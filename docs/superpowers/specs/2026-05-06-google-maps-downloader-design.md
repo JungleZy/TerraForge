@@ -22,7 +22,8 @@
 - Flask 2.3+ - Web 框架
 - Flask-SocketIO 5.3+ - WebSocket 实时通信
 - aiohttp 3.9+ - 异步 HTTP 客户端
-- Pillow 10.0+ - 图像处理
+- GDAL 3.6+ - 地理空间数据处理（坐标转换、瓦片拼接、格式转换）
+- Pillow 10.0+ - 辅助图像处理
 - SQLite 3 - 数据持久化
 
 **前端：**
@@ -124,6 +125,7 @@ CREATE TABLE config (
 - `default_style`: 默认地图样式（m）
 - `default_zoom_min`: 默认最小缩放级别（10）
 - `default_zoom_max`: 默认最大缩放级别（15）
+- `default_output_format`: 默认输出格式（GeoTIFF）
 - `concurrent_downloads`: 并发下载数（10）
 - `request_timeout`: 请求超时时间（30秒）
 - `max_retries`: 最大重试次数（3）
@@ -135,6 +137,8 @@ CREATE TABLE config (
 - `map_center_lat`: 地图初始中心纬度（39.9）
 - `map_center_lng`: 地图初始中心经度（116.4）
 - `map_initial_zoom`: 地图初始缩放级别（10）
+- `gdal_compression`: GDAL 压缩方式（LZW）
+- `gdal_resampling`: GDAL 重采样算法（cubic）
 
 ### 3.2 下载引擎（DownloadEngine）
 
@@ -144,7 +148,7 @@ CREATE TABLE config (
 - 服务器轮询（mts0/mts1/mts2/mts3）
 - 失败重试机制
 - 瓦片缓存管理
-- 图像拼接
+- 使用 GDAL 进行图像拼接和地理配准
 
 **核心方法：**
 ```python
@@ -152,7 +156,7 @@ class DownloadEngine:
     def calculate_tiles(self, north, south, east, west, zoom_min, zoom_max) -> List[Tile]
     async def download_tile(self, tile: Tile, style: str) -> bytes
     async def download_tiles_batch(self, tiles: List[Tile], task_id: int, style: str)
-    def stitch_tiles(self, tiles: List[Tile], output_path: str)
+    def stitch_tiles_with_gdal(self, tiles: List[Tile], output_path: str, output_format: str)
     def get_tile_url(self, x: int, y: int, z: int, style: str, server_index: int) -> str
     def manage_cache(self)
 ```
@@ -176,6 +180,29 @@ http://mts{0-3}.googleapis.com/vt?lyrs={style}&x={x}&y={y}&z={z}
 - 缓存路径：`./cache/{style}/{z}/{x}/{y}.png`
 - LRU 淘汰策略
 - 定期清理超过保留期限的缓存
+
+**GDAL 集成优势：**
+- **精确的坐标转换：** 使用 GDAL 的坐标转换功能，支持多种投影系统
+- **高效的瓦片拼接：** 使用 `gdal.Warp()` 或 `gdal_merge.py` 拼接瓦片，比 Pillow 更快且支持大图
+- **地理配准：** 自动为输出图像添加地理参考信息（GeoTIFF）
+- **多格式支持：** 输出 GeoTIFF、PNG、JPEG、MBTiles 等多种格式
+- **内存优化：** GDAL 的流式处理可以处理超大图像而不会内存溢出
+
+**GDAL 拼接实现示例：**
+```python
+def stitch_tiles_with_gdal(self, tiles, output_path, zoom_level):
+    # 创建 VRT（虚拟数据集）
+    vrt_options = gdal.BuildVRTOptions(resampleAlg='cubic')
+    vrt = gdal.BuildVRT('temp.vrt', [tile.path for tile in tiles], options=vrt_options)
+    
+    # 转换为最终格式（GeoTIFF 或 PNG）
+    translate_options = gdal.TranslateOptions(
+        format='GTiff',
+        creationOptions=['COMPRESS=LZW', 'TILED=YES']
+    )
+    gdal.Translate(output_path, vrt, options=translate_options)
+    vrt = None  # 关闭数据集
+```
 
 ### 3.3 任务管理器（TaskManager）
 
@@ -362,7 +389,11 @@ map-download/
 2. TaskManager 创建后台线程
 3. DownloadEngine 异步下载瓦片
 4. 实时更新数据库和推送进度
-5. 完成后拼接图像（如需要）
+5. 完成后使用 GDAL 拼接图像（如需要）
+   - 为每个瓦片添加地理参考信息
+   - 使用 VRT 虚拟数据集组织瓦片
+   - 转换为目标格式（GeoTIFF/PNG/JPEG）
+   - 可选：生成金字塔（多分辨率）以提高大图显示性能
 
 ### 5.3 断点续传
 1. 暂停时保留所有瓦片状态
@@ -383,6 +414,9 @@ map-download/
 - 瓦片缓存
 - 数据库索引
 - WebSocket 节流
+- GDAL VRT 虚拟数据集（避免加载所有瓦片到内存）
+- GDAL 流式处理（处理超大图像）
+- 可选的图像金字塔生成（提高大图浏览性能）
 
 ## 8. 安全考虑
 
@@ -394,12 +428,27 @@ map-download/
 ## 9. 部署
 
 ```bash
+# 安装系统依赖（Ubuntu/Debian）
+sudo apt-get update
+sudo apt-get install -y gdal-bin libgdal-dev python3-gdal
+
+# 安装 Python 依赖
 pip install -r requirements.txt
+
+# 初始化数据库
 python database.py
+
+# 启动应用
 python app.py
 ```
 
 应用在 `http://0.0.0.0:5000` 启动。
+
+**注意：** GDAL 的安装可能因操作系统而异：
+- **Ubuntu/Debian:** `apt-get install gdal-bin libgdal-dev`
+- **CentOS/RHEL:** `yum install gdal gdal-devel`
+- **macOS:** `brew install gdal`
+- **Windows:** 使用 OSGeo4W 或 Conda 安装
 
 ## 10. 风险和限制
 
