@@ -525,7 +525,7 @@ class DownloadEngine:
             2. Add georeference to each tile (creates _geo.tif versions)
             3. Build VRT (Virtual Dataset) from georeferenced tiles
             4. Translate VRT to final format with compression
-            5. Clean up temporary VRT file
+            5. Clean up temporary VRT file and georeferenced tiles
 
         GDAL Configuration:
             - Compression: from config (gdal_compression)
@@ -533,6 +533,21 @@ class DownloadEngine:
             - Output format: GeoTIFF (.tif) or PNG (.png) based on extension
         """
         logger.info(f"Starting GDAL tile stitching: {len(tiles)} tiles at zoom {zoom_level}")
+
+        # Validate and normalize output path
+        output_path_obj = Path(output_path).resolve()
+
+        # Validate output path is within allowed directories (cache or output directory)
+        allowed_dirs = [Config.CACHE_DIR.resolve(), Config.OUTPUT_DIR.resolve()]
+        if not any(output_path_obj.is_relative_to(allowed_dir) for allowed_dir in allowed_dirs):
+            raise ValueError(
+                f"Output path {output_path_obj} is not within allowed directories: "
+                f"{', '.join(str(d) for d in allowed_dirs)}"
+            )
+
+        # Create output directory if it doesn't exist
+        output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Ensured output directory exists: {output_path_obj.parent}")
 
         # Get configuration values
         gdal_compression = self.config_manager.get('gdal_compression', 'LZW')
@@ -559,7 +574,9 @@ class DownloadEngine:
         logger.info(f"Created {len(georef_paths)} georeferenced tiles")
 
         # Build VRT (Virtual Dataset) from georeferenced tiles
-        vrt_path = output_path.replace('.tif', '.vrt').replace('.png', '.vrt')
+        # Use Path operations instead of string replace for robustness
+        vrt_path_obj = output_path_obj.with_suffix('.vrt')
+        vrt_path = str(vrt_path_obj)
         logger.info(f"Building VRT: {vrt_path}")
 
         vrt_options = gdal.BuildVRTOptions(
@@ -601,22 +618,34 @@ class DownloadEngine:
             )
 
         # Perform translation
-        output_ds = gdal.Translate(output_path, vrt_path, options=translate_options)
+        output_ds = gdal.Translate(str(output_path_obj), vrt_path, options=translate_options)
         if output_ds is None:
-            raise RuntimeError(f"Failed to translate VRT to {output_path}")
+            raise RuntimeError(f"Failed to translate VRT to {output_path_obj}")
         output_ds = None  # Close output dataset
 
-        logger.info(f"Translation completed: {output_path}")
+        logger.info(f"Translation completed: {output_path_obj}")
 
-        # Clean up VRT file
+        # Clean up temporary files
+        # 1. Clean up VRT file
         try:
-            os.remove(vrt_path)
+            vrt_path_obj.unlink()
             logger.debug(f"Cleaned up VRT file: {vrt_path}")
         except Exception as e:
             logger.warning(f"Failed to clean up VRT file {vrt_path}: {e}")
 
-        logger.info(f"GDAL tile stitching completed: {output_path}")
-        return output_path
+        # 2. Clean up temporary georeferenced tiles (_geo.tif files)
+        cleaned_count = 0
+        for georef_path in georef_paths:
+            try:
+                Path(georef_path).unlink()
+                cleaned_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to clean up georeferenced tile {georef_path}: {e}")
+
+        logger.debug(f"Cleaned up {cleaned_count}/{len(georef_paths)} temporary georeferenced tiles")
+
+        logger.info(f"GDAL tile stitching completed: {output_path_obj}")
+        return str(output_path_obj)
 
     def _add_georeference(self, tile_path: str, tile: Tile) -> str:
         """
@@ -651,11 +680,13 @@ class DownloadEngine:
             Original: /path/to/tile.png
             Georef:   /path/to/tile_geo.tif
         """
-        # Generate georeferenced file path
-        georef_path = tile_path.replace('.png', '_geo.tif')
+        # Generate georeferenced file path using Path operations
+        tile_path_obj = Path(tile_path)
+        georef_path_obj = tile_path_obj.with_stem(f"{tile_path_obj.stem}_geo").with_suffix('.tif')
+        georef_path = str(georef_path_obj)
 
         # Return if already exists
-        if os.path.exists(georef_path):
+        if georef_path_obj.exists():
             logger.debug(f"Georeferenced tile already exists: {georef_path}")
             return georef_path
 
