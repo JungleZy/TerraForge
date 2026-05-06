@@ -368,25 +368,33 @@ class DownloadEngine:
         try:
             # Check cache first if enabled
             if cache_enabled:
-                cache_path = self._get_cache_path(tile, style)
-                if cache_path.exists():
-                    # Validate cached file (check size > 0)
-                    file_size = await asyncio.to_thread(lambda: cache_path.stat().st_size)
+                try:
+                    cache_path = self._get_cache_path(tile, style)
+                    if cache_path.exists():
+                        # Validate cached file (check size > 0)
+                        file_size = await asyncio.to_thread(lambda: cache_path.stat().st_size)
 
-                    if file_size > 0:
-                        logger.debug(f"Tile {tile.zoom}/{tile.x}/{tile.y} found in cache ({file_size} bytes)")
+                        if file_size > 0:
+                            logger.debug(f"Tile {tile.zoom}/{tile.x}/{tile.y} found in cache ({file_size} bytes)")
 
-                        # Report success from cache
-                        if progress_callback:
-                            await progress_callback(tile, 'completed', None)
+                            # Report success from cache
+                            if progress_callback:
+                                await progress_callback(tile, 'completed', None)
 
-                        return {
-                            'tile': tile,
-                            'status': 'completed',
-                            'size': file_size
-                        }
-                    else:
-                        logger.warning(f"Cached tile {tile.zoom}/{tile.x}/{tile.y} is empty, re-downloading")
+                            return {
+                                'tile': tile,
+                                'status': 'completed',
+                                'size': file_size
+                            }
+                        else:
+                            logger.warning(f"Cached tile {tile.zoom}/{tile.x}/{tile.y} is empty, re-downloading")
+                except Exception as cache_error:
+                    # Cache access failed (permissions, race condition, etc.)
+                    # Log warning and fall through to download
+                    logger.warning(
+                        f"Cache validation failed for tile {tile.zoom}/{tile.x}/{tile.y}: {cache_error}. "
+                        f"Falling back to download."
+                    )
 
             # Download tile
             data = await self.download_tile(tile, style, session)
