@@ -1,0 +1,339 @@
+/* Global Styles */
+body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+main {
+    flex: 1;
+}
+
+/* Map Styles */
+#map {
+    height: 600px;
+    width: 100%;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+}
+
+.history-map {
+    height: 400px;
+    width: 100%;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    margin-bottom: 15px;
+}
+
+/* Task Card Styles */
+.task-card {
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transition: all 0.3s ease;
+}
+
+.task-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transform: translateY(-2px);
+}
+
+.task-card.status-running {
+    border-left: 4px solid #0d6efd;
+    background-color: #e7f1ff;
+}
+
+.task-card.status-completed {
+    border-left: 4px solid #198754;
+    background-color: #d1e7dd;
+}
+
+.task-card.status-failed {
+    border-left: 4px solid #dc3545;
+    background-color: #f8d7da;
+}
+
+.task-card.status-paused {
+    border-left: 4px solid #ffc107;
+    background-color: #fff3cd;
+}
+
+.task-card.status-pending {
+    border-left: 4px solid #6c757d;
+    background-color: #e9ecef;
+}
+
+/* Status Badge Styles */
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.875rem;
+    font-weight: 600;
+}
+
+.status-badge.running {
+    background-color: #0d6efd;
+    color: white;
+}
+
+.status-badge.completed {
+    background-color: #198754;
+    color: white;
+}
+
+.status-badge.failed {
+    background-color: #dc3545;
+    color: white;
+}
+
+.status-badge.paused {
+    background-color: #ffc107;
+    color: #000;
+}
+
+.status-badge.pending {
+    background-color: #6c757d;
+    color: white;
+}
+
+/* Progress Bar Styles */
+.progress-container {
+    margin-top: 15px;
+}
+
+.progress {
+    height: 24px;
+    border-radius: 12px;
+    background-color: #e9ecef;
+    overflow: hidden;
+}
+
+.progress-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.875rem;
+    font-weight: 600;
+    transition: width 0.3s ease;
+}
+
+.progress-bar.bg-success {
+    background-color: #198754 !important;
+}
+
+.progress-bar.bg-info {
+    background-color: #0dcaf0 !important;
+}
+
+.progress-bar.bg-warning {
+    background-color: #ffc107 !important;
+}
+
+.progress-bar.bg-danger {
+    background-color: #dc3545 !important;
+}
+
+/* Zoom Progress Styles */
+.zoom-progress {
+    margin-top: 20px;
+}
+
+.zoom-level {
+    display: flex;
+    align-items: center;
+    margin-bottom: 10px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 6px;
+}
+
+.zoom-level-label {
+    min-width: 80px;
+    font-weight: 600;
+    color: #495057;
+}
+
+.zoom-level .progress {
+    flex: 1;
+    margin: 0 15px;
+    height: 20px;
+}
+
+.zoom-level-stats {
+    min-width: 120px;
+    text-align: right;
+    font-size: 0.875rem;
+    color: #6c757d;
+}
+
+/* Config Section Styles */
+.config-section {
+    background-color: #ffffff;
+    border-radius: 8px;
+    padding: 25px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.config-section h3 {
+    color: #0d6efd;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #e9ecef;
+}
+
+.config-section .form-label {
+    font-weight: 600;
+    color: #495057;
+    margin-bottom: 8px;
+}
+
+.config-section .form-control,
+.config-section .form-select {
+    border-radius: 6px;
+    border: 1px solid #ced4da;
+    padding: 10px 15px;
+}
+
+.config-section .form-control:focus,
+.config-section .form-select:focus {
+    border-color: #0d6efd;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+.config-section .btn {
+    padding: 10px 30px;
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+/* History Table Styles */
+.history-table {
+    background-color: #ffffff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.history-table table {
+    margin-bottom: 0;
+}
+
+.history-table th {
+    background-color: #0d6efd;
+    color: white;
+    font-weight: 600;
+    padding: 15px;
+}
+
+.history-table td {
+    padding: 12px 15px;
+    vertical-align: middle;
+}
+
+.history-table tbody tr:hover {
+    background-color: #f8f9fa;
+}
+
+/* Action Button Styles */
+.action-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.action-buttons .btn {
+    border-radius: 6px;
+    font-weight: 600;
+    padding: 8px 20px;
+}
+
+/* Alert Styles */
+.alert {
+    border-radius: 8px;
+    border: none;
+    padding: 15px 20px;
+}
+
+.alert-dismissible .btn-close {
+    padding: 18px 20px;
+}
+
+/* Card Styles */
+.card {
+    border-radius: 8px;
+    border: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.card-header {
+    background-color: #0d6efd;
+    color: white;
+    font-weight: 600;
+    border-radius: 8px 8px 0 0 !important;
+    padding: 15px 20px;
+}
+
+.card-body {
+    padding: 20px;
+}
+
+/* Statistics Styles */
+.stat-card {
+    text-align: center;
+    padding: 20px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.stat-card h3 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+
+.stat-card p {
+    font-size: 1rem;
+    margin-bottom: 0;
+    opacity: 0.9;
+}
+
+/* Loading Spinner */
+.spinner-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 200px;
+}
+
+/* Responsive Styles */
+@media (max-width: 768px) {
+    #map {
+        height: 400px;
+    }
+
+    .history-map {
+        height: 300px;
+    }
+
+    .task-card {
+        padding: 15px;
+    }
+
+    .config-section {
+        padding: 15px;
+    }
+
+    .action-buttons {
+        flex-direction: column;
+    }
+
+    .action-buttons .btn {
+        width: 100%;
+    }
+}
