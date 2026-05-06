@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}历史记录 - Google Maps 下载器{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h3>下载历史</h3>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>历史区域地图</h5>
+            </div>
+            <div class="card-body">
+                <div id="historyMap" class="history-map"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5>任务列表</h5>
+                <div>
+                    <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索任务...">
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>名称</th>
+                                <th>状态</th>
+                                <th>区域</th>
+                                <th>缩放级别</th>
+                                <th>样式</th>
+                                <th>瓦片数</th>
+                                <th>完成时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            <tr>
+                                <td colspan="9" class="text-center">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <nav>
+                    <ul class="pagination justify-content-center" id="pagination">
+                    </ul>
+                </nav>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/history.js') }}"></script>
+<script>
+    initHistory();
+</script>
+{% endblock %}
