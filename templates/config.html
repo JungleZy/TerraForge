@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}配置 - Google Maps 下载器{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 offset-md-2">
+        <h3>系统配置</h3>
+
+        <form id="configForm">
+            <div class="config-section">
+                <h5>基础设置</h5>
+
+                <div class="mb-3">
+                    <label for="default_save_path" class="form-label">默认保存路径</label>
+                    <input type="text" class="form-control" id="default_save_path"
+                           value="{{ config.default_save_path }}">
+                </div>
+
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label for="default_style" class="form-label">默认地图样式</label>
+                        <select class="form-select" id="default_style">
+                            <option value="m" {% if config.default_style == 'm' %}selected{% endif %}>标准</option>
+                            <option value="s" {% if config.default_style == 's' %}selected{% endif %}>卫星</option>
+                            <option value="y" {% if config.default_style == 'y' %}selected{% endif %}>卫星+标注</option>
+                            <option value="h" {% if config.default_style == 'h' %}selected{% endif %}>道路</option>
+                            <option value="t" {% if config.default_style == 't' %}selected{% endif %}>地形</option>
+                        </select>
+                    </div>
+
+                    <div class="col-md-4 mb-3">
+                        <label for="default_zoom_min" class="form-label">默认最小缩放</label>
+                        <input type="number" class="form-control" id="default_zoom_min"
+                               value="{{ config.default_zoom_min }}" min="0" max="21">
+                    </div>
+
+                    <div class="col-md-4 mb-3">
+                        <label for="default_zoom_max" class="form-label">默认最大缩放</label>
+                        <input type="number" class="form-control" id="default_zoom_max"
+                               value="{{ config.default_zoom_max }}" min="0" max="21">
+                    </div>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h5>下载设置</h5>
+
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label for="concurrent_downloads" class="form-label">并发下载数</label>
+                        <input type="number" class="form-control" id="concurrent_downloads"
+                               value="{{ config.concurrent_downloads }}" min="1" max="100">
+                    </div>
+
+                    <div class="col-md-4 mb-3">
+                        <label for="request_timeout" class="form-label">请求超时(秒)</label>
+                        <input type="number" class="form-control" id="request_timeout"
+                               value="{{ config.request_timeout }}" min="1" max="300">
+                    </div>
+
+                    <div class="col-md-4 mb-3">
+                        <label for="max_retries" class="form-label">最大重试次数</label>
+                        <input type="number" class="form-control" id="max_retries"
+                               value="{{ config.max_retries }}" min="0" max="10">
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="proxy_url" class="form-label">代理服务器 (可选)</label>
+                    <input type="text" class="form-control" id="proxy_url"
+                           value="{{ config.proxy_url }}" placeholder="http://proxy.example.com:8080">
+                </div>
+
+                <div class="mb-3">
+                    <label for="tile_servers" class="form-label">瓦片服务器列表</label>
+                    <input type="text" class="form-control" id="tile_servers"
+                           value="{{ config.tile_servers }}">
+                    <small class="form-text text-muted">用逗号分隔多个服务器</small>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h5>缓存设置</h5>
+
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="cache_enabled"
+                               {% if config.cache_enabled == 'true' %}checked{% endif %}>
+                        <label class="form-check-label" for="cache_enabled">
+                            启用瓦片缓存
+                        </label>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="cache_max_size_mb" class="form-label">缓存最大大小 (MB)</label>
+                    <input type="number" class="form-control" id="cache_max_size_mb"
+                           value="{{ config.cache_max_size_mb }}" min="0">
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h5>GDAL 设置</h5>
+
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="gdal_compression" class="form-label">压缩方式</label>
+                        <select class="form-select" id="gdal_compression">
+                            <option value="LZW" {% if config.gdal_compression == 'LZW' %}selected{% endif %}>LZW</option>
+                            <option value="DEFLATE" {% if config.gdal_compression == 'DEFLATE' %}selected{% endif %}>DEFLATE</option>
+                            <option value="JPEG" {% if config.gdal_compression == 'JPEG' %}selected{% endif %}>JPEG</option>
+                            <option value="NONE" {% if config.gdal_compression == 'NONE' %}selected{% endif %}>无压缩</option>
+                        </select>
+                    </div>
+
+                    <div class="col-md-6 mb-3">
+                        <label for="gdal_resampling" class="form-label">重采样算法</label>
+                        <select class="form-select" id="gdal_resampling">
+                            <option value="nearest" {% if config.gdal_resampling == 'nearest' %}selected{% endif %}>最近邻</option>
+                            <option value="bilinear" {% if config.gdal_resampling == 'bilinear' %}selected{% endif %}>双线性</option>
+                            <option value="cubic" {% if config.gdal_resampling == 'cubic' %}selected{% endif %}>三次卷积</option>
+                            <option value="lanczos" {% if config.gdal_resampling == 'lanczos' %}selected{% endif %}>Lanczos</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h5>其他设置</h5>
+
+                <div class="mb-3">
+                    <label for="history_retention_days" class="form-label">历史记录保留天数</label>
+                    <input type="number" class="form-control" id="history_retention_days"
+                           value="{{ config.history_retention_days }}" min="0">
+                </div>
+
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label for="map_center_lat" class="form-label">地图中心纬度</label>
+                        <input type="number" class="form-control" id="map_center_lat"
+                               value="{{ config.map_center_lat }}" step="0.1" min="-90" max="90">
+                    </div>
+
+                    <div class="col-md-4 mb-3">
+                        <label for="map_center_lng" class="form-label">地图中心经度</label>
+                        <input type="number" class="form-control" id="map_center_lng"
+                               value="{{ config.map_center_lng }}" step="0.1" min="-180" max="180">
+                    </div>
+
+                    <div class="col-md-4 mb-3">
+                        <label for="map_initial_zoom" class="form-label">地图初始缩放</label>
+                        <input type="number" class="form-control" id="map_initial_zoom"
+                               value="{{ config.map_initial_zoom }}" min="0" max="21">
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex justify-content-between">
+                <button type="button" class="btn btn-secondary" onclick="resetConfig()">重置为默认值</button>
+                <button type="submit" class="btn btn-primary">保存配置</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/config.js') }}"></script>
+<script>
+    initConfig();
+</script>
+{% endblock %}
