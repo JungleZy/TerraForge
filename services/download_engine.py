@@ -116,6 +116,22 @@ class DownloadEngine:
             The number of tiles increases exponentially with zoom level.
             Maximum allowed tiles per task: 100,000
         """
+        # Coordinate range validation
+        if not -90 <= north <= 90:
+            raise ValueError(f"North latitude must be between -90 and 90, got {north}")
+
+        if not -90 <= south <= 90:
+            raise ValueError(f"South latitude must be between -90 and 90, got {south}")
+
+        if not -180 <= east <= 180:
+            raise ValueError(f"East longitude must be between -180 and 180, got {east}")
+
+        if not -180 <= west <= 180:
+            raise ValueError(f"West longitude must be between -180 and 180, got {west}")
+
+        if east == west:
+            raise ValueError(f"East longitude ({east}) must be different from west longitude ({west})")
+
         # Input validation
         if north <= south:
             raise ValueError(f"North latitude ({north}) must be greater than south latitude ({south})")
@@ -129,6 +145,31 @@ class DownloadEngine:
         if zoom_min > zoom_max:
             raise ValueError(f"Minimum zoom ({zoom_min}) must be less than or equal to maximum zoom ({zoom_max})")
 
+        # Calculate expected tile count BEFORE generating any tiles
+        expected_tile_count = 0
+        for zoom in range(zoom_min, zoom_max + 1):
+            # Get tile coordinates for corners
+            x_min, y_max = self.lat_lon_to_tile(south, west, zoom)
+            x_max, y_min = self.lat_lon_to_tile(north, east, zoom)
+
+            # Ensure proper ordering
+            if x_min > x_max:
+                x_min, x_max = x_max, x_min
+            if y_min > y_max:
+                y_min, y_max = y_max, y_min
+
+            # Calculate tile count for this zoom level
+            tiles_at_zoom = (x_max - x_min + 1) * (y_max - y_min + 1)
+            expected_tile_count += tiles_at_zoom
+
+        # Check if tile count exceeds maximum allowed BEFORE creating any Tile objects
+        if expected_tile_count > MAX_TILES:
+            raise ValueError(
+                f"Tile count ({expected_tile_count}) exceeds maximum allowed ({MAX_TILES}). "
+                f"Please reduce the area size or zoom level range."
+            )
+
+        # Now generate tiles (only if count check passed)
         tiles = []
 
         # Iterate through each zoom level
@@ -155,13 +196,6 @@ class DownloadEngine:
                         retry_count=0
                     )
                     tiles.append(tile)
-
-        # Check if tile count exceeds maximum allowed
-        if len(tiles) > MAX_TILES:
-            raise ValueError(
-                f"Tile count ({len(tiles)}) exceeds maximum allowed ({MAX_TILES}). "
-                f"Please reduce the area size or zoom level range."
-            )
 
         logger.info(
             f"Calculated {len(tiles)} tiles for region "

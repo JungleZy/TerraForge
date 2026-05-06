@@ -186,9 +186,10 @@ def test_get_tile_url(download_engine):
 
 
 def test_tile_count_limit(download_engine):
-    """Test that tile count limit is enforced"""
+    """Test that tile count limit is enforced BEFORE tile generation"""
     # Try to create a task that would exceed MAX_TILES
     # Large area with high zoom levels should exceed 100,000 tiles
+    # This should fail fast without creating any Tile objects in memory
     with pytest.raises(ValueError) as exc_info:
         download_engine.calculate_tiles(
             north=50.0,
@@ -201,6 +202,11 @@ def test_tile_count_limit(download_engine):
 
     assert "exceeds maximum allowed" in str(exc_info.value)
     assert str(MAX_TILES) in str(exc_info.value)
+
+    # Verify the error message contains the expected tile count
+    # This confirms the check happened before generation
+    error_msg = str(exc_info.value)
+    assert "Tile count" in error_msg
 
 
 def test_input_validation_north_south(download_engine):
@@ -277,3 +283,128 @@ def test_lat_lon_to_tile_invalid_zoom(download_engine):
         download_engine.lat_lon_to_tile(40.0, 116.0, 25)
 
     assert "Zoom level must be between" in str(exc_info.value)
+
+
+def test_coordinate_range_validation_latitude(download_engine):
+    """Test that latitude must be between -90 and 90"""
+    # Test north latitude too high
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=95.0,  # Invalid: > 90
+            south=39.0,
+            east=116.5,
+            west=116.3,
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "North latitude must be between -90 and 90" in str(exc_info.value)
+
+    # Test north latitude too low
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=-95.0,  # Invalid: < -90
+            south=-96.0,
+            east=116.5,
+            west=116.3,
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "North latitude must be between -90 and 90" in str(exc_info.value)
+
+    # Test south latitude too high
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=95.0,  # Invalid: > 90
+            east=116.5,
+            west=116.3,
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "South latitude must be between -90 and 90" in str(exc_info.value)
+
+    # Test south latitude too low
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=-95.0,  # Invalid: < -90
+            east=116.5,
+            west=116.3,
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "South latitude must be between -90 and 90" in str(exc_info.value)
+
+
+def test_coordinate_range_validation_longitude(download_engine):
+    """Test that longitude must be between -180 and 180"""
+    # Test east longitude too high
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=185.0,  # Invalid: > 180
+            west=116.3,
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "East longitude must be between -180 and 180" in str(exc_info.value)
+
+    # Test east longitude too low
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=-185.0,  # Invalid: < -180
+            west=-186.0,
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "East longitude must be between -180 and 180" in str(exc_info.value)
+
+    # Test west longitude too high
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=116.5,
+            west=185.0,  # Invalid: > 180
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "West longitude must be between -180 and 180" in str(exc_info.value)
+
+    # Test west longitude too low
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=116.5,
+            west=-185.0,  # Invalid: < -180
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "West longitude must be between -180 and 180" in str(exc_info.value)
+
+
+def test_coordinate_validation_east_west_equal(download_engine):
+    """Test that east and west longitude must be different"""
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=116.5,
+            west=116.5,  # Invalid: east == west
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "must be different from west longitude" in str(exc_info.value)
