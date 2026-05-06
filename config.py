@@ -2,14 +2,25 @@
 Configuration module for Google Maps Downloader
 """
 import os
+import secrets
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
     """Application configuration class"""
 
     # Secret key for Flask session management
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+    SECRET_KEY = os.environ.get('SECRET_KEY')
+    if not SECRET_KEY:
+        SECRET_KEY = secrets.token_hex(32)
+        logger.warning(
+            "SECRET_KEY not set in environment variables. "
+            "Generated a random key for this session. "
+            "Set SECRET_KEY environment variable for production use."
+        )
 
     # Base directory of the application
     BASE_DIR = Path(__file__).parent.absolute()
@@ -36,7 +47,7 @@ class Config:
         # Create cache directory
         Config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        print(f"Initialized directories:")
-        print(f"  - Database: {Config.DATABASE_PATH}")
-        print(f"  - Downloads: {Config.DOWNLOADS_DIR}")
-        print(f"  - Cache: {Config.CACHE_DIR}")
+        logger.info("Initialized directories:")
+        logger.info(f"  - Database: {Config.DATABASE_PATH}")
+        logger.info(f"  - Downloads: {Config.DOWNLOADS_DIR}")
+        logger.info(f"  - Cache: {Config.CACHE_DIR}")
