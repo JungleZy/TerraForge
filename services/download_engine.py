@@ -7,9 +7,14 @@ Implements Web Mercator projection for converting geographic coordinates to tile
 
 import logging
 import math
-from typing import List, Tuple
+import asyncio
+import aiohttp
+import os
+from typing import List, Tuple, Optional, Dict, Any
+from pathlib import Path
 from models.task import Tile
 from services.config_manager import ConfigManager
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -240,3 +245,238 @@ class DownloadEngine:
         url = f"http://mts{server_index}.googleapis.com/vt?lyrs={style}&x={x}&y={y}&z={z}"
 
         return url
+
+    def _get_cache_path(self, tile: Tile, style: str) -> Path:
+        """
+        Get cache file path for a tile
+
+        Args:
+            tile: Tile object containing coordinates
+            style: Map style code
+
+        Returns:
+            Path object for cache file location
+
+        Cache Path Format:
+            cache/{style}/{zoom}/{x}/{y}.png
+        """
+        cache_path = Config.CACHE_DIR / style / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
+        return cache_path
+
+    async def download_tile(
+        self,
+        tile: Tile,
+        style: str,
+        session: aiohttp.ClientSession
+    ) -> bytes:
+        """
+        Download a single tile with retry logic and server rotation
+
+        Args:
+            tile: Tile object to download
+            style: Map style code
+            session: aiohttp ClientSession for making requests
+
+        Returns:
+            Tile image data as bytes
+
+        Raises:
+            aiohttp.ClientError: If download fails after all retries
+            asyncio.TimeoutError: If request times out after all retries
+
+        Retry Strategy:
+            - Max retries from config (max_retries)
+            - Server rotation on each retry (mts0 -> mts1 -> mts2 -> mts3)
+            - Exponential backoff: 2^attempt seconds between retries
+            - Timeout from config (request_timeout)
+        """
+        # Get configuration values
+        max_retries = int(self.config_manager.get('max_retries', '3'))
+        request_timeout = int(self.config_manager.get('request_timeout', '30'))
+
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                # Rotate server index on each attempt
+                server_index = attempt % TILE_SERVER_COUNT
+                url = self.get_tile_url(tile.x, tile.y, tile.zoom, style, server_index)
+
+                logger.debug(
+                    f"Downloading tile {tile.zoom}/{tile.x}/{tile.y} "
+                    f"from server mts{server_index} (attempt {attempt + 1}/{max_retries + 1})"
+                )
+
+                # Download with timeout
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=request_timeout)) as response:
+                    response.raise_for_status()
+                    data = await response.read()
+
+                    logger.debug(
+                        f"Successfully downloaded tile {tile.zoom}/{tile.x}/{tile.y} "
+                        f"({len(data)} bytes)"
+                    )
+
+                    return data
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                logger.warning(
+                    f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y} "
+                    f"(attempt {attempt + 1}/{max_retries + 1}): {e}"
+                )
+
+                # If not the last attempt, wait with exponential backoff
+                if attempt < max_retries:
+                    backoff_time = 2 ** attempt
+                    logger.debug(f"Waiting {backoff_time}s before retry...")
+                    await asyncio.sleep(backoff_time)
+
+        # All retries failed
+        error_msg = f"Failed to download tile after {max_retries + 1} attempts: {last_error}"
+        logger.error(error_msg)
+        raise last_error
+
+    async def _download_single_tile(
+        self,
+        tile: Tile,
+        style: str,
+        session: aiohttp.ClientSession,
+        cache_enabled: bool,
+        progress_callback=None
+    ) -> Dict[str, Any]:
+        """
+        Download a single tile with cache check and progress reporting
+
+        Args:
+            tile: Tile object to download
+            style: Map style code
+            session: aiohttp ClientSession
+            cache_enabled: Whether to check/use cache
+            progress_callback: Optional async callback function(tile, status, error)
+
+        Returns:
+            Dictionary with download result:
+                {
+                    'tile': Tile object,
+                    'status': 'completed' or 'failed',
+                    'size': bytes downloaded (if successful),
+                    'error': error message (if failed)
+                }
+        """
+        try:
+            # Check cache first if enabled
+            if cache_enabled:
+                cache_path = self._get_cache_path(tile, style)
+                if cache_path.exists():
+                    logger.debug(f"Tile {tile.zoom}/{tile.x}/{tile.y} found in cache")
+
+                    # Read cached file size
+                    file_size = cache_path.stat().st_size
+
+                    # Report success from cache
+                    if progress_callback:
+                        await progress_callback(tile, 'completed', None)
+
+                    return {
+                        'tile': tile,
+                        'status': 'completed',
+                        'size': file_size
+                    }
+
+            # Download tile
+            data = await self.download_tile(tile, style, session)
+
+            # Save to cache
+            cache_path = self._get_cache_path(tile, style)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(cache_path, 'wb') as f:
+                f.write(data)
+
+            logger.debug(f"Saved tile {tile.zoom}/{tile.x}/{tile.y} to cache")
+
+            # Report success
+            if progress_callback:
+                await progress_callback(tile, 'completed', None)
+
+            return {
+                'tile': tile,
+                'status': 'completed',
+                'size': len(data)
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y}: {error_msg}")
+
+            # Report failure
+            if progress_callback:
+                await progress_callback(tile, 'failed', error_msg)
+
+            return {
+                'tile': tile,
+                'status': 'failed',
+                'error': error_msg
+            }
+
+    async def download_tiles_batch(
+        self,
+        tiles: List[Tile],
+        task_id: int,
+        style: str,
+        progress_callback=None
+    ) -> List[Dict[str, Any]]:
+        """
+        Download multiple tiles concurrently with semaphore control
+
+        Args:
+            tiles: List of Tile objects to download
+            task_id: Task ID for the download batch
+            style: Map style code
+            progress_callback: Optional async callback function(tile, status, error)
+
+        Returns:
+            List of download result dictionaries
+
+        Concurrency Control:
+            Uses semaphore to limit concurrent downloads based on
+            concurrent_downloads config value
+        """
+        # Get configuration values
+        concurrent_downloads = int(self.config_manager.get('concurrent_downloads', '10'))
+        request_timeout = int(self.config_manager.get('request_timeout', '30'))
+
+        logger.info(
+            f"Starting batch download: {len(tiles)} tiles, "
+            f"concurrency={concurrent_downloads}, timeout={request_timeout}s"
+        )
+
+        # Create semaphore for concurrency control
+        semaphore = asyncio.Semaphore(concurrent_downloads)
+
+        # Create aiohttp session with connection pooling
+        connector = aiohttp.TCPConnector(limit=concurrent_downloads, limit_per_host=TILE_SERVER_COUNT)
+
+        async with aiohttp.ClientSession(connector=connector) as session:
+
+            async def download_with_semaphore(tile: Tile):
+                """Download a single tile with semaphore control"""
+                async with semaphore:
+                    return await self._download_single_tile(
+                        tile=tile,
+                        style=style,
+                        session=session,
+                        cache_enabled=True,
+                        progress_callback=progress_callback
+                    )
+
+            # Create download tasks for all tiles
+            tasks = [download_with_semaphore(tile) for tile in tiles]
+
+            # Execute all downloads concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        logger.info(f"Batch download completed: {len(results)} results")
+
+        return results
