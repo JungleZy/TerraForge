@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}地图下载 - Google Maps 下载器{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5>选择下载区域</h5>
+            </div>
+            <div class="card-body p-0">
+                <div id="map"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5>下载参数</h5>
+            </div>
+            <div class="card-body">
+                <form id="downloadForm">
+                    <div class="mb-3">
+                        <label for="taskName" class="form-label">任务名称</label>
+                        <input type="text" class="form-control" id="taskName" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="mapStyle" class="form-label">地图样式</label>
+                        <select class="form-select" id="mapStyle">
+                            <option value="m">标准地图</option>
+                            <option value="s">卫星图</option>
+                            <option value="y">卫星图+标注</option>
+                            <option value="h">道路图</option>
+                            <option value="t">地形图</option>
+                        </select>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label for="zoomMin" class="form-label">最小缩放级别</label>
+                            <input type="number" class="form-control" id="zoomMin" min="0" max="21" value="10">
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label for="zoomMax" class="form-label">最大缩放级别</label>
+                            <input type="number" class="form-control" id="zoomMax" min="0" max="21" value="15">
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="outputFormat" class="form-label">输出格式</label>
+                        <select class="form-select" id="outputFormat">
+                            <option value="both">瓦片+拼接图</option>
+                            <option value="tiles_only">仅瓦片</option>
+                            <option value="image_only">仅拼接图</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="outputPath" class="form-label">保存路径</label>
+                        <input type="text" class="form-control" id="outputPath" value="./downloads/map">
+                    </div>
+
+                    <div class="alert alert-info" id="boundsInfo">
+                        <small>请在地图上框选下载区域</small>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100" id="createTaskBtn" disabled>
+                        创建下载任务
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5>活动任务</h5>
+            </div>
+            <div class="card-body" id="activeTasks">
+                <p class="text-muted">暂无活动任务</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/map.js') }}"></script>
+<script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
+<script>
+    const config = {{ config|tojson }};
+    initMap(config);
+    initTasks();
+</script>
+{% endblock %}
