@@ -8,6 +8,28 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+# Default configuration values (18 total)
+DEFAULT_CONFIGS = [
+    ('default_save_path', './downloads'),
+    ('default_style', 'm'),
+    ('default_zoom_min', '10'),
+    ('default_zoom_max', '15'),
+    ('default_output_format', 'both'),
+    ('concurrent_downloads', '10'),
+    ('request_timeout', '30'),
+    ('max_retries', '3'),
+    ('proxy_url', ''),
+    ('tile_servers', 'mts0,mts1,mts2,mts3'),
+    ('cache_enabled', 'true'),
+    ('cache_max_size_mb', '1000'),
+    ('history_retention_days', '90'),
+    ('map_center_lat', '39.9'),
+    ('map_center_lng', '116.4'),
+    ('map_initial_zoom', '10'),
+    ('gdal_compression', 'LZW'),
+    ('gdal_resampling', 'cubic'),
+]
+
 
 def get_connection():
     """
@@ -132,30 +154,9 @@ def init_database():
         ''')
 
         # Insert default configuration values using executemany for efficiency
-        default_configs = [
-            ('default_save_path', './downloads'),
-            ('default_style', 'm'),
-            ('default_zoom_min', '10'),
-            ('default_zoom_max', '15'),
-            ('default_output_format', 'both'),
-            ('concurrent_downloads', '10'),
-            ('request_timeout', '30'),
-            ('max_retries', '3'),
-            ('proxy_url', ''),
-            ('tile_servers', 'mts0,mts1,mts2,mts3'),
-            ('cache_enabled', 'true'),
-            ('cache_max_size_mb', '1000'),
-            ('history_retention_days', '90'),
-            ('map_center_lat', '39.9'),
-            ('map_center_lng', '116.4'),
-            ('map_initial_zoom', '10'),
-            ('gdal_compression', 'LZW'),
-            ('gdal_resampling', 'cubic'),
-        ]
-
         cursor.executemany(
             'INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)',
-            default_configs
+            DEFAULT_CONFIGS
         )
 
         conn.commit()

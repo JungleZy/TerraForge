@@ -8,7 +8,8 @@ Handles reading, updating, and validating application configuration stored in SQ
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
-import database
+import sqlite3
+from database import get_connection_context, DEFAULT_CONFIGS
 
 logger = logging.getLogger(__name__)
 
@@ -33,28 +34,6 @@ class ConfigManager:
         - default_zoom_max: 0-21
     """
 
-    # Default configuration values (18 total)
-    DEFAULT_CONFIGS = [
-        ('default_save_path', './downloads'),
-        ('default_style', 'm'),
-        ('default_zoom_min', '10'),
-        ('default_zoom_max', '15'),
-        ('default_output_format', 'both'),
-        ('concurrent_downloads', '10'),
-        ('request_timeout', '30'),
-        ('max_retries', '3'),
-        ('proxy_url', ''),
-        ('tile_servers', 'mts0,mts1,mts2,mts3'),
-        ('cache_enabled', 'true'),
-        ('cache_max_size_mb', '1000'),
-        ('history_retention_days', '90'),
-        ('map_center_lat', '39.9'),
-        ('map_center_lng', '116.4'),
-        ('map_initial_zoom', '10'),
-        ('gdal_compression', 'LZW'),
-        ('gdal_resampling', 'cubic'),
-    ]
-
     def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
         """
         Get configuration value by key
@@ -67,20 +46,19 @@ class ConfigManager:
             Configuration value as string, or default if not found
         """
         try:
-            conn = database.get_connection()
-            cursor = conn.cursor()
+            with get_connection_context() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute(
-                'SELECT value FROM config WHERE key = ?',
-                (key,)
-            )
+                cursor.execute(
+                    'SELECT value FROM config WHERE key = ?',
+                    (key,)
+                )
 
-            row = cursor.fetchone()
-            conn.close()
+                row = cursor.fetchone()
 
-            if row:
-                return row['value']
-            return default
+                if row:
+                    return row['value']
+                return default
 
         except Exception as e:
             logger.error(f'Failed to get config {key}: {e}')
@@ -95,37 +73,37 @@ class ConfigManager:
             value: Configuration value to set
 
         Returns:
-            True if successful, False otherwise
+            True if successful
 
         Raises:
             ValueError: If validation fails for the given key-value pair
+            sqlite3.Error: If database operation fails
         """
         # Validate the configuration value
         if not self.validate_config(key, value):
             raise ValueError(f'Invalid value for config key {key}: {value}')
 
         try:
-            conn = database.get_connection()
-            cursor = conn.cursor()
+            with get_connection_context() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute(
-                '''INSERT INTO config (key, value, updated_at)
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(key) DO UPDATE SET
-                   value = excluded.value,
-                   updated_at = excluded.updated_at''',
-                (key, value, datetime.now())
-            )
+                cursor.execute(
+                    '''INSERT INTO config (key, value, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(key) DO UPDATE SET
+                       value = excluded.value,
+                       updated_at = excluded.updated_at''',
+                    (key, value, datetime.now())
+                )
 
-            conn.commit()
-            conn.close()
+                conn.commit()
 
-            logger.info(f'Config updated: {key} = {value}')
-            return True
+                logger.info(f'Config updated: {key} = {value}')
+                return True
 
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.error(f'Failed to set config {key}: {e}')
-            return False
+            raise
 
     def get_all(self) -> Dict[str, Any]:
         """
@@ -135,21 +113,20 @@ class ConfigManager:
             Dictionary with all configuration key-value pairs
         """
         try:
-            conn = database.get_connection()
-            cursor = conn.cursor()
+            with get_connection_context() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute('SELECT key, value, updated_at FROM config')
-            rows = cursor.fetchall()
-            conn.close()
+                cursor.execute('SELECT key, value, updated_at FROM config')
+                rows = cursor.fetchall()
 
-            result = {}
-            for row in rows:
-                result[row['key']] = {
-                    'value': row['value'],
-                    'updated_at': row['updated_at']
-                }
+                result = {}
+                for row in rows:
+                    result[row['key']] = {
+                        'value': row['value'],
+                        'updated_at': row['updated_at']
+                    }
 
-            return result
+                return result
 
         except Exception as e:
             logger.error(f'Failed to get all configs: {e}')
@@ -160,32 +137,39 @@ class ConfigManager:
         Reset all configuration to default values
 
         Deletes all existing configuration and re-inserts 18 default values.
+        Uses explicit transaction with rollback on error to ensure data safety.
 
         Returns:
-            True if successful, False otherwise
+            True if successful
+
+        Raises:
+            sqlite3.Error: If database operation fails
         """
         try:
-            conn = database.get_connection()
-            cursor = conn.cursor()
+            with get_connection_context() as conn:
+                cursor = conn.cursor()
 
-            # Delete all existing config
-            cursor.execute('DELETE FROM config')
+                try:
+                    # Delete all existing config
+                    cursor.execute('DELETE FROM config')
 
-            # Insert default configurations
-            cursor.executemany(
-                'INSERT INTO config (key, value) VALUES (?, ?)',
-                self.DEFAULT_CONFIGS
-            )
+                    # Insert default configurations
+                    cursor.executemany(
+                        'INSERT INTO config (key, value) VALUES (?, ?)',
+                        DEFAULT_CONFIGS
+                    )
 
-            conn.commit()
-            conn.close()
+                    conn.commit()
+                    logger.info('Configuration reset to defaults')
+                    return True
 
-            logger.info('Configuration reset to defaults')
-            return True
+                except sqlite3.Error as e:
+                    conn.rollback()
+                    logger.error(f'Failed to reset config to defaults: {e}')
+                    raise
 
-        except Exception as e:
-            logger.error(f'Failed to reset config to defaults: {e}')
-            return False
+        except sqlite3.Error:
+            raise
 
     def validate_config(self, key: str, value: str) -> bool:
         """
