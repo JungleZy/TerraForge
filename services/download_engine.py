@@ -400,13 +400,22 @@ class DownloadEngine:
             data = await self.download_tile(tile, style, session)
 
             # Save to cache using async file I/O
-            cache_path = self._get_cache_path(tile, style)
-            await asyncio.to_thread(lambda: cache_path.parent.mkdir(parents=True, exist_ok=True))
+            # Wrap cache write in try-except to prevent cache failures from failing the download
+            try:
+                cache_path = self._get_cache_path(tile, style)
+                await asyncio.to_thread(lambda: cache_path.parent.mkdir(parents=True, exist_ok=True))
 
-            async with aiofiles.open(cache_path, 'wb') as f:
-                await f.write(data)
+                async with aiofiles.open(cache_path, 'wb') as f:
+                    await f.write(data)
 
-            logger.debug(f"Saved tile {tile.zoom}/{tile.x}/{tile.y} to cache")
+                logger.debug(f"Saved tile {tile.zoom}/{tile.x}/{tile.y} to cache")
+            except Exception as cache_write_error:
+                # Cache write failed (disk full, permissions, etc.)
+                # Log warning but still report download as successful since data was downloaded
+                logger.warning(
+                    f"Failed to write tile {tile.zoom}/{tile.x}/{tile.y} to cache: {cache_write_error}. "
+                    f"Download was successful but tile will not be cached."
+                )
 
             # Report success
             if progress_callback:
