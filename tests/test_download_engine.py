@@ -13,7 +13,7 @@ import math
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import database
-from services.download_engine import DownloadEngine
+from services.download_engine import DownloadEngine, MAX_TILES, MIN_ZOOM, MAX_ZOOM
 from models.task import Tile
 from config import Config
 
@@ -183,3 +183,97 @@ def test_get_tile_url(download_engine):
     for i in range(4):
         url = download_engine.get_tile_url(x=0, y=0, z=0, style='m', server_index=i)
         assert url.startswith(f'http://mts{i}.googleapis.com/vt')
+
+
+def test_tile_count_limit(download_engine):
+    """Test that tile count limit is enforced"""
+    # Try to create a task that would exceed MAX_TILES
+    # Large area with high zoom levels should exceed 100,000 tiles
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=50.0,
+            south=30.0,
+            east=130.0,
+            west=100.0,
+            zoom_min=10,
+            zoom_max=15
+        )
+
+    assert "exceeds maximum allowed" in str(exc_info.value)
+    assert str(MAX_TILES) in str(exc_info.value)
+
+
+def test_input_validation_north_south(download_engine):
+    """Test that north must be greater than south"""
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=39.0,
+            south=40.0,  # south > north (invalid)
+            east=116.5,
+            west=116.3,
+            zoom_min=10,
+            zoom_max=10
+        )
+
+    assert "North latitude" in str(exc_info.value)
+    assert "must be greater than south latitude" in str(exc_info.value)
+
+
+def test_input_validation_zoom_range(download_engine):
+    """Test that zoom levels must be in valid range"""
+    # Test zoom_min too low
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=116.5,
+            west=116.3,
+            zoom_min=-1,  # Invalid
+            zoom_max=10
+        )
+
+    assert "Minimum zoom level must be between" in str(exc_info.value)
+
+    # Test zoom_max too high
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=116.5,
+            west=116.3,
+            zoom_min=10,
+            zoom_max=22  # Invalid
+        )
+
+    assert "Maximum zoom level must be between" in str(exc_info.value)
+
+
+def test_input_validation_zoom_min_max(download_engine):
+    """Test that zoom_min must be <= zoom_max"""
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.calculate_tiles(
+            north=40.0,
+            south=39.0,
+            east=116.5,
+            west=116.3,
+            zoom_min=15,
+            zoom_max=10  # zoom_min > zoom_max (invalid)
+        )
+
+    assert "Minimum zoom" in str(exc_info.value)
+    assert "must be less than or equal to maximum zoom" in str(exc_info.value)
+
+
+def test_lat_lon_to_tile_invalid_zoom(download_engine):
+    """Test that invalid zoom levels are rejected"""
+    # Test zoom too low
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.lat_lon_to_tile(40.0, 116.0, -1)
+
+    assert "Zoom level must be between" in str(exc_info.value)
+
+    # Test zoom too high
+    with pytest.raises(ValueError) as exc_info:
+        download_engine.lat_lon_to_tile(40.0, 116.0, 25)
+
+    assert "Zoom level must be between" in str(exc_info.value)
