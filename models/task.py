@@ -159,14 +159,20 @@ class Tile:
     retry_count: int = 0
     error_message: Optional[str] = None
 
-    @property
-    def cache_path(self) -> Path:
+    def cache_path(self, style: str) -> Path:
         """Get the cache file path for this tile
+
+        Args:
+            style: Map style code (roadmap, satellite, hybrid, terrain)
+
+        Returns:
+            Path object for cache file location
 
         Note: Always uses .png extension as tiles are downloaded as PNG
         regardless of the final output format specified in the task.
+        Cache path format: cache/{style}/{zoom}/{x}/{y}.png
         """
-        return Config.CACHE_DIR / str(self.task_id) / str(self.zoom) / str(self.x) / f"{self.y}.png"
+        return Config.CACHE_DIR / style / str(self.zoom) / str(self.x) / f"{self.y}.png"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert Tile to dictionary"""

@@ -9,6 +9,7 @@ import logging
 import math
 import asyncio
 import aiohttp
+import aiofiles
 import os
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
@@ -369,30 +370,33 @@ class DownloadEngine:
             if cache_enabled:
                 cache_path = self._get_cache_path(tile, style)
                 if cache_path.exists():
-                    logger.debug(f"Tile {tile.zoom}/{tile.x}/{tile.y} found in cache")
+                    # Validate cached file (check size > 0)
+                    file_size = await asyncio.to_thread(lambda: cache_path.stat().st_size)
 
-                    # Read cached file size
-                    file_size = cache_path.stat().st_size
+                    if file_size > 0:
+                        logger.debug(f"Tile {tile.zoom}/{tile.x}/{tile.y} found in cache ({file_size} bytes)")
 
-                    # Report success from cache
-                    if progress_callback:
-                        await progress_callback(tile, 'completed', None)
+                        # Report success from cache
+                        if progress_callback:
+                            await progress_callback(tile, 'completed', None)
 
-                    return {
-                        'tile': tile,
-                        'status': 'completed',
-                        'size': file_size
-                    }
+                        return {
+                            'tile': tile,
+                            'status': 'completed',
+                            'size': file_size
+                        }
+                    else:
+                        logger.warning(f"Cached tile {tile.zoom}/{tile.x}/{tile.y} is empty, re-downloading")
 
             # Download tile
             data = await self.download_tile(tile, style, session)
 
-            # Save to cache
+            # Save to cache using async file I/O
             cache_path = self._get_cache_path(tile, style)
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(lambda: cache_path.parent.mkdir(parents=True, exist_ok=True))
 
-            with open(cache_path, 'wb') as f:
-                f.write(data)
+            async with aiofiles.open(cache_path, 'wb') as f:
+                await f.write(data)
 
             logger.debug(f"Saved tile {tile.zoom}/{tile.x}/{tile.y} to cache")
 
@@ -423,7 +427,6 @@ class DownloadEngine:
     async def download_tiles_batch(
         self,
         tiles: List[Tile],
-        task_id: int,
         style: str,
         progress_callback=None
     ) -> List[Dict[str, Any]]:
@@ -432,7 +435,6 @@ class DownloadEngine:
 
         Args:
             tiles: List of Tile objects to download
-            task_id: Task ID for the download batch
             style: Map style code
             progress_callback: Optional async callback function(tile, status, error)
 
