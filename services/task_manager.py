@@ -19,6 +19,14 @@ from services.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
+# Style mapping from full names to Google Maps style codes
+STYLE_MAP = {
+    'roadmap': 'm',      # Standard roadmap
+    'satellite': 's',    # Satellite imagery
+    'hybrid': 'y',       # Hybrid (satellite + labels)
+    'terrain': 't'       # Terrain map
+}
+
 
 class TaskManager:
     """
@@ -609,9 +617,11 @@ class TaskManager:
                     return
 
                 logger.info(f"Task {task_id}: Starting tile download")
+                # Convert style name to style code
+                style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
                 await self.download_engine.download_tiles_batch(
                     tiles=tiles,
-                    style=task.style,
+                    style=style_code,
                     progress_callback=progress_callback
                 )
 
@@ -661,9 +671,11 @@ class TaskManager:
                     logger.info(f"Task {task_id}: Stitching zoom level {zoom} to {output_path}")
 
                     try:
+                        # Convert style name to style code
+                        style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
                         self.download_engine.stitch_tiles_with_gdal(
                             tiles=completed_tiles,
-                            style=task.style,
+                            style=style_code,
                             output_path=str(output_path),
                             zoom_level=zoom
                         )

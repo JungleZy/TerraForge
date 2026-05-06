@@ -30,6 +30,7 @@ class OutputFormat(Enum):
     """Output format enumeration"""
     PNG = "png"
     JPG = "jpg"
+    BOTH = "both"
 
 
 class TileStatus(Enum):

@@ -30,6 +30,7 @@ class Config:
 
     # Download and cache directories
     DOWNLOADS_DIR = BASE_DIR / 'downloads'
+    OUTPUT_DIR = DOWNLOADS_DIR  # Alias for output directory
     CACHE_DIR = BASE_DIR / 'cache'
 
     @staticmethod
