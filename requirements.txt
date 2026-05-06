@@ -1,0 +1,7 @@
+Flask==2.3.3
+Flask-SocketIO==5.3.4
+python-socketio==5.9.0
+python-engineio==4.7.1
+aiohttp==3.9.1
+GDAL==3.6.4
+Pillow==10.1.0
