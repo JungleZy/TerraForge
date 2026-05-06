@@ -13,6 +13,7 @@ import aiofiles
 import os
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
+from osgeo import gdal, osr
 from models.task import Tile
 from services.config_manager import ConfigManager
 from config import Config
@@ -499,3 +500,237 @@ class DownloadEngine:
         logger.info(f"Batch download completed: {len(results)} results")
 
         return results
+
+    def stitch_tiles_with_gdal(
+        self,
+        tiles: List[Tile],
+        style: str,
+        output_path: str,
+        zoom_level: int
+    ) -> str:
+        """
+        Stitch tiles into a single georeferenced image using GDAL
+
+        Args:
+            tiles: List of Tile objects to stitch
+            style: Map style code
+            output_path: Path for output file (GeoTIFF or PNG)
+            zoom_level: Zoom level of the tiles
+
+        Returns:
+            Path to the stitched output file
+
+        Process:
+            1. Get cache paths for all tiles
+            2. Add georeference to each tile (creates _geo.tif versions)
+            3. Build VRT (Virtual Dataset) from georeferenced tiles
+            4. Translate VRT to final format with compression
+            5. Clean up temporary VRT file
+
+        GDAL Configuration:
+            - Compression: from config (gdal_compression)
+            - Resampling: from config (gdal_resampling)
+            - Output format: GeoTIFF (.tif) or PNG (.png) based on extension
+        """
+        logger.info(f"Starting GDAL tile stitching: {len(tiles)} tiles at zoom {zoom_level}")
+
+        # Get configuration values
+        gdal_compression = self.config_manager.get('gdal_compression', 'LZW')
+        gdal_resampling = self.config_manager.get('gdal_resampling', 'nearest')
+
+        # Filter tiles for the specified zoom level
+        tiles_at_zoom = [t for t in tiles if t.zoom == zoom_level]
+        if not tiles_at_zoom:
+            raise ValueError(f"No tiles found at zoom level {zoom_level}")
+
+        logger.info(f"Processing {len(tiles_at_zoom)} tiles at zoom level {zoom_level}")
+
+        # Get cache paths and create georeferenced versions
+        georef_paths = []
+        for tile in tiles_at_zoom:
+            cache_path = self._get_cache_path(tile, style)
+            if not cache_path.exists():
+                raise FileNotFoundError(f"Tile not found in cache: {cache_path}")
+
+            # Add georeference to tile
+            georef_path = self._add_georeference(str(cache_path), tile)
+            georef_paths.append(georef_path)
+
+        logger.info(f"Created {len(georef_paths)} georeferenced tiles")
+
+        # Build VRT (Virtual Dataset) from georeferenced tiles
+        vrt_path = output_path.replace('.tif', '.vrt').replace('.png', '.vrt')
+        logger.info(f"Building VRT: {vrt_path}")
+
+        vrt_options = gdal.BuildVRTOptions(
+            resampleAlg=gdal_resampling,
+            addAlpha=False
+        )
+        vrt_ds = gdal.BuildVRT(vrt_path, georef_paths, options=vrt_options)
+        if vrt_ds is None:
+            raise RuntimeError(f"Failed to build VRT from {len(georef_paths)} tiles")
+        vrt_ds = None  # Close VRT dataset
+
+        logger.info("VRT built successfully")
+
+        # Translate VRT to final format
+        logger.info(f"Translating VRT to final format: {output_path}")
+
+        # Determine output format based on file extension
+        output_ext = Path(output_path).suffix.lower()
+        if output_ext == '.tif' or output_ext == '.tiff':
+            output_format = 'GTiff'
+            translate_options = gdal.TranslateOptions(
+                format=output_format,
+                creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
+                resampleAlg=gdal_resampling
+            )
+        elif output_ext == '.png':
+            output_format = 'PNG'
+            translate_options = gdal.TranslateOptions(
+                format=output_format,
+                resampleAlg=gdal_resampling
+            )
+        else:
+            # Default to GeoTIFF
+            output_format = 'GTiff'
+            translate_options = gdal.TranslateOptions(
+                format=output_format,
+                creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
+                resampleAlg=gdal_resampling
+            )
+
+        # Perform translation
+        output_ds = gdal.Translate(output_path, vrt_path, options=translate_options)
+        if output_ds is None:
+            raise RuntimeError(f"Failed to translate VRT to {output_path}")
+        output_ds = None  # Close output dataset
+
+        logger.info(f"Translation completed: {output_path}")
+
+        # Clean up VRT file
+        try:
+            os.remove(vrt_path)
+            logger.debug(f"Cleaned up VRT file: {vrt_path}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up VRT file {vrt_path}: {e}")
+
+        logger.info(f"GDAL tile stitching completed: {output_path}")
+        return output_path
+
+    def _add_georeference(self, tile_path: str, tile: Tile) -> str:
+        """
+        Add georeference information to a tile image
+
+        Args:
+            tile_path: Path to the tile image file
+            tile: Tile object with coordinates
+
+        Returns:
+            Path to the georeferenced tile file
+
+        Process:
+            1. Check if georeferenced version already exists
+            2. Open source tile with GDAL
+            3. Create georeferenced copy with GTiff driver
+            4. Calculate geotransform using Web Mercator math
+            5. Set geotransform and projection (EPSG:4326)
+
+        Geotransform Calculation:
+            Uses Web Mercator tile coordinate system to calculate
+            geographic bounds (latitude/longitude) for the tile.
+
+            For tile at (x, y, zoom):
+                n = 2^zoom
+                lon_min = x / n * 360.0 - 180.0
+                lon_max = (x + 1) / n * 360.0 - 180.0
+                lat_max = atan(sinh(π * (1 - 2 * y / n))) * 180 / π
+                lat_min = atan(sinh(π * (1 - 2 * (y + 1) / n))) * 180 / π
+
+        Georef Path Format:
+            Original: /path/to/tile.png
+            Georef:   /path/to/tile_geo.tif
+        """
+        # Generate georeferenced file path
+        georef_path = tile_path.replace('.png', '_geo.tif')
+
+        # Return if already exists
+        if os.path.exists(georef_path):
+            logger.debug(f"Georeferenced tile already exists: {georef_path}")
+            return georef_path
+
+        logger.debug(f"Adding georeference to tile {tile.zoom}/{tile.x}/{tile.y}")
+
+        # Open source tile
+        src_ds = gdal.Open(tile_path)
+        if src_ds is None:
+            raise RuntimeError(f"Failed to open tile: {tile_path}")
+
+        # Get tile dimensions
+        width = src_ds.RasterXSize
+        height = src_ds.RasterYSize
+        bands = src_ds.RasterCount
+
+        # Calculate geographic bounds using Web Mercator formulas
+        n = 2 ** tile.zoom
+        lon_min = tile.x / n * 360.0 - 180.0
+        lon_max = (tile.x + 1) / n * 360.0 - 180.0
+
+        # Calculate latitude using inverse Mercator projection
+        # lat = atan(sinh(π * (1 - 2 * y / n))) * 180 / π
+        lat_max_rad = math.atan(math.sinh(math.pi * (1.0 - 2.0 * tile.y / n)))
+        lat_max = math.degrees(lat_max_rad)
+
+        lat_min_rad = math.atan(math.sinh(math.pi * (1.0 - 2.0 * (tile.y + 1) / n)))
+        lat_min = math.degrees(lat_min_rad)
+
+        # Calculate geotransform
+        # Geotransform format: [top_left_x, pixel_width, 0, top_left_y, 0, pixel_height]
+        # Note: pixel_height is negative because y increases downward in image coordinates
+        pixel_width = (lon_max - lon_min) / width
+        pixel_height = -(lat_max - lat_min) / height  # Negative because y goes down
+
+        geotransform = [
+            lon_min,        # Top-left X (longitude)
+            pixel_width,    # Pixel width (degrees per pixel)
+            0,              # Rotation (0 for north-up images)
+            lat_max,        # Top-left Y (latitude)
+            0,              # Rotation (0 for north-up images)
+            pixel_height    # Pixel height (negative, degrees per pixel)
+        ]
+
+        # Create georeferenced output file
+        driver = gdal.GetDriverByName('GTiff')
+        dst_ds = driver.Create(
+            georef_path,
+            width,
+            height,
+            bands,
+            src_ds.GetRasterBand(1).DataType
+        )
+
+        if dst_ds is None:
+            src_ds = None
+            raise RuntimeError(f"Failed to create georeferenced tile: {georef_path}")
+
+        # Copy raster data
+        for band_idx in range(1, bands + 1):
+            src_band = src_ds.GetRasterBand(band_idx)
+            dst_band = dst_ds.GetRasterBand(band_idx)
+            data = src_band.ReadAsArray()
+            dst_band.WriteArray(data)
+
+        # Set geotransform
+        dst_ds.SetGeoTransform(geotransform)
+
+        # Set projection to WGS84 (EPSG:4326)
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+        dst_ds.SetProjection(srs.ExportToWkt())
+
+        # Close datasets
+        src_ds = None
+        dst_ds = None
+
+        logger.debug(f"Created georeferenced tile: {georef_path}")
+        return georef_path
