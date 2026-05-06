@@ -3,7 +3,7 @@ Configuration data model
 """
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 @dataclass
@@ -13,7 +13,7 @@ class ConfigModel:
     value: str
     updated_at: Optional[datetime] = None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Convert ConfigModel to dictionary"""
         return {
             'key': self.key,

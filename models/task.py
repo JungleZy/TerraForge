@@ -3,9 +3,41 @@ Task and Tile data models
 """
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 from pathlib import Path
+from enum import Enum
 from config import Config
+
+
+class TaskStatus(Enum):
+    """Task status enumeration"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+
+
+class MapStyle(Enum):
+    """Map style enumeration"""
+    ROADMAP = "roadmap"
+    SATELLITE = "satellite"
+    HYBRID = "hybrid"
+    TERRAIN = "terrain"
+
+
+class OutputFormat(Enum):
+    """Output format enumeration"""
+    PNG = "png"
+    JPG = "jpg"
+
+
+class TileStatus(Enum):
+    """Tile status enumeration"""
+    PENDING = "pending"
+    DOWNLOADING = "downloading"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 @dataclass
@@ -31,7 +63,60 @@ class Task:
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
 
-    def to_dict(self) -> dict:
+    def __post_init__(self):
+        """Validate task parameters after initialization"""
+        # Validate latitude bounds
+        if self.north <= self.south:
+            raise ValueError(
+                f"north ({self.north}) must be greater than south ({self.south})"
+            )
+
+        # Validate latitude range
+        if not (-90 <= self.south <= 90):
+            raise ValueError(f"south ({self.south}) must be between -90 and 90")
+        if not (-90 <= self.north <= 90):
+            raise ValueError(f"north ({self.north}) must be between -90 and 90")
+
+        # Validate longitude range
+        if not (-180 <= self.west <= 180):
+            raise ValueError(f"west ({self.west}) must be between -180 and 180")
+        if not (-180 <= self.east <= 180):
+            raise ValueError(f"east ({self.east}) must be between -180 and 180")
+
+        # Validate zoom levels
+        if self.zoom_min > self.zoom_max:
+            raise ValueError(
+                f"zoom_min ({self.zoom_min}) must be less than or equal to zoom_max ({self.zoom_max})"
+            )
+
+        if not (0 <= self.zoom_min <= 21):
+            raise ValueError(f"zoom_min ({self.zoom_min}) must be between 0 and 21")
+
+        if not (0 <= self.zoom_max <= 21):
+            raise ValueError(f"zoom_max ({self.zoom_max}) must be between 0 and 21")
+
+        # Validate status
+        valid_statuses = [s.value for s in TaskStatus]
+        if self.status not in valid_statuses:
+            raise ValueError(
+                f"status ({self.status}) must be one of {valid_statuses}"
+            )
+
+        # Validate style
+        valid_styles = [s.value for s in MapStyle]
+        if self.style not in valid_styles:
+            raise ValueError(
+                f"style ({self.style}) must be one of {valid_styles}"
+            )
+
+        # Validate output format
+        valid_formats = [f.value for f in OutputFormat]
+        if self.output_format not in valid_formats:
+            raise ValueError(
+                f"output_format ({self.output_format}) must be one of {valid_formats}"
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
         """Convert Task to dictionary"""
         return {
             'id': self.id,
@@ -76,5 +161,21 @@ class Tile:
 
     @property
     def cache_path(self) -> Path:
-        """Get the cache file path for this tile"""
+        """Get the cache file path for this tile
+
+        Note: Always uses .png extension as tiles are downloaded as PNG
+        regardless of the final output format specified in the task.
+        """
         return Config.CACHE_DIR / str(self.task_id) / str(self.zoom) / str(self.x) / f"{self.y}.png"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert Tile to dictionary"""
+        return {
+            'task_id': self.task_id,
+            'zoom': self.zoom,
+            'x': self.x,
+            'y': self.y,
+            'status': self.status,
+            'retry_count': self.retry_count,
+            'error_message': self.error_message,
+        }
