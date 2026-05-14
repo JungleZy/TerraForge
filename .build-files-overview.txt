@@ -1,0 +1,16 @@
+# .github/workflows/
+build.yml           # 主构建工作流 - 为所有平台构建可执行文件
+test-build.yml      # 测试构建工作流 - 在 PR 和推送时测试构建
+
+# 构建配置
+build.spec          # PyInstaller 构建配置文件
+hook-gdal.py        # GDAL 运行时钩子
+
+# 构建脚本
+build.sh            # Linux/macOS 构建脚本
+build.bat           # Windows 构建脚本
+
+# 文档
+PACKAGING.md        # 打包使用说明（中文）
+DISTRIBUTION.md     # 分发说明（英文）
+docs/BUILD.md       # 详细构建文档（英文）

@@ -29,7 +29,8 @@ MANIFEST
 
 # PyInstaller
 *.manifest
-*.spec
+# Keep build.spec for packaging
+# *.spec
 
 # Installer logs
 pip-log.txt

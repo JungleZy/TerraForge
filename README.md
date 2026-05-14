@@ -17,9 +17,24 @@
 - **后端:** Flask, Flask-SocketIO, aiohttp, GDAL, SQLite
 - **前端:** Leaflet.js, Leaflet.draw, Bootstrap 5, Socket.IO
 
-## 安装
+## 快速开始
 
-### 系统依赖
+### 方式一：使用预编译可执行文件（推荐）
+
+无需安装 Python 和依赖，直接运行：
+
+1. 从 [Releases](https://github.com/YOUR_USERNAME/map-download/releases) 下载对应平台的压缩包
+2. 解压文件
+3. 运行可执行文件：
+   - **Windows**: 双击 `map-downloader.exe`
+   - **macOS/Linux**: 运行 `./map-downloader`
+4. 浏览器访问 `http://localhost:5000`
+
+详见 [DISTRIBUTION.md](DISTRIBUTION.md)
+
+### 方式二：从源码安装
+
+#### 系统依赖
 
 **Ubuntu/Debian:**
 ```bash
@@ -32,13 +47,13 @@ sudo apt-get install -y gdal-bin libgdal-dev python3-gdal
 brew install gdal
 ```
 
-### Python 依赖
+#### Python 依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 数据库初始化
+#### 数据库初始化
 
 ```bash
 python database.py
@@ -167,6 +182,20 @@ map-download/
 - 大区域高缩放级别下载可能需要数小时甚至数天
 - 确保有足够的磁盘空间（高缩放级别可能产生数GB数据）
 - 建议合理设置并发数，避免对服务器造成过大压力
+
+## 构建可执行文件
+
+如果你想自己构建跨平台可执行文件：
+
+```bash
+# Linux/macOS
+./build.sh
+
+# Windows
+build.bat
+```
+
+详细构建说明请参考 [docs/BUILD.md](docs/BUILD.md)
 
 ## 故障排除
 
