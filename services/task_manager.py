@@ -667,7 +667,7 @@ class TaskManager:
                         logger.info(f"Task {task_id}: Stop flag detected during stitching")
                         return
 
-                    output_path = Path(task.output_path) / f"{task.name}_zoom_{zoom}.tif"
+                    output_path = Path(task.output_path) / f"task_{task_id}" / f"{task.name}_zoom_{zoom}.tif"
                     logger.info(f"Task {task_id}: Stitching zoom level {zoom} to {output_path}")
 
                     try:
@@ -692,6 +692,57 @@ class TaskManager:
                     except Exception as e:
                         logger.error(f"Task {task_id}: Failed to stitch zoom level {zoom}: {e}")
                         # Continue with other zoom levels even if one fails
+
+            # Handle tiles_only format: copy tiles to output_path
+            elif task.output_format == 'tiles_only':
+                logger.info(f"Task {task_id}: Copying tiles to output path (tiles_only mode)")
+
+                # Get all completed tiles
+                cursor.execute('''
+                    SELECT task_id, zoom, x, y, status, retry_count
+                    FROM task_tiles
+                    WHERE task_id = ? AND status = 'completed'
+                    ORDER BY zoom, x, y
+                ''', (task_id,))
+
+                completed_tile_rows = cursor.fetchall()
+
+                # Convert style name to style code
+                style_code = STYLE_MAP.get(task.style, 'm')
+
+                # Copy tiles from cache to output_path/task_{id}/
+                output_base = Path(task.output_path) / f"task_{task_id}"
+                output_base.mkdir(parents=True, exist_ok=True)
+
+                copied_count = 0
+                for row in completed_tile_rows:
+                    tile = Tile(
+                        task_id=row['task_id'],
+                        zoom=row['zoom'],
+                        x=row['x'],
+                        y=row['y'],
+                        status=row['status'],
+                        retry_count=row['retry_count']
+                    )
+
+                    # Source: cache path
+                    cache_path = tile.cache_path(style_code)
+
+                    # Destination: output_path/{zoom}/{x}/{y}.png
+                    dest_path = output_base / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    try:
+                        if cache_path.exists():
+                            import shutil
+                            shutil.copy2(cache_path, dest_path)
+                            copied_count += 1
+                        else:
+                            logger.warning(f"Task {task_id}: Cache file not found: {cache_path}")
+                    except Exception as e:
+                        logger.error(f"Task {task_id}: Failed to copy tile {tile.zoom}/{tile.x}/{tile.y}: {e}")
+
+                logger.info(f"Task {task_id}: Copied {copied_count}/{len(completed_tile_rows)} tiles to {output_base}")
 
             # Check stop flag before marking as completed
             if task_id in self.stop_flags and self.stop_flags[task_id].is_set():

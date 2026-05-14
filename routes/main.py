@@ -73,7 +73,12 @@ def config():
     """
     try:
         # Get all configuration
-        config_data = config_manager.get_all()
+        config_raw = config_manager.get_all()
+
+        # Flatten the config structure for template
+        config_data = {}
+        for key, data in config_raw.items():
+            config_data[key] = data.get('value', '')
 
         return render_template('config.html', config=config_data)
 

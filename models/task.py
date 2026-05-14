@@ -25,12 +25,87 @@ class MapStyle(Enum):
     HYBRID = "hybrid"
     TERRAIN = "terrain"
 
+    @classmethod
+    def from_shorthand(cls, value: str) -> str:
+        """Convert shorthand notation to full style name
+
+        Args:
+            value: Style value (can be shorthand or full name)
+
+        Returns:
+            Full style name
+
+        Raises:
+            ValueError: If value is not a valid style
+        """
+        # Shorthand mapping
+        shorthand_map = {
+            'r': 'roadmap',
+            's': 'satellite',
+            'h': 'hybrid',
+            't': 'terrain',
+            # Legacy shorthand support
+            'm': 'roadmap',
+            'y': 'hybrid',
+        }
+
+        # If it's already a full name, validate and return
+        if value in [s.value for s in cls]:
+            return value
+
+        # Try to convert from shorthand
+        if value.lower() in shorthand_map:
+            return shorthand_map[value.lower()]
+
+        # Invalid value
+        valid_options = list(shorthand_map.keys()) + [s.value for s in cls]
+        raise ValueError(
+            f"style ({value}) must be one of {valid_options}"
+        )
+
+
 
 class OutputFormat(Enum):
     """Output format enumeration"""
     PNG = "png"
     JPG = "jpg"
     BOTH = "both"
+    TILES_ONLY = "tiles_only"  # Only download tiles, no merging
+
+    @classmethod
+    def from_shorthand(cls, value: str) -> str:
+        """Convert shorthand notation to full format name
+
+        Args:
+            value: Format value (can be shorthand or full name)
+
+        Returns:
+            Full format name
+
+        Raises:
+            ValueError: If value is not a valid format
+        """
+        # Shorthand mapping
+        shorthand_map = {
+            'p': 'png',
+            'j': 'jpg',
+            'b': 'both',
+            't': 'tiles_only',
+        }
+
+        # If it's already a full name, validate and return
+        if value in [f.value for f in cls]:
+            return value
+
+        # Try to convert from shorthand
+        if value.lower() in shorthand_map:
+            return shorthand_map[value.lower()]
+
+        # Invalid value
+        valid_options = list(shorthand_map.keys()) + [f.value for f in cls]
+        raise ValueError(
+            f"output_format ({value}) must be one of {valid_options}"
+        )
 
 
 class TileStatus(Enum):
@@ -66,6 +141,12 @@ class Task:
 
     def __post_init__(self):
         """Validate task parameters after initialization"""
+        # Normalize style from shorthand if needed
+        self.style = MapStyle.from_shorthand(self.style)
+
+        # Normalize output_format from shorthand if needed
+        self.output_format = OutputFormat.from_shorthand(self.output_format)
+
         # Validate latitude bounds
         if self.north <= self.south:
             raise ValueError(
@@ -101,20 +182,6 @@ class Task:
         if self.status not in valid_statuses:
             raise ValueError(
                 f"status ({self.status}) must be one of {valid_statuses}"
-            )
-
-        # Validate style
-        valid_styles = [s.value for s in MapStyle]
-        if self.style not in valid_styles:
-            raise ValueError(
-                f"style ({self.style}) must be one of {valid_styles}"
-            )
-
-        # Validate output format
-        valid_formats = [f.value for f in OutputFormat]
-        if self.output_format not in valid_formats:
-            raise ValueError(
-                f"output_format ({self.output_format}) must be one of {valid_formats}"
             )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -172,6 +239,7 @@ class Tile:
         Note: Always uses .png extension as tiles are downloaded as PNG
         regardless of the final output format specified in the task.
         Cache path format: cache/{style}/{zoom}/{x}/{y}.png
+        Cache is shared across all tasks for efficiency.
         """
         return Config.CACHE_DIR / style / str(self.zoom) / str(self.x) / f"{self.y}.png"
 

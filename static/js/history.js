@@ -39,28 +39,65 @@ function renderHistoryTable(tasks) {
     const tbody = document.getElementById('historyTableBody');
 
     if (tasks.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="text-center">暂无历史记录</td></tr>';
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9" class="text-center" style="padding: 3rem;">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.3; margin-bottom: 1rem;">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
+                    <p style="color: var(--color-text-muted); margin: 0;">暂无历史记录</p>
+                </td>
+            </tr>
+        `;
         return;
     }
 
+    const statusIcons = {
+        'completed': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>',
+        'failed': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>',
+        'cancelled': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
+    };
+
     tbody.innerHTML = tasks.map(task => `
         <tr>
-            <td>${task.id}</td>
-            <td>${task.name}</td>
-            <td><span class="badge bg-${getStatusColor(task.status)}">${getStatusText(task.status)}</span></td>
+            <td style="font-family: var(--font-mono);">${task.id}</td>
+            <td style="font-weight: 500;">${task.name}</td>
             <td>
-                <small>
-                    N:${task.north.toFixed(4)}, S:${task.south.toFixed(4)}<br>
-                    E:${task.east.toFixed(4)}, W:${task.west.toFixed(4)}
+                <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center;">
+                    ${statusIcons[task.status] || ''}
+                    ${getStatusText(task.status)}
+                </span>
+            </td>
+            <td>
+                <small style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.4;">
+                    <span style="color: var(--color-accent-warm);">▲</span> ${task.north.toFixed(4)},
+                    <span style="color: var(--color-accent-warm);">▼</span> ${task.south.toFixed(4)}<br>
+                    <span style="color: var(--color-accent-warm);">▶</span> ${task.east.toFixed(4)},
+                    <span style="color: var(--color-accent-warm);">◀</span> ${task.west.toFixed(4)}
                 </small>
             </td>
-            <td>${task.zoom_min}-${task.zoom_max}</td>
+            <td style="font-family: var(--font-mono);">${task.zoom_min}-${task.zoom_max}</td>
             <td>${getStyleText(task.style)}</td>
-            <td>${task.downloaded_tiles}/${task.total_tiles}</td>
-            <td><small>${formatDate(task.completed_at)}</small></td>
+            <td style="font-family: var(--font-mono);">${task.downloaded_tiles}/${task.total_tiles}</td>
+            <td><small style="font-family: var(--font-mono); font-size: 0.85rem;">${formatDate(task.completed_at)}</small></td>
             <td>
-                <button class="btn btn-sm btn-info" onclick="viewTaskDetails(${task.id})">详情</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id})">删除</button>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn btn-sm btn-info" onclick="viewTaskDetails(${task.id})" title="查看详情">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="16" x2="12" y2="12"></line>
+                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                        </svg>
+                    </button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id})" title="删除任务">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
+                </div>
             </td>
         </tr>
     `).join('');
@@ -97,19 +134,24 @@ function renderHistoryMap(tasks) {
 
     tasks.forEach(task => {
         const bounds = [[task.south, task.west], [task.north, task.east]];
-        const color = task.status === 'completed' ? 'green' :
-                     task.status === 'failed' ? 'red' : 'orange';
+        const color = task.status === 'completed' ? '#10b981' :
+                     task.status === 'failed' ? '#ef4444' : '#f59e0b';
 
         const rectangle = L.rectangle(bounds, {
             color: color,
-            weight: 2,
-            fillOpacity: 0.2
+            weight: 3,
+            fillOpacity: 0.15,
+            fillColor: color
         }).addTo(historyMap);
 
         rectangle.bindPopup(`
-            <strong>${task.name}</strong><br>
-            状态: ${getStatusText(task.status)}<br>
-            瓦片: ${task.downloaded_tiles}/${task.total_tiles}
+            <div style="font-family: var(--font-display); min-width: 200px;">
+                <strong style="color: var(--color-accent-warm); font-size: 1.1rem;">${task.name}</strong><br>
+                <div style="margin-top: 0.5rem; font-size: 0.9rem;">
+                    <strong>状态:</strong> ${getStatusText(task.status)}<br>
+                    <strong>瓦片:</strong> <span style="font-family: var(--font-mono);">${task.downloaded_tiles}/${task.total_tiles}</span>
+                </div>
+            </div>
         `);
     });
 
@@ -148,6 +190,11 @@ function getStatusText(status) {
 
 function getStyleText(style) {
     const styles = {
+        'roadmap': '路线图',
+        'satellite': '卫星图',
+        'hybrid': '混合图',
+        'terrain': '地形图',
+        // 兼容旧的缩写格式
         'm': '标准',
         's': '卫星',
         'y': '卫星+标注',
@@ -166,16 +213,58 @@ function formatDate(dateStr) {
 async function viewTaskDetails(taskId) {
     try {
         const response = await fetch(`/api/tasks/${taskId}`);
-        const task = await response.json();
+        const data = await response.json();
+        const task = data.task;
 
-        alert(`任务详情:\n\n` +
-              `ID: ${task.id}\n` +
-              `名称: ${task.name}\n` +
-              `状态: ${getStatusText(task.status)}\n` +
-              `总瓦片: ${task.total_tiles}\n` +
-              `已下载: ${task.downloaded_tiles}\n` +
-              `失败: ${task.failed_tiles}\n` +
-              `输出路径: ${task.output_path}`);
+        // 填充模态框数据
+        document.getElementById('detailId').textContent = task.id;
+        document.getElementById('detailName').textContent = task.name;
+        document.getElementById('detailStatus').innerHTML = `<span class="badge bg-${getStatusColor(task.status)}">${getStatusText(task.status)}</span>`;
+        document.getElementById('detailStyle').textContent = getStyleText(task.style);
+        document.getElementById('detailFormat').textContent = task.output_format;
+        document.getElementById('detailZoom').textContent = `${task.zoom_min} - ${task.zoom_max}`;
+        document.getElementById('detailTotal').textContent = task.total_tiles;
+        document.getElementById('detailDownloaded').textContent = task.downloaded_tiles;
+        document.getElementById('detailFailed').textContent = task.failed_tiles;
+
+        const progress = task.total_tiles > 0
+            ? Math.round((task.downloaded_tiles / task.total_tiles) * 100)
+            : 0;
+
+        const progressColor = progress >= 100 ? 'success' :
+                             progress >= 75 ? 'info' :
+                             progress >= 50 ? 'primary' :
+                             progress >= 25 ? 'warning' : 'danger';
+
+        document.getElementById('detailProgress').innerHTML = `
+            <div class="progress" style="height: 28px; margin-top: 0.5rem;">
+                <div class="progress-bar bg-${progressColor}" role="progressbar" style="width: ${progress}%">
+                    ${progress}%
+                </div>
+            </div>
+        `;
+
+        document.getElementById('detailNorth').textContent = task.north.toFixed(6);
+        document.getElementById('detailSouth').textContent = task.south.toFixed(6);
+        document.getElementById('detailEast').textContent = task.east.toFixed(6);
+        document.getElementById('detailWest').textContent = task.west.toFixed(6);
+
+        document.getElementById('detailPath').textContent = task.output_path;
+        document.getElementById('detailCreated').textContent = formatDate(task.created_at);
+        document.getElementById('detailStarted').textContent = formatDate(task.started_at);
+        document.getElementById('detailCompleted').textContent = formatDate(task.completed_at);
+
+        // 显示错误信息（如果有）
+        if (task.error_message) {
+            document.getElementById('detailError').textContent = task.error_message;
+            document.getElementById('detailErrorRow').style.display = 'block';
+        } else {
+            document.getElementById('detailErrorRow').style.display = 'none';
+        }
+
+        // 显示模态框
+        const modal = new bootstrap.Modal(document.getElementById('taskDetailModal'));
+        modal.show();
     } catch (error) {
         alert('获取任务详情失败');
     }

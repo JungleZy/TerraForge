@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Constants
 WEB_MERCATOR_MAX_LAT = 85.0511  # Maximum valid latitude for Web Mercator projection
 TILE_SERVER_COUNT = 4  # Number of Google Maps tile servers (mts0-mts3)
-MAX_TILES = 100000  # Maximum number of tiles allowed per download task
+WARN_TILES_THRESHOLD = 100000  # Warn user if tile count exceeds this threshold
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
 
@@ -169,14 +169,15 @@ class DownloadEngine:
             tiles_at_zoom = (x_max - x_min + 1) * (y_max - y_min + 1)
             expected_tile_count += tiles_at_zoom
 
-        # Check if tile count exceeds maximum allowed BEFORE creating any Tile objects
-        if expected_tile_count > MAX_TILES:
-            raise ValueError(
-                f"Tile count ({expected_tile_count}) exceeds maximum allowed ({MAX_TILES}). "
-                f"Please reduce the area size or zoom level range."
+        # Warn if tile count is very large
+        if expected_tile_count > WARN_TILES_THRESHOLD:
+            logger.warning(
+                f"Large tile count detected: {expected_tile_count} tiles. "
+                f"This may take a long time to download and process. "
+                f"Estimated time: {expected_tile_count / 10 / 3600:.1f} hours at 10 tiles/sec."
             )
 
-        # Now generate tiles (only if count check passed)
+        # Now generate tiles
         tiles = []
 
         # Iterate through each zoom level
@@ -260,10 +261,9 @@ class DownloadEngine:
             Path object for cache file location
 
         Cache Path Format:
-            cache/{style}/{zoom}/{x}/{y}.png
+            cache/task_{task_id}/{style}/{zoom}/{x}/{y}.png
         """
-        cache_path = Config.CACHE_DIR / style / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
-        return cache_path
+        return tile.cache_path(style)
 
     async def download_tile(
         self,
