@@ -16,6 +16,9 @@ datas += collect_data_files('engineio')
 datas += [('templates', 'templates')]
 datas += [('static', 'static')]
 
+# Create empty directories for runtime data (will be created by app if not exist)
+# Don't include actual data/cache/downloads to keep package small
+
 # Collect hidden imports
 hiddenimports = []
 hiddenimports += collect_submodules('flask_socketio')
@@ -26,6 +29,10 @@ hiddenimports += collect_submodules('aiofiles')
 hiddenimports += ['osgeo', 'osgeo.gdal', 'osgeo.ogr', 'osgeo.osr', 'osgeo.gdal_array', 'osgeo.gdalconst']
 hiddenimports += ['PIL', 'PIL._imaging']
 hiddenimports += ['dns', 'dns.resolver']
+hiddenimports += ['werkzeug', 'werkzeug.security']
+hiddenimports += ['jinja2', 'jinja2.ext']
+hiddenimports += ['click']
+hiddenimports += ['sqlite3']
 
 # Binary files (GDAL libraries)
 binaries = []

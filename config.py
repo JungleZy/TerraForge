@@ -2,6 +2,7 @@
 Configuration module for Google Maps Downloader
 """
 import os
+import sys
 import secrets
 import logging
 from pathlib import Path
@@ -23,7 +24,13 @@ class Config:
         )
 
     # Base directory of the application
-    BASE_DIR = Path(__file__).parent.absolute()
+    # Support PyInstaller bundled mode
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running in PyInstaller bundle
+        BASE_DIR = Path(sys.executable).parent.absolute()
+    else:
+        # Running in normal Python environment
+        BASE_DIR = Path(__file__).parent.absolute()
 
     # Database configuration
     DATABASE_PATH = BASE_DIR / 'data' / 'map_downloader.db'

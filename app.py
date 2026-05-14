@@ -9,9 +9,21 @@ This module initializes and configures the Flask application with:
 - SocketIO event handlers
 """
 
+import sys
+import os
 import logging
 from flask import Flask
 from flask_socketio import SocketIO
+
+# Support PyInstaller bundled mode
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # Running in PyInstaller bundle - add templates and static paths
+    template_folder = os.path.join(sys._MEIPASS, 'templates')
+    static_folder = os.path.join(sys._MEIPASS, 'static')
+else:
+    # Running in normal Python environment
+    template_folder = 'templates'
+    static_folder = 'static'
 
 from config import Config
 from database import init_database
@@ -28,8 +40,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Create Flask application
-app = Flask(__name__)
+app = Flask(__name__, template_folder=template_folder, static_folder=static_folder)
 app.config.from_object(Config)
+
+# Initialize application directories
+Config.init_app()
 
 logger.info("Flask application created")
 

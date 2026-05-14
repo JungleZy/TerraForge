@@ -51,10 +51,20 @@ jobs:
     - name: Install GDAL (Windows)
       if: runner.os == 'Windows'
       run: |
+        $ErrorActionPreference = "Continue"
         choco install gdal -y
-        refreshenv
         $env:GDAL_VERSION = "3.8.4"
         echo "GDAL_VERSION=$env:GDAL_VERSION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Set GDAL environment (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        $gdalPath = "C:\Program Files\GDAL"
+        if (Test-Path $gdalPath) {
+          echo "$gdalPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:GDAL_DATA = "$gdalPath\gdal-data"
+          echo "GDAL_DATA=$env:GDAL_DATA" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        }
 
     - name: Install Python dependencies
       run: |
