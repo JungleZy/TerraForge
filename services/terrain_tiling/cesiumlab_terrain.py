@@ -38,7 +38,8 @@ try:
 except ImportError:
     sys.exit("Missing GDAL Python bindings: pip install gdal (or conda install -c conda-forge gdal)")
 
-gdal.UseExceptions()
+# Avoid gdal.UseExceptions() here. It attempts to import osgeo.gdal_array, which may be absent
+# depending on how GDAL Python bindings were built. This tiler doesn't require gdal_array.
 
 WGS84_A = 6378137.0
 WGS84_B = 6356752.3142451793
@@ -462,4 +463,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
