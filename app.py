@@ -27,10 +27,13 @@ else:
 
 from config import Config
 from database import init_database
-from routes import main_bp, api_bp
+from routes import main_bp, api_bp, dem_api_bp, terrain_api_bp
 from routes.api import init_task_manager
 from routes.socketio_events import register_socketio_events
 from services.task_manager import TaskManager
+from routes.dem_api import init_dem_task_manager
+from routes.terrain_api import init_terrain_dem_task_manager
+from services.dem_task_manager import DemTaskManager
 
 # Configure logging
 logging.basicConfig(
@@ -64,12 +67,30 @@ logger.info("TaskManager created")
 init_task_manager(task_manager)
 logger.info("TaskManager injected into API routes")
 
+# Create DEM TaskManager instance with SocketIO
+dem_task_manager = DemTaskManager(socketio=socketio)
+logger.info("DemTaskManager created")
+
+# Inject DemTaskManager into DEM API routes
+init_dem_task_manager(dem_task_manager)
+logger.info("DemTaskManager injected into DEM API routes")
+
+# Inject DemTaskManager into terrain API routes
+init_terrain_dem_task_manager(dem_task_manager)
+logger.info("DemTaskManager injected into terrain API routes")
+
 # Register blueprints
 app.register_blueprint(main_bp)
 logger.info("Main blueprint registered")
 
 app.register_blueprint(api_bp)
 logger.info("API blueprint registered")
+
+app.register_blueprint(dem_api_bp)
+logger.info("DEM API blueprint registered")
+
+app.register_blueprint(terrain_api_bp)
+logger.info("Terrain API blueprint registered")
 
 # Register SocketIO events
 register_socketio_events(socketio)
@@ -82,11 +103,14 @@ if __name__ == '__main__':
     logger.info("Starting Google Maps Downloader server...")
     logger.info("Server will be available at http://0.0.0.0:5000")
 
+    debug = os.environ.get('DEBUG', '1') not in ('0', 'false', 'False')
+
     # Run the application with SocketIO
     socketio.run(
         app,
         host='0.0.0.0',
         port=5000,
-        debug=True,
+        debug=debug,
+        use_reloader=debug,
         allow_unsafe_werkzeug=True
     )
