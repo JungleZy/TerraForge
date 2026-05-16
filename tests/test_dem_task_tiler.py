@@ -55,20 +55,13 @@ def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
 
     out_dir = tmp_path / "out"
 
-    calls = []
-
-    def fake_run(argv, cwd=None):
-        calls.append((argv, cwd))
-        if argv and argv[0] == "ctb-tile":
-            out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "layer.json").write_text(
-                '{"parentUrl":"OLD","available":[]}\n', encoding="utf-8"
-            )
-        return object()
+    def fake_build_terrain(**kwargs):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "layer.json").write_text('{"parentUrl":"OLD","available":[]}\n', encoding="utf-8")
 
     params = TileParams(maxzoom=0, parent_url="https://example.com/parent.json")
-    tile_dem_task_dir(task_dir, out_dir, params, fake_run)
+    # Don't run the real GDAL/numpy pipeline in unit tests.
+    tile_dem_task_dir(task_dir, out_dir, params, build_terrain_fn=fake_build_terrain)
 
-    assert [c[0][0] for c in calls] == ["gdalbuildvrt", "ctb-tile"]
     layer = (out_dir / "layer.json").read_text(encoding="utf-8")
     assert '"parentUrl": "https://example.com/parent.json"' in layer

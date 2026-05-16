@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from services.terrain_tiling.layer_json import compute_available_from_tiles
+from services.terrain_tiling.layer_json import patch_layer_json_parent
 from services.terrain_tiling.vrt_builder import list_dem_tifs
 
 
@@ -17,13 +17,15 @@ def terrain_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
 class TileParams:
     maxzoom: int
     parent_url: str
+    tile_size: int = 17
+    workers: int = 0
 
 
 def tile_dem_task_dir(
     task_dir: Path,
     out_dir: Path,
     params: TileParams,
-    run_argv: Callable[[List[str], Optional[str]], object],
+    build_terrain_fn: Optional[Callable[..., None]] = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -31,36 +33,28 @@ def tile_dem_task_dir(
     if not dem_tifs:
         raise ValueError(f"No DEM tifs found under {task_dir}")
 
-    vrt_path = out_dir / "dem.vrt"
-    run_argv(
-        ["gdalbuildvrt", str(vrt_path), *[str(p) for p in dem_tifs]],
-        None,
-    )
+    # Use cesiumlab_terrain.py as the source of truth for tiling behavior.
+    # Import lazily so unit tests can inject a stub without requiring numpy/GDAL.
+    if build_terrain_fn is None:
+        try:
+            from services.terrain_tiling.cesiumlab_terrain import build_terrain as build_terrain_fn  # type: ignore[assignment]
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError(
+                "Terrain tiling runtime deps missing (need numpy + GDAL bindings). "
+                "Install them, or inject build_terrain_fn for tests."
+            ) from e
 
-    run_argv(
-        [
-            "ctb-tile",
-            "-f",
-            "Mesh",
-            "-C",
-            "-N",
-            "-l",
-            "-o",
-            str(out_dir),
-            str(vrt_path),
-        ],
-        None,
+    build_terrain_fn(
+        inputs=[str(p) for p in dem_tifs],
+        output_dir=str(out_dir),
+        min_level=0,
+        max_level=int(params.maxzoom),
+        tile_size=int(params.tile_size),
+        workers=int(params.workers),
     )
 
     layer_json_path = out_dir / "layer.json"
     if not layer_json_path.is_file():
         raise FileNotFoundError(f"Missing layer.json at {layer_json_path}")
 
-    data = json.loads(layer_json_path.read_text(encoding="utf-8"))
-    data["parentUrl"] = params.parent_url
-    data["available"] = compute_available_from_tiles(out_dir, 0, params.maxzoom)
-    layer_json_path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
+    patch_layer_json_parent(layer_json_path, params.parent_url)

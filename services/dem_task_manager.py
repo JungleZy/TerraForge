@@ -17,7 +17,6 @@ from database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
 from services.dem_granules import tiles_for_bbox, astgtm_v3_granules_for_tile
-from services.terrain_tiling import ctb_runner
 from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
 logger = logging.getLogger(__name__)
@@ -205,7 +204,6 @@ class DemTaskManager:
                 task_dir=task_dir,
                 out_dir=output_dir,
                 params=TileParams(maxzoom=maxzoom, parent_url=parent_url),
-                run_argv=ctb_runner.run_cmd,
             )
 
             conn = get_connection()
