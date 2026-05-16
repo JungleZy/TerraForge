@@ -46,3 +46,30 @@ def test_dem_terrain_jobs_table_exists(tmp_path, monkeypatch):
         cols = {row[1]: row for row in cur.fetchall()}  # (cid,name,type,notnull,dflt_value,pk)
         assert cols["output_dir"][3] == 1
         assert cols["maxzoom"][3] == 1
+
+
+def test_patch_layer_json_parent(tmp_path):
+    import json
+
+    from services.terrain_tiling.layer_json import patch_layer_json_parent
+
+    layer_json_path = tmp_path / "layer.json"
+    layer_json_path.write_text("{}", encoding="utf-8")
+
+    patch_layer_json_parent(layer_json_path, "https://example.com/parent")
+
+    data = json.loads(layer_json_path.read_text(encoding="utf-8"))
+    assert data["parentUrl"] == "https://example.com/parent"
+
+
+def test_compute_available_from_tiles(tmp_path):
+    from services.terrain_tiling.layer_json import compute_available_from_tiles
+
+    tiles_root = tmp_path / "tiles"
+    (tiles_root / "0" / "0").mkdir(parents=True)
+    (tiles_root / "0" / "1").mkdir(parents=True)
+    (tiles_root / "0" / "0" / "0.terrain").write_text("", encoding="utf-8")
+    (tiles_root / "0" / "1" / "0.terrain").write_text("", encoding="utf-8")
+
+    available = compute_available_from_tiles(tiles_root, 0, 0)
+    assert available == [[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]]
