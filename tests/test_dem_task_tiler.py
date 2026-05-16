@@ -19,3 +19,21 @@ def test_list_dem_tifs_filters_num(tmp_path: Path):
 
     assert list_dem_tifs(tmp_path) == [tmp_path / "A_dem.tif"]
 
+
+def test_run_cmd_raises_on_failure(monkeypatch):
+    from services.terrain_tiling.ctb_runner import run_cmd
+    from services.terrain_tiling import ctb_runner
+
+    def fake_run(*args, **kwargs):
+        return ctb_runner.subprocess.CompletedProcess(
+            args=["fake"], returncode=2, stdout="", stderr="boom"
+        )
+
+    monkeypatch.setattr(ctb_runner.subprocess, "run", fake_run)
+
+    try:
+        run_cmd(["ctb-tile"])
+    except RuntimeError as e:
+        assert "returncode=2" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError")
