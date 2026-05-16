@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}历史记录 - Maps Downloader{% endblock %}
+{% block title %}鍘嗗彶璁板綍 - Maps Downloader{% endblock %}
 
 {% block content %}
 <div class="container-fluid" style="padding: 1rem; max-width: 1400px;">
@@ -14,7 +14,7 @@
                             <line x1="8" y1="2" x2="8" y2="18"></line>
                             <line x1="16" y1="6" x2="16" y2="22"></line>
                         </svg>
-                        历史区域地图
+                        鍘嗗彶鍖哄煙鍦板浘
                     </h5>
                 </div>
                 <div class="card-body">
@@ -33,10 +33,10 @@
                             <line x1="3" y1="12" x2="3.01" y2="12"></line>
                             <line x1="3" y1="18" x2="3.01" y2="18"></line>
                         </svg>
-                        任务列表
+                        浠诲姟鍒楄〃
                     </h5>
                     <div>
-                        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索任务..." style="min-width: 200px;">
+                        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="鎼滅储浠诲姟..." style="min-width: 200px;">
                     </div>
                 </div>
                 <div class="card-body">
@@ -45,14 +45,14 @@
                             <thead>
                                 <tr>
                                     <th>ID</th>
-                                    <th>名称</th>
-                                    <th>状态</th>
-                                    <th>区域</th>
-                                    <th>缩放级别</th>
-                                    <th>样式</th>
-                                    <th>瓦片数</th>
-                                    <th>完成时间</th>
-                                    <th>操作</th>
+                                    <th>鍚嶇О</th>
+                                    <th>鐘舵€?/th>
+                                    <th>鍖哄煙</th>
+                                    <th>缂╂斁绾у埆</th>
+                                    <th>鏍€�紡</th>
+                                    <th>鐡︿墖鏁?/th>
+                                    <th>瀹屾垚鏃堕棿</th>
+                                    <th>鎿嶄綔</th>
                                 </tr>
                             </thead>
                             <tbody id="historyTableBody">
@@ -60,7 +60,7 @@
                                     <td colspan="9" class="text-center">
                                         <div class="spinner-container">
                                             <div class="spinner-border" role="status">
-                                                <span class="visually-hidden">加载中...</span>
+                                                <span class="visually-hidden">鍔犺浇涓?..</span>
                                             </div>
                                         </div>
                                     </td>
@@ -79,7 +79,7 @@
     </div>
 </div>
 
-<!-- 任务详情模态框 -->
+<!-- 浠诲姟璇︽儏妯℃€佹 -->
 <div class="modal fade" id="taskDetailModal" tabindex="-1" aria-labelledby="taskDetailModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
@@ -90,58 +90,79 @@
                         <line x1="12" y1="16" x2="12" y2="12"></line>
                         <line x1="12" y1="8" x2="12.01" y2="8"></line>
                     </svg>
-                    任务详情
+                    浠诲姟璇︽儏
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <div class="row">
                     <div class="col-md-6">
-                        <p><strong>任务ID:</strong> <span id="detailId"></span></p>
-                        <p><strong>任务名称:</strong> <span id="detailName"></span></p>
-                        <p><strong>状态:</strong> <span id="detailStatus"></span></p>
-                        <p><strong>地图样式:</strong> <span id="detailStyle"></span></p>
-                        <p><strong>输出格式:</strong> <span id="detailFormat"></span></p>
+                        <p><strong>浠诲姟ID:</strong> <span id="detailId"></span></p>
+                        <p><strong>浠诲姟鍚嶇О:</strong> <span id="detailName"></span></p>
+                        <p><strong>鐘舵€?</strong> <span id="detailStatus"></span></p>
+                        <p><strong>鍦板浘鏍€�紡:</strong> <span id="detailStyle"></span></p>
+                        <p><strong>杈撳嚭鏍煎紡:</strong> <span id="detailFormat"></span></p>
                     </div>
                     <div class="col-md-6">
-                        <p><strong>缩放级别:</strong> <span id="detailZoom"></span></p>
-                        <p><strong>总瓦片数:</strong> <span id="detailTotal"></span></p>
-                        <p><strong>已下载:</strong> <span id="detailDownloaded"></span></p>
-                        <p><strong>失败:</strong> <span id="detailFailed"></span></p>
-                        <p><strong>进度:</strong> <span id="detailProgress"></span></p>
+                        <p><strong>缂╂斁绾у埆:</strong> <span id="detailZoom"></span></p>
+                        <p><strong>鎬荤摝鐗囨暟:</strong> <span id="detailTotal"></span></p>
+                        <p><strong>宸蹭笅杞?</strong> <span id="detailDownloaded"></span></p>
+                        <p><strong>澶辫触:</strong> <span id="detailFailed"></span></p>
+                        <p><strong>杩涘害:</strong> <span id="detailProgress"></span></p>
                     </div>
                 </div>
                 <hr style="border-color: var(--color-border);">
                 <div class="row">
                     <div class="col-12">
-                        <p><strong>区域范围:</strong></p>
+                        <p><strong>鍖哄煙鑼冨洿:</strong></p>
                         <ul style="font-family: var(--font-mono); font-size: 0.9rem;">
-                            <li>北纬: <span id="detailNorth"></span></li>
-                            <li>南纬: <span id="detailSouth"></span></li>
-                            <li>东经: <span id="detailEast"></span></li>
-                            <li>西经: <span id="detailWest"></span></li>
+                            <li>鍖楃含: <span id="detailNorth"></span></li>
+                            <li>鍗楃含: <span id="detailSouth"></span></li>
+                            <li>涓滅粡: <span id="detailEast"></span></li>
+                            <li>瑗跨粡: <span id="detailWest"></span></li>
                         </ul>
                     </div>
                 </div>
                 <hr style="border-color: var(--color-border);">
                 <div class="row">
                     <div class="col-12">
-                        <p><strong>输出路径:</strong> <code id="detailPath"></code></p>
-                        <p><strong>创建时间:</strong> <span id="detailCreated"></span></p>
-                        <p><strong>开始时间:</strong> <span id="detailStarted"></span></p>
-                        <p><strong>完成时间:</strong> <span id="detailCompleted"></span></p>
+                        <p><strong>杈撳嚭璺緞:</strong> <code id="detailPath"></code></p>
+                        <p><strong>鍒涘缓鏃堕棿:</strong> <span id="detailCreated"></span></p>
+                        <p><strong>寮€濮嬫椂闂?</strong> <span id="detailStarted"></span></p>
+                        <p><strong>瀹屾垚鏃堕棿:</strong> <span id="detailCompleted"></span></p>
                     </div>
                 </div>
                 <div class="row" id="detailErrorRow" style="display: none;">
                     <div class="col-12">
                         <hr style="border-color: var(--color-border);">
-                        <p><strong>错误信息:</strong></p>
+                        <p><strong>閿欒淇℃伅:</strong></p>
                         <div class="alert alert-danger" id="detailError"></div>
+                    </div>
+                </div>
+
+                <div class="row" id="detailTerrainRow" style="display: none;">
+                    <div class="col-12">
+                        <hr style="border-color: var(--color-border);">
+                        <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
+                            <div>
+                                <p style="margin-bottom: 0.25rem;"><strong>地形切片:</strong> <span id="detailTerrainStatus"></span></p>
+                                <div id="detailTerrainInfo" style="font-family: var(--font-mono); font-size: 0.9rem;"></div>
+                            </div>
+                            <div class="btn-group btn-group-sm" style="flex: 0 0 auto;">
+                                <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="启动地形切片">启动</button>
+                                <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="刷新切片状态">刷新</button>
+                            </div>
+                        </div>
+                        <div class="row" id="detailTerrainErrorRow" style="display: none; margin-top: 0.75rem;">
+                            <div class="col-12">
+                                <div class="alert alert-danger" id="detailTerrainError" style="margin: 0;"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">鍏抽棴</button>
             </div>
         </div>
     </div>
@@ -154,3 +175,4 @@
     initHistory();
 </script>
 {% endblock %}
+
