@@ -27,7 +27,7 @@ else:
 
 from config import Config
 from database import init_database
-from routes import main_bp, api_bp, dem_api_bp, terrain_api_bp
+from routes import main_bp, api_bp, dem_api_bp, terrain_api_bp, terrain_static_bp
 from routes.api import init_task_manager
 from routes.socketio_events import register_socketio_events
 from services.task_manager import TaskManager
@@ -91,6 +91,9 @@ logger.info("DEM API blueprint registered")
 
 app.register_blueprint(terrain_api_bp)
 logger.info("Terrain API blueprint registered")
+
+app.register_blueprint(terrain_static_bp)
+logger.info("Terrain static blueprint registered")
 
 # Register SocketIO events
 register_socketio_events(socketio)
