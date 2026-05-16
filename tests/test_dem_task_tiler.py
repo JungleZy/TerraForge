@@ -37,3 +37,38 @@ def test_run_cmd_raises_on_failure(monkeypatch):
         assert "returncode=2" in str(e)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_terrain_output_dir_for_task(tmp_path: Path):
+    from services.terrain_tiling.dem_task_tiler import terrain_output_dir_for_task
+
+    out = terrain_output_dir_for_task(str(tmp_path), 123)
+    assert out == tmp_path / "dem_task_123" / "terrain_tiles"
+
+
+def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
+    from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "A_dem.tif").write_text("", encoding="utf-8")
+
+    out_dir = tmp_path / "out"
+
+    calls = []
+
+    def fake_run(argv, cwd=None):
+        calls.append((argv, cwd))
+        if argv and argv[0] == "ctb-tile":
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "layer.json").write_text(
+                '{"parentUrl":"OLD","available":[]}\n', encoding="utf-8"
+            )
+        return object()
+
+    params = TileParams(maxzoom=0, parent_url="https://example.com/parent.json")
+    tile_dem_task_dir(task_dir, out_dir, params, fake_run)
+
+    assert [c[0][0] for c in calls] == ["gdalbuildvrt", "ctb-tile"]
+    layer = (out_dir / "layer.json").read_text(encoding="utf-8")
+    assert '"parentUrl": "https://example.com/parent.json"' in layer
