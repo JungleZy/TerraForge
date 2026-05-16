@@ -20,6 +20,9 @@ def test_dem_terrain_jobs_table_exists(tmp_path, monkeypatch):
 
     # Override database path for isolated test run
     monkeypatch.setattr(Config, "DATABASE_PATH", Path(str(db_path)))
+    # Prevent init_database() from touching the real workspace
+    monkeypatch.setattr(Config, "DOWNLOADS_DIR", tmp_path / "downloads")
+    monkeypatch.setattr(Config, "CACHE_DIR", tmp_path / "cache")
 
     database.init_database()
 
@@ -37,3 +40,9 @@ def test_dem_terrain_jobs_table_exists(tmp_path, monkeypatch):
             ("idx_dem_terrain_jobs_status",),
         )
         assert cur.fetchone() is not None
+
+        # Enforce spec-critical constraints: output_dir/maxzoom must be NOT NULL
+        cur.execute("PRAGMA table_info(dem_terrain_jobs)")
+        cols = {row[1]: row for row in cur.fetchall()}  # (cid,name,type,notnull,dflt_value,pk)
+        assert cols["output_dir"][3] == 1
+        assert cols["maxzoom"][3] == 1
