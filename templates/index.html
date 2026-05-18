@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
 {% block title %}地图下载 - Maps Downloader{% endblock %}
 
@@ -50,6 +50,14 @@
                     </div>
 
                     <div class="mb-3">
+                        <label for="downloadType" class="form-label">下载类型</label>
+                        <select class="form-select" id="downloadType">
+                            <option value="map">地图瓦片</option>
+                            <option value="dem">GDEM V3 30m (ASTER GDEM V3)</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="mapStyle" class="form-label">地图样式</label>
                         <select class="form-select" id="mapStyle">
                             <option value="m">标准地图</option>
@@ -78,6 +86,17 @@
                             <option value="tiles_only">仅瓦片</option>
                             <option value="image_only">仅拼接图</option>
                         </select>
+                    </div>
+
+                    <div class="mb-3" id="demOptions" style="display:none;">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="demDownloadNum">
+                            <label class="form-check-label" for="demDownloadNum">同时下载 NUM 质量文件</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="demDownloadSwb">
+                            <label class="form-check-label" for="demDownloadSwb">同时下载 SWB 水体掩膜文件</label>
+                        </div>
                     </div>
 
                     <div class="mb-3">
@@ -131,6 +150,7 @@
 <script>
     const config = {{ config|tojson }};
     initMap(config);
+    initDownloadTypeToggle();
     initTasks();
 </script>
 {% endblock %}

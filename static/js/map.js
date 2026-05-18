@@ -76,6 +76,42 @@ function initMap(config) {
     });
 }
 
+function initDownloadTypeToggle() {
+    const typeEl = document.getElementById('downloadType');
+    if (!typeEl) return;
+
+    const mapFields = [
+        document.getElementById('mapStyle')?.closest('.mb-3'),
+        document.getElementById('zoomMin')?.closest('.row'),
+        document.getElementById('outputFormat')?.closest('.mb-3'),
+    ].filter(Boolean);
+
+    const demOptions = document.getElementById('demOptions');
+
+    function apply() {
+        const t = typeEl.value;
+        const isDem = t === 'dem';
+        mapFields.forEach(el => el.style.display = isDem ? 'none' : '');
+        if (demOptions) demOptions.style.display = isDem ? '' : 'none';
+
+        const outputPath = document.getElementById('outputPath');
+        if (outputPath && !outputPath.dataset.userEdited) {
+            outputPath.value = isDem ? './downloads/dem' : './downloads/map';
+        }
+    }
+
+    typeEl.addEventListener('change', apply);
+
+    const outputPath = document.getElementById('outputPath');
+    if (outputPath) {
+        outputPath.addEventListener('input', () => {
+            outputPath.dataset.userEdited = '1';
+        });
+    }
+
+    apply();
+}
+
 function updateBoundsInfo() {
     const boundsInfo = document.getElementById('boundsInfo');
     if (currentBounds) {
@@ -117,18 +153,38 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
         return;
     }
 
-    const taskData = {
-        name: document.getElementById('taskName').value,
-        north: currentBounds.north,
-        south: currentBounds.south,
-        east: currentBounds.east,
-        west: currentBounds.west,
-        zoom_min: parseInt(document.getElementById('zoomMin').value),
-        zoom_max: parseInt(document.getElementById('zoomMax').value),
-        style: document.getElementById('mapStyle').value,
-        output_format: document.getElementById('outputFormat').value,
-        output_path: document.getElementById('outputPath').value
-    };
+    const downloadType = document.getElementById('downloadType')?.value || 'map';
+
+    let taskData;
+    let apiUrl;
+    if (downloadType === 'dem') {
+        taskData = {
+            name: document.getElementById('taskName').value,
+            north: currentBounds.north,
+            south: currentBounds.south,
+            east: currentBounds.east,
+            west: currentBounds.west,
+            dataset: 'ASTGTM.003',
+            output_path: document.getElementById('outputPath').value,
+            download_num: document.getElementById('demDownloadNum')?.checked ? 'true' : 'false',
+            download_swb: document.getElementById('demDownloadSwb')?.checked ? 'true' : 'false'
+        };
+        apiUrl = '/api/dem/tasks';
+    } else {
+        taskData = {
+            name: document.getElementById('taskName').value,
+            north: currentBounds.north,
+            south: currentBounds.south,
+            east: currentBounds.east,
+            west: currentBounds.west,
+            zoom_min: parseInt(document.getElementById('zoomMin').value),
+            zoom_max: parseInt(document.getElementById('zoomMax').value),
+            style: document.getElementById('mapStyle').value,
+            output_format: document.getElementById('outputFormat').value,
+            output_path: document.getElementById('outputPath').value
+        };
+        apiUrl = '/api/tasks';
+    }
 
     const btn = document.getElementById('createTaskBtn');
     const originalText = btn.innerHTML;
@@ -141,7 +197,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     `;
 
     try {
-        const response = await fetch('/api/tasks', {
+        const response = await fetch(apiUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'

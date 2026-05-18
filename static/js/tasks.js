@@ -1,33 +1,96 @@
 let socket;
+let activeTasks = new Map();
+let timeUpdateInterval = null;
 
 function initTasks() {
     socket = io();
 
     socket.on('connect', function() {
         console.log('Connected to server');
+        loadActiveTasks();
+    });
+
+    socket.on('disconnect', function() {
+        console.log('Disconnected from server');
     });
 
     socket.on('task_progress', function(data) {
-        updateTaskCard(data);
+        console.log('Task progress update:', data);
+        updateTaskProgress(data);
+    });
+
+    socket.on('task_completed', function(data) {
+        console.log('Task completed:', data);
+        handleTaskCompleted(data.task_id, data.task_type || 'map');
+    });
+
+    socket.on('task_failed', function(data) {
+        console.log('Task failed:', data);
+        handleTaskFailed(data.task_id, data.task_type || 'map', data.error_message);
+    });
+
+    socket.on('task_stitch_progress', function(data) {
+        console.log('Task stitch progress:', data);
     });
 
     loadActiveTasks();
-    setInterval(loadActiveTasks, 5000);
+
+    // 每秒更新一次时长显示
+    if (timeUpdateInterval) {
+        clearInterval(timeUpdateInterval);
+    }
+    timeUpdateInterval = setInterval(updateTimeDisplay, 1000);
 }
 
 async function loadActiveTasks() {
     try {
-        const response = await fetch('/api/tasks');
-        const data = await response.json();
+        const [mapResp, demResp] = await Promise.all([
+            fetch('/api/tasks'),
+            fetch('/api/dem/tasks')
+        ]);
+        const mapData = await mapResp.json();
+        const demData = await demResp.json();
 
-        const activeTasks = data.tasks.filter(t =>
+        const mapTasks = (mapData.tasks || []).map(t => normalizeTask(t, 'map'));
+        const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
+        const all = [...mapTasks, ...demTasks].filter(t =>
             ['pending', 'running', 'paused'].includes(t.status)
         );
 
-        renderActiveTasks(activeTasks);
+        activeTasks.clear();
+        all.forEach(task => {
+            activeTasks.set(task._key, task);
+        });
+
+        renderActiveTasks(all);
     } catch (error) {
         console.error('Failed to load tasks:', error);
     }
+}
+
+function normalizeTask(task, type) {
+    if (type === 'dem') {
+        return {
+            ...task,
+            task_type: 'dem',
+            id: task.id,
+            _key: `dem:${task.id}`,
+            total_items: task.total_files || 0,
+            downloaded_items: task.downloaded_files || 0,
+            failed_items: task.failed_files || 0,
+            items_label: '文件'
+        };
+    }
+    return {
+        ...task,
+        task_type: 'map',
+        id: task.id,
+        _key: `map:${task.id}`,
+        total_items: task.total_tiles || 0,
+        downloaded_items: task.downloaded_tiles || 0,
+        failed_items: task.failed_tiles || 0,
+        items_label: '瓦片'
+    };
 }
 
 function renderActiveTasks(tasks) {
@@ -51,9 +114,11 @@ function renderActiveTasks(tasks) {
 }
 
 function createTaskCard(task) {
-    const progress = task.total_tiles > 0
-        ? Math.round((task.downloaded_tiles / task.total_tiles) * 100)
+    const progress = task.total_items > 0
+        ? Math.round((task.downloaded_items / task.total_items) * 100)
         : 0;
+
+    const timeInfo = calculateTimeInfo(task);
 
     const statusIcons = {
         'pending': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
@@ -64,7 +129,7 @@ function createTaskCard(task) {
     };
 
     return `
-        <div class="task-card status-${task.status}" id="task-${task.id}">
+        <div class="task-card status-${task.status}" id="task-${task._key}">
             <div class="d-flex justify-content-between align-items-start" style="margin-bottom: 0.75rem;">
                 <div>
                     <h6 style="margin-bottom: 0.5rem;">${task.name}</h6>
@@ -75,14 +140,14 @@ function createTaskCard(task) {
                 </div>
                 <div class="btn-group btn-group-sm">
                     ${task.status === 'pending' ? `
-                        <button class="btn btn-success" onclick="startTask(${task.id})" title="启动任务">
+                        <button class="btn btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
                     ${task.status === 'running' ? `
-                        <button class="btn btn-warning" onclick="pauseTask(${task.id})" title="暂停任务">
+                        <button class="btn btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="6" y="4" width="4" height="16"></rect>
                                 <rect x="14" y="4" width="4" height="16"></rect>
@@ -90,13 +155,13 @@ function createTaskCard(task) {
                         </button>
                     ` : ''}
                     ${task.status === 'paused' ? `
-                        <button class="btn btn-success" onclick="resumeTask(${task.id})" title="恢复任务">
+                        <button class="btn btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
-                    <button class="btn btn-danger" onclick="cancelTask(${task.id})" title="取消任务">
+                    <button class="btn btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
                             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -121,18 +186,180 @@ function createTaskCard(task) {
                     <polyline points="7 10 12 15 17 10"></polyline>
                     <line x1="12" y1="15" x2="12" y2="3"></line>
                 </svg>
-                已下载: ${task.downloaded_tiles} / ${task.total_tiles} 瓦片
-                ${task.failed_tiles > 0 ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_tiles}</span>` : ''}
+                已下载: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
+                ${task.failed_items > 0 ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_items}</span>` : ''}
             </div>
+
+            ${timeInfo.show ? `
+            <div class="progress-detail" style="margin-top: 0.5rem;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                ${timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : ''}
+                ${timeInfo.elapsed && timeInfo.estimated ? ' | ' : ''}
+                ${timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : ''}
+            </div>
+            ` : ''}
         </div>
     `;
 }
 
-function updateTaskCard(task) {
-    const card = document.getElementById(`task-${task.id}`);
-    if (card) {
-        const parent = card.parentElement;
-        card.outerHTML = createTaskCard(task);
+function updateTaskProgress(data) {
+    const taskType = data.task_type || 'map';
+    const taskId = data.task_id || data.id;
+    const key = `${taskType}:${taskId}`;
+    let task = activeTasks.get(key);
+
+    if (task) {
+        const statusChanged = data.status && data.status !== task.status;
+
+        if (taskType === 'dem') {
+            const progressChanged = data.downloaded_files !== task.downloaded_files ||
+                                   data.failed_files !== task.failed_files;
+
+            task.id = taskId;
+            task.task_type = 'dem';
+            task._key = key;
+            task.name = data.name || task.name;
+            task.status = data.status || task.status;
+            task.downloaded_files = data.downloaded_files;
+            task.failed_files = data.failed_files;
+            task.total_files = data.total_files;
+            task.total_items = data.total_files || 0;
+            task.downloaded_items = data.downloaded_files || 0;
+            task.failed_items = data.failed_files || 0;
+            task.items_label = '文件';
+            task.output_path = data.output_path || task.output_path;
+            task.started_at = data.started_at || task.started_at;
+            task.created_at = data.created_at || task.created_at;
+
+            activeTasks.set(key, task);
+
+            const card = document.getElementById(`task-${key}`);
+            if (card) {
+                if (statusChanged) {
+                    card.outerHTML = createTaskCard(task);
+                } else if (progressChanged) {
+                    updateTaskProgressPartial(card, task);
+                }
+            }
+            return;
+        }
+
+        const progressChanged = data.downloaded_tiles !== task.downloaded_tiles ||
+                               data.failed_tiles !== task.failed_tiles;
+
+        task.id = taskId;
+        task.task_type = 'map';
+        task._key = key;
+        task.name = data.name || task.name;
+        task.status = data.status || task.status;
+        task.downloaded_tiles = data.downloaded_tiles;
+        task.failed_tiles = data.failed_tiles;
+        task.total_tiles = data.total_tiles;
+        task.total_items = data.total_tiles || 0;
+        task.downloaded_items = data.downloaded_tiles || 0;
+        task.failed_items = data.failed_tiles || 0;
+        task.items_label = '瓦片';
+        task.north = data.north !== undefined ? data.north : task.north;
+        task.south = data.south !== undefined ? data.south : task.south;
+        task.east = data.east !== undefined ? data.east : task.east;
+        task.west = data.west !== undefined ? data.west : task.west;
+        task.zoom_min = data.zoom_min !== undefined ? data.zoom_min : task.zoom_min;
+        task.zoom_max = data.zoom_max !== undefined ? data.zoom_max : task.zoom_max;
+        task.style = data.style || task.style;
+        task.output_format = data.output_format || task.output_format;
+        task.output_path = data.output_path || task.output_path;
+        task.started_at = data.started_at || task.started_at;
+        task.created_at = data.created_at || task.created_at;
+        task.total_running_seconds = data.total_running_seconds !== undefined ? data.total_running_seconds : task.total_running_seconds;
+
+        activeTasks.set(key, task);
+
+        const card = document.getElementById(`task-${key}`);
+        if (card) {
+            if (statusChanged) {
+                card.outerHTML = createTaskCard(task);
+            } else if (progressChanged) {
+                updateTaskProgressPartial(card, task);
+            }
+        }
+    } else {
+        // New task - normalize and render
+        activeTasks.set(key, normalizeTask(data, taskType));
+        renderActiveTasks(Array.from(activeTasks.values()));
+    }
+}
+
+function updateTaskProgressPartial(card, task) {
+    const progress = task.total_items > 0
+        ? Math.round((task.downloaded_items / task.total_items) * 100)
+        : 0;
+
+    // 更新进度条
+    const progressBar = card.querySelector('.progress-bar');
+    if (progressBar) {
+        progressBar.style.width = `${progress}%`;
+        progressBar.setAttribute('aria-valuenow', progress);
+        progressBar.textContent = `${progress}%`;
+        progressBar.className = `progress-bar bg-${getProgressColor(progress)}`;
+    }
+
+    // 更新下载数量
+    const progressDetails = card.querySelectorAll('.progress-detail');
+    if (progressDetails.length > 0) {
+        const downloadDetail = progressDetails[0];
+        const failedText = task.failed_items > 0
+            ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_items}</span>`
+            : '';
+
+        downloadDetail.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            已下载: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
+            ${failedText}
+        `;
+    }
+}
+
+function handleTaskCompleted(taskId, taskType) {
+    const key = `${taskType}:${taskId}`;
+    const task = activeTasks.get(key);
+    if (task) {
+        task.status = 'completed';
+        activeTasks.delete(key);
+
+        const card = document.getElementById(`task-${key}`);
+        if (card) {
+            card.remove();
+        }
+
+        renderActiveTasks(Array.from(activeTasks.values()));
+    }
+}
+
+function handleTaskFailed(taskId, taskType, errorMessage) {
+    const key = `${taskType}:${taskId}`;
+    const task = activeTasks.get(key);
+    if (task) {
+        task.status = 'failed';
+        task.error_message = errorMessage;
+        activeTasks.delete(key);
+
+        const card = document.getElementById(`task-${key}`);
+        if (card) {
+            card.remove();
+        }
+
+        renderActiveTasks(Array.from(activeTasks.values()));
+
+        if (errorMessage) {
+            console.error(`Task ${taskId} failed: ${errorMessage}`);
+        }
     }
 }
 
@@ -168,56 +395,148 @@ function getStatusText(status) {
     return texts[status] || status;
 }
 
-async function startTask(taskId) {
+function formatDuration(seconds) {
+    if (seconds < 60) {
+        return `${Math.round(seconds)}秒`;
+    } else if (seconds < 3600) {
+        const minutes = Math.floor(seconds / 60);
+        const secs = Math.round(seconds % 60);
+        return secs > 0 ? `${minutes}分${secs}秒` : `${minutes}分钟`;
+    } else {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        return minutes > 0 ? `${hours}小时${minutes}分钟` : `${hours}小时`;
+    }
+}
+
+function calculateTimeInfo(task) {
+    const result = {
+        show: false,
+        elapsed: null,
+        estimated: null
+    };
+
+    if (!task.started_at || task.status === 'pending') {
+        return result;
+    }
+
+    result.show = true;
+
+    // 使用后端计算的总运行时长
+    let elapsedSeconds = task.total_running_seconds || 0;
+
+    // 如果任务正在运行，加上当前这一段的时间
+    if (task.status === 'running' && task.started_at) {
+        const startTime = new Date(task.started_at);
+        const now = new Date();
+        const currentSegment = (now - startTime) / 1000;
+        elapsedSeconds += currentSegment;
+    }
+
+    result.elapsed = formatDuration(elapsedSeconds);
+
+    if (task.status === 'running' && task.downloaded_items > 0 && task.total_items > 0) {
+        const progress = task.downloaded_items / task.total_items;
+        const estimatedTotalSeconds = elapsedSeconds / progress;
+        const remainingSeconds = estimatedTotalSeconds - elapsedSeconds;
+
+        if (remainingSeconds > 0) {
+            result.estimated = formatDuration(remainingSeconds);
+        }
+    }
+
+    return result;
+}
+
+function updateTimeDisplay() {
+    activeTasks.forEach((task, taskId) => {
+        // 只更新运行中的任务时间
+        if (task.status === 'running') {
+            const card = document.getElementById(`task-${taskId}`);
+            if (card) {
+                const timeInfo = calculateTimeInfo(task);
+                const timeDetailDiv = card.querySelector('.progress-detail:last-child');
+
+                if (timeInfo.show && timeDetailDiv) {
+                    const timeHtml = `
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                        </svg>
+                        ${timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : ''}
+                        ${timeInfo.elapsed && timeInfo.estimated ? ' | ' : ''}
+                        ${timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : ''}
+                    `;
+
+                    if (timeDetailDiv.innerHTML.includes('已运行') || timeDetailDiv.innerHTML.includes('预计剩余')) {
+                        timeDetailDiv.innerHTML = timeHtml;
+                    }
+                }
+            }
+        }
+    });
+}
+
+function apiPrefixForType(taskType) {
+    return taskType === 'dem' ? '/api/dem/tasks' : '/api/tasks';
+}
+
+async function startTask(taskId, taskType = 'map') {
     try {
-        const response = await fetch(`/api/tasks/${taskId}/start`, {
+        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/start`, {
             method: 'POST'
         });
-        if (response.ok) {
-            loadActiveTasks();
+        if (!response.ok) {
+            throw new Error('启动任务失败');
         }
     } catch (error) {
         alert('启动任务失败: ' + error.message);
     }
 }
 
-async function pauseTask(taskId) {
+async function pauseTask(taskId, taskType = 'map') {
     try {
-        const response = await fetch(`/api/tasks/${taskId}/pause`, {
+        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/pause`, {
             method: 'POST'
         });
-        if (response.ok) {
-            loadActiveTasks();
+        if (!response.ok) {
+            throw new Error('暂停任务失败');
         }
     } catch (error) {
         alert('暂停任务失败: ' + error.message);
     }
 }
 
-async function resumeTask(taskId) {
+async function resumeTask(taskId, taskType = 'map') {
     try {
-        const response = await fetch(`/api/tasks/${taskId}/resume`, {
+        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/resume`, {
             method: 'POST'
         });
-        if (response.ok) {
-            loadActiveTasks();
+        if (!response.ok) {
+            throw new Error('恢复任务失败');
         }
     } catch (error) {
         alert('恢复任务失败: ' + error.message);
     }
 }
 
-async function cancelTask(taskId) {
+async function cancelTask(taskId, taskType = 'map') {
     if (!confirm('确定要取消这个任务吗？')) {
         return;
     }
 
     try {
-        const response = await fetch(`/api/tasks/${taskId}/cancel`, {
+        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/cancel`, {
             method: 'POST'
         });
         if (response.ok) {
-            loadActiveTasks();
+            const key = `${taskType}:${taskId}`;
+            activeTasks.delete(key);
+            const card = document.getElementById(`task-${key}`);
+            if (card) {
+                card.remove();
+            }
+            renderActiveTasks(Array.from(activeTasks.values()));
         }
     } catch (error) {
         alert('取消任务失败: ' + error.message);
