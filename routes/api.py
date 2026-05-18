@@ -432,6 +432,122 @@ def get_history():
         return jsonify({'error': 'Failed to get history'}), 500
 
 
+@api_bp.route('/history_all', methods=['GET'])
+def get_history_all():
+    """
+    Get combined history for map tasks and DEM tasks with pagination.
+
+    Returns a normalized task list with task_type in {'map','dem'}.
+    """
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        status_filter = request.args.get('status', None, type=str)
+
+        if per_page > 100:
+            per_page = 100
+        if per_page < 1:
+            per_page = 20
+        if page < 1:
+            page = 1
+
+        offset = (page - 1) * per_page
+
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+
+            if status_filter:
+                cursor.execute('SELECT COUNT(*) AS c FROM tasks WHERE status = ?', (status_filter,))
+                map_count = cursor.fetchone()['c']
+                cursor.execute('SELECT COUNT(*) AS c FROM dem_tasks WHERE status = ?', (status_filter,))
+                dem_count = cursor.fetchone()['c']
+            else:
+                cursor.execute('SELECT COUNT(*) AS c FROM tasks')
+                map_count = cursor.fetchone()['c']
+                cursor.execute('SELECT COUNT(*) AS c FROM dem_tasks')
+                dem_count = cursor.fetchone()['c']
+
+            total_count = int(map_count or 0) + int(dem_count or 0)
+
+            params = []
+            where_map = ""
+            where_dem = ""
+            if status_filter:
+                where_map = "WHERE status = ?"
+                where_dem = "WHERE status = ?"
+                params.extend([status_filter, status_filter])
+
+            query = f'''
+                SELECT
+                    'map' AS task_type,
+                    id,
+                    name,
+                    status,
+                    north, south, east, west,
+                    zoom_min, zoom_max,
+                    style,
+                    downloaded_tiles AS downloaded,
+                    total_tiles AS total,
+                    output_format,
+                    output_path,
+                    created_at, started_at, completed_at,
+                    error_message,
+                    COALESCE(completed_at, created_at) AS sort_key
+                FROM tasks
+                {where_map}
+                UNION ALL
+                SELECT
+                    'dem' AS task_type,
+                    id,
+                    name,
+                    status,
+                    north, south, east, west,
+                    NULL AS zoom_min, NULL AS zoom_max,
+                    dataset AS style,
+                    downloaded_files AS downloaded,
+                    total_files AS total,
+                    NULL AS output_format,
+                    output_path,
+                    created_at, started_at, completed_at,
+                    error_message,
+                    COALESCE(completed_at, created_at) AS sort_key
+                FROM dem_tasks
+                {where_dem}
+                ORDER BY sort_key DESC
+                LIMIT ? OFFSET ?
+            '''
+
+            params.extend([per_page, offset])
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+            tasks = []
+            for r in rows:
+                d = dict(r)
+                d.pop('sort_key', None)
+                tasks.append(d)
+
+            total_pages = (total_count + per_page - 1) // per_page
+
+            return jsonify({
+                'success': True,
+                'tasks': tasks,
+                'pagination': {
+                    'page': page,
+                    'per_page': per_page,
+                    'total_count': total_count,
+                    'total_pages': total_pages
+                }
+            })
+
+        finally:
+            conn.close()
+
+    except Exception as e:
+        logger.error(f"Error getting combined history: {e}")
+        return jsonify({'error': 'Failed to get combined history'}), 500
+
+
 @api_bp.route('/config', methods=['GET'])
 def get_config():
     """
