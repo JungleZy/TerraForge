@@ -22,19 +22,26 @@ def test_db():
     """Create a temporary test database"""
     # Create temporary directory for test database
     temp_dir = tempfile.mkdtemp()
-    test_db_path = os.path.join(temp_dir, 'test.db')
+    test_db_path = Path(temp_dir) / 'test.db'
 
-    # Override database path
+    # Override config paths (they must be Path objects — config.init_app
+    # uses .parent / .mkdir on each).
     original_db_path = Config.DATABASE_PATH
+    original_downloads = Config.DOWNLOADS_DIR
+    original_cache = Config.CACHE_DIR
     Config.DATABASE_PATH = test_db_path
+    Config.DOWNLOADS_DIR = Path(temp_dir) / 'downloads'
+    Config.CACHE_DIR = Path(temp_dir) / 'cache'
 
     # Initialize test database
     database.init_database()
 
-    yield test_db_path
+    yield str(test_db_path)
 
     # Cleanup
     Config.DATABASE_PATH = original_db_path
+    Config.DOWNLOADS_DIR = original_downloads
+    Config.CACHE_DIR = original_cache
     shutil.rmtree(temp_dir)
 
 
@@ -86,8 +93,8 @@ def test_get_all(config_manager):
     """Test getting all configuration values"""
     all_configs = config_manager.get_all()
 
-    # Should have 18 default configs
-    assert len(all_configs) == 18
+    # Should have 23 default configs
+    assert len(all_configs) == 23
 
     # Check some expected keys
     assert 'default_style' in all_configs
@@ -172,9 +179,9 @@ def test_reset_to_defaults(config_manager):
     # Verify value is back to default
     assert config_manager.get('concurrent_downloads') == '10'
 
-    # Verify all 18 defaults are present
+    # Verify all 23 defaults are present
     all_configs = config_manager.get_all()
-    assert len(all_configs) == 18
+    assert len(all_configs) == 23
 
 
 def test_is_valid_lat(config_manager):

@@ -8,12 +8,13 @@ import sys
 import tempfile
 import shutil
 import math
+from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import database
-from services.download_engine import DownloadEngine, MAX_TILES, MIN_ZOOM, MAX_ZOOM
+from services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD, MIN_ZOOM, MAX_ZOOM
 from models.task import Tile
 from config import Config
 
@@ -23,19 +24,25 @@ def test_db():
     """Create a temporary test database"""
     # Create temporary directory for test database
     temp_dir = tempfile.mkdtemp()
-    test_db_path = os.path.join(temp_dir, 'test.db')
+    test_db_path = Path(temp_dir) / 'test.db'
 
-    # Override database path
+    # Override config paths (must be Path — config.init_app uses .parent)
     original_db_path = Config.DATABASE_PATH
+    original_downloads = Config.DOWNLOADS_DIR
+    original_cache = Config.CACHE_DIR
     Config.DATABASE_PATH = test_db_path
+    Config.DOWNLOADS_DIR = Path(temp_dir) / 'downloads'
+    Config.CACHE_DIR = Path(temp_dir) / 'cache'
 
     # Initialize test database
     database.init_database()
 
-    yield test_db_path
+    yield str(test_db_path)
 
     # Cleanup
     Config.DATABASE_PATH = original_db_path
+    Config.DOWNLOADS_DIR = original_downloads
+    Config.CACHE_DIR = original_cache
     shutil.rmtree(temp_dir)
 
 
@@ -185,28 +192,24 @@ def test_get_tile_url(download_engine):
         assert url.startswith(f'http://mts{i}.googleapis.com/vt')
 
 
-def test_tile_count_limit(download_engine):
-    """Test that tile count limit is enforced BEFORE tile generation"""
-    # Try to create a task that would exceed MAX_TILES
-    # Large area with high zoom levels should exceed 100,000 tiles
-    # This should fail fast without creating any Tile objects in memory
-    with pytest.raises(ValueError) as exc_info:
-        download_engine.calculate_tiles(
+def test_tile_count_warning(download_engine, caplog):
+    """A request that would generate more than WARN_TILES_THRESHOLD tiles
+    should log a warning. The product no longer hard-rejects large jobs."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger='services.download_engine'):
+        tiles = download_engine.calculate_tiles(
             north=50.0,
             south=30.0,
             east=130.0,
             west=100.0,
             zoom_min=10,
-            zoom_max=15
+            zoom_max=15,
         )
 
-    assert "exceeds maximum allowed" in str(exc_info.value)
-    assert str(MAX_TILES) in str(exc_info.value)
-
-    # Verify the error message contains the expected tile count
-    # This confirms the check happened before generation
-    error_msg = str(exc_info.value)
-    assert "Tile count" in error_msg
+    assert len(tiles) > WARN_TILES_THRESHOLD
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("Large tile count" in m for m in warnings)
 
 
 def test_input_validation_north_south(download_engine):

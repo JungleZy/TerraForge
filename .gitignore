@@ -128,3 +128,6 @@ data/*.db
 cache/
 downloads/
 *.log
+
+# DEM granule samples (large binary, do not commit)
+ASTGTMV003_*.zip
