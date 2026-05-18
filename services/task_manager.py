@@ -61,6 +61,112 @@ class TaskManager:
 
         logger.info("TaskManager initialized")
 
+    def _record_time_action(self, task_id: int, action: str):
+        """
+        Record a time tracking action (start, pause, resume, complete)
+
+        Args:
+            task_id: Task ID
+            action: Action type ('start', 'pause', 'resume', 'complete')
+        """
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO task_time_records (task_id, action, timestamp)
+                VALUES (?, ?, ?)
+            ''', (task_id, action, datetime.now()))
+            conn.commit()
+            logger.debug(f"Recorded time action '{action}' for task {task_id}")
+        except Exception as e:
+            logger.error(f"Failed to record time action for task {task_id}: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def _update_total_running_time(self, task_id: int):
+        """
+        Update total_running_seconds by calculating time since last 'start' or 'resume'
+
+        Args:
+            task_id: Task ID
+        """
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+
+            # Get the last start/resume record
+            cursor.execute('''
+                SELECT timestamp FROM task_time_records
+                WHERE task_id = ? AND action IN ('start', 'resume')
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ''', (task_id,))
+
+            row = cursor.fetchone()
+            if row:
+                last_start = datetime.fromisoformat(row['timestamp'])
+                elapsed_seconds = int((datetime.now() - last_start).total_seconds())
+
+                # Add to total running time
+                cursor.execute('''
+                    UPDATE tasks
+                    SET total_running_seconds = total_running_seconds + ?
+                    WHERE id = ?
+                ''', (elapsed_seconds, task_id))
+
+                conn.commit()
+                logger.debug(f"Updated total running time for task {task_id}: +{elapsed_seconds}s")
+        except Exception as e:
+            logger.error(f"Failed to update total running time for task {task_id}: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def get_current_running_time(self, task_id: int) -> int:
+        """
+        Get current total running time in seconds
+
+        Args:
+            task_id: Task ID
+
+        Returns:
+            Total running time in seconds
+        """
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+
+            # Get task info
+            cursor.execute('''
+                SELECT status, total_running_seconds FROM tasks WHERE id = ?
+            ''', (task_id,))
+
+            row = cursor.fetchone()
+            if not row:
+                return 0
+
+            total_seconds = row['total_running_seconds'] or 0
+
+            # If task is running, add current segment
+            if row['status'] == 'running':
+                cursor.execute('''
+                    SELECT timestamp FROM task_time_records
+                    WHERE task_id = ? AND action IN ('start', 'resume')
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ''', (task_id,))
+
+                start_row = cursor.fetchone()
+                if start_row:
+                    last_start = datetime.fromisoformat(start_row['timestamp'])
+                    current_segment = int((datetime.now() - last_start).total_seconds())
+                    total_seconds += current_segment
+
+            return total_seconds
+        finally:
+            conn.close()
+
     def create_task(self, params: dict) -> int:
         """
         Create a new download task in database
@@ -180,6 +286,7 @@ class TaskManager:
             3. Create stop_flag (threading.Event)
             4. Start background thread running _run_task
             5. Track in active_tasks dict
+            6. Emit status update via socketio
         """
         logger.info(f"Starting task {task_id}")
 
@@ -211,6 +318,40 @@ class TaskManager:
             ''', (datetime.now(), task_id))
 
             conn.commit()
+
+            # Record time action (start or resume)
+            action = 'start' if status == 'pending' else 'resume'
+            self._record_time_action(task_id, action)
+
+            # Get updated task info and emit via socketio
+            cursor.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
+            task_row = cursor.fetchone()
+
+            if task_row and self.socketio:
+                # Get current running time
+                total_running_seconds = self.get_current_running_time(task_id)
+
+                self.socketio.emit('task_progress', {
+                    'task_id': task_id,
+                    'id': task_id,
+                    'name': task_row['name'],
+                    'status': task_row['status'],
+                    'downloaded_tiles': task_row['downloaded_tiles'],
+                    'failed_tiles': task_row['failed_tiles'],
+                    'total_tiles': task_row['total_tiles'],
+                    'north': task_row['north'],
+                    'south': task_row['south'],
+                    'east': task_row['east'],
+                    'west': task_row['west'],
+                    'zoom_min': task_row['zoom_min'],
+                    'zoom_max': task_row['zoom_max'],
+                    'style': task_row['style'],
+                    'output_format': task_row['output_format'],
+                    'output_path': task_row['output_path'],
+                    'started_at': task_row['started_at'],
+                    'created_at': task_row['created_at'],
+                    'total_running_seconds': total_running_seconds
+                })
 
             # Create stop flag for this task
             stop_flag = threading.Event()
@@ -249,6 +390,7 @@ class TaskManager:
         Process:
             1. Set stop_flag to signal task to stop
             2. Update status to 'paused' in database
+            3. Emit status update via socketio
         """
         logger.info(f"Pausing task {task_id}")
 
@@ -272,7 +414,44 @@ class TaskManager:
                 logger.warning(f"Task {task_id} was not running, cannot pause")
 
             conn.commit()
+
+            # Update total running time before pausing
+            self._update_total_running_time(task_id)
+
+            # Record pause action
+            self._record_time_action(task_id, 'pause')
+
             logger.info(f"Task {task_id} paused")
+
+            # Get updated task info and emit via socketio
+            cursor.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
+            task_row = cursor.fetchone()
+
+            if task_row and self.socketio:
+                # Get current running time
+                total_running_seconds = self.get_current_running_time(task_id)
+
+                self.socketio.emit('task_progress', {
+                    'task_id': task_id,
+                    'id': task_id,
+                    'name': task_row['name'],
+                    'status': task_row['status'],
+                    'downloaded_tiles': task_row['downloaded_tiles'],
+                    'failed_tiles': task_row['failed_tiles'],
+                    'total_tiles': task_row['total_tiles'],
+                    'north': task_row['north'],
+                    'south': task_row['south'],
+                    'east': task_row['east'],
+                    'west': task_row['west'],
+                    'zoom_min': task_row['zoom_min'],
+                    'zoom_max': task_row['zoom_max'],
+                    'style': task_row['style'],
+                    'output_format': task_row['output_format'],
+                    'output_path': task_row['output_path'],
+                    'started_at': task_row['started_at'],
+                    'created_at': task_row['created_at'],
+                    'total_running_seconds': total_running_seconds
+                })
 
         except Exception as e:
             conn.rollback()
@@ -581,26 +760,37 @@ class TaskManager:
 
                         tile_conn.commit()
 
-                        # Get updated task progress
+                        # Get updated task info
                         tile_cursor.execute('''
-                            SELECT downloaded_tiles, failed_tiles, total_tiles
-                            FROM tasks WHERE id = ?
+                            SELECT * FROM tasks WHERE id = ?
                         ''', (task_id,))
-                        progress_row = tile_cursor.fetchone()
+                        task_row = tile_cursor.fetchone()
 
-                        if progress_row and self.socketio:
-                            downloaded = progress_row['downloaded_tiles']
-                            failed = progress_row['failed_tiles']
-                            total = progress_row['total_tiles']
-                            progress_percent = (downloaded / total * 100) if total > 0 else 0
+                        if task_row and self.socketio:
+                            # Get current running time
+                            total_running_seconds = self.get_current_running_time(task_id)
 
-                            # Emit progress update via socketio
+                            # Emit full task progress update via socketio
                             self.socketio.emit('task_progress', {
                                 'task_id': task_id,
-                                'downloaded_tiles': downloaded,
-                                'failed_tiles': failed,
-                                'total_tiles': total,
-                                'progress_percent': round(progress_percent, 2)
+                                'id': task_id,
+                                'name': task_row['name'],
+                                'status': task_row['status'],
+                                'downloaded_tiles': task_row['downloaded_tiles'],
+                                'failed_tiles': task_row['failed_tiles'],
+                                'total_tiles': task_row['total_tiles'],
+                                'north': task_row['north'],
+                                'south': task_row['south'],
+                                'east': task_row['east'],
+                                'west': task_row['west'],
+                                'zoom_min': task_row['zoom_min'],
+                                'zoom_max': task_row['zoom_max'],
+                                'style': task_row['style'],
+                                'output_format': task_row['output_format'],
+                                'output_path': task_row['output_path'],
+                                'started_at': task_row['started_at'],
+                                'created_at': task_row['created_at'],
+                                'total_running_seconds': total_running_seconds
                             })
 
                     finally:
@@ -757,6 +947,10 @@ class TaskManager:
             ''', (datetime.now(), task_id))
 
             conn.commit()
+
+            # Update total running time and record complete action
+            self._update_total_running_time(task_id)
+            self._record_time_action(task_id, 'complete')
 
             logger.info(f"Task {task_id}: Completed successfully")
 
