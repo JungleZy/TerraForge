@@ -93,8 +93,8 @@ def test_get_all(config_manager):
     """Test getting all configuration values"""
     all_configs = config_manager.get_all()
 
-    # Should have 23 default configs
-    assert len(all_configs) == 23
+    # Should have 24 default configs
+    assert len(all_configs) == 24
 
     # Check some expected keys
     assert 'default_style' in all_configs
@@ -179,9 +179,9 @@ def test_reset_to_defaults(config_manager):
     # Verify value is back to default
     assert config_manager.get('concurrent_downloads') == '10'
 
-    # Verify all 23 defaults are present
+    # Verify all 24 defaults are present
     all_configs = config_manager.get_all()
-    assert len(all_configs) == 23
+    assert len(all_configs) == 24
 
 
 def test_is_valid_lat(config_manager):

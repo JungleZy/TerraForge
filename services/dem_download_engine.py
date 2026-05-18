@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
 
 import aiofiles
 import aiohttp
 
+from config import Config
 from services.config_manager import ConfigManager
 from services.earthdata_client import EarthdataClient
 
@@ -30,6 +33,48 @@ class DemDownloadEngine:
         if dataset != "ASTGTM.003":
             raise ValueError(f"Unsupported DEM dataset: {dataset}")
         return "https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/ASTGTM.003/"
+
+    @staticmethod
+    def _link_or_copy(src: Path, dst: Path) -> None:
+        # Hard link first (zero-copy, instant). Fall back to a full copy when
+        # src and dst live on different filesystems (EXDEV) or when the FS
+        # doesn't support hard links.
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copyfile(src, dst)
+
+    def _try_promote_from_cache(self, granule: str, dest: Path, cache_dir: Optional[Path]) -> bool:
+        """Promote a cached granule into the task's output dir.
+
+        Returns True iff dest now exists with the cached content.
+        """
+        if cache_dir is None:
+            return False
+        cached = cache_dir / granule
+        if not (cached.exists() and cached.stat().st_size > 0):
+            return False
+        try:
+            if dest.exists():
+                dest.unlink()
+            self._link_or_copy(cached, dest)
+            return True
+        except Exception as e:
+            logger.warning(f"DEM cache promotion failed for {granule}: {e}")
+            return False
+
+    def _save_to_cache(self, src: Path, granule: str, cache_dir: Optional[Path]) -> None:
+        """Best-effort: mirror a freshly downloaded granule into the cache."""
+        if cache_dir is None:
+            return
+        cached = cache_dir / granule
+        if cached.exists():
+            return
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self._link_or_copy(src, cached)
+        except Exception as e:
+            logger.warning(f"DEM cache save failed for {granule}: {e}")
 
     async def download_files(
         self,
@@ -52,6 +97,9 @@ class DemDownloadEngine:
         username = self.config.get("earthdata_username", "") or ""
         password = self.config.get("earthdata_password", "") or ""
 
+        dem_cache_enabled = (self.config.get("dem_cache_enabled", "true") or "true").lower() == "true"
+        cache_dir: Optional[Path] = Path(Config.CACHE_DIR) / "dem" if dem_cache_enabled else None
+
         earth = EarthdataClient(username=username, password=password, proxy_url=proxy_url)
         base_url = self._dataset_base_url(dataset)
 
@@ -69,6 +117,12 @@ class DemDownloadEngine:
 
                     dest = output_dir / granule
                     if dest.exists() and dest.stat().st_size > 0:
+                        if progress_callback:
+                            await progress_callback(granule, "completed", None, dest.stat().st_size)
+                        return
+
+                    if self._try_promote_from_cache(granule, dest, cache_dir):
+                        logger.info(f"DEM cache hit: {granule} (promoted from {cache_dir})")
                         if progress_callback:
                             await progress_callback(granule, "completed", None, dest.stat().st_size)
                         return
@@ -98,6 +152,8 @@ class DemDownloadEngine:
                                         size += len(chunk)
 
                                 tmp.replace(dest)
+
+                            self._save_to_cache(dest, granule, cache_dir)
 
                             if progress_callback:
                                 await progress_callback(granule, "completed", None, dest.stat().st_size)
