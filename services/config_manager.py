@@ -98,7 +98,11 @@ class ConfigManager:
 
                 conn.commit()
 
-                logger.info(f'Config updated: {key} = {value}')
+                # Avoid leaking secrets into logs (still allow saving them normally).
+                log_value = value
+                if key in {'earthdata_password'}:
+                    log_value = '***'
+                logger.info(f'Config updated: {key} = {log_value}')
                 return True
 
         except sqlite3.Error as e:

@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 
 {% block title %}配置 - Maps Downloader{% endblock %}
 
@@ -184,6 +184,32 @@
                             <label for="map_initial_zoom" class="form-label">地图初始缩放</label>
                             <input type="number" class="form-control" id="map_initial_zoom"
                                    value="{{ config.map_initial_zoom }}" min="0" max="21">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h3>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                            <path d="M20 7h-9"></path>
+                            <path d="M14 17H5"></path>
+                            <circle cx="17" cy="17" r="3"></circle>
+                            <circle cx="7" cy="7" r="3"></circle>
+                        </svg>
+                        Earthdata 设置
+                    </h3>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="earthdata_username" class="form-label">Earthdata 用户名</label>
+                            <input type="text" class="form-control" id="earthdata_username"
+                                   value="{{ config.earthdata_username }}" placeholder="Earthdata username">
+                        </div>
+
+                        <div class="col-md-6 mb-3">
+                            <label for="earthdata_password" class="form-label">Earthdata 密码</label>
+                            <input type="password" class="form-control" id="earthdata_password"
+                                   value="{{ config.earthdata_password }}" placeholder="Earthdata password">
                         </div>
                     </div>
                 </div>

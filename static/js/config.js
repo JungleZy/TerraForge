@@ -22,7 +22,9 @@ async function saveConfig(e) {
         history_retention_days: document.getElementById('history_retention_days').value,
         map_center_lat: document.getElementById('map_center_lat').value,
         map_center_lng: document.getElementById('map_center_lng').value,
-        map_initial_zoom: document.getElementById('map_initial_zoom').value
+        map_initial_zoom: document.getElementById('map_initial_zoom').value,
+        earthdata_username: document.getElementById('earthdata_username').value,
+        earthdata_password: document.getElementById('earthdata_password').value
     };
 
     try {
