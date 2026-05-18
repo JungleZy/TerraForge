@@ -50,7 +50,7 @@
                                     <th>区域</th>
                                     <th>缩放级别</th>
                                     <th>样式</th>
-                                    <th>瓦片数</th>
+                                    <th>数量</th>
                                     <th>完成时间</th>
                                     <th>操作</th>
                                 </tr>
@@ -105,7 +105,7 @@
                     </div>
                     <div class="col-md-6">
                         <p><strong>缩放级别:</strong> <span id="detailZoom"></span></p>
-                        <p><strong>总瓦片数:</strong> <span id="detailTotal"></span></p>
+                        <p><strong>总数量:</strong> <span id="detailTotal"></span></p>
                         <p><strong>已下载:</strong> <span id="detailDownloaded"></span></p>
                         <p><strong>失败:</strong> <span id="detailFailed"></span></p>
                         <p><strong>进度:</strong> <span id="detailProgress"></span></p>
@@ -137,6 +137,27 @@
                         <hr style="border-color: var(--color-border);">
                         <p><strong>错误信息:</strong></p>
                         <div class="alert alert-danger" id="detailError"></div>
+                    </div>
+                </div>
+
+                <div class="row" id="detailTerrainRow" style="display: none;">
+                    <div class="col-12">
+                        <hr style="border-color: var(--color-border);">
+                        <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
+                            <div>
+                                <p style="margin-bottom: 0.25rem;"><strong>地形切片:</strong> <span id="detailTerrainStatus"></span></p>
+                                <div id="detailTerrainInfo" style="font-family: var(--font-mono); font-size: 0.9rem;"></div>
+                            </div>
+                            <div class="btn-group btn-group-sm" style="flex: 0 0 auto;">
+                                <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="启动地形切片">启动</button>
+                                <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="刷新切片状态">刷新</button>
+                            </div>
+                        </div>
+                        <div class="row" id="detailTerrainErrorRow" style="display: none; margin-top: 0.75rem;">
+                            <div class="col-12">
+                                <div class="alert alert-danger" id="detailTerrainError" style="margin: 0;"></div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

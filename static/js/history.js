@@ -1,4 +1,4 @@
-let historyMap;
+﻿let historyMap;
 let currentPage = 1;
 let allTasks = [];
 
@@ -21,13 +21,18 @@ function initHistoryMap() {
 
 async function loadHistory(page = 1) {
     try {
-        const response = await fetch(`/api/history?page=${page}&per_page=20`);
+        const response = await fetch(`/api/history_all?page=${page}&per_page=20`);
         const data = await response.json();
 
-        allTasks = data.tasks;
-        renderHistoryTable(data.tasks);
-        renderPagination(data.page, Math.ceil(data.total / data.per_page));
-        renderHistoryMap(data.tasks);
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to load history');
+        }
+
+        allTasks = data.tasks || [];
+        renderHistoryTable(allTasks);
+        const p = data.pagination || {};
+        renderPagination(p.page || 1, p.total_pages || 1);
+        renderHistoryMap(allTasks);
     } catch (error) {
         console.error('Failed to load history:', error);
         document.getElementById('historyTableBody').innerHTML =
@@ -78,20 +83,20 @@ function renderHistoryTable(tasks) {
                     <span style="color: var(--color-accent-warm);">◀</span> ${task.west.toFixed(4)}
                 </small>
             </td>
-            <td style="font-family: var(--font-mono);">${task.zoom_min}-${task.zoom_max}</td>
-            <td>${getStyleText(task.style)}</td>
-            <td style="font-family: var(--font-mono);">${task.downloaded_tiles}/${task.total_tiles}</td>
+            <td style="font-family: var(--font-mono);">${task.task_type === 'map' ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
+            <td>${task.task_type === 'map' ? getStyleText(task.style) : (task.style || '-')}</td>
+            <td style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</td>
             <td><small style="font-family: var(--font-mono); font-size: 0.85rem;">${formatDate(task.completed_at)}</small></td>
             <td>
                 <div style="display: flex; gap: 0.5rem;">
-                    <button class="btn btn-sm btn-info" onclick="viewTaskDetails(${task.id})" title="查看详情">
+                    <button class="btn btn-sm btn-info" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"></circle>
                             <line x1="12" y1="16" x2="12" y2="12"></line>
                             <line x1="12" y1="8" x2="12.01" y2="8"></line>
                         </svg>
                     </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id})" title="删除任务">
+                    <button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id}, '${task.task_type}')" title="删除任务">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -149,7 +154,8 @@ function renderHistoryMap(tasks) {
                 <strong style="color: var(--color-accent-warm); font-size: 1.1rem;">${task.name}</strong><br>
                 <div style="margin-top: 0.5rem; font-size: 0.9rem;">
                     <strong>状态:</strong> ${getStatusText(task.status)}<br>
-                    <strong>瓦片:</strong> <span style="font-family: var(--font-mono);">${task.downloaded_tiles}/${task.total_tiles}</span>
+                    <strong>${task.task_type === 'dem' ? '文件' : '瓦片'}:</strong>
+                    <span style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</span>
                 </div>
             </div>
         `);
@@ -210,9 +216,10 @@ function formatDate(dateStr) {
     return date.toLocaleString('zh-CN');
 }
 
-async function viewTaskDetails(taskId) {
+async function viewTaskDetails(taskId, taskType = 'map') {
     try {
-        const response = await fetch(`/api/tasks/${taskId}`);
+        const url = taskType === 'dem' ? `/api/dem/tasks/${taskId}` : `/api/tasks/${taskId}`;
+        const response = await fetch(url);
         const data = await response.json();
         const task = data.task;
 
@@ -220,15 +227,26 @@ async function viewTaskDetails(taskId) {
         document.getElementById('detailId').textContent = task.id;
         document.getElementById('detailName').textContent = task.name;
         document.getElementById('detailStatus').innerHTML = `<span class="badge bg-${getStatusColor(task.status)}">${getStatusText(task.status)}</span>`;
-        document.getElementById('detailStyle').textContent = getStyleText(task.style);
-        document.getElementById('detailFormat').textContent = task.output_format;
-        document.getElementById('detailZoom').textContent = `${task.zoom_min} - ${task.zoom_max}`;
-        document.getElementById('detailTotal').textContent = task.total_tiles;
-        document.getElementById('detailDownloaded').textContent = task.downloaded_tiles;
-        document.getElementById('detailFailed').textContent = task.failed_tiles;
+        if (taskType === 'dem') {
+            document.getElementById('detailStyle').textContent = task.dataset || 'ASTGTM.003';
+            document.getElementById('detailFormat').textContent = '-';
+            document.getElementById('detailZoom').textContent = '-';
+            document.getElementById('detailTotal').textContent = task.total_files;
+            document.getElementById('detailDownloaded').textContent = task.downloaded_files;
+            document.getElementById('detailFailed').textContent = task.failed_files;
+        } else {
+            document.getElementById('detailStyle').textContent = getStyleText(task.style);
+            document.getElementById('detailFormat').textContent = task.output_format;
+            document.getElementById('detailZoom').textContent = `${task.zoom_min} - ${task.zoom_max}`;
+            document.getElementById('detailTotal').textContent = task.total_tiles;
+            document.getElementById('detailDownloaded').textContent = task.downloaded_tiles;
+            document.getElementById('detailFailed').textContent = task.failed_tiles;
+        }
 
-        const progress = task.total_tiles > 0
-            ? Math.round((task.downloaded_tiles / task.total_tiles) * 100)
+        const total = taskType === 'dem' ? (task.total_files || 0) : (task.total_tiles || 0);
+        const done = taskType === 'dem' ? (task.downloaded_files || 0) : (task.downloaded_tiles || 0);
+        const progress = total > 0
+            ? Math.round((done / total) * 100)
             : 0;
 
         const progressColor = progress >= 100 ? 'success' :
@@ -262,6 +280,16 @@ async function viewTaskDetails(taskId) {
             document.getElementById('detailErrorRow').style.display = 'none';
         }
 
+        // DEM: 地形切片入口
+        const terrainRow = document.getElementById('detailTerrainRow');
+        if (taskType === 'dem') {
+            terrainRow.style.display = 'block';
+            initTerrainDetailActions(taskId);
+            await refreshTerrainDetail(taskId);
+        } else {
+            terrainRow.style.display = 'none';
+        }
+
         // 显示模态框
         const modal = new bootstrap.Modal(document.getElementById('taskDetailModal'));
         modal.show();
@@ -270,15 +298,103 @@ async function viewTaskDetails(taskId) {
     }
 }
 
-async function deleteTask(taskId) {
+function initTerrainDetailActions(taskId) {
+    const startBtn = document.getElementById('detailTerrainStartBtn');
+    const refreshBtn = document.getElementById('detailTerrainRefreshBtn');
+
+    startBtn.onclick = async () => {
+        startBtn.disabled = true;
+        try {
+            const r = await fetch(`/api/terrain/dem/${taskId}/start`, { method: 'POST' });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) {
+                throw new Error(j.error || '启动切片失败');
+            }
+        } catch (e) {
+            alert(String(e.message || e));
+        } finally {
+            startBtn.disabled = false;
+            await refreshTerrainDetail(taskId);
+        }
+    };
+
+    refreshBtn.onclick = async () => {
+        refreshBtn.disabled = true;
+        try {
+            await refreshTerrainDetail(taskId);
+        } finally {
+            refreshBtn.disabled = false;
+        }
+    };
+}
+
+async function refreshTerrainDetail(taskId) {
+    const statusEl = document.getElementById('detailTerrainStatus');
+    const infoEl = document.getElementById('detailTerrainInfo');
+    const errRow = document.getElementById('detailTerrainErrorRow');
+    const errEl = document.getElementById('detailTerrainError');
+
+    errRow.style.display = 'none';
+    errEl.textContent = '';
+
+    // 固定 URL 约定（后端 terrain_static_bp）
+    const baseUrl = `${location.origin}/terrain/base/layer.json`;
+    const localUrl = `${location.origin}/terrain/dem/${taskId}/layer.json`;
+
+    try {
+        const r = await fetch(`/api/terrain/dem/${taskId}`);
+        const j = await r.json();
+        const job = j.job;
+
+        if (!job) {
+            statusEl.innerHTML = `<span class="badge bg-secondary">未开始</span>`;
+            infoEl.innerHTML = `
+                <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
+                <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
+            `;
+            return;
+        }
+
+        const status = job.status || 'unknown';
+        const color = status === 'completed' ? 'success'
+                    : status === 'running' ? 'primary'
+                    : status === 'failed' ? 'danger'
+                    : 'secondary';
+        statusEl.innerHTML = `<span class="badge bg-${color}">${status}</span>`;
+
+        const outDir = job.output_dir || '-';
+        const maxzoom = job.maxzoom ?? '-';
+        infoEl.innerHTML = `
+            <div>MaxZoom: ${maxzoom}</div>
+            <div>Out: ${outDir}</div>
+            <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
+            <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
+        `;
+
+        if (job.error_message) {
+            errEl.textContent = job.error_message;
+            errRow.style.display = 'block';
+        }
+    } catch (e) {
+        statusEl.innerHTML = `<span class="badge bg-danger">加载失败</span>`;
+        errEl.textContent = String(e.message || e);
+        errRow.style.display = 'block';
+        infoEl.innerHTML = `
+            <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
+            <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
+        `;
+    }
+}
+
+async function deleteTask(taskId, taskType = 'map') {
     if (!confirm('确定要删除这个任务吗？')) {
         return;
     }
 
     try {
-        const response = await fetch(`/api/tasks/${taskId}`, {
-            method: 'DELETE'
-        });
+        const response = taskType === 'dem'
+            ? await fetch(`/api/dem/tasks/${taskId}`, { method: 'DELETE' })
+            : await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
 
         if (response.ok) {
             alert('任务已删除');
