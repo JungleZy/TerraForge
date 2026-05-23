@@ -59,7 +59,52 @@ class TaskManager:
         self.active_tasks: Dict[int, threading.Thread] = {}
         self.stop_flags: Dict[int, threading.Event] = {}
 
+        # Any task still marked 'running' in the DB at this point must be an
+        # orphan from a previous process — no thread can have survived a restart.
+        # Demote them so the UI stops reporting them as live, and so their
+        # accumulated running time doesn't keep ticking against wall-clock.
+        self._recover_orphan_running_tasks()
+
         logger.info("TaskManager initialized")
+
+    def _recover_orphan_running_tasks(self) -> None:
+        """Mark any 'running' task as 'paused' on startup.
+
+        At __init__ time self.active_tasks is empty, so any tasks.status='running'
+        row is guaranteed to be a leftover from a crashed/restarted process.
+        We flip them to 'paused' (the existing pause_task semantics) and append a
+        'pause' time record so _update_total_running_time on a future resume
+        doesn't fold the dead-process gap into total_running_seconds.
+        We deliberately do NOT call _update_total_running_time here: we cannot
+        know when the process actually died, so adding wall-clock since the last
+        'start' would overstate the runtime.
+        """
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM tasks WHERE status = 'running'")
+            orphan_ids = [row['id'] for row in cursor.fetchall()]
+            if not orphan_ids:
+                return
+
+            now = datetime.now()
+            cursor.executemany(
+                "UPDATE tasks SET status = 'paused' WHERE id = ? AND status = 'running'",
+                [(tid,) for tid in orphan_ids],
+            )
+            cursor.executemany(
+                "INSERT INTO task_time_records (task_id, action, timestamp) VALUES (?, 'pause', ?)",
+                [(tid, now) for tid in orphan_ids],
+            )
+            conn.commit()
+            logger.warning(
+                f"Recovered {len(orphan_ids)} orphan 'running' task(s) to 'paused': {orphan_ids}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to recover orphan running tasks: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
 
     def _record_time_action(self, task_id: int, action: str):
         """
