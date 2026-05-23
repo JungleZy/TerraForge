@@ -35,6 +35,11 @@ hiddenimports += ['werkzeug', 'werkzeug.security']
 hiddenimports += ['jinja2', 'jinja2.ext']
 hiddenimports += ['click']
 hiddenimports += ['sqlite3']
+# certifi: aiohttp uses ssl.create_default_context on Windows. Some PyInstaller
+# bundles end up without a usable CA store, which manifests as silent SSL
+# handshake timeouts (the 30s-and-empty-error pattern in v0.0.1 reports).
+hiddenimports += ['certifi']
+datas += collect_data_files('certifi')
 
 # Binary files (GDAL libraries)
 binaries = []
