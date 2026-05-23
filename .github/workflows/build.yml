@@ -26,23 +26,24 @@ jobs:
 
     defaults:
       run:
-        # On Windows we install GDAL via conda-forge; using a login shell ensures
-        # the conda environment activated by setup-miniconda is on PATH for every
-        # subsequent step. bash -l works on all three runners.
+        # Windows and macOS both install GDAL via conda-forge (see GDAL step
+        # for the why). A login shell ensures the conda env activated by
+        # setup-miniconda is on PATH for every subsequent step. bash -l works
+        # on all three runners (Linux is unaffected — it uses system apt GDAL).
         shell: bash -l {0}
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Python (Linux/macOS)
-      if: runner.os != 'Windows'
+    - name: Set up Python (Linux)
+      if: runner.os == 'Linux'
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
 
-    - name: Set up Miniconda (Windows)
-      if: runner.os == 'Windows'
+    - name: Set up Miniconda (Windows/macOS)
+      if: runner.os != 'Linux'
       uses: conda-incubator/setup-miniconda@v3
       with:
         miniforge-version: latest
@@ -58,17 +59,15 @@ jobs:
         sudo apt-get install -y gdal-bin libgdal-dev
         echo "GDAL_VERSION=$(gdal-config --version)" >> $GITHUB_ENV
 
-    - name: Install GDAL (macOS)
-      if: runner.os == 'macOS'
+    - name: Install GDAL (Windows/macOS, conda-forge)
+      if: runner.os != 'Linux'
       run: |
-        brew install gdal
-        echo "GDAL_VERSION=$(gdal-config --version)" >> $GITHUB_ENV
-
-    - name: Install GDAL (Windows, conda-forge)
-      if: runner.os == 'Windows'
-      run: |
-        # choco no longer ships a 'gdal' package; conda-forge is the only
-        # reliable Windows GDAL on hosted runners as of 2026.
+        # Why conda-forge instead of brew/choco:
+        #  - Windows: choco gdal package is dead.
+        #  - macOS: macos-latest is Apple Silicon (arm64). brew ships arm64-only
+        #    gdal, but pip's GDAL sdist tries to build a universal2 wheel and
+        #    fails to link against the arm64-only libgdal. conda-forge ships a
+        #    matching arm64 prebuilt + Python binding, no pip compile needed.
         conda install -y -c conda-forge gdal=3.8 numpy
         GDAL_VERSION=$(python -c "from osgeo import gdal; print(gdal.__version__)")
         echo "GDAL_VERSION=$GDAL_VERSION" >> $GITHUB_ENV
@@ -77,15 +76,15 @@ jobs:
         GDAL_DATA=$(python -c "from osgeo import gdal; print(gdal.GetConfigOption('GDAL_DATA') or '')")
         echo "GDAL_DATA=$GDAL_DATA" >> $GITHUB_ENV
 
-    - name: Install Python dependencies (Linux/macOS)
-      if: runner.os != 'Windows'
+    - name: Install Python dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
         pip install -r requirements.txt
 
-    - name: Install Python dependencies (Windows)
-      if: runner.os == 'Windows'
+    - name: Install Python dependencies (Windows/macOS)
+      if: runner.os != 'Linux'
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
