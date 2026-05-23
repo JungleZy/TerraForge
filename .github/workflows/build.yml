@@ -112,10 +112,16 @@ jobs:
         7z a -tzip ${{ matrix.asset_name }} map-downloader/
 
     - name: Upload artifact
+      # Skip artifact upload on tag pushes — the Release step below already
+      # attaches the same file, and artifacts double-count against the account-
+      # level 500 MB Actions storage quota (the v0.0.1 build hit this).
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
         path: dist/${{ matrix.asset_name }}
+        # Short retention so manual-dispatch / branch builds don't accumulate.
+        retention-days: 7
 
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
