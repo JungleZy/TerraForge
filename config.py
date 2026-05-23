@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 class Config:
     """Application configuration class"""
 
+    APP_VERSION = '0.0.1'
+
     # Secret key for Flask session management
     SECRET_KEY = os.environ.get('SECRET_KEY')
     if not SECRET_KEY:
