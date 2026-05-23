@@ -30,6 +30,50 @@ class DemTaskManager:
         self.active_tasks: Dict[int, threading.Thread] = {}
         self.stop_flags: Dict[int, threading.Event] = {}
 
+        # Same orphan-recovery rationale as TaskManager: nothing in active_tasks
+        # at __init__ time, so any DB row still 'running' is from a dead process.
+        self._recover_orphan_running_tasks()
+
+    def _recover_orphan_running_tasks(self) -> None:
+        """Demote leftover 'running' rows in dem_tasks and dem_terrain_jobs.
+
+        - dem_tasks: flipped to 'paused' (supports resume_task)
+        - dem_terrain_jobs: flipped to 'failed' (no pause/resume model — terrain
+          tiling is a one-shot build_terrain call, must restart from scratch)
+        """
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM dem_tasks WHERE status = 'running'")
+            task_ids = [row['id'] for row in cur.fetchall()]
+            if task_ids:
+                cur.executemany(
+                    "UPDATE dem_tasks SET status = 'paused' WHERE id = ? AND status = 'running'",
+                    [(tid,) for tid in task_ids],
+                )
+
+            now = datetime.now()
+            cur.execute("SELECT id FROM dem_terrain_jobs WHERE status = 'running'")
+            job_ids = [row['id'] for row in cur.fetchall()]
+            if job_ids:
+                cur.executemany(
+                    "UPDATE dem_terrain_jobs SET status = 'failed', completed_at = ?, "
+                    "error_message = 'Process was interrupted before completion; restart terrain tiling' "
+                    "WHERE id = ? AND status = 'running'",
+                    [(now, jid) for jid in job_ids],
+                )
+
+            if task_ids or job_ids:
+                conn.commit()
+                logger.warning(
+                    f"Recovered orphans — dem_tasks paused: {task_ids}, dem_terrain_jobs failed: {job_ids}"
+                )
+        except Exception as e:
+            logger.error(f"Failed to recover DEM orphan tasks: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
     def create_task(self, params: dict) -> int:
         # NOTE: Keep signature compatible-ish with existing API patterns (dict in, id out).
         name = params.get("name") or "DEM Task"
