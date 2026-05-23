@@ -41,9 +41,24 @@ binaries = []
 
 # Platform-specific GDAL handling
 if sys.platform == 'win32':
-    # Windows GDAL binaries
-    gdal_data = os.environ.get('GDAL_DATA', '')
-    if gdal_data:
+    # Windows GDAL binaries — prefer GDAL_DATA from env (CI sets it after
+    # installing gdal via conda-forge). Fall back to discovering the data dir
+    # from the osgeo package layout, so local builds without the env var work.
+    gdal_data = os.environ.get('GDAL_DATA', '').strip()
+    if not (gdal_data and os.path.isdir(gdal_data)):
+        try:
+            import osgeo
+            osgeo_root = os.path.dirname(osgeo.__file__)
+            for cand in (
+                os.path.join(osgeo_root, 'data', 'gdal'),
+                os.path.join(os.path.dirname(sys.executable), 'Library', 'share', 'gdal'),
+            ):
+                if os.path.isdir(cand):
+                    gdal_data = cand
+                    break
+        except ImportError:
+            pass
+    if gdal_data and os.path.isdir(gdal_data):
         datas += [(gdal_data, 'gdal-data')]
 elif sys.platform == 'darwin':
     # macOS GDAL binaries

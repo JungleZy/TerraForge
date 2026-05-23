@@ -24,77 +24,92 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
+    defaults:
+      run:
+        # On Windows we install GDAL via conda-forge; using a login shell ensures
+        # the conda environment activated by setup-miniconda is on PATH for every
+        # subsequent step. bash -l works on all three runners.
+        shell: bash -l {0}
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Set up Python (Linux/macOS)
+      if: runner.os != 'Windows'
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
+
+    - name: Set up Miniconda (Windows)
+      if: runner.os == 'Windows'
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        miniforge-version: latest
+        python-version: '3.9'
+        activate-environment: build
+        channels: conda-forge
+        channel-priority: strict
 
     - name: Install GDAL (Ubuntu)
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y gdal-bin libgdal-dev
-        export GDAL_VERSION=$(gdal-config --version)
-        echo "GDAL_VERSION=$GDAL_VERSION" >> $GITHUB_ENV
+        echo "GDAL_VERSION=$(gdal-config --version)" >> $GITHUB_ENV
 
     - name: Install GDAL (macOS)
       if: runner.os == 'macOS'
       run: |
         brew install gdal
-        export GDAL_VERSION=$(gdal-config --version)
+        echo "GDAL_VERSION=$(gdal-config --version)" >> $GITHUB_ENV
+
+    - name: Install GDAL (Windows, conda-forge)
+      if: runner.os == 'Windows'
+      run: |
+        # choco no longer ships a 'gdal' package; conda-forge is the only
+        # reliable Windows GDAL on hosted runners as of 2026.
+        conda install -y -c conda-forge gdal=3.8 numpy
+        GDAL_VERSION=$(python -c "from osgeo import gdal; print(gdal.__version__)")
         echo "GDAL_VERSION=$GDAL_VERSION" >> $GITHUB_ENV
+        # conda's gdal sets GDAL_DATA via activate scripts; surface it here so
+        # build.spec can pick it up in a fresh sub-shell.
+        GDAL_DATA=$(python -c "from osgeo import gdal; print(gdal.GetConfigOption('GDAL_DATA') or '')")
+        echo "GDAL_DATA=$GDAL_DATA" >> $GITHUB_ENV
 
-    - name: Install GDAL (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        $ErrorActionPreference = "Continue"
-        choco install gdal -y
-        $env:GDAL_VERSION = "3.8.4"
-        echo "GDAL_VERSION=$env:GDAL_VERSION" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-    - name: Set GDAL environment (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        $gdalPath = "C:\Program Files\GDAL"
-        if (Test-Path $gdalPath) {
-          echo "$gdalPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          $env:GDAL_DATA = "$gdalPath\gdal-data"
-          echo "GDAL_DATA=$env:GDAL_DATA" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-        }
-
-    - name: Install Python dependencies
+    - name: Install Python dependencies (Linux/macOS)
+      if: runner.os != 'Windows'
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
         pip install -r requirements.txt
 
-    - name: Build with PyInstaller (Linux/macOS)
-      if: runner.os != 'Windows'
-      run: |
-        pyinstaller build.spec
-
-    - name: Build with PyInstaller (Windows)
+    - name: Install Python dependencies (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller build.spec
+        python -m pip install --upgrade pip
+        pip install pyinstaller
+        # GDAL already comes from conda; pip-installing it again would try to
+        # build from sdist and fail. Strip the GDAL pin and install the rest.
+        grep -viE '^[[:space:]]*gdal([[:space:]=<>!~]|$)' requirements.txt > /tmp/req.txt
+        pip install -r /tmp/req.txt
+
+    - name: Build with PyInstaller
+      run: pyinstaller build.spec
 
     - name: Package application (Linux/macOS)
       if: runner.os != 'Windows'
       run: |
         cd dist
         tar -czf ${{ matrix.asset_name }} map-downloader/
-        cd ..
 
     - name: Package application (Windows)
       if: runner.os == 'Windows'
       run: |
         cd dist
-        Compress-Archive -Path map-downloader/* -DestinationPath ${{ matrix.asset_name }}
-        cd ..
+        # 7z is preinstalled on windows-latest and works from bash without
+        # PowerShell quoting headaches.
+        7z a -tzip ${{ matrix.asset_name }} map-downloader/
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
