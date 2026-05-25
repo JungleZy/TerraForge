@@ -109,7 +109,7 @@ class DemDownloadEngine:
 
         semaphore = asyncio.Semaphore(concurrent_downloads)
 
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector, cookie_jar=jar) as session:
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector, cookie_jar=jar, trust_env=True) as session:
             async def one(granule: str):
                 async with semaphore:
                     if stop_flag and stop_flag.is_set():

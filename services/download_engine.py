@@ -323,16 +323,10 @@ class DownloadEngine:
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_error = e
-                import traceback
                 logger.warning(
                     f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y} "
                     f"(attempt {attempt + 1}/{max_retries + 1}): "
-                    f"type={type(e).__name__} repr={e!r} "
-                    f"cause={getattr(e, '__cause__', None)!r}"
-                )
-                logger.warning(
-                    f"Traceback for tile {tile.zoom}/{tile.x}/{tile.y}:\n"
-                    + traceback.format_exc()
+                    f"{type(e).__name__}: {e!r}"
                 )
 
                 # If not the last attempt, wait with exponential backoff
@@ -436,10 +430,8 @@ class DownloadEngine:
             }
 
         except Exception as e:
-            import traceback
             error_msg = f"{type(e).__name__}: {e!r}"
             logger.error(f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y}: {error_msg}")
-            logger.error(traceback.format_exc())
 
             # Report failure
             if progress_callback:
@@ -487,7 +479,11 @@ class DownloadEngine:
         # Create aiohttp session with connection pooling
         connector = aiohttp.TCPConnector(limit=concurrent_downloads, limit_per_host=TILE_SERVER_COUNT)
 
-        async with aiohttp.ClientSession(connector=connector) as session:
+        # trust_env=True lets aiohttp read HTTP_PROXY/HTTPS_PROXY from env.
+        # app.py's apply_system_proxy() populates those from the Windows
+        # registry / macOS scutil on startup, so this is what makes the
+        # packaged exe usable from behind a Clash/V2Ray system proxy.
+        async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
 
             async def download_with_semaphore(tile: Tile):
                 """Download a single tile with semaphore control"""

@@ -34,6 +34,7 @@ from services.task_manager import TaskManager
 from routes.dem_api import init_dem_task_manager
 from routes.terrain_api import init_terrain_dem_task_manager
 from services.dem_task_manager import DemTaskManager
+from services.system_proxy import apply_system_proxy
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +42,11 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Pick up Windows/macOS system proxy (read from registry / scutil) and export
+# it into HTTP_PROXY/HTTPS_PROXY so aiohttp(trust_env=True) can use it. Must
+# run before TaskManager/DemTaskManager are constructed.
+apply_system_proxy()
 
 # Create Flask application
 app = Flask(__name__, template_folder=template_folder, static_folder=static_folder)
