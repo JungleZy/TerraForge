@@ -269,7 +269,8 @@ class DownloadEngine:
         self,
         tile: Tile,
         style: str,
-        session: aiohttp.ClientSession
+        session: aiohttp.ClientSession,
+        proxy_url: Optional[str] = None
     ) -> bytes:
         """
         Download a single tile with retry logic and server rotation
@@ -295,6 +296,7 @@ class DownloadEngine:
         # Get configuration values
         max_retries = int(self.config_manager.get('max_retries', '3'))
         request_timeout = int(self.config_manager.get('request_timeout', '30'))
+        proxy_url = proxy_url if proxy_url is not None else (self.config_manager.get('proxy_url', '') or '')
 
         last_error = None
 
@@ -310,7 +312,11 @@ class DownloadEngine:
                 )
 
                 # Download with timeout
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=request_timeout)) as response:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=request_timeout),
+                    proxy=proxy_url or None,
+                ) as response:
                     response.raise_for_status()
                     data = await response.read()
 
@@ -346,7 +352,8 @@ class DownloadEngine:
         style: str,
         session: aiohttp.ClientSession,
         cache_enabled: bool,
-        progress_callback=None
+        progress_callback=None,
+        proxy_url: str = ''
     ) -> Dict[str, Any]:
         """
         Download a single tile with cache check and progress reporting
@@ -399,25 +406,28 @@ class DownloadEngine:
                     )
 
             # Download tile
-            data = await self.download_tile(tile, style, session)
+            data = await self.download_tile(tile, style, session, proxy_url=proxy_url)
 
-            # Save to cache using async file I/O
-            # Wrap cache write in try-except to prevent cache failures from failing the download
-            try:
-                cache_path = self._get_cache_path(tile, style)
-                await asyncio.to_thread(lambda: cache_path.parent.mkdir(parents=True, exist_ok=True))
+            if cache_enabled:
+                try:
+                    cache_path = self._get_cache_path(tile, style)
+                    await asyncio.to_thread(lambda: cache_path.parent.mkdir(parents=True, exist_ok=True))
+                    part_path = cache_path.with_name(f"{cache_path.name}.part.{os.getpid()}.{id(tile)}")
 
-                async with aiofiles.open(cache_path, 'wb') as f:
-                    await f.write(data)
+                    try:
+                        async with aiofiles.open(part_path, 'wb') as f:
+                            await f.write(data)
+                        await asyncio.to_thread(lambda: part_path.replace(cache_path))
+                    finally:
+                        if part_path.exists():
+                            await asyncio.to_thread(part_path.unlink)
 
-                logger.debug(f"Saved tile {tile.zoom}/{tile.x}/{tile.y} to cache")
-            except Exception as cache_write_error:
-                # Cache write failed (disk full, permissions, etc.)
-                # Log warning but still report download as successful since data was downloaded
-                logger.warning(
-                    f"Failed to write tile {tile.zoom}/{tile.x}/{tile.y} to cache: {cache_write_error}. "
-                    f"Download was successful but tile will not be cached."
-                )
+                    logger.debug(f"Saved tile {tile.zoom}/{tile.x}/{tile.y} to cache")
+                except Exception as cache_write_error:
+                    logger.warning(
+                        f"Failed to write tile {tile.zoom}/{tile.x}/{tile.y} to cache: {cache_write_error}. "
+                        f"Download was successful but tile will not be cached."
+                    )
 
             # Report success
             if progress_callback:
@@ -467,6 +477,8 @@ class DownloadEngine:
         # Get configuration values
         concurrent_downloads = int(self.config_manager.get('concurrent_downloads', '10'))
         request_timeout = int(self.config_manager.get('request_timeout', '30'))
+        cache_enabled = (self.config_manager.get('cache_enabled', 'true') or 'true').lower() == 'true'
+        proxy_url = self.config_manager.get('proxy_url', '') or ''
 
         logger.info(
             f"Starting batch download: {len(tiles)} tiles, "
@@ -492,8 +504,9 @@ class DownloadEngine:
                         tile=tile,
                         style=style,
                         session=session,
-                        cache_enabled=True,
-                        progress_callback=progress_callback
+                        cache_enabled=cache_enabled,
+                        progress_callback=progress_callback,
+                        proxy_url=proxy_url
                     )
 
             # Create download tasks for all tiles

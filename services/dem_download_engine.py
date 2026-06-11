@@ -36,13 +36,19 @@ class DemDownloadEngine:
 
     @staticmethod
     def _link_or_copy(src: Path, dst: Path) -> None:
-        # Hard link first (zero-copy, instant). Fall back to a full copy when
-        # src and dst live on different filesystems (EXDEV) or when the FS
-        # doesn't support hard links.
+        # Hard link first (zero-copy, instant). Fall back to a same-directory
+        # temp copy + atomic replace so other tasks never promote a half file.
         try:
             os.link(src, dst)
         except OSError:
-            shutil.copyfile(src, dst)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(f"{dst.name}.part.{os.getpid()}.{id(dst)}")
+            try:
+                shutil.copyfile(src, tmp)
+                tmp.replace(dst)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
 
     def _try_promote_from_cache(self, granule: str, dest: Path, cache_dir: Optional[Path]) -> bool:
         """Promote a cached granule into the task's output dir.

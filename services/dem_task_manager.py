@@ -22,6 +22,12 @@ from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 logger = logging.getLogger(__name__)
 
 
+def _status_count_deltas(old_status: Optional[str], new_status: str) -> tuple[int, int]:
+    downloaded_delta = int(new_status == "completed") - int(old_status == "completed")
+    failed_delta = int(new_status == "failed") - int(old_status == "failed")
+    return downloaded_delta, failed_delta
+
+
 class DemTaskManager:
     def __init__(self, socketio=None):
         self.socketio = socketio
@@ -29,6 +35,7 @@ class DemTaskManager:
         self.engine = DemDownloadEngine()
         self.active_tasks: Dict[int, threading.Thread] = {}
         self.stop_flags: Dict[int, threading.Event] = {}
+        self._state_lock = threading.Lock()
 
         # Same orphan-recovery rationale as TaskManager: nothing in active_tasks
         # at __init__ time, so any DB row still 'running' is from a dead process.
@@ -133,36 +140,49 @@ class DemTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT status FROM dem_tasks WHERE id = ?", (task_id,))
-            row = cur.fetchone()
-            if not row:
-                raise ValueError(f"DEM task {task_id} not found")
-            if row["status"] not in ("pending", "paused"):
-                raise ValueError(f"Cannot start DEM task {task_id} with status '{row['status']}'")
+            with self._state_lock:
+                active_thread = self.active_tasks.get(task_id)
+                if active_thread and active_thread.is_alive():
+                    raise ValueError(f"DEM task {task_id} is already running")
 
-            cur.execute(
-                "UPDATE dem_tasks SET status='running', started_at=? WHERE id=?",
-                (datetime.now(), task_id),
-            )
-            conn.commit()
+                cur.execute("SELECT status FROM dem_tasks WHERE id = ?", (task_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError(f"DEM task {task_id} not found")
+                if row["status"] not in ("pending", "paused"):
+                    raise ValueError(f"Cannot start DEM task {task_id} with status '{row['status']}'")
 
-            stop_flag = threading.Event()
-            self.stop_flags[task_id] = stop_flag
+                cur.execute(
+                    "UPDATE dem_tasks SET status='running', started_at=? WHERE id=? AND status IN ('pending','paused')",
+                    (datetime.now(), task_id),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError(f"DEM task {task_id} could not be started because its status changed")
+                conn.commit()
 
-            th = threading.Thread(target=self._run_task, args=(task_id,), daemon=True, name=f"DemTask-{task_id}")
-            self.active_tasks[task_id] = th
+                stop_flag = threading.Event()
+                self.stop_flags[task_id] = stop_flag
+                th = threading.Thread(target=self._run_task, args=(task_id, stop_flag), daemon=True, name=f"DemTask-{task_id}")
+                self.active_tasks[task_id] = th
             th.start()
         finally:
             conn.close()
 
     def pause_task(self, task_id: int) -> None:
-        if task_id in self.stop_flags:
-            self.stop_flags[task_id].set()
         conn = get_connection()
         try:
             cur = conn.cursor()
             cur.execute("UPDATE dem_tasks SET status='paused' WHERE id=? AND status='running'", (task_id,))
+            if cur.rowcount == 0:
+                cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError(f"DEM task {task_id} not found")
+                raise ValueError(f"Cannot pause DEM task {task_id} with status '{row['status']}'")
             conn.commit()
+            with self._state_lock:
+                if task_id in self.stop_flags:
+                    self.stop_flags[task_id].set()
         finally:
             conn.close()
 
@@ -170,13 +190,19 @@ class DemTaskManager:
         self.start_task(task_id)
 
     def cancel_task(self, task_id: int) -> None:
-        if task_id in self.stop_flags:
-            self.stop_flags[task_id].set()
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE dem_tasks SET status='cancelled' WHERE id=?", (task_id,))
+            cur.execute("UPDATE dem_tasks SET status='cancelled' WHERE id=? AND status!='cancelled'", (task_id,))
+            if cur.rowcount == 0:
+                cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError(f"DEM task {task_id} not found")
             conn.commit()
+            with self._state_lock:
+                if task_id in self.stop_flags:
+                    self.stop_flags[task_id].set()
         finally:
             conn.close()
 
@@ -209,6 +235,11 @@ class DemTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
+            cur.execute("SELECT status FROM dem_terrain_jobs WHERE task_id=?", (task_id,))
+            existing_job = cur.fetchone()
+            if existing_job and existing_job["status"] == "running":
+                raise ValueError(f"DEM tiling job for task {task_id} is already running")
+
             cur.execute(
                 """
                 INSERT INTO dem_terrain_jobs (
@@ -307,16 +338,19 @@ class DemTaskManager:
         finally:
             conn.close()
 
-    def _run_task(self, task_id: int) -> None:
+    def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
         try:
-            asyncio.run(self._execute(task_id))
+            asyncio.run(self._execute(task_id, stop_flag))
         except Exception as e:
             logger.error(f"DEM task {task_id} thread failed: {e}")
         finally:
-            self.active_tasks.pop(task_id, None)
-            self.stop_flags.pop(task_id, None)
+            with self._state_lock:
+                if self.active_tasks.get(task_id) is threading.current_thread():
+                    self.active_tasks.pop(task_id, None)
+                if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
+                    self.stop_flags.pop(task_id, None)
 
-    async def _execute(self, task_id: int) -> None:
+    async def _execute(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -339,7 +373,7 @@ class DemTaskManager:
             granules = [r["granule_id"] for r in cur.fetchall()]
 
             stop_ev = asyncio.Event()
-            if task_id in self.stop_flags and self.stop_flags[task_id].is_set():
+            if stop_flag and stop_flag.is_set():
                 stop_ev.set()
 
             async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
@@ -348,16 +382,30 @@ class DemTaskManager:
                 try:
                     c = tile_conn.cursor()
                     c.execute(
+                        "SELECT status FROM dem_files WHERE task_id=? AND granule_id=?",
+                        (task_id, granule_id),
+                    )
+                    existing = c.fetchone()
+                    old_status = existing["status"] if existing else None
+
+                    c.execute(
                         """
                         UPDATE dem_files SET status=?, error_message=?, size_bytes=?, local_path=?
                         WHERE task_id=? AND granule_id=?
                         """,
                         (status, error, size_bytes, str(output_dir / granule_id), task_id, granule_id),
                     )
-                    if status == "completed":
-                        c.execute("UPDATE dem_tasks SET downloaded_files = downloaded_files + 1 WHERE id=?", (task_id,))
-                    elif status == "failed":
-                        c.execute("UPDATE dem_tasks SET failed_files = failed_files + 1 WHERE id=?", (task_id,))
+                    downloaded_delta, failed_delta = _status_count_deltas(old_status, status)
+                    if downloaded_delta or failed_delta:
+                        c.execute(
+                            """
+                            UPDATE dem_tasks
+                            SET downloaded_files = MAX(downloaded_files + ?, 0),
+                                failed_files = MAX(failed_files + ?, 0)
+                            WHERE id=?
+                            """,
+                            (downloaded_delta, failed_delta, task_id),
+                        )
                     tile_conn.commit()
 
                     c.execute("SELECT * FROM dem_tasks WHERE id=?", (task_id,))
@@ -372,7 +420,7 @@ class DemTaskManager:
             # Wire stop flag polling: map threading.Event -> asyncio.Event
             async def stop_watcher():
                 while True:
-                    if task_id in self.stop_flags and self.stop_flags[task_id].is_set():
+                    if stop_flag and stop_flag.is_set():
                         stop_ev.set()
                         return
                     await asyncio.sleep(0.2)
@@ -392,20 +440,50 @@ class DemTaskManager:
             if stop_ev.is_set():
                 return
 
-            cur.execute("UPDATE dem_tasks SET status='completed', completed_at=? WHERE id=?", (datetime.now(), task_id))
+            cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
+            current = cur.fetchone()
+            if not current or current["status"] in ("cancelled", "paused"):
+                return
+
+            cur.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+                FROM dem_files
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            )
+            counts = cur.fetchone()
+            failed_count = counts["failed_count"] or 0
+            pending_count = counts["pending_count"] or 0
+
+            if failed_count > 0 or pending_count > 0:
+                error_message = f"{failed_count} DEM file(s) failed, {pending_count} DEM file(s) pending"
+                cur.execute(
+                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status='running'",
+                    (error_message, datetime.now(), task_id),
+                )
+                conn.commit()
+                if cur.rowcount and self.socketio:
+                    self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "dem", "status": "failed", "error_message": error_message})
+                return
+
+            cur.execute("UPDATE dem_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'", (datetime.now(), task_id))
             conn.commit()
-            if self.socketio:
+            if cur.rowcount and self.socketio:
                 self.socketio.emit("task_completed", {"task_id": task_id, "task_type": "dem", "status": "completed"})
 
         except Exception as e:
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=?",
+                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled', 'paused')",
                     (str(e), datetime.now(), task_id),
                 )
                 conn.commit()
-                if self.socketio:
+                if cur.rowcount and self.socketio:
                     self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "dem", "status": "failed", "error_message": str(e)})
             except Exception as e2:
                 logger.error(f"Failed to mark DEM task {task_id} as failed: {e2}")

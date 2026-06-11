@@ -58,6 +58,7 @@ class TaskManager:
         # Track active tasks and their stop flags
         self.active_tasks: Dict[int, threading.Thread] = {}
         self.stop_flags: Dict[int, threading.Event] = {}
+        self._state_lock = threading.Lock()
 
         # Any task still marked 'running' in the DB at this point must be an
         # orphan from a previous process — no thread can have survived a restart.
@@ -105,6 +106,16 @@ class TaskManager:
             conn.rollback()
         finally:
             conn.close()
+
+    def _is_stop_requested(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> bool:
+        flag = stop_flag or self.stop_flags.get(task_id)
+        return bool(flag and flag.is_set())
+
+    @staticmethod
+    def _status_count_deltas(old_status: Optional[str], new_status: str) -> tuple[int, int]:
+        downloaded_delta = int(new_status == 'completed') - int(old_status == 'completed')
+        failed_delta = int(new_status == 'failed') - int(old_status == 'failed')
+        return downloaded_delta, failed_delta
 
     def _record_time_action(self, task_id: int, action: str):
         """
@@ -324,14 +335,6 @@ class TaskManager:
         Raises:
             ValueError: If task status is not pending or paused
             sqlite3.Error: If database operation fails
-
-        Process:
-            1. Validate task status (must be pending or paused)
-            2. Update status to 'running' and set started_at
-            3. Create stop_flag (threading.Event)
-            4. Start background thread running _run_task
-            5. Track in active_tasks dict
-            6. Emit status update via socketio
         """
         logger.info(f"Starting task {task_id}")
 
@@ -339,43 +342,50 @@ class TaskManager:
         try:
             cursor = conn.cursor()
 
-            # Get task status
-            cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
-            row = cursor.fetchone()
+            with self._state_lock:
+                active_thread = self.active_tasks.get(task_id)
+                if active_thread and active_thread.is_alive():
+                    raise ValueError(f"Task {task_id} is already running")
 
-            if not row:
-                raise ValueError(f"Task {task_id} not found")
+                cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Task {task_id} not found")
 
-            status = row['status']
+                status = row['status']
+                if status not in ['pending', 'paused']:
+                    raise ValueError(
+                        f"Cannot start task {task_id} with status '{status}'. "
+                        f"Task must be 'pending' or 'paused'."
+                    )
 
-            # Validate status
-            if status not in ['pending', 'paused']:
-                raise ValueError(
-                    f"Cannot start task {task_id} with status '{status}'. "
-                    f"Task must be 'pending' or 'paused'."
+                cursor.execute('''
+                    UPDATE tasks
+                    SET status = 'running', started_at = ?
+                    WHERE id = ? AND status IN ('pending', 'paused')
+                ''', (datetime.now(), task_id))
+                if cursor.rowcount != 1:
+                    raise ValueError(f"Task {task_id} could not be started because its status changed")
+
+                conn.commit()
+
+                stop_flag = threading.Event()
+                self.stop_flags[task_id] = stop_flag
+                thread = threading.Thread(
+                    target=self._run_task,
+                    args=(task_id, stop_flag),
+                    daemon=True,
+                    name=f"Task-{task_id}"
                 )
+                self.active_tasks[task_id] = thread
 
-            # Update task status to running
-            cursor.execute('''
-                UPDATE tasks
-                SET status = 'running', started_at = ?
-                WHERE id = ?
-            ''', (datetime.now(), task_id))
-
-            conn.commit()
-
-            # Record time action (start or resume)
             action = 'start' if status == 'pending' else 'resume'
             self._record_time_action(task_id, action)
 
-            # Get updated task info and emit via socketio
             cursor.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
             task_row = cursor.fetchone()
-
             if task_row and self.socketio:
-                # Get current running time
                 total_running_seconds = self.get_current_running_time(task_id)
-
                 self.socketio.emit('task_progress', {
                     'task_id': task_id,
                     'id': task_id,
@@ -398,20 +408,7 @@ class TaskManager:
                     'total_running_seconds': total_running_seconds
                 })
 
-            # Create stop flag for this task
-            stop_flag = threading.Event()
-            self.stop_flags[task_id] = stop_flag
-
-            # Start background thread
-            thread = threading.Thread(
-                target=self._run_task,
-                args=(task_id,),
-                daemon=True,
-                name=f"Task-{task_id}"
-            )
-            self.active_tasks[task_id] = thread
             thread.start()
-
             logger.info(f"Task {task_id} started in background thread")
 
         except Exception as e:
@@ -439,12 +436,6 @@ class TaskManager:
         """
         logger.info(f"Pausing task {task_id}")
 
-        # Set stop flag
-        if task_id in self.stop_flags:
-            self.stop_flags[task_id].set()
-            logger.debug(f"Stop flag set for task {task_id}")
-
-        # Update database status
         conn = get_connection()
         try:
             cursor = conn.cursor()
@@ -456,14 +447,20 @@ class TaskManager:
             ''', (task_id,))
 
             if cursor.rowcount == 0:
-                logger.warning(f"Task {task_id} was not running, cannot pause")
+                cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Task {task_id} not found")
+                raise ValueError(f"Cannot pause task {task_id} with status '{row['status']}'")
 
             conn.commit()
 
-            # Update total running time before pausing
-            self._update_total_running_time(task_id)
+            with self._state_lock:
+                if task_id in self.stop_flags:
+                    self.stop_flags[task_id].set()
+                    logger.debug(f"Stop flag set for task {task_id}")
 
-            # Record pause action
+            self._update_total_running_time(task_id)
             self._record_time_action(task_id, 'pause')
 
             logger.info(f"Task {task_id} paused")
@@ -538,12 +535,6 @@ class TaskManager:
         """
         logger.info(f"Cancelling task {task_id}")
 
-        # Set stop flag
-        if task_id in self.stop_flags:
-            self.stop_flags[task_id].set()
-            logger.debug(f"Stop flag set for task {task_id}")
-
-        # Update database status
         conn = get_connection()
         try:
             cursor = conn.cursor()
@@ -551,10 +542,22 @@ class TaskManager:
             cursor.execute('''
                 UPDATE tasks
                 SET status = 'cancelled'
-                WHERE id = ?
+                WHERE id = ? AND status != 'cancelled'
             ''', (task_id,))
 
+            if cursor.rowcount == 0:
+                cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Task {task_id} not found")
+
             conn.commit()
+
+            with self._state_lock:
+                if task_id in self.stop_flags:
+                    self.stop_flags[task_id].set()
+                    logger.debug(f"Stop flag set for task {task_id}")
+
             logger.info(f"Task {task_id} cancelled")
 
         except Exception as e:
@@ -668,7 +671,7 @@ class TaskManager:
         finally:
             conn.close()
 
-    def _run_task(self, task_id: int):
+    def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None):
         """
         Wrapper for running task in background thread
 
@@ -680,18 +683,18 @@ class TaskManager:
         """
         logger.info(f"Task {task_id} thread started")
         try:
-            asyncio.run(self._execute_task(task_id))
+            asyncio.run(self._execute_task(task_id, stop_flag))
         except Exception as e:
             logger.error(f"Task {task_id} thread failed: {e}")
         finally:
-            # Clean up task from active tasks
-            if task_id in self.active_tasks:
-                del self.active_tasks[task_id]
-            if task_id in self.stop_flags:
-                del self.stop_flags[task_id]
+            with self._state_lock:
+                if self.active_tasks.get(task_id) is threading.current_thread():
+                    self.active_tasks.pop(task_id, None)
+                if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
+                    self.stop_flags.pop(task_id, None)
             logger.info(f"Task {task_id} thread finished")
 
-    async def _execute_task(self, task_id: int):
+    async def _execute_task(self, task_id: int, stop_flag: Optional[threading.Event] = None):
         """
         Execute download task asynchronously
 
@@ -773,15 +776,20 @@ class TaskManager:
             async def progress_callback(tile: Tile, status: str, error: Optional[str]):
                 """Update database and emit socketio event for tile progress"""
                 try:
-                    # Check stop flag
-                    if task_id in self.stop_flags and self.stop_flags[task_id].is_set():
+                    if self._is_stop_requested(task_id, stop_flag):
                         logger.info(f"Task {task_id}: Stop flag detected in progress callback")
                         return
 
-                    # Update tile status in database
                     tile_conn = get_connection()
                     try:
                         tile_cursor = tile_conn.cursor()
+
+                        tile_cursor.execute('''
+                            SELECT status FROM task_tiles
+                            WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
+                        ''', (tile.task_id, tile.zoom, tile.x, tile.y))
+                        existing = tile_cursor.fetchone()
+                        old_status = existing['status'] if existing else None
 
                         tile_cursor.execute('''
                             UPDATE task_tiles
@@ -789,19 +797,14 @@ class TaskManager:
                             WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
                         ''', (status, error, tile.task_id, tile.zoom, tile.x, tile.y))
 
-                        # Update task counters
-                        if status == 'completed':
+                        downloaded_delta, failed_delta = self._status_count_deltas(old_status, status)
+                        if downloaded_delta or failed_delta:
                             tile_cursor.execute('''
                                 UPDATE tasks
-                                SET downloaded_tiles = downloaded_tiles + 1
+                                SET downloaded_tiles = MAX(downloaded_tiles + ?, 0),
+                                    failed_tiles = MAX(failed_tiles + ?, 0)
                                 WHERE id = ?
-                            ''', (task_id,))
-                        elif status == 'failed':
-                            tile_cursor.execute('''
-                                UPDATE tasks
-                                SET failed_tiles = failed_tiles + 1
-                                WHERE id = ?
-                            ''', (task_id,))
+                            ''', (downloaded_delta, failed_delta, task_id))
 
                         tile_conn.commit()
 
@@ -847,7 +850,7 @@ class TaskManager:
             # Download tiles
             if len(tiles) > 0:
                 # Check stop flag before downloading
-                if task_id in self.stop_flags and self.stop_flags[task_id].is_set():
+                if self._is_stop_requested(task_id, stop_flag):
                     logger.info(f"Task {task_id}: Stop flag detected before download")
                     return
 
@@ -863,7 +866,7 @@ class TaskManager:
                 logger.info(f"Task {task_id}: Tile download completed")
 
             # Check stop flag before stitching
-            if task_id in self.stop_flags and self.stop_flags[task_id].is_set():
+            if self._is_stop_requested(task_id, stop_flag):
                 logger.info(f"Task {task_id}: Stop flag detected before stitching")
                 return
 
@@ -898,7 +901,7 @@ class TaskManager:
 
                 for zoom in zoom_levels:
                     # Check stop flag before each zoom level
-                    if task_id in self.stop_flags and self.stop_flags[task_id].is_set():
+                    if self._is_stop_requested(task_id, stop_flag):
                         logger.info(f"Task {task_id}: Stop flag detected during stitching")
                         return
 
@@ -979,32 +982,63 @@ class TaskManager:
 
                 logger.info(f"Task {task_id}: Copied {copied_count}/{len(completed_tile_rows)} tiles to {output_base}")
 
-            # Check stop flag before marking as completed
-            if task_id in self.stop_flags and self.stop_flags[task_id].is_set():
+            if self._is_stop_requested(task_id, stop_flag):
                 logger.info(f"Task {task_id}: Stop flag detected, not marking as completed")
                 return
 
-            # Update task status to completed
+            cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
+            current_row = cursor.fetchone()
+            if not current_row or current_row['status'] in ('cancelled', 'paused'):
+                logger.info(f"Task {task_id}: Current status prevents completion")
+                return
+
+            cursor.execute('''
+                SELECT
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+                FROM task_tiles
+                WHERE task_id = ?
+            ''', (task_id,))
+            counts = cursor.fetchone()
+            failed_count = counts['failed_count'] or 0
+            pending_count = counts['pending_count'] or 0
+
+            if failed_count > 0 or pending_count > 0:
+                error_message = f"{failed_count} tile(s) failed, {pending_count} tile(s) pending"
+                cursor.execute('''
+                    UPDATE tasks
+                    SET status = 'failed', error_message = ?, completed_at = ?
+                    WHERE id = ? AND status = 'running'
+                ''', (error_message, datetime.now(), task_id))
+                conn.commit()
+                logger.warning(f"Task {task_id}: {error_message}")
+                if cursor.rowcount and self.socketio:
+                    self.socketio.emit('task_failed', {
+                        'task_id': task_id,
+                        'status': 'failed',
+                        'error_message': error_message
+                    })
+                return
+
             cursor.execute('''
                 UPDATE tasks
                 SET status = 'completed', completed_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status = 'running'
             ''', (datetime.now(), task_id))
 
             conn.commit()
 
-            # Update total running time and record complete action
-            self._update_total_running_time(task_id)
-            self._record_time_action(task_id, 'complete')
+            if cursor.rowcount:
+                self._update_total_running_time(task_id)
+                self._record_time_action(task_id, 'complete')
 
-            logger.info(f"Task {task_id}: Completed successfully")
+                logger.info(f"Task {task_id}: Completed successfully")
 
-            # Emit completion notification
-            if self.socketio:
-                self.socketio.emit('task_completed', {
-                    'task_id': task_id,
-                    'status': 'completed'
-                })
+                if self.socketio:
+                    self.socketio.emit('task_completed', {
+                        'task_id': task_id,
+                        'status': 'completed'
+                    })
 
         except Exception as e:
             logger.error(f"Task {task_id} execution failed: {e}")
@@ -1014,13 +1048,12 @@ class TaskManager:
                 cursor.execute('''
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND status NOT IN ('cancelled', 'paused')
                 ''', (str(e), datetime.now(), task_id))
 
                 conn.commit()
 
-                # Emit failure notification
-                if self.socketio:
+                if cursor.rowcount and self.socketio:
                     self.socketio.emit('task_failed', {
                         'task_id': task_id,
                         'status': 'failed',

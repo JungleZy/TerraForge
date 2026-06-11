@@ -44,6 +44,48 @@ datas += collect_data_files('certifi')
 # Binary files (GDAL libraries)
 binaries = []
 
+
+def _first_existing_dir(candidates, required_file=None):
+    for cand in candidates:
+        cand = (cand or '').strip()
+        if not cand:
+            continue
+        if os.path.isdir(cand) and (required_file is None or os.path.exists(os.path.join(cand, required_file))):
+            return cand
+    return ''
+
+
+def _proj_data_candidates():
+    candidates = [
+        os.environ.get('PROJ_DATA', ''),
+        os.environ.get('PROJ_LIB', ''),
+    ]
+    conda_prefix = os.environ.get('CONDA_PREFIX', '').strip()
+    if conda_prefix:
+        candidates.append(os.path.join(conda_prefix, 'share', 'proj'))
+        candidates.append(os.path.join(conda_prefix, 'Library', 'share', 'proj'))
+
+    candidates.append(os.path.join(os.path.dirname(sys.executable), 'Library', 'share', 'proj'))
+
+    if sys.platform == 'darwin':
+        candidates.extend([
+            '/opt/homebrew/share/proj',
+            '/usr/local/share/proj',
+            '/usr/share/proj',
+        ])
+    else:
+        candidates.extend([
+            '/usr/share/proj',
+            '/usr/local/share/proj',
+        ])
+
+    pkg_config_datadir = os.popen('pkg-config --variable=datadir proj 2>/dev/null').read().strip()
+    if pkg_config_datadir:
+        candidates.append(os.path.join(pkg_config_datadir, 'proj'))
+
+    return candidates
+
+
 # Platform-specific GDAL handling
 if sys.platform == 'win32':
     # Windows GDAL binaries — prefer GDAL_DATA from env (CI sets it after
@@ -79,6 +121,10 @@ else:
     gdal_data = os.popen('gdal-config --datadir').read().strip()
     if gdal_data:
         datas += [(gdal_data, 'gdal-data')]
+
+proj_data = _first_existing_dir(_proj_data_candidates(), required_file='proj.db')
+if proj_data:
+    datas += [(proj_data, 'proj-data')]
 
 a = Analysis(
     ['app.py'],

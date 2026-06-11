@@ -16,6 +16,7 @@ class TaskStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
+    CANCELLED = "cancelled"
 
 
 class MapStyle(Enum):

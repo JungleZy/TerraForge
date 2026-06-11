@@ -1,21 +1,21 @@
 @echo off
 REM Build script for Windows
-REM This script builds the executable for Windows
+REM This script builds the executable for Windows using the project uv environment.
 
 echo Building Google Maps Downloader executable...
 
-REM Check if Python is installed
-python --version >nul 2>&1
+REM Check if uv is installed
+uv --version >nul 2>&1
 if errorlevel 1 (
-    echo Error: Python is not installed
+    echo Error: uv is not installed
     exit /b 1
 )
 
-REM Check if PyInstaller is installed
-python -c "import PyInstaller" >nul 2>&1
+REM Check if PyInstaller is installed in the uv environment
+uv run python -c "import PyInstaller" >nul 2>&1
 if errorlevel 1 (
     echo Installing PyInstaller...
-    pip install pyinstaller
+    uv pip install pyinstaller
 )
 
 REM Clean previous builds
@@ -25,7 +25,7 @@ if exist dist rmdir /s /q dist
 
 REM Build the executable
 echo Building executable...
-pyinstaller build.spec
+uv run python -m PyInstaller build.spec
 
 REM Check if build was successful
 if exist "dist\map-downloader" (
