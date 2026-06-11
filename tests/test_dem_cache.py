@@ -128,3 +128,20 @@ def test_link_or_copy_falls_back_to_copy_when_link_unsupported(tmp_path, engine,
     DemDownloadEngine._link_or_copy(src, dst)
 
     assert dst.read_bytes() == PAYLOAD
+
+
+def test_save_to_cache_copy_fallback_leaves_no_part_file(tmp_path, engine, monkeypatch):
+    src = tmp_path / "task" / GRANULE
+    src.parent.mkdir()
+    src.write_bytes(PAYLOAD)
+    cache_dir = tmp_path / "cache"
+
+    def fake_link(_a, _b):
+        raise OSError("simulated EXDEV")
+
+    monkeypatch.setattr("services.dem_download_engine.os.link", fake_link)
+
+    engine._save_to_cache(src, GRANULE, cache_dir)
+
+    assert (cache_dir / GRANULE).read_bytes() == PAYLOAD
+    assert list(cache_dir.glob("*.part.*")) == []

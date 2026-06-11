@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import shutil
+import asyncio
 import math
 from pathlib import Path
 
@@ -411,3 +412,86 @@ def test_coordinate_validation_east_west_equal(download_engine):
         )
 
     assert "must be different from west longitude" in str(exc_info.value)
+
+
+def test_download_tiles_batch_passes_cache_enabled_false(download_engine):
+    from services.config_manager import ConfigManager
+
+    ConfigManager().set('cache_enabled', 'false')
+    seen = []
+
+    async def fake_single(tile, style, session, cache_enabled, progress_callback=None, proxy_url=''):
+        seen.append(cache_enabled)
+        return {'tile': tile, 'status': 'completed'}
+
+    download_engine._download_single_tile = fake_single
+
+    asyncio.run(download_engine.download_tiles_batch([Tile(task_id=1, zoom=0, x=0, y=0)], 's'))
+
+    assert seen == [False]
+
+
+def test_download_single_tile_does_not_use_cache_when_disabled(download_engine):
+    tile = Tile(task_id=1, zoom=0, x=0, y=0)
+    cache_path = tile.cache_path('s')
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(b'cached')
+    downloaded = {'called': False}
+
+    async def fake_download_tile(tile, style, session, proxy_url=''):
+        downloaded['called'] = True
+        return b'fresh'
+
+    download_engine.download_tile = fake_download_tile
+
+    result = asyncio.run(download_engine._download_single_tile(tile, 's', session=None, cache_enabled=False))
+
+    assert downloaded['called'] is True
+    assert result['status'] == 'completed'
+    assert cache_path.read_bytes() == b'cached'
+
+
+def test_download_single_tile_writes_cache_atomically(download_engine):
+    tile = Tile(task_id=1, zoom=0, x=1, y=0)
+    cache_path = tile.cache_path('s')
+
+    async def fake_download_tile(tile, style, session, proxy_url=''):
+        return b'fresh'
+
+    download_engine.download_tile = fake_download_tile
+
+    result = asyncio.run(download_engine._download_single_tile(tile, 's', session=None, cache_enabled=True))
+
+    assert result['status'] == 'completed'
+    assert cache_path.read_bytes() == b'fresh'
+    assert list(cache_path.parent.glob('*.part.*')) == []
+
+
+def test_download_tile_passes_proxy_to_session(download_engine):
+    from services.config_manager import ConfigManager
+
+    ConfigManager().set('proxy_url', 'http://127.0.0.1:7890')
+    seen = []
+
+    class FakeResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        async def read(self):
+            return b'tile'
+
+    class FakeSession:
+        def get(self, url, timeout=None, proxy=None):
+            seen.append(proxy)
+            return FakeResponse()
+
+    data = asyncio.run(download_engine.download_tile(Tile(task_id=1, zoom=0, x=0, y=0), 's', FakeSession()))
+
+    assert data == b'tile'
+    assert seen == ['http://127.0.0.1:7890']

@@ -34,8 +34,8 @@ uv run pytest tests/test_terrain_api.py                             # single fil
 uv run pytest tests/test_dem_task_tiler.py::test_terrain_output_dir_for_task   # single test
 
 # Build standalone executable (PyInstaller)
-./build.sh           # Linux/macOS（脚本内部直接调用 python/pyinstaller，必要时改为 uv run）
-build.bat            # Windows
+./build.sh           # Linux/macOS（脚本内部使用 uv run python -m PyInstaller）
+build.bat            # Windows（脚本内部使用 uv run python -m PyInstaller）
 # Output: dist/map-downloader/ — entry build.spec, GDAL hook hook-gdal.py
 ```
 
