@@ -261,6 +261,51 @@ def init_database():
             ON dem_terrain_jobs(status)
         ''')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS local_terrain_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                output_path TEXT NOT NULL,
+                source_dir TEXT NOT NULL,
+                output_dir TEXT NOT NULL,
+                total_files INTEGER DEFAULT 0,
+                uploaded_files INTEGER DEFAULT 0,
+                failed_files INTEGER DEFAULT 0,
+                maxzoom INTEGER NOT NULL,
+                parent_url TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                error_message TEXT
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_local_terrain_tasks_status
+            ON local_terrain_tasks(status)
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS local_terrain_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                original_filename TEXT,
+                stored_filename TEXT NOT NULL,
+                local_path TEXT,
+                size_bytes INTEGER,
+                status TEXT NOT NULL DEFAULT 'uploaded',
+                error_message TEXT,
+                FOREIGN KEY (task_id) REFERENCES local_terrain_tasks(id) ON DELETE CASCADE,
+                UNIQUE(task_id, stored_filename)
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_local_terrain_files_status
+            ON local_terrain_files(status)
+        ''')
+
         # Insert default configuration values using executemany for efficiency
         cursor.executemany(
             'INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)',
