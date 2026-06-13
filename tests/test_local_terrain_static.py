@@ -62,8 +62,10 @@ def test_blocks_path_traversal(monkeypatch, tmp_path):
     output_dir.mkdir(parents=True)
     task_id = _insert_task(db, output_dir)
 
+    # _resolve_safe_file must reject the traversal with a hard 400 (the guard
+    # fires — this is not a Flask routing 404).
     resp = client.get(f"/terrain/local/{task_id}/..%2f..%2f..%2fsecret")
-    assert resp.status_code in (400, 404)
+    assert resp.status_code == 400
 
 
 def test_missing_task_returns_404(monkeypatch, tmp_path):
