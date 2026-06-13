@@ -40,6 +40,12 @@ class Config:
     # Download and cache directories
     DOWNLOADS_DIR = BASE_DIR / 'downloads'
     OUTPUT_DIR = DOWNLOADS_DIR  # Alias for output directory
+
+    # Max request body size (bytes). Flask aborts larger uploads with HTTP 413
+    # before reading them into memory — caps the local-terrain upload endpoint,
+    # which reads files into memory. Default 2 GiB covers a batch of large
+    # 1°x1° DEM GeoTIFFs; override with MAX_CONTENT_LENGTH env var if needed.
+    MAX_CONTENT_LENGTH = int(os.environ.get('MAX_CONTENT_LENGTH', 2 * 1024 * 1024 * 1024))
     CACHE_DIR = BASE_DIR / 'cache'
 
     @staticmethod

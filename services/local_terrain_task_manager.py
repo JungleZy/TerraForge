@@ -9,6 +9,7 @@ tiler (tile_dem_task_dir) by saving uploads as *_dem.tif.
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -334,6 +335,40 @@ class LocalTerrainTaskManager:
             conn.commit()
         finally:
             conn.close()
+
+    def delete_task(self, task_id: int) -> None:
+        """Delete a task's DB rows and its on-disk files. Refuses while running
+        (tiling can't be interrupted). Removing the row CASCADEs to the files
+        table; the local_task_<id> directory (source uploads + output tiles) is
+        also removed so cancelled/failed tasks don't leave large GeoTIFFs behind."""
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT status, output_path FROM local_terrain_tasks WHERE id=?", (task_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"Local terrain task {task_id} not found")
+            if row["status"] == "running":
+                raise ValueError(
+                    "Tiling is in progress and cannot be interrupted; "
+                    "wait for it to finish before deleting"
+                )
+            output_path = row["output_path"]
+            cur.execute("DELETE FROM local_terrain_tasks WHERE id=?", (task_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Best-effort directory cleanup after the row is gone.
+        if output_path:
+            try:
+                task_root = Path(output_path)
+                # Guard: only remove inside DOWNLOADS_DIR/terrain.
+                terrain_root = (Path(Config.DOWNLOADS_DIR) / "terrain").resolve()
+                if task_root.resolve().parent == terrain_root and task_root.exists():
+                    shutil.rmtree(task_root, ignore_errors=True)
+            except Exception as e:
+                logger.warning(f"Failed to remove local terrain dir for task {task_id}: {e}")
 
     def _emit_progress(self, task_id: int) -> None:
         if not self.socketio:

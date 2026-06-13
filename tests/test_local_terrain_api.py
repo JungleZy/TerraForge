@@ -244,3 +244,112 @@ def test_cancel_marks_pending_task_cancelled(monkeypatch, tmp_path):
 
     mgr.cancel_task(task_id)
     assert mgr.get_task(task_id)["status"] == "cancelled"
+
+
+def test_history_all_includes_local_terrain(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("database")
+
+    # Seed one completed local terrain task directly.
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO local_terrain_tasks
+              (name, status, output_path, source_dir, output_dir, total_files, uploaded_files, maxzoom)
+            VALUES ('hist-local', 'completed', '/tmp/x', '/tmp/x/source', '/tmp/x/terrain_tiles', 2, 2, 12)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    resp = client.get("/api/history_all")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["success"] is True
+    local = [t for t in body["tasks"] if t["task_type"] == "local_terrain"]
+    assert len(local) == 1
+    t = local[0]
+    assert t["name"] == "hist-local"
+    # bbox columns are NULL for local terrain
+    assert t["north"] is None and t["south"] is None
+    assert t["total"] == 2 and t["downloaded"] == 2
+
+
+def test_upload_rejects_too_many_files(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        app_mod.local_terrain_task_manager.__class__,
+        "start_tiling",
+        lambda self, task_id: None,
+    )
+    files = [(io.BytesIO(b"x"), f"f{i}.tif") for i in range(101)]
+    resp = client.post(
+        "/api/terrain/local/tasks",
+        data={"name": "many", "files": files},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
+    assert "Too many files" in resp.get_json()["error"]
+
+
+def test_upload_rejects_bad_ext_before_read(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        app_mod.local_terrain_task_manager.__class__,
+        "start_tiling",
+        lambda self, task_id: None,
+    )
+    resp = client.post(
+        "/api/terrain/local/tasks",
+        data={"name": "bad", "files": [(io.BytesIO(b"x"), "a.tif"), (io.BytesIO(b"y"), "b.png")]},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
+    assert "Unsupported file type" in resp.get_json()["error"]
+
+
+def test_max_content_length_configured(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    assert app_mod.app.config.get("MAX_CONTENT_LENGTH") is not None
+    assert app_mod.app.config["MAX_CONTENT_LENGTH"] > 0
+
+
+def test_delete_task_removes_row_and_dir(monkeypatch, tmp_path):
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="del", files=[("a.tif", b"data")], maxzoom=12)
+    from pathlib import Path
+    task_root = Path(mgr.get_task(task_id)["output_path"])
+    assert task_root.exists()
+
+    mgr.delete_task(task_id)
+
+    assert not task_root.exists()
+    import pytest
+    with pytest.raises(ValueError):
+        mgr.get_task(task_id)
+
+
+def test_delete_task_refuses_running(monkeypatch, tmp_path):
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="del2", files=[("a.tif", b"data")], maxzoom=12)
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE local_terrain_tasks SET status='running' WHERE id=?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    import pytest
+    with pytest.raises(ValueError):
+        mgr.delete_task(task_id)
+    assert mgr.get_task(task_id)["status"] == "running"

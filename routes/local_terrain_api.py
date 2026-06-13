@@ -5,6 +5,7 @@ Endpoints for uploading GeoTIFF files and tiling them into Cesium terrain.
 """
 
 import logging
+import os
 
 from flask import Blueprint, jsonify, request
 
@@ -31,6 +32,21 @@ def create_local_terrain_task():
         maxzoom = int(maxzoom_raw) if maxzoom_raw not in (None, "") else None
 
         uploads = request.files.getlist("files")
+
+        # Validate cheaply BEFORE reading any bytes into memory: cap the file
+        # count and reject non-tif extensions up front. The total request size
+        # is already capped by Config.MAX_CONTENT_LENGTH (Flask aborts oversized
+        # bodies with 413 before this handler runs). The manager re-validates.
+        if not uploads:
+            return jsonify({"error": "No files uploaded"}), 400
+        if len(uploads) > 100:
+            return jsonify({"error": "Too many files (max 100 per task)"}), 400
+        allowed_ext = (".tif", ".tiff")
+        for f in uploads:
+            ext = os.path.splitext(f.filename or "")[1].lower()
+            if ext not in allowed_ext:
+                return jsonify({"error": f"Unsupported file type: {f.filename} (only .tif/.tiff)"}), 400
+
         files = [(f.filename, f.read()) for f in uploads]
 
         task_id = local_terrain_task_manager.create_task_with_files(
@@ -85,3 +101,17 @@ def cancel_local_terrain_task(task_id: int):
     except Exception as e:
         logger.error(f"Error cancelling local terrain task {task_id}: {e}")
         return jsonify({"error": "Failed to cancel local terrain task"}), 500
+
+
+@local_terrain_api_bp.route("/tasks/<int:task_id>", methods=["DELETE"])
+def delete_local_terrain_task(task_id: int):
+    if not local_terrain_task_manager:
+        return jsonify({"error": "Local terrain task manager not initialized"}), 500
+    try:
+        local_terrain_task_manager.delete_task(task_id)
+        return jsonify({"success": True, "message": f"Local terrain task {task_id} deleted"})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error deleting local terrain task {task_id}: {e}")
+        return jsonify({"error": "Failed to delete local terrain task"}), 500
