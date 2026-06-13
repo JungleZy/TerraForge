@@ -218,5 +218,129 @@ class LocalTerrainTaskManager:
             conn.close()
 
     def start_tiling(self, task_id: int) -> None:
-        # Implemented in Task 3.
-        raise NotImplementedError
+        task_id = int(task_id)
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT status, source_dir, output_dir, maxzoom, parent_url "
+                "FROM local_terrain_tasks WHERE id=?",
+                (task_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"Local terrain task {task_id} not found")
+            if row["status"] == "running":
+                raise ValueError(f"Local terrain task {task_id} is already running")
+
+            cur.execute(
+                "UPDATE local_terrain_tasks SET status='running', started_at=?, "
+                "completed_at=NULL, error_message=NULL WHERE id=?",
+                (datetime.now(), task_id),
+            )
+            conn.commit()
+            source_dir = Path(row["source_dir"])
+            output_dir = Path(row["output_dir"])
+            maxzoom = int(row["maxzoom"])
+            parent_url = row["parent_url"] or "http://localhost:5000/terrain/base/layer.json"
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        self._emit_progress(task_id)
+
+        with self._state_lock:
+            th = threading.Thread(
+                target=self._run_tiling_job,
+                args=(task_id, source_dir, output_dir, maxzoom, parent_url),
+                daemon=True,
+                name=f"LocalTerrainTiling-{task_id}",
+            )
+            self.active_tasks[task_id] = th
+        th.start()
+
+    def _run_tiling_job(
+        self, task_id: int, source_dir: Path, output_dir: Path, maxzoom: int, parent_url: str
+    ) -> None:
+        try:
+            tile_dem_task_dir(
+                task_dir=source_dir,
+                out_dir=output_dir,
+                params=TileParams(maxzoom=maxzoom, parent_url=parent_url),
+            )
+            conn = get_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
+                    "error_message=NULL WHERE id=? AND status='running'",
+                    (datetime.now(), task_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            if self.socketio:
+                self.socketio.emit(
+                    "task_completed",
+                    {"task_id": task_id, "task_type": "local_terrain", "status": "completed"},
+                )
+        except Exception as e:
+            conn = get_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE local_terrain_tasks SET status='failed', completed_at=?, "
+                    "error_message=? WHERE id=?",
+                    (datetime.now(), str(e), task_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            logger.error(f"Local terrain tiling failed for task {task_id}: {e}")
+            if self.socketio:
+                self.socketio.emit(
+                    "task_failed",
+                    {"task_id": task_id, "task_type": "local_terrain",
+                     "status": "failed", "error_message": str(e)},
+                )
+        finally:
+            with self._state_lock:
+                if self.active_tasks.get(task_id) is threading.current_thread():
+                    self.active_tasks.pop(task_id, None)
+
+    def cancel_task(self, task_id: int) -> None:
+        """Cancel if not yet tiling. If build_terrain is in-flight it cannot be
+        hard-interrupted; we only flip non-running states to cancelled."""
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE local_terrain_tasks SET status='cancelled' "
+                "WHERE id=? AND status IN ('pending','uploading')",
+                (task_id,),
+            )
+            if cur.rowcount == 0:
+                cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
+                r = cur.fetchone()
+                if not r:
+                    raise ValueError(f"Local terrain task {task_id} not found")
+                if r["status"] == "running":
+                    raise ValueError(
+                        "Tiling is in progress and cannot be interrupted; "
+                        "wait for it to finish"
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _emit_progress(self, task_id: int) -> None:
+        if not self.socketio:
+            return
+        try:
+            task = self.get_task(task_id)
+            task["task_type"] = "local_terrain"
+            self.socketio.emit("task_progress", task)
+        except Exception as e:
+            logger.warning(f"Failed to emit local terrain progress for {task_id}: {e}")
