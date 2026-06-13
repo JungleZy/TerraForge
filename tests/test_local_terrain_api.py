@@ -130,3 +130,80 @@ def test_start_tiling_marks_failed_on_error(monkeypatch, tmp_path):
     task = mgr.get_task(task_id)
     assert task["status"] == "failed"
     assert "tiler exploded" in (task["error_message"] or "")
+
+
+import io
+
+
+def _load_app(monkeypatch, tmp_path):
+    import config
+
+    monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
+    monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
+    monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
+
+    for mod in ("app", "database", "services.local_terrain_task_manager"):
+        sys.modules.pop(mod, None)
+    app_mod = importlib.import_module("app")
+    app_mod.app.config["TESTING"] = True
+    return app_mod, app_mod.app.test_client()
+
+
+def test_http_wiring_list_does_not_500(monkeypatch, tmp_path):
+    _app_mod, client = _load_app(monkeypatch, tmp_path)
+    resp = client.get("/api/terrain/local/tasks")
+    assert resp.status_code == 200
+    assert resp.get_json()["success"] is True
+
+
+def test_http_upload_creates_task(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+
+    # Don't run real tiler.
+    monkeypatch.setattr(
+        app_mod.local_terrain_task_manager.__class__,
+        "start_tiling",
+        lambda self, task_id: None,
+    )
+
+    data = {
+        "name": "http-local",
+        "maxzoom": "10",
+        "files": [
+            (io.BytesIO(b"fake-a"), "a.tif"),
+            (io.BytesIO(b"fake-b"), "b.tiff"),
+        ],
+    }
+    resp = client.post(
+        "/api/terrain/local/tasks",
+        data=data,
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body["success"] is True
+    task_id = body["task_id"]
+
+    detail = client.get(f"/api/terrain/local/tasks/{task_id}")
+    assert detail.status_code == 200
+    dbody = detail.get_json()
+    assert dbody["task"]["total_files"] == 2
+    assert dbody["layer_url"].endswith(f"/terrain/local/{task_id}/layer.json")
+    assert len(dbody["files"]) == 2
+
+
+def test_http_upload_no_valid_files_returns_400(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        app_mod.local_terrain_task_manager.__class__,
+        "start_tiling",
+        lambda self, task_id: None,
+    )
+
+    resp = client.post(
+        "/api/terrain/local/tasks",
+        data={"name": "bad", "files": [(io.BytesIO(b"x"), "x.png")]},
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 400
