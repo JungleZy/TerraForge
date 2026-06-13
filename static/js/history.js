@@ -77,10 +77,11 @@ function renderHistoryTable(tasks) {
             </td>
             <td>
                 <small style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.4;">
+                    ${task.north == null ? '<span style="color: var(--color-text-muted);">本地文件</span>' : `
                     <span style="color: var(--color-accent-warm);">▲</span> ${task.north.toFixed(4)},
                     <span style="color: var(--color-accent-warm);">▼</span> ${task.south.toFixed(4)}<br>
                     <span style="color: var(--color-accent-warm);">▶</span> ${task.east.toFixed(4)},
-                    <span style="color: var(--color-accent-warm);">◀</span> ${task.west.toFixed(4)}
+                    <span style="color: var(--color-accent-warm);">◀</span> ${task.west.toFixed(4)}`}
                 </small>
             </td>
             <td style="font-family: var(--font-mono);">${task.task_type === 'map' ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
@@ -137,7 +138,10 @@ function renderHistoryMap(tasks) {
         }
     });
 
-    tasks.forEach(task => {
+    // Local-terrain tasks have no bbox; only map/dem tasks appear on the map.
+    const geoTasks = tasks.filter(t => t.north != null && t.south != null && t.east != null && t.west != null);
+
+    geoTasks.forEach(task => {
         const bounds = [[task.south, task.west], [task.north, task.east]];
         const color = task.status === 'completed' ? '#10b981' :
                      task.status === 'failed' ? '#ef4444' : '#f59e0b';
@@ -161,8 +165,8 @@ function renderHistoryMap(tasks) {
         `);
     });
 
-    if (tasks.length > 0) {
-        const allBounds = tasks.map(t => [[t.south, t.west], [t.north, t.east]]);
+    if (geoTasks.length > 0) {
+        const allBounds = geoTasks.map(t => [[t.south, t.west], [t.north, t.east]]);
         const group = L.featureGroup(allBounds.map(b => L.rectangle(b)));
         historyMap.fitBounds(group.getBounds());
     }
@@ -218,7 +222,9 @@ function formatDate(dateStr) {
 
 async function viewTaskDetails(taskId, taskType = 'map') {
     try {
-        const url = taskType === 'dem' ? `/api/dem/tasks/${taskId}` : `/api/tasks/${taskId}`;
+        const url = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
+                  : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
+                  : `/api/tasks/${taskId}`;
         const response = await fetch(url);
         const data = await response.json();
         const task = data.task;
@@ -234,6 +240,13 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailTotal').textContent = task.total_files;
             document.getElementById('detailDownloaded').textContent = task.downloaded_files;
             document.getElementById('detailFailed').textContent = task.failed_files;
+        } else if (taskType === 'local_terrain') {
+            document.getElementById('detailStyle').textContent = '本地高程切片';
+            document.getElementById('detailFormat').textContent = '-';
+            document.getElementById('detailZoom').textContent = `0 - ${task.maxzoom}`;
+            document.getElementById('detailTotal').textContent = task.total_files;
+            document.getElementById('detailDownloaded').textContent = task.uploaded_files;
+            document.getElementById('detailFailed').textContent = task.failed_files;
         } else {
             document.getElementById('detailStyle').textContent = getStyleText(task.style);
             document.getElementById('detailFormat').textContent = task.output_format;
@@ -243,8 +256,12 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailFailed').textContent = task.failed_tiles;
         }
 
-        const total = taskType === 'dem' ? (task.total_files || 0) : (task.total_tiles || 0);
-        const done = taskType === 'dem' ? (task.downloaded_files || 0) : (task.downloaded_tiles || 0);
+        const total = taskType === 'dem' ? (task.total_files || 0)
+                    : taskType === 'local_terrain' ? (task.total_files || 0)
+                    : (task.total_tiles || 0);
+        const done = taskType === 'dem' ? (task.downloaded_files || 0)
+                   : taskType === 'local_terrain' ? (task.uploaded_files || 0)
+                   : (task.downloaded_tiles || 0);
         const progress = total > 0
             ? Math.round((done / total) * 100)
             : 0;
@@ -262,10 +279,12 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             </div>
         `;
 
-        document.getElementById('detailNorth').textContent = task.north.toFixed(6);
-        document.getElementById('detailSouth').textContent = task.south.toFixed(6);
-        document.getElementById('detailEast').textContent = task.east.toFixed(6);
-        document.getElementById('detailWest').textContent = task.west.toFixed(6);
+        // Local-terrain tasks have no bounding box.
+        const hasBbox = task.north != null && task.south != null && task.east != null && task.west != null;
+        document.getElementById('detailNorth').textContent = hasBbox ? task.north.toFixed(6) : '-';
+        document.getElementById('detailSouth').textContent = hasBbox ? task.south.toFixed(6) : '-';
+        document.getElementById('detailEast').textContent = hasBbox ? task.east.toFixed(6) : '-';
+        document.getElementById('detailWest').textContent = hasBbox ? task.west.toFixed(6) : '-';
 
         document.getElementById('detailPath').textContent = task.output_path;
         document.getElementById('detailCreated').textContent = formatDate(task.created_at);
@@ -392,9 +411,10 @@ async function deleteTask(taskId, taskType = 'map') {
     }
 
     try {
-        const response = taskType === 'dem'
-            ? await fetch(`/api/dem/tasks/${taskId}`, { method: 'DELETE' })
-            : await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
+        const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
+                        : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
+                        : `/api/tasks/${taskId}`;
+        const response = await fetch(deleteUrl, { method: 'DELETE' });
 
         if (response.ok) {
             alert('任务已删除');

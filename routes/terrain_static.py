@@ -96,18 +96,23 @@ def terrain_dem_static(task_id: str, subpath: str):
 def terrain_local_static(task_id: int, subpath: str):
     from database import get_connection
 
+    # Confirm the task exists, but DO NOT trust the absolute output_dir stored at
+    # creation time: in frozen/PyInstaller mode DOWNLOADS_DIR is anchored to the
+    # executable's directory, so a stored absolute path breaks if the executable
+    # is moved. Recompute the path from the current DOWNLOADS_DIR (same approach
+    # as terrain_dem_static) so serving survives relocation.
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT output_dir FROM local_terrain_tasks WHERE id = ?", (task_id,))
+        cur.execute("SELECT id FROM local_terrain_tasks WHERE id = ?", (task_id,))
         row = cur.fetchone()
     finally:
         conn.close()
 
-    if not row or not row["output_dir"]:
+    if not row:
         abort(404)
 
-    base_dir = Path(row["output_dir"])
+    base_dir = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}" / "terrain_tiles"
     target = _resolve_safe_file(base_dir, subpath)
     if not target.exists() or target.is_dir():
         abort(404)

@@ -462,21 +462,27 @@ def get_history_all():
                 map_count = cursor.fetchone()['c']
                 cursor.execute('SELECT COUNT(*) AS c FROM dem_tasks WHERE status = ?', (status_filter,))
                 dem_count = cursor.fetchone()['c']
+                cursor.execute('SELECT COUNT(*) AS c FROM local_terrain_tasks WHERE status = ?', (status_filter,))
+                local_count = cursor.fetchone()['c']
             else:
                 cursor.execute('SELECT COUNT(*) AS c FROM tasks')
                 map_count = cursor.fetchone()['c']
                 cursor.execute('SELECT COUNT(*) AS c FROM dem_tasks')
                 dem_count = cursor.fetchone()['c']
+                cursor.execute('SELECT COUNT(*) AS c FROM local_terrain_tasks')
+                local_count = cursor.fetchone()['c']
 
-            total_count = int(map_count or 0) + int(dem_count or 0)
+            total_count = int(map_count or 0) + int(dem_count or 0) + int(local_count or 0)
 
             params = []
             where_map = ""
             where_dem = ""
+            where_local = ""
             if status_filter:
                 where_map = "WHERE status = ?"
                 where_dem = "WHERE status = ?"
-                params.extend([status_filter, status_filter])
+                where_local = "WHERE status = ?"
+                params.extend([status_filter, status_filter, status_filter])
 
             query = f'''
                 SELECT
@@ -514,6 +520,24 @@ def get_history_all():
                     COALESCE(completed_at, created_at) AS sort_key
                 FROM dem_tasks
                 {where_dem}
+                UNION ALL
+                SELECT
+                    'local_terrain' AS task_type,
+                    id,
+                    name,
+                    status,
+                    NULL AS north, NULL AS south, NULL AS east, NULL AS west,
+                    NULL AS zoom_min, NULL AS zoom_max,
+                    NULL AS style,
+                    uploaded_files AS downloaded,
+                    total_files AS total,
+                    NULL AS output_format,
+                    output_path,
+                    created_at, started_at, completed_at,
+                    error_message,
+                    COALESCE(completed_at, created_at) AS sort_key
+                FROM local_terrain_tasks
+                {where_local}
                 ORDER BY sort_key DESC
                 LIMIT ? OFFSET ?
             '''
