@@ -57,7 +57,7 @@ async function loadActiveTasks() {
         const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
         const all = [...mapTasks, ...demTasks, ...localTasks].filter(t =>
-            ['pending', 'uploading', 'running', 'paused'].includes(t.status)
+            ['pending', 'running', 'paused'].includes(t.status)
         );
 
         activeTasks.clear();

@@ -292,7 +292,7 @@ class LocalTerrainTaskManager:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='failed', completed_at=?, "
-                    "error_message=? WHERE id=?",
+                    "error_message=? WHERE id=? AND status='running'",
                     (datetime.now(), str(e), task_id),
                 )
                 conn.commit()
@@ -312,13 +312,13 @@ class LocalTerrainTaskManager:
 
     def cancel_task(self, task_id: int) -> None:
         """Cancel if not yet tiling. If build_terrain is in-flight it cannot be
-        hard-interrupted; we only flip non-running states to cancelled."""
+        hard-interrupted; we only flip a still-pending task to cancelled."""
         conn = get_connection()
         try:
             cur = conn.cursor()
             cur.execute(
                 "UPDATE local_terrain_tasks SET status='cancelled' "
-                "WHERE id=? AND status IN ('pending','uploading')",
+                "WHERE id=? AND status='pending'",
                 (task_id,),
             )
             if cur.rowcount == 0:

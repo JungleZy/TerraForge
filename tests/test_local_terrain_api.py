@@ -207,3 +207,40 @@ def test_http_upload_no_valid_files_returns_400(monkeypatch, tmp_path):
         content_type="multipart/form-data",
     )
     assert resp.status_code == 400
+
+
+def test_cancel_rejects_running_task(monkeypatch, tmp_path):
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="c1", files=[("a.tif", b"x")], maxzoom=12)
+
+    # Force the row into 'running' as if tiling were in flight.
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE local_terrain_tasks SET status='running' WHERE id=?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    import pytest
+    with pytest.raises(ValueError):
+        mgr.cancel_task(task_id)
+
+    # Row must remain 'running' — cancel did not interrupt the in-flight tiling.
+    assert mgr.get_task(task_id)["status"] == "running"
+
+
+def test_cancel_marks_pending_task_cancelled(monkeypatch, tmp_path):
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="c2", files=[("a.tif", b"x")], maxzoom=12)
+    # start_tiling was a no-op, so the row is still 'pending'.
+    assert mgr.get_task(task_id)["status"] == "pending"
+
+    mgr.cancel_task(task_id)
+    assert mgr.get_task(task_id)["status"] == "cancelled"
