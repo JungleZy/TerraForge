@@ -44,17 +44,20 @@ function initTasks() {
 
 async function loadActiveTasks() {
     try {
-        const [mapResp, demResp] = await Promise.all([
+        const [mapResp, demResp, localResp] = await Promise.all([
             fetch('/api/tasks'),
-            fetch('/api/dem/tasks')
+            fetch('/api/dem/tasks'),
+            fetch('/api/terrain/local/tasks')
         ]);
         const mapData = await mapResp.json();
         const demData = await demResp.json();
+        const localData = await localResp.json();
 
         const mapTasks = (mapData.tasks || []).map(t => normalizeTask(t, 'map'));
         const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
-        const all = [...mapTasks, ...demTasks].filter(t =>
-            ['pending', 'running', 'paused'].includes(t.status)
+        const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
+        const all = [...mapTasks, ...demTasks, ...localTasks].filter(t =>
+            ['pending', 'uploading', 'running', 'paused'].includes(t.status)
         );
 
         activeTasks.clear();
@@ -77,6 +80,20 @@ function normalizeTask(task, type) {
             _key: `dem:${task.id}`,
             total_items: task.total_files || 0,
             downloaded_items: task.downloaded_files || 0,
+            failed_items: task.failed_files || 0,
+            items_label: '文件'
+        };
+    }
+    if (type === 'local_terrain') {
+        const total = task.total_files || 0;
+        const done = task.status === 'completed' ? total : (task.uploaded_files || 0);
+        return {
+            ...task,
+            task_type: 'local_terrain',
+            id: task.id,
+            _key: `local_terrain:${task.id}`,
+            total_items: total,
+            downloaded_items: done,
             failed_items: task.failed_files || 0,
             items_label: '文件'
         };
@@ -478,7 +495,9 @@ function updateTimeDisplay() {
 }
 
 function apiPrefixForType(taskType) {
-    return taskType === 'dem' ? '/api/dem/tasks' : '/api/tasks';
+    if (taskType === 'dem') return '/api/dem/tasks';
+    if (taskType === 'local_terrain') return '/api/terrain/local/tasks';
+    return '/api/tasks';
 }
 
 async function startTask(taskId, taskType = 'map') {
