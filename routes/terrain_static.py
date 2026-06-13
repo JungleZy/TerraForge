@@ -91,3 +91,25 @@ def terrain_dem_static(task_id: str, subpath: str):
         abort(404)
     return send_file(str(target))
 
+
+@terrain_static_bp.route("/local/<int:task_id>/<path:subpath>", methods=["GET"])
+def terrain_local_static(task_id: int, subpath: str):
+    from database import get_connection
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT output_dir FROM local_terrain_tasks WHERE id = ?", (task_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row or not row["output_dir"]:
+        abort(404)
+
+    base_dir = Path(row["output_dir"])
+    target = _resolve_safe_file(base_dir, subpath)
+    if not target.exists() or target.is_dir():
+        abort(404)
+    return send_file(str(target))
+
