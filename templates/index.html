@@ -54,6 +54,7 @@
                         <select class="form-select" id="downloadType">
                             <option value="map">地图瓦片</option>
                             <option value="dem">GDEM V3 30m (ASTER GDEM V3)</option>
+                            <option value="local_terrain">本地高程切片（上传 GeoTIFF）</option>
                         </select>
                     </div>
 
@@ -97,6 +98,13 @@
                             <input class="form-check-input" type="checkbox" id="demDownloadSwb">
                             <label class="form-check-label" for="demDownloadSwb">同时下载 SWB 水体掩膜文件</label>
                         </div>
+                    </div>
+
+                    <div class="mb-3" id="localTerrainOptions" style="display:none;">
+                        <label for="localTerrainFiles" class="form-label">上传高程文件（可多选 .tif/.tiff）</label>
+                        <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
+                        <label for="localTerrainMaxzoom" class="form-label mt-2">最大切片层级</label>
+                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
                     </div>
 
                     <div class="mb-3">

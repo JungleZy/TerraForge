@@ -44,17 +44,20 @@ function initTasks() {
 
 async function loadActiveTasks() {
     try {
-        const [mapResp, demResp] = await Promise.all([
+        const [mapResp, demResp, localResp] = await Promise.all([
             fetch('/api/tasks'),
-            fetch('/api/dem/tasks')
+            fetch('/api/dem/tasks'),
+            fetch('/api/terrain/local/tasks')
         ]);
         const mapData = await mapResp.json();
         const demData = await demResp.json();
+        const localData = await localResp.json();
 
         const mapTasks = (mapData.tasks || []).map(t => normalizeTask(t, 'map'));
         const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
-        const all = [...mapTasks, ...demTasks].filter(t =>
-            ['pending', 'running', 'paused'].includes(t.status)
+        const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
+        const all = [...mapTasks, ...demTasks, ...localTasks].filter(t =>
+            ['pending', 'uploading', 'running', 'paused'].includes(t.status)
         );
 
         activeTasks.clear();
@@ -77,6 +80,20 @@ function normalizeTask(task, type) {
             _key: `dem:${task.id}`,
             total_items: task.total_files || 0,
             downloaded_items: task.downloaded_files || 0,
+            failed_items: task.failed_files || 0,
+            items_label: '文件'
+        };
+    }
+    if (type === 'local_terrain') {
+        const total = task.total_files || 0;
+        const done = task.status === 'completed' ? total : (task.uploaded_files || 0);
+        return {
+            ...task,
+            task_type: 'local_terrain',
+            id: task.id,
+            _key: `local_terrain:${task.id}`,
+            total_items: total,
+            downloaded_items: done,
             failed_items: task.failed_files || 0,
             items_label: '文件'
         };
@@ -128,6 +145,8 @@ function createTaskCard(task) {
         'failed': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>'
     };
 
+    const supportsPauseResume = task.task_type !== 'local_terrain';
+
     return `
         <div class="task-card status-${task.status}" id="task-${task._key}">
             <div class="d-flex justify-content-between align-items-start" style="margin-bottom: 0.75rem;">
@@ -139,14 +158,14 @@ function createTaskCard(task) {
                     </span>
                 </div>
                 <div class="btn-group btn-group-sm">
-                    ${task.status === 'pending' ? `
+                    ${supportsPauseResume && task.status === 'pending' ? `
                         <button class="btn btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
-                    ${task.status === 'running' ? `
+                    ${supportsPauseResume && task.status === 'running' ? `
                         <button class="btn btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="6" y="4" width="4" height="16"></rect>
@@ -154,7 +173,7 @@ function createTaskCard(task) {
                             </svg>
                         </button>
                     ` : ''}
-                    ${task.status === 'paused' ? `
+                    ${supportsPauseResume && task.status === 'paused' ? `
                         <button class="btn btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
@@ -213,6 +232,25 @@ function updateTaskProgress(data) {
 
     if (task) {
         const statusChanged = data.status && data.status !== task.status;
+
+        if (taskType === 'local_terrain') {
+            const normalized = normalizeTask(data, 'local_terrain');
+            const progressChanged = normalized.downloaded_items !== task.downloaded_items ||
+                                   normalized.failed_items !== task.failed_items;
+
+            normalized._key = key;
+            activeTasks.set(key, normalized);
+
+            const card = document.getElementById(`task-${key}`);
+            if (card) {
+                if (statusChanged) {
+                    card.outerHTML = createTaskCard(normalized);
+                } else if (progressChanged) {
+                    updateTaskProgressPartial(card, normalized);
+                }
+            }
+            return;
+        }
 
         if (taskType === 'dem') {
             const progressChanged = data.downloaded_files !== task.downloaded_files ||
@@ -478,7 +516,9 @@ function updateTimeDisplay() {
 }
 
 function apiPrefixForType(taskType) {
-    return taskType === 'dem' ? '/api/dem/tasks' : '/api/tasks';
+    if (taskType === 'dem') return '/api/dem/tasks';
+    if (taskType === 'local_terrain') return '/api/terrain/local/tasks';
+    return '/api/tasks';
 }
 
 async function startTask(taskId, taskType = 'map') {
@@ -537,6 +577,9 @@ async function cancelTask(taskId, taskType = 'map') {
                 card.remove();
             }
             renderActiveTasks(Array.from(activeTasks.values()));
+        } else {
+            const result = await response.json().catch(() => ({}));
+            alert('取消任务失败: ' + (result.error || response.status));
         }
     } catch (error) {
         alert('取消任务失败: ' + error.message);

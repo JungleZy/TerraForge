@@ -88,16 +88,29 @@ function initDownloadTypeToggle() {
 
     const demOptions = document.getElementById('demOptions');
 
+    const localOptions = document.getElementById('localTerrainOptions');
+
     function apply() {
         const t = typeEl.value;
         const isDem = t === 'dem';
-        mapFields.forEach(el => el.style.display = isDem ? 'none' : '');
+        const isLocal = t === 'local_terrain';
+        mapFields.forEach(el => el.style.display = (isDem || isLocal) ? 'none' : '');
         if (demOptions) demOptions.style.display = isDem ? '' : 'none';
+        if (localOptions) localOptions.style.display = isLocal ? '' : 'none';
+
+        const boundsInfo = document.getElementById('boundsInfo');
+        if (boundsInfo) boundsInfo.style.display = isLocal ? 'none' : '';
 
         const outputPath = document.getElementById('outputPath');
-        if (outputPath && !outputPath.dataset.userEdited) {
-            outputPath.value = isDem ? './downloads/dem' : './downloads/map';
+        if (outputPath) {
+            outputPath.closest('.mb-3').style.display = isLocal ? 'none' : '';
+            if (!outputPath.dataset.userEdited) {
+                outputPath.value = isDem ? './downloads/dem' : './downloads/map';
+            }
         }
+
+        const btn = document.getElementById('createTaskBtn');
+        if (btn && isLocal) btn.disabled = false;
     }
 
     typeEl.addEventListener('change', apply);
@@ -148,12 +161,18 @@ function updateBoundsInfo() {
 document.getElementById('downloadForm').addEventListener('submit', async function(e) {
     e.preventDefault();
 
+    const downloadType = document.getElementById('downloadType')?.value || 'map';
+
+    // Local terrain uploads have no bbox; handle separately and return early.
+    if (downloadType === 'local_terrain') {
+        await submitLocalTerrain();
+        return;
+    }
+
     if (!currentBounds) {
         showNotification('请先在地图上框选下载区域', 'warning');
         return;
     }
-
-    const downloadType = document.getElementById('downloadType')?.value || 'map';
 
     let taskData;
     let apiUrl;
@@ -259,3 +278,40 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+
+async function submitLocalTerrain() {
+    const fileInput = document.getElementById('localTerrainFiles');
+    const files = fileInput?.files;
+    if (!files || files.length === 0) {
+        showNotification('请先选择至少一个 .tif/.tiff 文件', 'warning');
+        return;
+    }
+
+    const fd = new FormData();
+    fd.append('name', document.getElementById('taskName').value || '本地高程切片');
+    fd.append('maxzoom', document.getElementById('localTerrainMaxzoom')?.value || '14');
+    for (const f of files) {
+        fd.append('files', f);
+    }
+
+    const btn = document.getElementById('createTaskBtn');
+    btn.disabled = true;
+    const original = btn.innerHTML;
+    btn.innerHTML = '上传中...';
+    try {
+        const resp = await fetch('/api/terrain/local/tasks', { method: 'POST', body: fd });
+        const result = await resp.json();
+        if (resp.ok) {
+            showNotification('上传成功，已开始切片！ID: ' + result.task_id, 'success');
+            document.getElementById('downloadForm').reset();
+            loadActiveTasks();
+        } else {
+            showNotification('上传失败: ' + (result.error || resp.status), 'danger');
+        }
+    } catch (err) {
+        showNotification('上传失败: ' + err.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }
+}

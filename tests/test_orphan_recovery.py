@@ -26,6 +26,7 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
         "database",
         "services.task_manager",
         "services.dem_task_manager",
+        "services.local_terrain_task_manager",
         "app",
     ):
         sys.modules.pop(mod, None)
@@ -169,6 +170,38 @@ def test_dem_task_manager_recovers_orphans(monkeypatch, tmp_path):
         row = cur.fetchone()
         assert row["status"] == "failed"
         assert row["completed_at"] is not None
+        assert "interrupted" in (row["error_message"] or "").lower()
+    finally:
+        conn.close()
+
+
+def test_local_terrain_manager_recovers_orphans(monkeypatch, tmp_path):
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO local_terrain_tasks
+              (name, status, output_path, source_dir, output_dir, maxzoom)
+            VALUES ('lt-orphan', 'running', '/tmp/x', '/tmp/x/source', '/tmp/x/terrain_tiles', 14)
+            """
+        )
+        task_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    ltm_mod = importlib.import_module("services.local_terrain_task_manager")
+    ltm_mod.LocalTerrainTaskManager(socketio=None)
+
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT status, error_message FROM local_terrain_tasks WHERE id = ?", (task_id,))
+        row = cur.fetchone()
+        assert row["status"] == "failed"
         assert "interrupted" in (row["error_message"] or "").lower()
     finally:
         conn.close()
