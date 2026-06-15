@@ -493,24 +493,28 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 12px;
     padding: 1.75rem;
     margin-bottom: 1.5rem;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-border);
     transition: all 0.3s ease;
 }
 
 .config-section:hover {
-    border-color: var(--color-accent-amber);
+    border-color: var(--color-border-strong);
 }
 
 .config-section h3 {
-    color: var(--color-accent-warm);
-    margin-bottom: 1.5rem;
+    color: var(--color-text-primary);
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    margin-bottom: 1.25rem;
     padding-bottom: 0.75rem;
-    border-bottom: 2px solid var(--color-border);
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: 1.5rem;
-    letter-spacing: -0.02em;
+    border-bottom: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+}
+
+.config-section h3 svg {
+    opacity: 0.7;
 }
 
 .config-section .form-label {
@@ -1367,7 +1371,7 @@ code {
 
 /* 配置区块字体 */
 .config-section h3 {
-    font-size: var(--font-size-lg) !important;
+    font-size: var(--font-size-md) !important;
 }
 
 /* 进度条字体 */
@@ -1429,3 +1433,9 @@ code {
     border-bottom: 1px solid var(--color-border);
 }
 .form-group-label:first-child { margin-top: 0; }
+
+.form-text {
+    color: var(--color-text-muted) !important;
+    font-size: var(--font-size-xs) !important;
+    margin-top: 0.35rem;
+}
