@@ -352,41 +352,49 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 600;
     font-family: var(--font-mono);
     transition: all 0.3s ease;
+    box-shadow: none;
 }
 
 .status-badge.running,
-.badge.bg-primary {
-    background: linear-gradient(135deg, var(--color-info), #2563eb) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+.badge.bg-primary,
+.badge.bg-info {
+    background: var(--color-info-bg) !important;
+    color: var(--color-info) !important;
+    border: 1px solid rgba(96, 165, 250, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.completed,
 .badge.bg-success {
-    background: linear-gradient(135deg, var(--color-success), #059669) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+    background: var(--color-success-bg) !important;
+    color: var(--color-success) !important;
+    border: 1px solid rgba(16, 185, 129, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.failed,
 .badge.bg-danger {
-    background: linear-gradient(135deg, var(--color-danger), #dc2626) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+    background: var(--color-danger-bg) !important;
+    color: var(--color-danger) !important;
+    border: 1px solid rgba(239, 68, 68, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.paused,
 .badge.bg-warning {
-    background: linear-gradient(135deg, var(--color-warning), var(--color-accent-copper)) !important;
-    color: var(--color-bg-primary);
-    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+    background: var(--color-warning-bg) !important;
+    color: var(--color-warning) !important;
+    border: 1px solid rgba(245, 158, 11, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.pending,
-.badge.bg-secondary {
-    background: linear-gradient(135deg, #4b5563, #374151) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(75, 85, 99, 0.3);
+.badge.bg-secondary,
+.badge.bg-dark {
+    background: rgba(255, 255, 255, 0.06) !important;
+    color: var(--color-text-secondary) !important;
+    border: 1px solid var(--color-border-strong);
+    box-shadow: none !important;
 }
 
 /* Progress Bar Styles */
@@ -520,8 +528,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .config-section .form-control:focus,
 .config-section .form-select:focus {
-    border-color: var(--color-accent-amber);
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-muted);
     background: var(--color-bg-secondary);
     outline: none;
 }
@@ -599,66 +607,66 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     transition: all 0.3s ease;
     position: relative;
     overflow: hidden;
+    font-weight: 500;
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, var(--color-info), #2563eb);
-    color: white;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    background: var(--color-accent-strong);
+    color: var(--color-on-accent);
+    font-weight: 600;
+    box-shadow: none;
 }
 
 .btn-primary:hover {
-    background: linear-gradient(135deg, #2563eb, #1d4ed8);
-    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    transform: none;
 }
 
 .btn-success {
-    background: linear-gradient(135deg, var(--color-success), #059669);
-    color: white;
-    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+    background: var(--color-success);
+    color: #fff;
+    box-shadow: none;
 }
 
 .btn-success:hover {
-    background: linear-gradient(135deg, #059669, #047857);
-    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-success);
+    color: #fff;
 }
 
 .btn-warning {
-    background: linear-gradient(135deg, var(--color-warning), var(--color-accent-copper));
-    color: var(--color-bg-primary);
-    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+    background: var(--color-warning);
+    color: #1a1206;
+    box-shadow: none;
 }
 
 .btn-warning:hover {
-    background: linear-gradient(135deg, var(--color-accent-copper), #b45309);
-    box-shadow: 0 6px 20px rgba(245, 158, 11, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-warning);
+    color: #1a1206;
 }
 
 .btn-danger {
-    background: linear-gradient(135deg, var(--color-danger), #dc2626);
-    color: white;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+    background: var(--color-danger);
+    color: #fff;
+    box-shadow: none;
 }
 
 .btn-danger:hover {
-    background: linear-gradient(135deg, #dc2626, #b91c1c);
-    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-danger);
+    color: #fff;
 }
 
 .btn-secondary {
-    background: linear-gradient(135deg, #4b5563, #374151);
-    color: white;
-    box-shadow: 0 4px 12px rgba(75, 85, 99, 0.3);
+    background: transparent;
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-strong);
+    box-shadow: none;
 }
 
 .btn-secondary:hover {
-    background: linear-gradient(135deg, #374151, #1f2937);
-    box-shadow: 0 6px 20px rgba(75, 85, 99, 0.4);
-    transform: translateY(-2px);
+    background: rgba(255, 255, 255, 0.04);
+    border-color: var(--color-text-secondary);
+    transform: none;
 }
 
 .btn:disabled {
@@ -679,15 +687,14 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .btn-info {
-    background: linear-gradient(135deg, var(--color-info), #2563eb);
-    color: white;
-    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    background: var(--color-info);
+    color: #fff;
+    box-shadow: none;
 }
 
 .btn-info:hover {
-    background: linear-gradient(135deg, #2563eb, #1d4ed8);
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-info);
+    color: #fff;
 }
 
 /* Alert Styles */
@@ -858,10 +865,10 @@ h1, h2, h3, h4, h5, h6 {
 
 .form-control:focus,
 .form-select:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-muted);
     background: var(--color-bg-secondary);
-    border-color: var(--color-accent-amber);
     color: var(--color-text-primary);
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
     outline: none;
 }
 
@@ -1045,13 +1052,13 @@ code {
 }
 
 .form-check-input:checked {
-    background-color: var(--color-accent-amber);
-    border-color: var(--color-accent-amber);
+    background-color: var(--color-accent);
+    border-color: var(--color-accent);
 }
 
 .form-check-input:focus {
-    border-color: var(--color-accent-amber);
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-muted);
 }
 
 .form-check-label {
