@@ -22,7 +22,7 @@ function initHistoryMap() {
 
 async function loadStats() {
     try {
-        const r = await fetch('/api/history_stats');
+        const r = await fetch('/api/history_stats', { cache: 'no-store' });
         const j = await r.json();
         if (!j.success) return;
         const s = j.stats;
@@ -37,7 +37,8 @@ async function loadStats() {
 
 async function loadHistory(page = 1) {
     try {
-        const response = await fetch(`/api/history_all?page=${page}&per_page=20`);
+        currentPage = page;
+        const response = await fetch(`/api/history_all?page=${page}&per_page=20`, { cache: 'no-store' });
         const data = await response.json();
 
         if (!data.success) {
