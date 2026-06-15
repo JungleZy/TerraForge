@@ -74,6 +74,16 @@
         </div>
     </nav>
 
+    <script>
+      (function () {
+        var p = location.pathname;
+        document.querySelectorAll('.navbar-nav .nav-link').forEach(function (a) {
+          var href = a.getAttribute('href');
+          if (href === p || (href === '/' && p === '/')) a.classList.add('active');
+        });
+      })();
+    </script>
+
     <!-- Main Content with padding-top for fixed navbar -->
     <main class="main-content">
         {% block content %}{% endblock %}

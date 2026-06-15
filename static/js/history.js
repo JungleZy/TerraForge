@@ -160,7 +160,7 @@ function renderHistoryMap(tasks) {
     geoTasks.forEach(task => {
         const bounds = [[task.south, task.west], [task.north, task.east]];
         const color = task.status === 'completed' ? '#10b981' :
-                     task.status === 'failed' ? '#ef4444' : '#f59e0b';
+                     task.status === 'failed' ? '#ef4444' : '#60a5fa';
 
         const rectangle = L.rectangle(bounds, {
             color: color,

@@ -110,9 +110,9 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 /* Navbar Styles */
 .navbar {
-    background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-bg-tertiary) 100%) !important;
-    border-bottom: 2px solid var(--color-accent-amber);
-    box-shadow: var(--shadow-md);
+    background: var(--color-bg-secondary) !important;
+    border-bottom: 1px solid var(--color-border);
+    box-shadow: var(--shadow-sm);
     backdrop-filter: blur(10px);
     padding: 0.5rem 0;
     min-height: 60px;
@@ -163,6 +163,14 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .nav-link:hover::after {
+    width: 80%;
+}
+
+.nav-link.active {
+    color: var(--color-text-primary) !important;
+}
+
+.nav-link.active::after {
     width: 80%;
 }
 
