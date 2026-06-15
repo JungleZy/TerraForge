@@ -8,6 +8,7 @@ Implements Web Mercator projection for converting geographic coordinates to tile
 import logging
 import math
 import asyncio
+import threading
 import aiohttp
 import aiofiles
 import os
@@ -26,6 +27,15 @@ TILE_SERVER_COUNT = 4  # Number of Google Maps tile servers (mts0-mts3)
 WARN_TILES_THRESHOLD = 100000  # Warn user if tile count exceeds this threshold
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
+
+
+class DownloadCancelled(Exception):
+    """Raised inside the download path when a task's stop flag is set.
+
+    Lets _download_single_tile distinguish a user cancellation from a genuine
+    download failure, so a cancelled tile is reported as 'cancelled' rather than
+    'failed' and the retry loop / queued-tile backlog stops immediately.
+    """
 
 
 class DownloadEngine:
@@ -265,12 +275,36 @@ class DownloadEngine:
         """
         return tile.cache_path(style)
 
+    async def _interruptible_sleep(
+        self,
+        seconds: float,
+        stop_flag: Optional[threading.Event] = None,
+        step: float = 0.25,
+    ) -> None:
+        """Sleep up to ``seconds``, but wake early as soon as stop_flag is set.
+
+        Keeps retry backoff from blocking cancellation: a cancelled task no
+        longer has to wait out a multi-second exponential backoff before it
+        notices the stop flag and gives up.
+        """
+        if stop_flag is None:
+            await asyncio.sleep(seconds)
+            return
+        remaining = float(seconds)
+        while remaining > 0:
+            if stop_flag.is_set():
+                return
+            chunk = min(step, remaining)
+            await asyncio.sleep(chunk)
+            remaining -= chunk
+
     async def download_tile(
         self,
         tile: Tile,
         style: str,
         session: aiohttp.ClientSession,
-        proxy_url: Optional[str] = None
+        proxy_url: Optional[str] = None,
+        stop_flag: Optional[threading.Event] = None
     ) -> bytes:
         """
         Download a single tile with retry logic and server rotation
@@ -301,6 +335,9 @@ class DownloadEngine:
         last_error = None
 
         for attempt in range(max_retries + 1):
+            # Cooperative cancellation: bail out before (re)issuing a request.
+            if stop_flag is not None and stop_flag.is_set():
+                raise DownloadCancelled()
             try:
                 # Rotate server index on each attempt
                 server_index = attempt % TILE_SERVER_COUNT
@@ -339,7 +376,12 @@ class DownloadEngine:
                 if attempt < max_retries:
                     backoff_time = 2 ** attempt
                     logger.debug(f"Waiting {backoff_time}s before retry...")
-                    await asyncio.sleep(backoff_time)
+                    await self._interruptible_sleep(backoff_time, stop_flag)
+
+        # If the loop ended because the task was cancelled, surface that rather
+        # than the last network error so the tile isn't recorded as 'failed'.
+        if stop_flag is not None and stop_flag.is_set():
+            raise DownloadCancelled()
 
         # All retries failed
         error_msg = f"Failed to download tile after {max_retries + 1} attempts: {last_error}"
@@ -353,7 +395,8 @@ class DownloadEngine:
         session: aiohttp.ClientSession,
         cache_enabled: bool,
         progress_callback=None,
-        proxy_url: str = ''
+        proxy_url: str = '',
+        stop_flag: Optional[threading.Event] = None
     ) -> Dict[str, Any]:
         """
         Download a single tile with cache check and progress reporting
@@ -406,7 +449,7 @@ class DownloadEngine:
                     )
 
             # Download tile
-            data = await self.download_tile(tile, style, session, proxy_url=proxy_url)
+            data = await self.download_tile(tile, style, session, proxy_url=proxy_url, stop_flag=stop_flag)
 
             if cache_enabled:
                 try:
@@ -439,6 +482,15 @@ class DownloadEngine:
                 'size': len(data)
             }
 
+        except DownloadCancelled:
+            # Task was cancelled mid-download: don't record this as a failure and
+            # don't fire the progress callback — the task is being torn down.
+            logger.info(f"Tile {tile.zoom}/{tile.x}/{tile.y} download cancelled")
+            return {
+                'tile': tile,
+                'status': 'cancelled'
+            }
+
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e!r}"
             logger.error(f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y}: {error_msg}")
@@ -457,7 +509,8 @@ class DownloadEngine:
         self,
         tiles: List[Tile],
         style: str,
-        progress_callback=None
+        progress_callback=None,
+        stop_flag: Optional[threading.Event] = None
     ) -> List[Dict[str, Any]]:
         """
         Download multiple tiles concurrently with semaphore control
@@ -500,13 +553,19 @@ class DownloadEngine:
             async def download_with_semaphore(tile: Tile):
                 """Download a single tile with semaphore control"""
                 async with semaphore:
+                    # Cooperative cancellation: a tile still queued behind the
+                    # semaphore when the task is cancelled is skipped here instead
+                    # of running its full timeout x retry budget to completion.
+                    if stop_flag is not None and stop_flag.is_set():
+                        return {'tile': tile, 'status': 'cancelled'}
                     return await self._download_single_tile(
                         tile=tile,
                         style=style,
                         session=session,
                         cache_enabled=cache_enabled,
                         progress_callback=progress_callback,
-                        proxy_url=proxy_url
+                        proxy_url=proxy_url,
+                        stop_flag=stop_flag
                     )
 
             # Create download tasks for all tiles
