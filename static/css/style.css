@@ -134,7 +134,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .navbar-brand:hover {
     color: var(--color-accent-amber) !important;
-    text-shadow: 0 0 20px rgba(245, 158, 11, 0.5);
+    text-shadow: none;
 }
 
 .nav-link {
@@ -469,7 +469,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .zoom-level:hover {
-    background: rgba(245, 158, 11, 0.05);
+    background: var(--color-accent-muted);
     border-color: var(--color-accent-amber);
 }
 
@@ -1035,7 +1035,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .table-hover tbody tr:hover {
-    background: rgba(245, 158, 11, 0.05) !important;
+    background: rgba(255, 255, 255, 0.03) !important;
 }
 
 .table-hover tbody tr:hover td {

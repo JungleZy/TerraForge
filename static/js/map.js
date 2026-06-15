@@ -20,7 +20,7 @@ function initMap(config) {
         draw: {
             rectangle: {
                 shapeOptions: {
-                    color: '#f59e0b',
+                    color: '#2dd4bf',
                     weight: 3,
                     fillOpacity: 0.1
                 }
@@ -43,10 +43,10 @@ function initMap(config) {
         const layer = event.layer;
 
         layer.setStyle({
-            color: '#f59e0b',
+            color: '#2dd4bf',
             weight: 3,
             fillOpacity: 0.15,
-            fillColor: '#fbbf24'
+            fillColor: '#5eead4'
         });
 
         drawnItems.addLayer(layer);
