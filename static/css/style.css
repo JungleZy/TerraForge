@@ -1418,3 +1418,14 @@ small {
 code {
     font-size: var(--font-size-sm) !important;
 }
+
+/* 下载表单分组标题 */
+.form-group-label {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin: 1.25rem 0 0.5rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--color-border);
+}
+.form-group-label:first-child { margin-top: 0; }

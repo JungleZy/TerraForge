@@ -81,10 +81,11 @@ function initDownloadTypeToggle() {
     if (!typeEl) return;
 
     const mapFields = [
-        document.getElementById('mapStyle')?.closest('.mb-3'),
         document.getElementById('zoomMin')?.closest('.row'),
         document.getElementById('outputFormat')?.closest('.mb-3'),
     ].filter(Boolean);
+
+    const mapStyleField = document.getElementById('mapStyleField');
 
     const demOptions = document.getElementById('demOptions');
 
@@ -92,9 +93,11 @@ function initDownloadTypeToggle() {
 
     function apply() {
         const t = typeEl.value;
+        const isMap = t === 'map';
         const isDem = t === 'dem';
         const isLocal = t === 'local_terrain';
         mapFields.forEach(el => el.style.display = (isDem || isLocal) ? 'none' : '');
+        if (mapStyleField) mapStyleField.style.display = isMap ? '' : 'none';
         if (demOptions) demOptions.style.display = isDem ? '' : 'none';
         if (localOptions) localOptions.style.display = isLocal ? '' : 'none';
 
