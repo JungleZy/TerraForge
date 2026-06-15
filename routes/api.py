@@ -553,7 +553,7 @@ def get_history_all():
 
             total_pages = (total_count + per_page - 1) // per_page
 
-            return jsonify({
+            resp = jsonify({
                 'success': True,
                 'tasks': tasks,
                 'pagination': {
@@ -563,6 +563,8 @@ def get_history_all():
                     'total_pages': total_pages
                 }
             })
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
 
         finally:
             conn.close()
@@ -604,7 +606,7 @@ def get_history_stats():
                 + _sum('local_terrain_tasks', 'uploaded_files')
             )
 
-            return jsonify({
+            resp = jsonify({
                 'success': True,
                 'stats': {
                     'total_tasks': m_total + d_total + l_total,
@@ -613,6 +615,8 @@ def get_history_stats():
                     'total_downloaded': total_downloaded,
                 }
             })
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
         finally:
             conn.close()
     except Exception as e:
