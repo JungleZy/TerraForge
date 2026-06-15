@@ -572,6 +572,54 @@ def get_history_all():
         return jsonify({'error': 'Failed to get combined history'}), 500
 
 
+@api_bp.route('/history_stats', methods=['GET'])
+def get_history_stats():
+    """Aggregate task counts and download totals across all three task tables."""
+    try:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+
+            def _counts(table):
+                cursor.execute(
+                    f"SELECT COUNT(*) AS total, "
+                    f"SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed, "
+                    f"SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed "
+                    f"FROM {table}"
+                )
+                row = cursor.fetchone()
+                return (int(row['total'] or 0), int(row['completed'] or 0), int(row['failed'] or 0))
+
+            def _sum(table, col):
+                cursor.execute(f"SELECT COALESCE(SUM({col}), 0) AS s FROM {table}")
+                return int(cursor.fetchone()['s'] or 0)
+
+            m_total, m_done, m_fail = _counts('tasks')
+            d_total, d_done, d_fail = _counts('dem_tasks')
+            l_total, l_done, l_fail = _counts('local_terrain_tasks')
+
+            total_downloaded = (
+                _sum('tasks', 'downloaded_tiles')
+                + _sum('dem_tasks', 'downloaded_files')
+                + _sum('local_terrain_tasks', 'uploaded_files')
+            )
+
+            return jsonify({
+                'success': True,
+                'stats': {
+                    'total_tasks': m_total + d_total + l_total,
+                    'completed': m_done + d_done + l_done,
+                    'failed': m_fail + d_fail + l_fail,
+                    'total_downloaded': total_downloaded,
+                }
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error getting history stats: {e}")
+        return jsonify({'error': 'Failed to get history stats'}), 500
+
+
 @api_bp.route('/config', methods=['GET'])
 def get_config():
     """
