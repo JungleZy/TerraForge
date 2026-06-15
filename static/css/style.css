@@ -128,7 +128,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: 1.3rem;
     letter-spacing: -0.02em;
     color: var(--color-accent-warm) !important;
-    text-transform: uppercase;
     transition: all 0.3s ease;
     padding: 0.5rem 1rem;
 }
@@ -176,21 +175,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     position: relative;
 }
 
-.main-content::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-image:
-        linear-gradient(rgba(245, 158, 11, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(245, 158, 11, 0.03) 1px, transparent 1px);
-    background-size: 50px 50px;
-    pointer-events: none;
-    opacity: 0.5;
-}
-
 /* Index page layout */
 .index-layout {
     height: calc(100vh - 60px);
@@ -217,16 +201,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-lg);
     position: relative;
-}
-
-.index-left .card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--color-accent-copper), var(--color-accent-amber), var(--color-accent-warm));
 }
 
 .index-left .card-body {
@@ -307,13 +281,11 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .task-card:hover {
     box-shadow: var(--shadow-md);
-    transform: translateX(4px);
     border-color: var(--color-accent-amber);
 }
 
 .task-card:hover::before {
     width: 6px;
-    box-shadow: var(--shadow-glow);
 }
 
 .task-card.status-running::before {
@@ -379,8 +351,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: 0.8rem;
     font-weight: 600;
     font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     transition: all 0.3s ease;
 }
 
@@ -443,26 +413,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
     position: relative;
     overflow: hidden;
-}
-
-.progress-bar::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-    animation: shimmer 2s infinite;
-}
-
-@keyframes shimmer {
-    0% {
-        left: -100%;
-    }
-    100% {
-        left: 200%;
-    }
 }
 
 .progress-bar.bg-success {
@@ -585,8 +535,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 8px;
     font-weight: 700;
     font-family: var(--font-display);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     transition: all 0.3s ease;
 }
 
@@ -611,9 +559,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-family: var(--font-display);
     padding: 1rem;
     border-bottom: 2px solid var(--color-accent-amber);
-    text-transform: uppercase;
     font-size: 0.85rem;
-    letter-spacing: 0.05em;
 }
 
 .history-table td {
@@ -629,7 +575,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .history-table tbody tr:hover {
     background: rgba(245, 158, 11, 0.05);
-    transform: translateX(4px);
 }
 
 /* Action Button Styles */
@@ -644,9 +589,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 700;
     padding: 0.5rem 1.25rem;
     font-family: var(--font-display);
-    text-transform: uppercase;
     font-size: 0.8rem;
-    letter-spacing: 0.05em;
     transition: all 0.3s ease;
 }
 
@@ -656,24 +599,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     transition: all 0.3s ease;
     position: relative;
     overflow: hidden;
-}
-
-.btn::before {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 0;
-    height: 0;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
-    transform: translate(-50%, -50%);
-    transition: width 0.6s, height 0.6s;
-}
-
-.btn:hover::before {
-    width: 300px;
-    height: 300px;
 }
 
 .btn-primary {
@@ -825,8 +750,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 12px 12px 0 0 !important;
     padding: 0.75rem 1rem;
     border-bottom: 2px solid var(--color-accent-amber);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     font-size: 0.9rem;
 }
 
@@ -888,7 +811,7 @@ h1, h2, h3, h4, h5, h6 {
 
 .stat-card:hover {
     transform: translateY(-4px);
-    box-shadow: var(--shadow-glow), var(--shadow-lg);
+    box-shadow: var(--shadow-lg);
 }
 
 .stat-card h3 {
@@ -905,8 +828,6 @@ h1, h2, h3, h4, h5, h6 {
     opacity: 0.95;
     font-family: var(--font-display);
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
 }
 
 /* Loading Spinner */
