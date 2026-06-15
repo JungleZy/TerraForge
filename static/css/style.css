@@ -1439,3 +1439,9 @@ code {
     font-size: var(--font-size-xs) !important;
     margin-top: 0.35rem;
 }
+
+.detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1.5rem; }
+.detail-item { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0; border-bottom: 1px solid var(--color-border); }
+.detail-k { font-size: var(--font-size-xs); color: var(--color-text-muted); }
+.detail-v { font-size: var(--font-size-sm); color: var(--color-text-primary); }
+@media (max-width: 576px) { .detail-grid { grid-template-columns: 1fr; } }
