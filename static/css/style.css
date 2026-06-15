@@ -1,38 +1,66 @@
 /* Import Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Outfit:wght@300;400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
 /* CSS Variables */
 :root {
-    --color-bg-primary: #0a0e1a;
-    --color-bg-secondary: #141824;
-    --color-bg-tertiary: #1a1f2e;
-    --color-accent-amber: #f59e0b;
-    --color-accent-copper: #d97706;
-    --color-accent-warm: #fbbf24;
-    --color-text-primary: #e5e7eb;
-    --color-text-secondary: #9ca3af;
-    --color-text-muted: #6b7280;
-    --color-border: #2d3748;
-    --color-success: #10b981;
-    --color-danger: #ef4444;
-    --color-warning: #f59e0b;
-    --color-info: #3b82f6;
+    /* 背景三层 */
+    --color-bg-primary:   #0c0d10;
+    --color-bg-secondary: #15171c;
+    --color-bg-tertiary:  #1c2027;
 
-    --font-display: 'Outfit', sans-serif;
-    --font-mono: 'Space Mono', monospace;
+    /* 边框 */
+    --color-border:        rgba(255,255,255,0.07);
+    --color-border-strong: rgba(255,255,255,0.12);
 
-    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
-    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
-    --shadow-glow: 0 0 20px rgba(245, 158, 11, 0.3);
+    /* 文字 */
+    --color-text-primary:   #e8eaed;
+    --color-text-secondary: #9aa0aa;
+    --color-text-muted:     #5f6670;
 
-    /* 统一字体大小 */
-    --font-size-xs: 0.75rem;      /* 12px - 小号文字 */
-    --font-size-sm: 0.875rem;     /* 14px - 次要文字 */
-    --font-size-base: 0.9375rem;  /* 15px - 基础文字 */
-    --font-size-md: 1rem;         /* 16px - 标准文字 */
-    --font-size-lg: 1.125rem;     /* 18px - 大号文字 */
-    --font-size-xl: 1.25rem;      /* 20px - 标题 */
+    /* 强调色：青绿 */
+    --color-accent:        #2dd4bf;
+    --color-accent-hover:  #5eead4;
+    --color-accent-strong: #14b8a6;
+    --color-accent-muted:  rgba(45,212,191,0.12);
+    --color-on-accent:     #04201c;
+
+    /* 兼容别名：旧名指向新值，避免改 JS 内联引用 */
+    --color-accent-amber:  var(--color-accent);
+    --color-accent-warm:   var(--color-accent-hover);
+    --color-accent-copper: var(--color-accent-strong);
+
+    /* 状态色（青绿=品牌，不当状态色） */
+    --color-success: #34d399;
+    --color-danger:  #f87171;
+    --color-warning: #fbbf24;
+    --color-info:    #60a5fa;
+    --color-success-bg: rgba(16,185,129,0.12);
+    --color-danger-bg:  rgba(239,68,68,0.12);
+    --color-warning-bg: rgba(245,158,11,0.12);
+    --color-info-bg:    rgba(96,165,250,0.12);
+
+    /* 字体 */
+    --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* 阴影（去发光，柔和深度） */
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
+    --shadow-lg: 0 12px 32px rgba(0,0,0,0.45);
+    --shadow-glow: none;
+
+    /* 圆角 */
+    --radius-sm: 8px;
+    --radius:    10px;
+    --radius-lg: 14px;
+
+    /* 字号系统（保留） */
+    --font-size-xs: 0.75rem;
+    --font-size-sm: 0.875rem;
+    --font-size-base: 0.9375rem;
+    --font-size-md: 1rem;
+    --font-size-lg: 1.125rem;
+    --font-size-xl: 1.25rem;
 }
 
 /* Global Styles */
@@ -51,7 +79,7 @@ body {
     background: var(--color-bg-primary) !important;
     color: var(--color-text-primary) !important;
     font-family: var(--font-display);
-    font-weight: 300;
+    font-weight: 400;
     font-size: var(--font-size-base);
 }
 
