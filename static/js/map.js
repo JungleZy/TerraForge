@@ -249,24 +249,11 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
 });
 
 function showNotification(message, type = 'info') {
-    const notification = document.createElement('div');
-    notification.className = `alert alert-${type}`;
-    notification.style.position = 'fixed';
-    notification.style.top = '80px';
-    notification.style.right = '20px';
-    notification.style.zIndex = '9999';
-    notification.style.minWidth = '300px';
-    notification.style.animation = 'fadeInUp 0.3s ease-out';
-    notification.innerHTML = message;
-
-    document.body.appendChild(notification);
-
-    setTimeout(() => {
-        notification.style.animation = 'fadeOut 0.3s ease-out';
-        setTimeout(() => {
-            document.body.removeChild(notification);
-        }, 300);
-    }, 3000);
+    // 委托给全局 showToast（ui.js）。保留函数名，map.js 内 13 处调用无需改动。
+    if (window.showToast) {
+        return window.showToast(message, type);
+    }
+    alert(message); // 兜底：ui.js 未加载时退回原生
 }
 
 const style = document.createElement('style');

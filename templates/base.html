@@ -103,6 +103,9 @@
     <!-- Socket.IO 4.5.4 -->
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 
+    <!-- 全局 UI 组件：自定义 Toast / Confirm（替代原生 alert/confirm） -->
+    <script src="{{ url_for('static', filename='js/ui.js') }}"></script>
+
     {% block extra_js %}{% endblock %}
 </body>
 </html>

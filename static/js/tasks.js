@@ -529,7 +529,7 @@ async function startTask(taskId, taskType = 'map') {
             throw new Error('启动任务失败');
         }
     } catch (error) {
-        alert('启动任务失败: ' + error.message);
+        showToast('启动任务失败: ' + error.message, 'danger');
     }
 }
 
@@ -542,7 +542,7 @@ async function pauseTask(taskId, taskType = 'map') {
             throw new Error('暂停任务失败');
         }
     } catch (error) {
-        alert('暂停任务失败: ' + error.message);
+        showToast('暂停任务失败: ' + error.message, 'danger');
     }
 }
 
@@ -555,12 +555,12 @@ async function resumeTask(taskId, taskType = 'map') {
             throw new Error('恢复任务失败');
         }
     } catch (error) {
-        alert('恢复任务失败: ' + error.message);
+        showToast('恢复任务失败: ' + error.message, 'danger');
     }
 }
 
 async function cancelTask(taskId, taskType = 'map') {
-    if (!confirm('确定要取消这个任务吗？')) {
+    if (!await showConfirm('确定要取消这个任务吗？', { title: '取消任务', danger: true })) {
         return;
     }
 
@@ -578,9 +578,9 @@ async function cancelTask(taskId, taskType = 'map') {
             renderActiveTasks(Array.from(activeTasks.values()));
         } else {
             const result = await response.json().catch(() => ({}));
-            alert('取消任务失败: ' + (result.error || response.status));
+            showToast('取消任务失败: ' + (result.error || response.status), 'danger');
         }
     } catch (error) {
-        alert('取消任务失败: ' + error.message);
+        showToast('取消任务失败: ' + error.message, 'danger');
     }
 }

@@ -697,3 +697,27 @@ def update_config():
     except Exception as e:
         logger.error(f"Error updating config: {e}")
         return jsonify({'error': 'Failed to update config'}), 500
+
+
+@api_bp.route('/config/reset', methods=['POST'])
+def reset_config():
+    """
+    Reset all configuration settings to their default values.
+
+    Deletes every config row and re-seeds DEFAULT_CONFIGS (this also clears
+    proxy_url and Earthdata credentials — that is the intended "reset all"
+    semantics; the UI confirms with the user before calling this).
+
+    Returns:
+        JSON response with success status
+    """
+    try:
+        config_manager.reset_to_defaults()
+        return jsonify({
+            'success': True,
+            'message': 'Configuration reset to defaults'
+        })
+
+    except Exception as e:
+        logger.error(f"Error resetting config: {e}")
+        return jsonify({'error': 'Failed to reset config'}), 500

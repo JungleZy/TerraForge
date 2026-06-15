@@ -39,19 +39,31 @@ async function saveConfig(e) {
         const result = await response.json();
 
         if (response.ok) {
-            alert('配置保存成功！');
+            showToast('配置保存成功！', 'success');
         } else {
-            alert('保存失败: ' + result.error);
+            showToast('保存失败: ' + result.error, 'danger');
         }
     } catch (error) {
-        alert('保存失败: ' + error.message);
+        showToast('保存失败: ' + error.message, 'danger');
     }
 }
 
 async function resetConfig() {
-    if (!confirm('确定要重置所有配置为默认值吗？')) {
+    if (!await showConfirm('确定要重置所有配置为默认值吗？', { title: '重置配置', danger: true })) {
         return;
     }
 
-    location.reload();
+    try {
+        const response = await fetch('/api/config/reset', { method: 'POST' });
+        const result = await response.json().catch(() => ({}));
+        if (response.ok) {
+            showToast('已重置为默认配置', 'success');
+            // 略等一下让用户看到提示，再刷新（服务端会用默认值重渲染表单）
+            setTimeout(() => location.reload(), 600);
+        } else {
+            showToast('重置失败: ' + (result.error || response.status), 'danger');
+        }
+    } catch (error) {
+        showToast('重置失败: ' + error.message, 'danger');
+    }
 }
