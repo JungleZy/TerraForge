@@ -228,13 +228,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .index-right::-webkit-scrollbar-thumb {
-    background: var(--color-accent-copper);
+    background: var(--color-border-strong);
     border-radius: 4px;
     transition: background 0.3s ease;
 }
 
 .index-right::-webkit-scrollbar-thumb:hover {
-    background: var(--color-accent-amber);
+    background: var(--color-text-muted);
 }
 
 /* Map Styles */
@@ -403,12 +403,17 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .progress {
-    height: 28px;
-    border-radius: 8px;
+    height: 8px;
+    border-radius: 999px;
     background: var(--color-bg-tertiary);
     overflow: hidden;
-    border: 1px solid var(--color-border);
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+    border: none;
+    box-shadow: none;
+}
+
+.modal .progress {
+    height: 22px;
+    border-radius: var(--radius-sm);
 }
 
 .progress-bar {
@@ -424,19 +429,19 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .progress-bar.bg-success {
-    background: linear-gradient(135deg, var(--color-success), #059669) !important;
+    background: var(--color-success) !important;
 }
 
 .progress-bar.bg-info {
-    background: linear-gradient(135deg, var(--color-info), #2563eb) !important;
+    background: var(--color-info) !important;
 }
 
 .progress-bar.bg-warning {
-    background: linear-gradient(135deg, var(--color-warning), var(--color-accent-copper)) !important;
+    background: var(--color-warning) !important;
 }
 
 .progress-bar.bg-danger {
-    background: linear-gradient(135deg, var(--color-danger), #dc2626) !important;
+    background: var(--color-danger) !important;
 }
 
 /* Zoom Progress Styles */
@@ -561,13 +566,11 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .history-table th {
-    background: linear-gradient(135deg, var(--color-bg-tertiary), var(--color-bg-secondary));
-    color: var(--color-accent-warm);
-    font-weight: 700;
-    font-family: var(--font-display);
-    padding: 1rem;
-    border-bottom: 2px solid var(--color-accent-amber);
-    font-size: 0.85rem;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .history-table td {
@@ -582,7 +585,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .history-table tbody tr:hover {
-    background: rgba(245, 158, 11, 0.05);
+    background: rgba(255, 255, 255, 0.03);
 }
 
 /* Action Button Styles */
@@ -739,31 +742,31 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .card {
     border-radius: 12px;
     border: 1px solid var(--color-border);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-sm);
     background: var(--color-bg-secondary);
     transition: all 0.3s ease;
     margin-bottom: 0.75rem;
 }
 
 .card:hover {
-    box-shadow: var(--shadow-lg);
+    border-color: var(--color-border-strong);
+    box-shadow: var(--shadow-md);
 }
 
 .card-header {
-    background: linear-gradient(135deg, var(--color-bg-tertiary), var(--color-bg-secondary));
-    color: var(--color-accent-warm);
-    font-weight: 700;
-    font-family: var(--font-display);
-    border-radius: 12px 12px 0 0 !important;
-    padding: 0.75rem 1rem;
-    border-bottom: 2px solid var(--color-accent-amber);
-    font-size: 0.9rem;
+    background: transparent;
+    color: var(--color-text-primary);
+    font-weight: 600;
+    border-bottom: 1px solid var(--color-border);
+    border-radius: var(--radius) var(--radius) 0 0 !important;
+    padding: 0.85rem 1rem;
 }
 
 .card-header h5 {
     margin: 0;
     font-size: 0.95rem;
-    font-weight: 700;
+    font-weight: 600;
+    color: var(--color-text-primary);
 }
 
 .card-body {
@@ -806,35 +809,41 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Statistics Styles */
 .stat-card {
-    text-align: center;
-    padding: 1.5rem;
-    border-radius: 12px;
-    background: linear-gradient(135deg, var(--color-accent-copper) 0%, var(--color-accent-amber) 100%);
-    color: var(--color-bg-primary);
-    box-shadow: var(--shadow-lg);
-    border: 1px solid var(--color-accent-warm);
-    transition: all 0.3s ease;
+    text-align: left;
+    padding: 1.25rem 1.5rem;
+    border-radius: var(--radius);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-sm);
+    color: var(--color-text-primary);
 }
 
 .stat-card:hover {
-    transform: translateY(-4px);
-    box-shadow: var(--shadow-lg);
+    border-color: var(--color-border-strong);
 }
 
 .stat-card h3 {
-    font-size: 2.75rem;
-    font-weight: 700;
+    font-size: 2rem;
+    font-weight: 600;
     font-family: var(--font-mono);
-    margin-bottom: 0.5rem;
-    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+    color: var(--color-text-primary) !important;
+    margin: 0 0 0.25rem 0;
+    text-shadow: none;
 }
 
 .stat-card p {
-    font-size: 1rem;
-    margin-bottom: 0;
-    opacity: 0.95;
-    font-family: var(--font-display);
-    font-weight: 600;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    margin: 0;
+    font-weight: 500;
+}
+
+.stat-card.accent h3 {
+    color: var(--color-accent) !important;
+}
+
+.stat-card.danger h3 {
+    color: var(--color-danger) !important;
 }
 
 /* Loading Spinner */
@@ -908,8 +917,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .modal-header {
-    background: linear-gradient(135deg, var(--color-bg-tertiary), var(--color-bg-secondary));
-    border-bottom: 2px solid var(--color-accent-amber);
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border);
     color: var(--color-text-primary);
     padding: 1.25rem;
 }
@@ -917,7 +926,7 @@ h1, h2, h3, h4, h5, h6 {
 .modal-title {
     font-family: var(--font-display);
     font-weight: 700;
-    color: var(--color-accent-warm);
+    color: var(--color-text-primary);
 }
 
 .modal-body {
@@ -970,9 +979,9 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .page-item.active .page-link {
-    background: linear-gradient(135deg, var(--color-accent-copper), var(--color-accent-amber));
-    border-color: var(--color-accent-amber);
-    color: var(--color-bg-primary);
+    background: var(--color-accent-strong);
+    border-color: var(--color-accent-strong);
+    color: var(--color-on-accent);
     font-weight: 700;
 }
 
@@ -1207,13 +1216,13 @@ code {
 }
 
 *::-webkit-scrollbar-thumb {
-    background: var(--color-accent-copper);
+    background: var(--color-border-strong);
     border-radius: 4px;
     transition: background 0.3s ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-    background: var(--color-accent-amber);
+    background: var(--color-text-muted);
 }
 
 /* Smooth Transitions */
