@@ -420,7 +420,7 @@ def test_download_tiles_batch_passes_cache_enabled_false(download_engine):
     ConfigManager().set('cache_enabled', 'false')
     seen = []
 
-    async def fake_single(tile, style, session, cache_enabled, progress_callback=None, proxy_url=''):
+    async def fake_single(tile, style, session, cache_enabled, progress_callback=None, proxy_url='', stop_flag=None):
         seen.append(cache_enabled)
         return {'tile': tile, 'status': 'completed'}
 
@@ -438,7 +438,7 @@ def test_download_single_tile_does_not_use_cache_when_disabled(download_engine):
     cache_path.write_bytes(b'cached')
     downloaded = {'called': False}
 
-    async def fake_download_tile(tile, style, session, proxy_url=''):
+    async def fake_download_tile(tile, style, session, proxy_url='', stop_flag=None):
         downloaded['called'] = True
         return b'fresh'
 
@@ -455,7 +455,7 @@ def test_download_single_tile_writes_cache_atomically(download_engine):
     tile = Tile(task_id=1, zoom=0, x=1, y=0)
     cache_path = tile.cache_path('s')
 
-    async def fake_download_tile(tile, style, session, proxy_url=''):
+    async def fake_download_tile(tile, style, session, proxy_url='', stop_flag=None):
         return b'fresh'
 
     download_engine.download_tile = fake_download_tile
@@ -495,3 +495,88 @@ def test_download_tile_passes_proxy_to_session(download_engine):
 
     assert data == b'tile'
     assert seen == ['http://127.0.0.1:7890']
+
+
+# ---------------------------------------------------------------------------
+# Cooperative cancellation (stop_flag) — mirrors the DEM engine's behaviour so
+# that cancelling a task stops in-flight retries and skips queued tiles instead
+# of letting every tile run its full timeout x retry budget to completion.
+# ---------------------------------------------------------------------------
+
+def test_download_tile_does_not_request_when_stop_flag_already_set(download_engine):
+    """If the task is already cancelled, download_tile must not hit the network."""
+    import threading
+    from services.download_engine import DownloadCancelled
+
+    stop = threading.Event()
+    stop.set()
+
+    calls = []
+
+    class FakeSession:
+        def get(self, url, timeout=None, proxy=None):
+            calls.append(url)
+            raise AssertionError("must not download once cancelled")
+
+    with pytest.raises(DownloadCancelled):
+        asyncio.run(download_engine.download_tile(
+            Tile(task_id=1, zoom=0, x=0, y=0), 's', FakeSession(), stop_flag=stop
+        ))
+
+    assert calls == []
+
+
+def test_download_tile_stops_retrying_after_stop_flag_set(download_engine):
+    """Reproduces the bug: cancelling mid-retry must abort the retry loop at once.
+
+    With max_retries=3 an unresponsive tile would normally be attempted 4 times.
+    Once the stop flag is set after the first failure, no further attempt may run.
+    """
+    import threading
+    from services.download_engine import DownloadCancelled
+
+    stop = threading.Event()
+    attempts = []
+
+    class FailingResponse:
+        async def __aenter__(self):
+            raise asyncio.TimeoutError()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeSession:
+        def get(self, url, timeout=None, proxy=None):
+            attempts.append(url)
+            stop.set()  # user cancels during the very first attempt
+            return FailingResponse()
+
+    with pytest.raises(DownloadCancelled):
+        asyncio.run(download_engine.download_tile(
+            Tile(task_id=1, zoom=0, x=0, y=0), 's', FakeSession(), stop_flag=stop
+        ))
+
+    assert len(attempts) == 1
+
+
+def test_download_tiles_batch_skips_queued_tiles_when_stopped(download_engine):
+    """A cancelled batch must skip tiles that have not started downloading yet."""
+    import threading
+
+    stop = threading.Event()
+    stop.set()
+
+    downloaded = []
+
+    async def fake_single(tile, style, session, cache_enabled,
+                          progress_callback=None, proxy_url='', stop_flag=None):
+        downloaded.append(tile)
+        return {'tile': tile, 'status': 'completed'}
+
+    download_engine._download_single_tile = fake_single
+
+    tiles = [Tile(task_id=1, zoom=0, x=i, y=0) for i in range(5)]
+    results = asyncio.run(download_engine.download_tiles_batch(tiles, 's', stop_flag=stop))
+
+    assert downloaded == []
+    assert all(r['status'] == 'cancelled' for r in results)

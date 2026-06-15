@@ -330,7 +330,7 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         const modal = new bootstrap.Modal(document.getElementById('taskDetailModal'));
         modal.show();
     } catch (error) {
-        alert('获取任务详情失败');
+        showToast('获取任务详情失败', 'danger');
     }
 }
 
@@ -347,7 +347,7 @@ function initTerrainDetailActions(taskId) {
                 throw new Error(j.error || '启动切片失败');
             }
         } catch (e) {
-            alert(String(e.message || e));
+            showToast(String(e.message || e), 'danger');
         } finally {
             startBtn.disabled = false;
             await refreshTerrainDetail(taskId);
@@ -423,7 +423,7 @@ async function refreshTerrainDetail(taskId) {
 }
 
 async function deleteTask(taskId, taskType = 'map') {
-    if (!confirm('确定要删除这个任务吗？')) {
+    if (!await showConfirm('确定要删除这个任务吗？', { title: '删除任务', danger: true })) {
         return;
     }
 
@@ -434,13 +434,13 @@ async function deleteTask(taskId, taskType = 'map') {
         const response = await fetch(deleteUrl, { method: 'DELETE' });
 
         if (response.ok) {
-            alert('任务已删除');
+            showToast('任务已删除', 'success');
             loadHistory(currentPage);
             loadStats();
         } else {
-            alert('删除失败');
+            showToast('删除失败', 'danger');
         }
     } catch (error) {
-        alert('删除失败: ' + error.message);
+        showToast('删除失败: ' + error.message, 'danger');
     }
 }

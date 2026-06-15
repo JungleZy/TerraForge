@@ -860,7 +860,8 @@ class TaskManager:
                 await self.download_engine.download_tiles_batch(
                     tiles=tiles,
                     style=style_code,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    stop_flag=stop_flag
                 )
 
                 logger.info(f"Task {task_id}: Tile download completed")

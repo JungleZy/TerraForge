@@ -1453,3 +1453,163 @@ code {
 .detail-k { font-size: var(--font-size-xs); color: var(--color-text-muted); }
 .detail-v { font-size: var(--font-size-sm); color: var(--color-text-primary); }
 @media (max-width: 576px) { .detail-grid { grid-template-columns: 1fr; } }
+
+/* ========================================================================
+   全局 UI 组件：Toast 通知 + Confirm 模态框（替代原生 alert/confirm）
+   均使用 :root 设计变量，与 premium 深色 + teal 主题统一。命名加 app- 前缀
+   以避开 Bootstrap 的 .toast / .modal / .alert。
+   ======================================================================== */
+
+/* ---- Toast 容器（右上角堆叠） ---- */
+#app-toast-container {
+    position: fixed;
+    top: 76px;
+    right: 20px;
+    z-index: 11000;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+    max-width: min(380px, calc(100vw - 40px));
+    pointer-events: none; /* 容器穿透，子项各自接收事件 */
+}
+
+/* ---- 单条 Toast ---- */
+.app-toast {
+    pointer-events: auto;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.75rem 0.875rem;
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border-strong);
+    border-left: 3px solid var(--color-info);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    color: var(--color-text-primary);
+    font-family: var(--font-display);
+    font-size: var(--font-size-sm);
+    line-height: 1.45;
+    opacity: 0;
+    transform: translateX(16px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.app-toast--in { opacity: 1; transform: translateX(0); }
+.app-toast--out { opacity: 0; transform: translateX(16px); }
+
+.app-toast__icon { flex: 0 0 auto; display: inline-flex; margin-top: 1px; }
+.app-toast__icon svg { width: 18px; height: 18px; display: block; }
+.app-toast__msg { flex: 1 1 auto; word-break: break-word; }
+.app-toast__close {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    font-size: 1.15rem;
+    line-height: 1;
+    padding: 0 0.15rem;
+    margin: -2px -2px 0 0;
+    transition: color 0.15s ease;
+}
+.app-toast__close:hover { color: var(--color-text-primary); }
+
+/* 状态色：左边条 + 图标 */
+.app-toast--success { border-left-color: var(--color-success); }
+.app-toast--success .app-toast__icon { color: var(--color-success); }
+.app-toast--danger { border-left-color: var(--color-danger); }
+.app-toast--danger .app-toast__icon { color: var(--color-danger); }
+.app-toast--warning { border-left-color: var(--color-warning); }
+.app-toast--warning .app-toast__icon { color: var(--color-warning); }
+.app-toast--info { border-left-color: var(--color-info); }
+.app-toast--info .app-toast__icon { color: var(--color-info); }
+
+/* ---- Confirm 遮罩 ---- */
+.app-confirm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 12000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(4, 6, 10, 0.62);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+.app-confirm-overlay--in { opacity: 1; }
+.app-confirm-overlay--out { opacity: 0; }
+
+/* ---- Confirm 卡片 ---- */
+.app-confirm {
+    width: 100%;
+    max-width: 400px;
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    padding: 1.5rem;
+    font-family: var(--font-display);
+    transform: scale(0.96);
+    transition: transform 0.2s ease;
+}
+.app-confirm-overlay--in .app-confirm { transform: scale(1); }
+
+.app-confirm__title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    color: var(--color-text-primary);
+    margin-bottom: 0.5rem;
+}
+.app-confirm__msg {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    line-height: 1.55;
+    margin-bottom: 1.5rem;
+    word-break: break-word;
+}
+.app-confirm__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.625rem;
+}
+.app-confirm__btn {
+    padding: 0.5rem 1.1rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-display);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.app-confirm__btn--cancel {
+    background: transparent;
+    border-color: var(--color-border-strong);
+    color: var(--color-text-secondary);
+}
+.app-confirm__btn--cancel:hover {
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+}
+.app-confirm__btn--ok {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+}
+.app-confirm__btn--ok:hover { background: var(--color-accent-hover); }
+.app-confirm__btn--ok.is-danger {
+    background: var(--color-danger);
+    color: #fff;
+}
+.app-confirm__btn--ok.is-danger:hover { background: #ef4444; }
+.app-confirm__btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+}
+
+@media (max-width: 480px) {
+    #app-toast-container { left: 16px; right: 16px; max-width: none; }
+    .app-confirm__actions { flex-direction: column-reverse; }
+    .app-confirm__btn { width: 100%; }
+}

@@ -120,7 +120,7 @@ def test_map_tile_failure_marks_parent_failed_not_completed(monkeypatch, tmp_pat
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback):
+    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
         await progress_callback(tiles[0], "failed", "boom")
         return [{"tile": tiles[0], "status": "failed", "error": "boom"}]
 
@@ -162,7 +162,7 @@ def test_map_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path)
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback):
+    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
         tm.cancel_task(task_id)
         raise RuntimeError("network died after cancel")
 
@@ -201,7 +201,7 @@ def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
     tm_mod = importlib.import_module("services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback):
+    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
         await progress_callback(tiles[0], "completed", None)
         await progress_callback(tiles[0], "completed", None)
         return [{"tile": tiles[0], "status": "completed"}]
