@@ -5,6 +5,7 @@ let allTasks = [];
 function initHistory() {
     initHistoryMap();
     loadHistory(1);
+    loadStats();
 
     document.getElementById('searchInput').addEventListener('input', function(e) {
         filterTasks(e.target.value);
@@ -17,6 +18,21 @@ function initHistoryMap() {
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors'
     }).addTo(historyMap);
+}
+
+async function loadStats() {
+    try {
+        const r = await fetch('/api/history_stats');
+        const j = await r.json();
+        if (!j.success) return;
+        const s = j.stats;
+        document.getElementById('statTotal').textContent = s.total_tasks;
+        document.getElementById('statCompleted').textContent = s.completed;
+        document.getElementById('statFailed').textContent = s.failed;
+        document.getElementById('statDownloaded').textContent = s.total_downloaded.toLocaleString();
+    } catch (e) {
+        console.error('Failed to load stats:', e);
+    }
 }
 
 async function loadHistory(page = 1) {
@@ -144,7 +160,7 @@ function renderHistoryMap(tasks) {
     geoTasks.forEach(task => {
         const bounds = [[task.south, task.west], [task.north, task.east]];
         const color = task.status === 'completed' ? '#10b981' :
-                     task.status === 'failed' ? '#ef4444' : '#f59e0b';
+                     task.status === 'failed' ? '#ef4444' : '#60a5fa';
 
         const rectangle = L.rectangle(bounds, {
             color: color,
@@ -419,6 +435,7 @@ async function deleteTask(taskId, taskType = 'map') {
         if (response.ok) {
             alert('任务已删除');
             loadHistory(currentPage);
+            loadStats();
         } else {
             alert('删除失败');
         }

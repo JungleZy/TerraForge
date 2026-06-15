@@ -44,6 +44,7 @@
             </div>
             <div class="card-body">
                 <form id="downloadForm">
+                    <div class="form-group-label">基础</div>
                     <div class="mb-3">
                         <label for="taskName" class="form-label">任务名称</label>
                         <input type="text" class="form-control" id="taskName" placeholder="输入任务名称..." required>
@@ -58,7 +59,8 @@
                         </select>
                     </div>
 
-                    <div class="mb-3">
+                    <div class="form-group-label">范围与层级</div>
+                    <div class="mb-3" id="mapStyleField">
                         <label for="mapStyle" class="form-label">地图样式</label>
                         <select class="form-select" id="mapStyle">
                             <option value="m">标准地图</option>
@@ -107,6 +109,7 @@
                         <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
                     </div>
 
+                    <div class="form-group-label">输出</div>
                     <div class="mb-3">
                         <label for="outputPath" class="form-label">保存路径</label>
                         <input type="text" class="form-control" id="outputPath" value="./downloads/map" placeholder="输入保存路径...">

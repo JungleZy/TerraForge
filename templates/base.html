@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Google Maps 下载器{% endblock %}</title>
 
+    <!-- Fonts: Inter (UI) + JetBrains Mono (数字) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
     <!-- Bootstrap 5.3 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
 
@@ -68,6 +73,16 @@
             </div>
         </div>
     </nav>
+
+    <script>
+      (function () {
+        var p = location.pathname;
+        document.querySelectorAll('.navbar-nav .nav-link').forEach(function (a) {
+          var href = a.getAttribute('href');
+          if (href === p || (href === '/' && p === '/')) a.classList.add('active');
+        });
+      })();
+    </script>
 
     <!-- Main Content with padding-top for fixed navbar -->
     <main class="main-content">

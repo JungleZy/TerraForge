@@ -6,6 +6,14 @@
 <div class="container-fluid" style="padding: 1rem; max-width: 1400px;">
     <div class="row">
         <div class="col-12">
+            <div class="row" id="statsRow" style="margin-bottom: 1rem;">
+                <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statTotal">-</h3><p>总任务</p></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card accent"><h3 id="statCompleted">-</h3><p>已完成</p></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card danger"><h3 id="statFailed">-</h3><p>失败</p></div></div>
+                <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statDownloaded">-</h3><p>累计下载量</p></div></div>
+            </div>
+        </div>
+        <div class="col-12">
             <div class="card mb-3">
                 <div class="card-header">
                     <h5>
@@ -95,41 +103,39 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
+                <div class="detail-grid">
+                  <div class="detail-item"><span class="detail-k">任务ID</span><span class="detail-v" id="detailId"></span></div>
+                  <div class="detail-item"><span class="detail-k">任务名称</span><span class="detail-v" id="detailName"></span></div>
+                  <div class="detail-item"><span class="detail-k">状态</span><span class="detail-v" id="detailStatus"></span></div>
+                  <div class="detail-item"><span class="detail-k">地图样式</span><span class="detail-v" id="detailStyle"></span></div>
+                  <div class="detail-item"><span class="detail-k">输出格式</span><span class="detail-v" id="detailFormat"></span></div>
+                  <div class="detail-item"><span class="detail-k">缩放级别</span><span class="detail-v" id="detailZoom"></span></div>
+                  <div class="detail-item"><span class="detail-k">总数量</span><span class="detail-v" id="detailTotal"></span></div>
+                  <div class="detail-item"><span class="detail-k">已下载</span><span class="detail-v" id="detailDownloaded"></span></div>
+                  <div class="detail-item"><span class="detail-k">失败</span><span class="detail-v" id="detailFailed"></span></div>
+                </div>
+                <div style="margin-top:1rem;"><span class="detail-k">进度</span> <span id="detailProgress"></span></div>
+                <hr style="border-color: var(--color-border);">
                 <div class="row">
-                    <div class="col-md-6">
-                        <p><strong>任务ID:</strong> <span id="detailId"></span></p>
-                        <p><strong>任务名称:</strong> <span id="detailName"></span></p>
-                        <p><strong>状态:</strong> <span id="detailStatus"></span></p>
-                        <p><strong>地图样式:</strong> <span id="detailStyle"></span></p>
-                        <p><strong>输出格式:</strong> <span id="detailFormat"></span></p>
-                    </div>
-                    <div class="col-md-6">
-                        <p><strong>缩放级别:</strong> <span id="detailZoom"></span></p>
-                        <p><strong>总数量:</strong> <span id="detailTotal"></span></p>
-                        <p><strong>已下载:</strong> <span id="detailDownloaded"></span></p>
-                        <p><strong>失败:</strong> <span id="detailFailed"></span></p>
-                        <p><strong>进度:</strong> <span id="detailProgress"></span></p>
+                    <div class="col-12">
+                        <p class="detail-k" style="margin-bottom: 0.5rem;">区域范围</p>
+                        <div class="detail-grid">
+                            <div class="detail-item"><span class="detail-k">北纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailNorth"></span></div>
+                            <div class="detail-item"><span class="detail-k">南纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailSouth"></span></div>
+                            <div class="detail-item"><span class="detail-k">东经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailEast"></span></div>
+                            <div class="detail-item"><span class="detail-k">西经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailWest"></span></div>
+                        </div>
                     </div>
                 </div>
                 <hr style="border-color: var(--color-border);">
                 <div class="row">
                     <div class="col-12">
-                        <p><strong>区域范围:</strong></p>
-                        <ul style="font-family: var(--font-mono); font-size: 0.9rem;">
-                            <li>北纬: <span id="detailNorth"></span></li>
-                            <li>南纬: <span id="detailSouth"></span></li>
-                            <li>东经: <span id="detailEast"></span></li>
-                            <li>西经: <span id="detailWest"></span></li>
-                        </ul>
-                    </div>
-                </div>
-                <hr style="border-color: var(--color-border);">
-                <div class="row">
-                    <div class="col-12">
-                        <p><strong>输出路径:</strong> <code id="detailPath"></code></p>
-                        <p><strong>创建时间:</strong> <span id="detailCreated"></span></p>
-                        <p><strong>开始时间:</strong> <span id="detailStarted"></span></p>
-                        <p><strong>完成时间:</strong> <span id="detailCompleted"></span></p>
+                        <div class="detail-item"><span class="detail-k">输出路径</span><span class="detail-v"><code id="detailPath"></code></span></div>
+                        <div class="detail-grid" style="margin-top: 0.5rem;">
+                            <div class="detail-item"><span class="detail-k">创建时间</span><span class="detail-v" id="detailCreated"></span></div>
+                            <div class="detail-item"><span class="detail-k">开始时间</span><span class="detail-v" id="detailStarted"></span></div>
+                            <div class="detail-item"><span class="detail-k">完成时间</span><span class="detail-v" id="detailCompleted"></span></div>
+                        </div>
                     </div>
                 </div>
                 <div class="row" id="detailErrorRow" style="display: none;">

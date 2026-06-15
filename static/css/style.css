@@ -1,38 +1,66 @@
 /* Import Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Outfit:wght@300;400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
 /* CSS Variables */
 :root {
-    --color-bg-primary: #0a0e1a;
-    --color-bg-secondary: #141824;
-    --color-bg-tertiary: #1a1f2e;
-    --color-accent-amber: #f59e0b;
-    --color-accent-copper: #d97706;
-    --color-accent-warm: #fbbf24;
-    --color-text-primary: #e5e7eb;
-    --color-text-secondary: #9ca3af;
-    --color-text-muted: #6b7280;
-    --color-border: #2d3748;
-    --color-success: #10b981;
-    --color-danger: #ef4444;
-    --color-warning: #f59e0b;
-    --color-info: #3b82f6;
+    /* 背景三层 */
+    --color-bg-primary:   #0c0d10;
+    --color-bg-secondary: #15171c;
+    --color-bg-tertiary:  #1c2027;
 
-    --font-display: 'Outfit', sans-serif;
-    --font-mono: 'Space Mono', monospace;
+    /* 边框 */
+    --color-border:        rgba(255,255,255,0.07);
+    --color-border-strong: rgba(255,255,255,0.12);
 
-    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
-    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
-    --shadow-glow: 0 0 20px rgba(245, 158, 11, 0.3);
+    /* 文字 */
+    --color-text-primary:   #e8eaed;
+    --color-text-secondary: #9aa0aa;
+    --color-text-muted:     #5f6670;
 
-    /* 统一字体大小 */
-    --font-size-xs: 0.75rem;      /* 12px - 小号文字 */
-    --font-size-sm: 0.875rem;     /* 14px - 次要文字 */
-    --font-size-base: 0.9375rem;  /* 15px - 基础文字 */
-    --font-size-md: 1rem;         /* 16px - 标准文字 */
-    --font-size-lg: 1.125rem;     /* 18px - 大号文字 */
-    --font-size-xl: 1.25rem;      /* 20px - 标题 */
+    /* 强调色：青绿 */
+    --color-accent:        #2dd4bf;
+    --color-accent-hover:  #5eead4;
+    --color-accent-strong: #14b8a6;
+    --color-accent-muted:  rgba(45,212,191,0.12);
+    --color-on-accent:     #04201c;
+
+    /* 兼容别名：旧名指向新值，避免改 JS 内联引用 */
+    --color-accent-amber:  var(--color-accent);
+    --color-accent-warm:   var(--color-accent-hover);
+    --color-accent-copper: var(--color-accent-strong);
+
+    /* 状态色（青绿=品牌，不当状态色） */
+    --color-success: #34d399;
+    --color-danger:  #f87171;
+    --color-warning: #fbbf24;
+    --color-info:    #60a5fa;
+    --color-success-bg: rgba(16,185,129,0.12);
+    --color-danger-bg:  rgba(239,68,68,0.12);
+    --color-warning-bg: rgba(245,158,11,0.12);
+    --color-info-bg:    rgba(96,165,250,0.12);
+
+    /* 字体 */
+    --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+    /* 阴影（去发光，柔和深度） */
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
+    --shadow-lg: 0 12px 32px rgba(0,0,0,0.45);
+    --shadow-glow: none;
+
+    /* 圆角 */
+    --radius-sm: 8px;
+    --radius:    10px;
+    --radius-lg: 14px;
+
+    /* 字号系统（保留） */
+    --font-size-xs: 0.75rem;
+    --font-size-sm: 0.875rem;
+    --font-size-base: 0.9375rem;
+    --font-size-md: 1rem;
+    --font-size-lg: 1.125rem;
+    --font-size-xl: 1.25rem;
 }
 
 /* Global Styles */
@@ -51,7 +79,7 @@ body {
     background: var(--color-bg-primary) !important;
     color: var(--color-text-primary) !important;
     font-family: var(--font-display);
-    font-weight: 300;
+    font-weight: 400;
     font-size: var(--font-size-base);
 }
 
@@ -82,9 +110,9 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 /* Navbar Styles */
 .navbar {
-    background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-bg-tertiary) 100%) !important;
-    border-bottom: 2px solid var(--color-accent-amber);
-    box-shadow: var(--shadow-md);
+    background: var(--color-bg-secondary) !important;
+    border-bottom: 1px solid var(--color-border);
+    box-shadow: var(--shadow-sm);
     backdrop-filter: blur(10px);
     padding: 0.5rem 0;
     min-height: 60px;
@@ -100,14 +128,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: 1.3rem;
     letter-spacing: -0.02em;
     color: var(--color-accent-warm) !important;
-    text-transform: uppercase;
     transition: all 0.3s ease;
     padding: 0.5rem 1rem;
 }
 
 .navbar-brand:hover {
     color: var(--color-accent-amber) !important;
-    text-shadow: 0 0 20px rgba(245, 158, 11, 0.5);
+    text-shadow: none;
 }
 
 .nav-link {
@@ -139,6 +166,14 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     width: 80%;
 }
 
+.nav-link.active {
+    color: var(--color-text-primary) !important;
+}
+
+.nav-link.active::after {
+    width: 80%;
+}
+
 /* Main content area with fixed height */
 .main-content {
     padding-top: 60px;
@@ -146,21 +181,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     overflow-y: auto;
     background: var(--color-bg-primary);
     position: relative;
-}
-
-.main-content::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-image:
-        linear-gradient(rgba(245, 158, 11, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(245, 158, 11, 0.03) 1px, transparent 1px);
-    background-size: 50px 50px;
-    pointer-events: none;
-    opacity: 0.5;
 }
 
 /* Index page layout */
@@ -191,16 +211,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     position: relative;
 }
 
-.index-left .card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--color-accent-copper), var(--color-accent-amber), var(--color-accent-warm));
-}
-
 .index-left .card-body {
     flex: 1;
     overflow: hidden;
@@ -226,13 +236,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .index-right::-webkit-scrollbar-thumb {
-    background: var(--color-accent-copper);
+    background: var(--color-border-strong);
     border-radius: 4px;
     transition: background 0.3s ease;
 }
 
 .index-right::-webkit-scrollbar-thumb:hover {
-    background: var(--color-accent-amber);
+    background: var(--color-text-muted);
 }
 
 /* Map Styles */
@@ -279,13 +289,11 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .task-card:hover {
     box-shadow: var(--shadow-md);
-    transform: translateX(4px);
     border-color: var(--color-accent-amber);
 }
 
 .task-card:hover::before {
     width: 6px;
-    box-shadow: var(--shadow-glow);
 }
 
 .task-card.status-running::before {
@@ -351,44 +359,50 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: 0.8rem;
     font-weight: 600;
     font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     transition: all 0.3s ease;
+    box-shadow: none;
 }
 
 .status-badge.running,
-.badge.bg-primary {
-    background: linear-gradient(135deg, var(--color-info), #2563eb) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+.badge.bg-primary,
+.badge.bg-info {
+    background: var(--color-info-bg) !important;
+    color: var(--color-info) !important;
+    border: 1px solid rgba(96, 165, 250, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.completed,
 .badge.bg-success {
-    background: linear-gradient(135deg, var(--color-success), #059669) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+    background: var(--color-success-bg) !important;
+    color: var(--color-success) !important;
+    border: 1px solid rgba(16, 185, 129, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.failed,
 .badge.bg-danger {
-    background: linear-gradient(135deg, var(--color-danger), #dc2626) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+    background: var(--color-danger-bg) !important;
+    color: var(--color-danger) !important;
+    border: 1px solid rgba(239, 68, 68, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.paused,
 .badge.bg-warning {
-    background: linear-gradient(135deg, var(--color-warning), var(--color-accent-copper)) !important;
-    color: var(--color-bg-primary);
-    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+    background: var(--color-warning-bg) !important;
+    color: var(--color-warning) !important;
+    border: 1px solid rgba(245, 158, 11, 0.30);
+    box-shadow: none !important;
 }
 
 .status-badge.pending,
-.badge.bg-secondary {
-    background: linear-gradient(135deg, #4b5563, #374151) !important;
-    color: white;
-    box-shadow: 0 2px 8px rgba(75, 85, 99, 0.3);
+.badge.bg-secondary,
+.badge.bg-dark {
+    background: rgba(255, 255, 255, 0.06) !important;
+    color: var(--color-text-secondary) !important;
+    border: 1px solid var(--color-border-strong);
+    box-shadow: none !important;
 }
 
 /* Progress Bar Styles */
@@ -397,12 +411,17 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .progress {
-    height: 28px;
-    border-radius: 8px;
+    height: 8px;
+    border-radius: 999px;
     background: var(--color-bg-tertiary);
     overflow: hidden;
-    border: 1px solid var(--color-border);
-    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+    border: none;
+    box-shadow: none;
+}
+
+.modal .progress {
+    height: 22px;
+    border-radius: var(--radius-sm);
 }
 
 .progress-bar {
@@ -417,40 +436,20 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     overflow: hidden;
 }
 
-.progress-bar::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-    animation: shimmer 2s infinite;
-}
-
-@keyframes shimmer {
-    0% {
-        left: -100%;
-    }
-    100% {
-        left: 200%;
-    }
-}
-
 .progress-bar.bg-success {
-    background: linear-gradient(135deg, var(--color-success), #059669) !important;
+    background: var(--color-success) !important;
 }
 
 .progress-bar.bg-info {
-    background: linear-gradient(135deg, var(--color-info), #2563eb) !important;
+    background: var(--color-info) !important;
 }
 
 .progress-bar.bg-warning {
-    background: linear-gradient(135deg, var(--color-warning), var(--color-accent-copper)) !important;
+    background: var(--color-warning) !important;
 }
 
 .progress-bar.bg-danger {
-    background: linear-gradient(135deg, var(--color-danger), #dc2626) !important;
+    background: var(--color-danger) !important;
 }
 
 /* Zoom Progress Styles */
@@ -470,7 +469,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .zoom-level:hover {
-    background: rgba(245, 158, 11, 0.05);
+    background: var(--color-accent-muted);
     border-color: var(--color-accent-amber);
 }
 
@@ -502,24 +501,28 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 12px;
     padding: 1.75rem;
     margin-bottom: 1.5rem;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-border);
     transition: all 0.3s ease;
 }
 
 .config-section:hover {
-    border-color: var(--color-accent-amber);
+    border-color: var(--color-border-strong);
 }
 
 .config-section h3 {
-    color: var(--color-accent-warm);
-    margin-bottom: 1.5rem;
+    color: var(--color-text-primary);
+    font-size: var(--font-size-md);
+    font-weight: 600;
+    margin-bottom: 1.25rem;
     padding-bottom: 0.75rem;
-    border-bottom: 2px solid var(--color-border);
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: 1.5rem;
-    letter-spacing: -0.02em;
+    border-bottom: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+}
+
+.config-section h3 svg {
+    opacity: 0.7;
 }
 
 .config-section .form-label {
@@ -542,8 +545,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .config-section .form-control:focus,
 .config-section .form-select:focus {
-    border-color: var(--color-accent-amber);
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-muted);
     background: var(--color-bg-secondary);
     outline: none;
 }
@@ -557,8 +560,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 8px;
     font-weight: 700;
     font-family: var(--font-display);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
     transition: all 0.3s ease;
 }
 
@@ -577,15 +578,11 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .history-table th {
-    background: linear-gradient(135deg, var(--color-bg-tertiary), var(--color-bg-secondary));
-    color: var(--color-accent-warm);
-    font-weight: 700;
-    font-family: var(--font-display);
-    padding: 1rem;
-    border-bottom: 2px solid var(--color-accent-amber);
-    text-transform: uppercase;
-    font-size: 0.85rem;
-    letter-spacing: 0.05em;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-secondary);
+    font-weight: 600;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--color-border);
 }
 
 .history-table td {
@@ -600,8 +597,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .history-table tbody tr:hover {
-    background: rgba(245, 158, 11, 0.05);
-    transform: translateX(4px);
+    background: rgba(255, 255, 255, 0.03);
 }
 
 /* Action Button Styles */
@@ -616,9 +612,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 700;
     padding: 0.5rem 1.25rem;
     font-family: var(--font-display);
-    text-transform: uppercase;
     font-size: 0.8rem;
-    letter-spacing: 0.05em;
     transition: all 0.3s ease;
 }
 
@@ -628,84 +622,66 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     transition: all 0.3s ease;
     position: relative;
     overflow: hidden;
-}
-
-.btn::before {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 0;
-    height: 0;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
-    transform: translate(-50%, -50%);
-    transition: width 0.6s, height 0.6s;
-}
-
-.btn:hover::before {
-    width: 300px;
-    height: 300px;
+    font-weight: 500;
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, var(--color-info), #2563eb);
-    color: white;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    background: var(--color-accent-strong);
+    color: var(--color-on-accent);
+    font-weight: 600;
+    box-shadow: none;
 }
 
 .btn-primary:hover {
-    background: linear-gradient(135deg, #2563eb, #1d4ed8);
-    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    transform: none;
 }
 
 .btn-success {
-    background: linear-gradient(135deg, var(--color-success), #059669);
-    color: white;
-    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+    background: var(--color-success);
+    color: #fff;
+    box-shadow: none;
 }
 
 .btn-success:hover {
-    background: linear-gradient(135deg, #059669, #047857);
-    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-success);
+    color: #fff;
 }
 
 .btn-warning {
-    background: linear-gradient(135deg, var(--color-warning), var(--color-accent-copper));
-    color: var(--color-bg-primary);
-    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+    background: var(--color-warning);
+    color: #1a1206;
+    box-shadow: none;
 }
 
 .btn-warning:hover {
-    background: linear-gradient(135deg, var(--color-accent-copper), #b45309);
-    box-shadow: 0 6px 20px rgba(245, 158, 11, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-warning);
+    color: #1a1206;
 }
 
 .btn-danger {
-    background: linear-gradient(135deg, var(--color-danger), #dc2626);
-    color: white;
-    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+    background: var(--color-danger);
+    color: #fff;
+    box-shadow: none;
 }
 
 .btn-danger:hover {
-    background: linear-gradient(135deg, #dc2626, #b91c1c);
-    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-danger);
+    color: #fff;
 }
 
 .btn-secondary {
-    background: linear-gradient(135deg, #4b5563, #374151);
-    color: white;
-    box-shadow: 0 4px 12px rgba(75, 85, 99, 0.3);
+    background: transparent;
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-strong);
+    box-shadow: none;
 }
 
 .btn-secondary:hover {
-    background: linear-gradient(135deg, #374151, #1f2937);
-    box-shadow: 0 6px 20px rgba(75, 85, 99, 0.4);
-    transform: translateY(-2px);
+    background: rgba(255, 255, 255, 0.04);
+    border-color: var(--color-text-secondary);
+    transform: none;
 }
 
 .btn:disabled {
@@ -726,15 +702,14 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .btn-info {
-    background: linear-gradient(135deg, var(--color-info), #2563eb);
-    color: white;
-    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    background: var(--color-info);
+    color: #fff;
+    box-shadow: none;
 }
 
 .btn-info:hover {
-    background: linear-gradient(135deg, #2563eb, #1d4ed8);
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
-    transform: translateY(-2px);
+    background: var(--color-info);
+    color: #fff;
 }
 
 /* Alert Styles */
@@ -779,33 +754,31 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .card {
     border-radius: 12px;
     border: 1px solid var(--color-border);
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-sm);
     background: var(--color-bg-secondary);
     transition: all 0.3s ease;
     margin-bottom: 0.75rem;
 }
 
 .card:hover {
-    box-shadow: var(--shadow-lg);
+    border-color: var(--color-border-strong);
+    box-shadow: var(--shadow-md);
 }
 
 .card-header {
-    background: linear-gradient(135deg, var(--color-bg-tertiary), var(--color-bg-secondary));
-    color: var(--color-accent-warm);
-    font-weight: 700;
-    font-family: var(--font-display);
-    border-radius: 12px 12px 0 0 !important;
-    padding: 0.75rem 1rem;
-    border-bottom: 2px solid var(--color-accent-amber);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-size: 0.9rem;
+    background: transparent;
+    color: var(--color-text-primary);
+    font-weight: 600;
+    border-bottom: 1px solid var(--color-border);
+    border-radius: var(--radius) var(--radius) 0 0 !important;
+    padding: 0.85rem 1rem;
 }
 
 .card-header h5 {
     margin: 0;
     font-size: 0.95rem;
-    font-weight: 700;
+    font-weight: 600;
+    color: var(--color-text-primary);
 }
 
 .card-body {
@@ -848,37 +821,41 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Statistics Styles */
 .stat-card {
-    text-align: center;
-    padding: 1.5rem;
-    border-radius: 12px;
-    background: linear-gradient(135deg, var(--color-accent-copper) 0%, var(--color-accent-amber) 100%);
-    color: var(--color-bg-primary);
-    box-shadow: var(--shadow-lg);
-    border: 1px solid var(--color-accent-warm);
-    transition: all 0.3s ease;
+    text-align: left;
+    padding: 1.25rem 1.5rem;
+    border-radius: var(--radius);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-sm);
+    color: var(--color-text-primary);
 }
 
 .stat-card:hover {
-    transform: translateY(-4px);
-    box-shadow: var(--shadow-glow), var(--shadow-lg);
+    border-color: var(--color-border-strong);
 }
 
 .stat-card h3 {
-    font-size: 2.75rem;
-    font-weight: 700;
+    font-size: 2rem;
+    font-weight: 600;
     font-family: var(--font-mono);
-    margin-bottom: 0.5rem;
-    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+    color: var(--color-text-primary) !important;
+    margin: 0 0 0.25rem 0;
+    text-shadow: none;
 }
 
 .stat-card p {
-    font-size: 1rem;
-    margin-bottom: 0;
-    opacity: 0.95;
-    font-family: var(--font-display);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    margin: 0;
+    font-weight: 500;
+}
+
+.stat-card.accent h3 {
+    color: var(--color-accent) !important;
+}
+
+.stat-card.danger h3 {
+    color: var(--color-danger) !important;
 }
 
 /* Loading Spinner */
@@ -909,10 +886,10 @@ h1, h2, h3, h4, h5, h6 {
 
 .form-control:focus,
 .form-select:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-muted);
     background: var(--color-bg-secondary);
-    border-color: var(--color-accent-amber);
     color: var(--color-text-primary);
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
     outline: none;
 }
 
@@ -952,8 +929,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .modal-header {
-    background: linear-gradient(135deg, var(--color-bg-tertiary), var(--color-bg-secondary));
-    border-bottom: 2px solid var(--color-accent-amber);
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border);
     color: var(--color-text-primary);
     padding: 1.25rem;
 }
@@ -961,7 +938,7 @@ h1, h2, h3, h4, h5, h6 {
 .modal-title {
     font-family: var(--font-display);
     font-weight: 700;
-    color: var(--color-accent-warm);
+    color: var(--color-text-primary);
 }
 
 .modal-body {
@@ -1014,9 +991,9 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .page-item.active .page-link {
-    background: linear-gradient(135deg, var(--color-accent-copper), var(--color-accent-amber));
-    border-color: var(--color-accent-amber);
-    color: var(--color-bg-primary);
+    background: var(--color-accent-strong);
+    border-color: var(--color-accent-strong);
+    color: var(--color-on-accent);
     font-weight: 700;
 }
 
@@ -1058,7 +1035,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .table-hover tbody tr:hover {
-    background: rgba(245, 158, 11, 0.05) !important;
+    background: rgba(255, 255, 255, 0.03) !important;
 }
 
 .table-hover tbody tr:hover td {
@@ -1096,13 +1073,13 @@ code {
 }
 
 .form-check-input:checked {
-    background-color: var(--color-accent-amber);
-    border-color: var(--color-accent-amber);
+    background-color: var(--color-accent);
+    border-color: var(--color-accent);
 }
 
 .form-check-input:focus {
-    border-color: var(--color-accent-amber);
-    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-muted);
 }
 
 .form-check-label {
@@ -1251,13 +1228,13 @@ code {
 }
 
 *::-webkit-scrollbar-thumb {
-    background: var(--color-accent-copper);
+    background: var(--color-border-strong);
     border-radius: 4px;
     transition: background 0.3s ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-    background: var(--color-accent-amber);
+    background: var(--color-text-muted);
 }
 
 /* Smooth Transitions */
@@ -1402,7 +1379,7 @@ code {
 
 /* 配置区块字体 */
 .config-section h3 {
-    font-size: var(--font-size-lg) !important;
+    font-size: var(--font-size-md) !important;
 }
 
 /* 进度条字体 */
@@ -1453,3 +1430,26 @@ small {
 code {
     font-size: var(--font-size-sm) !important;
 }
+
+/* 下载表单分组标题 */
+.form-group-label {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin: 1.25rem 0 0.5rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--color-border);
+}
+.form-group-label:first-child { margin-top: 0; }
+
+.form-text {
+    color: var(--color-text-muted) !important;
+    font-size: var(--font-size-xs) !important;
+    margin-top: 0.35rem;
+}
+
+.detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1.5rem; }
+.detail-item { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0; border-bottom: 1px solid var(--color-border); }
+.detail-k { font-size: var(--font-size-xs); color: var(--color-text-muted); }
+.detail-v { font-size: var(--font-size-sm); color: var(--color-text-primary); }
+@media (max-width: 576px) { .detail-grid { grid-template-columns: 1fr; } }
