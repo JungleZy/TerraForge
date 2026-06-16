@@ -16,7 +16,9 @@ from typing import Any, Dict, List, Optional
 from database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
-from services.dem_granules import tiles_for_bbox, astgtm_v3_granules_for_tile
+from services.dem_granules import (
+    tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
+)
 from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
 logger = logging.getLogger(__name__)
@@ -88,20 +90,26 @@ class DemTaskManager:
         south = float(params["south"])
         east = float(params["east"])
         west = float(params["west"])
-        dataset = params.get("dataset") or "ASTGTM.003"
+        dataset = params.get("dataset") or "COP-DEM-GLO-30"
         output_path = params.get("output_path") or self.config.get("default_save_path", "./downloads")
         download_num = 1 if str(params.get("download_num", "false")).lower() in ("1", "true", "yes") else 0
         download_swb = 1 if str(params.get("download_swb", "false")).lower() in ("1", "true", "yes") else 0
 
-        # Only dataset supported for now.
-        if dataset != "ASTGTM.003":
+        if dataset not in ("ASTGTM.003", "COP-DEM-GLO-30"):
             raise ValueError(f"Unsupported dataset: {dataset}")
+        # Copernicus GLO-30 has no NUM/SWB companion files.
+        if dataset == "COP-DEM-GLO-30":
+            download_num = 0
+            download_swb = 0
 
         # Compute granule list
         tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
         granules: List[str] = []
         for t in tiles:
-            granules.extend(astgtm_v3_granules_for_tile(t, include_num=bool(download_num), include_swb=bool(download_swb)))
+            if dataset == "COP-DEM-GLO-30":
+                granules.extend(copernicus_glo30_granules_for_tile(t))
+            else:
+                granules.extend(astgtm_v3_granules_for_tile(t, include_num=bool(download_num), include_swb=bool(download_swb)))
 
         total_files = len(granules)
 

@@ -29,12 +29,20 @@ class DemDownloadEngine:
         self.config = ConfigManager()
 
     def _dataset_base_url(self, dataset: str) -> str:
-        # Same LP DAAC cloud Data Pool infra for every protected granule; only
-        # the collection path differs. ASTGTM.003 = elevation, ASTWBD.001 = water.
-        base = "https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/"
+        # LP DAAC cloud Data Pool (Earthdata-protected): ASTGTM.003 = elevation,
+        # ASTWBD.001 = water. COP-DEM-GLO-30 = Copernicus DEM on a public AWS bucket.
+        lpdaac = "https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/"
         if dataset in ("ASTGTM.003", "ASTWBD.001"):
-            return f"{base}{dataset}/"
+            return f"{lpdaac}{dataset}/"
+        if dataset == "COP-DEM-GLO-30":
+            return "https://copernicus-dem-30m.s3.amazonaws.com/"
         raise ValueError(f"Unsupported DEM dataset: {dataset}")
+
+    @staticmethod
+    def _dataset_requires_auth(dataset: str) -> bool:
+        # Copernicus GLO-30 is a public AWS Open Data bucket (no signing);
+        # LP DAAC products require an Earthdata Login signed URL.
+        return dataset != "COP-DEM-GLO-30"
 
     @staticmethod
     def _link_or_copy(src: Path, dst: Path) -> None:
@@ -110,6 +118,7 @@ class DemDownloadEngine:
 
         earth = EarthdataClient(username=username, password=password, proxy_url=proxy_url)
         base_url = self._dataset_base_url(dataset)
+        requires_auth = self._dataset_requires_auth(dataset)
 
         timeout = aiohttp.ClientTimeout(total=request_timeout)
         connector = aiohttp.TCPConnector(limit=concurrent_downloads, limit_per_host=concurrent_downloads)
@@ -123,14 +132,17 @@ class DemDownloadEngine:
                     if stop_flag and stop_flag.is_set():
                         return
 
-                    dest = output_dir / granule
+                    # Remote granule may be a nested path (Copernicus); the local
+                    # file and cache key use the flat basename so list_dem_tifs finds it.
+                    local_name = Path(granule).name
+                    dest = output_dir / local_name
                     if dest.exists() and dest.stat().st_size > 0:
                         if progress_callback:
                             await progress_callback(granule, "completed", None, dest.stat().st_size)
                         return
 
-                    if self._try_promote_from_cache(granule, dest, cache_dir):
-                        logger.info(f"DEM cache hit: {granule} (promoted from {cache_dir})")
+                    if self._try_promote_from_cache(local_name, dest, cache_dir):
+                        logger.info(f"DEM cache hit: {local_name} (promoted from {cache_dir})")
                         if progress_callback:
                             await progress_callback(granule, "completed", None, dest.stat().st_size)
                         return
@@ -145,8 +157,11 @@ class DemDownloadEngine:
                             if progress_callback:
                                 await progress_callback(granule, "downloading", None, None)
 
-                            signed_url = await earth.get_signed_url(session=session, file_url=file_url)
-                            async with session.get(signed_url, proxy=proxy_url or None) as resp:
+                            if requires_auth:
+                                get_url = await earth.get_signed_url(session=session, file_url=file_url)
+                            else:
+                                get_url = file_url
+                            async with session.get(get_url, proxy=proxy_url or None) as resp:
                                 if resp.status != 200:
                                     raise RuntimeError(f"Download HTTP {resp.status}")
 
@@ -161,7 +176,7 @@ class DemDownloadEngine:
 
                                 tmp.replace(dest)
 
-                            self._save_to_cache(dest, granule, cache_dir)
+                            self._save_to_cache(dest, local_name, cache_dir)
 
                             if progress_callback:
                                 await progress_callback(granule, "completed", None, dest.stat().st_size)

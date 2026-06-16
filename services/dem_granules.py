@@ -92,6 +92,20 @@ def astgtm_v3_granules_for_tile(tile: LatLonTile, include_num: bool, include_swb
     return out
 
 
+def copernicus_glo30_granules_for_tile(tile: LatLonTile) -> List[str]:
+    """
+    Copernicus DEM GLO-30 (30m) granule path on the AWS public bucket (no auth).
+
+    Tiles are nested as <name>/<name>.tif, e.g.
+    Copernicus_DSM_COG_10_N40_00_E116_00_DEM/Copernicus_DSM_COG_10_N40_00_E116_00_DEM.tif
+    (the "10" denotes GLO-30; file suffix is uppercase _DEM.tif).
+    """
+    lat_p = "N" if tile.lat >= 0 else "S"
+    lon_p = "E" if tile.lon >= 0 else "W"
+    name = f"Copernicus_DSM_COG_10_{lat_p}{abs(tile.lat):02d}_00_{lon_p}{abs(tile.lon):03d}_00_DEM"
+    return [f"{name}/{name}.tif"]
+
+
 def astwbd_v1_att_granules_for_tile(tile: LatLonTile) -> List[str]:
     """
     ASTWBD V1 water-body attribute GeoTIFF filename for a tile.

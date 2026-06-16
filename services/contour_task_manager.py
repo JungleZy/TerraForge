@@ -20,7 +20,8 @@ from database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
 from services.dem_granules import (
-    tiles_for_bbox, astgtm_v3_granules_for_tile, astwbd_v1_att_granules_for_tile, coverage_bbox,
+    tiles_for_bbox, astgtm_v3_granules_for_tile, astwbd_v1_att_granules_for_tile,
+    copernicus_glo30_granules_for_tile, coverage_bbox,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,8 +66,8 @@ class ContourTaskManager:
         name = params.get("name") or "Contour Task"
         north = float(params["north"]); south = float(params["south"])
         east = float(params["east"]); west = float(params["west"])
-        dataset = params.get("dataset") or "ASTGTM.003"
-        if dataset != "ASTGTM.003":
+        dataset = params.get("dataset") or "COP-DEM-GLO-30"
+        if dataset not in ("ASTGTM.003", "COP-DEM-GLO-30"):
             raise ValueError(f"Unsupported dataset: {dataset}")
 
         interval_raw = params.get("contour_interval")
@@ -95,7 +96,10 @@ class ContourTaskManager:
         tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
         dem_granules: List[str] = []
         for t in tiles:
-            dem_granules.extend(astgtm_v3_granules_for_tile(t, include_num=False, include_swb=False))
+            if dataset == "COP-DEM-GLO-30":
+                dem_granules.extend(copernicus_glo30_granules_for_tile(t))
+            else:
+                dem_granules.extend(astgtm_v3_granules_for_tile(t, include_num=False, include_swb=False))
         att_granules: List[str] = []
         if water:
             for t in tiles:

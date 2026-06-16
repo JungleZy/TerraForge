@@ -4,13 +4,24 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services.dem_granules import (
-    coverage_bbox, tiles_for_bbox, astwbd_v1_att_granules_for_tile, LatLonTile,
+    coverage_bbox, tiles_for_bbox, astwbd_v1_att_granules_for_tile,
+    copernicus_glo30_granules_for_tile, LatLonTile,
 )
 
 
 def test_astwbd_att_granule_name():
     assert astwbd_v1_att_granules_for_tile(LatLonTile(lat=0, lon=6)) == ["ASTWBDV001_N00E006_att.tif"]
     assert astwbd_v1_att_granules_for_tile(LatLonTile(lat=-4, lon=120)) == ["ASTWBDV001_S04E120_att.tif"]
+
+
+def test_copernicus_glo30_granule_path():
+    # GLO-30 tiles are nested: <name>/<name>.tif on the AWS open bucket.
+    assert copernicus_glo30_granules_for_tile(LatLonTile(lat=40, lon=116)) == [
+        "Copernicus_DSM_COG_10_N40_00_E116_00_DEM/Copernicus_DSM_COG_10_N40_00_E116_00_DEM.tif"
+    ]
+    assert copernicus_glo30_granules_for_tile(LatLonTile(lat=-4, lon=-115)) == [
+        "Copernicus_DSM_COG_10_S04_00_W115_00_DEM/Copernicus_DSM_COG_10_S04_00_W115_00_DEM.tif"
+    ]
 
 
 def test_coverage_bbox_small_box_expands_to_full_degree_tile():

@@ -39,12 +39,32 @@ def test_create_task_computes_granules_and_rows(monkeypatch, tmp_path):
     assert task["contour_interval"] == 50
     assert task["zoom_min"] == 12 and task["zoom_max"] == 14
     assert task["status"] == "pending"
-    # Terrain shading + water default ON -> 1 DEM + 1 ASTWBD att granule.
+    # Default source is Copernicus GLO-30; terrain shading + water default ON
+    # -> 1 GLO-30 DEM + 1 ASTWBD att granule.
+    assert task["dataset"] == "COP-DEM-GLO-30"
     assert task["terrain_shade"] == 1 and task["water"] == 1
     assert task["total_files"] == 2
     by_kind = {f["kind"]: f["granule_id"] for f in files}
-    assert by_kind["dem"] == "ASTGTMV003_N00E000_dem.tif"
+    assert by_kind["dem"] == "Copernicus_DSM_COG_10_N00_00_E000_00_DEM/Copernicus_DSM_COG_10_N00_00_E000_00_DEM.tif"
     assert by_kind["water"] == "ASTWBDV001_N00E000_att.tif"
+
+
+def test_create_task_with_aster_dataset(monkeypatch, tmp_path):
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    mgr = ctm_mod.ContourTaskManager(socketio=None)
+    task_id = mgr.create_task({
+        "name": "aster", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
+        "contour_interval": 50, "zoom_min": 12, "zoom_max": 12,
+        "dataset": "ASTGTM.003", "water": False,
+    })
+    conn = db.get_connection()
+    try:
+        task = conn.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
+        dem = conn.execute("SELECT granule_id FROM contour_files WHERE task_id=? AND kind='dem'", (task_id,)).fetchone()
+    finally:
+        conn.close()
+    assert task["dataset"] == "ASTGTM.003"
+    assert dem["granule_id"] == "ASTGTMV003_N00E000_dem.tif"
 
 
 def test_create_task_water_off_skips_att_granule(monkeypatch, tmp_path):
