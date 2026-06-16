@@ -44,19 +44,22 @@ function initTasks() {
 
 async function loadActiveTasks() {
     try {
-        const [mapResp, demResp, localResp] = await Promise.all([
+        const [mapResp, demResp, localResp, contourResp] = await Promise.all([
             fetch('/api/tasks'),
             fetch('/api/dem/tasks'),
-            fetch('/api/terrain/local/tasks')
+            fetch('/api/terrain/local/tasks'),
+            fetch('/api/contour/tasks')
         ]);
         const mapData = await mapResp.json();
         const demData = await demResp.json();
         const localData = await localResp.json();
+        const contourData = await contourResp.json();
 
         const mapTasks = (mapData.tasks || []).map(t => normalizeTask(t, 'map'));
         const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
-        const all = [...mapTasks, ...demTasks, ...localTasks].filter(t =>
+        const contourTasks = (contourData.tasks || []).map(t => normalizeTask(t, 'contour'));
+        const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks].filter(t =>
             ['pending', 'running', 'paused'].includes(t.status)
         );
 
@@ -69,6 +72,31 @@ async function loadActiveTasks() {
     } catch (error) {
         console.error('Failed to load tasks:', error);
     }
+}
+
+// Contour tasks run two phases: download DEM, then render contour tiles.
+// `phase` ("download"/"render") comes from the backend; we fall back to the
+// render counts once tiles have started so a single progress bar tracks the
+// currently-active phase.
+function contourPhaseCounts(task) {
+    const totalTiles = task.total_tiles || 0;
+    const renderStarted = (task.phase === 'render') || totalTiles > 0;
+    if (renderStarted) {
+        return {
+            total: totalTiles,
+            done: task.rendered_tiles || 0,
+            failed: task.failed_tiles || 0,
+            label: '瓦片',
+            verb: '渲染等高线瓦片'
+        };
+    }
+    return {
+        total: task.total_files || 0,
+        done: task.downloaded_files || 0,
+        failed: task.failed_files || 0,
+        label: 'DEM',
+        verb: '下载 DEM'
+    };
 }
 
 function normalizeTask(task, type) {
@@ -96,6 +124,20 @@ function normalizeTask(task, type) {
             downloaded_items: done,
             failed_items: task.failed_files || 0,
             items_label: '文件'
+        };
+    }
+    if (type === 'contour') {
+        const counts = contourPhaseCounts(task);
+        return {
+            ...task,
+            task_type: 'contour',
+            id: task.id,
+            _key: `contour:${task.id}`,
+            total_items: counts.total,
+            downloaded_items: counts.done,
+            failed_items: counts.failed,
+            items_label: counts.label,
+            progress_verb: counts.verb
         };
     }
     return {
@@ -194,7 +236,7 @@ function createTaskCard(task) {
                     <polyline points="7 10 12 15 17 10"></polyline>
                     <line x1="12" y1="15" x2="12" y2="3"></line>
                 </svg>
-                已下载: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
+                ${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
                 ${task.failed_items > 0 ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_items}</span>` : ''}
             </div>
 
@@ -284,6 +326,53 @@ function updateTaskProgress(data) {
             return;
         }
 
+        if (taskType === 'contour') {
+            // Phase-aware: download counts until rendering starts, then tiles.
+            const phaseChanged = (data.phase || task.phase) !== task.phase;
+            const progressChanged = phaseChanged ||
+                                   data.downloaded_files !== task.downloaded_files ||
+                                   data.failed_files !== task.failed_files ||
+                                   data.rendered_tiles !== task.rendered_tiles ||
+                                   data.failed_tiles !== task.failed_tiles;
+
+            task.id = taskId;
+            task.task_type = 'contour';
+            task._key = key;
+            task.name = data.name || task.name;
+            task.status = data.status || task.status;
+            task.phase = data.phase || task.phase;
+            task.total_files = data.total_files;
+            task.downloaded_files = data.downloaded_files;
+            task.failed_files = data.failed_files;
+            task.total_tiles = data.total_tiles;
+            task.rendered_tiles = data.rendered_tiles;
+            task.failed_tiles = data.failed_tiles;
+            task.zoom_min = data.zoom_min !== undefined ? data.zoom_min : task.zoom_min;
+            task.zoom_max = data.zoom_max !== undefined ? data.zoom_max : task.zoom_max;
+            task.contour_interval = data.contour_interval !== undefined ? data.contour_interval : task.contour_interval;
+            task.started_at = data.started_at || task.started_at;
+            task.created_at = data.created_at || task.created_at;
+
+            const counts = contourPhaseCounts(task);
+            task.total_items = counts.total;
+            task.downloaded_items = counts.done;
+            task.failed_items = counts.failed;
+            task.items_label = counts.label;
+            task.progress_verb = counts.verb;
+
+            activeTasks.set(key, task);
+
+            const card = document.getElementById(`task-${key}`);
+            if (card) {
+                if (statusChanged || phaseChanged) {
+                    card.outerHTML = createTaskCard(task);
+                } else if (progressChanged) {
+                    updateTaskProgressPartial(card, task);
+                }
+            }
+            return;
+        }
+
         const progressChanged = data.downloaded_tiles !== task.downloaded_tiles ||
                                data.failed_tiles !== task.failed_tiles;
 
@@ -357,7 +446,7 @@ function updateTaskProgressPartial(card, task) {
                 <polyline points="7 10 12 15 17 10"></polyline>
                 <line x1="12" y1="15" x2="12" y2="3"></line>
             </svg>
-            已下载: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
+            ${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
             ${failedText}
         `;
     }
@@ -517,6 +606,7 @@ function updateTimeDisplay() {
 function apiPrefixForType(taskType) {
     if (taskType === 'dem') return '/api/dem/tasks';
     if (taskType === 'local_terrain') return '/api/terrain/local/tasks';
+    if (taskType === 'contour') return '/api/contour/tasks';
     return '/api/tasks';
 }
 
