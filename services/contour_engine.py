@@ -79,7 +79,7 @@ class ContourStyle:
     color_label: str = "#7A4F2A"
     width_intermediate: float = 0.5
     width_index: float = 1.2
-    background: str = "transparent"
+    background: str = "#FFFFFF"
     index_step: int = 5
     label_size: float = 6.0
 
@@ -103,7 +103,7 @@ class ContourStyle:
             color_label=config.get("contour_color_label", "#7A4F2A"),
             width_intermediate=_f("contour_width_intermediate", 0.5),
             width_index=_f("contour_width_index", 1.2),
-            background=config.get("contour_background", "transparent"),
+            background=config.get("contour_background", "#FFFFFF"),
             index_step=_i("contour_index_step", 5),
             label_size=_f("contour_label_size", 6.0),
         )

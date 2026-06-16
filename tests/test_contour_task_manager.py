@@ -56,3 +56,20 @@ def test_create_task_defaults_interval_from_config(monkeypatch, tmp_path):
     finally:
         conn.close()
     assert task["contour_interval"] == 50
+
+
+def test_create_task_background_default_and_explicit(monkeypatch, tmp_path):
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    mgr = ctm_mod.ContourTaskManager(socketio=None)
+    t1 = mgr.create_task({"name": "a", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
+                          "contour_interval": 50, "zoom_min": 12, "zoom_max": 12})
+    t2 = mgr.create_task({"name": "b", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
+                          "contour_interval": 50, "zoom_min": 12, "zoom_max": 12, "background": "transparent"})
+    conn = db.get_connection()
+    try:
+        r1 = conn.execute("SELECT background FROM contour_tasks WHERE id=?", (t1,)).fetchone()
+        r2 = conn.execute("SELECT background FROM contour_tasks WHERE id=?", (t2,)).fetchone()
+    finally:
+        conn.close()
+    assert r1["background"] == "#FFFFFF"
+    assert r2["background"] == "transparent"

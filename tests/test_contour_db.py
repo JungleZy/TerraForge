@@ -40,5 +40,5 @@ def test_contour_default_configs_seeded(monkeypatch, tmp_path):
         conn.close()
     assert rows["contour_default_interval"] == "50"
     assert rows["contour_color_index"] == "#7A4F2A"
-    assert rows["contour_background"] == "transparent"
+    assert rows["contour_background"] == "#FFFFFF"
     assert rows["contour_index_step"] == "5"
