@@ -43,7 +43,7 @@ DEFAULT_CONFIGS = [
     ('contour_color_label', '#7A4F2A'),
     ('contour_width_intermediate', '0.5'),
     ('contour_width_index', '1.2'),
-    ('contour_background', 'transparent'),
+    ('contour_background', '#FFFFFF'),
     ('contour_index_step', '5'),
 ]
 
@@ -327,6 +327,7 @@ def init_database():
                 west REAL NOT NULL,
                 dataset TEXT NOT NULL DEFAULT 'ASTGTM.003',
                 contour_interval REAL NOT NULL,
+                background TEXT DEFAULT '#FFFFFF',
                 zoom_min INTEGER NOT NULL,
                 zoom_max INTEGER NOT NULL,
                 output_path TEXT,
@@ -357,6 +358,20 @@ def init_database():
                 FOREIGN KEY (task_id) REFERENCES contour_tasks(id) ON DELETE CASCADE
             )
         ''')
+
+        # Per-task contour background (backwards compatible with older DBs).
+        # SQLite fills existing rows with the constant default '#FFFFFF'.
+        try:
+            cursor.execute('''
+                ALTER TABLE contour_tasks
+                ADD COLUMN background TEXT DEFAULT '#FFFFFF'
+            ''')
+            logger.info("Added background column to contour_tasks table")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" in str(e).lower():
+                pass
+            else:
+                raise
 
         # Insert default configuration values using executemany for efficiency
         cursor.executemany(

@@ -19,11 +19,14 @@ def _setup(monkeypatch, tmp_path):
     return db, ctm_mod
 
 
-def _make_running_task(db, mgr):
-    task_id = mgr.create_task({
+def _make_running_task(db, mgr, background=None):
+    params = {
         "name": "t", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
         "contour_interval": 50, "zoom_min": 12, "zoom_max": 12,
-    })
+    }
+    if background is not None:
+        params["background"] = background
+    task_id = mgr.create_task(params)
     conn = db.get_connection()
     try:
         conn.execute("UPDATE contour_tasks SET status='running' WHERE id=?", (task_id,))
@@ -36,7 +39,7 @@ def _make_running_task(db, mgr):
 def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = _make_running_task(db, mgr)
+    task_id = _make_running_task(db, mgr, background="transparent")
 
     async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
         for g in granules:
@@ -44,10 +47,11 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
                 await progress_callback(g, "completed", None, 123)
     monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
-    called = {"render": False}
+    called = {"render": False, "background": None}
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
         called["render"] = True
+        called["background"] = params.style.background
         if progress_cb:
             progress_cb(3, 3)
         return {"total": 3, "rendered": 3, "failed": 0}
@@ -59,6 +63,7 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
 
     task = mgr.get_task(task_id)
     assert called["render"] is True
+    assert called["background"] == "transparent"
     assert task["status"] == "completed"
     assert task["rendered_tiles"] == 3
 

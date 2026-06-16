@@ -79,6 +79,10 @@ class ContourTaskManager:
         if zoom_min > zoom_max:
             raise ValueError(f"zoom_min ({zoom_min}) must be <= zoom_max ({zoom_max})")
 
+        background = params.get("background") or "#FFFFFF"
+        if background != "transparent" and not str(background).startswith("#"):
+            background = "#FFFFFF"
+
         output_path = params.get("output_path") or str(Path(Config.DOWNLOADS_DIR) / "dem")
 
         tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
@@ -94,14 +98,14 @@ class ContourTaskManager:
                 """
                 INSERT INTO contour_tasks (
                     name, status, north, south, east, west, dataset,
-                    contour_interval, zoom_min, zoom_max, output_path,
+                    contour_interval, background, zoom_min, zoom_max, output_path,
                     total_files, downloaded_files, failed_files,
                     total_tiles, rendered_tiles, failed_tiles
                 )
-                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)
+                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)
                 """,
                 (name, north, south, east, west, dataset,
-                 interval, zoom_min, zoom_max, output_path, total_files),
+                 interval, background, zoom_min, zoom_max, output_path, total_files),
             )
             task_id = cur.lastrowid
             cur.executemany(
@@ -316,7 +320,9 @@ class ContourTaskManager:
             from services.contour_task_tiler import ContourParams, tile_contour_task_dir
             from services.contour_engine import ContourStyle, count_tiles
 
+            from dataclasses import replace
             style = ContourStyle.from_config(self.config)
+            style = replace(style, background=task["background"] or "#FFFFFF")
             interval = float(task["contour_interval"])
             zoom_min = int(task["zoom_min"]); zoom_max = int(task["zoom_max"])
             total_tiles = count_tiles(task["north"], task["south"], task["east"], task["west"], zoom_min, zoom_max)

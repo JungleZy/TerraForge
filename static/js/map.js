@@ -312,6 +312,9 @@ async function submitContour() {
     const zMin = parseInt(document.getElementById('zoomMin').value, 10);
     const zMax = parseInt(document.getElementById('zoomMax').value, 10);
 
+    const bgTransparent = document.getElementById('contourBackgroundTransparent').checked;
+    const background = bgTransparent ? 'transparent' : (document.getElementById('contourBackground').value || '#ffffff');
+
     // Warn before a large render: contour rendering is slow, so confirm heavy jobs.
     const approx = estimateContourTiles(currentBounds, zMin, zMax);
     if (approx > 20000) {
@@ -329,6 +332,7 @@ async function submitContour() {
         east: currentBounds.east,
         west: currentBounds.west,
         contour_interval: interval,
+        background: background,
         zoom_min: zMin,
         zoom_max: zMax,
         // NOTE: intentionally NO output_path — backend defaults to downloads/dem
