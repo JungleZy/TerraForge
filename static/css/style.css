@@ -222,7 +222,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .index-right {
     flex: 0 0 35%;
     padding: 1rem;
-    padding-left: 0.5rem;
+    padding-left: 0;
     overflow-y: auto;
     background: var(--color-bg-primary);
     position: relative;
