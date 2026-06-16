@@ -192,6 +192,9 @@ def build_contour_tiles(
     """
     from osgeo import gdal
     import numpy as np
+    import os
+    import shutil
+    import tempfile
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -205,10 +208,21 @@ def build_contour_tiles(
     if not dem_paths:
         return counts
 
-    vrt = gdal.BuildVRT("", dem_paths)
-    warped = gdal.Warp("", vrt, format="MEM", dstSRS="EPSG:3857",
-                       resampleAlg="bilinear", dstNodata=-9999)
-    vrt = None
+    # Warp to on-disk GTiffs (NOT MEM): a whole-coverage in-RAM warp OOMs on large
+    # multi-degree areas. On-disk warp streams to disk, and per-tile windowed reads
+    # keep RAM bounded regardless of coverage size. tmpdir is removed at the end.
+    tmpdir = tempfile.mkdtemp(prefix="contour_warp_")
+    warped = None
+    att_warped = None
+    try:
+        vrt = gdal.BuildVRT("", dem_paths)
+        warped = gdal.Warp(os.path.join(tmpdir, "dem_3857.tif"), vrt, format="GTiff",
+                           dstSRS="EPSG:3857", resampleAlg="bilinear", dstNodata=-9999,
+                           creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
+        vrt = None
+    except Exception:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
     band = warped.GetRasterBand(1)
     nodata = band.GetNoDataValue()
     originX, pxW, _, originY, _, pxH = warped.GetGeoTransform()
@@ -217,16 +231,17 @@ def build_contour_tiles(
     cov_west, cov_south = meters_to_lonlat(originX, originY + ny * pxH)
     cov_east, cov_north = meters_to_lonlat(originX + nx * pxW, originY)
 
-    # Optional water raster (ASTWBD att), warped to the same CRS. NEAREST keeps
-    # the categorical class values (0 land / 1 ocean / 2 river / 3 lake) intact.
+    # Optional water raster (ASTWBD att), warped to disk too. NEAREST keeps the
+    # categorical class values (0 land / 1 ocean / 2 river / 3 lake) intact.
     att_band = None
     aOX = aPW = aOY = aPH = anx = anumy = None
     att_paths = [str(p) for p in (att_tifs or [])]
-    att_warped = None
     if water and att_paths:
         try:
             avrt = gdal.BuildVRT("", att_paths)
-            att_warped = gdal.Warp("", avrt, format="MEM", dstSRS="EPSG:3857", resampleAlg="near")
+            att_warped = gdal.Warp(os.path.join(tmpdir, "att_3857.tif"), avrt, format="GTiff",
+                                   dstSRS="EPSG:3857", resampleAlg="near",
+                                   creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
             avrt = None
             att_band = att_warped.GetRasterBand(1)
             aOX, aPW, _, aOY, _, aPH = att_warped.GetGeoTransform()
@@ -248,11 +263,14 @@ def build_contour_tiles(
     ocean_rgba = mcolors.to_rgba(style.water_color_ocean)
     inland_rgba = mcolors.to_rgba(style.water_color_inland)
 
-    tile_list = []
+    # Count tiles arithmetically (no list) — materializing every (z,x,y) tile
+    # OOMs at high zoom over large areas (tens of millions of tuples).
+    total = 0
     for z in range(zoom_min, zoom_max + 1):
-        for (tx, ty) in tiles_for_bbox_xyz(cov_north, cov_south, cov_east, cov_west, z):
-            tile_list.append((z, tx, ty))
-    counts["total"] = len(tile_list)
+        x0, y0 = deg2num(cov_north, cov_west, z)
+        x1, y1 = deg2num(cov_south, cov_east, z)
+        total += (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
+    counts["total"] = total
 
     transparent = (style.background or "transparent").strip().lower() == "transparent"
     facecolor = "none" if transparent else style.background
@@ -261,7 +279,17 @@ def build_contour_tiles(
         if progress_cb is not None:
             progress_cb(counts["rendered"] + counts["failed"], counts["total"])
 
-    for (z, tx, ty) in tile_list:
+    def _iter_tiles():
+        for z in range(zoom_min, zoom_max + 1):
+            x0, y0 = deg2num(cov_north, cov_west, z)
+            x1, y1 = deg2num(cov_south, cov_east, z)
+            txmin, txmax = min(x0, x1), max(x0, x1)
+            tymin, tymax = min(y0, y1), max(y0, y1)
+            for tx in range(txmin, txmax + 1):
+                for ty in range(tymin, tymax + 1):
+                    yield z, tx, ty
+
+    for (z, tx, ty) in _iter_tiles():
         if stop_flag is not None and stop_flag.is_set():
             break
         xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
@@ -372,4 +400,5 @@ def build_contour_tiles(
 
     warped = None
     att_warped = None
+    shutil.rmtree(tmpdir, ignore_errors=True)
     return counts
