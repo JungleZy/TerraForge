@@ -464,6 +464,8 @@ def get_history_all():
                 dem_count = cursor.fetchone()['c']
                 cursor.execute('SELECT COUNT(*) AS c FROM local_terrain_tasks WHERE status = ?', (status_filter,))
                 local_count = cursor.fetchone()['c']
+                cursor.execute('SELECT COUNT(*) AS c FROM contour_tasks WHERE status = ?', (status_filter,))
+                contour_count = cursor.fetchone()['c']
             else:
                 cursor.execute('SELECT COUNT(*) AS c FROM tasks')
                 map_count = cursor.fetchone()['c']
@@ -471,18 +473,22 @@ def get_history_all():
                 dem_count = cursor.fetchone()['c']
                 cursor.execute('SELECT COUNT(*) AS c FROM local_terrain_tasks')
                 local_count = cursor.fetchone()['c']
+                cursor.execute('SELECT COUNT(*) AS c FROM contour_tasks')
+                contour_count = cursor.fetchone()['c']
 
-            total_count = int(map_count or 0) + int(dem_count or 0) + int(local_count or 0)
+            total_count = int(map_count or 0) + int(dem_count or 0) + int(local_count or 0) + int(contour_count or 0)
 
             params = []
             where_map = ""
             where_dem = ""
             where_local = ""
+            where_contour = ""
             if status_filter:
                 where_map = "WHERE status = ?"
                 where_dem = "WHERE status = ?"
                 where_local = "WHERE status = ?"
-                params.extend([status_filter, status_filter, status_filter])
+                where_contour = "WHERE status = ?"
+                params.extend([status_filter, status_filter, status_filter, status_filter])
 
             query = f'''
                 SELECT
@@ -538,6 +544,24 @@ def get_history_all():
                     COALESCE(completed_at, created_at) AS sort_key
                 FROM local_terrain_tasks
                 {where_local}
+                UNION ALL
+                SELECT
+                    'contour' AS task_type,
+                    id,
+                    name,
+                    status,
+                    north, south, east, west,
+                    zoom_min, zoom_max,
+                    'contour' AS style,
+                    rendered_tiles AS downloaded,
+                    total_tiles AS total,
+                    NULL AS output_format,
+                    output_path,
+                    created_at, started_at, completed_at,
+                    error_message,
+                    COALESCE(completed_at, created_at) AS sort_key
+                FROM contour_tasks
+                {where_contour}
                 ORDER BY sort_key DESC
                 LIMIT ? OFFSET ?
             '''
@@ -599,19 +623,21 @@ def get_history_stats():
             m_total, m_done, m_fail = _counts('tasks')
             d_total, d_done, d_fail = _counts('dem_tasks')
             l_total, l_done, l_fail = _counts('local_terrain_tasks')
+            c_total, c_done, c_fail = _counts('contour_tasks')
 
             total_downloaded = (
                 _sum('tasks', 'downloaded_tiles')
                 + _sum('dem_tasks', 'downloaded_files')
                 + _sum('local_terrain_tasks', 'uploaded_files')
+                + _sum('contour_tasks', 'rendered_tiles')
             )
 
             resp = jsonify({
                 'success': True,
                 'stats': {
-                    'total_tasks': m_total + d_total + l_total,
-                    'completed': m_done + d_done + l_done,
-                    'failed': m_fail + d_fail + l_fail,
+                    'total_tasks': m_total + d_total + l_total + c_total,
+                    'completed': m_done + d_done + l_done + c_done,
+                    'failed': m_fail + d_fail + l_fail + c_fail,
                     'total_downloaded': total_downloaded,
                 }
             })

@@ -347,7 +347,9 @@ def build_contour_tiles(
                                    vert_exag=float(style.hillshade_vert_exag),
                                    dx=abs(pxW), dy=abs(pxH), blend_mode=style.hillshade_blend)
                 rgba[np.isnan(arr), 3] = 0.0
-                ax.imshow(rgba, extent=arr_extent, origin="upper", zorder=0, interpolation="nearest")
+                # bilinear: smooth the ~30m DEM when tiles are finer (z14+), else
+                # nearest-neighbour upsampling looks like coarse mosaic blocks.
+                ax.imshow(rgba, extent=arr_extent, origin="upper", zorder=0, interpolation="bilinear")
                 drew = True
 
             if water and att_band is not None:
