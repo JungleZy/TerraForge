@@ -289,10 +289,39 @@ document.head.appendChild(style);
 // panel and listens to the shared socket independently.
 // ---------------------------------------------------------------------------
 
+// Mirror of the backend `count_tiles` slippy-map math, used purely client-side
+// to warn before a heavy contour render. Contour rendering is much slower than a
+// plain tile download, so a large bbox × high zoom can run for a very long time.
+function estimateContourTiles(bounds, zMin, zMax) {
+    const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * Math.pow(2, z));
+    const lat2y = (lat, z) => {
+        const r = (lat * Math.PI) / 180;
+        return Math.floor(((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2) * Math.pow(2, z));
+    };
+    let total = 0;
+    for (let z = zMin; z <= zMax; z++) {
+        const x0 = lon2x(bounds.west, z), x1 = lon2x(bounds.east, z);
+        const y0 = lat2y(bounds.north, z), y1 = lat2y(bounds.south, z);
+        total += (Math.abs(x1 - x0) + 1) * (Math.abs(y1 - y0) + 1);
+    }
+    return total;
+}
+
 async function submitContour() {
     const interval = parseFloat(document.getElementById('contourInterval').value) || 50;
     const zMin = parseInt(document.getElementById('zoomMin').value, 10);
     const zMax = parseInt(document.getElementById('zoomMax').value, 10);
+
+    // Warn before a large render: contour rendering is slow, so confirm heavy jobs.
+    const approx = estimateContourTiles(currentBounds, zMin, zMax);
+    if (approx > 20000) {
+        const ok = await showConfirm(
+            `预计渲染约 ${approx} 个等高线瓦片，等高线渲染较慢，可能耗时较久。确认继续？`,
+            { title: '确认渲染', confirmText: '继续', danger: true }
+        );
+        if (!ok) return;
+    }
+
     const body = {
         name: document.getElementById('taskName').value || '等高线瓦片',
         north: currentBounds.north,
