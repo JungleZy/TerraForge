@@ -78,6 +78,10 @@ def coverage_bbox(north: float, south: float, east: float, west: float) -> Tuple
 def astgtm_v3_granules_for_tile(tile: LatLonTile, include_num: bool, include_swb: bool) -> List[str]:
     """
     Build ASTGTM.003 granule filenames for a given tile.
+
+    Note: ASTGTM.003 only ships _dem and _num. The _swb name is kept for the
+    legacy DEM-task option but does not exist in this product; real water bodies
+    come from the separate ASTWBD.001 product (see astwbd_v1_att_granules_for_tile).
     """
     base = f"ASTGTMV003_{tile.tile_id}"
     out = [f"{base}_dem.tif"]
@@ -86,4 +90,14 @@ def astgtm_v3_granules_for_tile(tile: LatLonTile, include_num: bool, include_swb
     if include_swb:
         out.append(f"{base}_swb.tif")
     return out
+
+
+def astwbd_v1_att_granules_for_tile(tile: LatLonTile) -> List[str]:
+    """
+    ASTWBD V1 water-body attribute GeoTIFF filename for a tile.
+
+    The *_att.tif attribute layer classifies each pixel: 0=land, 1=ocean,
+    2=river, 3=lake. Distributed on LP DAAC alongside ASTGTM, same tiling.
+    """
+    return [f"ASTWBDV001_{tile.tile_id}_att.tif"]
 

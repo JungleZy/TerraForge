@@ -30,6 +30,17 @@ def test_create_contour_task_returns_201(monkeypatch, tmp_path):
     assert isinstance(body["task_id"], int)
 
 
+def test_create_contour_task_forwards_terrain_flags(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    tid = client.post("/api/contour/tasks", json={
+        "name": "x", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
+        "contour_interval": 50, "zoom_min": 12, "zoom_max": 12,
+        "terrain_shade": False, "water": False,
+    }).get_json()["task_id"]
+    task = client.get(f"/api/contour/tasks/{tid}").get_json()["task"]
+    assert task["terrain_shade"] == 0 and task["water"] == 0
+
+
 def test_create_contour_task_missing_field_400(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     resp = client.post("/api/contour/tasks", json={"name": "x"})

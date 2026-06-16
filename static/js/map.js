@@ -347,6 +347,8 @@ async function submitContour() {
         west: currentBounds.west,
         contour_interval: interval,
         background: background,
+        terrain_shade: document.getElementById('contourTerrainShade')?.checked ?? true,
+        water: document.getElementById('contourWater')?.checked ?? true,
         zoom_min: zMin,
         zoom_max: zMax,
         // NOTE: intentionally NO output_path — backend defaults to downloads/dem

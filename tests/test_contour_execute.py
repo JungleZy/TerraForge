@@ -109,6 +109,64 @@ def test_execute_total_tiles_covers_whole_dem_not_bbox(monkeypatch, tmp_path):
     assert expected > bbox_only
 
 
+def test_execute_downloads_water_and_passes_shade_water_flags(monkeypatch, tmp_path):
+    # Defaults: terrain_shade + water ON. _execute must download DEM (ASTGTM.003)
+    # AND water att (ASTWBD.001), and forward both flags to the tiler.
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    mgr = ctm_mod.ContourTaskManager(socketio=None)
+    task_id = _make_running_task(db, mgr)
+
+    calls = []
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+        calls.append((dataset, list(granules)))
+        for g in granules:
+            if progress_callback:
+                await progress_callback(g, "completed", None, 1)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    seen = {}
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+        seen["shade"] = params.shade
+        seen["water"] = params.water
+        return {"total": 1, "rendered": 1, "failed": 0}
+    import services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, None))
+
+    datasets = [c[0] for c in calls]
+    assert "ASTGTM.003" in datasets and "ASTWBD.001" in datasets
+    astwbd = next(c for c in calls if c[0] == "ASTWBD.001")
+    assert astwbd[1] == ["ASTWBDV001_N00E000_att.tif"]
+    assert seen["shade"] is True and seen["water"] is True
+    assert mgr.get_task(task_id)["status"] == "completed"
+
+
+def test_execute_water_download_failure_is_not_fatal(monkeypatch, tmp_path):
+    # ASTWBD att 404 (e.g. tile with no water bodies) must NOT fail the task;
+    # DEM succeeded, so render proceeds.
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    mgr = ctm_mod.ContourTaskManager(socketio=None)
+    task_id = _make_running_task(db, mgr)
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+        status = "completed" if dataset == "ASTGTM.003" else "failed"
+        for g in granules:
+            if progress_callback:
+                await progress_callback(g, status, None if status == "completed" else "404", 1)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+        return {"total": 1, "rendered": 1, "failed": 0}
+    import services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, None))
+    assert mgr.get_task(task_id)["status"] == "completed"  # water failure tolerated
+
+
 def test_execute_fails_and_skips_render_on_download_failure(monkeypatch, tmp_path):
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)

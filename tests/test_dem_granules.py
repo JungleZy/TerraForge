@@ -3,7 +3,14 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.dem_granules import coverage_bbox, tiles_for_bbox
+from services.dem_granules import (
+    coverage_bbox, tiles_for_bbox, astwbd_v1_att_granules_for_tile, LatLonTile,
+)
+
+
+def test_astwbd_att_granule_name():
+    assert astwbd_v1_att_granules_for_tile(LatLonTile(lat=0, lon=6)) == ["ASTWBDV001_N00E006_att.tif"]
+    assert astwbd_v1_att_granules_for_tile(LatLonTile(lat=-4, lon=120)) == ["ASTWBDV001_S04E120_att.tif"]
 
 
 def test_coverage_bbox_small_box_expands_to_full_degree_tile():

@@ -124,6 +124,17 @@
                             </div>
                         </div>
                         <small class="form-text text-muted">默认米白；勾选透明可把等高线叠加到卫星/标准底图上。</small>
+
+                        <label class="form-label mt-2">地形着色</label>
+                        <div class="form-check mb-0">
+                            <input type="checkbox" id="contourTerrainShade" class="form-check-input" checked>
+                            <label class="form-check-label" for="contourTerrainShade">分层设色 + 晕渲（按海拔上色 + 阳光阴影）</label>
+                        </div>
+                        <div class="form-check mb-0">
+                            <input type="checkbox" id="contourWater" class="form-check-input" checked>
+                            <label class="form-check-label" for="contourWater">水体（ASTWBD 江河湖海，蓝色）</label>
+                        </div>
+                        <small class="form-text text-muted">默认开启；关掉得到纯等高线（适合透明叠加）。水体需额外下载，无水体的区域会自动跳过。</small>
                     </div>
 
                     <div class="form-group-label">输出</div>

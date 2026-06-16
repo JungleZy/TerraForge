@@ -47,6 +47,16 @@ DEFAULT_CONFIGS = [
     ('contour_index_step', '5'),
     ('contour_detail_zoom', '14'),
     ('contour_zoom_scaling', 'standard'),
+    # Terrain coloring: hypsometric tints + hillshade + water (ASTWBD).
+    # breaks = N elevation breakpoints (m) -> N+1 color bands (incl. <first and >last).
+    ('contour_hypsometric_breaks', '0,200,500,1000,2000,3000,4000,5000'),
+    ('contour_hypsometric_colors', '#5E8C61,#8FBF6F,#B6CF7E,#DCD98E,#D9B97E,#C49A6C,#AC7F58,#8E6246,#F0EAE2'),
+    ('contour_hillshade_azimuth', '315'),
+    ('contour_hillshade_altitude', '45'),
+    ('contour_hillshade_vert_exag', '1.0'),
+    ('contour_hillshade_blend', 'soft'),
+    ('contour_water_color_ocean', '#6BAED6'),
+    ('contour_water_color_inland', '#9ECAE1'),
 ]
 
 
@@ -330,6 +340,8 @@ def init_database():
                 dataset TEXT NOT NULL DEFAULT 'ASTGTM.003',
                 contour_interval REAL NOT NULL,
                 background TEXT DEFAULT '#FAF6EC',
+                terrain_shade INTEGER DEFAULT 1,
+                water INTEGER DEFAULT 1,
                 zoom_min INTEGER NOT NULL,
                 zoom_max INTEGER NOT NULL,
                 output_path TEXT,
@@ -352,6 +364,7 @@ def init_database():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id INTEGER NOT NULL,
                 granule_id TEXT NOT NULL,
+                kind TEXT DEFAULT 'dem',
                 status TEXT NOT NULL DEFAULT 'pending',
                 local_path TEXT,
                 size_bytes INTEGER,
@@ -374,6 +387,21 @@ def init_database():
                 pass
             else:
                 raise
+
+        # Terrain coloring columns (backwards compatible with older DBs).
+        for table, coldef in (
+            ("contour_tasks", "terrain_shade INTEGER DEFAULT 1"),
+            ("contour_tasks", "water INTEGER DEFAULT 1"),
+            ("contour_files", "kind TEXT DEFAULT 'dem'"),
+        ):
+            try:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")
+                logger.info(f"Added column '{coldef}' to {table}")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e).lower():
+                    pass
+                else:
+                    raise
 
         # Insert default configuration values using executemany for efficiency
         cursor.executemany(

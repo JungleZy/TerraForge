@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from services.contour_engine import ContourStyle
-from services.terrain_tiling.vrt_builder import list_dem_tifs
+from services.terrain_tiling.vrt_builder import list_dem_tifs, list_att_tifs
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,8 @@ class ContourParams:
     zoom_min: int
     zoom_max: int
     style: ContourStyle
+    shade: bool = False
+    water: bool = False
 
 
 def contour_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
@@ -44,6 +46,9 @@ def tile_contour_task_dir(
     if not dem_tifs:
         return {"total": 0, "rendered": 0, "failed": 0}
 
+    # Water mask is best-effort: render whatever ASTWBD att tiles downloaded.
+    att_tifs = list_att_tifs(task_dir) if params.water else []
+
     if build_contour_fn is None:
         from services.contour_engine import build_contour_tiles as build_contour_fn
 
@@ -56,4 +61,7 @@ def tile_contour_task_dir(
         style=params.style,
         progress_cb=progress_cb,
         stop_flag=stop_flag,
+        shade=params.shade,
+        water=params.water,
+        att_tifs=att_tifs,
     )
