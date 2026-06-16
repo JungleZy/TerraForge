@@ -36,6 +36,15 @@ DEFAULT_CONFIGS = [
     ('terrain_global_base_path', './downloads/terrain/base_z8'),
     ('terrain_global_base_maxzoom', '8'),
     ('terrain_local_maxzoom', '14'),
+    # Contour (等高线) defaults
+    ('contour_default_interval', '50'),
+    ('contour_color_intermediate', '#9C6B3F'),
+    ('contour_color_index', '#7A4F2A'),
+    ('contour_color_label', '#7A4F2A'),
+    ('contour_width_intermediate', '0.5'),
+    ('contour_width_index', '1.2'),
+    ('contour_background', 'transparent'),
+    ('contour_index_step', '5'),
 ]
 
 
@@ -304,6 +313,49 @@ def init_database():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_local_terrain_files_status
             ON local_terrain_files(status)
+        ''')
+
+        # 等高线任务表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS contour_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                north REAL NOT NULL,
+                south REAL NOT NULL,
+                east REAL NOT NULL,
+                west REAL NOT NULL,
+                dataset TEXT NOT NULL DEFAULT 'ASTGTM.003',
+                contour_interval REAL NOT NULL,
+                zoom_min INTEGER NOT NULL,
+                zoom_max INTEGER NOT NULL,
+                output_path TEXT,
+                total_files INTEGER DEFAULT 0,
+                downloaded_files INTEGER DEFAULT 0,
+                failed_files INTEGER DEFAULT 0,
+                total_tiles INTEGER DEFAULT 0,
+                rendered_tiles INTEGER DEFAULT 0,
+                failed_tiles INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                error_message TEXT
+            )
+        ''')
+
+        # 等高线 DEM 文件表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS contour_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                granule_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                local_path TEXT,
+                size_bytes INTEGER,
+                retry_count INTEGER DEFAULT 0,
+                error_message TEXT,
+                FOREIGN KEY (task_id) REFERENCES contour_tasks(id) ON DELETE CASCADE
+            )
         ''')
 
         # Insert default configuration values using executemany for efficiency
