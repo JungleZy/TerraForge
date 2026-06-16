@@ -62,3 +62,27 @@ def test_contour_style_from_config():
     assert style.width_intermediate == 0.7
     assert style.index_step == 5
     assert style.background == "transparent"
+
+
+def test_interval_for_zoom_standard():
+    from services.contour_engine import interval_for_zoom
+    base = 50
+    # detail band: z >= 14 all use base
+    for z in (14, 15, 16, 19):
+        assert interval_for_zoom(base, z, detail_zoom=14) == 50
+    # coarsens below detail_zoom on the 1-2-5 ladder, one step per zoom
+    assert interval_for_zoom(base, 13, detail_zoom=14) == 100
+    assert interval_for_zoom(base, 12, detail_zoom=14) == 250
+    assert interval_for_zoom(base, 11, detail_zoom=14) == 500
+    assert interval_for_zoom(base, 10, detail_zoom=14) == 1000
+    assert interval_for_zoom(base, 9, detail_zoom=14) == 2500
+    assert interval_for_zoom(base, 8, detail_zoom=14) == 5000
+
+
+def test_interval_for_zoom_gentle_coarsens_slower():
+    from services.contour_engine import interval_for_zoom
+    # gentle steps once per two zoom levels -> at z13 still base, coarser only deeper
+    assert interval_for_zoom(50, 13, detail_zoom=14, scaling="gentle") == 50
+    assert interval_for_zoom(50, 12, detail_zoom=14, scaling="gentle") == 100
+    # standard is strictly coarser than gentle at the same low zoom
+    assert interval_for_zoom(50, 10, detail_zoom=14, scaling="standard") >= interval_for_zoom(50, 10, detail_zoom=14, scaling="gentle")
