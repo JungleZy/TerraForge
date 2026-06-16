@@ -103,8 +103,10 @@ body {
     background: var(--color-bg-secondary) !important;
 }
 
-/* Ensure all divs inherit background */
-div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progress):not(.progress-bar) {
+/* Ensure all divs inherit background. Exclude themed popups (.app-confirm /
+   overlay / toast) — otherwise this high-specificity rule forces their solid
+   background transparent, making the dialogs unreadable. */
+div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progress):not(.progress-bar):not(.app-confirm):not(.app-confirm-overlay):not(.app-toast) {
     background: transparent;
 }
 
