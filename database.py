@@ -45,6 +45,8 @@ DEFAULT_CONFIGS = [
     ('contour_width_index', '1.2'),
     ('contour_background', '#FFFFFF'),
     ('contour_index_step', '5'),
+    ('contour_detail_zoom', '14'),
+    ('contour_zoom_scaling', 'standard'),
 ]
 
 

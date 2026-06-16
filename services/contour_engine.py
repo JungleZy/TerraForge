@@ -72,6 +72,26 @@ def is_index_contour(elevation: float, interval: float, index_step: int) -> bool
     return abs(ratio - round(ratio)) < 1e-6
 
 
+def _zoom_interval_multiplier(delta: int, scaling: str = "standard") -> float:
+    """Multiplier on the base interval for a tile `delta` zoom levels below the detail zoom.
+    standard: step the 1-2-5 ladder once per zoom level.
+    gentle:   step once per two zoom levels (low zooms keep more lines).
+    """
+    if delta <= 0:
+        return 1.0
+    idx = (delta // 2) if scaling == "gentle" else delta
+    ladder = [1, 2, 5]
+    return (10 ** (idx // 3)) * ladder[idx % 3]
+
+
+def interval_for_zoom(base_interval: float, z: int, detail_zoom: int = 14, scaling: str = "standard") -> float:
+    """Effective contour interval at slippy zoom `z`. base applies for z >= detail_zoom;
+    coarsens up the 1-2-5 ladder for z < detail_zoom. Depends only on zoom (tiles at the
+    same zoom share one interval -> contours align across tile boundaries)."""
+    delta = max(0, int(detail_zoom) - int(z))
+    return base_interval * _zoom_interval_multiplier(delta, scaling)
+
+
 @dataclass(frozen=True)
 class ContourStyle:
     color_intermediate: str = "#9C6B3F"
@@ -82,6 +102,8 @@ class ContourStyle:
     background: str = "#FFFFFF"
     index_step: int = 5
     label_size: float = 6.0
+    detail_zoom: int = 14
+    zoom_scaling: str = "standard"
 
     @classmethod
     def from_config(cls, config) -> "ContourStyle":
@@ -106,6 +128,8 @@ class ContourStyle:
             background=config.get("contour_background", "#FFFFFF"),
             index_step=_i("contour_index_step", 5),
             label_size=_f("contour_label_size", 6.0),
+            detail_zoom=_i("contour_detail_zoom", 14),
+            zoom_scaling=config.get("contour_zoom_scaling", "standard"),
         )
 
 
@@ -192,11 +216,12 @@ def build_contour_tiles(
         ys = originY + (row0 + np.arange(win_y) + 0.5) * pxH
         X, Y = np.meshgrid(xs, ys)
 
-        lo = math.floor(zmin / interval) * interval
-        hi = math.ceil(zmax / interval) * interval
-        levels = [lo + i * interval for i in range(int(round((hi - lo) / interval)) + 1)]
-        minor = [lv for lv in levels if not is_index_contour(lv, interval, style.index_step)]
-        major = [lv for lv in levels if is_index_contour(lv, interval, style.index_step)]
+        eff = interval_for_zoom(interval, z, style.detail_zoom, style.zoom_scaling)
+        lo = math.floor(zmin / eff) * eff
+        hi = math.ceil(zmax / eff) * eff
+        levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
+        minor = [lv for lv in levels if not is_index_contour(lv, eff, style.index_step)]
+        major = [lv for lv in levels if is_index_contour(lv, eff, style.index_step)]
         if not minor and not major:
             if progress_cb is not None:
                 progress_cb(counts["rendered"] + counts["failed"], counts["total"])

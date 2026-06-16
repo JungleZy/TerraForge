@@ -19,7 +19,7 @@ def _make_dem(path, lon0=116.0, lat0=39.0):
     srs = gdal.osr.SpatialReference()
     srs.ImportFromEPSG(4326)
     ds.SetProjection(srs.ExportToWkt())
-    arr = np.tile(np.linspace(0, 600, 60).astype("float32"), (60, 1))
+    arr = np.tile(np.linspace(0, 6000, 60).astype("float32"), (60, 1))
     ds.GetRasterBand(1).WriteArray(arr)
     ds.FlushCache()
     ds = None
