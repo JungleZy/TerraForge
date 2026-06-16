@@ -71,5 +71,5 @@ def test_create_task_background_default_and_explicit(monkeypatch, tmp_path):
         r2 = conn.execute("SELECT background FROM contour_tasks WHERE id=?", (t2,)).fetchone()
     finally:
         conn.close()
-    assert r1["background"] == "#FFFFFF"
+    assert r1["background"] == "#FAF6EC"
     assert r2["background"] == "transparent"

@@ -307,16 +307,30 @@ function estimateContourTiles(bounds, zMin, zMax) {
     return total;
 }
 
+// Expand the framed bbox to the union of whole 1° DEM granule tiles (mirror of
+// services/dem_granules.coverage_bbox). Contours render over the whole
+// downloaded DEM, not just the framed box, so the estimate must use this.
+function coverageBounds(b) {
+    const eps = 1e-9;
+    return {
+        south: Math.floor(b.south),
+        north: Math.floor(b.north - eps) + 1,
+        west: Math.floor(b.west),
+        east: Math.floor(b.east - eps) + 1,
+    };
+}
+
 async function submitContour() {
     const interval = parseFloat(document.getElementById('contourInterval').value) || 50;
     const zMin = parseInt(document.getElementById('zoomMin').value, 10);
     const zMax = parseInt(document.getElementById('zoomMax').value, 10);
 
     const bgTransparent = document.getElementById('contourBackgroundTransparent').checked;
-    const background = bgTransparent ? 'transparent' : (document.getElementById('contourBackground').value || '#ffffff');
+    const background = bgTransparent ? 'transparent' : (document.getElementById('contourBackground').value || '#faf6ec');
 
     // Warn before a large render: contour rendering is slow, so confirm heavy jobs.
-    const approx = estimateContourTiles(currentBounds, zMin, zMax);
+    // Estimate over the whole DEM coverage (what actually renders), not the box.
+    const approx = estimateContourTiles(coverageBounds(currentBounds), zMin, zMax);
     if (approx > 20000) {
         const ok = await showConfirm(
             `预计渲染约 ${approx} 个等高线瓦片，等高线渲染较慢，可能耗时较久。确认继续？`,
