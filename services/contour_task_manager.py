@@ -19,7 +19,7 @@ from config import Config
 from database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
-from services.dem_granules import tiles_for_bbox, astgtm_v3_granules_for_tile
+from services.dem_granules import tiles_for_bbox, astgtm_v3_granules_for_tile, coverage_bbox
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +79,9 @@ class ContourTaskManager:
         if zoom_min > zoom_max:
             raise ValueError(f"zoom_min ({zoom_min}) must be <= zoom_max ({zoom_max})")
 
-        background = params.get("background") or "#FFFFFF"
+        background = params.get("background") or "#FAF6EC"
         if background != "transparent" and not str(background).startswith("#"):
-            background = "#FFFFFF"
+            background = "#FAF6EC"
 
         output_path = params.get("output_path") or str(Path(Config.DOWNLOADS_DIR) / "dem")
 
@@ -322,10 +322,13 @@ class ContourTaskManager:
 
             from dataclasses import replace
             style = ContourStyle.from_config(self.config)
-            style = replace(style, background=task["background"] or "#FFFFFF")
+            style = replace(style, background=task["background"] or "#FAF6EC")
             interval = float(task["contour_interval"])
             zoom_min = int(task["zoom_min"]); zoom_max = int(task["zoom_max"])
-            total_tiles = count_tiles(task["north"], task["south"], task["east"], task["west"], zoom_min, zoom_max)
+            # Contours render over the whole downloaded DEM (union of 1° granule
+            # tiles), not just the framed bbox, so count tiles over that coverage.
+            cov_n, cov_s, cov_e, cov_w = coverage_bbox(task["north"], task["south"], task["east"], task["west"])
+            total_tiles = count_tiles(cov_n, cov_s, cov_e, cov_w, zoom_min, zoom_max)
             self._update_render_counts(task_id, rendered=0, total=total_tiles)
 
             def render_progress(done: int, total: int):

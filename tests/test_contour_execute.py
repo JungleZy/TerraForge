@@ -68,6 +68,47 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
     assert task["rendered_tiles"] == 3
 
 
+def test_execute_total_tiles_covers_whole_dem_not_bbox(monkeypatch, tmp_path):
+    # A tiny framed box inside one 1° granule; contours render over the whole
+    # downloaded granule, so total_tiles must reflect that coverage, not the box.
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    from services.contour_engine import count_tiles
+    from services.dem_granules import coverage_bbox
+
+    mgr = ctm_mod.ContourTaskManager(socketio=None)
+    box = dict(north=0.10, south=0.00, east=0.10, west=0.00)
+    task_id = mgr.create_task({"name": "tiny", **box,
+                               "contour_interval": 50, "zoom_min": 12, "zoom_max": 12})
+    conn = db.get_connection()
+    try:
+        conn.execute("UPDATE contour_tasks SET status='running' WHERE id=?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+        for g in granules:
+            if progress_callback:
+                await progress_callback(g, "completed", None, 123)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    # Render succeeds but does NOT report progress, so total_tiles keeps the
+    # initial coverage-based value set before rendering.
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+        return {"total": 0, "rendered": 1, "failed": 0}
+    import services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, None))
+
+    task = mgr.get_task(task_id)
+    cov = coverage_bbox(**box)
+    expected = count_tiles(*cov, 12, 12)
+    bbox_only = count_tiles(box["north"], box["south"], box["east"], box["west"], 12, 12)
+    assert task["total_tiles"] == expected
+    assert expected > bbox_only
+
+
 def test_execute_fails_and_skips_render_on_download_failure(monkeypatch, tmp_path):
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)

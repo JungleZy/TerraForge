@@ -43,7 +43,7 @@ DEFAULT_CONFIGS = [
     ('contour_color_label', '#7A4F2A'),
     ('contour_width_intermediate', '0.5'),
     ('contour_width_index', '1.2'),
-    ('contour_background', '#FFFFFF'),
+    ('contour_background', '#FAF6EC'),
     ('contour_index_step', '5'),
     ('contour_detail_zoom', '14'),
     ('contour_zoom_scaling', 'standard'),
@@ -329,7 +329,7 @@ def init_database():
                 west REAL NOT NULL,
                 dataset TEXT NOT NULL DEFAULT 'ASTGTM.003',
                 contour_interval REAL NOT NULL,
-                background TEXT DEFAULT '#FFFFFF',
+                background TEXT DEFAULT '#FAF6EC',
                 zoom_min INTEGER NOT NULL,
                 zoom_max INTEGER NOT NULL,
                 output_path TEXT,
@@ -362,11 +362,11 @@ def init_database():
         ''')
 
         # Per-task contour background (backwards compatible with older DBs).
-        # SQLite fills existing rows with the constant default '#FFFFFF'.
+        # SQLite fills existing rows with the constant default '#FAF6EC'.
         try:
             cursor.execute('''
                 ALTER TABLE contour_tasks
-                ADD COLUMN background TEXT DEFAULT '#FFFFFF'
+                ADD COLUMN background TEXT DEFAULT '#FAF6EC'
             ''')
             logger.info("Added background column to contour_tasks table")
         except sqlite3.OperationalError as e:

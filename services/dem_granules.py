@@ -60,6 +60,21 @@ def tiles_for_bbox(north: float, south: float, east: float, west: float) -> List
     return tiles
 
 
+def coverage_bbox(north: float, south: float, east: float, west: float) -> Tuple[float, float, float, float]:
+    """
+    Bounding box of the union of 1x1 degree tiles intersecting the given bbox.
+
+    DEM download and contour rendering operate on whole granule tiles, so the
+    area actually covered is this whole-degree-aligned box, which is always
+    equal to or larger than the framed selection. Returns (north, south, east,
+    west) in degrees. Agrees exactly with the tiles from tiles_for_bbox.
+    """
+    tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
+    lats = [t.lat for t in tiles]
+    lons = [t.lon for t in tiles]
+    return (max(lats) + 1, min(lats), max(lons) + 1, min(lons))
+
+
 def astgtm_v3_granules_for_tile(tile: LatLonTile, include_num: bool, include_swb: bool) -> List[str]:
     """
     Build ASTGTM.003 granule filenames for a given tile.
