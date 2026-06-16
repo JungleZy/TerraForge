@@ -14,6 +14,15 @@ def list_dem_tifs(task_dir: Path) -> List[Path]:
     return sorted(tifs, key=lambda p: p.name)
 
 
+def list_att_tifs(task_dir: Path) -> List[Path]:
+    """
+    Return sorted ASTWBD water-body attribute GeoTIFF paths under task_dir
+    ("*_att.tif"). Kept separate from the DEM VRT — used only as a water mask.
+    """
+    tifs = [p for p in task_dir.glob("*_att.tif") if p.is_file()]
+    return sorted(tifs, key=lambda p: p.name)
+
+
 def build_vrt_command(vrt_path: Path, tif_paths: List[Path]) -> str:
     """
     Build a gdalbuildvrt command string. Quote Windows paths.

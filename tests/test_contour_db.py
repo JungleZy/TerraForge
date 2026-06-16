@@ -42,3 +42,24 @@ def test_contour_default_configs_seeded(monkeypatch, tmp_path):
     assert rows["contour_color_index"] == "#7A4F2A"
     assert rows["contour_background"] == "#FAF6EC"
     assert rows["contour_index_step"] == "5"
+    # Terrain coloring (hypsometric + hillshade + water) defaults.
+    assert rows["contour_hypsometric_breaks"] == "0,200,500,1000,2000,3000,4000,5000"
+    assert len(rows["contour_hypsometric_colors"].split(",")) == 9  # N breaks -> N+1 bands
+    assert rows["contour_hillshade_azimuth"] == "315"
+    assert rows["contour_hillshade_altitude"] == "45"
+    assert rows["contour_water_color_ocean"].startswith("#")
+    assert rows["contour_water_color_inland"].startswith("#")
+
+
+def test_contour_terrain_columns_exist(monkeypatch, tmp_path):
+    db = _reload_db(monkeypatch, tmp_path)
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        task_cols = {r["name"] for r in cur.execute("PRAGMA table_info(contour_tasks)").fetchall()}
+        file_cols = {r["name"] for r in cur.execute("PRAGMA table_info(contour_files)").fetchall()}
+    finally:
+        conn.close()
+    assert "terrain_shade" in task_cols
+    assert "water" in task_cols
+    assert "kind" in file_cols

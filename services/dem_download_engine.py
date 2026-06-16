@@ -29,10 +29,12 @@ class DemDownloadEngine:
         self.config = ConfigManager()
 
     def _dataset_base_url(self, dataset: str) -> str:
-        # For now only ASTGTM.003 is supported.
-        if dataset != "ASTGTM.003":
-            raise ValueError(f"Unsupported DEM dataset: {dataset}")
-        return "https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/ASTGTM.003/"
+        # Same LP DAAC cloud Data Pool infra for every protected granule; only
+        # the collection path differs. ASTGTM.003 = elevation, ASTWBD.001 = water.
+        base = "https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/"
+        if dataset in ("ASTGTM.003", "ASTWBD.001"):
+            return f"{base}{dataset}/"
+        raise ValueError(f"Unsupported DEM dataset: {dataset}")
 
     @staticmethod
     def _link_or_copy(src: Path, dst: Path) -> None:

@@ -19,7 +19,9 @@ from config import Config
 from database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
-from services.dem_granules import tiles_for_bbox, astgtm_v3_granules_for_tile, coverage_bbox
+from services.dem_granules import (
+    tiles_for_bbox, astgtm_v3_granules_for_tile, astwbd_v1_att_granules_for_tile, coverage_bbox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +85,22 @@ class ContourTaskManager:
         if background != "transparent" and not str(background).startswith("#"):
             background = "#FAF6EC"
 
+        def _flag(key: str, default: int = 1) -> int:
+            return 1 if str(params.get(key, default)).strip().lower() in ("1", "true", "yes", "on") else 0
+        terrain_shade = _flag("terrain_shade")
+        water = _flag("water")
+
         output_path = params.get("output_path") or str(Path(Config.DOWNLOADS_DIR) / "dem")
 
         tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
-        granules: List[str] = []
+        dem_granules: List[str] = []
         for t in tiles:
-            granules.extend(astgtm_v3_granules_for_tile(t, include_num=False, include_swb=False))
-        total_files = len(granules)
+            dem_granules.extend(astgtm_v3_granules_for_tile(t, include_num=False, include_swb=False))
+        att_granules: List[str] = []
+        if water:
+            for t in tiles:
+                att_granules.extend(astwbd_v1_att_granules_for_tile(t))
+        total_files = len(dem_granules) + len(att_granules)
 
         conn = get_connection()
         try:
@@ -98,19 +109,23 @@ class ContourTaskManager:
                 """
                 INSERT INTO contour_tasks (
                     name, status, north, south, east, west, dataset,
-                    contour_interval, background, zoom_min, zoom_max, output_path,
+                    contour_interval, background, terrain_shade, water,
+                    zoom_min, zoom_max, output_path,
                     total_files, downloaded_files, failed_files,
                     total_tiles, rendered_tiles, failed_tiles
                 )
-                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)
+                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)
                 """,
                 (name, north, south, east, west, dataset,
-                 interval, background, zoom_min, zoom_max, output_path, total_files),
+                 interval, background, terrain_shade, water,
+                 zoom_min, zoom_max, output_path, total_files),
             )
             task_id = cur.lastrowid
+            file_rows = [(task_id, g, "dem") for g in dem_granules] + \
+                        [(task_id, g, "water") for g in att_granules]
             cur.executemany(
-                "INSERT INTO contour_files (task_id, granule_id, status, retry_count) VALUES (?, ?, 'pending', 0)",
-                [(task_id, g) for g in granules],
+                "INSERT INTO contour_files (task_id, granule_id, kind, status, retry_count) VALUES (?, ?, ?, 'pending', 0)",
+                file_rows,
             )
             conn.commit()
             return task_id
@@ -236,12 +251,14 @@ class ContourTaskManager:
 
             dataset = task["dataset"]
             output_dir = Path(task["output_path"]) / f"contour_task_{task_id}"
+            want_water = bool(task["water"])
 
-            rows = cur.execute(
-                "SELECT granule_id FROM contour_files WHERE task_id=? AND status IN ('pending','failed') ORDER BY granule_id",
-                (task_id,),
-            ).fetchall()
-            granules = [r["granule_id"] for r in rows]
+            dem_granules = [r["granule_id"] for r in cur.execute(
+                "SELECT granule_id FROM contour_files WHERE task_id=? AND kind='dem' AND status IN ('pending','failed') ORDER BY granule_id",
+                (task_id,)).fetchall()]
+            att_granules = [r["granule_id"] for r in cur.execute(
+                "SELECT granule_id FROM contour_files WHERE task_id=? AND kind='water' AND status IN ('pending','failed') ORDER BY granule_id",
+                (task_id,)).fetchall()] if want_water else []
 
             stop_ev = asyncio.Event()
             if stop_flag and stop_flag.is_set():
@@ -284,9 +301,16 @@ class ContourTaskManager:
             watcher = asyncio.create_task(stop_watcher())
             try:
                 await self.engine.download_files(
-                    dataset=dataset, granules=granules, output_dir=output_dir,
+                    dataset=dataset, granules=dem_granules, output_dir=output_dir,
                     progress_callback=progress, stop_flag=stop_ev,
                 )
+                # Water (ASTWBD) is best-effort: tiles with no water bodies may have
+                # no att granule (404), which must not fail the task.
+                if att_granules and not stop_ev.is_set():
+                    await self.engine.download_files(
+                        dataset="ASTWBD.001", granules=att_granules, output_dir=output_dir,
+                        progress_callback=progress, stop_flag=stop_ev,
+                    )
             finally:
                 watcher.cancel()
 
@@ -301,7 +325,7 @@ class ContourTaskManager:
                 """
                 SELECT SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_count,
                        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count
-                FROM contour_files WHERE task_id=?
+                FROM contour_files WHERE task_id=? AND kind='dem'
                 """,
                 (task_id,),
             ).fetchone()
@@ -340,7 +364,8 @@ class ContourTaskManager:
                     payload["phase"] = "render"
                     self.socketio.emit("task_progress", payload)
 
-            params = ContourParams(interval=interval, zoom_min=zoom_min, zoom_max=zoom_max, style=style)
+            params = ContourParams(interval=interval, zoom_min=zoom_min, zoom_max=zoom_max,
+                                   style=style, shade=bool(task["terrain_shade"]), water=want_water)
             render_counts = tile_contour_task_dir(
                 task_dir=output_dir, out_dir=output_dir / "contour_tiles",
                 params=params, progress_cb=render_progress, stop_flag=stop_flag,

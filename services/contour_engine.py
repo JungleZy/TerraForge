@@ -104,6 +104,20 @@ class ContourStyle:
     label_size: float = 6.0
     detail_zoom: int = 14
     zoom_scaling: str = "standard"
+    # Hypsometric tints: N elevation breakpoints (m) -> N+1 color bands.
+    hypsometric_breaks: tuple = (0.0, 200.0, 500.0, 1000.0, 2000.0, 3000.0, 4000.0, 5000.0)
+    hypsometric_colors: tuple = (
+        "#5E8C61", "#8FBF6F", "#B6CF7E", "#DCD98E", "#D9B97E",
+        "#C49A6C", "#AC7F58", "#8E6246", "#F0EAE2",
+    )
+    # Hillshade (shaded relief) light source.
+    hillshade_azimuth: float = 315.0
+    hillshade_altitude: float = 45.0
+    hillshade_vert_exag: float = 1.0
+    hillshade_blend: str = "soft"
+    # Water (ASTWBD att): ocean=1, river=2, lake=3.
+    water_color_ocean: str = "#6BAED6"
+    water_color_inland: str = "#9ECAE1"
 
     @classmethod
     def from_config(cls, config) -> "ContourStyle":
@@ -119,6 +133,17 @@ class ContourStyle:
             except (TypeError, ValueError):
                 return int(default)
 
+        def _tuple_floats(key, default_csv):
+            try:
+                parts = [x.strip() for x in str(config.get(key, default_csv)).split(",")]
+                return tuple(float(x) for x in parts if x != "")
+            except (TypeError, ValueError):
+                return tuple(float(x) for x in default_csv.split(","))
+
+        def _tuple_strs(key, default_csv):
+            parts = [x.strip() for x in str(config.get(key, default_csv)).split(",") if x.strip() != ""]
+            return tuple(parts) if parts else tuple(default_csv.split(","))
+
         return cls(
             color_intermediate=config.get("contour_color_intermediate", "#9C6B3F"),
             color_index=config.get("contour_color_index", "#7A4F2A"),
@@ -130,6 +155,17 @@ class ContourStyle:
             label_size=_f("contour_label_size", 6.0),
             detail_zoom=_i("contour_detail_zoom", 14),
             zoom_scaling=config.get("contour_zoom_scaling", "standard"),
+            hypsometric_breaks=_tuple_floats(
+                "contour_hypsometric_breaks", "0,200,500,1000,2000,3000,4000,5000"),
+            hypsometric_colors=_tuple_strs(
+                "contour_hypsometric_colors",
+                "#5E8C61,#8FBF6F,#B6CF7E,#DCD98E,#D9B97E,#C49A6C,#AC7F58,#8E6246,#F0EAE2"),
+            hillshade_azimuth=_f("contour_hillshade_azimuth", 315.0),
+            hillshade_altitude=_f("contour_hillshade_altitude", 45.0),
+            hillshade_vert_exag=_f("contour_hillshade_vert_exag", 1.0),
+            hillshade_blend=config.get("contour_hillshade_blend", "soft"),
+            water_color_ocean=config.get("contour_water_color_ocean", "#6BAED6"),
+            water_color_inland=config.get("contour_water_color_inland", "#9ECAE1"),
         )
 
 
@@ -142,17 +178,28 @@ def build_contour_tiles(
     style: ContourStyle,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     stop_flag=None,
+    shade: bool = False,
+    water: bool = False,
+    att_tifs=None,
 ) -> dict:
     """
-    Warp DEM(s) to EPSG:3857, then per slippy tile read the window, run
-    matplotlib contour (minor + major + labels) and save a transparent 256x256 PNG.
-    Heavy deps imported lazily so the module stays import-safe without them.
+    Warp DEM(s) to EPSG:3857, then per slippy tile read the window and render a
+    256x256 PNG. Layers bottom->top: hypsometric tint + hillshade (shade=True),
+    ASTWBD water mask (water=True, needs att_tifs), then contour lines + labels.
+
+    Hypsometric coloring uses a global fixed elevation->color map so colors line
+    up across tiles. Heavy deps imported lazily so the module stays import-safe.
     """
     from osgeo import gdal
     import numpy as np
+    import os
+    import shutil
+    import tempfile
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from matplotlib.colors import ListedColormap, BoundaryNorm, LightSource
 
     gdal.UseExceptions()
     out_dir = Path(out_dir)
@@ -161,10 +208,21 @@ def build_contour_tiles(
     if not dem_paths:
         return counts
 
-    vrt = gdal.BuildVRT("", dem_paths)
-    warped = gdal.Warp("", vrt, format="MEM", dstSRS="EPSG:3857",
-                       resampleAlg="bilinear", dstNodata=-9999)
-    vrt = None
+    # Warp to on-disk GTiffs (NOT MEM): a whole-coverage in-RAM warp OOMs on large
+    # multi-degree areas. On-disk warp streams to disk, and per-tile windowed reads
+    # keep RAM bounded regardless of coverage size. tmpdir is removed at the end.
+    tmpdir = tempfile.mkdtemp(prefix="contour_warp_")
+    warped = None
+    att_warped = None
+    try:
+        vrt = gdal.BuildVRT("", dem_paths)
+        warped = gdal.Warp(os.path.join(tmpdir, "dem_3857.tif"), vrt, format="GTiff",
+                           dstSRS="EPSG:3857", resampleAlg="bilinear", dstNodata=-9999,
+                           creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
+        vrt = None
+    except Exception:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
     band = warped.GetRasterBand(1)
     nodata = band.GetNoDataValue()
     originX, pxW, _, originY, _, pxH = warped.GetGeoTransform()
@@ -173,16 +231,65 @@ def build_contour_tiles(
     cov_west, cov_south = meters_to_lonlat(originX, originY + ny * pxH)
     cov_east, cov_north = meters_to_lonlat(originX + nx * pxW, originY)
 
-    tile_list = []
+    # Optional water raster (ASTWBD att), warped to disk too. NEAREST keeps the
+    # categorical class values (0 land / 1 ocean / 2 river / 3 lake) intact.
+    att_band = None
+    aOX = aPW = aOY = aPH = anx = anumy = None
+    att_paths = [str(p) for p in (att_tifs or [])]
+    if water and att_paths:
+        try:
+            avrt = gdal.BuildVRT("", att_paths)
+            att_warped = gdal.Warp(os.path.join(tmpdir, "att_3857.tif"), avrt, format="GTiff",
+                                   dstSRS="EPSG:3857", resampleAlg="near",
+                                   creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
+            avrt = None
+            att_band = att_warped.GetRasterBand(1)
+            aOX, aPW, _, aOY, _, aPH = att_warped.GetGeoTransform()
+            anx, anumy = att_warped.RasterXSize, att_warped.RasterYSize
+        except Exception:
+            att_warped = None
+            att_band = None
+
+    # Global hypsometric colormap + boundary norm + light source (shared by all
+    # tiles -> consistent colors/shading across tile boundaries).
+    cmap = norm = light = None
+    if shade:
+        colors = list(style.hypsometric_colors)
+        breaks = [float(b) for b in style.hypsometric_breaks]
+        cmap = ListedColormap(colors)
+        bounds = [-1e9] + breaks + [1e9]
+        norm = BoundaryNorm(bounds, ncolors=cmap.N)
+        light = LightSource(azdeg=float(style.hillshade_azimuth), altdeg=float(style.hillshade_altitude))
+    ocean_rgba = mcolors.to_rgba(style.water_color_ocean)
+    inland_rgba = mcolors.to_rgba(style.water_color_inland)
+
+    # Count tiles arithmetically (no list) — materializing every (z,x,y) tile
+    # OOMs at high zoom over large areas (tens of millions of tuples).
+    total = 0
     for z in range(zoom_min, zoom_max + 1):
-        for (tx, ty) in tiles_for_bbox_xyz(cov_north, cov_south, cov_east, cov_west, z):
-            tile_list.append((z, tx, ty))
-    counts["total"] = len(tile_list)
+        x0, y0 = deg2num(cov_north, cov_west, z)
+        x1, y1 = deg2num(cov_south, cov_east, z)
+        total += (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
+    counts["total"] = total
 
     transparent = (style.background or "transparent").strip().lower() == "transparent"
     facecolor = "none" if transparent else style.background
 
-    for (z, tx, ty) in tile_list:
+    def _emit():
+        if progress_cb is not None:
+            progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+
+    def _iter_tiles():
+        for z in range(zoom_min, zoom_max + 1):
+            x0, y0 = deg2num(cov_north, cov_west, z)
+            x1, y1 = deg2num(cov_south, cov_east, z)
+            txmin, txmax = min(x0, x1), max(x0, x1)
+            tymin, tymax = min(y0, y1), max(y0, y1)
+            for tx in range(txmin, txmax + 1):
+                for ty in range(tymin, tymax + 1):
+                    yield z, tx, ty
+
+    for (z, tx, ty) in _iter_tiles():
         if stop_flag is not None and stop_flag.is_set():
             break
         xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
@@ -194,8 +301,7 @@ def build_contour_tiles(
         col0 = max(col0, 0); row0 = max(row0, 0)
         col1 = min(col1, nx); row1 = min(row1, ny)
         if col1 <= col0 or row1 <= row0:
-            if progress_cb is not None:
-                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+            _emit()
             continue
 
         win_x, win_y = col1 - col0, row1 - row0
@@ -203,28 +309,28 @@ def build_contour_tiles(
         if nodata is not None:
             arr = np.where(arr == nodata, np.nan, arr)
         if np.all(np.isnan(arr)):
-            if progress_cb is not None:
-                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+            _emit()
             continue
         zmin = float(np.nanmin(arr)); zmax = float(np.nanmax(arr))
-        if not math.isfinite(zmin) or not math.isfinite(zmax) or (zmax - zmin) < 1e-6:
-            if progress_cb is not None:
-                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
-            continue
+        arr_extent = (originX + col0 * pxW, originX + col1 * pxW,
+                      originY + row1 * pxH, originY + row0 * pxH)
 
-        xs = originX + (col0 + np.arange(win_x) + 0.5) * pxW
-        ys = originY + (row0 + np.arange(win_y) + 0.5) * pxH
-        X, Y = np.meshgrid(xs, ys)
-
+        # Contour levels — only where there is elevation variation.
         eff = interval_for_zoom(interval, z, style.detail_zoom, style.zoom_scaling)
-        lo = math.floor(zmin / eff) * eff
-        hi = math.ceil(zmax / eff) * eff
-        levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
-        minor = [lv for lv in levels if not is_index_contour(lv, eff, style.index_step)]
-        major = [lv for lv in levels if is_index_contour(lv, eff, style.index_step)]
-        if not minor and not major:
-            if progress_cb is not None:
-                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+        minor: List[float] = []
+        major: List[float] = []
+        draw_lines = math.isfinite(zmin) and math.isfinite(zmax) and (zmax - zmin) >= 1e-6
+        if draw_lines:
+            lo = math.floor(zmin / eff) * eff
+            hi = math.ceil(zmax / eff) * eff
+            levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
+            minor = [lv for lv in levels if not is_index_contour(lv, eff, style.index_step)]
+            major = [lv for lv in levels if is_index_contour(lv, eff, style.index_step)]
+            draw_lines = bool(minor or major)
+
+        # Pure-line mode on a featureless tile: nothing to draw, leave a gap.
+        if not shade and not water and not draw_lines:
+            _emit()
             continue
 
         fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
@@ -232,14 +338,56 @@ def build_contour_tiles(
         ax.set_axis_off()
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
+        drew = False
         try:
-            if minor:
-                ax.contour(X, Y, arr, levels=minor, colors=style.color_intermediate,
-                           linewidths=style.width_intermediate)
-            if major:
-                cs = ax.contour(X, Y, arr, levels=major, colors=style.color_index,
-                                linewidths=style.width_index)
-                ax.clabel(cs, fmt="%d", fontsize=style.label_size, colors=style.color_label)
+            if shade and arr.shape[0] >= 2 and arr.shape[1] >= 2:
+                fill = zmin if math.isfinite(zmin) else 0.0
+                filled = np.where(np.isnan(arr), fill, arr)
+                rgba = light.shade(filled, cmap=cmap, norm=norm,
+                                   vert_exag=float(style.hillshade_vert_exag),
+                                   dx=abs(pxW), dy=abs(pxH), blend_mode=style.hillshade_blend)
+                rgba[np.isnan(arr), 3] = 0.0
+                # bilinear: smooth the ~30m DEM when tiles are finer (z14+), else
+                # nearest-neighbour upsampling looks like coarse mosaic blocks.
+                ax.imshow(rgba, extent=arr_extent, origin="upper", zorder=0, interpolation="bilinear")
+                drew = True
+
+            if water and att_band is not None:
+                ac0 = int(math.floor((xmin - aOX) / aPW)) - 1
+                ac1 = int(math.ceil((xmax - aOX) / aPW)) + 1
+                ar0 = int(math.floor((ymax - aOY) / aPH)) - 1
+                ar1 = int(math.ceil((ymin - aOY) / aPH)) + 1
+                ac0 = max(ac0, 0); ar0 = max(ar0, 0)
+                ac1 = min(ac1, anx); ar1 = min(ar1, anumy)
+                if ac1 > ac0 and ar1 > ar0:
+                    att = att_band.ReadAsArray(ac0, ar0, ac1 - ac0, ar1 - ar0)
+                    wr = np.zeros((att.shape[0], att.shape[1], 4), dtype="float64")
+                    wr[att == 1] = ocean_rgba
+                    wr[(att == 2) | (att == 3)] = inland_rgba
+                    att_extent = (aOX + ac0 * aPW, aOX + ac1 * aPW,
+                                  aOY + ar1 * aPH, aOY + ar0 * aPH)
+                    ax.imshow(wr, extent=att_extent, origin="upper", zorder=1, interpolation="nearest")
+                    if bool(np.any(att >= 1)):
+                        drew = True
+
+            if draw_lines:
+                xs = originX + (col0 + np.arange(win_x) + 0.5) * pxW
+                ys = originY + (row0 + np.arange(win_y) + 0.5) * pxH
+                X, Y = np.meshgrid(xs, ys)
+                if minor:
+                    ax.contour(X, Y, arr, levels=minor, colors=style.color_intermediate,
+                               linewidths=style.width_intermediate, zorder=3)
+                if major:
+                    cs = ax.contour(X, Y, arr, levels=major, colors=style.color_index,
+                                    linewidths=style.width_index, zorder=3)
+                    ax.clabel(cs, fmt="%d", fontsize=style.label_size, colors=style.color_label)
+                drew = True
+
+            if not drew:
+                _emit()
+                plt.close(fig)
+                continue
+
             tile_path = out_dir / str(z) / str(tx) / f"{ty}.png"
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             fig.savefig(str(tile_path), dpi=100, transparent=transparent,
@@ -250,8 +398,9 @@ def build_contour_tiles(
         finally:
             plt.close(fig)
 
-        if progress_cb is not None:
-            progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+        _emit()
 
     warped = None
+    att_warped = None
+    shutil.rmtree(tmpdir, ignore_errors=True)
     return counts

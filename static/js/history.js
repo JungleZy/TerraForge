@@ -101,8 +101,8 @@ function renderHistoryTable(tasks) {
                     <span style="color: var(--color-accent-warm);">◀</span> ${task.west.toFixed(4)}`}
                 </small>
             </td>
-            <td style="font-family: var(--font-mono);">${task.task_type === 'map' ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
-            <td>${task.task_type === 'map' ? getStyleText(task.style) : (task.style || '-')}</td>
+            <td style="font-family: var(--font-mono);">${(task.task_type === 'map' || task.task_type === 'contour') ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
+            <td>${(task.task_type === 'map' || task.task_type === 'contour') ? getStyleText(task.style) : (task.style || '-')}</td>
             <td style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</td>
             <td><small style="font-family: var(--font-mono); font-size: 0.85rem;">${formatDate(task.completed_at)}</small></td>
             <td>
@@ -226,7 +226,8 @@ function getStyleText(style) {
         's': '卫星',
         'y': '卫星+标注',
         'h': '道路',
-        't': '地形'
+        't': '地形',
+        'contour': '等高线'
     };
     return styles[style] || style;
 }
@@ -241,6 +242,7 @@ async function viewTaskDetails(taskId, taskType = 'map') {
     try {
         const url = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
                   : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
+                  : taskType === 'contour' ? `/api/contour/tasks/${taskId}`
                   : `/api/tasks/${taskId}`;
         const response = await fetch(url);
         const data = await response.json();
@@ -264,6 +266,13 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailTotal').textContent = task.total_files;
             document.getElementById('detailDownloaded').textContent = task.uploaded_files;
             document.getElementById('detailFailed').textContent = task.failed_files;
+        } else if (taskType === 'contour') {
+            document.getElementById('detailStyle').textContent = '等高线瓦片';
+            document.getElementById('detailFormat').textContent = '-';
+            document.getElementById('detailZoom').textContent = `${task.zoom_min} - ${task.zoom_max}`;
+            document.getElementById('detailTotal').textContent = task.total_tiles;
+            document.getElementById('detailDownloaded').textContent = task.rendered_tiles;
+            document.getElementById('detailFailed').textContent = task.failed_tiles;
         } else {
             document.getElementById('detailStyle').textContent = getStyleText(task.style);
             document.getElementById('detailFormat').textContent = task.output_format;
@@ -278,6 +287,7 @@ async function viewTaskDetails(taskId, taskType = 'map') {
                     : (task.total_tiles || 0);
         const done = taskType === 'dem' ? (task.downloaded_files || 0)
                    : taskType === 'local_terrain' ? (task.uploaded_files || 0)
+                   : taskType === 'contour' ? (task.rendered_tiles || 0)
                    : (task.downloaded_tiles || 0);
         const progress = total > 0
             ? Math.round((done / total) * 100)
@@ -430,6 +440,7 @@ async function deleteTask(taskId, taskType = 'map') {
     try {
         const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
                         : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
+                        : taskType === 'contour' ? `/api/contour/tasks/${taskId}`
                         : `/api/tasks/${taskId}`;
         const response = await fetch(deleteUrl, { method: 'DELETE' });
 
