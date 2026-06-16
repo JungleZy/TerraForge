@@ -27,7 +27,7 @@ else:
 
 from config import Config
 from database import init_database
-from routes import main_bp, api_bp, dem_api_bp, terrain_api_bp, terrain_static_bp, local_terrain_api_bp
+from routes import main_bp, api_bp, dem_api_bp, terrain_api_bp, terrain_static_bp, local_terrain_api_bp, contour_api_bp, contour_static_bp
 from routes.api import init_task_manager
 from routes.socketio_events import register_socketio_events
 from services.task_manager import TaskManager
@@ -36,6 +36,8 @@ from routes.terrain_api import init_terrain_dem_task_manager
 from services.dem_task_manager import DemTaskManager
 from services.local_terrain_task_manager import LocalTerrainTaskManager
 from routes.local_terrain_api import init_local_terrain_task_manager
+from services.contour_task_manager import ContourTaskManager
+from routes.contour_api import init_contour_task_manager
 from services.system_proxy import apply_system_proxy
 
 # Configure logging
@@ -92,6 +94,11 @@ local_terrain_task_manager = LocalTerrainTaskManager(socketio=socketio)
 init_local_terrain_task_manager(local_terrain_task_manager)
 logger.info("LocalTerrainTaskManager created and injected")
 
+# Create ContourTaskManager and inject into contour API routes
+contour_task_manager = ContourTaskManager(socketio=socketio)
+init_contour_task_manager(contour_task_manager)
+logger.info("ContourTaskManager created and injected")
+
 # Register blueprints
 app.register_blueprint(main_bp)
 logger.info("Main blueprint registered")
@@ -110,6 +117,12 @@ logger.info("Terrain static blueprint registered")
 
 app.register_blueprint(local_terrain_api_bp)
 logger.info("Local terrain API blueprint registered")
+
+app.register_blueprint(contour_api_bp)
+logger.info("Contour API blueprint registered")
+
+app.register_blueprint(contour_static_bp)
+logger.info("Contour static blueprint registered")
 
 # Register SocketIO events
 register_socketio_events(socketio)
