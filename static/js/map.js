@@ -80,10 +80,8 @@ function initDownloadTypeToggle() {
     const typeEl = document.getElementById('downloadType');
     if (!typeEl) return;
 
-    const mapFields = [
-        document.getElementById('zoomMin')?.closest('.row'),
-        document.getElementById('outputFormat')?.closest('.mb-3'),
-    ].filter(Boolean);
+    const zoomRow = document.getElementById('zoomMin')?.closest('.row');
+    const outputFormatField = document.getElementById('outputFormat')?.closest('.mb-3');
 
     const mapStyleField = document.getElementById('mapStyleField');
 
@@ -91,22 +89,31 @@ function initDownloadTypeToggle() {
 
     const localOptions = document.getElementById('localTerrainOptions');
 
+    const contourOptions = document.getElementById('contourOptions');
+
     function apply() {
         const t = typeEl.value;
         const isMap = t === 'map';
         const isDem = t === 'dem';
         const isLocal = t === 'local_terrain';
-        mapFields.forEach(el => el.style.display = (isDem || isLocal) ? 'none' : '');
+        const isContour = t === 'contour';
+        // Zoom range is needed by map and contour; hidden for dem/local_terrain.
+        if (zoomRow) zoomRow.style.display = (isDem || isLocal) ? 'none' : '';
+        // Output format (tiles/stitch) is map-only.
+        if (outputFormatField) outputFormatField.style.display = isMap ? '' : 'none';
         if (mapStyleField) mapStyleField.style.display = isMap ? '' : 'none';
         if (demOptions) demOptions.style.display = isDem ? '' : 'none';
         if (localOptions) localOptions.style.display = isLocal ? '' : 'none';
+        if (contourOptions) contourOptions.style.display = isContour ? '' : 'none';
 
         const boundsInfo = document.getElementById('boundsInfo');
         if (boundsInfo) boundsInfo.style.display = isLocal ? 'none' : '';
 
+        // Contour writes tiles to downloads/dem by default; the path field is
+        // hidden because the contour branch intentionally does NOT send it.
         const outputPath = document.getElementById('outputPath');
         if (outputPath) {
-            outputPath.closest('.mb-3').style.display = isLocal ? 'none' : '';
+            outputPath.closest('.mb-3').style.display = (isLocal || isContour) ? 'none' : '';
             if (!outputPath.dataset.userEdited) {
                 outputPath.value = isDem ? './downloads/dem' : './downloads/map';
             }
@@ -174,6 +181,12 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
 
     if (!currentBounds) {
         showNotification('请先在地图上框选下载区域', 'warning');
+        return;
+    }
+
+    // Contour is a one-stop pipeline: create then immediately start (one click).
+    if (downloadType === 'contour') {
+        await submitContour();
         return;
     }
 
@@ -268,6 +281,201 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+
+// ---------------------------------------------------------------------------
+// Contour: one-stop create -> start, plus a map preview overlay for finished
+// contour tasks. The shared active-task list (tasks.js) removes cards on
+// completion and has no contour branch, so the preview lives here in its own
+// panel and listens to the shared socket independently.
+// ---------------------------------------------------------------------------
+
+// Mirror of the backend `count_tiles` slippy-map math, used purely client-side
+// to warn before a heavy contour render. Contour rendering is much slower than a
+// plain tile download, so a large bbox × high zoom can run for a very long time.
+function estimateContourTiles(bounds, zMin, zMax) {
+    const lon2x = (lon, z) => Math.floor(((lon + 180) / 360) * Math.pow(2, z));
+    const lat2y = (lat, z) => {
+        const r = (lat * Math.PI) / 180;
+        return Math.floor(((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2) * Math.pow(2, z));
+    };
+    let total = 0;
+    for (let z = zMin; z <= zMax; z++) {
+        const x0 = lon2x(bounds.west, z), x1 = lon2x(bounds.east, z);
+        const y0 = lat2y(bounds.north, z), y1 = lat2y(bounds.south, z);
+        total += (Math.abs(x1 - x0) + 1) * (Math.abs(y1 - y0) + 1);
+    }
+    return total;
+}
+
+async function submitContour() {
+    const interval = parseFloat(document.getElementById('contourInterval').value) || 50;
+    const zMin = parseInt(document.getElementById('zoomMin').value, 10);
+    const zMax = parseInt(document.getElementById('zoomMax').value, 10);
+
+    // Warn before a large render: contour rendering is slow, so confirm heavy jobs.
+    const approx = estimateContourTiles(currentBounds, zMin, zMax);
+    if (approx > 20000) {
+        const ok = await showConfirm(
+            `预计渲染约 ${approx} 个等高线瓦片，等高线渲染较慢，可能耗时较久。确认继续？`,
+            { title: '确认渲染', confirmText: '继续', danger: true }
+        );
+        if (!ok) return;
+    }
+
+    const body = {
+        name: document.getElementById('taskName').value || '等高线瓦片',
+        north: currentBounds.north,
+        south: currentBounds.south,
+        east: currentBounds.east,
+        west: currentBounds.west,
+        contour_interval: interval,
+        zoom_min: zMin,
+        zoom_max: zMax,
+        // NOTE: intentionally NO output_path — backend defaults to downloads/dem
+        // so the /contour/<id>/{z}/{x}/{y}.png tile route can find the tiles.
+    };
+
+    const btn = document.getElementById('createTaskBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '创建中...';
+    try {
+        const createResp = await fetch('/api/contour/tasks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const created = await createResp.json();
+        if (!createResp.ok) {
+            showNotification('创建失败: ' + (created.error || createResp.status), 'danger');
+            return;
+        }
+        await fetch(`/api/contour/tasks/${created.task_id}/start`, { method: 'POST' });
+        showNotification('等高线任务已开始（自动下 DEM → 渲染瓦片）', 'success');
+        document.getElementById('downloadForm').reset();
+        drawnItems.clearLayers();
+        currentBounds = null;
+        updateBoundsInfo();
+        document.getElementById('createTaskBtn').disabled = true;
+        // Re-apply type toggle so option blocks match the reset <select>.
+        document.getElementById('downloadType').dispatchEvent(new Event('change'));
+        loadActiveTasks();
+    } catch (err) {
+        showNotification('创建失败: ' + err.message, 'danger');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = original;
+    }
+}
+
+// --- Contour preview overlay ------------------------------------------------
+
+let contourPreviewLayer = null;
+let contourPreviewActiveId = null;
+
+function toggleContourPreview(taskId, zoomMax) {
+    // Same task toggled again -> turn it off.
+    if (contourPreviewLayer && contourPreviewActiveId === taskId) {
+        map.removeLayer(contourPreviewLayer);
+        contourPreviewLayer = null;
+        contourPreviewActiveId = null;
+        updateContourPreviewButtons();
+        return;
+    }
+    // Switching to a different task -> drop the old overlay first.
+    if (contourPreviewLayer) {
+        map.removeLayer(contourPreviewLayer);
+        contourPreviewLayer = null;
+        contourPreviewActiveId = null;
+    }
+    contourPreviewLayer = L.tileLayer(`/contour/${taskId}/{z}/{x}/{y}.png`, {
+        opacity: 0.9,
+        maxNativeZoom: zoomMax || undefined,
+    }).addTo(map);
+    contourPreviewActiveId = taskId;
+    updateContourPreviewButtons();
+}
+
+// Completed contour tasks available for preview: id -> {name, zoom_max}.
+const contourPreviewTasks = new Map();
+
+function contourPreviewPanel() {
+    let panel = document.getElementById('contourPreviewPanel');
+    if (!panel) {
+        const mapEl = document.getElementById('map');
+        if (!mapEl) return null;
+        panel = document.createElement('div');
+        panel.id = 'contourPreviewPanel';
+        panel.style.marginTop = '0.75rem';
+        // Place the panel right under the map card body.
+        mapEl.parentNode.appendChild(panel);
+    }
+    return panel;
+}
+
+function updateContourPreviewButtons() {
+    const panel = contourPreviewPanel();
+    if (!panel) return;
+    if (contourPreviewTasks.size === 0) {
+        panel.innerHTML = '';
+        return;
+    }
+    const rows = [];
+    contourPreviewTasks.forEach((info, id) => {
+        const active = contourPreviewActiveId === id;
+        rows.push(`
+            <button type="button"
+                    class="btn btn-sm ${active ? 'btn-primary' : 'btn-outline-primary'}"
+                    style="margin: 0 6px 6px 0;"
+                    onclick="toggleContourPreview(${id}, ${info.zoom_max || 'null'})">
+                ${active ? '隐藏预览' : '在地图上预览'}：${info.name || ('等高线 #' + id)}
+            </button>
+        `);
+    });
+    panel.innerHTML = `
+        <div class="alert alert-info" style="margin-bottom:0;">
+            <small><strong>已完成的等高线瓦片</strong></small><br>
+            ${rows.join('')}
+        </div>
+    `;
+}
+
+async function registerCompletedContourTask(taskId) {
+    // Pull zoom_max + name for the just-finished task from the list endpoint.
+    try {
+        const resp = await fetch('/api/contour/tasks');
+        const data = await resp.json();
+        const task = (data.tasks || []).find(t => t.id === taskId);
+        if (task) {
+            contourPreviewTasks.set(taskId, { name: task.name, zoom_max: task.zoom_max });
+        } else {
+            contourPreviewTasks.set(taskId, { name: '等高线 #' + taskId, zoom_max: null });
+        }
+    } catch (e) {
+        contourPreviewTasks.set(taskId, { name: '等高线 #' + taskId, zoom_max: null });
+    }
+    updateContourPreviewButtons();
+}
+
+// Hook the shared socket (created in tasks.js' initTasks). Called from the page
+// init block after initTasks(), so `socket` is already assigned.
+function initContourPreview() {
+    if (typeof socket === 'undefined' || !socket) return;
+    socket.on('task_completed', function(data) {
+        if (data && data.task_type === 'contour') {
+            registerCompletedContourTask(data.task_id);
+        }
+    });
+    // On page load, surface any already-completed contour tasks for preview.
+    fetch('/api/contour/tasks').then(r => r.json()).then(data => {
+        (data.tasks || []).forEach(t => {
+            if (t.status === 'completed') {
+                contourPreviewTasks.set(t.id, { name: t.name, zoom_max: t.zoom_max });
+            }
+        });
+        updateContourPreviewButtons();
+    }).catch(() => {});
+}
 
 async function submitLocalTerrain() {
     const fileInput = document.getElementById('localTerrainFiles');

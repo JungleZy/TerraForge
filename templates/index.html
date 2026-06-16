@@ -56,6 +56,7 @@
                             <option value="map">地图瓦片</option>
                             <option value="dem">GDEM V3 30m (ASTER GDEM V3)</option>
                             <option value="local_terrain">本地高程切片（上传 GeoTIFF）</option>
+                            <option value="contour">等高线瓦片</option>
                         </select>
                     </div>
 
@@ -107,6 +108,12 @@
                         <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
                         <label for="localTerrainMaxzoom" class="form-label mt-2">最大切片层级</label>
                         <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
+                    </div>
+
+                    <div class="mb-3" id="contourOptions" style="display:none;">
+                        <label for="contourInterval" class="form-label">等高距（米）</label>
+                        <input type="number" class="form-control" id="contourInterval" min="1" step="1" value="50">
+                        <small class="form-text text-muted">小范围建议 50m，大范围建议 100m；可手动修改。</small>
                     </div>
 
                     <div class="form-group-label">输出</div>
@@ -163,5 +170,6 @@
     initMap(config);
     initDownloadTypeToggle();
     initTasks();
+    initContourPreview();
 </script>
 {% endblock %}

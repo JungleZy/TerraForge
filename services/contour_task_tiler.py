@@ -1,0 +1,59 @@
+"""
+Contour task tiler.
+
+Thin wrapper around contour_engine.build_contour_tiles with a lazy default so
+tests can inject build_contour_fn=<fake> without GDAL/matplotlib (mirrors
+services/terrain_tiling/dem_task_tiler.py). DEM listing reuses the existing
+vrt_builder.list_dem_tifs (which filters *_num.tif).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+from services.contour_engine import ContourStyle
+from services.terrain_tiling.vrt_builder import list_dem_tifs
+
+
+@dataclass(frozen=True)
+class ContourParams:
+    interval: float
+    zoom_min: int
+    zoom_max: int
+    style: ContourStyle
+
+
+def contour_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
+    return Path(task_output_path) / f"contour_task_{task_id}" / "contour_tiles"
+
+
+def tile_contour_task_dir(
+    task_dir,
+    out_dir,
+    params: ContourParams,
+    build_contour_fn: Optional[Callable] = None,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+    stop_flag=None,
+) -> dict:
+    task_dir = Path(task_dir)
+    out_dir = Path(out_dir)
+
+    dem_tifs = list_dem_tifs(task_dir)
+    if not dem_tifs:
+        return {"total": 0, "rendered": 0, "failed": 0}
+
+    if build_contour_fn is None:
+        from services.contour_engine import build_contour_tiles as build_contour_fn
+
+    return build_contour_fn(
+        dem_tifs=dem_tifs,
+        out_dir=out_dir,
+        interval=params.interval,
+        zoom_min=params.zoom_min,
+        zoom_max=params.zoom_max,
+        style=params.style,
+        progress_cb=progress_cb,
+        stop_flag=stop_flag,
+    )
