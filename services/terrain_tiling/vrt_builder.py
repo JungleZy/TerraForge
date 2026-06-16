@@ -8,10 +8,16 @@ def list_dem_tifs(task_dir: Path) -> List[Path]:
     """
     Return sorted DEM GeoTIFF paths under task_dir.
 
-    Only files matching "*_dem.tif" are returned; "*_num.tif" is ignored.
+    Matches "*_dem.tif" (ASTER) and "*_DEM.tif" (Copernicus GLO-30); "*_num.tif"
+    and "*_att.tif" do not match. Deduped (case-insensitive filesystems may match
+    both patterns to the same file).
     """
-    tifs = [p for p in task_dir.glob("*_dem.tif") if p.is_file()]
-    return sorted(tifs, key=lambda p: p.name)
+    found = {}
+    for pattern in ("*_dem.tif", "*_DEM.tif"):
+        for p in task_dir.glob(pattern):
+            if p.is_file():
+                found[str(p)] = p
+    return sorted(found.values(), key=lambda p: p.name)
 
 
 def list_att_tifs(task_dir: Path) -> List[Path]:

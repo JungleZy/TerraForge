@@ -93,6 +93,12 @@
                     </div>
 
                     <div class="mb-3" id="demOptions" style="display:none;">
+                        <label for="demDataset" class="form-label">数据源</label>
+                        <select class="form-select mb-2" id="demDataset">
+                            <option value="COP-DEM-GLO-30">Copernicus GLO-30（30m，推荐，更干净，免认证）</option>
+                            <option value="ASTGTM.003">ASTER GDEM v3（30m，需 Earthdata 账号）</option>
+                        </select>
+                        <small class="form-text text-muted d-block mb-2">下方 NUM/SWB 仅 ASTER 适用；选 GLO-30 时忽略。</small>
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" id="demDownloadNum">
                             <label class="form-check-label" for="demDownloadNum">同时下载 NUM 质量文件</label>
@@ -111,6 +117,11 @@
                     </div>
 
                     <div class="mb-3" id="contourOptions" style="display:none;">
+                        <label for="contourDataset" class="form-label">数据源</label>
+                        <select class="form-select mb-2" id="contourDataset">
+                            <option value="COP-DEM-GLO-30">Copernicus GLO-30（30m，推荐，更干净，免认证）</option>
+                            <option value="ASTGTM.003">ASTER GDEM v3（30m，需 Earthdata 账号）</option>
+                        </select>
                         <label for="contourInterval" class="form-label">基准等高距（米）</label>
                         <input type="number" class="form-control" id="contourInterval" min="1" step="1" value="50">
                         <small class="form-text text-muted">基准（最细）等高距；低层级会自动变粗以免线条拥挤。小范围 50m、大范围 100m。</small>

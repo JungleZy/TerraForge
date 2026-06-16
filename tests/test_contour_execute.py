@@ -137,7 +137,7 @@ def test_execute_downloads_water_and_passes_shade_water_flags(monkeypatch, tmp_p
     asyncio.run(mgr._execute(task_id, None))
 
     datasets = [c[0] for c in calls]
-    assert "ASTGTM.003" in datasets and "ASTWBD.001" in datasets
+    assert "COP-DEM-GLO-30" in datasets and "ASTWBD.001" in datasets  # default DEM = GLO-30
     astwbd = next(c for c in calls if c[0] == "ASTWBD.001")
     assert astwbd[1] == ["ASTWBDV001_N00E000_att.tif"]
     assert seen["shade"] is True and seen["water"] is True
@@ -152,10 +152,11 @@ def test_execute_water_download_failure_is_not_fatal(monkeypatch, tmp_path):
     task_id = _make_running_task(db, mgr)
 
     async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
-        status = "completed" if dataset == "ASTGTM.003" else "failed"
+        # DEM (any source) succeeds; only the ASTWBD water download fails (404).
+        status = "failed" if dataset == "ASTWBD.001" else "completed"
         for g in granules:
             if progress_callback:
-                await progress_callback(g, status, None if status == "completed" else "404", 1)
+                await progress_callback(g, status, "404" if status == "failed" else None, 1)
     monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):

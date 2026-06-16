@@ -199,7 +199,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
             south: currentBounds.south,
             east: currentBounds.east,
             west: currentBounds.west,
-            dataset: 'ASTGTM.003',
+            dataset: document.getElementById('demDataset')?.value || 'COP-DEM-GLO-30',
             output_path: document.getElementById('outputPath').value,
             download_num: document.getElementById('demDownloadNum')?.checked ? 'true' : 'false',
             download_swb: document.getElementById('demDownloadSwb')?.checked ? 'true' : 'false'
@@ -347,6 +347,7 @@ async function submitContour() {
         west: currentBounds.west,
         contour_interval: interval,
         background: background,
+        dataset: document.getElementById('contourDataset')?.value || 'COP-DEM-GLO-30',
         terrain_shade: document.getElementById('contourTerrainShade')?.checked ?? true,
         water: document.getElementById('contourWater')?.checked ?? true,
         zoom_min: zMin,
