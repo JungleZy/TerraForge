@@ -107,3 +107,126 @@ class ContourStyle:
             index_step=_i("contour_index_step", 5),
             label_size=_f("contour_label_size", 6.0),
         )
+
+
+def build_contour_tiles(
+    dem_tifs,
+    out_dir,
+    interval: float,
+    zoom_min: int,
+    zoom_max: int,
+    style: ContourStyle,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+    stop_flag=None,
+) -> dict:
+    """
+    Warp DEM(s) to EPSG:3857, then per slippy tile read the window, run
+    matplotlib contour (minor + major + labels) and save a transparent 256x256 PNG.
+    Heavy deps imported lazily so the module stays import-safe without them.
+    """
+    from osgeo import gdal
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    gdal.UseExceptions()
+    out_dir = Path(out_dir)
+    dem_paths = [str(p) for p in dem_tifs]
+    counts = {"total": 0, "rendered": 0, "failed": 0}
+    if not dem_paths:
+        return counts
+
+    vrt = gdal.BuildVRT("", dem_paths)
+    warped = gdal.Warp("", vrt, format="MEM", dstSRS="EPSG:3857",
+                       resampleAlg="bilinear", dstNodata=-9999)
+    vrt = None
+    band = warped.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    originX, pxW, _, originY, _, pxH = warped.GetGeoTransform()
+    nx, ny = warped.RasterXSize, warped.RasterYSize
+
+    cov_west, cov_south = meters_to_lonlat(originX, originY + ny * pxH)
+    cov_east, cov_north = meters_to_lonlat(originX + nx * pxW, originY)
+
+    tile_list = []
+    for z in range(zoom_min, zoom_max + 1):
+        for (tx, ty) in tiles_for_bbox_xyz(cov_north, cov_south, cov_east, cov_west, z):
+            tile_list.append((z, tx, ty))
+    counts["total"] = len(tile_list)
+
+    transparent = (style.background or "transparent").strip().lower() == "transparent"
+    facecolor = "none" if transparent else style.background
+
+    for (z, tx, ty) in tile_list:
+        if stop_flag is not None and stop_flag.is_set():
+            break
+        xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
+
+        col0 = int(math.floor((xmin - originX) / pxW)) - 1
+        col1 = int(math.ceil((xmax - originX) / pxW)) + 1
+        row0 = int(math.floor((ymax - originY) / pxH)) - 1
+        row1 = int(math.ceil((ymin - originY) / pxH)) + 1
+        col0 = max(col0, 0); row0 = max(row0, 0)
+        col1 = min(col1, nx); row1 = min(row1, ny)
+        if col1 <= col0 or row1 <= row0:
+            if progress_cb is not None:
+                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+            continue
+
+        win_x, win_y = col1 - col0, row1 - row0
+        arr = band.ReadAsArray(col0, row0, win_x, win_y).astype("float64")
+        if nodata is not None:
+            arr = np.where(arr == nodata, np.nan, arr)
+        if np.all(np.isnan(arr)):
+            if progress_cb is not None:
+                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+            continue
+        zmin = float(np.nanmin(arr)); zmax = float(np.nanmax(arr))
+        if not math.isfinite(zmin) or not math.isfinite(zmax) or (zmax - zmin) < 1e-6:
+            if progress_cb is not None:
+                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+            continue
+
+        xs = originX + (col0 + np.arange(win_x) + 0.5) * pxW
+        ys = originY + (row0 + np.arange(win_y) + 0.5) * pxH
+        X, Y = np.meshgrid(xs, ys)
+
+        lo = math.floor(zmin / interval) * interval
+        hi = math.ceil(zmax / interval) * interval
+        levels = [lo + i * interval for i in range(int(round((hi - lo) / interval)) + 1)]
+        minor = [lv for lv in levels if not is_index_contour(lv, interval, style.index_step)]
+        major = [lv for lv in levels if is_index_contour(lv, interval, style.index_step)]
+        if not minor and not major:
+            if progress_cb is not None:
+                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+            continue
+
+        fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        try:
+            if minor:
+                ax.contour(X, Y, arr, levels=minor, colors=style.color_intermediate,
+                           linewidths=style.width_intermediate)
+            if major:
+                cs = ax.contour(X, Y, arr, levels=major, colors=style.color_index,
+                                linewidths=style.width_index)
+                ax.clabel(cs, fmt="%d", fontsize=style.label_size, colors=style.color_label)
+            tile_path = out_dir / str(z) / str(tx) / f"{ty}.png"
+            tile_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(str(tile_path), dpi=100, transparent=transparent,
+                        facecolor=facecolor, pad_inches=0)
+            counts["rendered"] += 1
+        except Exception:
+            counts["failed"] += 1
+        finally:
+            plt.close(fig)
+
+        if progress_cb is not None:
+            progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+
+    warped = None
+    return counts
