@@ -35,6 +35,14 @@ def test_dataset_requires_auth():
     assert DemDownloadEngine._dataset_requires_auth("COP-DEM-GLO-30") is False
 
 
+def test_client_timeout_has_no_total_cap():
+    # Large DEM COGs must not be killed by a total timeout; only stalls abort.
+    t = DemDownloadEngine._client_timeout(30)
+    assert t.total is None
+    assert t.sock_read == 30
+    assert t.sock_connect == 30
+
+
 def test_dataset_base_url_unknown_raises():
     with pytest.raises(ValueError):
         DemDownloadEngine._dataset_base_url(None, "FOO.001")

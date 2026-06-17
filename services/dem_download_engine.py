@@ -45,6 +45,13 @@ class DemDownloadEngine:
         return dataset != "COP-DEM-GLO-30"
 
     @staticmethod
+    def _client_timeout(request_timeout: int) -> "aiohttp.ClientTimeout":
+        # NO total cap: DEM tiles are 30-50MB COGs; over a slow/proxied link a
+        # total timeout kills the transfer mid-stream (leaving .part files).
+        # Use stall timeouts instead — abort only if connect or a read stalls.
+        return aiohttp.ClientTimeout(total=None, sock_connect=request_timeout, sock_read=request_timeout)
+
+    @staticmethod
     def _link_or_copy(src: Path, dst: Path) -> None:
         # Hard link first (zero-copy, instant). Fall back to a same-directory
         # temp copy + atomic replace so other tasks never promote a half file.
@@ -120,7 +127,7 @@ class DemDownloadEngine:
         base_url = self._dataset_base_url(dataset)
         requires_auth = self._dataset_requires_auth(dataset)
 
-        timeout = aiohttp.ClientTimeout(total=request_timeout)
+        timeout = self._client_timeout(request_timeout)
         connector = aiohttp.TCPConnector(limit=concurrent_downloads, limit_per_host=concurrent_downloads)
         jar = aiohttp.CookieJar(unsafe=True)
 
@@ -183,6 +190,14 @@ class DemDownloadEngine:
                             return
                         except Exception as e:
                             last_err = str(e)
+                            # Remove the partial .part so failed/interrupted attempts
+                            # don't leave litter (and a later run re-downloads cleanly).
+                            part = dest.with_suffix(dest.suffix + ".part")
+                            try:
+                                if part.exists():
+                                    part.unlink()
+                            except OSError:
+                                pass
                             logger.warning(f"DEM download failed ({granule}) attempt {attempt+1}/{max_retries+1}: {e}")
                             await asyncio.sleep(min(2 ** attempt, 10))
 
