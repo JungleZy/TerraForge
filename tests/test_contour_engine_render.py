@@ -57,6 +57,42 @@ def test_build_contour_tiles_emits_png(tmp_path):
     assert pngs[0].stat().st_size > 0
 
 
+def test_build_contour_tiles_falls_back_to_serial_on_broken_pool(tmp_path, monkeypatch):
+    """worker 进程崩溃(BrokenProcessPool)时,必须回退串行重渲染,保证切片完整 ——
+    而不是让整个任务失败(Windows 打包多 worker 内存耗尽的真实场景)。"""
+    import concurrent.futures
+    from concurrent.futures.process import BrokenProcessPool
+
+    class _BoomExecutor:  # 模拟一启动就崩的进程池
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def map(self, *a, **k):
+            raise BrokenProcessPool("simulated worker crash")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _BoomExecutor)
+
+    dem = tmp_path / "ASTGTMV003_N39E116_dem.tif"
+    _make_dem(dem)
+    out = tmp_path / "tiles"
+
+    # workers=4 + total>4 -> 走并行分支 -> 触发 BrokenProcessPool -> 回退串行
+    counts = build_contour_tiles(
+        dem_tifs=[dem], out_dir=out, interval=50,
+        zoom_min=10, zoom_max=11, style=ContourStyle(), shade=True, workers=4,
+    )
+
+    assert counts["total"] > 4
+    assert counts["rendered"] >= 1, "回退串行后应正常渲染出瓦片"
+    assert list(out.rglob("*.png")), "回退串行后应生成 PNG"
+
+
 def test_build_contour_tiles_parallel_matches_serial(tmp_path):
     """workers>1 的并行渲染必须与串行(workers=1)产出完全一致:相同的瓦片计数、
     相同的 PNG 文件集合。证明并行只是加速,不改变结果。"""

@@ -9,10 +9,13 @@ import-safe without them (mirrors services/terrain_tiling/dem_task_tiler.py).
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 EARTH_RADIUS = 6378137.0
 ORIGIN_SHIFT = math.pi * EARTH_RADIUS  # 20037508.342789244
@@ -511,32 +514,55 @@ def build_contour_tiles(
 
         n_workers = int(workers or 0)
         if n_workers <= 0:
-            n_workers = os.cpu_count() or 1
+            # 保守默认:每个 worker 都要加载 GDAL+matplotlib+numpy 并 mmap warp 后的
+            # DEM,worker 太多会内存吃紧。无脑用 cpu_count 在多核 Windows 打包环境下
+            # 曾 spawn ~20 个重型 worker 把内存打爆、worker 被 OS 杀掉(BrokenProcessPool)。
+            # 封顶 4;用户可用 contour_workers 配置显式提高。
+            n_workers = min(4, os.cpu_count() or 1)
 
-        if n_workers == 1 or total <= 4:
-            # 串行:主进程 ctx 直接渲染,stop_flag 每瓦片即时检查。
+        def _render_serial():
+            nonlocal ctx
+            if ctx is None:
+                ctx = _build_render_ctx(dem_path, att_path, style, interval, shade, water, str(out_dir))
             for (z, tx, ty) in _iter_tiles():
                 if stop_flag is not None and stop_flag.is_set():
                     break
                 _tally(_render_contour_tile_core(z, tx, ty, ctx))
+
+        if n_workers == 1 or total <= 4:
+            # 串行:主进程 ctx 直接渲染,stop_flag 每瓦片即时检查。
+            _render_serial()
         else:
             # 并行:释放主进程 dataset handle(避免 fork 继承),worker 各自打开。
             from concurrent.futures import ProcessPoolExecutor
-            ctx = None
+            from concurrent.futures.process import BrokenProcessPool
             init_args = (dem_path, att_path, style, interval, shade, water, str(out_dir))
             BATCH = 2048  # 批内并行,批间检查 stop_flag;不物化整张瓦片列表
-            with ProcessPoolExecutor(max_workers=n_workers,
-                                     initializer=_contour_worker_init,
-                                     initargs=init_args) as ex:
-                tiles = _iter_tiles()
-                while True:
-                    if stop_flag is not None and stop_flag.is_set():
-                        break
-                    batch = list(itertools.islice(tiles, BATCH))
-                    if not batch:
-                        break
-                    for status in ex.map(_contour_worker_render, batch, chunksize=8):
-                        _tally(status)
+            try:
+                ctx = None
+                with ProcessPoolExecutor(max_workers=n_workers,
+                                         initializer=_contour_worker_init,
+                                         initargs=init_args) as ex:
+                    tiles = _iter_tiles()
+                    while True:
+                        if stop_flag is not None and stop_flag.is_set():
+                            break
+                        batch = list(itertools.islice(tiles, BATCH))
+                        if not batch:
+                            break
+                        for status in ex.map(_contour_worker_render, batch, chunksize=8):
+                            _tally(status)
+            except BrokenProcessPool as e:
+                # worker 进程被异常终止(Windows 打包环境多 worker 内存耗尽常见)。进程级
+                # 崩溃 except 兜不住,会让整个任务失败 -> 回退串行重跑保证切片完整:已生成
+                # 的 PNG 被覆盖,未生成的补齐。串行单进程内存压力小,通常能跑完。
+                logger.warning(
+                    f"并行渲染 worker 崩溃({e!r}),回退串行重新渲染整个任务"
+                )
+                counts["rendered"] = 0
+                counts["failed"] = 0
+                ctx = None
+                _render_serial()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
