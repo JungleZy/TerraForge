@@ -13,6 +13,16 @@ import sys
 import os
 import logging
 import multiprocessing
+
+# 必须赶在任何 app 初始化(下方 create_app -> init_database / ContourTaskManager 的
+# orphan recovery)之前调用。Windows 打包 exe 的 ProcessPoolExecutor 渲染 worker 会
+# 重启 exe 并重新执行本模块;freeze_support() 检测到 worker(sys.argv 带
+# --multiprocessing-fork)就直接运行 worker 逻辑并 sys.exit(),根本到不了 create_app。
+# 放在 __main__ 块里太晚——模块级 create_app() 会先跑,worker 重跑 orphan recovery 把
+# 正在运行的任务误标成 paused;而 parent_process() guard 在 frozen worker 这一刻还没设
+# 好父进程标记(返回 None),拦不住。这才是 frozen 下真正有效的拦截点。
+multiprocessing.freeze_support()
+
 from flask import Flask
 from flask_socketio import SocketIO
 
@@ -160,12 +170,7 @@ if multiprocessing.parent_process() is None:
 
 
 if __name__ == '__main__':
-    # Required for multiprocessing (contour/terrain tiling ProcessPoolExecutor)
-    # under PyInstaller frozen builds: spawned workers re-launch the exe, and
-    # freeze_support() bootstraps them instead of re-running the whole server.
-    # No-op on source runs (Linux fork), so it's always safe to call first.
-    multiprocessing.freeze_support()
-
+    # freeze_support() 已在模块顶部调用(必须赶在 create_app 之前拦截 frozen worker)。
     logger.info("Starting Google Maps Downloader server...")
     logger.info("Server will be available at http://0.0.0.0:5000")
 
