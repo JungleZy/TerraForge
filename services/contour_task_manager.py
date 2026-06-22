@@ -357,7 +357,6 @@ class ContourTaskManager:
             # tiles), not just the framed bbox, so count tiles over that coverage.
             cov_n, cov_s, cov_e, cov_w = coverage_bbox(task["north"], task["south"], task["east"], task["west"])
             total_tiles = count_tiles(cov_n, cov_s, cov_e, cov_w, zoom_min, zoom_max)
-            self._update_render_counts(task_id, rendered=0, total=total_tiles)
 
             def render_progress(done: int, total: int):
                 self._update_render_counts(task_id, rendered=done, total=total)
@@ -367,6 +366,12 @@ class ContourTaskManager:
                     payload["task_type"] = "contour"
                     payload["phase"] = "render"
                     self.socketio.emit("task_progress", payload)
+
+            # 立即推一次 render 阶段事件:DEM 下载完进入切片时,前端要马上从"下载 DEM"
+            # 切到"渲染瓦片 0/total",不必手动刷新。warp 大区域可能耗时数十秒、期间无
+            # 瓦片产出,这一发确保用户看到已进入渲染阶段而非卡在下载 100%。
+            logger.info(f"Contour task {task_id}: 进入渲染阶段, 预计 {total_tiles} 瓦片")
+            render_progress(0, total_tiles)
 
             try:
                 workers = int(self.config.get("contour_workers", "0") or 0)

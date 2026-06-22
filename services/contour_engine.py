@@ -438,6 +438,7 @@ def build_contour_tiles(
     import shutil
     import tempfile
     import itertools
+    import time
 
     gdal.UseExceptions()
     out_dir = Path(out_dir)
@@ -452,6 +453,8 @@ def build_contour_tiles(
     tmpdir = tempfile.mkdtemp(prefix="contour_warp_")
     dem_path = os.path.join(tmpdir, "dem_3857.tif")
     att_path = None
+    _t_warp = time.time()
+    logger.info(f"Contour: 开始 warp {len(dem_paths)} 个 DEM 到 EPSG:3857(大区域可能耗时数十秒)...")
     try:
         vrt = gdal.BuildVRT("", dem_paths)
         gdal.Warp(dem_path, vrt, format="GTiff",
@@ -461,6 +464,7 @@ def build_contour_tiles(
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
+    logger.info(f"Contour: DEM warp 完成, 耗时 {time.time() - _t_warp:.1f}s")
 
     att_paths = [str(p) for p in (att_tifs or [])]
     if water and att_paths:
@@ -529,7 +533,10 @@ def build_contour_tiles(
                     break
                 _tally(_render_contour_tile_core(z, tx, ty, ctx))
 
-        if n_workers == 1 or total <= 4:
+        _serial = n_workers == 1 or total <= 4
+        logger.info(f"Contour: 开始渲染 {total} 瓦片, 模式={'串行' if _serial else f'并行 {n_workers} workers'}")
+        _t_render = time.time()
+        if _serial:
             # 串行:主进程 ctx 直接渲染,stop_flag 每瓦片即时检查。
             _render_serial()
         else:
@@ -543,6 +550,7 @@ def build_contour_tiles(
                 with ProcessPoolExecutor(max_workers=n_workers,
                                          initializer=_contour_worker_init,
                                          initargs=init_args) as ex:
+                    logger.info(f"Contour: {n_workers} 个渲染 worker 已就绪, 开始分批渲染(每批 {BATCH})")
                     tiles = _iter_tiles()
                     while True:
                         if stop_flag is not None and stop_flag.is_set():
@@ -552,6 +560,7 @@ def build_contour_tiles(
                             break
                         for status in ex.map(_contour_worker_render, batch, chunksize=8):
                             _tally(status)
+                        logger.info(f"Contour: 已渲染 {counts['rendered'] + counts['failed']}/{total} 瓦片, 耗时 {time.time() - _t_render:.1f}s")
             except BrokenProcessPool as e:
                 # worker 进程被异常终止(Windows 打包环境多 worker 内存耗尽常见)。进程级
                 # 崩溃 except 兜不住,会让整个任务失败 -> 回退串行重跑保证切片完整:已生成
