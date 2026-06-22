@@ -391,6 +391,16 @@ class ContourTaskManager:
                     self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "contour", "status": "failed", "error_message": msg})
                 return
 
+            # 诊断:部分瓦片渲染失败(被 _render_contour_tile_core 的 except 吞成 failed)
+            # 仍会标 completed,瓦片会缺。记 warning 便于排查"切片不完整"——failed 大说明
+            # 是渲染异常,failed=0 但缺层多半是低 zoom 无等高线穿过的设计性 skip。
+            failed_tiles = render_counts.get("failed", 0)
+            if failed_tiles > 0:
+                logger.warning(
+                    f"Contour task {task_id}: {failed_tiles} 个瓦片渲染失败 "
+                    f"(rendered={render_counts.get('rendered', 0)}, total={render_counts.get('total', 0)}),切片可能不完整"
+                )
+
             cur.execute("UPDATE contour_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'",
                         (datetime.now(), task_id))
             conn.commit()

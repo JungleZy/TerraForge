@@ -12,6 +12,7 @@ This module initializes and configures the Flask application with:
 import sys
 import os
 import logging
+import multiprocessing
 from flask import Flask
 from flask_socketio import SocketIO
 
@@ -47,88 +48,115 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Pick up Windows/macOS system proxy (read from registry / scutil) and export
-# it into HTTP_PROXY/HTTPS_PROXY so aiohttp(trust_env=True) can use it. Must
-# run before TaskManager/DemTaskManager are constructed.
-apply_system_proxy()
+def create_app():
+    """构造 Flask app + SocketIO + 全部 TaskManager + 蓝图,返回 (app, socketio)。
 
-# Create Flask application
-app = Flask(__name__, template_folder=template_folder, static_folder=static_folder)
-app.config.from_object(Config)
+    仅在主进程调用。multiprocessing worker(spawn 平台 —— Windows 打包 exe / macOS ——
+    会 re-import 本模块)绝不能重跑此函数:否则每个 worker 都会重新 init_database、抢
+    SQLite 锁,并触发 ContourTaskManager 的 orphan recovery 把正在 running 的任务误标成
+    paused(表现为刷新显示暂停、点开始报已在运行、完成后仍留在活动列表)。详见模块底部
+    的 parent_process() guard。
+    """
+    # Pick up Windows/macOS system proxy (read from registry / scutil) and export
+    # it into HTTP_PROXY/HTTPS_PROXY so aiohttp(trust_env=True) can use it. Must
+    # run before TaskManager/DemTaskManager are constructed.
+    apply_system_proxy()
 
-# Initialize application directories
-Config.init_app()
+    # Create Flask application
+    app = Flask(__name__, template_folder=template_folder, static_folder=static_folder)
+    app.config.from_object(Config)
 
-logger.info("Flask application created")
+    # Initialize application directories
+    Config.init_app()
 
-# Initialize SocketIO with CORS support
-socketio = SocketIO(app, cors_allowed_origins="*")
-logger.info("SocketIO initialized with CORS enabled")
+    logger.info("Flask application created")
 
-# Initialize database
-init_database()
-logger.info("Database initialized")
+    # Initialize SocketIO with CORS support
+    socketio = SocketIO(app, cors_allowed_origins="*")
+    logger.info("SocketIO initialized with CORS enabled")
 
-# Create TaskManager instance with SocketIO
-task_manager = TaskManager(socketio=socketio)
-logger.info("TaskManager created")
+    # Initialize database
+    init_database()
+    logger.info("Database initialized")
 
-# Inject TaskManager into API routes
-init_task_manager(task_manager)
-logger.info("TaskManager injected into API routes")
+    # Create TaskManager instance with SocketIO
+    task_manager = TaskManager(socketio=socketio)
+    logger.info("TaskManager created")
 
-# Create DEM TaskManager instance with SocketIO
-dem_task_manager = DemTaskManager(socketio=socketio)
-logger.info("DemTaskManager created")
+    # Inject TaskManager into API routes
+    init_task_manager(task_manager)
+    logger.info("TaskManager injected into API routes")
 
-# Inject DemTaskManager into DEM API routes
-init_dem_task_manager(dem_task_manager)
-logger.info("DemTaskManager injected into DEM API routes")
+    # Create DEM TaskManager instance with SocketIO
+    dem_task_manager = DemTaskManager(socketio=socketio)
+    logger.info("DemTaskManager created")
 
-# Inject DemTaskManager into terrain API routes
-init_terrain_dem_task_manager(dem_task_manager)
-logger.info("DemTaskManager injected into terrain API routes")
+    # Inject DemTaskManager into DEM API routes
+    init_dem_task_manager(dem_task_manager)
+    logger.info("DemTaskManager injected into DEM API routes")
 
-# Create LocalTerrainTaskManager and inject into local terrain API routes
-local_terrain_task_manager = LocalTerrainTaskManager(socketio=socketio)
-init_local_terrain_task_manager(local_terrain_task_manager)
-logger.info("LocalTerrainTaskManager created and injected")
+    # Inject DemTaskManager into terrain API routes
+    init_terrain_dem_task_manager(dem_task_manager)
+    logger.info("DemTaskManager injected into terrain API routes")
 
-# Create ContourTaskManager and inject into contour API routes
-contour_task_manager = ContourTaskManager(socketio=socketio)
-init_contour_task_manager(contour_task_manager)
-logger.info("ContourTaskManager created and injected")
+    # Create LocalTerrainTaskManager and inject into local terrain API routes
+    local_terrain_task_manager = LocalTerrainTaskManager(socketio=socketio)
+    init_local_terrain_task_manager(local_terrain_task_manager)
+    logger.info("LocalTerrainTaskManager created and injected")
 
-# Register blueprints
-app.register_blueprint(main_bp)
-logger.info("Main blueprint registered")
+    # Create ContourTaskManager and inject into contour API routes
+    contour_task_manager = ContourTaskManager(socketio=socketio)
+    init_contour_task_manager(contour_task_manager)
+    logger.info("ContourTaskManager created and injected")
 
-app.register_blueprint(api_bp)
-logger.info("API blueprint registered")
+    # Register blueprints
+    app.register_blueprint(main_bp)
+    logger.info("Main blueprint registered")
 
-app.register_blueprint(dem_api_bp)
-logger.info("DEM API blueprint registered")
+    app.register_blueprint(api_bp)
+    logger.info("API blueprint registered")
 
-app.register_blueprint(terrain_api_bp)
-logger.info("Terrain API blueprint registered")
+    app.register_blueprint(dem_api_bp)
+    logger.info("DEM API blueprint registered")
 
-app.register_blueprint(terrain_static_bp)
-logger.info("Terrain static blueprint registered")
+    app.register_blueprint(terrain_api_bp)
+    logger.info("Terrain API blueprint registered")
 
-app.register_blueprint(local_terrain_api_bp)
-logger.info("Local terrain API blueprint registered")
+    app.register_blueprint(terrain_static_bp)
+    logger.info("Terrain static blueprint registered")
 
-app.register_blueprint(contour_api_bp)
-logger.info("Contour API blueprint registered")
+    app.register_blueprint(local_terrain_api_bp)
+    logger.info("Local terrain API blueprint registered")
 
-app.register_blueprint(contour_static_bp)
-logger.info("Contour static blueprint registered")
+    app.register_blueprint(contour_api_bp)
+    logger.info("Contour API blueprint registered")
 
-# Register SocketIO events
-register_socketio_events(socketio)
-logger.info("SocketIO events registered")
+    app.register_blueprint(contour_static_bp)
+    logger.info("Contour static blueprint registered")
 
-logger.info("Application initialization complete")
+    # Register SocketIO events
+    register_socketio_events(socketio)
+    logger.info("SocketIO events registered")
+
+    logger.info("Application initialization complete")
+    return (app, socketio, task_manager, dem_task_manager,
+            local_terrain_task_manager, contour_task_manager)
+
+
+# 仅主进程执行完整初始化。multiprocessing worker(spawn 平台 —— Windows 打包 exe /
+# macOS —— 在启动 ProcessPoolExecutor 渲染瓦片时会 re-import 本模块)会命中 guard 并
+# 跳过 create_app(),避免重跑 init_database / orphan recovery —— 那是任务被误标 paused、
+# worker 环境不稳的根因。WSGI(gunicorn import app:app)和 Flask dev reloader 子进程都
+# 不是 multiprocessing 子进程,parent_process() 返回 None,会正常初始化。
+app = None
+socketio = None
+task_manager = None
+dem_task_manager = None
+local_terrain_task_manager = None
+contour_task_manager = None
+if multiprocessing.parent_process() is None:
+    (app, socketio, task_manager, dem_task_manager,
+     local_terrain_task_manager, contour_task_manager) = create_app()
 
 
 if __name__ == '__main__':
@@ -136,7 +164,6 @@ if __name__ == '__main__':
     # under PyInstaller frozen builds: spawned workers re-launch the exe, and
     # freeze_support() bootstraps them instead of re-running the whole server.
     # No-op on source runs (Linux fork), so it's always safe to call first.
-    import multiprocessing
     multiprocessing.freeze_support()
 
     logger.info("Starting Google Maps Downloader server...")
