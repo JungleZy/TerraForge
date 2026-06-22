@@ -25,6 +25,7 @@ class ContourParams:
     style: ContourStyle
     shade: bool = False
     water: bool = False
+    workers: int = 0  # 0 = auto (os.cpu_count()); 1 = serial
 
 
 def contour_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
@@ -64,4 +65,5 @@ def tile_contour_task_dir(
         shade=params.shade,
         water=params.water,
         att_tifs=att_tifs,
+        workers=params.workers,
     )

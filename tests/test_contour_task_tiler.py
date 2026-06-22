@@ -25,15 +25,17 @@ def test_tile_contour_task_dir_injects_and_filters_dem(tmp_path: Path):
     seen = {}
 
     def fake_build(dem_tifs, out_dir, interval, zoom_min, zoom_max, style,
-                   progress_cb=None, stop_flag=None, shade=False, water=False, att_tifs=None):
+                   progress_cb=None, stop_flag=None, shade=False, water=False, att_tifs=None,
+                   workers=0):
         seen["dem_tifs"] = list(dem_tifs)
         seen["interval"] = interval
         seen["zooms"] = (zoom_min, zoom_max)
         seen["shade"] = shade
         seen["water"] = water
+        seen["workers"] = workers
         return {"total": 3, "rendered": 3, "failed": 0}
 
-    params = ContourParams(interval=50, zoom_min=12, zoom_max=13, style=ContourStyle())
+    params = ContourParams(interval=50, zoom_min=12, zoom_max=13, style=ContourStyle(), workers=3)
     counts = tile_contour_task_dir(task_dir, out_dir, params, build_contour_fn=fake_build)
 
     assert counts == {"total": 3, "rendered": 3, "failed": 0}
@@ -41,6 +43,7 @@ def test_tile_contour_task_dir_injects_and_filters_dem(tmp_path: Path):
     assert seen["interval"] == 50
     assert seen["zooms"] == (12, 13)
     assert seen["shade"] is False and seen["water"] is False  # defaults off
+    assert seen["workers"] == 3  # workers 透传到引擎
 
 
 def test_tile_contour_task_dir_forwards_shade_water_and_att(tmp_path: Path):
@@ -53,7 +56,8 @@ def test_tile_contour_task_dir_forwards_shade_water_and_att(tmp_path: Path):
     seen = {}
 
     def fake_build(dem_tifs, out_dir, interval, zoom_min, zoom_max, style,
-                   progress_cb=None, stop_flag=None, shade=False, water=False, att_tifs=None):
+                   progress_cb=None, stop_flag=None, shade=False, water=False, att_tifs=None,
+                   workers=0):
         seen["shade"] = shade
         seen["water"] = water
         seen["att_tifs"] = list(att_tifs or [])

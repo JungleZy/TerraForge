@@ -368,8 +368,13 @@ class ContourTaskManager:
                     payload["phase"] = "render"
                     self.socketio.emit("task_progress", payload)
 
+            try:
+                workers = int(self.config.get("contour_workers", "0") or 0)
+            except (TypeError, ValueError):
+                workers = 0
             params = ContourParams(interval=interval, zoom_min=zoom_min, zoom_max=zoom_max,
-                                   style=style, shade=bool(task["terrain_shade"]), water=want_water)
+                                   style=style, shade=bool(task["terrain_shade"]), water=want_water,
+                                   workers=workers)
             render_counts = tile_contour_task_dir(
                 task_dir=output_dir, out_dir=output_dir / "contour_tiles",
                 params=params, progress_cb=render_progress, stop_flag=stop_flag,

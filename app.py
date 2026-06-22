@@ -132,6 +132,13 @@ logger.info("Application initialization complete")
 
 
 if __name__ == '__main__':
+    # Required for multiprocessing (contour/terrain tiling ProcessPoolExecutor)
+    # under PyInstaller frozen builds: spawned workers re-launch the exe, and
+    # freeze_support() bootstraps them instead of re-running the whole server.
+    # No-op on source runs (Linux fork), so it's always safe to call first.
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     logger.info("Starting Google Maps Downloader server...")
     logger.info("Server will be available at http://0.0.0.0:5000")
 

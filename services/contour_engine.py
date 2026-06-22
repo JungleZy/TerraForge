@@ -169,6 +169,240 @@ class ContourStyle:
         )
 
 
+def absolute_hillshade_intensity(elev, azimuth, altitude, vert_exag=1.0, dx=1.0, dy=1.0):
+    """逐瓦片一致的光照强度图,值域 [0,1]。
+
+    强度只由局部坡度坡向 + 固定光源(azimuth/altitude)决定,**不做**逐瓦片
+    min/max 拉伸 —— matplotlib `LightSource.shade_normals` 会把每个瓦片的强度按
+    自身 min/max 拉伸到 0-1,导致相邻瓦片明暗基准不一致、同级瓦片色差。这里改用
+    绝对映射:平地(法线 [0,0,1])统一归到 0.5,坡面在其上下偏移,全局基准一致。
+
+    numpy 在函数体内惰性导入,保持本模块 import-safe(与 build_contour_tiles 一致)。
+    """
+    import numpy as np
+
+    elev = np.asarray(elev, dtype="float64")
+    az = math.radians(90.0 - float(azimuth))
+    alt = math.radians(float(altitude))
+    light_dir = np.array([
+        math.cos(az) * math.cos(alt),
+        math.sin(az) * math.cos(alt),
+        math.sin(alt),
+    ])
+    # dy 隐式为负(栅格首行在顶部),与 matplotlib LightSource.hillshade 一致。
+    e_dy, e_dx = np.gradient(float(vert_exag) * elev, -abs(dy), abs(dx))
+    normal = np.empty(elev.shape + (3,), dtype="float64")
+    normal[..., 0] = -e_dx
+    normal[..., 1] = -e_dy
+    normal[..., 2] = 1.0
+    normal /= np.sqrt((normal ** 2).sum(axis=-1))[..., np.newaxis]
+    intensity = normal.dot(light_dir)
+    # 平地·光源 = light_dir[2];减去它再 +0.5 使平地=0.5(中性),全局统一基准。
+    return np.clip(intensity - light_dir[2] + 0.5, 0.0, 1.0)
+
+
+def _build_render_ctx(dem_path, att_path, style, interval, shade, water, out_dir):
+    """打开 warp 后的 EPSG:3857 GTiff 并预建渲染所需的全部上下文(geotransform、
+    可选水体栅格、全局 hypsometric cmap/norm、各类预转换颜色)。
+
+    串行(主进程)与并行 worker(子进程)都通过它构造 ctx,保证两条路径渲染逻辑
+    与参数完全一致。GDAL dataset 不可跨进程传递,所以每个 worker 各自按路径打开。
+    """
+    from osgeo import gdal
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.colors as mcolors
+    from matplotlib.colors import ListedColormap, BoundaryNorm
+    from types import SimpleNamespace
+
+    gdal.UseExceptions()
+    ctx = SimpleNamespace()
+    ds = gdal.Open(dem_path)
+    ctx.ds = ds  # 持引用,避免被 GC 关闭
+    ctx.band = ds.GetRasterBand(1)
+    ctx.nodata = ctx.band.GetNoDataValue()
+    ctx.originX, ctx.pxW, _, ctx.originY, _, ctx.pxH = ds.GetGeoTransform()
+    ctx.nx, ctx.ny = ds.RasterXSize, ds.RasterYSize
+
+    # 可选水体栅格(ASTWBD att),NEAREST 保留类别值(0 陆 / 1 海 / 2 河 / 3 湖)。
+    ctx.att_ds = ctx.att_band = None
+    ctx.aOX = ctx.aPW = ctx.aOY = ctx.aPH = ctx.anx = ctx.anumy = None
+    if water and att_path:
+        ads = gdal.Open(att_path)
+        if ads is not None:
+            ctx.att_ds = ads
+            ctx.att_band = ads.GetRasterBand(1)
+            ctx.aOX, ctx.aPW, _, ctx.aOY, _, ctx.aPH = ads.GetGeoTransform()
+            ctx.anx, ctx.anumy = ads.RasterXSize, ads.RasterYSize
+
+    # 全局固定 hypsometric 色表 + 边界 norm(所有瓦片共享 -> 跨瓦片颜色一致)。
+    ctx.cmap = ctx.norm = None
+    if shade:
+        colors = list(style.hypsometric_colors)
+        breaks = [float(b) for b in style.hypsometric_breaks]
+        ctx.cmap = ListedColormap(colors)
+        ctx.norm = BoundaryNorm([-1e9] + breaks + [1e9], ncolors=ctx.cmap.N)
+    ctx.ocean_rgba = mcolors.to_rgba(style.water_color_ocean)
+    ctx.inland_rgba = mcolors.to_rgba(style.water_color_inland)
+    ctx.transparent = (style.background or "transparent").strip().lower() == "transparent"
+    ctx.bg_rgba = None if ctx.transparent else mcolors.to_rgba(style.background)
+
+    ctx.style = style
+    ctx.interval = interval
+    ctx.shade = shade
+    ctx.water = water
+    ctx.out_dir = Path(out_dir)
+    return ctx
+
+
+def _render_contour_tile_core(z, tx, ty, ctx) -> str:
+    """渲染单个 slippy 瓦片为 256x256 PNG。返回 'rendered'/'failed'/'skipped'。
+
+    图层 bottom->top:DEM 覆盖区底色(非透明背景时)+ hypsometric tint/hillshade
+    (shade)+ ASTWBD 水体(water)+ 等高线与标注。串行与并行 worker 共用此函数。
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
+    col0 = int(math.floor((xmin - ctx.originX) / ctx.pxW)) - 1
+    col1 = int(math.ceil((xmax - ctx.originX) / ctx.pxW)) + 1
+    row0 = int(math.floor((ymax - ctx.originY) / ctx.pxH)) - 1
+    row1 = int(math.ceil((ymin - ctx.originY) / ctx.pxH)) + 1
+    col0 = max(col0, 0); row0 = max(row0, 0)
+    col1 = min(col1, ctx.nx); row1 = min(row1, ctx.ny)
+    if col1 <= col0 or row1 <= row0:
+        return "skipped"
+
+    win_x, win_y = col1 - col0, row1 - row0
+    arr = ctx.band.ReadAsArray(col0, row0, win_x, win_y).astype("float64")
+    if ctx.nodata is not None:
+        arr = np.where(arr == ctx.nodata, np.nan, arr)
+    if np.all(np.isnan(arr)):
+        return "skipped"
+    zmin = float(np.nanmin(arr)); zmax = float(np.nanmax(arr))
+    arr_extent = (ctx.originX + col0 * ctx.pxW, ctx.originX + col1 * ctx.pxW,
+                  ctx.originY + row1 * ctx.pxH, ctx.originY + row0 * ctx.pxH)
+
+    # Contour levels — only where there is elevation variation.
+    eff = interval_for_zoom(ctx.interval, z, ctx.style.detail_zoom, ctx.style.zoom_scaling)
+    minor: List[float] = []
+    major: List[float] = []
+    draw_lines = math.isfinite(zmin) and math.isfinite(zmax) and (zmax - zmin) >= 1e-6
+    if draw_lines:
+        lo = math.floor(zmin / eff) * eff
+        hi = math.ceil(zmax / eff) * eff
+        levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
+        minor = [lv for lv in levels if not is_index_contour(lv, eff, ctx.style.index_step)]
+        major = [lv for lv in levels if is_index_contour(lv, eff, ctx.style.index_step)]
+        draw_lines = bool(minor or major)
+
+    # Pure-line mode on a featureless tile: nothing to draw, leave a gap.
+    if not ctx.shade and not ctx.water and not draw_lines:
+        return "skipped"
+
+    fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    drew = False
+    try:
+        # 非透明背景:底色只铺在 DEM 覆盖区(arr 非 NaN),出界/空洞保持透明。
+        # 出界区域改由 figure 透明承载,而不是统一 facecolor —— 否则 slippy 瓦片
+        # 网格与 DEM 矩形不对齐时,最外圈瓦片的出界部分会被填成背景色(高 zoom
+        # '四周白边')。
+        if not ctx.transparent:
+            base = np.zeros((arr.shape[0], arr.shape[1], 4), dtype="float64")
+            base[~np.isnan(arr)] = ctx.bg_rgba
+            ax.imshow(base, extent=arr_extent, origin="upper", zorder=-1,
+                      interpolation="nearest")
+
+        if ctx.shade and arr.shape[0] >= 2 and arr.shape[1] >= 2:
+            fill = zmin if math.isfinite(zmin) else 0.0
+            filled = np.where(np.isnan(arr), fill, arr)
+            # 绝对 hillshade(全局统一基准,不逐瓦片拉伸)+ 全局 hypsometric 色,
+            # 再用 matplotlib 同款 soft/overlay 公式合成 -> 相邻瓦片无明暗接缝。
+            intensity = absolute_hillshade_intensity(
+                filled, ctx.style.hillshade_azimuth, ctx.style.hillshade_altitude,
+                ctx.style.hillshade_vert_exag, abs(ctx.pxW), abs(ctx.pxH))[..., np.newaxis]
+            rgb = ctx.cmap(ctx.norm(filled))[..., :3]
+            if ctx.style.hillshade_blend == "overlay":
+                low = 2 * intensity * rgb
+                high = 1 - 2 * (1 - intensity) * (1 - rgb)
+                blended = np.where(rgb <= 0.5, low, high)
+            else:  # 'soft' (pegtop) 默认;其他值(如 'hsv')回退到 soft
+                blended = 2 * intensity * rgb + (1 - 2 * intensity) * rgb ** 2
+            rgba = np.empty(arr.shape + (4,), dtype="float64")
+            rgba[..., :3] = np.clip(blended, 0.0, 1.0)
+            rgba[..., 3] = 1.0
+            rgba[np.isnan(arr), 3] = 0.0
+            # bilinear: smooth the ~30m DEM when tiles are finer (z14+), else
+            # nearest-neighbour upsampling looks like coarse mosaic blocks.
+            ax.imshow(rgba, extent=arr_extent, origin="upper", zorder=0, interpolation="bilinear")
+            drew = True
+
+        if ctx.water and ctx.att_band is not None:
+            ac0 = int(math.floor((xmin - ctx.aOX) / ctx.aPW)) - 1
+            ac1 = int(math.ceil((xmax - ctx.aOX) / ctx.aPW)) + 1
+            ar0 = int(math.floor((ymax - ctx.aOY) / ctx.aPH)) - 1
+            ar1 = int(math.ceil((ymin - ctx.aOY) / ctx.aPH)) + 1
+            ac0 = max(ac0, 0); ar0 = max(ar0, 0)
+            ac1 = min(ac1, ctx.anx); ar1 = min(ar1, ctx.anumy)
+            if ac1 > ac0 and ar1 > ar0:
+                att = ctx.att_band.ReadAsArray(ac0, ar0, ac1 - ac0, ar1 - ar0)
+                wr = np.zeros((att.shape[0], att.shape[1], 4), dtype="float64")
+                wr[att == 1] = ctx.ocean_rgba
+                wr[(att == 2) | (att == 3)] = ctx.inland_rgba
+                att_extent = (ctx.aOX + ac0 * ctx.aPW, ctx.aOX + ac1 * ctx.aPW,
+                              ctx.aOY + ar1 * ctx.aPH, ctx.aOY + ar0 * ctx.aPH)
+                ax.imshow(wr, extent=att_extent, origin="upper", zorder=1, interpolation="nearest")
+                if bool(np.any(att >= 1)):
+                    drew = True
+
+        if draw_lines:
+            xs = ctx.originX + (col0 + np.arange(win_x) + 0.5) * ctx.pxW
+            ys = ctx.originY + (row0 + np.arange(win_y) + 0.5) * ctx.pxH
+            X, Y = np.meshgrid(xs, ys)
+            if minor:
+                ax.contour(X, Y, arr, levels=minor, colors=ctx.style.color_intermediate,
+                           linewidths=ctx.style.width_intermediate, zorder=3)
+            if major:
+                cs = ax.contour(X, Y, arr, levels=major, colors=ctx.style.color_index,
+                                linewidths=ctx.style.width_index, zorder=3)
+                ax.clabel(cs, fmt="%d", fontsize=ctx.style.label_size, colors=ctx.style.color_label)
+            drew = True
+
+        if not drew:
+            return "skipped"
+
+        tile_path = ctx.out_dir / str(z) / str(tx) / f"{ty}.png"
+        tile_path.parent.mkdir(parents=True, exist_ok=True)
+        # figure 始终透明保存:DEM 内底色由上面的底色图层承载,出界区域透明。
+        fig.savefig(str(tile_path), dpi=100, transparent=True,
+                    facecolor="none", pad_inches=0)
+        return "rendered"
+    except Exception:
+        return "failed"
+    finally:
+        plt.close(fig)
+
+
+# 并行 worker:每个子进程在 initializer 里构造一次自己的 ctx(打开自己的 GDAL
+# dataset),存入进程级 global。task 只传可 pickle 的 (z,tx,ty),其余上下文不跨进程。
+_CONTOUR_WORKER_CTX = None
+
+
+def _contour_worker_init(dem_path, att_path, style, interval, shade, water, out_dir):
+    global _CONTOUR_WORKER_CTX
+    _CONTOUR_WORKER_CTX = _build_render_ctx(dem_path, att_path, style, interval, shade, water, out_dir)
+
+
+def _contour_worker_render(zxy) -> str:
+    z, tx, ty = zxy
+    return _render_contour_tile_core(z, tx, ty, _CONTOUR_WORKER_CTX)
+
+
 def build_contour_tiles(
     dem_tifs,
     out_dir,
@@ -181,6 +415,7 @@ def build_contour_tiles(
     shade: bool = False,
     water: bool = False,
     att_tifs=None,
+    workers: int = 0,
 ) -> dict:
     """
     Warp DEM(s) to EPSG:3857, then per slippy tile read the window and render a
@@ -189,17 +424,17 @@ def build_contour_tiles(
 
     Hypsometric coloring uses a global fixed elevation->color map so colors line
     up across tiles. Heavy deps imported lazily so the module stays import-safe.
+
+    workers: 0 = auto (os.cpu_count()); 1 = serial; N>1 = N worker processes.
+    并行时每个 worker 各自打开 warp 后的 GTiff;瓦片按 batch 从生成器取(不物化
+    整张列表,高 zoom 大区域会 OOM),批间检查 stop_flag。串行与并行共用
+    _render_contour_tile_core,产出完全一致。
     """
     from osgeo import gdal
-    import numpy as np
     import os
     import shutil
     import tempfile
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import matplotlib.colors as mcolors
-    from matplotlib.colors import ListedColormap, BoundaryNorm, LightSource
+    import itertools
 
     gdal.UseExceptions()
     out_dir = Path(out_dir)
@@ -212,195 +447,97 @@ def build_contour_tiles(
     # multi-degree areas. On-disk warp streams to disk, and per-tile windowed reads
     # keep RAM bounded regardless of coverage size. tmpdir is removed at the end.
     tmpdir = tempfile.mkdtemp(prefix="contour_warp_")
-    warped = None
-    att_warped = None
+    dem_path = os.path.join(tmpdir, "dem_3857.tif")
+    att_path = None
     try:
         vrt = gdal.BuildVRT("", dem_paths)
-        warped = gdal.Warp(os.path.join(tmpdir, "dem_3857.tif"), vrt, format="GTiff",
-                           dstSRS="EPSG:3857", resampleAlg="bilinear", dstNodata=-9999,
-                           creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
+        gdal.Warp(dem_path, vrt, format="GTiff",
+                  dstSRS="EPSG:3857", resampleAlg="bilinear", dstNodata=-9999,
+                  creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
         vrt = None
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
-    band = warped.GetRasterBand(1)
-    nodata = band.GetNoDataValue()
-    originX, pxW, _, originY, _, pxH = warped.GetGeoTransform()
-    nx, ny = warped.RasterXSize, warped.RasterYSize
 
-    cov_west, cov_south = meters_to_lonlat(originX, originY + ny * pxH)
-    cov_east, cov_north = meters_to_lonlat(originX + nx * pxW, originY)
-
-    # Optional water raster (ASTWBD att), warped to disk too. NEAREST keeps the
-    # categorical class values (0 land / 1 ocean / 2 river / 3 lake) intact.
-    att_band = None
-    aOX = aPW = aOY = aPH = anx = anumy = None
     att_paths = [str(p) for p in (att_tifs or [])]
     if water and att_paths:
         try:
             avrt = gdal.BuildVRT("", att_paths)
-            att_warped = gdal.Warp(os.path.join(tmpdir, "att_3857.tif"), avrt, format="GTiff",
-                                   dstSRS="EPSG:3857", resampleAlg="near",
-                                   creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
+            _ap = os.path.join(tmpdir, "att_3857.tif")
+            gdal.Warp(_ap, avrt, format="GTiff",
+                      dstSRS="EPSG:3857", resampleAlg="near",
+                      creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
             avrt = None
-            att_band = att_warped.GetRasterBand(1)
-            aOX, aPW, _, aOY, _, aPH = att_warped.GetGeoTransform()
-            anx, anumy = att_warped.RasterXSize, att_warped.RasterYSize
+            att_path = _ap
         except Exception:
-            att_warped = None
-            att_band = None
+            att_path = None
 
-    # Global hypsometric colormap + boundary norm + light source (shared by all
-    # tiles -> consistent colors/shading across tile boundaries).
-    cmap = norm = light = None
-    if shade:
-        colors = list(style.hypsometric_colors)
-        breaks = [float(b) for b in style.hypsometric_breaks]
-        cmap = ListedColormap(colors)
-        bounds = [-1e9] + breaks + [1e9]
-        norm = BoundaryNorm(bounds, ncolors=cmap.N)
-        light = LightSource(azdeg=float(style.hillshade_azimuth), altdeg=float(style.hillshade_altitude))
-    ocean_rgba = mcolors.to_rgba(style.water_color_ocean)
-    inland_rgba = mcolors.to_rgba(style.water_color_inland)
+    try:
+        # 主进程 ctx:既用于算 coverage/total,串行路径也直接拿它渲染。
+        ctx = _build_render_ctx(dem_path, att_path, style, interval, shade, water, str(out_dir))
 
-    # Count tiles arithmetically (no list) — materializing every (z,x,y) tile
-    # OOMs at high zoom over large areas (tens of millions of tuples).
-    total = 0
-    for z in range(zoom_min, zoom_max + 1):
-        x0, y0 = deg2num(cov_north, cov_west, z)
-        x1, y1 = deg2num(cov_south, cov_east, z)
-        total += (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
-    counts["total"] = total
+        cov_west, cov_south = meters_to_lonlat(ctx.originX, ctx.originY + ctx.ny * ctx.pxH)
+        cov_east, cov_north = meters_to_lonlat(ctx.originX + ctx.nx * ctx.pxW, ctx.originY)
 
-    transparent = (style.background or "transparent").strip().lower() == "transparent"
-    facecolor = "none" if transparent else style.background
-
-    def _emit():
-        if progress_cb is not None:
-            progress_cb(counts["rendered"] + counts["failed"], counts["total"])
-
-    def _iter_tiles():
+        # Count tiles arithmetically (no list) — materializing every (z,x,y) tile
+        # OOMs at high zoom over large areas (tens of millions of tuples).
+        total = 0
         for z in range(zoom_min, zoom_max + 1):
             x0, y0 = deg2num(cov_north, cov_west, z)
             x1, y1 = deg2num(cov_south, cov_east, z)
-            txmin, txmax = min(x0, x1), max(x0, x1)
-            tymin, tymax = min(y0, y1), max(y0, y1)
-            for tx in range(txmin, txmax + 1):
-                for ty in range(tymin, tymax + 1):
-                    yield z, tx, ty
+            total += (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
+        counts["total"] = total
 
-    for (z, tx, ty) in _iter_tiles():
-        if stop_flag is not None and stop_flag.is_set():
-            break
-        xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
+        def _emit():
+            if progress_cb is not None:
+                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
 
-        col0 = int(math.floor((xmin - originX) / pxW)) - 1
-        col1 = int(math.ceil((xmax - originX) / pxW)) + 1
-        row0 = int(math.floor((ymax - originY) / pxH)) - 1
-        row1 = int(math.ceil((ymin - originY) / pxH)) + 1
-        col0 = max(col0, 0); row0 = max(row0, 0)
-        col1 = min(col1, nx); row1 = min(row1, ny)
-        if col1 <= col0 or row1 <= row0:
+        def _iter_tiles():
+            for z in range(zoom_min, zoom_max + 1):
+                x0, y0 = deg2num(cov_north, cov_west, z)
+                x1, y1 = deg2num(cov_south, cov_east, z)
+                txmin, txmax = min(x0, x1), max(x0, x1)
+                tymin, tymax = min(y0, y1), max(y0, y1)
+                for tx in range(txmin, txmax + 1):
+                    for ty in range(tymin, tymax + 1):
+                        yield z, tx, ty
+
+        def _tally(status):
+            if status == "rendered":
+                counts["rendered"] += 1
+            elif status == "failed":
+                counts["failed"] += 1
             _emit()
-            continue
 
-        win_x, win_y = col1 - col0, row1 - row0
-        arr = band.ReadAsArray(col0, row0, win_x, win_y).astype("float64")
-        if nodata is not None:
-            arr = np.where(arr == nodata, np.nan, arr)
-        if np.all(np.isnan(arr)):
-            _emit()
-            continue
-        zmin = float(np.nanmin(arr)); zmax = float(np.nanmax(arr))
-        arr_extent = (originX + col0 * pxW, originX + col1 * pxW,
-                      originY + row1 * pxH, originY + row0 * pxH)
+        n_workers = int(workers or 0)
+        if n_workers <= 0:
+            n_workers = os.cpu_count() or 1
 
-        # Contour levels — only where there is elevation variation.
-        eff = interval_for_zoom(interval, z, style.detail_zoom, style.zoom_scaling)
-        minor: List[float] = []
-        major: List[float] = []
-        draw_lines = math.isfinite(zmin) and math.isfinite(zmax) and (zmax - zmin) >= 1e-6
-        if draw_lines:
-            lo = math.floor(zmin / eff) * eff
-            hi = math.ceil(zmax / eff) * eff
-            levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
-            minor = [lv for lv in levels if not is_index_contour(lv, eff, style.index_step)]
-            major = [lv for lv in levels if is_index_contour(lv, eff, style.index_step)]
-            draw_lines = bool(minor or major)
+        if n_workers == 1 or total <= 4:
+            # 串行:主进程 ctx 直接渲染,stop_flag 每瓦片即时检查。
+            for (z, tx, ty) in _iter_tiles():
+                if stop_flag is not None and stop_flag.is_set():
+                    break
+                _tally(_render_contour_tile_core(z, tx, ty, ctx))
+        else:
+            # 并行:释放主进程 dataset handle(避免 fork 继承),worker 各自打开。
+            from concurrent.futures import ProcessPoolExecutor
+            ctx = None
+            init_args = (dem_path, att_path, style, interval, shade, water, str(out_dir))
+            BATCH = 2048  # 批内并行,批间检查 stop_flag;不物化整张瓦片列表
+            with ProcessPoolExecutor(max_workers=n_workers,
+                                     initializer=_contour_worker_init,
+                                     initargs=init_args) as ex:
+                tiles = _iter_tiles()
+                while True:
+                    if stop_flag is not None and stop_flag.is_set():
+                        break
+                    batch = list(itertools.islice(tiles, BATCH))
+                    if not batch:
+                        break
+                    for status in ex.map(_contour_worker_render, batch, chunksize=8):
+                        _tally(status)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
-        # Pure-line mode on a featureless tile: nothing to draw, leave a gap.
-        if not shade and not water and not draw_lines:
-            _emit()
-            continue
-
-        fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.set_axis_off()
-        ax.set_xlim(xmin, xmax)
-        ax.set_ylim(ymin, ymax)
-        drew = False
-        try:
-            if shade and arr.shape[0] >= 2 and arr.shape[1] >= 2:
-                fill = zmin if math.isfinite(zmin) else 0.0
-                filled = np.where(np.isnan(arr), fill, arr)
-                rgba = light.shade(filled, cmap=cmap, norm=norm,
-                                   vert_exag=float(style.hillshade_vert_exag),
-                                   dx=abs(pxW), dy=abs(pxH), blend_mode=style.hillshade_blend)
-                rgba[np.isnan(arr), 3] = 0.0
-                # bilinear: smooth the ~30m DEM when tiles are finer (z14+), else
-                # nearest-neighbour upsampling looks like coarse mosaic blocks.
-                ax.imshow(rgba, extent=arr_extent, origin="upper", zorder=0, interpolation="bilinear")
-                drew = True
-
-            if water and att_band is not None:
-                ac0 = int(math.floor((xmin - aOX) / aPW)) - 1
-                ac1 = int(math.ceil((xmax - aOX) / aPW)) + 1
-                ar0 = int(math.floor((ymax - aOY) / aPH)) - 1
-                ar1 = int(math.ceil((ymin - aOY) / aPH)) + 1
-                ac0 = max(ac0, 0); ar0 = max(ar0, 0)
-                ac1 = min(ac1, anx); ar1 = min(ar1, anumy)
-                if ac1 > ac0 and ar1 > ar0:
-                    att = att_band.ReadAsArray(ac0, ar0, ac1 - ac0, ar1 - ar0)
-                    wr = np.zeros((att.shape[0], att.shape[1], 4), dtype="float64")
-                    wr[att == 1] = ocean_rgba
-                    wr[(att == 2) | (att == 3)] = inland_rgba
-                    att_extent = (aOX + ac0 * aPW, aOX + ac1 * aPW,
-                                  aOY + ar1 * aPH, aOY + ar0 * aPH)
-                    ax.imshow(wr, extent=att_extent, origin="upper", zorder=1, interpolation="nearest")
-                    if bool(np.any(att >= 1)):
-                        drew = True
-
-            if draw_lines:
-                xs = originX + (col0 + np.arange(win_x) + 0.5) * pxW
-                ys = originY + (row0 + np.arange(win_y) + 0.5) * pxH
-                X, Y = np.meshgrid(xs, ys)
-                if minor:
-                    ax.contour(X, Y, arr, levels=minor, colors=style.color_intermediate,
-                               linewidths=style.width_intermediate, zorder=3)
-                if major:
-                    cs = ax.contour(X, Y, arr, levels=major, colors=style.color_index,
-                                    linewidths=style.width_index, zorder=3)
-                    ax.clabel(cs, fmt="%d", fontsize=style.label_size, colors=style.color_label)
-                drew = True
-
-            if not drew:
-                _emit()
-                plt.close(fig)
-                continue
-
-            tile_path = out_dir / str(z) / str(tx) / f"{ty}.png"
-            tile_path.parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(str(tile_path), dpi=100, transparent=transparent,
-                        facecolor=facecolor, pad_inches=0)
-            counts["rendered"] += 1
-        except Exception:
-            counts["failed"] += 1
-        finally:
-            plt.close(fig)
-
-        _emit()
-
-    warped = None
-    att_warped = None
-    shutil.rmtree(tmpdir, ignore_errors=True)
     return counts
