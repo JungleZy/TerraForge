@@ -4,7 +4,7 @@ import sys
 import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-APP_VERSION = '0.0.4'
+APP_VERSION = '0.0.5'
 
 block_cipher = None
 
