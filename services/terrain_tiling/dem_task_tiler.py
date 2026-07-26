@@ -17,7 +17,10 @@ def terrain_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
 class TileParams:
     maxzoom: int
     parent_url: str
-    tile_size: int = 17
+    # 65x65 vertex grid: at z14 this samples ~19 m spacing, matching 30 m DEMs
+    # (Copernicus GLO-30 / ASTER). estimate_max_level in cesiumlab_terrain.py
+    # already assumes a 65-vertex tile (180/64 deg per tile pixel).
+    tile_size: int = 65
     workers: int = 0
 
 

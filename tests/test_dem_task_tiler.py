@@ -55,7 +55,10 @@ def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
 
     out_dir = tmp_path / "out"
 
+    captured = {}
+
     def fake_build_terrain(**kwargs):
+        captured.update(kwargs)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "layer.json").write_text('{"parentUrl":"OLD","available":[]}\n', encoding="utf-8")
 
@@ -65,3 +68,5 @@ def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
 
     layer = (out_dir / "layer.json").read_text(encoding="utf-8")
     assert '"parentUrl": "https://example.com/parent.json"' in layer
+    # 65x65 grid matches 30 m DEM resolution at the estimated maxzoom (z14).
+    assert captured["tile_size"] == 65
