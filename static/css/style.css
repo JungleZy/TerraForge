@@ -567,7 +567,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 8px;
     border: 1px solid var(--color-border);
     padding: 0.75rem 1rem;
-    background: var(--color-bg-tertiary);
+    background-color: var(--color-bg-tertiary);
     color: var(--color-text-primary);
     font-family: var(--font-display);
     transition: all 0.3s ease;
@@ -577,7 +577,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .config-section .form-select:focus {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-muted);
-    background: var(--color-bg-secondary);
+    background-color: var(--color-bg-secondary);
     outline: none;
 }
 
@@ -909,7 +909,7 @@ h1, h2, h3, h4, h5, h6 {
 /* Form Control Styles */
 .form-control,
 .form-select {
-    background: var(--color-bg-tertiary);
+    background-color: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
     border-radius: 8px;
@@ -919,11 +919,29 @@ h1, h2, h3, h4, h5, h6 {
     font-size: var(--font-size-base);
 }
 
+/* 下拉箭头描边色。
+   Bootstrap 把箭头 SVG 连同描边色一起写死在 data URI 里，浅色主题下是
+   #343a40。本站面板是深色（--color-bg-tertiary #1c2027），实测 #343a40
+   对箭头/背景对比度只有 1.42:1，远低于 WCAG 图形元素 3:1 的下限——
+   箭头"在"但肉眼看不见，等于没修。这里只把描边色换成 --color-text-secondary
+   的字面值，SVG 的 viewBox / path / stroke-width 与 Bootstrap 原图逐字符一致。
+
+   ⚠️ data URI 里不能写 var()，颜色只能字面写死。它必须等于
+   --color-text-secondary(#9aa0aa)，由 test_form_select_arrow_stroke_matches_palette
+   钉住——改调色板却忘了改这里，那条测试会红。
+
+   ⚠️ Task 8 若给 <html> 加上 data-bs-theme="dark"，Bootstrap 自带的
+   `[data-bs-theme=dark] .form-select`（0,2,0）会盖过本条（0,1,0），
+   箭头自动变成它的 #dee2e6。那是预期行为，届时可直接删掉本规则。 */
+.form-select {
+    --bs-form-select-bg-img: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%239aa0aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+}
+
 .form-control:focus,
 .form-select:focus {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-muted);
-    background: var(--color-bg-secondary);
+    background-color: var(--color-bg-secondary);
     color: var(--color-text-primary);
     outline: none;
 }

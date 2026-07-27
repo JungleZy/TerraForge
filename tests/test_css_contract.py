@@ -433,6 +433,196 @@ def test_dead_rules_removed():
     assert 'margin-bottom' in _decl_map(mb3[0][1]), '.mb-3 必须仍然声明 margin-bottom'
 
 
+# --------------------------------------------------------------------------
+# C1 / Task 4：select 下拉箭头
+# --------------------------------------------------------------------------
+
+def _form_select_rules(css):
+    """全部「选择器里出现 .form-select」的规则，含 @media 内、:focus、后代、分组。
+
+    用 _rules() 的花括号深度扫描 + 逗号拆分，而不是
+    `re.finditer(r'\\.form-select[^{]*\\{([^}]*)\\}', css)`：后者只能匹配
+    `.form-select` **打头**的选择器，实测漏掉 `.config-section .form-select`
+    与 `.form-control, .form-select` 这两种写法——而 style.css 里 4 条规则
+    有 3 条是这两种形态。负向断言配上漏检的匹配器，就是一条永真测试。
+    """
+    return [
+        (sel, body)
+        for sel, body in _rules(css)
+        if any(re.search(r'\.form-select(?![-\w])', part) for part in _selector_parts(sel))
+    ]
+
+
+# 选择器 -> 它必须用 background-color 声明的值。
+#
+# 这张表同时承担两件事：
+#   1. 存在性契约——`.form-select` 必须仍然显式声明背景色。光禁止 background
+#      简写的话，「把整条声明删掉」也能通过，而那样背景色会回落到 Bootstrap
+#      的 `--bs-body-bg`（实测 #fff）——深色面板上开一块纯白，比丢箭头更糟。
+#   2. 有效性自检——四条都找不到就说明选择器写法变了，测试已失效。
+#
+# ⚠️ 给后续任务的说明：本表钉的是「Task 4 当时的值」，不是禁止后续改配色。
+#    A5（密度）/ A7（层级）若要调整表单配色，同步更新本表即可。
+FORM_SELECT_BG_COLORS = {
+    '.form-control, .form-select':
+        'var(--color-bg-tertiary)',
+    '.form-control:focus, .form-select:focus':
+        'var(--color-bg-secondary)',
+    '.config-section .form-control, .config-section .form-select':
+        'var(--color-bg-tertiary)',
+    '.config-section .form-control:focus, .config-section .form-select:focus':
+        'var(--color-bg-secondary)',
+}
+
+
+def test_form_select_never_uses_background_shorthand():
+    """任何命中 .form-select 的规则都不许用 `background:` 简写。
+
+    `background` 是简写属性，写一次会把 background-image / -position / -size /
+    -repeat / -attachment / -origin / -clip 全部重置成初始值。Bootstrap 的
+    下拉箭头正是靠这四个子属性画出来的：
+
+        background-image:    var(--bs-form-select-bg-img)   ← 箭头 SVG
+        background-repeat:   no-repeat                      ← 不平铺
+        background-position: right .75rem center            ← 贴右侧居中
+        background-size:     16px 12px                      ← 缩到 16x12
+
+    所以 `background: <颜色>` 一写，四个全没了，箭头消失。实测清理前
+    getComputedStyle(select) 是 backgroundImage:"none" / repeat:"repeat" /
+    position:"0% 0%" / size:"auto" —— 四项全被重置，可见不是只丢了图。
+    改用 background-color 只覆盖颜色，其余四项让 Bootstrap 的值生效。
+    """
+    rules = _form_select_rules(_css())
+    assert rules, (
+        '没有匹配到任何 .form-select 规则——选择器写法变了，本测试已失效'
+    )
+    offenders = [
+        f'{sel} {{ background: {_decl_map(body)["background"]} }}'
+        for sel, body in rules
+        if 'background' in _decl_map(body)
+    ]
+    assert not offenders, (
+        '.form-select 用了 background 简写，会连带重置 Bootstrap 下拉箭头的\n'
+        'background-image/-repeat/-position/-size，导致 select 没有三角指示符。\n'
+        '改用 background-color：\n'
+        + '\n'.join('  ' + o for o in offenders)
+    )
+
+
+def test_form_select_still_declares_its_background_color():
+    """四条规则都必须仍显式声明 background-color，且值不变。
+
+    见 FORM_SELECT_BG_COLORS 的注释：这是与上一条配对的存在性契约，
+    防止「用删声明的方式让禁止性断言变绿」。
+    """
+    rules = _form_select_rules(_css())
+    problems = []
+    for sel, expected in FORM_SELECT_BG_COLORS.items():
+        found = [_decl_map(body).get('background-color')
+                 for rsel, body in rules if rsel == sel]
+        if not found:
+            problems.append(f'{sel}: 找不到这条规则（选择器写法变了？期望 background-color: {expected}）')
+        elif len(found) > 1:
+            problems.append(f'{sel}: 有 {len(found)} 条同名规则，应恰好 1 条')
+        elif found[0] is None:
+            problems.append(f'{sel}: 没有声明 background-color（期望 {expected}）'
+                            '——背景色会回落到 Bootstrap 的 --bs-body-bg(#fff)')
+        elif found[0] != expected:
+            problems.append(f'{sel}: background-color 是 {found[0]}，期望 {expected}')
+    assert not problems, (
+        '.form-select 的背景色契约被破坏：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def _hex_to_rgb(h):
+    h = h.lstrip('#')
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _relative_luminance(rgb):
+    """WCAG 2.x 相对亮度。"""
+    chan = []
+    for c in rgb:
+        c = c / 255
+        chan.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    r, g, b = chan
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_ratio(hex_a, hex_b):
+    la, lb = _relative_luminance(_hex_to_rgb(hex_a)), _relative_luminance(_hex_to_rgb(hex_b))
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _palette_var(css, name):
+    m = re.search(re.escape(name) + r'\s*:\s*([^;]+);', css)
+    assert m, f'{name} 未定义——本测试已失效'
+    return m.group(1).strip().lower()
+
+
+def _arrow_stroke_hex(css):
+    """`.form-select` 覆盖的 --bs-form-select-bg-img 里那个 SVG 描边色。"""
+    imgs = [
+        (sel, _decl_map(body)['--bs-form-select-bg-img'])
+        for sel, body in _form_select_rules(css)
+        if '--bs-form-select-bg-img' in _decl_map(body)
+    ]
+    assert len(imgs) == 1, (
+        f'期望恰好 1 条规则覆盖 --bs-form-select-bg-img，实际 {len(imgs)} 条'
+        f'（{[s for s, _ in imgs]}）——没有的话箭头会用回 Bootstrap 浅色主题的 '
+        '#343a40，深色面板上对比度 1.42:1，等于看不见'
+    )
+    m = re.search(r"stroke='%23([0-9a-fA-F]{6})'", imgs[0][1])
+    assert m, (
+        '在 --bs-form-select-bg-img 的 data URI 里找不到 '
+        "stroke='%23xxxxxx' —— 写法变了，本测试已失效"
+    )
+    return '#' + m.group(1).lower()
+
+
+def test_form_select_arrow_stroke_matches_palette():
+    """箭头描边色必须字面等于 --color-text-secondary。
+
+    为什么要单独钉一条：data URI 里不能写 var()，箭头颜色只能硬编码。
+    硬编码 + 调色板变量并存 = 典型的静默漂移点——有人改了
+    --color-text-secondary，箭头还是老颜色，没人会发现。这条把两者绑死。
+    """
+    css = _css()
+    stroke = _arrow_stroke_hex(css)
+    expected = _palette_var(css, '--color-text-secondary')
+    assert stroke == expected, (
+        f'下拉箭头描边色是 {stroke}，但 --color-text-secondary 是 {expected}。\n'
+        'data URI 里不能用 var()，所以两处必须手工保持一致；'
+        '改调色板时请同步改 .form-select 的 --bs-form-select-bg-img。'
+    )
+
+
+def test_form_select_arrow_has_sufficient_contrast():
+    """箭头描边对面板底色的对比度必须 >= 3:1（WCAG 图形元素下限）。
+
+    这条守的是**渲染出来看不看得见**，不是「代码里写了这个字符串」——
+    两个颜色都在 CSS 里，对比度可以纯文本算出来，所以它是本文件里少数
+    真正守住视觉结果的断言之一。
+
+    它与上一条互补：上一条只保证「箭头色 == 调色板的次级文字色」，
+    如果哪天次级文字色本身被调暗，上一条仍全绿而箭头重新消失；
+    这条会拦住。
+
+    实测记录（Task 4）：
+      修复前 Bootstrap 默认 #343a40 vs #1c2027 = 1.42:1（不可见）
+      修复后 #9aa0aa           vs #1c2027 = 6.21:1
+    """
+    css = _css()
+    stroke = _arrow_stroke_hex(css)
+    panel = _palette_var(css, '--color-bg-tertiary')
+    ratio = _contrast_ratio(stroke, panel)
+    assert ratio >= 3.0, (
+        f'下拉箭头 {stroke} 对面板底色 {panel} 的对比度只有 {ratio:.2f}:1，'
+        '低于 WCAG 图形元素 3:1 的下限——箭头会"在但看不见"，等于没修'
+    )
+
+
 def test_pulse_keyframe_has_no_offpalette_hardcoded_color():
     """pulse 关键帧不许再硬编码调色板外的蓝色发光。
 
