@@ -7,6 +7,7 @@ PyInstaller 离线打包形态)。这些测试用文本断言守住关键契约,
 """
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -24,6 +25,19 @@ def test_reset_form_helper_exists():
     assert 'function resetForm(' in src, "map.js 应定义 resetForm()"
 
 
+def test_reset_form_is_used_at_every_call_site():
+    """三处提交成功分支都必须调 resetForm(),本地高程分支还必须保留 bbox"""
+    src = _map_js()
+    # 1 处函数定义 + 3 处调用(map/dem、contour、local_terrain)
+    assert src.count('resetForm(') >= 4, (
+        "resetForm() 应有 1 处定义 + 3 处调用;少于 4 次说明某个提交分支没走统一重置"
+    )
+    assert 'resetForm({ clearBounds: false })' in src, (
+        "本地高程切片没有 bbox,重置时必须传 clearBounds:false,"
+        "否则会清掉用户为下一个任务画好的框"
+    )
+
+
 def test_submit_button_state_is_centralised():
     """按钮启用/禁用必须走统一函数,避免只加不减"""
     src = _map_js()
@@ -32,4 +46,15 @@ def test_submit_button_state_is_centralised():
     )
     assert 'if (btn && isLocal) btn.disabled = false;' not in src, (
         "apply() 里只加不减的按钮解禁应改为走 refreshSubmitButtonState()"
+    )
+    # finally 里若写回 btn.disabled = false,会覆盖 resetForm() 刚摆好的状态
+    # (例如非 local_terrain 模式重置后本该禁用,却被解禁)。
+    assert not re.search(r'\}\s*finally\s*\{[^}]*btn\.disabled\s*=\s*false', src), (
+        "finally 块里不能直接写 btn.disabled = false,会覆盖 resetForm() 的重置状态;"
+        "应只调 refreshSubmitButtonState()"
+    )
+    # 绘制事件 handler 里直接禁用按钮会让 local_terrain 模式永久卡死
+    # (该模式不需要 bbox,删框后没有任何东西会重新启用按钮)。
+    assert "createTaskBtn').disabled = true" not in src, (
+        "L.Draw.Event.DELETED 里不能直接禁用按钮,应走 refreshSubmitButtonState()"
     )

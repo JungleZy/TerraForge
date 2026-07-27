@@ -60,7 +60,7 @@ function initMap(config) {
         };
 
         updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = false;
+        refreshSubmitButtonState();
 
         const btn = document.getElementById('createTaskBtn');
         btn.style.animation = 'pulse 0.5s ease-in-out';
@@ -72,7 +72,7 @@ function initMap(config) {
     map.on(L.Draw.Event.DELETED, function() {
         currentBounds = null;
         updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = true;
+        refreshSubmitButtonState();
     });
 }
 
@@ -135,7 +135,8 @@ function initDownloadTypeToggle() {
 }
 
 // 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
-// 本地高程切片模式没有 bbox，只要选了文件就能提交；其余模式必须先框选。
+// 本地高程切片模式没有 bbox，所以这里无条件启用（不检查文件）——
+// 文件是否已选在提交时由 submitLocalTerrain() 校验。其余模式必须先框选。
 function refreshSubmitButtonState() {
     const btn = document.getElementById('createTaskBtn');
     if (!btn) return;
