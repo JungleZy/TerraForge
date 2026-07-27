@@ -119,8 +119,7 @@ function initDownloadTypeToggle() {
             }
         }
 
-        const btn = document.getElementById('createTaskBtn');
-        if (btn && isLocal) btn.disabled = false;
+        refreshSubmitButtonState();
     }
 
     typeEl.addEventListener('change', apply);
@@ -133,6 +132,42 @@ function initDownloadTypeToggle() {
     }
 
     apply();
+}
+
+// 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
+// 本地高程切片模式没有 bbox，只要选了文件就能提交；其余模式必须先框选。
+function refreshSubmitButtonState() {
+    const btn = document.getElementById('createTaskBtn');
+    if (!btn) return;
+    const type = document.getElementById('downloadType')?.value;
+    if (type === 'local_terrain') {
+        btn.disabled = false;
+    } else {
+        btn.disabled = !currentBounds;
+    }
+}
+
+// 任务创建成功后复位表单。
+// clearBounds=false 用于本地高程切片：该模式本来就没有 bbox，
+// 清空 drawnItems 会把用户为下一个任务画好的框也一起删掉。
+function resetForm({ clearBounds = true } = {}) {
+    const form = document.getElementById('downloadForm');
+    if (form) form.reset();
+
+    const outputPath = document.getElementById('outputPath');
+    if (outputPath) delete outputPath.dataset.userEdited;
+
+    if (clearBounds) {
+        if (drawnItems) drawnItems.clearLayers();
+        currentBounds = null;
+        updateBoundsInfo();
+    }
+
+    // 让 apply() 重新按当前类型摆好字段可见性和默认路径
+    const typeEl = document.getElementById('downloadType');
+    if (typeEl) typeEl.dispatchEvent(new Event('change'));
+
+    refreshSubmitButtonState();
 }
 
 function updateBoundsInfo() {
@@ -244,11 +279,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
 
         if (response.ok) {
             showNotification('任务创建成功！ID: ' + result.task_id, 'success');
-            document.getElementById('downloadForm').reset();
-            drawnItems.clearLayers();
-            currentBounds = null;
-            updateBoundsInfo();
-            document.getElementById('createTaskBtn').disabled = true;
+            resetForm();
             loadActiveTasks();
         } else {
             showNotification('创建任务失败: ' + result.error, 'danger');
@@ -256,8 +287,8 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     } catch (error) {
         showNotification('创建任务失败: ' + error.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = originalText;
+        refreshSubmitButtonState();
     }
 });
 
@@ -373,19 +404,13 @@ async function submitContour() {
         }
         await fetch(`/api/contour/tasks/${created.task_id}/start`, { method: 'POST' });
         showNotification('等高线任务已开始（自动下 DEM → 渲染瓦片）', 'success');
-        document.getElementById('downloadForm').reset();
-        drawnItems.clearLayers();
-        currentBounds = null;
-        updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = true;
-        // Re-apply type toggle so option blocks match the reset <select>.
-        document.getElementById('downloadType').dispatchEvent(new Event('change'));
+        resetForm();
         loadActiveTasks();
     } catch (err) {
         showNotification('创建失败: ' + err.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = original;
+        refreshSubmitButtonState();
     }
 }
 
@@ -522,7 +547,7 @@ async function submitLocalTerrain() {
         const result = await resp.json();
         if (resp.ok) {
             showNotification('上传成功，已开始切片！ID: ' + result.task_id, 'success');
-            document.getElementById('downloadForm').reset();
+            resetForm({ clearBounds: false });
             loadActiveTasks();
         } else {
             showNotification('上传失败: ' + (result.error || resp.status), 'danger');
@@ -530,7 +555,7 @@ async function submitLocalTerrain() {
     } catch (err) {
         showNotification('上传失败: ' + err.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = original;
+        refreshSubmitButtonState();
     }
 }
