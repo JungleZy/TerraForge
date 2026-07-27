@@ -222,7 +222,7 @@ def test_font_size_scale_variables_unchanged():
 # --------------------------------------------------------------------------
 
 def test_important_count_under_control():
-    """!important 声明总量上界 = 72。
+    """!important 声明总量上界 = 71.
 
     阈值构成（全部实测，不是估的）：
       Task 2 清理前 92 处
@@ -232,16 +232,19 @@ def test_important_count_under_control():
       = 67 处（Task 2 后实测）
       -  1 处：Task 3 删掉的 .text-center 的 color !important（布局类不该管颜色）
       = 66 处（Task 3 后实测）
-      +  3 处：**A1 / Task 5 新增**，登记如下——
-               .progress-bar.bg-primary   / .bg-secondary / .bg-dark 各 1 处。
-               压的是 Bootstrap 5.3.0 的 `.bg-primary{...!important}` 等工具类。
+      +  2 处：**A1 / Task 5 新增**，登记如下——
+               .progress-bar.bg-secondary / .bg-dark 各 1 处。
+               压的是 Bootstrap 5.3.0 的
+               `.bg-secondary{...background-color:...!important}` 等工具类。
                为什么非 !important 不可：important 声明之间先比来源、再比特异性，
-               我们的 `.progress-bar.bg-primary`(0,2,0) 若不带 !important，
-               就输给带 !important 的 `.bg-primary`(0,1,0)，运行中的进度条会是
-               Bootstrap 默认蓝 #0d6efd（已用 CDP 实测确认过这个回落）。
-      = 69 处（Task 5 后实测的真实值）
+               我们的 `.progress-bar.bg-secondary`(0,2,0) 若不带 !important，
+               就输给带 !important 的 `.bg-secondary`(0,1,0)，颜色仍是 Bootstrap 的。
+               （运行中不占额度：getStatusColor 把 running 映射成 'info'，
+               复用早就存在的 `.progress-bar.bg-info`，新增 0 条。若当初按
+               计划映射成 'primary'，这里就要多写一条、多占 1 处。）
+      = 68 处（Task 5 后实测的真实值）
       + 3 处余量：留给后续任务里个别确实必须压 Bootstrap 的新规则
-      = 72
+      = 71
 
     ⚠️ 棘轮规则（分两种任务，别混用）：
 
@@ -270,9 +273,9 @@ def test_important_count_under_control():
     """
     css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
     count = css.count('!important')
-    assert count <= 72, (
-        f'!important 声明有 {count} 处，应 <= 72（Task 2 前 92 → Task 2 后 67 → '
-        'Task 3 后 66 → Task 5 +3 条进度条覆盖后实测 69，余量 3）'
+    assert count <= 71, (
+        f'!important 声明有 {count} 处，应 <= 71（Task 2 前 92 → Task 2 后 67 → '
+        'Task 3 后 66 → Task 5 +2 条进度条覆盖后实测 68，余量 3）'
     )
 
 
@@ -927,14 +930,31 @@ def _status_color_names(js_name):
 
 
 def _progress_bar_color_rules(css):
-    """`.progress-bar.bg-XXX` 规则 -> {颜色名: [(选择器, 规则体), ...]}。"""
+    """**顶层**的 `.progress-bar.bg-XXX` 规则 -> {颜色名: [(选择器, 规则体), ...]}。
+
+    ⚠️ 必须用 `_rules_ctx` 并要求 at-rule 上下文为空，不能用 `_rules`。
+    实测：把整条 `.progress-bar.bg-info` 包进 `@media (min-width: 3000px)`，
+    用 `_rules` 的版本**仍然通过**——规则在文件里，但在任何正常视口下都不生效，
+    进度条照样回落到 Bootstrap 默认色。这与 test_universal_selector_declared_exactly_once
+    区分「顶层的 `*`」和「@media 里的 `*`」是同一个理由。
+    """
     out = {}
-    for sel, body in _rules(css):
+    for sel, body, at_ctx in _rules_ctx(css):
+        if at_ctx:
+            continue
         for part in _selector_parts(sel):
             m = re.fullmatch(r'\.progress-bar\.bg-([a-z]+)', part.strip())
             if m:
                 out.setdefault(m.group(1), []).append((sel, body))
     return out
+
+
+# 进度条填充色对轨道底色的最低对比度。
+#
+# 3:1 是 WCAG 2.x 对「图形对象与用户界面组件」的下限，也是本项目在 C1/Task 4
+# 已经立起来的同一条线（见 test_form_select_arrow_has_sufficient_contrast）。
+# 进度条填充是承载状态信息的图形对象，适用同一条下限。
+PROGRESS_FILL_MIN_CONTRAST = 3.0
 
 
 def _progress_track_color(css):
@@ -956,31 +976,38 @@ def test_every_status_color_has_a_progress_bar_override():
     那条只查字符串存在——写一条空规则 `.progress-bar.bg-primary {}` 就能过，
     而进度条颜色仍然回落到 Bootstrap 默认蓝 #0d6efd。这里逐项落地：
 
-      1. **规则存在且恰好一条**。两条同名规则说明有人在别处又覆盖了一次，
+      1. **规则存在于顶层且恰好一条**。两条同名规则说明有人在别处又覆盖了一次，
          改前面那条不生效（这正是 Task 2 清掉的那种形态）。
+         「顶层」是必须的：实测把整条 `.progress-bar.bg-info` 包进
+         `@media (min-width: 3000px)`，用 `_rules()` 的版本**仍然通过**——
+         规则在文件里、正常视口下却不生效。改用 `_rules_ctx()` 并要求
+         at-rule 上下文为空，见 `_progress_bar_color_rules`。
       2. **规则体里真的有背景色声明**。空规则 / 只写 color 都算失败。
       3. **必须带 !important**。这不是洁癖：Bootstrap 5.3.0 的
-         `.bg-primary{...background-color:rgba(var(--bs-primary-rgb),...)!important}`
+         `.bg-info{...background-color:rgba(var(--bs-info-rgb),...)!important}`
          自带 !important，important 声明之间先比来源再比特异性——我们的
-         `.progress-bar.bg-primary`(0,2,0) 只有同样带 !important 才赢得过
-         `.bg-primary`(0,1,0)。不带的话规则在、颜色还是 Bootstrap 的。
+         `.progress-bar.bg-info`(0,2,0) 只有同样带 !important 才赢得过
+         `.bg-info`(0,1,0)。不带的话规则在、颜色还是 Bootstrap 的。
       4. **值必须是 var(--color-*)**。硬编码色号会在调色板改动时静默漂移。
       5. **解析出的色值不能等于 `.progress` 轨道底色**。计划原文建议
          `.progress-bar.bg-dark { background: var(--color-bg-tertiary) }`，
          而 `.progress` 的底色恰恰就是 var(--color-bg-tertiary)——
          规则在、变量对、测试全绿，而已取消任务的进度条与轨道同色，
          肉眼完全看不见。这一条就是为了拦住这种「写了等于没写」。
+         更一般的可辨识度下限见 test_progress_bar_fill_has_sufficient_contrast
+         （同色只是对比度 1:1 的极端情形）。
 
     覆盖范围（诚实说明）：这条守的是「CSS 源码的形态」。它保证不了
     「浏览器最终算出来是什么颜色」——那部分由 CDP 实测覆盖。
     """
     css = _css()
     required = _status_color_names('tasks.js') | _status_color_names('history.js')
-    # 自检：这三个正是本任务补上的（原来只有 success/info/warning/danger）。
-    # 解析要是出了岔子导致 required 变小，负向遍历会静默变绿。
-    assert {'primary', 'secondary', 'dark'} <= required, (
+    # 自检：running 走 info（复用早就存在的 .progress-bar.bg-info），
+    # secondary/dark 是本任务补上的。解析要是出了岔子导致 required 变小，
+    # 负向遍历会静默变绿。
+    assert {'info', 'secondary', 'dark'} <= required, (
         f'从 getStatusColor 解析出的颜色名是 {sorted(required)}，'
-        '缺了 primary/secondary/dark —— 解析逻辑已失效'
+        '缺了 info/secondary/dark —— 解析逻辑已失效'
     )
 
     rules = _progress_bar_color_rules(css)
@@ -1032,6 +1059,91 @@ def test_every_status_color_has_a_progress_bar_override():
             )
     assert not problems, (
         '进度条状态色覆盖不完整：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_progress_bar_fill_has_sufficient_contrast():
+    """getStatusColor 能返回的每一个颜色，其进度条填充对轨道底色都必须 >= 3:1。
+
+    这条守的是**渲染出来分不分得清**，不是「代码里写了这个字符串」——两个颜色
+    都在 CSS 里，对比度可以纯文本算出来，所以它和
+    test_form_select_arrow_has_sufficient_contrast 一样，是本文件里少数真正
+    守住视觉结果的断言。
+
+    为什么需要它（实测经过，不是假想）：本任务首版把 bg-secondary 设成
+    --color-text-muted(#5f6670)，对轨道 --color-bg-tertiary(#1c2027) 实算
+    **2.82:1**，低于本项目自己在 C1/Task 4 刚立起来的 3:1 图形元素下限；
+    同批的另外两条是 6.21:1 和 3.94:1，只有它掉在门槛下。
+
+    而 bg-secondary 恰恰是最承重的一格：`static/js/history.js` 的
+    getStatusColor 只映射 completed/failed/cancelled，**running / pending /
+    paused 全部兜底成 secondary**，而 `/api/history_all` 默认不过滤非终态。
+    所以历史页详情里一个跑到 63% 的运行中任务，进度条就是这一格。改前那条
+    路径走百分比阶梯渲染 Bootstrap 蓝(#0d6efd 对轨道 3.63:1)，
+    也就是说 2.82:1 会让这一格**比修复前更难辨认**。
+
+    它与 test_every_status_color_has_a_progress_bar_override 的第 5 项互补：
+    那一项只拦「填充色 == 轨道色」这个极端情形，本条给出一般下限。
+
+    ⚠️ 给后续视觉任务的说明：调色板里的灰只有 --color-text-secondary(6.21:1)
+    和 --color-neutral(3.94:1) 过线，--color-text-muted(2.82:1) 不过线。
+    要给进度条换灰色之前先在这里算一下。
+    """
+    css = _css()
+    required = _status_color_names('tasks.js') | _status_color_names('history.js')
+    rules = _progress_bar_color_rules(css)
+
+    track_raw = _progress_track_color(css)
+    track_var = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', track_raw)
+    assert track_var, f'`.progress` 轨道底色 {track_raw!r} 不是 var(--*) —— 本测试已失效'
+    track = _palette_var(css, track_var.group(1))
+    assert re.fullmatch(r'#[0-9a-f]{6}', track), (
+        f'轨道底色解析成 {track!r}，不是 6 位十六进制，算不了对比度 —— 本测试已失效'
+    )
+
+    checked, unsupported, problems = 0, [], []
+    for name in sorted(required):
+        found = rules.get(name, [])
+        if len(found) != 1:
+            # 规则缺失/重复由 test_every_status_color_has_a_progress_bar_override
+            # 报告，这里只需保证自己不静默跳过
+            unsupported.append(f'.progress-bar.bg-{name}: 顶层规则有 {len(found)} 条，期望 1 条')
+            continue
+        decls = _decl_map(found[0][1])
+        raw = decls.get('background') or decls.get('background-color')
+        if raw is None:
+            unsupported.append(f'.progress-bar.bg-{name}: 没有背景色声明')
+            continue
+        m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', _IMPORTANT_RE.sub('', raw).strip())
+        if not m:
+            unsupported.append(f'.progress-bar.bg-{name}: 背景色 {raw!r} 不是 var(--*)')
+            continue
+        fill = _palette_var(css, m.group(1))
+        if not re.fullmatch(r'#[0-9a-f]{6}', fill):
+            # 响亮失败优于静默放行：rgba()/color-mix() 需要合成才能算对比度，
+            # 本断言不支持，直接报「已失效」而不是当成通过
+            unsupported.append(
+                f'.progress-bar.bg-{name}: {m.group(1)} = {fill!r}，'
+                '不是 6 位十六进制，本断言算不了它的对比度'
+            )
+            continue
+        checked += 1
+        ratio = _contrast_ratio(fill, track)
+        if ratio < PROGRESS_FILL_MIN_CONTRAST:
+            problems.append(
+                f'.progress-bar.bg-{name}: {m.group(1)}({fill}) 对轨道 {track} '
+                f'只有 {ratio:.2f}:1，低于 {PROGRESS_FILL_MIN_CONTRAST}:1'
+            )
+    assert not unsupported, (
+        '出现本断言处理不了的写法，测试已失效（不是通过）：\n'
+        + '\n'.join('  ' + u for u in unsupported)
+    )
+    assert checked == len(required), (
+        f'只算出 {checked} 个状态色的对比度，期望 {len(required)} 个 —— 本测试已失效'
+    )
+    assert not problems, (
+        '进度条填充色对轨道底色的对比度不足，该状态"在但看不清"：\n'
+        + '\n'.join('  ' + p for p in problems)
     )
 
 

@@ -29,6 +29,13 @@
     --color-danger:  #f87171;
     --color-warning: #fbbf24;
     --color-info:    #60a5fa;
+    /* 中性状态填充色。为「已取消」这类无语义色的终态准备。
+       不能直接复用 --color-text-muted(#5f6670)：它对 --color-bg-tertiary
+       只有 2.82:1，低于本项目 3:1 的图形元素下限（见
+       tests/test_css_contract.py 的 test_progress_bar_fill_has_sufficient_contrast）。
+       调暗它之前先跑那条测试。 */
+    --color-neutral: #767d88;
+
     --color-success-bg: rgba(16,185,129,0.12);
     --color-danger-bg:  rgba(239,68,68,0.12);
     --color-warning-bg: rgba(245,158,11,0.12);
@@ -484,23 +491,27 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 /* 进度条颜色由任务状态决定（getStatusColor），不由完成百分比决定。
-   getStatusColor 会返回 primary(运行中) / secondary(等待中) / dark(已取消)，
-   这三个原来没有覆盖，会回落到 Bootstrap 默认的 #0d6efd / #6c757d / #212529。
-   !important 是必需的：Bootstrap 的 .bg-* 工具类自带 !important，
-   不带的话我们更高的特异性也赢不了。
+   运行中走上面已有的 .bg-info —— getStatusColor 把 running 映射成 'info'
+   而不是 'primary'，这样徽章侧的 `.status-badge.running, .badge.bg-primary,
+   .badge.bg-info` 共用声明块渲染完全一致，运行中的徽章与进度条同色系，
+   且不必为 .bg-primary 再写一条覆盖。
 
-   已取消用 --color-text-secondary 而不是 --color-bg-tertiary：
-   后者正是 `.progress` 轨道的底色，同色 = 进度条完全看不见。 */
-.progress-bar.bg-primary {
-    background: var(--color-accent-strong) !important;
-}
+   secondary(等待中) / dark(已取消) 原来没有覆盖，会回落到 Bootstrap 默认的
+   #6c757d / #212529。!important 是必需的：Bootstrap 的 .bg-* 工具类自带
+   !important，不带的话我们更高的特异性也赢不了。
 
+   两条都必须对 `.progress` 轨道底色(--color-bg-tertiary #1c2027) 有
+   >= 3:1 对比度，见 test_progress_bar_fill_has_sufficient_contrast。
+   所以等待中用 --color-text-secondary(6.21:1) 而不是
+   --color-text-muted(2.82:1)——history.js 的 getStatusColor 把 running/
+   pending/paused 全兜底成 secondary，历史页里一个跑到 63% 的运行中任务
+   就是靠这条上色的。 */
 .progress-bar.bg-secondary {
-    background: var(--color-text-muted) !important;
+    background: var(--color-text-secondary) !important;
 }
 
 .progress-bar.bg-dark {
-    background: var(--color-text-secondary) !important;
+    background: var(--color-neutral) !important;
 }
 
 /* Zoom Progress Styles */

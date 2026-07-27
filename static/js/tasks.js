@@ -504,7 +504,10 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
 function getStatusColor(status) {
     const colors = {
         'pending': 'secondary',
-        'running': 'primary',
+        // running 用 'info' 而不是 'primary'：徽章侧 .status-badge.running /
+        // .badge.bg-primary / .badge.bg-info 是同一条声明块，渲染完全一致；
+        // 而进度条侧 .progress-bar.bg-info 已经存在，不必再写 .bg-primary 覆盖。
+        'running': 'info',
         'paused': 'warning',
         'completed': 'success',
         'failed': 'danger',
