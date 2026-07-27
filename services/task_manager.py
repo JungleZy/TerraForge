@@ -233,7 +233,9 @@ class TaskManager:
                 - north, south, east, west: Geographic bounds
                 - zoom_min, zoom_max: Zoom level range
                 - style: Map style (roadmap, satellite, hybrid, terrain)
-                - output_format: Output format (png, jpg, both)
+                - output_format: Output format — both (stitched image + tiles),
+                  image_only (stitched image only; png/jpg are legacy synonyms),
+                  tiles_only (tiles only)
                 - output_path: Output directory path
 
         Returns:
@@ -872,7 +874,9 @@ class TaskManager:
                 return
 
             # Stitch tiles if output format includes image
-            if task.output_format in ['png', 'jpg', 'both']:
+            # NOTE: 'png'/'jpg' are legacy synonyms of 'image_only' — the output
+            # path below is hardcoded to .tif, so they never produce PNG/JPG.
+            if task.output_format in ['png', 'jpg', 'both', 'image_only']:
                 logger.info(f"Task {task_id}: Starting tile stitching")
 
                 # Get all completed tiles for stitching
@@ -932,9 +936,10 @@ class TaskManager:
                         logger.error(f"Task {task_id}: Failed to stitch zoom level {zoom}: {e}")
                         # Continue with other zoom levels even if one fails
 
-            # Handle tiles_only format: copy tiles to output_path
-            elif task.output_format == 'tiles_only':
-                logger.info(f"Task {task_id}: Copying tiles to output path (tiles_only mode)")
+            # Copy tiles to output_path for formats that keep the raw tiles.
+            # NOTE: this is a separate `if`, not `elif` — 'both' must do both.
+            if task.output_format in ['both', 'tiles_only']:
+                logger.info(f"Task {task_id}: Copying tiles to output path ({task.output_format} mode)")
 
                 # Get all completed tiles
                 cursor.execute('''

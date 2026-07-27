@@ -72,6 +72,7 @@ class OutputFormat(Enum):
     JPG = "jpg"
     BOTH = "both"
     TILES_ONLY = "tiles_only"  # Only download tiles, no merging
+    IMAGE_ONLY = "image_only"  # Only stitched image, do not copy tiles out
 
     @classmethod
     def from_shorthand(cls, value: str) -> str:
@@ -92,6 +93,7 @@ class OutputFormat(Enum):
             'j': 'jpg',
             'b': 'both',
             't': 'tiles_only',
+            'i': 'image_only',
         }
 
         # If it's already a full name, validate and return
