@@ -826,9 +826,11 @@ class DownloadEngine:
         Process:
             1. Check if georeferenced version already exists
             2. Open source tile with GDAL
-            3. Create georeferenced copy with GTiff driver
-            4. Calculate geotransform via tile_geotransform()
-            5. Set geotransform and projection (EPSG:3857, Web Mercator)
+            3. Expand paletted (PNG8) tiles to 3-band RGB — see the comment at
+               that branch for why the colour table cannot just be copied
+            4. Create georeferenced copy with GTiff driver
+            5. Calculate geotransform via tile_geotransform()
+            6. Set geotransform and projection (EPSG:3857, Web Mercator)
 
         Geotransform Calculation:
             Delegated to tile_geotransform(). Tiles are written in EPSG:3857
@@ -886,6 +888,36 @@ class DownloadEngine:
         src_ds = gdal.Open(tile_path)
         if src_ds is None:
             raise RuntimeError(f"Failed to open tile: {tile_path}")
+
+        # Resolve paletted (PNG8) tiles against their own colour table *here*,
+        # before any tile meets another one.
+        #
+        # roadmap/hybrid/roads/terrain tiles come back from Google as PNG8: one
+        # band of colour-table *indices* plus the table. The band copy below
+        # only moves pixel values, so without this the intermediate keeps the
+        # raw indices and every viewer renders them as greyscale — the colours
+        # are simply gone. Satellite tiles are already 3-band RGB and skip this
+        # branch entirely (no extra read, no extra copy).
+        #
+        # Carrying the colour table across instead of expanding it does not
+        # work: adjacent Google tiles ship *different* tables (measured on three
+        # neighbouring roadmap tiles: 167 / 137 / 119 entries, and 132 of the
+        # first 137 indices hold different colours). A VRT can only hold one
+        # table, so every other tile would be decoded with the wrong one —
+        # vivid output with scrambled semantics, which is worse than obviously
+        # grey output because it looks correct.
+        #
+        # Expanding also means the mosaic can be resampled with the user's
+        # configured gdal_resampling: interpolating RGB averages colours, which
+        # is meaningful. Interpolating palette indices is not, and would have
+        # forced 'nearest' regardless of configuration.
+        if src_ds.RasterCount == 1 and src_ds.GetRasterBand(1).GetRasterColorTable() is not None:
+            logger.debug(f"Expanding paletted tile to RGB: {tile_path}")
+            expanded_ds = gdal.Translate('', src_ds, format='MEM', rgbExpand='rgb')
+            src_ds = None  # indices no longer needed
+            if expanded_ds is None:
+                raise RuntimeError(f"Failed to expand paletted tile to RGB: {tile_path}")
+            src_ds = expanded_ds
 
         # Get tile dimensions
         width = src_ds.RasterXSize
