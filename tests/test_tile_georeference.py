@@ -324,8 +324,32 @@ def test_stitch_reprojects_to_4326_by_default_and_keeps_3857_on_request(tmp_path
 
     ds = gdal.Open(str(out_4326))
     gt = ds.GetGeoTransform()
+    raster_w, raster_h = ds.RasterXSize, ds.RasterYSize
     ds = None
-    assert abs(gt[1]) == pytest.approx(abs(gt[5]), abs=1e-12), "4326 产出像素应近似方形"
+
+    # ⚠️ 不要在这里断言 pixel_width == |pixel_height|。
+    # gdal.Warp 不给 xRes/yRes 时走 GDALSuggestedWarpOutput,该算法用
+    # 「变换后影像对角线长度 ÷ 源影像对角线像素数」算出**一个各向同性的**
+    # 像素尺寸给 x/y 共用,所以 4326 输出的像素在度单位下**必然**严格方形——
+    # 那是 GDAL 内部的算术恒等式,warp 算错了它也照样成立,不构成任何证据。
+    # 真正能证伪的是下面这几条边界断言:它们把产出的地理范围钉死在
+    # 瓦片的理论经纬度边界上,期望值独立推导(slippy map 经度公式 +
+    # _tile_lat 墨卡托反算),不复读实现。
+    west = x / 2 ** zoom * 360.0 - 180.0
+    east = (x + 2) / 2 ** zoom * 360.0 - 180.0   # 两块瓦片,所以到 x+2
+    north = _tile_lat(y, zoom)
+    south = _tile_lat(y + 1, zoom)
+
+    # 左/上边界:warp 的输出范围锚在源范围的角点上,是逐位精确的
+    assert gt[0] == pytest.approx(west, abs=1e-9), "4326 产出左边界应等于瓦片西经"
+    assert gt[3] == pytest.approx(north, abs=1e-6), "4326 产出上边界应等于瓦片北纬(墨卡托反算)"
+
+    # 右/下边界:GDAL 把栅格尺寸向上取整成整数像素,所以最多差一个像素。
+    # 容差取一个像素宽——仍足以抓住 outputBounds / srcSRS 写错这类整体错位
+    # (那会差几十上百个像素),但不会因为取整噪声误报。
+    one_pixel = abs(gt[1])
+    assert gt[0] + gt[1] * raster_w == pytest.approx(east, abs=one_pixel), "4326 产出右边界越界超过一个像素"
+    assert gt[3] + gt[5] * raster_h == pytest.approx(south, abs=one_pixel), "4326 产出下边界越界超过一个像素"
 
     # --- 显式 3857：跳过 warp，无重采样 ---
     out_3857 = out_dir / 'native.tif'

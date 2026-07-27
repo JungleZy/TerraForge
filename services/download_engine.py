@@ -748,13 +748,19 @@ class DownloadEngine:
             logger.info(f"Translation completed: {output_path_obj}")
         finally:
             # Clean up temporary files — on success *and* on failure.
+            # Only files actually removed are logged/counted: on an early
+            # failure most of these were never created, and reporting them as
+            # "cleaned up" would send whoever debugs that failure down the
+            # wrong path.
             # 1. Clean up VRT files (mosaic + optional reprojected one)
             for temp_vrt in (vrt_path_obj, warped_path_obj):
                 if temp_vrt is None:
                     continue
                 try:
-                    temp_vrt.unlink(missing_ok=True)
+                    temp_vrt.unlink()
                     logger.debug(f"Cleaned up VRT file: {temp_vrt}")
+                except FileNotFoundError:
+                    pass  # never created (failed before this stage)
                 except Exception as e:
                     logger.warning(f"Failed to clean up VRT file {temp_vrt}: {e}")
 
@@ -762,8 +768,10 @@ class DownloadEngine:
             cleaned_count = 0
             for georef_path in georef_paths:
                 try:
-                    Path(georef_path).unlink(missing_ok=True)
+                    Path(georef_path).unlink()
                     cleaned_count += 1
+                except FileNotFoundError:
+                    pass  # already gone
                 except Exception as e:
                     logger.warning(f"Failed to clean up georeferenced tile {georef_path}: {e}")
 
