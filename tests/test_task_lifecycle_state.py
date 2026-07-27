@@ -36,7 +36,24 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
     return db
 
 
-def _seed_map_task(db, status="running", tile_statuses=("pending",), failed_tiles=0):
+def _seed_map_task(
+    db,
+    status="running",
+    tile_statuses=("pending",),
+    failed_tiles=0,
+    output_format="tiles_only",
+    output_path="/tmp",
+    tile_zooms=None,
+):
+    """播种一个地图任务。
+
+    output_format / output_path / tile_zooms 有默认值,原有调用点行为不变。
+    tile_zooms 用来跨多个缩放级别铺瓦片 —— 拼接是按 zoom 逐个跑的,
+    「部分 zoom 失败」这类场景必须有多个 zoom 才能复现。
+    """
+    zooms = list(tile_zooms) if tile_zooms is not None else [0] * len(tile_statuses)
+    assert len(zooms) == len(tile_statuses)
+
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -46,19 +63,19 @@ def _seed_map_task(db, status="running", tile_statuses=("pending",), failed_tile
               (name, status, north, south, east, west, zoom_min, zoom_max,
                style, output_format, output_path, total_tiles, downloaded_tiles,
                failed_tiles)
-            VALUES ('map-task', ?, 1, 0, 1, 0, 0, 0, 'satellite', 'tiles_only',
+            VALUES ('map-task', ?, 1, 0, 1, 0, 0, 0, 'satellite', ?,
                     ?, ?, 0, ?)
             """,
-            (status, "/tmp", len(tile_statuses), failed_tiles),
+            (status, output_format, output_path, len(tile_statuses), failed_tiles),
         )
         task_id = cur.lastrowid
-        for idx, tile_status in enumerate(tile_statuses):
+        for idx, (tile_status, zoom) in enumerate(zip(tile_statuses, zooms)):
             cur.execute(
                 """
                 INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count)
-                VALUES (?, 0, ?, 0, ?, 0)
+                VALUES (?, ?, ?, 0, ?, 0)
                 """,
-                (task_id, idx, tile_status),
+                (task_id, zoom, idx, tile_status),
             )
         conn.commit()
         return task_id
@@ -232,3 +249,216 @@ def test_dem_progress_counts_status_transitions(monkeypatch, tmp_path):
     row = _dem_task_row(db, task_id)
     assert row["downloaded_files"] == 1
     assert row["failed_files"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 拼接结果必须影响任务最终状态
+#
+# 缺陷：拼接的 except 只打一条 log 就继续,而任务最终状态只看 task_tiles 的
+# failed/pending 计数 —— 与拼接成功与否毫无关系。于是一整个 zoom 的拼接图一张
+# 都没产出,前端仍然收到 task_completed,用户只能自己去翻输出目录才知道。
+#
+# 本分支往这条路径新加了 gdal.Warp(PROJ 查表 / 内存 / 磁盘满 / 并发删中间文件
+# 都会让它失败),失败恰好落在这个唯一静默吞异常的 except 里。
+# ---------------------------------------------------------------------------
+
+
+def test_map_all_stitch_failures_mark_task_failed(monkeypatch, tmp_path):
+    """所有 zoom 的拼接都失败 → 任务必须报 failed,不能报 completed。
+
+    output_format=image_only 时拼接图是**唯一**的产出,一张都没有还说"完成"
+    就是纯粹的谎报。
+    """
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("completed", "completed"),
+        tile_zooms=(10, 11),
+        output_format="image_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    def exploding_stitch(tiles, style, output_path, zoom_level):
+        raise RuntimeError("gdal.Warp failed: PROJ database missing")
+
+    tm.download_engine.stitch_tiles_with_gdal = exploding_stitch
+
+    asyncio.run(tm._execute_task(task_id))
+
+    row = _map_task_row(db, task_id)
+    assert row["status"] == "failed", "拼接全失败的任务不能报完成"
+    assert "拼接全部失败" in row["error_message"]
+    # 根因必须落到 error_message 里,否则用户看到的只是"失败"两个字
+    assert "PROJ database missing" in row["error_message"]
+
+    events = tm.socketio.events
+    assert not any(name == "task_completed" for name, _ in events)
+    assert [p["zoom_level"] for name, p in events if name == "task_stitch_failed"] == [10, 11], (
+        "每个失败的 zoom 都应该实时 emit 一次 task_stitch_failed"
+    )
+
+
+def test_map_partial_stitch_failure_completes_with_warning(monkeypatch, tmp_path):
+    """部分 zoom 拼接失败 → 任务仍然完成(保住成功的那几个),但必须带明确警告。
+
+    刻意**不**把部分失败判成整个任务失败:成功的 zoom 是用户真正要的产出。
+    代价是"completed"这个状态本身不再自证清白,所以警告必须同时落在
+    tasks.error_message(持久,能在任务列表/历史里看到)和 task_completed 事件上。
+    """
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("completed", "completed"),
+        tile_zooms=(10, 11),
+        output_format="image_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    def half_broken_stitch(tiles, style, output_path, zoom_level):
+        if zoom_level == 11:
+            raise RuntimeError("boom at zoom 11")
+        return output_path
+
+    tm.download_engine.stitch_tiles_with_gdal = half_broken_stitch
+
+    asyncio.run(tm._execute_task(task_id))
+
+    row = _map_task_row(db, task_id)
+    assert row["status"] == "completed", "成功的 zoom 应该保留,不该把整个任务判死"
+    assert "部分缩放级别拼接失败" in row["error_message"]
+    assert "1/2" in row["error_message"], "警告里要写清几个 zoom 里坏了几个"
+    assert "boom at zoom 11" in row["error_message"]
+
+    completed = [p for name, p in tm.socketio.events if name == "task_completed"]
+    assert completed, "部分失败仍然要 emit task_completed"
+    assert completed[0]["warning"] == row["error_message"], (
+        "task_completed 必须带上警告,否则前端只能靠再拉一次接口才知道"
+    )
+
+
+def test_map_clean_stitch_leaves_no_error_message(monkeypatch, tmp_path):
+    """回归护栏:拼接全成功时 error_message 必须仍是空的。
+
+    上面两条测试往 completed 分支引入了 error_message 写入,这条确保正常
+    任务不会被顺带打上一条假警告。
+    """
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("completed", "completed"),
+        tile_zooms=(10, 11),
+        output_format="image_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    stitched = []
+
+    def ok_stitch(tiles, style, output_path, zoom_level):
+        stitched.append(zoom_level)
+        return output_path
+
+    tm.download_engine.stitch_tiles_with_gdal = ok_stitch
+
+    asyncio.run(tm._execute_task(task_id))
+
+    row = _map_task_row(db, task_id)
+    assert stitched == [10, 11]
+    assert row["status"] == "completed"
+    assert row["error_message"] is None
+    completed = [p for name, p in tm.socketio.events if name == "task_completed"]
+    assert completed and completed[0]["warning"] is None
+
+
+# ---------------------------------------------------------------------------
+# 复制瓦片阶段（both / tiles_only）必须响应取消,并给出进度
+# ---------------------------------------------------------------------------
+
+
+def test_map_tile_copy_stage_honours_cancel(monkeypatch, tmp_path):
+    """复制循环里必须检查 stop_flag。
+
+    both 是下拉框的默认项,升级后它多跑一整个复制阶段。10 万瓦片下没有这个
+    检查,用户点取消要等整个复制跑完才生效。
+    """
+    import threading
+
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    task_mod = importlib.import_module("models.task")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("completed",) * 4,
+        output_format="tiles_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    # cancel_task 只在 stop_flags 里已有该任务时才 set,所以先登记
+    tm.stop_flags[task_id] = threading.Event()
+
+    style_code = tm_mod.STYLE_MAP["satellite"]
+    for idx in range(4):
+        cache_path = task_mod.Tile(task_id=task_id, zoom=0, x=idx, y=0).cache_path(style_code)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(b"not-really-a-png")
+
+    copied = []
+    real_copy2 = tm_mod.shutil.copy2
+
+    def cancelling_copy2(src, dst):
+        real_copy2(src, dst)
+        copied.append(str(src))
+        tm.cancel_task(task_id)  # 用户在复制过程中点了取消
+
+    monkeypatch.setattr(tm_mod.shutil, "copy2", cancelling_copy2)
+
+    asyncio.run(tm._execute_task(task_id))
+
+    assert len(copied) == 1, (
+        f"取消后又复制了 {len(copied)} 个瓦片 —— 复制循环没检查 stop_flag,"
+        "取消要等整个复制跑完才生效"
+    )
+    assert _map_task_row(db, task_id)["status"] == "cancelled"
+
+
+def test_map_tile_copy_stage_emits_progress(monkeypatch, tmp_path):
+    """复制阶段必须有进度事件,否则下载走完 100% 之后 UI 静止若干分钟像卡死。
+
+    间隔取 COPY_PROGRESS_INTERVAL,末尾必须补一发(否则不满一个间隔的任务
+    一个事件都没有)。
+    """
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    task_mod = importlib.import_module("models.task")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+
+    total = tm_mod.COPY_PROGRESS_INTERVAL + 3
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("completed",) * total,
+        output_format="tiles_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    style_code = tm_mod.STYLE_MAP["satellite"]
+    for idx in range(total):
+        cache_path = task_mod.Tile(task_id=task_id, zoom=0, x=idx, y=0).cache_path(style_code)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(b"not-really-a-png")
+
+    asyncio.run(tm._execute_task(task_id))
+
+    progress = [p for name, p in tm.socketio.events if name == "task_copy_progress"]
+    assert [p["processed_tiles"] for p in progress] == [
+        tm_mod.COPY_PROGRESS_INTERVAL,
+        total,
+    ], "应在每 COPY_PROGRESS_INTERVAL 个瓦片以及最后一个瓦片时各报一次"
+    assert progress[-1]["copied_tiles"] == total
+    assert progress[-1]["total_tiles"] == total
