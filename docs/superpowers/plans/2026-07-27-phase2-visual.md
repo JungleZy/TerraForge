@@ -1561,8 +1561,7 @@ git commit -m "fix(ui): 动画降噪——全局过渡改按需,删除卡片入�
 - [ ] `uv run pytest tests/ -q` → 0 failed
 - [ ] 主计划 [Phase 2 验收标准](2026-07-27-master-plan.md#phase-2--2026-07-27-phase2-visualmd) 逐条勾选
 - [ ] `!important` 数量已从 92 降到 70 以下（`grep -c '!important' static/css/style.css`）
-- [ ] 版本号 bump 到 0.2.0（`app.py` 与 `build.spec` 两处）
-- [ ] 发版走项目既定流程（项目记忆：WSL 下 `git push` 会挂起，tag 用 `gh api` 创建）
+- [ ] **本阶段完成后才进入发版流程**（用户已决定全部改造完成后统一发版）：版本号 bump（`app.py` 与 `build.spec` 两处，参照 `git log` 里既往 bump 的做法），然后走项目既定发版流程（项目记忆：WSL 下 `git push` 会挂起，tag 用 `gh api` 创建）
 
 ## 本阶段明确不做
 
