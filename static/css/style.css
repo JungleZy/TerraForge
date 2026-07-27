@@ -484,6 +484,9 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     overflow: hidden;
     border: none;
     box-shadow: none;
+    /* .progress__label 的定位上下文。Bootstrap 5.3 的 .progress 不带 position，
+       不自己声明的话覆盖层会一路上溯到 .card / .modal-content 去定位。 */
+    position: relative;
 }
 
 .modal .progress {
@@ -491,16 +494,49 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: var(--radius-sm);
 }
 
+/* 百分比数字已搬到 .progress__label（见下），条里不再有文字，
+   所以原来那套居中 + 字体 + overflow:hidden 的声明全部作废：
+   居中的是别人的孩子，overflow:hidden 正是把 progress=0 的数字裁没的那条。 */
 .progress-bar {
-    display: flex;
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 进度条百分比覆盖层。
+ *
+ * 为什么不是「.progress-bar 里的文字 + 换个深色」（简报原方案）：
+ * 覆盖层横跨整条轨道居中，progress 一变，它压着的底色就变 —— 0% 压轨道
+ * (--color-bg-tertiary #1c2027)，100% 压填充，50% 正好骑在填充边界上。
+ * 轨道与最亮填充(--color-warning #fbbf24)之间只有 9.79:1 < 4.5x4.5=20.25，
+ * 按 WCAG 公式**不存在**任何单一文字色能对两者都拿到 4.5:1。简报建议的
+ * #0b1220 对六档填充是 4.51~11.22 全过，对轨道却只有 1.15:1 —— progress=0
+ * 的数字从「被裁掉」变成「画出来了但看不见」，缺陷原样留着。
+ *
+ * 所以给它自带一块**不透明**的底：底色取轨道同色，低进度时与轨道无缝
+ * （看起来就是轨道上的一行字），压到填充上时是一块深色衬底。文字对这块底
+ * 恒定 13.56:1，与背后是哪一档填充无关。断言见
+ * tests/test_css_contract.py::test_progress_label_readability_does_not_depend_on_the_fill。
+ *
+ * 必须是 <span>：改成 <div> 会被 `div:not(...)` 兜底重置把这块底压成透明。
+ * 不用 mix-blend-mode:difference——实测负优化（over bg-primary 4.50 -> 1.48）。
+ * tabular-nums = 等宽数字，3% -> 13% 时数字不左右抖。 */
+.progress__label {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1;
+    pointer-events: none;
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
     font-size: var(--font-size-sm);
     font-weight: 700;
-    font-family: var(--font-mono);
-    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-    position: relative;
-    overflow: hidden;
+    line-height: 1;
 }
 
 .progress-bar.bg-success {

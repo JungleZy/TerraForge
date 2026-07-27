@@ -151,7 +151,10 @@ MERGED_FONT_SIZES = {
     '.table th': 'var(--font-size-sm)',
     '.table small': 'var(--font-size-sm)',
     '.config-section h3': 'var(--font-size-md)',
-    '.progress-bar': 'var(--font-size-sm)',
+    # A2 / Task 7 把这一条从 `.progress-bar` **搬到** `.progress__label`：
+    # 百分比数字不再是进度条自己的子元素了，条里一个字都没有，给一个空元素
+    # 声明字号是死代码。值原样不变（0.875rem），承载它的元素换了个。
+    '.progress__label': 'var(--font-size-sm)',
     '.badge': 'var(--font-size-xs)',
     '.status-badge': 'var(--font-size-xs)',
     '.modal-title': 'var(--font-size-lg)',
@@ -1400,4 +1403,200 @@ def test_toast_container_cannot_grow_past_the_viewport():
     assert overflow in ('auto', 'scroll'), (
         f'#app-toast-container 的 overflow-y 是 {overflow!r}，必须是 auto 或 scroll ——'
         '否则光有 max-height 只会把超出的 toast 直接裁掉，更糟'
+    )
+
+
+# --------------------------------------------------------------------------
+# A2 / Task 7：进度条百分比覆盖层
+# --------------------------------------------------------------------------
+
+# 覆盖层文字属于「正常文字」（0.875rem = 14px，够不上大字号 18.66px/24px
+# 的 3:1 优惠），下限 4.5:1 —— 与 ERROR_TEXT_MIN_CONTRAST 同一条线。
+PROGRESS_LABEL_MIN_CONTRAST = 4.5
+
+
+def _top_rules(css, part):
+    """顶层（不在任何 at-rule 里）且选择器某个分支恰好等于 `part` 的规则。
+
+    要求「顶层」的理由与 `_progress_bar_color_rules` 相同：把规则包进
+    `@media (min-width: 3000px)` 之后，只查 `part in css` 的断言仍然全绿，
+    而规则在任何正常视口下都不生效。
+    """
+    return [
+        (sel, body) for sel, body, at_ctx in _rules_ctx(css)
+        if not at_ctx and part in _selector_parts(sel)
+    ]
+
+
+def _progress_fill_hexes(css):
+    """getStatusColor 能产出的每一档进度条填充色 -> {颜色名: '#rrggbb'}。
+
+    直接顺着 `.progress-bar.bg-XXX` 的声明解析，不在测试里手抄六个色号
+    —— 手抄的表会在调色板改动时静默过期，而对比度断言照旧全绿。
+    """
+    out = {}
+    for name, found in _progress_bar_color_rules(css).items():
+        if len(found) != 1:
+            continue
+        decls = _decl_map(found[0][1])
+        raw = decls.get('background') or decls.get('background-color')
+        if not raw:
+            continue
+        value = _resolve_color(css, raw)
+        if re.fullmatch(r'#[0-9a-f]{6}', value):
+            out[name] = value
+    return out
+
+
+def test_progress_track_is_a_positioning_context():
+    """`.progress` 必须声明 position: relative。
+
+    覆盖层用的是 position: absolute。`absolute` 是相对**最近的已定位祖先**
+    定位的，`.progress` 本身不定位的话就会一路上溯到 `.card` /
+    `.modal-content`（两者都有 position），百分比数字会跑到卡片左上角或者
+    模态框边上去 —— 而所有「文字色/对比度」断言依然全绿，因为颜色确实是对的。
+
+    Bootstrap 5.3 的 `.progress` 不带 position，所以这条必须由我们自己声明；
+    也因此不需要 !important。
+    """
+    rules = _top_rules(_css(), '.progress')
+    assert len(rules) == 1, (
+        f'期望顶层恰好 1 条裸 `.progress` 规则，实际 {len(rules)} 条 —— 本测试已失效'
+    )
+    pos = _decl_map(rules[0][1]).get('position', '').strip().lower()
+    assert pos == 'relative', (
+        f'`.progress` 的 position 是 {pos!r}，必须是 relative —— '
+        '否则 .progress__label 会相对 .card / .modal-content 定位，跑出进度条'
+    )
+
+
+def test_progress_label_is_an_overlay_that_always_renders():
+    """`.progress__label` 必须是顶层唯一一条、绝对定位、且**不被隐藏**的规则。
+
+    三件事各有来历：
+
+      1. **顶层恰好一条。** 两条同名规则说明有人在别处又覆盖了一次。
+
+      2. **position: absolute。** 覆盖层的全部意义就在这里：数字不再是
+         `.progress-bar` 的子元素，于是不受 `.progress-bar` 宽度为 0 的影响。
+         改前 progress=0 时 CDP 实测数字画出 **0 个像素**（截图法：藏掉文字
+         前后两张图差异为 0），progress=1 时只剩 230 个像素（50% 时是 2037）。
+
+      3. **display 不能是 none。** 简报原方案是「基础规则 display:none，
+         只在 `.modal .progress__label` 里显示」，理由是「卡片里的进度条只有
+         8px 高，放不下 0.875rem 的文字」。**这个前提是错的**：CDP 实测
+         `#activeTasks .progress` 的 computed height 是 **28px** —— 两处
+         渲染点（`tasks.js` 的 createTaskCard、`history.js` 的详情模态框）
+         都带 `style="height: 28px"` 内联样式，压过了 CSS 里那条
+         `.progress { height: 8px }`（它其实不作用于任何元素）。
+         照抄那个方案会把卡片上**现在就能看见**的百分比直接删掉。
+
+      另外禁 mix-blend-mode：实测是负优化（over bg-primary 4.50 -> 1.48，
+      over bg-danger 2.77 -> 1.88）。
+    """
+    rules = _top_rules(_css(), '.progress__label')
+    assert len(rules) == 1, (
+        f'期望顶层恰好 1 条 `.progress__label` 规则，实际 {len(rules)} 条：'
+        f'{[s for s, _ in rules]}'
+    )
+    decls = _decl_map(rules[0][1])
+
+    pos = decls.get('position', '').strip().lower()
+    assert pos == 'absolute', (
+        f'.progress__label 的 position 是 {pos!r}，必须是 absolute —— '
+        '不绝对定位就还是跟着 .progress-bar 的宽度走，progress=0 时照样消失'
+    )
+    display = decls.get('display', '').strip().lower()
+    assert display != 'none', (
+        '.progress__label 的基础规则把自己 display:none 了 —— '
+        '卡片里的进度条实测 28px（不是简报说的 8px），装得下 0.875rem 的文字，'
+        '隐藏它等于删掉卡片上现有的百分比'
+    )
+    assert 'mix-blend-mode' not in decls, (
+        '.progress__label 用了 mix-blend-mode —— 实测是负优化：'
+        'over bg-primary 对比度从 4.50 掉到 1.48，over bg-danger 从 2.77 掉到 1.88'
+    )
+
+
+def test_progress_label_readability_does_not_depend_on_the_fill():
+    """百分比文字对它**实际压着的**底色必须 >= 4.5:1，六档填充与轨道都算在内。
+
+    ⚠️ 这条是本任务最重要的断言，也是简报原方案过不了的那条。
+
+    **为什么单纯换个深色文字色解决不了**（可以算出来，不是意见）：
+    覆盖层是 `inset` 在整条轨道上、居中显示的，所以它压着什么完全取决于
+    progress：0% 时压在轨道 `--color-bg-tertiary`(#1c2027) 上，100% 时压在
+    填充色上，50% 时**正好横跨填充边界**，左半在填充上、右半在轨道上。
+    于是文字色必须同时对轨道和最亮的填充（`--color-warning` #fbbf24）达标。
+    而轨道与 warning 之间的对比度只有 **9.79:1** < 4.5 x 4.5 = 20.25，
+    按 WCAG 对比度公式这就意味着**不存在**任何单一颜色能对两者都拿到 4.5:1
+    （需要亮度 L >= 0.2392 同时 L <= 0.0898，空集）。
+    简报建议的 `#0b1220` 对六档填充确实全部 >= 4.5（4.51 ~ 11.22），但它对
+    轨道只有 **1.15:1** —— progress=0 时数字从「被裁掉看不见」变成
+    「画出来了但看不见」，本任务要修的缺陷原样留着，而按简报写的断言全绿。
+
+    所以做法是给覆盖层**自带一块不透明的底**（chip），让可读性与背后是
+    填充还是轨道无关。本断言按实际情况二选一：
+
+      - 覆盖层声明了不透明背景 -> 文字只需对**那块底**达标（背后是什么无所谓）；
+      - 没声明背景 -> 文字直接压在轨道和六档填充上，**每一个**都要达标
+        （按上面的证明，这条路走不通，会响亮失败并给出具体数字）。
+
+    覆盖范围（诚实说明）：这条守的是 CSS 源码里算得出来的色值关系。
+    「浏览器里真的画出来了」由 CDP 截图实测覆盖（藏掉文字前后的像素差 +
+    差异像素对同位置背景的实测对比度，见 p2-task-7-report.md）。
+    """
+    css = _css()
+    rules = _top_rules(css, '.progress__label')
+    assert len(rules) == 1, '`.progress__label` 顶层规则不唯一 —— 本测试已失效'
+    decls = _decl_map(rules[0][1])
+
+    assert 'color' in decls, '.progress__label 没有声明 color —— 会继承 Bootstrap 的白字'
+    text = _resolve_color(css, decls['color'])
+    assert re.fullmatch(r'#[0-9a-f]{6}', text), (
+        f'.progress__label 的文字色解析成 {text!r}，不是 6 位十六进制 —— '
+        '本断言算不了它的对比度，测试已失效（不是通过）'
+    )
+
+    fills = _progress_fill_hexes(css)
+    required = _status_color_names('tasks.js') | _status_color_names('history.js')
+    missing = sorted(required - set(fills))
+    assert not missing, (
+        f'解析不出 {missing} 的填充色 —— 六档没算全，本测试已失效'
+    )
+
+    track_raw = _progress_track_color(css)
+    track = _resolve_color(css, track_raw)
+    assert re.fullmatch(r'#[0-9a-f]{6}', track), (
+        f'轨道底色解析成 {track!r} —— 本测试已失效'
+    )
+
+    raw_bg = decls.get('background') or decls.get('background-color')
+    backdrops = {}
+    if raw_bg is not None:
+        chip = _resolve_color(css, raw_bg)
+        assert re.fullmatch(r'#[0-9a-f]{6}', chip), (
+            f'.progress__label 的背景 {chip!r} 不是不透明的 #rrggbb —— '
+            '半透明底会把背后的填充色透上来，可读性重新变成「看运气」。'
+            '要么改成不透明色，要么删掉背景让本断言走「直接压在填充上」那条路'
+        )
+        backdrops['覆盖层自带底'] = chip
+    else:
+        backdrops['轨道'] = track
+        for name, hexv in sorted(fills.items()):
+            backdrops[f'填充 bg-{name}'] = hexv
+
+    problems = []
+    for what, bg in backdrops.items():
+        ratio = _contrast_ratio(text, bg)
+        if ratio < PROGRESS_LABEL_MIN_CONTRAST:
+            problems.append(
+                f'{what}({bg}) 上只有 {ratio:.2f}:1，'
+                f'低于 WCAG 正文 {PROGRESS_LABEL_MIN_CONTRAST}:1'
+            )
+    assert not problems, (
+        f'进度条百分比文字 {text} 在这些底色上读不出来：\n'
+        + '\n'.join('  ' + p for p in problems)
+        + '\n提示：覆盖层横跨整条轨道，progress 一变底色就变；'
+          '单一文字色对「轨道 + 最亮填充」不可能同时达标（见本测试 docstring 的算式）'
     )

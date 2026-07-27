@@ -273,9 +273,8 @@ function createTaskCard(task) {
                      style="width: ${progress}%"
                      aria-valuenow="${progress}"
                      aria-valuemin="0"
-                     aria-valuemax="100">
-                    ${progress}%
-                </div>
+                     aria-valuemax="100"></div>
+                <span class="progress__label" aria-hidden="true">${progress}%</span>
             </div>
 
             ${timeInfo.show ? `
@@ -460,8 +459,15 @@ function updateTaskProgressPartial(card, task) {
     if (progressBar) {
         progressBar.style.width = `${progress}%`;
         progressBar.setAttribute('aria-valuenow', progress);
-        progressBar.textContent = `${progress}%`;
         progressBar.className = `progress-bar bg-${getStatusColor(task.status)}`;
+    }
+
+    // 百分比在覆盖层里，不在条里。这行原本是 progressBar.textContent = ...，
+    // 是这条路径最容易漏改的一处：卡片初次渲染看不出问题，第一个
+    // task_progress 事件一到就会在同一条进度条上多出第二个百分比。
+    const progressLabel = card.querySelector('.progress__label');
+    if (progressLabel) {
+        progressLabel.textContent = `${progress}%`;
     }
 
     // 更新下载数量

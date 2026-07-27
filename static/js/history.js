@@ -295,9 +295,12 @@ async function viewTaskDetails(taskId, taskType = 'map') {
 
         document.getElementById('detailProgress').innerHTML = `
             <div class="progress" style="height: 28px; margin-top: 0.5rem;">
-                <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar" style="width: ${progress}%">
-                    ${progress}%
-                </div>
+                <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
+                     style="width: ${progress}%"
+                     aria-valuenow="${progress}"
+                     aria-valuemin="0"
+                     aria-valuemax="100"></div>
+                <span class="progress__label" aria-hidden="true">${progress}%</span>
             </div>
         `;
 

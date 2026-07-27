@@ -465,3 +465,137 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
     assert 'closeFailureToast(' in dismiss_body, (
         '点「移除」之后那条常驻 toast 还留在右上角——卡片都清了，提示也该走'
     )
+
+
+# --------------------------------------------------------------------------
+# A2 / Task 7：百分比从 .progress-bar 的子元素改成 .progress 里的覆盖层
+# --------------------------------------------------------------------------
+
+# `<div class="progress-bar ...>` 一直到它的 `</div>`。
+# 属性值里有 `${progress}%` 和引号，但没有 `>`，所以 `[^>]*>` 切得干净。
+_PROGRESS_BAR_ELEMENT_RE = re.compile(
+    r'<div\s+class="progress-bar[^>]*>(.*?)</div>', re.S)
+
+# `class="progress"`（带结束引号）——不会误伤 progress-bar / progress-detail /
+# progress__label / progress-container。
+_PROGRESS_TRACK_ATTR_RE = re.compile(r'class="progress"')
+_PROGRESS_LABEL_ATTR_RE = re.compile(r'class="progress__label"')
+
+# 两个文件里各有几处进度条模板。等号不是下限：多出来的一处大概率是
+# 复制粘贴出来的第二套渲染路径，那正是本任务要防的「漏改一处出重复标签」。
+PROGRESS_TRACK_MARKUP_SITES = {'tasks.js': 1, 'history.js': 1}
+
+
+def test_percentage_is_an_overlay_not_a_child_of_the_bar():
+    """百分比必须是 `.progress` 里的独立 `<span class="progress__label">`，
+    `.progress-bar` 元素自己**不能再有任何文字内容**。
+
+    这是本任务的结构契约，守三件事：
+
+      1. **`.progress-bar` 标签之间是空的。** 数字留在里面的话，
+         `.progress { overflow: hidden }` + 宽度为 0 会把它整个裁掉 ——
+         CDP 实测 progress=0 时数字画出 0 个像素（截图差异法）。
+      2. **每个 `.progress` 容器恰好一个 `.progress__label`。**
+         0 个 = 这一处渲染点漏改了，百分比直接消失；
+         2 个 = 同一条进度条上两个百分比。
+      3. **覆盖层必须是 `<span>` 不能是 `<div>`。** style.css 里有一条
+         `div:not(.card):not(.modal-content)...{background:transparent}`
+         兜底重置，特异度 (0,10,1)，会把**任何**不在白名单里的 div 背景压成
+         透明。覆盖层的可读性正是靠自带的那块不透明底撑着（见
+         test_progress_label_readability_does_not_depend_on_the_fill），
+         改成 div 就会「源码里有底色、浏览器里透明」，而全部 CSS 断言照旧全绿
+         —— Task 6 的 `.task-error` 就是这么被咬的。
+    """
+    problems = []
+    for name, sites in PROGRESS_TRACK_MARKUP_SITES.items():
+        src = _strip_js_comments(_js(name))
+
+        tracks = len(_PROGRESS_TRACK_ATTR_RE.findall(src))
+        if tracks != sites:
+            problems.append(
+                f'{name}: 找到 {tracks} 处 `class="progress"` 模板，期望 {sites} 处 —— '
+                '渲染点被删掉、或者多了一套没人维护的副本'
+            )
+        labels = len(_PROGRESS_LABEL_ATTR_RE.findall(src))
+        if labels != tracks:
+            problems.append(
+                f'{name}: {tracks} 个 .progress 容器却有 {labels} 个 .progress__label —— '
+                '少了会让百分比消失，多了会在同一条进度条上出现两个百分比'
+            )
+
+        bars = _PROGRESS_BAR_ELEMENT_RE.findall(src)
+        if not bars:
+            problems.append(f'{name}: 一处 `<div class="progress-bar ...>` 都找不到 —— 本测试已失效')
+        for inner in bars:
+            if inner.strip():
+                problems.append(
+                    f'{name}: `.progress-bar` 标签之间还有内容 {inner.strip()[:40]!r} —— '
+                    '百分比必须搬到 .progress 下的覆盖层，留在条里会被 overflow:hidden 裁掉'
+                )
+
+        for m in _PROGRESS_LABEL_ATTR_RE.finditer(src):
+            head = src[max(0, m.start() - 40):m.start()]
+            if '<span' not in head:
+                problems.append(
+                    f'{name}: `class="progress__label"` 前面 40 字符里没有 `<span` '
+                    f'（实际是 {head[-25:]!r}）—— 覆盖层必须是 span，'
+                    'div 会被 `div:not(...)` 兜底重置把自带底色压成透明'
+                )
+    assert not problems, '进度条百分比覆盖层的结构不合契约：\n' + '\n'.join('  ' + p for p in problems)
+
+
+def test_socketio_incremental_path_updates_the_label_not_the_bar():
+    """Socket.IO 增量刷新路径必须改覆盖层的文字，且**不能**再往进度条里写文字。
+
+    `updateTaskProgressPartial` 是任务跑起来之后真正在刷新界面的那条路
+    （createTaskCard 只在状态切换时重建整卡）。漏改这里的后果很具体：
+    卡片初次渲染是对的（覆盖层里一个百分比），第一个 task_progress 事件一到，
+    `progressBar.textContent = '37%'` 又在条里塞回一个 —— 同一条进度条上
+    出现**两个**百分比，而所有只看模板的断言依然全绿。
+    """
+    body = _fn('updateTaskProgressPartial')
+
+    assert re.search(r"querySelector\(\s*'\.progress__label'\s*\)", body), (
+        'updateTaskProgressPartial 没有取 .progress__label —— '
+        '进度数字在 Socket.IO 刷新时不会更新（会一直停在初次渲染的值）'
+    )
+    assert re.search(r'\.textContent\s*=\s*`\$\{progress\}%`', body), (
+        'updateTaskProgressPartial 没有把 `${progress}%` 写进覆盖层'
+    )
+    assert not re.search(r'progressBar\.textContent\s*=', body), (
+        'updateTaskProgressPartial 仍在给 progressBar.textContent 赋值 —— '
+        '覆盖层 + 条内文字会同时存在，同一条进度条上出现两个百分比'
+    )
+
+
+def test_progress_bar_keeps_a_programmatic_value_after_losing_its_text():
+    """文字搬走之后，`role="progressbar"` 必须靠 aria-valuenow 报数值。
+
+    改之前进度条元素里就是那串「37%」文本，屏幕阅读器至少还能读到点东西。
+    文字搬到兄弟节点之后，`.progress-bar` 变成一个**空**的 progressbar，
+    没有 aria-valuenow 就等于什么值都不报。history.js 那处原本就漏了
+    aria-valuenow（只有 role 和内联 width），这条一并钉住。
+    """
+    problems = []
+    for name in ('tasks.js', 'history.js'):
+        src = _strip_js_comments(_js(name))
+        for m in _PROGRESS_BAR_ELEMENT_RE.finditer(src):
+            tag = src[m.start():m.start() + m.group(0).index('>') + 1]
+            for attr in ('aria-valuenow', 'aria-valuemin', 'aria-valuemax'):
+                if attr not in tag:
+                    problems.append(
+                        f'{name}: `<div class="progress-bar ...>` 缺 {attr} —— '
+                        '条里已经没有文字了，值只能靠 aria-* 报出去'
+                    )
+            if 'aria-valuenow="${progress}"' not in tag:
+                problems.append(
+                    f'{name}: aria-valuenow 不是 `${{progress}}` —— 报出去的值和画面对不上'
+                )
+    assert problems == [], (
+        '空进度条没有可编程的数值：\n' + '\n'.join('  ' + p for p in problems))
+
+    body = _fn('updateTaskProgressPartial')
+    assert re.search(r"setAttribute\(\s*'aria-valuenow'\s*,\s*progress\s*\)", body), (
+        'updateTaskProgressPartial 没有同步 aria-valuenow —— '
+        '视觉上在涨，报给辅助技术的值停在初始值'
+    )
