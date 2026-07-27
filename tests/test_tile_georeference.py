@@ -15,6 +15,55 @@ from services.download_engine import DownloadEngine
 from models.task import Tile
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """把 Config 的所有落盘路径**和数据库**都指向 tmp_path,然后建库。
+
+    为什么 DATABASE_PATH 必须一起 patch(CLAUDE.md 的测试规约就是这一条):
+    `DownloadEngine()` 持有一个 `ConfigManager`,拼接链路会读 `gdal_resampling`
+    / `gdal_compression`。只 patch CACHE_DIR/OUTPUT_DIR 的话,配置读的是仓库里
+    **真实的** data/map_downloader.db ——
+      - 开发机上那个库存在,gdal_resampling = 'cubic' → 跑 cubic 重采样
+      - 干净 checkout / CI 上那个库不存在,ConfigManager.get 吞掉异常返回
+        download_engine 里的兜底值 'nearest' → 跑 nearest
+    同一份测试在两处跑的是**不同的**代码路径,这种测试的绿是没有意义的。
+
+    建库(而不是只把路径指向一个不存在的文件)是为了让取到的值是生产真实默认值:
+    config 表由 database.DEFAULT_CONFIGS 播种,gdal_resampling = 'cubic'。
+    """
+    from config import Config
+    import database
+
+    monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
+    monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
+    monkeypatch.setattr(Config, 'OUTPUT_DIR', tmp_path / 'downloads')
+    monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
+
+    # init_database() 内部会 Config.init_app() 建目录,所以上面四条必须先生效
+    database.init_database()
+
+
+def test_resampling_config_is_the_production_default():
+    """守住上面那个 fixture 的目的:测试跑的必须是生产默认的重采样算法。
+
+    这条测试存在的意义是「兜底值 nearest 和真实默认 cubic 不一致」这个坑:
+    如果哪天 fixture 里的建库被删掉,ConfigManager 会静默退回 'nearest',
+    上面所有拼接测试立刻改跑另一条代码路径而**不会变红**。这条会红。
+    """
+    from database import DEFAULT_CONFIGS
+    from services.config_manager import ConfigManager
+
+    defaults = dict(DEFAULT_CONFIGS)
+    assert defaults['gdal_resampling'] == 'cubic', (
+        "生产默认重采样算法变了,download_engine.py 里那条『真实默认是 cubic』"
+        "的注释要同步更新"
+    )
+    assert ConfigManager().get('gdal_resampling', 'nearest') == 'cubic', (
+        "测试库里读不到 cubic,说明 isolated_config 没建库 —— 拼接测试正在跑 "
+        "nearest 兜底值,和生产不是同一条路径"
+    )
+
+
 def _tile_lat(y_tile_float: float, zoom: int) -> float:
     """逆墨卡托：给定连续的瓦片 y 坐标，返回其真实纬度（度）"""
     n = 2 ** zoom
@@ -659,3 +708,165 @@ def test_stale_single_band_intermediate_is_never_reused(tmp_path, monkeypatch):
             )
 
     assert not stale_path.exists(), "旧形态的中间文件应被顺手清掉，避免长期占盘"
+
+
+# --------------------------------------------------------------------------
+# BuildVRT 静默踢瓦片：必须显式失败，不能产出范围缩水的拼接图
+#
+# gdal.BuildVRT 对用不了的源文件不报错：打一条 `Warning 1: ... Skipping`
+# 就继续，返回一个完全合法的数据集。于是 Translate 成功、任务报完成，
+# 用户拿到一张少了几块瓦片的拼接图，只有自己去量地理范围才可能发现。
+#
+# 下面两条测试各自复现一种真实触发路径，都要求 raise 而不是静默缩水。
+# 它们同时是 _assert_vrt_covers_tile_grid 这条尺寸校验的护栏。
+# --------------------------------------------------------------------------
+
+def _georef_path_of(tile_png: Path) -> Path:
+    """中间文件路径。共用实现里的 GEOREF_SUFFIX，避免在测试里硬编码文件名"""
+    from services.download_engine import GEOREF_SUFFIX
+
+    return tile_png.with_name(f"{tile_png.stem}{GEOREF_SUFFIX}.tif")
+
+
+def _two_tiles_with_cache(engine, size=16):
+    """在缓存里放好左右相邻两块瓦片，返回 (left, right)"""
+    zoom, x, y = 10, 843, 387
+    left = Tile(task_id=0, zoom=zoom, x=x, y=y)
+    right = Tile(task_id=0, zoom=zoom, x=x + 1, y=y)
+    for tile in (left, right):
+        _write_png_tile(tile.cache_path('m'), size=size)
+    return left, right
+
+
+def test_half_written_intermediate_fails_instead_of_shrinking_the_mosaic():
+    """
+    「名字对、内容只写了一半」的中间文件残骸，必须让拼接显式失败。
+
+    残骸怎么来的：`_add_georeference` 里 driver.Create() 一执行，磁盘上就已经
+    有了一个叫 `<tile>_geo3857rgb.tif` 的文件。用户在此刻关掉 exe（或中途抛
+    异常），留下的就是这种「文件名完全合规、内容没有 geotransform/投影」的东西。
+    它不在 georef_paths 里（append 发生在函数成功返回之后），所以 stitch 的
+    finally 清不到它；下次拼接时 exists() 短路信任文件名，把它直接喂给 BuildVRT。
+
+    修复分两层，这条测试守的是第二层：
+      1. 原子写（.part + os.replace）—— 让这种残骸不再产生
+      2. BuildVRT 之后的尺寸校验 —— 已经在盘上的历史残骸也要变成显式失败
+
+    实测未修复时的后果（2 块瓦片 16px）：
+        Warning 1: gdalbuildvrt does not support ungeoreferenced image. Skipping ...
+        vrt size 16x16          # 本该 32x16，整块瓦片被踢出
+    只有一条 warning，Translate 照常成功，任务报完成。
+    """
+    from osgeo import gdal
+    from config import Config
+
+    engine = DownloadEngine()
+    left, right = _two_tiles_with_cache(engine)
+    out_path = Config.OUTPUT_DIR / 'half_written.tif'
+
+    poison = _georef_path_of(right.cache_path('m'))
+    half = gdal.GetDriverByName('GTiff').Create(str(poison), 16, 16, 3, gdal.GDT_Byte)
+    assert half is not None
+    half = None  # 关掉：没有 SetGeoTransform / SetProjection
+
+    # 自检：残骸必须真的是「打得开、但没有配准」，否则这条测试没在测它想测的东西
+    check = gdal.Open(str(poison))
+    assert check is not None, "残骸应当是能打开的（BuildVRT 才会走到 Skipping 分支）"
+    assert not check.GetProjection(), "残骸不该有投影，否则复现的不是半成品场景"
+    check = None
+
+    with pytest.raises(RuntimeError, match='skipped'):
+        engine.stitch_tiles_with_gdal([left, right], 'm', str(out_path), left.zoom)
+
+    assert not out_path.exists(), (
+        "尺寸校验必须在 Translate 之前拦下来，不能把缩水的拼接图落盘"
+    )
+    assert sorted(str(p) for p in Config.CACHE_DIR.rglob('*_geo*.tif')) == [], \
+        "失败路径也必须清掉中间文件"
+
+
+def test_band_count_mismatch_intermediate_fails_instead_of_shrinking_the_mosaic():
+    """
+    波段数不一致的中间文件残骸（如遗留的 4 波段 RGBA），同样必须显式失败。
+
+    BuildVRT 的波段数取自**第一个**源文件，与之不符的后续源会被踢出：
+        gdalbuildvrt was called with a band count of 3 but the file ... has 4 bands.
+        Skipping ...
+    调色板修复把 PNG8 归一成 3 波段是改善，但盘上残留的 RGBA 中间文件没有守卫 ——
+    它文件名合规、配准完整，exists() 短路照样会复用它。
+
+    实测未修复时：vrt size 16x16（本该 32x16），Translate 成功，任务报完成。
+    """
+    from osgeo import gdal, osr
+    from config import Config
+
+    engine = DownloadEngine()
+    left, right = _two_tiles_with_cache(engine)
+    out_path = Config.OUTPUT_DIR / 'band_mismatch.tif'
+
+    # 4 波段、配准完整 —— 唯一的问题就是波段数，把变量隔离干净
+    poison = _georef_path_of(right.cache_path('m'))
+    rgba = gdal.GetDriverByName('GTiff').Create(str(poison), 16, 16, 4, gdal.GDT_Byte)
+    assert rgba is not None
+    rgba.SetGeoTransform(engine.tile_geotransform(right, 16, 16)[0])
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(3857)
+    rgba.SetProjection(srs.ExportToWkt())
+    for band_idx in range(1, 5):
+        rgba.GetRasterBand(band_idx).Fill(90)
+    rgba = None
+
+    check = gdal.Open(str(poison))
+    assert check.RasterCount == 4, "残骸必须是 4 波段，否则复现的不是波段错配场景"
+    assert check.GetProjection(), "残骸必须配准完整，否则退化成上一条测试"
+    check = None
+
+    with pytest.raises(RuntimeError, match='skipped'):
+        engine.stitch_tiles_with_gdal([left, right], 'm', str(out_path), left.zoom)
+
+    assert not out_path.exists(), "不能把缩水的拼接图落盘"
+    assert sorted(str(p) for p in Config.CACHE_DIR.rglob('*_geo*.tif')) == [], \
+        "失败路径也必须清掉中间文件"
+
+
+def test_interrupted_georeference_leaves_no_name_compliant_leftover(monkeypatch):
+    """
+    配准中途失败，绝不能在盘上留下一个「名字合规、内容不对」的中间文件。
+
+    这是原子写那一层（.part + os.replace）的护栏，对应上面 half_written
+    那条测试的根因：本分支的整套防线是「把内容契约编进文件名，所以 exists()
+    短路可信」，而 driver.Create() 一执行文件名就已经占住了。
+
+    这里在 SetProjection 之前引爆（osr.SpatialReference 抛异常），正好落在
+    「文件已创建、配准还没写完」这个最危险的窗口里。
+    """
+    import services.download_engine as de
+
+    engine = DownloadEngine()
+    zoom, x, y = 10, 843, 387
+    tile = Tile(task_id=0, zoom=zoom, x=x, y=y)
+    tile_png = tile.cache_path('m')
+    _write_png_tile(tile_png, size=16)
+
+    class _ExplodingSRS:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError('killed mid-write')
+
+    monkeypatch.setattr(de.osr, 'SpatialReference', _ExplodingSRS)
+
+    with pytest.raises(RuntimeError, match='killed mid-write'):
+        engine._add_georeference(str(tile_png), tile)
+
+    georef = _georef_path_of(tile_png)
+    assert not georef.exists(), (
+        f"中途失败留下了名字合规的残骸 {georef.name} —— 下次拼接会被 exists() "
+        "短路复用，BuildVRT 只打一条 warning 就把它踢出，拼接图静默缩水"
+    )
+    leftover_parts = sorted(p.name for p in tile_png.parent.glob('*.part.*'))
+    assert leftover_parts == [], f"临时 .part 文件没清掉: {leftover_parts}"
+
+    # 失败之后重试必须能干净地成功 —— 证明上一步没留下挡路的东西
+    monkeypatch.undo()
+    retried = engine._add_georeference(str(tile_png), tile)
+    assert Path(retried) == georef
+    assert _epsg_of(retried) == '3857'

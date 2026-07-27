@@ -33,6 +33,18 @@ function initTasks() {
         console.log('Task stitch progress:', data);
     });
 
+    // 某个缩放级别拼接失败。任务可能仍在跑(其余级别继续),所以这里只报,不动卡片。
+    // 最终判定在后端:全失败 → task_failed;部分失败 → task_completed 带 warning,
+    // 同时写进 tasks.error_message。
+    socket.on('task_stitch_failed', function(data) {
+        console.error(`Task ${data.task_id} zoom ${data.zoom_level} 拼接失败:`, data.error_message);
+    });
+
+    // 复制瓦片阶段的心跳。下载进度条此时已经 100%,没有这个事件界面会静止若干分钟。
+    socket.on('task_copy_progress', function(data) {
+        console.log('Task copy progress:', data);
+    });
+
     loadActiveTasks();
 
     // 每秒更新一次时长显示

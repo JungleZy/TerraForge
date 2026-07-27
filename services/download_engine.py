@@ -658,7 +658,12 @@ class DownloadEngine:
         output_path_obj.parent.mkdir(parents=True, exist_ok=True)
         logger.debug(f"Ensured output directory exists: {output_path_obj.parent}")
 
-        # Get configuration values
+        # Get configuration values.
+        # NOTE: the second argument is only a last-resort fallback for a config
+        # table that has no such row (a DB created before the setting existed).
+        # The *real* default ships in database.py's DEFAULT_CONFIGS and is
+        # 'cubic' for gdal_resampling / 'LZW' for gdal_compression — don't read
+        # these literals as "what users get by default".
         gdal_compression = self.config_manager.get('gdal_compression', 'LZW')
         gdal_resampling = self.config_manager.get('gdal_resampling', 'nearest')
 
@@ -702,7 +707,10 @@ class DownloadEngine:
             vrt_ds = gdal.BuildVRT(vrt_path, georef_paths, options=vrt_options)
             if vrt_ds is None:
                 raise RuntimeError(f"Failed to build VRT from {len(georef_paths)} tiles")
-            vrt_ds = None  # Close VRT dataset
+            try:
+                self._assert_vrt_covers_tile_grid(vrt_ds, tiles_at_zoom, zoom_level)
+            finally:
+                vrt_ds = None  # Close VRT dataset
 
             logger.info("VRT built successfully")
 
@@ -795,6 +803,83 @@ class DownloadEngine:
 
         logger.info(f"GDAL tile stitching completed: {output_path_obj}")
         return str(output_path_obj)
+
+    def _assert_vrt_covers_tile_grid(
+        self,
+        vrt_ds,
+        tiles_at_zoom: List[Tile],
+        zoom_level: int
+    ) -> None:
+        """Fail loudly when BuildVRT silently dropped tiles from the mosaic.
+
+        gdal.BuildVRT does not fail on a source it cannot use. It prints one
+        `Warning 1: ... Skipping <file>` line, returns a perfectly valid dataset,
+        and everything downstream (Translate, the task status update) succeeds —
+        so the user gets a mosaic covering less ground than they asked for and
+        the task still reports "completed". Measured triggers, all of which
+        arrive here as a size mismatch:
+
+          - a half-written intermediate: `driver.Create()` alone already puts a
+            correctly-*named* file on disk, so a kill/exception between Create
+            and SetGeoTransform leaves one behind that the exists() short-circuit
+            in _add_georeference then reuses. gdalbuildvrt refuses it with
+            "does not support ungeoreferenced image". (The atomic write in
+            _add_georeference is the actual fix; this is the backstop for
+            residue written by earlier releases.)
+          - an intermediate with a different band count, e.g. a leftover RGBA
+            tile: "gdalbuildvrt: gdalbuildvrt was called with a band count of 3
+            but the file ... has 4 bands. Skipping".
+          - an intermediate deleted underneath us: intermediates are named by
+            style + z/x/y only and therefore shared across tasks, so the finally
+            block of a concurrent stitch of an overlapping bbox deletes files
+            this one is still using.
+
+        The expectation is derived from the requested tile grid (x/y extremes ->
+        geographic span via tile_geotransform) divided by the pixel size the VRT
+        actually ended up with. It is not a restatement of BuildVRT's own
+        arithmetic, and it does not assume 256x256 tiles.
+
+        Known blind spot: a tile dropped from the *interior* of the grid leaves
+        the bounding box — and therefore the raster size — unchanged. That case
+        shows up as a nodata hole in the output, not as a shrunken mosaic.
+        """
+        geotransform = vrt_ds.GetGeoTransform()
+        pixel_width, pixel_height = abs(geotransform[1]), abs(geotransform[5])
+        if not pixel_width or not pixel_height:
+            raise RuntimeError(
+                f"VRT for zoom {zoom_level} has a degenerate pixel size "
+                f"{geotransform[1]}x{geotransform[5]}; refusing to stitch"
+            )
+
+        x_min = min(t.x for t in tiles_at_zoom)
+        x_max = max(t.x for t in tiles_at_zoom)
+        y_min = min(t.y for t in tiles_at_zoom)
+        y_max = max(t.y for t in tiles_at_zoom)
+
+        # Corner coordinates of the grid: the top-left of tile (x_min, y_min) and
+        # the top-left of the tile one step past (x_max, y_max), which is exactly
+        # the grid's bottom-right. width/height are irrelevant for a corner, so
+        # pass 1x1.
+        grid_top_left, _ = self.tile_geotransform(
+            Tile(task_id=0, zoom=zoom_level, x=x_min, y=y_min), 1, 1
+        )
+        grid_past_end, _ = self.tile_geotransform(
+            Tile(task_id=0, zoom=zoom_level, x=x_max + 1, y=y_max + 1), 1, 1
+        )
+
+        expected_x_size = round((grid_past_end[0] - grid_top_left[0]) / pixel_width)
+        expected_y_size = round((grid_top_left[3] - grid_past_end[3]) / pixel_height)
+
+        actual = (vrt_ds.RasterXSize, vrt_ds.RasterYSize)
+        if actual != (expected_x_size, expected_y_size):
+            raise RuntimeError(
+                f"VRT for zoom {zoom_level} covers {actual[0]}x{actual[1]} px but the "
+                f"{x_max - x_min + 1}x{y_max - y_min + 1} tile grid requires "
+                f"{expected_x_size}x{expected_y_size} px — gdalbuildvrt skipped at least "
+                f"one of the {len(tiles_at_zoom)} intermediates (check the GDAL "
+                f"'Warning 1: ... Skipping' lines above: unwritable/ungeoreferenced "
+                f"leftover, band-count mismatch, or a concurrent stitch deleting them)"
+            )
 
     def tile_geotransform(self, tile: Tile, width: int, height: int) -> tuple[list[float], int]:
         """
@@ -962,38 +1047,71 @@ class DownloadEngine:
                 f"TILE_GEOREF_EPSG so cached intermediates stay self-describing"
             )
 
-        # Create georeferenced output file
-        driver = gdal.GetDriverByName('GTiff')
-        dst_ds = driver.Create(
-            georef_path,
-            width,
-            height,
-            bands,
-            src_ds.GetRasterBand(1).DataType
+        # Write to a sibling .part file and rename into place only once the
+        # pixels, geotransform and projection are all in — the same pattern the
+        # tile cache uses (see _download_single_tile).
+        #
+        # Without it the file name stops being a reliable contract: driver.Create()
+        # on its own already puts a file called `<tile>_geo3857rgb.tif` on disk, so
+        # the user closing the exe (or any exception) between Create and
+        # SetProjection leaves behind a name-compliant, content-broken leftover.
+        # Two things then conspire: the exists() short-circuit above trusts the
+        # name and hands the leftover straight to BuildVRT, and BuildVRT skips an
+        # ungeoreferenced source with a warning instead of failing. The leftover is
+        # also invisible to stitch_tiles_with_gdal's finally block, which only
+        # cleans paths this function successfully *returned*.
+        part_path_obj = georef_path_obj.with_name(
+            f"{georef_path_obj.name}.part.{os.getpid()}.{id(tile)}"
         )
+        dst_ds = None  # bound up front so the finally block can always close it
+        try:
+            # Create georeferenced output file
+            driver = gdal.GetDriverByName('GTiff')
+            dst_ds = driver.Create(
+                str(part_path_obj),
+                width,
+                height,
+                bands,
+                src_ds.GetRasterBand(1).DataType
+            )
 
-        if dst_ds is None:
+            if dst_ds is None:
+                raise RuntimeError(f"Failed to create georeferenced tile: {part_path_obj}")
+
+            # Copy raster data
+            for band_idx in range(1, bands + 1):
+                src_band = src_ds.GetRasterBand(band_idx)
+                dst_band = dst_ds.GetRasterBand(band_idx)
+                data = src_band.ReadAsArray()
+                dst_band.WriteArray(data)
+
+            # Set geotransform
+            dst_ds.SetGeoTransform(geotransform)
+
+            # Set projection to Web Mercator (EPSG:3857) — see tile_geotransform
+            srs = osr.SpatialReference()
+            srs.ImportFromEPSG(epsg_code)
+            dst_ds.SetProjection(srs.ExportToWkt())
+
+            # Close the dataset *before* the rename: GDAL flushes on close, so
+            # renaming an open dataset would publish a half-flushed file.
+            dst_ds = None
+
+            os.replace(part_path_obj, georef_path_obj)
+        finally:
+            # Close datasets
             src_ds = None
-            raise RuntimeError(f"Failed to create georeferenced tile: {georef_path}")
-
-        # Copy raster data
-        for band_idx in range(1, bands + 1):
-            src_band = src_ds.GetRasterBand(band_idx)
-            dst_band = dst_ds.GetRasterBand(band_idx)
-            data = src_band.ReadAsArray()
-            dst_band.WriteArray(data)
-
-        # Set geotransform
-        dst_ds.SetGeoTransform(geotransform)
-
-        # Set projection to Web Mercator (EPSG:3857) — see tile_geotransform
-        srs = osr.SpatialReference()
-        srs.ImportFromEPSG(epsg_code)
-        dst_ds.SetProjection(srs.ExportToWkt())
-
-        # Close datasets
-        src_ds = None
-        dst_ds = None
+            dst_ds = None
+            # Still there means the rename never happened — drop the debris so a
+            # retry starts clean and the shared cache dir doesn't accumulate it.
+            try:
+                if part_path_obj.exists():
+                    part_path_obj.unlink()
+            except Exception as cleanup_error:
+                logger.warning(
+                    f"Failed to remove partial georeferenced tile {part_path_obj}: "
+                    f"{cleanup_error}"
+                )
 
         logger.debug(f"Created georeferenced tile: {georef_path}")
         return georef_path

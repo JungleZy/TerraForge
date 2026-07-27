@@ -6,9 +6,10 @@ Coordinates between database, download engine, and WebSocket notifications.
 """
 
 import logging
+import shutil
 import threading
 import asyncio
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,11 @@ STYLE_MAP = {
     'hybrid': 'y',       # Hybrid (satellite + labels)
     'terrain': 't'       # Terrain map
 }
+
+# How often the tile-copy stage reports progress, in tiles. The copy runs *after*
+# the download progress bar already reached 100%, so with no events at all the UI
+# freezes for as long as the copy takes (minutes at 100k tiles) and looks hung.
+COPY_PROGRESS_INTERVAL = 200
 
 
 class TaskManager:
@@ -849,6 +855,11 @@ class TaskManager:
                 except Exception as e:
                     logger.error(f"Progress callback error for tile {tile.zoom}/{tile.x}/{tile.y}: {e}")
 
+            # Convert style name to style code once — the download, the stitching
+            # and the tile copy all key the shared tile cache off this same value,
+            # so it must not be recomputed (and possibly diverge) per stage.
+            style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
+
             # Download tiles
             if len(tiles) > 0:
                 # Check stop flag before downloading
@@ -857,8 +868,6 @@ class TaskManager:
                     return
 
                 logger.info(f"Task {task_id}: Starting tile download")
-                # Convert style name to style code
-                style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
                 await self.download_engine.download_tiles_batch(
                     tiles=tiles,
                     style=style_code,
@@ -873,32 +882,41 @@ class TaskManager:
                 logger.info(f"Task {task_id}: Stop flag detected before stitching")
                 return
 
+            # Materialise the completed tiles once. Every output_format reaches at
+            # least one of the two stages below ('both' reaches both of them), and
+            # they need the identical list, so querying per stage only bought two
+            # chances for the two lists to drift apart.
+            cursor.execute('''
+                SELECT task_id, zoom, x, y, status, retry_count
+                FROM task_tiles
+                WHERE task_id = ? AND status = 'completed'
+                ORDER BY zoom, x, y
+            ''', (task_id,))
+
+            completed_tiles = [
+                Tile(
+                    task_id=row['task_id'],
+                    zoom=row['zoom'],
+                    x=row['x'],
+                    y=row['y'],
+                    status=row['status'],
+                    retry_count=row['retry_count']
+                )
+                for row in cursor.fetchall()
+            ]
+
+            # Stitching results, consumed by the completion logic further down.
+            # A stitch failure used to be swallowed here, which meant a task whose
+            # mosaics all failed still emitted task_completed — the user had no way
+            # to find out short of opening the output directory.
+            stitched_zooms: List[int] = []
+            stitch_failures: List[Tuple[int, str]] = []
+
             # Stitch tiles if output format includes image
             # NOTE: 'png'/'jpg' are legacy synonyms of 'image_only' — the output
             # path below is hardcoded to .tif, so they never produce PNG/JPG.
             if task.output_format in ['png', 'jpg', 'both', 'image_only']:
                 logger.info(f"Task {task_id}: Starting tile stitching")
-
-                # Get all completed tiles for stitching
-                cursor.execute('''
-                    SELECT task_id, zoom, x, y, status, retry_count
-                    FROM task_tiles
-                    WHERE task_id = ? AND status = 'completed'
-                    ORDER BY zoom, x, y
-                ''', (task_id,))
-
-                completed_tile_rows = cursor.fetchall()
-                completed_tiles = [
-                    Tile(
-                        task_id=row['task_id'],
-                        zoom=row['zoom'],
-                        x=row['x'],
-                        y=row['y'],
-                        status=row['status'],
-                        retry_count=row['retry_count']
-                    )
-                    for row in completed_tile_rows
-                ]
 
                 # Stitch tiles for each zoom level
                 zoom_levels = sorted(set(tile.zoom for tile in completed_tiles))
@@ -914,8 +932,6 @@ class TaskManager:
                     logger.info(f"Task {task_id}: Stitching zoom level {zoom} to {output_path}")
 
                     try:
-                        # Convert style name to style code
-                        style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
                         self.download_engine.stitch_tiles_with_gdal(
                             tiles=completed_tiles,
                             style=style_code,
@@ -923,6 +939,7 @@ class TaskManager:
                             zoom_level=zoom
                         )
                         logger.info(f"Task {task_id}: Zoom level {zoom} stitched successfully")
+                        stitched_zooms.append(zoom)
 
                         # Emit stitching progress
                         if self.socketio:
@@ -934,40 +951,41 @@ class TaskManager:
 
                     except Exception as e:
                         logger.error(f"Task {task_id}: Failed to stitch zoom level {zoom}: {e}")
-                        # Continue with other zoom levels even if one fails
+                        # Keep going: the remaining zoom levels are independent and
+                        # the user is better off with the ones that do work. But the
+                        # failure is *recorded* now — see the completion logic below,
+                        # which turns an all-failed stitch into a failed task and a
+                        # partially-failed one into a warning on the task row.
+                        stitch_failures.append((zoom, str(e)))
+                        if self.socketio:
+                            self.socketio.emit('task_stitch_failed', {
+                                'task_id': task_id,
+                                'zoom_level': zoom,
+                                'error_message': str(e)
+                            })
 
             # Copy tiles to output_path for formats that keep the raw tiles.
             # NOTE: this is a separate `if`, not `elif` — 'both' must do both.
             if task.output_format in ['both', 'tiles_only']:
                 logger.info(f"Task {task_id}: Copying tiles to output path ({task.output_format} mode)")
 
-                # Get all completed tiles
-                cursor.execute('''
-                    SELECT task_id, zoom, x, y, status, retry_count
-                    FROM task_tiles
-                    WHERE task_id = ? AND status = 'completed'
-                    ORDER BY zoom, x, y
-                ''', (task_id,))
-
-                completed_tile_rows = cursor.fetchall()
-
-                # Convert style name to style code
-                style_code = STYLE_MAP.get(task.style, 'm')
-
                 # Copy tiles from cache to output_path/task_{id}/
                 output_base = Path(task.output_path) / f"task_{task_id}"
                 output_base.mkdir(parents=True, exist_ok=True)
 
+                total_to_copy = len(completed_tiles)
                 copied_count = 0
-                for row in completed_tile_rows:
-                    tile = Tile(
-                        task_id=row['task_id'],
-                        zoom=row['zoom'],
-                        x=row['x'],
-                        y=row['y'],
-                        status=row['status'],
-                        retry_count=row['retry_count']
-                    )
+                for copy_index, tile in enumerate(completed_tiles, start=1):
+                    # 'both' is the default output format, so this loop runs for
+                    # most tasks and at 100k tiles it takes minutes. Without a stop
+                    # check inside it, cancelling only takes effect once the whole
+                    # copy has finished.
+                    if self._is_stop_requested(task_id, stop_flag):
+                        logger.info(
+                            f"Task {task_id}: Stop flag detected during tile copy "
+                            f"({copied_count}/{total_to_copy} copied)"
+                        )
+                        return
 
                     # Source: cache path
                     cache_path = tile.cache_path(style_code)
@@ -978,7 +996,6 @@ class TaskManager:
 
                     try:
                         if cache_path.exists():
-                            import shutil
                             shutil.copy2(cache_path, dest_path)
                             copied_count += 1
                         else:
@@ -986,7 +1003,18 @@ class TaskManager:
                     except Exception as e:
                         logger.error(f"Task {task_id}: Failed to copy tile {tile.zoom}/{tile.x}/{tile.y}: {e}")
 
-                logger.info(f"Task {task_id}: Copied {copied_count}/{len(completed_tile_rows)} tiles to {output_base}")
+                    # Keep the UI alive during the copy — see COPY_PROGRESS_INTERVAL.
+                    if self.socketio and (
+                        copy_index % COPY_PROGRESS_INTERVAL == 0 or copy_index == total_to_copy
+                    ):
+                        self.socketio.emit('task_copy_progress', {
+                            'task_id': task_id,
+                            'copied_tiles': copied_count,
+                            'processed_tiles': copy_index,
+                            'total_tiles': total_to_copy
+                        })
+
+                logger.info(f"Task {task_id}: Copied {copied_count}/{total_to_copy} tiles to {output_base}")
 
             if self._is_stop_requested(task_id, stop_flag):
                 logger.info(f"Task {task_id}: Stop flag detected, not marking as completed")
@@ -1026,11 +1054,50 @@ class TaskManager:
                     })
                 return
 
+            # Stitched images are a deliverable of their own: every tile row can be
+            # 'completed' while not a single mosaic got produced. The tile counts
+            # above cannot see that, so judge the stitching separately.
+            stitch_detail = '; '.join(f"zoom {zoom}: {err}" for zoom, err in stitch_failures)
+
+            if stitch_failures and not stitched_zooms:
+                # Nothing to show for the stitching at all — for image_only that is
+                # the entire requested output. Calling this "completed" would be a
+                # lie the user can only catch by browsing the output directory.
+                error_message = (
+                    f"拼接全部失败({len(stitch_failures)} 个缩放级别): {stitch_detail}"
+                )
+                cursor.execute('''
+                    UPDATE tasks
+                    SET status = 'failed', error_message = ?, completed_at = ?
+                    WHERE id = ? AND status = 'running'
+                ''', (error_message, datetime.now(), task_id))
+                conn.commit()
+                logger.error(f"Task {task_id}: {error_message}")
+                if cursor.rowcount and self.socketio:
+                    self.socketio.emit('task_failed', {
+                        'task_id': task_id,
+                        'status': 'failed',
+                        'error_message': error_message
+                    })
+                return
+
+            # Some zoom levels stitched, some did not. The successful ones are real
+            # output the user wants to keep, so the task still completes — but the
+            # warning is persisted on the task row (and carried on task_completed)
+            # so it is not something they have to guess at.
+            stitch_warning = None
+            if stitch_failures:
+                stitch_warning = (
+                    f"部分缩放级别拼接失败"
+                    f"({len(stitch_failures)}/{len(stitch_failures) + len(stitched_zooms)}): "
+                    f"{stitch_detail}"
+                )
+
             cursor.execute('''
                 UPDATE tasks
-                SET status = 'completed', completed_at = ?
+                SET status = 'completed', error_message = ?, completed_at = ?
                 WHERE id = ? AND status = 'running'
-            ''', (datetime.now(), task_id))
+            ''', (stitch_warning, datetime.now(), task_id))
 
             conn.commit()
 
@@ -1038,12 +1105,16 @@ class TaskManager:
                 self._update_total_running_time(task_id)
                 self._record_time_action(task_id, 'complete')
 
-                logger.info(f"Task {task_id}: Completed successfully")
+                if stitch_warning:
+                    logger.warning(f"Task {task_id}: Completed with warning — {stitch_warning}")
+                else:
+                    logger.info(f"Task {task_id}: Completed successfully")
 
                 if self.socketio:
                     self.socketio.emit('task_completed', {
                         'task_id': task_id,
-                        'status': 'completed'
+                        'status': 'completed',
+                        'warning': stitch_warning
                     })
 
         except Exception as e:
