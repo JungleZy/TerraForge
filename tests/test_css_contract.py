@@ -1600,3 +1600,129 @@ def test_progress_label_readability_does_not_depend_on_the_fill():
         + '\n提示：覆盖层横跨整条轨道，progress 一变底色就变；'
           '单一文字色对「轨道 + 最亮填充」不可能同时达标（见本测试 docstring 的算式）'
     )
+
+
+def _progress_label_chip_height_px(css):
+    """`.progress__label` 那块 chip 的高度（px）= 行高 + 上下内边距。
+
+    从 CSS 里算出来而不是写死 18 —— 写死的话，谁把字号或内边距调大，
+    高度下限就静默过期了，而那正是这条约束要防的事。
+    算不出来的写法（calc()/em/百分比行高）返回 None，让调用方报「测试已失效」。
+    """
+    rules = _top_rules(css, '.progress__label')
+    assert len(rules) == 1, '`.progress__label` 顶层规则不唯一 —— 本测试已失效'
+    decls = _decl_map(rules[0][1])
+
+    raw_fs = decls.get('font-size')
+    assert raw_fs, '.progress__label 没有声明 font-size —— 本测试已失效'
+    m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', raw_fs.strip())
+    font_px = _length_to_px(_palette_var(css, m.group(1)) if m else raw_fs)
+    if font_px is None:
+        return None
+
+    lh = decls.get('line-height', '').strip()
+    if re.fullmatch(r'[\d.]+', lh):          # 无单位行高 = 倍数
+        line_px = font_px * float(lh)
+    else:
+        line_px = _length_to_px(lh)
+        if line_px is None:
+            return None
+
+    # padding 简写取上下分量：1 值 -> 该值；2/3/4 值 -> 第 1 个
+    pad = decls.get('padding', '0').strip().split()
+    pad_px = _length_to_px(pad[0]) if pad else 0.0
+    if pad_px is None:
+        return None
+    return line_px + 2 * pad_px
+
+
+def test_every_progress_height_fits_the_label():
+    """任何给 `.progress` 设高度的规则，高度都不能矮于覆盖层 chip。
+
+    ⚠️ 这条是评审实测逼出来的，前面几条断言对它完全失明。
+
+    `.progress` 有 `overflow: hidden`，而覆盖层是它的绝对定位子元素。
+    评审 CDP 实测：让原来那条 `.progress { height: 8px }` 生效之后，
+    **18px 高的 chip 被上下各裁掉 5px，数字被拦腰切断** —— 而
+    test_progress_label_readability_does_not_depend_on_the_fill 算的是色值、
+    test_progress_label_is_an_overlay_that_always_renders 查的是 position 和
+    display，两条都照旧全绿。
+
+    改之前那条 8px 是无害的（条里的文字跟着 .progress-bar 走，轨道细就细）；
+    **改之后它会毁掉这个功能**。当时不发作，只是因为两处 markup 恰好都内联了
+    `height: 28px` 把它盖住 —— 也就是说功能正确性静默依赖「每个未来的
+    `.progress` 都记得写内联高度」。现在高度收回 CSS、内联删掉，由这条断言兜底。
+
+    覆盖范围（诚实说明）：只查 CSS 里的 height 声明。markup 侧不许再内联
+    height 由 tests/test_tasks_js_contract.py::test_progress_track_markup_is_nested_and_heightless
+    守住；「浏览器里 chip 真的没被裁」由 CDP 实测覆盖（label 的 rect 完全落在
+    .progress 的裁剪框内，clippedOut = false）。
+    """
+    css = _css()
+    chip = _progress_label_chip_height_px(css)
+    assert chip is not None, (
+        '.progress__label 的 font-size / line-height / padding 里有本断言算不了的写法 '
+        '—— chip 高度求不出来，测试已失效（不是通过）'
+    )
+
+    # 选择器最后一个复合部分是 `.progress` 的规则：裸 `.progress`、
+    # `.modal .progress`、`.zoom-level .progress` 都算，`.progress-bar` 不算。
+    checked, problems = 0, []
+    for sel, body, at_ctx in _rules_ctx(css):
+        for part in _selector_parts(sel):
+            if not re.search(r'(^|[\s>+~])\.progress$', part):
+                continue
+            raw = _decl_map(body).get('height')
+            if raw is None:
+                continue
+            px = _length_to_px(_IMPORTANT_RE.sub('', raw).strip())
+            if px is None:
+                problems.append(
+                    f'{part} {{ height: {raw} }}: 本断言算不了这个写法 —— 测试已失效')
+                continue
+            checked += 1
+            if px < chip:
+                problems.append(
+                    f'{part} {{ height: {raw} }} = {px:g}px，矮于覆盖层 chip 的 '
+                    f'{chip:g}px（{at_ctx or "顶层"}）—— .progress 的 overflow: hidden '
+                    f'会把百分比数字上下裁断'
+                )
+    assert checked >= 1, (
+        '一条给 `.progress` 设高度的规则都没找到 —— 高度没了会回落到 Bootstrap 的 '
+        '1rem(16px)，同样矮于 chip。本测试已失效'
+    )
+    assert not problems, (
+        '有 `.progress` 高度装不下百分比覆盖层：\n' + '\n'.join('  ' + p for p in problems))
+
+
+def test_progress_label_chip_is_seamless_against_the_track():
+    """覆盖层 chip 的底色必须**等于**轨道底色。
+
+    这是本设计的立身之本，也是唯一一条守「好不好看」的断言：
+    低进度时 chip 压在轨道上，两者同色 -> 看不出有块底，视觉上就是
+    「轨道上的一行字」（CDP 截图复核：0% / 1% / 35% 三档完全看不出 chip 存在）。
+    颜色一旦分家，0% 时会变成轨道上一块**突兀的浮动药丸** —— 而
+    test_progress_label_readability_does_not_depend_on_the_fill 只比
+    「文字 vs chip」，chip 换成任何颜色它都照旧全绿。
+
+    比较的是**解析后的字面色值**而不是变量名：写 `var(--color-bg-tertiary)`
+    还是直接写 `#1c2027` 都算相同，换成另一个碰巧同值的变量也算相同。
+    真正要拦的是「两者渲染出来不是一个颜色」。
+    """
+    css = _css()
+    rules = _top_rules(css, '.progress__label')
+    assert len(rules) == 1, '`.progress__label` 顶层规则不唯一 —— 本测试已失效'
+    raw = _decl_map(rules[0][1]).get('background') or \
+        _decl_map(rules[0][1]).get('background-color')
+    assert raw, (
+        '.progress__label 没有背景 —— 无缝性无从谈起，而且可读性会退回'
+        '「看背后是什么」（见 test_progress_label_readability_does_not_depend_on_the_fill）'
+    )
+    chip = _resolve_color(css, raw)
+    track = _resolve_color(css, _progress_track_color(css))
+    assert chip == track, (
+        f'覆盖层 chip 的底色 {chip} 与 `.progress` 轨道底色 {track} 不同 —— '
+        f'低进度时数字下面会出现一块突兀的浮动药丸（对比度 '
+        f'{_contrast_ratio(chip, track):.2f}:1）。'
+        '要么改回同色，要么这是一次有意的视觉改动，请连同本断言一起更新'
+    )

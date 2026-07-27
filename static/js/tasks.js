@@ -268,7 +268,7 @@ function createTaskCard(task) {
                 ${task.failed_items > 0 ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_items}</span>` : ''}
             </div>
 
-            <div class="progress" style="height: 28px; margin-bottom: 0.75rem;">
+            <div class="progress" style="margin-bottom: 0.75rem;">
                 <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
                      style="width: ${progress}%"
                      aria-valuenow="${progress}"

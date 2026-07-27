@@ -599,3 +599,72 @@ def test_progress_bar_keeps_a_programmatic_value_after_losing_its_text():
         'updateTaskProgressPartial 没有同步 aria-valuenow —— '
         '视觉上在涨，报给辅助技术的值停在初始值'
     )
+
+
+def _element_inner_html(src, open_tag_start):
+    """从 `<div ...>` 的起始下标切出它与配对 `</div>` 之间的内容。
+
+    按 `<div` / `</div>` 计深度配对，不用「下一个 `</div>`」——那会在
+    `.progress` 里嵌着 `.progress-bar` 的时候提前收尾，把覆盖层判成「在外面」。
+    只数 div：`<span>` 不影响 div 的配对。
+    """
+    gt = src.index('>', open_tag_start)
+    depth, i = 1, gt + 1
+    pat = re.compile(r'<div\b|</div>')
+    while True:
+        m = pat.search(src, i)
+        if not m:
+            return None
+        if m.group(0) == '</div>':
+            depth -= 1
+            if depth == 0:
+                return src[gt + 1:m.start()]
+        else:
+            depth += 1
+        i = m.end()
+
+
+def test_progress_track_markup_is_nested_and_heightless():
+    """`.progress__label` 必须**嵌在** `.progress` 元素里面，且轨道不许内联 height。
+
+    ⚠️ 这条补的是 test_percentage_is_an_overlay_not_a_child_of_the_bar 的洞。
+    那条是按**文件**统计 `class="progress"` 与 `class="progress__label"` 的
+    出现次数再比相等，**从不检查 span 在不在 track 里面**：把 span 挪到
+    `.progress` 外面一行，计数依旧 1 : 1、测试全绿，而
+    `position: absolute` 会改为相对 `.card` 定位，数字直接飞出进度条 ——
+    正是 test_progress_track_is_a_positioning_context 要防的失败模式，
+    只是从 JS 侧绕了进来。这里按 `<div>` 深度配对切出 track 的内容再查。
+
+    顺带钉住第二件事：**轨道的内联 style 里不许再有 height**。
+    高度是承重的（矮于 chip 会被 `overflow: hidden` 上下裁断数字），
+    只能有一个来源 —— CSS 的 `.progress { height: 28px }`，那里有
+    test_every_progress_height_fits_the_label 守下限。内联写一个 8px
+    就能绕过那条断言，而所有 CSS 断言照旧全绿。
+    """
+    problems = []
+    for name in PROGRESS_TRACK_MARKUP_SITES:
+        src = _strip_js_comments(_js(name))
+        hits = list(_PROGRESS_TRACK_ATTR_RE.finditer(src))
+        assert hits, f'{name}: 找不到 `class="progress"` 的模板 —— 本测试已失效'
+        for h in hits:
+            start = src.rfind('<div', 0, h.start())
+            assert start != -1, f'{name}: `class="progress"` 前面没有 `<div` —— 本测试已失效'
+            open_tag = src[start:src.index('>', start) + 1]
+            if re.search(r'style="[^"]*\bheight\s*:', open_tag):
+                problems.append(
+                    f'{name}: `.progress` 的内联 style 里有 height '
+                    f'({open_tag.strip()[:70]!r}) —— 高度只能由 CSS 提供，'
+                    '内联值绕过 test_every_progress_height_fits_the_label 的下限检查'
+                )
+            inner = _element_inner_html(src, start)
+            if inner is None:
+                problems.append(f'{name}: `.progress` 的 <div> 配不上 </div> —— 本测试已失效')
+                continue
+            n = len(_PROGRESS_LABEL_ATTR_RE.findall(inner))
+            if n != 1:
+                problems.append(
+                    f'{name}: `.progress` 元素**内部**有 {n} 个 .progress__label（应为 1）'
+                    ' —— 挪到外面的话 position: absolute 会相对 .card 定位，'
+                    '数字飞出进度条，而按文件计数的那条断言依然全绿'
+                )
+    assert not problems, '进度条轨道的 markup 结构不合契约：\n' + '\n'.join('  ' + p for p in problems)

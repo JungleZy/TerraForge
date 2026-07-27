@@ -473,12 +473,17 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 /* Progress Bar Styles */
-.progress-container {
-    margin-top: 1rem;
-}
-
+/* height 是 28px 而不是原来的 8px，也不再由 markup 的内联 style 提供 ——
+   这条是**承重**的，不是审美：`.progress__label` 的 chip 高 18px
+   (0.875rem 字 x line-height 1 + 上下各 0.125rem 内边距)，而 `.progress`
+   有 overflow: hidden。轨道矮于 18px 时，数字会被上下裁断。
+   改前那条 8px 只是让轨道变细线、无害，因为条里的文字跟着 .progress-bar 走；
+   覆盖层方案下它会直接毁掉数字。原来两处 markup 各自内联 `height: 28px`
+   把它盖住了，等于「功能正确性依赖每个未来的 .progress 都记得写内联高度」，
+   所以内联的那两处一并删掉，高度只此一个来源。
+   下限由 tests/test_css_contract.py::test_every_progress_height_fits_the_label 守住。 */
 .progress {
-    height: 8px;
+    height: 28px;
     border-radius: 999px;
     background: var(--color-bg-tertiary);
     overflow: hidden;
@@ -489,8 +494,10 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     position: relative;
 }
 
+/* 只改圆角，不再改高度：原来的 `height: 22px` 同样被 markup 的内联
+   `height: 28px` 压掉，从来没生效过；现在基础规则就是 28px，重复声明一遍
+   只会变成第二个「随时可能与 chip 高度打架」的来源。 */
 .modal .progress {
-    height: 22px;
     border-radius: var(--radius-sm);
 }
 
@@ -579,48 +586,14 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-neutral) !important;
 }
 
-/* Zoom Progress Styles */
-.zoom-progress {
-    margin-top: 1.5rem;
-}
-
-.zoom-level {
-    display: flex;
-    align-items: center;
-    margin-bottom: 0.75rem;
-    padding: 0.75rem;
-    background: var(--color-bg-tertiary);
-    border-radius: 8px;
-    border: 1px solid var(--color-border);
-    transition: all 0.3s ease;
-}
-
-.zoom-level:hover {
-    background: var(--color-accent-muted);
-    border-color: var(--color-accent);
-}
-
-.zoom-level-label {
-    min-width: 90px;
-    font-weight: 700;
-    font-family: var(--font-mono);
-    color: var(--color-accent-hover);
-    font-size: 0.9rem;
-}
-
-.zoom-level .progress {
-    flex: 1;
-    margin: 0 1rem;
-    height: 22px;
-}
-
-.zoom-level-stats {
-    min-width: 130px;
-    text-align: right;
-    font-size: 0.85rem;
-    font-family: var(--font-mono);
-    color: var(--color-text-secondary);
-}
+/* 这里原本是一整块 `.zoom-progress` / `.zoom-level` / `.zoom-level-label` /
+   `.zoom-level .progress` / `.zoom-level-stats` / `.zoom-level:hover`，
+   连同上面的 `.progress-container` 一起删掉了：全仓 grep（static/js + templates）
+   确认这些 class 一处 HTML 都没有，是零引用的死规则。
+   删而不是留，是因为其中的 `.zoom-level .progress { height: 22px }` 属于
+   上面刚说清楚的那类雷 —— 一条矮于 chip 的 .progress 高度覆盖，
+   哪天有人照着这块 CSS 搭出缩放级别面板，数字就会被上下裁断。
+   要重建这块 UI 的话，从 28px 的基础高度重新起，别复活 22px。 */
 
 /* Config Section Styles */
 .config-section {
