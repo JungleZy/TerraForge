@@ -247,6 +247,44 @@ def test_important_count_under_control():
                复用早就存在的 `.progress-bar.bg-info`，新增 0 条。若当初按
                计划映射成 'primary'，这里就要多写一条、多占 1 处。）
       = 68 处（Task 5 后实测的真实值）
+      + 5 处 / - 5 处：**A4 / Task 9（Leaflet 控件主题化）**，净 0，登记如下——
+
+        新增 5 处，全部在 style.css 的 Leaflet 段：
+          1. `.leaflet-bar, .leaflet-draw-toolbar { background-color }`
+          2. `.leaflet-bar, .leaflet-draw-toolbar { border }`
+          3. `.leaflet-bar, .leaflet-draw-toolbar { box-shadow }`
+          4. `.leaflet-control-attribution { background-color }`
+          5. `.leaflet-draw-tooltip { background-color }`
+
+        压的是谁、为什么非 !important 不可：
+          #1 #4 #5 压的是**本文件自己**的兜底重置
+             `div:not(.card):not(...)...{background:transparent}`，特异度 (0,11,1)。
+             这三个 Leaflet 元素都是 <div> 且不在那串 :not() 白名单里，
+             改前 CDP 实测三者的 computed background-color 全是 rgba(0,0,0,0)。
+             不用 !important 的唯一替代是往白名单里再塞三个类 —— 那是在给
+             已知的结构债继续加码，明确不做（见
+             test_leaflet_div_controls_survive_the_blanket_div_reset）。
+          #4 还要额外压 leaflet.css 的
+             `.leaflet-container .leaflet-control-attribution{background:rgba(255,255,255,.8)}` (0,2,0)。
+          #2 #3 压的是 leaflet.css 的 `.leaflet-touch .leaflet-bar{border:2px solid rgba(0,0,0,.2)}`
+             和 `.leaflet-touch .leaflet-bar{box-shadow:none}`，都是 (0,2,0)，
+             我们的 `.leaflet-bar` (0,1,0) 赢不了。`.leaflet-touch` 在带触摸屏的
+             设备上是常态（headless Chrome 实测也带这个类），不是边角情况。
+
+        删除 5 处（原 `.leaflet-control-zoom` 覆盖块整条删掉）：
+             `.leaflet-control-zoom a { background / border / color }` 3 处
+           + `.leaflet-control-zoom a:hover { background / border-color }` 2 处。
+           缩放控件本身就是 `.leaflet-bar`，新的统一规则已经覆盖它；其中
+           background / color 那 3 条在新规则之后是**纯死代码**（同特异度、
+           同为 important，后者胜）。history 页（无 #map 滤镜）已 CDP 复核外观正常。
+
+        另外登记一个「本可以加、但选择不加」的决定：打在按钮 <a> 上的规则
+        （background-color / color / hover / disabled）**一条 !important 都没用**，
+        靠的是同特异度 + style.css 排在 leaflet.css 之后。这个前提由
+        test_style_css_is_the_last_stylesheet 钉住 —— 顺序被改动时是测试变红，
+        而不是界面静默漏白。按简报预估这里本来要花掉约 13 处额度。
+
+      = 68 处（Task 9 后实测，与 Task 5 后持平）
       + 3 处余量：留给后续任务里个别确实必须压 Bootstrap 的新规则
       = 71
 
@@ -260,11 +298,15 @@ def test_important_count_under_control():
       抬升本身不是失败，**悄悄抬升**才是。
 
     已知的计划内新增（这就是上界不能设死的原因）：
-      - Leaflet 控件主题化：约 13 处。Leaflet 自带样式的选择器特异度更高
-        （如 `.leaflet-touch .leaflet-bar a`），同名属性下我们赢不了。
+      - ~~Leaflet 控件主题化：约 13 处~~ —— **已完成，实测只用了 5 处，
+        且同时删掉 5 处死规则，净 0**。预估偏高的原因：那 13 处是按「每条
+        Leaflet 覆盖都要压高特异度选择器」估的，实际上只有 <div> 容器
+        （被本文件的 div 兜底重置压）和 `.leaflet-touch .leaflet-bar`
+        （border / box-shadow）两类真的赢不了；打在 <a> 上的规则同特异度、
+        style.css 又排在 leaflet.css 之后，靠源码顺序就够了。
       - 动画降噪的 prefers-reduced-motion 重置块：约 4 处（这是 W3C 推荐写法）。
       - 进度条 / 滚动条覆盖：约 3 处。
-    合计约 20 处，届时上界会被抬到 86 上下。**这不代表清理白做了** —— Task 2/3
+    余下合计约 7 处，届时上界会被抬到 75 上下。**这不代表清理白做了** —— Task 2/3
     清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
     两者性质不同。
 
@@ -279,7 +321,8 @@ def test_important_count_under_control():
     count = css.count('!important')
     assert count <= 71, (
         f'!important 声明有 {count} 处，应 <= 71（Task 2 前 92 → Task 2 后 67 → '
-        'Task 3 后 66 → Task 5 +2 条进度条覆盖后实测 68，余量 3）'
+        'Task 3 后 66 → Task 5 +2 条进度条覆盖后实测 68 → '
+        'Task 9 Leaflet +5 / -5 净 0，仍是 68，余量 3）'
     )
 
 
@@ -2006,4 +2049,519 @@ def test_color_picker_swatch_is_big_enough_to_see():
         f'（外框 {px["width"]:g}px - 左右内边距 {px["padding-left"]:g}/'
         f'{px["padding-right"]:g}px - 两条 {border:g}px 边框）—— 色块太小，'
         '看不出选的是什么颜色'
+    )
+
+
+# --------------------------------------------------------------------------
+# A4 / Task 9：Leaflet 控件主题化 + 绘制提示汉化
+#
+# 本节守三个「改完看着对、浏览器里是错的」的坑，每一条都对应一次 CDP 实测：
+#   坑 1  background 简写 → 雪碧图被一起重置 → 三个没有图标的空白按钮
+#   坑 2  给 <a> 同时设深色底和 filter: invert(1) → 两者抵消 → 净效果为零
+#   坑 3  .leaflet-* 容器是 <div>，会被 style.css 的兜底重置压成透明
+# --------------------------------------------------------------------------
+
+# 绘制工具条按钮 <a> 上的雪碧图（leaflet.draw 1.0.4）：
+#   .leaflet-draw-toolbar a { background-image: url(images/spritesheet.svg);
+#                             background-repeat: no-repeat;
+#                             background-size: 300px 30px; }
+#   .leaflet-draw-toolbar .leaflet-draw-draw-rectangle { background-position: -62px -2px }
+# 三个图标全靠 background-position 在同一张图上取不同格子。
+_SPRITE_BUTTON_CLASSES = (
+    'leaflet-draw-draw-rectangle',
+    'leaflet-draw-edit-edit',
+    'leaflet-draw-edit-remove',
+)
+# 按钮 <a> 的祖先/自身身上的类。leaflet.draw 1.0.4 建工具条时写死的是
+# `L.DomUtil.create("div", "leaflet-draw-toolbar leaflet-bar")`，两个类在同一个 div 上。
+_TOOLBAR_CONTAINER_CLASSES = ('leaflet-bar', 'leaflet-draw-toolbar')
+
+
+def _matches_sprite_button(part):
+    """这一支选择器会不会命中带雪碧图的绘制按钮 <a>？
+
+    两种命中方式：
+      1. 直接点名按钮类（`.leaflet-draw-edit-remove`）
+      2. 后代选择器最后一节是 `a`，且前面出现过工具条容器类
+         （`.leaflet-bar a:hover` / `.leaflet-draw-toolbar a.leaflet-disabled`）
+
+    只查「`.leaflet-draw-toolbar a`」这一种字面写法是不够的：`.leaflet-bar a`
+    同样命中这三个按钮（两个类在同一个 div 上），在它身上写 background 简写
+    照样把图标清光。
+    """
+    if any(c in part for c in _SPRITE_BUTTON_CLASSES):
+        return True
+    compounds = part.split()
+    if len(compounds) < 2:
+        return False
+    last = compounds[-1]
+    # 末节必须是 a（允许挂类和伪类：a、a:hover、a.leaflet-disabled:hover）
+    if not re.fullmatch(r'a(?:[.:][\w-]+(?:\([^)]*\))?)*', last):
+        return False
+    ancestors = ' '.join(compounds[:-1])
+    return any(c in ancestors for c in _TOOLBAR_CONTAINER_CLASSES)
+
+
+def _sprite_button_rules(css):
+    """全部可能命中绘制按钮 <a> 的规则，含 @media 内、伪类、分组写法。"""
+    return [
+        (part, body)
+        for sel, body in _rules(css)
+        for part in _selector_parts(_norm_selector(sel))
+        if _matches_sprite_button(part)
+    ]
+
+
+# 与 _ARROW_KILLING_IMAGE_VALUES 同理：这些值的计算值都是 none，图标都会消失。
+_ICON_KILLING_IMAGE_VALUES = _ARROW_KILLING_IMAGE_VALUES
+
+
+def test_leaflet_draw_buttons_never_use_background_shorthand():
+    """坑 1：命中绘制按钮 <a> 的规则不许用 `background:` 简写，也不许把
+    `background-image` 置成 none 等价物。
+
+    `background` 是简写，写一次会把 background-image / -position / -repeat /
+    -size / -clip 全部重置成初始值。leaflet.draw 的矩形 / 编辑 / 垃圾桶三个
+    图标全靠这几个子属性从同一张 spritesheet.svg 上取格子画出来，简写一写
+    就是**三个没有图标的空白按钮**。
+
+    这不是假想：C1/Task 4 的整个任务就是在修同一类问题——`background` 简写
+    把 Bootstrap select 的箭头 SVG 清掉了。本条是同一契约在 Leaflet 上的复制。
+
+    变异实验（报告里有输出）：把 style.css 里
+        .leaflet-bar a, .leaflet-bar a.leaflet-disabled { background-color: transparent }
+    改成 `background: transparent`，本条立刻变红；而只看 computed
+    `backgroundImage !== "none"` 的写法会**通过**——因为简写后的计算值是
+    `none`，字符串比较是过了，但屏幕上图标已经没了。所以这里查的是源码形态。
+    """
+    rules = _sprite_button_rules(_css())
+    assert rules, (
+        '一条命中绘制按钮 <a> 的规则都没匹配到——选择器写法变了，本测试已失效'
+    )
+    offenders = []
+    for sel, body in rules:
+        decls = _decl_map(body)
+        if 'background' in decls:
+            offenders.append(
+                f'{sel} {{ background: {decls["background"]} }}  ← 简写会连 spritesheet 一起重置'
+            )
+        img = decls.get('background-image')
+        if img is not None:
+            value = _IMPORTANT_RE.sub('', img).strip().lower()
+            if value in _ICON_KILLING_IMAGE_VALUES:
+                offenders.append(
+                    f'{sel} {{ background-image: {img} }}  ← 计算值为 none，直接去掉了图标'
+                )
+    assert not offenders, (
+        '绘制工具条的三个图标会变成空白按钮（矩形 / 编辑 / 垃圾桶）。\n'
+        '请改用 background-color，只覆盖颜色、把 background-image 留给 leaflet.draw：\n'
+        + '\n'.join('  ' + o for o in offenders)
+    )
+
+
+def _transparent(value):
+    """这个 background-color 的值等价于「透明」吗？"""
+    v = _IMPORTANT_RE.sub('', value or '').strip().lower()
+    if v in ('transparent', 'initial', 'unset', 'revert', 'revert-layer'):
+        return True
+    m = re.fullmatch(r'rgba?\(\s*[\d.]+[\s,]+[\d.]+[\s,]+[\d.]+\s*[,/]\s*0*(?:\.0+)?\s*\)', v)
+    return bool(m)
+
+
+def test_leaflet_draw_button_is_transparent_where_it_is_inverted():
+    """坑 2：戴着 `filter: invert(...)` 的那个元素，静息态背景必须是透明的。
+
+    雪碧图是深灰 (#464646) 画在透明底上的，为**白底**按钮设计。深色界面上
+    要么整张图反色、要么图标看不见。反色只能对元素整体生效，所以设计是：
+    深色底放在 `.leaflet-bar` 容器上，`<a>` 自己保持透明，filter 就只作用在
+    图标上。
+
+    如果给 `<a>` **同时**设深色背景和 invert(1)，深色背景会被一起反色成浅色，
+    净效果等于什么都没改——按钮还是浅底，只是图标从深灰变成了浅灰（更糟）。
+
+    本条断言：
+      (a) 确实有规则给绘制按钮 <a> 上了 invert 滤镜；
+      (b) 所有命中该 <a> 的**静息态**（不带 :hover/:focus/:active）规则里，
+          background-color 一律是透明等价物；
+      (c) 容器 (.leaflet-bar / .leaflet-draw-toolbar) 反过来必须有不透明背景。
+          少了 (c)，把 (b) 做到极致的结果是「按钮透明、容器也透明」——
+          断言全绿而界面上根本没有深色工具条。
+    """
+    css = _css()
+    button_rules = _sprite_button_rules(css)
+
+    inverted = [
+        (sel, body) for sel, body in button_rules
+        if 'invert(' in (_decl_map(body).get('filter') or '')
+    ]
+    assert inverted, (
+        '没有任何规则给绘制按钮上 filter: invert(...)——'
+        '深灰雪碧图在深色底上会看不见，或者本测试已失效'
+    )
+
+    opaque = []
+    for sel, body in button_rules:
+        if re.search(r':(hover|focus|active|focus-visible|focus-within)\b', sel):
+            continue
+        bg = _decl_map(body).get('background-color')
+        if bg is not None and not _transparent(bg):
+            opaque.append(f'{sel} {{ background-color: {bg} }}')
+    assert not opaque, (
+        '绘制按钮 <a> 同时有 filter: invert(1) 和不透明背景色，两者互相抵消、净效果为零。\n'
+        '深色底应该放在 .leaflet-bar 容器上，<a> 保持 transparent：\n'
+        + '\n'.join('  ' + o for o in opaque)
+    )
+
+    container = [
+        (part, body) for sel, body in _rules(css)
+        for part in _selector_parts(_norm_selector(sel))
+        if re.fullmatch(r'\.(?:%s)' % '|'.join(_TOOLBAR_CONTAINER_CLASSES), part)
+        and not _transparent(_decl_map(body).get('background-color') or 'transparent')
+    ]
+    assert container, (
+        '.leaflet-bar / .leaflet-draw-toolbar 容器没有任何不透明背景色。\n'
+        '按钮 <a> 是透明的，底色全靠容器——容器一没背景，工具条在深色地图上就是「隐形」的。'
+    )
+
+
+# 这四个 Leaflet 元素都是 <div>：
+#   .leaflet-bar / .leaflet-draw-toolbar  工具条容器（同一个 div 上的两个类）
+#   .leaflet-control-attribution          右下角出处标注
+#   .leaflet-draw-tooltip                 跟随鼠标的绘制提示条
+# 它们都会被 style.css 的兜底重置 `div:not(...)...{background:transparent}` 命中。
+_LEAFLET_DIV_CONTROLS = (
+    'leaflet-bar',
+    'leaflet-draw-toolbar',
+    'leaflet-control-attribution',
+    'leaflet-draw-tooltip',
+)
+
+
+def test_leaflet_div_controls_survive_the_blanket_div_reset():
+    """坑 3：这四个 Leaflet 容器的背景色必须带 !important，且不许进白名单。
+
+    style.css 里有一条兜底重置
+        div:not(.card):not(.modal-content):not(.alert)... { background: transparent }
+    特异度 (0,11,1)。上面四个类全是 <div> 且都不在那串 :not() 白名单里，所以
+    任何 `.leaflet-bar { background-color: X }`(0,1,0) 都打不过它。
+
+    实测证据（Chrome 148，CDP，改前）：
+        .leaflet-bar                  backgroundColor = rgba(0, 0, 0, 0)
+        .leaflet-control-attribution  backgroundColor = rgba(0, 0, 0, 0)
+        .leaflet-draw-tooltip         backgroundColor = rgba(0, 0, 0, 0)
+    三者的背景**在源码里写着、在浏览器里全是透明**。绘制提示条尤其严重：
+    白字直接飘在地图瓦片上。而只读 CSS 源码算色值的断言对此完全绿灯。
+
+    本条同时钉住「不要用加白名单来解决」：白名单模式本身是待处理的结构债，
+    往里塞 Leaflet 类只会让那串 :not() 继续膨胀。这里用 !important。
+
+    覆盖范围（诚实说明）：兜底重置若被整条删掉，本条第一段就没有对象可查、
+    自然通过——那时 !important 也确实不再必要，不算静默失效。第二段
+    （必须带 !important）无条件执行。
+    """
+    css = _css()
+    blankets = [
+        sel for sel, body, at_ctx in _rules_ctx(css)
+        if not at_ctx
+        for part in _selector_parts(sel)
+        if _BLANKET_DIV_RESET.fullmatch(part)
+        and 'transparent' in (_decl_map(body).get('background') or
+                              _decl_map(body).get('background-color') or '')
+    ]
+    leaked = []
+    for sel in blankets:
+        excluded = set(re.findall(r':not\(\s*([^)]*?)\s*\)', sel))
+        for cls in _LEAFLET_DIV_CONTROLS:
+            if '.' + cls in excluded:
+                leaked.append(f'.{cls} 被塞进了 {sel[:50]}... 的 :not() 白名单')
+    assert not leaked, (
+        '不要靠扩张 div:not(...) 白名单来给 Leaflet 控件上背景——那串白名单本身是结构债。\n'
+        '用 !important：\n' + '\n'.join('  ' + p for p in leaked)
+    )
+
+    declared = {}
+    for sel, body in _rules(css):
+        for part in _selector_parts(_norm_selector(sel)):
+            for cls in _LEAFLET_DIV_CONTROLS:
+                # 只认「选择器整支就是这一个类」的规则，`.leaflet-bar a` 不算
+                if part == '.' + cls:
+                    bg = _decl_map(body).get('background-color')
+                    if bg is not None:
+                        declared.setdefault(cls, []).append((part, bg))
+
+    problems = []
+    for cls in _LEAFLET_DIV_CONTROLS:
+        hits = declared.get(cls, [])
+        if not hits:
+            # .leaflet-draw-toolbar 与 .leaflet-bar 在同一个 div 上，
+            # 由 .leaflet-bar 那条覆盖即可，不强求两个类各写一遍。
+            if cls == 'leaflet-draw-toolbar' and declared.get('leaflet-bar'):
+                continue
+            problems.append(f'.{cls} 没有任何 background-color 声明——它的底色是兜底重置给的透明')
+            continue
+        if not any(_IMPORTANT_RE.search(bg) for _part, bg in hits):
+            problems.append(
+                f'.{cls} 的 background-color 没带 !important：'
+                + '、'.join(f'{p} {{ background-color: {b} }}' for p, b in hits)
+            )
+    assert not problems, (
+        'Leaflet 控件的背景色会被 div 兜底重置 (0,11,1) 压成透明（源码里有、浏览器里没有）：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
+# --------------------------------------------------------------------------
+# 汉化：L.drawLocal 的键名不许写错
+# --------------------------------------------------------------------------
+
+# leaflet.draw 1.0.4 的 L.drawLocal 全部叶子键路径（38 条）。
+# 生成方式：把 CDN 上 leaflet.draw.js 里的 `L.drawLocal={...}` 对象字面量
+# 括号配对切出来、转成 JSON、递归收集叶子路径。不是手抄的。
+#
+# 为什么需要这张快照：给一个不存在的属性赋值在 JS 里完全合法，
+# `L.drawLocal.edit.toolbar.buttons.editDisable = '...'`（少个 d）不会报错、
+# 不会有警告，只会**静默不生效**——按钮提示还是英文，而所有测试全绿。
+_LEAFLET_DRAW_LOCAL_KEYS_1_0_4 = frozenset({
+    'L.drawLocal.draw.handlers.circle.radius',
+    'L.drawLocal.draw.handlers.circle.tooltip.start',
+    'L.drawLocal.draw.handlers.circlemarker.tooltip.start',
+    'L.drawLocal.draw.handlers.marker.tooltip.start',
+    'L.drawLocal.draw.handlers.polygon.tooltip.cont',
+    'L.drawLocal.draw.handlers.polygon.tooltip.end',
+    'L.drawLocal.draw.handlers.polygon.tooltip.start',
+    'L.drawLocal.draw.handlers.polyline.error',
+    'L.drawLocal.draw.handlers.polyline.tooltip.cont',
+    'L.drawLocal.draw.handlers.polyline.tooltip.end',
+    'L.drawLocal.draw.handlers.polyline.tooltip.start',
+    'L.drawLocal.draw.handlers.rectangle.tooltip.start',
+    'L.drawLocal.draw.handlers.simpleshape.tooltip.end',
+    'L.drawLocal.draw.toolbar.actions.text',
+    'L.drawLocal.draw.toolbar.actions.title',
+    'L.drawLocal.draw.toolbar.buttons.circle',
+    'L.drawLocal.draw.toolbar.buttons.circlemarker',
+    'L.drawLocal.draw.toolbar.buttons.marker',
+    'L.drawLocal.draw.toolbar.buttons.polygon',
+    'L.drawLocal.draw.toolbar.buttons.polyline',
+    'L.drawLocal.draw.toolbar.buttons.rectangle',
+    'L.drawLocal.draw.toolbar.finish.text',
+    'L.drawLocal.draw.toolbar.finish.title',
+    'L.drawLocal.draw.toolbar.undo.text',
+    'L.drawLocal.draw.toolbar.undo.title',
+    'L.drawLocal.edit.handlers.edit.tooltip.subtext',
+    'L.drawLocal.edit.handlers.edit.tooltip.text',
+    'L.drawLocal.edit.handlers.remove.tooltip.text',
+    'L.drawLocal.edit.toolbar.actions.cancel.text',
+    'L.drawLocal.edit.toolbar.actions.cancel.title',
+    'L.drawLocal.edit.toolbar.actions.clearAll.text',
+    'L.drawLocal.edit.toolbar.actions.clearAll.title',
+    'L.drawLocal.edit.toolbar.actions.save.text',
+    'L.drawLocal.edit.toolbar.actions.save.title',
+    'L.drawLocal.edit.toolbar.buttons.edit',
+    'L.drawLocal.edit.toolbar.buttons.editDisabled',
+    'L.drawLocal.edit.toolbar.buttons.remove',
+    'L.drawLocal.edit.toolbar.buttons.removeDisabled',
+})
+
+# 本项目 UI 上真正会出现的那些键（map.js 只启用了 rectangle）。
+# 少翻其中任何一条，界面上就有一处中英混排。
+_REQUIRED_LOCALE_KEYS = frozenset({
+    # 绘制：按钮标题、跟随鼠标的提示条、绘制中的「取消」
+    'L.drawLocal.draw.toolbar.buttons.rectangle',
+    'L.drawLocal.draw.handlers.rectangle.tooltip.start',
+    'L.drawLocal.draw.handlers.simpleshape.tooltip.end',
+    'L.drawLocal.draw.toolbar.actions.title',
+    'L.drawLocal.draw.toolbar.actions.text',
+    # 编辑 / 删除：按钮标题（含**首屏默认的禁用态**标题）
+    'L.drawLocal.edit.toolbar.buttons.edit',
+    'L.drawLocal.edit.toolbar.buttons.editDisabled',
+    'L.drawLocal.edit.toolbar.buttons.remove',
+    'L.drawLocal.edit.toolbar.buttons.removeDisabled',
+    # 编辑 / 删除模式弹出的操作条（删除模式实测是「保存 / 取消 / 全部清除」三个）
+    'L.drawLocal.edit.toolbar.actions.save.title',
+    'L.drawLocal.edit.toolbar.actions.save.text',
+    'L.drawLocal.edit.toolbar.actions.cancel.title',
+    'L.drawLocal.edit.toolbar.actions.cancel.text',
+    'L.drawLocal.edit.toolbar.actions.clearAll.title',
+    'L.drawLocal.edit.toolbar.actions.clearAll.text',
+    # 编辑 / 删除模式的提示条
+    'L.drawLocal.edit.handlers.edit.tooltip.text',
+    'L.drawLocal.edit.handlers.edit.tooltip.subtext',
+    'L.drawLocal.edit.handlers.remove.tooltip.text',
+})
+
+_CJK_RE = re.compile(r'[一-鿿]')
+
+# `L.drawLocal.a.b.c = '中文';`
+_DRAW_LOCAL_ASSIGN_RE = re.compile(
+    r"(L\.drawLocal(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*(['\"])(.*?)\2"
+)
+
+
+def _draw_locale_assignments():
+    """map.js 里 `L.drawLocal.x.y.z = '...'` 的 {键路径: 文案}（已剥注释）。"""
+    src = _js('map.js')
+    # 先剥掉注释，否则示例代码 / 说明文字里的键路径会被当成真赋值
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    src = re.sub(r'(?m)//.*$', '', src)
+    return {m.group(1): m.group(3) for m in _DRAW_LOCAL_ASSIGN_RE.finditer(src)}
+
+
+def test_draw_locale_keys_exist_in_pinned_build():
+    """map.js 写的每个 L.drawLocal 键，在 leaflet.draw 1.0.4 里都必须真实存在。
+
+    这是本次汉化最容易翻车的地方：**键名写错不报错**。
+    `L.drawLocal.edit.toolbar.buttons.removeDisable = '...'`（少个 d）是完全
+    合法的 JS——给对象加了个没人读的新属性而已。按钮提示照旧是
+    "No layers to delete"，控制台一声不吭，人工不逐个 hover 根本发现不了。
+
+    所以这里拿 _LEAFLET_DRAW_LOCAL_KEYS_1_0_4 这份从 CDN 构建里机械提取的
+    键路径快照做白名单校验。配套的
+    test_leaflet_draw_build_matches_the_locale_key_snapshot 保证 base.html
+    引的还是这个版本，快照不会悄悄过期。
+    """
+    assigned = _draw_locale_assignments()
+    assert assigned, (
+        "map.js 里解析不到任何 `L.drawLocal.x.y = '...'` 赋值 —— "
+        '要么汉化被删了，要么改成了别名写法（`const d = L.drawLocal.draw`），'
+        '后者本测试静态看不见，请写全路径'
+    )
+    bogus = sorted(k for k in assigned if k not in _LEAFLET_DRAW_LOCAL_KEYS_1_0_4)
+    assert not bogus, (
+        'leaflet.draw 1.0.4 里没有这些键，赋值不会报错、只会静默不生效：\n'
+        + '\n'.join(f'  {k} = {assigned[k]!r}' for k in bogus)
+    )
+
+
+def test_draw_locale_covers_every_user_visible_string():
+    """UI 上真会出现的那些文案必须都翻了，而且值确实是中文。
+
+    两段缺一不可：
+      - 只查「键在不在」：把值改成 `= 'Draw a rectangle'` 照样绿，等于没翻。
+      - 只查「有中文」：漏翻 editDisabled / removeDisabled 这种**首屏默认态**
+        的键，剩下的中文照样让测试绿，而用户打开页面看到的两个按钮提示是英文。
+    """
+    assigned = _draw_locale_assignments()
+    missing = sorted(_REQUIRED_LOCALE_KEYS - set(assigned))
+    assert not missing, (
+        '这些界面上会出现的文案没有汉化（页面是 lang="zh-CN"）：\n'
+        + '\n'.join('  ' + k for k in missing)
+    )
+    not_chinese = sorted(
+        f'{k} = {v!r}' for k, v in assigned.items() if not _CJK_RE.search(v)
+    )
+    assert not not_chinese, (
+        'L.drawLocal 这些键赋的不是中文，等于没汉化：\n'
+        + '\n'.join('  ' + s for s in not_chinese)
+    )
+
+
+def test_draw_locale_is_applied_before_the_control_is_constructed():
+    """汉化必须在 `new L.Control.Draw(...)` **之前**跑。
+
+    Leaflet.draw 的按钮 title 是在 Toolbar.addToolbar() 里一次性从
+    L.drawLocal 读走、写进 DOM 的。控件建完之后再改 L.drawLocal，
+    对已经渲染出来的按钮没有任何影响——顺序写反了，测试若只查
+    「赋值语句存在」依然全绿，而界面上按钮提示仍是英文。
+    """
+    body = _js_function_body(_js('map.js'), 'initMap')
+    # 必须先剥注释再定位：initMap 里那句「必须在 new L.Control.Draw 之前」的
+    # 说明注释本身就含这段字面量，不剥的话 find() 命中的是注释、位置比真正的
+    # 构造调用还靠前，断言会**假红**。（本条第一次跑就是这么红的。）
+    body = re.sub(r'/\*.*?\*/', '', body, flags=re.S)
+    body = re.sub(r'(?m)//.*$', '', body)
+    call = body.find('localizeDrawControl(')
+    ctor = body.find('new L.Control.Draw')
+    assert call != -1, (
+        'initMap 里没有调用 localizeDrawControl() —— 汉化函数写了但没人调，'
+        '所有 L.drawLocal 断言都会绿，界面照旧是英文'
+    )
+    assert ctor != -1, (
+        'initMap 里找不到 `new L.Control.Draw` —— 本测试已失效，请更新'
+    )
+    assert call < ctor, (
+        f'localizeDrawControl() 在 initMap 里的位置（{call}）晚于 '
+        f'new L.Control.Draw（{ctor}）。按钮 title 是建控件时一次性读走的，'
+        '之后再改 L.drawLocal 不会回写 DOM。'
+    )
+
+
+# 键名快照是对着这个版本提取的。cdnjs 与 npm 两种 URL 写法都认。
+LEAFLET_DRAW_PINNED_VERSION = (1, 0, 4)
+_LEAFLET_DRAW_VERSION_RES = (
+    re.compile(r'leaflet[.-]?draw@(\d+)\.(\d+)\.(\d+)', re.I),
+    re.compile(r'/leaflet\.draw/(\d+)\.(\d+)\.(\d+)/', re.I),
+)
+
+
+def test_leaflet_draw_build_matches_the_locale_key_snapshot():
+    """base.html 引的 leaflet.draw 必须还是 1.0.4——键名快照才有效。
+
+    ⚠️ 这条是给上面两条汉化断言兜底的，**它们对版本漂移完全失明**：
+    把 base.html 的 1.0.4 换成任何重排过 L.drawLocal 结构的版本，
+    _LEAFLET_DRAW_LOCAL_KEYS_1_0_4 这份白名单立刻变成一张过期地图 ——
+    真正写错的键可能反而在白名单里、真正存在的键反而被判成 bogus，
+    而两条断言给出的红/绿都不再对应事实。
+
+    同样的理由，CSS 那边的坑 1 / 坑 2 也钉在这个版本上：
+    `background-image: url(images/spritesheet.svg)` + background-position
+    取格子、深灰 #464646 描边，都是 1.0.4 的实现细节。
+
+    只查声明的版本号，不联网核对 CDN 真的送了什么——与
+    test_bootstrap_build_is_new_enough_to_have_dark_theme 同一权衡。
+    """
+    urls = []
+    for name, attrs in _start_tags(_template('base.html')):
+        url = attrs.get('href') if name == 'link' else attrs.get('src') if name == 'script' else None
+        if url and 'leaflet' in url.lower() and 'draw' in url.lower():
+            urls.append((name, url))
+    assert urls, 'base.html 里找不到任何 leaflet.draw 资源引用 —— 本测试已失效'
+    problems = []
+    for name, url in urls:
+        found = None
+        for rx in _LEAFLET_DRAW_VERSION_RES:
+            m = rx.search(url)
+            if m:
+                found = tuple(int(g) for g in m.groups())
+                break
+        if found is None:
+            problems.append(f'<{name}> {url} 解析不出版本号')
+        elif found != LEAFLET_DRAW_PINNED_VERSION:
+            problems.append(
+                f'<{name}> {url} 是 {".".join(map(str, found))}，'
+                f'键名快照是对着 {".".join(map(str, LEAFLET_DRAW_PINNED_VERSION))} 提取的'
+            )
+    assert not problems, (
+        'leaflet.draw 版本与 _LEAFLET_DRAW_LOCAL_KEYS_1_0_4 快照对不上，'
+        '汉化断言的红绿都不再可信：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_style_css_is_the_last_stylesheet():
+    """style.css 必须排在所有第三方样式表之后。
+
+    为什么这条是必需的：本次 Leaflet 主题化里，**打在 <a> 上的那几条规则
+    刻意没有用 !important**——它们靠的是「同特异度、源码靠后者胜」赢过
+    leaflet.css。例如
+        leaflet.css     .leaflet-bar a.leaflet-disabled { background-color:#f4f4f4 }  (0,2,1)
+        style.css       .leaflet-bar a, .leaflet-bar a.leaflet-disabled { ...transparent } (0,2,1)
+    只要有人把 <link> 顺序调一下（或在 style.css 后面再插一张第三方表），
+    首屏那两个禁用按钮立刻变回 #f4f4f4 的白块，而所有只读源码的断言全绿。
+
+    比起给每条规则都加 !important，把顺序本身钉住更划算：
+    坏掉时是这条测试变红，而不是界面静默漏白。
+    """
+    sheets = [
+        attrs.get('href') or ''
+        for name, attrs in _start_tags(_template('base.html'))
+        if name == 'link' and (attrs.get('rel') or '').lower() == 'stylesheet'
+    ]
+    assert sheets, 'base.html 里解析不出任何 <link rel="stylesheet"> —— 本测试已失效'
+    own = [i for i, h in enumerate(sheets) if 'style.css' in h]
+    assert len(own) == 1, (
+        f'base.html 里有 {len(own)} 处引用 style.css，期望恰好 1 处 —— 本测试已失效'
+    )
+    after = [h for h in sheets[own[0] + 1:]]
+    assert not after, (
+        'style.css 后面还有别的样式表，Leaflet 覆盖规则（未用 !important 的那些）'
+        '会被它们压掉：\n' + '\n'.join('  ' + h for h in after)
     )

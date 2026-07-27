@@ -1419,18 +1419,155 @@ code {
     outline-offset: 2px;
 }
 
-/* Leaflet Control Styles Override
+/* ===========================================================================
+   Leaflet 控件主题化
    （不含 .leaflet-control-layers-toggle：代码里从未调用 L.control.layers，
-     那个 DOM 元素不存在） */
-.leaflet-control-zoom a {
-    background: var(--color-bg-secondary) !important;
+     那个 DOM 元素不存在）
+
+   改这一段之前必须知道的三条环境事实，全部是 CDP 实测得出、不是推断：
+
+   (1) **本文件 :142 的兜底重置会把这些控件压成透明。**
+       `div:not(.card):not(...)...{background:transparent}` 特异度 (0,11,1)。
+       .leaflet-bar / .leaflet-draw-toolbar / .leaflet-control-attribution /
+       .leaflet-draw-tooltip **全是 <div>**，且都不在那串 :not() 白名单里。
+       改前实测：三者的 computed background-color 都是 rgba(0, 0, 0, 0)。
+       所以凡是给它们设背景色，**必须带 !important**，否则源码看着对、
+       浏览器里是透明的。不要往 :142 那串白名单里加 Leaflet 类。
+
+   (2) **`#map` 上的 filter 会改掉这里写的每一个颜色。**
+       本文件 :288 有 `filter: brightness(0.9) contrast(1.1)`，它作用于整个
+       .leaflet-container —— 包括所有控件。所以这里写的不是屏幕上的最终颜色：
+       var(--color-bg-secondary) #15171c 过完滤镜实际渲染成 ≈ rgb(8,10,15)
+       （几乎等于 --color-bg-primary）。这是可接受的：控件因此比面板略深，
+       像浮在地图上的一块深色片。要对比度取数请以渲染值为准。
+
+   (3) **必须用 background-color，不能用 background 简写。**
+       leaflet.draw.css 用 `background-image:url(spritesheet.svg)` +
+       background-position 做雪碧图，`background` 简写会把它一并重置成 none，
+       结果是三个没有图标的空白按钮。（C1/Task 4 在 select 箭头上踩过同一个坑。）
+   =========================================================================== */
+
+/* 控件容器。.leaflet-control-zoom 与绘制工具条都是 .leaflet-bar，共用这一条。
+   .leaflet-draw-toolbar 与 .leaflet-bar 永远在同一个 <div> 上
+   （leaflet.draw 1.0.4: create("div", "leaflet-draw-toolbar leaflet-bar")），
+   这里两个类都写只是让按类名 grep 的人找得到，不是两个元素。 */
+.leaflet-bar,
+.leaflet-draw-toolbar {
+    /* !important #1：压本文件 :142 的 div 兜底重置 (0,11,1) */
+    background-color: var(--color-bg-secondary) !important;
+    /* !important #2/#3：压 leaflet.css 的
+       `.leaflet-touch .leaflet-bar{border:2px solid rgba(0,0,0,.2)}` 和
+       `.leaflet-touch .leaflet-bar{box-shadow:none}`，两条都是 (0,2,0)，
+       我们的 (0,1,0) 赢不了。.leaflet-touch 在带触摸屏的设备上是常态
+       （headless Chrome 实测也带这个类），不是边角情况。 */
     border: 1px solid var(--color-border) !important;
-    color: var(--color-text-primary) !important;
+    box-shadow: var(--shadow-md) !important;
 }
 
-.leaflet-control-zoom a:hover {
-    background: var(--color-bg-tertiary) !important;
-    border-color: var(--color-accent) !important;
+/* 按钮本体：底色交给容器，<a> 一律透明——这样下面那条 filter: invert(1)
+   只作用在雪碧图上。若在这里同时给深色背景和 invert，两者互相抵消，净效果为零。
+   选择器带上 `a.leaflet-disabled` 是为了压掉 leaflet.css 的
+   `.leaflet-bar a.leaflet-disabled{background-color:#f4f4f4}` (0,2,1) ——
+   那是首屏默认态（还没画选区时「编辑」「删除」就是 disabled），改前实测
+   两个按钮的底色是 rgb(244,244,244)，深色地图上两块刺眼白斑。
+   同特异度靠源码顺序取胜：base.html 里 style.css 排在 leaflet.css /
+   leaflet.draw.css 之后（由 test_style_css_is_the_last_stylesheet 钉住），
+   所以这里不需要 !important。 */
+.leaflet-bar a,
+.leaflet-bar a.leaflet-disabled {
+    background-color: transparent;
+}
+
+.leaflet-bar a {
+    color: var(--color-text-primary);
+    border-bottom-color: var(--color-border);
+}
+
+.leaflet-bar a:hover,
+.leaflet-bar a:focus {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* 雪碧图是深灰 (#464646) 画在透明底上的，为白底按钮设计。反色后得到浅色图标；
+   brightness(1.25) 把它推到 ≈ #e7e7e7，与 --color-text-primary(#e8eaed) 基本一致。
+
+   ⚠️ filter 作用于整个 <a>，连它自己的背景色和边框一起反色。所以本规则块里
+   **颜色值写的都是「反色前」的**：rgba(0,0,0,α) 渲染出来就是 rgba(255,255,255,α)。
+   rgba(0,0,0,0.07) ≡ --color-border，rgba(0,0,0,0.12) ≡ 上面那条 hover 高亮。 */
+.leaflet-draw-toolbar a {
+    filter: invert(1) brightness(1.25);
+    border-bottom-color: rgba(0, 0, 0, 0.07);
+}
+
+.leaflet-draw-toolbar a:hover,
+.leaflet-draw-toolbar a:focus {
+    background-color: rgba(0, 0, 0, 0.12);
+}
+
+/* 禁用态（首屏的「编辑」「删除」就是这个状态）。
+
+   为什么不能沿用上面那条 1.25：leaflet.draw 的雪碧图里两个禁用格子**用了两种
+   不同的灰**（实测 SVG：禁用「编辑」仍是 #464646，禁用「删除」是 #bbbbbb）。
+   同一条 filter 下反色后一个 13.8:1、一个 4.8:1 —— 前者亮得跟可用态一模一样，
+   看不出是禁用的。这里先用 brightness(4) 把两个格子都推到白（alpha 不受 filter
+   影响，边缘抗锯齿不会糊），再用 opacity 统一压暗，两个禁用图标才一致。 */
+.leaflet-draw-toolbar a.leaflet-disabled {
+    filter: invert(1) brightness(4);
+    opacity: 0.55;
+}
+
+.leaflet-bar a.leaflet-disabled,
+.leaflet-bar a.leaflet-disabled:hover {
+    background-color: transparent;
+    color: var(--color-text-muted);
+    cursor: default;
+}
+
+/* 绘制 / 编辑模式下弹出的操作条。它是 <ul class="leaflet-draw-actions"> 里的
+   <a>，不是 <div>，:142 的兜底重置管不到，所以这里不需要 !important。
+   改前实测底色是 leaflet.draw 出厂的 rgb(145,145,135) 橄榄灰。 */
+.leaflet-draw-actions a {
+    background-color: var(--color-bg-secondary);
+    border-left-color: var(--color-border);
+    color: var(--color-text-primary);
+}
+
+/* 只换底色的话，经 #map 那层 filter 压缩后实测只剩 7/9/11 的通道差，太弱；
+   文字同时转成强调色，悬停反馈才明确。 */
+.leaflet-draw-actions a:hover {
+    background-color: var(--color-bg-tertiary);
+    color: var(--color-accent-hover);
+}
+
+/* 绘制提示条。它是 popupPane 里的 <div>，同样被 :142 压成过透明 ——
+   改前实测 background-color = rgba(0, 0, 0, 0)，也就是白字直接飘在地图上，
+   遇到浅色瓦片基本看不清。这是本次修掉的一个既存缺陷，不只是配色调整。 */
+.leaflet-draw-tooltip {
+    /* !important #5：同 (1)，压 div 兜底重置 */
+    background-color: rgba(12, 13, 16, 0.92) !important;
+    border-color: var(--color-border);
+    color: var(--color-text-primary);
+}
+
+.leaflet-draw-tooltip:before {
+    border-right-color: rgba(12, 13, 16, 0.92);
+}
+
+.leaflet-draw-tooltip-subtext {
+    color: var(--color-text-secondary);
+}
+
+/* 右下角出处标注。改前实测 background-color = rgba(0,0,0,0)（被 :142 压掉）、
+   文字仍是 leaflet.css 的 #333 —— 深色地图上是**看不清**，不是简报说的「刺眼白底」。 */
+.leaflet-control-attribution {
+    /* !important #4：同 (1)，另外还要压 leaflet.css 的
+       `.leaflet-container .leaflet-control-attribution{background:rgba(255,255,255,.8)}` (0,2,0) */
+    background-color: rgba(12, 13, 16, 0.85) !important;
+    color: var(--color-text-secondary);
+}
+
+.leaflet-control-attribution a {
+    color: var(--color-accent-hover);
 }
 
 .leaflet-popup-content-wrapper {

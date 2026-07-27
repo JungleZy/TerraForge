@@ -2,6 +2,58 @@ let map;
 let drawnItems;
 let currentBounds = null;
 
+/**
+ * 汉化 Leaflet.draw 的按钮标题与提示条。
+ *
+ * 页面是 lang="zh-CN"，但 Leaflet.draw 1.0.4 的文案全部硬编码在
+ * L.drawLocal 里，出厂是英文。
+ *
+ * 两条约束：
+ * 1. **必须在 `new L.Control.Draw(...)` 之前调用。** 按钮的 title 是在
+ *    Toolbar.addToolbar() 里一次性读走的，控件建好之后再改 L.drawLocal
+ *    不会回写到已有的 DOM 上。
+ * 2. **键名写错不会报错，只会静默不生效**（给一个不存在的对象赋值属性是
+ *    合法 JS）。下面每个键都对着 CDN 上 leaflet.draw 1.0.4 的
+ *    L.drawLocal 原始定义逐条核对过；
+ *    tests/test_css_contract.py::test_draw_locale_keys_exist_in_pinned_build
+ *    钉住这份键名清单，防止后来改键时打错字。
+ *
+ * 只覆盖本项目真正会出现的文案：map.js 只启用了 rectangle，
+ * polyline / polygon / circle / marker 那几组以及 draw.toolbar.finish /
+ * draw.toolbar.undo（多点图形才用得到）在这里是不可达的，故意不翻。
+ */
+function localizeDrawControl() {
+    if (!window.L || !L.drawLocal) {
+        return false;
+    }
+    // 键路径一律写全 `L.drawLocal.x.y.z`，不用局部别名 —— 上面第 2 条说的
+    // 那条测试是**静态**解析这些路径的，走别名它就看不见了。
+    L.drawLocal.draw.toolbar.actions.title = '取消绘制';
+    L.drawLocal.draw.toolbar.actions.text = '取消';
+    L.drawLocal.draw.toolbar.buttons.rectangle = '绘制矩形选区';
+    L.drawLocal.draw.handlers.rectangle.tooltip.start = '按住并拖动鼠标绘制矩形';
+    L.drawLocal.draw.handlers.simpleshape.tooltip.end = '松开鼠标完成绘制';
+
+    L.drawLocal.edit.toolbar.actions.save.title = '保存修改';
+    L.drawLocal.edit.toolbar.actions.save.text = '保存';
+    L.drawLocal.edit.toolbar.actions.cancel.title = '取消编辑，放弃所有修改';
+    L.drawLocal.edit.toolbar.actions.cancel.text = '取消';
+    L.drawLocal.edit.toolbar.actions.clearAll.title = '清除所有选区';
+    L.drawLocal.edit.toolbar.actions.clearAll.text = '全部清除';
+
+    // editDisabled / removeDisabled 是**首屏默认态**的按钮提示（还没画选区时
+    // 「编辑」「删除」就是禁用的），漏了它们等于最常见的那个状态还是英文。
+    L.drawLocal.edit.toolbar.buttons.edit = '编辑选区';
+    L.drawLocal.edit.toolbar.buttons.editDisabled = '没有可编辑的选区';
+    L.drawLocal.edit.toolbar.buttons.remove = '删除选区';
+    L.drawLocal.edit.toolbar.buttons.removeDisabled = '没有可删除的选区';
+
+    L.drawLocal.edit.handlers.edit.tooltip.text = '拖动顶点或图形以修改选区';
+    L.drawLocal.edit.handlers.edit.tooltip.subtext = '点击「取消」放弃修改';
+    L.drawLocal.edit.handlers.remove.tooltip.text = '点击选区将其删除';
+    return true;
+}
+
 function initMap(config) {
     const centerLat = parseFloat(config.map_center_lat || 39.9);
     const centerLng = parseFloat(config.map_center_lng || 116.4);
@@ -15,6 +67,9 @@ function initMap(config) {
 
     drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
+
+    // 必须在 new L.Control.Draw 之前——按钮 title 是建控件时一次性读走的
+    localizeDrawControl();
 
     const drawControl = new L.Control.Draw({
         draw: {
