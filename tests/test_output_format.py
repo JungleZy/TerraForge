@@ -5,6 +5,7 @@ OutputFormat enum and semantics tests
 import ast
 import os
 import sys
+from html.parser import HTMLParser
 
 import pytest
 
@@ -147,3 +148,116 @@ def test_output_format_actions_match_contract(fmt, expected):
     assert actions == expected, (
         f"output_format={fmt!r} 实际会执行 {sorted(actions)},契约要求 {sorted(expected)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 前后端契约:index.html 的 #outputFormat 下拉里每个 value,后端枚举都必须认
+#
+# image_only 这个 bug 的根源就是前端加了选项、后端枚举没跟上。static/js/map.js
+# 直接把 document.getElementById('outputFormat').value 当 output_format 提交,
+# 所以「下拉里出现但枚举不认」= 用户一选就崩。
+#
+# 用 stdlib 的 HTMLParser 真解析,而不是正则匹配标签文本:属性顺序、引号风格、
+# 多余属性、跨行写法都不会让这个测试失效或误判。
+#
+# 契约是单向的:只要求「下拉 ⊆ 枚举」。反向不成立 —— png/jpg 是遗留值,
+# 故意不出现在 UI 上,所以不断言「枚举里的值都得在下拉里」。
+# ---------------------------------------------------------------------------
+
+INDEX_HTML_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'templates', 'index.html',
+)
+
+
+class _SelectOptionCollector(HTMLParser):
+    """收集指定 id 的 <select> 下所有 <option> 的 value(附行号,便于定位)
+
+    values 里的 value 为 None 表示该 <option> 没写 value 属性。
+    """
+
+    def __init__(self, select_id):
+        super().__init__(convert_charrefs=True)
+        self.select_id = select_id
+        self.found_select = False
+        self.values = []          # [(value_or_None, lineno)]
+        self._inside = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'select':
+            # <select> 不能嵌套,所以遇到任何 select 开标签都重新判定
+            self._inside = dict(attrs).get('id') == self.select_id
+            self.found_select = self.found_select or self._inside
+        elif tag == 'option' and self._inside:
+            self.values.append((dict(attrs).get('value'), self.getpos()[0]))
+
+    def handle_endtag(self, tag):
+        if tag == 'select':
+            self._inside = False
+
+
+def _collect_options(html, select_id):
+    collector = _SelectOptionCollector(select_id)
+    collector.feed(html)
+    collector.close()
+    return collector
+
+
+def test_every_option_in_index_html_is_a_valid_output_format():
+    """index.html 的 #outputFormat 下拉里每个 value,OutputFormat 都必须认"""
+    with open(INDEX_HTML_PATH, encoding='utf-8') as f:
+        html = f.read()
+
+    collector = _collect_options(html, 'outputFormat')
+
+    assert collector.found_select, (
+        'templates/index.html 里找不到 <select id="outputFormat">。'
+        '如果下拉框改名或挪走了,这个契约测试必须同步改,否则它就白站岗了'
+    )
+    assert collector.values, (
+        '#outputFormat 下拉里一个 <option> 都没有。'
+        '如果选项改成了 JS 动态注入,这个测试已经守不住契约了,'
+        '必须改成从 JS 取值或直接打 /api/tasks 接口验证'
+    )
+
+    rejected = []
+    for value, lineno in collector.values:
+        if value is None:
+            rejected.append(
+                f'index.html:{lineno} 的 <option> 没有 value 属性,'
+                '提交上来会是 option 的文字内容'
+            )
+            continue
+        try:
+            OutputFormat.from_shorthand(value)
+        except ValueError as exc:
+            rejected.append(f'index.html:{lineno} value={value!r} 后端不认 —— {exc}')
+
+    assert not rejected, (
+        '#outputFormat 下拉里有 OutputFormat 不认的值,用户选中即报错:\n  '
+        + '\n  '.join(rejected)
+    )
+
+
+def test_option_collector_survives_real_world_markup():
+    """守护上面那个解析器本身 —— 它认错了 option,契约测试就成了空壳"""
+    html = """
+    <select id="other"><option value="noise">别的下拉</option></select>
+    <select
+        class="form-select"
+        data-role='x'
+        id="outputFormat"
+        required>
+      <option value="both">瓦片+拼接图</option>
+      <option selected value='tiles_only'>仅瓦片</option>
+      <option data-hint="1" value="not_a_format">坏值</option>
+      <option>没有 value</option>
+    </select>
+    <select id="later"><option value="noise2">又一个</option></select>
+    """
+    collector = _collect_options(html, 'outputFormat')
+
+    assert collector.found_select
+    assert [v for v, _ in collector.values] == [
+        'both', 'tiles_only', 'not_a_format', None,
+    ]
