@@ -60,7 +60,7 @@ function initMap(config) {
         };
 
         updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = false;
+        refreshSubmitButtonState();
 
         const btn = document.getElementById('createTaskBtn');
         btn.style.animation = 'pulse 0.5s ease-in-out';
@@ -72,8 +72,22 @@ function initMap(config) {
     map.on(L.Draw.Event.DELETED, function() {
         currentBounds = null;
         updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = true;
+        refreshSubmitButtonState();
     });
+
+    // 拖角 / 整体拖动时实时同步，用户不必点保存就能看到四至变化
+    map.on(L.Draw.Event.EDITRESIZE, syncBoundsFromDrawnItems);
+    map.on(L.Draw.Event.EDITMOVE, syncBoundsFromDrawnItems);
+
+    // 点「保存」后确认一次
+    map.on(L.Draw.Event.EDITED, syncBoundsFromDrawnItems);
+
+    // 退出编辑模式。leaflet.draw 1.0.4 在取消时先 revertLayers() 还原图形、
+    // 之后才 fire EDITSTOP，所以这里重读 bounds 对保存和取消都正确。
+    map.on(L.Draw.Event.EDITSTOP, syncBoundsFromDrawnItems);
+
+    // 删除模式结束后同样重读（DELETED 只在真的删了东西时触发）
+    map.on(L.Draw.Event.DELETESTOP, syncBoundsFromDrawnItems);
 }
 
 function initDownloadTypeToggle() {
@@ -119,8 +133,7 @@ function initDownloadTypeToggle() {
             }
         }
 
-        const btn = document.getElementById('createTaskBtn');
-        if (btn && isLocal) btn.disabled = false;
+        refreshSubmitButtonState();
     }
 
     typeEl.addEventListener('change', apply);
@@ -133,6 +146,77 @@ function initDownloadTypeToggle() {
     }
 
     apply();
+}
+
+// 从 drawnItems 里当前的图层重新读取 bbox。
+// 编辑（拖角/拖动/保存/取消）之后统一走这里，保证右侧四至和地图上看到的一致。
+//
+// 前提：eachLayer 遍历取的是**最后一个**有 getBounds 的图层，也就是隐含假设
+// drawnItems 里最多只有一个选区。当前 L.Draw.Event.CREATED 分支会先
+// clearLayers() 再 addLayer()，这个假设成立。将来若支持多选区，这里必须改成
+// 合并所有图层的 bounds（或按选中态取）。
+//
+// 幂等：重复调用无副作用——DELETESTOP 和 DELETED 会都触发，两次读到同样的结果。
+function syncBoundsFromDrawnItems() {
+    let found = null;
+    if (drawnItems) {
+        drawnItems.eachLayer(function (layer) {
+            if (typeof layer.getBounds === 'function') {
+                found = layer.getBounds();
+            }
+        });
+    }
+
+    if (found) {
+        currentBounds = {
+            north: found.getNorth(),
+            south: found.getSouth(),
+            east: found.getEast(),
+            west: found.getWest()
+        };
+    } else {
+        currentBounds = null;
+    }
+
+    updateBoundsInfo();
+    refreshSubmitButtonState();
+}
+
+// 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
+// 本地高程切片模式没有 bbox，所以这里无条件启用（不检查文件）——
+// 文件是否已选在提交时由 submitLocalTerrain() 校验。其余模式必须先框选。
+function refreshSubmitButtonState() {
+    const btn = document.getElementById('createTaskBtn');
+    if (!btn) return;
+    const type = document.getElementById('downloadType')?.value;
+    if (type === 'local_terrain') {
+        btn.disabled = false;
+    } else {
+        btn.disabled = !currentBounds;
+    }
+}
+
+// 任务创建成功后复位表单。
+// clearBounds=false 用于本地高程切片：该模式本来就没有 bbox，
+// 清空 drawnItems 会把用户为下一个任务画好的框也一起删掉。
+function resetForm({ clearBounds = true } = {}) {
+    const form = document.getElementById('downloadForm');
+    if (form) form.reset();
+
+    const outputPath = document.getElementById('outputPath');
+    if (outputPath) delete outputPath.dataset.userEdited;
+
+    if (clearBounds) {
+        if (drawnItems) drawnItems.clearLayers();
+        currentBounds = null;
+        updateBoundsInfo();
+    }
+
+    // 让 apply() 重新按当前类型摆好字段可见性和默认路径
+    const typeEl = document.getElementById('downloadType');
+    if (typeEl) typeEl.dispatchEvent(new Event('change'));
+
+    refreshSubmitButtonState();
 }
 
 function updateBoundsInfo() {
@@ -244,11 +328,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
 
         if (response.ok) {
             showNotification('任务创建成功！ID: ' + result.task_id, 'success');
-            document.getElementById('downloadForm').reset();
-            drawnItems.clearLayers();
-            currentBounds = null;
-            updateBoundsInfo();
-            document.getElementById('createTaskBtn').disabled = true;
+            resetForm();
             loadActiveTasks();
         } else {
             showNotification('创建任务失败: ' + result.error, 'danger');
@@ -256,8 +336,8 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     } catch (error) {
         showNotification('创建任务失败: ' + error.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = originalText;
+        refreshSubmitButtonState();
     }
 });
 
@@ -373,19 +453,13 @@ async function submitContour() {
         }
         await fetch(`/api/contour/tasks/${created.task_id}/start`, { method: 'POST' });
         showNotification('等高线任务已开始（自动下 DEM → 渲染瓦片）', 'success');
-        document.getElementById('downloadForm').reset();
-        drawnItems.clearLayers();
-        currentBounds = null;
-        updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = true;
-        // Re-apply type toggle so option blocks match the reset <select>.
-        document.getElementById('downloadType').dispatchEvent(new Event('change'));
+        resetForm();
         loadActiveTasks();
     } catch (err) {
         showNotification('创建失败: ' + err.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = original;
+        refreshSubmitButtonState();
     }
 }
 
@@ -522,7 +596,7 @@ async function submitLocalTerrain() {
         const result = await resp.json();
         if (resp.ok) {
             showNotification('上传成功，已开始切片！ID: ' + result.task_id, 'success');
-            document.getElementById('downloadForm').reset();
+            resetForm({ clearBounds: false });
             loadActiveTasks();
         } else {
             showNotification('上传失败: ' + (result.error || resp.status), 'danger');
@@ -530,7 +604,7 @@ async function submitLocalTerrain() {
     } catch (err) {
         showNotification('上传失败: ' + err.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = original;
+        refreshSubmitButtonState();
     }
 }
