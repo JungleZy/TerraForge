@@ -142,7 +142,12 @@ MERGED_FONT_SIZES = {
     '.card-header': 'var(--font-size-base)',
     '.card-header h5': 'var(--font-size-base)',
     '.form-label': 'var(--font-size-sm)',
-    '.form-control, .form-select': 'var(--font-size-base)',
+    # A5 / Task 10 有意从 --font-size-base(15px) 改成 --font-size-sm(14px)：
+    # 控件总高收到 28px 之后，15px 文字配 20px 行高只剩 5px 的上下呼吸位，
+    # 视觉上是「字撑满了框」。14px 是同类专业工具的输入框字号（VS Code 13px、
+    # QGIS 14px）。改的是本条的**值**，不是删条目 —— 断言仍然守着
+    # 「这条规则必须恰好声明一次 font-size」。
+    '.form-control, .form-select': 'var(--font-size-sm)',
     '.btn': 'var(--font-size-base)',
     '.btn-sm': 'var(--font-size-sm)',
     '.task-card h6': 'var(--font-size-base)',
@@ -536,13 +541,23 @@ def _form_select_rules(css):
 #
 # ⚠️ 给后续任务的说明：本表钉的是「Task 4 当时的值」，不是禁止后续改配色。
 #    A5（密度）/ A7（层级）若要调整表单配色，同步更新本表即可。
+#
+# ⚠️ A5 / Task 10 从本表**删掉**了一行：
+#    `.config-section .form-control, .config-section .form-select`。
+#    那条 (0,2,0) 规则整条被删了 —— 逐条比对过，它的 border-radius / border /
+#    background-color / color / font-family / transition 与通用规则一字不差，
+#    唯一的差异是 `padding: 0.75rem 1rem`（让配置页控件比首页高 5px）。
+#    配置页的背景色现在由通用的 `.form-control, .form-select` (0,1,0) 提供。
+#    这不是「删声明骗测试变绿」：Bootstrap 那条 (0,2,0) 的
+#    `[data-bs-theme=dark] .form-select` 只声明 --bs-form-select-bg-img、不碰
+#    background-color，所以通用规则确实赢得下来。CDP 实测配置页 18 个控件
+#    computed background-color 全部是 rgb(28,32,39) = --color-bg-tertiary，
+#    与首页一致（记在 p2-task-10-report.md）。
 FORM_SELECT_BG_COLORS = {
     '.form-control, .form-select':
         'var(--color-bg-tertiary)',
     '.form-control:focus, .form-select:focus':
         'var(--color-bg-secondary)',
-    '.config-section .form-control, .config-section .form-select':
-        'var(--color-bg-tertiary)',
     '.config-section .form-control:focus, .config-section .form-select:focus':
         'var(--color-bg-secondary)',
 }
@@ -715,11 +730,21 @@ def _branch_applies(branch, ancestor_classes, element_classes, focused):
     只支持「后代组合符 + 类选择器 + :focus」——本文件涉及 .form-select 的
     选择器全是这个形态。遇到子/兄弟组合符、id、属性选择器、其它伪类一律
     返回 None，调用方据此报「本测试已失效」，绝不当成"不匹配"放过去。
+
+    **例外：`::` 伪元素判为「不匹配」(False) 而不是「不支持」(None)。**
+    伪元素样式化的是另一个盒子，不参与宿主元素自身的 width / padding 层叠 ——
+    `.form-control::file-selector-button { padding: ... }`（A5 / Task 10 新增，
+    用来对齐文件选择按钮的负外边距）设的是那颗按钮的内边距，跟 <input> 自己的
+    内边距毫无关系。把它当「不支持」会让调用方误报「测试已失效」。
+    双冒号是无歧义的伪元素写法；单冒号的老式写法（`:before`）仍走 None 分支，
+    响亮失败。
     """
     if re.search(r'[>+~#\[*]', branch):
         return None
     compounds = []
     for part in branch.split():
+        if '::' in part:
+            return False
         pseudos = re.findall(r':{1,2}([-\w]+)', part)
         if any(p != 'focus' for p in pseudos):
             return None
@@ -2854,4 +2879,280 @@ def test_leaflet_upstream_colors_are_all_replaced():
             )
     assert not problems, (
         'Leaflet 出厂颜色没有被覆盖住：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+# --------------------------------------------------------------------------
+# A5 / Task 10：密度令牌
+#
+# 缺陷（Phase 2 视觉基线 + 本任务 CDP 复测）：表单控件高 43.7px、右栏卡片
+# 800.3px。1366x768 上框选之后「创建下载任务」按钮的 bottom 在 949.3px ——
+# 折叠线以下 181px，用户必须滚动才能提交。43.7px 是消费级落地页的密度；
+# 专业 GIS 工具是 QGIS / ArcGIS Pro 22–26px、VS Code 输入框 26px。
+#
+# 本节守三件事：
+#   1. 令牌之间的算术自洽（否则 min-height 和内容盒子打架）
+#   2. 没有悬空的 var() 引用（这是「改了没反应」的头号成因）
+#   3. 令牌真的被控件规则消费（否则令牌是摆设，密度写死在别处）
+# --------------------------------------------------------------------------
+
+# 控件总高上界。28px 是本任务落地值；30px 是留给后续微调的天花板 ——
+# 依据是同类专业工具的实测区间（QGIS / ArcGIS Pro 22–26px、VS Code 输入框 26px），
+# 以及 1366x768 的垂直预算（见 test_control_density_tokens_are_self_consistent
+# 的 docstring）。
+CONTROL_HEIGHT_MAX_PX = 30
+
+# 表单字段之间的纵向间距（.mb-3）上界。改前 12px。
+FIELD_GAP_MAX_PX = 8
+
+
+def _token_px(css, name):
+    """某个自定义属性的值（px）。取不到 / 不是 px 字面量就响亮失败。
+
+    ⚠️ 用正则而不是 `_rules_ctx()` 找 `:root`：文件开头的
+    `@import url('...');` 是一条**以分号结尾的 at 语句**，`_rules_ctx` 的花括号
+    深度扫描不认分号，会把它连同后面的 `:root` 一起当成选择器
+    （实测扫出来的选择器是 `@import url('...'); :root`，按 `== ':root'` 找是 0 条）。
+    这与 `_palette_var` 同一个理由、同一个写法。先剥注释，避免注释里提到
+    `--ctl-h` 的说明文字被当成定义。
+    """
+    stripped = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
+    m = re.search(re.escape(name) + r'\s*:\s*([^;]+);', stripped)
+    assert m, (
+        f'{name} 没有定义。引用一个未定义的自定义属性**不会报错**，'
+        '只会让引用它的整条声明失效、静默退回 auto/initial —— 表现为「改了没反应」'
+    )
+    raw = m.group(1).strip()
+    px = _length_to_px(_IMPORTANT_RE.sub('', raw).strip())
+    assert px is not None, (
+        f'{name} = {raw!r}，不是 px/rem 字面量，本断言算不了 —— 测试已失效（不是通过）'
+    )
+    return px
+
+
+def test_control_density_tokens_are_self_consistent():
+    """`--ctl-h` 必须等于它的三个分量算出来的盒子高度。
+
+        2 * --ctl-pad-y + --ctl-line-h + 2 * 边框宽 = --ctl-h
+        2 *      3      +      20      + 2 *   1    =    28
+
+    为什么要钉这条等式：`.form-control, .form-select` 同时声明了
+    `min-height: var(--ctl-h)` 和 padding / line-height。两边不一致时**不会报错**
+    —— 内容盒子矮就留一条底边空白，高就把 min-height 顶穿，两种都是「令牌上写着
+    28px、量出来不是 28px」的静默漂移。改任何一个分量都要让等式继续成立。
+
+    ⚠️ 这条断言证明的是「令牌内部自洽 + 控件不高于专业工具区间」，
+    **不证明**「1366x768 一屏放得下」—— 后者取决于页面上有多少个字段、
+    卡片内边距、四至显示占几行，是文本断言够不着的。那个结论由 CDP 实测背书，
+    记在 .superpowers/sdd/p2-task-10-report.md：
+
+        1366x768、已框选（按钮可点的那个状态）
+        #createTaskBtn 的 bottom：改前 949.3 -> 改后 715.5（视口 768，余 52.5px）
+        未框选：859.3 -> 694
+
+    余量 52.5px 是本任务给后续任务留的。上面两个上界（控件 30px、字段间距 8px）
+    就是把这个余量钉住：6 个可见字段，控件每长 1px 吃掉 6px 余量。
+    """
+    css = _css()
+    ctl_h = _token_px(css, '--ctl-h')
+    line_h = _token_px(css, '--ctl-line-h')
+    pad_y = _token_px(css, '--ctl-pad-y')
+    pad_x = _token_px(css, '--ctl-pad-x')
+    border = _form_control_border_px(css)
+
+    box = 2 * pad_y + line_h + 2 * border
+    assert box == ctl_h, (
+        f'密度令牌不自洽：2 * --ctl-pad-y({pad_y:g}) + --ctl-line-h({line_h:g}) + '
+        f'2 * 边框({border:g}) = {box:g}px，但 --ctl-h = {ctl_h:g}px。'
+        '两者不等时 min-height 与内容盒子会打架，实际高度不是令牌上写的那个数'
+    )
+    assert ctl_h <= CONTROL_HEIGHT_MAX_PX, (
+        f'--ctl-h = {ctl_h:g}px，超过 {CONTROL_HEIGHT_MAX_PX}px 上界。'
+        '改前 43.7px 正是这个缺陷（1366x768 上提交按钮在折叠线以下 181px）；'
+        '专业 GIS 工具是 22–26px。真要放宽，先按 p2-task-10-report.md 的方法'
+        '重测 1366x768 下 #createTaskBtn 的 bottom，并同步这里的上界与理由'
+    )
+    assert pad_x >= 6, (
+        f'--ctl-pad-x = {pad_x:g}px，文字会贴着边框。密度收紧不等于取消内边距'
+    )
+
+
+def test_field_gap_stays_tight():
+    """`.mb-3`（表单字段间距）必须走 `--gap-field`，且不超过 8px。
+
+    为什么单独钉：首页表单在默认（地图瓦片）模式下有 6 个字段组，间距每放宽
+    1px 就吃掉 6px 的垂直预算。改前是 12px。
+    """
+    css = _css()
+    gap = _token_px(css, '--gap-field')
+    assert gap <= FIELD_GAP_MAX_PX, (
+        f'--gap-field = {gap:g}px，超过 {FIELD_GAP_MAX_PX}px 上界'
+    )
+    bodies = [body for sel, body, ctx in _rules_ctx(css) if sel == '.mb-3' and not ctx]
+    assert len(bodies) == 1, (
+        f'期望恰好 1 条顶层 `.mb-3` 规则，实际 {len(bodies)} 条 —— 本测试已失效'
+    )
+    mb = _decl_map(bodies[0]).get('margin-bottom', '')
+    assert 'var(--gap-field)' in mb, (
+        f'.mb-3 的 margin-bottom 是 {mb!r}，没有走 --gap-field。'
+        '写死数字的话，改令牌不会影响字段间距，令牌就成了摆设'
+    )
+
+
+# `.form-control, .form-select` 必须消费的密度令牌 -> 它负责的那一维。
+#
+# 为什么需要这张表：上面那条自洽性断言只看 :root 里的四个数字，**把整段
+# padding / min-height 从规则里删掉，它照样全绿**（令牌还在，只是没人用了），
+# 而浏览器里控件立刻退回 Bootstrap 的 43.7px。这张表把「令牌存在」和
+# 「令牌生效」分开。
+DENSITY_TOKEN_CONSUMERS = {
+    '--ctl-pad-y': '上下内边距',
+    '--ctl-pad-x': '左右内边距',
+    '--ctl-line-h': '行高',
+    '--ctl-h': '最小高度',
+}
+
+
+def test_form_controls_actually_consume_the_density_tokens():
+    """`.form-control, .form-select` 必须引用全部四个控件密度令牌。"""
+    bodies = [
+        body for sel, body, ctx in _rules_ctx(_css())
+        if sel == '.form-control, .form-select' and not ctx
+    ]
+    assert len(bodies) == 1, (
+        f'期望恰好 1 条 `.form-control, .form-select` 规则，实际 {len(bodies)} 条 '
+        '—— 本测试已失效（选择器分组或顺序被改过？）'
+    )
+    body = bodies[0]
+    missing = [
+        f'{name}（{what}）'
+        for name, what in DENSITY_TOKEN_CONSUMERS.items()
+        if f'var({name})' not in body
+    ]
+    assert not missing, (
+        '`.form-control, .form-select` 没有引用这些密度令牌：\n'
+        + '\n'.join('  ' + m for m in missing)
+        + '\n令牌定义了却没人消费 = 控件退回 Bootstrap 的默认密度（实测 43.7px），'
+        '而 :root 里的数字看着还是 28px'
+    )
+
+
+_VAR_REF_RE = re.compile(r'var\(\s*(--[-\w]+)')
+_VAR_DEF_RE = re.compile(r'(?<![-\w])(--[-\w]+)\s*:')
+
+
+def test_no_dangling_custom_property_references():
+    """style.css 里每个 `var(--x)` 引用的 `--x` 都必须在本文件里有定义。
+
+    这是本任务最容易踩的坑，也是它最普适的一条守卫：**引用一个未定义的自定义
+    属性不是错误**，浏览器会让引用它的**整条声明**失效（invalid at computed-value
+    time），静默退回 auto / initial。表现是「CSS 里明明写了，页面上没反应」——
+    和拼错属性名不同，控制台一个字都不会说。
+
+    Task 10 之前 `--ctl-h` 在全仓 0 次命中，如果先写 `min-height: var(--ctl-h)`
+    再忘了在 :root 里定义，控件高度会静默退回 Bootstrap 的 43.7px，而源码看着
+    完全正确。
+
+    豁免：`--bs-*` 由 Bootstrap 提供，不在本文件定义。豁免它们是有代价的
+    （拼错 --bs 名字这条断言看不见），但把 Bootstrap 的整套变量抄进来做白名单
+    会立刻过期，代价更大。
+    """
+    css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
+    defined = set(_VAR_DEF_RE.findall(css))
+    dangling = sorted({
+        name for name in _VAR_REF_RE.findall(css)
+        if name not in defined and not name.startswith('--bs-')
+    })
+    assert not dangling, (
+        'style.css 引用了未定义的自定义属性：\n'
+        + '\n'.join('  ' + d for d in dangling)
+        + '\n引用未定义的自定义属性会让**整条声明**静默失效（退回 auto/initial），'
+        '不会报错。请在 :root 里补上定义，或改掉引用'
+    )
+
+
+# --------------------------------------------------------------------------
+# A5 / Task 10：四至显示压成 2 行
+# --------------------------------------------------------------------------
+
+BOUNDS_READOUT_MAX_ROWS = 2
+
+# 改前那版的形态特征。留在这里是为了让回潮时的报错说人话。
+_BOUNDS_LEGACY_MARKERS = ('<br>', '▲', '▼', '▶', '◀')
+
+
+def _grid_track_count(value):
+    """`auto 1fr auto 1fr` -> 4。看不懂的（repeat()/minmax()/var()）返回 None。"""
+    value = value.strip()
+    if not value or re.search(r'(repeat|minmax|fit-content|var)\s*\(', value):
+        return None
+    return len(value.split())
+
+
+def test_bounds_readout_is_exactly_two_rows():
+    """框选后的四至显示必须恰好排成 2 行。
+
+    这是本任务里最值钱的单项（实测 146.5px -> 62px，省 84.5px，正好覆盖
+    1366x768 的溢出量）。改前是 5 行：图标 +「选中区域：」标题 +
+    ▲北 / ▼南 / ▶东 / ◀西 四行 `<br>`。
+
+    **行数是算出来的，不是查字符串**：
+        行数 = ceil(网格子元素数 / grid-template-columns 的轨道数)
+    两个输入分居两个文件（子元素由 static/js/map.js 的 updateBoundsInfo 生成，
+    轨道数在 style.css 的 .bounds-grid），所以只改一边都会被这条接住 ——
+    比如有人把列定义改成 `auto 1fr`（2 列），8 个子元素立刻退回 4 行，
+    而 JS 一个字没动。
+
+    覆盖范围（诚实说明）：算的是**网格轨道意义上的行数**，不是渲染出来的
+    视觉行数。若某个值长到在自己的格子里折行，实际视觉高度会比 2 行多 ——
+    那种情况这条断言看不见，由 CDP 在 19 个视口（Bootstrap 断点 576/768/992/
+    1200/1400 及其 ±1 邻域 + 1366x768 等）实测兜底：全部 2 行、无折行、无溢出，
+    记在 p2-task-10-report.md。
+    """
+    js = _js('map.js')
+    body = _js_function_body(js, 'updateBoundsInfo')
+
+    legacy = [m for m in _BOUNDS_LEGACY_MARKERS if m in body]
+    assert not legacy, (
+        f'updateBoundsInfo 里还有改前那版 5 行布局的痕迹 {legacy} —— '
+        '`<br>` 每出现一次就多一行；`▲▼▶◀` 应换成 GIS 惯例的 N/S/E/W'
+        '（那四个三角形在等宽字体里宽度还不一致，数字对不齐）'
+    )
+
+    keys = re.findall(r'class="bounds-k"', body)
+    vals = re.findall(r'class="bounds-v"', body)
+    assert len(keys) == 4 and len(vals) == 4, (
+        f'期望 4 个 .bounds-k + 4 个 .bounds-v（北南东西各一对），'
+        f'实际 {len(keys)} + {len(vals)} —— 本测试已失效，或者四至少渲染了一条'
+    )
+    for direction in ('N', 'S', 'E', 'W'):
+        assert re.search(r'class="bounds-k">\s*' + direction + r'\s*<', body), (
+            f'四至里缺少 {direction} —— GIS 惯例的四个方位字母必须齐全'
+        )
+
+    bodies = [
+        b for sel, b, ctx in _rules_ctx(_css())
+        if sel == '.bounds-grid' and not ctx
+    ]
+    assert len(bodies) == 1, (
+        f'期望恰好 1 条 `.bounds-grid` 规则，实际 {len(bodies)} 条 —— 本测试已失效'
+    )
+    decls = _decl_map(bodies[0])
+    assert decls.get('display') == 'grid', (
+        f'.bounds-grid 的 display 是 {decls.get("display")!r}，不是 grid —— '
+        '不是网格就没有「列」，8 个 span 会横着流成 1 行或竖着堆成 8 行'
+    )
+    cols = _grid_track_count(decls.get('grid-template-columns', ''))
+    assert cols is not None, (
+        f'.bounds-grid 的 grid-template-columns 是 '
+        f'{decls.get("grid-template-columns")!r}，本断言数不出轨道数 —— '
+        '测试已失效（不是通过）。真要用 repeat()/minmax()，请连同这里的解析一起改'
+    )
+
+    children = len(keys) + len(vals)
+    rows = -(-children // cols)          # ceil
+    assert rows <= BOUNDS_READOUT_MAX_ROWS, (
+        f'四至显示排成 {rows} 行（{children} 个格子 / {cols} 列），'
+        f'超过 {BOUNDS_READOUT_MAX_ROWS} 行上限。改前的 5 行版实测 146.5px，'
+        '是 1366x768 放不下提交按钮的主要原因之一'
     )

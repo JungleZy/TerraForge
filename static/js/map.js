@@ -274,23 +274,40 @@ function resetForm({ clearBounds = true } = {}) {
     refreshSubmitButtonState();
 }
 
+/**
+ * 渲染框选后的四至（#boundsInfo）。
+ *
+ * A5 / Task 10 把它从 5 行压成 2 行的网格：
+ *   改前——图标 +「选中区域：」标题 + ▲北/▼南/▶东/◀西 四行 <br>，实测 146.5px；
+ *   改后——4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行，实测 56.5px。
+ * 这一项单独就省下 90px，正好抵掉 1366x768 上「创建下载任务」按钮的溢出。
+ *
+ * 三处刻意的改动，都不是纯排版：
+ *  1. `▲▼▶◀` -> `N/S/E/W`。GIS 惯例用方位字母，而且原来那四个三角形在
+ *     等宽字体里宽度不一致，四行的数字对不齐。
+ *  2. 小数 6 位 -> 5 位。第 6 位约 0.11m，框选一个下载范围用不到；砍掉之后
+ *     两个数字并排也放得下。5 位 ≈ 1.1m。
+ *  3. 删掉了原来两个分支末尾各两行的 `boundsInfo.style.background/borderColor`
+ *     赋值 —— 两个分支赋的是**同一个值**，且与 style.css 里 `.alert-info` 的
+ *     `background: rgba(59,130,246,0.1)` / `border-color: var(--color-info)`
+ *     逐字相同，是纯粹的死代码（#boundsInfo 是 `<div class="alert alert-info">`，
+ *     `.alert` 在 style.css 兜底重置的 :not() 白名单里，底色不会被压掉）。
+ *
+ * 行数由 tests/test_css_contract.py::test_bounds_readout_is_exactly_two_rows
+ * 守住：它按「网格子元素数 / grid-template-columns 的轨道数」算行数。
+ */
 function updateBoundsInfo() {
     const boundsInfo = document.getElementById('boundsInfo');
     if (currentBounds) {
+        const f = (v) => v.toFixed(5);
         boundsInfo.innerHTML = `
-            <small style="font-family: var(--font-mono); line-height: 1.6;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-                </svg>
-                <strong>选中区域：</strong><br>
-                <span style="color: var(--color-accent-hover);">▲</span> 北: ${currentBounds.north.toFixed(6)}<br>
-                <span style="color: var(--color-accent-hover);">▼</span> 南: ${currentBounds.south.toFixed(6)}<br>
-                <span style="color: var(--color-accent-hover);">▶</span> 东: ${currentBounds.east.toFixed(6)}<br>
-                <span style="color: var(--color-accent-hover);">◀</span> 西: ${currentBounds.west.toFixed(6)}
-            </small>
+            <div class="bounds-grid">
+                <span class="bounds-k">N</span><span class="bounds-v">${f(currentBounds.north)}</span>
+                <span class="bounds-k">S</span><span class="bounds-v">${f(currentBounds.south)}</span>
+                <span class="bounds-k">E</span><span class="bounds-v">${f(currentBounds.east)}</span>
+                <span class="bounds-k">W</span><span class="bounds-v">${f(currentBounds.west)}</span>
+            </div>
         `;
-        boundsInfo.style.background = 'rgba(59, 130, 246, 0.1)';
-        boundsInfo.style.borderColor = 'var(--color-info)';
     } else {
         boundsInfo.innerHTML = `
             <small>
@@ -302,8 +319,6 @@ function updateBoundsInfo() {
                 请在地图上框选下载区域
             </small>
         `;
-        boundsInfo.style.background = 'rgba(59, 130, 246, 0.1)';
-        boundsInfo.style.borderColor = 'var(--color-info)';
     }
 }
 

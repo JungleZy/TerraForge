@@ -62,6 +62,32 @@
     --font-size-md: 1rem;
     --font-size-lg: 1.125rem;
     --font-size-xl: 1.25rem;
+
+    /* 控件密度（A5 / Task 10）。
+       改前实测：表单控件高 43.7px、右栏卡片 800.3px，1366x768 下框选之后
+       「创建下载任务」按钮的 bottom 在 949.3px —— 折叠线以下 181px，
+       用户必须滚动才能提交。43.7px 是消费级落地页的密度；专业 GIS 工具
+       是 QGIS / ArcGIS Pro 22–26px、VS Code 输入框 26px。
+
+       --ctl-h 是**目标总高**，其余三个是它的分解：
+           2 * --ctl-pad-y + --ctl-line-h + 2 * 边框(1px) = --ctl-h
+           2 *      3      +      20      + 2 *    1      =    28
+       四个值必须自洽，否则 `min-height: var(--ctl-h)` 会和内容盒子打架
+       （表现为控件比令牌说的高、或者文字贴边）。这条算术由
+       tests/test_css_contract.py::test_control_density_tokens_are_self_consistent
+       钉住 —— 改任何一个都要让等式继续成立。
+
+       ⚠️ 引用未定义的自定义属性不会报错，只会让**整条声明失效**、静默退回
+       auto/initial，表现为「改了没反应」。全文件的 var() 引用都必须在这里
+       有定义，由 test_no_dangling_custom_property_references 兜住。 */
+    --ctl-h:      28px;
+    --ctl-line-h: 20px;
+    --ctl-pad-y:  3px;
+    --ctl-pad-x:  8px;
+
+    /* 卡片内边距与表单字段纵向间距。改前 .card-body 16px、.mb-3 12px。 */
+    --pad-card:  10px;
+    --gap-field: 8px;
 }
 
 /* Global Styles */
@@ -632,28 +658,20 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     margin-bottom: 0.5rem;
 }
 
-.config-section .form-control,
-.config-section .form-select {
-    border-radius: 8px;
-    border: 1px solid var(--color-border);
-    padding: 0.75rem 1rem;
-    background-color: var(--color-bg-tertiary);
-    color: var(--color-text-primary);
-    font-family: var(--font-display);
-    transition: all 0.3s ease;
-}
-
-/* 配置页的下拉框同样要给箭头让位。
-   上面那条 (0,2,0) 的 padding 简写把右内边距设成 16px，压得过通用的
-   `.form-select { padding-right: 2.25rem }`(0,1,0)，所以必须在这里用同特异性
-   的规则单独补一次，否则配置页吃不到这个修复。
-   ⚠️ 这是悬崖不是斜坡：当前配置页最长选项 86.9px，离箭头还有一大截，
-   看着很安全；但只要有人加一个能填满控件的长选项，就会立刻叠印 12px
-   （16px 实际内边距 vs 28px 几何下限），没有逐渐变糟的中间状态。 */
-.config-section .form-select {
-    padding-right: 2.25rem;
-}
-
+/* 这里原本有两条 (0,2,0) 的规则，A5 / Task 10 一并删除：
+     1. `.config-section .form-control, .config-section .form-select { ... }`
+        —— 逐条比对过，它的 border-radius / border / background-color / color /
+        font-family / transition 与通用的 `.form-control, .form-select`
+        **完全一样**，唯一的差异是 `padding: 0.75rem 1rem`。也就是说它的全部作用
+        就是「让配置页的控件比首页高 5px」。密度统一之后这个差异就是纯粹的不一致，
+        整条删掉，配置页改走全局规则。
+     2. `.config-section .form-select { padding-right: 2.25rem }`
+        —— 它存在的唯一理由是压住上面那条 (0,2,0) 的 padding 简写。上面那条没了，
+        它就成了通用 `.form-select { padding-right: 2.25rem }` 的重复。
+        test_form_select_reserves_room_for_the_arrow 会继续为「配置页」这个上下文
+        算一遍最终生效的右内边距（现在由通用规则提供 36px），删掉不会留下盲区。
+   保留下面的 :focus / ::placeholder 两条（它们同样与全局重复，属于另一笔清理，
+   本任务不动 —— 见 p2-task-10-report.md 的「遗留」）。 */
 .config-section .form-control:focus,
 .config-section .form-select:focus {
     border-color: var(--color-accent);
@@ -826,7 +844,10 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .alert {
     border-radius: 10px;
     border: 1px solid;
-    padding: 1rem 1.25rem;
+    /* A5 / Task 10：1rem 1.25rem(16/20px) -> 8px/--pad-card。
+       站内的 .alert 全是**信息条**（#boundsInfo 的四至、history 的错误提示），
+       不是需要撑场面的横幅；16px 上下内边距在 1366x768 上是纯浪费。 */
+    padding: 8px var(--pad-card);
     font-family: var(--font-display);
     font-size: var(--font-size-base);
     box-shadow: var(--shadow-sm);
@@ -883,7 +904,9 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: var(--font-size-base);
     border-bottom: 1px solid var(--color-border);
     border-radius: var(--radius) var(--radius) 0 0 !important;
-    padding: 0.85rem 1rem;
+    /* A5 / Task 10：0.85rem 1rem(13.6/16px) -> 6px/--pad-card。
+       左右与 .card-body 同为 --pad-card，标题和正文才对得齐。 */
+    padding: 6px var(--pad-card);
 }
 
 .card-header h5 {
@@ -893,8 +916,12 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     color: var(--color-text-primary);
 }
 
+/* ⚠️ 想验证这条改动的实测值时，别用 `document.querySelector('.card-body')`：
+   首页第一个 .card-body 是地图那个，带 `p-0`，且被
+   `.index-left .card-body { padding: 0 }`(0,2,0) 压成 0px。要取右侧面板里的
+   具体元素（例如 `.index-right .card-body`）。 */
 .card-body {
-    padding: 1rem;
+    padding: var(--pad-card);
     color: var(--color-text-primary);
 }
 
@@ -987,17 +1014,45 @@ h1, h2, h3, h4, h5, h6 {
     border-right-color: transparent;
 }
 
-/* Form Control Styles */
+/* Form Control Styles
+   密度令牌落地处（A5 / Task 10）：控件总高从 43.7px 收到 28px = var(--ctl-h)。
+
+   ⚠️ 这里**故意写四条 padding 长写，不用 `padding` 简写**。
+   下面 `.form-select { padding-right: 2.25rem }` 是下拉箭头的让位空间
+   （C1 / Task 4 的修复，下限 28px）。那条规则写在本条之后、特异度相同，
+   所以简写其实也压不掉它 —— 长写的理由是**可读性**：让「右内边距另有主」
+   这件事在源码里一眼看得见，而不是要读者去脑内跑一遍层叠。
+   真正的下限由 test_form_select_reserves_room_for_the_arrow 守（它算的是
+   模拟层叠后最终生效的值，不是查字符串）。 */
 .form-control,
 .form-select {
     background-color: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
     border-radius: 8px;
-    padding: 0.6rem 0.85rem;
+    padding-top: var(--ctl-pad-y);
+    padding-bottom: var(--ctl-pad-y);
+    padding-left: var(--ctl-pad-x);
+    padding-right: var(--ctl-pad-x);
+    line-height: var(--ctl-line-h);
+    min-height: var(--ctl-h);
     font-family: var(--font-display);
     transition: all 0.3s ease;
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-sm);
+}
+
+/* 文件选择框的「浏览」按钮。
+   Bootstrap 的 `.form-control::file-selector-button` 用
+   `padding: .375rem .75rem` + `margin: -.375rem -.75rem` 把按钮**撑满**输入框
+   ——那对负外边距是按 Bootstrap 自己的 6px/12px 内边距算的。我们把控件内边距
+   收到 3px/8px 之后，按钮会比控件高出 6px、左右各溢出 4px。
+   这里把两者重新对齐到密度令牌上。
+   （用到的元素：templates/index.html 的 #localTerrainFiles，
+    「本地高程切片」下载类型下才显示。） */
+.form-control::file-selector-button {
+    padding: var(--ctl-pad-y) var(--ctl-pad-x);
+    margin: calc(-1 * var(--ctl-pad-y)) calc(-1 * var(--ctl-pad-x));
+    margin-inline-end: var(--ctl-pad-x);
 }
 
 /* 下拉箭头的让位空间。只作用于 .form-select，不波及普通 input。
@@ -1067,12 +1122,17 @@ h1, h2, h3, h4, h5, h6 {
     font-size: var(--font-size-sm);
 }
 
-.form-control-sm {
-    padding: 0.4rem 0.65rem;
-}
+/* 这里原本是 `.form-control-sm { padding: 0.4rem 0.65rem }`（6.4/10.4px）。
+   A5 / Task 10 把基础控件收到 3/8px 之后，这条「小号」变成了**比基础还大**
+   的规则 —— 全站唯一用它的 templates/history.html:47 搜索框会变成页面上最高
+   的输入框。语义倒挂，整条删除。
+   删掉之后 Bootstrap 的 `.form-control-sm { padding: .25rem .5rem }`(0,1,0) 也
+   赢不了：style.css 排在 bootstrap.min.css 之后，同特异度、且我们用的是
+   padding 四条长写，逐属性覆盖简写。实测 history 页 #searchInput 高度 28px，
+   与基础控件一致 —— 在这个密度下不再需要「更小的一档」。 */
 
 .mb-3 {
-    margin-bottom: 0.75rem !important;
+    margin-bottom: var(--gap-field) !important;
 }
 
 /* Input Group */
@@ -1622,7 +1682,9 @@ code {
     font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--color-text-muted);
-    margin: 1.25rem 0 0.5rem;
+    /* A5 / Task 10：1.25rem 0 0.5rem(20/8px) -> 14px 0 6px。
+       组间留白仍明显大于组内的 --gap-field(8px)，分组关系不受影响。 */
+    margin: 14px 0 6px;
     padding-bottom: 0.35rem;
     border-bottom: 1px solid var(--color-border);
 }
@@ -1632,6 +1694,37 @@ code {
     color: var(--color-text-muted) !important;
     font-size: var(--font-size-xs);
     margin-top: 0.35rem;
+}
+
+/* 框选后的四至显示（#boundsInfo 内部，由 static/js/map.js 的 updateBoundsInfo 渲染）。
+
+   改前是 5 行：图标 + 「选中区域：」标题 + 「▲北 / ▼南 / ▶东 / ◀西」四行 <br>，
+   实测高 146.5px。四个数字占掉 1366x768 可用高度的五分之一，而它们本来就是
+   一组同类量，天生该并排看（对比大小才有意义）。
+   这里改成 4 列网格 —— 8 个格子（4 个键 + 4 个值）固定排成 **2 行**，实测 56.5px。
+
+   列定义 `auto 1fr auto 1fr` 是承重的：4 条轨道 x 8 个子元素 = 2 行。
+   改成 2 列就退回 4 行，改成 8 列就挤成 1 行放不下。
+   由 test_bounds_readout_is_exactly_two_rows 钉住（它按「子元素数 / 列数」
+   算行数，不是查字符串）。 */
+.bounds-grid {
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr;
+    gap: 2px 6px;
+    align-items: baseline;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+}
+
+.bounds-k {
+    color: var(--color-accent-hover);
+    font-weight: 700;
+}
+
+.bounds-v {
+    color: var(--color-text-primary);
+    /* 等宽数字：四个纬度/经度上下对齐，扫一眼就能比大小 */
+    font-variant-numeric: tabular-nums;
 }
 
 .detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1.5rem; }
