@@ -133,7 +133,13 @@ body {
 /* Ensure all divs inherit background. Exclude themed popups (.app-confirm /
    overlay / toast) — otherwise this high-specificity rule forces their solid
    background transparent, making the dialogs unreadable. */
-div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progress):not(.progress-bar):not(.app-confirm):not(.app-confirm-overlay):not(.app-toast) {
+/* 兜底重置：把 Bootstrap 给 div 的各种白底抹掉。
+   特异度 (0,10,1)，比任何 `.xxx { background: ... }`(0,1,0) 都高，所以**凡是
+   自己需要背景色的 div 都必须列进这串 :not() 白名单**，否则它的 background
+   声明是死的（源码里看着有，浏览器里是透明）。
+   `.task-error`(A1b) 是红色底纹的失败原因框，加入白名单；
+   对应断言见 tests/test_css_contract.py::test_task_error_survives_the_blanket_div_reset。 */
+div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progress):not(.progress-bar):not(.app-confirm):not(.app-confirm-overlay):not(.app-toast):not(.task-error) {
     background: transparent;
 }
 
@@ -367,6 +373,27 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .task-card .badge {
     font-size: var(--font-size-xs);
     padding: 0.3rem 0.65rem;
+}
+
+/* 失败卡片里展开的错误原因。文本由 tasks.js 的 applyTaskErrorText 用
+   textContent 填入（后端错误原文不能进 innerHTML）。
+   配色实算（见 tests/test_css_contract.py::test_task_error_box_exists_and_is_readable）：
+     底色 rgba(239,68,68,0.12) 压在卡片的 #15171c 上 = #2f1c21
+     文字 #e8eaed 对 #2f1c21 = 13.27:1（WCAG 正文下限 4.5:1）
+     边框 #f87171 对 #15171c =  6.48:1（图形元素下限 3:1）
+   等宽字体是跟 .progress-detail 一致的选择：错误原文里多是路径、URL、状态码。 */
+.task-error {
+    margin-top: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-bg);
+    border: 1px solid var(--color-danger);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+    word-break: break-word;
+    white-space: pre-wrap;
 }
 
 /* 发光改用品牌色柔和版：原先硬编码 rgba(59,130,246,.x)（#3b82f6 蓝，不在

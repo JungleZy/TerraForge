@@ -1163,3 +1163,164 @@ def test_pulse_keyframe_has_no_offpalette_hardcoded_color():
     assert 'var(--color-accent-muted)' in body, (
         'pulse 的发光应改用品牌色柔和版 var(--color-accent-muted)'
     )
+
+
+# --------------------------------------------------------------------------
+# A1b / Task 6：失败卡片里的错误框
+# --------------------------------------------------------------------------
+
+_RGBA_RE = re.compile(
+    r'rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)', re.I
+)
+
+
+def _resolve_color(css, raw):
+    """声明值 -> 字面色值（剥 !important、解一层 var(--x)）。
+
+    只解一层是够的：本项目的调色板变量都直接指向字面值，没有变量指变量。
+    解不出来的写法（color-mix()、多层 var()）会原样返回，由 `_flatten`
+    的「算不了就报测试已失效」断言接住——静默放行比算错更危险。
+    """
+    value = _IMPORTANT_RE.sub('', raw).strip()
+    m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', value)
+    if m:
+        value = _palette_var(css, m.group(1))
+    return value.strip().lower()
+
+
+def _flatten(color, backdrop_hex):
+    """半透明色压到不透明背景上，得到肉眼**实际看到**的 #rrggbb。
+
+    为什么必须合成：本项目的状态底色全是 `rgba(...,0.12)`。
+    直接拿 rgba 的 RGB 分量去算对比度会得到一个与屏幕上完全无关的数字
+    —— rgba(239,68,68,0.12) 的「原色」是亮红，压到 #15171c 上之后
+    实际是很深的 #2f1c21，两者的对比度差着好几倍。
+    """
+    if re.fullmatch(r'#[0-9a-f]{6}', color):
+        return color
+    m = _RGBA_RE.fullmatch(color)
+    assert m, f'{color!r} 既不是 #rrggbb 也不是 rgb(a)() —— 本测试算不了它，已失效'
+    a = float(m.group(4)) if m.group(4) is not None else 1.0
+    fg = [int(m.group(i)) for i in (1, 2, 3)]
+    bg = _hex_to_rgb(backdrop_hex)
+    return '#%02x%02x%02x' % tuple(
+        min(255, max(0, round(a * f + (1 - a) * b))) for f, b in zip(fg, bg)
+    )
+
+
+# WCAG 2.x：正文文字 4.5:1（`.task-error` 是 0.8125rem ≈ 13px，属于「正常文字」，
+# 拿不到大字号的 3:1 优惠）；边框属于图形对象，下限 3:1——与
+# test_form_select_arrow_has_sufficient_contrast、
+# test_progress_bar_fill_has_sufficient_contrast 是同一条线。
+ERROR_TEXT_MIN_CONTRAST = 4.5
+ERROR_BORDER_MIN_CONTRAST = 3.0
+
+
+def test_task_error_box_exists_and_is_readable():
+    """失败卡片里的 `.task-error` 必须存在、在顶层、且文字真的看得清。
+
+    强度说明：只断言 `'.task-error' in css` 的话，一条空规则
+    `.task-error {}` 就能过——而错误文本会以「深色卡片上的默认色」渲染，
+    很可能是 Bootstrap 继承来的深灰，等于把失败原因写成隐形字。
+    这里逐项落地：
+
+      1. 顶层恰好一条规则（用 `_rules_ctx` 并要求 at-rule 上下文为空——
+         包进 `@media (min-width: 3000px)` 的规则在文件里存在但永不生效，
+         这是 Task 5 评审实测出来的坑）。
+      2. 规则体里真的声明了 background / border / color。
+      3. **半透明底色先合成再算对比度**：`--color-danger-bg` 是
+         rgba(239,68,68,0.12)，压在 `.task-card` 的 --color-bg-secondary
+         上才是屏幕上的真实底色。
+      4. 文字对合成底色 >= 4.5:1（正文），边框对卡片底色 >= 3:1（图形）。
+
+    覆盖范围（诚实说明）：这条守的是 CSS 源码里能算出来的色值关系。
+    它保证不了「这个框在浏览器里真的显示出来了」——那由 CDP 实测覆盖
+    （p2-task-6-report.md 里有 getComputedStyle 取到的实际颜色与实算比值）。
+    """
+    css = _css()
+    rules = [
+        (sel, body) for sel, body, at_ctx in _rules_ctx(css)
+        if not at_ctx and '.task-error' in _selector_parts(sel)
+    ]
+    assert len(rules) == 1, (
+        f'期望顶层恰好 1 条 `.task-error` 规则，实际 {len(rules)} 条：'
+        f'{[s for s, _ in rules]}'
+    )
+    decls = _decl_map(rules[0][1])
+    for prop in ('background', 'border', 'color'):
+        assert prop in decls, f'.task-error 没有声明 {prop}'
+
+    card = _palette_var(css, '--color-bg-secondary')   # .task-card 的底色
+    assert re.fullmatch(r'#[0-9a-f]{6}', card), (
+        f'--color-bg-secondary = {card!r}，不是 6 位十六进制 —— 本测试已失效'
+    )
+
+    box_bg = _flatten(_resolve_color(css, decls['background']), card)
+    text = _flatten(_resolve_color(css, decls['color']), box_bg)
+    ratio = _contrast_ratio(text, box_bg)
+    assert ratio >= ERROR_TEXT_MIN_CONTRAST, (
+        f'.task-error 的文字 {text} 对合成后的底色 {box_bg} 只有 {ratio:.2f}:1，'
+        f'低于 WCAG 正文 {ERROR_TEXT_MIN_CONTRAST}:1 —— 失败原因会「在但看不清」'
+    )
+
+    m = re.search(r'(#[0-9a-fA-F]{6}|rgba?\([^)]*\)|var\(\s*--[-\w]+\s*\))',
+                  decls['border'])
+    assert m, f'.task-error 的 border 里解析不出颜色：{decls["border"]!r} —— 本测试已失效'
+    border = _flatten(_resolve_color(css, m.group(1)), card)
+    bratio = _contrast_ratio(border, card)
+    assert bratio >= ERROR_BORDER_MIN_CONTRAST, (
+        f'.task-error 的边框 {border} 对卡片底色 {card} 只有 {bratio:.2f}:1，'
+        f'低于图形元素 {ERROR_BORDER_MIN_CONTRAST}:1'
+    )
+
+
+# 兜底重置规则的形态：`div:not(.a):not(.b)... { background: transparent }`。
+_BLANKET_DIV_RESET = re.compile(r'^div(?::not\([^)]*\))+$')
+
+
+def test_task_error_survives_the_blanket_div_reset():
+    """`.task-error` 必须列进 `div:not(...)...{background:transparent}` 的白名单。
+
+    这条是 CDP 实测逼出来的，**上一条对比度断言拦不住它**：
+
+    style.css 里有一条兜底重置
+        div:not(.card):not(.modal-content):not(.alert):not(.badge)...
+        { background: transparent; }
+    特异度 (0,10,1) —— 10 个 `:not(.class)` 各贡献一个类。任何
+    `.task-error { background: ... }`(0,1,0) 都打不过它。
+
+    实测证据（Chrome 148，CDP `CSS.getMatchedStylesForNode`）：
+    加白名单之前，`.task-error` 的 `getComputedStyle().backgroundColor`
+    是 `rgba(0, 0, 0, 0)` —— 红色底纹**在源码里存在、在浏览器里完全不出现**，
+    而 test_task_error_box_exists_and_is_readable（只读源码算色值）依然全绿。
+    这正是 p2-assertion-review.md 反复强调的「写了断言 ≠ 断言守住了我以为的东西」。
+
+    ⚠️ 顺带记录一个本任务**没有**修的既有缺陷：`.task-card { background:
+    var(--color-bg-secondary) }` 同样被这条重置压掉，卡片底色一直是透明的。
+    目前肉眼看不出来，因为它背后的面板 `.card` 恰好也是 --color-bg-secondary，
+    两者同色。面板色一改，卡片就不会跟着走。修它属于 C1 类死规则清理，
+    不在 A1b 范围内。
+
+    覆盖范围（诚实说明）：兜底重置若被整条删掉，这条测试就没有东西可查、
+    自然通过 —— 那时确实也不需要白名单了，所以不算静默失效。
+    """
+    css = _css()
+    blankets = [
+        (sel, body) for sel, body, at_ctx in _rules_ctx(css)
+        if not at_ctx
+        for part in _selector_parts(sel)
+        if _BLANKET_DIV_RESET.fullmatch(part)
+        and 'transparent' in (_decl_map(body).get('background') or
+                              _decl_map(body).get('background-color') or '')
+    ]
+    problems = []
+    for sel, _body in blankets:
+        excluded = set(re.findall(r':not\(\s*([^)]*?)\s*\)', sel))
+        if '.task-error' not in excluded:
+            problems.append(
+                f'{sel[:60]}... 的 :not() 白名单里没有 .task-error'
+            )
+    assert not problems, (
+        '失败原因框的红色底纹会被 div 兜底重置压成透明（源码里有、浏览器里没有）：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )

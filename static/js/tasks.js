@@ -181,6 +181,10 @@ function renderActiveTasks(tasks) {
     }
 
     container.innerHTML = tasks.map(task => createTaskCard(task)).join('');
+    // createTaskCard 只吐一个空的 .task-error 容器（错误原文不能进 innerHTML），
+    // 文本在这里补。漏掉这一步的话，失败当场看得见原因，之后随便来一个新任务
+    // 触发整体重绘，红框就变空了。
+    tasks.forEach(applyTaskErrorText);
 }
 
 function createTaskCard(task) {
@@ -233,12 +237,24 @@ function createTaskCard(task) {
                             </svg>
                         </button>
                     ` : ''}
-                    <button class="btn btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                    </button>
+                    ${task.status !== 'failed' ? `
+                        <button class="btn btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    ` : ''}
+                    ${task.status === 'failed' ? `
+                        <button class="btn btn-secondary" onclick="dismissTask(${task.id}, '${task.task_type}')"
+                                title="从列表中移除这张失败卡片" aria-label="移除失败任务卡片">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                            移除
+                        </button>
+                    ` : ''}
                 </div>
             </div>
 
@@ -272,6 +288,10 @@ function createTaskCard(task) {
                 ${timeInfo.elapsed && timeInfo.estimated ? ' | ' : ''}
                 ${timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : ''}
             </div>
+            ` : ''}
+
+            ${task.status === 'failed' ? `
+            <div class="task-error" role="alert"></div>
             ` : ''}
         </div>
     `;
@@ -480,25 +500,66 @@ function handleTaskCompleted(taskId, taskType) {
     }
 }
 
+// 后端没给原因时的兜底文案。空字符串会渲染成一个空红框，比没有红框更让人困惑。
+const UNKNOWN_ERROR_TEXT = '任务失败，但后端没有返回失败原因。请查看服务端日志。';
+
 function handleTaskFailed(taskId, taskType, errorMessage) {
     const key = `${taskType}:${taskId}`;
     const task = activeTasks.get(key);
-    if (task) {
-        task.status = 'failed';
-        task.error_message = errorMessage;
-        activeTasks.delete(key);
+    if (!task) return;
 
-        const card = document.getElementById(`task-${key}`);
-        if (card) {
-            card.remove();
-        }
+    task.status = 'failed';
+    task.error_message = errorMessage || UNKNOWN_ERROR_TEXT;
+    task._key = key;   // applyTaskErrorText 靠它定位卡片；normalizeTask 之外的路径不一定设过
 
+    // 既不 activeTasks.delete 也不删卡片：卡片必须留在页面上。
+    // 原实现两件事一起做，于是用户盯着 63% 的进度条，卡片突然消失、零提示，
+    // 分不清是失败、被别人取消、还是自己看花了眼。
+    // 清理改由用户点卡片上的「移除」按钮触发（dismissTask）。
+    activeTasks.set(key, task);
+
+    const card = document.getElementById(`task-${key}`);
+    if (card) {
+        // 整卡重建而不是逐个改 class：进度条转红、徽章改「失败」、动作按钮
+        // 换成「移除」这几件事，createTaskCard 里都已经按 status 分支写好了，
+        // 手工同步 DOM 只会多一份会走偏的真相。
+        card.outerHTML = createTaskCard(task);
+        applyTaskErrorText(task);
+    } else {
         renderActiveTasks(Array.from(activeTasks.values()));
-
-        if (errorMessage) {
-            console.error(`Task ${taskId} failed: ${errorMessage}`);
-        }
     }
+
+    console.error(`Task ${taskId} failed: ${task.error_message}`);
+    // duration: 0 → ui.js 里 `if (duration > 0)` 不成立，不挂定时器，
+    // toast 一直留到用户自己点 ×。默认的 3500ms 在这里没用：用户离座一趟
+    // 回来照样什么都看不到。
+    showToast(`任务失败：${task.error_message}`, 'danger', { duration: 0 });
+}
+
+// 把错误文本填进卡片里那个**空的** .task-error 容器。
+//
+// 为什么不直接拼进 createTaskCard 的模板：那个返回值最终进 innerHTML，
+// 而 error_message 是后端异常的字符串化结果（URL、路径、第三方库报错原文
+// 都可能在里面），拼进去等于把它当 HTML 解析。ui.js 的 toast 里是同一条规矩。
+function applyTaskErrorText(task) {
+    if (!task || task.status !== 'failed') return;
+    const card = document.getElementById(`task-${task._key}`);
+    if (!card) return;
+    const box = card.querySelector('.task-error');
+    if (!box) return;
+    box.textContent = task.error_message || UNKNOWN_ERROR_TEXT;  // textContent 防 XSS
+}
+
+// 「移除」按钮：只把失败卡片从界面上拿走，不碰后端。
+//
+// 失败任务在后端已经是终态，再 POST /cancel 最好的情况也只是白跑一趟。
+// 也刻意**没有**「重试」：三个 manager 的 start_task 都要求
+// status in ('pending','paused')，对 failed 调用直接抛 ValueError，
+// 重试得先改后端状态机。
+function dismissTask(taskId, taskType = 'map') {
+    const key = `${taskType}:${taskId}`;
+    activeTasks.delete(key);
+    renderActiveTasks(Array.from(activeTasks.values()));
 }
 
 function getStatusColor(status) {
