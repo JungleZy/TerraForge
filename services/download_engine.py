@@ -28,6 +28,15 @@ WARN_TILES_THRESHOLD = 100000  # Warn user if tile count exceeds this threshold
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
 
+# CRS the per-tile georeferenced intermediates are written in. Single source of
+# truth: tile_geotransform returns it and _add_georeference bakes it into the
+# intermediate file name (tile_geo3857.tif), so a stale intermediate written in
+# a *different* CRS can never be picked up by the exists() short-circuit.
+# Before this was introduced the intermediates were plain `<tile>_geo.tif`;
+# releases up to 0.0.9 wrote those in EPSG:4326.
+TILE_GEOREF_EPSG = 3857
+LEGACY_GEOREF_SUFFIX = '_geo'  # pre-3857 intermediates — never reused, only deleted
+
 
 class DownloadCancelled(Exception):
     """Raised inside the download path when a task's stop flag is set.
@@ -583,7 +592,8 @@ class DownloadEngine:
         tiles: List[Tile],
         style: str,
         output_path: str,
-        zoom_level: int
+        zoom_level: int,
+        target_epsg: int = 4326
     ) -> str:
         """
         Stitch tiles into a single georeferenced image using GDAL
@@ -593,16 +603,22 @@ class DownloadEngine:
             style: Map style code
             output_path: Path for output file (GeoTIFF or PNG)
             zoom_level: Zoom level of the tiles
+            target_epsg: CRS of the output file. Defaults to 4326, which is what
+                this tool has always produced. Tiles are mosaicked in their
+                native EPSG:3857 (see tile_geotransform) and then reprojected
+                once at the end. Pass 3857 to skip the reprojection and get the
+                resample-free native mosaic.
 
         Returns:
             Path to the stitched output file
 
         Process:
             1. Get cache paths for all tiles
-            2. Add georeference to each tile (creates _geo.tif versions)
+            2. Add georeference to each tile (creates _geo3857.tif versions)
             3. Build VRT (Virtual Dataset) from georeferenced tiles
-            4. Translate VRT to final format with compression
-            5. Clean up temporary VRT file and georeferenced tiles
+            4. Reproject the VRT to target_epsg (skipped when it is already 3857)
+            5. Translate VRT to final format with compression
+            6. Clean up temporary VRT files and georeferenced tiles
 
         GDAL Configuration:
             - Compression: from config (gdal_compression)
@@ -637,89 +653,121 @@ class DownloadEngine:
 
         logger.info(f"Processing {len(tiles_at_zoom)} tiles at zoom level {zoom_level}")
 
-        # Get cache paths and create georeferenced versions
-        georef_paths = []
-        for tile in tiles_at_zoom:
-            cache_path = self._get_cache_path(tile, style)
-            if not cache_path.exists():
-                raise FileNotFoundError(f"Tile not found in cache: {cache_path}")
-
-            # Add georeference to tile
-            georef_path = self._add_georeference(str(cache_path), tile)
-            georef_paths.append(georef_path)
-
-        logger.info(f"Created {len(georef_paths)} georeferenced tiles")
-
-        # Build VRT (Virtual Dataset) from georeferenced tiles
-        # Use Path operations instead of string replace for robustness
+        # Intermediates are cleaned in the finally block below. They must NOT be
+        # cleaned only on the happy path: a single missing cache tile raises
+        # inside the loop below, and every intermediate produced so far would
+        # otherwise be stranded in the cross-task cache directory.
+        georef_paths: List[str] = []
         vrt_path_obj = output_path_obj.with_suffix('.vrt')
         vrt_path = str(vrt_path_obj)
-        logger.info(f"Building VRT: {vrt_path}")
+        warped_path_obj: Optional[Path] = None
 
-        vrt_options = gdal.BuildVRTOptions(
-            resampleAlg=gdal_resampling,
-            addAlpha=False
-        )
-        vrt_ds = gdal.BuildVRT(vrt_path, georef_paths, options=vrt_options)
-        if vrt_ds is None:
-            raise RuntimeError(f"Failed to build VRT from {len(georef_paths)} tiles")
-        vrt_ds = None  # Close VRT dataset
-
-        logger.info("VRT built successfully")
-
-        # Translate VRT to final format
-        logger.info(f"Translating VRT to final format: {output_path}")
-
-        # Determine output format based on file extension
-        output_ext = Path(output_path).suffix.lower()
-        if output_ext == '.tif' or output_ext == '.tiff':
-            output_format = 'GTiff'
-            translate_options = gdal.TranslateOptions(
-                format=output_format,
-                creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
-                resampleAlg=gdal_resampling
-            )
-        elif output_ext == '.png':
-            output_format = 'PNG'
-            translate_options = gdal.TranslateOptions(
-                format=output_format,
-                resampleAlg=gdal_resampling
-            )
-        else:
-            # Default to GeoTIFF
-            output_format = 'GTiff'
-            translate_options = gdal.TranslateOptions(
-                format=output_format,
-                creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
-                resampleAlg=gdal_resampling
-            )
-
-        # Perform translation
-        output_ds = gdal.Translate(str(output_path_obj), vrt_path, options=translate_options)
-        if output_ds is None:
-            raise RuntimeError(f"Failed to translate VRT to {output_path_obj}")
-        output_ds = None  # Close output dataset
-
-        logger.info(f"Translation completed: {output_path_obj}")
-
-        # Clean up temporary files
-        # 1. Clean up VRT file
         try:
-            vrt_path_obj.unlink()
-            logger.debug(f"Cleaned up VRT file: {vrt_path}")
-        except Exception as e:
-            logger.warning(f"Failed to clean up VRT file {vrt_path}: {e}")
+            # Get cache paths and create georeferenced versions
+            for tile in tiles_at_zoom:
+                cache_path = self._get_cache_path(tile, style)
+                if not cache_path.exists():
+                    raise FileNotFoundError(f"Tile not found in cache: {cache_path}")
 
-        # 2. Clean up temporary georeferenced tiles (_geo.tif files)
-        cleaned_count = 0
-        for georef_path in georef_paths:
-            try:
-                Path(georef_path).unlink()
-                cleaned_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to clean up georeferenced tile {georef_path}: {e}")
+                # Add georeference to tile
+                georef_path = self._add_georeference(str(cache_path), tile)
+                georef_paths.append(georef_path)
 
-        logger.debug(f"Cleaned up {cleaned_count}/{len(georef_paths)} temporary georeferenced tiles")
+            logger.info(f"Created {len(georef_paths)} georeferenced tiles")
+
+            # Build VRT (Virtual Dataset) from georeferenced tiles
+            # Use Path operations instead of string replace for robustness
+            logger.info(f"Building VRT: {vrt_path}")
+
+            vrt_options = gdal.BuildVRTOptions(
+                resampleAlg=gdal_resampling,
+                addAlpha=False
+            )
+            vrt_ds = gdal.BuildVRT(vrt_path, georef_paths, options=vrt_options)
+            if vrt_ds is None:
+                raise RuntimeError(f"Failed to build VRT from {len(georef_paths)} tiles")
+            vrt_ds = None  # Close VRT dataset
+
+            logger.info("VRT built successfully")
+
+            # Reproject to the requested CRS if it differs from the tile CRS.
+            # Tiles are georeferenced in EPSG:3857 (see tile_geotransform), so a
+            # real gdal.Warp is what turns them into correct EPSG:4326 output —
+            # not the linear latitude interpolation this code used to do.
+            # format='VRT' keeps the reprojection lazy; Translate below is still
+            # the only step that writes a full-size raster to disk.
+            translate_source = vrt_path
+            if target_epsg != TILE_GEOREF_EPSG:
+                warped_path_obj = output_path_obj.with_suffix('.warp.vrt')
+                logger.info(f"Warping VRT to EPSG:{target_epsg}: {warped_path_obj}")
+                warp_ds = gdal.Warp(
+                    str(warped_path_obj),
+                    vrt_path,
+                    format='VRT',
+                    dstSRS=f'EPSG:{target_epsg}',
+                    resampleAlg=gdal_resampling,
+                )
+                if warp_ds is None:
+                    raise RuntimeError(f"Failed to warp VRT to EPSG:{target_epsg}")
+                warp_ds = None
+                translate_source = str(warped_path_obj)
+
+            # Translate VRT to final format
+            logger.info(f"Translating VRT to final format: {output_path}")
+
+            # Determine output format based on file extension
+            output_ext = Path(output_path).suffix.lower()
+            if output_ext == '.tif' or output_ext == '.tiff':
+                output_format = 'GTiff'
+                translate_options = gdal.TranslateOptions(
+                    format=output_format,
+                    creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
+                    resampleAlg=gdal_resampling
+                )
+            elif output_ext == '.png':
+                output_format = 'PNG'
+                translate_options = gdal.TranslateOptions(
+                    format=output_format,
+                    resampleAlg=gdal_resampling
+                )
+            else:
+                # Default to GeoTIFF
+                output_format = 'GTiff'
+                translate_options = gdal.TranslateOptions(
+                    format=output_format,
+                    creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
+                    resampleAlg=gdal_resampling
+                )
+
+            # Perform translation
+            output_ds = gdal.Translate(str(output_path_obj), translate_source, options=translate_options)
+            if output_ds is None:
+                raise RuntimeError(f"Failed to translate VRT to {output_path_obj}")
+            output_ds = None  # Close output dataset
+
+            logger.info(f"Translation completed: {output_path_obj}")
+        finally:
+            # Clean up temporary files — on success *and* on failure.
+            # 1. Clean up VRT files (mosaic + optional reprojected one)
+            for temp_vrt in (vrt_path_obj, warped_path_obj):
+                if temp_vrt is None:
+                    continue
+                try:
+                    temp_vrt.unlink(missing_ok=True)
+                    logger.debug(f"Cleaned up VRT file: {temp_vrt}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up VRT file {temp_vrt}: {e}")
+
+            # 2. Clean up temporary georeferenced tiles (_geo3857.tif files)
+            cleaned_count = 0
+            for georef_path in georef_paths:
+                try:
+                    Path(georef_path).unlink(missing_ok=True)
+                    cleaned_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to clean up georeferenced tile {georef_path}: {e}")
+
+            logger.debug(f"Cleaned up {cleaned_count}/{len(georef_paths)} temporary georeferenced tiles")
 
         logger.info(f"GDAL tile stitching completed: {output_path_obj}")
         return str(output_path_obj)
@@ -754,7 +802,7 @@ class DownloadEngine:
         y0 = origin - tile.y * tile_span
 
         geotransform = [x0, tile_span / width, 0, y0, 0, -tile_span / height]
-        return geotransform, 3857
+        return geotransform, TILE_GEOREF_EPSG
 
     def _add_georeference(self, tile_path: str, tile: Tile) -> str:
         """
@@ -788,12 +836,36 @@ class DownloadEngine:
 
         Georef Path Format:
             Original: /path/to/tile.png
-            Georef:   /path/to/tile_geo.tif
+            Georef:   /path/to/tile_geo3857.tif
+
+            The CRS is part of the name on purpose. Releases up to 0.0.9 wrote
+            `tile_geo.tif` in EPSG:4326, and those files survive on disk
+            whenever a stitch aborts part-way (a missing cache tile raises
+            inside the loop). The cache is shared across tasks and upgrades
+            never clean it, so an untagged name plus the exists() short-circuit
+            below would happily feed a 4326 leftover into a 3857 mosaic.
+            Tagging the name makes that impossible without re-opening every
+            tile to verify its projection.
         """
         # Generate georeferenced file path using Path operations
         tile_path_obj = Path(tile_path)
-        georef_path_obj = tile_path_obj.with_stem(f"{tile_path_obj.stem}_geo").with_suffix('.tif')
+        georef_path_obj = tile_path_obj.with_stem(
+            f"{tile_path_obj.stem}_geo{TILE_GEOREF_EPSG}"
+        ).with_suffix('.tif')
         georef_path = str(georef_path_obj)
+
+        # Opportunistically drop the pre-3857 leftover for this tile so the
+        # existing residue on users' disks drains away as tiles get re-stitched
+        # instead of sitting there forever.
+        legacy_path_obj = tile_path_obj.with_stem(
+            f"{tile_path_obj.stem}{LEGACY_GEOREF_SUFFIX}"
+        ).with_suffix('.tif')
+        try:
+            if legacy_path_obj.exists():
+                legacy_path_obj.unlink()
+                logger.debug(f"Removed stale pre-3857 georeferenced tile: {legacy_path_obj}")
+        except Exception as e:
+            logger.warning(f"Failed to remove stale georeferenced tile {legacy_path_obj}: {e}")
 
         # Return if already exists
         if georef_path_obj.exists():
@@ -814,6 +886,16 @@ class DownloadEngine:
 
         # Calculate geotransform (see tile_geotransform for the math)
         geotransform, epsg_code = self.tile_geotransform(tile, width, height)
+
+        # The CRS is baked into georef_path. If they ever diverge the exists()
+        # short-circuit starts handing back files whose projection does not
+        # match their name — exactly the stale-residue bug the tag prevents.
+        if epsg_code != TILE_GEOREF_EPSG:
+            raise RuntimeError(
+                f"tile_geotransform returned EPSG:{epsg_code} but the intermediate "
+                f"file name is tagged EPSG:{TILE_GEOREF_EPSG}; update "
+                f"TILE_GEOREF_EPSG so cached intermediates stay self-describing"
+            )
 
         # Create georeferenced output file
         driver = gdal.GetDriverByName('GTiff')
