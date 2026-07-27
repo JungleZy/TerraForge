@@ -253,7 +253,7 @@ function createTaskCard(task) {
             </div>
 
             <div class="progress" style="height: 28px; margin-bottom: 0.75rem;">
-                <div class="progress-bar bg-${getProgressColor(progress)}" role="progressbar"
+                <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
                      style="width: ${progress}%"
                      aria-valuenow="${progress}"
                      aria-valuemin="0"
@@ -441,7 +441,7 @@ function updateTaskProgressPartial(card, task) {
         progressBar.style.width = `${progress}%`;
         progressBar.setAttribute('aria-valuenow', progress);
         progressBar.textContent = `${progress}%`;
-        progressBar.className = `progress-bar bg-${getProgressColor(progress)}`;
+        progressBar.className = `progress-bar bg-${getStatusColor(task.status)}`;
     }
 
     // 更新下载数量
@@ -511,14 +511,6 @@ function getStatusColor(status) {
         'cancelled': 'dark'
     };
     return colors[status] || 'secondary';
-}
-
-function getProgressColor(progress) {
-    if (progress >= 100) return 'success';
-    if (progress >= 75) return 'info';
-    if (progress >= 50) return 'primary';
-    if (progress >= 25) return 'warning';
-    return 'danger';
 }
 
 function getStatusText(status) {

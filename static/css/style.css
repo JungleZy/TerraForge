@@ -483,6 +483,26 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-danger) !important;
 }
 
+/* 进度条颜色由任务状态决定（getStatusColor），不由完成百分比决定。
+   getStatusColor 会返回 primary(运行中) / secondary(等待中) / dark(已取消)，
+   这三个原来没有覆盖，会回落到 Bootstrap 默认的 #0d6efd / #6c757d / #212529。
+   !important 是必需的：Bootstrap 的 .bg-* 工具类自带 !important，
+   不带的话我们更高的特异性也赢不了。
+
+   已取消用 --color-text-secondary 而不是 --color-bg-tertiary：
+   后者正是 `.progress` 轨道的底色，同色 = 进度条完全看不见。 */
+.progress-bar.bg-primary {
+    background: var(--color-accent-strong) !important;
+}
+
+.progress-bar.bg-secondary {
+    background: var(--color-text-muted) !important;
+}
+
+.progress-bar.bg-dark {
+    background: var(--color-text-secondary) !important;
+}
+
 /* Zoom Progress Styles */
 .zoom-progress {
     margin-top: 1.5rem;

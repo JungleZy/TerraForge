@@ -222,7 +222,7 @@ def test_font_size_scale_variables_unchanged():
 # --------------------------------------------------------------------------
 
 def test_important_count_under_control():
-    """!important 声明总量上界 = 69。
+    """!important 声明总量上界 = 72。
 
     阈值构成（全部实测，不是估的）：
       Task 2 清理前 92 处
@@ -231,9 +231,17 @@ def test_important_count_under_control():
                它的 color !important 保留，不在本次范围）
       = 67 处（Task 2 后实测）
       -  1 处：Task 3 删掉的 .text-center 的 color !important（布局类不该管颜色）
-      = 66 处（Task 3 后实测的真实值）
+      = 66 处（Task 3 后实测）
+      +  3 处：**A1 / Task 5 新增**，登记如下——
+               .progress-bar.bg-primary   / .bg-secondary / .bg-dark 各 1 处。
+               压的是 Bootstrap 5.3.0 的 `.bg-primary{...!important}` 等工具类。
+               为什么非 !important 不可：important 声明之间先比来源、再比特异性，
+               我们的 `.progress-bar.bg-primary`(0,2,0) 若不带 !important，
+               就输给带 !important 的 `.bg-primary`(0,1,0)，运行中的进度条会是
+               Bootstrap 默认蓝 #0d6efd（已用 CDP 实测确认过这个回落）。
+      = 69 处（Task 5 后实测的真实值）
       + 3 处余量：留给后续任务里个别确实必须压 Bootstrap 的新规则
-      = 69
+      = 72
 
     ⚠️ 棘轮规则（分两种任务，别混用）：
 
@@ -262,9 +270,9 @@ def test_important_count_under_control():
     """
     css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
     count = css.count('!important')
-    assert count <= 69, (
-        f'!important 声明有 {count} 处，应 <= 69（Task 2 前 92 → Task 2 后 67 → '
-        'Task 3 后实测 66，余量 3）'
+    assert count <= 72, (
+        f'!important 声明有 {count} 处，应 <= 72（Task 2 前 92 → Task 2 后 67 → '
+        'Task 3 后 66 → Task 5 +3 条进度条覆盖后实测 69，余量 3）'
     )
 
 
@@ -865,6 +873,165 @@ def test_form_select_arrow_has_sufficient_contrast():
     assert ratio >= 3.0, (
         f'下拉箭头 {stroke} 对面板底色 {panel} 的对比度只有 {ratio:.2f}:1，'
         '低于 WCAG 图形元素 3:1 的下限——箭头会"在但看不见"，等于没修'
+    )
+
+
+# --------------------------------------------------------------------------
+# A1 / Task 5：进度条状态色
+# --------------------------------------------------------------------------
+
+_JS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static', 'js'
+)
+
+
+def _js(name):
+    with open(os.path.join(_JS_DIR, name), encoding='utf-8') as f:
+        return f.read()
+
+
+def _js_function_body(src, name):
+    """按花括号配对切出 `function <name>(...)` 的函数体。
+
+    不用「下一个函数名的 index」做切片终点——那依赖函数在文件里的先后顺序，
+    顺序一调 `end < start`，切片返回空串，负向断言集体永真
+    （p2-assertion-review.md 的 E 条）。这里配对花括号，与顺序无关。
+    """
+    m = re.search(r'function\s+' + re.escape(name) + r'\s*\(', src)
+    assert m, f'找不到 function {name}( —— 本测试已失效'
+    start = src.index('{', m.end() - 1)
+    depth = 0
+    for j in range(start, len(src)):
+        if src[j] == '{':
+            depth += 1
+        elif src[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return src[start + 1:j]
+    raise AssertionError(f'function {name} 花括号不配对 —— 本测试已失效')
+
+
+def _status_color_names(js_name):
+    """某个 JS 文件里 getStatusColor 可能返回的全部 Bootstrap 颜色名。
+
+    直接从 JS 源码解析（映射表的值 + `|| 'xxx'` 兜底），而不是在测试里
+    手抄一份清单——手抄的清单会在有人给 getStatusColor 加状态时静默过期，
+    新状态没有对应的 .progress-bar 覆盖，进度条回落到 Bootstrap 默认色。
+    """
+    body = _js_function_body(_js(js_name), 'getStatusColor')
+    names = set(re.findall(r":\s*'([a-z]+)'", body))
+    fallback = set(re.findall(r"\|\|\s*'([a-z]+)'", body))
+    assert names, f'{js_name} 的 getStatusColor 里解析不出颜色名 —— 本测试已失效'
+    assert fallback, f"{js_name} 的 getStatusColor 没有 `|| 'xxx'` 兜底 —— 本测试已失效"
+    return names | fallback
+
+
+def _progress_bar_color_rules(css):
+    """`.progress-bar.bg-XXX` 规则 -> {颜色名: [(选择器, 规则体), ...]}。"""
+    out = {}
+    for sel, body in _rules(css):
+        for part in _selector_parts(sel):
+            m = re.fullmatch(r'\.progress-bar\.bg-([a-z]+)', part.strip())
+            if m:
+                out.setdefault(m.group(1), []).append((sel, body))
+    return out
+
+
+def _progress_track_color(css):
+    """`.progress` 轨道底色的字面值（进度条填充色不能等于它，否则等于看不见）。"""
+    tracks = [body for sel, body in _rules(css) if '.progress' in _selector_parts(sel)]
+    assert len(tracks) == 1, (
+        f'期望恰好 1 条裸 `.progress` 规则，实际 {len(tracks)} 条 —— 本测试已失效'
+    )
+    value = _decl_map(tracks[0]).get('background') or _decl_map(tracks[0]).get('background-color')
+    assert value, '`.progress` 没有声明背景色 —— 本测试已失效'
+    return _IMPORTANT_RE.sub('', value).strip()
+
+
+def test_every_status_color_has_a_progress_bar_override():
+    """getStatusColor 能返回的**每一个**颜色名都必须有 .progress-bar 覆盖，
+    且该覆盖真的声明了背景色、带 !important、用调色板变量、不等于轨道底色。
+
+    强度说明（计划原文给的是 `assert '.progress-bar.bg-primary' in css`）：
+    那条只查字符串存在——写一条空规则 `.progress-bar.bg-primary {}` 就能过，
+    而进度条颜色仍然回落到 Bootstrap 默认蓝 #0d6efd。这里逐项落地：
+
+      1. **规则存在且恰好一条**。两条同名规则说明有人在别处又覆盖了一次，
+         改前面那条不生效（这正是 Task 2 清掉的那种形态）。
+      2. **规则体里真的有背景色声明**。空规则 / 只写 color 都算失败。
+      3. **必须带 !important**。这不是洁癖：Bootstrap 5.3.0 的
+         `.bg-primary{...background-color:rgba(var(--bs-primary-rgb),...)!important}`
+         自带 !important，important 声明之间先比来源再比特异性——我们的
+         `.progress-bar.bg-primary`(0,2,0) 只有同样带 !important 才赢得过
+         `.bg-primary`(0,1,0)。不带的话规则在、颜色还是 Bootstrap 的。
+      4. **值必须是 var(--color-*)**。硬编码色号会在调色板改动时静默漂移。
+      5. **解析出的色值不能等于 `.progress` 轨道底色**。计划原文建议
+         `.progress-bar.bg-dark { background: var(--color-bg-tertiary) }`，
+         而 `.progress` 的底色恰恰就是 var(--color-bg-tertiary)——
+         规则在、变量对、测试全绿，而已取消任务的进度条与轨道同色，
+         肉眼完全看不见。这一条就是为了拦住这种「写了等于没写」。
+
+    覆盖范围（诚实说明）：这条守的是「CSS 源码的形态」。它保证不了
+    「浏览器最终算出来是什么颜色」——那部分由 CDP 实测覆盖。
+    """
+    css = _css()
+    required = _status_color_names('tasks.js') | _status_color_names('history.js')
+    # 自检：这三个正是本任务补上的（原来只有 success/info/warning/danger）。
+    # 解析要是出了岔子导致 required 变小，负向遍历会静默变绿。
+    assert {'primary', 'secondary', 'dark'} <= required, (
+        f'从 getStatusColor 解析出的颜色名是 {sorted(required)}，'
+        '缺了 primary/secondary/dark —— 解析逻辑已失效'
+    )
+
+    rules = _progress_bar_color_rules(css)
+    track = _progress_track_color(css)
+    problems = []
+    for name in sorted(required):
+        found = rules.get(name, [])
+        if not found:
+            problems.append(
+                f'.progress-bar.bg-{name}: 没有这条规则 —— '
+                f'getStatusColor 会返回 {name!r}，进度条会用 Bootstrap 默认色'
+            )
+            continue
+        if len(found) > 1:
+            problems.append(f'.progress-bar.bg-{name}: 有 {len(found)} 条同名规则，应恰好 1 条')
+            continue
+        decls = _decl_map(found[0][1])
+        raw = decls.get('background') or decls.get('background-color')
+        if raw is None:
+            problems.append(
+                f'.progress-bar.bg-{name}: 规则体里没有背景色声明 —— '
+                '空规则同样让颜色回落到 Bootstrap 默认色'
+            )
+            continue
+        if not _IMPORTANT_RE.search(raw):
+            problems.append(
+                f'.progress-bar.bg-{name}: 背景色 {raw!r} 没带 !important —— '
+                f'压不过 Bootstrap 的 .bg-{name}{{...!important}}'
+            )
+        value = _IMPORTANT_RE.sub('', raw).strip()
+        m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', value)
+        if not m:
+            problems.append(
+                f'.progress-bar.bg-{name}: 背景色 {value!r} 不是单个 var(--color-*)，'
+                '硬编码色号会在调色板改动时静默漂移'
+            )
+            continue
+        if value == track:
+            problems.append(
+                f'.progress-bar.bg-{name}: 背景色 {value} 与 `.progress` 轨道底色相同，'
+                '进度条与轨道同色 = 完全看不见'
+            )
+        resolved = _palette_var(css, m.group(1))
+        track_var = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', track)
+        if track_var and resolved == _palette_var(css, track_var.group(1)):
+            problems.append(
+                f'.progress-bar.bg-{name}: {value} 解析出的色值 {resolved} '
+                f'与轨道底色相同 = 完全看不见'
+            )
+    assert not problems, (
+        '进度条状态色覆盖不完整：\n' + '\n'.join('  ' + p for p in problems)
     )
 
 

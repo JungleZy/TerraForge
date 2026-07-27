@@ -293,14 +293,9 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             ? Math.round((done / total) * 100)
             : 0;
 
-        const progressColor = progress >= 100 ? 'success' :
-                             progress >= 75 ? 'info' :
-                             progress >= 50 ? 'primary' :
-                             progress >= 25 ? 'warning' : 'danger';
-
         document.getElementById('detailProgress').innerHTML = `
             <div class="progress" style="height: 28px; margin-top: 0.5rem;">
-                <div class="progress-bar bg-${progressColor}" role="progressbar" style="width: ${progress}%">
+                <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar" style="width: ${progress}%">
                     ${progress}%
                 </div>
             </div>
