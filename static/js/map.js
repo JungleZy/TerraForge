@@ -74,6 +74,20 @@ function initMap(config) {
         updateBoundsInfo();
         refreshSubmitButtonState();
     });
+
+    // 拖角 / 整体拖动时实时同步，用户不必点保存就能看到四至变化
+    map.on(L.Draw.Event.EDITRESIZE, syncBoundsFromDrawnItems);
+    map.on(L.Draw.Event.EDITMOVE, syncBoundsFromDrawnItems);
+
+    // 点「保存」后确认一次
+    map.on(L.Draw.Event.EDITED, syncBoundsFromDrawnItems);
+
+    // 退出编辑模式。leaflet.draw 1.0.4 在取消时先 revertLayers() 还原图形、
+    // 之后才 fire EDITSTOP，所以这里重读 bounds 对保存和取消都正确。
+    map.on(L.Draw.Event.EDITSTOP, syncBoundsFromDrawnItems);
+
+    // 删除模式结束后同样重读（DELETED 只在真的删了东西时触发）
+    map.on(L.Draw.Event.DELETESTOP, syncBoundsFromDrawnItems);
 }
 
 function initDownloadTypeToggle() {
@@ -132,6 +146,40 @@ function initDownloadTypeToggle() {
     }
 
     apply();
+}
+
+// 从 drawnItems 里当前的图层重新读取 bbox。
+// 编辑（拖角/拖动/保存/取消）之后统一走这里，保证右侧四至和地图上看到的一致。
+//
+// 前提：eachLayer 遍历取的是**最后一个**有 getBounds 的图层，也就是隐含假设
+// drawnItems 里最多只有一个选区。当前 L.Draw.Event.CREATED 分支会先
+// clearLayers() 再 addLayer()，这个假设成立。将来若支持多选区，这里必须改成
+// 合并所有图层的 bounds（或按选中态取）。
+//
+// 幂等：重复调用无副作用——DELETESTOP 和 DELETED 会都触发，两次读到同样的结果。
+function syncBoundsFromDrawnItems() {
+    let found = null;
+    if (drawnItems) {
+        drawnItems.eachLayer(function (layer) {
+            if (typeof layer.getBounds === 'function') {
+                found = layer.getBounds();
+            }
+        });
+    }
+
+    if (found) {
+        currentBounds = {
+            north: found.getNorth(),
+            south: found.getSouth(),
+            east: found.getEast(),
+            west: found.getWest()
+        };
+    } else {
+        currentBounds = null;
+    }
+
+    updateBoundsInfo();
+    refreshSubmitButtonState();
 }
 
 // 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
