@@ -134,7 +134,8 @@ body {
    overlay / toast) — otherwise this high-specificity rule forces their solid
    background transparent, making the dialogs unreadable. */
 /* 兜底重置：把 Bootstrap 给 div 的各种白底抹掉。
-   特异度 (0,10,1)，比任何 `.xxx { background: ... }`(0,1,0) 都高，所以**凡是
+   特异度 (0,11,1)（11 个 `:not(.class)` 各贡献一个类），比任何
+   `.xxx { background: ... }`(0,1,0) 都高，所以**凡是
    自己需要背景色的 div 都必须列进这串 :not() 白名单**，否则它的 background
    声明是死的（源码里看着有，浏览器里是透明）。
    `.task-error`(A1b) 是红色底纹的失败原因框，加入白名单；
@@ -1506,13 +1507,21 @@ code {
 
 /* 禁用态（首屏的「编辑」「删除」就是这个状态）。
 
-   为什么不能沿用上面那条 1.25：leaflet.draw 的雪碧图里两个禁用格子**用了两种
-   不同的灰**（实测 SVG：禁用「编辑」仍是 #464646，禁用「删除」是 #bbbbbb）。
-   同一条 filter 下反色后一个 13.8:1、一个 4.8:1 —— 前者亮得跟可用态一模一样，
-   看不出是禁用的。这里先用 brightness(4) 把两个格子都推到白（alpha 不受 filter
-   影响，边缘抗锯齿不会糊），再用 opacity 统一压暗，两个禁用图标才一致。 */
+   为什么必须自己造这个视觉差异：leaflet.draw 的雪碧图里，**禁用格子和可用格子
+   是像素级相同的**。它的 SVG 本意是靠 `<g id="disabled" style="fill:#bbbbbb">`
+   把图标变浅，但组里放的是 `<use xlink:href="#edit">` / `<use xlink:href="#remove">`，
+   而被引用的那两个 group 自带 `style="fill:#464646;fill-opacity:1"` —— 子元素
+   自己的 fill 压掉了祖先的 #bbbbbb，那个浅灰**一次都没生效**。
+   （实测：把四个格子分别画到白底 canvas 上读像素，可用/禁用的主导非白色
+     全是 rgb(70,70,70)，没有任何 rgb(187,187,187)；改前页面上两个禁用按钮的
+     对比度也都是 9.17:1，与可用态完全一样。）
+
+   所以禁用态不能只靠上游的雪碧图，必须由主题自己压暗。这里只加 opacity ——
+   filter 继续用上面那条（同一张图、同一个反色），只是整体淡下去，
+   是「同一个图标、变淡」这个惯用表达。渲染后实测 4.67:1，明显弱于可用态的 13.89:1。
+   数值由 tests/test_css_contract.py::test_leaflet_draw_icon_stays_visible_through_the_map_filter
+   从源码算出来钉住（模型算 4.70、CDP 实测 4.67，逐通道差 <=1）。 */
 .leaflet-draw-toolbar a.leaflet-disabled {
-    filter: invert(1) brightness(4);
     opacity: 0.55;
 }
 

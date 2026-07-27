@@ -2072,24 +2072,51 @@ _SPRITE_BUTTON_CLASSES = (
     'leaflet-draw-edit-edit',
     'leaflet-draw-edit-remove',
 )
-# 按钮 <a> 的祖先/自身身上的类。leaflet.draw 1.0.4 建工具条时写死的是
-# `L.DomUtil.create("div", "leaflet-draw-toolbar leaflet-bar")`，两个类在同一个 div 上。
-_TOOLBAR_CONTAINER_CLASSES = ('leaflet-bar', 'leaflet-draw-toolbar')
+# 按钮 <a> 的祖先/自身身上的类 —— 任何一个都能当后代选择器的前缀命中那三个按钮。
+# 实测 DOM（leaflet.draw 1.0.4 + leaflet 1.9.4）：
+#   <div class="leaflet-top leaflet-left">                     leaflet.css 的 pane
+#     <div class="leaflet-draw leaflet-control">               ← leaflet-draw / leaflet-control
+#       <div class="leaflet-draw-section">                     ← leaflet-draw-section
+#         <div class="leaflet-draw-toolbar leaflet-bar">       ← 两个类在同一个 div 上
+#           <a class="leaflet-draw-draw-rectangle">
+#
+# 只认 leaflet-bar / leaflet-draw-toolbar 是不够的：`.leaflet-draw a`（leaflet.draw
+# 自己就用了这个写法）、`.leaflet-draw-section a`、`.leaflet-control a` 同样命中
+# 那三个按钮，在它们身上写 `background:` 简写照样把雪碧图清光。
+_TOOLBAR_CONTAINER_CLASSES = (
+    'leaflet-bar',
+    'leaflet-draw-toolbar',
+    'leaflet-draw-section',
+    'leaflet-draw',
+    'leaflet-control',
+    'leaflet-left',
+    'leaflet-top',
+)
+
+
+def _class_tokens(text):
+    """选择器片段里的类名 token 集合。
+
+    必须按 token 比而不是子串比：`'leaflet-draw' in '.leaflet-draw-actions'`
+    是真的，但 `.leaflet-draw-actions a` 命中的是操作条按钮、**不是**雪碧图按钮，
+    在它身上写 background-color 完全合法。子串匹配会把它误判成违规。
+    """
+    return set(re.findall(r'\.([\w-]+)', text))
 
 
 def _matches_sprite_button(part):
     """这一支选择器会不会命中带雪碧图的绘制按钮 <a>？
 
     两种命中方式：
-      1. 直接点名按钮类（`.leaflet-draw-edit-remove`）
-      2. 后代选择器最后一节是 `a`，且前面出现过工具条容器类
-         （`.leaflet-bar a:hover` / `.leaflet-draw-toolbar a.leaflet-disabled`）
+      1. 直接点名按钮类（`.leaflet-draw-edit-remove` /
+         `.leaflet-draw-toolbar .leaflet-draw-draw-rectangle`）
+      2. 后代选择器最后一节是 `a`，且祖先部分出现过按钮 <a> 真实祖先链上的类
+         （`.leaflet-bar a:hover` / `.leaflet-draw a` / `.leaflet-control a` ...）
 
-    只查「`.leaflet-draw-toolbar a`」这一种字面写法是不够的：`.leaflet-bar a`
-    同样命中这三个按钮（两个类在同一个 div 上），在它身上写 background 简写
-    照样把图标清光。
+    只查「`.leaflet-draw-toolbar a`」这一种字面写法是不够的 ——
+    见 _TOOLBAR_CONTAINER_CLASSES 的注释。
     """
-    if any(c in part for c in _SPRITE_BUTTON_CLASSES):
+    if _class_tokens(part) & set(_SPRITE_BUTTON_CLASSES):
         return True
     compounds = part.split()
     if len(compounds) < 2:
@@ -2098,8 +2125,8 @@ def _matches_sprite_button(part):
     # 末节必须是 a（允许挂类和伪类：a、a:hover、a.leaflet-disabled:hover）
     if not re.fullmatch(r'a(?:[.:][\w-]+(?:\([^)]*\))?)*', last):
         return False
-    ancestors = ' '.join(compounds[:-1])
-    return any(c in ancestors for c in _TOOLBAR_CONTAINER_CLASSES)
+    ancestors = _class_tokens(' '.join(compounds[:-1]))
+    return bool(ancestors & set(_TOOLBAR_CONTAINER_CLASSES))
 
 
 def _sprite_button_rules(css):
@@ -2536,32 +2563,295 @@ def test_leaflet_draw_build_matches_the_locale_key_snapshot():
     )
 
 
-def test_style_css_is_the_last_stylesheet():
-    """style.css 必须排在所有第三方样式表之后。
+def _all_templates():
+    """templates/ 下全部 .html 的 (文件名, 内容)。"""
+    out = []
+    for fn in sorted(os.listdir(_TEMPLATES_DIR)):
+        if fn.lower().endswith('.html'):
+            with open(os.path.join(_TEMPLATES_DIR, fn), encoding='utf-8') as f:
+                out.append((fn, f.read()))
+    assert out, 'templates/ 下一个 .html 都没有 —— 本测试已失效'
+    return out
+
+
+def test_no_stylesheet_can_load_after_style_css():
+    """全部 `<link rel="stylesheet">` 必须都在 base.html 里、且排在 style.css 之前。
 
     为什么这条是必需的：本次 Leaflet 主题化里，**打在 <a> 上的那几条规则
     刻意没有用 !important**——它们靠的是「同特异度、源码靠后者胜」赢过
     leaflet.css。例如
         leaflet.css     .leaflet-bar a.leaflet-disabled { background-color:#f4f4f4 }  (0,2,1)
         style.css       .leaflet-bar a, .leaflet-bar a.leaflet-disabled { ...transparent } (0,2,1)
-    只要有人把 <link> 顺序调一下（或在 style.css 后面再插一张第三方表），
-    首屏那两个禁用按钮立刻变回 #f4f4f4 的白块，而所有只读源码的断言全绿。
+    只要有任何样式表排到 style.css 后面，首屏那两个禁用按钮就会变回
+    #f4f4f4 的白块，而所有只读源码的断言全绿。
 
-    比起给每条规则都加 !important，把顺序本身钉住更划算：
-    坏掉时是这条测试变红，而不是界面静默漏白。
+    ⚠️ 为什么要扫整个 templates/ 而不是只扫 base.html（评审实测出来的盲区）：
+    base.html 里 `{% block extra_css %}{% endblock %}` 的位置在 style.css
+    **之后**，而「加页面级样式表」在这个代码库里唯一的惯用做法就是覆写这个
+    block。变异实验：在 index.html 里写
+        {% block extra_css %}<link rel="stylesheet" href="https://example.com/third.css">{% endblock %}
+    只扫 base.html 的版本是 **35 passed 全绿**，而那张表会实打实地排在
+    style.css 后面、把整套「靠后加载取胜」的方案静默掀翻。
+
+    为什么选「收紧断言」而不是「把 block 挪到 style.css 之前」：
+    挪 block 会把「页面级 CSS 覆盖全局 CSS」这个人人都会预期的语义反过来，
+    给以后第一个用这个 block 的人埋一个更难查的坑；而且当前**没有任何模板**
+    覆写 extra_css（实测只有 extra_js 有人用），挪它换不来任何现实收益。
+    收紧断言则把成本放在正确的时刻：真要加页面级样式表时这条会红，
+    失败信息里直接给出三个可选做法。
+
+    覆盖范围（诚实说明）：这条查的是 `<link rel=stylesheet>`。
+    在 extra_css 里写**内联 `<style>` 块**同样排在 style.css 之后，本条查不到。
+    没有一并禁掉是因为内联块是「本项目自己刻意写的页面级样式」，与
+    「第三方表静默掀翻层叠顺序」不是同一个风险等级；真要动 Leaflet 控件的人
+    会先读到 style.css 段首那三条注释。
     """
-    sheets = [
-        attrs.get('href') or ''
-        for name, attrs in _start_tags(_template('base.html'))
-        if name == 'link' and (attrs.get('rel') or '').lower() == 'stylesheet'
-    ]
-    assert sheets, 'base.html 里解析不出任何 <link rel="stylesheet"> —— 本测试已失效'
-    own = [i for i, h in enumerate(sheets) if 'style.css' in h]
-    assert len(own) == 1, (
-        f'base.html 里有 {len(own)} 处引用 style.css，期望恰好 1 处 —— 本测试已失效'
+    offenders = []
+    for fn, markup in _all_templates():
+        sheets = [
+            attrs.get('href') or ''
+            for name, attrs in _start_tags(markup)
+            if name == 'link' and (attrs.get('rel') or '').lower() == 'stylesheet'
+        ]
+        if fn == 'base.html':
+            assert sheets, 'base.html 里解析不出任何 <link rel="stylesheet"> —— 本测试已失效'
+            own = [i for i, h in enumerate(sheets) if 'style.css' in h]
+            assert len(own) == 1, (
+                f'base.html 里有 {len(own)} 处引用 style.css，期望恰好 1 处 —— 本测试已失效'
+            )
+            offenders += [f'base.html: {h}（排在 style.css 之后）' for h in sheets[own[0] + 1:]]
+        else:
+            # 子模板里的 <link> 只能来自 {% block extra_css %}，而那个 block
+            # 在 base.html 里的位置就在 style.css 后面。
+            offenders += [f'{fn}: {h}（子模板的样式表一定排在 style.css 之后）' for h in sheets]
+    assert not offenders, (
+        '有样式表会排到 style.css 后面，Leaflet 覆盖规则（未用 !important 的那些）会被压掉：\n'
+        + '\n'.join('  ' + o for o in offenders)
+        + '\n可选做法：(a) 把这些样式并进 style.css；(b) 改用内联 <style> 并确认不碰 .leaflet-*；'
+          '(c) 给 style.css 的 Leaflet 段落逐条补 !important（会抬高 !important 上界，需登记）。'
     )
-    after = [h for h in sheets[own[0] + 1:]]
-    assert not after, (
-        'style.css 后面还有别的样式表，Leaflet 覆盖规则（未用 !important 的那些）'
-        '会被它们压掉：\n' + '\n'.join('  ' + h for h in after)
+
+
+# --------------------------------------------------------------------------
+# 图标可见性：从源码把整条渲染链算出来
+#
+# 上面那几条 Leaflet 断言守的都是**形态**（有没有用简写、有没有带 !important）。
+# 评审实测出的盲区：把 `brightness(1.25)` 改成 `brightness(0.05)`，图标渲染成
+# rgb(14,14,14) 压在 rgb(8,10,15) 上、约 1.04:1 完全看不见，而 8 条形态断言
+# **全绿**。本节补上这一半：把源码里的数值代进渲染链，直接算对比度。
+#
+# 渲染链（每一步都是 CSS 规范定义的确定性运算，不是估的）：
+#   1. 雪碧图墨色                     #464646
+#   2. 元素自身 filter: invert(1)     255 - v
+#   3. 元素自身 filter: brightness(b) v * b，钳到 [0,255]
+#   4. 元素自身 opacity α             与容器底色按 α 混合
+#   5. 祖先 #map 的 filter            brightness(b2) 再 contrast(c)
+#   底色走同一条 5（它也在 #map 里）。
+#
+# 这个模型是**对着 CDP 实测校准过的**，三个独立数据点全部逐位命中：
+#   可用态图标   模型 rgb(216,216,216) / 13.89:1   实测 rgb(216,216,216) / 13.89:1
+#   容器底色     模型 rgb(8,10,15)                 实测 rgb(8,10,15)
+#   禁用态图标   模型 rgb(122,123,126) / 4.61:1    实测（见报告）
+# --------------------------------------------------------------------------
+
+# 雪碧图的墨色。来源：CDN 上 leaflet.draw 1.0.4 的 images/spritesheet.svg，
+# 全图 16 处 `style="fill:#464646;fill-opacity:1"`。
+#
+# ⚠️ 一个容易写错的事实（本报告初版就写错了，评审查实订正）：SVG 里确实有一处
+# `<g id="disabled" style="fill:#bbbbbb">`，但组里放的是 `<use xlink:href="#edit">`
+# / `<use xlink:href="#remove">`，而被引用的两个 group 自带
+# `style="fill:#464646;fill-opacity:1"` —— 子元素自己的 fill 压掉了祖先的 #bbbbbb，
+# 那个浅灰**一次都没生效**。实测：把四个格子（可用/禁用 × 编辑/删除）分别画到
+# 白底 canvas 上读像素，主导非白色全是 rgb(70,70,70)，没有任何 rgb(187,187,187)。
+# 所以禁用态和可用态的雪碧图墨色**相同**，禁用的视觉差异必须由主题自己做出来。
+SPRITE_INK_HEX = '#464646'
+
+# 图形元素对比度下限。与 --color-neutral 注释、
+# test_progress_bar_fill_has_sufficient_contrast 用的是同一条项目标准（WCAG 1.4.11）。
+ICON_MIN_CONTRAST = 3.0
+
+
+def _filter_ops(value):
+    """`invert(1) brightness(1.25)` -> {'invert': 1.0, 'brightness': 1.25}（同名取乘积）。"""
+    out = {}
+    for name, arg in re.findall(r'([a-z-]+)\(\s*([^)]*)\s*\)', (value or '').lower()):
+        arg = arg.strip()
+        if arg.endswith('%'):
+            num = float(arg[:-1]) / 100
+        else:
+            try:
+                num = float(arg)
+            except ValueError:
+                continue
+        out[name] = out.get(name, 1.0) * num
+    return out
+
+
+def _apply_filter(rgb, ops):
+    """按 CSS filter 规范顺序应用 invert / brightness / contrast（本项目只用到这三个）。"""
+    out = []
+    for v in rgb:
+        if 'invert' in ops:
+            amt = ops['invert']
+            v = v * (1 - amt) + (255 - v) * amt
+        if 'brightness' in ops:
+            v = v * ops['brightness']
+        if 'contrast' in ops:
+            v = (v / 255 - 0.5) * ops['contrast'] * 255 + 127.5
+        out.append(max(0.0, min(255.0, v)))
+    return tuple(out)
+
+
+def _leaflet_button_state(css, disabled):
+    """绘制按钮在指定状态下的 (filter ops, opacity)。
+
+    按 CSS 层叠取值：`.leaflet-draw-toolbar a` 提供基线，
+    `.leaflet-draw-toolbar a.leaflet-disabled`（特异度更高）在禁用态覆盖它。
+    某个属性没被覆盖就沿用基线 —— 这正是「禁用态只声明 opacity、filter 继续用
+    基线那条」能成立的原因。
+    """
+    ops, opacity = None, 1.0
+    for sel, body in _rules(css):
+        for part in _selector_parts(_norm_selector(sel)):
+            if re.search(r':(hover|focus|active)', part):
+                continue
+            tokens = _class_tokens(part)
+            if 'leaflet-draw-toolbar' not in tokens or not part.split()[-1].startswith('a'):
+                continue
+            is_disabled_rule = 'leaflet-disabled' in tokens
+            if is_disabled_rule and not disabled:
+                continue
+            decls = _decl_map(body)
+            if 'filter' in decls:
+                ops = _filter_ops(_IMPORTANT_RE.sub('', decls['filter']))
+            if 'opacity' in decls:
+                opacity = float(_IMPORTANT_RE.sub('', decls['opacity']).strip())
+    return ops, opacity
+
+
+def test_leaflet_draw_icon_stays_visible_through_the_map_filter():
+    """把源码里的数值代进渲染链，算出来的图标对比度必须 >= 3:1。
+
+    这是唯一一条对「图标看不看得见」真正敏感的断言。上面几条守的是形态
+    （简写 / !important / transparent），对**数值改坏**完全失明：
+    `brightness(1.25)` -> `brightness(0.05)` 会让图标渲染成 rgb(14,14,14) 压在
+    rgb(8,10,15) 上（约 1.04:1，人眼完全看不见），而那 8 条断言一条都不红。
+
+    额外还断言「可用态必须比禁用态明显更强」——否则把禁用态的 opacity 调到 1，
+    禁用/可用一模一样，首屏那两个按钮看起来是能点的，而对比度断言照样绿。
+
+    模型来源与校准见本节顶部注释：三个独立 CDP 数据点逐位命中，不是估算。
+    """
+    css = _css()
+
+    # 容器底色（渲染前）
+    bg_hex = _palette_var(css, '--color-bg-secondary')
+    assert re.fullmatch(r'#[0-9a-f]{6}', bg_hex), (
+        f'--color-bg-secondary 是 {bg_hex!r}，本测试只会算 6 位 hex —— 已失效，请更新'
+    )
+    container = _hex_to_rgb(bg_hex)
+
+    # 工具条容器真的用了这个变量吗？不然算的是一个没人用的颜色
+    holder = [
+        body for sel, body in _rules(css)
+        for part in _selector_parts(_norm_selector(sel))
+        if part == '.leaflet-bar'
+    ]
+    assert holder and any('--color-bg-secondary' in (_decl_map(b).get('background-color') or '')
+                          for b in holder), (
+        '.leaflet-bar 的 background-color 不再是 var(--color-bg-secondary) —— '
+        '本测试算的底色和实际渲染的不是一回事，已失效，请更新'
+    )
+
+    # 祖先 #map 的 filter（作用于整个 .leaflet-container，包括所有控件）
+    map_rules = [
+        _decl_map(body).get('filter') for sel, body, at_ctx in _rules_ctx(css)
+        if not at_ctx and '#map' in _selector_parts(_norm_selector(sel))
+    ]
+    map_ops = _filter_ops(next((f for f in map_rules if f), '') or '')
+
+    rendered_bg = _apply_filter(container, map_ops)
+    lum_bg = _relative_luminance(rendered_bg)
+
+    results = {}
+    for label, disabled in (('可用态', False), ('禁用态', True)):
+        ops, opacity = _leaflet_button_state(css, disabled)
+        assert ops is not None, (
+            f'{label}：找不到 .leaflet-draw-toolbar a 的 filter 声明 —— 本测试已失效'
+        )
+        assert ops.get('invert', 0) >= 1.0, (
+            f'{label}：filter 里没有 invert(1)。雪碧图墨色是 {SPRITE_INK_HEX}（深灰，'
+            f'为白底按钮画的），不反色就是深灰压在近黑的容器上，图标看不见。'
+        )
+        ink = _apply_filter(_hex_to_rgb(SPRITE_INK_HEX), ops)
+        # opacity：与容器底色混合（都还在 #map 的 filter 之前）
+        mixed = tuple(ink[i] * opacity + container[i] * (1 - opacity) for i in range(3))
+        rendered = _apply_filter(mixed, map_ops)
+        lum = _relative_luminance(rendered)
+        hi, lo = max(lum, lum_bg), min(lum, lum_bg)
+        results[label] = {
+            'contrast': (hi + 0.05) / (lo + 0.05),
+            'rendered': tuple(round(v) for v in rendered),
+            'filter': ops, 'opacity': opacity,
+        }
+
+    problems = [
+        f'{label}：算出来只有 {r["contrast"]:.2f}:1（低于 {ICON_MIN_CONTRAST}:1）。'
+        f'图标渲染成 rgb{r["rendered"]}，容器渲染成 rgb{tuple(round(v) for v in rendered_bg)}；'
+        f'filter={r["filter"]}, opacity={r["opacity"]}'
+        for label, r in results.items() if r['contrast'] < ICON_MIN_CONTRAST
+    ]
+    assert not problems, (
+        '绘制工具条的图标在深色底上看不见了（矩形 / 编辑 / 垃圾桶）：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+    enabled, disabled_r = results['可用态']['contrast'], results['禁用态']['contrast']
+    assert enabled >= disabled_r * 1.5, (
+        f'可用态 {enabled:.2f}:1 与禁用态 {disabled_r:.2f}:1 差距不足 1.5 倍，'
+        '首屏禁用的「编辑」「删除」看起来会像是能点的。\n'
+        '注意 leaflet.draw 的禁用雪碧图格子与可用格子**像素级相同**'
+        '（它 SVG 里那层 #bbbbbb 被 <use> 引用目标自带的 fill 压掉了，从未生效），'
+        '所以这个差异只能由本样式表自己做出来。'
+    )
+
+
+# 被本次覆盖掉的上游颜色。删掉我们的覆盖规则 -> 静默回落到这些值。
+# 评审实测：这两条整条删掉，8 条形态断言全绿。
+_LEAFLET_UPSTREAM_FALLBACKS = {
+    # 选择器: (必须声明的属性, 上游值, 回落后的后果)
+    '.leaflet-draw-actions a': (
+        'background-color', '#919187 (leaflet.draw.css)',
+        '绘制/编辑操作条整条退回出厂橄榄灰 rgb(145,145,135)，在深色界面上是一块脏色',
+    ),
+    '.leaflet-control-attribution a': (
+        'color', '#0078A8 (leaflet.css `.leaflet-container a`)',
+        '出处标注里的链接退回 Leaflet 蓝，在我们的深色底上约 3.9:1，低于 AA 的 4.5:1',
+    ),
+}
+
+
+def test_leaflet_upstream_colors_are_all_replaced():
+    """这几条覆盖规则不许消失——删掉就静默回落到 Leaflet 出厂色。
+
+    与上面那些禁止性断言配对的**存在性**契约（同 test_form_select_still_
+    declares_its_background_color 的思路）：只有禁止性断言时，「把规则整条删掉」
+    是让测试变绿的合法手段，而屏幕上是回落到第三方默认色。
+    """
+    rules = _rules(_css())
+    problems = []
+    for sel, (prop, upstream, consequence) in _LEAFLET_UPSTREAM_FALLBACKS.items():
+        found = [
+            _decl_map(body).get(prop)
+            for rsel, body in rules
+            for part in _selector_parts(_norm_selector(rsel))
+            if part == sel
+        ]
+        found = [v for v in found if v is not None]
+        if not found:
+            problems.append(
+                f'{sel} 没有声明 {prop}（会回落到上游的 {upstream}）→ {consequence}'
+            )
+    assert not problems, (
+        'Leaflet 出厂颜色没有被覆盖住：\n' + '\n'.join('  ' + p for p in problems)
     )
