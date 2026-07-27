@@ -439,20 +439,6 @@ def _write_palette_png_tile(path, palette, size: int = 16):
     return indices
 
 
-def _rgb_at(dataset_path, row: int, col: int) -> tuple[int, int, int]:
-    """读出栅格 (row, col) 处前三个波段的值"""
-    from osgeo import gdal
-
-    ds = gdal.Open(str(dataset_path))
-    assert ds is not None, f"无法打开 {dataset_path}"
-    values = tuple(
-        int(ds.GetRasterBand(b).ReadAsArray(col, row, 1, 1)[0][0])
-        for b in (1, 2, 3)
-    )
-    ds = None
-    return values
-
-
 def test_palette_tile_is_expanded_to_true_rgb(tmp_path):
     """
     调色板瓦片必须在配准阶段就地展开成 3 波段真彩色。
@@ -609,3 +595,67 @@ def test_stitched_palette_tiles_keep_each_tiles_own_colors(tmp_path, monkeypatch
             )
 
     assert sorted(str(p) for p in cache_dir.rglob('*_geo*.tif')) == []
+    assert sorted(str(p) for p in out_dir.rglob('*.vrt')) == []
+
+
+def test_stale_single_band_intermediate_is_never_reused(tmp_path, monkeypatch):
+    """
+    改动前形态的 1 波段中间文件，绝不能被 exists() 短路复用。
+
+    `_add_georeference` 在中间文件已存在时直接返回，不重新打开校验内容 ——
+    也就是说它完全信任文件名。展开调色板改变了中间文件的**内容契约**
+    （像素从调色板索引变成颜色），文件名却没跟着变的话：残留一份旧的
+    1 波段中间文件，下次 roadmap 拼接就会静默复用它，颜色又错回去。
+
+    残留是真实场景：中间文件虽然在 finally 里删，但 unlink 失败只打 warning
+    不抛错（Windows 文件占用足够触发），而缓存目录跨任务共享、升级也从不清理。
+
+    这与 Phase 1 的 `_geo.tif` 残骸问题同构：那次是坐标系变更把一个一直无害
+    的复用逻辑升级成了有害，这次是波段形态。对策也同构 —— 把契约编进文件名。
+    """
+    import numpy as np
+    from config import Config
+    from osgeo import gdal, osr
+
+    monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
+
+    engine = DownloadEngine()
+    zoom, x, y = 10, 843, 387
+    tile = Tile(task_id=0, zoom=zoom, x=x, y=y)
+    tile_png = tile.cache_path('m')
+    indices = _write_palette_png_tile(tile_png, _ROADMAP_PALETTE, size=16)
+
+    # 造一份「改动前的代码」会产出的中间文件：EPSG:3857 配准正确，
+    # 但只有 1 波段、装的是调色板索引。
+    stale_path = tile_png.with_name(f"{tile_png.stem}_geo3857.tif")
+    stale = gdal.GetDriverByName('GTiff').Create(str(stale_path), 16, 16, 1, gdal.GDT_Byte)
+    stale.SetGeoTransform(engine.tile_geotransform(tile, 16, 16)[0])
+    stale_srs = osr.SpatialReference()
+    stale_srs.ImportFromEPSG(3857)
+    stale.SetProjection(stale_srs.ExportToWkt())
+    stale.GetRasterBand(1).WriteArray(np.array(indices, dtype=np.uint8))
+    stale = None
+    assert stale_path.exists()
+
+    georef_path = engine._add_georeference(str(tile_png), tile)
+
+    assert Path(georef_path) != stale_path, "1 波段残骸被当成中间文件复用了"
+
+    ds = gdal.Open(georef_path)
+    assert ds.RasterCount == 3, (
+        f"复用把 1 波段索引图带回来了，实际 {ds.RasterCount} 波段"
+    )
+    # 不只数波段：颜色必须真的是展开后的 RGB。
+    # 注意别只挑 (0,0) 验 —— 那里索引是 0、颜色也是 (0,0,0)，
+    # 「把索引值复制进三个波段」的错误实现同样能过。逐像素扫。
+    arr = ds.ReadAsArray()
+    ds = None
+    for row in range(len(indices)):
+        for col in range(len(indices)):
+            expected = _ROADMAP_PALETTE[indices[row][col]]
+            actual = tuple(int(arr[band][row][col]) for band in range(3))
+            assert actual == expected, (
+                f"像素 ({row},{col}) 应为 {expected}，实际 {actual}"
+            )
+
+    assert not stale_path.exists(), "旧形态的中间文件应被顺手清掉，避免长期占盘"
