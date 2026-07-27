@@ -724,7 +724,7 @@ class DownloadEngine:
         logger.info(f"GDAL tile stitching completed: {output_path_obj}")
         return str(output_path_obj)
 
-    def tile_geotransform(self, tile: Tile, width: int, height: int):
+    def tile_geotransform(self, tile: Tile, width: int, height: int) -> tuple[list[float], int]:
         """
         Calculate GDAL geotransform + EPSG code for a single tile.
 

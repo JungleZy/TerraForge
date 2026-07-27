@@ -6,6 +6,8 @@ import os
 import sys
 import math
 
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from services.download_engine import DownloadEngine
@@ -29,3 +31,9 @@ def test_tile_geotransform_corners_match_tile_bounds():
     assert gt[2] == 0 and gt[4] == 0, "north-up 影像的旋转项必须为 0"
     assert gt[5] < 0, "pixel_height 必须为负（图像 y 向下）"
     assert isinstance(epsg, int)
+
+    n = 2 ** 10
+    assert gt[0] == pytest.approx(843 / n * 360.0 - 180.0)               # 左上经度
+    assert gt[3] == pytest.approx(_tile_lat(387, 10))                     # 左上纬度
+    assert gt[0] + gt[1] * 256 == pytest.approx(844 / n * 360.0 - 180.0)  # 右边界经度
+    assert gt[3] + gt[5] * 256 == pytest.approx(_tile_lat(388, 10))       # 下边界纬度
