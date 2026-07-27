@@ -490,6 +490,13 @@ FORM_SELECT_BG_COLORS = {
 }
 
 
+# `background-image` 写成这些值，计算值都是 none，箭头都会消失。
+# 只认字面 `none` 会漏掉后四种（实测 initial / unset 在浏览器里确实让箭头消失）。
+_ARROW_KILLING_IMAGE_VALUES = frozenset({
+    'none', 'initial', 'unset', 'revert', 'revert-layer',
+})
+
+
 def test_form_select_never_uses_background_shorthand():
     """任何命中 .form-select 的规则都不许用 `background:` 简写，也不许把
     `background-image` 置为 none。
@@ -508,9 +515,15 @@ def test_form_select_never_uses_background_shorthand():
     position:"0% 0%" / size:"auto" —— 四项全被重置，可见不是只丢了图。
     改用 background-color 只覆盖颜色，其余四项让 Bootstrap 的值生效。
 
-    第二条（`background-image: none`）是补漏：只禁简写的话，直接写
+    第二条（`background-image` 的计算值为 none）是补漏：只禁简写的话，直接写
     `.form-select { background-image: none }` 照样能让箭头消失，而其余
     断言全绿——禁止性契约留了个正门。
+
+    禁的是**一组等价写法**而不是字面量 `none`，因为下面这些的计算值都是 none、
+    箭头都会消失（见 _ARROW_KILLING_IMAGE_VALUES）：
+      none / initial / unset / revert / revert-layer
+    `background-image` 是非继承属性，所以 `unset` == `initial` == `none`；
+    `revert` 会退回作者层之前的来源，Bootstrap 的声明同属作者层，一并被撤掉。
     """
     rules = _form_select_rules(_css())
     assert rules, (
@@ -524,10 +537,17 @@ def test_form_select_never_uses_background_shorthand():
                 f'{sel} {{ background: {decls["background"]} }}  ← 简写会重置全部子属性'
             )
         img = decls.get('background-image')
-        if img is not None and img.strip().lower().rstrip('!important').strip() == 'none':
-            offenders.append(
-                f'{sel} {{ background-image: {img} }}  ← 直接把箭头图去掉了'
-            )
+        if img is not None:
+            # 用 _IMPORTANT_RE 剥 !important：它认 `!important` / `! important` /
+            # 任意大小写三种写法。原来这里写的是 `.rstrip('!important')`——
+            # str.rstrip 是**字符集**剥离不是后缀剥离，既漏掉 `none ! important`
+            # （剥完是 'none !'），又会误伤别的值（`'inherit'.rstrip('!important')`
+            # 实测得到 `'inhe'`）。
+            value = _IMPORTANT_RE.sub('', img).strip().lower()
+            if value in _ARROW_KILLING_IMAGE_VALUES:
+                offenders.append(
+                    f'{sel} {{ background-image: {img} }}  ← 计算值为 none，直接把箭头图去掉了'
+                )
     assert not offenders, (
         '.form-select 的背景写法会让 Bootstrap 下拉箭头消失\n'
         '（简写 background 会连带重置 background-image/-repeat/-position/-size；\n'
@@ -612,56 +632,180 @@ def _arrow_stroke_hex(css):
     return '#' + m.group(1).lower()
 
 
+ARROW_MIN_PADDING_RIGHT_PX = 28   # = 12px 右偏移 + 16px 图标宽，见下方 docstring
+
+
+def _length_to_px(value):
+    """`2.25rem` / `36px` -> 36.0。看不懂的（calc()/em/%/var()）返回 None。
+
+    返回 None 会让调用方报「本测试已失效」而不是静默通过——响亮失败优于
+    默默放行（这是 Phase 1 反复出现的教训）。
+    """
+    m = re.match(r'^([\d.]+)(px|rem)$', value.strip().lower())
+    if not m:
+        return None
+    return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+
+
+def _right_padding_in_body(body):
+    """按声明先后顺序求值，返回该规则体设定的右内边距 (值, 是否!important)。
+
+    **必须同时认 `padding` 简写和 `padding-right` 长写**，且要处理同一规则里
+    两者的先后覆盖——不能用 _decl_map（它丢掉了不同属性名之间的顺序）。
+
+    `padding` 简写取右分量：1 值 -> 该值；2/3/4 值 -> 第 2 个。
+    """
+    out = None
+    for chunk in body.split(';'):
+        if ':' not in chunk:
+            continue
+        name, _, raw = chunk.partition(':')
+        name = name.strip().lower()
+        raw = raw.strip()
+        important = bool(_IMPORTANT_RE.search(raw))
+        val = _IMPORTANT_RE.sub('', raw).strip()
+        if name == 'padding':
+            parts = val.split()
+            if len(parts) == 1:
+                out = (parts[0], important)
+            elif 2 <= len(parts) <= 4:
+                out = (parts[1], important)
+        elif name == 'padding-right':
+            out = (val, important)
+    return out
+
+
+def _branch_applies(branch, ancestor_classes, element_classes, focused):
+    """这个选择器分支是否作用于「给定祖先类 + 给定元素类 + 焦点态」的元素？
+
+    只支持「后代组合符 + 类选择器 + :focus」——本文件涉及 .form-select 的
+    选择器全是这个形态。遇到子/兄弟组合符、id、属性选择器、其它伪类一律
+    返回 None，调用方据此报「本测试已失效」，绝不当成"不匹配"放过去。
+    """
+    if re.search(r'[>+~#\[*]', branch):
+        return None
+    compounds = []
+    for part in branch.split():
+        pseudos = re.findall(r':{1,2}([-\w]+)', part)
+        if any(p != 'focus' for p in pseudos):
+            return None
+        if re.sub(r'(\.[-\w]+|:{1,2}[-\w]+)', '', part).strip():
+            return None            # 还剩下东西 = 元素选择器等，不支持
+        compounds.append((set(re.findall(r'\.([-\w]+)', part)), 'focus' in pseudos))
+    if not compounds:
+        return None
+    target_classes, target_focus = compounds[-1]
+    if target_focus and not focused:
+        return False
+    if not target_classes <= element_classes:
+        return False
+    for cls, foc in compounds[:-1]:
+        if foc or not cls <= ancestor_classes:
+            return False
+    return True
+
+
+def _branch_specificity(branch):
+    """(类 + 伪类) 计数。id / 元素选择器已被 _branch_applies 拒绝，
+    所以类计数就足以排序。"""
+    return len(re.findall(r'\.[-\w]+', branch)) + len(re.findall(r':{1,2}[-\w]+', branch))
+
+
+# 页面里真实存在的两种 select 上下文（`grep -rn "form-select" templates/` 确认）。
+FORM_SELECT_CONTEXTS = {
+    '首页 .form-select': frozenset(),
+    '配置页 .config-section .form-select': frozenset({'config-section'}),
+}
+
+
 def test_form_select_reserves_room_for_the_arrow():
-    """`.form-select` 必须留出容纳箭头的右内边距，否则选项文字会压在箭头上。
+    """每一种 select 上下文里，**最后生效**的右内边距都必须 >= 28px。
 
-    几何依据（全部取自 Bootstrap 5.3.0 的 `.form-select`，已核对 CDN 源码）：
-        background-position: right .75rem center   → 箭头右缘距padding框右缘 12px
+    几何依据（取自 Bootstrap 5.3.0 的 `.form-select`，已核对 CDN 源码）：
+        background-position: right .75rem center   → 箭头右缘距 padding 框右缘 12px
         background-size:     16px 12px             → 箭头宽 16px
-      ⇒ 箭头占据「右起 12px ~ 28px」这一段，右内边距至少要 28px 才不叠字。
-      Bootstrap 自己用 padding-right: 2.25rem(36px)，比下限多 8px 呼吸位。
+      ⇒ 箭头占据「右起 12px ~ 28px」，右内边距至少 28px 才不叠字。
+      Bootstrap 自己用 2.25rem(36px)，比下限多 8px 呼吸位。
 
-    为什么需要这条：本站 `.form-control, .form-select` 用
-    `padding: 0.6rem 0.85rem` 把右内边距压到 13.6px。**箭头丢失期间这不构成
-    问题（没有箭头就不会叠印），箭头一修好碰撞立刻出现**——Task 4 首版就漏了
-    这一点，实测 900px 视口下 #downloadType 的最长选项与箭头重叠 14.4px、
-    末尾字符被切断，992px 视口余量也只剩 3px。
+    **这个下限是与视口无关的充分条件，不是抽样结论。** 当选项文字长到被裁切时，
+    文字右缘恰好落在内容框右缘，即距控件右缘 `padding-right`；而箭头左缘距控件
+    右缘恒为 28px。于是余量恒等于 `padding-right - 28`，**与视口宽度、字体度量、
+    文案长度全部无关**。所以只要本断言为真，就不存在能触发重叠的视口；文字没被
+    裁切时余量只会更大。（Task 4 首版靠抽 7 个视口来"证明"不重叠，那才是抽样；
+    这条是证明。）
 
-    这条守的是真实几何，不是字符串：把 padding-right 删掉或调到 28px 以下都会红。
+    为什么需要这条：本站 `.form-control, .form-select` 的
+    `padding: 0.6rem 0.85rem` 把右内边距压到 13.6px。箭头丢失期间这不构成问题
+    （没有箭头就不会叠印），**箭头一修好碰撞立刻出现**——Task 4 首版就漏了，
+    实测 900px 视口下 #downloadType 重叠 14.4px、末尾字符被切断。
 
-    ⚠️ 后续任务（Task 10 密度收紧）若要改表单内边距，可以改本值，
-    但不能低于 28px 下限——除非同时改掉 Bootstrap 的箭头位置/尺寸。
+    ⚠️ 本条为什么要模拟层叠，而不是只查 `padding-right` 声明在不在：
+    因为**简写会静默覆盖长写**——这正是本任务存在的原因，在同一个文件里的复刻。
+    只查 `'padding-right' in decls` 的话，追加一条
+    `.form-select { padding: 0.4rem 0.7rem }`（右内边距 11.2px）测试仍然全绿，
+    因为那句 padding-right 的字符串还在文件里。实测发现该漏洞时，
+    `.config-section` 那条 16px 的规则已经在违反下限，而测试是绿的。
+
+    ⚠️ 给 Task 10（密度收紧）的说明：可以改这些 padding 值，但任一上下文的
+    **有效**右内边距不得低于 28px——除非同时改掉 Bootstrap 的箭头位置/尺寸。
+    另外本断言只认 `px` / `rem` 字面量；写成 `calc()` / `em` / `var()` 会报
+    「本测试已失效」而不是通过（响亮失败优于静默放行）。真要用 calc()，
+    请连同本断言的解析逻辑一起改。
     """
     css = _css()
-    rules = _form_select_rules(css)
-    assert rules, '没有匹配到任何 .form-select 规则——选择器写法变了，本测试已失效'
+    all_rules = _rules(css)          # 保持源码顺序，层叠要用
+    assert all_rules, 'CSS 解析不出任何规则——本测试已失效'
 
-    # 只看纯 `.form-select`（不含后代/分组）那条：它是专门给箭头让位的规则。
-    owners = [
-        (sel, _decl_map(body)['padding-right'])
-        for sel, body in rules
-        if 'padding-right' in _decl_map(body)
-    ]
-    assert owners, (
-        '没有任何 .form-select 规则声明 padding-right。\n'
-        'Bootstrap 的 padding-right:2.25rem 被本站的 `padding: 0.6rem 0.85rem`\n'
-        '简写压成了 13.6px，而箭头要占右起 12~28px —— 选项文字会叠印在箭头上。\n'
-        '实测 900px 视口重叠 14.4px。请在 .form-select 规则里补回 padding-right。'
+    unsupported, problems = [], []
+    checked = 0
+    for ctx_name, ancestors in FORM_SELECT_CONTEXTS.items():
+        for focused in (False, True):
+            candidates = []
+            for order, (sel, body) in enumerate(all_rules):
+                rp = _right_padding_in_body(body)
+                if rp is None:
+                    continue
+                for branch in _selector_parts(sel):
+                    if not re.search(r'\.form-select(?![-\w])', branch):
+                        continue
+                    applies = _branch_applies(branch, ancestors, {'form-select'}, focused)
+                    if applies is None:
+                        unsupported.append(f'{sel}   （分支 {branch!r} 形态不支持）')
+                    elif applies:
+                        candidates.append(
+                            (rp[1], _branch_specificity(branch), order, sel, rp[0])
+                        )
+            state = ':focus' if focused else '常态'
+            if not candidates:
+                problems.append(
+                    f'{ctx_name}[{state}]: 没有任何规则给它设右内边距——'
+                    'Bootstrap 的 padding-right:2.25rem 若也没生效，箭头就会压字'
+                )
+                continue
+            _imp, _spec, _order, sel, value = max(candidates)
+            px = _length_to_px(value)
+            if px is None:
+                unsupported.append(
+                    f'{ctx_name}[{state}]: 胜出的 `{sel}` 右内边距是 {value!r}，'
+                    '不是 px/rem 字面量，解析不了'
+                )
+                continue
+            checked += 1
+            if px < ARROW_MIN_PADDING_RIGHT_PX:
+                problems.append(
+                    f'{ctx_name}[{state}]: 最终生效的右内边距 {px:g}px < '
+                    f'{ARROW_MIN_PADDING_RIGHT_PX}px 下限（来自 `{sel}` 的 {value}）'
+                    f'——选项文字会压在下拉箭头上，叠印 '
+                    f'{ARROW_MIN_PADDING_RIGHT_PX - px:g}px'
+                )
+    assert not unsupported, (
+        '出现本断言的层叠模型处理不了的写法，测试已失效（不是通过）：\n'
+        + '\n'.join('  ' + u for u in unsupported)
     )
-    # rem -> px（本项目未覆盖根字号，实测 1rem = 16px）
-    problems = []
-    for sel, raw in owners:
-        v = raw.strip().lower()
-        m = re.match(r'^([\d.]+)(rem|px)$', v)
-        if not m:
-            problems.append(f'{sel}: padding-right={raw!r} 解析不了（只支持 rem/px），本测试已失效')
-            continue
-        px = float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
-        if px < 28:
-            problems.append(
-                f'{sel}: padding-right={raw}（{px:g}px）< 28px 下限，'
-                '选项文字会压在下拉箭头上'
-            )
+    assert checked == len(FORM_SELECT_CONTEXTS) * 2, (
+        f'只算出 {checked} 个「上下文×状态」的有效内边距，'
+        f'期望 {len(FORM_SELECT_CONTEXTS) * 2} 个——本测试已失效'
+    )
     assert not problems, '.form-select 没给箭头留够位置：\n' + '\n'.join('  ' + p for p in problems)
 
 
