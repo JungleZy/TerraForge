@@ -1216,7 +1216,14 @@ code {
 /* Row and Column Styles
    ⚠️ 这些不是 Bootstrap 的冗余副本，是它的**离线兜底**：base.html 的
    bootstrap.min.css 走 CDN，CDN 不可达时 .row/.col-* 只剩这里这一份定义
-   （文件上方 :~113 的 .row 只设 background，不管布局）。别当死代码删。 */
+   （文件上方 :~113 的 .row 只设 background，不管布局）。别当死代码删。
+
+   但也别把它当成完整兜底 —— 下面只覆盖了 .col-6 / .col-12 / .col-md-6。
+   模板里实际还在用 .col-md-4（9 处）和 .col-md-3（4 处），这两类在本地
+   **完全没有定义**，断网时拿不到宽度也拿不到 padding。同理 .card / .btn /
+   .navbar 等组件类也没有任何本地兜底。
+   真正的解法是把 Bootstrap 落到 static/vendor/ 本地引用（这是 PyInstaller
+   打包的离线桌面工具，本就不该依赖 CDN），届时这一整块可以删掉。 */
 .row {
     display: flex;
     flex-wrap: wrap;

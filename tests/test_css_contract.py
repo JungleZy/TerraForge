@@ -33,12 +33,16 @@ def _norm_selector(sel):
     return re.sub(r'\s*,\s*', ', ', sel)
 
 
-def _rules(css):
-    """扫描出全部 (选择器, 规则体)，包含 @media 内部的规则。
+def _rules_ctx(css):
+    """扫描出全部 (选择器, 规则体, 外层 at-rule 上下文)，包含 @media 内部的规则。
 
     用花括号深度扫描而不是单条正则——正则 `([^{}]+)\\{([^{}]*)\\}` 会被
     @media 的嵌套花括号带偏，漏掉媒体查询里的规则（Phase 1 的教训：
     只匹配第一条 / 只匹配顶层的正则等于静默漏检）。
+
+    第三个元素是该规则所有外层 at-rule 的列表（顶层规则为空列表），
+    用于区分「顶层的 `*`」和「@media 里的 `*`」——两者语义完全不同，
+    前者是全局重置，后者可能是响应式或无障碍覆盖。
     """
     css = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
     out = []
@@ -46,16 +50,22 @@ def _rules(css):
     token = ''
     for ch in css:
         if ch == '{':
-            stack.append(token)
+            stack.append(_norm_selector(token))
             token = ''
         elif ch == '}':
-            sel = _norm_selector(stack.pop()) if stack else ''
+            sel = stack.pop() if stack else ''
             if sel and not sel.startswith('@'):
-                out.append((sel, token))
+                at_ctx = [s for s in stack if s.startswith('@')]
+                out.append((sel, token, at_ctx))
             token = ''
         else:
             token += ch
     return out
+
+
+def _rules(css):
+    """扫描出全部 (选择器, 规则体)。见 _rules_ctx。"""
+    return [(sel, body) for sel, body, _ctx in _rules_ctx(css)]
 
 
 def _font_size_decls(body):
@@ -225,8 +235,23 @@ def test_important_count_under_control():
       + 3 处余量：留给后续任务里个别确实必须压 Bootstrap 的新规则
       = 69
 
-    ⚠️ 这是个棘轮：每次清理都要把上界降到「新实测值 + 3」，
-    否则前面清出来的空间会被后面的任务悄悄填回去。
+    ⚠️ 棘轮规则（分两种任务，别混用）：
+
+      **清理型任务**（删掉了 !important）：把上界降到「新实测值 + 3」。
+      不降的话，前面清出来的空间会被后面的任务悄悄填回去。
+
+      **新增型任务**（确实需要压第三方样式）：允许抬高上界，但必须在本
+      docstring 里逐条登记「新增几处、压的是谁、为什么非 !important 不可」。
+      抬升本身不是失败，**悄悄抬升**才是。
+
+    已知的计划内新增（这就是上界不能设死的原因）：
+      - Leaflet 控件主题化：约 13 处。Leaflet 自带样式的选择器特异度更高
+        （如 `.leaflet-touch .leaflet-bar a`），同名属性下我们赢不了。
+      - 动画降噪的 prefers-reduced-motion 重置块：约 4 处（这是 W3C 推荐写法）。
+      - 进度条 / 滚动条覆盖：约 3 处。
+    合计约 20 处，届时上界会被抬到 86 上下。**这不代表清理白做了** —— Task 2/3
+    清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
+    两者性质不同。
 
     余下 66 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
@@ -270,6 +295,12 @@ def _decl_map(body):
 # 为什么需要这张表：单看「`*` 规则只有 1 条」是可以靠**删掉另外两条**来满足的
 # —— 那样滚动条配色和全局过渡会一起消失，测试却全绿。这张表把「合并」和
 # 「删除」区分开。值取自合并前的三条原始规则，本次只搬不改。
+#
+# ⚠️ 给后续任务的说明（这条测试变红时先读这里）：
+#   本表钉的是「C1 合并当时的值」，用途是防止合并时漏搬，**不是**禁止后续改动。
+#   已知的计划内改动：动画降噪任务会**有意删掉** `transition-property` /
+#   `transition-duration`（把全局过渡改成只给交互元素加）。那属于正常的视觉改动
+#   —— 删的时候把本表对应条目一并移除即可，不要按报错提示去「恢复漏搬的声明」。
 MERGED_UNIVERSAL_DECLS = {
     'box-sizing': 'border-box',
     'scrollbar-width': 'thin',
@@ -290,11 +321,11 @@ def test_universal_selector_declared_exactly_once():
     """
     universal = [
         (sel, body)
-        for sel, body in _rules(_css())
-        if '*' in _selector_parts(sel)
+        for sel, body, at_ctx in _rules_ctx(_css())
+        if '*' in _selector_parts(sel) and not at_ctx
     ]
     assert len(universal) == 1, (
-        f'发现 {len(universal)} 条裸 `*` 规则，应合并为 1 条：'
+        f'发现 {len(universal)} 条**顶层**裸 `*` 规则，应合并为 1 条：'
         + '; '.join(sel for sel, _ in universal)
     )
     decls = _decl_map(universal[0][1])
@@ -335,10 +366,15 @@ def test_no_fake_color_aliases_anywhere_in_frontend():
     确实抓不到。所以这里扫 static/ + templates/ 下**所有**文件。
     """
     files = list(_frontend_files())
-    # 自检：确认这个遍历真的读到了内容——否则「零命中」只是因为没扫到文件。
-    assert any('--color-accent' in text for _, text in files), (
-        '遍历没读到任何含 --color-accent 的文件，说明扫描范围坏了，本测试已失效'
-    )
+    scanned = {rel.replace('\\', '/') for rel, _ in files}
+    # 自检：光断言「至少有一个文件含 --color-accent」是不够的——单靠 style.css
+    # 就能满足，而 JS 因编码异常被静默跳过（_frontend_files 的 except 会吞掉）
+    # 恰恰是这条断言存在的理由。所以点名要求这几个已知含引用的文件都被扫到。
+    for must in ('static/css/style.css', 'static/js/map.js', 'static/js/history.js'):
+        assert must in scanned, (
+            f'{must} 没被扫到（可能因编码异常被跳过），本测试已失效——'
+            f'实际扫到 {len(scanned)} 个文件'
+        )
     offenders = []
     for rel, text in files:
         for lineno, line in enumerate(text.splitlines(), 1):
