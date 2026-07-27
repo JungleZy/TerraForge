@@ -24,11 +24,6 @@
     --color-accent-muted:  rgba(45,212,191,0.12);
     --color-on-accent:     #04201c;
 
-    /* 兼容别名：旧名指向新值，避免改 JS 内联引用 */
-    --color-accent-amber:  var(--color-accent);
-    --color-accent-warm:   var(--color-accent-hover);
-    --color-accent-copper: var(--color-accent-strong);
-
     /* 状态色（青绿=品牌，不当状态色） */
     --color-success: #34d399;
     --color-danger:  #f87171;
@@ -47,7 +42,6 @@
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
     --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
     --shadow-lg: 0 12px 32px rgba(0,0,0,0.45);
-    --shadow-glow: none;
 
     /* 圆角 */
     --radius-sm: 8px;
@@ -64,8 +58,20 @@
 }
 
 /* Global Styles */
+/* 全局 `*` 规则只此一条。原先散在文件末尾还有两条（滚动条配色、全局过渡），
+   三条同选择器同优先级的规则分居三处，改任何一条都要先找齐另外两条。
+   这里只做合并，值一律照搬未改。 */
 * {
     box-sizing: border-box;
+
+    /* 滚动条（Firefox / 标准属性；WebKit 分支见下方 *::-webkit-scrollbar-*） */
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-accent-strong) var(--color-bg-secondary);
+
+    /* 全局过渡 */
+    transition-property: background-color, border-color, color, fill, stroke;
+    transition-duration: 0.3s;
+    transition-timing-function: ease;
 }
 
 /* 元素级字号基线：原先由文件末尾的 !important 覆盖块提供，现合并到此处。
@@ -143,13 +149,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 700;
     font-size: var(--font-size-xl);
     letter-spacing: -0.02em;
-    color: var(--color-accent-warm) !important;
+    color: var(--color-accent-hover) !important;
     transition: all 0.3s ease;
     padding: 0.5rem 1rem;
 }
 
 .navbar-brand:hover {
-    color: var(--color-accent-amber) !important;
+    color: var(--color-accent) !important;
     text-shadow: none;
 }
 
@@ -169,13 +175,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     left: 50%;
     width: 0;
     height: 2px;
-    background: var(--color-accent-amber);
+    background: var(--color-accent);
     transition: all 0.3s ease;
     transform: translateX(-50%);
 }
 
 .nav-link:hover {
-    color: var(--color-accent-warm) !important;
+    color: var(--color-accent-hover) !important;
 }
 
 .nav-link:hover::after {
@@ -299,13 +305,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     left: 0;
     width: 4px;
     height: 100%;
-    background: var(--color-accent-amber);
+    background: var(--color-accent);
     transition: all 0.3s ease;
 }
 
 .task-card:hover {
     box-shadow: var(--shadow-md);
-    border-color: var(--color-accent-amber);
+    border-color: var(--color-accent);
 }
 
 .task-card:hover::before {
@@ -356,14 +362,18 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     padding: 0.3rem 0.65rem;
 }
 
+/* 发光改用品牌色柔和版：原先硬编码 rgba(59,130,246,.x)（#3b82f6 蓝，不在
+   调色板里），与 --shadow-* 一律「去发光」的设计意图矛盾。0%/100% 那帧的
+   颜色也一并换掉——它虽然 blur/spread 为 0 看不见，但动画会在两帧之间插值
+   颜色，只换 50% 会在中途出现蓝绿混色。 */
 @keyframes pulse {
     0%, 100% {
         opacity: 1;
-        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+        box-shadow: 0 0 0 0 var(--color-accent-muted);
     }
     50% {
         opacity: 0.8;
-        box-shadow: 0 0 20px 5px rgba(59, 130, 246, 0.3);
+        box-shadow: 0 0 0 4px var(--color-accent-muted);
     }
 }
 
@@ -491,14 +501,14 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .zoom-level:hover {
     background: var(--color-accent-muted);
-    border-color: var(--color-accent-amber);
+    border-color: var(--color-accent);
 }
 
 .zoom-level-label {
     min-width: 90px;
     font-weight: 700;
     font-family: var(--font-mono);
-    color: var(--color-accent-warm);
+    color: var(--color-accent-hover);
     font-size: 0.9rem;
 }
 
@@ -811,10 +821,10 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     color: var(--color-text-muted) !important;
 }
 
-.text-center {
-    color: var(--color-text-primary) !important;
-}
-
+/* 注意：.text-center 是纯布局类，只在文件末尾声明 text-align，不设 color。
+   原先这里有一条 `color: var(--color-text-primary) !important`，它排在
+   .text-muted 之后、.text-danger 之前，是靠规则顺序在跟同优先级的颜色类
+   抢——布局类不该参与颜色级联。 */
 .text-danger {
     color: var(--color-danger) !important;
 }
@@ -892,7 +902,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .spinner-border {
-    border-color: var(--color-accent-amber);
+    border-color: var(--color-accent);
     border-right-color: transparent;
 }
 
@@ -977,7 +987,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .modal-body strong {
-    color: var(--color-accent-warm);
+    color: var(--color-accent-hover);
     font-weight: 600;
 }
 
@@ -1013,8 +1023,8 @@ h1, h2, h3, h4, h5, h6 {
 
 .page-link:hover {
     background: var(--color-bg-tertiary);
-    border-color: var(--color-accent-amber);
-    color: var(--color-accent-warm);
+    border-color: var(--color-accent);
+    color: var(--color-accent-hover);
 }
 
 .page-item.active .page-link {
@@ -1086,7 +1096,7 @@ h1, h2, h3, h4, h5, h6 {
 /* Code Styles */
 code {
     background: var(--color-bg-tertiary);
-    color: var(--color-accent-warm);
+    color: var(--color-accent-hover);
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
     font-family: var(--font-mono);
@@ -1138,7 +1148,7 @@ code {
 
     .index-right {
         border-left: none;
-        border-top: 2px solid var(--color-accent-amber);
+        border-top: 2px solid var(--color-accent);
     }
 
     #map {
@@ -1191,10 +1201,6 @@ code {
     align-items: flex-start;
 }
 
-.mb-3 {
-    margin-bottom: 1rem;
-}
-
 .mt-2 {
     margin-top: 0.5rem;
 }
@@ -1207,7 +1213,10 @@ code {
     width: 100%;
 }
 
-/* Row and Column Styles */
+/* Row and Column Styles
+   ⚠️ 这些不是 Bootstrap 的冗余副本，是它的**离线兜底**：base.html 的
+   bootstrap.min.css 走 CDN，CDN 不可达时 .row/.col-* 只剩这里这一份定义
+   （文件上方 :~113 的 .row 只设 background，不管布局）。别当死代码删。 */
 .row {
     display: flex;
     flex-wrap: wrap;
@@ -1239,12 +1248,7 @@ code {
     }
 }
 
-/* Scrollbar Styles for All Scrollable Elements */
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-accent-copper) var(--color-bg-secondary);
-}
-
+/* Scrollbar Styles for All Scrollable Elements（标准属性已并入文件顶部的 `*` 规则） */
 *::-webkit-scrollbar {
     width: 8px;
     height: 8px;
@@ -1265,42 +1269,35 @@ code {
     background: var(--color-text-muted);
 }
 
-/* Smooth Transitions */
-* {
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-duration: 0.3s;
-    transition-timing-function: ease;
-}
-
 /* Selection Styles */
 ::selection {
-    background: var(--color-accent-amber);
+    background: var(--color-accent);
     color: var(--color-bg-primary);
 }
 
 ::-moz-selection {
-    background: var(--color-accent-amber);
+    background: var(--color-accent);
     color: var(--color-bg-primary);
 }
 
 /* Focus Visible Styles */
 *:focus-visible {
-    outline: 2px solid var(--color-accent-amber);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
 }
 
-/* Leaflet Control Styles Override */
-.leaflet-control-zoom a,
-.leaflet-control-layers-toggle {
+/* Leaflet Control Styles Override
+   （不含 .leaflet-control-layers-toggle：代码里从未调用 L.control.layers，
+     那个 DOM 元素不存在） */
+.leaflet-control-zoom a {
     background: var(--color-bg-secondary) !important;
     border: 1px solid var(--color-border) !important;
     color: var(--color-text-primary) !important;
 }
 
-.leaflet-control-zoom a:hover,
-.leaflet-control-layers-toggle:hover {
+.leaflet-control-zoom a:hover {
     background: var(--color-bg-tertiary) !important;
-    border-color: var(--color-accent-amber) !important;
+    border-color: var(--color-accent) !important;
 }
 
 .leaflet-popup-content-wrapper {

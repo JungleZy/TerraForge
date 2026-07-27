@@ -212,18 +212,23 @@ def test_font_size_scale_variables_unchanged():
 # --------------------------------------------------------------------------
 
 def test_important_count_under_control():
-    """!important 声明总量上界 = 70。
+    """!important 声明总量上界 = 69。
 
     阈值构成（全部实测，不是估的）：
-      清理前 92 处
+      Task 2 清理前 92 处
       - 24 处：被删除的「统一字体大小系统」覆盖块里的 font-size !important
       -  1 处：.form-text 的 font-size !important（同一形态，一并清掉；
                它的 color !important 保留，不在本次范围）
-      = 67 处（实测清理后的真实值）
+      = 67 处（Task 2 后实测）
+      -  1 处：Task 3 删掉的 .text-center 的 color !important（布局类不该管颜色）
+      = 66 处（Task 3 后实测的真实值）
       + 3 处余量：留给后续任务里个别确实必须压 Bootstrap 的新规则
-      = 70
+      = 69
 
-    余下 67 处几乎全是压 Bootstrap 背景/文字色的历史债
+    ⚠️ 这是个棘轮：每次清理都要把上界降到「新实测值 + 3」，
+    否则前面清出来的空间会被后面的任务悄悄填回去。
+
+    余下 66 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
     属于 Phase 2 其他任务的范围，本次不动。
 
@@ -232,6 +237,179 @@ def test_important_count_under_control():
     """
     css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
     count = css.count('!important')
-    assert count <= 70, (
-        f'!important 声明有 {count} 处，应 <= 70（清理前 92，本次清理后实测 67，余量 3）'
+    assert count <= 69, (
+        f'!important 声明有 {count} 处，应 <= 69（Task 2 前 92 → Task 2 后 67 → '
+        'Task 3 后实测 66，余量 3）'
+    )
+
+
+# --------------------------------------------------------------------------
+# C1 / Task 3：死代码、重复规则、别名污染
+# --------------------------------------------------------------------------
+
+def _selector_parts(sel):
+    """规范化后的选择器按逗号拆成各个分支。"""
+    return [p.strip() for p in sel.split(',') if p.strip()]
+
+
+def _decl_map(body):
+    """规则体 -> {属性名(小写): 值}，同名属性取最后一次声明。"""
+    out = {}
+    for chunk in body.split(';'):
+        if ':' not in chunk:
+            continue
+        name, _, value = chunk.partition(':')
+        name = name.strip().lower()
+        if name:
+            out[name] = value.strip()
+    return out
+
+
+# 合并后那条 `*` 规则必须携带的声明。
+#
+# 为什么需要这张表：单看「`*` 规则只有 1 条」是可以靠**删掉另外两条**来满足的
+# —— 那样滚动条配色和全局过渡会一起消失，测试却全绿。这张表把「合并」和
+# 「删除」区分开。值取自合并前的三条原始规则，本次只搬不改。
+MERGED_UNIVERSAL_DECLS = {
+    'box-sizing': 'border-box',
+    'scrollbar-width': 'thin',
+    'scrollbar-color': 'var(--color-accent-strong) var(--color-bg-secondary)',
+    'transition-property': 'background-color, border-color, color, fill, stroke',
+    'transition-duration': '0.3s',
+    'transition-timing-function': 'ease',
+}
+
+
+def test_universal_selector_declared_exactly_once():
+    """全站只允许一条裸 `*` 规则，且它必须带齐合并进来的全部声明。
+
+    强度说明（计划原文给的是 `re.findall(r'^\\*\\s*\\{', css, re.M)`）：
+    那条正则只匹配**行首**的 `*`，写成 `  * {`（缩进）或 `*, *::before {`
+    （分组）就漏了，@media 里的更是完全看不见。这里改用 _rules() 的花括号
+    深度扫描 + 逗号拆分，任何位置、任何缩进、任何分组里的裸 `*` 都算一条。
+    """
+    universal = [
+        (sel, body)
+        for sel, body in _rules(_css())
+        if '*' in _selector_parts(sel)
+    ]
+    assert len(universal) == 1, (
+        f'发现 {len(universal)} 条裸 `*` 规则，应合并为 1 条：'
+        + '; '.join(sel for sel, _ in universal)
+    )
+    decls = _decl_map(universal[0][1])
+    problems = []
+    for name, expected in MERGED_UNIVERSAL_DECLS.items():
+        actual = decls.get(name)
+        if actual is None:
+            problems.append(f'{name}: 缺失（期望 {expected}）——合并时漏搬或被误删')
+        elif re.sub(r'\s+', ' ', actual) != expected:
+            problems.append(f'{name}: 是 {actual!r}，期望 {expected!r}')
+    assert not problems, '合并后的 `*` 规则声明不完整：\n' + '\n'.join('  ' + p for p in problems)
+
+
+FAKE_COLOR_ALIASES = ('--color-accent-amber', '--color-accent-warm', '--color-accent-copper')
+
+
+def _frontend_files():
+    """static/ 与 templates/ 下的全部文本文件。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for sub in ('static', 'templates'):
+        for dirpath, _dirnames, filenames in os.walk(os.path.join(root, sub)):
+            for fn in sorted(filenames):
+                path = os.path.join(dirpath, fn)
+                try:
+                    with open(path, encoding='utf-8') as f:
+                        yield os.path.relpath(path, root), f.read()
+                except (UnicodeDecodeError, OSError):
+                    continue
+
+
+def test_no_fake_color_aliases_anywhere_in_frontend():
+    """amber/warm/copper 三个别名全指向青绿，是误导性死名——全前端零出现。
+
+    强度说明（计划原文只断言 `alias not in css`）：只查 style.css 的话，
+    「CSS 里删了定义、JS 内联样式还在 var(--color-accent-warm)」这种情况
+    会让变量变成 undefined、颜色静默丢失，而测试全绿。实测该别名在
+    static/js/history.js 和 static/js/map.js 里各有若干引用点，光查 CSS
+    确实抓不到。所以这里扫 static/ + templates/ 下**所有**文件。
+    """
+    files = list(_frontend_files())
+    # 自检：确认这个遍历真的读到了内容——否则「零命中」只是因为没扫到文件。
+    assert any('--color-accent' in text for _, text in files), (
+        '遍历没读到任何含 --color-accent 的文件，说明扫描范围坏了，本测试已失效'
+    )
+    offenders = []
+    for rel, text in files:
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for alias in FAKE_COLOR_ALIASES:
+                if alias in line:
+                    offenders.append(f'{rel}:{lineno} {alias}')
+    assert not offenders, (
+        '发现指向青绿的假别名（应换成真实语义名 '
+        '--color-accent / --color-accent-hover / --color-accent-strong）：\n'
+        + '\n'.join('  ' + o for o in offenders)
+    )
+
+
+def test_text_center_declares_no_color():
+    """纯布局类 .text-center 不该管颜色。
+
+    强度说明（计划原文用 `re.search` + `if match:`）：`re.search` 只返回
+    第一个匹配——实测 style.css 里 `.text-center` 有两条规则，第二条会被
+    漏检；而正则一旦失配（选择器写成 `.text-center, .foo {`）`match` 为
+    None，`if match:` 直接跳过，测试变成**永真**。这里遍历全部规则、把
+    分组/后代选择器里的 .text-center 也算上，并先断言至少匹配到一条。
+    """
+    matched = [
+        (sel, body)
+        for sel, body in _rules(_css())
+        if re.search(r'\.text-center(?![-\w])', sel)
+    ]
+    assert matched, '没有匹配到任何 .text-center 规则——选择器写法变了，本测试已失效'
+    offenders = [
+        f'{sel} {{ color: {_decl_map(body)["color"]} }}'
+        for sel, body in matched
+        if 'color' in _decl_map(body)
+    ]
+    assert not offenders, (
+        '.text-center 是布局类，不该设 color：\n' + '\n'.join('  ' + o for o in offenders)
+    )
+
+
+def test_dead_rules_removed():
+    """三处已确认零引用的死代码不许回来。
+
+    - `--shadow-glow`：定义了 none 之后全库没有任何 var() 引用它
+    - `.leaflet-control-layers-toggle`：map.js 从未调用 L.control.layers，
+      该 DOM 元素不存在
+    - 重复的 `.mb-3`：第二条被前一条的 !important 完全压死，改它没有效果
+    """
+    # 先剥注释：说明「为什么删掉了它」的注释里必然要提到这些名字，
+    # 拿原文匹配会把解释性注释当成回潮（本条测试自己就先踩了一次）。
+    css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
+    assert '--shadow-glow' not in css, '--shadow-glow 零引用，应已删除'
+    assert 'leaflet-control-layers' not in css, (
+        '.leaflet-control-layers-* 对应的 DOM 从不存在（未调用 L.control.layers），应已删除'
+    )
+    mb3 = [(sel, body) for sel, body in _rules(css) if '.mb-3' in _selector_parts(sel)]
+    assert len(mb3) == 1, f'.mb-3 有 {len(mb3)} 条规则，重复的那条是死代码，应只剩 1 条'
+    assert 'margin-bottom' in _decl_map(mb3[0][1]), '.mb-3 必须仍然声明 margin-bottom'
+
+
+def test_pulse_keyframe_has_no_offpalette_hardcoded_color():
+    """pulse 关键帧不许再硬编码调色板外的蓝色发光。
+
+    背景：`--shadow-glow` 被设成 none 并注上「去发光」，但 pulse 关键帧里
+    还留着 `rgba(59,130,246,.3)` 的蓝色光晕——去发光只去了一半，而且
+    #3b82f6 不在当前调色板里。
+    """
+    m = re.search(r'@keyframes\s+pulse\s*\{(.*?)\n\}', _css(), re.S)
+    assert m, '找不到 @keyframes pulse——本测试已失效'
+    body = m.group(1)
+    assert '59, 130, 246' not in body and '59,130,246' not in body, (
+        'pulse 关键帧仍硬编码调色板外的蓝色 rgba(59,130,246,...)'
+    )
+    assert 'var(--color-accent-muted)' in body, (
+        'pulse 的发光应改用品牌色柔和版 var(--color-accent-muted)'
     )

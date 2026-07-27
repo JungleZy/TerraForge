@@ -95,10 +95,10 @@ function renderHistoryTable(tasks) {
             <td>
                 <small style="font-family: var(--font-mono); line-height: 1.4;">
                     ${task.north == null ? '<span style="color: var(--color-text-muted);">本地文件</span>' : `
-                    <span style="color: var(--color-accent-warm);">▲</span> ${task.north.toFixed(4)},
-                    <span style="color: var(--color-accent-warm);">▼</span> ${task.south.toFixed(4)}<br>
-                    <span style="color: var(--color-accent-warm);">▶</span> ${task.east.toFixed(4)},
-                    <span style="color: var(--color-accent-warm);">◀</span> ${task.west.toFixed(4)}`}
+                    <span style="color: var(--color-accent-hover);">▲</span> ${task.north.toFixed(4)},
+                    <span style="color: var(--color-accent-hover);">▼</span> ${task.south.toFixed(4)}<br>
+                    <span style="color: var(--color-accent-hover);">▶</span> ${task.east.toFixed(4)},
+                    <span style="color: var(--color-accent-hover);">◀</span> ${task.west.toFixed(4)}`}
                 </small>
             </td>
             <td style="font-family: var(--font-mono);">${(task.task_type === 'map' || task.task_type === 'contour') ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
@@ -172,7 +172,7 @@ function renderHistoryMap(tasks) {
 
         rectangle.bindPopup(`
             <div style="font-family: var(--font-display); min-width: 200px;">
-                <strong style="color: var(--color-accent-warm); font-size: 1.1rem;">${task.name}</strong><br>
+                <strong style="color: var(--color-accent-hover); font-size: 1.1rem;">${task.name}</strong><br>
                 <div style="margin-top: 0.5rem; font-size: 0.9rem;">
                     <strong>状态:</strong> ${getStatusText(task.status)}<br>
                     <strong>${task.task_type === 'dem' ? '文件' : '瓦片'}:</strong>

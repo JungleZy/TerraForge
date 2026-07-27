@@ -228,10 +228,10 @@ function updateBoundsInfo() {
                     <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
                 </svg>
                 <strong>选中区域：</strong><br>
-                <span style="color: var(--color-accent-warm);">▲</span> 北: ${currentBounds.north.toFixed(6)}<br>
-                <span style="color: var(--color-accent-warm);">▼</span> 南: ${currentBounds.south.toFixed(6)}<br>
-                <span style="color: var(--color-accent-warm);">▶</span> 东: ${currentBounds.east.toFixed(6)}<br>
-                <span style="color: var(--color-accent-warm);">◀</span> 西: ${currentBounds.west.toFixed(6)}
+                <span style="color: var(--color-accent-hover);">▲</span> 北: ${currentBounds.north.toFixed(6)}<br>
+                <span style="color: var(--color-accent-hover);">▼</span> 南: ${currentBounds.south.toFixed(6)}<br>
+                <span style="color: var(--color-accent-hover);">▶</span> 东: ${currentBounds.east.toFixed(6)}<br>
+                <span style="color: var(--color-accent-hover);">◀</span> 西: ${currentBounds.west.toFixed(6)}
             </small>
         `;
         boundsInfo.style.background = 'rgba(59, 130, 246, 0.1)';
