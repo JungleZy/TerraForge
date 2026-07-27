@@ -131,3 +131,6 @@ downloads/
 
 # DEM granule samples (large binary, do not commit)
 ASTGTMV003_*.zip
+
+# Playwright MCP 临时产物（截图/快照/控制台日志）
+.playwright-mcp/
