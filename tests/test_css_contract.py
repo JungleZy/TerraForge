@@ -1740,6 +1740,93 @@ def test_bootstrap_dark_theme_is_enabled_on_the_html_element():
     )
 
 
+# Bootstrap 首个带 `[data-bs-theme=dark]` 的版本。
+# 5.3.0 的 release note 把「color modes」列为该版本的头号新特性；5.2.x 的构建里
+# 全文件搜不到 data-bs-theme（实测：5.3.0 的 bootstrap.css 有 13 处）。
+MIN_BOOTSTRAP_VERSION = (5, 3)
+
+# CDN 上两种常见的版号写法：
+#   npm 系（jsdelivr / unpkg）：.../bootstrap@5.3.0/dist/css/bootstrap.min.css
+#   cdnjs 系：                 .../ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css
+_BOOTSTRAP_VERSION_RES = (
+    re.compile(r'bootstrap@(\d+)\.(\d+)(?:\.(\d+))?', re.I),
+    re.compile(r'/bootstrap/(\d+)\.(\d+)(?:\.(\d+))?/', re.I),
+)
+
+
+def _bootstrap_asset_urls(markup):
+    """base.html 里引用 Bootstrap 的全部资源 URL（`<link href>` / `<script src>`）。"""
+    out = []
+    for name, attrs in _start_tags(markup):
+        url = attrs.get('href') if name == 'link' else attrs.get('src') if name == 'script' else None
+        if url and 'bootstrap' in url.lower():
+            out.append((name, url))
+    return out
+
+
+def test_bootstrap_build_is_new_enough_to_have_dark_theme():
+    """base.html 引的 Bootstrap 必须 >= 5.3 —— 否则 data-bs-theme 是个没人读的属性。
+
+    ⚠️ 这条是评审逼出来的，**上一条断言对它完全失明**：把 base.html 里的
+    `bootstrap@5.3.0` 改成 `5.2.3`（或任何不含 `[data-bs-theme=dark]` 的构建），
+    `<html data-bs-theme="dark">` 立刻退化成一个纯装饰属性 —— 三处漏白原样回来、
+    select 箭头掉回 Bootstrap 亮色的 #343a40（对面板底 1.42:1，等于看不见），
+    **而全部测试照旧全绿**。
+
+    为什么本次提交之后特别需要它：A3/Task 8 删掉了站内那条硬编码
+    `--bs-form-select-bg-img` 的覆盖（因为 `[data-bs-theme=dark] .form-select`
+    (0,2,0) 无条件压过它），连带删掉了仅有的两条对箭头**渲染结果**敏感的断言
+    （test_form_select_arrow_stroke_matches_palette /
+    test_form_select_arrow_has_sufficient_contrast）。删除本身是对的 ——
+    那两条钉的是一段已成死代码的规则 —— 但删完之后「深色主题真的生效了」
+    这个契约只剩上一条断言在守，而它只看得见 HTML 属性、看不见属性有没有人消费。
+    这条把另一半补上：**属性在** + **能读懂这个属性的 Bootstrap 也在**。
+
+    为什么不需要联网（报告初稿在这里做了个假二选一，已订正）：版本号是**字面写在
+    base.html 里**的，而本文件早就在读这个文件了。真正守不住的是「Bootstrap 在
+    5.3.x 内部把 #adb5bd 改成别的颜色」那种漂移 —— 那才需要解析 CDN 上的 CSS，
+    代价大于收益，明确放弃（见 p2-task-8-report.md §10）。
+
+    覆盖范围（诚实说明）：这条守的是「声明的版本号够新」。它保证不了
+    「CDN 真的把这个文件送到了浏览器」—— 断网 / CDN 故障时整份 Bootstrap 都不在，
+    那属于本项目既有的 CDN 依赖问题（style.css 里 `.row/.col-*` 那段注释已点名），
+    不是本断言能覆盖的。CDP 实测脚本自带 `--bs-body-font-family` 非空的自检来兜这一层。
+    """
+    assets = _bootstrap_asset_urls(_template('base.html'))
+    assert assets, (
+        'base.html 里找不到任何引用 Bootstrap 的 <link>/<script> —— '
+        '要么改用了别的引入方式（本测试已失效，请连同解析逻辑一起改），'
+        '要么 Bootstrap 被整个拿掉了'
+    )
+    problems = []
+    for tag, url in assets:
+        version = None
+        for pattern in _BOOTSTRAP_VERSION_RES:
+            m = pattern.search(url)
+            if m:
+                version = tuple(int(g) for g in m.groups()[:2])
+                break
+        if version is None:
+            problems.append(
+                f'<{tag}> {url} —— 解析不出版本号。若是改成了本地 vendor 副本，'
+                '请把版本校验换成对该文件内容的检查（例如断言文件里有 '
+                '`[data-bs-theme=dark]`），不要直接删掉本断言'
+            )
+        elif version < MIN_BOOTSTRAP_VERSION:
+            problems.append(
+                f'<{tag}> {url} —— 版本 {version[0]}.{version[1]} < '
+                f'{MIN_BOOTSTRAP_VERSION[0]}.{MIN_BOOTSTRAP_VERSION[1]}，'
+                '该构建不含 [data-bs-theme=dark]'
+            )
+    assert not problems, (
+        'base.html 引的 Bootstrap 版本读不懂或太旧 —— '
+        '<html data-bs-theme="dark"> 会变成一个没人读的属性，'
+        '文件选择按钮 / number 微调箭头 / select 弹层三处漏白全部回潮，'
+        'select 箭头掉回 #343a40（对面板底 1.42:1）：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
 def test_every_page_template_inherits_the_themed_html_element():
     """每个页面模板要么 extends base.html，要么自带一个带 data-bs-theme 的 `<html>`。
 
