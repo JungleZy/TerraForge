@@ -728,6 +728,15 @@ class DownloadEngine:
         """
         Calculate GDAL geotransform + EPSG code for a single tile.
 
+        Tiles are Web Mercator (EPSG:3857) squares of constant size at a given
+        zoom level. Writing them in 3857 plane coordinates makes every pixel
+        exactly the same size, so BuildVRT can mosaic them losslessly.
+
+        Writing them as EPSG:4326 with a linearly-interpolated latitude step
+        (the previous implementation) is wrong: pixel rows are evenly spaced in
+        Mercator y, not in latitude. Peak error inside a single z10 tile at
+        40 degrees N is about 14.8 m.
+
         Args:
             tile: Tile object with zoom/x/y
             width: Tile image width in pixels
@@ -737,18 +746,15 @@ class DownloadEngine:
             (geotransform, epsg_code) where geotransform is
             [top_left_x, pixel_width, 0, top_left_y, 0, pixel_height]
         """
-        n = 2 ** tile.zoom
-        lon_min = tile.x / n * 360.0 - 180.0
-        lon_max = (tile.x + 1) / n * 360.0 - 180.0
+        # Half-circumference of the earth at the equator, in metres.
+        origin = 20037508.342789244
+        tile_span = 2 * origin / (2 ** tile.zoom)
 
-        lat_max = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * tile.y / n))))
-        lat_min = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (tile.y + 1) / n))))
+        x0 = -origin + tile.x * tile_span
+        y0 = origin - tile.y * tile_span
 
-        pixel_width = (lon_max - lon_min) / width
-        pixel_height = -(lat_max - lat_min) / height
-
-        geotransform = [lon_min, pixel_width, 0, lat_max, 0, pixel_height]
-        return geotransform, 4326
+        geotransform = [x0, tile_span / width, 0, y0, 0, -tile_span / height]
+        return geotransform, 3857
 
     def _add_georeference(self, tile_path: str, tile: Tile) -> str:
         """
@@ -765,19 +771,20 @@ class DownloadEngine:
             1. Check if georeferenced version already exists
             2. Open source tile with GDAL
             3. Create georeferenced copy with GTiff driver
-            4. Calculate geotransform using Web Mercator math
-            5. Set geotransform and projection (EPSG:4326)
+            4. Calculate geotransform via tile_geotransform()
+            5. Set geotransform and projection (EPSG:3857, Web Mercator)
 
         Geotransform Calculation:
-            Uses Web Mercator tile coordinate system to calculate
-            geographic bounds (latitude/longitude) for the tile.
+            Delegated to tile_geotransform(). Tiles are written in EPSG:3857
+            plane coordinates (metres), which is the coordinate system the
+            tile grid is natively defined in, so every pixel of every tile at
+            a given zoom has exactly the same size.
 
             For tile at (x, y, zoom):
-                n = 2^zoom
-                lon_min = x / n * 360.0 - 180.0
-                lon_max = (x + 1) / n * 360.0 - 180.0
-                lat_max = atan(sinh(π * (1 - 2 * y / n))) * 180 / π
-                lat_min = atan(sinh(π * (1 - 2 * (y + 1) / n))) * 180 / π
+                origin    = 6378137 * π = 20037508.342789244 m
+                tile_span = 2 * origin / 2^zoom
+                x0        = -origin + x * tile_span
+                y0        =  origin - y * tile_span
 
         Georef Path Format:
             Original: /path/to/tile.png
@@ -832,7 +839,7 @@ class DownloadEngine:
         # Set geotransform
         dst_ds.SetGeoTransform(geotransform)
 
-        # Set projection to WGS84 (EPSG:4326)
+        # Set projection to Web Mercator (EPSG:3857) — see tile_geotransform
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(epsg_code)
         dst_ds.SetProjection(srs.ExportToWkt())
