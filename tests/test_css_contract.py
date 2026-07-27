@@ -13,6 +13,7 @@
 import os
 import re
 import sys
+from html.parser import HTMLParser
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -622,30 +623,6 @@ def _palette_var(css, name):
     return m.group(1).strip().lower()
 
 
-def _arrow_stroke_hex(css):
-    """`.form-select` 覆盖的 --bs-form-select-bg-img 里那个 SVG 描边色。"""
-    imgs = [
-        (sel, _decl_map(body)['--bs-form-select-bg-img'])
-        for sel, body in _form_select_rules(css)
-        if '--bs-form-select-bg-img' in _decl_map(body)
-    ]
-    assert len(imgs) == 1, (
-        f'期望恰好 1 条规则覆盖 --bs-form-select-bg-img，实际 {len(imgs)} 条'
-        f'（{[s for s, _ in imgs]}）。\n'
-        '⚠️ 如果你是 Task 8（给 <html> 加 data-bs-theme="dark"）而故意删掉了这条'
-        '覆盖规则，那么本测试和 test_form_select_arrow_has_sufficient_contrast '
-        '应当一并删除，而不是把规则加回来——见两条测试 docstring 里的交接说明。\n'
-        '否则（当前仍是浅色主题时）箭头会用回 Bootstrap 的 #343a40，'
-        '深色面板上对比度 1.42:1，等于看不见。'
-    )
-    m = re.search(r"stroke='%23([0-9a-fA-F]{6})'", imgs[0][1])
-    assert m, (
-        '在 --bs-form-select-bg-img 的 data URI 里找不到 '
-        "stroke='%23xxxxxx' —— 写法变了，本测试已失效"
-    )
-    return '#' + m.group(1).lower()
-
-
 ARROW_MIN_PADDING_RIGHT_PX = 28   # = 12px 右偏移 + 16px 图标宽，见下方 docstring
 
 
@@ -823,63 +800,23 @@ def test_form_select_reserves_room_for_the_arrow():
     assert not problems, '.form-select 没给箭头留够位置：\n' + '\n'.join('  ' + p for p in problems)
 
 
-def test_form_select_arrow_stroke_matches_palette():
-    """箭头描边色必须字面等于 --color-text-secondary。
-
-    为什么要单独钉一条：data URI 里不能写 var()，箭头颜色只能硬编码。
-    硬编码 + 调色板变量并存 = 典型的静默漂移点——有人改了
-    --color-text-secondary，箭头还是老颜色，没人会发现。这条把两者绑死。
-
-    ⚠️ 给 Task 8（data-bs-theme="dark"）的交接说明：
-    加上 `data-bs-theme="dark"` 后，Bootstrap 自带的
-    `[data-bs-theme=dark] .form-select`（特异性 0,2,0）会盖过 style.css 里
-    那条 `.form-select`（0,1,0）的 --bs-form-select-bg-img，箭头自动变成
-    Bootstrap 的 #adb5bd（对 --color-bg-tertiary 实测 7.87:1，达标）。
-    届时 style.css 里那条自定义属性覆盖就是死代码，**可以删**——
-    但删的时候要把本测试和 test_form_select_arrow_has_sufficient_contrast
-    **一并删除**，否则它们会因为找不到覆盖规则而变红。
-    （注意：同一条 `.form-select` 规则里的 `padding-right: 2.25rem` **必须保留**，
-    它压的是本站自己的 padding 简写，与主题无关。）
-    """
-    css = _css()
-    stroke = _arrow_stroke_hex(css)
-    expected = _palette_var(css, '--color-text-secondary')
-    assert stroke == expected, (
-        f'下拉箭头描边色是 {stroke}，但 --color-text-secondary 是 {expected}。\n'
-        'data URI 里不能用 var()，所以两处必须手工保持一致；'
-        '改调色板时请同步改 .form-select 的 --bs-form-select-bg-img。'
-    )
-
-
-def test_form_select_arrow_has_sufficient_contrast():
-    """箭头描边对面板底色的对比度必须 >= 3:1（WCAG 图形元素下限）。
-
-    这条守的是**渲染出来看不看得见**，不是「代码里写了这个字符串」——
-    两个颜色都在 CSS 里，对比度可以纯文本算出来，所以它是本文件里少数
-    真正守住视觉结果的断言之一。
-
-    它与上一条互补：上一条只保证「箭头色 == 调色板的次级文字色」，
-    如果哪天次级文字色本身被调暗，上一条仍全绿而箭头重新消失；
-    这条会拦住。
-
-    实测记录（Task 4）：
-      修复前 Bootstrap 浅色主题默认 #343a40 vs #1c2027 = 1.42:1（不可见）
-      修复后 #9aa0aa                        vs #1c2027 = 6.21:1
-      参考：Bootstrap 深色主题的 #adb5bd    vs #1c2027 = 7.87:1
-
-    ⚠️ 给 Task 8（data-bs-theme="dark"）的交接说明：与
-    test_form_select_arrow_stroke_matches_palette 相同——Task 8 之后
-    style.css 里的 --bs-form-select-bg-img 覆盖可以删，删的时候本测试
-    要一并删除。详见那条测试的 docstring。
-    """
-    css = _css()
-    stroke = _arrow_stroke_hex(css)
-    panel = _palette_var(css, '--color-bg-tertiary')
-    ratio = _contrast_ratio(stroke, panel)
-    assert ratio >= 3.0, (
-        f'下拉箭头 {stroke} 对面板底色 {panel} 的对比度只有 {ratio:.2f}:1，'
-        '低于 WCAG 图形元素 3:1 的下限——箭头会"在但看不见"，等于没修'
-    )
+# ⚠️ 这里原本有 test_form_select_arrow_stroke_matches_palette 和
+# test_form_select_arrow_has_sufficient_contrast 两条断言，守的是 style.css 里
+# `.form-select { --bs-form-select-bg-img: ...stroke='%239aa0aa'... }` 那条硬编码
+# 覆盖：它把 Bootstrap 浅色主题写死在 data URI 里的 #343a40 箭头（对面板底
+# #1c2027 只有 1.42:1，等于看不见）换成调色板的 #9aa0aa（6.21:1）。
+#
+# A3 / Task 8 给 <html> 加上 data-bs-theme="dark" 之后，那条站内覆盖成了死代码：
+# Bootstrap 自带的 `[data-bs-theme=dark] .form-select`（特异性 0,2,0）压过站内的
+# `.form-select`（0,1,0），箭头改用它的 #adb5bd —— 对 #1c2027 实算 7.87:1，
+# 比站内那版还高。所以站内覆盖连同这两条断言一并删除（删除方案与理由写在
+# 两条断言原本的 docstring 里，是 C1/Task 4 留给 Task 8 的交接）。
+#
+# 箭头**存在**这件事仍然守着：test_form_select_never_uses_background_shorthand
+# 禁止 `background:` 简写与 `background-image: none` 一族写法，
+# test_form_select_reserves_room_for_the_arrow 守住 28px 的几何让位。
+# 箭头**颜色**改由 Bootstrap 深色主题提供，站内不再有可漂移的硬编码色号，
+# 所以不需要（也无法）用文本断言去钉它 —— 实测值记在 p2-task-8-report.md。
 
 
 # --------------------------------------------------------------------------
@@ -1725,4 +1662,261 @@ def test_progress_label_chip_is_seamless_against_the_track():
         f'低进度时数字下面会出现一块突兀的浮动药丸（对比度 '
         f'{_contrast_ratio(chip, track):.2f}:1）。'
         '要么改回同色，要么这是一次有意的视觉改动，请连同本断言一起更新'
+    )
+
+
+# --------------------------------------------------------------------------
+# A3 / Task 8：Bootstrap 深色主题总开关
+# --------------------------------------------------------------------------
+
+_TEMPLATES_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'templates'
+)
+
+
+def _template(name):
+    with open(os.path.join(_TEMPLATES_DIR, name), encoding='utf-8') as f:
+        return f.read()
+
+
+class _StartTagCollector(HTMLParser):
+    """收集 (标签名, 属性字典)。只有**真正的开始标签**会进来。
+
+    这正是本节需要它的理由：`handle_starttag` 对注释、纯文本、属性值里的
+    字符串一概不触发，所以「把 data-bs-theme=\"dark\" 写进注释」或
+    「写在别的标签上」都不会被误判成通过。
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tags = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append((tag.lower(), {k.lower(): v for k, v in attrs}))
+
+
+def _start_tags(markup):
+    """markup 里的全部开始标签（含自闭合标签，HTMLParser 默认会转发过来）。"""
+    parser = _StartTagCollector()
+    parser.feed(markup)
+    parser.close()
+    return parser.tags
+
+
+def test_bootstrap_dark_theme_is_enabled_on_the_html_element():
+    """`<html>` 标签上必须有 data-bs-theme="dark"。
+
+    为什么这一个属性是整个任务的核心：Bootstrap 5.3 的
+    `[data-bs-theme=dark]` 选择器块里第一条声明就是 `color-scheme: dark`
+    （已核对 CDN 源码 bootstrap@5.3.0/dist/css/bootstrap.css:127-128），
+    浏览器据此把**原生控件**——select 弹层、number 微调箭头、文件选择按钮
+    ——整体渲染成深色。同时它把 `--bs-tertiary-bg` 从 #f8f9fa 翻成 #2b3035，
+    修掉 `.form-control::file-selector-button` 的灰白底。
+    缺了它，自定义 CSS 只是在亮色 Bootstrap 上刷了一层深色漆，
+    凡是我们没逐条覆盖到的地方都会漏白。
+
+    ⚠️ 强度说明（p2-assertion-review.md 的 I 条）：计划原文写的是
+        assert 'data-bs-theme="dark"' in html
+    那条**写在注释里、写在任意 `<div>` 上都能通过**。这里改用标准库
+    HTMLParser 真正解析标签树，只认 `<html>` 这一个开始标签上的属性。
+    变异实验（报告里有输出）：把该属性挪进 HTML 注释 / 挪到 `<body>` 上，
+    本断言都会变红，而计划原文那条两次都是绿的。
+
+    只查 base.html 是够的，因为另外三个模板都 `{% extends %}` 它 ——
+    由 test_every_page_template_inherits_the_themed_html_element 钉住。
+    """
+    tags = _start_tags(_template('base.html'))
+    assert tags, 'base.html 解析不出任何开始标签 —— 本测试已失效'
+    html_tags = [attrs for name, attrs in tags if name == 'html']
+    assert len(html_tags) == 1, (
+        f'base.html 里解析出 {len(html_tags)} 个 <html> 开始标签，期望恰好 1 个 '
+        '—— 本测试已失效'
+    )
+    theme = html_tags[0].get('data-bs-theme')
+    assert theme == 'dark', (
+        f'<html> 的 data-bs-theme 是 {theme!r}，必须是 "dark"。\n'
+        '没有它，Bootstrap 整体仍处于亮色模式（实测 --bs-body-bg: #fff、'
+        '--bs-tertiary-bg: #f8f9fa），原生控件会在深色界面上漏出白块。'
+    )
+
+
+def test_every_page_template_inherits_the_themed_html_element():
+    """每个页面模板要么 extends base.html，要么自带一个带 data-bs-theme 的 `<html>`。
+
+    上一条只查 base.html。若有人新加一个**自带 `<html>` 标签**的页面模板
+    （不继承 base.html），那一页会静默回到亮色 Bootstrap，而上一条全绿。
+    这条把「主题覆盖了全部页面」这个真正的意图钉住。
+    """
+    names = sorted(
+        n for n in os.listdir(_TEMPLATES_DIR)
+        if n.endswith('.html') and n != 'base.html'
+    )
+    assert names, 'templates/ 下除 base.html 外没有别的页面模板 —— 本测试已失效'
+    problems = []
+    for name in names:
+        markup = _template(name)
+        own_html = [attrs for tag, attrs in _start_tags(markup) if tag == 'html']
+        if own_html:
+            if any(a.get('data-bs-theme') != 'dark' for a in own_html):
+                problems.append(f'{name}: 自带 <html> 标签但没有 data-bs-theme="dark"')
+        elif not re.search(r'{%-?\s*extends\s+["\']base\.html["\']', markup):
+            problems.append(
+                f'{name}: 既没有 extends base.html，也没有自带带主题的 <html> 标签'
+            )
+    assert not problems, (
+        '有页面模板拿不到 data-bs-theme="dark"，那一页会回到亮色 Bootstrap：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
+# --------------------------------------------------------------------------
+# A3 / Task 8：取色器色块尺寸
+# --------------------------------------------------------------------------
+
+# 色块（`<input type="color">` 的内容框）最小可视宽度。
+#
+# 30px 的来历：实测缺陷是色块被 `.form-control` 的 `padding: 0.6rem 0.85rem`
+# 挤成 **18.8 x 15.3px**，「几乎看不出颜色」。30px 是任务验收表给的下限。
+# 它和 ARROW_MIN_PADDING_RIGHT_PX 一样是**几何**下限，不是抽样结论：
+# 色块宽度 = 外框 width - 左右内边距 - 两条边框，三项全部在 CSS 里写着，
+# 与视口宽度无关（元素上的内联 `max-width:60px` 大于外框宽度，不参与）。
+COLOR_SWATCH_MIN_WIDTH_PX = 30
+
+_PADDING_SIDES = ('padding-top', 'padding-right', 'padding-bottom', 'padding-left')
+
+
+def _expanded_box_decls(body):
+    """规则体 -> [(属性名, 值, 是否!important), ...]，保持声明顺序，
+    并把 `padding` 简写展开成四条长写。
+
+    只处理本节关心的 width / padding*。和 `_right_padding_in_body` 同一个
+    理由：**不能用 `_decl_map`**，它按属性名去重，丢掉了「简写与长写谁在后面」
+    这个决定胜负的信息 —— 而「简写静默覆盖长写」正是 C1/Task 4 那个缺陷的形态。
+    """
+    out = []
+    for chunk in body.split(';'):
+        if ':' not in chunk:
+            continue
+        name, _, raw = chunk.partition(':')
+        name = name.strip().lower()
+        raw = raw.strip()
+        important = bool(_IMPORTANT_RE.search(raw))
+        val = _IMPORTANT_RE.sub('', raw).strip()
+        if name == 'padding':
+            parts = val.split()
+            if len(parts) == 1:
+                sides = parts * 4
+            elif len(parts) == 2:
+                sides = [parts[0], parts[1], parts[0], parts[1]]
+            elif len(parts) == 3:
+                sides = [parts[0], parts[1], parts[2], parts[1]]
+            elif len(parts) == 4:
+                sides = list(parts)
+            else:
+                continue
+            out.extend(zip(_PADDING_SIDES, sides, [important] * 4))
+        elif name in _PADDING_SIDES or name == 'width':
+            out.append((name, val, important))
+    return out
+
+
+def _form_control_border_px(css):
+    """`.form-control, .form-select` 声明的边框宽度（px）—— 色块要减掉两条边。
+
+    从 CSS 解析而不是写死 1px：边框宽度一改，色块就跟着变窄，写死的话
+    下限断言会静默过期。
+    """
+    bodies = [body for sel, body in _rules(css) if sel == '.form-control, .form-select']
+    assert len(bodies) == 1, (
+        f'期望恰好 1 条 `.form-control, .form-select` 规则，实际 {len(bodies)} 条 '
+        '—— 本测试已失效'
+    )
+    border = _decl_map(bodies[0]).get('border')
+    assert border, '`.form-control, .form-select` 没有声明 border —— 本测试已失效'
+    m = re.match(r'^([\d.]+)(px|rem)\b', _IMPORTANT_RE.sub('', border).strip())
+    assert m, f'border 简写 {border!r} 里读不出宽度 —— 本测试已失效'
+    return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+
+
+def test_color_picker_swatch_is_big_enough_to_see():
+    """`<input type="color" class="form-control form-control-color">` 的色块
+    必须至少 30px 宽。
+
+    缺陷（Phase 2 视觉基线实测）：`.form-control-color` 继承了
+    `.form-control, .form-select` 的 `padding: 0.6rem 0.85rem`（左右各 13.6px），
+    而它的外框只有 Bootstrap 给的 3rem(48px) —— 48 - 27.2 - 2 = **18.8px**，
+    连同 15.3px 的高度，色块小到看不出选的是什么颜色。
+
+    ⚠️ 本断言为什么要模拟层叠，而不是只查 `.form-control-color` 里有没有
+    padding 声明：因为决定胜负的是**顺序**。`.form-control-color` 与
+    `.form-control` 特异性相同（都是 (0,1,0)），谁写在后面谁生效。只查
+    「声明存在」的话，把 `.form-control-color` 挪到 `.form-control` 前面，
+    padding 立刻回到 13.6px，而测试全绿。这与 C1/Task 4
+    test_form_select_reserves_room_for_the_arrow 是同一套模型。
+
+    覆盖范围（诚实说明）：
+      1. 只模拟 **style.css 内部**的层叠。外框 `width` 必须由 style.css 自己
+         声明——拿不到就报「本测试已失效」，不会去猜 Bootstrap 的默认值。
+         这也是把 `width: 3rem` 显式写进 style.css 的理由：让色块宽度的三个
+         输入（width / padding / border）都只有一个来源。
+      2. 只看类选择器写法的规则（与 `_form_select_rules` 同款前置过滤）。
+         有人写 `input[type=color] { padding: 1rem }` 这种属性选择器绕过，
+         本断言看不见 —— 由 CDP 实测兜底。
+      3. 高度不在本断言范围内（Bootstrap 用 calc(1.5em + ...) 表达，
+         `_length_to_px` 解析不了 calc）。高度由 CDP 实测记录。
+    """
+    css = _css()
+    element_classes = {'form-control', 'form-control-color'}
+    wanted = {'width', 'padding-left', 'padding-right'}
+
+    best, unsupported = {}, []
+    for order, (sel, body, at_ctx) in enumerate(_rules_ctx(css)):
+        if at_ctx:
+            continue
+        decls = [d for d in _expanded_box_decls(body) if d[0] in wanted]
+        if not decls:
+            continue
+        for branch in _selector_parts(sel):
+            if not re.search(r'\.form-control(-color)?(?![-\w])', branch):
+                continue
+            applies = _branch_applies(branch, frozenset(), element_classes, False)
+            if applies is None:
+                unsupported.append(f'{sel}   （分支 {branch!r} 形态不支持）')
+                continue
+            if not applies:
+                continue
+            spec = _branch_specificity(branch)
+            for name, val, imp in decls:
+                key = (imp, spec, order)
+                if name not in best or key > best[name][0]:
+                    best[name] = (key, val, sel)
+    assert not unsupported, (
+        '出现本断言的层叠模型处理不了的写法，测试已失效（不是通过）：\n'
+        + '\n'.join('  ' + u for u in unsupported)
+    )
+
+    missing = sorted(wanted - set(best))
+    assert not missing, (
+        f'style.css 里没有任何规则给 .form-control-color 设定 {missing} —— '
+        '色块宽度算不出来。请在 style.css 里显式声明（尤其是 width：'
+        '不写就只能依赖 Bootstrap 的 3rem 默认值，本断言拿不到它，'
+        '色块尺寸会变成一个没人守得住的数字）'
+    )
+
+    px = {}
+    for name, (_key, val, sel) in best.items():
+        value = _length_to_px(val)
+        assert value is not None, (
+            f'{name} 的胜出值来自 `{sel}` 的 {val!r}，不是 px/rem 字面量，'
+            '本断言解析不了 —— 测试已失效（不是通过）'
+        )
+        px[name] = value
+
+    border = _form_control_border_px(css)
+    swatch = px['width'] - px['padding-left'] - px['padding-right'] - 2 * border
+    assert swatch >= COLOR_SWATCH_MIN_WIDTH_PX, (
+        f'取色器色块只有 {swatch:g}px 宽，低于 {COLOR_SWATCH_MIN_WIDTH_PX}px 下限'
+        f'（外框 {px["width"]:g}px - 左右内边距 {px["padding-left"]:g}/'
+        f'{px["padding-right"]:g}px - 两条 {border:g}px 边框）—— 色块太小，'
+        '看不出选的是什么颜色'
     )

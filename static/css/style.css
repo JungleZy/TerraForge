@@ -999,42 +999,50 @@ h1, h2, h3, h4, h5, h6 {
     font-size: var(--font-size-base);
 }
 
-/* 下拉箭头的描边色与让位空间。只作用于 .form-select，不波及普通 input。
+/* 下拉箭头的让位空间。只作用于 .form-select，不波及普通 input。
 
-   1) 描边色。Bootstrap 把箭头 SVG 连同描边色一起写死在 data URI 里，
-      浅色主题下是 #343a40。本站面板是深色（--color-bg-tertiary #1c2027），
-      实测 #343a40 对箭头/背景对比度只有 1.42:1，远低于 WCAG 图形元素 3:1
-      的下限——箭头"在"但肉眼看不见，等于没修。这里只把描边色换成
-      --color-text-secondary 的字面值，SVG 的 viewBox / path / stroke-width
-      与 Bootstrap 原图逐字符一致。
-
-      ⚠️ data URI 里不能写 var()，颜色只能字面写死。它必须等于
-      --color-text-secondary(#9aa0aa)，由 test_form_select_arrow_stroke_matches_palette
-      钉住——改调色板却忘了改这里，那条测试会红。
-
-   2) padding-right。上面 `.form-control, .form-select` 的
-      `padding: 0.6rem 0.85rem` 把右内边距压到 13.6px，而 Bootstrap 原本用
-      `padding-right: 2.25rem`(36px) 专门给箭头让位。箭头占据右起 12–28px，
-      文字内容框却能延伸到右起 13.6px —— 箭头恢复后二者就会叠印。
-      实测 900px 视口下 #downloadType 的最长选项与箭头重叠 14.4px，
-      文字末尾字符被切断（992px 视口余量也只剩 3px）。
-      这里补回 Bootstrap 的 36px。用 padding-right 长写而不是改上面那条的
-      padding 简写，是为了不波及 .form-control（普通 input 没有箭头，
-      给它加 36px 右内边距是平白的浪费）。
+   上面 `.form-control, .form-select` 的 `padding: 0.6rem 0.85rem` 把右内边距
+   压到 13.6px，而 Bootstrap 原本用 `padding-right: 2.25rem`(36px) 专门给箭头
+   让位。箭头占据右起 12–28px，文字内容框却能延伸到右起 13.6px —— 二者会叠印。
+   实测 900px 视口下 #downloadType 的最长选项与箭头重叠 14.4px，文字末尾字符
+   被切断（992px 视口余量也只剩 3px）。这里补回 Bootstrap 的 36px。
+   用 padding-right 长写而不是改上面那条的 padding 简写，是为了不波及
+   .form-control（普通 input 没有箭头，给它加 36px 右内边距是平白的浪费）。
+   下限由 tests/test_css_contract.py::test_form_select_reserves_room_for_the_arrow 守住。
 
    ⚠️ 本条 (0,1,0) 压不过 `.config-section .form-select` (0,2,0) 的 padding
       简写，所以配置页需要单独补一条同特异性的 padding-right——已加在
       `.config-section .form-control, .config-section .form-select` 之后。
 
-   ⚠️ Task 8 若给 <html> 加上 data-bs-theme="dark"，Bootstrap 自带的
-      `[data-bs-theme=dark] .form-select`（0,2,0）会盖过这里的
-      --bs-form-select-bg-img（0,1,0），箭头自动变成它的 #adb5bd（7.87:1，
-      同样达标）。那是预期行为。届时若删除本规则，**padding-right 必须保留**
-      （Bootstrap 的 padding 仍被上面的 padding 简写压着），且
-      tests/test_css_contract.py 里两条 arrow 断言需一并删除。 */
+   箭头的**描边色**这里不再管：A3/Task 8 给 <html> 加上 data-bs-theme="dark"
+   之后，Bootstrap 自带的 `[data-bs-theme=dark] .form-select`（特异性 0,2,0）
+   把 --bs-form-select-bg-img 换成描边 #adb5bd 的版本，压过任何写在这里的
+   (0,1,0) 覆盖。#adb5bd 对面板底 --color-bg-tertiary(#1c2027) 实算 7.87:1，
+   高于 C1/Task 4 立的 3:1 图形元素下限，所以站内那条硬编码 #9aa0aa 的
+   data URI 覆盖已是死代码，连同它的两条断言一起删掉了。
+   （已核对 bootstrap@5.3.0 源码 2363-2365 行：那条规则**只有**
+   --bs-form-select-bg-img 一条声明，不碰 position / size / padding，
+   所以删掉站内覆盖不影响上面这 28px 的几何下限。） */
 .form-select {
-    --bs-form-select-bg-img: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%239aa0aa' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
     padding-right: 2.25rem;
+}
+
+/* 取色器色块。
+   缺陷：`<input type="color" class="form-control form-control-color">` 会吃到
+   上面 `.form-control, .form-select` 的 `padding: 0.6rem 0.85rem`（两者特异性
+   都是 (0,1,0)，后写的赢），而它的外框只有 48px —— 48 - 13.6x2 - 1x2 =
+   **18.8px** 宽、15.3px 高，色块小到看不出选的是什么颜色。
+   这里把内边距收回 4px，色块回到 38 x 26.5px。
+
+   ⚠️ 位置是承重的：本规则必须排在 `.form-control, .form-select` **之后**，
+   两者特异性相同，靠源码顺序取胜。挪到前面 padding 立刻回到 13.6px。
+   ⚠️ width 与 Bootstrap 的 `.form-control-color { width: 3rem }` 同值，显式
+   写出来是为了让色块宽度的三个输入（width / padding / border）都在同一个
+   文件里，断言才算得出来。
+   下限由 tests/test_css_contract.py::test_color_picker_swatch_is_big_enough_to_see 守住。 */
+.form-control-color {
+    width: 3rem;
+    padding: 0.25rem;
 }
 
 .form-control:focus,
