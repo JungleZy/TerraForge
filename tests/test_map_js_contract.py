@@ -92,15 +92,48 @@ def test_submit_button_is_always_unlocked_in_finally():
     )
 
 
+# 编辑工具栏开着(edit.featureGroup)时必须接上的 5 个事件。
+# 这 5 条是同构契约,所以统一写成一张表、用同一种形式守——别给某几个换写法,
+# 后面看代码的人会以为那个区别有含义。
+# 常量名和 leaflet.draw 1.0.4 实际产物核对过(templates/base.html:101 走 CDN),
+# 5 个全部通过 this._map.fire() 派发,所以 map.on() 收得到。
+EDIT_EVENT_CONTRACT = [
+    ('EDITRESIZE', 'draw:editresize', '拖矩形四角时四至不实时更新'),
+    ('EDITMOVE', 'draw:editmove', '整体拖动图形时四至不实时更新'),
+    ('EDITED', 'draw:edited', '点「保存」后 bbox 不更新,提交的还是旧范围'),
+    ('EDITSTOP', 'draw:editstop', '取消编辑后 bbox 不还原'),
+    ('DELETESTOP', 'draw:deletestop', '退出删除模式后 bbox 不重读'),
+]
+
+
 def test_edit_events_are_wired():
     """
-    编辑工具栏开着(edit.featureGroup),就必须监听编辑事件,
+    编辑工具栏开着(edit.featureGroup),就必须把编辑事件接到 bbox 同步上,
     否则用户拖拽改框后提交的还是旧 bbox。
+
+    这里断言的是 map.on(<常量>, syncBoundsFromDrawnItems) 这个完整调用形状,
+    而不只是"常量名出现在文件里"。比后者多守住两件事:
+      - 常量只在注释/文档里被提到、但根本没接线 → 会红
+      - 接到了别的 handler(不是 syncBoundsFromDrawnItems) → 会红
+
+    守不住(已实测确认,别高估这条测试):
+      - 整行被 // 注释掉 → 仍然绿。正则不解析注释,而给测试塞个 JS parser
+        不值得(项目刻意没有 JS 工具链)
+      - 事件真的触发了没有、四至数字真的变了没有 → 没有 DOM,测不了
+
+    代价:若将来有人把 handler 包一层(如 map.on(X, () => ...)),本测试会红,
+    需要连带更新这里的正则。这是故意的,改接线要过一次人眼。
     """
     src = _map_js()
-    assert 'L.Draw.Event.EDITED' in src, "未监听 draw:edited,保存编辑后 bbox 不更新"
-    assert 'L.Draw.Event.EDITRESIZE' in src, "未监听 draw:editresize,拖角时四至不实时更新"
-    assert 'L.Draw.Event.EDITSTOP' in src, "未监听 draw:editstop,取消编辑后 bbox 不还原"
+    for const, event_name, consequence in EDIT_EVENT_CONTRACT:
+        pattern = (
+            r'map\.on\(\s*L\.Draw\.Event\.' + const
+            + r'\s*,\s*syncBoundsFromDrawnItems\s*\)'
+        )
+        assert re.search(pattern, src), (
+            f"未把 {event_name}(L.Draw.Event.{const}) 接到 "
+            f"syncBoundsFromDrawnItems:{consequence}"
+        )
 
 
 def test_bounds_sync_helper_exists():
