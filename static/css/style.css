@@ -68,6 +68,20 @@
     box-sizing: border-box;
 }
 
+/* 元素级字号基线：原先由文件末尾的 !important 覆盖块提供，现合并到此处。
+   放在最前面，任何带 class 的规则都能正常覆盖它（这正是原来做不到的）。 */
+h3 {
+    font-size: var(--font-size-lg);
+}
+
+h4, h5, h6 {
+    font-size: var(--font-size-base);
+}
+
+small {
+    font-size: var(--font-size-sm);
+}
+
 html {
     background: var(--color-bg-primary) !important;
 }
@@ -127,7 +141,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .navbar-brand {
     font-family: var(--font-display);
     font-weight: 700;
-    font-size: 1.3rem;
+    font-size: var(--font-size-xl);
     letter-spacing: -0.02em;
     color: var(--color-accent-warm) !important;
     transition: all 0.3s ease;
@@ -145,7 +159,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     transition: all 0.3s ease;
     position: relative;
     padding: 0.4rem 0.8rem !important;
-    font-size: 0.95rem;
+    font-size: var(--font-size-base);
 }
 
 .nav-link::after {
@@ -322,7 +336,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .task-card h6 {
     font-family: var(--font-display);
     font-weight: 600;
-    font-size: 1rem;
+    font-size: var(--font-size-base);
     color: var(--color-text-primary);
     margin: 0;
     letter-spacing: -0.01em;
@@ -330,7 +344,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .task-card .progress-detail {
     font-family: var(--font-mono);
-    font-size: 0.8rem;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     margin: 0;
     display: flex;
@@ -338,7 +352,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .task-card .badge {
-    font-size: 0.7rem;
+    font-size: var(--font-size-xs);
     padding: 0.3rem 0.65rem;
 }
 
@@ -354,11 +368,16 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 /* Status Badge Styles */
+/* Bootstrap 的 .badge 默认 0.75em（相对父级），这里钉成绝对刻度 */
+.badge {
+    font-size: var(--font-size-xs);
+}
+
 .status-badge {
     display: inline-block;
     padding: 0.35rem 0.85rem;
     border-radius: 6px;
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     font-family: var(--font-mono);
     transition: all 0.3s ease;
@@ -430,7 +449,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.85rem;
+    font-size: var(--font-size-sm);
     font-weight: 700;
     font-family: var(--font-mono);
     transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
@@ -531,7 +550,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 600;
     color: var(--color-text-primary);
     margin-bottom: 0.5rem;
-    font-size: 0.95rem;
 }
 
 .config-section .form-control,
@@ -614,7 +632,6 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 700;
     padding: 0.5rem 1.25rem;
     font-family: var(--font-display);
-    font-size: 0.8rem;
     transition: all 0.3s ease;
 }
 
@@ -625,6 +642,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     position: relative;
     overflow: hidden;
     font-weight: 500;
+    font-size: var(--font-size-base);
 }
 
 .btn-primary {
@@ -693,12 +711,11 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .btn-group-sm .btn {
-    font-size: 0.75rem;
     padding: 0.4rem 0.9rem;
 }
 
 .btn-sm {
-    font-size: 0.8rem;
+    font-size: var(--font-size-sm);
     padding: 0.4rem 0.8rem;
     border-radius: 6px;
 }
@@ -720,6 +737,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border: 1px solid;
     padding: 1rem 1.25rem;
     font-family: var(--font-display);
+    font-size: var(--font-size-base);
     box-shadow: var(--shadow-sm);
 }
 
@@ -771,6 +789,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: transparent;
     color: var(--color-text-primary);
     font-weight: 600;
+    font-size: var(--font-size-base);
     border-bottom: 1px solid var(--color-border);
     border-radius: var(--radius) var(--radius) 0 0 !important;
     padding: 0.85rem 1rem;
@@ -778,7 +797,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .card-header h5 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--font-size-base);
     font-weight: 600;
     color: var(--color-text-primary);
 }
@@ -837,7 +856,6 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .stat-card h3 {
-    font-size: 2rem;
     font-weight: 600;
     font-family: var(--font-mono);
     color: var(--color-text-primary) !important;
@@ -883,7 +901,7 @@ h1, h2, h3, h4, h5, h6 {
     padding: 0.6rem 0.85rem;
     font-family: var(--font-display);
     transition: all 0.3s ease;
-    font-size: 0.95rem;
+    font-size: var(--font-size-base);
 }
 
 .form-control:focus,
@@ -904,12 +922,11 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 600;
     margin-bottom: 0.4rem;
     font-family: var(--font-display);
-    font-size: 0.9rem;
+    font-size: var(--font-size-sm);
 }
 
 .form-control-sm {
     padding: 0.4rem 0.65rem;
-    font-size: 0.85rem;
 }
 
 .mb-3 {
@@ -940,11 +957,13 @@ h1, h2, h3, h4, h5, h6 {
 .modal-title {
     font-family: var(--font-display);
     font-weight: 700;
+    font-size: var(--font-size-lg);
     color: var(--color-text-primary);
 }
 
 .modal-body {
     color: var(--color-text-primary);
+    font-size: var(--font-size-base);
     padding: 1.5rem;
 }
 
@@ -983,6 +1002,7 @@ h1, h2, h3, h4, h5, h6 {
     border-radius: 8px;
     padding: 0.5rem 0.75rem;
     font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
     transition: all 0.3s ease;
 }
 
@@ -1010,6 +1030,15 @@ h1, h2, h3, h4, h5, h6 {
 .table {
     color: var(--color-text-primary) !important;
     background: transparent !important;
+    font-size: var(--font-size-base);
+}
+
+.table th {
+    font-size: var(--font-size-sm);
+}
+
+.table small {
+    font-size: var(--font-size-sm);
 }
 
 .table thead {
@@ -1056,7 +1085,7 @@ code {
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
     font-family: var(--font-mono);
-    font-size: 0.9em;
+    font-size: var(--font-size-sm);
 }
 
 /* Form Check Styles */
@@ -1129,14 +1158,6 @@ code {
 
     .action-buttons .btn {
         width: 100%;
-    }
-
-    .navbar-brand {
-        font-size: 1.2rem;
-    }
-
-    .stat-card h3 {
-        font-size: 2rem;
     }
 }
 
@@ -1315,124 +1336,6 @@ code {
 .task-card:nth-child(4) { animation-delay: 0.4s; }
 .task-card:nth-child(5) { animation-delay: 0.5s; }
 
-/* ========================================
-   统一字体大小系统
-   ======================================== */
-
-/* 导航栏字体 */
-.navbar-brand {
-    font-size: var(--font-size-xl) !important;
-}
-
-.nav-link {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 卡片字体 */
-.card-header,
-.card-header h5 {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 表单字体 */
-.form-label {
-    font-size: var(--font-size-sm) !important;
-}
-
-.form-control,
-.form-select {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 按钮字体 */
-.btn {
-    font-size: var(--font-size-base) !important;
-}
-
-.btn-sm {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 任务卡片字体 */
-.task-card h6 {
-    font-size: var(--font-size-base) !important;
-}
-
-.task-card .badge {
-    font-size: var(--font-size-xs) !important;
-}
-
-.task-card .progress-detail {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 表格字体 */
-.table {
-    font-size: var(--font-size-base) !important;
-}
-
-.table th {
-    font-size: var(--font-size-sm) !important;
-}
-
-.table small {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 配置区块字体 */
-.config-section h3 {
-    font-size: var(--font-size-md) !important;
-}
-
-/* 进度条字体 */
-.progress-bar {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 徽章字体 */
-.badge,
-.status-badge {
-    font-size: var(--font-size-xs) !important;
-}
-
-/* 模态框字体 */
-.modal-title {
-    font-size: var(--font-size-lg) !important;
-}
-
-.modal-body {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 分页字体 */
-.page-link {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* Alert字体 */
-.alert {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 标题字体 */
-h3 {
-    font-size: var(--font-size-lg) !important;
-}
-
-h4, h5, h6 {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 小号文字 */
-small {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 代码字体 */
-code {
-    font-size: var(--font-size-sm) !important;
-}
-
 /* 下载表单分组标题 */
 .form-group-label {
     font-size: var(--font-size-xs);
@@ -1446,7 +1349,7 @@ code {
 
 .form-text {
     color: var(--color-text-muted) !important;
-    font-size: var(--font-size-xs) !important;
+    font-size: var(--font-size-xs);
     margin-top: 0.35rem;
 }
 

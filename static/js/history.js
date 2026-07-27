@@ -93,7 +93,7 @@ function renderHistoryTable(tasks) {
                 </span>
             </td>
             <td>
-                <small style="font-family: var(--font-mono); font-size: 0.8rem; line-height: 1.4;">
+                <small style="font-family: var(--font-mono); line-height: 1.4;">
                     ${task.north == null ? '<span style="color: var(--color-text-muted);">本地文件</span>' : `
                     <span style="color: var(--color-accent-warm);">▲</span> ${task.north.toFixed(4)},
                     <span style="color: var(--color-accent-warm);">▼</span> ${task.south.toFixed(4)}<br>
@@ -104,7 +104,7 @@ function renderHistoryTable(tasks) {
             <td style="font-family: var(--font-mono);">${(task.task_type === 'map' || task.task_type === 'contour') ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
             <td>${(task.task_type === 'map' || task.task_type === 'contour') ? getStyleText(task.style) : (task.style || '-')}</td>
             <td style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</td>
-            <td><small style="font-family: var(--font-mono); font-size: 0.85rem;">${formatDate(task.completed_at)}</small></td>
+            <td><small style="font-family: var(--font-mono);">${formatDate(task.completed_at)}</small></td>
             <td>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn btn-sm btn-info" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情">
