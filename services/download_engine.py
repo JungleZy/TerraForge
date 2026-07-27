@@ -30,12 +30,28 @@ MAX_ZOOM = 21  # Maximum zoom level
 
 # CRS the per-tile georeferenced intermediates are written in. Single source of
 # truth: tile_geotransform returns it and _add_georeference bakes it into the
-# intermediate file name (tile_geo3857.tif), so a stale intermediate written in
-# a *different* CRS can never be picked up by the exists() short-circuit.
-# Before this was introduced the intermediates were plain `<tile>_geo.tif`;
-# releases up to 0.0.9 wrote those in EPSG:4326.
+# intermediate file name, so a stale intermediate written in a *different* CRS
+# can never be picked up by the exists() short-circuit.
 TILE_GEOREF_EPSG = 3857
-LEGACY_GEOREF_SUFFIX = '_geo'  # pre-3857 intermediates — never reused, only deleted
+
+# File-name suffix of the per-tile georeferenced intermediate. It encodes every
+# property of the content that the exists() short-circuit in _add_georeference
+# assumes without re-opening the file:
+#   - `3857`: the CRS (see TILE_GEOREF_EPSG)
+#   - `rgb`:  pixel values are *colours*, not palette indices
+# Whenever the intermediate's contract changes, this suffix must change too.
+# The rule exists because intermediates outlive the run that made them: they are
+# removed in a finally block, but that unlink only logs a warning on failure
+# (a locked file on Windows is enough), and the cache is shared across tasks and
+# never cleaned by upgrades. An unchanged name plus a changed contract means the
+# short-circuit silently serves content the current code would never produce.
+GEOREF_SUFFIX = f'_geo{TILE_GEOREF_EPSG}rgb'
+
+# Suffixes earlier releases wrote. Never reused — only deleted, so the residue
+# on users' disks drains away as tiles get re-stitched:
+#   `_geo`     — up to 0.0.9: EPSG:4326, wrong projection for a 3857 mosaic
+#   `_geo3857` — palette-unaware: paletted tiles left as 1 band of raw indices
+LEGACY_GEOREF_SUFFIXES = ('_geo', f'_geo{TILE_GEOREF_EPSG}')
 
 
 class DownloadCancelled(Exception):
@@ -614,7 +630,7 @@ class DownloadEngine:
 
         Process:
             1. Get cache paths for all tiles
-            2. Add georeference to each tile (creates _geo3857.tif versions)
+            2. Add georeference to each tile (creates _geo3857rgb.tif versions)
             3. Build VRT (Virtual Dataset) from georeferenced tiles
             4. Reproject the VRT to target_epsg (skipped when it is already 3857)
             5. Translate VRT to final format with compression
@@ -764,7 +780,7 @@ class DownloadEngine:
                 except Exception as e:
                     logger.warning(f"Failed to clean up VRT file {temp_vrt}: {e}")
 
-            # 2. Clean up temporary georeferenced tiles (_geo3857.tif files)
+            # 2. Clean up temporary georeferenced tiles (_geo3857rgb.tif files)
             cleaned_count = 0
             for georef_path in georef_paths:
                 try:
@@ -826,9 +842,11 @@ class DownloadEngine:
         Process:
             1. Check if georeferenced version already exists
             2. Open source tile with GDAL
-            3. Create georeferenced copy with GTiff driver
-            4. Calculate geotransform via tile_geotransform()
-            5. Set geotransform and projection (EPSG:3857, Web Mercator)
+            3. Expand paletted (PNG8) tiles to 3-band RGB — see the comment at
+               that branch for why the colour table cannot just be copied
+            4. Create georeferenced copy with GTiff driver
+            5. Calculate geotransform via tile_geotransform()
+            6. Set geotransform and projection (EPSG:3857, Web Mercator)
 
         Geotransform Calculation:
             Delegated to tile_geotransform(). Tiles are written in EPSG:3857
@@ -844,36 +862,42 @@ class DownloadEngine:
 
         Georef Path Format:
             Original: /path/to/tile.png
-            Georef:   /path/to/tile_geo3857.tif
+            Georef:   /path/to/tile_geo3857rgb.tif   (see GEOREF_SUFFIX)
 
-            The CRS is part of the name on purpose. Releases up to 0.0.9 wrote
-            `tile_geo.tif` in EPSG:4326, and those files survive on disk
-            whenever a stitch aborts part-way (a missing cache tile raises
-            inside the loop). The cache is shared across tasks and upgrades
-            never clean it, so an untagged name plus the exists() short-circuit
-            below would happily feed a 4326 leftover into a 3857 mosaic.
-            Tagging the name makes that impossible without re-opening every
-            tile to verify its projection.
+            The name encodes the content's contract — CRS *and* pixel form — on
+            purpose, because the exists() short-circuit below trusts the name
+            instead of re-opening the file. Leftovers survive on disk whenever a
+            stitch aborts part-way (a missing cache tile raises inside the loop
+            and the finally-block unlink only warns on failure), the cache is
+            shared across tasks, and upgrades never clean it. Two releases have
+            already changed the contract:
+              - up to 0.0.9 `tile_geo.tif` was EPSG:4326 — reusing one would
+                feed a 4326 tile into a 3857 mosaic
+              - `tile_geo3857.tif` predates palette expansion — reusing one for
+                a roadmap tile would put raw palette indices back into the
+                mosaic and the colours would be wrong again
+            Both are listed in LEGACY_GEOREF_SUFFIXES and get deleted on sight.
         """
         # Generate georeferenced file path using Path operations
         tile_path_obj = Path(tile_path)
         georef_path_obj = tile_path_obj.with_stem(
-            f"{tile_path_obj.stem}_geo{TILE_GEOREF_EPSG}"
+            f"{tile_path_obj.stem}{GEOREF_SUFFIX}"
         ).with_suffix('.tif')
         georef_path = str(georef_path_obj)
 
-        # Opportunistically drop the pre-3857 leftover for this tile so the
+        # Opportunistically drop leftovers written by earlier releases so the
         # existing residue on users' disks drains away as tiles get re-stitched
         # instead of sitting there forever.
-        legacy_path_obj = tile_path_obj.with_stem(
-            f"{tile_path_obj.stem}{LEGACY_GEOREF_SUFFIX}"
-        ).with_suffix('.tif')
-        try:
-            if legacy_path_obj.exists():
-                legacy_path_obj.unlink()
-                logger.debug(f"Removed stale pre-3857 georeferenced tile: {legacy_path_obj}")
-        except Exception as e:
-            logger.warning(f"Failed to remove stale georeferenced tile {legacy_path_obj}: {e}")
+        for legacy_suffix in LEGACY_GEOREF_SUFFIXES:
+            legacy_path_obj = tile_path_obj.with_stem(
+                f"{tile_path_obj.stem}{legacy_suffix}"
+            ).with_suffix('.tif')
+            try:
+                if legacy_path_obj.exists():
+                    legacy_path_obj.unlink()
+                    logger.debug(f"Removed stale georeferenced tile: {legacy_path_obj}")
+            except Exception as e:
+                logger.warning(f"Failed to remove stale georeferenced tile {legacy_path_obj}: {e}")
 
         # Return if already exists
         if georef_path_obj.exists():
@@ -886,6 +910,39 @@ class DownloadEngine:
         src_ds = gdal.Open(tile_path)
         if src_ds is None:
             raise RuntimeError(f"Failed to open tile: {tile_path}")
+
+        # Resolve paletted (PNG8) tiles against their own colour table *here*,
+        # before any tile meets another one.
+        #
+        # roadmap/hybrid/roads/terrain tiles come back from Google as PNG8: one
+        # band of colour-table *indices* plus the table. The band copy below
+        # only moves pixel values, so without this the intermediate keeps the
+        # raw indices and every viewer renders them as greyscale — the colours
+        # are simply gone. Satellite tiles are already 3-band RGB and skip this
+        # branch entirely (no extra read, no extra copy).
+        #
+        # Carrying the colour table across instead of expanding it does not
+        # work: adjacent Google tiles ship *different* tables (measured on three
+        # neighbouring roadmap tiles: 167 / 137 / 119 entries, and 132 of the
+        # first 137 indices hold different colours). A VRT can only hold one
+        # table, so every other tile would be decoded with the wrong one —
+        # vivid output with scrambled semantics, which is worse than obviously
+        # grey output because it looks correct.
+        #
+        # Expanding also means the mosaic can be resampled with the user's
+        # configured gdal_resampling: interpolating RGB averages colours, which
+        # is meaningful. Interpolating palette indices is not, and would have
+        # forced 'nearest' regardless of configuration.
+        if src_ds.RasterCount == 1 and src_ds.GetRasterBand(1).GetRasterColorTable() is not None:
+            logger.debug(f"Expanding paletted tile to RGB: {tile_path}")
+            expanded_ds = gdal.Translate('', src_ds, format='MEM', rgbExpand='rgb')
+            src_ds = None  # the index band is not needed any more
+            if expanded_ds is None:
+                raise RuntimeError(f"Failed to expand paletted tile to RGB: {tile_path}")
+            # Hand the *only* reference to src_ds, so the `src_ds = None` at the
+            # end of this function really is the last one and the MEM dataset is
+            # released there rather than lingering until the frame is destroyed.
+            src_ds, expanded_ds = expanded_ds, None
 
         # Get tile dimensions
         width = src_ds.RasterXSize

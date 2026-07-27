@@ -369,3 +369,293 @@ def test_stitch_reprojects_to_4326_by_default_and_keeps_3857_on_request(tmp_path
     # --- 中间文件必须清干净 ---
     assert sorted(str(p) for p in cache_dir.rglob('*_geo*.tif')) == []
     assert sorted(str(p) for p in out_dir.rglob('*.vrt')) == []
+
+
+# --------------------------------------------------------------------------
+# 调色板（PNG8）瓦片必须展开成真彩色 RGB
+# --------------------------------------------------------------------------
+
+# 取自真实 Google roadmap 瓦片的几种典型配色。刻意让每个条目的 R/G/B
+# 三个分量互不相同 —— 这样「通道顺序搞成 BGR」「三个通道都写成同一个
+# 波段」这类错误才会被逐像素断言抓到；若用灰阶调色板（R==G==B）则隐形。
+_ROADMAP_PALETTE = [
+    (0, 0, 0),           # 索引 0：黑（文字描边）
+    (145, 147, 148),     # 路面灰（实测 roadmap 里真实存在的一档）
+    (241, 243, 244),     # 底图浅灰
+    (163, 204, 255),     # 水体蓝
+    (252, 214, 164),     # 高速公路橙
+    (200, 30, 40),       # 标注红
+]
+
+# 第二块瓦片用一套**完全不同**的调色板，模拟实测事实：相邻的 Google
+# roadmap 瓦片各自带不同的调色板（实测 167 / 137 / 119 色，前 137 个索引
+# 里 132 个颜色不同）。索引矩阵与第一块一致，所以只要哪一块被用了别人的
+# 调色板解码，颜色断言立刻红。
+_ROADMAP_PALETTE_ALT = [
+    (255, 255, 255),
+    (60, 61, 62),
+    (12, 34, 56),
+    (255, 128, 0),
+    (0, 176, 80),
+    (99, 7, 201),
+]
+
+
+def _write_palette_png_tile(path, palette, size: int = 16):
+    """
+    在 path 写一张真实的 PNG8 调色板瓦片（1 波段索引 + color table）。
+
+    返回索引矩阵（list[list[int]]），供调用方逐像素核对颜色。
+    """
+    import numpy as np
+    from osgeo import gdal
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    indices = [[(row + col) % len(palette) for col in range(size)] for row in range(size)]
+
+    mem = gdal.GetDriverByName('MEM').Create('', size, size, 1, gdal.GDT_Byte)
+    color_table = gdal.ColorTable()
+    for idx, (r, g, b) in enumerate(palette):
+        color_table.SetColorEntry(idx, (r, g, b, 255))
+    band = mem.GetRasterBand(1)
+    band.SetRasterColorTable(color_table)
+    band.SetRasterColorInterpretation(gdal.GCI_PaletteIndex)
+    band.WriteArray(np.array(indices, dtype=np.uint8))
+
+    png = gdal.GetDriverByName('PNG').CreateCopy(str(path), mem)
+    assert png is not None, f"无法写入调色板测试瓦片 {path}"
+    png = None
+    mem = None
+
+    # 自检：写出来的 PNG 必须真的是「1 波段 + 调色板」，否则这条测试就没在
+    # 测它想测的东西（GDAL 的 PNG driver 若哪天默默展开成 RGB，测试会变成空壳）。
+    check = gdal.Open(str(path))
+    assert check.RasterCount == 1, "测试素材不是单波段，PNG8 前提已失效"
+    assert check.GetRasterBand(1).GetRasterColorTable() is not None, \
+        "测试素材没有调色板，PNG8 前提已失效"
+    check = None
+
+    return indices
+
+
+def test_palette_tile_is_expanded_to_true_rgb(tmp_path):
+    """
+    调色板瓦片必须在配准阶段就地展开成 3 波段真彩色。
+
+    缺陷：`_add_georeference` 逐波段 ReadAsArray/WriteArray 复制像素，从不碰
+    color table。PNG8 的 roadmap 瓦片只有 1 个波段、装的是**调色板索引**，
+    复制出来调色板就丢了，任何软件打开都是「把索引当灰度显示」，颜色全错。
+
+    为什么不是「顺手把 color table 也复制过去」：相邻 Google 瓦片各自带
+    不同的调色板，BuildVRT 只能保留一份，其余瓦片会按错的调色板解码 ——
+    产出「颜色鲜艳但地物语义错乱」，比灰度图更危险，因为它看起来像对的。
+    所以必须在瓦片彼此相遇之前，各自用自己的调色板解算成 RGB。
+
+    断言逐像素比对颜色，不只数波段个数 —— 只数波段的话，「展开成 3 波段但
+    通道顺序错」或「三个波段都塞索引值」都能骗过测试。
+    """
+    from osgeo import gdal
+
+    engine = DownloadEngine()
+    zoom, x, y = 10, 843, 387
+    tile = Tile(task_id=0, zoom=zoom, x=x, y=y)
+
+    tile_png = tmp_path / 'palette_tile.png'
+    indices = _write_palette_png_tile(tile_png, _ROADMAP_PALETTE, size=16)
+
+    georef_path = engine._add_georeference(str(tile_png), tile)
+
+    ds = gdal.Open(georef_path)
+    assert ds is not None, f"配准中间文件打不开: {georef_path}"
+    assert ds.RasterCount == 3, (
+        f"调色板瓦片应展开成 3 波段 RGB，实际 {ds.RasterCount} 波段"
+        "（1 波段说明调色板被丢弃，产物是索引值当灰度）"
+    )
+    assert ds.GetRasterBand(1).GetRasterColorTable() is None, \
+        "展开后不应再残留 color table"
+
+    arr = ds.ReadAsArray()
+    ds = None
+
+    size = len(indices)
+    for row in range(size):
+        for col in range(size):
+            expected = _ROADMAP_PALETTE[indices[row][col]]
+            actual = tuple(int(arr[band][row][col]) for band in range(3))
+            assert actual == expected, (
+                f"像素 ({row},{col}) 索引 {indices[row][col]} 的颜色应为 "
+                f"{expected}，实际 {actual}"
+            )
+
+    # 配准逻辑不能被展开顺手改坏
+    assert _epsg_of(georef_path) == '3857', "配准中间文件必须仍是 EPSG:3857"
+
+
+def test_rgb_tile_passes_through_georeference_unchanged(tmp_path):
+    """
+    卫星图（3 波段 RGB、无调色板）路径必须零变化。
+
+    这是当前生产中唯一被真正使用的路径（用户缓存里 43 万张全是卫星图），
+    调色板展开的改动绝不能顺带把它改坏 —— 既不能改波段数，也不能动像素值。
+    """
+    import numpy as np
+    from osgeo import gdal
+
+    engine = DownloadEngine()
+    zoom, x, y = 10, 843, 387
+    tile = Tile(task_id=0, zoom=zoom, x=x, y=y)
+
+    # 三个波段值刻意不同，这样「通道顺序被打乱」也会被抓到；
+    # 再叠一个随行变化的梯度，避免纯色图掩盖空间错位（翻转 / 平移）。
+    size = 16
+    base = np.array(
+        [[row * 3 + col for col in range(size)] for row in range(size)],
+        dtype=np.uint8,
+    )
+    channels = [base, (base + 60).astype(np.uint8), (base + 120).astype(np.uint8)]
+
+    tile_png = tmp_path / 'satellite_tile.png'
+    mem = gdal.GetDriverByName('MEM').Create('', size, size, 3, gdal.GDT_Byte)
+    for band_idx, data in enumerate(channels, start=1):
+        mem.GetRasterBand(band_idx).WriteArray(data)
+    png = gdal.GetDriverByName('PNG').CreateCopy(str(tile_png), mem)
+    assert png is not None
+    png = None
+    mem = None
+
+    georef_path = engine._add_georeference(str(tile_png), tile)
+
+    ds = gdal.Open(georef_path)
+    assert ds is not None
+    assert ds.RasterCount == 3, f"RGB 瓦片波段数应保持 3，实际 {ds.RasterCount}"
+    for band_idx, expected in enumerate(channels, start=1):
+        actual = ds.GetRasterBand(band_idx).ReadAsArray()
+        assert np.array_equal(actual, expected), (
+            f"波段 {band_idx} 的像素值被改动了（RGB 路径必须逐像素不变）"
+        )
+    ds = None
+
+    assert _epsg_of(georef_path) == '3857', "配准中间文件必须仍是 EPSG:3857"
+
+
+def test_stitched_palette_tiles_keep_each_tiles_own_colors(tmp_path, monkeypatch):
+    """
+    端到端：两块**调色板互不相同**的瓦片拼在一起，各自颜色都必须正确。
+
+    这条锁的是「复制 color table」那条死路：VRT 只能带一份调色板，若实现
+    走了复制路线，两块瓦片里必然有一块被按错的调色板解码。走 target_epsg
+    =3857 跳过 warp，像素原封不动穿过 BuildVRT → Translate，所以可以逐像素
+    比对颜色。
+    """
+    from config import Config
+    from osgeo import gdal
+
+    cache_dir = tmp_path / 'cache'
+    out_dir = tmp_path / 'downloads'
+    monkeypatch.setattr(Config, 'CACHE_DIR', cache_dir)
+    monkeypatch.setattr(Config, 'OUTPUT_DIR', out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    engine = DownloadEngine()
+    zoom, x, y = 10, 843, 387
+    size = 16
+    left = Tile(task_id=0, zoom=zoom, x=x, y=y)
+    right = Tile(task_id=0, zoom=zoom, x=x + 1, y=y)
+
+    indices = _write_palette_png_tile(left.cache_path('m'), _ROADMAP_PALETTE, size=size)
+    indices_right = _write_palette_png_tile(
+        right.cache_path('m'), _ROADMAP_PALETTE_ALT, size=size
+    )
+    assert indices == indices_right, "两块瓦片索引应相同，才能证伪『用了别人的调色板』"
+
+    out_path = out_dir / 'palette_mosaic.tif'
+    engine.stitch_tiles_with_gdal([left, right], 'm', str(out_path), zoom, target_epsg=3857)
+
+    ds = gdal.Open(str(out_path))
+    assert ds is not None
+    assert ds.RasterCount == 3, f"拼接产物应为 3 波段 RGB，实际 {ds.RasterCount}"
+    assert (ds.RasterXSize, ds.RasterYSize) == (size * 2, size), \
+        f"拼接尺寸应为 {size * 2}x{size}，实际 {ds.RasterXSize}x{ds.RasterYSize}"
+    arr = ds.ReadAsArray()
+    ds = None
+
+    for row in range(size):
+        for col in range(size):
+            left_expected = _ROADMAP_PALETTE[indices[row][col]]
+            right_expected = _ROADMAP_PALETTE_ALT[indices[row][col]]
+            left_actual = tuple(int(arr[band][row][col]) for band in range(3))
+            right_actual = tuple(int(arr[band][row][col + size]) for band in range(3))
+            assert left_actual == left_expected, (
+                f"左瓦片像素 ({row},{col}) 应为 {left_expected}，实际 {left_actual}"
+            )
+            assert right_actual == right_expected, (
+                f"右瓦片像素 ({row},{col}) 应为 {right_expected}，实际 {right_actual}"
+                "（若等于左瓦片的颜色，说明两块瓦片共用了同一份调色板）"
+            )
+
+    assert sorted(str(p) for p in cache_dir.rglob('*_geo*.tif')) == []
+    assert sorted(str(p) for p in out_dir.rglob('*.vrt')) == []
+
+
+def test_stale_single_band_intermediate_is_never_reused(tmp_path, monkeypatch):
+    """
+    改动前形态的 1 波段中间文件，绝不能被 exists() 短路复用。
+
+    `_add_georeference` 在中间文件已存在时直接返回，不重新打开校验内容 ——
+    也就是说它完全信任文件名。展开调色板改变了中间文件的**内容契约**
+    （像素从调色板索引变成颜色），文件名却没跟着变的话：残留一份旧的
+    1 波段中间文件，下次 roadmap 拼接就会静默复用它，颜色又错回去。
+
+    残留是真实场景：中间文件虽然在 finally 里删，但 unlink 失败只打 warning
+    不抛错（Windows 文件占用足够触发），而缓存目录跨任务共享、升级也从不清理。
+
+    这与 Phase 1 的 `_geo.tif` 残骸问题同构：那次是坐标系变更把一个一直无害
+    的复用逻辑升级成了有害，这次是波段形态。对策也同构 —— 把契约编进文件名。
+    """
+    import numpy as np
+    from config import Config
+    from osgeo import gdal, osr
+
+    monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
+
+    engine = DownloadEngine()
+    zoom, x, y = 10, 843, 387
+    tile = Tile(task_id=0, zoom=zoom, x=x, y=y)
+    tile_png = tile.cache_path('m')
+    indices = _write_palette_png_tile(tile_png, _ROADMAP_PALETTE, size=16)
+
+    # 造一份「改动前的代码」会产出的中间文件：EPSG:3857 配准正确，
+    # 但只有 1 波段、装的是调色板索引。
+    stale_path = tile_png.with_name(f"{tile_png.stem}_geo3857.tif")
+    stale = gdal.GetDriverByName('GTiff').Create(str(stale_path), 16, 16, 1, gdal.GDT_Byte)
+    stale.SetGeoTransform(engine.tile_geotransform(tile, 16, 16)[0])
+    stale_srs = osr.SpatialReference()
+    stale_srs.ImportFromEPSG(3857)
+    stale.SetProjection(stale_srs.ExportToWkt())
+    stale.GetRasterBand(1).WriteArray(np.array(indices, dtype=np.uint8))
+    stale = None
+    assert stale_path.exists()
+
+    georef_path = engine._add_georeference(str(tile_png), tile)
+
+    assert Path(georef_path) != stale_path, "1 波段残骸被当成中间文件复用了"
+
+    ds = gdal.Open(georef_path)
+    assert ds.RasterCount == 3, (
+        f"复用把 1 波段索引图带回来了，实际 {ds.RasterCount} 波段"
+    )
+    # 不只数波段：颜色必须真的是展开后的 RGB。
+    # 注意别只挑 (0,0) 验 —— 那里索引是 0、颜色也是 (0,0,0)，
+    # 「把索引值复制进三个波段」的错误实现同样能过。逐像素扫。
+    arr = ds.ReadAsArray()
+    ds = None
+    for row in range(len(indices)):
+        for col in range(len(indices)):
+            expected = _ROADMAP_PALETTE[indices[row][col]]
+            actual = tuple(int(arr[band][row][col]) for band in range(3))
+            assert actual == expected, (
+                f"像素 ({row},{col}) 应为 {expected}，实际 {actual}"
+            )
+
+    assert not stale_path.exists(), "旧形态的中间文件应被顺手清掉，避免长期占盘"
