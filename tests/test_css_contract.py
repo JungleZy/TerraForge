@@ -440,11 +440,26 @@ def test_dead_rules_removed():
 def _form_select_rules(css):
     """全部「选择器里出现 .form-select」的规则，含 @media 内、:focus、后代、分组。
 
-    用 _rules() 的花括号深度扫描 + 逗号拆分，而不是
-    `re.finditer(r'\\.form-select[^{]*\\{([^}]*)\\}', css)`：后者只能匹配
-    `.form-select` **打头**的选择器，实测漏掉 `.config-section .form-select`
-    与 `.form-control, .form-select` 这两种写法——而 style.css 里 4 条规则
-    有 3 条是这两种形态。负向断言配上漏检的匹配器，就是一条永真测试。
+    用 _rules() 的花括号深度扫描 + 逗号拆分，而不是计划原文给的
+    `re.finditer(r'\\.form-select[^{]*\\{([^}]*)\\}', css)`。
+
+    ⚠️ 订正（原注释写错过，别再照抄）：那条正则**不存在**「只匹配 .form-select
+    打头的选择器」的问题。`re.finditer` 会从每一处 `.form-select` 起头，`[^{]*`
+    再吞掉选择器剩余部分直到 `{`，没有任何行首锚点——实测拿它跑基线 CSS
+    （`git show 14ad54031:static/css/style.css`）4 条规则全部命中、内层断言
+    触发 4 次。换掉它的真实理由是下面三条：
+
+      1. 零匹配时永真。没有 `assert matches`，正则一旦完全失配，for 循环不执行，
+         负向断言直接绿。（这是 p2-assertion-review.md 的 H 条。）
+      2. 缺词边界，会误吃无关选择器。实测 `.form-select-lg { background: red }`
+         和 `.form-selected { background: red }` 都会被判成违规——而它们没有
+         Bootstrap 箭头，用 background 简写完全无害。假阳性。
+      3. 不剥注释。实测 `/* 别再给 .form-select 写 { background: red } 了 */`
+         这样一句说明文字会被当成一条真规则匹配上并报违规。假阳性。
+         （本文件其它断言已经踩过这个坑两次，见 test_dead_rules_removed。）
+
+    _rules() 在同样这三个输入上分别是：0 条、0 条、1 条（只命中真规则），
+    且 `(?![-\\w])` 词边界挡住了 -lg / -ed 后缀。
     """
     return [
         (sel, body)
@@ -476,7 +491,8 @@ FORM_SELECT_BG_COLORS = {
 
 
 def test_form_select_never_uses_background_shorthand():
-    """任何命中 .form-select 的规则都不许用 `background:` 简写。
+    """任何命中 .form-select 的规则都不许用 `background:` 简写，也不许把
+    `background-image` 置为 none。
 
     `background` 是简写属性，写一次会把 background-image / -position / -size /
     -repeat / -attachment / -origin / -clip 全部重置成初始值。Bootstrap 的
@@ -491,20 +507,31 @@ def test_form_select_never_uses_background_shorthand():
     getComputedStyle(select) 是 backgroundImage:"none" / repeat:"repeat" /
     position:"0% 0%" / size:"auto" —— 四项全被重置，可见不是只丢了图。
     改用 background-color 只覆盖颜色，其余四项让 Bootstrap 的值生效。
+
+    第二条（`background-image: none`）是补漏：只禁简写的话，直接写
+    `.form-select { background-image: none }` 照样能让箭头消失，而其余
+    断言全绿——禁止性契约留了个正门。
     """
     rules = _form_select_rules(_css())
     assert rules, (
         '没有匹配到任何 .form-select 规则——选择器写法变了，本测试已失效'
     )
-    offenders = [
-        f'{sel} {{ background: {_decl_map(body)["background"]} }}'
-        for sel, body in rules
-        if 'background' in _decl_map(body)
-    ]
+    offenders = []
+    for sel, body in rules:
+        decls = _decl_map(body)
+        if 'background' in decls:
+            offenders.append(
+                f'{sel} {{ background: {decls["background"]} }}  ← 简写会重置全部子属性'
+            )
+        img = decls.get('background-image')
+        if img is not None and img.strip().lower().rstrip('!important').strip() == 'none':
+            offenders.append(
+                f'{sel} {{ background-image: {img} }}  ← 直接把箭头图去掉了'
+            )
     assert not offenders, (
-        '.form-select 用了 background 简写，会连带重置 Bootstrap 下拉箭头的\n'
-        'background-image/-repeat/-position/-size，导致 select 没有三角指示符。\n'
-        '改用 background-color：\n'
+        '.form-select 的背景写法会让 Bootstrap 下拉箭头消失\n'
+        '（简写 background 会连带重置 background-image/-repeat/-position/-size；\n'
+        ' background-image:none 则是直接去掉箭头图）。请改用 background-color：\n'
         + '\n'.join('  ' + o for o in offenders)
     )
 
@@ -570,8 +597,12 @@ def _arrow_stroke_hex(css):
     ]
     assert len(imgs) == 1, (
         f'期望恰好 1 条规则覆盖 --bs-form-select-bg-img，实际 {len(imgs)} 条'
-        f'（{[s for s, _ in imgs]}）——没有的话箭头会用回 Bootstrap 浅色主题的 '
-        '#343a40，深色面板上对比度 1.42:1，等于看不见'
+        f'（{[s for s, _ in imgs]}）。\n'
+        '⚠️ 如果你是 Task 8（给 <html> 加 data-bs-theme="dark"）而故意删掉了这条'
+        '覆盖规则，那么本测试和 test_form_select_arrow_has_sufficient_contrast '
+        '应当一并删除，而不是把规则加回来——见两条测试 docstring 里的交接说明。\n'
+        '否则（当前仍是浅色主题时）箭头会用回 Bootstrap 的 #343a40，'
+        '深色面板上对比度 1.42:1，等于看不见。'
     )
     m = re.search(r"stroke='%23([0-9a-fA-F]{6})'", imgs[0][1])
     assert m, (
@@ -581,12 +612,76 @@ def _arrow_stroke_hex(css):
     return '#' + m.group(1).lower()
 
 
+def test_form_select_reserves_room_for_the_arrow():
+    """`.form-select` 必须留出容纳箭头的右内边距，否则选项文字会压在箭头上。
+
+    几何依据（全部取自 Bootstrap 5.3.0 的 `.form-select`，已核对 CDN 源码）：
+        background-position: right .75rem center   → 箭头右缘距padding框右缘 12px
+        background-size:     16px 12px             → 箭头宽 16px
+      ⇒ 箭头占据「右起 12px ~ 28px」这一段，右内边距至少要 28px 才不叠字。
+      Bootstrap 自己用 padding-right: 2.25rem(36px)，比下限多 8px 呼吸位。
+
+    为什么需要这条：本站 `.form-control, .form-select` 用
+    `padding: 0.6rem 0.85rem` 把右内边距压到 13.6px。**箭头丢失期间这不构成
+    问题（没有箭头就不会叠印），箭头一修好碰撞立刻出现**——Task 4 首版就漏了
+    这一点，实测 900px 视口下 #downloadType 的最长选项与箭头重叠 14.4px、
+    末尾字符被切断，992px 视口余量也只剩 3px。
+
+    这条守的是真实几何，不是字符串：把 padding-right 删掉或调到 28px 以下都会红。
+
+    ⚠️ 后续任务（Task 10 密度收紧）若要改表单内边距，可以改本值，
+    但不能低于 28px 下限——除非同时改掉 Bootstrap 的箭头位置/尺寸。
+    """
+    css = _css()
+    rules = _form_select_rules(css)
+    assert rules, '没有匹配到任何 .form-select 规则——选择器写法变了，本测试已失效'
+
+    # 只看纯 `.form-select`（不含后代/分组）那条：它是专门给箭头让位的规则。
+    owners = [
+        (sel, _decl_map(body)['padding-right'])
+        for sel, body in rules
+        if 'padding-right' in _decl_map(body)
+    ]
+    assert owners, (
+        '没有任何 .form-select 规则声明 padding-right。\n'
+        'Bootstrap 的 padding-right:2.25rem 被本站的 `padding: 0.6rem 0.85rem`\n'
+        '简写压成了 13.6px，而箭头要占右起 12~28px —— 选项文字会叠印在箭头上。\n'
+        '实测 900px 视口重叠 14.4px。请在 .form-select 规则里补回 padding-right。'
+    )
+    # rem -> px（本项目未覆盖根字号，实测 1rem = 16px）
+    problems = []
+    for sel, raw in owners:
+        v = raw.strip().lower()
+        m = re.match(r'^([\d.]+)(rem|px)$', v)
+        if not m:
+            problems.append(f'{sel}: padding-right={raw!r} 解析不了（只支持 rem/px），本测试已失效')
+            continue
+        px = float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+        if px < 28:
+            problems.append(
+                f'{sel}: padding-right={raw}（{px:g}px）< 28px 下限，'
+                '选项文字会压在下拉箭头上'
+            )
+    assert not problems, '.form-select 没给箭头留够位置：\n' + '\n'.join('  ' + p for p in problems)
+
+
 def test_form_select_arrow_stroke_matches_palette():
     """箭头描边色必须字面等于 --color-text-secondary。
 
     为什么要单独钉一条：data URI 里不能写 var()，箭头颜色只能硬编码。
     硬编码 + 调色板变量并存 = 典型的静默漂移点——有人改了
     --color-text-secondary，箭头还是老颜色，没人会发现。这条把两者绑死。
+
+    ⚠️ 给 Task 8（data-bs-theme="dark"）的交接说明：
+    加上 `data-bs-theme="dark"` 后，Bootstrap 自带的
+    `[data-bs-theme=dark] .form-select`（特异性 0,2,0）会盖过 style.css 里
+    那条 `.form-select`（0,1,0）的 --bs-form-select-bg-img，箭头自动变成
+    Bootstrap 的 #adb5bd（对 --color-bg-tertiary 实测 7.87:1，达标）。
+    届时 style.css 里那条自定义属性覆盖就是死代码，**可以删**——
+    但删的时候要把本测试和 test_form_select_arrow_has_sufficient_contrast
+    **一并删除**，否则它们会因为找不到覆盖规则而变红。
+    （注意：同一条 `.form-select` 规则里的 `padding-right: 2.25rem` **必须保留**，
+    它压的是本站自己的 padding 简写，与主题无关。）
     """
     css = _css()
     stroke = _arrow_stroke_hex(css)
@@ -610,8 +705,14 @@ def test_form_select_arrow_has_sufficient_contrast():
     这条会拦住。
 
     实测记录（Task 4）：
-      修复前 Bootstrap 默认 #343a40 vs #1c2027 = 1.42:1（不可见）
-      修复后 #9aa0aa           vs #1c2027 = 6.21:1
+      修复前 Bootstrap 浅色主题默认 #343a40 vs #1c2027 = 1.42:1（不可见）
+      修复后 #9aa0aa                        vs #1c2027 = 6.21:1
+      参考：Bootstrap 深色主题的 #adb5bd    vs #1c2027 = 7.87:1
+
+    ⚠️ 给 Task 8（data-bs-theme="dark"）的交接说明：与
+    test_form_select_arrow_stroke_matches_palette 相同——Task 8 之后
+    style.css 里的 --bs-form-select-bg-img 覆盖可以删，删的时候本测试
+    要一并删除。详见那条测试的 docstring。
     """
     css = _css()
     stroke = _arrow_stroke_hex(css)
