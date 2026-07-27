@@ -855,6 +855,11 @@ h1, h2, h3, h4, h5, h6 {
     border-color: var(--color-border-strong);
 }
 
+/* 历史页统计数字。
+   注意：这条规则原本声明过 font-size: 2rem，但一直被 C1 清理掉的那个字号覆盖块里的
+   `h3 { font-size: var(--font-size-lg) !important }` 压成 18px —— 也就是说这些统计
+   数字从来没按设计的 32px 显示过。C1 按「零视觉变化」原则删掉了这条死声明（保持 18px
+   现状），是否恢复到 2rem 属于视觉决策，交 A1-A7 阶段裁定。 */
 .stat-card h3 {
     font-weight: 600;
     font-family: var(--font-mono);

@@ -59,11 +59,19 @@ def _rules(css):
 
 
 def _font_size_decls(body):
-    """规则体里的 font-size 声明列表（原样返回值，含可能的 !important）。"""
+    """规则体里的 font-size 声明列表（原样返回值，含可能的 !important）。
+
+    大小写无关：`FONT-SIZE:` 是浏览器认的合法 CSS，漏掉它等于留一个绕过口。
+    """
     return [
         m.group(1).strip()
-        for m in re.finditer(r'(?<![-\w])font-size\s*:\s*([^;}]+)', body)
+        for m in re.finditer(r'(?<![-\w])font-size\s*:\s*([^;}]+)', body, re.I)
     ]
+
+
+# `!important` 的合法书写形态：大小写任意，`!` 与关键字之间允许空白。
+# 三种都被浏览器接受，只认字面小写 `!important` 会静默漏检。
+_IMPORTANT_RE = re.compile(r'!\s*important', re.I)
 
 
 # --------------------------------------------------------------------------
@@ -80,7 +88,7 @@ def test_no_font_size_uses_important():
     offenders = []
     for sel, body in _rules(_css()):
         for decl in _font_size_decls(body):
-            if '!important' in decl:
+            if _IMPORTANT_RE.search(decl):
                 offenders.append(f'{sel} {{ font-size: {decl} }}')
     assert not offenders, (
         '发现用 !important 声明的 font-size —— 这会让后续字号/密度调整改了不生效：\n'
@@ -106,6 +114,17 @@ def test_font_size_override_block_header_removed():
 
 # 选择器 -> 期望的 font-size 值。值取自被删除的覆盖块（那才是当前实际生效的）。
 # 只删块不合并 = 页面字号集体回落到 Bootstrap 默认，这张表就是防这个的。
+#
+# ⚠️ 给后续任务的说明（这条测试变红时先读这里）：
+#   本表钉的是「C1 合并当时的值」，用途是防止合并漏条，**不是**禁止后续改字号。
+#   Phase 2 后面的任务会**有意**改动其中一些值 —— 例如 A5（密度收紧）会改
+#   `.form-control, .form-select`，A7（文字层级）可能改分组标题相关的字号。
+#   那属于正常的视觉改动，**改的时候同步更新本表即可**。
+#
+#   另外：键是按 `_norm_selector` 规范化后的**精确字符串**匹配的，所以
+#   `.form-control, .form-select` 的分组与顺序是承重的。若你把这条规则拆成
+#   两条、或调换顺序，也要同步改本表，否则会报「没有任何规则声明 font-size」
+#   —— 那不是漏条，是选择器写法变了。
 MERGED_FONT_SIZES = {
     '.navbar-brand': 'var(--font-size-xl)',
     '.nav-link': 'var(--font-size-base)',
@@ -165,6 +184,10 @@ def test_font_size_scale_variables_unchanged():
 
     上面那张表全部用 var(--font-size-*) 表达，如果有人改了变量的值，
     表还是全绿而页面已经变了。这条把变量值钉住，让上面的断言真正有意义。
+
+    ⚠️ 同样地：「不许**悄悄**改」不等于「不许改」。后续视觉任务若要调整字号
+    刻度（例如 A7 收敛字阶、制造层级断层），那是有意的视觉改动，同步更新
+    本处期望值即可。这条断言拦的是「改了变量但没人注意到全站字号都变了」。
     """
     css = _css()
     expected = {
