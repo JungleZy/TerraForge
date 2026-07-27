@@ -724,6 +724,32 @@ class DownloadEngine:
         logger.info(f"GDAL tile stitching completed: {output_path_obj}")
         return str(output_path_obj)
 
+    def tile_geotransform(self, tile: Tile, width: int, height: int):
+        """
+        Calculate GDAL geotransform + EPSG code for a single tile.
+
+        Args:
+            tile: Tile object with zoom/x/y
+            width: Tile image width in pixels
+            height: Tile image height in pixels
+
+        Returns:
+            (geotransform, epsg_code) where geotransform is
+            [top_left_x, pixel_width, 0, top_left_y, 0, pixel_height]
+        """
+        n = 2 ** tile.zoom
+        lon_min = tile.x / n * 360.0 - 180.0
+        lon_max = (tile.x + 1) / n * 360.0 - 180.0
+
+        lat_max = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * tile.y / n))))
+        lat_min = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (tile.y + 1) / n))))
+
+        pixel_width = (lon_max - lon_min) / width
+        pixel_height = -(lat_max - lat_min) / height
+
+        geotransform = [lon_min, pixel_width, 0, lat_max, 0, pixel_height]
+        return geotransform, 4326
+
     def _add_georeference(self, tile_path: str, tile: Tile) -> str:
         """
         Add georeference information to a tile image
@@ -779,33 +805,8 @@ class DownloadEngine:
         height = src_ds.RasterYSize
         bands = src_ds.RasterCount
 
-        # Calculate geographic bounds using Web Mercator formulas
-        n = 2 ** tile.zoom
-        lon_min = tile.x / n * 360.0 - 180.0
-        lon_max = (tile.x + 1) / n * 360.0 - 180.0
-
-        # Calculate latitude using inverse Mercator projection
-        # lat = atan(sinh(π * (1 - 2 * y / n))) * 180 / π
-        lat_max_rad = math.atan(math.sinh(math.pi * (1.0 - 2.0 * tile.y / n)))
-        lat_max = math.degrees(lat_max_rad)
-
-        lat_min_rad = math.atan(math.sinh(math.pi * (1.0 - 2.0 * (tile.y + 1) / n)))
-        lat_min = math.degrees(lat_min_rad)
-
-        # Calculate geotransform
-        # Geotransform format: [top_left_x, pixel_width, 0, top_left_y, 0, pixel_height]
-        # Note: pixel_height is negative because y increases downward in image coordinates
-        pixel_width = (lon_max - lon_min) / width
-        pixel_height = -(lat_max - lat_min) / height  # Negative because y goes down
-
-        geotransform = [
-            lon_min,        # Top-left X (longitude)
-            pixel_width,    # Pixel width (degrees per pixel)
-            0,              # Rotation (0 for north-up images)
-            lat_max,        # Top-left Y (latitude)
-            0,              # Rotation (0 for north-up images)
-            pixel_height    # Pixel height (negative, degrees per pixel)
-        ]
+        # Calculate geotransform (see tile_geotransform for the math)
+        geotransform, epsg_code = self.tile_geotransform(tile, width, height)
 
         # Create georeferenced output file
         driver = gdal.GetDriverByName('GTiff')
@@ -833,7 +834,7 @@ class DownloadEngine:
 
         # Set projection to WGS84 (EPSG:4326)
         srs = osr.SpatialReference()
-        srs.ImportFromEPSG(4326)
+        srs.ImportFromEPSG(epsg_code)
         dst_ds.SetProjection(srs.ExportToWkt())
 
         # Close datasets
