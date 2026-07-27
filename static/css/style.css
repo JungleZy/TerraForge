@@ -378,8 +378,10 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 /* 失败卡片里展开的错误原因。文本由 tasks.js 的 applyTaskErrorText 用
    textContent 填入（后端错误原文不能进 innerHTML）。
    配色实算（见 tests/test_css_contract.py::test_task_error_box_exists_and_is_readable）：
-     底色 rgba(239,68,68,0.12) 压在卡片的 #15171c 上 = #2f1c21
-     文字 #e8eaed 对 #2f1c21 = 13.27:1（WCAG 正文下限 4.5:1）
+     真实背衬是祖先面板 .card 的 #15171c —— **不是** .task-card，后者的
+     background 被下面那条 div:not(...) 兜底重置压掉了，是死声明
+     底色 rgba(239,68,68,0.12) 压在 #15171c 上 = #2f1c21
+     文字 #e8eaed 对 #2f1c21 = 13.31:1（WCAG 正文下限 4.5:1，CDP 实测同值）
      边框 #f87171 对 #15171c =  6.48:1（图形元素下限 3:1）
    等宽字体是跟 .progress-detail 一致的选择：错误原文里多是路径、URL、状态码。 */
 .task-error {
@@ -1482,6 +1484,14 @@ code {
    ======================================================================== */
 
 /* ---- Toast 容器（右上角堆叠） ---- */
+/* max-height + overflow-y 是 A1b 加的，不是洁癖：在此之前应用里所有 toast
+   都会 3.5 秒后自消失，容器堆不高。A1b 引入了全应用第一个 duration: 0 的
+   常驻 toast（任务失败原因），N 个任务同时失败就是 N 条永不消失的提示向下堆，
+   超出视口底部的那几条 × 按钮点不到（fixed 容器不产生页面滚动条），
+   而且会盖住 index.html 右侧那一列——正好是本次修复要让用户看清的任务列表。
+   对应断言：tests/test_css_contract.py::test_toast_container_cannot_grow_past_the_viewport。
+   overflow-x: hidden 是为了不让被裁掉的横向阴影催生一条横向滚动条；
+   代价是容器四边的 box-shadow 会被裁，深色底上肉眼几乎看不出来。 */
 #app-toast-container {
     position: fixed;
     top: 76px;
@@ -1491,6 +1501,10 @@ code {
     flex-direction: column;
     gap: 0.625rem;
     max-width: min(380px, calc(100vw - 40px));
+    max-height: calc(100vh - 96px);   /* top:76px + 底部留 20px */
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;     /* 滚到头不要把整页也带着滚 */
     pointer-events: none; /* 容器穿透，子项各自接收事件 */
 }
 

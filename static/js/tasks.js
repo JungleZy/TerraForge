@@ -503,6 +503,20 @@ function handleTaskCompleted(taskId, taskType) {
 // 后端没给原因时的兜底文案。空字符串会渲染成一个空红框，比没有红框更让人困惑。
 const UNKNOWN_ERROR_TEXT = '任务失败，但后端没有返回失败原因。请查看服务端日志。';
 
+// taskKey -> showToast 返回的句柄。失败 toast 是常驻的（duration: 0），
+// 同一个任务重复发 task_failed（等高线任务下载阶段与渲染阶段各有失败出口）
+// 会让永不消失的提示白白堆高，所以按 key 合并，新的替掉旧的。
+// ⚠️ 只按 key 合并：不同任务的 toast 必须各留一条，失败原因不一样。
+const failureToasts = new Map();
+
+function closeFailureToast(key) {
+    const t = failureToasts.get(key);
+    if (t) {
+        t.close();
+        failureToasts.delete(key);
+    }
+}
+
 function handleTaskFailed(taskId, taskType, errorMessage) {
     const key = `${taskType}:${taskId}`;
     const task = activeTasks.get(key);
@@ -533,7 +547,8 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
     // duration: 0 → ui.js 里 `if (duration > 0)` 不成立，不挂定时器，
     // toast 一直留到用户自己点 ×。默认的 3500ms 在这里没用：用户离座一趟
     // 回来照样什么都看不到。
-    showToast(`任务失败：${task.error_message}`, 'danger', { duration: 0 });
+    closeFailureToast(key);   // 同一任务只留最新的一条
+    failureToasts.set(key, showToast(`任务失败：${task.error_message}`, 'danger', { duration: 0 }));
 }
 
 // 把错误文本填进卡片里那个**空的** .task-error 容器。
@@ -559,6 +574,7 @@ function applyTaskErrorText(task) {
 function dismissTask(taskId, taskType = 'map') {
     const key = `${taskType}:${taskId}`;
     activeTasks.delete(key);
+    closeFailureToast(key);   // 卡片都不要了，那条常驻 toast 也别留着占地方
     renderActiveTasks(Array.from(activeTasks.values()));
 }
 

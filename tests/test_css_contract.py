@@ -1208,12 +1208,53 @@ def _flatten(color, backdrop_hex):
     )
 
 
-# WCAG 2.x：正文文字 4.5:1（`.task-error` 是 0.8125rem ≈ 13px，属于「正常文字」，
-# 拿不到大字号的 3:1 优惠）；边框属于图形对象，下限 3:1——与
-# test_form_select_arrow_has_sufficient_contrast、
+# WCAG 2.x：正文文字 4.5:1（`.task-error` 用 var(--font-size-sm) = 0.875rem = 14px，
+# 属于「正常文字」，拿不到大字号 18.66px/24px 的 3:1 优惠）；边框属于图形对象，
+# 下限 3:1——与 test_form_select_arrow_has_sufficient_contrast、
 # test_progress_bar_fill_has_sufficient_contrast 是同一条线。
 ERROR_TEXT_MIN_CONTRAST = 4.5
 ERROR_BORDER_MIN_CONTRAST = 3.0
+
+
+def _effective_task_card_backdrop(css):
+    """失败卡片实际压在什么底色上 —— **从 `.card` 解析，不许硬编码调色板变量**。
+
+    ⚠️ 这个函数存在的唯一理由，是本文件上一版把背衬写死成
+    `_palette_var(css, '--color-bg-secondary')` 并注释「.task-card 的底色」，
+    而那是**巧合**：
+
+      - `.task-card { background: var(--color-bg-secondary) }` 是**死声明**，
+        被 `div:not(...)` 兜底重置（特异度 0,10,1）压掉了。CDP 实测
+        `getComputedStyle(.task-card).backgroundColor === 'rgba(0, 0, 0, 0)'`。
+      - 真正的背衬是祖先面板 `.card`（CDP 实测 `rgb(21, 23, 28)`），
+        它**恰好**也用 `--color-bg-secondary`。
+
+    后果：后面任何一个视觉任务改 `.card` 的底色，浏览器里的真实对比度就变了，
+    而拿 `--color-bg-secondary` 算的断言照旧全绿 —— 与 A1b 抓到的
+    「红色底纹被压成透明而测试全绿」是同一类失明。所以这里改成顺着**真实
+    渲染链**去取：`.card` 声明什么，就用什么。
+
+    `.task-card` 自己不参与计算（它的 background 是死的）。想让它复活，
+    得先把它加进兜底重置的 `:not()` 白名单——那属于 C1 类清理，见
+    test_task_error_survives_the_blanket_div_reset 的说明。
+    """
+    rules = [
+        (sel, body) for sel, body, at_ctx in _rules_ctx(css)
+        if not at_ctx and '.card' in _selector_parts(sel)
+        and ('background' in _decl_map(body) or 'background-color' in _decl_map(body))
+    ]
+    assert len(rules) == 1, (
+        f'期望顶层恰好 1 条声明了背景色的 `.card` 规则，实际 {len(rules)} 条：'
+        f'{[s for s, _ in rules]} —— 面板底色的来源变了，本测试已失效'
+    )
+    decls = _decl_map(rules[0][1])
+    raw = decls.get('background') or decls.get('background-color')
+    value = _resolve_color(css, raw)
+    assert re.fullmatch(r'#[0-9a-f]{6}', value), (
+        f'`.card` 的背景色解析成 {value!r}，不是 6 位十六进制 —— '
+        '本断言算不了它的对比度，测试已失效（不是通过）'
+    )
+    return value
 
 
 def test_task_error_box_exists_and_is_readable():
@@ -1229,9 +1270,11 @@ def test_task_error_box_exists_and_is_readable():
          这是 Task 5 评审实测出来的坑）。
       2. 规则体里真的声明了 background / border / color。
       3. **半透明底色先合成再算对比度**：`--color-danger-bg` 是
-         rgba(239,68,68,0.12)，压在 `.task-card` 的 --color-bg-secondary
-         上才是屏幕上的真实底色。
-      4. 文字对合成底色 >= 4.5:1（正文），边框对卡片底色 >= 3:1（图形）。
+         rgba(239,68,68,0.12)，压在真实背衬上才是屏幕上的实际底色。
+      4. **背衬顺着真实渲染链取**（`_effective_task_card_backdrop`：从 `.card`
+         的声明解析，不是硬编码 `--color-bg-secondary`）。硬编码那版是巧合，
+         改 `.card` 底色时会静默漂移，理由见那个函数的 docstring。
+      5. 文字对合成底色 >= 4.5:1（正文），边框对背衬 >= 3:1（图形）。
 
     覆盖范围（诚实说明）：这条守的是 CSS 源码里能算出来的色值关系。
     它保证不了「这个框在浏览器里真的显示出来了」——那由 CDP 实测覆盖
@@ -1250,10 +1293,7 @@ def test_task_error_box_exists_and_is_readable():
     for prop in ('background', 'border', 'color'):
         assert prop in decls, f'.task-error 没有声明 {prop}'
 
-    card = _palette_var(css, '--color-bg-secondary')   # .task-card 的底色
-    assert re.fullmatch(r'#[0-9a-f]{6}', card), (
-        f'--color-bg-secondary = {card!r}，不是 6 位十六进制 —— 本测试已失效'
-    )
+    card = _effective_task_card_backdrop(css)
 
     box_bg = _flatten(_resolve_color(css, decls['background']), card)
     text = _flatten(_resolve_color(css, decls['color']), box_bg)
@@ -1269,7 +1309,7 @@ def test_task_error_box_exists_and_is_readable():
     border = _flatten(_resolve_color(css, m.group(1)), card)
     bratio = _contrast_ratio(border, card)
     assert bratio >= ERROR_BORDER_MIN_CONTRAST, (
-        f'.task-error 的边框 {border} 对卡片底色 {card} 只有 {bratio:.2f}:1，'
+        f'.task-error 的边框 {border} 对真实背衬(.card) {card} 只有 {bratio:.2f}:1，'
         f'低于图形元素 {ERROR_BORDER_MIN_CONTRAST}:1'
     )
 
@@ -1323,4 +1363,41 @@ def test_task_error_survives_the_blanket_div_reset():
     assert not problems, (
         '失败原因框的红色底纹会被 div 兜底重置压成透明（源码里有、浏览器里没有）：\n'
         + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_toast_container_cannot_grow_past_the_viewport():
+    """`#app-toast-container` 必须有 max-height + 可滚动的 overflow-y。
+
+    背景：A1b 之前应用里**没有**常驻 toast——`showToast` 的默认 duration 是
+    3500ms，容器永远堆不高，所以它原本只有 `max-width`、没有任何高度约束。
+    A1b 引入了全应用第一个 `duration: 0`（任务失败原因，见
+    tests/test_tasks_js_contract.py::test_failed_task_pops_a_persistent_toast）。
+
+    没有这条约束会怎样：N 个任务同时失败 → N 条永不消失的 toast 向下堆叠。
+    容器是 `position: fixed`，**不产生页面滚动条**，所以超出视口底部的那几条
+    连 × 按钮都点不到，用户只能刷新页面；而且它们会盖住 index.html 右侧那一列
+    ——正好是 A1b 要让用户看清的任务列表。
+
+    覆盖范围（诚实说明）：这条只保证「声明了高度上限并且可滚」。
+    「滚轮真的能滚动一个 pointer-events: none 的容器」「所有 × 都点得到」
+    这两件事文本断言证明不了，由 CDP 实测覆盖（8 条 toast 的实测见
+    p2-task-6-report.md 的 I2 一节）。
+    """
+    rules = [
+        (sel, body) for sel, body, at_ctx in _rules_ctx(_css())
+        if not at_ctx and '#app-toast-container' in _selector_parts(sel)
+    ]
+    assert len(rules) == 1, (
+        f'期望顶层恰好 1 条 `#app-toast-container` 规则，实际 {len(rules)} 条 —— 本测试已失效'
+    )
+    decls = _decl_map(rules[0][1])
+    assert 'max-height' in decls, (
+        '#app-toast-container 没有 max-height —— 常驻 toast 会一路堆出视口，'
+        '超出部分的 × 点不到（fixed 容器不产生页面滚动条）'
+    )
+    overflow = (decls.get('overflow-y') or decls.get('overflow') or '').strip().lower()
+    assert overflow in ('auto', 'scroll'), (
+        f'#app-toast-container 的 overflow-y 是 {overflow!r}，必须是 auto 或 scroll ——'
+        '否则光有 max-height 只会把超出的 toast 直接裁掉，更糟'
     )

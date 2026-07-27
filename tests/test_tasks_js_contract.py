@@ -430,3 +430,38 @@ def test_dismiss_is_purely_local():
     assert 'activeTasks.delete(' in body, (
         'dismissTask 没有把任务从 activeTasks 摘掉，卡片会在下次重绘时回来'
     )
+
+
+def test_failure_toasts_are_deduped_per_task_not_globally():
+    """同一个任务的常驻 toast 只留一条，**不同任务的必须各留一条**。
+
+    失败 toast 是 duration: 0 的，不会自己消失。等高线任务在下载阶段和渲染
+    阶段各有一个失败出口（`services/contour_task_manager.py` 有 3 处
+    `emit("task_failed")`），同一个 task 重复发事件会让永不消失的提示白白堆高。
+
+    但**不能**退化成「全局只留一条」：8 个任务失败就是 8 个不同的原因，
+    合并掉等于把前 7 条错误信息扔了。所以这里同时钉两件事：
+      1. 合并逻辑存在（`closeFailureToast(key)` 在 set 之前被调用）；
+      2. 合并的键是 `key`（taskType:taskId），不是常量、不是全局单例。
+
+    另外钉住「点移除时顺手关掉那条 toast」——卡片都不要了还留一条永久提示
+    占着右上角，等于把 I2 的堆叠问题换个地方保留。
+    """
+    body = _fn('handleTaskFailed')
+    assert re.search(r'closeFailureToast\(\s*key\s*\)', body), (
+        'handleTaskFailed 没有先关掉同一任务的旧 toast，常驻提示会重复堆叠'
+    )
+    assert re.search(r'failureToasts\.set\(\s*key\s*,\s*showToast\(', body), (
+        'handleTaskFailed 没有按 key 记录 toast 句柄（或者合并键不是 key）——'
+        '合并键不是 taskType:taskId 的话，不同任务的失败原因会被互相顶掉'
+    )
+
+    close_body = _fn('closeFailureToast')
+    assert '.close()' in close_body and 'failureToasts.delete(' in close_body, (
+        'closeFailureToast 必须既关 toast 又清 Map，否则句柄会一直攒着'
+    )
+
+    dismiss_body = _fn('dismissTask')
+    assert 'closeFailureToast(' in dismiss_body, (
+        '点「移除」之后那条常驻 toast 还留在右上角——卡片都清了，提示也该走'
+    )
