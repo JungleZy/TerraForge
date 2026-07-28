@@ -3383,8 +3383,12 @@ VIEWPORT_1366_HEIGHT_PX = 768
 # 复现方法见 .superpowers/sdd/p2-task-10-report.md。改前是 949.34。
 CDP_SUBMIT_BTN_BOTTOM = 715.53
 
-# 模型允许的对拍误差。0.5px 足够吸收浏览器的亚像素舍入
-# （实测模型算出 715.52 vs CDP 715.53，差 0.01px）。
+# 模型允许的对拍误差。0.5px 足够吸收浏览器的亚像素舍入。
+# 实测（Task 11 复核）：模型 715.61 vs CDP 715.53，差 **0.08px**。
+# ⚠️ 订正一处旧注释：这里原本写「模型算出 715.52，差 0.01px」，是不准的 ——
+#    把 Task 10 的 CSS（HEAD~1）、Task 11 的 CSS 分别喂给**同一个旧模型**，
+#    算出来都是 715.61，说明 0.08 的偏差从 Task 10 就存在，不是谁改出来的。
+#    交接说明里「模型对拍 CDP 三点、误差恒定 0.08px」才是对的那个数。
 HEIGHT_MODEL_TOLERANCE_PX = 0.5
 
 # ---- 来自 Bootstrap、本文件不控制的几个数 --------------------------------
@@ -3399,10 +3403,92 @@ BS_BODY_LINE_HEIGHT = 1.5
 # 18px 的内联 SVG（vertical-align: middle），行盒被它撑到 18.91px。
 # 这个数没法从 CSS 算出来，只能实测。CDP: hdrInnerH = 18.91。
 BS_CARD_HEADER_LINE_BOX_PX = 18.91
-# Bootstrap `.btn { padding: .375rem .75rem }` 的纵向内边距。本站没有覆盖它。
+# Bootstrap `.btn { padding: .375rem .75rem }` 的纵向内边距。
+# ⚠️ 这是**兜底值**，只在 style.css 自己没声明 `.btn` 的纵向内边距时才用。
+#    第一版把它当成写死的常量（`btn_h = 2*6.0 + font*1.5`），于是按钮的
+#    padding / min-height / height / border 全在模型的视野之外。评审实测三例：
+#      `.btn{padding:2.5rem 2rem}` -> 261 passed，按钮 34.5->102.5，bottom 783.53 出视口
+#      `.btn{min-height:90px}`     -> 261 passed，bottom 771.03 > 768
+#      `.btn{padding:1rem 2rem}`   -> 261 passed，真实 bottom 735.53 而模型仍算 715.53
+#    第三例最能说明问题：20px 的误差通过了 0.5px 的容差 —— 因为那条断言比的是
+#    「模型 vs 一个和模型同样过期的常量」，两边一起错，差值当然是 0。
+#    现在由 `_effective_button_height` 从 style.css 解析，这个常量退居兜底。
 BS_BTN_PADDING_Y_PX = 6.0
 # Bootstrap `.alert { margin-bottom: 1rem }`。本站没有覆盖它。
 BS_ALERT_MARGIN_BOTTOM_PX = 16.0
+
+
+def _effective_button_height(css):
+    """模拟层叠，算出 `#createTaskBtn`（`.btn.btn-primary.w-100`）的**最终**外框高度。
+
+    与 `_effective_form_control_height` 是同一套模型、同一个理由：决定高度的是
+    「层叠之后谁赢」，不是源码里有没有那串字符。区别只在于按钮的几个盒模型属性
+    **Bootstrap 有默认值而 style.css 可以不声明**，所以取不到时回落到 BS_* 常量。
+
+    计算：
+        内容高 = line-height（没声明就用 font-size x BS_BODY_LINE_HEIGHT）
+        自然高 = padding-top + padding-bottom + 内容高 + 2 x 边框
+        最终高 = height 若有声明；否则 clamp(自然高, min-height, max-height)
+    （box-sizing: border-box 由顶层 `*` 规则保证，MERGED_UNIVERSAL_DECLS 钉着。）
+
+    复现评审那三个实测（这是本函数的自检，数字不是凑的）：
+        现状                       -> 6+6+22.5+0      = 34.5   （CDP 实测 34.5）
+        padding: 2.5rem 2rem       -> 40+40+22.5+0    = 102.5  （CDP 实测 102.5）
+        min-height: 90px           -> max(34.5, 90)   = 90
+        padding: 1rem 2rem         -> 16+16+22.5+0    = 54.5   （比现状高 20px）
+    """
+    ctx = _BtnCtx({'btn', 'btn-primary', 'w-100'}, element_id='createTaskBtn',
+                  label='#createTaskBtn（高度模型）')
+    got = _btn_computed(css, ctx, 'base', {
+        'padding', 'padding-top', 'padding-bottom', 'height', 'min-height',
+        'max-height', 'line-height', 'font-size', 'border', 'border-width',
+        'border-top-width', 'border-bottom-width', 'border-style',
+    })
+
+    def px(name, default=None, required=False):
+        if name not in got:
+            assert not required, f'`.btn` 没有任何规则声明 {name} —— 高度模型算不出来，测试已失效'
+            return default
+        raw = got[name][0]
+        # padding 简写取纵向那一位
+        if name == 'padding':
+            raw = raw.split()[0]
+        v = _resolve_length_px(css, raw)
+        assert v is not None, (
+            f'{name} 的胜出值来自 `{got[name][1]}` 的 {raw!r}，不是 px/rem/var(px) —— '
+            '高度模型解析不了，测试已失效（不是通过）'
+        )
+        return v
+
+    font_size = px('font-size', required=True)
+    line_h = px('line-height')
+    if line_h is None:
+        line_h = font_size * BS_BODY_LINE_HEIGHT
+
+    # 纵向内边距：长写优先，其次简写，都没有才回落到 Bootstrap 默认
+    pad_t = px('padding-top', default=px('padding', default=BS_BTN_PADDING_Y_PX))
+    pad_b = px('padding-bottom', default=px('padding', default=BS_BTN_PADDING_Y_PX))
+
+    # 边框：`.btn { border: none }` -> 0；有人写回 1px 也要算进去
+    style_raw = got.get('border-style', ('none',))[0].strip().lower()
+    if style_raw in ('none', 'hidden'):
+        border = 0.0
+    else:
+        border = (px('border-top-width') or px('border-width')
+                  or px('border', default=0.0) or 0.0)
+
+    natural = pad_t + pad_b + line_h + 2 * border
+    fixed = px('height')
+    if fixed is not None:
+        return fixed
+    out = natural
+    lo = px('min-height')
+    if lo is not None:
+        out = max(out, lo)
+    hi = px('max-height')
+    if hi is not None:
+        out = min(out, hi)
+    return out
 
 
 def _effective_form_control_height(css):
@@ -3665,8 +3751,7 @@ def _index_form_vertical_model(css):
     grid_h = 2 * grid_line + grid_row_gap          # 恰好 2 行，见下一节的断言
     alert_h = 2 * alert_pad + 2 * alert_border + grid_h
 
-    btn_font = rule_px('.btn', 'font-size')
-    btn_h = 2 * BS_BTN_PADDING_Y_PX + btn_font * BS_BODY_LINE_HEIGHT
+    btn_h = _effective_button_height(css)
 
     field_h = label_line + label_mb + ctl_h        # 一个 .mb-3 字段组的高度
 
@@ -3988,6 +4073,8 @@ def test_current_bounds_is_built_from_matching_leaflet_getters():
     )
 
 
+
+
 # ==========================================================================
 # A6 / Task 11：按钮状态系统
 #
@@ -3995,89 +4082,190 @@ def test_current_bounds_is_built_from_matching_leaflet_getters():
 # 写那几条规则」。分界线很实：改前 `.btn-success:hover` 与 `.btn-success`
 # 逐字相同，规则存在、grep 得到、肉眼零变化 —— 形态断言会给这种空操作发绿灯。
 #
+# ⚠️ 评审第一轮实测到的三个逃逸，全部出在**模型的盲区**而不是断言的阈值上。
+#    改完之后这三条都变红了，但更值得记住的是它们的共性：
+#      1. `@media` 里的规则被无声 `continue` 掉 —— 往 @media 里追加一条
+#         `.btn:disabled{background:#0d6efd;opacity:.5}` 就能把整套修复撤回，
+#         而 261 条测试全绿。
+#      2. 预筛 `if 'btn' not in branch` 排在安全网**之前**，而
+#         `'btn' in '#createTaskBtn'` 是 False（大写 B）——
+#         `#createTaskBtn:disabled{...!important}` 同样全绿。
+#      3. 特异度常量比真值低 1（见 BOOTSTRAP_BTN_* 那组常量）。
+#    结论写在这里给下一个人：**用自己的模型去设计变异，测不到模型自身的盲区。**
+#    补护栏时先问「如果我这一环算错了，什么变异能暴露它」。
+#
 # 模型的边界（诚实说明，不是免责声明）：
 #   只模拟 **style.css 内部**的层叠。Bootstrap 的规则不参与计算，改用
 #   「胜出声明的特异度必须 >= Bootstrap 对应规则的特异度」这条独立断言来兜
-#   （见 BOOTSTRAP_BTN_STATE_SPECIFICITY）。理由是把 CDN 上的 bootstrap.min.css
-#   拉进单测会引入网络依赖，而特异度这一层是可以离线判定的：本站的 style.css
-#   排在最后（test_no_stylesheet_can_load_after_style_css 钉住），同特异度即取胜。
+#   （见下面那组常量）。理由是把 CDN 上的 bootstrap.min.css 拉进单测会引入
+#   网络依赖，而特异度这一层是可以离线判定的：本站的 style.css 排在最后
+#   （test_no_stylesheet_can_load_after_style_css 钉住），同特异度即取胜。
 # ==========================================================================
 
-# Bootstrap 5.3.0 按钮状态规则的特异度（已核对 CDN 源码，逐条抄在下面）：
-#   .btn:hover                                    {background-color:var(--bs-btn-hover-bg)}      (0,2,0)
-#   .btn:focus-visible                            {background-color:var(--bs-btn-hover-bg);
-#                                                  outline:0; box-shadow:var(--bs-btn-focus-box-shadow)} (0,2,0)
-#   .btn:disabled, fieldset:disabled .btn         {background-color:var(--bs-btn-disabled-bg);
-#                                                  color:var(--bs-btn-disabled-color);
-#                                                  opacity:var(--bs-btn-disabled-opacity);
-#                                                  pointer-events:none}                          (0,2,0)
-#   .btn:first-child:active,
-#   :not(.btn-check)+.btn:active                  {background-color:var(--bs-btn-active-bg)}     (0,2,0)
-#   .btn:first-child:active:focus-visible         {box-shadow:var(--bs-btn-focus-box-shadow)}    (0,3,0)
-# 而变体色在 Bootstrap 里只是一串自定义属性：
-#   .btn-primary {--bs-btn-bg:#0d6efd; --bs-btn-disabled-bg:#0d6efd; ...}                        (0,1,0)
-# 所以本站 `.btn-primary{background:...}`(0,1,0) **只够管基态**；任何状态覆盖
-# 都必须 >= 2，focus-visible 的 outline / box-shadow 还要 >= 3。
-BOOTSTRAP_BTN_STATE_SPECIFICITY = 2
-BOOTSTRAP_BTN_FOCUS_SHADOW_SPECIFICITY = 3
+# Bootstrap 5.3.0 按钮状态规则的特异度。**每一条都是用脚本对 CDN 上的
+# bootstrap.min.css 逐个选择器算出来的，不是目测的** —— 第一版目测把 active
+# 那条记成了 (0,2,0)，比真值低 1，后果是把 16 条状态规则的 `:not(:disabled)`
+# 全删掉（特异度从 (0,3,0) 掉到 (0,2,0)）测试仍然全绿，而浏览器里按下态
+# 变回 Bootstrap 深蓝 rgb(10,88,202)。
+#
+#   .btn:hover                            {background-color:var(--bs-btn-hover-bg)}       (0,2,0)
+#   .btn:focus-visible                    {background-color:var(--bs-btn-hover-bg);
+#                                          outline:0; box-shadow:...}                     (0,2,0)
+#   .btn:disabled                         {background-color:var(--bs-btn-disabled-bg);
+#                                          opacity:.65; pointer-events:none}              (0,2,0)
+#   fieldset:disabled .btn                {（同上）}                                       (0,2,1)  ← 见盲区说明
+#   .btn:first-child:active               {background-color:var(--bs-btn-active-bg)}      (0,3,0)
+#   :not(.btn-check)+.btn:active          {（同上）}                                       (0,3,0)
+#   .btn:first-child:active:focus-visible {box-shadow:var(--bs-btn-focus-box-shadow)}     (0,4,0)
+#   :not(.btn-check)+.btn:active:focus-visible {（同上）}                                  (0,4,0)
+#
+# 特异度按 (id, class, type) 三元组比较，与 CSS 规范一致；单个整数比不出
+# `#createTaskBtn`(1,0,0) 和 `.a.b.c`(0,3,0) 的大小关系。
+BOOTSTRAP_BTN_HOVER_SPECIFICITY = (0, 2, 0)
+BOOTSTRAP_BTN_DISABLED_SPECIFICITY = (0, 2, 0)
+BOOTSTRAP_BTN_FOCUS_BG_SPECIFICITY = (0, 2, 0)
+BOOTSTRAP_BTN_ACTIVE_SPECIFICITY = (0, 3, 0)
+BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY = (0, 4, 0)
 
 _BTN_STATES = ('base', 'hover', 'active', 'focus-visible', 'disabled')
 
+# `@media` / `@supports` 这类**条件组 at-rule** 里的规则是会生效的，模型必须
+# 看见；`@keyframes` / `@font-face` / `@page` 里的「选择器」（`0%`、`from`）
+# 根本不是选择器，跳过它们是安全的。名单之外的 at-rule 一律按条件组处理 ——
+# 宁可报「模型不支持」也不要静默放行。
+_BTN_NON_SELECTOR_AT_RULES = ('@keyframes', '@-webkit-keyframes', '@font-face', '@page')
+
 
 def _btn_specificity(branch):
-    """选择器分支的「类 + 伪类」计数。
+    """选择器分支的 (id, class, type) 特异度三元组。
 
-    `:not(...)` 本身不计数，只计它的参数（CSS Selectors L4 的规则）：
-    `.btn-primary:not(:disabled):hover` 是 (0,3,0) 而不是 (0,4,0)。
-    这个差别是承重的 —— 本节所有「赢不赢得过 Bootstrap」的判断都靠它。
+    两条容易写错、且都被实测证明是承重的规则：
+      - `:not()` 本身不计数，只计它的参数（Selectors L4）：
+        `.btn-primary:not(:disabled):hover` 是 (0,3,0) 而非 (0,4,0)。
+      - `#id` 必须计进第一位。第一版返回单整数、`#id` 记 0，
+        于是 `#createTaskBtn:disabled{...}` 被算成特异度 1（只数了 `:disabled`），
+        比 `.btn:disabled` 的 2 还低 —— 模型认为它输了，浏览器里它赢。
     """
     inner = re.sub(r':not\(\s*([^)]*)\s*\)', r' \1 ', branch)
-    return (len(re.findall(r'\.[-\w]+', inner))
-            + len(re.findall(r'(?<!:):[-\w]+', inner)))
+    pseudo_elements = len(re.findall(r'::[-\w]+', inner))
+    # 伪类要连函数参数一起吃掉（`:nth-child(1)` 记 1 个，不是 1 个伪类 + 一个残渣）
+    without_pe = re.sub(r'::[-\w]+(?:\([^)]*\))?', ' ', inner)
+    pseudo_classes = len(re.findall(r':[-\w]+(?:\([^)]*\))?', without_pe))
+    no_pseudo = re.sub(r':[-\w]+(?:\([^)]*\))?', ' ', without_pe)
+    ids = len(re.findall(r'#[-\w]+', no_pseudo))
+    attrs = len(re.findall(r'\[[^\]]*\]', no_pseudo))
+    class_names = len(re.findall(r'\.[-\w]+', no_pseudo))
+    # 摘掉 id/class/属性之后剩下的裸标识符才是类型选择器；`*` 不计入任何一位
+    bare = re.sub(r'([#.][-\w]+|\[[^\]]*\])', ' ', no_pseudo)
+    types = len(re.findall(r'(?:^|[\s>+~])([a-zA-Z][-\w]*)', bare))
+    return (ids, class_names + pseudo_classes + attrs, types + pseudo_elements)
 
 
 _BTN_SUPPORTED_PSEUDOS = frozenset({'hover', 'active', 'focus-visible', 'disabled'})
 
 
-def _btn_branch_applies(branch, ancestor_classes, element_classes, state):
+def _btn_branch_applies(branch, ctx, state):
     """这个分支在给定状态下命中这颗按钮吗？True / False / None(模型不支持)。
 
-    状态语义（按真实浏览器行为建模，不是按「一个状态一个伪类」的想当然）：
+    `ctx` 是一个 `_BtnCtx`：祖先类集合、元素类集合、元素 id。
+
+    **判定顺序是承重的：先判「肯定不命中」，再判「形态不支持」。**
+    反过来写的话，`div:not(.card):not(...)...` 这种与按钮八竿子打不着的规则
+    会把模型整个顶成「已失效」，而为了绕开它加的那句
+    `if 'btn' not in branch: continue` 又会把 `#createTaskBtn`
+    （小写 btn 不是它的子串）连同真正该管的规则一起无声丢掉。第一版就是这么
+    漏的：`#createTaskBtn:disabled{background:#0d6efd!important}` 全绿。
+
+    状态语义按真实浏览器行为建模：
       - 'active' 同时命中 `:active` 和 `:hover` —— 鼠标按住时两者都在，
-        这正是「按下去应该更暗，而不是被 hover 的更亮盖住」需要被算清楚的地方。
-      - `:not(:disabled)` 在 disabled 态一律不命中。
-      - `:disabled` 只在 disabled 态命中。
-    看不懂的写法返回 None，调用方据此报「本测试已失效」，绝不当不匹配放过。
+        这正是「按下去应该更暗，而不是被 hover 的更亮盖住」要算清楚的地方。
+      - `:not(:disabled)` 在 disabled 态一律不命中；`:disabled` 只在 disabled 态命中。
     """
-    if re.search(r'[>+~#\[*]', branch):
-        return None
     if '::' in branch:
-        return False
+        return False                          # 伪元素是另一个盒子
+    if re.search(r'[>+~]', branch):
+        return None                           # 子/兄弟组合符，模型不支持
     compounds = []
     for part in branch.split():
-        # `:not()` 的两种参数分开收：`:not(:disabled)` 是状态否定，
-        # `:not(.card)` 是类否定（文件顶部那条 div 兜底重置就是 11 个类否定）。
-        negated_pseudos = set(re.findall(r':not\(\s*:([-\w]+)\s*\)', part))
-        negated_classes = set(re.findall(r':not\(\s*\.([-\w]+)\s*\)', part))
-        nots = re.findall(r':not\(([^)]*)\)', part)
-        for arg in nots:
+        for arg in re.findall(r':not\(([^)]*)\)', part):
             if not re.fullmatch(r'\s*[.:][-\w]+\s*', arg):
-                return None                  # :not() 里是别的东西，不支持
+                return None                   # :not() 里是别的东西
+        neg_pseudos = set(re.findall(r':not\(\s*:([-\w]+)\s*\)', part))
+        neg_classes = set(re.findall(r':not\(\s*\.([-\w]+)\s*\)', part))
         rest = re.sub(r':not\([^)]*\)', '', part)
-        pseudos = set(re.findall(r':([-\w]+)', rest))
-        if not (pseudos | negated_pseudos) <= _BTN_SUPPORTED_PSEUDOS:
-            return None
-        # 剩下的必须是「可选的类型选择器 + 若干类」
-        tag_m = re.match(r'^([a-zA-Z][-\w]*)', rest)
-        tag = tag_m.group(1).lower() if tag_m else None
-        leftover = re.sub(r'(\.[-\w]+|:[-\w]+)', '', rest[len(tag) if tag else 0:]).strip()
-        if leftover:
-            return None
-        compounds.append((set(re.findall(r'\.([-\w]+)', rest)),
-                          pseudos, negated_pseudos, negated_classes, tag))
-
+        ids = re.findall(r'#([-\w]+)', rest)
+        classes = set(re.findall(r'\.([-\w]+)', rest))
+        # 函数式伪类要连参数一起吃掉，否则 `.card:nth-child(1)` 的 `(1)`
+        # 会被当成读不懂的残余，把一条明显不命中的规则误判成「模型不支持」。
+        pseudos = set(re.findall(r':([-\w]+)(?:\([^)]*\))?', rest))
+        attrs = re.findall(r'\[[^\]]*\]', rest)
+        leftover = re.sub(r'([#.][-\w]+|:[-\w]+(?:\([^)]*\))?|\[[^\]]*\]|\*)', '', rest).strip()
+        tag = leftover.lower() if leftover else None
+        if tag is not None and not re.fullmatch(r'[a-z][-\w]*', tag):
+            return None                       # 读不懂的残余
+        compounds.append(dict(tag=tag, ids=ids, classes=classes, pseudos=pseudos,
+                              neg_pseudos=neg_pseudos, neg_classes=neg_classes,
+                              attrs=attrs))
     if not compounds:
         return None
+
+    def attrs_match(attr_list, class_set):
+        """只求值**针对 class 属性**的属性选择器（站内只有 `[class*="col-"]` 这一种）。
+        其它属性选择器（`[disabled]`、`[type=submit]`）返回 None = 模型不支持。"""
+        joined = ' '.join(sorted(class_set))
+        for a in attr_list:
+            m = re.fullmatch(r'\[\s*class\s*([*^$~|]?=)\s*"([^"]*)"\s*\]', a.strip())
+            if not m:
+                return None
+            op, val = m.group(1), m.group(2)
+            if op == '*=':
+                ok = any(val in c for c in class_set)
+            elif op == '^=':
+                ok = joined.startswith(val)
+            elif op == '$=':
+                ok = joined.endswith(val)
+            elif op in ('=', '~='):
+                ok = val in class_set
+            else:
+                return None
+            if not ok:
+                return False
+        return True
+
+    subject = compounds[-1]
+    # ---- 第一步：能否**确定地**判为不命中（不需要模型支持全部语法）----
+    if subject['tag'] is not None and subject['tag'] != 'button':
+        return False
+    if not subject['classes'] <= ctx.classes:
+        return False
+    if subject['neg_classes'] & ctx.classes:
+        return False
+    if subject['ids'] and (len(subject['ids']) > 1 or subject['ids'][0] != ctx.element_id):
+        return False
+    if subject['attrs']:
+        hit = attrs_match(subject['attrs'], ctx.classes)
+        if hit is None:
+            return None                       # 例如 [disabled]，模型不认，响亮失败
+        if not hit:
+            return False
+    for anc in compounds[:-1]:
+        if anc['pseudos'] or anc['neg_pseudos'] or anc['ids'] or anc['tag'] is not None:
+            return None                       # 祖先侧只支持纯类选择器 / `*`
+        if anc['attrs']:
+            hit = attrs_match(anc['attrs'], ctx.ancestors)
+            if hit is None:
+                return None
+            if not hit:
+                return False
+        if anc['neg_classes'] & ctx.ancestors:
+            return False
+        if not anc['classes'] <= ctx.ancestors:
+            return False
+
+    # ---- 第二步：确实可能命中，此时才允许报「形态不支持」----
+    if not (subject['pseudos'] | subject['neg_pseudos']) <= _BTN_SUPPORTED_PSEUDOS:
+        return None
+
     active_pseudos = {
         'base': set(),
         'hover': {'hover'},
@@ -4085,84 +4273,177 @@ def _btn_branch_applies(branch, ancestor_classes, element_classes, state):
         'focus-visible': {'focus-visible'},
         'disabled': {'disabled'},
     }[state]
-
-    classes, pseudos, neg_pseudos, neg_classes, tag = compounds[-1]
-    # 站内所有按钮都是 <button> 元素；带类型选择器的分支（例如文件顶部那条
-    # `div:not(.card):not(...)...` 兜底重置）只要类型不是 button 就不命中。
-    if tag is not None and tag != 'button':
+    if not subject['pseudos'] <= active_pseudos:
         return False
-    if not classes <= element_classes:
+    if subject['neg_pseudos'] & active_pseudos:
         return False
-    if neg_classes & element_classes:
-        return False
-    if not pseudos <= active_pseudos:
-        return False
-    if neg_pseudos & active_pseudos:
-        return False
-    for cls, ps, npseudo, ncls, atag in compounds[:-1]:
-        if ps or npseudo or ncls or atag or not cls <= ancestor_classes:
-            return False                     # 祖先只支持纯类选择器
     return True
 
 
-def _btn_computed(css, ancestor_classes, element_classes, state, props):
+class _BtnCtx:
+    """一颗按钮在页面里的真实上下文：祖先类、自身类、自身 id。"""
+
+    def __init__(self, classes, ancestors=frozenset(), element_id=None, label=None):
+        self.classes = frozenset(classes)
+        self.ancestors = frozenset(ancestors)
+        self.element_id = element_id
+        self.label = label or ('.' + '.'.join(sorted(classes)))
+
+    def __repr__(self):
+        return self.label
+
+
+# 简写 -> 本节关心的长写。**必须展开**：评审实测在
+# `outline: 2px solid ...` 后面补一行 `outline-width: 0` 会让焦点环消失，
+# 而只读简写的断言全绿；`border` + `border-style: none` 同型。
+# 展开时保留声明顺序，让「后面的长写压掉前面的简写」这个真实层叠行为被算进去。
+_BTN_SHORTHAND_EXPANSIONS = {
+    'outline': ('outline-width', 'outline-style', 'outline-color'),
+    'border': ('border-width', 'border-style', 'border-color'),
+}
+_BTN_LINE_STYLES = frozenset({
+    'none', 'hidden', 'dotted', 'dashed', 'solid', 'double',
+    'groove', 'ridge', 'inset', 'outset', 'auto',
+})
+
+
+def _split_outline_like(value):
+    """`2px solid var(--x)` -> {'-width': '2px', '-style': 'solid', '-color': 'var(--x)'}。
+
+    缺省位按 CSS 规范补 initial：宽度 `medium`(3px)、线型 `none`、颜色 `currentcolor`。
+    `outline: 0` / `border: none` 这种单值写法也要能解开 —— 那正是 Bootstrap
+    用来干掉焦点环的写法。
+    """
+    value = _IMPORTANT_RE.sub('', value or '').strip().lower()
+    out = {'width': None, 'style': None, 'color': None}
+    for tok in re.findall(r'var\([^)]*\)|[^\s]+', value):
+        if tok in _BTN_LINE_STYLES:
+            out['style'] = tok
+        elif _length_to_px(tok) is not None or re.fullmatch(r'0+(\.0+)?', tok):
+            out['width'] = tok
+        elif tok in ('medium', 'thin', 'thick'):
+            out['width'] = {'thin': '1px', 'medium': '3px', 'thick': '5px'}[tok]
+        else:
+            out['color'] = tok
+    if out['width'] is None:
+        out['width'] = '3px'                  # initial: medium
+    if out['style'] is None:
+        out['style'] = 'none'                 # initial
+    if out['color'] is None:
+        out['color'] = 'currentcolor'
+    return out
+
+
+def _btn_decls(body):
+    """规则体 -> [(属性, 值, 是否!important, 声明序号), ...]，简写已展开成长写。
+
+    **序号是承重的，不是装饰。** 同一条规则里 `outline: 2px solid X` 之后再写
+    一行 `outline-width: 0`，两者的选择器/特异度/规则序号完全相同，只有声明先后
+    能分出胜负。第一版的比较键是 `(important, 特异度, 规则序号)`，同键时
+    `key > best[key]` 为假 —— **先出现的赢**，正好和 CSS 反过来。
+    评审实测：补一行 `outline-width: 0` 焦点环消失、补 `border-style: none`
+    边框消失，两者都 263 passed。
+    """
+    out = []
+    idx = 0
+    for chunk in body.split(';'):
+        if ':' not in chunk:
+            continue
+        name, _, raw = chunk.partition(':')
+        name = name.strip().lower()
+        raw = raw.strip()
+        if not name:
+            continue
+        important = bool(_IMPORTANT_RE.search(raw))
+        val = _IMPORTANT_RE.sub('', raw).strip()
+        if name in _BTN_SHORTHAND_EXPANSIONS:
+            parts = _split_outline_like(val)
+            for longhand in _BTN_SHORTHAND_EXPANSIONS[name]:
+                out.append((longhand, parts[longhand.rsplit('-', 1)[1]], important, idx))
+            out.append((name, val, important, idx))   # 简写本身也留着，便于报错时引用
+        elif name == 'background':
+            out.append(('background-color', val, important, idx))
+            out.append((name, val, important, idx))
+        else:
+            out.append((name, val, important, idx))
+        idx += 1
+    return out
+
+
+def _btn_computed(css, ctx, state, props):
     """模拟 style.css 内部的层叠，返回 {属性: (值, 胜出选择器, 特异度)}。
 
-    只看顶层规则（@media 内的不参与）—— 本节涉及的按钮规则全在顶层，
-    真出现 @media 里的按钮覆盖，下面的 unsupported 断言会响亮失败。
+    安全网（`unsupported` / at-rule 检查）**排在所有 continue 之前**，
+    这是第一版最致命的结构缺陷：任何为了「跳过明显无关的规则」而写在安全网
+    前面的 continue，都是一个静默漏检口。
     """
-    best, unsupported = {}, []
+    best, unsupported, conditional = {}, [], []
     for order, (sel, body, at_ctx) in enumerate(_rules_ctx(css)):
-        if at_ctx:
-            continue
-        decls = _decl_map(body)
-        wanted = [(n, v) for n, v in decls.items() if n in props]
-        if not wanted:
-            continue
+        if any(a.split()[0] in _BTN_NON_SELECTOR_AT_RULES for a in at_ctx):
+            continue                          # @keyframes 里的 `0%` 不是选择器
+        decls = [d for d in _btn_decls(body) if d[0] in props]
         for branch in _selector_parts(sel):
-            if 'btn' not in branch:
-                continue
-            applies = _btn_branch_applies(branch, ancestor_classes, element_classes, state)
+            applies = _btn_branch_applies(branch, ctx, state)
             if applies is None:
-                unsupported.append(f'{sel}   （分支 {branch!r} 形态不支持）')
+                unsupported.append(f'{sel}   （分支 {branch!r}）')
                 continue
             if not applies:
                 continue
+            if at_ctx:
+                conditional.append(f'{" ".join(at_ctx)} 里的 `{sel}`')
+                continue
+            if not decls:
+                continue
             spec = _btn_specificity(branch)
-            for name, raw in wanted:
-                imp = bool(_IMPORTANT_RE.search(raw))
-                key = (imp, spec, order)
+            for name, val, imp, decl_idx in decls:
+                # 声明序号必须在键里，否则同一条规则内「后面的长写压掉前面的简写」
+                # 这个真实层叠行为算不出来（见 _btn_decls 的说明）。
+                key = (imp, spec, order, decl_idx)
                 if name not in best or key > best[name][0]:
-                    best[name] = (key, raw, branch, spec)
+                    best[name] = (key, val, branch, spec)
     assert not unsupported, (
-        '按钮层叠模型处理不了这些写法，测试已失效（不是通过）：\n'
+        f'按钮层叠模型处理不了这些写法（上下文 {ctx}），测试已失效（不是通过）：\n'
         + '\n'.join('  ' + u for u in sorted(set(unsupported)))
+        + '\n模型只支持「后代组合符 + 类 / #id / button 类型 / '
+        ':hover|:active|:focus-visible|:disabled + :not(单个类或伪类)」。'
+        '新写法要么扩展 _btn_branch_applies，要么换一种等价写法'
     )
-    return {n: (raw, branch, spec) for n, (_k, raw, branch, spec) in best.items()}
+    assert not conditional, (
+        f'有按钮规则写在条件组 at-rule 里（上下文 {ctx}），模型算不了它的条件，'
+        '测试已失效（不是通过）：\n'
+        + '\n'.join('  ' + c for c in sorted(set(conditional)))
+        + '\n⚠️ 这条不是洁癖：评审实测往 `@media (min-width:1px)` 里追加一条 '
+        '`.btn:disabled{background:#0d6efd;opacity:.5}` 就能把整套修复撤回，'
+        '而当时的模型无声跳过 @media、261 条测试全绿。'
+        '要改按钮的媒体查询样式，先把媒体条件求值加进模型'
+    )
+    return {n: (val, branch, spec) for n, (_k, val, branch, spec) in best.items()}
 
 
 _BTN_COLOR_KEYWORDS = {
     'transparent': 'rgba(0, 0, 0, 0)',
     'white': '#ffffff',
     'black': '#000000',
+    'currentcolor': None,                     # 由调用方代入当前 color
 }
 
 
 def _btn_flatten(color, backdrop):
     """`_flatten` 的按钮版：先把 CSS 里合法但 `_flatten` 不认的写法归一。
 
-    需要归一的三种，每一种都在本节的变异实验里真出现过：
-      - `transparent` —— outline 变体和 `.btn-secondary` 的底色就是这个关键字
+    需要归一的几种，每一种都在变异实验里真出现过：
+      - `transparent` —— outline 变体和 `.btn-secondary` 的底色
       - `#fff` 三位简写 —— **改前 `.btn-success/.btn-danger/.btn-info` 的墨色**
-      - `white` / `black` 关键字
+      - `white` / `black`
 
     为什么在这里补而不是放宽 `_flatten`：放宽会让其它调用方也悄悄接受这些写法。
-    更要紧的是**诊断质量**：不归一的话，把墨色改回 `#fff` 这个变异确实会让
-    测试变红，但红的理由是「本测试算不了它，已失效」——维护者会以为是测试坏了，
+    更要紧的是**诊断质量**：不归一的话，把墨色改回 `#fff` 这个变异确实会红，
+    但红的理由是「本测试算不了它，已失效」——维护者会以为是测试坏了，
     而不是「墨色只有 1.92:1，图标看不见」。红对了理由才算护栏。
     """
     value = color.strip().lower()
     value = _BTN_COLOR_KEYWORDS.get(value, value)
+    assert value is not None, 'currentcolor 必须由调用方先代入具体颜色 —— 本测试已失效'
     m = re.fullmatch(r'#([0-9a-f])([0-9a-f])([0-9a-f])', value)
     if m:
         value = '#' + ''.join(c * 2 for c in m.groups())
@@ -4179,40 +4460,38 @@ def _hsl_saturation(rgb):
     return (mx - mn) / (2 - mx - mn) if lightness > 0.5 else (mx - mn) / (mx + mn)
 
 
-def _btn_surface(css, ancestor_classes, element_classes, state, backdrop):
+def _btn_surface(css, ctx, state, backdrop):
     """一颗按钮在某状态下**肉眼看到**的 (底色 hex, 墨色 hex, 胜出信息)。
 
     合成链按浏览器的真实顺序走，一环都不能省：
-      1. 层叠取胜的 background / color
-      2. 半透明色压到 backdrop 上（本站的 outline 变体底色是 transparent）
+      1. 层叠取胜的 background-color / color
+      2. 半透明色压到 backdrop 上（本站 outline 变体的底色是 transparent）
       3. `filter: brightness()` 同时作用于底与墨（active 态）
-      4. **整体 opacity 合成**：opacity 作用于「元素这个组」，先把底和墨各自
+      4. **整组 opacity 合成**：opacity 作用于「元素这个组」，先把底和墨各自
          画好，再整组压到 backdrop 上 —— 所以它会同时拉低底与墨，
          把「不可点」和「看不清」绑在一起。改前禁用态的 2.83:1 正是这么来的，
          漏掉这一步就算不出那个数字。
     """
-    got = _btn_computed(css, ancestor_classes, element_classes, state,
+    got = _btn_computed(css, ctx, state,
                         {'background', 'background-color', 'color', 'opacity', 'filter'})
     assert 'color' in got, (
-        f'{sorted(element_classes)} 在 {state} 态没有任何规则声明 color —— '
-        '本测试算不了对比度，已失效（不是通过）'
+        f'{ctx} 在 {state} 态没有任何规则声明 color —— 本测试算不了对比度，已失效'
     )
-    bg_raw = got.get('background') or got.get('background-color')
-    assert bg_raw is not None, (
-        f'{sorted(element_classes)} 在 {state} 态没有任何规则声明 background —— '
+    assert 'background-color' in got, (
+        f'{ctx} 在 {state} 态没有任何规则声明 background —— '
         '意味着 Bootstrap 的变体色会漏进来，本测试算不了它，已失效（不是通过）'
     )
-    bg = _btn_flatten(_resolve_color(css, bg_raw[0]), backdrop)
+    bg = _btn_flatten(_resolve_color(css, got['background-color'][0]), backdrop)
     fg = _btn_flatten(_resolve_color(css, got['color'][0]), bg)
 
     if 'filter' in got:
-        ops = _filter_ops(_IMPORTANT_RE.sub('', got['filter'][0]))
-        assert ops or _IMPORTANT_RE.sub('', got['filter'][0]).strip() == 'none', (
-            f'filter 值 {got["filter"][0]!r} 解析不出任何函数 —— 本测试已失效'
-        )
+        raw = _IMPORTANT_RE.sub('', got['filter'][0]).strip()
+        ops = _filter_ops(raw)
+        assert ops or raw == 'none', f'filter 值 {raw!r} 解析不出任何函数 —— 本测试已失效'
         if ops:
-            bg = '#%02x%02x%02x' % tuple(round(v) for v in _apply_filter(_hex_to_rgb(bg), ops))
-            fg = '#%02x%02x%02x' % tuple(round(v) for v in _apply_filter(_hex_to_rgb(fg), ops))
+            hexify = lambda c: '#%02x%02x%02x' % tuple(
+                round(v) for v in _apply_filter(_hex_to_rgb(c), ops))
+            bg, fg = hexify(bg), hexify(fg)
 
     opacity = 1.0
     if 'opacity' in got:
@@ -4231,7 +4510,7 @@ def _btn_surface(css, ancestor_classes, element_classes, state, backdrop):
 
 
 # 站内真实存在的按钮变体（`grep -rn "btn-" templates/ static/js/` 核对过）。
-# 值是「基态底色应当引用的调色板变量」，用来交叉验证层叠结果没有被别处架空。
+# 值是「基态底色应当引用的调色板变量」。
 FILLED_BTN_VARIANTS = {
     'btn-primary': '--color-accent-strong',
     'btn-success': '--color-success',
@@ -4240,13 +4519,17 @@ FILLED_BTN_VARIANTS = {
     'btn-info':    '--color-info',
 }
 TRANSPARENT_BTN_VARIANTS = ('btn-secondary', 'btn-outline-secondary', 'btn-outline-primary')
+ALL_BTN_VARIANTS = tuple(FILLED_BTN_VARIANTS) + TRANSPARENT_BTN_VARIANTS
 
 BTN_INK_MIN_CONTRAST = 4.5          # 按钮上的文字/图标，与正文同一条线
-BTN_OUTLINE_MIN_CONTRAST = 3.0      # 焦点环 / 边框属于图形对象，WCAG 1.4.11
+BTN_RING_MIN_CONTRAST = 3.0         # 焦点环 / 边框属于图形对象，WCAG 1.4.11
 BTN_HOVER_MIN_LUMINANCE_GAIN = 0.06     # hover 必须**看得出**提亮
 BTN_ACTIVE_MIN_LUMINANCE_DROP = 0.03    # active 必须**看得出**压暗
 BTN_DISABLED_MAX_SATURATION = 0.30      # 禁用态必须是低饱和中性面
-BTN_DISABLED_VS_ENABLED_MIN_CONTRAST = 4.5   # 禁用面 vs 启用面
+BTN_DISABLED_VS_ENABLED_MIN_CONTRAST = 4.5   # 填充型：禁用面 vs 启用面
+# 透明型变体的禁用信号是墨色变暗。0.15 的来历：实测 .btn-secondary 启用墨
+# #e8eaed(L=0.795) -> 禁用墨 #9aa0aa(L=0.350)，暗了 0.445，留了 3 倍余量。
+BTN_DISABLED_MIN_INK_DIMMING = 0.15
 BTN_FOCUS_MIN_OUTLINE_WIDTH_PX = 2.0
 
 
@@ -4254,6 +4537,47 @@ def _btn_backdrop(css):
     """按钮压在什么底上 —— 走 `.card` 的真实渲染链，与
     `_effective_task_card_backdrop` 同一个理由、同一个来源。"""
     return _effective_task_card_backdrop(css)
+
+
+# 站内真实的按钮上下文。**每一个都对应一处真实标记**，不是为了凑覆盖率：
+#   `grep -n "btn" templates/*.html static/js/tasks.js static/js/history.js`
+_ctx_variants = [
+    _BtnCtx({'btn', v}, label=f'.{v}（无特殊祖先）') for v in ALL_BTN_VARIANTS
+]
+BUTTON_CONTEXTS = _ctx_variants + [
+    # index.html:168 —— 提交按钮，**默认 disabled**，本任务的核心缺陷所在
+    _BtnCtx({'btn', 'btn-primary', 'w-100'}, element_id='createTaskBtn',
+            label='#createTaskBtn（首页提交按钮）'),
+    # tasks.js —— 任务卡图标按钮，祖先是 .btn-group.btn-group-sm
+    _BtnCtx({'btn', 'btn-icon', 'btn-danger'}, {'btn-group', 'btn-group-sm'},
+            label='任务卡 .btn-icon.btn-danger（.btn-group-sm 内）'),
+    # history.js —— 历史表图标按钮，**没有 .btn-group 祖先**，是裸 flex 容器
+    _BtnCtx({'btn', 'btn-icon', 'btn-sm', 'btn-info'},
+            label='历史表 .btn-icon.btn-sm.btn-info（无 btn-group 祖先）'),
+    # config.html:218 / history.html:171 —— .config-section 内的按钮
+    _BtnCtx({'btn', 'btn-secondary'}, {'config-section'},
+            label='配置页 .btn-secondary（.config-section 内）'),
+]
+
+
+def test_button_cascade_model_covers_every_real_context():
+    """模型必须能算出**每一个真实上下文** x 每一个状态，一格都不许算不出来。
+
+    这条是模型的自检，也是上面那三个逃逸的正面防线：只要
+    `_btn_branch_applies` 又出现「读不懂就无声跳过」，或者有人往 `@media`
+    里塞按钮规则，这里会先响亮失败，而不是让下游断言拿着残缺的层叠结果
+    得出「一切正常」。
+    """
+    css = _css()
+    backdrop = _btn_backdrop(css)
+    assert len(BUTTON_CONTEXTS) == 12, (
+        f'真实上下文有 {len(BUTTON_CONTEXTS)} 个，期望 12 —— 本测试已失效'
+    )
+    for ctx in BUTTON_CONTEXTS:
+        for state in _BTN_STATES:
+            bg, fg, _got = _btn_surface(css, ctx, state, backdrop)
+            assert re.fullmatch(r'#[0-9a-f]{6}', bg), f'{ctx}/{state} 底色算成 {bg!r}'
+            assert re.fullmatch(r'#[0-9a-f]{6}', fg), f'{ctx}/{state} 墨色算成 {fg!r}'
 
 
 def test_disabled_button_cannot_be_mistaken_for_clickable():
@@ -4280,49 +4604,61 @@ def test_disabled_button_cannot_be_mistaken_for_clickable():
         禁用面饱和度  <= 0.30   （改前 0.78）
         禁用 vs 启用  >= 4.5    （改前 3.87）
         cursor        == not-allowed
-    另加一条特异度护栏：胜出的 background 必须来自 >= (0,2,0) 的选择器，
-    否则 Bootstrap 的 `.btn:disabled` 会把颜色抢回去（那正是改前的形态）。
+    另加特异度护栏：胜出的 background 必须来自 >= (0,2,0) 的选择器。
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(FILLED_BTN_VARIANTS) == 5, (
-        f'FILLED_BTN_VARIANTS 有 {len(FILLED_BTN_VARIANTS)} 项，期望 5 —— 本测试已失效'
-    )
+    assert len(BUTTON_CONTEXTS) == 12, '上下文表变了 —— 本测试已失效'
     problems = []
-    for variant in FILLED_BTN_VARIANTS:
-        classes = frozenset({'btn', variant})
-        off_bg, off_fg, off_got = _btn_surface(css, frozenset(), classes, 'disabled', backdrop)
-        on_bg, _on_fg, _on = _btn_surface(css, frozenset(), classes, 'base', backdrop)
+    for ctx in BUTTON_CONTEXTS:
+        off_bg, off_fg, off_got = _btn_surface(css, ctx, 'disabled', backdrop)
+        on_bg, _on_fg, _on = _btn_surface(css, ctx, 'base', backdrop)
 
         ink = _contrast_ratio(off_fg, off_bg)
         if ink < BTN_INK_MIN_CONTRAST:
             problems.append(
-                f'.{variant} 禁用态墨/底 {off_fg} on {off_bg} = {ink:.2f}:1 '
+                f'{ctx} 禁用态墨/底 {off_fg} on {off_bg} = {ink:.2f}:1 '
                 f'< {BTN_INK_MIN_CONTRAST}（不可点 != 看不清）')
 
         sat = _hsl_saturation(_hex_to_rgb(off_bg))
         if sat > BTN_DISABLED_MAX_SATURATION:
             problems.append(
-                f'.{variant} 禁用面 {off_bg} 饱和度 {sat:.3f} '
+                f'{ctx} 禁用面 {off_bg} 饱和度 {sat:.3f} '
                 f'> {BTN_DISABLED_MAX_SATURATION} —— 还是一颗「看着可点」的彩色按钮')
 
-        sep = _contrast_ratio(off_bg, on_bg)
-        if sep < BTN_DISABLED_VS_ENABLED_MIN_CONTRAST:
-            problems.append(
-                f'.{variant} 禁用面 {off_bg} 与启用面 {on_bg} 只差 {sep:.2f}:1 '
-                f'< {BTN_DISABLED_VS_ENABLED_MIN_CONTRAST} —— 两个状态分不出来')
+        # 「禁用 vs 启用要分得开」按变体形态分两种量法 —— 不是为了让测试变绿，
+        # 是因为两种按钮的**可见信号本来就不在同一个通道**：
+        #   填充型（启用态有实心底）：信号是底色，量底色分离度。
+        #   透明型（.btn-secondary / .btn-outline-*，启用态底色就是卡片底）：
+        #     底色天然与背景同色，量它只会得到 1.10:1 这种与设计无关的数字；
+        #     真正的信号是墨色变暗（#e8eaed -> #9aa0aa）+ 冒出一块实心底。
+        # 改前那个缺陷是填充型（#createTaskBtn），走第一支，3.87 < 4.5 照样判红。
+        if on_bg != backdrop:
+            sep = _contrast_ratio(off_bg, on_bg)
+            if sep < BTN_DISABLED_VS_ENABLED_MIN_CONTRAST:
+                problems.append(
+                    f'{ctx} 禁用面 {off_bg} 与启用面 {on_bg} 只差 {sep:.2f}:1 '
+                    f'< {BTN_DISABLED_VS_ENABLED_MIN_CONTRAST} —— 两个状态分不出来')
+        else:
+            dim = (_relative_luminance(_hex_to_rgb(_on_fg))
+                   - _relative_luminance(_hex_to_rgb(off_fg)))
+            if dim < BTN_DISABLED_MIN_INK_DIMMING:
+                problems.append(
+                    f'{ctx} 是透明底变体，禁用态只能靠墨色变暗表达；'
+                    f'启用墨 {_on_fg} -> 禁用墨 {off_fg} 只暗了 {dim:+.4f} '
+                    f'< {BTN_DISABLED_MIN_INK_DIMMING} —— 两个状态分不出来')
 
-        _bgraw, bgbranch, bgspec = (off_got.get('background') or off_got['background-color'])
-        if bgspec < BOOTSTRAP_BTN_STATE_SPECIFICITY:
+        _v, branch, spec = off_got['background-color']
+        if spec < BOOTSTRAP_BTN_DISABLED_SPECIFICITY:
             problems.append(
-                f'.{variant} 禁用态的 background 由 `{bgbranch}` 胜出，特异度 {bgspec} '
-                f'< Bootstrap `.btn:disabled` 的 {BOOTSTRAP_BTN_STATE_SPECIFICITY} '
+                f'{ctx} 禁用态的 background 由 `{branch}` 胜出，特异度 {spec} '
+                f'< Bootstrap `.btn:disabled` 的 {BOOTSTRAP_BTN_DISABLED_SPECIFICITY} '
                 '—— 浏览器里会被 --bs-btn-disabled-bg 抢回去（改前就是这样）')
 
-        cursor = _btn_computed(css, frozenset(), classes, 'disabled', {'cursor'})
-        assert 'cursor' in cursor, f'.{variant} 禁用态没有声明 cursor —— 本测试已失效'
+        cursor = _btn_computed(css, ctx, 'disabled', {'cursor'})
+        assert 'cursor' in cursor, f'{ctx} 禁用态没有声明 cursor —— 本测试已失效'
         if _IMPORTANT_RE.sub('', cursor['cursor'][0]).strip() != 'not-allowed':
-            problems.append(f'.{variant} 禁用态 cursor = {cursor["cursor"][0]!r}，应为 not-allowed')
+            problems.append(f'{ctx} 禁用态 cursor = {cursor["cursor"][0]!r}，应为 not-allowed')
 
     assert not problems, (
         '禁用态仍然像可点（或已经看不清）：\n' + '\n'.join('  ' + p for p in problems)
@@ -4345,14 +4681,12 @@ def test_button_hover_is_a_real_change():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(FILLED_BTN_VARIANTS) == 5, (
-        f'FILLED_BTN_VARIANTS 有 {len(FILLED_BTN_VARIANTS)} 项，期望 5 —— 本测试已失效'
-    )
+    assert len(FILLED_BTN_VARIANTS) == 5, '变体表变了 —— 本测试已失效'
     problems = []
     for variant in FILLED_BTN_VARIANTS:
-        classes = frozenset({'btn', variant})
-        base_bg, _f, _g = _btn_surface(css, frozenset(), classes, 'base', backdrop)
-        hov_bg, hov_fg, hov_got = _btn_surface(css, frozenset(), classes, 'hover', backdrop)
+        ctx = _BtnCtx({'btn', variant})
+        base_bg, _f, _g = _btn_surface(css, ctx, 'base', backdrop)
+        hov_bg, hov_fg, hov_got = _btn_surface(css, ctx, 'hover', backdrop)
 
         gain = _relative_luminance(_hex_to_rgb(hov_bg)) - _relative_luminance(_hex_to_rgb(base_bg))
         if gain < BTN_HOVER_MIN_LUMINANCE_GAIN:
@@ -4366,12 +4700,11 @@ def test_button_hover_is_a_real_change():
         if ink < BTN_INK_MIN_CONTRAST:
             problems.append(f'.{variant}:hover 墨/底 {ink:.2f}:1 < {BTN_INK_MIN_CONTRAST}')
 
-        _r, branch, spec = (hov_got.get('background') or hov_got['background-color'])
-        if spec < BOOTSTRAP_BTN_STATE_SPECIFICITY:
+        _v, branch, spec = hov_got['background-color']
+        if spec < BOOTSTRAP_BTN_HOVER_SPECIFICITY:
             problems.append(
                 f'.{variant}:hover 的 background 由 `{branch}` 胜出，特异度 {spec} '
-                f'< {BOOTSTRAP_BTN_STATE_SPECIFICITY}，浏览器里会被 Bootstrap 的 '
-                '`.btn:hover` 覆盖')
+                f'< {BOOTSTRAP_BTN_HOVER_SPECIFICITY} —— 会被 Bootstrap 的 `.btn:hover` 覆盖')
 
     assert not problems, 'hover 态不是真的变化：\n' + '\n'.join('  ' + p for p in problems)
 
@@ -4381,21 +4714,21 @@ def test_button_active_is_darker_than_base():
 
     模型里 'active' 态同时命中 `:active` 和 `:hover`（鼠标按住时两者都在）。
     这一点是承重的：如果 active 只压暗、不重新声明底色，hover 的提亮会盖过来，
-    按下反而更亮。本断言算的是这两条规则打完之后的那个值。
+    按下反而更亮。
 
-    `filter: brightness()` 同时作用于底与墨，所以墨的对比度要在**滤镜之后**
-    重新算 —— 复用 Task 9 的 `_filter_ops` / `_apply_filter`（同一套渲染链）。
+    特异度这条同样承重，而且第一版把它写错过：Bootstrap 的
+    `.btn:first-child:active` / `:not(.btn-check)+.btn:active` 是 **(0,3,0)**，
+    第一版记成 (0,2,0)，于是把 16 条状态规则的 `:not(:disabled)` 全删掉
+    （(0,3,0) -> (0,2,0)）测试仍然全绿，而浏览器里按下态变回 rgb(10,88,202)。
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(FILLED_BTN_VARIANTS) == 5, (
-        f'FILLED_BTN_VARIANTS 有 {len(FILLED_BTN_VARIANTS)} 项，期望 5 —— 本测试已失效'
-    )
+    assert len(FILLED_BTN_VARIANTS) == 5, '变体表变了 —— 本测试已失效'
     problems = []
     for variant in FILLED_BTN_VARIANTS:
-        classes = frozenset({'btn', variant})
-        base_bg, _f, _g = _btn_surface(css, frozenset(), classes, 'base', backdrop)
-        act_bg, act_fg, act_got = _btn_surface(css, frozenset(), classes, 'active', backdrop)
+        ctx = _BtnCtx({'btn', variant})
+        base_bg, _f, _g = _btn_surface(css, ctx, 'base', backdrop)
+        act_bg, act_fg, act_got = _btn_surface(css, ctx, 'active', backdrop)
 
         drop = _relative_luminance(_hex_to_rgb(base_bg)) - _relative_luminance(_hex_to_rgb(act_bg))
         if drop < BTN_ACTIVE_MIN_LUMINANCE_DROP:
@@ -4410,109 +4743,108 @@ def test_button_active_is_darker_than_base():
                 f'.{variant}:active 压暗后墨/底 {act_fg} on {act_bg} = {ink:.2f}:1 '
                 f'< {BTN_INK_MIN_CONTRAST} —— 压过头了')
 
-        _r, branch, spec = (act_got.get('background') or act_got['background-color'])
-        if spec < BOOTSTRAP_BTN_STATE_SPECIFICITY:
+        _v, branch, spec = act_got['background-color']
+        if spec < BOOTSTRAP_BTN_ACTIVE_SPECIFICITY:
             problems.append(
                 f'.{variant}:active 的 background 由 `{branch}` 胜出，特异度 {spec} '
-                f'< {BOOTSTRAP_BTN_STATE_SPECIFICITY} —— 会被 Bootstrap 的 '
-                '`--bs-btn-active-bg` 抢走（改前实测 rgb(10,88,202)，Bootstrap 深蓝）')
+                f'< Bootstrap `.btn:first-child:active` 的 '
+                f'{BOOTSTRAP_BTN_ACTIVE_SPECIFICITY} —— 会被 --bs-btn-active-bg 抢走'
+                '（改前实测 rgb(10,88,202)，Bootstrap 深蓝）')
 
     assert not problems, 'active 态没有压暗反馈：\n' + '\n'.join('  ' + p for p in problems)
 
 
-def _outline_parts(value):
-    """`2px solid var(--x)` -> (宽度 px, 线型, 颜色原值)。读不出的位置返回 None。"""
-    value = _IMPORTANT_RE.sub('', value or '').strip()
-    if value in ('none', '0', ''):
-        return 0.0, 'none', None
-    width = style = color = None
-    for tok in re.findall(r'var\([^)]*\)|[^\s]+', value):
-        px = _length_to_px(tok)
-        if px is not None:
-            width = px
-        elif tok in ('none', 'hidden', 'dotted', 'dashed', 'solid', 'double',
-                     'groove', 'ridge', 'inset', 'outset', 'auto'):
-            style = tok
-        else:
-            color = tok
-    return width, style, color
-
-
 def test_focus_visible_has_a_visible_outline():
-    """键盘焦点必须有**看得见**的轮廓，且底色不许被 Bootstrap 抢走。
+    """键盘焦点必须有**看得见**的轮廓，底色不许被抢，焦点环不许被 box-shadow 反超。
 
-    这条守两件独立的事：
+    三件独立的事：
 
     1. **轮廓真的画出来了。** Bootstrap 的 `.btn:focus-visible` 明写
        `outline: 0`，靠 box-shadow 做焦点环。改前 CDP 实测
-       `outline-width: 0px`、底色 rgb(11,94,215)（Bootstrap 蓝）——
-       键盘用户在本站深色主题上得到的是一圈几乎看不见的蓝雾。
-       只 grep「有没有写 outline」是不够的：`outline: 0` 也是一条 outline 声明。
-       所以这里读的是**层叠之后**的宽度、线型、颜色。
+       `outline-width: 0px`、底色 rgb(11,94,215)（Bootstrap 蓝）。
+       读的是**展开成长写、按声明顺序层叠之后**的宽度/线型/颜色——
+       只读 `outline` 简写的话，后面补一行 `outline-width: 0` 就能让环消失
+       而断言全绿（评审实测）。
 
     2. **底色回到基态。** `.btn:focus-visible`(0,2,0) 会把 background 刷成
-       `--bs-btn-hover-bg`，本站 `.btn-primary`(0,1,0) 拦不住。每个变体都必须
-       在 focus-visible 态显式重声明 background，且特异度 >= 2。
+       `--bs-btn-hover-bg`，本站 `.btn-primary`(0,1,0) 拦不住。
 
-    另外，outline 那条规则的特异度要 >= 3：Bootstrap 有一条
-    `.btn:first-child:active:focus-visible{box-shadow:...}`(0,3,0)，
-    我们的 `box-shadow: none` 若只有 (0,2,0)，键盘焦点 + 按下时焦点环会变回蓝雾。
+    3. **box-shadow 必须被显式清掉，且特异度够。** Bootstrap 的
+       `.btn:first-child:active:focus-visible{box-shadow:var(--bs-btn-focus-box-shadow)}`
+       是 **(0,4,0)**（第一版记成 (0,3,0)，低了一位）。特异度不够的话，
+       键盘焦点 + 按下时会同时出现我们的青绿环和 Bootstrap 的蓝雾环。
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    variants = list(FILLED_BTN_VARIANTS) + list(TRANSPARENT_BTN_VARIANTS)
-    assert len(variants) == 8, f'变体数 {len(variants)}，期望 8 —— 本测试已失效'
-
+    assert len(BUTTON_CONTEXTS) == 12, '上下文表变了 —— 本测试已失效'
     problems = []
-    for variant in variants:
-        classes = frozenset({'btn', variant})
-        got = _btn_computed(css, frozenset(), classes, 'focus-visible',
-                            {'outline', 'outline-width', 'outline-style',
-                             'outline-color', 'box-shadow'})
-        if 'outline' not in got:
-            problems.append(f'.{variant}:focus-visible 没有任何规则声明 outline —— '
-                            'Bootstrap 的 `outline: 0` 生效，键盘用户看不到焦点')
+    for ctx in BUTTON_CONTEXTS:
+        got = _btn_computed(css, ctx, 'focus-visible',
+                            {'outline', 'outline-width', 'outline-style', 'outline-color',
+                             'box-shadow'})
+        for prop in ('outline-width', 'outline-style', 'outline-color'):
+            if prop not in got:
+                problems.append(f'{ctx}:focus-visible 没有任何规则声明 {prop} —— '
+                                'Bootstrap 的 `outline: 0` 生效，键盘用户看不到焦点')
+        if not {'outline-width', 'outline-style', 'outline-color'} <= set(got):
             continue
-        raw, branch, spec = got['outline']
-        width, style, color = _outline_parts(raw)
+
+        w_raw, w_branch, w_spec = got['outline-width']
+        width = _resolve_length_px(css, w_raw)
         if width is None or width < BTN_FOCUS_MIN_OUTLINE_WIDTH_PX:
             problems.append(
-                f'.{variant}:focus-visible 的 outline 宽度 {width} '
-                f'< {BTN_FOCUS_MIN_OUTLINE_WIDTH_PX}px（来自 `{branch}`: {raw!r}）')
-        if style in (None, 'none', 'hidden'):
-            problems.append(f'.{variant}:focus-visible 的 outline 线型是 {style!r} —— 画不出来')
-        if color is None:
-            problems.append(f'.{variant}:focus-visible 的 outline 没有颜色 —— 本测试算不了对比度')
-        else:
-            ring = _btn_flatten(_resolve_color(css, color), backdrop)
-            ratio = _contrast_ratio(ring, backdrop)
-            if ratio < BTN_OUTLINE_MIN_CONTRAST:
-                problems.append(
-                    f'.{variant}:focus-visible 焦点环 {ring} 对卡片底 {backdrop} '
-                    f'只有 {ratio:.2f}:1 < {BTN_OUTLINE_MIN_CONTRAST}')
-        if spec < BOOTSTRAP_BTN_FOCUS_SHADOW_SPECIFICITY:
+                f'{ctx}:focus-visible 层叠之后的 outline-width 是 {w_raw!r}'
+                f'（来自 `{w_branch}`），不足 {BTN_FOCUS_MIN_OUTLINE_WIDTH_PX}px')
+        s_raw, s_branch, _ = got['outline-style']
+        if s_raw.strip().lower() in ('none', 'hidden'):
             problems.append(
-                f'.{variant}:focus-visible 的 outline 来自 `{branch}`，特异度 {spec} '
-                f'< {BOOTSTRAP_BTN_FOCUS_SHADOW_SPECIFICITY}')
+                f'{ctx}:focus-visible 层叠之后的 outline-style 是 {s_raw!r}'
+                f'（来自 `{s_branch}`）—— 画不出来')
+        c_raw, _cb, _cs = got['outline-color']
+        ring = _btn_flatten(_resolve_color(css, c_raw), backdrop)
+        ratio = _contrast_ratio(ring, backdrop)
+        if ratio < BTN_RING_MIN_CONTRAST:
+            problems.append(
+                f'{ctx}:focus-visible 焦点环 {ring} 对卡片底 {backdrop} '
+                f'只有 {ratio:.2f}:1 < {BTN_RING_MIN_CONTRAST}')
+        if w_spec < BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY:
+            problems.append(
+                f'{ctx}:focus-visible 的 outline 来自 `{w_branch}`，特异度 {w_spec} '
+                f'< Bootstrap `.btn:first-child:active:focus-visible` 的 '
+                f'{BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY}')
 
-        base_bg, _bf, _bg2 = _btn_surface(css, frozenset(), classes, 'base', backdrop)
-        foc_bg, foc_fg, foc_got = _btn_surface(css, frozenset(), classes, 'focus-visible', backdrop)
+        if 'box-shadow' not in got:
+            problems.append(
+                f'{ctx}:focus-visible 没有清掉 box-shadow —— '
+                'Bootstrap 的蓝雾焦点环会和我们的青绿环同时出现')
+        else:
+            b_raw, b_branch, b_spec = got['box-shadow']
+            if b_raw.strip().lower() != 'none':
+                problems.append(
+                    f'{ctx}:focus-visible 的 box-shadow = {b_raw!r}（来自 `{b_branch}`），'
+                    '期望 none')
+            if b_spec < BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY:
+                problems.append(
+                    f'{ctx}:focus-visible 的 box-shadow 清除规则 `{b_branch}` 特异度 '
+                    f'{b_spec} < {BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY} —— 压不住蓝雾环')
+
+        base_bg, _bf, _x = _btn_surface(css, ctx, 'base', backdrop)
+        foc_bg, foc_fg, foc_got = _btn_surface(css, ctx, 'focus-visible', backdrop)
         if foc_bg != base_bg:
             problems.append(
-                f'.{variant}:focus-visible 底色 {foc_bg} != 基态 {base_bg} —— '
-                '键盘焦点不该改变按钮底色（改变了就说明有别的规则赢了）')
-        _r, bbranch, bspec = (foc_got.get('background') or foc_got['background-color'])
-        if bspec < BOOTSTRAP_BTN_STATE_SPECIFICITY:
+                f'{ctx}:focus-visible 底色 {foc_bg} != 基态 {base_bg} —— '
+                '键盘焦点不该改变按钮底色')
+        _v, bbranch, bspec = foc_got['background-color']
+        if bspec < BOOTSTRAP_BTN_FOCUS_BG_SPECIFICITY:
             problems.append(
-                f'.{variant}:focus-visible 的 background 由 `{bbranch}` 胜出，'
-                f'特异度 {bspec} < {BOOTSTRAP_BTN_STATE_SPECIFICITY} —— '
+                f'{ctx}:focus-visible 的 background 由 `{bbranch}` 胜出，'
+                f'特异度 {bspec} < {BOOTSTRAP_BTN_FOCUS_BG_SPECIFICITY} —— '
                 '浏览器里会被刷成 --bs-btn-hover-bg（改前实测 rgb(11,94,215)）')
         ink = _contrast_ratio(foc_fg, foc_bg)
         if ink < BTN_INK_MIN_CONTRAST:
-            problems.append(f'.{variant}:focus-visible 墨/底 {ink:.2f}:1 < {BTN_INK_MIN_CONTRAST}')
+            problems.append(f'{ctx}:focus-visible 墨/底 {ink:.2f}:1 < {BTN_INK_MIN_CONTRAST}')
 
-    assert not problems, (
-        '键盘焦点态不合格：\n' + '\n'.join('  ' + p for p in problems))
+    assert not problems, '键盘焦点态不合格：\n' + '\n'.join('  ' + p for p in problems)
 
 
 def test_outline_button_variants_have_a_real_border():
@@ -4520,45 +4852,43 @@ def test_outline_button_variants_have_a_real_border():
 
     改前的形态：`btn-outline` 在 style.css 里**零定义**，而本文件的
     `.btn { border: none }`(0,1,0) 排在 bootstrap.min.css 之后，吃掉了
-    Bootstrap 给 outline 变体的 `border: var(--bs-btn-border-width) solid
-    var(--bs-btn-border-color)`。CDP 实测 history.html 的「刷新」按钮：
+    Bootstrap 给 outline 变体的 border。CDP 实测 history.html 的「刷新」按钮：
         border-top-width: 0px   border-top-style: none
         color: rgb(108, 117, 125)   对卡片底 #15171c 只有 3.82:1
-    渲染成一坨没有边框的灰字，紧挨着实心的「启动」按钮。
+    渲染成一坨没有边框的灰字。`.btn-outline-primary` 用在 map.js 的等高线
+    预览面板（同样零定义，文字是 Bootstrap 蓝 #0d6efd，对卡片底 3.98:1）。
 
-    `.btn-outline-primary` 用在 map.js 的等高线预览面板（同样零定义，
-    文字是 Bootstrap 蓝 #0d6efd，对深色底 2.6:1）。
-
-    本断言读的是**层叠之后**的边框宽度 —— 只 grep「有没有写 border」拦不住
-    「写了但被 `.btn{border:none}` 压掉」这个正是原缺陷的形态。
+    读的是**展开成长写之后**的边框：只读 `border` 简写的话，后面补一行
+    `border-style: none` 就能让边框消失而断言全绿（评审实测的同型逃逸）。
     """
     css = _css()
     backdrop = _btn_backdrop(css)
     outline_variants = [v for v in TRANSPARENT_BTN_VARIANTS if v.startswith('btn-outline-')]
     assert len(outline_variants) == 2, (
-        f'outline 变体有 {len(outline_variants)} 个，期望 2 '
-        '（btn-outline-primary / btn-outline-secondary，grep 模板与 JS 核对过）—— 本测试已失效'
+        f'outline 变体有 {len(outline_variants)} 个，期望 2 —— 本测试已失效'
     )
     problems = []
     for variant in outline_variants:
-        classes = frozenset({'btn', variant})
-        got = _btn_computed(css, frozenset(), classes, 'base',
-                            {'border', 'border-width', 'border-color', 'border-style'})
-        assert 'border' in got or 'border-width' in got, (
-            f'.{variant} 连一条 border 声明都没有 —— 本测试已失效'
-        )
-        raw, branch, _spec = got.get('border') or got['border-width']
-        value = _IMPORTANT_RE.sub('', raw).strip()
-        m = re.match(r'^([\d.]+)(px|rem)\b', value)
-        width = float(m.group(1)) * (16 if m.group(2) == 'rem' else 1) if m else 0.0
-        if width < 1.0:
+        ctx = _BtnCtx({'btn', variant})
+        got = _btn_computed(css, ctx, 'base',
+                            {'border', 'border-width', 'border-style', 'border-color'})
+        for prop in ('border-width', 'border-style'):
+            assert prop in got, f'.{variant} 连一条 {prop} 都没有 —— 本测试已失效'
+        w_raw, w_branch, _ = got['border-width']
+        width = _resolve_length_px(css, w_raw)
+        if width is None or width < 1.0:
             problems.append(
-                f'.{variant} 层叠之后的边框是 `{branch}` 的 {value!r}（宽 {width}px）—— '
+                f'.{variant} 层叠之后的 border-width 是 {w_raw!r}（来自 `{w_branch}`）—— '
                 '没有边框的 outline 按钮就是一坨纯文字')
-        if 'none' in value.split():
-            problems.append(f'.{variant} 的边框线型是 none（来自 `{branch}`）')
+        s_raw, s_branch, _ = got['border-style']
+        if s_raw.strip().lower() in ('none', 'hidden'):
+            problems.append(
+                f'.{variant} 层叠之后的 border-style 是 {s_raw!r}（来自 `{s_branch}`）')
+        if 'border-color' in got:
+            edge = _btn_flatten(_resolve_color(css, got['border-color'][0]), backdrop)
+            _ = _contrast_ratio(edge, backdrop)   # 记录用；下限见报告的遗留条目
 
-        bg, fg, _g = _btn_surface(css, frozenset(), classes, 'base', backdrop)
+        bg, fg, _g = _btn_surface(css, ctx, 'base', backdrop)
         ratio = _contrast_ratio(fg, bg)
         if ratio < BTN_INK_MIN_CONTRAST:
             problems.append(
@@ -4569,98 +4899,8 @@ def test_outline_button_variants_have_a_real_border():
         'outline 变体没有真边框 / 文字看不清：\n' + '\n'.join('  ' + p for p in problems))
 
 
-# 纯图标按钮（无可见文本，屏幕阅读器只能读 aria-label）在 JS 里的数量。
-# `grep -n "<button" static/js/tasks.js static/js/history.js` 核对：
-#   tasks.js  启动 / 暂停 / 恢复 / 取消  4 个
-#   history.js 查看详情 / 删除           2 个
-# （tasks.js 的「移除」按钮带可见文字「移除」，不算纯图标，不在此列）
-ICON_ONLY_BUTTON_COUNT = 6
-
-_JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
-
-
-def _icon_only_buttons():
-    """JS 模板里所有「没有可见文本」的 <button>，返回 [(文件, 属性串)]。"""
-    found = []
-    for name in ('tasks.js', 'history.js'):
-        src = _strip_js_comments(_js(name))
-        matches = list(_JS_BUTTON_RE.finditer(src))
-        assert matches, f'{name} 里一个 <button> 都没扫到 —— 本测试已失效（不是通过）'
-        for m in matches:
-            attrs, inner = m.group(1), m.group(2)
-            # 去掉标签、模板插值和空白，剩下的就是可见文本
-            text = re.sub(r'<[^>]*>', '', inner)
-            text = re.sub(r'\$\{[^}]*\}', '', text)
-            if not text.strip():
-                found.append((name, attrs))
-    return found
-
-
-def test_icon_only_buttons_are_square_and_labelled():
-    """纯图标按钮必须是 `--ctl-h` 见方，且有 aria-label。
-
-    两件事一起守，因为它们会一起坏：
-
-    1. **尺寸走密度令牌。** 选择器必须是 `.btn.btn-icon`(0,2,0)：任务卡的容器是
-       `.btn-group.btn-group-sm`，而 `.btn-group-sm .btn { padding: .4rem .9rem }`
-       也是 (0,2,0) —— 裸 `.btn-icon`(0,1,0) 的 `padding: 0` 会输给它，
-       按钮被撑成胶囊。这条断言在**祖先带 btn-group-sm** 的上下文里算最终值，
-       所以降特异度会被直接抓住，而不是「源码里写了就算数」。
-
-    2. **无障碍名称。** 图标按钮没有可见文本，`title` 不是可靠的无障碍名称来源
-       （多数屏幕阅读器只在没有别的名称时才回退到它，且移动端根本没有 hover）。
-       先断言扫到的数量 == ICON_ONLY_BUTTON_COUNT(6)，正则失配时会响亮失败
-       而不是退化成永真。
-    """
-    css = _css()
-    buttons = _icon_only_buttons()
-    assert len(buttons) == ICON_ONLY_BUTTON_COUNT, (
-        f'扫到 {len(buttons)} 个纯图标按钮，期望 {ICON_ONLY_BUTTON_COUNT} —— '
-        '要么正则失配（本测试已失效），要么有人加/删了图标按钮（确认后改常量）：\n'
-        + '\n'.join(f'  {f}: {a.strip()[:90]}' for f, a in buttons)
-    )
-    problems = []
-    for fname, attrs in buttons:
-        cls = re.search(r'class\s*=\s*"([^"]*)"', attrs)
-        cls_tokens = set((cls.group(1) if cls else '').split())
-        if 'btn-icon' not in cls_tokens:
-            problems.append(f'{fname}: 纯图标按钮缺 btn-icon 类 -> `{attrs.strip()[:80]}`')
-        if not re.search(r'aria-label\s*=\s*"[^"]+"', attrs):
-            problems.append(f'{fname}: 纯图标按钮缺 aria-label -> `{attrs.strip()[:80]}`')
-    assert not problems, '图标按钮的标记不完整：\n' + '\n'.join('  ' + p for p in problems)
-
-    # 尺寸：在真实的 .btn-group-sm 上下文里算最终生效值
-    ctl_h = _token_px(css, '--ctl-h')
-    ancestors = frozenset({'btn-group', 'btn-group-sm'})
-    classes = frozenset({'btn', 'btn-icon', 'btn-danger'})
-    got = _btn_computed(css, ancestors, classes, 'base',
-                        {'width', 'height', 'padding', 'padding-top', 'padding-left'})
-    for prop in ('width', 'height'):
-        assert prop in got, (
-            f'`.btn.btn-icon` 没有声明 {prop} —— 图标按钮不是正方形，本测试已失效')
-        px = _resolve_length_px(css, got[prop][0])
-        assert px is not None, (
-            f'`.btn.btn-icon` 的 {prop} = {got[prop][0]!r}，解析不了 —— 本测试已失效')
-        assert px == pytest.approx(ctl_h, abs=0.01), (
-            f'图标按钮的 {prop} 是 {px:g}px，与密度令牌 --ctl-h({ctl_h:g}px) 不一致 —— '
-            f'胜出规则是 `{got[prop][1]}`。按钮尺寸必须走令牌，改令牌才管用')
-
-    assert 'padding' in got, '`.btn.btn-icon` 没有声明 padding —— 本测试已失效'
-    pad_raw, pad_branch, pad_spec = got['padding']
-    pad_px = _resolve_length_px(css, pad_raw.split()[0])
-    assert pad_px == pytest.approx(0.0, abs=0.01), (
-        f'在 .btn-group-sm 里，图标按钮最终生效的 padding 是 `{pad_branch}` 的 '
-        f'{pad_raw!r} —— 期望 0。`.btn-group-sm .btn` 是 (0,2,0)，'
-        '选择器必须写成 `.btn.btn-icon` 且排在它之后才赢得了'
-    )
-    assert pad_spec >= 2, (
-        f'`.btn.btn-icon` 的 padding 来自特异度 {pad_spec} 的 `{pad_branch}`，'
-        '低于 `.btn-group-sm .btn` 的 2 —— 会被撑成胶囊'
-    )
-
-
 def test_button_ink_is_readable_in_every_state():
-    """8 个变体 x 5 个状态，每一格的墨/底对比度都必须 >= 4.5:1。
+    """每个真实上下文 x 每个状态，墨/底对比度都必须 >= 4.5:1。
 
     这条是兜底网，补的是「按状态分开写的那几条断言各自只看自己那一格」
     留下的洞 —— 尤其是**基态**：改前 `.btn-success` / `.btn-danger` /
@@ -4671,30 +4911,159 @@ def test_button_ink_is_readable_in_every_state():
 
     而这三颗按钮在任务卡和历史表里都是**纯图标**按钮，SVG 用
     `stroke="currentColor"` 描边 —— 1.92:1 意味着图标近乎看不见。
-    （Task 9 的教训同型：8 条断言全绿，把 `brightness(1.25)` 改成
-    `brightness(0.05)` 仍能让图标彻底消失。所以「墨看得见」必须被单独钉住，
-    不能指望别的断言顺手带到。）
-
-    40 格全部遍历，并先断言格子数 —— 少一个变体或少一个状态都会响亮失败，
-    而不是「循环空转、断言永真」。
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    variants = list(FILLED_BTN_VARIANTS) + list(TRANSPARENT_BTN_VARIANTS)
-    cells = [(v, s) for v in variants for s in _BTN_STATES]
-    assert len(cells) == 40, (
-        f'变体 x 状态 = {len(cells)} 格，期望 8 x 5 = 40 —— 本测试已失效'
+    cells = [(c, s) for c in BUTTON_CONTEXTS for s in _BTN_STATES]
+    assert len(cells) == 60, (
+        f'上下文 x 状态 = {len(cells)} 格，期望 12 x 5 = 60 —— 本测试已失效'
     )
     problems = []
-    for variant, state in cells:
-        classes = frozenset({'btn', variant})
-        bg, fg, _got = _btn_surface(css, frozenset(), classes, state, backdrop)
+    for ctx, state in cells:
+        bg, fg, _got = _btn_surface(css, ctx, state, backdrop)
         ratio = _contrast_ratio(fg, bg)
         if ratio < BTN_INK_MIN_CONTRAST:
             problems.append(
-                f'.{variant} 在 {state} 态：墨 {fg} 压在底 {bg} 上只有 {ratio:.2f}:1 '
+                f'{ctx} 在 {state} 态：墨 {fg} 压在底 {bg} 上只有 {ratio:.2f}:1 '
                 f'< {BTN_INK_MIN_CONTRAST}')
     assert not problems, (
         '按钮上的文字/图标看不清：\n' + '\n'.join('  ' + p for p in problems)
-        + '\n这三颗是纯图标按钮（SVG 走 currentColor），墨色不达标 = 图标消失'
+        + '\n其中三颗是纯图标按钮（SVG 走 currentColor），墨色不达标 = 图标消失'
     )
+
+
+# --------------------------------------------------------------------------
+# 纯图标按钮：尺寸走密度令牌 + 无障碍名称
+# --------------------------------------------------------------------------
+
+# **全站**纯图标按钮（无可见文本）的数量，JS 模板与 HTML 模板一起扫。
+#   static/js/tasks.js   启动 / 暂停 / 恢复 / 取消              4
+#   static/js/history.js 查看详情 / 删除                        2
+#   templates/base.html  navbar-toggler（汉堡菜单）             1
+#   templates/history.html .btn-close（模态框关闭）              1
+# 合计 8。
+#
+# ⚠️ 第一版只扫两个 JS 文件、常量写 6，读起来像「全站都覆盖了」而实际漏了
+# 模板。评审实测：`templates/base.html:40` 的 navbar-toggler 在 900px 视口下
+# `display: block`、56x40、**`aria-label` 为 null** —— 一颗真实存在、真实可见、
+# 真实缺无障碍名称的纯图标按钮，就在断言的扫描范围外。
+# `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
+# 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
+# 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
+ICON_ONLY_BUTTON_COUNT = 8
+
+_JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
+
+# 纯图标按钮里允许出现的「不是可见文本」的东西：标签、模板插值、HTML 实体。
+_MARKUP_NOISE_RE = re.compile(r'<[^>]*>|\$\{[^}]*\}|&[a-zA-Z]+;|&#\d+;')
+
+
+def _icon_only_buttons():
+    """全站（JS 模板 + HTML 模板）里所有「没有可见文本」的 <button>。
+
+    返回 [(来源, 属性串)]。**每个来源都断言至少扫到一个 <button>**，
+    正则失配时响亮失败而不是退化成空循环。
+    """
+    sources = []
+    for name in ('tasks.js', 'history.js'):
+        sources.append((f'static/js/{name}', _strip_js_comments(_js(name))))
+    for name in ('base.html', 'index.html', 'history.html', 'config.html'):
+        sources.append((f'templates/{name}', _template(name)))
+
+    found = []
+    for label, src in sources:
+        matches = list(_JS_BUTTON_RE.finditer(src))
+        assert matches, f'{label} 里一个 <button> 都没扫到 —— 本测试已失效（不是通过）'
+        for m in matches:
+            attrs, inner = m.group(1), m.group(2)
+            if not _MARKUP_NOISE_RE.sub('', inner).strip():
+                found.append((label, attrs))
+    return found
+
+
+def test_icon_only_buttons_are_labelled():
+    """**全站**每一颗纯图标按钮都必须有 aria-label。
+
+    图标按钮没有可见文本，`title` 不是可靠的无障碍名称来源（多数屏幕阅读器
+    只在没有别的名称时才回退到它，移动端更是根本没有 hover）。
+    先断言扫到的数量 == ICON_ONLY_BUTTON_COUNT，正则失配会响亮失败。
+    """
+    buttons = _icon_only_buttons()
+    assert len(buttons) == ICON_ONLY_BUTTON_COUNT, (
+        f'扫到 {len(buttons)} 颗纯图标按钮，期望 {ICON_ONLY_BUTTON_COUNT} —— '
+        '要么正则失配（本测试已失效），要么有人加/删了图标按钮（确认后改常量）：\n'
+        + '\n'.join(f'  {f}: {a.strip()[:90]}' for f, a in buttons)
+    )
+    missing = [
+        f'{f}: `{a.strip()[:80]}`' for f, a in buttons
+        if not re.search(r'aria-label\s*=\s*"[^"]+"', a)
+    ]
+    assert not missing, (
+        '纯图标按钮缺 aria-label（屏幕阅读器只会读出「按钮」）：\n'
+        + '\n'.join('  ' + m for m in missing)
+    )
+
+    # 每一颗**走 .btn 体系**的纯图标按钮都必须带 .btn-icon，否则下面那条尺寸
+    # 断言（按 BUTTON_CONTEXTS 里写死的类组合去算）根本轮不到它 —— 类掉了，
+    # 按钮在浏览器里被 `.btn-group-sm .btn` 的 padding 撑成胶囊，而尺寸断言
+    # 仍然在给一个「假想的、带 btn-icon 的按钮」发绿灯。
+    # `.btn-close` / `.navbar-toggler` 不带 `btn` 类，是 Bootstrap 的独立组件，
+    # 有自己的尺寸规则，天然不在此列。
+    classless = []
+    for f, a in buttons:
+        m = re.search(r'class\s*=\s*"([^"]*)"', a)
+        tokens = set((m.group(1) if m else '').split())
+        if 'btn' in tokens and 'btn-icon' not in tokens:
+            classless.append(f'{f}: `{a.strip()[:80]}`')
+    assert not classless, (
+        '纯图标按钮带 .btn 却没有 .btn-icon —— 尺寸规则打不到它，'
+        '会被 `.btn-group-sm .btn` 的 padding 撑成胶囊：\n'
+        + '\n'.join('  ' + c for c in classless)
+    )
+
+
+def test_icon_buttons_are_square_via_the_density_token():
+    """`.btn-icon` 必须在**每个真实上下文**里都是 `--ctl-h` 见方、内边距 0。
+
+    选择器必须是 `.btn.btn-icon`(0,2,0)：任务卡的容器是
+    `.btn-group.btn-group-sm`，而 `.btn-group-sm .btn { padding: .4rem .9rem }`
+    也是 (0,2,0) —— 裸 `.btn-icon`(0,1,0) 的 `padding: 0` 会输给它，
+    按钮被撑成胶囊。历史表那颗**没有** btn-group 祖先、但带 `.btn-sm`
+    （自带 padding），是另一条独立的层叠路径，所以两个上下文都要算。
+    """
+    css = _css()
+    ctl_h = _token_px(css, '--ctl-h')
+    contexts = [c for c in BUTTON_CONTEXTS if 'btn-icon' in c.classes]
+    assert len(contexts) == 2, (
+        f'带 .btn-icon 的真实上下文有 {len(contexts)} 个，期望 2'
+        '（任务卡 btn-group-sm 内 + 历史表无 btn-group）—— 本测试已失效'
+    )
+    problems = []
+    for ctx in contexts:
+        got = _btn_computed(css, ctx, 'base',
+                            {'width', 'height', 'padding', 'padding-top', 'padding-right',
+                             'padding-bottom', 'padding-left'})
+        for prop in ('width', 'height'):
+            if prop not in got:
+                problems.append(f'{ctx} 没有声明 {prop} —— 图标按钮不是正方形')
+                continue
+            px = _resolve_length_px(css, got[prop][0])
+            if px is None:
+                problems.append(f'{ctx} 的 {prop} = {got[prop][0]!r} 解析不了')
+            elif px != pytest.approx(ctl_h, abs=0.01):
+                problems.append(
+                    f'{ctx} 的 {prop} 是 {px:g}px，与密度令牌 --ctl-h({ctl_h:g}px) 不一致'
+                    f'（胜出规则 `{got[prop][1]}`）。按钮尺寸必须走令牌，改令牌才管用')
+        if 'padding' not in got:
+            problems.append(f'{ctx} 没有声明 padding')
+            continue
+        pad_raw, pad_branch, pad_spec = got['padding']
+        pad_px = _resolve_length_px(css, pad_raw.split()[0])
+        if pad_px is None or pad_px != pytest.approx(0.0, abs=0.01):
+            problems.append(
+                f'{ctx} 最终生效的 padding 是 `{pad_branch}` 的 {pad_raw!r}，期望 0')
+        if pad_spec < (0, 2, 0):
+            problems.append(
+                f'{ctx} 的 padding 来自特异度 {pad_spec} 的 `{pad_branch}`，'
+                '低于 `.btn-group-sm .btn` 的 (0,2,0) —— 会被撑成胶囊')
+    assert not problems, '图标按钮的尺寸不对：\n' + '\n'.join('  ' + p for p in problems)

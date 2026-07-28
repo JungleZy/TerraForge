@@ -938,7 +938,17 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     color: var(--color-accent);
 }
 
-.btn:not(:disabled):focus-visible {
+/* ⚠️ `:not(.disabled)` 不是笔误，也不是防御性冗余 —— 它是**特异度配重**。
+   Bootstrap 有一条
+       .btn:first-child:active:focus-visible,
+       :not(.btn-check)+.btn:active:focus-visible { box-shadow: var(--bs-btn-focus-box-shadow) }
+   特异度是 (0,4,0)。本条若只写 `.btn:not(:disabled):focus-visible` 是 (0,3,0)，
+   压不住它：键盘焦点 + 按下的瞬间，Bootstrap 的蓝雾环会和我们的青绿环同时出现。
+   加上 `:not(.disabled)`（Bootstrap 给 <a> 用的禁用类，本站不用）之后是 (0,4,0)，
+   与之打平、靠 style.css 排在后面取胜。
+   由 test_focus_visible_has_a_visible_outline 的
+   BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY 钉住 —— 删掉它测试会红。 */
+.btn:not(:disabled):not(.disabled):focus-visible {
     outline: 2px solid var(--color-accent-hover);
     outline-offset: 2px;
     box-shadow: none;
