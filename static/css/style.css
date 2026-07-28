@@ -1,5 +1,7 @@
-/* Import Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+/* 字体由 base.html 的 static/vendor/fonts/fonts.css 提供。
+   这里**刻意不写 @import**：@import 只能出现在样式表顶部且会阻塞渲染，
+   而它原先指向的正是 fonts.googleapis.com —— 是藏在 CSS 里的第 9 个 CDN 依赖，
+   只改 base.html 会漏掉它。要换字体请改 vendor/fonts/fonts.css。 */
 
 /* CSS Variables */
 :root {
@@ -1749,47 +1751,12 @@ code {
     width: 100%;
 }
 
-/* Row and Column Styles
-   ⚠️ 这些不是 Bootstrap 的冗余副本，是它的**离线兜底**：base.html 的
-   bootstrap.min.css 走 CDN，CDN 不可达时 .row/.col-* 只剩这里这一份定义
-   （文件上方 :~113 的 .row 只设 background，不管布局）。别当死代码删。
-
-   但也别把它当成完整兜底 —— 下面只覆盖了 .col-6 / .col-12 / .col-md-6。
-   模板里实际还在用 .col-md-4（9 处）和 .col-md-3（4 处），这两类在本地
-   **完全没有定义**，断网时拿不到宽度也拿不到 padding。同理 .card / .btn /
-   .navbar 等组件类也没有任何本地兜底。
-   真正的解法是把 Bootstrap 落到 static/vendor/ 本地引用（这是 PyInstaller
-   打包的离线桌面工具，本就不该依赖 CDN），届时这一整块可以删掉。 */
-.row {
-    display: flex;
-    flex-wrap: wrap;
-    margin-right: -0.75rem;
-    margin-left: -0.75rem;
-}
-
-.col-6,
-.col-12,
-.col-md-6 {
-    padding-right: 0.75rem;
-    padding-left: 0.75rem;
-}
-
-.col-6 {
-    flex: 0 0 50%;
-    max-width: 50%;
-}
-
-.col-12 {
-    flex: 0 0 100%;
-    max-width: 100%;
-}
-
-@media (min-width: 768px) {
-    .col-md-6 {
-        flex: 0 0 50%;
-        max-width: 50%;
-    }
-}
+/* Row / Column 的本地兜底已删除（vendor 本地化）。
+   这里原先有一份 .row / .col-6 / .col-12 / .col-md-6 的手抄定义，理由是
+   「bootstrap.min.css 走 CDN，CDN 不可达时栅格只剩这一份」。现在 Bootstrap
+   在 static/vendor/bootstrap/5.3.0/ 里随包发布，那个前提不再成立 ——
+   而那份兜底本来就是残缺的（模板里在用的 .col-md-4 / .col-md-3 从来没覆盖到），
+   留着只会和 Bootstrap 的真定义打架。别再加回来。 */
 
 /* Scrollbar Styles for All Scrollable Elements（标准属性已并入文件顶部的 `*` 规则） */
 *::-webkit-scrollbar {
@@ -2109,9 +2076,10 @@ code {
    拿不到「北/南/东/西」这个信息。这里补一份纯文本，键那边用 aria-hidden 关掉，
    于是读屏听到的是「北纬 39.91653」而不是「N 39.91653」。
 
-   自己写而不用 Bootstrap 的 .visually-hidden：base.html 的 bootstrap.min.css 走
-   CDN，CDN 不可达时那个类不存在，方位词会**直接显示出来**并撑破 2 行网格。
-   本站已有同样理由的离线兜底（见文件末尾的 .row / .col-* 说明）。
+   自己写而不用 Bootstrap 的 .visually-hidden：原因原本是「CDN 不可达时那个类
+   不存在」，vendor 本地化后这个理由已经不成立。但这个类**继续保留**，换个理由：
+   自有类不受上游版本影响 —— Bootstrap 升级重命名 .visually-hidden，
+   受影响的就是屏读用户听到的坐标，而这种回归没有任何测试看得见。
 
    position:absolute 不参与布局，所以不影响上面那 2 行的几何 —— 实测加它前后
    `#boundsInfo` 都是 62.0px、769px 极端坐标下仍无溢出。 */

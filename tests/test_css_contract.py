@@ -12,6 +12,7 @@
 
 import os
 import re
+import subprocess
 import sys
 from html.parser import HTMLParser
 
@@ -48,6 +49,16 @@ def _rules_ctx(css):
     前者是全局重置，后者可能是响应式或无障碍覆盖。
     """
     css = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
+    # 剥掉 at-**语句**（以 `;` 收尾、不带花括号的 at-rule：@import / @charset /
+    # @namespace）。不剥的后果是实测出来的，不是假设：`@import url(...);` 不带
+    # 花括号，于是它会被并进**下一条规则**的选择器 token（`_norm_selector` 折完
+    # 空白后长成 `@import url(...); :root`），而下面 `sel.startswith('@')` 那句
+    # 又把整条规则丢掉 —— style.css 顶部原先那句 @import 就这样让紧随其后的
+    # `:root { ... }`（全站设计令牌的唯一定义处）对本文件**每一条**基于
+    # _rules/_rules_ctx 的断言隐身。vendor 本地化删掉 @import 的那一刻才暴露：
+    # `:root` 一进扫描范围，按钮层叠模型立刻报「读不懂 :root」，10 条断言变红。
+    # 用 `[^;{}]*` 限定，保证不会跨进任何花括号块。
+    css = re.sub(r'@(?:import|charset|namespace)\b[^;{}]*;', '', css, flags=re.I)
     out = []
     stack = []
     token = ''
@@ -1908,9 +1919,14 @@ def test_bootstrap_build_is_new_enough_to_have_dark_theme():
     代价大于收益，明确放弃（见 p2-task-8-report.md §10）。
 
     覆盖范围（诚实说明）：这条守的是「声明的版本号够新」。它保证不了
-    「CDN 真的把这个文件送到了浏览器」—— 断网 / CDN 故障时整份 Bootstrap 都不在，
-    那属于本项目既有的 CDN 依赖问题（style.css 里 `.row/.col-*` 那段注释已点名），
-    不是本断言能覆盖的。CDP 实测脚本自带 `--bs-body-font-family` 非空的自检来兜这一层。
+    「浏览器真的拿到了这个文件」。**vendor 本地化之后这层已经补上了**：
+    Bootstrap 落在 static/vendor/bootstrap/5.3.0/，由
+    test_vendor_tree_matches_the_manifest（文件在、字节数对）+
+    test_vendor_builds_match_the_version_in_their_path（文件里真有
+    `[data-bs-theme=dark]`）+ test_no_template_references_an_external_url
+    （没人把 <link> 改回 CDN）三条合起来钉住。本条只剩「模板声明的版本号够新」
+    这一层语义。（本地化之前这里写的是「属于本项目既有的 CDN 依赖问题」，
+    并指向 style.css 里那段 .row/.col-* 离线兜底注释 —— 那段已随本地化删除。）
     """
     assets = _bootstrap_asset_urls(_template('base.html'))
     assert assets, (
@@ -3368,9 +3384,11 @@ def test_bounds_readout_is_announced_to_screen_readers():
 
     没有这一层，读屏用户听到的是「N 39.91653」——拿不到方位。
     `.bounds-sr` 必须是脱离文档流的（position: absolute），否则中文方位词会
-    显示出来并撑破 2 行网格；而且它必须由 **style.css 自己**定义 ——
-    直接用 Bootstrap 的 `.visually-hidden` 的话，CDN 不可达时那个类不存在，
-    方位词会直接漏到界面上（本站已有同样理由的离线兜底，见 .row / .col-*）。
+    显示出来并撑破 2 行网格；而且它必须由 **style.css 自己**定义。
+    原因在 vendor 本地化时换过一次：以前是「CDN 不可达时 Bootstrap 的
+    .visually-hidden 不存在」，Bootstrap 随包发布后这条不再成立；
+    现在的理由是**不受上游版本影响** —— Bootstrap 哪天重命名了
+    .visually-hidden，代价是屏读用户听到的坐标，而那种回归没有任何测试看得见。
     """
     branch, _markup = _bounds_readout_markup(
         _js_function_body(_js('map.js'), 'updateBoundsInfo')
@@ -3394,8 +3412,8 @@ def test_bounds_readout_is_announced_to_screen_readers():
     bodies = [b for sel, b, ctx in _rules_ctx(_css()) if sel == '.bounds-sr' and not ctx]
     assert len(bodies) == 1, (
         f'期望 style.css 里恰好 1 条 `.bounds-sr` 规则，实际 {len(bodies)} 条。'
-        '这个类必须由本站自己定义 —— 依赖 Bootstrap 的 .visually-hidden 的话，'
-        'CDN 不可达时方位词会直接显示出来并撑破 2 行网格'
+        '这个类必须由本站自己定义 —— 改用 Bootstrap 的 .visually-hidden，'
+        '上游哪天重命名它，方位词就会直接显示出来并撑破 2 行网格'
     )
     pos = _decl_map(bodies[0]).get('position')
     assert pos == 'absolute', (
@@ -4147,9 +4165,13 @@ def test_current_bounds_is_built_from_matching_leaflet_getters():
 # 模型的边界（诚实说明，不是免责声明）：
 #   只模拟 **style.css 内部**的层叠。Bootstrap 的规则不参与计算，改用
 #   「胜出声明的特异度必须 >= Bootstrap 对应规则的特异度」这条独立断言来兜
-#   （见下面那组常量）。理由是把 CDN 上的 bootstrap.min.css 拉进单测会引入
-#   网络依赖，而特异度这一层是可以离线判定的：本站的 style.css 排在最后
+#   （见下面那组常量）。原理由是「把 CDN 上的 bootstrap.min.css 拉进单测会
+#   引入网络依赖」——**vendor 本地化之后这个理由已经不成立**：
+#   static/vendor/bootstrap/5.3.0/bootstrap.min.css 就在仓库里，离线可读。
+#   保持现状是**权衡**不是限制：解析完整的 Bootstrap 需要一个真 CSS 解析器，
+#   而特异度这一层已经够用 —— 本站的 style.css 排在最后
 #   （test_no_stylesheet_can_load_after_style_css 钉住），同特异度即取胜。
+#   将来谁想把手抄的特异度常量换成实读本地文件，路已经通了。
 # ==========================================================================
 
 # Bootstrap 5.3.0 按钮状态规则的特异度。**每一条都是用脚本对 CDN 上的
@@ -4323,6 +4345,12 @@ def _btn_branch_applies(branch, ctx, state):
     subject = compounds[-1]
     # ---- 第一步：能否**确定地**判为不命中（不需要模型支持全部语法）----
     if subject['tag'] is not None and subject['tag'] != 'button':
+        return False
+    # `:root` 只可能命中 <html>，而 <html> 永远不是按钮 —— 属于「确定不命中」，
+    # 必须归第一步。落到第二步会因为 root 不在 _BTN_SUPPORTED_PSEUDOS 里被判成
+    # 「模型不支持」，把整个模型顶成失效（vendor 本地化删掉 style.css 顶部那句
+    # @import、`:root` 头一次进入扫描范围时，实测 10 条断言就是这么红的）。
+    if 'root' in subject['pseudos']:
         return False
     if not subject['classes'] <= ctx.classes:
         return False
@@ -5311,8 +5339,10 @@ def _text_branch_applies(branch, chain):
 # Bootstrap 5.3.0 里可能与 style.css 抢同一个元素 `color` 的规则。
 #
 # ⚠️ 这张表**不用来算颜色**，只用来做「style.css 必须赢」的下界检查。
-# Bootstrap 是 CDN 引入的（templates/base.html），本仓库里没有它的源码，
-# 拿它的值算最终色 = 拿一份手抄的常量冒充事实。所以做法是：一旦模型算出
+# 原写法是「Bootstrap 是 CDN 引入的，本仓库里没有它的源码，拿它的值算最终色
+# = 拿一份手抄的常量冒充事实」。**vendor 本地化之后前半句已经不成立**：源码就在
+# static/vendor/bootstrap/5.3.0/。但结论不变——真要算最终色得先有个完整的 CSS
+# 解析器（变量解析 + 层叠 + 继承），那是另一件事。所以做法仍然是：一旦模型算出
 # Bootstrap 的某条规则赢了 style.css，就**响亮失败**（「本测试算不了」），
 # 而不是给出一个可能错的数字。
 #
@@ -6558,4 +6588,648 @@ def test_reduced_motion_block_only_touches_motion():
         + '\n'.join('  ' + o for o in offenders)
         + '\n按钮/文字/高度三个层叠模型都假设这一块不影响外观（见 _btn_media_applies），'
         '要在 reduce 下改外观，先给那三个模型加环境参数'
+    )
+
+
+# --------------------------------------------------------------------------
+# vendor 本地化：离线可用性护栏
+#
+# 背景：本项目是 PyInstaller 打包的**离线桌面工具**，第三方前端资源（Bootstrap /
+# Leaflet / Leaflet.draw / Socket.IO / Google Fonts）全部落到 static/vendor/。
+# 在此之前它们走 6 个 CDN，断网时界面大面积降级：弹窗打不开、绘制工具条三个
+# 按钮变空白、栅格塌掉、字体退回系统默认。
+#
+# 这一节钉的是**「离线还能不能用」这件事本身**——在本节之前，没有任何一条断言
+# 看得见它：把某个 <link> 改回 CDN、漏掉一个二级资源（雪碧图 / woff2）、
+# 或者让 .gitignore 把 vendor 文件吃掉，测试全绿而用户拿到的是裸页面。
+#
+# 底图瓦片（map.js / history.js 里的 OSM 公网瓦片）**不在本节范围**：
+# 用户明确决定「先只做库本地化，底图单独议」。所以断网时地图区域仍是灰格子，
+# 那是**预期行为**，不是本节该拦的缺陷。下面的扫描只覆盖 templates/ 与
+# static/**/*.css，不覆盖 static/js/。
+# --------------------------------------------------------------------------
+
+_STATIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static'
+)
+_VENDOR_DIR = os.path.join(_STATIC_DIR, 'vendor')
+
+# vendor 清单：相对 static/vendor/ 的路径 -> 精确字节数。
+#
+# 为什么钉**精确字节数**而不是「文件存在就行」：存在性挡不住「下成了未压缩版」
+# 「下成了别的构建」「下到一半截断」这三种。它们都不会报错，只会让页面悄悄变样。
+# 与 test_font_size_scale_variables_unchanged 同一逻辑——拦的是「悄悄改」，
+# 不是「不许改」：真要升版本，改路径里的版本号 + 改这里的数字，一眼可见。
+#
+# fonts/fonts.css 不在这里：它是**本仓库生成的**（上游 40 个 @font-face 裁成
+# latin/latin-ext 两个子集、URL 改成本地相对路径），改一行注释字节数就变，
+# 钉死只会制造无谓的红。它由 test_local_font_css_is_self_contained 按结构校验。
+VENDOR_MANIFEST = {
+    'bootstrap/5.3.0/bootstrap.min.css': 232914,
+    'bootstrap/5.3.0/bootstrap.bundle.min.js': 80421,
+    'leaflet/1.9.4/leaflet.css': 14806,
+    'leaflet/1.9.4/leaflet.js': 147552,
+    'leaflet.draw/1.0.4/leaflet.draw.css': 5267,
+    'leaflet.draw/1.0.4/leaflet.draw.js': 67484,
+    # 三张雪碧图：leaflet.draw.css 里写的是 url('images/spritesheet.png')，
+    # 少一张就是首页最核心的框选工具条上多一个空白按钮。
+    'leaflet.draw/1.0.4/images/spritesheet.png': 1083,
+    'leaflet.draw/1.0.4/images/spritesheet-2x.png': 2103,
+    'leaflet.draw/1.0.4/images/spritesheet.svg': 5551,
+    'socket.io/4.5.4/socket.io.min.js': 44191,
+    'fonts/inter-latin.woff2': 48256,
+    'fonts/inter-latin-ext.woff2': 85068,
+    'fonts/jetbrains-mono-latin.woff2': 31432,
+    'fonts/jetbrains-mono-latin-ext.woff2': 11624,
+}
+_VENDOR_GENERATED = ('fonts/fonts.css',)
+
+# 本地化之前 base.html + style.css 依赖的 6 个域名。留在这里当**具名黑名单**：
+# 通用的「不许有 http(s):// 」已经能拦住它们，但错误信息里点名域名 + 对应的
+# 本地替代路径，比一句「发现外链」有用得多。
+_FORMER_CDN_HOSTS = {
+    'cdn.jsdelivr.net': 'static/vendor/bootstrap/5.3.0/',
+    'unpkg.com': 'static/vendor/leaflet/1.9.4/',
+    'cdnjs.cloudflare.com': 'static/vendor/leaflet.draw/1.0.4/',
+    'cdn.socket.io': 'static/vendor/socket.io/4.5.4/',
+    'fonts.googleapis.com': 'static/vendor/fonts/fonts.css',
+    'fonts.gstatic.com': 'static/vendor/fonts/*.woff2',
+}
+
+# 会真正触发一次网络请求的属性。`href` 覆盖 <link>（含 preconnect /
+# dns-prefetch —— 离线时它们是白白发出去的 DNS 查询）与 <a>；
+# `src` 覆盖 <script>/<img>/<iframe>；`action` 覆盖 <form>。
+_FETCHING_ATTRS = ('href', 'src', 'action', 'poster', 'data-src')
+
+_EXTERNAL_URL_RE = re.compile(r'^\s*(?:[a-z][a-z0-9+.-]*:)?//', re.I)
+
+
+def _static_refs_in_templates():
+    """templates/ 里全部 `url_for('static', filename='...')` 的 filename 值。
+
+    直接读 Jinja 源码而不是渲染结果：渲染需要起 Flask app、要 DB、要 Config，
+    而本文件全程只读文件。代价是识别不了动态拼接的 filename —— 这正是
+    base.html 顶部那条注释要求「版本号写成字面量」的原因之一。
+    """
+    out = []
+    rx = re.compile(r"""url_for\(\s*['"]static['"]\s*,\s*filename\s*=\s*['"]([^'"]+)['"]""")
+    for fn, markup in _all_templates():
+        for m in rx.finditer(markup):
+            out.append((fn, m.group(1)))
+    return out
+
+
+def test_no_template_references_an_external_url():
+    """templates/ 下任何标签都不许指向站外 URL —— 断网必须能用。
+
+    这条是整个 vendor 本地化的**唯一一条形态护栏**，也是最容易被无声撤销的
+    那一环：把 base.html 里任意一个 `<link>` / `<script>` 改回 CDN，页面在
+    开发机上（联网）看不出任何区别，全部既有断言照旧全绿，而打包出去的 exe
+    在断网环境里就少一个库。少 Bootstrap = 弹窗打不开 + 栅格塌掉；
+    少 Leaflet.draw = 框选工具条三个按钮变空白；少 Socket.IO = 进度不动。
+
+    连 `rel="preconnect"` 一起拦：它不加载资源，但离线时是一次白白发出去的
+    DNS 查询 + TCP 连接，而它存在的唯一理由（给 CDN 预热）已经消失。
+
+    ⚠️ 范围（诚实说明，别扩大解读）：
+      - 只扫 templates/。底图瓦片写在 static/js/map.js 与 history.js 里，
+        是**公网 OSM 瓦片**，用户明确决定不在本次范围内 —— 断网时地图区域
+        仍是灰格子，那是预期行为。本条拦不到、也不该拦。
+      - 只扫标签属性。JS 里 `fetch('https://...')`、CSS 里的 url() 不归它管；
+        CSS 那半边由 test_no_css_under_static_reaches_out_to_the_network 覆盖。
+    """
+    templates = _all_templates()
+    assert len(templates) == 4, (
+        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 4 个 —— '
+        '新增页面不需要改本断言（它按目录遍历），但请确认新页面也没有外链，'
+        '然后把这个数字更新掉'
+    )
+    scanned = 0
+    offenders = []
+    for fn, markup in templates:
+        for tag, attrs in _start_tags(markup):
+            for attr in _FETCHING_ATTRS:
+                val = attrs.get(attr)
+                if val is None:
+                    continue
+                scanned += 1
+                if not _EXTERNAL_URL_RE.match(val):
+                    continue
+                host = re.sub(r'^\s*(?:[a-z][a-z0-9+.-]*:)?//', '', val, flags=re.I)
+                host = host.split('/')[0].split('?')[0].lower()
+                hint = _FORMER_CDN_HOSTS.get(host)
+                offenders.append(
+                    f'{fn}: <{tag} {attr}="{val}">'
+                    + (f'  —— 本地副本在 {hint}' if hint else '')
+                )
+    # 扫描到的属性数量必须像样，否则「0 个外链」可能只是因为**什么都没扫到**
+    # （例如 HTMLParser 换了行为、或 _FETCHING_ATTRS 被清空）。
+    # 写下时实测 18 个：base.html 14（5 张表 + 5 个脚本 + 4 个导航 <a>）、
+    # index/config/history 各 1-2 个页面级 <script>。
+    assert scanned >= 18, (
+        f'四个模板里只扫出 {scanned} 个可能发起请求的属性（写下时是 18 个），太少了 —— '
+        '本断言的 0 offender 很可能是扫描器坏了而不是真的没有外链'
+    )
+    assert not offenders, (
+        '模板里出现了指向站外的引用，断网时这些资源全部拿不到：\n'
+        + '\n'.join('  ' + o for o in offenders)
+        + '\n本项目是 PyInstaller 打包的离线桌面工具，第三方资源一律走 '
+          "{{ url_for('static', filename='vendor/...') }}。"
+    )
+
+
+def test_every_static_reference_in_templates_exists_on_disk():
+    """模板里引的每一个 static 文件都必须真的在磁盘上。
+
+    这条把「markup 说要加载什么」和「仓库里真有什么」**绑在一起**。
+    单独看，上一条只保证「没指向站外」，这条只保证「文件在」；合起来才等于
+    「离线时这些资源真的加载得到」。
+
+    它专治两类静默失败：
+      1. 改了 vendor 目录名 / 版本号，忘了同步模板（或反过来）——
+         Flask 的 url_for('static', ...) **不检查文件是否存在**，照样吐出 URL，
+         浏览器拿到 404，页面静默降级。
+      2. 新加一个 `<script src=...vendor/x.js>` 却忘了把文件提交进来。
+    """
+    refs = _static_refs_in_templates()
+    assert len(refs) == 14, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 14 处。"
+        '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
+        '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
+    )
+    missing = [
+        f'{fn}: static/{name}'
+        for fn, name in refs
+        if not os.path.isfile(os.path.join(_STATIC_DIR, *name.split('/')))
+    ]
+    assert not missing, (
+        '模板引用了不存在的 static 文件，浏览器会拿到 404 而页面不会报错：\n'
+        + '\n'.join('  ' + m for m in missing)
+    )
+
+
+def _vendor_files_on_disk():
+    """static/vendor/ 下全部文件的相对路径（正斜杠）。"""
+    out = []
+    for root, _dirs, files in os.walk(_VENDOR_DIR):
+        for f in files:
+            rel = os.path.relpath(os.path.join(root, f), _VENDOR_DIR)
+            out.append(rel.replace(os.sep, '/'))
+    return sorted(out)
+
+
+def test_vendor_tree_matches_the_manifest():
+    """static/vendor/ 的文件集合与字节数必须与清单逐一对上。
+
+    为什么要有一份显式清单：二级资源（3 张雪碧图 + 4 个 woff2）**grep 模板
+    grep 不出来**——它们是被 leaflet.draw.css / fonts.css 里的 url() 引的。
+    漏掉雪碧图，首页框选工具条的三个按钮就是三个空白方块；漏掉 woff2，
+    字体静默退回系统默认。这两种失败都不会在控制台留下任何红色。
+
+    字节数钉死的理由见 VENDOR_MANIFEST 上方的注释。
+    """
+    on_disk = set(_vendor_files_on_disk())
+    expected = set(VENDOR_MANIFEST) | set(_VENDOR_GENERATED)
+    missing = sorted(expected - on_disk)
+    extra = sorted(on_disk - expected)
+    assert not missing, (
+        'vendor 清单里的文件在磁盘上找不到 —— 离线时这些资源直接 404：\n'
+        + '\n'.join('  static/vendor/' + m for m in missing)
+    )
+    assert not extra, (
+        'static/vendor/ 下有清单外的文件。要么是忘了登记（请补进 '
+        'VENDOR_MANIFEST），要么是残留物（请删）：\n'
+        + '\n'.join('  static/vendor/' + e for e in extra)
+    )
+    wrong = []
+    for rel, size in sorted(VENDOR_MANIFEST.items()):
+        actual = os.path.getsize(os.path.join(_VENDOR_DIR, *rel.split('/')))
+        if actual != size:
+            wrong.append(f'static/vendor/{rel}: {actual} B，清单是 {size} B')
+    assert not wrong, (
+        'vendor 文件的字节数与清单对不上 —— 可能是下成了别的构建'
+        '（未压缩版 / 别的版本）、下到一半截断，或者有人手改了第三方源码：\n'
+        + '\n'.join('  ' + w for w in wrong)
+    )
+
+
+# 每个 vendor 库在自己文件里声明的版本，用来和**路径里的版本号**对账。
+# 键 = 相对 static/vendor/ 的文件路径；值 = (提取版本的正则, 该文件必须含有的内容标记们)。
+# 标记一律挑「站内真的依赖它」的东西，不挑随便一个字符串。
+_VENDOR_VERSION_PROBES = {
+    'bootstrap/5.3.0/bootstrap.min.css': (
+        re.compile(r'Bootstrap\s+v(\d+\.\d+\.\d+)'),
+        # `[data-bs-theme=dark]` 就是 MIN_BOOTSTRAP_VERSION 的**事实依据**：
+        # <html data-bs-theme="dark"> 得有人消费才不是装饰属性。本地化之前这
+        # 只能靠一个手抄常量间接主张（那条断言的注释自己承认「拿一份手抄的常量
+        # 冒充事实」），现在源码在仓库里，直接读文件。
+        # `.modal-backdrop` / `.row` 各代表一类站内依赖：弹窗遮罩、栅格
+        # （style.css 里那份残缺的 .row/.col-* 兜底已随本地化删除）。
+        ('[data-bs-theme=dark]', '.modal-backdrop', '.row'),
+    ),
+    'bootstrap/5.3.0/bootstrap.bundle.min.js': (
+        re.compile(r'Bootstrap\s+v(\d+\.\d+\.\d+)'),
+        # Modal：history 页任务详情弹窗（history.js 里 new bootstrap.Modal）。
+        # Collapse：导航栏折叠按钮。
+        # createPopper：**bundle 版才有**，用它区分 bootstrap.bundle.min.js
+        # 和体积相近的 bootstrap.min.js —— 后者不带 Popper，Dropdown/Tooltip
+        # 会在运行时抛错，而文件名/版本号看起来一切正常。
+        ('Modal', 'Collapse', 'createPopper'),
+    ),
+    'leaflet/1.9.4/leaflet.js': (
+        re.compile(r'version\s*=\s*"(\d+\.\d+\.\d+)"'),
+        # latLngBounds：map.js / history.js 构造 window.currentBounds 用它。
+        # leaflet-container：style.css 的 Leaflet 主题化规则钉在这个类上。
+        ('latLngBounds', 'leaflet-container'),
+    ),
+    'leaflet.draw/1.0.4/leaflet.draw.js': (
+        re.compile(r'Leaflet\.draw\s+(\d+\.\d+\.\d+)'),
+        # drawLocal：汉化断言那份 38 键快照（_LEAFLET_DRAW_LOCAL_KEYS_1_0_4）
+        # 整个挂在它身上。
+        ('drawLocal',),
+    ),
+    'socket.io/4.5.4/socket.io.min.js': (
+        re.compile(r'Socket\.IO\s+v(\d+\.\d+\.\d+)'),
+        # engine.io / EIO：传输层。服务端是 python-engineio 4.7.1（Engine.IO v4），
+        # 客户端换大版本会直接握不上手，而页面只表现为「进度条永远不动」。
+        ('engine.io', 'EIO'),
+    ),
+}
+
+
+def test_vendor_builds_match_the_version_in_their_path():
+    """路径里的版本号必须和文件里自报的版本一致。
+
+    路径版本号不是装饰：`test_bootstrap_build_is_new_enough_to_have_dark_theme`
+    和 `test_leaflet_draw_build_matches_the_locale_key_snapshot` 都从 base.html
+    的 URL 里正则抠版本号下结论。本地化之后那个版本号只是一个**目录名**——
+    谁都可以把一份 4.x 的 socket.io 放进 `socket.io/4.5.4/`，两条断言照旧全绿，
+    而运行时握手直接失败（服务端 python-socketio 5.9.0 = 协议 v5 / Engine.IO v4，
+    只吃 4.x 客户端）。
+
+    这条把「声明」对上「实物」：读文件里的版本 banner，和路径比。
+    同时各查一个**内容标记**，挡住「版本对但内容被替换/裁剪」——
+    尤其是 Bootstrap 的 `[data-bs-theme=dark]`：整站深色主题就靠它，
+    在本地化之前这一条只能靠手抄的 MIN_BOOTSTRAP_VERSION 常量间接主张。
+    """
+    assert len(_VENDOR_VERSION_PROBES) == 5, '探针表被改动过，请同步本断言的说明'
+    problems = []
+    for rel, (rx, markers) in sorted(_VENDOR_VERSION_PROBES.items()):
+        path = os.path.join(_VENDOR_DIR, *rel.split('/'))
+        assert os.path.isfile(path), f'static/vendor/{rel} 不存在 —— 本测试已失效'
+        with open(path, encoding='utf-8', errors='replace') as f:
+            text = f.read()
+        path_version = rel.split('/')[1]
+        m = rx.search(text)
+        if not m:
+            problems.append(
+                f'static/vendor/{rel}: 文件里读不出版本 banner（正则 {rx.pattern!r}）。'
+                '换了上游构建就要同步 _VENDOR_VERSION_PROBES，别直接删探针'
+            )
+        elif m.group(1) != path_version:
+            problems.append(
+                f'static/vendor/{rel}: 文件自报 {m.group(1)}，路径写的是 {path_version}'
+            )
+        for marker in markers:
+            if marker not in text:
+                problems.append(
+                    f'static/vendor/{rel}: 文件里找不到内容标记 {marker!r} —— '
+                    '版本号对得上但内容不是预期的那份构建'
+                )
+    assert not problems, (
+        'vendor 库的实物和路径声明对不上：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def _css_files_under_static():
+    """static/ 下全部 .css 的 (相对 static 的路径, 绝对路径, 内容)。"""
+    out = []
+    for root, _dirs, files in os.walk(_STATIC_DIR):
+        for f in sorted(files):
+            if not f.lower().endswith('.css'):
+                continue
+            path = os.path.join(root, f)
+            rel = os.path.relpath(path, _STATIC_DIR).replace(os.sep, '/')
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                out.append((rel, path, fh.read()))
+    return sorted(out)
+
+
+def _css_asset_targets(css):
+    """一份 CSS 里全部会发起请求的目标：url(...) 与 @import 的参数。
+
+    先剥注释——本仓库的 CSS 注释在**逐字讨论**被删掉的那些 URL（style.css 顶部
+    那段就写着 fonts.googleapis.com），不剥的话通用扫描器会把注释当成违规。
+    """
+    css = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
+    targets = [m.group(1).strip().strip('\'"') for m in re.finditer(r'url\(([^)]*)\)', css)]
+    targets += [
+        m.group(1).strip()
+        for m in re.finditer(r'@import\s+(?:url\()?\s*[\'"]([^\'"]+)[\'"]', css, re.I)
+    ]
+    return targets
+
+
+def test_no_css_under_static_reaches_out_to_the_network():
+    """static/ 下任何一份 CSS 都不许引用站外资源。
+
+    上一批断言只看 templates/ 的标签属性，对 CSS **完全失明**。而本次本地化
+    里第 9 个 CDN 依赖恰恰就藏在 CSS 里：style.css 第 2 行原本是
+        @import url('https://fonts.googleapis.com/css2?family=Inter...');
+    与 base.html 那条 `<link>` 指向**同一个 URL**。只改模板会把它留下，
+    而 @import 在样式表顶部是**阻塞渲染**的 —— 离线时首屏要被它拖到超时。
+
+    连 vendor/ 自己的 CSS 一起扫：Google Fonts 的 CSS 天生就是一堆
+    `src: url(https://fonts.gstatic.com/...)`，本地化时必须逐条改写成相对路径，
+    漏改一条就是一个字重悄悄走网络。
+    """
+    files = _css_files_under_static()
+    assert len(files) >= 4, (
+        f'static/ 下只扫到 {len(files)} 份 CSS（style.css + vendor 里 3 份），'
+        '太少了 —— 扫描器很可能坏了'
+    )
+    offenders = []
+    for rel, _path, css in files:
+        for target in _css_asset_targets(css):
+            if target.startswith('data:') or target.startswith('#'):
+                continue
+            if _EXTERNAL_URL_RE.match(target):
+                host = re.sub(r'^\s*(?:[a-z][a-z0-9+.-]*:)?//', '', target, flags=re.I)
+                host = host.split('/')[0].split('?')[0].lower()
+                hint = _FORMER_CDN_HOSTS.get(host)
+                offenders.append(
+                    f'static/{rel}: {target}'
+                    + (f'  —— 本地副本在 {hint}' if hint else '')
+                )
+    assert not offenders, (
+        'CSS 里出现了指向站外的引用，断网时拿不到（@import 还会阻塞首屏渲染）：\n'
+        + '\n'.join('  ' + o for o in offenders)
+    )
+
+
+def test_every_relative_css_url_resolves_next_to_its_own_stylesheet():
+    """CSS 里的相对 url() 必须能相对**该 CSS 自身的位置**解析到真实文件。
+
+    这条钉的是一个只有一种改法会踩、但踩了必坏的坑：浏览器解析 CSS 里的相对
+    路径**以 CSS 文件自己的 URL 为基准**，不是以页面 URL。
+    `leaflet.draw.css` 里写的是 `url('images/spritesheet.png')`，所以
+    `images/` 必须与 `leaflet.draw.css` **同级**。把三张雪碧图放平到
+    `vendor/leaflet.draw/1.0.4/spritesheet.png`，或者把几份 vendor CSS 合并成
+    一个大文件，图标就全丢 —— 而「文件都在仓库里」这类断言依然全绿。
+
+    fonts.css 的 4 个 woff2 同理。
+
+    _VENDOR_UNSHIPPED 里那 3 个是**故意没下载**的，理由见那张表；
+    下一条断言负责保证那个理由还成立。
+    """
+    files = _css_files_under_static()
+    checked = 0
+    broken = []
+    for rel, path, css in files:
+        base = os.path.dirname(path)
+        for target in _css_asset_targets(css):
+            if _EXTERNAL_URL_RE.match(target) or target.startswith(('data:', '#', '/')):
+                continue
+            checked += 1
+            clean = target.split('?')[0].split('#')[0]
+            if f'{rel}::{clean}' in _VENDOR_UNSHIPPED:
+                continue
+            if not os.path.isfile(os.path.join(base, *clean.split('/'))):
+                broken.append(f'static/{rel} -> {target}（相对该 CSS 自身解析不到）')
+    # 站内实际有 3(leaflet.draw 雪碧图) + 4(fonts woff2) + 3(leaflet.css 里
+    # 故意没下载的 layers/marker 图) = 10 个相对目标。少于这个数 = 扫描器坏了。
+    assert checked >= 10, (
+        f'只扫到 {checked} 个相对 url() 目标，本断言写下时是 10 个 —— 扫描器可能坏了'
+    )
+    assert not broken, (
+        'CSS 里的相对 url() 解析不到文件。浏览器按**该 CSS 自身的 URL** 解析相对'
+        '路径，所以图片目录必须与引用它的 CSS 同级：\n'
+        + '\n'.join('  ' + b for b in broken)
+        + '\n如果是故意不发布这个资源（例如站内根本不会渲染出对应元素），'
+          '请登记进 _VENDOR_UNSHIPPED 并写清理由。'
+    )
+
+
+# 上游 CSS 里引了、但本仓库**故意不发布**的资源。键是 `<相对 static 的 CSS 路径>::<url 目标>`。
+#
+# 这 3 个都是 Leaflet 的：`.leaflet-control-layers-toggle` 的图层切换图标、
+# `.leaflet-default-icon-path` 的默认标记图标。站内从不创建图层控件、也从不放
+# marker（map.js 明确 `marker: false, circlemarker: false`，history.js 只用
+# L.rectangle —— 纯 SVG 矢量，不吃图片），对应元素在 DOM 里根本不存在，
+# 于是浏览器**不会**为这几条规则发起任何请求。不下载不产生任何视觉差异，
+# 也不会在控制台留下 404。
+_VENDOR_UNSHIPPED = {
+    'vendor/leaflet/1.9.4/leaflet.css::images/layers.png',
+    'vendor/leaflet/1.9.4/leaflet.css::images/layers-2x.png',
+    'vendor/leaflet/1.9.4/leaflet.css::images/marker-icon.png',
+}
+
+# 一旦站内开始用这些 API，上面「元素不存在所以不会发请求」的理由就失效了。
+_LEAFLET_IMAGE_CONSUMING_APIS = (
+    'L.marker',
+    'L.Marker',
+    'L.control.layers',
+    'L.Control.Layers',
+    'Icon.Default',
+)
+
+
+def test_the_reason_for_not_shipping_leaflet_images_still_holds():
+    """没下载 Leaflet 那 3 张图，靠的是「站内不会渲染出用它们的元素」。这条守住那个前提。
+
+    上一条断言把这 3 个目标放进了豁免名单。豁免的**理由**是行为性的，不是永久
+    事实：只要有人写一句 `L.marker(...)`，Leaflet 立刻去找 `images/marker-icon.png`
+    —— 而那个文件不在，地图上出现的是一个**看不见的标记**（元素在、图片 404）。
+    这是典型的静默降级：控制台只多一条 404，功能上「标记加了但看不到」。
+
+    所以：要么把图下下来（连同 marker-icon-2x / marker-shadow，Leaflet 会一起要），
+    要么给 marker 指定自定义 icon。两条路都要求先改这条断言，改不动就说明
+    你正在踩坑。
+    """
+    js_dir = _JS_DIR
+    names = sorted(n for n in os.listdir(js_dir) if n.endswith('.js'))
+    assert len(names) == 5, (
+        f'static/js/ 下有 {len(names)} 个 .js，本断言写下时是 5 个 —— '
+        '新文件也要纳入扫描，请更新这个数字'
+    )
+    hits = []
+    for name in names:
+        src = _strip_js_comments(_js(name))
+        for api in _LEAFLET_IMAGE_CONSUMING_APIS:
+            if api in src:
+                hits.append(f'{name}: 用到了 {api}')
+    assert not hits, (
+        '站内开始使用会拉取 Leaflet 内置图片的 API，而那些图片**故意没有下载**：\n'
+        + '\n'.join('  ' + h for h in hits)
+        + '\n后果是元素渲染出来但图标 404（看不见的标记 / 空白的图层按钮）。'
+          '请下载 static/vendor/leaflet/1.9.4/images/ 下对应的图（marker 需要 '
+          'marker-icon.png + marker-icon-2x.png + marker-shadow.png 三张），'
+          '并同步 VENDOR_MANIFEST 与 _VENDOR_UNSHIPPED。'
+    )
+
+
+def test_local_font_css_is_self_contained():
+    """vendor/fonts/fonts.css 必须是一份完整、全本地、结构正确的字体表。
+
+    fonts.css 是本仓库**唯一一份自己生成的 vendor 文件**（上游 40 个
+    @font-face 裁成 latin / latin-ext 两个子集、URL 全部改写成同目录相对路径），
+    所以它不像别的 vendor 文件那样能靠字节数对账。这条按结构校验。
+
+    为什么值得单列一条：字体是**二级资源**里最容易漏的一类 —— grep 模板扫不出
+    woff2，漏掉一个子集的表现只是「某几个字重悄悄退回系统字体」，没有报错、
+    没有布局塌陷，一眼看不出来。另外抓上游 CSS 时若忘了带浏览器 User-Agent，
+    fonts.googleapis.com 会返回一份指向 **.ttf** 的表（体积大好几倍），
+    那种情况下 format('woff2') 会一个都不剩 —— 下面第三条断言就是钉这个的。
+    """
+    path = os.path.join(_VENDOR_DIR, 'fonts', 'fonts.css')
+    with open(path, encoding='utf-8') as f:
+        raw = f.read()
+    css = re.sub(r'/\*.*?\*/', '', raw, flags=re.S)
+
+    blocks = re.findall(r'@font-face\s*\{[^}]*\}', css, re.S)
+    # Inter 4 个字重 + JetBrains Mono 2 个字重，各 2 个子集 = (4+2)*2 = 12。
+    assert len(blocks) == 12, (
+        f'fonts.css 里有 {len(blocks)} 个 @font-face 块，期望 12 个'
+        '（Inter 400/500/600/700 + JetBrains Mono 400/600，各 latin 与 latin-ext 两份）。'
+        '少了就是某个字重悄悄退回系统字体 —— 页面不会报任何错。'
+    )
+    families = {m.group(1) for m in re.finditer(r"font-family:\s*'([^']+)'", css)}
+    assert families == {'Inter', 'JetBrains Mono'}, (
+        f'fonts.css 声明的字族是 {sorted(families)}，期望 Inter + JetBrains Mono。'
+        'style.css 的 --font-* 令牌指名要这两个。'
+    )
+    assert 'format(' in css and css.count("format('woff2')") == 12, (
+        f"fonts.css 里 format('woff2') 出现 {css.count(chr(39) + 'woff2' + chr(39))} 次，"
+        '期望 12 次。**抓上游 CSS 时必须带浏览器 User-Agent** —— '
+        'fonts.googleapis.com/css2 会嗅探 UA，裸 curl 拿到的是 .ttf。'
+    )
+    weights = sorted({int(m.group(1)) for m in re.finditer(r'font-weight:\s*(\d+)', css)})
+    assert weights == [400, 500, 600, 700], (
+        f'fonts.css 覆盖的字重是 {weights}，期望 [400, 500, 600, 700]。'
+        'style.css 里 .btn/.card-header/h3 等处用到 500/600/700，缺哪个就由浏览器'
+        '合成假粗体（形态明显变糙）。'
+    )
+    # unicode-range 是子集机制的开关：删掉它，第一个 @font-face 就会吃掉全部
+    # 码位，latin-ext 的那份永远不会被下载。
+    assert len(re.findall(r'unicode-range:', css)) == 12, (
+        'fonts.css 里 unicode-range 声明数与 @font-face 块数对不上 —— '
+        '子集机制会失效（浏览器只下第一份，另一个子集永远拿不到）'
+    )
+
+
+def test_vendor_files_are_not_swallowed_by_gitignore():
+    """vendor 文件必须真的进得了 git —— 这是本次任务最容易无声炸掉的一环。
+
+    `.gitignore` 里的 `build/`、`dist/`、`lib/` **没有路径锚定**，按 gitignore
+    语义它们匹配**任意层级**的同名目录。实测 `git check-ignore -v`：
+        static/vendor/leaflet/dist/leaflet.js  -> IGNORED (.gitignore:13)
+        static/vendor/x/lib/y.js               -> IGNORED (.gitignore:17)
+        static/vendor/x/build/y.js             -> IGNORED (.gitignore:11)
+    也就是说，**照搬 npm 包的目录结构**（`leaflet/dist/`、`leaflet-draw/lib/`）
+    的话，文件根本进不了仓库。
+
+    这个失败模式全程无声，是它值得单独一条断言的理由：
+      本机开发一切正常（文件就在磁盘上，dev server 和本地 PyInstaller 都读得到）
+      -> CI checkout 出来少这些文件
+      -> PyInstaller **不报错**（`datas` 是整目录 os.walk，少几个文件它不知道）
+      -> 构建成功
+      -> 用户拿到的 exe 前端全裸。
+
+    所以现有的目录结构是**扁平 + 版本号**（`vendor/leaflet/1.9.4/leaflet.js`），
+    不是 npm 那套。谁要改回 npm 结构，这条会红。
+
+    实现说明：以 `git ls-files` 为准（那才是「新 checkout 里有没有」的事实）。
+    拿不到 git 时退回一份 .gitignore 目录模式扫描 —— 不是跳过：静默跳过的护栏
+    等于没有护栏。
+    """
+    repo_root = os.path.dirname(_STATIC_DIR)
+    on_disk = _vendor_files_on_disk()
+    assert len(on_disk) == 15, (
+        f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 15 个 —— '
+        '本条按目录遍历，数量本身会变，但请顺手确认 VENDOR_MANIFEST 也同步了'
+    )
+    try:
+        out = subprocess.run(
+            ['git', 'ls-files', '-z', '--', 'static/vendor'],
+            cwd=repo_root, capture_output=True, timeout=30,
+        )
+        tracked = None if out.returncode != 0 else {
+            p.decode('utf-8')[len('static/vendor/'):]
+            for p in out.stdout.split(b'\0') if p
+        }
+    except (OSError, subprocess.SubprocessError):
+        tracked = None
+
+    if tracked is not None:
+        untracked = sorted(set(on_disk) - tracked)
+        assert not untracked, (
+            'vendor 文件在磁盘上但 git 不认（多半是被 .gitignore 吃掉了）。'
+            '本机看不出任何问题，CI checkout 出来就少文件，'
+            '打包出的 exe 前端全裸：\n'
+            + '\n'.join(f'  static/vendor/{u}    # git check-ignore -v 这个路径看看' for u in untracked)
+            + '\n对策：别用 npm 的目录结构（dist/ lib/ build/ 三个名字都被 '
+              '.gitignore 无锚定匹配），改用 `<库名>/<版本号>/<文件>` 扁平结构。'
+        )
+        return
+
+    # 退路：git 不可用（源码 tarball / 无 git 的环境）时，直接按 .gitignore 里
+    # 的**无锚定目录模式**扫。覆盖不如 git 全（不处理 ! 反向规则、通配符），
+    # 但足以拦住本条真正要拦的那一类。
+    patterns = set()
+    with open(os.path.join(repo_root, '.gitignore'), encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('!'):
+                continue
+            if line.endswith('/') and '/' not in line[:-1] and '*' not in line:
+                patterns.add(line[:-1])
+    assert patterns, '.gitignore 里解析不出任何无锚定目录模式 —— 退路逻辑已失效'
+    hits = [
+        f'static/vendor/{rel}    # 目录名 {seg!r} 命中 .gitignore 的无锚定模式'
+        for rel in on_disk for seg in rel.split('/')[:-1] if seg in patterns
+    ]
+    assert not hits, (
+        'vendor 路径里出现了会被 .gitignore 无锚定匹配的目录名：\n' + '\n'.join('  ' + h for h in hits)
+    )
+
+
+def test_rule_scanner_is_not_blinded_by_an_at_statement():
+    """`@import` / `@charset` 这类**不带花括号**的 at-语句不许吞掉后面那条规则。
+
+    这条是本文件的**自检**，来历是一个真实存在过、且骗过了全部 283 条断言的
+    静默漏检：style.css 第 2 行原本是
+        @import url('https://fonts.googleapis.com/css2?...');
+    `_rules_ctx` 按花括号深度扫描，而 at-语句以 `;` 收尾、没有花括号，于是它
+    整段被并进**下一条规则**的选择器 token（折完空白后长成
+    `@import url(...); :root`），再被 `sel.startswith('@')` 那句丢掉。
+    结果：紧随其后的 `:root { ... }` —— 全站设计令牌（--color-* / --font-size-*
+    / --space-*）的唯一定义处 —— 对本文件**每一条**基于 _rules/_rules_ctx 的
+    断言完全隐身。
+
+    没人发现是因为它的表现是「少扫一条规则」，而少扫永远不会让断言变红。
+    直到 vendor 本地化删掉那句 @import，`:root` 头一次进入扫描范围，
+    按钮层叠模型立刻报「读不懂 :root」，10 条断言同时红 —— 那是这个漏检
+    唯一一次现形。
+
+    所以这条钉两件事：(1) 解析器对 at-语句免疫；(2) `:root` 确实在扫描范围内。
+    """
+    probe = (
+        "@charset \"UTF-8\";\n"
+        "@import url('https://example.com/x.css');\n"
+        ":root { --k: 1px; }\n"
+        ".a { color: red; }\n"
+        "@media (min-width: 768px) { .b { color: blue; } }\n"
+    )
+    got = [(sel, ctx) for sel, _body, ctx in _rules_ctx(probe)]
+    assert got == [(':root', []), ('.a', []), ('.b', ['@media (min-width: 768px)'])], (
+        f'带 at-语句的探针解析成 {got}，期望 :root / .a / .b 三条都在。'
+        'at-语句一旦被并进下一条规则的选择器，那条规则会被整个丢掉 —— '
+        '静默少扫，没有任何断言会红。'
+    )
+    live = [sel for sel, _body, _ctx in _rules_ctx(_css())]
+    assert ':root' in live, (
+        'style.css 的 `:root` 不在 _rules_ctx 的扫描结果里 —— '
+        '全站设计令牌对本文件所有基于 _rules 的断言隐身了。'
+        '最可能的原因：有人在它前面加了一条不带花括号的 at-语句'
+        '（@import / @charset / @namespace），而 _rules_ctx 的剥离正则没覆盖到。'
     )
