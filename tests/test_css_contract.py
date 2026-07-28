@@ -3750,3 +3750,237 @@ def test_submit_button_fits_at_1366x768():
         f'{got - VIEWPORT_1366_HEIGHT_PX:.2f}px，用户必须滚动才能提交。'
         '这正是 A5 / Task 10 要修的缺陷（改前 949.34）'
     )
+
+
+# --------------------------------------------------------------------------
+# A5 / Task 10（评审第二轮）：bbox 的方位不许接反
+#
+# 这一节守的**不是排版，是数据正确性**，而且是整条链，不是其中一环。
+#
+# 上一节的 test_bounds_labels_bind_to_the_right_coordinate 只守住了渲染那一环：
+#     标签 N  <->  currentBounds.north          ✅
+# 评审做的变异在**上一环**：把 map.js 里的 getNorth() 和 getSouth() 全局互换
+# （命中 4 处，两个构造点各 2 处）。互换之后 `currentBounds.north` 字段里装的是
+# 南纬值，而标签配对纹丝不动 —— 47 条断言一条不红。
+#     currentBounds.north  <->  getNorth()      ❌ 当时没人守
+#
+# 为什么这一环比渲染层更重要：`currentBounds` **同时是提交给后端的 bbox**
+# （submitContour / taskData 三处 payload 都从它取值）。构造点接反的后果不只是
+# 界面把南标成北，**下载的区域也跟着错**。这条数据链 Phase 1 刚修过一次
+# （「拖拽改框后提交的还是旧 bbox」），是敏感区。
+#
+# 做法：不只盯那两个构造点，而是扫 map.js 里**每一个** bbox 形状的对象字面量
+# （四个方位键齐全的），逐键检查「值表达式引用的方位」是否与键名一致。
+# 当前命中 6 处：2 个构造点（getter 形态）、3 处提交 payload（字段形态）、
+# coverageBounds() 的返回值（`Math.floor(b.north - eps) + 1` 这种包了一层的形态）。
+# 新加一处 bbox 字面量会被自动扫进来，不需要改测试。
+# --------------------------------------------------------------------------
+
+_DIRECTIONS = ('north', 'south', 'east', 'west')
+
+
+def _strip_js_comments(src):
+    """剥掉 JS 注释。
+
+    行注释的正则带 `(?<!:)`，避免把 `https://...` 的后半截当注释吃掉
+    （map.js:64 的 OSM 瓦片 URL 就是这个形态）。
+    """
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?<![:\\])//[^\n]*', '', src)
+
+
+def _matching_brace(src, open_idx):
+    """`src[open_idx]` 是 `{`，返回配对的 `}` 下标；配不上返回 None。"""
+    depth = 0
+    for i in range(open_idx, len(src)):
+        if src[i] == '{':
+            depth += 1
+        elif src[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _enclosing_object_literal(src, pos):
+    """从 `pos` 往回找最近的未闭合 `{`，返回 (起始下标, 花括号内的文本)。"""
+    depth = 0
+    for i in range(pos - 1, -1, -1):
+        if src[i] == '}':
+            depth += 1
+        elif src[i] == '{':
+            if depth == 0:
+                end = _matching_brace(src, i)
+                return (i, src[i + 1:end]) if end is not None else (None, None)
+            depth -= 1
+    return (None, None)
+
+
+def _split_top_level(body):
+    """按**顶层**逗号拆对象字面量的属性（括号/方括号/花括号里的逗号不算）。"""
+    parts, depth, cur = [], 0, ''
+    for ch in body:
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            parts.append(cur)
+            cur = ''
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def _directions_referenced(expr):
+    """值表达式里引用了哪些方位。
+
+    认两种形态：
+      字段名 —— `currentBounds.north` / `b.north`（`.` 不在词边界字符集里，能匹配上）
+      getter —— `bounds.getNorth()`（`north` 被 `getNorth` 粘住，单独匹配 getter 形态）
+    """
+    found = set()
+    for d in _DIRECTIONS:
+        if re.search(r'(?<![-\w$])' + d + r'(?![-\w$])', expr, re.I):
+            found.add(d)
+        elif re.search(r'get' + d.capitalize() + r'\s*\(', expr):
+            found.add(d)
+    return found
+
+
+def _bbox_object_literals(src):
+    """四个方位键齐全的对象字面量 -> [(起始下标, {键: 值表达式}), ...]。"""
+    out, seen = [], set()
+    for m in re.finditer(r'(?<![-\w.$])north\s*:', src):
+        start, body = _enclosing_object_literal(src, m.start())
+        if start is None or start in seen:
+            continue
+        pairs = {}
+        for part in _split_top_level(body):
+            key, sep, value = part.partition(':')
+            if sep:
+                pairs[key.strip()] = value.strip()
+        if all(d in pairs for d in _DIRECTIONS):
+            seen.add(start)
+            out.append((start, pairs))
+    return out
+
+
+# 当前 map.js 里 bbox 字面量的处数。用于防「正则一个都没匹配上 -> for 循环不执行
+# -> 断言永真」这个本文件反复踩过的坑（见 _form_select_rules 的注释）。
+# 加新的 bbox 字面量时把这个数字调大即可 —— 新字面量会被自动检查，不需要改逻辑。
+MAP_JS_BBOX_LITERAL_COUNT = 6
+
+
+def test_bbox_literals_never_swap_directions():
+    """map.js 里每个 bbox 字面量的每个方位键，值必须引用**同名**方位。
+
+    覆盖整条数据链上的全部 6 处（不是只有那两个构造点）：
+      - `currentBounds = { north: bounds.getNorth(), ... }`  绘制时构造
+      - `currentBounds = { north: found.getNorth(), ... }`   编辑/回填时重建
+      - `taskData = { north: currentBounds.north, ... }`     x2，提交给后端的 bbox
+      - `body = { north: currentBounds.north, ... }`         等高线任务的 bbox
+      - `coverageBounds()` 的返回值 `{ north: Math.floor(b.north - eps) + 1, ... }`
+
+    规则是「值表达式引用的方位 == 键名」，不是「值必须长成某个样子」，
+    所以 `Math.floor(b.north - eps) + 1` 这种包了一层的写法照样能查。
+
+    ⚠️ 为什么必须扫全部而不是只扫构造点：`currentBounds` 同时是**提交给后端的
+    bbox**。构造点接反 -> 界面和下载区域一起错；payload 接反 -> 界面是对的、
+    下载的区域是错的（更难发现）。两种都是数据正确性缺陷。
+    """
+    src = _strip_js_comments(_js('map.js'))
+    literals = _bbox_object_literals(src)
+    assert len(literals) == MAP_JS_BBOX_LITERAL_COUNT, (
+        f'在 map.js 里扫到 {len(literals)} 个 bbox 对象字面量，'
+        f'期望 {MAP_JS_BBOX_LITERAL_COUNT} 个。'
+        '少了 = 扫描失效（断言会变成永真，比报错更糟）；'
+        '多了 = 新增了 bbox 字面量，确认它被检查到之后把 '
+        'MAP_JS_BBOX_LITERAL_COUNT 调大'
+    )
+
+    problems = []
+    for start, pairs in literals:
+        line = src.count('\n', 0, start) + 1
+        for d in _DIRECTIONS:
+            expr = pairs[d]
+            refs = _directions_referenced(expr)
+            if refs != {d}:
+                wrong = sorted(refs - {d}) or ['（一个方位都没引用）']
+                problems.append(
+                    f'剥注释后第 {line} 行附近的 bbox 字面量：'
+                    f'`{d}: {expr}` 引用的是 {wrong}，不是 {d}'
+                )
+    assert not problems, (
+        'bbox 的方位接反了 —— 这是数据正确性缺陷，不是排版问题：\n'
+        + '\n'.join('  ' + p for p in problems)
+        + '\ncurrentBounds 既喂给界面也喂给后端，接反会让**下载的区域**也错'
+    )
+
+
+# `currentBounds` 的构造点数量。当前两处：
+#   1. L.Draw.Event.CREATED 回调里，用户刚画完框
+#   2. syncBoundsFromDrawnItems() 里，拖角/拖动/编辑结束后重读图层
+# ⚠️ 只守其中一处等于没守：另一处接反照样全绿（评审就是这么发现漏洞的）。
+CURRENT_BOUNDS_CONSTRUCTION_SITES = 2
+
+_LEAFLET_BOUNDS_GETTERS = {d: 'get' + d.capitalize() for d in _DIRECTIONS}
+
+
+def test_current_bounds_is_built_from_matching_leaflet_getters():
+    """每一处 `currentBounds = { ... }` 都必须 `north:` 配 `getNorth()`，以此类推。
+
+    这是 `test_bbox_literals_never_swap_directions` 的**加强档**：那条只要求
+    「值引用了同名方位」，本条进一步要求构造点必须直接用 Leaflet 的对应 getter
+    —— 构造点是整条链的源头，源头错了下游全错，不该允许中间再包一层加工。
+
+    定位方式（不依赖行号，也不只取第一处）：在剥掉注释的源码里 finditer
+    所有 `currentBounds = {`，逐个花括号配对取出字面量。
+    `currentBounds = null` 那三处不是构造点，正则天然不匹配。
+    """
+    src = _strip_js_comments(_js('map.js'))
+    sites = []
+    for m in re.finditer(r'currentBounds\s*=\s*\{', src):
+        open_idx = src.index('{', m.start())
+        end = _matching_brace(src, open_idx)
+        assert end is not None, (
+            f'第 {src.count(chr(10), 0, open_idx) + 1} 行附近的 '
+            '`currentBounds = {` 花括号配不上对 —— 本测试已失效（不是通过）'
+        )
+        pairs = {}
+        for part in _split_top_level(src[open_idx + 1:end]):
+            key, sep, value = part.partition(':')
+            if sep:
+                pairs[key.strip()] = value.strip()
+        sites.append((src.count('\n', 0, open_idx) + 1, pairs))
+
+    assert len(sites) == CURRENT_BOUNDS_CONSTRUCTION_SITES, (
+        f'找到 {len(sites)} 处 `currentBounds = {{...}}` 构造点，'
+        f'期望 {CURRENT_BOUNDS_CONSTRUCTION_SITES} 处'
+        '（绘制完成时一处、拖角/编辑后重读图层时一处）。'
+        '少了 = 扫描失效或构造点被改写；多了 = 新增了构造点，'
+        '确认它也被检查到之后把 CURRENT_BOUNDS_CONSTRUCTION_SITES 调大 —— '
+        '**只守一处等于没守**'
+    )
+
+    problems = []
+    for line, pairs in sites:
+        missing = [d for d in _DIRECTIONS if d not in pairs]
+        if missing:
+            problems.append(f'第 {line} 行附近的构造点缺少 {missing} 四至不全')
+            continue
+        for d in _DIRECTIONS:
+            getter = _LEAFLET_BOUNDS_GETTERS[d]
+            if not re.fullmatch(r'[\w$.]+\.' + getter + r'\s*\(\s*\)', pairs[d]):
+                problems.append(
+                    f'第 {line} 行附近：`{d}: {pairs[d]}` —— '
+                    f'期望形如 `<bounds>.{getter}()`'
+                )
+    assert not problems, (
+        'currentBounds 的构造点把方位接错了：\n'
+        + '\n'.join('  ' + p for p in problems)
+        + '\ncurrentBounds 既喂给界面（updateBoundsInfo）也喂给后端（提交的 bbox），'
+        '源头接反会让界面把南标成北，**下载的区域也跟着错**'
+    )
