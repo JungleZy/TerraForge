@@ -206,19 +206,37 @@ body {
     background: var(--color-bg-secondary) !important;
 }
 
-/* Ensure all divs inherit background. Exclude themed popups (.app-confirm /
-   overlay / toast) — otherwise this high-specificity rule forces their solid
-   background transparent, making the dialogs unreadable. */
-/* 兜底重置：把 Bootstrap 给 div 的各种白底抹掉。
-   特异度 (0,11,1)（11 个 `:not(.class)` 各贡献一个类），比任何
-   `.xxx { background: ... }`(0,1,0) 都高，所以**凡是
-   自己需要背景色的 div 都必须列进这串 :not() 白名单**，否则它的 background
-   声明是死的（源码里看着有，浏览器里是透明）。
-   `.task-error`(A1b) 是红色底纹的失败原因框，加入白名单；
-   对应断言见 tests/test_css_contract.py::test_task_error_survives_the_blanket_div_reset。 */
-div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progress):not(.progress-bar):not(.app-confirm):not(.app-confirm-overlay):not(.app-toast):not(.task-error) {
-    background: transparent;
-}
+/* 这里原先有一条兜底重置，已整条删除：
+
+       div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn)
+          :not(.progress):not(.progress-bar):not(.app-confirm)
+          :not(.app-confirm-overlay):not(.app-toast):not(.task-error)
+       { background: transparent; }
+
+   特异度 (0,11,1)（11 个 `:not(.class)` 各贡献一个类），压得过任何
+   `.xxx { background: ... }`(0,1,0)。后果是**凡是自己需要背景色的 div
+   都得先挤进那串白名单**，否则它的 background 声明在源码里看得见、
+   在浏览器里是透明的。那 11 项白名单就是历次撞上它之后逐个补的豁免。
+
+   删掉它的实测依据（CDP，Chrome 148，三个页面 6 个场景共 1699 个元素逐元素对拍）：
+   删除后 13 个元素的 computed background-color 从 rgba(0,0,0,0) 变成实色，
+   去重 6 类 —— .index-right(#0c0d10 首页右侧整个面板)、.config-section(x6)、
+   .stat-card(x4)、.modal-header、.task-card(x6)、以及 Bootstrap 的
+   `div.modal-backdrop`（rgba(0,0,0,0) -> rgb(0,0,0)，即**打开弹窗时背后
+   从来没有变暗过**，因为 `.modal-backdrop{--bs-backdrop-bg:#000}` 只有 (0,1,0)）。
+
+   为什么是「整条删」而不是降级成 `div { background: transparent }`：
+   降级后特异度 (0,0,1)，而 UA 样式表给 div 的默认背景本来就是 transparent，
+   三个 vendor 样式表里也没有任何一条用 div 类型选择器给背景
+   （由 test_no_stylesheet_gives_a_bare_div_a_background 钉住）。
+   实测两种形态跨 1699 个元素逐一比对，差异 0 —— 它是纯死代码。
+
+   ⚠️ 删掉之后，Bootstrap 组件的 div 背景**会正常生效**。本项目自己覆盖过的
+   （.card / .modal-content / .modal-header / .dropdown-item …）没问题，但
+   Bootstrap 还有一批组件容器自带 #212529 之类的灰，与本站调色板 (#15171c)
+   不同源。将来往模板里加这类组件时必须同时在本文件写覆盖 ——
+   由 test_no_bootstrap_component_background_reaches_a_div_unreviewed 兜住：
+   模板/JS 里一旦出现没被本文件覆盖的 Bootstrap 背景组件类，那条断言变红。 */
 
 /* Navbar Styles */
 .navbar {
@@ -476,8 +494,10 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 /* 失败卡片里展开的错误原因。文本由 tasks.js 的 applyTaskErrorText 用
    textContent 填入（后端错误原文不能进 innerHTML）。
    配色实算（见 tests/test_css_contract.py::test_task_error_box_exists_and_is_readable）：
-     真实背衬是祖先面板 .card 的 #15171c —— **不是** .task-card，后者的
-     background 被下面那条 div:not(...) 兜底重置压掉了，是死声明
+     真实背衬是 .task-card 的 #15171c。（历史注记：兜底重置还在的时候
+     `.task-card{background:var(--color-bg-secondary)}` 是**死声明**，真实背衬
+     是再往上一层的面板 .card；两者恰好同色，所以算出来的数一样。兜底重置
+     已删，.task-card 的底色现在真的生效了，CDP 实测 rgb(21,23,28)。）
      底色 rgba(239,68,68,0.12) 压在 #15171c 上 = #2f1c21
      文字 #e8eaed 对 #2f1c21 = 13.31:1（WCAG 正文下限 4.5:1，CDP 实测同值）
      边框 #f87171 对 #15171c =  6.48:1（图形元素下限 3:1）
@@ -644,7 +664,9 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
  * 恒定 13.56:1，与背后是哪一档填充无关。断言见
  * tests/test_css_contract.py::test_progress_label_readability_does_not_depend_on_the_fill。
  *
- * 必须是 <span>：改成 <div> 会被 `div:not(...)` 兜底重置把这块底压成透明。
+ * （历史注记：兜底重置还在的时候这里**必须**是 <span>，改成 <div> 会被
+ * `div:not(...)`(0,11,1) 把这块底压成透明。重置已删，这个限制不再成立 ——
+ * 保留 <span> 只是因为它本来就是行内语义，不是被迫的。）
  * 不用 mix-blend-mode:difference——实测负优化（over bg-primary 4.50 -> 1.48）。
  * tabular-nums = 等宽数字，3% -> 13% 时数字不左右抖。 */
 .progress__label {
@@ -1810,13 +1832,28 @@ code {
 
    改这一段之前必须知道的三条环境事实，全部是 CDP 实测得出、不是推断：
 
-   (1) **本文件 :142 的兜底重置会把这些控件压成透明。**
-       `div:not(.card):not(...)...{background:transparent}` 特异度 (0,11,1)。
+   (1) ~~本文件的 div 兜底重置会把这些控件压成透明~~ —— **已随兜底重置一起删除**。
+       原文：`div:not(.card):not(...)...{background:transparent}` 特异度 (0,11,1)，
        .leaflet-bar / .leaflet-draw-toolbar / .leaflet-control-attribution /
-       .leaflet-draw-tooltip **全是 <div>**，且都不在那串 :not() 白名单里。
-       改前实测：三者的 computed background-color 都是 rgba(0, 0, 0, 0)。
-       所以凡是给它们设背景色，**必须带 !important**，否则源码看着对、
-       浏览器里是透明的。不要往 :142 那串白名单里加 Leaflet 类。
+       .leaflet-draw-tooltip 全是 <div> 且不在白名单里，所以底色必须带 !important。
+       兜底重置删掉之后这三处 !important 逐个实测过：
+         · `.leaflet-bar / .leaflet-draw-toolbar { background-color }` —— 去掉。
+           leaflet.css 没有任何规则给 `.leaflet-bar` **容器**设背景（它只给
+           `.leaflet-bar a` 设 #fff），(0,1,0) 无对手。
+         · `.leaflet-draw-tooltip { background-color }` —— 去掉。对手是
+           leaflet.draw.css 的 `.leaflet-draw-tooltip{background:rgb(54,54,54)}`
+           (0,1,0)，同分、style.css 排在后面，源码顺序即取胜。
+         · `.leaflet-control-attribution { background-color }` —— **保留**。
+           它还要压 leaflet.css 的 `.leaflet-container .leaflet-control-attribution
+           {background:rgba(255,255,255,.8)}` (0,2,0)，那条我们赢不了。
+       三处的删/留都做过 CDP 对拍（见 test_leaflet_div_controls_keep_their_background）。
+
+   (1b) **删掉兜底重置反而让 leaflet.css 的浅灰底冒了出来。**
+       `.leaflet-container{background:#ddd}`(leaflet.css:260, 特异度 0,1,0)
+       原先也被 (0,11,1) 压着。删除后 CDP 实测 #map 和 .history-map 两个容器
+       都变成 rgb(221,221,221)。瓦片没盖满 / 还没加载完的时候就是一片浅灰。
+       修法是下面那条 `.leaflet-container` —— 同特异度 + style.css 靠后取胜，
+       不需要 !important。
 
    (2) **`#map` 上的 filter 会改掉这里写的每一个颜色。**
        本文件 :288 有 `filter: brightness(0.9) contrast(1.1)`，它作用于整个
@@ -1831,15 +1868,32 @@ code {
        结果是三个没有图标的空白按钮。（C1/Task 4 在 select 箭头上踩过同一个坑。）
    =========================================================================== */
 
+/* 地图容器自身的底。见上面 (1b)：leaflet.css:260 给它 #ddd 浅灰，原本被
+   兜底重置压着，重置一删就冒出来了。这条是整次清理里**唯一**一处兜底重置
+   真的在对第三方样式表干活的地方，所以把它单独提出来，用正常特异度重写。
+
+   为什么是 transparent 而不是某个具体色：这样「瓦片盖不到的地方」露出来的
+   还是宿主面板本身，与删除前逐像素相同。试过 var(--color-bg-primary)，
+   实测不行 —— #map 的宿主是 `.index-left .card`(#15171c)，而 #map 自己那层
+   `filter: brightness(.9) contrast(1.1)` 会把写在这里的颜色再压一遍：
+   #0c0d10 过完滤镜是 rgb(0,0,3)，于是「没瓦片的地图区」从面板灰变成近纯黑，
+   1600x1000 截图上 53% 的像素变了。transparent 则是 0 像素差。
+
+   同特异度 (0,1,0) 靠源码顺序赢 leaflet.css，不需要 !important
+   （前提由 test_style_css_is_the_last_stylesheet 钉住）。 */
+.leaflet-container {
+    background: transparent;
+}
+
 /* 控件容器。.leaflet-control-zoom 与绘制工具条都是 .leaflet-bar，共用这一条。
    .leaflet-draw-toolbar 与 .leaflet-bar 永远在同一个 <div> 上
    （leaflet.draw 1.0.4: create("div", "leaflet-draw-toolbar leaflet-bar")），
    这里两个类都写只是让按类名 grep 的人找得到，不是两个元素。 */
 .leaflet-bar,
 .leaflet-draw-toolbar {
-    /* !important #1：压本文件 :142 的 div 兜底重置 (0,11,1) */
-    background-color: var(--color-bg-secondary) !important;
-    /* !important #2/#3：压 leaflet.css 的
+    /* 兜底重置删除后这里不再需要 !important，见段首 (1)。 */
+    background-color: var(--color-bg-secondary);
+    /* !important #1/#2：压 leaflet.css 的
        `.leaflet-touch .leaflet-bar{border:2px solid rgba(0,0,0,.2)}` 和
        `.leaflet-touch .leaflet-bar{box-shadow:none}`，两条都是 (0,2,0)，
        我们的 (0,1,0) 赢不了。.leaflet-touch 在带触摸屏的设备上是常态
@@ -1916,7 +1970,7 @@ code {
 }
 
 /* 绘制 / 编辑模式下弹出的操作条。它是 <ul class="leaflet-draw-actions"> 里的
-   <a>，不是 <div>，:142 的兜底重置管不到，所以这里不需要 !important。
+   <a>，同特异度靠源码顺序赢 leaflet.draw.css，不需要 !important。
    改前实测底色是 leaflet.draw 出厂的 rgb(145,145,135) 橄榄灰。 */
 .leaflet-draw-actions a {
     background-color: var(--color-bg-secondary);
@@ -1931,12 +1985,13 @@ code {
     color: var(--color-accent-hover);
 }
 
-/* 绘制提示条。它是 popupPane 里的 <div>，同样被 :142 压成过透明 ——
-   改前实测 background-color = rgba(0, 0, 0, 0)，也就是白字直接飘在地图上，
-   遇到浅色瓦片基本看不清。这是本次修掉的一个既存缺陷，不只是配色调整。 */
+/* 绘制提示条。它是 popupPane 里的 <div>，A4/Task 9 之前被兜底重置压成过透明
+   （实测 background-color = rgba(0,0,0,0)，白字直接飘在地图上，遇到浅色瓦片
+   基本看不清）。兜底重置已删，这里的 !important 也随之去掉：对手只剩
+   leaflet.draw.css 的 `.leaflet-draw-tooltip{background:rgb(54,54,54)}` (0,1,0)，
+   同分、style.css 靠后，源码顺序即取胜。 */
 .leaflet-draw-tooltip {
-    /* !important #5：同 (1)，压 div 兜底重置 */
-    background-color: rgba(12, 13, 16, 0.92) !important;
+    background-color: rgba(12, 13, 16, 0.92);
     border-color: var(--color-border);
     color: var(--color-text-primary);
 }
@@ -1949,11 +2004,14 @@ code {
     color: var(--color-text-secondary);
 }
 
-/* 右下角出处标注。改前实测 background-color = rgba(0,0,0,0)（被 :142 压掉）、
-   文字仍是 leaflet.css 的 #333 —— 深色地图上是**看不清**，不是简报说的「刺眼白底」。 */
+/* 右下角出处标注。A4/Task 9 改前实测 background-color = rgba(0,0,0,0)
+   （被兜底重置压掉）、文字仍是 leaflet.css 的 #333 —— 深色地图上是**看不清**，
+   不是简报说的「刺眼白底」。 */
 .leaflet-control-attribution {
-    /* !important #4：同 (1)，另外还要压 leaflet.css 的
-       `.leaflet-container .leaflet-control-attribution{background:rgba(255,255,255,.8)}` (0,2,0) */
+    /* !important #3：这一处**必须保留**。兜底重置虽然删了，但它还要压
+       leaflet.css 的
+       `.leaflet-container .leaflet-control-attribution{background:rgba(255,255,255,.8)}` (0,2,0)，
+       我们的 (0,1,0) 赢不了。去掉之后实测底色变回 rgba(255,255,255,0.8)。 */
     background-color: rgba(12, 13, 16, 0.85) !important;
     color: var(--color-text-secondary);
 }

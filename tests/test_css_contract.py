@@ -10,6 +10,7 @@
 断言就是防止这种自我覆盖的形态复活。
 """
 
+import collections
 import os
 import re
 import subprocess
@@ -274,6 +275,10 @@ def test_important_count_under_control():
           4. `.leaflet-control-attribution { background-color }`
           5. `.leaflet-draw-tooltip { background-color }`
 
+        （⚠️ 下面这段是 Task 9 当时的记账，其中 #1 #5 已在 C1 收尾随兜底重置
+          一起删除 —— 见本 docstring 末尾的「- 2 处」那一条。保留原文是为了
+          让「当初为什么加」和「后来为什么能删」对得上。）
+
         压的是谁、为什么非 !important 不可：
           #1 #4 #5 压的是**本文件自己**的兜底重置
              `div:not(.card):not(...)...{background:transparent}`，特异度 (0,11,1)。
@@ -281,7 +286,7 @@ def test_important_count_under_control():
              改前 CDP 实测三者的 computed background-color 全是 rgba(0,0,0,0)。
              不用 !important 的唯一替代是往白名单里再塞三个类 —— 那是在给
              已知的结构债继续加码，明确不做（见
-             test_leaflet_div_controls_survive_the_blanket_div_reset）。
+             test_leaflet_div_controls_keep_their_background）。
           #4 还要额外压 leaflet.css 的
              `.leaflet-container .leaflet-control-attribution{background:rgba(255,255,255,.8)}` (0,2,0)。
           #2 #3 压的是 leaflet.css 的 `.leaflet-touch .leaflet-bar{border:2px solid rgba(0,0,0,.2)}`
@@ -323,6 +328,30 @@ def test_important_count_under_control():
       = 65 处（Task 12 后实测）
       + 3 处：A8 / Task 13 的 prefers-reduced-motion 重置块（逐条登记见下）
       = 68 处（Task 13 后实测，正好等于上界，余量 0）
+      - 2 处：**C1 收尾「根治 div 兜底重置」删除**（清理型任务）。两处都是
+              Leaflet 段的 background-color，删掉的理由是它们压的对象没了 ——
+              `div:not(...)...{background:transparent}`(0,11,1) 已整条删除：
+          1. `.leaflet-bar, .leaflet-draw-toolbar { background-color }`
+             —— 原 !important #1。leaflet.css **没有**任何规则给 `.leaflet-bar`
+             容器设背景（它只给 `.leaflet-bar a` 设 #fff），(0,1,0) 无对手。
+          2. `.leaflet-draw-tooltip { background-color }` —— 原 !important #5。
+             对手只剩 leaflet.draw.css 的
+             `.leaflet-draw-tooltip{background:rgb(54,54,54)}` (0,1,0)，
+             同分、style.css 排在后面，源码顺序即取胜。
+        **保留**的是 `.leaflet-control-attribution`（原 #4）：它还要压
+        leaflet.css 的 `.leaflet-container .leaflet-control-attribution
+        {background:rgba(255,255,255,.8)}` (0,2,0)，(0,1,0) 赢不了。
+        三处的删 / 留逐个做过 CDP 对拍：删掉那两个 !important 前后，
+        1600x1000 首页整页截图差异 **0 像素**（`.leaflet-bar` 仍是
+        rgb(21,23,28)、`.leaflet-draw-tooltip` 仍是 rgba(12,13,16,0.92)）。
+        本次**新增 0 处**。
+      = 66 处（本次实测）
+
+    ⚠️ 本次上界**不动，仍是 68**，而不是按棘轮公式取「实测 66 + 3 = 69」。
+       理由：那个公式在这里会把上界**抬高**（68 -> 69），与棘轮「只降不升」
+       的目的正好相反 —— 公式默认的场景是「上界原本松、清理后收紧」，
+       而 Task 13 已经把余量用到 0，上界本来就是紧的。
+       取 min(原上界, 实测 + 3) = min(68, 69) = 68，余量从 0 恢复到 2。
 
     ⚠️ 棘轮规则（分两种任务，别混用）：
 
@@ -373,9 +402,8 @@ def test_important_count_under_control():
     清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
     两者性质不同。
 
-    ⚠️ 当前余量为 **0**（实测 68 / 上界 68）：Task 13 把 3 处余量正好用完。
-    下一个需要新增 !important 的任务会立刻变红 —— 这是有意的，逼一次显式决策，
-    而不是让它悄悄溜进去。
+    ⚠️ 当前余量为 **2**（实测 66 / 上界 68）：C1 收尾删掉 2 处压兜底重置的
+    !important，把 Task 13 用光的余量还回来一部分。上界没有跟着往上走。
 
     余下 66 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
@@ -390,7 +418,9 @@ def test_important_count_under_control():
         f'!important 声明有 {count} 处，应 <= 68（Task 2 前 92 → Task 2 后 67 → '
         'Task 3 后 66 → Task 5 +2 条进度条覆盖后实测 68 → '
         'Task 9 Leaflet +5 / -5 净 0，仍是 68 → '
-        'Task 12 删掉表格段 3 条压错对象的 color 后实测 65，余量 3）'
+        'Task 12 删掉表格段 3 条压错对象的 color 后实测 65 → '
+        'Task 13 +3 条 reduced-motion 后 68 → '
+        'C1 收尾删掉 2 条压 div 兜底重置的 background-color 后实测 66，余量 2）'
     )
 
 
@@ -1294,20 +1324,24 @@ def _effective_task_card_backdrop(css):
     `_palette_var(css, '--color-bg-secondary')` 并注释「.task-card 的底色」，
     而那是**巧合**：
 
-      - `.task-card { background: var(--color-bg-secondary) }` 是**死声明**，
-        被 `div:not(...)` 兜底重置（特异度 0,10,1）压掉了。CDP 实测
+      - `.task-card { background: var(--color-bg-secondary) }` 当时是**死声明**，
+        被 `div:not(...)` 兜底重置（特异度 0,11,1）压掉了。CDP 实测
         `getComputedStyle(.task-card).backgroundColor === 'rgba(0, 0, 0, 0)'`。
       - 真正的背衬是祖先面板 `.card`（CDP 实测 `rgb(21, 23, 28)`），
         它**恰好**也用 `--color-bg-secondary`。
+
+    兜底重置已在本文件末尾那一节整条删除，`.task-card` 的底色现在真的生效了
+    （CDP 复核 rgb(21,23,28)）。**但这个函数保留原样**：它守的是「别把背衬
+    硬编码成某个调色板变量」这条纪律，与谁是背衬无关；而且 `.task-card` 与
+    `.card` 同色，改成读 `.task-card` 一个数字都不会变，等于白改一次。
 
     后果：后面任何一个视觉任务改 `.card` 的底色，浏览器里的真实对比度就变了，
     而拿 `--color-bg-secondary` 算的断言照旧全绿 —— 与 A1b 抓到的
     「红色底纹被压成透明而测试全绿」是同一类失明。所以这里改成顺着**真实
     渲染链**去取：`.card` 声明什么，就用什么。
 
-    `.task-card` 自己不参与计算（它的 background 是死的）。想让它复活，
-    得先把它加进兜底重置的 `:not()` 白名单——那属于 C1 类清理，见
-    test_task_error_survives_the_blanket_div_reset 的说明。
+    `.task-card` 自己不参与计算：兜底重置删除前它的 background 是死的，
+    删除后它与 `.card` 同色，两种情况下结论都一样。
     """
     rules = [
         (sel, body) for sel, body, at_ctx in _rules_ctx(css)
@@ -1385,55 +1419,76 @@ def test_task_error_box_exists_and_is_readable():
     )
 
 
-# 兜底重置规则的形态：`div:not(.a):not(.b)... { background: transparent }`。
-_BLANKET_DIV_RESET = re.compile(r'^div(?::not\([^)]*\))+$')
+# --------------------------------------------------------------------------
+# 曾经的 `div:not(...)` 兜底重置：已整条删除（见本文件末尾「根治」一节）。
+#
+# 这里原先有两条断言，钉的都是「为了绕开兜底重置而必须写成某个样子」：
+#   test_task_error_survives_the_blanket_div_reset
+#       —— 要求 `.task-error` 出现在那串 :not() 白名单里
+#   test_leaflet_div_controls_survive_the_blanket_div_reset
+#       —— 要求四个 Leaflet 容器的 background-color 必须带 !important
+#
+# 兜底重置删掉之后，这两个「怎么绕」的要求全部失效：白名单不存在了，
+# 那几处 !important 也不再必要（清理型任务本来就该删）。但它们真正想守的东西
+# —— **这些元素的底色在浏览器里必须真的出现** —— 一条都不能丢。
+# 所以两条都改成用层叠模型算**最终生效值**：无论将来是靠 !important、靠特异度、
+# 还是靠源码顺序赢，只要结果对就绿；结果坏了就红。
+# --------------------------------------------------------------------------
 
 
-def test_task_error_survives_the_blanket_div_reset():
-    """`.task-error` 必须列进 `div:not(...)...{background:transparent}` 的白名单。
+def _effective_bg_for(chain):
+    """算出这个元素最终拿到的背景声明。找不到返回 None。见文件末尾的层叠模型。"""
+    cands, unsupported = _bg_candidates(chain, _all_sheets())
+    assert not unsupported, (
+        f'{_describe(chain)}: 有背景规则命中它但模型读不懂 —— 结论不可信：'
+        + '、'.join(f'{sh}:{br}' for sh, br in unsupported[:5])
+    )
+    return _winning_bg(cands)
 
-    这条是 CDP 实测逼出来的，**上一条对比度断言拦不住它**：
 
-    style.css 里有一条兜底重置
-        div:not(.card):not(.modal-content):not(.alert):not(.badge)...
-        { background: transparent; }
-    特异度 (0,10,1) —— 10 个 `:not(.class)` 各贡献一个类。任何
-    `.task-error { background: ... }`(0,1,0) 都打不过它。
+# `.task-error` 在真实 DOM 里的祖先链（tasks.js createTaskCard 生成，
+# 由 test_runtime_injected_div_table_is_grounded 同源的那张表描述任务卡本身）。
+def _task_error_chain():
+    return _PAGE_CHAIN_PREFIX + (
+        ('div', {'index-layout'}, '', {}),
+        ('div', {'index-right'}, '', {}),
+        ('div', {'card'}, '', {}),
+        ('div', {'card-body'}, '', {}),
+        ('div', set(), 'activeTasksList', {}),
+        ('div', {'task-card', 'status-failed'}, '', {}),
+        ('div', {'task-error'}, '', {}),
+    )
 
-    实测证据（Chrome 148，CDP `CSS.getMatchedStylesForNode`）：
-    加白名单之前，`.task-error` 的 `getComputedStyle().backgroundColor`
-    是 `rgba(0, 0, 0, 0)` —— 红色底纹**在源码里存在、在浏览器里完全不出现**，
-    而 test_task_error_box_exists_and_is_readable（只读源码算色值）依然全绿。
-    这正是 p2-assertion-review.md 反复强调的「写了断言 ≠ 断言守住了我以为的东西」。
 
-    ⚠️ 顺带记录一个本任务**没有**修的既有缺陷：`.task-card { background:
-    var(--color-bg-secondary) }` 同样被这条重置压掉，卡片底色一直是透明的。
-    目前肉眼看不出来，因为它背后的面板 `.card` 恰好也是 --color-bg-secondary，
-    两者同色。面板色一改，卡片就不会跟着走。修它属于 C1 类死规则清理，
-    不在 A1b 范围内。
+def test_task_error_box_background_actually_reaches_the_screen():
+    """失败原因框的红色底纹必须真的渲染出来。
 
-    覆盖范围（诚实说明）：兜底重置若被整条删掉，这条测试就没有东西可查、
-    自然通过 —— 那时确实也不需要白名单了，所以不算静默失效。
+    这条的前身是 test_task_error_survives_the_blanket_div_reset，它要求
+    `.task-error` 出现在兜底重置的 `:not()` 白名单里。那是**绕法**，不是目的。
+
+    历史证据（Chrome 148，CDP `CSS.getMatchedStylesForNode`）：加白名单之前
+    `.task-error` 的 `getComputedStyle().backgroundColor` 是 `rgba(0,0,0,0)`
+    —— 红色底纹在源码里存在、在浏览器里完全不出现，而只读源码算色值的
+    test_task_error_box_exists_and_is_readable 依然全绿。
+    这正是「写了断言 ≠ 断言守住了我以为的东西」。
+
+    现在白名单和兜底重置都没了，改成直接算最终生效值：赢家必须是
+    style.css 的 `.task-error` 那条，值必须是 --color-danger-bg。
     """
-    css = _css()
-    blankets = [
-        (sel, body) for sel, body, at_ctx in _rules_ctx(css)
-        if not at_ctx
-        for part in _selector_parts(sel)
-        if _BLANKET_DIV_RESET.fullmatch(part)
-        and 'transparent' in (_decl_map(body).get('background') or
-                              _decl_map(body).get('background-color') or '')
-    ]
-    problems = []
-    for sel, _body in blankets:
-        excluded = set(re.findall(r':not\(\s*([^)]*?)\s*\)', sel))
-        if '.task-error' not in excluded:
-            problems.append(
-                f'{sel[:60]}... 的 :not() 白名单里没有 .task-error'
-            )
-    assert not problems, (
-        '失败原因框的红色底纹会被 div 兜底重置压成透明（源码里有、浏览器里没有）：\n'
-        + '\n'.join('  ' + p for p in problems)
+    win = _effective_bg_for(_task_error_chain())
+    assert win is not None, '.task-error 没有任何背景声明命中它 —— 底纹不存在'
+    assert win.sheet == 'style.css' and '.task-error' in win.branch, (
+        f'.task-error 的背景赢家是 {win.sheet} 的 `{win.branch}` '
+        f'{{ background: {win.value} }}，不是 style.css 的 `.task-error` —— '
+        '红色底纹被别的规则夺走了（源码里有、浏览器里没有）'
+    )
+    assert not _bg_is_transparent(_css(), win.value), (
+        f'.task-error 最终生效的背景是 {win.value}，等于没有底纹'
+    )
+    assert _resolve_color(_css(), win.value) == \
+        _palette_var(_css(), '--color-danger-bg'), (
+        f'.task-error 的底纹色变成了 {win.value}，不再是 --color-danger-bg —— '
+        'test_task_error_box_exists_and_is_readable 算的对比度是按那个值算的'
     )
 
 
@@ -2356,88 +2411,101 @@ def test_leaflet_draw_button_is_transparent_where_it_is_inverted():
     )
 
 
-# 这四个 Leaflet 元素都是 <div>：
+# 这四个 Leaflet 元素都是 <div>，改前全被兜底重置压成了透明：
 #   .leaflet-bar / .leaflet-draw-toolbar  工具条容器（同一个 div 上的两个类）
 #   .leaflet-control-attribution          右下角出处标注
 #   .leaflet-draw-tooltip                 跟随鼠标的绘制提示条
-# 它们都会被 style.css 的兜底重置 `div:not(...)...{background:transparent}` 命中。
-_LEAFLET_DIV_CONTROLS = (
-    'leaflet-bar',
-    'leaflet-draw-toolbar',
-    'leaflet-control-attribution',
-    'leaflet-draw-tooltip',
-)
+#
+# 每一条的真实祖先链（CDP 实测 DOM，leaflet 1.9.4 + leaflet.draw 1.0.4）。
+# `.leaflet-touch` 在带触摸屏的设备上是常态，headless Chrome 实测也带 ——
+# 它是承重的：leaflet.css 的 `.leaflet-touch .leaflet-bar{border:2px solid
+# rgba(0,0,0,.2)}` (0,2,0) 就是靠它命中的。
+def _leaflet_div_controls():
+    """{说明: (祖先链, 期望的底色)}。链末尾就是那个控件 div。"""
+    map_chain = _PAGE_CHAIN_PREFIX + (
+        ('div', {'index-layout'}, '', {}),
+        ('div', {'index-left'}, '', {}),
+        ('div', {'card'}, '', {}),
+        ('div', {'card-body'}, '', {}),
+        ('div', {'leaflet-container', 'leaflet-touch'}, 'map', {}),
+    )
+    controls = map_chain + (('div', {'leaflet-control-container'}, '', {}),)
+    return {
+        'leaflet-bar（缩放控件容器）': (
+            controls + (
+                ('div', {'leaflet-top', 'leaflet-left'}, '', {}),
+                ('div', {'leaflet-control-zoom', 'leaflet-bar', 'leaflet-control'},
+                 '', {}),
+            ), '--color-bg-secondary'),
+        'leaflet-draw-toolbar（绘制工具条，与 .leaflet-bar 同一个 div）': (
+            controls + (
+                ('div', {'leaflet-top', 'leaflet-left'}, '', {}),
+                ('div', {'leaflet-draw', 'leaflet-control'}, '', {}),
+                ('div', {'leaflet-draw-section'}, '', {}),
+                ('div', {'leaflet-draw-toolbar', 'leaflet-bar'}, '', {}),
+            ), '--color-bg-secondary'),
+        'leaflet-control-attribution（右下角出处标注）': (
+            controls + (
+                ('div', {'leaflet-bottom', 'leaflet-right'}, '', {}),
+                ('div', {'leaflet-control-attribution', 'leaflet-control'}, '', {}),
+            ), 'rgba(12, 13, 16, 0.85)'),
+        'leaflet-draw-tooltip（跟随鼠标的绘制提示条）': (
+            map_chain + (
+                ('div', {'leaflet-pane', 'leaflet-map-pane'}, '', {}),
+                ('div', {'leaflet-pane', 'leaflet-popup-pane'}, '', {}),
+                ('div', {'leaflet-draw-tooltip'}, '', {}),
+            ), 'rgba(12, 13, 16, 0.92)'),
+    }
 
 
-def test_leaflet_div_controls_survive_the_blanket_div_reset():
-    """坑 3：这四个 Leaflet 容器的背景色必须带 !important，且不许进白名单。
+def test_leaflet_div_controls_keep_their_background():
+    """坑 3：这四个 Leaflet 容器的底色必须真的渲染出来，且是本站给的那个值。
 
-    style.css 里有一条兜底重置
-        div:not(.card):not(.modal-content):not(.alert)... { background: transparent }
-    特异度 (0,11,1)。上面四个类全是 <div> 且都不在那串 :not() 白名单里，所以
-    任何 `.leaflet-bar { background-color: X }`(0,1,0) 都打不过它。
+    这条的前身是 test_leaflet_div_controls_survive_the_blanket_div_reset，
+    它要求这些规则**必须带 !important**。那是当年绕开兜底重置的手段，
+    不是目的 —— 而兜底重置现在已经整条删除，那几处 !important 也随之删掉。
+    断言跟着升级：不再管用什么手段赢，只管**赢没赢**。
 
-    实测证据（Chrome 148，CDP，改前）：
+    历史证据（Chrome 148，CDP，A4/Task 9 改前）：
         .leaflet-bar                  backgroundColor = rgba(0, 0, 0, 0)
         .leaflet-control-attribution  backgroundColor = rgba(0, 0, 0, 0)
         .leaflet-draw-tooltip         backgroundColor = rgba(0, 0, 0, 0)
-    三者的背景**在源码里写着、在浏览器里全是透明**。绘制提示条尤其严重：
-    白字直接飘在地图瓦片上。而只读 CSS 源码算色值的断言对此完全绿灯。
+    三者的背景在源码里写着、在浏览器里全是透明。绘制提示条尤其严重：
+    白字直接飘在地图瓦片上。只读源码算色值的断言对此完全绿灯。
 
-    本条同时钉住「不要用加白名单来解决」：白名单模式本身是待处理的结构债，
-    往里塞 Leaflet 类只会让那串 :not() 继续膨胀。这里用 !important。
+    本次删掉 !important 之后的复核（CDP，同一版 Chrome）：
+        .leaflet-bar / .leaflet-draw-toolbar   rgb(21, 23, 28)        不变
+        .leaflet-control-attribution           rgba(12,13,16,0.85)    不变
+        .leaflet-draw-tooltip                  rgba(12,13,16,0.92)    不变
+    `.leaflet-control-attribution` 那一处 !important **保留**：它还要压
+    leaflet.css 的 `.leaflet-container .leaflet-control-attribution
+    {background:rgba(255,255,255,.8)}` (0,2,0)，(0,1,0) 赢不了。
 
-    覆盖范围（诚实说明）：兜底重置若被整条删掉，本条第一段就没有对象可查、
-    自然通过——那时 !important 也确实不再必要，不算静默失效。第二段
-    （必须带 !important）无条件执行。
+    覆盖范围（诚实说明）：算的是静止态。悬停态（`.leaflet-bar a:hover`）
+    打在 <a> 上，不在本条范围内。
     """
     css = _css()
-    blankets = [
-        sel for sel, body, at_ctx in _rules_ctx(css)
-        if not at_ctx
-        for part in _selector_parts(sel)
-        if _BLANKET_DIV_RESET.fullmatch(part)
-        and 'transparent' in (_decl_map(body).get('background') or
-                              _decl_map(body).get('background-color') or '')
-    ]
-    leaked = []
-    for sel in blankets:
-        excluded = set(re.findall(r':not\(\s*([^)]*?)\s*\)', sel))
-        for cls in _LEAFLET_DIV_CONTROLS:
-            if '.' + cls in excluded:
-                leaked.append(f'.{cls} 被塞进了 {sel[:50]}... 的 :not() 白名单')
-    assert not leaked, (
-        '不要靠扩张 div:not(...) 白名单来给 Leaflet 控件上背景——那串白名单本身是结构债。\n'
-        '用 !important：\n' + '\n'.join('  ' + p for p in leaked)
-    )
-
-    declared = {}
-    for sel, body in _rules(css):
-        for part in _selector_parts(_norm_selector(sel)):
-            for cls in _LEAFLET_DIV_CONTROLS:
-                # 只认「选择器整支就是这一个类」的规则，`.leaflet-bar a` 不算
-                if part == '.' + cls:
-                    bg = _decl_map(body).get('background-color')
-                    if bg is not None:
-                        declared.setdefault(cls, []).append((part, bg))
-
     problems = []
-    for cls in _LEAFLET_DIV_CONTROLS:
-        hits = declared.get(cls, [])
-        if not hits:
-            # .leaflet-draw-toolbar 与 .leaflet-bar 在同一个 div 上，
-            # 由 .leaflet-bar 那条覆盖即可，不强求两个类各写一遍。
-            if cls == 'leaflet-draw-toolbar' and declared.get('leaflet-bar'):
-                continue
-            problems.append(f'.{cls} 没有任何 background-color 声明——它的底色是兜底重置给的透明')
+    for label, (chain, expect) in sorted(_leaflet_div_controls().items()):
+        win = _effective_bg_for(chain)
+        if win is None:
+            problems.append(f'{label}: 没有任何背景声明命中它，底色是透明')
             continue
-        if not any(_IMPORTANT_RE.search(bg) for _part, bg in hits):
+        if _bg_is_transparent(css, win.value):
             problems.append(
-                f'.{cls} 的 background-color 没带 !important：'
-                + '、'.join(f'{p} {{ background-color: {b} }}' for p, b in hits)
+                f'{label}: 最终生效的是 {win.sheet} 的 `{win.branch}` '
+                f'{{ background: {win.value} }} —— 透明，深色地图上等于没有控件底'
+            )
+            continue
+        want = _palette_var(css, expect) if expect.startswith('--') else expect
+        got = _resolve_color(css, win.value)
+        if got.replace(' ', '') != want.replace(' ', ''):
+            problems.append(
+                f'{label}: 最终生效的底色是 {got}（来自 {win.sheet} 的 '
+                f'`{win.branch}`），期望 {want}'
             )
     assert not problems, (
-        'Leaflet 控件的背景色会被 div 兜底重置 (0,11,1) 压成透明（源码里有、浏览器里没有）：\n'
+        'Leaflet 控件的背景没有真的渲染出来 —— 源码里有、浏览器里没有：\n'
         + '\n'.join('  ' + p for p in problems)
     )
 
@@ -7232,4 +7300,973 @@ def test_rule_scanner_is_not_blinded_by_an_at_statement():
         '全站设计令牌对本文件所有基于 _rules 的断言隐身了。'
         '最可能的原因：有人在它前面加了一条不带花括号的 at-语句'
         '（@import / @charset / @namespace），而 _rules_ctx 的剥离正则没覆盖到。'
+    )
+
+
+# ==========================================================================
+# C1 收尾：根治 `div:not(...)` 兜底重置
+#
+# 被删掉的那条规则长这样（style.css，删除前）：
+#     div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn)
+#        :not(.progress):not(.progress-bar):not(.app-confirm)
+#        :not(.app-confirm-overlay):not(.app-toast):not(.task-error)
+#     { background: transparent; }
+# 特异度 (0,11,1)。11 个 `:not(.class)` 各贡献一个类，于是它压得过**任何**
+# `.xxx { background: ... }`(0,1,0)。那 11 项白名单是历次撞上它之后逐个补的豁免。
+#
+# 它压掉的东西（CDP 实测，Chrome 148，三页 6 场景 1699 个元素逐元素对拍）：
+#   .index-right / .config-section x6 / .stat-card x8 / .modal-header x2 /
+#   .task-card x8 / div.modal-backdrop —— 共 28 个元素、13 个类组合的
+#   computed background-color 从 rgba(0,0,0,0) 变回实色。
+#   其中 `div.modal-backdrop` 是本次的硬验收点：Bootstrap 的
+#   `.modal-backdrop{--bs-backdrop-bg:#000}` 只有 (0,1,0)，被压成透明之后
+#   **这个应用从上线到现在，打开任何弹窗背后都没有变暗过**。
+#
+# 本节四条断言分两类：
+#   1) 结果类（主力）—— 模拟层叠算出「元素最终拿到哪条背景声明」，
+#      钉的是**用户看到的结果**，不是源码里有没有某个字符串。
+#      这四类断言共同的设计要求：任何一次「让背景消失」的改动都必须变红，
+#      无论它是靠特异度、靠 !important、还是靠删掉声明本身做到的。
+#   2) 形态类（补位）—— 正面禁止兜底重置这种「不认识元素却夺走它背景」
+#      的规则形态回潮，即使当天恰好没有受害者在 markup 里。
+# ==========================================================================
+
+
+def _stylesheet_load_order():
+    """base.html 里 `<link rel=stylesheet>` 的真实顺序 -> 仓库内相对路径列表。
+
+    **不硬编码**：顺序本身是承重的（style.css 靠最后取胜是好几条断言的前提），
+    抄一份到测试里就等于给它开了个静默漂移的口子。这里直接读 base.html，
+    顺序一改，下面所有层叠计算跟着改，该红的会红。
+    """
+    links = re.findall(r"<link[^>]*rel=[\"']stylesheet[\"'][^>]*>", _template('base.html'))
+    out = []
+    for tag in links:
+        m = re.search(r"filename=['\"]([^'\"]+)['\"]", tag)
+        assert m, f'base.html 里有一条 <link rel=stylesheet> 不是 url_for 形态：{tag[:80]}'
+        out.append(os.path.join(_STATIC_DIR, *m.group(1).split('/')))
+    return out
+
+
+# 只有 `.css` 会参与层叠计算；`fonts.css` 里全是 @font-face，没有选择器规则，
+# 留着也无害，一并读进来省得维护第二张名单。
+def _all_sheets():
+    """[(短名, [(选择器, 规则体, at 上下文, 表内序号)])]，按 <link> 顺序。"""
+    out = []
+    for path in _stylesheet_load_order():
+        with open(path, encoding='utf-8') as f:
+            css = f.read()
+        rules = [
+            (sel, body, at_ctx, i)
+            for i, (sel, body, at_ctx) in enumerate(_rules_ctx(css))
+        ]
+        out.append((os.path.basename(path), rules))
+    return out
+
+
+def _bg_decl(body):
+    """规则体里最后一次 background / background-color 声明 -> (值, 是否!important)。
+
+    两个属性都要看：`background` 简写会把 `background-color` 一起覆盖，
+    只认其中一个等于留一半盲区（Task 9 在 select 箭头和 Leaflet 雪碧图上
+    分别踩过这个坑的另一面）。同名属性取最后一次 —— 与浏览器一致。
+    """
+    last = None
+    for m in re.finditer(r'(?<![-\w])(background|background-color)\s*:\s*([^;}]+)',
+                         body, re.I):
+        last = m.group(2).strip()
+    if last is None:
+        return None
+    return (_IMPORTANT_RE.sub('', last).strip(), bool(_IMPORTANT_RE.search(last)))
+
+
+def _bg_is_transparent(css, value):
+    """这个背景值渲染出来是「什么都没有」吗？
+
+    `transparent` / `none` / `rgba(...,0)` 三种写法都算。先解一层本站的 var()
+    —— 本项目的背景值大量写成 var(--color-bg-secondary)。
+
+    **解不出来的 var() 一律判为「非透明」**，这是刻意选的保守方向：那多半是
+    Bootstrap 的 `var(--bs-card-bg)` 之类，含义是「有人在这里明确要一个底色」。
+    判成透明的话，Bootstrap 组件会被当作「没人想给它底色」，主断言就看不见
+    `.modal-backdrop` 这种**只有 vendor 声明过背景**的受害者 —— 而那正是本次
+    最硬的那个缺陷。不用 _resolve_color：它对本文件之外的变量会直接断言失败。
+    """
+    v = _IMPORTANT_RE.sub('', value).strip().lower()
+    m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', v)
+    if m:
+        hit = re.search(re.escape(m.group(1)) + r'\s*:\s*([^;]+);', css)
+        if hit is None:
+            return False                   # 外部变量：保守当成「有人要底色」
+        v = hit.group(1).strip().lower()
+    if v in ('transparent', 'none', 'initial', 'unset', 'revert', '0 0'):
+        return True
+    m = re.match(r'^rgba?\(([^)]*)\)', v)
+    if m:
+        parts = [p.strip() for p in re.split(r'[,/]', m.group(1)) if p.strip()]
+        if len(parts) == 4:
+            try:
+                return float(parts[3]) == 0.0
+            except ValueError:
+                return False
+    return False
+
+
+# 单冒号写法的伪元素（CSS2 遗留，leaflet.css 通篇在用）。它们样式化的是另一个
+# 盒子，不参与宿主元素自身的背景层叠 —— 与 `::` 同等对待，判「不命中」。
+_LEGACY_PSEUDO_ELEMENTS = frozenset({'before', 'after', 'first-line', 'first-letter'})
+
+# 这些伪类描述的是「用户正在操作」的瞬时状态。本模型算的是**静止态**
+# （页面刚打开、鼠标不在上面）的渲染结果，它们一律判不成立。
+# 代价说清楚：悬停 / 聚焦 / 禁用态的背景不在本模型覆盖范围内。
+_INTERACTIVE_PSEUDOS = frozenset({
+    'hover', 'focus', 'focus-visible', 'focus-within', 'active',
+    'disabled', 'checked', 'target', 'visited', 'link', 'placeholder-shown',
+    'indeterminate', 'valid', 'invalid',
+})
+
+# 静止态一定成立、且本模型能判定的伪类。
+_RESTING_PSEUDOS = frozenset({'root'})
+
+
+def _compound_matches(compound, node):
+    """单个复合选择器命中这个元素吗？True / False / None(模型不支持)。
+
+    `node` = (标签, 类集合, id, 属性字典)。属性字典是从模板**原样**收上来的，
+    所以 `[data-bs-target]`、`[type=checkbox]` 这类判定是精确的，不是猜的。
+
+    看不懂的写法一律返回 None，由调用方报「模型已失效」——**绝不当成不匹配
+    放过去**。这是本文件反复出现的教训：静默少扫一条规则，等于给一个 bug
+    发免死金牌。
+    """
+    tag, classes, elem_id, attrs = node
+    if '::' in compound:
+        return False                       # 伪元素是另一个盒子
+    rest = compound
+    negatives = []
+    while True:
+        m = re.search(r':not\(([^()]*)\)', rest)
+        if not m:
+            break
+        negatives.append(m.group(1).strip())
+        rest = rest[:m.start()] + ' ' + rest[m.end():]
+    if '(' in rest or ')' in rest:
+        return None                        # 嵌套 / 函数式伪类，模型不支持
+    pseudos = re.findall(r':([-\w]+)', rest)
+    # 顺序是承重的：先看有没有「静止态一定不成立」的伪类，再挑剔看不懂的。
+    # 反过来的话 `.btn:first-child:active` 会因为 :first-child 被判「模型不支持」，
+    # 而它其实根本就是个按下态规则，静止态一定不命中。
+    if any(p in _LEGACY_PSEUDO_ELEMENTS or p in _INTERACTIVE_PSEUDOS for p in pseudos):
+        return False
+    for p in pseudos:
+        if p not in _RESTING_PSEUDOS:
+            return None
+        if p == 'root' and tag != 'html':
+            return False
+    rest = re.sub(r':[-\w]+', ' ', rest)
+    for attr in re.findall(r'\[([^\]]*)\]', rest):
+        m = re.fullmatch(r'([-\w]+)\s*(?:([~^$*|]?=)\s*[\'"]?([^\'"]*)[\'"]?)?',
+                         attr.strip())
+        if m is None:
+            return None
+        name, op, want = m.group(1).lower(), m.group(2), m.group(3)
+        have = attrs.get(name)
+        if op is None:                     # `[attr]` 存在性
+            if have is None:
+                return False
+            continue
+        if have is None:
+            return False
+        if op == '=':
+            ok = have == want
+        elif op == '~=':
+            ok = want in have.split()
+        elif op == '*=':
+            ok = want in have
+        elif op == '^=':
+            ok = have.startswith(want)
+        elif op == '$=':
+            ok = have.endswith(want)
+        else:
+            return None                    # `|=`，本站没用到，不猜
+        if not ok:
+            return False
+    rest = re.sub(r'\[[^\]]*\]', ' ', rest)
+    ids = re.findall(r'#([-\w]+)', rest)
+    sel_classes = set(re.findall(r'\.([-\w]+)', rest))
+    bare = re.sub(r'[#.][-\w]+', ' ', rest).strip()
+    if bare and bare != '*':
+        if not re.fullmatch(r'[a-zA-Z][-\w]*', bare):
+            return None                    # 组合符残渣等，模型不支持
+        if bare.lower() != tag:
+            return False
+    if any(i != elem_id for i in ids):
+        return False
+    if not sel_classes <= classes:
+        return False
+    for neg in negatives:
+        sub = _compound_matches(neg, node)
+        if sub is None:
+            return None
+        if sub:
+            return False                   # :not() 的参数命中了 = 整体不命中
+    return True
+
+
+def _split_branch(branch):
+    """`.a > .b .c` -> [('.a', None), ('.b', '>'), ('.c', ' ')]，组合符跟在**右**边那项上。
+
+    返回 None 表示写法看不懂。
+    """
+    toks = re.findall(r'[>+~]|[^\s>+~]+', branch)
+    if not toks or toks[0] in '>+~':
+        return None
+    out = [(toks[0], None)]
+    i = 1
+    while i < len(toks):
+        if toks[i] in '>+~':
+            if i + 1 >= len(toks) or toks[i + 1] in '>+~':
+                return None
+            out.append((toks[i + 1], toks[i]))
+            i += 2
+        else:
+            out.append((toks[i], ' '))
+            i += 1
+    return out
+
+
+def _branch_matches(branch, chain):
+    """选择器分支命中 chain 末尾那个元素吗？chain = [(tag, classes, id), ...]。
+
+    支持后代（空格）与子（`>`）组合符 —— 两者都能从祖先链精确判定。
+    兄弟组合符（`+` `~`）返回 None：本模型不记兄弟节点，当成后代会**多**匹配
+    （可能把一条其实管不到的规则算成赢家），当成不匹配又会漏。响亮失败是唯一出路。
+
+    **判定顺序是承重的：先判主体复合项「肯定不命中」，再判形态不支持。**
+    反过来写的话，Bootstrap 里一大堆打在 <a>/<label>/伪元素上、与 div 八竿子
+    打不着的规则（`.btn-check:checked+.btn`、`.form-floating>.form-control~label::after`）
+    会把模型整个顶成「已失效」。第一版就是这么炸的：21 条不支持里没有一条
+    真能命中 div。
+    """
+    parts = _split_branch(branch)
+    if parts is None:
+        return None
+    subject = _compound_matches(parts[-1][0], chain[-1])
+    if subject is not True:
+        return subject
+    if any(comb in ('+', '~') for _c, comb in parts):
+        return None
+    ancestors = list(chain[:-1])
+    # parts[i] 上挂的组合符描述的是 parts[i-1] 与 parts[i] 的关系，
+    # 所以从右往左走时要用 parts[i].comb 决定 parts[i-1] 匹配「直接父」还是「任意祖先」。
+    for i in range(len(parts) - 1, 0, -1):
+        comp, comb = parts[i - 1][0], parts[i][1]
+        if comb == '>':
+            if not ancestors:
+                return False
+            r = _compound_matches(comp, ancestors.pop())
+            if r is None:
+                return None
+            if not r:
+                return False
+            continue
+        while ancestors:
+            r = _compound_matches(comp, ancestors.pop())
+            if r is None:
+                return None
+            if r:
+                break
+        else:
+            return False
+    return True
+
+
+class _DomChainCollector(HTMLParser):
+    """把模板解析成一棵树，产出每个元素的 (tag, classes, id) 祖先链（含自身）。
+
+    Jinja 的 `{% ... %}` / `{{ ... }}` 对 HTMLParser 来说只是文本，不影响标签树。
+    void 元素单独列出来，否则 `<img>` 会被当成开标签一直挂在栈上，
+    把它后面所有兄弟节点都错算成它的后代。
+    """
+
+    VOID = frozenset({
+        'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+        'meta', 'param', 'source', 'track', 'wbr',
+    })
+
+    def __init__(self, prefix):
+        super().__init__(convert_charrefs=True)
+        self.stack = list(prefix)
+        self.chains = []
+
+    def _node(self, tag, attrs):
+        a = {k.lower(): (v or '') for k, v in attrs}
+        # 第四位是**完整**属性字典。少了它，`[data-bs-target]` / `[type=checkbox]`
+        # 这类选择器只能判「模型不支持」，Bootstrap 里一大批规则会把自检顶红。
+        return (tag.lower(), set(a.get('class', '').split()), a.get('id', ''), a)
+
+    def handle_starttag(self, tag, attrs):
+        node = self._node(tag, attrs)
+        self.stack.append(node)
+        self.chains.append(list(self.stack))
+        if tag.lower() in self.VOID:
+            self.stack.pop()
+
+    def handle_startendtag(self, tag, attrs):
+        self.stack.append(self._node(tag, attrs))
+        self.chains.append(list(self.stack))
+        self.stack.pop()
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in self.VOID:
+            return
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                return
+
+
+# base.html 把页面内容放进 `<main class="main-content">`（:95-97）。
+# 页面模板里的元素在浏览器里的真实祖先链因此多这两层。
+_PAGE_CHAIN_PREFIX = (
+    ('html', set(), '', {}),
+    ('body', set(), '', {}),
+    ('main', {'main-content'}, '', {}),
+)
+
+# 运行时才出现、grep 模板永远看不到的 <div>。
+#
+# 为什么必须显式登记：本次两个最重要的受害者都在这张表里 ——
+# `.task-card` 由 tasks.js 的 createTaskCard 拼字符串塞进 innerHTML，
+# `.modal-backdrop` 由 Bootstrap 的 Modal 组件插到 <body> 末尾。
+# 只扫模板的话，这两个类一个都看不见，而「弹窗遮罩从来没暗过」正是本次
+# 要修的那个缺陷。祖先链按真实 DOM 写（CDP 实测确认过层级）。
+#
+# 每一条都由 test_runtime_injected_div_table_is_grounded 反查来源，防止表烂掉。
+_RUNTIME_INJECTED_DIVS = (
+    (
+        'tasks.js createTaskCard 生成的任务卡（#activeTasksList 的直接子节点）',
+        'static/js/tasks.js', 'task-card',
+        _PAGE_CHAIN_PREFIX + (
+            ('div', {'index-layout'}, '', {}),
+            ('div', {'index-right'}, '', {}),
+            ('div', {'card'}, '', {}),
+            ('div', {'card-body'}, '', {}),
+            ('div', set(), 'activeTasksList', {}),
+            ('div', {'task-card', 'status-running'}, '', {}),
+        ),
+    ),
+    (
+        'Bootstrap Modal 运行时插到 <body> 末尾的遮罩',
+        'static/vendor/bootstrap/5.3.0/bootstrap.bundle.min.js', 'modal-backdrop',
+        (
+            ('html', set(), '', {}),
+            ('body', {'modal-open'}, '', {}),
+            ('div', {'modal-backdrop', 'fade', 'show'}, '', {}),
+        ),
+    ),
+    (
+        'ui.js showToast 生成的常驻提示条',
+        'static/js/ui.js', 'app-toast',
+        (
+            ('html', set(), '', {}),
+            ('body', set(), '', {}),
+            ('div', set(), 'app-toast-container', {}),
+            ('div', {'app-toast', 'app-toast--info'}, '', {}),
+        ),
+    ),
+    (
+        'ui.js showConfirm 生成的确认框与它的遮罩',
+        'static/js/ui.js', 'app-confirm',
+        (
+            ('html', set(), '', {}),
+            ('body', set(), '', {}),
+            ('div', {'app-confirm-overlay'}, '', {}),
+            ('div', {'app-confirm'}, '', {}),
+        ),
+    ),
+    (
+        'Leaflet 绘制提示条（popupPane 里的 div，只在绘制模式下存在）',
+        'static/vendor/leaflet.draw/1.0.4/leaflet.draw.js', 'leaflet-draw-tooltip',
+        _PAGE_CHAIN_PREFIX + (
+            ('div', {'index-layout'}, '', {}),
+            ('div', {'index-left'}, '', {}),
+            ('div', {'card'}, '', {}),
+            ('div', {'card-body'}, '', {}),
+            ('div', {'leaflet-container', 'leaflet-touch'}, 'map', {}),
+            ('div', {'leaflet-pane', 'leaflet-map-pane'}, '', {}),
+            ('div', {'leaflet-pane', 'leaflet-popup-pane'}, '', {}),
+            ('div', {'leaflet-draw-tooltip'}, '', {}),
+        ),
+    ),
+)
+
+
+def _modeled_div_chains():
+    """本模型覆盖的全部 <div>：三个页面模板 + base.html + 运行时注入表。
+
+    返回 [(来源说明, chain)]，chain 末尾就是那个 div。
+    """
+    out = []
+    base_chains = _DomChainCollector(())
+    base_chains.feed(_template('base.html'))
+    base_chains.close()
+    for chain in base_chains.chains:
+        if chain[-1][0] == 'div':
+            out.append(('base.html', chain))
+    for name in sorted(n for n in os.listdir(_TEMPLATES_DIR)
+                       if n.endswith('.html') and n != 'base.html'):
+        c = _DomChainCollector(_PAGE_CHAIN_PREFIX)
+        c.feed(_template(name))
+        c.close()
+        for chain in c.chains:
+            if chain[-1][0] == 'div':
+                out.append((name, chain))
+    for label, _src, _marker, chain in _RUNTIME_INJECTED_DIVS:
+        out.append(('运行时: ' + label, list(chain)))
+    return out
+
+
+# 层叠里的一条候选背景声明。
+#   sheet_i / rule_i  = 样式表顺序 / 表内规则顺序，用来在同特异度时判先后
+#   targeted          = 这条规则的**主体复合项**带不带类/id
+#                       —— 即它到底「认不认识」这个元素，见下面主断言的说明
+_BgCand = collections.namedtuple(
+    '_BgCand', 'sheet sheet_i rule_i sel branch value important spec targeted')
+
+
+def _bg_candidates(chain, sheets):
+    """命中 chain 末尾那个元素的全部背景声明。返回 (候选列表, 不支持的规则列表)。"""
+    cands, unsupported = [], []
+    for sheet_i, (sheet, rules) in enumerate(sheets):
+        for sel, body, at_ctx, rule_i in rules:
+            decl = _bg_decl(body)
+            if decl is None:
+                continue
+            for branch in _selector_parts(sel):
+                hit = _branch_matches(branch, chain)
+                if hit is None:
+                    unsupported.append((sheet, branch))
+                    continue
+                if not hit:
+                    continue
+                if at_ctx:
+                    # 条件组 at-rule：默认渲染环境（1600x1000、无 reduce 偏好）
+                    # 下是否成立没建模。命中了就必须响亮失败，不能当没看见。
+                    unsupported.append((sheet, f'{branch} @ {at_ctx}'))
+                    continue
+                subject = branch.split()[-1]
+                targeted = bool(re.search(r'[.#][-\w]+', re.sub(r':not\([^)]*\)', '', subject)))
+                cands.append(_BgCand(
+                    sheet, sheet_i, rule_i, sel, branch, decl[0], decl[1],
+                    _btn_specificity(branch), targeted))
+    return cands, unsupported
+
+
+def _winning_bg(cands):
+    """按 CSS 层叠规则挑赢家：先 !important，再特异度，再出现顺序。"""
+    if not cands:
+        return None
+    return max(cands, key=lambda c: (c.important, c.spec, c.sheet_i, c.rule_i))
+
+
+def _describe(chain):
+    tag, classes, elem_id, _attrs = chain[-1]
+    bits = tag + ('#' + elem_id if elem_id else '')
+    if classes:
+        bits += '.' + '.'.join(sorted(classes))
+    return bits
+
+
+def test_the_div_background_cascade_model_still_understands_every_rule():
+    """层叠模型的自检：不许有「模型看不懂」的规则悄悄被跳过。
+
+    这条是下面三条结果类断言的**地基**。模型跳过一条它读不懂的规则时不会
+    报错，只会少算一个候选者——赢家可能因此算错，而断言全绿。
+    Phase 2 的教训（`_rules_ctx` 被一句 `@import` 蒙住 283 条断言）就是这么来的：
+    静默少扫没有任何症状。所以把「跳过了什么」单独提出来当一条断言。
+
+    扫描范围：base.html + 三个页面模板里的每一个 <div>（含 base 前缀链），
+    外加 _RUNTIME_INJECTED_DIVS 里 5 条运行时注入的 div，
+    对照 base.html 里 <link> 顺序加载的全部样式表。
+    """
+    sheets = _all_sheets()
+    chains = _modeled_div_chains()
+    assert len(chains) >= 60, (
+        f'模型只扫到 {len(chains)} 个 div —— 模板解析多半坏了（正常在 90 上下）'
+    )
+    bad = collections.Counter()
+    for _src, chain in chains:
+        _c, unsupported = _bg_candidates(chain, sheets)
+        for sheet, branch in unsupported:
+            bad[(sheet, branch)] += 1
+    assert not bad, (
+        '有带背景声明的规则命中了模型里的 div，但模型读不懂它的选择器 / at-rule 上下文。\n'
+        '在扩模型之前，下面三条结果类断言算出来的「赢家」都不可信：\n'
+        + '\n'.join(f'  {s}: {b}' for (s, b), _n in sorted(bad.items())[:20])
+    )
+
+
+def test_no_div_loses_its_background_to_a_rule_that_does_not_know_it():
+    """**本次的主断言**：没有任何 div 的背景可以被一条「不认识它」的规则夺走。
+
+    「不认识它」= 那条规则的**主体复合项里一个类 / id 都没有**（`div`、`*`、
+    `div:not(.a):not(.b)...`）。这种规则是按标签一刀切的，它不针对任何具体组件，
+    却因为堆 `:not()` 能把特异度堆到任意高，从而压掉每一个组件自己的背景声明。
+    被删掉的那条兜底重置正是这个形态：(0,11,1)，比 `.stat-card`(0,1,0) 高 10 个类。
+
+    判定式：某个 div 只要有**任何**一张样式表用「带类 / id 的选择器」给它声明过
+    非透明背景（= 有人明确想让这个组件有底色），那么层叠的赢家也必须是一条
+    带类 / id 的规则。赢家是「一刀切」规则 = 这个组件的底色被一条不认识它的
+    规则抢走了 = 红。
+
+    为什么用这个判定式而不是「赢家必须非透明」：`.leaflet-container` 是反例 ——
+    leaflet.css 给它 `#ddd` 浅灰，本站**故意**用 `.leaflet-container{background:
+    transparent}` 盖掉，让地图空白处露出宿主面板。那是一个针对性的、写明理由的
+    本地决定，不该判红。而兜底重置压 `.modal-backdrop` 不是决定，是误伤。
+
+    改前这条断言会红在哪（CDP 实测同步确认，Chrome 148）：
+        div.modal-backdrop.fade.show     rgba(0,0,0,0) -> rgb(0,0,0)
+        div.index-right                  rgba(0,0,0,0) -> rgb(12,13,16)
+        div.config-section         x6    rgba(0,0,0,0) -> rgb(21,23,28)
+        div.stat-card              x8    rgba(0,0,0,0) -> rgb(21,23,28)
+        div.modal-header           x2    rgba(0,0,0,0) -> rgb(21,23,28)
+        div.task-card              x8    rgba(0,0,0,0) -> rgb(21,23,28)
+    其中 modal-backdrop 是硬缺陷：`.modal-backdrop{--bs-backdrop-bg:#000}` 只有
+    (0,1,0)，被 (0,11,1) 压成透明，**这个应用从上线到现在打开弹窗背后都没暗过**。
+
+    覆盖范围（诚实说明）：只算静止态（无 hover / focus）、只算默认视口
+    （不进 @media，进了会被上面那条自检顶红）、只覆盖
+    _modeled_div_chains() 圈定的 div。悬停态与响应式断点下的背景不在范围内。
+    """
+    sheets = _all_sheets()
+    css = _css()
+    problems = []
+    for src, chain in _modeled_div_chains():
+        cands, _ = _bg_candidates(chain, sheets)
+        wanted = [c for c in cands
+                  if c.targeted and not _bg_is_transparent(css, c.value)]
+        if not wanted:
+            continue
+        win = _winning_bg(cands)
+        if win.targeted:
+            continue
+        problems.append(
+            f'{src} 的 {_describe(chain)}\n'
+            f'      想要的底色：{wanted[-1].sheet} `{wanted[-1].branch}` '
+            f'{{ background: {wanted[-1].value} }} 特异度 {wanted[-1].spec}\n'
+            f'      实际赢家：  {win.sheet} `{win.branch}` '
+            f'{{ background: {win.value} }} 特异度 {win.spec}'
+            + ('（!important）' if win.important else '')
+        )
+    assert not problems, (
+        '这些 div 的背景被一条「主体选择器里没有任何类 / id」的规则夺走了 —— '
+        '源码里写着，浏览器里没有：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_no_blanket_type_selector_may_outrank_a_component_background():
+    """形态补位：**一刀切**的背景重置，特异度不许 >= (0,1,0)。
+
+    上一条只在「模型里恰好有受害者」时才红。这条不依赖受害者：只要有人再写出
+    被删掉的那条兜底重置的形态，当场红，即使那天页面上没有任何 div 受影响。
+
+    「一刀切」的精确定义（四条同时成立才算）：
+      1. 单个复合项，没有后代 / 子 / 兄弟组合符 —— `.leaflet-bar a` 有祖先类
+         限定，它知道自己在管谁，不算；
+      2. 主体不是伪元素（`::-webkit-scrollbar-thumb` 样式化的是另一个盒子，
+         夺不走宿主的背景）；
+      3. 不带交互伪类（`:hover` 之流只在用户操作时成立，不是静止态的一刀切）；
+      4. 除去 `:not()` 之后，选择器里**一个类 / id / 属性都没有** ——
+         也就是它只按标签名筛元素，对具体组件一无所知。
+         `[class*="col-"]` 有属性限定，它知道自己在管栅格列，不算。
+
+    门槛为什么划在 (0,1,0)：`div{...}` 是 (0,0,1)，输给每一条
+    `.foo{background}`(0,1,0)，改不了任何东西；加**一个** `:not(.x)` 就变成
+    (0,1,1)，已经压得过所有组件的背景声明。被删掉的兜底重置是 (0,11,1) ——
+    11 个 `:not(.class)` 各贡献一个类，纯粹为了赢层叠而堆出来的。
+
+    ⚠️ 也正因为 (0,0,1) 的 `div { background: transparent }` 改不了任何东西，
+    本次选的是**整条删除**而不是降级：CDP 实测（三页 6 场景 1699 个元素逐一
+    对拍）两种形态渲染结果差异为 0，留着只是把结构债换个写法。
+
+    扫描范围：style.css 顶层 + 全部 @media 内的规则（用 _rules_ctx，
+    媒体查询里藏一条同样有效）。
+    """
+    css = _css()
+    offenders = []
+    for sel, body, at_ctx in _rules_ctx(css):
+        if _bg_decl(body) is None:
+            continue
+        for branch in _selector_parts(sel):
+            parts = _split_branch(branch)
+            if parts is None or len(parts) != 1:
+                continue                    # 有组合符 = 有上下文限定
+            subject = parts[0][0]
+            if '::' in subject:
+                continue
+            pseudos = re.findall(r':([-\w]+)', subject)
+            if any(p in _LEGACY_PSEUDO_ELEMENTS or p in _INTERACTIVE_PSEUDOS
+                   for p in pseudos):
+                continue
+            if re.search(r'[.#][-\w]+|\[', re.sub(r':not\([^)]*\)', '', subject)):
+                continue                    # 带类 / id / 属性 = 有针对性
+            spec = _btn_specificity(branch)
+            if spec >= (0, 1, 0):
+                offenders.append(
+                    f'{branch}  特异度 {spec}'
+                    + (f'  （在 {at_ctx} 里）' if at_ctx else '')
+                )
+    assert not offenders, (
+        '这些规则只按标签名一刀切地设背景，特异度却压得过组件自己的 '
+        '`.foo{background}`(0,1,0)。\n'
+        '这正是被删掉的 `div:not(...)...` 兜底重置的形态，不要让它换个写法回来：\n'
+        + '\n'.join('  ' + o for o in offenders)
+    )
+
+
+def test_no_stylesheet_gives_a_bare_div_a_background():
+    """前提钉子：四张样式表里没有任何一条用**裸 div 类型选择器**给背景。
+
+    这是「整条删掉兜底重置」这个决定的依据。若哪天 vendor 升级后冒出
+    `div{background:#fff}` 之类的规则，本站就真的需要一条 (0,0,1) 的
+    `div{background:transparent}` 去压它 —— 那时这条断言变红，逼一次显式决策，
+    而不是让首页在某次升级后静默变白。
+
+    扫描范围：base.html 里 <link> 进来的每一张 .css，含 @media 内部。
+    """
+    hits = []
+    for path in _stylesheet_load_order():
+        with open(path, encoding='utf-8') as f:
+            sheet = f.read()
+        for sel, body, at_ctx in _rules_ctx(sheet):
+            if _bg_decl(body) is None:
+                continue
+            for branch in _selector_parts(sel):
+                parts = _split_branch(branch)
+                if parts is None:
+                    continue
+                subject = re.sub(r':not\([^)]*\)|::?[-\w]+', '', parts[-1][0]).strip()
+                if subject == 'div':
+                    hits.append(f'{os.path.basename(path)}: {branch}'
+                                + (f' （在 {at_ctx} 里）' if at_ctx else ''))
+    assert not hits, (
+        '有样式表用裸 `div` 类型选择器给背景。style.css 删掉兜底重置的前提'
+        '（「div 的默认背景本来就是透明，没人动它」）不再成立，需要重新决策：\n'
+        + '\n'.join('  ' + h for h in hits)
+    )
+
+
+def test_runtime_injected_div_table_is_grounded():
+    """`_RUNTIME_INJECTED_DIVS` 的每一条都必须在真实源码里找得到出处。
+
+    这张表是**手写**的 —— 模板里 grep 不到 `.task-card` / `.modal-backdrop`，
+    它们由 JS 在运行时插进 DOM，只能人工登记。手写表的通病是烂掉：类名改了、
+    组件删了，表还在，上面那条主断言就对着一个不存在的元素空转，全绿。
+
+    这里反查两件事：
+      1. 每条登记的类名在它声明的源文件里真的出现过；
+      2. 每条链末尾那个 div 确实带着这个类（防止抄错行）。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert len(_RUNTIME_INJECTED_DIVS) == 5, (
+        f'运行时注入表有 {len(_RUNTIME_INJECTED_DIVS)} 条，与 docstring 描述的 5 条不符'
+    )
+    problems = []
+    for label, src, marker, chain in _RUNTIME_INJECTED_DIVS:
+        path = os.path.join(root, *src.split('/'))
+        if not os.path.exists(path):
+            problems.append(f'{label}: 声称的出处 {src} 不存在')
+            continue
+        with open(path, encoding='utf-8', errors='ignore') as f:
+            text = f.read()
+        if marker not in text:
+            problems.append(f'{label}: {src} 里已经找不到类名 `{marker}`')
+        if marker not in chain[-1][1]:
+            problems.append(f'{label}: 祖先链末尾的 div 没带 `{marker}`')
+    assert not problems, (
+        '运行时注入 div 表和源码对不上了 —— 主断言正在对着不存在的元素空转：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
+# Bootstrap 里给容器上背景、但本站**不打算**在 style.css 里覆盖的类，
+# 逐条写明为什么可以不管。每一条都是 CDP 实测过的（Chrome 148，删除兜底重置之后）。
+_BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED = {
+    'btn-close':
+        '弹窗右上角的关闭叉。它是 <button>，且 Bootstrap 给的是 '
+        '`transparent var(--bs-btn-close-bg) center/1em` —— 一张 data:URI 的 SVG 图标，'
+        '不是底色。实测 computed background-color = rgba(0,0,0,0)。',
+    'navbar-toggler':
+        '窄屏汉堡按钮。它是 <button>，Bootstrap 声明的就是 transparent，'
+        '实测 rgba(0,0,0,0)，没有需要覆盖的灰。',
+    'modal-footer':
+        'Bootstrap 5.3.0 只写了 `background-color: var(--bs-modal-footer-bg)`，'
+        '而这个变量在 5.3.0 里**从未被赋值**，实测 computed 是 rgba(0,0,0,0)。'
+        '它落在 .modal-content 的 #15171c 上，视觉上就是弹窗底色，正确。',
+    'alert':
+        'Bootstrap 的 `.alert{background-color:var(--bs-alert-bg)}` 里那个变量'
+        '由变体类赋值，而本站在 style.css 里覆盖的正是变体（.alert-info / '
+        '.alert-danger）。实测 #boundsInfo = rgba(59,130,246,0.1)，是本站的值。',
+}
+
+
+def test_no_bootstrap_component_background_reaches_a_div_unreviewed():
+    """在用的 Bootstrap 背景组件，要么本站覆盖过，要么写明为什么不覆盖。
+
+    **这条守的是删掉兜底重置之后新出现的长期风险。** 兜底重置在的时候，
+    Bootstrap 给任何 div 的背景都被 (0,11,1) 一律压平；删掉之后它们全部生效。
+    本站已经覆盖过的组件没问题，但 Bootstrap 5.3.0 里还有一批容器自带
+    `#212529` / `#2b3035` / `rgba(33,37,41,.85)` 这类灰，与本站调色板的
+    `#15171c` 不同源：
+
+        .dropdown-menu    #212529        .offcanvas        #212529
+        .popover          #212529        .toast            rgba(33,37,41,.85)
+        .input-group-text #2b3035
+
+    这些类今天在模板和 JS 里一个都不存在，所以不进受害者清单。但如果没有这条
+    断言，**将来任何人往页面里加一个这样的组件，拿到的就是 Bootstrap 的灰，
+    而且没有任何测试会红**。
+
+    判定方式：把 bootstrap.min.css 里「主体是单个类、且声明了背景」的类，与
+    模板 + JS 里真实出现过的类求交集；交集里的每一个类，要么 style.css 里
+    有一条选择器带上它的背景规则（= 本站做过决定），要么在
+    _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED 里写明理由。
+
+    JS 也要扫：`.app-toast` 那批就是 JS 拼出来的，只扫模板会漏掉一半界面。
+    扫的是 `class="..."`、`className = "..."`、`classList.add('...')` 三种形态。
+
+    覆盖范围（诚实说明）：这条按**类名**判定，不判层叠 —— 「做过决定」不等于
+    「决定生效了」。生效与否由上面那条主断言负责。两条一起才是完整的。
+    """
+    bs_path = os.path.join(_VENDOR_DIR, 'bootstrap', '5.3.0', 'bootstrap.min.css')
+    with open(bs_path, encoding='utf-8') as f:
+        bs = f.read()
+    bs_bg = {}
+    for sel, body, _ctx in _rules_ctx(bs):
+        decl = _bg_decl(body)
+        if decl is None:
+            continue
+        for branch in _selector_parts(sel):
+            parts = _split_branch(branch)
+            if parts is None:
+                continue
+            if re.fullmatch(r'\.[-\w]+', parts[-1][0]):
+                bs_bg.setdefault(parts[-1][0][1:], decl[0])
+    assert len(bs_bg) > 50, (
+        f'只从 bootstrap.min.css 里扫出 {len(bs_bg)} 个带背景的类 —— 解析多半坏了'
+    )
+
+    used = set()
+    for name in os.listdir(_TEMPLATES_DIR):
+        if name.endswith('.html'):
+            for attr in re.findall(r'class="([^"]*)"', _template(name)):
+                used |= set(attr.split())
+    for name in sorted(n for n in os.listdir(_JS_DIR) if n.endswith('.js')):
+        src = re.sub(r'/\*.*?\*/', '', _js(name), flags=re.S)
+        src = re.sub(r'(?m)^\s*//.*$', '', src)
+        for attr in re.findall(r'class="([^"]*)"', src):
+            used |= set(re.sub(r'\$\{[^}]*\}', ' ', attr).split())
+        for attr in re.findall(r"className\s*=\s*['\"]([^'\"]*)['\"]", src):
+            used |= set(attr.split())
+        for call in re.findall(r"classList\.(?:add|toggle)\(([^)]*)\)", src):
+            used |= set(re.findall(r"['\"]([-\w]+)['\"]", call))
+    assert len(used) > 80, f'只从模板 + JS 里扫出 {len(used)} 个类名 —— 解析多半坏了'
+
+    styled = set()
+    for sel, body, _ctx in _rules_ctx(_css()):
+        if _bg_decl(body) is None:
+            continue
+        for branch in _selector_parts(sel):
+            parts = _split_branch(branch)
+            if parts is None:
+                continue
+            styled |= set(re.findall(r'\.([-\w]+)', parts[-1][0]))
+
+    unreviewed = sorted(
+        c for c in (set(bs_bg) & used)
+        if c not in styled and c not in _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED
+    )
+    assert not unreviewed, (
+        '这些 Bootstrap 组件类在模板 / JS 里用上了，Bootstrap 会给它们上背景，'
+        '而 style.css 里没有任何背景规则提到它们 —— 界面上会出现 Bootstrap 自己的灰，'
+        '不是本站调色板的颜色。\n'
+        '要么在 style.css 里覆盖，要么登记进 '
+        '_BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED 并写明理由：\n'
+        + '\n'.join(f'  .{c}  Bootstrap 给的是 {bs_bg[c]}' for c in unreviewed)
+    )
+
+    stale = sorted(
+        c for c in _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED
+        if c not in (set(bs_bg) & used)
+    )
+    assert not stale, (
+        '豁免表里有已经不成立的条目（组件不再使用，或 Bootstrap 不再给它背景），'
+        '留着只会让下一个人以为这里被想过：\n' + '\n'.join('  .' + c for c in stale)
+    )
+
+
+# 本次「根治兜底重置」修复的**全部受害者**，逐个登记期望值。
+#
+# 为什么在通用层叠断言之外还要这张表：变异实验 M4 暴露的盲区 ——
+# 通用断言的判定式是「有人声明了背景，就必须是它赢」，那么**把声明本身删掉**
+# 就没有受害者可查，测试全绿而 `.stat-card` 在页面上重新变透明。
+# 这张表把「这些底色必须存在」写死，堵住那条路。
+#
+# 值全部来自 CDP 实测（Chrome 148，1600x1000，删除兜底重置之后）。
+# 「改前」一栏是同一台浏览器在删除之前读到的 computed background-color。
+_DIV_BACKGROUNDS_THAT_MUST_RENDER = {
+    # 类名/说明: (取链的方式, 期望的最终色, 改前实测值)
+    '.index-right（首页右侧整个面板）':
+        ('index.html', {'index-right'}, '--color-bg-primary', 'rgba(0, 0, 0, 0)'),
+    '.config-section（配置页 6 个分区）':
+        ('config.html', {'config-section'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
+    '.stat-card（历史页 4 张统计卡）':
+        ('history.html', {'stat-card'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
+    '.modal-header（历史页详情弹窗标题栏）':
+        ('history.html', {'modal-header'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
+}
+
+
+def _chains_with_classes(template, classes):
+    """模板里所有 class 包含 `classes` 的 div 的祖先链。"""
+    return [chain for src, chain in _modeled_div_chains()
+            if src == template and classes <= chain[-1][1]]
+
+
+def test_every_victim_of_the_deleted_blanket_reset_renders_its_background():
+    """兜底重置的每一个受害者，底色都必须**存在**且是登记的那个值。
+
+    这条与上面的通用层叠断言是互补的，不是重复：
+      - 通用断言查「声明存在时，它有没有赢」——挡住「有人又写了条更强的规则」；
+      - 这条查「声明还在不在」——挡住「有人直接把声明删了」。
+        变异 M4（删掉 `.stat-card { background }`）在只有通用断言时**全绿**，
+        因为没有声明就没有受害者。这条会红。
+
+    受害者清单是实测出来的，不是抄文档的：删除兜底重置前后，三个页面 6 个场景
+    共 1699 个元素逐元素对拍 computed background-color，28 个元素发生变化。
+    去重后的 6 类里，这里登记 4 个模板里的；另外两个在运行时才存在，
+    由下面两条单独查（`.task-card` 与 `div.modal-backdrop`）。
+
+    `.card-header` 也在那 28 个里，但它声明的值本来就是 transparent，
+    视觉零差异，不登记。
+    """
+    css = _css()
+    problems = []
+    for label, (template, classes, expect, before) in \
+            sorted(_DIV_BACKGROUNDS_THAT_MUST_RENDER.items()):
+        chains = _chains_with_classes(template, classes)
+        if not chains:
+            problems.append(f'{label}: {template} 里已经找不到这个 div —— 清单过期')
+            continue
+        want = _palette_var(css, expect) if expect.startswith('--') else expect
+        for chain in chains:
+            win = _effective_bg_for(chain)
+            if win is None or _bg_is_transparent(css, win.value):
+                problems.append(
+                    f'{label}: 最终底色又变回透明了（改前实测就是 {before}）'
+                    + (f'，赢家是 {win.sheet} 的 `{win.branch}`' if win else '，没有任何声明命中它')
+                )
+                continue
+            got = _resolve_color(css, win.value)
+            if got.replace(' ', '') != want.replace(' ', ''):
+                problems.append(
+                    f'{label}: 最终底色是 {got}（来自 {win.sheet} 的 `{win.branch}`），'
+                    f'登记的期望是 {want}'
+                )
+    assert not problems, (
+        '兜底重置的受害者又失去底色了 —— 这些正是这次修复要让它们出现的：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_task_card_and_modal_backdrop_render_their_background():
+    """两个运行时注入的受害者：任务卡底色 + **弹窗遮罩必须变暗**。
+
+    `div.modal-backdrop` 是本次最硬的验收点。Bootstrap 的
+    `.modal-backdrop{--bs-backdrop-bg:#000; background-color:var(--bs-backdrop-bg)}`
+    只有 (0,1,0)，被兜底重置的 (0,11,1) 压成透明 —— **这个应用从上线到现在，
+    打开任何弹窗背后都没有暗过**。元素在、opacity 是 0.5，就是没有颜色。
+
+    CDP 合成像素实测（Chrome 148，1600x1000，history 页详情弹窗，
+    取 x=60 / x=1540 两处——对话框居中占 x∈[400,1200]，这两点只有遮罩）：
+        改前：不开弹窗 rgb(12,13,16) -> 开弹窗 rgb(12,13,16)   零变化
+        改后：不开弹窗 rgb(12,13,16) -> 开弹窗 rgb(6,6,8)      正好压暗一半
+    6 ≈ 12*0.5、8 = 16*0.5，与 `#000` @ opacity .5 的合成结果逐通道吻合。
+
+    `.task-card` 同理：改前 rgba(0,0,0,0)（底色靠祖先 `.card` 恰好同色蒙混过去），
+    改后 rgb(21,23,28)，`.task-card{background:var(--color-bg-secondary)}`
+    从死声明变成活声明。
+    """
+    css = _css()
+    lookup = {}
+    for src, chain in _modeled_div_chains():
+        for cls in ('task-card', 'modal-backdrop'):
+            if cls in chain[-1][1]:
+                lookup[cls] = chain
+    assert set(lookup) == {'task-card', 'modal-backdrop'}, (
+        f'运行时注入表里找不到 {"task-card / modal-backdrop"} —— 本测试已失效，'
+        f'只找到 {sorted(lookup)}'
+    )
+    problems = []
+    win = _effective_bg_for(lookup['task-card'])
+    if win is None or _bg_is_transparent(css, win.value):
+        problems.append('.task-card 的底色又是透明的（改前实测 rgba(0,0,0,0)）')
+    elif _resolve_color(css, win.value) != _palette_var(css, '--color-bg-secondary'):
+        problems.append(
+            f'.task-card 的底色变成了 {win.value}，不再是 --color-bg-secondary'
+        )
+    win = _effective_bg_for(lookup['modal-backdrop'])
+    if win is None:
+        problems.append('div.modal-backdrop 没有任何背景声明命中 —— 弹窗遮罩不会变暗')
+    elif _bg_is_transparent(css, win.value):
+        problems.append(
+            f'div.modal-backdrop 的最终背景是 {win.value}（来自 {win.sheet} 的 '
+            f'`{win.branch}`）—— 遮罩透明，打开弹窗背后不会变暗。'
+            '这正是 vendor 本地化交付时唯一未达标的那一项。'
+        )
+    assert not problems, '\n'.join('  ' + p for p in problems)
+
+
+def test_map_container_does_not_show_leaflets_light_grey():
+    """地图容器不许露出 leaflet.css 的 `#ddd` 浅灰。
+
+    这条是**删除兜底重置时新发现的**风险，不在原受害者清单里：
+    `leaflet.css:260 .leaflet-container { background: #ddd }` (0,1,0) 原先也被
+    (0,11,1) 压着，兜底重置一删就冒出来了。CDP 实测 #map 与 .history-map
+    两个容器的 computed background-color 双双变成 rgb(221,221,221) ——
+    瓦片没加载完 / 盖不满的地方就是一片浅灰。
+
+    修法是 style.css 里一条同特异度的 `.leaflet-container{background:transparent}`，
+    靠源码顺序赢（style.css 排最后，由 test_style_css_is_the_last_stylesheet 钉住）。
+    选 transparent 而不是某个具体色，是为了让空白处露出宿主面板，与删除前
+    逐像素相同 —— 实测整页 1600x1000 截图差异 0 像素。
+
+    变异实验 M5 证明这条是必要的：把那条规则整条删掉，在只有通用层叠断言时
+    **87 条全绿**（通用断言的判定式是「本地做过决定就放行」，声明没了就无从判起）。
+    """
+    css = _css()
+    chain = _PAGE_CHAIN_PREFIX + (
+        ('div', {'index-layout'}, '', {}),
+        ('div', {'index-left'}, '', {}),
+        ('div', {'card'}, '', {}),
+        ('div', {'card-body'}, '', {}),
+        ('div', {'leaflet-container', 'leaflet-touch'}, 'map', {}),
+    )
+    win = _effective_bg_for(chain)
+    assert win is not None, (
+        '.leaflet-container 没有任何背景声明命中它 —— leaflet.css 那条 #ddd 呢？'
+        '本测试的前提（leaflet.css 会给地图容器上浅灰底）已失效'
+    )
+    assert win.sheet == 'style.css', (
+        f'地图容器的背景赢家来自 {win.sheet} 的 `{win.branch}` '
+        f'{{ background: {win.value} }} —— 不是本站的决定。'
+        'leaflet.css 给的是 #ddd 浅灰，瓦片盖不满的地方会变成一片亮灰'
+    )
+    assert _bg_is_transparent(css, win.value), (
+        f'地图容器的底色是 {win.value}，不是 transparent。'
+        '#map 上还有一层 filter: brightness(.9) contrast(1.1)，'
+        '写具体色会被它再压一遍（实测 #0c0d10 过完滤镜是 rgb(0,0,3)，'
+        '「没瓦片的地图区」从面板灰变成近纯黑，整页 53% 的像素会变）'
     )

@@ -292,7 +292,7 @@ function resetForm({ clearBounds = true } = {}) {
  *     赋值 —— 两个分支赋的是**同一个值**，且与 style.css 里 `.alert-info` 的
  *     `background: rgba(59,130,246,0.1)` / `border-color: var(--color-info)`
  *     逐字相同，是纯粹的死代码（#boundsInfo 是 `<div class="alert alert-info">`，
- *     `.alert` 在 style.css 兜底重置的 :not() 白名单里，底色不会被压掉）。
+ *     `.alert-info` 的底色由 style.css 提供）。
  *  4. 每个值前面加一段 `.bounds-sr` 的读屏专用方位词，键那边 aria-hidden。
  *     N/S/E/W 视觉上够用，但读屏软件念出来只有四个字母；这样读屏拿到的是
  *     「北纬 39.91653」。`.bounds-sr` 是 position:absolute，不参与布局，
