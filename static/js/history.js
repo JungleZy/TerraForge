@@ -107,14 +107,14 @@ function renderHistoryTable(tasks) {
             <td><small style="font-family: var(--font-mono);">${formatDate(task.completed_at)}</small></td>
             <td>
                 <div style="display: flex; gap: 0.5rem;">
-                    <button class="btn btn-sm btn-info" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情">
+                    <button class="btn btn-icon btn-sm btn-info" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情" aria-label="查看任务详情">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"></circle>
                             <line x1="12" y1="16" x2="12" y2="12"></line>
                             <line x1="12" y1="8" x2="12.01" y2="8"></line>
                         </svg>
                     </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id}, '${task.task_type}')" title="删除任务">
+                    <button class="btn btn-icon btn-sm btn-danger" onclick="deleteTask(${task.id}, '${task.task_type}')" title="删除任务" aria-label="删除任务">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>

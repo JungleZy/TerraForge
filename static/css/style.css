@@ -29,6 +29,22 @@
     --color-danger:  #f87171;
     --color-warning: #fbbf24;
     --color-info:    #60a5fa;
+
+    /* 状态色的 hover 档（A6 / Task 11）。取的是同一色系的上一档
+       （Tailwind -400 -> -300），与已有的
+       `--color-accent(#2dd4bf, teal-400) -> --color-accent-hover(#5eead4, teal-300)`
+       是同一条规则，不是随手挑的四个亮色：
+           #34d399 emerald-400 -> #6ee7b7 emerald-300
+           #f87171 red-400     -> #fca5a5 red-300
+           #fbbf24 amber-400   -> #fcd34d amber-300
+           #60a5fa blue-400    -> #93c5fd blue-300
+       改前这四个变体的 `:hover` 规则与基态**逐字相同**，是空操作。
+       抬亮幅度由 test_button_hover_is_a_real_change 钉住（相对亮度至少 +0.06，
+       实测最小的一档是 warning 的 +0.099）。 */
+    --color-success-hover: #6ee7b7;
+    --color-danger-hover:  #fca5a5;
+    --color-warning-hover: #fcd34d;
+    --color-info-hover:    #93c5fd;
     /* 中性状态填充色。为「已取消」这类无语义色的终态准备。
        不能直接复用 --color-text-muted(#5f6670)：它对 --color-bg-tertiary
        只有 2.82:1，低于本项目 3:1 的图形元素下限（见
@@ -744,7 +760,43 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     transition: all 0.3s ease;
 }
 
-/* Button Styles */
+/* ==========================================================================
+   Button Styles —— A6 / Task 11：五态系统（基态 / hover / focus-visible /
+   active / disabled）
+
+   ⚠️ 读这一段之前先看懂两条特异度事实，否则改哪一行都可能是空操作：
+
+   1. Bootstrap 5.3.0 的按钮状态规则**全是 (0,2,0) 或 (0,3,0)**，而变体色只是
+      一堆自定义属性：
+          .btn-primary { --bs-btn-bg:#0d6efd; --bs-btn-disabled-bg:#0d6efd; ... }   (0,1,0)
+          .btn:hover          { background-color: var(--bs-btn-hover-bg) }          (0,2,0)
+          .btn:focus-visible  { background-color: var(--bs-btn-hover-bg); outline:0 }(0,2,0)
+          .btn:disabled, fieldset:disabled .btn
+                              { background-color: var(--bs-btn-disabled-bg);
+                                pointer-events:none; opacity:.65 }                  (0,2,0)
+          .btn:first-child:active, :not(.btn-check)+.btn:active
+                              { background-color: var(--bs-btn-active-bg) }          (0,2,0)
+          .btn:first-child:active:focus-visible { box-shadow: ... }                  (0,3,0)
+      我们的 `.btn-primary{background:...}` 是 (0,1,0) —— **只够管基态**。
+      改前 CDP 实测的后果：
+          禁用态 rgb(13,110,253)  = Bootstrap 蓝（不是本站青绿）
+          按下态 rgb(10,88,202)   = Bootstrap 深蓝
+          键盘焦点 rgb(11,94,215) = Bootstrap 蓝，且 outline-width: 0px
+      所以本段所有状态规则都写成 `.btn-X:not(:disabled):STATE` = (0,3,0)，
+      赢下 Bootstrap 的每一条；`:not(:disabled)` 同时保证禁用态不被状态色点亮。
+
+   2. `.btn { border: none }`（下方第一条）会吃掉 Bootstrap 给 outline 变体的
+      边框简写，所以 `.btn-outline-*` 必须**显式重新声明 border**。
+      `.btn-secondary` 早就这么补过一次，只是漏了 outline 变体 —— 改前
+      history.html 的「刷新」按钮实测 `border: 0px none`、
+      文字 #6c757d 对卡片底 3.82:1，渲染成一坨灰字。
+
+   墨色统一用 `--color-on-accent`（近黑）：它是本调色板里「打在高亮填充上的
+   墨」这个角色的唯一取值，不再为每个变体各写一个硬编码近黑。
+   改前 `.btn-success/.btn-danger/.btn-info` 用的是 `#fff`，实测对比度
+   1.92 / 2.77 / 2.54 —— 这三颗按钮是纯图标按钮，SVG 用 currentColor 描边，
+   等于图标近乎看不见。换成 --color-on-accent 后是 8.89 / 6.18 / 6.72。
+   ========================================================================== */
 .btn {
     border: none;
     transition: all 0.3s ease;
@@ -754,6 +806,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: var(--font-size-base);
 }
 
+/* ---- 基态 ------------------------------------------------------------ */
 .btn-primary {
     background: var(--color-accent-strong);
     color: var(--color-on-accent);
@@ -761,64 +814,214 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     box-shadow: none;
 }
 
-.btn-primary:hover {
-    background: var(--color-accent);
-    color: var(--color-on-accent);
-    transform: none;
-}
-
 .btn-success {
     background: var(--color-success);
-    color: #fff;
+    color: var(--color-on-accent);
     box-shadow: none;
-}
-
-.btn-success:hover {
-    background: var(--color-success);
-    color: #fff;
 }
 
 .btn-warning {
     background: var(--color-warning);
-    color: #1a1206;
+    color: var(--color-on-accent);
     box-shadow: none;
-}
-
-.btn-warning:hover {
-    background: var(--color-warning);
-    color: #1a1206;
 }
 
 .btn-danger {
     background: var(--color-danger);
-    color: #fff;
+    color: var(--color-on-accent);
     box-shadow: none;
 }
 
-.btn-danger:hover {
-    background: var(--color-danger);
-    color: #fff;
+.btn-info {
+    background: var(--color-info);
+    color: var(--color-on-accent);
+    box-shadow: none;
 }
 
-.btn-secondary {
+/* `.btn-secondary` 和 `.btn-outline-secondary` 在深色主题里是同一个东西
+   （透明底 + 一圈弱边框 + 主文字色），合成一条而不是各写一份。 */
+.btn-secondary,
+.btn-outline-secondary {
     background: transparent;
     color: var(--color-text-primary);
     border: 1px solid var(--color-border-strong);
     box-shadow: none;
 }
 
-.btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: var(--color-text-secondary);
-    transform: none;
+.btn-outline-primary {
+    background: transparent;
+    color: var(--color-accent);
+    border: 1px solid var(--color-accent-strong);
+    box-shadow: none;
 }
 
+/* ---- hover：填充提亮一档（-400 -> -300，与 accent/accent-hover 同一步长）-- */
+.btn-primary:not(:disabled):hover {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+}
+
+.btn-success:not(:disabled):hover {
+    background: var(--color-success-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-warning:not(:disabled):hover {
+    background: var(--color-warning-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-danger:not(:disabled):hover {
+    background: var(--color-danger-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-info:not(:disabled):hover {
+    background: var(--color-info-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-secondary:not(:disabled):hover,
+.btn-outline-secondary:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--color-text-secondary);
+    color: var(--color-text-primary);
+}
+
+.btn-outline-primary:not(:disabled):hover {
+    background: var(--color-accent-muted);
+    border-color: var(--color-accent);
+    color: var(--color-accent-hover);
+}
+
+/* ---- focus-visible：底色回到基态，靠一圈 outline 表示焦点 ----------------
+   底色必须显式重声明，否则 Bootstrap 的 `.btn:focus-visible`(0,2,0) 会把它
+   刷成 --bs-btn-hover-bg（改前实测 rgb(11,94,215)）。
+   outline 那条写成 `.btn:not(:disabled):focus-visible` = (0,3,0)，
+   压得住 Bootstrap 的 `outline: 0` 和 `.btn:first-child:active:focus-visible`
+   的 box-shadow 焦点环。offset 2px 让环落在按钮外的卡片底上（对比度按卡片底算）。 */
+.btn-primary:not(:disabled):focus-visible {
+    background: var(--color-accent-strong);
+    color: var(--color-on-accent);
+}
+
+.btn-success:not(:disabled):focus-visible {
+    background: var(--color-success);
+    color: var(--color-on-accent);
+}
+
+.btn-warning:not(:disabled):focus-visible {
+    background: var(--color-warning);
+    color: var(--color-on-accent);
+}
+
+.btn-danger:not(:disabled):focus-visible {
+    background: var(--color-danger);
+    color: var(--color-on-accent);
+}
+
+.btn-info:not(:disabled):focus-visible {
+    background: var(--color-info);
+    color: var(--color-on-accent);
+}
+
+.btn-secondary:not(:disabled):focus-visible,
+.btn-outline-secondary:not(:disabled):focus-visible {
+    background: transparent;
+    border-color: var(--color-border-strong);
+    color: var(--color-text-primary);
+}
+
+.btn-outline-primary:not(:disabled):focus-visible {
+    background: transparent;
+    border-color: var(--color-accent-strong);
+    color: var(--color-accent);
+}
+
+.btn:not(:disabled):focus-visible {
+    outline: 2px solid var(--color-accent-hover);
+    outline-offset: 2px;
+    box-shadow: none;
+}
+
+/* ---- active：按下压暗一档 ----------------------------------------------
+   底色显式回到**基态**（不是 hover 色），再整体 brightness(0.85)：
+   于是「基态 < hover」「active < 基态」两个方向都成立，鼠标按住时
+   （:hover 与 :active 同时命中，active 在后所以赢）也是压暗而不是提亮。
+   0.85 同时作用于墨色，实测压暗后的墨/底对比度最低 4.78:1（danger），仍达标。 */
+.btn-primary:not(:disabled):active {
+    background: var(--color-accent-strong);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-success:not(:disabled):active {
+    background: var(--color-success);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-warning:not(:disabled):active {
+    background: var(--color-warning);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-danger:not(:disabled):active {
+    background: var(--color-danger);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-info:not(:disabled):active {
+    background: var(--color-info);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+/* 透明底的两种变体压不出「暗一档」（底本来就是卡片色），改用加深一档的
+   白色叠层 + 提亮边框来表达「按下去了」。 */
+.btn-secondary:not(:disabled):active,
+.btn-outline-secondary:not(:disabled):active {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: var(--color-text-primary);
+    color: var(--color-text-primary);
+}
+
+.btn-outline-primary:not(:disabled):active {
+    background: var(--color-accent-muted);
+    border-color: var(--color-accent-hover);
+    color: var(--color-accent-hover);
+    filter: brightness(0.85);
+}
+
+/* ---- disabled：本任务的核心缺陷 ----------------------------------------
+   改前：`.btn:disabled { opacity: 0.5 }` + Bootstrap 的
+   `--bs-btn-disabled-bg: #0d6efd` 胜出，禁用的「创建下载任务」按钮渲染成
+   **50% 不透明度的 Bootstrap 主色蓝**（合成后 rgb(17,66,140)），文字合成后
+   rgb(138,139,142) —— 对比度只有 2.83:1，既像可点又看不清。
+   而这颗按钮**默认就是禁用的**（要先在地图上框选），是用户打开页面的第一眼。
+
+   改后不再用整体 opacity（那是把「不可点」和「看不清」绑在一起的根源），
+   改为换一套**低饱和中性**的表面：
+       底 --color-bg-tertiary #1c2027   饱和度 16.4%（启用态青绿是 80.4%）
+       字 --color-text-secondary #9aa0aa  对底 6.21:1（>= 4.5，不可点 != 看不清）
+       禁用底 vs 启用底 6.56:1（改前只有 3.87:1）
+   特异度 (0,2,0)，与 Bootstrap 的 `.btn:disabled` 打平，靠 style.css 排在
+   bootstrap.min.css 之后取胜 —— 这个前提由
+   tests/test_css_contract.py::test_no_stylesheet_can_load_after_style_css 钉住。 */
 .btn:disabled {
-    opacity: 0.5;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-secondary);
+    border-color: var(--color-border);
+    opacity: 1;
+    box-shadow: none;
+    filter: none;
     cursor: not-allowed;
     transform: none !important;
 }
 
+/* ---- 尺寸 -------------------------------------------------------------- */
 .btn-group-sm .btn {
     padding: 0.4rem 0.9rem;
 }
@@ -829,15 +1032,18 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 6px;
 }
 
-.btn-info {
-    background: var(--color-info);
-    color: #fff;
-    box-shadow: none;
-}
-
-.btn-info:hover {
-    background: var(--color-info);
-    color: #fff;
+/* 纯图标按钮：正方形，边长 = 控件密度令牌 --ctl-h。
+   选择器必须是 `.btn.btn-icon`(0,2,0)：任务卡上的容器是
+   `.btn-group.btn-group-sm`，上面那条 `.btn-group-sm .btn` 也是 (0,2,0)，
+   裸 `.btn-icon`(0,1,0) 的 padding 会输给它，按钮被撑成胶囊。
+   同特异度靠源码顺序取胜，所以这条必须留在 `.btn-group-sm .btn` 之后。 */
+.btn.btn-icon {
+    width: var(--ctl-h);
+    height: var(--ctl-h);
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 /* Alert Styles */

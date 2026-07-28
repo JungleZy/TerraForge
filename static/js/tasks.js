@@ -216,14 +216,14 @@ function createTaskCard(task) {
             <div class="d-flex justify-content-end" style="margin-bottom: 0.75rem;">
                 <div class="btn-group btn-group-sm">
                     ${supportsPauseResume && task.status === 'pending' ? `
-                        <button class="btn btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务">
+                        <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务" aria-label="启动任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
                     ${supportsPauseResume && task.status === 'running' ? `
-                        <button class="btn btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务">
+                        <button class="btn btn-icon btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务" aria-label="暂停任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="6" y="4" width="4" height="16"></rect>
                                 <rect x="14" y="4" width="4" height="16"></rect>
@@ -231,14 +231,14 @@ function createTaskCard(task) {
                         </button>
                     ` : ''}
                     ${supportsPauseResume && task.status === 'paused' ? `
-                        <button class="btn btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务">
+                        <button class="btn btn-icon btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务" aria-label="恢复任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
                     ${task.status !== 'failed' ? `
-                        <button class="btn btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务">
+                        <button class="btn btn-icon btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务" aria-label="取消任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <line x1="18" y1="6" x2="6" y2="18"></line>
                                 <line x1="6" y1="6" x2="18" y2="18"></line>
