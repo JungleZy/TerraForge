@@ -1939,12 +1939,24 @@ COLOR_SWATCH_MIN_WIDTH_PX = 30
 
 _PADDING_SIDES = ('padding-top', 'padding-right', 'padding-bottom', 'padding-left')
 
+# 本 helper 收集的长写属性。
+#
+# ⚠️ A5 / Task 10 在 width 之外加了纵向那几条（height / min-height / max-height /
+#    line-height / font-size）。加它们是为了让「模拟层叠算出控件最终高度」成为可能
+#    —— 评审实测：只钉 `--ctl-h` 这个令牌的话，往
+#    `.form-control, .form-select` 里加一行 `height: 44px` 全套测试仍然全绿，
+#    而 1366x768 下提交按钮回到折叠线以下 43.5px。令牌还在源码里，高度已经不是它了。
+#    加这几条不影响既有调用方：取色器那条断言自己按 `wanted` 过滤。
+_BOX_LONGHANDS = _PADDING_SIDES + (
+    'width', 'height', 'min-height', 'max-height', 'line-height', 'font-size',
+)
+
 
 def _expanded_box_decls(body):
     """规则体 -> [(属性名, 值, 是否!important), ...]，保持声明顺序，
     并把 `padding` 简写展开成四条长写。
 
-    只处理本节关心的 width / padding*。和 `_right_padding_in_body` 同一个
+    只处理 _BOX_LONGHANDS 里那几条。和 `_right_padding_in_body` 同一个
     理由：**不能用 `_decl_map`**，它按属性名去重，丢掉了「简写与长写谁在后面」
     这个决定胜负的信息 —— 而「简写静默覆盖长写」正是 C1/Task 4 那个缺陷的形态。
     """
@@ -1970,7 +1982,7 @@ def _expanded_box_decls(body):
             else:
                 continue
             out.extend(zip(_PADDING_SIDES, sides, [important] * 4))
-        elif name in _PADDING_SIDES or name == 'width':
+        elif name in _BOX_LONGHANDS:
             out.append((name, val, important))
     return out
 
@@ -2906,8 +2918,8 @@ CONTROL_HEIGHT_MAX_PX = 30
 FIELD_GAP_MAX_PX = 8
 
 
-def _token_px(css, name):
-    """某个自定义属性的值（px）。取不到 / 不是 px 字面量就响亮失败。
+def _custom_property_raw(css, name):
+    """某个自定义属性的原始值文本，未定义返回 None。
 
     ⚠️ 用正则而不是 `_rules_ctx()` 找 `:root`：文件开头的
     `@import url('...');` 是一条**以分号结尾的 at 语句**，`_rules_ctx` 的花括号
@@ -2918,12 +2930,36 @@ def _token_px(css, name):
     """
     stripped = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
     m = re.search(re.escape(name) + r'\s*:\s*([^;]+);', stripped)
-    assert m, (
+    return None if m is None else m.group(1).strip()
+
+
+def _resolve_length_px(css, value, _depth=0):
+    """`28px` / `1.75rem` / `var(--ctl-h)` -> px。解析不了返回 None。
+
+    只跟一层层 `var()`，不支持 `var(--x, fallback)` 和 `calc()` —— 那两种返回
+    None，让调用方报「本测试已失效」而不是静默用一个猜出来的数字。
+    """
+    if value is None:
+        return None
+    value = _IMPORTANT_RE.sub('', value).strip()
+    if re.fullmatch(r'0+(\.0+)?', value):
+        return 0.0                           # 无单位的 0 是合法 CSS
+    m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', value)
+    if m:
+        if _depth > 4:
+            return None                      # 自引用/环，别死循环
+        return _resolve_length_px(css, _custom_property_raw(css, m.group(1)), _depth + 1)
+    return _length_to_px(value)
+
+
+def _token_px(css, name):
+    """某个自定义属性的值（px）。取不到 / 不是 px 字面量就响亮失败。"""
+    raw = _custom_property_raw(css, name)
+    assert raw is not None, (
         f'{name} 没有定义。引用一个未定义的自定义属性**不会报错**，'
         '只会让引用它的整条声明失效、静默退回 auto/initial —— 表现为「改了没反应」'
     )
-    raw = m.group(1).strip()
-    px = _length_to_px(_IMPORTANT_RE.sub('', raw).strip())
+    px = _resolve_length_px(css, raw)
     assert px is not None, (
         f'{name} = {raw!r}，不是 px/rem 字面量，本断言算不了 —— 测试已失效（不是通过）'
     )
@@ -3089,12 +3125,66 @@ def _grid_track_count(value):
     return len(value.split())
 
 
-def test_bounds_readout_is_exactly_two_rows():
-    """框选后的四至显示必须恰好排成 2 行。
+# `.bounds-grid` 的列间距上界，量出来的不是审美选的。见 style.css 里那段注释：
+# 最窄的双栏视口 769px 下网格容器 199.1px，极端坐标（`-179.99999` 这种带号
+# 10 字符的经度）一行在 gap 6px 时需要 202.8px（网页字体）/ 203.5px（回退字形），
+# 会吃掉 alert 右内边距 10px 里的 3.7px。收到 4px 才放得下，余量只有 1.6–2.3px。
+BOUNDS_GRID_MAX_COLUMN_GAP_PX = 4
 
-    这是本任务里最值钱的单项（实测 146.5px -> 62px，省 84.5px，正好覆盖
-    1366x768 的溢出量）。改前是 5 行：图标 +「选中区域：」标题 +
-    ▲北 / ▼南 / ▶东 / ◀西 四行 `<br>`。
+
+def _bounds_readout_markup(js_body):
+    """`updateBoundsInfo` 里「已框选」那个分支写进 innerHTML 的 HTML 模板。
+
+    把 `${...}` 插值换成占位符，好让 HTMLParser 能读。
+    """
+    branch = re.split(r'\n\s*\}\s*else\s*\{', js_body, maxsplit=1)[0]
+    m = re.search(r'innerHTML\s*=\s*`(.*?)`', branch, re.S)
+    assert m, (
+        'updateBoundsInfo 的「已框选」分支里找不到 innerHTML 模板字面量 —— '
+        '本测试已失效（不是通过）'
+    )
+    return branch, re.sub(r'\$\{[^}]*\}', 'X', m.group(1))
+
+
+# HTML 的**空元素**（没有结束标签）。深度计数必须跳过它们，否则一个 <input>
+# 就会让深度只增不减。
+#
+# ⚠️ 这里**不能**把 SVG 的 <circle>/<line>/<path>/<polyline> 算进来：本仓库的
+# 内联 SVG 全部写了显式结束标签（`<circle ...></circle>`），HTMLParser 会照常
+# 发 endtag。把它们当空元素会重复减一次，深度变负 —— 首版就踩了这个坑，
+# 表现是 #boundsInfo 里的那个 SVG 之后解析直接停摆，`<button>` 整个丢了，
+# 模型少算 50.42px（而且是**少**算，方向上会让测试更容易通过，正是最坏的一种错）。
+# 真正的自闭合写法 `<x/>` 由 HTMLParser 的 handle_startendtag 自动配平，不用管。
+_VOID_TAGS = frozenset({
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+    'link', 'meta', 'param', 'source', 'track', 'wbr',
+})
+
+
+class _TopLevelTagParser(HTMLParser):
+    """记下深度 0 的元素（标签 + class 集合）。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.top = []
+
+    def handle_starttag(self, tag, attrs):
+        if self.depth == 0:
+            self.top.append((tag, set((dict(attrs).get('class') or '').split())))
+        if tag not in _VOID_TAGS:
+            self.depth += 1
+
+    def handle_endtag(self, tag):
+        if tag not in _VOID_TAGS:
+            self.depth = max(0, self.depth - 1)
+
+
+def test_bounds_readout_is_exactly_two_rows():
+    """框选后的四至显示必须恰好排成 2 行，且 alert 里只有这一个网格。
+
+    这是本任务里最值钱的单项（实测 `#boundsInfo` 146.5px -> 62.0px，省 84.5px）。
+    改前是 5 行：图标 +「选中区域：」标题 + ▲北 / ▼南 / ▶东 / ◀西 四行 `<br>`。
 
     **行数是算出来的，不是查字符串**：
         行数 = ceil(网格子元素数 / grid-template-columns 的轨道数)
@@ -3103,32 +3193,42 @@ def test_bounds_readout_is_exactly_two_rows():
     比如有人把列定义改成 `auto 1fr`（2 列），8 个子元素立刻退回 4 行，
     而 JS 一个字没动。
 
+    ⚠️ 「alert 里只有这一个顶层元素」这条是**评审加的**，堵的是一个真实逃逸：
+    在 `.bounds-grid` **上面**再加一行标题（就像改前那样），
+    「8 格 / 4 列 = 2 行」这个算式完全看不见，全套测试绿，而屏幕上又变回 3 行
+    （评审实测 +22.5px）。所以行数算式必须配上「网格之外没有别的东西」。
+
     覆盖范围（诚实说明）：算的是**网格轨道意义上的行数**，不是渲染出来的
     视觉行数。若某个值长到在自己的格子里折行，实际视觉高度会比 2 行多 ——
-    那种情况这条断言看不见，由 CDP 在 19 个视口（Bootstrap 断点 576/768/992/
-    1200/1400 及其 ±1 邻域 + 1366x768 等）实测兜底：全部 2 行、无折行、无溢出，
-    记在 p2-task-10-report.md。
+    那种情况这条断言看不见，由 CDP 实测兜底（19 个断点边界视口 + 769px 极端坐标，
+    记在 p2-task-10-report.md）。列间距上界就是那轮实测的产物。
     """
     js = _js('map.js')
     body = _js_function_body(js, 'updateBoundsInfo')
+    branch, markup = _bounds_readout_markup(body)
 
-    legacy = [m for m in _BOUNDS_LEGACY_MARKERS if m in body]
+    legacy = [m for m in _BOUNDS_LEGACY_MARKERS if m in branch]
     assert not legacy, (
         f'updateBoundsInfo 里还有改前那版 5 行布局的痕迹 {legacy} —— '
         '`<br>` 每出现一次就多一行；`▲▼▶◀` 应换成 GIS 惯例的 N/S/E/W'
         '（那四个三角形在等宽字体里宽度还不一致，数字对不齐）'
     )
 
-    keys = re.findall(r'class="bounds-k"', body)
-    vals = re.findall(r'class="bounds-v"', body)
+    parser = _TopLevelTagParser()
+    parser.feed(markup)
+    assert len(parser.top) == 1 and parser.top[0] == ('div', {'bounds-grid'}), (
+        f'「已框选」分支的顶层元素是 {parser.top}，'
+        '期望恰好一个 <div class="bounds-grid">。'
+        '在网格之外再放任何东西（标题、图标、说明）都会多占行 —— '
+        '而下面那个「8 格 / 4 列 = 2 行」的算式看不见它'
+    )
+
+    keys = re.findall(r'class="bounds-k"', branch)
+    vals = re.findall(r'class="bounds-v"', branch)
     assert len(keys) == 4 and len(vals) == 4, (
         f'期望 4 个 .bounds-k + 4 个 .bounds-v（北南东西各一对），'
         f'实际 {len(keys)} + {len(vals)} —— 本测试已失效，或者四至少渲染了一条'
     )
-    for direction in ('N', 'S', 'E', 'W'):
-        assert re.search(r'class="bounds-k">\s*' + direction + r'\s*<', body), (
-            f'四至里缺少 {direction} —— GIS 惯例的四个方位字母必须齐全'
-        )
 
     bodies = [
         b for sel, b, ctx in _rules_ctx(_css())
@@ -3155,4 +3255,498 @@ def test_bounds_readout_is_exactly_two_rows():
         f'四至显示排成 {rows} 行（{children} 个格子 / {cols} 列），'
         f'超过 {BOUNDS_READOUT_MAX_ROWS} 行上限。改前的 5 行版实测 146.5px，'
         '是 1366x768 放不下提交按钮的主要原因之一'
+    )
+
+    gap = _IMPORTANT_RE.sub('', decls.get('gap', '')).strip().split()
+    assert len(gap) == 2, (
+        f'.bounds-grid 的 gap = {decls.get("gap")!r}，期望「行间距 列间距」两个值 '
+        '—— 本测试已失效'
+    )
+    col_gap = _resolve_length_px(_css(), gap[1])
+    assert col_gap is not None, f'.bounds-grid 的列间距 {gap[1]!r} 解析不了 —— 本测试已失效'
+    assert col_gap <= BOUNDS_GRID_MAX_COLUMN_GAP_PX, (
+        f'.bounds-grid 的列间距 {col_gap:g}px 超过 {BOUNDS_GRID_MAX_COLUMN_GAP_PX}px。'
+        '769px（最窄的双栏视口）+ 极端坐标 -179.99999 下，6px 间距实测超出容器 3.7px，'
+        '会挤掉 alert 的右内边距。要放宽请先按 p2-task-10-report.md 的方法重测'
+    )
+
+
+# 方位字母 -> 它必须绑定的 currentBounds 字段。
+#
+# ⚠️ 这张表守的是**数据正确性，不是排版**。评审实测：把 N 和 S 的值对调，
+#    全套 247 条断言一条不红，而界面把南纬标成了北纬。这是个 GIS 工具，
+#    方位标错和「进度条颜色不好看」不在一个量级上。
+BOUNDS_LABEL_FIELDS = {'N': 'north', 'S': 'south', 'E': 'east', 'W': 'west'}
+
+
+def test_bounds_labels_bind_to_the_right_coordinate():
+    """每个方位字母后面跟的必须是**对应**的那个 bounds 字段。
+
+    检查的是「配对」，不是「四个字母都出现过」——后者对调 N/S 的值照样通过。
+    """
+    branch, _markup = _bounds_readout_markup(
+        _js_function_body(_js('map.js'), 'updateBoundsInfo')
+    )
+    pairs = re.findall(
+        r'class="bounds-k"[^>]*>\s*([NSEW])\s*</span>'      # 键
+        r'\s*<span class="bounds-v"[^>]*>'                  # 值的开标签
+        r'(?:\s*<span[^>]*>[^<]*</span>)?'                  # 可选的读屏文本
+        r'\s*\$\{\s*f\(\s*currentBounds\.(\w+)\s*\)\s*\}',  # 值引用的字段
+        branch,
+    )
+    assert len(pairs) == len(BOUNDS_LABEL_FIELDS), (
+        f'只解析出 {len(pairs)} 组「方位字母 -> currentBounds 字段」的配对，'
+        f'期望 {len(BOUNDS_LABEL_FIELDS)} 组 —— 本测试已失效（不是通过）。'
+        'updateBoundsInfo 的标记写法变了？请连同这里的正则一起改'
+    )
+    got = dict(pairs)
+    assert got == BOUNDS_LABEL_FIELDS, (
+        f'方位字母绑错了坐标：实际 {got}，期望 {BOUNDS_LABEL_FIELDS}。'
+        '这是数据正确性缺陷，不是排版问题 —— 界面会把南纬标成北纬'
+    )
+
+
+# 只给读屏软件的方位词。N/S/E/W 是 GIS 惯例，视觉上够用，
+# 但读屏念出来只有四个字母，方位信息丢失。
+BOUNDS_SR_WORDS = {'north': '北纬', 'south': '南纬', 'east': '东经', 'west': '西经'}
+
+
+def test_bounds_readout_is_announced_to_screen_readers():
+    """四至的方位必须有读屏可读的中文文本，且键上要有 aria-hidden。
+
+    没有这一层，读屏用户听到的是「N 39.91653」——拿不到方位。
+    `.bounds-sr` 必须是脱离文档流的（position: absolute），否则中文方位词会
+    显示出来并撑破 2 行网格；而且它必须由 **style.css 自己**定义 ——
+    直接用 Bootstrap 的 `.visually-hidden` 的话，CDN 不可达时那个类不存在，
+    方位词会直接漏到界面上（本站已有同样理由的离线兜底，见 .row / .col-*）。
+    """
+    branch, _markup = _bounds_readout_markup(
+        _js_function_body(_js('map.js'), 'updateBoundsInfo')
+    )
+    problems = []
+    for letter, field in sorted(BOUNDS_LABEL_FIELDS.items()):
+        word = BOUNDS_SR_WORDS[field]
+        if not re.search(
+            r'<span class="bounds-sr">\s*' + word + r'\s*</span>\s*'
+            r'\$\{\s*f\(\s*currentBounds\.' + field + r'\s*\)\s*\}', branch
+        ):
+            problems.append(f'{letter}/{field}: 缺少 `<span class="bounds-sr">{word}</span>`')
+    hidden = re.findall(r'class="bounds-k"\s+aria-hidden="true"', branch)
+    if len(hidden) != len(BOUNDS_LABEL_FIELDS):
+        problems.append(
+            f'只有 {len(hidden)} 个 .bounds-k 带 aria-hidden="true"，'
+            f'期望 {len(BOUNDS_LABEL_FIELDS)} 个 —— 否则读屏会念成「N 北纬 39.9…」'
+        )
+    assert not problems, '四至的读屏可访问性不完整：\n' + '\n'.join('  ' + p for p in problems)
+
+    bodies = [b for sel, b, ctx in _rules_ctx(_css()) if sel == '.bounds-sr' and not ctx]
+    assert len(bodies) == 1, (
+        f'期望 style.css 里恰好 1 条 `.bounds-sr` 规则，实际 {len(bodies)} 条。'
+        '这个类必须由本站自己定义 —— 依赖 Bootstrap 的 .visually-hidden 的话，'
+        'CDN 不可达时方位词会直接显示出来并撑破 2 行网格'
+    )
+    pos = _decl_map(bodies[0]).get('position')
+    assert pos == 'absolute', (
+        f'.bounds-sr 的 position 是 {pos!r}，不是 absolute —— '
+        '不脱离文档流的话中文方位词会参与布局，2 行网格的几何就不成立了'
+    )
+
+
+# --------------------------------------------------------------------------
+# A5 / Task 10（评审补强）：1366x768 垂直预算模型
+#
+# 为什么上面那些断言不够 —— 评审实测的四个逃逸变异：
+#   1. 给 `.form-control, .form-select` 加一行 `height: 44px`  -> 全套 247 绿，
+#      而实际 ctlH 回到 44、submitBtnBottom 811.53、**溢出 43.5px**。
+#      根因：`min-height: var(--ctl-h)` 是**下界**，没有任何东西钉上界；
+#      「令牌已被消费」那条只是 grep `var()` 字符串，`height` 和 `min-height`
+#      同时存在时前者赢，令牌还在源码里、测试照样绿。
+#   2. `--pad-card` 10 -> 40                                  -> 全套绿，745.5；
+#      改到 80 就是 785.5，装不下。
+#   3. 在 `.bounds-grid` 上面加一行标题                        -> 全套绿，又变 3 行。
+#   4. 把 N 和 S 的值对调                                      -> 全套绿，
+#      **界面把南边标成北边**。这是数据正确性，不是排版。
+#
+# 本节用「模拟层叠 + 高度模型」一次性接住 1 和 2；3 和 4 由下一节的两条
+# 专用断言接住（它们是结构 / 语义问题，高度模型看不见）。
+#
+# 模型思路与 A4 / Task 9 的渲染链断言同源：把源码里的量算成一个可对拍的数字，
+# 再拿 CDP 实测值校准。校准锚点见 CDP_SUBMIT_BTN_BOTTOM。
+# --------------------------------------------------------------------------
+
+VIEWPORT_1366_HEIGHT_PX = 768
+
+# CDP 实测锚点：1366x768、**已框选**（按钮 disabled 解除、四至已渲染）状态下
+# `#createTaskBtn.getBoundingClientRect().bottom`。
+# 复现方法见 .superpowers/sdd/p2-task-10-report.md。改前是 949.34。
+CDP_SUBMIT_BTN_BOTTOM = 715.53
+
+# 模型允许的对拍误差。0.5px 足够吸收浏览器的亚像素舍入
+# （实测模型算出 715.52 vs CDP 715.53，差 0.01px）。
+HEIGHT_MODEL_TOLERANCE_PX = 0.5
+
+# ---- 来自 Bootstrap、本文件不控制的几个数 --------------------------------
+# 每一条都标了 CDP 实测值。它们是模型里唯一「不是从 style.css 解析出来」的输入，
+# 所以单独列出来：Bootstrap 大版本升级时这几个数要重测。
+# `test_bootstrap_build_is_new_enough_to_have_dark_theme` 已经钉住 >= 5.3。
+
+# Bootstrap 的 --bs-body-line-height。用于所有没有显式声明 line-height 的文字
+# （.form-label / .form-group-label / .bounds-grid / .btn）。实测：14px 字 -> 21px 行高。
+BS_BODY_LINE_HEIGHT = 1.5
+# `.card-header h5` 的行盒高度。**不是** font-size x line-height：h5 里有一个
+# 18px 的内联 SVG（vertical-align: middle），行盒被它撑到 18.91px。
+# 这个数没法从 CSS 算出来，只能实测。CDP: hdrInnerH = 18.91。
+BS_CARD_HEADER_LINE_BOX_PX = 18.91
+# Bootstrap `.btn { padding: .375rem .75rem }` 的纵向内边距。本站没有覆盖它。
+BS_BTN_PADDING_Y_PX = 6.0
+# Bootstrap `.alert { margin-bottom: 1rem }`。本站没有覆盖它。
+BS_ALERT_MARGIN_BOTTOM_PX = 16.0
+
+
+def _effective_form_control_height(css):
+    """模拟层叠，算出一个 `<input class="form-control">` 的**最终**外框高度。
+
+    这是接住「加一行 `height: 44px`」的那把锁。只查 `--ctl-h` 或者 grep
+    `var(--ctl-h)` 都拦不住它 —— 决定高度的是**层叠之后谁赢**，不是源码里
+    有没有那串字符。与 `test_form_select_reserves_room_for_the_arrow`
+    （最终右内边距）、`test_color_picker_swatch_is_big_enough_to_see`
+    （最终宽度）是同一套模型。
+
+    计算：
+        内容高 = line-height（没声明就用 font-size x BS_BODY_LINE_HEIGHT）
+        自然高 = padding-top + padding-bottom + 内容高 + 2 x 边框
+        最终高 = height 若有声明；否则 clamp(自然高, min-height, max-height)
+    （box-sizing: border-box 由本文件顶层的 `*` 规则保证，
+      MERGED_UNIVERSAL_DECLS 钉着，所以 height 就是外框高。）
+
+    覆盖范围（诚实说明）：只模拟 style.css 内部的层叠、只认类选择器写法。
+    有人用 `input[type=text] { height: 44px }` 这种属性选择器绕过，本断言看不见
+    —— 由 CDP 实测兜底。
+    """
+    element_classes = {'form-control'}
+    wanted = {'padding-top', 'padding-bottom', 'height', 'min-height',
+              'max-height', 'line-height', 'font-size'}
+    best, unsupported = {}, []
+    for order, (sel, body, at_ctx) in enumerate(_rules_ctx(css)):
+        if at_ctx:
+            continue
+        decls = [d for d in _expanded_box_decls(body) if d[0] in wanted]
+        if not decls:
+            continue
+        for branch in _selector_parts(sel):
+            if not re.search(r'\.form-control(?![-\w])', branch):
+                continue
+            applies = _branch_applies(branch, frozenset(), element_classes, False)
+            if applies is None:
+                unsupported.append(f'{sel}   （分支 {branch!r} 形态不支持）')
+                continue
+            if not applies:
+                continue
+            spec = _branch_specificity(branch)
+            for name, val, imp in decls:
+                key = (imp, spec, order)
+                if name not in best or key > best[name][0]:
+                    best[name] = (key, val, sel)
+    assert not unsupported, (
+        '控件高度的层叠模型处理不了这些写法，测试已失效（不是通过）：\n'
+        + '\n'.join('  ' + u for u in unsupported)
+    )
+
+    def px(name, required=False):
+        if name not in best:
+            assert not required, (
+                f'`.form-control` 没有任何规则声明 {name} —— 高度模型算不出来，'
+                '测试已失效（不是通过）'
+            )
+            return None
+        _key, val, sel = best[name]
+        v = _resolve_length_px(css, val)
+        assert v is not None, (
+            f'{name} 的胜出值来自 `{sel}` 的 {val!r}，不是 px/rem/var(px) —— '
+            '高度模型解析不了，测试已失效（不是通过）'
+        )
+        return v
+
+    font_size = px('font-size', required=True)
+    line_h = px('line-height')
+    if line_h is None:
+        line_h = font_size * BS_BODY_LINE_HEIGHT
+    pad_t = px('padding-top', required=True)
+    pad_b = px('padding-bottom', required=True)
+    border = _form_control_border_px(css)
+    natural = pad_t + pad_b + line_h + 2 * border
+
+    fixed = px('height')
+    if fixed is not None:
+        return fixed
+    out = natural
+    lo = px('min-height')
+    if lo is not None:
+        out = max(out, lo)
+    hi = px('max-height')
+    if hi is not None:
+        out = min(out, hi)
+    return out
+
+
+def test_form_control_height_has_an_upper_bound():
+    """**层叠之后**控件的最终高度必须 <= CONTROL_HEIGHT_MAX_PX。
+
+    与 `test_control_density_tokens_are_self_consistent` 的区别是承重的：
+    那条只看 `:root` 里四个数字自不自洽，**管不到有没有别的声明把它们架空**。
+    评审实测：往 `.form-control, .form-select` 里加一行 `height: 44px`，
+    那条断言全绿（令牌没动），而浏览器里控件是 44px、1366x768 溢出 43.5px。
+    本条算的是最终生效高度，加 `height` 会被直接抓住。
+    """
+    css = _css()
+    h = _effective_form_control_height(css)
+    assert h <= CONTROL_HEIGHT_MAX_PX, (
+        f'层叠之后 `.form-control` 的最终高度是 {h:g}px，超过 '
+        f'{CONTROL_HEIGHT_MAX_PX}px 上界。改前 43.7px 正是本任务要修的缺陷。'
+        '注意：`height` 会压过 `min-height: var(--ctl-h)`，'
+        '所以「令牌没变」不代表高度没变'
+    )
+    ctl_h = _token_px(css, '--ctl-h')
+    assert abs(h - ctl_h) < 0.01, (
+        f'最终高度 {h:g}px 与令牌 --ctl-h({ctl_h:g}px) 不一致 —— '
+        '说明有别的声明把令牌架空了（多半是一条 height/max-height）。'
+        '令牌必须是控件高度的**唯一**来源，否则改令牌不管用'
+    )
+
+
+# ---- 首页表单的纵向结构（从模板解析，不写死条数）--------------------------
+
+class _FormStructureParser(HTMLParser):
+    """扒出 `#downloadForm` 的直接子元素序列。
+
+    为什么从模板解析而不是把「6 个字段组 + 3 个分组标题」写死：写死的话，
+    有人往 index.html 里加一个字段，模型算出来的高度不变，测试全绿而页面
+    已经溢出了。
+
+    默认（地图瓦片）模式下不可见的块（`style="display:none"`，即
+    #demOptions / #localTerrainOptions / #contourOptions）跳过 —— 它们由
+    initDownloadTypeToggle() 按下载类型切换，不占默认视图的高度。
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = None          # None = 还没进 / 已经出了那个 <form>
+        self.rows = []             # [(标签, class 集合, 是否 display:none)]
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if a.get('id') == 'downloadForm':
+            assert self.depth is None, 'index.html 里出现了两个 #downloadForm —— 本测试已失效'
+            self.depth = 0
+            return
+        if self.depth is None:
+            return
+        if self.depth == 0:
+            self.rows.append((
+                tag,
+                set((a.get('class') or '').split()),
+                'display:none' in (a.get('style') or '').replace(' ', ''),
+            ))
+        if tag not in _VOID_TAGS:
+            self.depth += 1
+
+    def handle_endtag(self, tag):
+        if self.depth is None or tag in _VOID_TAGS:
+            return
+        if self.depth == 0:
+            self.depth = None      # 这是 </form>，出去了
+            return
+        self.depth -= 1
+
+
+def _index_form_rows():
+    """`#downloadForm` 在默认（地图瓦片）模式下可见的直接子元素。"""
+    parser = _FormStructureParser()
+    parser.feed(_template('index.html'))
+    assert parser.depth is None, (
+        'index.html 的 #downloadForm 没有正常闭合（解析结束时深度 '
+        f'{parser.depth}）—— 本测试已失效'
+    )
+    rows = [(tag, cls) for tag, cls, hidden in parser.rows if not hidden]
+    assert rows, '解析不出 #downloadForm 的子元素 —— 本测试已失效'
+    # 模型只在「有提交按钮 + 有四至提示条」的前提下成立
+    assert any(t == 'button' for t, _c in rows), (
+        '#downloadForm 的直接子元素里没有 <button> —— 解析漏了，本测试已失效'
+    )
+    assert any('alert' in c for _t, c in rows), (
+        '#downloadForm 的直接子元素里没有 .alert（四至提示条）—— 本测试已失效'
+    )
+    return rows
+
+
+def _index_form_vertical_model(css):
+    """算出 1366x768 下 `#createTaskBtn` 的 bottom（px）。
+
+    结构从 templates/index.html 解析，尺寸从 style.css 解析，
+    只有上面那 4 个 BS_* 常量来自 Bootstrap（各自标了 CDP 实测值）。
+
+    相邻块级元素的**外边距合并**是模型里最容易漏的一环：
+    `.mb-3`(8px) 后面跟 `.form-group-label`(margin-top 14px) 时，两者合并成
+    max(8,14)=14 而不是 22。漏掉合并会让模型比实际高出 16px（实测差值）。
+    """
+    def rule_px(selector, prop, required=True):
+        bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
+        assert len(bodies) == 1, (
+            f'期望恰好 1 条 `{selector}` 规则，实际 {len(bodies)} 条 —— 本测试已失效'
+        )
+        decls = dict((n, v) for n, v, _i in _expanded_box_decls(bodies[0]))
+        if prop not in decls:
+            decls = _decl_map(bodies[0])
+        raw = decls.get(prop)
+        if raw is None:
+            assert not required, f'`{selector}` 没有声明 {prop} —— 本测试已失效'
+            return None
+        v = _resolve_length_px(css, raw)
+        assert v is not None, (
+            f'`{selector}` 的 {prop} = {raw!r}，解析不了 —— 本测试已失效'
+        )
+        return v
+
+    def margin_parts(selector, prop='margin'):
+        bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
+        assert len(bodies) == 1, (
+            f'期望恰好 1 条 `{selector}` 规则，实际 {len(bodies)} 条 —— 本测试已失效'
+        )
+        raw = _decl_map(bodies[0]).get(prop)
+        assert raw, f'`{selector}` 没有声明 {prop} —— 本测试已失效'
+        parts = _IMPORTANT_RE.sub('', raw).strip().split()
+        vals = [_resolve_length_px(css, p) for p in parts]
+        assert all(v is not None for v in vals), (
+            f'`{selector}` 的 {prop} = {raw!r}，解析不了 —— 本测试已失效'
+        )
+        if len(vals) == 1:
+            return vals[0], vals[0]
+        if len(vals) == 2:
+            return vals[0], vals[0]
+        return vals[0], vals[2]              # 3/4 值：上、下
+
+    def border_px(selector, prop):
+        bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
+        assert len(bodies) == 1, f'`{selector}` 不是恰好 1 条 —— 本测试已失效'
+        raw = _decl_map(bodies[0]).get(prop)
+        assert raw, f'`{selector}` 没有声明 {prop} —— 本测试已失效'
+        m = re.match(r'^([\d.]+)(px|rem)\b', _IMPORTANT_RE.sub('', raw).strip())
+        assert m, f'`{selector}` 的 {prop} = {raw!r} 里读不出宽度 —— 本测试已失效'
+        return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+
+    navbar = rule_px('.main-content', 'padding-top')
+    panel_pad = rule_px('.index-right', 'padding-top')
+    card_border = border_px('.card', 'border')
+    hdr_pad = rule_px('.card-header', 'padding-top')
+    hdr_border = border_px('.card-header', 'border-bottom')
+    body_pad = rule_px('.card-body', 'padding-top')
+
+    ctl_h = _effective_form_control_height(css)
+    field_gap = rule_px('.mb-3', 'margin-bottom')
+
+    label_font = rule_px('.form-label', 'font-size')
+    label_line = label_font * BS_BODY_LINE_HEIGHT
+    label_mb = rule_px('.form-label', 'margin-bottom')
+
+    gl_font = rule_px('.form-group-label', 'font-size')
+    gl_line = gl_font * BS_BODY_LINE_HEIGHT
+    gl_pad_b = rule_px('.form-group-label', 'padding-bottom')
+    gl_border = border_px('.form-group-label', 'border-bottom')
+    gl_mt, gl_mb = margin_parts('.form-group-label')
+    gl_h = gl_line + gl_pad_b + gl_border
+
+    alert_pad = rule_px('.alert', 'padding-top')
+    alert_border = border_px('.alert', 'border')
+    grid_font = rule_px('.bounds-grid', 'font-size')
+    grid_line = grid_font * BS_BODY_LINE_HEIGHT
+    grid_row_gap = margin_parts('.bounds-grid', 'gap')[0]
+    grid_h = 2 * grid_line + grid_row_gap          # 恰好 2 行，见下一节的断言
+    alert_h = 2 * alert_pad + 2 * alert_border + grid_h
+
+    btn_font = rule_px('.btn', 'font-size')
+    btn_h = 2 * BS_BTN_PADDING_Y_PX + btn_font * BS_BODY_LINE_HEIGHT
+
+    field_h = label_line + label_mb + ctl_h        # 一个 .mb-3 字段组的高度
+
+    # 逐个子元素累加，并按 CSS 规则合并相邻外边距
+    items = []                                     # [(高度, 下外边距, 上外边距)]
+    for tag, classes in _index_form_rows():
+        if 'form-group-label' in classes:
+            items.append((gl_h, gl_mb, gl_mt))
+        elif 'row' in classes:
+            # display:flex 的容器，子元素外边距不合并出去：
+            # 高度 = 列内容 + 列自己的 .mb-3
+            items.append((field_h + field_gap, 0.0, 0.0))
+        elif 'alert' in classes:
+            items.append((alert_h, BS_ALERT_MARGIN_BOTTOM_PX, 0.0))
+        elif tag == 'button':
+            items.append((btn_h, 0.0, 0.0))
+        elif 'mb-3' in classes:
+            items.append((field_h, field_gap, 0.0))
+        else:
+            raise AssertionError(
+                f'#downloadForm 里出现了模型不认识的直接子元素 <{tag} class="'
+                f'{" ".join(sorted(classes))}"> —— 本测试已失效（不是通过）。'
+                '请把它的高度加进 _index_form_vertical_model'
+            )
+
+    total = sum(h for h, _mb, _mt in items)
+    for prev, nxt in zip(items, items[1:]):
+        total += max(prev[1], nxt[2])              # 相邻外边距合并取较大者
+
+    return (navbar + panel_pad + card_border + 2 * hdr_pad
+            + BS_CARD_HEADER_LINE_BOX_PX + hdr_border + body_pad + total)
+
+
+def test_height_model_reproduces_the_cdp_measurement():
+    """高度模型必须复现 CDP 实测的 715.53。
+
+    这条是**模型的自检**，不是产品契约。它在这里的作用：
+    `test_submit_button_fits_at_1366x768` 用模型算出的数字下结论，
+    模型本身要是错的，那条断言就是在给一个错数字背书 ——
+    「静默给出错误的信心」比没有断言更糟。
+
+    ⚠️ 这条变红时怎么办（大概率你是故意改了尺寸）：
+      1. 先看 `test_submit_button_fits_at_1366x768` 是不是也红了。红了 = 真放不下。
+      2. 按 .superpowers/sdd/p2-task-10-report.md 的方法在 1366x768 **已框选**
+         状态下重测 `#createTaskBtn` 的 bottom，把 CDP_SUBMIT_BTN_BOTTOM 换成新值。
+      3. **别反过来改模型去凑锚点。** 模型算错和尺寸改动是两回事。
+    锚点被人随手改大也不要紧：装不装得下由下面那条独立判断，改锚点绕不过它。
+    """
+    got = _index_form_vertical_model(_css())
+    assert abs(got - CDP_SUBMIT_BTN_BOTTOM) <= HEIGHT_MODEL_TOLERANCE_PX, (
+        f'高度模型算出 #createTaskBtn 的 bottom = {got:.2f}px，'
+        f'与 CDP 实测锚点 {CDP_SUBMIT_BTN_BOTTOM}px 差 '
+        f'{abs(got - CDP_SUBMIT_BTN_BOTTOM):.2f}px（容差 {HEIGHT_MODEL_TOLERANCE_PX}px）。'
+        '要么你改了影响高度的尺寸（那就重测并更新锚点），'
+        '要么模型该更新了（例如 Bootstrap 升级改了 BS_* 那几个常量）'
+    )
+
+
+def test_submit_button_fits_at_1366x768():
+    """1366x768 下「创建下载任务」按钮必须整个在折叠线以上。
+
+    **这是 A5 / Task 10 的验收标准本身。**
+
+    改前实测 949.34（已框选 = 按钮可点的那个状态），溢出 181.3px：用户在
+    1366x768 笔记本上必须滚动才能提交。改后 715.53，余 52.47px。
+
+    模型的输入：
+      - 结构：从 templates/index.html 解析 `#downloadForm` 的可见直接子元素
+        （加一个字段会被算进来）
+      - 尺寸：从 style.css 解析，控件高度走**模拟层叠**（加 `height: 44px`
+        会被算进来）
+      - 只有 4 个 BS_* 常量来自 Bootstrap，各自标了 CDP 实测值
+    模型准不准由 test_height_model_reproduces_the_cdp_measurement 自检。
+
+    评审实测的两个逃逸变异现在都会被这条抓住：
+      `height: 44px`     -> 模型 811.5 > 768
+      `--pad-card` 10->80 -> 模型 785.5 > 768
+    """
+    got = _index_form_vertical_model(_css())
+    assert got <= VIEWPORT_1366_HEIGHT_PX, (
+        f'1366x768 下 #createTaskBtn 的 bottom 模型值 {got:.2f}px > '
+        f'{VIEWPORT_1366_HEIGHT_PX}px —— 提交按钮在折叠线以下 '
+        f'{got - VIEWPORT_1366_HEIGHT_PX:.2f}px，用户必须滚动才能提交。'
+        '这正是 A5 / Task 10 要修的缺陷（改前 949.34）'
     )

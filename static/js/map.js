@@ -279,12 +279,13 @@ function resetForm({ clearBounds = true } = {}) {
  *
  * A5 / Task 10 把它从 5 行压成 2 行的网格：
  *   改前——图标 +「选中区域：」标题 + ▲北/▼南/▶东/◀西 四行 <br>，实测 146.5px；
- *   改后——4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行，实测 56.5px。
- * 这一项单独就省下 90px，正好抵掉 1366x768 上「创建下载任务」按钮的溢出。
+ *   改后——4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行，实测 62.0px。
+ * 这一项单独就省下 84.5px（1366x768 上按钮总共要往回收 181px）。
  *
- * 三处刻意的改动，都不是纯排版：
- *  1. `▲▼▶◀` -> `N/S/E/W`。GIS 惯例用方位字母，而且原来那四个三角形在
- *     等宽字体里宽度不一致，四行的数字对不齐。
+ * 四处刻意的改动，都不是纯排版：
+ *  1. `▲北/▼南/▶东/◀西` -> `N/S/E/W`。GIS 惯例用方位字母；原来那四个三角形在
+ *     等宽字体里宽度不一致，四行的数字对不齐。中文方位词没有丢，只是移到了
+ *     .bounds-sr 里（见第 4 点）——视觉上是 N/S/E/W，读屏听到的是「北纬…」。
  *  2. 小数 6 位 -> 5 位。第 6 位约 0.11m，框选一个下载范围用不到；砍掉之后
  *     两个数字并排也放得下。5 位 ≈ 1.1m。
  *  3. 删掉了原来两个分支末尾各两行的 `boundsInfo.style.background/borderColor`
@@ -292,9 +293,21 @@ function resetForm({ clearBounds = true } = {}) {
  *     `background: rgba(59,130,246,0.1)` / `border-color: var(--color-info)`
  *     逐字相同，是纯粹的死代码（#boundsInfo 是 `<div class="alert alert-info">`，
  *     `.alert` 在 style.css 兜底重置的 :not() 白名单里，底色不会被压掉）。
+ *  4. 每个值前面加一段 `.bounds-sr` 的读屏专用方位词，键那边 aria-hidden。
+ *     N/S/E/W 视觉上够用，但读屏软件念出来只有四个字母；这样读屏拿到的是
+ *     「北纬 39.91653」。`.bounds-sr` 是 position:absolute，不参与布局，
+ *     实测加它前后 #boundsInfo 都是 62.0px、769px 极端坐标下仍无溢出。
+ *
+ * ⚠️ 键与值的**配对关系是数据正确性，不是排版**：把 N 配到 south 上，界面就会
+ * 把南纬标成北纬，而所有排版类断言都是绿的。由
+ * test_bounds_labels_bind_to_the_right_coordinate 逐对钉住 —— 它解析每个
+ * bounds-k 的字母和紧随其后那个值引用的 currentBounds.<字段> 做映射比对，
+ * 不是「这四个字母都出现过」。
  *
  * 行数由 tests/test_css_contract.py::test_bounds_readout_is_exactly_two_rows
- * 守住：它按「网格子元素数 / grid-template-columns 的轨道数」算行数。
+ * 守住：它按「网格子元素数 / grid-template-columns 的轨道数」算行数，并且要求
+ * alert 里**只有**这一个顶层元素 —— 否则在网格上面加一行标题就又变回 3 行，
+ * 而「8 格 / 4 列 = 2 行」这个算式看不见它。
  */
 function updateBoundsInfo() {
     const boundsInfo = document.getElementById('boundsInfo');
@@ -302,10 +315,10 @@ function updateBoundsInfo() {
         const f = (v) => v.toFixed(5);
         boundsInfo.innerHTML = `
             <div class="bounds-grid">
-                <span class="bounds-k">N</span><span class="bounds-v">${f(currentBounds.north)}</span>
-                <span class="bounds-k">S</span><span class="bounds-v">${f(currentBounds.south)}</span>
-                <span class="bounds-k">E</span><span class="bounds-v">${f(currentBounds.east)}</span>
-                <span class="bounds-k">W</span><span class="bounds-v">${f(currentBounds.west)}</span>
+                <span class="bounds-k" aria-hidden="true">N</span><span class="bounds-v"><span class="bounds-sr">北纬 </span>${f(currentBounds.north)}</span>
+                <span class="bounds-k" aria-hidden="true">S</span><span class="bounds-v"><span class="bounds-sr">南纬 </span>${f(currentBounds.south)}</span>
+                <span class="bounds-k" aria-hidden="true">E</span><span class="bounds-v"><span class="bounds-sr">东经 </span>${f(currentBounds.east)}</span>
+                <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v"><span class="bounds-sr">西经 </span>${f(currentBounds.west)}</span>
             </div>
         `;
     } else {
