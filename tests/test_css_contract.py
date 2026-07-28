@@ -310,8 +310,8 @@ def test_important_count_under_control():
              CDP 实测删除前后 hover 行的普通单元格都是 rgb(232,234,237)。
         本次**新增 0 处**。
       = 65 处（Task 12 后实测）
-      + 3 处余量：留给后续任务里个别确实必须压 Bootstrap 的新规则
-      = 68
+      + 3 处：A8 / Task 13 的 prefers-reduced-motion 重置块（逐条登记见下）
+      = 68 处（Task 13 后实测，正好等于上界，余量 0）
 
     ⚠️ 棘轮规则（分两种任务，别混用）：
 
@@ -329,11 +329,42 @@ def test_important_count_under_control():
         （被本文件的 div 兜底重置压）和 `.leaflet-touch .leaflet-bar`
         （border / box-shadow）两类真的赢不了；打在 <a> 上的规则同特异度、
         style.css 又排在 leaflet.css 之后，靠源码顺序就够了。
-      - 动画降噪的 prefers-reduced-motion 重置块：约 4 处（这是 W3C 推荐写法）。
+      - ~~动画降噪的 prefers-reduced-motion 重置块：约 4 处~~
+        —— **A8 / Task 13 已完成，实测只用了 3 处，上界不动**。逐条登记：
+
+            @media (prefers-reduced-motion: reduce) { *, *::before, *::after }
+              1. animation-duration: 0.01ms !important
+              2. animation-iteration-count: 1 !important
+              3. transition-duration: 0.01ms !important
+
+          为什么非 !important 不可：本块选择器特异度 (0,0,0)，是 CSS 里最弱的
+          形态，全站每一条声明 transition/animation 的规则（`.btn` (0,1,0)、
+          `.task-card.status-running::before` (0,2,0) …）都比它强。去掉
+          !important 整块立刻变成死代码 —— 变异实验 M1/M22 实测，
+          test_reduced_motion_actually_stops_every_animated_element 会当场变红。
+          这是 a11y 社区的标准写法（web.dev/prefers-reduced-motion）。
+
+          比预估少一处的原因（两条都实测过，不是省着用）：
+            · `scroll-behavior: auto !important` —— 通行模板里有，这里不写。
+              CDP 实测 Bootstrap 5.3.0 的 reboot 自己就把
+              `:root{scroll-behavior:smooth}` 关在 `no-preference` 里：
+              默认读到 `smooth`，Emulation 打开 reduce 后读到 `auto`。
+              本站自己一处 scroll-behavior 都没声明。
+            · `transition-property: ...` —— 时长已压到 0.01ms，再限制哪些属性
+              参与过渡不产生任何额外效果。
+
+          ⚠️ 已知豁免（**没有**为它花 !important）：`::-webkit-scrollbar-thumb`
+          的 0.15s 颜色过渡压不进 reduce 块 —— `*::before/*::after` 覆盖不到这个
+          非标准伪元素，而把它并进那个逗号组会让整组选择器在 Firefox 里作废。
+          理由见 _REDUCED_MOTION_EXEMPT 的说明。
       - 进度条 / 滚动条覆盖：约 3 处。
-    余下合计约 7 处，届时上界会被抬到 75 上下。**这不代表清理白做了** —— Task 2/3
+    余下合计约 3 处，届时上界会被抬到 71 上下。**这不代表清理白做了** —— Task 2/3
     清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
     两者性质不同。
+
+    ⚠️ 当前余量为 **0**（实测 68 / 上界 68）：Task 13 把 3 处余量正好用完。
+    下一个需要新增 !important 的任务会立刻变红 —— 这是有意的，逼一次显式决策，
+    而不是让它悄悄溜进去。
 
     余下 66 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
@@ -382,16 +413,16 @@ def _decl_map(body):
 #
 # ⚠️ 给后续任务的说明（这条测试变红时先读这里）：
 #   本表钉的是「C1 合并当时的值」，用途是防止合并时漏搬，**不是**禁止后续改动。
-#   已知的计划内改动：动画降噪任务会**有意删掉** `transition-property` /
-#   `transition-duration`（把全局过渡改成只给交互元素加）。那属于正常的视觉改动
-#   —— 删的时候把本表对应条目一并移除即可，不要按报错提示去「恢复漏搬的声明」。
+#
+#   A8 / Task 13 已按计划删掉 `transition-property` / `transition-duration` /
+#   `transition-timing-function` 三条，本表随之移除对应条目。
+#   ⚠️ 只删本表条目会留下一个洞：没有任何断言禁止它们**回潮**。补位的是
+#   test_no_blanket_motion_on_the_universal_selector —— 那条正面禁止顶层 `*`
+#   声明任何 transition-* / animation-*。改本表前先读它。
 MERGED_UNIVERSAL_DECLS = {
     'box-sizing': 'border-box',
     'scrollbar-width': 'thin',
     'scrollbar-color': 'var(--color-accent-strong) var(--color-bg-secondary)',
-    'transition-property': 'background-color, border-color, color, fill, stroke',
-    'transition-duration': '0.3s',
-    'transition-timing-function': 'ease',
 }
 
 
@@ -4183,6 +4214,44 @@ def _btn_specificity(branch):
 _BTN_SUPPORTED_PSEUDOS = frozenset({'hover', 'active', 'focus-visible', 'disabled'})
 
 
+# 按钮层叠模型描述的是**默认渲染环境**：没有开启系统「减少动画」偏好的用户
+# 看到的那个界面。A8 / Task 13 往文件末尾加了
+# `@media (prefers-reduced-motion: reduce)`，它的选择器是 `*, *::before,
+# *::after` —— 命中每一颗按钮，于是撞上了 Task 11 建的条件组 at-rule 安全网。
+#
+# 安全网的报错文案本身给了唯一正确的出路：「要改按钮的媒体查询样式，先把
+# 媒体条件求值加进模型」。这里就是那个求值器。
+#
+# 只支持 prefers-reduced-motion，**故意不支持宽度类条件**：
+#   文件里现有 @media (max-width: 768px) / (min-width: 768px) / (max-width: 576px)
+#   / (max-width: 480px) 四块，它们至今没有一条命中过按钮上下文，所以从没走到
+#   安全网。给它们加求值就得先钉死一个建模视口宽度，而高度模型讲的是 1366px、
+#   密度模型讲的是别的场景 —— 用一个数冒充「全部」正是模型撒谎的开始。
+#   保持返回 None（= 模型不支持 = 响亮失败），将来真有人往宽度断点里写按钮样式时，
+#   测试会当场变红并要求先扩模型。
+_PREFERS_REDUCED_MOTION_RE = re.compile(
+    r'^@media\s*\(\s*prefers-reduced-motion\s*:\s*(reduce|no-preference)\s*\)$', re.I)
+
+
+def _btn_media_applies(at_rule):
+    """条件组 at-rule 在「默认渲染环境」下成立吗？True / False / None(模型不支持)。
+
+    返回 False 的后果是该规则被整条跳过 —— 这是**正确**的建模，不是放行：
+    在没开减少动画偏好的浏览器里，`@media (prefers-reduced-motion: reduce)`
+    里的声明确实一条也不生效。
+
+    ⚠️ 代价要说清楚：开了减少动画偏好的用户看到的按钮外观不在本模型覆盖范围内。
+    当前那一块只声明 animation-duration / animation-iteration-count /
+    transition-duration 三个属性，`props` 里一个都没有，所以两种建模环境下
+    算出来的按钮外观完全一致。哪天有人往那一块里塞颜色/边框，这句话就不成立了
+    —— test_reduced_motion_block_only_touches_motion 钉的就是这个前提。
+    """
+    m = _PREFERS_REDUCED_MOTION_RE.match(re.sub(r'\s+', ' ', at_rule).strip())
+    if not m:
+        return None
+    return m.group(1).lower() == 'no-preference'
+
+
 def _btn_branch_applies(branch, ctx, state):
     """这个分支在给定状态下命中这颗按钮吗？True / False / None(模型不支持)。
 
@@ -4409,8 +4478,12 @@ def _btn_computed(css, ctx, state, props):
             if not applies:
                 continue
             if at_ctx:
-                conditional.append(f'{" ".join(at_ctx)} 里的 `{sel}`')
-                continue
+                verdicts = [_btn_media_applies(a) for a in at_ctx]
+                if any(v is None for v in verdicts):
+                    conditional.append(f'{" ".join(at_ctx)} 里的 `{sel}`')
+                    continue
+                if not all(verdicts):
+                    continue      # 条件在建模环境下不成立，浏览器里也不生效
             if not decls:
                 continue
             spec = _btn_specificity(branch)
@@ -5927,4 +6000,562 @@ def test_bootstrap_version_matches_the_modelled_one():
         + '\n'.join('  ' + w for w in wrong)
         + '\n升级是正当的，但要先重新核对 _bootstrap_color_competitors 那张表'
         '（扫新版本里所有能命中 <td> 且设 color 的规则），再改 _MODELLED_BOOTSTRAP_VERSION。'
+    )
+
+
+# ==========================================================================
+# A8 / Task 13：动画降噪 + prefers-reduced-motion
+# ==========================================================================
+# 为什么这一节要建第三个层叠模型（前两个是按钮外观、文字颜色）：
+#
+# 本任务改的四件事，**每一件都能被无声撤回**，如果只写「文件里有没有这行」
+# 的形态断言：
+#   1. 全局 `*` 过渡删了 —— 有人再写一条 `body * { transition: ... }`，
+#      效果原样回来，查 `*` 规则的断言全绿。
+#   2. `.card/.task-card` 的入场动画删了 —— 有人在别处写
+#      `.task-card { animation: fadeInUp .5s }`，同样全绿。
+#   3. 进度条时长 0.6s -> 0.2s —— 有人补一条
+#      `.progress .progress-bar { transition: width 1s }`(0,2,0) 压回去。
+#   4. `@media (prefers-reduced-motion: reduce)` 块 —— **这条最危险**：
+#      它的选择器是 `*, *::before, *::after`，特异度 (0,0,0)，是 CSS 里最弱的
+#      形态。把里面的 `!important` 去掉，整块立刻变成死代码（`.btn` 的 (0,1,0)
+#      就能压过它），而「文件里有没有这个 @media 块」的断言一个字都不会红。
+#      Task 11 的教训原文：整套修复能被原样撤回而 261 条测试全绿。
+#
+# 所以下面全部走「算最终生效值」：把命中同一个元素的所有规则按
+# (!important, 特异度, 源码序, 声明序号) 排一遍取胜出者 —— 与 _btn_computed /
+# _winning_color_decl 同一套比较键。
+#
+# 建模环境用 `reduced` 参数区分：False = 普通用户，True = 打开了系统
+# 「减少动画」偏好的用户。同一套规则在两个环境下都要给出正确答案。
+
+_MOTION_LONGHANDS = (
+    'animation-name', 'animation-duration', 'animation-iteration-count',
+    'transition-property', 'transition-duration',
+)
+
+# CSS 里所有合法的 <time>：数字 + s/ms（大小写不敏感）。
+_TIME_RE = re.compile(r'^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(s|ms)$', re.I)
+
+# animation 简写里可以出现、但**不是** name 的关键字。
+# 漏掉任何一个都会让它被当成动画名（例如把 `ease-out` 当名字），
+# 于是「.card 没有入场动画」这条断言会因为读错字段而失效。
+_ANIMATION_NON_NAME = frozenset({
+    'normal', 'reverse', 'alternate', 'alternate-reverse',        # direction
+    'none', 'forwards', 'backwards', 'both',                      # fill-mode
+    'running', 'paused',                                          # play-state
+    'infinite',                                                   # iteration-count
+    'linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out',
+    'step-start', 'step-end',                                     # timing-function
+    'initial', 'inherit', 'unset', 'revert',                      # 全局关键字
+})
+
+# transition-property 里出现即「不是属性名」的关键字。
+_TRANSITION_NON_PROPERTY = frozenset({
+    'linear', 'ease', 'ease-in', 'ease-out', 'ease-in-out',
+    'step-start', 'step-end', 'initial', 'inherit', 'unset', 'revert',
+})
+
+
+def _time_to_seconds(tok):
+    """`0.2s` / `150ms` / `0.01ms` -> 秒（float）。不是时间返回 None。"""
+    m = _TIME_RE.match(tok.strip())
+    if not m:
+        return None
+    return float(tok.strip()[:-len(m.group(1))]) / (1000.0 if m.group(1).lower() == 'ms' else 1.0)
+
+
+def _split_commas_outside_parens(value):
+    """按顶层逗号拆。`cubic-bezier(0.4, 0, 0.2, 1)` 里的逗号不算。"""
+    out, depth, cur = [], 0, ''
+    for ch in value:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            out.append(cur)
+            cur = ''
+        else:
+            cur += ch
+    out.append(cur)
+    return [p.strip() for p in out if p.strip()]
+
+
+def _tokens_outside_parens(part):
+    """按空白拆 token，括号内当作一个整体（`cubic-bezier(...)` 不被拆散）。"""
+    out, depth, cur = [], 0, ''
+    for ch in part:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        if ch.isspace() and depth == 0:
+            if cur:
+                out.append(cur)
+            cur = ''
+        else:
+            cur += ch
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _expand_motion_decls(body):
+    """规则体 -> [(长写属性名, 值, important, 声明序号)]，简写已展开。
+
+    简写**必须**展开，理由与 _BTN_SHORTHAND_EXPANSIONS 完全相同：
+    `animation: fadeInUp .5s` 和 `animation-name: fadeInUp` 在浏览器里等价，
+    只认其中一种写法的断言，换另一种写法就能绕过去。
+
+    简写里 <time> 的顺序按规范：**第一个是 duration，第二个是 delay**。
+    只要认「有个 s 结尾的 token」而不管顺序，`animation: pulse 0s 2s` 这种
+    会被读成 2s，正好把「时长压到 0」的检查骗过去。
+    """
+    out = []
+    for idx, chunk in enumerate(body.split(';')):
+        if ':' not in chunk:
+            continue
+        name, _, value = chunk.partition(':')
+        name = name.strip().lower()
+        imp = bool(_IMPORTANT_RE.search(value))
+        value = _IMPORTANT_RE.sub('', value).strip()
+        if name in _MOTION_LONGHANDS:
+            out.append((name, value, imp, idx))
+        elif name == 'animation':
+            # 只处理单条动画（站内没有逗号分隔的多动画写法）；有了再扩。
+            for part in _split_commas_outside_parens(value):
+                toks = _tokens_outside_parens(part)
+                times = [t for t in toks if _TIME_RE.match(t)]
+                iters = [t for t in toks
+                         if t.lower() == 'infinite' or re.fullmatch(r'\d+\.?\d*', t)]
+                names = [t for t in toks
+                         if not _TIME_RE.match(t)
+                         and t.lower() not in _ANIMATION_NON_NAME
+                         and '(' not in t
+                         and not re.fullmatch(r'\d+\.?\d*', t)]
+                out.append(('animation-name', names[0] if names else 'none', imp, idx))
+                out.append(('animation-duration', times[0] if times else '0s', imp, idx))
+                out.append(('animation-iteration-count',
+                            iters[0] if iters else '1', imp, idx))
+        elif name == 'transition':
+            props, durs = [], []
+            for part in _split_commas_outside_parens(value):
+                toks = _tokens_outside_parens(part)
+                times = [t for t in toks if _TIME_RE.match(t)]
+                names = [t for t in toks
+                         if not _TIME_RE.match(t)
+                         and t.lower() not in _TRANSITION_NON_PROPERTY
+                         and '(' not in t]
+                props.append(names[0] if names else 'all')
+                durs.append(times[0] if times else '0s')
+            out.append(('transition-property', ', '.join(props), imp, idx))
+            out.append(('transition-duration', ', '.join(durs), imp, idx))
+    return out
+
+
+def _motion_media_verdict(at_rule, reduced):
+    """条件组 at-rule 在给定建模环境下成立吗？True / False / None(模型不支持)。
+
+    与 _btn_media_applies 同一个口径，只是这里把 `reduced` 当参数：
+    动画模型必须能算**两种**环境，按钮外观模型只算默认环境。
+    宽度类断点一律返回 None（模型不支持）—— 只要有人往里塞动画声明就响亮失败。
+    """
+    m = _PREFERS_REDUCED_MOTION_RE.match(re.sub(r'\s+', ' ', at_rule).strip())
+    if not m:
+        return None
+    want_reduce = m.group(1).lower() == 'reduce'
+    return want_reduce == bool(reduced)
+
+
+def _motion_computed(css, chain, reduced=False):
+    """模拟层叠，返回链尾节点最终生效的动画/过渡。
+
+    返回 dict：
+      animation_name / animation_duration(秒) / animation_iterations(str)
+      transitions: {属性名: 时长秒}，'all' 原样保留为键
+    读不懂的写法一律抛 AssertionError（响亮失败），绝不猜。
+    """
+    best, unsupported = {}, []
+    for order, (sel, body, at_ctx) in enumerate(_rules_ctx(css)):
+        if any(a.split()[0] in _BTN_NON_SELECTOR_AT_RULES for a in at_ctx):
+            continue                       # @keyframes 里的 `0%` 不是选择器
+        decls = _expand_motion_decls(body)
+        for branch in _selector_parts(sel):
+            applies = _text_branch_applies(branch, chain)
+            if applies is None:
+                if decls:
+                    unsupported.append(f'{sel}   （分支 {branch!r}）')
+                continue
+            if not applies:
+                continue
+            if at_ctx:
+                verdicts = [_motion_media_verdict(a, reduced) for a in at_ctx]
+                if any(v is None for v in verdicts):
+                    if decls:
+                        unsupported.append(f'{" ".join(at_ctx)} 里的 `{sel}`（条件求不了值）')
+                    continue
+                if not all(verdicts):
+                    continue
+            spec = _btn_specificity(branch)
+            for name, val, imp, decl_idx in decls:
+                key = (imp, spec, order, decl_idx)
+                if name not in best or key > best[name][0]:
+                    best[name] = (key, val)
+    assert not unsupported, (
+        f'动画层叠模型处理不了这些写法（节点 {chain[-1]!r}），测试已失效（不是通过）：\n'
+        + '\n'.join('  ' + u for u in sorted(set(unsupported)))
+        + '\n新写法要么扩展 _text_branch_applies / _motion_media_verdict，要么换等价写法'
+    )
+
+    def val_of(name, default):
+        return best[name][1] if name in best else default
+
+    dur_raw = val_of('animation-duration', '0s')
+    anim_dur = _time_to_seconds(_split_commas_outside_parens(dur_raw)[0])
+    assert anim_dur is not None, f'读不懂的 animation-duration: {dur_raw!r}'
+
+    tprops = [p.strip().lower() for p in
+              _split_commas_outside_parens(val_of('transition-property', 'all'))]
+    tdurs_raw = _split_commas_outside_parens(val_of('transition-duration', '0s'))
+    tdurs = []
+    for d in tdurs_raw:
+        s = _time_to_seconds(d)
+        assert s is not None, f'读不懂的 transition-duration: {d!r}'
+        tdurs.append(s)
+    transitions = {}
+    if 'none' not in tprops:
+        for i, p in enumerate(tprops):
+            # 规范：属性表比时长表长时，时长表循环取用
+            d = tdurs[i % len(tdurs)] if tdurs else 0.0
+            # 时长 0 = 不过渡。CSS 的初始值就是 `transition-property: all;
+            # transition-duration: 0s`，不滤掉的话**每个**元素都会带着
+            # {'all': 0.0}，「裸元素身上没有过渡」这条断言永远红。
+            if d > 0:
+                transitions[p] = d
+    return {
+        'animation_name': val_of('animation-name', 'none').strip(),
+        'animation_duration': anim_dur,
+        'animation_iterations': val_of('animation-iteration-count', '1').strip().lower(),
+        'transitions': transitions,
+    }
+
+
+def _motion_rule_index(css):
+    """全站声明了动画/过渡的规则清单：[(选择器分支, 是否在 reduce 块里)]。
+
+    扫描范围 = style.css 全文（含 @media 内部），@keyframes 里的 `0%`/`from`
+    这类非选择器除外。给下面几条遍历型断言当「完整性锚点」用。
+    """
+    out = []
+    for sel, body, at_ctx in _rules_ctx(css):
+        if any(a.split()[0] in _BTN_NON_SELECTOR_AT_RULES for a in at_ctx):
+            continue
+        if not _expand_motion_decls(body):
+            continue
+        in_reduce = any(
+            _PREFERS_REDUCED_MOTION_RE.match(re.sub(r'\s+', ' ', a).strip())
+            and 'reduce' in a.lower()
+            for a in at_ctx
+        )
+        for branch in _selector_parts(sel):
+            out.append((branch, in_reduce))
+    return out
+
+
+# 全站声明动画/过渡的选择器分支总数（含 reduce 块里那 3 个分支）。
+#
+# ⚠️ 这个数字的用途是**完整性锚点**，不是洁癖：Task 11 的 `== 6` 曾经制造
+# 「全站都覆盖到了」的假象，实际漏了 base.html 里的第 7 颗按钮。下面几条
+# 遍历型断言都建立在「我真的扫到了每一条」之上，数字对不上先查是不是漏扫。
+# 增删动画规则时，改这个数字**并同时确认**新规则被下面的断言覆盖到了。
+_MOTION_BRANCH_COUNT = 28
+
+
+def test_motion_rule_index_is_complete():
+    """先钉住扫描范围本身：动画/过渡声明分布在 28 个选择器分支上。
+
+    扫描范围：static/css/style.css 全文，包含 @media 内部的规则，
+    排除 @keyframes/@font-face/@page（里面的 `0%`、`from` 不是选择器）。
+    """
+    idx = _motion_rule_index(_css())
+    assert len(idx) == _MOTION_BRANCH_COUNT, (
+        f'全站声明动画/过渡的选择器分支有 {len(idx)} 个，锚点是 {_MOTION_BRANCH_COUNT}：\n'
+        + '\n'.join(f'  {b}{"   [reduce 块内]" if r else ""}' for b, r in idx)
+        + '\n改动画规则要同步这个锚点，并确认新规则被本节其余断言覆盖'
+    )
+    assert sum(1 for _b, r in idx if r) == 3, (
+        'prefers-reduced-motion: reduce 块里应当正好有 3 个选择器分支'
+        '（`*` / `*::before` / `*::after`）'
+    )
+
+
+def test_no_blanket_motion_reaches_an_unstyled_element():
+    """一个「什么样式都没有」的元素，最终生效的过渡/动画必须是空的。
+
+    这条守的是「全局 `*` 过渡已删除且不会回潮」，但它**不查 `*` 规则**——
+    查规则的写法只堵一种回潮姿势，`body *`、`div`、`:where(*)`、
+    `html * { transition: ... }` 每一种都能绕过去，效果却一模一样。
+    这里改为算「一个裸 <td> 最终生效的 transition/animation 是什么」：
+    只要有任何一条规则把过渡挂到了普通节点上，不管它怎么写，这里都变红。
+
+    为什么这件事值得守：首页 Leaflet 动态生成的节点数以千计，它们一条过渡
+    也用不上，`*` 却让样式引擎给每一个都挂上过渡簿记。
+    """
+    css = _css()
+    # 链必须带上 html/body 祖先：变异实验 M5 实测，只放一个孤立节点时
+    # `body * { transition: color .3s }` 这种「换个写法重新全局化」的姿势
+    # 会因为祖先侧对不上而被判不命中，本条断言当场变成假绿。
+    for node in (_TextEl(tag='td'), _TextEl(tag='span'), _TextEl(tag='div')):
+        chain = [_TextEl(tag='html'), _TextEl(tag='body'), _TextEl(tag='div'), node]
+        got = _motion_computed(css, chain)
+        assert not got['transitions'], (
+            f'裸 <{node.tag}> 身上还有过渡 {got["transitions"]} —— 全局过渡回潮了。'
+            '交互反馈请写在具体的交互元素上（.btn / .form-control / .nav-link …）'
+        )
+        assert got['animation_name'] == 'none', (
+            f'裸 <{node.tag}> 身上挂了动画 {got["animation_name"]!r}'
+        )
+
+
+def test_cards_have_no_entrance_animation_but_running_bar_still_pulses():
+    """两件事一起钉：入场动画没了，**而状态动画还在**。
+
+    只断言「.task-card 没有 animation」是不够的 —— 把整节动画全删光也能通过，
+    而那样会连「运行中的任务左边条在呼吸」这个**传达状态**的信号一起丢掉。
+    所以第二半是正面断言：.task-card.status-running::before 必须仍然跑 pulse、
+    仍然是无限循环。
+
+    算的是层叠胜出值，不是「文件里有没有 fadeInUp 这个词」：把
+    `.task-card { animation: fadeInUp .5s }` 换个地方重写一遍照样会红。
+    """
+    css = _css()
+    for classes in (('card',), ('task-card',), ('task-card', 'status-running'),
+                    ('task-card', 'status-failed')):
+        got = _motion_computed(css, [
+            _TextEl(tag='body'),
+            _TextEl(tag='div', element_id='activeTasks'),
+            _TextEl(tag='div', classes=classes)])
+        assert got['animation_name'] == 'none', (
+            f'.{".".join(classes)} 又挂上了入场动画 {got["animation_name"]!r}'
+            f'（{got["animation_duration"]}s）。任务列表每次成员变化都整体重建 '
+            'innerHTML，入场动画会被集体重放：CDP 实测 5 张卡的场景下，'
+            '「新任务到达」和「任一任务完成」各触发 fadeInUp × 5'
+        )
+
+    pulse = _motion_computed(css, [
+        _TextEl(tag='body'),
+        _TextEl(tag='div', element_id='activeTasks'),
+        _TextEl(tag='div', classes=('task-card', 'status-running'), pseudo_element='before')])
+    assert pulse['animation_name'] == 'pulse', (
+        '运行中任务的左边条不再跑 pulse —— 这是「任务还活着」的唯一视觉信号，'
+        f'属于传达状态的动画，不在降噪范围内。实际是 {pulse["animation_name"]!r}'
+    )
+    assert pulse['animation_iterations'] == 'infinite', (
+        f'pulse 不再无限循环（{pulse["animation_iterations"]}），呼吸灯会停在某一帧'
+    )
+    assert pulse['animation_duration'] == pytest.approx(2.0, abs=0.01), (
+        f'pulse 时长变成 {pulse["animation_duration"]}s'
+    )
+
+
+# 进度条 width 过渡的时长上界（秒）。
+#
+# 定这个数的依据是 CDP 实测，不是手感：
+#   services/task_manager.py 的 progress_callback **每下载一块瓦片**就
+#   `socketio.emit('task_progress', ...)` 一次，回调体内没有任何攒批或限频，
+#   并发下载下 10~20 次/秒。tasks.js 走增量路径只改 bar.style.width，
+#   于是这条过渡被反复重启，永远从上一帧位置重新起步。
+#   20Hz 驱动 40 次（真值走到 80%）实测最大滞后：
+#       0.6s cubic-bezier  57.0pp   ← 改前，用户看到 23% 时真实进度是 80%
+#       0.2s cubic-bezier   7.7pp
+#       0.2s linear         6.7pp   ← 改后
+#       0.12s linear        3.5pp
+#       none                0
+#   决定性变量是时长，不是缓动曲线（0.2s 下 linear 与 cubic 只差 1pp，
+#   10Hz 时 cubic 反而更好），所以这里只钉时长、**不钉 timing-function**。
+_PROGRESS_WIDTH_MAX_SECONDS = 0.25
+
+
+def test_progress_bar_transition_keeps_up_with_the_push_rate():
+    """进度条的 width 过渡时长必须撑得住后端的推送频率。
+
+    算的是层叠胜出值：补一条 `.progress .progress-bar { transition: width 1s }`
+    (0,2,0) 把它压回去，这里照样变红。
+    """
+    # 真实 markup（tasks.js createTaskCard）：
+    #   .task-card > .progress > .progress-bar
+    # 祖先必须建模到位，否则 `.progress .progress-bar { transition: width 1s }`
+    # 这条压回去的规则算不进来 —— 变异 M8 实测过，当时本断言是假绿。
+    got = _motion_computed(_css(), [
+        _TextEl(tag='div', classes=('task-card',)),
+        _TextEl(tag='div', classes=('progress',)),
+        _TextEl(tag='div', classes=('progress-bar',)),
+    ])
+    width_dur = got['transitions'].get('width', got['transitions'].get('all'))
+    assert width_dur is not None or not got['transitions'], (
+        f'.progress-bar 的过渡里既没有 width 也没有 all：{got["transitions"]}'
+    )
+    if width_dur is not None:
+        assert width_dur <= _PROGRESS_WIDTH_MAX_SECONDS, (
+            f'.progress-bar 的 width 过渡是 {width_dur}s，上界 '
+            f'{_PROGRESS_WIDTH_MAX_SECONDS}s。后端每块瓦片推一次进度'
+            '（task_manager.py 的 progress_callback，无攒批），过渡时长超过推送'
+            '间隔就永远追不上真值 —— 0.6s 时实测最大滞后 57 个百分点'
+        )
+
+
+# reduce 块把时长压到 0.01ms。判定阈值给到 1ms：
+# 目的是区分「压住了」和「没压住」（没压住的最小值是 0.12s = 120ms），
+# 不是去校验那个字面量。留出量级余地，换个 0.5ms/1ms 写法不会误红。
+_REDUCED_MOTION_MAX_SECONDS = 0.001
+
+# 「减少动画」压不到、且**故意不去压**的豁免清单。
+#
+# 每条都要写清两件事：为什么压不到、为什么可以不压。清单之外一律必须被压住。
+#
+#   ::-webkit-scrollbar-thumb（`*::-webkit-scrollbar-thumb` 与
+#   `.index-right::-webkit-scrollbar-thumb` 两条，各有一个 0.15s 的
+#   background-color 过渡）
+#     · 为什么压不到：reduce 块的选择器是 `*, *::before, *::after`，
+#       覆盖不到这个非标准伪元素。
+#     · 为什么不另写一条去压：CSS 的逗号选择器组里只要有一个浏览器不认识的
+#       选择器，**整组作废**。把 `*::-webkit-scrollbar-thumb` 并进那个组，
+#       Firefox 会把整块减少动画支持一起丢掉 —— 用一个真缺陷换一个假缺陷。
+#       单独再写一条则要多花一个 !important（预算见
+#       test_important_count_under_control）。
+#     · 为什么可以不压：这是滚动条滑块 hover 时的 150ms **颜色**淡入，
+#       没有位移、缩放、旋转，也不循环。WCAG 2.1 SC 2.3.3 管的是
+#       「交互引发的动画」造成的前庭不适，颜色渐变不在其列。
+_REDUCED_MOTION_EXEMPT_PSEUDOS = frozenset({'-webkit-scrollbar-thumb'})
+# 注：`*::-webkit-scrollbar-thumb` 经 _TextEl.__repr__ 规范化后是 `::-webkit-scrollbar-thumb`
+# （通配符不进 repr），这里存的是规范化后的形态。
+_REDUCED_MOTION_EXEMPT = {'::-webkit-scrollbar-thumb', '.index-right::-webkit-scrollbar-thumb'}
+
+
+def _motion_contexts_from_stylesheet(css):
+    """把每一条动画/过渡规则的选择器**反向变成一个元素上下文**。
+
+    为什么要反向生成而不是手写一张上下文表：手写的表会过期。Task 11 的
+    `== 6` 就是手写清单漏了第 7 颗按钮，制造出「全站都覆盖了」的假象。
+    这里让样式表自己说出「有哪些元素身上有动画」，新增一条动画规则的人
+    不需要记得来补测试 —— 它自动进入下面那条断言的覆盖范围。
+
+    生成的是**整条祖先链**，不是只取最后一个复合选择器。
+    这一点是实测踩出来的：第一版只取末端，于是链长恒为 1，
+    `_text_branch_applies` 对任何带后代组合符的规则都直接判不命中 ——
+    变异实验 M8（`.progress .progress-bar { transition: width 1s }`）
+    因此没能让「进度条时长上界」那条变红，M5（`body * { transition: color .3s }`）
+    也没能让「裸元素身上没有过渡」那条变红。两条断言当时都是**假绿**。
+    生成全链之后，每条规则至少保证能命中它自己生成的那个上下文。
+
+    `*` 这种通配分支跳过（它不描述某个具体元素，reduce 块自己就是这个形态）。
+    """
+    ctxs = {}
+    for branch, in_reduce in _motion_rule_index(css):
+        if in_reduce:
+            continue
+        chain = []
+        for part in branch.split():
+            comp = _parse_compound(part)
+            assert comp is not None, f'动画规则的选择器读不懂，模型已失效：{branch!r}'
+            chain.append(_TextEl(
+                tag=comp['tag'], classes=comp['classes'],
+                element_id=(comp['ids'][0] if comp['ids'] else None),
+                pseudo_element=comp['pseudo_element']))
+        tail = chain[-1]
+        if (not tail.classes and not tail.tag and not tail.element_id
+                and not tail.pseudo_element):
+            continue                      # 裸 `*`（`*::伪元素` 不算，它描述一个具体的盒子）
+        ctxs.setdefault(' '.join(repr(n) for n in chain), chain)
+    return [ctxs[k] for k in sorted(ctxs)]
+
+
+def test_reduced_motion_actually_stops_every_animated_element():
+    """开了系统「减少动画」偏好后，**每一个**带动效的元素都必须真的停下来。
+
+    扫描范围：style.css 里全部声明了 transition/animation 的规则（含 @media
+    内部），逐条把选择器反解成元素上下文，再在 `reduced=True` 环境下重算层叠。
+
+    这条是本次改动里最容易被无声撤回的一环，所以它算最终生效值：
+    `@media (prefers-reduced-motion: reduce)` 块的选择器是 `*, *::before,
+    *::after`，特异度 (0,0,0)。**把里面的 !important 去掉，整块立刻变成死代码**
+    （`.btn` 的 (0,1,0) 就压过它），而「文件里有没有这个 @media 块」的形态断言
+    一个字都不会红。同理：把媒体条件写成 no-preference、把
+    animation-duration 写成别的属性名、或者别处新增一条带 !important 的
+    动画规则，这里都会变红。
+
+    ⚠️ 无障碍口径：前庭功能障碍用户会因为界面动效产生真实的生理不适
+    （WCAG 2.1 SC 2.3.3）。这不是观感偏好，所以断言是「全部」而不是「主要的几个」。
+    """
+    css = _css()
+    ctxs = _motion_contexts_from_stylesheet(css)
+    exempt = {repr(c[-1]) for c in ctxs
+              if c[-1].pseudo_element in _REDUCED_MOTION_EXEMPT_PSEUDOS}
+    assert exempt == _REDUCED_MOTION_EXEMPT, (
+        f'减少动画的豁免清单与实际不符：实际 {sorted(exempt)}，清单 '
+        f'{sorted(_REDUCED_MOTION_EXEMPT)}。新增豁免必须**逐条写理由**，'
+        '清单里有而实际没有的（规则删了/改名了）也要清掉，否则清单会变成一张空头支票'
+    )
+    assert len(ctxs) == 25, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 25：\n'
+        + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
+        + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
+    )
+    problems = []
+    for chain in ctxs:
+        node = chain[-1]
+        if repr(node) in _REDUCED_MOTION_EXEMPT:
+            continue
+        normal = _motion_computed(css, chain, reduced=False)
+        reduced = _motion_computed(css, chain, reduced=True)
+        # 只检查在普通环境下**确实会动**的元素：没动效的元素本来就不需要被压。
+        if normal['animation_name'] != 'none' and normal['animation_duration'] > 0:
+            if reduced['animation_duration'] > _REDUCED_MOTION_MAX_SECONDS:
+                problems.append(
+                    f'{node!r}: 动画 {normal["animation_name"]} 在 reduce 下仍有 '
+                    f'{reduced["animation_duration"]}s')
+            if reduced['animation_iterations'] == 'infinite':
+                problems.append(f'{node!r}: 动画在 reduce 下仍是无限循环')
+        for prop, dur in normal['transitions'].items():
+            got = reduced['transitions'].get(prop, 0.0)
+            if got > _REDUCED_MOTION_MAX_SECONDS:
+                problems.append(
+                    f'{node!r}: 过渡 {prop} 普通环境 {dur}s，reduce 下仍有 {got}s')
+    assert not problems, (
+        'prefers-reduced-motion: reduce 没有压住下列动效 —— '
+        '八成是那一块的 !important 被去掉了（它的选择器特异度是 (0,0,0)，'
+        '不带 !important 谁都压不住），或者媒体条件被改写了：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_reduced_motion_block_only_touches_motion():
+    """reduce 块里只许出现动画相关属性 —— 这是另外三个层叠模型的前提。
+
+    按钮外观模型 / 文字颜色模型 / 高度模型都只建模**默认环境**
+    （见 _btn_media_applies）。它们之所以可以直接跳过 reduce 块，
+    唯一依据就是那一块不碰颜色、边框、尺寸。前提一旦被打破，
+    那三个模型会在无人察觉的情况下漏算一整个用户群看到的界面。
+
+    所以这条不是洁癖：它是把「模型的适用前提」变成一条会响的断言。
+    真要在 reduce 下改外观，先给那三个模型加上环境参数。
+    """
+    offenders = []
+    for sel, body, at_ctx in _rules_ctx(_css()):
+        if not any(_PREFERS_REDUCED_MOTION_RE.match(re.sub(r'\s+', ' ', a).strip())
+                   and 'reduce' in a.lower() for a in at_ctx):
+            continue
+        for chunk in body.split(';'):
+            if ':' not in chunk:
+                continue
+            name = chunk.partition(':')[0].strip().lower()
+            if name and not (name.startswith('animation') or name.startswith('transition')
+                             or name == 'scroll-behavior'):
+                offenders.append(f'{sel} -> {name}')
+    assert not offenders, (
+        'prefers-reduced-motion: reduce 块里出现了非动画属性：\n'
+        + '\n'.join('  ' + o for o in offenders)
+        + '\n按钮/文字/高度三个层叠模型都假设这一块不影响外观（见 _btn_media_applies），'
+        '要在 reduce 下改外观，先给那三个模型加环境参数'
     )

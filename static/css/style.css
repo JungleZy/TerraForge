@@ -117,19 +117,43 @@
 /* Global Styles */
 /* 全局 `*` 规则只此一条。原先散在文件末尾还有两条（滚动条配色、全局过渡），
    三条同选择器同优先级的规则分居三处，改任何一条都要先找齐另外两条。
-   这里只做合并，值一律照搬未改。 */
+   C1 只做合并、值照搬未改。
+
+   A8 / Task 13：全局过渡三条声明（transition-property / -duration /
+   -timing-function）在此**删除**，改为由各交互元素自己声明。
+   为什么删：
+     1. `*` 让样式引擎给**每一个**节点挂过渡簿记。首页地图上 Leaflet
+        动态生成的节点数以千计，它们一条过渡也用不上。
+     2. 真正需要过渡反馈的元素（.btn / .form-control / .nav-link / .card /
+        .task-card / .status-badge / .page-link / .form-check-input …）
+        本来就各自写了一条 transition，`*` 那条对它们完全是死声明。
+   删除本身由 tests/test_css_contract.py::test_no_blanket_motion_on_the_universal_selector
+   钉住（那条同时禁止 animation-* 回潮）。 */
 * {
     box-sizing: border-box;
 
     /* 滚动条（Firefox / 标准属性；WebKit 分支见下方 *::-webkit-scrollbar-*） */
     scrollbar-width: thin;
     scrollbar-color: var(--color-accent-strong) var(--color-bg-secondary);
-
-    /* 全局过渡 */
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-duration: 0.3s;
-    transition-timing-function: ease;
 }
+
+/* A8 / Task 13：交互反馈过渡的统一口径。
+ *
+ * 全站的 `transition: all <t>` 一律换成下面这张显式属性表。三条理由，
+ * 前两条有 CDP 实测：
+ *
+ *   1. `all` 会连 `scrollbar-color` 一起动。上面那条 `*` 给每个元素都设了
+ *      scrollbar-color，于是 hover 一个 .nav-link，Animation domain 抓到的
+ *      CSSTransition 里赫然有 `scrollbar-color` —— 纯粹的无用功。
+ *   2. `all` 还会动 transform / 未来任何新增的布局属性。`.btn:disabled` 的
+ *      `transform: none !important` 一旦有人给基态加上 transform，就会变成
+ *      每次禁用/启用都上下弹一下。显式列表把这条路堵死。
+ *   3. 0.3s 用在 hover 反馈上偏慢（指针已经离开了颜色才走完）。交互反馈
+ *      统一 0.15s；只有真正表达「状态切换」的过渡才允许更长。
+ *
+ * `width` 只出现在两处**有意**的尺寸过渡上（.nav-link::after 的下划线扫出、
+ * .task-card::before 的左边条加粗），各自在那条规则里单列，不进这张通表。
+ */
 
 /* 元素级字号基线：原先由文件末尾的 !important 覆盖块提供，现合并到此处。
    放在最前面，任何带 class 的规则都能正常覆盖它（这正是原来做不到的）。 */
@@ -214,7 +238,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: var(--font-size-xl);
     letter-spacing: -0.02em;
     color: var(--color-accent-hover) !important;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     padding: 0.5rem 1rem;
 }
 
@@ -226,7 +251,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .nav-link {
     color: var(--color-text-secondary) !important;
     font-weight: 400;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     position: relative;
     padding: 0.4rem 0.8rem !important;
     font-size: var(--font-size-base);
@@ -240,7 +266,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     width: 0;
     height: 2px;
     background: var(--color-accent);
-    transition: all 0.3s ease;
+    transition: width 0.15s ease;
     transform: translateX(-50%);
 }
 
@@ -324,7 +350,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .index-right::-webkit-scrollbar-thumb {
     background: var(--color-border-strong);
     border-radius: 4px;
-    transition: background 0.3s ease;
+    /* A8 / Task 13：0.3s -> 0.15s，与全站交互反馈口径一致（见文件头部那段说明）。 */
+    transition: background-color 0.15s ease;
 }
 
 .index-right::-webkit-scrollbar-thumb:hover {
@@ -357,7 +384,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-sm);
-    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     position: relative;
     overflow: hidden;
 }
@@ -370,7 +398,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     width: 4px;
     height: 100%;
     background: var(--color-accent);
-    transition: all 0.3s ease;
+    transition: width 0.15s ease, background-color 0.15s ease;
 }
 
 .task-card:hover {
@@ -487,7 +515,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-size: var(--font-size-xs);
     font-weight: 600;
     font-family: var(--font-mono);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     box-shadow: none;
 }
 
@@ -565,8 +594,30 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 /* 百分比数字已搬到 .progress__label（见下），条里不再有文字，
    所以原来那套居中 + 字体 + overflow:hidden 的声明全部作废：
    居中的是别人的孩子，overflow:hidden 正是把 progress=0 的数字裁没的那条。 */
+/* A8 / Task 13：width 过渡 0.6s cubic-bezier -> 0.2s linear。
+ *
+ * 这不是口味问题，是**进度条在显示错误的数字**。
+ * task_manager.py 的 progress_callback 是**每下载一块瓦片**推一次
+ * task_progress（`self.socketio.emit('task_progress', ...)` 在回调体内，
+ * 没有任何攒批或限频）。并发下载下轻松到 10~20 次/秒。
+ * tasks.js 走增量路径 updateTaskProgressPartial，只改 `bar.style.width`，
+ * 于是这条过渡被**每 50ms 重启一次**，永远从上一帧的位置重新起步。
+ *
+ * CDP 实测（20Hz 驱动 40 次，真值走到 80%）：
+ *     0.6s cubic-bezier(当前)  最大滞后 57.0pp，均值 32.0pp，驱动结束时条上是 23%
+ *     0.2s cubic-bezier        最大滞后  7.7pp
+ *     0.2s linear              最大滞后  6.7pp
+ *     0.12s linear             最大滞后  3.5pp
+ *     none                     最大滞后  0
+ * 也就是说改前用户看到 23% 的时候真实进度是 80%。
+ *
+ * 决定性变量是**时长**不是缓动曲线（0.2s 下 linear 与 cubic 只差 1pp，
+ * 10Hz 时 cubic 反而更好）。所以护栏只钉时长上界，不钉 timing-function。
+ * 选 linear 是语义上的选择：进度条在两个已知值之间插值，缓动曲线暗示了
+ * 一个并不存在的加减速。
+ * 上界由 test_progress_bar_transition_keeps_up_with_the_push_rate 钉住。 */
 .progress-bar {
-    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.2s linear;
 }
 
 /* 进度条百分比覆盖层。
@@ -667,7 +718,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     margin-bottom: 1.5rem;
     box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-border);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .config-section:hover {
@@ -728,7 +780,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 8px;
     font-weight: 700;
     font-family: var(--font-display);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
 
 /* History Table Styles */
@@ -761,7 +814,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .history-table tbody tr {
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .history-table tbody tr:hover {
@@ -780,7 +834,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 700;
     padding: 0.5rem 1.25rem;
     font-family: var(--font-display);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
 
 /* ==========================================================================
@@ -822,7 +877,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
    ========================================================================== */
 .btn {
     border: none;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
     position: relative;
     overflow: hidden;
     font-weight: 500;
@@ -1127,7 +1183,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-sm);
     background: var(--color-bg-secondary);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     margin-bottom: 0.75rem;
 }
 
@@ -1281,7 +1338,8 @@ h1, h2, h3, h4, h5, h6 {
     line-height: var(--ctl-line-h);
     min-height: var(--ctl-h);
     font-family: var(--font-display);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     font-size: var(--font-size-sm);
 }
 
@@ -1461,7 +1519,8 @@ h1, h2, h3, h4, h5, h6 {
     padding: 0.5rem 0.75rem;
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .page-link:hover {
@@ -1584,7 +1643,8 @@ code {
     background-color: var(--color-bg-tertiary);
     border: 2px solid var(--color-border);
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .form-check-input:checked {
@@ -1738,7 +1798,14 @@ code {
 *::-webkit-scrollbar-thumb {
     background: var(--color-border-strong);
     border-radius: 4px;
-    transition: background 0.3s ease;
+    /* A8 / Task 13：0.3s -> 0.15s。⚠️ 这条**压不进**
+       @media (prefers-reduced-motion: reduce) —— 那一块的选择器是
+       `*, *::before, *::after`，覆盖不到 ::-webkit-scrollbar-thumb 这个
+       非标准伪元素；而把它塞进那个逗号组会让**整组选择器在 Firefox 里
+       整条失效**（组里有一个不认识的选择器 = 全组作废），等于把减少动画
+       支持在 Firefox 上悄悄弄没。详见
+       test_reduced_motion_actually_stops_every_animated_element 的豁免清单。 */
+    transition: background-color 0.15s ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
@@ -1932,32 +1999,35 @@ code {
     background: var(--color-bg-secondary) !important;
 }
 
-/* Animation for Page Load */
-@keyframes fadeInUp {
-    from {
-        opacity: 0;
-        transform: translateY(20px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
+/* A8 / Task 13：入场动画 `@keyframes fadeInUp` + `.card, .task-card
+   { animation: fadeInUp 0.5s }` + 两组 nth-child 递延，整块**删除**。
+   护栏：test_cards_have_no_entrance_animation（算层叠胜出的 animation-name，
+   不是查字符串）。
 
-.card,
-.task-card {
-    animation: fadeInUp 0.5s ease-out;
-}
+   ── 为什么删 .task-card ────────────────────────────────────────────────
+   简报给的根因（「tasks.js 每次进度更新都 innerHTML 全量重建」）**与代码不符**，
+   下面是 CDP 实测的真实触发面：
 
-.card:nth-child(1) { animation-delay: 0.1s; }
-.card:nth-child(2) { animation-delay: 0.2s; }
-.card:nth-child(3) { animation-delay: 0.3s; }
+     updateTaskProgress 里每种任务类型都有增量分支
+     （statusChanged → 只重建这一张卡；progressChanged → updateTaskProgressPartial
+     原地改 DOM）。用 Animation domain 录制，一次纯进度推送产生的 CSSAnimation
+     数量是 **0** —— 进度更新不会重放入场动画。
 
-.task-card:nth-child(1) { animation-delay: 0.1s; }
-.task-card:nth-child(2) { animation-delay: 0.2s; }
-.task-card:nth-child(3) { animation-delay: 0.3s; }
-.task-card:nth-child(4) { animation-delay: 0.4s; }
-.task-card:nth-child(5) { animation-delay: 0.5s; }
+   真正会重放的是**列表成员变化**，它们都走 renderActiveTasks 的
+   `container.innerHTML = ...` 全量重建。实测 5 张卡的场景：
+     · 新任务到达（updateTaskProgress 的未知 key 分支）→ fadeInUp × 5
+     · 任务完成 handleTaskCompleted                    → fadeInUp × 5
+     另有 dismissTask / cancelTask / loadActiveTasks 同路径。
+   即「别人完成了一个任务，我这四张卡集体上浮一遍」。这是真实缺陷，
+   只是频率没有简报说的那么高。根治是增量渲染（第三档 C5），在那之前
+   删动画是成本最低的止血。
+
+   ── 为什么连 .card 一起删 ──────────────────────────────────────────────
+   .card 是模板里的静态面板，JS 从不重建它，所以不存在重放问题。删它的理由
+   是另一个，CDP 实测：首页 3 张 .card 的 animation-delay 是 0.1/0.1/0.2s，
+   duration 0.5s，而关键帧起点是 `opacity: 0` —— 页面前 100ms 完全空白，
+   到 700ms 才全部到位。给一个本地工具的启动画面付 0.7s 的「内容不可见」，
+   换一个纯装饰的上浮，不划算；样式表加载稍有抖动还会留下整屏空白。 */
 
 /* 下载表单分组标题。
    A7 / Task 12：color 从 --color-text-muted 改成 --color-text-secondary。
@@ -2234,4 +2304,54 @@ code {
     #app-toast-container { left: 16px; right: 16px; max-width: none; }
     .app-confirm__actions { flex-direction: column-reverse; }
     .app-confirm__btn { width: 100%; }
+}
+
+/* ==========================================================================
+   A8 / Task 13：尊重系统的「减少动画」偏好
+   ==========================================================================
+   前庭功能障碍（vestibular disorder）用户会因为界面动效产生真实的生理不适
+   —— 眩晕、恶心。操作系统提供了 `prefers-reduced-motion` 让他们一次性表态，
+   这是 WCAG 2.1 SC 2.3.3 (Animation from Interactions) 对应的实现手段，
+   不是可选装饰。
+
+   本站在这个开关下要被压掉的东西（各自都有实测）：
+     · .task-card.status-running::before 的 `pulse 2s infinite` —— 无限循环
+       的呼吸灯正是最典型的诱因，页面上只要有运行中的任务它就一直在动；
+     · toast 的滑入/滑出、confirm 遮罩与卡片的淡入缩放；
+     · 进度条 width 过渡、以及全部 hover/focus 的颜色过渡。
+
+   ── 为什么必须带 !important（4 处，逐条登记） ─────────────────────────
+   本块选择器 `*, *::before, *::after` 特异度 (0,0,0)，是 CSS 里最弱的形态。
+   全站每一条声明了 transition / animation 的规则（.btn 0,1,0、
+   .task-card.status-running::before 0,2,0 …）都比它强，**不带 !important
+   这一块一条也压不住，等于整段死代码**。这是 a11y 社区的标准写法
+   （见 https://web.dev/prefers-reduced-motion/）。逐条：
+     1. `animation-duration: 0.01ms`      压 pulse（0,2,0）
+     2. `animation-iteration-count: 1`    单独一条：只压时长的话 infinite 仍在
+                                          每 0.01ms 触发一次 animationiteration
+                                          事件，是 CPU 空转
+     3. `transition-duration: 0.01ms`     压 .progress-bar / .btn / .card …
+   通行模板里还有一条 `transition-property`，这里**不写**：时长已经压到
+   0.01ms，再限制哪些属性参与过渡不产生任何额外效果，纯粹多一个 !important。
+
+   用 0.01ms 而不是 0：0 会让浏览器**根本不派发** transitionend /
+   animationend，依赖这些事件收尾的脚本会静默卡住。本站 ui.js 的 toast
+   出场就是靠定时器 + class 切换，不依赖事件；但这条约定是给后来者的护栏。
+
+   ── 为什么没有 `scroll-behavior: auto !important` ─────────────────────
+   通行模板里有这一行，这里**故意不写**，CDP 实测过：Bootstrap 5.3.0 的
+   reboot 自己就把 `:root { scroll-behavior: smooth }` 关在
+   `@media (prefers-reduced-motion: no-preference)` 里。实测
+   getComputedStyle(:root).scrollBehavior：默认 `smooth`，
+   Emulation.setEmulatedMedia 打开 reduce 后是 `auto`。本站自己一处
+   scroll-behavior 都没声明。多写一条只是多一个 !important 和一条死声明。
+   ⚠️ 若将来本站自己声明了 scroll-behavior: smooth，请把这一行补回来。 */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }
