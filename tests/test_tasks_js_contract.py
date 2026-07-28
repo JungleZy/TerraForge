@@ -882,6 +882,15 @@ def test_terrain_job_status_is_translated_too():
     ⚠️ 强度自评（诚实）：这是一条**结构**断言 —— 它检查徽章的文本位置来自
     getStatusText 调用而不是裸变量，守不住「getStatusText 返回了什么」
     （那部分由上面两条守）。它拦得住的是「有人把这里改回内联三元阶梯」。
+
+    **已知绕过（评审实测，本条拦不住）**：保留 `getStatusText(...)` 模板不动，
+    在下一行补一句
+        `statusEl.querySelector('.badge').textContent = status;`
+    徽章会重新显示英文 `running`，而本条断言全绿。
+    根因是它只看**构建 markup 的那一行**，看不到之后对 DOM 的再次赋值。
+    要堵住这个口子需要一个 JS 运行时（本项目没有：无 package.json / vitest，
+    引入会破坏 PyInstaller 的离线打包形态），或者一次 CDP 实测。
+    下一个动这块的人：知道边界在这里，别把这条当成语义保障。
     """
     body = _js_function_body(_strip_js_comments(_js('history.js')), 'refreshTerrainDetail')
     badges = re.findall(r'<span class="badge bg-([^"]*)">([^<]*)</span>', body)
@@ -915,4 +924,153 @@ def test_terrain_job_status_is_translated_too():
     )
     assert not problems, (
         '地形切片状态没走统一词表：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+# --------------------------------------------------------------------------
+# A7 / Task 12（评审第二轮）：补掉评审实测出来的 4 个逃逸
+#   R2/R3  statusIcons 的**值**没被检查（`'cancelled': ''` 能恢复缺陷症状）
+#   R10    状态 -> 文案的映射可以整体互换（键集合齐全就绿）
+#   新     getStatusStroke 是第四处状态映射点，改前只覆盖 2/6
+# --------------------------------------------------------------------------
+
+# 每个状态的文案里必须出现的关键词。钉关键词而不是整句：
+# 「已完成」改成「完成了」不该误红，「failed -> 已完成」必须红。
+_STATUS_LABEL_KEYWORD = {
+    'pending': '等待',
+    'running': '运行',
+    'paused': '暂停',
+    'completed': '完成',
+    'failed': '失败',
+    'cancelled': '取消',
+}
+
+# 每个状态在历史地图上的描边色应该走哪个调色板令牌。
+# pending / cancelled 是中性档，与徽章的中性档一致（见
+# test_status_badge_color_matches_the_semantic_token 的说明）。
+_STATUS_STROKE_TOKEN = {
+    'pending': '--color-text-secondary',
+    'running': '--color-info',
+    'paused': '--color-warning',
+    'completed': '--color-success',
+    'failed': '--color-danger',
+    'cancelled': '--color-neutral',
+}
+
+
+def test_status_labels_are_paired_with_the_right_status():
+    """状态与文案的**配对**，不只是「六个键都在」。
+
+    评审实测的逃逸（R10）：把 getStatusText 的六个值整体轮换一位 ——
+    键集合齐全、每个值都是中文，上一版两条断言全绿，
+    而界面上失败的任务写着「已完成」。这与 Task 10 的教训同型：
+    **守了集合，没守配对。**
+
+    钉关键词而不是整句：文案微调（「已完成」->「完成了」）不该误红，
+    整体互换必须红。
+    """
+    problems, checked = [], 0
+    for js_name in ('tasks.js', 'history.js'):
+        body = _js_function_body(_strip_js_comments(_js(js_name)), 'getStatusText')
+        pairs = dict(re.findall(r"'([a-z_]+)'\s*:\s*'([^']*)'", body))
+        assert set(pairs) == set(_STATUS_LABEL_KEYWORD), (
+            f'{js_name} 的 getStatusText 键集合是 {sorted(pairs)} —— '
+            '先修 test_both_js_files_map_every_backend_status'
+        )
+        for status, keyword in _STATUS_LABEL_KEYWORD.items():
+            checked += 1
+            if keyword not in pairs[status]:
+                problems.append(
+                    f'{js_name}: {status!r} -> {pairs[status]!r}，应含 {keyword!r}')
+    assert checked == 12, f'只检查了 {checked} 组（期望 12）—— 本测试已失效'
+    assert not problems, (
+        '状态与文案的配对错了（界面会把失败写成已完成这种）：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_status_icons_are_real_distinct_glyphs():
+    """statusIcons 的**值**也要检查：非空、是 SVG、六个互不相同。
+
+    评审实测的逃逸（R2/R3）：把 `'cancelled': ''` 改成空串 ——
+    键集合齐全，上一版断言全绿，而渲染出来就是修复前那个「没有图标的徽章」；
+    把两个状态的图标改成同一个也照样通过。
+
+    「互不相同」是承重的，不是洁癖：pending 与 cancelled 走的是**同一块**中性
+    徽章底色（见 test_status_badge_color_matches_the_semantic_token），
+    它们在界面上唯一的图形差别就是这个图标。图标一样 = 「等待中」和「已取消」
+    只剩文案能区分。
+    """
+    holders = {'tasks.js': 'createTaskCard', 'history.js': 'renderHistoryTable'}
+    problems, checked = [], 0
+    for js_name, holder in holders.items():
+        body = _js_function_body(_strip_js_comments(_js(js_name)), holder)
+        keys, inner = _js_object_literal_keys(body, 'statusIcons')
+        values = dict(re.findall(r"'([a-z_]+)'\s*:\s*'([^']*)'", inner))
+        assert set(values) == keys, (
+            f'{js_name} 的 statusIcons 解析出 {sorted(values)} 个值、{sorted(keys)} 个键 —— '
+            '本测试已失效'
+        )
+        seen = {}
+        for status, svg in sorted(values.items()):
+            checked += 1
+            if not svg.strip():
+                problems.append(
+                    f'{js_name}: {status!r} 的图标是空串 —— '
+                    "`statusIcons[status] || ''` 会静默吐空，徽章上什么都没有")
+                continue
+            if '<svg' not in svg:
+                problems.append(f'{js_name}: {status!r} 的图标不是 SVG：{svg[:40]!r}')
+                continue
+            shape = re.sub(r'\s+', ' ', re.sub(r'^<svg[^>]*>|</svg>$', '', svg)).strip()
+            if shape in seen:
+                problems.append(
+                    f'{js_name}: {status!r} 与 {seen[shape]!r} 的图标图形完全相同 —— '
+                    '这两态在界面上就只剩文案能区分了')
+            else:
+                seen[shape] = status
+    assert checked == 12, f'只检查了 {checked} 个图标（期望 2 文件 x 6 态）—— 本测试已失效'
+    assert not problems, (
+        '状态图标有问题：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_map_rectangle_stroke_covers_every_status():
+    """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖六态、走调色板令牌。
+
+    评审找到的漏网：改前 `renderHistoryMap` 里是一条内联三元阶梯，
+    只认 completed / failed，其余四态（pending / running / paused / cancelled）
+    全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷，只是发生在第四处。
+
+    而且三个色号是**硬编码且离调色板**的：`#10b981` 是 emerald-500，
+    本项目的 `--color-success` 是 emerald-400 `#34d399`，改调色板时这里会静默漂移。
+
+    这条同时守两件事：六态全覆盖、且每一态指向正确的语义令牌（配对，不只是集合）。
+    """
+    src = _strip_js_comments(_js('history.js'))
+    body = _js_function_body(src, 'getStatusStroke')
+    pairs = dict(re.findall(r"'([a-z_]+)'\s*:\s*'(--[-\w]+)'", body))
+    assert pairs, 'getStatusStroke 里解析不出 {状态: 令牌} 映射 —— 本测试已失效'
+    fallback = re.findall(r"\|\|\s*'(--[-\w]+)'", body)
+    assert len(fallback) == 1, (
+        f"getStatusStroke 的 `|| '--...'` 兜底解析出 {fallback} —— 本测试已失效"
+    )
+    assert set(pairs) == set(_STATUS_STROKE_TOKEN), (
+        f'getStatusStroke 覆盖 {sorted(pairs)}，期望 {sorted(_STATUS_STROKE_TOKEN)}'
+    )
+    problems = [
+        f'{s!r} -> {pairs[s]}，期望 {want}'
+        for s, want in _STATUS_STROKE_TOKEN.items() if pairs[s] != want
+    ]
+    assert not problems, (
+        '地图矩形描边的状态映射错了：\n' + '\n'.join('  ' + p for p in problems)
+    )
+    # 渲染函数里不许再出现硬编码色号 —— 那是改调色板时静默漂移的入口。
+    render = _js_function_body(src, 'renderHistoryMap')
+    hardcoded = re.findall(r'#[0-9a-fA-F]{3,8}\b', render)
+    assert not hardcoded, (
+        f'renderHistoryMap 里还有硬编码色号 {hardcoded} —— 描边色必须走 getStatusStroke'
+    )
+    assert 'getStatusStroke(' in render, (
+        'renderHistoryMap 没有调用 getStatusStroke —— 映射表写了但没人用'
     )

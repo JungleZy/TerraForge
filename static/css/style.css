@@ -403,6 +403,16 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-text-muted);
 }
 
+/* A7 / Task 12 补上：改前**没有**这条，已取消的卡片因此落到
+   `.task-card::before` 的兜底 `var(--color-accent)` —— 一条青绿色的品牌色边条，
+   读起来像「一切正常」。CDP 实测改前是 rgb(45, 212, 191)。
+   用 --color-neutral 而不是 --color-text-muted：调色板里那个变量本来就是
+   「为『已取消』这类无语义色的终态准备」的（见 :61 的说明），而且
+   --color-text-muted 对面板底只有 3.09:1，紧贴 3:1 下限。 */
+.task-card.status-cancelled::before {
+    background: var(--color-neutral);
+}
+
 .task-card h6 {
     font-family: var(--font-display);
     font-weight: 600;
@@ -1542,7 +1552,7 @@ h1, h2, h3, h4, h5, h6 {
         属性，真正上色的仍是 `.table > :not(caption) > * > *`(0,1,1)；上面那条
         `.table td`(0,1,1) 排在它后面，hover 与否都已经赢了。CDP 实测删掉之后
         hover 行的普通单元格仍是 rgb(232, 234, 237)。
-     2. **有害**。它是 (0,2,2)!important —— 鼠标划过「加载失败」那一行时，
+     2. **有害**。它是 (0,2,3)!important —— 鼠标划过「加载失败」那一行时，
         连修好之后的 `.text-danger`(0,1,0)!important 也会被它重新压成灰白。
         CDP 实测改前 hover 与非 hover 都是 rgb(232, 234, 237)，改后都是
         rgb(248, 113, 113)。 */

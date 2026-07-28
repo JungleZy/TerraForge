@@ -167,8 +167,7 @@ function renderHistoryMap(tasks) {
 
     geoTasks.forEach(task => {
         const bounds = [[task.south, task.west], [task.north, task.east]];
-        const color = task.status === 'completed' ? '#10b981' :
-                     task.status === 'failed' ? '#ef4444' : '#60a5fa';
+        const color = getStatusStroke(task.status);
 
         const rectangle = L.rectangle(bounds, {
             color: color,
@@ -224,6 +223,32 @@ function getStatusColor(status) {
         'cancelled': 'dark'
     };
     return colors[status] || 'secondary';
+}
+
+// 历史地图上矩形的描边色。这是**第四处**状态映射点（前三处是 getStatusColor /
+// getStatusText / statusIcons），A7 / Task 12 一并补齐。
+//
+// 改前是内联三元阶梯，只认 completed / failed，其余四态（pending / running /
+// paused / cancelled）全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷。
+// 而且三个色号 #10b981 / #ef4444 / #60a5fa 是**硬编码且离调色板**的：
+// #10b981 是 emerald-500，本项目的 --color-success 是 emerald-400 #34d399，
+// 改调色板时这里会静默漂移。
+//
+// 现在读 CSS 自定义属性，与徽章/进度条/卡片边条走同一套语义令牌：
+//   pending -> --color-text-secondary（与 .badge.bg-secondary 同色）
+//   cancelled -> --color-neutral（与 .progress-bar.bg-dark 同色）
+// Leaflet 要的是真实色值字符串，不认 var()，所以必须在这里求值。
+function getStatusStroke(status) {
+    const vars = {
+        'pending': '--color-text-secondary',
+        'running': '--color-info',
+        'paused': '--color-warning',
+        'completed': '--color-success',
+        'failed': '--color-danger',
+        'cancelled': '--color-neutral'
+    };
+    const name = vars[status] || '--color-text-secondary';
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 function getStatusText(status) {

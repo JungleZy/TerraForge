@@ -303,7 +303,7 @@ def test_important_count_under_control():
              且不带 !important，style.css 排在后面，同分后来者赢。
           2. `.table td small { color: ... !important }` (0,1,2) —— 同型，
              压死的是可能挂在 <small> 上的 .text-danger。
-          3. `.table-hover tbody tr:hover td { color: ... !important }` (0,2,2)
+          3. `.table-hover tbody tr:hover td { color: ... !important }` (0,2,3)
              —— **整条规则删除**。它是冗余的（Bootstrap 的行 hover 只改
              `--bs-table-bg-state` 自定义属性，上面第 1 条已经赢了），
              而且是有害的：鼠标划过时连修好之后的 .text-danger 也压得住。
@@ -5246,6 +5246,12 @@ def _text_branch_applies(branch, chain):
 # 表里每条的特异度与 !important 形态取自 bootstrap@5.3.0 的
 # dist/css/bootstrap.min.css，并已由 CDP 的 CSS.getMatchedStylesForNode
 # 在本项目的历史页 <td> 上逐条核对过（实测命中的就是下面第 1、2 条）。
+#
+# ⚠️ 版本被钉死在下面这个常量上（test_bootstrap_version_matches_the_modelled_one）。
+# 这张表是**按 5.3.0 的源码建的**：升级 Bootstrap 时那条断言会变红，
+# 强制重新核对「新版本里还有哪些规则能命中 <td> 且设 color」。
+# 不钉的话，升级引入一条新的高特异度规则时，模型不会知道，也不会响亮失败。
+_MODELLED_BOOTSTRAP_VERSION = (5, 3, 0)
 _BS_TEXT_UTILITIES = (
     'text-danger', 'text-success', 'text-warning', 'text-info',
     'text-primary', 'text-secondary', 'text-muted', 'text-body-secondary',
@@ -5410,6 +5416,53 @@ def test_text_color_model_assumptions_still_hold():
 _BS_TABLE_HOVER_INSET = 'rgba(0, 0, 0, 0.075)'
 
 
+class _CellClassCollector(HTMLParser):
+    """收集一段 markup 里所有 <td>/<th> 的 class 集合。"""
+
+    def __init__(self):
+        super().__init__()
+        self.cells = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('td', 'th'):
+            cls = dict(attrs).get('class', '')
+            self.cells.append(frozenset(cls.split()))
+
+
+def _history_error_cell():
+    """从 **history.js 实际出货的那段模板字符串**里解析出加载失败单元格。
+
+    ⚠️ 这个函数存在的唯一理由，是评审实测出来的一个 Critical 逃逸：
+    上一版这里写死成 `_TextEl('td', {'text-center', 'text-danger'})`，于是
+    **把 `history.js` 里那行的 `class="text-center text-danger"` 改成
+    `class="text-center"`（CSS 一个字不动）→ 271 条全绿**，而 CDP 走真实失败
+    路径实测单元格渲染 rgb(232,234,237) / 14.88:1 —— 逐位就是修复前的那个 bug。
+
+    根因是「层叠模型推理的是一个假想元素，不是实际出货的 markup」。这与
+    Task 10 补链时的教训同型：配对断言守住了「标签 ↔ 变量」，守不住
+    「变量 ↔ 数据源」。这里把数据源那一端接上：类名从 markup 里消失，
+    模型就会对着一个没有 .text-danger 的 <td> 算，直接给出
+    --color-text-primary 而不是 --color-danger，断言立刻变红。
+    """
+    src = _strip_js_comments(_js('history.js'))
+    body = _js_function_body(src, 'loadHistory')
+    # 只认 catch 分支里那次 innerHTML 赋值 —— 正常分支不写 markup。
+    m = re.search(r'\.innerHTML\s*=\s*(.*?);', body, re.S)
+    assert m, 'loadHistory 里找不到 innerHTML 赋值 —— 加载失败行的 markup 变形了，本测试已失效'
+    literal = m.group(1)
+    strings = re.findall(r"'([^']*)'|\"([^\"]*)\"|`([^`]*)`", literal, re.S)
+    markup = ''.join(a or b or c for a, b, c in strings)
+    assert '<td' in markup, (
+        f'从 loadHistory 的 innerHTML 里解析不出 <td>（拿到 {markup[:80]!r}）—— 本测试已失效'
+    )
+    p = _CellClassCollector()
+    p.feed(markup)
+    assert len(p.cells) == 1, (
+        f'加载失败行里解析出 {len(p.cells)} 个单元格（期望 1）—— 本测试已失效'
+    )
+    return _TextEl('td', p.cells[0])
+
+
 def _text_contexts(css):
     """页面上真实存在的文字上下文。
 
@@ -5443,7 +5496,8 @@ def _text_contexts(css):
     def cell_chain(cell, hover=False, tail=()):
         return hist_top + [_TextEl('tr', pseudos=({'hover'} if hover else ())), cell] + list(tail)
 
-    err_cell = _TextEl('td', {'text-center', 'text-danger'})
+    # **从 history.js 实际出货的 markup 解析**，不写死 —— 见 _history_error_cell 的说明。
+    err_cell = _history_error_cell()
     plain_cell = _TextEl('td')
 
     # --- 详情弹窗 ---
@@ -5621,53 +5675,256 @@ def test_status_badge_text_is_readable_in_every_state():
     )
 
 
-def test_inline_colors_in_js_templates_meet_wcag_aa():
-    """两个 JS 的模板字符串里写死的 `color: var(--color-*)` 也要过 4.5:1。
+def test_inline_style_colors_meet_wcag_aa_everywhere():
+    """`style="..."` 里写死的文字色也要过 4.5:1 —— **JS 模板与 Jinja 模板都扫**。
 
     为什么单独一条：这些颜色**不在 style.css 里**，上面那个层叠模型扫不到它们。
     改前 history.js 的「暂无历史记录」「本地文件」和 tasks.js 的
-    「暂无活动任务」都用 `var(--color-text-muted)`（3.09:1），
-    走的是内联 style，任何针对 CSS 文件的断言都看不见。
+    「暂无活动任务」都用 `var(--color-text-muted)`（3.09:1），走的是内联 style。
+    内联样式的特异度高于任何选择器，写了就是最终值，不需要跑层叠。
 
-    内联样式的特异度高于任何选择器，所以不需要跑层叠——写了就是最终值，
-    只要解析变量、压到面板底色上算对比度即可。
+    ⚠️ 扫描范围含 `templates/`，这是评审实测出来的逃逸（R9）修的：
+    上一版只扫 `static/js/`，在任意 Jinja 模板里写一个
+    `<span style="color: var(--color-text-muted)">` 就能拿到 3.09:1 而全绿。
+    模板里当前 0 处内联 color，正是这条要守住的状态。
 
-    命中数的边界：当前 10 处（history.js 7 处、tasks.js 3 处）。
-    这个数字会随 UI 改动变，所以断言只要求「至少扫到了两个文件、且总数 >= 8」
-    —— 钉死具体数字会在无关改动时误红，钉 0 则负向遍历永真。
+    做法是先切出 `style="..."` 属性再在里面找 `color:` 声明 —— 不是全文
+    grep `color:`，那样会把 CSS 选择器名、JS 变量名、注释一起吃进来。
+
+    命中数的边界：当前 10 处，全部在 static/js（history.js 7、tasks.js 3），
+    templates 0 处。断言只要求「两个 JS 都被扫到、templates 目录被扫到、
+    且总数 >= 8」—— 钉死具体数字会在无关 UI 改动时误红，钉 0 则负向遍历永真。
     """
     css = _css()
     panel = _effective_task_card_backdrop(css)
-    pat = re.compile(r'color\s*:\s*var\(\s*(--color-[-\w]+)\s*\)')
-    hits = []
-    problems = []
-    scanned = []
-    js_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          'static', 'js')
-    for fn in sorted(os.listdir(js_dir)):
-        if not fn.endswith('.js'):
-            continue
-        with open(os.path.join(js_dir, fn), encoding='utf-8') as f:
-            src = re.sub(r'/\*.*?\*/', '', f.read(), flags=re.S)
-        scanned.append(fn)
-        for m in pat.finditer(src):
-            line = src[:m.start()].count('\n') + 1
-            literal = _palette_var(css, m.group(1))
-            flat = _flatten(literal, panel)
-            ratio = _contrast_ratio(flat, panel)
-            hits.append(f'{fn}:{line} {m.group(1)} = {flat} -> {ratio:.2f}:1')
-            if ratio < WCAG_AA_TEXT_CONTRAST:
-                problems.append(
-                    f'{fn}:{line} 内联 color: var({m.group(1)}) = {flat}，'
-                    f'对面板底 {panel} 只有 {ratio:.2f}:1，低于 {WCAG_AA_TEXT_CONTRAST}')
-    assert {'tasks.js', 'history.js'} <= set(scanned), (
-        f'没扫到 tasks.js / history.js（实际 {scanned}）—— 本测试已失效'
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pat_style = re.compile(r'style\s*=\s*"([^"]*)"')
+    pat_color = re.compile(r'(?<![-\w])color\s*:\s*([^;"]+)')
+    hits, problems, scanned = [], [], []
+    for sub, ext in (('static/js', '.js'), ('templates', '.html')):
+        d = os.path.join(root, *sub.split('/'))
+        assert os.path.isdir(d), f'{sub} 目录不存在 —— 本测试已失效'
+        scanned.append(sub)
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(ext):
+                continue
+            with open(os.path.join(d, fn), encoding='utf-8') as f:
+                src = re.sub(r'/\*.*?\*/', '', f.read(), flags=re.S)
+            scanned.append(f'{sub}/{fn}')
+            for sm in pat_style.finditer(src):
+                line = src[:sm.start()].count('\n') + 1
+                for cm in pat_color.finditer(sm.group(1)):
+                    raw = cm.group(1).strip()
+                    where = f'{sub}/{fn}:{line}'
+                    var = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', raw)
+                    if var:
+                        literal = _palette_var(css, var.group(1))
+                    elif re.fullmatch(r'#[0-9a-fA-F]{6}', raw) or _RGBA_RE.fullmatch(raw):
+                        literal = raw.lower()
+                    else:
+                        problems.append(
+                            f'{where} 内联 color 写成 {raw!r}，本测试算不了它的对比度 —— '
+                            '换成 var(--color-*) 或 #rrggbb，别让它静默逃过检查')
+                        continue
+                    flat = _flatten(literal, panel)
+                    ratio = _contrast_ratio(flat, panel)
+                    hits.append(f'{where} {raw} = {flat} -> {ratio:.2f}:1')
+                    if ratio < WCAG_AA_TEXT_CONTRAST:
+                        problems.append(
+                            f'{where} 内联 color: {raw} = {flat}，对面板底 {panel} '
+                            f'只有 {ratio:.2f}:1，低于 {WCAG_AA_TEXT_CONTRAST}')
+    assert {'static/js/tasks.js', 'static/js/history.js', 'templates'} <= set(scanned), (
+        f'扫描范围不完整（实际 {scanned}）—— 本测试已失效'
     )
     assert len(hits) >= 8, (
-        f'只扫到 {len(hits)} 处内联 color: var(--color-*)（期望 >= 8）—— '
+        f'只扫到 {len(hits)} 处内联 color（期望 >= 8）—— '
         '正则失效的话下面的负向断言就是永真\n' + '\n'.join('  ' + h for h in hits)
     )
     assert not problems, (
-        'JS 模板里的内联文字颜色不达标：\n' + '\n'.join('  ' + p for p in problems)
+        '内联文字颜色不达标：\n' + '\n'.join('  ' + p for p in problems)
         + '\n\n全部命中：\n' + '\n'.join('  ' + h for h in hits)
+    )
+
+
+# --------------------------------------------------------------------------
+# A7 / Task 12（评审第二轮）：状态 -> 语义色的**配对**，不只是集合
+#
+# 评审实测的两个逃逸（R4 / R10）：把 getStatusColor 的六个值整体轮换一位，
+# 键集合齐全、颜色名集合也齐全，上一版断言全绿 —— 而失败的任务会显示成绿色。
+# 这与 Task 10 补链时的教训完全同型：**守住了集合，没守住配对。**
+#
+# 这张表是产品决策（哪个状态该用哪种语义色），所以它就该被钉在测试里；
+# 但钉的是**语义令牌名**，不是色号 —— 调色板改值时这条不动，
+# 有人把「失败」画成绿色时它变红。
+#
+# `None` = 中性档：这两个状态**故意**没有语义色（等待中还没开始、已取消是
+# 无褒贬的终态）。对它们的要求反过来：最终色**不许**等于四个语义色中的任何一个
+# —— 「已取消」被画成青绿品牌色正是本轮补掉的缺陷之一。
+# --------------------------------------------------------------------------
+
+_STATUS_SEMANTIC_TOKEN = {
+    'pending': None,
+    'running': '--color-info',
+    'paused': '--color-warning',
+    'completed': '--color-success',
+    'failed': '--color-danger',
+    'cancelled': None,
+}
+
+
+def _semantic_palette_values(css):
+    return {
+        _palette_var(css, t)
+        for t in ('--color-info', '--color-warning', '--color-success', '--color-danger')
+    }
+
+
+def _status_color_map(js_name):
+    """`getStatusColor` 的 {状态: Bootstrap 颜色名}。"""
+    body = _js_function_body(_js(js_name), 'getStatusColor')
+    pairs = re.findall(r"'([a-z_]+)'\s*:\s*'([a-z]+)'", body)
+    assert pairs, f'{js_name} 的 getStatusColor 解析不出映射 —— 本测试已失效'
+    return dict(pairs)
+
+
+def test_status_badge_color_matches_the_semantic_token():
+    """每个状态的徽章文字色必须解析成**它自己那一档**语义色。
+
+    强度说明：上一版只断言「颜色名集合 == 六个」。评审实测把六个值整体轮换一位
+    （failed -> 'success'、completed -> 'danger' …）—— 集合纹丝不动，271 条全绿，
+    而界面上失败的任务是绿的。这条把配对钉住：`colors['failed']` 指向的那条
+    `.badge.bg-X` 规则，其 color 必须解析成 `--color-danger` 的字面值。
+
+    钉的是语义令牌不是色号：调色板改值时本条不动。
+    中性档（pending / cancelled）反向断言 —— 不许等于四个语义色中的任何一个。
+
+    覆盖边界：2 个文件 × 6 个状态 = 12 组，先钉组数再逐组比对。
+    """
+    css = _css()
+    semantic = _semantic_palette_values(css)
+    checked, problems = [], []
+    for js_name in ('tasks.js', 'history.js'):
+        cmap = _status_color_map(js_name)
+        assert set(cmap) == set(_STATUS_SEMANTIC_TOKEN), (
+            f'{js_name} 的 getStatusColor 键集合是 {sorted(cmap)}，'
+            f'期望 {sorted(_STATUS_SEMANTIC_TOKEN)} —— 先修 '
+            'test_both_js_files_map_every_backend_status'
+        )
+        for status, token in _STATUS_SEMANTIC_TOKEN.items():
+            name = cmap[status]
+            chain = [_TextEl('div', {'card'}), _TextEl('div', {'card-body'}),
+                     _TextEl('span', {'badge', f'bg-{name}'})]
+            _branch, raw = _winning_color_decl(css, chain, f'{js_name} {status} 徽章')
+            got = _resolve_color(css, raw)
+            checked.append(f'{js_name} {status} -> bg-{name} -> {got}')
+            if token is None:
+                if got in semantic:
+                    problems.append(
+                        f'{js_name}: {status!r} 是中性档，却映射到 bg-{name}，'
+                        f'解析出语义色 {got} —— 它会冒充「运行中/已完成/失败/已暂停」')
+            else:
+                want = _palette_var(css, token)
+                if got != want:
+                    problems.append(
+                        f'{js_name}: {status!r} -> bg-{name} -> {got}，'
+                        f'期望 {token}({want})')
+    assert len(checked) == 12, f'只检查了 {len(checked)} 组（期望 12）—— 本测试已失效'
+    assert not problems, (
+        '状态与语义色的配对错了：\n' + '\n'.join('  ' + p for p in problems)
+        + '\n\n全部映射：\n' + '\n'.join('  ' + c for c in checked)
+    )
+
+
+def test_task_card_status_bar_covers_every_status():
+    """任务卡片左侧那条 4px 边条：六态**每一态**都要有自己的规则，且色对、够看得见。
+
+    改前 `.task-card.status-cancelled::before` **根本不存在**，已取消的卡片落到
+    `.task-card::before` 的兜底 `var(--color-accent)` —— 一条青绿品牌色边条，
+    读起来像「一切正常」。CDP 实测改前 rgb(45, 212, 191)。
+    这是评审找到的、与本任务修的缺陷完全同型的第二处漏网。
+
+    三件事一起断言：
+      1. 六态各有一条顶层规则（缺一条就会落到兜底色，而兜底色是品牌色）；
+      2. 语义档的色值等于对应令牌，中性档不许等于任何语义色；
+      3. 对面板底 >= 3:1 —— 它是图形元素不是文字，走 WCAG 1.4.11 的下限。
+    """
+    css = _css()
+    panel = _effective_task_card_backdrop(css)
+    semantic = _semantic_palette_values(css)
+    fallback = _resolve_color(css, _branch_background(css, '.task-card::before'))
+    problems, report = [], []
+    for status, token in _STATUS_SEMANTIC_TOKEN.items():
+        branch = f'.task-card.status-{status}::before'
+        rules = [
+            (sel, body) for sel, body, at in _rules_ctx(css)
+            if not at and branch in _selector_parts(sel)
+            and ('background' in _decl_map(body) or 'background-color' in _decl_map(body))
+        ]
+        if len(rules) != 1:
+            problems.append(
+                f'`{branch}` 有 {len(rules)} 条声明了背景色的顶层规则（应恰好 1 条）。'
+                f'一条都没有 = 落到 `.task-card::before` 的兜底 {fallback}，'
+                '那是品牌强调色，读起来像「一切正常」')
+            continue
+        decls = _decl_map(rules[0][1])
+        got = _resolve_color(css, decls.get('background') or decls.get('background-color'))
+        ratio = _contrast_ratio(got, panel)
+        report.append(f'{branch} -> {got} on {panel} = {ratio:.2f}:1')
+        if token is None:
+            if got in semantic:
+                problems.append(f'`{branch}` 用了语义色 {got}，但 {status!r} 是中性档')
+            if got == fallback:
+                problems.append(f'`{branch}` 与兜底色 {fallback} 相同 = 等于没写')
+        else:
+            want = _palette_var(css, token)
+            if got != want:
+                problems.append(f'`{branch}` 是 {got}，期望 {token}({want})')
+        if ratio < 3.0:
+            problems.append(
+                f'`{branch}` 的 {got} 对面板底 {panel} 只有 {ratio:.2f}:1，'
+                '低于 WCAG 1.4.11 给图形元素的 3:1')
+    assert len(report) + len([p for p in problems if '条声明了背景色' in p]) == 6, (
+        '没有恰好检查 6 个状态 —— 本测试已失效'
+    )
+    assert not problems, (
+        '任务卡片状态边条有问题：\n' + '\n'.join('  ' + p for p in problems)
+        + '\n\n全部实测：\n' + '\n'.join('  ' + r for r in report)
+    )
+
+
+def test_bootstrap_version_matches_the_modelled_one():
+    """Bootstrap 的版本必须**恰好**是层叠模型建模时用的那一版。
+
+    `_bootstrap_color_competitors` 那张表是照着 bootstrap@5.3.0 的源码建的：
+    我扫了 5.3.0 里所有「能命中 <td>/<th> 且声明 color」的规则，完整集就是表里那两条
+    （`.table > :not(caption) > * > *` 和 `.text-*` 工具类），并用 CDP 的
+    `CSS.getMatchedStylesForNode` 在真实节点上核对过。
+
+    升级 Bootstrap 时这条会变红 —— **那是设计意图**，不是误报：
+    新版本可能引入一条新的高特异度 color 规则，而模型对它一无所知，
+    既不会算错也不会响亮失败，只会静默给出一个可能过期的结论。
+    变红时的正确做法是重新扫一遍新版本的 <td> 颜色规则、更新那张表，再改这个常量。
+
+    这条与 `test_bootstrap_build_is_new_enough_to_have_dark_theme` 是不同的约束：
+    那条守下界（>= 5.3 才有暗色主题），这条守精确匹配（模型的前提）。
+    """
+    seen = []
+    for tpl, markup in _all_templates():
+        for _tag, url in _bootstrap_asset_urls(markup):
+            for rx in _BOOTSTRAP_VERSION_RES:
+                m = rx.search(url)
+                if m:
+                    seen.append((tpl, url, tuple(int(g or 0) for g in m.groups())))
+                    break
+    assert seen, 'templates 里找不到任何带版号的 Bootstrap 资源 —— 本测试已失效'
+    wrong = [
+        f'{tpl}: {url} -> {".".join(map(str, ver))}'
+        for tpl, url, ver in seen if ver != _MODELLED_BOOTSTRAP_VERSION
+    ]
+    assert not wrong, (
+        '引用的 Bootstrap 版本与层叠模型建模的版本不符（模型按 '
+        f'{".".join(map(str, _MODELLED_BOOTSTRAP_VERSION))} 建的）：\n'
+        + '\n'.join('  ' + w for w in wrong)
+        + '\n升级是正当的，但要先重新核对 _bootstrap_color_competitors 那张表'
+        '（扫新版本里所有能命中 <td> 且设 color 的规则），再改 _MODELLED_BOOTSTRAP_VERSION。'
     )
