@@ -427,8 +427,15 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-warning);
 }
 
+/* Task 13 收尾修：改前用 --color-text-muted(#5f6670)，对卡片底只有 3.09:1 ——
+   六档边条里最低的一档（cancelled 4.32、其余 6.48~10.74），截图里几乎看不见。
+   下面那条 cancelled 的注释早就写明了「--color-text-muted 只有 3.09:1，紧贴下限」
+   这个理由，但当时只改了 cancelled、漏了紧挨着的 pending。
+   改用 --color-text-secondary(#9aa0aa)：pending 的徽章与地图描边本来就用它，
+   三处从此统一；同时与 cancelled 的 --color-neutral(#767d88) 保持区分 ——
+   这两个状态语义不同，边条不该同色。 */
 .task-card.status-pending::before {
-    background: var(--color-text-muted);
+    background: var(--color-text-secondary);
 }
 
 /* A7 / Task 12 补上：改前**没有**这条，已取消的卡片因此落到
