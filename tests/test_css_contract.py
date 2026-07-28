@@ -233,7 +233,7 @@ def test_font_size_scale_variables_unchanged():
 # --------------------------------------------------------------------------
 
 def test_important_count_under_control():
-    """!important 声明总量上界 = 71.
+    """!important 声明总量上界 = 68.
 
     阈值构成（全部实测，不是估的）：
       Task 2 清理前 92 处
@@ -292,8 +292,26 @@ def test_important_count_under_control():
         而不是界面静默漏白。按简报预估这里本来要花掉约 13 处额度。
 
       = 68 处（Task 9 后实测，与 Task 5 后持平）
+      - 3 处：**A7 / Task 12 删除**（清理型任务，按棘轮规则把上界一并降下来），
+              三处都是 color、都在表格段，删掉的理由是它们**压错了对象**：
+          1. `.table td, .table th { color: ... !important }` (0,1,1)
+             —— 它压死的不是 Bootstrap，是本文件自己的
+             `.text-danger` (0,1,0)!important。history.js 的「加载失败」行
+             因此从上线起就是普通灰白色（CDP 实测 rgb(232,234,237)）。
+             去掉 !important 之后普通单元格颜色不变：唯一同时命中 td 的
+             Bootstrap 规则 `.table > :not(caption) > * > *` 同为 (0,1,1)
+             且不带 !important，style.css 排在后面，同分后来者赢。
+          2. `.table td small { color: ... !important }` (0,1,2) —— 同型，
+             压死的是可能挂在 <small> 上的 .text-danger。
+          3. `.table-hover tbody tr:hover td { color: ... !important }` (0,2,2)
+             —— **整条规则删除**。它是冗余的（Bootstrap 的行 hover 只改
+             `--bs-table-bg-state` 自定义属性，上面第 1 条已经赢了），
+             而且是有害的：鼠标划过时连修好之后的 .text-danger 也压得住。
+             CDP 实测删除前后 hover 行的普通单元格都是 rgb(232,234,237)。
+        本次**新增 0 处**。
+      = 65 处（Task 12 后实测）
       + 3 处余量：留给后续任务里个别确实必须压 Bootstrap 的新规则
-      = 71
+      = 68
 
     ⚠️ 棘轮规则（分两种任务，别混用）：
 
@@ -326,10 +344,11 @@ def test_important_count_under_control():
     """
     css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
     count = css.count('!important')
-    assert count <= 71, (
-        f'!important 声明有 {count} 处，应 <= 71（Task 2 前 92 → Task 2 后 67 → '
+    assert count <= 68, (
+        f'!important 声明有 {count} 处，应 <= 68（Task 2 前 92 → Task 2 后 67 → '
         'Task 3 后 66 → Task 5 +2 条进度条覆盖后实测 68 → '
-        'Task 9 Leaflet +5 / -5 净 0，仍是 68，余量 3）'
+        'Task 9 Leaflet +5 / -5 净 0，仍是 68 → '
+        'Task 12 删掉表格段 3 条压错对象的 color 后实测 65，余量 3）'
     )
 
 
@@ -5067,3 +5086,588 @@ def test_icon_buttons_are_square_via_the_density_token():
                 f'{ctx} 的 padding 来自特异度 {pad_spec} 的 `{pad_branch}`，'
                 '低于 `.btn-group-sm .btn` 的 (0,2,0) —— 会被撑成胶囊')
     assert not problems, '图标按钮的尺寸不对：\n' + '\n'.join('  ' + p for p in problems)
+
+
+# ==========================================================================
+# A7 / Task 12：文字对比度与状态语义
+#
+# 本节要守的两个事实，都是 CDP 实测出来的，不是推的：
+#
+#   1. history.js 的「加载失败」行写的是
+#      `<td class="text-center text-danger">加载失败</td>`，
+#      而它**从上线起就没红过**。原因不是 Bootstrap，是本文件自己的
+#      `.table td, .table th { color: var(--color-text-primary) !important }`
+#      —— (0,1,1)!important 压过 `.text-danger` 的 (0,1,0)!important。
+#      改前 CDP 实测 `rgb(232, 234, 237)`，与正常单元格**一模一样**：
+#      加载失败和加载成功长得没有任何区别。
+#
+#   2. `--color-text-muted (#5f6670)` 对三层背景分别只有 3.09 / 3.09 / 2.82:1，
+#      全部低于 WCAG AA 正文要求的 4.5:1，而它被用在首页三个分组标题、
+#      详情弹窗全部 19 个字段名、4 条表单说明、空态提示和输入框占位符上。
+#
+# 为什么这里要建一个层叠模型，而不是查「某条规则写了什么颜色」：
+# 上面第 1 条恰恰是「规则写对了、渲染出来是错的」——`.text-danger` 的规则
+# 一直在文件里、值也一直是 var(--color-danger)，查规则的断言全绿。
+# 只有把同一个元素上**所有**命中规则按 (important, 特异度, 源码序) 排一遍、
+# 取胜出者，才看得见这个缺陷。
+# ==========================================================================
+
+WCAG_AA_TEXT_CONTRAST = 4.5
+
+# 模型支持的伪类 = 「元素的交互状态」这一类。
+# `:first-child` / `:nth-child()` 这种结构性伪类**故意不列入** —— 模型不知道
+# 节点在父级里排第几，列进来等于允许模型对一条它算不清的规则给出 True/False。
+# 不在表里的伪类会让 `_text_branch_applies` 返回 None，调用方响亮失败。
+_TEXT_SUPPORTED_PSEUDOS = frozenset({'hover', 'focus', 'focus-visible', 'active', 'disabled'})
+
+
+class _TextEl:
+    """层叠模型里的一个节点：标签、类、id、当前激活的伪类、伪元素。"""
+
+    __slots__ = ('tag', 'classes', 'element_id', 'pseudos', 'pseudo_element')
+
+    def __init__(self, tag=None, classes=(), element_id=None, pseudos=(), pseudo_element=None):
+        self.tag = tag
+        self.classes = frozenset(classes)
+        self.element_id = element_id
+        self.pseudos = frozenset(pseudos)
+        self.pseudo_element = pseudo_element
+
+    def __repr__(self):
+        s = self.tag or ''
+        if self.element_id:
+            s += '#' + self.element_id
+        s += ''.join('.' + c for c in sorted(self.classes))
+        s += ''.join(':' + p for p in sorted(self.pseudos))
+        if self.pseudo_element:
+            s += '::' + self.pseudo_element
+        return s or '*'
+
+
+def _parse_compound(part):
+    """一个复合选择器（不含组合符）-> dict；读不懂返回 None（= 模型不支持）。"""
+    for arg in re.findall(r':not\(([^)]*)\)', part):
+        if not re.fullmatch(r'\s*[.:][-\w]+\s*', arg):
+            return None
+    neg_pseudos = set(re.findall(r':not\(\s*:([-\w]+)\s*\)', part))
+    neg_classes = set(re.findall(r':not\(\s*\.([-\w]+)\s*\)', part))
+    rest = re.sub(r':not\([^)]*\)', '', part)
+    pseudo_elements = re.findall(r'::([-\w]+)', rest)
+    if len(pseudo_elements) > 1:
+        return None
+    rest = re.sub(r'::[-\w]+', '', rest)
+    ids = re.findall(r'#([-\w]+)', rest)
+    classes = set(re.findall(r'\.([-\w]+)', rest))
+    # 函数式伪类连参数一起吃掉，否则 `(1)` 会变成读不懂的残余
+    pseudos = set(re.findall(r':([-\w]+)(?:\([^)]*\))?', rest))
+    leftover = re.sub(r'([#.][-\w]+|:[-\w]+(?:\([^)]*\))?|\[[^\]]*\]|\*)', '', rest).strip()
+    if leftover and not re.fullmatch(r'[a-zA-Z][-\w]*', leftover):
+        return None
+    return dict(tag=(leftover.lower() or None), ids=ids, classes=classes, pseudos=pseudos,
+                neg_pseudos=neg_pseudos, neg_classes=neg_classes,
+                pseudo_element=(pseudo_elements[0] if pseudo_elements else None))
+
+
+def _compound_structurally_matches(comp, node):
+    """只看标签/类/id/伪元素这些**确定**的部分。伪类支持性另判。"""
+    if comp['pseudo_element'] != node.pseudo_element:
+        return False
+    if comp['tag'] is not None and comp['tag'] != node.tag:
+        return False
+    if not comp['classes'] <= node.classes:
+        return False
+    if comp['neg_classes'] & node.classes:
+        return False
+    if comp['ids'] and (len(comp['ids']) > 1 or comp['ids'][0] != node.element_id):
+        return False
+    return True
+
+
+def _text_branch_applies(branch, chain):
+    """这个选择器分支命中链尾那个节点吗？True / False / None(模型不支持)。
+
+    判定顺序与 `_btn_branch_applies` 一致，而且是承重的：**先判「肯定不命中」，
+    再判「形态不支持」**。反过来写的话，`div:not(.card):not(...)...` 这种
+    与目标元素八竿子打不着的规则会把整个模型顶成「已失效」。
+
+    style.css 里没有任何 `>` / `+` / `~` 组合符，也没有任何 @media 规则声明
+    color —— 这两条前提由 `test_text_color_model_assumptions_still_hold` 钉住，
+    前提被打破时是那条测试变红，而不是本函数悄悄按后代关系算错。
+    """
+    parts = branch.split()
+    compounds = []
+    for p in parts:
+        c = _parse_compound(p)
+        if c is None:
+            return None
+        compounds.append(c)
+    if not compounds:
+        return None
+    subject, ancestors = compounds[-1], compounds[:-1]
+
+    # ---- 第一步：能否**确定地**判为不命中 ----
+    if not _compound_structurally_matches(subject, chain[-1]):
+        return False
+    # 祖先侧从右向左做子序列匹配（纯后代组合符下贪心是正确的）
+    matched_ancestors = []
+    i = len(chain) - 2
+    for comp in reversed(ancestors):
+        while i >= 0 and not _compound_structurally_matches(comp, chain[i]):
+            i -= 1
+        if i < 0:
+            return False
+        matched_ancestors.append((comp, chain[i]))
+        i -= 1
+
+    # ---- 第二步：确实可能命中，此时才允许报「形态不支持」----
+    for comp in [subject] + [c for c, _ in matched_ancestors]:
+        if not (comp['pseudos'] | comp['neg_pseudos']) <= _TEXT_SUPPORTED_PSEUDOS:
+            return None
+    if not subject['pseudos'] <= chain[-1].pseudos:
+        return False
+    if subject['neg_pseudos'] & chain[-1].pseudos:
+        return False
+    for comp, node in matched_ancestors:
+        if not comp['pseudos'] <= node.pseudos:
+            return False
+        if comp['neg_pseudos'] & node.pseudos:
+            return False
+    return True
+
+
+# Bootstrap 5.3.0 里可能与 style.css 抢同一个元素 `color` 的规则。
+#
+# ⚠️ 这张表**不用来算颜色**，只用来做「style.css 必须赢」的下界检查。
+# Bootstrap 是 CDN 引入的（templates/base.html），本仓库里没有它的源码，
+# 拿它的值算最终色 = 拿一份手抄的常量冒充事实。所以做法是：一旦模型算出
+# Bootstrap 的某条规则赢了 style.css，就**响亮失败**（「本测试算不了」），
+# 而不是给出一个可能错的数字。
+#
+# 表里每条的特异度与 !important 形态取自 bootstrap@5.3.0 的
+# dist/css/bootstrap.min.css，并已由 CDP 的 CSS.getMatchedStylesForNode
+# 在本项目的历史页 <td> 上逐条核对过（实测命中的就是下面第 1、2 条）。
+_BS_TEXT_UTILITIES = (
+    'text-danger', 'text-success', 'text-warning', 'text-info',
+    'text-primary', 'text-secondary', 'text-muted', 'text-body-secondary',
+)
+
+
+def _bootstrap_color_competitors(chain):
+    """返回 [(说明, (是否 important, 特异度))]。"""
+    el = chain[-1]
+    anc_classes = set()
+    for n in chain[:-1]:
+        anc_classes |= n.classes
+    out = []
+    if el.pseudo_element is None and el.tag in ('td', 'th') and 'table' in anc_classes:
+        # `.table > :not(caption) > * > *{color:var(--bs-table-color-state,...)}`
+        # `:not(caption)` 记它参数的特异度(0,0,1)，两个 `*` 不计 -> (0,1,1)，不带 !important
+        out.append(('.table > :not(caption) > * > *', (False, (0, 1, 1))))
+    for u in _BS_TEXT_UTILITIES:
+        if u in el.classes:
+            # `.text-danger{color:rgba(var(--bs-danger-rgb),var(--bs-text-opacity))!important}`
+            out.append((f'.{u}', (True, (0, 1, 0))))
+    if 'form-text' in el.classes:
+        out.append(('.form-text', (False, (0, 1, 0))))
+    if 'badge' in el.classes:
+        out.append(('.badge', (False, (0, 1, 0))))
+    if el.pseudo_element == 'placeholder' and 'form-control' in el.classes:
+        out.append(('.form-control::placeholder', (False, (0, 1, 1))))
+    return out
+
+
+def _winning_color_decl(css, chain, label):
+    """算出链尾节点最终生效的 `color` 声明原值 + 胜出的选择器分支。
+
+    比较键 = (是否 !important, 特异度三元组, 源码里的规则序号)。
+    序号是必须的：`.text-muted` 与 `.text-danger` 特异度完全相同、都带
+    !important，同一个元素同时挂着这两个类时，**后声明的那条赢**。
+    """
+    cands = []
+    scanned = 0
+    for idx, (sel, body, at_ctx) in enumerate(_rules_ctx(css)):
+        raw = _decl_map(body).get('color')
+        if raw is None:
+            continue
+        scanned += 1
+        for branch in _selector_parts(sel):
+            hit = _text_branch_applies(branch, chain)
+            assert hit is not None, (
+                f'[{label}] 选择器 `{branch}` 的形态本模型不支持 —— 本测试已失效。'
+                '（不是通过：模型算不清的规则可能正是胜出的那条）'
+            )
+            if hit:
+                if at_ctx:
+                    raise AssertionError(
+                        f'[{label}] 命中的规则 `{branch}` 在 at-rule {at_ctx} 里，'
+                        '本模型只算顶层规则 —— 已失效'
+                    )
+                cands.append((
+                    (bool(_IMPORTANT_RE.search(raw)), _btn_specificity(branch), idx),
+                    branch, raw,
+                ))
+                break
+    assert scanned > 100, f'只扫到 {scanned} 条声明 color 的规则 —— 扫描逻辑已失效'
+    assert cands, (
+        f'[{label}] 没有任何 style.css 的规则直接命中这个节点 —— '
+        '颜色会走继承或 Bootstrap，本模型算不了，测试已失效'
+    )
+    key, branch, raw = max(cands)
+    own_rank = (key[0], key[1])
+    for bs_label, bs_rank in _bootstrap_color_competitors(chain):
+        assert own_rank >= bs_rank, (
+            f'[{label}] style.css 的胜出规则 `{branch}` 排名 {own_rank}，'
+            f'输给 Bootstrap 的 `{bs_label}` {bs_rank} —— 最终颜色由 Bootstrap 决定，'
+            '本仓库里没有它的源码，模型算不了，测试已失效'
+        )
+    return branch, raw
+
+
+def _modal_backdrop(css):
+    """详情弹窗的底色 —— 从 `.modal-content` 解析，不许硬编码调色板变量。"""
+    rules = [
+        (sel, body) for sel, body, at in _rules_ctx(css)
+        if not at and '.modal-content' in _selector_parts(sel)
+        and ('background' in _decl_map(body) or 'background-color' in _decl_map(body))
+    ]
+    assert len(rules) == 1, (
+        f'期望顶层恰好 1 条声明了背景色的 `.modal-content` 规则，实际 {len(rules)} 条 —— 已失效'
+    )
+    decls = _decl_map(rules[0][1])
+    value = _resolve_color(css, decls.get('background') or decls.get('background-color'))
+    assert re.fullmatch(r'#[0-9a-f]{6}', value), f'.modal-content 底色解析成 {value!r} —— 已失效'
+    return value
+
+
+def _branch_background(css, branch):
+    """某个选择器分支声明的背景色原值（要求顶层恰好一条规则声明它）。"""
+    rules = [
+        (sel, body) for sel, body, at in _rules_ctx(css)
+        if not at and branch in _selector_parts(sel)
+        and ('background' in _decl_map(body) or 'background-color' in _decl_map(body))
+    ]
+    assert len(rules) == 1, (
+        f'期望顶层恰好 1 条声明了背景色的 `{branch}` 规则，实际 {len(rules)} 条 —— 已失效'
+    )
+    decls = _decl_map(rules[0][1])
+    return decls.get('background') or decls.get('background-color')
+
+
+def test_text_color_model_assumptions_still_hold():
+    """层叠模型的三条前提：无组合符、无 @media 声明 color、style.css 排在最后。
+
+    这条不是产品契约，是**模型的自检**。三条前提任何一条被打破，
+    下面那些「算最终颜色」的断言就是在给一个错数字背书 ——
+    「静默给出错误的信心」比没有断言更糟（这是 Task 10/11 反复付过学费的地方）。
+    """
+    css = _css()
+    combinator_offenders = []
+    media_offenders = []
+    color_branches = 0
+    for sel, body, at_ctx in _rules_ctx(css):
+        if 'color' not in _decl_map(body):
+            continue
+        for branch in _selector_parts(sel):
+            color_branches += 1
+            if re.search(r'[>+~]', branch):
+                combinator_offenders.append(branch)
+            if at_ctx:
+                media_offenders.append(f'{at_ctx} {branch}')
+    assert color_branches > 100, (
+        f'只扫到 {color_branches} 个声明 color 的选择器分支 —— 扫描逻辑已失效'
+    )
+    assert not combinator_offenders, (
+        '发现带子/兄弟组合符的 color 规则，`_text_branch_applies` 只按后代关系拆分，'
+        '会把它们算错：\n' + '\n'.join('  ' + o for o in combinator_offenders)
+        + '\n要么改掉选择器，要么给模型补上组合符支持——别让它继续静默算错。'
+    )
+    assert not media_offenders, (
+        '发现 @media 里声明 color 的规则，本模型只算顶层规则：\n'
+        + '\n'.join('  ' + o for o in media_offenders)
+    )
+    # style.css 必须是最后加载的样式表——`.table td` 去掉 !important 之后
+    # 靠的就是「同特异度、后来者赢」压住 Bootstrap 的 `.table > :not(caption) > * > *`。
+    # 顺序契约由 test_no_stylesheet_can_load_after_style_css 独立守住，这里只做交叉引用。
+    assert 'def test_no_stylesheet_can_load_after_style_css' in open(
+        os.path.abspath(__file__), encoding='utf-8').read(), (
+        '样式表顺序的断言不见了 —— 本模型的第三条前提没人守了'
+    )
+
+
+# --- 页面里真实存在的文字上下文 -------------------------------------------
+#
+# 每条 = (标签, 从祖先到目标元素的节点链, 背衬来源, 期望的颜色变量或 None)
+# 链的形状照抄真实 markup（templates/*.html + 两个 JS 的模板字符串）。
+
+# Bootstrap 5.3.0 在行 hover 时给单元格加的**内阴影**：
+#   `.table > :not(caption) > * > * { box-shadow: inset 0 0 0 9999px var(--bs-table-bg-state,...) }`
+# `background: transparent !important` 压不掉 box-shadow，所以这一层实际存在。
+# 常量取自 CDP 实测：hover 时 `getComputedStyle(td).boxShadow` ===
+# `rgba(0, 0, 0, 0.075) 0px 0px 0px 9999px inset`。
+# 少算这一层的话，hover 行的背衬会算成 #1c1e23，而屏幕上是 #191b20 ——
+# 本项目是浅字压深底，漏算会让模型**低估**对比度（保守），但换个配色就会变成
+# 高估。宁可把它算进来。
+_BS_TABLE_HOVER_INSET = 'rgba(0, 0, 0, 0.075)'
+
+
+def _text_contexts(css):
+    """页面上真实存在的文字上下文。
+
+    ⚠️ 每条链都是 **CDP 实抓**的祖先链（`el.parentElement` 一路向上），
+    不是照着模板猜的。这一点是承重的：第一版按记忆写链，漏了
+    `tbody#historyTableBody` 这个 id 和 `form#downloadForm` 这一层 ——
+    任何写成 `#historyTableBody td { color: ... !important }` 的新规则
+    在浏览器里会赢，在模型里却根本不命中，等于给自己开了个盲区。
+    改 markup 之后要重抓（脚本见 p2-task-12-report.md）。
+    """
+    panel = _effective_task_card_backdrop(css)          # `.card` 的底色，实测 #15171c
+    modal = _modal_backdrop(css)
+    row_hover = _flatten(
+        _BS_TABLE_HOVER_INSET,
+        _flatten(_resolve_color(css, _branch_background(css, '.table-hover tbody tr:hover')), panel),
+    )
+    control = _flatten(_resolve_color(css, _branch_background(css, '.form-control')), panel)
+    toast = _flatten(_resolve_color(css, _branch_background(css, '.app-toast')),
+                     _palette_var(css, '--color-bg-primary'))
+
+    body = _TextEl('body')
+    main = _TextEl('main', {'main-content'})
+
+    # --- 历史页表格 ---
+    hist_top = [body, main, _TextEl('div', {'container-fluid'}), _TextEl('div', {'row'}),
+                _TextEl('div', {'col-12'}), _TextEl('div', {'card'}),
+                _TextEl('div', {'card-body'}), _TextEl('div', {'table-responsive'}),
+                _TextEl('table', {'table', 'table-hover'}),
+                _TextEl('tbody', element_id='historyTableBody')]
+
+    def cell_chain(cell, hover=False, tail=()):
+        return hist_top + [_TextEl('tr', pseudos=({'hover'} if hover else ())), cell] + list(tail)
+
+    err_cell = _TextEl('td', {'text-center', 'text-danger'})
+    plain_cell = _TextEl('td')
+
+    # --- 详情弹窗 ---
+    modal_top = [body, main,
+                 _TextEl('div', {'modal', 'fade', 'show'}, element_id='taskDetailModal'),
+                 _TextEl('div', {'modal-dialog', 'modal-lg'}),
+                 _TextEl('div', {'modal-content'}), _TextEl('div', {'modal-body'}),
+                 _TextEl('div', {'detail-grid'}), _TextEl('div', {'detail-item'})]
+
+    # --- 首页表单 ---
+    form_top = [body, main, _TextEl('div', {'index-layout'}), _TextEl('div', {'index-right'}),
+                _TextEl('div', {'card'}), _TextEl('div', {'card-body'}),
+                _TextEl('form', element_id='downloadForm')]
+
+    return [
+        # (标签, 链, 背衬, 期望的调色板变量或 None)
+        ('历史表「加载失败」单元格',
+         cell_chain(err_cell), panel, '--color-danger'),
+        ('历史表「加载失败」单元格（鼠标划过该行）',
+         cell_chain(err_cell, hover=True), row_hover, '--color-danger'),
+        ('历史表普通单元格',
+         cell_chain(plain_cell), panel, '--color-text-primary'),
+        ('历史表普通单元格（鼠标划过该行）',
+         cell_chain(plain_cell, hover=True), row_hover, '--color-text-primary'),
+        ('历史表单元格里的 <small>（四至坐标）',
+         cell_chain(plain_cell, tail=[_TextEl('small')]), panel, '--color-text-secondary'),
+        # ⚠️ 下面这条守的是**不变量**而不是现有 markup：表格里任何元素挂上
+        # .text-danger 都必须变红。当前没有 `<small class="text-danger">` 的
+        # 用法，但 `.table td small` 那条规则改前带 !important、特异度 (0,1,2)，
+        # 会把它压成灰色 —— 与本任务修的 `.table td` 是同一个坑的另一个入口。
+        ('历史表单元格里挂 .text-danger 的 <small>（不变量）',
+         cell_chain(plain_cell, tail=[_TextEl('small', {'text-danger'})]), panel, '--color-danger'),
+        ('首页表单分组标题',
+         form_top + [_TextEl('div', {'form-group-label'})], panel, None),
+        ('首页表单说明文字',
+         form_top + [_TextEl('div', {'mb-3'}, element_id='demOptions'),
+                     _TextEl('small', {'form-text', 'text-muted', 'd-block', 'mb-2'})], panel, None),
+        ('活动任务空态提示（首屏静态 markup）',
+         [body, main, _TextEl('div', {'index-layout'}), _TextEl('div', {'index-right'}),
+          _TextEl('div', {'card', 'mt-3'}), _TextEl('div', {'card-body'}, element_id='activeTasks'),
+          _TextEl('p', {'text-muted'})], panel, None),
+        ('详情弹窗字段名',
+         modal_top + [_TextEl('span', {'detail-k'})], modal, None),
+        ('详情弹窗字段值',
+         modal_top + [_TextEl('span', {'detail-v'}, element_id='detailId')], modal, None),
+        ('首页输入框占位符',
+         form_top + [_TextEl('div', {'mb-3'}),
+                     _TextEl('input', {'form-control'}, element_id='taskName',
+                             pseudo_element='placeholder')], control, None),
+        # 配置页的占位符走的是**另一条**规则：`.config-section .form-control::placeholder`
+        # (0,2,1)，与全局那条重复（Task 10 报告里记的「遗留」）。少了这一条上下文，
+        # 只改全局那条、把配置页留在 2.82:1 的变异会逃逸 —— 实测逃过过一次。
+        ('配置页输入框占位符',
+         [body, main, _TextEl('div', {'container-fluid'}), _TextEl('div', {'row'}),
+          _TextEl('div', {'col-12'}), _TextEl('form', element_id='configForm'),
+          _TextEl('div', {'config-section'}), _TextEl('div', {'mb-3'}),
+          _TextEl('input', {'form-control'}, element_id='proxy_url',
+                  pseudo_element='placeholder')], control, None),
+        # toast 的关闭按钮：`×` 是这个可点控件上唯一的可见标识。它压的不是面板底色，
+        # 是 toast 自己的 --color-bg-tertiary。改前 2.82:1 —— 连 WCAG 1.4.11
+        # 给图形元素的 3:1 都不到。
+        ('Toast 关闭按钮',
+         [body, _TextEl('div', {'app-toast-container'}), _TextEl('div', {'app-toast'}),
+          _TextEl('button', {'app-toast__close'})], toast, None),
+    ]
+
+
+def test_every_text_context_meets_wcag_aa():
+    """页面上每一处正文文字，**层叠算完之后**对它真正的背衬都要 >= 4.5:1。
+
+    强度说明 —— 为什么不能写成「查某条规则用了哪个颜色变量」：
+    A7 修的两个缺陷里，第一个（表格里的错误文字不是红的）**规则一直是对的**。
+    `.text-danger { color: var(--color-danger) !important }` 从项目第一版就在，
+    值也没变过；坏的是同一个元素上还有一条 (0,1,1)!important 的
+    `.table td` 压着它。查规则的断言在改动前后都是绿的，看不见这个缺陷。
+    所以这里把同一个元素上**所有**命中规则排一遍取胜出者。
+
+    背衬也不许硬编码：面板底色从 `.card` 解析（`_effective_task_card_backdrop`），
+    弹窗底色从 `.modal-content` 解析，行 hover 的底色是
+    `.table-hover tbody tr:hover` 的 rgba 压到面板底色上的合成值，
+    控件底色从 `.form-control` 解析。改调色板会让这些数字跟着动。
+
+    上下文清单（14 条）的边界：覆盖三个页面上**由 style.css 上色的**全部
+    正文类文字位置 —— 历史表格单元格（普通/错误 x hover/非 hover）、
+    表格内的 <small>（含挂 .text-danger 的不变量那条）、首页分组标题、
+    表单说明、空态提示、详情弹窗的键与值、首页与配置页各自的输入框占位符
+    （两处走不同规则，只覆盖一处会漏）、toast 的关闭按钮。
+    没进清单的三类各有归属：徽章文字 -> test_status_badge_text_is_readable_in_every_state
+    （背衬是每个状态自己的半透明填充，不是面板底色）；按钮文字 ->
+    test_button_ink_is_readable_in_every_state；JS 模板里的内联色 ->
+    test_inline_colors_in_js_templates_meet_wcag_aa（它们不在 style.css 里，
+    本模型扫不到）。三者合起来才叫「全覆盖」，单看本条不叫。
+    """
+    css = _css()
+    contexts = _text_contexts(css)
+    assert len(contexts) == 14, (
+        f'上下文清单变成 {len(contexts)} 条（期望 14）—— 增删了要同步更新本断言，'
+        '否则「全都覆盖了」是假象'
+    )
+    problems = []
+    report = []
+    for label, chain, backdrop, expect_var in contexts:
+        branch, raw = _winning_color_decl(css, chain, label)
+        literal = _resolve_color(css, raw)
+        flat = _flatten(literal, backdrop)
+        ratio = _contrast_ratio(flat, backdrop)
+        report.append(f'{label}: `{branch}` -> {flat} on {backdrop} = {ratio:.2f}:1')
+        if expect_var is not None:
+            want = _palette_var(css, expect_var)
+            if literal != want:
+                problems.append(
+                    f'{label}：层叠后生效的是 `{branch}` 的 {literal}，'
+                    f'期望 {expect_var}({want})。'
+                    '颜色够亮不代表语义对 —— 白字也够亮，但它说不出「这条失败了」')
+        if ratio < WCAG_AA_TEXT_CONTRAST:
+            problems.append(
+                f'{label}：`{branch}` 算出 {flat} 压在 {backdrop} 上只有 {ratio:.2f}:1，'
+                f'低于 WCAG AA 的 {WCAG_AA_TEXT_CONTRAST}')
+    assert not problems, (
+        '文字对比度 / 语义不达标：\n' + '\n'.join('  ' + p for p in problems)
+        + '\n\n全部实测值：\n' + '\n'.join('  ' + r for r in report)
+    )
+
+
+def test_status_badge_text_is_readable_in_every_state():
+    """`getStatusColor` 能返回的**每一个**颜色名，其徽章文字都要 >= 4.5:1。
+
+    包含 `|| 'xxx'` 那个兜底档 —— 这条是本任务的验收标准之一。
+    改前 history.js 的 getStatusColor 只映射三态，pending/running/paused
+    全落到兜底的 'secondary'：徽章是同一块灰、文字是后端吐的英文字面量
+    （CDP 实测徽章里写的就是 `pending` / `running` / `paused`）。
+    补齐映射之后兜底档只在「后端出现了模型不认识的新状态」时才生效，
+    但它仍然必须可读 —— 那正是最需要看清楚的时候。
+
+    颜色名不是手抄的，从两个 JS 的 getStatusColor 源码解析（`_status_color_names`）：
+    手抄的清单会在有人加状态时静默过期。
+
+    背衬按真实渲染合成：徽章底是 `rgba(...)` 半透明，必须先压到面板底色
+    （`.card`，实测 #15171c）上再算 —— 直接拿 rgba 的 RGB 分量算会得到一个
+    与屏幕上完全无关的数字。
+    """
+    css = _css()
+    names = _status_color_names('tasks.js') | _status_color_names('history.js')
+    assert names == {'secondary', 'info', 'warning', 'success', 'danger', 'dark'}, (
+        f'从两个 getStatusColor 解析出的颜色名是 {sorted(names)}，'
+        "期望 {'danger','dark','info','secondary','success','warning'} —— "
+        '六态 x 两个文件的映射变了，先确认是有意的再改本断言'
+    )
+    fallbacks = set()
+    for js_name in ('tasks.js', 'history.js'):
+        body = _js_function_body(_js(js_name), 'getStatusColor')
+        fallbacks |= set(re.findall(r"\|\|\s*'([a-z]+)'", body))
+    assert fallbacks <= names, f'兜底色 {sorted(fallbacks - names)} 不在被检查的名单里 —— 已失效'
+
+    panel = _effective_task_card_backdrop(css)
+    problems = []
+    report = []
+    for name in sorted(names):
+        branch = f'.badge.bg-{name}'
+        bg = _flatten(_resolve_color(css, _branch_background(css, branch)), panel)
+        chain = [_TextEl('div', {'card'}), _TextEl('div', {'card-body'}),
+                 _TextEl('span', {'badge', f'bg-{name}'})]
+        win_branch, raw = _winning_color_decl(css, chain, f'徽章 {branch}')
+        ink = _flatten(_resolve_color(css, raw), bg)
+        ratio = _contrast_ratio(ink, bg)
+        tag = '（兜底档）' if name in fallbacks else ''
+        report.append(f'{branch}{tag}: `{win_branch}` -> {ink} on {bg} = {ratio:.2f}:1')
+        if ratio < WCAG_AA_TEXT_CONTRAST:
+            problems.append(
+                f'{branch}{tag}：文字 {ink} 压在徽章底 {bg} 上只有 {ratio:.2f}:1，'
+                f'低于 WCAG AA 的 {WCAG_AA_TEXT_CONTRAST}')
+    assert not problems, (
+        '状态徽章文字不可读：\n' + '\n'.join('  ' + p for p in problems)
+        + '\n\n全部实测值：\n' + '\n'.join('  ' + r for r in report)
+    )
+
+
+def test_inline_colors_in_js_templates_meet_wcag_aa():
+    """两个 JS 的模板字符串里写死的 `color: var(--color-*)` 也要过 4.5:1。
+
+    为什么单独一条：这些颜色**不在 style.css 里**，上面那个层叠模型扫不到它们。
+    改前 history.js 的「暂无历史记录」「本地文件」和 tasks.js 的
+    「暂无活动任务」都用 `var(--color-text-muted)`（3.09:1），
+    走的是内联 style，任何针对 CSS 文件的断言都看不见。
+
+    内联样式的特异度高于任何选择器，所以不需要跑层叠——写了就是最终值，
+    只要解析变量、压到面板底色上算对比度即可。
+
+    命中数的边界：当前 10 处（history.js 7 处、tasks.js 3 处）。
+    这个数字会随 UI 改动变，所以断言只要求「至少扫到了两个文件、且总数 >= 8」
+    —— 钉死具体数字会在无关改动时误红，钉 0 则负向遍历永真。
+    """
+    css = _css()
+    panel = _effective_task_card_backdrop(css)
+    pat = re.compile(r'color\s*:\s*var\(\s*(--color-[-\w]+)\s*\)')
+    hits = []
+    problems = []
+    scanned = []
+    js_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          'static', 'js')
+    for fn in sorted(os.listdir(js_dir)):
+        if not fn.endswith('.js'):
+            continue
+        with open(os.path.join(js_dir, fn), encoding='utf-8') as f:
+            src = re.sub(r'/\*.*?\*/', '', f.read(), flags=re.S)
+        scanned.append(fn)
+        for m in pat.finditer(src):
+            line = src[:m.start()].count('\n') + 1
+            literal = _palette_var(css, m.group(1))
+            flat = _flatten(literal, panel)
+            ratio = _contrast_ratio(flat, panel)
+            hits.append(f'{fn}:{line} {m.group(1)} = {flat} -> {ratio:.2f}:1')
+            if ratio < WCAG_AA_TEXT_CONTRAST:
+                problems.append(
+                    f'{fn}:{line} 内联 color: var({m.group(1)}) = {flat}，'
+                    f'对面板底 {panel} 只有 {ratio:.2f}:1，低于 {WCAG_AA_TEXT_CONTRAST}')
+    assert {'tasks.js', 'history.js'} <= set(scanned), (
+        f'没扫到 tasks.js / history.js（实际 {scanned}）—— 本测试已失效'
+    )
+    assert len(hits) >= 8, (
+        f'只扫到 {len(hits)} 处内联 color: var(--color-*)（期望 >= 8）—— '
+        '正则失效的话下面的负向断言就是永真\n' + '\n'.join('  ' + h for h in hits)
+    )
+    assert not problems, (
+        'JS 模板里的内联文字颜色不达标：\n' + '\n'.join('  ' + p for p in problems)
+        + '\n\n全部命中：\n' + '\n'.join('  ' + h for h in hits)
+    )

@@ -69,14 +69,21 @@ function renderHistoryTable(tasks) {
                         <line x1="12" y1="8" x2="12" y2="12"></line>
                         <line x1="12" y1="16" x2="12.01" y2="16"></line>
                     </svg>
-                    <p style="color: var(--color-text-muted); margin: 0;">暂无历史记录</p>
+                    <p style="color: var(--color-text-secondary); margin: 0;">暂无历史记录</p>
                 </td>
             </tr>
         `;
         return;
     }
 
+    // 图标必须与 getStatusColor / getStatusText 覆盖同一组状态：徽章底色是
+    // 同一个色系里的深浅变化，只靠颜色区分状态对色觉障碍用户是失效的
+    // （WCAG 1.4.1）。图形与 tasks.js 的同名表一一对应，只是尺寸 14px 而非 16px
+    // ——历史表格的行高比任务卡片紧。
     const statusIcons = {
+        'pending': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
+        'running': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>',
+        'paused': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>',
         'completed': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>',
         'failed': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>',
         'cancelled': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
@@ -94,7 +101,7 @@ function renderHistoryTable(tasks) {
             </td>
             <td>
                 <small style="font-family: var(--font-mono); line-height: 1.4;">
-                    ${task.north == null ? '<span style="color: var(--color-text-muted);">本地文件</span>' : `
+                    ${task.north == null ? '<span style="color: var(--color-text-secondary);">本地文件</span>' : `
                     <span style="color: var(--color-accent-hover);">▲</span> ${task.north.toFixed(4)},
                     <span style="color: var(--color-accent-hover);">▼</span> ${task.south.toFixed(4)}<br>
                     <span style="color: var(--color-accent-hover);">▶</span> ${task.east.toFixed(4)},
@@ -197,8 +204,21 @@ function filterTasks(searchTerm) {
     renderHistoryTable(filtered);
 }
 
+// A7 / Task 12：这两张表原先只映射 completed / failed / cancelled 三态。
+// 但 /api/history_all 不带 status 过滤（routes/api.py 的四路 UNION ALL 没有
+// status 谓词），pending / running / paused 的任务照样进历史表。落在表外的
+// 状态会走 `|| status` 兜底，把后端的**英文字面量**直接渲染进中文界面
+// —— 这就是历史页里 `paused` 与「✓ 已完成」中英混杂的根源。
+// 现在与 tasks.js 的同名函数逐字对齐，覆盖 models/task.py 的 TaskStatus 全部六态。
+// 两份实现仍然重复（没有构建工具、没有 ES module，两个页面不会同时加载），
+// 收敛到公共文件属于第三档，本次只对齐行为。
 function getStatusColor(status) {
     const colors = {
+        'pending': 'secondary',
+        // running 用 'info' 而不是 'primary'：`.status-badge.running /
+        // .badge.bg-primary / .badge.bg-info` 是同一条声明块，渲染完全一致。
+        'running': 'info',
+        'paused': 'warning',
         'completed': 'success',
         'failed': 'danger',
         'cancelled': 'dark'
@@ -208,6 +228,9 @@ function getStatusColor(status) {
 
 function getStatusText(status) {
     const texts = {
+        'pending': '等待中',
+        'running': '运行中',
+        'paused': '已暂停',
         'completed': '已完成',
         'failed': '失败',
         'cancelled': '已取消'
@@ -399,12 +422,13 @@ async function refreshTerrainDetail(taskId) {
             return;
         }
 
+        // A7 / Task 12：地形切片作业的状态词表（running / completed / failed）
+        // 是任务状态的子集，直接复用上面两个函数，不再写一份内联三元阶梯 ——
+        // 原来这里把 `job.status` **原样**插进徽章，中文界面里显示英文
+        // `running`，和历史表格的老毛病是同一个。
         const status = job.status || 'unknown';
-        const color = status === 'completed' ? 'success'
-                    : status === 'running' ? 'primary'
-                    : status === 'failed' ? 'danger'
-                    : 'secondary';
-        statusEl.innerHTML = `<span class="badge bg-${color}">${status}</span>`;
+        const label = status === 'unknown' ? '状态未知' : getStatusText(status);
+        statusEl.innerHTML = `<span class="badge bg-${getStatusColor(status)}">${label}</span>`;
 
         const outDir = job.output_dir || '-';
         const maxzoom = job.maxzoom ?? '-';

@@ -668,3 +668,251 @@ def test_progress_track_markup_is_nested_and_heightless():
                     '数字飞出进度条，而按文件计数的那条断言依然全绿'
                 )
     assert not problems, '进度条轨道的 markup 结构不合契约：\n' + '\n'.join('  ' + p for p in problems)
+
+
+# --------------------------------------------------------------------------
+# A7 / Task 12：状态词表必须覆盖后端真实存在的每一个状态
+#
+# 改前的事实（实测，不是推测）：
+#   - `/api/history_all`（routes/api.py 的四路 UNION ALL）**没有 status 谓词**，
+#     history.js 也不传 status 参数 —— pending / running / paused 的任务照样
+#     出现在历史表格里。
+#   - history.js 的 getStatusColor / getStatusText 只映射 completed / failed /
+#     cancelled 三态，`return texts[status] || status` 把剩下三态**原样**渲染成
+#     后端的英文字面量。CDP 实测徽章里写的就是 `pending` / `running` / `paused`，
+#     旁边一行是「✓ 已完成」—— 这就是历史页中英混杂的根源。
+#   - statusIcons 同样只有三态，`statusIcons[status] || ''` 静默吐空串：
+#     那三态既没有中文、也没有图标，只剩一块与「已取消」完全同色的灰底，
+#     等于「运行中」和「已取消」在界面上分不出来。
+#
+# 词表的真值来自 models/task.py 的 TaskStatus 枚举（用 ast 解析，不 import，
+# 避免 config.py 的导入副作用）。**不在测试里手抄一份六元组** —— 手抄的清单
+# 会在有人给后端加状态时静默过期，而那正是这条断言唯一要拦的事。
+# --------------------------------------------------------------------------
+
+import ast  # noqa: E402
+
+
+def _task_status_values():
+    """从 models/task.py 的 TaskStatus 枚举解析出全部状态字面量。"""
+    path = os.path.join(ROOT, 'models', 'task.py')
+    with open(path, encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == 'TaskStatus':
+            vals = {
+                st.value.value
+                for st in node.body
+                if isinstance(st, ast.Assign) and isinstance(st.value, ast.Constant)
+                and isinstance(st.value.value, str)
+            }
+            assert vals, 'TaskStatus 里解析不出任何字符串成员 —— 本测试已失效'
+            return vals
+    raise AssertionError('models/task.py 里找不到 class TaskStatus —— 本测试已失效')
+
+
+# 会把状态字面量写进数据库的四个管理器。engine 层不在内（它写的是瓦片/文件级
+# 的状态词表 'downloading' / 'rendered' / 'uploaded'，那些列不进任务徽章）。
+_STATUS_WRITERS = (
+    'task_manager.py', 'dem_task_manager.py',
+    'contour_task_manager.py', 'local_terrain_task_manager.py',
+)
+
+_STATUS_LITERAL_RE = re.compile(
+    r"""(?:SET\s+status\s*=\s*|(?<![-\w])status\s*(?:=|==|!=)\s*|['"]status['"]\s*:\s*)['"]([a-z_]+)['"]""",
+    re.I,
+)
+_STATUS_IN_RE = re.compile(r"(?<![-\w])status\s+(?:NOT\s+)?IN\s*\(([^)]*)\)", re.I)
+
+
+def test_task_status_enum_covers_what_the_managers_actually_write():
+    """四个管理器里出现的每一个状态字面量都必须在 TaskStatus 枚举里。
+
+    为什么需要这条：下面那条断言拿 TaskStatus 当真值，去要求两个 JS 覆盖全部状态。
+    可四个管理器里有三个**根本不用这个枚举**，它们直接写字符串字面量
+    （`UPDATE dem_tasks SET status='paused' ...`）。也就是说枚举本身可能是过期的
+    —— 那样上面那条断言就是在拿一份不完整的清单验收「全覆盖」，全绿而漏。
+    这正是 Task 10 补链时点名的那类缺口：配对断言守住了「标签 <-> 变量」，
+    守不住「变量 <-> 数据源」。这条把数据源那一端接上。
+
+    做法：扫四个管理器里所有 `SET status='x'` / `status = 'x'` / `'status': 'x'` /
+    `status IN ('a','b')` 的字面量，要求它们是枚举的子集。
+    """
+    enum_values = _task_status_values()
+    found = {}
+    for fn in _STATUS_WRITERS:
+        path = os.path.join(ROOT, 'services', fn)
+        assert os.path.exists(path), f'{fn} 不存在 —— 本测试已失效（管理器改名/搬家了？）'
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        for m in _STATUS_LITERAL_RE.finditer(src):
+            found.setdefault(m.group(1), set()).add(fn)
+        for m in _STATUS_IN_RE.finditer(src):
+            for lit in re.findall(r"'([a-z_]+)'", m.group(1)):
+                found.setdefault(lit, set()).add(fn)
+    # 自检：扫空的话下面的子集断言永真
+    assert len(found) >= len(enum_values), (
+        f'只从四个管理器里扫到 {sorted(found)}，比枚举 {sorted(enum_values)} 还少 —— '
+        '正则失效了，本测试已无效'
+    )
+    extra = set(found) - enum_values
+    assert not extra, (
+        '管理器写了 TaskStatus 里没有的状态：\n'
+        + '\n'.join(f'  {k!r} <- {sorted(found[k])}' for k in sorted(extra))
+        + '\n枚举是前端词表断言的真值来源，漏一个状态 = 界面上冒出一个英文字面量。'
+        '把它补进 models/task.py 的 TaskStatus，再补进两个 JS 的三张表。'
+    )
+
+
+def _js_object_literal_keys(body, var_name):
+    """切出 `const <var_name> = { ... }` 的键集合。
+
+    只认单引号包起来的键 —— 本项目三张状态表都是这个写法，
+    换写法（裸键 / 计算键）会让键集合变小、断言变红，那是**响亮失败**，
+    不是静默放行。
+    """
+    m = re.search(r'\b(?:const|let|var)\s+' + re.escape(var_name) + r'\s*=\s*\{', body)
+    assert m, f'找不到 `{var_name} = {{` —— 本测试已失效'
+    start = body.index('{', m.end() - 1)
+    depth = 0
+    for j in range(start, len(body)):
+        if body[j] == '{':
+            depth += 1
+        elif body[j] == '}':
+            depth -= 1
+            if depth == 0:
+                inner = body[start + 1:j]
+                break
+    else:
+        raise AssertionError(f'{var_name} 的花括号不配对 —— 本测试已失效')
+    keys = re.findall(r"'([a-z_]+)'\s*:", inner)
+    assert keys, f'{var_name} 里解析不出任何键 —— 本测试已失效'
+    return set(keys), inner
+
+
+# 三张表分别在哪里：前两张是顶层函数，statusIcons 是渲染函数里的局部常量。
+_STATUS_MAPS = (
+    ('getStatusColor', 'colors', None),
+    ('getStatusText', 'texts', None),
+    ('statusIcons', 'statusIcons', {'tasks.js': 'createTaskCard', 'history.js': 'renderHistoryTable'}),
+)
+
+
+def test_both_js_files_map_every_backend_status():
+    """history.js 与 tasks.js 的三张状态表都必须覆盖 TaskStatus 的全部六态。
+
+    强度说明 —— 为什么不写成 `assert "'paused'" in src`：
+    那种断言在 history.js 里查的是「文件里有没有出现过这个词」，
+    而 `getStatusColor` 与 `statusIcons` 是两张独立的表，补了一张漏了另一张
+    照样绿。这里按函数体逐张表解析键集合，并要求**等于**枚举
+    （不是「包含」）—— 多一个不在后端存在的状态同样报错，因为那说明
+    有人在前端凭空造了一个界面上永远到不了的分支。
+
+    覆盖数的边界：2 个文件 x 3 张表 = 6 组，每组 6 个键。断言先钉住组数，
+    再逐组比对 —— 只比对不钉组数的话，解析逻辑挂掉返回空列表时是永真。
+    """
+    enum_values = _task_status_values()
+    assert len(enum_values) == 6, (
+        f'TaskStatus 现在有 {len(enum_values)} 个成员：{sorted(enum_values)}。'
+        '不是 6 个不一定是错，但下面每张表的期望值要跟着改，先确认是有意的'
+    )
+    checked = []
+    problems = []
+    for js_name in ('tasks.js', 'history.js'):
+        src = _strip_js_comments(_js(js_name))
+        for var_label, var_name, holders in _STATUS_MAPS:
+            body = src if holders is None else _js_function_body(src, holders[js_name])
+            if holders is None:
+                body = _js_function_body(src, var_label)
+            keys, _inner = _js_object_literal_keys(body, var_name)
+            checked.append(f'{js_name}:{var_label}')
+            if keys != enum_values:
+                missing = sorted(enum_values - keys)
+                extra = sorted(keys - enum_values)
+                problems.append(
+                    f'{js_name} 的 {var_label} 键集合 {sorted(keys)}'
+                    + (f'，缺 {missing}' if missing else '')
+                    + (f'，多出 {extra}' if extra else '')
+                )
+    assert len(checked) == 6, f'只检查了 {checked}（期望 6 组）—— 本测试已失效'
+    assert not problems, (
+        '状态词表没覆盖后端全部状态：\n' + '\n'.join('  ' + p for p in problems)
+        + f'\n真值来自 models/task.py 的 TaskStatus = {sorted(enum_values)}。'
+        '\n漏掉的状态会走 `|| status` / `|| \'\'` 兜底：'
+        '中文界面里冒出英文字面量，徽章没有图标。'
+    )
+
+
+def test_status_labels_are_never_the_raw_backend_literal():
+    """`getStatusText` 的每一个值都必须是中文，不能是英文原值。
+
+    为什么单独一条：上一条只查「键齐不齐」。补一行 `'paused': 'paused'`
+    就能让键集合合格，而界面上仍然显示英文 —— 中英混杂原样保留，测试全绿。
+    这条把值也钉住：必须含中日韩统一表意文字，且不得等于键本身。
+    """
+    enum_values = _task_status_values()
+    problems = []
+    checked = 0
+    for js_name in ('tasks.js', 'history.js'):
+        body = _js_function_body(_strip_js_comments(_js(js_name)), 'getStatusText')
+        pairs = re.findall(r"'([a-z_]+)'\s*:\s*'([^']*)'", body)
+        assert len(pairs) == len(enum_values), (
+            f'{js_name} 的 getStatusText 解析出 {len(pairs)} 对映射，'
+            f'期望 {len(enum_values)} 对 —— 本测试已失效'
+        )
+        for key, value in pairs:
+            checked += 1
+            if value == key or not re.search(r'[一-鿿]', value):
+                problems.append(f'{js_name}: {key!r} -> {value!r}')
+    assert checked == 2 * len(enum_values), f'只检查了 {checked} 条映射 —— 本测试已失效'
+    assert not problems, (
+        '状态文案不是中文（界面会中英混杂）：\n' + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_terrain_job_status_is_translated_too():
+    """详情弹窗的地形切片状态也要走 getStatusText，不许把 job.status 原样插进徽章。
+
+    改前 history.js 的 refreshTerrainDetail 是
+        `statusEl.innerHTML = \\`<span class="badge bg-${color}">${status}</span>\\``
+    —— 与历史表格是同一个毛病的另一处实例：中文弹窗里显示 `running`。
+    地形作业的词表（running / completed / failed）是 TaskStatus 的子集，
+    所以直接复用两个函数即可，不需要第二份映射。
+
+    ⚠️ 强度自评（诚实）：这是一条**结构**断言 —— 它检查徽章的文本位置来自
+    getStatusText 调用而不是裸变量，守不住「getStatusText 返回了什么」
+    （那部分由上面两条守）。它拦得住的是「有人把这里改回内联三元阶梯」。
+    """
+    body = _js_function_body(_strip_js_comments(_js('history.js')), 'refreshTerrainDetail')
+    badges = re.findall(r'<span class="badge bg-([^"]*)">([^<]*)</span>', body)
+    assert len(badges) == 3, (
+        f'refreshTerrainDetail 里解析出 {len(badges)} 个徽章模板（期望 3：'
+        '未开始 / 作业状态 / 加载失败）—— 本测试已失效'
+    )
+    def resolve(expr, want):
+        """`${x}` 里要么直接是 want(...) 调用，要么是同一函数体内 `const x = ...`
+        的局部变量，再看它的右值。只解一层 —— 解不动就判不合格，不静默放行。"""
+        if want in expr:
+            return True
+        m = re.fullmatch(r'\$\{\s*([A-Za-z_$][\w$]*)\s*\}', expr.strip())
+        if not m:
+            return False
+        d = re.search(r'\b(?:const|let|var)\s+' + re.escape(m.group(1)) + r'\s*=([^;]*);', body)
+        return bool(d) and want in d.group(1)
+
+    problems = []
+    for color_expr, label_expr in badges:
+        if '${' not in label_expr:
+            continue                      # 中文字面量（「未开始」「加载失败」），合格
+        if not resolve(label_expr, 'getStatusText('):
+            problems.append(f'徽章文案 `{label_expr}` 追不到 getStatusText(...)')
+        if not resolve('${' + color_expr.strip('${}') + '}', 'getStatusColor('):
+            problems.append(f'徽章配色 `{color_expr}` 追不到 getStatusColor(...)')
+    # 自检：三个徽章里必须恰好有一个是插值的，否则上面的循环什么都没查
+    interpolated = [b for b in badges if '${' in b[1]]
+    assert len(interpolated) == 1, (
+        f'期望恰好 1 个插值徽章（作业状态），实际 {len(interpolated)} 个 —— 本测试已失效'
+    )
+    assert not problems, (
+        '地形切片状态没走统一词表：\n' + '\n'.join('  ' + p for p in problems)
+    )

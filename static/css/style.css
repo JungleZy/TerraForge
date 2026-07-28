@@ -15,6 +15,14 @@
     /* 文字 */
     --color-text-primary:   #e8eaed;
     --color-text-secondary: #9aa0aa;
+    /* ⚠️ --color-text-muted **不是文字色**（A7 / Task 12 起）。
+       它对三层背景的实测对比度是 3.09 / 3.09 / 2.82:1，全部低于 WCAG AA
+       正文要求的 4.5:1 —— 拿它写字等于把字写成看不见。文字最暗只能到
+       --color-text-secondary（对 #15171c 6.81:1、对 #1c2027 6.21:1）。
+       本变量现在只用于图形元素（滚动条滑块 hover、等待中卡片的左侧色条），
+       那类元素的下限是 3:1。
+       约束由 tests/test_css_contract.py::test_every_text_context_meets_wcag_aa
+       兜住 —— 它算的是层叠后真正生效的颜色，不是「有没有人写了这个变量名」。 */
     --color-text-muted:     #5f6670;
 
     /* 强调色：青绿 */
@@ -618,9 +626,12 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
    两条都必须对 `.progress` 轨道底色(--color-bg-tertiary #1c2027) 有
    >= 3:1 对比度，见 test_progress_bar_fill_has_sufficient_contrast。
    所以等待中用 --color-text-secondary(6.21:1) 而不是
-   --color-text-muted(2.82:1)——history.js 的 getStatusColor 把 running/
-   pending/paused 全兜底成 secondary，历史页里一个跑到 63% 的运行中任务
-   就是靠这条上色的。 */
+   --color-text-muted(2.82:1)。
+
+   ⚠️ 这段注释原本还写着「history.js 的 getStatusColor 把 running/pending/paused
+   全兜底成 secondary」—— A7 / Task 12 已经把 history.js 的映射补齐到六态，
+   那句话过期了。secondary 现在只对应 pending，以及后端冒出新状态时的兜底档；
+   兜底档同样要可读，见 test_status_badge_text_is_readable_in_every_state。 */
 .progress-bar.bg-secondary {
     background: var(--color-text-secondary) !important;
 }
@@ -696,8 +707,10 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     outline: none;
 }
 
+/* 与全局 `.form-control::placeholder` 重复的一条（Task 10 报告里记的「遗留」），
+   本次不删只对齐取值，否则配置页的占位符会留在 2.82:1。 */
 .config-section .form-control::placeholder {
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
 }
 
 .config-section .btn {
@@ -1141,8 +1154,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     color: var(--color-text-primary);
 }
 
+/* A7 / Task 12：--color-text-muted -> --color-text-secondary（3.09 -> 6.81:1）。
+   这个类挂在真正要读的正文上（index.html 的 4 条 `<small class="form-text
+   text-muted">` 表单说明、以及「暂无活动任务」空态），不是装饰。
+   !important 必须保留：Bootstrap 的 `.text-muted{color:var(--bs-secondary-color)
+   !important}` 同为 (0,1,0) 且自带 !important，不带的话我们赢不了它。 */
 .text-muted {
-    color: var(--color-text-muted) !important;
+    color: var(--color-text-secondary) !important;
 }
 
 /* 注意：.text-center 是纯布局类，只在文件末尾声明 text-align，不设 color。
@@ -1334,8 +1352,12 @@ h1, h2, h3, h4, h5, h6 {
     outline: none;
 }
 
+/* A7 / Task 12：占位符也是用户要读的文字（「输入任务名称...」）。
+   改前 --color-text-muted 对控件底 --color-bg-tertiary(#1c2027) 只有 2.82:1，
+   改后 --color-text-secondary 6.21:1。与「已输入的值」仍然分得开 —— 值走
+   .form-control 的 --color-text-primary(#e8eaed)，两者相差一个完整层级。 */
 .form-control::placeholder {
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
 }
 
 .form-label {
@@ -1480,24 +1502,50 @@ h1, h2, h3, h4, h5, h6 {
     border-color: var(--color-border) !important;
 }
 
+/* ⚠️ 这里的 `color` **不许**再加 !important（A7 / Task 12 修的就是这个）。
+   history.js 的加载失败行是 `<td class="text-center text-danger">加载失败</td>`。
+   `.text-danger` 是 (0,1,0)!important，本条改前是 (0,1,1)!important ——
+   两条都是 important 时先比特异度，(0,1,1) 赢。后果：**这行文字从上线起
+   就是普通灰白色**，加载失败和正常内容长得一模一样。CDP 实测改前
+   `getComputedStyle(td).color === 'rgb(232, 234, 237)'`（= --color-text-primary），
+   改后 `rgb(248, 113, 113)`（= --color-danger，对面板底 #15171c 实测 6.48:1）。
+
+   去掉 !important 之后普通单元格的颜色不变：唯一同时命中 td 的 Bootstrap
+   颜色规则是 `.table > :not(caption) > * > *`，(0,1,1) 且**不带** !important
+   —— 与本条特异度相同，而 style.css 是最后加载的样式表
+   （test_no_stylesheet_can_load_after_style_css 钉住了这一点），同分后来者赢。
+   CDP 实测改前改后普通 td 都是 rgb(232, 234, 237)。
+
+   background / border-color 的 !important 保留不动：它们要压的是 Bootstrap
+   自带 !important 的 `.bg-*` 工具类，与本次的颜色语义问题无关。 */
 .table td,
 .table th {
     background: transparent !important;
     border-color: var(--color-border) !important;
-    color: var(--color-text-primary) !important;
+    color: var(--color-text-primary);
 }
 
+/* 同上：(0,1,2) 不带 !important 已经压得过 Bootstrap 的 td 颜色规则，
+   却不再压住写在 `<small>` 自己身上的 .text-danger / .text-success。 */
 .table td small {
-    color: var(--color-text-secondary) !important;
+    color: var(--color-text-secondary);
 }
 
 .table-hover tbody tr:hover {
     background: rgba(255, 255, 255, 0.03) !important;
 }
 
-.table-hover tbody tr:hover td {
-    color: var(--color-text-primary) !important;
-}
+/* 这里原本还有一条
+       `.table-hover tbody tr:hover td { color: var(--color-text-primary) !important }`
+   A7 / Task 12 删掉，两条理由都实测过：
+     1. **冗余**。Bootstrap 的行 hover 只改 `--bs-table-color-state` 这个自定义
+        属性，真正上色的仍是 `.table > :not(caption) > * > *`(0,1,1)；上面那条
+        `.table td`(0,1,1) 排在它后面，hover 与否都已经赢了。CDP 实测删掉之后
+        hover 行的普通单元格仍是 rgb(232, 234, 237)。
+     2. **有害**。它是 (0,2,2)!important —— 鼠标划过「加载失败」那一行时，
+        连修好之后的 `.text-danger`(0,1,0)!important 也会被它重新压成灰白。
+        CDP 实测改前 hover 与非 hover 都是 rgb(232, 234, 237)，改后都是
+        rgb(248, 113, 113)。 */
 
 .table-responsive {
     border-radius: 8px;
@@ -1901,11 +1949,15 @@ code {
 .task-card:nth-child(4) { animation-delay: 0.4s; }
 .task-card:nth-child(5) { animation-delay: 0.5s; }
 
-/* 下载表单分组标题 */
+/* 下载表单分组标题。
+   A7 / Task 12：color 从 --color-text-muted 改成 --color-text-secondary。
+   前者对面板底 #15171c 只有 3.09:1（CDP 渲染像素实测），达不到 WCAG AA
+   的 4.5；后者 6.81:1。层级感靠 font-size(12px vs 正文 14px) +
+   font-weight 600 + 下边框维持，不靠「把字调暗到看不见」。 */
 .form-group-label {
     font-size: var(--font-size-xs);
     font-weight: 600;
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
     /* A5 / Task 10：1.25rem 0 0.5rem(20/8px) -> 14px 0 6px。
        组间留白仍明显大于组内的 --gap-field(8px)，分组关系不受影响。 */
     margin: 14px 0 6px;
@@ -1914,8 +1966,10 @@ code {
 }
 .form-group-label:first-child { margin-top: 0; }
 
+/* A7 / Task 12：同 .text-muted。表单说明文字是用户必须读懂的正文
+   （「下方 NUM/SWB 仅 ASTER 适用」这种），3.09:1 等于写了不给看。 */
 .form-text {
-    color: var(--color-text-muted) !important;
+    color: var(--color-text-secondary) !important;
     font-size: var(--font-size-xs);
     margin-top: 0.35rem;
 }
@@ -1988,7 +2042,11 @@ code {
 
 .detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1.5rem; }
 .detail-item { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0; border-bottom: 1px solid var(--color-border); }
-.detail-k { font-size: var(--font-size-xs); color: var(--color-text-muted); }
+/* A7 / Task 12：详情弹窗的**全部** 19 个字段名走这条规则。
+   改前 --color-text-muted 对 .modal-content 底 #15171c 实测 3.09:1（不达 AA），
+   改后 --color-text-secondary 6.81:1。与 .detail-v(14px/#e8eaed) 的层级差
+   仍由 12px vs 14px 的字号断层承担。 */
+.detail-k { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
 .detail-v { font-size: var(--font-size-sm); color: var(--color-text-primary); }
 @media (max-width: 576px) { .detail-grid { grid-template-columns: 1fr; } }
 
@@ -2049,12 +2107,16 @@ code {
 .app-toast__icon { flex: 0 0 auto; display: inline-flex; margin-top: 1px; }
 .app-toast__icon svg { width: 18px; height: 18px; display: block; }
 .app-toast__msg { flex: 1 1 auto; word-break: break-word; }
+/* A7 / Task 12：关闭按钮的 `×` 是可点控件上唯一的可见标识，
+   --color-text-muted 对 toast 底 --color-bg-tertiary(#1c2027) 只有 2.82:1，
+   连 WCAG 1.4.11 给图形元素的 3:1 都不到。改 --color-text-secondary(6.21:1)，
+   :hover 仍然抬到 --color-text-primary，两态的差别没被抹平。 */
 .app-toast__close {
     flex: 0 0 auto;
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
     font-size: 1.15rem;
     line-height: 1;
     padding: 0 0.15rem;
