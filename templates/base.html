@@ -1,25 +1,31 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Google Maps 下载器{% endblock %}</title>
 
+    {# 全部第三方前端资源走本地 static/vendor/，不依赖任何 CDN。
+       这是 PyInstaller 打包的离线桌面工具，断网必须能用。
+       三条硬规矩，改之前先读：
+       1. 路径里的版本号必须是**字面量**。tests/test_css_contract.py 有三条断言
+          直接从模板源码里正则抠版本号，写成 Jinja 变量拼接会抠不出来。
+       2. **不要加 integrity/crossorigin**。本地文件与 CDN 差一个字节浏览器就
+          静默拒载，且没有明显报错；crossorigin 还会让同源请求走 CORS。
+       3. **style.css 必须是最后一张表**。Leaflet 覆盖规则刻意没写 !important，
+          靠的是「同特异度、源码靠后者胜」。新表一律插在它之前。 #}
+
     <!-- Fonts: Inter (UI) + JetBrains Mono (数字) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}">
 
     <!-- Bootstrap 5.3 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.min.css') }}">
 
     <!-- Leaflet.js 1.9.4 CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-          crossorigin=""/>
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/1.9.4/leaflet.css') }}">
 
     <!-- Leaflet.draw CSS -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet.draw/1.0.4/leaflet.draw.css') }}">
 
     <!-- Custom CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
@@ -37,7 +43,8 @@
                 </svg>
                 Maps Downloader
             </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+                    aria-controls="navbarNav" aria-expanded="false" aria-label="展开导航菜单">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
@@ -89,19 +96,19 @@
         {% block content %}{% endblock %}
     </main>
 
-    <!-- Bootstrap 5.3 JS Bundle -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Bootstrap 5.3 JS Bundle（含 Popper） -->
+    <script src="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.bundle.min.js') }}"></script>
 
     <!-- Leaflet.js 1.9.4 JS -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-            crossorigin=""></script>
+    <script src="{{ url_for('static', filename='vendor/leaflet/1.9.4/leaflet.js') }}"></script>
 
     <!-- Leaflet.draw JS -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <script src="{{ url_for('static', filename='vendor/leaflet.draw/1.0.4/leaflet.draw.js') }}"></script>
 
-    <!-- Socket.IO 4.5.4 -->
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <!-- Socket.IO 4.5.4 —— 版本必须锁在 4.x：服务端 Flask-SocketIO 5.3.4 /
+         python-socketio 5.9.0 / python-engineio 4.7.1 对应 Socket.IO 协议 v5 +
+         Engine.IO v4，换大版本会直接握不上手。 -->
+    <script src="{{ url_for('static', filename='vendor/socket.io/4.5.4/socket.io.min.js') }}"></script>
 
     <!-- 全局 UI 组件：自定义 Toast / Confirm（替代原生 alert/confirm） -->
     <script src="{{ url_for('static', filename='js/ui.js') }}"></script>

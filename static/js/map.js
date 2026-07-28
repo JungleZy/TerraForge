@@ -2,6 +2,58 @@ let map;
 let drawnItems;
 let currentBounds = null;
 
+/**
+ * 汉化 Leaflet.draw 的按钮标题与提示条。
+ *
+ * 页面是 lang="zh-CN"，但 Leaflet.draw 1.0.4 的文案全部硬编码在
+ * L.drawLocal 里，出厂是英文。
+ *
+ * 两条约束：
+ * 1. **必须在 `new L.Control.Draw(...)` 之前调用。** 按钮的 title 是在
+ *    Toolbar.addToolbar() 里一次性读走的，控件建好之后再改 L.drawLocal
+ *    不会回写到已有的 DOM 上。
+ * 2. **键名写错不会报错，只会静默不生效**（给一个不存在的对象赋值属性是
+ *    合法 JS）。下面每个键都对着 CDN 上 leaflet.draw 1.0.4 的
+ *    L.drawLocal 原始定义逐条核对过；
+ *    tests/test_css_contract.py::test_draw_locale_keys_exist_in_pinned_build
+ *    钉住这份键名清单，防止后来改键时打错字。
+ *
+ * 只覆盖本项目真正会出现的文案：map.js 只启用了 rectangle，
+ * polyline / polygon / circle / marker 那几组以及 draw.toolbar.finish /
+ * draw.toolbar.undo（多点图形才用得到）在这里是不可达的，故意不翻。
+ */
+function localizeDrawControl() {
+    if (!window.L || !L.drawLocal) {
+        return false;
+    }
+    // 键路径一律写全 `L.drawLocal.x.y.z`，不用局部别名 —— 上面第 2 条说的
+    // 那条测试是**静态**解析这些路径的，走别名它就看不见了。
+    L.drawLocal.draw.toolbar.actions.title = '取消绘制';
+    L.drawLocal.draw.toolbar.actions.text = '取消';
+    L.drawLocal.draw.toolbar.buttons.rectangle = '绘制矩形选区';
+    L.drawLocal.draw.handlers.rectangle.tooltip.start = '按住并拖动鼠标绘制矩形';
+    L.drawLocal.draw.handlers.simpleshape.tooltip.end = '松开鼠标完成绘制';
+
+    L.drawLocal.edit.toolbar.actions.save.title = '保存修改';
+    L.drawLocal.edit.toolbar.actions.save.text = '保存';
+    L.drawLocal.edit.toolbar.actions.cancel.title = '取消编辑，放弃所有修改';
+    L.drawLocal.edit.toolbar.actions.cancel.text = '取消';
+    L.drawLocal.edit.toolbar.actions.clearAll.title = '清除所有选区';
+    L.drawLocal.edit.toolbar.actions.clearAll.text = '全部清除';
+
+    // editDisabled / removeDisabled 是**首屏默认态**的按钮提示（还没画选区时
+    // 「编辑」「删除」就是禁用的），漏了它们等于最常见的那个状态还是英文。
+    L.drawLocal.edit.toolbar.buttons.edit = '编辑选区';
+    L.drawLocal.edit.toolbar.buttons.editDisabled = '没有可编辑的选区';
+    L.drawLocal.edit.toolbar.buttons.remove = '删除选区';
+    L.drawLocal.edit.toolbar.buttons.removeDisabled = '没有可删除的选区';
+
+    L.drawLocal.edit.handlers.edit.tooltip.text = '拖动顶点或图形以修改选区';
+    L.drawLocal.edit.handlers.edit.tooltip.subtext = '点击「取消」放弃修改';
+    L.drawLocal.edit.handlers.remove.tooltip.text = '点击选区将其删除';
+    return true;
+}
+
 function initMap(config) {
     const centerLat = parseFloat(config.map_center_lat || 39.9);
     const centerLng = parseFloat(config.map_center_lng || 116.4);
@@ -15,6 +67,9 @@ function initMap(config) {
 
     drawnItems = new L.FeatureGroup();
     map.addLayer(drawnItems);
+
+    // 必须在 new L.Control.Draw 之前——按钮 title 是建控件时一次性读走的
+    localizeDrawControl();
 
     const drawControl = new L.Control.Draw({
         draw: {
@@ -60,7 +115,7 @@ function initMap(config) {
         };
 
         updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = false;
+        refreshSubmitButtonState();
 
         const btn = document.getElementById('createTaskBtn');
         btn.style.animation = 'pulse 0.5s ease-in-out';
@@ -72,8 +127,22 @@ function initMap(config) {
     map.on(L.Draw.Event.DELETED, function() {
         currentBounds = null;
         updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = true;
+        refreshSubmitButtonState();
     });
+
+    // 拖角 / 整体拖动时实时同步，用户不必点保存就能看到四至变化
+    map.on(L.Draw.Event.EDITRESIZE, syncBoundsFromDrawnItems);
+    map.on(L.Draw.Event.EDITMOVE, syncBoundsFromDrawnItems);
+
+    // 点「保存」后确认一次
+    map.on(L.Draw.Event.EDITED, syncBoundsFromDrawnItems);
+
+    // 退出编辑模式。leaflet.draw 1.0.4 在取消时先 revertLayers() 还原图形、
+    // 之后才 fire EDITSTOP，所以这里重读 bounds 对保存和取消都正确。
+    map.on(L.Draw.Event.EDITSTOP, syncBoundsFromDrawnItems);
+
+    // 删除模式结束后同样重读（DELETED 只在真的删了东西时触发）
+    map.on(L.Draw.Event.DELETESTOP, syncBoundsFromDrawnItems);
 }
 
 function initDownloadTypeToggle() {
@@ -119,8 +188,7 @@ function initDownloadTypeToggle() {
             }
         }
 
-        const btn = document.getElementById('createTaskBtn');
-        if (btn && isLocal) btn.disabled = false;
+        refreshSubmitButtonState();
     }
 
     typeEl.addEventListener('change', apply);
@@ -135,23 +203,124 @@ function initDownloadTypeToggle() {
     apply();
 }
 
+// 从 drawnItems 里当前的图层重新读取 bbox。
+// 编辑（拖角/拖动/保存/取消）之后统一走这里，保证右侧四至和地图上看到的一致。
+//
+// 前提：eachLayer 遍历取的是**最后一个**有 getBounds 的图层，也就是隐含假设
+// drawnItems 里最多只有一个选区。当前 L.Draw.Event.CREATED 分支会先
+// clearLayers() 再 addLayer()，这个假设成立。将来若支持多选区，这里必须改成
+// 合并所有图层的 bounds（或按选中态取）。
+//
+// 幂等：重复调用无副作用——DELETESTOP 和 DELETED 会都触发，两次读到同样的结果。
+function syncBoundsFromDrawnItems() {
+    let found = null;
+    if (drawnItems) {
+        drawnItems.eachLayer(function (layer) {
+            if (typeof layer.getBounds === 'function') {
+                found = layer.getBounds();
+            }
+        });
+    }
+
+    if (found) {
+        currentBounds = {
+            north: found.getNorth(),
+            south: found.getSouth(),
+            east: found.getEast(),
+            west: found.getWest()
+        };
+    } else {
+        currentBounds = null;
+    }
+
+    updateBoundsInfo();
+    refreshSubmitButtonState();
+}
+
+// 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
+// 本地高程切片模式没有 bbox，所以这里无条件启用（不检查文件）——
+// 文件是否已选在提交时由 submitLocalTerrain() 校验。其余模式必须先框选。
+function refreshSubmitButtonState() {
+    const btn = document.getElementById('createTaskBtn');
+    if (!btn) return;
+    const type = document.getElementById('downloadType')?.value;
+    if (type === 'local_terrain') {
+        btn.disabled = false;
+    } else {
+        btn.disabled = !currentBounds;
+    }
+}
+
+// 任务创建成功后复位表单。
+// clearBounds=false 用于本地高程切片：该模式本来就没有 bbox，
+// 清空 drawnItems 会把用户为下一个任务画好的框也一起删掉。
+function resetForm({ clearBounds = true } = {}) {
+    const form = document.getElementById('downloadForm');
+    if (form) form.reset();
+
+    const outputPath = document.getElementById('outputPath');
+    if (outputPath) delete outputPath.dataset.userEdited;
+
+    if (clearBounds) {
+        if (drawnItems) drawnItems.clearLayers();
+        currentBounds = null;
+        updateBoundsInfo();
+    }
+
+    // 让 apply() 重新按当前类型摆好字段可见性和默认路径
+    const typeEl = document.getElementById('downloadType');
+    if (typeEl) typeEl.dispatchEvent(new Event('change'));
+
+    refreshSubmitButtonState();
+}
+
+/**
+ * 渲染框选后的四至（#boundsInfo）。
+ *
+ * A5 / Task 10 把它从 5 行压成 2 行的网格：
+ *   改前——图标 +「选中区域：」标题 + ▲北/▼南/▶东/◀西 四行 <br>，实测 146.5px；
+ *   改后——4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行，实测 62.0px。
+ * 这一项单独就省下 84.5px（1366x768 上按钮总共要往回收 181px）。
+ *
+ * 四处刻意的改动，都不是纯排版：
+ *  1. `▲北/▼南/▶东/◀西` -> `N/S/E/W`。GIS 惯例用方位字母；原来那四个三角形在
+ *     等宽字体里宽度不一致，四行的数字对不齐。中文方位词没有丢，只是移到了
+ *     .bounds-sr 里（见第 4 点）——视觉上是 N/S/E/W，读屏听到的是「北纬…」。
+ *  2. 小数 6 位 -> 5 位。第 6 位约 0.11m，框选一个下载范围用不到；砍掉之后
+ *     两个数字并排也放得下。5 位 ≈ 1.1m。
+ *  3. 删掉了原来两个分支末尾各两行的 `boundsInfo.style.background/borderColor`
+ *     赋值 —— 两个分支赋的是**同一个值**，且与 style.css 里 `.alert-info` 的
+ *     `background: rgba(59,130,246,0.1)` / `border-color: var(--color-info)`
+ *     逐字相同，是纯粹的死代码（#boundsInfo 是 `<div class="alert alert-info">`，
+ *     `.alert-info` 的底色由 style.css 提供）。
+ *  4. 每个值前面加一段 `.bounds-sr` 的读屏专用方位词，键那边 aria-hidden。
+ *     N/S/E/W 视觉上够用，但读屏软件念出来只有四个字母；这样读屏拿到的是
+ *     「北纬 39.91653」。`.bounds-sr` 是 position:absolute，不参与布局，
+ *     实测加它前后 #boundsInfo 都是 62.0px、769px 极端坐标下仍无溢出。
+ *
+ * ⚠️ 键与值的**配对关系是数据正确性，不是排版**：把 N 配到 south 上，界面就会
+ * 把南纬标成北纬，而所有排版类断言都是绿的。由
+ * test_bounds_labels_bind_to_the_right_coordinate 逐对钉住 —— 它解析每个
+ * bounds-k 的字母和紧随其后那个值引用的 currentBounds.<字段> 做映射比对，
+ * 不是「这四个字母都出现过」。
+ *
+ * 行数由 tests/test_css_contract.py::test_bounds_readout_is_exactly_two_rows
+ * 守住：它按「网格子元素数 / grid-template-columns 的轨道数」算行数，并且要求
+ * alert 里**只有**这一个顶层元素 —— 否则在网格上面加一行标题就又变回 3 行，
+ * 而「8 格 / 4 列 = 2 行」这个算式看不见它。
+ */
 function updateBoundsInfo() {
     const boundsInfo = document.getElementById('boundsInfo');
     if (currentBounds) {
+        const f = (v) => v.toFixed(5);
         boundsInfo.innerHTML = `
-            <small style="font-family: var(--font-mono); line-height: 1.6;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-                </svg>
-                <strong>选中区域：</strong><br>
-                <span style="color: var(--color-accent-warm);">▲</span> 北: ${currentBounds.north.toFixed(6)}<br>
-                <span style="color: var(--color-accent-warm);">▼</span> 南: ${currentBounds.south.toFixed(6)}<br>
-                <span style="color: var(--color-accent-warm);">▶</span> 东: ${currentBounds.east.toFixed(6)}<br>
-                <span style="color: var(--color-accent-warm);">◀</span> 西: ${currentBounds.west.toFixed(6)}
-            </small>
+            <div class="bounds-grid">
+                <span class="bounds-k" aria-hidden="true">N</span><span class="bounds-v"><span class="bounds-sr">北纬 </span>${f(currentBounds.north)}</span>
+                <span class="bounds-k" aria-hidden="true">S</span><span class="bounds-v"><span class="bounds-sr">南纬 </span>${f(currentBounds.south)}</span>
+                <span class="bounds-k" aria-hidden="true">E</span><span class="bounds-v"><span class="bounds-sr">东经 </span>${f(currentBounds.east)}</span>
+                <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v"><span class="bounds-sr">西经 </span>${f(currentBounds.west)}</span>
+            </div>
         `;
-        boundsInfo.style.background = 'rgba(59, 130, 246, 0.1)';
-        boundsInfo.style.borderColor = 'var(--color-info)';
     } else {
         boundsInfo.innerHTML = `
             <small>
@@ -163,8 +332,6 @@ function updateBoundsInfo() {
                 请在地图上框选下载区域
             </small>
         `;
-        boundsInfo.style.background = 'rgba(59, 130, 246, 0.1)';
-        boundsInfo.style.borderColor = 'var(--color-info)';
     }
 }
 
@@ -244,11 +411,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
 
         if (response.ok) {
             showNotification('任务创建成功！ID: ' + result.task_id, 'success');
-            document.getElementById('downloadForm').reset();
-            drawnItems.clearLayers();
-            currentBounds = null;
-            updateBoundsInfo();
-            document.getElementById('createTaskBtn').disabled = true;
+            resetForm();
             loadActiveTasks();
         } else {
             showNotification('创建任务失败: ' + result.error, 'danger');
@@ -256,8 +419,8 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     } catch (error) {
         showNotification('创建任务失败: ' + error.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = originalText;
+        refreshSubmitButtonState();
     }
 });
 
@@ -373,19 +536,13 @@ async function submitContour() {
         }
         await fetch(`/api/contour/tasks/${created.task_id}/start`, { method: 'POST' });
         showNotification('等高线任务已开始（自动下 DEM → 渲染瓦片）', 'success');
-        document.getElementById('downloadForm').reset();
-        drawnItems.clearLayers();
-        currentBounds = null;
-        updateBoundsInfo();
-        document.getElementById('createTaskBtn').disabled = true;
-        // Re-apply type toggle so option blocks match the reset <select>.
-        document.getElementById('downloadType').dispatchEvent(new Event('change'));
+        resetForm();
         loadActiveTasks();
     } catch (err) {
         showNotification('创建失败: ' + err.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = original;
+        refreshSubmitButtonState();
     }
 }
 
@@ -522,7 +679,7 @@ async function submitLocalTerrain() {
         const result = await resp.json();
         if (resp.ok) {
             showNotification('上传成功，已开始切片！ID: ' + result.task_id, 'success');
-            document.getElementById('downloadForm').reset();
+            resetForm({ clearBounds: false });
             loadActiveTasks();
         } else {
             showNotification('上传失败: ' + (result.error || resp.status), 'danger');
@@ -530,7 +687,7 @@ async function submitLocalTerrain() {
     } catch (err) {
         showNotification('上传失败: ' + err.message, 'danger');
     } finally {
-        btn.disabled = false;
         btn.innerHTML = original;
+        refreshSubmitButtonState();
     }
 }

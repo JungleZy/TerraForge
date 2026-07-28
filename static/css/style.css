@@ -1,5 +1,7 @@
-/* Import Fonts */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+/* 字体由 base.html 的 static/vendor/fonts/fonts.css 提供。
+   这里**刻意不写 @import**：@import 只能出现在样式表顶部且会阻塞渲染，
+   而它原先指向的正是 fonts.googleapis.com —— 是藏在 CSS 里的第 9 个 CDN 依赖，
+   只改 base.html 会漏掉它。要换字体请改 vendor/fonts/fonts.css。 */
 
 /* CSS Variables */
 :root {
@@ -15,6 +17,14 @@
     /* 文字 */
     --color-text-primary:   #e8eaed;
     --color-text-secondary: #9aa0aa;
+    /* ⚠️ --color-text-muted **不是文字色**（A7 / Task 12 起）。
+       它对三层背景的实测对比度是 3.09 / 3.09 / 2.82:1，全部低于 WCAG AA
+       正文要求的 4.5:1 —— 拿它写字等于把字写成看不见。文字最暗只能到
+       --color-text-secondary（对 #15171c 6.81:1、对 #1c2027 6.21:1）。
+       本变量现在只用于图形元素（滚动条滑块 hover、等待中卡片的左侧色条），
+       那类元素的下限是 3:1。
+       约束由 tests/test_css_contract.py::test_every_text_context_meets_wcag_aa
+       兜住 —— 它算的是层叠后真正生效的颜色，不是「有没有人写了这个变量名」。 */
     --color-text-muted:     #5f6670;
 
     /* 强调色：青绿 */
@@ -24,16 +34,34 @@
     --color-accent-muted:  rgba(45,212,191,0.12);
     --color-on-accent:     #04201c;
 
-    /* 兼容别名：旧名指向新值，避免改 JS 内联引用 */
-    --color-accent-amber:  var(--color-accent);
-    --color-accent-warm:   var(--color-accent-hover);
-    --color-accent-copper: var(--color-accent-strong);
-
     /* 状态色（青绿=品牌，不当状态色） */
     --color-success: #34d399;
     --color-danger:  #f87171;
     --color-warning: #fbbf24;
     --color-info:    #60a5fa;
+
+    /* 状态色的 hover 档（A6 / Task 11）。取的是同一色系的上一档
+       （Tailwind -400 -> -300），与已有的
+       `--color-accent(#2dd4bf, teal-400) -> --color-accent-hover(#5eead4, teal-300)`
+       是同一条规则，不是随手挑的四个亮色：
+           #34d399 emerald-400 -> #6ee7b7 emerald-300
+           #f87171 red-400     -> #fca5a5 red-300
+           #fbbf24 amber-400   -> #fcd34d amber-300
+           #60a5fa blue-400    -> #93c5fd blue-300
+       改前这四个变体的 `:hover` 规则与基态**逐字相同**，是空操作。
+       抬亮幅度由 test_button_hover_is_a_real_change 钉住（相对亮度至少 +0.06，
+       实测最小的一档是 warning 的 +0.099）。 */
+    --color-success-hover: #6ee7b7;
+    --color-danger-hover:  #fca5a5;
+    --color-warning-hover: #fcd34d;
+    --color-info-hover:    #93c5fd;
+    /* 中性状态填充色。为「已取消」这类无语义色的终态准备。
+       不能直接复用 --color-text-muted(#5f6670)：它对 --color-bg-tertiary
+       只有 2.82:1，低于本项目 3:1 的图形元素下限（见
+       tests/test_css_contract.py 的 test_progress_bar_fill_has_sufficient_contrast）。
+       调暗它之前先跑那条测试。 */
+    --color-neutral: #767d88;
+
     --color-success-bg: rgba(16,185,129,0.12);
     --color-danger-bg:  rgba(239,68,68,0.12);
     --color-warning-bg: rgba(245,158,11,0.12);
@@ -47,7 +75,6 @@
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);
     --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
     --shadow-lg: 0 12px 32px rgba(0,0,0,0.45);
-    --shadow-glow: none;
 
     /* 圆角 */
     --radius-sm: 8px;
@@ -61,11 +88,87 @@
     --font-size-md: 1rem;
     --font-size-lg: 1.125rem;
     --font-size-xl: 1.25rem;
+
+    /* 控件密度（A5 / Task 10）。
+       改前实测：表单控件高 43.7px、右栏卡片 800.3px，1366x768 下框选之后
+       「创建下载任务」按钮的 bottom 在 949.3px —— 折叠线以下 181px，
+       用户必须滚动才能提交。43.7px 是消费级落地页的密度；专业 GIS 工具
+       是 QGIS / ArcGIS Pro 22–26px、VS Code 输入框 26px。
+
+       --ctl-h 是**目标总高**，其余三个是它的分解：
+           2 * --ctl-pad-y + --ctl-line-h + 2 * 边框(1px) = --ctl-h
+           2 *      3      +      20      + 2 *    1      =    28
+       四个值必须自洽，否则 `min-height: var(--ctl-h)` 会和内容盒子打架
+       （表现为控件比令牌说的高、或者文字贴边）。这条算术由
+       tests/test_css_contract.py::test_control_density_tokens_are_self_consistent
+       钉住 —— 改任何一个都要让等式继续成立。
+
+       ⚠️ 引用未定义的自定义属性不会报错，只会让**整条声明失效**、静默退回
+       auto/initial，表现为「改了没反应」。全文件的 var() 引用都必须在这里
+       有定义，由 test_no_dangling_custom_property_references 兜住。 */
+    --ctl-h:      28px;
+    --ctl-line-h: 20px;
+    --ctl-pad-y:  3px;
+    --ctl-pad-x:  8px;
+
+    /* 卡片内边距与表单字段纵向间距。改前 .card-body 16px、.mb-3 12px。 */
+    --pad-card:  10px;
+    --gap-field: 8px;
 }
 
 /* Global Styles */
+/* 全局 `*` 规则只此一条。原先散在文件末尾还有两条（滚动条配色、全局过渡），
+   三条同选择器同优先级的规则分居三处，改任何一条都要先找齐另外两条。
+   C1 只做合并、值照搬未改。
+
+   A8 / Task 13：全局过渡三条声明（transition-property / -duration /
+   -timing-function）在此**删除**，改为由各交互元素自己声明。
+   为什么删：
+     1. `*` 让样式引擎给**每一个**节点挂过渡簿记。首页地图上 Leaflet
+        动态生成的节点数以千计，它们一条过渡也用不上。
+     2. 真正需要过渡反馈的元素（.btn / .form-control / .nav-link / .card /
+        .task-card / .status-badge / .page-link / .form-check-input …）
+        本来就各自写了一条 transition，`*` 那条对它们完全是死声明。
+   删除本身由 tests/test_css_contract.py::test_no_blanket_motion_on_the_universal_selector
+   钉住（那条同时禁止 animation-* 回潮）。 */
 * {
     box-sizing: border-box;
+
+    /* 滚动条（Firefox / 标准属性；WebKit 分支见下方 *::-webkit-scrollbar-*） */
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-accent-strong) var(--color-bg-secondary);
+}
+
+/* A8 / Task 13：交互反馈过渡的统一口径。
+ *
+ * 全站的 `transition: all <t>` 一律换成下面这张显式属性表。三条理由，
+ * 前两条有 CDP 实测：
+ *
+ *   1. `all` 会连 `scrollbar-color` 一起动。上面那条 `*` 给每个元素都设了
+ *      scrollbar-color，于是 hover 一个 .nav-link，Animation domain 抓到的
+ *      CSSTransition 里赫然有 `scrollbar-color` —— 纯粹的无用功。
+ *   2. `all` 还会动 transform / 未来任何新增的布局属性。`.btn:disabled` 的
+ *      `transform: none !important` 一旦有人给基态加上 transform，就会变成
+ *      每次禁用/启用都上下弹一下。显式列表把这条路堵死。
+ *   3. 0.3s 用在 hover 反馈上偏慢（指针已经离开了颜色才走完）。交互反馈
+ *      统一 0.15s；只有真正表达「状态切换」的过渡才允许更长。
+ *
+ * `width` 只出现在两处**有意**的尺寸过渡上（.nav-link::after 的下划线扫出、
+ * .task-card::before 的左边条加粗），各自在那条规则里单列，不进这张通表。
+ */
+
+/* 元素级字号基线：原先由文件末尾的 !important 覆盖块提供，现合并到此处。
+   放在最前面，任何带 class 的规则都能正常覆盖它（这正是原来做不到的）。 */
+h3 {
+    font-size: var(--font-size-lg);
+}
+
+h4, h5, h6 {
+    font-size: var(--font-size-base);
+}
+
+small {
+    font-size: var(--font-size-sm);
 }
 
 html {
@@ -103,12 +206,37 @@ body {
     background: var(--color-bg-secondary) !important;
 }
 
-/* Ensure all divs inherit background. Exclude themed popups (.app-confirm /
-   overlay / toast) — otherwise this high-specificity rule forces their solid
-   background transparent, making the dialogs unreadable. */
-div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progress):not(.progress-bar):not(.app-confirm):not(.app-confirm-overlay):not(.app-toast) {
-    background: transparent;
-}
+/* 这里原先有一条兜底重置，已整条删除：
+
+       div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn)
+          :not(.progress):not(.progress-bar):not(.app-confirm)
+          :not(.app-confirm-overlay):not(.app-toast):not(.task-error)
+       { background: transparent; }
+
+   特异度 (0,11,1)（11 个 `:not(.class)` 各贡献一个类），压得过任何
+   `.xxx { background: ... }`(0,1,0)。后果是**凡是自己需要背景色的 div
+   都得先挤进那串白名单**，否则它的 background 声明在源码里看得见、
+   在浏览器里是透明的。那 11 项白名单就是历次撞上它之后逐个补的豁免。
+
+   删掉它的实测依据（CDP，Chrome 148，三个页面 6 个场景共 1699 个元素逐元素对拍）：
+   删除后 13 个元素的 computed background-color 从 rgba(0,0,0,0) 变成实色，
+   去重 6 类 —— .index-right(#0c0d10 首页右侧整个面板)、.config-section(x6)、
+   .stat-card(x4)、.modal-header、.task-card(x6)、以及 Bootstrap 的
+   `div.modal-backdrop`（rgba(0,0,0,0) -> rgb(0,0,0)，即**打开弹窗时背后
+   从来没有变暗过**，因为 `.modal-backdrop{--bs-backdrop-bg:#000}` 只有 (0,1,0)）。
+
+   为什么是「整条删」而不是降级成 `div { background: transparent }`：
+   降级后特异度 (0,0,1)，而 UA 样式表给 div 的默认背景本来就是 transparent，
+   三个 vendor 样式表里也没有任何一条用 div 类型选择器给背景
+   （由 test_no_stylesheet_gives_a_bare_div_a_background 钉住）。
+   实测两种形态跨 1699 个元素逐一比对，差异 0 —— 它是纯死代码。
+
+   ⚠️ 删掉之后，Bootstrap 组件的 div 背景**会正常生效**。本项目自己覆盖过的
+   （.card / .modal-content / .modal-header / .dropdown-item …）没问题，但
+   Bootstrap 还有一批组件容器自带 #212529 之类的灰，与本站调色板 (#15171c)
+   不同源。将来往模板里加这类组件时必须同时在本文件写覆盖 ——
+   由 test_no_bootstrap_component_background_reaches_a_div_unreviewed 兜住：
+   模板/JS 里一旦出现没被本文件覆盖的 Bootstrap 背景组件类，那条断言变红。 */
 
 /* Navbar Styles */
 .navbar {
@@ -127,25 +255,27 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .navbar-brand {
     font-family: var(--font-display);
     font-weight: 700;
-    font-size: 1.3rem;
+    font-size: var(--font-size-xl);
     letter-spacing: -0.02em;
-    color: var(--color-accent-warm) !important;
-    transition: all 0.3s ease;
+    color: var(--color-accent-hover) !important;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     padding: 0.5rem 1rem;
 }
 
 .navbar-brand:hover {
-    color: var(--color-accent-amber) !important;
+    color: var(--color-accent) !important;
     text-shadow: none;
 }
 
 .nav-link {
     color: var(--color-text-secondary) !important;
     font-weight: 400;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     position: relative;
     padding: 0.4rem 0.8rem !important;
-    font-size: 0.95rem;
+    font-size: var(--font-size-base);
 }
 
 .nav-link::after {
@@ -155,13 +285,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     left: 50%;
     width: 0;
     height: 2px;
-    background: var(--color-accent-amber);
-    transition: all 0.3s ease;
+    background: var(--color-accent);
+    transition: width 0.15s ease;
     transform: translateX(-50%);
 }
 
 .nav-link:hover {
-    color: var(--color-accent-warm) !important;
+    color: var(--color-accent-hover) !important;
 }
 
 .nav-link:hover::after {
@@ -240,7 +370,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 .index-right::-webkit-scrollbar-thumb {
     background: var(--color-border-strong);
     border-radius: 4px;
-    transition: background 0.3s ease;
+    /* A8 / Task 13：0.3s -> 0.15s，与全站交互反馈口径一致（见文件头部那段说明）。 */
+    transition: background-color 0.15s ease;
 }
 
 .index-right::-webkit-scrollbar-thumb:hover {
@@ -273,7 +404,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-sm);
-    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     position: relative;
     overflow: hidden;
 }
@@ -285,13 +417,13 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     left: 0;
     width: 4px;
     height: 100%;
-    background: var(--color-accent-amber);
-    transition: all 0.3s ease;
+    background: var(--color-accent);
+    transition: width 0.15s ease, background-color 0.15s ease;
 }
 
 .task-card:hover {
     box-shadow: var(--shadow-md);
-    border-color: var(--color-accent-amber);
+    border-color: var(--color-accent);
 }
 
 .task-card:hover::before {
@@ -315,14 +447,31 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-warning);
 }
 
+/* Task 13 收尾修：改前用 --color-text-muted(#5f6670)，对卡片底只有 3.09:1 ——
+   六档边条里最低的一档（cancelled 4.32、其余 6.48~10.74），截图里几乎看不见。
+   下面那条 cancelled 的注释早就写明了「--color-text-muted 只有 3.09:1，紧贴下限」
+   这个理由，但当时只改了 cancelled、漏了紧挨着的 pending。
+   改用 --color-text-secondary(#9aa0aa)：pending 的徽章与地图描边本来就用它，
+   三处从此统一；同时与 cancelled 的 --color-neutral(#767d88) 保持区分 ——
+   这两个状态语义不同，边条不该同色。 */
 .task-card.status-pending::before {
-    background: var(--color-text-muted);
+    background: var(--color-text-secondary);
+}
+
+/* A7 / Task 12 补上：改前**没有**这条，已取消的卡片因此落到
+   `.task-card::before` 的兜底 `var(--color-accent)` —— 一条青绿色的品牌色边条，
+   读起来像「一切正常」。CDP 实测改前是 rgb(45, 212, 191)。
+   用 --color-neutral 而不是 --color-text-muted：调色板里那个变量本来就是
+   「为『已取消』这类无语义色的终态准备」的（见 :61 的说明），而且
+   --color-text-muted 对面板底只有 3.09:1，紧贴 3:1 下限。 */
+.task-card.status-cancelled::before {
+    background: var(--color-neutral);
 }
 
 .task-card h6 {
     font-family: var(--font-display);
     font-weight: 600;
-    font-size: 1rem;
+    font-size: var(--font-size-base);
     color: var(--color-text-primary);
     margin: 0;
     letter-spacing: -0.01em;
@@ -330,7 +479,7 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 
 .task-card .progress-detail {
     font-family: var(--font-mono);
-    font-size: 0.8rem;
+    font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     margin: 0;
     display: flex;
@@ -338,30 +487,65 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .task-card .badge {
-    font-size: 0.7rem;
+    font-size: var(--font-size-xs);
     padding: 0.3rem 0.65rem;
 }
 
+/* 失败卡片里展开的错误原因。文本由 tasks.js 的 applyTaskErrorText 用
+   textContent 填入（后端错误原文不能进 innerHTML）。
+   配色实算（见 tests/test_css_contract.py::test_task_error_box_exists_and_is_readable）：
+     真实背衬是 .task-card 的 #15171c。（历史注记：兜底重置还在的时候
+     `.task-card{background:var(--color-bg-secondary)}` 是**死声明**，真实背衬
+     是再往上一层的面板 .card；两者恰好同色，所以算出来的数一样。兜底重置
+     已删，.task-card 的底色现在真的生效了，CDP 实测 rgb(21,23,28)。）
+     底色 rgba(239,68,68,0.12) 压在 #15171c 上 = #2f1c21
+     文字 #e8eaed 对 #2f1c21 = 13.31:1（WCAG 正文下限 4.5:1，CDP 实测同值）
+     边框 #f87171 对 #15171c =  6.48:1（图形元素下限 3:1）
+   等宽字体是跟 .progress-detail 一致的选择：错误原文里多是路径、URL、状态码。 */
+.task-error {
+    margin-top: 0.5rem;
+    padding: 0.375rem 0.5rem;
+    border-radius: var(--radius-sm);
+    background: var(--color-danger-bg);
+    border: 1px solid var(--color-danger);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    line-height: 1.5;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+/* 发光改用品牌色柔和版：原先硬编码 rgba(59,130,246,.x)（#3b82f6 蓝，不在
+   调色板里），与 --shadow-* 一律「去发光」的设计意图矛盾。0%/100% 那帧的
+   颜色也一并换掉——它虽然 blur/spread 为 0 看不见，但动画会在两帧之间插值
+   颜色，只换 50% 会在中途出现蓝绿混色。 */
 @keyframes pulse {
     0%, 100% {
         opacity: 1;
-        box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+        box-shadow: 0 0 0 0 var(--color-accent-muted);
     }
     50% {
         opacity: 0.8;
-        box-shadow: 0 0 20px 5px rgba(59, 130, 246, 0.3);
+        box-shadow: 0 0 0 4px var(--color-accent-muted);
     }
 }
 
 /* Status Badge Styles */
+/* Bootstrap 的 .badge 默认 0.75em（相对父级），这里钉成绝对刻度 */
+.badge {
+    font-size: var(--font-size-xs);
+}
+
 .status-badge {
     display: inline-block;
     padding: 0.35rem 0.85rem;
     border-radius: 6px;
-    font-size: 0.8rem;
+    font-size: var(--font-size-xs);
     font-weight: 600;
     font-family: var(--font-mono);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     box-shadow: none;
 }
 
@@ -408,34 +592,101 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 /* Progress Bar Styles */
-.progress-container {
-    margin-top: 1rem;
-}
-
+/* height 是 28px 而不是原来的 8px，也不再由 markup 的内联 style 提供 ——
+   这条是**承重**的，不是审美：`.progress__label` 的 chip 高 18px
+   (0.875rem 字 x line-height 1 + 上下各 0.125rem 内边距)，而 `.progress`
+   有 overflow: hidden。轨道矮于 18px 时，数字会被上下裁断。
+   改前那条 8px 只是让轨道变细线、无害，因为条里的文字跟着 .progress-bar 走；
+   覆盖层方案下它会直接毁掉数字。原来两处 markup 各自内联 `height: 28px`
+   把它盖住了，等于「功能正确性依赖每个未来的 .progress 都记得写内联高度」，
+   所以内联的那两处一并删掉，高度只此一个来源。
+   下限由 tests/test_css_contract.py::test_every_progress_height_fits_the_label 守住。 */
 .progress {
-    height: 8px;
+    height: 28px;
     border-radius: 999px;
     background: var(--color-bg-tertiary);
     overflow: hidden;
     border: none;
     box-shadow: none;
+    /* .progress__label 的定位上下文。Bootstrap 5.3 的 .progress 不带 position，
+       不自己声明的话覆盖层会一路上溯到 .card / .modal-content 去定位。 */
+    position: relative;
 }
 
+/* 只改圆角，不再改高度：原来的 `height: 22px` 同样被 markup 的内联
+   `height: 28px` 压掉，从来没生效过；现在基础规则就是 28px，重复声明一遍
+   只会变成第二个「随时可能与 chip 高度打架」的来源。 */
 .modal .progress {
-    height: 22px;
     border-radius: var(--radius-sm);
 }
 
+/* 百分比数字已搬到 .progress__label（见下），条里不再有文字，
+   所以原来那套居中 + 字体 + overflow:hidden 的声明全部作废：
+   居中的是别人的孩子，overflow:hidden 正是把 progress=0 的数字裁没的那条。 */
+/* A8 / Task 13：width 过渡 0.6s cubic-bezier -> 0.2s linear。
+ *
+ * 这不是口味问题，是**进度条在显示错误的数字**。
+ * task_manager.py 的 progress_callback 是**每下载一块瓦片**推一次
+ * task_progress（`self.socketio.emit('task_progress', ...)` 在回调体内，
+ * 没有任何攒批或限频）。并发下载下轻松到 10~20 次/秒。
+ * tasks.js 走增量路径 updateTaskProgressPartial，只改 `bar.style.width`，
+ * 于是这条过渡被**每 50ms 重启一次**，永远从上一帧的位置重新起步。
+ *
+ * CDP 实测（20Hz 驱动 40 次，真值走到 80%）：
+ *     0.6s cubic-bezier(当前)  最大滞后 57.0pp，均值 32.0pp，驱动结束时条上是 23%
+ *     0.2s cubic-bezier        最大滞后  7.7pp
+ *     0.2s linear              最大滞后  6.7pp
+ *     0.12s linear             最大滞后  3.5pp
+ *     none                     最大滞后  0
+ * 也就是说改前用户看到 23% 的时候真实进度是 80%。
+ *
+ * 决定性变量是**时长**不是缓动曲线（0.2s 下 linear 与 cubic 只差 1pp，
+ * 10Hz 时 cubic 反而更好）。所以护栏只钉时长上界，不钉 timing-function。
+ * 选 linear 是语义上的选择：进度条在两个已知值之间插值，缓动曲线暗示了
+ * 一个并不存在的加减速。
+ * 上界由 test_progress_bar_transition_keeps_up_with_the_push_rate 钉住。 */
 .progress-bar {
-    display: flex;
+    transition: width 0.2s linear;
+}
+
+/* 进度条百分比覆盖层。
+ *
+ * 为什么不是「.progress-bar 里的文字 + 换个深色」（简报原方案）：
+ * 覆盖层横跨整条轨道居中，progress 一变，它压着的底色就变 —— 0% 压轨道
+ * (--color-bg-tertiary #1c2027)，100% 压填充，50% 正好骑在填充边界上。
+ * 轨道与最亮填充(--color-warning #fbbf24)之间只有 9.79:1 < 4.5x4.5=20.25，
+ * 按 WCAG 公式**不存在**任何单一文字色能对两者都拿到 4.5:1。简报建议的
+ * #0b1220 对六档填充是 4.51~11.22 全过，对轨道却只有 1.15:1 —— progress=0
+ * 的数字从「被裁掉」变成「画出来了但看不见」，缺陷原样留着。
+ *
+ * 所以给它自带一块**不透明**的底：底色取轨道同色，低进度时与轨道无缝
+ * （看起来就是轨道上的一行字），压到填充上时是一块深色衬底。文字对这块底
+ * 恒定 13.56:1，与背后是哪一档填充无关。断言见
+ * tests/test_css_contract.py::test_progress_label_readability_does_not_depend_on_the_fill。
+ *
+ * （历史注记：兜底重置还在的时候这里**必须**是 <span>，改成 <div> 会被
+ * `div:not(...)`(0,11,1) 把这块底压成透明。重置已删，这个限制不再成立 ——
+ * 保留 <span> 只是因为它本来就是行内语义，不是被迫的。）
+ * 不用 mix-blend-mode:difference——实测负优化（over bg-primary 4.50 -> 1.48）。
+ * tabular-nums = 等宽数字，3% -> 13% 时数字不左右抖。 */
+.progress__label {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 1;
+    pointer-events: none;
+    display: inline-flex;
     align-items: center;
-    justify-content: center;
-    font-size: 0.85rem;
-    font-weight: 700;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
     font-family: var(--font-mono);
-    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-    position: relative;
-    overflow: hidden;
+    font-variant-numeric: tabular-nums;
+    font-size: var(--font-size-sm);
+    font-weight: 700;
+    line-height: 1;
 }
 
 .progress-bar.bg-success {
@@ -454,48 +705,41 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: var(--color-danger) !important;
 }
 
-/* Zoom Progress Styles */
-.zoom-progress {
-    margin-top: 1.5rem;
+/* 进度条颜色由任务状态决定（getStatusColor），不由完成百分比决定。
+   运行中走上面已有的 .bg-info —— getStatusColor 把 running 映射成 'info'
+   而不是 'primary'，这样徽章侧的 `.status-badge.running, .badge.bg-primary,
+   .badge.bg-info` 共用声明块渲染完全一致，运行中的徽章与进度条同色系，
+   且不必为 .bg-primary 再写一条覆盖。
+
+   secondary(等待中) / dark(已取消) 原来没有覆盖，会回落到 Bootstrap 默认的
+   #6c757d / #212529。!important 是必需的：Bootstrap 的 .bg-* 工具类自带
+   !important，不带的话我们更高的特异性也赢不了。
+
+   两条都必须对 `.progress` 轨道底色(--color-bg-tertiary #1c2027) 有
+   >= 3:1 对比度，见 test_progress_bar_fill_has_sufficient_contrast。
+   所以等待中用 --color-text-secondary(6.21:1) 而不是
+   --color-text-muted(2.82:1)。
+
+   ⚠️ 这段注释原本还写着「history.js 的 getStatusColor 把 running/pending/paused
+   全兜底成 secondary」—— A7 / Task 12 已经把 history.js 的映射补齐到六态，
+   那句话过期了。secondary 现在只对应 pending，以及后端冒出新状态时的兜底档；
+   兜底档同样要可读，见 test_status_badge_text_is_readable_in_every_state。 */
+.progress-bar.bg-secondary {
+    background: var(--color-text-secondary) !important;
 }
 
-.zoom-level {
-    display: flex;
-    align-items: center;
-    margin-bottom: 0.75rem;
-    padding: 0.75rem;
-    background: var(--color-bg-tertiary);
-    border-radius: 8px;
-    border: 1px solid var(--color-border);
-    transition: all 0.3s ease;
+.progress-bar.bg-dark {
+    background: var(--color-neutral) !important;
 }
 
-.zoom-level:hover {
-    background: var(--color-accent-muted);
-    border-color: var(--color-accent-amber);
-}
-
-.zoom-level-label {
-    min-width: 90px;
-    font-weight: 700;
-    font-family: var(--font-mono);
-    color: var(--color-accent-warm);
-    font-size: 0.9rem;
-}
-
-.zoom-level .progress {
-    flex: 1;
-    margin: 0 1rem;
-    height: 22px;
-}
-
-.zoom-level-stats {
-    min-width: 130px;
-    text-align: right;
-    font-size: 0.85rem;
-    font-family: var(--font-mono);
-    color: var(--color-text-secondary);
-}
+/* 这里原本是一整块 `.zoom-progress` / `.zoom-level` / `.zoom-level-label` /
+   `.zoom-level .progress` / `.zoom-level-stats` / `.zoom-level:hover`，
+   连同上面的 `.progress-container` 一起删掉了：全仓 grep（static/js + templates）
+   确认这些 class 一处 HTML 都没有，是零引用的死规则。
+   删而不是留，是因为其中的 `.zoom-level .progress { height: 22px }` 属于
+   上面刚说清楚的那类雷 —— 一条矮于 chip 的 .progress 高度覆盖，
+   哪天有人照着这块 CSS 搭出缩放级别面板，数字就会被上下裁断。
+   要重建这块 UI 的话，从 28px 的基础高度重新起，别复活 22px。 */
 
 /* Config Section Styles */
 .config-section {
@@ -505,7 +749,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     margin-bottom: 1.5rem;
     box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-border);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .config-section:hover {
@@ -531,30 +776,34 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 600;
     color: var(--color-text-primary);
     margin-bottom: 0.5rem;
-    font-size: 0.95rem;
 }
 
-.config-section .form-control,
-.config-section .form-select {
-    border-radius: 8px;
-    border: 1px solid var(--color-border);
-    padding: 0.75rem 1rem;
-    background: var(--color-bg-tertiary);
-    color: var(--color-text-primary);
-    font-family: var(--font-display);
-    transition: all 0.3s ease;
-}
-
+/* 这里原本有两条 (0,2,0) 的规则，A5 / Task 10 一并删除：
+     1. `.config-section .form-control, .config-section .form-select { ... }`
+        —— 逐条比对过，它的 border-radius / border / background-color / color /
+        font-family / transition 与通用的 `.form-control, .form-select`
+        **完全一样**，唯一的差异是 `padding: 0.75rem 1rem`。也就是说它的全部作用
+        就是「让配置页的控件比首页高 5px」。密度统一之后这个差异就是纯粹的不一致，
+        整条删掉，配置页改走全局规则。
+     2. `.config-section .form-select { padding-right: 2.25rem }`
+        —— 它存在的唯一理由是压住上面那条 (0,2,0) 的 padding 简写。上面那条没了，
+        它就成了通用 `.form-select { padding-right: 2.25rem }` 的重复。
+        test_form_select_reserves_room_for_the_arrow 会继续为「配置页」这个上下文
+        算一遍最终生效的右内边距（现在由通用规则提供 36px），删掉不会留下盲区。
+   保留下面的 :focus / ::placeholder 两条（它们同样与全局重复，属于另一笔清理，
+   本任务不动 —— 见 p2-task-10-report.md 的「遗留」）。 */
 .config-section .form-control:focus,
 .config-section .form-select:focus {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-muted);
-    background: var(--color-bg-secondary);
+    background-color: var(--color-bg-secondary);
     outline: none;
 }
 
+/* 与全局 `.form-control::placeholder` 重复的一条（Task 10 报告里记的「遗留」），
+   本次不删只对齐取值，否则配置页的占位符会留在 2.82:1。 */
 .config-section .form-control::placeholder {
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
 }
 
 .config-section .btn {
@@ -562,7 +811,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border-radius: 8px;
     font-weight: 700;
     font-family: var(--font-display);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
 
 /* History Table Styles */
@@ -595,7 +845,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
 }
 
 .history-table tbody tr {
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .history-table tbody tr:hover {
@@ -614,19 +865,58 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     font-weight: 700;
     padding: 0.5rem 1.25rem;
     font-family: var(--font-display);
-    font-size: 0.8rem;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
 
-/* Button Styles */
+/* ==========================================================================
+   Button Styles —— A6 / Task 11：五态系统（基态 / hover / focus-visible /
+   active / disabled）
+
+   ⚠️ 读这一段之前先看懂两条特异度事实，否则改哪一行都可能是空操作：
+
+   1. Bootstrap 5.3.0 的按钮状态规则**全是 (0,2,0) 或 (0,3,0)**，而变体色只是
+      一堆自定义属性：
+          .btn-primary { --bs-btn-bg:#0d6efd; --bs-btn-disabled-bg:#0d6efd; ... }   (0,1,0)
+          .btn:hover          { background-color: var(--bs-btn-hover-bg) }          (0,2,0)
+          .btn:focus-visible  { background-color: var(--bs-btn-hover-bg); outline:0 }(0,2,0)
+          .btn:disabled, fieldset:disabled .btn
+                              { background-color: var(--bs-btn-disabled-bg);
+                                pointer-events:none; opacity:.65 }                  (0,2,0)
+          .btn:first-child:active, :not(.btn-check)+.btn:active
+                              { background-color: var(--bs-btn-active-bg) }          (0,2,0)
+          .btn:first-child:active:focus-visible { box-shadow: ... }                  (0,3,0)
+      我们的 `.btn-primary{background:...}` 是 (0,1,0) —— **只够管基态**。
+      改前 CDP 实测的后果：
+          禁用态 rgb(13,110,253)  = Bootstrap 蓝（不是本站青绿）
+          按下态 rgb(10,88,202)   = Bootstrap 深蓝
+          键盘焦点 rgb(11,94,215) = Bootstrap 蓝，且 outline-width: 0px
+      所以本段所有状态规则都写成 `.btn-X:not(:disabled):STATE` = (0,3,0)，
+      赢下 Bootstrap 的每一条；`:not(:disabled)` 同时保证禁用态不被状态色点亮。
+
+   2. `.btn { border: none }`（下方第一条）会吃掉 Bootstrap 给 outline 变体的
+      边框简写，所以 `.btn-outline-*` 必须**显式重新声明 border**。
+      `.btn-secondary` 早就这么补过一次，只是漏了 outline 变体 —— 改前
+      history.html 的「刷新」按钮实测 `border: 0px none`、
+      文字 #6c757d 对卡片底 3.82:1，渲染成一坨灰字。
+
+   墨色统一用 `--color-on-accent`（近黑）：它是本调色板里「打在高亮填充上的
+   墨」这个角色的唯一取值，不再为每个变体各写一个硬编码近黑。
+   改前 `.btn-success/.btn-danger/.btn-info` 用的是 `#fff`，实测对比度
+   1.92 / 2.77 / 2.54 —— 这三颗按钮是纯图标按钮，SVG 用 currentColor 描边，
+   等于图标近乎看不见。换成 --color-on-accent 后是 8.89 / 6.18 / 6.72。
+   ========================================================================== */
 .btn {
     border: none;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
     position: relative;
     overflow: hidden;
     font-weight: 500;
+    font-size: var(--font-size-base);
 }
 
+/* ---- 基态 ------------------------------------------------------------ */
 .btn-primary {
     background: var(--color-accent-strong);
     color: var(--color-on-accent);
@@ -634,92 +924,258 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     box-shadow: none;
 }
 
-.btn-primary:hover {
-    background: var(--color-accent);
-    color: var(--color-on-accent);
-    transform: none;
-}
-
 .btn-success {
     background: var(--color-success);
-    color: #fff;
+    color: var(--color-on-accent);
     box-shadow: none;
-}
-
-.btn-success:hover {
-    background: var(--color-success);
-    color: #fff;
 }
 
 .btn-warning {
     background: var(--color-warning);
-    color: #1a1206;
+    color: var(--color-on-accent);
     box-shadow: none;
-}
-
-.btn-warning:hover {
-    background: var(--color-warning);
-    color: #1a1206;
 }
 
 .btn-danger {
     background: var(--color-danger);
-    color: #fff;
+    color: var(--color-on-accent);
     box-shadow: none;
 }
 
-.btn-danger:hover {
-    background: var(--color-danger);
-    color: #fff;
+.btn-info {
+    background: var(--color-info);
+    color: var(--color-on-accent);
+    box-shadow: none;
 }
 
-.btn-secondary {
+/* `.btn-secondary` 和 `.btn-outline-secondary` 在深色主题里是同一个东西
+   （透明底 + 一圈弱边框 + 主文字色），合成一条而不是各写一份。 */
+.btn-secondary,
+.btn-outline-secondary {
     background: transparent;
     color: var(--color-text-primary);
     border: 1px solid var(--color-border-strong);
     box-shadow: none;
 }
 
-.btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.04);
-    border-color: var(--color-text-secondary);
-    transform: none;
+.btn-outline-primary {
+    background: transparent;
+    color: var(--color-accent);
+    border: 1px solid var(--color-accent-strong);
+    box-shadow: none;
 }
 
+/* ---- hover：填充提亮一档（-400 -> -300，与 accent/accent-hover 同一步长）-- */
+.btn-primary:not(:disabled):hover {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+}
+
+.btn-success:not(:disabled):hover {
+    background: var(--color-success-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-warning:not(:disabled):hover {
+    background: var(--color-warning-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-danger:not(:disabled):hover {
+    background: var(--color-danger-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-info:not(:disabled):hover {
+    background: var(--color-info-hover);
+    color: var(--color-on-accent);
+}
+
+.btn-secondary:not(:disabled):hover,
+.btn-outline-secondary:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--color-text-secondary);
+    color: var(--color-text-primary);
+}
+
+.btn-outline-primary:not(:disabled):hover {
+    background: var(--color-accent-muted);
+    border-color: var(--color-accent);
+    color: var(--color-accent-hover);
+}
+
+/* ---- focus-visible：底色回到基态，靠一圈 outline 表示焦点 ----------------
+   底色必须显式重声明，否则 Bootstrap 的 `.btn:focus-visible`(0,2,0) 会把它
+   刷成 --bs-btn-hover-bg（改前实测 rgb(11,94,215)）。
+   outline 那条写成 `.btn:not(:disabled):focus-visible` = (0,3,0)，
+   压得住 Bootstrap 的 `outline: 0` 和 `.btn:first-child:active:focus-visible`
+   的 box-shadow 焦点环。offset 2px 让环落在按钮外的卡片底上（对比度按卡片底算）。 */
+.btn-primary:not(:disabled):focus-visible {
+    background: var(--color-accent-strong);
+    color: var(--color-on-accent);
+}
+
+.btn-success:not(:disabled):focus-visible {
+    background: var(--color-success);
+    color: var(--color-on-accent);
+}
+
+.btn-warning:not(:disabled):focus-visible {
+    background: var(--color-warning);
+    color: var(--color-on-accent);
+}
+
+.btn-danger:not(:disabled):focus-visible {
+    background: var(--color-danger);
+    color: var(--color-on-accent);
+}
+
+.btn-info:not(:disabled):focus-visible {
+    background: var(--color-info);
+    color: var(--color-on-accent);
+}
+
+.btn-secondary:not(:disabled):focus-visible,
+.btn-outline-secondary:not(:disabled):focus-visible {
+    background: transparent;
+    border-color: var(--color-border-strong);
+    color: var(--color-text-primary);
+}
+
+.btn-outline-primary:not(:disabled):focus-visible {
+    background: transparent;
+    border-color: var(--color-accent-strong);
+    color: var(--color-accent);
+}
+
+/* ⚠️ `:not(.disabled)` 不是笔误，也不是防御性冗余 —— 它是**特异度配重**。
+   Bootstrap 有一条
+       .btn:first-child:active:focus-visible,
+       :not(.btn-check)+.btn:active:focus-visible { box-shadow: var(--bs-btn-focus-box-shadow) }
+   特异度是 (0,4,0)。本条若只写 `.btn:not(:disabled):focus-visible` 是 (0,3,0)，
+   压不住它：键盘焦点 + 按下的瞬间，Bootstrap 的蓝雾环会和我们的青绿环同时出现。
+   加上 `:not(.disabled)`（Bootstrap 给 <a> 用的禁用类，本站不用）之后是 (0,4,0)，
+   与之打平、靠 style.css 排在后面取胜。
+   由 test_focus_visible_has_a_visible_outline 的
+   BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY 钉住 —— 删掉它测试会红。 */
+.btn:not(:disabled):not(.disabled):focus-visible {
+    outline: 2px solid var(--color-accent-hover);
+    outline-offset: 2px;
+    box-shadow: none;
+}
+
+/* ---- active：按下压暗一档 ----------------------------------------------
+   底色显式回到**基态**（不是 hover 色），再整体 brightness(0.85)：
+   于是「基态 < hover」「active < 基态」两个方向都成立，鼠标按住时
+   （:hover 与 :active 同时命中，active 在后所以赢）也是压暗而不是提亮。
+   0.85 同时作用于墨色，实测压暗后的墨/底对比度最低 4.78:1（danger），仍达标。 */
+.btn-primary:not(:disabled):active {
+    background: var(--color-accent-strong);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-success:not(:disabled):active {
+    background: var(--color-success);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-warning:not(:disabled):active {
+    background: var(--color-warning);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-danger:not(:disabled):active {
+    background: var(--color-danger);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+.btn-info:not(:disabled):active {
+    background: var(--color-info);
+    color: var(--color-on-accent);
+    filter: brightness(0.85);
+}
+
+/* 透明底的两种变体压不出「暗一档」（底本来就是卡片色），改用加深一档的
+   白色叠层 + 提亮边框来表达「按下去了」。 */
+.btn-secondary:not(:disabled):active,
+.btn-outline-secondary:not(:disabled):active {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: var(--color-text-primary);
+    color: var(--color-text-primary);
+}
+
+.btn-outline-primary:not(:disabled):active {
+    background: var(--color-accent-muted);
+    border-color: var(--color-accent-hover);
+    color: var(--color-accent-hover);
+    filter: brightness(0.85);
+}
+
+/* ---- disabled：本任务的核心缺陷 ----------------------------------------
+   改前：`.btn:disabled { opacity: 0.5 }` + Bootstrap 的
+   `--bs-btn-disabled-bg: #0d6efd` 胜出，禁用的「创建下载任务」按钮渲染成
+   **50% 不透明度的 Bootstrap 主色蓝**（合成后 rgb(17,66,140)），文字合成后
+   rgb(138,139,142) —— 对比度只有 2.83:1，既像可点又看不清。
+   而这颗按钮**默认就是禁用的**（要先在地图上框选），是用户打开页面的第一眼。
+
+   改后不再用整体 opacity（那是把「不可点」和「看不清」绑在一起的根源），
+   改为换一套**低饱和中性**的表面：
+       底 --color-bg-tertiary #1c2027   饱和度 16.4%（启用态青绿是 80.4%）
+       字 --color-text-secondary #9aa0aa  对底 6.21:1（>= 4.5，不可点 != 看不清）
+       禁用底 vs 启用底 6.56:1（改前只有 3.87:1）
+   特异度 (0,2,0)，与 Bootstrap 的 `.btn:disabled` 打平，靠 style.css 排在
+   bootstrap.min.css 之后取胜 —— 这个前提由
+   tests/test_css_contract.py::test_no_stylesheet_can_load_after_style_css 钉住。 */
 .btn:disabled {
-    opacity: 0.5;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-secondary);
+    border-color: var(--color-border);
+    opacity: 1;
+    box-shadow: none;
+    filter: none;
     cursor: not-allowed;
     transform: none !important;
 }
 
+/* ---- 尺寸 -------------------------------------------------------------- */
 .btn-group-sm .btn {
-    font-size: 0.75rem;
     padding: 0.4rem 0.9rem;
 }
 
 .btn-sm {
-    font-size: 0.8rem;
+    font-size: var(--font-size-sm);
     padding: 0.4rem 0.8rem;
     border-radius: 6px;
 }
 
-.btn-info {
-    background: var(--color-info);
-    color: #fff;
-    box-shadow: none;
-}
-
-.btn-info:hover {
-    background: var(--color-info);
-    color: #fff;
+/* 纯图标按钮：正方形，边长 = 控件密度令牌 --ctl-h。
+   选择器必须是 `.btn.btn-icon`(0,2,0)：任务卡上的容器是
+   `.btn-group.btn-group-sm`，上面那条 `.btn-group-sm .btn` 也是 (0,2,0)，
+   裸 `.btn-icon`(0,1,0) 的 padding 会输给它，按钮被撑成胶囊。
+   同特异度靠源码顺序取胜，所以这条必须留在 `.btn-group-sm .btn` 之后。 */
+.btn.btn-icon {
+    width: var(--ctl-h);
+    height: var(--ctl-h);
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 /* Alert Styles */
 .alert {
     border-radius: 10px;
     border: 1px solid;
-    padding: 1rem 1.25rem;
+    /* A5 / Task 10：1rem 1.25rem(16/20px) -> 8px/--pad-card。
+       站内的 .alert 全是**信息条**（#boundsInfo 的四至、history 的错误提示），
+       不是需要撑场面的横幅；16px 上下内边距在 1366x768 上是纯浪费。 */
+    padding: 8px var(--pad-card);
     font-family: var(--font-display);
+    font-size: var(--font-size-base);
     box-shadow: var(--shadow-sm);
 }
 
@@ -758,7 +1214,8 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-sm);
     background: var(--color-bg-secondary);
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
     margin-bottom: 0.75rem;
 }
 
@@ -771,31 +1228,43 @@ div:not(.card):not(.modal-content):not(.alert):not(.badge):not(.btn):not(.progre
     background: transparent;
     color: var(--color-text-primary);
     font-weight: 600;
+    font-size: var(--font-size-base);
     border-bottom: 1px solid var(--color-border);
     border-radius: var(--radius) var(--radius) 0 0 !important;
-    padding: 0.85rem 1rem;
+    /* A5 / Task 10：0.85rem 1rem(13.6/16px) -> 6px/--pad-card。
+       左右与 .card-body 同为 --pad-card，标题和正文才对得齐。 */
+    padding: 6px var(--pad-card);
 }
 
 .card-header h5 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--font-size-base);
     font-weight: 600;
     color: var(--color-text-primary);
 }
 
+/* ⚠️ 想验证这条改动的实测值时，别用 `document.querySelector('.card-body')`：
+   首页第一个 .card-body 是地图那个，带 `p-0`，且被
+   `.index-left .card-body { padding: 0 }`(0,2,0) 压成 0px。要取右侧面板里的
+   具体元素（例如 `.index-right .card-body`）。 */
 .card-body {
-    padding: 1rem;
+    padding: var(--pad-card);
     color: var(--color-text-primary);
 }
 
+/* A7 / Task 12：--color-text-muted -> --color-text-secondary（3.09 -> 6.81:1）。
+   这个类挂在真正要读的正文上（index.html 的 4 条 `<small class="form-text
+   text-muted">` 表单说明、以及「暂无活动任务」空态），不是装饰。
+   !important 必须保留：Bootstrap 的 `.text-muted{color:var(--bs-secondary-color)
+   !important}` 同为 (0,1,0) 且自带 !important，不带的话我们赢不了它。 */
 .text-muted {
-    color: var(--color-text-muted) !important;
+    color: var(--color-text-secondary) !important;
 }
 
-.text-center {
-    color: var(--color-text-primary) !important;
-}
-
+/* 注意：.text-center 是纯布局类，只在文件末尾声明 text-align，不设 color。
+   原先这里有一条 `color: var(--color-text-primary) !important`，它排在
+   .text-muted 之后、.text-danger 之前，是靠规则顺序在跟同优先级的颜色类
+   抢——布局类不该参与颜色级联。 */
 .text-danger {
     color: var(--color-danger) !important;
 }
@@ -836,8 +1305,12 @@ h1, h2, h3, h4, h5, h6 {
     border-color: var(--color-border-strong);
 }
 
+/* 历史页统计数字。
+   注意：这条规则原本声明过 font-size: 2rem，但一直被 C1 清理掉的那个字号覆盖块里的
+   `h3 { font-size: var(--font-size-lg) !important }` 压成 18px —— 也就是说这些统计
+   数字从来没按设计的 32px 显示过。C1 按「零视觉变化」原则删掉了这条死声明（保持 18px
+   现状），是否恢复到 2rem 属于视觉决策，交 A1-A7 阶段裁定。 */
 .stat-card h3 {
-    font-size: 2rem;
     font-weight: 600;
     font-family: var(--font-mono);
     color: var(--color-text-primary) !important;
@@ -869,34 +1342,121 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .spinner-border {
-    border-color: var(--color-accent-amber);
+    border-color: var(--color-accent);
     border-right-color: transparent;
 }
 
-/* Form Control Styles */
+/* Form Control Styles
+   密度令牌落地处（A5 / Task 10）：控件总高从 43.7px 收到 28px = var(--ctl-h)。
+
+   ⚠️ 这里**故意写四条 padding 长写，不用 `padding` 简写**。
+   下面 `.form-select { padding-right: 2.25rem }` 是下拉箭头的让位空间
+   （C1 / Task 4 的修复，下限 28px）。那条规则写在本条之后、特异度相同，
+   所以简写其实也压不掉它 —— 长写的理由是**可读性**：让「右内边距另有主」
+   这件事在源码里一眼看得见，而不是要读者去脑内跑一遍层叠。
+   真正的下限由 test_form_select_reserves_room_for_the_arrow 守（它算的是
+   模拟层叠后最终生效的值，不是查字符串）。 */
 .form-control,
 .form-select {
-    background: var(--color-bg-tertiary);
+    background-color: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
     border-radius: 8px;
-    padding: 0.6rem 0.85rem;
+    padding-top: var(--ctl-pad-y);
+    padding-bottom: var(--ctl-pad-y);
+    padding-left: var(--ctl-pad-x);
+    padding-right: var(--ctl-pad-x);
+    line-height: var(--ctl-line-h);
+    min-height: var(--ctl-h);
     font-family: var(--font-display);
-    transition: all 0.3s ease;
-    font-size: 0.95rem;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
+    font-size: var(--font-size-sm);
+}
+
+/* 文件选择框的「浏览」按钮。
+   Bootstrap 的 `.form-control::file-selector-button` 用
+   `padding: .375rem .75rem` + `margin: -.375rem -.75rem` 把按钮**撑满**输入框
+   ——那对负外边距是按 Bootstrap 自己的 6px/12px 内边距算的。我们把控件内边距
+   收到 3px/8px 之后，按钮会比控件高出 6px、左右各溢出 4px。
+   这里把两者重新对齐到密度令牌上。
+   （用到的元素：templates/index.html 的 #localTerrainFiles，
+    「本地高程切片」下载类型下才显示。） */
+.form-control::file-selector-button {
+    padding: var(--ctl-pad-y) var(--ctl-pad-x);
+    margin: calc(-1 * var(--ctl-pad-y)) calc(-1 * var(--ctl-pad-x));
+    margin-inline-end: var(--ctl-pad-x);
+}
+
+/* 下拉箭头的让位空间。只作用于 .form-select，不波及普通 input。
+
+   上面 `.form-control, .form-select` 把右内边距设成 var(--ctl-pad-x)（现 8px；
+   A5/Task 10 之前是 `padding: 0.6rem 0.85rem` 的 13.6px），而 Bootstrap 原本用
+   `padding-right: 2.25rem`(36px) 专门给箭头让位。箭头占据右起 12–28px，
+   文字内容框却能延伸到右起 8px —— 二者会叠印。C1/Task 4 实测 900px 视口下
+   #downloadType 的最长选项与箭头重叠 14.4px，文字末尾字符被切断。
+   这里补回 Bootstrap 的 36px（几何下限 28px，余 8px 呼吸位）。
+   本条只作用于 .form-select，不波及 .form-control——普通 input 没有箭头，
+   给它 36px 右内边距是平白的浪费。
+   下限由 tests/test_css_contract.py::test_form_select_reserves_room_for_the_arrow 守住。
+
+   ⚠️ 位置是承重的：本条与上面那条特异度相同 (0,1,0)，靠**写在后面**取胜
+      （同特异度下 longhand 与 shorthand 之间没有优先级，只有源码顺序）。
+      挪到前面，右内边距立刻退回 8px，箭头压字。
+   （原先这里还有一段说「压不过 .config-section .form-select (0,2,0)、配置页要
+     单独补一条」—— A5/Task 10 已把那两条 .config-section 规则删掉，配置页现在
+     直接吃本条，实测 padding-right 36px。说明随之移除。）
+
+   箭头的**描边色**这里不再管：A3/Task 8 给 <html> 加上 data-bs-theme="dark"
+   之后，Bootstrap 自带的 `[data-bs-theme=dark] .form-select`（特异性 0,2,0）
+   把 --bs-form-select-bg-img 换成描边 #adb5bd 的版本，压过任何写在这里的
+   (0,1,0) 覆盖。#adb5bd 对面板底 --color-bg-tertiary(#1c2027) 实算 7.87:1，
+   高于 C1/Task 4 立的 3:1 图形元素下限，所以站内那条硬编码 #9aa0aa 的
+   data URI 覆盖已是死代码，连同它的两条断言一起删掉了。
+   （已核对 bootstrap@5.3.0 源码 2363-2365 行：那条规则**只有**
+   --bs-form-select-bg-img 一条声明，不碰 position / size / padding，
+   所以删掉站内覆盖不影响上面这 28px 的几何下限。） */
+.form-select {
+    padding-right: 2.25rem;
+}
+
+/* 取色器色块。
+   缺陷（A3/Task 8 修复时的实测）：`<input type="color" class="form-control
+   form-control-color">` 会吃到上面 `.form-control, .form-select` 的左右内边距
+   （当时是 `padding: 0.6rem 0.85rem` 的 13.6px），而它的外框只有 48px ——
+   48 - 13.6x2 - 1x2 = **18.8px** 宽、15.3px 高，色块小到看不出选的是什么颜色。
+   这里把内边距收回 4px：色块 48 - 4x2 - 1x2 = **38px** 宽。
+   （A5/Task 10 把通用内边距收到 --ctl-pad-x(8px) 之后，不修这条的话色块会是
+     48 - 8x2 - 2 = 30px —— 正好卡在 30px 下限上，一点余量都没有。保留本条。
+     高度：Bootstrap 单独给 .form-control-color 设了 height，实测外框 35px、
+     色块 25px 高，不受 --ctl-h 影响。）
+
+   ⚠️ 位置是承重的：本规则必须排在 `.form-control, .form-select` **之后**，
+   两者特异性相同，靠源码顺序取胜。挪到前面，内边距立刻退回 --ctl-pad-x。
+   ⚠️ width 与 Bootstrap 的 `.form-control-color { width: 3rem }` 同值，显式
+   写出来是为了让色块宽度的三个输入（width / padding / border）都在同一个
+   文件里，断言才算得出来。
+   下限由 tests/test_css_contract.py::test_color_picker_swatch_is_big_enough_to_see 守住。 */
+.form-control-color {
+    width: 3rem;
+    padding: 0.25rem;
 }
 
 .form-control:focus,
 .form-select:focus {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-muted);
-    background: var(--color-bg-secondary);
+    background-color: var(--color-bg-secondary);
     color: var(--color-text-primary);
     outline: none;
 }
 
+/* A7 / Task 12：占位符也是用户要读的文字（「输入任务名称...」）。
+   改前 --color-text-muted 对控件底 --color-bg-tertiary(#1c2027) 只有 2.82:1，
+   改后 --color-text-secondary 6.21:1。与「已输入的值」仍然分得开 —— 值走
+   .form-control 的 --color-text-primary(#e8eaed)，两者相差一个完整层级。 */
 .form-control::placeholder {
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
 }
 
 .form-label {
@@ -904,16 +1464,20 @@ h1, h2, h3, h4, h5, h6 {
     font-weight: 600;
     margin-bottom: 0.4rem;
     font-family: var(--font-display);
-    font-size: 0.9rem;
+    font-size: var(--font-size-sm);
 }
 
-.form-control-sm {
-    padding: 0.4rem 0.65rem;
-    font-size: 0.85rem;
-}
+/* 这里原本是 `.form-control-sm { padding: 0.4rem 0.65rem }`（6.4/10.4px）。
+   A5 / Task 10 把基础控件收到 3/8px 之后，这条「小号」变成了**比基础还大**
+   的规则 —— 全站唯一用它的 templates/history.html:47 搜索框会变成页面上最高
+   的输入框。语义倒挂，整条删除。
+   删掉之后 Bootstrap 的 `.form-control-sm { padding: .25rem .5rem }`(0,1,0) 也
+   赢不了：style.css 排在 bootstrap.min.css 之后，同特异度、且我们用的是
+   padding 四条长写，逐属性覆盖简写。实测 history 页 #searchInput 高度 28px，
+   与基础控件一致 —— 在这个密度下不再需要「更小的一档」。 */
 
 .mb-3 {
-    margin-bottom: 0.75rem !important;
+    margin-bottom: var(--gap-field) !important;
 }
 
 /* Input Group */
@@ -940,11 +1504,13 @@ h1, h2, h3, h4, h5, h6 {
 .modal-title {
     font-family: var(--font-display);
     font-weight: 700;
+    font-size: var(--font-size-lg);
     color: var(--color-text-primary);
 }
 
 .modal-body {
     color: var(--color-text-primary);
+    font-size: var(--font-size-base);
     padding: 1.5rem;
 }
 
@@ -953,7 +1519,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .modal-body strong {
-    color: var(--color-accent-warm);
+    color: var(--color-accent-hover);
     font-weight: 600;
 }
 
@@ -983,13 +1549,15 @@ h1, h2, h3, h4, h5, h6 {
     border-radius: 8px;
     padding: 0.5rem 0.75rem;
     font-family: var(--font-mono);
-    transition: all 0.3s ease;
+    font-size: var(--font-size-sm);
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .page-link:hover {
     background: var(--color-bg-tertiary);
-    border-color: var(--color-accent-amber);
-    color: var(--color-accent-warm);
+    border-color: var(--color-accent);
+    color: var(--color-accent-hover);
 }
 
 .page-item.active .page-link {
@@ -1010,6 +1578,15 @@ h1, h2, h3, h4, h5, h6 {
 .table {
     color: var(--color-text-primary) !important;
     background: transparent !important;
+    font-size: var(--font-size-base);
+}
+
+.table th {
+    font-size: var(--font-size-sm);
+}
+
+.table small {
+    font-size: var(--font-size-sm);
 }
 
 .table thead {
@@ -1025,24 +1602,50 @@ h1, h2, h3, h4, h5, h6 {
     border-color: var(--color-border) !important;
 }
 
+/* ⚠️ 这里的 `color` **不许**再加 !important（A7 / Task 12 修的就是这个）。
+   history.js 的加载失败行是 `<td class="text-center text-danger">加载失败</td>`。
+   `.text-danger` 是 (0,1,0)!important，本条改前是 (0,1,1)!important ——
+   两条都是 important 时先比特异度，(0,1,1) 赢。后果：**这行文字从上线起
+   就是普通灰白色**，加载失败和正常内容长得一模一样。CDP 实测改前
+   `getComputedStyle(td).color === 'rgb(232, 234, 237)'`（= --color-text-primary），
+   改后 `rgb(248, 113, 113)`（= --color-danger，对面板底 #15171c 实测 6.48:1）。
+
+   去掉 !important 之后普通单元格的颜色不变：唯一同时命中 td 的 Bootstrap
+   颜色规则是 `.table > :not(caption) > * > *`，(0,1,1) 且**不带** !important
+   —— 与本条特异度相同，而 style.css 是最后加载的样式表
+   （test_no_stylesheet_can_load_after_style_css 钉住了这一点），同分后来者赢。
+   CDP 实测改前改后普通 td 都是 rgb(232, 234, 237)。
+
+   background / border-color 的 !important 保留不动：它们要压的是 Bootstrap
+   自带 !important 的 `.bg-*` 工具类，与本次的颜色语义问题无关。 */
 .table td,
 .table th {
     background: transparent !important;
     border-color: var(--color-border) !important;
-    color: var(--color-text-primary) !important;
+    color: var(--color-text-primary);
 }
 
+/* 同上：(0,1,2) 不带 !important 已经压得过 Bootstrap 的 td 颜色规则，
+   却不再压住写在 `<small>` 自己身上的 .text-danger / .text-success。 */
 .table td small {
-    color: var(--color-text-secondary) !important;
+    color: var(--color-text-secondary);
 }
 
 .table-hover tbody tr:hover {
     background: rgba(255, 255, 255, 0.03) !important;
 }
 
-.table-hover tbody tr:hover td {
-    color: var(--color-text-primary) !important;
-}
+/* 这里原本还有一条
+       `.table-hover tbody tr:hover td { color: var(--color-text-primary) !important }`
+   A7 / Task 12 删掉，两条理由都实测过：
+     1. **冗余**。Bootstrap 的行 hover 只改 `--bs-table-color-state` 这个自定义
+        属性，真正上色的仍是 `.table > :not(caption) > * > *`(0,1,1)；上面那条
+        `.table td`(0,1,1) 排在它后面，hover 与否都已经赢了。CDP 实测删掉之后
+        hover 行的普通单元格仍是 rgb(232, 234, 237)。
+     2. **有害**。它是 (0,2,3)!important —— 鼠标划过「加载失败」那一行时，
+        连修好之后的 `.text-danger`(0,1,0)!important 也会被它重新压成灰白。
+        CDP 实测改前 hover 与非 hover 都是 rgb(232, 234, 237)，改后都是
+        rgb(248, 113, 113)。 */
 
 .table-responsive {
     border-radius: 8px;
@@ -1052,11 +1655,11 @@ h1, h2, h3, h4, h5, h6 {
 /* Code Styles */
 code {
     background: var(--color-bg-tertiary);
-    color: var(--color-accent-warm);
+    color: var(--color-accent-hover);
     padding: 0.25rem 0.5rem;
     border-radius: 4px;
     font-family: var(--font-mono);
-    font-size: 0.9em;
+    font-size: var(--font-size-sm);
 }
 
 /* Form Check Styles */
@@ -1071,7 +1674,8 @@ code {
     background-color: var(--color-bg-tertiary);
     border: 2px solid var(--color-border);
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+                color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .form-check-input:checked {
@@ -1104,7 +1708,7 @@ code {
 
     .index-right {
         border-left: none;
-        border-top: 2px solid var(--color-accent-amber);
+        border-top: 2px solid var(--color-accent);
     }
 
     #map {
@@ -1129,14 +1733,6 @@ code {
 
     .action-buttons .btn {
         width: 100%;
-    }
-
-    .navbar-brand {
-        font-size: 1.2rem;
-    }
-
-    .stat-card h3 {
-        font-size: 2rem;
     }
 }
 
@@ -1165,10 +1761,6 @@ code {
     align-items: flex-start;
 }
 
-.mb-3 {
-    margin-bottom: 1rem;
-}
-
 .mt-2 {
     margin-top: 0.5rem;
 }
@@ -1181,44 +1773,14 @@ code {
     width: 100%;
 }
 
-/* Row and Column Styles */
-.row {
-    display: flex;
-    flex-wrap: wrap;
-    margin-right: -0.75rem;
-    margin-left: -0.75rem;
-}
+/* Row / Column 的本地兜底已删除（vendor 本地化）。
+   这里原先有一份 .row / .col-6 / .col-12 / .col-md-6 的手抄定义，理由是
+   「bootstrap.min.css 走 CDN，CDN 不可达时栅格只剩这一份」。现在 Bootstrap
+   在 static/vendor/bootstrap/5.3.0/ 里随包发布，那个前提不再成立 ——
+   而那份兜底本来就是残缺的（模板里在用的 .col-md-4 / .col-md-3 从来没覆盖到），
+   留着只会和 Bootstrap 的真定义打架。别再加回来。 */
 
-.col-6,
-.col-12,
-.col-md-6 {
-    padding-right: 0.75rem;
-    padding-left: 0.75rem;
-}
-
-.col-6 {
-    flex: 0 0 50%;
-    max-width: 50%;
-}
-
-.col-12 {
-    flex: 0 0 100%;
-    max-width: 100%;
-}
-
-@media (min-width: 768px) {
-    .col-md-6 {
-        flex: 0 0 50%;
-        max-width: 50%;
-    }
-}
-
-/* Scrollbar Styles for All Scrollable Elements */
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-accent-copper) var(--color-bg-secondary);
-}
-
+/* Scrollbar Styles for All Scrollable Elements（标准属性已并入文件顶部的 `*` 规则） */
 *::-webkit-scrollbar {
     width: 8px;
     height: 8px;
@@ -1232,49 +1794,230 @@ code {
 *::-webkit-scrollbar-thumb {
     background: var(--color-border-strong);
     border-radius: 4px;
-    transition: background 0.3s ease;
+    /* A8 / Task 13：0.3s -> 0.15s。⚠️ 这条**压不进**
+       @media (prefers-reduced-motion: reduce) —— 那一块的选择器是
+       `*, *::before, *::after`，覆盖不到 ::-webkit-scrollbar-thumb 这个
+       非标准伪元素；而把它塞进那个逗号组会让**整组选择器在 Firefox 里
+       整条失效**（组里有一个不认识的选择器 = 全组作废），等于把减少动画
+       支持在 Firefox 上悄悄弄没。详见
+       test_reduced_motion_actually_stops_every_animated_element 的豁免清单。 */
+    transition: background-color 0.15s ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
     background: var(--color-text-muted);
 }
 
-/* Smooth Transitions */
-* {
-    transition-property: background-color, border-color, color, fill, stroke;
-    transition-duration: 0.3s;
-    transition-timing-function: ease;
-}
-
 /* Selection Styles */
 ::selection {
-    background: var(--color-accent-amber);
+    background: var(--color-accent);
     color: var(--color-bg-primary);
 }
 
 ::-moz-selection {
-    background: var(--color-accent-amber);
+    background: var(--color-accent);
     color: var(--color-bg-primary);
 }
 
 /* Focus Visible Styles */
 *:focus-visible {
-    outline: 2px solid var(--color-accent-amber);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
 }
 
-/* Leaflet Control Styles Override */
-.leaflet-control-zoom a,
-.leaflet-control-layers-toggle {
-    background: var(--color-bg-secondary) !important;
-    border: 1px solid var(--color-border) !important;
-    color: var(--color-text-primary) !important;
+/* ===========================================================================
+   Leaflet 控件主题化
+   （不含 .leaflet-control-layers-toggle：代码里从未调用 L.control.layers，
+     那个 DOM 元素不存在）
+
+   改这一段之前必须知道的三条环境事实，全部是 CDP 实测得出、不是推断：
+
+   (1) ~~本文件的 div 兜底重置会把这些控件压成透明~~ —— **已随兜底重置一起删除**。
+       原文：`div:not(.card):not(...)...{background:transparent}` 特异度 (0,11,1)，
+       .leaflet-bar / .leaflet-draw-toolbar / .leaflet-control-attribution /
+       .leaflet-draw-tooltip 全是 <div> 且不在白名单里，所以底色必须带 !important。
+       兜底重置删掉之后这三处 !important 逐个实测过：
+         · `.leaflet-bar / .leaflet-draw-toolbar { background-color }` —— 去掉。
+           leaflet.css 没有任何规则给 `.leaflet-bar` **容器**设背景（它只给
+           `.leaflet-bar a` 设 #fff），(0,1,0) 无对手。
+         · `.leaflet-draw-tooltip { background-color }` —— 去掉。对手是
+           leaflet.draw.css 的 `.leaflet-draw-tooltip{background:rgb(54,54,54)}`
+           (0,1,0)，同分、style.css 排在后面，源码顺序即取胜。
+         · `.leaflet-control-attribution { background-color }` —— **保留**。
+           它还要压 leaflet.css 的 `.leaflet-container .leaflet-control-attribution
+           {background:rgba(255,255,255,.8)}` (0,2,0)，那条我们赢不了。
+       三处的删/留都做过 CDP 对拍（见 test_leaflet_div_controls_keep_their_background）。
+
+   (1b) **删掉兜底重置反而让 leaflet.css 的浅灰底冒了出来。**
+       `.leaflet-container{background:#ddd}`(leaflet.css:260, 特异度 0,1,0)
+       原先也被 (0,11,1) 压着。删除后 CDP 实测 #map 和 .history-map 两个容器
+       都变成 rgb(221,221,221)。瓦片没盖满 / 还没加载完的时候就是一片浅灰。
+       修法是下面那条 `.leaflet-container` —— 同特异度 + style.css 靠后取胜，
+       不需要 !important。
+
+   (2) **`#map` 上的 filter 会改掉这里写的每一个颜色。**
+       本文件 :288 有 `filter: brightness(0.9) contrast(1.1)`，它作用于整个
+       .leaflet-container —— 包括所有控件。所以这里写的不是屏幕上的最终颜色：
+       var(--color-bg-secondary) #15171c 过完滤镜实际渲染成 ≈ rgb(8,10,15)
+       （几乎等于 --color-bg-primary）。这是可接受的：控件因此比面板略深，
+       像浮在地图上的一块深色片。要对比度取数请以渲染值为准。
+
+   (3) **必须用 background-color，不能用 background 简写。**
+       leaflet.draw.css 用 `background-image:url(spritesheet.svg)` +
+       background-position 做雪碧图，`background` 简写会把它一并重置成 none，
+       结果是三个没有图标的空白按钮。（C1/Task 4 在 select 箭头上踩过同一个坑。）
+   =========================================================================== */
+
+/* 地图容器自身的底。见上面 (1b)：leaflet.css:260 给它 #ddd 浅灰，原本被
+   兜底重置压着，重置一删就冒出来了。这条是整次清理里**唯一**一处兜底重置
+   真的在对第三方样式表干活的地方，所以把它单独提出来，用正常特异度重写。
+
+   为什么是 transparent 而不是某个具体色：这样「瓦片盖不到的地方」露出来的
+   还是宿主面板本身，与删除前逐像素相同。试过 var(--color-bg-primary)，
+   实测不行 —— #map 的宿主是 `.index-left .card`(#15171c)，而 #map 自己那层
+   `filter: brightness(.9) contrast(1.1)` 会把写在这里的颜色再压一遍：
+   #0c0d10 过完滤镜是 rgb(0,0,3)，于是「没瓦片的地图区」从面板灰变成近纯黑，
+   1600x1000 截图上 53% 的像素变了。transparent 则是 0 像素差。
+
+   同特异度 (0,1,0) 靠源码顺序赢 leaflet.css，不需要 !important
+   （前提由 test_style_css_is_the_last_stylesheet 钉住）。 */
+.leaflet-container {
+    background: transparent;
 }
 
-.leaflet-control-zoom a:hover,
-.leaflet-control-layers-toggle:hover {
-    background: var(--color-bg-tertiary) !important;
-    border-color: var(--color-accent-amber) !important;
+/* 控件容器。.leaflet-control-zoom 与绘制工具条都是 .leaflet-bar，共用这一条。
+   .leaflet-draw-toolbar 与 .leaflet-bar 永远在同一个 <div> 上
+   （leaflet.draw 1.0.4: create("div", "leaflet-draw-toolbar leaflet-bar")），
+   这里两个类都写只是让按类名 grep 的人找得到，不是两个元素。 */
+.leaflet-bar,
+.leaflet-draw-toolbar {
+    /* 兜底重置删除后这里不再需要 !important，见段首 (1)。 */
+    background-color: var(--color-bg-secondary);
+    /* !important #1/#2：压 leaflet.css 的
+       `.leaflet-touch .leaflet-bar{border:2px solid rgba(0,0,0,.2)}` 和
+       `.leaflet-touch .leaflet-bar{box-shadow:none}`，两条都是 (0,2,0)，
+       我们的 (0,1,0) 赢不了。.leaflet-touch 在带触摸屏的设备上是常态
+       （headless Chrome 实测也带这个类），不是边角情况。 */
+    border: 1px solid var(--color-border) !important;
+    box-shadow: var(--shadow-md) !important;
+}
+
+/* 按钮本体：底色交给容器，<a> 一律透明——这样下面那条 filter: invert(1)
+   只作用在雪碧图上。若在这里同时给深色背景和 invert，两者互相抵消，净效果为零。
+   选择器带上 `a.leaflet-disabled` 是为了压掉 leaflet.css 的
+   `.leaflet-bar a.leaflet-disabled{background-color:#f4f4f4}` (0,2,1) ——
+   那是首屏默认态（还没画选区时「编辑」「删除」就是 disabled），改前实测
+   两个按钮的底色是 rgb(244,244,244)，深色地图上两块刺眼白斑。
+   同特异度靠源码顺序取胜：base.html 里 style.css 排在 leaflet.css /
+   leaflet.draw.css 之后（由 test_style_css_is_the_last_stylesheet 钉住），
+   所以这里不需要 !important。 */
+.leaflet-bar a,
+.leaflet-bar a.leaflet-disabled {
+    background-color: transparent;
+}
+
+.leaflet-bar a {
+    color: var(--color-text-primary);
+    border-bottom-color: var(--color-border);
+}
+
+.leaflet-bar a:hover,
+.leaflet-bar a:focus {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* 雪碧图是深灰 (#464646) 画在透明底上的，为白底按钮设计。反色后得到浅色图标；
+   brightness(1.25) 把它推到 ≈ #e7e7e7，与 --color-text-primary(#e8eaed) 基本一致。
+
+   ⚠️ filter 作用于整个 <a>，连它自己的背景色和边框一起反色。所以本规则块里
+   **颜色值写的都是「反色前」的**：rgba(0,0,0,α) 渲染出来就是 rgba(255,255,255,α)。
+   rgba(0,0,0,0.07) ≡ --color-border，rgba(0,0,0,0.12) ≡ 上面那条 hover 高亮。 */
+.leaflet-draw-toolbar a {
+    filter: invert(1) brightness(1.25);
+    border-bottom-color: rgba(0, 0, 0, 0.07);
+}
+
+.leaflet-draw-toolbar a:hover,
+.leaflet-draw-toolbar a:focus {
+    background-color: rgba(0, 0, 0, 0.12);
+}
+
+/* 禁用态（首屏的「编辑」「删除」就是这个状态）。
+
+   为什么必须自己造这个视觉差异：leaflet.draw 的雪碧图里，**禁用格子和可用格子
+   是像素级相同的**。它的 SVG 本意是靠 `<g id="disabled" style="fill:#bbbbbb">`
+   把图标变浅，但组里放的是 `<use xlink:href="#edit">` / `<use xlink:href="#remove">`，
+   而被引用的那两个 group 自带 `style="fill:#464646;fill-opacity:1"` —— 子元素
+   自己的 fill 压掉了祖先的 #bbbbbb，那个浅灰**一次都没生效**。
+   （实测：把四个格子分别画到白底 canvas 上读像素，可用/禁用的主导非白色
+     全是 rgb(70,70,70)，没有任何 rgb(187,187,187)；改前页面上两个禁用按钮的
+     对比度也都是 9.17:1，与可用态完全一样。）
+
+   所以禁用态不能只靠上游的雪碧图，必须由主题自己压暗。这里只加 opacity ——
+   filter 继续用上面那条（同一张图、同一个反色），只是整体淡下去，
+   是「同一个图标、变淡」这个惯用表达。渲染后实测 4.67:1，明显弱于可用态的 13.89:1。
+   数值由 tests/test_css_contract.py::test_leaflet_draw_icon_stays_visible_through_the_map_filter
+   从源码算出来钉住（模型算 4.70、CDP 实测 4.67，逐通道差 <=1）。 */
+.leaflet-draw-toolbar a.leaflet-disabled {
+    opacity: 0.55;
+}
+
+.leaflet-bar a.leaflet-disabled,
+.leaflet-bar a.leaflet-disabled:hover {
+    background-color: transparent;
+    color: var(--color-text-muted);
+    cursor: default;
+}
+
+/* 绘制 / 编辑模式下弹出的操作条。它是 <ul class="leaflet-draw-actions"> 里的
+   <a>，同特异度靠源码顺序赢 leaflet.draw.css，不需要 !important。
+   改前实测底色是 leaflet.draw 出厂的 rgb(145,145,135) 橄榄灰。 */
+.leaflet-draw-actions a {
+    background-color: var(--color-bg-secondary);
+    border-left-color: var(--color-border);
+    color: var(--color-text-primary);
+}
+
+/* 只换底色的话，经 #map 那层 filter 压缩后实测只剩 7/9/11 的通道差，太弱；
+   文字同时转成强调色，悬停反馈才明确。 */
+.leaflet-draw-actions a:hover {
+    background-color: var(--color-bg-tertiary);
+    color: var(--color-accent-hover);
+}
+
+/* 绘制提示条。它是 popupPane 里的 <div>，A4/Task 9 之前被兜底重置压成过透明
+   （实测 background-color = rgba(0,0,0,0)，白字直接飘在地图上，遇到浅色瓦片
+   基本看不清）。兜底重置已删，这里的 !important 也随之去掉：对手只剩
+   leaflet.draw.css 的 `.leaflet-draw-tooltip{background:rgb(54,54,54)}` (0,1,0)，
+   同分、style.css 靠后，源码顺序即取胜。 */
+.leaflet-draw-tooltip {
+    background-color: rgba(12, 13, 16, 0.92);
+    border-color: var(--color-border);
+    color: var(--color-text-primary);
+}
+
+.leaflet-draw-tooltip:before {
+    border-right-color: rgba(12, 13, 16, 0.92);
+}
+
+.leaflet-draw-tooltip-subtext {
+    color: var(--color-text-secondary);
+}
+
+/* 右下角出处标注。A4/Task 9 改前实测 background-color = rgba(0,0,0,0)
+   （被兜底重置压掉）、文字仍是 leaflet.css 的 #333 —— 深色地图上是**看不清**，
+   不是简报说的「刺眼白底」。 */
+.leaflet-control-attribution {
+    /* !important #3：这一处**必须保留**。兜底重置虽然删了，但它还要压
+       leaflet.css 的
+       `.leaflet-container .leaflet-control-attribution{background:rgba(255,255,255,.8)}` (0,2,0)，
+       我们的 (0,1,0) 赢不了。去掉之后实测底色变回 rgba(255,255,255,0.8)。 */
+    background-color: rgba(12, 13, 16, 0.85) !important;
+    color: var(--color-text-secondary);
+}
+
+.leaflet-control-attribution a {
+    color: var(--color-accent-hover);
 }
 
 .leaflet-popup-content-wrapper {
@@ -1288,171 +2031,135 @@ code {
     background: var(--color-bg-secondary) !important;
 }
 
-/* Animation for Page Load */
-@keyframes fadeInUp {
-    from {
-        opacity: 0;
-        transform: translateY(20px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
+/* A8 / Task 13：入场动画 `@keyframes fadeInUp` + `.card, .task-card
+   { animation: fadeInUp 0.5s }` + 两组 nth-child 递延，整块**删除**。
+   护栏：test_cards_have_no_entrance_animation（算层叠胜出的 animation-name，
+   不是查字符串）。
 
-.card,
-.task-card {
-    animation: fadeInUp 0.5s ease-out;
-}
+   ── 为什么删 .task-card ────────────────────────────────────────────────
+   简报给的根因（「tasks.js 每次进度更新都 innerHTML 全量重建」）**与代码不符**，
+   下面是 CDP 实测的真实触发面：
 
-.card:nth-child(1) { animation-delay: 0.1s; }
-.card:nth-child(2) { animation-delay: 0.2s; }
-.card:nth-child(3) { animation-delay: 0.3s; }
+     updateTaskProgress 里每种任务类型都有增量分支
+     （statusChanged → 只重建这一张卡；progressChanged → updateTaskProgressPartial
+     原地改 DOM）。用 Animation domain 录制，一次纯进度推送产生的 CSSAnimation
+     数量是 **0** —— 进度更新不会重放入场动画。
 
-.task-card:nth-child(1) { animation-delay: 0.1s; }
-.task-card:nth-child(2) { animation-delay: 0.2s; }
-.task-card:nth-child(3) { animation-delay: 0.3s; }
-.task-card:nth-child(4) { animation-delay: 0.4s; }
-.task-card:nth-child(5) { animation-delay: 0.5s; }
+   真正会重放的是**列表成员变化**，它们都走 renderActiveTasks 的
+   `container.innerHTML = ...` 全量重建。实测 5 张卡的场景：
+     · 新任务到达（updateTaskProgress 的未知 key 分支）→ fadeInUp × 5
+     · 任务完成 handleTaskCompleted                    → fadeInUp × 5
+     另有 dismissTask / cancelTask / loadActiveTasks 同路径。
+   即「别人完成了一个任务，我这四张卡集体上浮一遍」。这是真实缺陷，
+   只是频率没有简报说的那么高。根治是增量渲染（第三档 C5），在那之前
+   删动画是成本最低的止血。
 
-/* ========================================
-   统一字体大小系统
-   ======================================== */
+   ── 为什么连 .card 一起删 ──────────────────────────────────────────────
+   .card 是模板里的静态面板，JS 从不重建它，所以不存在重放问题。删它的理由
+   是另一个，CDP 实测：首页 3 张 .card 的 animation-delay 是 0.1/0.1/0.2s，
+   duration 0.5s，而关键帧起点是 `opacity: 0` —— 页面前 100ms 完全空白，
+   到 700ms 才全部到位。给一个本地工具的启动画面付 0.7s 的「内容不可见」，
+   换一个纯装饰的上浮，不划算；样式表加载稍有抖动还会留下整屏空白。 */
 
-/* 导航栏字体 */
-.navbar-brand {
-    font-size: var(--font-size-xl) !important;
-}
-
-.nav-link {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 卡片字体 */
-.card-header,
-.card-header h5 {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 表单字体 */
-.form-label {
-    font-size: var(--font-size-sm) !important;
-}
-
-.form-control,
-.form-select {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 按钮字体 */
-.btn {
-    font-size: var(--font-size-base) !important;
-}
-
-.btn-sm {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 任务卡片字体 */
-.task-card h6 {
-    font-size: var(--font-size-base) !important;
-}
-
-.task-card .badge {
-    font-size: var(--font-size-xs) !important;
-}
-
-.task-card .progress-detail {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 表格字体 */
-.table {
-    font-size: var(--font-size-base) !important;
-}
-
-.table th {
-    font-size: var(--font-size-sm) !important;
-}
-
-.table small {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 配置区块字体 */
-.config-section h3 {
-    font-size: var(--font-size-md) !important;
-}
-
-/* 进度条字体 */
-.progress-bar {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 徽章字体 */
-.badge,
-.status-badge {
-    font-size: var(--font-size-xs) !important;
-}
-
-/* 模态框字体 */
-.modal-title {
-    font-size: var(--font-size-lg) !important;
-}
-
-.modal-body {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 分页字体 */
-.page-link {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* Alert字体 */
-.alert {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 标题字体 */
-h3 {
-    font-size: var(--font-size-lg) !important;
-}
-
-h4, h5, h6 {
-    font-size: var(--font-size-base) !important;
-}
-
-/* 小号文字 */
-small {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 代码字体 */
-code {
-    font-size: var(--font-size-sm) !important;
-}
-
-/* 下载表单分组标题 */
+/* 下载表单分组标题。
+   A7 / Task 12：color 从 --color-text-muted 改成 --color-text-secondary。
+   前者对面板底 #15171c 只有 3.09:1（CDP 渲染像素实测），达不到 WCAG AA
+   的 4.5；后者 6.81:1。层级感靠 font-size(12px vs 正文 14px) +
+   font-weight 600 + 下边框维持，不靠「把字调暗到看不见」。 */
 .form-group-label {
     font-size: var(--font-size-xs);
     font-weight: 600;
-    color: var(--color-text-muted);
-    margin: 1.25rem 0 0.5rem;
+    color: var(--color-text-secondary);
+    /* A5 / Task 10：1.25rem 0 0.5rem(20/8px) -> 14px 0 6px。
+       组间留白仍明显大于组内的 --gap-field(8px)，分组关系不受影响。 */
+    margin: 14px 0 6px;
     padding-bottom: 0.35rem;
     border-bottom: 1px solid var(--color-border);
 }
 .form-group-label:first-child { margin-top: 0; }
 
+/* A7 / Task 12：同 .text-muted。表单说明文字是用户必须读懂的正文
+   （「下方 NUM/SWB 仅 ASTER 适用」这种），3.09:1 等于写了不给看。 */
 .form-text {
-    color: var(--color-text-muted) !important;
-    font-size: var(--font-size-xs) !important;
+    color: var(--color-text-secondary) !important;
+    font-size: var(--font-size-xs);
     margin-top: 0.35rem;
+}
+
+/* 框选后的四至显示（#boundsInfo 内部，由 static/js/map.js 的 updateBoundsInfo 渲染）。
+
+   改前是 5 行：图标 + 「选中区域：」标题 + 「▲北 / ▼南 / ▶东 / ◀西」四行 <br>，
+   实测 `#boundsInfo` 高 **146.5px**。四个数字占掉 1366x768 可用高度的五分之一，
+   而它们本来就是一组同类量，天生该并排看（对比大小才有意义）。
+   这里改成 4 列网格 —— 8 个格子（4 个键 + 4 个值）固定排成 **2 行**：
+   网格自身 44px、连 alert 的内边距和边框实测 `#boundsInfo` **62.0px**，
+   净省 **84.5px**。
+
+   列定义 `auto 1fr auto 1fr` 是承重的：4 条轨道 x 8 个子元素 = 2 行。
+   改成 2 列就退回 4 行，改成 8 列就挤成 1 行放不下。
+   由 test_bounds_readout_is_exactly_two_rows 钉住（它按「子元素数 / 列数」
+   算行数，不是查字符串）。
+
+   ⚠️ column-gap 4px 是**量出来的上界，不是审美选择**。最窄的双栏视口是 769px
+   （768 及以下走 @media 堆叠布局，面板宽得多），此时网格容器只有 199.1px。
+   极端坐标（`-179.99999` 这种带号 10 字符的经度）一行需要：
+       gap 6px -> 202.8px（网页字体）/ 203.5px（Google Fonts 不可达时的回退字形）
+   两者都超出 3.7 / 4.3px，会吃掉 alert 右内边距 10px 里的 3.7px（末格离边框只剩
+   6.3px）—— 不裁切，但挤。收到 4px 后两种字形都放得下（省 3 x 2 = 6px）。
+   余量只有 1.6–2.3px，**要放宽 gap 或字号请先按 p2-task-10-report.md 的方法
+   在 769px + 极端坐标 + 屏蔽 Google Fonts 的条件下重测**。
+   上界由 test_bounds_readout_is_exactly_two_rows 一并钉住。 */
+.bounds-grid {
+    display: grid;
+    grid-template-columns: auto 1fr auto 1fr;
+    gap: 2px 4px;
+    align-items: baseline;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+}
+
+.bounds-k {
+    color: var(--color-accent-hover);
+    font-weight: 700;
+}
+
+.bounds-v {
+    color: var(--color-text-primary);
+    /* 等宽数字：四个纬度/经度上下对齐，扫一眼就能比大小 */
+    font-variant-numeric: tabular-nums;
+}
+
+/* 只给读屏软件的方位词。
+   N/S/E/W 是 GIS 惯例，视觉上够用；但读屏软件念出来就是四个字母，
+   拿不到「北/南/东/西」这个信息。这里补一份纯文本，键那边用 aria-hidden 关掉，
+   于是读屏听到的是「北纬 39.91653」而不是「N 39.91653」。
+
+   自己写而不用 Bootstrap 的 .visually-hidden：原因原本是「CDN 不可达时那个类
+   不存在」，vendor 本地化后这个理由已经不成立。但这个类**继续保留**，换个理由：
+   自有类不受上游版本影响 —— Bootstrap 升级重命名 .visually-hidden，
+   受影响的就是屏读用户听到的坐标，而这种回归没有任何测试看得见。
+
+   position:absolute 不参与布局，所以不影响上面那 2 行的几何 —— 实测加它前后
+   `#boundsInfo` 都是 62.0px、769px 极端坐标下仍无溢出。 */
+.bounds-sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
 }
 
 .detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1.5rem; }
 .detail-item { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0; border-bottom: 1px solid var(--color-border); }
-.detail-k { font-size: var(--font-size-xs); color: var(--color-text-muted); }
+/* A7 / Task 12：详情弹窗的**全部** 19 个字段名走这条规则。
+   改前 --color-text-muted 对 .modal-content 底 #15171c 实测 3.09:1（不达 AA），
+   改后 --color-text-secondary 6.81:1。与 .detail-v(14px/#e8eaed) 的层级差
+   仍由 12px vs 14px 的字号断层承担。 */
+.detail-k { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
 .detail-v { font-size: var(--font-size-sm); color: var(--color-text-primary); }
 @media (max-width: 576px) { .detail-grid { grid-template-columns: 1fr; } }
 
@@ -1463,6 +2170,14 @@ code {
    ======================================================================== */
 
 /* ---- Toast 容器（右上角堆叠） ---- */
+/* max-height + overflow-y 是 A1b 加的，不是洁癖：在此之前应用里所有 toast
+   都会 3.5 秒后自消失，容器堆不高。A1b 引入了全应用第一个 duration: 0 的
+   常驻 toast（任务失败原因），N 个任务同时失败就是 N 条永不消失的提示向下堆，
+   超出视口底部的那几条 × 按钮点不到（fixed 容器不产生页面滚动条），
+   而且会盖住 index.html 右侧那一列——正好是本次修复要让用户看清的任务列表。
+   对应断言：tests/test_css_contract.py::test_toast_container_cannot_grow_past_the_viewport。
+   overflow-x: hidden 是为了不让被裁掉的横向阴影催生一条横向滚动条；
+   代价是容器四边的 box-shadow 会被裁，深色底上肉眼几乎看不出来。 */
 #app-toast-container {
     position: fixed;
     top: 76px;
@@ -1472,6 +2187,10 @@ code {
     flex-direction: column;
     gap: 0.625rem;
     max-width: min(380px, calc(100vw - 40px));
+    max-height: calc(100vh - 96px);   /* top:76px + 底部留 20px */
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;     /* 滚到头不要把整页也带着滚 */
     pointer-events: none; /* 容器穿透，子项各自接收事件 */
 }
 
@@ -1501,12 +2220,16 @@ code {
 .app-toast__icon { flex: 0 0 auto; display: inline-flex; margin-top: 1px; }
 .app-toast__icon svg { width: 18px; height: 18px; display: block; }
 .app-toast__msg { flex: 1 1 auto; word-break: break-word; }
+/* A7 / Task 12：关闭按钮的 `×` 是可点控件上唯一的可见标识，
+   --color-text-muted 对 toast 底 --color-bg-tertiary(#1c2027) 只有 2.82:1，
+   连 WCAG 1.4.11 给图形元素的 3:1 都不到。改 --color-text-secondary(6.21:1)，
+   :hover 仍然抬到 --color-text-primary，两态的差别没被抹平。 */
 .app-toast__close {
     flex: 0 0 auto;
     background: none;
     border: none;
     cursor: pointer;
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
     font-size: 1.15rem;
     line-height: 1;
     padding: 0 0.15rem;
@@ -1614,4 +2337,54 @@ code {
     #app-toast-container { left: 16px; right: 16px; max-width: none; }
     .app-confirm__actions { flex-direction: column-reverse; }
     .app-confirm__btn { width: 100%; }
+}
+
+/* ==========================================================================
+   A8 / Task 13：尊重系统的「减少动画」偏好
+   ==========================================================================
+   前庭功能障碍（vestibular disorder）用户会因为界面动效产生真实的生理不适
+   —— 眩晕、恶心。操作系统提供了 `prefers-reduced-motion` 让他们一次性表态，
+   这是 WCAG 2.1 SC 2.3.3 (Animation from Interactions) 对应的实现手段，
+   不是可选装饰。
+
+   本站在这个开关下要被压掉的东西（各自都有实测）：
+     · .task-card.status-running::before 的 `pulse 2s infinite` —— 无限循环
+       的呼吸灯正是最典型的诱因，页面上只要有运行中的任务它就一直在动；
+     · toast 的滑入/滑出、confirm 遮罩与卡片的淡入缩放；
+     · 进度条 width 过渡、以及全部 hover/focus 的颜色过渡。
+
+   ── 为什么必须带 !important（4 处，逐条登记） ─────────────────────────
+   本块选择器 `*, *::before, *::after` 特异度 (0,0,0)，是 CSS 里最弱的形态。
+   全站每一条声明了 transition / animation 的规则（.btn 0,1,0、
+   .task-card.status-running::before 0,2,0 …）都比它强，**不带 !important
+   这一块一条也压不住，等于整段死代码**。这是 a11y 社区的标准写法
+   （见 https://web.dev/prefers-reduced-motion/）。逐条：
+     1. `animation-duration: 0.01ms`      压 pulse（0,2,0）
+     2. `animation-iteration-count: 1`    单独一条：只压时长的话 infinite 仍在
+                                          每 0.01ms 触发一次 animationiteration
+                                          事件，是 CPU 空转
+     3. `transition-duration: 0.01ms`     压 .progress-bar / .btn / .card …
+   通行模板里还有一条 `transition-property`，这里**不写**：时长已经压到
+   0.01ms，再限制哪些属性参与过渡不产生任何额外效果，纯粹多一个 !important。
+
+   用 0.01ms 而不是 0：0 会让浏览器**根本不派发** transitionend /
+   animationend，依赖这些事件收尾的脚本会静默卡住。本站 ui.js 的 toast
+   出场就是靠定时器 + class 切换，不依赖事件；但这条约定是给后来者的护栏。
+
+   ── 为什么没有 `scroll-behavior: auto !important` ─────────────────────
+   通行模板里有这一行，这里**故意不写**，CDP 实测过：Bootstrap 5.3.0 的
+   reboot 自己就把 `:root { scroll-behavior: smooth }` 关在
+   `@media (prefers-reduced-motion: no-preference)` 里。实测
+   getComputedStyle(:root).scrollBehavior：默认 `smooth`，
+   Emulation.setEmulatedMedia 打开 reduce 后是 `auto`。本站自己一处
+   scroll-behavior 都没声明。多写一条只是多一个 !important 和一条死声明。
+   ⚠️ 若将来本站自己声明了 scroll-behavior: smooth，请把这一行补回来。 */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }

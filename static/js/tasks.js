@@ -33,6 +33,18 @@ function initTasks() {
         console.log('Task stitch progress:', data);
     });
 
+    // 某个缩放级别拼接失败。任务可能仍在跑(其余级别继续),所以这里只报,不动卡片。
+    // 最终判定在后端:全失败 → task_failed;部分失败 → task_completed 带 warning,
+    // 同时写进 tasks.error_message。
+    socket.on('task_stitch_failed', function(data) {
+        console.error(`Task ${data.task_id} zoom ${data.zoom_level} 拼接失败:`, data.error_message);
+    });
+
+    // 复制瓦片阶段的心跳。下载进度条此时已经 100%,没有这个事件界面会静止若干分钟。
+    socket.on('task_copy_progress', function(data) {
+        console.log('Task copy progress:', data);
+    });
+
     loadActiveTasks();
 
     // 每秒更新一次时长显示
@@ -157,7 +169,7 @@ function renderActiveTasks(tasks) {
 
     if (tasks.length === 0) {
         container.innerHTML = `
-            <div style="text-align:center; padding:2rem 1rem; color:var(--color-text-muted);">
+            <div style="text-align:center; padding:2rem 1rem; color:var(--color-text-secondary);">
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.4; margin-bottom:0.75rem;">
                 <line x1="22" y1="12" x2="18" y2="12"></line><line x1="6" y1="12" x2="2" y2="12"></line>
                 <line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line>
@@ -169,6 +181,10 @@ function renderActiveTasks(tasks) {
     }
 
     container.innerHTML = tasks.map(task => createTaskCard(task)).join('');
+    // createTaskCard 只吐一个空的 .task-error 容器（错误原文不能进 innerHTML），
+    // 文本在这里补。漏掉这一步的话，失败当场看得见原因，之后随便来一个新任务
+    // 触发整体重绘，红框就变空了。
+    tasks.forEach(applyTaskErrorText);
 }
 
 function createTaskCard(task) {
@@ -183,7 +199,11 @@ function createTaskCard(task) {
         'running': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>',
         'paused': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>',
         'completed': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>',
-        'failed': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>'
+        'failed': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>',
+        // A7 / Task 12 补上：cancelled 原先没有图标（`statusIcons[task.status] || ''`
+        // 静默吐空串）。这一态确实到得了卡片——task_progress 事件推的是整行 DB 记录，
+        // 取消动作落库后会顺着 `task.status = data.status` 进来。
+        'cancelled': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
     };
 
     const supportsPauseResume = task.task_type !== 'local_terrain';
@@ -200,14 +220,14 @@ function createTaskCard(task) {
             <div class="d-flex justify-content-end" style="margin-bottom: 0.75rem;">
                 <div class="btn-group btn-group-sm">
                     ${supportsPauseResume && task.status === 'pending' ? `
-                        <button class="btn btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务">
+                        <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务" aria-label="启动任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
                     ${supportsPauseResume && task.status === 'running' ? `
-                        <button class="btn btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务">
+                        <button class="btn btn-icon btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务" aria-label="暂停任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="6" y="4" width="4" height="16"></rect>
                                 <rect x="14" y="4" width="4" height="16"></rect>
@@ -215,18 +235,30 @@ function createTaskCard(task) {
                         </button>
                     ` : ''}
                     ${supportsPauseResume && task.status === 'paused' ? `
-                        <button class="btn btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务">
+                        <button class="btn btn-icon btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务" aria-label="恢复任务">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
-                    <button class="btn btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                    </button>
+                    ${task.status !== 'failed' ? `
+                        <button class="btn btn-icon btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务" aria-label="取消任务">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
+                    ` : ''}
+                    ${task.status === 'failed' ? `
+                        <button class="btn btn-secondary" onclick="dismissTask(${task.id}, '${task.task_type}')"
+                                title="从列表中移除这张失败卡片" aria-label="移除失败任务卡片">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                            移除
+                        </button>
+                    ` : ''}
                 </div>
             </div>
 
@@ -240,14 +272,13 @@ function createTaskCard(task) {
                 ${task.failed_items > 0 ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_items}</span>` : ''}
             </div>
 
-            <div class="progress" style="height: 28px; margin-bottom: 0.75rem;">
-                <div class="progress-bar bg-${getProgressColor(progress)}" role="progressbar"
+            <div class="progress" style="margin-bottom: 0.75rem;">
+                <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
                      style="width: ${progress}%"
                      aria-valuenow="${progress}"
                      aria-valuemin="0"
-                     aria-valuemax="100">
-                    ${progress}%
-                </div>
+                     aria-valuemax="100"></div>
+                <span class="progress__label" aria-hidden="true">${progress}%</span>
             </div>
 
             ${timeInfo.show ? `
@@ -260,6 +291,10 @@ function createTaskCard(task) {
                 ${timeInfo.elapsed && timeInfo.estimated ? ' | ' : ''}
                 ${timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : ''}
             </div>
+            ` : ''}
+
+            ${task.status === 'failed' ? `
+            <div class="task-error" role="alert"></div>
             ` : ''}
         </div>
     `;
@@ -428,8 +463,15 @@ function updateTaskProgressPartial(card, task) {
     if (progressBar) {
         progressBar.style.width = `${progress}%`;
         progressBar.setAttribute('aria-valuenow', progress);
-        progressBar.textContent = `${progress}%`;
-        progressBar.className = `progress-bar bg-${getProgressColor(progress)}`;
+        progressBar.className = `progress-bar bg-${getStatusColor(task.status)}`;
+    }
+
+    // 百分比在覆盖层里，不在条里。这行原本是 progressBar.textContent = ...，
+    // 是这条路径最容易漏改的一处：卡片初次渲染看不出问题，第一个
+    // task_progress 事件一到就会在同一条进度条上多出第二个百分比。
+    const progressLabel = card.querySelector('.progress__label');
+    if (progressLabel) {
+        progressLabel.textContent = `${progress}%`;
     }
 
     // 更新下载数量
@@ -468,45 +510,97 @@ function handleTaskCompleted(taskId, taskType) {
     }
 }
 
+// 后端没给原因时的兜底文案。空字符串会渲染成一个空红框，比没有红框更让人困惑。
+const UNKNOWN_ERROR_TEXT = '任务失败，但后端没有返回失败原因。请查看服务端日志。';
+
+// taskKey -> showToast 返回的句柄。失败 toast 是常驻的（duration: 0），
+// 同一个任务重复发 task_failed（等高线任务下载阶段与渲染阶段各有失败出口）
+// 会让永不消失的提示白白堆高，所以按 key 合并，新的替掉旧的。
+// ⚠️ 只按 key 合并：不同任务的 toast 必须各留一条，失败原因不一样。
+const failureToasts = new Map();
+
+function closeFailureToast(key) {
+    const t = failureToasts.get(key);
+    if (t) {
+        t.close();
+        failureToasts.delete(key);
+    }
+}
+
 function handleTaskFailed(taskId, taskType, errorMessage) {
     const key = `${taskType}:${taskId}`;
     const task = activeTasks.get(key);
-    if (task) {
-        task.status = 'failed';
-        task.error_message = errorMessage;
-        activeTasks.delete(key);
+    if (!task) return;
 
-        const card = document.getElementById(`task-${key}`);
-        if (card) {
-            card.remove();
-        }
+    task.status = 'failed';
+    task.error_message = errorMessage || UNKNOWN_ERROR_TEXT;
+    task._key = key;   // applyTaskErrorText 靠它定位卡片；normalizeTask 之外的路径不一定设过
 
+    // 既不 activeTasks.delete 也不删卡片：卡片必须留在页面上。
+    // 原实现两件事一起做，于是用户盯着 63% 的进度条，卡片突然消失、零提示，
+    // 分不清是失败、被别人取消、还是自己看花了眼。
+    // 清理改由用户点卡片上的「移除」按钮触发（dismissTask）。
+    activeTasks.set(key, task);
+
+    const card = document.getElementById(`task-${key}`);
+    if (card) {
+        // 整卡重建而不是逐个改 class：进度条转红、徽章改「失败」、动作按钮
+        // 换成「移除」这几件事，createTaskCard 里都已经按 status 分支写好了，
+        // 手工同步 DOM 只会多一份会走偏的真相。
+        card.outerHTML = createTaskCard(task);
+        applyTaskErrorText(task);
+    } else {
         renderActiveTasks(Array.from(activeTasks.values()));
-
-        if (errorMessage) {
-            console.error(`Task ${taskId} failed: ${errorMessage}`);
-        }
     }
+
+    console.error(`Task ${taskId} failed: ${task.error_message}`);
+    // duration: 0 → ui.js 里 `if (duration > 0)` 不成立，不挂定时器，
+    // toast 一直留到用户自己点 ×。默认的 3500ms 在这里没用：用户离座一趟
+    // 回来照样什么都看不到。
+    closeFailureToast(key);   // 同一任务只留最新的一条
+    failureToasts.set(key, showToast(`任务失败：${task.error_message}`, 'danger', { duration: 0 }));
+}
+
+// 把错误文本填进卡片里那个**空的** .task-error 容器。
+//
+// 为什么不直接拼进 createTaskCard 的模板：那个返回值最终进 innerHTML，
+// 而 error_message 是后端异常的字符串化结果（URL、路径、第三方库报错原文
+// 都可能在里面），拼进去等于把它当 HTML 解析。ui.js 的 toast 里是同一条规矩。
+function applyTaskErrorText(task) {
+    if (!task || task.status !== 'failed') return;
+    const card = document.getElementById(`task-${task._key}`);
+    if (!card) return;
+    const box = card.querySelector('.task-error');
+    if (!box) return;
+    box.textContent = task.error_message || UNKNOWN_ERROR_TEXT;  // textContent 防 XSS
+}
+
+// 「移除」按钮：只把失败卡片从界面上拿走，不碰后端。
+//
+// 失败任务在后端已经是终态，再 POST /cancel 最好的情况也只是白跑一趟。
+// 也刻意**没有**「重试」：三个 manager 的 start_task 都要求
+// status in ('pending','paused')，对 failed 调用直接抛 ValueError，
+// 重试得先改后端状态机。
+function dismissTask(taskId, taskType = 'map') {
+    const key = `${taskType}:${taskId}`;
+    activeTasks.delete(key);
+    closeFailureToast(key);   // 卡片都不要了，那条常驻 toast 也别留着占地方
+    renderActiveTasks(Array.from(activeTasks.values()));
 }
 
 function getStatusColor(status) {
     const colors = {
         'pending': 'secondary',
-        'running': 'primary',
+        // running 用 'info' 而不是 'primary'：徽章侧 .status-badge.running /
+        // .badge.bg-primary / .badge.bg-info 是同一条声明块，渲染完全一致；
+        // 而进度条侧 .progress-bar.bg-info 已经存在，不必再写 .bg-primary 覆盖。
+        'running': 'info',
         'paused': 'warning',
         'completed': 'success',
         'failed': 'danger',
         'cancelled': 'dark'
     };
     return colors[status] || 'secondary';
-}
-
-function getProgressColor(progress) {
-    if (progress >= 100) return 'success';
-    if (progress >= 75) return 'info';
-    if (progress >= 50) return 'primary';
-    if (progress >= 25) return 'warning';
-    return 'danger';
 }
 
 function getStatusText(status) {

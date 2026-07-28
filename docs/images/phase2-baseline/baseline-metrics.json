@@ -1,0 +1,40 @@
+{
+  "capturedAt": "Phase 2 Task 1 — C1 清理前",
+  "branch": "feat/gis-data-correctness",
+  "viewport1600x1000": {
+    "formControlHeight": 43.7,
+    "formControlFontSize": "15px",
+    "formControlPadding": "9.6px 13.6px",
+    "cardHeaderHeight": 47.1,
+    "cardBodyPadding": "0px",
+    "rightCardHeight": 800.3,
+    "submitBtnBottom": 859.3,
+    "viewportHeight": 1000,
+    "selectBgImage": "none",
+    "bsBodyBg": "#fff",
+    "bsTertiaryBg": "#f8f9fa",
+    "htmlDataBsTheme": null
+  },
+  "viewport1366x768": {
+    "formControlHeight": 43.7,
+    "formControlFontSize": "15px",
+    "formControlPadding": "9.6px 13.6px",
+    "cardHeaderHeight": 47.1,
+    "cardBodyPadding": "0px",
+    "rightCardHeight": 800.3,
+    "submitBtnBottom": 859.3,
+    "viewportHeight": 768,
+    "selectBgImage": "none",
+    "bsBodyBg": "#fff",
+    "bsTertiaryBg": "#f8f9fa",
+    "htmlDataBsTheme": null
+  },
+  "fitsOnScreen1366": false,
+  "files": [
+    "home.png",
+    "contour.png",
+    "history.png",
+    "config.png",
+    "home-1366x768.png"
+  ]
+}
