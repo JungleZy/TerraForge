@@ -109,8 +109,8 @@ def test_start_tiling_invokes_build_terrain(monkeypatch, tmp_path):
     task = mgr.get_task(task_id)
     assert task["status"] == "completed"
     assert calls["maxzoom"] == 11
-    assert str(calls["task_dir"]).endswith(f"local_task_{task_id}/source")
-    assert str(calls["out_dir"]).endswith(f"local_task_{task_id}/terrain_tiles")
+    assert str(calls["task_dir"]).endswith(os.path.join(f"local_task_{task_id}", "source"))
+    assert str(calls["out_dir"]).endswith(os.path.join(f"local_task_{task_id}", "terrain_tiles"))
 
 
 def test_start_tiling_marks_failed_on_error(monkeypatch, tmp_path):

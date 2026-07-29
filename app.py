@@ -82,7 +82,7 @@ _SHOW_STARTUP_OUTPUT = (
 # 轻量模块,先加载它们即可。
 if _PRINT_BANNER:
     from core.config import Config
-    from core.startup_banner import print_banner, use_color
+    from core.startup_banner import print_banner, safe_print, use_color
 
     _color = use_color()
     print_banner(
@@ -94,12 +94,13 @@ if _PRINT_BANNER:
         database_path=Config.DATABASE_PATH,
     )
     # SECRET_KEY 提示跟在横幅后面(config.py 在 import 时只置标记,不直接打日志)。
-    # 用 print 而不用 logger.warning:父进程的日志已被压到 ERROR;且父进程在 reload
-    # 时不会重跑,提示不会每次热重载都刷一遍。
+    # 用 safe_print 而不用 logger.warning:父进程的日志已被压到 ERROR;且父进程在
+    # reload 时不会重跑,提示不会每次热重载都刷一遍。safe_print 保证 cp1252 等
+    # 控制台编码下不崩。
     if Config.SECRET_KEY_WAS_GENERATED:
         _warn = ('  ⚠ SECRET_KEY 未配置,已为本会话生成随机密钥;'
                  '生产环境请设置 SECRET_KEY 环境变量')
-        print(f'\033[33m{_warn}\033[0m' if _color else _warn, flush=True)
+        safe_print(f'\033[33m{_warn}\033[0m' if _color else _warn)
 
 # 加载动画:重量级 import 阻塞主线程数秒,动画只能在后台线程里跑(Spinner 内部
 # 处理;非 TTY 退化为一次性静态提示)。父进程(横幅后)和 reloader 子进程(不打

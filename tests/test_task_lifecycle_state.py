@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -94,7 +95,7 @@ def _seed_dem_task(db, status="running", file_statuses=("pending",), failed_file
                total_files, downloaded_files, failed_files)
             VALUES ('dem-task', ?, 1, 0, 1, 0, 'ASTGTM.003', ?, ?, 0, ?)
             """,
-            (status, "/tmp", len(file_statuses), failed_files),
+            (status, tempfile.gettempdir(), len(file_statuses), failed_files),
         )
         task_id = cur.lastrowid
         for idx, file_status in enumerate(file_statuses):

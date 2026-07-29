@@ -28,6 +28,7 @@ def build_env(monkeypatch, tmp_path):
     # 防止真的执行 Nuitka / 共享库拷贝 / 产物重命名
     monkeypatch.setattr(nuitka_build.subprocess, 'check_call', lambda cmd: None)
     monkeypatch.setattr(nuitka_build, 'copy_extension_system_libs', lambda d: None)
+    monkeypatch.setattr(nuitka_build, 'copy_extension_system_dlls_windows', lambda d: None)
     monkeypatch.setattr(nuitka_build, 'verify_no_missing_libs', lambda d: None)
     monkeypatch.setattr(nuitka_build.os.path, 'isfile', lambda p: True)
     monkeypatch.setattr(nuitka_build.os, 'rename', lambda s, d: None)
@@ -37,8 +38,9 @@ def build_env(monkeypatch, tmp_path):
 
 
 def test_build_raises_when_gdal_and_proj_data_missing(build_env):
-    """gdal-config 无输出 + 找不到 proj.db → 构建期直接报错。"""
-    build_env.setattr(os, 'popen', lambda cmd: _FakePopen(''))
+    """数据目录都找不到 → 构建期直接报错。"""
+    build_env.setattr(nuitka_build, '_gdal_data_candidates', lambda: ['/fake/gdal'])
+    build_env.setattr(nuitka_build, '_proj_data_candidates', lambda: ['/fake/proj'])
     build_env.setattr(os.path, 'isdir', lambda p: False)
     build_env.setattr(os.path, 'exists', lambda p: False)
     with pytest.raises(RuntimeError, match='gdal-data'):
@@ -47,8 +49,9 @@ def test_build_raises_when_gdal_and_proj_data_missing(build_env):
 
 def test_build_raises_when_only_proj_data_missing(build_env):
     """gdal-data 找得到但 proj.db 找不到 → 同样必须报错。"""
-    build_env.setattr(os, 'popen', lambda cmd: _FakePopen('/fake/gdal\n'))
-    build_env.setattr(os.path, 'isdir', lambda p: p == '/fake/gdal')
+    build_env.setattr(nuitka_build, '_gdal_data_candidates', lambda: ['/fake/gdal'])
+    build_env.setattr(nuitka_build, '_proj_data_candidates', lambda: ['/fake/proj'])
+    build_env.setattr(os.path, 'isdir', lambda p: True)
     build_env.setattr(os.path, 'exists', lambda p: p == os.path.join('/fake/gdal', 'epsg.wkt'))
     with pytest.raises(RuntimeError, match='proj-data'):
         nuitka_build.main()

@@ -65,6 +65,27 @@ def use_color(stream=None):
     return hasattr(stream, 'isatty') and stream.isatty()
 
 
+def safe_write(stream, text):
+    """写文本;控制台编码(如西欧 Windows 的 cp1252)装不下时降级为替换字符。
+
+    横幅/spinner 含块字符、braille、中文,cp1252 直接 UnicodeEncodeError 把
+    进程搞挂——这是打包 exe 在真实用户机器上的崩溃场景,绝不能让装饰性输出
+    干掉主程序。
+    """
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, 'encoding', None) or 'utf-8'
+        stream.write(text.encode(encoding, errors='replace').decode(encoding, errors='replace'))
+
+
+def safe_print(text, stream=None):
+    """print() 的编码安全版本,见 safe_write。"""
+    stream = stream if stream is not None else sys.stdout
+    safe_write(stream, text + '\n')
+    stream.flush()
+
+
 def _lan_ip():
     """探测局域网 IP(UDP connect 不实际发包);离线环境返回 None。"""
     sock = None
@@ -128,12 +149,12 @@ def print_banner(version, host='0.0.0.0', port=5000, debug=False,
     """打印启动横幅。自动处理 Windows ANSI 兼容与无颜色环境退化。"""
     stream = stream if stream is not None else sys.stdout
     _enable_windows_ansi()
-    stream.write(format_banner(
+    safe_write(stream, format_banner(
         version, host=host, port=port, debug=debug,
         downloads_dir=downloads_dir, database_path=database_path,
         color=use_color(stream),
     ))
-    stream.write('\n')
+    safe_write(stream, '\n')
     stream.flush()
 
 
@@ -167,14 +188,14 @@ class Spinner:
 
     def start(self):
         if not self._animated:
-            print(self.message, file=self.stream, flush=True)
+            safe_print(self.message, stream=self.stream)
             return self
 
         def _run():
             i = 0
             while not self._stop_event.is_set():
                 frame = self.FRAMES[i % len(self.FRAMES)]
-                self.stream.write(f'\r\033[36m{frame}\033[0m {self.message}')
+                safe_write(self.stream, f'\r\033[36m{frame}\033[0m {self.message}')
                 self.stream.flush()
                 i += 1
                 self._stop_event.wait(self.interval)
@@ -193,7 +214,7 @@ class Spinner:
         if self._thread is not None:
             self._thread.join(timeout=1)
         # CJK 字符是双宽,清行空格按两倍字符数给,保证不残留
-        self.stream.write('\r' + ' ' * (len(self.message) * 2 + 4) + '\r')
+        safe_write(self.stream, '\r' + ' ' * (len(self.message) * 2 + 4) + '\r')
         self.stream.flush()
 
 

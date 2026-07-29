@@ -81,7 +81,7 @@ def test_terrain_api_start_creates_running_job(monkeypatch, tmp_path):
     assert job is not None
     assert job["status"] == "running"
     assert job["maxzoom"] == 14
-    assert job["output_dir"].endswith(f"dem_task_{task_id}/terrain_tiles")
+    assert job["output_dir"].endswith(os.path.join(f"dem_task_{task_id}", "terrain_tiles"))
 
 
 def test_terrain_api_get_existing_job(monkeypatch, tmp_path):
