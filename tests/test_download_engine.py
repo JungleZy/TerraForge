@@ -14,10 +14,10 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import database
+from core import database
 from services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD, MIN_ZOOM, MAX_ZOOM
 from models.task import Tile
-from config import Config
+from core.config import Config
 
 
 @pytest.fixture

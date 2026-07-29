@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import Blueprint, abort, send_file
 
-from config import Config
+from core.config import Config
 from routes.terrain_static import _resolve_safe_file
 
 logger = logging.getLogger(__name__)

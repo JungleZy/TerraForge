@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    import config
+    from core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
@@ -30,7 +30,7 @@ def _load_app(monkeypatch, tmp_path):
     # init_task_manager` 又会新建一个 routes.api 模块 —— 测试 patch 新模块、
     # 请求却打到旧模块,I3/I15 的断言就对不上。
     for mod in (
-        "app", "database", "models.task", "services.config_manager",
+        "app", "core.database", "models.task", "services.config_manager",
         "services.task_manager", "services.dem_task_manager",
         "services.contour_task_manager",
         "routes", "routes.api", "routes.dem_api", "routes.contour_api",
@@ -139,7 +139,7 @@ def test_create_map_task_output_path_inside_downloads_201(monkeypatch, tmp_path)
 
 def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     api_mod = importlib.import_module("routes.api")
     task_id = _seed_map_task(db, status="paused")
 
@@ -156,7 +156,7 @@ def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
 
 def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     dem_api_mod = importlib.import_module("routes.dem_api")
     task_id = _seed_dem_task(db, status="paused")
 
@@ -173,7 +173,7 @@ def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
 
 def test_delete_map_task_without_active_thread_still_works(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _seed_map_task(db, status="paused")
     resp = client.delete(f"/api/tasks/{task_id}")
     assert resp.status_code == 200, resp.get_json()
@@ -192,7 +192,7 @@ def test_pause_cancel_nonexistent_map_task_400(monkeypatch, tmp_path):
 
 def test_pause_map_task_with_wrong_status_400(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _seed_map_task(db, status="pending")
     resp = client.post(f"/api/tasks/{task_id}/pause")
     assert resp.status_code == 400, resp.get_json()
@@ -235,7 +235,7 @@ def test_update_config_unknown_key_rejected(monkeypatch, tmp_path):
     assert resp.get_json()["success"] is False
 
     # 未知键不得落库
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     conn = db.get_connection()
     try:
         row = conn.cursor().execute(
@@ -257,7 +257,7 @@ def test_update_config_known_key_still_works(monkeypatch, tmp_path):
 
 def test_get_tasks_limit_zero_clamped_to_default(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     for _ in range(2):
         _seed_map_task(db)
     resp = client.get("/api/tasks?limit=0")

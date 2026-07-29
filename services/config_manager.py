@@ -9,7 +9,7 @@ import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
 import sqlite3
-from database import get_connection_context, DEFAULT_CONFIGS
+from core.database import get_connection_context, DEFAULT_CONFIGS
 from services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)

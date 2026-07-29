@@ -51,7 +51,7 @@ class _FakeSession:
 
 
 def _make_engine(monkeypatch, tmp_path, resp, max_retries="0"):
-    import config
+    from core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     import services.dem_download_engine as dde
 

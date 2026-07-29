@@ -4,7 +4,7 @@ import sys
 
 def _load_client(monkeypatch, tmp_path):
     # Isolate DB and directory side effects before importing app.py (which runs init_database()).
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")

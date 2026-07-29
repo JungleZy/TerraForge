@@ -17,13 +17,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _setup(monkeypatch, tmp_path):
-    import config
+    from core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "database", "services.dem_task_manager"):
+    for mod in ("app", "core.database", "services.dem_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     db.init_database()
     dtm = importlib.import_module("services.dem_task_manager")
     return db, dtm
@@ -156,7 +156,7 @@ class _FakeSession:
 
 
 def test_engine_pause_writes_back_pending(monkeypatch, tmp_path):
-    import config
+    from core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     import services.dem_download_engine as dde
 

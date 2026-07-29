@@ -2,7 +2,7 @@
 
 ## 概述
 
-本项目可以使用 PyInstaller 打包成 Windows、macOS 和 Linux 的独立可执行文件。可执行文件包含所有依赖，可在没有安装 Python 的机器上运行。
+本项目可以使用 Nuitka 打包成 Windows、macOS 和 Linux 的独立可执行文件。可执行文件包含所有依赖，可在没有安装 Python 的机器上运行。
 
 ## 自动构建（GitHub Actions）
 
@@ -42,7 +42,7 @@ GitHub Actions 工作流会在以下情况自动构建所有平台的可执行�
 3. **安装依赖**：
    ```bash
    pip install -r requirements.txt
-   pip install pyinstaller
+   pip install nuitka
    ```
 
 ### 构建命令
@@ -59,7 +59,7 @@ build.bat
 
 #### 手动构建
 ```bash
-pyinstaller build.spec
+python nuitka_build.py
 ```
 
 ### 输出
@@ -114,18 +114,16 @@ powershell Compress-Archive -Path terraforge/* -DestinationPath terraforge-windo
    gdalinfo --version     # Windows
    ```
 
-2. **验证 GDAL_DATA 路径**（在 `hook-gdal.py` 中）
+2. **验证 GDAL_DATA 路径**（打包模式下由 `core/bundle.py:setup_bundle_env()` 设置）
 
-3. **使用详细输出重新构建**：
-   ```bash
-   pyinstaller --log-level DEBUG build.spec
-   ```
+3. **使用详细输出重新构建**：在 `nuitka_build.py` 的 Nuitka 参数中追加
+   `--show-progress --show-modules`，重新运行 `python nuitka_build.py`
 
 ### 缺少依赖
 
 如果可执行文件因导入错误失败：
 
-1. 将缺少的模块添加到 `build.spec` 中的 `hiddenimports`
+1. 将缺少的模块添加到 `nuitka_build.py` 中的 `--include-package` 参数
 2. 重新构建可执行文件
 
 ### 可执行文件体积过大
@@ -133,8 +131,8 @@ powershell Compress-Archive -Path terraforge/* -DestinationPath terraforge-windo
 要减小体积：
 
 1. 从 `requirements.txt` 中移除未使用的依赖
-2. 在 `build.spec` 中使用 `--exclude-module` 排除不必要的包
-3. 如果 UPX 压缩导致问题，在 `build.spec` 中设置 `upx=False`
+2. 在 `nuitka_build.py` 中使用 `--nofollow-import-to` 排除不必要的包
+3. 如确认环境兼容，可尝试 `--lto=yes` 减小编译产物体积
 
 ### 平台特定问题
 
@@ -154,23 +152,24 @@ chmod +x dist/terraforge/terraforge
 
 ## 构建配置
 
-### build.spec
+### nuitka_build.py
 
-`build.spec` 文件控制构建过程：
+`nuitka_build.py` 控制构建过程：
 
-- **datas**: 包含模板、静态文件、GDAL 数据
-- **hiddenimports**: PyInstaller 未自动检测的 Python 模块
-- **binaries**: 原生库（GDAL 等）
-- **runtime_hooks**: 应用启动前运行的设置代码
+- **`--include-data-dir`**: 包含模板、静态文件、GDAL/PROJ 数据
+- **`--include-package`**: Nuitka 静态分析未自动检测到的 Python 包
+- **`--include-package-data`**: 包内数据文件（matplotlib mpl-data、certifi CA 证书）
+- **GDAL/PROJ 数据目录发现**: 按平台从环境变量、`gdal-config`、conda 布局中定位，找不到时构建直接失败
+- **系统依赖库补拷**: Nuitka 只复制 Python/conda 前缀内的依赖库；Linux（apt GDAL，补拷 ldd 闭包）和 Windows 非 conda 布局（OSGeo4W 等，用 Nuitka 自带扫描器补拷 DLL 闭包）会在构建后把 GDAL 相关系统库补进 dist 根目录，并自检无缺失依赖
 
 ### 自定义
 
 要自定义构建：
 
-1. **更改应用名称**: 修改 `build.spec` 中的 `name='terraforge'`
-2. **添加图标**: 在 `EXE()` 部分添加 `icon='icon.ico'`
-3. **单文件模式**: 用单文件 EXE 替换 `COLLECT()`
-4. **控制台模式**: 设置 `console=False` 隐藏终端窗口
+1. **更改应用名称**: 修改 `nuitka_build.py` 中的 `APP_NAME`
+2. **添加图标**: 在 Nuitka 参数中添加 `--windows-icon-from-ico=icon.ico` / `--macos-app-icon=icon.icns`
+3. **单文件模式**: 在 Nuitka 参数中添加 `--onefile`（启动时会解压到临时目录，启动变慢）
+4. **无控制台窗口**: 在 Nuitka 参数中添加 `--windows-console-mode=disable`（仅 Windows）
 
 ## CI/CD 集成
 
@@ -179,7 +178,7 @@ chmod +x dist/terraforge/terraforge
 1. 设置 Python 3.9
 2. 为每个平台安装 GDAL
 3. 安装 Python 依赖
-4. 使用 PyInstaller 构建可执行文件
+4. 使用 Nuitka 构建可执行文件
 5. 打包结果
 6. 上传构建产物
 7. 创建 GitHub Release（对于标签）
@@ -206,8 +205,8 @@ chmod +x dist/terraforge/terraforge
 - 加载所有依赖
 
 改进方法：
-- 使用 `--onefile` 获得更快的启动（但文件更大）
-- 排除未使用的模块
+- 使用 `--onefile` 分发单文件（但首次启动需解压，更慢）
+- 用 `--nofollow-import-to` 排除未使用的模块
 - 在代码中使用延迟导入
 
 ## 已知问题
@@ -230,6 +229,6 @@ Windows 上的 GDAL 安装可能不稳定。如果构建失败：
 ## 技术支持
 
 构建问题：
-1. 查看 PyInstaller 文档：https://pyinstaller.org
+1. 查看 Nuitka 文档：https://nuitka.net
 2. 查看 GitHub Actions 中的构建日志
 3. 提交 issue 并附上构建输出

@@ -6,16 +6,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _reload(monkeypatch, tmp_path):
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    for mod in ("database", "services.local_terrain_task_manager"):
+    for mod in ("core.database", "services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     db.init_database()
     mgr_mod = importlib.import_module("services.local_terrain_task_manager")
     return db, mgr_mod
@@ -136,14 +136,14 @@ import io
 
 
 def _load_app(monkeypatch, tmp_path):
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    for mod in ("app", "database", "services.local_terrain_task_manager"):
+    for mod in ("app", "core.database", "services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -248,7 +248,7 @@ def test_cancel_marks_pending_task_cancelled(monkeypatch, tmp_path):
 
 def test_history_all_includes_local_terrain(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
 
     # Seed one completed local terrain task directly.
     conn = db.get_connection()

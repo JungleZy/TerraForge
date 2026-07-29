@@ -19,12 +19,14 @@ echo "Installing dependencies..."
 uv pip install -r requirements.txt
 
 # GDAL version consistency check (I20d): the pip pin in requirements.txt must
-# match the system GDAL (major.minor), otherwise the bindings fail to compile
-# or silently misbehave at runtime.
+# match the GDAL the bindings were built against (major.minor), otherwise the
+# bindings fail to compile or silently misbehave at runtime. Prefer the osgeo
+# binding's own version — that is what actually gets bundled; gdal-config may
+# belong to a different GDAL installation on the same machine.
 REQUIRED_GDAL=$(grep -oE '^GDAL==[0-9.]+' requirements.txt | head -1 | cut -d= -f3)
-SYSTEM_GDAL=$(gdal-config --version 2>/dev/null || uv run python -c "from osgeo import gdal; print(gdal.__version__)" 2>/dev/null || true)
+SYSTEM_GDAL=$(uv run python -c "from osgeo import gdal; print(gdal.__version__)" 2>/dev/null || gdal-config --version 2>/dev/null || true)
 if [ -z "$SYSTEM_GDAL" ]; then
-    echo "Error: no system GDAL found (gdal-config missing and osgeo not importable)."
+    echo "Error: no GDAL found (osgeo not importable and gdal-config missing)."
     echo "Install system GDAL first (e.g. apt-get install gdal-bin libgdal-dev / conda install gdal)."
     exit 1
 fi
@@ -38,10 +40,10 @@ if [ "$REQ_MM" != "$SYS_MM" ]; then
 fi
 echo "GDAL version check OK (pin $REQUIRED_GDAL, system $SYSTEM_GDAL)"
 
-# Check if PyInstaller is installed in the uv environment
-if ! uv run python -c "import PyInstaller" &> /dev/null; then
-    echo "Installing PyInstaller..."
-    uv pip install pyinstaller
+# Check if Nuitka is installed in the uv environment
+if ! uv run python -c "import nuitka" &> /dev/null; then
+    echo "Installing Nuitka..."
+    uv pip install nuitka
 fi
 
 # Clean previous builds
@@ -50,7 +52,7 @@ rm -rf build dist
 
 # Build the executable
 echo "Building executable..."
-uv run python -m PyInstaller build.spec
+uv run python nuitka_build.py
 
 # Check if build was successful
 if [ -d "dist/terraforge" ]; then

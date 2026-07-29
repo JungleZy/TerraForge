@@ -74,7 +74,7 @@ uv pip install -r requirements.txt
 #### 数据库初始化
 
 ```bash
-uv run python database.py
+uv run python -c "from core.database import init_database; init_database()"
 ```
 
 ## 使用
@@ -128,12 +128,12 @@ uv run python app.py
 ```
 map-download/
 ├── app.py                  # Flask 应用入口（组合根：注册蓝图、注入管理器）
-├── config.py               # 配置类
-├── database.py             # 数据库初始化（含幂等迁移）
-├── startup_banner.py       # 启动信息横幅
-├── process_watchdog.py     # 进程看门狗（冻结模式下守护主进程）
-├── build.spec              # PyInstaller 打包配置
-├── hook-gdal.py            # PyInstaller GDAL hook
+├── core/                   # 应用基础设施
+│   ├── config.py          # 配置类（路径、密钥、版本）
+│   ├── database.py        # 数据库初始化与连接管理（含幂等迁移）
+│   ├── startup_banner.py  # 启动信息横幅
+│   └── process_watchdog.py # reloader 子进程看门狗
+├── nuitka_build.py         # Nuitka 打包配置（GDAL/PROJ 环境设置在 core/bundle.py）
 ├── build.sh / build.bat    # 本地构建脚本
 ├── requirements.txt        # Python 依赖
 ├── models/                 # 数据模型

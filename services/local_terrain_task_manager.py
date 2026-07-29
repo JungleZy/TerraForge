@@ -15,8 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from config import Config
-from database import get_connection
+from core.config import Config
+from core.database import get_connection
 from services.config_manager import ConfigManager
 from services.geo_validation import validate_zoom
 from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir

@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from pathlib import Path
 
-from database import get_connection
+from core.database import get_connection
 from models.task import Task, Tile
 from services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD
 from services.config_manager import ConfigManager

@@ -15,7 +15,7 @@ class FakeSocketIO:
 
 
 def _reload_with_isolated_db(monkeypatch, tmp_path):
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -23,7 +23,7 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
     for mod in (
-        "database",
+        "core.database",
         "models.task",
         "services.task_manager",
         "services.dem_task_manager",
@@ -31,7 +31,7 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
     ):
         sys.modules.pop(mod, None)
 
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     db.init_database()
     return db
 

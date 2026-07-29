@@ -41,7 +41,7 @@ def test_tampered_output_path_outside_downloads_is_not_served(isolated_app, tmp_
     file. The route must never serve it (404 — the canonical recomputed
     location simply has no such file)."""
     client = isolated_app.app.test_client()
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
 
     outside = tmp_path / "attacker_controlled"  # NOT under tmp_path/downloads
     outside.mkdir()
@@ -58,7 +58,7 @@ def test_tampered_output_path_pointing_at_etc_is_not_served(isolated_app):
     """Classic /etc target: even though /etc/passwd exists on disk, a row
     whose output_path says /etc must not make it reachable."""
     client = isolated_app.app.test_client()
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
 
     task_id = _insert_tampered_task(db, "/etc", "/etc")
 

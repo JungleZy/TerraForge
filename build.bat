@@ -40,11 +40,11 @@ if not "%REQ_MM%"=="%SYS_MM%" (
 )
 echo GDAL version check OK ^(pin %REQ_GDAL%, system %SYS_GDAL%^)
 
-REM Check if PyInstaller is installed in the uv environment
-uv run python -c "import PyInstaller" >nul 2>&1
+REM Check if Nuitka is installed in the uv environment
+uv run python -c "import nuitka" >nul 2>&1
 if errorlevel 1 (
-    echo Installing PyInstaller...
-    uv pip install pyinstaller
+    echo Installing Nuitka...
+    uv pip install nuitka
 )
 
 REM Clean previous builds
@@ -54,7 +54,7 @@ if exist dist rmdir /s /q dist
 
 REM Build the executable
 echo Building executable...
-uv run python -m PyInstaller build.spec
+uv run python nuitka_build.py
 
 REM Check if build was successful
 if exist "dist\terraforge" (

@@ -21,13 +21,13 @@ The four pipelines have **separate** managers, routes, DB tables, and frontend p
 # Setup (one-time)
 uv venv                                 # 如果 .venv 不存在
 uv pip install -r requirements.txt
-uv run python database.py               # 创建 data/map_downloader.db + 默认配置行
+uv run python -c "from core.database import init_database; init_database()"               # 创建 data/map_downloader.db + 默认配置行
 
 # Run dev server (Flask + Socket.IO on :5000)
 uv run python app.py                    # 源码运行 DEBUG=1 by default → use_reloader=True（打包 exe 默认 DEBUG=0）
 DEBUG=0 uv run python app.py            # disable reloader/debug
 
-# Migrations (rarely needed — init_database() in database.py also runs idempotent ALTERs)
+# Migrations (rarely needed — init_database() in core/database.py also runs idempotent ALTERs)
 uv run python migrations/001_add_time_tracking.py
 
 # Tests
@@ -35,10 +35,10 @@ uv run pytest tests/                                                # full suite
 uv run pytest tests/test_terrain_api.py                             # single file
 uv run pytest tests/test_dem_task_tiler.py::test_terrain_output_dir_for_task   # single test
 
-# Build standalone executable (PyInstaller)
-./build.sh           # Linux/macOS（脚本内部使用 uv run python -m PyInstaller）
-build.bat            # Windows（脚本内部使用 uv run python -m PyInstaller）
-# Output: dist/terraforge/ — entry build.spec, GDAL hook hook-gdal.py
+# Build standalone executable (Nuitka)
+./build.sh           # Linux/macOS（脚本内部使用 uv run python nuitka_build.py）
+build.bat            # Windows（脚本内部使用 uv run python nuitka_build.py）
+# Output: dist/terraforge/ — entry nuitka_build.py, GDAL/PROJ 环境设置在 core/bundle.py
 ```
 
 GDAL system libraries are required (`gdal-bin libgdal-dev` on Debian, `brew install gdal` on macOS). `requirements.txt` pins `GDAL==3.8.4` — keep in sync with the system `gdal-config --version`. 安装 GDAL Python 绑定时，`uv pip install gdal==$(gdal-config --version)` 通常比固定版本更稳。
@@ -83,7 +83,7 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 - SQLite at `Config.DATABASE_PATH` (`data/map_downloader.db`). Connections use `sqlite3.Row` factory and `PRAGMA foreign_keys = ON`.
 - Use `get_connection_context()` (context manager) for short reads; `get_connection()` + manual close inside managers.
 - **Schema evolves inside `init_database()`** with `ALTER TABLE ... ADD COLUMN` wrapped in a try/except that swallows `duplicate column name`. New backward-compatible columns go there; the `migrations/` folder exists but is not the primary mechanism.
-- The `config` table is seeded from `DEFAULT_CONFIGS` in `database.py` with `INSERT OR IGNORE`. Adding a new setting means appending there.
+- The `config` table is seeded from `DEFAULT_CONFIGS` in `core/database.py` with `INSERT OR IGNORE`. Adding a new setting means appending there.
 
 ### Map tile specifics
 
@@ -109,13 +109,14 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 - Contour tasks default `output_path` to `downloads/dem/`; granules and output live in `contour_task_<id>/` with XYZ PNGs at `contour_tiles/{z}/{x}/{y}.png`, served at `/contour/<id>/...`.
 - Like the terrain tiler, the contour renderer is lazy-imported for testability: `contour_task_tiler.tile_contour_task_dir` accepts a `build_contour_fn=` stub so tests don't need GDAL/matplotlib.
 
-### Frozen / PyInstaller mode
+### Frozen / Nuitka mode
 
-Both `app.py` and `config.py` branch on `getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')`:
+`core/bundle.py` branches on `'__compiled__' in globals()` (injected by Nuitka into every compiled module); `app.py` and `core/config.py` consume `bundle_dir()`:
 
-- Templates/static come from `sys._MEIPASS` (PyInstaller's read-only bundle).
+- Templates/static come from `bundle_dir()` (the Nuitka standalone dist dir — data dirs sit next to the executable, and `sys.executable` points at the real exe).
 - `Config.BASE_DIR` becomes `Path(sys.executable).parent` so `data/`, `downloads/`, `cache/` live next to the executable, not inside the bundle. Anything writing to disk must go through `Config.*_DIR` to stay portable across frozen vs source runs.
-- `build.spec` collects `flask_socketio`, `socketio`, `engineio`, `aiohttp`, `osgeo.*`, etc., and copies the GDAL data dir per platform. `hook-gdal.py` is the runtime hook.
+- `core/bundle.py:setup_bundle_env()` (called at the top of `app.py`, before any `osgeo` import) sets `GDAL_DATA`/`PROJ_DATA` and fails loudly if the bundle lacks them — it replaces the old PyInstaller runtime hook. `nuitka_build.py` collects `flask_socketio`, `socketio`, `engineio`, `aiohttp`, `osgeo.*`, etc., and copies the GDAL/PROJ data dirs per platform.
+- Nuitka only bundles dependency libraries inside the Python/conda prefix. `nuitka_build.py` therefore post-copies the GDAL system-library closure into the dist root on Linux (apt GDAL, `ldd` walk) and on non-conda Windows layouts (OSGeo4W etc., via Nuitka's own Win32 dependency scanner), then self-checks for unresolved libraries. Windows CI uses conda, whose `Library/bin` is inside the prefix, so Nuitka covers it natively.
 
 ### Testing patterns to follow
 

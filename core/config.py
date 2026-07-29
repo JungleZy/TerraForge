@@ -7,13 +7,15 @@ import secrets
 import logging
 from pathlib import Path
 
+from core.bundle import bundle_dir
+
 logger = logging.getLogger(__name__)
 
 
 class Config:
     """Application configuration class"""
 
-    APP_VERSION = '0.1.0'
+    APP_VERSION = '0.1.1'
 
     # Secret key for Flask session management
     SECRET_KEY = os.environ.get('SECRET_KEY')
@@ -27,13 +29,13 @@ class Config:
         SECRET_KEY_WAS_GENERATED = False
 
     # Base directory of the application
-    # Support PyInstaller bundled mode
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # Running in PyInstaller bundle
+    # 打包模式(Nuitka standalone):可写数据(数据库/下载/缓存)放在可执行文件旁边
+    if bundle_dir() is not None:
         BASE_DIR = Path(sys.executable).parent.absolute()
     else:
         # Running in normal Python environment
-        BASE_DIR = Path(__file__).parent.absolute()
+        # (core/ 的上一级才是项目根目录)
+        BASE_DIR = Path(__file__).parent.parent.absolute()
 
     # Database configuration
     DATABASE_PATH = BASE_DIR / 'data' / 'map_downloader.db'

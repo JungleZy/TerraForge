@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
 from enum import Enum
-from config import Config
+from core.config import Config
 from services.geo_validation import validate_bbox, validate_zoom
 
 

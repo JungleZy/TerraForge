@@ -11,8 +11,8 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import database
-from config import Config
+from core import database
+from core.config import Config
 
 
 def test_dem_terrain_jobs_table_exists(tmp_path, monkeypatch):

@@ -4,7 +4,7 @@ Database initialization and connection management for TerraForge
 import sqlite3
 import logging
 from contextlib import contextmanager
-from config import Config
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 

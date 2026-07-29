@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from database import get_connection
+from core.database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
 from services.geo_validation import resolve_output_dir, sanitize_filename, validate_bbox

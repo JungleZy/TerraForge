@@ -7,14 +7,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    import config
+    from core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     for mod in (
         "app",
-        "database",
+        "core.database",
         "models.task",
         "services.config_manager",
         "services.task_manager",
@@ -120,8 +120,8 @@ def _task_row(db, table, task_id):
 
 def test_delete_map_task_with_delete_files_removes_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    import config
-    db = importlib.import_module("database")
+    from core import config
+    db = importlib.import_module("core.database")
     task_id = _seed_map_task(db, output_path=config.Config.DOWNLOADS_DIR)
     artifact = _make_artifact(Path(config.Config.DOWNLOADS_DIR) / f"task_{task_id}")
 
@@ -134,8 +134,8 @@ def test_delete_map_task_with_delete_files_removes_artifacts(monkeypatch, tmp_pa
 
 def test_delete_map_task_default_keeps_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    import config
-    db = importlib.import_module("database")
+    from core import config
+    db = importlib.import_module("core.database")
     task_id = _seed_map_task(db, output_path=config.Config.DOWNLOADS_DIR)
     artifact = _make_artifact(Path(config.Config.DOWNLOADS_DIR) / f"task_{task_id}")
 
@@ -149,7 +149,7 @@ def test_delete_map_task_default_keeps_artifacts(monkeypatch, tmp_path):
 def test_delete_map_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _seed_map_task(db, output_path=outside)
     artifact = _make_artifact(outside / f"task_{task_id}")
 
@@ -162,8 +162,8 @@ def test_delete_map_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path
 
 def test_delete_dem_task_with_delete_files_removes_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    import config
-    db = importlib.import_module("database")
+    from core import config
+    db = importlib.import_module("core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_dem_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"dem_task_{task_id}")
@@ -177,8 +177,8 @@ def test_delete_dem_task_with_delete_files_removes_artifacts(monkeypatch, tmp_pa
 
 def test_delete_dem_task_default_keeps_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    import config
-    db = importlib.import_module("database")
+    from core import config
+    db = importlib.import_module("core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_dem_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"dem_task_{task_id}")
@@ -193,7 +193,7 @@ def test_delete_dem_task_default_keeps_artifacts(monkeypatch, tmp_path):
 def test_delete_dem_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _seed_dem_task(db, output_path=outside)
     artifact = _make_artifact(outside / f"dem_task_{task_id}")
 
@@ -206,8 +206,8 @@ def test_delete_dem_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path
 
 def test_delete_contour_task_with_delete_files_removes_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    import config
-    db = importlib.import_module("database")
+    from core import config
+    db = importlib.import_module("core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_contour_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"contour_task_{task_id}")
@@ -221,8 +221,8 @@ def test_delete_contour_task_with_delete_files_removes_artifacts(monkeypatch, tm
 
 def test_delete_contour_task_default_keeps_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    import config
-    db = importlib.import_module("database")
+    from core import config
+    db = importlib.import_module("core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_contour_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"contour_task_{task_id}")
@@ -237,7 +237,7 @@ def test_delete_contour_task_default_keeps_artifacts(monkeypatch, tmp_path):
 def test_delete_contour_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _seed_contour_task(db, output_path=outside)
     artifact = _make_artifact(outside / f"contour_task_{task_id}")
 

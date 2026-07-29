@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from startup_banner import format_banner, print_banner, use_color
+from core.startup_banner import format_banner, print_banner, use_color
 
 
 def test_plain_banner_contains_key_info():
@@ -78,7 +78,7 @@ def _make_record(msg):
 
 
 def test_werkzeug_filter_drops_startup_lines():
-    from startup_banner import WerkzeugStartupFilter
+    from core.startup_banner import WerkzeugStartupFilter
     f = WerkzeugStartupFilter()
     for msg in (
         ' * Running on http://127.0.0.1:5000',
@@ -93,7 +93,7 @@ def test_werkzeug_filter_drops_startup_lines():
 
 
 def test_werkzeug_filter_keeps_request_logs():
-    from startup_banner import WerkzeugStartupFilter
+    from core.startup_banner import WerkzeugStartupFilter
     f = WerkzeugStartupFilter()
     assert f.filter(_make_record('127.0.0.1 - - [29/Jul/2026 12:00:00] "GET / HTTP/1.1" 200 -')) is True
     assert f.filter(_make_record('127.0.0.1 - - [29/Jul/2026 12:00:01] "POST /api/tasks HTTP/1.1" 201 -')) is True
@@ -105,7 +105,7 @@ class _FakeTty(io.StringIO):
 
 
 def test_spinner_non_tty_prints_static_hint_once(monkeypatch):
-    from startup_banner import Spinner
+    from core.startup_banner import Spinner
     monkeypatch.delenv('NO_COLOR', raising=False)
     buf = io.StringIO()  # 非 TTY
     sp = Spinner('  正在加载组件,请稍候…', stream=buf).start()
@@ -117,7 +117,7 @@ def test_spinner_non_tty_prints_static_hint_once(monkeypatch):
 
 def test_spinner_tty_animates_and_clears_on_stop(monkeypatch):
     import time
-    from startup_banner import Spinner
+    from core.startup_banner import Spinner
     monkeypatch.delenv('NO_COLOR', raising=False)
     buf = _FakeTty()
     sp = Spinner('加载中', stream=buf, interval=0.02).start()
@@ -132,7 +132,7 @@ def test_spinner_tty_animates_and_clears_on_stop(monkeypatch):
 
 
 def test_spinner_tty_respects_no_color_env(monkeypatch):
-    from startup_banner import Spinner
+    from core.startup_banner import Spinner
     monkeypatch.setenv('NO_COLOR', '1')
     buf = _FakeTty()  # 即使是 TTY,NO_COLOR 也退化为静态提示
     sp = Spinner('加载中', stream=buf).start()
@@ -141,7 +141,7 @@ def test_spinner_tty_respects_no_color_env(monkeypatch):
 
 
 def test_spinner_context_manager(monkeypatch):
-    from startup_banner import Spinner
+    from core.startup_banner import Spinner
     monkeypatch.delenv('NO_COLOR', raising=False)
     buf = _FakeTty()
     with Spinner('加载中', stream=buf, interval=0.02):

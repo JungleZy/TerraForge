@@ -9,7 +9,7 @@ from pathlib import Path
 
 from flask import Blueprint, abort, send_file
 
-from config import Config
+from core.config import Config
 from services.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ def terrain_dem_static(task_id: str, subpath: str):
 
 @terrain_static_bp.route("/local/<int:task_id>/<path:subpath>", methods=["GET"])
 def terrain_local_static(task_id: int, subpath: str):
-    from database import get_connection
+    from core.database import get_connection
 
     # Confirm the task exists, but DO NOT trust the absolute output_dir stored at
     # creation time: in frozen/PyInstaller mode DOWNLOADS_DIR is anchored to the

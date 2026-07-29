@@ -31,7 +31,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 
 def _patch_config_paths(monkeypatch, tmp_path):
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -41,8 +41,8 @@ def _patch_config_paths(monkeypatch, tmp_path):
 
 def _fresh_db(monkeypatch, tmp_path):
     _patch_config_paths(monkeypatch, tmp_path)
-    sys.modules.pop("database", None)
-    db = importlib.import_module("database")
+    sys.modules.pop("core.database", None)
+    db = importlib.import_module("core.database")
     db.init_database()
     return db
 
@@ -56,9 +56,9 @@ def _fresh_config_manager(monkeypatch, tmp_path):
 
 def _fresh_local_mgr(monkeypatch, tmp_path):
     _patch_config_paths(monkeypatch, tmp_path)
-    for mod in ("database", "services.local_terrain_task_manager"):
+    for mod in ("core.database", "services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     db.init_database()
     mgr_mod = importlib.import_module("services.local_terrain_task_manager")
     return db, mgr_mod
@@ -66,7 +66,7 @@ def _fresh_local_mgr(monkeypatch, tmp_path):
 
 def _load_app(monkeypatch, tmp_path):
     _patch_config_paths(monkeypatch, tmp_path)
-    for mod in ("app", "database", "services.local_terrain_task_manager"):
+    for mod in ("app", "core.database", "services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -435,13 +435,13 @@ else:
 os.environ.pop("TF_RELOADER_PARENT_PID", None)
 sys.path.insert(0, project_root)
 
-import config
+from core import config
 from pathlib import Path
 config.Config.DATABASE_PATH = Path(tmp) / "test.db"
 config.Config.DOWNLOADS_DIR = Path(tmp) / "downloads"
 config.Config.CACHE_DIR = Path(tmp) / "cache"
 
-import database
+from core import database
 database.init_database()
 conn = database.get_connection()
 conn.execute(

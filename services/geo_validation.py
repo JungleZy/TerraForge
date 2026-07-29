@@ -78,7 +78,7 @@ def resolve_output_dir(raw, base_dir=None):
     from pathlib import Path
 
     if base_dir is None:
-        from config import Config
+        from core.config import Config
 
         base_dir = Config.DOWNLOADS_DIR
     base = Path(base_dir).resolve()

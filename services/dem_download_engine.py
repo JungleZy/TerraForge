@@ -15,7 +15,7 @@ from typing import Callable, Optional, Dict, Any, List
 import aiofiles
 import aiohttp
 
-from config import Config
+from core.config import Config
 from services.config_manager import ConfigManager
 from services.earthdata_client import EarthdataClient
 

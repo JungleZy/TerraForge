@@ -30,17 +30,17 @@ def isolated_app(monkeypatch, tmp_path):
 
     Returns the imported `app` module (app_mod.app is the Flask instance,
     already in TESTING mode). Modules that bind Config at import time
-    ("app", "database") are popped first so the re-import picks up the
+    ("app", "core.database") are popped first so the re-import picks up the
     patched values.
     """
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    for mod in ("app", "database"):
+    for mod in ("app", "core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True

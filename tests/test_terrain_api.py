@@ -8,14 +8,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 def _load_app(monkeypatch, tmp_path):
     # Isolate DB and directory side effects before importing app.py (which runs init_database()).
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    for mod in ("app", "database", "services.dem_task_manager"):
+    for mod in ("app", "core.database", "services.dem_task_manager"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
 
@@ -57,7 +57,7 @@ def test_terrain_api_wiring_does_not_return_500(monkeypatch, tmp_path):
 
 def test_terrain_api_start_creates_running_job(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
 
     def fake_run_tiling_job(self, task_id, task_dir, output_dir, maxzoom, parent_url):
@@ -86,7 +86,7 @@ def test_terrain_api_start_creates_running_job(monkeypatch, tmp_path):
 
 def test_terrain_api_get_existing_job(monkeypatch, tmp_path):
     _app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
 
     conn = db.get_connection()
@@ -115,7 +115,7 @@ def test_terrain_api_get_existing_job(monkeypatch, tmp_path):
 
 def test_terrain_api_rejects_duplicate_running_start(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
 
     def fake_run_tiling_job(self, task_id, task_dir, output_dir, maxzoom, parent_url):

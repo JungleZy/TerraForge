@@ -23,8 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from config import Config
-from database import get_connection
+from core.config import Config
+from core.database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
 from services.geo_validation import MAX_ZOOM, coerce_number, validate_bbox, validate_zoom

@@ -27,10 +27,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
+# Nuitka
 *.manifest
-# Keep build.spec for packaging
-# *.spec
+*.build/
+*.dist/
+*.onefile-build/
 
 # Installer logs
 pip-log.txt

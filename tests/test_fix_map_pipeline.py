@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
-    from config import Config
-    import database
+    from core.config import Config
+    from core import database
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
@@ -42,8 +42,8 @@ def _params(**overrides):
 
 def _seed_task_row(name='t', status='pending', output_format='tiles_only',
                    output_path=None, total=0):
-    from config import Config
-    from database import get_connection
+    from core.config import Config
+    from core.database import get_connection
 
     if output_path is None:
         output_path = str(Config.DOWNLOADS_DIR)
@@ -104,8 +104,8 @@ def test_create_task_accepts_output_path_inside_downloads(isolated_config):
 # ---------- C5: task.name 消毒后才拼输出文件名 ----------
 
 def test_stitch_output_filename_sanitizes_task_name(isolated_config):
-    from config import Config
-    from database import get_connection
+    from core.config import Config
+    from core.database import get_connection
     from models.task import Tile
     from services.task_manager import TaskManager
 
@@ -142,7 +142,7 @@ def test_stitch_output_filename_sanitizes_task_name(isolated_config):
 # ---------- I5: failed 任务允许重新 start ----------
 
 def test_failed_task_can_be_restarted(isolated_config):
-    from database import get_connection
+    from core.database import get_connection
     from services.task_manager import TaskManager
 
     tm = TaskManager()
@@ -184,7 +184,7 @@ def test_stitch_ignores_and_preserves_shared_cache_intermediates(isolated_config
     垃圾文件把拼接带崩;finally 又会把共享文件 unlink 掉(并发互删的根因)。
     修复后:中间文件在每次 stitch 私有的临时目录里生成, cache 只读瓦片本体。
     """
-    from config import Config
+    from core.config import Config
     from models.task import Tile
     from services.download_engine import DownloadEngine, GEOREF_SUFFIX
 

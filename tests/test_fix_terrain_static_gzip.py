@@ -21,14 +21,14 @@ GZ_PAYLOAD = gzip.compress(b"fake-quantized-mesh")
 
 
 def _load_app(monkeypatch, tmp_path):
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    for mod in ("app", "database"):
+    for mod in ("app", "core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -70,7 +70,7 @@ def test_dem_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
 
 def test_local_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
     _app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
 
     conn = db.get_connection()
     try:

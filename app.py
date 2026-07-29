@@ -23,11 +23,19 @@ import multiprocessing
 # 好父进程标记(返回 None),拦不住。这才是 frozen 下真正有效的拦截点。
 multiprocessing.freeze_support()
 
+# 打包模式(Nuitka standalone)下设置 GDAL_DATA/PROJ_DATA,必须赶在任何
+# import osgeo 之前(routes/services 在下方 import 时会间接加载 GDAL)。
+# 非打包环境为 no-op。core.bundle 是轻量模块,不引入重量级依赖。
+from core.bundle import bundle_dir, setup_bundle_env
+setup_bundle_env()
+
 # 打包 exe 默认关闭 debug/reloader:热重载对最终用户没有意义,还会让进程模型更复杂
 # (reloader 会重新执行 exe 本身)。开发环境默认开启。DEBUG 环境变量始终优先。
+# Nuitka 不设 sys.frozen,用 bundle_dir() 统一判断打包环境。
+_FROZEN = getattr(sys, 'frozen', False) or bundle_dir() is not None
 _DEBUG = os.environ.get(
     'DEBUG',
-    '0' if getattr(sys, 'frozen', False) else '1',
+    '0' if _FROZEN else '1',
 ) not in ('0', 'false', 'False')
 
 # debug 模式下 Werkzeug reloader 会先以"watcher 父进程"身份执行一遍本模块,再 fork
@@ -73,8 +81,8 @@ _SHOW_STARTUP_OUTPUT = (
 # 之前打印,否则这段时间控制台一片空白,看起来像卡死。config 和 startup_banner 都是
 # 轻量模块,先加载它们即可。
 if _PRINT_BANNER:
-    from config import Config
-    from startup_banner import print_banner, use_color
+    from core.config import Config
+    from core.startup_banner import print_banner, use_color
 
     _color = use_color()
     print_banner(
@@ -98,24 +106,24 @@ if _PRINT_BANNER:
 # 横幅,但也要等同样久的 import)各起一个,在下方 create_app 之前停掉。
 _spinner = None
 if _PRINT_BANNER or _SHOW_STARTUP_OUTPUT:
-    from startup_banner import start_spinner
+    from core.startup_banner import start_spinner
     _spinner = start_spinner('  正在加载组件,请稍候…')
 
 from flask import Flask
 from flask_socketio import SocketIO
 
-# Support PyInstaller bundled mode
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # Running in PyInstaller bundle - add templates and static paths
-    template_folder = os.path.join(sys._MEIPASS, 'templates')
-    static_folder = os.path.join(sys._MEIPASS, 'static')
+# 打包模式(Nuitka standalone):templates/static 与可执行文件同目录
+_bundle_dir = bundle_dir()
+if _bundle_dir is not None:
+    template_folder = os.path.join(_bundle_dir, 'templates')
+    static_folder = os.path.join(_bundle_dir, 'static')
 else:
     # Running in normal Python environment
     template_folder = 'templates'
     static_folder = 'static'
 
-from config import Config
-from database import init_database
+from core.config import Config
+from core.database import init_database
 from routes import main_bp, api_bp, dem_api_bp, terrain_api_bp, terrain_static_bp, local_terrain_api_bp, contour_api_bp, contour_static_bp, tiles_static_bp
 from routes.api import init_task_manager
 from routes.socketio_events import register_socketio_events
@@ -267,7 +275,7 @@ if __name__ == '__main__':
 
     # werkzeug 的启动行(Running on xxx / dev-server 警告 / debugger PIN)和横幅里的
     # 访问地址重复,用过滤器精确拦掉这几条;HTTP 请求访问日志(GET /... 200)保留。
-    from startup_banner import WerkzeugStartupFilter
+    from core.startup_banner import WerkzeugStartupFilter
     logging.getLogger('werkzeug').addFilter(WerkzeugStartupFilter())
 
     # Flask 的 " * Serving Flask app / * Debug mode" 两行由 app.run -> flask.cli.
@@ -280,7 +288,7 @@ if __name__ == '__main__':
     # reloader 的 watcher 父进程被强杀时,fork 出来的子进程会变孤儿继续占着 5000
     # 端口(werkzeug 不处理)。父进程先把 pid 写进环境变量传给子进程;子进程起
     # 看门狗线程轮询,父进程没了就退出。
-    from process_watchdog import PARENT_PID_ENV, start_parent_watchdog
+    from core.process_watchdog import PARENT_PID_ENV, start_parent_watchdog
     if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         start_parent_watchdog()
     else:
@@ -289,7 +297,7 @@ if __name__ == '__main__':
     # 组件加载完毕的反馈 —— werkzeug 的服务行已被压掉,没有这行的话用户不知道
     # "正在加载组件"已经结束。
     if _SHOW_STARTUP_OUTPUT:
-        from startup_banner import use_color
+        from core.startup_banner import use_color
         _ready = '  ✓ 组件加载完成,服务已启动'
         print(f'\033[32m{_ready}\033[0m' if use_color() else _ready, flush=True)
 

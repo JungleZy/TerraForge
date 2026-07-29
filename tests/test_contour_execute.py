@@ -7,13 +7,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _setup(monkeypatch, tmp_path):
-    import config
+    from core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "database", "services.contour_task_manager"):
+    for mod in ("app", "core.database", "services.contour_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("database")
+    db = importlib.import_module("core.database")
     db.init_database()
     ctm_mod = importlib.import_module("services.contour_task_manager")
     return db, ctm_mod

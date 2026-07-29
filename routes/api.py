@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from flask import Blueprint, request, jsonify
 from typing import Optional
-from database import get_connection, DEFAULT_CONFIGS
+from core.database import get_connection, DEFAULT_CONFIGS
 from services.config_manager import ConfigManager
 from services.task_cleanup import remove_task_dir_if_safe
 

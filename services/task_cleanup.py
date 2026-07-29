@@ -13,7 +13,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from config import Config
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 

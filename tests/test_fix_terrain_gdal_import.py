@@ -60,14 +60,14 @@ def test_tile_dem_task_dir_wraps_missing_gdal_in_friendly_runtimeerror(monkeypat
 
 
 def test_tiling_job_marked_failed_with_error_message_when_tiler_raises(monkeypatch, tmp_path):
-    import config
+    from core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    sys.modules.pop("database", None)
-    db = importlib.import_module("database")
+    sys.modules.pop("core.database", None)
+    db = importlib.import_module("core.database")
     db.init_database()
 
     conn = db.get_connection()

@@ -1,3 +1,14 @@
+## v0.1.1 —— 打包工具链迁移：PyInstaller → Nuitka
+
+- **可执行文件改用 Nuitka standalone 构建**（`nuitka_build.py`），替代 PyInstaller（原 `build.spec` 与运行时钩子已移除）。构建产物布局不变，仍是 `terraforge/` 目录内含主程序、模板、静态资源与 GDAL/PROJ 数据。
+- **修复打包 exe 误以 DEBUG + 热重载模式启动的问题**：Nuitka 不设置 `sys.frozen`，旧判断会让 exe 进入 reloader 并反复重启自身，表现为启动后卡死、页面 404。现在打包产物默认 PRODUCTION 模式。
+- **自动补拷 GDAL 系统依赖库**：Linux（apt GDAL）与 Windows 非 conda 布局（OSGeo4W 等）下，构建后自动把 GDAL 依赖库闭包补进产物，并自检无缺失动态库；Windows conda 布局由 Nuitka 原生覆盖。
+- **构建期防线**：找不到 GDAL/PROJ 数据目录时构建直接失败，不再静默产出"能启动但 GDAL 全挂"的包。
+
+以下为 v0.1.0 的发布说明。
+
+---
+
 ## ⚠️ 请先看这一条：0.0.9 及更早版本拼出来的 GeoTIFF，地理位置是错的
 
 拼接大图时，瓦片边界的纬度用了线性插值计算，而 Web Mercator 的纬度是非线性的（`arctan(sinh(...))`）。后果是产物整体错位：

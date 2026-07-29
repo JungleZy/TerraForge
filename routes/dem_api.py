@@ -94,7 +94,7 @@ def delete_dem_task(task_id: int):
             if active_thread and active_thread.is_alive():
                 return jsonify({"error": "Cannot delete running DEM task. Please pause or cancel it first."}), 400
 
-            from database import get_connection
+            from core.database import get_connection
             conn = get_connection()
             try:
                 cur = conn.cursor()

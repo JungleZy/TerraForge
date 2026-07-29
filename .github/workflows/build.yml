@@ -56,7 +56,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y gdal-bin libgdal-dev
+        sudo apt-get install -y gdal-bin libgdal-dev patchelf
         echo "GDAL_VERSION=$(gdal-config --version)" >> $GITHUB_ENV
 
     - name: Install GDAL (Windows/macOS, conda-forge)
@@ -72,7 +72,7 @@ jobs:
         GDAL_VERSION=$(python -c "from osgeo import gdal; print(gdal.__version__)")
         echo "GDAL_VERSION=$GDAL_VERSION" >> $GITHUB_ENV
         # conda's gdal sets GDAL_DATA via activate scripts; surface it here so
-        # build.spec can pick it up in a fresh sub-shell.
+        # nuitka_build.py can pick it up in a fresh sub-shell.
         GDAL_DATA=$(python -c "from osgeo import gdal; print(gdal.GetConfigOption('GDAL_DATA') or '')")
         echo "GDAL_DATA=$GDAL_DATA" >> $GITHUB_ENV
 
@@ -80,7 +80,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller
+        pip install nuitka
         # GDAL sdist 编译时必须能 import numpy，否则编不出 _gdal_array：
         # 先装 numpy，再关闭 build isolation 编译 GDAL。
         pip install numpy==1.26.4
@@ -91,7 +91,7 @@ jobs:
       if: runner.os != 'Linux'
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller
+        pip install nuitka
         # GDAL already comes from conda; pip-installing it again would try to
         # build from sdist and fail. Strip the GDAL pin and install the rest.
         grep -viE '^[[:space:]]*gdal([[:space:]=<>!~]|$)' requirements.txt > /tmp/req.txt
@@ -103,8 +103,8 @@ jobs:
     - name: Run test suite
       run: python -m pytest tests/ -q
 
-    - name: Build with PyInstaller
-      run: pyinstaller build.spec
+    - name: Build with Nuitka
+      run: python nuitka_build.py
 
     - name: Package application (Linux/macOS)
       if: runner.os != 'Windows'

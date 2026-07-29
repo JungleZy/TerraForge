@@ -19,7 +19,7 @@ from pathlib import Path
 from osgeo import gdal, osr
 from models.task import Tile
 from services.config_manager import ConfigManager
-from config import Config
+from core.config import Config
 
 logger = logging.getLogger(__name__)
 

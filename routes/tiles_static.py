@@ -12,7 +12,7 @@ from pathlib import Path
 
 from flask import Blueprint, abort, send_file
 
-from database import get_connection
+from core.database import get_connection
 from routes.terrain_static import _resolve_config_path, _resolve_safe_file
 
 logger = logging.getLogger(__name__)

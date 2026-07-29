@@ -6,7 +6,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from process_watchdog import PARENT_PID_ENV, pid_alive, start_parent_watchdog
+from core.process_watchdog import PARENT_PID_ENV, pid_alive, start_parent_watchdog
 
 
 def test_pid_alive_current_process():
