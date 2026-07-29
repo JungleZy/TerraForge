@@ -298,9 +298,9 @@ if __name__ == '__main__':
     # 组件加载完毕的反馈 —— werkzeug 的服务行已被压掉,没有这行的话用户不知道
     # "正在加载组件"已经结束。
     if _SHOW_STARTUP_OUTPUT:
-        from core.startup_banner import use_color
+        from core.startup_banner import safe_print, use_color
         _ready = '  ✓ 组件加载完成,服务已启动'
-        print(f'\033[32m{_ready}\033[0m' if use_color() else _ready, flush=True)
+        safe_print(f'\033[32m{_ready}\033[0m' if use_color() else _ready)
 
     # reloader 父进程里 create_app 被守卫跳过(app/socketio 为 None)。父进程并不
     # 真正服务 —— werkzeug run_simple 在父进程只把 application 包进一个从不调用的
