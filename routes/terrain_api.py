@@ -18,7 +18,7 @@ dem_task_manager = None
 def init_terrain_dem_task_manager(tm):
     global dem_task_manager
     dem_task_manager = tm
-    logger.info("DEM task manager initialized in terrain API routes")
+    logger.debug("DEM task manager initialized in terrain API routes")
 
 
 @terrain_api_bp.route("/dem/<int:task_id>/start", methods=["POST"])

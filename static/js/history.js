@@ -1,4 +1,4 @@
-﻿let historyMap;
+let historyViewer;
 let currentPage = 1;
 let allTasks = [];
 
@@ -13,11 +13,27 @@ function initHistory() {
 }
 
 function initHistoryMap() {
-    historyMap = L.map('historyMap').setView([39.9, 116.4], 5);
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors'
-    }).addTo(historyMap);
+    // 历史区域小地图：Cesium 只读视图（地图系统已从 Leaflet 切到 CesiumJS）
+    historyViewer = new Cesium.Viewer('historyMap', {
+        baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
+            url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            tilingScheme: new Cesium.WebMercatorTilingScheme(),
+            credit: '© OpenStreetMap contributors',
+        })),
+        baseLayerPicker: false,
+        geocoder: false,
+        homeButton: false,
+        sceneModePicker: false,
+        navigationHelpButton: false,
+        animation: false,
+        timeline: false,
+        fullscreenButton: false,
+        selectionIndicator: false,
+        infoBox: true,      // 点矩形弹任务摘要（替代 Leaflet bindPopup）
+    });
+    historyViewer.camera.setView({
+        destination: Cesium.Cartesian3.fromDegrees(104.0, 35.0, 14000000),
+    });
 }
 
 async function loadStats() {
@@ -89,14 +105,17 @@ function renderHistoryTable(tasks) {
         'cancelled': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
     };
 
+    // 预览按钮只在首页覆盖面板里有意义（主视图在旁边）；独立页没有主视图。
+    const canPreview = typeof previewTask === 'function';
+
     tbody.innerHTML = tasks.map(task => `
         <tr>
             <td style="font-family: var(--font-mono);">${task.id}</td>
-            <td style="font-weight: 500;">${task.name}</td>
+            <td style="font-weight: 500;">${escapeHtml(task.name)}</td>
             <td>
                 <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center;">
                     ${statusIcons[task.status] || ''}
-                    ${getStatusText(task.status)}
+                    ${escapeHtml(getStatusText(task.status))}
                 </span>
             </td>
             <td>
@@ -109,11 +128,18 @@ function renderHistoryTable(tasks) {
                 </small>
             </td>
             <td style="font-family: var(--font-mono);">${(task.task_type === 'map' || task.task_type === 'contour') ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
-            <td>${(task.task_type === 'map' || task.task_type === 'contour') ? getStyleText(task.style) : (task.style || '-')}</td>
+            <td>${(task.task_type === 'map' || task.task_type === 'contour') ? escapeHtml(getStyleText(task.style)) : escapeHtml(task.style || '-')}</td>
             <td style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</td>
             <td><small style="font-family: var(--font-mono);">${formatDate(task.completed_at)}</small></td>
             <td>
                 <div style="display: flex; gap: 0.5rem;">
+                    ${(canPreview && task.status === 'completed') ? `
+                    <button class="btn btn-icon btn-sm btn-success" onclick="previewHistoryTask(${task.id}, '${task.task_type}')" title="在地图上预览" aria-label="在地图上预览">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                    </button>` : ''}
                     <button class="btn btn-icon btn-sm btn-info" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情" aria-label="查看任务详情">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"></circle>
@@ -156,42 +182,45 @@ function renderPagination(currentPage, totalPages) {
 }
 
 function renderHistoryMap(tasks) {
-    historyMap.eachLayer(layer => {
-        if (layer instanceof L.Rectangle) {
-            historyMap.removeLayer(layer);
-        }
-    });
+    if (!historyViewer) return;
+    historyViewer.entities.removeAll();
 
     // Local-terrain tasks have no bbox; only map/dem tasks appear on the map.
     const geoTasks = tasks.filter(t => t.north != null && t.south != null && t.east != null && t.west != null);
+    let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity;
 
     geoTasks.forEach(task => {
-        const bounds = [[task.south, task.west], [task.north, task.east]];
-        const color = getStatusStroke(task.status);
+        const color = Cesium.Color.fromCssColorString(getStatusStroke(task.status));
+        west = Math.min(west, task.west);
+        south = Math.min(south, task.south);
+        east = Math.max(east, task.east);
+        north = Math.max(north, task.north);
 
-        const rectangle = L.rectangle(bounds, {
-            color: color,
-            weight: 3,
-            fillOpacity: 0.15,
-            fillColor: color
-        }).addTo(historyMap);
-
-        rectangle.bindPopup(`
-            <div style="font-family: var(--font-display); min-width: 200px;">
-                <strong style="color: var(--color-accent-hover); font-size: 1.1rem;">${task.name}</strong><br>
-                <div style="margin-top: 0.5rem; font-size: 0.9rem;">
-                    <strong>状态:</strong> ${getStatusText(task.status)}<br>
-                    <strong>${task.task_type === 'dem' ? '文件' : '瓦片'}:</strong>
-                    <span style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</span>
-                </div>
-            </div>
-        `);
+        historyViewer.entities.add({
+            rectangle: {
+                coordinates: Cesium.Rectangle.fromDegrees(task.west, task.south, task.east, task.north),
+                material: color.withAlpha(0.15),
+                outline: true,
+                outlineColor: color,
+                outlineWidth: 3,
+            },
+            name: task.name,
+            description: `
+                <strong style="color: var(--color-accent-hover); font-size: 1.05rem;">${escapeHtml(task.name)}</strong><br>
+                <strong>状态:</strong> ${escapeHtml(getStatusText(task.status))}<br>
+                <strong>${task.task_type === 'dem' ? '文件' : '瓦片'}:</strong>
+                <span style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</span>
+            `,
+        });
     });
 
     if (geoTasks.length > 0) {
-        const allBounds = geoTasks.map(t => [[t.south, t.west], [t.north, t.east]]);
-        const group = L.featureGroup(allBounds.map(b => L.rectangle(b)));
-        historyMap.fitBounds(group.getBounds());
+        const padLng = Math.max((east - west) * 0.1, 0.01);
+        const padLat = Math.max((north - south) * 0.1, 0.01);
+        historyViewer.camera.setView({
+            destination: Cesium.Rectangle.fromDegrees(
+                west - padLng, south - padLat, east + padLng, north + padLat),
+        });
     }
 }
 
@@ -299,7 +328,7 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         // 填充模态框数据
         document.getElementById('detailId').textContent = task.id;
         document.getElementById('detailName').textContent = task.name;
-        document.getElementById('detailStatus').innerHTML = `<span class="badge bg-${getStatusColor(task.status)}">${getStatusText(task.status)}</span>`;
+        document.getElementById('detailStatus').innerHTML = `<span class="badge bg-${getStatusColor(task.status)}">${escapeHtml(getStatusText(task.status))}</span>`;
         if (taskType === 'dem') {
             document.getElementById('detailStyle').textContent = task.dataset || 'ASTGTM.003';
             document.getElementById('detailFormat').textContent = '-';
@@ -452,14 +481,14 @@ async function refreshTerrainDetail(taskId) {
         // 原来这里把 `job.status` **原样**插进徽章，中文界面里显示英文
         // `running`，和历史表格的老毛病是同一个。
         const status = job.status || 'unknown';
-        const label = status === 'unknown' ? '状态未知' : getStatusText(status);
+        const label = escapeHtml(status === 'unknown' ? '状态未知' : getStatusText(status));
         statusEl.innerHTML = `<span class="badge bg-${getStatusColor(status)}">${label}</span>`;
 
         const outDir = job.output_dir || '-';
         const maxzoom = job.maxzoom ?? '-';
         infoEl.innerHTML = `
             <div>MaxZoom: ${maxzoom}</div>
-            <div>Out: ${outDir}</div>
+            <div>Out: ${escapeHtml(outDir)}</div>
             <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
             <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
         `;
@@ -479,17 +508,35 @@ async function refreshTerrainDetail(taskId) {
     }
 }
 
+// 「在地图上预览」：把任务的可视化输出叠加到主视图（map.js 的 previewTask），
+// 并关掉历史面板让用户直接看到。数据来自当前页已加载的行（含 bbox / zoom）。
+function previewHistoryTask(taskId, taskType) {
+    const task = allTasks.find(t => t.id === taskId && t.task_type === taskType);
+    if (!task) return;
+    previewTask(Object.assign({}, task, { task_type: taskType }));
+    if (typeof closePanel === 'function') closePanel();
+}
+
 async function deleteTask(taskId, taskType = 'map') {
     if (!await showConfirm('确定要删除这个任务吗？', { title: '删除任务', danger: true })) {
         return;
     }
+
+    // 第二步确认：是否连磁盘上的下载产物一起删。后端 DELETE 端点按
+    // ?delete_files=true/false 决定是否清理产物目录，缺省 false（保留）。
+    const deleteFiles = await showConfirm('是否同时删除磁盘上的下载产物？', {
+        title: '清理下载产物',
+        confirmText: '删除产物',
+        cancelText: '保留产物',
+        danger: true
+    });
 
     try {
         const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
                         : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
                         : taskType === 'contour' ? `/api/contour/tasks/${taskId}`
                         : `/api/tasks/${taskId}`;
-        const response = await fetch(deleteUrl, { method: 'DELETE' });
+        const response = await fetch(`${deleteUrl}?delete_files=${deleteFiles ? 'true' : 'false'}`, { method: 'DELETE' });
 
         if (response.ok) {
             showToast('任务已删除', 'success');

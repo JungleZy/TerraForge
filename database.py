@@ -1,5 +1,5 @@
 """
-Database initialization and connection management for Google Maps Downloader
+Database initialization and connection management for TerraForge
 """
 import sqlite3
 import logging
@@ -24,9 +24,9 @@ DEFAULT_CONFIGS = [
     ('cache_max_size_mb', '1000'),
     ('dem_cache_enabled', 'true'),
     ('history_retention_days', '90'),
-    ('map_center_lat', '39.9'),
-    ('map_center_lng', '116.4'),
-    ('map_initial_zoom', '10'),
+    ('map_center_lat', '29.56'),
+    ('map_center_lng', '106.55'),
+    ('map_initial_zoom', '3'),
     ('gdal_compression', 'LZW'),
     ('gdal_resampling', 'cubic'),
     # Earthdata Login (for NASA LP DAAC protected datasets, e.g., ASTGTM.003)
@@ -75,6 +75,13 @@ def get_connection():
     conn.row_factory = sqlite3.Row
     # Enable foreign key constraints
     conn.execute('PRAGMA foreign_keys = ON')
+    # WAL + busy_timeout：下载线程高频写进度，HTTP 线程并发读，默认 rollback
+    # journal 下读写互斥、写者遇锁立即报 "database is locked"。WAL 让读不阻塞写，
+    # busy_timeout 让写者等待而非立刻报错。journal_mode 持久化在库文件上，
+    # busy_timeout 是每连接设置，所以在唯一的连接入口统一开启（init_database
+    # 也走这里）。对 tmp_path 测试库同样生效。
+    conn.execute('PRAGMA journal_mode = WAL')
+    conn.execute('PRAGMA busy_timeout = 30000')
     return conn
 
 
@@ -393,6 +400,12 @@ def init_database():
             ("contour_tasks", "terrain_shade INTEGER DEFAULT 1"),
             ("contour_tasks", "water INTEGER DEFAULT 1"),
             ("contour_files", "kind TEXT DEFAULT 'dem'"),
+            # 按任务自定义配色（空串 = 用 ContourStyle 的默认方案）：
+            # 普通等高线 / 计曲线颜色，分层设色断点与颜色（CSV，颜色数 = 断点数+1）。
+            ("contour_tasks", "line_color_intermediate TEXT DEFAULT ''"),
+            ("contour_tasks", "line_color_index TEXT DEFAULT ''"),
+            ("contour_tasks", "tint_breaks TEXT DEFAULT ''"),
+            ("contour_tasks", "tint_colors TEXT DEFAULT ''"),
         ):
             try:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")

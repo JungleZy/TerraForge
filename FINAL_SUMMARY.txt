@@ -2,7 +2,7 @@
                     🎉 跨平台打包配置完成总结 🎉
 ================================================================================
 
-项目：Google Maps 下载器
+项目：TerraForge
 版本：v0.0.1 (准备发布)
 日期：2026-05-14
 
@@ -96,9 +96,9 @@ Windows:
    └─> Linux 构建 (10-15 分钟)
 
 4. 构建产物自动发布 ⏳
-   ├─> map-downloader-windows.zip (~200-300MB)
-   ├─> map-downloader-macos.tar.gz (~150-200MB)
-   └─> map-downloader-linux.tar.gz (~150-200MB)
+   ├─> terraforge-windows.zip (~200-300MB)
+   ├─> terraforge-macos.tar.gz (~150-200MB)
+   └─> terraforge-linux.tar.gz (~150-200MB)
 
 5. 从 Releases 下载测试 ⏳
    └─> https://github.com/JungleZy/map-download/releases

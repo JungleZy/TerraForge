@@ -4,6 +4,7 @@ let timeUpdateInterval = null;
 
 function initTasks() {
     socket = io();
+    if (window.initConnectionStatus) window.initConnectionStatus(socket);
 
     socket.on('connect', function() {
         console.log('Connected to server');
@@ -21,7 +22,7 @@ function initTasks() {
 
     socket.on('task_completed', function(data) {
         console.log('Task completed:', data);
-        handleTaskCompleted(data.task_id, data.task_type || 'map');
+        handleTaskCompleted(data.task_id, data.task_type || 'map', data.warning);
     });
 
     socket.on('task_failed', function(data) {
@@ -62,6 +63,12 @@ async function loadActiveTasks() {
             fetch('/api/terrain/local/tasks'),
             fetch('/api/contour/tasks')
         ]);
+        // 四路任何一路非 2xx 都不能接着解析渲染——失败响应的 body 不是任务
+        // 列表，会被当成「没有活动任务」把整页卡片清空，看起来就像任务全没了。
+        const badResp = [mapResp, demResp, localResp, contourResp].find(r => !r.ok);
+        if (badResp) {
+            throw new Error('任务列表接口返回 HTTP ' + badResp.status);
+        }
         const mapData = await mapResp.json();
         const demData = await demResp.json();
         const localData = await localResp.json();
@@ -72,7 +79,10 @@ async function loadActiveTasks() {
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
         const contourTasks = (contourData.tasks || []).map(t => normalizeTask(t, 'contour'));
         const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks].filter(t =>
-            ['pending', 'running', 'paused'].includes(t.status)
+            // failed 也保留：失败卡片必须常驻（与 handleTaskFailed 的约定一致），
+            // 否则刷新页面后失败任务无声消失，用户无从得知失败原因。
+            // 移除卡片仍是用户点「移除」按钮（dismissTask）的事。
+            ['pending', 'running', 'paused', 'failed'].includes(t.status)
         );
 
         activeTasks.clear();
@@ -83,6 +93,7 @@ async function loadActiveTasks() {
         renderActiveTasks(all);
     } catch (error) {
         console.error('Failed to load tasks:', error);
+        showToast('加载任务列表失败: ' + error.message, 'danger');
     }
 }
 
@@ -211,10 +222,10 @@ function createTaskCard(task) {
     return `
         <div class="task-card status-${task.status}" id="task-${task._key}">
             <div class="d-flex justify-content-between align-items-center" style="margin-bottom: 0.75rem; gap: 0.5rem;">
-                <h6 style="margin-bottom: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${task.name}</h6>
+                <h6 style="margin-bottom: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(task.name)}</h6>
                 <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;">
                     ${statusIcons[task.status] || ''}
-                    ${getStatusText(task.status)}
+                    ${escapeHtml(getStatusText(task.status))}
                 </span>
             </div>
             <div class="d-flex justify-content-end" style="margin-bottom: 0.75rem;">
@@ -494,7 +505,15 @@ function updateTaskProgressPartial(card, task) {
     }
 }
 
-function handleTaskCompleted(taskId, taskType) {
+function handleTaskCompleted(taskId, taskType, warning) {
+    // I18：部分 zoom 拼接失败时任务仍判 completed，但事件里带 warning
+    // （同时写进了 tasks.error_message）。原实现直接删卡片、零提示——
+    // 「任务成功但 GeoTIFF 缺层级」用户无从得知。toast 在删卡片之前弹，
+    // 且任务不在 activeTasks（页面中途加载）时也照样提示。
+    // showToast 内部走 textContent，warning 原文无需再转义。
+    if (warning) {
+        showToast('任务完成，但有警告：' + warning, 'warning');
+    }
     const key = `${taskType}:${taskId}`;
     const task = activeTasks.get(key);
     if (task) {

@@ -5,10 +5,12 @@ Handles RESTful API endpoints for task management, history, and configuration.
 """
 
 import logging
+from pathlib import Path
 from flask import Blueprint, request, jsonify
 from typing import Optional
-from database import get_connection
+from database import get_connection, DEFAULT_CONFIGS
 from services.config_manager import ConfigManager
+from services.task_cleanup import remove_task_dir_if_safe
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ def init_task_manager(tm):
     """
     global task_manager
     task_manager = tm
-    logger.info("Task manager initialized in API routes")
+    logger.debug("Task manager initialized in API routes")
 
 
 @api_bp.route('/tasks', methods=['POST'])
@@ -60,8 +62,11 @@ def create_task():
         if not task_manager:
             return jsonify({'error': 'Task manager not initialized'}), 500
 
-        # Get request data
-        data = request.get_json()
+        # Get request data(silent=True:解析失败/空 body 返回 None,统一按 400 处理;
+        # 非对象 JSON(数组/字符串/数字)直接拒绝,避免 "in" 判断抛 TypeError 变 500)
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'error': 'Request body must be a JSON object'}), 400
 
         # Validate required fields
         required_fields = ['name', 'north', 'south', 'east', 'west',
@@ -108,8 +113,12 @@ def get_tasks():
         # Get limit from query parameters
         limit = request.args.get('limit', 100, type=int)
 
-        # Cap limit at 100
+        # Clamp limit into [1, 100] — a negative limit means "no limit" in
+        # SQLite and 0 returns nothing; both are caller bugs, answer with the
+        # default window instead (same convention as /history's per_page).
         if limit > 100:
+            limit = 100
+        if limit < 1:
             limit = 100
 
         conn = get_connection()
@@ -231,6 +240,10 @@ def pause_task(task_id: int):
             'message': f'Task {task_id} paused'
         })
 
+    except ValueError as e:
+        logger.error(f"Error pausing task {task_id}: {e}")
+        return jsonify({'error': str(e)}), 400
+
     except Exception as e:
         logger.error(f"Error pausing task {task_id}: {e}")
         return jsonify({'error': 'Failed to pause task'}), 500
@@ -293,6 +306,10 @@ def cancel_task(task_id: int):
             'message': f'Task {task_id} cancelled'
         })
 
+    except ValueError as e:
+        logger.error(f"Error cancelling task {task_id}: {e}")
+        return jsonify({'error': str(e)}), 400
+
     except Exception as e:
         logger.error(f"Error cancelling task {task_id}: {e}")
         return jsonify({'error': 'Failed to cancel task'}), 500
@@ -306,40 +323,64 @@ def delete_task(task_id: int):
     Args:
         task_id: Task ID to delete
 
+    Query Parameters:
+        delete_files: Optional (1/true/yes). Also remove the task's on-disk
+            artifact directory (output_path/task_<id>) when it resolves
+            inside Config.DOWNLOADS_DIR. Defaults to false.
+
     Returns:
         JSON response with success status
     """
     try:
+        if not task_manager:
+            return jsonify({'error': 'Task manager not initialized'}), 500
+
         conn = get_connection()
         try:
             cursor = conn.cursor()
 
-            # Check if task exists
-            cursor.execute('SELECT id, status FROM tasks WHERE id = ?', (task_id,))
-            row = cursor.fetchone()
+            # Serialize with start_task via the manager lock: start_task holds
+            # _state_lock while flipping a paused task to running and spawning
+            # its thread, so holding the same lock across the check + delete
+            # closes the window where a paused task is deleted while a
+            # concurrent start is bringing it back to life.
+            with task_manager._state_lock:
+                active_thread = task_manager.active_tasks.get(task_id)
+                if active_thread and active_thread.is_alive():
+                    return jsonify({
+                        'error': 'Cannot delete running task. Please pause or cancel it first.'
+                    }), 400
 
-            if not row:
-                return jsonify({'error': f'Task {task_id} not found'}), 404
+                # Check if task exists
+                cursor.execute('SELECT id, status, output_path FROM tasks WHERE id = ?', (task_id,))
+                row = cursor.fetchone()
 
-            # Prevent deletion of running tasks
-            if row['status'] == 'running':
-                return jsonify({
-                    'error': 'Cannot delete running task. Please pause or cancel it first.'
-                }), 400
+                if not row:
+                    return jsonify({'error': f'Task {task_id} not found'}), 404
 
-            # Delete task (tiles will be deleted via CASCADE)
-            cursor.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
-            conn.commit()
+                # Prevent deletion of running tasks
+                if row['status'] == 'running':
+                    return jsonify({
+                        'error': 'Cannot delete running task. Please pause or cancel it first.'
+                    }), 400
+
+                # Delete task (tiles will be deleted via CASCADE)
+                cursor.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
+                conn.commit()
 
             logger.info(f"Task {task_id} deleted via API")
 
-            return jsonify({
-                'success': True,
-                'message': f'Task {task_id} deleted'
-            })
-
         finally:
             conn.close()
+
+        # Optional best-effort artifact cleanup after the row is gone.
+        if request.args.get('delete_files', '').lower() in ('1', 'true', 'yes'):
+            remove_task_dir_if_safe(Path(row['output_path']) / f"task_{task_id}")
+
+        return jsonify({
+            'success': True,
+            'message': f'Task {task_id} deleted'
+        })
 
     except Exception as e:
         logger.error(f"Error deleting task {task_id}: {e}")
@@ -370,6 +411,8 @@ def get_history():
             per_page = 100
         if per_page < 1:
             per_page = 20
+        if page < 1:
+            page = 1
 
         # Calculate offset
         offset = (page - 1) * per_page
@@ -687,16 +730,26 @@ def update_config():
         JSON response with success status
     """
     try:
-        data = request.get_json()
+        # silent=True:解析失败/空 body 返回 None,统一按 400 处理 ——
+        # 不带 silent 时 get_json 抛的 BadRequest 会被下面的通用
+        # except Exception 吞成 500;非对象 JSON(数组等)同理。
+        data = request.get_json(silent=True)
 
-        if not data:
+        if not isinstance(data, dict) or not data:
             return jsonify({'error': 'No configuration data provided'}), 400
+
+        # 只接受 DEFAULT_CONFIGS 里已知的键 —— 否则任意拼错的键都会被
+        # 静默写进 config 表,而读取侧永远读不到它,用户以为设置生效了。
+        known_keys = {key for key, _ in DEFAULT_CONFIGS}
 
         # Update each configuration key
         updated_keys = []
         errors = []
 
         for key, value in data.items():
+            if key not in known_keys:
+                errors.append(f"{key}: unknown config key")
+                continue
             try:
                 config_manager.set(key, str(value))
                 updated_keys.append(key)

@@ -1,49 +1,61 @@
 @echo off
-REM 推送 0.0.1 版本到 GitHub 的脚本 (Windows)
+REM 推送代码并创建版本标签 (Windows)
+REM 版本来源（单一事实源）：build.spec 的 APP_VERSION；也可用第一个参数覆盖：
+REM   push-release.bat            用 build.spec 里的版本
+REM   push-release.bat 0.2.0      显式指定
 
-echo ================================
-echo 推送代码并创建 v0.0.1 版本
-echo ================================
-echo.
+setlocal
 
-REM 1. 推送代码到 GitHub
-echo 步骤 1: 推送代码到 GitHub...
-git push origin master
+set VERSION=%~1
+if "%VERSION%"=="" (
+    for /f "tokens=2 delims='" %%v in ('findstr /b /c:"APP_VERSION = '" build.spec') do set VERSION=%%v
+)
+if "%VERSION%"=="" (
+    echo ❌ 无法确定版本号：请传入参数，或检查 build.spec 的 APP_VERSION
+    exit /b 1
+)
+set TAG=v%VERSION%
 
-if %errorlevel% equ 0 (
-    echo ✅ 代码推送成功
-) else (
-    echo ❌ 代码推送失败，请检查 GitHub 认证
+git rev-parse %TAG% >nul 2>&1
+if not errorlevel 1 (
+    echo ❌ 标签 %TAG% 已存在，请先 bump build.spec 的 APP_VERSION 或删除旧标签
     exit /b 1
 )
 
+echo ================================
+echo 推送代码并创建 %TAG% 版本
+echo ================================
 echo.
 
-REM 2. 创建版本标签
-echo 步骤 2: 创建版本标签 v0.0.1...
-git tag -a v0.0.1 -m "测试版本 v0.0.1 - 跨平台打包配置"
-
-if %errorlevel% equ 0 (
-    echo ✅ 标签创建成功
-) else (
+REM 先在本地建标签再推送：标签创建失败时尚未产生任何远端改动，
+REM 避免旧脚本「代码已推、标签失败」的半完成态。
+echo 步骤 1: 创建本地标签 %TAG%...
+git tag -a %TAG% -m "版本 %TAG%"
+if errorlevel 1 (
     echo ❌ 标签创建失败
     exit /b 1
 )
-
+echo ✅ 标签创建成功
 echo.
 
-REM 3. 推送标签到 GitHub
-echo 步骤 3: 推送标签到 GitHub...
-git push origin v0.0.1
+echo 步骤 2: 推送代码到 GitHub...
+git push origin master
+if errorlevel 1 (
+    echo ❌ 代码推送失败，请检查 GitHub 认证
+    exit /b 1
+)
+echo ✅ 代码推送成功
+echo.
 
-if %errorlevel% equ 0 (
-    echo ✅ 标签推送成功
-) else (
+echo 步骤 3: 推送标签到 GitHub...
+git push origin %TAG%
+if errorlevel 1 (
     echo ❌ 标签推送失败
     exit /b 1
 )
-
+echo ✅ 标签推送成功
 echo.
+
 echo ================================
 echo 🎉 完成！
 echo ================================

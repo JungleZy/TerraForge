@@ -1,7 +1,7 @@
 /**
  * 全局 UI 组件：自定义 Toast 通知 + Confirm 模态框
  *
- * 替代浏览器原生 alert() / confirm()，与 premium 深色设计系统（teal 强调色）统一。
+ * 替代浏览器原生 alert() / confirm()，与 premium 深色设计系统（GIS 蓝强调色）统一。
  * 全局暴露：
  *   window.showToast(message, type, opts)      —— 右上角通知，type: success|danger|warning|info
  *   window.showConfirm(message, opts) -> Promise<boolean>  —— 居中确认框
@@ -163,7 +163,40 @@
         });
     }
 
+    // ------------------------------------------------------ Connection status
+    // 工具栏连接状态点。有 socket 的页面（首页 tasks.js）在 socket 建立后调用；
+    // 无 socket 的页面不调用，指示器保持 hidden。
+    function initConnectionStatus(socket) {
+        const el = document.getElementById('connStatus');
+        const text = document.getElementById('connStatusText');
+        if (!el || !text || !socket) return;
+        el.hidden = false;
+        function apply(connected) {
+            el.classList.toggle('conn-status--on', connected);
+            el.classList.toggle('conn-status--off', !connected);
+            text.textContent = connected ? '已连接' : '已断开';
+        }
+        apply(socket.connected);
+        socket.on('connect', function () { apply(true); });
+        socket.on('disconnect', function () { apply(false); });
+    }
+
+    // -------------------------------------------------------------- escaping
+    // 服务端/用户可控字符串（任务名、output_dir、style 原文等）拼进 innerHTML
+    // 模板前必须过这一道（C6：存储型 XSS）。error_message 走 textContent 的
+    // 既有约定不变，不经过这里。& 必须最先替换，否则后面的实体会被二次转义。
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     window.showToast = showToast;
     window.showConfirm = showConfirm;
     window.showNotification = showToast; // 兼容旧的 showNotification(message, type) 调用
+    window.initConnectionStatus = initConnectionStatus;
+    window.escapeHtml = escapeHtml;
 })();

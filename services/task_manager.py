@@ -15,8 +15,9 @@ from pathlib import Path
 
 from database import get_connection
 from models.task import Task, Tile
-from services.download_engine import DownloadEngine
+from services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD
 from services.config_manager import ConfigManager
+from services.geo_validation import resolve_output_dir, sanitize_filename
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ class TaskManager:
         # accumulated running time doesn't keep ticking against wall-clock.
         self._recover_orphan_running_tasks()
 
-        logger.info("TaskManager initialized")
+        logger.debug("TaskManager initialized")
 
     def _recover_orphan_running_tasks(self) -> None:
         """Mark any 'running' task as 'paused' on startup.
@@ -259,16 +260,24 @@ class TaskManager:
         """
         logger.info(f"Creating task: {params.get('name', 'Unnamed')}")
 
+        # output_path 越界校验:相对路径相对 Config.DOWNLOADS_DIR 解析,解析结果
+        # 必须落在其内部,否则 resolve_output_dir 抛 ValueError(API 层映射 400)。
+        # 只校验不改写 —— 存量任务行里可能还有历史路径,读路径不做这个校验。
+        resolve_output_dir(params['output_path'])
+
         # Create Task object for validation
+        # 传原始值,由 Task.__post_init__ 里的 validate_bbox/validate_zoom 统一
+        # 转换+校验 —— 在这里先 float()/int() 的话,None/列表会抛 TypeError
+        # 变成 500,"abc" 的报错也不带字段名。
         task = Task(
             name=params['name'],
             status='pending',
-            north=float(params['north']),
-            south=float(params['south']),
-            east=float(params['east']),
-            west=float(params['west']),
-            zoom_min=int(params['zoom_min']),
-            zoom_max=int(params['zoom_max']),
+            north=params['north'],
+            south=params['south'],
+            east=params['east'],
+            west=params['west'],
+            zoom_min=params['zoom_min'],
+            zoom_max=params['zoom_max'],
             style=params['style'],
             output_format=params['output_format'],
             output_path=params['output_path']
@@ -287,6 +296,17 @@ class TaskManager:
 
         total_tiles = len(tiles)
         logger.info(f"Calculated {total_tiles} tiles for task")
+
+        # 瓦片数硬上限:超过 WARN_TILES_THRESHOLD 直接拒绝创建(API 层 400)。
+        # download_engine.calculate_tiles 只做 warning(那里是计算函数,调用方
+        # 可能只想知道数量);「创建任务」这个入口才是强制点 —— 10 万张瓦片的
+        # 下载 + 拼接是小时级作业,写进库里再失败比在这里拒绝代价大得多。
+        if total_tiles > WARN_TILES_THRESHOLD:
+            raise ValueError(
+                f"Task requires {total_tiles} tiles, which exceeds the maximum "
+                f"of {WARN_TILES_THRESHOLD} tiles per task. "
+                f"Reduce the area or zoom range."
+            )
 
         # Insert task into database
         conn = get_connection()
@@ -341,7 +361,7 @@ class TaskManager:
             task_id: Task ID to start
 
         Raises:
-            ValueError: If task status is not pending or paused
+            ValueError: If task status is not pending, paused or failed
             sqlite3.Error: If database operation fails
         """
         logger.info(f"Starting task {task_id}")
@@ -360,17 +380,20 @@ class TaskManager:
                 if not row:
                     raise ValueError(f"Task {task_id} not found")
 
+                # 'failed' 也在准许列表里:_execute_task 本就按 pending/failed
+                # 捞瓦片(续传语义写好了),入口不能把失败任务关死 —— 否则一次
+                # 网络波动失败的任务永远无法重试。
                 status = row['status']
-                if status not in ['pending', 'paused']:
+                if status not in ['pending', 'paused', 'failed']:
                     raise ValueError(
                         f"Cannot start task {task_id} with status '{status}'. "
-                        f"Task must be 'pending' or 'paused'."
+                        f"Task must be 'pending', 'paused' or 'failed'."
                     )
 
                 cursor.execute('''
                     UPDATE tasks
                     SET status = 'running', started_at = ?
-                    WHERE id = ? AND status IN ('pending', 'paused')
+                    WHERE id = ? AND status IN ('pending', 'paused', 'failed')
                 ''', (datetime.now(), task_id))
                 if cursor.rowcount != 1:
                     raise ValueError(f"Task {task_id} could not be started because its status changed")
@@ -547,10 +570,12 @@ class TaskManager:
         try:
             cursor = conn.cursor()
 
+            # Only pending/running/paused may transition to cancelled — a
+            # terminal completed/failed record must never be rewritten.
             cursor.execute('''
                 UPDATE tasks
                 SET status = 'cancelled'
-                WHERE id = ? AND status != 'cancelled'
+                WHERE id = ? AND status IN ('pending', 'running', 'paused')
             ''', (task_id,))
 
             if cursor.rowcount == 0:
@@ -928,7 +953,10 @@ class TaskManager:
                         logger.info(f"Task {task_id}: Stop flag detected during stitching")
                         return
 
-                    output_path = Path(task.output_path) / f"task_{task_id}" / f"{task.name}_zoom_{zoom}.tif"
+                    # task.name 是用户输入,直接拼进文件名可携 '..' / 路径分隔符
+                    # 逃逸出任务目录 —— 先消毒再拼。
+                    safe_name = sanitize_filename(task.name)
+                    output_path = Path(task.output_path) / f"task_{task_id}" / f"{safe_name}_zoom_{zoom}.tif"
                     logger.info(f"Task {task_id}: Stitching zoom level {zoom} to {output_path}")
 
                     try:

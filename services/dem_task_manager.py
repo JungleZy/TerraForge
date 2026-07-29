@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from database import get_connection
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
+from services.geo_validation import resolve_output_dir, sanitize_filename, validate_bbox
 from services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
@@ -85,13 +86,18 @@ class DemTaskManager:
 
     def create_task(self, params: dict) -> int:
         # NOTE: Keep signature compatible-ish with existing API patterns (dict in, id out).
-        name = params.get("name") or "DEM Task"
-        north = float(params["north"])
-        south = float(params["south"])
-        east = float(params["east"])
-        west = float(params["west"])
+        name = sanitize_filename(params.get("name") or "DEM Task")
+        # 四至共用校验(范围/顺序/NaN/类型),见 services/geo_validation.py
+        north, south, east, west = validate_bbox(
+            params.get("north"), params.get("south"),
+            params.get("east"), params.get("west"),
+        )
         dataset = params.get("dataset") or "COP-DEM-GLO-30"
-        output_path = params.get("output_path") or self.config.get("default_save_path", "./downloads")
+        # C5: 创建任务时解析 output_path 并强制落在 Config.DOWNLOADS_DIR 内,
+        # 越界抛 ValueError(路由层转 400);相对路径相对 DOWNLOADS_DIR 解析,不依赖 CWD。
+        output_path = resolve_output_dir(
+            params.get("output_path") or self.config.get("default_save_path", "./downloads")
+        )
         download_num = 1 if str(params.get("download_num", "false")).lower() in ("1", "true", "yes") else 0
         download_swb = 1 if str(params.get("download_swb", "false")).lower() in ("1", "true", "yes") else 0
 
@@ -101,6 +107,13 @@ class DemTaskManager:
         if dataset == "COP-DEM-GLO-30":
             download_num = 0
             download_swb = 0
+        # ASTGTM.003 does not ship _swb granules (water bodies live in ASTWBD.001);
+        # creating a task with swb would queue nothing but guaranteed 404s.
+        if download_swb:
+            raise ValueError(
+                "ASTGTM.003 has no _swb granules; water body data comes from the "
+                "separate ASTWBD.001 product"
+            )
 
         # Compute granule list
         tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
@@ -201,7 +214,7 @@ class DemTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("UPDATE dem_tasks SET status='cancelled' WHERE id=? AND status!='cancelled'", (task_id,))
+            cur.execute("UPDATE dem_tasks SET status='cancelled' WHERE id=? AND status IN ('pending','running','paused')", (task_id,))
             if cur.rowcount == 0:
                 cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
                 row = cur.fetchone()
@@ -213,6 +226,18 @@ class DemTaskManager:
                     self.stop_flags[task_id].set()
         finally:
             conn.close()
+
+    @staticmethod
+    def _resolve_task_output_dir(output_path: str) -> Path:
+        """相对 output_path 相对 Config.DOWNLOADS_DIR 解析（不依赖进程 CWD）。
+
+        创建任务时 output_path 已经过 resolve_output_dir 校验并存为绝对路径；
+        这里兼容历史任务入库的相对路径（按 DOWNLOADS_DIR 解析）与绝对路径（原样）。
+        """
+        p = Path(output_path)
+        if p.is_absolute():
+            return p
+        return Path(resolve_output_dir(output_path))
 
     def start_tiling(self, task_id: int) -> None:
         task_id = int(task_id)
@@ -237,36 +262,37 @@ class DemTaskManager:
         except Exception:
             maxzoom = 14
 
-        task_dir = Path(output_path) / f"dem_task_{task_id}"
+        task_dir = self._resolve_task_output_dir(output_path) / f"dem_task_{task_id}"
         output_dir = task_dir / "terrain_tiles"
 
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT status FROM dem_terrain_jobs WHERE task_id=?", (task_id,))
-            existing_job = cur.fetchone()
-            if existing_job and existing_job["status"] == "running":
-                raise ValueError(f"DEM tiling job for task {task_id} is already running")
-
-            cur.execute(
-                """
-                INSERT INTO dem_terrain_jobs (
-                    task_id, status, output_dir, maxzoom, parent_url,
-                    started_at, completed_at, error_message
+            # I2: 锁内条件 upsert + rowcount（范本同 start_task）——并发
+            # start_tiling 只有一个能把 job 置为 running，其余 ValueError。
+            with self._state_lock:
+                cur.execute(
+                    """
+                    INSERT INTO dem_terrain_jobs (
+                        task_id, status, output_dir, maxzoom, parent_url,
+                        started_at, completed_at, error_message
+                    )
+                    VALUES (?, 'running', ?, ?, ?, ?, NULL, NULL)
+                    ON CONFLICT(task_id) DO UPDATE SET
+                        status='running',
+                        output_dir=excluded.output_dir,
+                        maxzoom=excluded.maxzoom,
+                        parent_url=excluded.parent_url,
+                        started_at=excluded.started_at,
+                        completed_at=NULL,
+                        error_message=NULL
+                    WHERE dem_terrain_jobs.status != 'running'
+                    """,
+                    (task_id, str(output_dir), maxzoom, parent_url, datetime.now()),
                 )
-                VALUES (?, 'running', ?, ?, ?, ?, NULL, NULL)
-                ON CONFLICT(task_id) DO UPDATE SET
-                    status='running',
-                    output_dir=excluded.output_dir,
-                    maxzoom=excluded.maxzoom,
-                    parent_url=excluded.parent_url,
-                    started_at=excluded.started_at,
-                    completed_at=NULL,
-                    error_message=NULL
-                """,
-                (task_id, str(output_dir), maxzoom, parent_url, datetime.now()),
-            )
-            conn.commit()
+                if cur.rowcount != 1:
+                    raise ValueError(f"DEM tiling job for task {task_id} is already running")
+                conn.commit()
         except Exception:
             conn.rollback()
             raise
@@ -368,7 +394,15 @@ class DemTaskManager:
                 raise ValueError(f"DEM task {task_id} not found")
 
             dataset = task["dataset"]
-            output_dir = Path(task["output_path"]) / f"dem_task_{task_id}"
+            output_dir = self._resolve_task_output_dir(task["output_path"]) / f"dem_task_{task_id}"
+
+            # C4: 暂停/崩溃时下载中的文件停留在 downloading —— 恢复时重新入队，
+            # 否则下面的查询会跳过它们、终态统计也漏掉（任务被误报 completed）。
+            cur.execute(
+                "UPDATE dem_files SET status='pending' WHERE task_id=? AND status='downloading'",
+                (task_id,),
+            )
+            conn.commit()
 
             cur.execute(
                 """
@@ -401,7 +435,9 @@ class DemTaskManager:
                         UPDATE dem_files SET status=?, error_message=?, size_bytes=?, local_path=?
                         WHERE task_id=? AND granule_id=?
                         """,
-                        (status, error, size_bytes, str(output_dir / granule_id), task_id, granule_id),
+                        # I14: COP-DEM 的 granule_id 是嵌套路径，实际落盘是
+                        # basename（见引擎 local_name），local_path 与之保持一致。
+                        (status, error, size_bytes, str(output_dir / Path(granule_id).name), task_id, granule_id),
                     )
                     downloaded_delta, failed_delta = _status_count_deltas(old_status, status)
                     if downloaded_delta or failed_delta:
@@ -457,7 +493,7 @@ class DemTaskManager:
                 """
                 SELECT
                     SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+                    SUM(CASE WHEN status NOT IN ('completed','skipped','failed') THEN 1 ELSE 0 END) AS pending_count
                 FROM dem_files
                 WHERE task_id = ?
                 """,

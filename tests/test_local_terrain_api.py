@@ -353,3 +353,59 @@ def test_delete_task_refuses_running(monkeypatch, tmp_path):
     with pytest.raises(ValueError):
         mgr.delete_task(task_id)
     assert mgr.get_task(task_id)["status"] == "running"
+
+
+def test_delete_task_delete_files_false_keeps_dir(monkeypatch, tmp_path):
+    """delete_files=False must remove the DB row but keep the on-disk dir."""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="keep", files=[("a.tif", b"data")], maxzoom=12)
+    from pathlib import Path
+    task_root = Path(mgr.get_task(task_id)["output_path"])
+    assert task_root.exists()
+
+    mgr.delete_task(task_id, delete_files=False)
+
+    assert task_root.exists()
+    import pytest
+    with pytest.raises(ValueError):
+        mgr.get_task(task_id)
+
+
+def test_http_delete_delete_files_param(monkeypatch, tmp_path):
+    """DELETE .../tasks/<id>?delete_files=false keeps files, =true removes them."""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        app_mod.local_terrain_task_manager.__class__,
+        "start_tiling",
+        lambda self, task_id: None,
+    )
+
+    from pathlib import Path
+
+    created = []
+    for i in range(2):
+        resp = client.post(
+            "/api/terrain/local/tasks",
+            data={"name": f"df-{i}", "maxzoom": "10",
+                  "files": [(io.BytesIO(b"fake"), "a.tif")]},
+            content_type="multipart/form-data",
+        )
+        assert resp.status_code == 201
+        created.append(resp.get_json()["task_id"])
+
+    dirs = {
+        tid: Path(app_mod.local_terrain_task_manager.get_task(tid)["output_path"])
+        for tid in created
+    }
+    assert all(d.exists() for d in dirs.values())
+
+    r1 = client.delete(f"/api/terrain/local/tasks/{created[0]}?delete_files=false")
+    assert r1.status_code == 200
+    assert dirs[created[0]].exists()
+
+    r2 = client.delete(f"/api/terrain/local/tasks/{created[1]}?delete_files=true")
+    assert r2.status_code == 200
+    assert not dirs[created[1]].exists()

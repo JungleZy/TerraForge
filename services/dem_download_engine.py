@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
@@ -19,6 +20,11 @@ from services.config_manager import ConfigManager
 from services.earthdata_client import EarthdataClient
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_url_query(text: str) -> str:
+    """剥掉消息里 URL 的 query —— 签名 URL 的凭据/签名不能进日志或 DB。"""
+    return re.sub(r"\?[^\s\"')]*", "?<redacted>", str(text))
 
 
 ProgressCallback = Callable[[str, str, Optional[str], Optional[int]], "asyncio.Future[Any]"]
@@ -158,6 +164,10 @@ class DemDownloadEngine:
                     last_err: Optional[str] = None
                     for attempt in range(max_retries + 1):
                         if stop_flag and stop_flag.is_set():
+                            # C4: 暂停不是失败 —— 回写 pending，恢复时重新下载，
+                            # 不能留下 downloading 孤儿。
+                            if progress_callback:
+                                await progress_callback(granule, "pending", None, None)
                             return
 
                         try:
@@ -169,8 +179,22 @@ class DemDownloadEngine:
                             else:
                                 get_url = file_url
                             async with session.get(get_url, proxy=proxy_url or None) as resp:
+                                if resp.status == 404:
+                                    # I12: 无数据颗粒（海洋/覆盖范围外）—— 标记 skipped，
+                                    # 不重试、不计 failed、不阻断任务完成（部分成功语义）。
+                                    if progress_callback:
+                                        await progress_callback(
+                                            granule, "skipped", "no data at this location (HTTP 404)", None
+                                        )
+                                    return
                                 if resp.status != 200:
                                     raise RuntimeError(f"Download HTTP {resp.status}")
+
+                                try:
+                                    content_length = resp.headers.get("Content-Length")
+                                    expected_size = int(content_length) if content_length is not None else None
+                                except (TypeError, ValueError):
+                                    expected_size = None
 
                                 tmp = dest.with_suffix(dest.suffix + ".part")
                                 size = 0
@@ -181,6 +205,13 @@ class DemDownloadEngine:
                                         await f.write(chunk)
                                         size += len(chunk)
 
+                                # I13: 完整性校验 —— 截断文件判失败、不落盘、不写缓存
+                                # （否则 size>0 的半成品会永久污染全局缓存）。
+                                if expected_size is not None and size != expected_size:
+                                    raise RuntimeError(
+                                        f"truncated download: got {size} bytes, expected {expected_size}"
+                                    )
+
                                 tmp.replace(dest)
 
                             self._save_to_cache(dest, local_name, cache_dir)
@@ -189,7 +220,12 @@ class DemDownloadEngine:
                                 await progress_callback(granule, "completed", None, dest.stat().st_size)
                             return
                         except Exception as e:
-                            last_err = str(e)
+                            if stop_flag and stop_flag.is_set():
+                                # C4: 下载途中暂停 —— 回写 pending，恢复时重新下载。
+                                if progress_callback:
+                                    await progress_callback(granule, "pending", None, None)
+                                return
+                            last_err = _redact_url_query(str(e))
                             # Remove the partial .part so failed/interrupted attempts
                             # don't leave litter (and a later run re-downloads cleanly).
                             part = dest.with_suffix(dest.suffix + ".part")
@@ -198,7 +234,7 @@ class DemDownloadEngine:
                                     part.unlink()
                             except OSError:
                                 pass
-                            logger.warning(f"DEM download failed ({granule}) attempt {attempt+1}/{max_retries+1}: {e}")
+                            logger.warning(f"DEM download failed ({granule}) attempt {attempt+1}/{max_retries+1}: {last_err}")
                             await asyncio.sleep(min(2 ** attempt, 10))
 
                     if progress_callback:

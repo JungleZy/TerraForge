@@ -27,14 +27,14 @@
        兜住 —— 它算的是层叠后真正生效的颜色，不是「有没有人写了这个变量名」。 */
     --color-text-muted:     #5f6670;
 
-    /* 强调色：青绿 */
-    --color-accent:        #2dd4bf;
-    --color-accent-hover:  #5eead4;
-    --color-accent-strong: #14b8a6;
-    --color-accent-muted:  rgba(45,212,191,0.12);
-    --color-on-accent:     #04201c;
+    /* 强调色：GIS 蓝（sky 系，与状态色同走 Tailwind 400→300 hover 档位） */
+    --color-accent:        #38bdf8;
+    --color-accent-hover:  #7dd3fc;
+    --color-accent-strong: #0ea5e9;
+    --color-accent-muted:  rgba(56,189,248,0.12);
+    --color-on-accent:     #041e2b;
 
-    /* 状态色（青绿=品牌，不当状态色） */
+    /* 状态色（品牌蓝=品牌，不当状态色） */
     --color-success: #34d399;
     --color-danger:  #f87171;
     --color-warning: #fbbf24;
@@ -42,7 +42,7 @@
 
     /* 状态色的 hover 档（A6 / Task 11）。取的是同一色系的上一档
        （Tailwind -400 -> -300），与已有的
-       `--color-accent(#2dd4bf, teal-400) -> --color-accent-hover(#5eead4, teal-300)`
+       `--color-accent(#38bdf8, sky-400) -> --color-accent-hover(#7dd3fc, sky-300)`
        是同一条规则，不是随手挑的四个亮色：
            #34d399 emerald-400 -> #6ee7b7 emerald-300
            #f87171 red-400     -> #fca5a5 red-300
@@ -126,7 +126,7 @@
    为什么删：
      1. `*` 让样式引擎给**每一个**节点挂过渡簿记。首页地图上 Leaflet
         动态生成的节点数以千计，它们一条过渡也用不上。
-     2. 真正需要过渡反馈的元素（.btn / .form-control / .nav-link / .card /
+     2. 真正需要过渡反馈的元素（.btn / .form-control / .card /
         .task-card / .status-badge / .page-link / .form-check-input …）
         本来就各自写了一条 transition，`*` 那条对它们完全是死声明。
    删除本身由 tests/test_css_contract.py::test_no_blanket_motion_on_the_universal_selector
@@ -145,7 +145,7 @@
  * 前两条有 CDP 实测：
  *
  *   1. `all` 会连 `scrollbar-color` 一起动。上面那条 `*` 给每个元素都设了
- *      scrollbar-color，于是 hover 一个 .nav-link，Animation domain 抓到的
+ *      scrollbar-color，于是 hover 一个导航链接，Animation domain 抓到的
  *      CSSTransition 里赫然有 `scrollbar-color` —— 纯粹的无用功。
  *   2. `all` 还会动 transform / 未来任何新增的布局属性。`.btn:disabled` 的
  *      `transform: none !important` 一旦有人给基态加上 transform，就会变成
@@ -153,8 +153,8 @@
  *   3. 0.3s 用在 hover 反馈上偏慢（指针已经离开了颜色才走完）。交互反馈
  *      统一 0.15s；只有真正表达「状态切换」的过渡才允许更长。
  *
- * `width` 只出现在两处**有意**的尺寸过渡上（.nav-link::after 的下划线扫出、
- * .task-card::before 的左边条加粗），各自在那条规则里单列，不进这张通表。
+ * `width` 只出现在一处**有意**的尺寸过渡上（.task-card::before 的左边条
+ * 加粗），在那条规则里单列，不进这张通表。
  */
 
 /* 元素级字号基线：原先由文件末尾的 !important 覆盖块提供，现合并到此处。
@@ -238,124 +238,340 @@ body {
    由 test_no_bootstrap_component_background_reaches_a_div_unreviewed 兜住：
    模板/JS 里一旦出现没被本文件覆盖的 Bootstrap 背景组件类，那条断言变红。 */
 
-/* Navbar Styles */
-.navbar {
-    background: var(--color-bg-secondary) !important;
-    border-bottom: 1px solid var(--color-border);
-    box-shadow: var(--shadow-sm);
-    backdrop-filter: blur(10px);
-    padding: 0.5rem 0;
-    min-height: 60px;
-}
-
-.navbar.fixed-top {
-    z-index: 1030;
-}
-
-.navbar-brand {
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: var(--font-size-xl);
-    letter-spacing: -0.02em;
-    color: var(--color-accent-hover) !important;
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
-    padding: 0.5rem 1rem;
-}
-
-.navbar-brand:hover {
-    color: var(--color-accent) !important;
-    text-shadow: none;
-}
-
-.nav-link {
-    color: var(--color-text-secondary) !important;
-    font-weight: 400;
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
-    position: relative;
-    padding: 0.4rem 0.8rem !important;
-    font-size: var(--font-size-base);
-}
-
-.nav-link::after {
-    content: '';
-    position: absolute;
-    bottom: 0;
-    left: 50%;
-    width: 0;
-    height: 2px;
-    background: var(--color-accent);
-    transition: width 0.15s ease;
-    transform: translateX(-50%);
-}
-
-.nav-link:hover {
-    color: var(--color-accent-hover) !important;
-}
-
-.nav-link:hover::after {
-    width: 80%;
-}
-
-.nav-link.active {
-    color: var(--color-text-primary) !important;
-}
-
-.nav-link.active::after {
-    width: 80%;
-}
-
-/* Main content area with fixed height */
-.main-content {
-    padding-top: 60px;
+/* Workbench shell：flex 列布局占满视口。没有顶部工具栏（历史/配置入口是
+   首页地图上的浮动按钮），主内容区从视口顶开始。 */
+.workbench {
+    display: flex;
+    flex-direction: column;
     height: 100vh;
+    overflow: hidden;
+}
+
+/* 连接状态指示（仅在有 socket 的页面由 initConnectionStatus 点亮），
+   位于底部状态栏，与读数项同行。 */
+.conn-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+.conn-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-neutral);
+}
+
+.conn-status--on .conn-dot { background: var(--color-success); }
+.conn-status--off .conn-dot { background: var(--color-danger); }
+
+/* Main content area：flex 子项。首页内部自己撑满（overflow 由 .index-layout 管），
+   其它页在这里滚动。 */
+.main-content {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     background: var(--color-bg-primary);
     position: relative;
 }
 
-/* Index page layout */
+/* Bottom status bar（28px，等宽字体读数，专业 GIS 的标尺位） */
+.workbench-statusbar {
+    flex: 0 0 28px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 12px;
+    background: var(--color-bg-secondary);
+    border-top: 1px solid var(--color-border);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.statusbar-item b {
+    color: var(--color-text-primary);
+    font-weight: 500;
+}
+
+/* 极窄屏状态栏只保留经纬度与缩放（最后一项选区摘要让位） */
+@media (max-width: 576px) {
+    .workbench-statusbar .statusbar-item:last-child {
+        display: none;
+    }
+}
+
+/* Index page layout：地图全屏 + 右侧 dock（工作台形态） */
 .index-layout {
-    height: calc(100vh - 60px);
+    height: 100%;
     display: flex;
     flex-direction: row;
-    position: relative;
-}
-
-.index-left {
-    flex: 0 0 65%;
-    padding: 1rem;
     overflow: hidden;
-    display: flex;
-    flex-direction: column;
     position: relative;
 }
 
-.index-left .card {
+.index-map {
     flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border);
-    box-shadow: var(--shadow-lg);
+    min-width: 0;
     position: relative;
-}
-
-.index-left .card-body {
-    flex: 1;
     overflow: hidden;
-    padding: 0;
 }
 
+/* 右侧 dock：固定 380px，可收起（margin-right 负值滑出，地图占满整行） */
 .index-right {
-    flex: 0 0 35%;
-    padding: 1rem;
-    padding-left: 0;
+    flex: 0 0 380px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
     overflow-y: auto;
-    background: var(--color-bg-primary);
+    background: var(--color-bg-secondary);
+    border-left: 1px solid var(--color-border);
     position: relative;
+    transition: margin-right 0.2s ease;
+}
+
+.index-right.dock-collapsed {
+    margin-right: -380px;
+}
+
+.dock-panel {
+    flex: 0 0 auto;
+}
+
+.dock-collapse-btn,
+.dock-reopen-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--ctl-h);
+    height: var(--ctl-h);
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.dock-collapse-btn:hover,
+.dock-reopen-handle:hover {
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+}
+
+/* 收起后地图右缘的展开把手：垂直居中于右缘（抽屉拉手形态），
+   不与右上角的 bounds 浮层重叠 */
+.dock-reopen-handle {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    z-index: 1000;
+    width: 24px;
+    height: 48px;
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+    background: var(--color-bg-secondary);
+    border-right: none;
+}
+
+/* Cesium 时代的左列工具条：全自绘按钮组（视图 / 框选 / 功能面板三组），
+   绝对定位在地图左上角。z-index 1000 < 面板 backdrop(1400)：
+   面板开着时先关面板（点遮罩 / X / Esc）再切换。 */
+.map-toolbar {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* 工具条分组条（下载 / 处理 / 历史 / 配置等功能入口）。
+   视觉与 GIS 控件条同语言（最初对齐 Leaflet .leaflet-bar 的几何）：
+   容器持背景/边框/圆角/阴影，按钮透明、之间以 1px 边线分隔。 */
+.map-panel-triggers {
+    display: flex;
+    flex-direction: column;
+    background-color: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;              /* 与 .leaflet-bar 一致 */
+    box-shadow: var(--shadow-md);
+    overflow: hidden;                /* 圆角裁掉首尾按钮的 hover 底色 */
+}
+
+.map-panel-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 30px;                     /* 与 .leaflet-bar a 同宽 */
+    height: 46px;                    /* 30px 图标区 + 16px 文字区，同 Leaflet 按钮 */
+    padding: 8px 0 0;                /* 14px 图标在上部 30px 里居中 */
+    border: none;
+    border-bottom: 1px solid var(--color-border);
+    background: transparent;
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.map-panel-btn span {
+    display: block;
+    margin-top: 5px;
+    line-height: 12px;
+    font-size: 10px;
+    color: inherit;
+}
+
+.map-panel-btn:last-child {
+    border-bottom: none;
+}
+
+.map-panel-btn:hover {
+    background-color: rgba(255, 255, 255, 0.12);   /* 与 .leaflet-bar a:hover 一致 */
+    color: var(--color-text-primary);
+}
+
+/* 面板打开 / dock 展开时点亮对应入口（panels.js / map.js 切换） */
+.map-panel-btn--active,
+.map-panel-btn--active:hover {
+    color: var(--color-accent);
+}
+
+/* 独立页（/history、/config）的返回链接：顶部工具栏移除后唯一的回程 */
+.back-home-link {
+    display: inline-block;
+    margin-bottom: 12px;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+
+.back-home-link:hover {
+    color: var(--color-accent-hover);
+}
+
+/* 等高线配色自定义（数据处理表单内）：海拔带色块 + 范围小字 */
+.contour-style-custom {
+    margin-top: 8px;
+}
+
+.contour-style-custom summary {
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-sm);
+}
+
+.tint-stops {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.tint-stop {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.tint-stop input[type="color"] {
+    width: 28px;
+    height: 28px;
+    padding: 1px;
+}
+
+.tint-stop-label {
+    font-size: 10px;
+    color: var(--color-text-secondary);
+}
+
+/* 配色样式预览图：棋盘格底让透明背景也能看清（与瓦片的透明出界一致） */
+.contour-style-preview {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: repeating-conic-gradient(#3a3f47 0% 25%, #26292f 0% 50%) 0 0 / 12px 12px;
+}
+
+/* 历史任务预览提示条（地图右下、状态栏上方）：当前在主视图叠加的是哪个任务 */
+.task-preview-chip {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: rgba(21, 23, 28, 0.92);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+}
+
+/* 地图样式瓦片缩略图：与下拉同行同高（28px，不进表单高度模型），
+   悬停放大看细节（绝对定位不撑布局） */
+.map-style-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.map-style-row .form-select {
+    flex: 1;
+    min-width: 0;
+}
+
+.map-style-preview {
+    width: 28px;
+    height: 28px;
+    flex: 0 0 auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-tertiary);
+    object-fit: cover;
+    cursor: zoom-in;
+    transition: transform 0.15s ease;
+    transform-origin: top right;
+}
+
+.map-style-preview:hover {
+    position: relative;
+    z-index: 1500;
+    transform: scale(6);
+    box-shadow: var(--shadow-lg);
+}
+
+/* 地图上的范围信息浮层（替代原表单底部的 #boundsInfo alert） */
+.bounds-overlay {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 1000;
+    max-width: min(420px, calc(100% - 60px));
+    padding: 6px 10px;
+    background: rgba(21, 23, 28, 0.92);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
 }
 
 .index-right::-webkit-scrollbar {
@@ -376,6 +592,98 @@ body {
 
 .index-right::-webkit-scrollbar-thumb:hover {
     background: var(--color-text-muted);
+}
+
+/* 非地图页（历史记录 / 配置）的内容容器：居中限宽，与 dock 同一套间距 */
+.page-content {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+/* ---- 覆盖面板（历史记录 / 配置）：右侧滑出，浮在地图上方 --------------
+   单窗口工作台形态：面板只活在视口顶与状态栏(28px)之间的主区内（顶部
+   工具栏已移除），外壳始终可见。z-index 层级：
+     Leaflet 控件 ≤ 1000 < 面板 backdrop 1400 < 面板 1401
+     < Bootstrap modal-backdrop 1450 < modal 1500（历史详情弹窗在面板之上）
+     < toast 11000 < confirm 12000（ui.js 组件永远最顶） */
+.panel-backdrop {
+    position: fixed;
+    top: 0;
+    bottom: 28px;
+    left: 0;
+    right: 0;
+    z-index: 1400;
+    background: rgba(4, 6, 10, 0.55);
+    backdrop-filter: blur(2px);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.panel-backdrop--in {
+    opacity: 1;
+}
+
+.workbench-panel {
+    position: fixed;
+    top: 0;
+    bottom: 28px;
+    right: 0;
+    z-index: 1401;
+    width: 480px;
+    max-width: 94vw;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-bg-secondary);
+    border-left: 1px solid var(--color-border-strong);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+}
+
+.workbench-panel--wide {
+    width: 920px;
+}
+
+.workbench-panel--in {
+    transform: translateX(0);
+}
+
+/* [hidden] 的 UA 样式 (0,1,1) 压不过 .workbench-panel 的 display:flex (0,1,0)，
+   需要 (0,2,0) 的显式规则让隐藏真正生效。 */
+.workbench-panel[hidden],
+.panel-backdrop[hidden] {
+    display: none;
+}
+
+.workbench-panel__header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--color-border);
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    color: var(--color-text-primary);
+}
+
+.workbench-panel__body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
+}
+
+/* Bootstrap 的 modal(1055)/modal-backdrop(1050) 原本是为「页面最顶层」设的，
+   工作台面板(1401)比它们高 —— 历史面板里开任务详情会弹到面板**下面**。
+   抬到面板之上、toast(11000) 之下。 */
+.modal-backdrop {
+    z-index: 1450;
+}
+
+.modal {
+    z-index: 1500;
 }
 
 /* Map Styles */
@@ -459,7 +767,7 @@ body {
 }
 
 /* A7 / Task 12 补上：改前**没有**这条，已取消的卡片因此落到
-   `.task-card::before` 的兜底 `var(--color-accent)` —— 一条青绿色的品牌色边条，
+   `.task-card::before` 的兜底 `var(--color-accent)` —— 一条品牌蓝色的边条，
    读起来像「一切正常」。CDP 实测改前是 rgb(45, 212, 191)。
    用 --color-neutral 而不是 --color-text-muted：调色板里那个变量本来就是
    「为『已取消』这类无语义色的终态准备」的（见 :61 的说明），而且
@@ -888,7 +1196,7 @@ body {
           .btn:first-child:active:focus-visible { box-shadow: ... }                  (0,3,0)
       我们的 `.btn-primary{background:...}` 是 (0,1,0) —— **只够管基态**。
       改前 CDP 实测的后果：
-          禁用态 rgb(13,110,253)  = Bootstrap 蓝（不是本站青绿）
+          禁用态 rgb(13,110,253)  = Bootstrap 蓝（不是本站品牌蓝）
           按下态 rgb(10,88,202)   = Bootstrap 深蓝
           键盘焦点 rgb(11,94,215) = Bootstrap 蓝，且 outline-width: 0px
       所以本段所有状态规则都写成 `.btn-X:not(:disabled):STATE` = (0,3,0)，
@@ -1053,7 +1361,7 @@ body {
        .btn:first-child:active:focus-visible,
        :not(.btn-check)+.btn:active:focus-visible { box-shadow: var(--bs-btn-focus-box-shadow) }
    特异度是 (0,4,0)。本条若只写 `.btn:not(:disabled):focus-visible` 是 (0,3,0)，
-   压不住它：键盘焦点 + 按下的瞬间，Bootstrap 的蓝雾环会和我们的青绿环同时出现。
+   压不住它：键盘焦点 + 按下的瞬间，Bootstrap 的蓝雾环会和我们的品牌蓝环同时出现。
    加上 `:not(.disabled)`（Bootstrap 给 <a> 用的禁用类，本站不用）之后是 (0,4,0)，
    与之打平、靠 style.css 排在后面取胜。
    由 test_focus_visible_has_a_visible_outline 的
@@ -1124,7 +1432,7 @@ body {
 
    改后不再用整体 opacity（那是把「不可点」和「看不清」绑在一起的根源），
    改为换一套**低饱和中性**的表面：
-       底 --color-bg-tertiary #1c2027   饱和度 16.4%（启用态青绿是 80.4%）
+       底 --color-bg-tertiary #1c2027   饱和度 16.4%（启用态品牌蓝是 80.4%）
        字 --color-text-secondary #9aa0aa  对底 6.21:1（>= 4.5，不可点 != 看不清）
        禁用底 vs 启用底 6.56:1（改前只有 3.87:1）
    特异度 (0,2,0)，与 Bootstrap 的 `.btn:disabled` 打平，靠 style.css 排在
@@ -1139,6 +1447,16 @@ body {
     filter: none;
     cursor: not-allowed;
     transform: none !important;
+}
+
+/* .btn-outline-primary 的启用墨是 accent 蓝 #38bdf8（L≈0.44），换成通用的
+   禁用墨 #9aa0aa（L 0.350）只暗了 0.091，分不出启用/禁用（透明变体的禁用
+   信号全靠墨色变暗，见 test_disabled_button_cannot_be_mistaken_for_clickable
+   的第二支量法）。这里给它单独一个更深的禁用墨 #828a94：对禁用底
+   #1c2027 仍有 4.68:1（>= 4.5），相对启用墨暗了 0.19（>= 0.15）。
+   特异度同为 (0,2,0)，靠排在上一条之后取胜。 */
+.btn-outline-primary:disabled {
+    color: #828a94;
 }
 
 /* ---- 尺寸 -------------------------------------------------------------- */
@@ -1244,9 +1562,8 @@ body {
 }
 
 /* ⚠️ 想验证这条改动的实测值时，别用 `document.querySelector('.card-body')`：
-   首页第一个 .card-body 是地图那个，带 `p-0`，且被
-   `.index-left .card-body { padding: 0 }`(0,2,0) 压成 0px。要取右侧面板里的
-   具体元素（例如 `.index-right .card-body`）。 */
+   首页的 .card-body 都在右侧 dock 里，要取具体元素
+   （例如 `.index-right .card-body`）。 */
 .card-body {
     padding: var(--pad-card);
     color: var(--color-text-primary);
@@ -1696,23 +2013,27 @@ code {
 
 /* Responsive Styles */
 @media (max-width: 768px) {
+    /* 窄屏：dock 从右侧停靠改为下方堆叠，地图在上 */
     .index-layout {
         flex-direction: column;
     }
 
-    .index-left,
-    .index-right {
+    .index-map {
         flex: 1 1 auto;
-        padding: 1rem;
+        min-height: 0;
     }
 
     .index-right {
+        flex: 0 0 45%;
         border-left: none;
-        border-top: 2px solid var(--color-accent);
+        border-top: 1px solid var(--color-border);
     }
 
-    #map {
-        height: 400px;
+    /* 列布局下 margin 百分比相对宽度计算，负 margin 收起不可靠，
+       窄屏直接隐藏（无滑出动画，行为一致：点把手恢复） */
+    .index-right.dock-collapsed {
+        margin-right: 0;
+        display: none;
     }
 
     .history-map {
@@ -1823,212 +2144,6 @@ code {
 *:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
-}
-
-/* ===========================================================================
-   Leaflet 控件主题化
-   （不含 .leaflet-control-layers-toggle：代码里从未调用 L.control.layers，
-     那个 DOM 元素不存在）
-
-   改这一段之前必须知道的三条环境事实，全部是 CDP 实测得出、不是推断：
-
-   (1) ~~本文件的 div 兜底重置会把这些控件压成透明~~ —— **已随兜底重置一起删除**。
-       原文：`div:not(.card):not(...)...{background:transparent}` 特异度 (0,11,1)，
-       .leaflet-bar / .leaflet-draw-toolbar / .leaflet-control-attribution /
-       .leaflet-draw-tooltip 全是 <div> 且不在白名单里，所以底色必须带 !important。
-       兜底重置删掉之后这三处 !important 逐个实测过：
-         · `.leaflet-bar / .leaflet-draw-toolbar { background-color }` —— 去掉。
-           leaflet.css 没有任何规则给 `.leaflet-bar` **容器**设背景（它只给
-           `.leaflet-bar a` 设 #fff），(0,1,0) 无对手。
-         · `.leaflet-draw-tooltip { background-color }` —— 去掉。对手是
-           leaflet.draw.css 的 `.leaflet-draw-tooltip{background:rgb(54,54,54)}`
-           (0,1,0)，同分、style.css 排在后面，源码顺序即取胜。
-         · `.leaflet-control-attribution { background-color }` —— **保留**。
-           它还要压 leaflet.css 的 `.leaflet-container .leaflet-control-attribution
-           {background:rgba(255,255,255,.8)}` (0,2,0)，那条我们赢不了。
-       三处的删/留都做过 CDP 对拍（见 test_leaflet_div_controls_keep_their_background）。
-
-   (1b) **删掉兜底重置反而让 leaflet.css 的浅灰底冒了出来。**
-       `.leaflet-container{background:#ddd}`(leaflet.css:260, 特异度 0,1,0)
-       原先也被 (0,11,1) 压着。删除后 CDP 实测 #map 和 .history-map 两个容器
-       都变成 rgb(221,221,221)。瓦片没盖满 / 还没加载完的时候就是一片浅灰。
-       修法是下面那条 `.leaflet-container` —— 同特异度 + style.css 靠后取胜，
-       不需要 !important。
-
-   (2) **`#map` 上的 filter 会改掉这里写的每一个颜色。**
-       本文件 :288 有 `filter: brightness(0.9) contrast(1.1)`，它作用于整个
-       .leaflet-container —— 包括所有控件。所以这里写的不是屏幕上的最终颜色：
-       var(--color-bg-secondary) #15171c 过完滤镜实际渲染成 ≈ rgb(8,10,15)
-       （几乎等于 --color-bg-primary）。这是可接受的：控件因此比面板略深，
-       像浮在地图上的一块深色片。要对比度取数请以渲染值为准。
-
-   (3) **必须用 background-color，不能用 background 简写。**
-       leaflet.draw.css 用 `background-image:url(spritesheet.svg)` +
-       background-position 做雪碧图，`background` 简写会把它一并重置成 none，
-       结果是三个没有图标的空白按钮。（C1/Task 4 在 select 箭头上踩过同一个坑。）
-   =========================================================================== */
-
-/* 地图容器自身的底。见上面 (1b)：leaflet.css:260 给它 #ddd 浅灰，原本被
-   兜底重置压着，重置一删就冒出来了。这条是整次清理里**唯一**一处兜底重置
-   真的在对第三方样式表干活的地方，所以把它单独提出来，用正常特异度重写。
-
-   为什么是 transparent 而不是某个具体色：这样「瓦片盖不到的地方」露出来的
-   还是宿主面板本身，与删除前逐像素相同。试过 var(--color-bg-primary)，
-   实测不行 —— #map 的宿主是 `.index-left .card`(#15171c)，而 #map 自己那层
-   `filter: brightness(.9) contrast(1.1)` 会把写在这里的颜色再压一遍：
-   #0c0d10 过完滤镜是 rgb(0,0,3)，于是「没瓦片的地图区」从面板灰变成近纯黑，
-   1600x1000 截图上 53% 的像素变了。transparent 则是 0 像素差。
-
-   同特异度 (0,1,0) 靠源码顺序赢 leaflet.css，不需要 !important
-   （前提由 test_style_css_is_the_last_stylesheet 钉住）。 */
-.leaflet-container {
-    background: transparent;
-}
-
-/* 控件容器。.leaflet-control-zoom 与绘制工具条都是 .leaflet-bar，共用这一条。
-   .leaflet-draw-toolbar 与 .leaflet-bar 永远在同一个 <div> 上
-   （leaflet.draw 1.0.4: create("div", "leaflet-draw-toolbar leaflet-bar")），
-   这里两个类都写只是让按类名 grep 的人找得到，不是两个元素。 */
-.leaflet-bar,
-.leaflet-draw-toolbar {
-    /* 兜底重置删除后这里不再需要 !important，见段首 (1)。 */
-    background-color: var(--color-bg-secondary);
-    /* !important #1/#2：压 leaflet.css 的
-       `.leaflet-touch .leaflet-bar{border:2px solid rgba(0,0,0,.2)}` 和
-       `.leaflet-touch .leaflet-bar{box-shadow:none}`，两条都是 (0,2,0)，
-       我们的 (0,1,0) 赢不了。.leaflet-touch 在带触摸屏的设备上是常态
-       （headless Chrome 实测也带这个类），不是边角情况。 */
-    border: 1px solid var(--color-border) !important;
-    box-shadow: var(--shadow-md) !important;
-}
-
-/* 按钮本体：底色交给容器，<a> 一律透明——这样下面那条 filter: invert(1)
-   只作用在雪碧图上。若在这里同时给深色背景和 invert，两者互相抵消，净效果为零。
-   选择器带上 `a.leaflet-disabled` 是为了压掉 leaflet.css 的
-   `.leaflet-bar a.leaflet-disabled{background-color:#f4f4f4}` (0,2,1) ——
-   那是首屏默认态（还没画选区时「编辑」「删除」就是 disabled），改前实测
-   两个按钮的底色是 rgb(244,244,244)，深色地图上两块刺眼白斑。
-   同特异度靠源码顺序取胜：base.html 里 style.css 排在 leaflet.css /
-   leaflet.draw.css 之后（由 test_style_css_is_the_last_stylesheet 钉住），
-   所以这里不需要 !important。 */
-.leaflet-bar a,
-.leaflet-bar a.leaflet-disabled {
-    background-color: transparent;
-}
-
-.leaflet-bar a {
-    color: var(--color-text-primary);
-    border-bottom-color: var(--color-border);
-}
-
-.leaflet-bar a:hover,
-.leaflet-bar a:focus {
-    background-color: rgba(255, 255, 255, 0.12);
-}
-
-/* 雪碧图是深灰 (#464646) 画在透明底上的，为白底按钮设计。反色后得到浅色图标；
-   brightness(1.25) 把它推到 ≈ #e7e7e7，与 --color-text-primary(#e8eaed) 基本一致。
-
-   ⚠️ filter 作用于整个 <a>，连它自己的背景色和边框一起反色。所以本规则块里
-   **颜色值写的都是「反色前」的**：rgba(0,0,0,α) 渲染出来就是 rgba(255,255,255,α)。
-   rgba(0,0,0,0.07) ≡ --color-border，rgba(0,0,0,0.12) ≡ 上面那条 hover 高亮。 */
-.leaflet-draw-toolbar a {
-    filter: invert(1) brightness(1.25);
-    border-bottom-color: rgba(0, 0, 0, 0.07);
-}
-
-.leaflet-draw-toolbar a:hover,
-.leaflet-draw-toolbar a:focus {
-    background-color: rgba(0, 0, 0, 0.12);
-}
-
-/* 禁用态（首屏的「编辑」「删除」就是这个状态）。
-
-   为什么必须自己造这个视觉差异：leaflet.draw 的雪碧图里，**禁用格子和可用格子
-   是像素级相同的**。它的 SVG 本意是靠 `<g id="disabled" style="fill:#bbbbbb">`
-   把图标变浅，但组里放的是 `<use xlink:href="#edit">` / `<use xlink:href="#remove">`，
-   而被引用的那两个 group 自带 `style="fill:#464646;fill-opacity:1"` —— 子元素
-   自己的 fill 压掉了祖先的 #bbbbbb，那个浅灰**一次都没生效**。
-   （实测：把四个格子分别画到白底 canvas 上读像素，可用/禁用的主导非白色
-     全是 rgb(70,70,70)，没有任何 rgb(187,187,187)；改前页面上两个禁用按钮的
-     对比度也都是 9.17:1，与可用态完全一样。）
-
-   所以禁用态不能只靠上游的雪碧图，必须由主题自己压暗。这里只加 opacity ——
-   filter 继续用上面那条（同一张图、同一个反色），只是整体淡下去，
-   是「同一个图标、变淡」这个惯用表达。渲染后实测 4.67:1，明显弱于可用态的 13.89:1。
-   数值由 tests/test_css_contract.py::test_leaflet_draw_icon_stays_visible_through_the_map_filter
-   从源码算出来钉住（模型算 4.70、CDP 实测 4.67，逐通道差 <=1）。 */
-.leaflet-draw-toolbar a.leaflet-disabled {
-    opacity: 0.55;
-}
-
-.leaflet-bar a.leaflet-disabled,
-.leaflet-bar a.leaflet-disabled:hover {
-    background-color: transparent;
-    color: var(--color-text-muted);
-    cursor: default;
-}
-
-/* 绘制 / 编辑模式下弹出的操作条。它是 <ul class="leaflet-draw-actions"> 里的
-   <a>，同特异度靠源码顺序赢 leaflet.draw.css，不需要 !important。
-   改前实测底色是 leaflet.draw 出厂的 rgb(145,145,135) 橄榄灰。 */
-.leaflet-draw-actions a {
-    background-color: var(--color-bg-secondary);
-    border-left-color: var(--color-border);
-    color: var(--color-text-primary);
-}
-
-/* 只换底色的话，经 #map 那层 filter 压缩后实测只剩 7/9/11 的通道差，太弱；
-   文字同时转成强调色，悬停反馈才明确。 */
-.leaflet-draw-actions a:hover {
-    background-color: var(--color-bg-tertiary);
-    color: var(--color-accent-hover);
-}
-
-/* 绘制提示条。它是 popupPane 里的 <div>，A4/Task 9 之前被兜底重置压成过透明
-   （实测 background-color = rgba(0,0,0,0)，白字直接飘在地图上，遇到浅色瓦片
-   基本看不清）。兜底重置已删，这里的 !important 也随之去掉：对手只剩
-   leaflet.draw.css 的 `.leaflet-draw-tooltip{background:rgb(54,54,54)}` (0,1,0)，
-   同分、style.css 靠后，源码顺序即取胜。 */
-.leaflet-draw-tooltip {
-    background-color: rgba(12, 13, 16, 0.92);
-    border-color: var(--color-border);
-    color: var(--color-text-primary);
-}
-
-.leaflet-draw-tooltip:before {
-    border-right-color: rgba(12, 13, 16, 0.92);
-}
-
-.leaflet-draw-tooltip-subtext {
-    color: var(--color-text-secondary);
-}
-
-/* 右下角出处标注。A4/Task 9 改前实测 background-color = rgba(0,0,0,0)
-   （被兜底重置压掉）、文字仍是 leaflet.css 的 #333 —— 深色地图上是**看不清**，
-   不是简报说的「刺眼白底」。 */
-.leaflet-control-attribution {
-    /* !important #3：这一处**必须保留**。兜底重置虽然删了，但它还要压
-       leaflet.css 的
-       `.leaflet-container .leaflet-control-attribution{background:rgba(255,255,255,.8)}` (0,2,0)，
-       我们的 (0,1,0) 赢不了。去掉之后实测底色变回 rgba(255,255,255,0.8)。 */
-    background-color: rgba(12, 13, 16, 0.85) !important;
-    color: var(--color-text-secondary);
-}
-
-.leaflet-control-attribution a {
-    color: var(--color-accent-hover);
-}
-
-.leaflet-popup-content-wrapper {
-    background: var(--color-bg-secondary) !important;
-    color: var(--color-text-primary);
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-}
-
-.leaflet-popup-tip {
-    background: var(--color-bg-secondary) !important;
 }
 
 /* A8 / Task 13：入场动画 `@keyframes fadeInUp` + `.card, .task-card
@@ -2165,7 +2280,7 @@ code {
 
 /* ========================================================================
    全局 UI 组件：Toast 通知 + Confirm 模态框（替代原生 alert/confirm）
-   均使用 :root 设计变量，与 premium 深色 + teal 主题统一。命名加 app- 前缀
+   均使用 :root 设计变量，与 premium 深色 + GIS 蓝主题统一。命名加 app- 前缀
    以避开 Bootstrap 的 .toast / .modal / .alert。
    ======================================================================== */
 

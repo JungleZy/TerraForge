@@ -728,6 +728,32 @@ def _georef_path_of(tile_png: Path) -> Path:
     return tile_png.with_name(f"{tile_png.stem}{GEOREF_SUFFIX}.tif")
 
 
+def _private_georef_path_of(work_dir: Path, tile) -> Path:
+    """stitch 私有临时目录里的中间文件路径(I8 后的位置)。
+
+    I8 把 stitch 的中间文件从共享 cache 搬进了每次 stitch 私有的临时目录,
+    且目录内命名带 x 前缀(cache 文件名只是 {y}.png,同 y 不同 x 会撞名)。
+    这里共用实现里的 GEOREF_SUFFIX,镜像这套命名。
+    """
+    from services.download_engine import GEOREF_SUFFIX
+
+    return work_dir / f"{tile.x}_{tile.y}{GEOREF_SUFFIX}.tif"
+
+
+def _plant_poison_in_work_dir(monkeypatch, work_dir: Path):
+    """让 stitch 用我们准备的目录做私有临时目录(里面已放好毒中间文件)。
+
+    I8 之后 stitch 的中间文件写在 tempfile.mkdtemp 出来的私有目录里,测试
+    无法事先知道路径;把 mkdtemp 钉到固定目录,就能在 stitch 开始前把
+    「名字合规、内容有毒」的残骸放进去,复现 exists() 短路复用残骸、
+    BuildVRT 静默踢瓦片的路径。行为断言(必须显式失败,不能缩水)不变。
+    """
+    import services.download_engine as de
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(de.tempfile, 'mkdtemp', lambda prefix=None: str(work_dir))
+
+
 def _two_tiles_with_cache(engine, size=16):
     """在缓存里放好左右相邻两块瓦片，返回 (left, right)"""
     zoom, x, y = 10, 843, 387
@@ -738,15 +764,16 @@ def _two_tiles_with_cache(engine, size=16):
     return left, right
 
 
-def test_half_written_intermediate_fails_instead_of_shrinking_the_mosaic():
+def test_half_written_intermediate_fails_instead_of_shrinking_the_mosaic(monkeypatch, tmp_path):
     """
     「名字对、内容只写了一半」的中间文件残骸，必须让拼接显式失败。
 
     残骸怎么来的：`_add_georeference` 里 driver.Create() 一执行，磁盘上就已经
     有了一个叫 `<tile>_geo3857rgb.tif` 的文件。用户在此刻关掉 exe（或中途抛
     异常），留下的就是这种「文件名完全合规、内容没有 geotransform/投影」的东西。
-    它不在 georef_paths 里（append 发生在函数成功返回之后），所以 stitch 的
-    finally 清不到它；下次拼接时 exists() 短路信任文件名，把它直接喂给 BuildVRT。
+    下次拼接时 exists() 短路信任文件名，把它直接喂给 BuildVRT。
+    （I8 后中间文件在 stitch 私有临时目录里，本测试把 mkdtemp 钉到固定目录
+    来投放残骸；要守的行为不变：被复用的毒中间文件必须显式失败。）
 
     修复分两层，这条测试守的是第二层：
       1. 原子写（.part + os.replace）—— 让这种残骸不再产生
@@ -764,7 +791,9 @@ def test_half_written_intermediate_fails_instead_of_shrinking_the_mosaic():
     left, right = _two_tiles_with_cache(engine)
     out_path = Config.OUTPUT_DIR / 'half_written.tif'
 
-    poison = _georef_path_of(right.cache_path('m'))
+    work_dir = tmp_path / 'stitch_work'
+    _plant_poison_in_work_dir(monkeypatch, work_dir)
+    poison = _private_georef_path_of(work_dir, right)
     half = gdal.GetDriverByName('GTiff').Create(str(poison), 16, 16, 3, gdal.GDT_Byte)
     assert half is not None
     half = None  # 关掉：没有 SetGeoTransform / SetProjection
@@ -781,11 +810,10 @@ def test_half_written_intermediate_fails_instead_of_shrinking_the_mosaic():
     assert not out_path.exists(), (
         "尺寸校验必须在 Translate 之前拦下来，不能把缩水的拼接图落盘"
     )
-    assert sorted(str(p) for p in Config.CACHE_DIR.rglob('*_geo*.tif')) == [], \
-        "失败路径也必须清掉中间文件"
+    assert not work_dir.exists(), "失败路径也必须清掉中间文件(私有临时目录)"
 
 
-def test_band_count_mismatch_intermediate_fails_instead_of_shrinking_the_mosaic():
+def test_band_count_mismatch_intermediate_fails_instead_of_shrinking_the_mosaic(monkeypatch, tmp_path):
     """
     波段数不一致的中间文件残骸（如遗留的 4 波段 RGBA），同样必须显式失败。
 
@@ -794,6 +822,8 @@ def test_band_count_mismatch_intermediate_fails_instead_of_shrinking_the_mosaic(
         Skipping ...
     调色板修复把 PNG8 归一成 3 波段是改善，但盘上残留的 RGBA 中间文件没有守卫 ——
     它文件名合规、配准完整，exists() 短路照样会复用它。
+    （I8 后中间文件在 stitch 私有临时目录里，本测试把 mkdtemp 钉到固定目录
+    来投放残骸；要守的行为不变：被复用的毒中间文件必须显式失败。）
 
     实测未修复时：vrt size 16x16（本该 32x16），Translate 成功，任务报完成。
     """
@@ -805,7 +835,9 @@ def test_band_count_mismatch_intermediate_fails_instead_of_shrinking_the_mosaic(
     out_path = Config.OUTPUT_DIR / 'band_mismatch.tif'
 
     # 4 波段、配准完整 —— 唯一的问题就是波段数，把变量隔离干净
-    poison = _georef_path_of(right.cache_path('m'))
+    work_dir = tmp_path / 'stitch_work'
+    _plant_poison_in_work_dir(monkeypatch, work_dir)
+    poison = _private_georef_path_of(work_dir, right)
     rgba = gdal.GetDriverByName('GTiff').Create(str(poison), 16, 16, 4, gdal.GDT_Byte)
     assert rgba is not None
     rgba.SetGeoTransform(engine.tile_geotransform(right, 16, 16)[0])
@@ -825,8 +857,7 @@ def test_band_count_mismatch_intermediate_fails_instead_of_shrinking_the_mosaic(
         engine.stitch_tiles_with_gdal([left, right], 'm', str(out_path), left.zoom)
 
     assert not out_path.exists(), "不能把缩水的拼接图落盘"
-    assert sorted(str(p) for p in Config.CACHE_DIR.rglob('*_geo*.tif')) == [], \
-        "失败路径也必须清掉中间文件"
+    assert not work_dir.exists(), "失败路径也必须清掉中间文件(私有临时目录)"
 
 
 def test_interrupted_georeference_leaves_no_name_compliant_leftover(monkeypatch):

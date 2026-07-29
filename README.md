@@ -1,6 +1,6 @@
-# Google Maps 下载器
+# TerraForge
 
-基于 Web 的 Google Maps 瓦片下载器，支持交互式地图选择区域、实时下载进度监控、历史记录可视化和高级配置管理。
+基于 Web 的 GIS 数据获取与加工系统：Google Maps 瓦片下载、ASTER GDEM 高程数据获取、Cesium 3D 地形切片与等高线生成，支持交互式地图选区、实时进度监控、历史记录可视化和高级配置管理。
 
 ## 功能特性
 
@@ -15,7 +15,7 @@
 ## 技术栈
 
 - **后端:** Flask, Flask-SocketIO, aiohttp, GDAL, SQLite
-- **前端:** Leaflet.js, Leaflet.draw, Bootstrap 5, Socket.IO
+- **前端:** CesiumJS 1.143, Bootstrap 5.3, Socket.IO 4.5.4（第三方库全部本地 vendor 于 `static/vendor/`，不依赖 CDN）
 
 ## 快速开始
 
@@ -23,11 +23,11 @@
 
 无需安装 Python 和依赖，直接运行：
 
-1. 从 [Releases](https://github.com/YOUR_USERNAME/map-download/releases) 下载对应平台的压缩包
+1. 从 [Releases](https://github.com/JungleZy/map-download/releases) 下载对应平台的压缩包
 2. 解压文件
 3. 运行可执行文件：
-   - **Windows**: 双击 `map-downloader.exe`
-   - **macOS/Linux**: 运行 `./map-downloader`
+   - **Windows**: 双击 `terraforge.exe`
+   - **macOS/Linux**: 运行 `./terraforge`
 4. 浏览器访问 `http://localhost:5000`
 
 详见 [DISTRIBUTION.md](DISTRIBUTION.md)
@@ -49,14 +49,17 @@ brew install gdal
 
 #### Python 依赖
 
+项目使用 [uv](https://docs.astral.sh/uv/) 管理虚拟环境：
+
 ```bash
-pip install -r requirements.txt
+uv venv                              # 如果 .venv 不存在
+uv pip install -r requirements.txt
 ```
 
 #### 数据库初始化
 
 ```bash
-python database.py
+uv run python database.py
 ```
 
 ## 使用
@@ -64,7 +67,7 @@ python database.py
 ### 启动应用
 
 ```bash
-python app.py
+uv run python app.py
 ```
 
 应用将在 `http://0.0.0.0:5000` 启动。
@@ -109,33 +112,48 @@ python app.py
 
 ```
 map-download/
-├── app.py                  # Flask 应用入口
+├── app.py                  # Flask 应用入口（组合根：注册蓝图、注入管理器）
 ├── config.py               # 配置类
 ├── database.py             # 数据库初始化
 ├── models/                 # 数据模型
-│   ├── task.py            # Task 和 Tile 模型
+│   ├── task.py            # 任务/瓦片模型与枚举
 │   └── config.py          # Config 模型
 ├── services/               # 业务逻辑
-│   ├── download_engine.py  # 下载引擎
-│   ├── task_manager.py     # 任务管理器
-│   └── config_manager.py   # 配置管理器
+│   ├── download_engine.py  # Google 瓦片下载引擎
+│   ├── task_manager.py     # 瓦片任务管理器
+│   ├── config_manager.py   # 配置管理器
+│   ├── dem_download_engine.py  # DEM 下载引擎（NASA ASTER GDEM）
+│   ├── dem_task_manager.py     # DEM 任务管理器
+│   ├── dem_granules.py         # ASTGTM 1°×1° 分幅工具
+│   ├── earthdata_client.py     # NASA Earthdata Login 认证
+│   ├── contour_engine.py       # 等高线生成引擎
+│   ├── contour_task_manager.py # 等高线任务管理器
+│   ├── contour_task_tiler.py   # 等高线瓦片切分
+│   ├── local_terrain_task_manager.py  # 本地地形（上传 GeoTIFF）任务管理器
+│   ├── terrain_tiling/         # Cesium quantized-mesh 地形切片
+│   ├── geo_validation.py       # bbox / 缩放级别校验（三条管线共用）
+│   ├── system_proxy.py         # 系统代理检测
+│   └── task_cleanup.py         # 任务产物清理
 ├── routes/                 # Flask 路由
 │   ├── main.py            # 页面路由
-│   ├── api.py             # API 路由
+│   ├── api.py             # 瓦片任务 / 历史 / 配置 API
+│   ├── dem_api.py         # DEM 任务 API
+│   ├── terrain_api.py     # DEM 地形切片 API
+│   ├── local_terrain_api.py  # 本地地形 API
+│   ├── contour_api.py     # 等高线 API
+│   ├── terrain_static.py  # 地形瓦片静态服务
+│   ├── tiles_static.py    # 地图瓦片静态服务
+│   ├── contour_static.py  # 等高线瓦片静态服务
 │   └── socketio_events.py # WebSocket 事件
 ├── templates/              # HTML 模板
 │   ├── base.html          # 基础模板
 │   ├── index.html         # 主页
-│   ├── history.html       # 历史记录页
-│   └── config.html        # 配置页
+│   ├── history.html       # 历史记录页（含 _history_content.html 局部模板）
+│   └── config.html        # 配置页（含 _config_content.html 局部模板）
 ├── static/                 # 静态资源
-│   ├── css/
-│   │   └── style.css      # 自定义样式
-│   └── js/
-│       ├── map.js         # 地图交互
-│       ├── tasks.js       # 任务管理
-│       ├── history.js     # 历史记录
-│       └── config.js      # 配置管理
+│   ├── css/style.css      # 自定义样式
+│   ├── js/                # map / tasks / history / config / panels / ui
+│   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、字体）
 ├── downloads/              # 下载文件目录
 ├── cache/                  # 瓦片缓存目录
 └── data/                   # SQLite 数据库
@@ -143,7 +161,7 @@ map-download/
 
 ## API 端点
 
-### 任务管理
+### 瓦片任务（Google 地图下载）
 
 - `POST /api/tasks` - 创建新任务
 - `GET /api/tasks` - 获取所有任务
@@ -151,21 +169,67 @@ map-download/
 - `POST /api/tasks/<id>/start` - 启动任务
 - `POST /api/tasks/<id>/pause` - 暂停任务
 - `POST /api/tasks/<id>/resume` - 恢复任务
-- `POST /api/tasks/<id>/cancel` - 取消任务
-- `DELETE /api/tasks/<id>` - 删除任务
+- `POST /api/tasks/<id>/cancel` - 取消任务（仅 pending/running/paused 可取消）
+- `DELETE /api/tasks/<id>` - 删除任务（`?delete_files=true` 同时清理磁盘产物）
+
+### DEM 任务（ASTER GDEM 高程下载）
+
+- `POST /api/dem/tasks` - 创建 DEM 任务
+- `GET /api/dem/tasks` - 获取所有 DEM 任务
+- `GET /api/dem/tasks/<id>` - 获取 DEM 任务详情
+- `POST /api/dem/tasks/<id>/start` - 启动
+- `POST /api/dem/tasks/<id>/pause` - 暂停
+- `POST /api/dem/tasks/<id>/resume` - 恢复
+- `POST /api/dem/tasks/<id>/cancel` - 取消（仅 pending/running/paused 可取消）
+- `DELETE /api/dem/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物；running 任务需先暂停或取消）
+
+### 地形切片（Cesium quantized-mesh）
+
+- `POST /api/terrain/dem/<id>/start` - 对已下载的 DEM 任务启动地形切片
+- `GET /api/terrain/dem/<id>` - 查询切片任务状态
+- `POST /api/terrain/local/tasks` - 上传 GeoTIFF 创建本地地形任务
+- `GET /api/terrain/local/tasks` - 获取所有本地地形任务
+- `GET /api/terrain/local/tasks/<id>` - 获取本地地形任务详情
+- `POST /api/terrain/local/tasks/<id>/cancel` - 取消（仅 pending 可取消）
+- `DELETE /api/terrain/local/tasks/<id>` - 删除（默认清理磁盘产物，`?delete_files=false` 保留）
+
+### 等高线任务
+
+- `GET /api/contour/style_preview` - 等高线样式预览
+- `POST /api/contour/tasks` - 创建等高线任务
+- `GET /api/contour/tasks` - 获取所有等高线任务
+- `GET /api/contour/tasks/<id>` - 获取等高线任务详情
+- `POST /api/contour/tasks/<id>/start` - 启动
+- `POST /api/contour/tasks/<id>/pause` - 暂停
+- `POST /api/contour/tasks/<id>/resume` - 恢复
+- `POST /api/contour/tasks/<id>/cancel` - 取消（仅 pending/running/paused 可取消）
+- `DELETE /api/contour/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物；running 任务需先暂停或取消）
+
+### 静态瓦片服务
+
+- `GET /tiles/<task_id>/<path>` - 地图瓦片文件
+- `GET /terrain/base/<path>` - 全球基础地形（base_z8）
+- `GET /terrain/dem/<task_id>/<path>` - DEM 地形切片
+- `GET /terrain/local/<task_id>/<path>` - 本地地形切片
+- `GET /contour/<task_id>/<path>` - 等高线瓦片
 
 ### 历史记录
 
 - `GET /api/history` - 获取历史记录（支持分页）
+- `GET /api/history_all` - 获取全部历史记录
+- `GET /api/history_stats` - 历史统计
 
 ### 配置管理
 
 - `GET /api/config` - 获取所有配置
 - `PUT /api/config` - 更新配置
+- `POST /api/config/reset` - 重置为默认配置
 
 ### WebSocket 事件
 
-- `task_progress` - 实时任务进度更新
+- `task_progress` - 实时任务进度更新（瓦片 / DEM / 等高线 / 本地地形）
+- `task_completed` / `task_failed` - 任务完成 / 失败通知
+- `task_stitch_progress` / `task_stitch_failed` / `task_copy_progress` - 瓦片拼接与文件复制进度
 
 ## 性能优化
 
@@ -208,7 +272,7 @@ build.bat
 sudo apt-get install python3-gdal
 
 # macOS
-pip install gdal==$(gdal-config --version)
+uv pip install gdal==$(gdal-config --version)
 ```
 
 ### 数据库锁定错误

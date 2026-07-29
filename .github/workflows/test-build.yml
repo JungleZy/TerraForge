@@ -32,6 +32,12 @@ jobs:
         pip install pyinstaller
         pip install -r requirements.txt
 
+    # C7: 先跑完整测试套件再打包——测试失败则构建失败。
+    # 测试均为离线单元测试（monkeypatch 隔离 DB/网络/显示），
+    # ubuntu-latest 无显示环境可直接运行，无需排除。
+    - name: Run test suite
+      run: python -m pytest tests/ -q
+
     - name: Test PyInstaller build
       run: |
         pyinstaller build.spec
@@ -39,5 +45,5 @@ jobs:
 
     - name: Verify executable exists
       run: |
-        test -f dist/map-downloader/map-downloader
+        test -f dist/terraforge/terraforge
         echo "Build successful!"

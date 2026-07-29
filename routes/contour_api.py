@@ -1,9 +1,18 @@
 """
-Contour API routes — create/run contour tile download tasks.
+Contour API routes — 上传 GeoTIFF 渲染等高线瓦片的任务。
+
+数据处理不下载：远程 DEM 的下载统一在「数据下载」的 DEM 任务里
+（/api/dem/tasks），等高线任务只吃用户上传的 .tif/.tiff。
 """
 
 import logging
-from flask import Blueprint, jsonify, request
+import os
+from pathlib import Path
+from flask import Blueprint, current_app, jsonify, request
+
+from services.config_manager import ConfigManager
+from services.geo_validation import coerce_number, validate_zoom
+from services.task_cleanup import remove_task_dir_if_safe
 
 logger = logging.getLogger(__name__)
 
@@ -15,20 +24,86 @@ contour_task_manager = None
 def init_contour_task_manager(tm):
     global contour_task_manager
     contour_task_manager = tm
-    logger.info("Contour task manager initialized in contour API routes")
+    logger.debug("Contour task manager initialized in contour API routes")
+
+
+@contour_api_bp.route("/style_preview", methods=["GET"])
+def contour_style_preview():
+    """配色样式预览 PNG：合成 DEM + 当前配色参数走渲染管线出图。
+    全部参数可选，缺省即现行默认方案（与 style_for_task 同一套回退）。"""
+    try:
+        from services.contour_engine import render_style_preview
+        from services.contour_task_manager import style_for_task
+
+        config = contour_task_manager.config if contour_task_manager else ConfigManager()
+        background = request.args.get("background") or "#FAF6EC"
+        shade = str(request.args.get("terrain_shade", "1")).strip().lower() in ("1", "true", "yes", "on")
+        interval_raw = request.args.get("interval") or config.get("contour_default_interval", "50")
+        interval = coerce_number(interval_raw, "interval")  # 拒绝 NaN/inf/非数字
+        if interval <= 0:
+            raise ValueError(f"interval must be > 0, got {interval}")
+
+        task = {
+            "background": background,
+            "line_color_intermediate": request.args.get("line_color_intermediate", ""),
+            "line_color_index": request.args.get("line_color_index", ""),
+            "tint_breaks": request.args.get("tint_breaks", ""),
+            "tint_colors": request.args.get("tint_colors", ""),
+        }
+        style = style_for_task(config, task)
+        png = render_style_preview(style, interval, shade=shade)
+        resp = current_app.response_class(png, mimetype="image/png")
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error rendering contour style preview: {e}")
+        return jsonify({"error": "Failed to render style preview"}), 500
 
 
 @contour_api_bp.route("/tasks", methods=["POST"])
 def create_contour_task():
+    if not contour_task_manager:
+        return jsonify({"error": "Contour task manager not initialized"}), 500
     try:
-        if not contour_task_manager:
-            return jsonify({"error": "Contour task manager not initialized"}), 500
-        data = request.get_json() or {}
-        required = ["name", "north", "south", "east", "west", "contour_interval", "zoom_min", "zoom_max"]
-        missing = [k for k in required if k not in data]
-        if missing:
-            return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
-        task_id = contour_task_manager.create_task(data)
+        name = request.form.get("name") or "等高线瓦片"
+        zoom_min_raw = request.form.get("zoom_min")
+        zoom_max_raw = request.form.get("zoom_max")
+        # zoom_max 留空 = 按 DEM 分辨率自动计算；显式填写时校验 0-21，
+        # 允许设得比自动值更高
+        zoom_min = validate_zoom(zoom_min_raw, "zoom_min") if zoom_min_raw not in (None, "") else 10
+        zoom_max = validate_zoom(zoom_max_raw, "zoom_max") if zoom_max_raw not in (None, "") else None
+
+        uploads = request.files.getlist("files")
+
+        # 与 local_terrain_api 同款的廉价前置校验：先卡数量和扩展名，
+        # 请求体总尺寸由 Config.MAX_CONTENT_LENGTH 在前面挡（413）。
+        if not uploads:
+            return jsonify({"error": "No files uploaded"}), 400
+        if len(uploads) > 100:
+            return jsonify({"error": "Too many files (max 100 per task)"}), 400
+        allowed_ext = (".tif", ".tiff")
+        for f in uploads:
+            ext = os.path.splitext(f.filename or "")[1].lower()
+            if ext not in allowed_ext:
+                return jsonify({"error": f"Unsupported file type: {f.filename} (only .tif/.tiff)"}), 400
+
+        files = [(f.filename, f.read()) for f in uploads]
+
+        task_id = contour_task_manager.create_task_with_files(
+            name=name,
+            files=files,
+            contour_interval=request.form.get("contour_interval"),
+            zoom_min=zoom_min,
+            zoom_max=zoom_max,
+            background=request.form.get("background"),
+            terrain_shade=request.form.get("terrain_shade", "1"),
+            line_color_intermediate=request.form.get("line_color_intermediate"),
+            line_color_index=request.form.get("line_color_index"),
+            tint_breaks=request.form.get("tint_breaks"),
+            tint_colors=request.form.get("tint_colors"),
+        )
         return jsonify({"success": True, "task_id": task_id}), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -70,21 +145,19 @@ def delete_contour_task(task_id: int):
         if not contour_task_manager:
             return jsonify({"error": "Contour task manager not initialized"}), 500
         task = contour_task_manager.get_task(task_id)
-        if task.get("status") == "running":
-            return jsonify({"error": "Cannot delete running contour task. Pause or cancel it first."}), 400
-        from database import get_connection
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM contour_tasks WHERE id = ?", (task_id,))
-            if cur.rowcount == 0:
-                return jsonify({"error": f"Contour task {task_id} not found"}), 404
-            conn.commit()
-        finally:
-            conn.close()
+        # 锁内复查 active 线程 + DB 状态(范本: ContourTaskManager.start_task),
+        # 运行中的任务拒绝删除 —— 此前这里绕开 manager 锁直查 DB 再删,
+        # 与正在跑的任务线程存在 check-then-act 竞态。
+        contour_task_manager.delete_task(task_id)
+        # Optional best-effort artifact cleanup (output_path/contour_task_<id>/)
+        # after the row is gone; only removed when inside DOWNLOADS_DIR.
+        if request.args.get("delete_files", "").lower() in ("1", "true", "yes") and task.get("output_path"):
+            remove_task_dir_if_safe(Path(task["output_path"]) / f"contour_task_{task_id}")
         return jsonify({"success": True, "message": f"Contour task {task_id} deleted"})
     except ValueError as e:
-        return jsonify({"error": str(e)}), 404
+        # get_task/delete_task 的 "not found" -> 404;运行中拒绝删除 -> 400
+        msg = str(e)
+        return jsonify({"error": msg}), (404 if "not found" in msg else 400)
     except Exception as e:
         logger.error(f"Error deleting contour task {task_id}: {e}")
         return jsonify({"error": "Failed to delete contour task"}), 500

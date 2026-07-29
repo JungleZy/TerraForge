@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import sqlite3
 from database import get_connection_context, DEFAULT_CONFIGS
+from services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,11 @@ class ConfigManager:
                     return row['value']
                 return default
 
-        except Exception as e:
+        except sqlite3.Error as e:
+            # 区分“无行”（上面返回 default）与“出错”：锁/IO 异常若静默吞成默认值，
+            # earthdata_username 会被读成 '' 导致莫名 401，极难排查。记 error 后抛出。
             logger.error(f'Failed to get config {key}: {e}')
-            return default
+            raise
 
     def set(self, key: str, value: str) -> bool:
         """
@@ -100,8 +103,11 @@ class ConfigManager:
 
                 # Avoid leaking secrets into logs (still allow saving them normally).
                 log_value = value
-                if key in {'earthdata_password'}:
+                if key in {'earthdata_username', 'earthdata_password'}:
                     log_value = '***'
+                elif key == 'proxy_url':
+                    # user:pass@ 形式的代理凭据不进日志（host 保留便于排查）
+                    log_value = mask_url_userinfo(value)
                 logger.info(f'Config updated: {key} = {log_value}')
                 return True
 
@@ -132,9 +138,9 @@ class ConfigManager:
 
                 return result
 
-        except Exception as e:
+        except sqlite3.Error as e:
             logger.error(f'Failed to get all configs: {e}')
-            return {}
+            raise
 
     def reset_to_defaults(self) -> bool:
         """

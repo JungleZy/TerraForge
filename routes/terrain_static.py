@@ -16,6 +16,26 @@ logger = logging.getLogger(__name__)
 
 terrain_static_bp = Blueprint("terrain_static", __name__, url_prefix="/terrain")
 
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def _send_terrain_file(target: Path):
+    """send_file wrapper for terrain resources.
+
+    .terrain tiles are stored gzip-compressed on disk (see cesiumlab_terrain.py).
+    Detect the gzip magic bytes and advertise Content-Encoding: gzip so browsers
+    decompress transparently; plain files (layer.json) are served untouched.
+    """
+    resp = send_file(str(target))
+    try:
+        with open(target, "rb") as f:
+            magic = f.read(2)
+    except OSError:
+        magic = b""
+    if magic == _GZIP_MAGIC:
+        resp.headers["Content-Encoding"] = "gzip"
+    return resp
+
 
 def _is_within(path: Path, root: Path) -> bool:
     try:
@@ -80,7 +100,7 @@ def terrain_base_static(subpath: str):
     target = _resolve_safe_file(base_dir, subpath)
     if not target.exists() or target.is_dir():
         abort(404)
-    return send_file(str(target))
+    return _send_terrain_file(target)
 
 
 @terrain_static_bp.route("/dem/<task_id>/<path:subpath>", methods=["GET"])
@@ -89,7 +109,7 @@ def terrain_dem_static(task_id: str, subpath: str):
     target = _resolve_safe_file(base_dir, subpath)
     if not target.exists() or target.is_dir():
         abort(404)
-    return send_file(str(target))
+    return _send_terrain_file(target)
 
 
 @terrain_static_bp.route("/local/<int:task_id>/<path:subpath>", methods=["GET"])
@@ -116,5 +136,5 @@ def terrain_local_static(task_id: int, subpath: str):
     target = _resolve_safe_file(base_dir, subpath)
     if not target.exists() or target.is_dir():
         abort(404)
-    return send_file(str(target))
+    return _send_terrain_file(target)
 

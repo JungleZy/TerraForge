@@ -32,7 +32,13 @@ def test_reset_form_is_used_at_every_call_site():
     assert src.count('resetForm(') >= 4, (
         "resetForm() 应有 1 处定义 + 3 处调用;少于 4 次说明某个提交分支没走统一重置"
     )
-    assert 'resetForm({ clearBounds: false })' in src, (
+    # 数据下载/数据处理拆成两张独立表单后,resetForm 用 formId 指明复位哪一张;
+    # 两条处理类分支必须复位 #processForm,本地高程还必须 clearBounds:false
+    # (该模式没有 bbox,清框会删掉用户为下一个任务画好的选区)。
+    assert "resetForm({ formId: 'processForm' })" in src, (
+        "等高线分支必须复位处理表单 resetForm({ formId: 'processForm' })"
+    )
+    assert "resetForm({ clearBounds: false, formId: 'processForm' })" in src, (
         "本地高程切片没有 bbox,重置时必须传 clearBounds:false,"
         "否则会清掉用户为下一个任务画好的框"
     )
@@ -92,56 +98,28 @@ def test_submit_button_is_always_unlocked_in_finally():
     )
 
 
-# 编辑工具栏开着(edit.featureGroup)时必须接上的 5 个事件。
-# 这 5 条是同构契约,所以统一写成一张表、用同一种形式守——别给某几个换写法,
-# 后面看代码的人会以为那个区别有含义。
-# 常量名和 leaflet.draw 1.0.4 实际产物核对过(templates/base.html:101 走 CDN),
-# 5 个全部通过 this._map.fire() 派发,所以 map.on() 收得到。
-EDIT_EVENT_CONTRACT = [
-    ('EDITRESIZE', 'draw:editresize', '拖矩形四角时四至不实时更新'),
-    ('EDITMOVE', 'draw:editmove', '整体拖动图形时四至不实时更新'),
-    ('EDITED', 'draw:edited', '点「保存」后 bbox 不更新,提交的还是旧范围'),
-    ('EDITSTOP', 'draw:editstop', '取消编辑后 bbox 不还原'),
-    ('DELETESTOP', 'draw:deletestop', '退出删除模式后 bbox 不重读'),
-]
+def test_rectangle_selection_is_wired():
+    """Cesium 框选：ScreenSpaceEventHandler 必须接全按下/拖动/抬起三段，
+    并提供统一的清除入口。
 
-
-def test_edit_events_are_wired():
-    """
-    编辑工具栏开着(edit.featureGroup),就必须把编辑事件接到 bbox 同步上,
-    否则用户拖拽改框后提交的还是旧 bbox。
-
-    这里断言的是 map.on(<常量>, syncBoundsFromDrawnItems) 这个完整调用形状,
-    而不只是"常量名出现在文件里"。比后者多守住两件事:
-      - 常量不以完整的 map.on(...) 调用形状出现(只在文档里被提及、只赋给变量、
-        写成 map.on(常量) 少了 handler 等) → 会红
-      - 接到了别的 handler(不是 syncBoundsFromDrawnItems) → 会红
-
-    守不住(已实测确认,别高估这条测试):
-      - 整行被 // 注释掉 → 仍然绿。这就是上面那条的一个例外:注释里的文本形状
-        依然合规。正则不解析注释,而给测试塞个 JS parser 不值得
-        (项目刻意没有 JS 工具链)
-      - 这 5 行整段挪进一个永不被调用的函数 → 仍然绿。正则只看文本形状,
-        不检查它是否位于活代码路径上
-      - 事件真的触发了没有、四至数字真的变了没有 → 没有 DOM,测不了
-
-    代价:若将来有人把 handler 包一层(如 map.on(X, () => ...)),本测试会红,
-    需要连带更新这里的正则。这是故意的,改接线要过一次人眼。
+    Cesium 没有 Leaflet.draw 那样的现成绘制控件，框选是 map.js 自己实现的：
+    「框选」按钮进绘制态，LEFT_DOWN 记起点、MOUSE_MOVE 实时更新矩形、
+    LEFT_UP 落定写 currentBounds。少任何一段，用户就画不出选区，
+    而「创建下载任务」永远禁用 —— 没有其他测试会红。
+    文本级契约（与 resetForm 那几条同口径，项目刻意没有 JS 测试框架）。
     """
     src = _map_js()
-    for const, event_name, consequence in EDIT_EVENT_CONTRACT:
-        pattern = (
-            r'map\.on\(\s*L\.Draw\.Event\.' + const
-            + r'\s*,\s*syncBoundsFromDrawnItems\s*\)'
+    for event in ('LEFT_DOWN', 'MOUSE_MOVE', 'LEFT_UP'):
+        assert f'Cesium.ScreenSpaceEventType.{event}' in src, (
+            f"框选缺少 {event} 监听 —— 拖不出选区"
         )
-        assert re.search(pattern, src), (
-            f"未把 {event_name}(L.Draw.Event.{const}) 接到 "
-            f"syncBoundsFromDrawnItems:{consequence}"
-        )
-
-
-def test_bounds_sync_helper_exists():
-    src = _map_js()
-    assert 'function syncBoundsFromDrawnItems(' in src, (
-        "map.js 应定义 syncBoundsFromDrawnItems()"
+    assert 'function _initMapTools(' in src, (
+        "map.js 应定义 _initMapTools()（框选 + 工具条按钮接线）"
+    )
+    assert 'function clearSelection(' in src, (
+        "map.js 应定义 clearSelection()（删除选区的统一入口）"
+    )
+    assert 'function syncBoundsFromDrawnItems(' not in src, (
+        "syncBoundsFromDrawnItems 是 Leaflet.draw 时代的残留，"
+        "Cesium 框选在 LEFT_UP 里直接写 currentBounds，不该再需要它"
     )

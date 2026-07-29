@@ -12,8 +12,25 @@ import logging
 import os
 import sys
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
+
+
+def mask_url_userinfo(url) -> str:
+    """把 URL 里的 user:pass@ 凭据掩码成 ***:***@，host 保留便于排查。
+
+    无法解析或不含 userinfo 时原样返回。只用于日志输出，不影响实际生效的值。
+    """
+    try:
+        parts = urlsplit(str(url))
+    except Exception:
+        return str(url)
+    if '@' not in parts.netloc:
+        return str(url)
+    host = parts.netloc.rsplit('@', 1)[1]
+    return urlunsplit((parts.scheme, f'***:***@{host}', parts.path,
+                       parts.query, parts.fragment))
 
 
 def apply_system_proxy() -> dict:
@@ -44,7 +61,11 @@ def apply_system_proxy() -> dict:
         applied[env_key] = proxies[scheme]
 
     if applied:
-        logger.info(f"Applied system proxy on {sys.platform}: {applied}")
+        # 代理 URL 可能带 user:pass@ 凭据，掩码后再进日志
+        logger.info(
+            f"Applied system proxy on {sys.platform}: "
+            f"{ {k: mask_url_userinfo(v) for k, v in applied.items()} }"
+        )
     else:
-        logger.info("No system proxy detected (or env already set).")
+        logger.debug("No system proxy detected (or env already set).")
     return applied

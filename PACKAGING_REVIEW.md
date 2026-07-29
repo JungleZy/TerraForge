@@ -86,8 +86,8 @@
 ./build.sh  # 或 build.bat
 
 # 2. 测试可执行文件
-cd dist/map-downloader
-./map-downloader
+cd dist/terraforge
+./terraforge
 
 # 3. 在浏览器中测试功能
 # 访问 http://localhost:5000
@@ -119,7 +119,7 @@ git push origin v0.1.0-test
 2. **本地测试**（如果环境允许）
    ```bash
    ./build.sh
-   cd dist/map-downloader && ./map-downloader
+   cd dist/terraforge && ./terraforge
    ```
 
 3. **推送到 GitHub**

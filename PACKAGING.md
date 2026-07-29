@@ -63,15 +63,15 @@ git push origin v1.0.0
 build.bat
 ```
 
-构建产物在 `dist/map-downloader/` 目录。
+构建产物在 `dist/terraforge/` 目录。
 
 ## 分发给用户
 
 构建完成后，将压缩包分发给用户：
 
-- `map-downloader-windows.zip` - Windows 用户
-- `map-downloader-macos.tar.gz` - macOS 用户
-- `map-downloader-linux.tar.gz` - Linux 用户
+- `terraforge-windows.zip` - Windows 用户
+- `terraforge-macos.tar.gz` - macOS 用户
+- `terraforge-linux.tar.gz` - Linux 用户
 
 用户只需解压并运行可执行文件，无需安装 Python 或任何依赖。
 

@@ -26,20 +26,12 @@ def index():
         Rendered index.html template with configuration data
     """
     try:
-        # Get all configuration for the page
-        config = config_manager.get_all()
-
-        # Extract values for template
-        template_config = {
-            'map_center_lat': config.get('map_center_lat', {}).get('value', '39.9'),
-            'map_center_lng': config.get('map_center_lng', {}).get('value', '116.4'),
-            'map_initial_zoom': config.get('map_initial_zoom', {}).get('value', '10'),
-            'default_style': config.get('default_style', {}).get('value', 'm'),
-            'default_zoom_min': config.get('default_zoom_min', {}).get('value', '10'),
-            'default_zoom_max': config.get('default_zoom_max', {}).get('value', '15'),
-            'default_output_format': config.get('default_output_format', {}).get('value', 'both'),
-            'default_save_path': config.get('default_save_path', {}).get('value', './downloads'),
-        }
+        # Get all configuration for the page（与 /config 相同的扁平化结构：
+        # 配置面板作为 partial 嵌在首页里，需要全量键）
+        config_raw = config_manager.get_all()
+        template_config = {}
+        for key, data in config_raw.items():
+            template_config[key] = data.get('value', '')
 
         return render_template('index.html', config=template_config)
 

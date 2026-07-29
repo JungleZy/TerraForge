@@ -58,7 +58,9 @@ async function resetConfig() {
         const result = await response.json().catch(() => ({}));
         if (response.ok) {
             showToast('已重置为默认配置', 'success');
-            // 略等一下让用户看到提示，再刷新（服务端会用默认值重渲染表单）
+            // 略等一下让用户看到提示，再刷新（服务端会用默认值重渲染表单）。
+            // 首页的配置是覆盖面板：挂上 hash，刷新后 panels.js 自动重开面板。
+            location.hash = '#config';
             setTimeout(() => location.reload(), 600);
         } else {
             showToast('重置失败: ' + (result.error || response.status), 'danger');

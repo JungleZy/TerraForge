@@ -8,6 +8,8 @@ Implements Web Mercator projection for converting geographic coordinates to tile
 import logging
 import math
 import asyncio
+import shutil
+import tempfile
 import threading
 import aiohttp
 import aiofiles
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Constants
 WEB_MERCATOR_MAX_LAT = 85.0511  # Maximum valid latitude for Web Mercator projection
 TILE_SERVER_COUNT = 4  # Number of Google Maps tile servers (mts0-mts3)
-WARN_TILES_THRESHOLD = 100000  # Warn user if tile count exceeds this threshold
+WARN_TILES_THRESHOLD = 100000  # 单任务瓦片数硬上限,在 TaskManager.create_task 强制(400)
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
 
@@ -151,12 +153,15 @@ class DownloadEngine:
             List of Tile objects covering the region at all zoom levels
 
         Raises:
-            ValueError: If input parameters are invalid or tile count exceeds MAX_TILES
+            ValueError: If input parameters are invalid
 
         Note:
             Tiles are generated for each zoom level from zoom_min to zoom_max (inclusive).
             The number of tiles increases exponentially with zoom level.
-            Maximum allowed tiles per task: 100,000
+            When the count exceeds WARN_TILES_THRESHOLD (100,000) this function only
+            logs a warning — the hard rejection lives at the task-creation entry
+            point (TaskManager.create_task → API 400), because this calculator is
+            also used by callers that merely want the count.
         """
         # Coordinate range validation
         if not -90 <= north <= 90:
@@ -204,7 +209,10 @@ class DownloadEngine:
             tiles_at_zoom = (x_max - x_min + 1) * (y_max - y_min + 1)
             expected_tile_count += tiles_at_zoom
 
-        # Warn if tile count is very large
+        # Warn if tile count is very large. The *hard* limit is enforced at task
+        # creation (TaskManager.create_task raises ValueError → API 400); here we
+        # only warn, because this calculator is also used by callers that merely
+        # want the number (e.g. pre-flight estimates in tests).
         if expected_tile_count > WARN_TILES_THRESHOLD:
             logger.warning(
                 f"Large tile count detected: {expected_tile_count} tiles. "
@@ -630,7 +638,8 @@ class DownloadEngine:
 
         Process:
             1. Get cache paths for all tiles
-            2. Add georeference to each tile (creates _geo3857rgb.tif versions)
+            2. Add georeference to each tile (creates _geo3857rgb.tif versions
+               in a per-stitch private temp directory)
             3. Build VRT (Virtual Dataset) from georeferenced tiles
             4. Reproject the VRT to target_epsg (skipped when it is already 3857)
             5. Translate VRT to final format with compression
@@ -674,14 +683,19 @@ class DownloadEngine:
 
         logger.info(f"Processing {len(tiles_at_zoom)} tiles at zoom level {zoom_level}")
 
-        # Intermediates are cleaned in the finally block below. They must NOT be
-        # cleaned only on the happy path: a single missing cache tile raises
-        # inside the loop below, and every intermediate produced so far would
-        # otherwise be stranded in the cross-task cache directory.
+        # Intermediates live in a per-stitch private temp directory, NOT next to
+        # the cached tiles. They used to be named style/z/x/y inside the shared
+        # cache, so two concurrent stitches of overlapping bboxes wrote the same
+        # paths and each one's finally-block unlink deleted files the other was
+        # still reading. A fresh directory per stitch makes the intermediates
+        # private by construction; the rmtree in the finally below replaces the
+        # old per-file unlink loop and also covers the failure path (a missing
+        # cache tile raises inside the loop below).
         georef_paths: List[str] = []
         vrt_path_obj = output_path_obj.with_suffix('.vrt')
         vrt_path = str(vrt_path_obj)
         warped_path_obj: Optional[Path] = None
+        work_dir = tempfile.mkdtemp(prefix='map_dl_stitch_')
 
         try:
             # Get cache paths and create georeferenced versions
@@ -690,8 +704,8 @@ class DownloadEngine:
                 if not cache_path.exists():
                     raise FileNotFoundError(f"Tile not found in cache: {cache_path}")
 
-                # Add georeference to tile
-                georef_path = self._add_georeference(str(cache_path), tile)
+                # Add georeference to tile (written into the private work_dir)
+                georef_path = self._add_georeference(str(cache_path), tile, output_dir=work_dir)
                 georef_paths.append(georef_path)
 
             logger.info(f"Created {len(georef_paths)} georeferenced tiles")
@@ -772,10 +786,6 @@ class DownloadEngine:
             logger.info(f"Translation completed: {output_path_obj}")
         finally:
             # Clean up temporary files — on success *and* on failure.
-            # Only files actually removed are logged/counted: on an early
-            # failure most of these were never created, and reporting them as
-            # "cleaned up" would send whoever debugs that failure down the
-            # wrong path.
             # 1. Clean up VRT files (mosaic + optional reprojected one)
             for temp_vrt in (vrt_path_obj, warped_path_obj):
                 if temp_vrt is None:
@@ -788,18 +798,11 @@ class DownloadEngine:
                 except Exception as e:
                     logger.warning(f"Failed to clean up VRT file {temp_vrt}: {e}")
 
-            # 2. Clean up temporary georeferenced tiles (_geo3857rgb.tif files)
-            cleaned_count = 0
-            for georef_path in georef_paths:
-                try:
-                    Path(georef_path).unlink()
-                    cleaned_count += 1
-                except FileNotFoundError:
-                    pass  # already gone
-                except Exception as e:
-                    logger.warning(f"Failed to clean up georeferenced tile {georef_path}: {e}")
-
-            logger.debug(f"Cleaned up {cleaned_count}/{len(georef_paths)} temporary georeferenced tiles")
+            # 2. Remove the per-stitch private work directory with all
+            # georeferenced intermediates in it. ignore_errors keeps the old
+            # best-effort semantics: a locked file on Windows must not mask the
+            # stitch's real result or exception.
+            shutil.rmtree(work_dir, ignore_errors=True)
 
         logger.info(f"GDAL tile stitching completed: {output_path_obj}")
         return str(output_path_obj)
@@ -829,10 +832,12 @@ class DownloadEngine:
           - an intermediate with a different band count, e.g. a leftover RGBA
             tile: "gdalbuildvrt: gdalbuildvrt was called with a band count of 3
             but the file ... has 4 bands. Skipping".
-          - an intermediate deleted underneath us: intermediates are named by
-            style + z/x/y only and therefore shared across tasks, so the finally
-            block of a concurrent stitch of an overlapping bbox deletes files
-            this one is still using.
+          - an intermediate deleted underneath us. Historical trigger, now
+            prevented: intermediates used to be named by style + z/x/y inside
+            the shared cache, so the finally block of a concurrent stitch of an
+            overlapping bbox deleted files this one was still using. They now
+            live in a per-stitch private temp directory (see
+            stitch_tiles_with_gdal).
 
         The expectation is derived from the requested tile grid (x/y extremes ->
         geographic span via tile_geotransform) divided by the pixel size the VRT
@@ -913,13 +918,18 @@ class DownloadEngine:
         geotransform = [x0, tile_span / width, 0, y0, 0, -tile_span / height]
         return geotransform, TILE_GEOREF_EPSG
 
-    def _add_georeference(self, tile_path: str, tile: Tile) -> str:
+    def _add_georeference(self, tile_path: str, tile: Tile, output_dir: Optional[str] = None) -> str:
         """
         Add georeference information to a tile image
 
         Args:
             tile_path: Path to the tile image file
             tile: Tile object with coordinates
+            output_dir: Directory for the georeferenced intermediate. When given
+                (stitch_tiles_with_gdal passes its per-stitch private temp dir),
+                the intermediate is written there instead of next to the cached
+                tile — nothing concurrent can then delete or reuse it. When None
+                (direct callers), the historical cache-sibling location is used.
 
         Returns:
             Path to the georeferenced tile file
@@ -965,9 +975,20 @@ class DownloadEngine:
         """
         # Generate georeferenced file path using Path operations
         tile_path_obj = Path(tile_path)
-        georef_path_obj = tile_path_obj.with_stem(
-            f"{tile_path_obj.stem}{GEOREF_SUFFIX}"
-        ).with_suffix('.tif')
+        if output_dir is not None:
+            # Per-stitch private directory: starts empty, so the exists()
+            # short-circuit below never applies here and no other stitch can
+            # see (or delete) this file.
+            # 文件名必须带 x:cache 文件名只是 {y}.png(cache/{style}/{z}/{x}/{y}.png),
+            # 同 y 不同 x 的瓦片 stem 相同,只用 stem 会在私有目录里互相覆盖,
+            # 第二张瓦片命中 exists() 短路拿到第一张的中间文件,VRT 缺列。
+            georef_path_obj = Path(output_dir) / (
+                f"{tile.x}_{tile_path_obj.stem}{GEOREF_SUFFIX}.tif"
+            )
+        else:
+            georef_path_obj = tile_path_obj.with_stem(
+                f"{tile_path_obj.stem}{GEOREF_SUFFIX}"
+            ).with_suffix('.tif')
         georef_path = str(georef_path_obj)
 
         # Opportunistically drop leftovers written by earlier releases so the

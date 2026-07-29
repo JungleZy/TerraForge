@@ -83,9 +83,9 @@ git push origin v0.0.1
 1. 访问 Releases 页面：https://github.com/JungleZy/map-download/releases
 2. 找到 v0.0.1 版本
 3. 下载三个平台的压缩包：
-   - map-downloader-windows.zip
-   - map-downloader-macos.tar.gz
-   - map-downloader-linux.tar.gz
+   - terraforge-windows.zip
+   - terraforge-macos.tar.gz
+   - terraforge-linux.tar.gz
 4. 解压并测试运行
 
 ## 🔧 故障排除

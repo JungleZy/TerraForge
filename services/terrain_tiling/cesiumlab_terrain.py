@@ -35,8 +35,13 @@ import numpy as np
 
 try:
     from osgeo import gdal, osr
-except ImportError:
-    sys.exit("Missing GDAL Python bindings: pip install gdal (or conda install -c conda-forge gdal)")
+except ImportError as e:
+    # ImportError (not sys.exit/SystemExit) so `except Exception` callers — e.g.
+    # dem_task_tiler's lazy-import wrapper and the tiling job thread — can catch
+    # it and mark the job failed instead of dying silently with status 'running'.
+    raise ImportError(
+        "Missing GDAL Python bindings: pip install gdal (or conda install -c conda-forge gdal)"
+    ) from e
 
 # Avoid gdal.UseExceptions() here. It attempts to import osgeo.gdal_array, which may be absent
 # depending on how GDAL Python bindings were built. This tiler doesn't require gdal_array.
@@ -149,12 +154,44 @@ class DemSampler:
         if x1c <= x0c or y1c <= y0c:
             return np.zeros_like(lons, dtype=np.float32)
 
-        arr = self.band.ReadAsArray(x0c, y0c, x1c - x0c, y1c - y0c).astype(np.float32)
+        # Let GDAL downsample oversized windows instead of reading them at
+        # native resolution: low-zoom tiles over a large DEM would otherwise
+        # allocate the full source window per worker process (OOM). Sampling
+        # density never needs more than the output grid plus a small margin.
+        win_w = x1c - x0c
+        win_h = y1c - y0c
+        buf_w = min(win_w, lons.shape[1] + 2)
+        buf_h = min(win_h, lons.shape[0] + 2)
+        if buf_w < win_w or buf_h < win_h:
+            # GDAL resampling is center-based: buffer pixel j represents the
+            # source around x0c + (j+0.5)*scale - 0.5. Expand the read window by
+            # half a buffer pixel (+1 to keep the original 1px margin) so edge
+            # samples still fall inside the represented range instead of being
+            # clamped to the outermost buffer pixel.
+            pad_x = int(math.ceil(win_w / buf_w / 2.0)) + 1
+            pad_y = int(math.ceil(win_h / buf_h / 2.0)) + 1
+            x0c = max(0, x0c - pad_x)
+            y0c = max(0, y0c - pad_y)
+            x1c = min(self.cols, x1c + pad_x)
+            y1c = min(self.rows, y1c + pad_y)
+            win_w = x1c - x0c
+            win_h = y1c - y0c
+        arr = self.band.ReadAsArray(
+            x0c, y0c, win_w, win_h,
+            buf_xsize=buf_w, buf_ysize=buf_h,
+            resample_alg=gdal.GRA_Bilinear,
+        ).astype(np.float32)
         if self.nodata is not None:
             arr = np.where(arr == self.nodata, np.nan, arr)
 
-        lpx = px - x0c
-        lpy = py - y0c
+        # Map source pixel coords into the resampled buffer. GDAL's resampling
+        # is center-based (buffer pixel j <- source (j+0.5)*scale-0.5, verified
+        # against gdal 3.x RasterIO), so apply the half-pixel correction to keep
+        # sample positions unbiased; it vanishes when buf == win.
+        sx = win_w / buf_w
+        sy = win_h / buf_h
+        lpx = (px - x0c) / sx - 0.5 * (1.0 - 1.0 / sx)
+        lpy = (py - y0c) / sy - 0.5 * (1.0 - 1.0 / sy)
         ix = np.clip(np.floor(lpx).astype(int), 0, arr.shape[1] - 2)
         iy = np.clip(np.floor(lpy).astype(int), 0, arr.shape[0] - 2)
         fx = np.clip(lpx - ix, 0, 1)
@@ -261,12 +298,15 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float, 
     east_idx = np.array([j * n + (n - 1) for j in range(n)], dtype=np.uint32)
     north_idx = np.array([(n - 1) * n + i for i in range(n)], dtype=np.uint32)
 
-    def pack_u16_or_u32(arr: np.ndarray) -> bytes:
-        if arr.max() <= 65535:
-            return arr.astype(np.uint16).tobytes()
-        return arr.astype(np.uint32).tobytes()
-
+    # quantized-mesh-1.0: index width is chosen by VERTEX COUNT (>65536 -> 32-bit),
+    # not by the max encoded value. High-water-mark diffs wrap around, so the u16
+    # branch must truncate them (astype(np.uint16)) rather than range-check them.
     vertex_count = n * n
+    index_dtype = np.uint32 if vertex_count > 65536 else np.uint16
+
+    def pack_indices(arr: np.ndarray) -> bytes:
+        return arr.astype(index_dtype).tobytes()
+
     body = io.BytesIO()
     body.write(struct.pack("<I", vertex_count))
     body.write(uzz.tobytes())
@@ -274,11 +314,11 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float, 
     body.write(hzz.tobytes())
 
     body.write(struct.pack("<I", len(indices)))
-    body.write(pack_u16_or_u32(encoded_indices))
+    body.write(pack_indices(encoded_indices))
 
     for edge in (west_idx, south_idx, east_idx, north_idx):
         body.write(struct.pack("<I", len(edge)))
-        body.write(pack_u16_or_u32(edge))
+        body.write(pack_indices(edge))
 
     payload = header + body.getvalue()
     return payload

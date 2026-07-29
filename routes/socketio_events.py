@@ -38,7 +38,7 @@ def register_socketio_events(socketio):
 
             # Send welcome message to client
             emit('connected', {
-                'message': 'Connected to Google Maps Downloader',
+                'message': 'Connected to TerraForge',
                 'client_id': client_id
             })
 
@@ -64,4 +64,4 @@ def register_socketio_events(socketio):
         except Exception as e:
             logger.error(f"Error handling client disconnection: {e}")
 
-    logger.info("Socket.IO events registered")
+    logger.debug("Socket.IO events registered")

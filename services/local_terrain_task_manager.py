@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from config import Config
 from database import get_connection
 from services.config_manager import ConfigManager
+from services.geo_validation import validate_zoom
 from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ class LocalTerrainTaskManager:
 
         if maxzoom is None:
             maxzoom = self._default_maxzoom()
-        maxzoom = int(maxzoom)
+        maxzoom = validate_zoom(maxzoom, "maxzoom")
 
         base = Path(Config.DOWNLOADS_DIR) / "terrain"
         parent_url = "http://localhost:5000/terrain/base/layer.json"
@@ -223,27 +224,51 @@ class LocalTerrainTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT status, source_dir, output_dir, maxzoom, parent_url "
-                "FROM local_terrain_tasks WHERE id=?",
-                (task_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise ValueError(f"Local terrain task {task_id} not found")
-            if row["status"] == "running":
-                raise ValueError(f"Local terrain task {task_id} is already running")
+            # 检查/更新/登记线程全部在同一把锁内完成（task_manager.start_task 范本），
+            # 并发调用时第二个会看到条件 UPDATE 的 rowcount=0 或 status='running'。
+            with self._state_lock:
+                active_thread = self.active_tasks.get(task_id)
+                if active_thread and active_thread.is_alive():
+                    raise ValueError(f"Local terrain task {task_id} is already running")
 
-            cur.execute(
-                "UPDATE local_terrain_tasks SET status='running', started_at=?, "
-                "completed_at=NULL, error_message=NULL WHERE id=?",
-                (datetime.now(), task_id),
-            )
-            conn.commit()
-            source_dir = Path(row["source_dir"])
-            output_dir = Path(row["output_dir"])
-            maxzoom = int(row["maxzoom"])
-            parent_url = row["parent_url"] or "http://localhost:5000/terrain/base/layer.json"
+                cur.execute(
+                    "SELECT status, maxzoom, parent_url "
+                    "FROM local_terrain_tasks WHERE id=?",
+                    (task_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError(f"Local terrain task {task_id} not found")
+                if row["status"] == "running":
+                    raise ValueError(f"Local terrain task {task_id} is already running")
+
+                cur.execute(
+                    "UPDATE local_terrain_tasks SET status='running', started_at=?, "
+                    "completed_at=NULL, error_message=NULL WHERE id=? AND status != 'running'",
+                    (datetime.now(), task_id),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError(
+                        f"Local terrain task {task_id} could not be started "
+                        "because its status changed"
+                    )
+                conn.commit()
+
+                maxzoom = int(row["maxzoom"])
+                parent_url = row["parent_url"] or "http://localhost:5000/terrain/base/layer.json"
+                # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
+                # 的约定）：冻结 exe 搬迁后旧绝对路径不会把切片写去错的地方。
+                task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
+                source_dir = task_root / "source"
+                output_dir = task_root / "terrain_tiles"
+
+                th = threading.Thread(
+                    target=self._run_tiling_job,
+                    args=(task_id, source_dir, output_dir, maxzoom, parent_url),
+                    daemon=True,
+                    name=f"LocalTerrainTiling-{task_id}",
+                )
+                self.active_tasks[task_id] = th
         except Exception:
             conn.rollback()
             raise
@@ -251,15 +276,6 @@ class LocalTerrainTaskManager:
             conn.close()
 
         self._emit_progress(task_id)
-
-        with self._state_lock:
-            th = threading.Thread(
-                target=self._run_tiling_job,
-                args=(task_id, source_dir, output_dir, maxzoom, parent_url),
-                daemon=True,
-                name=f"LocalTerrainTiling-{task_id}",
-            )
-            self.active_tasks[task_id] = th
         th.start()
 
     def _run_tiling_job(
@@ -336,15 +352,16 @@ class LocalTerrainTaskManager:
         finally:
             conn.close()
 
-    def delete_task(self, task_id: int) -> None:
-        """Delete a task's DB rows and its on-disk files. Refuses while running
-        (tiling can't be interrupted). Removing the row CASCADEs to the files
-        table; the local_task_<id> directory (source uploads + output tiles) is
-        also removed so cancelled/failed tasks don't leave large GeoTIFFs behind."""
+    def delete_task(self, task_id: int, delete_files: bool = True) -> None:
+        """Delete a task's DB rows and, unless delete_files=False, its on-disk
+        files. Refuses while running (tiling can't be interrupted). Removing
+        the row CASCADEs to the files table; the local_task_<id> directory
+        (source uploads + output tiles) is also removed so cancelled/failed
+        tasks don't leave large GeoTIFFs behind."""
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT status, output_path FROM local_terrain_tasks WHERE id=?", (task_id,))
+            cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
             row = cur.fetchone()
             if not row:
                 raise ValueError(f"Local terrain task {task_id} not found")
@@ -353,16 +370,18 @@ class LocalTerrainTaskManager:
                     "Tiling is in progress and cannot be interrupted; "
                     "wait for it to finish before deleting"
                 )
-            output_path = row["output_path"]
             cur.execute("DELETE FROM local_terrain_tasks WHERE id=?", (task_id,))
             conn.commit()
         finally:
             conn.close()
 
         # Best-effort directory cleanup after the row is gone.
-        if output_path:
+        if delete_files:
             try:
-                task_root = Path(output_path)
+                # 不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
+                # terrain_static 的约定）：冻结 exe 搬迁后库存的旧绝对路径不会让
+                # 下面的守卫失效、也不会误删旧位置的目录。
+                task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
                 # Guard: only remove inside DOWNLOADS_DIR/terrain.
                 terrain_root = (Path(Config.DOWNLOADS_DIR) / "terrain").resolve()
                 if task_root.resolve().parent == terrain_root and task_root.exists():

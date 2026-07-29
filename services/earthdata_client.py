@@ -16,6 +16,11 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 
+def _redact_url(url: str) -> str:
+    """剥掉 URL 的 query —— 签名/授权 URL 的凭据参数不能进异常消息（会落日志/DB）。"""
+    return str(url).split("?", 1)[0]
+
+
 class EarthdataClient:
     def __init__(self, username: str, password: str, proxy_url: str = ""):
         self.username = username or ""
@@ -38,7 +43,7 @@ class EarthdataClient:
             if resp.status in (301, 302, 303, 307, 308):
                 loc = resp.headers.get("Location") or resp.headers.get("location")
                 if not loc:
-                    raise RuntimeError(f"Redirect ({resp.status}) without Location header for {file_url}")
+                    raise RuntimeError(f"Redirect ({resp.status}) without Location header for {_redact_url(file_url)}")
 
                 # If we already got the signed URL, return it
                 if resp.status == 303 and "cloudfront.net" in loc:
@@ -53,7 +58,7 @@ class EarthdataClient:
                     loc2 = resp2.headers.get("Location") or resp2.headers.get("location")
                     if resp2.status == 303 and loc2 and "cloudfront.net" in loc2:
                         return loc2
-                    raise RuntimeError(f"Unexpected redirect chain while resolving signed URL for {file_url}: {resp.status}->{resp2.status}")
+                    raise RuntimeError(f"Unexpected redirect chain while resolving signed URL for {_redact_url(file_url)}: {resp.status}->{resp2.status}")
 
             if resp.status == 200:
                 # Not expected for LP DAAC protected URL, but handle it.
@@ -62,7 +67,7 @@ class EarthdataClient:
             if resp.status == 401:
                 raise RuntimeError("Earthdata 401 Unauthorized (check username/password)")
 
-            raise RuntimeError(f"Unexpected response while resolving signed URL for {file_url}: HTTP {resp.status}")
+            raise RuntimeError(f"Unexpected response while resolving signed URL for {_redact_url(file_url)}: HTTP {resp.status}")
 
     async def _login_and_resolve(self, session: aiohttp.ClientSession, file_url: str, authorize_url: str) -> str:
         auth = self._auth()

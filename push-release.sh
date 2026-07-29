@@ -1,49 +1,48 @@
 #!/bin/bash
-# 推送 0.0.1 版本到 GitHub 的脚本
+# 推送代码并创建版本标签。
+# 版本来源（单一事实源）：build.spec 的 APP_VERSION；也可用第一个参数覆盖：
+#   ./push-release.sh            # 用 build.spec 里的版本
+#   ./push-release.sh 0.2.0      # 显式指定
+
+set -euo pipefail
+
+VERSION="${1:-}"
+if [ -z "$VERSION" ]; then
+    VERSION=$(grep -oE "^APP_VERSION = '[0-9.]+'" build.spec | head -1 | cut -d"'" -f2)
+fi
+if [ -z "$VERSION" ]; then
+    echo "❌ 无法确定版本号：请传入参数，或检查 build.spec 的 APP_VERSION"
+    exit 1
+fi
+TAG="v${VERSION}"
+
+if git rev-parse "$TAG" >/dev/null 2>&1; then
+    echo "❌ 标签 $TAG 已存在，请先 bump build.spec 的 APP_VERSION 或删除旧标签"
+    exit 1
+fi
 
 echo "================================"
-echo "推送代码并创建 v0.0.1 版本"
+echo "推送代码并创建 $TAG 版本"
 echo "================================"
 echo ""
 
-# 1. 推送代码到 GitHub
-echo "步骤 1: 推送代码到 GitHub..."
+# 先在本地建标签再推送：标签创建失败时尚未产生任何远端改动，
+# 避免旧脚本「代码已推、标签失败」的半完成态。
+echo "步骤 1: 创建本地标签 $TAG..."
+git tag -a "$TAG" -m "版本 $TAG"
+echo "✅ 标签创建成功"
+echo ""
+
+echo "步骤 2: 推送代码到 GitHub..."
 git push origin master
-
-if [ $? -eq 0 ]; then
-    echo "✅ 代码推送成功"
-else
-    echo "❌ 代码推送失败，请检查 GitHub 认证"
-    exit 1
-fi
-
+echo "✅ 代码推送成功"
 echo ""
 
-# 2. 创建版本标签
-echo "步骤 2: 创建版本标签 v0.0.1..."
-git tag -a v0.0.1 -m "测试版本 v0.0.1 - 跨平台打包配置"
-
-if [ $? -eq 0 ]; then
-    echo "✅ 标签创建成功"
-else
-    echo "❌ 标签创建失败"
-    exit 1
-fi
-
-echo ""
-
-# 3. 推送标签到 GitHub
 echo "步骤 3: 推送标签到 GitHub..."
-git push origin v0.0.1
-
-if [ $? -eq 0 ]; then
-    echo "✅ 标签推送成功"
-else
-    echo "❌ 标签推送失败"
-    exit 1
-fi
-
+git push origin "$TAG"
+echo "✅ 标签推送成功"
 echo ""
+
 echo "================================"
 echo "🎉 完成！"
 echo "================================"

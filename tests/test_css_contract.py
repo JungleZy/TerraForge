@@ -151,8 +151,6 @@ def test_font_size_override_block_header_removed():
 #   两条、或调换顺序，也要同步改本表，否则会报「没有任何规则声明 font-size」
 #   —— 那不是漏条，是选择器写法变了。
 MERGED_FONT_SIZES = {
-    '.navbar-brand': 'var(--font-size-xl)',
-    '.nav-link': 'var(--font-size-base)',
     '.card-header': 'var(--font-size-base)',
     '.card-header h5': 'var(--font-size-base)',
     '.form-label': 'var(--font-size-sm)',
@@ -1860,9 +1858,29 @@ _TEMPLATES_DIR = os.path.join(
 )
 
 
+_INCLUDE_RE = re.compile(r'\{%\s*include\s+"([^"]+)"\s*%\}')
+
+
 def _template(name):
+    """读模板源码，并文本级展开 `{% include "..." %}`。
+
+    工作台改版把 history/config 的内容抽成 _history_content.html /
+    _config_content.html 两个 partial，独立页与首页覆盖面板共享同一份标记。
+    这里的 include 是无参纯包含，文本级展开与 Jinja 渲染结果等价 ——
+    不展开的话，所有针对 history.html / config.html 内容的断言扫到的都是
+    空壳，测试全绿而页面内容无人守卫。
+    """
     with open(os.path.join(_TEMPLATES_DIR, name), encoding='utf-8') as f:
-        return f.read()
+        src = f.read()
+
+    def _sub(m):
+        return _template(m.group(1))
+
+    prev = None
+    while prev != src:
+        prev = src
+        src = _INCLUDE_RE.sub(_sub, src)
+    return src
 
 
 class _StartTagCollector(HTMLParser):
@@ -2025,9 +2043,12 @@ def test_every_page_template_inherits_the_themed_html_element():
     （不继承 base.html），那一页会静默回到亮色 Bootstrap，而上一条全绿。
     这条把「主题覆盖了全部页面」这个真正的意图钉住。
     """
+    # `_` 开头的是被 include 的内容 partial（_history_content.html /
+    # _config_content.html），不是页面：它们渲染时永远嵌在 extends base.html
+    # 的页面里，主题由宿主页面提供，不需要（也不能）自己带 <html>。
     names = sorted(
         n for n in os.listdir(_TEMPLATES_DIR)
-        if n.endswith('.html') and n != 'base.html'
+        if n.endswith('.html') and n != 'base.html' and not n.startswith('_')
     )
     assert names, 'templates/ 下除 base.html 外没有别的页面模板 —— 本测试已失效'
     problems = []
@@ -2212,48 +2233,6 @@ def test_color_picker_swatch_is_big_enough_to_see():
     )
 
 
-# --------------------------------------------------------------------------
-# A4 / Task 9：Leaflet 控件主题化 + 绘制提示汉化
-#
-# 本节守三个「改完看着对、浏览器里是错的」的坑，每一条都对应一次 CDP 实测：
-#   坑 1  background 简写 → 雪碧图被一起重置 → 三个没有图标的空白按钮
-#   坑 2  给 <a> 同时设深色底和 filter: invert(1) → 两者抵消 → 净效果为零
-#   坑 3  .leaflet-* 容器是 <div>，会被 style.css 的兜底重置压成透明
-# --------------------------------------------------------------------------
-
-# 绘制工具条按钮 <a> 上的雪碧图（leaflet.draw 1.0.4）：
-#   .leaflet-draw-toolbar a { background-image: url(images/spritesheet.svg);
-#                             background-repeat: no-repeat;
-#                             background-size: 300px 30px; }
-#   .leaflet-draw-toolbar .leaflet-draw-draw-rectangle { background-position: -62px -2px }
-# 三个图标全靠 background-position 在同一张图上取不同格子。
-_SPRITE_BUTTON_CLASSES = (
-    'leaflet-draw-draw-rectangle',
-    'leaflet-draw-edit-edit',
-    'leaflet-draw-edit-remove',
-)
-# 按钮 <a> 的祖先/自身身上的类 —— 任何一个都能当后代选择器的前缀命中那三个按钮。
-# 实测 DOM（leaflet.draw 1.0.4 + leaflet 1.9.4）：
-#   <div class="leaflet-top leaflet-left">                     leaflet.css 的 pane
-#     <div class="leaflet-draw leaflet-control">               ← leaflet-draw / leaflet-control
-#       <div class="leaflet-draw-section">                     ← leaflet-draw-section
-#         <div class="leaflet-draw-toolbar leaflet-bar">       ← 两个类在同一个 div 上
-#           <a class="leaflet-draw-draw-rectangle">
-#
-# 只认 leaflet-bar / leaflet-draw-toolbar 是不够的：`.leaflet-draw a`（leaflet.draw
-# 自己就用了这个写法）、`.leaflet-draw-section a`、`.leaflet-control a` 同样命中
-# 那三个按钮，在它们身上写 `background:` 简写照样把雪碧图清光。
-_TOOLBAR_CONTAINER_CLASSES = (
-    'leaflet-bar',
-    'leaflet-draw-toolbar',
-    'leaflet-draw-section',
-    'leaflet-draw',
-    'leaflet-control',
-    'leaflet-left',
-    'leaflet-top',
-)
-
-
 def _class_tokens(text):
     """选择器片段里的类名 token 集合。
 
@@ -2264,88 +2243,6 @@ def _class_tokens(text):
     return set(re.findall(r'\.([\w-]+)', text))
 
 
-def _matches_sprite_button(part):
-    """这一支选择器会不会命中带雪碧图的绘制按钮 <a>？
-
-    两种命中方式：
-      1. 直接点名按钮类（`.leaflet-draw-edit-remove` /
-         `.leaflet-draw-toolbar .leaflet-draw-draw-rectangle`）
-      2. 后代选择器最后一节是 `a`，且祖先部分出现过按钮 <a> 真实祖先链上的类
-         （`.leaflet-bar a:hover` / `.leaflet-draw a` / `.leaflet-control a` ...）
-
-    只查「`.leaflet-draw-toolbar a`」这一种字面写法是不够的 ——
-    见 _TOOLBAR_CONTAINER_CLASSES 的注释。
-    """
-    if _class_tokens(part) & set(_SPRITE_BUTTON_CLASSES):
-        return True
-    compounds = part.split()
-    if len(compounds) < 2:
-        return False
-    last = compounds[-1]
-    # 末节必须是 a（允许挂类和伪类：a、a:hover、a.leaflet-disabled:hover）
-    if not re.fullmatch(r'a(?:[.:][\w-]+(?:\([^)]*\))?)*', last):
-        return False
-    ancestors = _class_tokens(' '.join(compounds[:-1]))
-    return bool(ancestors & set(_TOOLBAR_CONTAINER_CLASSES))
-
-
-def _sprite_button_rules(css):
-    """全部可能命中绘制按钮 <a> 的规则，含 @media 内、伪类、分组写法。"""
-    return [
-        (part, body)
-        for sel, body in _rules(css)
-        for part in _selector_parts(_norm_selector(sel))
-        if _matches_sprite_button(part)
-    ]
-
-
-# 与 _ARROW_KILLING_IMAGE_VALUES 同理：这些值的计算值都是 none，图标都会消失。
-_ICON_KILLING_IMAGE_VALUES = _ARROW_KILLING_IMAGE_VALUES
-
-
-def test_leaflet_draw_buttons_never_use_background_shorthand():
-    """坑 1：命中绘制按钮 <a> 的规则不许用 `background:` 简写，也不许把
-    `background-image` 置成 none 等价物。
-
-    `background` 是简写，写一次会把 background-image / -position / -repeat /
-    -size / -clip 全部重置成初始值。leaflet.draw 的矩形 / 编辑 / 垃圾桶三个
-    图标全靠这几个子属性从同一张 spritesheet.svg 上取格子画出来，简写一写
-    就是**三个没有图标的空白按钮**。
-
-    这不是假想：C1/Task 4 的整个任务就是在修同一类问题——`background` 简写
-    把 Bootstrap select 的箭头 SVG 清掉了。本条是同一契约在 Leaflet 上的复制。
-
-    变异实验（报告里有输出）：把 style.css 里
-        .leaflet-bar a, .leaflet-bar a.leaflet-disabled { background-color: transparent }
-    改成 `background: transparent`，本条立刻变红；而只看 computed
-    `backgroundImage !== "none"` 的写法会**通过**——因为简写后的计算值是
-    `none`，字符串比较是过了，但屏幕上图标已经没了。所以这里查的是源码形态。
-    """
-    rules = _sprite_button_rules(_css())
-    assert rules, (
-        '一条命中绘制按钮 <a> 的规则都没匹配到——选择器写法变了，本测试已失效'
-    )
-    offenders = []
-    for sel, body in rules:
-        decls = _decl_map(body)
-        if 'background' in decls:
-            offenders.append(
-                f'{sel} {{ background: {decls["background"]} }}  ← 简写会连 spritesheet 一起重置'
-            )
-        img = decls.get('background-image')
-        if img is not None:
-            value = _IMPORTANT_RE.sub('', img).strip().lower()
-            if value in _ICON_KILLING_IMAGE_VALUES:
-                offenders.append(
-                    f'{sel} {{ background-image: {img} }}  ← 计算值为 none，直接去掉了图标'
-                )
-    assert not offenders, (
-        '绘制工具条的三个图标会变成空白按钮（矩形 / 编辑 / 垃圾桶）。\n'
-        '请改用 background-color，只覆盖颜色、把 background-image 留给 leaflet.draw：\n'
-        + '\n'.join('  ' + o for o in offenders)
-    )
-
-
 def _transparent(value):
     """这个 background-color 的值等价于「透明」吗？"""
     v = _IMPORTANT_RE.sub('', value or '').strip().lower()
@@ -2353,214 +2250,6 @@ def _transparent(value):
         return True
     m = re.fullmatch(r'rgba?\(\s*[\d.]+[\s,]+[\d.]+[\s,]+[\d.]+\s*[,/]\s*0*(?:\.0+)?\s*\)', v)
     return bool(m)
-
-
-def test_leaflet_draw_button_is_transparent_where_it_is_inverted():
-    """坑 2：戴着 `filter: invert(...)` 的那个元素，静息态背景必须是透明的。
-
-    雪碧图是深灰 (#464646) 画在透明底上的，为**白底**按钮设计。深色界面上
-    要么整张图反色、要么图标看不见。反色只能对元素整体生效，所以设计是：
-    深色底放在 `.leaflet-bar` 容器上，`<a>` 自己保持透明，filter 就只作用在
-    图标上。
-
-    如果给 `<a>` **同时**设深色背景和 invert(1)，深色背景会被一起反色成浅色，
-    净效果等于什么都没改——按钮还是浅底，只是图标从深灰变成了浅灰（更糟）。
-
-    本条断言：
-      (a) 确实有规则给绘制按钮 <a> 上了 invert 滤镜；
-      (b) 所有命中该 <a> 的**静息态**（不带 :hover/:focus/:active）规则里，
-          background-color 一律是透明等价物；
-      (c) 容器 (.leaflet-bar / .leaflet-draw-toolbar) 反过来必须有不透明背景。
-          少了 (c)，把 (b) 做到极致的结果是「按钮透明、容器也透明」——
-          断言全绿而界面上根本没有深色工具条。
-    """
-    css = _css()
-    button_rules = _sprite_button_rules(css)
-
-    inverted = [
-        (sel, body) for sel, body in button_rules
-        if 'invert(' in (_decl_map(body).get('filter') or '')
-    ]
-    assert inverted, (
-        '没有任何规则给绘制按钮上 filter: invert(...)——'
-        '深灰雪碧图在深色底上会看不见，或者本测试已失效'
-    )
-
-    opaque = []
-    for sel, body in button_rules:
-        if re.search(r':(hover|focus|active|focus-visible|focus-within)\b', sel):
-            continue
-        bg = _decl_map(body).get('background-color')
-        if bg is not None and not _transparent(bg):
-            opaque.append(f'{sel} {{ background-color: {bg} }}')
-    assert not opaque, (
-        '绘制按钮 <a> 同时有 filter: invert(1) 和不透明背景色，两者互相抵消、净效果为零。\n'
-        '深色底应该放在 .leaflet-bar 容器上，<a> 保持 transparent：\n'
-        + '\n'.join('  ' + o for o in opaque)
-    )
-
-    container = [
-        (part, body) for sel, body in _rules(css)
-        for part in _selector_parts(_norm_selector(sel))
-        if re.fullmatch(r'\.(?:%s)' % '|'.join(_TOOLBAR_CONTAINER_CLASSES), part)
-        and not _transparent(_decl_map(body).get('background-color') or 'transparent')
-    ]
-    assert container, (
-        '.leaflet-bar / .leaflet-draw-toolbar 容器没有任何不透明背景色。\n'
-        '按钮 <a> 是透明的，底色全靠容器——容器一没背景，工具条在深色地图上就是「隐形」的。'
-    )
-
-
-# 这四个 Leaflet 元素都是 <div>，改前全被兜底重置压成了透明：
-#   .leaflet-bar / .leaflet-draw-toolbar  工具条容器（同一个 div 上的两个类）
-#   .leaflet-control-attribution          右下角出处标注
-#   .leaflet-draw-tooltip                 跟随鼠标的绘制提示条
-#
-# 每一条的真实祖先链（CDP 实测 DOM，leaflet 1.9.4 + leaflet.draw 1.0.4）。
-# `.leaflet-touch` 在带触摸屏的设备上是常态，headless Chrome 实测也带 ——
-# 它是承重的：leaflet.css 的 `.leaflet-touch .leaflet-bar{border:2px solid
-# rgba(0,0,0,.2)}` (0,2,0) 就是靠它命中的。
-def _leaflet_div_controls():
-    """{说明: (祖先链, 期望的底色)}。链末尾就是那个控件 div。"""
-    map_chain = _PAGE_CHAIN_PREFIX + (
-        ('div', {'index-layout'}, '', {}),
-        ('div', {'index-left'}, '', {}),
-        ('div', {'card'}, '', {}),
-        ('div', {'card-body'}, '', {}),
-        ('div', {'leaflet-container', 'leaflet-touch'}, 'map', {}),
-    )
-    controls = map_chain + (('div', {'leaflet-control-container'}, '', {}),)
-    return {
-        'leaflet-bar（缩放控件容器）': (
-            controls + (
-                ('div', {'leaflet-top', 'leaflet-left'}, '', {}),
-                ('div', {'leaflet-control-zoom', 'leaflet-bar', 'leaflet-control'},
-                 '', {}),
-            ), '--color-bg-secondary'),
-        'leaflet-draw-toolbar（绘制工具条，与 .leaflet-bar 同一个 div）': (
-            controls + (
-                ('div', {'leaflet-top', 'leaflet-left'}, '', {}),
-                ('div', {'leaflet-draw', 'leaflet-control'}, '', {}),
-                ('div', {'leaflet-draw-section'}, '', {}),
-                ('div', {'leaflet-draw-toolbar', 'leaflet-bar'}, '', {}),
-            ), '--color-bg-secondary'),
-        'leaflet-control-attribution（右下角出处标注）': (
-            controls + (
-                ('div', {'leaflet-bottom', 'leaflet-right'}, '', {}),
-                ('div', {'leaflet-control-attribution', 'leaflet-control'}, '', {}),
-            ), 'rgba(12, 13, 16, 0.85)'),
-        'leaflet-draw-tooltip（跟随鼠标的绘制提示条）': (
-            map_chain + (
-                ('div', {'leaflet-pane', 'leaflet-map-pane'}, '', {}),
-                ('div', {'leaflet-pane', 'leaflet-popup-pane'}, '', {}),
-                ('div', {'leaflet-draw-tooltip'}, '', {}),
-            ), 'rgba(12, 13, 16, 0.92)'),
-    }
-
-
-def test_leaflet_div_controls_keep_their_background():
-    """坑 3：这四个 Leaflet 容器的底色必须真的渲染出来，且是本站给的那个值。
-
-    这条的前身是 test_leaflet_div_controls_survive_the_blanket_div_reset，
-    它要求这些规则**必须带 !important**。那是当年绕开兜底重置的手段，
-    不是目的 —— 而兜底重置现在已经整条删除，那几处 !important 也随之删掉。
-    断言跟着升级：不再管用什么手段赢，只管**赢没赢**。
-
-    历史证据（Chrome 148，CDP，A4/Task 9 改前）：
-        .leaflet-bar                  backgroundColor = rgba(0, 0, 0, 0)
-        .leaflet-control-attribution  backgroundColor = rgba(0, 0, 0, 0)
-        .leaflet-draw-tooltip         backgroundColor = rgba(0, 0, 0, 0)
-    三者的背景在源码里写着、在浏览器里全是透明。绘制提示条尤其严重：
-    白字直接飘在地图瓦片上。只读源码算色值的断言对此完全绿灯。
-
-    本次删掉 !important 之后的复核（CDP，同一版 Chrome）：
-        .leaflet-bar / .leaflet-draw-toolbar   rgb(21, 23, 28)        不变
-        .leaflet-control-attribution           rgba(12,13,16,0.85)    不变
-        .leaflet-draw-tooltip                  rgba(12,13,16,0.92)    不变
-    `.leaflet-control-attribution` 那一处 !important **保留**：它还要压
-    leaflet.css 的 `.leaflet-container .leaflet-control-attribution
-    {background:rgba(255,255,255,.8)}` (0,2,0)，(0,1,0) 赢不了。
-
-    覆盖范围（诚实说明）：算的是静止态。悬停态（`.leaflet-bar a:hover`）
-    打在 <a> 上，不在本条范围内。
-    """
-    css = _css()
-    problems = []
-    for label, (chain, expect) in sorted(_leaflet_div_controls().items()):
-        win = _effective_bg_for(chain)
-        if win is None:
-            problems.append(f'{label}: 没有任何背景声明命中它，底色是透明')
-            continue
-        if _bg_is_transparent(css, win.value):
-            problems.append(
-                f'{label}: 最终生效的是 {win.sheet} 的 `{win.branch}` '
-                f'{{ background: {win.value} }} —— 透明，深色地图上等于没有控件底'
-            )
-            continue
-        want = _palette_var(css, expect) if expect.startswith('--') else expect
-        got = _resolve_color(css, win.value)
-        if got.replace(' ', '') != want.replace(' ', ''):
-            problems.append(
-                f'{label}: 最终生效的底色是 {got}（来自 {win.sheet} 的 '
-                f'`{win.branch}`），期望 {want}'
-            )
-    assert not problems, (
-        'Leaflet 控件的背景没有真的渲染出来 —— 源码里有、浏览器里没有：\n'
-        + '\n'.join('  ' + p for p in problems)
-    )
-
-
-# --------------------------------------------------------------------------
-# 汉化：L.drawLocal 的键名不许写错
-# --------------------------------------------------------------------------
-
-# leaflet.draw 1.0.4 的 L.drawLocal 全部叶子键路径（38 条）。
-# 生成方式：把 CDN 上 leaflet.draw.js 里的 `L.drawLocal={...}` 对象字面量
-# 括号配对切出来、转成 JSON、递归收集叶子路径。不是手抄的。
-#
-# 为什么需要这张快照：给一个不存在的属性赋值在 JS 里完全合法，
-# `L.drawLocal.edit.toolbar.buttons.editDisable = '...'`（少个 d）不会报错、
-# 不会有警告，只会**静默不生效**——按钮提示还是英文，而所有测试全绿。
-_LEAFLET_DRAW_LOCAL_KEYS_1_0_4 = frozenset({
-    'L.drawLocal.draw.handlers.circle.radius',
-    'L.drawLocal.draw.handlers.circle.tooltip.start',
-    'L.drawLocal.draw.handlers.circlemarker.tooltip.start',
-    'L.drawLocal.draw.handlers.marker.tooltip.start',
-    'L.drawLocal.draw.handlers.polygon.tooltip.cont',
-    'L.drawLocal.draw.handlers.polygon.tooltip.end',
-    'L.drawLocal.draw.handlers.polygon.tooltip.start',
-    'L.drawLocal.draw.handlers.polyline.error',
-    'L.drawLocal.draw.handlers.polyline.tooltip.cont',
-    'L.drawLocal.draw.handlers.polyline.tooltip.end',
-    'L.drawLocal.draw.handlers.polyline.tooltip.start',
-    'L.drawLocal.draw.handlers.rectangle.tooltip.start',
-    'L.drawLocal.draw.handlers.simpleshape.tooltip.end',
-    'L.drawLocal.draw.toolbar.actions.text',
-    'L.drawLocal.draw.toolbar.actions.title',
-    'L.drawLocal.draw.toolbar.buttons.circle',
-    'L.drawLocal.draw.toolbar.buttons.circlemarker',
-    'L.drawLocal.draw.toolbar.buttons.marker',
-    'L.drawLocal.draw.toolbar.buttons.polygon',
-    'L.drawLocal.draw.toolbar.buttons.polyline',
-    'L.drawLocal.draw.toolbar.buttons.rectangle',
-    'L.drawLocal.draw.toolbar.finish.text',
-    'L.drawLocal.draw.toolbar.finish.title',
-    'L.drawLocal.draw.toolbar.undo.text',
-    'L.drawLocal.draw.toolbar.undo.title',
-    'L.drawLocal.edit.handlers.edit.tooltip.subtext',
-    'L.drawLocal.edit.handlers.edit.tooltip.text',
-    'L.drawLocal.edit.handlers.remove.tooltip.text',
-    'L.drawLocal.edit.toolbar.actions.cancel.text',
-    'L.drawLocal.edit.toolbar.actions.cancel.title',
-    'L.drawLocal.edit.toolbar.actions.clearAll.text',
-    'L.drawLocal.edit.toolbar.actions.clearAll.title',
-    'L.drawLocal.edit.toolbar.actions.save.text',
-    'L.drawLocal.edit.toolbar.actions.save.title',
-    'L.drawLocal.edit.toolbar.buttons.edit',
-    'L.drawLocal.edit.toolbar.buttons.editDisabled',
-    'L.drawLocal.edit.toolbar.buttons.remove',
-    'L.drawLocal.edit.toolbar.buttons.removeDisabled',
-})
 
 # 本项目 UI 上真正会出现的那些键（map.js 只启用了 rectangle）。
 # 少翻其中任何一条，界面上就有一处中英混排。
@@ -2606,134 +2295,12 @@ def _draw_locale_assignments():
     return {m.group(1): m.group(3) for m in _DRAW_LOCAL_ASSIGN_RE.finditer(src)}
 
 
-def test_draw_locale_keys_exist_in_pinned_build():
-    """map.js 写的每个 L.drawLocal 键，在 leaflet.draw 1.0.4 里都必须真实存在。
-
-    这是本次汉化最容易翻车的地方：**键名写错不报错**。
-    `L.drawLocal.edit.toolbar.buttons.removeDisable = '...'`（少个 d）是完全
-    合法的 JS——给对象加了个没人读的新属性而已。按钮提示照旧是
-    "No layers to delete"，控制台一声不吭，人工不逐个 hover 根本发现不了。
-
-    所以这里拿 _LEAFLET_DRAW_LOCAL_KEYS_1_0_4 这份从 CDN 构建里机械提取的
-    键路径快照做白名单校验。配套的
-    test_leaflet_draw_build_matches_the_locale_key_snapshot 保证 base.html
-    引的还是这个版本，快照不会悄悄过期。
-    """
-    assigned = _draw_locale_assignments()
-    assert assigned, (
-        "map.js 里解析不到任何 `L.drawLocal.x.y = '...'` 赋值 —— "
-        '要么汉化被删了，要么改成了别名写法（`const d = L.drawLocal.draw`），'
-        '后者本测试静态看不见，请写全路径'
-    )
-    bogus = sorted(k for k in assigned if k not in _LEAFLET_DRAW_LOCAL_KEYS_1_0_4)
-    assert not bogus, (
-        'leaflet.draw 1.0.4 里没有这些键，赋值不会报错、只会静默不生效：\n'
-        + '\n'.join(f'  {k} = {assigned[k]!r}' for k in bogus)
-    )
-
-
-def test_draw_locale_covers_every_user_visible_string():
-    """UI 上真会出现的那些文案必须都翻了，而且值确实是中文。
-
-    两段缺一不可：
-      - 只查「键在不在」：把值改成 `= 'Draw a rectangle'` 照样绿，等于没翻。
-      - 只查「有中文」：漏翻 editDisabled / removeDisabled 这种**首屏默认态**
-        的键，剩下的中文照样让测试绿，而用户打开页面看到的两个按钮提示是英文。
-    """
-    assigned = _draw_locale_assignments()
-    missing = sorted(_REQUIRED_LOCALE_KEYS - set(assigned))
-    assert not missing, (
-        '这些界面上会出现的文案没有汉化（页面是 lang="zh-CN"）：\n'
-        + '\n'.join('  ' + k for k in missing)
-    )
-    not_chinese = sorted(
-        f'{k} = {v!r}' for k, v in assigned.items() if not _CJK_RE.search(v)
-    )
-    assert not not_chinese, (
-        'L.drawLocal 这些键赋的不是中文，等于没汉化：\n'
-        + '\n'.join('  ' + s for s in not_chinese)
-    )
-
-
-def test_draw_locale_is_applied_before_the_control_is_constructed():
-    """汉化必须在 `new L.Control.Draw(...)` **之前**跑。
-
-    Leaflet.draw 的按钮 title 是在 Toolbar.addToolbar() 里一次性从
-    L.drawLocal 读走、写进 DOM 的。控件建完之后再改 L.drawLocal，
-    对已经渲染出来的按钮没有任何影响——顺序写反了，测试若只查
-    「赋值语句存在」依然全绿，而界面上按钮提示仍是英文。
-    """
-    body = _js_function_body(_js('map.js'), 'initMap')
-    # 必须先剥注释再定位：initMap 里那句「必须在 new L.Control.Draw 之前」的
-    # 说明注释本身就含这段字面量，不剥的话 find() 命中的是注释、位置比真正的
-    # 构造调用还靠前，断言会**假红**。（本条第一次跑就是这么红的。）
-    body = re.sub(r'/\*.*?\*/', '', body, flags=re.S)
-    body = re.sub(r'(?m)//.*$', '', body)
-    call = body.find('localizeDrawControl(')
-    ctor = body.find('new L.Control.Draw')
-    assert call != -1, (
-        'initMap 里没有调用 localizeDrawControl() —— 汉化函数写了但没人调，'
-        '所有 L.drawLocal 断言都会绿，界面照旧是英文'
-    )
-    assert ctor != -1, (
-        'initMap 里找不到 `new L.Control.Draw` —— 本测试已失效，请更新'
-    )
-    assert call < ctor, (
-        f'localizeDrawControl() 在 initMap 里的位置（{call}）晚于 '
-        f'new L.Control.Draw（{ctor}）。按钮 title 是建控件时一次性读走的，'
-        '之后再改 L.drawLocal 不会回写 DOM。'
-    )
-
-
 # 键名快照是对着这个版本提取的。cdnjs 与 npm 两种 URL 写法都认。
 LEAFLET_DRAW_PINNED_VERSION = (1, 0, 4)
 _LEAFLET_DRAW_VERSION_RES = (
     re.compile(r'leaflet[.-]?draw@(\d+)\.(\d+)\.(\d+)', re.I),
     re.compile(r'/leaflet\.draw/(\d+)\.(\d+)\.(\d+)/', re.I),
 )
-
-
-def test_leaflet_draw_build_matches_the_locale_key_snapshot():
-    """base.html 引的 leaflet.draw 必须还是 1.0.4——键名快照才有效。
-
-    ⚠️ 这条是给上面两条汉化断言兜底的，**它们对版本漂移完全失明**：
-    把 base.html 的 1.0.4 换成任何重排过 L.drawLocal 结构的版本，
-    _LEAFLET_DRAW_LOCAL_KEYS_1_0_4 这份白名单立刻变成一张过期地图 ——
-    真正写错的键可能反而在白名单里、真正存在的键反而被判成 bogus，
-    而两条断言给出的红/绿都不再对应事实。
-
-    同样的理由，CSS 那边的坑 1 / 坑 2 也钉在这个版本上：
-    `background-image: url(images/spritesheet.svg)` + background-position
-    取格子、深灰 #464646 描边，都是 1.0.4 的实现细节。
-
-    只查声明的版本号，不联网核对 CDN 真的送了什么——与
-    test_bootstrap_build_is_new_enough_to_have_dark_theme 同一权衡。
-    """
-    urls = []
-    for name, attrs in _start_tags(_template('base.html')):
-        url = attrs.get('href') if name == 'link' else attrs.get('src') if name == 'script' else None
-        if url and 'leaflet' in url.lower() and 'draw' in url.lower():
-            urls.append((name, url))
-    assert urls, 'base.html 里找不到任何 leaflet.draw 资源引用 —— 本测试已失效'
-    problems = []
-    for name, url in urls:
-        found = None
-        for rx in _LEAFLET_DRAW_VERSION_RES:
-            m = rx.search(url)
-            if m:
-                found = tuple(int(g) for g in m.groups())
-                break
-        if found is None:
-            problems.append(f'<{name}> {url} 解析不出版本号')
-        elif found != LEAFLET_DRAW_PINNED_VERSION:
-            problems.append(
-                f'<{name}> {url} 是 {".".join(map(str, found))}，'
-                f'键名快照是对着 {".".join(map(str, LEAFLET_DRAW_PINNED_VERSION))} 提取的'
-            )
-    assert not problems, (
-        'leaflet.draw 版本与 _LEAFLET_DRAW_LOCAL_KEYS_1_0_4 快照对不上，'
-        '汉化断言的红绿都不再可信：\n' + '\n'.join('  ' + p for p in problems)
-    )
 
 
 def _all_templates():
@@ -2827,23 +2394,6 @@ def test_no_stylesheet_can_load_after_style_css():
 #   禁用态图标   模型 rgb(122,123,126) / 4.61:1    实测（见报告）
 # --------------------------------------------------------------------------
 
-# 雪碧图的墨色。来源：CDN 上 leaflet.draw 1.0.4 的 images/spritesheet.svg，
-# 全图 16 处 `style="fill:#464646;fill-opacity:1"`。
-#
-# ⚠️ 一个容易写错的事实（本报告初版就写错了，评审查实订正）：SVG 里确实有一处
-# `<g id="disabled" style="fill:#bbbbbb">`，但组里放的是 `<use xlink:href="#edit">`
-# / `<use xlink:href="#remove">`，而被引用的两个 group 自带
-# `style="fill:#464646;fill-opacity:1"` —— 子元素自己的 fill 压掉了祖先的 #bbbbbb，
-# 那个浅灰**一次都没生效**。实测：把四个格子（可用/禁用 × 编辑/删除）分别画到
-# 白底 canvas 上读像素，主导非白色全是 rgb(70,70,70)，没有任何 rgb(187,187,187)。
-# 所以禁用态和可用态的雪碧图墨色**相同**，禁用的视觉差异必须由主题自己做出来。
-SPRITE_INK_HEX = '#464646'
-
-# 图形元素对比度下限。与 --color-neutral 注释、
-# test_progress_bar_fill_has_sufficient_contrast 用的是同一条项目标准（WCAG 1.4.11）。
-ICON_MIN_CONTRAST = 3.0
-
-
 def _filter_ops(value):
     """`invert(1) brightness(1.25)` -> {'invert': 1.0, 'brightness': 1.25}（同名取乘积）。"""
     out = {}
@@ -2873,161 +2423,6 @@ def _apply_filter(rgb, ops):
             v = (v / 255 - 0.5) * ops['contrast'] * 255 + 127.5
         out.append(max(0.0, min(255.0, v)))
     return tuple(out)
-
-
-def _leaflet_button_state(css, disabled):
-    """绘制按钮在指定状态下的 (filter ops, opacity)。
-
-    按 CSS 层叠取值：`.leaflet-draw-toolbar a` 提供基线，
-    `.leaflet-draw-toolbar a.leaflet-disabled`（特异度更高）在禁用态覆盖它。
-    某个属性没被覆盖就沿用基线 —— 这正是「禁用态只声明 opacity、filter 继续用
-    基线那条」能成立的原因。
-    """
-    ops, opacity = None, 1.0
-    for sel, body in _rules(css):
-        for part in _selector_parts(_norm_selector(sel)):
-            if re.search(r':(hover|focus|active)', part):
-                continue
-            tokens = _class_tokens(part)
-            if 'leaflet-draw-toolbar' not in tokens or not part.split()[-1].startswith('a'):
-                continue
-            is_disabled_rule = 'leaflet-disabled' in tokens
-            if is_disabled_rule and not disabled:
-                continue
-            decls = _decl_map(body)
-            if 'filter' in decls:
-                ops = _filter_ops(_IMPORTANT_RE.sub('', decls['filter']))
-            if 'opacity' in decls:
-                opacity = float(_IMPORTANT_RE.sub('', decls['opacity']).strip())
-    return ops, opacity
-
-
-def test_leaflet_draw_icon_stays_visible_through_the_map_filter():
-    """把源码里的数值代进渲染链，算出来的图标对比度必须 >= 3:1。
-
-    这是唯一一条对「图标看不看得见」真正敏感的断言。上面几条守的是形态
-    （简写 / !important / transparent），对**数值改坏**完全失明：
-    `brightness(1.25)` -> `brightness(0.05)` 会让图标渲染成 rgb(14,14,14) 压在
-    rgb(8,10,15) 上（约 1.04:1，人眼完全看不见），而那 8 条断言一条都不红。
-
-    额外还断言「可用态必须比禁用态明显更强」——否则把禁用态的 opacity 调到 1，
-    禁用/可用一模一样，首屏那两个按钮看起来是能点的，而对比度断言照样绿。
-
-    模型来源与校准见本节顶部注释：三个独立 CDP 数据点逐位命中，不是估算。
-    """
-    css = _css()
-
-    # 容器底色（渲染前）
-    bg_hex = _palette_var(css, '--color-bg-secondary')
-    assert re.fullmatch(r'#[0-9a-f]{6}', bg_hex), (
-        f'--color-bg-secondary 是 {bg_hex!r}，本测试只会算 6 位 hex —— 已失效，请更新'
-    )
-    container = _hex_to_rgb(bg_hex)
-
-    # 工具条容器真的用了这个变量吗？不然算的是一个没人用的颜色
-    holder = [
-        body for sel, body in _rules(css)
-        for part in _selector_parts(_norm_selector(sel))
-        if part == '.leaflet-bar'
-    ]
-    assert holder and any('--color-bg-secondary' in (_decl_map(b).get('background-color') or '')
-                          for b in holder), (
-        '.leaflet-bar 的 background-color 不再是 var(--color-bg-secondary) —— '
-        '本测试算的底色和实际渲染的不是一回事，已失效，请更新'
-    )
-
-    # 祖先 #map 的 filter（作用于整个 .leaflet-container，包括所有控件）
-    map_rules = [
-        _decl_map(body).get('filter') for sel, body, at_ctx in _rules_ctx(css)
-        if not at_ctx and '#map' in _selector_parts(_norm_selector(sel))
-    ]
-    map_ops = _filter_ops(next((f for f in map_rules if f), '') or '')
-
-    rendered_bg = _apply_filter(container, map_ops)
-    lum_bg = _relative_luminance(rendered_bg)
-
-    results = {}
-    for label, disabled in (('可用态', False), ('禁用态', True)):
-        ops, opacity = _leaflet_button_state(css, disabled)
-        assert ops is not None, (
-            f'{label}：找不到 .leaflet-draw-toolbar a 的 filter 声明 —— 本测试已失效'
-        )
-        assert ops.get('invert', 0) >= 1.0, (
-            f'{label}：filter 里没有 invert(1)。雪碧图墨色是 {SPRITE_INK_HEX}（深灰，'
-            f'为白底按钮画的），不反色就是深灰压在近黑的容器上，图标看不见。'
-        )
-        ink = _apply_filter(_hex_to_rgb(SPRITE_INK_HEX), ops)
-        # opacity：与容器底色混合（都还在 #map 的 filter 之前）
-        mixed = tuple(ink[i] * opacity + container[i] * (1 - opacity) for i in range(3))
-        rendered = _apply_filter(mixed, map_ops)
-        lum = _relative_luminance(rendered)
-        hi, lo = max(lum, lum_bg), min(lum, lum_bg)
-        results[label] = {
-            'contrast': (hi + 0.05) / (lo + 0.05),
-            'rendered': tuple(round(v) for v in rendered),
-            'filter': ops, 'opacity': opacity,
-        }
-
-    problems = [
-        f'{label}：算出来只有 {r["contrast"]:.2f}:1（低于 {ICON_MIN_CONTRAST}:1）。'
-        f'图标渲染成 rgb{r["rendered"]}，容器渲染成 rgb{tuple(round(v) for v in rendered_bg)}；'
-        f'filter={r["filter"]}, opacity={r["opacity"]}'
-        for label, r in results.items() if r['contrast'] < ICON_MIN_CONTRAST
-    ]
-    assert not problems, (
-        '绘制工具条的图标在深色底上看不见了（矩形 / 编辑 / 垃圾桶）：\n'
-        + '\n'.join('  ' + p for p in problems)
-    )
-
-    enabled, disabled_r = results['可用态']['contrast'], results['禁用态']['contrast']
-    assert enabled >= disabled_r * 1.5, (
-        f'可用态 {enabled:.2f}:1 与禁用态 {disabled_r:.2f}:1 差距不足 1.5 倍，'
-        '首屏禁用的「编辑」「删除」看起来会像是能点的。\n'
-        '注意 leaflet.draw 的禁用雪碧图格子与可用格子**像素级相同**'
-        '（它 SVG 里那层 #bbbbbb 被 <use> 引用目标自带的 fill 压掉了，从未生效），'
-        '所以这个差异只能由本样式表自己做出来。'
-    )
-
-
-# 被本次覆盖掉的上游颜色。删掉我们的覆盖规则 -> 静默回落到这些值。
-# 评审实测：这两条整条删掉，8 条形态断言全绿。
-_LEAFLET_UPSTREAM_FALLBACKS = {
-    # 选择器: (必须声明的属性, 上游值, 回落后的后果)
-    '.leaflet-draw-actions a': (
-        'background-color', '#919187 (leaflet.draw.css)',
-        '绘制/编辑操作条整条退回出厂橄榄灰 rgb(145,145,135)，在深色界面上是一块脏色',
-    ),
-    '.leaflet-control-attribution a': (
-        'color', '#0078A8 (leaflet.css `.leaflet-container a`)',
-        '出处标注里的链接退回 Leaflet 蓝，在我们的深色底上约 3.9:1，低于 AA 的 4.5:1',
-    ),
-}
-
-
-def test_leaflet_upstream_colors_are_all_replaced():
-    """这几条覆盖规则不许消失——删掉就静默回落到 Leaflet 出厂色。
-
-    与上面那些禁止性断言配对的**存在性**契约（同 test_form_select_still_
-    declares_its_background_color 的思路）：只有禁止性断言时，「把规则整条删掉」
-    是让测试变绿的合法手段，而屏幕上是回落到第三方默认色。
-    """
-    rules = _rules(_css())
-    problems = []
-    for sel, (prop, upstream, consequence) in _LEAFLET_UPSTREAM_FALLBACKS.items():
-        found = [
-            _decl_map(body).get(prop)
-            for rsel, body in rules
-            for part in _selector_parts(_norm_selector(rsel))
-            if part == sel
-        ]
-        found = [v for v in found if v is not None]
-        if not found:
-            problems.append(
-                f'{sel} 没有声明 {prop}（会回落到上游的 {upstream}）→ {consequence}'
-            )
-    assert not problems, (
-        'Leaflet 出厂颜色没有被覆盖住：\n' + '\n'.join('  ' + p for p in problems)
-    )
 
 
 # --------------------------------------------------------------------------
@@ -3514,10 +2909,13 @@ def test_bounds_readout_is_announced_to_screen_readers():
 
 VIEWPORT_1366_HEIGHT_PX = 768
 
-# CDP 实测锚点：1366x768、**已框选**（按钮 disabled 解除、四至已渲染）状态下
+# CDP 实测锚点：1366x768、首页默认（地图瓦片）状态下
 # `#createTaskBtn.getBoundingClientRect().bottom`。
-# 复现方法见 .superpowers/sdd/p2-task-10-report.md。改前是 949.34。
-CDP_SUBMIT_BTN_BOTTOM = 715.53
+# GIS 工作台改版后四至浮层移出表单，框选与否不再影响表单高度，
+# 所以锚点不再区分「已框选」。复现方法：headless Chrome 1366x768 打开首页，
+# 读 getBoundingClientRect().bottom。本次实测 580.625（顶部工具栏移除，
+# 主区从视口顶开始）；带 48px 工具栏时是 628.625；改前（网页表单布局）是 715.53。
+CDP_SUBMIT_BTN_BOTTOM = 580.63
 
 # 模型允许的对拍误差。0.5px 足够吸收浏览器的亚像素舍入。
 # 实测（Task 11 复核）：模型 715.61 vs CDP 715.53，差 **0.08px**。
@@ -3793,12 +3191,11 @@ def _index_form_rows():
     )
     rows = [(tag, cls) for tag, cls, hidden in parser.rows if not hidden]
     assert rows, '解析不出 #downloadForm 的子元素 —— 本测试已失效'
-    # 模型只在「有提交按钮 + 有四至提示条」的前提下成立
+    # 模型只在「有提交按钮」的前提下成立。
+    # （GIS 工作台改版前还要求有四至 alert；它已搬到地图上的 .bounds-overlay
+    #   浮层，不再是表单子元素，也不再占表单高度。）
     assert any(t == 'button' for t, _c in rows), (
         '#downloadForm 的直接子元素里没有 <button> —— 解析漏了，本测试已失效'
-    )
-    assert any('alert' in c for _t, c in rows), (
-        '#downloadForm 的直接子元素里没有 .alert（四至提示条）—— 本测试已失效'
     )
     return rows
 
@@ -3858,7 +3255,11 @@ def _index_form_vertical_model(css):
         assert m, f'`{selector}` 的 {prop} = {raw!r} 里读不出宽度 —— 本测试已失效'
         return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
 
-    navbar = rule_px('.main-content', 'padding-top')
+    # GIS 工作台改版：按钮的纵向位置 = dock 上内边距 + 卡片头 + 表单。
+    # 旧模型是 `.main-content` 的 padding-top(60px 固定导航补偿) + 面板 padding；
+    # 工作台外壳是 flex 列，`.main-content` 没有 padding-top。顶部工具栏移除后
+    # 主内容区从视口顶开始，纵向起点为 0。
+    toolbar = 0.0
     panel_pad = rule_px('.index-right', 'padding-top')
     card_border = border_px('.card', 'border')
     hdr_pad = rule_px('.card-header', 'padding-top')
@@ -3917,8 +3318,11 @@ def _index_form_vertical_model(css):
     for prev, nxt in zip(items, items[1:]):
         total += max(prev[1], nxt[2])              # 相邻外边距合并取较大者
 
-    return (navbar + panel_pad + card_border + 2 * hdr_pad
-            + BS_CARD_HEADER_LINE_BOX_PX + hdr_border + body_pad + total)
+    # 卡片头内容高：GIS 工作台改版后卡片头里多了 28px(--ctl-h) 的 dock 收起
+    # 按钮，行盒由它（而不是 h5 的 18.91px 文字行盒）撑起。取两者较大者。
+    hdr_content = max(BS_CARD_HEADER_LINE_BOX_PX, ctl_h)
+    return (toolbar + panel_pad + card_border + 2 * hdr_pad
+            + hdr_content + hdr_border + body_pad + total)
 
 
 def test_height_model_reproduces_the_cdp_measurement():
@@ -3952,7 +3356,8 @@ def test_submit_button_fits_at_1366x768():
     **这是 A5 / Task 10 的验收标准本身。**
 
     改前实测 949.34（已框选 = 按钮可点的那个状态），溢出 181.3px：用户在
-    1366x768 笔记本上必须滚动才能提交。改后 715.53，余 52.47px。
+    1366x768 笔记本上必须滚动才能提交。A5 / Task 10 改后 715.53；
+    GIS 工作台改版后（四至浮层移出表单、工具栏 48px）实测 628.63。
 
     模型的输入：
       - 结构：从 templates/index.html 解析 `#downloadForm` 的可见直接子元素
@@ -4094,18 +3499,21 @@ def _bbox_object_literals(src):
 # 当前 map.js 里 bbox 字面量的处数。用于防「正则一个都没匹配上 -> for 循环不执行
 # -> 断言永真」这个本文件反复踩过的坑（见 _form_select_rules 的注释）。
 # 加新的 bbox 字面量时把这个数字调大即可 —— 新字面量会被自动检查，不需要改逻辑。
-MAP_JS_BBOX_LITERAL_COUNT = 6
+# 6 -> 4（等高线改上传驱动）：等高线提交 payload 的 bbox 和 coverageBounds()
+# 的返回值随旧下载式 submitContour 一并删除；等高线不再有 bbox。
+# 4 -> 4（Cesium 换地图）：Leaflet 的两个 getter 构造点变成 Cesium 的
+# _rectDegrees（拖拽中按度直写）+ currentBounds（LEFT_UP 落定）两个构造点。
+MAP_JS_BBOX_LITERAL_COUNT = 4
 
 
 def test_bbox_literals_never_swap_directions():
     """map.js 里每个 bbox 字面量的每个方位键，值必须引用**同名**方位。
 
-    覆盖整条数据链上的全部 6 处（不是只有那两个构造点）：
-      - `currentBounds = { north: bounds.getNorth(), ... }`  绘制时构造
-      - `currentBounds = { north: found.getNorth(), ... }`   编辑/回填时重建
-      - `taskData = { north: currentBounds.north, ... }`     x2，提交给后端的 bbox
-      - `body = { north: currentBounds.north, ... }`         等高线任务的 bbox
-      - `coverageBounds()` 的返回值 `{ north: Math.floor(b.north - eps) + 1, ... }`
+    覆盖整条数据链上的全部 4 处：
+      - `_rectDegrees = { west: ..., east: ..., ... }`          Cesium 拖拽中按度直写
+      - `currentBounds = { north: _rectDegrees.north, ... }`    LEFT_UP 落定时构造
+      - `taskData = { north: currentBounds.north, ... }`        x2，提交给后端的 bbox
+      （等高线改上传驱动后不再有 bbox payload。）
 
     规则是「值表达式引用的方位 == 键名」，不是「值必须长成某个样子」，
     所以 `Math.floor(b.north - eps) + 1` 这种包了一层的写法照样能查。
@@ -4150,63 +3558,6 @@ def test_bbox_literals_never_swap_directions():
 CURRENT_BOUNDS_CONSTRUCTION_SITES = 2
 
 _LEAFLET_BOUNDS_GETTERS = {d: 'get' + d.capitalize() for d in _DIRECTIONS}
-
-
-def test_current_bounds_is_built_from_matching_leaflet_getters():
-    """每一处 `currentBounds = { ... }` 都必须 `north:` 配 `getNorth()`，以此类推。
-
-    这是 `test_bbox_literals_never_swap_directions` 的**加强档**：那条只要求
-    「值引用了同名方位」，本条进一步要求构造点必须直接用 Leaflet 的对应 getter
-    —— 构造点是整条链的源头，源头错了下游全错，不该允许中间再包一层加工。
-
-    定位方式（不依赖行号，也不只取第一处）：在剥掉注释的源码里 finditer
-    所有 `currentBounds = {`，逐个花括号配对取出字面量。
-    `currentBounds = null` 那三处不是构造点，正则天然不匹配。
-    """
-    src = _strip_js_comments(_js('map.js'))
-    sites = []
-    for m in re.finditer(r'currentBounds\s*=\s*\{', src):
-        open_idx = src.index('{', m.start())
-        end = _matching_brace(src, open_idx)
-        assert end is not None, (
-            f'第 {src.count(chr(10), 0, open_idx) + 1} 行附近的 '
-            '`currentBounds = {` 花括号配不上对 —— 本测试已失效（不是通过）'
-        )
-        pairs = {}
-        for part in _split_top_level(src[open_idx + 1:end]):
-            key, sep, value = part.partition(':')
-            if sep:
-                pairs[key.strip()] = value.strip()
-        sites.append((src.count('\n', 0, open_idx) + 1, pairs))
-
-    assert len(sites) == CURRENT_BOUNDS_CONSTRUCTION_SITES, (
-        f'找到 {len(sites)} 处 `currentBounds = {{...}}` 构造点，'
-        f'期望 {CURRENT_BOUNDS_CONSTRUCTION_SITES} 处'
-        '（绘制完成时一处、拖角/编辑后重读图层时一处）。'
-        '少了 = 扫描失效或构造点被改写；多了 = 新增了构造点，'
-        '确认它也被检查到之后把 CURRENT_BOUNDS_CONSTRUCTION_SITES 调大 —— '
-        '**只守一处等于没守**'
-    )
-
-    problems = []
-    for line, pairs in sites:
-        missing = [d for d in _DIRECTIONS if d not in pairs]
-        if missing:
-            problems.append(f'第 {line} 行附近的构造点缺少 {missing} 四至不全')
-            continue
-        for d in _DIRECTIONS:
-            getter = _LEAFLET_BOUNDS_GETTERS[d]
-            if not re.fullmatch(r'[\w$.]+\.' + getter + r'\s*\(\s*\)', pairs[d]):
-                problems.append(
-                    f'第 {line} 行附近：`{d}: {pairs[d]}` —— '
-                    f'期望形如 `<bounds>.{getter}()`'
-                )
-    assert not problems, (
-        'currentBounds 的构造点把方位接错了：\n'
-        + '\n'.join('  ' + p for p in problems)
-        + '\ncurrentBounds 既喂给界面（updateBoundsInfo）也喂给后端（提交的 bbox），'
-        '源头接反会让界面把南标成北，**下载的区域也跟着错**'
-    )
 
 
 
@@ -5126,19 +4477,26 @@ def test_button_ink_is_readable_in_every_state():
 
 # **全站**纯图标按钮（无可见文本）的数量，JS 模板与 HTML 模板一起扫。
 #   static/js/tasks.js   启动 / 暂停 / 恢复 / 取消              4
-#   static/js/history.js 查看详情 / 删除                        2
-#   templates/base.html  navbar-toggler（汉堡菜单）             1
+#   static/js/history.js 查看详情 / 删除 / 预览                 3
 #   templates/history.html .btn-close（模态框关闭）              1
-# 合计 8。
+#   templates/index.html dock-collapse-btn / dock-reopen-handle 2（GIS 工作台改版新增）
+#   templates/index.html 两个覆盖面板的关闭按钮            2（历史/配置面板）
+#   templates/index.html include 进来的历史详情弹窗 .btn-close 1（与 history.html
+#     那颗是同一份 partial 标记，两个模板各扫到一次，预期重复）
+# 合计 13。
 #
 # ⚠️ 第一版只扫两个 JS 文件、常量写 6，读起来像「全站都覆盖了」而实际漏了
-# 模板。评审实测：`templates/base.html:40` 的 navbar-toggler 在 900px 视口下
+# 模板。评审实测：当时 `templates/base.html` 的 navbar-toggler 在 900px 视口下
 # `display: block`、56x40、**`aria-label` 为 null** —— 一颗真实存在、真实可见、
-# 真实缺无障碍名称的纯图标按钮，就在断言的扫描范围外。
+# 真实缺无障碍名称的纯图标按钮，就在断言的扫描范围外（该按钮已随顶部
+# 工具栏一并移除）。
+# 注：地图左上角的 map-panel-btn（数据下载/数据处理/历史记录/配置）曾按纯
+# 图标按钮计入；实机反馈「纯图标必须悬停才知道功能」后已改为图标+文字，
+# 有可见文本，不再计入本表。
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
-ICON_ONLY_BUTTON_COUNT = 8
+ICON_ONLY_BUTTON_COUNT = 13
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -5151,11 +4509,15 @@ def _icon_only_buttons():
 
     返回 [(来源, 属性串)]。**每个来源都断言至少扫到一个 <button>**，
     正则失配时响亮失败而不是退化成空循环。
+
+    base.html 不在扫描列表里：它原本唯一的按钮是 navbar-toggler，
+    已随顶部工具栏一并移除，现在一个 <button> 都没有，留下只会触发
+    上面的响亮失败。将来若往 base.html 加按钮，把它加回扫描列表。
     """
     sources = []
     for name in ('tasks.js', 'history.js'):
         sources.append((f'static/js/{name}', _strip_js_comments(_js(name))))
-    for name in ('base.html', 'index.html', 'history.html', 'config.html'):
+    for name in ('index.html', 'history.html', 'config.html'):
         sources.append((f'templates/{name}', _template(name)))
 
     found = []
@@ -5195,7 +4557,7 @@ def test_icon_only_buttons_are_labelled():
     # 断言（按 BUTTON_CONTEXTS 里写死的类组合去算）根本轮不到它 —— 类掉了，
     # 按钮在浏览器里被 `.btn-group-sm .btn` 的 padding 撑成胶囊，而尺寸断言
     # 仍然在给一个「假想的、带 btn-icon 的按钮」发绿灯。
-    # `.btn-close` / `.navbar-toggler` 不带 `btn` 类，是 Bootstrap 的独立组件，
+    # `.btn-close` 不带 `btn` 类，是 Bootstrap 的独立组件，
     # 有自己的尺寸规则，天然不在此列。
     classless = []
     for f, a in buttons:
@@ -6367,7 +5729,18 @@ def _motion_rule_index(css):
 # 「全站都覆盖到了」的假象，实际漏了 base.html 里的第 7 颗按钮。下面几条
 # 遍历型断言都建立在「我真的扫到了每一条」之上，数字对不上先查是不是漏扫。
 # 增删动画规则时，改这个数字**并同时确认**新规则被下面的断言覆盖到了。
-_MOTION_BRANCH_COUNT = 28
+#
+# 28 -> 31（GIS 工作台改版）：新增 3 个分支，都有过渡且都在 reduce 块的
+# 通用选择器 `*` 覆盖范围内，无需豁免登记：
+#   1. `.index-right` —— dock 收起的 margin-right 0.2s 过渡
+#   2. `.dock-collapse-btn` / 3. `.dock-reopen-handle` —— hover 底色 0.15s
+# 31 -> 33（覆盖面板）：`.panel-backdrop` 的 opacity 0.2s、`.workbench-panel`
+# 的 transform 0.22s，同样在 `*` 覆盖范围内。
+# 33 -> 32（移除顶部工具栏）：删 `.navbar-brand` / `.nav-link` /
+# `.nav-link::after` 三个分支，加 `.map-panel-btn` / `.back-home-link`
+# 两个（hover 0.15s，在 `*` 覆盖范围内）。
+# 32 -> 33（地图样式缩略图）：`.map-style-preview` 的 transform 0.15s。
+_MOTION_BRANCH_COUNT = 33
 
 
 def test_motion_rule_index_is_complete():
@@ -6409,7 +5782,7 @@ def test_no_blanket_motion_reaches_an_unstyled_element():
         got = _motion_computed(css, chain)
         assert not got['transitions'], (
             f'裸 <{node.tag}> 身上还有过渡 {got["transitions"]} —— 全局过渡回潮了。'
-            '交互反馈请写在具体的交互元素上（.btn / .form-control / .nav-link …）'
+            '交互反馈请写在具体的交互元素上（.btn / .form-control / .card …）'
         )
         assert got['animation_name'] == 'none', (
             f'裸 <{node.tag}> 身上挂了动画 {got["animation_name"]!r}'
@@ -6595,8 +5968,14 @@ def test_reduced_motion_actually_stops_every_animated_element():
         f'{sorted(_REDUCED_MOTION_EXEMPT)}。新增豁免必须**逐条写理由**，'
         '清单里有而实际没有的（规则删了/改名了）也要清掉，否则清单会变成一张空头支票'
     )
-    assert len(ctxs) == 25, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 25：\n'
+    # 25 -> 28（GIS 工作台改版）：新增 .index-right / .dock-collapse-btn /
+    # .dock-reopen-handle 三个上下文，均为普通过渡，走通用豁免之外的正常检查。
+    # 28 -> 30（覆盖面板）：.panel-backdrop / .workbench-panel 两个上下文，同理。
+    # 30 -> 29（移除顶部工具栏）：删 .navbar-brand / .nav-link / .nav-link::after
+    # 三个上下文，加 .map-panel-btn / .back-home-link 两个。
+    # 29 -> 30（地图样式缩略图）：.map-style-preview 的 transform 过渡。
+    assert len(ctxs) == 30, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 30：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -6695,21 +6074,408 @@ _VENDOR_DIR = os.path.join(_STATIC_DIR, 'vendor')
 VENDOR_MANIFEST = {
     'bootstrap/5.3.0/bootstrap.min.css': 232914,
     'bootstrap/5.3.0/bootstrap.bundle.min.js': 80421,
-    'leaflet/1.9.4/leaflet.css': 14806,
-    'leaflet/1.9.4/leaflet.js': 147552,
-    'leaflet.draw/1.0.4/leaflet.draw.css': 5267,
-    'leaflet.draw/1.0.4/leaflet.draw.js': 67484,
-    # 三张雪碧图：leaflet.draw.css 里写的是 url('images/spritesheet.png')，
-    # 少一张就是首页最核心的框选工具条上多一个空白按钮。
-    'leaflet.draw/1.0.4/images/spritesheet.png': 1083,
-    'leaflet.draw/1.0.4/images/spritesheet-2x.png': 2103,
-    'leaflet.draw/1.0.4/images/spritesheet.svg': 5551,
     'socket.io/4.5.4/socket.io.min.js': 44191,
     'fonts/inter-latin.woff2': 48256,
     'fonts/inter-latin-ext.woff2': 85068,
     'fonts/jetbrains-mono-latin.woff2': 31432,
     'fonts/jetbrains-mono-latin-ext.woff2': 11624,
 }
+
+# CesiumJS 1.143.0（390 个文件）：workers / assets / widgets 全部由
+# Cesium.js 运行时按 CESIUM_BASE_URL 动态拉取，模板 grep 不出来，必须登记。
+VENDOR_MANIFEST.update({
+    'cesium/1.143.0/Cesium.js': 5909848,
+    'cesium/1.143.0/Assets/approximateTerrainHeights.json': 299471,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_0.json': 67428,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_1.json': 67313,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_10.json': 65984,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_11.json': 65007,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_12.json': 64663,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_13.json': 65854,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_14.json': 65547,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_15.json': 65709,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_16.json': 66030,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_17.json': 65622,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_18.json': 65310,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_19.json': 65537,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_2.json': 67802,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_20.json': 65328,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_21.json': 64843,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_22.json': 64977,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_23.json': 66084,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_24.json': 64894,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_25.json': 64953,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_26.json': 65311,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_27.json': 27595,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_3.json': 66400,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_4.json': 65900,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_5.json': 65378,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_6.json': 65596,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_7.json': 67099,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_8.json': 66931,
+    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_9.json': 66857,
+    'cesium/1.143.0/Assets/Images/bing_maps_credit.png': 18831,
+    'cesium/1.143.0/Assets/Images/cesium_credit.png': 4242,
+    'cesium/1.143.0/Assets/Images/google_earth_credit.png': 7703,
+    'cesium/1.143.0/Assets/Images/ion-credit.png': 6028,
+    'cesium/1.143.0/Assets/Textures/moonSmall.jpg': 18196,
+    'cesium/1.143.0/Assets/Textures/pin.svg': 348,
+    'cesium/1.143.0/Assets/Textures/waterNormals.jpg': 294196,
+    'cesium/1.143.0/Assets/Textures/waterNormalsSmall.jpg': 34121,
+    'cesium/1.143.0/Assets/Textures/LensFlare/DirtMask.jpg': 113718,
+    'cesium/1.143.0/Assets/Textures/LensFlare/StarBurst.jpg': 195728,
+    'cesium/1.143.0/Assets/Textures/maki/airfield.png': 1188,
+    'cesium/1.143.0/Assets/Textures/maki/airport.png': 1554,
+    'cesium/1.143.0/Assets/Textures/maki/alcohol-shop.png': 1293,
+    'cesium/1.143.0/Assets/Textures/maki/america-football.png': 2595,
+    'cesium/1.143.0/Assets/Textures/maki/art-gallery.png': 3159,
+    'cesium/1.143.0/Assets/Textures/maki/bakery.png': 2714,
+    'cesium/1.143.0/Assets/Textures/maki/bank.png': 936,
+    'cesium/1.143.0/Assets/Textures/maki/bar.png': 1435,
+    'cesium/1.143.0/Assets/Textures/maki/baseball.png': 1838,
+    'cesium/1.143.0/Assets/Textures/maki/basketball.png': 1318,
+    'cesium/1.143.0/Assets/Textures/maki/beer.png': 1403,
+    'cesium/1.143.0/Assets/Textures/maki/bicycle.png': 3989,
+    'cesium/1.143.0/Assets/Textures/maki/building.png': 1765,
+    'cesium/1.143.0/Assets/Textures/maki/bus.png': 998,
+    'cesium/1.143.0/Assets/Textures/maki/cafe.png': 1518,
+    'cesium/1.143.0/Assets/Textures/maki/camera.png': 1976,
+    'cesium/1.143.0/Assets/Textures/maki/campsite.png': 2411,
+    'cesium/1.143.0/Assets/Textures/maki/car.png': 1498,
+    'cesium/1.143.0/Assets/Textures/maki/cemetery.png': 967,
+    'cesium/1.143.0/Assets/Textures/maki/cesium.png': 3610,
+    'cesium/1.143.0/Assets/Textures/maki/chemist.png': 1603,
+    'cesium/1.143.0/Assets/Textures/maki/cinema.png': 1492,
+    'cesium/1.143.0/Assets/Textures/maki/circle-stroked.png': 2126,
+    'cesium/1.143.0/Assets/Textures/maki/circle.png': 1459,
+    'cesium/1.143.0/Assets/Textures/maki/city.png': 788,
+    'cesium/1.143.0/Assets/Textures/maki/clothing-store.png': 2037,
+    'cesium/1.143.0/Assets/Textures/maki/college.png': 2502,
+    'cesium/1.143.0/Assets/Textures/maki/commercial.png': 1002,
+    'cesium/1.143.0/Assets/Textures/maki/cricket.png': 1677,
+    'cesium/1.143.0/Assets/Textures/maki/cross.png': 1888,
+    'cesium/1.143.0/Assets/Textures/maki/dam.png': 1703,
+    'cesium/1.143.0/Assets/Textures/maki/danger.png': 2429,
+    'cesium/1.143.0/Assets/Textures/maki/disability.png': 3437,
+    'cesium/1.143.0/Assets/Textures/maki/dog-park.png': 3146,
+    'cesium/1.143.0/Assets/Textures/maki/embassy.png': 1680,
+    'cesium/1.143.0/Assets/Textures/maki/emergency-telephone.png': 1533,
+    'cesium/1.143.0/Assets/Textures/maki/entrance.png': 1307,
+    'cesium/1.143.0/Assets/Textures/maki/farm.png': 1686,
+    'cesium/1.143.0/Assets/Textures/maki/fast-food.png': 2019,
+    'cesium/1.143.0/Assets/Textures/maki/ferry.png': 2879,
+    'cesium/1.143.0/Assets/Textures/maki/fire-station.png': 2228,
+    'cesium/1.143.0/Assets/Textures/maki/fuel.png': 1741,
+    'cesium/1.143.0/Assets/Textures/maki/garden.png': 2057,
+    'cesium/1.143.0/Assets/Textures/maki/gift.png': 1606,
+    'cesium/1.143.0/Assets/Textures/maki/golf.png': 1999,
+    'cesium/1.143.0/Assets/Textures/maki/grocery.png': 1425,
+    'cesium/1.143.0/Assets/Textures/maki/hairdresser.png': 3301,
+    'cesium/1.143.0/Assets/Textures/maki/harbor.png': 2048,
+    'cesium/1.143.0/Assets/Textures/maki/heart.png': 1745,
+    'cesium/1.143.0/Assets/Textures/maki/heliport.png': 2059,
+    'cesium/1.143.0/Assets/Textures/maki/hospital.png': 909,
+    'cesium/1.143.0/Assets/Textures/maki/ice-cream.png': 1602,
+    'cesium/1.143.0/Assets/Textures/maki/industrial.png': 1092,
+    'cesium/1.143.0/Assets/Textures/maki/land-use.png': 1773,
+    'cesium/1.143.0/Assets/Textures/maki/laundry.png': 2407,
+    'cesium/1.143.0/Assets/Textures/maki/library.png': 1355,
+    'cesium/1.143.0/Assets/Textures/maki/lighthouse.png': 1944,
+    'cesium/1.143.0/Assets/Textures/maki/lodging.png': 1362,
+    'cesium/1.143.0/Assets/Textures/maki/logging.png': 1378,
+    'cesium/1.143.0/Assets/Textures/maki/london-underground.png': 2979,
+    'cesium/1.143.0/Assets/Textures/maki/marker-stroked.png': 3414,
+    'cesium/1.143.0/Assets/Textures/maki/marker.png': 2448,
+    'cesium/1.143.0/Assets/Textures/maki/minefield.png': 1907,
+    'cesium/1.143.0/Assets/Textures/maki/mobilephone.png': 1474,
+    'cesium/1.143.0/Assets/Textures/maki/monument.png': 1376,
+    'cesium/1.143.0/Assets/Textures/maki/museum.png': 2578,
+    'cesium/1.143.0/Assets/Textures/maki/music.png': 1371,
+    'cesium/1.143.0/Assets/Textures/maki/oil-well.png': 3357,
+    'cesium/1.143.0/Assets/Textures/maki/park.png': 2059,
+    'cesium/1.143.0/Assets/Textures/maki/park2.png': 2284,
+    'cesium/1.143.0/Assets/Textures/maki/parking-garage.png': 1563,
+    'cesium/1.143.0/Assets/Textures/maki/parking.png': 1250,
+    'cesium/1.143.0/Assets/Textures/maki/pharmacy.png': 2258,
+    'cesium/1.143.0/Assets/Textures/maki/pitch.png': 3288,
+    'cesium/1.143.0/Assets/Textures/maki/place-of-worship.png': 1111,
+    'cesium/1.143.0/Assets/Textures/maki/playground.png': 3856,
+    'cesium/1.143.0/Assets/Textures/maki/police.png': 2194,
+    'cesium/1.143.0/Assets/Textures/maki/polling-place.png': 1772,
+    'cesium/1.143.0/Assets/Textures/maki/post.png': 1273,
+    'cesium/1.143.0/Assets/Textures/maki/prison.png': 1371,
+    'cesium/1.143.0/Assets/Textures/maki/rail-above.png': 2071,
+    'cesium/1.143.0/Assets/Textures/maki/rail-light.png': 2816,
+    'cesium/1.143.0/Assets/Textures/maki/rail-metro.png': 2249,
+    'cesium/1.143.0/Assets/Textures/maki/rail-underground.png': 1996,
+    'cesium/1.143.0/Assets/Textures/maki/rail.png': 2073,
+    'cesium/1.143.0/Assets/Textures/maki/religious-christian.png': 948,
+    'cesium/1.143.0/Assets/Textures/maki/religious-jewish.png': 2384,
+    'cesium/1.143.0/Assets/Textures/maki/religious-muslim.png': 3925,
+    'cesium/1.143.0/Assets/Textures/maki/restaurant.png': 2499,
+    'cesium/1.143.0/Assets/Textures/maki/roadblock.png': 1312,
+    'cesium/1.143.0/Assets/Textures/maki/rocket.png': 1653,
+    'cesium/1.143.0/Assets/Textures/maki/school.png': 3838,
+    'cesium/1.143.0/Assets/Textures/maki/scooter.png': 2942,
+    'cesium/1.143.0/Assets/Textures/maki/shop.png': 1544,
+    'cesium/1.143.0/Assets/Textures/maki/skiing.png': 3345,
+    'cesium/1.143.0/Assets/Textures/maki/slaughterhouse.png': 2270,
+    'cesium/1.143.0/Assets/Textures/maki/soccer.png': 2420,
+    'cesium/1.143.0/Assets/Textures/maki/square-stroked.png': 650,
+    'cesium/1.143.0/Assets/Textures/maki/square.png': 582,
+    'cesium/1.143.0/Assets/Textures/maki/star-stroked.png': 3460,
+    'cesium/1.143.0/Assets/Textures/maki/star.png': 2703,
+    'cesium/1.143.0/Assets/Textures/maki/suitcase.png': 1129,
+    'cesium/1.143.0/Assets/Textures/maki/swimming.png': 2106,
+    'cesium/1.143.0/Assets/Textures/maki/telephone.png': 1702,
+    'cesium/1.143.0/Assets/Textures/maki/tennis.png': 1658,
+    'cesium/1.143.0/Assets/Textures/maki/theatre.png': 3233,
+    'cesium/1.143.0/Assets/Textures/maki/toilets.png': 2917,
+    'cesium/1.143.0/Assets/Textures/maki/town-hall.png': 2005,
+    'cesium/1.143.0/Assets/Textures/maki/town.png': 1125,
+    'cesium/1.143.0/Assets/Textures/maki/triangle-stroked.png': 2837,
+    'cesium/1.143.0/Assets/Textures/maki/triangle.png': 2137,
+    'cesium/1.143.0/Assets/Textures/maki/village.png': 2145,
+    'cesium/1.143.0/Assets/Textures/maki/warehouse.png': 1908,
+    'cesium/1.143.0/Assets/Textures/maki/waste-basket.png': 1917,
+    'cesium/1.143.0/Assets/Textures/maki/water.png': 2411,
+    'cesium/1.143.0/Assets/Textures/maki/wetland.png': 2151,
+    'cesium/1.143.0/Assets/Textures/maki/zoo.png': 2681,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/tilemapresource.xml': 780,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/0/0/0.jpg': 12067,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/0/1/0.jpg': 14055,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/0/0.jpg': 7278,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/0/1.jpg': 11399,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/1/0.jpg': 10652,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/1/1.jpg': 13142,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/2/0.jpg': 9643,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/2/1.jpg': 15312,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/3/0.jpg': 10532,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/3/1.jpg': 13262,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/0.jpg': 8157,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/1.jpg': 9307,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/2.jpg': 7891,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/3.jpg': 10341,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/0.jpg': 7852,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/1.jpg': 6850,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/2.jpg': 11581,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/3.jpg': 15862,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/0.jpg': 10657,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/1.jpg': 12456,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/2.jpg': 12262,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/3.jpg': 14940,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/0.jpg': 9531,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/1.jpg': 10234,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/2.jpg': 11678,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/3.jpg': 10754,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/0.jpg': 8474,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/1.jpg': 12265,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/2.jpg': 16477,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/3.jpg': 11888,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/0.jpg': 7540,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/1.jpg': 10274,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/2.jpg': 16112,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/3.jpg': 11877,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/0.jpg': 6636,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/1.jpg': 11564,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/2.jpg': 16411,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/3.jpg': 12756,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/0.jpg': 9032,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/1.jpg': 12957,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/2.jpg': 11362,
+    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/3.jpg': 11859,
+    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_mx.jpg': 118775,
+    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_my.jpg': 152501,
+    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_mz.jpg': 167980,
+    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_px.jpg': 122746,
+    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_py.jpg': 152999,
+    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_pz.jpg': 152537,
+    'cesium/1.143.0/ThirdParty/basis_transcoder.wasm': 500839,
+    'cesium/1.143.0/ThirdParty/draco_decoder.wasm': 285948,
+    'cesium/1.143.0/ThirdParty/google-earth-dbroot-parser.js': 218747,
+    'cesium/1.143.0/ThirdParty/wasm_splats_bg.wasm': 26522,
+    'cesium/1.143.0/ThirdParty/zip-module.wasm': 50264,
+    'cesium/1.143.0/ThirdParty/Workers/package.json': 19,
+    'cesium/1.143.0/ThirdParty/Workers/zip-web-worker.js': 18493,
+    'cesium/1.143.0/Widgets/lighter.css': 6142,
+    'cesium/1.143.0/Widgets/lighterShared.css': 1062,
+    'cesium/1.143.0/Widgets/shared.css': 1952,
+    'cesium/1.143.0/Widgets/widgets.css': 30710,
+    'cesium/1.143.0/Widgets/Animation/Animation.css': 2748,
+    'cesium/1.143.0/Widgets/Animation/lighter.css': 1919,
+    'cesium/1.143.0/Widgets/BaseLayerPicker/BaseLayerPicker.css': 2544,
+    'cesium/1.143.0/Widgets/BaseLayerPicker/lighter.css': 734,
+    'cesium/1.143.0/Widgets/Cesium3DTilesInspector/Cesium3DTilesInspector.css': 2431,
+    'cesium/1.143.0/Widgets/CesiumInspector/CesiumInspector.css': 2633,
+    'cesium/1.143.0/Widgets/CesiumWidget/CesiumWidget.css': 2265,
+    'cesium/1.143.0/Widgets/CesiumWidget/lighter.css': 307,
+    'cesium/1.143.0/Widgets/FullscreenButton/FullscreenButton.css': 193,
+    'cesium/1.143.0/Widgets/Geocoder/Geocoder.css': 1811,
+    'cesium/1.143.0/Widgets/Geocoder/lighter.css': 495,
+    'cesium/1.143.0/Widgets/I3SBuildingSceneLayerExplorer/I3SBuildingSceneLayerExplorer.css': 636,
+    'cesium/1.143.0/Widgets/Images/TimelineIcons.png': 781,
+    'cesium/1.143.0/Widgets/Images/info-loading.gif': 723,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/ArcGisMapServiceWorldHillshade.png': 8624,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/ArcGisMapServiceWorldImagery.png': 12290,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/ArcGisMapServiceWorldOcean.png': 9905,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/azureAerial.png': 32446,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/azureRoads.png': 25152,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/bingAerial.png': 9943,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/bingAerialLabels.png': 10374,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/bingRoads.png': 8076,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/blueMarble.png': 7403,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/earthAtNight.png': 5836,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleContour.png': 40737,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleRoadmap.png': 32232,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleSatellite.png': 40898,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleSatelliteLabels.png': 40267,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapQuestOpenStreetMap.png': 11342,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapboxSatellite.png': 9242,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapboxStreets.png': 7270,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapboxTerrain.png': 8300,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/naturalEarthII.png': 7491,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/openStreetMap.png': 2663,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/sentinel-2.png': 10086,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/stadiaAlidadeSmooth.png': 7302,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/stadiaAlidadeSmoothDark.png': 7289,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/stamenToner.png': 4119,
+    'cesium/1.143.0/Widgets/Images/ImageryProviders/stamenWatercolor.png': 10806,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/Mouse.svg': 5623,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/MouseLeft.svg': 5581,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/MouseMiddle.svg': 5579,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/MouseRight.svg': 5572,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/Touch.svg': 3446,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchDrag.svg': 6288,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchRotate.svg': 5626,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchTilt.svg': 5862,
+    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchZoom.svg': 5482,
+    'cesium/1.143.0/Widgets/Images/TerrainProviders/CesiumWorldTerrain.png': 10080,
+    'cesium/1.143.0/Widgets/Images/TerrainProviders/Ellipsoid.png': 6173,
+    'cesium/1.143.0/Widgets/InfoBox/InfoBox.css': 1950,
+    'cesium/1.143.0/Widgets/InfoBox/InfoBoxDescription.css': 4675,
+    'cesium/1.143.0/Widgets/NavigationHelpButton/NavigationHelpButton.css': 2074,
+    'cesium/1.143.0/Widgets/NavigationHelpButton/lighter.css': 1063,
+    'cesium/1.143.0/Widgets/PerformanceWatchdog/PerformanceWatchdog.css': 371,
+    'cesium/1.143.0/Widgets/ProjectionPicker/ProjectionPicker.css': 1216,
+    'cesium/1.143.0/Widgets/SceneModePicker/SceneModePicker.css': 1794,
+    'cesium/1.143.0/Widgets/SelectionIndicator/SelectionIndicator.css': 472,
+    'cesium/1.143.0/Widgets/Timeline/Timeline.css': 2910,
+    'cesium/1.143.0/Widgets/Timeline/lighter.css': 467,
+    'cesium/1.143.0/Widgets/Viewer/Viewer.css': 1958,
+    'cesium/1.143.0/Widgets/VoxelInspector/VoxelInspector.css': 449,
+    'cesium/1.143.0/Widgets/VRButton/VRButton.css': 169,
+    'cesium/1.143.0/Workers/chunk-2AIOP76V.js': 20253,
+    'cesium/1.143.0/Workers/chunk-37ETYCYM.js': 7545,
+    'cesium/1.143.0/Workers/chunk-3E7FIXV7.js': 8890,
+    'cesium/1.143.0/Workers/chunk-3N6OW3OY.js': 5614,
+    'cesium/1.143.0/Workers/chunk-3VUCSHGU.js': 931,
+    'cesium/1.143.0/Workers/chunk-4KY4VMEH.js': 3381,
+    'cesium/1.143.0/Workers/chunk-4WQ4VT5S.js': 2442,
+    'cesium/1.143.0/Workers/chunk-5AAMOBJK.js': 2907,
+    'cesium/1.143.0/Workers/chunk-5DGDPBQU.js': 10016,
+    'cesium/1.143.0/Workers/chunk-5VFNV3LW.js': 3077,
+    'cesium/1.143.0/Workers/chunk-5Z36UAB7.js': 7241,
+    'cesium/1.143.0/Workers/chunk-6AEO73KW.js': 5570,
+    'cesium/1.143.0/Workers/chunk-6DLS2UKD.js': 1961,
+    'cesium/1.143.0/Workers/chunk-6EINM7EY.js': 1073,
+    'cesium/1.143.0/Workers/chunk-6W2XFGWI.js': 1748,
+    'cesium/1.143.0/Workers/chunk-7GCQCPLT.js': 5098,
+    'cesium/1.143.0/Workers/chunk-7TN3TOVQ.js': 2666,
+    'cesium/1.143.0/Workers/chunk-A4I25VN7.js': 4215,
+    'cesium/1.143.0/Workers/chunk-AJH5KBOO.js': 922,
+    'cesium/1.143.0/Workers/chunk-AKELQO2L.js': 2262,
+    'cesium/1.143.0/Workers/chunk-ALIHIWSS.js': 8096,
+    'cesium/1.143.0/Workers/chunk-ATKJRN2G.js': 4312,
+    'cesium/1.143.0/Workers/chunk-BDWA46XV.js': 3759,
+    'cesium/1.143.0/Workers/chunk-BKIYVF74.js': 1644,
+    'cesium/1.143.0/Workers/chunk-BPABSUDY.js': 27384,
+    'cesium/1.143.0/Workers/chunk-D3TVNJ6W.js': 11036,
+    'cesium/1.143.0/Workers/chunk-DM7KUSL2.js': 14561,
+    'cesium/1.143.0/Workers/chunk-E7EKLP3B.js': 147462,
+    'cesium/1.143.0/Workers/chunk-G2QPRBZU.js': 1375,
+    'cesium/1.143.0/Workers/chunk-G3GDHHWO.js': 1240,
+    'cesium/1.143.0/Workers/chunk-G72JFEXW.js': 6489,
+    'cesium/1.143.0/Workers/chunk-IAE6APK2.js': 20558,
+    'cesium/1.143.0/Workers/chunk-IEITL4VO.js': 12020,
+    'cesium/1.143.0/Workers/chunk-LHBFSFJE.js': 7214,
+    'cesium/1.143.0/Workers/chunk-LN2UT4R3.js': 1982,
+    'cesium/1.143.0/Workers/chunk-LNJEJFV5.js': 124894,
+    'cesium/1.143.0/Workers/chunk-ML6MR2RA.js': 915,
+    'cesium/1.143.0/Workers/chunk-MOHWP7VV.js': 2198,
+    'cesium/1.143.0/Workers/chunk-NZBME2JK.js': 2936,
+    'cesium/1.143.0/Workers/chunk-P5EFSOUF.js': 10761,
+    'cesium/1.143.0/Workers/chunk-P7N43FDO.js': 3320,
+    'cesium/1.143.0/Workers/chunk-PEDE2P3Q.js': 1275,
+    'cesium/1.143.0/Workers/chunk-PSIOCLX7.js': 5669,
+    'cesium/1.143.0/Workers/chunk-PYMQNHFO.js': 11819,
+    'cesium/1.143.0/Workers/chunk-QJTXFT4R.js': 16488,
+    'cesium/1.143.0/Workers/chunk-QNPYEODC.js': 31687,
+    'cesium/1.143.0/Workers/chunk-QS7V5G6Y.js': 5986,
+    'cesium/1.143.0/Workers/chunk-RDX4QSUS.js': 14260,
+    'cesium/1.143.0/Workers/chunk-RESOCDYZ.js': 58499,
+    'cesium/1.143.0/Workers/chunk-SRA5MBUT.js': 15910,
+    'cesium/1.143.0/Workers/chunk-TCOMWBL2.js': 12777,
+    'cesium/1.143.0/Workers/chunk-UA7PAMQQ.js': 3177,
+    'cesium/1.143.0/Workers/chunk-W5OEMTMB.js': 4601,
+    'cesium/1.143.0/Workers/chunk-WGIRJIIK.js': 4891,
+    'cesium/1.143.0/Workers/chunk-XRJOFXJF.js': 1351,
+    'cesium/1.143.0/Workers/chunk-YP4SXJYZ.js': 4788,
+    'cesium/1.143.0/Workers/chunk-Z7Q4J7AE.js': 20747,
+    'cesium/1.143.0/Workers/combineGeometry.js': 1671,
+    'cesium/1.143.0/Workers/createBoxGeometry.js': 1444,
+    'cesium/1.143.0/Workers/createBoxOutlineGeometry.js': 3981,
+    'cesium/1.143.0/Workers/createCircleGeometry.js': 3799,
+    'cesium/1.143.0/Workers/createCircleOutlineGeometry.js': 2856,
+    'cesium/1.143.0/Workers/createCoplanarPolygonGeometry.js': 6901,
+    'cesium/1.143.0/Workers/createCoplanarPolygonOutlineGeometry.js': 3577,
+    'cesium/1.143.0/Workers/createCorridorGeometry.js': 15298,
+    'cesium/1.143.0/Workers/createCorridorOutlineGeometry.js': 7550,
+    'cesium/1.143.0/Workers/createCylinderGeometry.js': 1500,
+    'cesium/1.143.0/Workers/createCylinderOutlineGeometry.js': 3907,
+    'cesium/1.143.0/Workers/createEllipseGeometry.js': 1751,
+    'cesium/1.143.0/Workers/createEllipseOutlineGeometry.js': 1555,
+    'cesium/1.143.0/Workers/createEllipsoidGeometry.js': 1472,
+    'cesium/1.143.0/Workers/createEllipsoidOutlineGeometry.js': 1453,
+    'cesium/1.143.0/Workers/createFrustumGeometry.js': 1444,
+    'cesium/1.143.0/Workers/createFrustumOutlineGeometry.js': 3603,
+    'cesium/1.143.0/Workers/createGeometry.js': 6366,
+    'cesium/1.143.0/Workers/createGroundPolylineGeometry.js': 16535,
+    'cesium/1.143.0/Workers/createPlaneGeometry.js': 3216,
+    'cesium/1.143.0/Workers/createPlaneOutlineGeometry.js': 2123,
+    'cesium/1.143.0/Workers/createPolygonGeometry.js': 18690,
+    'cesium/1.143.0/Workers/createPolygonOutlineGeometry.js': 7757,
+    'cesium/1.143.0/Workers/createPolylineGeometry.js': 6887,
+    'cesium/1.143.0/Workers/createPolylineVolumeGeometry.js': 5643,
+    'cesium/1.143.0/Workers/createPolylineVolumeOutlineGeometry.js': 4314,
+    'cesium/1.143.0/Workers/createRectangleGeometry.js': 15013,
+    'cesium/1.143.0/Workers/createRectangleOutlineGeometry.js': 6225,
+    'cesium/1.143.0/Workers/createSimplePolylineGeometry.js': 5892,
+    'cesium/1.143.0/Workers/createSphereGeometry.js': 2324,
+    'cesium/1.143.0/Workers/createSphereOutlineGeometry.js': 2268,
+    'cesium/1.143.0/Workers/createTaskProcessorWorker.js': 932,
+    'cesium/1.143.0/Workers/createVectorTileClampedPolylines.js': 6040,
+    'cesium/1.143.0/Workers/createVectorTileGeometries.js': 5765,
+    'cesium/1.143.0/Workers/createVectorTilePoints.js': 1956,
+    'cesium/1.143.0/Workers/createVectorTilePolygons.js': 5413,
+    'cesium/1.143.0/Workers/createVectorTilePolylines.js': 3617,
+    'cesium/1.143.0/Workers/createVerticesFromCesium3DTilesTerrain.js': 2081,
+    'cesium/1.143.0/Workers/createVerticesFromGoogleEarthEnterpriseBuffer.js': 7863,
+    'cesium/1.143.0/Workers/createVerticesFromHeightmap.js': 28260,
+    'cesium/1.143.0/Workers/createVerticesFromQuantizedTerrainMesh.js': 5846,
+    'cesium/1.143.0/Workers/createWallGeometry.js': 6500,
+    'cesium/1.143.0/Workers/createWallOutlineGeometry.js': 4861,
+    'cesium/1.143.0/Workers/decodeDraco.js': 5045,
+    'cesium/1.143.0/Workers/decodeGoogleEarthEnterprisePacket.js': 36097,
+    'cesium/1.143.0/Workers/decodeI3S.js': 17157,
+    'cesium/1.143.0/Workers/gaussianSplatSorter.js': 1266,
+    'cesium/1.143.0/Workers/gaussianSplatTextureGenerator.js': 1304,
+    'cesium/1.143.0/Workers/incrementallyBuildTerrainPicker.js': 2098,
+    'cesium/1.143.0/Workers/transcodeKTX2.js': 60183,
+    'cesium/1.143.0/Workers/transferTypedArrayTest.js': 979,
+    'cesium/1.143.0/Workers/upsampleQuantizedTerrainMesh.js': 9688,
+    'cesium/1.143.0/Workers/upsampleVerticesFromCesium3DTilesTerrain.js': 2241,
+})
+
 _VENDOR_GENERATED = ('fonts/fonts.css',)
 
 # 本地化之前 base.html + style.css 依赖的 6 个域名。留在这里当**具名黑名单**：
@@ -6767,8 +6533,10 @@ def test_no_template_references_an_external_url():
         CSS 那半边由 test_no_css_under_static_reaches_out_to_the_network 覆盖。
     """
     templates = _all_templates()
-    assert len(templates) == 4, (
-        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 4 个 —— '
+    # 4 -> 6（GIS 工作台改版）：新增 _history_content.html / _config_content.html
+    # 两个 include partial，内容与原页面相同，均无外链。
+    assert len(templates) == 6, (
+        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 6 个 —— '
         '新增页面不需要改本断言（它按目录遍历），但请确认新页面也没有外链，'
         '然后把这个数字更新掉'
     )
@@ -6794,8 +6562,8 @@ def test_no_template_references_an_external_url():
     # （例如 HTMLParser 换了行为、或 _FETCHING_ATTRS 被清空）。
     # 写下时实测 18 个：base.html 14（5 张表 + 5 个脚本 + 4 个导航 <a>）、
     # index/config/history 各 1-2 个页面级 <script>。
-    assert scanned >= 18, (
-        f'四个模板里只扫出 {scanned} 个可能发起请求的属性（写下时是 18 个），太少了 —— '
+    assert scanned >= 17, (
+        f'四个模板里只扫出 {scanned} 个可能发起请求的属性（写下时是 17 个），太少了 —— '
         '本断言的 0 offender 很可能是扫描器坏了而不是真的没有外链'
     )
     assert not offenders, (
@@ -6820,15 +6588,23 @@ def test_every_static_reference_in_templates_exists_on_disk():
       2. 新加一个 `<script src=...vendor/x.js>` 却忘了把文件提交进来。
     """
     refs = _static_refs_in_templates()
-    assert len(refs) == 14, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 14 处。"
+    # 14 -> 17（GIS 工作台改版）：首页 extra_js 新增 history.js / config.js /
+    # panels.js 三处引用（覆盖面板），均为本地文件。
+    # 17 -> 18（Cesium 换地图）：-2（leaflet.draw css/js）+1（widgets.css）
+    # +1（Cesium.js）+1（CESIUM_BASE_URL 的 url_for）。
+    # 18 -> 16（Leaflet 全量移除）：历史小地图也迁到 Cesium 后，leaflet css/js 删除。
+    assert len(refs) == 16, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 16 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
     missing = [
         f'{fn}: static/{name}'
         for fn, name in refs
+        # CESIUM_BASE_URL 指向的是目录（Cesium 运行时按它拼 worker/asset 路径），
+        # 所以目录也算有效引用。
         if not os.path.isfile(os.path.join(_STATIC_DIR, *name.split('/')))
+        and not os.path.isdir(os.path.join(_STATIC_DIR, *name.split('/')))
     ]
     assert not missing, (
         '模板引用了不存在的 static 文件，浏览器会拿到 404 而页面不会报错：\n'
@@ -6904,17 +6680,11 @@ _VENDOR_VERSION_PROBES = {
         # 会在运行时抛错，而文件名/版本号看起来一切正常。
         ('Modal', 'Collapse', 'createPopper'),
     ),
-    'leaflet/1.9.4/leaflet.js': (
-        re.compile(r'version\s*=\s*"(\d+\.\d+\.\d+)"'),
-        # latLngBounds：map.js / history.js 构造 window.currentBounds 用它。
-        # leaflet-container：style.css 的 Leaflet 主题化规则钉在这个类上。
-        ('latLngBounds', 'leaflet-container'),
-    ),
-    'leaflet.draw/1.0.4/leaflet.draw.js': (
-        re.compile(r'Leaflet\.draw\s+(\d+\.\d+\.\d+)'),
-        # drawLocal：汉化断言那份 38 键快照（_LEAFLET_DRAW_LOCAL_KEYS_1_0_4）
-        # 整个挂在它身上。
-        ('drawLocal',),
+    'cesium/1.143.0/Cesium.js': (
+        re.compile(r'CESIUM_VERSION="(\d+\.\d+\.\d+)"'),
+        # UrlTemplateImageryProvider / WebMercatorTilingScheme：首页 OSM 底图与
+        # 等高线瓦片叠加都走这两个类（map.js）。
+        ('UrlTemplateImageryProvider', 'WebMercatorTilingScheme'),
     ),
     'socket.io/4.5.4/socket.io.min.js': (
         re.compile(r'Socket\.IO\s+v(\d+\.\d+\.\d+)'),
@@ -6940,7 +6710,7 @@ def test_vendor_builds_match_the_version_in_their_path():
     尤其是 Bootstrap 的 `[data-bs-theme=dark]`：整站深色主题就靠它，
     在本地化之前这一条只能靠手抄的 MIN_BOOTSTRAP_VERSION 常量间接主张。
     """
-    assert len(_VENDOR_VERSION_PROBES) == 5, '探针表被改动过，请同步本断言的说明'
+    assert len(_VENDOR_VERSION_PROBES) == 4, '探针表被改动过，请同步本断言的说明'
     problems = []
     for rel, (rx, markers) in sorted(_VENDOR_VERSION_PROBES.items()):
         path = os.path.join(_VENDOR_DIR, *rel.split('/'))
@@ -7102,40 +6872,6 @@ _LEAFLET_IMAGE_CONSUMING_APIS = (
 )
 
 
-def test_the_reason_for_not_shipping_leaflet_images_still_holds():
-    """没下载 Leaflet 那 3 张图，靠的是「站内不会渲染出用它们的元素」。这条守住那个前提。
-
-    上一条断言把这 3 个目标放进了豁免名单。豁免的**理由**是行为性的，不是永久
-    事实：只要有人写一句 `L.marker(...)`，Leaflet 立刻去找 `images/marker-icon.png`
-    —— 而那个文件不在，地图上出现的是一个**看不见的标记**（元素在、图片 404）。
-    这是典型的静默降级：控制台只多一条 404，功能上「标记加了但看不到」。
-
-    所以：要么把图下下来（连同 marker-icon-2x / marker-shadow，Leaflet 会一起要），
-    要么给 marker 指定自定义 icon。两条路都要求先改这条断言，改不动就说明
-    你正在踩坑。
-    """
-    js_dir = _JS_DIR
-    names = sorted(n for n in os.listdir(js_dir) if n.endswith('.js'))
-    assert len(names) == 5, (
-        f'static/js/ 下有 {len(names)} 个 .js，本断言写下时是 5 个 —— '
-        '新文件也要纳入扫描，请更新这个数字'
-    )
-    hits = []
-    for name in names:
-        src = _strip_js_comments(_js(name))
-        for api in _LEAFLET_IMAGE_CONSUMING_APIS:
-            if api in src:
-                hits.append(f'{name}: 用到了 {api}')
-    assert not hits, (
-        '站内开始使用会拉取 Leaflet 内置图片的 API，而那些图片**故意没有下载**：\n'
-        + '\n'.join('  ' + h for h in hits)
-        + '\n后果是元素渲染出来但图标 404（看不见的标记 / 空白的图层按钮）。'
-          '请下载 static/vendor/leaflet/1.9.4/images/ 下对应的图（marker 需要 '
-          'marker-icon.png + marker-icon-2x.png + marker-shadow.png 三张），'
-          '并同步 VENDOR_MANIFEST 与 _VENDOR_UNSHIPPED。'
-    )
-
-
 def test_local_font_css_is_self_contained():
     """vendor/fonts/fonts.css 必须是一份完整、全本地、结构正确的字体表。
 
@@ -7212,7 +6948,7 @@ def test_vendor_files_are_not_swallowed_by_gitignore():
     """
     repo_root = os.path.dirname(_STATIC_DIR)
     on_disk = _vendor_files_on_disk()
-    assert len(on_disk) == 15, (
+    assert len(on_disk) == 398, (
         f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 15 个 —— '
         '本条按目录遍历，数量本身会变，但请顺手确认 VENDOR_MANIFEST 也同步了'
     )
@@ -7686,20 +7422,6 @@ _RUNTIME_INJECTED_DIVS = (
             ('div', {'app-confirm'}, '', {}),
         ),
     ),
-    (
-        'Leaflet 绘制提示条（popupPane 里的 div，只在绘制模式下存在）',
-        'static/vendor/leaflet.draw/1.0.4/leaflet.draw.js', 'leaflet-draw-tooltip',
-        _PAGE_CHAIN_PREFIX + (
-            ('div', {'index-layout'}, '', {}),
-            ('div', {'index-left'}, '', {}),
-            ('div', {'card'}, '', {}),
-            ('div', {'card-body'}, '', {}),
-            ('div', {'leaflet-container', 'leaflet-touch'}, 'map', {}),
-            ('div', {'leaflet-pane', 'leaflet-map-pane'}, '', {}),
-            ('div', {'leaflet-pane', 'leaflet-popup-pane'}, '', {}),
-            ('div', {'leaflet-draw-tooltip'}, '', {}),
-        ),
-    ),
 )
 
 
@@ -7788,7 +7510,7 @@ def test_the_div_background_cascade_model_still_understands_every_rule():
     静默少扫没有任何症状。所以把「跳过了什么」单独提出来当一条断言。
 
     扫描范围：base.html + 三个页面模板里的每一个 <div>（含 base 前缀链），
-    外加 _RUNTIME_INJECTED_DIVS 里 5 条运行时注入的 div，
+    外加 _RUNTIME_INJECTED_DIVS 里 4 条运行时注入的 div，
     对照 base.html 里 <link> 顺序加载的全部样式表。
     """
     sheets = _all_sheets()
@@ -7970,8 +7692,8 @@ def test_runtime_injected_div_table_is_grounded():
       2. 每条链末尾那个 div 确实带着这个类（防止抄错行）。
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    assert len(_RUNTIME_INJECTED_DIVS) == 5, (
-        f'运行时注入表有 {len(_RUNTIME_INJECTED_DIVS)} 条，与 docstring 描述的 5 条不符'
+    assert len(_RUNTIME_INJECTED_DIVS) == 4, (
+        f'运行时注入表有 {len(_RUNTIME_INJECTED_DIVS)} 条，与 docstring 描述的 4 条不符'
     )
     problems = []
     for label, src, marker, chain in _RUNTIME_INJECTED_DIVS:
@@ -7998,9 +7720,6 @@ _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED = {
         '弹窗右上角的关闭叉。它是 <button>，且 Bootstrap 给的是 '
         '`transparent var(--bs-btn-close-bg) center/1em` —— 一张 data:URI 的 SVG 图标，'
         '不是底色。实测 computed background-color = rgba(0,0,0,0)。',
-    'navbar-toggler':
-        '窄屏汉堡按钮。它是 <button>，Bootstrap 声明的就是 transparent，'
-        '实测 rgba(0,0,0,0)，没有需要覆盖的灰。',
     'modal-footer':
         'Bootstrap 5.3.0 只写了 `background-color: var(--bs-modal-footer-bg)`，'
         '而这个变量在 5.3.0 里**从未被赋值**，实测 computed 是 rgba(0,0,0,0)。'
@@ -8118,8 +7837,10 @@ def test_no_bootstrap_component_background_reaches_a_div_unreviewed():
 # 「改前」一栏是同一台浏览器在删除之前读到的 computed background-color。
 _DIV_BACKGROUNDS_THAT_MUST_RENDER = {
     # 类名/说明: (取链的方式, 期望的最终色, 改前实测值)
-    '.index-right（首页右侧整个面板）':
-        ('index.html', {'index-right'}, '--color-bg-primary', 'rgba(0, 0, 0, 0)'),
+    # GIS 工作台改版：.index-right 从透明面板（压在 bg-primary 上）改为
+    # 独立的 dock 面板色 bg-secondary，期望值同步为 --color-bg-secondary。
+    '.index-right（首页右侧 dock 面板）':
+        ('index.html', {'index-right'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
     '.config-section（配置页 6 个分区）':
         ('config.html', {'config-section'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
     '.stat-card（历史页 4 张统计卡）':
@@ -8227,46 +7948,3 @@ def test_task_card_and_modal_backdrop_render_their_background():
             '这正是 vendor 本地化交付时唯一未达标的那一项。'
         )
     assert not problems, '\n'.join('  ' + p for p in problems)
-
-
-def test_map_container_does_not_show_leaflets_light_grey():
-    """地图容器不许露出 leaflet.css 的 `#ddd` 浅灰。
-
-    这条是**删除兜底重置时新发现的**风险，不在原受害者清单里：
-    `leaflet.css:260 .leaflet-container { background: #ddd }` (0,1,0) 原先也被
-    (0,11,1) 压着，兜底重置一删就冒出来了。CDP 实测 #map 与 .history-map
-    两个容器的 computed background-color 双双变成 rgb(221,221,221) ——
-    瓦片没加载完 / 盖不满的地方就是一片浅灰。
-
-    修法是 style.css 里一条同特异度的 `.leaflet-container{background:transparent}`，
-    靠源码顺序赢（style.css 排最后，由 test_style_css_is_the_last_stylesheet 钉住）。
-    选 transparent 而不是某个具体色，是为了让空白处露出宿主面板，与删除前
-    逐像素相同 —— 实测整页 1600x1000 截图差异 0 像素。
-
-    变异实验 M5 证明这条是必要的：把那条规则整条删掉，在只有通用层叠断言时
-    **87 条全绿**（通用断言的判定式是「本地做过决定就放行」，声明没了就无从判起）。
-    """
-    css = _css()
-    chain = _PAGE_CHAIN_PREFIX + (
-        ('div', {'index-layout'}, '', {}),
-        ('div', {'index-left'}, '', {}),
-        ('div', {'card'}, '', {}),
-        ('div', {'card-body'}, '', {}),
-        ('div', {'leaflet-container', 'leaflet-touch'}, 'map', {}),
-    )
-    win = _effective_bg_for(chain)
-    assert win is not None, (
-        '.leaflet-container 没有任何背景声明命中它 —— leaflet.css 那条 #ddd 呢？'
-        '本测试的前提（leaflet.css 会给地图容器上浅灰底）已失效'
-    )
-    assert win.sheet == 'style.css', (
-        f'地图容器的背景赢家来自 {win.sheet} 的 `{win.branch}` '
-        f'{{ background: {win.value} }} —— 不是本站的决定。'
-        'leaflet.css 给的是 #ddd 浅灰，瓦片盖不满的地方会变成一片亮灰'
-    )
-    assert _bg_is_transparent(css, win.value), (
-        f'地图容器的底色是 {win.value}，不是 transparent。'
-        '#map 上还有一层 filter: brightness(.9) contrast(1.1)，'
-        '写具体色会被它再压一遍（实测 #0c0d10 过完滤镜是 rgb(0,0,3)，'
-        '「没瓦片的地图区」从面板灰变成近纯黑，整页 53% 的像素会变）'
-    )

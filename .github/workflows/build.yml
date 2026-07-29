@@ -13,14 +13,14 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         include:
           - os: ubuntu-latest
-            artifact_name: map-downloader-linux
-            asset_name: map-downloader-linux.tar.gz
+            artifact_name: terraforge-linux
+            asset_name: terraforge-linux.tar.gz
           - os: windows-latest
-            artifact_name: map-downloader-windows
-            asset_name: map-downloader-windows.zip
+            artifact_name: terraforge-windows
+            asset_name: terraforge-windows.zip
           - os: macos-latest
-            artifact_name: map-downloader-macos
-            asset_name: map-downloader-macos.tar.gz
+            artifact_name: terraforge-macos
+            asset_name: terraforge-macos.tar.gz
 
     runs-on: ${{ matrix.os }}
 
@@ -93,6 +93,12 @@ jobs:
         grep -viE '^[[:space:]]*gdal([[:space:]=<>!~]|$)' requirements.txt > /tmp/req.txt
         pip install -r /tmp/req.txt
 
+    # C7: 先跑完整测试套件再打包——测试失败则构建失败。
+    # 三个平台均已装好 GDAL（Linux=apt、Windows/macOS=conda-forge），
+    # 测试为离线单元测试，无显示/无网络环境下全部可运行。
+    - name: Run test suite
+      run: python -m pytest tests/ -q
+
     - name: Build with PyInstaller
       run: pyinstaller build.spec
 
@@ -100,7 +106,7 @@ jobs:
       if: runner.os != 'Windows'
       run: |
         cd dist
-        tar -czf ${{ matrix.asset_name }} map-downloader/
+        tar -czf ${{ matrix.asset_name }} terraforge/
 
     - name: Package application (Windows)
       if: runner.os == 'Windows'
@@ -108,7 +114,7 @@ jobs:
         cd dist
         # 7z is preinstalled on windows-latest and works from bash without
         # PowerShell quoting headaches.
-        7z a -tzip ${{ matrix.asset_name }} map-downloader/
+        7z a -tzip ${{ matrix.asset_name }} terraforge/
 
     - name: Upload artifact
       # Skip artifact upload on tag pushes — the Release step below already

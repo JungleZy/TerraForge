@@ -66,8 +66,8 @@ pyinstaller build.spec
 
 可执行文件将创建在：
 ```
-dist/map-downloader/
-├── map-downloader(.exe)    # 主程序
+dist/terraforge/
+├── terraforge(.exe)    # 主程序
 ├── templates/              # Web UI 模板
 ├── static/                 # 静态资源
 └── [其他打包文件]
@@ -80,25 +80,25 @@ dist/map-downloader/
 #### Linux/macOS
 ```bash
 cd dist
-tar -czf map-downloader-linux.tar.gz map-downloader/
+tar -czf terraforge-linux.tar.gz terraforge/
 ```
 
 #### Windows
 ```cmd
 cd dist
-powershell Compress-Archive -Path map-downloader/* -DestinationPath map-downloader-windows.zip
+powershell Compress-Archive -Path terraforge/* -DestinationPath terraforge-windows.zip
 ```
 
 ### 测试可执行文件
 
 1. 进入 dist 文件夹：
    ```bash
-   cd dist/map-downloader
+   cd dist/terraforge
    ```
 
 2. 运行可执行文件：
-   - **Linux/macOS**: `./map-downloader`
-   - **Windows**: `map-downloader.exe`
+   - **Linux/macOS**: `./terraforge`
+   - **Windows**: `terraforge.exe`
 
 3. 打开浏览器访问 `http://localhost:5000`
 
@@ -140,12 +140,12 @@ powershell Compress-Archive -Path map-downloader/* -DestinationPath map-download
 
 #### macOS: "应用已损坏"
 ```bash
-xattr -cr dist/map-downloader
+xattr -cr dist/terraforge
 ```
 
 #### Linux: 权限被拒绝
 ```bash
-chmod +x dist/map-downloader/map-downloader
+chmod +x dist/terraforge/terraforge
 ```
 
 #### Windows: 杀毒软件误报
@@ -167,7 +167,7 @@ chmod +x dist/map-downloader/map-downloader
 
 要自定义构建：
 
-1. **更改应用名称**: 修改 `build.spec` 中的 `name='map-downloader'`
+1. **更改应用名称**: 修改 `build.spec` 中的 `name='terraforge'`
 2. **添加图标**: 在 `EXE()` 部分添加 `icon='icon.ico'`
 3. **单文件模式**: 用单文件 EXE 替换 `COLLECT()`
 4. **控制台模式**: 设置 `console=False` 隐藏终端窗口

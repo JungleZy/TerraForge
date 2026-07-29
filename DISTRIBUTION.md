@@ -1,24 +1,24 @@
-# Google Maps 下载器 - 可执行文件分发说明
+# TerraForge - 可执行文件分发说明
 
-本目录包含 Google Maps 下载器的独立可执行版本。
+本目录包含 TerraForge的独立可执行版本。
 
 ## 快速开始
 
 ### Windows
-1. 解压 `map-downloader-windows.zip`
-2. 双击 `map-downloader.exe`
+1. 解压 `terraforge-windows.zip`
+2. 双击 `terraforge.exe`
 3. 打开浏览器访问 `http://localhost:5000`
 
 ### macOS
-1. 解压 `map-downloader-macos.tar.gz`
+1. 解压 `terraforge-macos.tar.gz`
 2. 打开终端，进入解压后的文件夹
-3. 运行：`./map-downloader`
+3. 运行：`./terraforge`
 4. 打开浏览器访问 `http://localhost:5000`
 
 ### Linux
-1. 解压 `map-downloader-linux.tar.gz`
+1. 解压 `terraforge-linux.tar.gz`
 2. 打开终端，进入解压后的文件夹
-3. 运行：`./map-downloader`
+3. 运行：`./terraforge`
 4. 打开浏览器访问 `http://localhost:5000`
 
 ## 功能特性
@@ -37,8 +37,8 @@
 ## 目录结构
 
 ```
-map-downloader/
-├── map-downloader(.exe)    # 主程序
+terraforge/
+├── terraforge(.exe)    # 主程序
 ├── templates/              # Web 界面模板
 ├── static/                 # CSS、JS、图片
 ├── data/                   # 数据库（自动创建）
@@ -64,12 +64,12 @@ map-downloader/
 ### macOS 安全警告
 如果 macOS 阻止应用运行：
 1. 打开"系统偏好设置" → "安全性与隐私"
-2. 点击"仍要打开" map-downloader
+2. 点击"仍要打开" terraforge
 
 ### Linux 权限错误
 如果遇到权限错误：
 ```bash
-chmod +x map-downloader
+chmod +x terraforge
 ```
 
 ## 从源码构建
@@ -80,7 +80,7 @@ chmod +x map-downloader
 2. 安装依赖：`pip install -r requirements.txt`
 3. 安装 PyInstaller：`pip install pyinstaller`
 4. 运行：`pyinstaller build.spec`
-5. 可执行文件位于 `dist/map-downloader/`
+5. 可执行文件位于 `dist/terraforge/`
 
 ## 技术支持
 

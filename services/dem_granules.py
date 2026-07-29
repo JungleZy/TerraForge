@@ -79,16 +79,24 @@ def astgtm_v3_granules_for_tile(tile: LatLonTile, include_num: bool, include_swb
     """
     Build ASTGTM.003 granule filenames for a given tile.
 
-    Note: ASTGTM.003 only ships _dem and _num. The _swb name is kept for the
-    legacy DEM-task option but does not exist in this product; real water bodies
-    come from the separate ASTWBD.001 product (see astwbd_v1_att_granules_for_tile).
+    Note: ASTGTM.003 only ships _dem and _num. There is no _swb granule in this
+    product — requesting one is rejected explicitly; real water bodies come from
+    the separate ASTWBD.001 product (see astwbd_v1_att_granules_for_tile).
+
+    Coverage is 83S-83N: tiles with |lat| > 83 have no data (every request would
+    404), so they produce no granules at all.
     """
+    if include_swb:
+        raise ValueError(
+            "ASTGTM.003 has no _swb granules; water body data comes from the "
+            "separate ASTWBD.001 product (see astwbd_v1_att_granules_for_tile)"
+        )
+    if abs(tile.lat) > 83:
+        return []
     base = f"ASTGTMV003_{tile.tile_id}"
     out = [f"{base}_dem.tif"]
     if include_num:
         out.append(f"{base}_num.tif")
-    if include_swb:
-        out.append(f"{base}_swb.tif")
     return out
 
 

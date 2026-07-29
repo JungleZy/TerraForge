@@ -95,6 +95,98 @@ def interval_for_zoom(base_interval: float, z: int, detail_zoom: int = 14, scali
     return base_interval * _zoom_interval_multiplier(delta, scaling)
 
 
+def render_style_preview(style, interval, width=640, height=200, shade=True) -> bytes:
+    """样式预览 PNG：用合成 DEM（沿 x 的海拔斜坡 + 正弦起伏）按与瓦片渲染
+    相同的管线出图 —— 分层设色 + 绝对晕渲混合 + 普通/计曲线等高线与标签。
+    配色自定义时前端随取色器实时刷新，重依赖（matplotlib/numpy）惰性导入。
+    """
+    import io
+
+    import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+
+    interval = float(interval) if float(interval or 0) > 0 else 50.0
+    breaks = [float(b) for b in style.hypsometric_breaks]
+    z0 = breaks[0] if breaks else 0.0
+    z1 = (breaks[-1] if breaks else 5000.0) * 1.05
+    if z1 <= z0:
+        z1 = z0 + 1.0
+
+    ny, nx = max(40, height // 4), max(120, width // 4)
+    ys, xs = np.mgrid[0:ny, 0:nx].astype("float64")
+    ramp = z0 + (z1 - z0) * (xs / max(nx - 1, 1))
+    hills = 0.12 * (z1 - z0) * (np.sin(xs / nx * 4 * np.pi) + np.cos(ys / ny * 3 * np.pi))
+    elev = ramp + hills
+
+    dpi = 100
+    fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+    try:
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        ax.set_xlim(0, nx)
+        ax.set_ylim(0, ny)
+        extent = (0, nx, 0, ny)
+
+        transparent = (style.background or "transparent").strip().lower() == "transparent"
+        if not transparent:
+            base = np.empty(elev.shape + (4,), dtype="float64")
+            base[...] = mcolors.to_rgba(style.background)
+            ax.imshow(base, extent=extent, origin="upper", zorder=-1,
+                      interpolation="nearest")
+
+        if shade and style.hypsometric_colors:
+            cmap = ListedColormap(list(style.hypsometric_colors))
+            norm = BoundaryNorm([-1e9] + breaks + [1e9], ncolors=cmap.N)
+            # 合成场的“格网间距”，只影响晕渲的坡度的明暗强度
+            dx = dy = (z1 - z0) / 20.0
+            intensity = absolute_hillshade_intensity(
+                elev, style.hillshade_azimuth, style.hillshade_altitude,
+                style.hillshade_vert_exag, dx, dy)[..., np.newaxis]
+            rgb = cmap(norm(elev))[..., :3]
+            if style.hillshade_blend == "overlay":
+                low = 2 * intensity * rgb
+                high = 1 - 2 * (1 - intensity) * (1 - rgb)
+                blended = np.where(rgb <= 0.5, low, high)
+            else:  # 'soft'，与瓦片渲染同一公式
+                blended = 2 * intensity * rgb + (1 - 2 * intensity) * rgb ** 2
+            rgba = np.empty(elev.shape + (4,), dtype="float64")
+            rgba[..., :3] = np.clip(blended, 0.0, 1.0)
+            rgba[..., 3] = 1.0
+            ax.imshow(rgba, extent=extent, origin="upper", zorder=0,
+                      interpolation="bilinear")
+
+        # 等高线：与瓦片同一套 level/索引规则（预览只看样式，与 zoom 无关）
+        zmin, zmax = float(np.min(elev)), float(np.max(elev))
+        lo = math.floor(zmin / interval) * interval
+        hi = math.ceil(zmax / interval) * interval
+        n_levels = int(round((hi - lo) / interval)) + 1
+        if 2 <= n_levels <= 200:
+            levels = [lo + i * interval for i in range(n_levels)]
+            minor = [lv for lv in levels if not is_index_contour(lv, interval, style.index_step)]
+            major = [lv for lv in levels if is_index_contour(lv, interval, style.index_step)]
+            X, Y = np.meshgrid(np.arange(nx) + 0.5, np.arange(ny) + 0.5)
+            if minor:
+                ax.contour(X, Y, elev, levels=minor, colors=style.color_intermediate,
+                           linewidths=style.width_intermediate, zorder=3)
+            if major:
+                cs = ax.contour(X, Y, elev, levels=major, colors=style.color_index,
+                                linewidths=style.width_index, zorder=3)
+                # %g 保留非整数 interval 的标签(%d 会把 62.5 截成 62)
+                ax.clabel(cs, fmt="%g", fontsize=style.label_size,
+                          colors=style.color_label)
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi, transparent=True,
+                    facecolor="none", pad_inches=0)
+        return buf.getvalue()
+    finally:
+        plt.close(fig)
+
+
 @dataclass(frozen=True)
 class ContourStyle:
     color_intermediate: str = "#9C6B3F"
@@ -204,6 +296,29 @@ def absolute_hillshade_intensity(elev, azimuth, altitude, vert_exag=1.0, dx=1.0,
     return np.clip(intensity - light_dir[2] + 0.5, 0.0, 1.0)
 
 
+# 单瓦片读窗口的像素上限(= 256 输出像素 + 2 余量,与输出瓦片对齐)。
+# 低 zoom 时一个瓦片的窗口可能覆盖整幅 DEM —— 按原始分辨率 ReadAsArray 会把
+# 整幅 float64 读进内存(大 DEM 直接 OOM),超过上限时改由 GDAL 端重采样到
+# 上限尺寸再返回(同 services/terrain_tiling/cesiumlab_terrain.py 的做法)。
+_MAX_READ_DIM = 258
+
+
+def _read_band_window(band, xoff, yoff, win_x, win_y, resample_alg=None):
+    """读栅格窗口;窗口超过 _MAX_READ_DIM 时让 GDAL 重采样到上限尺寸。
+
+    窗口不超限时不传任何 buf 参数,行为与原 ReadAsArray 完全一致。返回数组的
+    shape 为 (min(win_y, _MAX_READ_DIM), min(win_x, _MAX_READ_DIM))。
+    """
+    buf_x = min(win_x, _MAX_READ_DIM)
+    buf_y = min(win_y, _MAX_READ_DIM)
+    if buf_x == win_x and buf_y == win_y:
+        return band.ReadAsArray(xoff, yoff, win_x, win_y)
+    kwargs = {"buf_xsize": buf_x, "buf_ysize": buf_y}
+    if resample_alg is not None:
+        kwargs["resample_alg"] = resample_alg
+    return band.ReadAsArray(xoff, yoff, win_x, win_y, **kwargs)
+
+
 def _build_render_ctx(dem_path, att_path, style, interval, shade, water, out_dir):
     """打开 warp 后的 EPSG:3857 GTiff 并预建渲染所需的全部上下文(geotransform、
     可选水体栅格、全局 hypsometric cmap/norm、各类预转换颜色)。
@@ -263,54 +378,64 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
 
     图层 bottom->top:DEM 覆盖区底色(非透明背景时)+ hypsometric tint/hillshade
     (shade)+ ASTWBD 水体(water)+ 等高线与标注。串行与并行 worker 共用此函数。
+
+    每瓦片容错:读窗口/ReadAsArray/level 计算与绘图全部在 try 内 —— 单瓦片
+    I/O 或渲染异常只计 'failed' 并记 warning,绝不炸掉整个任务。
     """
     import numpy as np
     import matplotlib.pyplot as plt
+    from osgeo import gdal
 
-    xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
-    col0 = int(math.floor((xmin - ctx.originX) / ctx.pxW)) - 1
-    col1 = int(math.ceil((xmax - ctx.originX) / ctx.pxW)) + 1
-    row0 = int(math.floor((ymax - ctx.originY) / ctx.pxH)) - 1
-    row1 = int(math.ceil((ymin - ctx.originY) / ctx.pxH)) + 1
-    col0 = max(col0, 0); row0 = max(row0, 0)
-    col1 = min(col1, ctx.nx); row1 = min(row1, ctx.ny)
-    if col1 <= col0 or row1 <= row0:
-        return "skipped"
-
-    win_x, win_y = col1 - col0, row1 - row0
-    arr = ctx.band.ReadAsArray(col0, row0, win_x, win_y).astype("float64")
-    if ctx.nodata is not None:
-        arr = np.where(arr == ctx.nodata, np.nan, arr)
-    if np.all(np.isnan(arr)):
-        return "skipped"
-    zmin = float(np.nanmin(arr)); zmax = float(np.nanmax(arr))
-    arr_extent = (ctx.originX + col0 * ctx.pxW, ctx.originX + col1 * ctx.pxW,
-                  ctx.originY + row1 * ctx.pxH, ctx.originY + row0 * ctx.pxH)
-
-    # Contour levels — only where there is elevation variation.
-    eff = interval_for_zoom(ctx.interval, z, ctx.style.detail_zoom, ctx.style.zoom_scaling)
-    minor: List[float] = []
-    major: List[float] = []
-    draw_lines = math.isfinite(zmin) and math.isfinite(zmax) and (zmax - zmin) >= 1e-6
-    if draw_lines:
-        lo = math.floor(zmin / eff) * eff
-        hi = math.ceil(zmax / eff) * eff
-        levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
-        minor = [lv for lv in levels if not is_index_contour(lv, eff, ctx.style.index_step)]
-        major = [lv for lv in levels if is_index_contour(lv, eff, ctx.style.index_step)]
-        draw_lines = bool(minor or major)
-
-    # Pure-line mode on a featureless tile: nothing to draw, leave a gap.
-    if not ctx.shade and not ctx.water and not draw_lines:
-        return "skipped"
-
-    fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
-    ax = fig.add_axes([0, 0, 1, 1])
-    ax.set_axis_off()
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymin, ymax)
-    drew = False
+    fig = None
     try:
+        xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
+        col0 = int(math.floor((xmin - ctx.originX) / ctx.pxW)) - 1
+        col1 = int(math.ceil((xmax - ctx.originX) / ctx.pxW)) + 1
+        row0 = int(math.floor((ymax - ctx.originY) / ctx.pxH)) - 1
+        row1 = int(math.ceil((ymin - ctx.originY) / ctx.pxH)) + 1
+        col0 = max(col0, 0); row0 = max(row0, 0)
+        col1 = min(col1, ctx.nx); row1 = min(row1, ctx.ny)
+        if col1 <= col0 or row1 <= row0:
+            return "skipped"
+
+        win_x, win_y = col1 - col0, row1 - row0
+        arr = _read_band_window(ctx.band, col0, row0, win_x, win_y,
+                                resample_alg=gdal.GRA_Bilinear).astype("float64")
+        # 重采样后 arr 可能小于原始窗口:有效像元尺寸按实际 shape 折算
+        # (未重采样时恒等于 ctx.pxW/pxH,行为不变)。
+        eff_px_w = ctx.pxW * win_x / arr.shape[1]
+        eff_px_h = ctx.pxH * win_y / arr.shape[0]
+        if ctx.nodata is not None:
+            arr = np.where(arr == ctx.nodata, np.nan, arr)
+        if np.all(np.isnan(arr)):
+            return "skipped"
+        zmin = float(np.nanmin(arr)); zmax = float(np.nanmax(arr))
+        arr_extent = (ctx.originX + col0 * ctx.pxW, ctx.originX + col1 * ctx.pxW,
+                      ctx.originY + row1 * ctx.pxH, ctx.originY + row0 * ctx.pxH)
+
+        # Contour levels — only where there is elevation variation.
+        eff = interval_for_zoom(ctx.interval, z, ctx.style.detail_zoom, ctx.style.zoom_scaling)
+        minor: List[float] = []
+        major: List[float] = []
+        draw_lines = math.isfinite(zmin) and math.isfinite(zmax) and (zmax - zmin) >= 1e-6
+        if draw_lines:
+            lo = math.floor(zmin / eff) * eff
+            hi = math.ceil(zmax / eff) * eff
+            levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
+            minor = [lv for lv in levels if not is_index_contour(lv, eff, ctx.style.index_step)]
+            major = [lv for lv in levels if is_index_contour(lv, eff, ctx.style.index_step)]
+            draw_lines = bool(minor or major)
+
+        # Pure-line mode on a featureless tile: nothing to draw, leave a gap.
+        if not ctx.shade and not ctx.water and not draw_lines:
+            return "skipped"
+
+        fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.set_axis_off()
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        drew = False
         # 非透明背景:底色只铺在 DEM 覆盖区(arr 非 NaN),出界/空洞保持透明。
         # 出界区域改由 figure 透明承载,而不是统一 facecolor —— 否则 slippy 瓦片
         # 网格与 DEM 矩形不对齐时,最外圈瓦片的出界部分会被填成背景色(高 zoom
@@ -328,7 +453,7 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
             # 再用 matplotlib 同款 soft/overlay 公式合成 -> 相邻瓦片无明暗接缝。
             intensity = absolute_hillshade_intensity(
                 filled, ctx.style.hillshade_azimuth, ctx.style.hillshade_altitude,
-                ctx.style.hillshade_vert_exag, abs(ctx.pxW), abs(ctx.pxH))[..., np.newaxis]
+                ctx.style.hillshade_vert_exag, abs(eff_px_w), abs(eff_px_h))[..., np.newaxis]
             rgb = ctx.cmap(ctx.norm(filled))[..., :3]
             if ctx.style.hillshade_blend == "overlay":
                 low = 2 * intensity * rgb
@@ -353,7 +478,7 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
             ac0 = max(ac0, 0); ar0 = max(ar0, 0)
             ac1 = min(ac1, ctx.anx); ar1 = min(ar1, ctx.anumy)
             if ac1 > ac0 and ar1 > ar0:
-                att = ctx.att_band.ReadAsArray(ac0, ar0, ac1 - ac0, ar1 - ar0)
+                att = _read_band_window(ctx.att_band, ac0, ar0, ac1 - ac0, ar1 - ar0)
                 wr = np.zeros((att.shape[0], att.shape[1], 4), dtype="float64")
                 wr[att == 1] = ctx.ocean_rgba
                 wr[(att == 2) | (att == 3)] = ctx.inland_rgba
@@ -364,8 +489,8 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
                     drew = True
 
         if draw_lines:
-            xs = ctx.originX + (col0 + np.arange(win_x) + 0.5) * ctx.pxW
-            ys = ctx.originY + (row0 + np.arange(win_y) + 0.5) * ctx.pxH
+            xs = ctx.originX + (col0 + np.arange(arr.shape[1]) + 0.5) * eff_px_w
+            ys = ctx.originY + (row0 + np.arange(arr.shape[0]) + 0.5) * eff_px_h
             X, Y = np.meshgrid(xs, ys)
             if minor:
                 ax.contour(X, Y, arr, levels=minor, colors=ctx.style.color_intermediate,
@@ -373,7 +498,8 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
             if major:
                 cs = ax.contour(X, Y, arr, levels=major, colors=ctx.style.color_index,
                                 linewidths=ctx.style.width_index, zorder=3)
-                ax.clabel(cs, fmt="%d", fontsize=ctx.style.label_size, colors=ctx.style.color_label)
+                # %g 保留非整数 interval 的标签(%d 会把 62.5 截成 62)
+                ax.clabel(cs, fmt="%g", fontsize=ctx.style.label_size, colors=ctx.style.color_label)
             drew = True
 
         if not drew:
@@ -385,10 +511,12 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
         fig.savefig(str(tile_path), dpi=100, transparent=True,
                     facecolor="none", pad_inches=0)
         return "rendered"
-    except Exception:
+    except Exception as e:
+        logger.warning(f"等高线瓦片渲染失败 z={z} x={tx} y={ty}: {e!r}")
         return "failed"
     finally:
-        plt.close(fig)
+        if fig is not None:
+            plt.close(fig)
 
 
 # 并行 worker:每个子进程在 initializer 里构造一次自己的 ctx(打开自己的 GDAL
@@ -443,7 +571,7 @@ def build_contour_tiles(
     gdal.UseExceptions()
     out_dir = Path(out_dir)
     dem_paths = [str(p) for p in dem_tifs]
-    counts = {"total": 0, "rendered": 0, "failed": 0}
+    counts = {"total": 0, "rendered": 0, "failed": 0, "skipped": 0}
     if not dem_paths:
         return counts
 
@@ -476,7 +604,10 @@ def build_contour_tiles(
                       creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
             avrt = None
             att_path = _ap
-        except Exception:
+        except Exception as e:
+            # 水体是 best-effort:att warp 失败只跳过水色层,但必须留日志,
+            # 否则"开了 water 却没有水体"无从排查
+            logger.warning(f"Contour: ASTWBD att warp 失败({e!r}),水体图层跳过,任务继续")
             att_path = None
 
     try:
@@ -497,7 +628,11 @@ def build_contour_tiles(
 
         def _emit():
             if progress_cb is not None:
-                progress_cb(counts["rendered"] + counts["failed"], counts["total"])
+                # 进度按 processed(rendered+skipped+failed)计:skipped(无数据/
+                # 无线条可画)也是处理完的瓦片,不计的话进度条会停在如 72% 就直接
+                # completed。
+                progress_cb(counts["rendered"] + counts["failed"] + counts["skipped"],
+                            counts["total"])
 
         def _iter_tiles():
             for z in range(zoom_min, zoom_max + 1):
@@ -514,6 +649,8 @@ def build_contour_tiles(
                 counts["rendered"] += 1
             elif status == "failed":
                 counts["failed"] += 1
+            else:  # "skipped"
+                counts["skipped"] += 1
             _emit()
 
         n_workers = int(workers or 0)
@@ -560,7 +697,8 @@ def build_contour_tiles(
                             break
                         for status in ex.map(_contour_worker_render, batch, chunksize=8):
                             _tally(status)
-                        logger.info(f"Contour: 已渲染 {counts['rendered'] + counts['failed']}/{total} 瓦片, 耗时 {time.time() - _t_render:.1f}s")
+                        processed = counts['rendered'] + counts['failed'] + counts['skipped']
+                        logger.info(f"Contour: 已处理 {processed}/{total} 瓦片, 耗时 {time.time() - _t_render:.1f}s")
             except BrokenProcessPool as e:
                 # worker 进程被异常终止(Windows 打包环境多 worker 内存耗尽常见)。进程级
                 # 崩溃 except 兜不住,会让整个任务失败 -> 回退串行重跑保证切片完整:已生成
@@ -570,6 +708,7 @@ def build_contour_tiles(
                 )
                 counts["rendered"] = 0
                 counts["failed"] = 0
+                counts["skipped"] = 0
                 ctx = None
                 _render_serial()
     finally:

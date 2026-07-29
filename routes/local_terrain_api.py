@@ -9,6 +9,8 @@ import os
 
 from flask import Blueprint, jsonify, request
 
+from services.geo_validation import validate_zoom
+
 logger = logging.getLogger(__name__)
 
 local_terrain_api_bp = Blueprint("local_terrain_api", __name__, url_prefix="/api/terrain/local")
@@ -19,7 +21,7 @@ local_terrain_task_manager = None
 def init_local_terrain_task_manager(tm):
     global local_terrain_task_manager
     local_terrain_task_manager = tm
-    logger.info("Local terrain task manager initialized in local terrain API routes")
+    logger.debug("Local terrain task manager initialized in local terrain API routes")
 
 
 @local_terrain_api_bp.route("/tasks", methods=["POST"])
@@ -29,7 +31,8 @@ def create_local_terrain_task():
     try:
         name = request.form.get("name") or "Local Terrain Task"
         maxzoom_raw = request.form.get("maxzoom")
-        maxzoom = int(maxzoom_raw) if maxzoom_raw not in (None, "") else None
+        # 0–21 校验（validate_zoom 抛带字段名的 ValueError -> 400）
+        maxzoom = validate_zoom(maxzoom_raw, "maxzoom") if maxzoom_raw not in (None, "") else None
 
         uploads = request.files.getlist("files")
 
@@ -108,7 +111,10 @@ def delete_local_terrain_task(task_id: int):
     if not local_terrain_task_manager:
         return jsonify({"error": "Local terrain task manager not initialized"}), 500
     try:
-        local_terrain_task_manager.delete_task(task_id)
+        # Local terrain historically always cleaned up on delete; keep that as
+        # the default, but honor an explicit delete_files=false from the UI.
+        delete_files = request.args.get("delete_files", "true").lower() in ("1", "true", "yes")
+        local_terrain_task_manager.delete_task(task_id, delete_files=delete_files)
         return jsonify({"success": True, "message": f"Local terrain task {task_id} deleted"})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

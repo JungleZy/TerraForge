@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from enum import Enum
 from config import Config
+from services.geo_validation import validate_bbox, validate_zoom
 
 
 class TaskStatus(Enum):
@@ -49,6 +50,14 @@ class MapStyle(Enum):
             'm': 'roadmap',
             'y': 'hybrid',
         }
+
+        # None/非字符串输入:抛 ValueError(路由层映射 400)而不是
+        # AttributeError(经通用 except 变 500)
+        if not isinstance(value, str):
+            valid_options = list(shorthand_map.keys()) + [s.value for s in cls]
+            raise ValueError(
+                f"style ({value}) must be one of {valid_options}"
+            )
 
         # If it's already a full name, validate and return
         if value in [s.value for s in cls]:
@@ -95,6 +104,14 @@ class OutputFormat(Enum):
             't': 'tiles_only',
             'i': 'image_only',
         }
+
+        # None/非字符串输入:抛 ValueError(路由层映射 400)而不是
+        # AttributeError(经通用 except 变 500)
+        if not isinstance(value, str):
+            valid_options = list(shorthand_map.keys()) + [f.value for f in cls]
+            raise ValueError(
+                f"output_format ({value}) must be one of {valid_options}"
+            )
 
         # If it's already a full name, validate and return
         if value in [f.value for f in cls]:
@@ -150,35 +167,19 @@ class Task:
         # Normalize output_format from shorthand if needed
         self.output_format = OutputFormat.from_shorthand(self.output_format)
 
-        # Validate latitude bounds
-        if self.north <= self.south:
-            raise ValueError(
-                f"north ({self.north}) must be greater than south ({self.south})"
-            )
-
-        # Validate latitude range
-        if not (-90 <= self.south <= 90):
-            raise ValueError(f"south ({self.south}) must be between -90 and 90")
-        if not (-90 <= self.north <= 90):
-            raise ValueError(f"north ({self.north}) must be between -90 and 90")
-
-        # Validate longitude range
-        if not (-180 <= self.west <= 180):
-            raise ValueError(f"west ({self.west}) must be between -180 and 180")
-        if not (-180 <= self.east <= 180):
-            raise ValueError(f"east ({self.east}) must be between -180 and 180")
+        # 四至校验(共用规则:纬度 ±90、经度 ±180、north>south、east>west、
+        # 拒绝 NaN/inf/非数字;详见 services/geo_validation.py 模块 docstring)
+        self.north, self.south, self.east, self.west = validate_bbox(
+            self.north, self.south, self.east, self.west
+        )
 
         # Validate zoom levels
+        self.zoom_min = validate_zoom(self.zoom_min, 'zoom_min')
+        self.zoom_max = validate_zoom(self.zoom_max, 'zoom_max')
         if self.zoom_min > self.zoom_max:
             raise ValueError(
                 f"zoom_min ({self.zoom_min}) must be less than or equal to zoom_max ({self.zoom_max})"
             )
-
-        if not (0 <= self.zoom_min <= 21):
-            raise ValueError(f"zoom_min ({self.zoom_min}) must be between 0 and 21")
-
-        if not (0 <= self.zoom_max <= 21):
-            raise ValueError(f"zoom_max ({self.zoom_max}) must be between 0 and 21")
 
         # Validate status
         valid_statuses = [s.value for s in TaskStatus]

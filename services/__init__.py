@@ -1,5 +1,5 @@
 """
-Services module for Google Maps Downloader
+Services module for TerraForge
 
 This module provides core business logic services:
 - ConfigManager: Configuration management with validation

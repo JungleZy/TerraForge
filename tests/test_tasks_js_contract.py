@@ -718,6 +718,19 @@ _STATUS_WRITERS = (
     'contour_task_manager.py', 'local_terrain_task_manager.py',
 )
 
+# 文件级状态词表（dem_files / contour_files / tiles 的 status 列）——与 engine 层
+# 被排除是同一理由：这些状态不列进任务徽章，不属于 TaskStatus。管理器自己也会
+# 写文件级状态，不能按文件排除，只能按词表剔除：
+#   - dem_task_manager 恢复入队：`UPDATE dem_files SET status='pending'
+#     WHERE task_id=? AND status='downloading'`（dem_files 粒度的下载中标记）；
+#   - I12 新增的 404 无数据颗粒：dem_download_engine 回调把颗粒标 'skipped'
+#     （无数据跳过，不算失败），dem_task_manager 的终态统计因此出现
+#     `status NOT IN ('completed','skipped','failed')`（FROM dem_files）。
+# 新增文件级状态时下面会响亮失败（extra 非空），把新状态加进这里即可——
+# 不要加进 TaskStatus：那会连带要求两个 JS 的六态词表覆盖一个永远到不了
+# 任务徽章的状态。
+_FILE_LEVEL_STATUSES = frozenset({'downloading', 'skipped'})
+
 _STATUS_LITERAL_RE = re.compile(
     r"""(?:SET\s+status\s*=\s*|(?<![-\w])status\s*(?:=|==|!=)\s*|['"]status['"]\s*:\s*)['"]([a-z_]+)['"]""",
     re.I,
@@ -736,7 +749,8 @@ def test_task_status_enum_covers_what_the_managers_actually_write():
     守不住「变量 <-> 数据源」。这条把数据源那一端接上。
 
     做法：扫四个管理器里所有 `SET status='x'` / `status = 'x'` / `'status': 'x'` /
-    `status IN ('a','b')` 的字面量，要求它们是枚举的子集。
+    `status IN ('a','b')` 的字面量，剔除 _FILE_LEVEL_STATUSES（dem_files 等
+    文件级状态，见上方注释）后，要求剩下的是枚举的子集。
     """
     enum_values = _task_status_values()
     found = {}
@@ -746,9 +760,14 @@ def test_task_status_enum_covers_what_the_managers_actually_write():
         with open(path, encoding='utf-8') as f:
             src = f.read()
         for m in _STATUS_LITERAL_RE.finditer(src):
-            found.setdefault(m.group(1), set()).add(fn)
+            lit = m.group(1)
+            if lit in _FILE_LEVEL_STATUSES:
+                continue
+            found.setdefault(lit, set()).add(fn)
         for m in _STATUS_IN_RE.finditer(src):
             for lit in re.findall(r"'([a-z_]+)'", m.group(1)):
+                if lit in _FILE_LEVEL_STATUSES:
+                    continue
                 found.setdefault(lit, set()).add(fn)
     # 自检：扫空的话下面的子集断言永真
     assert len(found) >= len(enum_values), (
@@ -760,7 +779,9 @@ def test_task_status_enum_covers_what_the_managers_actually_write():
         '管理器写了 TaskStatus 里没有的状态：\n'
         + '\n'.join(f'  {k!r} <- {sorted(found[k])}' for k in sorted(extra))
         + '\n枚举是前端词表断言的真值来源，漏一个状态 = 界面上冒出一个英文字面量。'
-        '把它补进 models/task.py 的 TaskStatus，再补进两个 JS 的三张表。'
+        '任务级状态：把它补进 models/task.py 的 TaskStatus，再补进两个 JS 的三张表；'
+        '文件级状态（dem_files / contour_files / tiles 的 status 列，不进任务徽章）：'
+        '补进本文件上方的 _FILE_LEVEL_STATUSES。'
     )
 
 

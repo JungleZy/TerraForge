@@ -2,7 +2,7 @@ import importlib
 import sys
 
 
-def test_terrain_static_routes_exist(monkeypatch, tmp_path):
+def _load_client(monkeypatch, tmp_path):
     # Isolate DB and directory side effects before importing app.py (which runs init_database()).
     import config
 
@@ -16,8 +16,25 @@ def test_terrain_static_routes_exist(monkeypatch, tmp_path):
 
     app = app_mod.app
     app.config["TESTING"] = True
-    client = app.test_client()
+    return app.test_client()
+
+
+def test_terrain_base_serves_existing_layer_json(monkeypatch, tmp_path):
+    client = _load_client(monkeypatch, tmp_path)
+
+    # Default terrain_global_base_path is ./downloads/terrain/base_z8, rebased
+    # onto Config.DOWNLOADS_DIR.
+    base_dir = tmp_path / "downloads" / "terrain" / "base_z8"
+    base_dir.mkdir(parents=True)
+    (base_dir / "layer.json").write_text('{"tilejson":"2.1.0"}', encoding="utf-8")
 
     r = client.get("/terrain/base/layer.json")
-    assert r.status_code in (200, 404)
+    assert r.status_code == 200
+    assert b'"tilejson"' in r.data
 
+
+def test_terrain_base_missing_file_returns_404(monkeypatch, tmp_path):
+    client = _load_client(monkeypatch, tmp_path)
+
+    r = client.get("/terrain/base/layer.json")
+    assert r.status_code == 404

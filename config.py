@@ -1,5 +1,5 @@
 """
-Configuration module for Google Maps Downloader
+Configuration module for TerraForge
 """
 import os
 import sys
@@ -19,11 +19,12 @@ class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY')
     if not SECRET_KEY:
         SECRET_KEY = secrets.token_hex(32)
-        logger.warning(
-            "SECRET_KEY not set in environment variables. "
-            "Generated a random key for this session. "
-            "Set SECRET_KEY environment variable for production use."
-        )
+        # 不在这里直接 logger.warning —— 本类在 import 时就执行,警告会刷在启动横幅
+        # 前面,而且在 reloader 父子进程里各打一遍。改为置标记,由 app.py 在打印完
+        # 启动横幅后统一提示一次。
+        SECRET_KEY_WAS_GENERATED = True
+    else:
+        SECRET_KEY_WAS_GENERATED = False
 
     # Base directory of the application
     # Support PyInstaller bundled mode
@@ -63,7 +64,7 @@ class Config:
         # Create cache directory
         Config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-        logger.info("Initialized directories:")
-        logger.info(f"  - Database: {Config.DATABASE_PATH}")
-        logger.info(f"  - Downloads: {Config.DOWNLOADS_DIR}")
-        logger.info(f"  - Cache: {Config.CACHE_DIR}")
+        logger.debug("Initialized directories:")
+        logger.debug(f"  - Database: {Config.DATABASE_PATH}")
+        logger.debug(f"  - Downloads: {Config.DOWNLOADS_DIR}")
+        logger.debug(f"  - Cache: {Config.CACHE_DIR}")

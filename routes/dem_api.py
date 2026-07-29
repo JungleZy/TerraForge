@@ -5,7 +5,10 @@ Endpoints for creating and running DEM download tasks (e.g., ASTGTM.003).
 """
 
 import logging
+from pathlib import Path
 from flask import Blueprint, jsonify, request
+
+from services.task_cleanup import remove_task_dir_if_safe
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +20,7 @@ dem_task_manager = None
 def init_dem_task_manager(tm):
     global dem_task_manager
     dem_task_manager = tm
-    logger.info("DEM task manager initialized in DEM API routes")
+    logger.debug("DEM task manager initialized in DEM API routes")
 
 
 @dem_api_bp.route("/tasks", methods=["POST"])
@@ -26,7 +29,9 @@ def create_dem_task():
         if not dem_task_manager:
             return jsonify({"error": "DEM task manager not initialized"}), 500
 
-        data = request.get_json() or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Request body must be a JSON object"}), 400
         required = ["name", "north", "south", "east", "west", "output_path"]
         missing = [k for k in required if k not in data]
         if missing:
@@ -81,16 +86,29 @@ def delete_dem_task(task_id: int):
         if task.get("status") == "running":
             return jsonify({"error": "Cannot delete running DEM task. Please pause or cancel it first."}), 400
 
-        from database import get_connection
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM dem_tasks WHERE id = ?", (task_id,))
-            if cur.rowcount == 0:
-                return jsonify({"error": f"DEM task {task_id} not found"}), 404
-            conn.commit()
-        finally:
-            conn.close()
+        # Serialize with start_task via the manager lock: a paused task can be
+        # flipped back to running (thread spawned) while we hold no lock, so the
+        # check + delete must happen under the same lock start_task uses.
+        with dem_task_manager._state_lock:
+            active_thread = dem_task_manager.active_tasks.get(task_id)
+            if active_thread and active_thread.is_alive():
+                return jsonify({"error": "Cannot delete running DEM task. Please pause or cancel it first."}), 400
+
+            from database import get_connection
+            conn = get_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM dem_tasks WHERE id = ?", (task_id,))
+                if cur.rowcount == 0:
+                    return jsonify({"error": f"DEM task {task_id} not found"}), 404
+                conn.commit()
+            finally:
+                conn.close()
+
+        # Optional best-effort artifact cleanup (downloads/dem/dem_task_<id>/)
+        # after the row is gone; only removed when inside DOWNLOADS_DIR.
+        if request.args.get("delete_files", "").lower() in ("1", "true", "yes"):
+            remove_task_dir_if_safe(Path(task["output_path"]) / f"dem_task_{task_id}")
 
         return jsonify({"success": True, "message": f"DEM task {task_id} deleted"})
 
@@ -122,6 +140,8 @@ def pause_dem_task(task_id: int):
             return jsonify({"error": "DEM task manager not initialized"}), 500
         dem_task_manager.pause_task(task_id)
         return jsonify({"success": True, "message": f"DEM task {task_id} paused"})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Error pausing DEM task {task_id}: {e}")
         return jsonify({"error": "Failed to pause DEM task"}), 500
@@ -148,6 +168,8 @@ def cancel_dem_task(task_id: int):
             return jsonify({"error": "DEM task manager not initialized"}), 500
         dem_task_manager.cancel_task(task_id)
         return jsonify({"success": True, "message": f"DEM task {task_id} cancelled"})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Error cancelling DEM task {task_id}: {e}")
         return jsonify({"error": "Failed to cancel DEM task"}), 500

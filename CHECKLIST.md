@@ -75,20 +75,20 @@
 
 - [ ] 测试 Windows 可执行文件
   - [ ] 解压文件
-  - [ ] 运行 map-downloader.exe
+  - [ ] 运行 terraforge.exe
   - [ ] 访问 http://localhost:5000
   - [ ] 测试创建下载任务
   - [ ] 测试下载功能
 
 - [ ] 测试 macOS 可执行文件（如果有 Mac）
   - [ ] 解压文件
-  - [ ] 运行 ./map-downloader
+  - [ ] 运行 ./terraforge
   - [ ] 测试基本功能
 
 - [ ] 测试 Linux 可执行文件
   - [ ] 解压文件
   - [ ] 添加执行权限
-  - [ ] 运行 ./map-downloader
+  - [ ] 运行 ./terraforge
   - [ ] 测试基本功能
 
 ## 🐛 如果构建失败

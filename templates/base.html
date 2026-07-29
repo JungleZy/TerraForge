@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Google Maps 下载器{% endblock %}</title>
+    <title>{% block title %}TerraForge{% endblock %}</title>
 
     {# 全部第三方前端资源走本地 static/vendor/，不依赖任何 CDN。
        这是 PyInstaller 打包的离线桌面工具，断网必须能用。
@@ -21,11 +21,8 @@
     <!-- Bootstrap 5.3 CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.min.css') }}">
 
-    <!-- Leaflet.js 1.9.4 CSS -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/1.9.4/leaflet.css') }}">
-
-    <!-- Leaflet.draw CSS -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet.draw/1.0.4/leaflet.draw.css') }}">
+    <!-- CesiumJS 1.143.0 Widgets CSS（首页主视图 + 历史小地图都是 Cesium） -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/cesium/1.143.0/Widgets/widgets.css') }}">
 
     <!-- Custom CSS -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
@@ -33,77 +30,32 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-    <!-- Navigation Bar - Fixed Top -->
-    <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
-                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-                    <circle cx="12" cy="10" r="3"></circle>
-                </svg>
-                Maps Downloader
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
-                    aria-controls="navbarNav" aria-expanded="false" aria-label="展开导航菜单">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                                <polyline points="9 22 9 12 15 12 15 22"></polyline>
-                            </svg>
-                            首页
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/history">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <polyline points="12 6 12 12 16 14"></polyline>
-                            </svg>
-                            历史记录
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/config">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                                <circle cx="12" cy="12" r="3"></circle>
-                                <path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path>
-                            </svg>
-                            配置
-                        </a>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
+    <!-- GIS 工作台外壳：主内容区 + 底部状态栏（flex 列，占满视口）。
+         没有顶部工具栏：历史/配置入口是首页地图上的浮动按钮（index.html），
+         独立页 /history、/config 各自带「返回首页」链接。 -->
+    <div class="workbench">
+        <!-- Main Content -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
 
-    <script>
-      (function () {
-        var p = location.pathname;
-        document.querySelectorAll('.navbar-nav .nav-link').forEach(function (a) {
-          var href = a.getAttribute('href');
-          if (href === p || (href === '/' && p === '/')) a.classList.add('active');
-        });
-      })();
-    </script>
-
-    <!-- Main Content with padding-top for fixed navbar -->
-    <main class="main-content">
-        {% block content %}{% endblock %}
-    </main>
+        <!-- Bottom Status Bar（各页用 statusbar block 填充读数） -->
+        <footer class="workbench-statusbar">
+            <!-- 连接状态指示：仅在有 socket 的页面由 initConnectionStatus 点亮 -->
+            <span class="conn-status" id="connStatus" hidden>
+                <span class="conn-dot"></span><span id="connStatusText">未连接</span>
+            </span>
+            {% block statusbar %}{% endblock %}
+        </footer>
+    </div>
 
     <!-- Bootstrap 5.3 JS Bundle（含 Popper） -->
     <script src="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.bundle.min.js') }}"></script>
 
-    <!-- Leaflet.js 1.9.4 JS -->
-    <script src="{{ url_for('static', filename='vendor/leaflet/1.9.4/leaflet.js') }}"></script>
-
-    <!-- Leaflet.draw JS -->
-    <script src="{{ url_for('static', filename='vendor/leaflet.draw/1.0.4/leaflet.draw.js') }}"></script>
+    <!-- CesiumJS 1.143.0（本地 vendor，断网可用；CESIUM_BASE_URL 必须在
+         Cesium.js 之前设好，workers/assets 都按它解析） -->
+    <script>window.CESIUM_BASE_URL = "{{ url_for('static', filename='vendor/cesium/1.143.0') }}/";</script>
+    <script src="{{ url_for('static', filename='vendor/cesium/1.143.0/Cesium.js') }}"></script>
 
     <!-- Socket.IO 4.5.4 —— 版本必须锁在 4.x：服务端 Flask-SocketIO 5.3.4 /
          python-socketio 5.9.0 / python-engineio 4.7.1 对应 Socket.IO 协议 v5 +

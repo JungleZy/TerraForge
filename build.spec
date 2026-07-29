@@ -126,6 +126,22 @@ proj_data = _first_existing_dir(_proj_data_candidates(), required_file='proj.db'
 if proj_data:
     datas += [(proj_data, 'proj-data')]
 
+# Fail the build loudly when GDAL/PROJ data dirs could not be collected (I20b).
+# A bundle without them builds fine but every GDAL call fails at runtime —
+# "builds and runs but is broken". Better to stop here with a clear message.
+if not any(dest == 'gdal-data' for _src, dest in datas):
+    raise RuntimeError(
+        'gdal-data collection failed: no GDAL data directory found. '
+        'Install system GDAL (gdal-config) or set the GDAL_DATA environment '
+        'variable, then rebuild.'
+    )
+if not proj_data:
+    raise RuntimeError(
+        'proj-data collection failed: no PROJ data directory containing '
+        'proj.db found. Set PROJ_DATA/PROJ_LIB or install the proj data '
+        'package, then rebuild.'
+    )
+
 a = Analysis(
     ['app.py'],
     pathex=[],
@@ -149,7 +165,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='map-downloader',
+    name='terraforge',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -170,5 +186,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='map-downloader',
+    name='terraforge',
 )
