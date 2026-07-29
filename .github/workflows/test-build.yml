@@ -30,6 +30,11 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
+        # GDAL sdist 编译时必须能 import numpy，否则编不出 _gdal_array
+        # （gdal_array/numeric 模块缺失，所有用 osgeo.gdal_array 的测试会炸）。
+        # 先装 numpy，再关闭 build isolation 编译 GDAL。
+        pip install numpy==1.26.4
+        pip install --no-build-isolation GDAL==3.8.4
         pip install -r requirements.txt
 
     # C7: 先跑完整测试套件再打包——测试失败则构建失败。
