@@ -12,6 +12,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _read(name):
+    # 发版脚本已移至 scripts/，构建脚本仍在根目录
+    if name.startswith('push-release.'):
+        name = os.path.join('scripts', name)
     with open(os.path.join(ROOT, name), encoding='utf-8') as f:
         return f.read()
 

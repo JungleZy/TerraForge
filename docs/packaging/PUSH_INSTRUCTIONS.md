@@ -6,12 +6,12 @@
 
 ### Linux/macOS
 ```bash
-./push-release.sh
+./scripts/push-release.sh
 ```
 
 ### Windows
 ```cmd
-push-release.bat
+scripts/push-release.bat
 ```
 
 ## 或者手动执行以下命令
@@ -82,4 +82,4 @@ git remote set-url origin git@github.com:JungleZy/map-download.git
 
 ## 下一步
 
-请在终端运行 `./push-release.sh` 或 `push-release.bat` 来推送代码和创建版本！
+请在终端运行 `./scripts/push-release.sh` 或 `scripts/push-release.bat` 来推送代码和创建版本！

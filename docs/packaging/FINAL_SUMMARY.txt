@@ -37,7 +37,7 @@
 
 5. 推送脚本
    ✅ push-release.sh - Linux/macOS 推送脚本
-   ✅ push-release.bat - Windows 推送脚本
+   ✅ scripts/push-release.bat - Windows 推送脚本
 
 6. Git 提交
    ✅ 4 个提交已完成
@@ -54,11 +54,11 @@
 ------------------------
 Linux/macOS:
     cd /mnt/d/workspace/python/map-download
-    ./push-release.sh
+    ./scripts/push-release.sh
 
 Windows:
     cd D:\workspace\python\map-download
-    push-release.bat
+    scripts/push-release.bat
 
 方式二：手动执行
 ------------------------

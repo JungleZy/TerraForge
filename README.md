@@ -2,6 +2,21 @@
 
 基于 Web 的 GIS 数据获取与加工系统：Google Maps 瓦片下载、ASTER GDEM 高程数据获取、Cesium 3D 地形切片与等高线生成，支持交互式地图选区、实时进度监控、历史记录可视化和高级配置管理。
 
+## 目录
+
+- [功能特性](#功能特性)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [使用](#使用)
+- [项目结构](#项目结构)
+- [API 端点](#api-端点)
+- [开发](#开发)
+- [性能优化](#性能优化)
+- [注意事项](#注意事项)
+- [构建可执行文件](#构建可执行文件)
+- [故障排除](#故障排除)
+- [许可证](#许可证)
+
 ## 功能特性
 
 - 🗺️ 交互式地图界面选择下载区域
@@ -30,7 +45,7 @@
    - **macOS/Linux**: 运行 `./terraforge`
 4. 浏览器访问 `http://localhost:5000`
 
-详见 [DISTRIBUTION.md](DISTRIBUTION.md)
+详见 [DISTRIBUTION.md](docs/packaging/DISTRIBUTION.md)
 
 ### 方式二：从源码安装
 
@@ -114,7 +129,13 @@ uv run python app.py
 map-download/
 ├── app.py                  # Flask 应用入口（组合根：注册蓝图、注入管理器）
 ├── config.py               # 配置类
-├── database.py             # 数据库初始化
+├── database.py             # 数据库初始化（含幂等迁移）
+├── startup_banner.py       # 启动信息横幅
+├── process_watchdog.py     # 进程看门狗（冻结模式下守护主进程）
+├── build.spec              # PyInstaller 打包配置
+├── hook-gdal.py            # PyInstaller GDAL hook
+├── build.sh / build.bat    # 本地构建脚本
+├── requirements.txt        # Python 依赖
 ├── models/                 # 数据模型
 │   ├── task.py            # 任务/瓦片模型与枚举
 │   └── config.py          # Config 模型
@@ -154,9 +175,13 @@ map-download/
 │   ├── css/style.css      # 自定义样式
 │   ├── js/                # map / tasks / history / config / panels / ui
 │   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、字体）
-├── downloads/              # 下载文件目录
-├── cache/                  # 瓦片缓存目录
-└── data/                   # SQLite 数据库
+├── migrations/             # 数据库迁移脚本
+├── scripts/                # 辅助脚本（发版推送、全球基础地形构建）
+├── tests/                  # pytest 测试套件
+├── docs/                   # 项目文档（构建、设计、评审记录、packaging/ 发版资料）
+├── downloads/              # 下载文件目录（运行时生成）
+├── cache/                  # 瓦片缓存目录（运行时生成）
+└── data/                   # SQLite 数据库（运行时生成）
 ```
 
 ## API 端点
@@ -230,6 +255,29 @@ map-download/
 - `task_progress` - 实时任务进度更新（瓦片 / DEM / 等高线 / 本地地形）
 - `task_completed` / `task_failed` - 任务完成 / 失败通知
 - `task_stitch_progress` / `task_stitch_failed` / `task_copy_progress` - 瓦片拼接与文件复制进度
+
+## 开发
+
+### 运行测试
+
+```bash
+uv run pytest                 # 运行全部测试
+uv run pytest tests/test_config_manager.py   # 运行单个测试文件
+```
+
+### 代码组织约定
+
+- 四条任务管线（瓦片 / DEM / 地形 / 等高线）均遵循 `routes/*_api.py`（HTTP 层）→ `services/*_task_manager.py`（状态与调度）→ `services/*_engine.py`（实际执行）的分层
+- 共享的校验逻辑集中在 `services/geo_validation.py`，不要在各管线重复实现
+- 任务取消约定：仅 `pending` / `running` / `paused` 状态可取消；`DELETE` 接口通过 `?delete_files=true` 清理磁盘产物
+
+### 更多文档
+
+- [docs/BUILD.md](docs/BUILD.md) — 构建详细说明
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) / [docs/INSTALL.md](docs/INSTALL.md) — 快速启动与安装指南
+- [docs/packaging/](docs/packaging/) — 打包与发版资料（分发说明、发布检查清单、历史记录）
+- [RELEASE_NOTES.md](RELEASE_NOTES.md) — 发版说明
+- [CLAUDE.md](CLAUDE.md) — 架构与开发约定（面向 AI 协作者，对人类开发者同样有参考价值）
 
 ## 性能优化
 
