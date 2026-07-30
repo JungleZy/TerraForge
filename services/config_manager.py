@@ -224,12 +224,11 @@ class ConfigManager:
                 val = int(value)
                 return 0 <= val <= 21
 
-            elif key == 'map_tile_url':
-                # 留空 = 前端回退内置 OSM 源；非空必须是合法的 XYZ 模板
-                if not str(value).strip():
-                    return True
-                from services.tile_url_probe import validate_tile_url_template
-                ok, _err = validate_tile_url_template(str(value).strip())
+            elif key == 'tile_servers':
+                # 逗号分隔的瓦片服务器列表：每个条目必须是 Google 别名/主机
+                # 或含 {x}/{y}/{z} 的完整 XYZ 模板（tile_url_probe 统一语义）
+                from services.tile_url_probe import validate_server_list
+                ok, _err = validate_server_list(str(value))
                 return ok
 
             # For keys without specific validation, accept any value

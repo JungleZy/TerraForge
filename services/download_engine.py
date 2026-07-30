@@ -11,6 +11,7 @@ import asyncio
 import shutil
 import tempfile
 import threading
+import time
 import aiohttp
 import aiofiles
 import os
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 WEB_MERCATOR_MAX_LAT = 85.0511  # Maximum valid latitude for Web Mercator projection
-TILE_SERVER_COUNT = 4  # Number of Google Maps tile servers (mts0-mts3)
+TILE_SERVER_COUNT = 4  # 默认瓦片服务器数（mts0-mts3），仅作 connector limit_per_host 参考
 WARN_TILES_THRESHOLD = 100000  # 单任务瓦片数硬上限,在 TaskManager.create_task 强制(400)
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
@@ -84,6 +85,20 @@ class DownloadEngine:
     def __init__(self):
         """Initialize download engine with config manager"""
         self.config_manager = ConfigManager()
+        # tile_servers 列表缓存：get_tile_url 每块瓦片都走，不能每次都查库；
+        # 60s TTL 足够让「改配置后新任务生效」（任务通常跑几十分钟以上）。
+        self._servers_cache = None
+        self._servers_loaded_at = 0.0
+
+    def _tile_servers(self) -> List[str]:
+        """读取配置的瓦片服务器列表（60s 缓存；为空回退默认 mts0-3）。"""
+        from services.tile_url_probe import parse_server_list
+        now = time.monotonic()
+        if self._servers_cache is None or now - self._servers_loaded_at > 60:
+            raw = self.config_manager.get('tile_servers', '') or ''
+            self._servers_cache = parse_server_list(raw)
+            self._servers_loaded_at = now
+        return self._servers_cache
 
     def lat_lon_to_tile(self, lat: float, lon: float, zoom: int) -> Tuple[int, int]:
         """
@@ -265,32 +280,31 @@ class DownloadEngine:
         server_index: int = 0
     ) -> str:
         """
-        Generate Google Maps tile URL
+        Generate tile URL from the configured tile server list
 
         Args:
             x: Tile X coordinate
             y: Tile Y coordinate
             z: Zoom level
             style: Map style code (m=roadmap, s=satellite, y=hybrid, t=terrain)
-            server_index: Server index (0-3 for mts0-mts3)
+            server_index: Index into the configured tile_servers list
+                (rotates on retry; wraps around the list)
 
         Returns:
             Complete tile URL string
 
-        Google Maps Style Codes:
-            m: roadmap (default)
-            s: satellite
-            y: hybrid (satellite with labels)
-            t: terrain
-            p: terrain with labels
+        条目形态见 services.tile_url_probe.expand_server_entry：
+        别名/主机按 Google vt 格式拼 lyrs={style}；完整 XYZ 模板按占位符
+        展开（模板含 {style} 时替换，不含则样式由地址自身决定）。
         """
-        # Ensure server index is in valid range
-        server_index = server_index % TILE_SERVER_COUNT
-
-        # Build URL using Google Maps tile server format
-        url = f"http://mts{server_index}.googleapis.com/vt?lyrs={style}&x={x}&y={y}&z={z}"
-
-        return url
+        from services.tile_url_probe import expand_server_entry
+        servers = self._tile_servers()
+        entry = servers[server_index % len(servers)]
+        template = expand_server_entry(entry, style)
+        return (template
+                .replace('{z}', str(z))
+                .replace('{x}', str(x))
+                .replace('{y}', str(y)))
 
     def _get_cache_path(self, tile: Tile, style: str) -> Path:
         """
@@ -356,7 +370,7 @@ class DownloadEngine:
 
         Retry Strategy:
             - Max retries from config (max_retries)
-            - Server rotation on each retry (mts0 -> mts1 -> mts2 -> mts3)
+            - Server rotation on each retry (按 tile_servers 配置列表轮换)
             - Exponential backoff: 2^attempt seconds between retries
             - Timeout from config (request_timeout)
         """
@@ -372,13 +386,14 @@ class DownloadEngine:
             if stop_flag is not None and stop_flag.is_set():
                 raise DownloadCancelled()
             try:
-                # Rotate server index on each attempt
-                server_index = attempt % TILE_SERVER_COUNT
+                # Rotate server index on each attempt（列表长度来自配置）
+                servers = self._tile_servers()
+                server_index = attempt % len(servers)
                 url = self.get_tile_url(tile.x, tile.y, tile.zoom, style, server_index)
 
                 logger.debug(
                     f"Downloading tile {tile.zoom}/{tile.x}/{tile.y} "
-                    f"from server mts{server_index} (attempt {attempt + 1}/{max_retries + 1})"
+                    f"from server {servers[server_index]} (attempt {attempt + 1}/{max_retries + 1})"
                 )
 
                 # Download with timeout

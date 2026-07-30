@@ -4574,7 +4574,10 @@ def test_button_ink_is_readable_in_every_state():
 #   templates/index.html 两个覆盖面板的关闭按钮            2（记录/配置面板）
 #   templates/index.html include 进来的历史详情弹窗 .btn-close 1（与 history.html
 #     那颗是同一份 partial 标记，两个模板各扫到一次，预期重复）
-# 合计 13。
+#   _config_content.html 瓦片服务器行的「删除该服务器」     2（2026-07 行编辑器新增；
+#     Jinja include 展开后 index.html 与 config.html 各扫到一次，预期重复；
+#     Jinja for 循环在源码里只出现一次，动态增删的行由 JS 模板生成、不在静态扫描内）
+# 合计 15。
 #
 # ⚠️ 第一版只扫两个 JS 文件、常量写 6，读起来像「全站都覆盖了」而实际漏了
 # 模板。评审实测：当时 `templates/base.html` 的 navbar-toggler 在 900px 视口下
@@ -4587,7 +4590,7 @@ def test_button_ink_is_readable_in_every_state():
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
-ICON_ONLY_BUTTON_COUNT = 13
+ICON_ONLY_BUTTON_COUNT = 15
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 

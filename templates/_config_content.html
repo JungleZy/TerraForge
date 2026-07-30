@@ -78,10 +78,28 @@
                     </div>
 
                     <div class="mb-3">
-                        <label for="tile_servers" class="form-label">瓦片服务器列表</label>
-                        <input type="text" class="form-control" id="tile_servers"
-                               value="{{ config.tile_servers }}">
-                        <small class="form-text">用逗号分隔多个服务器</small>
+                        <label class="form-label">瓦片服务器列表</label>
+                        <!-- 每行一个条目：Google 别名（mts0–mts3）、主机
+                             （mts0.google.cn）或完整 XYZ 模板。行结构由
+                             config.js 的 addTileServerRow 生成/增删。 -->
+                        <div id="tileServerRows">
+                            {% for srv in (config.tile_servers or '').split(',') if srv.strip() %}
+                            <div class="tile-server-row">
+                                <div class="d-flex gap-2 align-items-center">
+                                    <input type="text" class="form-control flex-grow-1 tile-server-input"
+                                           value="{{ srv.strip() }}">
+                                    <button type="button" class="btn btn-outline-primary tile-server-verify">验证</button>
+                                    <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove"
+                                            aria-label="删除该服务器" title="删除该服务器">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                    </button>
+                                </div>
+                                <div class="tile-url-verify-result" hidden></div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="tileServerAdd">+ 添加服务器</button>
+                        <small class="form-text d-block mt-1">每行一个：Google 别名（mts0–mts3）、主机（如 mts0.google.cn）或完整 XYZ 模板（含 {z}/{x}/{y}，可选 {style}）。下载按列表轮换；第一个条目同时用作地图底图。</small>
                     </div>
                 </div>
 
@@ -159,19 +177,6 @@
                         <label for="history_retention_days" class="form-label">历史记录保留天数</label>
                         <input type="number" class="form-control" id="history_retention_days"
                                value="{{ config.history_retention_days }}" min="0">
-                    </div>
-
-                    <div class="mb-3">
-                        <label for="map_tile_url" class="form-label">底图瓦片服务地址</label>
-                        <div class="d-flex gap-2">
-                            <input type="text" class="form-control flex-grow-1" id="map_tile_url"
-                                   value="{{ config.map_tile_url }}"
-                                   placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png">
-                            <button type="button" class="btn btn-outline-primary" id="verifyTileUrlBtn"
-                                    onclick="verifyTileUrl()">验证通联</button>
-                        </div>
-                        <small class="form-text">XYZ 模板，须含 {z}/{x}/{y} 占位符；留空用内置 OSM 源。保存后刷新页面生效。</small>
-                        <div class="tile-url-verify-result" id="tileUrlVerifyResult" hidden></div>
                     </div>
 
                     <div class="row">

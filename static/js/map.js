@@ -84,10 +84,19 @@ function initMap(config) {
     const centerLng = parseFloat(config.map_center_lng || 106.55);
     const initialZoom = parseInt(config.map_initial_zoom || 3);
 
-    // 底图 XYZ 源：配置页可换（内网/自建瓦片服务），留空回退内置 OSM。
-    // 不用 Cesium Ion（离线打包工具，不能依赖 Ion token）
-    const tileUrl = (config.map_tile_url || '').trim()
-        || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    // 底图 = tile_servers 列表的第一个条目（与下载共用一份配置，配置页可改）：
+    // 别名/主机按 Google vt 格式拼 lyrs=m；完整 XYZ 模板原样用（{style} 替换为 m）。
+    // 列表为空时回退内置 OSM。条目语义与 services/tile_url_probe.py 保持一致。
+    function _baseMapUrl(serversRaw) {
+        const first = (serversRaw || '').split(',').map(s => s.trim()).filter(Boolean)[0];
+        if (!first) return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+        if (first.startsWith('http://') || first.startsWith('https://')) {
+            return first.replace('{style}', 'm');
+        }
+        const host = first.includes('.') ? first : first + '.googleapis.com';
+        return `http://${host}/vt?lyrs=m&x={x}&y={y}&z={z}`;
+    }
+    const tileUrl = _baseMapUrl(config.tile_servers);
     viewer = new Cesium.Viewer('map', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
             url: tileUrl,

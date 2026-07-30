@@ -804,20 +804,20 @@ def reset_config():
 
 @api_bp.route('/config/verify_tile_url', methods=['POST'])
 def verify_tile_url():
-    """验证底图瓦片服务地址的通联（配置页「验证通联」按钮）。
+    """验证单个瓦片服务器条目的通联（配置页每行「验证」按钮）。
 
-    Request Body: {"url": "https://.../{z}/{x}/{y}.png"}
-    模板校验失败返回 400；通联结果始终 200 + {success, status_code,
-    content_type, elapsed_ms, tile, error} —— 连不上也是一次成功的探测。
+    Request Body: {"server": "mts0" | "mts0.google.cn" | "https://.../{z}/{x}/{y}.png"}
+    条目校验失败返回 400；通联结果始终 200 + {success, status_code,
+    content_type, elapsed_ms, tile, url, error} —— 连不上也是一次成功的探测。
     """
-    from services.tile_url_probe import probe_tile_url, validate_tile_url_template
+    from services.tile_url_probe import probe_server_entry, validate_server_entry
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({'error': 'No JSON body provided'}), 400
-    url = str(data.get('url') or '').strip()
+    server = str(data.get('server') or '').strip()
 
-    ok, err = validate_tile_url_template(url)
+    ok, err = validate_server_entry(server)
     if not ok:
         return jsonify({'error': err}), 400
 
@@ -827,8 +827,8 @@ def verify_tile_url():
         except (TypeError, ValueError):
             return float(default)
 
-    result = probe_tile_url(
-        url,
+    result = probe_server_entry(
+        server,
         proxy_url=config_manager.get('proxy_url', '') or '',
         center_lng=_float('map_center_lng', 106.55),
         center_lat=_float('map_center_lat', 29.56),

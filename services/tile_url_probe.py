@@ -1,13 +1,24 @@
-"""底图瓦片服务地址的校验与通联探测（配置页「验证通联」按钮）。
+"""瓦片服务器条目的展开、校验与通联探测。
 
-拆成独立模块而不是塞进 routes/api.py：模板校验与样例瓦片坐标换算都是
-纯函数，单测不需要起 Flask；HTTP 抓取收敛在 _fetch_tile 一处，
-probe_tile_url 接受 fetcher 注入，成功路径可以无网测试。
+tile_servers 配置（逗号分隔列表）的统一语义，下载引擎 / 底图 / 配置页
+「验证」按钮共用这一份，避免三处各写一套解析：
+
+  条目三种形态：
+    1. Google 别名   —— `mts0`（不含点），展开为 `mts0.googleapis.com`
+    2. 主机名        —— `mts0.google.cn`，按 Google vt 格式拼 lyrs URL
+    3. 完整 XYZ 模板 —— `https://.../{z}/{x}/{y}.png`，可选 `{style}`
+                        占位符（Google 兼容镜像用），没有 {style} 的模板
+                        样式由地址自身决定，下载时忽略样式选择
+
+通联探测给配置页「验证」按钮用：拆成独立模块而不是塞进 routes/api.py，
+模板校验与坐标换算是纯函数，单测不需要起 Flask；HTTP 抓取收敛在
+_fetch_tile 一处，probe_server_entry 接受 fetcher 注入，成功路径无网可测。
 """
 import asyncio
 import ipaddress
 import logging
 import math
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -15,31 +26,65 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-# 前端（map.js initMap）与这里共用的内置底图源；改要一起改。
-DEFAULT_MAP_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+# 配置里 tile_servers 为空时的回退（与 core/database.py 的默认值一致）。
+DEFAULT_TILE_SERVERS = 'mts0,mts1,mts2,mts3'
 
 # 探测只取前几十 KB，确认链路通即可，不把整张瓦片读进来。
 _MAX_PROBE_BYTES = 64 * 1024
 
+# 主机/别名形态：字母数字、点、连字符（mts0 / mts0.google.cn / mt0.l.google.com）
+_HOST_ENTRY_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.-]*$')
 
-def validate_tile_url_template(url):
-    """校验 XYZ 瓦片 URL 模板。返回 (ok, error_message)。
 
-    规则：http/https 协议，且 {z} {x} {y} 三个占位符齐全
-    （Cesium 的 UrlTemplateImageryProvider 按这三个占位符展开）。
+def expand_server_entry(entry, style='m'):
+    """把一个服务器条目展开成带 {x}/{y}/{z} 占位符的 URL 模板。
+
+    别名/主机形态按 Google vt 格式拼 lyrs；完整模板原样返回，
+    其中的 {style} 占位符替换为当前样式码（模板没有 {style} 则样式固定）。
     """
-    url = (url or '').strip()
-    if not url:
-        return False, '地址不能为空（留空请使用内置 OSM 源）'
-    parts = urlsplit(url)
-    if parts.scheme not in ('http', 'https'):
-        return False, f'只支持 http/https 协议（当前是 {parts.scheme or "无"}）'
-    if not parts.netloc:
-        return False, 'URL 缺少主机名'
-    missing = [p for p in ('{z}', '{x}', '{y}') if p not in url]
-    if missing:
-        return False, '模板缺少占位符 ' + ' '.join(missing)
+    entry = (entry or '').strip()
+    if entry.startswith(('http://', 'https://')):
+        return entry.replace('{style}', style)
+    host = entry if '.' in entry else entry + '.googleapis.com'
+    return f'http://{host}/vt?lyrs={style}&x={{x}}&y={{y}}&z={{z}}'
+
+
+def validate_server_entry(entry):
+    """校验单个服务器条目。返回 (ok, error_message)。"""
+    entry = (entry or '').strip()
+    if not entry:
+        return False, '条目不能为空'
+    if entry.startswith(('http://', 'https://')):
+        parts = urlsplit(entry)
+        if not parts.netloc:
+            return False, 'URL 缺少主机名'
+        missing = [p for p in ('{z}', '{x}', '{y}') if p not in entry]
+        if missing:
+            return False, '模板缺少占位符 ' + ' '.join(missing)
+        return True, None
+    if '://' in entry:
+        return False, '只支持 http/https 协议'
+    if not _HOST_ENTRY_RE.match(entry):
+        return False, f'无法识别的主机/别名：{entry}'
     return True, None
+
+
+def validate_server_list(value):
+    """校验逗号分隔的整个列表（ConfigManager.validate_config 用）。"""
+    entries = [s.strip() for s in (value or '').split(',') if s.strip()]
+    if not entries:
+        return False, '瓦片服务器列表不能为空'
+    for entry in entries:
+        ok, err = validate_server_entry(entry)
+        if not ok:
+            return False, f'{entry}: {err}'
+    return True, None
+
+
+def parse_server_list(value):
+    """逗号分隔字符串 -> 条目列表；空/全空白回退默认 mts0-3。"""
+    entries = [s.strip() for s in (value or '').split(',') if s.strip()]
+    return entries or DEFAULT_TILE_SERVERS.split(',')
 
 
 def _tile_xy(lng, lat, z):
@@ -114,26 +159,28 @@ async def _fetch_tile(url, proxy_url, timeout_s):
     return result
 
 
-def probe_tile_url(template, proxy_url='', center_lng=106.55, center_lat=29.56,
-                   timeout_s=10, fetcher=None):
-    """校验模板并探测通联。返回可 JSON 化的结果 dict。
+def probe_server_entry(entry, proxy_url='', center_lng=106.55, center_lat=29.56,
+                       timeout_s=10, fetcher=None):
+    """校验条目并探测通联（样式固定用 m 标准图）。返回可 JSON 化的结果 dict。
 
     fetcher 可注入（默认 _fetch_tile），测试用假 fetcher 覆盖成功/失败路径，
     不需要真实网络。
     """
-    ok, err = validate_tile_url_template(template)
+    ok, err = validate_server_entry(entry)
     if not ok:
         return {'success': False, 'status_code': None, 'content_type': '',
                 'elapsed_ms': 0, 'bytes_read': 0, 'tile': None, 'error': err}
 
-    url, (z, x, y) = build_probe_url(template.strip(), center_lng, center_lat)
+    template = expand_server_entry(entry.strip(), style='m')
+    url, (z, x, y) = build_probe_url(template, center_lng, center_lat)
     if should_bypass_proxy(url):
         proxy_url = ''
     fetcher = fetcher or _fetch_tile
     result = asyncio.run(fetcher(url, proxy_url, timeout_s))
     result['tile'] = f'{z}/{x}/{y}'
+    result['url'] = url
     logger.info(
-        f'Tile URL probe {url} (proxy={"direct" if not proxy_url else "on"}) -> '
+        f'Tile server probe {url} (proxy={"direct" if not proxy_url else "on"}) -> '
         f'success={result["success"]} status={result["status_code"]} '
         f'elapsed={result["elapsed_ms"]}ms'
     )

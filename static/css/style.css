@@ -2683,3 +2683,15 @@ code {
 .tile-url-verify-result--fail {
     color: var(--color-danger);
 }
+
+
+/* ==========================================================================
+   配置页：瓦片服务器行编辑器
+   ========================================================================== */
+.tile-server-row {
+    margin-bottom: 8px;
+}
+
+.tile-server-row .tile-url-verify-result {
+    margin-top: 4px;
+}
