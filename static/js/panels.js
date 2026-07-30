@@ -3,18 +3,22 @@
  * 不再整页跳转（单窗口 GIS 工作台形态，与 ArcGIS Online / Felt 同模式）。
  *
  * 顶部工具栏已移除，入口是首页地图左上角的 .map-panel-btn 浮动按钮
- * （index.html）。任何带 data-panel="history|config" 的元素都会被拦截
+ * （index.html）。任何带 data-panel="records|history|config" 的元素都会被拦截
  * 改为打开面板；独立页（/history、/config）没有面板元素，链接保持正常
  * 跳转，行为与之前完全一致。
  *
- * 全局暴露：window.openPanel(name) / window.closePanel()，name ∈ {history, config}
- * 支持 #history / #config hash 直达（resetConfig 刷新后重开配置面板）。
+ * 全局暴露：window.openPanel(name) / window.closePanel()，
+ * name ∈ {records, history, config}。「记录」面板合并了活动任务与历史：
+ * records 是新名字，history 作为别名保留（#history hash 与旧入口兼容）。
+ * 支持 #records / #history / #config hash 直达（resetConfig 刷新后重开配置面板）。
  */
 (function () {
     'use strict';
 
-    var PANELS = { history: 'historyPanel', config: 'configPanel' };
-    var inited = { history: false, config: false };
+    // records/history 指向同一个面板元素；懒初始化标记按**元素 id** 记，
+    // 免得 openPanel('records') 之后 openPanel('history') 又初始化一遍。
+    var PANELS = { history: 'historyPanel', records: 'historyPanel', config: 'configPanel' };
+    var inited = {};
     var current = null;
 
     function panelEl(name) { return document.getElementById(PANELS[name]); }
@@ -34,17 +38,19 @@
         });
         document.addEventListener('keydown', onKey);
 
-        // 触发按钮高亮：面板打开时点亮对应的 .map-panel-btn
+        // 触发按钮高亮：面板打开时点亮对应的入口（含别名，如 records/history）
         document.querySelectorAll('[data-panel]').forEach(function (b) {
-            b.classList.toggle('map-panel-btn--active', b.getAttribute('data-panel') === name);
+            b.classList.toggle('map-panel-btn--active',
+                PANELS[b.getAttribute('data-panel')] === PANELS[name]);
         });
 
-        // 懒初始化：面板可见后才建 Leaflet 地图（hidden 容器初始化会得到 0 尺寸）
-        if (!inited[name]) {
-            inited[name] = true;
-            if (name === 'history' && typeof initHistory === 'function') initHistory();
-            if (name === 'config' && typeof initConfig === 'function') initConfig();
-        } else if (name === 'history' && typeof historyViewer !== 'undefined' && historyViewer) {
+        // 懒初始化：面板可见后才建 Cesium 地图（hidden 容器初始化会得到 0 尺寸）
+        var key = PANELS[name];
+        if (!inited[key]) {
+            inited[key] = true;
+            if (key === 'historyPanel' && typeof initHistory === 'function') initHistory();
+            if (key === 'configPanel' && typeof initConfig === 'function') initConfig();
+        } else if (key === 'historyPanel' && typeof historyViewer !== 'undefined' && historyViewer) {
             setTimeout(function () { historyViewer.resize(); }, 250);
         }
 

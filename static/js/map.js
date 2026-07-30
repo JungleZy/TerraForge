@@ -24,15 +24,73 @@ function _heightToZoom(h) {
     return Math.max(0, Math.min(21, Math.round(z)));
 }
 
+// --- 首屏加载动画（Splash） ----------------------------------------------------
+// 进度 = 模拟缓动（封顶 90%）+ 真实就绪事件补完：Cesium Viewer 创建成功且
+// 首帧渲染后由 splashReady() 推满并淡出。JS 异常时 stage 原地显示错误，
+// 不让用户对着永远转圈的动画猜。
+let _splashTimer = null;
+let _splashDone = false;
+
+function initSplash() {
+    const splash = document.getElementById('splashScreen');
+    if (!splash || _splashTimer) return;
+    const bar = document.getElementById('splashBar');
+    const stage = document.getElementById('splashStage');
+    const stages = ['正在初始化地图引擎…', '加载影像服务…', '准备工作台…'];
+    let progress = 0;
+    let stageIdx = 0;
+    _splashTimer = setInterval(function () {
+        // 缓动逼近 90%，剩下的 10% 留给真实就绪事件
+        progress += (90 - progress) * 0.06 + 0.15;
+        if (progress > 90) progress = 90;
+        if (bar) bar.style.width = progress.toFixed(1) + '%';
+        const target = Math.min(stages.length - 1, Math.floor(progress / 35));
+        if (target !== stageIdx) {
+            stageIdx = target;
+            if (stage) stage.textContent = stages[stageIdx];
+        }
+    }, 120);
+    window.addEventListener('error', function (e) {
+        if (_splashDone || !stage) return;
+        stage.textContent = '加载出错：' + (e.message || '未知错误');
+        stage.classList.add('splash-stage--error');
+    });
+    // 兜底：正常路径几百毫秒就就绪；万一渲染管线异常，20s 后也不把用户
+    // 关在 splash 里（地图已在后面可用）。
+    setTimeout(splashReady, 20000);
+}
+
+function splashReady() {
+    if (_splashDone) return;
+    _splashDone = true;
+    if (_splashTimer) {
+        clearInterval(_splashTimer);
+        _splashTimer = null;
+    }
+    const splash = document.getElementById('splashScreen');
+    if (!splash) return;
+    const bar = document.getElementById('splashBar');
+    const stage = document.getElementById('splashStage');
+    if (bar) bar.style.width = '100%';
+    if (stage) stage.textContent = '就绪';
+    splash.classList.add('splash-screen--done');
+    setTimeout(function () { splash.remove(); }, 550);
+}
+
 function initMap(config) {
+    initSplash();
+
     const centerLat = parseFloat(config.map_center_lat || 29.56);
     const centerLng = parseFloat(config.map_center_lng || 106.55);
     const initialZoom = parseInt(config.map_initial_zoom || 3);
 
-    // OSM XYZ 底图，不用 Cesium Ion（离线打包工具，不能依赖 Ion token）
+    // 底图 XYZ 源：配置页可换（内网/自建瓦片服务），留空回退内置 OSM。
+    // 不用 Cesium Ion（离线打包工具，不能依赖 Ion token）
+    const tileUrl = (config.map_tile_url || '').trim()
+        || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
     viewer = new Cesium.Viewer('map', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-            url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            url: tileUrl,
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
             credit: '© OpenStreetMap contributors',
         })),
@@ -51,6 +109,13 @@ function initMap(config) {
         destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, _zoomToHeight(initialZoom)),
     });
 
+    // 首帧渲染完成 = 地图真正可用，splash 推满淡出
+    const onFirstFrame = function () {
+        viewer.scene.postRender.removeEventListener(onFirstFrame);
+        splashReady();
+    };
+    viewer.scene.postRender.addEventListener(onFirstFrame);
+
     // 默认缩放级别与「配置」页同步（默认最小/最大缩放）
     const zoomMinEl = document.getElementById('zoomMin');
     const zoomMaxEl = document.getElementById('zoomMax');
@@ -63,11 +128,17 @@ function initMap(config) {
 // --- 矩形框选（下载区域）-------------------------------------------------------
 // Cesium 没有 Leaflet.draw 那样的现成绘制控件，自己实现：「框选」按钮进入
 // 绘制态（相机操作暂停、光标十字），LEFT_DOWN 记起点、MOUSE_MOVE 实时更新
-// 矩形 entity、LEFT_UP 落定。修改选区 = 重新框选；「删除」清空。
+// 矩形 entity、LEFT_UP 落定。落定后选区**可调整**：四个角点手柄可拖拽，
+// bounds 浮层里的数值可点击编辑；「删除」清空，「框选」重画。
 let _selectionEntity = null;
 let _drawing = false;
 let _drawStart = null;              // Cartographic
 let _rectDegrees = null;            // {west, south, east, north}（度）
+
+// 角点调整手柄：选区落定后出现，拖到哪儿矩形跟到哪儿
+const _HANDLE_CORNERS = ['nw', 'ne', 'sw', 'se'];
+let _handleEntities = {};           // corner -> entity
+let _draggingHandle = null;         // 正在拖拽的角点（'nw' 等）或 null
 
 function _pickCartographic(position) {
     // 优先纯数学的椭球拾取（不依赖 GPU/地形渲染状态），失败再退回 globe.pick
@@ -94,6 +165,60 @@ function _ensureSelectionEntity() {
         },
     });
     return _selectionEntity;
+}
+
+// 手柄位置直接读 _rectDegrees（CallbackProperty），拖手柄改 _rectDegrees
+// 时手柄与矩形一起动，不需要手动同步。
+function _cornerPosition(corner) {
+    if (!_rectDegrees) return null;
+    const lng = corner.indexOf('w') !== -1 ? _rectDegrees.west : _rectDegrees.east;
+    const lat = corner.indexOf('n') !== -1 ? _rectDegrees.north : _rectDegrees.south;
+    return Cesium.Cartesian3.fromDegrees(lng, lat);
+}
+
+function _ensureHandles() {
+    if (!_rectDegrees || !viewer) return;
+    _HANDLE_CORNERS.forEach(function (corner) {
+        if (_handleEntities[corner]) return;
+        const entity = viewer.entities.add({
+            position: new Cesium.CallbackProperty(function () {
+                return _cornerPosition(corner);
+            }, false),
+            point: {
+                pixelSize: 11,
+                color: Cesium.Color.fromCssColorString('#38bdf8'),
+                outlineColor: Cesium.Color.WHITE,
+                outlineWidth: 2,
+                // 手柄必须始终压在矩形与地形之上，否则 3D 视角下会被盖住拖不到
+                disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+        });
+        entity._selectionHandle = corner;   // scene.pick 命中后据此识别
+        _handleEntities[corner] = entity;
+    });
+}
+
+function _removeHandles() {
+    _HANDLE_CORNERS.forEach(function (corner) {
+        if (_handleEntities[corner] && viewer) {
+            viewer.entities.remove(_handleEntities[corner]);
+        }
+        delete _handleEntities[corner];
+    });
+    _draggingHandle = null;
+}
+
+// _rectDegrees 是选区的唯一真相；currentBounds 是它的提交态快照。
+// 拖手柄 / 数值编辑改了 _rectDegrees 之后走这里同步并刷新浮层。
+function _syncBoundsFromRect() {
+    if (!_rectDegrees) return;
+    currentBounds = {
+        north: _rectDegrees.north,
+        south: _rectDegrees.south,
+        east: _rectDegrees.east,
+        west: _rectDegrees.west,
+    };
+    updateBoundsInfo();
 }
 
 function _setRectFromCartographics(a, b) {
@@ -135,6 +260,7 @@ function clearSelection() {
         viewer.entities.remove(_selectionEntity);
         _selectionEntity = null;
     }
+    _removeHandles();
     _rectDegrees = null;
     currentBounds = null;
     _exitDrawMode();
@@ -147,46 +273,87 @@ function _initMapTools() {
     const scc = viewer.scene.screenSpaceCameraController;
 
     handler.setInputAction(function (event) {
-        if (!_drawing) return;
-        const carto = _pickCartographic(event.position);
-        if (!carto) return;
-        _drawStart = carto;
-        scc.enableRotate = false;
-        scc.enableTilt = false;
-        scc.enableTranslate = false;
+        if (_drawing) {
+            const carto = _pickCartographic(event.position);
+            if (!carto) return;
+            _drawStart = carto;
+            scc.enableRotate = false;
+            scc.enableTilt = false;
+            scc.enableTranslate = false;
+            return;
+        }
+        // 非绘制态：命中角点手柄则开始拖拽调整（同样暂停相机操作）
+        if (_rectDegrees) {
+            const picked = viewer.scene.pick(event.position, 16, 16);
+            const corner = picked && picked.id && picked.id._selectionHandle;
+            if (corner) {
+                _draggingHandle = corner;
+                scc.enableRotate = false;
+                scc.enableTilt = false;
+                scc.enableTranslate = false;
+            }
+        }
     }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
 
     handler.setInputAction(function (event) {
-        if (!_drawing || !_drawStart) return;
-        const carto = _pickCartographic(event.endPosition);
-        if (!carto) return;
-        _setRectFromCartographics(_drawStart, carto);
-        _ensureSelectionEntity();
+        if (_drawing && _drawStart) {
+            const carto = _pickCartographic(event.endPosition);
+            if (!carto) return;
+            _setRectFromCartographics(_drawStart, carto);
+            _ensureSelectionEntity();
+            return;
+        }
+        if (_draggingHandle && _rectDegrees) {
+            const carto = _pickCartographic(event.endPosition);
+            if (!carto) return;
+            const lng = Cesium.Math.toDegrees(carto.longitude);
+            const lat = Cesium.Math.toDegrees(carto.latitude);
+            const d = _rectDegrees;
+            // 钳位在对侧边内侧 1e-6°，拖过对边不会翻转成负宽/负高的矩形
+            if (_draggingHandle.indexOf('w') !== -1) d.west = Math.min(lng, d.east - 1e-6);
+            else d.east = Math.max(lng, d.west + 1e-6);
+            if (_draggingHandle.indexOf('n') !== -1) d.north = Math.max(lat, d.south + 1e-6);
+            else d.south = Math.min(lat, d.north - 1e-6);
+            d.north = Math.min(90, d.north);
+            d.south = Math.max(-90, d.south);
+            _syncBoundsFromRect();
+        }
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
     handler.setInputAction(function (event) {
-        if (!_drawing || !_drawStart) return;
-        const carto = _pickCartographic(event.position) || _drawStart;
-        _setRectFromCartographics(_drawStart, carto);
-        _drawStart = null;
-        scc.enableRotate = true;
-        scc.enableTilt = true;
-        scc.enableTranslate = true;
-        _ensureSelectionEntity();
-        currentBounds = {
-            north: _rectDegrees.north,
-            south: _rectDegrees.south,
-            east: _rectDegrees.east,
-            west: _rectDegrees.west,
-        };
-        _exitDrawMode();
-        updateBoundsInfo();
-        refreshSubmitButtonState();
+        if (_drawing && _drawStart) {
+            const carto = _pickCartographic(event.position) || _drawStart;
+            _setRectFromCartographics(_drawStart, carto);
+            _drawStart = null;
+            scc.enableRotate = true;
+            scc.enableTilt = true;
+            scc.enableTranslate = true;
+            _ensureSelectionEntity();
+            currentBounds = {
+                north: _rectDegrees.north,
+                south: _rectDegrees.south,
+                east: _rectDegrees.east,
+                west: _rectDegrees.west,
+            };
+            _exitDrawMode();
+            _ensureHandles();
+            updateBoundsInfo();
+            refreshSubmitButtonState();
 
-        const btn = document.getElementById('createTaskBtn');
-        if (btn) {
-            btn.style.animation = 'pulse 0.5s ease-in-out';
-            setTimeout(() => { btn.style.animation = ''; }, 500);
+            // 选区落定后 pulse 浮层上的「下载」按钮，引导下一步
+            const dlBtn = document.getElementById('boundsDownloadBtn');
+            if (dlBtn) {
+                dlBtn.style.animation = 'pulse 0.5s ease-in-out';
+                setTimeout(() => { dlBtn.style.animation = ''; }, 500);
+            }
+            return;
+        }
+        if (_draggingHandle) {
+            _draggingHandle = null;
+            scc.enableRotate = true;
+            scc.enableTilt = true;
+            scc.enableTranslate = true;
+            refreshSubmitButtonState();
         }
     }, Cesium.ScreenSpaceEventType.LEFT_UP);
 
@@ -255,10 +422,6 @@ function initDownloadTypeToggle() {
         if (mapStyleField) mapStyleField.style.display = isMap ? '' : 'none';
         if (demOptions) demOptions.style.display = isDem ? '' : 'none';
 
-        // 下载类都需要框选，四至浮层始终可见（本地高程的隐藏逻辑在处理表单那边）
-        const boundsInfo = document.getElementById('boundsInfo');
-        if (boundsInfo) boundsInfo.style.display = '';
-
         const outputPath = document.getElementById('outputPath');
         if (outputPath && !outputPath.dataset.userEdited) {
             outputPath.value = isDem ? './downloads/dem' : './downloads/map';
@@ -296,14 +459,6 @@ function initProcessTypeToggle() {
         if (contourOptions) contourOptions.style.display = isContour ? '' : 'none';
         // 缩放范围只有等高线用；本地高程的层级在它自己的字段里
         if (zoomSection) zoomSection.style.display = isContour ? '' : 'none';
-
-        // 处理类都是上传驱动（本地高程 / 等高线），都没有 bbox：
-        // 处理表单可见时四至浮层一律隐藏。注意只在处理表单可见时才接管
-        // 浮层 —— 初始化时两张表单的 apply 都会跑一遍，不能把下载表单的
-        // 浮层藏起来。
-        const boundsInfo = document.getElementById('boundsInfo');
-        const processHidden = document.getElementById('processForm')?.hidden;
-        if (boundsInfo) boundsInfo.style.display = processHidden ? '' : 'none';
 
         refreshSubmitButtonState();
     }
@@ -461,6 +616,7 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
             viewer.entities.remove(_selectionEntity);
             _selectionEntity = null;
         }
+        _removeHandles();
         _rectDegrees = null;
         currentBounds = null;
         updateBoundsInfo();
@@ -474,39 +630,20 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
 }
 
 /**
- * 渲染框选后的四至（#boundsInfo，GIS 工作台改版后从表单底部 alert 搬到
- * 地图右上角的 .bounds-overlay 浮层），并同步状态栏的选区摘要（#statusSelection）。
+ * 渲染框选后的四至（#boundsInfo，地图右上角的 .bounds-overlay 浮层），
+ * 并同步状态栏的选区摘要（#statusSelection）。
  *
- * A5 / Task 10 把它从 5 行压成 2 行的网格：
- *   改前——图标 +「选中区域：」标题 + ▲北/▼南/▶东/◀西 四行 <br>，实测 146.5px；
- *   改后——4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行，实测 62.0px。
- * 这一项单独就省下 84.5px（1366x768 上按钮总共要往回收 181px）。
+ * 浮层分两段：
+ *   1. .bounds-grid —— 4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行。
+ *      每个值带 data-field，**点击可编辑**（_beginBoundsEdit 换成输入框，
+ *      Enter/失焦提交，Esc 取消）。`N/S/E/W` 键与 currentBounds 字段的
+ *      配对关系是数据正确性，由
+ *      test_bounds_labels_bind_to_the_right_coordinate 逐对钉住；
+ *      `.bounds-sr` 读屏方位词由 test_bounds_readout_is_announced_to_screen_readers
+ *      钉住。这两段 markup 不要动结构。
+ *   2. .bounds-actions —— 「下载」按钮（打开下载弹窗）+ 调整提示。
  *
- * 四处刻意的改动，都不是纯排版：
- *  1. `▲北/▼南/▶东/◀西` -> `N/S/E/W`。GIS 惯例用方位字母；原来那四个三角形在
- *     等宽字体里宽度不一致，四行的数字对不齐。中文方位词没有丢，只是移到了
- *     .bounds-sr 里（见第 4 点）——视觉上是 N/S/E/W，读屏听到的是「北纬…」。
- *  2. 小数 6 位 -> 5 位。第 6 位约 0.11m，框选一个下载范围用不到；砍掉之后
- *     两个数字并排也放得下。5 位 ≈ 1.1m。
- *  3. 删掉了原来两个分支末尾各两行的 `boundsInfo.style.background/borderColor`
- *     赋值 —— 两个分支赋的是**同一个值**，且与 style.css 里 `.alert-info` 的
- *     `background: rgba(59,130,246,0.1)` / `border-color: var(--color-info)`
- *     逐字相同，是纯粹的死代码。工作台改版后容器改为 .bounds-overlay，
- *     底色由 style.css 的 .bounds-overlay 规则提供。
- *  4. 每个值前面加一段 `.bounds-sr` 的读屏专用方位词，键那边 aria-hidden。
- *     N/S/E/W 视觉上够用，但读屏软件念出来只有四个字母；这样读屏拿到的是
- *     「北纬 39.91653」。`.bounds-sr` 是 position:absolute，不参与布局。
- *
- * ⚠️ 键与值的**配对关系是数据正确性，不是排版**：把 N 配到 south 上，界面就会
- * 把南纬标成北纬，而所有排版类断言都是绿的。由
- * test_bounds_labels_bind_to_the_right_coordinate 逐对钉住 —— 它解析每个
- * bounds-k 的字母和紧随其后那个值引用的 currentBounds.<字段> 做映射比对，
- * 不是「这四个字母都出现过」。
- *
- * 行数由 tests/test_css_contract.py::test_bounds_readout_is_exactly_two_rows
- * 守住：它按「网格子元素数 / grid-template-columns 的轨道数」算行数，并且要求
- * 浮层里**只有**这一个顶层元素 —— 否则在网格上面加一行标题就又变回 3 行，
- * 而「8 格 / 4 列 = 2 行」这个算式看不见它。
+ * 小数 5 位（≈1.1m），框选下载范围够用，两个数字并排也放得下。
  */
 function updateBoundsInfo() {
     const boundsInfo = document.getElementById('boundsInfo');
@@ -515,10 +652,21 @@ function updateBoundsInfo() {
         const f = (v) => v.toFixed(5);
         boundsInfo.innerHTML = `
             <div class="bounds-grid">
-                <span class="bounds-k" aria-hidden="true">N</span><span class="bounds-v"><span class="bounds-sr">北纬 </span>${f(currentBounds.north)}</span>
-                <span class="bounds-k" aria-hidden="true">S</span><span class="bounds-v"><span class="bounds-sr">南纬 </span>${f(currentBounds.south)}</span>
-                <span class="bounds-k" aria-hidden="true">E</span><span class="bounds-v"><span class="bounds-sr">东经 </span>${f(currentBounds.east)}</span>
-                <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v"><span class="bounds-sr">西经 </span>${f(currentBounds.west)}</span>
+                <span class="bounds-k" aria-hidden="true">N</span><span class="bounds-v" data-field="north" title="点击编辑"><span class="bounds-sr">北纬 </span>${f(currentBounds.north)}</span>
+                <span class="bounds-k" aria-hidden="true">S</span><span class="bounds-v" data-field="south" title="点击编辑"><span class="bounds-sr">南纬 </span>${f(currentBounds.south)}</span>
+                <span class="bounds-k" aria-hidden="true">E</span><span class="bounds-v" data-field="east" title="点击编辑"><span class="bounds-sr">东经 </span>${f(currentBounds.east)}</span>
+                <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v" data-field="west" title="点击编辑"><span class="bounds-sr">西经 </span>${f(currentBounds.west)}</span>
+            </div>
+            <div class="bounds-actions">
+                <button type="button" class="btn btn-primary btn-sm" id="boundsDownloadBtn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                    下载
+                </button>
+                <span class="bounds-hint">拖拽角点调整 · 点击数值编辑</span>
             </div>
         `;
         if (statusSel) {
@@ -539,6 +687,114 @@ function updateBoundsInfo() {
         `;
         if (statusSel) statusSel.textContent = '未选择区域';
     }
+}
+
+// --- 选区数值点击编辑 ----------------------------------------------------------
+// 点击 .bounds-v 把读数换成输入框；Enter / 失焦提交，Esc 取消。
+// 提交经 _applyBoundsEdit 校验（北纬>南纬、纬度 ±90、经度非零宽），
+// 非法输入回退原值并 toast。
+
+function _beginBoundsEdit(vEl) {
+    if (!currentBounds || vEl.querySelector('input')) return;
+    const field = vEl.dataset.field;
+    if (!field) return;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'bounds-edit-input';
+    input.value = currentBounds[field].toFixed(5);
+    input.setAttribute('aria-label', '编辑' + field);
+    vEl.innerHTML = '';
+    vEl.appendChild(input);
+    input.focus();
+    input.select();
+    let done = false;
+    function commit(apply) {
+        if (done) return;
+        done = true;
+        if (apply) _applyBoundsEdit(field, input.value);
+        else updateBoundsInfo();    // 取消：重渲染回原读数
+    }
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            commit(true);
+        } else if (e.key === 'Escape') {
+            commit(false);
+        }
+    });
+    input.addEventListener('blur', function () { commit(true); });
+}
+
+function _applyBoundsEdit(field, raw) {
+    const v = parseFloat(String(raw).trim());
+    if (isNaN(v)) {
+        showNotification('坐标格式无效：' + raw, 'warning');
+        updateBoundsInfo();
+        return;
+    }
+    const b = {
+        north: currentBounds.north,
+        south: currentBounds.south,
+        east: currentBounds.east,
+        west: currentBounds.west,
+    };
+    b[field] = v;
+    if (b.north <= b.south) {
+        showNotification('北纬必须大于南纬', 'warning');
+        updateBoundsInfo();
+        return;
+    }
+    if (b.north > 90 || b.south < -90) {
+        showNotification('纬度必须在 ±90° 之间', 'warning');
+        updateBoundsInfo();
+        return;
+    }
+    if (Math.abs(b.east - b.west) < 1e-9) {
+        showNotification('东西经不能相同（选区宽度为 0）', 'warning');
+        updateBoundsInfo();
+        return;
+    }
+    _rectDegrees = { west: b.west, south: b.south, east: b.east, north: b.north };
+    _ensureSelectionEntity();
+    _ensureHandles();
+    _syncBoundsFromRect();
+    refreshSubmitButtonState();
+}
+
+// --- 下载 / 处理弹窗 -----------------------------------------------------------
+
+// 打开下载弹窗前刷新顶部的选区四至摘要——弹窗可能关过又开，
+// 期间用户拖过角点或改过数值，摘要必须反映当前选区。
+function openDownloadModal() {
+    if (!currentBounds) {
+        showNotification('请先在地图上框选下载区域', 'warning');
+        return;
+    }
+    const summary = document.getElementById('downloadModalBounds');
+    if (summary) {
+        const f = (v) => v.toFixed(5);
+        const w = (currentBounds.east - currentBounds.west).toFixed(3);
+        const h = (currentBounds.north - currentBounds.south).toFixed(3);
+        summary.textContent =
+            `选区 N ${f(currentBounds.north)} · S ${f(currentBounds.south)} · ` +
+            `E ${f(currentBounds.east)} · W ${f(currentBounds.west)}（${w}° × ${h}°）`;
+    }
+    const modalEl = document.getElementById('downloadModal');
+    if (!modalEl || typeof bootstrap === 'undefined') return;
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    setTimeout(function () {
+        const nameEl = document.getElementById('taskName');
+        if (nameEl) nameEl.focus();
+    }, 350);
+}
+
+// 任务创建成功后：关掉对应弹窗，滑出记录面板让用户看到新任务。
+function _afterTaskCreated(modalId) {
+    const modalEl = document.getElementById(modalId);
+    if (modalEl && typeof bootstrap !== 'undefined') {
+        bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+    }
+    if (window.openPanel) window.openPanel('records');
 }
 
 document.getElementById('downloadForm').addEventListener('submit', async function(e) {
@@ -607,6 +863,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
             showNotification('任务创建成功！ID: ' + result.task_id, 'success');
             resetForm();
             loadActiveTasks();
+            _afterTaskCreated('downloadModal');
         } else {
             showNotification('创建任务失败: ' + result.error, 'danger');
         }
@@ -716,6 +973,7 @@ async function submitContour() {
         resetForm({ formId: 'processForm' });
         resetContourTintUI();
         loadActiveTasks();
+        _afterTaskCreated('processModal');
     } catch (err) {
         showNotification('创建失败: ' + err.message, 'danger');
     } finally {
@@ -935,6 +1193,7 @@ async function submitLocalTerrain() {
             showNotification('上传成功，已开始切片！ID: ' + result.task_id, 'success');
             resetForm({ clearBounds: false, formId: 'processForm' });
             loadActiveTasks();
+            _afterTaskCreated('processModal');
         } else {
             showNotification('上传失败: ' + (result.error || resp.status), 'danger');
         }
@@ -947,8 +1206,9 @@ async function submitLocalTerrain() {
 }
 
 /**
- * 工作台行为：状态栏读数（鼠标经纬度 / 缩放级别 / 选区摘要）、比例尺控件、
- * dock 收起展开。在 initMap 之后由页面 init 块调用（index.html）。
+ * 工作台行为：状态栏读数（鼠标经纬度 / 缩放级别 / 选区摘要 / 时钟）、
+ * bounds 浮层交互（下载按钮、数值点击编辑）。在 initMap 之后由页面
+ * init 块调用（index.html）。
  */
 function initMapWorkbench() {
     if (!viewer) return;
@@ -985,80 +1245,32 @@ function initMapWorkbench() {
         });
     }
 
-    // dock 收起 / 展开：margin 动画结束后 invalidateSize，300ms 兜底
-    // （地图容器在动画中途尺寸为中间值，必须等动画结束再刷新）
-    const dock = document.getElementById('workbenchDock');
-    const collapseBtn = document.getElementById('dockCollapse');
-    const reopenBtn = document.getElementById('dockReopen');
-    // 左列功能条的「数据下载」「数据处理」按钮：各自对应 dock 里的一张
-    // 独立表单。按钮与 dock 的收起/展开是同一状态的两个开关，
-    // 任何一边改变都要同步按钮的点亮态。
-    const dockDownload = document.getElementById('dockDownload');
-    const dockProcess = document.getElementById('dockProcess');
-    const dockFormTitle = document.getElementById('dockFormTitle');
-    let activeForm = 'download';           // 'download' | 'process'
-
-    function syncFormButtons(collapsed) {
-        const pairs = [[dockDownload, 'download'], [dockProcess, 'process']];
-        pairs.forEach(function (pair) {
-            const btn = pair[0], name = pair[1];
-            if (!btn) return;
-            const on = !collapsed && activeForm === name;
-            btn.classList.toggle('map-panel-btn--active', on);
-            btn.setAttribute('aria-pressed', String(on));
-        });
-    }
-
-    function setActiveForm(name) {
-        activeForm = name;
-        const dl = document.getElementById('downloadForm');
-        const pr = document.getElementById('processForm');
-        if (dl) dl.hidden = name !== 'download';
-        if (pr) pr.hidden = name !== 'process';
-        if (dockFormTitle) dockFormTitle.textContent = name === 'download' ? '数据下载' : '数据处理';
-        // 重新摆字段可见性（四至浮层在本地高程模式下要隐藏）
-        const typeEl = document.getElementById(name === 'download' ? 'downloadType' : 'processType');
-        if (typeEl) typeEl.dispatchEvent(new Event('change'));
-        syncFormButtons(dock ? dock.classList.contains('dock-collapsed') : false);
-    }
-
-    function setDockCollapsed(collapsed) {
-        if (!dock) return;
-        dock.classList.toggle('dock-collapsed', collapsed);
-        if (reopenBtn) reopenBtn.hidden = !collapsed;
-        syncFormButtons(collapsed);
-        refreshMapSize();
-    }
-
-    function refreshMapSize() {
-        let done = false;
-        const once = function () {
-            if (done) return;
-            done = true;
-            viewer.resize();
+    // 状态栏时钟：本地时间 HH:MM:SS，1s 刷新
+    const clockEl = document.getElementById('statusClock');
+    if (clockEl) {
+        const tick = function () {
+            const d = new Date();
+            const p = (n) => String(n).padStart(2, '0');
+            clockEl.textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
         };
-        if (dock) dock.addEventListener('transitionend', once, { once: true });
-        setTimeout(once, 300);
+        tick();
+        setInterval(tick, 1000);
     }
-    if (dock && collapseBtn) {
-        collapseBtn.addEventListener('click', function () { setDockCollapsed(true); });
-    }
-    if (dock && reopenBtn) {
-        reopenBtn.addEventListener('click', function () { setDockCollapsed(false); });
-    }
-    [[dockDownload, 'download'], [dockProcess, 'process']].forEach(function (pair) {
-        const btn = pair[0], name = pair[1];
-        if (!btn) return;
-        btn.addEventListener('click', function () {
-            const collapsed = dock && dock.classList.contains('dock-collapsed');
-            if (!collapsed && activeForm === name) {
-                setDockCollapsed(true);        // 已展开且就是这张表单：再点收起
-            } else {
-                setActiveForm(name);
-                setDockCollapsed(false);
+
+    // bounds 浮层交互（事件代理，浮层内容每次 updateBoundsInfo 都重渲染）：
+    // 「下载」按钮 -> 下载弹窗；.bounds-v 数值 -> 点击编辑。
+    const boundsInfo = document.getElementById('boundsInfo');
+    if (boundsInfo) {
+        boundsInfo.addEventListener('click', function (e) {
+            const dl = e.target.closest('#boundsDownloadBtn');
+            if (dl) {
+                openDownloadModal();
+                return;
             }
+            const v = e.target.closest('.bounds-v');
+            if (v && currentBounds) _beginBoundsEdit(v);
         });
-    });
+    }
 
     // 首屏填充「请在地图上框选下载区域」提示与状态栏选区摘要
     updateBoundsInfo();

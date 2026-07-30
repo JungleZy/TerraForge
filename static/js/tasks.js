@@ -18,20 +18,26 @@ function initTasks() {
     socket.on('task_progress', function(data) {
         console.log('Task progress update:', data);
         updateTaskProgress(data);
+        updateStatusTasks();
     });
 
     socket.on('task_completed', function(data) {
         console.log('Task completed:', data);
         handleTaskCompleted(data.task_id, data.task_type || 'map', data.warning);
+        pushStatusEvent('任务 #' + data.task_id + ' 已完成');
+        updateStatusTasks();
     });
 
     socket.on('task_failed', function(data) {
         console.log('Task failed:', data);
         handleTaskFailed(data.task_id, data.task_type || 'map', data.error_message);
+        pushStatusEvent('任务 #' + data.task_id + ' 失败');
+        updateStatusTasks();
     });
 
     socket.on('task_stitch_progress', function(data) {
         console.log('Task stitch progress:', data);
+        pushStatusEvent('任务 #' + data.task_id + ' 拼接瓦片中…');
     });
 
     // 某个缩放级别拼接失败。任务可能仍在跑(其余级别继续),所以这里只报,不动卡片。
@@ -44,9 +50,11 @@ function initTasks() {
     // 复制瓦片阶段的心跳。下载进度条此时已经 100%,没有这个事件界面会静止若干分钟。
     socket.on('task_copy_progress', function(data) {
         console.log('Task copy progress:', data);
+        pushStatusEvent('任务 #' + data.task_id + ' 复制瓦片中…');
     });
 
     loadActiveTasks();
+    updateStatusTasks();
 
     // 每秒更新一次时长显示
     if (timeUpdateInterval) {
@@ -188,6 +196,7 @@ function renderActiveTasks(tasks) {
               <p style="margin:0;">暂无活动任务</p>
             </div>
         `;
+        updateStatusTasks();
         return;
     }
 
@@ -196,6 +205,48 @@ function renderActiveTasks(tasks) {
     // 文本在这里补。漏掉这一步的话，失败当场看得见原因，之后随便来一个新任务
     // 触发整体重绘，红框就变空了。
     tasks.forEach(applyTaskErrorText);
+    updateStatusTasks();
+}
+
+// --- 底部状态栏：活动任务聚合 + 最近事件 ----------------------------------------
+// 状态栏元素只在首页存在（#statusTasksText 等），独立页不加载 tasks.js，
+// 这里仍全部做 null 守卫，避免未来被其它页引入时报错。
+
+// 活动任务读数：进行中（pending/running/paused）任务数 + 汇总进度条。
+// failed 卡片留在 activeTasks 里等用户移除，但不算「活动」。
+function updateStatusTasks() {
+    const textEl = document.getElementById('statusTasksText');
+    if (!textEl) return;
+    const barWrap = document.getElementById('statusTasksProgress');
+    const barFill = document.getElementById('statusTasksBar');
+    const live = Array.from(activeTasks.values())
+        .filter(t => ['pending', 'running', 'paused'].includes(t.status));
+    if (live.length === 0) {
+        textEl.textContent = '无活动任务';
+        if (barWrap) barWrap.hidden = true;
+        return;
+    }
+    const running = live.filter(t => t.status === 'running').length;
+    let total = 0;
+    let done = 0;
+    live.forEach(t => {
+        total += t.total_items || 0;
+        done += t.downloaded_items || 0;
+    });
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    textEl.textContent = `${live.length} 个活动任务（${running} 运行中） ${pct}%`;
+    if (barWrap && barFill) {
+        barWrap.hidden = false;
+        barFill.style.width = pct + '%';
+    }
+}
+
+// 最近事件单行读数：任务完成/失败/拼接/复制阶段的文字心跳。
+// 这些 socket 事件原本只 console.log，状态栏是唯一让消费者。
+function pushStatusEvent(msg) {
+    const el = document.getElementById('statusEvent');
+    if (!el) return;
+    el.textContent = msg;
 }
 
 function createTaskCard(task) {

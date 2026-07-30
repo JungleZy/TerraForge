@@ -3,13 +3,35 @@
 {% block title %}地图下载 - TerraForge{% endblock %}
 
 {% block content %}
+<!-- 首屏加载动画：地图引擎（Cesium 同步阻塞初始化）就绪前盖住全屏。
+     进度条是「模拟缓动 + 真实就绪事件补完」：map.js 的 initSplash() 驱动，
+     viewer 首帧渲染后推满并淡出；JS 异常时原地显示错误而不是永久转圈。 -->
+<div class="splash-screen" id="splashScreen" role="status" aria-label="页面加载中">
+    <div class="splash-grid" aria-hidden="true"></div>
+    <div class="splash-scan" aria-hidden="true"></div>
+    <div class="splash-core">
+        <svg class="splash-logo" width="72" height="72" viewBox="0 0 72 72" fill="none" aria-hidden="true">
+            <circle cx="36" cy="36" r="30" stroke="currentColor" stroke-width="2" opacity="0.35"/>
+            <circle cx="36" cy="36" r="22" stroke="currentColor" stroke-width="1.5" opacity="0.5" stroke-dasharray="4 5"/>
+            <path d="M18 44 L30 26 L38 38 L46 24 L54 44 Z" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linejoin="round"/>
+            <circle class="splash-logo-dot" cx="36" cy="36" r="3.5" fill="currentColor"/>
+        </svg>
+        <div class="splash-wordmark">TerraForge</div>
+        <div class="splash-track">
+            <div class="splash-bar" id="splashBar"></div>
+        </div>
+        <div class="splash-stage" id="splashStage">正在初始化地图引擎…</div>
+    </div>
+</div>
+
 <div class="index-layout">
     <!-- Map canvas：铺满主区，不再是卡片内容 -->
     <div class="index-map">
         <div id="map"></div>
         <!-- 左列工具条（Cesium 时代全自绘，不再借 Leaflet 控件容器）：
              三组 —— 视图（放大/缩小）、框选（画矩形选区/清除）、
-             功能面板（数据下载/数据处理/历史记录/配置）。图标在上文字在下。 -->
+             功能（数据处理弹窗/记录面板/配置面板）。图标在上文字在下。
+             「下载」不是常驻入口：框选后由选区浮层上的「下载」按钮触发。 -->
         <div class="map-toolbar" id="mapToolbar">
             <div class="map-panel-triggers">
                 <button type="button" class="map-panel-btn" id="mapZoomIn" aria-label="放大" title="放大">
@@ -41,26 +63,20 @@
                 </button>
             </div>
             <div class="map-panel-triggers" id="mapPanelTriggers">
-                <button type="button" class="map-panel-btn map-panel-btn--active" id="dockDownload" aria-pressed="true" aria-label="数据下载" title="数据下载">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                        <polyline points="7 10 12 15 17 10"></polyline>
-                        <line x1="12" y1="15" x2="12" y2="3"></line>
-                    </svg>
-                    <span>下载</span>
-                </button>
-                <button type="button" class="map-panel-btn" id="dockProcess" aria-pressed="false" aria-label="数据处理" title="数据处理">
+                <button type="button" class="map-panel-btn" id="processOpenBtn"
+                        data-bs-toggle="modal" data-bs-target="#processModal"
+                        aria-label="数据处理" title="数据处理">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
                     </svg>
                     <span>处理</span>
                 </button>
-                <button type="button" class="map-panel-btn" data-panel="history" aria-label="历史记录" title="历史记录">
+                <button type="button" class="map-panel-btn" data-panel="records" aria-label="记录" title="记录（活动任务 + 历史）">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="10"></circle>
                         <polyline points="12 6 12 12 16 14"></polyline>
                     </svg>
-                    <span>历史</span>
+                    <span>记录</span>
                 </button>
                 <button type="button" class="map-panel-btn" data-panel="config" aria-label="配置" title="配置">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -71,37 +87,30 @@
                 </button>
             </div>
         </div>
-        <!-- 框选后的范围信息浮层（原表单底部 alert 搬到地图上） -->
+        <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「下载」入口 -->
         <div class="bounds-overlay" id="boundsInfo" role="status" aria-live="polite"></div>
-        <!-- dock 收起后的展开把手 -->
-        <button type="button" class="dock-reopen-handle" id="dockReopen" title="展开参数面板" aria-label="展开参数面板" hidden>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
-        </button>
     </div>
+</div>
 
-    <!-- Right dock：下载参数 + 活动任务（380px，可收起） -->
-    <div class="index-right" id="workbenchDock">
-        <div class="card dock-panel">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 style="margin: 0;">
+<!-- 下载参数弹窗：框选后由选区浮层的「下载」按钮打开（map.js 里
+     openDownloadModal()，会先刷新顶部的选区四至摘要）。关闭弹窗即可
+     回地图继续拖拽角点 / 点击数值调整选区，表单内容保留。 -->
+<div class="modal fade" id="downloadModal" tabindex="-1" aria-labelledby="downloadModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="downloadModalLabel">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                        <line x1="4" y1="21" x2="4" y2="14"></line>
-                        <line x1="4" y1="10" x2="4" y2="3"></line>
-                        <line x1="12" y1="21" x2="12" y2="12"></line>
-                        <line x1="12" y1="8" x2="12" y2="3"></line>
-                        <line x1="20" y1="21" x2="20" y2="16"></line>
-                        <line x1="20" y1="12" x2="20" y2="3"></line>
-                        <line x1="1" y1="14" x2="7" y2="14"></line>
-                        <line x1="9" y1="8" x2="15" y2="8"></line>
-                        <line x1="17" y1="16" x2="23" y2="16"></line>
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
                     </svg>
-                    <span id="dockFormTitle">数据下载</span>
+                    下载数据
                 </h5>
-                <button type="button" class="dock-collapse-btn" id="dockCollapse" title="收起参数面板" aria-label="收起参数面板">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
             </div>
-            <div class="card-body">
+            <div class="modal-body">
+                <div class="modal-bounds-summary" id="downloadModalBounds"></div>
                 <form id="downloadForm">
                     <div class="form-group-label">基础</div>
                     <div class="mb-3">
@@ -184,11 +193,27 @@
                         创建下载任务
                     </button>
                 </form>
+            </div>
+        </div>
+    </div>
+</div>
 
-                <!-- 数据处理表单：与数据下载并列的独立入口（左列「数据处理」按钮
-                     切换）。任务名 / 缩放行 / 提交按钮是各自的元素（process* id），
-                     不与下载表单共享 —— 两张表单互不影响。 -->
-                <form id="processForm" hidden>
+<!-- 数据处理弹窗：左列「处理」按钮直接打开（data-bs-toggle）。
+     处理类任务（本地高程切片 / 等高线）都是上传驱动，不需要框选。 -->
+<div class="modal fade" id="processModal" tabindex="-1" aria-labelledby="processModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="processModalLabel">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                    </svg>
+                    数据处理
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <form id="processForm">
                     <div class="form-group-label">基础</div>
                     <div class="mb-3">
                         <label for="processTaskName" class="form-label">任务名称</label>
@@ -213,7 +238,7 @@
                     <div class="mb-3" id="contourOptions" style="display:none;">
                         <label for="contourFiles" class="form-label">上传高程文件（可多选 .tif/.tiff）</label>
                         <input type="file" class="form-control" id="contourFiles" accept=".tif,.tiff" multiple>
-                        <small class="form-text text-muted">等高线从上传的 DEM 渲染；远程高程下载在「数据下载」里做。</small>
+                        <small class="form-text text-muted">等高线从上传的 DEM 渲染；远程高程下载在「下载数据」里做。</small>
 
                         <label for="contourInterval" class="form-label mt-2">基准等高距（米）</label>
                         <input type="number" class="form-control" id="contourInterval" min="1" step="1" value="50">
@@ -286,41 +311,41 @@
                 </form>
             </div>
         </div>
-
-        <div class="card dock-panel">
-            <div class="card-header">
-                <h5 style="margin: 0;">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-                    </svg>
-                    活动任务
-                </h5>
-            </div>
-            <div class="card-body" id="activeTasks">
-                <p class="text-muted">暂无活动任务</p>
-            </div>
-        </div>
     </div>
 </div>
 
 <!-- 覆盖面板 backdrop：点击关闭面板 -->
 <div class="panel-backdrop" id="panelBackdrop" hidden></div>
 
-<!-- 历史记录面板（右侧滑出，浮在地图上方；独立页 /history 仍可用） -->
-<section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="历史记录" hidden>
+<!-- 记录面板（右侧滑出，浮在地图上方）：进行中（活动任务，socket 实时）
+     + 历史（统计 / 区域地图 / 任务列表）。独立页 /history 仍可用。 -->
+<section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="记录" hidden>
     <header class="workbench-panel__header">
         <span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
                 <circle cx="12" cy="12" r="10"></circle>
                 <polyline points="12 6 12 12 16 14"></polyline>
             </svg>
-            历史记录
+            记录
         </span>
         <button type="button" class="dock-collapse-btn" data-panel-close title="关闭面板" aria-label="关闭面板">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
     </header>
     <div class="workbench-panel__body">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                    </svg>
+                    进行中
+                </h5>
+            </div>
+            <div class="card-body" id="activeTasks">
+                <p class="text-muted">暂无活动任务</p>
+            </div>
+        </div>
         {% include "_history_content.html" %}
     </div>
 </section>
@@ -346,9 +371,20 @@
 {% endblock %}
 
 {% block statusbar %}
+<span class="statusbar-item statusbar-tasks" id="statusTasks" title="活动任务（点击打开记录面板）" data-panel="records">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+    </svg>
+    <span id="statusTasksText">无活动任务</span>
+    <span class="statusbar-progress" id="statusTasksProgress" hidden>
+        <span class="statusbar-progress__bar" id="statusTasksBar"></span>
+    </span>
+</span>
 <span class="statusbar-item" id="statusCoords">经度 — 纬度 —</span>
 <span class="statusbar-item" id="statusZoom">z—</span>
 <span class="statusbar-item" id="statusSelection">未选择区域</span>
+<span class="statusbar-item statusbar-event" id="statusEvent" aria-live="polite"></span>
+<span class="statusbar-item statusbar-clock" id="statusClock" title="本地时间">--:--:--</span>
 {% endblock %}
 
 {% block extra_js %}

@@ -1446,13 +1446,13 @@ def _effective_bg_for(chain):
 
 # `.task-error` 在真实 DOM 里的祖先链（tasks.js createTaskCard 生成，
 # 由 test_runtime_injected_div_table_is_grounded 同源的那张表描述任务卡本身）。
+# 2026-07 UX 改版：活动任务卡片从 dock 迁入「记录」滑出面板（#historyPanel）。
 def _task_error_chain():
     return _PAGE_CHAIN_PREFIX + (
-        ('div', {'index-layout'}, '', {}),
-        ('div', {'index-right'}, '', {}),
+        ('section', {'workbench-panel', 'workbench-panel--wide'}, 'historyPanel', {}),
+        ('div', {'workbench-panel__body'}, '', {}),
         ('div', {'card'}, '', {}),
-        ('div', {'card-body'}, '', {}),
-        ('div', set(), 'activeTasksList', {}),
+        ('div', {'card-body'}, 'activeTasks', {}),
         ('div', {'task-card', 'status-failed'}, '', {}),
         ('div', {'task-error'}, '', {}),
     )
@@ -2747,9 +2747,13 @@ def test_bounds_readout_is_exactly_two_rows():
 
     parser = _TopLevelTagParser()
     parser.feed(markup)
-    assert len(parser.top) == 1 and parser.top[0] == ('div', {'bounds-grid'}), (
+    # 顶层恰好两个元素：读数网格 + 操作行（「下载」按钮 / 调整提示）。
+    # 操作行是 2026-07 UX 改版加的（下载不再常驻 dock，入口挂在选区上），
+    # 它在网格**下方**，不影响上面「8 格 / 4 列 = 2 行」的算式；
+    # 这条白名单仍然堵「在网格上面加标题/说明」那个真实逃逸。
+    assert parser.top == [('div', {'bounds-grid'}), ('div', {'bounds-actions'})], (
         f'「已框选」分支的顶层元素是 {parser.top}，'
-        '期望恰好一个 <div class="bounds-grid">。'
+        '期望 <div class="bounds-grid"> + <div class="bounds-actions"> 两个。'
         '在网格之外再放任何东西（标题、图标、说明）都会多占行 —— '
         '而下面那个「8 格 / 4 列 = 2 行」的算式看不见它'
     )
@@ -2903,27 +2907,67 @@ def test_bounds_readout_is_announced_to_screen_readers():
 # 本节用「模拟层叠 + 高度模型」一次性接住 1 和 2；3 和 4 由下一节的两条
 # 专用断言接住（它们是结构 / 语义问题，高度模型看不见）。
 #
-# 模型思路与 A4 / Task 9 的渲染链断言同源：把源码里的量算成一个可对拍的数字，
-# 再拿 CDP 实测值校准。校准锚点见 CDP_SUBMIT_BTN_BOTTOM。
+# 模型思路与 A4 / Task 9 的渲染链断言同源：把源码里的量算成一个可对拍的数字。
+# dock 时代拿 CDP 实测的按钮 bottom 校准；2026-07 弹窗化之后改从 vendor
+# bootstrap.min.css 解析弹窗框架度量（见下面 2026-07 那段说明）。
 # --------------------------------------------------------------------------
 
 VIEWPORT_1366_HEIGHT_PX = 768
 
-# CDP 实测锚点：1366x768、首页默认（地图瓦片）状态下
-# `#createTaskBtn.getBoundingClientRect().bottom`。
-# GIS 工作台改版后四至浮层移出表单，框选与否不再影响表单高度，
-# 所以锚点不再区分「已框选」。复现方法：headless Chrome 1366x768 打开首页，
-# 读 getBoundingClientRect().bottom。本次实测 580.625（顶部工具栏移除，
-# 主区从视口顶开始）；带 48px 工具栏时是 628.625；改前（网页表单布局）是 715.53。
-CDP_SUBMIT_BTN_BOTTOM = 580.63
+# --------------------------------------------------------------------------
+# 2026-07 UX 改版：下载表单从常驻 dock 搬进了 Bootstrap 弹窗（#downloadModal）。
+#
+# 旧模型回答的问题是「dock 里的提交按钮在 1366x768 折叠线以上吗」；dock 移除后
+# 这个问题不成立了，新问题是「弹窗在默认态下是否需要内部滚动才能看到提交按钮」。
+# 弹窗的纵向起点不再由本站 CSS 决定，而是 Bootstrap 的 .modal-dialog margin
+# （--bs-modal-margin，≥576px 断点下 1.75rem）——所以锚点常量从「CDP 实测的
+# CDP_SUBMIT_BTN_BOTTOM」换成「从 vendor bootstrap.min.css 解析出来的弹窗度量」
+# （_bootstrap_modal_metrics，读不到就响亮失败）。表单部分的高度模型不变，
+# 仍然从 style.css 解析，「加字段 / 加 height:44px 会被抓住」的性质也不变。
+# --------------------------------------------------------------------------
 
-# 模型允许的对拍误差。0.5px 足够吸收浏览器的亚像素舍入。
-# 实测（Task 11 复核）：模型 715.61 vs CDP 715.53，差 **0.08px**。
-# ⚠️ 订正一处旧注释：这里原本写「模型算出 715.52，差 0.01px」，是不准的 ——
-#    把 Task 10 的 CSS（HEAD~1）、Task 11 的 CSS 分别喂给**同一个旧模型**，
-#    算出来都是 715.61，说明 0.08 的偏差从 Task 10 就存在，不是谁改出来的。
-#    交接说明里「模型对拍 CDP 三点、误差恒定 0.08px」才是对的那个数。
-HEIGHT_MODEL_TOLERANCE_PX = 0.5
+_BOOTSTRAP_MIN_CSS = os.path.join(
+    os.path.dirname(os.path.dirname(CSS_PATH)),
+    'vendor', 'bootstrap', '5.3.0', 'bootstrap.min.css')
+
+
+def _bootstrap_modal_metrics():
+    """从 vendor 的 bootstrap.min.css 解析弹窗布局度量（全部 fail-loud）。
+
+    解析 vendor 文件而不是手写常量的理由与本文件其它 vendor 探针一致：
+    Bootstrap 升级改了这些值时，这里要么跟着算出新的（正确的）结果，
+    要么因为模式匹配不上而报「测试已失效」——两种情况都不会静默放行。
+    """
+    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
+        src = f.read()
+
+    def grab(pattern, label):
+        m = re.search(pattern, src)
+        assert m, f'vendor bootstrap.min.css 里找不到 {label} —— 构建变了，本测试已失效'
+        return m.group(1)
+
+    def to_px(rem_str):
+        m = re.match(r'^([\d.]+)(px|rem)$', rem_str)
+        assert m, f'{rem_str!r} 不是 px/rem 字面量 —— 本测试已失效'
+        return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+
+    return {
+        # ≥576px 的 .modal-dialog 上外边距（1366px 视口命中这条）
+        'margin_top': to_px(grab(r'--bs-modal-margin:([\d.]+rem)', '弹窗 margin')),
+        'padding': to_px(grab(r'--bs-modal-padding:([\d.]+rem)', '弹窗 body padding')),
+        'header_padding': to_px(grab(
+            r'--bs-modal-header-padding:([\d.]+rem)', '弹窗 header padding')),
+        'border_width': to_px(grab(r'--bs-border-width:([\d.]+px)', '边框宽度')),
+        'title_line_height': float(grab(
+            r'--bs-modal-title-line-height:([\d.]+)', '标题行高')),
+        # .btn-close：box-sizing:content-box，1em + 2×0.25em = 1.5em 高
+        'btn_close_em': 1.5,
+    }
+
+
+# Bootstrap reboot 让 button 继承字体；.modal-header 本站没声明字号，
+# 继承 body 的 --font-size-base（0.9375rem = 15px）。btn-close = 1.5em × 15。
+BS_MODAL_BTN_CLOSE_PX = 22.5
 
 # ---- 来自 Bootstrap、本文件不控制的几个数 --------------------------------
 # 每一条都标了 CDP 实测值。它们是模型里唯一「不是从 style.css 解析出来」的输入，
@@ -2933,10 +2977,6 @@ HEIGHT_MODEL_TOLERANCE_PX = 0.5
 # Bootstrap 的 --bs-body-line-height。用于所有没有显式声明 line-height 的文字
 # （.form-label / .form-group-label / .bounds-grid / .btn）。实测：14px 字 -> 21px 行高。
 BS_BODY_LINE_HEIGHT = 1.5
-# `.card-header h5` 的行盒高度。**不是** font-size x line-height：h5 里有一个
-# 18px 的内联 SVG（vertical-align: middle），行盒被它撑到 18.91px。
-# 这个数没法从 CSS 算出来，只能实测。CDP: hdrInnerH = 18.91。
-BS_CARD_HEADER_LINE_BOX_PX = 18.91
 # Bootstrap `.btn { padding: .375rem .75rem }` 的纵向内边距。
 # ⚠️ 这是**兜底值**，只在 style.css 自己没声明 `.btn` 的纵向内边距时才用。
 #    第一版把它当成写死的常量（`btn_h = 2*6.0 + font*1.5`），于是按钮的
@@ -3255,17 +3295,6 @@ def _index_form_vertical_model(css):
         assert m, f'`{selector}` 的 {prop} = {raw!r} 里读不出宽度 —— 本测试已失效'
         return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
 
-    # GIS 工作台改版：按钮的纵向位置 = dock 上内边距 + 卡片头 + 表单。
-    # 旧模型是 `.main-content` 的 padding-top(60px 固定导航补偿) + 面板 padding；
-    # 工作台外壳是 flex 列，`.main-content` 没有 padding-top。顶部工具栏移除后
-    # 主内容区从视口顶开始，纵向起点为 0。
-    toolbar = 0.0
-    panel_pad = rule_px('.index-right', 'padding-top')
-    card_border = border_px('.card', 'border')
-    hdr_pad = rule_px('.card-header', 'padding-top')
-    hdr_border = border_px('.card-header', 'border-bottom')
-    body_pad = rule_px('.card-body', 'padding-top')
-
     ctl_h = _effective_form_control_height(css)
     field_gap = rule_px('.mb-3', 'margin-bottom')
 
@@ -3318,58 +3347,115 @@ def _index_form_vertical_model(css):
     for prev, nxt in zip(items, items[1:]):
         total += max(prev[1], nxt[2])              # 相邻外边距合并取较大者
 
-    # 卡片头内容高：GIS 工作台改版后卡片头里多了 28px(--ctl-h) 的 dock 收起
-    # 按钮，行盒由它（而不是 h5 的 18.91px 文字行盒）撑起。取两者较大者。
-    hdr_content = max(BS_CARD_HEADER_LINE_BOX_PX, ctl_h)
-    return (toolbar + panel_pad + card_border + 2 * hdr_pad
-            + hdr_content + hdr_border + body_pad + total)
+    # 2026-07 UX 改版：按钮在下载弹窗（#downloadModal）里。纵向位置 =
+    #   .modal-dialog 上外边距 + modal-content 上边框 + modal-header
+    #   + modal-body 上内边距 + 选区四至摘要 + 表单。
+    # 弹窗度量全部来自 vendor bootstrap.min.css（_bootstrap_modal_metrics，
+    # 读不到会响亮失败）；标题行盒按 .modal-title 的字号（style.css 解析）
+    # × --bs-modal-title-line-height，与 btn-close 的 1.5em 取较大者。
+    metrics = _bootstrap_modal_metrics()
+    title_font = rule_px('.modal-title', 'font-size')
+    title_line = title_font * metrics['title_line_height']
+    hdr_content = max(title_line, BS_MODAL_BTN_CLOSE_PX)
+    hdr_h = 2 * metrics['header_padding'] + hdr_content + metrics['border_width']
+
+    sum_font = rule_px('.modal-bounds-summary', 'font-size')
+    sum_line = sum_font * BS_BODY_LINE_HEIGHT
+    sum_pad = rule_px('.modal-bounds-summary', 'padding-top')
+    sum_border = border_px('.modal-bounds-summary', 'border')
+    sum_mb = rule_px('.modal-bounds-summary', 'margin-bottom')
+    summary_h = sum_line + 2 * sum_pad + 2 * sum_border + sum_mb
+
+    return (metrics['margin_top'] + metrics['border_width'] + hdr_h
+            + metrics['padding'] + summary_h + total)
 
 
-def test_height_model_reproduces_the_cdp_measurement():
-    """高度模型必须复现 CDP 实测的 715.53。
+class _IdAncestorParser(HTMLParser):
+    """记录每个带 id 元素出现时的 id 祖先栈：{元素 id: [祖先 id, ...]}"""
 
-    这条是**模型的自检**，不是产品契约。它在这里的作用：
-    `test_submit_button_fits_at_1366x768` 用模型算出的数字下结论，
-    模型本身要是错的，那条断言就是在给一个错数字背书 ——
-    「静默给出错误的信心」比没有断言更糟。
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.parents = {}
 
-    ⚠️ 这条变红时怎么办（大概率你是故意改了尺寸）：
-      1. 先看 `test_submit_button_fits_at_1366x768` 是不是也红了。红了 = 真放不下。
-      2. 按 .superpowers/sdd/p2-task-10-report.md 的方法在 1366x768 **已框选**
-         状态下重测 `#createTaskBtn` 的 bottom，把 CDP_SUBMIT_BTN_BOTTOM 换成新值。
-      3. **别反过来改模型去凑锚点。** 模型算错和尺寸改动是两回事。
-    锚点被人随手改大也不要紧：装不装得下由下面那条独立判断，改锚点绕不过它。
+    def handle_starttag(self, tag, attrs):
+        el_id = dict(attrs).get('id')
+        if el_id:
+            self.parents.setdefault(el_id, list(self.stack))
+            self.stack.append(el_id)
+        if tag in _VOID_TAGS:
+            return
+        if not el_id:
+            self.stack.append(None)
+
+    def handle_endtag(self, tag):
+        if tag in _VOID_TAGS or not self.stack:
+            return
+        self.stack.pop()
+
+
+def test_submit_button_lives_inside_download_modal():
+    """「创建下载任务」按钮必须在 #downloadModal 弹窗内（2026-07 UX 改版）。
+
+    这条替代了 dock 时代的「高度模型复现 CDP 实测」自检：旧自检校准的是
+    「dock 布局下按钮的折叠线位置」，dock 移除后那个问题不存在了——
+    弹窗由 Bootstrap 定位，真正要钉住的是结构本身：
+      1. #downloadForm 与 #createTaskBtn 都是 #downloadModal 的后代
+         （表单要是被搬回常驻容器，用户又得为它让出整块屏幕）；
+      2. #downloadModal 带 modal 类（Bootstrap 的居中/滚动行为才有附着点）；
+      3. 选区浮层里有 #boundsDownloadBtn（「框选 -> 框上点下载」的入口），
+         且 map.js 的 openDownloadModal() 会刷新四至摘要后打开这个弹窗。
     """
-    got = _index_form_vertical_model(_css())
-    assert abs(got - CDP_SUBMIT_BTN_BOTTOM) <= HEIGHT_MODEL_TOLERANCE_PX, (
-        f'高度模型算出 #createTaskBtn 的 bottom = {got:.2f}px，'
-        f'与 CDP 实测锚点 {CDP_SUBMIT_BTN_BOTTOM}px 差 '
-        f'{abs(got - CDP_SUBMIT_BTN_BOTTOM):.2f}px（容差 {HEIGHT_MODEL_TOLERANCE_PX}px）。'
-        '要么你改了影响高度的尺寸（那就重测并更新锚点），'
-        '要么模型该更新了（例如 Bootstrap 升级改了 BS_* 那几个常量）'
+    parser = _IdAncestorParser()
+    parser.feed(_template('index.html'))
+    for el in ('downloadForm', 'createTaskBtn'):
+        assert 'downloadModal' in parser.parents.get(el, []), (
+            f'#{el} 不在 #downloadModal 里（祖先：{parser.parents.get(el)}）—— '
+            '下载表单必须住在弹窗里，不能回到常驻面板'
+        )
+    assert 'processForm' in parser.parents and \
+           'processModal' in parser.parents['processForm'], (
+        '#processForm 不在 #processModal 里 —— 处理表单同样改为弹窗'
+    )
+
+    m = re.search(r'<div class="([^"]*)" id="downloadModal"', _template('index.html'))
+    assert m and 'modal' in m.group(1).split(), (
+        '#downloadModal 没有 modal 类 —— Bootstrap 的弹窗行为不会生效'
+    )
+
+    body = _js_function_body(_js('map.js'), 'updateBoundsInfo')
+    assert 'boundsDownloadBtn' in body, (
+        'updateBoundsInfo 的「已框选」分支里没有 #boundsDownloadBtn —— '
+        '框选后选区上没有下载入口，下载功能就无家可归了'
+    )
+    src = _js('map.js')
+    assert 'function openDownloadModal(' in src, 'map.js 应定义 openDownloadModal()'
+    modal_body = _js_function_body(src, 'openDownloadModal')
+    assert 'downloadModalBounds' in modal_body and 'getOrCreateInstance' in modal_body, (
+        'openDownloadModal() 必须先刷新 #downloadModalBounds 四至摘要，'
+        '再用 bootstrap.Modal.getOrCreateInstance 打开 #downloadModal'
     )
 
 
 def test_submit_button_fits_at_1366x768():
-    """1366x768 下「创建下载任务」按钮必须整个在折叠线以上。
+    """1366x768 下下载弹窗必须完整装下表单，提交按钮无需滚动即可见。
 
-    **这是 A5 / Task 10 的验收标准本身。**
+    **这是 A5 / Task 10 的验收标准在弹窗时代的等价物。**
 
-    改前实测 949.34（已框选 = 按钮可点的那个状态），溢出 181.3px：用户在
-    1366x768 笔记本上必须滚动才能提交。A5 / Task 10 改后 715.53；
-    GIS 工作台改版后（四至浮层移出表单、工具栏 48px）实测 628.63。
+    dock 时代这条断言算的是「常驻面板里按钮的 bottom <= 768」（改前实测
+    949.34，溢出 181.3px，用户必须滚动才能提交）。2026-07 UX 改版把表单
+    搬进了 #downloadModal，问题变成「弹窗在 1366x768 默认态下是否超出
+    视口」——超出的话 Bootstrap 会让弹窗自身滚动，提交按钮又躲回折叠线下。
 
     模型的输入：
       - 结构：从 templates/index.html 解析 `#downloadForm` 的可见直接子元素
         （加一个字段会被算进来）
-      - 尺寸：从 style.css 解析，控件高度走**模拟层叠**（加 `height: 44px`
+      - 表单尺寸：从 style.css 解析，控件高度走**模拟层叠**（加 `height: 44px`
         会被算进来）
-      - 只有 4 个 BS_* 常量来自 Bootstrap，各自标了 CDP 实测值
-    模型准不准由 test_height_model_reproduces_the_cdp_measurement 自检。
-
-    评审实测的两个逃逸变异现在都会被这条抓住：
-      `height: 44px`     -> 模型 811.5 > 768
-      `--pad-card` 10->80 -> 模型 785.5 > 768
+      - 弹窗框架尺寸：从 vendor bootstrap.min.css 解析
+        （_bootstrap_modal_metrics，读不到会响亮失败）
+    结构契约（表单确实在弹窗里）由 test_submit_button_lives_inside_download_modal
+    钉住。
     """
     got = _index_form_vertical_model(_css())
     assert got <= VIEWPORT_1366_HEIGHT_PX, (
@@ -3503,7 +3589,11 @@ def _bbox_object_literals(src):
 # 的返回值随旧下载式 submitContour 一并删除；等高线不再有 bbox。
 # 4 -> 4（Cesium 换地图）：Leaflet 的两个 getter 构造点变成 Cesium 的
 # _rectDegrees（拖拽中按度直写）+ currentBounds（LEFT_UP 落定）两个构造点。
-MAP_JS_BBOX_LITERAL_COUNT = 4
+# 4 -> 7（2026-07 框选可调整）：新增 3 处，全部是选区调整链上的构造点——
+#   _syncBoundsFromRect() 的 currentBounds（拖角点 / 数值编辑后同步快照）、
+#   _applyBoundsEdit() 的中间变量 b 与重建的 _rectDegrees（点击编辑提交）。
+#   逐键核对过：全部同名方位引用，检查通过才把计数调上来。
+MAP_JS_BBOX_LITERAL_COUNT = 7
 
 
 def test_bbox_literals_never_swap_directions():
@@ -4479,8 +4569,9 @@ def test_button_ink_is_readable_in_every_state():
 #   static/js/tasks.js   启动 / 暂停 / 恢复 / 取消              4
 #   static/js/history.js 查看详情 / 删除 / 预览                 3
 #   templates/history.html .btn-close（模态框关闭）              1
-#   templates/index.html dock-collapse-btn / dock-reopen-handle 2（GIS 工作台改版新增）
-#   templates/index.html 两个覆盖面板的关闭按钮            2（历史/配置面板）
+#   templates/index.html 下载/处理两个弹窗的 .btn-close      2（2026-07 弹窗化新增；
+#     替代的 dock-collapse-btn / dock-reopen-handle 两颗已随 dock 移除）
+#   templates/index.html 两个覆盖面板的关闭按钮            2（记录/配置面板）
 #   templates/index.html include 进来的历史详情弹窗 .btn-close 1（与 history.html
 #     那颗是同一份 partial 标记，两个模板各扫到一次，预期重复）
 # 合计 13。
@@ -5040,9 +5131,12 @@ def _text_contexts(css):
                  _TextEl('div', {'modal-content'}), _TextEl('div', {'modal-body'}),
                  _TextEl('div', {'detail-grid'}), _TextEl('div', {'detail-item'})]
 
-    # --- 首页表单 ---
-    form_top = [body, main, _TextEl('div', {'index-layout'}), _TextEl('div', {'index-right'}),
-                _TextEl('div', {'card'}), _TextEl('div', {'card-body'}),
+    # --- 首页表单（2026-07：在 #downloadModal 弹窗内） ---
+    form_top = [body, main,
+                _TextEl('div', {'modal', 'fade'}, element_id='downloadModal'),
+                _TextEl('div', {'modal-dialog'}),
+                _TextEl('div', {'modal-content'}),
+                _TextEl('div', {'modal-body'}),
                 _TextEl('form', element_id='downloadForm')]
 
     return [
@@ -5069,8 +5163,11 @@ def _text_contexts(css):
          form_top + [_TextEl('div', {'mb-3'}, element_id='demOptions'),
                      _TextEl('small', {'form-text', 'text-muted', 'd-block', 'mb-2'})], panel, None),
         ('活动任务空态提示（首屏静态 markup）',
-         [body, main, _TextEl('div', {'index-layout'}), _TextEl('div', {'index-right'}),
-          _TextEl('div', {'card', 'mt-3'}), _TextEl('div', {'card-body'}, element_id='activeTasks'),
+         [body, main,
+          _TextEl('section', {'workbench-panel', 'workbench-panel--wide'}, element_id='historyPanel'),
+          _TextEl('div', {'workbench-panel__body'}),
+          _TextEl('div', {'card', 'mb-3'}),
+          _TextEl('div', {'card-body'}, element_id='activeTasks'),
           _TextEl('p', {'text-muted'})], panel, None),
         ('详情弹窗字段名',
          modal_top + [_TextEl('span', {'detail-k'})], modal, None),
@@ -5740,7 +5837,16 @@ def _motion_rule_index(css):
 # `.nav-link::after` 三个分支，加 `.map-panel-btn` / `.back-home-link`
 # 两个（hover 0.15s，在 `*` 覆盖范围内）。
 # 32 -> 33（地图样式缩略图）：`.map-style-preview` 的 transform 0.15s。
-_MOTION_BRANCH_COUNT = 33
+# 33 -> 39（2026-07 UX 改版）：dock 移除 + splash/状态栏/bounds 交互新增。
+#   删 3 个分支：`.index-right`、`.index-right::-webkit-scrollbar-thumb`、
+#     `.dock-reopen-handle`（dock 整体移除，下载/处理改为按需弹窗）。
+#   加 9 个分支：`.splash-screen`（opacity 淡出）、`.splash-grid` /
+#     `.splash-scan` / `.splash-logo` / `.splash-logo-dot`（splash 动效）、
+#     `.splash-bar`（进度条 width）、`.bounds-v`（点击编辑 hover 底色）、
+#     `.statusbar-tasks`（hover 底色）、`.statusbar-progress__bar`
+#     （状态栏聚合进度 width）。全部在 reduce 块通用选择器 `*` 覆盖范围内，
+#     无需豁免登记。
+_MOTION_BRANCH_COUNT = 39
 
 
 def test_motion_rule_index_is_complete():
@@ -5885,9 +5991,9 @@ _REDUCED_MOTION_MAX_SECONDS = 0.001
 #
 # 每条都要写清两件事：为什么压不到、为什么可以不压。清单之外一律必须被压住。
 #
-#   ::-webkit-scrollbar-thumb（`*::-webkit-scrollbar-thumb` 与
-#   `.index-right::-webkit-scrollbar-thumb` 两条，各有一个 0.15s 的
-#   background-color 过渡）
+#   ::-webkit-scrollbar-thumb（`*::-webkit-scrollbar-thumb` 一条，0.15s 的
+#   background-color 过渡；dock 时代的 `.index-right::-webkit-scrollbar-thumb`
+#   已随 dock 移除删除）
 #     · 为什么压不到：reduce 块的选择器是 `*, *::before, *::after`，
 #       覆盖不到这个非标准伪元素。
 #     · 为什么不另写一条去压：CSS 的逗号选择器组里只要有一个浏览器不认识的
@@ -5901,7 +6007,7 @@ _REDUCED_MOTION_MAX_SECONDS = 0.001
 _REDUCED_MOTION_EXEMPT_PSEUDOS = frozenset({'-webkit-scrollbar-thumb'})
 # 注：`*::-webkit-scrollbar-thumb` 经 _TextEl.__repr__ 规范化后是 `::-webkit-scrollbar-thumb`
 # （通配符不进 repr），这里存的是规范化后的形态。
-_REDUCED_MOTION_EXEMPT = {'::-webkit-scrollbar-thumb', '.index-right::-webkit-scrollbar-thumb'}
+_REDUCED_MOTION_EXEMPT = {'::-webkit-scrollbar-thumb'}
 
 
 def _motion_contexts_from_stylesheet(css):
@@ -5974,8 +6080,13 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 30 -> 29（移除顶部工具栏）：删 .navbar-brand / .nav-link / .nav-link::after
     # 三个上下文，加 .map-panel-btn / .back-home-link 两个。
     # 29 -> 30（地图样式缩略图）：.map-style-preview 的 transform 过渡。
-    assert len(ctxs) == 30, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 30：\n'
+    # 30 -> 36（2026-07 UX 改版）：删 .index-right（含 scrollbar-thumb 伪元素）/
+    # .dock-reopen-handle 三个上下文（dock 移除）；加 .splash-screen /
+    # .splash-grid / .splash-scan / .splash-logo / .splash-logo-dot /
+    # .splash-bar / .bounds-v / .statusbar-tasks / .statusbar-progress__bar
+    # 九个（splash 与状态栏/bounds 交互，均在 reduce 块 `*` 覆盖范围内）。
+    assert len(ctxs) == 36, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 36：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -7382,14 +7493,13 @@ _PAGE_CHAIN_PREFIX = (
 # 每一条都由 test_runtime_injected_div_table_is_grounded 反查来源，防止表烂掉。
 _RUNTIME_INJECTED_DIVS = (
     (
-        'tasks.js createTaskCard 生成的任务卡（#activeTasksList 的直接子节点）',
+        'tasks.js createTaskCard 生成的任务卡（记录面板 #activeTasks 的直接子节点）',
         'static/js/tasks.js', 'task-card',
         _PAGE_CHAIN_PREFIX + (
-            ('div', {'index-layout'}, '', {}),
-            ('div', {'index-right'}, '', {}),
+            ('section', {'workbench-panel', 'workbench-panel--wide'}, 'historyPanel', {}),
+            ('div', {'workbench-panel__body'}, '', {}),
             ('div', {'card'}, '', {}),
-            ('div', {'card-body'}, '', {}),
-            ('div', set(), 'activeTasksList', {}),
+            ('div', {'card-body'}, 'activeTasks', {}),
             ('div', {'task-card', 'status-running'}, '', {}),
         ),
     ),
@@ -7837,10 +7947,8 @@ def test_no_bootstrap_component_background_reaches_a_div_unreviewed():
 # 「改前」一栏是同一台浏览器在删除之前读到的 computed background-color。
 _DIV_BACKGROUNDS_THAT_MUST_RENDER = {
     # 类名/说明: (取链的方式, 期望的最终色, 改前实测值)
-    # GIS 工作台改版：.index-right 从透明面板（压在 bg-primary 上）改为
-    # 独立的 dock 面板色 bg-secondary，期望值同步为 --color-bg-secondary。
-    '.index-right（首页右侧 dock 面板）':
-        ('index.html', {'index-right'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
+    # 2026-07 UX 改版：.index-right（dock 面板）随 dock 整体移除，
+    # 不再是受害者，从清单删除。
     '.config-section（配置页 6 个分区）':
         ('config.html', {'config-section'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
     '.stat-card（历史页 4 张统计卡）':

@@ -301,14 +301,14 @@ body {
     font-weight: 500;
 }
 
-/* 极窄屏状态栏只保留经纬度与缩放（最后一项选区摘要让位） */
+/* 极窄屏状态栏隐藏最后一项（时钟），给读数让位 */
 @media (max-width: 576px) {
     .workbench-statusbar .statusbar-item:last-child {
         display: none;
     }
 }
 
-/* Index page layout：地图全屏 + 右侧 dock（工作台形态） */
+/* Index page layout：地图全屏（无 dock，下载/处理均为按需弹窗） */
 .index-layout {
     height: 100%;
     display: flex;
@@ -324,30 +324,9 @@ body {
     overflow: hidden;
 }
 
-/* 右侧 dock：固定 380px，可收起（margin-right 负值滑出，地图占满整行） */
-.index-right {
-    flex: 0 0 380px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 10px;
-    overflow-y: auto;
-    background: var(--color-bg-secondary);
-    border-left: 1px solid var(--color-border);
-    position: relative;
-    transition: margin-right 0.2s ease;
-}
-
-.index-right.dock-collapsed {
-    margin-right: -380px;
-}
-
-.dock-panel {
-    flex: 0 0 auto;
-}
-
-.dock-collapse-btn,
-.dock-reopen-handle {
+/* 面板关闭按钮（记录/配置滑出面板头部共用）。类名是历史遗留
+   （dock 时代），现在只服务覆盖面板，不再对应任何 dock 元素。 */
+.dock-collapse-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -362,25 +341,9 @@ body {
     transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.dock-collapse-btn:hover,
-.dock-reopen-handle:hover {
+.dock-collapse-btn:hover {
     background: var(--color-bg-tertiary);
     color: var(--color-text-primary);
-}
-
-/* 收起后地图右缘的展开把手：垂直居中于右缘（抽屉拉手形态），
-   不与右上角的 bounds 浮层重叠 */
-.dock-reopen-handle {
-    position: absolute;
-    top: 50%;
-    right: 0;
-    transform: translateY(-50%);
-    z-index: 1000;
-    width: 24px;
-    height: 48px;
-    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-    background: var(--color-bg-secondary);
-    border-right: none;
 }
 
 /* Cesium 时代的左列工具条：全自绘按钮组（视图 / 框选 / 功能面板三组），
@@ -574,27 +537,7 @@ body {
     font-size: var(--font-size-sm);
 }
 
-.index-right::-webkit-scrollbar {
-    width: 8px;
-}
-
-.index-right::-webkit-scrollbar-track {
-    background: var(--color-bg-secondary);
-    border-radius: 4px;
-}
-
-.index-right::-webkit-scrollbar-thumb {
-    background: var(--color-border-strong);
-    border-radius: 4px;
-    /* A8 / Task 13：0.3s -> 0.15s，与全站交互反馈口径一致（见文件头部那段说明）。 */
-    transition: background-color 0.15s ease;
-}
-
-.index-right::-webkit-scrollbar-thumb:hover {
-    background: var(--color-text-muted);
-}
-
-/* 非地图页（历史记录 / 配置）的内容容器：居中限宽，与 dock 同一套间距 */
+/* 非地图页（历史记录 / 配置）的内容容器：居中限宽 */
 .page-content {
     max-width: 1100px;
     margin: 0 auto;
@@ -2013,7 +1956,6 @@ code {
 
 /* Responsive Styles */
 @media (max-width: 768px) {
-    /* 窄屏：dock 从右侧停靠改为下方堆叠，地图在上 */
     .index-layout {
         flex-direction: column;
     }
@@ -2021,19 +1963,6 @@ code {
     .index-map {
         flex: 1 1 auto;
         min-height: 0;
-    }
-
-    .index-right {
-        flex: 0 0 45%;
-        border-left: none;
-        border-top: 1px solid var(--color-border);
-    }
-
-    /* 列布局下 margin 百分比相对宽度计算，负 margin 收起不可靠，
-       窄屏直接隐藏（无滑出动画，行为一致：点把手恢复） */
-    .index-right.dock-collapsed {
-        margin-right: 0;
-        display: none;
     }
 
     .history-map {
@@ -2502,4 +2431,255 @@ code {
         animation-iteration-count: 1 !important;
         transition-duration: 0.01ms !important;
     }
+}
+
+
+/* ==========================================================================
+   首屏加载动画（Splash）
+   结构见 templates/index.html #splashScreen；驱动逻辑在 map.js initSplash()。
+   进度条是 JS 模拟缓动 + 首帧渲染事件补完，CSS 只负责呈现。
+   reduced-motion 下全站动画时长被压到 0.01ms（文件尾部统一重置），
+   splash 变为静态画面，由 JS 照常移除，不依赖任何 animationend。
+   ========================================================================== */
+.splash-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-bg-primary);
+    overflow: hidden;
+    opacity: 1;
+    transition: opacity 0.45s ease;
+}
+
+.splash-screen--done {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* 经纬网格：两层正交渐变线缓慢漂移，暗色 GIS 底图质感 */
+.splash-grid {
+    position: absolute;
+    inset: -60px;
+    background-image:
+        linear-gradient(rgba(56, 189, 248, 0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(56, 189, 248, 0.06) 1px, transparent 1px);
+    background-size: 48px 48px;
+    animation: splashGridDrift 12s linear infinite;
+}
+
+@keyframes splashGridDrift {
+    from { transform: translate(0, 0); }
+    to { transform: translate(48px, 48px); }
+}
+
+/* 扫描线自上而下扫过，模拟影像加载 */
+.splash-scan {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -30%;
+    height: 30%;
+    background: linear-gradient(to bottom, transparent, rgba(56, 189, 248, 0.09), transparent);
+    animation: splashScan 3.2s ease-in-out infinite;
+}
+
+@keyframes splashScan {
+    from { top: -30%; }
+    to { top: 110%; }
+}
+
+.splash-core {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    color: var(--color-accent);
+}
+
+.splash-logo {
+    animation: splashLogoPulse 2.2s ease-in-out infinite;
+}
+
+@keyframes splashLogoPulse {
+    0%, 100% { opacity: 0.85; }
+    50% { opacity: 1; filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.45)); }
+}
+
+.splash-logo-dot {
+    animation: splashLogoDot 1.6s ease-in-out infinite;
+}
+
+@keyframes splashLogoDot {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+}
+
+.splash-wordmark {
+    font-family: var(--font-display);
+    font-size: 1.35rem;
+    font-weight: 600;
+    letter-spacing: 0.35em;
+    /* letter-spacing 会在末尾留一块空白，左补同样宽度让视觉居中 */
+    padding-left: 0.35em;
+    text-transform: uppercase;
+    color: var(--color-text-primary);
+}
+
+.splash-track {
+    width: 220px;
+    height: 3px;
+    background: var(--color-bg-tertiary);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.splash-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--color-accent-strong), var(--color-accent));
+    border-radius: 999px;
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+    transition: width 0.12s linear;
+}
+
+.splash-stage {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    letter-spacing: 0.08em;
+    color: var(--color-text-secondary);
+}
+
+.splash-stage--error {
+    color: var(--color-danger);
+}
+
+/* ==========================================================================
+   框选浮层：操作行（下载入口 + 调整提示）与数值点击编辑
+   .bounds-grid 读数部分保持 2 行网格不变（契约测试钉住）；
+   操作行是网格下方的独立一行。
+   ========================================================================== */
+.bounds-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--color-border);
+}
+
+.bounds-hint {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-xs);
+    white-space: nowrap;
+}
+
+/* 数值可点击编辑：hover 给一点提示底色；编辑态换成输入框 */
+.bounds-v {
+    cursor: text;
+    border-radius: 4px;
+    padding: 0 2px;
+    margin: 0 -2px;
+    transition: background-color 0.15s ease;
+}
+
+.bounds-v:hover {
+    background: var(--color-accent-muted);
+}
+
+.bounds-edit-input {
+    width: 10ch;
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-accent);
+    border-radius: 4px;
+    padding: 0 2px;
+    outline: none;
+}
+
+/* ==========================================================================
+   底部状态栏扩展：活动任务聚合 / 最近事件 / 时钟
+   ========================================================================== */
+.statusbar-tasks {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0 4px;
+    margin-left: -4px;
+    transition: background-color 0.15s ease;
+}
+
+.statusbar-tasks:hover {
+    background: var(--color-bg-tertiary);
+}
+
+.statusbar-progress {
+    display: inline-flex;
+    width: 64px;
+    height: 4px;
+    background: var(--color-bg-tertiary);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.statusbar-progress__bar {
+    display: block;
+    height: 100%;
+    width: 0%;
+    background: var(--color-accent);
+    transition: width 0.3s ease;
+}
+
+/* 最近事件：吃掉剩余宽度，长文本省略号 */
+.statusbar-event {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--color-text-muted);
+}
+
+.statusbar-clock {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   下载弹窗：顶部选区四至摘要（打开弹窗时由 openDownloadModal 刷新）
+   ========================================================================== */
+.modal-bounds-summary {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-accent-hover);
+    background: var(--color-accent-muted);
+    border: 1px solid rgba(56, 189, 248, 0.25);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    margin-bottom: 12px;
+}
+
+
+/* ==========================================================================
+   配置页：底图瓦片地址「验证通联」结果行
+   ========================================================================== */
+.tile-url-verify-result {
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+.tile-url-verify-result--ok {
+    color: var(--color-success);
+}
+
+.tile-url-verify-result--fail {
+    color: var(--color-danger);
 }
