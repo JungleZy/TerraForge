@@ -106,6 +106,30 @@ jobs:
     - name: Build with Nuitka
       run: python nuitka_build.py
 
+    # 冒烟测试:真正启动 exe 并请求首页。构建成功 ≠ 能运行——GDAL DLL 搜索
+    # 路径、conda SWIG shim 的 pkg_resources 路径、multiprocessing spawn 等
+    # 运行时问题只有跑了才暴露(v0.1.1 三次踩坑)。
+    - name: Smoke test executable
+      run: |
+        cd dist/terraforge
+        EXE=./terraforge
+        [ "${{ runner.os }}" = "Windows" ] && EXE=./terraforge.exe
+        "$EXE" > smoke.log 2>&1 &
+        SMOKE_PID=$!
+        code=000
+        for i in $(seq 1 30); do
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/ || true)
+          [ "$code" = "200" ] && break
+          sleep 2
+        done
+        kill $SMOKE_PID 2>/dev/null || true
+        tail -30 smoke.log
+        if [ "$code" != "200" ]; then
+          echo "Smoke test FAILED (HTTP $code)"
+          exit 1
+        fi
+        echo "Smoke test OK (HTTP 200)"
+
     - name: Package application (Linux/macOS)
       if: runner.os != 'Windows'
       run: |

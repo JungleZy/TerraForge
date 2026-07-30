@@ -79,3 +79,23 @@ def test_windows_path_and_dll_directory_setup(clean_env, tmp_path, monkeypatch):
 
     assert os.environ['PATH'].startswith(str(exe_dir) + os.pathsep)
     assert added == [str(exe_dir)]
+
+
+def test_sets_sys_frozen_when_compiled():
+    """Nuitka 编译环境下 import core.bundle 必须补设 sys.frozen。
+
+    multiprocessing.spawn.get_command_line 靠 sys.frozen 识别冻结环境;
+    缺了它 Windows spawn worker 会以 `exe -c spawn_main` 重跑整个 app。
+    """
+    sentinel = getattr(sys, 'frozen', None)
+    try:
+        with open(bundle.__file__, encoding='utf-8') as f:
+            source = f.read()
+        exec(compile(source, bundle.__file__, 'exec'),
+             {'__name__': 'bundle_frozen_test', '__compiled__': object()})
+        assert sys.frozen is True
+    finally:
+        if sentinel is None:
+            del sys.frozen
+        else:
+            sys.frozen = sentinel

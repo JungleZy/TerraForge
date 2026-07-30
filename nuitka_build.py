@@ -283,6 +283,41 @@ def verify_no_missing_libs(dist_dir):
     print('Shared library check OK (no unresolved dependencies)')
 
 
+def alias_conda_tagged_extensions(dist_dir):
+    """为 conda 版 osgeo 的 SWIG shim 补带 ABI 标签的扩展别名(Windows/macOS)。
+
+    conda 的 osgeo/_gdal.py 用 pkg_resources.resource_filename 按带 ABI 标签的
+    原名('_gdal.cp39-win_amd64.pyd' / '_gdal.cpython-39-darwin.so')定位扩展文件,
+    而 Nuitka 把扩展重命名为无标签名(_gdal.pyd/_gdal.so)——resource_filename
+    找不到文件,LoadLibrary 报 err 126「找不到指定的模块」。为每个带标签的
+    源文件名在 dist 里补一份别名拷贝。
+    """
+    if sys.platform not in ('win32', 'darwin'):
+        return
+
+    import osgeo
+    src_dir = os.path.dirname(osgeo.__file__)
+    dst_dir = os.path.join(dist_dir, 'osgeo')
+    if not os.path.isdir(dst_dir):
+        return
+
+    ext = '.pyd' if sys.platform == 'win32' else '.so'
+    count = 0
+    for name in os.listdir(src_dir):
+        if not name.endswith(ext):
+            continue
+        plain = name.split('.', 1)[0] + ext
+        if name == plain:
+            continue
+        src = os.path.join(dst_dir, plain)
+        dst = os.path.join(dst_dir, name)
+        if os.path.isfile(src) and not os.path.exists(dst):
+            shutil.copy(src, dst)
+            count += 1
+    if count:
+        print(f'Aliased {count} conda-tagged extension names in {dst_dir}')
+
+
 def main():
     gdal_data = _first_existing_dir(_gdal_data_candidates(), required_file='epsg.wkt')
     proj_data = _first_existing_dir(_proj_data_candidates(), required_file='proj.db')
@@ -349,6 +384,7 @@ def main():
 
     copy_extension_system_libs(dst)
     copy_extension_system_dlls_windows(dst)
+    alias_conda_tagged_extensions(dst)
     verify_no_missing_libs(dst)
     print(f'Build successful: {exe}')
 

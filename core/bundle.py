@@ -8,6 +8,13 @@ Nuitka standalone 模式下,`--include-data-dir` 收集的数据目录与可执�
 import os
 import sys
 
+# Nuitka 不设置 sys.frozen;multiprocessing.spawn.get_command_line 靠它识别冻结
+# 环境——缺了它,Windows 上 spawn 的 ProcessPoolExecutor worker 会以
+# `exe -c spawn_main` 形式重跑整个 app(触发 orphan recovery 误杀运行中的任务,
+# 且 worker 根本不会执行)。import 时尽早补上,语义与 PyInstaller 一致。
+if '__compiled__' in globals():
+    sys.frozen = True
+
 
 def bundle_dir():
     """返回打包产物的资源目录;非打包环境返回 None。"""

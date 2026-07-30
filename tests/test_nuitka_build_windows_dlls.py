@@ -96,3 +96,35 @@ def test_windows_copy_noop_on_non_windows(monkeypatch, tmp_path):
     """非 Windows 平台 → no-op。"""
     monkeypatch.setattr(nuitka_build.sys, 'platform', 'linux')
     nuitka_build.copy_extension_system_dlls_windows(str(tmp_path))
+
+
+def test_alias_conda_tagged_extensions(monkeypatch, tmp_path):
+    """conda 的带 ABI 标签扩展名 → 在 dist/osgeo 里补别名拷贝。
+
+    Nuitka 把 _gdal.cp39-win_amd64.pyd 重命名为 _gdal.pyd,conda 的 SWIG shim
+    按原名经 pkg_resources.resource_filename 查找会扑空(err 126)。
+    """
+    monkeypatch.setattr(nuitka_build.sys, 'platform', 'win32')
+
+    # 源 osgeo 包(conda 布局,带标签名)
+    src_osgeo = tmp_path / 'site-packages' / 'osgeo'
+    src_osgeo.mkdir(parents=True)
+    (src_osgeo / '_gdal.cp39-win_amd64.pyd').write_bytes(b'x')
+    (src_osgeo / '_gdal.py').write_text('# shim')
+    osgeo_mod = types.ModuleType('osgeo')
+    osgeo_mod.__file__ = str(src_osgeo / '__init__.py')
+    monkeypatch.setitem(sys.modules, 'osgeo', osgeo_mod)
+
+    # dist 里只有 Nuitka 重命名后的无标签名
+    dist_osgeo = tmp_path / 'dist' / 'osgeo'
+    dist_osgeo.mkdir(parents=True)
+    (dist_osgeo / '_gdal.pyd').write_bytes(b'x')
+
+    nuitka_build.alias_conda_tagged_extensions(str(tmp_path / 'dist'))
+
+    assert (dist_osgeo / '_gdal.cp39-win_amd64.pyd').exists()
+
+
+def test_alias_conda_tagged_extensions_noop_on_linux(monkeypatch, tmp_path):
+    monkeypatch.setattr(nuitka_build.sys, 'platform', 'linux')
+    nuitka_build.alias_conda_tagged_extensions(str(tmp_path))
