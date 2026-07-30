@@ -2735,3 +2735,18 @@ code {
     color: var(--color-danger-hover);
     border-color: var(--color-danger-hover);
 }
+
+
+/* ==========================================================================
+   下载弹窗：瓦片数量预估（超上限变红）
+   ========================================================================== */
+.tile-estimate {
+    margin-bottom: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+}
+
+.tile-estimate--over {
+    color: var(--color-danger);
+}

@@ -3366,8 +3366,12 @@ def _index_form_vertical_model(css):
     sum_mb = rule_px('.modal-bounds-summary', 'margin-bottom')
     summary_h = sum_line + 2 * sum_pad + 2 * sum_border + sum_mb
 
+    # 瓦片预估行（#tileEstimate，2026-07 加入）：一行 xs 文字 + 12px 下外边距
+    est_font = rule_px('.tile-estimate', 'font-size')
+    est_h = est_font * BS_BODY_LINE_HEIGHT + rule_px('.tile-estimate', 'margin-bottom')
+
     return (metrics['margin_top'] + metrics['border_width'] + hdr_h
-            + metrics['padding'] + summary_h + total)
+            + metrics['padding'] + summary_h + est_h + total)
 
 
 class _IdAncestorParser(HTMLParser):

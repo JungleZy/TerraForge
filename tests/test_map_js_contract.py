@@ -98,6 +98,25 @@ def test_submit_button_is_always_unlocked_in_finally():
     )
 
 
+def test_tile_estimate_uses_backend_formula():
+    """瓦片预估必须与后端 calculate_tiles 同口径（同一 Web Mercator 公式），
+    且提交按钮的启用条件必须走预估——否则用户又是提交后才吃到 400。"""
+    src = _map_js()
+    assert 'function estimateTileCount(' in src, 'map.js 应定义 estimateTileCount()'
+    assert 'const TASK_TILE_LIMIT = 100000' in src, (
+        '前端硬上限必须与后端 WARN_TILES_THRESHOLD(100000) 一致'
+    )
+    assert 'Math.tan' in src and 'Math.cos' in src, (
+        '预估公式必须是与后端一致的 Mercator deg2num（tan/sec），'
+        '换成线性插值会让预估与后端判定脱节'
+    )
+    body = re.search(r'function refreshSubmitButtonState\(\) \{.*?\n\}', src, re.S)
+    assert body and 'updateTileEstimate()' in body.group(0), (
+        'refreshSubmitButtonState 必须把 updateTileEstimate() 纳入禁用条件'
+    )
+    assert 'function updateTileEstimate(' in src
+
+
 def test_rectangle_selection_is_wired():
     """Cesium 框选：ScreenSpaceEventHandler 必须接全按下/拖动/抬起三段，
     并提供统一的清除入口。

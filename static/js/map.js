@@ -24,6 +24,64 @@ function _heightToZoom(h) {
     return Math.max(0, Math.min(21, Math.round(z)));
 }
 
+// --- 瓦片数量预估（下载弹窗实时提示） ------------------------------------------
+// 与 services/download_engine.py 的 calculate_tiles 同一公式（Web Mercator
+// deg2num，逐 zoom 求 (x 跨度 + 1) × (y 跨度 + 1) 再累加）。前端预估与
+// 后端硬上限（TASK_TILE_LIMIT）同口径，超限在提交前就拦下，而不是等 400。
+const TASK_TILE_LIMIT = 100000;
+
+function _latLonToTile(lat, lon, zoom) {
+    lat = Math.max(-85.0511, Math.min(85.0511, lat));
+    const n = Math.pow(2, zoom);
+    let x = Math.floor((lon + 180) / 360 * n);
+    const latRad = lat * Math.PI / 180;
+    let y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+    x = Math.max(0, Math.min(n - 1, x));
+    y = Math.max(0, Math.min(n - 1, y));
+    return [x, y];
+}
+
+function estimateTileCount(bounds, zoomMin, zoomMax) {
+    let total = 0;
+    for (let z = zoomMin; z <= zoomMax; z++) {
+        let [xMin, yMax] = _latLonToTile(bounds.south, bounds.west, z);
+        let [xMax, yMin] = _latLonToTile(bounds.north, bounds.east, z);
+        if (xMin > xMax) [xMin, xMax] = [xMax, xMin];
+        if (yMin > yMax) [yMin, yMax] = [yMax, yMin];
+        total += (xMax - xMin + 1) * (yMax - yMin + 1);
+    }
+    return total;
+}
+
+// 刷新 #tileEstimate 读数。返回「是否在硬上限内」（提交按钮的启用条件之一）。
+// DEM 下载按颗粒计、不用瓦片数，高程模式下隐藏读数并视为不超上限。
+function updateTileEstimate() {
+    const el = document.getElementById('tileEstimate');
+    if (!el) return true;
+    const type = document.getElementById('downloadType')?.value || 'map';
+    if (type === 'dem' || !currentBounds) {
+        el.hidden = true;
+        return true;
+    }
+    const zMin = parseInt(document.getElementById('zoomMin')?.value, 10);
+    const zMax = parseInt(document.getElementById('zoomMax')?.value, 10);
+    if (isNaN(zMin) || isNaN(zMax) || zMin > zMax) {
+        el.hidden = true;
+        return true;
+    }
+    const count = estimateTileCount(currentBounds, zMin, zMax);
+    const formatted = count.toLocaleString('zh-CN');
+    if (count > TASK_TILE_LIMIT) {
+        el.textContent = `预计 ${formatted} 块瓦片，超过单任务上限 ${TASK_TILE_LIMIT.toLocaleString('zh-CN')} —— 请缩小范围或降低缩放级别`;
+        el.classList.add('tile-estimate--over');
+    } else {
+        el.textContent = `预计 ${formatted} 块瓦片（上限 ${TASK_TILE_LIMIT.toLocaleString('zh-CN')}）`;
+        el.classList.remove('tile-estimate--over');
+    }
+    el.hidden = false;
+    return count <= TASK_TILE_LIMIT;
+}
+
 // --- 首屏加载动画（Splash） ----------------------------------------------------
 // 进度 = 模拟缓动（封顶 90%）+ 真实就绪事件补完：Cesium Viewer 创建成功且
 // 首帧渲染后由 splashReady() 推满并淡出。JS 异常时 stage 原地显示错误，
@@ -441,6 +499,12 @@ function initDownloadTypeToggle() {
 
     typeEl.addEventListener('change', apply);
 
+    // 缩放级别变化实时刷新瓦片预估（顺带经 refreshSubmitButtonState 更新按钮态）
+    ['zoomMin', 'zoomMax'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', function () { updateTileEstimate(); refreshSubmitButtonState(); });
+    });
+
     const outputPath = document.getElementById('outputPath');
     if (outputPath) {
         outputPath.addEventListener('input', () => {
@@ -598,12 +662,13 @@ function initContourTintUI() {
 
 // 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
 // 两张表单各自一颗按钮：数据下载（瓦片/高程）必须先框选；
-// 处理类（本地高程切片 / 等高线）都是上传驱动，没有 bbox，无条件启用
-// （不检查文件）—— 文件是否已选在提交时由 submitLocalTerrain() /
-// submitContour() 各自校验。
+// 瓦片任务还要求预估数量不超单任务上限（updateTileEstimate，与后端
+// 硬上限同口径）；处理类（本地高程切片 / 等高线）都是上传驱动，
+// 没有 bbox，无条件启用（不检查文件）—— 文件是否已选在提交时由
+// submitLocalTerrain() / submitContour() 各自校验。
 function refreshSubmitButtonState() {
     const dlBtn = document.getElementById('createTaskBtn');
-    if (dlBtn) dlBtn.disabled = !currentBounds;
+    if (dlBtn) dlBtn.disabled = !currentBounds || !updateTileEstimate();
     const prBtn = document.getElementById('createProcessBtn');
     if (prBtn) prBtn.disabled = false;
 }
@@ -790,6 +855,8 @@ function openDownloadModal() {
     }
     const modalEl = document.getElementById('downloadModal');
     if (!modalEl || typeof bootstrap === 'undefined') return;
+    updateTileEstimate();
+    refreshSubmitButtonState();
     bootstrap.Modal.getOrCreateInstance(modalEl).show();
     setTimeout(function () {
         const nameEl = document.getElementById('taskName');
@@ -813,6 +880,13 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
 
     if (!currentBounds) {
         showNotification('请先在地图上框选下载区域', 'warning');
+        return;
+    }
+
+    // 兜底：按钮启用态已经拦过（refreshSubmitButtonState），这里再核一次，
+    // 与后端 100k 硬上限同口径，避免绕过禁用态直接 submit 时白跑一趟 400。
+    if (!updateTileEstimate()) {
+        showNotification('瓦片数量超过单任务上限（100,000），请缩小范围或降低缩放级别', 'warning');
         return;
     }
 
