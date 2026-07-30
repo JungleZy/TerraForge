@@ -996,7 +996,7 @@ body {
 .config-section {
     background: var(--color-bg-secondary);
     border-radius: 12px;
-    padding: 1.75rem;
+    padding: 12px;
     margin-bottom: 1.5rem;
     box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-border);
@@ -2704,7 +2704,11 @@ code {
     padding: 0 10px;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     font-size: var(--font-size-sm);
+    /* Bootstrap 的 .btn 行高 1.5，CJK 文字没有西文降部，
+       在 28px 盒子里视觉偏上；行高收回 1 后由 flex 居中才是真正的居中 */
+    line-height: 1;
     white-space: nowrap;    /* 两个汉字不许折行 */
 }
 
