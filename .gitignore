@@ -138,3 +138,7 @@ ASTGTMV003_*.zip
 
 # UI 改造期间的过程截图（本地留存，不入库；已入库的基线在 docs/images/phase2-baseline/）
 docs/ui-baseline/
+
+# SQLite 运行时文件
+data/*.db-wal
+data/*.db-shm
