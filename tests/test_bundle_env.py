@@ -82,19 +82,23 @@ def test_windows_path_and_dll_directory_setup(clean_env, tmp_path, monkeypatch):
 
 
 def test_sets_sys_frozen_when_compiled():
-    """Nuitka 编译环境下 import core.bundle 必须补设 sys.frozen。
+    """编译环境下调用 bundle_dir() 必须补设 sys.frozen。
 
     multiprocessing.spawn.get_command_line 靠 sys.frozen 识别冻结环境;
-    缺了它 Windows spawn worker 会以 `exe -c spawn_main` 重跑整个 app。
+    且必须在调用时设置——Python 3.9 的 Nuitka 在模块 import 时
+    __compiled__ 尚未进入 globals(),import 时设置会漏判。
     """
     sentinel = getattr(sys, 'frozen', None)
+    sentinel_exe = sys.executable
     try:
         with open(bundle.__file__, encoding='utf-8') as f:
             source = f.read()
-        exec(compile(source, bundle.__file__, 'exec'),
-             {'__name__': 'bundle_frozen_test', '__compiled__': object()})
+        glb = {'__name__': 'bundle_frozen_test', '__compiled__': object()}
+        exec(compile(source, bundle.__file__, 'exec'), glb)
+        glb['bundle_dir']()
         assert sys.frozen is True
     finally:
+        sys.executable = sentinel_exe
         if sentinel is None:
             del sys.frozen
         else:

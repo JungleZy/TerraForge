@@ -45,3 +45,38 @@ def test_app_init_skipped_in_mp_worker():
     assert result["ok"], f"worker 内 import app 失败: {result.get('error')}"
     assert result["app_is_none"] is True, "mp worker 不应构造 Flask app(说明 app 初始化被重跑)"
     assert result["socketio_is_none"] is True, "mp worker 不应构造 SocketIO"
+
+
+def test_mp_main_rerun_skips_create_app():
+    """spawn 子进程以 __mp_main__ 重跑主模块时,create_app 必须被跳过。
+
+    CPython spawn 的 _fixup_main_from_path 会用 runpy.run_path(run_name='__mp_main__')
+    重跑 app.py,此时 parent_process() 为 None,仅靠 parent_process guard 拦不住
+    (v0.1.1 Windows 打包 exe 地形切片被 orphan recovery 误杀的根因)。
+    """
+    import subprocess
+    import textwrap
+
+    code = textwrap.dedent(f"""
+        import runpy, sys
+        sys.path.insert(0, {PROJECT_ROOT!r})
+        ns = runpy.run_path({os.path.join(PROJECT_ROOT, 'app.py')!r}, run_name='__mp_main__')
+        print('APP_NONE', ns['app'] is None)
+    """)
+    out = subprocess.check_output([sys.executable, '-c', code], text=True, timeout=300)
+    assert 'APP_NONE True' in out
+
+
+def test_dash_c_argv_executes_program_instead_of_app():
+    """`exe -c 'prog'`(multiprocessing resource_tracker 的拉起形式)必须执行 prog。
+
+    Nuitka 不识别 -c;不处理会把 app 当主程序重跑(create_app → orphan recovery)。
+    """
+    import subprocess
+
+    out = subprocess.check_output(
+        [sys.executable, os.path.join(PROJECT_ROOT, 'app.py'), '-c', "print('EXEC_OK')"],
+        text=True, timeout=300, cwd=PROJECT_ROOT,
+    )
+    assert 'EXEC_OK' in out
+    assert 'TerraForge' not in out  # 不应进入主程序(横幅)

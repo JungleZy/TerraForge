@@ -23,6 +23,16 @@ import multiprocessing
 # 好父进程标记(返回 None),拦不住。这才是 frozen 下真正有效的拦截点。
 multiprocessing.freeze_support()
 
+# multiprocessing 的 resource_tracker 子进程以 `exe -c 'prog'` 形式拉起本 exe
+# (CPython 对冻结应用同样用 -c,resource_tracker.ensure_running 没有 frozen 分支)。
+# Nuitka 不识别 -c 参数,不处理会把本模块当主程序重跑(create_app → orphan
+# recovery 误杀运行中的任务、重复占用端口)。代为执行该程序段后退出——
+# 这只是 multiprocessing 自己构造的启动形式,等价于 python -c。
+if '-c' in sys.argv[1:]:
+    _c_idx = sys.argv.index('-c')
+    exec(sys.argv[_c_idx + 1], {'__name__': '__main__'})
+    sys.exit()
+
 # 打包模式(Nuitka standalone)下设置 GDAL_DATA/PROJ_DATA,必须赶在任何
 # import osgeo 之前(routes/services 在下方 import 时会间接加载 GDAL)。
 # 非打包环境为 no-op。core.bundle 是轻量模块,不引入重量级依赖。
@@ -241,10 +251,16 @@ if _spinner is not None:
     _spinner.stop()
 
 # 仅主进程执行完整初始化。multiprocessing worker(spawn 平台 —— Windows 打包 exe /
-# macOS —— 在启动 ProcessPoolExecutor 渲染瓦片时会 re-import 本模块)会命中 guard 并
-# 跳过 create_app(),避免重跑 init_database / orphan recovery —— 那是任务被误标 paused、
-# worker 环境不稳的根因。WSGI(gunicorn import app:app)和 Flask dev reloader 子进程都
-# 不是 multiprocessing 子进程,parent_process() 返回 None,会正常初始化。
+# macOS —— 在启动 ProcessPoolExecutor 渲染瓦片时)会以两种方式重跑本模块,都必须拦住:
+#   1. CPython 原生:runpy 以 '__mp_main__' 重跑主模块;
+#   2. Nuitka multiprocessing 插件:以伪造的 '__parents_main__' 模块重跑主模块源码。
+# 这两种情况下 parent_process() 尚未设置(返回 None),原有的 parent_process() guard
+# 拦不住(create_app → init_database → orphan recovery 把运行中的任务误标失败/暂停,
+# 实测 v0.1.1 Windows 打包 exe 的地形切片即死于此)。WSGI(gunicorn import app:app,
+# __name__=='app')和 Flask dev reloader 子进程(__main__)不在排除名单,正常初始化。
+_MP_RERUN_NAMES = ('__mp_main__', '__parents_main__')
+
+
 def _is_reloader_parent() -> bool:
     """dev 模式 reloader 的 watcher 父进程:__main__ + debug + 无 WERKZEUG_RUN_MAIN。
 
@@ -266,7 +282,11 @@ task_manager = None
 dem_task_manager = None
 local_terrain_task_manager = None
 contour_task_manager = None
-if multiprocessing.parent_process() is None and not _is_reloader_parent():
+if (
+    __name__ not in _MP_RERUN_NAMES
+    and multiprocessing.parent_process() is None
+    and not _is_reloader_parent()
+):
     (app, socketio, task_manager, dem_task_manager,
      local_terrain_task_manager, contour_task_manager) = create_app()
 
