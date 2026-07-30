@@ -2695,3 +2695,31 @@ code {
 .tile-server-row .tile-url-verify-result {
     margin-top: 4px;
 }
+
+/* 「验证」按钮与输入框同高（--ctl-h 密度令牌 28px），
+   选择器 `.btn.tile-server-verify`(0,2,0) 才能压住 Bootstrap 的 .btn padding
+   （与 .btn.btn-icon 同一理由，见纯图标按钮那条的注释）。 */
+.btn.tile-server-verify {
+    height: var(--ctl-h);
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--font-size-sm);
+    white-space: nowrap;    /* 两个汉字不许折行 */
+}
+
+/* `.btn { border: none }` 会吃掉 Bootstrap 给 outline 变体的边框，
+   outline-primary/-secondary 都有本站重声明，-danger 原来没有
+   （服务器行的删除按钮边框因此丢失），按同一配方补上。 */
+.btn-outline-danger {
+    background: transparent;
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
+    box-shadow: none;
+}
+
+.btn-outline-danger:not(:disabled):hover {
+    background: var(--color-danger-bg);
+    color: var(--color-danger-hover);
+    border-color: var(--color-danger-hover);
+}
