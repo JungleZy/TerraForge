@@ -58,3 +58,24 @@ def test_noop_outside_bundle(clean_env):
     bundle.setup_bundle_env()
     for var in _ENV_VARS:
         assert var not in os.environ
+
+
+def test_windows_path_and_dll_directory_setup(clean_env, tmp_path, monkeypatch):
+    """Windows 打包环境 → dist 根目录加入 PATH 并注册 AddDllDirectory。
+
+    Nuitka 用 LOAD_WITH_ALTERED_SEARCH_PATH 加载 .pyd,dist 根目录的 GDAL DLL
+    只能通过 PATH 搜到(真实 Windows 上探针验证过)。
+    """
+    exe_dir = tmp_path / 'terraforge'
+    (exe_dir / 'gdal-data').mkdir(parents=True)
+    (exe_dir / 'proj-data').mkdir()
+    _fake_compiled(clean_env, exe_dir / 'terraforge.exe')
+    monkeypatch.setattr(bundle.sys, 'platform', 'win32')
+    added = []
+    monkeypatch.setattr(bundle.os, 'add_dll_directory', added.append, raising=False)
+    monkeypatch.setenv('PATH', '/usr/bin')
+
+    bundle.setup_bundle_env()
+
+    assert os.environ['PATH'].startswith(str(exe_dir) + os.pathsep)
+    assert added == [str(exe_dir)]

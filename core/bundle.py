@@ -41,3 +41,15 @@ def setup_bundle_env():
     os.environ['GDAL_DATA'] = gdal_data_path
     os.environ['PROJ_LIB'] = proj_data_path
     os.environ['PROJ_DATA'] = proj_data_path
+
+    # Windows:Nuitka 用 LOAD_WITH_ALTERED_SEARCH_PATH 加载 .pyd,依赖 DLL 只搜
+    # .pyd 所在目录和 PATH 等,搜不到 dist 根目录的 gdal.dll 及其闭包(conda 版
+    # osgeo 自带的 add_dll_directory 在 ALTERED 搜索路径下不生效,实测 err=126)。
+    # 把 dist 根加入 PATH(ALTERED 路径会搜 PATH),并注册 AddDllDirectory
+    # 兜底(兼容 CPython 原生 DEFAULT_DIRS|USER_DIRS 加载路径)。
+    if sys.platform == 'win32':
+        os.environ['PATH'] = base + os.pathsep + os.environ.get('PATH', '')
+        try:
+            os.add_dll_directory(base)
+        except (AttributeError, OSError):
+            pass
