@@ -800,3 +800,37 @@ def reset_config():
     except Exception as e:
         logger.error(f"Error resetting config: {e}")
         return jsonify({'error': 'Failed to reset config'}), 500
+
+
+@api_bp.route('/config/verify_tile_url', methods=['POST'])
+def verify_tile_url():
+    """验证底图瓦片服务地址的通联（配置页「验证通联」按钮）。
+
+    Request Body: {"url": "https://.../{z}/{x}/{y}.png"}
+    模板校验失败返回 400；通联结果始终 200 + {success, status_code,
+    content_type, elapsed_ms, tile, error} —— 连不上也是一次成功的探测。
+    """
+    from services.tile_url_probe import probe_tile_url, validate_tile_url_template
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'error': 'No JSON body provided'}), 400
+    url = str(data.get('url') or '').strip()
+
+    ok, err = validate_tile_url_template(url)
+    if not ok:
+        return jsonify({'error': err}), 400
+
+    def _float(key, default):
+        try:
+            return float(config_manager.get(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    result = probe_tile_url(
+        url,
+        proxy_url=config_manager.get('proxy_url', '') or '',
+        center_lng=_float('map_center_lng', 106.55),
+        center_lat=_float('map_center_lat', 29.56),
+    )
+    return jsonify(result)

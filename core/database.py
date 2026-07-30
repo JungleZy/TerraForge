@@ -27,6 +27,9 @@ DEFAULT_CONFIGS = [
     ('map_center_lat', '29.56'),
     ('map_center_lng', '106.55'),
     ('map_initial_zoom', '3'),
+    # 首页 Cesium 底图的 XYZ 瓦片模板（配置页可改并可「验证通联」；
+    # 留空时前端回退到这个内置 OSM 源）
+    ('map_tile_url', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
     ('gdal_compression', 'LZW'),
     ('gdal_resampling', 'cubic'),
     # Earthdata Login (for NASA LP DAAC protected datasets, e.g., ASTGTM.003)

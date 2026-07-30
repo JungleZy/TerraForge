@@ -224,6 +224,14 @@ class ConfigManager:
                 val = int(value)
                 return 0 <= val <= 21
 
+            elif key == 'map_tile_url':
+                # 留空 = 前端回退内置 OSM 源；非空必须是合法的 XYZ 模板
+                if not str(value).strip():
+                    return True
+                from services.tile_url_probe import validate_tile_url_template
+                ok, _err = validate_tile_url_template(str(value).strip())
+                return ok
+
             # For keys without specific validation, accept any value
             return True
 

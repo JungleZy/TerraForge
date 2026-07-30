@@ -23,6 +23,7 @@ async function saveConfig(e) {
         map_center_lat: document.getElementById('map_center_lat').value,
         map_center_lng: document.getElementById('map_center_lng').value,
         map_initial_zoom: document.getElementById('map_initial_zoom').value,
+        map_tile_url: document.getElementById('map_tile_url').value.trim(),
         earthdata_username: document.getElementById('earthdata_username').value,
         earthdata_password: document.getElementById('earthdata_password').value
     };
@@ -41,10 +42,49 @@ async function saveConfig(e) {
         if (response.ok) {
             showToast('配置保存成功！', 'success');
         } else {
-            showToast('保存失败: ' + result.error, 'danger');
+            const detail = (result.errors && result.errors.length)
+                ? result.errors.join('；') : result.error;
+            showToast('保存失败: ' + detail, 'danger');
         }
     } catch (error) {
         showToast('保存失败: ' + error.message, 'danger');
+    }
+}
+
+// 「验证通联」按钮：校验当前输入框里的底图瓦片地址（不需要先保存）。
+// 结果内联显示在输入框下方，成功绿色 / 失败红色，不打断表单编辑。
+async function verifyTileUrl() {
+    const btn = document.getElementById('verifyTileUrlBtn');
+    const result = document.getElementById('tileUrlVerifyResult');
+    const url = document.getElementById('map_tile_url').value.trim();
+
+    result.hidden = false;
+    result.className = 'tile-url-verify-result';
+    result.textContent = '正在验证…';
+    btn.disabled = true;
+
+    try {
+        const response = await fetch('/api/config/verify_tile_url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+        });
+        const data = await response.json();
+
+        if (response.ok && data.success) {
+            result.classList.add('tile-url-verify-result--ok');
+            result.textContent =
+                `通联正常 · HTTP ${data.status_code} · ${data.content_type || '未知类型'}` +
+                ` · ${data.elapsed_ms}ms（样例瓦片 ${data.tile}）`;
+        } else {
+            result.classList.add('tile-url-verify-result--fail');
+            result.textContent = '验证失败：' + (data.error || ('HTTP ' + response.status));
+        }
+    } catch (error) {
+        result.classList.add('tile-url-verify-result--fail');
+        result.textContent = '验证失败：' + error.message;
+    } finally {
+        btn.disabled = false;
     }
 }
 

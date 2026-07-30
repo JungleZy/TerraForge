@@ -161,6 +161,19 @@
                                value="{{ config.history_retention_days }}" min="0">
                     </div>
 
+                    <div class="mb-3">
+                        <label for="map_tile_url" class="form-label">底图瓦片服务地址</label>
+                        <div class="d-flex gap-2">
+                            <input type="text" class="form-control flex-grow-1" id="map_tile_url"
+                                   value="{{ config.map_tile_url }}"
+                                   placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png">
+                            <button type="button" class="btn btn-outline-primary" id="verifyTileUrlBtn"
+                                    onclick="verifyTileUrl()">验证通联</button>
+                        </div>
+                        <small class="form-text">XYZ 模板，须含 {z}/{x}/{y} 占位符；留空用内置 OSM 源。保存后刷新页面生效。</small>
+                        <div class="tile-url-verify-result" id="tileUrlVerifyResult" hidden></div>
+                    </div>
+
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="map_center_lat" class="form-label">地图中心纬度</label>
