@@ -18,11 +18,20 @@ def clean_env(monkeypatch):
     for var in _ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delattr(bundle, '__compiled__', raising=False)
+    frozen_sentinel = getattr(sys, 'frozen', None)
     yield monkeypatch
     # setup_bundle_env() 直接写 os.environ,monkeypatch 追踪不到,必须手动清理,
     # 否则 GDAL_DATA 泄漏到后续测试(指向已删除的 tmp 目录,GDAL 重投影类测试全挂)。
     for var in _ENV_VARS:
         os.environ.pop(var, None)
+    # bundle_dir() 在伪造编译环境下会补设 sys.frozen,同样必须还原——
+    # 否则 Windows 上后续创建 ProcessPoolExecutor 的测试会走 frozen 命令行
+    # (python.exe --multiprocessing-fork),worker 无法启动,进程池挂死。
+    if frozen_sentinel is None:
+        if hasattr(sys, 'frozen'):
+            del sys.frozen
+    else:
+        sys.frozen = frozen_sentinel
 
 
 def _fake_compiled(monkeypatch, exe_path):
