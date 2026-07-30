@@ -101,7 +101,7 @@ jobs:
     # 三个平台均已装好 GDAL（Linux=apt、Windows/macOS=conda-forge），
     # 测试为离线单元测试，无显示/无网络环境下全部可运行。
     - name: Run test suite
-      run: python -m pytest tests/ -q
+      run: python -m pytest tests/ -v --durations=30
 
     - name: Build with Nuitka
       run: python nuitka_build.py
