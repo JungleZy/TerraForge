@@ -1165,6 +1165,14 @@ body {
     overflow: hidden;
     font-weight: 500;
     font-size: var(--font-size-base);
+    /* 全站按钮内容统一居中：图标（内联 SVG）与文字不再靠每个按钮手写
+       vertical-align 对齐——Bootstrap 的行盒模型下 CJK 文字会视觉偏上、
+       图标偏下。flex 居中后两类内容都按真实几何中线对齐。
+       已有按钮里的 inline style（vertical-align/margin-right）不受影响：
+       margin-right 继续充当图标与文字的间距。 */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 /* ---- 基态 ------------------------------------------------------------ */
