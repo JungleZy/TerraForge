@@ -264,15 +264,15 @@ function createTaskRow(task) {
     const timeText = timeInfo.show
         ? [timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : '',
            timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : '']
-            .filter(Boolean).join(' | ')
+            .filter(Boolean).join(' · ')
         : '—';
 
     const hasBbox = task.north != null && task.south != null
                  && task.east != null && task.west != null;
-    // 两行排版（与历史行一致）：第一行 北/南，第二行 东/西。数值是后端数字，
-    // 无注入面。nowrap 防止坐标从数字中间断开。
+    // 富行行3 单行排版：N,S,E,W 依次列出（富行前是两行 <br> 排版，那是 9 列
+    // 网格里省宽度的做法，行3 整行可用，不再需要）。数值是后端数字，无注入面。
     const bboxText = hasBbox
-        ? `${task.north.toFixed(2)}, ${task.south.toFixed(2)}<br>${task.east.toFixed(2)}, ${task.west.toFixed(2)}`
+        ? `${task.north.toFixed(2)}, ${task.south.toFixed(2)}, ${task.east.toFixed(2)}, ${task.west.toFixed(2)}`
         : '—';
     const zoomText = (task.zoom_min != null && task.zoom_max != null)
         ? `${task.zoom_min}~${task.zoom_max}`
@@ -281,6 +281,9 @@ function createTaskRow(task) {
     const styleText = task.style
         ? (typeof getStyleText === 'function' ? getStyleText(task.style) : task.style)
         : '—';
+    // 行3 元信息：区域 · 缩放 · 样式。坐标/缩放是后端数值（无注入面），
+    // 样式名走 escapeHtml。单行显示，超宽由 CSS 省略号截断。
+    const metaText = `区域 ${bboxText} · 缩放 ${zoomText} · ${escapeHtml(styleText)}`;
 
     const statusIcons = {
         'pending': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
@@ -296,24 +299,69 @@ function createTaskRow(task) {
 
     const supportsPauseResume = task.task_type !== 'local_terrain';
 
-    // 单元格与历史行的 9 列一一对应。数量列是「计数文本 + 紧凑进度条 + 条外
-    // 百分比」：表格行高装不下 28px 轨道 + 18px 覆盖层 chip，所以这里不用
-    // .progress/.progress__label 那套，百分比放在条右边的 .task-pct。
+    // 富行布局（2026-08 重排，实测反馈「任务列表太乱」）：活动行信息量比
+    // 历史行大得多（进度条/计数/耗时），硬塞进与历史行共用的 9 列网格，
+    // 数量格折 4 行、耗时格折 3 行、区域格折 2 行，行高约 90px 且参差。
+    // 改为整行单格（colspan=9）内部三行 flex：
+    //   行1 名称 + #类型:id + 状态徽章 …… 耗时 + 动作组（margin-left:auto 顶右端）
+    //   行2 进度条(flex:1) + 条外百分比(.task-pct) + 计数(.task-count)
+    //   行3 区域 · 缩放 · 样式（小字弱化等宽，单行省略）
+    // 状态色左条仍由 .task-row__bar::before 提供（挂在唯一的格上），失败行
+    // 红底语义不变；14px 紧凑条装不下 18px 覆盖层 chip，百分比仍在条右边的
+    // .task-pct（updateTaskProgressPartial 按稳定类名原地更新，类名不能换）。
     return `
         <tr class="task-row status-${task.status}" id="task-${task._key}">
-            <td class="task-row__bar" style="font-family: var(--font-mono);">${escapeHtml(task._key)}</td>
-            <td><span class="task-name">${escapeHtml(task.name)}</span></td>
-            <td>
-                <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center; gap: 4px;">
-                    ${statusIcons[task.status] || ''}
-                    ${escapeHtml(getStatusText(task.status))}
-                </span>
-            </td>
-            <td><small style="font-family: var(--font-mono); white-space: nowrap;">${bboxText}</small></td>
-            <td style="font-family: var(--font-mono);">${zoomText}</td>
-            <td>${escapeHtml(styleText)}</td>
-            <td>
-                <div class="progress-detail task-count">${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}${task.failed_items > 0 ? ` <span style="color: var(--color-danger);">| 失败: ${task.failed_items}</span>` : ''}</div>
+            <td colspan="9" class="task-cell task-row__bar">
+                <div class="task-line1">
+                    <span class="task-name">${escapeHtml(task.name)}</span>
+                    <span class="task-id">#${escapeHtml(task._key)}</span>
+                    <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center; gap: 4px;">
+                        ${statusIcons[task.status] || ''}
+                        ${escapeHtml(getStatusText(task.status))}
+                    </span>
+                    <span class="task-time progress-detail">${timeText}</span>
+                    <div class="btn-group btn-group-sm">
+                        ${supportsPauseResume && task.status === 'pending' ? `
+                            <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务" aria-label="启动任务">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                                </svg>
+                            </button>
+                        ` : ''}
+                        ${supportsPauseResume && task.status === 'running' ? `
+                            <button class="btn btn-icon btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务" aria-label="暂停任务">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="6" y="4" width="4" height="16"></rect>
+                                    <rect x="14" y="4" width="4" height="16"></rect>
+                                </svg>
+                            </button>
+                        ` : ''}
+                        ${supportsPauseResume && task.status === 'paused' ? `
+                            <button class="btn btn-icon btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务" aria-label="恢复任务">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                                </svg>
+                            </button>
+                        ` : ''}
+                        ${task.status !== 'failed' ? `
+                            <button class="btn btn-icon btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务" aria-label="取消任务">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </button>
+                        ` : ''}
+                        ${task.status === 'failed' ? `
+                            <button class="btn btn-icon btn-secondary" onclick="dismissTask(${task.id}, '${task.task_type}')"
+                                    title="从列表中移除这条失败记录" aria-label="移除失败任务行">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="3 6 5 6 21 6"></polyline>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                </svg>
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
                 <div class="task-progress-line">
                     <div class="task-progress">
                         <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
@@ -323,51 +371,9 @@ function createTaskRow(task) {
                              aria-valuemax="100"></div>
                     </div>
                     <span class="task-pct" aria-hidden="true">${progress}%</span>
+                    <span class="task-count progress-detail">${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}${task.failed_items > 0 ? ` <span style="color: var(--color-danger);">| 失败: ${task.failed_items}</span>` : ''}</span>
                 </div>
-            </td>
-            <td class="task-time progress-detail">${timeText}</td>
-            <td>
-                <div class="btn-group btn-group-sm">
-                    ${supportsPauseResume && task.status === 'pending' ? `
-                        <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务" aria-label="启动任务">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${supportsPauseResume && task.status === 'running' ? `
-                        <button class="btn btn-icon btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务" aria-label="暂停任务">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <rect x="6" y="4" width="4" height="16"></rect>
-                                <rect x="14" y="4" width="4" height="16"></rect>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${supportsPauseResume && task.status === 'paused' ? `
-                        <button class="btn btn-icon btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务" aria-label="恢复任务">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${task.status !== 'failed' ? `
-                        <button class="btn btn-icon btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务" aria-label="取消任务">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${task.status === 'failed' ? `
-                        <button class="btn btn-icon btn-secondary" onclick="dismissTask(${task.id}, '${task.task_type}')"
-                                title="从列表中移除这条失败记录" aria-label="移除失败任务行">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="3 6 5 6 21 6"></polyline>
-                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                            </svg>
-                        </button>
-                    ` : ''}
-                </div>
+                <div class="task-line3">${metaText}</div>
             </td>
         </tr>
     `;
@@ -545,7 +551,7 @@ function updateTaskProgressPartial(row, task) {
         ? Math.round((task.downloaded_items / task.total_items) * 100)
         : 0;
 
-    // 更新进度条（紧凑条，在数量单元格里）
+    // 更新进度条（紧凑条，在富行行2，进度条/百分比/计数同一行）
     const progressBar = row.querySelector('.progress-bar');
     if (progressBar) {
         progressBar.style.width = `${progress}%`;
@@ -793,7 +799,7 @@ function calculateTimeInfo(task) {
 
 function updateTimeDisplay() {
     activeTasks.forEach((task, taskId) => {
-        // 只更新运行中的任务时间（「完成时间」列在运行期间显示 已运行/预计剩余）
+        // 只更新运行中的任务时间（富行行1 右侧的 已运行/预计剩余）
         if (task.status !== 'running') return;
         const row = document.getElementById(`task-${taskId}`);
         if (!row) return;
@@ -804,7 +810,7 @@ function updateTimeDisplay() {
         timeCell.textContent = timeInfo.show
             ? [timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : '',
                timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : '']
-                .filter(Boolean).join(' | ')
+                .filter(Boolean).join(' · ')
             : '—';
     });
 }

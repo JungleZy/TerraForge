@@ -202,6 +202,13 @@ function renderHistoryTable(tasks) {
 function renderPagination(currentPage, totalPages) {
     const pagination = document.getElementById('pagination');
 
+    // 只有一页（或没有数据）时不渲染分页条：孤零零一个「1」按钮没有
+    // 交互价值，是纯视觉噪音（2026-08 实测反馈）。
+    if (totalPages <= 1) {
+        pagination.innerHTML = '';
+        return;
+    }
+
     let html = '';
 
     if (currentPage > 1) {

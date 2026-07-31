@@ -648,15 +648,20 @@ body {
 }
 
 /* Task Row Styles（活动任务实时行：统一任务表顶部 tbody#activeTasksBody 的行，
-   由 tasks.js createTaskRow 渲染；样式迁移自原 .task-card 卡片） */
+   由 tasks.js createTaskRow 渲染；样式迁移自原 .task-card 卡片）
+   2026-08 重排（实测反馈「任务列表太乱」）：行内不再是与历史行对应的
+   9 个单元格，而是单格（td.task-cell, colspan=9）内部三行 flex ——
+   9 列网格装不下活动行的进度条/计数/耗时，硬塞会让数量/耗时/区域格
+   各折 2~4 行，行高约 90px 且参差不齐。 */
 .task-row td {
     vertical-align: middle;
 }
 
 /* 状态色左条：迁移自 .task-card::before。表格是 border-collapse: collapse，
-   行（tr）上画不出可靠的边条，所以挂在第一个单元格的 ::before 上。
-   单元格带 .task-row__bar 类（createTaskRow 渲染）：不用 td:first-child，
-   因为测试层的层叠模型故意不支持结构性伪类（它不知道节点排第几）。
+   行（tr）上画不出可靠的边条，所以挂在单元格的 ::before 上。
+   单元格带 .task-row__bar 类（createTaskRow 渲染；2026-08 重排后是行内
+   唯一的一格）：不用 td:first-child，因为测试层的层叠模型故意不支持
+   结构性伪类（它不知道节点排第几）。
    position: relative 打在 td 上是给 ::before 当定位上下文的。 */
 .task-row__bar {
     position: relative;
@@ -718,7 +723,7 @@ body {
     color: var(--color-text-primary);
 }
 
-/* 数量列的计数文本与「完成时间」列的运行时长共用这一套：
+/* 富行行1 的耗时文本与行2 的计数文本共用这一套：
    等宽字体是跟原卡片 .progress-detail 一致的选择（数字多、要对齐）。 */
 .task-row .progress-detail {
     font-family: var(--font-mono);
@@ -731,7 +736,7 @@ body {
     padding: 0.3rem 0.65rem;
 }
 
-/* 数量列的紧凑进度条：表格行高装不下 28px 轨道 + 18px 覆盖层 chip，
+/* 富行行2 的紧凑进度条：表格行装不下 28px 轨道 + 18px 覆盖层 chip，
    所以这里不用 .progress/.progress__label 那套（百分比移到条右边的 .task-pct，
    由 tasks.js updateTaskProgressPartial 同步）。
    width 过渡沿用 .progress-bar 的全局规则（0.2s linear），
@@ -744,11 +749,22 @@ body {
     display: flex;
 }
 
+/* 行2 整行：进度条吃满剩余宽度（flex:1），百分比与计数贴右不折行。 */
 .task-progress-line {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-top: 2px;
+    gap: 0.75rem;
+    margin-top: 0.375rem;
+}
+
+.task-progress-line .task-progress {
+    flex: 1;
+}
+
+.task-progress-line .task-pct,
+.task-progress-line .task-count {
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
 
 .task-pct {
@@ -756,6 +772,56 @@ body {
     font-variant-numeric: tabular-nums;
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
+}
+
+/* 富行行1（2026-08 重排）：名称 + #类型:id + 徽章 …… 耗时 + 动作组。
+   名称是唯一允许收缩的元素（超全省略号），其余成员不折行；
+   耗时 margin-left:auto 把它和动作组一起顶到右端。 */
+.task-line1 {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.task-line1 .task-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.task-id {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.task-line1 .badge,
+.task-line1 .btn-group {
+    flex: 0 0 auto;
+}
+
+.task-line1 .task-time {
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+/* 富行行3：区域 · 缩放 · 样式，小字弱化等宽，超宽单行省略。 */
+.task-line3 {
+    margin-top: 0.25rem;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 任务表表头不折行：面板约 880px 时「名称」「缩放级别」会折成两行
+   （2026-08 实测）。只钉任务表（.task-table），不碰其它 .table。 */
+.task-table th {
+    white-space: nowrap;
 }
 
 /* 失败任务错误行里的错误原因框（tr.task-error-row > td 里的 .task-error）。

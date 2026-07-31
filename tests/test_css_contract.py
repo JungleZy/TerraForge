@@ -164,6 +164,8 @@ MERGED_FONT_SIZES = {
     '.btn-sm': 'var(--font-size-sm)',
     # 活动任务卡片 -> 统一任务表实时行（.task-card -> .task-row，2026-07 改版）：
     # h6 标题 -> .task-name 名称单元格，徽章与计数/时长文本类名不变、宿主变了。
+    # 2026-08 富行重排：行内改为单格三行 flex，但这三类文本仍在 .task-row 内
+    # （名称/徽章在行1，计数在行2），选择器与值不变，本表条目不动。
     '.task-row .task-name': 'var(--font-size-base)',
     '.task-row .badge': 'var(--font-size-xs)',
     '.task-row .progress-detail': 'var(--font-size-sm)',

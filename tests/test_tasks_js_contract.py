@@ -1261,6 +1261,47 @@ def test_active_tasks_render_into_the_shared_table_tbody():
     )
 
 
+def test_active_task_row_is_a_single_rich_cell_with_three_lines():
+    """活动任务行是「富行」：单格 colspan=9 + 内部三行 flex，不是 9 个单元格。
+
+    （2026-08 重排，实测反馈「任务列表太乱」：9 列网格装不下活动行的
+    进度条/计数/耗时——数量格折 4 行、耗时格折 3 行、区域格折 2 行，
+    行高约 90px 且参差不齐。行1 = 名称/#类型:id/徽章/耗时/动作组，
+    行2 = 进度条/百分比/计数，行3 = 区域/缩放/样式。历史行保持 9 列不变。）
+
+    这条守两件事：
+      1. 结构锚点存在（colspan=9 单格 + 三行容器 + 状态左条宿主 .task-row__bar）；
+      2. 增量更新依赖的稳定类名没有改名——updateTaskProgressPartial /
+         updateTimeDisplay 按 .progress-bar/.task-pct/.task-count/.task-time
+         原地更新，模板里类名一换，Socket.IO 刷新就静默失效而本文件其它
+         断言未必红。
+    """
+    body = _fn('createTaskRow')
+    for anchor in ('colspan="9"', 'task-cell', 'task-row__bar',
+                   'task-line1', 'task-progress-line', 'task-line3'):
+        assert anchor in body, (
+            f'createTaskRow 缺 {anchor} —— 富行三行布局的锚点（见 docstring）'
+        )
+    for cls in ('task-name', 'task-pct', 'task-count', 'task-time', 'progress-bar'):
+        assert cls in body, (
+            f'createTaskRow 缺稳定类名 {cls} —— Socket.IO 增量更新按它定位元素'
+        )
+
+
+def test_pagination_bar_is_hidden_when_only_one_page():
+    """总页数 <= 1 时不渲染分页条（孤零零一个「1」按钮没有交互价值）。
+
+    （2026-08 重排配套：实测只有 1 页历史时分页区仍显示一个「1」。）
+    """
+    body = _fn('renderPagination', 'history.js')
+    assert re.search(r'totalPages\s*<=\s*1', body), (
+        'renderPagination 没有「<= 1 页直接返回」的分支——单页时会显示孤按钮'
+    )
+    assert re.search(r"innerHTML\s*=\s*''", body), (
+        'renderPagination 的单页分支没有清空分页条'
+    )
+
+
 def test_history_table_skips_non_terminal_rows_only_when_active_tbody_exists():
     """去重契约：文档里有 #activeTasksBody 时，历史区跳过 pending/running/paused。
 
