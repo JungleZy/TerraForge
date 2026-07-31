@@ -76,7 +76,24 @@ def _sh_run_version_resolution(*args, cwd=ROOT):
     )
 
 
-needs_bash = pytest.mark.skipif(shutil.which('bash') is None, reason='需要 bash')
+def _bash_is_usable():
+    """Windows 的 System32\\bash.exe 是 WSL 安装占位 stub：which 找得到、
+    能执行，但只打印「Windows Subsystem for Linux … to install」（UTF-16）
+    并以非零退出。路径探测挡不住它，必须功能验证——真跑一句 `true`。"""
+    exe = shutil.which('bash')
+    if not exe:
+        return False
+    try:
+        return subprocess.run(
+            [exe, '-c', 'true'], capture_output=True, timeout=10,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+needs_bash = pytest.mark.skipif(
+    not _bash_is_usable(),
+    reason='需要可用的 bash（Windows 的 WSL 占位 stub 不算）')
 
 
 def test_push_release_sh_not_hardcoded_v001():
