@@ -71,29 +71,47 @@ def _sh_run_version_resolution(*args, cwd=ROOT):
     """实际执行 push-release.sh 开头到 TAG= 之前的版本解析段。"""
     head = _read('push-release.sh').split('TAG=', 1)[0]
     return subprocess.run(
-        ['bash', '-c', head + '\necho "RESOLVED:$VERSION"', 'push-release.sh', *args],
+        [_BASH, '-c', head + '\necho "RESOLVED:$VERSION"', 'push-release.sh', *args],
         cwd=cwd, capture_output=True, text=True,
     )
 
 
-def _bash_is_usable():
-    """Windows 的 System32\\bash.exe 是 WSL 安装占位 stub：which 找得到、
-    能执行，但只打印「Windows Subsystem for Linux … to install」（UTF-16）
-    并以非零退出。路径探测挡不住它，必须功能验证——真跑一句 `true`。"""
-    exe = shutil.which('bash')
-    if not exe:
-        return False
-    try:
-        return subprocess.run(
-            [exe, '-c', 'true'], capture_output=True, timeout=10,
-        ).returncode == 0
-    except Exception:
-        return False
+def _find_real_bash():
+    """找真正可用的 bash，找不到返回 None。
+
+    Windows 的 System32\\bash.exe 是 WSL 安装占位 stub：which 找得到、能执行，
+    但没有发行版时只打印「Windows Subsystem for Linux … to install」（UTF-16）
+    并以非零退出——而且它对本该失败的调用的退出码与参数长度相关，功能验证
+    用 `true` 挡不住。可靠的验明正身：`--version` 必须输出 GNU bash
+    （WSL/git-bash 都是 GNU，stub 只会打印安装提示）。
+    Windows 上 GitHub Actions 的 git-bash 常不在 pytest 的 PATH 里，
+    额外探测 Git for Windows 的默认安装位置。
+    """
+    candidates = []
+    found = shutil.which('bash')
+    if found:
+        candidates.append(found)
+    if os.name == 'nt':
+        candidates += [
+            os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
+                         'Git', 'bin', 'bash.exe'),
+            os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+                         'Git', 'bin', 'bash.exe'),
+        ]
+    for exe in candidates:
+        try:
+            proc = subprocess.run([exe, '--version'], capture_output=True, timeout=10)
+        except Exception:
+            continue
+        if proc.returncode == 0 and b'GNU bash' in proc.stdout:
+            return exe
+    return None
 
 
+_BASH = _find_real_bash()
 needs_bash = pytest.mark.skipif(
-    not _bash_is_usable(),
-    reason='需要可用的 bash（Windows 的 WSL 占位 stub 不算）')
+    _BASH is None,
+    reason='需要可用的 GNU bash（Windows 的 WSL 占位 stub 不算）')
 
 
 def test_push_release_sh_not_hardcoded_v001():
