@@ -1,3 +1,11 @@
+## v0.1.8 —— CI 修复：Windows 构建的脚本行为测试
+
+- bash 验明正身改为 `--version` 必须输出 GNU bash（WSL 占位 stub 的退出码与参数相关，单跑 `true` 挡不住），并探测 Git for Windows 默认安装路径——CI windows-latest 上的 5 条脚本行为测试此前被 System32 的 WSL stub 假失败，现在用 git-bash 真正执行；无 bash 环境干净跳过。
+
+以下为 v0.1.7 的发布说明。
+
+---
+
 ## v0.1.7 —— 测试修复：Windows 下脚本行为测试假失败
 
 - `test_fix_build_scripts.py` / `test_fix_l1_entry_build_misc.py` 的 bash 探测从「路径存在」改为「功能验证」（真跑 `bash -c true`）：Windows 的 System32\bash.exe 是 WSL 安装占位 stub，存在但不可用，此前导致 5 条测试在 Windows 上假失败；现在 stub 环境干净跳过，真 bash（WSL/git-bash）照常执行。
