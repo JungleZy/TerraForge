@@ -58,7 +58,6 @@ def test_retry_backoff_aborts_promptly_on_stop(monkeypatch, tmp_path):
         "concurrent_downloads": "1",
     })
 
-    stop = asyncio.Event()
     monkeypatch.setattr(dde.aiohttp, "ClientSession", lambda *a, **k: _FakeSession())
     monkeypatch.setattr(dde.aiohttp, "TCPConnector", lambda *a, **k: None)
     monkeypatch.setattr(dde.aiohttp, "CookieJar", lambda *a, **k: None)
@@ -69,6 +68,10 @@ def test_retry_backoff_aborts_promptly_on_stop(monkeypatch, tmp_path):
         events.append((granule, status))
 
     async def run():
+        # asyncio.Event 必须在运行中的事件循环里创建（3.13+ 在循环外构造直接
+        # 抛 RuntimeError）
+        stop = asyncio.Event()
+
         async def set_stop_soon():
             await asyncio.sleep(0.2)
             stop.set()

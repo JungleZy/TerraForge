@@ -581,7 +581,13 @@ def build_contour_tiles(
     # 大区域 warp 产物可达数十 GB,默认落系统临时目录;contour_warp_tmpdir 配置键
     # 可指到空间充足的盘(留空 = 系统默认)。
     from services.config_manager import ConfigManager
-    warp_tmp_base = (ConfigManager().get("contour_warp_tmpdir", "") or "").strip() or None
+    try:
+        warp_tmp_base = (ConfigManager().get("contour_warp_tmpdir", "") or "").strip() or None
+    except Exception as e:
+        # 配置库不可用(fresh clone 尚无 data/ 目录、cwd 不同等)不应让渲染失败;
+        # ConfigManager.get 对 sqlite 错误是有意重抛的,这里自行兜底。
+        logger.warning(f"读取 contour_warp_tmpdir 失败({e!r}),回退系统临时目录")
+        warp_tmp_base = None
     tmpdir = tempfile.mkdtemp(prefix="contour_warp_", dir=warp_tmp_base)
     dem_path = os.path.join(tmpdir, "dem_3857.tif")
     att_path = None

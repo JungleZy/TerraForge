@@ -69,9 +69,6 @@ def test_stop_mid_download_leaves_no_part_file(monkeypatch, tmp_path):
         "concurrent_downloads": "2",
     })
 
-    stop = asyncio.Event()
-    resp = _FakeResp(stop)
-    monkeypatch.setattr(dde.aiohttp, "ClientSession", lambda *a, **k: _FakeSession(resp))
     monkeypatch.setattr(dde.aiohttp, "TCPConnector", lambda *a, **k: None)
     monkeypatch.setattr(dde.aiohttp, "CookieJar", lambda *a, **k: None)
 
@@ -81,13 +78,22 @@ def test_stop_mid_download_leaves_no_part_file(monkeypatch, tmp_path):
         events.append((granule, status))
 
     out = tmp_path / "out"
-    asyncio.run(engine.download_files(
-        dataset="COP-DEM-GLO-30",
-        granules=["tile/G.tif"],
-        output_dir=out,
-        progress_callback=progress,
-        stop_flag=stop,
-    ))
+
+    async def main():
+        # asyncio.Event 必须在运行中的事件循环里创建（3.13+ 在循环外构造直接
+        # 抛 RuntimeError），依赖它的 _FakeResp 一并挪进来
+        stop = asyncio.Event()
+        resp = _FakeResp(stop)
+        monkeypatch.setattr(dde.aiohttp, "ClientSession", lambda *a, **k: _FakeSession(resp))
+        await engine.download_files(
+            dataset="COP-DEM-GLO-30",
+            granules=["tile/G.tif"],
+            output_dir=out,
+            progress_callback=progress,
+            stop_flag=stop,
+        )
+
+    asyncio.run(main())
 
     # 暂停语义：回写 pending（不是 failed）
     assert events[-1] == ("tile/G.tif", "pending"), f"实际事件: {events}"
