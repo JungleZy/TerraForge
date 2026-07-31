@@ -2747,6 +2747,7 @@ code {
     color: var(--color-text-muted);
 }
 
+/* 超软阈值是「提醒」不是「错误」（0.1.4 起放开硬上限，创建时二次确认） */
 .tile-estimate--over {
-    color: var(--color-danger);
+    color: var(--color-warning);
 }

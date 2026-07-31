@@ -53,33 +53,36 @@ function estimateTileCount(bounds, zoomMin, zoomMax) {
     return total;
 }
 
-// 刷新 #tileEstimate 读数。返回「是否在硬上限内」（提交按钮的启用条件之一）。
-// DEM 下载按颗粒计、不用瓦片数，高程模式下隐藏读数并视为不超上限。
+// 刷新 #tileEstimate 读数，返回 {count, over}（无选区/DEM 模式返回 null）。
+// 0.1.4 起瓦片数是软阈值：不再禁用提交，只提示并在提交时要求二次确认。
+// DEM 下载按颗粒计、不用瓦片数，高程模式下隐藏读数。
 function updateTileEstimate() {
     const el = document.getElementById('tileEstimate');
-    if (!el) return true;
+    if (!el) return null;
     const type = document.getElementById('downloadType')?.value || 'map';
     if (type === 'dem' || !currentBounds) {
         el.hidden = true;
-        return true;
+        return null;
     }
     const zMin = parseInt(document.getElementById('zoomMin')?.value, 10);
     const zMax = parseInt(document.getElementById('zoomMax')?.value, 10);
     if (isNaN(zMin) || isNaN(zMax) || zMin > zMax) {
         el.hidden = true;
-        return true;
+        return null;
     }
     const count = estimateTileCount(currentBounds, zMin, zMax);
     const formatted = count.toLocaleString('zh-CN');
-    if (count > TASK_TILE_LIMIT) {
-        el.textContent = `预计 ${formatted} 块瓦片，超过单任务上限 ${TASK_TILE_LIMIT.toLocaleString('zh-CN')} —— 请缩小范围或降低缩放级别`;
+    const over = count > TASK_TILE_LIMIT;
+    if (over) {
+        const hours = (count / 10 / 3600).toFixed(1);
+        el.textContent = `预计 ${formatted} 块瓦片 · 按 10 张/秒约 ${hours} 小时（大任务，创建时将要求确认）`;
         el.classList.add('tile-estimate--over');
     } else {
-        el.textContent = `预计 ${formatted} 块瓦片（上限 ${TASK_TILE_LIMIT.toLocaleString('zh-CN')}）`;
+        el.textContent = `预计 ${formatted} 块瓦片`;
         el.classList.remove('tile-estimate--over');
     }
     el.hidden = false;
-    return count <= TASK_TILE_LIMIT;
+    return { count, over };
 }
 
 // --- 首屏加载动画（Splash） ----------------------------------------------------
@@ -661,14 +664,13 @@ function initContourTintUI() {
 }
 
 // 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
-// 两张表单各自一颗按钮：数据下载（瓦片/高程）必须先框选；
-// 瓦片任务还要求预估数量不超单任务上限（updateTileEstimate，与后端
-// 硬上限同口径）；处理类（本地高程切片 / 等高线）都是上传驱动，
-// 没有 bbox，无条件启用（不检查文件）—— 文件是否已选在提交时由
-// submitLocalTerrain() / submitContour() 各自校验。
+// 两张表单各自一颗按钮：数据下载（瓦片/高程）必须先框选（瓦片数只是
+// 提示项，0.1.4 起不禁用按钮）；处理类（本地高程切片 / 等高线）都是
+// 上传驱动，没有 bbox，无条件启用（不检查文件）—— 文件是否已选在提交时
+// 由 submitLocalTerrain() / submitContour() 各自校验。
 function refreshSubmitButtonState() {
     const dlBtn = document.getElementById('createTaskBtn');
-    if (dlBtn) dlBtn.disabled = !currentBounds || !updateTileEstimate();
+    if (dlBtn) dlBtn.disabled = !currentBounds;
     const prBtn = document.getElementById('createProcessBtn');
     if (prBtn) prBtn.disabled = false;
 }
@@ -883,11 +885,15 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
         return;
     }
 
-    // 兜底：按钮启用态已经拦过（refreshSubmitButtonState），这里再核一次，
-    // 与后端 100k 硬上限同口径，避免绕过禁用态直接 submit 时白跑一趟 400。
-    if (!updateTileEstimate()) {
-        showNotification('瓦片数量超过单任务上限（100,000），请缩小范围或降低缩放级别', 'warning');
-        return;
+    // 大任务二次确认：瓦片数超软阈值（100k，小时级作业）时把预计耗时
+    // 摆给用户，确认后才提交。0.1.4 起服务端不再硬性拒绝。
+    const est = updateTileEstimate();
+    if (est && est.over) {
+        const hours = (est.count / 10 / 3600).toFixed(1);
+        const ok = await showConfirm(
+            `预计 ${est.count.toLocaleString('zh-CN')} 块瓦片，按 10 张/秒估算耗时约 ${hours} 小时。确定创建吗？`,
+            { title: '大任务确认', danger: true });
+        if (!ok) return;
     }
 
     let taskData;

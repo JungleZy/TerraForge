@@ -99,22 +99,21 @@ def test_submit_button_is_always_unlocked_in_finally():
 
 
 def test_tile_estimate_uses_backend_formula():
-    """瓦片预估必须与后端 calculate_tiles 同口径（同一 Web Mercator 公式），
-    且提交按钮的启用条件必须走预估——否则用户又是提交后才吃到 400。"""
+    """瓦片预估必须与后端 calculate_tiles 同口径（同一 Web Mercator 公式）。
+    0.1.4 起它是软阈值：按钮不被禁用，但提交时必须二次确认。"""
     src = _map_js()
     assert 'function estimateTileCount(' in src, 'map.js 应定义 estimateTileCount()'
     assert 'const TASK_TILE_LIMIT = 100000' in src, (
-        '前端硬上限必须与后端 WARN_TILES_THRESHOLD(100000) 一致'
+        '前端软阈值必须与后端 WARN_TILES_THRESHOLD(100000) 一致'
     )
     assert 'Math.tan' in src and 'Math.cos' in src, (
         '预估公式必须是与后端一致的 Mercator deg2num（tan/sec），'
-        '换成线性插值会让预估与后端判定脱节'
-    )
-    body = re.search(r'function refreshSubmitButtonState\(\) \{.*?\n\}', src, re.S)
-    assert body and 'updateTileEstimate()' in body.group(0), (
-        'refreshSubmitButtonState 必须把 updateTileEstimate() 纳入禁用条件'
+        '换成线性插值会让预估与后端口径脱节'
     )
     assert 'function updateTileEstimate(' in src
+    assert '大任务确认' in src and 'showConfirm(' in src, (
+        '瓦片数超软阈值时，提交前必须弹大任务确认框（0.1.4 放开硬上限后的把关）'
+    )
 
 
 def test_rectangle_selection_is_wired():

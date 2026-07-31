@@ -206,15 +206,16 @@ def test_pause_cancel_nonexistent_dem_task_400(monkeypatch, tmp_path):
     assert resp.status_code == 400, resp.get_json()
 
 
-# ---------- I15: 瓦片数超阈值 → 创建直接 400 ----------
+# ---------- I15: 瓦片数超软阈值 → 0.1.4 起照常创建 ----------
 
-def test_create_map_task_over_tile_cap_400(monkeypatch, tmp_path):
+def test_create_map_task_over_tile_soft_cap_still_created(monkeypatch, tmp_path):
+    """0.1.4 放开硬上限：超阈值不再 400（前端大任务确认框替用户把关）。"""
     _, client = _load_app(monkeypatch, tmp_path)
     tm_mod = importlib.import_module("services.task_manager")
     monkeypatch.setattr(tm_mod, "WARN_TILES_THRESHOLD", 5)
     resp = client.post("/api/tasks", json=_map_payload())
-    assert resp.status_code == 400, resp.get_json()
-    assert 'exceeds' in resp.get_json()['error']
+    assert resp.status_code == 201, resp.get_json()
+    assert resp.get_json()['success'] is True
 
 
 # ---------- minor: PUT /api/config ----------

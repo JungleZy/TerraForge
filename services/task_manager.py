@@ -297,15 +297,13 @@ class TaskManager:
         total_tiles = len(tiles)
         logger.info(f"Calculated {total_tiles} tiles for task")
 
-        # 瓦片数硬上限:超过 WARN_TILES_THRESHOLD 直接拒绝创建(API 层 400)。
-        # download_engine.calculate_tiles 只做 warning(那里是计算函数,调用方
-        # 可能只想知道数量);「创建任务」这个入口才是强制点 —— 10 万张瓦片的
-        # 下载 + 拼接是小时级作业,写进库里再失败比在这里拒绝代价大得多。
+        # 瓦片数软阈值:超过 WARN_TILES_THRESHOLD 只记警告,不拒绝创建。
+        # 0.1.4 起放开硬上限 —— 是否继续由用户在前端确认(下载弹窗会显示
+        # 预计瓦片数与耗时,超阈值时要求二次确认);服务端不替用户做决定。
         if total_tiles > WARN_TILES_THRESHOLD:
-            raise ValueError(
-                f"Task requires {total_tiles} tiles, which exceeds the maximum "
-                f"of {WARN_TILES_THRESHOLD} tiles per task. "
-                f"Reduce the area or zoom range."
+            logger.warning(
+                f"Task tile count {total_tiles} exceeds soft threshold "
+                f"{WARN_TILES_THRESHOLD}; allowed (user confirmed in UI)"
             )
 
         # Insert task into database

@@ -219,28 +219,29 @@ def test_stitch_ignores_and_preserves_shared_cache_intermediates(isolated_config
     )
 
 
-# ---------- I15: 瓦片数硬上限 ----------
+# ---------- I15: 瓦片数阈值（0.1.4 起为软阈值） ----------
 
-def test_create_task_rejects_tile_count_over_threshold(isolated_config, monkeypatch):
-    """阈值本身不动,用小阈值快速验证 create_task 的拒绝路径。"""
+def test_create_task_over_threshold_is_allowed(isolated_config, monkeypatch):
+    """0.1.4 放开硬上限：超阈值只记警告、不拒绝创建
+    （是否继续由用户在前端大任务确认框里决定，服务端不替用户做决定）。"""
     import services.task_manager as tm_mod
 
     monkeypatch.setattr(tm_mod, 'WARN_TILES_THRESHOLD', 5)
     tm = tm_mod.TaskManager()
-    with pytest.raises(ValueError, match='exceeds'):
-        tm.create_task(_params())  # zoom 10-11 跨 1°x1°,远超 5 张
+    task_id = tm.create_task(_params())  # zoom 10-11 跨 1°x1°，远超 5 张
+    assert isinstance(task_id, int)
 
 
-def test_create_task_rejects_over_100k_tiles_for_real(isolated_config):
-    """用真实阈值守住接线:docstring 承诺的 10 万硬上限必须真的生效。"""
+def test_create_task_over_100k_tiles_for_real(isolated_config):
+    """真实阈值下超 10 万张也能创建——守住「不再 400」的接线。"""
     from services.task_manager import TaskManager
 
     tm = TaskManager()
-    with pytest.raises(ValueError, match='exceeds'):
-        tm.create_task(_params(
-            north=42.0, south=38.0, east=119.0, west=115.0,
-            zoom_min=15, zoom_max=15,  # 约 17 万张瓦片
-        ))
+    task_id = tm.create_task(_params(
+        north=42.0, south=38.0, east=119.0, west=115.0,
+        zoom_min=15, zoom_max=15,  # 约 17 万张瓦片
+    ))
+    assert isinstance(task_id, int)
 
 
 def test_create_task_under_threshold_still_works(isolated_config):
