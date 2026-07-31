@@ -351,6 +351,8 @@ def test_build_sh_missing_gdal_pin_clear_error(tmp_path):
     proc = subprocess.run(
         [_BASH, '-c', _build_sh_pin_check_segment()],
         cwd=tmp_path, capture_output=True, text=True,
+        # 脚本输出含 UTF-8 中文；Windows 上 text=True 默认 cp1252，会解成乱码
+        encoding='utf-8', errors='replace',
     )
     assert proc.returncode != 0
     assert 'requirements.txt 缺少 GDAL== pin' in proc.stdout + proc.stderr
@@ -363,6 +365,7 @@ def test_build_sh_pin_present_passes_check(tmp_path):
     proc = subprocess.run(
         [_BASH, '-c', _build_sh_pin_check_segment() + '\necho "PIN:$REQUIRED_GDAL"'],
         cwd=tmp_path, capture_output=True, text=True,
+        encoding='utf-8', errors='replace',
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip().endswith('PIN:3.8.4')

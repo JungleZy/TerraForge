@@ -73,6 +73,9 @@ def _sh_run_version_resolution(*args, cwd=ROOT):
     return subprocess.run(
         [_BASH, '-c', head + '\necho "RESOLVED:$VERSION"', 'push-release.sh', *args],
         cwd=cwd, capture_output=True, text=True,
+        # 脚本输出含 UTF-8 中文；Windows 上 text=True 默认 cp1252，
+        # 解码失败会崩 reader 线程、stdout 变 None
+        encoding='utf-8', errors='replace',
     )
 
 
