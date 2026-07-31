@@ -40,7 +40,7 @@ function initTasks() {
         pushStatusEvent('任务 #' + data.task_id + ' 拼接瓦片中…');
     });
 
-    // 某个缩放级别拼接失败。任务可能仍在跑(其余级别继续),所以这里只报,不动卡片。
+    // 某个缩放级别拼接失败。任务可能仍在跑(其余级别继续),所以这里只报,不动行。
     // 最终判定在后端:全失败 → task_failed;部分失败 → task_completed 带 warning,
     // 同时写进 tasks.error_message。
     socket.on('task_stitch_failed', function(data) {
@@ -87,9 +87,9 @@ async function loadActiveTasks() {
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
         const contourTasks = (contourData.tasks || []).map(t => normalizeTask(t, 'contour'));
         const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks].filter(t =>
-            // failed 也保留：失败卡片必须常驻（与 handleTaskFailed 的约定一致），
+            // failed 也保留：失败行必须常驻（与 handleTaskFailed 的约定一致），
             // 否则刷新页面后失败任务无声消失，用户无从得知失败原因。
-            // 移除卡片仍是用户点「移除」按钮（dismissTask）的事。
+            // 移除行仍是用户点「移除」按钮（dismissTask）的事。
             ['pending', 'running', 'paused', 'failed'].includes(t.status)
         );
 
@@ -187,24 +187,27 @@ function normalizeTask(task, type) {
 }
 
 function renderActiveTasks(tasks) {
-    const container = document.getElementById('activeTasks');
+    // 活动任务不再是独立卡片区，而是统一任务表顶部的实时行区
+    // （#activeTasksBody，在历史行 #historyTableBody 之上）。
+    const tbody = document.getElementById('activeTasksBody');
+    if (!tbody) return;
 
     if (tasks.length === 0) {
-        container.innerHTML = `
-            <div style="text-align:center; padding:2rem 1rem; color:var(--color-text-secondary);">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:0.4; margin-bottom:0.75rem;">
-                <line x1="22" y1="12" x2="18" y2="12"></line><line x1="6" y1="12" x2="2" y2="12"></line>
-                <line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line>
-              </svg>
-              <p style="margin:0;">暂无活动任务</p>
-            </div>
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9" class="text-center" style="padding: 1.5rem 1rem;">
+                    <p class="text-muted" style="margin: 0;">暂无活动任务</p>
+                </td>
+            </tr>
         `;
         updateStatusTasks();
         return;
     }
 
-    container.innerHTML = tasks.map(task => createTaskCard(task)).join('');
-    // createTaskCard 只吐一个空的 .task-error 容器（错误原文不能进 innerHTML），
+    tbody.innerHTML = tasks.map(task =>
+        createTaskRow(task) + (task.status === 'failed' ? createTaskErrorRow(task) : '')
+    ).join('');
+    // createTaskErrorRow 只吐一个空的 .task-error 容器（错误原文不能进 innerHTML），
     // 文本在这里补。漏掉这一步的话，失败当场看得见原因，之后随便来一个新任务
     // 触发整体重绘，红框就变空了。
     tasks.forEach(applyTaskErrorText);
@@ -216,7 +219,7 @@ function renderActiveTasks(tasks) {
 // 这里仍全部做 null 守卫，避免未来被其它页引入时报错。
 
 // 活动任务读数：进行中（pending/running/paused）任务数 + 汇总进度条。
-// failed 卡片留在 activeTasks 里等用户移除，但不算「活动」。
+// failed 行留在 activeTasks 里等用户移除，但不算「活动」。
 function updateStatusTasks() {
     const textEl = document.getElementById('statusTasksText');
     if (!textEl) return;
@@ -252,12 +255,32 @@ function pushStatusEvent(msg) {
     el.textContent = msg;
 }
 
-function createTaskCard(task) {
+function createTaskRow(task) {
     const progress = task.total_items > 0
         ? Math.round((task.downloaded_items / task.total_items) * 100)
         : 0;
 
     const timeInfo = calculateTimeInfo(task);
+    const timeText = timeInfo.show
+        ? [timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : '',
+           timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : '']
+            .filter(Boolean).join(' | ')
+        : '—';
+
+    const hasBbox = task.north != null && task.south != null
+                 && task.east != null && task.west != null;
+    // 两行排版（与历史行一致）：第一行 北/南，第二行 东/西。数值是后端数字，
+    // 无注入面。nowrap 防止坐标从数字中间断开。
+    const bboxText = hasBbox
+        ? `${task.north.toFixed(2)}, ${task.south.toFixed(2)}<br>${task.east.toFixed(2)}, ${task.west.toFixed(2)}`
+        : '—';
+    const zoomText = (task.zoom_min != null && task.zoom_max != null)
+        ? `${task.zoom_min}~${task.zoom_max}`
+        : '—';
+    // getStyleText 定义在 history.js（首页两个文件都加载）；拿不到就显示原文。
+    const styleText = task.style
+        ? (typeof getStyleText === 'function' ? getStyleText(task.style) : task.style)
+        : '—';
 
     const statusIcons = {
         'pending': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
@@ -266,23 +289,44 @@ function createTaskCard(task) {
         'completed': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>',
         'failed': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>',
         // A7 / Task 12 补上：cancelled 原先没有图标（`statusIcons[task.status] || ''`
-        // 静默吐空串）。这一态确实到得了卡片——task_progress 事件推的是整行 DB 记录，
+        // 静默吐空串）。这一态确实到得了行——task_progress 事件推的是整行 DB 记录，
         // 取消动作落库后会顺着 `task.status = data.status` 进来。
         'cancelled': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
     };
 
     const supportsPauseResume = task.task_type !== 'local_terrain';
 
+    // 单元格与历史行的 9 列一一对应。数量列是「计数文本 + 紧凑进度条 + 条外
+    // 百分比」：表格行高装不下 28px 轨道 + 18px 覆盖层 chip，所以这里不用
+    // .progress/.progress__label 那套，百分比放在条右边的 .task-pct。
     return `
-        <div class="task-card status-${task.status}" id="task-${task._key}">
-            <div class="d-flex justify-content-between align-items-center" style="margin-bottom: 0.75rem; gap: 0.5rem;">
-                <h6 style="margin-bottom: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(task.name)}</h6>
-                <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;">
+        <tr class="task-row status-${task.status}" id="task-${task._key}">
+            <td class="task-row__bar" style="font-family: var(--font-mono);">${escapeHtml(task._key)}</td>
+            <td><span class="task-name">${escapeHtml(task.name)}</span></td>
+            <td>
+                <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center; gap: 4px;">
                     ${statusIcons[task.status] || ''}
                     ${escapeHtml(getStatusText(task.status))}
                 </span>
-            </div>
-            <div class="d-flex justify-content-end" style="margin-bottom: 0.75rem;">
+            </td>
+            <td><small style="font-family: var(--font-mono); white-space: nowrap;">${bboxText}</small></td>
+            <td style="font-family: var(--font-mono);">${zoomText}</td>
+            <td>${escapeHtml(styleText)}</td>
+            <td>
+                <div class="progress-detail task-count">${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}${task.failed_items > 0 ? ` <span style="color: var(--color-danger);">| 失败: ${task.failed_items}</span>` : ''}</div>
+                <div class="task-progress-line">
+                    <div class="task-progress">
+                        <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
+                             style="width: ${progress}%"
+                             aria-valuenow="${progress}"
+                             aria-valuemin="0"
+                             aria-valuemax="100"></div>
+                    </div>
+                    <span class="task-pct" aria-hidden="true">${progress}%</span>
+                </div>
+            </td>
+            <td class="task-time progress-detail">${timeText}</td>
+            <td>
                 <div class="btn-group btn-group-sm">
                     ${supportsPauseResume && task.status === 'pending' ? `
                         <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务" aria-label="启动任务">
@@ -316,7 +360,7 @@ function createTaskCard(task) {
                     ` : ''}
                     ${task.status === 'failed' ? `
                         <button class="btn btn-icon btn-secondary" onclick="dismissTask(${task.id}, '${task.task_type}')"
-                                title="从列表中移除这张失败卡片" aria-label="移除失败任务卡片">
+                                title="从列表中移除这条失败记录" aria-label="移除失败任务行">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="3 6 5 6 21 6"></polyline>
                                 <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -324,43 +368,22 @@ function createTaskCard(task) {
                         </button>
                     ` : ''}
                 </div>
-            </div>
+            </td>
+        </tr>
+    `;
+}
 
-            <div class="progress-detail" style="margin-bottom: 0.5rem;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="7 10 12 15 17 10"></polyline>
-                    <line x1="12" y1="15" x2="12" y2="3"></line>
-                </svg>
-                ${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
-                ${task.failed_items > 0 ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_items}</span>` : ''}
-            </div>
-
-            <div class="progress" style="margin-bottom: 0.75rem;">
-                <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
-                     style="width: ${progress}%"
-                     aria-valuenow="${progress}"
-                     aria-valuemin="0"
-                     aria-valuemax="100"></div>
-                <span class="progress__label" aria-hidden="true">${progress}%</span>
-            </div>
-
-            ${timeInfo.show ? `
-            <div class="progress-detail" style="margin-top: 0.5rem;">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <polyline points="12 6 12 12 16 14"></polyline>
-                </svg>
-                ${timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : ''}
-                ${timeInfo.elapsed && timeInfo.estimated ? ' | ' : ''}
-                ${timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : ''}
-            </div>
-            ` : ''}
-
-            ${task.status === 'failed' ? `
-            <div class="task-error" role="alert"></div>
-            ` : ''}
-        </div>
+// 失败任务的错误信息行：紧跟主行之后、横跨 9 列。
+// 与主行分开一个 <tr>（而不是塞进主行的某个单元格），是因为错误原文长度
+// 不可控，独占一行才不挤压别的列。文本由 applyTaskErrorText 用 textContent
+// 补——error_message 是后端异常的字符串化结果，绝不能进这里的 innerHTML 模板。
+function createTaskErrorRow(task) {
+    return `
+        <tr class="task-error-row" id="task-error-${task._key}">
+            <td colspan="9">
+                <div class="task-error" role="alert"></div>
+            </td>
+        </tr>
     `;
 }
 
@@ -381,12 +404,12 @@ function updateTaskProgress(data) {
             normalized._key = key;
             activeTasks.set(key, normalized);
 
-            const card = document.getElementById(`task-${key}`);
-            if (card) {
+            const row = document.getElementById(`task-${key}`);
+            if (row) {
                 if (statusChanged) {
-                    card.outerHTML = createTaskCard(normalized);
+                    row.outerHTML = createTaskRow(normalized);
                 } else if (progressChanged) {
-                    updateTaskProgressPartial(card, normalized);
+                    updateTaskProgressPartial(row, normalized);
                 }
             }
             return;
@@ -414,12 +437,12 @@ function updateTaskProgress(data) {
 
             activeTasks.set(key, task);
 
-            const card = document.getElementById(`task-${key}`);
-            if (card) {
+            const row = document.getElementById(`task-${key}`);
+            if (row) {
                 if (statusChanged) {
-                    card.outerHTML = createTaskCard(task);
+                    row.outerHTML = createTaskRow(task);
                 } else if (progressChanged) {
-                    updateTaskProgressPartial(card, task);
+                    updateTaskProgressPartial(row, task);
                 }
             }
             return;
@@ -461,12 +484,12 @@ function updateTaskProgress(data) {
 
             activeTasks.set(key, task);
 
-            const card = document.getElementById(`task-${key}`);
-            if (card) {
+            const row = document.getElementById(`task-${key}`);
+            if (row) {
                 if (statusChanged || phaseChanged) {
-                    card.outerHTML = createTaskCard(task);
+                    row.outerHTML = createTaskRow(task);
                 } else if (progressChanged) {
-                    updateTaskProgressPartial(card, task);
+                    updateTaskProgressPartial(row, task);
                 }
             }
             return;
@@ -502,12 +525,12 @@ function updateTaskProgress(data) {
 
         activeTasks.set(key, task);
 
-        const card = document.getElementById(`task-${key}`);
-        if (card) {
+        const row = document.getElementById(`task-${key}`);
+        if (row) {
             if (statusChanged) {
-                card.outerHTML = createTaskCard(task);
+                row.outerHTML = createTaskRow(task);
             } else if (progressChanged) {
-                updateTaskProgressPartial(card, task);
+                updateTaskProgressPartial(row, task);
             }
         }
     } else {
@@ -517,51 +540,43 @@ function updateTaskProgress(data) {
     }
 }
 
-function updateTaskProgressPartial(card, task) {
+function updateTaskProgressPartial(row, task) {
     const progress = task.total_items > 0
         ? Math.round((task.downloaded_items / task.total_items) * 100)
         : 0;
 
-    // 更新进度条
-    const progressBar = card.querySelector('.progress-bar');
+    // 更新进度条（紧凑条，在数量单元格里）
+    const progressBar = row.querySelector('.progress-bar');
     if (progressBar) {
         progressBar.style.width = `${progress}%`;
         progressBar.setAttribute('aria-valuenow', progress);
         progressBar.className = `progress-bar bg-${getStatusColor(task.status)}`;
     }
 
-    // 百分比在覆盖层里，不在条里。这行原本是 progressBar.textContent = ...，
-    // 是这条路径最容易漏改的一处：卡片初次渲染看不出问题，第一个
+    // 百分比在条右边的 .task-pct，不在条里。这行原本是 progressBar.textContent = ...，
+    // 是这条路径最容易漏改的一处：行初次渲染看不出问题，第一个
     // task_progress 事件一到就会在同一条进度条上多出第二个百分比。
-    const progressLabel = card.querySelector('.progress__label');
+    const progressLabel = row.querySelector('.task-pct');
     if (progressLabel) {
         progressLabel.textContent = `${progress}%`;
     }
 
-    // 更新下载数量
-    const progressDetails = card.querySelectorAll('.progress-detail');
-    if (progressDetails.length > 0) {
-        const downloadDetail = progressDetails[0];
+    // 更新下载数量（数字与失败计数都是数值字段，没有注入面）
+    const downloadDetail = row.querySelector('.task-count');
+    if (downloadDetail) {
         const failedText = task.failed_items > 0
-            ? `<span style="color: var(--color-danger); margin-left: 8px;">| 失败: ${task.failed_items}</span>`
+            ? ` <span style="color: var(--color-danger);">| 失败: ${task.failed_items}</span>`
             : '';
 
-        downloadDetail.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="7 10 12 15 17 10"></polyline>
-                <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            ${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}
-            ${failedText}
-        `;
+        downloadDetail.innerHTML =
+            `${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}${failedText}`;
     }
 }
 
 function handleTaskCompleted(taskId, taskType, warning) {
     // I18：部分 zoom 拼接失败时任务仍判 completed，但事件里带 warning
     // （同时写进了 tasks.error_message）。原实现直接删卡片、零提示——
-    // 「任务成功但 GeoTIFF 缺层级」用户无从得知。toast 在删卡片之前弹，
+    // 「任务成功但 GeoTIFF 缺层级」用户无从得知。toast 在删行之前弹，
     // 且任务不在 activeTasks（页面中途加载）时也照样提示。
     // showToast 内部走 textContent，warning 原文无需再转义。
     if (warning) {
@@ -573,12 +588,26 @@ function handleTaskCompleted(taskId, taskType, warning) {
         task.status = 'completed';
         activeTasks.delete(key);
 
-        const card = document.getElementById(`task-${key}`);
-        if (card) {
-            card.remove();
+        const row = document.getElementById(`task-${key}`);
+        if (row) {
+            row.remove();
         }
 
         renderActiveTasks(Array.from(activeTasks.values()));
+    }
+
+    // 完成的任务要立刻在历史区出现：实时行删掉了，如果历史表还停在旧数据，
+    // 这个任务就在界面上「凭空消失」了。只在记录面板的历史已初始化过时才刷新
+    // （historyViewer 存在，或历史表已有内容）——面板从没打开过的话，
+    // 打开时 initHistory 本来就会拉最新数据，不必抢着刷。
+    if (typeof loadHistory === 'function') {
+        const historyBody = document.getElementById('historyTableBody');
+        const historyReady = (typeof historyViewer !== 'undefined' && historyViewer)
+            || (historyBody && historyBody.children.length > 0);
+        if (historyReady) {
+            loadHistory(1);
+            loadStats();
+        }
     }
 }
 
@@ -606,20 +635,29 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
 
     task.status = 'failed';
     task.error_message = errorMessage || UNKNOWN_ERROR_TEXT;
-    task._key = key;   // applyTaskErrorText 靠它定位卡片；normalizeTask 之外的路径不一定设过
+    task._key = key;   // applyTaskErrorText 靠它定位错误行；normalizeTask 之外的路径不一定设过
 
-    // 既不 activeTasks.delete 也不删卡片：卡片必须留在页面上。
+    // 既不 activeTasks.delete 也不删行：失败行必须留在页面上（转红 + 错误行）。
     // 原实现两件事一起做，于是用户盯着 63% 的进度条，卡片突然消失、零提示，
     // 分不清是失败、被别人取消、还是自己看花了眼。
-    // 清理改由用户点卡片上的「移除」按钮触发（dismissTask）。
+    // 清理改由用户点行上的「移除」按钮触发（dismissTask）。
     activeTasks.set(key, task);
 
-    const card = document.getElementById(`task-${key}`);
-    if (card) {
-        // 整卡重建而不是逐个改 class：进度条转红、徽章改「失败」、动作按钮
-        // 换成「移除」这几件事，createTaskCard 里都已经按 status 分支写好了，
+    const row = document.getElementById(`task-${key}`);
+    if (row) {
+        // 整行重建而不是逐个改 class：进度条转红、徽章改「失败」、动作按钮
+        // 换成「移除」这几件事，createTaskRow 里都已经按 status 分支写好了，
         // 手工同步 DOM 只会多一份会走偏的真相。
-        card.outerHTML = createTaskCard(task);
+        row.outerHTML = createTaskRow(task);
+        // 错误行紧随其后。同一任务重复发 task_failed 时原位重建，
+        // 不会在主行下面堆出一串错误行。
+        const errRow = document.getElementById(`task-error-${key}`);
+        if (errRow) {
+            errRow.outerHTML = createTaskErrorRow(task);
+        } else {
+            document.getElementById(`task-${key}`)
+                .insertAdjacentHTML('afterend', createTaskErrorRow(task));
+        }
         applyTaskErrorText(task);
     } else {
         renderActiveTasks(Array.from(activeTasks.values()));
@@ -633,21 +671,21 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
     failureToasts.set(key, showToast(`任务失败：${task.error_message}`, 'danger', { duration: 0 }));
 }
 
-// 把错误文本填进卡片里那个**空的** .task-error 容器。
+// 把错误文本填进错误行里那个**空的** .task-error 容器。
 //
-// 为什么不直接拼进 createTaskCard 的模板：那个返回值最终进 innerHTML，
+// 为什么不直接拼进 createTaskErrorRow 的模板：那个返回值最终进 innerHTML，
 // 而 error_message 是后端异常的字符串化结果（URL、路径、第三方库报错原文
 // 都可能在里面），拼进去等于把它当 HTML 解析。ui.js 的 toast 里是同一条规矩。
 function applyTaskErrorText(task) {
     if (!task || task.status !== 'failed') return;
-    const card = document.getElementById(`task-${task._key}`);
-    if (!card) return;
-    const box = card.querySelector('.task-error');
+    const errRow = document.getElementById(`task-error-${task._key}`);
+    if (!errRow) return;
+    const box = errRow.querySelector('.task-error');
     if (!box) return;
     box.textContent = task.error_message || UNKNOWN_ERROR_TEXT;  // textContent 防 XSS
 }
 
-// 「移除」按钮：只把失败卡片从界面上拿走，不碰后端。
+// 「移除」按钮：只把失败行从界面上拿走，不碰后端。
 //
 // 失败任务在后端已经是终态，再 POST /cancel 最好的情况也只是白跑一趟。
 // 也刻意**没有**「重试」：三个 manager 的 start_task 都要求
@@ -656,7 +694,7 @@ function applyTaskErrorText(task) {
 function dismissTask(taskId, taskType = 'map') {
     const key = `${taskType}:${taskId}`;
     activeTasks.delete(key);
-    closeFailureToast(key);   // 卡片都不要了，那条常驻 toast 也别留着占地方
+    closeFailureToast(key);   // 行都不要了，那条常驻 toast 也别留着占地方
     renderActiveTasks(Array.from(activeTasks.values()));
 }
 
@@ -755,30 +793,19 @@ function calculateTimeInfo(task) {
 
 function updateTimeDisplay() {
     activeTasks.forEach((task, taskId) => {
-        // 只更新运行中的任务时间
-        if (task.status === 'running') {
-            const card = document.getElementById(`task-${taskId}`);
-            if (card) {
-                const timeInfo = calculateTimeInfo(task);
-                const timeDetailDiv = card.querySelector('.progress-detail:last-child');
-
-                if (timeInfo.show && timeDetailDiv) {
-                    const timeHtml = `
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <polyline points="12 6 12 12 16 14"></polyline>
-                        </svg>
-                        ${timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : ''}
-                        ${timeInfo.elapsed && timeInfo.estimated ? ' | ' : ''}
-                        ${timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : ''}
-                    `;
-
-                    if (timeDetailDiv.innerHTML.includes('已运行') || timeDetailDiv.innerHTML.includes('预计剩余')) {
-                        timeDetailDiv.innerHTML = timeHtml;
-                    }
-                }
-            }
-        }
+        // 只更新运行中的任务时间（「完成时间」列在运行期间显示 已运行/预计剩余）
+        if (task.status !== 'running') return;
+        const row = document.getElementById(`task-${taskId}`);
+        if (!row) return;
+        const timeCell = row.querySelector('.task-time');
+        if (!timeCell) return;
+        const timeInfo = calculateTimeInfo(task);
+        // 时间文本由 formatDuration 的数字组成，无注入面；整格重写 textContent
+        timeCell.textContent = timeInfo.show
+            ? [timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : '',
+               timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : '']
+                .filter(Boolean).join(' | ')
+            : '—';
     });
 }
 
@@ -844,9 +871,9 @@ async function cancelTask(taskId, taskType = 'map') {
         if (response.ok) {
             const key = `${taskType}:${taskId}`;
             activeTasks.delete(key);
-            const card = document.getElementById(`task-${key}`);
-            if (card) {
-                card.remove();
+            const row = document.getElementById(`task-${key}`);
+            if (row) {
+                row.remove();
             }
             renderActiveTasks(Array.from(activeTasks.values()));
         } else {

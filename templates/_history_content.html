@@ -1,13 +1,21 @@
-    <div class="row">
-        <div class="col-12">
-            <div class="row" id="statsRow" style="margin-bottom: 1rem;">
-                <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statTotal">-</h3><p>总任务</p></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card accent"><h3 id="statCompleted">-</h3><p>已完成</p></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card danger"><h3 id="statFailed">-</h3><p>失败</p></div></div>
-                <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statDownloaded">-</h3><p>累计下载量</p></div></div>
-            </div>
-        </div>
-        <div class="col-12">
+{# 记录面板/历史页共享内容。
+   records_panel（由 index.html 在 include 前 set）决定两件事：
+     1. 任务表是否带 #activeTasksBody（活动任务实时行区，tasks.js 渲染）——
+        独立页 /history 不加载 tasks.js，不能有它；history.js 也靠
+        「文档里有没有 #activeTasksBody」判断要不要跳过非终态行（去重）。
+     2. 卡片顺序：首页记录面板列表是主体，统计卡 → 任务列表 → 历史区域地图；
+        独立页 /history 布局不动，统计卡 → 历史区域地图 → 任务列表。
+   用宏而不是两份 {% if %} 各写一遍卡片：同一份标记只能有一个出处。 #}
+{% macro stats_row() %}
+    <div class="row" id="statsRow" style="margin-bottom: 1rem;">
+        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statTotal">-</h3><p>总任务</p></div></div>
+        <div class="col-6 col-md-3"><div class="stat-card accent"><h3 id="statCompleted">-</h3><p>已完成</p></div></div>
+        <div class="col-6 col-md-3"><div class="stat-card danger"><h3 id="statFailed">-</h3><p>失败</p></div></div>
+        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statDownloaded">-</h3><p>累计下载量</p></div></div>
+    </div>
+{% endmacro %}
+
+{% macro history_map_card() %}
             <div class="card mb-3">
                 <div class="card-header">
                     <h5>
@@ -23,7 +31,9 @@
                     <div id="historyMap" class="history-map"></div>
                 </div>
             </div>
+{% endmacro %}
 
+{% macro task_list_card() %}
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 style="margin: 0;">
@@ -57,6 +67,12 @@
                                     <th>操作</th>
                                 </tr>
                             </thead>
+                            {% if records_panel|default(false) %}
+                            <!-- 活动任务实时行区（tasks.js 渲染），在历史行之上。
+                                 /api/history_all 不过滤状态，活动任务本来也会出现在历史区——
+                                 有本 tbody 时 history.js 会跳过非终态行，避免同一任务出现两次。 -->
+                            <tbody id="activeTasksBody"></tbody>
+                            {% endif %}
                             <tbody id="historyTableBody">
                                 <tr>
                                     <td colspan="9" class="text-center">
@@ -77,6 +93,20 @@
                     </nav>
                 </div>
             </div>
+{% endmacro %}
+
+    <div class="row">
+        <div class="col-12">
+            {{ stats_row() }}
+        </div>
+        <div class="col-12">
+            {% if records_panel|default(false) %}
+            {{ task_list_card() }}
+            {{ history_map_card() }}
+            {% else %}
+            {{ history_map_card() }}
+            {{ task_list_card() }}
+            {% endif %}
         </div>
     </div>
 </div>

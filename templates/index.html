@@ -318,8 +318,9 @@
 <!-- 覆盖面板 backdrop：点击关闭面板 -->
 <div class="panel-backdrop" id="panelBackdrop" hidden></div>
 
-<!-- 记录面板（右侧滑出，浮在地图上方）：进行中（活动任务，socket 实时）
-     + 历史（统计 / 区域地图 / 任务列表）。独立页 /history 仍可用。 -->
+<!-- 记录面板（右侧滑出，浮在地图上方）：统计 + 统一任务表（顶部是活动任务
+     实时行，socket 更新；下方是历史行，分页）+ 历史区域地图。
+     独立页 /history 仍可用（无实时行区，布局不同）。 -->
 <section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="记录" hidden>
     <header class="workbench-panel__header">
         <span>
@@ -334,19 +335,9 @@
         </button>
     </header>
     <div class="workbench-panel__body">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
-                    </svg>
-                    进行中
-                </h5>
-            </div>
-            <div class="card-body" id="activeTasks">
-                <p class="text-muted">暂无活动任务</p>
-            </div>
-        </div>
+        {# records_panel：告诉共享 partial 这里要活动任务实时行区（#activeTasksBody）
+           且任务列表在历史区域地图之前。独立页 /history 不设这个变量。 #}
+        {% set records_panel = true %}
         {% include "_history_content.html" %}
     </div>
 </section>

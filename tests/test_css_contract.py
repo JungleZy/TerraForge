@@ -162,9 +162,11 @@ MERGED_FONT_SIZES = {
     '.form-control, .form-select': 'var(--font-size-sm)',
     '.btn': 'var(--font-size-base)',
     '.btn-sm': 'var(--font-size-sm)',
-    '.task-card h6': 'var(--font-size-base)',
-    '.task-card .badge': 'var(--font-size-xs)',
-    '.task-card .progress-detail': 'var(--font-size-sm)',
+    # 活动任务卡片 -> 统一任务表实时行（.task-card -> .task-row，2026-07 改版）：
+    # h6 标题 -> .task-name 名称单元格，徽章与计数/时长文本类名不变、宿主变了。
+    '.task-row .task-name': 'var(--font-size-base)',
+    '.task-row .badge': 'var(--font-size-xs)',
+    '.task-row .progress-detail': 'var(--font-size-sm)',
     '.table': 'var(--font-size-base)',
     '.table th': 'var(--font-size-sm)',
     '.table small': 'var(--font-size-sm)',
@@ -344,6 +346,14 @@ def test_important_count_under_control():
         rgb(21,23,28)、`.leaflet-draw-tooltip` 仍是 rgba(12,13,16,0.92)）。
         本次**新增 0 处**。
       = 66 处（本次实测）
+      + 1 处：**统一任务表改版（活动任务卡片 .task-card -> 实时行 .task-row）新增**，
+              登记如下——
+              `.task-row.status-failed td { background-color: var(--color-danger-bg) !important }`。
+              压的是谁、为什么非 !important 不可：`.table td, .table th` 自带
+              `background: transparent !important`（压 Bootstrap `.bg-*` 工具类的
+              历史债，见表格段注释）。不带 !important 的话失败行底色根本不生效；
+              !important 之间先比特异度，本条 (0,2,1) 赢 (0,1,1)。
+      = 67 处（本次实测）
 
     ⚠️ 本次上界**不动，仍是 68**，而不是按棘轮公式取「实测 66 + 3 = 69」。
        理由：那个公式在这里会把上界**抬高**（68 -> 69），与棘轮「只降不升」
@@ -377,7 +387,7 @@ def test_important_count_under_control():
 
           为什么非 !important 不可：本块选择器特异度 (0,0,0)，是 CSS 里最弱的
           形态，全站每一条声明 transition/animation 的规则（`.btn` (0,1,0)、
-          `.task-card.status-running::before` (0,2,0) …）都比它强。去掉
+          `.task-row.status-running .task-row__bar::before` (0,3,1) …）都比它强。去掉
           !important 整块立刻变成死代码 —— 变异实验 M1/M22 实测，
           test_reduced_motion_actually_stops_every_animated_element 会当场变红。
           这是 a11y 社区的标准写法（web.dev/prefers-reduced-motion）。
@@ -400,8 +410,9 @@ def test_important_count_under_control():
     清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
     两者性质不同。
 
-    ⚠️ 当前余量为 **2**（实测 66 / 上界 68）：C1 收尾删掉 2 处压兜底重置的
-    !important，把 Task 13 用光的余量还回来一部分。上界没有跟着往上走。
+    ⚠️ 当前余量为 **1**（实测 67 / 上界 68）：统一任务表改版给失败行底色
+    （.task-row.status-failed td）新增 1 处 !important，压 `.table td` 的
+    `background: transparent !important`。上界没有跟着往上走。
 
     余下 66 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
@@ -418,7 +429,8 @@ def test_important_count_under_control():
         'Task 9 Leaflet +5 / -5 净 0，仍是 68 → '
         'Task 12 删掉表格段 3 条压错对象的 color 后实测 65 → '
         'Task 13 +3 条 reduced-motion 后 68 → '
-        'C1 收尾删掉 2 条压 div 兜底重置的 background-color 后实测 66，余量 2）'
+        'C1 收尾删掉 2 条压 div 兜底重置的 background-color 后实测 66 → '
+        '统一任务表改版 +1 条失败行底色后实测 67，余量 1）'
     )
 
 
@@ -1316,30 +1328,19 @@ ERROR_BORDER_MIN_CONTRAST = 3.0
 
 
 def _effective_task_card_backdrop(css):
-    """失败卡片实际压在什么底色上 —— **从 `.card` 解析，不许硬编码调色板变量**。
+    """任务区元素实际压在什么底色上 —— **从 `.card` 解析，不许硬编码调色板变量**。
+
+    名字里的 task_card 是历史遗留：当时它算的是 .task-card 卡片的背衬。
+    卡片已改为统一任务表里的 .task-row 行（单元格背景透明，透出面板 .card），
+    背衬仍然是 `.card`，函数保留原名以免无谓的连锁改名。
 
     ⚠️ 这个函数存在的唯一理由，是本文件上一版把背衬写死成
     `_palette_var(css, '--color-bg-secondary')` 并注释「.task-card 的底色」，
-    而那是**巧合**：
-
-      - `.task-card { background: var(--color-bg-secondary) }` 当时是**死声明**，
-        被 `div:not(...)` 兜底重置（特异度 0,11,1）压掉了。CDP 实测
-        `getComputedStyle(.task-card).backgroundColor === 'rgba(0, 0, 0, 0)'`。
-      - 真正的背衬是祖先面板 `.card`（CDP 实测 `rgb(21, 23, 28)`），
-        它**恰好**也用 `--color-bg-secondary`。
-
-    兜底重置已在本文件末尾那一节整条删除，`.task-card` 的底色现在真的生效了
-    （CDP 复核 rgb(21,23,28)）。**但这个函数保留原样**：它守的是「别把背衬
-    硬编码成某个调色板变量」这条纪律，与谁是背衬无关；而且 `.task-card` 与
-    `.card` 同色，改成读 `.task-card` 一个数字都不会变，等于白改一次。
-
-    后果：后面任何一个视觉任务改 `.card` 的底色，浏览器里的真实对比度就变了，
-    而拿 `--color-bg-secondary` 算的断言照旧全绿 —— 与 A1b 抓到的
-    「红色底纹被压成透明而测试全绿」是同一类失明。所以这里改成顺着**真实
-    渲染链**去取：`.card` 声明什么，就用什么。
-
-    `.task-card` 自己不参与计算：兜底重置删除前它的 background 是死的，
-    删除后它与 `.card` 同色，两种情况下结论都一样。
+    而那是**巧合**：真正的背衬是祖先面板 `.card`，它**恰好**也用
+    `--color-bg-secondary`。后果：后面任何一个视觉任务改 `.card` 的底色，
+    浏览器里的真实对比度就变了，而拿 `--color-bg-secondary` 算的断言照旧全绿
+    —— 与 A1b 抓到的「红色底纹被压成透明而测试全绿」是同一类失明。
+    所以这里顺着**真实渲染链**去取：`.card` 声明什么，就用什么。
     """
     rules = [
         (sel, body) for sel, body, at_ctx in _rules_ctx(css)
@@ -1444,16 +1445,21 @@ def _effective_bg_for(chain):
     return _winning_bg(cands)
 
 
-# `.task-error` 在真实 DOM 里的祖先链（tasks.js createTaskCard 生成，
-# 由 test_runtime_injected_div_table_is_grounded 同源的那张表描述任务卡本身）。
-# 2026-07 UX 改版：活动任务卡片从 dock 迁入「记录」滑出面板（#historyPanel）。
+# `.task-error` 在真实 DOM 里的祖先链（tasks.js createTaskErrorRow 生成，
+# 由 test_runtime_injected_div_table_is_grounded 同源的那张表描述错误行本身）。
+# 统一任务表改版：错误框从卡片内部（#activeTasks > .task-card > .task-error）
+# 变成错误行（tbody#activeTasksBody > tr.task-error-row > td > .task-error）。
 def _task_error_chain():
     return _PAGE_CHAIN_PREFIX + (
         ('section', {'workbench-panel', 'workbench-panel--wide'}, 'historyPanel', {}),
         ('div', {'workbench-panel__body'}, '', {}),
         ('div', {'card'}, '', {}),
-        ('div', {'card-body'}, 'activeTasks', {}),
-        ('div', {'task-card', 'status-failed'}, '', {}),
+        ('div', {'card-body'}, '', {}),
+        ('div', {'table-responsive'}, '', {}),
+        ('table', {'table', 'table-hover'}, '', {}),
+        ('tbody', set(), 'activeTasksBody', {}),
+        ('tr', {'task-error-row'}, '', {}),
+        ('td', set(), '', {}),
         ('div', {'task-error'}, '', {}),
     )
 
@@ -1605,12 +1611,13 @@ def test_progress_label_is_an_overlay_that_always_renders():
 
       3. **display 不能是 none。** 简报原方案是「基础规则 display:none，
          只在 `.modal .progress__label` 里显示」，理由是「卡片里的进度条只有
-         8px 高，放不下 0.875rem 的文字」。**这个前提是错的**：CDP 实测
-         `#activeTasks .progress` 的 computed height 是 **28px** —— 两处
-         渲染点（`tasks.js` 的 createTaskCard、`history.js` 的详情模态框）
-         都带 `style="height: 28px"` 内联样式，压过了 CSS 里那条
-         `.progress { height: 8px }`（它其实不作用于任何元素）。
-         照抄那个方案会把卡片上**现在就能看见**的百分比直接删掉。
+         8px 高，放不下 0.875rem 的文字」。**这个前提是错的**：CDP 实测当时
+         任务卡的 .progress 的 computed height 是 **28px**（两处渲染点都内联
+         `style="height: 28px"`，压过了 CSS 里那条不生效的 8px）。
+         照抄那个方案会把当时就能看见的百分比直接删掉。
+         （后注：统一任务表改版后，活动任务行改用 14px 紧凑条 + 条外
+         .task-pct，不再使用 .progress/.progress__label；详情模态框仍是
+         28px 轨道 + 覆盖层。）
 
       另外禁 mix-blend-mode：实测是负优化（over bg-primary 4.50 -> 1.48，
       over bg-danger 2.77 -> 1.88）。
@@ -4181,9 +4188,9 @@ BUTTON_CONTEXTS = _ctx_variants + [
     # index.html:168 —— 提交按钮，**默认 disabled**，本任务的核心缺陷所在
     _BtnCtx({'btn', 'btn-primary', 'w-100'}, element_id='createTaskBtn',
             label='#createTaskBtn（首页提交按钮）'),
-    # tasks.js —— 任务卡图标按钮，祖先是 .btn-group.btn-group-sm
+    # tasks.js —— 活动任务行图标按钮，祖先是 .btn-group.btn-group-sm
     _BtnCtx({'btn', 'btn-icon', 'btn-danger'}, {'btn-group', 'btn-group-sm'},
-            label='任务卡 .btn-icon.btn-danger（.btn-group-sm 内）'),
+            label='任务行 .btn-icon.btn-danger（.btn-group-sm 内）'),
     # history.js —— 历史表图标按钮，**没有 .btn-group 祖先**，是裸 flex 容器
     _BtnCtx({'btn', 'btn-icon', 'btn-sm', 'btn-info'},
             label='历史表 .btn-icon.btn-sm.btn-info（无 btn-group 祖先）'),
@@ -4674,7 +4681,7 @@ def test_icon_only_buttons_are_labelled():
 def test_icon_buttons_are_square_via_the_density_token():
     """`.btn-icon` 必须在**每个真实上下文**里都是 `--ctl-h` 见方、内边距 0。
 
-    选择器必须是 `.btn.btn-icon`(0,2,0)：任务卡的容器是
+    选择器必须是 `.btn.btn-icon`(0,2,0)：任务行的动作按钮容器是
     `.btn-group.btn-group-sm`，而 `.btn-group-sm .btn { padding: .4rem .9rem }`
     也是 (0,2,0) —— 裸 `.btn-icon`(0,1,0) 的 `padding: 0` 会输给它，
     按钮被撑成胶囊。历史表那颗**没有** btn-group 祖先、但带 `.btn-sm`
@@ -4685,7 +4692,7 @@ def test_icon_buttons_are_square_via_the_density_token():
     contexts = [c for c in BUTTON_CONTEXTS if 'btn-icon' in c.classes]
     assert len(contexts) == 2, (
         f'带 .btn-icon 的真实上下文有 {len(contexts)} 个，期望 2'
-        '（任务卡 btn-group-sm 内 + 历史表无 btn-group）—— 本测试已失效'
+        '（任务行 btn-group-sm 内 + 历史表无 btn-group）—— 本测试已失效'
     )
     problems = []
     for ctx in contexts:
@@ -5170,12 +5177,17 @@ def _text_contexts(css):
         ('首页表单说明文字',
          form_top + [_TextEl('div', {'mb-3'}, element_id='demOptions'),
                      _TextEl('small', {'form-text', 'text-muted', 'd-block', 'mb-2'})], panel, None),
-        ('活动任务空态提示（首屏静态 markup）',
+        ('活动任务空态提示（tasks.js 渲染进实时行区 tbody）',
          [body, main,
           _TextEl('section', {'workbench-panel', 'workbench-panel--wide'}, element_id='historyPanel'),
           _TextEl('div', {'workbench-panel__body'}),
-          _TextEl('div', {'card', 'mb-3'}),
-          _TextEl('div', {'card-body'}, element_id='activeTasks'),
+          _TextEl('div', {'card'}),
+          _TextEl('div', {'card-body'}),
+          _TextEl('div', {'table-responsive'}),
+          _TextEl('table', {'table', 'table-hover'}),
+          _TextEl('tbody', element_id='activeTasksBody'),
+          _TextEl('tr'),
+          _TextEl('td', {'text-center'}),
           _TextEl('p', {'text-muted'})], panel, None),
         ('详情弹窗字段名',
          modal_top + [_TextEl('span', {'detail-k'})], modal, None),
@@ -5473,13 +5485,14 @@ def test_status_badge_color_matches_the_semantic_token():
     )
 
 
-def test_task_card_status_bar_covers_every_status():
-    """任务卡片左侧那条 4px 边条：六态**每一态**都要有自己的规则，且色对、够看得见。
+def test_task_row_status_bar_covers_every_status():
+    """实时行第一个单元格左侧那条 4px 边条：六态**每一态**都要有自己的规则，且色对、够看得见。
 
+    前身是 test_task_card_status_bar_covers_every_status（卡片时代）：
     改前 `.task-card.status-cancelled::before` **根本不存在**，已取消的卡片落到
     `.task-card::before` 的兜底 `var(--color-accent)` —— 一条青绿品牌色边条，
-    读起来像「一切正常」。CDP 实测改前 rgb(45, 212, 191)。
-    这是评审找到的、与本任务修的缺陷完全同型的第二处漏网。
+    读起来像「一切正常」。统一任务表改版把卡片改成行，边条从卡片 ::before
+    迁到行首单元格（.task-row__bar）的 ::before，同一缺陷形态要继续守住。
 
     三件事一起断言：
       1. 六态各有一条顶层规则（缺一条就会落到兜底色，而兜底色是品牌色）；
@@ -5489,10 +5502,10 @@ def test_task_card_status_bar_covers_every_status():
     css = _css()
     panel = _effective_task_card_backdrop(css)
     semantic = _semantic_palette_values(css)
-    fallback = _resolve_color(css, _branch_background(css, '.task-card::before'))
+    fallback = _resolve_color(css, _branch_background(css, '.task-row__bar::before'))
     problems, report = [], []
     for status, token in _STATUS_SEMANTIC_TOKEN.items():
-        branch = f'.task-card.status-{status}::before'
+        branch = f'.task-row.status-{status} .task-row__bar::before'
         rules = [
             (sel, body) for sel, body, at in _rules_ctx(css)
             if not at and branch in _selector_parts(sel)
@@ -5501,7 +5514,7 @@ def test_task_card_status_bar_covers_every_status():
         if len(rules) != 1:
             problems.append(
                 f'`{branch}` 有 {len(rules)} 条声明了背景色的顶层规则（应恰好 1 条）。'
-                f'一条都没有 = 落到 `.task-card::before` 的兜底 {fallback}，'
+                f'一条都没有 = 落到 `.task-row__bar::before` 的兜底 {fallback}，'
                 '那是品牌强调色，读起来像「一切正常」')
             continue
         decls = _decl_map(rules[0][1])
@@ -5525,7 +5538,7 @@ def test_task_card_status_bar_covers_every_status():
         '没有恰好检查 6 个状态 —— 本测试已失效'
     )
     assert not problems, (
-        '任务卡片状态边条有问题：\n' + '\n'.join('  ' + p for p in problems)
+        '实时行状态边条有问题：\n' + '\n'.join('  ' + p for p in problems)
         + '\n\n全部实测：\n' + '\n'.join('  ' + r for r in report)
     )
 
@@ -5854,7 +5867,13 @@ def _motion_rule_index(css):
 #     `.statusbar-tasks`（hover 底色）、`.statusbar-progress__bar`
 #     （状态栏聚合进度 width）。全部在 reduce 块通用选择器 `*` 覆盖范围内，
 #     无需豁免登记。
-_MOTION_BRANCH_COUNT = 39
+# 39 -> 37（统一任务表改版，活动任务卡片 -> 实时行）：
+#   删 3 个分支：`.task-card`（交互过渡）、`.task-card::before`（左边条
+#     width/底色过渡）、`.task-card.status-running::before`（pulse）。
+#   加 1 个分支：`.task-row.status-running .task-row__bar::before`（同一个
+#     pulse，从卡片边条迁到行首单元格边条；行本身不声明任何过渡——
+#     行随任务增删整行重建，过渡没有意义）。
+_MOTION_BRANCH_COUNT = 37
 
 
 def test_motion_rule_index_is_complete():
@@ -5906,21 +5925,31 @@ def test_no_blanket_motion_reaches_an_unstyled_element():
 def test_cards_have_no_entrance_animation_but_running_bar_still_pulses():
     """两件事一起钉：入场动画没了，**而状态动画还在**。
 
-    只断言「.task-card 没有 animation」是不够的 —— 把整节动画全删光也能通过，
+    只断言「.task-row 没有 animation」是不够的 —— 把整节动画全删光也能通过，
     而那样会连「运行中的任务左边条在呼吸」这个**传达状态**的信号一起丢掉。
-    所以第二半是正面断言：.task-card.status-running::before 必须仍然跑 pulse、
-    仍然是无限循环。
+    所以第二半是正面断言：.task-row.status-running 的行首单元格 ::before
+    必须仍然跑 pulse、仍然是无限循环。
+    （统一任务表改版：卡片 .task-card 改成行 .task-row，边条从卡片 ::before
+    迁到 .task-row__bar::before，断言跟着结构走，守护的语义不变。）
 
     算的是层叠胜出值，不是「文件里有没有 fadeInUp 这个词」：把
-    `.task-card { animation: fadeInUp .5s }` 换个地方重写一遍照样会红。
+    `.task-row { animation: fadeInUp .5s }` 换个地方重写一遍照样会红。
     """
     css = _css()
-    for classes in (('card',), ('task-card',), ('task-card', 'status-running'),
-                    ('task-card', 'status-failed')):
+    # 静态面板 .card（div）与活动任务行 .task-row（tr）都不许有入场动画
+    card = _motion_computed(css, [
+        _TextEl(tag='body'),
+        _TextEl(tag='div', classes=('card',))])
+    assert card['animation_name'] == 'none', (
+        f'.card 又挂上了入场动画 {card["animation_name"]!r}'
+    )
+    for classes in (('task-row',), ('task-row', 'status-running'),
+                    ('task-row', 'status-failed')):
         got = _motion_computed(css, [
             _TextEl(tag='body'),
-            _TextEl(tag='div', element_id='activeTasks'),
-            _TextEl(tag='div', classes=classes)])
+            _TextEl(tag='table', classes=('table',)),
+            _TextEl(tag='tbody', element_id='activeTasksBody'),
+            _TextEl(tag='tr', classes=classes)])
         assert got['animation_name'] == 'none', (
             f'.{".".join(classes)} 又挂上了入场动画 {got["animation_name"]!r}'
             f'（{got["animation_duration"]}s）。任务列表每次成员变化都整体重建 '
@@ -5930,8 +5959,10 @@ def test_cards_have_no_entrance_animation_but_running_bar_still_pulses():
 
     pulse = _motion_computed(css, [
         _TextEl(tag='body'),
-        _TextEl(tag='div', element_id='activeTasks'),
-        _TextEl(tag='div', classes=('task-card', 'status-running'), pseudo_element='before')])
+        _TextEl(tag='table', classes=('table',)),
+        _TextEl(tag='tbody', element_id='activeTasksBody'),
+        _TextEl(tag='tr', classes=('task-row', 'status-running')),
+        _TextEl(tag='td', classes=('task-row__bar',), pseudo_element='before')])
     assert pulse['animation_name'] == 'pulse', (
         '运行中任务的左边条不再跑 pulse —— 这是「任务还活着」的唯一视觉信号，'
         f'属于传达状态的动画，不在降噪范围内。实际是 {pulse["animation_name"]!r}'
@@ -5969,13 +6000,15 @@ def test_progress_bar_transition_keeps_up_with_the_push_rate():
     算的是层叠胜出值：补一条 `.progress .progress-bar { transition: width 1s }`
     (0,2,0) 把它压回去，这里照样变红。
     """
-    # 真实 markup（tasks.js createTaskCard）：
-    #   .task-card > .progress > .progress-bar
+    # 真实 markup（tasks.js createTaskRow）：
+    #   tr.task-row > td > .task-progress-line > .task-progress > .progress-bar
     # 祖先必须建模到位，否则 `.progress .progress-bar { transition: width 1s }`
     # 这条压回去的规则算不进来 —— 变异 M8 实测过，当时本断言是假绿。
     got = _motion_computed(_css(), [
-        _TextEl(tag='div', classes=('task-card',)),
-        _TextEl(tag='div', classes=('progress',)),
+        _TextEl(tag='tr', classes=('task-row',)),
+        _TextEl(tag='td'),
+        _TextEl(tag='div', classes=('task-progress-line',)),
+        _TextEl(tag='div', classes=('task-progress',)),
         _TextEl(tag='div', classes=('progress-bar',)),
     ])
     width_dur = got['transitions'].get('width', got['transitions'].get('all'))
@@ -6094,8 +6127,11 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # .splash-grid / .splash-scan / .splash-logo / .splash-logo-dot /
     # .splash-bar / .bounds-v / .statusbar-tasks / .statusbar-progress__bar
     # 九个（splash 与状态栏/bounds 交互，均在 reduce 块 `*` 覆盖范围内）。
-    assert len(ctxs) == 36, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 36：\n'
+    # 36 -> 34（统一任务表改版）：删 .task-card / .task-card::before /
+    # .task-card.status-running::before 三个卡片上下文，加
+    # .task-row.status-running .task-row__bar::before 一个行上下文。
+    assert len(ctxs) == 34, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 34：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -7493,24 +7529,19 @@ _PAGE_CHAIN_PREFIX = (
 
 # 运行时才出现、grep 模板永远看不到的 <div>。
 #
-# 为什么必须显式登记：本次两个最重要的受害者都在这张表里 ——
-# `.task-card` 由 tasks.js 的 createTaskCard 拼字符串塞进 innerHTML，
-# `.modal-backdrop` 由 Bootstrap 的 Modal 组件插到 <body> 末尾。
-# 只扫模板的话，这两个类一个都看不见，而「弹窗遮罩从来没暗过」正是本次
-# 要修的那个缺陷。祖先链按真实 DOM 写（CDP 实测确认过层级）。
+# 为什么必须显式登记：`.modal-backdrop` 由 Bootstrap 的 Modal 组件插到
+# <body> 末尾，`.task-error` 错误框由 tasks.js 拼字符串塞进错误行的
+# innerHTML——只扫模板的话，这两类一个都看不见，而「弹窗遮罩从来没暗过」
+# 正是 C1 收尾要修的那个缺陷。祖先链按真实 DOM 写（CDP 实测确认过层级）。
+# （统一任务表改版：原先的 .task-card 条目随卡片删除，换成同样运行时注入、
+# 同样带底色的 .task-error 错误框，链与 _task_error_chain() 一致。）
 #
 # 每一条都由 test_runtime_injected_div_table_is_grounded 反查来源，防止表烂掉。
 _RUNTIME_INJECTED_DIVS = (
     (
-        'tasks.js createTaskCard 生成的任务卡（记录面板 #activeTasks 的直接子节点）',
-        'static/js/tasks.js', 'task-card',
-        _PAGE_CHAIN_PREFIX + (
-            ('section', {'workbench-panel', 'workbench-panel--wide'}, 'historyPanel', {}),
-            ('div', {'workbench-panel__body'}, '', {}),
-            ('div', {'card'}, '', {}),
-            ('div', {'card-body'}, 'activeTasks', {}),
-            ('div', {'task-card', 'status-running'}, '', {}),
-        ),
+        'tasks.js createTaskErrorRow 生成的失败原因框（记录面板任务表错误行里的 div）',
+        'static/js/tasks.js', 'task-error',
+        _task_error_chain(),
     ),
     (
         'Bootstrap Modal 运行时插到 <body> 末尾的遮罩',
@@ -7802,7 +7833,7 @@ def test_no_stylesheet_gives_a_bare_div_a_background():
 def test_runtime_injected_div_table_is_grounded():
     """`_RUNTIME_INJECTED_DIVS` 的每一条都必须在真实源码里找得到出处。
 
-    这张表是**手写**的 —— 模板里 grep 不到 `.task-card` / `.modal-backdrop`，
+    这张表是**手写**的 —— 模板里 grep 不到 `.task-error` / `.modal-backdrop`，
     它们由 JS 在运行时插进 DOM，只能人工登记。手写表的通病是烂掉：类名改了、
     组件删了，表还在，上面那条主断言就对着一个不存在的元素空转，全绿。
 
@@ -7985,7 +8016,8 @@ def test_every_victim_of_the_deleted_blanket_reset_renders_its_background():
     受害者清单是实测出来的，不是抄文档的：删除兜底重置前后，三个页面 6 个场景
     共 1699 个元素逐元素对拍 computed background-color，28 个元素发生变化。
     去重后的 6 类里，这里登记 4 个模板里的；另外两个在运行时才存在，
-    由下面两条单独查（`.task-card` 与 `div.modal-backdrop`）。
+    由下面两条单独查（`.task-error` 与 `div.modal-backdrop`；
+    `.task-error` 是统一任务表改版后的接替者——原来的条目是已删除的 `.task-card`）。
 
     `.card-header` 也在那 28 个里，但它声明的值本来就是 transparent，
     视觉零差异，不登记。
@@ -8019,8 +8051,13 @@ def test_every_victim_of_the_deleted_blanket_reset_renders_its_background():
     )
 
 
-def test_task_card_and_modal_backdrop_render_their_background():
-    """两个运行时注入的受害者：任务卡底色 + **弹窗遮罩必须变暗**。
+def test_task_error_and_modal_backdrop_render_their_background():
+    """两个运行时注入的受害者：错误框底色 + **弹窗遮罩必须变暗**。
+
+    （前身是 test_task_card_and_modal_backdrop_render_their_background。
+    统一任务表改版删掉了 .task-card，任务列表不再有「卡片底色」这个受害者；
+    接替登记的是同样运行时注入、同样必须带底色的 .task-error 错误框——
+    它的 --color-danger-bg 底纹是「失败原因看得见」的承载。）
 
     `div.modal-backdrop` 是本次最硬的验收点。Bootstrap 的
     `.modal-backdrop{--bs-backdrop-bg:#000; background-color:var(--bs-backdrop-bg)}`
@@ -8032,28 +8069,24 @@ def test_task_card_and_modal_backdrop_render_their_background():
         改前：不开弹窗 rgb(12,13,16) -> 开弹窗 rgb(12,13,16)   零变化
         改后：不开弹窗 rgb(12,13,16) -> 开弹窗 rgb(6,6,8)      正好压暗一半
     6 ≈ 12*0.5、8 = 16*0.5，与 `#000` @ opacity .5 的合成结果逐通道吻合。
-
-    `.task-card` 同理：改前 rgba(0,0,0,0)（底色靠祖先 `.card` 恰好同色蒙混过去），
-    改后 rgb(21,23,28)，`.task-card{background:var(--color-bg-secondary)}`
-    从死声明变成活声明。
     """
     css = _css()
     lookup = {}
     for src, chain in _modeled_div_chains():
-        for cls in ('task-card', 'modal-backdrop'):
+        for cls in ('task-error', 'modal-backdrop'):
             if cls in chain[-1][1]:
                 lookup[cls] = chain
-    assert set(lookup) == {'task-card', 'modal-backdrop'}, (
-        f'运行时注入表里找不到 {"task-card / modal-backdrop"} —— 本测试已失效，'
+    assert set(lookup) == {'task-error', 'modal-backdrop'}, (
+        f'运行时注入表里找不到 task-error / modal-backdrop —— 本测试已失效，'
         f'只找到 {sorted(lookup)}'
     )
     problems = []
-    win = _effective_bg_for(lookup['task-card'])
+    win = _effective_bg_for(lookup['task-error'])
     if win is None or _bg_is_transparent(css, win.value):
-        problems.append('.task-card 的底色又是透明的（改前实测 rgba(0,0,0,0)）')
-    elif _resolve_color(css, win.value) != _palette_var(css, '--color-bg-secondary'):
+        problems.append('.task-error 的底纹又是透明的（与改前的 .task-card 同型缺陷）')
+    elif _resolve_color(css, win.value) != _palette_var(css, '--color-danger-bg'):
         problems.append(
-            f'.task-card 的底色变成了 {win.value}，不再是 --color-bg-secondary'
+            f'.task-error 的底纹变成了 {win.value}，不再是 --color-danger-bg'
         )
     win = _effective_bg_for(lookup['modal-backdrop'])
     if win is None:

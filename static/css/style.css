@@ -127,7 +127,7 @@
      1. `*` 让样式引擎给**每一个**节点挂过渡簿记。首页地图上 Leaflet
         动态生成的节点数以千计，它们一条过渡也用不上。
      2. 真正需要过渡反馈的元素（.btn / .form-control / .card /
-        .task-card / .status-badge / .page-link / .form-check-input …）
+        .status-badge / .page-link / .form-check-input …）
         本来就各自写了一条 transition，`*` 那条对它们完全是死声明。
    删除本身由 tests/test_css_contract.py::test_no_blanket_motion_on_the_universal_selector
    钉住（那条同时禁止 animation-* 回潮）。 */
@@ -153,8 +153,8 @@
  *   3. 0.3s 用在 hover 反馈上偏慢（指针已经离开了颜色才走完）。交互反馈
  *      统一 0.15s；只有真正表达「状态切换」的过渡才允许更长。
  *
- * `width` 只出现在一处**有意**的尺寸过渡上（.task-card::before 的左边条
- * 加粗），在那条规则里单列，不进这张通表。
+ * `width` 的过渡不进这张通表：它只出现在真正表达「进度/状态」的条上
+ * （.progress-bar、splash/状态栏的进度条），各自单列时长。
  */
 
 /* 元素级字号基线：原先由文件末尾的 !important 覆盖块提供，现合并到此处。
@@ -647,21 +647,22 @@ body {
     overflow: hidden;
 }
 
-/* Task Card Styles */
-.task-card {
-    border-radius: 12px;
-    padding: 1rem;
-    margin-bottom: 0.75rem;
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border);
-    box-shadow: var(--shadow-sm);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
-    position: relative;
-    overflow: hidden;
+/* Task Row Styles（活动任务实时行：统一任务表顶部 tbody#activeTasksBody 的行，
+   由 tasks.js createTaskRow 渲染；样式迁移自原 .task-card 卡片） */
+.task-row td {
+    vertical-align: middle;
 }
 
-.task-card::before {
+/* 状态色左条：迁移自 .task-card::before。表格是 border-collapse: collapse，
+   行（tr）上画不出可靠的边条，所以挂在第一个单元格的 ::before 上。
+   单元格带 .task-row__bar 类（createTaskRow 渲染）：不用 td:first-child，
+   因为测试层的层叠模型故意不支持结构性伪类（它不知道节点排第几）。
+   position: relative 打在 td 上是给 ::before 当定位上下文的。 */
+.task-row__bar {
+    position: relative;
+}
+
+.task-row__bar::before {
     content: '';
     position: absolute;
     top: 0;
@@ -669,86 +670,99 @@ body {
     width: 4px;
     height: 100%;
     background: var(--color-accent);
-    transition: width 0.15s ease, background-color 0.15s ease;
 }
 
-.task-card:hover {
-    box-shadow: var(--shadow-md);
-    border-color: var(--color-accent);
-}
-
-.task-card:hover::before {
-    width: 6px;
-}
-
-.task-card.status-running::before {
+.task-row.status-running .task-row__bar::before {
     background: var(--color-info);
     animation: pulse 2s ease-in-out infinite;
 }
 
-.task-card.status-completed::before {
+.task-row.status-completed .task-row__bar::before {
     background: var(--color-success);
 }
 
-.task-card.status-failed::before {
+.task-row.status-failed .task-row__bar::before {
     background: var(--color-danger);
 }
 
-.task-card.status-paused::before {
+.task-row.status-paused .task-row__bar::before {
     background: var(--color-warning);
 }
 
-/* Task 13 收尾修：改前用 --color-text-muted(#5f6670)，对卡片底只有 3.09:1 ——
-   六档边条里最低的一档（cancelled 4.32、其余 6.48~10.74），截图里几乎看不见。
-   下面那条 cancelled 的注释早就写明了「--color-text-muted 只有 3.09:1，紧贴下限」
-   这个理由，但当时只改了 cancelled、漏了紧挨着的 pending。
-   改用 --color-text-secondary(#9aa0aa)：pending 的徽章与地图描边本来就用它，
-   三处从此统一；同时与 cancelled 的 --color-neutral(#767d88) 保持区分 ——
-   这两个状态语义不同，边条不该同色。 */
-.task-card.status-pending::before {
+/* 沿用原卡片的结论（Task 13 收尾修）：pending 用 --color-text-secondary
+   而不是 --color-text-muted（对面板底只有 3.09:1，紧贴 3:1 下限），
+   且与 cancelled 的 --color-neutral 保持区分——两个状态语义不同，边条不该同色。 */
+.task-row.status-pending .task-row__bar::before {
     background: var(--color-text-secondary);
 }
 
-/* A7 / Task 12 补上：改前**没有**这条，已取消的卡片因此落到
-   `.task-card::before` 的兜底 `var(--color-accent)` —— 一条品牌蓝色的边条，
-   读起来像「一切正常」。CDP 实测改前是 rgb(45, 212, 191)。
-   用 --color-neutral 而不是 --color-text-muted：调色板里那个变量本来就是
-   「为『已取消』这类无语义色的终态准备」的（见 :61 的说明），而且
-   --color-text-muted 对面板底只有 3.09:1，紧贴 3:1 下限。 */
-.task-card.status-cancelled::before {
+/* A7 / Task 12 补上（迁移自卡片）：没有这条的话，已取消的行会落到
+   `.task-row__bar::before` 的兜底 `var(--color-accent)` —— 一条品牌蓝色的边条，
+   读起来像「一切正常」。 */
+.task-row.status-cancelled .task-row__bar::before {
     background: var(--color-neutral);
 }
 
-.task-card h6 {
+/* 失败行底色。!important 是必需的：`.table td` 有
+   `background: transparent !important`（压 Bootstrap 的 .bg-* 工具类），
+   !important 之间先比特异度，本条 (0,2,1) 赢 (0,1,1)。
+   已在 tests/test_css_contract.py 的 !important 登记处记账。 */
+.task-row.status-failed td {
+    background-color: var(--color-danger-bg) !important;
+}
+
+.task-row .task-name {
     font-family: var(--font-display);
     font-weight: 600;
     font-size: var(--font-size-base);
     color: var(--color-text-primary);
-    margin: 0;
-    letter-spacing: -0.01em;
 }
 
-.task-card .progress-detail {
+/* 数量列的计数文本与「完成时间」列的运行时长共用这一套：
+   等宽字体是跟原卡片 .progress-detail 一致的选择（数字多、要对齐）。 */
+.task-row .progress-detail {
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
-    margin: 0;
-    display: flex;
-    align-items: center;
 }
 
-.task-card .badge {
+.task-row .badge {
     font-size: var(--font-size-xs);
     padding: 0.3rem 0.65rem;
 }
 
-/* 失败卡片里展开的错误原因。文本由 tasks.js 的 applyTaskErrorText 用
-   textContent 填入（后端错误原文不能进 innerHTML）。
+/* 数量列的紧凑进度条：表格行高装不下 28px 轨道 + 18px 覆盖层 chip，
+   所以这里不用 .progress/.progress__label 那套（百分比移到条右边的 .task-pct，
+   由 tasks.js updateTaskProgressPartial 同步）。
+   width 过渡沿用 .progress-bar 的全局规则（0.2s linear），
+   推送追得上（test_progress_bar_transition_keeps_up_with_the_push_rate）。 */
+.task-progress {
+    height: 14px;
+    background: var(--color-bg-tertiary);
+    border-radius: 999px;
+    overflow: hidden;
+    display: flex;
+}
+
+.task-progress-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 2px;
+}
+
+.task-pct {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-primary);
+}
+
+/* 失败任务错误行里的错误原因框（tr.task-error-row > td 里的 .task-error）。
+   文本由 tasks.js 的 applyTaskErrorText 用 textContent 填入（后端错误原文不能进 innerHTML）。
    配色实算（见 tests/test_css_contract.py::test_task_error_box_exists_and_is_readable）：
-     真实背衬是 .task-card 的 #15171c。（历史注记：兜底重置还在的时候
-     `.task-card{background:var(--color-bg-secondary)}` 是**死声明**，真实背衬
-     是再往上一层的面板 .card；两者恰好同色，所以算出来的数一样。兜底重置
-     已删，.task-card 的底色现在真的生效了，CDP 实测 rgb(21,23,28)。）
+     真实背衬是面板 .card 的 #15171c（单元格背景透明，透出面板底；
+     历史注记：这里原指 .task-card 卡片底，与 .card 恰好同色，数值不变）。
      底色 rgba(239,68,68,0.12) 压在 #15171c 上 = #2f1c21
      文字 #e8eaed 对 #2f1c21 = 13.31:1（WCAG 正文下限 4.5:1，CDP 实测同值）
      边框 #f87171 对 #15171c =  6.48:1（图形元素下限 3:1）
@@ -1977,10 +1991,6 @@ code {
         height: 300px;
     }
 
-    .task-card {
-        padding: 1rem;
-    }
-
     .config-section {
         padding: 1rem;
     }
@@ -2087,6 +2097,9 @@ code {
    { animation: fadeInUp 0.5s }` + 两组 nth-child 递延，整块**删除**。
    护栏：test_cards_have_no_entrance_animation（算层叠胜出的 animation-name，
    不是查字符串）。
+   （后注：.task-card 卡片后来整体改为统一任务表里的 .task-row 行，
+   下面「为什么删 .task-card」的实测叙述是对当时卡片形态的，理由本身不变——
+   renderActiveTasks 的全量 innerHTML 重建今天仍在，行同样不能有入场动画。）
 
    ── 为什么删 .task-card ────────────────────────────────────────────────
    简报给的根因（「tasks.js 每次进度更新都 innerHTML 全量重建」）**与代码不符**，
@@ -2400,18 +2413,18 @@ code {
    不是可选装饰。
 
    本站在这个开关下要被压掉的东西（各自都有实测）：
-     · .task-card.status-running::before 的 `pulse 2s infinite` —— 无限循环
-       的呼吸灯正是最典型的诱因，页面上只要有运行中的任务它就一直在动；
+     · .task-row.status-running .task-row__bar::before 的 `pulse 2s infinite`
+       —— 无限循环的呼吸灯正是最典型的诱因，页面上只要有运行中的任务它就一直在动；
      · toast 的滑入/滑出、confirm 遮罩与卡片的淡入缩放；
      · 进度条 width 过渡、以及全部 hover/focus 的颜色过渡。
 
    ── 为什么必须带 !important（4 处，逐条登记） ─────────────────────────
    本块选择器 `*, *::before, *::after` 特异度 (0,0,0)，是 CSS 里最弱的形态。
    全站每一条声明了 transition / animation 的规则（.btn 0,1,0、
-   .task-card.status-running::before 0,2,0 …）都比它强，**不带 !important
-   这一块一条也压不住，等于整段死代码**。这是 a11y 社区的标准写法
-   （见 https://web.dev/prefers-reduced-motion/）。逐条：
-     1. `animation-duration: 0.01ms`      压 pulse（0,2,0）
+   .task-row.status-running .task-row__bar::before 0,3,1 …）都比它强，
+   **不带 !important 这一块一条也压不住，等于整段死代码**。这是 a11y 社区的
+   标准写法（见 https://web.dev/prefers-reduced-motion/）。逐条：
+     1. `animation-duration: 0.01ms`      压 pulse（0,3,1）
      2. `animation-iteration-count: 1`    单独一条：只压时长的话 infinite 仍在
                                           每 0.01ms 触发一次 animationiteration
                                           事件，是 CPU 空转

@@ -84,7 +84,7 @@ def _strip_js_comments(src):
 # 「守禁止性契约、不守存在性契约」的不对称：只断言 getProgressColor 消失的话，
 # 把整行 className 赋值删掉也能全绿，而进度条会永远停在 Bootstrap 默认蓝。
 PROGRESS_BAR_CALL_SITES = {
-    'tasks.js': 2,      # createTaskCard 的模板 + updateTaskProgressPartial 的 className
+    'tasks.js': 2,      # createTaskRow 的模板 + updateTaskProgressPartial 的 className
     'history.js': 1,    # viewTaskDetails 详情模态框
 }
 
@@ -147,7 +147,7 @@ def test_socketio_incremental_path_is_wired():
 
     上一条已经覆盖了它，这里再钉一次只是为了让回潮时的失败信息直接指向
     正确的地方——这行是任务跑起来之后真正决定进度条颜色的那一行，
-    createTaskCard 只在状态切换时才重建卡片。
+    createTaskRow 只在状态切换时才重建整行。
     """
     src = _strip_js_comments(_js('tasks.js'))
     assert re.search(
@@ -241,8 +241,12 @@ def _fn(name, js_name='tasks.js'):
     return body
 
 
-def test_failed_task_card_is_not_removed():
-    """任务失败时不许删卡片、也不许把任务从 activeTasks 里摘掉。
+def test_failed_task_row_is_not_removed():
+    """任务失败时不许删行、也不许把任务从 activeTasks 里摘掉。
+
+    （前身是 test_failed_task_card_is_not_removed。统一任务表改版把卡片改成
+    表格行，契约不变：失败行必须留在页面上——转红 + 错误行，
+    清理只能由用户点「移除」触发（dismissTask）。）
 
     这是本任务的核心禁止性契约。原实现两件事一起做：
         activeTasks.delete(key);  →  卡片下次整体重绘时不会再出现
@@ -256,21 +260,19 @@ def test_failed_task_card_is_not_removed():
     （p2-assertion-review.md 的 E 条）。这里改用 `_fn()`（花括号配对，
     与函数先后顺序无关）并加了「函数体非空」自检。
 
-    覆盖范围（诚实说明）：这条守的是源码形态。它保证不了「卡片在浏览器里
+    覆盖范围（诚实说明）：这条守的是源码形态。它保证不了「行在浏览器里
     真的还在」——那由 CDP 实测覆盖（见 p2-task-6-report.md）。
     """
     body = _fn('handleTaskFailed')
 
-    assert 'card.remove()' not in body, (
-        'handleTaskFailed 仍在删除卡片，用户看不到失败原因'
-    )
     assert not re.search(r'\.remove\(\s*\)', body), (
-        'handleTaskFailed 里出现了 .remove() 调用——失败卡片必须留在页面上，'
-        '清理只能由用户点「移除」触发（dismissTask）'
+        'handleTaskFailed 里出现了 .remove() 调用——失败行必须留在页面上，'
+        '清理只能由用户点「移除」触发（dismissTask）。'
+        '（错误行的去重要用 outerHTML 原位重建，不许走 .remove()。）'
     )
     assert 'activeTasks.delete(' not in body, (
         'handleTaskFailed 仍把任务从 activeTasks 摘掉——下一次整体重绘'
-        '（renderActiveTasks）就会让失败卡片再次凭空消失'
+        '（renderActiveTasks）就会让失败行再次凭空消失'
     )
 
 
@@ -319,21 +321,22 @@ def test_error_message_never_reaches_innerhtml():
     """错误文本只能经 textContent 落地，绝不进 HTML 模板。
 
     error_message 是后端异常的字符串化结果（URL、文件路径、第三方库的
-    报错原文都可能在里面）。它一旦被拼进 createTaskCard 的模板字符串，
-    `container.innerHTML = ...` 就会把里面的 `<img onerror=...>` 当标签解析。
+    报错原文都可能在里面）。它一旦被拼进 createTaskErrorRow 的模板字符串，
+    `tbody.innerHTML = ...` 就会把里面的 `<img onerror=...>` 当标签解析。
     ui.js 里同样的地方已经写了 `// textContent 防 XSS` 的注释，这里是同一条规矩。
 
-    做法上让 createTaskCard 只吐一个**空**的 `.task-error` 容器
-    （连 error_message 都不引用），文本由 applyTaskErrorText 单独填。
-    所以这条可以直接断言「createTaskCard 里根本没有 error_message 这个词」。
+    做法上让 createTaskRow / createTaskErrorRow 只吐一个**空**的 `.task-error`
+    容器（连 error_message 都不引用），文本由 applyTaskErrorText 单独填。
+    所以这条可以直接断言「两个模板函数里根本没有 error_message 这个词」。
     """
     src = _strip_js_comments(_js('tasks.js'))
-    card_body = _js_function_body(src, 'createTaskCard')
-    assert 'error_message' not in card_body, (
-        'createTaskCard 里出现了 error_message——它的返回值会被塞进 innerHTML，'
-        '后端错误原文里的 HTML 会被当标签解析（XSS）。'
-        '错误文本请交给 applyTaskErrorText 用 textContent 填'
-    )
+    for fn_name in ('createTaskRow', 'createTaskErrorRow'):
+        row_body = _js_function_body(src, fn_name)
+        assert 'error_message' not in row_body, (
+            f'{fn_name} 里出现了 error_message——它的返回值会被塞进 innerHTML，'
+            '后端错误原文里的 HTML 会被当标签解析（XSS）。'
+            '错误文本请交给 applyTaskErrorText 用 textContent 填'
+        )
 
     apply_body = _js_function_body(src, 'applyTaskErrorText')
     assert re.search(r'\.textContent\s*=', apply_body), (
@@ -347,8 +350,8 @@ def test_error_message_never_reaches_innerhtml():
 def test_full_rerender_keeps_the_error_text():
     """整体重绘（renderActiveTasks）之后错误文本必须被重新填回去。
 
-    存在性契约。renderActiveTasks 是 `container.innerHTML = tasks.map(...)`，
-    一次性重建全部卡片；失败卡片现在会留在 activeTasks 里，所以任何一个
+    存在性契约。renderActiveTasks 是 `tbody.innerHTML = tasks.map(...)`，
+    一次性重建全部行；失败行现在会留在 activeTasks 里，所以任何一个
     新任务到达都会触发重绘。漏掉这一步的话：失败当场看得见错误，之后
     随便来一个新任务，红框就变空了——而所有文本断言依然全绿。
     """
@@ -359,7 +362,7 @@ def test_full_rerender_keeps_the_error_text():
     )
 
 
-# createTaskCard 里每个 onclick 动作，期望它**最近的前置**状态判断是哪一个。
+# createTaskRow 里每个 onclick 动作，期望它**最近的前置**状态判断是哪一个。
 #
 # 这张表是「不许加重试按钮」这条硬约束的机器检查：三个 manager 的 start_task
 # 都要求 status in ('pending','paused')，对 failed 调用直接抛 ValueError。
@@ -377,16 +380,16 @@ _STATUS_GUARD_RE = re.compile(r"task\.status\s*(===|!==)\s*'(\w+)'")
 
 
 def test_card_actions_are_gated_by_the_right_status():
-    """卡片上每个动作按钮都必须挂在正确的状态分支下。
+    """行上每个动作按钮都必须挂在正确的状态分支下。
 
-    实现方式：对 createTaskCard 体内每一处 `onclick="xxxTask(`，往前找
+    实现方式：对 createTaskRow 体内每一处 `onclick="xxxTask(`，往前找
     **最近**的 `task.status === / !== '...'`，与 _ACTION_GUARDS 对表。
 
     这条同时守三件事：
-      1. 失败卡片**没有**重试按钮（后端会抛 ValueError，见上面表里的注释）。
-      2. 失败卡片**有**「移除」按钮。卡片不再自动消失了，没有这个按钮
+      1. 失败行**没有**重试按钮（后端会抛 ValueError，见上面表里的注释）。
+      2. 失败行**有**「移除」按钮。行不再自动消失了，没有这个按钮
          用户就没有任何办法清掉它，只能刷新页面。
-      3. 失败卡片不再显示「取消」——对一个已经 failed 的任务调
+      3. 失败行不再显示「取消」——对一个已经 failed 的任务调
          /cancel 是无意义的后端往返。
 
     已知弱点（诚实说明）：「最近的前置判断」是启发式的。若有人把按钮写成
@@ -394,12 +397,12 @@ def test_card_actions_are_gated_by_the_right_status():
     这条可能失配。所以每个动作还额外断言了「至少出现一次」——完全找不到
     比匹配错更危险。
     """
-    body = _fn('createTaskCard')
+    body = _fn('createTaskRow')
     problems = []
     for action, expected in _ACTION_GUARDS.items():
         hits = list(re.finditer(r'onclick="' + action + r'\(', body))
         if not hits:
-            problems.append(f'{action}: createTaskCard 里一处调用都没有')
+            problems.append(f'{action}: createTaskRow 里一处调用都没有')
             continue
         for h in hits:
             guards = _STATUS_GUARD_RE.findall(body[:h.start()])
@@ -412,7 +415,7 @@ def test_card_actions_are_gated_by_the_right_status():
                     f"task.status {guards[-1][0]} '{guards[-1][1]}'，"
                     f"期望 task.status {expected[0]} '{expected[1]}'"
                 )
-    assert not problems, '卡片动作按钮的状态门控不对：\n' + '\n'.join('  ' + p for p in problems)
+    assert not problems, '行动作按钮的状态门控不对：\n' + '\n'.join('  ' + p for p in problems)
 
 
 def test_dismiss_is_purely_local():
@@ -481,30 +484,39 @@ _PROGRESS_BAR_ELEMENT_RE = re.compile(
 _PROGRESS_TRACK_ATTR_RE = re.compile(r'class="progress"')
 _PROGRESS_LABEL_ATTR_RE = re.compile(r'class="progress__label"')
 
-# 两个文件里各有几处进度条模板。等号不是下限：多出来的一处大概率是
+# 两个文件里各有几处 `.progress` 轨道模板。等号不是下限：多出来的一处大概率是
 # 复制粘贴出来的第二套渲染路径，那正是本任务要防的「漏改一处出重复标签」。
-PROGRESS_TRACK_MARKUP_SITES = {'tasks.js': 1, 'history.js': 1}
+#
+# ⚠️ tasks.js 是 **0**（统一任务表改版，有意如此）：活动任务行改用 14px 紧凑条
+# （.task-progress），装不下 18px 的覆盖层 chip，百分比移到条右边的 .task-pct。
+# 那一处的结构契约由下面三条里的「条内必须是空的」+ 
+# test_socketio_incremental_path_updates_the_label_not_the_bar（.task-pct 同步）守住。
+# 覆盖层体系（.progress + .progress__label）只剩 history.js 详情模态框一处。
+PROGRESS_TRACK_MARKUP_SITES = {'tasks.js': 0, 'history.js': 1}
 
 
 def test_percentage_is_an_overlay_not_a_child_of_the_bar():
-    """百分比必须是 `.progress` 里的独立 `<span class="progress__label">`，
-    `.progress-bar` 元素自己**不能再有任何文字内容**。
+    """在仍使用 `.progress` 轨道的渲染点，百分比必须是 `.progress` 里的独立
+    `<span class="progress__label">`；**任何** `.progress-bar` 元素自己都不能
+    再有文字内容（含 tasks.js 的紧凑条）。
 
     这是本任务的结构契约，守三件事：
 
       1. **`.progress-bar` 标签之间是空的。** 数字留在里面的话，
          `.progress { overflow: hidden }` + 宽度为 0 会把它整个裁掉 ——
          CDP 实测 progress=0 时数字画出 0 个像素（截图差异法）。
+         这一条对 tasks.js 的紧凑条同样成立（它没有覆盖层，数字在条外
+         .task-pct，条里一样不许有字）。
       2. **每个 `.progress` 容器恰好一个 `.progress__label`。**
          0 个 = 这一处渲染点漏改了，百分比直接消失；
-         2 个 = 同一条进度条上两个百分比。
-      3. **覆盖层必须是 `<span>` 不能是 `<div>`。** style.css 里有一条
+         2 个 = 同一条进度条上两个百分比。tasks.js 期望 0 处轨道
+         （见 PROGRESS_TRACK_MARKUP_SITES 的注释），多个出来就是
+         有人把两套体系混着用了。
+      3. **覆盖层必须是 `<span>` 不能是 `<div>`。** style.css 里曾有一条
          `div:not(.card):not(.modal-content)...{background:transparent}`
-         兜底重置，特异度 (0,10,1)，会把**任何**不在白名单里的 div 背景压成
-         透明。覆盖层的可读性正是靠自带的那块不透明底撑着（见
-         test_progress_label_readability_does_not_depend_on_the_fill），
-         改成 div 就会「源码里有底色、浏览器里透明」，而全部 CSS 断言照旧全绿
-         —— Task 6 的 `.task-error` 就是这么被咬的。
+         兜底重置（已删），特异度 (0,10,1)，会把**任何**不在白名单里的
+         div 背景压成透明。覆盖层的可读性正是靠自带的那块不透明底撑着（见
+         test_progress_label_readability_does_not_depend_on_the_fill）。
     """
     problems = []
     for name, sites in PROGRESS_TRACK_MARKUP_SITES.items():
@@ -545,26 +557,30 @@ def test_percentage_is_an_overlay_not_a_child_of_the_bar():
 
 
 def test_socketio_incremental_path_updates_the_label_not_the_bar():
-    """Socket.IO 增量刷新路径必须改覆盖层的文字，且**不能**再往进度条里写文字。
+    """Socket.IO 增量刷新路径必须改条外百分比的文字，且**不能**再往进度条里写文字。
 
     `updateTaskProgressPartial` 是任务跑起来之后真正在刷新界面的那条路
-    （createTaskCard 只在状态切换时重建整卡）。漏改这里的后果很具体：
-    卡片初次渲染是对的（覆盖层里一个百分比），第一个 task_progress 事件一到，
+    （createTaskRow 只在状态切换时重建整行）。漏改这里的后果很具体：
+    行初次渲染是对的（条外一个百分比），第一个 task_progress 事件一到，
     `progressBar.textContent = '37%'` 又在条里塞回一个 —— 同一条进度条上
     出现**两个**百分比，而所有只看模板的断言依然全绿。
+
+    （统一任务表改版：百分比从 .progress 里的覆盖层 .progress__label
+    改成紧凑条右边的 .task-pct——14px 的条装不下 18px 的 chip。
+    守护的语义不变：增量路径更新的是条外文本，不是条。）
     """
     body = _fn('updateTaskProgressPartial')
 
-    assert re.search(r"querySelector\(\s*'\.progress__label'\s*\)", body), (
-        'updateTaskProgressPartial 没有取 .progress__label —— '
+    assert re.search(r"querySelector\(\s*'\.task-pct'\s*\)", body), (
+        'updateTaskProgressPartial 没有取 .task-pct —— '
         '进度数字在 Socket.IO 刷新时不会更新（会一直停在初次渲染的值）'
     )
     assert re.search(r'\.textContent\s*=\s*`\$\{progress\}%`', body), (
-        'updateTaskProgressPartial 没有把 `${progress}%` 写进覆盖层'
+        'updateTaskProgressPartial 没有把 `${progress}%` 写进条外百分比'
     )
     assert not re.search(r'progressBar\.textContent\s*=', body), (
         'updateTaskProgressPartial 仍在给 progressBar.textContent 赋值 —— '
-        '覆盖层 + 条内文字会同时存在，同一条进度条上出现两个百分比'
+        '条外文本 + 条内文字会同时存在，同一条进度条上出现两个百分比'
     )
 
 
@@ -642,7 +658,11 @@ def test_progress_track_markup_is_nested_and_heightless():
     就能绕过那条断言，而所有 CSS 断言照旧全绿。
     """
     problems = []
-    for name in PROGRESS_TRACK_MARKUP_SITES:
+    for name, sites in PROGRESS_TRACK_MARKUP_SITES.items():
+        if sites == 0:
+            # tasks.js 改版后没有 .progress 轨道（紧凑条 + 条外 .task-pct），
+            # 本条不适用；它的进度条结构由上一条的「条内必须为空」守住。
+            continue
         src = _strip_js_comments(_js(name))
         hits = list(_PROGRESS_TRACK_ATTR_RE.finditer(src))
         assert hits, f'{name}: 找不到 `class="progress"` 的模板 —— 本测试已失效'
@@ -815,7 +835,7 @@ def _js_object_literal_keys(body, var_name):
 _STATUS_MAPS = (
     ('getStatusColor', 'colors', None),
     ('getStatusText', 'texts', None),
-    ('statusIcons', 'statusIcons', {'tasks.js': 'createTaskCard', 'history.js': 'renderHistoryTable'}),
+    ('statusIcons', 'statusIcons', {'tasks.js': 'createTaskRow', 'history.js': 'renderHistoryTable'}),
 )
 
 
@@ -1022,7 +1042,7 @@ def test_status_icons_are_real_distinct_glyphs():
     它们在界面上唯一的图形差别就是这个图标。图标一样 = 「等待中」和「已取消」
     只剩文案能区分。
     """
-    holders = {'tasks.js': 'createTaskCard', 'history.js': 'renderHistoryTable'}
+    holders = {'tasks.js': 'createTaskRow', 'history.js': 'renderHistoryTable'}
     problems, checked = [], 0
     for js_name, holder in holders.items():
         body = _js_function_body(_strip_js_comments(_js(js_name)), holder)
@@ -1205,4 +1225,81 @@ def test_panel_close_guard_compares_elements_not_names():
     )
     assert 'current !== closing' not in body, (
         'closePanel 的 done 守卫仍按面板名比较——records/history 同元素会误藏'
+    )
+
+
+# --------------------------------------------------------------------------
+# 统一任务表（2026-07）：活动任务从独立卡片区融入任务表顶部的实时行区
+#
+# 结构：一张表、两个 tbody——#activeTasksBody（tasks.js 实时行）在上，
+# #historyTableBody（history.js 历史行，分页）在下。/api/history_all 不过滤
+# 状态，所以 history.js 在首页要跳过非终态行（去重）；独立页 /history
+# 没有实时行区，照旧全量渲染。
+# --------------------------------------------------------------------------
+
+def test_active_tasks_render_into_the_shared_table_tbody():
+    """tasks.js 必须渲染进 #activeTasksBody（表格 tbody），不再是 #activeTasks 卡片区。"""
+    body = _fn('renderActiveTasks')
+    assert "getElementById('activeTasksBody')" in body, (
+        'renderActiveTasks 没有以 #activeTasksBody 为容器——实时行区搬进任务表了吗？'
+    )
+    assert "getElementById('activeTasks')" not in body, (
+        'renderActiveTasks 仍在渲染旧的 #activeTasks 卡片区'
+    )
+    assert 'colspan="9"' in body, (
+        '空态必须是横跨 9 列的表格行（与任务表的列数一致）'
+    )
+
+    src = _strip_js_comments(_js('tasks.js'))
+    row_body = _js_function_body(src, 'createTaskRow')
+    assert 'task-row status-' in row_body, (
+        'createTaskRow 必须产出带状态类的 <tr class="task-row status-*">'
+    )
+    err_body = _js_function_body(src, 'createTaskErrorRow')
+    assert 'task-error-row' in err_body and 'colspan="9"' in err_body, (
+        '失败任务的错误信息必须是横跨 9 列的独立错误行（tr.task-error-row）'
+    )
+
+
+def test_history_table_skips_non_terminal_rows_only_when_active_tbody_exists():
+    """去重契约：文档里有 #activeTasksBody 时，历史区跳过 pending/running/paused。
+
+    /api/history_all 不过滤状态（routes/api.py 的四路 UNION ALL 没有 status
+    谓词），活动任务本来就会进历史数据集。首页任务表顶部已有实时行区，
+    不跳过的话同一任务在上下两个 tbody 各出现一次。
+    独立页 /history 没有 #activeTasksBody（不加载 tasks.js），必须照旧全量渲染
+    ——所以跳过必须以「元素存在」为条件，不能无条件过滤。
+    """
+    body = _fn('renderHistoryTable', 'history.js')
+    assert "getElementById('activeTasksBody')" in body, (
+        'renderHistoryTable 没有检查 #activeTasksBody 是否存在——'
+        '独立页 /history 的行为无法与首页区分'
+    )
+    for status in ('pending', 'running', 'paused'):
+        assert f"'{status}'" in body, (
+            f"跳过清单里缺 '{status}'——该状态的任务会在实时行和历史行里各出现一次"
+        )
+    assert re.search(r'\.filter\s*\(', body), (
+        'renderHistoryTable 没有 filter——去重逻辑没了'
+    )
+
+
+def test_completed_task_refreshes_initialized_history_panel():
+    """task_completed 删掉实时行之后，必须让任务立刻出现在历史区。
+
+    不刷新的后果：实时行删了、历史表还停在旧数据，完成的任务在界面上
+    「凭空消失」，要等用户手动翻页/重开面板才回来。
+    但只在记录面板的历史已初始化过时才刷（historyViewer 存在或历史表已有
+    内容）——面板从没打开过的话，打开时 initHistory 本来就会拉最新数据。
+    """
+    body = _fn('handleTaskCompleted')
+    assert re.search(r'loadHistory\(\s*1\s*\)', body), (
+        'handleTaskCompleted 没有调 loadHistory(1)——完成的任务不会立刻出现在历史区'
+    )
+    assert re.search(r'loadStats\(\s*\)', body), (
+        'handleTaskCompleted 没有调 loadStats()——统计卡还是旧数字'
+    )
+    assert 'historyViewer' in body and 'historyTableBody' in body, (
+        '刷新必须以「历史已初始化过」为条件（historyViewer 或 #historyTableBody），'
+        '无条件刷新会在面板从未打开时白打两路接口'
     )

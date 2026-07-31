@@ -106,7 +106,17 @@ async function loadHistory(page = 1) {
 function renderHistoryTable(tasks) {
     const tbody = document.getElementById('historyTableBody');
 
-    if (tasks.length === 0) {
+    // 去重：首页记录面板的任务表顶部有活动任务实时行区（#activeTasksBody，
+    // tasks.js 渲染），/api/history_all 又不过滤状态——不跳过的话，
+    // pending/running/paused 的任务会在实时行和历史行里各出现一次。
+    // 独立页 /history 没有实时行区（不加载 tasks.js），照旧渲染全部状态。
+    // failed 不在跳过之列：失败行虽然常驻实时区，但那是「等待用户移除」的
+    // 临时态，历史区的是正式记录。
+    const rows = document.getElementById('activeTasksBody')
+        ? tasks.filter(t => !['pending', 'running', 'paused'].includes(t.status))
+        : tasks;
+
+    if (rows.length === 0) {
         tbody.innerHTML = `
             <tr>
                 <td colspan="9" class="text-center" style="padding: 3rem;">
@@ -125,7 +135,7 @@ function renderHistoryTable(tasks) {
     // 图标必须与 getStatusColor / getStatusText 覆盖同一组状态：徽章底色是
     // 同一个色系里的深浅变化，只靠颜色区分状态对色觉障碍用户是失效的
     // （WCAG 1.4.1）。图形与 tasks.js 的同名表一一对应，只是尺寸 14px 而非 16px
-    // ——历史表格的行高比任务卡片紧。
+    // ——历史表格的行高比活动任务行紧。
     const statusIcons = {
         'pending': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
         'running': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>',
@@ -138,7 +148,7 @@ function renderHistoryTable(tasks) {
     // 预览按钮只在首页覆盖面板里有意义（主视图在旁边）；独立页没有主视图。
     const canPreview = typeof previewTask === 'function';
 
-    tbody.innerHTML = tasks.map(task => `
+    tbody.innerHTML = rows.map(task => `
         <tr>
             <td style="font-family: var(--font-mono);">${task.id}</td>
             <td style="font-weight: 500;">${escapeHtml(task.name)}</td>
