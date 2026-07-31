@@ -4570,7 +4570,8 @@ def test_button_ink_is_readable_in_every_state():
 # --------------------------------------------------------------------------
 
 # **全站**纯图标按钮（无可见文本）的数量，JS 模板与 HTML 模板一起扫。
-#   static/js/tasks.js   启动 / 暂停 / 恢复 / 取消              4
+#   static/js/tasks.js   启动 / 暂停 / 恢复 / 取消 / 移除          5
+#     （移除 2026-08 从「图标+文字」改为 btn-icon 纯图标，与同组按钮样式一致）
 #   static/js/history.js 查看详情 / 删除 / 预览                 3
 #   templates/history.html .btn-close（模态框关闭）              1
 #   templates/index.html 下载/处理两个弹窗的 .btn-close      2（2026-07 弹窗化新增；
@@ -4581,7 +4582,7 @@ def test_button_ink_is_readable_in_every_state():
 #   _config_content.html 瓦片服务器行的「删除该服务器」     2（2026-07 行编辑器新增；
 #     Jinja include 展开后 index.html 与 config.html 各扫到一次，预期重复；
 #     Jinja for 循环在源码里只出现一次，动态增删的行由 JS 模板生成、不在静态扫描内）
-# 合计 15。
+# 合计 16。
 #
 # ⚠️ 第一版只扫两个 JS 文件、常量写 6，读起来像「全站都覆盖了」而实际漏了
 # 模板。评审实测：当时 `templates/base.html` 的 navbar-toggler 在 900px 视口下
@@ -4594,7 +4595,7 @@ def test_button_ink_is_readable_in_every_state():
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
-ICON_ONLY_BUTTON_COUNT = 15
+ICON_ONLY_BUTTON_COUNT = 16
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
