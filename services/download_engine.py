@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Constants
 WEB_MERCATOR_MAX_LAT = 85.0511  # Maximum valid latitude for Web Mercator projection
 TILE_SERVER_COUNT = 4  # 默认瓦片服务器数（mts0-mts3），仅作 connector limit_per_host 参考
-WARN_TILES_THRESHOLD = 100000  # 单任务瓦片数硬上限,在 TaskManager.create_task 强制(400)
+WARN_TILES_THRESHOLD = 100000  # 单任务瓦片数软阈值,超过只记警告(0.1.4 起放开硬上限)
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
 
@@ -142,6 +142,166 @@ class DownloadEngine:
 
         return x, y
 
+    def _tile_ranges(
+        self,
+        north: float,
+        south: float,
+        east: float,
+        west: float,
+        zoom_min: int,
+        zoom_max: int
+    ):
+        """
+        Validate inputs and yield per-zoom tile index ranges.
+
+        Yields:
+            Tuples of (zoom, x_min, x_max, y_min, y_max), zoom ascending.
+
+        Raises:
+            ValueError: If input parameters are invalid
+
+        Note:
+            count_tiles / iter_tiles / calculate_tiles 共用这一段,
+            保证三者的计数、顺序、覆盖范围口径完全一致。
+        """
+        # Coordinate range validation
+        if not -90 <= north <= 90:
+            raise ValueError(f"North latitude must be between -90 and 90, got {north}")
+
+        if not -90 <= south <= 90:
+            raise ValueError(f"South latitude must be between -90 and 90, got {south}")
+
+        if not -180 <= east <= 180:
+            raise ValueError(f"East longitude must be between -180 and 180, got {east}")
+
+        if not -180 <= west <= 180:
+            raise ValueError(f"West longitude must be between -180 and 180, got {west}")
+
+        if east == west:
+            raise ValueError(f"East longitude ({east}) must be different from west longitude ({west})")
+
+        # Input validation
+        if north <= south:
+            raise ValueError(f"North latitude ({north}) must be greater than south latitude ({south})")
+
+        if not MIN_ZOOM <= zoom_min <= MAX_ZOOM:
+            raise ValueError(f"Minimum zoom level must be between {MIN_ZOOM} and {MAX_ZOOM}, got {zoom_min}")
+
+        if not MIN_ZOOM <= zoom_max <= MAX_ZOOM:
+            raise ValueError(f"Maximum zoom level must be between {MIN_ZOOM} and {MAX_ZOOM}, got {zoom_max}")
+
+        if zoom_min > zoom_max:
+            raise ValueError(f"Minimum zoom ({zoom_min}) must be less than or equal to maximum zoom ({zoom_max})")
+
+        # Iterate through each zoom level
+        for zoom in range(zoom_min, zoom_max + 1):
+            # Get tile coordinates for corners
+            x_min, y_max = self.lat_lon_to_tile(south, west, zoom)
+            x_max, y_min = self.lat_lon_to_tile(north, east, zoom)
+
+            # Ensure proper ordering
+            if x_min > x_max:
+                x_min, x_max = x_max, x_min
+            if y_min > y_max:
+                y_min, y_max = y_max, y_min
+
+            yield zoom, x_min, x_max, y_min, y_max
+
+    def count_tiles(
+        self,
+        north: float,
+        south: float,
+        east: float,
+        west: float,
+        zoom_min: int,
+        zoom_max: int
+    ) -> int:
+        """
+        Count tiles needed for a geographic region without materialising them
+
+        Args:
+            north: Northern latitude boundary
+            south: Southern latitude boundary
+            east: Eastern longitude boundary
+            west: Western longitude boundary
+            zoom_min: Minimum zoom level
+            zoom_max: Maximum zoom level
+
+        Returns:
+            Number of tiles covering the region at all zoom levels
+
+        Raises:
+            ValueError: If input parameters are invalid
+
+        Note:
+            与 calculate_tiles 同口径(共用 _tile_ranges),但只做纯计数。
+            大任务(数十万块瓦片)的 create_task 只需要总数,物化 Tile 列表
+            既费内存又没必要。
+        """
+        expected_tile_count = 0
+        for zoom, x_min, x_max, y_min, y_max in self._tile_ranges(
+            north, south, east, west, zoom_min, zoom_max
+        ):
+            expected_tile_count += (x_max - x_min + 1) * (y_max - y_min + 1)
+
+        # Warn if tile count is very large. The *hard* limit used to be enforced
+        # at task creation; since 0.1.4 it is a soft threshold (the UI asks the
+        # user to confirm), so here we only warn.
+        if expected_tile_count > WARN_TILES_THRESHOLD:
+            logger.warning(
+                f"Large tile count detected: {expected_tile_count} tiles. "
+                f"This may take a long time to download and process. "
+                f"Estimated time: {expected_tile_count / 10 / 3600:.1f} hours at 10 tiles/sec."
+            )
+
+        return expected_tile_count
+
+    def iter_tiles(
+        self,
+        north: float,
+        south: float,
+        east: float,
+        west: float,
+        zoom_min: int,
+        zoom_max: int,
+        task_id: int = 0
+    ):
+        """
+        Lazily yield all tiles for a region in deterministic order
+
+        Args:
+            north: Northern latitude boundary
+            south: Southern latitude boundary
+            east: Eastern longitude boundary
+            west: Western longitude boundary
+            zoom_min: Minimum zoom level
+            zoom_max: Maximum zoom level
+            task_id: Task ID for the tiles (default: 0)
+
+        Yields:
+            Tile objects, ordered by zoom ascending, then x, then y — exactly
+            the order calculate_tiles() materialises.
+
+        Note:
+            瓦片集合是 bbox+zoom 的纯函数,可以随时按同一确定性顺序重建。
+            恢复任务靠它枚举待下载集合(配合磁盘 cache 判断完成态),
+            这是 task_tiles 不再存全量行的前提。
+        """
+        for zoom, x_min, x_max, y_min, y_max in self._tile_ranges(
+            north, south, east, west, zoom_min, zoom_max
+        ):
+            # Generate all tiles in the range
+            for x in range(x_min, x_max + 1):
+                for y in range(y_min, y_max + 1):
+                    yield Tile(
+                        task_id=task_id,
+                        zoom=zoom,
+                        x=x,
+                        y=y,
+                        status="pending",
+                        retry_count=0
+                    )
+
     def calculate_tiles(
         self,
         north: float,
@@ -177,91 +337,14 @@ class DownloadEngine:
             logs a warning — the hard rejection lives at the task-creation entry
             point (TaskManager.create_task → API 400), because this calculator is
             also used by callers that merely want the count.
+            实现上就是 list(iter_tiles(...)),先过一遍 count_tiles 触发参数
+            校验和大任务警告(iter_tiles 是惰性生成器,不消费就不会校验)。
         """
-        # Coordinate range validation
-        if not -90 <= north <= 90:
-            raise ValueError(f"North latitude must be between -90 and 90, got {north}")
+        # count_tiles 先消费一遍 _tile_ranges:参数非法时在这里就抛
+        # ValueError(保持历史上的急切校验语义),并输出大任务警告。
+        self.count_tiles(north, south, east, west, zoom_min, zoom_max)
 
-        if not -90 <= south <= 90:
-            raise ValueError(f"South latitude must be between -90 and 90, got {south}")
-
-        if not -180 <= east <= 180:
-            raise ValueError(f"East longitude must be between -180 and 180, got {east}")
-
-        if not -180 <= west <= 180:
-            raise ValueError(f"West longitude must be between -180 and 180, got {west}")
-
-        if east == west:
-            raise ValueError(f"East longitude ({east}) must be different from west longitude ({west})")
-
-        # Input validation
-        if north <= south:
-            raise ValueError(f"North latitude ({north}) must be greater than south latitude ({south})")
-
-        if not MIN_ZOOM <= zoom_min <= MAX_ZOOM:
-            raise ValueError(f"Minimum zoom level must be between {MIN_ZOOM} and {MAX_ZOOM}, got {zoom_min}")
-
-        if not MIN_ZOOM <= zoom_max <= MAX_ZOOM:
-            raise ValueError(f"Maximum zoom level must be between {MIN_ZOOM} and {MAX_ZOOM}, got {zoom_max}")
-
-        if zoom_min > zoom_max:
-            raise ValueError(f"Minimum zoom ({zoom_min}) must be less than or equal to maximum zoom ({zoom_max})")
-
-        # Calculate expected tile count BEFORE generating any tiles
-        expected_tile_count = 0
-        for zoom in range(zoom_min, zoom_max + 1):
-            # Get tile coordinates for corners
-            x_min, y_max = self.lat_lon_to_tile(south, west, zoom)
-            x_max, y_min = self.lat_lon_to_tile(north, east, zoom)
-
-            # Ensure proper ordering
-            if x_min > x_max:
-                x_min, x_max = x_max, x_min
-            if y_min > y_max:
-                y_min, y_max = y_max, y_min
-
-            # Calculate tile count for this zoom level
-            tiles_at_zoom = (x_max - x_min + 1) * (y_max - y_min + 1)
-            expected_tile_count += tiles_at_zoom
-
-        # Warn if tile count is very large. The *hard* limit is enforced at task
-        # creation (TaskManager.create_task raises ValueError → API 400); here we
-        # only warn, because this calculator is also used by callers that merely
-        # want the number (e.g. pre-flight estimates in tests).
-        if expected_tile_count > WARN_TILES_THRESHOLD:
-            logger.warning(
-                f"Large tile count detected: {expected_tile_count} tiles. "
-                f"This may take a long time to download and process. "
-                f"Estimated time: {expected_tile_count / 10 / 3600:.1f} hours at 10 tiles/sec."
-            )
-
-        # Now generate tiles
-        tiles = []
-
-        # Iterate through each zoom level
-        for zoom in range(zoom_min, zoom_max + 1):
-            # Get tile coordinates for corners
-            x_min, y_max = self.lat_lon_to_tile(south, west, zoom)
-            x_max, y_min = self.lat_lon_to_tile(north, east, zoom)
-
-            # Ensure proper ordering
-            if x_min > x_max:
-                x_min, x_max = x_max, x_min
-            if y_min > y_max:
-                y_min, y_max = y_max, y_min
-
-            # Generate all tiles in the range
-            for x in range(x_min, x_max + 1):
-                for y in range(y_min, y_max + 1):
-                    tile = Tile(
-                        task_id=task_id,
-                        zoom=zoom,
-                        x=x,
-                        y=y,
-                        status="pending",
-                        retry_count=0
-                    )
-                    tiles.append(tile)
+        tiles = list(self.iter_tiles(north, south, east, west, zoom_min, zoom_max, task_id=task_id))
 
         logger.info(
             f"Calculated {len(tiles)} tiles for region "

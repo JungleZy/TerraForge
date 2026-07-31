@@ -2,9 +2,9 @@
 
 覆盖:
 - C5 : create_task 拒绝越界 output_path;task.name 消毒后才能拼进输出文件名
-- I5 : failed 任务允许重新 start(续传入口:瓦片本就按 pending/failed 捞)
+- I5 : failed 任务允许重新 start(续传入口:待下载集合由磁盘 cache 枚举推导)
 - I8 : stitch 中间文件放每次 stitch 私有的临时目录,不读/不写/不删共享 cache
-- I15: 预计瓦片数超过 WARN_TILES_THRESHOLD 直接拒绝创建(ValueError → 400)
+- I15: 预计瓦片数超过 WARN_TILES_THRESHOLD 只记警告不拒绝(0.1.4 起软阈值)
 """
 import asyncio
 import os
@@ -105,27 +105,20 @@ def test_create_task_accepts_output_path_inside_downloads(isolated_config):
 
 def test_stitch_output_filename_sanitizes_task_name(isolated_config):
     from core.config import Config
-    from core.database import get_connection
-    from models.task import Tile
+    from services.download_engine import DownloadEngine
     from services.task_manager import TaskManager
+
+    # 完成态由磁盘 cache 推导(task_tiles 只存失败瓦片):把任务枚举出的
+    # 全部瓦片写进 cache,拼接阶段才会认为它们已完成。
+    engine = DownloadEngine()
+    tiles = list(engine.iter_tiles(1, 0, 1, 0, 10, 10))
+    for tile in tiles:
+        _write_png_tile(tile.cache_path('s'))
 
     tm = TaskManager()  # 先建 manager,再插 running 行,免得被 orphan 回收降级
 
     task_id = _seed_task_row(name='../../evil', status='running',
-                             output_format='image_only', total=1)
-    conn = get_connection()
-    try:
-        conn.cursor().execute(
-            "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count)"
-            " VALUES (?, 10, 843, 387, 'completed', 0)",
-            (task_id,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    tile = Tile(task_id=task_id, zoom=10, x=843, y=387)
-    _write_png_tile(tile.cache_path('s'))
+                             output_format='image_only', total=len(tiles))
 
     asyncio.run(tm._execute_task(task_id))
 
@@ -143,10 +136,19 @@ def test_stitch_output_filename_sanitizes_task_name(isolated_config):
 
 def test_failed_task_can_be_restarted(isolated_config):
     from core.database import get_connection
+    from services.download_engine import DownloadEngine
     from services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = _seed_task_row(status='failed')
+
+    # 稀疏表语义下「无待下载瓦片」= 枚举出的瓦片全部已在 cache 里
+    # (完成态从磁盘 cache 推导,不再看 task_tiles 的 pending/failed 行)。
+    engine = DownloadEngine()
+    for tile in engine.iter_tiles(1, 0, 1, 0, 10, 10):
+        cache_path = tile.cache_path('s')
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(b'cached-tile')
 
     tm.start_task(task_id)  # 旧代码在这里 raise ValueError
 
@@ -162,7 +164,7 @@ def test_failed_task_can_be_restarted(isolated_config):
         ).fetchone()
     finally:
         conn.close()
-    # 无待下载瓦片:重跑直接走到完成 —— 证明 start 这条路真的通了
+    # 无待下载瓦片(全部命中 cache):重跑直接走到完成 —— 证明 start 这条路真的通了
     assert row['status'] == 'completed'
 
 

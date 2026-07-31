@@ -112,7 +112,8 @@ def init_database():
 
     Creates:
         - tasks table: stores download task information
-        - task_tiles table: stores individual tile download status
+        - task_tiles table: sparse table of failed tiles only (completion state
+          is derived from the on-disk tile cache, not from this table)
         - config table: stores application configuration
 
     Inserts default configuration values for all settings
@@ -206,6 +207,13 @@ def init_database():
             CREATE INDEX IF NOT EXISTS idx_task_tiles_status
             ON task_tiles(task_id, status)
         ''')
+
+        # 迁移(稀疏失败表重构):task_tiles 不再物化「每块瓦片一行」—— 瓦片
+        # 集合是 bbox+zoom 的纯函数,可由 DownloadEngine.iter_tiles 确定性
+        # 枚举;完成态以磁盘 cache 文件为准,表里只保留失败瓦片。清掉旧版本
+        # 写入的 pending/completed 全量行(大任务可达数十万行);恢复下载走
+        # cache 枚举,不依赖它们。failed 行保留 —— 恢复时要重试这些瓦片。
+        cursor.execute("DELETE FROM task_tiles WHERE status != 'failed'")
 
         # Create config table
         cursor.execute('''

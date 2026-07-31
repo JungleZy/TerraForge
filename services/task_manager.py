@@ -34,6 +34,11 @@ STYLE_MAP = {
 # freezes for as long as the copy takes (minutes at 100k tiles) and looks hung.
 COPY_PROGRESS_INTERVAL = 200
 
+# 下载进度计数批量落库的间隔(块)。socketio 的 task_progress 仍每块瓦片都发
+# (前端实时进度依赖它),但 tasks 表的 downloaded/failed 计数攒到这个批次
+# 才 UPDATE 一次 —— 旧实现每块瓦片 3-4 条 SQL,是大任务的性能瓶颈。
+PROGRESS_DB_FLUSH_INTERVAL = 200
+
 
 class TaskManager:
     """
@@ -253,10 +258,9 @@ class TaskManager:
             sqlite3.Error: If database operation fails
 
         Process:
-            1. Calculate tiles using download_engine
+            1. Count tiles using download_engine (no per-tile rows are written)
             2. Insert task into tasks table
-            3. Insert all tiles into task_tiles table
-            4. Return task_id
+            3. Return task_id
         """
         logger.info(f"Creating task: {params.get('name', 'Unnamed')}")
 
@@ -283,18 +287,19 @@ class TaskManager:
             output_path=params['output_path']
         )
 
-        # Calculate tiles for the task
-        tiles = self.download_engine.calculate_tiles(
+        # 瓦片总数只计数、不物化,也不向 task_tiles 写任何行。
+        # 为什么不再每块瓦片存一行:瓦片集合是 bbox+zoom 的纯函数,可由
+        # DownloadEngine.iter_tiles 按确定性顺序随时重建;完成态以磁盘
+        # cache 文件为准(cache 即真相),task_tiles 退化为只存失败瓦片的
+        # 稀疏表。旧实现 50 万块瓦片就是 50 万次 INSERT,是建任务的主要瓶颈。
+        total_tiles = self.download_engine.count_tiles(
             north=task.north,
             south=task.south,
             east=task.east,
             west=task.west,
             zoom_min=task.zoom_min,
             zoom_max=task.zoom_max,
-            task_id=0  # Will be updated after task insertion
         )
-
-        total_tiles = len(tiles)
         logger.info(f"Calculated {total_tiles} tiles for task")
 
         # 瓦片数软阈值:超过 WARN_TILES_THRESHOLD 只记警告,不拒绝创建。
@@ -328,19 +333,7 @@ class TaskManager:
             task_id = cursor.lastrowid
             logger.info(f"Task created with ID: {task_id}")
 
-            # Update tile task_id and insert into database
-            tile_data = [
-                (task_id, tile.zoom, tile.x, tile.y, tile.status, tile.retry_count)
-                for tile in tiles
-            ]
-
-            cursor.executemany('''
-                INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', tile_data)
-
             conn.commit()
-            logger.info(f"Inserted {len(tile_data)} tiles for task {task_id}")
 
             return task_id
 
@@ -776,112 +769,191 @@ class TaskManager:
                 failed_tiles=task_row['failed_tiles']
             )
 
-            # Get pending and failed tiles
-            cursor.execute('''
-                SELECT task_id, zoom, x, y, status, retry_count, error_message
-                FROM task_tiles
-                WHERE task_id = ? AND status IN ('pending', 'failed')
-                ORDER BY zoom, x, y
-            ''', (task_id,))
+            # Convert style name to style code once — the download, the stitching
+            # and the tile copy all key the shared tile cache off this same value,
+            # so it must not be recomputed (and possibly diverge) per stage.
+            style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
 
-            tile_rows = cursor.fetchall()
-            tiles = [
-                Tile(
-                    task_id=row['task_id'],
-                    zoom=row['zoom'],
-                    x=row['x'],
-                    y=row['y'],
-                    status=row['status'],
-                    retry_count=row['retry_count'],
-                    error_message=row['error_message']
-                )
-                for row in tile_rows
-            ]
+            cache_enabled = (
+                self.config_manager.get('cache_enabled', 'true') or 'true'
+            ).lower() == 'true'
 
-            logger.info(f"Task {task_id}: {len(tiles)} tiles to download")
+            # 待下载集合不再查 task_tiles(它现在只是失败瓦片的稀疏表):瓦片集合
+            # 是 bbox+zoom 的纯函数,用 iter_tiles 按确定性顺序重建;磁盘 cache
+            # 里已存在且非空的文件就是已完成 —— cache 文件才是完成态的真相。
+            # 失败瓦片天然没有 cache 文件,暂停/崩溃后恢复自然只补缺口。
+            # 注:cache_enabled=false 时无法推导完成态,会全量重下并重复计数 ——
+            # 该路径本就不完整(拼接同样要求 cache 文件),不为它保留旧行为。
+            tiles: List[Tile] = []
+            cache_hits = 0
+            for tile in self.download_engine.iter_tiles(
+                north=task.north,
+                south=task.south,
+                east=task.east,
+                west=task.west,
+                zoom_min=task.zoom_min,
+                zoom_max=task.zoom_max,
+                task_id=task_id,
+            ):
+                if cache_enabled:
+                    try:
+                        cache_path = tile.cache_path(style_code)
+                        if cache_path.exists() and cache_path.stat().st_size > 0:
+                            cache_hits += 1
+                            continue
+                    except OSError as e:
+                        logger.warning(
+                            f"Task {task_id}: Cache check failed for tile "
+                            f"{tile.zoom}/{tile.x}/{tile.y}: {e}"
+                        )
+                tiles.append(tile)
+
+            logger.info(
+                f"Task {task_id}: {len(tiles)} tiles to download "
+                f"({cache_hits} already in cache)"
+            )
 
             if len(tiles) == 0:
                 logger.info(f"Task {task_id}: No tiles to download, proceeding to stitching")
 
+            # 计数对账:枚举时已经 stat 过每个 cache 文件,顺带把 tasks 计数校准成
+            # 「cache 命中数 + 稀疏失败表失败数」。批量落库在进程崩溃时最多丢一个
+            # 批次的计数,恢复时这次对账把它追回来,进度不会少算。
+            if cache_enabled:
+                cursor.execute('''
+                    SELECT COUNT(*) AS c FROM task_tiles
+                    WHERE task_id = ? AND status = 'failed'
+                ''', (task_id,))
+                failed_rows = cursor.fetchone()['c']
+                cursor.execute('''
+                    UPDATE tasks SET downloaded_tiles = ?, failed_tiles = ?
+                    WHERE id = ?
+                ''', (cache_hits, failed_rows, task_id))
+                conn.commit()
+                base_downloaded, base_failed = cache_hits, failed_rows
+            else:
+                base_downloaded = task.downloaded_tiles
+                base_failed = task.failed_tiles
+
+            # --- 进度回调:稀疏失败表 + 计数批量落库 ---
+            # session_status 记录本次运行里每块瓦片已上报的状态,和稀疏表里的
+            # 历史失败行一起还原 _status_count_deltas 需要的 old_status ——
+            # 同一块瓦片重复上报(如同一次运行里 completed 两次)不会重复计数,
+            # 任务暂停/取消时计数语义与旧版一致。
+            session_status: Dict[Tuple[int, int, int], str] = {}
+            progress_counts = {'downloaded': base_downloaded, 'failed': base_failed}
+            unflushed = {'downloaded': 0, 'failed': 0}
+            processed_since_flush = 0
+            progress_conn = None  # 下载循环开启时建立,结束(finally)时关闭
+
+            def flush_progress_counts():
+                """把攒批的计数增量一次性落库。
+
+                每 PROGRESS_DB_FLUSH_INTERVAL 块以及下载循环结束时各刷一次 ——
+                旧实现每块瓦片都对 tasks 表做 UPDATE,是高频小事务瓶颈。
+                """
+                nonlocal processed_since_flush
+                if unflushed['downloaded'] or unflushed['failed']:
+                    progress_conn.execute('''
+                        UPDATE tasks
+                        SET downloaded_tiles = MAX(downloaded_tiles + ?, 0),
+                            failed_tiles = MAX(failed_tiles + ?, 0)
+                        WHERE id = ?
+                    ''', (unflushed['downloaded'], unflushed['failed'], task_id))
+                    progress_conn.commit()
+                    unflushed['downloaded'] = 0
+                    unflushed['failed'] = 0
+                processed_since_flush = 0
+
             # Define progress callback
             async def progress_callback(tile: Tile, status: str, error: Optional[str]):
-                """Update database and emit socketio event for tile progress"""
+                """维护稀疏失败表、累计计数增量,并每块瓦片 emit socketio 事件
+
+                为什么不再每块瓦片写一行:瓦片集合是 bbox+zoom 的纯函数(见
+                iter_tiles),完成态以磁盘 cache 文件为准;task_tiles 只存失败
+                瓦片 —— 失败时 UPSERT 一行,成功时 DELETE 掉历史失败行。
+                tasks 表的进度计数攒批落库(见 flush_progress_counts),但
+                socketio 的 task_progress 保持每块瓦片都发,前端节奏不变。
+                """
+                nonlocal processed_since_flush
                 try:
                     if self._is_stop_requested(task_id, stop_flag):
                         logger.info(f"Task {task_id}: Stop flag detected in progress callback")
                         return
 
-                    tile_conn = get_connection()
-                    try:
-                        tile_cursor = tile_conn.cursor()
+                    key = (tile.zoom, tile.x, tile.y)
+                    old_status = session_status.get(key)
 
-                        tile_cursor.execute('''
-                            SELECT status FROM task_tiles
+                    progress_cursor = progress_conn.cursor()
+                    if status == 'failed':
+                        # 失败:写入/更新稀疏失败行。INSERT OR IGNORE 的 rowcount
+                        # 同时说明这块瓦片历史上是否已失败过(retry_count 在旧行
+                        # 基础上 +1)。
+                        progress_cursor.execute('''
+                            INSERT OR IGNORE INTO task_tiles
+                                (task_id, zoom, x, y, status, retry_count, error_message)
+                            VALUES (?, ?, ?, ?, 'failed', 1, ?)
+                        ''', (task_id, tile.zoom, tile.x, tile.y, error))
+                        row_existed = progress_cursor.rowcount == 0
+                        if row_existed:
+                            progress_cursor.execute('''
+                                UPDATE task_tiles
+                                SET retry_count = retry_count + 1, error_message = ?
+                                WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
+                            ''', (error, task_id, tile.zoom, tile.x, tile.y))
+                    else:
+                        # 成功:清掉历史失败行;rowcount 说明它之前是否失败过。
+                        progress_cursor.execute('''
+                            DELETE FROM task_tiles
                             WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                        ''', (tile.task_id, tile.zoom, tile.x, tile.y))
-                        existing = tile_cursor.fetchone()
-                        old_status = existing['status'] if existing else None
+                        ''', (task_id, tile.zoom, tile.x, tile.y))
+                        row_existed = progress_cursor.rowcount > 0
+                    progress_conn.commit()
 
-                        tile_cursor.execute('''
-                            UPDATE task_tiles
-                            SET status = ?, error_message = ?
-                            WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                        ''', (status, error, tile.task_id, tile.zoom, tile.x, tile.y))
+                    if old_status is None and row_existed:
+                        old_status = 'failed'
+                    downloaded_delta, failed_delta = self._status_count_deltas(old_status, status)
+                    session_status[key] = status
+                    progress_counts['downloaded'] += downloaded_delta
+                    progress_counts['failed'] += failed_delta
+                    unflushed['downloaded'] += downloaded_delta
+                    unflushed['failed'] += failed_delta
 
-                        downloaded_delta, failed_delta = self._status_count_deltas(old_status, status)
-                        if downloaded_delta or failed_delta:
-                            tile_cursor.execute('''
-                                UPDATE tasks
-                                SET downloaded_tiles = MAX(downloaded_tiles + ?, 0),
-                                    failed_tiles = MAX(failed_tiles + ?, 0)
-                                WHERE id = ?
-                            ''', (downloaded_delta, failed_delta, task_id))
+                    processed_since_flush += 1
+                    if processed_since_flush >= PROGRESS_DB_FLUSH_INTERVAL:
+                        flush_progress_counts()
 
-                        tile_conn.commit()
+                    if self.socketio:
+                        # Get current running time
+                        total_running_seconds = self.get_current_running_time(task_id)
 
-                        # Get updated task info
-                        tile_cursor.execute('''
-                            SELECT * FROM tasks WHERE id = ?
-                        ''', (task_id,))
-                        task_row = tile_cursor.fetchone()
-
-                        if task_row and self.socketio:
-                            # Get current running time
-                            total_running_seconds = self.get_current_running_time(task_id)
-
-                            # Emit full task progress update via socketio
-                            self.socketio.emit('task_progress', {
-                                'task_id': task_id,
-                                'id': task_id,
-                                'name': task_row['name'],
-                                'status': task_row['status'],
-                                'downloaded_tiles': task_row['downloaded_tiles'],
-                                'failed_tiles': task_row['failed_tiles'],
-                                'total_tiles': task_row['total_tiles'],
-                                'north': task_row['north'],
-                                'south': task_row['south'],
-                                'east': task_row['east'],
-                                'west': task_row['west'],
-                                'zoom_min': task_row['zoom_min'],
-                                'zoom_max': task_row['zoom_max'],
-                                'style': task_row['style'],
-                                'output_format': task_row['output_format'],
-                                'output_path': task_row['output_path'],
-                                'started_at': task_row['started_at'],
-                                'created_at': task_row['created_at'],
-                                'total_running_seconds': total_running_seconds
-                            })
-
-                    finally:
-                        tile_conn.close()
+                        # Emit full task progress update via socketio。载荷字段与
+                        # 旧版完全一致;计数取内存累计值(DB 按批落库,实时进度
+                        # 不能等批次)。
+                        self.socketio.emit('task_progress', {
+                            'task_id': task_id,
+                            'id': task_id,
+                            'name': task.name,
+                            'status': task.status,
+                            'downloaded_tiles': progress_counts['downloaded'],
+                            'failed_tiles': progress_counts['failed'],
+                            'total_tiles': task.total_tiles,
+                            'north': task.north,
+                            'south': task.south,
+                            'east': task.east,
+                            'west': task.west,
+                            'zoom_min': task.zoom_min,
+                            'zoom_max': task.zoom_max,
+                            'style': task.style,
+                            'output_format': task.output_format,
+                            'output_path': task.output_path,
+                            'started_at': task_row['started_at'],
+                            'created_at': task_row['created_at'],
+                            'total_running_seconds': total_running_seconds
+                        })
 
                 except Exception as e:
                     logger.error(f"Progress callback error for tile {tile.zoom}/{tile.x}/{tile.y}: {e}")
-
-            # Convert style name to style code once — the download, the stitching
-            # and the tile copy all key the shared tile cache off this same value,
-            # so it must not be recomputed (and possibly diverge) per stage.
-            style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
 
             # Download tiles
             if len(tiles) > 0:
@@ -891,12 +963,19 @@ class TaskManager:
                     return
 
                 logger.info(f"Task {task_id}: Starting tile download")
-                await self.download_engine.download_tiles_batch(
-                    tiles=tiles,
-                    style=style_code,
-                    progress_callback=progress_callback,
-                    stop_flag=stop_flag
-                )
+                progress_conn = get_connection()
+                try:
+                    await self.download_engine.download_tiles_batch(
+                        tiles=tiles,
+                        style=style_code,
+                        progress_callback=progress_callback,
+                        stop_flag=stop_flag
+                    )
+                finally:
+                    # 下载循环结束时把最后不满一批的计数增量落库 —— 暂停/取消/
+                    # 异常都不能丢这部分进度。
+                    flush_progress_counts()
+                    progress_conn.close()
 
                 logger.info(f"Task {task_id}: Tile download completed")
 
@@ -909,24 +988,31 @@ class TaskManager:
             # least one of the two stages below ('both' reaches both of them), and
             # they need the identical list, so querying per stage only bought two
             # chances for the two lists to drift apart.
-            cursor.execute('''
-                SELECT task_id, zoom, x, y, status, retry_count
-                FROM task_tiles
-                WHERE task_id = ? AND status = 'completed'
-                ORDER BY zoom, x, y
-            ''', (task_id,))
-
-            completed_tiles = [
-                Tile(
-                    task_id=row['task_id'],
-                    zoom=row['zoom'],
-                    x=row['x'],
-                    y=row['y'],
-                    status=row['status'],
-                    retry_count=row['retry_count']
-                )
-                for row in cursor.fetchall()
-            ]
+            #
+            # 清单从磁盘 cache 推导(替代旧的 SELECT status='completed'):能用的
+            # 瓦片 = 枚举出的瓦片里 cache 文件存在且非空的那些 —— 这也正是
+            # stitch_tiles_with_gdal 对输入的要求(缺 cache 文件它会抛
+            # FileNotFoundError)。cache_enabled=false 时清单恒为空,该路径
+            # 本就不完整,见上文待下载枚举处的注释。
+            completed_tiles: List[Tile] = []
+            for tile in self.download_engine.iter_tiles(
+                north=task.north,
+                south=task.south,
+                east=task.east,
+                west=task.west,
+                zoom_min=task.zoom_min,
+                zoom_max=task.zoom_max,
+                task_id=task_id,
+            ):
+                try:
+                    completed_cache_path = tile.cache_path(style_code)
+                    if completed_cache_path.exists() and completed_cache_path.stat().st_size > 0:
+                        completed_tiles.append(tile)
+                except OSError as e:
+                    logger.warning(
+                        f"Task {task_id}: Cache check failed for tile "
+                        f"{tile.zoom}/{tile.x}/{tile.y}: {e}"
+                    )
 
             # Stitching results, consumed by the completion logic further down.
             # A stitch failure used to be swallowed here, which meant a task whose
@@ -1052,19 +1138,17 @@ class TaskManager:
                 logger.info(f"Task {task_id}: Current status prevents completion")
                 return
 
+            # 完成判定:稀疏失败表里还有失败行 → 任务失败;否则下载循环已正常
+            # 走完(未下载的瓦片都在 cache 里,否则上面不会走到这里),pending
+            # 概念已随 task_tiles 全量行一起消失。
             cursor.execute('''
-                SELECT
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
-                FROM task_tiles
-                WHERE task_id = ?
+                SELECT COUNT(*) AS failed_count FROM task_tiles
+                WHERE task_id = ? AND status = 'failed'
             ''', (task_id,))
-            counts = cursor.fetchone()
-            failed_count = counts['failed_count'] or 0
-            pending_count = counts['pending_count'] or 0
+            failed_count = cursor.fetchone()['failed_count']
 
-            if failed_count > 0 or pending_count > 0:
-                error_message = f"{failed_count} tile(s) failed, {pending_count} tile(s) pending"
+            if failed_count > 0:
+                error_message = f"{failed_count} tile(s) failed"
                 cursor.execute('''
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?

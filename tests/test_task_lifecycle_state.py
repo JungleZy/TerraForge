@@ -45,15 +45,28 @@ def _seed_map_task(
     output_format="tiles_only",
     output_path="/tmp",
     tile_zooms=None,
+    zoom_min=0,
+    zoom_max=0,
 ):
     """播种一个地图任务。
 
-    output_format / output_path / tile_zooms 有默认值,原有调用点行为不变。
-    tile_zooms 用来跨多个缩放级别铺瓦片 —— 拼接是按 zoom 逐个跑的,
-    「部分 zoom 失败」这类场景必须有多个 zoom 才能复现。
+    task_tiles 已是稀疏失败表,播种按新语义造「完成态/失败态」:
+    - 'completed' → 写磁盘 cache 文件(完成态由 cache 推导,不再有表里的行)
+    - 'failed'    → 插一行 task_tiles 失败行
+    - 'pending'   → 什么都不做(未下载 = 既无 cache 也无失败行)
+
+    状态按 zoom 整层铺(拼接按 zoom 逐个跑,「部分 zoom 失败」需要多 zoom)。
+    bbox 固定 (1,0,1,0),瓦片集合由 iter_tiles 枚举,与运行时同口径;
+    zoom_min/zoom_max 决定枚举范围(默认 0-0,整个 bbox 只有 1 块瓦片)。
     """
-    zooms = list(tile_zooms) if tile_zooms is not None else [0] * len(tile_statuses)
+    from services.download_engine import DownloadEngine
+
+    zooms = list(tile_zooms) if tile_zooms is not None else [zoom_min] * len(tile_statuses)
     assert len(zooms) == len(tile_statuses)
+    status_by_zoom = dict(zip(zooms, tile_statuses))
+
+    engine = DownloadEngine()
+    tiles = list(engine.iter_tiles(1, 0, 1, 0, zoom_min, zoom_max))
 
     conn = db.get_connection()
     try:
@@ -64,20 +77,27 @@ def _seed_map_task(
               (name, status, north, south, east, west, zoom_min, zoom_max,
                style, output_format, output_path, total_tiles, downloaded_tiles,
                failed_tiles)
-            VALUES ('map-task', ?, 1, 0, 1, 0, 0, 0, 'satellite', ?,
+            VALUES ('map-task', ?, 1, 0, 1, 0, ?, ?, 'satellite', ?,
                     ?, ?, 0, ?)
             """,
-            (status, output_format, output_path, len(tile_statuses), failed_tiles),
+            (status, zoom_min, zoom_max, output_format, output_path, len(tiles), failed_tiles),
         )
         task_id = cur.lastrowid
-        for idx, (tile_status, zoom) in enumerate(zip(tile_statuses, zooms)):
-            cur.execute(
-                """
-                INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count)
-                VALUES (?, ?, ?, 0, ?, 0)
-                """,
-                (task_id, zoom, idx, tile_status),
-            )
+        for tile in tiles:
+            tile_status = status_by_zoom.get(tile.zoom, "pending")
+            if tile_status == "completed":
+                # satellite → style code 's'(与 TaskManager.STYLE_MAP 一致)
+                cache_path = tile.cache_path("s")
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_bytes(b"not-really-a-png")
+            elif tile_status == "failed":
+                cur.execute(
+                    """
+                    INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count)
+                    VALUES (?, ?, ?, ?, 'failed', 0)
+                    """,
+                    (task_id, tile.zoom, tile.x, tile.y),
+                )
         conn.commit()
         return task_id
     finally:
@@ -255,8 +275,9 @@ def test_dem_progress_counts_status_transitions(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # 拼接结果必须影响任务最终状态
 #
-# 缺陷：拼接的 except 只打一条 log 就继续,而任务最终状态只看 task_tiles 的
-# failed/pending 计数 —— 与拼接成功与否毫无关系。于是一整个 zoom 的拼接图一张
+# 缺陷：拼接的 except 只打一条 log 就继续,而任务最终状态只看失败瓦片数
+# （现在是 task_tiles 稀疏失败表,重构前是全量行的 failed/pending 计数）——
+# 与拼接成功与否毫无关系。于是一整个 zoom 的拼接图一张
 # 都没产出,前端仍然收到 task_completed,用户只能自己去翻输出目录才知道。
 #
 # 本分支往这条路径新加了 gdal.Warp(PROJ 查表 / 内存 / 磁盘满 / 并发删中间文件
@@ -277,6 +298,8 @@ def test_map_all_stitch_failures_mark_task_failed(monkeypatch, tmp_path):
         db,
         tile_statuses=("completed", "completed"),
         tile_zooms=(10, 11),
+        zoom_min=10,
+        zoom_max=11,
         output_format="image_only",
         output_path=str(tmp_path / "out"),
     )
@@ -315,6 +338,8 @@ def test_map_partial_stitch_failure_completes_with_warning(monkeypatch, tmp_path
         db,
         tile_statuses=("completed", "completed"),
         tile_zooms=(10, 11),
+        zoom_min=10,
+        zoom_max=11,
         output_format="image_only",
         output_path=str(tmp_path / "out"),
     )
@@ -354,6 +379,8 @@ def test_map_clean_stitch_leaves_no_error_message(monkeypatch, tmp_path):
         db,
         tile_statuses=("completed", "completed"),
         tile_zooms=(10, 11),
+        zoom_min=10,
+        zoom_max=11,
         output_format="image_only",
         output_path=str(tmp_path / "out"),
     )
@@ -391,24 +418,22 @@ def test_map_tile_copy_stage_honours_cancel(monkeypatch, tmp_path):
 
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     tm_mod = importlib.import_module("services.task_manager")
-    task_mod = importlib.import_module("models.task")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
 
+    # zoom 10 的 1°x1° bbox 有 12 块瓦片(cache 文件由播种写妥)——
+    # 多于 2 块才能验证「取消后不再复制下一块」。
     task_id = _seed_map_task(
         db,
-        tile_statuses=("completed",) * 4,
+        tile_statuses=("completed",),
+        tile_zooms=(10,),
+        zoom_min=10,
+        zoom_max=10,
         output_format="tiles_only",
         output_path=str(tmp_path / "out"),
     )
 
     # cancel_task 只在 stop_flags 里已有该任务时才 set,所以先登记
     tm.stop_flags[task_id] = threading.Event()
-
-    style_code = tm_mod.STYLE_MAP["satellite"]
-    for idx in range(4):
-        cache_path = task_mod.Tile(task_id=task_id, zoom=0, x=idx, y=0).cache_path(style_code)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_bytes(b"not-really-a-png")
 
     copied = []
     real_copy2 = tm_mod.shutil.copy2
@@ -437,29 +462,34 @@ def test_map_tile_copy_stage_emits_progress(monkeypatch, tmp_path):
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     tm_mod = importlib.import_module("services.task_manager")
-    task_mod = importlib.import_module("models.task")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
 
-    total = tm_mod.COPY_PROGRESS_INTERVAL + 3
+    # zoom 12-13 的 1°x1° bbox 有几百块瓦片(足够跨过一个 COPY_PROGRESS_INTERVAL
+    # 批次);cache 文件由播种按枚举结果写妥。
     task_id = _seed_map_task(
         db,
-        tile_statuses=("completed",) * total,
+        tile_statuses=("completed", "completed"),
+        tile_zooms=(12, 13),
+        zoom_min=12,
+        zoom_max=13,
         output_format="tiles_only",
         output_path=str(tmp_path / "out"),
     )
-
-    style_code = tm_mod.STYLE_MAP["satellite"]
-    for idx in range(total):
-        cache_path = task_mod.Tile(task_id=task_id, zoom=0, x=idx, y=0).cache_path(style_code)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_bytes(b"not-really-a-png")
+    total = _map_task_row(db, task_id)["total_tiles"]
+    assert total > tm_mod.COPY_PROGRESS_INTERVAL, (
+        "瓦片数必须超过一个进度批次,才能验证「每间隔报一次」"
+    )
 
     asyncio.run(tm._execute_task(task_id))
 
+    # 每 COPY_PROGRESS_INTERVAL 块报一次,最后不满一批也必须补一发
+    expected = list(range(tm_mod.COPY_PROGRESS_INTERVAL, total + 1, tm_mod.COPY_PROGRESS_INTERVAL))
+    if total % tm_mod.COPY_PROGRESS_INTERVAL:
+        expected.append(total)
+
     progress = [p for name, p in tm.socketio.events if name == "task_copy_progress"]
-    assert [p["processed_tiles"] for p in progress] == [
-        tm_mod.COPY_PROGRESS_INTERVAL,
-        total,
-    ], "应在每 COPY_PROGRESS_INTERVAL 个瓦片以及最后一个瓦片时各报一次"
+    assert [p["processed_tiles"] for p in progress] == expected, (
+        "应在每 COPY_PROGRESS_INTERVAL 个瓦片以及最后一个瓦片时各报一次"
+    )
     assert progress[-1]["copied_tiles"] == total
     assert progress[-1]["total_tiles"] == total
