@@ -1,3 +1,11 @@
+## v0.1.9 —— CI 修复：Windows cp1252 解码问题
+
+- 测试内 subprocess 输出显式 `encoding='utf-8', errors='replace'`：Windows 上 `text=True` 默认按 cp1252 解码，脚本的 UTF-8 中文输出一个崩 reader 线程（stdout 变 None）、一个解成乱码，导致 v0.1.8 构建剩余 2 条假失败。
+
+以下为 v0.1.8 的发布说明。
+
+---
+
 ## v0.1.8 —— CI 修复：Windows 构建的脚本行为测试
 
 - bash 验明正身改为 `--version` 必须输出 GNU bash（WSL 占位 stub 的退出码与参数相关，单跑 `true` 挡不住），并探测 Git for Windows 默认安装路径——CI windows-latest 上的 5 条脚本行为测试此前被 System32 的 WSL stub 假失败，现在用 git-bash 真正执行；无 bash 环境干净跳过。
