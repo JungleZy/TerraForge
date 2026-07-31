@@ -34,9 +34,9 @@ def mask_url_userinfo(url) -> str:
 
 
 def apply_system_proxy() -> dict:
-    """Detect the OS system proxy and export it into HTTP_PROXY/HTTPS_PROXY
-    if those env vars aren't already set. Returns the proxies dict that was
-    applied (may be empty).
+    """Detect the OS system proxy and export it into HTTP_PROXY/HTTPS_PROXY/
+    NO_PROXY if those env vars aren't already set. Returns the env vars that
+    were applied (may be empty).
 
     - On Windows urllib.request.getproxies() reads the registry, which is
       where Clash/V2Ray/etc. write the system proxy.
@@ -50,15 +50,26 @@ def apply_system_proxy() -> dict:
         return {}
 
     applied = {}
-    for scheme in ('http', 'https', 'all'):
-        if scheme not in proxies:
+    for scheme in ('http', 'https'):
+        # 'all' 只作 http/https 缺失时的回退：aiohttp(trust_env=True) 不读
+        # ALL_PROXY，直接导出 ALL_PROXY 是死写入。
+        proxy = proxies.get(scheme) or proxies.get('all')
+        if not proxy:
             continue
         env_key = f'{scheme.upper()}_PROXY'
         if os.environ.get(env_key):
             # User explicitly set it — respect that.
             continue
-        os.environ[env_key] = proxies[scheme]
-        applied[env_key] = proxies[scheme]
+        os.environ[env_key] = proxy
+        applied[env_key] = proxy
+
+    # bypass 列表（getproxies() 的 'no' 键，来自 Windows ProxyOverride /
+    # macOS scutil / no_proxy 环境变量）：导出为 NO_PROXY，aiohttp
+    # trust_env 会读它；不导出的话系统设置里排除的内网地址会被错误走代理。
+    bypass = proxies.get('no')
+    if bypass and not os.environ.get('NO_PROXY'):
+        os.environ['NO_PROXY'] = bypass
+        applied['NO_PROXY'] = bypass
 
     if applied:
         # 代理 URL 可能带 user:pass@ 凭据，掩码后再进日志

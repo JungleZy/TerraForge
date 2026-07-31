@@ -9,15 +9,15 @@ import logging
 import shutil
 import threading
 import asyncio
+import time
 from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime
-from pathlib import Path
 
-from core.database import get_connection
+from core.database import get_connection, parse_db_timestamp, utc_now, utc_now_iso
 from models.task import Task, Tile
 from services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD
 from services.config_manager import ConfigManager
 from services.geo_validation import resolve_output_dir, sanitize_filename
+from services.task_cleanup import resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,15 @@ STYLE_MAP = {
 # freezes for as long as the copy takes (minutes at 100k tiles) and looks hung.
 COPY_PROGRESS_INTERVAL = 200
 
-# 下载进度计数批量落库的间隔(块)。socketio 的 task_progress 仍每块瓦片都发
-# (前端实时进度依赖它),但 tasks 表的 downloaded/failed 计数攒到这个批次
-# 才 UPDATE 一次 —— 旧实现每块瓦片 3-4 条 SQL,是大任务的性能瓶颈。
+# 下载进度计数批量落库的间隔(块)。tasks 表的 downloaded/failed 计数攒到
+# 这个批次才 UPDATE 一次 —— 旧实现每块瓦片 3-4 条 SQL,是大任务的性能瓶颈。
 PROGRESS_DB_FLUSH_INTERVAL = 200
+
+# socketio task_progress 广播的最小间隔(秒)。旧实现每块瓦片都 emit 一次,
+# 且每次都另开连接查 get_current_running_time —— 百万级瓦片就是百万次
+# 同步 DB 查询 + 广播,全部跑在下载事件循环里把它堵死。节流后前端进度
+# 仍以 2Hz 刷新,末块瓦片(完成那一发)不受节流限制。
+PROGRESS_EMIT_MIN_INTERVAL = 0.5
 
 
 class TaskManager:
@@ -100,7 +105,7 @@ class TaskManager:
             if not orphan_ids:
                 return
 
-            now = datetime.now()
+            now = utc_now_iso()
             cursor.executemany(
                 "UPDATE tasks SET status = 'paused' WHERE id = ? AND status = 'running'",
                 [(tid,) for tid in orphan_ids],
@@ -143,7 +148,7 @@ class TaskManager:
             cursor.execute('''
                 INSERT INTO task_time_records (task_id, action, timestamp)
                 VALUES (?, ?, ?)
-            ''', (task_id, action, datetime.now()))
+            ''', (task_id, action, utc_now_iso()))
             conn.commit()
             logger.debug(f"Recorded time action '{action}' for task {task_id}")
         except Exception as e:
@@ -173,8 +178,8 @@ class TaskManager:
 
             row = cursor.fetchone()
             if row:
-                last_start = datetime.fromisoformat(row['timestamp'])
-                elapsed_seconds = int((datetime.now() - last_start).total_seconds())
+                last_start = parse_db_timestamp(row['timestamp'])
+                elapsed_seconds = int((utc_now() - last_start).total_seconds())
 
                 # Add to total running time
                 cursor.execute('''
@@ -227,8 +232,8 @@ class TaskManager:
 
                 start_row = cursor.fetchone()
                 if start_row:
-                    last_start = datetime.fromisoformat(start_row['timestamp'])
-                    current_segment = int((datetime.now() - last_start).total_seconds())
+                    last_start = parse_db_timestamp(start_row['timestamp'])
+                    current_segment = int((utc_now() - last_start).total_seconds())
                     total_seconds += current_segment
 
             return total_seconds
@@ -266,8 +271,10 @@ class TaskManager:
 
         # output_path 越界校验:相对路径相对 Config.DOWNLOADS_DIR 解析,解析结果
         # 必须落在其内部,否则 resolve_output_dir 抛 ValueError(API 层映射 400)。
-        # 只校验不改写 —— 存量任务行里可能还有历史路径,读路径不做这个校验。
-        resolve_output_dir(params['output_path'])
+        # 入库的是解析后的绝对路径(与 dem_task_manager.create_task 同口径)——
+        # 存原始相对值的话,_execute_task 里 Path(task.output_path) 会按进程
+        # CWD 解析,打包 exe 从快捷方式启动(CWD≠BASE_DIR)时文件写到校验范围外。
+        output_path = resolve_output_dir(params['output_path'])
 
         # Create Task object for validation
         # 传原始值,由 Task.__post_init__ 里的 validate_bbox/validate_zoom 统一
@@ -284,7 +291,7 @@ class TaskManager:
             zoom_max=params['zoom_max'],
             style=params['style'],
             output_format=params['output_format'],
-            output_path=params['output_path']
+            output_path=output_path
         )
 
         # 瓦片总数只计数、不物化,也不向 task_tiles 写任何行。
@@ -357,6 +364,13 @@ class TaskManager:
         """
         logger.info(f"Starting task {task_id}")
 
+        # 状态翻转 commit 之后、thread.start() 之前还有若干可能抛异常的调用
+        # (get_current_running_time、socketio.emit)。一旦抛出,except 里的
+        # rollback 对已 commit 的事务无效,会留下 status='running' 但线程从未
+        # 启动的假运行任务 —— 用这两个标志在 except 里显式回补状态。
+        status_committed = False
+        thread_started = False
+
         conn = get_connection()
         try:
             cursor = conn.cursor()
@@ -381,15 +395,19 @@ class TaskManager:
                         f"Task must be 'pending', 'paused' or 'failed'."
                     )
 
+                # started_at 只在首次启动时写入(COALESCE):resume/重试不再
+                # 覆写 —— 字段语义是「首次开始时间」,运行时长另有
+                # task_time_records + total_running_seconds 跟踪,不依赖它。
                 cursor.execute('''
                     UPDATE tasks
-                    SET status = 'running', started_at = ?
+                    SET status = 'running', started_at = COALESCE(started_at, ?)
                     WHERE id = ? AND status IN ('pending', 'paused', 'failed')
-                ''', (datetime.now(), task_id))
+                ''', (utc_now_iso(), task_id))
                 if cursor.rowcount != 1:
                     raise ValueError(f"Task {task_id} could not be started because its status changed")
 
                 conn.commit()
+                status_committed = True
 
                 stop_flag = threading.Event()
                 self.stop_flags[task_id] = stop_flag
@@ -431,10 +449,30 @@ class TaskManager:
                 })
 
             thread.start()
+            thread_started = True
             logger.info(f"Task {task_id} started in background thread")
 
         except Exception as e:
             conn.rollback()
+            if status_committed and not thread_started:
+                # commit 之后、thread.start() 之前的异常(get_current_running_time、
+                # socketio.emit 等)会留下 status='running' 但线程从未启动的假
+                # 运行任务;rollback 对已 commit 无效,显式把状态回补为 failed,
+                # 并清掉 active_tasks/stop_flags 里从未启动的登记。
+                with self._state_lock:
+                    self.active_tasks.pop(task_id, None)
+                    self.stop_flags.pop(task_id, None)
+                try:
+                    cursor.execute('''
+                        UPDATE tasks
+                        SET status = 'failed', error_message = ?
+                        WHERE id = ? AND status = 'running'
+                    ''', (f'Failed to start task: {e}', task_id))
+                    conn.commit()
+                except Exception as revert_error:
+                    logger.error(
+                        f"Failed to revert task {task_id} status after start failure: {revert_error}"
+                    )
             logger.error(f"Failed to start task {task_id}: {e}")
             raise
         finally:
@@ -462,6 +500,16 @@ class TaskManager:
         try:
             cursor = conn.cursor()
 
+            # 状态翻转、时长累计、pause 时间记录必须在同一事务:旧实现先
+            # commit 'paused' 再另开连接 _update_total_running_time,窗口内
+            # 并发 resume(start_task)会先写入新的 'resume' 记录,使时长累计
+            # 取到新时间戳、elapsed≈0,整段运行时长被吞掉。这里先 UPDATE
+            # 拿到写锁再读最近的 start/resume 记录 —— resume 的时间记录在
+            # 其自身 commit 之后才写入,必然排在本事务之后;而 resume 若先
+            # 抢到写锁,说明任务此前已是 paused(时长早在上次 pause 累计过),
+            # 本事务读到的就是正确的段起点。
+            now = utc_now()
+
             cursor.execute('''
                 UPDATE tasks
                 SET status = 'paused'
@@ -475,15 +523,34 @@ class TaskManager:
                     raise ValueError(f"Task {task_id} not found")
                 raise ValueError(f"Cannot pause task {task_id} with status '{row['status']}'")
 
+            cursor.execute('''
+                SELECT timestamp FROM task_time_records
+                WHERE task_id = ? AND action IN ('start', 'resume')
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ''', (task_id,))
+            row = cursor.fetchone()
+            if row:
+                last_start = parse_db_timestamp(row['timestamp'])
+                elapsed_seconds = int((now - last_start).total_seconds())
+                if elapsed_seconds > 0:
+                    cursor.execute('''
+                        UPDATE tasks
+                        SET total_running_seconds = total_running_seconds + ?
+                        WHERE id = ?
+                    ''', (elapsed_seconds, task_id))
+
+            cursor.execute('''
+                INSERT INTO task_time_records (task_id, action, timestamp)
+                VALUES (?, 'pause', ?)
+            ''', (task_id, now.isoformat(timespec='seconds')))
+
             conn.commit()
 
             with self._state_lock:
                 if task_id in self.stop_flags:
                     self.stop_flags[task_id].set()
                     logger.debug(f"Stop flag set for task {task_id}")
-
-            self._update_total_running_time(task_id)
-            self._record_time_action(task_id, 'pause')
 
             logger.info(f"Task {task_id} paused")
 
@@ -549,6 +616,9 @@ class TaskManager:
             task_id: Task ID to cancel
 
         Raises:
+            ValueError: If task not found, or already in a terminal state
+                (completed/failed/cancelled) — 终态任务无可取消,如实抛错
+                而不是什么都不改却报 'cancelled'
             sqlite3.Error: If database operation fails
 
         Process:
@@ -574,6 +644,10 @@ class TaskManager:
                 row = cursor.fetchone()
                 if not row:
                     raise ValueError(f"Task {task_id} not found")
+                raise ValueError(
+                    f"Cannot cancel task {task_id} with status '{row['status']}'. "
+                    f"Task must be 'pending', 'running' or 'paused'."
+                )
 
             conn.commit()
 
@@ -615,28 +689,9 @@ class TaskManager:
             if not row:
                 raise ValueError(f"Task {task_id} not found")
 
-            # Convert row to Task object
-            task = Task(
-                id=row['id'],
-                name=row['name'],
-                status=row['status'],
-                north=row['north'],
-                south=row['south'],
-                east=row['east'],
-                west=row['west'],
-                zoom_min=row['zoom_min'],
-                zoom_max=row['zoom_max'],
-                style=row['style'],
-                output_format=row['output_format'],
-                output_path=row['output_path'],
-                total_tiles=row['total_tiles'],
-                downloaded_tiles=row['downloaded_tiles'],
-                failed_tiles=row['failed_tiles'],
-                created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
-                completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
-                error_message=row['error_message']
-            )
+            # Convert row to Task object。读取路径用 from_row(跳过
+            # __post_init__ 校验):历史遗留的非法行不应让查询接口 500。
+            task = Task.from_row(row)
 
             return task.to_dict()
 
@@ -667,28 +722,9 @@ class TaskManager:
 
             tasks = []
             for row in rows:
-                task = Task(
-                    id=row['id'],
-                    name=row['name'],
-                    status=row['status'],
-                    north=row['north'],
-                    south=row['south'],
-                    east=row['east'],
-                    west=row['west'],
-                    zoom_min=row['zoom_min'],
-                    zoom_max=row['zoom_max'],
-                    style=row['style'],
-                    output_format=row['output_format'],
-                    output_path=row['output_path'],
-                    total_tiles=row['total_tiles'],
-                    downloaded_tiles=row['downloaded_tiles'],
-                    failed_tiles=row['failed_tiles'],
-                    created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else None,
-                    started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
-                    completed_at=datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None,
-                    error_message=row['error_message']
-                )
-                tasks.append(task.to_dict())
+                # 同 get_task_status:读取路径走 from_row,一条历史非法行
+                # 不能把整个列表接口打成 500。
+                tasks.append(Task.from_row(row).to_dict())
 
             return tasks
 
@@ -751,41 +787,63 @@ class TaskManager:
             if not task_row:
                 raise ValueError(f"Task {task_id} not found")
 
-            task = Task(
-                id=task_row['id'],
-                name=task_row['name'],
-                status=task_row['status'],
-                north=task_row['north'],
-                south=task_row['south'],
-                east=task_row['east'],
-                west=task_row['west'],
-                zoom_min=task_row['zoom_min'],
-                zoom_max=task_row['zoom_max'],
-                style=task_row['style'],
-                output_format=task_row['output_format'],
-                output_path=task_row['output_path'],
-                total_tiles=task_row['total_tiles'],
-                downloaded_tiles=task_row['downloaded_tiles'],
-                failed_tiles=task_row['failed_tiles']
-            )
+            # 同读取路径:_execute_task 恢复历史任务时不能因遗留非法行
+            # 在构造 Task 时抛校验错误(from_row 跳过 __post_init__)。
+            task = Task.from_row(task_row)
 
             # Convert style name to style code once — the download, the stitching
             # and the tile copy all key the shared tile cache off this same value,
             # so it must not be recomputed (and possibly diverge) per stage.
             style_code = STYLE_MAP.get(task.style, 'm')  # Default to roadmap if not found
 
+            # 存量任务行的 output_path 可能是相对路径(旧版本只校验不改写,入库的
+            # 是用户原始值)—— 归一化成绝对路径再落盘;直接 Path(task.output_path)
+            # 会按进程 CWD 解析,exe 换目录启动时写到校验范围外。
+            output_dir = resolve_stored_output_dir(task.output_path)
+
             cache_enabled = (
                 self.config_manager.get('cache_enabled', 'true') or 'true'
             ).lower() == 'true'
+
+            # cache_enabled=false 时任务注定零产出:下载不落盘,而拼接
+            # (png/jpg/both/image_only)和瓦片复制(both/tiles_only)的输入
+            # 都是 cache 文件 —— 修复前这种任务会空跑一遍下载再被标
+            # 'completed'。明确拒绝(走通用 except 标 failed + 如实错误信息),
+            # 不为它保留「全量重下、完成态无法推导」的旧行为。
+            if not cache_enabled:
+                raise ValueError(
+                    "cache_enabled=false 时任务无法产出任何结果"
+                    "(拼接与瓦片复制都依赖 tile cache),请开启缓存后重试"
+                )
 
             # 待下载集合不再查 task_tiles(它现在只是失败瓦片的稀疏表):瓦片集合
             # 是 bbox+zoom 的纯函数,用 iter_tiles 按确定性顺序重建;磁盘 cache
             # 里已存在且非空的文件就是已完成 —— cache 文件才是完成态的真相。
             # 失败瓦片天然没有 cache 文件,暂停/崩溃后恢复自然只补缺口。
-            # 注:cache_enabled=false 时无法推导完成态,会全量重下并重复计数 ——
-            # 该路径本就不完整(拼接同样要求 cache 文件),不为它保留旧行为。
+            #
+            # 顺带把稀疏失败表的现有行读成一个集合(它是稀疏的,行数 = 失败瓦片数,
+            # 不会随选区膨胀):枚举遇 cache 命中且该瓦片在集合里时,记入待清理清单
+            # —— 这枚 failed 行的瓦片其实已成功(cache 落盘),只是当时回调没跑到
+            # (stop 检查/进程崩溃),清理见枚举后的对账段。
+            failed_tile_keys = set()
+            if cache_enabled:
+                cursor.execute('''
+                    SELECT zoom, x, y FROM task_tiles
+                    WHERE task_id = ? AND status = 'failed'
+                ''', (task_id,))
+                failed_tile_keys = {
+                    (row['zoom'], row['x'], row['y']) for row in cursor.fetchall()
+                }
+
+            # 单遍枚举同时产出「待下载」与「已完成」两份清单(互不重叠,每块
+            # 瓦片只物化一次)。旧实现下载前只建待下载列表,下载后再第二遍
+            # 全量 stat 重建 completed 列表 —— 两遍枚举 + 部分瓦片两份对象;
+            # 现在下载结束后直接把本次下载成功的瓦片并入 completed_tiles
+            # (见下载调用处),省掉第二遍。
             tiles: List[Tile] = []
+            completed_tiles: List[Tile] = []
             cache_hits = 0
+            stale_failed_keys: List[Tuple[int, int, int]] = []
             for tile in self.download_engine.iter_tiles(
                 north=task.north,
                 south=task.south,
@@ -800,6 +858,10 @@ class TaskManager:
                         cache_path = tile.cache_path(style_code)
                         if cache_path.exists() and cache_path.stat().st_size > 0:
                             cache_hits += 1
+                            completed_tiles.append(tile)
+                            key = (tile.zoom, tile.x, tile.y)
+                            if key in failed_tile_keys:
+                                stale_failed_keys.append(key)
                             continue
                     except OSError as e:
                         logger.warning(
@@ -815,6 +877,27 @@ class TaskManager:
 
             if len(tiles) == 0:
                 logger.info(f"Task {task_id}: No tiles to download, proceeding to stitching")
+
+            # 对账:清掉 cache 命中瓦片残留在稀疏表里的 failed 行。
+            # 留下它们的场景:瓦片下载成功、cache 已落盘,但进度回调因 stop 检查
+            # (暂停/取消)或进程崩溃没能执行 —— 回调里的 DELETE 是唯一清行路径,
+            # 它没跑,失败行就永远留着;而枚举遇 cache 命中直接 continue,不再有
+            # 任何路径清它,完成判定的 failed_count>0 恒真,任务反复失败不自愈。
+            # cache 文件才是完成态真相(见上文),cache 命中即视为成功,在这里
+            # 批量补清。executemany 单事务一次 commit,不是逐瓦片开事务。
+            if stale_failed_keys:
+                cursor.executemany(
+                    '''
+                    DELETE FROM task_tiles
+                    WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
+                    ''',
+                    [(task_id, zoom, x, y) for zoom, x, y in stale_failed_keys]
+                )
+                conn.commit()
+                logger.info(
+                    f"Task {task_id}: Cleared {len(stale_failed_keys)} stale failed "
+                    f"tile row(s) already present in cache"
+                )
 
             # 计数对账:枚举时已经 stat 过每个 cache 文件,顺带把 tasks 计数校准成
             # 「cache 命中数 + 稀疏失败表失败数」。批量落库在进程崩溃时最多丢一个
@@ -844,6 +927,9 @@ class TaskManager:
             progress_counts = {'downloaded': base_downloaded, 'failed': base_failed}
             unflushed = {'downloaded': 0, 'failed': 0}
             processed_since_flush = 0
+            # 上次 socketio 广播的 monotonic 时间戳;初始 -inf 让首块瓦片必发
+            # (见 PROGRESS_EMIT_MIN_INTERVAL)。
+            last_emit_at = float('-inf')
             progress_conn = None  # 下载循环开启时建立,结束(finally)时关闭
 
             def flush_progress_counts():
@@ -867,23 +953,28 @@ class TaskManager:
 
             # Define progress callback
             async def progress_callback(tile: Tile, status: str, error: Optional[str]):
-                """维护稀疏失败表、累计计数增量,并每块瓦片 emit socketio 事件
+                """维护稀疏失败表、累计计数增量,并按时间节流 emit socketio 事件
 
                 为什么不再每块瓦片写一行:瓦片集合是 bbox+zoom 的纯函数(见
                 iter_tiles),完成态以磁盘 cache 文件为准;task_tiles 只存失败
                 瓦片 —— 失败时 UPSERT 一行,成功时 DELETE 掉历史失败行。
-                tasks 表的进度计数攒批落库(见 flush_progress_counts),但
-                socketio 的 task_progress 保持每块瓦片都发,前端节奏不变。
+                tasks 表的进度计数攒批落库(见 flush_progress_counts);
+                socketio 的 task_progress 按 PROGRESS_EMIT_MIN_INTERVAL 节流
+                (计数始终取内存实时值),末块瓦片必发 —— 逐瓦片广播 + 每次
+                另开连接查运行时长会在百万级瓦片下堵死下载事件循环。
                 """
-                nonlocal processed_since_flush
+                nonlocal processed_since_flush, last_emit_at
+                if self._is_stop_requested(task_id, stop_flag):
+                    logger.info(f"Task {task_id}: Stop flag detected in progress callback")
+                    return
+
+                key = (tile.zoom, tile.x, tile.y)
+                old_status = session_status.get(key)
+
+                # DB 层:稀疏失败表维护 + 计数累计/攒批落库。这一层的故障必须
+                # 显眼地记 error —— 失败瓦片若静默丢记录,完成判定的
+                # failed_count>0 就守不住,任务会被误判成 completed。
                 try:
-                    if self._is_stop_requested(task_id, stop_flag):
-                        logger.info(f"Task {task_id}: Stop flag detected in progress callback")
-                        return
-
-                    key = (tile.zoom, tile.x, tile.y)
-                    old_status = session_status.get(key)
-
                     progress_cursor = progress_conn.cursor()
                     if status == 'failed':
                         # 失败:写入/更新稀疏失败行。INSERT OR IGNORE 的 rowcount
@@ -922,9 +1013,27 @@ class TaskManager:
                     processed_since_flush += 1
                     if processed_since_flush >= PROGRESS_DB_FLUSH_INTERVAL:
                         flush_progress_counts()
+                except Exception as e:
+                    logger.error(
+                        f"Progress callback DB error for tile "
+                        f"{tile.zoom}/{tile.x}/{tile.y} (status={status}): {e}"
+                    )
+                    return
 
-                    if self.socketio:
-                        # Get current running time
+                # 广播层:与 DB 层解耦 —— socketio 故障只影响这一发实时推送,
+                # 不能回头拖垮已经落库的进度,也不能中断下载循环。
+                try:
+                    # 时间节流(见 PROGRESS_EMIT_MIN_INTERVAL):done 达到
+                    # 总数那一发(完成进度)必发,其余距上次不足间隔只记内存。
+                    done_tiles = progress_counts['downloaded'] + progress_counts['failed']
+                    now = time.monotonic()
+                    if self.socketio and (
+                        done_tiles >= task.total_tiles
+                        or now - last_emit_at >= PROGRESS_EMIT_MIN_INTERVAL
+                    ):
+                        last_emit_at = now
+                        # Get current running time(只在真正广播时查 —— 它每次
+                        # 另开连接,逐瓦片查询是事件循环阻塞点之一)
                         total_running_seconds = self.get_current_running_time(task_id)
 
                         # Emit full task progress update via socketio。载荷字段与
@@ -951,9 +1060,11 @@ class TaskManager:
                             'created_at': task_row['created_at'],
                             'total_running_seconds': total_running_seconds
                         })
-
                 except Exception as e:
-                    logger.error(f"Progress callback error for tile {tile.zoom}/{tile.x}/{tile.y}: {e}")
+                    logger.error(
+                        f"Progress callback emit error for tile "
+                        f"{tile.zoom}/{tile.x}/{tile.y}: {e}"
+                    )
 
             # Download tiles
             if len(tiles) > 0:
@@ -965,7 +1076,7 @@ class TaskManager:
                 logger.info(f"Task {task_id}: Starting tile download")
                 progress_conn = get_connection()
                 try:
-                    await self.download_engine.download_tiles_batch(
+                    download_results = await self.download_engine.download_tiles_batch(
                         tiles=tiles,
                         style=style_code,
                         progress_callback=progress_callback,
@@ -973,9 +1084,26 @@ class TaskManager:
                     )
                 finally:
                     # 下载循环结束时把最后不满一批的计数增量落库 —— 暂停/取消/
-                    # 异常都不能丢这部分进度。
-                    flush_progress_counts()
+                    # 异常都不能丢这部分进度。flush 失败只记 error:收尾异常不能
+                    # 掩盖下载循环抛出的原始异常,且连接无论如何都要关闭。
+                    try:
+                        flush_progress_counts()
+                    except Exception as flush_error:
+                        logger.error(
+                            f"Task {task_id}: Failed to flush progress counts: {flush_error}"
+                        )
                     progress_conn.close()
+
+                # 本次下载成功的瓦片并入 completed 清单 —— 与枚举段的 cache
+                # 命中清单互补,替代旧的「下载后第二遍全量 stat 枚举」。
+                # 'cancelled'/'failed' 的瓦片不并入,与旧第二遍枚举的口径一致
+                # (无 cache 文件)。(cache_enabled=false 已在上面被拒绝,
+                # 走到这里 cache 必然开启。)
+                if cache_enabled:
+                    completed_tiles.extend(
+                        result['tile'] for result in download_results
+                        if result['status'] == 'completed'
+                    )
 
                 logger.info(f"Task {task_id}: Tile download completed")
 
@@ -983,36 +1111,6 @@ class TaskManager:
             if self._is_stop_requested(task_id, stop_flag):
                 logger.info(f"Task {task_id}: Stop flag detected before stitching")
                 return
-
-            # Materialise the completed tiles once. Every output_format reaches at
-            # least one of the two stages below ('both' reaches both of them), and
-            # they need the identical list, so querying per stage only bought two
-            # chances for the two lists to drift apart.
-            #
-            # 清单从磁盘 cache 推导(替代旧的 SELECT status='completed'):能用的
-            # 瓦片 = 枚举出的瓦片里 cache 文件存在且非空的那些 —— 这也正是
-            # stitch_tiles_with_gdal 对输入的要求(缺 cache 文件它会抛
-            # FileNotFoundError)。cache_enabled=false 时清单恒为空,该路径
-            # 本就不完整,见上文待下载枚举处的注释。
-            completed_tiles: List[Tile] = []
-            for tile in self.download_engine.iter_tiles(
-                north=task.north,
-                south=task.south,
-                east=task.east,
-                west=task.west,
-                zoom_min=task.zoom_min,
-                zoom_max=task.zoom_max,
-                task_id=task_id,
-            ):
-                try:
-                    completed_cache_path = tile.cache_path(style_code)
-                    if completed_cache_path.exists() and completed_cache_path.stat().st_size > 0:
-                        completed_tiles.append(tile)
-                except OSError as e:
-                    logger.warning(
-                        f"Task {task_id}: Cache check failed for tile "
-                        f"{tile.zoom}/{tile.x}/{tile.y}: {e}"
-                    )
 
             # Stitching results, consumed by the completion logic further down.
             # A stitch failure used to be swallowed here, which meant a task whose
@@ -1040,7 +1138,7 @@ class TaskManager:
                     # task.name 是用户输入,直接拼进文件名可携 '..' / 路径分隔符
                     # 逃逸出任务目录 —— 先消毒再拼。
                     safe_name = sanitize_filename(task.name)
-                    output_path = Path(task.output_path) / f"task_{task_id}" / f"{safe_name}_zoom_{zoom}.tif"
+                    output_path = output_dir / f"task_{task_id}" / f"{safe_name}_zoom_{zoom}.tif"
                     logger.info(f"Task {task_id}: Stitching zoom level {zoom} to {output_path}")
 
                     try:
@@ -1082,7 +1180,7 @@ class TaskManager:
                 logger.info(f"Task {task_id}: Copying tiles to output path ({task.output_format} mode)")
 
                 # Copy tiles from cache to output_path/task_{id}/
-                output_base = Path(task.output_path) / f"task_{task_id}"
+                output_base = output_dir / f"task_{task_id}"
                 output_base.mkdir(parents=True, exist_ok=True)
 
                 total_to_copy = len(completed_tiles)
@@ -1119,12 +1217,16 @@ class TaskManager:
                     if self.socketio and (
                         copy_index % COPY_PROGRESS_INTERVAL == 0 or copy_index == total_to_copy
                     ):
-                        self.socketio.emit('task_copy_progress', {
-                            'task_id': task_id,
-                            'copied_tiles': copied_count,
-                            'processed_tiles': copy_index,
-                            'total_tiles': total_to_copy
-                        })
+                        # emit 故障（客户端断开等）不应打断复制本身
+                        try:
+                            self.socketio.emit('task_copy_progress', {
+                                'task_id': task_id,
+                                'copied_tiles': copied_count,
+                                'processed_tiles': copy_index,
+                                'total_tiles': total_to_copy
+                            })
+                        except Exception as e:
+                            logger.warning(f"Task {task_id}: copy progress emit failed: {e!r}")
 
                 logger.info(f"Task {task_id}: Copied {copied_count}/{total_to_copy} tiles to {output_base}")
 
@@ -1153,7 +1255,7 @@ class TaskManager:
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?
                     WHERE id = ? AND status = 'running'
-                ''', (error_message, datetime.now(), task_id))
+                ''', (error_message, utc_now_iso(), task_id))
                 conn.commit()
                 logger.warning(f"Task {task_id}: {error_message}")
                 if cursor.rowcount and self.socketio:
@@ -1180,7 +1282,7 @@ class TaskManager:
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?
                     WHERE id = ? AND status = 'running'
-                ''', (error_message, datetime.now(), task_id))
+                ''', (error_message, utc_now_iso(), task_id))
                 conn.commit()
                 logger.error(f"Task {task_id}: {error_message}")
                 if cursor.rowcount and self.socketio:
@@ -1207,7 +1309,7 @@ class TaskManager:
                 UPDATE tasks
                 SET status = 'completed', error_message = ?, completed_at = ?
                 WHERE id = ? AND status = 'running'
-            ''', (stitch_warning, datetime.now(), task_id))
+            ''', (stitch_warning, utc_now_iso(), task_id))
 
             conn.commit()
 
@@ -1236,7 +1338,7 @@ class TaskManager:
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?
                     WHERE id = ? AND status NOT IN ('cancelled', 'paused')
-                ''', (str(e), datetime.now(), task_id))
+                ''', (str(e), utc_now_iso(), task_id))
 
                 conn.commit()
 

@@ -2,6 +2,8 @@ import importlib
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
@@ -125,7 +127,10 @@ def test_map_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db, status="completed")
 
-    tm.cancel_task(task_id)
+    # 终态任务无可取消:如实抛 ValueError(API 层映射 400),状态保持不动 ——
+    # 而不是什么都不改却记一条 'cancelled' 日志、返回 success。
+    with pytest.raises(ValueError, match="Cannot cancel"):
+        tm.cancel_task(task_id)
 
     assert _task_status(db, "tasks", task_id) == "completed"
 
@@ -136,7 +141,8 @@ def test_map_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db, status="failed")
 
-    tm.cancel_task(task_id)
+    with pytest.raises(ValueError, match="Cannot cancel"):
+        tm.cancel_task(task_id)
 
     assert _task_status(db, "tasks", task_id) == "failed"
 
@@ -154,12 +160,14 @@ def test_map_cancel_pending_task_marks_cancelled(monkeypatch, tmp_path):
 
 
 def test_dem_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
+    """终态任务 cancel 抛 ValueError（与 pause_task 行为对齐），状态不变。"""
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     dtm_mod = importlib.import_module("services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db, status="completed")
 
-    dtm.cancel_task(task_id)
+    with pytest.raises(ValueError, match="Cannot cancel DEM task"):
+        dtm.cancel_task(task_id)
 
     assert _task_status(db, "dem_tasks", task_id) == "completed"
 
@@ -170,7 +178,8 @@ def test_dem_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db, status="failed")
 
-    dtm.cancel_task(task_id)
+    with pytest.raises(ValueError, match="Cannot cancel DEM task"):
+        dtm.cancel_task(task_id)
 
     assert _task_status(db, "dem_tasks", task_id) == "failed"
 

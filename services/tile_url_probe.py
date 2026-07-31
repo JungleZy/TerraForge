@@ -24,6 +24,8 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from services.system_proxy import mask_url_userinfo
+
 logger = logging.getLogger(__name__)
 
 # 配置里 tile_servers 为空时的回退（与 core/database.py 的默认值一致）。
@@ -34,6 +36,12 @@ _MAX_PROBE_BYTES = 64 * 1024
 
 # 主机/别名形态：字母数字、点、连字符（mts0 / mts0.google.cn / mt0.l.google.com）
 _HOST_ENTRY_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9.-]*$')
+
+# 模板里出现的 {占位符}。下载引擎（download_engine.py get_tile_url）只替换
+# {z}/{x}/{y}，expand_server_entry 替换 {style}；含 {s} 等其它占位符的模板
+# 能过校验但探测/下载必然失败，校验阶段直接拒绝。
+_PLACEHOLDER_RE = re.compile(r'\{[^{}]*\}')
+_ALLOWED_PLACEHOLDERS = frozenset(('{z}', '{x}', '{y}', '{style}'))
 
 
 def expand_server_entry(entry, style='m'):
@@ -61,6 +69,10 @@ def validate_server_entry(entry):
         missing = [p for p in ('{z}', '{x}', '{y}') if p not in entry]
         if missing:
             return False, '模板缺少占位符 ' + ' '.join(missing)
+        unknown = [p for p in _PLACEHOLDER_RE.findall(entry)
+                   if p not in _ALLOWED_PLACEHOLDERS]
+        if unknown:
+            return False, '模板包含不支持的占位符 ' + ' '.join(unknown)
         return True, None
     if '://' in entry:
         return False, '只支持 http/https 协议'
@@ -180,7 +192,7 @@ def probe_server_entry(entry, proxy_url='', center_lng=106.55, center_lat=29.56,
     result['tile'] = f'{z}/{x}/{y}'
     result['url'] = url
     logger.info(
-        f'Tile server probe {url} (proxy={"direct" if not proxy_url else "on"}) -> '
+        f'Tile server probe {mask_url_userinfo(url)} (proxy={"direct" if not proxy_url else "on"}) -> '
         f'success={result["success"]} status={result["status_code"]} '
         f'elapsed={result["elapsed_ms"]}ms'
     )

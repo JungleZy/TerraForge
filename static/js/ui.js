@@ -6,6 +6,7 @@
  *   window.showToast(message, type, opts)      —— 右上角通知，type: success|danger|warning|info
  *   window.showConfirm(message, opts) -> Promise<boolean>  —— 居中确认框
  *   window.showNotification(message, type)     —— showToast 的别名（兼容旧调用）
+ *   window.parseTaskDate(value) -> Date|null   —— 任务时间字段统一解析（裸格式按 UTC）
  */
 (function () {
     'use strict';
@@ -194,9 +195,26 @@
             .replace(/'/g, '&#39;');
     }
 
+    // ------------------------------------------------------ task timestamps
+    // 后端任务时间字段（created_at/started_at/completed_at）有两种格式：
+    // 新的 UTC ISO 8601（带 +00:00 时区标记）和历史遗留的 SQLite 裸格式
+    // 'YYYY-MM-DD HH:MM:SS[.ffffff]'（UTC，无时区标记）。裸格式直接
+    // new Date() 会被当成本地时间（Safari 对空格分隔格式甚至返回
+    // Invalid Date），所以一律走这里：无时区后缀的一律按 UTC 解析。
+    function parseTaskDate(value) {
+        if (!value) return null;
+        let s = String(value).trim();
+        if (!/([zZ]|[+-]\d{2}:?\d{2})$/.test(s)) {
+            s = s.replace(' ', 'T') + 'Z';
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
     window.showToast = showToast;
     window.showConfirm = showConfirm;
     window.showNotification = showToast; // 兼容旧的 showNotification(message, type) 调用
     window.initConnectionStatus = initConnectionStatus;
+    window.parseTaskDate = parseTaskDate;
     window.escapeHtml = escapeHtml;
 })();

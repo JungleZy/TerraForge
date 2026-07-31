@@ -81,29 +81,11 @@ def delete_dem_task(task_id: int):
         if not dem_task_manager:
             return jsonify({"error": "DEM task manager not initialized"}), 500
 
-        # Prevent deletion of running tasks
         task = dem_task_manager.get_task(task_id)
-        if task.get("status") == "running":
-            return jsonify({"error": "Cannot delete running DEM task. Please pause or cancel it first."}), 400
-
-        # Serialize with start_task via the manager lock: a paused task can be
-        # flipped back to running (thread spawned) while we hold no lock, so the
-        # check + delete must happen under the same lock start_task uses.
-        with dem_task_manager._state_lock:
-            active_thread = dem_task_manager.active_tasks.get(task_id)
-            if active_thread and active_thread.is_alive():
-                return jsonify({"error": "Cannot delete running DEM task. Please pause or cancel it first."}), 400
-
-            from core.database import get_connection
-            conn = get_connection()
-            try:
-                cur = conn.cursor()
-                cur.execute("DELETE FROM dem_tasks WHERE id = ?", (task_id,))
-                if cur.rowcount == 0:
-                    return jsonify({"error": f"DEM task {task_id} not found"}), 404
-                conn.commit()
-            finally:
-                conn.close()
+        # 锁内复查下载线程 + 任务状态 + tiling job(范本: contour_task_manager.delete_task),
+        # 下载中或 tiling 中的任务拒绝删除 —— 此前这里只查下载线程,tiling 中删除会
+        # rmtree 正在写入的 terrain_tiles/,job 行被 CASCADE 静默删除。
+        dem_task_manager.delete_task(task_id)
 
         # Optional best-effort artifact cleanup (downloads/dem/dem_task_<id>/)
         # after the row is gone; only removed when inside DOWNLOADS_DIR.
@@ -113,7 +95,9 @@ def delete_dem_task(task_id: int):
         return jsonify({"success": True, "message": f"DEM task {task_id} deleted"})
 
     except ValueError as e:
-        return jsonify({"error": str(e)}), 404
+        # get_task/delete_task 的 "not found" -> 404;下载中/tiling 中拒绝删除 -> 400
+        msg = str(e)
+        return jsonify({"error": msg}), (404 if "not found" in msg else 400)
     except Exception as e:
         logger.error(f"Error deleting DEM task {task_id}: {e}")
         return jsonify({"error": "Failed to delete DEM task"}), 500

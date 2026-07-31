@@ -1,12 +1,18 @@
-"""I20a/c/d 修复契约测试 —— 构建/发布脚本的形态断言。
+"""I20a/c/d 修复契约测试 —— 构建/发布脚本的形态与行为断言。
 
 覆盖：
 - build.sh / build.bat 必须安装 requirements.txt 依赖（干净环境不再必失败）；
 - build.sh 必须做 GDAL pin 与系统 gdal-config 版本一致性检查；
 - push-release.sh / push-release.bat 不得硬编码 v0.0.1，版本须参数化
-  （命令行参数或从 build.spec 的 APP_VERSION 单一来源读取）。
+  （命令行参数覆盖，或从 core/config.py 的 Config.APP_VERSION 单一事实源解析；
+  build.spec 已随 PyInstaller→Nuitka 迁移删除，脚本不得再引用）。
 """
 import os
+import re
+import shutil
+import subprocess
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -51,15 +57,62 @@ def test_build_bat_checks_gdal_version():
 
 # ---------- I20c: push-release 版本参数化 ----------
 
+def _config_app_version():
+    """从单一事实源 core/config.py 解析 Config.APP_VERSION。"""
+    m = re.search(
+        r"APP_VERSION\s*=\s*'([0-9.]+)'",
+        _read(os.path.join('core', 'config.py')),
+    )
+    assert m, 'core/config.py 中未找到 Config.APP_VERSION'
+    return m.group(1)
+
+
+def _sh_run_version_resolution(*args, cwd=ROOT):
+    """实际执行 push-release.sh 开头到 TAG= 之前的版本解析段。"""
+    head = _read('push-release.sh').split('TAG=', 1)[0]
+    return subprocess.run(
+        ['bash', '-c', head + '\necho "RESOLVED:$VERSION"', 'push-release.sh', *args],
+        cwd=cwd, capture_output=True, text=True,
+    )
+
+
+needs_bash = pytest.mark.skipif(shutil.which('bash') is None, reason='需要 bash')
+
+
 def test_push_release_sh_not_hardcoded_v001():
-    content = _read('push-release.sh')
-    assert 'v0.0.1' not in content, 'push-release.sh 仍硬编码 v0.0.1（当前版本 0.1.0）'
+    assert 'v0.0.1' not in _read('push-release.sh')
 
 
-def test_push_release_sh_version_parameterized():
+def test_push_release_sh_reads_version_from_core_config():
     content = _read('push-release.sh')
-    # 接受命令行参数覆盖，或从 build.spec 的 APP_VERSION 单一来源读取
-    assert '$1' in content or 'APP_VERSION' in content
+    assert 'core/config.py' in content, (
+        'push-release.sh 必须从 core/config.py 的 Config.APP_VERSION 读取版本'
+    )
+    assert 'build.spec' not in content, (
+        'build.spec 已随 Nuitka 迁移删除，push-release.sh 不得再引用'
+    )
+
+
+@needs_bash
+def test_push_release_sh_resolves_version_from_config():
+    proc = _sh_run_version_resolution()
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().endswith('RESOLVED:' + _config_app_version())
+
+
+@needs_bash
+def test_push_release_sh_cli_arg_overrides_config():
+    proc = _sh_run_version_resolution('9.9.9')
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().endswith('RESOLVED:9.9.9')
+
+
+@needs_bash
+def test_push_release_sh_clear_error_when_version_unresolvable(tmp_path):
+    # 在没有 core/config.py 的目录下运行：应给出明确报错而非静默失败
+    proc = _sh_run_version_resolution(cwd=str(tmp_path))
+    assert proc.returncode != 0
+    assert '无法确定版本号' in proc.stdout + proc.stderr
 
 
 def test_push_release_sh_strict_error_handling():
@@ -67,10 +120,16 @@ def test_push_release_sh_strict_error_handling():
 
 
 def test_push_release_bat_not_hardcoded_v001():
-    content = _read('push-release.bat')
-    assert 'v0.0.1' not in content, 'push-release.bat 仍硬编码 v0.0.1（当前版本 0.1.0）'
+    assert 'v0.0.1' not in _read('push-release.bat')
 
 
-def test_push_release_bat_version_parameterized():
+def test_push_release_bat_reads_version_from_core_config():
     content = _read('push-release.bat')
-    assert '%~1' in content or 'APP_VERSION' in content
+    assert 'core/config.py' in content, (
+        'push-release.bat 必须从 core/config.py 的 Config.APP_VERSION 读取版本'
+    )
+    assert 'build.spec' not in content, (
+        'build.spec 已随 Nuitka 迁移删除，push-release.bat 不得再引用'
+    )
+    assert '%~1' in content, 'push-release.bat 必须保留命令行参数覆盖'
+    assert 'APP_VERSION' in content

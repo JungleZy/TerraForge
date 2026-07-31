@@ -91,8 +91,12 @@ class EarthdataClient:
                 raise RuntimeError("URS authorize redirect missing Location header")
 
         # Step 2: follow the redirect to LP DAAC /login with the code. This sets cookies in the session jar.
-        async with session.get(loc, allow_redirects=True, proxy=self.proxy_url or None) as _:
-            pass
+        async with session.get(loc, allow_redirects=True, proxy=self.proxy_url or None) as resp:
+            # 不查状态会把登录链失败吞掉（最终表现为 step 3 含糊的 302 循环）。
+            if not (200 <= resp.status < 300):
+                raise RuntimeError(
+                    f"Earthdata login follow-up failed for {_redact_url(file_url)}: HTTP {resp.status}"
+                )
 
         # Step 3: request the original file URL again; should now yield 303 with signed URL.
         async with session.get(file_url, allow_redirects=False, proxy=self.proxy_url or None) as resp2:

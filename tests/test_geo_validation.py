@@ -19,9 +19,10 @@ def test_coerce_accepts_numbers_and_numeric_strings():
     assert coerce_number(-0.0, 'west') == 0.0
 
 
-@pytest.mark.parametrize('bad', [None, 'abc', [1], {'x': 1}, object()])
+@pytest.mark.parametrize('bad', [None, 'abc', [1], {'x': 1}, object(), True, False])
 def test_coerce_rejects_non_numbers_as_valueerror(bad):
-    """None/列表等会让 float() 抛 TypeError —— 必须统一成 ValueError(400 语义)。"""
+    """None/列表等会让 float() 抛 TypeError —— 必须统一成 ValueError(400 语义)。
+    JSON 布尔是 int 子类(float(True)=1.0),坐标不含义布尔,同样拒绝。"""
     with pytest.raises(ValueError, match='must be a number'):
         coerce_number(bad, 'north')
 

@@ -4,9 +4,39 @@ Database initialization and connection management for TerraForge
 import sqlite3
 import logging
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from core.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def utc_now() -> datetime:
+    """Current time as a timezone-aware UTC datetime."""
+    return datetime.now(timezone.utc)
+
+
+def utc_now_iso() -> str:
+    """当前 UTC 时间的 ISO 8601 字符串（带 +00:00 时区标记）。
+
+    所有手写时间戳（started_at/completed_at/task_time_records 等）统一走这里：
+    存字符串而非 datetime 对象（Python 3.12 起 sqlite3 默认 datetime 适配器
+    已弃用），且带时区标记，前端可直接 new Date() 正确解析。表默认值
+    CURRENT_TIMESTAMP 本身是 UTC，保留不动。
+    """
+    return utc_now().isoformat(timespec='seconds')
+
+
+def parse_db_timestamp(value) -> datetime:
+    """Parse a DB timestamp string into an aware UTC datetime.
+
+    新格式带时区标记直接解析；历史遗留的裸格式（'YYYY-MM-DD HH:MM:SS[.ffffff]'，
+    本地时间或 CURRENT_TIMESTAMP 的 UTC）按 UTC 处理 —— 旧本地时间行会有
+    一个时区的偏移，可接受，好过 aware/naive 相减直接 TypeError。
+    """
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 # Default configuration values
 DEFAULT_CONFIGS = [
@@ -36,8 +66,10 @@ DEFAULT_CONFIGS = [
     ('terrain_global_base_path', './downloads/terrain/base_z8'),
     ('terrain_global_base_maxzoom', '8'),
     ('terrain_local_maxzoom', '14'),
+    ('terrain_base_parent_url', 'http://localhost:5000/terrain/base/layer.json'),
     # Contour (等高线) defaults
     ('contour_default_interval', '50'),
+    ('contour_warp_tmpdir', ''),
     ('contour_color_intermediate', '#9C6B3F'),
     ('contour_color_index', '#7A4F2A'),
     ('contour_color_label', '#7A4F2A'),
@@ -77,11 +109,13 @@ def get_connection():
     conn.execute('PRAGMA foreign_keys = ON')
     # WAL + busy_timeout：下载线程高频写进度，HTTP 线程并发读，默认 rollback
     # journal 下读写互斥、写者遇锁立即报 "database is locked"。WAL 让读不阻塞写，
-    # busy_timeout 让写者等待而非立刻报错。journal_mode 持久化在库文件上，
+    # busy_timeout 让写者等待而非立刻报错。busy_timeout 必须先于 journal_mode 设置：
+    # 切换 journal_mode 本身也要拿库锁，多实例同时启动时若 busy_timeout 还没生效，
+    # journal_mode 这一步就直接 database is locked。journal_mode 持久化在库文件上，
     # busy_timeout 是每连接设置，所以在唯一的连接入口统一开启（init_database
     # 也走这里）。对 tmp_path 测试库同样生效。
-    conn.execute('PRAGMA journal_mode = WAL')
     conn.execute('PRAGMA busy_timeout = 30000')
+    conn.execute('PRAGMA journal_mode = WAL')
     return conn
 
 
@@ -213,7 +247,12 @@ def init_database():
         # 枚举;完成态以磁盘 cache 文件为准,表里只保留失败瓦片。清掉旧版本
         # 写入的 pending/completed 全量行(大任务可达数十万行);恢复下载走
         # cache 枚举,不依赖它们。failed 行保留 —— 恢复时要重试这些瓦片。
-        cursor.execute("DELETE FROM task_tiles WHERE status != 'failed'")
+        # 用 user_version 做一次性幂等标记:只对旧库(version < 1)执行一次大
+        # DELETE,之后启动直接跳过,避免每次启动都全表扫描持写锁。
+        if cursor.execute('PRAGMA user_version').fetchone()[0] < 1:
+            cursor.execute("DELETE FROM task_tiles WHERE status != 'failed'")
+            cursor.execute('PRAGMA user_version = 1')
+            logger.info("Migrated task_tiles to sparse failed-only table (user_version=1)")
 
         # Create config table
         cursor.execute('''
@@ -385,9 +424,28 @@ def init_database():
                 size_bytes INTEGER,
                 retry_count INTEGER DEFAULT 0,
                 error_message TEXT,
-                FOREIGN KEY (task_id) REFERENCES contour_tasks(id) ON DELETE CASCADE
+                FOREIGN KEY (task_id) REFERENCES contour_tasks(id) ON DELETE CASCADE,
+                UNIQUE(task_id, granule_id)
             )
         ''')
+
+        # 与 dem_files 对齐的唯一约束：新库靠上面的 UNIQUE(task_id, granule_id)，
+        # 存量库（CREATE TABLE IF NOT EXISTS 不会改旧表）补唯一索引兜底。
+        # 建索引前先删重复行（保留最小 rowid），否则 CREATE UNIQUE INDEX 直接失败。
+        # 用索引名做一次性幂等标记：索引已存在就跳过去重扫描。
+        if not cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_contour_files_task_granule'"
+        ).fetchone():
+            cursor.execute('''
+                DELETE FROM contour_files
+                WHERE rowid NOT IN (
+                    SELECT MIN(rowid) FROM contour_files GROUP BY task_id, granule_id
+                )
+            ''')
+            cursor.execute('''
+                CREATE UNIQUE INDEX idx_contour_files_task_granule
+                ON contour_files(task_id, granule_id)
+            ''')
 
         # Per-task contour background (backwards compatible with older DBs).
         # SQLite fills existing rows with the constant default '#FAF6EC'.

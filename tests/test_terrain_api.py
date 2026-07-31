@@ -98,7 +98,7 @@ def test_terrain_api_get_existing_job(monkeypatch, tmp_path):
               (task_id, status, output_dir, maxzoom, parent_url, started_at)
             VALUES (?, 'completed', ?, 12, 'http://localhost:5000/terrain/base/layer.json', ?)
             """,
-            (task_id, str(tmp_path / "tiles"), datetime.now()),
+            (task_id, str(tmp_path / "tiles"), datetime.now().isoformat()),
         )
         conn.commit()
     finally:

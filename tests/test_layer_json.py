@@ -60,16 +60,3 @@ def test_patch_layer_json_parent(tmp_path):
 
     data = json.loads(layer_json_path.read_text(encoding="utf-8"))
     assert data["parentUrl"] == "https://example.com/parent"
-
-
-def test_compute_available_from_tiles(tmp_path):
-    from services.terrain_tiling.layer_json import compute_available_from_tiles
-
-    tiles_root = tmp_path / "tiles"
-    (tiles_root / "0" / "0").mkdir(parents=True)
-    (tiles_root / "0" / "1").mkdir(parents=True)
-    (tiles_root / "0" / "0" / "0.terrain").write_text("", encoding="utf-8")
-    (tiles_root / "0" / "1" / "0.terrain").write_text("", encoding="utf-8")
-
-    available = compute_available_from_tiles(tiles_root, 0, 0)
-    assert available == [[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]]

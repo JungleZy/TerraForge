@@ -141,7 +141,7 @@ class Task:
     """Task data model for map download tasks"""
     id: Optional[int] = None
     name: str = ""
-    status: str = "pending"  # pending, running, completed, failed, paused
+    status: str = "pending"  # pending, running, completed, failed, paused, cancelled
     north: float = 0.0
     south: float = 0.0
     east: float = 0.0
@@ -149,7 +149,7 @@ class Task:
     zoom_min: int = 0
     zoom_max: int = 18
     style: str = "roadmap"  # roadmap, satellite, hybrid, terrain
-    output_format: str = "png"  # png, jpg
+    output_format: str = "png"  # png, jpg, both, tiles_only, image_only
     output_path: str = ""
     total_tiles: int = 0
     downloaded_tiles: int = 0
@@ -187,6 +187,37 @@ class Task:
             raise ValueError(
                 f"status ({self.status}) must be one of {valid_statuses}"
             )
+
+    @classmethod
+    def from_row(cls, row) -> "Task":
+        """Reconstruct a Task from a DB row WITHOUT running __post_init__ validation.
+
+        读取路径专用:历史遗留行可能带着旧版本校验缺口写入的非法值(非法
+        style、越界四至、zoom_min>zoom_max 等),走严格构造会让一条坏行把
+        get_active_tasks 这类列表接口整个打成 500。读取侧原样还原行内容;
+        写入路径(create_task)仍走 __init__ + __post_init__ 严格校验。
+        """
+        task = cls.__new__(cls)
+        task.id = row['id']
+        task.name = row['name']
+        task.status = row['status']
+        task.north = row['north']
+        task.south = row['south']
+        task.east = row['east']
+        task.west = row['west']
+        task.zoom_min = row['zoom_min']
+        task.zoom_max = row['zoom_max']
+        task.style = row['style']
+        task.output_format = row['output_format']
+        task.output_path = row['output_path']
+        task.total_tiles = row['total_tiles']
+        task.downloaded_tiles = row['downloaded_tiles']
+        task.failed_tiles = row['failed_tiles']
+        task.created_at = datetime.fromisoformat(row['created_at']) if row['created_at'] else None
+        task.started_at = datetime.fromisoformat(row['started_at']) if row['started_at'] else None
+        task.completed_at = datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None
+        task.error_message = row['error_message']
+        return task
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert Task to dictionary"""

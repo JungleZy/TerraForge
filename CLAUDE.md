@@ -27,8 +27,8 @@ uv run python -c "from core.database import init_database; init_database()"     
 uv run python app.py                    # 源码运行 DEBUG=1 by default → use_reloader=True（打包 exe 默认 DEBUG=0）
 DEBUG=0 uv run python app.py            # disable reloader/debug
 
-# Migrations (rarely needed — init_database() in core/database.py also runs idempotent ALTERs)
-uv run python migrations/001_add_time_tracking.py
+# Migrations — 无独立迁移脚本：迁移已内联在 core/database.py 的 init_database()
+# （幂等 ALTER + PRAGMA user_version 一次性标记），启动时自动执行，无需手动运行。
 
 # Tests
 uv run pytest tests/                                                # full suite

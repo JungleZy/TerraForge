@@ -36,10 +36,10 @@ def create_local_terrain_task():
 
         uploads = request.files.getlist("files")
 
-        # Validate cheaply BEFORE reading any bytes into memory: cap the file
-        # count and reject non-tif extensions up front. The total request size
-        # is already capped by Config.MAX_CONTENT_LENGTH (Flask aborts oversized
-        # bodies with 413 before this handler runs). The manager re-validates.
+        # Validate cheaply BEFORE touching the payload: cap the file count and
+        # reject non-tif extensions up front. The total request size is already
+        # capped by Config.MAX_CONTENT_LENGTH (Flask aborts oversized bodies
+        # with 413 before this handler runs). The manager re-validates.
         if not uploads:
             return jsonify({"error": "No files uploaded"}), 400
         if len(uploads) > 100:
@@ -50,7 +50,9 @@ def create_local_terrain_task():
             if ext not in allowed_ext:
                 return jsonify({"error": f"Unsupported file type: {f.filename} (only .tif/.tiff)"}), 400
 
-        files = [(f.filename, f.read()) for f in uploads]
+        # FileStorage 流直传 manager：分块写盘，不再把全部上传一次性读进内存
+        # （此前 f.read() 全量物化，单请求峰值内存可能拖垮本机，M5）。
+        files = [(f.filename, f.stream) for f in uploads]
 
         task_id = local_terrain_task_manager.create_task_with_files(
             name=name, files=files, maxzoom=maxzoom

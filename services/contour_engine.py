@@ -556,7 +556,7 @@ def build_contour_tiles(
     Hypsometric coloring uses a global fixed elevation->color map so colors line
     up across tiles. Heavy deps imported lazily so the module stays import-safe.
 
-    workers: 0 = auto (os.cpu_count()); 1 = serial; N>1 = N worker processes.
+    workers: 0 = auto (min(4, os.cpu_count())); 1 = serial; N>1 = N worker processes.
     并行时每个 worker 各自打开 warp 后的 GTiff;瓦片按 batch 从生成器取(不物化
     整张列表,高 zoom 大区域会 OOM),批间检查 stop_flag。串行与并行共用
     _render_contour_tile_core,产出完全一致。
@@ -578,7 +578,11 @@ def build_contour_tiles(
     # Warp to on-disk GTiffs (NOT MEM): a whole-coverage in-RAM warp OOMs on large
     # multi-degree areas. On-disk warp streams to disk, and per-tile windowed reads
     # keep RAM bounded regardless of coverage size. tmpdir is removed at the end.
-    tmpdir = tempfile.mkdtemp(prefix="contour_warp_")
+    # 大区域 warp 产物可达数十 GB,默认落系统临时目录;contour_warp_tmpdir 配置键
+    # 可指到空间充足的盘(留空 = 系统默认)。
+    from services.config_manager import ConfigManager
+    warp_tmp_base = (ConfigManager().get("contour_warp_tmpdir", "") or "").strip() or None
+    tmpdir = tempfile.mkdtemp(prefix="contour_warp_", dir=warp_tmp_base)
     dem_path = os.path.join(tmpdir, "dem_3857.tif")
     att_path = None
     _t_warp = time.time()
@@ -661,13 +665,22 @@ def build_contour_tiles(
             # 封顶 4;用户可用 contour_workers 配置显式提高。
             n_workers = min(4, os.cpu_count() or 1)
 
-        def _render_serial():
+        def _render_serial(skip_existing=False):
             nonlocal ctx
             if ctx is None:
                 ctx = _build_render_ctx(dem_path, att_path, style, interval, shade, water, str(out_dir))
             for (z, tx, ty) in _iter_tiles():
                 if stop_flag is not None and stop_flag.is_set():
                     break
+                if skip_existing:
+                    # BrokenProcessPool 回退重跑:已落盘的 PNG(含崩溃批次里已写但
+                    # 未及 tally 的)直接计 rendered,不重复渲染——counts 已清零,
+                    # 不会重复计数,进度也会快速爬回崩溃前位置而不是长期停在 0。
+                    # 零字节文件视为崩溃残留,照常重渲染。
+                    tile_path = ctx.out_dir / str(z) / str(tx) / f"{ty}.png"
+                    if tile_path.exists() and tile_path.stat().st_size > 0:
+                        _tally("rendered")
+                        continue
                 _tally(_render_contour_tile_core(z, tx, ty, ctx))
 
         _serial = n_workers == 1 or total <= 4
@@ -701,16 +714,16 @@ def build_contour_tiles(
                         logger.info(f"Contour: 已处理 {processed}/{total} 瓦片, 耗时 {time.time() - _t_render:.1f}s")
             except BrokenProcessPool as e:
                 # worker 进程被异常终止(Windows 打包环境多 worker 内存耗尽常见)。进程级
-                # 崩溃 except 兜不住,会让整个任务失败 -> 回退串行重跑保证切片完整:已生成
-                # 的 PNG 被覆盖,未生成的补齐。串行单进程内存压力小,通常能跑完。
+                # 崩溃 except 兜不住,会让整个任务失败 -> 回退串行重跑:已落盘的 PNG 跳过
+                # 直接计数(skip_existing),未生成的补齐。串行单进程内存压力小,通常能跑完。
                 logger.warning(
-                    f"并行渲染 worker 崩溃({e!r}),回退串行重新渲染整个任务"
+                    f"并行渲染 worker 崩溃({e!r}),回退串行重跑(已生成的瓦片跳过)"
                 )
                 counts["rendered"] = 0
                 counts["failed"] = 0
                 counts["skipped"] = 0
                 ctx = None
-                _render_serial()
+                _render_serial(skip_existing=True)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

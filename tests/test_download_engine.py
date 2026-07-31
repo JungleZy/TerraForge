@@ -21,19 +21,17 @@ from core.config import Config
 
 
 @pytest.fixture
-def test_db():
+def test_db(monkeypatch):
     """Create a temporary test database"""
     # Create temporary directory for test database
     temp_dir = tempfile.mkdtemp()
     test_db_path = Path(temp_dir) / 'test.db'
 
-    # Override config paths (must be Path — config.init_app uses .parent)
-    original_db_path = Config.DATABASE_PATH
-    original_downloads = Config.DOWNLOADS_DIR
-    original_cache = Config.CACHE_DIR
-    Config.DATABASE_PATH = test_db_path
-    Config.DOWNLOADS_DIR = Path(temp_dir) / 'downloads'
-    Config.CACHE_DIR = Path(temp_dir) / 'cache'
+    # Override config paths (must be Path — config.init_app uses .parent).
+    # monkeypatch restores them at teardown.
+    monkeypatch.setattr(Config, 'DATABASE_PATH', test_db_path)
+    monkeypatch.setattr(Config, 'DOWNLOADS_DIR', Path(temp_dir) / 'downloads')
+    monkeypatch.setattr(Config, 'CACHE_DIR', Path(temp_dir) / 'cache')
 
     # Initialize test database
     database.init_database()
@@ -41,9 +39,6 @@ def test_db():
     yield str(test_db_path)
 
     # Cleanup
-    Config.DATABASE_PATH = original_db_path
-    Config.DOWNLOADS_DIR = original_downloads
-    Config.CACHE_DIR = original_cache
     shutil.rmtree(temp_dir)
 
 
@@ -468,9 +463,7 @@ def test_download_single_tile_writes_cache_atomically(download_engine):
 
 
 def test_download_tile_passes_proxy_to_session(download_engine):
-    from services.config_manager import ConfigManager
-
-    ConfigManager().set('proxy_url', 'http://127.0.0.1:7890')
+    """调用方传入的 proxy_url 原样透传给 session.get(空串归一为 None)。"""
     seen = []
 
     class FakeResponse:
@@ -491,10 +484,114 @@ def test_download_tile_passes_proxy_to_session(download_engine):
             seen.append(proxy)
             return FakeResponse()
 
-    data = asyncio.run(download_engine.download_tile(Tile(task_id=1, zoom=0, x=0, y=0), 's', FakeSession()))
+    data = asyncio.run(download_engine.download_tile(
+        Tile(task_id=1, zoom=0, x=0, y=0), 's', FakeSession(),
+        proxy_url='http://127.0.0.1:7890',
+    ))
 
     assert data == b'tile'
     assert seen == ['http://127.0.0.1:7890']
+
+
+# ---------------------------------------------------------------------------
+# 重试策略:4xx(429 除外)永久错误不重试;max_retries 负值按 0 钳制
+# ---------------------------------------------------------------------------
+
+def _client_response_error(status):
+    """构造一个带状态码的 aiohttp.ClientResponseError(raise_for_status 的抛出物)。"""
+    import aiohttp
+    from aiohttp import RequestInfo
+    from multidict import CIMultiDict, CIMultiDictProxy
+    from yarl import URL
+
+    request_info = RequestInfo(
+        URL('http://example.invalid/tile'), 'GET',
+        CIMultiDictProxy(CIMultiDict()), URL('http://example.invalid/tile'),
+    )
+    return aiohttp.ClientResponseError(
+        request_info, (), status=status, message='error'
+    )
+
+
+def _failing_session(attempts, error):
+    class FailingResponse:
+        async def __aenter__(self):
+            raise error
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeSession:
+        def get(self, url, timeout=None, proxy=None):
+            attempts.append(url)
+            return FailingResponse()
+
+    return FakeSession()
+
+
+@pytest.mark.parametrize('status', [400, 403, 404])
+def test_download_tile_permanent_4xx_is_not_retried(download_engine, status):
+    """404 的瓦片重试多少次都不存在:永久 4xx 第一次失败就直接抛出。"""
+    import aiohttp
+    from services.config_manager import ConfigManager
+
+    ConfigManager().set('max_retries', '3')
+    attempts = []
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        asyncio.run(download_engine.download_tile(
+            Tile(task_id=1, zoom=0, x=0, y=0), 's',
+            _failing_session(attempts, _client_response_error(status)),
+        ))
+
+    assert len(attempts) == 1, f"HTTP {status} 不应退避重试,实际请求了 {len(attempts)} 次"
+
+
+def test_download_tile_429_is_retried(download_engine, monkeypatch):
+    """429 是限流不是永久错误,仍走指数退避重试。"""
+    import aiohttp
+    from services.config_manager import ConfigManager
+
+    ConfigManager().set('max_retries', '2')
+
+    async def no_sleep(seconds, stop_flag=None, step=0.25):
+        return
+
+    monkeypatch.setattr(download_engine, '_interruptible_sleep', no_sleep)
+    attempts = []
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        asyncio.run(download_engine.download_tile(
+            Tile(task_id=1, zoom=0, x=0, y=0), 's',
+            _failing_session(attempts, _client_response_error(429)),
+        ))
+
+    assert len(attempts) == 3  # 1 + max_retries(2)
+
+
+def test_download_tile_negative_max_retries_clamped(download_engine):
+    """max_retries 为负时 range(0) 一次都不进,修复前 raise None 变 TypeError
+    吞掉真实错误;钳制到 0 后恰好试一次并抛出真实的网络错误。
+    (负值进不了 ConfigManager.set 的校验,这里直接写库模拟历史脏数据。)"""
+    import aiohttp
+    from core.database import get_connection
+
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE config SET value = '-5' WHERE key = 'max_retries'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    attempts = []
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        asyncio.run(download_engine.download_tile(
+            Tile(task_id=1, zoom=0, x=0, y=0), 's',
+            _failing_session(attempts, _client_response_error(500)),
+        ))
+
+    assert len(attempts) == 1
 
 
 # ---------------------------------------------------------------------------

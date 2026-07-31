@@ -1,8 +1,24 @@
 import importlib
 import os
 import sys
+from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+class _FakeUpload:
+    """FileStorage 兼容替身：filename 属性 + save() 落盘，供不经过 HTTP
+    直接测 manager 的用例使用（manager 不再接受 (filename, bytes) 元组）。"""
+
+    def __init__(self, filename, content):
+        self.filename = filename
+        self._content = content
+
+    def save(self, dst):
+        with open(dst, "wb") as f:
+            f.write(self._content)
 
 
 def _setup(monkeypatch, tmp_path):
@@ -18,101 +34,72 @@ def _setup(monkeypatch, tmp_path):
     return db, ctm_mod
 
 
-def test_create_task_computes_granules_and_rows(monkeypatch, tmp_path):
+def _task_dir(task_id):
+    from core import config
+    return Path(config.Config.DOWNLOADS_DIR) / "dem" / f"contour_task_{task_id}"
+
+
+def test_create_task_with_files_streams_uploads_to_disk(monkeypatch, tmp_path):
+    """流式落盘：manager 吃 FileStorage 式对象（filename + save），
+    文件内容写进任务目录，contour_files 行记 completed + 实际大小。"""
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
 
-    task_id = mgr.create_task({
-        "name": "bj",
-        "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
-        "contour_interval": 50, "zoom_min": 12, "zoom_max": 14,
-    })
+    task_id = mgr.create_task_with_files(
+        name="up", files=[_FakeUpload("a.tif", b"tif-bytes-1"), _FakeUpload("b.tiff", b"tif-bytes-2")],
+        contour_interval=50, zoom_min=12, zoom_max=12)
 
+    task_dir = _task_dir(task_id)
+    assert (task_dir / "upload_1_dem.tif").read_bytes() == b"tif-bytes-1"
+    assert (task_dir / "upload_2_dem.tif").read_bytes() == b"tif-bytes-2"
     conn = db.get_connection()
     try:
-        cur = conn.cursor()
-        task = cur.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-        files = cur.execute("SELECT granule_id, kind FROM contour_files WHERE task_id=? ORDER BY kind", (task_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT granule_id, status, size_bytes FROM contour_files"
+            " WHERE task_id=? ORDER BY granule_id", (task_id,)).fetchall()
     finally:
         conn.close()
-
-    assert task["contour_interval"] == 50
-    assert task["zoom_min"] == 12 and task["zoom_max"] == 14
-    assert task["status"] == "pending"
-    # Default source is Copernicus GLO-30; terrain shading + water default ON
-    # -> 1 GLO-30 DEM + 1 ASTWBD att granule.
-    assert task["dataset"] == "COP-DEM-GLO-30"
-    assert task["terrain_shade"] == 1 and task["water"] == 1
-    assert task["total_files"] == 2
-    by_kind = {f["kind"]: f["granule_id"] for f in files}
-    assert by_kind["dem"] == "Copernicus_DSM_COG_10_N00_00_E000_00_DEM/Copernicus_DSM_COG_10_N00_00_E000_00_DEM.tif"
-    assert by_kind["water"] == "ASTWBDV001_N00E000_att.tif"
+    assert [(r["granule_id"], r["status"], r["size_bytes"]) for r in rows] == [
+        ("upload_1_dem.tif", "completed", len(b"tif-bytes-1")),
+        ("upload_2_dem.tif", "completed", len(b"tif-bytes-2")),
+    ]
 
 
-def test_create_task_with_aster_dataset(monkeypatch, tmp_path):
+def test_create_task_with_files_failure_cleans_up_disk_and_db(monkeypatch, tmp_path):
+    """创建中途失败（第二个文件为空）：已落盘的文件和任务目录要清掉，
+    DB 行回滚 —— rowid 复用后残留 tif 不能被下个同 id 任务扫进渲染。"""
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = mgr.create_task({
-        "name": "aster", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
-        "contour_interval": 50, "zoom_min": 12, "zoom_max": 12,
-        "dataset": "ASTGTM.003", "water": False,
-    })
+
+    with pytest.raises(ValueError):
+        mgr.create_task_with_files(
+            name="bad", files=[_FakeUpload("a.tif", b"data"), _FakeUpload("b.tif", b"")],
+            contour_interval=50, zoom_min=12, zoom_max=12)
+
+    assert not _task_dir(1).exists()
     conn = db.get_connection()
     try:
-        task = conn.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-        dem = conn.execute("SELECT granule_id FROM contour_files WHERE task_id=? AND kind='dem'", (task_id,)).fetchone()
+        assert conn.execute("SELECT COUNT(*) c FROM contour_tasks").fetchone()["c"] == 0
+        assert conn.execute("SELECT COUNT(*) c FROM contour_files").fetchone()["c"] == 0
     finally:
         conn.close()
-    assert task["dataset"] == "ASTGTM.003"
-    assert dem["granule_id"] == "ASTGTMV003_N00E000_dem.tif"
+
+    # rowid 复用：下一个任务拿到同一个 id，任务目录里只有它自己的文件
+    task_id = mgr.create_task_with_files(
+        name="ok", files=[_FakeUpload("c.tif", b"fresh")],
+        contour_interval=50, zoom_min=12, zoom_max=12)
+    assert task_id == 1
+    assert sorted(p.name for p in _task_dir(task_id).iterdir()) == ["upload_1_dem.tif"]
 
 
-def test_create_task_water_off_skips_att_granule(monkeypatch, tmp_path):
+def test_list_tasks_limit_clamped_to_at_least_one(monkeypatch, tmp_path):
+    """limit=-1 在 SQLite 里是不限行数：钳到 >=1，不能绕过上限拉全表。"""
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = mgr.create_task({
-        "name": "noh2o", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
-        "contour_interval": 50, "zoom_min": 12, "zoom_max": 12,
-        "water": False, "terrain_shade": False,
-    })
-    conn = db.get_connection()
-    try:
-        task = conn.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-        kinds = [r["kind"] for r in conn.execute("SELECT kind FROM contour_files WHERE task_id=?", (task_id,)).fetchall()]
-    finally:
-        conn.close()
-    assert task["terrain_shade"] == 0 and task["water"] == 0
-    assert task["total_files"] == 1
-    assert kinds == ["dem"]  # no att granule when water off
-
-
-def test_create_task_defaults_interval_from_config(monkeypatch, tmp_path):
-    db, ctm_mod = _setup(monkeypatch, tmp_path)
-    mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = mgr.create_task({
-        "name": "x", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
-        "zoom_min": 12, "zoom_max": 13,
-    })
-    conn = db.get_connection()
-    try:
-        task = conn.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-    finally:
-        conn.close()
-    assert task["contour_interval"] == 50
-
-
-def test_create_task_background_default_and_explicit(monkeypatch, tmp_path):
-    db, ctm_mod = _setup(monkeypatch, tmp_path)
-    mgr = ctm_mod.ContourTaskManager(socketio=None)
-    t1 = mgr.create_task({"name": "a", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
-                          "contour_interval": 50, "zoom_min": 12, "zoom_max": 12})
-    t2 = mgr.create_task({"name": "b", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
-                          "contour_interval": 50, "zoom_min": 12, "zoom_max": 12, "background": "transparent"})
-    conn = db.get_connection()
-    try:
-        r1 = conn.execute("SELECT background FROM contour_tasks WHERE id=?", (t1,)).fetchone()
-        r2 = conn.execute("SELECT background FROM contour_tasks WHERE id=?", (t2,)).fetchone()
-    finally:
-        conn.close()
-    assert r1["background"] == "#FAF6EC"
-    assert r2["background"] == "transparent"
+    for i in range(2):
+        mgr.create_task_with_files(
+            name=f"t{i}", files=[_FakeUpload("a.tif", b"x")],
+            contour_interval=50, zoom_min=12, zoom_max=12)
+    assert len(mgr.list_tasks(limit=-1)) == 1
+    assert len(mgr.list_tasks(limit=0)) == 2  # 0/None 走默认值 100
+    assert len(mgr.list_tasks(limit=None)) == 2

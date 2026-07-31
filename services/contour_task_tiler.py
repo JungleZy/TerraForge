@@ -25,7 +25,7 @@ class ContourParams:
     style: ContourStyle
     shade: bool = False
     water: bool = False
-    workers: int = 0  # 0 = auto (os.cpu_count()); 1 = serial
+    workers: int = 0  # 0 = auto (min(4, os.cpu_count())，见 contour_engine); 1 = serial
 
 
 def contour_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
@@ -45,7 +45,8 @@ def tile_contour_task_dir(
 
     dem_tifs = list_dem_tifs(task_dir)
     if not dem_tifs:
-        return {"total": 0, "rendered": 0, "failed": 0}
+        # 与 build_contour_tiles 的正常返回保持同一 4 键结构
+        return {"total": 0, "rendered": 0, "failed": 0, "skipped": 0}
 
     # Water mask is best-effort: render whatever ASTWBD att tiles downloaded.
     att_tifs = list_att_tifs(task_dir) if params.water else []

@@ -175,7 +175,6 @@ map-download/
 │   ├── css/style.css      # 自定义样式
 │   ├── js/                # map / tasks / history / config / panels / ui
 │   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、字体）
-├── migrations/             # 数据库迁移脚本
 ├── scripts/                # 辅助脚本（发版推送、全球基础地形构建）
 ├── tests/                  # pytest 测试套件
 ├── docs/                   # 项目文档（构建、设计、评审记录、packaging/ 发版资料）

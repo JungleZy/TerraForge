@@ -5946,8 +5946,9 @@ def test_cards_have_no_entrance_animation_but_running_bar_still_pulses():
 # 进度条 width 过渡的时长上界（秒）。
 #
 # 定这个数的依据是 CDP 实测，不是手感：
-#   services/task_manager.py 的 progress_callback **每下载一块瓦片**就
-#   `socketio.emit('task_progress', ...)` 一次，回调体内没有任何攒批或限频，
+#   services/task_manager.py 的 progress_callback 历史上**每下载一块瓦片**就
+#   `socketio.emit('task_progress', ...)` 一次（现已按
+#   PROGRESS_EMIT_MIN_INTERVAL=0.5s 时间节流，推送频率只会更低，本约束更宽松），
 #   并发下载下 10~20 次/秒。tasks.js 走增量路径只改 bar.style.width，
 #   于是这条过渡被反复重启，永远从上一帧位置重新起步。
 #   20Hz 驱动 40 次（真值走到 80%）实测最大滞后：

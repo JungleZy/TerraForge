@@ -52,13 +52,13 @@ def test_task_manager_recovers_orphan_running_tasks(monkeypatch, tmp_path):
             VALUES ('orphan', 'running', 1, 0, 1, 0, 0, 0, 'satellite', 'tiles_only',
                     '/tmp', 100, 90, 10, ?, 12345)
             """,
-            (datetime.now() - timedelta(hours=110),),
+            ((datetime.now() - timedelta(hours=110)).isoformat(),),
         )
         task_id = cur.lastrowid
         # A matching 'start' time record exists (as the real code path would write).
         cur.execute(
             "INSERT INTO task_time_records (task_id, action, timestamp) VALUES (?, 'start', ?)",
-            (task_id, datetime.now() - timedelta(hours=110)),
+            (task_id, (datetime.now() - timedelta(hours=110)).isoformat()),
         )
         conn.commit()
     finally:

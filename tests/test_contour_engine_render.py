@@ -214,3 +214,46 @@ def test_build_contour_tiles_shade_and_water(tmp_path):
                 found_water = True
                 break
     assert found_water
+
+
+def test_broken_pool_fallback_skips_existing_tiles(tmp_path, monkeypatch):
+    """BrokenProcessPool 回退串行重跑时,已落盘的瓦片跳过(不覆盖重渲染)、
+    直接计入 rendered——避免整任务重画和进度条长期停在 0(遗留项④)。"""
+    import concurrent.futures
+    from concurrent.futures.process import BrokenProcessPool
+
+    class _BoomExecutor:  # 模拟一启动就崩的进程池
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def map(self, *a, **k):
+            raise BrokenProcessPool("simulated worker crash")
+
+    dem = tmp_path / "ASTGTMV003_N39E116_dem.tif"
+    _make_dem(dem)
+    out = tmp_path / "tiles"
+
+    # 先串行跑出基线(全部瓦片落盘)
+    baseline = build_contour_tiles(
+        dem_tifs=[dem], out_dir=out, interval=50,
+        zoom_min=10, zoom_max=11, style=ContourStyle(), shade=True, workers=1,
+    )
+    sentinels = {p: p.read_bytes() for p in out.rglob('*.png')}
+    assert sentinels
+
+    # 再并行跑(boom -> 回退串行 skip_existing):已有瓦片不得被改写
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _BoomExecutor)
+    counts = build_contour_tiles(
+        dem_tifs=[dem], out_dir=out, interval=50,
+        zoom_min=10, zoom_max=11, style=ContourStyle(), shade=True, workers=4,
+    )
+
+    assert counts == baseline, f"回退重跑计数应与基线一致: {counts} != {baseline}"
+    for p, content in sentinels.items():
+        assert p.read_bytes() == content, f"已生成瓦片被重渲染覆盖: {p}"

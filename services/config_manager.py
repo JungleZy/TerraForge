@@ -7,9 +7,8 @@ Handles reading, updating, and validating application configuration stored in SQ
 
 import logging
 from typing import Optional, Dict, Any
-from datetime import datetime
 import sqlite3
-from core.database import get_connection_context, DEFAULT_CONFIGS
+from core.database import get_connection_context, DEFAULT_CONFIGS, utc_now_iso
 from services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)
@@ -96,7 +95,7 @@ class ConfigManager:
                        ON CONFLICT(key) DO UPDATE SET
                        value = excluded.value,
                        updated_at = excluded.updated_at''',
-                    (key, value, datetime.now())
+                    (key, value, utc_now_iso())
                 )
 
                 conn.commit()

@@ -20,13 +20,14 @@ from __future__ import annotations
 import argparse
 import gzip
 import io
+import itertools
 import json
+import logging
 import math
 import os
 import struct
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -45,6 +46,8 @@ except ImportError as e:
 
 # Avoid gdal.UseExceptions() here. It attempts to import osgeo.gdal_array, which may be absent
 # depending on how GDAL Python bindings were built. This tiler doesn't require gdal_array.
+
+logger = logging.getLogger(__name__)
 
 WGS84_A = 6378137.0
 WGS84_B = 6356752.3142451793
@@ -81,7 +84,12 @@ class GeographicTilingScheme:
     def estimate_max_level(self, pixel_size_deg: float) -> int:
         if pixel_size_deg <= 0:
             return 14
-        deg_per_tile_pixel = 180.0 / 64.0
+        # 瓦片顶点网格是 tile_size x tile_size（见 _worker_tile 的 linspace：
+        # 端点含边界），即 tile_size-1 个采样间隔均分瓦片的 180°/2^z 纬度跨度；
+        # 间隔追上源像素尺寸即可。此前硬编码 180/64（=65 顶点网格），无视
+        # self.tile_size，tile_size=17 时自动层级少算约 2 级（M22）。
+        intervals = max(1, self.tile_size - 1)
+        deg_per_tile_pixel = 180.0 / intervals
         ratio = deg_per_tile_pixel / pixel_size_deg
         return max(0, int(math.ceil(math.log2(ratio))))
 
@@ -185,9 +193,13 @@ class DemSampler:
             arr = np.where(arr == self.nodata, np.nan, arr)
 
         # Map source pixel coords into the resampled buffer. GDAL's resampling
-        # is center-based (buffer pixel j <- source (j+0.5)*scale-0.5, verified
-        # against gdal 3.x RasterIO), so apply the half-pixel correction to keep
-        # sample positions unbiased; it vanishes when buf == win.
+        # is center-based: buffer pixel j represents source position
+        # (j+0.5)*scale - 0.5 (verified against gdal 3.x RasterIO — its
+        # "bilinear" downsample is a tent filter centred exactly there), so the
+        # inverse mapping is p/sx - 0.5*(1 - 1/sx). Do NOT "simplify" this to
+        # p/sx - 0.5: that introduces a +0.5 source-pixel shift (measured on a
+        # synthetic linear-field DEM; pinned by test_fix_terrain_sampler_resample).
+        # The correction vanishes when buf == win.
         sx = win_w / buf_w
         sy = win_h / buf_h
         lpx = (px - x0c) / sx - 0.5 * (1.0 - 1.0 / sx)
@@ -334,23 +346,32 @@ def _worker_init(input_path: str, nodata: float | None) -> None:
     _WORKER_NODATA = nodata
 
 
-def _worker_tile(task) -> Tuple[float, float]:
+def _worker_tile(task) -> Tuple[float, float] | None:
+    """Returns (min, max) heights of the written tile, or None on failure.
+
+    逐瓦片容错:单个坏块(如 ReadAsArray 返回 None、磁盘写失败)只记日志计失败,
+    不让一个瓦片炸掉整个任务 —— 与 contour 的 _render_contour_tile_core 同款。
+    """
     z, x, y, west, south, east, north, tile_size, out_dir = task
     assert _WORKER_SAMPLER is not None
 
-    scheme = GeographicTilingScheme(tile_size=tile_size)
-    lons = np.linspace(west, east, tile_size, dtype=np.float64)
-    lats = np.linspace(south, north, tile_size, dtype=np.float64)
-    llon, llat = np.meshgrid(lons, lats)
-    heights = _WORKER_SAMPLER.sample(llon, llat)
+    try:
+        scheme = GeographicTilingScheme(tile_size=tile_size)
+        lons = np.linspace(west, east, tile_size, dtype=np.float64)
+        lats = np.linspace(south, north, tile_size, dtype=np.float64)
+        llon, llat = np.meshgrid(lons, lats)
+        heights = _WORKER_SAMPLER.sample(llon, llat)
 
-    data = encode_quantized_mesh(west, south, east, north, heights)
-    out_path = Path(out_dir) / str(z) / str(x)
-    out_path.mkdir(parents=True, exist_ok=True)
-    tile_file = out_path / f"{y}.terrain"
-    with gzip.open(tile_file, "wb") as f:
-        f.write(data)
-    return float(np.min(heights)), float(np.max(heights))
+        data = encode_quantized_mesh(west, south, east, north, heights)
+        out_path = Path(out_dir) / str(z) / str(x)
+        out_path.mkdir(parents=True, exist_ok=True)
+        tile_file = out_path / f"{y}.terrain"
+        with gzip.open(tile_file, "wb") as f:
+            f.write(data)
+        return float(np.min(heights)), float(np.max(heights))
+    except Exception as e:
+        logger.warning(f"terrain 瓦片生成失败 z={z} x={x} y={y}: {e!r}")
+        return None
 
 
 def build_terrain(
@@ -362,105 +383,167 @@ def build_terrain(
     tile_size: int = 17,
     nodata: float | None = None,
     workers: int = 0,
-) -> None:
+) -> dict:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     input_path = build_input_vrt(inputs)
-    sampler = DemSampler(input_path, nodata=nodata)
-    scheme = GeographicTilingScheme(tile_size=tile_size)
+    # 多输入时 build_input_vrt 落在 tempfile.mkstemp 的临时 .vrt，此前从不删除，
+    # 每次多输入切片泄漏一个临时文件（M18）。删除时机必须在进程池消费完之后
+    # （worker 在 initializer 里各自打开这个文件），所以挂在整个切片过程的
+    # finally 上，best-effort 删除。
+    temp_vrt = input_path if input_path not in inputs else None
+    try:
+        sampler = DemSampler(input_path, nodata=nodata)
+        scheme = GeographicTilingScheme(tile_size=tile_size)
 
-    if max_level is None:
-        max_level = scheme.estimate_max_level(sampler.pixel_size_deg)
+        if max_level is None:
+            max_level = scheme.estimate_max_level(sampler.pixel_size_deg)
 
-    src_w, src_s, src_e, src_n = sampler.bounds
-    h_min_global = float("inf")
-    h_max_global = float("-inf")
+        src_w, src_s, src_e, src_n = sampler.bounds
 
-    all_tasks = []
-    available_per_level = []
+        def _tile_ranges():
+            # compute intersected tile ranges per level
+            for z in range(min_level, max_level + 1):
+                nx, ny = scheme.tile_count(z)
+                # project bbox to tile index range (clamp)
+                ix0 = max(0, int(math.floor((src_w + 180.0) / 360.0 * nx)))
+                ix1 = min(nx - 1, int(math.floor((src_e + 180.0) / 360.0 * nx)))
+                iy0 = max(0, int(math.floor((src_s + 90.0) / 180.0 * ny)))
+                iy1 = min(ny - 1, int(math.floor((src_n + 90.0) / 180.0 * ny)))
 
-    # compute intersected tile ranges per level
-    for z in range(min_level, max_level + 1):
-        nx, ny = scheme.tile_count(z)
-        # project bbox to tile index range (clamp)
-        ix0 = max(0, int(math.floor((src_w + 180.0) / 360.0 * nx)))
-        ix1 = min(nx - 1, int(math.floor((src_e + 180.0) / 360.0 * nx)))
-        iy0 = max(0, int(math.floor((src_s + 90.0) / 180.0 * ny)))
-        iy1 = min(ny - 1, int(math.floor((src_n + 90.0) / 180.0 * ny)))
+                if z <= 4:
+                    x0, x1, y0, y1 = 0, nx - 1, 0, ny - 1
+                else:
+                    x0, x1, y0, y1 = ix0, ix1, iy0, iy1
+                yield z, x0, x1, y0, y1
 
-        if z <= 4:
-            x0, x1, y0, y1 = 0, nx - 1, 0, ny - 1
-        else:
-            x0, x1, y0, y1 = ix0, ix1, iy0, iy1
+        available_per_level = []
+        # Count tiles arithmetically (no list) — materializing every tile task tuple
+        # OOMs at high max_level over large areas (same pitfall contour fixed).
+        total = 0
+        for z, x0, x1, y0, y1 in _tile_ranges():
+            if x1 < x0 or y1 < y0:
+                available_per_level.append([])
+                continue
+            available_per_level.append([{"startX": x0, "startY": y0, "endX": x1, "endY": y1}])
+            total += (x1 - x0 + 1) * (y1 - y0 + 1)
 
-        if x1 < x0 or y1 < y0:
-            available_per_level.append([])
-            continue
+        def _iter_tasks():
+            for z, x0, x1, y0, y1 in _tile_ranges():
+                if x1 < x0 or y1 < y0:
+                    continue
+                for x in range(x0, x1 + 1):
+                    for y in range(y0, y1 + 1):
+                        west, south, east, north = scheme.tile_extent_deg(z, x, y)
+                        yield (z, x, y, west, south, east, north, tile_size, str(out))
 
-        available_per_level.append([{"startX": x0, "startY": y0, "endX": x1, "endY": y1}])
+        sampler.ds = None
+        sampler.band = None
 
-        for x in range(x0, x1 + 1):
-            for y in range(y0, y1 + 1):
-                west, south, east, north = scheme.tile_extent_deg(z, x, y)
-                all_tasks.append((z, x, y, west, south, east, north, tile_size, str(out)))
+        t0 = time.time()
+        h_min_global = float("inf")
+        h_max_global = float("-inf")
+        done = 0
+        failed = 0
+        workers = int(workers or 0)
+        if workers <= 0:
+            # 保守默认:每个 worker 都要打开 GDAL dataset 并逐瓦片读 DEM 窗口,worker
+            # 太多内存吃紧;无脑 cpu_count 在多核机器上可能把内存打爆、worker 被 OS
+            # 杀掉(BrokenProcessPool)。封顶 4,与 contour 一致;显式传 workers 可覆盖。
+            workers = min(4, os.cpu_count() or 1)
 
-    total = len(all_tasks)
-    sampler.ds = None
-    sampler.band = None
-
-    t0 = time.time()
-    done = 0
-    workers = int(workers or 0)
-    if workers <= 0:
-        workers = os.cpu_count() or 1
-
-    if workers == 1 or total <= 4:
-        _worker_init(input_path, nodata)
-        for task in all_tasks:
-            mn, mx = _worker_tile(task)
+        def _tally(result) -> None:
+            nonlocal h_min_global, h_max_global, done, failed
+            if result is None:
+                failed += 1
+                return
+            mn, mx = result
             h_min_global = min(h_min_global, mn)
             h_max_global = max(h_max_global, mx)
             done += 1
-    else:
-        with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init, initargs=(input_path, nodata)) as ex:
-            for mn, mx in ex.map(_worker_tile, all_tasks, chunksize=8):
-                h_min_global = min(h_min_global, mn)
-                h_max_global = max(h_max_global, mx)
-                done += 1
 
-    _ = time.time() - t0
+        def _run_serial() -> None:
+            _worker_init(input_path, nodata)
+            for task in _iter_tasks():
+                _tally(_worker_tile(task))
 
-    layer_name = Path(inputs[0]).stem if len(inputs) == 1 else f"{Path(inputs[0]).stem}+{len(inputs)-1}"
-    layer = {
-        "tilejson": "1.0",
-        "name": layer_name,
-        "description": "",
-        "version": "1.0.0",
-        "format": "quantized-mesh-1.0",
-        "attribution": "",
-        "scheme": "tms",
-        "tiles": ["{z}/{x}/{y}.terrain"],
-        "projection": "EPSG:4326",
-        "bounds": [-180, -90, 180, 90],
-        "valid_bounds": list(sampler.bounds),
-        "minzoom": min_level,
-        "maxzoom": max_level,
-        "available": available_per_level,
-        "extensions": [],
-    }
-    (out / "layer.json").write_text(json.dumps(layer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if workers == 1 or total <= 4:
+            _run_serial()
+        else:
+            # 并行:worker 在 initializer 里各自打开 dataset。瓦片按 batch 从生成器取:
+            # Executor.map 会把传入 iterable 一次性全部 submit 成 Future,直接接生成器
+            # 等于变相物化整张任务列表,高 max_level 大区域会 OOM(同 contour 的坑)。
+            from concurrent.futures import ProcessPoolExecutor
+            from concurrent.futures.process import BrokenProcessPool
+            BATCH = 2048  # 批内并行;不物化整张瓦片列表
+            try:
+                with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init, initargs=(input_path, nodata)) as ex:
+                    tasks = _iter_tasks()
+                    while True:
+                        batch = list(itertools.islice(tasks, BATCH))
+                        if not batch:
+                            break
+                        for result in ex.map(_worker_tile, batch, chunksize=8):
+                            _tally(result)
+            except BrokenProcessPool as e:
+                # worker 进程被异常终止(多 worker 内存耗尽被 OS 杀常见)。进程级崩溃
+                # except 兜不住,会让整个任务失败 -> 回退串行重跑保证切片完整:已生成
+                # 的 .terrain 被覆盖,未生成的补齐。串行单进程内存压力小,通常能跑完。
+                logger.warning(f"并行切片 worker 崩溃({e!r}),回退串行重跑整个任务")
+                h_min_global = float("inf")
+                h_max_global = float("-inf")
+                done = 0
+                failed = 0
+                _run_serial()
 
-    meta = {
-        "minLevel": min_level,
-        "maxLevel": max_level,
-        "minHeight": h_min_global,
-        "maxHeight": h_max_global,
-        "bounds": list(sampler.bounds),
-        "tileSize": tile_size,
-        "scheme": "EPSG:4326",
-    }
-    (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _ = time.time() - t0
+
+        layer_name = Path(inputs[0]).stem if len(inputs) == 1 else f"{Path(inputs[0]).stem}+{len(inputs)-1}"
+        layer = {
+            "tilejson": "1.0",
+            "name": layer_name,
+            "description": "",
+            "version": "1.0.0",
+            "format": "quantized-mesh-1.0",
+            "attribution": "",
+            "scheme": "tms",
+            "tiles": ["{z}/{x}/{y}.terrain"],
+            "projection": "EPSG:4326",
+            "bounds": [-180, -90, 180, 90],
+            "valid_bounds": list(sampler.bounds),
+            "minzoom": min_level,
+            "maxzoom": max_level,
+            "available": available_per_level,
+            "extensions": [],
+        }
+        (out / "layer.json").write_text(json.dumps(layer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        meta = {
+            "minLevel": min_level,
+            "maxLevel": max_level,
+            "minHeight": h_min_global,
+            "maxHeight": h_max_global,
+            "bounds": list(sampler.bounds),
+            "tileSize": tile_size,
+            "scheme": "EPSG:4326",
+        }
+        (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        # 计数结构对照 contour 的 build_contour_tiles(无 skipped:terrain 没有跳过态)。
+        # 调用方(dem_task_tiler/local_terrain_task_manager)此前忽略返回值,保持兼容。
+        return {"total": total, "rendered": done, "failed": failed}
+    finally:
+        if temp_vrt:
+            # 串行路径的全局 worker sampler 可能还持有该 .vrt 的句柄（Windows 上
+            # 打开中的文件删不掉），先释放再删；并行路径 pool 退出后 worker 已回收。
+            if _WORKER_SAMPLER is not None:
+                _WORKER_SAMPLER.ds = None
+                _WORKER_SAMPLER.band = None
+            try:
+                os.remove(temp_vrt)
+            except OSError as e:
+                logger.warning(f"Failed to remove temp VRT {temp_vrt}: {e}")
 
 
 def main(argv: list[str] | None = None) -> int:

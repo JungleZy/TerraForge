@@ -355,6 +355,31 @@ def test_delete_task_refuses_running(monkeypatch, tmp_path):
     assert mgr.get_task(task_id)["status"] == "running"
 
 
+def test_delete_task_refuses_active_thread(monkeypatch, tmp_path):
+    """DB 状态不是 running、但 active_tasks 里登记了存活线程（start_tiling
+    刚起线程的窗口）时也必须拒删 —— 锁内复查 active 线程。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="del3", files=[("a.tif", b"data")], maxzoom=12)
+    assert mgr.get_task(task_id)["status"] == "pending"
+
+    import threading
+    gate = threading.Event()
+    th = threading.Thread(target=lambda: gate.wait(timeout=30), daemon=True)
+    th.start()
+    mgr.active_tasks[task_id] = th
+    try:
+        import pytest
+        with pytest.raises(ValueError):
+            mgr.delete_task(task_id)
+        assert mgr.get_task(task_id)["status"] == "pending"
+    finally:
+        gate.set()
+        th.join(timeout=5)
+
+
 def test_delete_task_delete_files_false_keeps_dir(monkeypatch, tmp_path):
     """delete_files=False must remove the DB row but keep the on-disk dir."""
     db, mgr_mod = _reload(monkeypatch, tmp_path)
@@ -409,3 +434,194 @@ def test_http_delete_delete_files_param(monkeypatch, tmp_path):
     r2 = client.delete(f"/api/terrain/local/tasks/{created[1]}?delete_files=true")
     assert r2.status_code == 200
     assert not dirs[created[1]].exists()
+
+
+# ---------------------------------------------------------------------------
+# M4 修复的行为测试：流式上传(M5)、创建失败清目录(M12)、limit 钳制(M13)、
+# parent_url 配置键(M20)
+# ---------------------------------------------------------------------------
+
+
+def test_create_task_accepts_file_streams(monkeypatch, tmp_path):
+    """M5: manager 接受文件流（路由直传 FileStorage），分块写盘；
+    落盘内容与 size_bytes 与 bytes 路径一致。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    payload_b = b"fake-tif-bytes-b" * 500  # 大于 copyfileobj 单块也无所谓，流式复制
+    files = [
+        ("a.tif", io.BytesIO(b"fake-tif-bytes-a")),
+        ("b.tiff", io.BytesIO(payload_b)),
+    ]
+    task_id = mgr.create_task_with_files(name="stream", files=files, maxzoom=12)
+
+    from pathlib import Path
+    source_dir = Path(mgr.get_task(task_id)["source_dir"])
+    assert (source_dir / "upload_1_dem.tif").read_bytes() == b"fake-tif-bytes-a"
+    assert (source_dir / "upload_2_dem.tif").read_bytes() == payload_b
+
+    rows = {r["original_filename"]: r for r in mgr.list_files(task_id)}
+    assert rows["a.tif"]["size_bytes"] == len(b"fake-tif-bytes-a")
+    assert rows["b.tiff"]["size_bytes"] == len(payload_b)
+    assert all(r["status"] == "uploaded" for r in rows.values())
+
+
+def test_create_task_all_uploads_fail_cleans_dir(monkeypatch, tmp_path):
+    """M12: 全部写盘失败时，任务行标记 failed，且任务目录被清理，不留磁盘残留。"""
+    import pytest
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    def boom(*args, **kwargs):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(mgr_mod.shutil, "copyfileobj", boom)
+
+    with pytest.raises(ValueError):
+        mgr.create_task_with_files(name="f", files=[("a.tif", io.BytesIO(b"x"))], maxzoom=12)
+
+    tasks = mgr.list_tasks()
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "failed"
+
+    from pathlib import Path
+    task_root = Path(tasks[0]["output_path"])
+    assert not task_root.exists()
+
+
+def test_create_task_rollback_cleans_dir_rowid_reuse_safe(monkeypatch, tmp_path):
+    """M12: 文件落盘后、commit 前失败（回滚路径）也要清任务目录；
+    SQLite rowid 复用后，下一个同 id 任务的 source 目录不含残留 tif。"""
+    import sqlite3
+
+    import pytest
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    real_get_connection = mgr_mod.get_connection
+
+    class _CommitBoom:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def commit(self):
+            raise sqlite3.OperationalError("simulated commit failure")
+
+    monkeypatch.setattr(mgr_mod, "get_connection", lambda: _CommitBoom(real_get_connection()))
+
+    # 两个文件都落盘后 commit 失败 -> 回滚；残留 upload_1/upload_2 必须被清掉
+    with pytest.raises(Exception):
+        mgr.create_task_with_files(
+            name="boom",
+            files=[("a.tif", b"stale-a"), ("a2.tif", b"stale-a2")],
+            maxzoom=12,
+        )
+
+    monkeypatch.setattr(mgr_mod, "get_connection", real_get_connection)
+
+    # 回滚后表为空，rowid 复用：新任务拿到同一个 id、同一个任务目录
+    task_id = mgr.create_task_with_files(name="ok", files=[("b.tif", b"fresh")], maxzoom=12)
+
+    from pathlib import Path
+    source_dir = Path(mgr.get_task(task_id)["source_dir"])
+    saved = sorted(p.name for p in source_dir.glob("*_dem.tif"))
+    assert saved == ["upload_1_dem.tif"]
+    assert (source_dir / "upload_1_dem.tif").read_bytes() == b"fresh"
+    assert len(mgr.list_files(task_id)) == 1
+
+
+def test_list_tasks_limit_clamped(monkeypatch, tmp_path):
+    """M13: limit<=0 或 >100 回退默认窗口 100；SQLite LIMIT -1 不能返回全表。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.executemany(
+            """
+            INSERT INTO local_terrain_tasks
+              (name, status, output_path, source_dir, output_dir, total_files, uploaded_files, maxzoom)
+            VALUES ('t', 'completed', '/tmp/x', '/tmp/x/source', '/tmp/x/terrain_tiles', 1, 1, 12)
+            """,
+            [() for _ in range(105)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert len(mgr.list_tasks(limit=-1)) == 100
+    assert len(mgr.list_tasks(limit=0)) == 100
+    assert len(mgr.list_tasks(limit=5)) == 5
+    assert len(mgr.list_tasks(limit=500)) == 100
+    assert len(mgr.list_tasks(limit=None)) == 100
+
+
+def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
+    """M20: 未配置时 parent_url 保持 localhost:5000 既有行为。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
+    assert mgr.get_task(task_id)["parent_url"] == "http://localhost:5000/terrain/base/layer.json"
+
+
+def test_parent_url_from_config_key(monkeypatch, tmp_path):
+    """M20: 配置键 terrain_base_parent_url（与 DEM 管线同一键）覆盖默认值。"""
+    from services.config_manager import ConfigManager
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    ConfigManager().set(
+        "terrain_base_parent_url", "https://tiles.example.com:8443/terrain/base/layer.json"
+    )
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
+    assert mgr.get_task(task_id)["parent_url"] == "https://tiles.example.com:8443/terrain/base/layer.json"
+
+
+def test_start_tiling_parent_url_fallback_uses_config(monkeypatch, tmp_path):
+    """M20: 存量行 parent_url 为 NULL 时，start_tiling 的回退值也走配置键。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    captured = {}
+
+    def fake_tile(task_dir, out_dir, params):
+        captured["parent_url"] = params.parent_url
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+
+    task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+    # 正常创建的行已写入配置值
+    assert captured["parent_url"] == "http://localhost:5000/terrain/base/layer.json"
+
+    # 模拟存量脏行：parent_url 置 NULL，重新 start，回退值同样走配置
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE local_terrain_tasks SET parent_url=NULL WHERE id=?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    mgr.start_tiling(task_id)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+    assert captured["parent_url"] == "http://localhost:5000/terrain/base/layer.json"

@@ -58,10 +58,8 @@ def _gdal_data_candidates():
             '/usr/local/share/gdal',
         ])
         if sys.platform == 'darwin':
-            candidates.extend([
-                '/opt/homebrew/share/gdal',
-                '/usr/local/share/gdal',
-            ])
+            # '/usr/local/share/gdal' 已在上方通用列表里,不重复添加
+            candidates.append('/opt/homebrew/share/gdal')
 
     return candidates
 
@@ -90,9 +88,12 @@ def _proj_data_candidates():
             '/usr/local/share/proj',
         ])
 
-    pkg_config_datadir = os.popen('pkg-config --variable=datadir proj 2>/dev/null').read().strip()
-    if pkg_config_datadir:
-        candidates.append(os.path.join(pkg_config_datadir, 'proj'))
+    # pkg-config 是 Unix 工具,Windows 上不存在 —— 无守卫时 popen 静默失败
+    # 虽无害,但与上方 gdal-config 同款守卫保持一致。
+    if sys.platform != 'win32':
+        pkg_config_datadir = os.popen('pkg-config --variable=datadir proj 2>/dev/null').read().strip()
+        if pkg_config_datadir:
+            candidates.append(os.path.join(pkg_config_datadir, 'proj'))
 
     return candidates
 
@@ -253,28 +254,34 @@ def copy_extension_system_dlls_windows(dist_dir):
 
 
 def verify_no_missing_libs(dist_dir):
-    """打包后自检:dist 内所有 .so 的 ldd 不得有 'not found'。
+    """打包后自检:dist 内主程序 exe 与所有 .so 的 ldd 不得有 'not found'。
 
     LD_LIBRARY_PATH 指向 dist 根目录,模拟 exe 的传递性 RPATH($ORIGIN)——
     Nuitka 把 numpy/PIL 等 wheel 自带库放在 dist 根,靠 exe 的 RPATH 解析,
-    直接对单个 .so 跑 ldd 会误报。
+    直接对单个 .so 跑 ldd 会误报。exe 本体也要查:它是 ELF 可执行文件,
+    文件名不含 .so,只按文件名过滤会漏掉它自身的缺库问题。
     """
     if sys.platform == 'win32' or sys.platform == 'darwin':
         return
     env = dict(os.environ)
     env['LD_LIBRARY_PATH'] = os.path.abspath(dist_dir)
-    missing = []
+    targets = []
+    exe = os.path.join(dist_dir, APP_NAME)
+    if os.path.isfile(exe):
+        targets.append(exe)
     for root, _dirs, files in os.walk(dist_dir):
         for name in files:
             if '.so' not in name:
                 continue
-            path = os.path.join(root, name)
-            out = subprocess.run(
-                ['ldd', path], capture_output=True, text=True, check=False, env=env,
-            ).stdout
-            for line in out.splitlines():
-                if 'not found' in line:
-                    missing.append(f'{path}: {line.strip()}')
+            targets.append(os.path.join(root, name))
+    missing = []
+    for path in targets:
+        out = subprocess.run(
+            ['ldd', path], capture_output=True, text=True, check=False, env=env,
+        ).stdout
+        for line in out.splitlines():
+            if 'not found' in line:
+                missing.append(f'{path}: {line.strip()}')
     if missing:
         raise RuntimeError(
             'Bundle has unresolved shared library dependencies:\n'

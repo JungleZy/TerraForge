@@ -28,12 +28,3 @@ def list_att_tifs(task_dir: Path) -> List[Path]:
     tifs = [p for p in task_dir.glob("*_att.tif") if p.is_file()]
     return sorted(tifs, key=lambda p: p.name)
 
-
-def build_vrt_command(vrt_path: Path, tif_paths: List[Path]) -> str:
-    """
-    Build a gdalbuildvrt command string. Quote Windows paths.
-    """
-    args = ['gdalbuildvrt', f'"{str(vrt_path)}"']
-    args.extend(f'"{str(p)}"' for p in tif_paths)
-    return " ".join(args)
-

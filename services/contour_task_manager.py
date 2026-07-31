@@ -8,8 +8,8 @@ contour_task_tiler 渲染等高线 PNG 瓦片。渲染引擎按 warp 后的 DEM 
 的范围并集算出来）。
 
 dataset='upload' 即上传任务；早期版本下载驱动的任务（dataset 为
-ASTGTM.003 / COP-DEM-GLO-30，由 create_task 创建）仍走旧的下载→渲染
-路径恢复执行。Lifecycle/threading mirror DemTaskManager
+ASTGTM.003 / COP-DEM-GLO-30，由已删除的下载驱动 create_task 创建）
+仍走旧的下载→渲染路径恢复执行。Lifecycle/threading mirror DemTaskManager
 (active_tasks + stop_flags + orphan recovery)。
 """
 
@@ -18,25 +18,31 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import shutil
 import threading
-from datetime import datetime
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from core.config import Config
-from core.database import get_connection
+from core.database import get_connection, utc_now_iso
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
-from services.geo_validation import MAX_ZOOM, coerce_number, validate_bbox, validate_zoom
-from services.dem_granules import (
-    tiles_for_bbox, astgtm_v3_granules_for_tile, astwbd_v1_att_granules_for_tile,
-    copernicus_glo30_granules_for_tile, coverage_bbox,
-)
+from services.geo_validation import MAX_ZOOM, coerce_number, validate_zoom
+from services.dem_granules import coverage_bbox
 
 logger = logging.getLogger(__name__)
 
 _ALLOWED_EXT = (".tif", ".tiff")
-UploadFile = Tuple[str, bytes]  # (original_filename, content_bytes)
+
+
+class UploadFile(Protocol):
+    """上传文件对象（werkzeug FileStorage 或兼容替身）：路由直接把它传给
+    manager，save() 分块流式落盘，不再 Tuple[str, bytes] 一次性读进内存。"""
+
+    filename: str
+
+    def save(self, dst) -> None: ...
 
 # Web Mercator 赤道处 z0 单像素地面分辨率（米/像素，256px 瓦片）
 _EQUATOR_M_PER_PX_Z0 = 156543.03392
@@ -44,6 +50,9 @@ _EQUATOR_M_PER_PX_Z0 = 156543.03392
 _FALLBACK_MAX_ZOOM = 15
 # 估算层级在“像素恰好匹配”的层级上再多给的过采样级数（保证线条平滑）
 _AUTO_ZOOM_OVERSAMPLE = 1
+# 渲染进度落库/广播的最小间隔(秒):引擎逐瓦片回调,高 zoom 大区域百万级
+# 瓦片,不节流就是百万次写事务+广播
+_RENDER_PROGRESS_MIN_INTERVAL = 0.5
 
 
 def estimate_max_zoom(pixel_size_3857_m: float, zoom_min: int) -> int:
@@ -246,86 +255,6 @@ class ContourTaskManager:
         finally:
             conn.close()
 
-    def create_task(self, params: dict) -> int:
-        name = params.get("name") or "Contour Task"
-        # 四至共用校验(范围/顺序/NaN/类型),见 services/geo_validation.py
-        north, south, east, west = validate_bbox(
-            params.get("north"), params.get("south"),
-            params.get("east"), params.get("west"),
-        )
-        dataset = params.get("dataset") or "COP-DEM-GLO-30"
-        if dataset not in ("ASTGTM.003", "COP-DEM-GLO-30"):
-            raise ValueError(f"Unsupported dataset: {dataset}")
-
-        interval_raw = params.get("contour_interval")
-        if interval_raw in (None, ""):
-            interval_raw = self.config.get("contour_default_interval", "50")
-        interval = coerce_number(interval_raw, 'contour_interval')
-        if interval <= 0:
-            raise ValueError(f"contour_interval must be > 0, got {interval}")
-
-        zoom_min = validate_zoom(params.get("zoom_min", 12), 'zoom_min')
-        zoom_max = validate_zoom(params.get("zoom_max", 14), 'zoom_max')
-        if zoom_min > zoom_max:
-            raise ValueError(f"zoom_min ({zoom_min}) must be <= zoom_max ({zoom_max})")
-
-        background = params.get("background") or "#FAF6EC"
-        if background != "transparent" and not str(background).startswith("#"):
-            background = "#FAF6EC"
-
-        def _flag(key: str, default: int = 1) -> int:
-            return 1 if str(params.get(key, default)).strip().lower() in ("1", "true", "yes", "on") else 0
-        terrain_shade = _flag("terrain_shade")
-        water = _flag("water")
-
-        output_path = params.get("output_path") or str(Path(Config.DOWNLOADS_DIR) / "dem")
-
-        tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
-        dem_granules: List[str] = []
-        for t in tiles:
-            if dataset == "COP-DEM-GLO-30":
-                dem_granules.extend(copernicus_glo30_granules_for_tile(t))
-            else:
-                dem_granules.extend(astgtm_v3_granules_for_tile(t, include_num=False, include_swb=False))
-        att_granules: List[str] = []
-        if water:
-            for t in tiles:
-                att_granules.extend(astwbd_v1_att_granules_for_tile(t))
-        total_files = len(dem_granules) + len(att_granules)
-
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO contour_tasks (
-                    name, status, north, south, east, west, dataset,
-                    contour_interval, background, terrain_shade, water,
-                    zoom_min, zoom_max, output_path,
-                    total_files, downloaded_files, failed_files,
-                    total_tiles, rendered_tiles, failed_tiles
-                )
-                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)
-                """,
-                (name, north, south, east, west, dataset,
-                 interval, background, terrain_shade, water,
-                 zoom_min, zoom_max, output_path, total_files),
-            )
-            task_id = cur.lastrowid
-            file_rows = [(task_id, g, "dem") for g in dem_granules] + \
-                        [(task_id, g, "water") for g in att_granules]
-            cur.executemany(
-                "INSERT INTO contour_files (task_id, granule_id, kind, status, retry_count) VALUES (?, ?, ?, 'pending', 0)",
-                file_rows,
-            )
-            conn.commit()
-            return task_id
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
     def create_task_with_files(
         self,
         name: str,
@@ -349,14 +278,14 @@ class ContourTaskManager:
         """
         name = (name or "等高线瓦片").strip() or "等高线瓦片"
 
+        # 廉价前置校验只有扩展名；空文件判定推迟到落盘后按实际大小查
+        # （流式上传下读内容判空本身就违背不全部读进内存的目的）。
         valid: List[UploadFile] = []
-        for original, content in files:
-            ext = Path(original or "").suffix.lower()
+        for f in files:
+            ext = Path(f.filename or "").suffix.lower()
             if ext not in _ALLOWED_EXT:
-                raise ValueError(f"Unsupported file type: {original} (only .tif/.tiff)")
-            if not content:
-                raise ValueError(f"Empty file: {original}")
-            valid.append((original, content))
+                raise ValueError(f"Unsupported file type: {f.filename} (only .tif/.tiff)")
+            valid.append(f)
         if not valid:
             raise ValueError("No valid .tif/.tiff files uploaded")
 
@@ -390,6 +319,7 @@ class ContourTaskManager:
         output_path = str(Path(Config.DOWNLOADS_DIR) / "dem")
 
         conn = get_connection()
+        task_dir: Optional[Path] = None
         try:
             cur = conn.cursor()
             # 先建行拿 id（bbox 先填 0，算完范围再更新）。下载计数即上传计数：
@@ -416,17 +346,20 @@ class ContourTaskManager:
             task_dir.mkdir(parents=True, exist_ok=True)
 
             saved: List[Path] = []
-            for idx, (original, content) in enumerate(valid, start=1):
+            for idx, f in enumerate(valid, start=1):
                 stored = f"upload_{idx}_dem.tif"
                 dest = task_dir / stored
-                dest.write_bytes(content)
+                f.save(dest)  # FileStorage.save 分块拷贝，不全部读进内存
+                size = dest.stat().st_size
+                if size == 0:
+                    raise ValueError(f"Empty file: {f.filename}")
                 saved.append(dest)
                 cur.execute(
                     """
-                    INSERT INTO contour_files (task_id, granule_id, kind, status, local_path, size_bytes, retry_count)
+                    INSERT OR IGNORE INTO contour_files (task_id, granule_id, kind, status, local_path, size_bytes, retry_count)
                     VALUES (?, ?, 'dem', 'completed', ?, ?, 0)
                     """,
-                    (task_id, stored, str(dest), len(content)),
+                    (task_id, stored, str(dest), size),
                 )
 
             extent = _union_tif_extent_lonlat(saved)
@@ -452,6 +385,11 @@ class ContourTaskManager:
             return task_id
         except Exception:
             conn.rollback()
+            # 文件已落盘后失败（空文件/读范围或分辨率异常等）：rowid 复用后
+            # 残留 tif 会被下一个同 id 任务按 *_dem.tif 扫进渲染，清掉整个
+            # 任务目录。best-effort，清理失败不掩盖原异常。
+            if task_dir is not None:
+                shutil.rmtree(task_dir, ignore_errors=True)
             raise
         finally:
             conn.close()
@@ -472,7 +410,7 @@ class ContourTaskManager:
                     raise ValueError(f"Cannot start contour task {task_id} with status '{row['status']}'")
                 cur.execute(
                     "UPDATE contour_tasks SET status='running', started_at=? WHERE id=? AND status IN ('pending','paused')",
-                    (datetime.now(), task_id),
+                    (utc_now_iso(), task_id),
                 )
                 if cur.rowcount != 1:
                     raise ValueError(f"Contour task {task_id} could not be started (status changed)")
@@ -557,7 +495,8 @@ class ContourTaskManager:
             conn.close()
 
     def list_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
-        limit = min(int(limit or 100), 100)
+        # SQLite LIMIT -1 表示不限行数：limit=-1 会绕过上限拉全表，钳到 [1, 100]
+        limit = max(1, min(int(limit or 100), 100))
         conn = get_connection()
         try:
             rows = conn.execute("SELECT * FROM contour_tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
@@ -633,7 +572,9 @@ class ContourTaskManager:
                     old_status = existing["status"] if existing else None
                     c.execute(
                         "UPDATE contour_files SET status=?, error_message=?, size_bytes=?, local_path=? WHERE task_id=? AND granule_id=?",
-                        (status, error, size_bytes, str(output_dir / granule_id), task_id, granule_id),
+                        # 引擎按扁平 basename 落盘(dem_download_engine.download_files:
+                        # Copernicus granule 是 name/name.tif 嵌套),写库路径保持一致
+                        (status, error, size_bytes, str(output_dir / Path(granule_id).name), task_id, granule_id),
                     )
                     d_delta, f_delta = _status_count_deltas(old_status, status)
                     if d_delta or f_delta:
@@ -696,7 +637,7 @@ class ContourTaskManager:
             if failed_count > 0 or pending_count > 0:
                 msg = f"{failed_count} DEM file(s) failed, {pending_count} pending"
                 cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status='running'",
-                            (msg, datetime.now(), task_id))
+                            (msg, utc_now_iso(), task_id))
                 conn.commit()
                 if cur.rowcount and self.socketio:
                     self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "contour", "status": "failed", "error_message": msg})
@@ -719,36 +660,71 @@ class ContourTaskManager:
                 cov_n, cov_s, cov_e, cov_w = coverage_bbox(task["north"], task["south"], task["east"], task["west"])
                 total_tiles = count_tiles(cov_n, cov_s, cov_e, cov_w, zoom_min, zoom_max)
 
-            def render_progress(done: int, total: int):
-                # done 是 processed(rendered+skipped+failed,见 contour_engine._emit):
-                # skipped 瓦片也计入进度,否则进度条停在如 72% 就直接 completed。
-                # 渲染期间 rendered_tiles 列暂存这个 processed 进度,收尾时在下面
-                # 用真实 rendered/failed 重写。
-                self._update_render_counts(task_id, rendered=done, total=total)
-                if self.socketio:
-                    trow = self.get_task(task_id)
-                    payload = dict(trow)
-                    payload["task_type"] = "contour"
-                    payload["phase"] = "render"
-                    self.socketio.emit("task_progress", payload)
-
-            # 立即推一次 render 阶段事件:DEM 下载完进入切片时,前端要马上从"下载 DEM"
-            # 切到"渲染瓦片 0/total",不必手动刷新。warp 大区域可能耗时数十秒、期间无
-            # 瓦片产出,这一发确保用户看到已进入渲染阶段而非卡在下载 100%。
-            logger.info(f"Contour task {task_id}: 进入渲染阶段, 预计 {total_tiles} 瓦片")
-            render_progress(0, total_tiles)
-
+            # 渲染进度节流 + 连接复用:引擎 _emit 逐瓦片回调(见
+            # contour_engine._emit),不节流时每次回调都是"新连接 + UPDATE +
+            # 又一连接 SELECT 全行 + socketio.emit",百万级瓦片会把渲染拖垮、
+            # 把前端打爆。这里:计数维护在内存,距上次落库不足
+            # _RENDER_PROGRESS_MIN_INTERVAL 且未处理完时只记内存;落库复用同
+            # 一连接;emit 载荷的静态字段在进入渲染阶段时取一次全行,之后每次
+            # 只覆盖内存里的计数字段。引擎 BrokenProcessPool 回退重跑会把计数
+            # 清零重报(contour_engine.py),时间节流天然兼容 —— 最终计数由
+            # 下方收尾用 render_counts 重写,不依赖回调逐次累计。
+            progress_conn = get_connection()
             try:
-                workers = int(self.config.get("contour_workers", "0") or 0)
-            except (TypeError, ValueError):
-                workers = 0
-            params = ContourParams(interval=interval, zoom_min=zoom_min, zoom_max=zoom_max,
-                                   style=style, shade=bool(task["terrain_shade"]), water=want_water,
-                                   workers=workers)
-            render_counts = tile_contour_task_dir(
-                task_dir=output_dir, out_dir=output_dir / "contour_tiles",
-                params=params, progress_cb=render_progress, stop_flag=stop_flag,
-            )
+                prow = progress_conn.execute(
+                    "SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
+                base_payload = dict(prow) if prow else None
+                # last_flush 初始 -inf:首次回调(进入渲染阶段的 0/total)必落库
+                render_state = {"done": 0, "total": total_tiles, "last_flush": float("-inf")}
+
+                def _flush_render_progress():
+                    progress_conn.execute(
+                        "UPDATE contour_tasks SET rendered_tiles=?, total_tiles=? WHERE id=?",
+                        (render_state["done"], render_state["total"], task_id))
+                    progress_conn.commit()
+                    render_state["last_flush"] = time.monotonic()
+                    if self.socketio and base_payload is not None:
+                        payload = dict(base_payload)
+                        payload["rendered_tiles"] = render_state["done"]
+                        payload["total_tiles"] = render_state["total"]
+                        payload["task_type"] = "contour"
+                        payload["phase"] = "render"
+                        self.socketio.emit("task_progress", payload)
+
+                def render_progress(done: int, total: int):
+                    # done 是 processed(rendered+skipped+failed,见 contour_engine._emit):
+                    # skipped 瓦片也计入进度,否则进度条停在如 72% 就直接 completed。
+                    # 渲染期间 rendered_tiles 列暂存这个 processed 进度,收尾时在下面
+                    # 用真实 rendered/failed 重写。
+                    render_state["done"] = done
+                    render_state["total"] = total
+                    if done < total and \
+                            time.monotonic() - render_state["last_flush"] < _RENDER_PROGRESS_MIN_INTERVAL:
+                        return
+                    _flush_render_progress()
+
+                # 立即推一次 render 阶段事件:DEM 下载完进入切片时,前端要马上从"下载 DEM"
+                # 切到"渲染瓦片 0/total",不必手动刷新。warp 大区域可能耗时数十秒、期间无
+                # 瓦片产出,这一发确保用户看到已进入渲染阶段而非卡在下载 100%。
+                logger.info(f"Contour task {task_id}: 进入渲染阶段, 预计 {total_tiles} 瓦片")
+                render_progress(0, total_tiles)
+
+                try:
+                    workers = int(self.config.get("contour_workers", "0") or 0)
+                except (TypeError, ValueError):
+                    workers = 0
+                params = ContourParams(interval=interval, zoom_min=zoom_min, zoom_max=zoom_max,
+                                       style=style, shade=bool(task["terrain_shade"]), water=want_water,
+                                       workers=workers)
+                render_counts = tile_contour_task_dir(
+                    task_dir=output_dir, out_dir=output_dir / "contour_tiles",
+                    params=params, progress_cb=render_progress, stop_flag=stop_flag,
+                )
+                # 渲染结束(正常完成/暂停/部分失败)强制 flush:节流窗口内最后
+                # 一段计数不丢。渲染异常由外层 except 标 failed,无需再 flush。
+                _flush_render_progress()
+            finally:
+                progress_conn.close()
 
             if stop_flag and stop_flag.is_set():
                 return
@@ -764,7 +740,7 @@ class ContourTaskManager:
             if render_counts.get("rendered", 0) == 0:
                 msg = "No contour tiles rendered (check DEM coverage / interval / zoom range)"
                 cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status='running'",
-                            (msg, datetime.now(), task_id))
+                            (msg, utc_now_iso(), task_id))
                 conn.commit()
                 if cur.rowcount and self.socketio:
                     self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "contour", "status": "failed", "error_message": msg})
@@ -781,7 +757,7 @@ class ContourTaskManager:
                 )
 
             cur.execute("UPDATE contour_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'",
-                        (datetime.now(), task_id))
+                        (utc_now_iso(), task_id))
             conn.commit()
             if cur.rowcount and self.socketio:
                 self.socketio.emit("task_completed", {"task_id": task_id, "task_type": "contour", "status": "completed"})
@@ -789,8 +765,10 @@ class ContourTaskManager:
         except Exception as e:
             try:
                 cur = conn.cursor()
-                cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled','paused')",
-                            (str(e), datetime.now(), task_id))
+                # 'completed' 也要排除:上面的 emit("task_completed") 抛异常时会走到
+                # 这里,不能把已经完成的任务改判 failed
+                cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled','paused','completed')",
+                            (str(e), utc_now_iso(), task_id))
                 conn.commit()
                 if cur.rowcount and self.socketio:
                     self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "contour", "status": "failed", "error_message": str(e)})

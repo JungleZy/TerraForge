@@ -11,19 +11,39 @@ from core.bundle import bundle_dir
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MAX_CONTENT_LENGTH = 2 * 1024 * 1024 * 1024
+
+
+def _parse_max_content_length():
+    """解析 MAX_CONTENT_LENGTH 环境变量;非法值回退默认值并警告。
+
+    直接 int(os.environ.get(...)) 会在 import 期对非法值抛 ValueError,且报错
+    不含变量名,排查困难。
+    """
+    raw = os.environ.get('MAX_CONTENT_LENGTH')
+    if raw is None:
+        return _DEFAULT_MAX_CONTENT_LENGTH
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "MAX_CONTENT_LENGTH 环境变量值 %r 不是合法整数,回退默认值 %d",
+            raw, _DEFAULT_MAX_CONTENT_LENGTH)
+        return _DEFAULT_MAX_CONTENT_LENGTH
+
 
 class Config:
     """Application configuration class"""
 
-    APP_VERSION = '0.1.4'
+    APP_VERSION = '0.1.5'
 
     # Secret key for Flask session management
     SECRET_KEY = os.environ.get('SECRET_KEY')
     if not SECRET_KEY:
         SECRET_KEY = secrets.token_hex(32)
         # 不在这里直接 logger.warning —— 本类在 import 时就执行,警告会刷在启动横幅
-        # 前面,而且在 reloader 父子进程里各打一遍。改为置标记,由 app.py 在打印完
-        # 启动横幅后统一提示一次。
+        # 前面,而且在 reloader 父子进程里各打一遍。改为置标记,由 app.py 的
+        # create_app 统一提示一次(WSGI 部署也能看到)。
         SECRET_KEY_WAS_GENERATED = True
     else:
         SECRET_KEY_WAS_GENERATED = False
@@ -45,10 +65,11 @@ class Config:
     OUTPUT_DIR = DOWNLOADS_DIR  # Alias for output directory
 
     # Max request body size (bytes). Flask aborts larger uploads with HTTP 413
-    # before reading them into memory — caps the local-terrain upload endpoint,
-    # which reads files into memory. Default 2 GiB covers a batch of large
-    # 1°x1° DEM GeoTIFFs; override with MAX_CONTENT_LENGTH env var if needed.
-    MAX_CONTENT_LENGTH = int(os.environ.get('MAX_CONTENT_LENGTH', 2 * 1024 * 1024 * 1024))
+    # before reading the body — caps the local-terrain upload endpoint, which
+    # streams files to disk in chunks (shutil.copyfileobj). Default 2 GiB
+    # covers a batch of large 1°x1° DEM GeoTIFFs; override with
+    # MAX_CONTENT_LENGTH env var if needed (非法值回退默认,见 _parse_max_content_length).
+    MAX_CONTENT_LENGTH = _parse_max_content_length()
     CACHE_DIR = BASE_DIR / 'cache'
 
     @staticmethod

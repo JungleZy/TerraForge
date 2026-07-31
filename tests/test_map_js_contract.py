@@ -6,9 +6,14 @@ PyInstaller 离线打包形态)。这些测试用文本断言守住关键契约,
 由 playwright 手工实测覆盖(见计划 Task 10)。
 """
 
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -19,6 +24,21 @@ def _map_js():
         return f.read()
 
 
+def _fn_body(src, name):
+    """按花括号配对提取 `function name(...)` 的整个函数体（含外层 {}）。"""
+    i = src.index(f'function {name}(')
+    j = src.index('{', i)
+    depth = 0
+    for k in range(j, len(src)):
+        if src[k] == '{':
+            depth += 1
+        elif src[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return src[j:k + 1]
+    raise AssertionError(f'{name} 函数体花括号不配对')
+
+
 def test_reset_form_helper_exists():
     """三处重复的表单重置逻辑必须收敛成一个函数"""
     src = _map_js()
@@ -26,21 +46,18 @@ def test_reset_form_helper_exists():
 
 
 def test_reset_form_is_used_at_every_call_site():
-    """三处提交成功分支都必须调 resetForm(),本地高程分支还必须保留 bbox"""
+    """三处提交成功分支都必须调 resetForm(),两条处理类分支都必须保留 bbox"""
     src = _map_js()
     # 1 处函数定义 + 3 处调用(map/dem、contour、local_terrain)
     assert src.count('resetForm(') >= 4, (
         "resetForm() 应有 1 处定义 + 3 处调用;少于 4 次说明某个提交分支没走统一重置"
     )
     # 数据下载/数据处理拆成两张独立表单后,resetForm 用 formId 指明复位哪一张;
-    # 两条处理类分支必须复位 #processForm,本地高程还必须 clearBounds:false
-    # (该模式没有 bbox,清框会删掉用户为下一个任务画好的选区)。
-    assert "resetForm({ formId: 'processForm' })" in src, (
-        "等高线分支必须复位处理表单 resetForm({ formId: 'processForm' })"
-    )
-    assert "resetForm({ clearBounds: false, formId: 'processForm' })" in src, (
-        "本地高程切片没有 bbox,重置时必须传 clearBounds:false,"
-        "否则会清掉用户为下一个任务画好的框"
+    # 两条处理类分支（等高线、本地高程）都是上传驱动、没有 bbox,都必须
+    # clearBounds:false 复位 #processForm——清框会删掉用户为下一个任务画好的选区。
+    assert src.count("resetForm({ clearBounds: false, formId: 'processForm' })") >= 2, (
+        "等高线与本地高程两条分支都必须 resetForm({ clearBounds: false, formId: 'processForm' });"
+        "等高线分支漏了 clearBounds:false 会在任务创建成功后清掉用户选区"
     )
 
 
@@ -140,4 +157,150 @@ def test_rectangle_selection_is_wired():
     assert 'function syncBoundsFromDrawnItems(' not in src, (
         "syncBoundsFromDrawnItems 是 Leaflet.draw 时代的残留，"
         "Cesium 框选在 LEFT_UP 里直接写 currentBounds，不该再需要它"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM #3：_wrapLngEast(180) 必须保持 180
+# ---------------------------------------------------------------------------
+
+def test_wrap_lng_east_keeps_180_structure():
+    """_wrapLngEast 必须把 -180 的结果翻到 180（东边界口径 (-180,180]）。
+
+    无 node 环境下的兜底结构断言；真实数值行为由下面 node 用例覆盖。
+    """
+    src = _map_js()
+    body = _fn_body(src, '_wrapLngEast')
+    assert '_wrapLngWest' in body, (
+        '_wrapLngEast 应复用 _wrapLngWest 的基础 wrap，再修正端点'
+    )
+    assert re.search(r'===\s*-180\s*\?\s*180', body), (
+        '_wrapLngEast 必须把 wrap 结果 -180 翻成 180，'
+        '否则东经 180 被折成 -180 → east < west → 后端 400'
+    )
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node 不可用，跳过 JS 行为断言')
+def test_wrap_lng_east_numeric_behavior():
+    """把 map.js 里真实的 _wrapLngWest/_wrapLngEast 抠出来用 node 跑数值断言。"""
+    src = _map_js()
+    # 按花括号配对抠出两个函数定义
+    west_def = 'function _wrapLngWest(lng) ' + _fn_body(src, '_wrapLngWest')
+    east_def = 'function _wrapLngEast(lng) ' + _fn_body(src, '_wrapLngEast')
+    script = (
+        west_def + '\n' + east_def + '\n'
+        'const cases = [180, -180, 179.9, 180.1, 540, -540, 0, 360, -360];\n'
+        'console.log(JSON.stringify(cases.map(c => [_wrapLngEast(c), _wrapLngWest(c)])));\n'
+    )
+    out = subprocess.run(
+        ['node', '-e', script], capture_output=True, text=True, check=True, timeout=30,
+    ).stdout.strip()
+    results = json.loads(out)
+    east_expected = [180, 180, 179.9, -179.9, 180, 180, 0, 0, 0]
+    west_expected = [-180, -180, 179.9, -179.9, -180, -180, 0, 0, 0]
+    for (east, west), e, w, c in zip(
+            results, east_expected, west_expected,
+            [180, -180, 179.9, 180.1, 540, -540, 0, 360, -360]):
+        assert abs(east - e) < 1e-9, f'_wrapLngEast({c}) = {east}，期望 {e}'
+        assert abs(west - w) < 1e-9, f'_wrapLngWest({c}) = {west}，期望 {w}'
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM #17：previewTask 地形分支竞态 + 未捕获 Promise 拒绝
+# ---------------------------------------------------------------------------
+
+def test_preview_task_uses_sequence_token_against_race():
+    """地形分支有 await，期间切换/关闭预览后，过期结果不得落地。"""
+    src = _map_js()
+    assert re.search(r'let _previewSeq\s*=\s*0', src), (
+        'map.js 应定义预览调用序号 _previewSeq'
+    )
+    stop_body = _fn_body(src, 'stopTaskPreview')
+    assert re.search(r'_previewSeq\s*\+=\s*1', stop_body), (
+        'stopTaskPreview 必须递增 _previewSeq，作废在途的 previewTask'
+    )
+    body = _fn_body(src, 'previewTask')
+    assert re.search(r'const seq\s*=\s*_previewSeq', body), (
+        'previewTask 必须在 await 之前捕获当前序号'
+    )
+    # 两处 await（HEAD 探测、fromUrl）之后都必须比对序号
+    assert body.count('seq !== _previewSeq') >= 2, (
+        '每次 await 返回后都要比对 seq !== _previewSeq，过期直接 return'
+    )
+    # fromUrl 结果须先落局部变量，序号仍有效才赋给 viewer.terrainProvider
+    assign = re.search(
+        r'const provider\s*=\s*await Cesium\.CesiumTerrainProvider\.fromUrl', body)
+    assert assign, 'fromUrl 结果应先 await 到局部变量再落地'
+    land = body.index('viewer.terrainProvider = provider')
+    last_check = body.rindex('seq !== _previewSeq', 0, land)
+    assert assign.start() < last_check < land, (
+        '赋值 viewer.terrainProvider 前必须有序号比对，否则过期预览会覆盖当前地形'
+    )
+
+
+def test_preview_task_catches_rejections_with_user_feedback():
+    """previewTask 整体 try/catch：fromUrl reject 等失败要给用户可见反馈，
+    调用方（history.js previewHistoryTask、map.js toggleContourPreview）
+    都不 await，未捕获的 rejection 会变成 unhandled。"""
+    src = _map_js()
+    body = _fn_body(src, 'previewTask')
+    assert re.search(r'\}\s*catch\s*\(', body), 'previewTask 必须整体包 try/catch'
+    catch_body = body[body.rindex('catch'):]
+    assert 'showNotification(' in catch_body and "'danger'" in catch_body, (
+        'catch 里必须 showNotification(..., danger) 给用户可见反馈'
+    )
+    assert 'seq === _previewSeq' in catch_body, (
+        '过期调用的报错不应打扰当前预览，catch 里要按序号过滤'
+    )
+
+
+# ---------------------------------------------------------------------------
+# LOW 批次（2026-07-31 code-only review，前端杂项）
+# ---------------------------------------------------------------------------
+
+def test_download_type_toggle_refreshes_tile_estimate():
+    """切换下载类型（地图/DEM）必须刷新瓦片预估读数。
+
+    改前 apply() 只摆字段可见性不调 updateTileEstimate()：切到 DEM 时
+    #tileEstimate 残留上一次地图模式的旧读数（DEM 按颗粒计、不用瓦片数）。
+    """
+    src = _map_js()
+    body = _fn_body(src, 'initDownloadTypeToggle')
+    apply_start = body.index('function apply(')
+    apply_body = body[apply_start:body.index('typeEl.addEventListener', apply_start)]
+    assert 'updateTileEstimate()' in apply_body, (
+        'initDownloadTypeToggle 的 apply() 没有调 updateTileEstimate()——'
+        '切到高程模式会残留旧的瓦片预估读数'
+    )
+
+
+def test_tile_estimate_rejects_antimeridian_selection():
+    """跨反经线选区（wrap 后 east < west）不许静默 swap 东西边界算瓦片数。
+
+    与后端拒绝语义对齐：这种选区提交必然 400，预估应显示「不可用」提示，
+    而不是拿交换后的边界算一个注定提交失败的数字。
+    """
+    src = _map_js()
+    body = _fn_body(src, 'updateTileEstimate')
+    assert '_wrapLngWest(' in body and '_wrapLngEast(' in body, (
+        'updateTileEstimate 必须按提交口径 wrap 经度后再判断/计算'
+    )
+    assert re.search(r'east\s*<\s*west\s*\)\s*\{[^}]*return null', body), (
+        '检测到跨反经线（wrap 后 east < west）后必须 return null（不算数），'
+        '而不是继续用 estimateTileCount 的静默 swap 算一个必然 400 的瓦片数'
+    )
+
+
+def test_base_map_host_entry_is_protocol_relative():
+    """_baseMapUrl 的主机条目（mts0 / mts0.google.cn）不许硬编码 http://。
+
+    页面走 https 时 http:// 的瓦片请求会被混合内容拦截，底图白屏。
+    """
+    src = _map_js()
+    body = _fn_body(src, '_baseMapUrl')
+    assert 'http://${host}' not in body, (
+        '_baseMapUrl 的主机条目仍硬编码 http://——https 部署下会被混合内容拦截'
+    )
+    assert '//${host}' in body, (
+        '_baseMapUrl 的主机条目应使用协议相对 URL（//host/...）'
     )

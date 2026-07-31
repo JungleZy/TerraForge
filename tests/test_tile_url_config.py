@@ -92,11 +92,19 @@ def test_parse_server_list_falls_back_to_default():
     ('', False),
     ('ftp://t.example.com/{z}/{x}/{y}.png', False),
     ('https://t.example.com/{z}/{x}.png', False),      # 缺 {y}
+    ('https://{s}.example.com/{z}/{x}/{y}.png', False),  # {s} 下载引擎不替换
+    ('https://t.example.com/{z}/{x}/{y}.png?key={token}', False),  # 未知占位符
     ('mts 0', False),                                 # 空格
     ('mts0/evil', False),                             # 主机形态不许带路径
 ])
 def test_validate_server_entry(entry, ok):
     assert validate_server_entry(entry)[0] is ok
+
+
+def test_validate_server_entry_unknown_placeholder_message():
+    ok, err = validate_server_entry('https://{s}.example.com/{z}/{x}/{y}.png')
+    assert ok is False
+    assert '{s}' in err
 
 
 def test_validate_server_list_requires_at_least_one_valid_entry():
@@ -209,6 +217,23 @@ def test_probe_rejects_invalid_entry_before_fetching():
     assert result['success'] is False
     assert result['tile'] is None
     assert called == [], '条目非法时不许发起任何网络请求'
+
+
+def test_probe_log_masks_url_userinfo(caplog):
+    """模板内嵌 user:pass@ 时，凭据不得进探测日志（host 保留便于排查）。"""
+    import logging
+
+    async def _fake(url, proxy_url, timeout_s):
+        assert 'user:pass@' in url  # 实际请求仍用完整 URL
+        return {'success': True, 'status_code': 200, 'content_type': 'image/png',
+                'elapsed_ms': 1, 'bytes_read': 1, 'error': None}
+
+    with caplog.at_level(logging.INFO, logger='services.tile_url_probe'):
+        result = probe_server_entry(
+            'https://user:pass@t.example.com/{z}/{x}/{y}.png', fetcher=_fake)
+    assert result['success'] is True
+    assert 'user:pass@' not in caplog.text
+    assert '***:***@t.example.com' in caplog.text
 
 
 # --- 代理绕过（本机/内网地址不走 proxy_url） --------------------------------------

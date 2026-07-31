@@ -23,7 +23,12 @@ if errorlevel 1 (
 REM GDAL version consistency check (I20d): the pip pin in requirements.txt must
 REM match the installed GDAL (major.minor). On Windows GDAL usually comes from
 REM conda-forge, so read the version from the osgeo binding.
+set REQ_GDAL=
 for /f "tokens=3 delims==" %%v in ('findstr /b /c:"GDAL==" requirements.txt') do set REQ_GDAL=%%v
+if "%REQ_GDAL%"=="" (
+    echo Error: requirements.txt 缺少 GDAL== pin
+    exit /b 1
+)
 set SYS_GDAL=
 for /f "delims=" %%v in ('uv run python -c "from osgeo import gdal; print(gdal.__version__)" 2^>nul') do set SYS_GDAL=%%v
 if "%SYS_GDAL%"=="" (

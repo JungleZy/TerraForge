@@ -86,6 +86,19 @@ def test_urs_redirect_without_credentials_raises():
         run(client.get_signed_url(session, FILE_URL))
 
 
+def test_login_callback_non_2xx_raises_with_status():
+    """Step-2 登录跟随链失败必须抛出含状态码的错误，而不是被吞掉后
+    在 step 3 表现成含糊的重定向循环。"""
+    session = FakeSession([
+        FakeResp(302, {"Location": URS_URL}),          # initial request
+        FakeResp(302, {"Location": LOGIN_CB}),          # URS authorize w/ auth
+        FakeResp(500),                                   # login callback fails
+    ])
+    client = EarthdataClient(USERNAME, PASSWORD)
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        run(client.get_signed_url(session, FILE_URL))
+
+
 def test_401_raises_unauthorized():
     session = FakeSession([FakeResp(401)])
     client = EarthdataClient(USERNAME, PASSWORD)

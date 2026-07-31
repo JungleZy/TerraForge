@@ -89,11 +89,11 @@ def create_contour_task():
             if ext not in allowed_ext:
                 return jsonify({"error": f"Unsupported file type: {f.filename} (only .tif/.tiff)"}), 400
 
-        files = [(f.filename, f.read()) for f in uploads]
-
+        # 流式落盘：FileStorage 直接交给 manager（save() 分块拷贝写盘），
+        # 不再 f.read() 把最多 100 个文件一次性读进内存。
         task_id = contour_task_manager.create_task_with_files(
             name=name,
-            files=files,
+            files=uploads,
             contour_interval=request.form.get("contour_interval"),
             zoom_min=zoom_min,
             zoom_max=zoom_max,
@@ -212,6 +212,10 @@ def cancel_contour_task(task_id: int):
             return jsonify({"error": "Contour task manager not initialized"}), 500
         contour_task_manager.cancel_task(task_id)
         return jsonify({"success": True, "message": f"Contour task {task_id} cancelled"})
+    except ValueError as e:
+        # cancel_task 对不存在任务抛 "not found" -> 404（与 delete 端点同款分流）
+        msg = str(e)
+        return jsonify({"error": msg}), (404 if "not found" in msg else 400)
     except Exception as e:
         logger.error(f"Error cancelling contour task {task_id}: {e}")
         return jsonify({"error": "Failed to cancel contour task"}), 500

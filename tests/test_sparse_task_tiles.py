@@ -7,8 +7,10 @@
   枚举全量瓦片、跳过 cache 命中的,天然只补缺口;
 - task_tiles 只存失败瓦片(失败 UPSERT、成功 DELETE 历史失败行);
 - tasks 表的进度计数批量落库(每 PROGRESS_DB_FLUSH_INTERVAL 块 + 下载结束),
-  socketio 的 task_progress 保持每块瓦片都发;
-- init_database 迁移清掉旧版本写入的 pending/completed 全量行。
+  socketio 的 task_progress 按 PROGRESS_EMIT_MIN_INTERVAL 时间节流
+  (首块与末块必发,中间按间隔,计数始终取内存实时值);
+- init_database 迁移清掉旧版本写入的 pending/completed 全量行(一次性,
+  用 SQLite user_version pragma 做幂等标记,跑过即跳过)。
 """
 import asyncio
 import os
@@ -237,8 +239,47 @@ def test_progress_counts_flushed_in_batches(isolated_config, monkeypatch):
     assert _tile_rows(task_id) == [], "成功后历史失败行必须被清掉"
 
     progress_events = [p for name, p in socketio.events if name == 'task_progress']
-    assert len(progress_events) == total, "socketio 进度事件必须保持每块瓦片一发"
-    assert progress_events[-1]['downloaded_tiles'] == total
+    assert 2 <= len(progress_events) <= total, (
+        "socketio 进度事件按时间节流(PROGRESS_EMIT_MIN_INTERVAL):"
+        "不再逐瓦片一发,但首块与末块必发"
+    )
+    assert progress_events[0]['downloaded_tiles'] == 1, "首块瓦片必发"
+    assert progress_events[-1]['downloaded_tiles'] == total, (
+        "末块瓦片必发,且计数取内存实时值(不等批量落库)"
+    )
+
+
+def test_progress_emit_throttled_but_first_and_last_always_sent(isolated_config, monkeypatch):
+    """进度广播按时间节流:极端间隔下只剩首发与末发,两发都不能丢。"""
+    import services.task_manager as tm_mod
+
+    # 极端节流间隔:中间的逐瓦片广播全部被压掉
+    monkeypatch.setattr(tm_mod, 'PROGRESS_EMIT_MIN_INTERVAL', 3600)
+
+    socketio = FakeSocketIO()
+    tm = tm_mod.TaskManager(socketio=socketio)
+    task_id = tm.create_task(_params())  # zoom 10 → 12 块
+
+    _mark_running(task_id)
+
+    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+        for tile in tiles:
+            await progress_callback(tile, 'completed', None)
+        return [{'tile': t, 'status': 'completed'} for t in tiles]
+
+    tm.download_engine.download_tiles_batch = fake_download_tiles_batch
+
+    asyncio.run(tm._execute_task(task_id))
+
+    progress_events = [p for name, p in socketio.events if name == 'task_progress']
+    assert len(progress_events) == 2, (
+        f"极端节流下应只剩首发与末发两发,实际 {len(progress_events)} 发"
+    )
+    assert progress_events[0]['downloaded_tiles'] == 1
+    assert progress_events[-1]['downloaded_tiles'] == 12, "完成那一发必须带出最终计数"
+
+    row = _task_row(task_id)
+    assert row['downloaded_tiles'] == 12, "节流只影响广播,不影响 DB 计数"
 
 
 # ---------- 失败 UPSERT 稀疏行 + 终态判定 ----------
@@ -310,6 +351,8 @@ def test_init_database_migration_keeps_only_failed_rows(isolated_config):
                 " VALUES (?, 10, ?, 0, ?, 0)",
                 (task_id, x, status),
             )
+        # 模拟旧库:fixture 建库时已置 user_version=1,清回 0 才会触发迁移
+        cur.execute('PRAGMA user_version = 0')
         conn.commit()
     finally:
         conn.close()
@@ -320,3 +363,162 @@ def test_init_database_migration_keeps_only_failed_rows(isolated_config):
     assert [r['status'] for r in rows] == ['failed'], (
         "迁移后 task_tiles 只保留失败行,pending/completed 全量行必须清掉"
     )
+
+    conn = get_connection()
+    try:
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 1, (
+            "迁移完成后必须写入 user_version 幂等标记"
+        )
+    finally:
+        conn.close()
+
+
+# ---------- init_database 迁移只执行一次(user_version 幂等标记) ----------
+
+def test_init_database_migration_runs_only_once(isolated_config):
+    """迁移跑过后不再执行:已迁移库里的非 failed 行(运行中正常写入的)
+    不应在后续启动时被 DELETE。"""
+    from core import database
+    from core.database import get_connection
+
+    # fixture 已完成首次 init_database,新库应直接带上版本标记
+    conn = get_connection()
+    try:
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 1, (
+            "新建库初始化后应立即带上 user_version=1 标记"
+        )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO tasks
+              (name, status, north, south, east, west, zoom_min, zoom_max,
+               style, output_format, output_path, total_tiles, downloaded_tiles,
+               failed_tiles)
+            VALUES ('t', 'running', 1, 0, 1, 0, 10, 10, 'roadmap',
+                    'tiles_only', '/tmp', 1, 0, 0)
+            """
+        )
+        task_id = cur.lastrowid
+        # 已迁移库里的非 failed 行:再次启动必须原样保留
+        cur.execute(
+            "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count)"
+            " VALUES (?, 10, 0, 0, 'pending', 0)",
+            (task_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    database.init_database()  # 再次初始化,迁移已被标记执行过
+
+    rows = _tile_rows(task_id)
+    assert [r['status'] for r in rows] == ['pending'], (
+        "迁移只应执行一次:已迁移库里的非 failed 行不应在后续启动时被清掉"
+    )
+
+
+# ---------- cache 命中瓦片的残留 failed 行必须在对账时清掉 ----------
+
+def test_stale_failed_rows_cleared_when_all_tiles_cached(isolated_config):
+    """暂停/崩溃瞬间「cache 已写、failed 行未清」的瓦片,恢复执行时必须自愈。
+
+    场景还原:瓦片下载成功、cache 落盘,但进度回调因 stop 检查 return(或进程
+    崩溃)没跑到 DELETE —— 稀疏表里留下 failed 行。旧代码:枚举遇 cache 命中
+    直接 continue,全库没有任何路径再清这枚行,完成判定 failed_count>0 恒真,
+    任务重试多少次都失败。
+    """
+    from services.task_manager import TaskManager
+
+    socketio = FakeSocketIO()
+    tm = TaskManager(socketio=socketio)
+    task_id = tm.create_task(_params())  # zoom 10 → 12 块
+
+    # 全部瓦片已在 cache,且每块都留一枚残留 failed 行
+    all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 10, 10, task_id=task_id))
+    from core.database import get_connection
+    conn = get_connection()
+    try:
+        for tile in all_tiles:
+            cache_path = tile.cache_path('m')  # roadmap → style code 'm'
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(b'cached-tile')
+            conn.execute(
+                "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count, error_message)"
+                " VALUES (?, ?, ?, ?, 'failed', 2, 'boom')",
+                (task_id, tile.zoom, tile.x, tile.y),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _mark_running(task_id)
+
+    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+        raise AssertionError("全部瓦片命中 cache,不应触发任何下载")
+
+    tm.download_engine.download_tiles_batch = fake_download_tiles_batch
+
+    asyncio.run(tm._execute_task(task_id))
+
+    assert _tile_rows(task_id) == [], "cache 命中的残留 failed 行必须被对账清掉"
+    row = _task_row(task_id)
+    assert row['status'] == 'completed', "残留失败行不应再把任务拖成 failed"
+    assert row['failed_tiles'] == 0
+    assert row['downloaded_tiles'] == len(all_tiles)
+    assert any(name == 'task_completed' for name, _ in socketio.events)
+
+
+def test_stale_failed_rows_cleared_mixed_with_real_download(isolated_config):
+    """混合场景:cache 命中的残留失败行清掉,未命中的失败行保留并重下。"""
+    from services.task_manager import TaskManager
+
+    socketio = FakeSocketIO()
+    tm = TaskManager(socketio=socketio)
+    task_id = tm.create_task(_params())  # zoom 10 → 12 块
+
+    all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 10, 10, task_id=task_id))
+    cached_with_stale_row = all_tiles[:3]   # cache 已写 + 残留 failed 行
+    missing_with_row = all_tiles[3]         # 无 cache + failed 行(本次应重下成功)
+    from core.database import get_connection
+    conn = get_connection()
+    try:
+        for tile in cached_with_stale_row:
+            cache_path = tile.cache_path('m')
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(b'cached-tile')
+            conn.execute(
+                "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count, error_message)"
+                " VALUES (?, ?, ?, ?, 'failed', 2, 'boom')",
+                (task_id, tile.zoom, tile.x, tile.y),
+            )
+        conn.execute(
+            "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count, error_message)"
+            " VALUES (?, ?, ?, ?, 'failed', 1, 'boom')",
+            (task_id, missing_with_row.zoom, missing_with_row.x, missing_with_row.y),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _mark_running(task_id)
+
+    downloaded = []
+
+    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+        downloaded.extend(tiles)
+        for tile in tiles:
+            await progress_callback(tile, 'completed', None)
+        return [{'tile': t, 'status': 'completed'} for t in tiles]
+
+    tm.download_engine.download_tiles_batch = fake_download_tiles_batch
+
+    asyncio.run(tm._execute_task(task_id))
+
+    assert len(downloaded) == len(all_tiles) - 3, "cache 命中的瓦片不应重下"
+    assert _tile_rows(task_id) == [], (
+        "cache 命中的残留行与重下成功的失败行都应被清掉"
+    )
+    row = _task_row(task_id)
+    assert row['status'] == 'completed'
+    assert row['failed_tiles'] == 0
+    assert row['downloaded_tiles'] == len(all_tiles)

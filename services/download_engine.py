@@ -8,6 +8,7 @@ Implements Web Mercator projection for converting geographic coordinates to tile
 import logging
 import math
 import asyncio
+import itertools
 import shutil
 import tempfile
 import threading
@@ -30,6 +31,11 @@ TILE_SERVER_COUNT = 4  # 默认瓦片服务器数（mts0-mts3），仅作 connec
 WARN_TILES_THRESHOLD = 100000  # 单任务瓦片数软阈值,超过只记警告(0.1.4 起放开硬上限)
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
+
+# download_tiles_batch 每批创建的协程数上限。旧实现对全部瓦片一次性
+# 预建协程再 gather —— 百万级瓦片就是百万个待调度协程同时挂在事件循环上;
+# 分批后任一时刻只有一批协程存活,下载语义(信号量限流、逐瓦片容错)不变。
+DOWNLOAD_BATCH_SIZE = 1000
 
 # CRS the per-tile georeferenced intermediates are written in. Single source of
 # truth: tile_geotransform returns it and _add_georeference bakes it into the
@@ -401,7 +407,8 @@ class DownloadEngine:
             Path object for cache file location
 
         Cache Path Format:
-            cache/task_{task_id}/{style}/{zoom}/{x}/{y}.png
+            cache/{style}/{zoom}/{x}/{y}.png —— cache 跨任务共享,
+            不带 task_id(见 models/task.py Tile.cache_path)。
         """
         return tile.cache_path(style)
 
@@ -433,7 +440,7 @@ class DownloadEngine:
         tile: Tile,
         style: str,
         session: aiohttp.ClientSession,
-        proxy_url: Optional[str] = None,
+        proxy_url: str = '',
         stop_flag: Optional[threading.Event] = None
     ) -> bytes:
         """
@@ -443,6 +450,7 @@ class DownloadEngine:
             tile: Tile object to download
             style: Map style code
             session: aiohttp ClientSession for making requests
+            proxy_url: Proxy URL ('' means no proxy); 由调用方从配置读出传入
 
         Returns:
             Tile image data as bytes
@@ -452,15 +460,18 @@ class DownloadEngine:
             asyncio.TimeoutError: If request times out after all retries
 
         Retry Strategy:
-            - Max retries from config (max_retries)
+            - Max retries from config (max_retries, 负值按 0 钳制 —— 至少试一次)
             - Server rotation on each retry (按 tile_servers 配置列表轮换)
             - Exponential backoff: 2^attempt seconds between retries
             - Timeout from config (request_timeout)
+            - 4xx(429 除外)是永久性错误(404 瓦片不存在、403 禁止访问等),
+              重试不会改变结果,直接失败不退避
         """
         # Get configuration values
-        max_retries = int(self.config_manager.get('max_retries', '3'))
+        # max_retries 钳制到 >=0:负值会让 range(max_retries + 1) 一次都不进,
+        # 最后 raise last_error(None) 变成 TypeError,真实错误被吞。
+        max_retries = max(0, int(self.config_manager.get('max_retries', '3')))
         request_timeout = int(self.config_manager.get('request_timeout', '30'))
-        proxy_url = proxy_url if proxy_url is not None else (self.config_manager.get('proxy_url', '') or '')
 
         last_error = None
 
@@ -496,6 +507,16 @@ class DownloadEngine:
                     return data
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # 4xx(429 限流除外)是永久性错误 —— 404 的瓦片重试多少次都
+                # 不存在,指数退避只会把必然失败拖延成分钟级,直接抛出。
+                if isinstance(e, aiohttp.ClientResponseError) and (
+                    400 <= e.status < 500 and e.status != 429
+                ):
+                    logger.warning(
+                        f"Tile {tile.zoom}/{tile.x}/{tile.y} got HTTP {e.status}, "
+                        f"not retrying a permanent client error"
+                    )
+                    raise
                 last_error = e
                 logger.warning(
                     f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y} "
@@ -638,7 +659,7 @@ class DownloadEngine:
 
     async def download_tiles_batch(
         self,
-        tiles: List[Tile],
+        tiles,
         style: str,
         progress_callback=None,
         stop_flag: Optional[threading.Event] = None
@@ -647,16 +668,19 @@ class DownloadEngine:
         Download multiple tiles concurrently with semaphore control
 
         Args:
-            tiles: List of Tile objects to download
+            tiles: Tiles to download — any iterable (list or generator);
+                it is consumed lazily in batches of DOWNLOAD_BATCH_SIZE
             style: Map style code
             progress_callback: Optional async callback function(tile, status, error)
 
         Returns:
-            List of download result dictionaries
+            List of download result dictionaries, in input order
 
         Concurrency Control:
             Uses semaphore to limit concurrent downloads based on
-            concurrent_downloads config value
+            concurrent_downloads config value; coroutines are created in
+            batches (DOWNLOAD_BATCH_SIZE) instead of all upfront, so a
+            million-tile task never has a million pending coroutines.
         """
         # Get configuration values
         concurrent_downloads = int(self.config_manager.get('concurrent_downloads', '10'))
@@ -664,9 +688,11 @@ class DownloadEngine:
         cache_enabled = (self.config_manager.get('cache_enabled', 'true') or 'true').lower() == 'true'
         proxy_url = self.config_manager.get('proxy_url', '') or ''
 
+        tile_iterator = iter(tiles)
+
         logger.info(
-            f"Starting batch download: {len(tiles)} tiles, "
-            f"concurrency={concurrent_downloads}, timeout={request_timeout}s"
+            f"Starting batch download: concurrency={concurrent_downloads}, "
+            f"timeout={request_timeout}s, batch_size={DOWNLOAD_BATCH_SIZE}"
         )
 
         # Create semaphore for concurrency control
@@ -674,6 +700,8 @@ class DownloadEngine:
 
         # Create aiohttp session with connection pooling
         connector = aiohttp.TCPConnector(limit=concurrent_downloads, limit_per_host=TILE_SERVER_COUNT)
+
+        results: List[Dict[str, Any]] = []
 
         # trust_env=True lets aiohttp read HTTP_PROXY/HTTPS_PROXY from env.
         # app.py's apply_system_proxy() populates those from the Windows
@@ -699,11 +727,17 @@ class DownloadEngine:
                         stop_flag=stop_flag
                     )
 
-            # Create download tasks for all tiles
-            tasks = [download_with_semaphore(tile) for tile in tiles]
-
-            # Execute all downloads concurrently
-            results = await asyncio.gather(*tasks, return_exceptions=False)
+            # 分批创建协程(见 DOWNLOAD_BATCH_SIZE):不在批次间因 stop_flag
+            # 提前退出 —— 每块瓦片都要产出一条结果(queued 的报 'cancelled'),
+            # 保持「结果数 == 输入瓦片数」的既有语义。
+            while True:
+                batch = list(itertools.islice(tile_iterator, DOWNLOAD_BATCH_SIZE))
+                if not batch:
+                    break
+                results.extend(await asyncio.gather(
+                    *(download_with_semaphore(tile) for tile in batch),
+                    return_exceptions=False
+                ))
 
         logger.info(f"Batch download completed: {len(results)} results")
 

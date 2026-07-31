@@ -59,17 +59,15 @@ def test_start_tiling_concurrent_calls_only_one_wins(monkeypatch, tmp_path):
 
     monkeypatch.setattr(dtm, "tile_dem_task_dir", fake_tile)
 
-    # 把 datetime.now 变慢，确定性撑大「检查 → upsert」之间的竞态窗口：
+    # 把 utc_now_iso 变慢，确定性撑大「检查 → upsert」之间的竞态窗口：
     # 无锁时所有线程都会在第一个提交前通过检查；有锁时被串行化。
-    real_datetime = dtm.datetime
+    real_utc_now_iso = dtm.utc_now_iso
 
-    class _SlowDatetime:
-        @staticmethod
-        def now():
-            time.sleep(0.05)
-            return real_datetime.now()
+    def _slow_utc_now_iso():
+        time.sleep(0.05)
+        return real_utc_now_iso()
 
-    monkeypatch.setattr(dtm, "datetime", _SlowDatetime)
+    monkeypatch.setattr(dtm, "utc_now_iso", _slow_utc_now_iso)
 
     barrier = threading.Barrier(8)
     results = {"ok": 0, "err": 0}

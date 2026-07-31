@@ -127,3 +127,50 @@ def test_list_and_get_contour_task(monkeypatch, tmp_path):
     got = client.get(f"/api/contour/tasks/{tid}")
     assert got.status_code == 200
     assert got.get_json()["task"]["id"] == tid
+
+
+def test_create_contour_task_saves_upload_streamed_to_disk(monkeypatch, tmp_path):
+    """路由不再 f.read() 全读内存：FileStorage 直传 manager，save() 落盘，
+    磁盘文件内容与上传一致。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    payload = b"tif-content-" + b"x" * 100000
+    tid = _post_task(client, files=[("dem1.tif", payload)]).get_json()["task_id"]
+    saved = tmp_path / "downloads" / "dem" / f"contour_task_{tid}" / "upload_1_dem.tif"
+    assert saved.read_bytes() == payload
+
+
+def test_create_contour_task_empty_file_400_and_no_residue(monkeypatch, tmp_path):
+    """空文件 -> 400；中途失败清掉已落盘目录、DB 无残留行。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    resp = _post_task(client, files=[("a.tif", b"data"), ("b.tif", b"")])
+    assert resp.status_code == 400
+    lst = client.get("/api/contour/tasks").get_json()
+    assert lst["count"] == 0
+    assert not (tmp_path / "downloads" / "dem" / "contour_task_1").exists()
+
+
+def test_cancel_nonexistent_contour_task_404(monkeypatch, tmp_path):
+    """cancel_task 对不存在任务抛 ValueError("... not found")，
+    端点此前缺 except ValueError 直接 500。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    resp = client.post("/api/contour/tasks/999/cancel")
+    assert resp.status_code == 404
+
+
+def test_cancel_pending_contour_task_200(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    tid = _post_task(client).get_json()["task_id"]
+    resp = client.post(f"/api/contour/tasks/{tid}/cancel")
+    assert resp.status_code == 200
+    task = client.get(f"/api/contour/tasks/{tid}").get_json()["task"]
+    assert task["status"] == "cancelled"
+
+
+def test_list_contour_tasks_limit_minus_one_not_unlimited(monkeypatch, tmp_path):
+    """limit=-1 在 SQLite 里不限行数：路由透传 manager 后仍钳到 >=1。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _post_task(client, name="a")
+    _post_task(client, name="b")
+    resp = client.get("/api/contour/tasks?limit=-1")
+    assert resp.status_code == 200
+    assert resp.get_json()["count"] == 1

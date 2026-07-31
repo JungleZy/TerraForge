@@ -30,6 +30,11 @@ multiprocessing.freeze_support()
 # 这只是 multiprocessing 自己构造的启动形式,等价于 python -c。
 if '-c' in sys.argv[1:]:
     _c_idx = sys.argv.index('-c')
+    if _c_idx + 1 >= len(sys.argv):
+        # `-c` 后面没有程序段(畸形调用,resource_tracker 不会这么拉起)——
+        # 不 exec 空气,也别往下走把整个 app 当主程序重跑。
+        print("error: '-c' requires a program argument", file=sys.stderr)
+        sys.exit(1)
     exec(sys.argv[_c_idx + 1], {'__name__': '__main__'})
     sys.exit()
 
@@ -50,11 +55,12 @@ _DEBUG = os.environ.get(
 
 # debug 模式下 Werkzeug reloader 会先以"watcher 父进程"身份执行一遍本模块,再 fork
 # 子进程(WERKZEUG_RUN_MAIN=true)重跑。父进程只是文件监听器,但它的 import 副作用
-# (SECRET_KEY 提示、create_app 的初始化日志)和 run_simple 在父进程侧打的启动行
-# (Serving Flask app / Running on / Restarting with stat)都会打一遍,子进程再打一遍,
-# 启动输出又乱又重复。这里赶在 import config/routes(会触发日志)之前把父进程的
-# 根日志级别抬到 ERROR,让它保持安静 —— 启动输出只由子进程负责。werkzeug 的 _log
-# 首次使用时会把 werkzeug logger 显式设为 INFO(盖过根级别),所以要单独压它。
+# (create_app 的初始化日志 —— 父进程被守卫跳过,正常情况下没有)和 run_simple 在
+# 父进程侧打的启动行(Serving Flask app / Running on / Restarting with stat)都会
+# 打一遍,子进程再打一遍,启动输出又乱又重复。这里赶在 import config/routes(会触发
+# 日志)之前把父进程的根日志级别抬到 ERROR,让它保持安静 —— 启动输出只由子进程负责。
+# werkzeug 的 _log 首次使用时会把 werkzeug logger 显式设为 INFO(盖过根级别),所以要
+# 单独压它。
 # 下方正式的 basicConfig 对已配置过 handler 的父进程是 no-op,不会把级别降回去。
 if __name__ == '__main__' and _DEBUG and os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
     logging.basicConfig(level=logging.ERROR)
@@ -92,9 +98,8 @@ _SHOW_STARTUP_OUTPUT = (
 # 轻量模块,先加载它们即可。
 if _PRINT_BANNER:
     from core.config import Config
-    from core.startup_banner import print_banner, safe_print, use_color
+    from core.startup_banner import print_banner
 
-    _color = use_color()
     print_banner(
         Config.APP_VERSION,
         host='0.0.0.0',
@@ -103,14 +108,6 @@ if _PRINT_BANNER:
         downloads_dir=Config.DOWNLOADS_DIR,
         database_path=Config.DATABASE_PATH,
     )
-    # SECRET_KEY 提示跟在横幅后面(config.py 在 import 时只置标记,不直接打日志)。
-    # 用 safe_print 而不用 logger.warning:父进程的日志已被压到 ERROR;且父进程在
-    # reload 时不会重跑,提示不会每次热重载都刷一遍。safe_print 保证 cp1252 等
-    # 控制台编码下不崩。
-    if Config.SECRET_KEY_WAS_GENERATED:
-        _warn = ('  ⚠ SECRET_KEY 未配置,已为本会话生成随机密钥;'
-                 '生产环境请设置 SECRET_KEY 环境变量')
-        safe_print(f'\033[33m{_warn}\033[0m' if _color else _warn)
 
 # 加载动画:重量级 import 阻塞主线程数秒,动画只能在后台线程里跑(Spinner 内部
 # 处理;非 TTY 退化为一次性静态提示)。父进程(横幅后)和 reloader 子进程(不打
@@ -149,7 +146,9 @@ from routes.contour_api import init_contour_task_manager
 from services.system_proxy import apply_system_proxy
 
 def create_app():
-    """构造 Flask app + SocketIO + 全部 TaskManager + 蓝图,返回 (app, socketio)。
+    """构造 Flask app + SocketIO + 全部 TaskManager + 蓝图,返回
+    (app, socketio, task_manager, dem_task_manager,
+    local_terrain_task_manager, contour_task_manager) 六元组。
 
     仅在主进程调用。multiprocessing worker(spawn 平台 —— Windows 打包 exe / macOS ——
     会 re-import 本模块)绝不能重跑此函数:否则每个 worker 都会重新 init_database、抢
@@ -161,6 +160,16 @@ def create_app():
     # it into HTTP_PROXY/HTTPS_PROXY so aiohttp(trust_env=True) can use it. Must
     # run before TaskManager/DemTaskManager are constructed.
     apply_system_proxy()
+
+    # SECRET_KEY 提示统一在这里打:config.py 在 import 时只置标记(见
+    # Config.SECRET_KEY_WAS_GENERATED),由真正起服务的进程在 create_app 里
+    # logger.warning 一次。dev reloader 的 watcher 父进程 / multiprocessing
+    # worker 都被守卫挡在 create_app 之外,不会重复;WSGI 部署
+    # (gunicorn import app:app)也能看到 —— 挂在启动横幅分支后则 WSGI 看不到。
+    if Config.SECRET_KEY_WAS_GENERATED:
+        logger.warning(
+            'SECRET_KEY 未配置,已为本会话生成随机密钥;'
+            '生产环境请设置 SECRET_KEY 环境变量')
 
     # Create Flask application
     app = Flask(__name__, template_folder=template_folder, static_folder=static_folder)

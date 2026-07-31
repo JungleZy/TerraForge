@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.database import get_connection
+from core.database import get_connection, utc_now_iso
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
 from services.geo_validation import resolve_output_dir, sanitize_filename, validate_bbox
@@ -62,7 +61,7 @@ class DemTaskManager:
                     [(tid,) for tid in task_ids],
                 )
 
-            now = datetime.now()
+            now = utc_now_iso()
             cur.execute("SELECT id FROM dem_terrain_jobs WHERE status = 'running'")
             job_ids = [row['id'] for row in cur.fetchall()]
             if job_ids:
@@ -125,6 +124,13 @@ class DemTaskManager:
                 granules.extend(astgtm_v3_granules_for_tile(t, include_num=bool(download_num), include_swb=bool(download_swb)))
 
         total_files = len(granules)
+        # 选区完全落在数据覆盖范围外（如 ASTGTM |lat|>83）时颗粒列表为空：
+        # 拒绝创建，否则会产生一个 total_files=0、无事可做却"成功完成"的空任务。
+        if total_files == 0:
+            raise ValueError(
+                f"Selected area yields no {dataset} granules (outside dataset coverage); "
+                "nothing to download"
+            )
 
         conn = get_connection()
         try:
@@ -175,7 +181,7 @@ class DemTaskManager:
 
                 cur.execute(
                     "UPDATE dem_tasks SET status='running', started_at=? WHERE id=? AND status IN ('pending','paused')",
-                    (datetime.now(), task_id),
+                    (utc_now_iso(), task_id),
                 )
                 if cur.rowcount != 1:
                     raise ValueError(f"DEM task {task_id} could not be started because its status changed")
@@ -185,7 +191,23 @@ class DemTaskManager:
                 self.stop_flags[task_id] = stop_flag
                 th = threading.Thread(target=self._run_task, args=(task_id, stop_flag), daemon=True, name=f"DemTask-{task_id}")
                 self.active_tasks[task_id] = th
-            th.start()
+            try:
+                th.start()
+            except Exception:
+                # commit 与 thread.start() 之间的异常会留下"DB 是 running、
+                # 线程从未启动"的任务：状态回退为 paused（可重新 start/resume），
+                # 并清理登记，避免卡死在 running。
+                with self._state_lock:
+                    if self.active_tasks.get(task_id) is th:
+                        self.active_tasks.pop(task_id, None)
+                    if self.stop_flags.get(task_id) is stop_flag:
+                        self.stop_flags.pop(task_id, None)
+                cur.execute(
+                    "UPDATE dem_tasks SET status='paused' WHERE id=? AND status='running'",
+                    (task_id,),
+                )
+                conn.commit()
+                raise
         finally:
             conn.close()
 
@@ -220,6 +242,9 @@ class DemTaskManager:
                 row = cur.fetchone()
                 if not row:
                     raise ValueError(f"DEM task {task_id} not found")
+                # 与 pause_task 一致：终态（completed/failed/cancelled）不可取消，
+                # 抛错而非静默成功。
+                raise ValueError(f"Cannot cancel DEM task {task_id} with status '{row['status']}'")
             conn.commit()
             with self._state_lock:
                 if task_id in self.stop_flags:
@@ -246,15 +271,26 @@ class DemTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT output_path FROM dem_tasks WHERE id = ?", (task_id,))
+            cur.execute("SELECT status, output_path FROM dem_tasks WHERE id = ?", (task_id,))
             row = cur.fetchone()
             if not row:
                 raise ValueError(f"DEM task {task_id} not found")
+            # 只有下载完成（completed）的任务才能切片：pending/running 的任务
+            # 数据残缺，tiling 会在不完整输入上"成功"产出错误的 terrain。
+            if row["status"] != "completed":
+                raise ValueError(
+                    f"Cannot start terrain tiling for DEM task {task_id} with status "
+                    f"'{row['status']}'; wait for the download to complete"
+                )
             output_path = row["output_path"]
         finally:
             conn.close()
 
-        parent_url = "http://localhost:5000/terrain/base/layer.json"
+        # M20: layer.json 的 parentUrl 指向全局 base，写死 localhost:5000 会在
+        # 非 5000 端口/反代部署下 404 —— 可配置，默认值保持现状兼容。
+        parent_url = self.config.get("terrain_base_parent_url", "") or (
+            "http://localhost:5000/terrain/base/layer.json"
+        )
 
         maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")
         try:
@@ -288,7 +324,7 @@ class DemTaskManager:
                         error_message=NULL
                     WHERE dem_terrain_jobs.status != 'running'
                     """,
-                    (task_id, str(output_dir), maxzoom, parent_url, datetime.now()),
+                    (task_id, str(output_dir), maxzoom, parent_url, utc_now_iso()),
                 )
                 if cur.rowcount != 1:
                     raise ValueError(f"DEM tiling job for task {task_id} is already running")
@@ -320,7 +356,7 @@ class DemTaskManager:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE dem_terrain_jobs SET status='completed', completed_at=?, error_message=NULL WHERE task_id=?",
-                    (datetime.now(), task_id),
+                    (utc_now_iso(), task_id),
                 )
                 conn.commit()
             finally:
@@ -332,7 +368,7 @@ class DemTaskManager:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE dem_terrain_jobs SET status='failed', completed_at=?, error_message=? WHERE task_id=?",
-                    (datetime.now(), str(e), task_id),
+                    (utc_now_iso(), str(e), task_id),
                 )
                 conn.commit()
             finally:
@@ -363,12 +399,50 @@ class DemTaskManager:
             conn.close()
 
     def list_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
-        limit = min(int(limit or 100), 100)
+        limit = int(limit or 100)
+        # 钳到 [1, 100] —— SQLite LIMIT -1 表示无上限、0 返回空，两者都是
+        # 调用方 bug，回退到默认窗口（同 routes/api.py get_tasks 的约定）。
+        if limit > 100:
+            limit = 100
+        if limit < 1:
+            limit = 100
         conn = get_connection()
         try:
             cur = conn.cursor()
             cur.execute("SELECT * FROM dem_tasks ORDER BY created_at DESC LIMIT ?", (limit,))
             return [dict(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def delete_task(self, task_id: int) -> None:
+        """删除任务行。与 start_task/start_tiling 同一把 _state_lock 锁内复查
+        下载线程 + dem_tasks 状态 + dem_terrain_jobs 状态:下载中或 tiling 中的
+        任务抛 ValueError 拒删 —— tiling 中删除会 rmtree 正在被 GDAL 写入的
+        terrain_tiles/,job 行被 ON DELETE CASCADE 删掉,结果静默丢失
+        (范本: contour_task_manager.delete_task)。
+        磁盘产物清理由路由层负责(delete_files)。"""
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            with self._state_lock:
+                active = self.active_tasks.get(task_id)
+                if active and active.is_alive():
+                    raise ValueError(
+                        f"Cannot delete running DEM task {task_id}. Please pause or cancel it first.")
+                row = cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,)).fetchone()
+                if not row:
+                    raise ValueError(f"DEM task {task_id} not found")
+                if row["status"] == "running":
+                    raise ValueError(
+                        f"Cannot delete running DEM task {task_id}. Please pause or cancel it first.")
+                job = cur.execute(
+                    "SELECT status FROM dem_terrain_jobs WHERE task_id=?", (task_id,)).fetchone()
+                if job and job["status"] == "running":
+                    raise ValueError(
+                        f"Cannot delete DEM task {task_id} while terrain tiling is running. "
+                        "Wait for it to finish first.")
+                cur.execute("DELETE FROM dem_tasks WHERE id=?", (task_id,))
+                conn.commit()
         finally:
             conn.close()
 
@@ -507,14 +581,14 @@ class DemTaskManager:
                 error_message = f"{failed_count} DEM file(s) failed, {pending_count} DEM file(s) pending"
                 cur.execute(
                     "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status='running'",
-                    (error_message, datetime.now(), task_id),
+                    (error_message, utc_now_iso(), task_id),
                 )
                 conn.commit()
                 if cur.rowcount and self.socketio:
                     self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "dem", "status": "failed", "error_message": error_message})
                 return
 
-            cur.execute("UPDATE dem_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'", (datetime.now(), task_id))
+            cur.execute("UPDATE dem_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'", (utc_now_iso(), task_id))
             conn.commit()
             if cur.rowcount and self.socketio:
                 self.socketio.emit("task_completed", {"task_id": task_id, "task_type": "dem", "status": "completed"})
@@ -524,7 +598,7 @@ class DemTaskManager:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled', 'paused')",
-                    (str(e), datetime.now(), task_id),
+                    (str(e), utc_now_iso(), task_id),
                 )
                 conn.commit()
                 if cur.rowcount and self.socketio:

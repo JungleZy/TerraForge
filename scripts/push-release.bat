@@ -1,24 +1,25 @@
 @echo off
 REM 推送代码并创建版本标签 (Windows)
-REM 版本来源（单一事实源）：build.spec 的 APP_VERSION；也可用第一个参数覆盖：
-REM   push-release.bat            用 build.spec 里的版本
+REM 版本来源（单一事实源）：core/config.py 的 Config.APP_VERSION；也可用第一个参数覆盖：
+REM   push-release.bat            用 core/config.py 里的版本
 REM   push-release.bat 0.2.0      显式指定
 
 setlocal
 
 set VERSION=%~1
 if "%VERSION%"=="" (
-    for /f "tokens=2 delims='" %%v in ('findstr /b /c:"APP_VERSION = '" build.spec') do set VERSION=%%v
+    REM core/config.py 中该行为类属性（带缩进）：APP_VERSION = 'x.y.z'
+    for /f "tokens=2 delims='" %%v in ('findstr /r /c:"^ *APP_VERSION *= *'" core/config.py') do set VERSION=%%v
 )
 if "%VERSION%"=="" (
-    echo ❌ 无法确定版本号：请传入参数，或检查 build.spec 的 APP_VERSION
+    echo ❌ 无法确定版本号：请传入参数，或检查 core/config.py 的 Config.APP_VERSION
     exit /b 1
 )
 set TAG=v%VERSION%
 
 git rev-parse %TAG% >nul 2>&1
 if not errorlevel 1 (
-    echo ❌ 标签 %TAG% 已存在，请先 bump build.spec 的 APP_VERSION 或删除旧标签
+    echo ❌ 标签 %TAG% 已存在，请先 bump core/config.py 的 APP_VERSION 或删除旧标签
     exit /b 1
 )
 

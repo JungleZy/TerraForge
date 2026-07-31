@@ -18,20 +18,17 @@ from core.config import Config
 
 
 @pytest.fixture
-def test_db():
+def test_db(monkeypatch):
     """Create a temporary test database"""
     # Create temporary directory for test database
     temp_dir = tempfile.mkdtemp()
     test_db_path = Path(temp_dir) / 'test.db'
 
     # Override config paths (they must be Path objects — config.init_app
-    # uses .parent / .mkdir on each).
-    original_db_path = Config.DATABASE_PATH
-    original_downloads = Config.DOWNLOADS_DIR
-    original_cache = Config.CACHE_DIR
-    Config.DATABASE_PATH = test_db_path
-    Config.DOWNLOADS_DIR = Path(temp_dir) / 'downloads'
-    Config.CACHE_DIR = Path(temp_dir) / 'cache'
+    # uses .parent / .mkdir on each). monkeypatch restores them at teardown.
+    monkeypatch.setattr(Config, 'DATABASE_PATH', test_db_path)
+    monkeypatch.setattr(Config, 'DOWNLOADS_DIR', Path(temp_dir) / 'downloads')
+    monkeypatch.setattr(Config, 'CACHE_DIR', Path(temp_dir) / 'cache')
 
     # Initialize test database
     database.init_database()
@@ -39,9 +36,6 @@ def test_db():
     yield str(test_db_path)
 
     # Cleanup
-    Config.DATABASE_PATH = original_db_path
-    Config.DOWNLOADS_DIR = original_downloads
-    Config.CACHE_DIR = original_cache
     shutil.rmtree(temp_dir)
 
 

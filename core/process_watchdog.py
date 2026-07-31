@@ -46,6 +46,19 @@ def pid_alive(pid):
     return True
 
 
+def _read_proc_cmdline(pid):
+    """Linux 下读 /proc/<pid>/cmdline,用于识别 PID 复用;读不到返回 None。
+
+    Windows / 无 /proc 的平台恒为 None —— 调用方据此跳过身份校验,退回纯
+    pid_alive 探活(保持原行为)。
+    """
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def start_parent_watchdog(interval=2.0):
     """启动看门狗线程:父进程(reloader watcher)死亡时本进程退出。
 
@@ -59,9 +72,18 @@ def start_parent_watchdog(interval=2.0):
     if parent_pid <= 0:
         return
 
+    # PID 复用缓解(Linux):父进程死后其 pid 可能被无关进程复用,纯 pid_alive
+    # 探活会误判父进程还活着、孤儿子进程永远占着端口。启动时(父进程必活)记下
+    # 它的 cmdline,之后每轮比对 —— pid 易主后 cmdline 必然不同,视为父进程已死。
+    # 父进程自己的 cmdline 运行中不会变,无误判风险。Windows 无 /proc,跳过该校验。
+    parent_cmdline = _read_proc_cmdline(parent_pid)
+
     def _watch():
         while True:
-            if not pid_alive(parent_pid):
+            if not pid_alive(parent_pid) or (
+                parent_cmdline is not None
+                and _read_proc_cmdline(parent_pid) != parent_cmdline
+            ):
                 logger.warning(
                     "reloader watcher 父进程已消失,孤儿子进程退出(避免残留占用端口)")
                 os._exit(0)

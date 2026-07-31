@@ -81,4 +81,5 @@ def test_tile_contour_task_dir_no_dem_returns_zero(tmp_path: Path):
         raise AssertionError("should not be called without DEM")
 
     counts = tile_contour_task_dir(task_dir, out_dir, params, build_contour_fn=fake_build)
-    assert counts == {"total": 0, "rendered": 0, "failed": 0}
+    # 与 build_contour_tiles 的正常返回保持同一 4 键结构(含 skipped)
+    assert counts == {"total": 0, "rendered": 0, "failed": 0, "skipped": 0}

@@ -246,3 +246,27 @@ def test_delete_contour_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_
     assert resp.status_code == 200
     assert artifact.exists(), "产物在 DOWNLOADS_DIR 之外时不得删文件"
     assert _task_row(db, "contour_tasks", task_id) is None, "DB 记录仍应删除"
+
+
+def test_delete_map_task_legacy_relative_output_path_removes_artifacts(monkeypatch, tmp_path):
+    """存量行的相对 output_path:delete_files=true 时必须归一化后删除产物。
+
+    旧版本只校验不改写,库里存的是相对原始值;删除路径按进程 CWD resolve,
+    CWD≠BASE_DIR 时会误判越界拒删,接口却已返回 success(删了个寂寞)。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    from core import config
+    db = importlib.import_module("core.database")
+    # 存量行:相对路径原始值(旧版本 create_task 入库的形态)
+    task_id = _seed_map_task(db, output_path="legacy_out")
+    artifact = _make_artifact(
+        Path(config.Config.DOWNLOADS_DIR) / "legacy_out" / f"task_{task_id}"
+    )
+
+    resp = client.delete(f"/api/tasks/{task_id}?delete_files=true")
+
+    assert resp.status_code == 200
+    assert not artifact.exists(), (
+        "相对路径存量行必须相对 DOWNLOADS_DIR 归一化后再删产物,不能按进程 CWD"
+    )
+    assert _task_row(db, "tasks", task_id) is None

@@ -1095,3 +1095,114 @@ def test_map_rectangle_stroke_covers_every_status():
     assert 'getStatusStroke(' in render, (
         'renderHistoryMap 没有调用 getStatusStroke —— 映射表写了但没人用'
     )
+
+
+# --------------------------------------------------------------------------
+# LOW 批次（2026-07-31 code-only review，前端杂项）
+# --------------------------------------------------------------------------
+
+def test_start_pause_resume_surface_server_error_reason():
+    """start/pause/resume 非 2xx 时必须透出服务端 error，与 cancelTask 同口径。
+
+    改前三个函数都是 `throw new Error('启动任务失败')`，后端给的具体原因
+    （如"任务已在运行"）被整个丢掉，用户只看到一句套话。
+    """
+    for fn in ('startTask', 'pauseTask', 'resumeTask'):
+        body = _fn(fn)
+        assert 'result.error' in body, (
+            f'{fn} 没有读响应体里的 result.error——服务端错误原因被丢弃，'
+            '应与 cancelTask 的 `result.error || response.status` 对齐'
+        )
+
+
+def test_upload_contour_task_shows_render_phase_not_fake_download():
+    """上传来源的等高线任务（dataset='upload'）没有下载阶段，必须按渲染阶段显示。
+
+    后端创建上传任务时 downloaded_files == total_files（上传即落盘），
+    contourPhaseCounts 回落到文件计数会让 pending 任务一出现就显示
+    100%「下载 DEM」。判定口径与后端 is_upload 一致（dataset == "upload"，
+    见 services/contour_task_manager.py）。
+    """
+    body = _fn('contourPhaseCounts')
+    assert "task.dataset === 'upload'" in body, (
+        "contourPhaseCounts 没有识别 dataset='upload' 的上传来源任务——"
+        "pending 状态会显示 100%「下载 DEM」"
+    )
+
+
+def test_time_info_falls_back_when_total_running_seconds_missing():
+    """dem/contour/local_terrain 的 manager 不写 total_running_seconds：
+    字段缺失时必须回退按 started_at 算墙钟时长，而不是恒显示 0 秒。"""
+    body = _fn('calculateTimeInfo')
+    assert re.search(r'task\.total_running_seconds\s*!=\s*null', body), (
+        'calculateTimeInfo 没有区分「字段缺失」与「累计 0 秒」——'
+        'dem/contour 任务的已运行时间会恒显示 0秒'
+    )
+    assert 'parseTaskDate(task.started_at)' in body, (
+        '缺 total_running_seconds 时应回退用 started_at 计算已运行时间'
+    )
+
+
+def test_unknown_status_never_renders_raw_english_literal():
+    """getStatusText 的兜底不许把未知英文状态原样渲染进中文界面。
+
+    已知六态由词表覆盖（见上面的 A7 断言）；词表外的状态统一显示「未知」，
+    与 A7 修过的中英混杂问题保持同一方案。
+    """
+    for js_name in ('tasks.js', 'history.js'):
+        body = _fn('getStatusText', js_name)
+        assert not re.search(r"\|\|\s*status\b", body), (
+            f'{js_name} 的 getStatusText 仍用 `|| status` 兜底——'
+            '未知英文状态会被原样渲染进中文界面'
+        )
+        assert "'未知'" in body, (
+            f"{js_name} 的 getStatusText 未知状态应统一显示 '未知'"
+        )
+
+
+def test_delete_last_item_on_page_steps_back_a_page():
+    """删掉当前页最后一条记录后必须回退一页，而不是停在空白页。"""
+    body = _fn('deleteTask', 'history.js')
+    assert re.search(r'loadHistory\(\s*currentPage\s*-\s*1\s*\)', body), (
+        'deleteTask 没有页码回退——删除当前页最后一条后用户会看到空白页'
+    )
+    assert 'currentPage > 1' in body, (
+        '页码回退必须以 currentPage > 1 为条件，第 1 页无处可退'
+    )
+
+
+def test_history_map_uses_configured_tile_server_with_osm_fallback():
+    """历史小地图底图必须与主视图同源（tile_servers 第一条），OSM 只做回退。
+
+    改前硬编码 https://tile.openstreetmap.org/...，与「断网/内网可用」的
+    定位矛盾：主视图走内网瓦片正常，历史小地图白屏。
+    """
+    src = _strip_js_comments(_js('history.js'))
+    body = _js_function_body(src, 'initHistoryMap')
+    assert 'https://tile.openstreetmap.org' not in body, (
+        'initHistoryMap 仍硬编码外网 OSM 底图'
+    )
+    assert 'tile_servers' in src, (
+        'history.js 没有读 tile_servers 配置——历史小地图与主视图不同源'
+    )
+    fb = _js_function_body(src, '_historyBaseMapUrl')
+    assert 'https://tile.openstreetmap.org/{z}/{x}/{y}.png' in fb, (
+        '_historyBaseMapUrl 必须保留 OSM 回退（拿不到配置时小地图仍要能用）'
+    )
+
+
+def test_panel_close_guard_compares_elements_not_names():
+    """panels.js 关闭守卫必须按元素引用比较，不能按面板名。
+
+    records/history 是同一个面板元素（PANELS 别名）。按名字比较时
+    openPanel('records') → openPanel('history') 的延迟 done 回调会把
+    刚重开的共享面板重新 hidden。
+    """
+    src = _strip_js_comments(_js('panels.js'))
+    body = _js_function_body(src, 'closePanel')
+    assert 'panelEl(current) !== el' in body, (
+        'closePanel 的 done 守卫应按元素引用比较（panelEl(current) !== el）'
+    )
+    assert 'current !== closing' not in body, (
+        'closePanel 的 done 守卫仍按面板名比较——records/history 同元素会误藏'
+    )

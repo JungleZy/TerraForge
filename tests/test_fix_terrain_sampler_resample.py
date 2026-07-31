@@ -99,4 +99,39 @@ def test_resampled_sampling_is_numerically_correct(tmp_path):
     expected = 0.5 * px + 0.25 * py
 
     assert got.shape == (n, n)
-    np.testing.assert_allclose(got, expected, atol=0.5)
+    # 梯度 0.5/0.25 per px:半像素偏移会产生 0.375 的系统误差。
+    # 收紧容差钉住无偏行为 —— 帐篷滤波对线性场在窗口内部精确复现。
+    np.testing.assert_allclose(got, expected, atol=0.05)
+
+
+def test_sampling_has_no_half_pixel_bias(tmp_path):
+    """M19 复核：审查报告称采样坐标恒偏 +0.5 源像素、公式应改成
+    (px - x0c)/sx - 0.5。实测 GDAL RasterIO 的 bilinear 降采样是以
+    (j+0.5)*sx - 0.5 为中心的帐篷滤波，现行公式正是其逆映射，本身无偏；
+    按报告改才会引入 +0.5 源像素偏移。本测试用陡峭线性场钉住正确行为：
+    半像素偏移在梯度 1.0/0.7 per px 下产生 ~0.85 系统误差，远超容差。"""
+    cols = rows = 2000
+    west0, north0, deg_per_px = 100.0, 40.0, 0.01
+    tif = tmp_path / "steep_dem.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(tif), cols, rows, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((west0, deg_per_px, 0.0, north0, 0.0, -deg_per_px))
+    py_px, px_px = np.mgrid[0:rows, 0:cols].astype(np.float32)
+    ds.GetRasterBand(1).WriteArray(1.0 * px_px + 0.7 * py_px)
+    ds.FlushCache()
+    ds = None
+
+    sampler = DemSampler(str(tif))
+    n = 65  # forces downsampling: ~1000px window -> ~67px buffer
+    lons = np.linspace(105.0, 115.0, n)
+    lats = np.linspace(25.0, 35.0, n)
+    llon, llat = np.meshgrid(lons, lats)
+
+    got = sampler.sample(llon, llat)
+    px = (llon - west0) / deg_per_px
+    py = (north0 - llat) / deg_per_px
+    expected = 1.0 * px + 0.7 * py
+
+    err = got - expected
+    np.testing.assert_allclose(got, expected, atol=0.05)
+    # 系统性偏移检查：无偏采样的平均误差应趋于 0（半像素偏移则 ~-0.85）
+    assert abs(float(err.mean())) < 0.01

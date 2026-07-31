@@ -28,14 +28,24 @@ def start_dem_tiling(task_id: int):
     try:
         dem_task_manager.start_tiling(task_id)
         return jsonify({"success": True, "message": f"DEM tiling started for task {task_id}"}), 200
-    except Exception as e:
+    except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        # 服务器内部错误不能谎报成 400 客户端错误
+        logger.error(f"Error starting DEM tiling for task {task_id}: {e}")
+        return jsonify({"error": "Failed to start DEM tiling"}), 500
 
 
 @terrain_api_bp.route("/dem/<int:task_id>", methods=["GET"])
 def get_dem_tiling_job(task_id: int):
     if not dem_task_manager:
         return jsonify({"error": "DEM task manager not initialized"}), 500
-    job = dem_task_manager.get_tiling_job(task_id)
-    return jsonify({"success": True, "job": job}), 200
+    try:
+        job = dem_task_manager.get_tiling_job(task_id)
+        return jsonify({"success": True, "job": job}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error getting DEM tiling job for task {task_id}: {e}")
+        return jsonify({"error": "Failed to get DEM tiling job"}), 500
 

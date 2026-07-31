@@ -3,14 +3,18 @@ let currentBounds = null;
 
 // 选区经度归一化:在环绕显示（拖过 ±180）的视图上画框时，东/西边界可能超出
 // ±180。后端会拒绝超出 ±180 的四至，这里先 wrap 回标准范围:
-// 西边界 wrap 到 [-180,180)，东边界 wrap 到 (-180,180](让 180 保持 180)。
+// 西边界 wrap 到 [-180,180)，东边界 wrap 到 (-180,180](让 180 保持 180;
+// 东边界输入 -180 与 180 是同一条经线，同样归一到 180)。
 // wrap 只在提交给后端的 payload 里做;
 // wrap 后若 east < west(选区跨反经线),由后端报错提示,不在前端静默交换。
 function _wrapLngWest(lng) {
     return ((lng + 180) % 360 + 360) % 360 - 180;
 }
 function _wrapLngEast(lng) {
-    return ((lng - 180) % 360 + 360) % 360 - 180;
+    // 先按西边界口径 wrap 到 [-180,180)，再把 -180 翻到 180，
+    // 保证东经 180 不会被折成 -180(east < west 会被后端 400 拒掉)。
+    const w = _wrapLngWest(lng);
+    return w === -180 ? 180 : w;
 }
 
 // --- Cesium 基础 --------------------------------------------------------------
@@ -70,7 +74,18 @@ function updateTileEstimate() {
         el.hidden = true;
         return null;
     }
-    const count = estimateTileCount(currentBounds, zMin, zMax);
+    // 与提交时的 wrap 口径一致（_wrapLngWest/_wrapLngEast）：wrap 后 east < west
+    // 说明选区跨反经线，后端会 400 拒绝——预估同样给不出有意义的数，不算数，
+    // 而不是静默 swap 东西边界算一个必然提交失败的瓦片数。
+    const west = _wrapLngWest(currentBounds.west);
+    const east = _wrapLngEast(currentBounds.east);
+    if (east < west) {
+        el.textContent = '选区跨反经线，后端会拒绝该四至，无法预估瓦片数';
+        el.classList.remove('tile-estimate--over');
+        el.hidden = false;
+        return null;
+    }
+    const count = estimateTileCount({ ...currentBounds, west, east }, zMin, zMax);
     const formatted = count.toLocaleString('zh-CN');
     const over = count > TASK_TILE_LIMIT;
     if (over) {
@@ -155,7 +170,8 @@ function initMap(config) {
             return first.replace('{style}', 'm');
         }
         const host = first.includes('.') ? first : first + '.googleapis.com';
-        return `http://${host}/vt?lyrs=m&x={x}&y={y}&z={z}`;
+        // 协议相对：页面走 https 时硬编码 http:// 会被混合内容拦截
+        return `//${host}/vt?lyrs=m&x={x}&y={y}&z={z}`;
     }
     const tileUrl = _baseMapUrl(config.tile_servers);
     viewer = new Cesium.Viewer('map', {
@@ -497,6 +513,9 @@ function initDownloadTypeToggle() {
             outputPath.value = isDem ? './downloads/dem' : './downloads/map';
         }
 
+        // 切到 DEM 时隐藏读数、切回瓦片时按当前选区/缩放重算——不刷的话
+        // 高程模式下会残留上一次地图模式的旧读数。
+        updateTileEstimate();
         refreshSubmitButtonState();
     }
 
@@ -676,8 +695,8 @@ function refreshSubmitButtonState() {
 }
 
 // 任务创建成功后复位表单。formId 指明复位哪一张（下载/处理各自独立）。
-// clearBounds=false 用于本地高程切片：该模式本来就没有 bbox，
-// 清空选区会把用户为下一个任务画好的框也一起删掉。
+// clearBounds=false 用于两条上传驱动的处理类分支（本地高程切片/等高线）：
+// 它们本来就没有 bbox，清空选区会把用户为下一个任务画好的框也一起删掉。
 function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
     const form = document.getElementById(formId);
     if (form) form.reset();
@@ -1059,7 +1078,7 @@ async function submitContour() {
             return;
         }
         showNotification('等高线任务已开始（上传 DEM → 渲染瓦片）', 'success');
-        resetForm({ formId: 'processForm' });
+        resetForm({ clearBounds: false, formId: 'processForm' });
         resetContourTintUI();
         loadActiveTasks();
         _afterTaskCreated('processModal');
@@ -1083,8 +1102,12 @@ let contourPreviewActiveId = null;
 //   DEM 任务     -> 地形切片存在时按 Cesium 地形预览（/terrain/dem/<id>/layer.json）
 // 同一时刻只有一个预览；「关闭预览」撤掉影像层并还原默认椭球地形。
 let _previewState = null;   // { kind: 'imagery'|'terrain', taskId, name, layer?, prevTerrainProvider? }
+// 预览调用序号：地形分支有 await(HEAD 探测 + fromUrl)，期间用户可能已切到
+// 另一个预览或关闭预览；await 返回后比对序号，过期结果直接丢弃不落地。
+let _previewSeq = 0;
 
 function stopTaskPreview() {
+    _previewSeq += 1;   // 作废任何在途的 previewTask
     if (viewer && _previewState) {
         if (_previewState.layer) {
             viewer.imageryLayers.remove(_previewState.layer, true);
@@ -1102,43 +1125,56 @@ function stopTaskPreview() {
 async function previewTask(task) {
     if (!viewer) return;
     stopTaskPreview();
-    const t = task.task_type;
-    if (t === 'map' || t === 'contour') {
-        const base = t === 'map' ? `/tiles/${task.id}` : `/contour/${task.id}`;
-        const layer = viewer.imageryLayers.addImageryProvider(
-            new Cesium.UrlTemplateImageryProvider({
-                url: `${base}/{z}/{x}/{y}.png`,
-                tilingScheme: new Cesium.WebMercatorTilingScheme(),
-                maximumLevel: task.zoom_max || undefined,
-            })
-        );
-        layer.alpha = 0.9;
-        _previewState = { kind: 'imagery', taskId: task.id, name: task.name, layer };
-        if (t === 'contour') contourPreviewActiveId = task.id;
-    } else if (t === 'local_terrain' || t === 'dem') {
-        const url = t === 'local_terrain'
-            ? `/terrain/local/${task.id}/layer.json`
-            : `/terrain/dem/${task.id}/layer.json`;
-        // 地形切片不存在时 layer.json 404：先探一下，没有就只飞到区域
-        const ok = await fetch(url, { method: 'HEAD' }).then((r) => r.ok).catch(() => false);
-        if (ok) {
-            const prev = viewer.terrainProvider;
-            viewer.terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(url);
-            _previewState = { kind: 'terrain', taskId: task.id, name: task.name, prevTerrainProvider: prev };
-        } else {
-            showNotification(t === 'dem'
-                ? '该任务还没有地形切片（可在详情里启动），仅定位到区域'
-                : '切片文件不存在，仅定位到区域', 'info');
+    const seq = _previewSeq;
+    try {
+        const t = task.task_type;
+        if (t === 'map' || t === 'contour') {
+            const base = t === 'map' ? `/tiles/${task.id}` : `/contour/${task.id}`;
+            const layer = viewer.imageryLayers.addImageryProvider(
+                new Cesium.UrlTemplateImageryProvider({
+                    url: `${base}/{z}/{x}/{y}.png`,
+                    tilingScheme: new Cesium.WebMercatorTilingScheme(),
+                    maximumLevel: task.zoom_max || undefined,
+                })
+            );
+            layer.alpha = 0.9;
+            _previewState = { kind: 'imagery', taskId: task.id, name: task.name, layer };
+            if (t === 'contour') contourPreviewActiveId = task.id;
+        } else if (t === 'local_terrain' || t === 'dem') {
+            const url = t === 'local_terrain'
+                ? `/terrain/local/${task.id}/layer.json`
+                : `/terrain/dem/${task.id}/layer.json`;
+            // 地形切片不存在时 layer.json 404：先探一下，没有就只飞到区域
+            const ok = await fetch(url, { method: 'HEAD' }).then((r) => r.ok).catch(() => false);
+            if (seq !== _previewSeq) return;   // await 期间预览已被切换/关闭
+            if (ok) {
+                const prev = viewer.terrainProvider;
+                // 先 await 到局部变量，序号仍有效才落地，避免过期结果覆盖当前预览
+                const provider = await Cesium.CesiumTerrainProvider.fromUrl(url);
+                if (seq !== _previewSeq) return;
+                viewer.terrainProvider = provider;
+                _previewState = { kind: 'terrain', taskId: task.id, name: task.name, prevTerrainProvider: prev };
+            } else {
+                showNotification(t === 'dem'
+                    ? '该任务还没有地形切片（可在详情里启动），仅定位到区域'
+                    : '切片文件不存在，仅定位到区域', 'info');
+            }
+        }
+        if (task.north != null && task.south != null && task.east != null && task.west != null) {
+            viewer.camera.flyTo({
+                destination: Cesium.Rectangle.fromDegrees(task.west, task.south, task.east, task.north),
+                duration: 1.2,
+            });
+        }
+        _renderPreviewChip();
+        updateContourPreviewButtons();
+    } catch (err) {
+        // fromUrl reject / 网络异常等：只有仍是当前预览时才打扰用户;
+        // 过期调用的报错随结果一起丢弃。
+        if (seq === _previewSeq) {
+            showNotification('预览失败: ' + (err && err.message ? err.message : err), 'danger');
         }
     }
-    if (task.north != null && task.south != null && task.east != null && task.west != null) {
-        viewer.camera.flyTo({
-            destination: Cesium.Rectangle.fromDegrees(task.west, task.south, task.east, task.north),
-            duration: 1.2,
-        });
-    }
-    _renderPreviewChip();
-    updateContourPreviewButtons();
 }
 
 // 预览中的浮动提示条（地图右下、状态栏上方）

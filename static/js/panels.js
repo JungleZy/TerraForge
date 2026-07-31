@@ -60,7 +60,6 @@
     function closePanel(silent) {
         if (!current) return;
         var el = panelEl(current);
-        var closing = current;
         backdrop().classList.remove('panel-backdrop--in');
         el.classList.remove('workbench-panel--in');
         // done 是延迟回调（transitionend 或 350ms 兜底），触发时面板可能已经被
@@ -68,9 +67,12 @@
         // backdrop 和（同一个）面板重新显示，没有守卫的话这里会把新面板的
         // 遮罩甚至面板本体撤掉 —— 表现为「遮罩闪一下就消失」。
         // 所以：backdrop 只在确实没有任何面板打开时才藏；面板元素只在它
-        // 没有重新成为当前面板时才藏。
+        // 没有重新成为当前面板时才藏。守卫按**元素引用**比较而不是名字：
+        // records/history 是同一个元素（PANELS 别名），按名字比较会在
+        // openPanel('records') → openPanel('history') 切换时把刚重开的
+        // 共享面板又藏起来。
         var done = function () {
-            if (current !== closing) el.hidden = true;
+            if (panelEl(current) !== el) el.hidden = true;
             if (!current) backdrop().hidden = true;
         };
         el.addEventListener('transitionend', done, { once: true });

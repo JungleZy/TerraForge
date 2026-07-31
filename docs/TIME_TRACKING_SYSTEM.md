@@ -48,6 +48,6 @@
 
 ## 相关文件
 
-- migrations/001_add_time_tracking.py
+- core/database.py（迁移已内联在 init_database()，幂等执行，无需手动脚本）
 - services/task_manager.py
 - static/js/tasks.js

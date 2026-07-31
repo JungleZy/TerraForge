@@ -109,9 +109,12 @@ async function loadActiveTasks() {
 // `phase` ("download"/"render") comes from the backend; we fall back to the
 // render counts once tiles have started so a single progress bar tracks the
 // currently-active phase.
+// 上传来源的任务（dataset='upload'，与后端 is_upload 同一判定）没有下载阶段：
+// 文件计数在创建时就已记满（downloaded_files == total_files），拿它当进度
+// 会让 pending 任务一出现就显示 100%「下载 DEM」——直接按渲染阶段显示。
 function contourPhaseCounts(task) {
     const totalTiles = task.total_tiles || 0;
-    const renderStarted = (task.phase === 'render') || totalTiles > 0;
+    const renderStarted = task.dataset === 'upload' || (task.phase === 'render') || totalTiles > 0;
     if (renderStarted) {
         return {
             total: totalTiles,
@@ -682,7 +685,8 @@ function getStatusText(status) {
         'failed': '失败',
         'cancelled': '已取消'
     };
-    return texts[status] || status;
+    // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）
+    return texts[status] || '未知';
 }
 
 function formatDuration(seconds) {
@@ -712,15 +716,27 @@ function calculateTimeInfo(task) {
 
     result.show = true;
 
-    // 使用后端计算的总运行时长
-    let elapsedSeconds = task.total_running_seconds || 0;
-
-    // 如果任务正在运行，加上当前这一段的时间
-    if (task.status === 'running' && task.started_at) {
-        const startTime = new Date(task.started_at);
-        const now = new Date();
-        const currentSegment = (now - startTime) / 1000;
-        elapsedSeconds += currentSegment;
+    // 使用后端计算的总运行时长。dem/contour/local_terrain 的 manager 不写
+    // total_running_seconds（只有地图管线维护该列），字段缺失时回退按
+    // started_at 的墙钟时长显示——否则这些任务恒显示"已运行: 0秒"。
+    let elapsedSeconds;
+    if (task.total_running_seconds != null) {
+        elapsedSeconds = task.total_running_seconds;
+        // 如果任务正在运行，加上当前这一段的时间
+        if (task.status === 'running' && task.started_at) {
+            const startTime = parseTaskDate(task.started_at);
+            if (startTime) {
+                const currentSegment = (Date.now() - startTime.getTime()) / 1000;
+                elapsedSeconds += currentSegment;
+            }
+        }
+    } else {
+        const startTime = parseTaskDate(task.started_at);
+        if (!startTime) {
+            result.show = false;
+            return result;
+        }
+        elapsedSeconds = (Date.now() - startTime.getTime()) / 1000;
     }
 
     result.elapsed = formatDuration(elapsedSeconds);
@@ -780,7 +796,9 @@ async function startTask(taskId, taskType = 'map') {
             method: 'POST'
         });
         if (!response.ok) {
-            throw new Error('启动任务失败');
+            // 与 cancelTask 同口径：透出服务端给的具体原因，不只报"失败"
+            const result = await response.json().catch(() => ({}));
+            throw new Error(result.error || ('HTTP ' + response.status));
         }
     } catch (error) {
         showToast('启动任务失败: ' + error.message, 'danger');
@@ -793,7 +811,8 @@ async function pauseTask(taskId, taskType = 'map') {
             method: 'POST'
         });
         if (!response.ok) {
-            throw new Error('暂停任务失败');
+            const result = await response.json().catch(() => ({}));
+            throw new Error(result.error || ('HTTP ' + response.status));
         }
     } catch (error) {
         showToast('暂停任务失败: ' + error.message, 'danger');
@@ -806,7 +825,8 @@ async function resumeTask(taskId, taskType = 'map') {
             method: 'POST'
         });
         if (!response.ok) {
-            throw new Error('恢复任务失败');
+            const result = await response.json().catch(() => ({}));
+            throw new Error(result.error || ('HTTP ' + response.status));
         }
     } catch (error) {
         showToast('恢复任务失败: ' + error.message, 'danger');

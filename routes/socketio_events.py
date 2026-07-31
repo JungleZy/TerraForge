@@ -9,7 +9,10 @@ from flask_socketio import emit
 
 logger = logging.getLogger(__name__)
 
-# Track connected clients
+# Track connected clients.
+# 只用于 connect/disconnect 日志里的在线计数,没有其它消费方 —— 保留它
+# 是因为排查「事件有没有发给还活着的客户端」时这个计数是唯一线索;
+# tests/test_fix_socketio_events.py 依赖它的 add/remove 语义。
 connected_clients = set()
 
 

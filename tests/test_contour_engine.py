@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -86,3 +87,50 @@ def test_interval_for_zoom_gentle_coarsens_slower():
     assert interval_for_zoom(50, 12, detail_zoom=14, scaling="gentle") == 100
     # standard is strictly coarser than gentle at the same low zoom
     assert interval_for_zoom(50, 10, detail_zoom=14, scaling="standard") >= interval_for_zoom(50, 10, detail_zoom=14, scaling="gentle")
+
+
+def test_build_contour_tiles_warp_tmpdir_from_config(monkeypatch, tmp_path):
+    """contour_warp_tmpdir 配置键指定 warp 产物临时目录(大区域可达数十 GB,
+    默认留空走系统临时目录)。假 gdal + 假 _build_render_ctx,只验证 tmpdir 选址
+    与结束后的清理。"""
+    import types
+
+    import pytest
+
+    import services.config_manager as cm
+    import services.contour_engine as ce
+
+    warp_root = tmp_path / "warp_tmp"
+    warp_root.mkdir()
+    monkeypatch.setattr(
+        cm.ConfigManager, "get",
+        lambda self, k, d=None: str(warp_root) if k == "contour_warp_tmpdir" else d)
+
+    fake_gdal = types.SimpleNamespace(
+        UseExceptions=lambda: None,
+        BuildVRT=lambda *a, **k: object(),
+        Warp=lambda *a, **k: None,
+    )
+    monkeypatch.setitem(sys.modules, "osgeo", types.SimpleNamespace(gdal=fake_gdal))
+    monkeypatch.setitem(sys.modules, "osgeo.gdal", fake_gdal)
+
+    seen = {}
+
+    class _Sentinel(Exception):
+        pass
+
+    def fake_ctx(dem_path, att_path, style, interval, shade, water, out_dir):
+        seen["dem_path"] = dem_path
+        raise _Sentinel
+
+    monkeypatch.setattr(ce, "_build_render_ctx", fake_ctx)
+
+    with pytest.raises(_Sentinel):
+        ce.build_contour_tiles(
+            dem_tifs=[tmp_path / "A_dem.tif"], out_dir=tmp_path / "out",
+            interval=50, zoom_min=12, zoom_max=12, style=ContourStyle(), workers=1)
+
+    # dem_3857.tif 落在 <warp_root>/contour_warp_*/ 下
+    assert Path(seen["dem_path"]).parent.parent == warp_root
+    # finally 清理:配置目录下不留 contour_warp_ 残留
+    assert list(warp_root.iterdir()) == []

@@ -11,20 +11,44 @@ from __future__ import annotations
 import logging
 import shutil
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.config import Config
-from core.database import get_connection
+from core.database import get_connection, utc_now_iso
 from services.config_manager import ConfigManager
 from services.geo_validation import validate_zoom
+from services.task_cleanup import remove_task_dir_if_safe
 from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
 logger = logging.getLogger(__name__)
 
 _ALLOWED_EXT = (".tif", ".tiff")
-UploadFile = Tuple[str, bytes]  # (original_filename, content_bytes)
+# (original_filename, content): bytes 或带 read() 的文件对象（路由直传
+# werkzeug FileStorage 的流）。流式写盘，避免把大上传全量读进内存（M5）。
+UploadFile = Tuple[str, Any]
+
+def _parent_layer_url() -> str:
+    """layer.json 的 parentUrl（级联到全局 base terrain）。
+
+    配置键与 DEM 管线共用：config 表的 terrain_base_parent_url（完整 URL，
+    见 core/database.py DEFAULT_CONFIGS），未配置时回退 localhost:5000 保持
+    既有行为。此前两处硬编码，非 5000 端口/反代部署下 parentUrl 必 404（M20）。
+    """
+    return ConfigManager().get("terrain_base_parent_url", "") or (
+        "http://localhost:5000/terrain/base/layer.json"
+    )
+
+
+def _save_upload(dest: Path, content: Any) -> int:
+    """Persist one upload to dest; returns bytes written. File-like content
+    is copied in chunks so uploads never materialize fully in memory."""
+    if isinstance(content, (bytes, bytearray)):
+        dest.write_bytes(content)
+        return len(content)
+    with open(dest, "wb") as out:
+        shutil.copyfileobj(content, out, length=1024 * 1024)
+    return dest.stat().st_size
 
 
 class LocalTerrainTaskManager:
@@ -47,7 +71,7 @@ class LocalTerrainTaskManager:
             cur.execute("SELECT id FROM local_terrain_tasks WHERE status = 'running'")
             ids = [row["id"] for row in cur.fetchall()]
             if ids:
-                now = datetime.now()
+                now = utc_now_iso()
                 cur.executemany(
                     "UPDATE local_terrain_tasks SET status='failed', completed_at=?, "
                     "error_message='Process was interrupted before completion; re-upload to retile' "
@@ -77,8 +101,9 @@ class LocalTerrainTaskManager:
     ) -> int:
         """Create a task, persist uploaded tifs, then auto-start tiling.
 
-        files: sequence of (original_filename, content_bytes) already read into
-        memory by the caller (the route reads werkzeug FileStorage).
+        files: sequence of (original_filename, content) where content is bytes
+        or a file-like object (the route passes werkzeug FileStorage streams;
+        they are copied to disk in chunks, never read fully into memory).
         """
         name = (name or "Local Terrain Task").strip() or "Local Terrain Task"
 
@@ -87,7 +112,7 @@ class LocalTerrainTaskManager:
             ext = Path(original or "").suffix.lower()
             if ext not in _ALLOWED_EXT:
                 raise ValueError(f"Unsupported file type: {original} (only .tif/.tiff)")
-            if not content:
+            if isinstance(content, (bytes, bytearray)) and not content:
                 raise ValueError(f"Empty file: {original}")
             valid.append((original, content))
 
@@ -99,8 +124,9 @@ class LocalTerrainTaskManager:
         maxzoom = validate_zoom(maxzoom, "maxzoom")
 
         base = Path(Config.DOWNLOADS_DIR) / "terrain"
-        parent_url = "http://localhost:5000/terrain/base/layer.json"
+        parent_url = _parent_layer_url()
 
+        task_root: Optional[Path] = None
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -131,16 +157,7 @@ class LocalTerrainTaskManager:
                 stored = f"upload_{idx}_dem.tif"
                 dest = source_dir / stored
                 try:
-                    dest.write_bytes(content)
-                    cur.execute(
-                        """
-                        INSERT INTO local_terrain_files
-                          (task_id, original_filename, stored_filename, local_path, size_bytes, status)
-                        VALUES (?, ?, ?, ?, ?, 'uploaded')
-                        """,
-                        (task_id, original, stored, str(dest), len(content)),
-                    )
-                    uploaded += 1
+                    size = _save_upload(dest, content)
                 except Exception as e:
                     failed += 1
                     cur.execute(
@@ -149,8 +166,20 @@ class LocalTerrainTaskManager:
                           (task_id, original_filename, stored_filename, local_path, size_bytes, status, error_message)
                         VALUES (?, ?, ?, ?, ?, 'failed', ?)
                         """,
-                        (task_id, original, stored, str(dest), len(content), str(e)),
+                        (task_id, original, stored, str(dest), 0, str(e)),
                     )
+                    continue
+                if size == 0:
+                    raise ValueError(f"Empty file: {original}")
+                cur.execute(
+                    """
+                    INSERT INTO local_terrain_files
+                      (task_id, original_filename, stored_filename, local_path, size_bytes, status)
+                    VALUES (?, ?, ?, ?, ?, 'uploaded')
+                    """,
+                    (task_id, original, stored, str(dest), size),
+                )
+                uploaded += 1
 
             cur.execute(
                 "UPDATE local_terrain_tasks SET uploaded_files=?, failed_files=? WHERE id=?",
@@ -159,11 +188,19 @@ class LocalTerrainTaskManager:
             conn.commit()
         except Exception:
             conn.rollback()
+            # 创建中途失败：文件已先落盘，只回滚 DB 不清目录会留残留；SQLite
+            # rowid 复用后，残留 tif 会被下个同 id 任务的 list_dem_tifs 扫进
+            # 渲染（M12）。best-effort 清掉任务目录（限 DOWNLOADS_DIR 内）。
+            if task_root is not None:
+                remove_task_dir_if_safe(task_root)
             raise
         finally:
             conn.close()
 
         if uploaded == 0:
+            # 全部写盘失败：任务行保留并标记 failed，但残文件没有保留价值，
+            # 同样清掉任务目录避免磁盘残留（M12）。
+            remove_task_dir_if_safe(task_root)
             self._mark_failed(task_id, "All uploaded files failed to save")
             raise ValueError("All uploaded files failed to save")
 
@@ -176,7 +213,7 @@ class LocalTerrainTaskManager:
             cur = conn.cursor()
             cur.execute(
                 "UPDATE local_terrain_tasks SET status='failed', error_message=?, completed_at=? WHERE id=?",
-                (message, datetime.now(), task_id),
+                (message, utc_now_iso(), task_id),
             )
             conn.commit()
         finally:
@@ -207,7 +244,10 @@ class LocalTerrainTaskManager:
             conn.close()
 
     def list_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
-        limit = min(int(limit or 100), 100)
+        # SQLite LIMIT -1 = 无上限：<1 或 >100 都回退默认窗口（同 dem 管线约定，M13）。
+        limit = int(limit or 100)
+        if limit < 1 or limit > 100:
+            limit = 100
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -245,7 +285,7 @@ class LocalTerrainTaskManager:
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='running', started_at=?, "
                     "completed_at=NULL, error_message=NULL WHERE id=? AND status != 'running'",
-                    (datetime.now(), task_id),
+                    (utc_now_iso(), task_id),
                 )
                 if cur.rowcount != 1:
                     raise ValueError(
@@ -255,7 +295,7 @@ class LocalTerrainTaskManager:
                 conn.commit()
 
                 maxzoom = int(row["maxzoom"])
-                parent_url = row["parent_url"] or "http://localhost:5000/terrain/base/layer.json"
+                parent_url = row["parent_url"] or _parent_layer_url()
                 # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
                 # 的约定）：冻结 exe 搬迁后旧绝对路径不会把切片写去错的地方。
                 task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
@@ -293,7 +333,7 @@ class LocalTerrainTaskManager:
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
                     "error_message=NULL WHERE id=? AND status='running'",
-                    (datetime.now(), task_id),
+                    (utc_now_iso(), task_id),
                 )
                 conn.commit()
             finally:
@@ -310,7 +350,7 @@ class LocalTerrainTaskManager:
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='failed', completed_at=?, "
                     "error_message=? WHERE id=? AND status='running'",
-                    (datetime.now(), str(e), task_id),
+                    (utc_now_iso(), str(e), task_id),
                 )
                 conn.commit()
             finally:
@@ -361,17 +401,27 @@ class LocalTerrainTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
-            row = cur.fetchone()
-            if not row:
-                raise ValueError(f"Local terrain task {task_id} not found")
-            if row["status"] == "running":
-                raise ValueError(
-                    "Tiling is in progress and cannot be interrupted; "
-                    "wait for it to finish before deleting"
-                )
-            cur.execute("DELETE FROM local_terrain_tasks WHERE id=?", (task_id,))
-            conn.commit()
+            # 与 start_tiling 同一把 _state_lock 锁内复查 active 线程 + DB 状态
+            # (范本: contour_task_manager.delete_task) —— 此前无锁、不查 active
+            # 线程,与正在跑的 tiling 线程存在 check-then-act 竞态。
+            with self._state_lock:
+                active = self.active_tasks.get(task_id)
+                if active and active.is_alive():
+                    raise ValueError(
+                        "Tiling is in progress and cannot be interrupted; "
+                        "wait for it to finish before deleting"
+                    )
+                cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError(f"Local terrain task {task_id} not found")
+                if row["status"] == "running":
+                    raise ValueError(
+                        "Tiling is in progress and cannot be interrupted; "
+                        "wait for it to finish before deleting"
+                    )
+                cur.execute("DELETE FROM local_terrain_tasks WHERE id=?", (task_id,))
+                conn.commit()
         finally:
             conn.close()
 

@@ -24,6 +24,10 @@ uv pip install -r requirements.txt
 # binding's own version — that is what actually gets bundled; gdal-config may
 # belong to a different GDAL installation on the same machine.
 REQUIRED_GDAL=$(grep -oE '^GDAL==[0-9.]+' requirements.txt | head -1 | cut -d= -f3)
+if [ -z "$REQUIRED_GDAL" ]; then
+    echo "Error: requirements.txt 缺少 GDAL== pin"
+    exit 1
+fi
 SYSTEM_GDAL=$(uv run python -c "from osgeo import gdal; print(gdal.__version__)" 2>/dev/null || gdal-config --version 2>/dev/null || true)
 if [ -z "$SYSTEM_GDAL" ]; then
     echo "Error: no GDAL found (osgeo not importable and gdal-config missing)."

@@ -12,11 +12,41 @@ function initHistory() {
     });
 }
 
-function initHistoryMap() {
+// 历史小地图底图与主视图同一份配置（tile_servers 第一条，语法与
+// map.js _baseMapUrl 一致），不再硬编码外网 OSM——断网/内网部署时
+// 主视图可用而小地图白屏是矛盾的。拿不到配置时保持 OSM 回退。
+// 与 map.js 是刻意重复的两份（无构建工具、独立历史页不加载 map.js，
+// 收敛到公共文件属于第三档）。
+function _historyBaseMapUrl(serversRaw) {
+    const first = (serversRaw || '').split(',').map(s => s.trim()).filter(Boolean)[0];
+    if (!first) return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    if (first.startsWith('http://') || first.startsWith('https://')) {
+        return first.replace('{style}', 'm');
+    }
+    const host = first.includes('.') ? first : first + '.googleapis.com';
+    return `//${host}/vt?lyrs=m&x={x}&y={y}&z={z}`;
+}
+
+async function _resolveHistoryTileServers() {
+    // 首页（index.html）内联了全局 config；独立历史页没有，走 /api/config 拿。
+    if (typeof config !== 'undefined' && config && config.tile_servers) {
+        return config.tile_servers;
+    }
+    try {
+        const r = await fetch('/api/config', { cache: 'no-store' });
+        const j = await r.json();
+        return (j.config && j.config.tile_servers) || '';
+    } catch (e) {
+        return '';      // 接口失败：_historyBaseMapUrl 回退 OSM
+    }
+}
+
+async function initHistoryMap() {
     // 历史区域小地图：Cesium 只读视图（地图系统已从 Leaflet 切到 CesiumJS）
+    const tileUrl = _historyBaseMapUrl(await _resolveHistoryTileServers());
     historyViewer = new Cesium.Viewer('historyMap', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-            url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            url: tileUrl,
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
             credit: '© OpenStreetMap contributors',
         })),
@@ -289,7 +319,8 @@ function getStatusText(status) {
         'failed': '失败',
         'cancelled': '已取消'
     };
-    return texts[status] || status;
+    // 未知状态不把英文字面量原样渲染进中文界面（与 tasks.js 同一约定）
+    return texts[status] || '未知';
 }
 
 function getStyleText(style) {
@@ -310,9 +341,8 @@ function getStyleText(style) {
 }
 
 function formatDate(dateStr) {
-    if (!dateStr) return '-';
-    const date = new Date(dateStr);
-    return date.toLocaleString('zh-CN');
+    const date = parseTaskDate(dateStr);
+    return date ? date.toLocaleString('zh-CN') : '-';
 }
 
 async function viewTaskDetails(taskId, taskType = 'map') {
@@ -540,7 +570,12 @@ async function deleteTask(taskId, taskType = 'map') {
 
         if (response.ok) {
             showToast('任务已删除', 'success');
-            loadHistory(currentPage);
+            // 删掉的是当前页最后一条时本页已空，停在原页会看到空白页——回退一页
+            if (allTasks.length <= 1 && currentPage > 1) {
+                loadHistory(currentPage - 1);
+            } else {
+                loadHistory(currentPage);
+            }
             loadStats();
         } else {
             showToast('删除失败', 'danger');

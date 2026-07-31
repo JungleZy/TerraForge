@@ -5,12 +5,11 @@ Handles RESTful API endpoints for task management, history, and configuration.
 """
 
 import logging
-from pathlib import Path
 from flask import Blueprint, request, jsonify
 from typing import Optional
 from core.database import get_connection, DEFAULT_CONFIGS
 from services.config_manager import ConfigManager
-from services.task_cleanup import remove_task_dir_if_safe
+from services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +76,11 @@ def create_task():
             return jsonify({
                 'error': f'Missing required fields: {", ".join(missing_fields)}'
             }), 400
+
+        # name 必须是字符串:list/dict 会一路带到 sqlite 绑定参数抛
+        # InterfaceError,经通用 except 变成 500 —— 在入口处拦成 400。
+        if not isinstance(data['name'], str):
+            return jsonify({'error': 'name must be a string'}), 400
 
         # Create task
         task_id = task_manager.create_task(data)
@@ -374,8 +378,13 @@ def delete_task(task_id: int):
             conn.close()
 
         # Optional best-effort artifact cleanup after the row is gone.
+        # 存量行的 output_path 可能是相对路径(旧版本只校验不改写)——先归一化
+        # 成绝对路径;否则 Path.resolve() 按进程 CWD 解析,CWD≠BASE_DIR 时会
+        # 误判成"越界"而拒删,接口却已经返回 success。
         if request.args.get('delete_files', '').lower() in ('1', 'true', 'yes'):
-            remove_task_dir_if_safe(Path(row['output_path']) / f"task_{task_id}")
+            remove_task_dir_if_safe(
+                resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
+            )
 
         return jsonify({
             'success': True,
@@ -643,7 +652,7 @@ def get_history_all():
 
 @api_bp.route('/history_stats', methods=['GET'])
 def get_history_stats():
-    """Aggregate task counts and download totals across all three task tables."""
+    """Aggregate task counts and download totals across all four task tables."""
     try:
         conn = get_connection()
         try:

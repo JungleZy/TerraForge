@@ -8,14 +8,16 @@ minors: 瓦片失败无日志;att warp 失败静默;fmt='%d' 截断非整数 int
 """
 
 import asyncio
-import importlib
 import io
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from conftest import fresh_import
 
 
 def _setup_db(monkeypatch, tmp_path):
@@ -23,11 +25,9 @@ def _setup_db(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.contour_task_manager"):
-        sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = fresh_import(monkeypatch, "core.database")
     db.init_database()
-    ctm_mod = importlib.import_module("services.contour_task_manager")
+    ctm_mod = fresh_import(monkeypatch, "services.contour_task_manager")
     return db, ctm_mod
 
 
@@ -37,9 +37,17 @@ def _load_app(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.contour_task_manager"):
-        sys.modules.pop(mod, None)
-    app_mod = importlib.import_module("app")
+    # routes / routes.contour_api 也必须重导入:app.py 是
+    # `from routes import contour_api_bp` + `from routes.contour_api import
+    # init_contour_task_manager`,若 sys.modules 里还留着其他测试 pop 后残留的
+    # 旧实例,蓝图用的模块和 `import routes.contour_api` 拿到的就不是同一份
+    # (模块双实例)。fresh_import 在 teardown 时恢复原有 sys.modules 条目,
+    # 本文件也不会再把残留泄漏给后面的测试。
+    app_mod = fresh_import(
+        monkeypatch,
+        "app", "core.database", "services.contour_task_manager",
+        "routes", "routes.contour_api",
+    )[0]
     app_mod.app.config["TESTING"] = True
     return app_mod, app_mod.app.test_client()
 
@@ -157,13 +165,31 @@ def test_fix_i19_skipped_tiles_count_toward_progress(tmp_path):
 def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
     db, ctm_mod = _setup_db(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = mgr.create_task({
-        "name": "t", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
-        "contour_interval": 50, "zoom_min": 12, "zoom_max": 12,
-    })
+    # 下载驱动 create_task 已删除:直接 SQL 造旧版下载驱动的 running 任务行
     conn = db.get_connection()
     try:
-        conn.execute("UPDATE contour_tasks SET status='running' WHERE id=?", (task_id,))
+        from core import config
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO contour_tasks (
+                name, status, north, south, east, west, dataset,
+                contour_interval, background, terrain_shade, water,
+                zoom_min, zoom_max, output_path,
+                total_files, downloaded_files, failed_files,
+                total_tiles, rendered_tiles, failed_tiles
+            )
+            VALUES ('t', 'running', 1.0, 0.0, 1.0, 0.0, 'COP-DEM-GLO-30', 50,
+                    '#FAF6EC', 1, 0, 12, 12, ?, 1, 0, 0, 0, 0, 0)
+            """,
+            (str(Path(config.Config.DOWNLOADS_DIR) / "dem"),),
+        )
+        task_id = cur.lastrowid
+        cur.execute(
+            "INSERT INTO contour_files (task_id, granule_id, kind, status, retry_count)"
+            " VALUES (?, ?, 'dem', 'pending', 0)",
+            (task_id, "Copernicus_DSM_COG_10_N00_00_E000_00_DEM/Copernicus_DSM_COG_10_N00_00_E000_00_DEM.tif"),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -196,12 +222,15 @@ def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_fix_i15_create_task_with_files_rejects_non_finite_interval(monkeypatch, tmp_path):
+    from werkzeug.datastructures import FileStorage
     db, ctm_mod = _setup_db(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
     for bad in ("nan", "inf", "-inf"):
         with pytest.raises(ValueError):
-            mgr.create_task_with_files(name="x", files=[("a.tif", b"fake")],
-                                       contour_interval=bad)
+            mgr.create_task_with_files(
+                name="x",
+                files=[FileStorage(stream=io.BytesIO(b"fake"), filename="a.tif")],
+                contour_interval=bad)
 
 
 def test_fix_i15_api_rejects_non_finite_interval(monkeypatch, tmp_path):
@@ -233,11 +262,10 @@ def test_fix_i3_delete_task_with_active_thread_rejected(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     tid = _post_task(client).get_json()["task_id"]
 
-    # 从实际服务请求的视图函数 globals 里取 manager —— 其他测试文件会
-    # pop sys.modules["routes.contour_api"] 造成模块双实例,直接 import
-    # routes.contour_api 拿到的可能不是蓝图实际在用的那份。
-    view = app_mod.app.view_functions["contour_api.delete_contour_task"]
-    mgr = view.__globals__["contour_task_manager"]
+    # _load_app 已把 routes / routes.contour_api 一并重导入,这里正常 import
+    # 拿到的就是蓝图实际在用的同一个模块实例
+    from routes import contour_api
+    mgr = contour_api.contour_task_manager
 
     class _Alive:
         def is_alive(self):

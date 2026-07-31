@@ -19,7 +19,7 @@ class TileParams:
     parent_url: str
     # 65x65 vertex grid: at z14 this samples ~19 m spacing, matching 30 m DEMs
     # (Copernicus GLO-30 / ASTER). estimate_max_level in cesiumlab_terrain.py
-    # already assumes a 65-vertex tile (180/64 deg per tile pixel).
+    # derives the per-tile interval from tile_size (180/(tile_size-1) deg).
     tile_size: int = 65
     workers: int = 0
 

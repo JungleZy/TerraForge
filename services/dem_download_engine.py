@@ -27,7 +27,23 @@ def _redact_url_query(text: str) -> str:
     return re.sub(r"\?[^\s\"')]*", "?<redacted>", str(text))
 
 
-ProgressCallback = Callable[[str, str, Optional[str], Optional[int]], "asyncio.Future[Any]"]
+async def _report_progress(
+    progress_callback: Optional[Callable[[str, str, Optional[str], Optional[int]], Any]],
+    granule: str,
+    status: str,
+    error: Optional[str],
+    size_bytes: Optional[int],
+) -> None:
+    """回调只负责进度/记账，其异常不外抛：progress 回调（新开 sqlite 连接
+    同步写库 + emit）若在下载 try 块内抛出，会被下载重试的 except Exception
+    当成下载失败（白下 30-50MB），最终 failed 回调再抛还会击穿无
+    return_exceptions 的 gather、取消其余 granule 协程。DB 层瞬时故障只记日志。"""
+    if progress_callback is None:
+        return
+    try:
+        await progress_callback(granule, status, error, size_bytes)
+    except Exception as e:
+        logger.warning(f"DEM progress callback failed ({granule}, {status}): {e}")
 
 
 class DemDownloadEngine:
@@ -150,14 +166,12 @@ class DemDownloadEngine:
                     local_name = Path(granule).name
                     dest = output_dir / local_name
                     if dest.exists() and dest.stat().st_size > 0:
-                        if progress_callback:
-                            await progress_callback(granule, "completed", None, dest.stat().st_size)
+                        await _report_progress(progress_callback, granule, "completed", None, dest.stat().st_size)
                         return
 
                     if self._try_promote_from_cache(local_name, dest, cache_dir):
                         logger.info(f"DEM cache hit: {local_name} (promoted from {cache_dir})")
-                        if progress_callback:
-                            await progress_callback(granule, "completed", None, dest.stat().st_size)
+                        await _report_progress(progress_callback, granule, "completed", None, dest.stat().st_size)
                         return
 
                     file_url = base_url + granule
@@ -166,13 +180,11 @@ class DemDownloadEngine:
                         if stop_flag and stop_flag.is_set():
                             # C4: 暂停不是失败 —— 回写 pending，恢复时重新下载，
                             # 不能留下 downloading 孤儿。
-                            if progress_callback:
-                                await progress_callback(granule, "pending", None, None)
+                            await _report_progress(progress_callback, granule, "pending", None, None)
                             return
 
                         try:
-                            if progress_callback:
-                                await progress_callback(granule, "downloading", None, None)
+                            await _report_progress(progress_callback, granule, "downloading", None, None)
 
                             if requires_auth:
                                 get_url = await earth.get_signed_url(session=session, file_url=file_url)
@@ -182,10 +194,10 @@ class DemDownloadEngine:
                                 if resp.status == 404:
                                     # I12: 无数据颗粒（海洋/覆盖范围外）—— 标记 skipped，
                                     # 不重试、不计 failed、不阻断任务完成（部分成功语义）。
-                                    if progress_callback:
-                                        await progress_callback(
-                                            granule, "skipped", "no data at this location (HTTP 404)", None
-                                        )
+                                    await _report_progress(
+                                        progress_callback,
+                                        granule, "skipped", "no data at this location (HTTP 404)", None,
+                                    )
                                     return
                                 if resp.status != 200:
                                     raise RuntimeError(f"Download HTTP {resp.status}")
@@ -216,16 +228,9 @@ class DemDownloadEngine:
 
                             self._save_to_cache(dest, local_name, cache_dir)
 
-                            if progress_callback:
-                                await progress_callback(granule, "completed", None, dest.stat().st_size)
+                            await _report_progress(progress_callback, granule, "completed", None, dest.stat().st_size)
                             return
                         except Exception as e:
-                            if stop_flag and stop_flag.is_set():
-                                # C4: 下载途中暂停 —— 回写 pending，恢复时重新下载。
-                                if progress_callback:
-                                    await progress_callback(granule, "pending", None, None)
-                                return
-                            last_err = _redact_url_query(str(e))
                             # Remove the partial .part so failed/interrupted attempts
                             # don't leave litter (and a later run re-downloads cleanly).
                             part = dest.with_suffix(dest.suffix + ".part")
@@ -234,11 +239,24 @@ class DemDownloadEngine:
                                     part.unlink()
                             except OSError:
                                 pass
+                            if stop_flag and stop_flag.is_set():
+                                # C4: 下载途中暂停 —— 回写 pending，恢复时重新下载。
+                                await _report_progress(progress_callback, granule, "pending", None, None)
+                                return
+                            last_err = _redact_url_query(str(e))
                             logger.warning(f"DEM download failed ({granule}) attempt {attempt+1}/{max_retries+1}: {last_err}")
-                            await asyncio.sleep(min(2 ** attempt, 10))
+                            # 分段退避：每 0.5s 检查一次 stop —— 一觉睡到 10s 的话
+                            # 暂停/停止要等 sleep 结束才生效。
+                            delay = min(2 ** attempt, 10)
+                            elapsed = 0.0
+                            while elapsed < delay:
+                                if stop_flag and stop_flag.is_set():
+                                    break
+                                step = min(0.5, delay - elapsed)
+                                await asyncio.sleep(step)
+                                elapsed += step
 
-                    if progress_callback:
-                        await progress_callback(granule, "failed", last_err, None)
+                    await _report_progress(progress_callback, granule, "failed", last_err, None)
 
             await asyncio.gather(*(one(g) for g in granules))
 

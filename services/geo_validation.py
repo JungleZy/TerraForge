@@ -22,6 +22,9 @@ MAX_ZOOM = 21  # 与 services/download_engine.py 的 MAX_ZOOM 一致
 
 def coerce_number(value, name):
     """把输入转成 float 并保证是有限数,失败抛带字段名的 ValueError。"""
+    # JSON 布尔是 int 子类（float(True)=1.0），坐标/层级不含义布尔，显式拒绝。
+    if isinstance(value, bool):
+        raise ValueError(f"{name} ({value!r}) must be a number")
     try:
         f = float(value)
     except (TypeError, ValueError):
