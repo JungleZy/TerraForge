@@ -708,13 +708,10 @@ body {
     background: var(--color-neutral);
 }
 
-/* 失败行底色。!important 是必需的：`.table td` 有
-   `background: transparent !important`（压 Bootstrap 的 .bg-* 工具类），
-   !important 之间先比特异度，本条 (0,2,1) 赢 (0,1,1)。
-   已在 tests/test_css_contract.py 的 !important 登记处记账。 */
-.task-row.status-failed td {
-    background-color: var(--color-danger-bg) !important;
-}
+/* 失败行**不铺底色**（2026-08 扁平化）：整行红洗 + 红框错误框是「模板味」
+   重灾区——状态识别交给 4px 左条与红色徽章，错误原因交给下方错误行，
+   行本身与其它行一样只留发丝分隔线。原先那处 !important 随之删除
+   （已在 tests/test_css_contract.py 的登记处记账）。 */
 
 .task-row .task-name {
     font-family: var(--font-display);
@@ -736,13 +733,14 @@ body {
     padding: 0.3rem 0.65rem;
 }
 
-/* 富行行2 的紧凑进度条：表格行装不下 28px 轨道 + 18px 覆盖层 chip，
+/* 富行行2 的紧凑进度条：2026-08 扁平化收到 5px 发丝条——14px 的粗条加满色
+   填充是视觉噪音的主要来源。表格行装不下 28px 轨道 + 18px 覆盖层 chip，
    所以这里不用 .progress/.progress__label 那套（百分比移到条右边的 .task-pct，
    由 tasks.js updateTaskProgressPartial 同步）。
    width 过渡沿用 .progress-bar 的全局规则（0.2s linear），
    推送追得上（test_progress_bar_transition_keeps_up_with_the_push_rate）。 */
 .task-progress {
-    height: 14px;
+    height: 5px;
     background: var(--color-bg-tertiary);
     border-radius: 999px;
     overflow: hidden;
@@ -824,22 +822,18 @@ body {
     white-space: nowrap;
 }
 
-/* 失败任务错误行里的错误原因框（tr.task-error-row > td 里的 .task-error）。
+/* 失败任务错误行里的错误原因（tr.task-error-row > td 里的 .task-error）。
    文本由 tasks.js 的 applyTaskErrorText 用 textContent 填入（后端错误原文不能进 innerHTML）。
-   配色实算（见 tests/test_css_contract.py::test_task_error_box_exists_and_is_readable）：
-     真实背衬是面板 .card 的 #15171c（单元格背景透明，透出面板底；
-     历史注记：这里原指 .task-card 卡片底，与 .card 恰好同色，数值不变）。
-     底色 rgba(239,68,68,0.12) 压在 #15171c 上 = #2f1c21
-     文字 #e8eaed 对 #2f1c21 = 13.31:1（WCAG 正文下限 4.5:1，CDP 实测同值）
-     边框 #f87171 对 #15171c =  6.48:1（图形元素下限 3:1）
+   2026-08 扁平化：红底 + 整圈红边框的「盒子里的盒子」改为无边框无边底、
+   只留 2px 红色左边条的引文式排版。可读性靠文字色本身：
+     文字 #f87171(--color-danger) 对背衬 .card #15171c = 6.48:1
+     （WCAG 正文 4.5:1；左边条与文字同色，图形下限 3:1 同值满足）
    等宽字体是跟 .progress-detail 一致的选择：错误原文里多是路径、URL、状态码。 */
 .task-error {
-    margin-top: 0.5rem;
-    padding: 0.375rem 0.5rem;
-    border-radius: var(--radius-sm);
-    background: var(--color-danger-bg);
-    border: 1px solid var(--color-danger);
-    color: var(--color-text-primary);
+    margin-top: 0.25rem;
+    padding: 0.125rem 0 0.125rem 0.625rem;
+    border-left: 2px solid var(--color-danger);
+    color: var(--color-danger);
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     line-height: 1.5;

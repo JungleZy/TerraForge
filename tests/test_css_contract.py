@@ -348,14 +348,13 @@ def test_important_count_under_control():
         rgb(21,23,28)、`.leaflet-draw-tooltip` 仍是 rgba(12,13,16,0.92)）。
         本次**新增 0 处**。
       = 66 处（本次实测）
-      + 1 处：**统一任务表改版（活动任务卡片 .task-card -> 实时行 .task-row）新增**，
-              登记如下——
-              `.task-row.status-failed td { background-color: var(--color-danger-bg) !important }`。
-              压的是谁、为什么非 !important 不可：`.table td, .table th` 自带
-              `background: transparent !important`（压 Bootstrap `.bg-*` 工具类的
-              历史债，见表格段注释）。不带 !important 的话失败行底色根本不生效；
-              !important 之间先比特异度，本条 (0,2,1) 赢 (0,1,1)。
-      = 67 处（本次实测）
+      + 1 处 / - 1 处：**统一任务表改版新增、2026-08 扁平化又删除**，净 0，登记如下——
+              `.task-row.status-failed td { background-color: var(--color-danger-bg) !important }`
+              （统一任务表改版时新增：压 `.table td` 的 `background: transparent !important`，
+              失败行整行红洗。2026-08 扁平化随「失败行不铺底色」整条删除：
+              整行红洗 + 红框错误框是用户实测否掉的「模板味」形态，
+              状态识别改由左条/徽章/错误行承担，不再需要这处 !important。）
+      = 66 处（本次实测）
 
     ⚠️ 本次上界**不动，仍是 68**，而不是按棘轮公式取「实测 66 + 3 = 69」。
        理由：那个公式在这里会把上界**抬高**（68 -> 69），与棘轮「只降不升」
@@ -412,9 +411,9 @@ def test_important_count_under_control():
     清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
     两者性质不同。
 
-    ⚠️ 当前余量为 **1**（实测 67 / 上界 68）：统一任务表改版给失败行底色
-    （.task-row.status-failed td）新增 1 处 !important，压 `.table td` 的
-    `background: transparent !important`。上界没有跟着往上走。
+    ⚠️ 当前余量为 **2**（实测 66 / 上界 68）：2026-08 扁平化删掉了
+    统一任务表改版新增的失败行底色 !important（.task-row.status-failed td），
+    余量从 1 恢复到 2。上界没有跟着往上走。
 
     余下 66 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
@@ -1364,27 +1363,23 @@ def _effective_task_card_backdrop(css):
 
 
 def test_task_error_box_exists_and_is_readable():
-    """失败卡片里的 `.task-error` 必须存在、在顶层、且文字真的看得清。
+    """失败行里的 `.task-error` 必须存在、在顶层、且文字真的看得清。
 
-    强度说明：只断言 `'.task-error' in css` 的话，一条空规则
-    `.task-error {}` 就能过——而错误文本会以「深色卡片上的默认色」渲染，
-    很可能是 Bootstrap 继承来的深灰，等于把失败原因写成隐形字。
-    这里逐项落地：
+    2026-08 扁平化（用户实测反馈整行红洗 + 红框错误框「太像模板」）：
+    错误框从「红底 + 整圈红边框的盒子」改为「2px 红色左边条 + 红色文字」
+    的引文式排版。本断言跟着换形态，强度不降级：
 
-      1. 顶层恰好一条规则（用 `_rules_ctx` 并要求 at-rule 上下文为空——
-         包进 `@media (min-width: 3000px)` 的规则在文件里存在但永不生效，
-         这是 Task 5 评审实测出来的坑）。
-      2. 规则体里真的声明了 background / border / color。
-      3. **半透明底色先合成再算对比度**：`--color-danger-bg` 是
-         rgba(239,68,68,0.12)，压在真实背衬上才是屏幕上的实际底色。
-      4. **背衬顺着真实渲染链取**（`_effective_task_card_backdrop`：从 `.card`
-         的声明解析，不是硬编码 `--color-bg-secondary`）。硬编码那版是巧合，
-         改 `.card` 底色时会静默漂移，理由见那个函数的 docstring。
-      5. 文字对合成底色 >= 4.5:1（正文），边框对背衬 >= 3:1（图形）。
+      1. 顶层恰好一条规则（包进 `@media (min-width: 3000px)` 的规则在文件里
+         存在但永不生效——Task 5 评审实测出来的坑）。
+      2. 必须声明 `color` 与 `border-left`（新形态的两个可读性来源），
+         且**不得**声明 background（铺底色 = 回潮到盒子形态）。
+      3. 文字对真实背衬 >= 4.5:1（正文），左边条对背衬 >= 3:1（图形）。
+         背衬顺着真实渲染链取（`_effective_task_card_backdrop`：从 `.card`
+         的声明解析，不是硬编码调色板变量——硬编码会随 `.card` 改色静默漂移，
+         理由见那个函数的 docstring）。
 
     覆盖范围（诚实说明）：这条守的是 CSS 源码里能算出来的色值关系。
-    它保证不了「这个框在浏览器里真的显示出来了」——那由 CDP 实测覆盖
-    （p2-task-6-report.md 里有 getComputedStyle 取到的实际颜色与实算比值）。
+    它保证不了「这段文字在浏览器里真的显示出来了」——那由 CDP 实测覆盖。
     """
     css = _css()
     rules = [
@@ -1396,26 +1391,34 @@ def test_task_error_box_exists_and_is_readable():
         f'{[s for s, _ in rules]}'
     )
     decls = _decl_map(rules[0][1])
-    for prop in ('background', 'border', 'color'):
-        assert prop in decls, f'.task-error 没有声明 {prop}'
+    for prop in ('color', 'border-left'):
+        assert prop in decls, (
+            f'.task-error 没有声明 {prop} —— 扁平形态下它是可读性的唯一来源'
+        )
+    assert 'background' not in decls and 'background-color' not in decls, (
+        '.task-error 又铺了底色 —— 2026-08 扁平化后它是无边底引文式；'
+        '要恢复盒子形态请先评审（整行红洗 + 红框是实测被否掉的形态）'
+    )
 
     card = _effective_task_card_backdrop(css)
 
-    box_bg = _flatten(_resolve_color(css, decls['background']), card)
-    text = _flatten(_resolve_color(css, decls['color']), box_bg)
-    ratio = _contrast_ratio(text, box_bg)
+    text = _flatten(_resolve_color(css, decls['color']), card)
+    ratio = _contrast_ratio(text, card)
     assert ratio >= ERROR_TEXT_MIN_CONTRAST, (
-        f'.task-error 的文字 {text} 对合成后的底色 {box_bg} 只有 {ratio:.2f}:1，'
+        f'.task-error 的文字 {text} 对真实背衬(.card) {card} 只有 {ratio:.2f}:1，'
         f'低于 WCAG 正文 {ERROR_TEXT_MIN_CONTRAST}:1 —— 失败原因会「在但看不清」'
     )
 
     m = re.search(r'(#[0-9a-fA-F]{6}|rgba?\([^)]*\)|var\(\s*--[-\w]+\s*\))',
-                  decls['border'])
-    assert m, f'.task-error 的 border 里解析不出颜色：{decls["border"]!r} —— 本测试已失效'
+                  decls['border-left'])
+    assert m, (
+        f'.task-error 的 border-left 里解析不出颜色：{decls["border-left"]!r} '
+        '—— 本测试已失效'
+    )
     border = _flatten(_resolve_color(css, m.group(1)), card)
     bratio = _contrast_ratio(border, card)
     assert bratio >= ERROR_BORDER_MIN_CONTRAST, (
-        f'.task-error 的边框 {border} 对真实背衬(.card) {card} 只有 {bratio:.2f}:1，'
+        f'.task-error 的左边条 {border} 对真实背衬(.card) {card} 只有 {bratio:.2f}:1，'
         f'低于图形元素 {ERROR_BORDER_MIN_CONTRAST}:1'
     )
 
@@ -1467,34 +1470,33 @@ def _task_error_chain():
 
 
 def test_task_error_box_background_actually_reaches_the_screen():
-    """失败原因框的红色底纹必须真的渲染出来。
+    """扁平化形态契约：`.task-error` 不得再靠底色呈现（2026-08）。
 
-    这条的前身是 test_task_error_survives_the_blanket_div_reset，它要求
-    `.task-error` 出现在兜底重置的 `:not()` 白名单里。那是**绕法**，不是目的。
+    这条的前身守的是「红色底纹必须真的渲染出来」（底纹曾被兜底重置压成
+    透明，源码存在、浏览器里没有）。2026-08 扁平化把错误框从红底盒子改为
+    无边底引文式（2px 左边条 + 红字），这条跟着翻面：
 
-    历史证据（Chrome 148，CDP `CSS.getMatchedStylesForNode`）：加白名单之前
-    `.task-error` 的 `getComputedStyle().backgroundColor` 是 `rgba(0,0,0,0)`
-    —— 红色底纹在源码里存在、在浏览器里完全不出现，而只读源码算色值的
-    test_task_error_box_exists_and_is_readable 依然全绿。
-    这正是「写了断言 ≠ 断言守住了我以为的东西」。
-
-    现在白名单和兜底重置都没了，改成直接算最终生效值：赢家必须是
-    style.css 的 `.task-error` 那条，值必须是 --color-danger-bg。
+      1. `.task-error` 的最终生效背景必须是不存在或透明——有人把底色写回来
+         就是回潮到「盒子里的盒子」形态；
+      2. 文字色必须解析为 --color-danger（可读性由文字色承担，
+         对比度由 test_task_error_box_exists_and_is_readable 按背衬实算）。
     """
     win = _effective_bg_for(_task_error_chain())
-    assert win is not None, '.task-error 没有任何背景声明命中它 —— 底纹不存在'
-    assert win.sheet == 'style.css' and '.task-error' in win.branch, (
-        f'.task-error 的背景赢家是 {win.sheet} 的 `{win.branch}` '
-        f'{{ background: {win.value} }}，不是 style.css 的 `.task-error` —— '
-        '红色底纹被别的规则夺走了（源码里有、浏览器里没有）'
+    assert win is None or _bg_is_transparent(_css(), win.value), (
+        f'.task-error 的最终生效背景是 {win.value}（来自 {win.sheet} 的 `{win.branch}`）'
+        '—— 扁平化后它不该有底色。要恢复盒子形态请先评审'
     )
-    assert not _bg_is_transparent(_css(), win.value), (
-        f'.task-error 最终生效的背景是 {win.value}，等于没有底纹'
-    )
-    assert _resolve_color(_css(), win.value) == \
-        _palette_var(_css(), '--color-danger-bg'), (
-        f'.task-error 的底纹色变成了 {win.value}，不再是 --color-danger-bg —— '
-        'test_task_error_box_exists_and_is_readable 算的对比度是按那个值算的'
+    css = _css()
+    rules = [
+        (sel, body) for sel, body, at_ctx in _rules_ctx(css)
+        if not at_ctx and '.task-error' in _selector_parts(sel)
+    ]
+    assert len(rules) == 1, '顶层 .task-error 规则必须是恰好 1 条 —— 本测试已失效'
+    color = _decl_map(rules[0][1]).get('color')
+    assert color is not None and _resolve_color(css, color) == \
+        _palette_var(css, '--color-danger'), (
+        f'.task-error 的文字色是 {color}，不是 --color-danger —— '
+        '无边底形态下文字色是唯一的可读性来源'
     )
 
 
@@ -8054,12 +8056,13 @@ def test_every_victim_of_the_deleted_blanket_reset_renders_its_background():
 
 
 def test_task_error_and_modal_backdrop_render_their_background():
-    """两个运行时注入的受害者：错误框底色 + **弹窗遮罩必须变暗**。
+    """两个运行时注入元素的背景契约：错误框**不得有底色** + 弹窗遮罩必须变暗。
 
     （前身是 test_task_card_and_modal_backdrop_render_their_background。
-    统一任务表改版删掉了 .task-card，任务列表不再有「卡片底色」这个受害者；
-    接替登记的是同样运行时注入、同样必须带底色的 .task-error 错误框——
-    它的 --color-danger-bg 底纹是「失败原因看得见」的承载。）
+    统一任务表改版把 .task-card 换成 .task-error 错误框；2026-08 扁平化
+    再把错误框从红底盒子改为无边底引文式——所以这一条对 .task-error
+    的期望从「底纹必须是 --color-danger-bg」翻面为「不得有不透明底色」，
+    可读性改由文字色承担，见 test_task_error_box_exists_and_is_readable。）
 
     `div.modal-backdrop` 是本次最硬的验收点。Bootstrap 的
     `.modal-backdrop{--bs-backdrop-bg:#000; background-color:var(--bs-backdrop-bg)}`
@@ -8084,11 +8087,10 @@ def test_task_error_and_modal_backdrop_render_their_background():
     )
     problems = []
     win = _effective_bg_for(lookup['task-error'])
-    if win is None or _bg_is_transparent(css, win.value):
-        problems.append('.task-error 的底纹又是透明的（与改前的 .task-card 同型缺陷）')
-    elif _resolve_color(css, win.value) != _palette_var(css, '--color-danger-bg'):
+    if win is not None and not _bg_is_transparent(css, win.value):
         problems.append(
-            f'.task-error 的底纹变成了 {win.value}，不再是 --color-danger-bg'
+            f'.task-error 又有了不透明底色 {win.value} —— 2026-08 扁平化后'
+            '它是无边底引文式（红字 + 2px 左边条），铺底色就是回潮'
         )
     win = _effective_bg_for(lookup['modal-backdrop'])
     if win is None:
