@@ -117,7 +117,7 @@ if _PRINT_BANNER or _SHOW_STARTUP_OUTPUT:
     from core.startup_banner import start_spinner
     _spinner = start_spinner('  正在加载组件,请稍候…')
 
-from flask import Flask
+from flask import Flask, request
 from flask_socketio import SocketIO
 
 # 打包模式(Nuitka standalone):templates/static 与可执行文件同目录
@@ -144,6 +144,7 @@ from routes.local_terrain_api import init_local_terrain_task_manager
 from services.contour_task_manager import ContourTaskManager
 from routes.contour_api import init_contour_task_manager
 from services.system_proxy import apply_system_proxy
+from services.task_cleanup import sweep_startup_residue
 
 def create_app():
     """构造 Flask app + SocketIO + 全部 TaskManager + 蓝图,返回
@@ -180,6 +181,16 @@ def create_app():
 
     logger.debug("Flask application created")
 
+    # /static/vendor/ 下的第三方库路径自带版本号(如 cesium/1.143.0/...),
+    # 内容变了路径就变,所以可以安全地让浏览器 immutable 长缓存,免去每次启动
+    # 重新拉取几十 MB 的 Cesium/Bootstrap。业务资源(/static/js/ 等)不加,
+    # 保持默认协商缓存,改了能立即生效。
+    @app.after_request
+    def _vendor_immutable_cache(response):
+        if request.path.startswith('/static/vendor/'):
+            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        return response
+
     # Initialize SocketIO with CORS support
     socketio = SocketIO(app, cors_allowed_origins="*")
     logger.debug("SocketIO initialized with CORS enabled")
@@ -187,6 +198,12 @@ def create_app():
     # Initialize database
     init_database()
     logger.debug("Database initialized")
+
+    # 启动一次性清扫:上次进程被 SIGKILL/关窗打断时,finally 盖不住的三类
+    # 临时残留(stitch work_dir / contour warp tmpdir / cache .part)在这里
+    # best-effort 清掉。必须在 init_database 之后(要读 contour_warp_tmpdir
+    # 配置键);同步毫秒级,失败只记日志不拖慢/阻断启动。
+    sweep_startup_residue()
 
     # Create TaskManager instance with SocketIO
     task_manager = TaskManager(socketio=socketio)

@@ -59,6 +59,9 @@ DEFAULT_CONFIGS = [
     ('map_initial_zoom', '3'),
     ('gdal_compression', 'LZW'),
     ('gdal_resampling', 'cubic'),
+    # 瓦片拼接(stitch)中间产物临时目录;留空 = 系统临时目录。
+    # 形制同 contour_warp_tmpdir,配置页同样不暴露(高级排障键)。
+    ('stitch_tmpdir', ''),
     # Earthdata Login (for NASA LP DAAC protected datasets, e.g., ASTGTM.003)
     ('earthdata_username', ''),
     ('earthdata_password', ''),
@@ -114,8 +117,11 @@ def get_connection():
     # journal_mode 这一步就直接 database is locked。journal_mode 持久化在库文件上，
     # busy_timeout 是每连接设置，所以在唯一的连接入口统一开启（init_database
     # 也走这里）。对 tmp_path 测试库同样生效。
+    # synchronous 也是每连接设置：WAL 下 NORMAL 只在 checkpoint 时刷盘，崩溃
+    # 不损库（至多丢最后一个已提交事务），比默认 FULL 省大量 fsync。
     conn.execute('PRAGMA busy_timeout = 30000')
     conn.execute('PRAGMA journal_mode = WAL')
+    conn.execute('PRAGMA synchronous = NORMAL')
     return conn
 
 
@@ -191,6 +197,13 @@ def init_database():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_tasks_status
             ON tasks(status)
+        ''')
+
+        # 历史列表(/api/history、history_all)按 created_at DESC 排序分页,
+        # 无索引时任务多了每次列表都全表排序
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_tasks_created_at
+            ON tasks(created_at)
         ''')
 
         # Time tracking support (backwards compatible with older DBs)
@@ -292,6 +305,12 @@ def init_database():
             ON dem_tasks(status)
         ''')
 
+        # list_tasks 按 created_at DESC 排序(与 tasks 表同理)
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_dem_tasks_created_at
+            ON dem_tasks(created_at)
+        ''')
+
         # Create DEM files table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS dem_files (
@@ -322,6 +341,8 @@ def init_database():
                 output_dir TEXT NOT NULL,
                 maxzoom INTEGER NOT NULL,
                 parent_url TEXT,
+                rendered_tiles INTEGER DEFAULT 0,
+                total_tiles INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
                 completed_at TIMESTAMP,
@@ -359,6 +380,12 @@ def init_database():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_local_terrain_tasks_status
             ON local_terrain_tasks(status)
+        ''')
+
+        # list_tasks 按 created_at DESC 排序(与 tasks 表同理)
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_local_terrain_tasks_created_at
+            ON local_terrain_tasks(created_at)
         ''')
 
         cursor.execute('''
@@ -410,6 +437,12 @@ def init_database():
                 completed_at TIMESTAMP,
                 error_message TEXT
             )
+        ''')
+
+        # list_tasks 按 created_at DESC 排序(与 tasks 表同理)
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_contour_tasks_created_at
+            ON contour_tasks(created_at)
         ''')
 
         # 等高线 DEM 文件表
@@ -472,6 +505,10 @@ def init_database():
             ("contour_tasks", "line_color_index TEXT DEFAULT ''"),
             ("contour_tasks", "tint_breaks TEXT DEFAULT ''"),
             ("contour_tasks", "tint_colors TEXT DEFAULT ''"),
+            # DEM 地形切片进度（dem_task_manager._run_tiling_job 节流落库，
+            # 前端详情弹窗轮询读取）：渲染中 rendered_tiles 是 processed 进度。
+            ("dem_terrain_jobs", "rendered_tiles INTEGER DEFAULT 0"),
+            ("dem_terrain_jobs", "total_tiles INTEGER DEFAULT 0"),
         ):
             try:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")

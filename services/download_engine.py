@@ -18,12 +18,32 @@ import aiofiles
 import os
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
-from osgeo import gdal, osr
 from models.task import Tile
 from services.config_manager import ConfigManager
 from core.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str):
+    """GDAL 惰性导入(PEP 562,照 contour_engine「模块可 import、重依赖用到才引」的模式)。
+
+    模块加载不再引 osgeo:不走路径拼接的进程(只下载/只复制瓦片、--help 等)
+    不用付 GDAL 的 import 成本,缺 GDAL 的环境也能 import 本模块。首个用到
+    gdal/osr 的函数经模块属性查找走到这里才真正 import,并写回 globals()
+    缓存,后续访问不再进 __getattr__。
+
+    必须保持 de.gdal / de.osr 这两个模块属性形态:既有测试替身直接
+    monkeypatch de.osr.SpatialReference(tests/test_tile_georeference.py
+    的原子写护栏),若把 import 收进函数体,替身会因模块没有 osr 属性而
+    AttributeError。
+    """
+    if name in ('gdal', 'osr'):
+        from osgeo import gdal, osr
+        module = {'gdal': gdal, 'osr': osr}[name]
+        globals()[name] = module
+        return module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Constants
 WEB_MERCATOR_MAX_LAT = 85.0511  # Maximum valid latitude for Web Mercator projection
@@ -62,6 +82,23 @@ GEOREF_SUFFIX = f'_geo{TILE_GEOREF_EPSG}rgb'
 #   `_geo3857` — palette-unaware: paletted tiles left as 1 band of raw indices
 LEGACY_GEOREF_SUFFIXES = ('_geo', f'_geo{TILE_GEOREF_EPSG}')
 
+# EPSG:3857 的 WKT,模块级惰性缓存。ImportFromEPSG 每次都要查 PROJ 库,
+# 拼接时逐瓦片重建 SpatialReference 是纯浪费;只缓存成功结果,osr 故障
+# 时下次调用重算。仍按缓存 WKT 逐瓦片构造 SRS 再导出(见
+# _add_georeference),保持「配准阶段过一遍 osr」的既有故障点与异常语义。
+_TILE_GEOREF_WKT: Optional[str] = None
+
+
+def _tile_georef_wkt() -> str:
+    """返回 EPSG:3857(TILE_GEOREF_EPSG)的 WKT,首次调用时构建并缓存。"""
+    from osgeo import osr  # 惰性 import,见模块级 __getattr__
+    global _TILE_GEOREF_WKT
+    if _TILE_GEOREF_WKT is None:
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(TILE_GEOREF_EPSG)
+        _TILE_GEOREF_WKT = srs.ExportToWkt()
+    return _TILE_GEOREF_WKT
+
 
 class DownloadCancelled(Exception):
     """Raised inside the download path when a task's stop flag is set.
@@ -95,6 +132,18 @@ class DownloadEngine:
         # 60s TTL 足够让「改配置后新任务生效」（任务通常跑几十分钟以上）。
         self._servers_cache = None
         self._servers_loaded_at = 0.0
+        # download_tiles_batch 入口预读的 (max_retries, request_timeout),
+        # 供 download_tile 免查询复用;None = 不在批量下载中,自行读配置。
+        self._batch_retry_config: Optional[Tuple[int, int]] = None
+        # download_tiles_batch 是否物化全量 results 列表。默认 True 保持
+        # 「结果数==输入数且按序」的返回契约(tests 钉死);唯一调用方
+        # task_manager 刻意不接返回值(completed 清单由 progress_callback
+        # 逐块维护),会在调用前置 False 逐批丢弃 —— 百万级瓦片就是百万条
+        # 结果 dict 白占内存。为什么是实例属性而不是新方法参数:tests/ 里
+        # 多处把 download_tiles_batch 整个换成 (tiles, style,
+        # progress_callback, stop_flag=None) 四参替身,多传一个 kwarg
+        # 会让全部替身 TypeError。
+        self._collect_batch_results = True
 
     def _tile_servers(self) -> List[str]:
         """读取配置的瓦片服务器列表（60s 缓存；为空回退默认 mts0-3）。"""
@@ -470,8 +519,17 @@ class DownloadEngine:
         # Get configuration values
         # max_retries 钳制到 >=0:负值会让 range(max_retries + 1) 一次都不进,
         # 最后 raise last_error(None) 变成 TypeError,真实错误被吞。
-        max_retries = max(0, int(self.config_manager.get('max_retries', '3')))
-        request_timeout = int(self.config_manager.get('request_timeout', '30'))
+        # 优先用 download_tiles_batch 入口预读的配置(每块瓦片两次
+        # config_manager.get 就是两次新开 SQLite 连接,逐瓦片查询是批量下载的
+        # 热点);直接调用 download_tile(不经批量入口)时回退为自行读配置。
+        # 为什么不加参数显式传入:download_tiles_batch → _download_single_tile
+        # → download_tile 这条调用链的签名被既有测试的替身钉死,不能带新参数。
+        retry_config = self._batch_retry_config
+        if retry_config is not None:
+            max_retries, request_timeout = retry_config
+        else:
+            max_retries = max(0, int(self.config_manager.get('max_retries', '3')))
+            request_timeout = int(self.config_manager.get('request_timeout', '30'))
 
         last_error = None
 
@@ -480,9 +538,13 @@ class DownloadEngine:
             if stop_flag is not None and stop_flag.is_set():
                 raise DownloadCancelled()
             try:
-                # Rotate server index on each attempt（列表长度来自配置）
+                # Rotate server index on each attempt（列表长度来自配置）。
+                # 起点加 (x + y):旧实现首 attempt 全部落在 servers[0],叠加
+                # connector 的 limit_per_host=4,所有瓦片的前 4 个并发把
+                # 第一台服务器打满、其余三台闲置 —— 首尝试按瓦片坐标天然
+                # 分散到各台服务器,重试仍按 attempt 轮换。
                 servers = self._tile_servers()
-                server_index = attempt % len(servers)
+                server_index = (tile.x + tile.y + attempt) % len(servers)
                 url = self.get_tile_url(tile.x, tile.y, tile.zoom, style, server_index)
 
                 logger.debug(
@@ -674,7 +736,10 @@ class DownloadEngine:
             progress_callback: Optional async callback function(tile, status, error)
 
         Returns:
-            List of download result dictionaries, in input order
+            List of download result dictionaries, in input order.
+            Empty when self._collect_batch_results is False (task_manager's
+            call path — results are consumed per-tile via progress_callback
+            instead of being materialised; see __init__).
 
         Concurrency Control:
             Uses semaphore to limit concurrent downloads based on
@@ -687,6 +752,12 @@ class DownloadEngine:
         request_timeout = int(self.config_manager.get('request_timeout', '30'))
         cache_enabled = (self.config_manager.get('cache_enabled', 'true') or 'true').lower() == 'true'
         proxy_url = self.config_manager.get('proxy_url', '') or ''
+        # max_retries/request_timeout 在入口读一次,整批复用 —— 逐瓦片读就是
+        # 每块瓦片两次新开 SQLite 连接(见 download_tile 里的回退逻辑)。
+        self._batch_retry_config = (
+            max(0, int(self.config_manager.get('max_retries', '3'))),
+            request_timeout,
+        )
 
         tile_iterator = iter(tiles)
 
@@ -730,16 +801,23 @@ class DownloadEngine:
             # 分批创建协程(见 DOWNLOAD_BATCH_SIZE):不在批次间因 stop_flag
             # 提前退出 —— 每块瓦片都要产出一条结果(queued 的报 'cancelled'),
             # 保持「结果数 == 输入瓦片数」的既有语义。
+            # _collect_batch_results=False 时(task_manager 的调用路径,结果
+            # 由 progress_callback 逐块消费)逐批丢弃 gather 返回值,不物化
+            # 全量 results;result_count 仅为日志计数。
+            result_count = 0
             while True:
                 batch = list(itertools.islice(tile_iterator, DOWNLOAD_BATCH_SIZE))
                 if not batch:
                     break
-                results.extend(await asyncio.gather(
+                batch_results = await asyncio.gather(
                     *(download_with_semaphore(tile) for tile in batch),
                     return_exceptions=False
-                ))
+                )
+                result_count += len(batch_results)
+                if self._collect_batch_results:
+                    results.extend(batch_results)
 
-        logger.info(f"Batch download completed: {len(results)} results")
+        logger.info(f"Batch download completed: {result_count} results")
 
         return results
 
@@ -784,6 +862,8 @@ class DownloadEngine:
         """
         logger.info(f"Starting GDAL tile stitching: {len(tiles)} tiles at zoom {zoom_level}")
 
+        from osgeo import gdal  # 惰性 import,见模块级 __getattr__
+
         # Validate and normalize output path
         output_path_obj = Path(output_path).resolve()
 
@@ -827,18 +907,72 @@ class DownloadEngine:
         vrt_path_obj = output_path_obj.with_suffix('.vrt')
         vrt_path = str(vrt_path_obj)
         warped_path_obj: Optional[Path] = None
-        work_dir = tempfile.mkdtemp(prefix='map_dl_stitch_')
+        # 中间产物默认落系统临时盘(可能是小容量系统盘,大 zoom 一层可达 GB 级);
+        # stitch_tmpdir 配置键(形制同 contour_warp_tmpdir,见 contour_engine)
+        # 可指到空间充足的盘,留空 = 系统默认;读取失败回退系统默认,不让配置库
+        # 故障拖垮拼接。
+        try:
+            stitch_tmp_base = (
+                self.config_manager.get('stitch_tmpdir', '') or ''
+            ).strip() or None
+        except Exception as e:
+            logger.warning(f"读取 stitch_tmpdir 失败({e!r}),回退系统临时目录")
+            stitch_tmp_base = None
+        if stitch_tmp_base:
+            os.makedirs(stitch_tmp_base, exist_ok=True)
+            work_dir = tempfile.mkdtemp(prefix='map_dl_stitch_', dir=stitch_tmp_base)
+        else:
+            # 保持「只传 prefix」的调用形态:既有测试把 tempfile.mkdtemp 换成
+            # lambda prefix=None 的替身来投放毒中间文件(见
+            # tests/test_tile_georeference.py _plant_poison_in_work_dir)。
+            work_dir = tempfile.mkdtemp(prefix='map_dl_stitch_')
 
         try:
-            # Get cache paths and create georeferenced versions
+            # legacy 配准中间产物(_geo.tif / _geo3857.tif,见
+            # LEGACY_GEOREF_SUFFIXES)批量清理:每个 cache 目录扫一次,替代
+            # 旧版 _add_georeference 里逐瓦片 2 次 exists —— 10 万瓦片同目录
+            # 反复扫同一批文件名,是 20 万次纯浪费的 syscall。直调
+            # _add_georeference(无 output_dir)的路径仍保留逐瓦片清理
+            # (存量契约,见 _add_georeference 里的注释)。
+            cleaned_legacy_dirs = set()
             for tile in tiles_at_zoom:
+                cache_parent = self._get_cache_path(tile, style).parent
+                if cache_parent in cleaned_legacy_dirs:
+                    continue
+                cleaned_legacy_dirs.add(cache_parent)
+                for legacy_suffix in LEGACY_GEOREF_SUFFIXES:
+                    for legacy_path in cache_parent.glob(f"*{legacy_suffix}.tif"):
+                        try:
+                            legacy_path.unlink()
+                            logger.debug(f"Removed stale georeferenced tile: {legacy_path}")
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove stale georeferenced tile "
+                                f"{legacy_path}: {e}"
+                            )
+
+            # Get cache paths and create georeferenced versions.
+            # 逐瓦片串行配准在大 mosaic 上是纯 CPU/IO 空转:每块瓦片的输出
+            # 都写进本次 stitch 私有的 work_dir(原子 .part + rename),瓦片间
+            # 无任何共享状态,可以安全并行。worker 数沿用项目封顶惯例
+            # (min(4, cpu_count),同 contour_engine / cesiumlab_terrain)。
+            # map 保序,georef_paths 顺序与串行一致;任一瓦片失败时 with 退出
+            # 会等所有 worker 收尾,再由 finally 清掉整个 work_dir。
+            def _georef_one(tile: Tile) -> str:
                 cache_path = self._get_cache_path(tile, style)
                 if not cache_path.exists():
                     raise FileNotFoundError(f"Tile not found in cache: {cache_path}")
 
                 # Add georeference to tile (written into the private work_dir)
-                georef_path = self._add_georeference(str(cache_path), tile, output_dir=work_dir)
-                georef_paths.append(georef_path)
+                return self._add_georeference(str(cache_path), tile, output_dir=work_dir)
+
+            max_workers = min(4, os.cpu_count() or 1)
+            if max_workers > 1 and len(tiles_at_zoom) > 1:
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    georef_paths = list(pool.map(_georef_one, tiles_at_zoom))
+            else:
+                georef_paths = [_georef_one(tile) for tile in tiles_at_zoom]
 
             logger.info(f"Created {len(georef_paths)} georeferenced tiles")
 
@@ -1126,16 +1260,22 @@ class DownloadEngine:
         # Opportunistically drop leftovers written by earlier releases so the
         # existing residue on users' disks drains away as tiles get re-stitched
         # instead of sitting there forever.
-        for legacy_suffix in LEGACY_GEOREF_SUFFIXES:
-            legacy_path_obj = tile_path_obj.with_stem(
-                f"{tile_path_obj.stem}{legacy_suffix}"
-            ).with_suffix('.tif')
-            try:
-                if legacy_path_obj.exists():
-                    legacy_path_obj.unlink()
-                    logger.debug(f"Removed stale georeferenced tile: {legacy_path_obj}")
-            except Exception as e:
-                logger.warning(f"Failed to remove stale georeferenced tile {legacy_path_obj}: {e}")
+        # 只在直调路径(无 output_dir)逐瓦片清:stitch 热路径由
+        # stitch_tiles_with_gdal 按 cache 目录批量扫(每目录一次),这里再
+        # 逐瓦片 2 次 exists 是纯重复。直调路径保留是存量契约 ——
+        # tests/test_tile_georeference.py 的 stale 残骸测试直接调用本函数
+        # 并断言残骸被顺手清掉。
+        if output_dir is None:
+            for legacy_suffix in LEGACY_GEOREF_SUFFIXES:
+                legacy_path_obj = tile_path_obj.with_stem(
+                    f"{tile_path_obj.stem}{legacy_suffix}"
+                ).with_suffix('.tif')
+                try:
+                    if legacy_path_obj.exists():
+                        legacy_path_obj.unlink()
+                        logger.debug(f"Removed stale georeferenced tile: {legacy_path_obj}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove stale georeferenced tile {legacy_path_obj}: {e}")
 
         # Return if already exists
         if georef_path_obj.exists():
@@ -1143,6 +1283,12 @@ class DownloadEngine:
             return georef_path
 
         logger.debug(f"Adding georeference to tile {tile.zoom}/{tile.x}/{tile.y}")
+
+        # 惰性 import,见模块级 __getattr__;放在 exists() 短路之后,命中
+        # 短路(以及 stitch 私有目录的纯命名路径)不触发 GDAL 加载。
+        # 注意:测试替身 patch 的是 de.osr 解析到的同一个 osgeo.osr 模块
+        # 对象,本地 import 拿到的就是它,替身语义不变。
+        from osgeo import gdal, osr
 
         # Open source tile
         src_ds = gdal.Open(tile_path)
@@ -1218,14 +1364,19 @@ class DownloadEngine:
         )
         dst_ds = None  # bound up front so the finally block can always close it
         try:
-            # Create georeferenced output file
+            # Create georeferenced output file.
+            # DEFLATE 无损压缩:旧版默认无压缩 GTiff 每瓦片固定 ~196KB
+            # (256x256x3),而源瓦片才 10-60KB —— 10 万瓦片的 zoom 就是
+            # ~15GB 的中间产物写+读。压缩只改磁盘体积,文件名/波段/像素
+            # 契约(见 GEOREF_SUFFIX)不变,BuildVRT 读取透明。
             driver = gdal.GetDriverByName('GTiff')
             dst_ds = driver.Create(
                 str(part_path_obj),
                 width,
                 height,
                 bands,
-                src_ds.GetRasterBand(1).DataType
+                src_ds.GetRasterBand(1).DataType,
+                options=['COMPRESS=DEFLATE']
             )
 
             if dst_ds is None:
@@ -1242,8 +1393,9 @@ class DownloadEngine:
             dst_ds.SetGeoTransform(geotransform)
 
             # Set projection to Web Mercator (EPSG:3857) — see tile_geotransform
-            srs = osr.SpatialReference()
-            srs.ImportFromEPSG(epsg_code)
+            # WKT 走模块级缓存(见 _tile_georef_wkt),不再逐瓦片 ImportFromEPSG
+            # 查 PROJ 库;仍逐瓦片构造 SRS 并导出,故障点与旧实现一致。
+            srs = osr.SpatialReference(_tile_georef_wkt())
             dst_ds.SetProjection(srs.ExportToWkt())
 
             # Close the dataset *before* the rename: GDAL flushes on close, so

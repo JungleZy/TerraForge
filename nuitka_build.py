@@ -363,6 +363,9 @@ def main():
         '--include-package=flask_socketio',
         '--include-package=socketio',
         '--include-package=engineio',
+        # engineio 在 _websocket_wsgi 里运行时 import simple_websocket
+        # (threading 模式的 WebSocket 升级),静态分析跟不住就退回 long-polling
+        '--include-package=simple_websocket',
         '--include-package=aiohttp',
         '--include-package=aiofiles',
         '--include-package=osgeo',

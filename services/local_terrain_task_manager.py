@@ -9,7 +9,9 @@ tiler (tile_dem_task_dir) by saving uploads as *_dem.tif.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -56,6 +58,11 @@ class LocalTerrainTaskManager:
         self.socketio = socketio
         self.config = ConfigManager()
         self.active_tasks: Dict[int, threading.Thread] = {}
+        # 切片协作停止标记：随 start_tiling 登记、_run_tiling_job 结束清理。
+        # build_terrain 批间/逐瓦片检查（见 cesiumlab_terrain.py）；当前 cancel
+        # 仍只拦 pending（有意折中，API 契约被测试钉住），这里把 flag 传下去
+        # 让切片具备中途停的能力，后续开放运行中取消时 set 即可生效。
+        self.stop_flags: Dict[int, threading.Event] = {}
         self._state_lock = threading.Lock()
         self._recover_orphan_running_tasks()
 
@@ -126,76 +133,102 @@ class LocalTerrainTaskManager:
         base = Path(Config.DOWNLOADS_DIR) / "terrain"
         parent_url = _parent_layer_url()
 
+        # 上传先全量落盘到任务目录旁的暂存目录,再进 DB 事务。此前 INSERT
+        # 隐式 BEGIN 的写事务里逐文件写盘,GB 级上传期间占死 WAL 唯一写者,
+        # 其他写方 30s busy_timeout 后 500。现在写事务里只剩毫秒级行写入;
+        # 暂存目录与任务目录同盘,事务内 os.replace 改名即就位。
+        base.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix="local_upload_", dir=base))
         task_root: Optional[Path] = None
-        conn = get_connection()
         try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO local_terrain_tasks
-                  (name, status, output_path, source_dir, output_dir,
-                   total_files, uploaded_files, failed_files, maxzoom, parent_url)
-                VALUES (?, 'pending', '', '', '', ?, 0, 0, ?, ?)
-                """,
-                (name, len(valid), maxzoom, parent_url),
-            )
-            task_id = cur.lastrowid
-
-            task_root = base / f"local_task_{task_id}"
-            source_dir = task_root / "source"
-            output_dir = task_root / "terrain_tiles"
-            source_dir.mkdir(parents=True, exist_ok=True)
-
-            cur.execute(
-                "UPDATE local_terrain_tasks SET output_path=?, source_dir=?, output_dir=? WHERE id=?",
-                (str(task_root), str(source_dir), str(output_dir), task_id),
-            )
-
-            uploaded = 0
-            failed = 0
+            # (original, stored, size, error)：单文件写盘失败不致命,
+            # 记成 failed 行继续(与此前逐文件 INSERT 'failed' 的行为一致)
+            staged: List[Tuple[str, str, int, Optional[str]]] = []
             for idx, (original, content) in enumerate(valid, start=1):
                 stored = f"upload_{idx}_dem.tif"
-                dest = source_dir / stored
+                dest = staging / stored
                 try:
                     size = _save_upload(dest, content)
                 except Exception as e:
-                    failed += 1
-                    cur.execute(
-                        """
-                        INSERT INTO local_terrain_files
-                          (task_id, original_filename, stored_filename, local_path, size_bytes, status, error_message)
-                        VALUES (?, ?, ?, ?, ?, 'failed', ?)
-                        """,
-                        (task_id, original, stored, str(dest), 0, str(e)),
-                    )
+                    staged.append((original, stored, 0, str(e)))
                     continue
                 if size == 0:
                     raise ValueError(f"Empty file: {original}")
+                staged.append((original, stored, size, None))
+
+            conn = get_connection()
+            try:
+                cur = conn.cursor()
                 cur.execute(
                     """
-                    INSERT INTO local_terrain_files
-                      (task_id, original_filename, stored_filename, local_path, size_bytes, status)
-                    VALUES (?, ?, ?, ?, ?, 'uploaded')
+                    INSERT INTO local_terrain_tasks
+                      (name, status, output_path, source_dir, output_dir,
+                       total_files, uploaded_files, failed_files, maxzoom, parent_url)
+                    VALUES (?, 'pending', '', '', '', ?, 0, 0, ?, ?)
                     """,
-                    (task_id, original, stored, str(dest), size),
+                    (name, len(valid), maxzoom, parent_url),
                 )
-                uploaded += 1
+                task_id = cur.lastrowid
 
-            cur.execute(
-                "UPDATE local_terrain_tasks SET uploaded_files=?, failed_files=? WHERE id=?",
-                (uploaded, failed, task_id),
-            )
-            conn.commit()
+                task_root = base / f"local_task_{task_id}"
+                source_dir = task_root / "source"
+                output_dir = task_root / "terrain_tiles"
+                source_dir.mkdir(parents=True, exist_ok=True)
+
+                cur.execute(
+                    "UPDATE local_terrain_tasks SET output_path=?, source_dir=?, output_dir=? WHERE id=?",
+                    (str(task_root), str(source_dir), str(output_dir), task_id),
+                )
+
+                uploaded = 0
+                failed = 0
+                for original, stored, size, error in staged:
+                    dest = source_dir / stored
+                    if error is not None:
+                        failed += 1
+                        cur.execute(
+                            """
+                            INSERT INTO local_terrain_files
+                              (task_id, original_filename, stored_filename, local_path, size_bytes, status, error_message)
+                            VALUES (?, ?, ?, ?, ?, 'failed', ?)
+                            """,
+                            (task_id, original, stored, str(dest), 0, error),
+                        )
+                        continue
+                    os.replace(staging / stored, dest)  # 同盘改名,毫秒级
+                    cur.execute(
+                        """
+                        INSERT INTO local_terrain_files
+                          (task_id, original_filename, stored_filename, local_path, size_bytes, status)
+                        VALUES (?, ?, ?, ?, ?, 'uploaded')
+                        """,
+                        (task_id, original, stored, str(dest), size),
+                    )
+                    uploaded += 1
+
+                cur.execute(
+                    "UPDATE local_terrain_tasks SET uploaded_files=?, failed_files=? WHERE id=?",
+                    (uploaded, failed, task_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                # 创建中途失败：文件已先落盘，只回滚 DB 不清目录会留残留；SQLite
+                # rowid 复用后，残留 tif 会被下个同 id 任务的 list_dem_tifs 扫进
+                # 渲染（M12）。best-effort 清掉任务目录（限 DOWNLOADS_DIR 内）。
+                if task_root is not None:
+                    remove_task_dir_if_safe(task_root)
+                raise
+            finally:
+                conn.close()
         except Exception:
-            conn.rollback()
-            # 创建中途失败：文件已先落盘，只回滚 DB 不清目录会留残留；SQLite
-            # rowid 复用后，残留 tif 会被下个同 id 任务的 list_dem_tifs 扫进
-            # 渲染（M12）。best-effort 清掉任务目录（限 DOWNLOADS_DIR 内）。
-            if task_root is not None:
-                remove_task_dir_if_safe(task_root)
+            # 暂存目录里的残留(未走完 DB 事务的部分)一并清掉;best-effort,
+            # 清理失败不掩盖原异常。
+            shutil.rmtree(staging, ignore_errors=True)
             raise
-        finally:
-            conn.close()
+        # 成功的文件已 os.replace 走,failed 的文件留在暂存目录里(写盘失败
+        # 多半只有残件),与空目录一并删除
+        shutil.rmtree(staging, ignore_errors=True)
 
         if uploaded == 0:
             # 全部写盘失败：任务行保留并标记 failed，但残文件没有保留价值，
@@ -243,7 +276,7 @@ class LocalTerrainTaskManager:
         finally:
             conn.close()
 
-    def list_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_tasks(self, limit: int = 100, status: Optional[str] = None) -> List[Dict[str, Any]]:
         # SQLite LIMIT -1 = 无上限：<1 或 >100 都回退默认窗口（同 dem 管线约定，M13）。
         limit = int(limit or 100)
         if limit < 1 or limit > 100:
@@ -251,10 +284,20 @@ class LocalTerrainTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT * FROM local_terrain_tasks ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
+            # status='active' 是路由层契约的特殊值（同 /api/history_all）：
+            # 展开成活动三态；其余取值（含 None）维持原行为。
+            if status == 'active':
+                cur.execute(
+                    "SELECT * FROM local_terrain_tasks "
+                    "WHERE status IN ('pending','running','paused') "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM local_terrain_tasks ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                )
             return [dict(r) for r in cur.fetchall()]
         finally:
             conn.close()
@@ -302,9 +345,11 @@ class LocalTerrainTaskManager:
                 source_dir = task_root / "source"
                 output_dir = task_root / "terrain_tiles"
 
+                stop_flag = threading.Event()
+                self.stop_flags[task_id] = stop_flag
                 th = threading.Thread(
                     target=self._run_tiling_job,
-                    args=(task_id, source_dir, output_dir, maxzoom, parent_url),
+                    args=(task_id, source_dir, output_dir, maxzoom, parent_url, stop_flag),
                     daemon=True,
                     name=f"LocalTerrainTiling-{task_id}",
                 )
@@ -319,17 +364,28 @@ class LocalTerrainTaskManager:
         th.start()
 
     def _run_tiling_job(
-        self, task_id: int, source_dir: Path, output_dir: Path, maxzoom: int, parent_url: str
+        self, task_id: int, source_dir: Path, output_dir: Path, maxzoom: int, parent_url: str,
+        stop_flag: Optional[threading.Event] = None,
     ) -> None:
         try:
             tile_dem_task_dir(
                 task_dir=source_dir,
                 out_dir=output_dir,
-                params=TileParams(maxzoom=maxzoom, parent_url=parent_url),
+                params=TileParams(maxzoom=maxzoom, parent_url=parent_url, stop_flag=stop_flag),
             )
             conn = get_connection()
             try:
                 cur = conn.cursor()
+                if stop_flag is not None and stop_flag.is_set():
+                    # 中途停止：build_terrain 提前收尾（部分瓦片 + layer.json 已
+                    # 落盘），不能报 completed —— 落 cancelled，重跑请重新 start。
+                    cur.execute(
+                        "UPDATE local_terrain_tasks SET status='cancelled', completed_at=?, "
+                        "error_message=NULL WHERE id=? AND status='running'",
+                        (utc_now_iso(), task_id),
+                    )
+                    conn.commit()
+                    return
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
                     "error_message=NULL WHERE id=? AND status='running'",
@@ -366,10 +422,17 @@ class LocalTerrainTaskManager:
             with self._state_lock:
                 if self.active_tasks.get(task_id) is threading.current_thread():
                     self.active_tasks.pop(task_id, None)
+                    self.stop_flags.pop(task_id, None)
 
     def cancel_task(self, task_id: int) -> None:
-        """Cancel if not yet tiling. If build_terrain is in-flight it cannot be
-        hard-interrupted; we only flip a still-pending task to cancelled."""
+        """Cancel if not yet tiling; a running tiling job is rejected.
+
+        build_terrain 现在支持 stop_flag 协作停止（批间/逐瓦片检查，见
+        cesiumlab_terrain.py），运行中的切片技术上已能中途停（flag 在
+        self.stop_flags）；但 cancel 仍只拦 pending 是有意折中 —— 「取消
+        运行中任务」的语义（部分瓦片去留、是否自动重跑）没定，且该 API
+        契约被测试钉住。后续开放时在 running 分支 set stop_flags[task_id]
+        即可生效。"""
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -394,10 +457,11 @@ class LocalTerrainTaskManager:
 
     def delete_task(self, task_id: int, delete_files: bool = True) -> None:
         """Delete a task's DB rows and, unless delete_files=False, its on-disk
-        files. Refuses while running (tiling can't be interrupted). Removing
-        the row CASCADEs to the files table; the local_task_<id> directory
-        (source uploads + output tiles) is also removed so cancelled/failed
-        tasks don't leave large GeoTIFFs behind."""
+        files. Refuses while running：切片虽能经 stop_flag 中途停（见
+        cancel_task），但 delete 会 rmtree 整个输出目录，不能跟在写的
+        GDAL 进程后面删。Removing the row CASCADEs to the files table; the
+        local_task_<id> directory (source uploads + output tiles) is also
+        removed so cancelled/failed tasks don't leave large GeoTIFFs behind."""
         conn = get_connection()
         try:
             cur = conn.cursor()

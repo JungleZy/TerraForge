@@ -7,14 +7,26 @@ Contour API routes — 上传 GeoTIFF 渲染等高线瓦片的任务。
 
 import logging
 import os
+from functools import lru_cache
 from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from services.config_manager import ConfigManager
 from services.geo_validation import coerce_number, validate_zoom
 from services.task_cleanup import remove_task_dir_if_safe
+from routes import contour_static
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=32)
+def _render_style_preview_cached(style, interval, shade):
+    """style_preview 的服务端缓存：输出 PNG 对 (style, interval, shade) 是纯函数，
+    而前端随取色器实时刷新会高频打这个端点，matplotlib 渲染是最贵的一步。
+    ContourStyle 是 frozen dataclass（字段全为 str/float/int/tuple），可直接作
+    缓存键；配置改动会体现为不同的 style 值，旧条目自然淘汰，无需手动失效。"""
+    from services.contour_engine import render_style_preview
+    return render_style_preview(style, interval, shade=shade)
 
 contour_api_bp = Blueprint("contour_api", __name__, url_prefix="/api/contour")
 
@@ -32,7 +44,6 @@ def contour_style_preview():
     """配色样式预览 PNG：合成 DEM + 当前配色参数走渲染管线出图。
     全部参数可选，缺省即现行默认方案（与 style_for_task 同一套回退）。"""
     try:
-        from services.contour_engine import render_style_preview
         from services.contour_task_manager import style_for_task
 
         config = contour_task_manager.config if contour_task_manager else ConfigManager()
@@ -51,7 +62,7 @@ def contour_style_preview():
             "tint_colors": request.args.get("tint_colors", ""),
         }
         style = style_for_task(config, task)
-        png = render_style_preview(style, interval, shade=shade)
+        png = _render_style_preview_cached(style, interval, shade)
         resp = current_app.response_class(png, mimetype="image/png")
         resp.headers["Cache-Control"] = "no-cache"
         return resp
@@ -118,7 +129,10 @@ def list_contour_tasks():
         if not contour_task_manager:
             return jsonify({"error": "Contour task manager not initialized"}), 500
         limit = request.args.get("limit", 100, type=int)
-        tasks = contour_task_manager.list_tasks(limit=limit)
+        # ?status=active 是契约特殊值（同 /api/tasks、/api/history_all）：只回
+        # 活动三态；不传 status 时行为完全不变。
+        status = request.args.get("status", None, type=str)
+        tasks = contour_task_manager.list_tasks(limit=limit, status=status)
         return jsonify({"success": True, "tasks": tasks, "count": len(tasks)})
     except Exception as e:
         logger.error(f"Error listing contour tasks: {e}")
@@ -149,6 +163,9 @@ def delete_contour_task(task_id: int):
         # 运行中的任务拒绝删除 —— 此前这里绕开 manager 锁直查 DB 再删,
         # 与正在跑的任务线程存在 check-then-act 竞态。
         contour_task_manager.delete_task(task_id)
+        # 行已删：清掉 /contour 静态路由的存在性缓存，否则 delete_files=false
+        # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到
+        contour_static.invalidate_known_task(task_id)
         # Optional best-effort artifact cleanup (output_path/contour_task_<id>/)
         # after the row is gone; only removed when inside DOWNLOADS_DIR.
         if request.args.get("delete_files", "").lower() in ("1", "true", "yes") and task.get("output_path"):

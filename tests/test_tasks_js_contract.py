@@ -773,6 +773,12 @@ _STATUS_WRITERS = (
 # 不要加进 TaskStatus：那会连带要求两个 JS 的六态词表覆盖一个永远到不了
 # 任务徽章的状态。
 _FILE_LEVEL_STATUSES = frozenset({'downloading', 'skipped'})
+# 仅作查询过滤的伪状态（永远不会写进任务行）：?status=active 是路由/列表
+# 接口的特殊筛选值（pending/running/paused 三态的并集），管理器里只出现在
+# `status == 'active'` 比较与 `WHERE status IN (...)` 过滤分支，不是任务状态。
+# 与 _FILE_LEVEL_STATUSES 同理：加进这里而不是 TaskStatus。
+_FILTER_ONLY_STATUSES = frozenset({'active'})
+_NON_TASK_STATUSES = _FILE_LEVEL_STATUSES | _FILTER_ONLY_STATUSES
 
 _STATUS_LITERAL_RE = re.compile(
     r"""(?:SET\s+status\s*=\s*|(?<![-\w])status\s*(?:=|==|!=)\s*|['"]status['"]\s*:\s*)['"]([a-z_]+)['"]""",
@@ -804,12 +810,12 @@ def test_task_status_enum_covers_what_the_managers_actually_write():
             src = f.read()
         for m in _STATUS_LITERAL_RE.finditer(src):
             lit = m.group(1)
-            if lit in _FILE_LEVEL_STATUSES:
+            if lit in _NON_TASK_STATUSES:
                 continue
             found.setdefault(lit, set()).add(fn)
         for m in _STATUS_IN_RE.finditer(src):
             for lit in re.findall(r"'([a-z_]+)'", m.group(1)):
-                if lit in _FILE_LEVEL_STATUSES:
+                if lit in _NON_TASK_STATUSES:
                     continue
                 found.setdefault(lit, set()).add(fn)
     # 自检：扫空的话下面的子集断言永真

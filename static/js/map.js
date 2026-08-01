@@ -191,6 +191,12 @@ function initMap(config) {
         infoBox: false,
         selectionIndicator: false,
     });
+    // 按需渲染：默认模式每帧重绘（60fps 空转耗电），改为仅在场景变化时渲染。
+    // 注意：CallbackProperty（选区矩形/角点手柄）的值变化不会自动触发重绘，
+    // 拖拽等直接改 _rectDegrees 的路径必须显式调 scene.requestRender()。
+    viewer.scene.requestRenderMode = true;
+    viewer.scene.maximumRenderTimeChange = Infinity;
+
     viewer.camera.setView({
         destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, _zoomToHeight(initialZoom)),
     });
@@ -294,6 +300,19 @@ function _removeHandles() {
     _draggingHandle = null;
 }
 
+// 拖拽期 bounds 浮层刷新合并：拖角点每个 MOUSE_MOVE 都会走到
+// _syncBoundsFromRect，整层 innerHTML 重写（含 SVG 模板）太贵，用 rAF
+// 合并成一帧一次。updateBoundsInfo 本体保持同步（模板被契约测试钉住），
+// 低频调用点（LEFT_UP / clearSelection / 编辑校验失败回退）仍直接调。
+let _boundsInfoRaf = 0;
+function _scheduleBoundsInfoUpdate() {
+    if (_boundsInfoRaf) return;
+    _boundsInfoRaf = requestAnimationFrame(function () {
+        _boundsInfoRaf = 0;
+        updateBoundsInfo();
+    });
+}
+
 // _rectDegrees 是选区的唯一真相；currentBounds 是它的提交态快照。
 // 拖手柄 / 数值编辑改了 _rectDegrees 之后走这里同步并刷新浮层。
 function _syncBoundsFromRect() {
@@ -304,7 +323,7 @@ function _syncBoundsFromRect() {
         east: _rectDegrees.east,
         west: _rectDegrees.west,
     };
-    updateBoundsInfo();
+    _scheduleBoundsInfoUpdate();
 }
 
 function _setRectFromCartographics(a, b) {
@@ -387,6 +406,9 @@ function _initMapTools() {
             if (!carto) return;
             _setRectFromCartographics(_drawStart, carto);
             _ensureSelectionEntity();
+            // requestRenderMode 下相机不动不会自动重绘，矩形是 CallbackProperty，
+            // 改了 _rectDegrees 必须显式请求一帧
+            viewer.scene.requestRender();
             return;
         }
         if (_draggingHandle && _rectDegrees) {
@@ -403,6 +425,8 @@ function _initMapTools() {
             d.north = Math.min(90, d.north);
             d.south = Math.max(-90, d.south);
             _syncBoundsFromRect();
+            // 同上：拖手柄只改 _rectDegrees，需显式请求重绘
+            viewer.scene.requestRender();
         }
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
@@ -415,6 +439,9 @@ function _initMapTools() {
             scc.enableTilt = true;
             scc.enableTranslate = true;
             _ensureSelectionEntity();
+            // 落定点可能与最后一次 MOUSE_MOVE 不同，矩形仍是 CallbackProperty，
+            // 显式请求一帧保证落定形状立即显示
+            viewer.scene.requestRender();
             currentBounds = {
                 north: _rectDegrees.north,
                 south: _rectDegrees.south,
@@ -853,6 +880,8 @@ function _applyBoundsEdit(field, raw) {
     _ensureSelectionEntity();
     _ensureHandles();
     _syncBoundsFromRect();
+    // 矩形/手柄是 CallbackProperty，改 _rectDegrees 不会自动重绘，显式请求一帧
+    viewer.scene.requestRender();
     refreshSubmitButtonState();
 }
 
@@ -1282,14 +1311,22 @@ function initContourPreview() {
         }
     });
     // On page load, surface any already-completed contour tasks for preview.
-    fetch('/api/contour/tasks').then(r => r.json()).then(data => {
-        (data.tasks || []).forEach(t => {
+    // 首屏不再自己 fetch /api/contour/tasks：loadActiveTasks（tasks.js）首屏
+    // 必拉同一份响应，且 contour 路刻意不带 ?status=active（预览要从里面筛
+    // completed）——等它 resolve 后共享，首屏同接口只拉一遍。
+    // 接口失败时 loadActiveTasks 自己已经 toast 过，这里静默不重复打扰。
+    const shared = (typeof firstActiveTasksLoad !== 'undefined' && firstActiveTasksLoad)
+        ? firstActiveTasksLoad
+        : Promise.resolve();
+    shared.then(function() {
+        const tasks = (typeof latestContourTasks !== 'undefined') ? latestContourTasks : [];
+        tasks.forEach(function(t) {
             if (t.status === 'completed') {
                 contourPreviewTasks.set(t.id, { name: t.name, zoom_max: t.zoom_max });
             }
         });
         updateContourPreviewButtons();
-    }).catch(() => {});
+    }).catch(function() {});
 }
 
 async function submitLocalTerrain() {
@@ -1331,9 +1368,9 @@ async function submitLocalTerrain() {
 }
 
 /**
- * 工作台行为：状态栏读数（鼠标经纬度 / 缩放级别 / 选区摘要 / 时钟）、
- * bounds 浮层交互（下载按钮、数值点击编辑）。在 initMap 之后由页面
- * init 块调用（index.html）。
+ * 工作台行为：状态栏读数（鼠标经纬度 / 缩放级别 / 选区摘要 / 日期时钟；
+ * 坐标与选区四至支持点击复制）、bounds 浮层交互（下载按钮、数值点击
+ * 编辑）。在 initMap 之后由页面 init 块调用（index.html）。
  */
 function initMapWorkbench() {
     if (!viewer) return;
@@ -1341,46 +1378,115 @@ function initMapWorkbench() {
     const coordsEl = document.getElementById('statusCoords');
     const zoomEl = document.getElementById('statusZoom');
 
+    // 复制到剪贴板：navigator.clipboard 只在安全上下文可用（127.0.0.1 可以，
+    // 局域网 http://IP 不行），不可用时退到 execCommand 老路。
+    function _copyText(text, toastMsg) {
+        function fallback() {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            let ok = false;
+            try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+            ta.remove();
+            if (ok) showToast(toastMsg, 'success');
+            else showToast('复制失败，请手动选择复制', 'error');
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(
+                function () { showToast(toastMsg, 'success'); },
+                fallback
+            );
+        } else {
+            fallback();
+        }
+    }
+
     // 缩放级别：相机高度换算的近似 zoom，300ms 轮询（camera.changed 太高频）
     function updateZoom() {
         if (zoomEl) zoomEl.textContent = 'z' + _heightToZoom(viewer.camera.positionCartographic.height);
     }
-    setInterval(updateZoom, 300);
-    updateZoom();
 
     // 鼠标经纬度：50ms 节流，避免 mousemove 高频刷新
+    let pending = null;
+    let lastCoords = null;  // {lng, lat}，供状态栏点击复制
+    function pickCoords() {
+        if (!pending) return;
+        const carto = _pickCartographic(pending);
+        pending = null;
+        if (!carto) return;
+        lastCoords = {
+            lng: Cesium.Math.toDegrees(carto.longitude),
+            lat: Cesium.Math.toDegrees(carto.latitude),
+        };
+        coordsEl.textContent =
+            '经度 ' + lastCoords.lng.toFixed(4) + '°  纬度 ' + lastCoords.lat.toFixed(4) + '°';
+    }
     if (coordsEl) {
-        let pending = null;
         const moveHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
         moveHandler.setInputAction(function (event) {
             pending = event.endPosition;
         }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
-        setInterval(function () {
-            if (!pending) return;
-            const carto = _pickCartographic(pending);
-            pending = null;
-            if (!carto) return;
-            coordsEl.textContent =
-                '经度 ' + Cesium.Math.toDegrees(carto.longitude).toFixed(4) + '°  纬度 ' +
-                Cesium.Math.toDegrees(carto.latitude).toFixed(4) + '°';
-        }, 50);
         viewer.scene.canvas.addEventListener('mouseout', function () {
             pending = null;
+            lastCoords = null;
             coordsEl.textContent = '经度 — 纬度 —';
+        });
+        // 点击状态栏坐标 -> 复制「经度,纬度」（GIS 惯用顺序，可直接贴进大多数工具）
+        coordsEl.addEventListener('click', function () {
+            if (!lastCoords) return;
+            _copyText(
+                lastCoords.lng.toFixed(6) + ', ' + lastCoords.lat.toFixed(6),
+                '坐标已复制'
+            );
         });
     }
 
-    // 状态栏时钟：本地时间 HH:MM:SS，1s 刷新
-    const clockEl = document.getElementById('statusClock');
-    if (clockEl) {
-        const tick = function () {
-            const d = new Date();
-            const p = (n) => String(n).padStart(2, '0');
-            clockEl.textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-        };
-        tick();
-        setInterval(tick, 1000);
+    // 点击状态栏选区摘要 -> 复制四至（W,S,E,N 顺序，GDAL/PostGIS 的 bbox 惯例）
+    const statusSelEl = document.getElementById('statusSelection');
+    if (statusSelEl) {
+        statusSelEl.addEventListener('click', function () {
+            if (!currentBounds) return;
+            const f = (v) => v.toFixed(5);
+            _copyText(
+                f(currentBounds.west) + ',' + f(currentBounds.south) + ',' +
+                f(currentBounds.east) + ',' + f(currentBounds.north),
+                '选区四至已复制（W,S,E,N）'
+            );
+        });
     }
+
+    // 状态栏时钟：本地日期+时间 MM-DD HH:MM:SS，1s 刷新
+    const clockEl = document.getElementById('statusClock');
+    const tickClock = function () {
+        if (!clockEl) return;
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, '0');
+        clockEl.textContent = p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+            p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    };
+
+    // 三档刷新（拾取 50ms / 缩放 300ms / 时钟 1s）合并成单个 50ms 基准
+    // tick，按 elapsed 时间分派 —— 少两个常驻 interval。仍用 setInterval
+    // 而不是 rAF：后台标签页节流下时钟照样走，不冻结。
+    let lastZoom = 0;
+    let lastClock = 0;
+    updateZoom();
+    tickClock();
+    setInterval(function () {
+        const now = Date.now();
+        pickCoords();
+        if (now - lastZoom >= 300) {
+            lastZoom = now;
+            updateZoom();
+        }
+        if (now - lastClock >= 1000) {
+            lastClock = now;
+            tickClock();
+        }
+    }, 50);
 
     // bounds 浮层交互（事件代理，浮层内容每次 updateBoundsInfo 都重渲染）：
     // 「下载」按钮 -> 下载弹窗；.bounds-v 数值 -> 点击编辑。

@@ -51,7 +51,11 @@
             if (key === 'historyPanel' && typeof initHistory === 'function') initHistory();
             if (key === 'configPanel' && typeof initConfig === 'function') initConfig();
         } else if (key === 'historyPanel' && typeof historyViewer !== 'undefined' && historyViewer) {
-            setTimeout(function () { historyViewer.resize(); }, 250);
+            setTimeout(function () {
+                historyViewer.resize();
+                // 小地图开了 requestRenderMode，resize 后显式请求一帧保证重开后画面刷新
+                historyViewer.scene.requestRender();
+            }, 250);
         }
 
         if (window.history && history.pushState) history.pushState(null, '', '#' + name);

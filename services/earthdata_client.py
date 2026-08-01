@@ -16,6 +16,14 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 
+class EarthdataAuthError(RuntimeError):
+    """不可重试的认证失败（401 / 缺凭据 / 登录后仍 401）。
+
+    与可重试的网络/5xx 错误区分开:坏凭据重试多少次都是必败,引擎捕获后
+    直接判颗粒失败,不进指数退避（见 dem_download_engine）。
+    """
+
+
 def _redact_url(url: str) -> str:
     """剥掉 URL 的 query —— 签名/授权 URL 的凭据参数不能进异常消息（会落日志/DB）。"""
     return str(url).split("?", 1)[0]
@@ -45,8 +53,10 @@ class EarthdataClient:
                 if not loc:
                     raise RuntimeError(f"Redirect ({resp.status}) without Location header for {_redact_url(file_url)}")
 
-                # If we already got the signed URL, return it
-                if resp.status == 303 and "cloudfront.net" in loc:
+                # 303 + Location 即签名 URL —— 不认 host 白名单:LP DAAC 也
+                # 可能签 S3 预签名 URL（非 cloudfront.net）,只认 cloudfront 会
+                # 多走一跳中间重定向,甚至误报 "Unexpected redirect chain"。
+                if resp.status == 303:
                     return loc
 
                 # If redirected to URS, do login flow
@@ -56,7 +66,8 @@ class EarthdataClient:
                 # Some intermediate redirects (rare): follow one step and retry.
                 async with session.get(loc, allow_redirects=False, proxy=self.proxy_url or None) as resp2:
                     loc2 = resp2.headers.get("Location") or resp2.headers.get("location")
-                    if resp2.status == 303 and loc2 and "cloudfront.net" in loc2:
+                    # 同上:303 + Location 即签名 URL,不限定 host。
+                    if resp2.status == 303 and loc2:
                         return loc2
                     raise RuntimeError(f"Unexpected redirect chain while resolving signed URL for {_redact_url(file_url)}: {resp.status}->{resp2.status}")
 
@@ -65,14 +76,15 @@ class EarthdataClient:
                 return file_url
 
             if resp.status == 401:
-                raise RuntimeError("Earthdata 401 Unauthorized (check username/password)")
+                raise EarthdataAuthError("Earthdata 401 Unauthorized (check username/password)")
 
             raise RuntimeError(f"Unexpected response while resolving signed URL for {_redact_url(file_url)}: HTTP {resp.status}")
 
     async def _login_and_resolve(self, session: aiohttp.ClientSession, file_url: str, authorize_url: str) -> str:
         auth = self._auth()
         if not auth:
-            raise RuntimeError("Missing Earthdata credentials (earthdata_username/earthdata_password)")
+            # 缺凭据同样不可重试 —— 配置没填,重试不会凭空变出凭据。
+            raise EarthdataAuthError("Missing Earthdata credentials (earthdata_username/earthdata_password)")
 
         # Step 1: hit authorize URL with BasicAuth, expect redirect back to data.lpdaac.../login?code=...
         async with session.get(
@@ -83,7 +95,7 @@ class EarthdataClient:
         ) as resp:
             if resp.status not in (301, 302, 303, 307, 308):
                 if resp.status == 401:
-                    raise RuntimeError("Earthdata 401 Unauthorized (check username/password)")
+                    raise EarthdataAuthError("Earthdata 401 Unauthorized (check username/password)")
                 raise RuntimeError(f"Unexpected URS authorize response: HTTP {resp.status}")
 
             loc = resp.headers.get("Location") or resp.headers.get("location")
@@ -102,9 +114,10 @@ class EarthdataClient:
         async with session.get(file_url, allow_redirects=False, proxy=self.proxy_url or None) as resp2:
             if resp2.status in (301, 302, 303):
                 loc2 = resp2.headers.get("Location") or resp2.headers.get("location")
-                if resp2.status == 303 and loc2 and "cloudfront.net" in loc2:
+                # 303 + Location 即签名 URL,不限定 host（S3 预签名同样合法）。
+                if resp2.status == 303 and loc2:
                     return loc2
             if resp2.status == 401:
-                raise RuntimeError("Earthdata auth loop: still unauthorized after login")
+                raise EarthdataAuthError("Earthdata auth loop: still unauthorized after login")
             raise RuntimeError(f"Failed to resolve signed URL after login: HTTP {resp2.status}")
 

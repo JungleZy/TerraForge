@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +23,11 @@ from services.dem_granules import (
 from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
 logger = logging.getLogger(__name__)
+
+# task_progress 广播最小间隔（秒）：进度回调每颗粒触发，逐次 emit 会把前端
+# 打爆；严格时间窗节流，无「计数变化必发」豁免 —— 颗粒集中完成时每个完成
+# 回调都改计数，豁免会让窗口形同虚设（范本：task_manager.PROGRESS_EMIT_MIN_INTERVAL）。
+_PROGRESS_EMIT_MIN_INTERVAL = 1.0
 
 
 def _status_count_deltas(old_status: Optional[str], new_status: str) -> tuple[int, int]:
@@ -345,11 +351,59 @@ class DemTaskManager:
 
     def _run_tiling_job(self, task_id: int, task_dir: Path, output_dir: Path, maxzoom: int, parent_url: str) -> None:
         try:
-            tile_dem_task_dir(
-                task_dir=task_dir,
-                out_dir=output_dir,
-                params=TileParams(maxzoom=maxzoom, parent_url=parent_url),
-            )
+            # 切片进度节流落库/emit（范本：contour_task_manager 渲染阶段的
+            # render_progress）：build_terrain 逐瓦片回调，不节流时每次回调
+            # 都是 UPDATE + commit + 广播，百万级瓦片会把切片拖垮、把前端打爆。
+            # 距上次落库不足 _PROGRESS_EMIT_MIN_INTERVAL 且未处理完时只记
+            # 内存；结束后强制 flush 保住节流窗口内最后一段计数。
+            progress_conn = get_connection()
+            try:
+                # last_flush 初始 -inf:首次回调（0/total）必落库 —— 重启切片时
+                # 也顺势清掉上一轮残留的进度计数。
+                tiling_state = {"done": 0, "total": 0, "last_flush": float("-inf")}
+
+                def _flush_tiling_progress() -> None:
+                    progress_conn.execute(
+                        "UPDATE dem_terrain_jobs SET rendered_tiles=?, total_tiles=? WHERE task_id=?",
+                        (tiling_state["done"], tiling_state["total"], task_id),
+                    )
+                    progress_conn.commit()
+                    tiling_state["last_flush"] = time.monotonic()
+                    # getattr 而非 self.socketio:契约测试用 __new__ 构造的管理器
+                    # 直调本方法（无 __init__、无 socketio 属性）验证失败落库路径。
+                    socketio = getattr(self, "socketio", None)
+                    if socketio:
+                        # 专用事件而非 task_progress：job 行没有 dem 任务的计数
+                        # 字段，混进 task_progress 会被前端按 task_type:task_id
+                        # 当成 dem 任务行把计数冲掉（见 static/js/tasks.js）。
+                        # 前端详情弹窗轮询 GET /api/terrain/dem/<id> 拿全行，
+                        # 这发只是实时 nudge。
+                        socketio.emit("terrain_job_progress", {
+                            "task_id": task_id,
+                            "task_type": "dem_terrain",
+                            "status": "running",
+                            "rendered_tiles": tiling_state["done"],
+                            "total_tiles": tiling_state["total"],
+                        })
+
+                def tiling_progress(done: int, total: int) -> None:
+                    tiling_state["done"] = done
+                    tiling_state["total"] = total
+                    if done < total and \
+                            time.monotonic() - tiling_state["last_flush"] < _PROGRESS_EMIT_MIN_INTERVAL:
+                        return
+                    _flush_tiling_progress()
+
+                tiling_progress(0, 0)
+                tile_dem_task_dir(
+                    task_dir=task_dir,
+                    out_dir=output_dir,
+                    params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
+                                      progress_cb=tiling_progress),
+                )
+                _flush_tiling_progress()
+            finally:
+                progress_conn.close()
 
             conn = get_connection()
             try:
@@ -398,7 +452,7 @@ class DemTaskManager:
         finally:
             conn.close()
 
-    def list_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_tasks(self, limit: int = 100, status: Optional[str] = None) -> List[Dict[str, Any]]:
         limit = int(limit or 100)
         # 钳到 [1, 100] —— SQLite LIMIT -1 表示无上限、0 返回空，两者都是
         # 调用方 bug，回退到默认窗口（同 routes/api.py get_tasks 的约定）。
@@ -409,7 +463,17 @@ class DemTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM dem_tasks ORDER BY created_at DESC LIMIT ?", (limit,))
+            # status='active' 是路由层契约的特殊值（同 /api/history_all）：
+            # 展开成活动三态；其余取值（含 None）维持原行为。
+            if status == 'active':
+                cur.execute(
+                    "SELECT * FROM dem_tasks "
+                    "WHERE status IN ('pending','running','paused') "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                )
+            else:
+                cur.execute("SELECT * FROM dem_tasks ORDER BY created_at DESC LIMIT ?", (limit,))
             return [dict(r) for r in cur.fetchall()]
         finally:
             conn.close()
@@ -492,8 +556,13 @@ class DemTaskManager:
             if stop_flag and stop_flag.is_set():
                 stop_ev.set()
 
-            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
-                # Mirror existing naming: emit task_progress updates.
+            # 进度记账（同步 sqlite I/O：新开连接 + SELECT 状态 + UPDATE + commit）
+            # 整体放 worker 线程 —— 回调在下载事件循环里被 await，直接在循环
+            # 上跑会堵住所有并发颗粒的下载协程。只回传计数增量（deltas）：
+            # SELECT * 全行挪到真正要 emit 的分支（见 progress），不广播的
+            # 回调不做这次全行查询。
+            def _record_progress(granule_id: str, status: str, error: Optional[str],
+                                 size_bytes: Optional[int]) -> tuple[int, int]:
                 tile_conn = get_connection()
                 try:
                     c = tile_conn.cursor()
@@ -525,15 +594,53 @@ class DemTaskManager:
                             (downloaded_delta, failed_delta, task_id),
                         )
                     tile_conn.commit()
-
-                    c.execute("SELECT * FROM dem_tasks WHERE id=?", (task_id,))
-                    trow = c.fetchone()
-                    if trow and self.socketio:
-                        payload = dict(trow)
-                        payload["task_type"] = "dem"
-                        self.socketio.emit("task_progress", payload)
+                    return downloaded_delta, failed_delta
                 finally:
                     tile_conn.close()
+
+            def _fetch_task_row() -> Optional[Dict[str, Any]]:
+                row_conn = get_connection()
+                try:
+                    c = row_conn.cursor()
+                    c.execute("SELECT * FROM dem_tasks WHERE id=?", (task_id,))
+                    trow = c.fetchone()
+                    return dict(trow) if trow else None
+                finally:
+                    row_conn.close()
+
+            # emit 节流（与 map/contour 对齐的严格时间窗）：距上次广播不足
+            # _PROGRESS_EMIT_MIN_INTERVAL 且未到最后一颗时只落库不广播；
+            # 计数取内存累计值（每回调已逐次落库，实时进度不必再查 DB），
+            # done 达 total_files 的末发必发。不再有「计数变化必发」豁免 ——
+            # 颗粒集中完成时豁免会让时间窗形同虚设；任务级状态变更由收尾的
+            # task_completed/task_failed 事件覆盖，payload 结构不变（task 整行
+            # + task_type）。
+            progress_counts = {
+                "downloaded": int(task["downloaded_files"] or 0),
+                "failed": int(task["failed_files"] or 0),
+            }
+            total_files = int(task["total_files"] or 0)
+            last_emit_at = float("-inf")
+
+            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
+                nonlocal last_emit_at
+                # Mirror existing naming: emit task_progress updates.
+                downloaded_delta, failed_delta = await asyncio.to_thread(
+                    _record_progress, granule_id, status, error, size_bytes)
+                progress_counts["downloaded"] += downloaded_delta
+                progress_counts["failed"] += failed_delta
+                if not self.socketio:
+                    return
+                done = progress_counts["downloaded"] + progress_counts["failed"]
+                now = time.monotonic()
+                if done < total_files and now - last_emit_at < _PROGRESS_EMIT_MIN_INTERVAL:
+                    return
+                last_emit_at = now
+                row = await asyncio.to_thread(_fetch_task_row)
+                if not row:
+                    return
+                row["task_type"] = "dem"
+                self.socketio.emit("task_progress", row)
 
             # Wire stop flag polling: map threading.Event -> asyncio.Event
             async def stop_watcher():

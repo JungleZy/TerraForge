@@ -54,7 +54,10 @@ def list_dem_tasks():
             return jsonify({"error": "DEM task manager not initialized"}), 500
 
         limit = request.args.get("limit", 100, type=int)
-        tasks = dem_task_manager.list_tasks(limit=limit)
+        # ?status=active 是契约特殊值（同 /api/tasks、/api/history_all）：只回
+        # 活动三态；不传 status 时行为完全不变。
+        status = request.args.get("status", None, type=str)
+        tasks = dem_task_manager.list_tasks(limit=limit, status=status)
         return jsonify({"success": True, "tasks": tasks, "count": len(tasks)})
     except Exception as e:
         logger.error(f"Error listing DEM tasks: {e}")

@@ -65,6 +65,29 @@ def test_contour_style_from_config():
     assert style.background == "transparent"
 
 
+def test_contour_style_from_config_prefers_get_many():
+    """有 get_many 的 config(真实 ConfigManager)必须走批量取:
+    单连接一次查询,不再 18 个键各开一次连接;缺失键(None)回退默认值。"""
+    calls = []
+
+    class FakeConfigMany:
+        def get_many(self, keys):
+            calls.append(list(keys))
+            # 只覆盖一个键,其余返回 None(模拟无配置行)
+            return {"contour_color_index": "#222222"}
+
+        def get(self, k, default=None):  # pragma: no cover - 不应被调用
+            raise AssertionError("应走 get_many 批量取,不应逐键 get")
+
+    style = ContourStyle.from_config(FakeConfigMany())
+    assert len(calls) == 1
+    assert "contour_color_index" in calls[0]
+    assert style.color_index == "#222222"
+    # 无配置行的键回退默认
+    assert style.color_intermediate == "#9C6B3F"
+    assert style.index_step == 5
+
+
 def test_interval_for_zoom_standard():
     from services.contour_engine import interval_for_zoom
     base = 50

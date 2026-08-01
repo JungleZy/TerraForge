@@ -1,6 +1,18 @@
 let socket;
 let activeTasks = new Map();
 let timeUpdateInterval = null;
+// 标记是否已经完成首次 socket 连接。initTasks 末尾会直接调一次
+// loadActiveTasks 负责首屏，connect 回调只在**断线重连**时补拉——
+// 否则首次连接会重复拉一遍 4 个列表接口。
+let hasConnectedOnce = false;
+// 首屏 loadActiveTasks 的 Promise + 该次拿到的 contour 全量列表（未过滤，
+// 含 completed）。map.js 的等高线预览面板首屏要从中筛 completed 任务——
+// contour 路因此刻意不带 ?status=active（见 loadActiveTasks 的注释）。
+let firstActiveTasksLoad = null;
+let latestContourTasks = [];
+// 终态事件（task_completed/task_failed）统计卡刷新的去抖定时器：
+// 批量收官时每个任务各发一次，300ms 内合并成一次 loadStats()。
+let _loadStatsDebounceTimer = null;
 
 function initTasks() {
     socket = io();
@@ -8,7 +20,20 @@ function initTasks() {
 
     socket.on('connect', function() {
         console.log('Connected to server');
-        loadActiveTasks();
+        if (hasConnectedOnce) {
+            loadActiveTasks();
+            // 断线窗口内的终态变化不会补发 socket 事件：只补拉活动列表的话，
+            // 时间流里的行（历史流）和统计卡会永久停在断线前的状态——一并刷新。
+            // loadHistory/loadStats/currentPage 是 history.js 的全局
+            // （首页两个文件都加载，typeof 守卫兜底）。
+            if (typeof loadHistory === 'function') {
+                loadHistory(typeof currentPage !== 'undefined' ? currentPage : 1);
+            }
+            if (typeof loadStats === 'function') {
+                loadStats();
+            }
+        }
+        hasConnectedOnce = true;
     });
 
     socket.on('disconnect', function() {
@@ -16,27 +41,24 @@ function initTasks() {
     });
 
     socket.on('task_progress', function(data) {
-        console.log('Task progress update:', data);
+        // 高频事件，不 console.log 整个 data（DevTools 打开时是主线程开销）
         updateTaskProgress(data);
         updateStatusTasks();
     });
 
     socket.on('task_completed', function(data) {
-        console.log('Task completed:', data);
         handleTaskCompleted(data.task_id, data.task_type || 'map', data.warning);
         pushStatusEvent('任务 #' + data.task_id + ' 已完成');
         updateStatusTasks();
     });
 
     socket.on('task_failed', function(data) {
-        console.log('Task failed:', data);
         handleTaskFailed(data.task_id, data.task_type || 'map', data.error_message);
         pushStatusEvent('任务 #' + data.task_id + ' 失败');
         updateStatusTasks();
     });
 
     socket.on('task_stitch_progress', function(data) {
-        console.log('Task stitch progress:', data);
         pushStatusEvent('任务 #' + data.task_id + ' 拼接瓦片中…');
     });
 
@@ -49,11 +71,12 @@ function initTasks() {
 
     // 复制瓦片阶段的心跳。下载进度条此时已经 100%,没有这个事件界面会静止若干分钟。
     socket.on('task_copy_progress', function(data) {
-        console.log('Task copy progress:', data);
         pushStatusEvent('任务 #' + data.task_id + ' 复制瓦片中…');
     });
 
-    loadActiveTasks();
+    // 首屏这次拉取的 Promise 挂到模块级：map.js 的 initContourPreview 等它
+    // resolve 后共享 contour 数据，首屏 /api/contour/tasks 只拉一遍。
+    firstActiveTasksLoad = loadActiveTasks();
     updateStatusTasks();
 
     // 每秒更新一次时长显示
@@ -65,10 +88,15 @@ function initTasks() {
 
 async function loadActiveTasks() {
     try {
+        // 三路带 ?status=active：服务端只回活动三态（不传行为不变——后端
+        // 未上线该参数时返回全量，下面白名单照样滤），completed/cancelled
+        // 不再随每次补拉往返。contour 路刻意不带：这份响应同时是地图预览
+        // 面板的数据源（initContourPreview 要从里面筛 completed 任务，
+        // 见 map.js），带上的话首屏还得再拉一遍全量。
         const [mapResp, demResp, localResp, contourResp] = await Promise.all([
-            fetch('/api/tasks'),
-            fetch('/api/dem/tasks'),
-            fetch('/api/terrain/local/tasks'),
+            fetch('/api/tasks?status=active'),
+            fetch('/api/dem/tasks?status=active'),
+            fetch('/api/terrain/local/tasks?status=active'),
             fetch('/api/contour/tasks')
         ]);
         // 四路任何一路非 2xx 都不能接着解析渲染——失败响应的 body 不是任务
@@ -81,13 +109,17 @@ async function loadActiveTasks() {
         const demData = await demResp.json();
         const localData = await localResp.json();
         const contourData = await contourResp.json();
+        // 全量（含 completed）共享给 map.js 的等高线预览面板，首屏只拉这一遍
+        latestContourTasks = contourData.tasks || [];
 
         const mapTasks = (mapData.tasks || []).map(t => normalizeTask(t, 'map'));
         const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
         const contourTasks = (contourData.tasks || []).map(t => normalizeTask(t, 'contour'));
         const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks].filter(t =>
-            // failed 也保留：失败行的「移除」（dismissTask）与 socket 失败事件
+            // completed/cancelled 由服务端 ?status=active 挡掉（contour 路拉的是
+            // 全量，终态在这里被白名单丢弃——它只需要活动态进这个 Map）。
+            // failed 仍保留：失败行的「移除」（dismissTask）与 socket 失败事件
             // 都按 key 在这个 Map 里找任务；状态栏聚合自己会再滤掉非活动态。
             ['pending', 'running', 'paused', 'failed'].includes(t.status)
         );
@@ -196,6 +228,8 @@ function normalizeTask(task, type) {
 
 // 活动任务读数：进行中（pending/running/paused）任务数 + 汇总进度条。
 // failed 行留在 activeTasks 里等用户移除，但不算「活动」。
+// task_progress 每个事件都调这里：文本/宽度算出来后先比对再写——无条件
+// 写 textContent/style.width 每次都会触发 DOM 变更（高频事件下白付 layout）。
 function updateStatusTasks() {
     const textEl = document.getElementById('statusTasksText');
     if (!textEl) return;
@@ -204,8 +238,12 @@ function updateStatusTasks() {
     const live = Array.from(activeTasks.values())
         .filter(t => ['pending', 'running', 'paused'].includes(t.status));
     if (live.length === 0) {
-        textEl.textContent = '无活动任务';
-        if (barWrap) barWrap.hidden = true;
+        if (textEl.textContent !== '无活动任务') {
+            textEl.textContent = '无活动任务';
+        }
+        if (barWrap && !barWrap.hidden) {
+            barWrap.hidden = true;
+        }
         return;
     }
     const running = live.filter(t => t.status === 'running').length;
@@ -216,10 +254,18 @@ function updateStatusTasks() {
         done += t.downloaded_items || 0;
     });
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    textEl.textContent = `${live.length} 个活动任务（${running} 运行中） ${pct}%`;
+    const text = `${live.length} 个活动任务（${running} 运行中） ${pct}%`;
+    if (textEl.textContent !== text) {
+        textEl.textContent = text;
+    }
     if (barWrap && barFill) {
-        barWrap.hidden = false;
-        barFill.style.width = pct + '%';
+        if (barWrap.hidden) {
+            barWrap.hidden = false;
+        }
+        const width = pct + '%';
+        if (barFill.style.width !== width) {
+            barFill.style.width = width;
+        }
     }
 }
 
@@ -252,6 +298,17 @@ function rebuildStreamRow(row, task) {
 // 任务自然出现。currentPage / currentStatusFilter / createTaskRow 都是
 // history.js 的全局（首页两个文件都加载，typeof 守卫兜底）。
 function prependStreamRow(task) {
+    // 查重兜底：行已在流里就原地重建，绝不插第二行。两条重复路径：
+    //   1. 活动任务被列表接口的 100 条窗口挤掉后，task_progress 到达时
+    //      activeTasks 里查不到，被当成「新任务」；
+    //   2. 启动竞态：loadHistory 已经渲染了该行，首个 task_progress 又到达。
+    if (task._key) {
+        const existing = document.getElementById(`task-${task._key}`);
+        if (existing) {
+            rebuildStreamRow(existing, task);
+            return;
+        }
+    }
     if (typeof currentPage === 'undefined' || currentPage !== 1) return;
     if (typeof currentStatusFilter !== 'undefined'
         && currentStatusFilter !== '' && currentStatusFilter !== 'active') return;
@@ -427,9 +484,17 @@ function updateTaskProgressPartial(row, task) {
     // 更新进度条（行2 的 5px 发丝条，进度条/百分比/计数同一行）
     const progressBar = row.querySelector('.progress-bar');
     if (progressBar) {
-        progressBar.style.width = `${progress}%`;
-        progressBar.setAttribute('aria-valuenow', progress);
-        progressBar.className = `progress-bar bg-${getStatusColor(task.status)}`;
+        // 数值没变就不重写 width/aria：写 style.width 必然触发 layout，
+        // task_progress 高频事件下值得挡掉（aria-valuenow 即 DOM 里的现值）。
+        if (progressBar.getAttribute('aria-valuenow') !== String(progress)) {
+            progressBar.style.width = `${progress}%`;
+            progressBar.setAttribute('aria-valuenow', progress);
+        }
+        // 状态色同理：className 不变时重写也会触发 restyle，先比再写。
+        // 赋值保持这行字面量——契约测试用正则点名钉住它（Socket.IO 增量主路径）。
+        if (progressBar.className !== `progress-bar bg-${getStatusColor(task.status)}`) {
+            progressBar.className = `progress-bar bg-${getStatusColor(task.status)}`;
+        }
     }
 
     // 百分比在条右边的 .task-pct，不在条里。这行原本是 progressBar.textContent = ...，
@@ -479,8 +544,14 @@ function handleTaskCompleted(taskId, taskType, warning) {
 
     // 统计卡（总任务/已完成/失败/累计下载量）跟着终态走。loadStats 是
     // history.js 的全局（首页两个文件都加载，typeof 守卫兜底）。
+    // 批量收官时每个任务各发一次终态事件，立即刷新会 N 连发——300ms 去抖
+    // 合并成一次（字面量 loadStats() 保留在调用处：契约测试按正则点名它）。
     if (typeof loadStats === 'function') {
-        loadStats();
+        if (_loadStatsDebounceTimer) clearTimeout(_loadStatsDebounceTimer);
+        _loadStatsDebounceTimer = setTimeout(() => {
+            _loadStatsDebounceTimer = null;
+            loadStats();
+        }, 300);
     }
 }
 
@@ -532,9 +603,14 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
     closeFailureToast(key);   // 同一任务只留最新的一条
     failureToasts.set(key, showToast(`任务失败：${task.error_message}`, 'danger', { duration: 0 }));
 
-    // 统计卡的「失败」计数跟着走（与 handleTaskCompleted 的 loadStats 联动一致）
+    // 统计卡的「失败」计数跟着走（与 handleTaskCompleted 同一去抖：
+    // 批量失败时 N 个事件合并成一次刷新，字面量 loadStats() 同样被契约测试点名）
     if (typeof loadStats === 'function') {
-        loadStats();
+        if (_loadStatsDebounceTimer) clearTimeout(_loadStatsDebounceTimer);
+        _loadStatsDebounceTimer = setTimeout(() => {
+            _loadStatsDebounceTimer = null;
+            loadStats();
+        }, 300);
     }
 }
 
@@ -625,9 +701,12 @@ function calculateTimeInfo(task) {
 
     result.show = true;
 
-    // 使用后端计算的总运行时长。dem/contour/local_terrain 的 manager 不写
-    // total_running_seconds（只有地图管线维护该列），字段缺失时回退按
-    // started_at 的墙钟时长显示——否则这些任务恒显示"已运行: 0秒"。
+    // 使用后端列累计的总运行时长（**不含当前段**）。三个来源同一口径：
+    // /api/tasks 与 /api/history_all 本来就是 tasks 列的累计值；socket 载荷
+    // 曾经发「列累计 + 当前段」的瞬时值，前端又叠加一次当前段导致双计——
+    // 后端改发列值后，当前段统一由前端按 started_at 在下方叠加（仅 running），
+    // 全前端只剩这一处计算。dem/contour/local_terrain 的 manager 不写该列，
+    // 字段缺失时回退按 started_at 的墙钟时长显示——否则恒显示"已运行: 0秒"。
     let elapsedSeconds;
     if (task.total_running_seconds != null) {
         elapsedSeconds = task.total_running_seconds;

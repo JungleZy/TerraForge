@@ -68,11 +68,22 @@ def coverage_bbox(north: float, south: float, east: float, west: float) -> Tuple
     area actually covered is this whole-degree-aligned box, which is always
     equal to or larger than the framed selection. Returns (north, south, east,
     west) in degrees. Agrees exactly with the tiles from tiles_for_bbox.
+
+    边界就是 tiles_for_bbox 里 floor(south)/floor(north-eps) 的算术结果，
+    直接算 —— 全球 bbox 会物化 6 万+ LatLonTile 对象再取 min/max，没有必要。
+    校验规则与 tiles_for_bbox 保持一致（非法 bbox 同样抛 ValueError）。
     """
-    tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
-    lats = [t.lat for t in tiles]
-    lons = [t.lon for t in tiles]
-    return (max(lats) + 1, min(lats), max(lons) + 1, min(lons))
+    if north <= south:
+        raise ValueError(f"north ({north}) must be greater than south ({south})")
+    if east <= west:
+        raise ValueError(f"east ({east}) must be greater than west ({west})")
+
+    eps = 1e-12
+    lat_min = int(math.floor(south))
+    lat_max = int(math.floor(north - eps))
+    lon_min = int(math.floor(west))
+    lon_max = int(math.floor(east - eps))
+    return (lat_max + 1, lat_min, lon_max + 1, lon_min)
 
 
 def astgtm_v3_granules_for_tile(tile: LatLonTile, include_num: bool, include_swb: bool) -> List[str]:

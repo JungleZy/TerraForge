@@ -21,6 +21,12 @@
 
     const VALID_TYPES = ['success', 'danger', 'warning', 'info'];
 
+    // toast 总量上限：失败 toast 是常驻的（duration: 0 不自动消失），批量失败
+    // 时右上角会无限堆高。超过上限时最旧的自动收起——走该 toast 自己的
+    // remove，进出场动画与计时语义不变，常驻设计本身不变。
+    const MAX_TOASTS = 10;
+    const openToasts = [];
+
     // ---------------------------------------------------------------- Toast
     function ensureToastContainer() {
         let c = document.getElementById('app-toast-container');
@@ -68,20 +74,31 @@
 
         let removed = false;
         let timer = null;
+        // 先占位再回填 close：remove 闭包里要按引用把自己从 openToasts 摘掉
+        const handle = { close: null };
         function remove() {
             if (removed) return;
             removed = true;
+            const i = openToasts.indexOf(handle);
+            if (i !== -1) openToasts.splice(i, 1);
             if (timer) clearTimeout(timer);
             toast.classList.remove('app-toast--in');
             toast.classList.add('app-toast--out');
             toast.addEventListener('transitionend', function () { toast.remove(); }, { once: true });
             setTimeout(function () { toast.remove(); }, 400); // 兜底
         }
+        handle.close = remove;
 
         close.addEventListener('click', remove);
         if (duration > 0) timer = setTimeout(remove, duration);
 
-        return { close: remove };
+        openToasts.push(handle);
+        // 超上限：最旧的先收（remove 会把它自己从数组里摘掉，循环因此推进）
+        while (openToasts.length > MAX_TOASTS) {
+            openToasts[0].close();
+        }
+
+        return handle;
     }
 
     // -------------------------------------------------------------- Confirm

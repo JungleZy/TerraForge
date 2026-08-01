@@ -83,6 +83,52 @@ def test_set_config(config_manager):
         config_manager.set('concurrent_downloads', '200')  # Out of range
 
 
+def test_set_many_writes_all_in_one_transaction(config_manager):
+    """set_many:批量写入一次提交，全部键可读回"""
+    result = config_manager.set_many({
+        'concurrent_downloads': '20',
+        'request_timeout': '60',
+        'max_retries': '3',
+    })
+
+    assert result is True
+    assert config_manager.get('concurrent_downloads') == '20'
+    assert config_manager.get('request_timeout') == '60'
+    assert config_manager.get('max_retries') == '3'
+
+
+def test_set_many_invalid_key_rejects_whole_batch(config_manager):
+    """set_many:任一键校验失败整批拒绝，合法键也不落库（无半更新状态）"""
+    before = config_manager.get('concurrent_downloads')
+
+    with pytest.raises(ValueError):
+        config_manager.set_many({
+            'concurrent_downloads': '20',
+            'request_timeout': '9999',  # Out of range
+        })
+
+    assert config_manager.get('concurrent_downloads') == before
+
+
+def test_set_many_empty_mapping_is_noop(config_manager):
+    assert config_manager.set_many({}) is True
+
+
+def test_get_many_returns_dict_with_none_for_missing(config_manager):
+    """get_many:一次取回多键；无配置行的键映射为 None（与 get 的 default=None 一致）"""
+    config_manager.set('concurrent_downloads', '25')
+
+    result = config_manager.get_many(
+        ['concurrent_downloads', 'default_style', 'no_such_key'])
+
+    assert result == {
+        'concurrent_downloads': '25',
+        'default_style': 'm',
+        'no_such_key': None,
+    }
+    assert config_manager.get_many([]) == {}
+
+
 def test_get_all(config_manager):
     """Test getting all configuration values"""
     all_configs = config_manager.get_all()

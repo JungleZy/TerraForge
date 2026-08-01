@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -22,6 +23,11 @@ class TileParams:
     # derives the per-tile interval from tile_size (180/(tile_size-1) deg).
     tile_size: int = 65
     workers: int = 0
+    # 进度回调/协作停止透传给 build_terrain（默认 None = 关闭）。放在 params
+    # 而不是 tile_dem_task_dir 的独立参数：多个契约测试用 (task_dir, out_dir,
+    # params) 三参替身钉住管理器到 tiler 的调用形态，加独立参数会破坏它们。
+    progress_cb: Optional[Callable[[int, int], None]] = None
+    stop_flag: Optional[threading.Event] = None
 
 
 def tile_dem_task_dir(
@@ -54,6 +60,8 @@ def tile_dem_task_dir(
         max_level=int(params.maxzoom),
         tile_size=int(params.tile_size),
         workers=int(params.workers),
+        progress_cb=params.progress_cb,
+        stop_flag=params.stop_flag,
     )
 
     layer_json_path = out_dir / "layer.json"

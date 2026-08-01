@@ -10,6 +10,7 @@ from typing import Optional
 from core.database import get_connection, DEFAULT_CONFIGS
 from services.config_manager import ConfigManager
 from services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from routes import tiles_static
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,20 @@ def get_tasks():
             limit = 100
         if limit < 1:
             limit = 100
+
+        # ?status=active 是契约特殊值（与 /api/history_all 对齐）：只回活动三态
+        # (pending/running/paused)，直接复用 TaskManager.get_active_tasks 的现成
+        # 查询。不传 status 时行为完全不变；其它取值本接口不做过滤（契约只有
+        # active 这一个特殊值）。
+        if request.args.get('status') == 'active':
+            if not task_manager:
+                return jsonify({'error': 'Task manager not initialized'}), 500
+            tasks = task_manager.get_active_tasks()
+            return jsonify({
+                'success': True,
+                'tasks': tasks,
+                'count': len(tasks)
+            })
 
         conn = get_connection()
         try:
@@ -377,6 +392,10 @@ def delete_task(task_id: int):
         finally:
             conn.close()
 
+        # 行已删：清掉 /tiles 静态路由的 output_path 缓存，否则 delete_files=false
+        # （默认，磁盘瓦片保留）时已删任务的瓦片仍能被访问到
+        tiles_static.invalidate_output_path_cache(task_id)
+
         # Optional best-effort artifact cleanup after the row is gone.
         # 存量行的 output_path 可能是相对路径(旧版本只校验不改写)——先归一化
         # 成绝对路径;否则 Path.resolve() 按进程 CWD 解析,CWD≠BASE_DIR 时会
@@ -525,14 +544,22 @@ def get_history_all():
         try:
             cursor = conn.cursor()
 
-            def _count(table):
-                cursor.execute(f'SELECT COUNT(*) AS c FROM {table} {where_sql}', count_params)
-                return cursor.fetchone()['c']
-
-            map_count = _count('tasks')
-            dem_count = _count('dem_tasks')
-            local_count = _count('local_terrain_tasks')
-            contour_count = _count('contour_tasks')
+            # 4 个相互独立的 COUNT 合并成一条标量子查询 SQL:同连接下每次
+            # execute 仍是一次完整的解析+执行往返,合一后只跑一趟。
+            # where_sql/count_params 四表相同,参数按出现顺序重复 4 份。
+            cursor.execute(
+                f'SELECT '
+                f'(SELECT COUNT(*) FROM tasks {where_sql}) AS map_c, '
+                f'(SELECT COUNT(*) FROM dem_tasks {where_sql}) AS dem_c, '
+                f'(SELECT COUNT(*) FROM local_terrain_tasks {where_sql}) AS local_c, '
+                f'(SELECT COUNT(*) FROM contour_tasks {where_sql}) AS contour_c',
+                count_params * 4,
+            )
+            row = cursor.fetchone()
+            map_count = row['map_c']
+            dem_count = row['dem_c']
+            local_count = row['local_c']
+            contour_count = row['contour_c']
 
             total_count = int(map_count or 0) + int(dem_count or 0) + int(local_count or 0) + int(contour_count or 0)
 
@@ -655,39 +682,51 @@ def get_history_stats():
         try:
             cursor = conn.cursor()
 
-            def _counts(table):
-                cursor.execute(
-                    f"SELECT COUNT(*) AS total, "
-                    f"SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed, "
-                    f"SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed "
-                    f"FROM {table}"
-                )
-                row = cursor.fetchone()
-                return (int(row['total'] or 0), int(row['completed'] or 0), int(row['failed'] or 0))
-
-            def _sum(table, col):
-                cursor.execute(f"SELECT COALESCE(SUM({col}), 0) AS s FROM {table}")
-                return int(cursor.fetchone()['s'] or 0)
-
-            m_total, m_done, m_fail = _counts('tasks')
-            d_total, d_done, d_fail = _counts('dem_tasks')
-            l_total, l_done, l_fail = _counts('local_terrain_tasks')
-            c_total, c_done, c_fail = _counts('contour_tasks')
-
-            total_downloaded = (
-                _sum('tasks', 'downloaded_tiles')
-                + _sum('dem_tasks', 'downloaded_files')
-                + _sum('local_terrain_tasks', 'uploaded_files')
-                + _sum('contour_tasks', 'rendered_tiles')
-            )
+            # 原来 4 条 COUNT + 4 条 SUM 串行执行，每次 execute 都是一次完整的
+            # 解析+执行往返。合并成 1 条：4 个聚合子查询交叉连接（无 GROUP BY 的
+            # 聚合在空表上也恒返回一行），每表仍只扫一遍，总共只有一次往返
+            # （思路同 history_all 已合并的 4 路 COUNT）。
+            cursor.execute('''
+                SELECT
+                    m.t AS m_total, m.c AS m_done, m.f AS m_fail, m.s AS m_sum,
+                    d.t AS d_total, d.c AS d_done, d.f AS d_fail, d.s AS d_sum,
+                    l.t AS l_total, l.c AS l_done, l.f AS l_fail, l.s AS l_sum,
+                    c.t AS c_total, c.c AS c_done, c.f AS c_fail, c.s AS c_sum
+                FROM
+                    (SELECT COUNT(*) AS t,
+                            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS c,
+                            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS f,
+                            COALESCE(SUM(downloaded_tiles), 0) AS s
+                     FROM tasks) m,
+                    (SELECT COUNT(*) AS t,
+                            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS c,
+                            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS f,
+                            COALESCE(SUM(downloaded_files), 0) AS s
+                     FROM dem_tasks) d,
+                    (SELECT COUNT(*) AS t,
+                            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS c,
+                            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS f,
+                            COALESCE(SUM(uploaded_files), 0) AS s
+                     FROM local_terrain_tasks) l,
+                    (SELECT COUNT(*) AS t,
+                            SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS c,
+                            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS f,
+                            COALESCE(SUM(rendered_tiles), 0) AS s
+                     FROM contour_tasks) c
+            ''')
+            row = cursor.fetchone()
 
             resp = jsonify({
                 'success': True,
                 'stats': {
-                    'total_tasks': m_total + d_total + l_total + c_total,
-                    'completed': m_done + d_done + l_done + c_done,
-                    'failed': m_fail + d_fail + l_fail + c_fail,
-                    'total_downloaded': total_downloaded,
+                    'total_tasks': int(row['m_total'] or 0) + int(row['d_total'] or 0)
+                                   + int(row['l_total'] or 0) + int(row['c_total'] or 0),
+                    'completed': int(row['m_done'] or 0) + int(row['d_done'] or 0)
+                                 + int(row['l_done'] or 0) + int(row['c_done'] or 0),
+                    'failed': int(row['m_fail'] or 0) + int(row['d_fail'] or 0)
+                              + int(row['l_fail'] or 0) + int(row['c_fail'] or 0),
+                    'total_downloaded': int(row['m_sum'] or 0) + int(row['d_sum'] or 0)
+                                        + int(row['l_sum'] or 0) + int(row['c_sum'] or 0),
                 }
             })
             resp.headers['Cache-Control'] = 'no-store'
@@ -752,18 +791,31 @@ def update_config():
         updated_keys = []
         errors = []
 
+        # 逐键校验、收集错误，合法的一次性交给 set_many 单事务写入 ——
+        # 逐键 set() 各自 commit 时，中途失败会留下半更新状态（部分键已生效、
+        # 部分没生效），用户难以察觉。
+        valid_items = {}
         for key, value in data.items():
             if key not in known_keys:
                 errors.append(f"{key}: unknown config key")
                 continue
             try:
-                config_manager.set(key, str(value))
+                if not config_manager.validate_config(key, str(value)):
+                    # 与 ConfigManager.set 的报错口径一致
+                    raise ValueError(f'Invalid value for config key {key}: {value}')
+                valid_items[key] = str(value)
                 updated_keys.append(key)
             except ValueError as e:
                 errors.append(f"{key}: {str(e)}")
+
+        if valid_items:
+            try:
+                config_manager.set_many(valid_items)
             except Exception as e:
-                logger.error(f"Error updating config {key}: {e}")
-                errors.append(f"{key}: Failed to update")
+                # 整批失败（set_many 内部已回滚，库中无任何半更新）
+                logger.error(f"Error updating config batch: {e}")
+                errors.append(f"{', '.join(valid_items)}: Failed to update")
+                updated_keys = []
 
         # Return response
         if errors:

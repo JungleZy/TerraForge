@@ -251,9 +251,14 @@ class Task:
         return (self.downloaded_tiles / self.total_tiles) * 100.0
 
 
-@dataclass
+@dataclass(slots=True)
 class Tile:
-    """Tile data model for individual map tiles"""
+    """Tile data model for individual map tiles
+
+    slots=True：下载循环会成万地实例化 Tile，省掉每实例 __dict__ 的内存开销。
+    字段集固定（无人动态挂属性，from_row 那套 __new__ 绕过构造的写法只用在
+    Task 上），加 slots 不改变任何现有行为。
+    """
     task_id: int
     zoom: int
     x: int

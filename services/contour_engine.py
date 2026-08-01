@@ -216,40 +216,63 @@ class ContourStyle:
 
     @classmethod
     def from_config(cls, config) -> "ContourStyle":
+        # 批量取配置：ConfigManager.get 每键开一次连接，这里 18 个键就是 18 次
+        # 连接/查询；get_many 单连接一次取回。无 get_many 的轻量 config 替身
+        # （测试 FakeConfig 等）回退逐键 get，行为不变。
+        _KEYS = (
+            "contour_color_intermediate", "contour_color_index", "contour_color_label",
+            "contour_width_intermediate", "contour_width_index", "contour_background",
+            "contour_index_step", "contour_label_size", "contour_detail_zoom",
+            "contour_zoom_scaling", "contour_hypsometric_breaks",
+            "contour_hypsometric_colors", "contour_hillshade_azimuth",
+            "contour_hillshade_altitude", "contour_hillshade_vert_exag",
+            "contour_hillshade_blend", "contour_water_color_ocean",
+            "contour_water_color_inland",
+        )
+        _get_many = getattr(config, "get_many", None)
+        if callable(_get_many):
+            _vals = _get_many(_KEYS)
+
+            def _cfg(key, default):
+                v = _vals.get(key)
+                return default if v is None else v
+        else:
+            _cfg = config.get
+
         def _f(key, default):
             try:
-                return float(config.get(key, str(default)))
+                return float(_cfg(key, str(default)))
             except (TypeError, ValueError):
                 return float(default)
 
         def _i(key, default):
             try:
-                return int(float(config.get(key, str(default))))
+                return int(float(_cfg(key, str(default))))
             except (TypeError, ValueError):
                 return int(default)
 
         def _tuple_floats(key, default_csv):
             try:
-                parts = [x.strip() for x in str(config.get(key, default_csv)).split(",")]
+                parts = [x.strip() for x in str(_cfg(key, default_csv)).split(",")]
                 return tuple(float(x) for x in parts if x != "")
             except (TypeError, ValueError):
                 return tuple(float(x) for x in default_csv.split(","))
 
         def _tuple_strs(key, default_csv):
-            parts = [x.strip() for x in str(config.get(key, default_csv)).split(",") if x.strip() != ""]
+            parts = [x.strip() for x in str(_cfg(key, default_csv)).split(",") if x.strip() != ""]
             return tuple(parts) if parts else tuple(default_csv.split(","))
 
         return cls(
-            color_intermediate=config.get("contour_color_intermediate", "#9C6B3F"),
-            color_index=config.get("contour_color_index", "#7A4F2A"),
-            color_label=config.get("contour_color_label", "#7A4F2A"),
+            color_intermediate=_cfg("contour_color_intermediate", "#9C6B3F"),
+            color_index=_cfg("contour_color_index", "#7A4F2A"),
+            color_label=_cfg("contour_color_label", "#7A4F2A"),
             width_intermediate=_f("contour_width_intermediate", 0.5),
             width_index=_f("contour_width_index", 1.2),
-            background=config.get("contour_background", "#FAF6EC"),
+            background=_cfg("contour_background", "#FAF6EC"),
             index_step=_i("contour_index_step", 5),
             label_size=_f("contour_label_size", 6.0),
             detail_zoom=_i("contour_detail_zoom", 14),
-            zoom_scaling=config.get("contour_zoom_scaling", "standard"),
+            zoom_scaling=_cfg("contour_zoom_scaling", "standard"),
             hypsometric_breaks=_tuple_floats(
                 "contour_hypsometric_breaks", "0,200,500,1000,2000,3000,4000,5000"),
             hypsometric_colors=_tuple_strs(
@@ -258,9 +281,9 @@ class ContourStyle:
             hillshade_azimuth=_f("contour_hillshade_azimuth", 315.0),
             hillshade_altitude=_f("contour_hillshade_altitude", 45.0),
             hillshade_vert_exag=_f("contour_hillshade_vert_exag", 1.0),
-            hillshade_blend=config.get("contour_hillshade_blend", "soft"),
-            water_color_ocean=config.get("contour_water_color_ocean", "#6BAED6"),
-            water_color_inland=config.get("contour_water_color_inland", "#9ECAE1"),
+            hillshade_blend=_cfg("contour_hillshade_blend", "soft"),
+            water_color_ocean=_cfg("contour_water_color_ocean", "#6BAED6"),
+            water_color_inland=_cfg("contour_water_color_inland", "#9ECAE1"),
         )
 
 
@@ -386,7 +409,6 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
     import matplotlib.pyplot as plt
     from osgeo import gdal
 
-    fig = None
     try:
         xmin, ymin, xmax, ymax = tile_bounds_meters(z, tx, ty)
         col0 = int(math.floor((xmin - ctx.originX) / ctx.pxW)) - 1
@@ -430,7 +452,17 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
         if not ctx.shade and not ctx.water and not draw_lines:
             return "skipped"
 
-        fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
+        # figure 复用:plt.figure()+close() 每瓦片各一次,大头是 figure/后端
+        # 初始化的固定开销;同一 worker(串行=主进程 ctx,并行=子进程 ctx)内复用
+        # 单个 figure,每瓦片 clear() 清轴重画。clear() 会移除全部 axes/artist,
+        # clabel 的标签状态挂在 ContourSet/axes 上随 clear 一并清掉,不串味。
+        # figure 挂在 ctx 上,任务结束由 build_contour_tiles 统一 close。
+        fig = getattr(ctx, "fig", None)
+        if fig is None:
+            fig = plt.figure(figsize=(2.56, 2.56), dpi=100)
+            ctx.fig = fig
+        else:
+            fig.clear()
         ax = fig.add_axes([0, 0, 1, 1])
         ax.set_axis_off()
         ax.set_xlim(xmin, xmax)
@@ -514,9 +546,8 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
     except Exception as e:
         logger.warning(f"等高线瓦片渲染失败 z={z} x={tx} y={ty}: {e!r}")
         return "failed"
-    finally:
-        if fig is not None:
-            plt.close(fig)
+    # 复用的 figure 不在此 close:异常留下的半截内容会在下一瓦片 fig.clear()
+    # 时清掉;任务结束时由 build_contour_tiles 统一关闭(见下方 finally)。
 
 
 # 并行 worker:每个子进程在 initializer 里构造一次自己的 ctx(打开自己的 GDAL
@@ -532,6 +563,33 @@ def _contour_worker_init(dem_path, att_path, style, interval, shade, water, out_
 def _contour_worker_render(zxy) -> str:
     z, tx, ty = zxy
     return _render_contour_tile_core(z, tx, ty, _CONTOUR_WORKER_CTX)
+
+
+def _build_raster_overviews(path, resample):
+    """给 warp 产物建内部金字塔(overviews)。
+
+    warp 产物只开了 TILED+LZW、没有金字塔:低 zoom 时一个瓦片的读窗口覆盖很大
+    范围,_read_band_window 要靠 GDAL 把全分辨率窗口解压后再重采样到 258px,
+    每瓦片都重复这份解压。有了 overviews,GDAL 重采样直接读就近层级,低 zoom
+    解压量随层级指数下降。级别按栅格尺寸翻倍,到 <256 像素(约一瓦片)止。
+    best-effort:失败只记 warning —— 没有金字塔渲染结果不变,只是慢。
+    """
+    from osgeo import gdal
+    try:
+        ds = gdal.Open(path, gdal.GA_Update)
+        if ds is None:
+            return
+        dim = max(ds.RasterXSize, ds.RasterYSize)
+        levels = []
+        lv = 2
+        while dim // lv >= 256:
+            levels.append(lv)
+            lv *= 2
+        if levels:
+            ds.BuildOverviews(resample, levels)
+        ds = None
+    except Exception as e:
+        logger.warning(f"Contour: 建 overviews 失败({e!r}),跳过(仅影响低 zoom 读取性能)")
 
 
 def build_contour_tiles(
@@ -603,6 +661,8 @@ def build_contour_tiles(
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
     logger.info(f"Contour: DEM warp 完成, 耗时 {time.time() - _t_warp:.1f}s")
+    # 金字塔与 warp 的 bilinear 重采样口径一致(逐层平均约等于连续 bilinear)
+    _build_raster_overviews(dem_path, "BILINEAR")
 
     att_paths = [str(p) for p in (att_tifs or [])]
     if water and att_paths:
@@ -614,12 +674,15 @@ def build_contour_tiles(
                       creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
             avrt = None
             att_path = _ap
+            # att 是类别栅格(0陆/1海/2河/3湖),金字塔必须 NEAREST 保留类别值
+            _build_raster_overviews(att_path, "NEAREST")
         except Exception as e:
             # 水体是 best-effort:att warp 失败只跳过水色层,但必须留日志,
             # 否则"开了 water 却没有水体"无从排查
             logger.warning(f"Contour: ASTWBD att warp 失败({e!r}),水体图层跳过,任务继续")
             att_path = None
 
+    ctx = None  # 先置 None:_build_render_ctx 抛错时 finally 里也能安全引用
     try:
         # 主进程 ctx:既用于算 coverage/total,串行路径也直接拿它渲染。
         ctx = _build_render_ctx(dem_path, att_path, style, interval, shade, water, str(out_dir))
@@ -700,7 +763,9 @@ def build_contour_tiles(
             from concurrent.futures import ProcessPoolExecutor
             from concurrent.futures.process import BrokenProcessPool
             init_args = (dem_path, att_path, style, interval, shade, water, str(out_dir))
-            BATCH = 2048  # 批内并行,批间检查 stop_flag;不物化整张瓦片列表
+            BATCH = 512  # 批内并行,批间检查 stop_flag;不物化整张瓦片列表。
+            # 2048 -> 512:暂停/停止要等当前批跑完才生效,批小 4 倍响应约快 4 倍;
+            # 单批 list 内存从 2048 个 (z,x,y) 元组降到 512 个,本身都可忽略。
             try:
                 ctx = None
                 with ProcessPoolExecutor(max_workers=n_workers,
@@ -731,6 +796,12 @@ def build_contour_tiles(
                 ctx = None
                 _render_serial(skip_existing=True)
     finally:
+        # 串行路径(含 BrokenProcessPool 回退)在主进程 ctx 上复用的 figure
+        # 任务结束统一关闭;并行 worker 的 figure 随子进程退出释放。
+        _fig = getattr(ctx, "fig", None) if ctx is not None else None
+        if _fig is not None:
+            import matplotlib.pyplot as plt
+            plt.close(_fig)
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     return counts

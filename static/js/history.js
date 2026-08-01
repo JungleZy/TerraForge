@@ -85,6 +85,10 @@ async function initHistoryMap() {
         selectionIndicator: false,
         infoBox: true,      // 点矩形弹任务摘要（替代 Leaflet bindPopup）
     });
+    // 按需渲染：小地图非交互主视图，常开会空转渲染循环。画面更新点
+    // （renderHistoryMap 增删实体、panels.js 重开面板）各自显式 requestRender 兜底。
+    historyViewer.scene.requestRenderMode = true;
+    historyViewer.scene.maximumRenderTimeChange = Infinity;
     historyViewer.camera.setView({
         destination: Cesium.Cartesian3.fromDegrees(104.0, 35.0, 14000000),
     });
@@ -153,7 +157,7 @@ function renderHistoryTable(tasks) {
                     <line x1="12" y1="8" x2="12" y2="12"></line>
                     <line x1="12" y1="16" x2="12.01" y2="16"></line>
                 </svg>
-                <p style="margin: 0;">暂无记录</p>
+                <p style="margin: 0;">暂无任务</p>
             </div>
         `;
         return;
@@ -425,6 +429,8 @@ function renderHistoryMap(tasks) {
                 west - padLng, south - padLat, east + padLng, north + padLat),
         });
     }
+    // requestRenderMode 下实体增删/setView 不一定自动触发重绘，显式请求一帧
+    historyViewer.scene.requestRender();
 }
 
 function filterTasks(searchTerm) {
@@ -471,6 +477,12 @@ function getStatusColor(status) {
 //   pending -> --color-text-secondary（与 .badge.bg-secondary 同色）
 //   cancelled -> --color-neutral（与 .progress-bar.bg-dark 同色）
 // Leaflet 要的是真实色值字符串，不认 var()，所以必须在这里求值。
+// 状态色惰性缓存：getComputedStyle 每次调用都强制样式计算，renderHistoryMap
+// 逐任务调用时成本放大；调色板运行期不变，首次调用把 6 个令牌求值后查表。
+// 缓存按令牌名键控、放模块级变量：history.js 在独立页和首页都会加载，
+// 但同一页面只加载一次。
+let _statusStrokeCache = null;
+
 function getStatusStroke(status) {
     const vars = {
         'pending': '--color-text-secondary',
@@ -481,7 +493,15 @@ function getStatusStroke(status) {
         'cancelled': '--color-neutral'
     };
     const name = vars[status] || '--color-text-secondary';
-    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    if (!_statusStrokeCache) {
+        const style = getComputedStyle(document.documentElement);
+        _statusStrokeCache = {};
+        Object.keys(vars).forEach(function (key) {
+            const token = vars[key];
+            _statusStrokeCache[token] = style.getPropertyValue(token).trim();
+        });
+    }
+    return _statusStrokeCache[name];
 }
 
 function getStatusText(status) {
@@ -626,9 +646,9 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             terrainRow.style.display = 'none';
         }
 
-        // 显示模态框
-        const modal = new bootstrap.Modal(document.getElementById('taskDetailModal'));
-        modal.show();
+        // 显示模态框。getOrCreateInstance 与全站一致：重复 new bootstrap.Modal
+        // 同一元素会叠出多个实例（每次打开多一层遮罩，关一层还剩一层）。
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('taskDetailModal')).show();
     } catch (error) {
         showToast('获取任务详情失败', 'danger');
     }
@@ -755,6 +775,12 @@ async function deleteTask(taskId, taskType = 'map') {
 
         if (response.ok) {
             showToast('任务已删除', 'success');
+            // 删掉的是失败任务时，它那条常驻失败 toast（tasks.js 按 key 合并的）
+            // 一并关掉——记录都没了，提示不该留在右上角。
+            // 独立页 /history 不加载 tasks.js，typeof 守卫兜底。
+            if (typeof closeFailureToast === 'function') {
+                closeFailureToast(`${taskType}:${taskId}`);
+            }
             // 删掉的是当前页最后一条时本页已空，停在原页会看到空白页——回退一页
             if (allTasks.length <= 1 && currentPage > 1) {
                 loadHistory(currentPage - 1);

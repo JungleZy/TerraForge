@@ -855,14 +855,19 @@ class TaskManager:
             ):
                 if cache_enabled:
                     try:
-                        cache_path = tile.cache_path(style_code)
-                        if cache_path.exists() and cache_path.stat().st_size > 0:
+                        # 单次 stat 同时回答「存在吗」与「非空吗」—— 旧写法
+                        # exists() + stat() 每块瓦片两次 syscall,恢复枚举
+                        # 大任务时是纯浪费。判定语义不变:存在且非空才算命中。
+                        # FileNotFoundError 就是「未命中」,不是故障,不打 warning。
+                        if tile.cache_path(style_code).stat().st_size > 0:
                             cache_hits += 1
                             completed_tiles.append(tile)
                             key = (tile.zoom, tile.x, tile.y)
                             if key in failed_tile_keys:
                                 stale_failed_keys.append(key)
                             continue
+                    except FileNotFoundError:
+                        pass
                     except OSError as e:
                         logger.warning(
                             f"Task {task_id}: Cache check failed for tile "
@@ -932,13 +937,55 @@ class TaskManager:
             last_emit_at = float('-inf')
             progress_conn = None  # 下载循环开启时建立,结束(finally)时关闭
 
+            # 稀疏失败表的内存镜像 + 攒批写队列。回调不再逐瓦片 INSERT/DELETE
+            # + commit(每块瓦片一个事务,全部跑在下载事件循环线程上同步执行),
+            # 改为只登记到三个列表,随 flush_progress_counts 一起 executemany +
+            # 单次 commit。
+            # failed_keys 的初始真值 = 枚举时读入的历史失败行 - 对账已清掉的
+            # 残留行;之后由回调自行维护 —— 本任务只有这一个写方,集合裁决与
+            # 旧实现逐瓦片 rowcount 判定等价(失败:行已存在则 UPDATE 累加
+            # retry_count,否则 INSERT;成功:行存在才需要 DELETE)。
+            failed_keys = failed_tile_keys - set(stale_failed_keys)
+            pending_tile_inserts: List[Tuple[int, int, int, int, Optional[str]]] = []
+            pending_tile_updates: List[Tuple[Optional[str], int, int, int, int]] = []
+            pending_tile_deletes: List[Tuple[int, int, int, int]] = []
+
             def flush_progress_counts():
-                """把攒批的计数增量一次性落库。
+                """把攒批的稀疏失败表写操作和计数增量一次性落库。
 
                 每 PROGRESS_DB_FLUSH_INTERVAL 块以及下载循环结束时各刷一次 ——
-                旧实现每块瓦片都对 tasks 表做 UPDATE,是高频小事务瓶颈。
+                旧实现每块瓦片都对 tasks 表做 UPDATE、对 task_tiles 做一次
+                INSERT/DELETE + commit,是高频小事务瓶颈。
+                一个批次窗口内同一块瓦片只会被上报一次(每次运行每块瓦片只
+                下载一回),所以按操作类型分组 executemany 与逐条执行的最终
+                结果一致。崩溃最多丢一个批次的失败行:对应瓦片没有 cache
+                文件,恢复时自然重下,失败了会重新登记,语义与计数攒批相同。
                 """
                 nonlocal processed_since_flush
+                wrote_anything = False
+                if pending_tile_inserts:
+                    progress_conn.executemany('''
+                        INSERT OR IGNORE INTO task_tiles
+                            (task_id, zoom, x, y, status, retry_count, error_message)
+                        VALUES (?, ?, ?, ?, 'failed', 1, ?)
+                    ''', pending_tile_inserts)
+                    pending_tile_inserts.clear()
+                    wrote_anything = True
+                if pending_tile_updates:
+                    progress_conn.executemany('''
+                        UPDATE task_tiles
+                        SET retry_count = retry_count + 1, error_message = ?
+                        WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
+                    ''', pending_tile_updates)
+                    pending_tile_updates.clear()
+                    wrote_anything = True
+                if pending_tile_deletes:
+                    progress_conn.executemany('''
+                        DELETE FROM task_tiles
+                        WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
+                    ''', pending_tile_deletes)
+                    pending_tile_deletes.clear()
+                    wrote_anything = True
                 if unflushed['downloaded'] or unflushed['failed']:
                     progress_conn.execute('''
                         UPDATE tasks
@@ -946,9 +993,11 @@ class TaskManager:
                             failed_tiles = MAX(failed_tiles + ?, 0)
                         WHERE id = ?
                     ''', (unflushed['downloaded'], unflushed['failed'], task_id))
-                    progress_conn.commit()
                     unflushed['downloaded'] = 0
                     unflushed['failed'] = 0
+                    wrote_anything = True
+                if wrote_anything:
+                    progress_conn.commit()
                 processed_since_flush = 0
 
             # Define progress callback
@@ -957,11 +1006,12 @@ class TaskManager:
 
                 为什么不再每块瓦片写一行:瓦片集合是 bbox+zoom 的纯函数(见
                 iter_tiles),完成态以磁盘 cache 文件为准;task_tiles 只存失败
-                瓦片 —— 失败时 UPSERT 一行,成功时 DELETE 掉历史失败行。
-                tasks 表的进度计数攒批落库(见 flush_progress_counts);
-                socketio 的 task_progress 按 PROGRESS_EMIT_MIN_INTERVAL 节流
-                (计数始终取内存实时值),末块瓦片必发 —— 逐瓦片广播 + 每次
-                另开连接查运行时长会在百万级瓦片下堵死下载事件循环。
+                瓦片 —— 失败时 UPSERT 一行,成功时 DELETE 掉历史失败行(均
+                攒批落库,见 flush_progress_counts)。
+                tasks 表的进度计数攒批落库;socketio 的 task_progress 按
+                PROGRESS_EMIT_MIN_INTERVAL 节流(计数始终取内存实时值),
+                末块瓦片必发 —— 逐瓦片广播 + 每次另开连接查运行时长会在
+                百万级瓦片下堵死下载事件循环。
                 """
                 nonlocal processed_since_flush, last_emit_at
                 if self._is_stop_requested(task_id, stop_flag):
@@ -971,35 +1021,34 @@ class TaskManager:
                 key = (tile.zoom, tile.x, tile.y)
                 old_status = session_status.get(key)
 
-                # DB 层:稀疏失败表维护 + 计数累计/攒批落库。这一层的故障必须
-                # 显眼地记 error —— 失败瓦片若静默丢记录,完成判定的
+                # DB 层:稀疏失败表攒批登记 + 计数累计/攒批落库。这一层的故障
+                # 必须显眼地记 error —— 失败瓦片若静默丢记录,完成判定的
                 # failed_count>0 就守不住,任务会被误判成 completed。
                 try:
-                    progress_cursor = progress_conn.cursor()
                     if status == 'failed':
-                        # 失败:写入/更新稀疏失败行。INSERT OR IGNORE 的 rowcount
-                        # 同时说明这块瓦片历史上是否已失败过(retry_count 在旧行
-                        # 基础上 +1)。
-                        progress_cursor.execute('''
-                            INSERT OR IGNORE INTO task_tiles
-                                (task_id, zoom, x, y, status, retry_count, error_message)
-                            VALUES (?, ?, ?, ?, 'failed', 1, ?)
-                        ''', (task_id, tile.zoom, tile.x, tile.y, error))
-                        row_existed = progress_cursor.rowcount == 0
+                        # 失败:登记写入/更新稀疏失败行。行是否已存在由内存镜像
+                        # failed_keys 裁决(与旧实现 INSERT OR IGNORE 的 rowcount
+                        # 判定等价):已存在 → UPDATE 在旧行基础上 retry_count +1,
+                        # 否则 INSERT(retry_count=1)。
+                        row_existed = key in failed_keys
                         if row_existed:
-                            progress_cursor.execute('''
-                                UPDATE task_tiles
-                                SET retry_count = retry_count + 1, error_message = ?
-                                WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                            ''', (error, task_id, tile.zoom, tile.x, tile.y))
+                            pending_tile_updates.append(
+                                (error, task_id, tile.zoom, tile.x, tile.y)
+                            )
+                        else:
+                            pending_tile_inserts.append(
+                                (task_id, tile.zoom, tile.x, tile.y, error)
+                            )
+                            failed_keys.add(key)
                     else:
-                        # 成功:清掉历史失败行;rowcount 说明它之前是否失败过。
-                        progress_cursor.execute('''
-                            DELETE FROM task_tiles
-                            WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                        ''', (task_id, tile.zoom, tile.x, tile.y))
-                        row_existed = progress_cursor.rowcount > 0
-                    progress_conn.commit()
+                        # 成功:清掉历史失败行;只有行真的存在才需要登记 DELETE,
+                        # 对不存在的行 DELETE 是 no-op,跳过不改语义。
+                        row_existed = key in failed_keys
+                        if row_existed:
+                            pending_tile_deletes.append(
+                                (task_id, tile.zoom, tile.x, tile.y)
+                            )
+                            failed_keys.discard(key)
 
                     if old_status is None and row_existed:
                         old_status = 'failed'
@@ -1009,6 +1058,13 @@ class TaskManager:
                     progress_counts['failed'] += failed_delta
                     unflushed['downloaded'] += downloaded_delta
                     unflushed['failed'] += failed_delta
+
+                    # 本次下载成功的瓦片直接并入 completed 清单(替代旧的
+                    # 「下载后从 results 再筛一遍 completed」):回调本来就逐块
+                    # 上报,results 不必再为这件事全量保留。重复上报同一块
+                    # (如测试里的 completed 两连发)只并一次。
+                    if status == 'completed' and old_status != 'completed':
+                        completed_tiles.append(tile)
 
                     processed_since_flush += 1
                     if processed_since_flush >= PROGRESS_DB_FLUSH_INTERVAL:
@@ -1032,9 +1088,14 @@ class TaskManager:
                         or now - last_emit_at >= PROGRESS_EMIT_MIN_INTERVAL
                     ):
                         last_emit_at = now
-                        # Get current running time(只在真正广播时查 —— 它每次
-                        # 另开连接,逐瓦片查询是事件循环阻塞点之一)
-                        total_running_seconds = self.get_current_running_time(task_id)
+                        # 运行时长口径:发 tasks 表的列累计值(不含当前段),
+                        # 当前段由前端 calculateTimeInfo 按 started_at/服务端
+                        # 时间统一叠加 —— 旧实现每发广播都调
+                        # get_current_running_time 另开一条 SQLite 连接查库,
+                        # 是事件循环阻塞点之一。列值在本次执行期间不会变
+                        # (只有 pause/complete 才累计落库,而那意味着本次
+                        # 执行已收尾),直接取入口已读出的 task_row,零查询。
+                        total_running_seconds = task_row['total_running_seconds'] or 0
 
                         # Emit full task progress update via socketio。载荷字段与
                         # 旧版完全一致;计数取内存累计值(DB 按批落库,实时进度
@@ -1076,7 +1137,14 @@ class TaskManager:
                 logger.info(f"Task {task_id}: Starting tile download")
                 progress_conn = get_connection()
                 try:
-                    download_results = await self.download_engine.download_tiles_batch(
+                    # 返回值(每块瓦片一条结果)刻意不接收:completed 清单由
+                    # progress_callback 逐块并入(见回调里的注释),全量 results
+                    # 列表在这里没有任何消费方,接住它只是白白占内存。
+                    # 置 _collect_batch_results=False 让引擎连物化都不做
+                    # (为什么是实例属性而不是 kwarg:tests/ 里多处把
+                    # download_tiles_batch 换成四参替身,见引擎 __init__ 注释)。
+                    self.download_engine._collect_batch_results = False
+                    await self.download_engine.download_tiles_batch(
                         tiles=tiles,
                         style=style_code,
                         progress_callback=progress_callback,
@@ -1094,17 +1162,8 @@ class TaskManager:
                         )
                     progress_conn.close()
 
-                # 本次下载成功的瓦片并入 completed 清单 —— 与枚举段的 cache
-                # 命中清单互补,替代旧的「下载后第二遍全量 stat 枚举」。
-                # 'cancelled'/'failed' 的瓦片不并入,与旧第二遍枚举的口径一致
-                # (无 cache 文件)。(cache_enabled=false 已在上面被拒绝,
-                # 走到这里 cache 必然开启。)
-                if cache_enabled:
-                    completed_tiles.extend(
-                        result['tile'] for result in download_results
-                        if result['status'] == 'completed'
-                    )
-
+                # 本次下载成功的瓦片已在回调里并入 completed 清单 —— 与枚举段的
+                # cache 命中清单互补,替代旧的「下载后第二遍全量 stat 枚举」。
                 logger.info(f"Task {task_id}: Tile download completed")
 
             # Check stop flag before stitching
@@ -1139,10 +1198,34 @@ class TaskManager:
                     # 逃逸出任务目录 —— 先消毒再拼。
                     safe_name = sanitize_filename(task.name)
                     output_path = output_dir / f"task_{task_id}" / f"{safe_name}_zoom_{zoom}.tif"
+
+                    # 拼接断点:任务重试/恢复时,已产出且非空的 zoom mosaic 直接
+                    # 保留不重算(大 zoom 单层拼接是十分钟级活)。判定口径与瓦片
+                    # cache「存在且非空即完成」一致。已知取舍:进程在 Translate
+                    # 写盘中途被杀会留下非空半成品 tif,这里无法区分,会当作完成
+                    # 保留 —— 用户删掉该层文件重跑即可强制重算。
+                    if output_path.exists() and output_path.stat().st_size > 0:
+                        logger.info(
+                            f"Task {task_id}: Zoom level {zoom} output already exists "
+                            f"({output_path}), skipping stitch"
+                        )
+                        stitched_zooms.append(zoom)
+                        if self.socketio:
+                            self.socketio.emit('task_stitch_progress', {
+                                'task_id': task_id,
+                                'zoom_level': zoom,
+                                'output_path': str(output_path)
+                            })
+                        continue
+
                     logger.info(f"Task {task_id}: Stitching zoom level {zoom} to {output_path}")
 
                     try:
-                        self.download_engine.stitch_tiles_with_gdal(
+                        # to_thread 把 GDAL 拼接挪出事件循环:大 mosaic 拼接是
+                        # 分钟级 CPU/IO 活,同步调用的期间暂停/取消/进度回调
+                        # 全被堵死,只能等拼完才生效。
+                        await asyncio.to_thread(
+                            self.download_engine.stitch_tiles_with_gdal,
                             tiles=completed_tiles,
                             style=style_code,
                             output_path=str(output_path),
@@ -1185,6 +1268,10 @@ class TaskManager:
 
                 total_to_copy = len(completed_tiles)
                 copied_count = 0
+                # mkdir 按目录去重:瓦片按 zoom/x 分目录,每个目录只需建一次,
+                # 旧实现每块瓦片都 mkdir(parents=True, exist_ok=True) ——
+                # 10 万块瓦片就是 10 万次多余的 syscall。
+                made_dirs = set()
                 for copy_index, tile in enumerate(completed_tiles, start=1):
                     # 'both' is the default output format, so this loop runs for
                     # most tasks and at 100k tiles it takes minutes. Without a stop
@@ -1202,12 +1289,35 @@ class TaskManager:
 
                     # Destination: output_path/{zoom}/{x}/{y}.png
                     dest_path = output_base / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    dest_parent = dest_path.parent
+                    if dest_parent not in made_dirs:
+                        dest_parent.mkdir(parents=True, exist_ok=True)
+                        made_dirs.add(dest_parent)
 
                     try:
                         if cache_path.exists():
-                            shutil.copy2(cache_path, dest_path)
-                            copied_count += 1
+                            # 复制断点:dest 已存在且大小与 cache 一致即视为已
+                            # 复制,任务重试不再全量复写。判定可信的依据:cache
+                            # 瓦片落盘即不可变(原子 .part + rename,见
+                            # _download_single_tile),同 key 内容不会变;而
+                            # copy2 中途被打断留下的截断文件必然比源小,会重新
+                            # 复制。
+                            # 保留 shutil.copy2 逐瓦片调用点:AST 契约
+                            # (tests/test_output_format.py)钉字面量 'copy2',
+                            # 取消钩子测试(test_task_lifecycle_state.py)
+                            # monkeypatch copy2 作为取消触发器 —— 同卷硬链
+                            # 零拷贝(_link_or_copy)与这两个钉点冲突,未采用。
+                            if dest_path.exists() and (
+                                dest_path.stat().st_size == cache_path.stat().st_size
+                            ):
+                                logger.debug(
+                                    f"Task {task_id}: Tile {tile.zoom}/{tile.x}/{tile.y} "
+                                    f"already copied, skipping"
+                                )
+                                copied_count += 1
+                            else:
+                                shutil.copy2(cache_path, dest_path)
+                                copied_count += 1
                         else:
                             logger.warning(f"Task {task_id}: Cache file not found: {cache_path}")
                     except Exception as e:

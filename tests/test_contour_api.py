@@ -115,6 +115,32 @@ def test_style_preview_reflects_params(monkeypatch, tmp_path):
     assert (r, g, b) == (0x11, 0x22, 0x33)
 
 
+def test_style_preview_lru_cache_hits_on_repeat(monkeypatch, tmp_path):
+    """预览对参数是纯函数：相同参数第二次请求命中服务端 LRU 缓存，
+    不再走 matplotlib 渲染；任一参数变化则重渲染。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    import services.contour_engine as ce
+
+    calls = []
+
+    def fake_render(style, interval, width=640, height=200, shade=True):
+        calls.append((interval, shade))
+        return b"\x89PNG\r\n\x1a\n-fake"
+
+    monkeypatch.setattr(ce, "render_style_preview", fake_render)
+
+    # 背景色取冷门值，避免与本进程内其他测试的缓存条目撞键
+    url = "/api/contour/style_preview?background=%23010203&terrain_shade=0&interval=321.5"
+    assert client.get(url).status_code == 200
+    assert client.get(url).status_code == 200
+    assert len(calls) == 1, "相同参数重复请求应命中缓存,只渲染一次"
+
+    resp = client.get(
+        "/api/contour/style_preview?background=%23010203&terrain_shade=1&interval=321.5")
+    assert resp.status_code == 200
+    assert len(calls) == 2, "参数变化必须重渲染"
+
+
 def test_list_and_get_contour_task(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     tid = _post_task(client, contour_interval="50",

@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -53,6 +55,9 @@ _AUTO_ZOOM_OVERSAMPLE = 1
 # 渲染进度落库/广播的最小间隔(秒):引擎逐瓦片回调,高 zoom 大区域百万级
 # 瓦片,不节流就是百万次写事务+广播
 _RENDER_PROGRESS_MIN_INTERVAL = 0.5
+# 下载进度广播的最小间隔(秒),对齐 dem_task_manager 的 1s 时间窗;
+# 落库不节流(每颗粒终态必须如实记账),只节流 emit
+_DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL = 1.0
 
 
 def estimate_max_zoom(pixel_size_3857_m: float, zoom_min: int) -> int:
@@ -317,82 +322,86 @@ class ContourTaskManager:
         tint_breaks, tint_colors = validate_tint(tint_breaks, tint_colors)
 
         output_path = str(Path(Config.DOWNLOADS_DIR) / "dem")
+        Path(output_path).mkdir(parents=True, exist_ok=True)
 
-        conn = get_connection()
+        # 上传先全量落盘到任务目录旁的暂存目录,再进 DB 事务。此前 INSERT
+        # 隐式 BEGIN 的写事务里逐文件 f.save,GB 级上传期间占死 WAL 唯一
+        # 写者,其他写方 30s busy_timeout 后 500。现在写事务里只剩毫秒级
+        # 行写入;暂存目录与最终任务目录同盘,事务内 os.replace 改名即就位。
+        staging = Path(tempfile.mkdtemp(prefix="contour_upload_", dir=output_path))
         task_dir: Optional[Path] = None
         try:
-            cur = conn.cursor()
-            # 先建行拿 id（bbox 先填 0，算完范围再更新）。下载计数即上传计数：
-            # 没有下载阶段，文件行直接记 completed。
-            cur.execute(
-                """
-                INSERT INTO contour_tasks (
-                    name, status, north, south, east, west, dataset,
-                    contour_interval, background, terrain_shade, water,
-                    zoom_min, zoom_max, output_path,
-                    line_color_intermediate, line_color_index, tint_breaks, tint_colors,
-                    total_files, downloaded_files, failed_files,
-                    total_tiles, rendered_tiles, failed_tiles
-                )
-                VALUES (?, 'pending', 0, 0, 0, 0, 'upload', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)
-                """,
-                (name, interval, background, shade, zoom_min,
-                 zoom_min if auto_zoom_max else zoom_max,
-                 output_path, line_mid, line_idx, tint_breaks, tint_colors, len(valid)),
-            )
-            task_id = cur.lastrowid
-
-            task_dir = Path(output_path) / f"contour_task_{task_id}"
-            task_dir.mkdir(parents=True, exist_ok=True)
-
-            saved: List[Path] = []
+            staged: List[Tuple[str, int]] = []  # (stored_name, size)
             for idx, f in enumerate(valid, start=1):
                 stored = f"upload_{idx}_dem.tif"
-                dest = task_dir / stored
+                dest = staging / stored
                 f.save(dest)  # FileStorage.save 分块拷贝，不全部读进内存
                 size = dest.stat().st_size
                 if size == 0:
                     raise ValueError(f"Empty file: {f.filename}")
-                saved.append(dest)
-                cur.execute(
-                    """
-                    INSERT OR IGNORE INTO contour_files (task_id, granule_id, kind, status, local_path, size_bytes, retry_count)
-                    VALUES (?, ?, 'dem', 'completed', ?, ?, 0)
-                    """,
-                    (task_id, stored, str(dest), size),
-                )
+                staged.append((stored, size))
+            saved = [staging / stored for stored, _ in staged]
 
+            # bbox/最高层级按暂存文件预读(GDAL 只读头部元数据,毫秒级),
+            # 不拖进后面的写事务。bbox 只用于历史记录地图展示,读不出保持 0。
             extent = _union_tif_extent_lonlat(saved)
-            if extent:
-                north, south, east, west = extent
-                cur.execute(
-                    "UPDATE contour_tasks SET north=?, south=?, east=?, west=? WHERE id=?",
-                    (north, south, east, west, task_id),
-                )
+            north, south, east, west = extent if extent else (0.0, 0.0, 0.0, 0.0)
             if auto_zoom_max:
                 # 最高层级按 DEM 原始分辨率自动计算；读不出分辨率时用兜底默认值
                 px = _finest_pixel_size_3857(saved)
                 zoom_max = estimate_max_zoom(px, zoom_min) if px else max(zoom_min, _FALLBACK_MAX_ZOOM)
+
+            conn = get_connection()
+            try:
+                cur = conn.cursor()
+                # 下载计数即上传计数：没有下载阶段，文件行直接记 completed。
                 cur.execute(
-                    "UPDATE contour_tasks SET zoom_max=? WHERE id=?",
-                    (zoom_max, task_id),
+                    """
+                    INSERT INTO contour_tasks (
+                        name, status, north, south, east, west, dataset,
+                        contour_interval, background, terrain_shade, water,
+                        zoom_min, zoom_max, output_path,
+                        line_color_intermediate, line_color_index, tint_breaks, tint_colors,
+                        total_files, downloaded_files, failed_files,
+                        total_tiles, rendered_tiles, failed_tiles
+                    )
+                    VALUES (?, 'pending', ?, ?, ?, ?, 'upload', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
+                    """,
+                    (name, north, south, east, west, interval, background, shade, zoom_min,
+                     zoom_max, output_path, line_mid, line_idx, tint_breaks, tint_colors,
+                     len(valid), len(staged)),
                 )
-            cur.execute(
-                "UPDATE contour_tasks SET downloaded_files=? WHERE id=?",
-                (len(saved), task_id),
-            )
-            conn.commit()
-            return task_id
+                task_id = cur.lastrowid
+
+                task_dir = Path(output_path) / f"contour_task_{task_id}"
+                task_dir.mkdir(parents=True, exist_ok=True)
+                for stored, size in staged:
+                    dest = task_dir / stored
+                    os.replace(staging / stored, dest)  # 同盘改名,毫秒级
+                    cur.execute(
+                        """
+                        INSERT OR IGNORE INTO contour_files (task_id, granule_id, kind, status, local_path, size_bytes, retry_count)
+                        VALUES (?, ?, 'dem', 'completed', ?, ?, 0)
+                        """,
+                        (task_id, stored, str(dest), size),
+                    )
+                conn.commit()
+                return task_id
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
         except Exception:
-            conn.rollback()
-            # 文件已落盘后失败（空文件/读范围或分辨率异常等）：rowid 复用后
+            # 文件已落盘后失败（空文件/DB 异常等）：rowid 复用后
             # 残留 tif 会被下一个同 id 任务按 *_dem.tif 扫进渲染，清掉整个
-            # 任务目录。best-effort，清理失败不掩盖原异常。
+            # 任务目录与暂存目录。best-effort，清理失败不掩盖原异常。
             if task_dir is not None:
                 shutil.rmtree(task_dir, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
             raise
-        finally:
-            conn.close()
+        # 全部 os.replace 后暂存目录已空;部分失败路径走上面的 except
+        shutil.rmtree(staging, ignore_errors=True)
 
     def start_task(self, task_id: int) -> None:
         conn = get_connection()
@@ -494,12 +503,22 @@ class ContourTaskManager:
         finally:
             conn.close()
 
-    def list_tasks(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_tasks(self, limit: int = 100, status: Optional[str] = None) -> List[Dict[str, Any]]:
         # SQLite LIMIT -1 表示不限行数：limit=-1 会绕过上限拉全表，钳到 [1, 100]
         limit = max(1, min(int(limit or 100), 100))
         conn = get_connection()
         try:
-            rows = conn.execute("SELECT * FROM contour_tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            # status='active' 是路由层契约的特殊值（同 /api/history_all）：
+            # 展开成活动三态；其余取值（含 None）维持原行为。
+            if status == 'active':
+                rows = conn.execute(
+                    "SELECT * FROM contour_tasks "
+                    "WHERE status IN ('pending','running','paused') "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM contour_tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
@@ -563,7 +582,11 @@ class ContourTaskManager:
             if stop_flag and stop_flag.is_set():
                 stop_ev.set()
 
-            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
+            # 进度记账（同步 sqlite I/O：新开连接 + SELECT + UPDATE + commit）
+            # 整体放 worker 线程 —— 回调在下载事件循环里被 await，直接在循环
+            # 上跑会堵住所有并发颗粒的下载协程（对齐 dem_task_manager）。
+            def _record_progress(granule_id: str, status: str, error: Optional[str],
+                                 size_bytes: Optional[int]) -> Optional[Dict[str, Any]]:
                 tile_conn = get_connection()
                 try:
                     c = tile_conn.cursor()
@@ -584,13 +607,28 @@ class ContourTaskManager:
                         )
                     tile_conn.commit()
                     trow = c.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-                    if trow and self.socketio:
-                        payload = dict(trow)
-                        payload["task_type"] = "contour"
-                        payload["phase"] = "download"
-                        self.socketio.emit("task_progress", payload)
+                    return dict(trow) if trow else None
                 finally:
                     tile_conn.close()
+
+            # emit 节流：距上次广播不足 _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL
+            # 且计数没变时只落库不广播（同 dem）；计数变化或到窗口必发，
+            # payload 结构不变（task 整行 + task_type + phase='download'）。
+            last_emit: Dict[str, Any] = {"at": float("-inf"), "counts": None}
+
+            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
+                row = await asyncio.to_thread(_record_progress, granule_id, status, error, size_bytes)
+                if not row or not self.socketio:
+                    return
+                counts = (row["downloaded_files"], row["failed_files"])
+                now = time.monotonic()
+                if now - last_emit["at"] < _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL and counts == last_emit["counts"]:
+                    return
+                last_emit["at"] = now
+                last_emit["counts"] = counts
+                row["task_type"] = "contour"
+                row["phase"] = "download"
+                self.socketio.emit("task_progress", row)
 
             # 上传任务没有下载阶段：文件行创建时就是 completed，直接进渲染。
             if not is_upload:

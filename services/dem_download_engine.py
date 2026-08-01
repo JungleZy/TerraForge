@@ -17,7 +17,7 @@ import aiohttp
 
 from core.config import Config
 from services.config_manager import ConfigManager
-from services.earthdata_client import EarthdataClient
+from services.earthdata_client import EarthdataAuthError, EarthdataClient
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,8 @@ async def _report_progress(
     error: Optional[str],
     size_bytes: Optional[int],
 ) -> None:
-    """回调只负责进度/记账，其异常不外抛：progress 回调（新开 sqlite 连接
-    同步写库 + emit）若在下载 try 块内抛出，会被下载重试的 except Exception
+    """回调只负责进度/记账，其异常不外抛：progress 回调（sqlite 写库 +
+    emit）若在下载 try 块内抛出，会被下载重试的 except Exception
     当成下载失败（白下 30-50MB），最终 failed 回调再抛还会击穿无
     return_exceptions 的 gather、取消其余 granule 协程。DB 层瞬时故障只记日志。"""
     if progress_callback is None:
@@ -175,6 +175,10 @@ class DemDownloadEngine:
                         return
 
                     file_url = base_url + granule
+                    # 签名 URL 只解析一次、重试复用：签名约 1 小时有效而重试退避
+                    # 是秒级，每次 attempt 重签只是白走 URS/跳转往返。下载遇 403
+                    # （签名过期）时清空 signed_url，下个 attempt 循环内重签。
+                    signed_url: Optional[str] = None
                     last_err: Optional[str] = None
                     for attempt in range(max_retries + 1):
                         if stop_flag and stop_flag.is_set():
@@ -184,10 +188,15 @@ class DemDownloadEngine:
                             return
 
                         try:
-                            await _report_progress(progress_callback, granule, "downloading", None, None)
+                            # downloading 只在首次 attempt 上报：重试重报只是
+                            # 无意义的状态翻转，dem_files 行和前端都不需要。
+                            if attempt == 0:
+                                await _report_progress(progress_callback, granule, "downloading", None, None)
 
                             if requires_auth:
-                                get_url = await earth.get_signed_url(session=session, file_url=file_url)
+                                if signed_url is None:
+                                    signed_url = await earth.get_signed_url(session=session, file_url=file_url)
+                                get_url = signed_url
                             else:
                                 get_url = file_url
                             async with session.get(get_url, proxy=proxy_url or None) as resp:
@@ -199,6 +208,11 @@ class DemDownloadEngine:
                                         granule, "skipped", "no data at this location (HTTP 404)", None,
                                     )
                                     return
+                                if resp.status == 403 and requires_auth:
+                                    # 签名 URL 过期：重签即可恢复，不按普通网络
+                                    # 错误白白耗尽整轮指数退避。
+                                    signed_url = None
+                                    raise RuntimeError("Download HTTP 403 (signed URL expired, will re-sign)")
                                 if resp.status != 200:
                                     raise RuntimeError(f"Download HTTP {resp.status}")
 
@@ -229,6 +243,15 @@ class DemDownloadEngine:
                             self._save_to_cache(dest, local_name, cache_dir)
 
                             await _report_progress(progress_callback, granule, "completed", None, dest.stat().st_size)
+                            return
+                        except EarthdataAuthError as e:
+                            # 401/缺凭据不可重试：坏凭据下 N 颗粒 × M 重试 × 3 跳
+                            # 全是必败请求。直接判该颗粒失败、不进指数退避；不
+                            # 终止整个任务 —— 同任务其余颗粒会在各自首次签名时
+                            # 同样快速失败，用户改凭据后恢复任务即可重下。
+                            await _report_progress(
+                                progress_callback, granule, "failed", _redact_url_query(str(e)), None,
+                            )
                             return
                         except Exception as e:
                             # Remove the partial .part so failed/interrupted attempts

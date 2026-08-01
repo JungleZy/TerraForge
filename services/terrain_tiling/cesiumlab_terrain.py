@@ -18,6 +18,7 @@ Purpose:
 from __future__ import annotations
 
 import argparse
+import functools
 import gzip
 import io
 import itertools
@@ -233,6 +234,53 @@ def _high_water_mark_encode(indices: np.ndarray) -> np.ndarray:
     return out
 
 
+def _zz_delta(a: np.ndarray) -> np.ndarray:
+    """zigzag-delta 编码:行优先展平 -> 相邻差分 -> zigzag。原先是
+    encode_quantized_mesh 里的闭包,提到模块级是为了让 _mesh_constants 复用
+    同一份实现(字节流必须与原逻辑逐字节等价)。"""
+    flat = a.reshape(-1).astype(np.int32)
+    d = np.empty_like(flat)
+    d[0] = flat[0]
+    d[1:] = flat[1:] - flat[:-1]
+    return _zigzag(d).astype(np.uint16)
+
+
+# encode_quantized_mesh 里有一大块只依赖网格尺寸 n(=tile_size)的常量:三角形索引、
+# 高水位编码、四条边索引、u/v 的 zigzag-delta。此前每瓦片重算一遍(n=17 时三角形
+# 索引是双重 for 拼 24576 元素 list + 逐元素 Python 循环高水位编码),纯属浪费。
+# worker 是独立进程,进程内按 n 缓存一次即可;每瓦片只剩高度相关的 hzz 要现算。
+# 缓存用的就是原来的计算代码,保证 quantized-mesh 字节流逐字节等价
+# (test_fix_terrain_mesh_indices 按 spec 逐字段解析字节流)。
+@functools.lru_cache(maxsize=None)
+def _mesh_constants(n: int):
+    u = np.linspace(0, 32767, n, dtype=np.uint16)
+    v = np.linspace(0, 32767, n, dtype=np.uint16)
+    uu, vv = np.meshgrid(u, v)
+    uzz = _zz_delta(uu)
+    vzz = _zz_delta(vv)
+
+    # indices: 2 triangles per cell
+    idx = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            a0 = j * n + i
+            a1 = j * n + (i + 1)
+            a2 = (j + 1) * n + i
+            a3 = (j + 1) * n + (i + 1)
+            idx.extend([a0, a1, a2])
+            idx.extend([a1, a3, a2])
+    indices = np.array(idx, dtype=np.uint32)
+    encoded_indices = _high_water_mark_encode(indices)
+
+    # edge indices
+    ar = np.arange(n, dtype=np.uint32)
+    west_idx = ar * n
+    south_idx = ar
+    east_idx = ar * n + (n - 1)
+    north_idx = (n - 1) * n + ar
+    return uzz, vzz, encoded_indices, (west_idx, south_idx, east_idx, north_idx)
+
+
 def encode_quantized_mesh(west: float, south: float, east: float, north: float, heights_grid: np.ndarray) -> bytes:
     n = heights_grid.shape[0]
     assert heights_grid.shape == (n, n)
@@ -273,42 +321,11 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float, 
         + struct.pack("<ddd", float(hox), float(hoy), float(hoz))
     )
 
-    # vertices: regular grid
-    u = np.linspace(0, 32767, n, dtype=np.uint16)
-    v = np.linspace(0, 32767, n, dtype=np.uint16)
-    uu, vv = np.meshgrid(u, v)
+    # vertices: regular grid。u/v 与三角形索引、边索引只依赖 n,走进程级缓存;
+    # 每瓦片只需现算高度相关的 hh/hzz。
+    uzz, vzz, encoded_indices, edge_indices = _mesh_constants(n)
     hh = ((heights_grid - h_min) / (h_max - h_min) * 32767.0).astype(np.uint16)
-
-    # zigzag-delta encode
-    def zz_delta(a: np.ndarray) -> np.ndarray:
-        flat = a.reshape(-1).astype(np.int32)
-        d = np.empty_like(flat)
-        d[0] = flat[0]
-        d[1:] = flat[1:] - flat[:-1]
-        return _zigzag(d).astype(np.uint16)
-
-    uzz = zz_delta(uu)
-    vzz = zz_delta(vv)
-    hzz = zz_delta(hh)
-
-    # indices: 2 triangles per cell
-    idx = []
-    for j in range(n - 1):
-        for i in range(n - 1):
-            a0 = j * n + i
-            a1 = j * n + (i + 1)
-            a2 = (j + 1) * n + i
-            a3 = (j + 1) * n + (i + 1)
-            idx.extend([a0, a1, a2])
-            idx.extend([a1, a3, a2])
-    indices = np.array(idx, dtype=np.uint32)
-    encoded_indices = _high_water_mark_encode(indices)
-
-    # edge indices
-    west_idx = np.array([j * n for j in range(n)], dtype=np.uint32)
-    south_idx = np.array([i for i in range(n)], dtype=np.uint32)
-    east_idx = np.array([j * n + (n - 1) for j in range(n)], dtype=np.uint32)
-    north_idx = np.array([(n - 1) * n + i for i in range(n)], dtype=np.uint32)
+    hzz = _zz_delta(hh)
 
     # quantized-mesh-1.0: index width is chosen by VERTEX COUNT (>65536 -> 32-bit),
     # not by the max encoded value. High-water-mark diffs wrap around, so the u16
@@ -325,10 +342,10 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float, 
     body.write(vzz.tobytes())
     body.write(hzz.tobytes())
 
-    body.write(struct.pack("<I", len(indices)))
+    body.write(struct.pack("<I", len(encoded_indices)))
     body.write(pack_indices(encoded_indices))
 
-    for edge in (west_idx, south_idx, east_idx, north_idx):
+    for edge in edge_indices:
         body.write(struct.pack("<I", len(edge)))
         body.write(pack_indices(edge))
 
@@ -338,12 +355,18 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float, 
 
 _WORKER_SAMPLER: DemSampler | None = None
 _WORKER_NODATA: float | None = None
+# worker 进程内已创建过的 {z}/{x} 目录集合:每瓦片都 mkdir(parents=True,
+# exist_ok=True) 是一次多余 syscall,去重后每目录只建一次。去重只在单次切片
+# 任务内有效 —— _worker_init(并行:每 worker 进程一次;串行:_run_serial 调)
+# 会清空,避免输出目录被删后同进程重跑时跳过 mkdir 导致写瓦片失败。
+_WORKER_MKDIRS: set = set()
 
 
 def _worker_init(input_path: str, nodata: float | None) -> None:
     global _WORKER_SAMPLER, _WORKER_NODATA
     _WORKER_SAMPLER = DemSampler(input_path, nodata=nodata)
     _WORKER_NODATA = nodata
+    _WORKER_MKDIRS.clear()
 
 
 def _worker_tile(task) -> Tuple[float, float] | None:
@@ -364,9 +387,13 @@ def _worker_tile(task) -> Tuple[float, float] | None:
 
         data = encode_quantized_mesh(west, south, east, north, heights)
         out_path = Path(out_dir) / str(z) / str(x)
-        out_path.mkdir(parents=True, exist_ok=True)
+        if out_path not in _WORKER_MKDIRS:
+            out_path.mkdir(parents=True, exist_ok=True)
+            _WORKER_MKDIRS.add(out_path)
         tile_file = out_path / f"{y}.terrain"
-        with gzip.open(tile_file, "wb") as f:
+        # compresslevel=6:quantized-mesh 是高熵二进制,9 级比 6 级压缩率提升
+        # 可忽略但 CPU 开销明显更大,瓦片量大时值得。
+        with gzip.open(tile_file, "wb", compresslevel=6) as f:
             f.write(data)
         return float(np.min(heights)), float(np.max(heights))
     except Exception as e:
@@ -383,7 +410,14 @@ def build_terrain(
     tile_size: int = 17,
     nodata: float | None = None,
     workers: int = 0,
+    progress_cb=None,
+    stop_flag=None,
 ) -> dict:
+    # progress_cb(done, total): 逐瓦片进度回调（done = rendered+failed，terrain
+    # 没有 contour 的 skipped 态），串行/并行每 tally 一次调一次；调用方自行
+    # 节流（范本：contour_engine.build_contour_tiles）。stop_flag: threading.Event
+    # 式协作停止 —— 串行每瓦片检查、并行批间检查；置位后提前收尾（已生成的
+    # 瓦片保留，layer.json/meta.json 照常按已处理部分写出）。
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -453,19 +487,30 @@ def build_terrain(
             # 杀掉(BrokenProcessPool)。封顶 4,与 contour 一致;显式传 workers 可覆盖。
             workers = min(4, os.cpu_count() or 1)
 
+        def _emit() -> None:
+            if progress_cb is not None:
+                # done 按 processed(rendered+failed) 计:失败瓦片也是处理完的
+                # 瓦片,不计的话进度条会停在 <100% 就结束(同 contour_engine._emit)。
+                progress_cb(done + failed, total)
+
         def _tally(result) -> None:
             nonlocal h_min_global, h_max_global, done, failed
             if result is None:
                 failed += 1
+                _emit()
                 return
             mn, mx = result
             h_min_global = min(h_min_global, mn)
             h_max_global = max(h_max_global, mx)
             done += 1
+            _emit()
 
         def _run_serial() -> None:
             _worker_init(input_path, nodata)
             for task in _iter_tasks():
+                # 串行:stop_flag 每瓦片即时检查(同 contour 的 _render_serial)。
+                if stop_flag is not None and stop_flag.is_set():
+                    break
                 _tally(_worker_tile(task))
 
         if workers == 1 or total <= 4:
@@ -476,11 +521,15 @@ def build_terrain(
             # 等于变相物化整张任务列表,高 max_level 大区域会 OOM(同 contour 的坑)。
             from concurrent.futures import ProcessPoolExecutor
             from concurrent.futures.process import BrokenProcessPool
-            BATCH = 2048  # 批内并行;不物化整张瓦片列表
+            BATCH = 512  # 批内并行,批间检查 stop_flag;不物化整张瓦片列表。
+            # 2048 -> 512(同 contour_engine):停止/暂停要等当前批跑完才生效,
+            # 批小 4 倍响应约快 4 倍;单批 list 内存本身可忽略。
             try:
                 with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init, initargs=(input_path, nodata)) as ex:
                     tasks = _iter_tasks()
                     while True:
+                        if stop_flag is not None and stop_flag.is_set():
+                            break
                         batch = list(itertools.islice(tasks, BATCH))
                         if not batch:
                             break
@@ -490,6 +539,8 @@ def build_terrain(
                 # worker 进程被异常终止(多 worker 内存耗尽被 OS 杀常见)。进程级崩溃
                 # except 兜不住,会让整个任务失败 -> 回退串行重跑保证切片完整:已生成
                 # 的 .terrain 被覆盖,未生成的补齐。串行单进程内存压力小,通常能跑完。
+                # 计数清零重跑后 progress_cb 会从 0 重新上报(同 contour 的回退),
+                # 调用方的时间节流天然兼容,最终计数由收尾覆盖,不依赖逐次累计。
                 logger.warning(f"并行切片 worker 崩溃({e!r}),回退串行重跑整个任务")
                 h_min_global = float("inf")
                 h_max_global = float("-inf")

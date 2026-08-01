@@ -10,6 +10,7 @@ import os
 from flask import Blueprint, jsonify, request
 
 from services.geo_validation import validate_zoom
+from routes import terrain_static
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,10 @@ def list_local_terrain_tasks():
         return jsonify({"error": "Local terrain task manager not initialized"}), 500
     try:
         limit = request.args.get("limit", 100, type=int)
-        tasks = local_terrain_task_manager.list_tasks(limit=limit)
+        # ?status=active 是契约特殊值（同 /api/tasks、/api/history_all）：只回
+        # 活动三态；不传 status 时行为完全不变。
+        status = request.args.get("status", None, type=str)
+        tasks = local_terrain_task_manager.list_tasks(limit=limit, status=status)
         return jsonify({"success": True, "tasks": tasks, "count": len(tasks)})
     except Exception as e:
         logger.error(f"Error listing local terrain tasks: {e}")
@@ -117,6 +121,9 @@ def delete_local_terrain_task(task_id: int):
         # the default, but honor an explicit delete_files=false from the UI.
         delete_files = request.args.get("delete_files", "true").lower() in ("1", "true", "yes")
         local_terrain_task_manager.delete_task(task_id, delete_files=delete_files)
+        # 行已删：清掉 /terrain/local 静态路由的存在性缓存，否则 delete_files=false
+        # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到（同 contour_api 的做法）
+        terrain_static.invalidate_known_task(task_id)
         return jsonify({"success": True, "message": f"Local terrain task {task_id} deleted"})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
