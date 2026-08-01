@@ -40,14 +40,14 @@ jobs:
       if: runner.os == 'Linux'
       uses: actions/setup-python@v5
       with:
-        python-version: '3.9'
+        python-version: '3.12'
 
     - name: Set up Miniconda (Windows/macOS)
       if: runner.os != 'Linux'
       uses: conda-incubator/setup-miniconda@v3
       with:
         miniforge-version: latest
-        python-version: '3.9'
+        python-version: '3.12'
         activate-environment: build
         channels: conda-forge
         channel-priority: strict

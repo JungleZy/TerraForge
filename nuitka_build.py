@@ -294,7 +294,8 @@ def alias_conda_tagged_extensions(dist_dir):
     """为 conda 版 osgeo 的 SWIG shim 补带 ABI 标签的扩展别名(Windows/macOS)。
 
     conda 的 osgeo/_gdal.py 用 pkg_resources.resource_filename 按带 ABI 标签的
-    原名('_gdal.cp39-win_amd64.pyd' / '_gdal.cpython-39-darwin.so')定位扩展文件,
+    原名('_gdal.cp312-win_amd64.pyd' / '_gdal.cpython-312-darwin.so' 等,
+    标签随 Python 版本变)定位扩展文件,
     而 Nuitka 把扩展重命名为无标签名(_gdal.pyd/_gdal.so)——resource_filename
     找不到文件,LoadLibrary 报 err 126「找不到指定的模块」。为每个带标签的
     源文件名在 dist 里补一份别名拷贝。

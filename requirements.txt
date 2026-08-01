@@ -1,4 +1,4 @@
-# Python 3.9+ required
+# Python 3.12+ required
 # GDAL requires system-level dependencies:
 #   Ubuntu/Debian: sudo apt-get install gdal-bin libgdal-dev
 #   macOS: brew install gdal

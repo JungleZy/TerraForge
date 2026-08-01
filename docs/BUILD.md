@@ -33,7 +33,7 @@ GitHub Actions 工作流会在以下情况自动构建所有平台的可执行�
 
 ### 前置要求
 
-1. **Python 3.9+** 已安装
+1. **Python 3.12+** 已安装
 2. **GDAL** 已安装：
    - **Ubuntu/Debian**: `sudo apt-get install gdal-bin libgdal-dev`
    - **macOS**: `brew install gdal`
@@ -175,7 +175,7 @@ chmod +x dist/terraforge/terraforge
 
 `.github/workflows/build.yml` 工作流：
 
-1. 设置 Python 3.9
+1. 设置 Python 3.12
 2. 为每个平台安装 GDAL
 3. 安装 Python 依赖
 4. 使用 Nuitka 构建可执行文件
@@ -214,7 +214,7 @@ chmod +x dist/terraforge/terraforge
 ### Windows GDAL 安装
 Windows 上的 GDAL 安装可能不稳定。如果构建失败：
 - 尝试使用 OSGeo4W 安装 GDAL
-- 或使用预编译的 GDAL wheel：`pip install GDAL-3.8.4-cp39-cp39-win_amd64.whl`
+- 或使用预编译的 GDAL wheel（注意 wheel 的 cp 标签要匹配 Python 版本）：`pip install GDAL-3.8.4-cp312-cp312-win_amd64.whl`
 
 ### macOS 代码签名
 未签名的 macOS 应用可能被 Gatekeeper 阻止。考虑：
