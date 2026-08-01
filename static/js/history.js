@@ -287,7 +287,7 @@ function createTaskRow(task) {
         <div class="task-row status-${task.status}" id="task-${key}">
             <div class="task-line1">
                 <span class="task-dot" aria-hidden="true"></span>
-                <span class="task-name">${escapeHtml(task.name)}</span>
+                <button type="button" class="task-name" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情">${escapeHtml(task.name)}</button>
                 <span class="task-id">#${escapeHtml(key)}</span>
                 <span class="task-meta">${escapeHtml(historyMetaText(task))}</span>
                 <span class="task-status-text">${escapeHtml(getStatusText(task.status))}</span>
@@ -330,13 +330,6 @@ function createTaskRow(task) {
                             <circle cx="12" cy="12" r="3"></circle>
                         </svg>
                     </button>` : ''}
-                    <button class="btn btn-icon btn-sm btn-info" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情" aria-label="查看任务详情">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <line x1="12" y1="16" x2="12" y2="12"></line>
-                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                        </svg>
-                    </button>
                     <button class="btn btn-icon btn-sm btn-danger" onclick="deleteTask(${task.id}, '${task.task_type}')" title="删除任务" aria-label="删除任务">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>

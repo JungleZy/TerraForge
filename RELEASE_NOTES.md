@@ -1,3 +1,24 @@
+## v0.2.0 —— 明暗主题 + 全栈性能优化 + Python 3.12
+
+**界面**
+- 明暗/跟随系统主题：`data-bs-theme` 单一开关，偏好存 localStorage（dark/light/system），首帧前内联脚本设置避免闪烁；切换入口在配置面板「外观」组。
+- 任务详情入口改为点击任务名（原「查看详情」图标按钮移除）。
+- 控制台日志按级别着色，werkzeug 访问日志剥掉重复日期并改名 `http`。
+
+**性能（三轮系统性 review 修复）**
+- 前端：两个 Cesium 视图开按需渲染（空闲不再 60fps 空转）；拖拽浮层 rAF 节流；定时器合并；vendor 资源 immutable 缓存。
+- 下载管线：失败表写入攒批落库（消除事件循环上逐瓦片 commit）；DEM 进度回调移出事件循环并节流；每瓦片配置读取消；首 attempt 负载打散到各瓦片服务器；Earthdata 401 熔断不再无效重试。
+- 拼接/切片：georef 中间产物压缩 + 可配置临时目录；stitch/copy 断点跳过；量化网格编码常量缓存；拼接并行化且暂停/取消可及时生效；warp 产物建金字塔（低 zoom 渲染大幅省解压）。
+- 数据流：上传落盘移出 SQLite 写事务（大文件上传不再堵死其他写操作）；四张任务表补 created_at 索引；历史统计合并单条 SQL；瓦片/地形静态端点缓存 + immutable 头。
+- 实时链路：断线重连补拉时间流与统计；任务列表接口支持活动态过滤；运行时长口径统一；WebSocket 真正启用（simple-websocket）。
+
+**构建/CI**
+- Python 基线 3.9 → 3.12；3.12 环境补装 setuptools/wheel 修复 GDAL 源码编译。
+
+以下为 v0.1.9 的发布说明。
+
+---
+
 ## v0.1.9 —— CI 修复：Windows cp1252 解码问题
 
 - 测试内 subprocess 输出显式 `encoding='utf-8', errors='replace'`：Windows 上 `text=True` 默认按 cp1252 解码，脚本的 UTF-8 中文输出一个崩 reader 线程（stdout 变 None）、一个解成乱码，导致 v0.1.8 构建剩余 2 条假失败。

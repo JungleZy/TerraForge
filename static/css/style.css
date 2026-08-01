@@ -912,11 +912,26 @@ body {
    是「模板味」重灾区——状态识别交给状态点与状态小字，错误原因交给
    下方引文式错误行，行本身与其它行一样只留发丝分隔线。 */
 
+/* 2026-08：任务名从 <span> 改为 <button type="button">（点击打开详情弹窗，
+   「查看详情」图标按钮随之移除），清壳（底色/边框/内边距/鼠标指针/文字对齐）
+   不动字——font 三件套照旧显式声明，字号仍被 MERGED_FONT_SIZES 锚定。
+   按钮天生可键盘聚焦，比 span+role 的写法少一条无障碍负担。 */
 .task-row .task-name {
+    background: none;
+    border: none;
+    padding: 0;
     font-family: var(--font-display);
     font-weight: 500;
     font-size: var(--font-size-base);
     color: var(--color-text-primary);
+    cursor: pointer;
+    text-align: left;
+}
+
+/* hover 反馈与站内文字链接同一惯例（.back-home-link:hover）：墨色提亮到
+   accent-hover。不加 transition/animation——动效分支数有测试锚定。 */
+.task-row .task-name:hover {
+    color: var(--color-accent-hover);
 }
 
 /* 行1 的时间文本与行2 的计数文本共用这一套：
@@ -975,6 +990,7 @@ body {
 }
 
 .task-line1 .task-name {
+    min-width: 0;   /* flex 项默认 min-width:auto，不清掉省略号不生效 */
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

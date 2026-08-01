@@ -4209,9 +4209,9 @@ BUTTON_CONTEXTS = _ctx_variants + [
     # tasks.js —— 活动任务行图标按钮，祖先是 .btn-group.btn-group-sm
     _BtnCtx({'btn', 'btn-icon', 'btn-danger'}, {'btn-group', 'btn-group-sm'},
             label='任务行 .btn-icon.btn-danger（.btn-group-sm 内）'),
-    # history.js —— 历史表图标按钮，**没有 .btn-group 祖先**，是裸 flex 容器
-    _BtnCtx({'btn', 'btn-icon', 'btn-sm', 'btn-info'},
-            label='历史表 .btn-icon.btn-sm.btn-info（无 btn-group 祖先）'),
+    # （曾有一条「历史表 .btn-icon.btn-sm.btn-info（无 btn-group 祖先）」——
+    #  「查看详情」图标按钮的上下文；2026-08 详情入口改为任务名按钮
+    #  <button class="task-name">（不走 .btn 体系），该上下文随之移除。）
     # config.html:218 / history.html:171 —— .config-section 内的按钮
     _BtnCtx({'btn', 'btn-secondary'}, {'config-section'},
             label='配置页 .btn-secondary（.config-section 内）'),
@@ -4228,8 +4228,8 @@ def test_button_cascade_model_covers_every_real_context():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(BUTTON_CONTEXTS) == 12, (
-        f'真实上下文有 {len(BUTTON_CONTEXTS)} 个，期望 12 —— 本测试已失效'
+    assert len(BUTTON_CONTEXTS) == 11, (
+        f'真实上下文有 {len(BUTTON_CONTEXTS)} 个，期望 11 —— 本测试已失效'
     )
     for ctx in BUTTON_CONTEXTS:
         for state in _BTN_STATES:
@@ -4266,7 +4266,7 @@ def test_disabled_button_cannot_be_mistaken_for_clickable():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(BUTTON_CONTEXTS) == 12, '上下文表变了 —— 本测试已失效'
+    assert len(BUTTON_CONTEXTS) == 11, '上下文表变了 —— 本测试已失效'
     problems = []
     for ctx in BUTTON_CONTEXTS:
         off_bg, off_fg, off_got = _btn_surface(css, ctx, 'disabled', backdrop)
@@ -4434,7 +4434,7 @@ def test_focus_visible_has_a_visible_outline():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(BUTTON_CONTEXTS) == 12, '上下文表变了 —— 本测试已失效'
+    assert len(BUTTON_CONTEXTS) == 11, '上下文表变了 —— 本测试已失效'
     problems = []
     for ctx in BUTTON_CONTEXTS:
         got = _btn_computed(css, ctx, 'focus-visible',
@@ -4567,14 +4567,16 @@ def test_button_ink_is_readable_in_every_state():
         #fff on #34d399 = 1.92:1     #fff on #f87171 = 2.77:1
         #fff on #60a5fa = 2.54:1
 
-    而这三颗按钮在任务卡和历史表里都是**纯图标**按钮，SVG 用
-    `stroke="currentColor"` 描边 —— 1.92:1 意味着图标近乎看不见。
+    其中 `.btn-success` / `.btn-danger` 在任务行里至今仍是**纯图标**按钮，
+    SVG 用 `stroke="currentColor"` 描边 —— 1.92:1 意味着图标近乎看不见。
+    （`.btn-info` 的唯一用例是历史表「查看详情」图标按钮，2026-08 随任务名
+    按钮化移除；变体本身保留在 FILLED_BTN_VARIANTS，仍走裸变体上下文。）
     """
     css = _css()
     backdrop = _btn_backdrop(css)
     cells = [(c, s) for c in BUTTON_CONTEXTS for s in _BTN_STATES]
-    assert len(cells) == 60, (
-        f'上下文 x 状态 = {len(cells)} 格，期望 12 x 5 = 60 —— 本测试已失效'
+    assert len(cells) == 55, (
+        f'上下文 x 状态 = {len(cells)} 格，期望 11 x 5 = 55 —— 本测试已失效'
     )
     problems = []
     for ctx, state in cells:
@@ -4586,7 +4588,8 @@ def test_button_ink_is_readable_in_every_state():
                 f'< {BTN_INK_MIN_CONTRAST}')
     assert not problems, (
         '按钮上的文字/图标看不清：\n' + '\n'.join('  ' + p for p in problems)
-        + '\n其中三颗是纯图标按钮（SVG 走 currentColor），墨色不达标 = 图标消失'
+        + '\n其中 success/danger 是纯图标按钮（SVG 走 currentColor），'
+        '墨色不达标 = 图标消失'
     )
 
 
@@ -4595,10 +4598,14 @@ def test_button_ink_is_readable_in_every_state():
 # --------------------------------------------------------------------------
 
 # **全站**纯图标按钮（无可见文本）的数量，JS 模板与 HTML 模板一起扫。
-#   static/js/history.js 启动/暂停/恢复/取消/移除/查看详情/删除/预览  8
+#   static/js/history.js 启动/暂停/恢复/取消/移除/删除/预览  7
 #     （2026-08 单一时间流定稿：行渲染收口 history.js createTaskRow，
 #     tasks.js 的 5 颗任务控制按钮随迁——tasks.js 不再有任何 <button>，
-#     也从 _icon_only_buttons 的扫描列表移除，见那里的说明）
+#     也从 _icon_only_buttons 的扫描列表移除，见那里的说明；
+#     2026-08「查看详情」图标按钮移除，详情入口改为任务名按钮
+#     <button class="task-name">——它的可见文本是 ${escapeHtml(task.name)}
+#     插值，_MARKUP_NOISE_RE 认得这种「文本插值」，不会把它误扫进本表，
+#     见那里的登记）
 #   templates/base.html 详情弹窗的 .btn-close                    1（2026-08 起弹窗
 #     标记收口到 base.html <body> 直下——曾经嵌在记录面板里被遮罩盖住，
 #     也曾在 index/history 两页各放一份拷贝；单出处见
@@ -4609,7 +4616,7 @@ def test_button_ink_is_readable_in_every_state():
 #   _config_content.html 瓦片服务器行的「删除该服务器」     2（2026-07 行编辑器新增；
 #     Jinja include 展开后 index.html 与 config.html 各扫到一次，预期重复；
 #     Jinja for 循环在源码里只出现一次，动态增删的行由 JS 模板生成、不在静态扫描内）
-# 合计 15。
+# 合计 14。
 #
 # ⚠️ 第一版只扫两个 JS 文件、常量写 6，读起来像「全站都覆盖了」而实际漏了
 # 模板。评审实测：当时 `templates/base.html` 的 navbar-toggler 在 900px 视口下
@@ -4622,12 +4629,17 @@ def test_button_ink_is_readable_in_every_state():
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
-ICON_ONLY_BUTTON_COUNT = 15
+ICON_ONLY_BUTTON_COUNT = 14
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
-# 纯图标按钮里允许出现的「不是可见文本」的东西：标签、模板插值、HTML 实体。
-_MARKUP_NOISE_RE = re.compile(r'<[^>]*>|\$\{[^}]*\}|&[a-zA-Z]+;|&#\d+;')
+# 纯图标按钮里允许出现的「不是可见文本」的东西：标签、HTML 实体、以及
+# **非 escapeHtml 的**模板插值。`${escapeHtml(...)}` 是项目里「插值一段服务端
+# 文本」的固定写法（task.name 等）——2026-08 任务名按钮化后，
+# <button class="task-name"> 的内容就是 ${escapeHtml(task.name)}；把它当噪声
+# 剥掉会将这颗有可见文本的按钮误扫成纯图标（占掉一个计数名额、还缺
+# aria-label），所以这里用负向前瞻把它认作可见文本。
+_MARKUP_NOISE_RE = re.compile(r'<[^>]*>|\$\{(?!escapeHtml\()[^}]*\}|&[a-zA-Z]+;|&#\d+;')
 
 
 def _icon_only_buttons():
@@ -4706,15 +4718,17 @@ def test_icon_buttons_are_square_via_the_density_token():
     选择器必须是 `.btn.btn-icon`(0,2,0)：任务行的动作按钮容器是
     `.btn-group.btn-group-sm`，而 `.btn-group-sm .btn { padding: .4rem .9rem }`
     也是 (0,2,0) —— 裸 `.btn-icon`(0,1,0) 的 `padding: 0` 会输给它，
-    按钮被撑成胶囊。历史表那颗**没有** btn-group 祖先、但带 `.btn-sm`
-    （自带 padding），是另一条独立的层叠路径，所以两个上下文都要算。
+    按钮被撑成胶囊。曾注册的第二条路径「历史表 .btn-icon.btn-sm、
+    没有 btn-group 祖先」是「查看详情」图标按钮的上下文，2026-08 随
+    任务名按钮化移除；现存图标按钮（任务行/历史表）全在
+    `.btn-group.btn-group-sm` 内，只剩一个真实上下文。
     """
     css = _css()
     ctl_h = _token_px(css, '--ctl-h')
     contexts = [c for c in BUTTON_CONTEXTS if 'btn-icon' in c.classes]
-    assert len(contexts) == 2, (
-        f'带 .btn-icon 的真实上下文有 {len(contexts)} 个，期望 2'
-        '（任务行 btn-group-sm 内 + 历史表无 btn-group）—— 本测试已失效'
+    assert len(contexts) == 1, (
+        f'带 .btn-icon 的真实上下文有 {len(contexts)} 个，期望 1'
+        '（任务行/历史表图标按钮都在 btn-group-sm 内）—— 本测试已失效'
     )
     problems = []
     for ctx in contexts:
@@ -5182,8 +5196,8 @@ def _text_contexts(css):
         ('历史流「加载失败」提示',
          panel_top + [_TextEl('div', element_id='historyTableBody'), err_div],
          panel, '--color-danger'),
-        ('任务行名称',
-         line1 + [_TextEl('span', {'task-name'})], panel, '--color-text-primary'),
+        ('任务行名称（2026-08 起是 button.task-name，点击开详情弹窗）',
+         line1 + [_TextEl('button', {'task-name'})], panel, '--color-text-primary'),
         ('任务行 #类型:id',
          line1 + [_TextEl('span', {'task-id'})], panel, '--color-text-secondary'),
         ('任务行元信息（样式/缩放）',

@@ -61,16 +61,15 @@ _DEBUG = os.environ.get(
 # 日志)之前把父进程的根日志级别抬到 ERROR,让它保持安静 —— 启动输出只由子进程负责。
 # werkzeug 的 _log 首次使用时会把 werkzeug logger 显式设为 INFO(盖过根级别),所以要
 # 单独压它。
-# 下方正式的 basicConfig 对已配置过 handler 的父进程是 no-op,不会把级别降回去。
+# 下方正式的 configure_logging 对已配置过 handler 的父进程是 no-op,不会把级别降回去。
 if __name__ == '__main__' and _DEBUG and os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
     logging.basicConfig(level=logging.ERROR)
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
-# Configure logging
-logging.basicConfig(
-    level=os.environ.get('LOG_LEVEL', 'INFO').upper(),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging(按级别着色;核心模块 logging_setup 很轻,赶在重量级 import 前配置)
+from core.logging_setup import configure_logging
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # 启动输出分两半,由两个进程分别负责:
@@ -321,9 +320,12 @@ if __name__ == '__main__':
     # freeze_support() 已在模块顶部调用(必须赶在 create_app 之前拦截 frozen worker)。
 
     # werkzeug 的启动行(Running on xxx / dev-server 警告 / debugger PIN)和横幅里的
-    # 访问地址重复,用过滤器精确拦掉这几条;HTTP 请求访问日志(GET /... 200)保留。
+    # 访问地址重复,用过滤器精确拦掉这几条;HTTP 请求访问日志(GET /... 200)保留,
+    # 但剥掉和 asctime 重复的内嵌日期,并把日志名 werkzeug 换成 http。
+    from core.logging_setup import WerkzeugAccessLogFilter
     from core.startup_banner import WerkzeugStartupFilter
     logging.getLogger('werkzeug').addFilter(WerkzeugStartupFilter())
+    logging.getLogger('werkzeug').addFilter(WerkzeugAccessLogFilter())
 
     # Flask 的 " * Serving Flask app / * Debug mode" 两行由 app.run -> flask.cli.
     # show_server_banner 用 click.echo 直接写 stdout,日志级别拦不住;内容与横幅
