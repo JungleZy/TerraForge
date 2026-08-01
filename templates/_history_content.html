@@ -1,8 +1,9 @@
 {# 记录面板/历史页共享内容。
    records_panel（由 index.html 在 include 前 set）决定两件事：
-     1. 任务表是否带 #activeTasksBody（活动任务实时行区，tasks.js 渲染）——
-        独立页 /history 不加载 tasks.js，不能有它；history.js 也靠
-        「文档里有没有 #activeTasksBody」判断要不要跳过非终态行（去重）。
+     1. 任务列表是否带 #activeTasksBody（活动任务实时区，tasks.js 渲染
+        「活动」「失败」两个分组）——独立页 /history 不加载 tasks.js，
+        不能有它；history.js 也靠「文档里有没有 #activeTasksBody」判断
+        要不要按 activeTasks 精确去重（实时区里显示着的任务，历史流不重复显示）。
      2. 卡片顺序：首页记录面板列表是主体，统计卡 → 任务列表 → 历史区域地图；
         独立页 /history 布局不动，统计卡 → 历史区域地图 → 任务列表。
    用宏而不是两份 {% if %} 各写一遍卡片：同一份标记只能有一个出处。 #}
@@ -47,44 +48,34 @@
                         </svg>
                         任务列表
                     </h5>
-                    <div>
-                        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索任务..." style="min-width: 200px;">
-                    </div>
                 </div>
                 <div class="card-body">
-                    <div class="table-responsive">
-                        <table class="table table-hover task-table">
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>名称</th>
-                                    <th>状态</th>
-                                    <th>区域</th>
-                                    <th>缩放级别</th>
-                                    <th>样式</th>
-                                    <th>数量</th>
-                                    <th>完成时间</th>
-                                    <th>操作</th>
-                                </tr>
-                            </thead>
-                            {% if records_panel|default(false) %}
-                            <!-- 活动任务实时行区（tasks.js 渲染），在历史行之上。
-                                 /api/history_all 不过滤状态，活动任务本来也会出现在历史区——
-                                 有本 tbody 时 history.js 会跳过非终态行，避免同一任务出现两次。 -->
-                            <tbody id="activeTasksBody"></tbody>
-                            {% endif %}
-                            <tbody id="historyTableBody">
-                                <tr>
-                                    <td colspan="9" class="text-center">
-                                        <div class="spinner-container">
-                                            <div class="spinner-border" role="status">
-                                                <span class="visually-hidden">加载中...</span>
-                                            </div>
-                                        </div>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
+                    {# 统一流式列表（2026-08 重设计定稿）：废掉 9 列 .task-table 与表头，
+                       活动/历史任务共用同一种行结构（状态点 + 名称 + #类型:id + 元信息，
+                       行2 按状态变体）。筛选行 = 搜索框（客户端过滤当前页）
+                       + 状态 chips（只作用于历史流，走 /api/history_all ?status=）。 #}
+                    <div class="task-filter-bar">
+                        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索任务...">
+                        <div class="status-chips" id="statusChips" role="group" aria-label="按状态筛选历史记录">
+                            <button type="button" class="status-chip active" data-status="">全部</button>
+                            <button type="button" class="status-chip" data-status="completed">已完成</button>
+                            <button type="button" class="status-chip" data-status="failed">失败</button>
+                            <button type="button" class="status-chip" data-status="cancelled">已取消</button>
+                        </div>
+                    </div>
+                    {% if records_panel|default(false) %}
+                    <!-- 活动任务实时区（tasks.js 渲染：「活动」「失败」两个分组头 +
+                         统一流式行），在历史流之上。history.js 靠「文档里有没有
+                         #activeTasksBody」判断要不要按 activeTasks 精确去重。 -->
+                    <div id="activeTasksBody"></div>
+                    <div class="task-group-header">历史</div>
+                    {% endif %}
+                    <div id="historyTableBody">
+                        <div class="spinner-container">
+                            <div class="spinner-border" role="status">
+                                <span class="visually-hidden">加载中...</span>
+                            </div>
+                        </div>
                     </div>
 
                     <nav>

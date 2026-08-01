@@ -163,15 +163,18 @@ MERGED_FONT_SIZES = {
     '.btn': 'var(--font-size-base)',
     '.btn-sm': 'var(--font-size-sm)',
     # 活动任务卡片 -> 统一任务表实时行（.task-card -> .task-row，2026-07 改版）：
-    # h6 标题 -> .task-name 名称单元格，徽章与计数/时长文本类名不变、宿主变了。
-    # 2026-08 富行重排：行内改为单格三行 flex，但这三类文本仍在 .task-row 内
-    # （名称/徽章在行1，计数在行2），选择器与值不变，本表条目不动。
+    # h6 标题 -> .task-name 名称单元格，计数/时长文本类名不变、宿主变了。
+    # 2026-08 统一流式列表重设计：这两类文本仍在 .task-row 内
+    # （名称在行1，计数/时间在行2/行1），选择器与值不变，本表条目不动。
     '.task-row .task-name': 'var(--font-size-base)',
-    '.task-row .badge': 'var(--font-size-xs)',
     '.task-row .progress-detail': 'var(--font-size-sm)',
-    '.table': 'var(--font-size-base)',
-    '.table th': 'var(--font-size-sm)',
-    '.table small': 'var(--font-size-sm)',
+    # 登记（2026-08 统一流式列表重设计）——本表删除 4 条，全部随 9 列
+    # .task-table 与徽章 pill 一起成为死代码（不是「合并漏条」）：
+    #   '.task-row .badge'      —— 行内徽章 pill 废除（状态点 + 状态小字替代）；
+    #   '.table' / '.table th' / '.table small'
+    #                           —— 全站最后一张 <table> 废除，.table* 规则
+    #                              整段从 style.css 删除（见 style.css Table
+    #                              Styles 段的删除登记）。
     '.config-section h3': 'var(--font-size-md)',
     # A2 / Task 7 把这一条从 `.progress-bar` **搬到** `.progress__label`：
     # 百分比数字不再是进度条自己的子元素了，条里一个字都没有，给一个空元素
@@ -355,12 +358,22 @@ def test_important_count_under_control():
               整行红洗 + 红框错误框是用户实测否掉的「模板味」形态，
               状态识别改由左条/徽章/错误行承担，不再需要这处 !important。）
       = 66 处（本次实测）
+      - 10 处：**2026-08 统一流式列表重设计删除**（清理型任务）。记录面板的
+              9 列 .task-table 是全站最后一张 <table>，`.table*` 规则整段
+              从 style.css 删除，连带 10 处 !important：
+          1. `.table { color / background }`                    2 处
+          2. `.table thead / tbody { background }`              2 处
+          3. `.table tr { background / border-color }`          2 处
+          4. `.table td, .table th { background / border-color }` 2 处
+          5. `.table-hover tbody tr:hover { background }`       1 处
+          6. `.table-responsive { background }`                 1 处
+        删除理由：规则服务的 DOM 不存在了（templates/ 与 static/js/ 已无任何
+        表格标记，grep 可证）。其中 `.table td` 的 color 不带 !important
+        那条（A7 / Task 12 的修复）随表格一并成为历史。
+        本次**新增 0 处**。
+      = 56 处（本次实测）
 
-    ⚠️ 本次上界**不动，仍是 68**，而不是按棘轮公式取「实测 66 + 3 = 69」。
-       理由：那个公式在这里会把上界**抬高**（68 -> 69），与棘轮「只降不升」
-       的目的正好相反 —— 公式默认的场景是「上界原本松、清理后收紧」，
-       而 Task 13 已经把余量用到 0，上界本来就是紧的。
-       取 min(原上界, 实测 + 3) = min(68, 69) = 68，余量从 0 恢复到 2。
+    ⚠️ 本次上界按棘轮规则（清理型）下调：**59 = 实测 56 + 3**。
 
     ⚠️ 棘轮规则（分两种任务，别混用）：
 
@@ -411,11 +424,10 @@ def test_important_count_under_control():
     清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
     两者性质不同。
 
-    ⚠️ 当前余量为 **2**（实测 66 / 上界 68）：2026-08 扁平化删掉了
-    统一任务表改版新增的失败行底色 !important（.task-row.status-failed td），
-    余量从 1 恢复到 2。上界没有跟着往上走。
+    ⚠️ 当前余量为 **3**（实测 56 / 上界 59）：2026-08 统一流式列表重设计
+    删掉 `.table*` 整段 10 处 !important（见上方登记），余量从 2 升到 3。
 
-    余下 66 处几乎全是压 Bootstrap 背景/文字色的历史债
+    余下 56 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
     属于 Phase 2 其他任务的范围，本次不动。
 
@@ -424,14 +436,15 @@ def test_important_count_under_control():
     """
     css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
     count = css.count('!important')
-    assert count <= 68, (
-        f'!important 声明有 {count} 处，应 <= 68（Task 2 前 92 → Task 2 后 67 → '
+    assert count <= 59, (
+        f'!important 声明有 {count} 处，应 <= 59（Task 2 前 92 → Task 2 后 67 → '
         'Task 3 后 66 → Task 5 +2 条进度条覆盖后实测 68 → '
         'Task 9 Leaflet +5 / -5 净 0，仍是 68 → '
         'Task 12 删掉表格段 3 条压错对象的 color 后实测 65 → '
         'Task 13 +3 条 reduced-motion 后 68 → '
         'C1 收尾删掉 2 条压 div 兜底重置的 background-color 后实测 66 → '
-        '统一任务表改版 +1 条失败行底色后实测 67，余量 1）'
+        '2026-08 统一流式列表删掉 .table* 整段 10 处后实测 56，'
+        '上界按棘轮规则降到 59）'
     )
 
 
@@ -1452,19 +1465,17 @@ def _effective_bg_for(chain):
 
 # `.task-error` 在真实 DOM 里的祖先链（tasks.js createTaskErrorRow 生成，
 # 由 test_runtime_injected_div_table_is_grounded 同源的那张表描述错误行本身）。
-# 统一任务表改版：错误框从卡片内部（#activeTasks > .task-card > .task-error）
-# 变成错误行（tbody#activeTasksBody > tr.task-error-row > td > .task-error）。
+# 2026-08 统一流式列表重设计：错误框从错误表格行
+# （tbody#activeTasksBody > tr.task-error-row > td > .task-error）
+# 变成列表里的错误节点（div#activeTasksBody > div.task-error-row > div.task-error）。
 def _task_error_chain():
     return _PAGE_CHAIN_PREFIX + (
         ('section', {'workbench-panel', 'workbench-panel--wide'}, 'historyPanel', {}),
         ('div', {'workbench-panel__body'}, '', {}),
         ('div', {'card'}, '', {}),
         ('div', {'card-body'}, '', {}),
-        ('div', {'table-responsive'}, '', {}),
-        ('table', {'table', 'table-hover'}, '', {}),
-        ('tbody', set(), 'activeTasksBody', {}),
-        ('tr', {'task-error-row'}, '', {}),
-        ('td', set(), '', {}),
+        ('div', set(), 'activeTasksBody', {}),
+        ('div', {'task-error-row'}, '', {}),
         ('div', {'task-error'}, '', {}),
     )
 
@@ -5047,81 +5058,81 @@ def test_text_color_model_assumptions_still_hold():
 #
 # 每条 = (标签, 从祖先到目标元素的节点链, 背衬来源, 期望的颜色变量或 None)
 # 链的形状照抄真实 markup（templates/*.html + 两个 JS 的模板字符串）。
+#
+# 登记（2026-08 统一流式列表重设计）：
+#   · `_BS_TABLE_HOVER_INSET` 常量和 4 条「历史表单元格（±hover）」上下文
+#     随 9 列 .task-table 一起删除——表格不存在了，Bootstrap 的行 hover
+#     内阴影层（rgba(0,0,0,0.075)）也不存在；统一流式行没有行 hover 底色。
+#   · 「表格内 <small>（含挂 .text-danger 的不变量）」两条一并删除：
+#     `.table td small` 规则已随 `.table*` 整段移除，不变量失去对象。
+#     错误文字变红的守卫没有丢，搬到「历史流『加载失败』提示」这一条
+#     （挂在 .text-danger 上的错误提示，与 A7 修的是同一语义）。
+#   · 「活动任务空态提示」删除：定稿设计里实时区无活动任务时整个留空，
+#     不渲染空态；空态只剩历史流的「暂无历史记录」（.task-empty），已收进来。
 
-# Bootstrap 5.3.0 在行 hover 时给单元格加的**内阴影**：
-#   `.table > :not(caption) > * > * { box-shadow: inset 0 0 0 9999px var(--bs-table-bg-state,...) }`
-# `background: transparent !important` 压不掉 box-shadow，所以这一层实际存在。
-# 常量取自 CDP 实测：hover 时 `getComputedStyle(td).boxShadow` ===
-# `rgba(0, 0, 0, 0.075) 0px 0px 0px 9999px inset`。
-# 少算这一层的话，hover 行的背衬会算成 #1c1e23，而屏幕上是 #191b20 ——
-# 本项目是浅字压深底，漏算会让模型**低估**对比度（保守），但换个配色就会变成
-# 高估。宁可把它算进来。
-_BS_TABLE_HOVER_INSET = 'rgba(0, 0, 0, 0.075)'
 
+class _DivClassCollector(HTMLParser):
+    """收集一段 markup 里所有 <div> 的 class 集合。
 
-class _CellClassCollector(HTMLParser):
-    """收集一段 markup 里所有 <td>/<th> 的 class 集合。"""
+    （前身 _CellClassCollector 收 <td>/<th>——表格废除后，「加载失败」
+    提示从 td 变成 div，解析器跟着换。）
+    """
 
     def __init__(self):
         super().__init__()
-        self.cells = []
+        self.divs = []
 
     def handle_starttag(self, tag, attrs):
-        if tag in ('td', 'th'):
+        if tag == 'div':
             cls = dict(attrs).get('class', '')
-            self.cells.append(frozenset(cls.split()))
+            self.divs.append(frozenset(cls.split()))
 
 
-def _history_error_cell():
-    """从 **history.js 实际出货的那段模板字符串**里解析出加载失败单元格。
+def _history_error_div():
+    """从 **history.js 实际出货的那段模板字符串**里解析出加载失败提示节点。
 
     ⚠️ 这个函数存在的唯一理由，是评审实测出来的一个 Critical 逃逸：
-    上一版这里写死成 `_TextEl('td', {'text-center', 'text-danger'})`，于是
-    **把 `history.js` 里那行的 `class="text-center text-danger"` 改成
-    `class="text-center"`（CSS 一个字不动）→ 271 条全绿**，而 CDP 走真实失败
-    路径实测单元格渲染 rgb(232,234,237) / 14.88:1 —— 逐位就是修复前的那个 bug。
+    把 history.js 里那行的 `class="text-center text-danger"` 改成
+    `class="text-center"`（CSS 一个字不动）→ 全套全绿，而 CDP 走真实失败
+    路径实测提示渲染成普通灰白色 —— 逐位就是修复前的那个 bug。
 
     根因是「层叠模型推理的是一个假想元素，不是实际出货的 markup」。这与
     Task 10 补链时的教训同型：配对断言守住了「标签 ↔ 变量」，守不住
     「变量 ↔ 数据源」。这里把数据源那一端接上：类名从 markup 里消失，
-    模型就会对着一个没有 .text-danger 的 <td> 算，直接给出
+    模型就会对着一个没有 .text-danger 的节点算，直接给出
     --color-text-primary 而不是 --color-danger，断言立刻变红。
     """
     src = _strip_js_comments(_js('history.js'))
     body = _js_function_body(src, 'loadHistory')
     # 只认 catch 分支里那次 innerHTML 赋值 —— 正常分支不写 markup。
     m = re.search(r'\.innerHTML\s*=\s*(.*?);', body, re.S)
-    assert m, 'loadHistory 里找不到 innerHTML 赋值 —— 加载失败行的 markup 变形了，本测试已失效'
+    assert m, 'loadHistory 里找不到 innerHTML 赋值 —— 加载失败提示的 markup 变形了，本测试已失效'
     literal = m.group(1)
     strings = re.findall(r"'([^']*)'|\"([^\"]*)\"|`([^`]*)`", literal, re.S)
     markup = ''.join(a or b or c for a, b, c in strings)
-    assert '<td' in markup, (
-        f'从 loadHistory 的 innerHTML 里解析不出 <td>（拿到 {markup[:80]!r}）—— 本测试已失效'
+    assert '<div' in markup, (
+        f'从 loadHistory 的 innerHTML 里解析不出 <div>（拿到 {markup[:80]!r}）—— 本测试已失效'
     )
-    p = _CellClassCollector()
+    p = _DivClassCollector()
     p.feed(markup)
-    assert len(p.cells) == 1, (
-        f'加载失败行里解析出 {len(p.cells)} 个单元格（期望 1）—— 本测试已失效'
+    assert len(p.divs) == 1, (
+        f'加载失败提示里解析出 {len(p.divs)} 个 <div>（期望 1）—— 本测试已失效'
     )
-    return _TextEl('td', p.cells[0])
+    return _TextEl('div', p.divs[0])
 
 
 def _text_contexts(css):
     """页面上真实存在的文字上下文。
 
-    ⚠️ 每条链都是 **CDP 实抓**的祖先链（`el.parentElement` 一路向上），
-    不是照着模板猜的。这一点是承重的：第一版按记忆写链，漏了
-    `tbody#historyTableBody` 这个 id 和 `form#downloadForm` 这一层 ——
-    任何写成 `#historyTableBody td { color: ... !important }` 的新规则
-    在浏览器里会赢，在模型里却根本不命中，等于给自己开了个盲区。
-    改 markup 之后要重抓（脚本见 p2-task-12-report.md）。
+    ⚠️ 链的写法：每条链都要带上**承重**的祖先层（容器 id、组件类），
+    不是照模板猜个大概——第一版按记忆写链，漏了 `tbody#historyTableBody`
+    这个 id，任何写成 `#historyTableBody td { color: ... !important }` 的
+    新规则在浏览器里会赢，在模型里却根本不命中，等于给自己开了个盲区。
+    2026-08 重设计后改 markup 要同步重抓这里（面板路径
+    section#historyPanel > .workbench-panel__body > .card > .card-body）。
     """
     panel = _effective_task_card_backdrop(css)          # `.card` 的底色，实测 #15171c
     modal = _modal_backdrop(css)
-    row_hover = _flatten(
-        _BS_TABLE_HOVER_INSET,
-        _flatten(_resolve_color(css, _branch_background(css, '.table-hover tbody tr:hover')), panel),
-    )
     control = _flatten(_resolve_color(css, _branch_background(css, '.form-control')), panel)
     toast = _flatten(_resolve_color(css, _branch_background(css, '.app-toast')),
                      _palette_var(css, '--color-bg-primary'))
@@ -5129,19 +5140,18 @@ def _text_contexts(css):
     body = _TextEl('body')
     main = _TextEl('main', {'main-content'})
 
-    # --- 历史页表格 ---
-    hist_top = [body, main, _TextEl('div', {'container-fluid'}), _TextEl('div', {'row'}),
-                _TextEl('div', {'col-12'}), _TextEl('div', {'card'}),
-                _TextEl('div', {'card-body'}), _TextEl('div', {'table-responsive'}),
-                _TextEl('table', {'table', 'table-hover'}),
-                _TextEl('tbody', element_id='historyTableBody')]
+    # --- 记录面板统一流式列表（首页覆盖面板路径） ---
+    panel_top = [body, main,
+                 _TextEl('section', {'workbench-panel', 'workbench-panel--wide'},
+                         element_id='historyPanel'),
+                 _TextEl('div', {'workbench-panel__body'}),
+                 _TextEl('div', {'card'}), _TextEl('div', {'card-body'})]
+    hist_row = panel_top + [_TextEl('div', element_id='historyTableBody'),
+                            _TextEl('div', {'task-row', 'status-completed'})]
+    line1 = hist_row + [_TextEl('div', {'task-line1'})]
 
-    def cell_chain(cell, hover=False, tail=()):
-        return hist_top + [_TextEl('tr', pseudos=({'hover'} if hover else ())), cell] + list(tail)
-
-    # **从 history.js 实际出货的 markup 解析**，不写死 —— 见 _history_error_cell 的说明。
-    err_cell = _history_error_cell()
-    plain_cell = _TextEl('td')
+    # **从 history.js 实际出货的 markup 解析**，不写死 —— 见 _history_error_div 的说明。
+    err_div = _history_error_div()
 
     # --- 详情弹窗 ---
     modal_top = [body, main,
@@ -5160,39 +5170,41 @@ def _text_contexts(css):
 
     return [
         # (标签, 链, 背衬, 期望的调色板变量或 None)
-        ('历史表「加载失败」单元格',
-         cell_chain(err_cell), panel, '--color-danger'),
-        ('历史表「加载失败」单元格（鼠标划过该行）',
-         cell_chain(err_cell, hover=True), row_hover, '--color-danger'),
-        ('历史表普通单元格',
-         cell_chain(plain_cell), panel, '--color-text-primary'),
-        ('历史表普通单元格（鼠标划过该行）',
-         cell_chain(plain_cell, hover=True), row_hover, '--color-text-primary'),
-        ('历史表单元格里的 <small>（四至坐标）',
-         cell_chain(plain_cell, tail=[_TextEl('small')]), panel, '--color-text-secondary'),
-        # ⚠️ 下面这条守的是**不变量**而不是现有 markup：表格里任何元素挂上
-        # .text-danger 都必须变红。当前没有 `<small class="text-danger">` 的
-        # 用法，但 `.table td small` 那条规则改前带 !important、特异度 (0,1,2)，
-        # 会把它压成灰色 —— 与本任务修的 `.table td` 是同一个坑的另一个入口。
-        ('历史表单元格里挂 .text-danger 的 <small>（不变量）',
-         cell_chain(plain_cell, tail=[_TextEl('small', {'text-danger'})]), panel, '--color-danger'),
+        ('历史流「加载失败」提示',
+         panel_top + [_TextEl('div', element_id='historyTableBody'), err_div],
+         panel, '--color-danger'),
+        ('任务行名称',
+         line1 + [_TextEl('span', {'task-name'})], panel, '--color-text-primary'),
+        ('任务行 #类型:id',
+         line1 + [_TextEl('span', {'task-id'})], panel, '--color-text-secondary'),
+        ('任务行元信息（样式/缩放）',
+         line1 + [_TextEl('span', {'task-meta'})], panel, '--color-text-secondary'),
+        ('任务行状态小字',
+         line1 + [_TextEl('span', {'task-status-text'})], panel, '--color-text-secondary'),
+        ('任务行耗时（等宽弱化）',
+         line1 + [_TextEl('span', {'task-time', 'progress-detail'})],
+         panel, '--color-text-secondary'),
+        ('历史行行2 摘要（已完成 · 数量 · 区域）',
+         hist_row + [_TextEl('div', {'task-line2'})], panel, '--color-text-secondary'),
+        ('历史流空态提示（暂无历史记录）',
+         panel_top + [_TextEl('div', element_id='historyTableBody'),
+                      _TextEl('div', {'task-empty'})], panel, '--color-text-secondary'),
+        ('分组头（活动/失败/历史）',
+         panel_top + [_TextEl('div', {'task-group-header'})],
+         panel, '--color-text-secondary'),
+        ('状态筛选 chip（未选中）',
+         panel_top + [_TextEl('div', {'task-filter-bar'}),
+                      _TextEl('div', {'status-chips'}),
+                      _TextEl('button', {'status-chip'})], panel, '--color-text-secondary'),
+        ('状态筛选 chip（选中）',
+         panel_top + [_TextEl('div', {'task-filter-bar'}),
+                      _TextEl('div', {'status-chips'}),
+                      _TextEl('button', {'status-chip', 'active'})], panel, '--color-accent-hover'),
         ('首页表单分组标题',
          form_top + [_TextEl('div', {'form-group-label'})], panel, None),
         ('首页表单说明文字',
          form_top + [_TextEl('div', {'mb-3'}, element_id='demOptions'),
                      _TextEl('small', {'form-text', 'text-muted', 'd-block', 'mb-2'})], panel, None),
-        ('活动任务空态提示（tasks.js 渲染进实时行区 tbody）',
-         [body, main,
-          _TextEl('section', {'workbench-panel', 'workbench-panel--wide'}, element_id='historyPanel'),
-          _TextEl('div', {'workbench-panel__body'}),
-          _TextEl('div', {'card'}),
-          _TextEl('div', {'card-body'}),
-          _TextEl('div', {'table-responsive'}),
-          _TextEl('table', {'table', 'table-hover'}),
-          _TextEl('tbody', element_id='activeTasksBody'),
-          _TextEl('tr'),
-          _TextEl('td', {'text-center'}),
-          _TextEl('p', {'text-muted'})], panel, None),
         ('详情弹窗字段名',
          modal_top + [_TextEl('span', {'detail-k'})], modal, None),
         ('详情弹窗字段值',
@@ -5234,21 +5246,25 @@ def test_every_text_context_meets_wcag_aa():
     `.table-hover tbody tr:hover` 的 rgba 压到面板底色上的合成值，
     控件底色从 `.form-control` 解析。改调色板会让这些数字跟着动。
 
-    上下文清单（14 条）的边界：覆盖三个页面上**由 style.css 上色的**全部
-    正文类文字位置 —— 历史表格单元格（普通/错误 x hover/非 hover）、
-    表格内的 <small>（含挂 .text-danger 的不变量那条）、首页分组标题、
-    表单说明、空态提示、详情弹窗的键与值、首页与配置页各自的输入框占位符
-    （两处走不同规则，只覆盖一处会漏）、toast 的关闭按钮。
+    上下文清单（18 条）的边界：覆盖三个页面上**由 style.css 上色的**全部
+    正文类文字位置 —— 统一流式列表的行内文本（名称/#类型:id/元信息/状态小字/
+    耗时/行2 摘要）、历史流的加载失败提示与空态、分组头、状态筛选 chips
+    （选中/未选中两态）、首页分组标题、表单说明、详情弹窗的键与值、
+    首页与配置页各自的输入框占位符（两处走不同规则，只覆盖一处会漏）、
+    toast 的关闭按钮。
     没进清单的三类各有归属：徽章文字 -> test_status_badge_text_is_readable_in_every_state
     （背衬是每个状态自己的半透明填充，不是面板底色）；按钮文字 ->
     test_button_ink_is_readable_in_every_state；JS 模板里的内联色 ->
     test_inline_colors_in_js_templates_meet_wcag_aa（它们不在 style.css 里，
     本模型扫不到）。三者合起来才叫「全覆盖」，单看本条不叫。
+    （2026-08 重设计：原 14 条里的 6 条历史表格单元格上下文与 1 条活动
+    空态上下文随 9 列 .task-table / 活动空态一起删除，替换为上面 11 条
+    流式列表上下文，登记在 _text_contexts 上方的注释块。）
     """
     css = _css()
     contexts = _text_contexts(css)
-    assert len(contexts) == 14, (
-        f'上下文清单变成 {len(contexts)} 条（期望 14）—— 增删了要同步更新本断言，'
+    assert len(contexts) == 18, (
+        f'上下文清单变成 {len(contexts)} 条（期望 18）—— 增删了要同步更新本断言，'
         '否则「全都覆盖了」是假象'
     )
     problems = []
@@ -5345,9 +5361,14 @@ def test_inline_style_colors_meet_wcag_aa_everywhere():
     做法是先切出 `style="..."` 属性再在里面找 `color:` 声明 —— 不是全文
     grep `color:`，那样会把 CSS 选择器名、JS 变量名、注释一起吃进来。
 
-    命中数的边界：当前 10 处，全部在 static/js（history.js 7、tasks.js 3），
-    templates 0 处。断言只要求「两个 JS 都被扫到、templates 目录被扫到、
-    且总数 >= 8」—— 钉死具体数字会在无关 UI 改动时误红，钉 0 则负向遍历永真。
+    命中数的边界：当前 3 处，全部在 static/js（tasks.js 2 处——活动行行2
+    「| 失败: N」的 danger 计数，createTaskRow 与 updateTaskProgressPartial
+    各一；history.js 1 处——历史小地图弹窗标题的 accent-hover），templates 0 处。
+    （2026-08 统一流式列表重设计前是 10 处：9 列历史行里的四至箭头
+    ▲▼▶◀ 四处 accent-hover、「本地文件」、两处空态提示等随表格一起删除，
+    颜色全部收进 CSS 类——这正是内联色该去的方向。）
+    断言只要求「两个 JS 都被扫到、templates 目录被扫到、且总数 >= 3」——
+    钉死具体数字会在无关 UI 改动时误红，钉 0 则负向遍历永真。
     """
     css = _css()
     panel = _effective_task_card_backdrop(css)
@@ -5390,8 +5411,8 @@ def test_inline_style_colors_meet_wcag_aa_everywhere():
     assert {'static/js/tasks.js', 'static/js/history.js', 'templates'} <= set(scanned), (
         f'扫描范围不完整（实际 {scanned}）—— 本测试已失效'
     )
-    assert len(hits) >= 8, (
-        f'只扫到 {len(hits)} 处内联 color（期望 >= 8）—— '
+    assert len(hits) >= 3, (
+        f'只扫到 {len(hits)} 处内联 color（期望 >= 3）—— '
         '正则失效的话下面的负向断言就是永真\n' + '\n'.join('  ' + h for h in hits)
     )
     assert not problems, (
@@ -5489,27 +5510,29 @@ def test_status_badge_color_matches_the_semantic_token():
     )
 
 
-def test_task_row_status_bar_covers_every_status():
-    """实时行第一个单元格左侧那条 4px 边条：六态**每一态**都要有自己的规则，且色对、够看得见。
+def test_task_row_status_dot_covers_every_status():
+    """行1 的 8px 状态点：六态**每一态**都要有自己的规则，且色对、够看得见。
 
-    前身是 test_task_card_status_bar_covers_every_status（卡片时代）：
-    改前 `.task-card.status-cancelled::before` **根本不存在**，已取消的卡片落到
-    `.task-card::before` 的兜底 `var(--color-accent)` —— 一条青绿品牌色边条，
-    读起来像「一切正常」。统一任务表改版把卡片改成行，边条从卡片 ::before
-    迁到行首单元格（.task-row__bar）的 ::before，同一缺陷形态要继续守住。
+    （前身 test_task_row_status_bar_covers_every_status。2026-08 统一流式
+    列表重设计：4px 状态左条随 9 列表格一起废除，状态识别改由行1 的
+    .task-dot 圆点 + 小字状态文本承担。接替的这条同时是 WCAG 1.4.1
+    「不只靠颜色」链条的图形侧——文字侧由两个 JS 的 getStatusText
+    六态词表断言守，原徽章 SVG 图标表断言 test_status_icons_are_real_
+    distinct_glyphs 随徽章 pill 删除，登记在 tests/test_tasks_js_contract.py。）
 
     三件事一起断言：
-      1. 六态各有一条顶层规则（缺一条就会落到兜底色，而兜底色是品牌色）；
+      1. 六态各有一条顶层规则（缺一条就会落到 .task-dot 的兜底色——
+         兜底是中性灰，「失败」掉到灰色 = 状态信号丢失）；
       2. 语义档的色值等于对应令牌，中性档不许等于任何语义色；
       3. 对面板底 >= 3:1 —— 它是图形元素不是文字，走 WCAG 1.4.11 的下限。
     """
     css = _css()
     panel = _effective_task_card_backdrop(css)
     semantic = _semantic_palette_values(css)
-    fallback = _resolve_color(css, _branch_background(css, '.task-row__bar::before'))
+    fallback = _resolve_color(css, _branch_background(css, '.task-dot'))
     problems, report = [], []
     for status, token in _STATUS_SEMANTIC_TOKEN.items():
-        branch = f'.task-row.status-{status} .task-row__bar::before'
+        branch = f'.task-row.status-{status} .task-dot'
         rules = [
             (sel, body) for sel, body, at in _rules_ctx(css)
             if not at and branch in _selector_parts(sel)
@@ -5518,8 +5541,8 @@ def test_task_row_status_bar_covers_every_status():
         if len(rules) != 1:
             problems.append(
                 f'`{branch}` 有 {len(rules)} 条声明了背景色的顶层规则（应恰好 1 条）。'
-                f'一条都没有 = 落到 `.task-row__bar::before` 的兜底 {fallback}，'
-                '那是品牌强调色，读起来像「一切正常」')
+                f'一条都没有 = 落到 `.task-dot` 的兜底 {fallback}，'
+                '该态的状态点与「等待中」同色，状态信号丢失')
             continue
         decls = _decl_map(rules[0][1])
         got = _resolve_color(css, decls.get('background') or decls.get('background-color'))
@@ -5542,7 +5565,7 @@ def test_task_row_status_bar_covers_every_status():
         '没有恰好检查 6 个状态 —— 本测试已失效'
     )
     assert not problems, (
-        '实时行状态边条有问题：\n' + '\n'.join('  ' + p for p in problems)
+        '状态点配色有问题：\n' + '\n'.join('  ' + p for p in problems)
         + '\n\n全部实测：\n' + '\n'.join('  ' + r for r in report)
     )
 
@@ -5877,6 +5900,13 @@ def _motion_rule_index(css):
 #   加 1 个分支：`.task-row.status-running .task-row__bar::before`（同一个
 #     pulse，从卡片边条迁到行首单元格边条；行本身不声明任何过渡——
 #     行随任务增删整行重建，过渡没有意义）。
+# 37 -> 37（2026-08 统一流式列表重设计，纯改名）：
+#   删 1 个分支：`.task-row.status-running .task-row__bar::before`
+#     （4px 状态左条随 9 列表格废除）。
+#   加 1 个分支：`.task-row.status-running .task-dot`（同一个 pulse，
+#     从左条迁到行1 的 8px 状态点——「任务还活着」的信号保留，形态换成
+#     脉冲环）。列表其它元素（行/分组头/chips）刻意不声明任何过渡/动画，
+#     行随任务增删整体重建 innerHTML，过渡没有意义。
 _MOTION_BRANCH_COUNT = 37
 
 
@@ -5926,21 +5956,22 @@ def test_no_blanket_motion_reaches_an_unstyled_element():
         )
 
 
-def test_cards_have_no_entrance_animation_but_running_bar_still_pulses():
+def test_cards_have_no_entrance_animation_but_running_dot_still_pulses():
     """两件事一起钉：入场动画没了，**而状态动画还在**。
 
     只断言「.task-row 没有 animation」是不够的 —— 把整节动画全删光也能通过，
-    而那样会连「运行中的任务左边条在呼吸」这个**传达状态**的信号一起丢掉。
-    所以第二半是正面断言：.task-row.status-running 的行首单元格 ::before
+    而那样会连「运行中的任务状态点在呼吸」这个**传达状态**的信号一起丢掉。
+    所以第二半是正面断言：.task-row.status-running 行1 的 .task-dot
     必须仍然跑 pulse、仍然是无限循环。
-    （统一任务表改版：卡片 .task-card 改成行 .task-row，边条从卡片 ::before
-    迁到 .task-row__bar::before，断言跟着结构走，守护的语义不变。）
+    （2026-08 统一流式列表重设计：pulse 的宿主从 4px 左条
+    .task-row__bar::before 迁到 8px 状态点 .task-dot——左条随 9 列表格废除，
+    信号本身保留，断言跟着结构走。）
 
     算的是层叠胜出值，不是「文件里有没有 fadeInUp 这个词」：把
     `.task-row { animation: fadeInUp .5s }` 换个地方重写一遍照样会红。
     """
     css = _css()
-    # 静态面板 .card（div）与活动任务行 .task-row（tr）都不许有入场动画
+    # 静态面板 .card（div）与任务行 .task-row（div）都不许有入场动画
     card = _motion_computed(css, [
         _TextEl(tag='body'),
         _TextEl(tag='div', classes=('card',))])
@@ -5951,9 +5982,9 @@ def test_cards_have_no_entrance_animation_but_running_bar_still_pulses():
                     ('task-row', 'status-failed')):
         got = _motion_computed(css, [
             _TextEl(tag='body'),
-            _TextEl(tag='table', classes=('table',)),
-            _TextEl(tag='tbody', element_id='activeTasksBody'),
-            _TextEl(tag='tr', classes=classes)])
+            _TextEl(tag='div', classes=('card',)),
+            _TextEl(tag='div', element_id='activeTasksBody'),
+            _TextEl(tag='div', classes=classes)])
         assert got['animation_name'] == 'none', (
             f'.{".".join(classes)} 又挂上了入场动画 {got["animation_name"]!r}'
             f'（{got["animation_duration"]}s）。任务列表每次成员变化都整体重建 '
@@ -5963,12 +5994,13 @@ def test_cards_have_no_entrance_animation_but_running_bar_still_pulses():
 
     pulse = _motion_computed(css, [
         _TextEl(tag='body'),
-        _TextEl(tag='table', classes=('table',)),
-        _TextEl(tag='tbody', element_id='activeTasksBody'),
-        _TextEl(tag='tr', classes=('task-row', 'status-running')),
-        _TextEl(tag='td', classes=('task-row__bar',), pseudo_element='before')])
+        _TextEl(tag='div', classes=('card',)),
+        _TextEl(tag='div', element_id='activeTasksBody'),
+        _TextEl(tag='div', classes=('task-row', 'status-running')),
+        _TextEl(tag='div', classes=('task-line1',)),
+        _TextEl(tag='span', classes=('task-dot',))])
     assert pulse['animation_name'] == 'pulse', (
-        '运行中任务的左边条不再跑 pulse —— 这是「任务还活着」的唯一视觉信号，'
+        '运行中任务的状态点不再跑 pulse —— 这是「任务还活着」的唯一视觉信号，'
         f'属于传达状态的动画，不在降噪范围内。实际是 {pulse["animation_name"]!r}'
     )
     assert pulse['animation_iterations'] == 'infinite', (
@@ -6004,13 +6036,12 @@ def test_progress_bar_transition_keeps_up_with_the_push_rate():
     算的是层叠胜出值：补一条 `.progress .progress-bar { transition: width 1s }`
     (0,2,0) 把它压回去，这里照样变红。
     """
-    # 真实 markup（tasks.js createTaskRow）：
-    #   tr.task-row > td > .task-progress-line > .task-progress > .progress-bar
+    # 真实 markup（tasks.js createTaskRow，统一流式行）：
+    #   div.task-row > .task-progress-line > .task-progress > .progress-bar
     # 祖先必须建模到位，否则 `.progress .progress-bar { transition: width 1s }`
     # 这条压回去的规则算不进来 —— 变异 M8 实测过，当时本断言是假绿。
     got = _motion_computed(_css(), [
-        _TextEl(tag='tr', classes=('task-row',)),
-        _TextEl(tag='td'),
+        _TextEl(tag='div', classes=('task-row',)),
         _TextEl(tag='div', classes=('task-progress-line',)),
         _TextEl(tag='div', classes=('task-progress',)),
         _TextEl(tag='div', classes=('progress-bar',)),
@@ -6134,6 +6165,9 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 36 -> 34（统一任务表改版）：删 .task-card / .task-card::before /
     # .task-card.status-running::before 三个卡片上下文，加
     # .task-row.status-running .task-row__bar::before 一个行上下文。
+    # 34 -> 34（2026-08 统一流式列表重设计，纯改名）：
+    # .task-row.status-running .task-row__bar::before 换成
+    # .task-row.status-running .task-dot（pulse 从左条迁到状态点）。
     assert len(ctxs) == 34, (
         f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 34：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)

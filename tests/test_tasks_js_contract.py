@@ -831,26 +831,35 @@ def _js_object_literal_keys(body, var_name):
     return set(keys), inner
 
 
-# 三张表分别在哪里：前两张是顶层函数，statusIcons 是渲染函数里的局部常量。
+# 状态表在哪里：两张都是顶层函数。
+#
+# 登记（2026-08 统一流式列表重设计）：第三张表 statusIcons（行内徽章 SVG
+# 图标表）随徽章 pill 一并删除——定稿设计的状态识别 = 状态点配色 +
+# 小字状态文本，行里不再有徽章。六态覆盖的守卫相应搬家：
+#   · getStatusColor / getStatusText 的六态覆盖仍由本节的下面两条守；
+#   · 状态点的六态配色（图形侧，替代图标的 WCAG 1.4.1 职责）改由
+#     tests/test_css_contract.py::test_task_row_status_dot_covers_every_status 守；
+#   原 test_status_icons_are_real_distinct_glyphs 随之删除（无表可查）。
 _STATUS_MAPS = (
     ('getStatusColor', 'colors', None),
     ('getStatusText', 'texts', None),
-    ('statusIcons', 'statusIcons', {'tasks.js': 'createTaskRow', 'history.js': 'renderHistoryTable'}),
 )
 
 
 def test_both_js_files_map_every_backend_status():
-    """history.js 与 tasks.js 的三张状态表都必须覆盖 TaskStatus 的全部六态。
+    """history.js 与 tasks.js 的两张状态表都必须覆盖 TaskStatus 的全部六态。
 
     强度说明 —— 为什么不写成 `assert "'paused'" in src`：
     那种断言在 history.js 里查的是「文件里有没有出现过这个词」，
-    而 `getStatusColor` 与 `statusIcons` 是两张独立的表，补了一张漏了另一张
+    而 getStatusColor 与 getStatusText 是两张独立的表，补了一张漏了另一张
     照样绿。这里按函数体逐张表解析键集合，并要求**等于**枚举
     （不是「包含」）—— 多一个不在后端存在的状态同样报错，因为那说明
     有人在前端凭空造了一个界面上永远到不了的分支。
 
-    覆盖数的边界：2 个文件 x 3 张表 = 6 组，每组 6 个键。断言先钉住组数，
-    再逐组比对 —— 只比对不钉组数的话，解析逻辑挂掉返回空列表时是永真。
+    覆盖数的边界：2 个文件 x 2 张表 = 4 组（2026-08 前是 x3：第三张
+    statusIcons 随徽章 pill 删除，见 _STATUS_MAPS 的登记），每组 6 个键。
+    断言先钉住组数，再逐组比对 —— 只比对不钉组数的话，解析逻辑挂掉
+    返回空列表时是永真。
     """
     enum_values = _task_status_values()
     assert len(enum_values) == 6, (
@@ -875,7 +884,7 @@ def test_both_js_files_map_every_backend_status():
                     + (f'，缺 {missing}' if missing else '')
                     + (f'，多出 {extra}' if extra else '')
                 )
-    assert len(checked) == 6, f'只检查了 {checked}（期望 6 组）—— 本测试已失效'
+    assert len(checked) == 4, f'只检查了 {checked}（期望 4 组）—— 本测试已失效'
     assert not problems, (
         '状态词表没覆盖后端全部状态：\n' + '\n'.join('  ' + p for p in problems)
         + f'\n真值来自 models/task.py 的 TaskStatus = {sorted(enum_values)}。'
@@ -1030,51 +1039,19 @@ def test_status_labels_are_paired_with_the_right_status():
     )
 
 
-def test_status_icons_are_real_distinct_glyphs():
-    """statusIcons 的**值**也要检查：非空、是 SVG、六个互不相同。
-
-    评审实测的逃逸（R2/R3）：把 `'cancelled': ''` 改成空串 ——
-    键集合齐全，上一版断言全绿，而渲染出来就是修复前那个「没有图标的徽章」；
-    把两个状态的图标改成同一个也照样通过。
-
-    「互不相同」是承重的，不是洁癖：pending 与 cancelled 走的是**同一块**中性
-    徽章底色（见 test_status_badge_color_matches_the_semantic_token），
-    它们在界面上唯一的图形差别就是这个图标。图标一样 = 「等待中」和「已取消」
-    只剩文案能区分。
-    """
-    holders = {'tasks.js': 'createTaskRow', 'history.js': 'renderHistoryTable'}
-    problems, checked = [], 0
-    for js_name, holder in holders.items():
-        body = _js_function_body(_strip_js_comments(_js(js_name)), holder)
-        keys, inner = _js_object_literal_keys(body, 'statusIcons')
-        values = dict(re.findall(r"'([a-z_]+)'\s*:\s*'([^']*)'", inner))
-        assert set(values) == keys, (
-            f'{js_name} 的 statusIcons 解析出 {sorted(values)} 个值、{sorted(keys)} 个键 —— '
-            '本测试已失效'
-        )
-        seen = {}
-        for status, svg in sorted(values.items()):
-            checked += 1
-            if not svg.strip():
-                problems.append(
-                    f'{js_name}: {status!r} 的图标是空串 —— '
-                    "`statusIcons[status] || ''` 会静默吐空，徽章上什么都没有")
-                continue
-            if '<svg' not in svg:
-                problems.append(f'{js_name}: {status!r} 的图标不是 SVG：{svg[:40]!r}')
-                continue
-            shape = re.sub(r'\s+', ' ', re.sub(r'^<svg[^>]*>|</svg>$', '', svg)).strip()
-            if shape in seen:
-                problems.append(
-                    f'{js_name}: {status!r} 与 {seen[shape]!r} 的图标图形完全相同 —— '
-                    '这两态在界面上就只剩文案能区分了')
-            else:
-                seen[shape] = status
-    assert checked == 12, f'只检查了 {checked} 个图标（期望 2 文件 x 6 态）—— 本测试已失效'
-    assert not problems, (
-        '状态图标有问题：\n' + '\n'.join('  ' + p for p in problems)
-    )
-
+# ⚠️ 登记（2026-08 统一流式列表重设计）：这里原本是
+# test_status_icons_are_real_distinct_glyphs —— 检查两个文件渲染函数里
+# statusIcons 表的值（非空、是 SVG、六个互不相同，守 WCAG 1.4.1
+# 「不只靠颜色区分状态」）。定稿设计废掉徽章 pill（状态点 + 小字状态文本
+# 承担状态识别），statusIcons 表随之从 createTaskRow / renderHistoryTable
+# 删除，该断言失去检查对象，整条删除。
+# 「不只靠颜色」的职责没有丢，由两条一起接住：
+#   · 图形侧（六态状态点配色 + 对比度）：
+#     tests/test_css_contract.py::test_task_row_status_dot_covers_every_status
+#   · 文字侧（小字状态文本必须来自 getStatusText 的中文词表）：
+#     本文件 test_status_labels_are_paired_with_the_right_status 等 A7 断言
+# 与图形侧的区别说明：状态点比 SVG 图标信息量低，所以活动行行1 与历史行
+# 行2 都带 getStatusText 的状态文字，颜色不再是唯一通道。
 
 def test_map_rectangle_stroke_covers_every_status():
     """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖六态、走调色板令牌。
@@ -1229,63 +1206,200 @@ def test_panel_close_guard_compares_elements_not_names():
 
 
 # --------------------------------------------------------------------------
-# 统一任务表（2026-07）：活动任务从独立卡片区融入任务表顶部的实时行区
+# 统一流式列表（2026-08 重设计定稿）
 #
-# 结构：一张表、两个 tbody——#activeTasksBody（tasks.js 实时行）在上，
-# #historyTableBody（history.js 历史行，分页）在下。/api/history_all 不过滤
-# 状态，所以 history.js 在首页要跳过非终态行（去重）；独立页 /history
-# 没有实时行区，照旧全量渲染。
+# 前身是「统一任务表（2026-07）」一节：一张 9 列表、两个 tbody。用户连续
+# 反馈「太乱」后整体重设计——废掉 9 列 .task-table 与表头，活动/历史任务
+# 共用同一种行结构（状态点 + 名称 + #类型:id + 元信息 …… 时间 + 动作组；
+# 行2 按状态变体：进度 / 引文式错误 / 单行摘要）。
+# 本节的锚点随之从「表格结构」翻面为「列表结构」，每条都登记了翻面理由。
 # --------------------------------------------------------------------------
 
-def test_active_tasks_render_into_the_shared_table_tbody():
-    """tasks.js 必须渲染进 #activeTasksBody（表格 tbody），不再是 #activeTasks 卡片区。"""
+def test_active_tasks_render_into_the_records_panel_list():
+    """tasks.js 必须渲染进 #activeTasksBody（记录面板列表顶部的实时区容器）。
+
+    （前身 test_active_tasks_render_into_the_shared_table_tbody：
+    容器从 <tbody> 变成 <div>，「空态是 colspan=9 的行」整条翻面——
+    定稿设计里无活动任务时实时区整个留空，不渲染「暂无活动任务」。）
+    """
     body = _fn('renderActiveTasks')
     assert "getElementById('activeTasksBody')" in body, (
-        'renderActiveTasks 没有以 #activeTasksBody 为容器——实时行区搬进任务表了吗？'
+        'renderActiveTasks 没有以 #activeTasksBody 为容器'
     )
     assert "getElementById('activeTasks')" not in body, (
         'renderActiveTasks 仍在渲染旧的 #activeTasks 卡片区'
     )
-    assert 'colspan="9"' in body, (
-        '空态必须是横跨 9 列的表格行（与任务表的列数一致）'
+    assert 'colspan' not in body and '<tr' not in body and '<td' not in body, (
+        'renderActiveTasks 还在产出表格行——9 列 .task-table 已随统一流式列表废除'
+    )
+    assert re.search(r"innerHTML\s*=\s*''", body), (
+        '无活动任务时实时区必须整个留空（定稿设计：不显示「活动」分组头、'
+        '也没有独立的活动空态）'
     )
 
     src = _strip_js_comments(_js('tasks.js'))
     row_body = _js_function_body(src, 'createTaskRow')
     assert 'task-row status-' in row_body, (
-        'createTaskRow 必须产出带状态类的 <tr class="task-row status-*">'
+        'createTaskRow 必须产出带状态类的 <div class="task-row status-*">'
+    )
+    assert '<tr' not in row_body and '<td' not in row_body, (
+        'createTaskRow 还在产出 <tr>/<td>——统一流式列表里没有表格'
     )
     err_body = _js_function_body(src, 'createTaskErrorRow')
-    assert 'task-error-row' in err_body and 'colspan="9"' in err_body, (
-        '失败任务的错误信息必须是横跨 9 列的独立错误行（tr.task-error-row）'
+    assert 'task-error-row' in err_body, (
+        '失败任务的引文式错误行（.task-error-row）没了'
+    )
+    assert '<tr' not in err_body and '<td' not in err_body and 'colspan' not in err_body, (
+        'createTaskErrorRow 还在产出横跨 9 列的表格行'
     )
 
 
-def test_active_task_row_is_a_single_rich_cell_with_three_lines():
-    """活动任务行是「富行」：单格 colspan=9 + 内部三行 flex，不是 9 个单元格。
+def test_task_row_is_the_unified_two_line_structure():
+    """活动任务行与历史任务行是同一种「统一流式行」结构。
 
-    （2026-08 重排，实测反馈「任务列表太乱」：9 列网格装不下活动行的
-    进度条/计数/耗时——数量格折 4 行、耗时格折 3 行、区域格折 2 行，
-    行高约 90px 且参差不齐。行1 = 名称/#类型:id/徽章/耗时/动作组，
-    行2 = 进度条/百分比/计数，行3 = 区域/缩放/样式。历史行保持 9 列不变。）
+    （前身 test_active_task_row_is_a_single_rich_cell_with_three_lines：
+    富行 = colspan=9 单格 + 三行 flex。2026-08 定稿改为两行，且历史行
+    用同一结构——「两种行语言硬拼」是「太乱」的根因之一。）
 
     这条守两件事：
-      1. 结构锚点存在（colspan=9 单格 + 三行容器 + 状态左条宿主 .task-row__bar）；
+      1. 结构锚点存在（行1 = task-line1：状态点/名称/#类型:id/元信息/
+         状态小字/时间；行2 = task-progress-line：发丝条/百分比/计数）；
       2. 增量更新依赖的稳定类名没有改名——updateTaskProgressPartial /
          updateTimeDisplay 按 .progress-bar/.task-pct/.task-count/.task-time
          原地更新，模板里类名一换，Socket.IO 刷新就静默失效而本文件其它
          断言未必红。
+      3. 徽章 pill 不再存在（状态识别 = 状态点 + 小字状态文本）。
     """
     body = _fn('createTaskRow')
-    for anchor in ('colspan="9"', 'task-cell', 'task-row__bar',
-                   'task-line1', 'task-progress-line', 'task-line3'):
+    for anchor in ('task-line1', 'task-dot', 'task-name', 'task-id',
+                   'task-meta', 'task-status-text', 'task-progress-line'):
         assert anchor in body, (
-            f'createTaskRow 缺 {anchor} —— 富行三行布局的锚点（见 docstring）'
+            f'createTaskRow 缺 {anchor} —— 统一流式行的结构锚点（见 docstring）'
         )
-    for cls in ('task-name', 'task-pct', 'task-count', 'task-time', 'progress-bar'):
+    for cls in ('task-pct', 'task-count', 'task-time', 'progress-bar'):
         assert cls in body, (
             f'createTaskRow 缺稳定类名 {cls} —— Socket.IO 增量更新按它定位元素'
         )
+    assert 'badge' not in body, (
+        'createTaskRow 还在渲染徽章 pill——定稿设计的状态识别是状态点 + 状态小字'
+    )
+
+    # 历史行必须说同一种行语言（history.js 独立渲染，最容易走偏的就是它）
+    hist_body = _fn('createHistoryRow', 'history.js')
+    for anchor in ('task-row status-', 'task-line1', 'task-dot', 'task-name',
+                   'task-id', 'task-meta', 'task-time'):
+        assert anchor in hist_body, (
+            f'createHistoryRow 缺 {anchor} —— 历史行必须与活动行同一种结构'
+        )
+    for forbidden in ('<tr', '<td', 'colspan', 'badge'):
+        assert forbidden not in hist_body, (
+            f'createHistoryRow 里还有 {forbidden} —— 历史行退回 9 列网格/徽章形态了'
+        )
+
+
+def test_failed_group_collapses_beyond_five_and_remembers_the_choice():
+    """失败组治理（「太乱」根因之二：dev 库 96 个 failed 任务钉在列表顶部
+    形成红墙）：>5 个时默认折叠只显示最近 3 个，分组头可点击展开全部，
+    折叠态用 sessionStorage 记忆；≤5 个时全部显示、分组头不可折叠。
+    """
+    src = _strip_js_comments(_js('tasks.js'))
+    body = _fn('renderActiveTasks')
+    assert 'FAILED_GROUP_COLLAPSE_THRESHOLD' in body, (
+        'renderActiveTasks 没有失败组折叠阈值——96 个失败任务又会全部铺开成红墙'
+    )
+    assert 'FAILED_GROUP_PREVIEW_COUNT' in body and '.slice(0,' in body.replace(' ', ''), (
+        '折叠时没有「只显示最近 3 个」的裁剪（slice + FAILED_GROUP_PREVIEW_COUNT）'
+    )
+    assert 'toggleFailedTaskGroup()' in body, (
+        '失败分组头不可点击展开——>5 个时剩下的失败任务永远看不到'
+    )
+    # 阈值与预览数的字面值钉死（常量被改成 999 的话上面两条照样绿）
+    assert re.search(r'FAILED_GROUP_COLLAPSE_THRESHOLD\s*=\s*5', src), (
+        'FAILED_GROUP_COLLAPSE_THRESHOLD 不是 5——定稿是「>5 个才折叠」'
+    )
+    assert re.search(r'FAILED_GROUP_PREVIEW_COUNT\s*=\s*3', src), (
+        'FAILED_GROUP_PREVIEW_COUNT 不是 3——定稿是「折叠时只显示最近 3 个」'
+    )
+
+    toggle_body = _fn('toggleFailedTaskGroup')
+    assert 'sessionStorage' in toggle_body, (
+        '折叠态没有用 sessionStorage 记忆——每次重绘都回到默认折叠'
+    )
+    assert 'renderActiveTasks(' in toggle_body, (
+        '展开/收起后没有重绘实时区'
+    )
+
+
+def test_history_stream_dedups_exactly_against_active_tasks():
+    """精确去重契约：历史流排除「当前在 activeTasks Map 里的任务」
+    （按 `类型:id` 键比对），且只在文档里有 #activeTasksBody 时启用。
+
+    这替代旧的「按状态跳过 pending/running/paused」规则（2026-08 定稿）：
+    旧规则会把从未进过实时区的历史非终态任务也一并藏掉，而失败任务
+    又在实时区和历史区各出现一次。新规则下：活动区/失败组里显示着的，
+    历史区就不显示；dismiss 后下次刷新才在历史出现。
+    独立页 /history 不加载 tasks.js（activeTasks 未定义）也没有
+    #activeTasksBody，必须照旧全量渲染——所以两个前提条件缺一不可。
+    """
+    body = _fn('renderHistoryTable', 'history.js')
+    assert "getElementById('activeTasksBody')" in body, (
+        'renderHistoryTable 没有检查 #activeTasksBody 是否存在——'
+        '独立页 /history 的行为无法与首页区分'
+    )
+    assert 'activeTasks' in body, (
+        'renderHistoryTable 没有读 tasks.js 的全局 activeTasks Map——精确去重没了'
+    )
+    assert re.search(r'activeTasks\.has\(\s*`\$\{t\.task_type\}:\$\{t\.id\}`\s*\)', body), (
+        '去重不是按 `task_type:id` 键查 activeTasks——比对键变了会整批误伤/漏排'
+    )
+    assert re.search(r'\.filter\s*\(', body), (
+        'renderHistoryTable 没有 filter——去重逻辑没了'
+    )
+    # 旧的「按状态跳过」规则必须消失（failed 不再被历史区无条件放行、
+    # pending/running/paused 不再被无条件跳过）
+    assert "['pending', 'running', 'paused']" not in body, (
+        '旧的「按状态跳过 pending/running/paused」规则还在——与精确去重是两套逻辑'
+    )
+
+
+def test_status_chips_filter_only_the_history_stream():
+    """状态筛选 chips：只作用于历史流——loadHistory 把取值透传给
+    /api/history_all 的 ?status= 参数；chips 点击后回到第 1 页刷新。
+    """
+    src = _strip_js_comments(_js('history.js'))
+    load_body = _js_function_body(src, 'loadHistory')
+    assert 'currentStatusFilter' in load_body and '&status=' in load_body, (
+        'loadHistory 没有把 chips 取值透传成 ?status= 参数——chips 成了摆设'
+    )
+    init_body = _js_function_body(src, 'initHistory')
+    assert '#statusChips .status-chip' in init_body, (
+        'initHistory 没有给 #statusChips .status-chip 挂点击事件'
+    )
+    assert re.search(r'loadHistory\(\s*1\s*\)', init_body), (
+        '切换 chip 后没有 loadHistory(1)——筛选不会生效/停留在旧页码'
+    )
+
+
+def test_history_error_text_only_lands_via_textcontent():
+    """失败历史行的错误原文与活动失败行同一条规矩：不进 innerHTML 模板。
+
+    /api/history_all 返回的 error_message 同样是后端异常的字符串化结果。
+    createHistoryRow 只吐一个**空**的 .task-error 容器（连 error_message
+    都不引用），文本由 renderHistoryTable 在渲染后用 textContent 补。
+    """
+    src = _strip_js_comments(_js('history.js'))
+    row_body = _js_function_body(src, 'createHistoryRow')
+    assert 'error_message' not in row_body, (
+        'createHistoryRow 里出现了 error_message——它的返回值会进 innerHTML，'
+        '后端错误原文里的 HTML 会被当标签解析（XSS）'
+    )
+    render_body = _js_function_body(src, 'renderHistoryTable')
+    assert 'error_message' in render_body and re.search(r'\.textContent\s*=', render_body), (
+        'renderHistoryTable 没有在渲染后用 textContent 回填失败历史行的错误文本'
+    )
+    assert 'innerHTML' not in render_body.split('forEach')[1] if 'forEach' in render_body else True, (
+        '错误文本回填走了 innerHTML——必须走 textContent'
+    )
 
 
 def test_pagination_bar_is_hidden_when_only_one_page():
@@ -1302,28 +1416,12 @@ def test_pagination_bar_is_hidden_when_only_one_page():
     )
 
 
-def test_history_table_skips_non_terminal_rows_only_when_active_tbody_exists():
-    """去重契约：文档里有 #activeTasksBody 时，历史区跳过 pending/running/paused。
-
-    /api/history_all 不过滤状态（routes/api.py 的四路 UNION ALL 没有 status
-    谓词），活动任务本来就会进历史数据集。首页任务表顶部已有实时行区，
-    不跳过的话同一任务在上下两个 tbody 各出现一次。
-    独立页 /history 没有 #activeTasksBody（不加载 tasks.js），必须照旧全量渲染
-    ——所以跳过必须以「元素存在」为条件，不能无条件过滤。
-    """
-    body = _fn('renderHistoryTable', 'history.js')
-    assert "getElementById('activeTasksBody')" in body, (
-        'renderHistoryTable 没有检查 #activeTasksBody 是否存在——'
-        '独立页 /history 的行为无法与首页区分'
-    )
-    for status in ('pending', 'running', 'paused'):
-        assert f"'{status}'" in body, (
-            f"跳过清单里缺 '{status}'——该状态的任务会在实时行和历史行里各出现一次"
-        )
-    assert re.search(r'\.filter\s*\(', body), (
-        'renderHistoryTable 没有 filter——去重逻辑没了'
-    )
-
+# ⚠️ 登记（2026-08 统一流式列表重设计）：这里原本是
+# test_history_table_skips_non_terminal_rows_only_when_active_tbody_exists
+# ——守旧的「有 #activeTasksBody 时按状态跳过 pending/running/paused」
+# 去重规则。定稿设计把它换成**精确去重**（按 activeTasks 的 `类型:id`
+# 键排除实时区里正显示着的任务），该断言整条删除，
+# 接替者是上面的 test_history_stream_dedups_exactly_against_active_tasks。
 
 def test_completed_task_refreshes_initialized_history_panel():
     """task_completed 删掉实时行之后，必须让任务立刻出现在历史区。

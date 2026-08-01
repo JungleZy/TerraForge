@@ -83,15 +83,39 @@ def test_map_preview_names_escaped():
 def test_history_secondary_fields_escaped():
     """history.js 其余服务端字段：style 兜底原文、详情徽章状态、地形 job.output_dir。"""
     src = _strip_js_comments(_js('history.js'))
-    assert 'escapeHtml(getStyleText(task.style))' in src, (
-        'getStyleText 的 `|| style` 兜底会把 DB 里的 style 原文渲染进表格'
+    # 2026-08 统一流式列表重设计：行内样式/缩放文本改由 historyMetaText()
+    # 组装、在插值点统一转义。本条的两个旧锚点
+    # （escapeHtml(getStyleText(task.style)) / escapeHtml(task.style || '-')）
+    # 是 9 列历史行「样式格」的写法，随表格删除；守护的语义不变——
+    # getStyleText 的 `|| style` 兜底会把 DB 里的 style 原文带出来，
+    # 进模板前必须过 escapeHtml。改为断言「组装函数里有兜底来源 +
+    # 插值点确实转义」两个环节，只查一个都会留洞。
+    meta_body = _body('history.js', 'historyMetaText')
+    assert 'getStyleText(task.style)' in meta_body, (
+        'historyMetaText 没有调 getStyleText——样式元信息的来源变了？本测试已失效'
     )
-    assert "escapeHtml(task.style || '-')" in src, '非 map/contour 行的 style 原文未转义'
+    assert 'escapeHtml(historyMetaText(task))' in src, (
+        'createHistoryRow 没有转义 historyMetaText 的输出——'
+        'getStyleText 的 `|| style` 兜底会把 DB 里的 style 原文渲染进行1'
+    )
     assert 'escapeHtml(getStatusText(task.status))' in src, (
         '详情模态框徽章里 getStatusText 的 `|| status` 兜底原文未转义'
     )
     assert re.search(r'const label = escapeHtml\(', src), '地形作业状态徽章的 label 未转义'
     assert 'escapeHtml(outDir)' in src, 'job.output_dir（用户可控路径）未转义'
+
+
+def test_active_row_meta_text_escaped():
+    """tasks.js 行1 元信息同样来自服务端（style/dataset 原文），进模板前必须转义。
+
+    与上面 history.js 那条是同一条规矩在活动行这一侧的对称检查——
+    两个文件各自渲染行，最容易漏的就是只转义了一边。
+    """
+    src = _strip_js_comments(_js('tasks.js'))
+    assert 'escapeHtml(taskMetaText(task))' in src, (
+        'createTaskRow 没有转义 taskMetaText 的输出——'
+        'style/dataset 的 DB 原文会被渲染进行1'
+    )
 
 
 # ---------------------------------------------------------------- I11: _swb

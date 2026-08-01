@@ -647,95 +647,92 @@ body {
     overflow: hidden;
 }
 
-/* Task Row Styles（活动任务实时行：统一任务表顶部 tbody#activeTasksBody 的行，
-   由 tasks.js createTaskRow 渲染；样式迁移自原 .task-card 卡片）
-   2026-08 重排（实测反馈「任务列表太乱」）：行内不再是与历史行对应的
-   9 个单元格，而是单格（td.task-cell, colspan=9）内部三行 flex ——
-   9 列网格装不下活动行的进度条/计数/耗时，硬塞会让数量/耗时/区域格
-   各折 2~4 行，行高约 90px 且参差不齐。 */
-.task-row td {
-    vertical-align: middle;
+/* Task Row Styles（统一流式列表的行：活动实时区 #activeTasksBody 与历史流
+   #historyTableBody 里的 .task-row，分别由 tasks.js createTaskRow /
+   history.js createHistoryRow 渲染，同一种行语言）
+   2026-08 重设计定稿（用户连续反馈「任务列表太乱」，三条根因全部回应）：
+     1. 废掉 9 列 .task-table 与表头 —— 活动三行富行 + 历史 9 列网格行 +
+        不对应的 9 列表头，两种行语言硬拼是「乱」的主要来源；
+     2. 失败治理 —— 失败组 >5 个时默认折叠只显示最近 3 个（分组头可展开），
+        不再是一面钉在列表顶部的红墙；
+     3. 行内信息改排两行 flex，880px 面板不再挤 9 列网格。
+   行内结构：行1 状态点 + 名称 + #类型:id + 元信息 + 状态小字 …… 时间 + 动作组；
+   行2 进度（pending/running/paused）或引文式错误（failed）或单行摘要（终态历史行）。
+   不再有徽章 pill、不再有整行底色、不再有 4px 左条；行间只有发丝分隔线。 */
+.task-row {
+    padding: 0.5rem 0.25rem;
+    border-bottom: 1px solid var(--color-border);
 }
 
-/* 状态色左条：迁移自 .task-card::before。表格是 border-collapse: collapse，
-   行（tr）上画不出可靠的边条，所以挂在单元格的 ::before 上。
-   单元格带 .task-row__bar 类（createTaskRow 渲染；2026-08 重排后是行内
-   唯一的一格）：不用 td:first-child，因为测试层的层叠模型故意不支持
-   结构性伪类（它不知道节点排第几）。
-   position: relative 打在 td 上是给 ::before 当定位上下文的。 */
-.task-row__bar {
-    position: relative;
-}
+/* 行间只有发丝分隔线。刻意不写 `:last-child { border-bottom: none }`：
+   测试层的三个层叠模型（按钮外观/文字颜色/动画）都不支持子/兄弟组合符
+   与结构性伪类——安全网会把整份测试顶成「已失效」。最后一行下面多一条
+   1px 发丝线（落在分组头/分页条之前）是可接受的代价。 */
 
-.task-row__bar::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 4px;
-    height: 100%;
+/* 状态点：8px 圆点承担状态识别（与小字状态文本一起，替代原徽章 pill）。
+   六态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
+   「任务还活着」的唯一动效信号（动画降噪时刻意保留的那一类）。
+   兜底色是品牌色 var(--color-accent)：六态各有专属规则，落到兜底 = 有态
+   没写规则（测试会红）；不能用中性灰当兜底——那会让缺规则的态冒充 pending。 */
+.task-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
     background: var(--color-accent);
+    flex: 0 0 auto;
 }
 
-.task-row.status-running .task-row__bar::before {
+.task-row.status-running .task-dot {
     background: var(--color-info);
     animation: pulse 2s ease-in-out infinite;
 }
 
-.task-row.status-completed .task-row__bar::before {
+.task-row.status-completed .task-dot {
     background: var(--color-success);
 }
 
-.task-row.status-failed .task-row__bar::before {
+.task-row.status-failed .task-dot {
     background: var(--color-danger);
 }
 
-.task-row.status-paused .task-row__bar::before {
+.task-row.status-paused .task-dot {
     background: var(--color-warning);
 }
 
-/* 沿用原卡片的结论（Task 13 收尾修）：pending 用 --color-text-secondary
-   而不是 --color-text-muted（对面板底只有 3.09:1，紧贴 3:1 下限），
-   且与 cancelled 的 --color-neutral 保持区分——两个状态语义不同，边条不该同色。 */
-.task-row.status-pending .task-row__bar::before {
+/* pending 用 --color-text-secondary 而不是 --color-text-muted
+   （对面板底只有 3.09:1，紧贴 3:1 下限），且与 cancelled 的
+   --color-neutral 保持区分——两个状态语义不同，状态点不该同色。 */
+.task-row.status-pending .task-dot {
     background: var(--color-text-secondary);
 }
 
-/* A7 / Task 12 补上（迁移自卡片）：没有这条的话，已取消的行会落到
-   `.task-row__bar::before` 的兜底 `var(--color-accent)` —— 一条品牌蓝色的边条，
-   读起来像「一切正常」。 */
-.task-row.status-cancelled .task-row__bar::before {
+/* 没有这条的话，已取消的行会落到 .task-dot 的兜底色——与「等待中」同色，
+   读起来像「还没开始」。 */
+.task-row.status-cancelled .task-dot {
     background: var(--color-neutral);
 }
 
-/* 失败行**不铺底色**（2026-08 扁平化）：整行红洗 + 红框错误框是「模板味」
-   重灾区——状态识别交给 4px 左条与红色徽章，错误原因交给下方错误行，
-   行本身与其它行一样只留发丝分隔线。原先那处 !important 随之删除
-   （已在 tests/test_css_contract.py 的登记处记账）。 */
+/* 失败行**不铺底色**（沿用 2026-08 扁平化结论）：整行红洗 + 红框错误框
+   是「模板味」重灾区——状态识别交给状态点与状态小字，错误原因交给
+   下方引文式错误行，行本身与其它行一样只留发丝分隔线。 */
 
 .task-row .task-name {
     font-family: var(--font-display);
-    font-weight: 600;
+    font-weight: 500;
     font-size: var(--font-size-base);
     color: var(--color-text-primary);
 }
 
-/* 富行行1 的耗时文本与行2 的计数文本共用这一套：
-   等宽字体是跟原卡片 .progress-detail 一致的选择（数字多、要对齐）。 */
+/* 行1 的时间文本与行2 的计数文本共用这一套：
+   等宽字体（数字多、要对齐）。 */
 .task-row .progress-detail {
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
 }
 
-.task-row .badge {
-    font-size: var(--font-size-xs);
-    padding: 0.3rem 0.65rem;
-}
-
-/* 富行行2 的紧凑进度条：2026-08 扁平化收到 5px 发丝条——14px 的粗条加满色
-   填充是视觉噪音的主要来源。表格行装不下 28px 轨道 + 18px 覆盖层 chip，
-   所以这里不用 .progress/.progress__label 那套（百分比移到条右边的 .task-pct，
+/* 行2 的 5px 发丝进度条：表格时代装不下 28px 轨道 + 18px 覆盖层 chip，
+   所以不用 .progress/.progress__label 那套（百分比在条右边的 .task-pct，
    由 tasks.js updateTaskProgressPartial 同步）。
    width 过渡沿用 .progress-bar 的全局规则（0.2s linear），
    推送追得上（test_progress_bar_transition_keeps_up_with_the_push_rate）。 */
@@ -772,9 +769,9 @@ body {
     color: var(--color-text-primary);
 }
 
-/* 富行行1（2026-08 重排）：名称 + #类型:id + 徽章 …… 耗时 + 动作组。
+/* 行1：状态点 + 名称 + #类型:id + 元信息 + 状态小字 …… 时间 + 动作组。
    名称是唯一允许收缩的元素（超全省略号），其余成员不折行；
-   耗时 margin-left:auto 把它和动作组一起顶到右端。 */
+   时间 margin-left:auto 把它和动作组一起顶到右端。 */
 .task-line1 {
     display: flex;
     align-items: center;
@@ -789,13 +786,21 @@ body {
 
 .task-id {
     font-family: var(--font-mono);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
     white-space: nowrap;
     flex: 0 0 auto;
 }
 
-.task-line1 .badge,
+/* 行1 元信息（样式/缩放或数据源）与状态小字：弱化小字，不折行。 */
+.task-meta,
+.task-status-text {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
 .task-line1 .btn-group {
     flex: 0 0 auto;
 }
@@ -805,8 +810,8 @@ body {
     white-space: nowrap;
 }
 
-/* 富行行3：区域 · 缩放 · 样式，小字弱化等宽，超宽单行省略。 */
-.task-line3 {
+/* 终态历史行的行2：`已完成 · 54 / 60 瓦片 · 区域 …` 单行弱化，超宽省略。 */
+.task-line2 {
     margin-top: 0.25rem;
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
@@ -816,16 +821,11 @@ body {
     text-overflow: ellipsis;
 }
 
-/* 任务表表头不折行：面板约 880px 时「名称」「缩放级别」会折成两行
-   （2026-08 实测）。只钉任务表（.task-table），不碰其它 .table。 */
-.task-table th {
-    white-space: nowrap;
-}
-
-/* 失败任务错误行里的错误原因（tr.task-error-row > td 里的 .task-error）。
-   文本由 tasks.js 的 applyTaskErrorText 用 textContent 填入（后端错误原文不能进 innerHTML）。
-   2026-08 扁平化：红底 + 整圈红边框的「盒子里的盒子」改为无边框无边底、
-   只留 2px 红色左边条的引文式排版。可读性靠文字色本身：
+/* 失败任务错误行里的错误原因（.task-error-row 或历史行行2 的 .task-error）。
+   文本由 tasks.js applyTaskErrorText / history.js renderHistoryTable 用
+   textContent 填入（后端错误原文不能进 innerHTML）。
+   引文式排版：无边框无边底、只留 2px 红色左边条 + 红字，最多 2 行省略。
+   可读性靠文字色本身：
      文字 #f87171(--color-danger) 对背衬 .card #15171c = 6.48:1
      （WCAG 正文 4.5:1；左边条与文字同色，图形下限 3:1 同值满足）
    等宽字体是跟 .progress-detail 一致的选择：错误原文里多是路径、URL、状态码。 */
@@ -838,7 +838,88 @@ body {
     font-size: var(--font-size-sm);
     line-height: 1.5;
     word-break: break-word;
-    white-space: pre-wrap;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* 错误行紧跟主行之后，与主行共享发丝分隔节奏（主行的分隔线移到错误行末尾）。 */
+.task-error-row {
+    padding: 0 0.25rem 0.5rem;
+    border-bottom: 1px solid var(--color-border);
+}
+
+/* 分组头（活动 (N) / 失败 (N) / 历史）：小字弱化 + 计数。
+   失败组 >5 个时整头是一个 <button>（task-group-header--toggle），
+   点击展开/收起（tasks.js toggleFailedTaskGroup）。 */
+.task-group-header {
+    margin: 0.75rem 0 0.125rem;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    letter-spacing: 0.04em;
+}
+
+button.task-group-header {
+    display: block;
+    width: 100%;
+    padding: 0;
+    background: none;
+    border: none;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+button.task-group-header:hover {
+    color: var(--color-text-primary);
+}
+
+/* 筛选行：搜索框（客户端过滤当前页）+ 状态 chips（历史流 ?status=）。 */
+.task-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.task-filter-bar #searchInput {
+    max-width: 220px;
+}
+
+.status-chips {
+    display: flex;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+}
+
+.status-chip {
+    padding: 0.125rem 0.625rem;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: none;
+    font-family: inherit;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+}
+
+.status-chip:hover {
+    color: var(--color-text-primary);
+    border-color: var(--color-text-secondary);
+}
+
+.status-chip.active {
+    color: var(--color-accent-hover);
+    border-color: var(--color-accent);
+}
+
+/* 历史流空态（暂无历史记录）：颜色走 CSS 类，不写内联 style。 */
+.task-empty {
+    padding: 3rem 1rem;
+    text-align: center;
+    color: var(--color-text-secondary);
 }
 
 /* 发光改用品牌色柔和版：原先硬编码 rgba(59,130,246,.x)（#3b82f6 蓝，不在
@@ -1916,83 +1997,15 @@ h1, h2, h3, h4, h5, h6 {
     opacity: 0.5;
 }
 
-/* Table Styles */
-.table {
-    color: var(--color-text-primary) !important;
-    background: transparent !important;
-    font-size: var(--font-size-base);
-}
-
-.table th {
-    font-size: var(--font-size-sm);
-}
-
-.table small {
-    font-size: var(--font-size-sm);
-}
-
-.table thead {
-    background: transparent !important;
-}
-
-.table tbody {
-    background: transparent !important;
-}
-
-.table tr {
-    background: transparent !important;
-    border-color: var(--color-border) !important;
-}
-
-/* ⚠️ 这里的 `color` **不许**再加 !important（A7 / Task 12 修的就是这个）。
-   history.js 的加载失败行是 `<td class="text-center text-danger">加载失败</td>`。
-   `.text-danger` 是 (0,1,0)!important，本条改前是 (0,1,1)!important ——
-   两条都是 important 时先比特异度，(0,1,1) 赢。后果：**这行文字从上线起
-   就是普通灰白色**，加载失败和正常内容长得一模一样。CDP 实测改前
-   `getComputedStyle(td).color === 'rgb(232, 234, 237)'`（= --color-text-primary），
-   改后 `rgb(248, 113, 113)`（= --color-danger，对面板底 #15171c 实测 6.48:1）。
-
-   去掉 !important 之后普通单元格的颜色不变：唯一同时命中 td 的 Bootstrap
-   颜色规则是 `.table > :not(caption) > * > *`，(0,1,1) 且**不带** !important
-   —— 与本条特异度相同，而 style.css 是最后加载的样式表
-   （test_no_stylesheet_can_load_after_style_css 钉住了这一点），同分后来者赢。
-   CDP 实测改前改后普通 td 都是 rgb(232, 234, 237)。
-
-   background / border-color 的 !important 保留不动：它们要压的是 Bootstrap
-   自带 !important 的 `.bg-*` 工具类，与本次的颜色语义问题无关。 */
-.table td,
-.table th {
-    background: transparent !important;
-    border-color: var(--color-border) !important;
-    color: var(--color-text-primary);
-}
-
-/* 同上：(0,1,2) 不带 !important 已经压得过 Bootstrap 的 td 颜色规则，
-   却不再压住写在 `<small>` 自己身上的 .text-danger / .text-success。 */
-.table td small {
-    color: var(--color-text-secondary);
-}
-
-.table-hover tbody tr:hover {
-    background: rgba(255, 255, 255, 0.03) !important;
-}
-
-/* 这里原本还有一条
-       `.table-hover tbody tr:hover td { color: var(--color-text-primary) !important }`
-   A7 / Task 12 删掉，两条理由都实测过：
-     1. **冗余**。Bootstrap 的行 hover 只改 `--bs-table-color-state` 这个自定义
-        属性，真正上色的仍是 `.table > :not(caption) > * > *`(0,1,1)；上面那条
-        `.table td`(0,1,1) 排在它后面，hover 与否都已经赢了。CDP 实测删掉之后
-        hover 行的普通单元格仍是 rgb(232, 234, 237)。
-     2. **有害**。它是 (0,2,3)!important —— 鼠标划过「加载失败」那一行时，
-        连修好之后的 `.text-danger`(0,1,0)!important 也会被它重新压成灰白。
-        CDP 实测改前 hover 与非 hover 都是 rgb(232, 234, 237)，改后都是
-        rgb(248, 113, 113)。 */
-
-.table-responsive {
-    border-radius: 8px;
-    background: transparent !important;
-}
+/* Table Styles —— 整段已删除（2026-08 统一流式列表重设计）。
+   记录面板的 9 列 .task-table 是全站最后一张 <table>（templates/ 与
+   static/js/ 已无任何表格标记），原 `.table` / `.table th` / `.table small` /
+   `.table thead|tbody|tr` / `.table td, .table th` / `.table td small` /
+   `.table-hover tbody tr:hover` / `.table-responsive` 十条规则随之成为死代码，
+   连带 10 处 !important 一并清掉（已在 tests/test_css_contract.py 的
+   !important 登记处记账，上界按棘轮规则同步下调）。
+   原 `.table td` 的 color 不带 !important 的教训（A7 / Task 12：
+   (0,1,1)!important 压死加载失败行的 .text-danger）随表格一并成为历史。 */
 
 /* Code Styles */
 code {
@@ -2473,7 +2486,7 @@ code {
    不是可选装饰。
 
    本站在这个开关下要被压掉的东西（各自都有实测）：
-     · .task-row.status-running .task-row__bar::before 的 `pulse 2s infinite`
+     · .task-row.status-running .task-dot 的 `pulse 2s infinite`
        —— 无限循环的呼吸灯正是最典型的诱因，页面上只要有运行中的任务它就一直在动；
      · toast 的滑入/滑出、confirm 遮罩与卡片的淡入缩放；
      · 进度条 width 过渡、以及全部 hover/focus 的颜色过渡。
@@ -2481,10 +2494,10 @@ code {
    ── 为什么必须带 !important（4 处，逐条登记） ─────────────────────────
    本块选择器 `*, *::before, *::after` 特异度 (0,0,0)，是 CSS 里最弱的形态。
    全站每一条声明了 transition / animation 的规则（.btn 0,1,0、
-   .task-row.status-running .task-row__bar::before 0,3,1 …）都比它强，
+   .task-row.status-running .task-dot 0,3,0 …）都比它强，
    **不带 !important 这一块一条也压不住，等于整段死代码**。这是 a11y 社区的
    标准写法（见 https://web.dev/prefers-reduced-motion/）。逐条：
-     1. `animation-duration: 0.01ms`      压 pulse（0,3,1）
+     1. `animation-duration: 0.01ms`      压 pulse（0,3,0）
      2. `animation-iteration-count: 1`    单独一条：只压时长的话 infinite 仍在
                                           每 0.01ms 触发一次 animationiteration
                                           事件，是 CPU 空转

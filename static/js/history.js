@@ -1,6 +1,9 @@
 let historyViewer;
 let currentPage = 1;
 let allTasks = [];
+// 状态筛选 chips 的当前取值（'' = 全部）。只作用于历史流：
+// 透传给 /api/history_all 的 ?status= 参数（后端已支持）。
+let currentStatusFilter = '';
 
 function initHistory() {
     initHistoryMap();
@@ -10,6 +13,19 @@ function initHistory() {
     document.getElementById('searchInput').addEventListener('input', function(e) {
         filterTasks(e.target.value);
     });
+
+    // 状态筛选 chips（2026-08 统一流式列表）：全部/已完成/失败/已取消。
+    // 只筛选历史流，不影响上方活动/失败分组（那是 tasks.js 的实时区）。
+    document.querySelectorAll('#statusChips .status-chip').forEach(function(chip) {
+        chip.addEventListener('click', function() {
+            document.querySelectorAll('#statusChips .status-chip').forEach(function(c) {
+                c.classList.remove('active');
+            });
+            this.classList.add('active');
+            currentStatusFilter = this.dataset.status || '';
+            loadHistory(1);
+        });
+    });
 }
 
 // 历史小地图底图与主视图同一份配置（tile_servers 第一条，语法与
@@ -18,6 +34,13 @@ function initHistory() {
 // 与 map.js 是刻意重复的两份（无构建工具、独立历史页不加载 map.js，
 // 收敛到公共文件属于第三档）。
 function _historyBaseMapUrl(serversRaw) {
+    // 两种配置形态都认：首页内联 config 的 tile_servers 是裸逗号串；
+    // 独立页 /history 走 /api/config，配置项是 {"updated_at":..., "value": ...}
+    // 包装对象——不拆包的话 (serversRaw||'').split 直接 TypeError，
+    // initHistoryMap 整个挂掉、小地图白屏（2026-08 实测）。
+    if (serversRaw && typeof serversRaw === 'object') {
+        serversRaw = serversRaw.value || '';
+    }
     const first = (serversRaw || '').split(',').map(s => s.trim()).filter(Boolean)[0];
     if (!first) return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
     if (first.startsWith('http://') || first.startsWith('https://')) {
@@ -84,7 +107,10 @@ async function loadStats() {
 async function loadHistory(page = 1) {
     try {
         currentPage = page;
-        const response = await fetch(`/api/history_all?page=${page}&per_page=20`, { cache: 'no-store' });
+        const statusParam = currentStatusFilter
+            ? `&status=${encodeURIComponent(currentStatusFilter)}`
+            : '';
+        const response = await fetch(`/api/history_all?page=${page}&per_page=20${statusParam}`, { cache: 'no-store' });
         const data = await response.json();
 
         if (!data.success) {
@@ -98,81 +124,114 @@ async function loadHistory(page = 1) {
         renderHistoryMap(allTasks);
     } catch (error) {
         console.error('Failed to load history:', error);
+        // 错误提示挂在 .text-danger 上（CSS 类），不写内联 color。
+        // ⚠️ 内联 style 里不许带分号：tests/test_css_contract.py 的
+        // _history_error_div 用 `(.*?);` 非贪婪切这段模板，分号会让它提前收尾。
         document.getElementById('historyTableBody').innerHTML =
-            '<tr><td colspan="9" class="text-center text-danger">加载失败</td></tr>';
+            '<div class="text-center text-danger" style="padding: 1.5rem 1rem">加载失败</div>';
     }
 }
 
-function renderHistoryTable(tasks) {
-    const tbody = document.getElementById('historyTableBody');
+// 历史流失败行的兜底文案（与 tasks.js 的 UNKNOWN_ERROR_TEXT 同语义，
+// 但**不能**同名：首页两个文件共享全局作用域，const 重名会直接
+// SyntaxError 让整个文件失效——函数声明可以重复，const 不行）。
+const HISTORY_UNKNOWN_ERROR = '任务失败，但没有记录失败原因。';
 
-    // 去重：首页记录面板的任务表顶部有活动任务实时行区（#activeTasksBody，
-    // tasks.js 渲染），/api/history_all 又不过滤状态——不跳过的话，
-    // pending/running/paused 的任务会在实时行和历史行里各出现一次。
-    // 独立页 /history 没有实时行区（不加载 tasks.js），照旧渲染全部状态。
-    // failed 不在跳过之列：失败行虽然常驻实时区，但那是「等待用户移除」的
-    // 临时态，历史区的是正式记录。
-    const rows = document.getElementById('activeTasksBody')
-        ? tasks.filter(t => !['pending', 'running', 'paused'].includes(t.status))
+function renderHistoryTable(tasks) {
+    const container = document.getElementById('historyTableBody');
+
+    // 精确去重（2026-08 定稿）：历史流排除「当前还挂在实时区里的任务」——
+    // 活动组/失败组里显示着的，历史区就不显示；dismiss 之后下次刷新才在
+    // 历史出现。比对键是 tasks.js 全局 activeTasks Map 的 _key（`类型:id`）。
+    // 这替代旧的「按状态跳过 pending/running/paused」规则：旧规则会把
+    // 从未进过实时区的历史非终态任务也一并藏掉，而失败任务又在实时区和
+    // 历史区各出现一次。
+    // 独立页 /history 不加载 tasks.js（activeTasks 未定义）、也没有
+    // #activeTasksBody，两个条件都不满足，照旧全量渲染。
+    const dedup = (typeof activeTasks !== 'undefined' && activeTasks instanceof Map)
+        && document.getElementById('activeTasksBody');
+    const rows = dedup
+        ? tasks.filter(t => !activeTasks.has(`${t.task_type}:${t.id}`))
         : tasks;
 
     if (rows.length === 0) {
-        tbody.innerHTML = `
-            <tr>
-                <td colspan="9" class="text-center" style="padding: 3rem;">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.3; margin-bottom: 1rem;">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="12" y1="8" x2="12" y2="12"></line>
-                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                    </svg>
-                    <p style="color: var(--color-text-secondary); margin: 0;">暂无历史记录</p>
-                </td>
-            </tr>
+        container.innerHTML = `
+            <div class="task-empty">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.3; margin-bottom: 1rem;">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                <p style="margin: 0;">暂无历史记录</p>
+            </div>
         `;
         return;
     }
 
-    // 图标必须与 getStatusColor / getStatusText 覆盖同一组状态：徽章底色是
-    // 同一个色系里的深浅变化，只靠颜色区分状态对色觉障碍用户是失效的
-    // （WCAG 1.4.1）。图形与 tasks.js 的同名表一一对应，只是尺寸 14px 而非 16px
-    // ——历史表格的行高比活动任务行紧。
-    const statusIcons = {
-        'pending': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
-        'running': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>',
-        'paused': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>',
-        'completed': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><polyline points="20 6 9 17 4 12"></polyline></svg>',
-        'failed': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>',
-        'cancelled': '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
-    };
+    container.innerHTML = rows.map(createHistoryRow).join('');
+    // 失败历史行的错误原文与活动失败行同一条规矩：不进 innerHTML 模板
+    // （error_message 是后端异常的字符串化结果），渲染后按行用
+    // textContent 补——与 tasks.js 的 applyTaskErrorText 同一形态。
+    rows.forEach(task => {
+        if (task.status !== 'failed') return;
+        const row = document.getElementById(`hist-${task.task_type}:${task.id}`);
+        const box = row && row.querySelector('.task-error');
+        if (box) {
+            box.textContent = task.error_message || HISTORY_UNKNOWN_ERROR;
+        }
+    });
+}
+
+// 历史流行1 的元信息（与 tasks.js taskMetaText 同语言；两份是刻意重复，
+// 无构建工具、两个页面不会同时加载的另一个文件不可见）。
+function historyMetaText(task) {
+    if (task.task_type === 'map' || task.task_type === 'contour') {
+        const styleText = task.task_type === 'contour'
+            ? '等高线'
+            : (task.style ? getStyleText(task.style) : '');
+        const zoom = (task.zoom_min != null && task.zoom_max != null)
+            ? `${task.zoom_min}~${task.zoom_max}`
+            : '';
+        return [styleText, zoom].filter(Boolean).join(' ');
+    }
+    if (task.task_type === 'dem') {
+        // /api/history_all 的 UNION 把 dem_tasks.dataset 映射进 style 列
+        return task.style || '高程';
+    }
+    return '本地高程切片';
+}
+
+// 统一流式行（与 tasks.js createTaskRow 同一种行语言）：
+//   行1 状态点 + 名称 + #类型:id + 元信息 …… 完成时间 + 动作组（预览/详情/删除）
+//   行2 completed/cancelled → `已完成 · 54 / 60 瓦片 · 区域 …` 单行弱化；
+//       failed → 引文式错误（空 .task-error 容器，文本由 renderHistoryTable 补）
+function createHistoryRow(task) {
+    const key = `${task.task_type}:${task.id}`;
+    const isFailed = task.status === 'failed';
+
+    const itemLabel = (task.task_type === 'map' || task.task_type === 'contour') ? '瓦片' : '文件';
+    const hasBbox = task.north != null && task.south != null
+                 && task.east != null && task.west != null;
+    // 坐标是后端数值（无注入面），单行排版，超宽由 CSS 省略号截断。
+    const bboxText = hasBbox
+        ? ` · 区域 ${task.north.toFixed(2)}, ${task.south.toFixed(2)}, ${task.east.toFixed(2)}, ${task.west.toFixed(2)}`
+        : '';
+    const line2 = isFailed
+        ? '<div class="task-error" role="alert"></div>'
+        : `<div class="task-line2">${escapeHtml(getStatusText(task.status))} · ${task.downloaded} / ${task.total} ${itemLabel}${bboxText}</div>`;
 
     // 预览按钮只在首页覆盖面板里有意义（主视图在旁边）；独立页没有主视图。
     const canPreview = typeof previewTask === 'function';
 
-    tbody.innerHTML = rows.map(task => `
-        <tr>
-            <td style="font-family: var(--font-mono);">${task.id}</td>
-            <td style="font-weight: 500;">${escapeHtml(task.name)}</td>
-            <td>
-                <span class="badge bg-${getStatusColor(task.status)}" style="display: inline-flex; align-items: center;">
-                    ${statusIcons[task.status] || ''}
-                    ${escapeHtml(getStatusText(task.status))}
-                </span>
-            </td>
-            <td>
-                <small style="font-family: var(--font-mono); line-height: 1.4;">
-                    ${task.north == null ? '<span style="color: var(--color-text-secondary);">本地文件</span>' : `
-                    <span style="color: var(--color-accent-hover);">▲</span> ${task.north.toFixed(4)},
-                    <span style="color: var(--color-accent-hover);">▼</span> ${task.south.toFixed(4)}<br>
-                    <span style="color: var(--color-accent-hover);">▶</span> ${task.east.toFixed(4)},
-                    <span style="color: var(--color-accent-hover);">◀</span> ${task.west.toFixed(4)}`}
-                </small>
-            </td>
-            <td style="font-family: var(--font-mono);">${(task.task_type === 'map' || task.task_type === 'contour') ? `${task.zoom_min}-${task.zoom_max}` : '-'}</td>
-            <td>${(task.task_type === 'map' || task.task_type === 'contour') ? escapeHtml(getStyleText(task.style)) : escapeHtml(task.style || '-')}</td>
-            <td style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</td>
-            <td><small style="font-family: var(--font-mono);">${formatDate(task.completed_at)}</small></td>
-            <td>
-                <div style="display: flex; gap: 0.5rem;">
+    return `
+        <div class="task-row status-${task.status}" id="hist-${key}">
+            <div class="task-line1">
+                <span class="task-dot" aria-hidden="true"></span>
+                <span class="task-name">${escapeHtml(task.name)}</span>
+                <span class="task-id">#${escapeHtml(key)}</span>
+                <span class="task-meta">${escapeHtml(historyMetaText(task))}</span>
+                <span class="task-time progress-detail">${formatDate(task.completed_at)}</span>
+                <div class="btn-group btn-group-sm">
                     ${(canPreview && task.status === 'completed') ? `
                     <button class="btn btn-icon btn-sm btn-success" onclick="previewHistoryTask(${task.id}, '${task.task_type}')" title="在地图上预览" aria-label="在地图上预览">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -194,9 +253,10 @@ function renderHistoryTable(tasks) {
                         </svg>
                     </button>
                 </div>
-            </td>
-        </tr>
-    `).join('');
+            </div>
+            ${line2}
+        </div>
+    `;
 }
 
 function renderPagination(currentPage, totalPages) {
@@ -280,9 +340,10 @@ function filterTasks(searchTerm) {
 }
 
 // A7 / Task 12：这两张表原先只映射 completed / failed / cancelled 三态。
-// 但 /api/history_all 不带 status 过滤（routes/api.py 的四路 UNION ALL 没有
-// status 谓词），pending / running / paused 的任务照样进历史表。落在表外的
-// 状态会走 `|| status` 兜底，把后端的**英文字面量**直接渲染进中文界面
+// /api/history_all 默认不带 status 过滤（路由的 ?status= 是可选参数，
+// 状态筛选 chips 选中时才传），pending / running / paused 的任务照样可能
+// 进历史流（例如独立页 /history 全量渲染）。落在表外的状态会走
+// `|| status` 兜底，把后端的**英文字面量**直接渲染进中文界面
 // —— 这就是历史页里 `paused` 与「✓ 已完成」中英混杂的根源。
 // 现在与 tasks.js 的同名函数逐字对齐，覆盖 models/task.py 的 TaskStatus 全部六态。
 // 两份实现仍然重复（没有构建工具、没有 ES module，两个页面不会同时加载），
