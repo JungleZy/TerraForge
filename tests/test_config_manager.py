@@ -209,15 +209,15 @@ def test_validate_config_zoom(config_manager):
 def test_reset_to_defaults(config_manager):
     """Test resetting configuration to defaults"""
     # Modify a config value
-    config_manager.set('concurrent_downloads', '50')
-    assert config_manager.get('concurrent_downloads') == '50'
+    config_manager.set('concurrent_downloads', '20')
+    assert config_manager.get('concurrent_downloads') == '20'
 
     # Reset to defaults
     result = config_manager.reset_to_defaults()
     assert result is True
 
     # Verify value is back to default
-    assert config_manager.get('concurrent_downloads') == '10'
+    assert config_manager.get('concurrent_downloads') == '50'
 
     # Verify all defaults are present (mirrors database.DEFAULT_CONFIGS)
     all_configs = config_manager.get_all()

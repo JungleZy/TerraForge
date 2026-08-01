@@ -197,3 +197,183 @@ def probe_server_entry(entry, proxy_url='', center_lng=106.55, center_lat=29.56,
         f'elapsed={result["elapsed_ms"]}ms'
     )
     return result
+
+
+# --- 并发数「测速推荐」 ---------------------------------------------------------
+#
+# 推荐的依据是实测吞吐阶梯，不是公式：真实链路（代理、运营商、对端限速）
+# 只有实测才知道。逐级（RECOMMEND_LEVELS）在固定时间窗内按该档并发下载
+# 真实瓦片，计完成数得吞吐；_pick_concurrency 取膝点（达到最高吞吐 90%
+# 的最小并发）。CPU 不参与 —— 瓦片下载是纯 IO 等待，核数不决定吞吐。
+
+# 测量阶梯与每档时间窗。三档 × 8s ≈ 半分钟，是按钮点击可接受的等待上限。
+RECOMMEND_LEVELS = (10, 25, 50)
+RECOMMEND_WINDOW_S = 8.0
+# 探测全失败（断网/代理不可用/瓦片 404）时的保守回退值。
+RECOMMEND_FALLBACK = 20
+# 探测瓦片层级与数量：z12 一块约几度见方，以地图中心为锚铺一圈网格，
+# 循环取用（worker 循环消耗，URL 不够时重复请求同一瓦片，CDN 命中即可，
+# 测的是链路吞吐不是内容）。
+_RECOMMEND_ZOOM = 12
+_RECOMMEND_URL_COUNT = 64
+
+
+def _pick_concurrency(samples, knee_ratio=0.9, rise_ratio=1.15):
+    """从阶梯测量结果挑推荐并发。samples: [{concurrency, tiles_per_sec, ok, ...}]。
+
+    返回 (recommended, rising)；全部档位零成功返回 None。
+      - 膝点：tiles_per_sec >= knee_ratio × 最高吞吐 的最小并发档 —— 再加
+        并发收益不到 10% 就不值得多占连接；
+      - rising：膝点就是顶格且顶格比次档仍快 rise_ratio 以上 —— 链路还没
+        吃饱，提示用户可以再手动调高。
+    """
+    valid = [s for s in samples if s.get('ok', 0) > 0]
+    if not valid:
+        return None
+    best = max(s['tiles_per_sec'] for s in valid)
+    knee = min(s['concurrency'] for s in valid
+               if s['tiles_per_sec'] >= knee_ratio * best)
+    top = max(s['concurrency'] for s in valid)
+    rising = False
+    if knee == top and len(valid) > 1:
+        below = max((s['tiles_per_sec'] for s in valid if s['concurrency'] < top),
+                    default=0.0)
+        rising = below > 0 and best >= rise_ratio * below
+    return knee, rising
+
+
+async def _measure_throughput(urls, concurrency, proxy_url, window_s, fetch=None):
+    """在 window_s 时间窗内以 concurrency 条通道循环下载 urls，计完成数。
+
+    fetch 可注入（测试用假 fetch）：async (url, proxy_url, timeout_s) -> bytes，
+    抛异常即失败。默认 fetch 建带连接池的 session（与下载引擎同款的
+    limit/limit_per_host=concurrency、trust_env），测出的才是引擎真实能
+    跑到的吞吐。窗口一到取消所有在途请求，只计完成的。
+    """
+    result = {'concurrency': concurrency, 'ok': 0, 'attempted': 0,
+              'seconds': 0.0, 'tiles_per_sec': 0.0}
+
+    session = None
+    if fetch is None:
+        connector = aiohttp.TCPConnector(limit=concurrency, limit_per_host=concurrency)
+        session = aiohttp.ClientSession(connector=connector, trust_env=True)
+
+        async def _default_fetch(url, proxy, timeout_s):
+            async with session.get(
+                url, proxy=proxy or None,
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
+            ) as resp:
+                if resp.status != 200:
+                    raise aiohttp.ClientResponseError(
+                        resp.request_info, resp.history, status=resp.status)
+                return await resp.read()
+        fetch = _default_fetch
+
+    stop = False
+
+    async def worker():
+        nonlocal stop
+        while not stop:
+            for url in urls:
+                if stop:
+                    return
+                result['attempted'] += 1
+                try:
+                    await fetch(url, proxy_url, window_s + 10)
+                    result['ok'] += 1
+                except Exception:
+                    pass  # 单请求失败不算测量失败，窗口内继续
+                # 同步返回/立即抛错的 fetch(测试替身、连不上的秒失败)不给
+                # 事件循环让路会把 asyncio.sleep(window_s) 饿死成忙等 ——
+                # 每轮强制让出一次。
+                await asyncio.sleep(0)
+
+    started = time.monotonic()
+    workers = [asyncio.ensure_future(worker()) for _ in range(concurrency)]
+    try:
+        await asyncio.sleep(window_s)
+    finally:
+        stop = True
+        for w in workers:
+            w.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        if session is not None:
+            await session.close()
+    elapsed = time.monotonic() - started
+    result['seconds'] = round(elapsed, 2)
+    result['tiles_per_sec'] = round(result['ok'] / elapsed, 2) if elapsed > 0 else 0.0
+    return result
+
+
+def _recommend_probe_urls(servers, style, center_lng, center_lat):
+    """以地图中心为锚，在 _RECOMMEND_ZOOM 层铺一圈瓦片 URL（服务器逐条轮换）。"""
+    cx, cy = _tile_xy(center_lng, center_lat, _RECOMMEND_ZOOM)
+    n = 2 ** _RECOMMEND_ZOOM
+    half = int(math.ceil(math.sqrt(_RECOMMEND_URL_COUNT))) // 2
+    urls = []
+    for dx in range(-half, half + 1):
+        for dy in range(-half, half + 1):
+            x, y = cx + dx, cy + dy
+            if not (0 <= x < n and 0 <= y < n):
+                continue
+            template = expand_server_entry(servers[len(urls) % len(servers)], style)
+            urls.append(template
+                        .replace('{z}', str(_RECOMMEND_ZOOM))
+                        .replace('{x}', str(x))
+                        .replace('{y}', str(y)))
+    return urls
+
+
+def recommend_concurrency(servers, style='s', proxy_url='',
+                          center_lng=106.55, center_lat=29.56,
+                          measure=None):
+    """实测吞吐阶梯，给出 concurrent_downloads 推荐值。返回可 JSON 化 dict。
+
+    与 probe_server_entry 同款约定：sync 包装（内部 asyncio.run），任何
+    故障都归一成 fallback 结果而不是抛给路由。measure 可注入（测试用
+    假测量覆盖各档吞吐形态，不需要真实网络）。
+    """
+    measure = measure or _measure_throughput
+    result = {'recommended': RECOMMEND_FALLBACK, 'fallback': True,
+              'rising': False, 'note': '', 'samples': []}
+    try:
+        urls = _recommend_probe_urls(servers, style, center_lng, center_lat)
+        if not urls:
+            result['note'] = '瓦片服务器列表为空，无法测速，给出保守值'
+            return result
+        if should_bypass_proxy(urls[0]):
+            proxy_url = ''
+
+        async def _run():
+            samples = []
+            for level in RECOMMEND_LEVELS:
+                samples.append(await measure(urls, level, proxy_url,
+                                             RECOMMEND_WINDOW_S))
+            return samples
+
+        samples = asyncio.run(_run())
+        result['samples'] = samples
+
+        picked = _pick_concurrency(samples)
+        if picked is None:
+            result['note'] = ('测速样本全部失败（网络/代理不可用或瓦片不存在），'
+                              f'给出保守值 {RECOMMEND_FALLBACK}')
+            return result
+
+        recommended, rising = picked
+        recommended = max(1, min(100, recommended))  # 配置校验域 1-100
+        best = max(s['tiles_per_sec'] for s in samples if s['ok'] > 0)
+        result.update(recommended=recommended, fallback=False, rising=rising)
+        result['note'] = (
+            f'实测最高 {best:.1f} 块/秒；推荐并发 {recommended}'
+            + ('，且顶格仍在上升，可再手动调高试试' if rising else '（膝点：再加并发收益不足 10%）')
+        )
+        logger.info(
+            f'Concurrency recommendation: {recommended} '
+            f'(samples={[(s["concurrency"], s["tiles_per_sec"]) for s in samples]})'
+        )
+        return result
+    except Exception as e:
+        logger.warning(f'Concurrency recommendation failed ({e!r}), fallback')
+        result['note'] = f'测速出错（{type(e).__name__}），给出保守值 {RECOMMEND_FALLBACK}'
+        return result

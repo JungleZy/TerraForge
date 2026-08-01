@@ -1166,6 +1166,12 @@ class TaskManager:
                 # cache 命中清单互补,替代旧的「下载后第二遍全量 stat 枚举」。
                 logger.info(f"Task {task_id}: Tile download completed")
 
+                # 下载是瓦片 cache 唯一增长点,顺势按 cache_max_size_mb 做 LRU
+                # 清理(best-effort,内有新文件护栏,不会清到本任务刚下的瓦片;
+                # 全量 stat 是秒级活,放线程里不阻塞事件循环)。
+                from services.task_cleanup import enforce_cache_size_limit
+                await asyncio.to_thread(enforce_cache_size_limit)
+
             # Check stop flag before stitching
             if self._is_stop_requested(task_id, stop_flag):
                 logger.info(f"Task {task_id}: Stop flag detected before stitching")

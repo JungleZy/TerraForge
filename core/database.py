@@ -45,7 +45,7 @@ DEFAULT_CONFIGS = [
     ('default_zoom_min', '10'),
     ('default_zoom_max', '15'),
     ('default_output_format', 'both'),
-    ('concurrent_downloads', '10'),
+    ('concurrent_downloads', '50'),
     ('request_timeout', '30'),
     ('max_retries', '3'),
     ('proxy_url', ''),

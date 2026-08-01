@@ -86,8 +86,12 @@
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="concurrent_downloads" class="form-label">并发下载数</label>
-                            <input type="number" class="form-control" id="concurrent_downloads"
-                                   value="{{ config.concurrent_downloads }}" min="1" max="100">
+                            <div class="input-group">
+                                <input type="number" class="form-control" id="concurrent_downloads"
+                                       value="{{ config.concurrent_downloads }}" min="1" max="100">
+                                <button type="button" class="btn btn-outline-primary" id="concurrencyRecommend">测速推荐</button>
+                            </div>
+                            <small class="form-text d-block mt-1" id="concurrencyRecommendHint">按当前网络/代理实测瓦片吞吐推荐（约 30 秒）；只填入数值，保存后生效。</small>
                         </div>
 
                         <div class="col-md-4 mb-3">
@@ -159,6 +163,7 @@
                         <label for="cache_max_size_mb" class="form-label">缓存最大大小 (MB)</label>
                         <input type="number" class="form-control" id="cache_max_size_mb"
                                value="{{ config.cache_max_size_mb }}" min="0">
+                        <small class="form-text d-block mt-1">超过上限时自动清理最久未用的瓦片；0 表示不限制。</small>
                     </div>
                 </div>
 

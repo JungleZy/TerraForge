@@ -2,6 +2,40 @@ function initConfig() {
     document.getElementById('configForm').addEventListener('submit', saveConfig);
     initTileServerEditor();
     initThemeSwitcher();
+    initConcurrencyRecommend();
+}
+
+// --- 并发下载数：测速推荐 -----------------------------------------------------
+// 后端按已保存的 tile_servers / proxy 做真实瓦片阶梯测速（约 30 秒），
+// 返回膝点并发。推荐值只填进输入框 —— 是否落库仍由「保存配置」决定，
+// 与配置页其它字段的语义一致。
+
+function initConcurrencyRecommend() {
+    const btn = document.getElementById('concurrencyRecommend');
+    const hint = document.getElementById('concurrencyRecommendHint');
+    if (!btn || !hint) return;
+
+    btn.addEventListener('click', async function () {
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '测速中…';
+        hint.textContent = '正在按当前网络环境实测吞吐，约 30 秒…';
+        try {
+            const response = await fetch('/api/config/recommend_concurrency', { method: 'POST' });
+            const data = await response.json();
+            if (response.ok && data.recommended) {
+                document.getElementById('concurrent_downloads').value = data.recommended;
+                hint.textContent = (data.note || ('推荐 ' + data.recommended)) + '（已填入，保存后生效）';
+            } else {
+                hint.textContent = '推荐失败：' + (data.error || ('HTTP ' + response.status));
+            }
+        } catch (error) {
+            hint.textContent = '推荐失败：' + error.message;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    });
 }
 
 // --- 外观：主题分段开关 -------------------------------------------------------

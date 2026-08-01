@@ -860,6 +860,39 @@ def reset_config():
         return jsonify({'error': 'Failed to reset config'}), 500
 
 
+@api_bp.route('/config/recommend_concurrency', methods=['POST'])
+def recommend_concurrency_route():
+    """按当前网络环境实测吞吐，推荐 concurrent_downloads（配置页「测速推荐」）。
+
+    用已保存的 tile_servers / proxy_url / 地图中心做真实瓦片阶梯测速
+    （约 30 秒）。测速流程自身保证不抛（全失败回退保守值），这里只兜
+    意料之外的异常，同样 200 + fallback —— 按钮前端按 fallback 展示。
+    """
+    from services.tile_url_probe import (
+        RECOMMEND_FALLBACK, parse_server_list, recommend_concurrency,
+    )
+
+    def _float(key, default):
+        try:
+            return float(config_manager.get(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    try:
+        result = recommend_concurrency(
+            parse_server_list(config_manager.get('tile_servers', '') or ''),
+            style=config_manager.get('default_style', 's') or 's',
+            proxy_url=config_manager.get('proxy_url', '') or '',
+            center_lng=_float('map_center_lng', 106.55),
+            center_lat=_float('map_center_lat', 29.56),
+        )
+    except Exception as e:
+        logger.warning(f'recommend_concurrency route failed: {e!r}')
+        result = {'recommended': RECOMMEND_FALLBACK, 'fallback': True,
+                  'rising': False, 'note': '测速流程异常，给出保守值', 'samples': []}
+    return jsonify(result)
+
+
 @api_bp.route('/config/verify_tile_url', methods=['POST'])
 def verify_tile_url():
     """验证单个瓦片服务器条目的通联（配置页每行「验证」按钮）。

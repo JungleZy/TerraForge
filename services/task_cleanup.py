@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from core.config import Config
@@ -34,6 +35,11 @@ _PART_GLOB = "*.part.*"
 # 限深是为了不随 cache 增长无界遍历 —— 瓦片文件本身在叶子层,扫目录名
 # 不需要再往下走。
 _CACHE_PART_MAX_DEPTH = 4
+
+# enforce_cache_size_limit 跳过比这个新的文件:任务下载完瓦片到拼接读完
+# 之间有一个窗口,刚落盘的瓦片若被 LRU 清掉,拼接会报 "Tile not found";
+# 一小时的宽限对「最久未用先清」的语义没有实质影响。
+_EVICTION_MIN_AGE_SECONDS = 3600
 
 
 def resolve_stored_output_dir(stored_path) -> Path:
@@ -178,3 +184,111 @@ def sweep_startup_residue() -> None:
             f"stitch tmp={removed['stitch']}, contour warp tmp={removed['warp']}, "
             f"cache .part={removed['part']}"
         )
+
+
+def _iter_tile_cache_files(cache_root: Path):
+    """产出瓦片 cache 里的全部文件（scandir 迭代，不递归进 dem 目录）。
+
+    dem granule 有独立生命周期（dem_cache_enabled），重下要过 Earthdata
+    登录，不归瓦片 cache 的 LRU 清理管；其余子目录（各 style 的
+    {z}/{x}/{y}.png）都是瓦片 cache。
+    """
+    try:
+        with os.scandir(cache_root) as it:
+            top = list(it)
+    except OSError:
+        return
+    stack = [e.path for e in top
+             if e.name != 'dem' and e.is_dir(follow_symlinks=False)]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    yield entry
+            except OSError:
+                continue
+
+
+def enforce_cache_size_limit(cache_root=None) -> dict:
+    """按 cache_max_size_mb 配置对瓦片 cache 做 LRU 清理。
+
+    配置项过去没有任何消费方,cache 可以无限增长(实测 6.1GB vs 配置
+    1000MB)。这里把它补上:全量扫一遍瓦片 cache,总大小超过上限时按
+    「最久未用先清」(max(atime, mtime) 升序)逐个删,直到回到上限内。
+
+    护栏(宁可漏清不可误删):
+      - 0/负值/读配置失败 = 不限制,直接返回(0 绝不能理解成清空 cache);
+      - dem 目录不扫(见 _iter_tile_cache_files);
+      - *.part.* 原子写临时件跳过 —— 那可能是别的任务正在写的瓦片;
+      - 比 _EVICTION_MIN_AGE_SECONDS 新的文件跳过 —— 保护下载完还没
+        拼接读完的在途任务;
+      - 全程 best-effort:单文件失败跳过,整体异常只记日志。
+
+    调用点:任务下载阶段结束后(task_manager,to_thread 里)。下载是
+    cache 唯一增长点,顺势清理即可,不挂启动路径 —— 几十万瓦片的全量
+    stat 是秒级活,不能拖慢启动。
+
+    Returns:
+        统计 dict:scanned_files/total_bytes(含不可清理项的账面总量)、
+        removed_files/removed_bytes。
+    """
+    root = Path(cache_root) if cache_root is not None else Path(Config.CACHE_DIR)
+    stats = {'scanned_files': 0, 'total_bytes': 0,
+             'removed_files': 0, 'removed_bytes': 0}
+    try:
+        from services.config_manager import ConfigManager
+        limit_mb = int(ConfigManager().get('cache_max_size_mb', '1000') or '0')
+    except Exception as e:
+        logger.warning(f"读取 cache_max_size_mb 失败({e!r}),跳过 cache 清理")
+        return stats
+    if limit_mb <= 0:
+        return stats
+    limit_bytes = limit_mb * 1024 * 1024
+
+    now = time.time()
+    candidates = []  # (atime_key, size, path) —— 仅可清理项
+    for entry in _iter_tile_cache_files(root):
+        if fnmatch.fnmatch(entry.name, _PART_GLOB):
+            continue
+        try:
+            st = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        stats['scanned_files'] += 1
+        stats['total_bytes'] += st.st_size
+        key = max(st.st_atime, st.st_mtime)
+        if now - key < _EVICTION_MIN_AGE_SECONDS:
+            continue
+        candidates.append((key, st.st_size, entry.path))
+
+    if stats['total_bytes'] <= limit_bytes:
+        return stats
+
+    candidates.sort()  # 最久未用在前
+    remaining = stats['total_bytes']
+    for _key, size, path in candidates:
+        if remaining <= limit_bytes:
+            break
+        try:
+            os.unlink(path)
+            remaining -= size
+            stats['removed_files'] += 1
+            stats['removed_bytes'] += size
+        except OSError as e:
+            logger.warning(f"cache LRU 清理删除失败 {path}: {e}")
+
+    if stats['removed_files']:
+        logger.info(
+            f"Tile cache LRU cleanup: removed {stats['removed_files']} file(s), "
+            f"{stats['removed_bytes'] / 1024 / 1024:.1f}MB "
+            f"(limit {limit_mb}MB, now ~{remaining / 1024 / 1024:.1f}MB)"
+        )
+    return stats

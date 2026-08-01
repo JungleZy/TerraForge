@@ -47,7 +47,6 @@ def __getattr__(name: str):
 
 # Constants
 WEB_MERCATOR_MAX_LAT = 85.0511  # Maximum valid latitude for Web Mercator projection
-TILE_SERVER_COUNT = 4  # 默认瓦片服务器数（mts0-mts3），仅作 connector limit_per_host 参考
 WARN_TILES_THRESHOLD = 100000  # 单任务瓦片数软阈值,超过只记警告(0.1.4 起放开硬上限)
 MIN_ZOOM = 0  # Minimum zoom level
 MAX_ZOOM = 21  # Maximum zoom level
@@ -540,9 +539,9 @@ class DownloadEngine:
             try:
                 # Rotate server index on each attempt（列表长度来自配置）。
                 # 起点加 (x + y):旧实现首 attempt 全部落在 servers[0],叠加
-                # connector 的 limit_per_host=4,所有瓦片的前 4 个并发把
-                # 第一台服务器打满、其余三台闲置 —— 首尝试按瓦片坐标天然
-                # 分散到各台服务器,重试仍按 attempt 轮换。
+                # 较小的 limit_per_host,所有瓦片的前几个并发把第一台服务器
+                # 打满、其余三台闲置 —— 首尝试按瓦片坐标天然分散到各台服务器,
+                # 重试仍按 attempt 轮换。
                 servers = self._tile_servers()
                 server_index = (tile.x + tile.y + attempt) % len(servers)
                 url = self.get_tile_url(tile.x, tile.y, tile.zoom, style, server_index)
@@ -769,8 +768,12 @@ class DownloadEngine:
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(concurrent_downloads)
 
-        # Create aiohttp session with connection pooling
-        connector = aiohttp.TCPConnector(limit=concurrent_downloads, limit_per_host=TILE_SERVER_COUNT)
+        # Create aiohttp session with connection pooling。
+        # limit_per_host 必须跟着并发走:旧版恒为 4(服务器数),4 台服务器
+        # 最多 16 条连接,concurrent_downloads 调到 20+ 也被悄悄压死(实测
+        # 吞吐差一倍以上);瓦片按 (x+y) 坐标天然轮换服务器(见 download_tile),
+        # per-host 不需要再承担均衡职责,与 dem_download_engine 口径一致。
+        connector = aiohttp.TCPConnector(limit=concurrent_downloads, limit_per_host=concurrent_downloads)
 
         results: List[Dict[str, Any]] = []
 
