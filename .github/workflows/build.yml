@@ -81,6 +81,9 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install nuitka
+        # Python 3.12 的托管环境不再自带 setuptools，而 GDAL 走
+        # --no-build-isolation 编译时需要它提供 setuptools.build_meta 后端。
+        pip install setuptools wheel
         # GDAL sdist 编译时必须能 import numpy，否则编不出 _gdal_array：
         # 先装 numpy，再关闭 build isolation 编译 GDAL。
         pip install numpy==1.26.4
