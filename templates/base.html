@@ -5,6 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}TerraForge{% endblock %}</title>
 
+    {# 主题引导脚本：必须在**所有 CSS 链接之前**同步执行 —— 首帧绘制前就把
+       data-bs-theme 定好，否则亮色用户会先看到一帧暗色再跳变。
+       localStorage `tf-theme` ∈ {dark, light, system}（缺省 dark）；
+       system 按系统 prefers-color-scheme 求值。运行期的切换/跟随实现
+       在 static/js/theme.js（window.TerraTheme），值口径必须与这里一致。
+       html 标签上的 data-bs-theme="dark" 字面量是无 JS 时的 SSR 默认值，
+       tests/test_css_contract.py 钉住了它，不要动。
+       ⚠️ 这段注释里不能出现 html 的尖括号写法：tests 用 HTMLParser 直接
+       扫模板源码（不剥 Jinja 注释），写成标签形态会被当成第二个
+       html 开始标签，钉主题的断言立刻变红。 #}
+    <script>
+        (function () {
+            var mode = 'dark';
+            try { mode = localStorage.getItem('tf-theme') || 'dark'; } catch (e) {}
+            if (mode !== 'dark' && mode !== 'light' && mode !== 'system') mode = 'dark';
+            document.documentElement.dataset.bsTheme = (mode === 'system')
+                ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+                : mode;
+        })();
+    </script>
+
     {# 全部第三方前端资源走本地 static/vendor/，不依赖任何 CDN。
        这是 PyInstaller 打包的离线桌面工具，断网必须能用。
        三条硬规矩，改之前先读：
@@ -49,9 +70,109 @@
         </footer>
     </div>
 
+    <!-- 任务详情模态框（history.js viewTaskDetails 打开；首页任务面板与
+         独立页 /history 共用这一份）。必须留在 <body> 直下、.workbench 之外：
+         它曾经随 _history_content.html 被 include 进首页任务面板
+         （.workbench-panel），而面板永远带非 none 的 transform（滑入/滑出），
+         transform 让面板成为 fixed 后代的包含块并自建层叠上下文
+         （z-index 1401 < body 级 .modal-backdrop 1450）——遮罩会整个盖住
+         详情弹窗（点不动、被压暗），弹窗还相对面板布局被裁出视口。
+         tests/test_records_panel_structure.py 的
+         test_task_detail_modal_is_not_trapped_inside_workbench_panel 钉住。 -->
+    <div class="modal fade" id="taskDetailModal" tabindex="-1" aria-labelledby="taskDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="taskDetailModalLabel">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="16" x2="12" y2="12"></line>
+                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                        </svg>
+                        任务详情
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="detail-grid">
+                      <div class="detail-item"><span class="detail-k">任务ID</span><span class="detail-v" id="detailId"></span></div>
+                      <div class="detail-item"><span class="detail-k">任务名称</span><span class="detail-v" id="detailName"></span></div>
+                      <div class="detail-item"><span class="detail-k">状态</span><span class="detail-v" id="detailStatus"></span></div>
+                      <div class="detail-item"><span class="detail-k">地图样式</span><span class="detail-v" id="detailStyle"></span></div>
+                      <div class="detail-item"><span class="detail-k">输出格式</span><span class="detail-v" id="detailFormat"></span></div>
+                      <div class="detail-item"><span class="detail-k">缩放级别</span><span class="detail-v" id="detailZoom"></span></div>
+                      <div class="detail-item"><span class="detail-k">总数量</span><span class="detail-v" id="detailTotal"></span></div>
+                      <div class="detail-item"><span class="detail-k">已下载</span><span class="detail-v" id="detailDownloaded"></span></div>
+                      <div class="detail-item"><span class="detail-k">失败</span><span class="detail-v" id="detailFailed"></span></div>
+                    </div>
+                    <div style="margin-top:1rem;"><span class="detail-k">进度</span> <span id="detailProgress"></span></div>
+                    <hr style="border-color: var(--color-border);">
+                    <div class="row">
+                        <div class="col-12">
+                            <p class="detail-k" style="margin-bottom: 0.5rem;">区域范围</p>
+                            <div class="detail-grid">
+                                <div class="detail-item"><span class="detail-k">北纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailNorth"></span></div>
+                                <div class="detail-item"><span class="detail-k">南纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailSouth"></span></div>
+                                <div class="detail-item"><span class="detail-k">东经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailEast"></span></div>
+                                <div class="detail-item"><span class="detail-k">西经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailWest"></span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <hr style="border-color: var(--color-border);">
+                    <div class="row">
+                        <div class="col-12">
+                            <div class="detail-item"><span class="detail-k">输出路径</span><span class="detail-v"><code id="detailPath"></code></span></div>
+                            <div class="detail-grid" style="margin-top: 0.5rem;">
+                                <div class="detail-item"><span class="detail-k">创建时间</span><span class="detail-v" id="detailCreated"></span></div>
+                                <div class="detail-item"><span class="detail-k">开始时间</span><span class="detail-v" id="detailStarted"></span></div>
+                                <div class="detail-item"><span class="detail-k">完成时间</span><span class="detail-v" id="detailCompleted"></span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row" id="detailErrorRow" style="display: none;">
+                        <div class="col-12">
+                            <hr style="border-color: var(--color-border);">
+                            <p><strong>错误信息:</strong></p>
+                            <div class="alert alert-danger" id="detailError"></div>
+                        </div>
+                    </div>
+
+                    <div class="row" id="detailTerrainRow" style="display: none;">
+                        <div class="col-12">
+                            <hr style="border-color: var(--color-border);">
+                            <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
+                                <div>
+                                    <p style="margin-bottom: 0.25rem;"><strong>地形切片:</strong> <span id="detailTerrainStatus"></span></p>
+                                    <div id="detailTerrainInfo" style="font-family: var(--font-mono); font-size: 0.9rem;"></div>
+                                </div>
+                                <div class="btn-group btn-group-sm" style="flex: 0 0 auto;">
+                                    <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="启动地形切片">启动</button>
+                                    <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="刷新切片状态">刷新</button>
+                                </div>
+                            </div>
+                            <div class="row" id="detailTerrainErrorRow" style="display: none; margin-top: 0.75rem;">
+                                <div class="col-12">
+                                    <div class="alert alert-danger" id="detailTerrainError" style="margin: 0;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bootstrap 5.3 JS Bundle（含 Popper） -->
     <script src="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.bundle.min.js') }}"></script>
 
+    {# 地图/实时推送的重型 vendor(Cesium 5.7MB + socket.io):只有首页和
+       历史页用得到,/config 独立页覆盖本 block 为空,白付的解析/下载全省。
+       url_for 必须保持字符串字面量 —— tests/test_css_contract.py 按正则
+       抠模板源码对账 vendor 清单与引用数。 #}
+    {% block vendor_js %}
     <!-- CesiumJS 1.143.0（本地 vendor，断网可用；CESIUM_BASE_URL 必须在
          Cesium.js 之前设好，workers/assets 都按它解析） -->
     <script>window.CESIUM_BASE_URL = "{{ url_for('static', filename='vendor/cesium/1.143.0') }}/";</script>
@@ -61,9 +182,16 @@
          python-socketio 5.9.0 / python-engineio 4.7.1 对应 Socket.IO 协议 v5 +
          Engine.IO v4，换大版本会直接握不上手。 -->
     <script src="{{ url_for('static', filename='vendor/socket.io/4.5.4/socket.io.min.js') }}"></script>
+    {% endblock %}
 
     <!-- 全局 UI 组件：自定义 Toast / Confirm（替代原生 alert/confirm） -->
     <script src="{{ url_for('static', filename='js/ui.js') }}"></script>
+
+    <!-- 全站主题（dark / light / system）：<head> 的内联引导脚本已同步定好
+         首帧主题；这里挂上运行期实现 —— 配置面板「外观」组的切换、
+         system 模式下对系统配色的实时跟随。init() 幂等。 -->
+    <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
+    <script>TerraTheme.init();</script>
 
     {% block extra_js %}{% endblock %}
 </body>

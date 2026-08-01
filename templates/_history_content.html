@@ -1,6 +1,6 @@
-{# 记录面板/历史页共享内容。
+{# 任务面板/历史页共享内容。
    records_panel（由 index.html 在 include 前 set）只决定卡片顺序：
-     首页记录面板列表是主体，统计卡 → 任务列表 → 历史区域地图；
+     首页任务面板列表是主体，统计卡 → 任务列表 → 历史区域地图；
      独立页 /history 布局不动，统计卡 → 历史区域地图 → 任务列表。
    （2026-08 单一时间流定稿前它还控制 #activeTasksBody 实时区——
    活动/失败/历史三分区已废，活动任务就在时间流里，那个容器随之删除。）
@@ -96,10 +96,9 @@
             {% endif %}
         </div>
     </div>
-</div>
 
 {# 任务详情模态框不在这里——在 base.html 的 <body> 直下。
-   它曾经随本 partial 一起被 include 进首页记录面板（.workbench-panel），
+   它曾经随本 partial 一起被 include 进首页任务面板（.workbench-panel），
    但面板永远带非 none 的 transform（滑入/滑出），transform 让面板成为
    fixed 后代的包含块并自建层叠上下文（z-index 1401 < body 级
    .modal-backdrop 1450）：遮罩会整个盖住详情弹窗，弹窗还会相对面板

@@ -114,6 +114,181 @@
     /* 卡片内边距与表单字段纵向间距。改前 .card-body 16px、.mb-3 12px。 */
     --pad-card:  10px;
     --gap-field: 8px;
+
+    /* ---- 组件级颜色令牌（亮/暗双主题，2026-08 明亮模式新增） --------------
+       下列令牌来自组件规则里原先的硬编码字面量（白色 hover 叠层、面板遮罩、
+       徽章描边、棋盘格、splash 辉光等）。**原值逐字保留为暗色默认值**，
+       亮色覆盖集中在下方 `:root[data-bs-theme="light"]` 块。组件规则一律
+       引用令牌、不再写字面量 —— 写死的 rgba(255,255,255,...) 叠层 /
+       rgba(4,6,10,...) 遮罩在亮底下就是一块白斑 / 一块化不开的黑。 */
+    --color-row-hover:        rgba(255,255,255,0.03);   /* .history-table 行 hover */
+    --color-control-hover:    rgba(255,255,255,0.12);   /* .map-panel-btn hover */
+    --color-btn-ghost-hover:  rgba(255,255,255,0.08);   /* .btn-secondary / .btn-outline-secondary hover */
+    --color-btn-ghost-active: rgba(255,255,255,0.16);   /* 同上的 active */
+    --color-badge-neutral-bg: rgba(255,255,255,0.06);   /* pending / bg-secondary / bg-dark 徽章底 */
+
+    /* 状态徽章的描边（与各自 --color-*-bg 同色系、更高 alpha） */
+    --color-info-border:    rgba(96,165,250,0.30);
+    --color-success-border: rgba(16,185,129,0.30);
+    --color-danger-border:  rgba(239,68,68,0.30);
+    --color-warning-border: rgba(245,158,11,0.30);
+
+    /* .alert-* 的底色（注意 alert-info 历史上用的是调色板外的 #3b82f6 蓝，
+       暗色默认值保持现状不动；亮色档已归并到 info 色系） */
+    --color-alert-info-bg:    rgba(59,130,246,0.1);
+    --color-alert-success-bg: rgba(16,185,129,0.1);
+    --color-alert-warning-bg: rgba(245,158,11,0.1);
+    --color-alert-danger-bg:  rgba(239,68,68,0.1);
+
+    /* 遮罩与浮层表面 */
+    --color-backdrop:         rgba(4,6,10,0.55);      /* .panel-backdrop */
+    --color-backdrop-strong:  rgba(4,6,10,0.62);      /* .app-confirm-overlay */
+    --color-overlay-surface:  rgba(21,23,28,0.92);    /* 地图浮层（.task-preview-chip / .bounds-overlay） */
+
+    /* 透明棋盘格（配色样式预览图）：暗格 / 亮格 */
+    --color-checker-a: #3a3f47;
+    --color-checker-b: #26292f;
+
+    /* .btn-outline-primary:disabled 的专用禁用墨（理由见该规则注释） */
+    --color-accent-disabled-ink: #828a94;
+    /* confirm 危险确认按钮的 hover 档（red-500，比 --color-danger 深一档） */
+    --color-danger-deep: #ef4444;
+    /* .modal-bounds-summary 的描边（accent 同色系） */
+    --color-accent-border: rgba(56,189,248,0.25);
+
+    /* splash 首屏的品牌色辉光（accent 同色系不同 alpha 档） */
+    --color-splash-grid:     rgba(56,189,248,0.06);
+    --color-splash-scan:     rgba(56,189,248,0.09);
+    --color-splash-glow:     rgba(56,189,248,0.45);
+    --color-splash-bar-glow: rgba(56,189,248,0.5);
+
+    /* #map 的瓦片滤镜：暗色下把亮瓦片压暗、融入界面。亮色下不需要（见 light 块） */
+    --map-filter: brightness(0.9) contrast(1.1);
+    /* Bootstrap 的 .btn-close 图标本身是黑色 SVG，暗色下要反白；亮色下用原图 */
+    --btn-close-filter: invert(1);
+}
+
+/* ==========================================================================
+   亮色主题（明亮模式）
+
+   开关机制：<html> 的 data-bs-theme 属性（dark / light），由 base.html <head>
+   的内联引导脚本在首帧绘制前同步设置（偏好存 localStorage `tf-theme`：
+   dark / light / system，缺省 dark；system 跟随
+   prefers-color-scheme 并监听其 change）。Bootstrap 5.3 原生响应该属性，
+   本块覆盖 :root 里的同名令牌，让全站自定义组件一起翻转。:root 保持暗色
+   默认值（SSR / 无 JS 回退），本块一行不改它。
+
+   ⚠️ 本块**只许放自定义属性声明**，不许写组件规则：
+   tests/test_css_contract.py 的三个层叠模型（按钮 / 文字 / div 背景）会对
+   style.css 里声明了实质属性的规则做选择器求值，带 [data-bs-theme=...]
+   属性选择器的组件规则会把模型顶成「已失效」。组件的主题差异必须全部
+   通过本块的令牌翻转表达。选择器写成 `:root[data-bs-theme="light"]` 而不是
+   裸属性选择器，正是按钮模型能判定「:root 只可能是 <html>，永远不是按钮」
+   （确定不命中）的前提。
+
+   配色基准：专业 GIS 工具的亮色档（QGIS / VS Code light）。文字令牌对三层
+   背景的实测对比度全部 ≥ WCAG AA（正文 4.5:1，图形 3:1），数字附在各档
+   注释里。状态色系与暗色同一条档位规则：暗色是 Tailwind 400 基色 -> 300
+   hover（提亮），亮色是 700 基色 -> 800 hover（压暗）；亮底上白墨可读
+   （≥4.5:1）的阈值在 600–700 之间，取 700 让填充按钮（--color-on-accent
+   白墨）与状态文字（.text-danger / .task-error 等）同时过线。
+   ========================================================================== */
+:root[data-bs-theme="light"] {
+    /* 背景三层：页面 / 卡片与面板 / 控件与轨道 */
+    --color-bg-primary:   #eef0f3;
+    --color-bg-secondary: #ffffff;
+    --color-bg-tertiary:  #f1f3f5;
+
+    /* 边框：亮底上换成墨色的透明叠层（暗色是白色叠层） */
+    --color-border:        rgba(15,23,42,0.10);
+    --color-border-strong: rgba(15,23,42,0.18);
+
+    /* 文字：primary 对三层背景实测 14.2 / 16.2 / 14.6:1，
+       secondary 6.6 / 7.5 / 6.8:1（全部 ≥ 4.5:1） */
+    --color-text-primary:   #1c2128;
+    --color-text-secondary: #4d5562;
+    /* ⚠️ 与暗色同一刻意安排：--color-text-muted **不是文字色**。亮色下它对
+       白底实测约 2.9:1，同样低于 WCAG AA 正文要求的 4.5:1 —— 拿它写字等于
+       把字写成看不见。文字最暗只能到 --color-text-secondary；本变量只用于
+       图形元素（滚动条滑块 hover 等），那类元素的下限是 3:1。 */
+    --color-text-muted:     #8f959f;
+
+    /* 强调色：sky 800/900/700。亮色里 hover 是**压暗**（与暗色的提亮相反，
+       方向不同、档位规则相同）。accent-strong 是填充按钮基态（白墨 5.93:1），
+       accent 是 hover 与链接/点缀色（白墨 7.56:1、白底文字 7.56:1），
+       accent-hover 白底文字 9.46:1。 */
+    --color-accent:        #075985;
+    --color-accent-hover:  #0c4a6e;
+    --color-accent-strong: #0369a1;
+    --color-accent-muted:  rgba(3,105,161,0.10);
+    --color-on-accent:     #ffffff;
+
+    /* 状态色：700 基色（白墨与白底文字同时 ≥4.5:1，见块头说明） */
+    --color-success: #047857;   /* 白墨 5.48 / 白底文字 5.48 */
+    --color-danger:  #b91c1c;   /* 白墨 6.47 / 白底文字 6.47 */
+    --color-warning: #b45309;   /* 白墨 5.02 / 白底文字 5.02 */
+    --color-info:    #1d4ed8;   /* 白墨 6.70 / 白底文字 6.70 */
+
+    /* hover 档：800，继续压暗 */
+    --color-success-hover: #065f46;   /* 白墨 7.68 */
+    --color-danger-hover:  #991b1b;   /* 白墨 8.56 */
+    --color-warning-hover: #92400e;   /* 白墨 7.09 */
+    --color-info-hover:    #1e40af;   /* 白墨 8.72 */
+
+    /* 中性状态填充：对 --color-bg-tertiary 实测 4.35:1 ≥ 3:1 图形下限 */
+    --color-neutral: #6b7280;
+
+    /* 状态底色 tint：alpha 比暗色低 —— 徽章文字（700 基色）压在 tint 上仍要
+       ≥4.5:1，实测 success 4.90 / danger 5.66 / warning 4.65 / info 5.98 */
+    --color-success-bg: rgba(4,120,87,0.08);
+    --color-danger-bg:  rgba(185,28,28,0.08);
+    --color-warning-bg: rgba(180,83,9,0.06);
+    --color-info-bg:    rgba(29,78,216,0.08);
+
+    /* 阴影：亮底上去掉重黑，换低透明度墨色 */
+    --shadow-sm: 0 1px 2px rgba(15,23,42,0.08);
+    --shadow-md: 0 4px 12px rgba(15,23,42,0.12);
+    --shadow-lg: 0 12px 32px rgba(15,23,42,0.18);
+
+    /* ---- 组件级令牌（暗色默认值的亮色对应） ---- */
+    --color-row-hover:        rgba(15,23,42,0.04);
+    --color-control-hover:    rgba(15,23,42,0.08);
+    --color-btn-ghost-hover:  rgba(15,23,42,0.06);
+    --color-btn-ghost-active: rgba(15,23,42,0.12);
+    --color-badge-neutral-bg: rgba(15,23,42,0.06);
+
+    --color-info-border:    rgba(29,78,216,0.35);
+    --color-success-border: rgba(4,120,87,0.35);
+    --color-danger-border:  rgba(185,28,28,0.35);
+    --color-warning-border: rgba(180,83,9,0.40);
+
+    --color-alert-info-bg:    rgba(29,78,216,0.08);
+    --color-alert-success-bg: rgba(4,120,87,0.08);
+    --color-alert-warning-bg: rgba(180,83,9,0.10);
+    --color-alert-danger-bg:  rgba(185,28,28,0.08);
+
+    /* 亮色的遮罩仍然压暗（让面板/弹窗浮出来），但比暗色浅 */
+    --color-backdrop:         rgba(15,23,42,0.35);
+    --color-backdrop-strong:  rgba(15,23,42,0.45);
+    --color-overlay-surface:  rgba(255,255,255,0.94);
+
+    --color-checker-a: #d5d9df;
+    --color-checker-b: #f4f5f7;
+
+    /* 禁用墨：比启用墨（--color-accent #075985）明显浅，对禁用面
+       --color-bg-tertiary 仍有 5.80:1（≥ 4.5:1，不可点 != 看不清） */
+    --color-accent-disabled-ink: #52606e;
+    --color-danger-deep: #991b1b;
+    --color-accent-border: rgba(3,105,161,0.35);
+
+    --color-splash-grid:     rgba(3,105,161,0.07);
+    --color-splash-scan:     rgba(3,105,161,0.10);
+    --color-splash-glow:     rgba(3,105,161,0.35);
+    --color-splash-bar-glow: rgba(3,105,161,0.40);
+
+    /* 亮色下瓦片不再压暗；btn-close 用 Bootstrap 原生的黑图标（不反色） */
+    --map-filter: none;
+    --btn-close-filter: none;
 }
 
 /* Global Styles */
@@ -253,6 +428,7 @@ body {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    margin-left: 8px;
     padding: 2px 10px;
     border: 1px solid var(--color-border);
     border-radius: 999px;
@@ -280,13 +456,16 @@ body {
     position: relative;
 }
 
-/* Bottom status bar（28px，等宽字体读数，专业 GIS 的标尺位） */
+/* Bottom status bar（28px，等宽字体读数，专业 GIS 的标尺位）。
+   项间用分隔线分组（gap 归 0，padding 进项内），可读性比纯空白好。
+   注意：别用 `.a + .a` 兄弟选择器给首项去边线——test_css_contract 的
+   按钮层叠模型只支持后代组合符，兄弟选择器会让它整体失效。 */
 .workbench-statusbar {
     flex: 0 0 28px;
     display: flex;
     align-items: center;
-    gap: 18px;
-    padding: 0 12px;
+    gap: 0;
+    padding: 0;
     background: var(--color-bg-secondary);
     border-top: 1px solid var(--color-border);
     font-family: var(--font-mono);
@@ -296,9 +475,25 @@ body {
     overflow: hidden;
 }
 
+.statusbar-item {
+    padding: 0 10px;
+    border-left: 1px solid var(--color-border);
+}
+
 .statusbar-item b {
     color: var(--color-text-primary);
     font-weight: 500;
+}
+
+/* 点击可复制的读数项（坐标 / 选区四至）：hover 底色提示可点 */
+.statusbar-copy {
+    cursor: pointer;
+    border-radius: 0;
+    transition: background-color 0.15s ease;
+}
+
+.statusbar-copy:hover {
+    background: var(--color-bg-tertiary);
 }
 
 /* 极窄屏状态栏隐藏最后一项（时钟），给读数让位 */
@@ -401,7 +596,7 @@ body {
 }
 
 .map-panel-btn:hover {
-    background-color: rgba(255, 255, 255, 0.12);   /* 与 .leaflet-bar a:hover 一致 */
+    background-color: var(--color-control-hover);   /* 与 .leaflet-bar a:hover 一致 */
     color: var(--color-text-primary);
 }
 
@@ -467,7 +662,7 @@ body {
     margin-top: 8px;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
-    background: repeating-conic-gradient(#3a3f47 0% 25%, #26292f 0% 50%) 0 0 / 12px 12px;
+    background: repeating-conic-gradient(var(--color-checker-a) 0% 25%, var(--color-checker-b) 0% 50%) 0 0 / 12px 12px;
 }
 
 /* 历史任务预览提示条（地图右下、状态栏上方）：当前在主视图叠加的是哪个任务 */
@@ -480,7 +675,7 @@ body {
     align-items: center;
     gap: 10px;
     padding: 6px 10px;
-    background: rgba(21, 23, 28, 0.92);
+    background: var(--color-overlay-surface);
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
@@ -529,7 +724,7 @@ body {
     z-index: 1000;
     max-width: min(420px, calc(100% - 60px));
     padding: 6px 10px;
-    background: rgba(21, 23, 28, 0.92);
+    background: var(--color-overlay-surface);
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
@@ -557,7 +752,7 @@ body {
     left: 0;
     right: 0;
     z-index: 1400;
-    background: rgba(4, 6, 10, 0.55);
+    background: var(--color-backdrop);
     backdrop-filter: blur(2px);
     opacity: 0;
     transition: opacity 0.2s ease;
@@ -634,7 +829,7 @@ body {
     height: 100%;
     width: 100%;
     border-radius: 0;
-    filter: brightness(0.9) contrast(1.1);
+    filter: var(--map-filter);
 }
 
 .history-map {
@@ -938,7 +1133,7 @@ body {
 .badge.bg-info {
     background: var(--color-info-bg) !important;
     color: var(--color-info) !important;
-    border: 1px solid rgba(96, 165, 250, 0.30);
+    border: 1px solid var(--color-info-border);
     box-shadow: none !important;
 }
 
@@ -946,7 +1141,7 @@ body {
 .badge.bg-success {
     background: var(--color-success-bg) !important;
     color: var(--color-success) !important;
-    border: 1px solid rgba(16, 185, 129, 0.30);
+    border: 1px solid var(--color-success-border);
     box-shadow: none !important;
 }
 
@@ -954,7 +1149,7 @@ body {
 .badge.bg-danger {
     background: var(--color-danger-bg) !important;
     color: var(--color-danger) !important;
-    border: 1px solid rgba(239, 68, 68, 0.30);
+    border: 1px solid var(--color-danger-border);
     box-shadow: none !important;
 }
 
@@ -962,14 +1157,14 @@ body {
 .badge.bg-warning {
     background: var(--color-warning-bg) !important;
     color: var(--color-warning) !important;
-    border: 1px solid rgba(245, 158, 11, 0.30);
+    border: 1px solid var(--color-warning-border);
     box-shadow: none !important;
 }
 
 .status-badge.pending,
 .badge.bg-secondary,
 .badge.bg-dark {
-    background: rgba(255, 255, 255, 0.06) !important;
+    background: var(--color-badge-neutral-bg) !important;
     color: var(--color-text-secondary) !important;
     border: 1px solid var(--color-border-strong);
     box-shadow: none !important;
@@ -1234,7 +1429,7 @@ body {
 }
 
 .history-table tbody tr:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--color-row-hover);
 }
 
 /* Action Button Styles */
@@ -1385,7 +1580,7 @@ body {
 
 .btn-secondary:not(:disabled):hover,
 .btn-outline-secondary:not(:disabled):hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--color-btn-ghost-hover);
     border-color: var(--color-text-secondary);
     color: var(--color-text-primary);
 }
@@ -1491,11 +1686,11 @@ body {
     filter: brightness(0.85);
 }
 
-/* 透明底的两种变体压不出「暗一档」（底本来就是卡片色），改用加深一档的
-   白色叠层 + 提亮边框来表达「按下去了」。 */
+/* 透明底的两种变体压不出「暗一档」（底本来就是卡片色），改用更深一档的
+   叠层（暗色=白色叠层、亮色=墨色叠层，走令牌）+ 提亮边框来表达「按下去了」。 */
 .btn-secondary:not(:disabled):active,
 .btn-outline-secondary:not(:disabled):active {
-    background: rgba(255, 255, 255, 0.16);
+    background: var(--color-btn-ghost-active);
     border-color: var(--color-text-primary);
     color: var(--color-text-primary);
 }
@@ -1540,7 +1735,7 @@ body {
    #1c2027 仍有 4.68:1（>= 4.5），相对启用墨暗了 0.19（>= 0.15）。
    特异度同为 (0,2,0)，靠排在上一条之后取胜。 */
 .btn-outline-primary:disabled {
-    color: #828a94;
+    color: var(--color-accent-disabled-ink);
 }
 
 /* ---- 尺寸 -------------------------------------------------------------- */
@@ -1582,32 +1777,32 @@ body {
 }
 
 .alert-info {
-    background: rgba(59, 130, 246, 0.1);
+    background: var(--color-alert-info-bg);
     border-color: var(--color-info);
     color: var(--color-text-primary);
 }
 
 .alert-success {
-    background: rgba(16, 185, 129, 0.1);
+    background: var(--color-alert-success-bg);
     border-color: var(--color-success);
     color: var(--color-text-primary);
 }
 
 .alert-warning {
-    background: rgba(245, 158, 11, 0.1);
+    background: var(--color-alert-warning-bg);
     border-color: var(--color-warning);
     color: var(--color-text-primary);
 }
 
 .alert-danger {
-    background: rgba(239, 68, 68, 0.1);
+    background: var(--color-alert-danger-bg);
     border-color: var(--color-danger);
     color: var(--color-text-primary);
 }
 
 .alert-dismissible .btn-close {
     padding: 1.125rem 1.25rem;
-    filter: invert(1);
+    filter: var(--btn-close-filter);
 }
 
 /* Card Styles */
@@ -1930,7 +2125,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .btn-close {
-    filter: invert(1);
+    filter: var(--btn-close-filter);
     opacity: 0.7;
 }
 
@@ -2374,7 +2569,7 @@ code {
     align-items: center;
     justify-content: center;
     padding: 1rem;
-    background: rgba(4, 6, 10, 0.62);
+    background: var(--color-backdrop-strong);
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
     opacity: 0;
@@ -2444,7 +2639,7 @@ code {
     background: var(--color-danger);
     color: #fff;
 }
-.app-confirm__btn--ok.is-danger:hover { background: #ef4444; }
+.app-confirm__btn--ok.is-danger:hover { background: var(--color-danger-deep); }
 .app-confirm__btn:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
@@ -2537,8 +2732,8 @@ code {
     position: absolute;
     inset: -60px;
     background-image:
-        linear-gradient(rgba(56, 189, 248, 0.06) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(56, 189, 248, 0.06) 1px, transparent 1px);
+        linear-gradient(var(--color-splash-grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--color-splash-grid) 1px, transparent 1px);
     background-size: 48px 48px;
     animation: splashGridDrift 12s linear infinite;
 }
@@ -2555,7 +2750,7 @@ code {
     right: 0;
     top: -30%;
     height: 30%;
-    background: linear-gradient(to bottom, transparent, rgba(56, 189, 248, 0.09), transparent);
+    background: linear-gradient(to bottom, transparent, var(--color-splash-scan), transparent);
     animation: splashScan 3.2s ease-in-out infinite;
 }
 
@@ -2579,7 +2774,7 @@ code {
 
 @keyframes splashLogoPulse {
     0%, 100% { opacity: 0.85; }
-    50% { opacity: 1; filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.45)); }
+    50% { opacity: 1; filter: drop-shadow(0 0 12px var(--color-splash-glow)); }
 }
 
 .splash-logo-dot {
@@ -2615,7 +2810,7 @@ code {
     width: 0%;
     background: linear-gradient(90deg, var(--color-accent-strong), var(--color-accent));
     border-radius: 999px;
-    box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+    box-shadow: 0 0 8px var(--color-splash-bar-glow);
     transition: width 0.12s linear;
 }
 
@@ -2683,9 +2878,8 @@ code {
     align-items: center;
     gap: 6px;
     cursor: pointer;
-    border-radius: 4px;
-    padding: 0 4px;
-    margin-left: -4px;
+    padding: 0 6px;
+    margin-left: 2px;
     transition: background-color 0.15s ease;
 }
 
@@ -2732,7 +2926,7 @@ code {
     font-size: var(--font-size-xs);
     color: var(--color-accent-hover);
     background: var(--color-accent-muted);
-    border: 1px solid rgba(56, 189, 248, 0.25);
+    border: 1px solid var(--color-accent-border);
     border-radius: var(--radius-sm);
     padding: 6px 10px;
     margin-bottom: 12px;

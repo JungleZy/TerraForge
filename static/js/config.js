@@ -1,6 +1,31 @@
 function initConfig() {
     document.getElementById('configForm').addEventListener('submit', saveConfig);
     initTileServerEditor();
+    initThemeSwitcher();
+}
+
+// --- 外观：主题分段开关 -------------------------------------------------------
+// 三枚带文字的 chip（暗黑 / 明亮 / 跟随系统），当前值高亮（.status-chip.active）。
+// 只调 TerraTheme.set —— 偏好存 localStorage、立即全站生效，不随表单提交。
+
+function initThemeSwitcher() {
+    const group = document.getElementById('themeModeGroup');
+    if (!group || !window.TerraTheme) return;
+    const chips = [...group.querySelectorAll('[data-theme-mode]')];
+
+    function refresh() {
+        const mode = TerraTheme.get();
+        chips.forEach(chip => chip.classList.toggle('active', chip.dataset.themeMode === mode));
+    }
+
+    group.addEventListener('click', function (e) {
+        const chip = e.target.closest('[data-theme-mode]');
+        if (!chip) return;
+        TerraTheme.set(chip.dataset.themeMode);
+        refresh();
+    });
+
+    refresh();
 }
 
 // --- 瓦片服务器列表编辑器 -----------------------------------------------------

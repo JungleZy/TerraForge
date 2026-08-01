@@ -30,7 +30,7 @@
         <div id="map"></div>
         <!-- 左列工具条（Cesium 时代全自绘，不再借 Leaflet 控件容器）：
              三组 —— 视图（放大/缩小）、框选（画矩形选区/清除）、
-             功能（数据处理弹窗/记录面板/配置面板）。图标在上文字在下。
+             功能（数据处理弹窗/任务面板/配置面板）。图标在上文字在下。
              「下载」不是常驻入口：框选后由选区浮层上的「下载」按钮触发。 -->
         <div class="map-toolbar" id="mapToolbar">
             <div class="map-panel-triggers">
@@ -71,12 +71,15 @@
                     </svg>
                     <span>处理</span>
                 </button>
-                <button type="button" class="map-panel-btn" data-panel="records" aria-label="记录" title="记录（活动任务 + 历史）">
+                <button type="button" class="map-panel-btn" data-panel="records" aria-label="任务" title="任务（活动 + 历史）">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <polyline points="12 6 12 12 16 14"></polyline>
+                        <polyline points="3 7 5 9 9 5"></polyline>
+                        <polyline points="3 17 5 19 9 15"></polyline>
+                        <line x1="13" y1="6" x2="21" y2="6"></line>
+                        <line x1="13" y1="12" x2="21" y2="12"></line>
+                        <line x1="13" y1="18" x2="21" y2="18"></line>
                     </svg>
-                    <span>记录</span>
+                    <span>任务</span>
                 </button>
                 <button type="button" class="map-panel-btn" data-panel="config" aria-label="配置" title="配置">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -318,24 +321,27 @@
 <!-- 覆盖面板 backdrop：点击关闭面板 -->
 <div class="panel-backdrop" id="panelBackdrop" hidden></div>
 
-<!-- 记录面板（右侧滑出，浮在地图上方）：统计 + 统一流式任务列表（顶部是
-     活动/失败分组的实时区，socket 更新；下方是历史流，分页）+ 历史区域地图。
-     独立页 /history 仍可用（无实时区，布局不同）。 -->
-<section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="记录" hidden>
+<!-- 任务面板（右侧滑出，浮在地图上方）：统计 + 单一时间流任务列表
+     （活动任务也在流里，socket 原地更新）+ 历史区域地图。
+     独立页 /history 仍可用（布局顺序不同）。 -->
+<section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="任务" hidden>
     <header class="workbench-panel__header">
         <span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                <circle cx="12" cy="12" r="10"></circle>
-                <polyline points="12 6 12 12 16 14"></polyline>
+                <polyline points="3 7 5 9 9 5"></polyline>
+                <polyline points="3 17 5 19 9 15"></polyline>
+                <line x1="13" y1="6" x2="21" y2="6"></line>
+                <line x1="13" y1="12" x2="21" y2="12"></line>
+                <line x1="13" y1="18" x2="21" y2="18"></line>
             </svg>
-            记录
+            任务
         </span>
         <button type="button" class="dock-collapse-btn" data-panel-close title="关闭面板" aria-label="关闭面板">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
     </header>
     <div class="workbench-panel__body">
-        {# records_panel：告诉共享 partial 这里是首页记录面板——任务列表
+        {# records_panel：告诉共享 partial 这里是首页任务面板——任务列表
            排在历史区域地图之前（独立页 /history 顺序相反，不设这个变量）。 #}
         {% set records_panel = true %}
         {% include "_history_content.html" %}
@@ -361,99 +367,10 @@
     </div>
 </section>
 
-<!-- 任务详情模态框（必须挂在 content 顶层、.workbench-panel 之外：
-     面板的 transform 会囚禁 fixed 定位的后代，Bootstrap 遮罩
-     (z-index 1450) 会盖住面板(z 1401) 内的弹窗 —— 见
-     test_task_detail_modal_is_not_trapped_inside_workbench_panel） -->
-<div class="modal fade" id="taskDetailModal" tabindex="-1" aria-labelledby="taskDetailModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="taskDetailModalLabel">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="12" y1="16" x2="12" y2="12"></line>
-                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                    </svg>
-                    任务详情
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-            </div>
-            <div class="modal-body">
-                <div class="detail-grid">
-                  <div class="detail-item"><span class="detail-k">任务ID</span><span class="detail-v" id="detailId"></span></div>
-                  <div class="detail-item"><span class="detail-k">任务名称</span><span class="detail-v" id="detailName"></span></div>
-                  <div class="detail-item"><span class="detail-k">状态</span><span class="detail-v" id="detailStatus"></span></div>
-                  <div class="detail-item"><span class="detail-k">地图样式</span><span class="detail-v" id="detailStyle"></span></div>
-                  <div class="detail-item"><span class="detail-k">输出格式</span><span class="detail-v" id="detailFormat"></span></div>
-                  <div class="detail-item"><span class="detail-k">缩放级别</span><span class="detail-v" id="detailZoom"></span></div>
-                  <div class="detail-item"><span class="detail-k">总数量</span><span class="detail-v" id="detailTotal"></span></div>
-                  <div class="detail-item"><span class="detail-k">已下载</span><span class="detail-v" id="detailDownloaded"></span></div>
-                  <div class="detail-item"><span class="detail-k">失败</span><span class="detail-v" id="detailFailed"></span></div>
-                </div>
-                <div style="margin-top:1rem;"><span class="detail-k">进度</span> <span id="detailProgress"></span></div>
-                <hr style="border-color: var(--color-border);">
-                <div class="row">
-                    <div class="col-12">
-                        <p class="detail-k" style="margin-bottom: 0.5rem;">区域范围</p>
-                        <div class="detail-grid">
-                            <div class="detail-item"><span class="detail-k">北纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailNorth"></span></div>
-                            <div class="detail-item"><span class="detail-k">南纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailSouth"></span></div>
-                            <div class="detail-item"><span class="detail-k">东经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailEast"></span></div>
-                            <div class="detail-item"><span class="detail-k">西经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailWest"></span></div>
-                        </div>
-                    </div>
-                </div>
-                <hr style="border-color: var(--color-border);">
-                <div class="row">
-                    <div class="col-12">
-                        <div class="detail-item"><span class="detail-k">输出路径</span><span class="detail-v"><code id="detailPath"></code></span></div>
-                        <div class="detail-grid" style="margin-top: 0.5rem;">
-                            <div class="detail-item"><span class="detail-k">创建时间</span><span class="detail-v" id="detailCreated"></span></div>
-                            <div class="detail-item"><span class="detail-k">开始时间</span><span class="detail-v" id="detailStarted"></span></div>
-                            <div class="detail-item"><span class="detail-k">完成时间</span><span class="detail-v" id="detailCompleted"></span></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="row" id="detailErrorRow" style="display: none;">
-                    <div class="col-12">
-                        <hr style="border-color: var(--color-border);">
-                        <p><strong>错误信息:</strong></p>
-                        <div class="alert alert-danger" id="detailError"></div>
-                    </div>
-                </div>
-
-                <div class="row" id="detailTerrainRow" style="display: none;">
-                    <div class="col-12">
-                        <hr style="border-color: var(--color-border);">
-                        <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
-                            <div>
-                                <p style="margin-bottom: 0.25rem;"><strong>地形切片:</strong> <span id="detailTerrainStatus"></span></p>
-                                <div id="detailTerrainInfo" style="font-family: var(--font-mono); font-size: 0.9rem;"></div>
-                            </div>
-                            <div class="btn-group btn-group-sm" style="flex: 0 0 auto;">
-                                <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="启动地形切片">启动</button>
-                                <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="刷新切片状态">刷新</button>
-                            </div>
-                        </div>
-                        <div class="row" id="detailTerrainErrorRow" style="display: none; margin-top: 0.75rem;">
-                            <div class="col-12">
-                                <div class="alert alert-danger" id="detailTerrainError" style="margin: 0;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-            </div>
-        </div>
-    </div>
-
 {% endblock %}
 
 {% block statusbar %}
-<span class="statusbar-item statusbar-tasks" id="statusTasks" title="活动任务（点击打开记录面板）" data-panel="records">
+<span class="statusbar-item statusbar-tasks" id="statusTasks" title="活动任务（点击打开任务面板）" data-panel="records">
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
@@ -462,9 +379,9 @@
         <span class="statusbar-progress__bar" id="statusTasksBar"></span>
     </span>
 </span>
-<span class="statusbar-item" id="statusCoords">经度 — 纬度 —</span>
+<span class="statusbar-item statusbar-copy" id="statusCoords" title="鼠标指向地图显示经纬度，点击复制坐标">经度 — 纬度 —</span>
 <span class="statusbar-item" id="statusZoom">z—</span>
-<span class="statusbar-item" id="statusSelection">未选择区域</span>
+<span class="statusbar-item statusbar-copy" id="statusSelection" title="框选后点击复制四至（W,S,E,N）">未选择区域</span>
 <span class="statusbar-item statusbar-event" id="statusEvent" aria-live="polite"></span>
 <span class="statusbar-item statusbar-clock" id="statusClock" title="本地时间">--:--:--</span>
 {% endblock %}

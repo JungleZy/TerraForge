@@ -85,6 +85,12 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 - **Schema evolves inside `init_database()`** with `ALTER TABLE ... ADD COLUMN` wrapped in a try/except that swallows `duplicate column name`. New backward-compatible columns go there; the `migrations/` folder exists but is not the primary mechanism.
 - The `config` table is seeded from `DEFAULT_CONFIGS` in `core/database.py` with `INSERT OR IGNORE`. Adding a new setting means appending there.
 
+### Theming (dark / light / system)
+
+- The single switch is the `data-bs-theme` attribute on `<html>` (`dark` / `light`). Bootstrap 5.3 reacts natively; all custom components read the `--color-*` tokens in `static/css/style.css` `:root` (dark values are the `:root` defaults = SSR/no-JS fallback; light overrides live in a `[data-bs-theme="light"]` block overriding the same token names).
+- Preference is client-side only: localStorage key `tf-theme` ∈ `dark` | `light` | `system` (default `dark`), **not** the server `config` table. `system` resolves via `matchMedia('(prefers-color-scheme: light)')` and follows it live via a `change` listener.
+- `templates/base.html` `<head>` has an inline bootstrap script (before any CSS link) that sets the attribute synchronously to avoid first-frame flash; `<html data-bs-theme="dark">` literal must stay (pinned by `tests/test_css_contract.py`). Runtime switching lives in `static/js/theme.js` (`window.TerraTheme` = `{get, set, resolved, init}`), loaded globally in `base.html` after `ui.js`; the switcher UI is the 「外观」 section at the top of `templates/_config_content.html` (three text-labelled `.status-chip` buttons), wired by `initThemeSwitcher()` in `static/js/config.js`.
+
 ### Map tile specifics
 
 - Style codes used in Google URLs (`lyrs=`): `m` roadmap, `s` satellite, `y` hybrid, `h` roads, `t` terrain. `MapStyle.from_shorthand` accepts both the legacy 1-char codes and the full names (`roadmap`, `satellite`, etc.); `STYLE_MAP` in `task_manager.py` maps full → short.

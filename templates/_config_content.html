@@ -4,6 +4,38 @@
                 <div class="config-section">
                     <h3>
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                            <circle cx="12" cy="12" r="4"></circle>
+                            <line x1="12" y1="2" x2="12" y2="5"></line>
+                            <line x1="12" y1="19" x2="12" y2="22"></line>
+                            <line x1="2" y1="12" x2="5" y2="12"></line>
+                            <line x1="19" y1="12" x2="22" y2="12"></line>
+                            <line x1="4.9" y1="4.9" x2="7" y2="7"></line>
+                            <line x1="17" y1="17" x2="19.1" y2="19.1"></line>
+                            <line x1="4.9" y1="19.1" x2="7" y2="17"></line>
+                            <line x1="17" y1="7" x2="19.1" y2="4.9"></line>
+                        </svg>
+                        外观
+                    </h3>
+
+                    <!-- 主题分段开关：复用全站既有的 .status-chips / .status-chip
+                         风格（与任务面板的状态筛选同一套 class，选中态走
+                         .status-chip.active，无需新增 CSS）。点击经 config.js
+                         的 initThemeSwitcher 调 TerraTheme.set，全站即时生效；
+                         偏好存 localStorage `tf-theme`，不进服务端配置表。 -->
+                    <div class="mb-3">
+                        <label class="form-label" id="themeModeLabel">主题</label>
+                        <div class="status-chips" id="themeModeGroup" role="group" aria-labelledby="themeModeLabel">
+                            <button type="button" class="status-chip" data-theme-mode="dark">暗黑</button>
+                            <button type="button" class="status-chip" data-theme-mode="light">明亮</button>
+                            <button type="button" class="status-chip" data-theme-mode="system">跟随系统</button>
+                        </div>
+                        <small class="form-text d-block mt-1">「跟随系统」按系统的明暗配色自动切换；选择立即生效，无需保存。</small>
+                    </div>
+                </div>
+
+                <div class="config-section">
+                    <h3>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
                             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
                         </svg>
                         基础设置

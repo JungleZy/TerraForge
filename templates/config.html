@@ -2,6 +2,10 @@
 
 {% block title %}配置 - TerraForge{% endblock %}
 
+{# 本页没有地图也没有实时推送:覆盖掉 base.html 的 Cesium(5.7MB)+socket.io,
+   不白付下载与解析。config.js 不消费这两者(grep 可证)。 #}
+{% block vendor_js %}{% endblock %}
+
 {% block content %}
 <div class="page-content">
 <a class="back-home-link" href="/">

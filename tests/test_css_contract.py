@@ -4599,16 +4599,17 @@ def test_button_ink_is_readable_in_every_state():
 #     （2026-08 单一时间流定稿：行渲染收口 history.js createTaskRow，
 #     tasks.js 的 5 颗任务控制按钮随迁——tasks.js 不再有任何 <button>，
 #     也从 _icon_only_buttons 的扫描列表移除，见那里的说明）
-#   templates/history.html .btn-close（模态框关闭）              1
+#   templates/base.html 详情弹窗的 .btn-close                    1（2026-08 起弹窗
+#     标记收口到 base.html <body> 直下——曾经嵌在记录面板里被遮罩盖住，
+#     也曾在 index/history 两页各放一份拷贝；单出处见
+#     test_task_detail_modal_is_not_trapped_inside_workbench_panel）
 #   templates/index.html 下载/处理两个弹窗的 .btn-close      2（2026-07 弹窗化新增；
 #     替代的 dock-collapse-btn / dock-reopen-handle 两颗已随 dock 移除）
 #   templates/index.html 两个覆盖面板的关闭按钮            2（记录/配置面板）
-#   templates/index.html include 进来的历史详情弹窗 .btn-close 1（与 history.html
-#     那颗是同一份 partial 标记，两个模板各扫到一次，预期重复）
 #   _config_content.html 瓦片服务器行的「删除该服务器」     2（2026-07 行编辑器新增；
 #     Jinja include 展开后 index.html 与 config.html 各扫到一次，预期重复；
 #     Jinja for 循环在源码里只出现一次，动态增删的行由 JS 模板生成、不在静态扫描内）
-# 合计 16。
+# 合计 15。
 #
 # ⚠️ 第一版只扫两个 JS 文件、常量写 6，读起来像「全站都覆盖了」而实际漏了
 # 模板。评审实测：当时 `templates/base.html` 的 navbar-toggler 在 900px 视口下
@@ -4621,7 +4622,7 @@ def test_button_ink_is_readable_in_every_state():
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
-ICON_ONLY_BUTTON_COUNT = 16
+ICON_ONLY_BUTTON_COUNT = 15
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -4635,9 +4636,8 @@ def _icon_only_buttons():
     返回 [(来源, 属性串)]。**每个来源都断言至少扫到一个 <button>**，
     正则失配时响亮失败而不是退化成空循环。
 
-    base.html 不在扫描列表里：它原本唯一的按钮是 navbar-toggler，
-    已随顶部工具栏一并移除，现在一个 <button> 都没有，留下只会触发
-    上面的响亮失败。将来若往 base.html 加按钮，把它加回扫描列表。
+    base.html 在扫描列表里：2026-08 起任务详情弹窗标记收口在
+    base.html <body> 直下（.btn-close 是纯图标按钮）。
     """
     sources = []
     # tasks.js 不在扫描列表里：行渲染收口 history.js 后（2026-08 单一时间流
@@ -4645,7 +4645,7 @@ def _icon_only_buttons():
     # 将来若往 tasks.js 加按钮模板，把它加回扫描列表。
     for name in ('history.js',):
         sources.append((f'static/js/{name}', _strip_js_comments(_js(name))))
-    for name in ('index.html', 'history.html', 'config.html'):
+    for name in ('base.html', 'index.html', 'history.html', 'config.html'):
         sources.append((f'templates/{name}', _template(name)))
 
     found = []
@@ -5160,8 +5160,10 @@ def _text_contexts(css):
     # **从 history.js 实际出货的 markup 解析**，不写死 —— 见 _history_error_div 的说明。
     err_div = _history_error_div()
 
-    # --- 详情弹窗 ---
-    modal_top = [body, main,
+    # --- 详情弹窗（2026-08 起在 base.html 的 <body> 直下、.workbench 之外——
+    # 曾经嵌在记录面板 .workbench-panel 里被 body 级遮罩盖住，见
+    # tests/test_records_panel_structure.py 的 modal 层叠测试） ---
+    modal_top = [body,
                  _TextEl('div', {'modal', 'fade', 'show'}, element_id='taskDetailModal'),
                  _TextEl('div', {'modal-dialog', 'modal-lg'}),
                  _TextEl('div', {'modal-content'}), _TextEl('div', {'modal-body'}),
@@ -5913,7 +5915,10 @@ def _motion_rule_index(css):
 #     脉冲环）。列表其它元素（行/chips）刻意不声明任何过渡/动画，
 #     行随 socket 事件整体重建（outerHTML 原地替换），过渡没有意义。
 #     （2026-08 第二轮：分组头随三分区删除，从列举中去掉；分支数不变。）
-_MOTION_BRANCH_COUNT = 37
+# 37 -> 38（2026-08 状态栏完善）：`.statusbar-copy`（坐标/选区四至读数项
+#   的 hover 底色 0.15s，与 `.statusbar-tasks` 同款，在 reduce 块 `*`
+#   覆盖范围内）。
+_MOTION_BRANCH_COUNT = 38
 
 
 def test_motion_rule_index_is_complete():
@@ -6174,8 +6179,10 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 34 -> 34（2026-08 统一流式列表重设计，纯改名）：
     # .task-row.status-running .task-row__bar::before 换成
     # .task-row.status-running .task-dot（pulse 从左条迁到状态点）。
-    assert len(ctxs) == 34, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 34：\n'
+    # 34 -> 35（2026-08 状态栏完善）：加 .statusbar-copy（坐标/选区四至
+    # 读数项的 hover 底色，在 reduce 块 `*` 覆盖范围内）。
+    assert len(ctxs) == 35, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 35：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -6283,8 +6290,15 @@ VENDOR_MANIFEST = {
 
 # CesiumJS 1.143.0（390 个文件）：workers / assets / widgets 全部由
 # Cesium.js 运行时按 CESIUM_BASE_URL 动态拉取，模板 grep 不出来，必须登记。
+#
+# ⚠️ Cesium.js 有一处**有意的本地补丁**（2026-08，用户要求）：CesiumWidget
+# 构造时创建的 .cesium-widget-credits div 不再挂载进 DOM（删了
+# c.appendChild(a)，原位留有 TERRAFORGE-PATCH 注释标记）——去掉左下角的
+# Cesium ion logo、底图版权文字和「Data attribution」链接（离线桌面工具，
+# 用户明确不保留）。上游原版是 5909848 B，补丁后为下方数字；
+# 升级 Cesium 版本时这个补丁需要重新打。
 VENDOR_MANIFEST.update({
-    'cesium/1.143.0/Cesium.js': 5909848,
+    'cesium/1.143.0/Cesium.js': 5909997,
     'cesium/1.143.0/Assets/approximateTerrainHeights.json': 299471,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_0.json': 67428,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_1.json': 67313,
@@ -6793,8 +6807,10 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 17 -> 18（Cesium 换地图）：-2（leaflet.draw css/js）+1（widgets.css）
     # +1（Cesium.js）+1（CESIUM_BASE_URL 的 url_for）。
     # 18 -> 16（Leaflet 全量移除）：历史小地图也迁到 Cesium 后，leaflet css/js 删除。
-    assert len(refs) == 16, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 16 处。"
+    # 16 -> 17（明亮模式 + 跟随系统）：base.html 在 ui.js 之后全局引入
+    # js/theme.js（window.TerraTheme，运行期主题切换/跟随实现）。
+    assert len(refs) == 17, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 17 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
@@ -8039,8 +8055,8 @@ _DIV_BACKGROUNDS_THAT_MUST_RENDER = {
         ('config.html', {'config-section'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
     '.stat-card（历史页 4 张统计卡）':
         ('history.html', {'stat-card'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
-    '.modal-header（历史页详情弹窗标题栏）':
-        ('history.html', {'modal-header'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
+    '.modal-header（详情弹窗标题栏，2026-08 起标记在 base.html）':
+        ('base.html', {'modal-header'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
 }
 
 
