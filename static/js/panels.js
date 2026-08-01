@@ -56,6 +56,14 @@
                 // 小地图开了 requestRenderMode，resize 后显式请求一帧保证重开后画面刷新
                 historyViewer.scene.requestRender();
             }, 250);
+            // 重开必须重拉时间流 + 统计:懒初始化只在首次 open 跑一遍,之后
+            // 时间流停在旧内容上 —— 新建的 pending 任务没有 socket 进度事件
+            // 可触发 prependStreamRow,不重拉就要等整页刷新才看得见。
+            // loadHistory/loadStats/currentPage 都是 history.js 的全局。
+            if (typeof loadHistory === 'function') {
+                loadHistory(typeof currentPage !== 'undefined' ? currentPage : 1);
+            }
+            if (typeof loadStats === 'function') loadStats();
         }
 
         if (window.history && history.pushState) history.pushState(null, '', '#' + name);

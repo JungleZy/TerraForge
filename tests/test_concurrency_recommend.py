@@ -186,6 +186,31 @@ def test_config_page_has_recommend_button(monkeypatch, tmp_path):
         html = client.get(path).get_data(as_text=True)
         assert 'id="concurrencyRecommend"' in html, f'{path} 缺少测速推荐按钮'
         assert 'id="concurrent_downloads"' in html
+        # 紧凑配方类:`.config-section .btn` 的大 padding(0.75rem 2rem 粗体)
+        # 会把裸 btn 撑成与整体风格不协调的大块头,必须带专用类压住
+        assert 'concurrency-recommend' in html, (
+            f'{path} 的测速推荐按钮缺少紧凑样式类 concurrency-recommend'
+        )
+
+
+def test_recommend_button_compact_css_recipe():
+    """`.btn.concurrency-recommend` 必须按「验证」按钮同款紧凑配方声明。
+
+    (0,2,0) 与 `.config-section .btn` 同优先级、靠文件内位置靠后取胜,
+    所以这条同时钉「规则存在」和「用了 --ctl-h 密度令牌」。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'css', 'style.css'), encoding='utf-8') as f:
+        src = f.read()
+    assert '.btn.concurrency-recommend' in src, '缺少紧凑按钮规则'
+    rule_start = src.index('.btn.concurrency-recommend')
+    rule_end = src.index('}', rule_start)
+    rule = src[rule_start:rule_end]
+    assert 'var(--ctl-h)' in rule, '紧凑按钮必须用 --ctl-h 高度令牌(与验证按钮一致)'
+    # 必须在 .config-section .btn 之后声明,同优先级才压得住
+    assert src.index('.btn.concurrency-recommend') > src.index('.config-section .btn'), (
+        '规则顺序错误:同优先级下后写者胜,紧凑规则要放在 .config-section .btn 之后'
+    )
 
 
 def test_config_js_recommend_wiring():

@@ -1515,3 +1515,24 @@ def test_dismiss_removes_the_row_purely_on_the_frontend():
     assert 'loadHistory(' not in body and 'renderHistoryTable(' not in body, (
         'dismissTask 不该触发重拉/整体重绘——纯前端删行就够了'
     )
+
+def test_panel_reopen_refreshes_timeline():
+    """记录面板重开必须重新拉取时间流 + 统计,不能只吃懒初始化那一遍。
+
+    回归场景:面板打开过(inited 标记已置位)→ 关闭 → 新建任务 →
+    _afterTaskCreated 重开面板。旧实现重开只 resize 小地图,时间流停在
+    上一次 loadHistory 的内容 —— 新建的 pending 任务没有 socket 进度事件
+    可触发 prependStreamRow,列表里看不到,要刷新页面才出现。
+    """
+    src = _strip_js_comments(_js('panels.js'))
+    body = _js_function_body(src, 'openPanel')
+    # 已初始化分支(else if)也要刷新:断言 loadHistory 的调用点在
+    # inited 判定之后仍能到达 —— 直接要求 openPanel 体内存在
+    # 「已初始化时」的 loadHistory 调用(懒初始化分支只调 initHistory)。
+    assert 'loadHistory(' in body, (
+        'openPanel 没有调 loadHistory——面板重开不会刷新时间流,'
+        '新建任务要等到整页刷新才看得见'
+    )
+    assert 'loadStats(' in body, (
+        'openPanel 重开时应一并刷新统计卡片,否则总数与列表口径不一致'
+    )

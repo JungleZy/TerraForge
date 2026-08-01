@@ -2995,6 +2995,23 @@ code {
     white-space: nowrap;    /* 两个汉字不许折行 */
 }
 
+/* 「测速推荐」（配置页并发下载数旁）与「验证」同款紧凑配方。
+   裸 .btn 会吃到 .config-section .btn 的大 padding(0.75rem 2rem) 和粗体，
+   在窄列里撑成两行高的大块头（input-group 因此被挤成上下堆叠）；
+   本规则与它同优先级 (0,2,0)、靠文件位置靠后取胜，理由同 .btn.tile-server-verify。 */
+.btn.concurrency-recommend {
+    height: var(--ctl-h);
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: var(--font-size-sm);
+    font-weight: 400;
+    line-height: 1;
+    white-space: nowrap;
+    flex-shrink: 0;         /* 旁边的说明小字换行时按钮不被压扁 */
+}
+
 /* `.btn { border: none }` 会吃掉 Bootstrap 给 outline 变体的边框，
    outline-primary/-secondary 都有本站重声明，-danger 原来没有
    （服务器行的删除按钮边框因此丢失），按同一配方补上。 */

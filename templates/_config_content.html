@@ -86,12 +86,13 @@
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="concurrent_downloads" class="form-label">并发下载数</label>
-                            <div class="input-group">
-                                <input type="number" class="form-control" id="concurrent_downloads"
-                                       value="{{ config.concurrent_downloads }}" min="1" max="100">
-                                <button type="button" class="btn btn-outline-primary" id="concurrencyRecommend">测速推荐</button>
+                            <input type="number" class="form-control" id="concurrent_downloads"
+                                   value="{{ config.concurrent_downloads }}" min="1" max="100">
+                            <div class="mt-1">
+                                <button type="button" class="btn btn-outline-primary concurrency-recommend"
+                                        id="concurrencyRecommend">测速推荐</button>
                             </div>
-                            <small class="form-text d-block mt-1" id="concurrencyRecommendHint">按当前网络/代理实测瓦片吞吐推荐（约 30 秒）；只填入数值，保存后生效。</small>
+                            <small class="form-text d-block mt-1" id="concurrencyRecommendHint">实测网络吞吐后推荐（约 30 秒），只填入数值，保存后生效。</small>
                         </div>
 
                         <div class="col-md-4 mb-3">
