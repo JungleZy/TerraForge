@@ -1,11 +1,9 @@
 {# 记录面板/历史页共享内容。
-   records_panel（由 index.html 在 include 前 set）决定两件事：
-     1. 任务列表是否带 #activeTasksBody（活动任务实时区，tasks.js 渲染
-        「活动」「失败」两个分组）——独立页 /history 不加载 tasks.js，
-        不能有它；history.js 也靠「文档里有没有 #activeTasksBody」判断
-        要不要按 activeTasks 精确去重（实时区里显示着的任务，历史流不重复显示）。
-     2. 卡片顺序：首页记录面板列表是主体，统计卡 → 任务列表 → 历史区域地图；
-        独立页 /history 布局不动，统计卡 → 历史区域地图 → 任务列表。
+   records_panel（由 index.html 在 include 前 set）只决定卡片顺序：
+     首页记录面板列表是主体，统计卡 → 任务列表 → 历史区域地图；
+     独立页 /history 布局不动，统计卡 → 历史区域地图 → 任务列表。
+   （2026-08 单一时间流定稿前它还控制 #activeTasksBody 实时区——
+   活动/失败/历史三分区已废，活动任务就在时间流里，那个容器随之删除。）
    用宏而不是两份 {% if %} 各写一遍卡片：同一份标记只能有一个出处。 #}
 {% macro stats_row() %}
     <div class="row" id="statsRow" style="margin-bottom: 1rem;">
@@ -50,26 +48,24 @@
                     </h5>
                 </div>
                 <div class="card-body">
-                    {# 统一流式列表（2026-08 重设计定稿）：废掉 9 列 .task-table 与表头，
-                       活动/历史任务共用同一种行结构（状态点 + 名称 + #类型:id + 元信息，
-                       行2 按状态变体）。筛选行 = 搜索框（客户端过滤当前页）
-                       + 状态 chips（只作用于历史流，走 /api/history_all ?status=）。 #}
+                    {# 单一时间流（2026-08 定稿，取代「活动/失败/历史」三分区）：
+                       全部任务按创建时间倒序列在一个容器里，无分组头、无折叠、
+                       无去重——每个任务天然只出现一次。活动任务也在流里，
+                       行结构按状态变体（进度行/错误行/摘要行），由
+                       history.js createTaskRow 统一渲染。
+                       筛选行 = 搜索框（客户端过滤当前页）+ 状态 chips
+                       （作用于整个时间流，走 /api/history_all ?status=；
+                       「进行中」对应特殊值 active = pending/running/paused）。 #}
                     <div class="task-filter-bar">
                         <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索任务...">
-                        <div class="status-chips" id="statusChips" role="group" aria-label="按状态筛选历史记录">
+                        <div class="status-chips" id="statusChips" role="group" aria-label="按状态筛选任务">
                             <button type="button" class="status-chip active" data-status="">全部</button>
-                            <button type="button" class="status-chip" data-status="completed">已完成</button>
+                            <button type="button" class="status-chip" data-status="active">进行中</button>
                             <button type="button" class="status-chip" data-status="failed">失败</button>
+                            <button type="button" class="status-chip" data-status="completed">已完成</button>
                             <button type="button" class="status-chip" data-status="cancelled">已取消</button>
                         </div>
                     </div>
-                    {% if records_panel|default(false) %}
-                    <!-- 活动任务实时区（tasks.js 渲染：「活动」「失败」两个分组头 +
-                         统一流式行），在历史流之上。history.js 靠「文档里有没有
-                         #activeTasksBody」判断要不要按 activeTasks 精确去重。 -->
-                    <div id="activeTasksBody"></div>
-                    <div class="task-group-header">历史</div>
-                    {% endif %}
                     <div id="historyTableBody">
                         <div class="spinner-container">
                             <div class="spinner-border" role="status">
@@ -102,88 +98,11 @@
     </div>
 </div>
 
-<!-- 任务详情模态框 -->
-<div class="modal fade" id="taskDetailModal" tabindex="-1" aria-labelledby="taskDetailModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="taskDetailModalLabel">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="12" y1="16" x2="12" y2="12"></line>
-                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                    </svg>
-                    任务详情
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-            </div>
-            <div class="modal-body">
-                <div class="detail-grid">
-                  <div class="detail-item"><span class="detail-k">任务ID</span><span class="detail-v" id="detailId"></span></div>
-                  <div class="detail-item"><span class="detail-k">任务名称</span><span class="detail-v" id="detailName"></span></div>
-                  <div class="detail-item"><span class="detail-k">状态</span><span class="detail-v" id="detailStatus"></span></div>
-                  <div class="detail-item"><span class="detail-k">地图样式</span><span class="detail-v" id="detailStyle"></span></div>
-                  <div class="detail-item"><span class="detail-k">输出格式</span><span class="detail-v" id="detailFormat"></span></div>
-                  <div class="detail-item"><span class="detail-k">缩放级别</span><span class="detail-v" id="detailZoom"></span></div>
-                  <div class="detail-item"><span class="detail-k">总数量</span><span class="detail-v" id="detailTotal"></span></div>
-                  <div class="detail-item"><span class="detail-k">已下载</span><span class="detail-v" id="detailDownloaded"></span></div>
-                  <div class="detail-item"><span class="detail-k">失败</span><span class="detail-v" id="detailFailed"></span></div>
-                </div>
-                <div style="margin-top:1rem;"><span class="detail-k">进度</span> <span id="detailProgress"></span></div>
-                <hr style="border-color: var(--color-border);">
-                <div class="row">
-                    <div class="col-12">
-                        <p class="detail-k" style="margin-bottom: 0.5rem;">区域范围</p>
-                        <div class="detail-grid">
-                            <div class="detail-item"><span class="detail-k">北纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailNorth"></span></div>
-                            <div class="detail-item"><span class="detail-k">南纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailSouth"></span></div>
-                            <div class="detail-item"><span class="detail-k">东经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailEast"></span></div>
-                            <div class="detail-item"><span class="detail-k">西经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailWest"></span></div>
-                        </div>
-                    </div>
-                </div>
-                <hr style="border-color: var(--color-border);">
-                <div class="row">
-                    <div class="col-12">
-                        <div class="detail-item"><span class="detail-k">输出路径</span><span class="detail-v"><code id="detailPath"></code></span></div>
-                        <div class="detail-grid" style="margin-top: 0.5rem;">
-                            <div class="detail-item"><span class="detail-k">创建时间</span><span class="detail-v" id="detailCreated"></span></div>
-                            <div class="detail-item"><span class="detail-k">开始时间</span><span class="detail-v" id="detailStarted"></span></div>
-                            <div class="detail-item"><span class="detail-k">完成时间</span><span class="detail-v" id="detailCompleted"></span></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="row" id="detailErrorRow" style="display: none;">
-                    <div class="col-12">
-                        <hr style="border-color: var(--color-border);">
-                        <p><strong>错误信息:</strong></p>
-                        <div class="alert alert-danger" id="detailError"></div>
-                    </div>
-                </div>
-
-                <div class="row" id="detailTerrainRow" style="display: none;">
-                    <div class="col-12">
-                        <hr style="border-color: var(--color-border);">
-                        <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
-                            <div>
-                                <p style="margin-bottom: 0.25rem;"><strong>地形切片:</strong> <span id="detailTerrainStatus"></span></p>
-                                <div id="detailTerrainInfo" style="font-family: var(--font-mono); font-size: 0.9rem;"></div>
-                            </div>
-                            <div class="btn-group btn-group-sm" style="flex: 0 0 auto;">
-                                <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="启动地形切片">启动</button>
-                                <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="刷新切片状态">刷新</button>
-                            </div>
-                        </div>
-                        <div class="row" id="detailTerrainErrorRow" style="display: none; margin-top: 0.75rem;">
-                            <div class="col-12">
-                                <div class="alert alert-danger" id="detailTerrainError" style="margin: 0;"></div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-            </div>
-        </div>
-    </div>
+{# 任务详情模态框不在这里——在 base.html 的 <body> 直下。
+   它曾经随本 partial 一起被 include 进首页记录面板（.workbench-panel），
+   但面板永远带非 none 的 transform（滑入/滑出），transform 让面板成为
+   fixed 后代的包含块并自建层叠上下文（z-index 1401 < body 级
+   .modal-backdrop 1450）：遮罩会整个盖住详情弹窗，弹窗还会相对面板
+   布局被裁出视口（2026-08 实测，tests/test_records_panel_structure.py
+   的 test_task_detail_modal_is_not_trapped_inside_workbench_panel 钉住）。
+   Bootstrap 官方也要求 modal 标记放 body 顶层。 #}

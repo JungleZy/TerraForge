@@ -487,9 +487,13 @@ def get_history():
 @api_bp.route('/history_all', methods=['GET'])
 def get_history_all():
     """
-    Get combined history for map tasks and DEM tasks with pagination.
+    Get combined history for all four task tables with pagination.
 
-    Returns a normalized task list with task_type in {'map','dem'}.
+    Returns a normalized task list with task_type in
+    {'map','dem','local_terrain','contour'}, ordered strictly by
+    created_at DESC (single time stream). ?status= filters by a single
+    status value; the special value 'active' means
+    status IN ('pending','running','paused').
     """
     try:
         page = request.args.get('page', 1, type=int)
@@ -505,41 +509,39 @@ def get_history_all():
 
         offset = (page - 1) * per_page
 
+        # 2026-08 单一时间流定稿：?status=active 是特殊值，表示「进行中」
+        # （pending/running/paused 三态）——记录面板不再有独立的活动分区，
+        # 活动任务也在时间流里，靠这个筛选值把它们单独滤出来。
+        # 其它取值维持原来的单值等值语义。
+        active_clause = "status IN ('pending','running','paused')"
+        if status_filter == 'active':
+            where_sql = f'WHERE {active_clause}'
+            count_params = ()
+        else:
+            where_sql = 'WHERE status = ?' if status_filter else ''
+            count_params = (status_filter,) if status_filter else ()
+
         conn = get_connection()
         try:
             cursor = conn.cursor()
 
-            if status_filter:
-                cursor.execute('SELECT COUNT(*) AS c FROM tasks WHERE status = ?', (status_filter,))
-                map_count = cursor.fetchone()['c']
-                cursor.execute('SELECT COUNT(*) AS c FROM dem_tasks WHERE status = ?', (status_filter,))
-                dem_count = cursor.fetchone()['c']
-                cursor.execute('SELECT COUNT(*) AS c FROM local_terrain_tasks WHERE status = ?', (status_filter,))
-                local_count = cursor.fetchone()['c']
-                cursor.execute('SELECT COUNT(*) AS c FROM contour_tasks WHERE status = ?', (status_filter,))
-                contour_count = cursor.fetchone()['c']
-            else:
-                cursor.execute('SELECT COUNT(*) AS c FROM tasks')
-                map_count = cursor.fetchone()['c']
-                cursor.execute('SELECT COUNT(*) AS c FROM dem_tasks')
-                dem_count = cursor.fetchone()['c']
-                cursor.execute('SELECT COUNT(*) AS c FROM local_terrain_tasks')
-                local_count = cursor.fetchone()['c']
-                cursor.execute('SELECT COUNT(*) AS c FROM contour_tasks')
-                contour_count = cursor.fetchone()['c']
+            def _count(table):
+                cursor.execute(f'SELECT COUNT(*) AS c FROM {table} {where_sql}', count_params)
+                return cursor.fetchone()['c']
+
+            map_count = _count('tasks')
+            dem_count = _count('dem_tasks')
+            local_count = _count('local_terrain_tasks')
+            contour_count = _count('contour_tasks')
 
             total_count = int(map_count or 0) + int(dem_count or 0) + int(local_count or 0) + int(contour_count or 0)
 
             params = []
-            where_map = ""
-            where_dem = ""
-            where_local = ""
-            where_contour = ""
-            if status_filter:
-                where_map = "WHERE status = ?"
-                where_dem = "WHERE status = ?"
-                where_local = "WHERE status = ?"
-                where_contour = "WHERE status = ?"
+            where_map = where_sql
+            where_dem = where_sql
+            where_local = where_sql
+            where_contour = where_sql
+            if status_filter and status_filter != 'active':
                 params.extend([status_filter, status_filter, status_filter, status_filter])
 
             query = f'''
@@ -556,8 +558,7 @@ def get_history_all():
                     output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message,
-                    COALESCE(completed_at, created_at) AS sort_key
+                    error_message
                 FROM tasks
                 {where_map}
                 UNION ALL
@@ -574,8 +575,7 @@ def get_history_all():
                     NULL AS output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message,
-                    COALESCE(completed_at, created_at) AS sort_key
+                    error_message
                 FROM dem_tasks
                 {where_dem}
                 UNION ALL
@@ -592,8 +592,7 @@ def get_history_all():
                     NULL AS output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message,
-                    COALESCE(completed_at, created_at) AS sort_key
+                    error_message
                 FROM local_terrain_tasks
                 {where_local}
                 UNION ALL
@@ -610,11 +609,10 @@ def get_history_all():
                     NULL AS output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message,
-                    COALESCE(completed_at, created_at) AS sort_key
+                    error_message
                 FROM contour_tasks
                 {where_contour}
-                ORDER BY sort_key DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT ? OFFSET ?
             '''
 
@@ -624,7 +622,6 @@ def get_history_all():
             tasks = []
             for r in rows:
                 d = dict(r)
-                d.pop('sort_key', None)
                 tasks.append(d)
 
             total_pages = (total_count + per_page - 1) // per_page

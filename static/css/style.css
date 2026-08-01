@@ -647,17 +647,18 @@ body {
     overflow: hidden;
 }
 
-/* Task Row Styles（统一流式列表的行：活动实时区 #activeTasksBody 与历史流
-   #historyTableBody 里的 .task-row，分别由 tasks.js createTaskRow /
-   history.js createHistoryRow 渲染，同一种行语言）
-   2026-08 重设计定稿（用户连续反馈「任务列表太乱」，三条根因全部回应）：
+/* Task Row Styles（单一时间流的行：#historyTableBody 里的 .task-row，
+   由 history.js createTaskRow 统一渲染——2026-08 定稿后全站只有这一处
+   行实现，tasks.js 的实时更新也调它做原地重建）
+   2026-08 设计演进（用户连续反馈「任务列表太乱」）：
      1. 废掉 9 列 .task-table 与表头 —— 活动三行富行 + 历史 9 列网格行 +
         不对应的 9 列表头，两种行语言硬拼是「乱」的主要来源；
-     2. 失败治理 —— 失败组 >5 个时默认折叠只显示最近 3 个（分组头可展开），
-        不再是一面钉在列表顶部的红墙；
-     3. 行内信息改排两行 flex，880px 面板不再挤 9 列网格。
+     2. 再废掉「活动/失败/历史」三分区（含失败组折叠与分组头）——
+        改为按创建时间倒序的单一时间流 + 顶部状态筛选 chips，
+        每个任务天然只出现一次，红墙问题由「流 + 筛选」根治；
+     3. 行内信息排两行 flex，880px 面板不再挤 9 列网格。
    行内结构：行1 状态点 + 名称 + #类型:id + 元信息 + 状态小字 …… 时间 + 动作组；
-   行2 进度（pending/running/paused）或引文式错误（failed）或单行摘要（终态历史行）。
+   行2 进度（pending/running/paused）或引文式错误（failed）或单行摘要（终态行）。
    不再有徽章 pill、不再有整行底色、不再有 4px 左条；行间只有发丝分隔线。 */
 .task-row {
     padding: 0.5rem 0.25rem;
@@ -821,8 +822,8 @@ body {
     text-overflow: ellipsis;
 }
 
-/* 失败任务错误行里的错误原因（.task-error-row 或历史行行2 的 .task-error）。
-   文本由 tasks.js applyTaskErrorText / history.js renderHistoryTable 用
+/* 失败行行2 的错误原因（.task-row.status-failed 里的 .task-error）。
+   文本由 history.js renderHistoryTable / tasks.js applyTaskErrorText 用
    textContent 填入（后端错误原文不能进 innerHTML）。
    引文式排版：无边框无边底、只留 2px 红色左边条 + 红字，最多 2 行省略。
    可读性靠文字色本身：
@@ -844,38 +845,15 @@ body {
     overflow: hidden;
 }
 
-/* 错误行紧跟主行之后，与主行共享发丝分隔节奏（主行的分隔线移到错误行末尾）。 */
-.task-error-row {
-    padding: 0 0.25rem 0.5rem;
-    border-bottom: 1px solid var(--color-border);
-}
+/* 错误文本直接作失败行的行2（.task-row.status-failed > .task-error），
+   不再有独立的 .task-error-row 兄弟节点——单一时间流里每种状态变体
+   都是同一颗 .task-row 内部的两行。 */
 
-/* 分组头（活动 (N) / 失败 (N) / 历史）：小字弱化 + 计数。
-   失败组 >5 个时整头是一个 <button>（task-group-header--toggle），
-   点击展开/收起（tasks.js toggleFailedTaskGroup）。 */
-.task-group-header {
-    margin: 0.75rem 0 0.125rem;
-    font-size: var(--font-size-xs);
-    color: var(--color-text-secondary);
-    letter-spacing: 0.04em;
-}
+/* 分组头（活动 (N) / 失败 (N) / 历史）已随「活动/失败/历史」三分区
+   整体删除（2026-08 单一时间流定稿）：无分组头、无折叠，自然也没有
+   .task-group-header 这组规则。 */
 
-button.task-group-header {
-    display: block;
-    width: 100%;
-    padding: 0;
-    background: none;
-    border: none;
-    font-family: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-
-button.task-group-header:hover {
-    color: var(--color-text-primary);
-}
-
-/* 筛选行：搜索框（客户端过滤当前页）+ 状态 chips（历史流 ?status=）。 */
+/* 筛选行：搜索框（客户端过滤当前页）+ 状态 chips（时间流 ?status=）。 */
 .task-filter-bar {
     display: flex;
     align-items: center;
@@ -2172,7 +2150,8 @@ code {
    不是查字符串）。
    （后注：.task-card 卡片后来整体改为统一任务表里的 .task-row 行，
    下面「为什么删 .task-card」的实测叙述是对当时卡片形态的，理由本身不变——
-   renderActiveTasks 的全量 innerHTML 重建今天仍在，行同样不能有入场动画。）
+   行的整体重建今天仍在（单一时间流里 socket 事件会 outerHTML 原地重建行），
+   行同样不能有入场动画。）
 
    ── 为什么删 .task-card ────────────────────────────────────────────────
    简报给的根因（「tasks.js 每次进度更新都 innerHTML 全量重建」）**与代码不符**，

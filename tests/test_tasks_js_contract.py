@@ -83,9 +83,14 @@ def _strip_js_comments(src):
 # 已有的调用点会立刻变红。J 条要求的就是这个存在性契约——Phase 1 反复出现
 # 「守禁止性契约、不守存在性契约」的不对称：只断言 getProgressColor 消失的话，
 # 把整行 className 赋值删掉也能全绿，而进度条会永远停在 Bootstrap 默认蓝。
+#
+# 登记（2026-08 单一时间流定稿）：行渲染从 tasks.js 收口到 history.js 的
+# createTaskRow（全站唯一行实现），tasks.js 那处模板插值随之搬家——
+# tasks.js 从 2 处变 1 处（updateTaskProgressPartial 的 className），
+# history.js 从 1 处变 2 处（createTaskRow 行2 发丝条 + viewTaskDetails 模态）。
 PROGRESS_BAR_CALL_SITES = {
-    'tasks.js': 2,      # createTaskRow 的模板 + updateTaskProgressPartial 的 className
-    'history.js': 1,    # viewTaskDetails 详情模态框
+    'tasks.js': 1,      # updateTaskProgressPartial 的 className（Socket.IO 增量主路径）
+    'history.js': 2,    # createTaskRow 行2 发丝条 + viewTaskDetails 详情模态框
 }
 
 # `progress-bar bg-${<表达式>}` 里允许出现的表达式（唯一形态）。
@@ -321,24 +326,23 @@ def test_error_message_never_reaches_innerhtml():
     """错误文本只能经 textContent 落地，绝不进 HTML 模板。
 
     error_message 是后端异常的字符串化结果（URL、文件路径、第三方库的
-    报错原文都可能在里面）。它一旦被拼进 createTaskErrorRow 的模板字符串，
-    `tbody.innerHTML = ...` 就会把里面的 `<img onerror=...>` 当标签解析。
+    报错原文都可能在里面）。它一旦被拼进 createTaskRow 的模板字符串，
+    `container.innerHTML = ...` 就会把里面的 `<img onerror=...>` 当标签解析。
     ui.js 里同样的地方已经写了 `// textContent 防 XSS` 的注释，这里是同一条规矩。
 
-    做法上让 createTaskRow / createTaskErrorRow 只吐一个**空**的 `.task-error`
-    容器（连 error_message 都不引用），文本由 applyTaskErrorText 单独填。
-    所以这条可以直接断言「两个模板函数里根本没有 error_message 这个词」。
+    做法上让 createTaskRow（2026-08 单一时间流定稿后收口在 history.js，
+    全站唯一行实现）只吐一个**空**的 `.task-error` 容器（连 error_message
+    都不引用），文本由 applyTaskErrorText / renderHistoryTable 单独填。
+    所以这条可以直接断言「行模板函数里根本没有 error_message 这个词」。
     """
-    src = _strip_js_comments(_js('tasks.js'))
-    for fn_name in ('createTaskRow', 'createTaskErrorRow'):
-        row_body = _js_function_body(src, fn_name)
-        assert 'error_message' not in row_body, (
-            f'{fn_name} 里出现了 error_message——它的返回值会被塞进 innerHTML，'
-            '后端错误原文里的 HTML 会被当标签解析（XSS）。'
-            '错误文本请交给 applyTaskErrorText 用 textContent 填'
-        )
+    row_body = _js_function_body(_strip_js_comments(_js('history.js')), 'createTaskRow')
+    assert 'error_message' not in row_body, (
+        'createTaskRow 里出现了 error_message——它的返回值会被塞进 innerHTML，'
+        '后端错误原文里的 HTML 会被当标签解析（XSS）。'
+        '错误文本请交给 applyTaskErrorText / renderHistoryTable 用 textContent 填'
+    )
 
-    apply_body = _js_function_body(src, 'applyTaskErrorText')
+    apply_body = _js_function_body(_strip_js_comments(_js('tasks.js')), 'applyTaskErrorText')
     assert re.search(r'\.textContent\s*=', apply_body), (
         'applyTaskErrorText 没有用 textContent 赋值'
     )
@@ -347,18 +351,24 @@ def test_error_message_never_reaches_innerhtml():
     )
 
 
-def test_full_rerender_keeps_the_error_text():
-    """整体重绘（renderActiveTasks）之后错误文本必须被重新填回去。
+def test_row_rebuild_refills_the_error_text():
+    """原地重建（rebuildStreamRow）之后错误文本必须被重新填回去。
 
-    存在性契约。renderActiveTasks 是 `tbody.innerHTML = tasks.map(...)`，
-    一次性重建全部行；失败行现在会留在 activeTasks 里，所以任何一个
-    新任务到达都会触发重绘。漏掉这一步的话：失败当场看得见错误，之后
-    随便来一个新任务，红框就变空了——而所有文本断言依然全绿。
+    存在性契约。单一时间流里 socket 事件对行做的是 outerHTML 原地重建
+    （rebuildStreamRow），重建出来的失败行 .task-error 是空容器。
+    漏掉回填这一步的话：失败当场看得见错误，之后随便一个进度事件
+    触发重建，红框就变空了——而所有文本断言依然全绿。
+    （前身 test_full_rerender_keeps_the_error_text：守的是 renderActiveTasks
+    整体重绘的回填。renderActiveTasks 随「活动/失败」分区删除，重建入口
+    收口为 rebuildStreamRow 一处。）
     """
-    render_body = _fn('renderActiveTasks')
-    assert 'applyTaskErrorText' in render_body, (
-        'renderActiveTasks 重建 innerHTML 之后没有回填错误文本，'
-        '失败卡片的红框会在下一次整体重绘时被清空'
+    body = _fn('rebuildStreamRow')
+    assert 'createTaskRow(' in body, (
+        'rebuildStreamRow 没有调 createTaskRow——行重建的实现变了？本测试已失效'
+    )
+    assert 'applyTaskErrorText' in body, (
+        'rebuildStreamRow 重建 outerHTML 之后没有回填错误文本，'
+        '失败行的红框会在下一次原地重建时被清空'
     )
 
 
@@ -384,6 +394,9 @@ def test_card_actions_are_gated_by_the_right_status():
 
     实现方式：对 createTaskRow 体内每一处 `onclick="xxxTask(`，往前找
     **最近**的 `task.status === / !== '...'`，与 _ACTION_GUARDS 对表。
+    （2026-08 单一时间流定稿：createTaskRow 收口在 history.js，
+    全站唯一行实现，任务控制按钮只在 tasks.js 已加载时渲染——
+    门控表达式里的 hasTaskActions/isLive 前缀不影响「最近的状态判断」。）
 
     这条同时守三件事：
       1. 失败行**没有**重试按钮（后端会抛 ValueError，见上面表里的注释）。
@@ -397,7 +410,7 @@ def test_card_actions_are_gated_by_the_right_status():
     这条可能失配。所以每个动作还额外断言了「至少出现一次」——完全找不到
     比匹配错更危险。
     """
-    body = _fn('createTaskRow')
+    body = _fn('createTaskRow', 'history.js')
     problems = []
     for action, expected in _ACTION_GUARDS.items():
         hits = list(re.finditer(r'onclick="' + action + r'\(', body))
@@ -536,7 +549,17 @@ def test_percentage_is_an_overlay_not_a_child_of_the_bar():
             )
 
         bars = _PROGRESS_BAR_ELEMENT_RE.findall(src)
-        if not bars:
+        # tasks.js 一处 bar 模板都没有是**对的**（行渲染收口 history.js 后，
+        # 它只剩 updateTaskProgressPartial 的 className 赋值，没有模板）；
+        # history.js 必须至少有一处（createTaskRow 行2 发丝条 + 详情模态框），
+        # 找不到说明解析失效或模板被删。
+        if sites == 0:
+            if bars:
+                problems.append(
+                    f'{name}: 找到 {len(bars)} 处 `<div class="progress-bar ...>` 模板，'
+                    '期望 0 处——行渲染已收口 history.js，tasks.js 不该再有 bar 模板'
+                )
+        elif not bars:
             problems.append(f'{name}: 一处 `<div class="progress-bar ...>` 都找不到 —— 本测试已失效')
         for inner in bars:
             if inner.strip():
@@ -1206,165 +1229,137 @@ def test_panel_close_guard_compares_elements_not_names():
 
 
 # --------------------------------------------------------------------------
-# 统一流式列表（2026-08 重设计定稿）
+# 单一时间流（2026-08 定稿，第二轮）
 #
-# 前身是「统一任务表（2026-07）」一节：一张 9 列表、两个 tbody。用户连续
-# 反馈「太乱」后整体重设计——废掉 9 列 .task-table 与表头，活动/历史任务
-# 共用同一种行结构（状态点 + 名称 + #类型:id + 元信息 …… 时间 + 动作组；
-# 行2 按状态变体：进度 / 引文式错误 / 单行摘要）。
-# 本节的锚点随之从「表格结构」翻面为「列表结构」，每条都登记了翻面理由。
+# 本节的前身有两代：「统一任务表（2026-07，9 列表格）」→「统一流式列表
+# （2026-08 第一轮，活动/失败/历史三分区 + 失败组折叠 + 精确去重）」。
+# 用户明确不要三个分区后定稿：**按创建时间倒序的单一时间流 + 顶部状态
+# 筛选**——无分组头、无折叠、无去重，每个任务天然只出现一次；行渲染
+# 从 tasks.js / history.js 两套近似实现收口为 history.js createTaskRow
+# 一处。本节的锚点随之再次翻面，每条都登记了翻面理由。
 # --------------------------------------------------------------------------
 
-def test_active_tasks_render_into_the_records_panel_list():
-    """tasks.js 必须渲染进 #activeTasksBody（记录面板列表顶部的实时区容器）。
+def test_row_rendering_is_unified_in_history_js():
+    """行渲染全站只有一处：history.js 的 createTaskRow。
 
-    （前身 test_active_tasks_render_into_the_shared_table_tbody：
-    容器从 <tbody> 变成 <div>，「空态是 colspan=9 的行」整条翻面——
-    定稿设计里无活动任务时实时区整个留空，不渲染「暂无活动任务」。）
+    （前身 test_active_tasks_render_into_the_records_panel_list：守 tasks.js
+    渲染进 #activeTasksBody 实时区。实时区随三分区删除，锚点翻面为
+    「tasks.js 不再持有行模板」。）
+
+    两套近似实现必然漂移（上一轮 tasks.js createTaskRow / history.js
+    createHistoryRow 的按钮组、时间语义就各不相同），所以 tasks.js 那套
+    createTaskRow / createTaskErrorRow / taskMetaText / renderActiveTasks
+    整体删除，实时更新（socket 事件的原地重建）也调 history.js 那份。
     """
-    body = _fn('renderActiveTasks')
-    assert "getElementById('activeTasksBody')" in body, (
-        'renderActiveTasks 没有以 #activeTasksBody 为容器'
+    tasks_src = _strip_js_comments(_js('tasks.js'))
+    for fn in ('createTaskRow', 'createTaskErrorRow', 'taskMetaText',
+               'renderActiveTasks', 'toggleFailedTaskGroup'):
+        assert f'function {fn}(' not in tasks_src, (
+            f'tasks.js 仍定义 {fn}()——行渲染已收口到 history.js createTaskRow，'
+            '留着第二份实现必然漂移（「两种行语言」是「太乱」的根因之一）'
+        )
+    hist_src = _strip_js_comments(_js('history.js'))
+    assert 'function createTaskRow(' in hist_src, (
+        'history.js 没有定义 createTaskRow——统一行实现没了，本测试已失效'
     )
-    assert "getElementById('activeTasks')" not in body, (
-        'renderActiveTasks 仍在渲染旧的 #activeTasks 卡片区'
+    # 时间流容器锚点：renderHistoryTable 渲染进 #historyTableBody
+    render_body = _js_function_body(hist_src, 'renderHistoryTable')
+    assert "getElementById('historyTableBody')" in render_body, (
+        'renderHistoryTable 没有以 #historyTableBody 为容器'
     )
-    assert 'colspan' not in body and '<tr' not in body and '<td' not in body, (
-        'renderActiveTasks 还在产出表格行——9 列 .task-table 已随统一流式列表废除'
+    assert 'createTaskRow' in render_body, (
+        'renderHistoryTable 没有用统一行实现 createTaskRow 渲染时间流'
     )
-    assert re.search(r"innerHTML\s*=\s*''", body), (
-        '无活动任务时实时区必须整个留空（定稿设计：不显示「活动」分组头、'
-        '也没有独立的活动空态）'
-    )
-
-    src = _strip_js_comments(_js('tasks.js'))
-    row_body = _js_function_body(src, 'createTaskRow')
-    assert 'task-row status-' in row_body, (
-        'createTaskRow 必须产出带状态类的 <div class="task-row status-*">'
-    )
-    assert '<tr' not in row_body and '<td' not in row_body, (
-        'createTaskRow 还在产出 <tr>/<td>——统一流式列表里没有表格'
-    )
-    err_body = _js_function_body(src, 'createTaskErrorRow')
-    assert 'task-error-row' in err_body, (
-        '失败任务的引文式错误行（.task-error-row）没了'
-    )
-    assert '<tr' not in err_body and '<td' not in err_body and 'colspan' not in err_body, (
-        'createTaskErrorRow 还在产出横跨 9 列的表格行'
+    assert "innerHTML = tasks.map(createTaskRow).join('')" in render_body, (
+        '时间流应直接由 tasks.map(createTaskRow) 构成——多出来的中间层复查'
     )
 
 
 def test_task_row_is_the_unified_two_line_structure():
-    """活动任务行与历史任务行是同一种「统一流式行」结构。
+    """时间流行是同一种「统一流式行」结构，且覆盖全部状态变体。
 
-    （前身 test_active_task_row_is_a_single_rich_cell_with_three_lines：
-    富行 = colspan=9 单格 + 三行 flex。2026-08 定稿改为两行，且历史行
-    用同一结构——「两种行语言硬拼」是「太乱」的根因之一。）
+    （前身守「活动行与历史行同一种结构」——两套实现对比。行渲染收口后
+    只剩一套，锚点改守这一套自身的结构完整。）
 
-    这条守两件事：
+    这条守三件事：
       1. 结构锚点存在（行1 = task-line1：状态点/名称/#类型:id/元信息/
-         状态小字/时间；行2 = task-progress-line：发丝条/百分比/计数）；
+         状态小字/时间；行2 按状态变体）；
       2. 增量更新依赖的稳定类名没有改名——updateTaskProgressPartial /
          updateTimeDisplay 按 .progress-bar/.task-pct/.task-count/.task-time
          原地更新，模板里类名一换，Socket.IO 刷新就静默失效而本文件其它
-         断言未必红。
-      3. 徽章 pill 不再存在（状态识别 = 状态点 + 小字状态文本）。
+         断言未必红；
+      3. 三种行2 变体齐全：进度行（task-progress-line，活动态）/
+         引文式错误（task-error，failed）/ 单行摘要（task-line2，终态）。
+      4. 徽章 pill 不再存在（状态识别 = 状态点 + 小字状态文本）。
     """
-    body = _fn('createTaskRow')
-    for anchor in ('task-line1', 'task-dot', 'task-name', 'task-id',
-                   'task-meta', 'task-status-text', 'task-progress-line'):
+    body = _fn('createTaskRow', 'history.js')
+    for anchor in ('task-row status-', 'task-line1', 'task-dot', 'task-name',
+                   'task-id', 'task-meta', 'task-status-text', 'task-time'):
         assert anchor in body, (
             f'createTaskRow 缺 {anchor} —— 统一流式行的结构锚点（见 docstring）'
         )
-    for cls in ('task-pct', 'task-count', 'task-time', 'progress-bar'):
+    for cls in ('task-pct', 'task-count', 'progress-bar'):
         assert cls in body, (
             f'createTaskRow 缺稳定类名 {cls} —— Socket.IO 增量更新按它定位元素'
         )
-    assert 'badge' not in body, (
-        'createTaskRow 还在渲染徽章 pill——定稿设计的状态识别是状态点 + 状态小字'
-    )
-
-    # 历史行必须说同一种行语言（history.js 独立渲染，最容易走偏的就是它）
-    hist_body = _fn('createHistoryRow', 'history.js')
-    for anchor in ('task-row status-', 'task-line1', 'task-dot', 'task-name',
-                   'task-id', 'task-meta', 'task-time'):
-        assert anchor in hist_body, (
-            f'createHistoryRow 缺 {anchor} —— 历史行必须与活动行同一种结构'
+    for variant in ('task-progress-line', 'task-error', 'task-line2'):
+        assert variant in body, (
+            f'createTaskRow 缺行2 变体 {variant} —— 进度/错误/摘要三种形态要齐全'
         )
     for forbidden in ('<tr', '<td', 'colspan', 'badge'):
-        assert forbidden not in hist_body, (
-            f'createHistoryRow 里还有 {forbidden} —— 历史行退回 9 列网格/徽章形态了'
+        assert forbidden not in body, (
+            f'createTaskRow 里还有 {forbidden} —— 退回 9 列网格/徽章形态了'
         )
 
 
-def test_failed_group_collapses_beyond_five_and_remembers_the_choice():
-    """失败组治理（「太乱」根因之二：dev 库 96 个 failed 任务钉在列表顶部
-    形成红墙）：>5 个时默认折叠只显示最近 3 个，分组头可点击展开全部，
-    折叠态用 sessionStorage 记忆；≤5 个时全部显示、分组头不可折叠。
+def test_stream_has_no_grouping_or_collapsing_machinery():
+    """三分区治理机制整体消失：无分组头、无失败组折叠、无 sessionStorage 记忆。
+
+    （前身 test_failed_group_collapses_beyond_five_and_remembers_the_choice：
+    守「失败组 >5 折叠显示 3 个」。用户明确不要分区后，红墙问题由
+    「单一时间流 + 状态筛选」根治——失败任务按创建时间散在流里，
+    要看失败点「失败」chip——折叠机制本身成了要删的东西。锚点翻面。）
     """
     src = _strip_js_comments(_js('tasks.js'))
-    body = _fn('renderActiveTasks')
-    assert 'FAILED_GROUP_COLLAPSE_THRESHOLD' in body, (
-        'renderActiveTasks 没有失败组折叠阈值——96 个失败任务又会全部铺开成红墙'
-    )
-    assert 'FAILED_GROUP_PREVIEW_COUNT' in body and '.slice(0,' in body.replace(' ', ''), (
-        '折叠时没有「只显示最近 3 个」的裁剪（slice + FAILED_GROUP_PREVIEW_COUNT）'
-    )
-    assert 'toggleFailedTaskGroup()' in body, (
-        '失败分组头不可点击展开——>5 个时剩下的失败任务永远看不到'
-    )
-    # 阈值与预览数的字面值钉死（常量被改成 999 的话上面两条照样绿）
-    assert re.search(r'FAILED_GROUP_COLLAPSE_THRESHOLD\s*=\s*5', src), (
-        'FAILED_GROUP_COLLAPSE_THRESHOLD 不是 5——定稿是「>5 个才折叠」'
-    )
-    assert re.search(r'FAILED_GROUP_PREVIEW_COUNT\s*=\s*3', src), (
-        'FAILED_GROUP_PREVIEW_COUNT 不是 3——定稿是「折叠时只显示最近 3 个」'
-    )
-
-    toggle_body = _fn('toggleFailedTaskGroup')
-    assert 'sessionStorage' in toggle_body, (
-        '折叠态没有用 sessionStorage 记忆——每次重绘都回到默认折叠'
-    )
-    assert 'renderActiveTasks(' in toggle_body, (
-        '展开/收起后没有重绘实时区'
+    for gone in ('FAILED_GROUP_COLLAPSE_THRESHOLD', 'FAILED_GROUP_PREVIEW_COUNT',
+                 'failedGroupCollapsed', 'taskFailedGroupCollapsed',
+                 'task-group-header', 'sessionStorage'):
+        assert gone not in src, (
+            f'tasks.js 里还有 {gone} —— 失败组折叠机制应随三分区整体删除'
+        )
+    hist_src = _strip_js_comments(_js('history.js'))
+    assert 'task-group-header' not in hist_src, (
+        'history.js 里还有分组头——单一时间流没有「活动/失败/历史」分区'
     )
 
 
-def test_history_stream_dedups_exactly_against_active_tasks():
-    """精确去重契约：历史流排除「当前在 activeTasks Map 里的任务」
-    （按 `类型:id` 键比对），且只在文档里有 #activeTasksBody 时启用。
+def test_history_stream_has_no_dedup_logic():
+    """单一时间流无去重：renderHistoryTable 不再读 activeTasks / #activeTasksBody。
 
-    这替代旧的「按状态跳过 pending/running/paused」规则（2026-08 定稿）：
-    旧规则会把从未进过实时区的历史非终态任务也一并藏掉，而失败任务
-    又在实时区和历史区各出现一次。新规则下：活动区/失败组里显示着的，
-    历史区就不显示；dismiss 后下次刷新才在历史出现。
-    独立页 /history 不加载 tasks.js（activeTasks 未定义）也没有
-    #activeTasksBody，必须照旧全量渲染——所以两个前提条件缺一不可。
+    （前身 test_history_stream_dedups_exactly_against_active_tasks：守
+    「历史流按 activeTasks 精确去重」。去重是三分区时代的补丁——同一任务
+    可能同时挂在实时区和历史流里；分区废掉后四表 UNION 每任务一行，
+    天然只出现一次，去重失去存在理由。锚点翻面的理由与上一条同源。）
     """
     body = _fn('renderHistoryTable', 'history.js')
-    assert "getElementById('activeTasksBody')" in body, (
-        'renderHistoryTable 没有检查 #activeTasksBody 是否存在——'
-        '独立页 /history 的行为无法与首页区分'
+    assert 'activeTasks' not in body, (
+        'renderHistoryTable 还在读 activeTasks Map——去重逻辑应随三分区删除'
     )
-    assert 'activeTasks' in body, (
-        'renderHistoryTable 没有读 tasks.js 的全局 activeTasks Map——精确去重没了'
+    assert 'activeTasksBody' not in body, (
+        'renderHistoryTable 还在检查 #activeTasksBody——实时区已不存在'
     )
-    assert re.search(r'activeTasks\.has\(\s*`\$\{t\.task_type\}:\$\{t\.id\}`\s*\)', body), (
-        '去重不是按 `task_type:id` 键查 activeTasks——比对键变了会整批误伤/漏排'
-    )
-    assert re.search(r'\.filter\s*\(', body), (
-        'renderHistoryTable 没有 filter——去重逻辑没了'
-    )
-    # 旧的「按状态跳过」规则必须消失（failed 不再被历史区无条件放行、
-    # pending/running/paused 不再被无条件跳过）
-    assert "['pending', 'running', 'paused']" not in body, (
-        '旧的「按状态跳过 pending/running/paused」规则还在——与精确去重是两套逻辑'
+    assert '.filter(' not in body, (
+        'renderHistoryTable 还有 filter——时间流应原样渲染传入的任务页'
     )
 
 
-def test_status_chips_filter_only_the_history_stream():
-    """状态筛选 chips：只作用于历史流——loadHistory 把取值透传给
+def test_status_chips_filter_the_whole_stream():
+    """状态筛选 chips 作用于整个时间流：loadHistory 把取值透传给
     /api/history_all 的 ?status= 参数；chips 点击后回到第 1 页刷新。
+
+    （前身 test_status_chips_filter_only_the_history_stream：chips 只筛
+    历史流，活动/失败分组不受影响。活动任务进流之后，「只筛历史」
+    与「筛全部」变成同一件事，语义锚点不变、覆盖范围变了。）
     """
     src = _strip_js_comments(_js('history.js'))
     load_body = _js_function_body(src, 'loadHistory')
@@ -1380,22 +1375,40 @@ def test_status_chips_filter_only_the_history_stream():
     )
 
 
+def test_terminal_row_shows_created_at_and_live_row_shows_elapsed():
+    """行1 右侧时间的语义：终态显示创建时间短日期，非终态显示耗时。
+
+    列表按创建时间倒序（/api/history_all ORDER BY created_at DESC），
+    行上展示创建时间才自洽；完成时间在详情模态里。非终态的耗时文本
+    来自 calculateTimeInfo（tasks.js），独立页 /history 不加载它，
+    所以调用点必须带 typeof 守卫。
+    """
+    body = _fn('createTaskRow', 'history.js')
+    assert 'formatShortDate(task.created_at)' in body, (
+        '终态行的行1 时间不是创建时间短日期——列表按创建排序，展示完成时间不自洽'
+    )
+    assert "typeof calculateTimeInfo === 'function'" in body, (
+        '非终态耗时没有 typeof 守卫——独立页 /history 不加载 tasks.js，'
+        '直接调用会 ReferenceError 让整列渲染挂掉'
+    )
+    src = _strip_js_comments(_js('history.js'))
+    assert 'function formatShortDate(' in src, (
+        'history.js 没有 formatShortDate——短日期格式化函数没了'
+    )
+
+
 def test_history_error_text_only_lands_via_textcontent():
-    """失败历史行的错误原文与活动失败行同一条规矩：不进 innerHTML 模板。
+    """失败行的错误原文不进 innerHTML 模板（与上一条同一条规矩的时间流侧）。
 
     /api/history_all 返回的 error_message 同样是后端异常的字符串化结果。
-    createHistoryRow 只吐一个**空**的 .task-error 容器（连 error_message
-    都不引用），文本由 renderHistoryTable 在渲染后用 textContent 补。
+    createTaskRow 只吐一个**空**的 .task-error 容器（连 error_message
+    都不引用——见 test_error_message_never_reaches_innerhtml），文本由
+    renderHistoryTable 在渲染后用 textContent 补。
     """
     src = _strip_js_comments(_js('history.js'))
-    row_body = _js_function_body(src, 'createHistoryRow')
-    assert 'error_message' not in row_body, (
-        'createHistoryRow 里出现了 error_message——它的返回值会进 innerHTML，'
-        '后端错误原文里的 HTML 会被当标签解析（XSS）'
-    )
     render_body = _js_function_body(src, 'renderHistoryTable')
     assert 'error_message' in render_body and re.search(r'\.textContent\s*=', render_body), (
-        'renderHistoryTable 没有在渲染后用 textContent 回填失败历史行的错误文本'
+        'renderHistoryTable 没有在渲染后用 textContent 回填失败行的错误文本'
     )
     assert 'innerHTML' not in render_body.split('forEach')[1] if 'forEach' in render_body else True, (
         '错误文本回填走了 innerHTML——必须走 textContent'
@@ -1403,10 +1416,7 @@ def test_history_error_text_only_lands_via_textcontent():
 
 
 def test_pagination_bar_is_hidden_when_only_one_page():
-    """总页数 <= 1 时不渲染分页条（孤零零一个「1」按钮没有交互价值）。
-
-    （2026-08 重排配套：实测只有 1 页历史时分页区仍显示一个「1」。）
-    """
+    """总页数 <= 1 时不渲染分页条（孤零零一个「1」按钮没有交互价值）。"""
     body = _fn('renderPagination', 'history.js')
     assert re.search(r'totalPages\s*<=\s*1', body), (
         'renderPagination 没有「<= 1 页直接返回」的分支——单页时会显示孤按钮'
@@ -1416,29 +1426,86 @@ def test_pagination_bar_is_hidden_when_only_one_page():
     )
 
 
-# ⚠️ 登记（2026-08 统一流式列表重设计）：这里原本是
-# test_history_table_skips_non_terminal_rows_only_when_active_tbody_exists
-# ——守旧的「有 #activeTasksBody 时按状态跳过 pending/running/paused」
-# 去重规则。定稿设计把它换成**精确去重**（按 activeTasks 的 `类型:id`
-# 键排除实时区里正显示着的任务），该断言整条删除，
-# 接替者是上面的 test_history_stream_dedups_exactly_against_active_tasks。
+def test_completed_task_is_rebuilt_in_place_not_removed():
+    """task_completed：行原地重建为 completed 态 + loadStats()，**不删行、不重拉**。
 
-def test_completed_task_refreshes_initialized_history_panel():
-    """task_completed 删掉实时行之后，必须让任务立刻出现在历史区。
-
-    不刷新的后果：实时行删了、历史表还停在旧数据，完成的任务在界面上
-    「凭空消失」，要等用户手动翻页/重开面板才回来。
-    但只在记录面板的历史已初始化过时才刷（historyViewer 存在或历史表已有
-    内容）——面板从没打开过的话，打开时 initHistory 本来就会拉最新数据。
+    （前身 test_completed_task_refreshes_initialized_history_panel：守
+    「删实时行 + loadHistory(1) + loadStats()」。那是活动/历史分区时代的
+    做法——完成的任务要从活动区「搬」进历史区。单一时间流里没有分区，
+    换状态只是换这一行的形态；删行会让任务在界面上凭空消失。）
     """
     body = _fn('handleTaskCompleted')
-    assert re.search(r'loadHistory\(\s*1\s*\)', body), (
-        'handleTaskCompleted 没有调 loadHistory(1)——完成的任务不会立刻出现在历史区'
+    assert not re.search(r'\.remove\(\s*\)', body), (
+        'handleTaskCompleted 里出现了 .remove()——完成的任务要留在时间流里，'
+        '原地重建为 completed 态，不是删除'
+    )
+    assert 'loadHistory(' not in body, (
+        'handleTaskCompleted 还在 loadHistory 重拉——原地重建已经够了，'
+        '重拉会把用户正在看的页码/滚动位置冲掉'
+    )
+    assert 'rebuildStreamRow(' in body or 'outerHTML' in body, (
+        'handleTaskCompleted 没有原地重建行——完成的任务会停留在 running 形态'
     )
     assert re.search(r'loadStats\(\s*\)', body), (
         'handleTaskCompleted 没有调 loadStats()——统计卡还是旧数字'
     )
-    assert 'historyViewer' in body and 'historyTableBody' in body, (
-        '刷新必须以「历史已初始化过」为条件（historyViewer 或 #historyTableBody），'
-        '无条件刷新会在面板从未打开时白打两路接口'
+
+
+def test_failed_task_is_rebuilt_in_place_with_error_refilled():
+    """task_failed：行原地重建为 failed 态（含引文式错误行）+ loadStats()。
+
+    与 completed 同一形态（见上一条）。失败行额外的硬性要求：
+    错误原文走 textContent 回填（rebuildStreamRow 内部调 applyTaskErrorText，
+    由 test_row_rebuild_refills_the_error_text 钉住），这里钉「失败事件的
+    处理路径确实走原地重建」。
+    """
+    body = _fn('handleTaskFailed')
+    assert 'rebuildStreamRow(' in body or 'outerHTML' in body, (
+        'handleTaskFailed 没有原地重建行——失败的任务会停留在 running 形态'
+    )
+    assert re.search(r'loadStats\(\s*\)', body), (
+        'handleTaskFailed 没有调 loadStats()——统计卡的失败计数还是旧数字'
+    )
+
+
+def test_new_task_prepends_only_on_first_page_and_matching_chip():
+    """未知任务（新建）prepend 到流顶部的条件：第 1 页 + chip 为 全部/进行中。
+
+    其它页码/其它筛选下硬插会破坏「按创建时间倒序 + 状态筛选」的语义
+    （任务会出现在它不该出现的页里）。不满足时不插：翻页/切 chip 会从
+    /api/history_all 重拉，任务自然出现。
+    """
+    body = _fn('prependStreamRow')
+    assert re.search(r'currentPage\s*!==\s*1', body), (
+        'prependStreamRow 没有「只在第 1 页」的门禁——深页里会插进不属于那里的行'
+    )
+    assert "currentStatusFilter !== ''" in body and "'active'" in body, (
+        'prependStreamRow 没有「chip 为 全部/进行中」的门禁——'
+        '失败/已完成/已取消筛选下会插进不符合筛选条件的行'
+    )
+    assert re.search(r"insertAdjacentHTML\(\s*'afterbegin'", body), (
+        'prependStreamRow 没有插到容器顶部（afterbegin）——新任务应出现在流顶'
+    )
+    # updateTaskProgress 的未知 key 分支必须走它
+    progress_body = _fn('updateTaskProgress')
+    assert 'prependStreamRow(' in progress_body, (
+        'updateTaskProgress 的未知 key 分支没有调 prependStreamRow——'
+        '新建任务不会出现在时间流里'
+    )
+
+
+def test_dismiss_removes_the_row_purely_on_the_frontend():
+    """dismiss（失败行的移除按钮）：纯前端删行，不碰后端、不触发重拉。
+
+    「移除」与「删除」的区别：dismiss 只把行从界面上拿走（任务仍在后端，
+    下次翻页/刷新会回来）；🗑 是 deleteTask 的事。这条与
+    test_dismiss_is_purely_local 互补：那条守「不打后端」，这条守
+    「确实把行拿走、且不整体重绘」。
+    """
+    body = _fn('dismissTask')
+    assert re.search(r'\.remove\(\s*\)', body), (
+        'dismissTask 没有删行——「移除」按钮成了摆设'
+    )
+    assert 'loadHistory(' not in body and 'renderHistoryTable(' not in body, (
+        'dismissTask 不该触发重拉/整体重绘——纯前端删行就够了'
     )

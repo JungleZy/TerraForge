@@ -62,12 +62,12 @@ def test_task_name_never_enters_innerhtml_raw():
         assert '${task.name}' not in src, (
             f'{name} 仍把 task.name 裸拼进 HTML 模板（存储型 XSS）'
         )
-    assert 'escapeHtml(task.name)' in _strip_js_comments(_js('tasks.js')), (
-        'tasks.js 的任务卡片标题没有转义 task.name'
-    )
+    # 2026-08 单一时间流定稿：行渲染收口 history.js createTaskRow，tasks.js
+    # 不再有行模板（原先这里断言 tasks.js 的 escapeHtml(task.name)）。
     hist = _strip_js_comments(_js('history.js'))
     assert hist.count('escapeHtml(task.name)') >= 2, (
-        'history.js 应至少有两处转义 task.name：历史表格 + 历史地图 InfoBox description'
+        'history.js 应至少有两处转义 task.name：时间流行（createTaskRow）'
+        ' + 历史地图 InfoBox description'
     )
 
 
@@ -95,7 +95,7 @@ def test_history_secondary_fields_escaped():
         'historyMetaText 没有调 getStyleText——样式元信息的来源变了？本测试已失效'
     )
     assert 'escapeHtml(historyMetaText(task))' in src, (
-        'createHistoryRow 没有转义 historyMetaText 的输出——'
+        'createTaskRow 没有转义 historyMetaText 的输出——'
         'getStyleText 的 `|| style` 兜底会把 DB 里的 style 原文渲染进行1'
     )
     assert 'escapeHtml(getStatusText(task.status))' in src, (
@@ -106,16 +106,20 @@ def test_history_secondary_fields_escaped():
 
 
 def test_active_row_meta_text_escaped():
-    """tasks.js 行1 元信息同样来自服务端（style/dataset 原文），进模板前必须转义。
+    """tasks.js 不再持有行模板——行渲染收口在 history.js（2026-08 单一时间流定稿）。
 
-    与上面 history.js 那条是同一条规矩在活动行这一侧的对称检查——
-    两个文件各自渲染行，最容易漏的就是只转义了一边。
+    本检查的前身守「tasks.js createTaskRow 里 escapeHtml(taskMetaText(task))」，
+    与上面 history.js 那条是对称检查——当时两个文件各自渲染行，最容易漏的
+    就是只转义了一边。单一时间流定稿后全站只剩 history.js createTaskRow
+    一处行实现（转义由上面那条守），这里改守「tasks.js 没有长回第二份
+    行模板」——两份实现必然漂移，包括转义。
     """
     src = _strip_js_comments(_js('tasks.js'))
-    assert 'escapeHtml(taskMetaText(task))' in src, (
-        'createTaskRow 没有转义 taskMetaText 的输出——'
-        'style/dataset 的 DB 原文会被渲染进行1'
-    )
+    for fn in ('createTaskRow', 'taskMetaText'):
+        assert f'function {fn}(' not in src, (
+            f'tasks.js 又长出了 {fn}()——行渲染已收口 history.js，'
+            '第二份实现（含转义义务）必然漂移'
+        )
 
 
 # ---------------------------------------------------------------- I11: _swb

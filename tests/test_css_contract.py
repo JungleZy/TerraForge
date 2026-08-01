@@ -1463,19 +1463,22 @@ def _effective_bg_for(chain):
     return _winning_bg(cands)
 
 
-# `.task-error` 在真实 DOM 里的祖先链（tasks.js createTaskErrorRow 生成，
-# 由 test_runtime_injected_div_table_is_grounded 同源的那张表描述错误行本身）。
-# 2026-08 统一流式列表重设计：错误框从错误表格行
+# `.task-error` 在真实 DOM 里的祖先链（history.js createTaskRow 生成——
+# 2026-08 单一时间流定稿后全站唯一行实现，失败行的行2 就是它，
+# 由 test_runtime_injected_div_table_is_grounded 同源的那张表描述错误框本身）。
+# 2026-08 两轮演进：错误框从错误表格行
 # （tbody#activeTasksBody > tr.task-error-row > td > .task-error）
-# 变成列表里的错误节点（div#activeTasksBody > div.task-error-row > div.task-error）。
+# → 列表里的错误节点（div#activeTasksBody > div.task-error-row > div.task-error）
+# → 单一时间流失败行的行2（div#historyTableBody > div.task-row.status-failed
+#   > div.task-error；实时区与独立错误行节点都随三分区删除）。
 def _task_error_chain():
     return _PAGE_CHAIN_PREFIX + (
         ('section', {'workbench-panel', 'workbench-panel--wide'}, 'historyPanel', {}),
         ('div', {'workbench-panel__body'}, '', {}),
         ('div', {'card'}, '', {}),
         ('div', {'card-body'}, '', {}),
-        ('div', set(), 'activeTasksBody', {}),
-        ('div', {'task-error-row'}, '', {}),
+        ('div', set(), 'historyTableBody', {}),
+        ('div', {'task-row', 'status-failed'}, '', {}),
         ('div', {'task-error'}, '', {}),
     )
 
@@ -4592,9 +4595,10 @@ def test_button_ink_is_readable_in_every_state():
 # --------------------------------------------------------------------------
 
 # **全站**纯图标按钮（无可见文本）的数量，JS 模板与 HTML 模板一起扫。
-#   static/js/tasks.js   启动 / 暂停 / 恢复 / 取消 / 移除          5
-#     （移除 2026-08 从「图标+文字」改为 btn-icon 纯图标，与同组按钮样式一致）
-#   static/js/history.js 查看详情 / 删除 / 预览                 3
+#   static/js/history.js 启动/暂停/恢复/取消/移除/查看详情/删除/预览  8
+#     （2026-08 单一时间流定稿：行渲染收口 history.js createTaskRow，
+#     tasks.js 的 5 颗任务控制按钮随迁——tasks.js 不再有任何 <button>，
+#     也从 _icon_only_buttons 的扫描列表移除，见那里的说明）
 #   templates/history.html .btn-close（模态框关闭）              1
 #   templates/index.html 下载/处理两个弹窗的 .btn-close      2（2026-07 弹窗化新增；
 #     替代的 dock-collapse-btn / dock-reopen-handle 两颗已随 dock 移除）
@@ -4636,7 +4640,10 @@ def _icon_only_buttons():
     上面的响亮失败。将来若往 base.html 加按钮，把它加回扫描列表。
     """
     sources = []
-    for name in ('tasks.js', 'history.js'):
+    # tasks.js 不在扫描列表里：行渲染收口 history.js 后（2026-08 单一时间流
+    # 定稿）它不再有任何 <button> 模板，留下只会触发上面的响亮失败。
+    # 将来若往 tasks.js 加按钮模板，把它加回扫描列表。
+    for name in ('history.js',):
         sources.append((f'static/js/{name}', _strip_js_comments(_js(name))))
     for name in ('index.html', 'history.html', 'config.html'):
         sources.append((f'templates/{name}', _template(name)))
@@ -5189,9 +5196,6 @@ def _text_contexts(css):
         ('历史流空态提示（暂无历史记录）',
          panel_top + [_TextEl('div', element_id='historyTableBody'),
                       _TextEl('div', {'task-empty'})], panel, '--color-text-secondary'),
-        ('分组头（活动/失败/历史）',
-         panel_top + [_TextEl('div', {'task-group-header'})],
-         panel, '--color-text-secondary'),
         ('状态筛选 chip（未选中）',
          panel_top + [_TextEl('div', {'task-filter-bar'}),
                       _TextEl('div', {'status-chips'}),
@@ -5246,9 +5250,9 @@ def test_every_text_context_meets_wcag_aa():
     `.table-hover tbody tr:hover` 的 rgba 压到面板底色上的合成值，
     控件底色从 `.form-control` 解析。改调色板会让这些数字跟着动。
 
-    上下文清单（18 条）的边界：覆盖三个页面上**由 style.css 上色的**全部
-    正文类文字位置 —— 统一流式列表的行内文本（名称/#类型:id/元信息/状态小字/
-    耗时/行2 摘要）、历史流的加载失败提示与空态、分组头、状态筛选 chips
+    上下文清单（17 条）的边界：覆盖三个页面上**由 style.css 上色的**全部
+    正文类文字位置 —— 单一时间流的行内文本（名称/#类型:id/元信息/状态小字/
+    耗时/行2 摘要）、时间流的加载失败提示与空态、状态筛选 chips
     （选中/未选中两态）、首页分组标题、表单说明、详情弹窗的键与值、
     首页与配置页各自的输入框占位符（两处走不同规则，只覆盖一处会漏）、
     toast 的关闭按钮。
@@ -5257,14 +5261,15 @@ def test_every_text_context_meets_wcag_aa():
     test_button_ink_is_readable_in_every_state；JS 模板里的内联色 ->
     test_inline_colors_in_js_templates_meet_wcag_aa（它们不在 style.css 里，
     本模型扫不到）。三者合起来才叫「全覆盖」，单看本条不叫。
-    （2026-08 重设计：原 14 条里的 6 条历史表格单元格上下文与 1 条活动
-    空态上下文随 9 列 .task-table / 活动空态一起删除，替换为上面 11 条
-    流式列表上下文，登记在 _text_contexts 上方的注释块。）
+    （2026-08 两轮演进：第一轮原 14 条里的 6 条历史表格单元格上下文与
+    1 条活动空态上下文随 9 列 .task-table / 活动空态一起删除，替换为
+    流式列表上下文；第二轮「分组头（活动/失败/历史）」上下文随三分区
+    删除，18 → 17，登记在 _text_contexts 上方的注释块。）
     """
     css = _css()
     contexts = _text_contexts(css)
-    assert len(contexts) == 18, (
-        f'上下文清单变成 {len(contexts)} 条（期望 18）—— 增删了要同步更新本断言，'
+    assert len(contexts) == 17, (
+        f'上下文清单变成 {len(contexts)} 条（期望 17）—— 增删了要同步更新本断言，'
         '否则「全都覆盖了」是假象'
     )
     problems = []
@@ -5905,8 +5910,9 @@ def _motion_rule_index(css):
 #     （4px 状态左条随 9 列表格废除）。
 #   加 1 个分支：`.task-row.status-running .task-dot`（同一个 pulse，
 #     从左条迁到行1 的 8px 状态点——「任务还活着」的信号保留，形态换成
-#     脉冲环）。列表其它元素（行/分组头/chips）刻意不声明任何过渡/动画，
-#     行随任务增删整体重建 innerHTML，过渡没有意义。
+#     脉冲环）。列表其它元素（行/chips）刻意不声明任何过渡/动画，
+#     行随 socket 事件整体重建（outerHTML 原地替换），过渡没有意义。
+#     （2026-08 第二轮：分组头随三分区删除，从列举中去掉；分支数不变。）
 _MOTION_BRANCH_COUNT = 37
 
 
@@ -5983,7 +5989,7 @@ def test_cards_have_no_entrance_animation_but_running_dot_still_pulses():
         got = _motion_computed(css, [
             _TextEl(tag='body'),
             _TextEl(tag='div', classes=('card',)),
-            _TextEl(tag='div', element_id='activeTasksBody'),
+            _TextEl(tag='div', element_id='historyTableBody'),
             _TextEl(tag='div', classes=classes)])
         assert got['animation_name'] == 'none', (
             f'.{".".join(classes)} 又挂上了入场动画 {got["animation_name"]!r}'
@@ -5995,7 +6001,7 @@ def test_cards_have_no_entrance_animation_but_running_dot_still_pulses():
     pulse = _motion_computed(css, [
         _TextEl(tag='body'),
         _TextEl(tag='div', classes=('card',)),
-        _TextEl(tag='div', element_id='activeTasksBody'),
+        _TextEl(tag='div', element_id='historyTableBody'),
         _TextEl(tag='div', classes=('task-row', 'status-running')),
         _TextEl(tag='div', classes=('task-line1',)),
         _TextEl(tag='span', classes=('task-dot',))])
@@ -7568,17 +7574,19 @@ _PAGE_CHAIN_PREFIX = (
 # 运行时才出现、grep 模板永远看不到的 <div>。
 #
 # 为什么必须显式登记：`.modal-backdrop` 由 Bootstrap 的 Modal 组件插到
-# <body> 末尾，`.task-error` 错误框由 tasks.js 拼字符串塞进错误行的
-# innerHTML——只扫模板的话，这两类一个都看不见，而「弹窗遮罩从来没暗过」
-# 正是 C1 收尾要修的那个缺陷。祖先链按真实 DOM 写（CDP 实测确认过层级）。
-# （统一任务表改版：原先的 .task-card 条目随卡片删除，换成同样运行时注入、
-# 同样带底色的 .task-error 错误框，链与 _task_error_chain() 一致。）
+# <body> 末尾，`.task-error` 错误框由 history.js createTaskRow 拼字符串
+# 塞进时间流的 innerHTML——只扫模板的话，这两类一个都看不见，而「弹窗遮罩
+# 从来没暗过」正是 C1 收尾要修的那个缺陷。祖先链按真实 DOM 写（CDP 实测
+# 确认过层级）。
+# （演进：原先的 .task-card 条目随卡片删除，换成同样运行时注入、
+# 同样带底色的 .task-error 错误框，链与 _task_error_chain() 一致；
+# 2026-08 单一时间流定稿后行实现从 tasks.js 收口到 history.js。）
 #
 # 每一条都由 test_runtime_injected_div_table_is_grounded 反查来源，防止表烂掉。
 _RUNTIME_INJECTED_DIVS = (
     (
-        'tasks.js createTaskErrorRow 生成的失败原因框（记录面板任务表错误行里的 div）',
-        'static/js/tasks.js', 'task-error',
+        'history.js createTaskRow 生成的失败原因框（时间流失败行的行2 div）',
+        'static/js/history.js', 'task-error',
         _task_error_chain(),
     ),
     (
