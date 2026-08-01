@@ -275,7 +275,7 @@ uv run pytest tests/test_config_manager.py   # 运行单个测试文件
 - [docs/BUILD.md](docs/BUILD.md) — 构建详细说明
 - [docs/QUICKSTART.md](docs/QUICKSTART.md) / [docs/INSTALL.md](docs/INSTALL.md) — 快速启动与安装指南
 - [docs/packaging/](docs/packaging/) — 打包与发版资料（分发说明、发布检查清单、历史记录）
-- [RELEASE_NOTES.md](RELEASE_NOTES.md) — 发版说明
+- [RELEASE_NOTES.md](RELEASE_NOTES.md) — 当前版本发版说明（作为 GitHub Release 正文发布）;[CHANGELOG.md](CHANGELOG.md) — 全版本更新历史
 - [CLAUDE.md](CLAUDE.md) — 架构与开发约定（面向 AI 协作者，对人类开发者同样有参考价值）
 
 ## 性能优化
