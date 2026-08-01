@@ -1,6 +1,7 @@
 """
 Task and Tile data models
 """
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -251,13 +252,19 @@ class Task:
         return (self.downloaded_tiles / self.total_tiles) * 100.0
 
 
-@dataclass(slots=True)
+# slots=True 是 3.10+ 才支持的 dataclass 参数，项目 CI/打包基线是 Python 3.9
+# （docs/BUILD.md、.github/workflows 均为 3.9）——按版本条件启用：3.10+ 下载
+# 循环成万实例化 Tile 时省掉每实例 __dict__ 的开销，3.9 退回普通 dataclass。
+_tile_dataclass = dataclass(slots=True) if sys.version_info >= (3, 10) else dataclass
+
+
+@_tile_dataclass
 class Tile:
     """Tile data model for individual map tiles
 
-    slots=True：下载循环会成万地实例化 Tile，省掉每实例 __dict__ 的内存开销。
-    字段集固定（无人动态挂属性，from_row 那套 __new__ 绕过构造的写法只用在
-    Task 上），加 slots 不改变任何现有行为。
+    slots（3.10+ 启用）：下载循环会成万地实例化 Tile，省掉每实例 __dict__ 的
+    内存开销。字段集固定（无人动态挂属性，from_row 那套 __new__ 绕过构造的
+    写法只用在 Task 上），加 slots 不改变任何现有行为。
     """
     task_id: int
     zoom: int
