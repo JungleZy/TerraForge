@@ -87,14 +87,18 @@ def _write_png_tile(path, size=16, value=128):
 # ---------- C5: output_path 越界拒绝 ----------
 
 def test_create_task_rejects_output_path_outside_downloads(isolated_config):
+    from core.config import Config
     from services.task_manager import TaskManager
 
     tm = TaskManager()
     # 相对路径新口径:不再代为解析,直接拒绝并要求绝对路径(报错指路「浏览」按钮)
     with pytest.raises(ValueError, match='绝对路径'):
         tm.create_task(_params(output_path='../../outside'))
+    # 「绝对但越界」用动态路径:写死 /etc/evil 在 Windows 上不是绝对路径,
+    # 会落到「必须绝对路径」分支而非边界分支(CI 在 Windows 挂过)。
+    outside = str(Config.DOWNLOADS_DIR.parent / 'outside_downloads')
     with pytest.raises(ValueError, match='output_path'):
-        tm.create_task(_params(output_path='/etc/evil'))
+        tm.create_task(_params(output_path=outside))
 
 
 def test_create_task_accepts_output_path_inside_downloads(isolated_config):
