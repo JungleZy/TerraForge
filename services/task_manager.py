@@ -16,7 +16,7 @@ from core.database import get_connection, parse_db_timestamp, utc_now, utc_now_i
 from models.task import Task, Tile
 from services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD
 from services.config_manager import ConfigManager
-from services.geo_validation import resolve_output_dir, sanitize_filename
+from services.geo_validation import require_absolute_output_dir, sanitize_filename
 from services.task_cleanup import resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)
@@ -251,8 +251,9 @@ class TaskManager:
                 - zoom_min, zoom_max: Zoom level range
                 - style: Map style (roadmap, satellite, hybrid, terrain)
                 - output_format: Output format — both (stitched image + tiles),
-                  image_only (stitched image only; png/jpg are legacy synonyms),
-                  tiles_only (tiles only)
+                  image_only (same products as both; png/jpg are legacy synonyms),
+                  tiles_only (tiles only). All formats copy raw tiles to the
+                  output dir — the /tiles/<id>/ preview serves from there.
                 - output_path: Output directory path
 
         Returns:
@@ -269,12 +270,12 @@ class TaskManager:
         """
         logger.info(f"Creating task: {params.get('name', 'Unnamed')}")
 
-        # output_path 越界校验:相对路径相对 Config.DOWNLOADS_DIR 解析,解析结果
-        # 必须落在其内部,否则 resolve_output_dir 抛 ValueError(API 层映射 400)。
-        # 入库的是解析后的绝对路径(与 dem_task_manager.create_task 同口径)——
+        # output_path 校验:必须是绝对路径且落在 Config.DOWNLOADS_DIR 内,
+        # 否则 require_absolute_output_dir 抛 ValueError(API 层映射 400)。
+        # 入库的是校验后的绝对路径(与 dem_task_manager.create_task 同口径)——
         # 存原始相对值的话,_execute_task 里 Path(task.output_path) 会按进程
         # CWD 解析,打包 exe 从快捷方式启动(CWD≠BASE_DIR)时文件写到校验范围外。
-        output_path = resolve_output_dir(params['output_path'])
+        output_path = require_absolute_output_dir(params['output_path'])
 
         # Create Task object for validation
         # 传原始值,由 Task.__post_init__ 里的 validate_bbox/validate_zoom 统一
@@ -806,7 +807,7 @@ class TaskManager:
             ).lower() == 'true'
 
             # cache_enabled=false 时任务注定零产出:下载不落盘,而拼接
-            # (png/jpg/both/image_only)和瓦片复制(both/tiles_only)的输入
+            # (png/jpg/both/image_only)和瓦片复制(所有格式)的输入
             # 都是 cache 文件 —— 修复前这种任务会空跑一遍下载再被标
             # 'completed'。明确拒绝(走通用 except 标 failed + 如实错误信息),
             # 不为它保留「全量重下、完成态无法推导」的旧行为。
@@ -1263,9 +1264,11 @@ class TaskManager:
                                 'error_message': str(e)
                             })
 
-            # Copy tiles to output_path for formats that keep the raw tiles.
+            # Copy tiles to output_path — 所有格式都复制:历史预览的
+            # /tiles/<id>/ 瓦片服务以产物目录为来源,image_only 不复制的话
+            # 已完成任务的预览只能定位到区域、看不到任何已下载内容。
             # NOTE: this is a separate `if`, not `elif` — 'both' must do both.
-            if task.output_format in ['both', 'tiles_only']:
+            if task.output_format in ['png', 'jpg', 'both', 'image_only', 'tiles_only']:
                 logger.info(f"Task {task_id}: Copying tiles to output path ({task.output_format} mode)")
 
                 # Copy tiles from cache to output_path/task_{id}/
@@ -1388,8 +1391,9 @@ class TaskManager:
             stitch_detail = '; '.join(f"zoom {zoom}: {err}" for zoom, err in stitch_failures)
 
             if stitch_failures and not stitched_zooms:
-                # Nothing to show for the stitching at all — for image_only that is
-                # the entire requested output. Calling this "completed" would be a
+                # Nothing to show for the stitching at all. Tiles are copied for
+                # every format now, but the stitched mosaic is still the point of
+                # picking image_only/both — calling this "completed" would be a
                 # lie the user can only catch by browsing the output directory.
                 error_message = (
                     f"拼接全部失败({len(stitch_failures)} 个缩放级别): {stitch_detail}"

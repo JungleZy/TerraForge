@@ -301,6 +301,16 @@ class ConfigManager:
                 val = int(value)
                 return val >= 0
 
+            elif key == 'default_save_path':
+                # 绝对路径且落在 DOWNLOADS_DIR 内(与建任务同一口径);
+                # 相对/越界都拒绝 —— 存一个建任务时必被 400 的值没有意义
+                from services.geo_validation import require_absolute_output_dir
+                try:
+                    require_absolute_output_dir(str(value))
+                    return True
+                except ValueError:
+                    return False
+
             elif key == 'map_center_lat':
                 return self._is_valid_lat(value)
 

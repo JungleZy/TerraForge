@@ -81,7 +81,7 @@ class OutputFormat(Enum):
     JPG = "jpg"
     BOTH = "both"
     TILES_ONLY = "tiles_only"  # Only download tiles, no merging
-    IMAGE_ONLY = "image_only"  # Only stitched image, do not copy tiles out
+    IMAGE_ONLY = "image_only"  # Stitched image; tiles are still copied out (preview source)
 
     @classmethod
     def from_shorthand(cls, value: str) -> str:

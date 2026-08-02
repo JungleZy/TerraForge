@@ -59,10 +59,28 @@ def test_base_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
 
 def test_dem_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
     _app_mod, client = _load_app(monkeypatch, tmp_path)
-    tiles = tmp_path / "downloads" / "dem" / "dem_task_5" / "terrain_tiles"
+    # /terrain/dem 按 dem_tasks.output_path 解析并要求任务行存在(与
+    # tiles/contour/local 三路一致):先插行,路径指向默认 downloads/dem。
+    db = importlib.import_module("core.database")
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO dem_tasks (name, status, north, south, east, west, dataset, output_path)
+            VALUES ('dem', 'completed', 1, 0, 1, 0, 'COP-DEM-GLO-30', ?)
+            """,
+            (str(tmp_path / "downloads" / "dem"),),
+        )
+        task_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    tiles = tmp_path / "downloads" / "dem" / f"dem_task_{task_id}" / "terrain_tiles"
     _write(tiles / "0" / "0" / "0.terrain", GZ_PAYLOAD)
 
-    resp = client.get("/terrain/dem/5/0/0/0.terrain")
+    resp = client.get(f"/terrain/dem/{task_id}/0/0/0.terrain")
     assert resp.status_code == 200
     assert resp.headers.get("Content-Encoding") == "gzip"
     assert resp.data == GZ_PAYLOAD

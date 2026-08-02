@@ -6,6 +6,7 @@ Handles RESTful API endpoints for task management, history, and configuration.
 
 import logging
 from flask import Blueprint, request, jsonify
+from pathlib import Path
 from typing import Optional
 from core.database import get_connection, DEFAULT_CONFIGS
 from services.config_manager import ConfigManager
@@ -858,6 +859,44 @@ def reset_config():
     except Exception as e:
         logger.error(f"Error resetting config: {e}")
         return jsonify({'error': 'Failed to reset config'}), 500
+
+
+@api_bp.route('/fs/browse', methods=['GET'])
+def browse_dir():
+    """目录选择弹窗的数据源：列出 DOWNLOADS_DIR 内某目录的子目录。
+
+    Query: ?path=<绝对路径>（缺省 = DOWNLOADS_DIR 根）。
+    边界与建任务一致 —— 只允许浏览 DOWNLOADS_DIR 之内；越界/不存在/
+    不是目录一律 400。只列非隐藏子目录（文件不列，弹窗只选目录）。
+    parent 为 null 表示已到根（没有「上一级」可去）。
+    """
+    from core.config import Config
+
+    root = Config.DOWNLOADS_DIR.resolve()
+    raw = (request.args.get('path') or '').strip()
+    target = root if not raw else Path(raw).expanduser().resolve()
+    if target != root and root not in target.parents:
+        return jsonify({'success': False, 'error': '只能浏览下载目录之内的路径'}), 400
+    if not target.exists():
+        return jsonify({'success': False, 'error': '目录不存在'}), 400
+    if not target.is_dir():
+        return jsonify({'success': False, 'error': '不是目录'}), 400
+
+    try:
+        dirs = [
+            {'name': e.name, 'path': str(target / e.name)}
+            for e in sorted(target.iterdir(), key=lambda e: e.name)
+            if e.is_dir() and not e.name.startswith('.')
+        ]
+    except OSError as e:
+        return jsonify({'success': False, 'error': f'读取目录失败：{e}'}), 400
+
+    return jsonify({
+        'success': True,
+        'path': str(target),
+        'parent': None if target == root else str(target.parent),
+        'dirs': dirs,
+    })
 
 
 @api_bp.route('/config/recommend_concurrency', methods=['POST'])

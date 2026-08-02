@@ -768,6 +768,11 @@ async function deleteTask(taskId, taskType = 'map') {
 
         if (response.ok) {
             showToast('任务已删除', 'success');
+            // 预览中的正是被删任务时联动关闭（map.js 的预览管理器）；
+            // 独立页 /history 不加载 map.js，typeof 守卫兜底。
+            if (typeof stopTaskPreviewForTask === 'function') {
+                stopTaskPreviewForTask(taskType, taskId);
+            }
             // 删掉的是失败任务时，它那条常驻失败 toast（tasks.js 按 key 合并的）
             // 一并关掉——记录都没了，提示不该留在右上角。
             // 独立页 /history 不加载 tasks.js，typeof 守卫兜底。

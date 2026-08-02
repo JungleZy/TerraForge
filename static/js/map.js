@@ -57,13 +57,30 @@ function estimateTileCount(bounds, zoomMin, zoomMax) {
     return total;
 }
 
+// 单选组取值：下载类型从下拉改成 radio 后，统一从 :checked 取。
+function _radioValue(name, fallback) {
+    return document.querySelector(`input[name="${name}"]:checked`)?.value || fallback;
+}
+
+// 输出格式多选（瓦片 / GeoTIFF 两个 checkbox）映射回后端 OutputFormat 枚举：
+// 都勾 → both；只勾瓦片 → tiles_only；只勾 GeoTIFF → image_only；
+// 都不勾 → null（提交时拦下，不可能有没有产出的下载）。
+function _outputFormatValue() {
+    const tiles = document.getElementById('outputFormatTiles')?.checked;
+    const geotiff = document.getElementById('outputFormatGeoTiff')?.checked;
+    if (tiles && geotiff) return 'both';
+    if (tiles) return 'tiles_only';
+    if (geotiff) return 'image_only';
+    return null;
+}
+
 // 刷新 #tileEstimate 读数，返回 {count, over}（无选区/DEM 模式返回 null）。
 // 0.1.4 起瓦片数是软阈值：不再禁用提交，只提示并在提交时要求二次确认。
 // DEM 下载按颗粒计、不用瓦片数，高程模式下隐藏读数。
 function updateTileEstimate() {
     const el = document.getElementById('tileEstimate');
     if (!el) return null;
-    const type = document.getElementById('downloadType')?.value || 'map';
+    const type = _radioValue('downloadType', 'map');
     if (type === 'dem' || !currentBounds) {
         el.hidden = true;
         return null;
@@ -475,8 +492,6 @@ function _initMapTools() {
     if (drawBtn) drawBtn.addEventListener('click', function () {
         if (_drawing) _exitDrawMode(); else _enterDrawMode();
     });
-    const clearBtn = document.getElementById('mapClearSelection');
-    if (clearBtn) clearBtn.addEventListener('click', function () { clearSelection(); });
     const zoomInBtn = document.getElementById('mapZoomIn');
     if (zoomInBtn) zoomInBtn.addEventListener('click', function () {
         viewer.camera.zoomIn(viewer.camera.positionCartographic.height * 0.5);
@@ -503,12 +518,12 @@ function initMapStylePreview() {
 }
 
 function initDownloadTypeToggle() {
-    // 数据下载表单（#downloadForm）：地图瓦片 / DEM。
-    const typeEl = document.getElementById('downloadType');
-    if (!typeEl) return;
+    // 数据下载表单（#downloadForm）：地图瓦片 / DEM（radio 组，按 name 取）。
+    const typeRadios = document.querySelectorAll('input[name="downloadType"]');
+    if (!typeRadios.length) return;
 
     const zoomRow = document.getElementById('zoomMin')?.closest('.row');
-    const outputFormatField = document.getElementById('outputFormat')?.closest('.mb-3');
+    const outputFormatField = document.querySelector('input[name="outputFormat"]')?.closest('.mb-3');
 
     const mapStyleField = document.getElementById('mapStyleField');
 
@@ -525,7 +540,7 @@ function initDownloadTypeToggle() {
     }
 
     function apply() {
-        const t = typeEl.value;
+        const t = _radioValue('downloadType', 'map');
         const isMap = t === 'map';
         const isDem = t === 'dem';
         // Zoom range is map-only; DEM zoom is fixed by the dataset.
@@ -537,7 +552,11 @@ function initDownloadTypeToggle() {
 
         const outputPath = document.getElementById('outputPath');
         if (outputPath && !outputPath.dataset.userEdited) {
-            outputPath.value = isDem ? './downloads/dem' : './downloads/map';
+            // 默认保存路径一律绝对:default_save_path 已在 init_database 归一成
+            // 绝对值(0.2.3 起建任务拒相对路径);拿不到配置仅是模板未注入的兜底。
+            const base = ((typeof config !== 'undefined' && config && config.default_save_path) || './downloads')
+                .trim().replace(/[\\/]+$/, '');
+            outputPath.value = base + (isDem ? '/dem' : '/map');
         }
 
         // 切到 DEM 时隐藏读数、切回瓦片时按当前选区/缩放重算——不刷的话
@@ -546,7 +565,7 @@ function initDownloadTypeToggle() {
         refreshSubmitButtonState();
     }
 
-    typeEl.addEventListener('change', apply);
+    typeRadios.forEach(function (r) { r.addEventListener('change', apply); });
 
     // 缩放级别变化实时刷新瓦片预估（顺带经 refreshSubmitButtonState 更新按钮态）
     ['zoomMin', 'zoomMax'].forEach(function (id) {
@@ -744,8 +763,11 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
         updateBoundsInfo();
     }
 
-    // 让 apply() 重新按当前类型摆好字段可见性和默认路径
-    const typeEl = document.getElementById(formId === 'downloadForm' ? 'downloadType' : 'processType');
+    // 让 apply() 重新按当前类型摆好字段可见性和默认路径。
+    // 下载类型是 radio 组（按 name 取选中项），处理类型仍是 <select>（按 id 取）。
+    const fieldName = formId === 'downloadForm' ? 'downloadType' : 'processType';
+    const typeEl = document.getElementById(fieldName)
+        || document.querySelector(`input[name="${fieldName}"]:checked`);
     if (typeEl) typeEl.dispatchEvent(new Event('change'));
 
     refreshSubmitButtonState();
@@ -763,7 +785,8 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
  *      test_bounds_labels_bind_to_the_right_coordinate 逐对钉住；
  *      `.bounds-sr` 读屏方位词由 test_bounds_readout_is_announced_to_screen_readers
  *      钉住。这两段 markup 不要动结构。
- *   2. .bounds-actions —— 「下载」按钮（打开下载弹窗）+ 调整提示。
+ *   2. .bounds-actions —— 「下载」按钮（打开下载弹窗）+ 「删除」按钮
+ *      （清空选区）+ 调整提示。
  *
  * 小数 5 位（≈1.1m），框选下载范围够用，两个数字并排也放得下。
  */
@@ -787,6 +810,13 @@ function updateBoundsInfo() {
                         <line x1="12" y1="15" x2="12" y2="3"></line>
                     </svg>
                     下载
+                </button>
+                <button type="button" class="btn btn-danger btn-sm" id="boundsClearBtn" title="清除选区">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    删除
                 </button>
                 <span class="bounds-hint">拖拽角点调整 · 点击数值编辑</span>
             </div>
@@ -926,7 +956,7 @@ function _afterTaskCreated(modalId) {
 document.getElementById('downloadForm').addEventListener('submit', async function(e) {
     e.preventDefault();
 
-    const downloadType = document.getElementById('downloadType')?.value || 'map';
+    const downloadType = _radioValue('downloadType', 'map');
 
     if (!currentBounds) {
         showNotification('请先在地图上框选下载区域', 'warning');
@@ -960,6 +990,11 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
         };
         apiUrl = '/api/dem/tasks';
     } else {
+        const outputFormat = _outputFormatValue();
+        if (!outputFormat) {
+            showNotification('请至少勾选一种输出格式（瓦片 / GeoTIFF）', 'warning');
+            return;
+        }
         taskData = {
             name: document.getElementById('taskName').value,
             north: currentBounds.north,
@@ -969,7 +1004,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
             zoom_min: parseInt(document.getElementById('zoomMin').value),
             zoom_max: parseInt(document.getElementById('zoomMax').value),
             style: document.getElementById('mapStyle').value,
-            output_format: document.getElementById('outputFormat').value,
+            output_format: outputFormat,
             output_path: document.getElementById('outputPath').value
         };
         apiUrl = '/api/tasks';
@@ -1127,12 +1162,13 @@ let contourPreviewActiveId = null;
 // 各类已完成任务的可视化输出在 Cesium 主视图上预览：
 //   地图瓦片任务 -> XYZ 瓦片叠加（/tiles/<id>/，按任务 output_path 服务）
 //   等高线任务   -> XYZ 瓦片叠加（/contour/<id>/）
-//   本地高程切片 -> Cesium 地形（/terrain/local/<id>/layer.json）
+//   本地高程切片 -> Cesium 地形（/terrain/local/<id>/layer.json，valid_bounds 定位）
 //   DEM 任务     -> 地形切片存在时按 Cesium 地形预览（/terrain/dem/<id>/layer.json）
+//   dem/local_terrain 无切片 -> 源 DEM 晕渲图单图叠加（<base>/hillshade 按需渲染）
 // 同一时刻只有一个预览；「关闭预览」撤掉影像层并还原默认椭球地形。
-let _previewState = null;   // { kind: 'imagery'|'terrain', taskId, name, layer?, prevTerrainProvider? }
-// 预览调用序号：地形分支有 await(HEAD 探测 + fromUrl)，期间用户可能已切到
-// 另一个预览或关闭预览；await 返回后比对序号，过期结果直接丢弃不落地。
+let _previewState = null;   // { kind: 'imagery'|'terrain', taskId, taskType, name, layer?, prevTerrainProvider? }
+// 预览调用序号：地形分支有 await(layer.json + fromUrl / hillshade)，期间用户可能
+// 已切到另一个预览或关闭预览；await 返回后比对序号，过期结果直接丢弃不落地。
 let _previewSeq = 0;
 
 function stopTaskPreview() {
@@ -1151,6 +1187,14 @@ function stopTaskPreview() {
     _renderPreviewChip();
 }
 
+// 删除任务时的联动（history.js 删除成功后调用）：预览中的正是被删任务，
+// 留着只会让瓦片逐个 404、chip 挂着一个不存在的任务 —— 直接关掉。
+function stopTaskPreviewForTask(taskType, taskId) {
+    if (_previewState && _previewState.taskType === taskType && _previewState.taskId === taskId) {
+        stopTaskPreview();
+    }
+}
+
 async function previewTask(task) {
     if (!viewer) return;
     stopTaskPreview();
@@ -1167,26 +1211,60 @@ async function previewTask(task) {
                 })
             );
             layer.alpha = 0.9;
-            _previewState = { kind: 'imagery', taskId: task.id, name: task.name, layer };
+            _previewState = { kind: 'imagery', taskId: task.id, taskType: t, name: task.name, layer };
             if (t === 'contour') contourPreviewActiveId = task.id;
         } else if (t === 'local_terrain' || t === 'dem') {
-            const url = t === 'local_terrain'
-                ? `/terrain/local/${task.id}/layer.json`
-                : `/terrain/dem/${task.id}/layer.json`;
-            // 地形切片不存在时 layer.json 404：先探一下，没有就只飞到区域
-            const ok = await fetch(url, { method: 'HEAD' }).then((r) => r.ok).catch(() => false);
+            const base = t === 'local_terrain'
+                ? `/terrain/local/${task.id}`
+                : `/terrain/dem/${task.id}`;
+            // GET 而非 HEAD：layer.json 里的 valid_bounds 是数据真实范围，
+            // 任务行没有 bbox（local_terrain）时靠它定位。
+            const layerMeta = await fetch(`${base}/layer.json`)
+                .then((r) => (r.ok ? r.json() : null))
+                .catch(() => null);
             if (seq !== _previewSeq) return;   // await 期间预览已被切换/关闭
-            if (ok) {
+            if (layerMeta) {
                 const prev = viewer.terrainProvider;
                 // 先 await 到局部变量，序号仍有效才落地，避免过期结果覆盖当前预览
-                const provider = await Cesium.CesiumTerrainProvider.fromUrl(url);
+                const provider = await Cesium.CesiumTerrainProvider.fromUrl(`${base}/layer.json`);
                 if (seq !== _previewSeq) return;
                 viewer.terrainProvider = provider;
-                _previewState = { kind: 'terrain', taskId: task.id, name: task.name, prevTerrainProvider: prev };
+                _previewState = { kind: 'terrain', taskId: task.id, taskType: t, name: task.name, prevTerrainProvider: prev };
+                if (task.north == null && Array.isArray(layerMeta.valid_bounds) && layerMeta.valid_bounds.length === 4) {
+                    const b = layerMeta.valid_bounds;   // [west, south, east, north]
+                    viewer.camera.flyTo({
+                        destination: Cesium.Rectangle.fromDegrees(b[0], b[1], b[2], b[3]),
+                        duration: 1.2,
+                    });
+                }
             } else {
-                showNotification(t === 'dem'
-                    ? '该任务还没有地形切片（可在详情里启动），仅定位到区域'
-                    : '切片文件不存在，仅定位到区域', 'info');
+                // 无地形切片：退到源 DEM 的晕渲预览（后端按需渲染 *_dem.tif），
+                // 也没有源文件时才只定位。
+                const hs = await fetch(`${base}/hillshade`)
+                    .then((r) => (r.ok ? r.json() : null))
+                    .catch(() => null);
+                if (seq !== _previewSeq) return;
+                if (hs && hs.url && Array.isArray(hs.bounds) && hs.bounds.length === 4) {
+                    const layer = viewer.imageryLayers.addImageryProvider(
+                        new Cesium.SingleTileImageryProvider({
+                            url: hs.url,
+                            rectangle: Cesium.Rectangle.fromDegrees(hs.bounds[0], hs.bounds[1], hs.bounds[2], hs.bounds[3]),
+                        })
+                    );
+                    layer.alpha = 0.85;
+                    _previewState = { kind: 'imagery', taskId: task.id, taskType: t, name: task.name, layer };
+                    if (task.north == null) {
+                        viewer.camera.flyTo({
+                            destination: Cesium.Rectangle.fromDegrees(hs.bounds[0], hs.bounds[1], hs.bounds[2], hs.bounds[3]),
+                            duration: 1.2,
+                        });
+                    }
+                    showNotification('该任务还没有地形切片，显示源 DEM 的晕渲预览', 'info');
+                } else {
+                    showNotification(t === 'dem'
+                        ? '该任务没有地形切片、也没有可渲染的 DEM 源文件，仅定位到区域'
+                        : '切片与源文件都不存在，仅定位到区域', 'info');
+                }
             }
         }
         if (task.north != null && task.south != null && task.east != null && task.west != null) {
@@ -1232,15 +1310,20 @@ function toggleContourPreview(taskId, zoomMax) {
         return;
     }
     const info = contourPreviewTasks.get(taskId) || {};
-    // 不传 bbox 键：previewTask 的 `task.north != null` 检查会跳过 flyTo，
-    // 也避免造一个无意义的 null-bbox 字面量（契约测试会逐键扫方位配对）。
     previewTask({
         id: taskId, task_type: 'contour', zoom_max: zoomMax,
         name: info.name || ('等高线 #' + taskId),
+        // contour_tasks 行有 bbox（列表接口 SELECT * 带出来的）：带上才能
+        // flyTo 到任务区域，与历史面板的预览行为对齐。没拿到时不传键，
+        // previewTask 的 `task.north != null` 检查会跳过 flyTo。
+        ...(info.north != null
+            ? { north: info.north, south: info.south, east: info.east, west: info.west }
+            : {}),
     });
 }
 
-// Completed contour tasks available for preview: id -> {name, zoom_max}.
+// Completed contour tasks available for preview: id -> {name, zoom_max, north?, south?, east?, west?}.
+// bbox 用于预览时 flyTo（列表接口的行带不出 bbox 的兜底场景除外）。
 const contourPreviewTasks = new Map();
 
 function contourPreviewPanel() {
@@ -1291,7 +1374,10 @@ async function registerCompletedContourTask(taskId) {
         const data = await resp.json();
         const task = (data.tasks || []).find(t => t.id === taskId);
         if (task) {
-            contourPreviewTasks.set(taskId, { name: task.name, zoom_max: task.zoom_max });
+            contourPreviewTasks.set(taskId, {
+                name: task.name, zoom_max: task.zoom_max,
+                north: task.north, south: task.south, east: task.east, west: task.west,
+            });
         } else {
             contourPreviewTasks.set(taskId, { name: '等高线 #' + taskId, zoom_max: null });
         }
@@ -1322,7 +1408,10 @@ function initContourPreview() {
         const tasks = (typeof latestContourTasks !== 'undefined') ? latestContourTasks : [];
         tasks.forEach(function(t) {
             if (t.status === 'completed') {
-                contourPreviewTasks.set(t.id, { name: t.name, zoom_max: t.zoom_max });
+                contourPreviewTasks.set(t.id, {
+                    name: t.name, zoom_max: t.zoom_max,
+                    north: t.north, south: t.south, east: t.east, west: t.west,
+                });
             }
         });
         updateContourPreviewButtons();
@@ -1489,13 +1578,18 @@ function initMapWorkbench() {
     }, 50);
 
     // bounds 浮层交互（事件代理，浮层内容每次 updateBoundsInfo 都重渲染）：
-    // 「下载」按钮 -> 下载弹窗；.bounds-v 数值 -> 点击编辑。
+    // 「下载」按钮 -> 下载弹窗；「删除」按钮 -> 清空选区；.bounds-v 数值 -> 点击编辑。
     const boundsInfo = document.getElementById('boundsInfo');
     if (boundsInfo) {
         boundsInfo.addEventListener('click', function (e) {
             const dl = e.target.closest('#boundsDownloadBtn');
             if (dl) {
                 openDownloadModal();
+                return;
+            }
+            const clr = e.target.closest('#boundsClearBtn');
+            if (clr) {
+                clearSelection();
                 return;
             }
             const v = e.target.closest('.bounds-v');

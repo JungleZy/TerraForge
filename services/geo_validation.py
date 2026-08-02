@@ -77,6 +77,9 @@ def resolve_output_dir(raw, base_dir=None):
     - 解析结果必须等于 base_dir 或位于其内部；`../` 逃逸、指向别处的绝对路径
       抛 ValueError（调用方在 API 层转成 400）。
     返回 str 绝对路径（不创建目录）。
+
+    注意：这是「读历史数据」的兼容入口（存量任务行可能是相对路径）。
+    新的用户输入走 require_absolute_output_dir —— 相对值直接拒绝。
     """
     from pathlib import Path
 
@@ -92,6 +95,24 @@ def resolve_output_dir(raw, base_dir=None):
             f"output_path ({raw!r}) resolves outside the downloads directory"
         )
     return str(resolved)
+
+
+def require_absolute_output_dir(raw, base_dir=None):
+    """校验用户输入的保存路径：必须是绝对路径，且落在 base_dir 之内。
+
+    与 resolve_output_dir 的边界规则完全相同，唯一区别是相对路径不再
+    代为解析而是直接拒绝 —— UI 一律展示/提交绝对路径（「浏览」按钮选出
+    来的就是绝对值），相对输入多半是手滑或旧脚本，放行会让 exe 换目录
+    启动后落盘位置漂移。报错文案指路「浏览」按钮。
+    """
+    from pathlib import Path
+
+    p = Path(str(raw)).expanduser()
+    if not p.is_absolute():
+        raise ValueError(
+            f"保存路径必须是绝对路径（收到 {raw!r}），可点输入框旁的「浏览」选择"
+        )
+    return resolve_output_dir(str(p), base_dir)
 
 
 def sanitize_filename(name, default="task"):

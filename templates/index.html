@@ -29,9 +29,9 @@
     <div class="index-map">
         <div id="map"></div>
         <!-- 左列工具条（Cesium 时代全自绘，不再借 Leaflet 控件容器）：
-             三组 —— 视图（放大/缩小）、框选（画矩形选区/清除）、
+             三组 —— 视图（放大/缩小）、框选（画矩形选区）、
              功能（数据处理弹窗/任务面板/配置面板）。图标在上文字在下。
-             「下载」不是常驻入口：框选后由选区浮层上的「下载」按钮触发。 -->
+             「下载」「删除」不是常驻入口：框选后出现在选区浮层上。 -->
         <div class="map-toolbar" id="mapToolbar">
             <div class="map-panel-triggers">
                 <button type="button" class="map-panel-btn" id="mapZoomIn" aria-label="放大" title="放大">
@@ -53,13 +53,6 @@
                         <rect x="4" y="4" width="16" height="16" rx="1"></rect>
                     </svg>
                     <span>框选</span>
-                </button>
-                <button type="button" class="map-panel-btn" id="mapClearSelection" aria-label="清除选区" title="清除选区">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 6 5 6 21 6"></polyline>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                    </svg>
-                    <span>删除</span>
                 </button>
             </div>
             <div class="map-panel-triggers" id="mapPanelTriggers">
@@ -90,7 +83,7 @@
                 </button>
             </div>
         </div>
-        <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「下载」入口 -->
+        <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「下载」「删除」入口 -->
         <div class="bounds-overlay" id="boundsInfo" role="status" aria-live="polite"></div>
     </div>
 </div>
@@ -123,11 +116,33 @@
                     </div>
 
                     <div class="mb-3">
-                        <label for="downloadType" class="form-label">下载类型</label>
-                        <select class="form-select" id="downloadType">
-                            <option value="map">瓦片</option>
-                            <option value="dem">高程</option>
-                        </select>
+                        <label class="form-label">下载类型</label>
+                        <div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="downloadType" id="downloadTypeMap" value="map" checked>
+                                <label class="form-check-label" for="downloadTypeMap">瓦片</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="downloadType" id="downloadTypeDem" value="dem">
+                                <label class="form-check-label" for="downloadTypeDem">高程</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">输出格式</label>
+                        <div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatTiles" checked>
+                                <label class="form-check-label" for="outputFormatTiles">瓦片</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatGeoTiff" checked>
+                                <label class="form-check-label" for="outputFormatGeoTiff">GeoTIFF</label>
+                            </div>
+                            <!-- 多选映射回后端枚举（map.js _outputFormatValue）:
+                                 都勾 → both,只勾瓦片 → tiles_only,只勾 GeoTIFF → image_only。 -->
+                        </div>
                     </div>
 
                     <div class="form-group-label">范围与层级</div>
@@ -156,15 +171,6 @@
                         </div>
                     </div>
 
-                    <div class="mb-3">
-                        <label for="outputFormat" class="form-label">输出格式</label>
-                        <select class="form-select" id="outputFormat">
-                            <option value="both">瓦片+拼接图</option>
-                            <option value="tiles_only">仅瓦片</option>
-                            <option value="image_only">仅拼接图</option>
-                        </select>
-                    </div>
-
                     <div class="mb-3" id="demOptions" style="display:none;">
                         <label for="demDataset" class="form-label">数据源</label>
                         <select class="form-select mb-2" id="demDataset">
@@ -185,7 +191,11 @@
                     <div class="form-group-label">输出</div>
                     <div class="mb-3">
                         <label for="outputPath" class="form-label">保存路径</label>
-                        <input type="text" class="form-control" id="outputPath" value="./downloads/map" placeholder="输入保存路径...">
+                        <div class="d-flex gap-2 align-items-center">
+                            <input type="text" class="form-control" id="outputPath" placeholder="绝对路径,可点「浏览」选择">
+                            <button type="button" class="btn btn-outline-primary path-browse" id="outputPathBrowse"
+                                    onclick="openPathBrowser('outputPath')">浏览</button>
+                        </div>
                     </div>
 
                     <button type="submit" class="btn btn-primary w-100" id="createTaskBtn" disabled>

@@ -8,11 +8,13 @@ import logging
 import time
 from pathlib import Path
 
-from flask import Blueprint, abort, current_app, send_file
+from flask import Blueprint, abort, current_app, jsonify, send_file
 
 from core.config import Config
 from core.database import get_connection
 from services.config_manager import ConfigManager
+from services.geo_validation import resolve_output_dir
+from services.hillshade_preview import ensure_hillshade
 
 logger = logging.getLogger(__name__)
 
@@ -163,9 +165,60 @@ def terrain_base_static(subpath: str):
     return _send_terrain_file(target)
 
 
-@terrain_static_bp.route("/dem/<task_id>/<path:subpath>", methods=["GET"])
-def terrain_dem_static(task_id: str, subpath: str):
-    base_dir = Path(Config.DOWNLOADS_DIR) / "dem" / f"dem_task_{task_id}" / "terrain_tiles"
+# dem 任务 output_path 缓存：地形瓦片请求是热路径，output_path 创建后永不变，
+# 没必要每瓦片查一次。只缓存正结果（查不到不缓存，新任务立即可见）；删除任务时
+# 路由层必须调 invalidate_dem_task —— 任务行没了但磁盘切片可能还在
+# （delete_files 默认 false），不失效的话已删任务的瓦片还能访问到，与其他三条
+# 静态瓦片路由（tiles/contour/local）的行为不一致。
+# 缓存挂 app.extensions 而非模块级：测试每次 fresh-import app 都得到干净缓存。
+_CACHE_KEY_DEM_OUTPUT_PATH = "terrain_static_dem_output_path"
+
+
+def _dem_output_path_cache() -> dict:
+    return current_app.extensions.setdefault(_CACHE_KEY_DEM_OUTPUT_PATH, {})
+
+
+def invalidate_dem_task(task_id: int) -> None:
+    """任务删除时由路由层调用（请求上下文内），清掉该任务的 output_path 缓存项。"""
+    _dem_output_path_cache().pop(task_id, None)
+
+
+def _get_dem_output_path(task_id: int):
+    cache = _dem_output_path_cache()
+    if task_id in cache:
+        return cache[task_id]
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT output_path FROM dem_tasks WHERE id = ?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    cache[task_id] = row["output_path"]
+    return row["output_path"]
+
+
+def _resolve_dem_task_output_dir(output_path: str) -> Path:
+    """与切片写入侧 dem_task_manager._resolve_task_output_dir 同口径：
+
+    绝对路径原样；相对路径（存量任务行的历史值）按 DOWNLOADS_DIR 解析。
+    读侧必须镜像写侧 —— 此前这里硬编码 DOWNLOADS_DIR/dem，用户自定义保存路径
+    （仍在 DOWNLOADS_DIR 内，合法）时切片写在 <output_path>/dem_task_<id>/，
+    路由读不到，地形预览 404 退化成「仅定位到区域」。
+    """
+    p = Path(output_path)
+    if p.is_absolute():
+        return p
+    return Path(resolve_output_dir(output_path))
+
+
+@terrain_static_bp.route("/dem/<int:task_id>/<path:subpath>", methods=["GET"])
+def terrain_dem_static(task_id: int, subpath: str):
+    output_path = _get_dem_output_path(task_id)
+    if output_path is None:
+        abort(404)
+
+    base_dir = _resolve_dem_task_output_dir(output_path) / f"dem_task_{task_id}" / "terrain_tiles"
     target = _resolve_safe_file(base_dir, subpath)
     if not target.exists() or target.is_dir():
         abort(404)
@@ -177,8 +230,10 @@ def terrain_local_static(task_id: int, subpath: str):
     # Confirm the task exists, but DO NOT trust the absolute output_dir stored at
     # creation time: in frozen/PyInstaller mode DOWNLOADS_DIR is anchored to the
     # executable's directory, so a stored absolute path breaks if the executable
-    # is moved. Recompute the path from the current DOWNLOADS_DIR (same approach
-    # as terrain_dem_static) so serving survives relocation.
+    # is moved. local 任务的产物目录是固定布局（DOWNLOADS_DIR/terrain/local_task_<id>），
+    # 直接从当前 DOWNLOADS_DIR 重算即可，serving 因此能扛住 exe 挪目录。
+    # （dem 任务产物目录随任务 output_path 走、不是固定布局，只能按任务行解析，
+    #   见 terrain_dem_static。）
     if not _local_task_exists(task_id):
         abort(404)
 
@@ -187,4 +242,68 @@ def terrain_local_static(task_id: int, subpath: str):
     if not target.exists() or target.is_dir():
         abort(404)
     return _send_terrain_file(target)
+
+
+# ---------------------------------------------------------------------------
+# 无切片任务的源 DEM 晕渲预览（services/hillshade_preview.py）
+#
+# 路由尾段是静态串（hillshade / hillshade.png），Werkzeug 的静态优先于
+# <path:subpath> 通配，不会被上面的瓦片路由吃掉。
+# ---------------------------------------------------------------------------
+
+
+def _hillshade_json(task_dir: Path, raster_dir: Path, png_url: str):
+    result = ensure_hillshade(raster_dir, task_dir)
+    if result is None:
+        abort(404)
+    _, bounds = result
+    return jsonify({"url": png_url, "bounds": bounds})
+
+
+def _hillshade_png(task_dir: Path, raster_dir: Path):
+    result = ensure_hillshade(raster_dir, task_dir)
+    if result is None:
+        abort(404)
+    png_path, _ = result
+    resp = send_file(str(png_path))
+    # 同任务的源文件不变则内容不变；但缓存文件可能被手动删掉重建，不用 immutable
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+def _dem_task_dir_or_404(task_id: int) -> Path:
+    output_path = _get_dem_output_path(task_id)
+    if output_path is None:
+        abort(404)
+    return _resolve_dem_task_output_dir(output_path) / f"dem_task_{task_id}"
+
+
+def _local_task_dir_or_404(task_id: int) -> Path:
+    if not _local_task_exists(task_id):
+        abort(404)
+    return Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
+
+
+@terrain_static_bp.route("/dem/<int:task_id>/hillshade", methods=["GET"])
+def terrain_dem_hillshade(task_id: int):
+    task_dir = _dem_task_dir_or_404(task_id)
+    return _hillshade_json(task_dir, task_dir, f"/terrain/dem/{task_id}/hillshade.png")
+
+
+@terrain_static_bp.route("/dem/<int:task_id>/hillshade.png", methods=["GET"])
+def terrain_dem_hillshade_png(task_id: int):
+    task_dir = _dem_task_dir_or_404(task_id)
+    return _hillshade_png(task_dir, task_dir)
+
+
+@terrain_static_bp.route("/local/<int:task_id>/hillshade", methods=["GET"])
+def terrain_local_hillshade(task_id: int):
+    task_dir = _local_task_dir_or_404(task_id)
+    return _hillshade_json(task_dir, task_dir / "source", f"/terrain/local/{task_id}/hillshade.png")
+
+
+@terrain_static_bp.route("/local/<int:task_id>/hillshade.png", methods=["GET"])
+def terrain_local_hillshade_png(task_id: int):
+    task_dir = _local_task_dir_or_404(task_id)
+    return _hillshade_png(task_dir, task_dir / "source")
 

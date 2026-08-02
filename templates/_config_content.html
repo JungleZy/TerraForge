@@ -43,8 +43,13 @@
 
                     <div class="mb-3">
                         <label for="default_save_path" class="form-label">默认保存路径</label>
-                        <input type="text" class="form-control" id="default_save_path"
-                               value="{{ config.default_save_path }}" placeholder="./downloads/map">
+                        <div class="d-flex gap-2 align-items-center">
+                            <input type="text" class="form-control" id="default_save_path"
+                                   value="{{ config.default_save_path }}" placeholder="绝对路径,可点「浏览」选择">
+                            <button type="button" class="btn btn-outline-primary path-browse" id="defaultSavePathBrowse"
+                                    onclick="openPathBrowser('default_save_path')">浏览</button>
+                        </div>
+                        <small class="form-text d-block mt-1">必须是绝对路径且位于下载根目录之内。</small>
                     </div>
 
                     <div class="row">

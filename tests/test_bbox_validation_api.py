@@ -22,19 +22,26 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _map_task_payload(**overrides):
+    from core import config
+
     payload = {
         "name": "t", "north": 40.0, "south": 39.0, "east": 117.0, "west": 116.0,
         "zoom_min": 10, "zoom_max": 11, "style": "roadmap",
-        "output_format": "tiles_only", "output_path": "downloads",
+        # 保存路径新口径:一律绝对路径(相对值 → 400),默认 DOWNLOADS_DIR 下子目录
+        "output_format": "tiles_only",
+        "output_path": str(config.Config.DOWNLOADS_DIR / "downloads"),
     }
     payload.update(overrides)
     return payload
 
 
 def _dem_task_payload(**overrides):
+    from core import config
+
     payload = {
         "name": "t", "north": 40.0, "south": 39.0, "east": 117.0, "west": 116.0,
-        "output_path": "downloads", "dataset": "ASTGTM.003",
+        "output_path": str(config.Config.DOWNLOADS_DIR / "downloads"),
+        "dataset": "ASTGTM.003",
     }
     payload.update(overrides)
     return payload

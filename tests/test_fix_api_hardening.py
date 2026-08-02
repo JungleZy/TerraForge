@@ -42,10 +42,14 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _map_payload(**overrides):
+    from core import config
+
     payload = {
         "name": "t", "north": 40.0, "south": 39.0, "east": 117.0, "west": 116.0,
         "zoom_min": 10, "zoom_max": 11, "style": "roadmap",
-        "output_format": "tiles_only", "output_path": "downloads",
+        # 保存路径新口径:一律绝对路径(相对值 → 400),默认 DOWNLOADS_DIR 下子目录
+        "output_format": "tiles_only",
+        "output_path": str(config.Config.DOWNLOADS_DIR / "downloads"),
     }
     payload.update(overrides)
     return payload
@@ -126,12 +130,19 @@ def test_create_map_task_output_path_outside_downloads_400(monkeypatch, tmp_path
     _, client = _load_app(monkeypatch, tmp_path)
     resp = client.post("/api/tasks", json=_map_payload(output_path=bad_path))
     assert resp.status_code == 400, resp.get_json()
-    assert 'output_path' in resp.get_json()['error']
+    error = resp.get_json()['error']
+    if bad_path.startswith('/'):
+        # 绝对路径越界:仍按边界规则拒绝
+        assert 'output_path' in error
+    else:
+        # 相对路径新口径:不再代为解析,直接要求绝对路径(文案指路「浏览」)
+        assert '绝对路径' in error
 
 
 def test_create_map_task_output_path_inside_downloads_201(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    resp = client.post("/api/tasks", json=_map_payload(output_path='downloads'))
+    resp = client.post("/api/tasks", json=_map_payload(
+        output_path=str(tmp_path / 'downloads' / 'sub')))
     assert resp.status_code == 201, resp.get_json()
 
 

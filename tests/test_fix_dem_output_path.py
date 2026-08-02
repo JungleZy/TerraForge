@@ -1,8 +1,9 @@
 """C5/I16/I14: output_path 校验与解析、任务名消毒、local_path 与实际落盘一致。
 
-- C5: 创建任务时 output_path 必须解析并强制落在 Config.DOWNLOADS_DIR 内，
-  越界抛 ValueError（路由层转 400）；任务名消毒后再入库。
-- I16: 相对 output_path 相对 Config.DOWNLOADS_DIR 解析，不依赖进程 CWD。
+- C5: 创建任务时 output_path 必须是绝对路径且落在 Config.DOWNLOADS_DIR 内，
+  相对路径/越界一律抛 ValueError（路由层转 400）；任务名消毒后再入库。
+- I16: 存量数据的相对 output_path 在执行时相对 Config.DOWNLOADS_DIR 解析，
+  不依赖进程 CWD（仅兼容历史行，新输入不再接受相对值）。
 - I14: COP-DEM 嵌套 granule_id 的 local_path 必须与实际落盘（basename）一致。
 """
 
@@ -47,21 +48,17 @@ def test_create_task_rejects_absolute_path_outside_downloads(monkeypatch, tmp_pa
         mgr.create_task({"name": "x", **BBOX, "output_path": str(tmp_path / "outside")})
 
 
-def test_create_task_resolves_relative_output_path_against_downloads(monkeypatch, tmp_path):
+def test_create_task_rejects_relative_output_path(monkeypatch, tmp_path):
+    """新口径:保存路径一律要求绝对路径,相对值不再代为解析,直接拒绝。
+
+    (本测试翻面前钉的是旧行为「相对路径相对 DOWNLOADS_DIR 解析入库」;
+    UI 的「浏览」按钮选出的就是绝对路径,相对输入多半是手滑或旧脚本,
+    放行会让 exe 换目录启动后落盘位置漂移。)"""
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
-    task_id = mgr.create_task({"name": "x", **BBOX, "output_path": "sub/dir"})
 
-    conn = db.get_connection()
-    try:
-        row = conn.execute("SELECT output_path FROM dem_tasks WHERE id=?", (task_id,)).fetchone()
-    finally:
-        conn.close()
-
-    expected = str((tmp_path / "downloads" / "sub" / "dir").resolve())
-    assert row["output_path"] == expected, (
-        f"相对 output_path 必须相对 DOWNLOADS_DIR 解析成绝对路径，实际: {row['output_path']}"
-    )
+    with pytest.raises(ValueError, match='绝对路径'):
+        mgr.create_task({"name": "x", **BBOX, "output_path": "sub/dir"})
 
 
 def test_create_task_sanitizes_name(monkeypatch, tmp_path):

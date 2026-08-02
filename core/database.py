@@ -525,6 +525,35 @@ def init_database():
             DEFAULT_CONFIGS
         )
 
+        # 存量相对 default_save_path(如 './downloads')一次性归一成绝对路径:
+        # 0.2.3 起保存路径一律绝对(建任务/配置保存都拒相对值),UI 不该再有
+        # 相对值可显示。相对值的历史语义是「相对 BASE_DIR/CWD」('./downloads'
+        # 就是 DOWNLOADS_DIR 本身),不是 resolve_output_dir 的「相对
+        # DOWNLOADS_DIR」—— 按后者归一会把 './downloads' 错置成
+        # downloads/downloads。幂等(已是绝对值跳过);归一结果越界的保留原值
+        # 只警告,启动不能因配置值崩掉,用户在配置页改正即可。
+        cursor.execute("SELECT value FROM config WHERE key = 'default_save_path'")
+        row = cursor.fetchone()
+        if row:
+            from pathlib import Path as _Path
+            _raw = row[0] or ''
+            _p = _Path(_raw).expanduser()
+            if _raw and not _p.is_absolute():
+                try:
+                    _root = _Path(Config.DOWNLOADS_DIR).resolve()
+                    _cand = (_root.parent / _p).resolve()
+                    if _cand == _root or _root in _cand.parents:
+                        cursor.execute(
+                            "UPDATE config SET value = ? WHERE key = 'default_save_path'",
+                            (str(_cand),))
+                        logger.info(f'Normalized default_save_path to absolute: {_cand}')
+                    else:
+                        logger.warning(
+                            f'default_save_path 相对值 {_raw!r} 归一后越出 '
+                            f'DOWNLOADS_DIR,保留原值(请在配置页改成绝对路径)')
+                except Exception as e:
+                    logger.warning(f'default_save_path 归一化跳过({e!r}),保留原值')
+
         conn.commit()
         logger.info('Database initialized successfully')
 

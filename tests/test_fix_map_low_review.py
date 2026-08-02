@@ -256,10 +256,14 @@ def test_copy_progress_emit_failure_does_not_break_copy(isolated_config):
 # ---------- L2-12: name 类型校验 → 400 ----------
 
 def _map_payload(**overrides):
+    from core.config import Config
+
     payload = {
         'name': 't', 'north': 40.0, 'south': 39.0, 'east': 117.0, 'west': 116.0,
         'zoom_min': 10, 'zoom_max': 11, 'style': 'roadmap',
-        'output_format': 'tiles_only', 'output_path': 'downloads',
+        # 保存路径新口径:一律绝对路径(相对值 → 400),默认 DOWNLOADS_DIR 下子目录
+        'output_format': 'tiles_only',
+        'output_path': str(Config.DOWNLOADS_DIR / 'downloads'),
     }
     payload.update(overrides)
     return payload

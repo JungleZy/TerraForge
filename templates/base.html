@@ -193,6 +193,10 @@
     <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
     <script>TerraTheme.init();</script>
 
+    <!-- 保存路径「浏览」的目录选择弹窗 + 组件(首页任务表单/配置页共用) -->
+    {% include "_path_browser_modal.html" %}
+    <script src="{{ url_for('static', filename='js/path_browser.js') }}"></script>
+
     {% block extra_js %}{% endblock %}
 </body>
 </html>

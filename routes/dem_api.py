@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from services.task_cleanup import remove_task_dir_if_safe
+from routes import terrain_static
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,11 @@ def delete_dem_task(task_id: int):
         # rmtree 正在写入的 terrain_tiles/,job 行被 CASCADE 静默删除。
         dem_task_manager.delete_task(task_id)
 
-        # Optional best-effort artifact cleanup (downloads/dem/dem_task_<id>/)
+        # 行已删：清掉 /terrain/dem 静态路由的 output_path 缓存，否则
+        # delete_files=false（磁盘切片保留）时已删任务的瓦片仍能被访问到
+        terrain_static.invalidate_dem_task(task_id)
+
+        # Optional best-effort artifact cleanup (<output_path>/dem_task_<id>/)
         # after the row is gone; only removed when inside DOWNLOADS_DIR.
         if request.args.get("delete_files", "").lower() in ("1", "true", "yes"):
             remove_task_dir_if_safe(Path(task["output_path"]) / f"dem_task_{task_id}")

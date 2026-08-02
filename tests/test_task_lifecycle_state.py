@@ -288,8 +288,8 @@ def test_dem_progress_counts_status_transitions(monkeypatch, tmp_path):
 def test_map_all_stitch_failures_mark_task_failed(monkeypatch, tmp_path):
     """所有 zoom 的拼接都失败 → 任务必须报 failed,不能报 completed。
 
-    output_format=image_only 时拼接图是**唯一**的产出,一张都没有还说"完成"
-    就是纯粹的谎报。
+    output_format=image_only 时拼接图是选这个格式的意义所在(瓦片对所有格式
+    都会复制),一张拼接图都没有还说"完成"就是纯粹的谎报。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     tm_mod = importlib.import_module("services.task_manager")
@@ -404,7 +404,7 @@ def test_map_clean_stitch_leaves_no_error_message(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 复制瓦片阶段（both / tiles_only）必须响应取消,并给出进度
+# 复制瓦片阶段（所有格式都会复制）必须响应取消,并给出进度
 # ---------------------------------------------------------------------------
 
 

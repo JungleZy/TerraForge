@@ -31,10 +31,13 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 def _params(**overrides):
+    from core.config import Config
+
     p = dict(
         name='t', north=40.0, south=39.0, east=117.0, west=116.0,
         zoom_min=10, zoom_max=11, style='roadmap',
-        output_format='tiles_only', output_path='downloads',
+        # 保存路径新口径:一律绝对路径(相对值在入口被拒),默认 DOWNLOADS_DIR 本身
+        output_format='tiles_only', output_path=str(Config.DOWNLOADS_DIR),
     )
     p.update(overrides)
     return p
@@ -87,17 +90,19 @@ def test_create_task_rejects_output_path_outside_downloads(isolated_config):
     from services.task_manager import TaskManager
 
     tm = TaskManager()
-    with pytest.raises(ValueError, match='output_path'):
+    # 相对路径新口径:不再代为解析,直接拒绝并要求绝对路径(报错指路「浏览」按钮)
+    with pytest.raises(ValueError, match='绝对路径'):
         tm.create_task(_params(output_path='../../outside'))
     with pytest.raises(ValueError, match='output_path'):
         tm.create_task(_params(output_path='/etc/evil'))
 
 
 def test_create_task_accepts_output_path_inside_downloads(isolated_config):
+    from core.config import Config
     from services.task_manager import TaskManager
 
     tm = TaskManager()
-    task_id = tm.create_task(_params(output_path='downloads'))
+    task_id = tm.create_task(_params(output_path=str(Config.DOWNLOADS_DIR / 'sub')))
     assert isinstance(task_id, int)
 
 
@@ -256,16 +261,18 @@ def test_create_task_under_threshold_still_works(isolated_config):
 
 # ---------- output_path 规范化入库 + 存量相对路径兼容 ----------
 
-def test_create_task_stores_resolved_absolute_output_path(isolated_config):
-    """create_task 入库的必须是 resolve_output_dir() 解析后的绝对路径
-    (与 dem_task_manager 同口径),而不是用户原始相对值 —— 存原始值时
-    _execute_task 的 Path(task.output_path) 会按进程 CWD 解析。"""
+def test_create_task_stores_absolute_output_path_as_is(isolated_config):
+    """create_task 入库的必须是用户提交的绝对路径(经边界校验后的解析值)。
+
+    新口径下相对路径在入口就被拒绝(见上方 C5 测试),不再存在「相对值入库、
+    _execute_task 按进程 CWD 解析」的旧坑;入库值即用户给的绝对路径,
+    与 dem_task_manager 同口径。"""
     from core.config import Config
     from core.database import get_connection
     from services.task_manager import TaskManager
 
     tm = TaskManager()
-    task_id = tm.create_task(_params(output_path='sub dir'))
+    task_id = tm.create_task(_params(output_path=str(Config.DOWNLOADS_DIR / 'sub dir')))
 
     conn = get_connection()
     try:
@@ -275,7 +282,7 @@ def test_create_task_stores_resolved_absolute_output_path(isolated_config):
     finally:
         conn.close()
 
-    expected = str((Path(Config.DOWNLOADS_DIR) / 'sub dir').resolve())
+    expected = str((Config.DOWNLOADS_DIR / 'sub dir').resolve())
     assert row['output_path'] == expected, (
         f"入库的必须是解析后的绝对路径,实际: {row['output_path']}"
     )
@@ -628,8 +635,8 @@ def test_execute_task_enumerates_tiles_only_once(isolated_config):
     assert row['downloaded_tiles'] == len(all_tiles)
 
     # tiles_only:复制阶段的输入 = cache 命中 + 本次下载,一块都不能少
-    # (output_path='downloads' 解析为 DOWNLOADS_DIR/downloads)
+    # (_params 默认 output_path = DOWNLOADS_DIR 本身,任务目录直接在其下)
     copied = list(
-        (Path(Config.DOWNLOADS_DIR) / 'downloads' / f'task_{task_id}').rglob('*.png')
+        (Path(Config.DOWNLOADS_DIR) / f'task_{task_id}').rglob('*.png')
     )
     assert len(copied) == len(all_tiles)

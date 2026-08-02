@@ -267,7 +267,7 @@ def test_download_type_toggle_refreshes_tile_estimate():
     src = _map_js()
     body = _fn_body(src, 'initDownloadTypeToggle')
     apply_start = body.index('function apply(')
-    apply_body = body[apply_start:body.index('typeEl.addEventListener', apply_start)]
+    apply_body = body[apply_start:body.index('typeRadios.forEach(', apply_start)]
     assert 'updateTileEstimate()' in apply_body, (
         'initDownloadTypeToggle 的 apply() 没有调 updateTileEstimate()——'
         '切到高程模式会残留旧的瓦片预估读数'

@@ -44,10 +44,13 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 def _params(**overrides):
+    from core.config import Config
+
     p = dict(
         name='t', north=1.0, south=0.0, east=1.0, west=0.0,
         zoom_min=10, zoom_max=10, style='roadmap',
-        output_format='tiles_only', output_path='downloads',
+        # 保存路径新口径:一律绝对路径(相对值在入口被拒),默认 DOWNLOADS_DIR 本身
+        output_format='tiles_only', output_path=str(Config.DOWNLOADS_DIR),
     )
     p.update(overrides)
     return p

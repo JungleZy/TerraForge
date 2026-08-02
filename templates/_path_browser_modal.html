@@ -1,0 +1,23 @@
+<!-- 目录选择弹窗(保存路径「浏览」按钮):只浏览 DOWNLOADS_DIR 之内的目录,
+     数据来自 GET /api/fs/browse,交互在 static/js/path_browser.js。 -->
+<div class="modal fade" id="pathBrowserModal" tabindex="-1" aria-labelledby="pathBrowserTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="pathBrowserTitle">选择保存目录</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+                <div class="small text-muted mb-1">当前目录(仅可浏览下载根目录之内)</div>
+                <div class="path-browser-current font-monospace small text-break mb-2"
+                     id="pathBrowserCurrent">…</div>
+                <div class="list-group" id="pathBrowserDirs"></div>
+                <div class="text-danger small mt-2" id="pathBrowserError" hidden></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="pathBrowserSelect">选择此目录</button>
+            </div>
+        </div>
+    </div>
+</div>

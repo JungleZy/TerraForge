@@ -2215,6 +2215,11 @@ code {
     width: 1.25rem;
     height: 1.25rem;
     margin-top: 0.125rem;
+    /* 拉齐容器 padding：Bootstrap 默认 margin-left:-1.5em 是按 1em 见方的
+       原生控件定的；这里控件放大到 1.25rem、容器 padding-left 1.75rem，
+       沿用 -1.5em 会让图标右缘离文字只剩 ~4px。改成 -1.75rem 后图标左缘
+       贴容器边，图标与文字间恒为 1.75-1.25=0.5rem。 */
+    margin-left: -1.75rem;
     background-color: var(--color-bg-tertiary);
     border: 2px solid var(--color-border);
     cursor: pointer;
@@ -2995,11 +3000,12 @@ code {
     white-space: nowrap;    /* 两个汉字不许折行 */
 }
 
-/* 「测速推荐」（配置页并发下载数旁）与「验证」同款紧凑配方。
-   裸 .btn 会吃到 .config-section .btn 的大 padding(0.75rem 2rem) 和粗体，
-   在窄列里撑成两行高的大块头（input-group 因此被挤成上下堆叠）；
-   本规则与它同优先级 (0,2,0)、靠文件位置靠后取胜，理由同 .btn.tile-server-verify。 */
-.btn.concurrency-recommend {
+/* 「测速推荐」(配置页并发下载数旁)/「浏览」(保存路径旁)与「验证」同款紧凑配方。
+   裸 .btn 会吃到 .config-section .btn 的大 padding(0.75rem 2rem) 和粗体,
+   在窄列里撑成两行高的大块头(input-group 因此被挤成上下堆叠);
+   本规则与它同优先级 (0,2,0)、靠文件位置靠后取胜,理由同 .btn.tile-server-verify。 */
+.btn.concurrency-recommend,
+.btn.path-browse {
     height: var(--ctl-h);
     padding: 0 10px;
     display: inline-flex;
@@ -3010,6 +3016,25 @@ code {
     line-height: 1;
     white-space: nowrap;
     flex-shrink: 0;         /* 旁边的说明小字换行时按钮不被压扁 */
+}
+
+/* 目录选择弹窗(_path_browser_modal.html)的目录列表条目。
+   盖掉 Bootstrap 5.3.0 .list-group-item 的默认底色(var(--bs-list-group-bg),
+   深色主题下是 #212529 的灰,与本站调色板不同源):条目底色用比弹窗底
+   (--color-bg-secondary)浅一层的 --color-bg-tertiary,文字/边框走本站变量,
+   hover/focus 底色与幽灵按钮同款 --color-btn-ghost-hover(深浅两主题都有定义)。
+   特异度与 Bootstrap 相同((0,1,0)/(0,2,0)),靠 style.css 排在 bootstrap.min.css
+   之后取胜,不需要 !important。 */
+.list-group-item {
+    background-color: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+    border-color: var(--color-border);
+}
+
+.list-group-item-action:hover,
+.list-group-item-action:focus {
+    background-color: var(--color-btn-ghost-hover);
+    color: var(--color-text-primary);
 }
 
 /* `.btn { border: none }` 会吃掉 Bootstrap 给 outline 变体的边框，

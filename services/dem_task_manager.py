@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from core.database import get_connection, utc_now_iso
 from services.config_manager import ConfigManager
 from services.dem_download_engine import DemDownloadEngine
-from services.geo_validation import resolve_output_dir, sanitize_filename, validate_bbox
+from services.geo_validation import require_absolute_output_dir, resolve_output_dir, sanitize_filename, validate_bbox
 from services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
@@ -98,9 +98,10 @@ class DemTaskManager:
             params.get("east"), params.get("west"),
         )
         dataset = params.get("dataset") or "COP-DEM-GLO-30"
-        # C5: 创建任务时解析 output_path 并强制落在 Config.DOWNLOADS_DIR 内,
-        # 越界抛 ValueError(路由层转 400);相对路径相对 DOWNLOADS_DIR 解析,不依赖 CWD。
-        output_path = resolve_output_dir(
+        # C5: 创建任务时校验 output_path 并强制落在 Config.DOWNLOADS_DIR 内,
+        # 越界抛 ValueError(路由层转 400);输入必须是绝对路径(0.2.3 起,
+        # 见 require_absolute_output_dir),不依赖 CWD。
+        output_path = require_absolute_output_dir(
             params.get("output_path") or self.config.get("default_save_path", "./downloads")
         )
         download_num = 1 if str(params.get("download_num", "false")).lower() in ("1", "true", "yes") else 0

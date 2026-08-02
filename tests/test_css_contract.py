@@ -3622,7 +3622,11 @@ def _bbox_object_literals(src):
 #   _syncBoundsFromRect() 的 currentBounds（拖角点 / 数值编辑后同步快照）、
 #   _applyBoundsEdit() 的中间变量 b 与重建的 _rectDegrees（点击编辑提交）。
 #   逐键核对过：全部同名方位引用，检查通过才把计数调上来。
-MAP_JS_BBOX_LITERAL_COUNT = 7
+# 7 -> 10（2026-08 等高线预览带 bbox 定位）：等高线预览面板补上 flyTo——
+#   registerCompletedContourTask / initContourPreview 两处 contourPreviewTasks
+#   条目（值取自 /api/contour/tasks 行的同名字段）、toggleContourPreview 传给
+#   previewTask 的条件字面量（info.north 等同名引用）。
+MAP_JS_BBOX_LITERAL_COUNT = 10
 
 
 def test_bbox_literals_never_swap_directions():
@@ -4613,10 +4617,13 @@ def test_button_ink_is_readable_in_every_state():
 #   templates/index.html 下载/处理两个弹窗的 .btn-close      2（2026-07 弹窗化新增；
 #     替代的 dock-collapse-btn / dock-reopen-handle 两颗已随 dock 移除）
 #   templates/index.html 两个覆盖面板的关闭按钮            2（记录/配置面板）
+#   templates/_path_browser_modal.html 目录选择弹窗的 .btn-close  1（2026-08
+#     保存路径「浏览」功能新增;经 base.html 的 {% include %} 文本展开扫到,
+#     已带 aria-label="关闭"）
 #   _config_content.html 瓦片服务器行的「删除该服务器」     2（2026-07 行编辑器新增；
 #     Jinja include 展开后 index.html 与 config.html 各扫到一次，预期重复；
 #     Jinja for 循环在源码里只出现一次，动态增删的行由 JS 模板生成、不在静态扫描内）
-# 合计 14。
+# 合计 15。
 #
 # ⚠️ 第一版只扫两个 JS 文件、常量写 6，读起来像「全站都覆盖了」而实际漏了
 # 模板。评审实测：当时 `templates/base.html` 的 navbar-toggler 在 900px 视口下
@@ -4629,7 +4636,7 @@ def test_button_ink_is_readable_in_every_state():
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
-ICON_ONLY_BUTTON_COUNT = 14
+ICON_ONLY_BUTTON_COUNT = 15
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -6763,8 +6770,10 @@ def test_no_template_references_an_external_url():
     templates = _all_templates()
     # 4 -> 6（GIS 工作台改版）：新增 _history_content.html / _config_content.html
     # 两个 include partial，内容与原页面相同，均无外链。
-    assert len(templates) == 6, (
-        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 6 个 —— '
+    # 6 -> 7（保存路径「浏览」）：新增 _path_browser_modal.html 目录选择弹窗
+    # partial，无外链。
+    assert len(templates) == 7, (
+        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 7 个 —— '
         '新增页面不需要改本断言（它按目录遍历），但请确认新页面也没有外链，'
         '然后把这个数字更新掉'
     )
@@ -6823,8 +6832,10 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 18 -> 16（Leaflet 全量移除）：历史小地图也迁到 Cesium 后，leaflet css/js 删除。
     # 16 -> 17（明亮模式 + 跟随系统）：base.html 在 ui.js 之后全局引入
     # js/theme.js（window.TerraTheme，运行期主题切换/跟随实现）。
-    assert len(refs) == 17, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 17 处。"
+    # 17 -> 18（保存路径「浏览」）：base.html 引入 js/path_browser.js
+    # （目录选择弹窗交互），字符串字面量。
+    assert len(refs) == 18, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 18 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
