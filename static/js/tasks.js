@@ -60,6 +60,7 @@ function initTasks() {
 
     socket.on('task_stitch_progress', function(data) {
         pushStatusEvent('任务 #' + data.task_id + ' 拼接瓦片中…');
+        updateTaskStageText(data.task_id, '拼接中（zoom ' + data.zoom_level + '）…');
     });
 
     // 某个缩放级别拼接失败。任务可能仍在跑(其余级别继续),所以这里只报,不动行。
@@ -72,6 +73,10 @@ function initTasks() {
     // 复制瓦片阶段的心跳。下载进度条此时已经 100%,没有这个事件界面会静止若干分钟。
     socket.on('task_copy_progress', function(data) {
         pushStatusEvent('任务 #' + data.task_id + ' 复制瓦片中…');
+        updateTaskStageText(
+            data.task_id,
+            '复制瓦片中 ' + data.processed_tiles + ' / ' + data.total_tiles + ' …'
+        );
     });
 
     // 首屏这次拉取的 Promise 挂到模块级：map.js 的 initContourPreview 等它
@@ -289,6 +294,19 @@ function pushStatusEvent(msg) {
 function rebuildStreamRow(row, task) {
     row.outerHTML = createTaskRow(task);
     applyTaskErrorText(task);
+}
+
+// 拼接/复制阶段的行内阶段提示：下载 100% 后这两个阶段还要跑几分钟到几小时，
+// 旧界面行上只有「已下载 N/N」，看起来就是卡死（「卡 100%」）。stage_text
+// 写进行模型（history.js 的 line2 渲染）并就地重建该行。事件频率低——
+// 拼接按 zoom 一次、复制每 COPY_PROGRESS_INTERVAL 块一次，重建一行开销可忽略。
+function updateTaskStageText(taskId, stageText) {
+    const key = `map:${taskId}`;
+    const task = activeTasks.get(key);
+    if (!task) return;   // 任务不在活动窗口里时，状态栏事件仍然可见
+    task.stage_text = stageText;
+    const row = document.getElementById(`task-${key}`);
+    if (row) rebuildStreamRow(row, task);
 }
 
 // 新任务到达（updateTaskProgress 的未知 key 分支）时插到时间流顶部。

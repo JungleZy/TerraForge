@@ -830,7 +830,8 @@ class DownloadEngine:
         style: str,
         output_path: str,
         zoom_level: int,
-        target_epsg: int = 4326
+        target_epsg: int = 4326,
+        extra_allowed_dir: str = None
     ) -> str:
         """
         Stitch tiles into a single georeferenced image using GDAL
@@ -870,8 +871,12 @@ class DownloadEngine:
         # Validate and normalize output path
         output_path_obj = Path(output_path).resolve()
 
-        # Validate output path is within allowed directories (cache or output directory)
+        # Validate output path is within allowed directories (cache, output dir,
+        # or the calling task's registered output dir — 0.2.4 起保存路径可全盘,
+        # 任务产物目录随任务 output_path 走,由调用方经 extra_allowed_dir 传入)
         allowed_dirs = [Config.CACHE_DIR.resolve(), Config.OUTPUT_DIR.resolve()]
+        if extra_allowed_dir is not None:
+            allowed_dirs.append(Path(extra_allowed_dir).resolve())
         if not any(output_path_obj.is_relative_to(allowed_dir) for allowed_dir in allowed_dirs):
             raise ValueError(
                 f"Output path {output_path_obj} is not within allowed directories: "

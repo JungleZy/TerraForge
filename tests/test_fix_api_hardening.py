@@ -123,27 +123,30 @@ class _FakeActiveThread:
         self._thread.join(timeout=5)
 
 
-# ---------- C5: output_path 越界 → 400 ----------
+# ---------- C5: output_path 入口校验 ----------
 
-@pytest.mark.parametrize('case', ['relative', 'absolute_outside'])
-def test_create_map_task_output_path_outside_downloads_400(monkeypatch, tmp_path, case):
+@pytest.mark.parametrize('case', ['relative', 'absolute_outside', 'shallow'])
+def test_create_map_task_output_path_validation(monkeypatch, tmp_path, case):
     _, client = _load_app(monkeypatch, tmp_path)
     if case == 'relative':
         bad_path = '../../outside'
-    else:
-        # 「绝对但越界」必须用动态路径:写死 /etc/evil 在 Windows 上不是绝对路径,
-        # 会落到「必须绝对路径」分支而非边界分支(CI 在 Windows 挂过)。
-        # tmp_path 必然绝对,其下的兄弟目录必然越出 downloads 边界。
+    elif case == 'absolute_outside':
+        # 0.2.4 全盘化:DOWNLOADS_DIR 之外的深路径(兄弟目录,深度足够)接受
         bad_path = str(tmp_path / 'outside_downloads')
+    else:
+        # 浅层(根目录)拒绝:产物 <path>/task_<id> 会落在根级
+        bad_path = os.path.abspath(os.sep)
     resp = client.post("/api/tasks", json=_map_payload(output_path=bad_path))
+    if case == 'absolute_outside':
+        assert resp.status_code == 201, resp.get_json()
+        return
     assert resp.status_code == 400, resp.get_json()
     error = resp.get_json()['error']
     if case == 'relative':
         # 相对路径新口径:不再代为解析,直接要求绝对路径(文案指路「浏览」)
         assert '绝对路径' in error
     else:
-        # 绝对路径越界:仍按边界规则拒绝
-        assert 'output_path' in error
+        assert '两级目录' in error
 
 
 def test_create_map_task_output_path_inside_downloads_201(monkeypatch, tmp_path):

@@ -98,12 +98,18 @@ def resolve_output_dir(raw, base_dir=None):
 
 
 def require_absolute_output_dir(raw, base_dir=None):
-    """校验用户输入的保存路径：必须是绝对路径，且落在 base_dir 之内。
+    """校验用户输入的保存路径：绝对路径 + 至少两级目录深度。
 
-    与 resolve_output_dir 的边界规则完全相同，唯一区别是相对路径不再
-    代为解析而是直接拒绝 —— UI 一律展示/提交绝对路径（「浏览」按钮选出
-    来的就是绝对值），相对输入多半是手滑或旧脚本，放行会让 exe 换目录
-    启动后落盘位置漂移。报错文案指路「浏览」按钮。
+    边界沿革：0.2.3 起要求绝对路径（相对值直接拒绝，不再按 CWD 解析）；
+    0.2.4 起放开全盘 —— 保存目录可任选（「浏览」弹窗全盘可选），不再强制
+    落在 DOWNLOADS_DIR 内。保留的两条底线：
+
+    - 相对路径拒绝：exe 换目录启动后落盘位置会漂移；
+    - 深度不足两级拒绝（如 `/`、`C:\\`、`/home`）：产物写成 <path>/task_<id>/，
+      浅层路径删除保护（remove_task_dir_if_safe）挡不住手滑选根目录的风险。
+
+    base_dir 形参保留只为调用点签名兼容，已不再参与校验。
+    返回 str 绝对路径（不创建目录）。
     """
     from pathlib import Path
 
@@ -112,7 +118,13 @@ def require_absolute_output_dir(raw, base_dir=None):
         raise ValueError(
             f"保存路径必须是绝对路径（收到 {raw!r}），可点输入框旁的「浏览」选择"
         )
-    return resolve_output_dir(str(p), base_dir)
+    resolved = p.resolve()
+    # parts 含根（'/' 或 'C:\\'）：('/','a','b') = 3 即两级目录
+    if len(resolved.parts) < 3:
+        raise ValueError(
+            f"保存路径至少需要两级目录（收到 {raw!r}），不要直接选根目录/盘符根"
+        )
+    return str(resolved)
 
 
 def sanitize_filename(name, default="task"):

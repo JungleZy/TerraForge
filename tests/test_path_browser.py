@@ -1,11 +1,11 @@
 """保存路径绝对化 + 「浏览」目录选择 —— 入口校验、浏览 API、默认值迁移、前端接线。
 
-口径(2026-08 定):
-- 新建任务的 output_path 与配置的 default_save_path 一律要求**绝对路径**,
-  且仍须落在 Config.DOWNLOADS_DIR 内(边界不变);相对输入直接 400,
-  报错文案指路「浏览」按钮;
-- GET /api/fs/browse?path= 给「浏览」按钮的目录选择弹窗供数据:只列
-  DOWNLOADS_DIR 内的子目录,越界/不存在/非目录一律 400;
+口径沿革:
+- 0.2.3:新建任务的 output_path 与配置的 default_save_path 一律要求绝对路径,
+  且须落在 Config.DOWNLOADS_DIR 内;
+- 0.2.4 起(本文):放开全盘 —— 任意绝对路径都可做保存目录,底线两条:
+  相对输入拒绝(文案指路「浏览」)、深度不足两级拒绝(根目录/盘符根);
+- GET /api/fs/browse?path= 全盘可浏览(Windows 根级返回盘符),不存在/非目录 400;
 - 存量相对 default_save_path(如 './downloads')在 init_database 一次性
   归一成绝对路径 —— UI 不再有相对值可显示。
 """
@@ -51,16 +51,26 @@ def test_absolute_inside_downloads_accepted(downloads):
     assert require_absolute_output_dir(str(downloads / 'map')) == str(downloads / 'map')
 
 
-def test_absolute_outside_downloads_still_rejected(downloads, tmp_path):
+def test_absolute_outside_downloads_accepted(downloads, tmp_path):
+    """0.2.4 全盘化:DOWNLOADS_DIR 之外的绝对路径(深度足够)同样接受"""
     from services.geo_validation import require_absolute_output_dir
-    with pytest.raises(ValueError):
-        require_absolute_output_dir(str(tmp_path / 'elsewhere'))
+    assert require_absolute_output_dir(str(tmp_path / 'elsewhere')) == str(
+        (tmp_path / 'elsewhere').resolve())
 
 
-def test_dotdot_absolute_escape_rejected(downloads):
+def test_dotdot_is_normalized_and_accepted(downloads):
+    """`..` 由 resolve 归一,不再是逃逸拒绝 —— 归一后深度足够即合法"""
     from services.geo_validation import require_absolute_output_dir
-    with pytest.raises(ValueError):
-        require_absolute_output_dir(str(downloads / '..' / 'outside'))
+    assert require_absolute_output_dir(str(downloads / '..' / 'outside')) == str(
+        (downloads / '..' / 'outside').resolve())
+
+
+def test_shallow_absolute_rejected(downloads):
+    """根目录/盘符根直接当保存目录拒绝 —— 产物 <path>/task_<id> 会落在根级,
+    删除保护也守不住(与 require_absolute 的两级深度底线一致)"""
+    from services.geo_validation import require_absolute_output_dir
+    with pytest.raises(ValueError, match='两级目录'):
+        require_absolute_output_dir(os.path.abspath(os.sep))
 
 
 # --- create_task / 配置保存 入口的绝对路径要求 ---------------------------------
@@ -85,6 +95,22 @@ def test_create_task_accepts_absolute_output_path(monkeypatch, tmp_path):
     resp = client.post('/api/tasks',
                        json=_task_params(output_path=str(tmp_path / 'downloads' / 'map')))
     assert resp.status_code == 201, resp.get_json()
+
+
+def test_create_task_accepts_output_path_outside_downloads(monkeypatch, tmp_path):
+    """0.2.4 全盘化:DOWNLOADS_DIR 之外的深路径建任务也接受"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    resp = client.post('/api/tasks',
+                       json=_task_params(output_path=str(tmp_path / 'elsewhere' / 'deep')))
+    assert resp.status_code == 201, resp.get_json()
+
+
+def test_create_task_rejects_shallow_output_path(monkeypatch, tmp_path):
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    resp = client.post('/api/tasks',
+                       json=_task_params(output_path=os.path.abspath(os.sep)))
+    assert resp.status_code == 400
+    assert '两级目录' in resp.get_json()['error']
 
 
 def test_put_config_rejects_relative_default_save_path(monkeypatch, tmp_path):
@@ -116,21 +142,19 @@ def test_init_database_normalizes_relative_default_save_path(monkeypatch, tmp_pa
 
 # --- GET /api/fs/browse ---------------------------------------------------------
 
-def test_browse_defaults_to_downloads_root(monkeypatch, tmp_path):
+def test_browse_defaults_to_fs_root(monkeypatch, tmp_path):
+    """0.2.4 起缺省浏览文件系统根(Windows 为盘符列表,path='')"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    root = tmp_path / 'downloads'
-    (root / 'map').mkdir(parents=True)
-    (root / 'dem').mkdir()
-    (root / 'afile.txt').write_text('x')          # 文件不该出现在目录列表里
-    (root / '.hidden').mkdir()                    # 隐藏目录不列
     resp = client.get('/api/fs/browse')
     data = resp.get_json()
     assert resp.status_code == 200
     assert data['success'] is True
-    assert data['path'] == str(root.resolve())
-    assert data['parent'] is None, '根目录没有「上一级」可去'
-    names = [d['name'] for d in data['dirs']]
-    assert names == ['dem', 'map'], f'只列非隐藏子目录: {names}'
+    if os.name == 'nt':
+        assert data['path'] == ''
+        assert any(d['name'].endswith(':\\') for d in data['dirs']), '根级应列出盘符'
+    else:
+        assert data['path'] == '/'
+    assert data['parent'] is None, '根级没有「上一级」可去'
 
 
 def test_browse_subdirectory_and_parent(monkeypatch, tmp_path):
@@ -145,12 +169,15 @@ def test_browse_subdirectory_and_parent(monkeypatch, tmp_path):
     assert [d['name'] for d in data['dirs']] == ['sub']
 
 
-def test_browse_rejects_escape_outside_root(monkeypatch, tmp_path):
+def test_browse_allows_any_absolute_dir(monkeypatch, tmp_path):
+    """0.2.4 起不再限制 DOWNLOADS_DIR 内:任意已存在目录都可浏览"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    (tmp_path / 'downloads').mkdir(exist_ok=True)
     resp = client.get('/api/fs/browse', query_string={'path': str(tmp_path)})
-    assert resp.status_code == 400
-    assert resp.get_json()['success'] is False
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data['success'] is True
+    assert data['path'] == str(tmp_path.resolve())
+    assert data['parent'] == str(tmp_path.resolve().parent)
 
 
 def test_browse_rejects_nonexistent_and_file(monkeypatch, tmp_path):

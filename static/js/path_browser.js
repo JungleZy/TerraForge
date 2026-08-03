@@ -1,7 +1,7 @@
 /**
  * 保存路径「浏览」按钮的目录选择弹窗。
  *
- * 数据源 GET /api/fs/browse(只列 DOWNLOADS_DIR 内的子目录,越界 400)。
+ * 数据源 GET /api/fs/browse(0.2.4 起全盘可浏览;Windows 根级返回盘符列表)。
  * 用法:按钮 onclick="openPathBrowser('<inputId>')";选中结果写回该 input
  * 并派发 input 事件(map.js 靠它把字段标记为 userEdited,不被类型切换
  * 的默认值覆盖)。base.html 全站加载,首页任务表单与配置页共用。
@@ -26,7 +26,9 @@
 
     function _render(data) {
         currentPath = data.path;
-        _el('pathBrowserCurrent').textContent = data.path;
+        // Windows 盘符列表视图 path 为 ''(此时「选择此目录」因 currentPath
+        // 为空不会写回,只能继续点盘符下钻)
+        _el('pathBrowserCurrent').textContent = data.path || '(选择盘符)';
         const list = _el('pathBrowserDirs');
         list.innerHTML = '';
         if (data.parent) {
@@ -52,9 +54,9 @@
             }
             _render(data);
         } catch (e) {
-            // 输入框里可能还是相对值/不存在的目录:回退根目录,把原因亮出来
+            // 输入框里可能还是相对值/不存在的目录:回退根级(盘符/根目录),把原因亮出来
             if (path) {
-                errBox.textContent = '起点不可用(' + e.message + '),已回到下载根目录';
+                errBox.textContent = '起点不可用(' + e.message + '),已回到根目录';
                 errBox.hidden = false;
                 return load('');
             }

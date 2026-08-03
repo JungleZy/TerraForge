@@ -3,6 +3,111 @@ function initConfig() {
     initTileServerEditor();
     initThemeSwitcher();
     initConcurrencyRecommend();
+    initCacheManager();
+}
+
+// --- 缓存管理 -----------------------------------------------------------------
+// 缓存不做任何自动清理：这里分类展示占用，手动清理走两次 showConfirm
+// （第一次说明将删什么，第二次 danger 样式确认不可恢复）。
+
+function formatCacheBytes(bytes) {
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = Number(bytes) || 0;
+    let i = 0;
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+    return (i === 0 ? value : value.toFixed(1)) + ' ' + units[i];
+}
+
+function initCacheManager() {
+    const body = document.getElementById('cacheStatsBody');
+    if (!body) return;
+
+    // 事件代理：行是 loadCacheStats 动态渲染的
+    body.addEventListener('click', function (e) {
+        const btn = e.target.closest('.cache-clear-btn');
+        if (btn) clearCacheCategory(btn.dataset.key, btn.dataset.label, btn.dataset.size);
+    });
+
+    const refreshBtn = document.getElementById('cacheStatsRefresh');
+    if (refreshBtn) refreshBtn.addEventListener('click', loadCacheStats);
+
+    const clearAllBtn = document.getElementById('cacheClearAll');
+    if (clearAllBtn) {
+        clearAllBtn.addEventListener('click', function () {
+            const total = document.getElementById('cacheStatsTotal').textContent || '—';
+            clearCacheCategory('__all__', '全部缓存', total);
+        });
+    }
+
+    loadCacheStats();
+}
+
+async function loadCacheStats() {
+    const body = document.getElementById('cacheStatsBody');
+    if (!body) return;
+    try {
+        const response = await fetch('/api/cache/stats');
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
+        renderCacheStats(data);
+    } catch (error) {
+        body.innerHTML = '<div class="text-danger">加载失败：' +
+            window.escapeHtml(error.message) + '</div>';
+    }
+}
+
+function renderCacheStats(data) {
+    const body = document.getElementById('cacheStatsBody');
+    const categories = data.categories || [];
+    if (!categories.length) {
+        body.innerHTML = '<div class="text-muted">暂无缓存</div>';
+    } else {
+        body.innerHTML = categories.map(function (c) {
+            return '<div class="d-flex justify-content-between align-items-center py-1">' +
+                '<span>' + window.escapeHtml(c.label) + '</span>' +
+                '<span class="d-flex align-items-center gap-2">' +
+                '<span class="text-muted">' + formatCacheBytes(c.size_bytes) +
+                ' · ' + c.file_count + ' 个文件</span>' +
+                '<button type="button" class="btn btn-outline-danger btn-sm cache-clear-btn" ' +
+                'data-key="' + window.escapeHtml(c.key) + '" data-label="' + window.escapeHtml(c.label) + '" ' +
+                'data-size="' + formatCacheBytes(c.size_bytes) + '">清理</button>' +
+                '</span></div>';
+        }).join('');
+    }
+    document.getElementById('cacheStatsTotal').textContent = formatCacheBytes(data.total_bytes || 0);
+    document.getElementById('cacheStatsTotalFiles').textContent =
+        categories.reduce(function (sum, c) { return sum + (c.file_count || 0); }, 0);
+}
+
+async function clearCacheCategory(category, label, sizeText) {
+    const demWarning = category === 'dem' || category === '__all__'
+        ? ' 注意：DEM 缓存重新下载需要 Earthdata 账号登录。' : '';
+    const first = await showConfirm(
+        `将删除「${label}」的缓存（${sizeText}）。${demWarning}`,
+        { title: '清理缓存', confirmText: '继续', danger: true });
+    if (!first) return;
+
+    const second = await showConfirm(
+        `再次确认：删除「${label}」后不可恢复，确定删除？`,
+        { title: '再次确认', confirmText: '确认删除', danger: true });
+    if (!second) return;
+
+    try {
+        const response = await fetch('/api/cache/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category: category })
+        });
+        const data = await response.json();
+        if (response.ok && data.success) {
+            showToast(`已清理「${label}」，释放 ${formatCacheBytes(data.total_removed_bytes)}`, 'success');
+        } else {
+            showToast('清理失败: ' + (data.error || ('HTTP ' + response.status)), 'danger');
+        }
+    } catch (error) {
+        showToast('清理失败: ' + error.message, 'danger');
+    }
+    loadCacheStats();
 }
 
 // --- 并发下载数：测速推荐 -----------------------------------------------------
@@ -176,7 +281,6 @@ async function saveConfig(e) {
         proxy_url: document.getElementById('proxy_url').value,
         tile_servers: collectTileServers(),
         cache_enabled: document.getElementById('cache_enabled').checked ? 'true' : 'false',
-        cache_max_size_mb: document.getElementById('cache_max_size_mb').value,
         gdal_compression: document.getElementById('gdal_compression').value,
         gdal_resampling: document.getElementById('gdal_resampling').value,
         history_retention_days: document.getElementById('history_retention_days').value,

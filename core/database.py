@@ -51,7 +51,6 @@ DEFAULT_CONFIGS = [
     ('proxy_url', ''),
     ('tile_servers', 'mts0,mts1,mts2,mts3'),
     ('cache_enabled', 'true'),
-    ('cache_max_size_mb', '1000'),
     ('dem_cache_enabled', 'true'),
     ('history_retention_days', '90'),
     ('map_center_lat', '29.56'),

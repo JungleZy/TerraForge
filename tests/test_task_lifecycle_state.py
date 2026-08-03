@@ -304,7 +304,7 @@ def test_map_all_stitch_failures_mark_task_failed(monkeypatch, tmp_path):
         output_path=str(tmp_path / "out"),
     )
 
-    def exploding_stitch(tiles, style, output_path, zoom_level):
+    def exploding_stitch(tiles, style, output_path, zoom_level, **_):
         raise RuntimeError("gdal.Warp failed: PROJ database missing")
 
     tm.download_engine.stitch_tiles_with_gdal = exploding_stitch
@@ -344,7 +344,7 @@ def test_map_partial_stitch_failure_completes_with_warning(monkeypatch, tmp_path
         output_path=str(tmp_path / "out"),
     )
 
-    def half_broken_stitch(tiles, style, output_path, zoom_level):
+    def half_broken_stitch(tiles, style, output_path, zoom_level, **_):
         if zoom_level == 11:
             raise RuntimeError("boom at zoom 11")
         return output_path
@@ -387,7 +387,7 @@ def test_map_clean_stitch_leaves_no_error_message(monkeypatch, tmp_path):
 
     stitched = []
 
-    def ok_stitch(tiles, style, output_path, zoom_level):
+    def ok_stitch(tiles, style, output_path, zoom_level, **_):
         stitched.append(zoom_level)
         return output_path
 
@@ -401,6 +401,145 @@ def test_map_clean_stitch_leaves_no_error_message(monkeypatch, tmp_path):
     assert row["error_message"] is None
     completed = [p for name, p in tm.socketio.events if name == "task_completed"]
     assert completed and completed[0]["warning"] is None
+
+
+def test_map_stitch_emits_start_event_before_each_zoom(monkeypatch, tmp_path):
+    """拼接开始必须发 task_stitch_progress(phase='start'),且在拼接函数之前。
+
+    旧的完成事件只在拼完才发:单个大 zoom 一拼几十分钟起步,期间界面零
+    反馈,任务行停在「已下载 N/N」——「卡 100%」的直接成因。断言顺序:
+    每个 zoom 的 start 事件必须出现在该 zoom 的拼接调用之前。
+    """
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("completed", "completed"),
+        tile_zooms=(10, 11),
+        zoom_min=10,
+        zoom_max=11,
+        output_format="image_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    stitched_order_ok = []
+
+    def tracking_stitch(tiles, style, output_path, zoom_level, **_):
+        # 拼接函数被调用的瞬间,该 zoom 的 phase='start' 事件必须已经发出
+        already = any(
+            name == "task_stitch_progress"
+            and p.get("phase") == "start"
+            and p.get("zoom_level") == zoom_level
+            for name, p in tm.socketio.events
+        )
+        stitched_order_ok.append((zoom_level, already))
+        return output_path
+
+    tm.download_engine.stitch_tiles_with_gdal = tracking_stitch
+
+    asyncio.run(tm._execute_task(task_id))
+
+    starts = [
+        p["zoom_level"] for name, p in tm.socketio.events
+        if name == "task_stitch_progress" and p.get("phase") == "start"
+    ]
+    assert starts == [10, 11], "每个 zoom 拼接前都要发一次 phase='start'"
+    assert stitched_order_ok == [(10, True), (11, True)], (
+        "phase='start' 必须在该 zoom 的拼接调用之前发出,否则大单层拼接期间"
+        "界面仍然零反馈"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 边下边复制:下载回调即时复制 + cache 命中补拷线程,结尾阶段退化为对账
+# ---------------------------------------------------------------------------
+
+
+def test_stream_copy_writes_output_before_stitch(monkeypatch, tmp_path):
+    """下载成功的瓦片必须在拼接开始前就已出现在产物目录(不等结尾复制阶段)。
+
+    拼接在流程上先于结尾复制阶段,拼接函数里能看到的产物 = 下载阶段写入的。
+    """
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("pending",),
+        tile_zooms=(10,),
+        zoom_min=10,
+        zoom_max=10,
+        output_format="image_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    async def fake_batch(tiles, style, progress_callback, stop_flag):
+        for tile in tiles:
+            p = tile.cache_path("s")
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"png-bytes")
+            await progress_callback(tile, "completed", None)
+
+    tm.download_engine.download_tiles_batch = fake_batch
+
+    from services.download_engine import DownloadEngine
+    engine = DownloadEngine()
+    expected = list(engine.iter_tiles(1, 0, 1, 0, 10, 10))
+    assert expected, "测试前提:z10 1°x1° 至少 1 块瓦片"
+
+    def checking_stitch(tiles, style, output_path, zoom_level, **_):
+        out_dir = tmp_path / "out" / f"task_{task_id}"
+        for tile in expected:
+            dest = out_dir / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
+            assert dest.exists() and dest.stat().st_size > 0, (
+                f"拼接开始前产物目录缺 {dest} —— 下载回调没做即时复制"
+            )
+        return output_path
+
+    tm.download_engine.stitch_tiles_with_gdal = checking_stitch
+
+    asyncio.run(tm._execute_task(task_id))
+    assert _map_task_row(db, task_id)["status"] == "completed"
+
+
+def test_cache_hit_backfill_writes_output_before_stitch(monkeypatch, tmp_path):
+    """cache 命中(本次零下载)的瓦片也由补拷线程在拼接开始前复制到产物目录。
+
+    全部命中时 tiles 待下载清单为空,不经下载回调 —— 没有补拷线程的话
+    这些瓦片只能等结尾复制阶段,续跑任务仍要在 100% 后等一次全量复制。
+    """
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    tm_mod = importlib.import_module("services.task_manager")
+    tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+    task_id = _seed_map_task(
+        db,
+        tile_statuses=("completed", "completed"),
+        tile_zooms=(10, 11),
+        zoom_min=10,
+        zoom_max=11,
+        output_format="image_only",
+        output_path=str(tmp_path / "out"),
+    )
+
+    from services.download_engine import DownloadEngine
+    engine = DownloadEngine()
+    expected = list(engine.iter_tiles(1, 0, 1, 0, 10, 11))
+    assert expected
+
+    def checking_stitch(tiles, style, output_path, zoom_level, **_):
+        out_dir = tmp_path / "out" / f"task_{task_id}"
+        for tile in expected:
+            dest = out_dir / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
+            assert dest.exists() and dest.stat().st_size > 0, (
+                f"拼接开始前产物目录缺 {dest} —— cache 命中瓦片没有开案补拷"
+            )
+        return output_path
+
+    tm.download_engine.stitch_tiles_with_gdal = checking_stitch
+
+    asyncio.run(tm._execute_task(task_id))
+    assert _map_task_row(db, task_id)["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------

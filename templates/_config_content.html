@@ -166,10 +166,19 @@
                     </div>
 
                     <div class="mb-3">
-                        <label for="cache_max_size_mb" class="form-label">缓存最大大小 (MB)</label>
-                        <input type="number" class="form-control" id="cache_max_size_mb"
-                               value="{{ config.cache_max_size_mb }}" min="0">
-                        <small class="form-text d-block mt-1">超过上限时自动清理最久未用的瓦片；0 表示不限制。</small>
+                        <label class="form-label">缓存管理</label>
+                        <small class="form-text d-block mb-2">缓存不会自动清理。按分类查看占用，可手动清理（需二次确认，删除后不可恢复）。</small>
+                        <div id="cacheStatsBody" class="mb-2">
+                            <div class="text-muted">加载中…</div>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center border-top pt-2 mb-2">
+                            <strong>总计</strong>
+                            <span><span id="cacheStatsTotal">—</span>（<span id="cacheStatsTotalFiles">—</span> 个文件）</span>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="cacheStatsRefresh">刷新</button>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="cacheClearAll">全部清理</button>
+                        </div>
                     </div>
                 </div>
 

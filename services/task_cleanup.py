@@ -6,15 +6,21 @@ services/local_terrain_task_manager.py delete_task): removal is best-effort
 and only allowed for directories that resolve strictly inside
 Config.DOWNLOADS_DIR. Task output_path values are user-supplied, so artifacts
 may live elsewhere — those are left alone (the DB row is still deleted).
-The shared tile cache (Config.CACHE_DIR) must never be removed.
+The shared tile cache (Config.CACHE_DIR) must never be removed by task
+deletion.
+
+下载缓存本身不做任何自动清理:get_cache_stats 分类统计 cache 占用,
+clear_cache_category 由用户在前端手动触发(带二次确认),启动清扫
+sweep_startup_residue 只清 *.part.* 原子写残留和 stitch/warp 临时目录,
+不碰缓存内容。
 """
 
 import fnmatch
 import logging
 import os
+import re
 import shutil
 import tempfile
-import time
 from pathlib import Path
 
 from core.config import Config
@@ -36,10 +42,9 @@ _PART_GLOB = "*.part.*"
 # 不需要再往下走。
 _CACHE_PART_MAX_DEPTH = 4
 
-# enforce_cache_size_limit 跳过比这个新的文件:任务下载完瓦片到拼接读完
-# 之间有一个窗口,刚落盘的瓦片若被 LRU 清掉,拼接会报 "Tile not found";
-# 一小时的宽限对「最久未用先清」的语义没有实质影响。
-_EVICTION_MIN_AGE_SECONDS = 3600
+# 手动清理的分类名白名单:cache 顶层目录名(各 style 代码 / dem),
+# 拒绝路径分隔符与 ..,配合 resolve 校验防越界。
+_CATEGORY_NAME_RE = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
 def resolve_stored_output_dir(stored_path) -> Path:
@@ -58,6 +63,20 @@ def resolve_stored_output_dir(stored_path) -> Path:
     return p
 
 
+def _has_symlink_component(path: Path) -> bool:
+    """路径任一层是符号链接则为真 —— 逐层 lstat,不靠 resolve 对比
+    (macOS /tmp、/var 本身是符号链接,resolve 对比会误伤合法路径)。"""
+    cur = Path(path.anchor)
+    for part in path.parts[1:]:
+        cur = cur / part
+        try:
+            if cur.is_symlink():
+                return True
+        except OSError:
+            return True  # 查不了按有风险处理,宁可拒绝
+    return False
+
+
 def remove_task_dir_if_safe(task_dir) -> bool:
     """
     Best-effort removal of a task's on-disk artifact directory.
@@ -69,23 +88,36 @@ def remove_task_dir_if_safe(task_dir) -> bool:
         True if the directory was eligible for removal (whether or not it
         existed), False if it fell outside the safety boundary.
 
-    Safety boundary:
-        - target must resolve strictly inside Config.DOWNLOADS_DIR
-          (not equal to it, not one of its ancestors, not a sibling);
-        - target must never be the shared tile cache or contain it.
+    Safety boundary（0.2.4 全盘保存路径后重定,不再要求在 DOWNLOADS_DIR 内）:
+        - 路径任一层是符号链接 → 拒绝(rmtree 会跟着链接删到别处);
+        - 不足两级目录深度(根目录/盘符根/单级目录) → 拒绝;
+        - 用户家目录本身 → 拒绝;
+        - DOWNLOADS_DIR 本身或其祖先 → 拒绝;
+        - 共享瓦片 cache 本身、cache 内部、或包含 cache 的目录 → 拒绝。
     """
     try:
-        target = Path(task_dir).resolve()
+        raw = Path(task_dir).expanduser().absolute()
+        target = raw.resolve()
         downloads_root = Path(Config.DOWNLOADS_DIR).resolve()
         cache_root = Path(Config.CACHE_DIR).resolve()
 
-        if target == downloads_root or downloads_root not in target.parents:
-            logger.warning(
-                f"Refusing to delete artifact dir outside DOWNLOADS_DIR: {target}"
-            )
+        # symlink 检查必须用未 resolve 的路径 —— resolve 会先把链接塌掉,
+        # 塌完再查等于没查(rmtree 会跟着链接删到别处)
+        if _has_symlink_component(raw):
+            logger.warning(f"Refusing to delete path with symlink component: {raw}")
             return False
-        if target == cache_root or cache_root in target.parents:
-            logger.warning(f"Refusing to delete shared tile cache: {target}")
+        if len(target.parts) < 3:
+            logger.warning(f"Refusing to delete shallow path: {target}")
+            return False
+        if target == Path.home().resolve():
+            logger.warning(f"Refusing to delete user home directory: {target}")
+            return False
+        if target == downloads_root or target in downloads_root.parents:
+            logger.warning(f"Refusing to delete downloads root or its ancestor: {target}")
+            return False
+        if (target == cache_root or cache_root in target.parents
+                or target in cache_root.parents):
+            logger.warning(f"Refusing to delete shared tile cache or its container: {target}")
             return False
 
         if target.exists():
@@ -186,20 +218,11 @@ def sweep_startup_residue() -> None:
         )
 
 
-def _iter_tile_cache_files(cache_root: Path):
-    """产出瓦片 cache 里的全部文件（scandir 迭代，不递归进 dem 目录）。
-
-    dem granule 有独立生命周期（dem_cache_enabled），重下要过 Earthdata
-    登录，不归瓦片 cache 的 LRU 清理管；其余子目录（各 style 的
-    {z}/{x}/{y}.png）都是瓦片 cache。
-    """
-    try:
-        with os.scandir(cache_root) as it:
-            top = list(it)
-    except OSError:
-        return
-    stack = [e.path for e in top
-             if e.name != 'dem' and e.is_dir(follow_symlinks=False)]
+def _sum_dir_bytes(root: Path) -> tuple:
+    """递归统计目录大小与文件数(scandir 迭代,best-effort,OSError 跳过)。"""
+    total_bytes = 0
+    file_count = 0
+    stack = [root]
     while stack:
         current = stack.pop()
         try:
@@ -212,83 +235,108 @@ def _iter_tile_cache_files(cache_root: Path):
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(entry.path)
                 elif entry.is_file(follow_symlinks=False):
-                    yield entry
+                    st = entry.stat(follow_symlinks=False)
+                    total_bytes += st.st_size
+                    file_count += 1
             except OSError:
                 continue
+    return total_bytes, file_count
 
 
-def enforce_cache_size_limit(cache_root=None) -> dict:
-    """按 cache_max_size_mb 配置对瓦片 cache 做 LRU 清理。
+def get_cache_stats(cache_root=None) -> dict:
+    """分类统计下载缓存占用:cache 顶层每个子目录一个分类。
 
-    配置项过去没有任何消费方,cache 可以无限增长(实测 6.1GB vs 配置
-    1000MB)。这里把它补上:全量扫一遍瓦片 cache,总大小超过上限时按
-    「最久未用先清」(max(atime, mtime) 升序)逐个删,直到回到上限内。
-
-    护栏(宁可漏清不可误删):
-      - 0/负值/读配置失败 = 不限制,直接返回(0 绝不能理解成清空 cache);
-      - dem 目录不扫(见 _iter_tile_cache_files);
-      - *.part.* 原子写临时件跳过 —— 那可能是别的任务正在写的瓦片;
-      - 比 _EVICTION_MIN_AGE_SECONDS 新的文件跳过 —— 保护下载完还没
-        拼接读完的在途任务;
-      - 全程 best-effort:单文件失败跳过,整体异常只记日志。
-
-    调用点:任务下载阶段结束后(task_manager,to_thread 里)。下载是
-    cache 唯一增长点,顺势清理即可,不挂启动路径 —— 几十万瓦片的全量
-    stat 是秒级活,不能拖慢启动。
+    分类规则:dem → DEM 缓存(重下需 Earthdata 登录);其余子目录是各
+    style 的瓦片缓存;顶层散落文件(正常不会有)归入 _root/其他。
+    只统计不删除 —— 缓存不做任何自动清理,清理由用户在前端手动触发
+    (clear_cache_category)。
 
     Returns:
-        统计 dict:scanned_files/total_bytes(含不可清理项的账面总量)、
-        removed_files/removed_bytes。
+        {'categories': [{'key', 'label', 'size_bytes', 'file_count'}...],
+         'total_bytes': N}
     """
     root = Path(cache_root) if cache_root is not None else Path(Config.CACHE_DIR)
-    stats = {'scanned_files': 0, 'total_bytes': 0,
-             'removed_files': 0, 'removed_bytes': 0}
+    categories = []
+    total_bytes = 0
+    root_bytes = 0
+    root_files = 0
     try:
-        from services.config_manager import ConfigManager
-        limit_mb = int(ConfigManager().get('cache_max_size_mb', '1000') or '0')
-    except Exception as e:
-        logger.warning(f"读取 cache_max_size_mb 失败({e!r}),跳过 cache 清理")
-        return stats
-    if limit_mb <= 0:
-        return stats
-    limit_bytes = limit_mb * 1024 * 1024
-
-    now = time.time()
-    candidates = []  # (atime_key, size, path) —— 仅可清理项
-    for entry in _iter_tile_cache_files(root):
-        if fnmatch.fnmatch(entry.name, _PART_GLOB):
-            continue
+        with os.scandir(root) as it:
+            top = list(it)
+    except OSError:
+        top = []
+    for entry in top:
         try:
-            st = entry.stat(follow_symlinks=False)
+            if entry.is_dir(follow_symlinks=False):
+                size, count = _sum_dir_bytes(Path(entry.path))
+                label = 'DEM 缓存' if entry.name == 'dem' else f'瓦片缓存（{entry.name}）'
+                categories.append({
+                    'key': entry.name, 'label': label,
+                    'size_bytes': size, 'file_count': count,
+                })
+                total_bytes += size
+            elif entry.is_file(follow_symlinks=False):
+                st = entry.stat(follow_symlinks=False)
+                root_bytes += st.st_size
+                root_files += 1
         except OSError:
             continue
-        stats['scanned_files'] += 1
-        stats['total_bytes'] += st.st_size
-        key = max(st.st_atime, st.st_mtime)
-        if now - key < _EVICTION_MIN_AGE_SECONDS:
-            continue
-        candidates.append((key, st.st_size, entry.path))
+    if root_files:
+        categories.append({'key': '_root', 'label': '其他',
+                           'size_bytes': root_bytes, 'file_count': root_files})
+        total_bytes += root_bytes
+    categories.sort(key=lambda c: c['size_bytes'], reverse=True)
+    return {'categories': categories, 'total_bytes': total_bytes}
 
-    if stats['total_bytes'] <= limit_bytes:
-        return stats
 
-    candidates.sort()  # 最久未用在前
-    remaining = stats['total_bytes']
-    for _key, size, path in candidates:
-        if remaining <= limit_bytes:
-            break
+def clear_cache_category(category: str, cache_root=None) -> dict:
+    """手动清理一个缓存分类(删除 cache 顶层对应子目录的全部内容)。
+
+    安全护栏(与 remove_task_dir_if_safe 同一思路,宁可拒绝不可误删):
+    category 必须是简单目录名(_CATEGORY_NAME_RE,拒绝 .. / 分隔符 /
+    绝对路径),且 resolve 后严格位于 CACHE_DIR 内、不等于 CACHE_DIR。
+    目录不存在时抛 ValueError(前端分类清单来自 get_cache_stats,
+    不存在即视为非法输入)。
+
+    Returns:
+        {'removed_bytes': N, 'removed_files': M}
+
+    Raises:
+        ValueError: category 非法、越界或不存在。
+    """
+    root = Path(cache_root) if cache_root is not None else Path(Config.CACHE_DIR)
+    if not _CATEGORY_NAME_RE.match(category or ''):
+        raise ValueError(f"非法的缓存分类名: {category!r}")
+
+    # _root 是 get_cache_stats 里「顶层散落文件」的分类,只删文件不碰子目录。
+    if category == '_root':
+        removed_bytes = 0
+        removed_files = 0
         try:
-            os.unlink(path)
-            remaining -= size
-            stats['removed_files'] += 1
-            stats['removed_bytes'] += size
-        except OSError as e:
-            logger.warning(f"cache LRU 清理删除失败 {path}: {e}")
+            with os.scandir(root) as it:
+                for entry in it:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            size = entry.stat(follow_symlinks=False).st_size
+                            os.unlink(entry.path)
+                            removed_bytes += size
+                            removed_files += 1
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        return {'removed_bytes': removed_bytes, 'removed_files': removed_files}
 
-    if stats['removed_files']:
-        logger.info(
-            f"Tile cache LRU cleanup: removed {stats['removed_files']} file(s), "
-            f"{stats['removed_bytes'] / 1024 / 1024:.1f}MB "
-            f"(limit {limit_mb}MB, now ~{remaining / 1024 / 1024:.1f}MB)"
-        )
-    return stats
+    target = (root / category).resolve()
+    root_resolved = root.resolve()
+    if target == root_resolved or root_resolved not in target.parents:
+        raise ValueError(f"缓存分类越界: {category!r}")
+    if not target.is_dir():
+        raise ValueError(f"缓存分类不存在: {category!r}")
+    removed_bytes, removed_files = _sum_dir_bytes(target)
+    shutil.rmtree(target, ignore_errors=True)
+    logger.info(
+        f"Cache category cleared: {category} "
+        f"({removed_files} file(s), {removed_bytes / 1024 / 1024:.1f}MB)"
+    )
+    return {'removed_bytes': removed_bytes, 'removed_files': removed_files}

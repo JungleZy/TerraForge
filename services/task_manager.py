@@ -128,6 +128,31 @@ class TaskManager:
         flag = stop_flag or self.stop_flags.get(task_id)
         return bool(flag and flag.is_set())
 
+    def _stream_copy_tile(self, tile: Tile, style_code: str, output_base,
+                          made_dirs: set, made_dirs_lock: threading.Lock) -> bool:
+        """边下边复制的单瓦片写入:cache -> 产物目录,原子 .part + replace。
+
+        与结尾复制阶段共用「同尺寸已存在即跳过」的幂等判定 —— 恢复/对账重跑
+        不会复写。保留 copy2 字面量:取消钩子测试 monkeypatch copy2 作为取消
+        触发器(见结尾复制段注释),即时复制与补拷线程同样走它,取消语义不变。
+        临时名带线程 id:下载回调(事件循环线程)与补拷线程临时件不互踩。
+        """
+        src = tile.cache_path(style_code)
+        dest = output_base / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
+        with made_dirs_lock:
+            if dest.parent not in made_dirs:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                made_dirs.add(dest.parent)
+        try:
+            if dest.exists() and dest.stat().st_size == src.stat().st_size:
+                return False
+        except OSError:
+            pass  # stat 竞态(文件刚好被删):按需要复制处理,失败由外层记 warning
+        tmp = dest.with_name(f"{dest.name}.part.{threading.get_ident()}")
+        shutil.copy2(src, tmp)
+        tmp.replace(dest)
+        return True
+
     @staticmethod
     def _status_count_deltas(old_status: Optional[str], new_status: str) -> tuple[int, int]:
         downloaded_delta = int(new_status == 'completed') - int(old_status == 'completed')
@@ -763,12 +788,15 @@ class TaskManager:
             task_id: Task ID to execute
 
         Process:
-            1. Get pending/failed tiles from database
-            2. Define progress_callback that updates database and emits socketio
+            1. Enumerate the tile set once: pending (download) vs cache hits
+            2. Stream-copy to the output dir as tiles land (progress_callback),
+               plus a backfill thread for cache-hit tiles — both concurrent
+               with the download
             3. Call download_engine.download_tiles_batch()
             4. Check stop_flag between operations
             5. If output_format includes image, call stitch_tiles_with_gdal for each zoom
-            6. Update task status to 'completed'
+            6. Final copy pass — mostly a same-size reconciliation after step 2
+            7. Update task status to 'completed'
 
         Error Handling:
             - Catches exceptions and updates task status to 'failed'
@@ -881,6 +909,11 @@ class TaskManager:
                 f"({cache_hits} already in cache)"
             )
 
+            # 命中清单快照:补拷线程遍历它往产物目录复制,与下载并行(见下文
+            # 「边下边复制」)。必须快照 —— 下载回调还会往 completed_tiles
+            # 追加本次下载的瓦片,迭代中不能共享同一列表。
+            cache_hit_tiles = list(completed_tiles)
+
             if len(tiles) == 0:
                 logger.info(f"Task {task_id}: No tiles to download, proceeding to stitching")
 
@@ -923,6 +956,49 @@ class TaskManager:
             else:
                 base_downloaded = task.downloaded_tiles
                 base_failed = task.failed_tiles
+
+            # --- 边下边复制:产物目录 = 已下载内容的镜像 ----------------------
+            # 两条写入路径,与下载并行,结尾复制阶段(下方)退化为同尺寸对账:
+            #   ① 下载回调:瓦片落 cache 成功后立即复制一份到产物目录;
+            #   ② 补拷线程:枚举出的 cache 命中瓦片(不经回调)开案就复制。
+            # 两份清单天然不相交(命中 vs 待下载),写盘不冲突;取消时保留已
+            # 复制部分 —— 与 cache 的状态一致,取消任务的产物即部分下载内容。
+            stream_output_base = output_dir / f"task_{task_id}"
+            stream_made_dirs: set = set()
+            stream_dirs_lock = threading.Lock()
+
+            def _stream_copy_quiet(tile: Tile) -> None:
+                # 单块失败(如磁盘满)不拖垮下载/补拷:记 warning,结尾复制
+                # 阶段的对账会按「同尺寸跳过」判定重试这块。
+                try:
+                    self._stream_copy_tile(
+                        tile, style_code,
+                        stream_output_base, stream_made_dirs, stream_dirs_lock,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Task {task_id}: stream copy failed for "
+                        f"{tile.zoom}/{tile.x}/{tile.y}: {e}"
+                    )
+
+            def _backfill_cache_hits() -> None:
+                copied = 0
+                for tile in cache_hit_tiles:
+                    if self._is_stop_requested(task_id, stop_flag):
+                        break
+                    _stream_copy_quiet(tile)
+                    copied += 1
+                logger.info(
+                    f"Task {task_id}: cache-hit backfill copied "
+                    f"{copied}/{len(cache_hit_tiles)} tiles"
+                )
+
+            backfill_thread = threading.Thread(
+                target=_backfill_cache_hits,
+                name=f"task-{task_id}-backfill",
+                daemon=True,
+            )
+            backfill_thread.start()
 
             # --- 进度回调:稀疏失败表 + 计数批量落库 ---
             # session_status 记录本次运行里每块瓦片已上报的状态,和稀疏表里的
@@ -1066,6 +1142,9 @@ class TaskManager:
                     # (如测试里的 completed 两连发)只并一次。
                     if status == 'completed' and old_status != 'completed':
                         completed_tiles.append(tile)
+                        # 边下边复制①:cache 落盘即镜像一份到产物目录,下载结束
+                        # ≈ 产物就绪,不再在 100% 后整段等待结尾复制阶段。
+                        _stream_copy_quiet(tile)
 
                     processed_since_flush += 1
                     if processed_since_flush >= PROGRESS_DB_FLUSH_INTERVAL:
@@ -1129,49 +1208,49 @@ class TaskManager:
                     )
 
             # Download tiles
-            if len(tiles) > 0:
-                # Check stop flag before downloading
-                if self._is_stop_requested(task_id, stop_flag):
-                    logger.info(f"Task {task_id}: Stop flag detected before download")
-                    return
+            # 补拷线程随下载并行跑;finally 里 join,保证「下载块的所有出口
+            # (完成/stop return/异常)都在拼接与结尾对账前收尾」—— 此后产物
+            # 目录只剩零头缺口,结尾复制阶段基本退化为 stat 对账。
+            try:
+                if len(tiles) > 0:
+                    # Check stop flag before downloading
+                    if self._is_stop_requested(task_id, stop_flag):
+                        logger.info(f"Task {task_id}: Stop flag detected before download")
+                        return
 
-                logger.info(f"Task {task_id}: Starting tile download")
-                progress_conn = get_connection()
-                try:
-                    # 返回值(每块瓦片一条结果)刻意不接收:completed 清单由
-                    # progress_callback 逐块并入(见回调里的注释),全量 results
-                    # 列表在这里没有任何消费方,接住它只是白白占内存。
-                    # 置 _collect_batch_results=False 让引擎连物化都不做
-                    # (为什么是实例属性而不是 kwarg:tests/ 里多处把
-                    # download_tiles_batch 换成四参替身,见引擎 __init__ 注释)。
-                    self.download_engine._collect_batch_results = False
-                    await self.download_engine.download_tiles_batch(
-                        tiles=tiles,
-                        style=style_code,
-                        progress_callback=progress_callback,
-                        stop_flag=stop_flag
-                    )
-                finally:
-                    # 下载循环结束时把最后不满一批的计数增量落库 —— 暂停/取消/
-                    # 异常都不能丢这部分进度。flush 失败只记 error:收尾异常不能
-                    # 掩盖下载循环抛出的原始异常,且连接无论如何都要关闭。
+                    logger.info(f"Task {task_id}: Starting tile download")
+                    progress_conn = get_connection()
                     try:
-                        flush_progress_counts()
-                    except Exception as flush_error:
-                        logger.error(
-                            f"Task {task_id}: Failed to flush progress counts: {flush_error}"
+                        # 返回值(每块瓦片一条结果)刻意不接收:completed 清单由
+                        # progress_callback 逐块并入(见回调里的注释),全量 results
+                        # 列表在这里没有任何消费方,接住它只是白白占内存。
+                        # 置 _collect_batch_results=False 让引擎连物化都不做
+                        # (为什么是实例属性而不是 kwarg:tests/ 里多处把
+                        # download_tiles_batch 换成四参替身,见引擎 __init__ 注释)。
+                        self.download_engine._collect_batch_results = False
+                        await self.download_engine.download_tiles_batch(
+                            tiles=tiles,
+                            style=style_code,
+                            progress_callback=progress_callback,
+                            stop_flag=stop_flag
                         )
-                    progress_conn.close()
+                    finally:
+                        # 下载循环结束时把最后不满一批的计数增量落库 —— 暂停/取消/
+                        # 异常都不能丢这部分进度。flush 失败只记 error:收尾异常不能
+                        # 掩盖下载循环抛出的原始异常,且连接无论如何都要关闭。
+                        try:
+                            flush_progress_counts()
+                        except Exception as flush_error:
+                            logger.error(
+                                f"Task {task_id}: Failed to flush progress counts: {flush_error}"
+                            )
+                        progress_conn.close()
 
-                # 本次下载成功的瓦片已在回调里并入 completed 清单 —— 与枚举段的
-                # cache 命中清单互补,替代旧的「下载后第二遍全量 stat 枚举」。
-                logger.info(f"Task {task_id}: Tile download completed")
-
-                # 下载是瓦片 cache 唯一增长点,顺势按 cache_max_size_mb 做 LRU
-                # 清理(best-effort,内有新文件护栏,不会清到本任务刚下的瓦片;
-                # 全量 stat 是秒级活,放线程里不阻塞事件循环)。
-                from services.task_cleanup import enforce_cache_size_limit
-                await asyncio.to_thread(enforce_cache_size_limit)
+                    # 本次下载成功的瓦片已在回调里并入 completed 清单 —— 与枚举段的
+                    # cache 命中清单互补,替代旧的「下载后第二遍全量 stat 枚举」。
+                    logger.info(f"Task {task_id}: Tile download completed")
+            finally:
+                backfill_thread.join()
 
             # Check stop flag before stitching
             if self._is_stop_requested(task_id, stop_flag):
@@ -1228,6 +1307,19 @@ class TaskManager:
                     logger.info(f"Task {task_id}: Stitching zoom level {zoom} to {output_path}")
 
                     try:
+                        # 拼接开始也发一次：旧事件只在拼完才发，单个大 zoom
+                        # 一拼就是几十分钟起步，期间界面零反馈，看起来像「卡
+                        # 100%」。phase='start' 让前端能把任务行切到「拼接中」。
+                        if self.socketio:
+                            try:
+                                self.socketio.emit('task_stitch_progress', {
+                                    'task_id': task_id,
+                                    'zoom_level': zoom,
+                                    'phase': 'start',
+                                })
+                            except Exception as e:
+                                logger.warning(f"Task {task_id}: stitch start emit failed: {e!r}")
+
                         # to_thread 把 GDAL 拼接挪出事件循环:大 mosaic 拼接是
                         # 分钟级 CPU/IO 活,同步调用的期间暂停/取消/进度回调
                         # 全被堵死,只能等拼完才生效。
@@ -1236,7 +1328,9 @@ class TaskManager:
                             tiles=completed_tiles,
                             style=style_code,
                             output_path=str(output_path),
-                            zoom_level=zoom
+                            zoom_level=zoom,
+                            # 保存路径全盘化后,拼接白名单要认该任务的注册产物根
+                            extra_allowed_dir=str(output_dir),
                         )
                         logger.info(f"Task {task_id}: Zoom level {zoom} stitched successfully")
                         stitched_zooms.append(zoom)
@@ -1267,6 +1361,9 @@ class TaskManager:
             # Copy tiles to output_path — 所有格式都复制:历史预览的
             # /tiles/<id>/ 瓦片服务以产物目录为来源,image_only 不复制的话
             # 已完成任务的预览只能定位到区域、看不到任何已下载内容。
+            # 边下边复制(回调即时复制 + cache 命中补拷线程)之后,这里绝大多数
+            # 瓦片命中「同尺寸跳过」,本阶段实质是对账:补即时复制失败/补拷被
+            # 取消打断留下的缺口,并继续提供复制进度事件与取消检查。
             # NOTE: this is a separate `if`, not `elif` — 'both' must do both.
             if task.output_format in ['png', 'jpg', 'both', 'image_only', 'tiles_only']:
                 logger.info(f"Task {task_id}: Copying tiles to output path ({task.output_format} mode)")

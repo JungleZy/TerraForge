@@ -40,12 +40,13 @@ def test_create_task_rejects_output_path_escape(monkeypatch, tmp_path):
         mgr.create_task({"name": "x", **BBOX, "output_path": "../../escape"})
 
 
-def test_create_task_rejects_absolute_path_outside_downloads(monkeypatch, tmp_path):
+def test_create_task_accepts_absolute_path_outside_downloads(monkeypatch, tmp_path):
+    """0.2.4 全盘化:DOWNLOADS_DIR 之外的绝对路径(深度足够)同样接受"""
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
 
-    with pytest.raises(ValueError):
-        mgr.create_task({"name": "x", **BBOX, "output_path": str(tmp_path / "outside")})
+    task_id = mgr.create_task({"name": "x", **BBOX, "output_path": str(tmp_path / "outside")})
+    assert isinstance(task_id, int)
 
 
 def test_create_task_rejects_relative_output_path(monkeypatch, tmp_path):

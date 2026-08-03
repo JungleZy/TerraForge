@@ -260,6 +260,11 @@ function createTaskRow(task) {
     if (isFailed) {
         line2 = '<div class="task-error" role="alert"></div>';
     } else if (isLive) {
+        // stage_text（拼接中/复制瓦片中）由 tasks.js 的阶段事件写入：下载 100%
+        // 之后拼接/复制还要跑几分钟到几小时，行上只显示「已下载 N/N」会像卡死。
+        const countText = task.stage_text
+            ? escapeHtml(task.stage_text)
+            : `${progressVerb}: ${downloaded} / ${total} ${itemLabel}${failedItems > 0 ? ` <span style="color: var(--color-danger);">| 失败: ${failedItems}</span>` : ''}`;
         line2 = `
             <div class="task-progress-line">
                 <div class="task-progress">
@@ -270,7 +275,7 @@ function createTaskRow(task) {
                          aria-valuemax="100"></div>
                 </div>
                 <span class="task-pct" aria-hidden="true">${progress}%</span>
-                <span class="task-count progress-detail">${progressVerb}: ${downloaded} / ${total} ${itemLabel}${failedItems > 0 ? ` <span style="color: var(--color-danger);">| 失败: ${failedItems}</span>` : ''}</span>
+                <span class="task-count progress-detail">${countText}</span>
             </div>`;
     } else {
         line2 = `<div class="task-line2">${escapeHtml(getStatusText(task.status))} · ${downloaded} / ${total} ${itemLabel}${bboxText}</div>`;

@@ -146,7 +146,9 @@ def test_delete_map_task_default_keeps_artifacts(monkeypatch, tmp_path):
     assert _task_row(db, "tasks", task_id) is None
 
 
-def test_delete_map_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path):
+def test_delete_map_task_outside_downloads_dir_removes_files(monkeypatch, tmp_path):
+    """0.2.4 护栏放开:DOWNLOADS_DIR 之外的注册任务目录,delete_files=true 也删
+    (护栏:非符号链接、深度足够、非根目录/家目录/cache)"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
     db = importlib.import_module("core.database")
@@ -156,7 +158,7 @@ def test_delete_map_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path
     resp = client.delete(f"/api/tasks/{task_id}?delete_files=true")
 
     assert resp.status_code == 200
-    assert artifact.exists(), "产物在 DOWNLOADS_DIR 之外时不得删文件"
+    assert not artifact.exists(), "注册任务目录即使在 DOWNLOADS_DIR 之外,delete_files=true 也应删除"
     assert _task_row(db, "tasks", task_id) is None, "DB 记录仍应删除"
 
 
@@ -190,7 +192,8 @@ def test_delete_dem_task_default_keeps_artifacts(monkeypatch, tmp_path):
     assert _task_row(db, "dem_tasks", task_id) is None
 
 
-def test_delete_dem_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path):
+def test_delete_dem_task_outside_downloads_dir_removes_files(monkeypatch, tmp_path):
+    """0.2.4 护栏放开:DOWNLOADS_DIR 之外的注册任务目录,delete_files 也删"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
     db = importlib.import_module("core.database")
@@ -200,7 +203,7 @@ def test_delete_dem_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path
     resp = client.delete(f"/api/dem/tasks/{task_id}?delete_files=1")
 
     assert resp.status_code == 200
-    assert artifact.exists(), "产物在 DOWNLOADS_DIR 之外时不得删文件"
+    assert not artifact.exists(), "注册任务目录即使在 DOWNLOADS_DIR 之外,delete_files=true 也应删除"
     assert _task_row(db, "dem_tasks", task_id) is None, "DB 记录仍应删除"
 
 
@@ -234,7 +237,8 @@ def test_delete_contour_task_default_keeps_artifacts(monkeypatch, tmp_path):
     assert _task_row(db, "contour_tasks", task_id) is None
 
 
-def test_delete_contour_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_path):
+def test_delete_contour_task_outside_downloads_dir_removes_files(monkeypatch, tmp_path):
+    """0.2.4 护栏放开:DOWNLOADS_DIR 之外的注册任务目录,delete_files 也删"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
     db = importlib.import_module("core.database")
@@ -244,7 +248,7 @@ def test_delete_contour_task_outside_downloads_dir_keeps_files(monkeypatch, tmp_
     resp = client.delete(f"/api/contour/tasks/{task_id}?delete_files=true")
 
     assert resp.status_code == 200
-    assert artifact.exists(), "产物在 DOWNLOADS_DIR 之外时不得删文件"
+    assert not artifact.exists(), "注册任务目录即使在 DOWNLOADS_DIR 之外,delete_files=true 也应删除"
     assert _task_row(db, "contour_tasks", task_id) is None, "DB 记录仍应删除"
 
 
@@ -270,3 +274,56 @@ def test_delete_map_task_legacy_relative_output_path_removes_artifacts(monkeypat
         "相对路径存量行必须相对 DOWNLOADS_DIR 归一化后再删产物,不能按进程 CWD"
     )
     assert _task_row(db, "tasks", task_id) is None
+
+
+# ---------------------------------------------------------------------------
+# remove_task_dir_if_safe 护栏（0.2.4 全盘放开后重定的边界）
+# ---------------------------------------------------------------------------
+
+
+def _cleanup_mod(monkeypatch, tmp_path):
+    from core import config
+    monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
+    monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
+    import services.task_cleanup as tc
+    return tc
+
+
+def test_cleanup_allows_registered_dir_outside_downloads(monkeypatch, tmp_path):
+    tc = _cleanup_mod(monkeypatch, tmp_path)
+    artifact = tmp_path / "elsewhere" / "task_1"
+    artifact.mkdir(parents=True)
+    (artifact / "f.txt").write_text("x")
+
+    assert tc.remove_task_dir_if_safe(artifact) is True
+    assert not artifact.exists()
+
+
+def test_cleanup_refuses_symlink_component(monkeypatch, tmp_path):
+    tc = _cleanup_mod(monkeypatch, tmp_path)
+    real = tmp_path / "real" / "task_1"
+    real.mkdir(parents=True)
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError) as e:
+        import pytest
+        pytest.skip(f"无法创建符号链接: {e}")
+
+    assert tc.remove_task_dir_if_safe(link / "task_1") is False
+    assert real.exists(), "符号链接路径必须拒删,真实目录不能被动到"
+
+
+def test_cleanup_refuses_shallow_and_home(monkeypatch, tmp_path):
+    import pytest
+    tc = _cleanup_mod(monkeypatch, tmp_path)
+    assert tc.remove_task_dir_if_safe(Path(os.path.abspath(os.sep))) is False
+    assert tc.remove_task_dir_if_safe(Path.home()) is False
+
+
+def test_cleanup_refuses_cache_and_downloads_root(monkeypatch, tmp_path):
+    tc = _cleanup_mod(monkeypatch, tmp_path)
+    assert tc.remove_task_dir_if_safe(tmp_path / "downloads") is False
+    assert tc.remove_task_dir_if_safe(tmp_path / "cache") is False
+    assert tc.remove_task_dir_if_safe(tmp_path) is False, "包含 cache 的上级目录也拒删"

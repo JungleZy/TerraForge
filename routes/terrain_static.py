@@ -88,11 +88,13 @@ def _resolve_config_path(path_str: str) -> Path:
 
 
 def _resolve_safe_file(base_dir: Path, subpath: str) -> Path:
-    downloads_root = Path(Config.DOWNLOADS_DIR).resolve()
+    """把 subpath 限制在 base_dir 之内,防路径穿越。
 
+    0.2.4 起不再要求 base_dir 落在 DOWNLOADS_DIR 内:base_dir 全部来自
+    DB 任务行的 output_path(建任务时已校验)或管理员配置,不是请求方
+    输入;请求方能控制的只有 subpath,把它锁在 base_dir 里即可。
+    """
     base_dir = base_dir.resolve()
-    if not _is_within(base_dir, downloads_root):
-        abort(400, description="base_dir must be under downloads")
 
     # Guard against backslash-based traversal on Windows.
     subpath = (subpath or "").replace("\\", "/")
@@ -100,8 +102,6 @@ def _resolve_safe_file(base_dir: Path, subpath: str) -> Path:
 
     if not _is_within(target, base_dir):
         abort(400, description="path traversal blocked")
-    if not _is_within(target, downloads_root):
-        abort(400, description="file must be under downloads")
 
     return target
 

@@ -5,6 +5,7 @@ Handles RESTful API endpoints for task management, history, and configuration.
 """
 
 import logging
+import os
 from flask import Blueprint, request, jsonify
 from pathlib import Path
 from typing import Optional
@@ -861,22 +862,92 @@ def reset_config():
         return jsonify({'error': 'Failed to reset config'}), 500
 
 
+@api_bp.route('/cache/stats', methods=['GET'])
+def get_cache_stats_api():
+    """分类统计下载缓存占用（cache 顶层每个子目录一类）。
+
+    只读接口。缓存不做任何自动清理 —— 清理由用户在前端手动触发
+    （POST /api/cache/clear，界面带二次确认）。
+    """
+    from services.task_cleanup import get_cache_stats
+
+    try:
+        stats = get_cache_stats()
+        return jsonify({'success': True, **stats})
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {e}")
+        return jsonify({'error': 'Failed to get cache stats'}), 500
+
+
+@api_bp.route('/cache/clear', methods=['POST'])
+def clear_cache_api():
+    """手动清理一个缓存分类（或 __all__ 全部分类）。
+
+    Request Body:
+        {"category": "<key>"} —— key 取自 GET /api/cache/stats 的
+        categories[].key，"__all__" 表示全部分类。
+
+    Returns:
+        200 {success, cleared: [{key, removed_bytes, removed_files}],
+             total_removed_bytes}；非法/不存在的 category 400。
+    """
+    from services.task_cleanup import clear_cache_category, get_cache_stats
+
+    try:
+        data = request.get_json(silent=True)
+        category = data.get('category') if isinstance(data, dict) else None
+        if not category or not isinstance(category, str):
+            return jsonify({'error': 'Missing category'}), 400
+
+        if category == '__all__':
+            keys = [c['key'] for c in get_cache_stats()['categories']]
+        else:
+            keys = [category]
+
+        cleared = []
+        total_removed_bytes = 0
+        for key in keys:
+            result = clear_cache_category(key)
+            cleared.append({'key': key, **result})
+            total_removed_bytes += result['removed_bytes']
+
+        return jsonify({
+            'success': True,
+            'cleared': cleared,
+            'total_removed_bytes': total_removed_bytes,
+        })
+
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}")
+        return jsonify({'error': 'Failed to clear cache'}), 500
+
+
 @api_bp.route('/fs/browse', methods=['GET'])
 def browse_dir():
-    """目录选择弹窗的数据源：列出 DOWNLOADS_DIR 内某目录的子目录。
+    """目录选择弹窗的数据源：列出某目录的子目录（0.2.4 起全盘可浏览）。
 
-    Query: ?path=<绝对路径>（缺省 = DOWNLOADS_DIR 根）。
-    边界与建任务一致 —— 只允许浏览 DOWNLOADS_DIR 之内；越界/不存在/
-    不是目录一律 400。只列非隐藏子目录（文件不列，弹窗只选目录）。
-    parent 为 null 表示已到根（没有「上一级」可去）。
+    Query: ?path=<绝对路径>。缺省时：Windows 返回盘符列表，POSIX 返回
+    根目录 /。不存在/不是目录一律 400。只列非隐藏子目录（文件不列，
+    弹窗只选目录）。parent 为 null 表示已到根（没有「上一级」可去）。
     """
-    from core.config import Config
-
-    root = Config.DOWNLOADS_DIR.resolve()
     raw = (request.args.get('path') or '').strip()
-    target = root if not raw else Path(raw).expanduser().resolve()
-    if target != root and root not in target.parents:
-        return jsonify({'success': False, 'error': '只能浏览下载目录之内的路径'}), 400
+
+    if not raw:
+        # 根级:Windows 给盘符列表(parent=null);POSIX 直接按 / 列目录
+        if os.name == 'nt':
+            import string
+            drives = [
+                {'name': f"{d}:\\", 'path': f"{d}:\\"}
+                for d in string.ascii_uppercase
+                if Path(f"{d}:\\").exists()
+            ]
+            return jsonify({'success': True, 'path': '', 'parent': None, 'dirs': drives})
+        target = Path('/')
+    else:
+        target = Path(raw).expanduser().resolve()
+
     if not target.exists():
         return jsonify({'success': False, 'error': '目录不存在'}), 400
     if not target.is_dir():
@@ -891,10 +962,11 @@ def browse_dir():
     except OSError as e:
         return jsonify({'success': False, 'error': f'读取目录失败：{e}'}), 400
 
+    parent = target.parent
     return jsonify({
         'success': True,
         'path': str(target),
-        'parent': None if target == root else str(target.parent),
+        'parent': None if parent == target else str(parent),
         'dirs': dirs,
     })
 

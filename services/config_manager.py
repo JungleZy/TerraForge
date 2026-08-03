@@ -42,7 +42,6 @@ class ConfigManager:
         - concurrent_downloads: 1-100
         - request_timeout: 1-300 seconds
         - max_retries: 0-10
-        - cache_max_size_mb: >= 0
         - history_retention_days: >= 0
         - map_center_lat: -90 to 90
         - map_center_lng: -180 to 180
@@ -293,17 +292,13 @@ class ConfigManager:
                 val = int(value)
                 return 0 <= val <= 10
 
-            elif key == 'cache_max_size_mb':
-                val = int(value)
-                return val >= 0
-
             elif key == 'history_retention_days':
                 val = int(value)
                 return val >= 0
 
             elif key == 'default_save_path':
-                # 绝对路径且落在 DOWNLOADS_DIR 内(与建任务同一口径);
-                # 相对/越界都拒绝 —— 存一个建任务时必被 400 的值没有意义
+                # 绝对路径 + 至少两级深度(与建任务同一口径,0.2.4 起全盘可选);
+                # 相对/浅层都拒绝 —— 存一个建任务时必被 400 的值没有意义
                 from services.geo_validation import require_absolute_output_dir
                 try:
                     require_absolute_output_dir(str(value))

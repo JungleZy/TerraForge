@@ -68,19 +68,19 @@ def test_tampered_output_path_pointing_at_etc_is_not_served(isolated_app):
         raise AssertionError("tampered output_path served /etc/passwd!")
 
 
-def test_resolve_safe_file_rejects_base_dir_outside_downloads(isolated_app, tmp_path):
-    """Service-level guard: _resolve_safe_file must hard-reject (400) any
-    base_dir that escapes Config.DOWNLOADS_DIR, regardless of how the
-    base_dir was derived."""
+def test_resolve_safe_file_guards_traversal_only(isolated_app, tmp_path):
+    """0.2.4 起 _resolve_safe_file 不再要求 base_dir 在 DOWNLOADS_DIR 内
+    (base_dir 来自任务行/配置,不是请求输入),但仍须硬拒 subpath 穿越。"""
     from werkzeug.exceptions import HTTPException
 
     from routes.terrain_static import _resolve_safe_file
 
+    # base_dir 在 downloads 之外不再拒绝 —— 全盘保存路径的任务就靠它服务
     with isolated_app.app.test_request_context("/"):
-        with pytest.raises(HTTPException) as excinfo:
-            _resolve_safe_file(Path("/etc"), "passwd")
-    assert excinfo.value.code == 400
+        target = _resolve_safe_file(Path("/etc"), "passwd")
+    assert str(target) == str(Path("/etc") / "passwd")
 
+    # subpath 穿越仍然硬拒
     with isolated_app.app.test_request_context("/"):
         with pytest.raises(HTTPException) as excinfo:
             _resolve_safe_file(tmp_path / "downloads" / "ok", "../../outside")
