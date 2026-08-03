@@ -13,6 +13,11 @@
     /* 边框 */
     --color-border:        rgba(255,255,255,0.07);
     --color-border-strong: rgba(255,255,255,0.12);
+    /* 表单控件的可见边界（M17）。--color-border 是「分隔线」级别的弱边框，
+       合成后对卡片/弹窗底只有 1.35:1；未勾选的复选框/单选框除了这个方框
+       什么都没有，正是 WCAG 1.4.11 非文本对比要管的对象（下限 3:1）。
+       实测 #6b7280 对 #15171c = 3.71:1、对控件填充 #1c2027 = 3.38:1。 */
+    --color-control-border: #6b7280;
 
     /* 文字 */
     --color-text-primary:   #e8eaed;
@@ -121,7 +126,6 @@
        亮色覆盖集中在下方 `:root[data-bs-theme="light"]` 块。组件规则一律
        引用令牌、不再写字面量 —— 写死的 rgba(255,255,255,...) 叠层 /
        rgba(4,6,10,...) 遮罩在亮底下就是一块白斑 / 一块化不开的黑。 */
-    --color-row-hover:        rgba(255,255,255,0.03);   /* .history-table 行 hover */
     --color-control-hover:    rgba(255,255,255,0.12);   /* .map-panel-btn hover */
     --color-btn-ghost-hover:  rgba(255,255,255,0.08);   /* .btn-secondary / .btn-outline-secondary hover */
     --color-btn-ghost-active: rgba(255,255,255,0.16);   /* 同上的 active */
@@ -202,6 +206,10 @@
     /* 边框：亮底上换成墨色的透明叠层（暗色是白色叠层） */
     --color-border:        rgba(15,23,42,0.10);
     --color-border-strong: rgba(15,23,42,0.18);
+    /* 表单控件的可见边界（M17）。取值必须实算：常见的 #9ca3af 对白底只有
+       2.54:1，比它要修的 3:1 门槛还低。#858c97 对白底 3.39:1、对控件填充
+       #f1f3f5 3.05:1。 */
+    --color-control-border: #858c97;
 
     /* 文字：primary 对三层背景实测 14.2 / 16.2 / 14.6:1，
        secondary 6.6 / 7.5 / 6.8:1（全部 ≥ 4.5:1） */
@@ -251,7 +259,6 @@
     --shadow-lg: 0 12px 32px rgba(15,23,42,0.18);
 
     /* ---- 组件级令牌（暗色默认值的亮色对应） ---- */
-    --color-row-hover:        rgba(15,23,42,0.04);
     --color-control-hover:    rgba(15,23,42,0.08);
     --color-btn-ghost-hover:  rgba(15,23,42,0.06);
     --color-btn-ghost-active: rgba(15,23,42,0.12);
@@ -361,12 +368,6 @@ body {
     font-size: var(--font-size-base);
 }
 
-/* Override Bootstrap container backgrounds */
-.container,
-.container-fluid {
-    background: transparent !important;
-}
-
 .row {
     background: transparent !important;
 }
@@ -374,11 +375,6 @@ body {
 .col,
 [class*="col-"] {
     background: transparent !important;
-}
-
-/* Override all Bootstrap white backgrounds */
-.bg-white {
-    background: var(--color-bg-secondary) !important;
 }
 
 /* 这里原先有一条兜底重置，已整条删除：
@@ -597,6 +593,20 @@ body {
 
 .map-panel-btn:hover {
     background-color: var(--color-control-hover);   /* 与 .leaflet-bar a:hover 一致 */
+    color: var(--color-text-primary);
+}
+
+/* M16：键盘焦点圈必须画在 padding box 【之内】。
+   容器 .map-panel-triggers 有 overflow:hidden（为了让圆角裁掉首尾按钮的 hover
+   底色），且无内边距、内容盒宽度正好等于按钮的 30px —— 全站通配的
+   `*:focus-visible { outline-offset: 2px }` 画出的整圈都落在 padding box 之外，
+   而 outline 不计入 scrollable overflow region，会被直接剪掉。实测：单按钮分组
+   （「框选」）聚焦后屏幕上一条焦点线都没有；三按钮分组的中间按钮只剩两截压在
+   邻居身上的水平线。负 offset 把圈画进内部，不受祖先裁剪影响。 */
+.map-panel-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+    background-color: var(--color-control-hover);
     color: var(--color-text-primary);
 }
 
@@ -1411,58 +1421,8 @@ body {
 }
 
 /* History Table Styles */
-.history-table {
-    background: var(--color-bg-secondary);
-    border-radius: 12px;
-    overflow: hidden;
-    box-shadow: var(--shadow-md);
-    border: 1px solid var(--color-border);
-}
-
-.history-table table {
-    margin-bottom: 0;
-    color: var(--color-text-primary);
-}
-
-.history-table th {
-    background: var(--color-bg-tertiary);
-    color: var(--color-text-secondary);
-    font-weight: 600;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--color-border);
-}
-
-.history-table td {
-    padding: 1rem;
-    vertical-align: middle;
-    border-bottom: 1px solid var(--color-border);
-    font-family: var(--font-display);
-}
-
-.history-table tbody tr {
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.history-table tbody tr:hover {
-    background: var(--color-row-hover);
-}
 
 /* Action Button Styles */
-.action-buttons {
-    display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-}
-
-.action-buttons .btn {
-    border-radius: 8px;
-    font-weight: 700;
-    padding: 0.5rem 1.25rem;
-    font-family: var(--font-display);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
-}
 
 /* ==========================================================================
    Button Styles —— A6 / Task 11：五态系统（基态 / hover / focus-visible /
@@ -1816,11 +1776,6 @@ body {
     color: var(--color-text-primary);
 }
 
-.alert-dismissible .btn-close {
-    padding: 1.125rem 1.25rem;
-    filter: var(--btn-close-filter);
-}
-
 /* Card Styles */
 .card {
     border-radius: 12px;
@@ -2092,12 +2047,6 @@ h1, h2, h3, h4, h5, h6 {
     margin-bottom: var(--gap-field) !important;
 }
 
-/* Input Group */
-.input-group {
-    border-radius: 8px;
-    overflow: hidden;
-}
-
 /* Modal Styles */
 .modal-content {
     background: var(--color-bg-secondary);
@@ -2215,16 +2164,23 @@ code {
     width: 1.25rem;
     height: 1.25rem;
     margin-top: 0.125rem;
-    /* 拉齐容器 padding：Bootstrap 默认 margin-left:-1.5em 是按 1em 见方的
-       原生控件定的；这里控件放大到 1.25rem、容器 padding-left 1.75rem，
-       沿用 -1.5em 会让图标右缘离文字只剩 ~4px。改成 -1.75rem 后图标左缘
-       贴容器边，图标与文字间恒为 1.75-1.25=0.5rem。 */
-    margin-left: -1.75rem;
     background-color: var(--color-bg-tertiary);
-    border: 2px solid var(--color-border);
+    border: 2px solid var(--color-control-border);
     cursor: pointer;
     transition: background-color 0.15s ease, border-color 0.15s ease,
                 color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* 拉齐容器 padding：Bootstrap 默认 margin-left:-1.5em 是按 1em 见方的原生
+   控件定的；这里控件放大到 1.25rem、容器 padding-left 1.75rem，沿用 -1.5em
+   会让图标右缘离文字只剩 ~4px。改成 -1.75rem 后图标左缘贴容器边，图标与文字
+   间恒为 1.75-1.25=0.5rem。
+   ⚠️ 选择器必须带 `.form-check` 祖先（U7）：Bootstrap 的
+   `.form-check .form-check-input { margin-left: -1.5em }` 是 (0,2,0)，写成裸
+   `.form-check-input`(0,1,0) 会被它压掉 —— 上面那段注释描述的对齐修正
+   **从未生效过**。模板里控件一律包在 .form-check 内，所以后代选择器必然命中。 */
+.form-check .form-check-input {
+    margin-left: -1.75rem;
 }
 
 .form-check-input:checked {
@@ -2262,13 +2218,6 @@ code {
         padding: 1rem;
     }
 
-    .action-buttons {
-        flex-direction: column;
-    }
-
-    .action-buttons .btn {
-        width: 100%;
-    }
 }
 
 /* Additional Utility Classes */
@@ -2861,7 +2810,7 @@ code {
 }
 
 .bounds-hint {
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
     font-size: var(--font-size-xs);
     white-space: nowrap;
 }
@@ -2931,7 +2880,7 @@ code {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
 }
 
 .statusbar-clock {
@@ -3053,6 +3002,22 @@ code {
     border-color: var(--color-danger-hover);
 }
 
+/* U8：此前只写了基态和 hover，键盘 Tab 聚焦 / 按下时会掉回 Bootstrap 默认红。
+   该类是活的（_config_content.html 的两处 + config.js 的两处动态渲染）。
+   五态写全的要求见本文件按钮段头注释。 */
+.btn-outline-danger:not(:disabled):focus-visible {
+    background: transparent;
+    border-color: var(--color-danger);
+    color: var(--color-danger);
+}
+
+.btn-outline-danger:not(:disabled):active {
+    background: var(--color-danger-bg);
+    border-color: var(--color-danger-hover);
+    color: var(--color-danger-hover);
+    filter: brightness(0.85);
+}
+
 
 /* ==========================================================================
    下载弹窗：瓦片数量预估（超上限变红）
@@ -3061,10 +3026,29 @@ code {
     margin-bottom: 12px;
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
-    color: var(--color-text-muted);
+    color: var(--color-text-secondary);
 }
 
 /* 超软阈值是「提醒」不是「错误」（0.1.4 起放开硬上限，创建时二次确认） */
 .tile-estimate--over {
     color: var(--color-warning);
+}
+
+/* 等高线预览面板（U6）：由 map.js contourPreviewPanel() 动态创建并 append 到
+   .index-map 里。父容器是 position:relative + overflow:hidden，而 #map 高
+   100% 已经吃满容器 —— 面板此前只设了 marginTop，作为普通流内块起始位置就在
+   容器高度之下，被完整裁掉（永远不可见，却照样会去拉 /api/contour/tasks）。
+   锚到左下角：右上角是 .bounds-overlay，左侧中部是 .map-panel-triggers。 */
+.contour-preview-panel {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    z-index: 1000;
+    max-width: min(320px, calc(100% - 60px));
+    max-height: 40%;
+    overflow-y: auto;
+}
+
+.contour-preview-panel:empty {
+    display: none;   /* 无可预览任务时不占位、不挡地图 */
 }

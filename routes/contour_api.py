@@ -13,7 +13,8 @@ from flask import Blueprint, current_app, jsonify, request
 
 from services.config_manager import ConfigManager
 from services.geo_validation import coerce_number, validate_zoom
-from services.task_cleanup import remove_task_dir_if_safe
+from services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from routes.api import _delete_payload
 from routes import contour_static
 
 logger = logging.getLogger(__name__)
@@ -167,10 +168,14 @@ def delete_contour_task(task_id: int):
         # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到
         contour_static.invalidate_known_task(task_id)
         # Optional best-effort artifact cleanup (output_path/contour_task_<id>/)
-        # after the row is gone; only removed when inside DOWNLOADS_DIR.
+        # after the row is gone. 边界见 remove_task_dir_if_safe 的 docstring。
+        # M10：走 resolve_stored_output_dir（裸 Path() 对存量相对值按进程 CWD
+        # 解析），并接住返回值 —— 护栏命中时要如实告诉用户文件没删。
+        files_removed = None
         if request.args.get("delete_files", "").lower() in ("1", "true", "yes") and task.get("output_path"):
-            remove_task_dir_if_safe(Path(task["output_path"]) / f"contour_task_{task_id}")
-        return jsonify({"success": True, "message": f"Contour task {task_id} deleted"})
+            files_removed = remove_task_dir_if_safe(
+                resolve_stored_output_dir(task["output_path"]) / f"contour_task_{task_id}")
+        return jsonify(_delete_payload(f"Contour task {task_id} deleted", files_removed))
     except ValueError as e:
         # get_task/delete_task 的 "not found" -> 404;运行中拒绝删除 -> 400
         msg = str(e)

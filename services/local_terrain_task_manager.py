@@ -241,11 +241,19 @@ class LocalTerrainTaskManager:
         return task_id
 
     def _mark_failed(self, task_id: int, message: str) -> None:
+        """create 阶段「全部上传失败」时把刚建的行标 failed。
+
+        WHERE 带 `status='pending'` 守卫：唯一调用点在 create_task_with_files
+        里、任务刚 INSERT 完还没跑起来，本就只可能是 pending。加上它是为了让
+        「置 failed 的 UPDATE 一律不得改写终态记录」这条约定在四条管线里没有
+        例外（见 tests/test_pipeline_parity.py）。
+        """
         conn = get_connection()
         try:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE local_terrain_tasks SET status='failed', error_message=?, completed_at=? WHERE id=?",
+                "UPDATE local_terrain_tasks SET status='failed', error_message=?, "
+                "completed_at=? WHERE id=? AND status='pending'",
                 (message, utc_now_iso(), task_id),
             )
             conn.commit()
@@ -361,18 +369,64 @@ class LocalTerrainTaskManager:
             conn.close()
 
         self._emit_progress(task_id)
-        th.start()
+        try:
+            th.start()
+        except Exception as e:
+            # L2: 锁内已把任务置 running 并 commit。线程创建失败后不回补的话,
+            # 任务永久停在 running —— 再次 start 被状态检查拒、delete 也被拒,
+            # 只能重启进程靠孤儿恢复解开。回补:清登记 + 置 failed。
+            with self._state_lock:
+                if self.active_tasks.get(task_id) is th:
+                    self.active_tasks.pop(task_id, None)
+                if self.stop_flags.get(task_id) is stop_flag:
+                    self.stop_flags.pop(task_id, None)
+            self._mark_running_task_failed(task_id, f"tiling thread failed to start: {e}")
+            raise
+
+    def _mark_running_task_failed(self, task_id: int, message: str) -> None:
+        """把任务行从 running 回补成 failed（L2 的线程启动失败路径）。
+
+        与 `_mark_failed` 的区别是带 `AND status='running'` 守卫：这条路径只
+        用于「已置 running 但线程没起来」，不能误改其它状态的行。
+        """
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE local_terrain_tasks SET status='failed', error_message=?, "
+                "completed_at=? WHERE id=? AND status='running'",
+                (message, utc_now_iso(), task_id),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to mark local terrain task {task_id} as failed: {e}")
+        finally:
+            conn.close()
 
     def _run_tiling_job(
         self, task_id: int, source_dir: Path, output_dir: Path, maxzoom: int, parent_url: str,
         stop_flag: Optional[threading.Event] = None,
     ) -> None:
         try:
-            tile_dem_task_dir(
+            # `or {}`：多个契约测试直接 monkeypatch 掉 tile_dem_task_dir 并
+            # 返回 None，归一成空计数后行为与改动前一致（不判 failed）。
+            counts = tile_dem_task_dir(
                 task_dir=source_dir,
                 out_dir=output_dir,
                 params=TileParams(maxzoom=maxzoom, parent_url=parent_url, stop_flag=stop_flag),
-            )
+            ) or {}
+            # M11: 消费 build_terrain 的失败计数 —— 此前返回值被整个丢弃，
+            # 逐瓦片容错变成纯静默（缺瓦片仍报 completed，layer.json 过度声明）。
+            rendered = int(counts.get("rendered", 0) or 0)
+            failed = int(counts.get("failed", 0) or 0)
+            total = int(counts.get("total", 0) or 0)
+            if total > 0 and rendered == 0 and not (stop_flag is not None and stop_flag.is_set()):
+                raise RuntimeError(
+                    f"terrain tiling produced no tiles ({failed}/{total} failed)")
+            warning = f"部分地形瓦片切片失败({failed}/{total})" if failed > 0 else None
+            if warning:
+                logger.warning(f"Local terrain task {task_id}: {warning}")
+
             conn = get_connection()
             try:
                 cur = conn.cursor()
@@ -388,17 +442,25 @@ class LocalTerrainTaskManager:
                     return
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
-                    "error_message=NULL WHERE id=? AND status='running'",
-                    (utc_now_iso(), task_id),
+                    "error_message=? WHERE id=? AND status='running'",
+                    (utc_now_iso(), warning, task_id),
                 )
                 conn.commit()
             finally:
                 conn.close()
             if self.socketio:
-                self.socketio.emit(
-                    "task_completed",
-                    {"task_id": task_id, "task_type": "local_terrain", "status": "completed"},
-                )
+                # emit 在 completed 落库之后才跑，抛异常会落到兜底 except 把这条
+                # 终态记录改写成 failed（M1 同款）—— 自带 try 只记日志。
+                try:
+                    self.socketio.emit(
+                        "task_completed",
+                        {"task_id": task_id, "task_type": "local_terrain",
+                         "status": "completed", "warning": warning},
+                    )
+                except Exception as emit_error:
+                    logger.warning(
+                        f"Local terrain task {task_id}: emit task_completed "
+                        f"failed (ignored): {emit_error}")
         except Exception as e:
             conn = get_connection()
             try:
@@ -455,7 +517,7 @@ class LocalTerrainTaskManager:
         finally:
             conn.close()
 
-    def delete_task(self, task_id: int, delete_files: bool = True) -> None:
+    def delete_task(self, task_id: int, delete_files: bool = True) -> Optional[bool]:
         """Delete a task's DB rows and, unless delete_files=False, its on-disk
         files. Refuses while running：切片虽能经 stop_flag 中途停（见
         cancel_task），但 delete 会 rmtree 整个输出目录，不能跟在写的
@@ -490,18 +552,29 @@ class LocalTerrainTaskManager:
             conn.close()
 
         # Best-effort directory cleanup after the row is gone.
-        if delete_files:
-            try:
-                # 不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
-                # terrain_static 的约定）：冻结 exe 搬迁后库存的旧绝对路径不会让
-                # 下面的守卫失效、也不会误删旧位置的目录。
-                task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
-                # Guard: only remove inside DOWNLOADS_DIR/terrain.
-                terrain_root = (Path(Config.DOWNLOADS_DIR) / "terrain").resolve()
-                if task_root.resolve().parent == terrain_root and task_root.exists():
-                    shutil.rmtree(task_root, ignore_errors=True)
-            except Exception as e:
-                logger.warning(f"Failed to remove local terrain dir for task {task_id}: {e}")
+        # 返回值（M10）：True=已删 / False=护栏拦下或删除出错 / None=调用方没要求
+        # 删文件。此前无论哪种情况路由都回 200 {"success": true}，护栏命中时用户
+        # 会以为文件已经清掉了。
+        if not delete_files:
+            return None
+        try:
+            # 不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
+            # terrain_static 的约定）：冻结 exe 搬迁后库存的旧绝对路径不会让
+            # 下面的守卫失效、也不会误删旧位置的目录。
+            task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
+            # Guard: only remove inside DOWNLOADS_DIR/terrain.
+            terrain_root = (Path(Config.DOWNLOADS_DIR) / "terrain").resolve()
+            if task_root.resolve().parent != terrain_root:
+                logger.warning(
+                    f"Refusing to remove local terrain dir outside "
+                    f"{terrain_root}: {task_root}")
+                return False
+            if task_root.exists():
+                shutil.rmtree(task_root, ignore_errors=True)
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to remove local terrain dir for task {task_id}: {e}")
+            return False
 
     def _emit_progress(self, task_id: int) -> None:
         if not self.socketio:

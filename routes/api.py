@@ -346,8 +346,12 @@ def delete_task(task_id: int):
 
     Query Parameters:
         delete_files: Optional (1/true/yes). Also remove the task's on-disk
-            artifact directory (output_path/task_<id>) when it resolves
-            inside Config.DOWNLOADS_DIR. Defaults to false.
+            artifact directory (output_path/task_<id>). Defaults to false.
+            0.2.4 起保存路径全盘可选，删除边界见
+            services/task_cleanup.remove_task_dir_if_safe（符号链接分量 /
+            不足两级深度 / 家目录 / DOWNLOADS_DIR 本身或祖先 / CACHE_DIR
+            相关一律拒绝）。护栏命中时响应会带 files_removed:false 与说明，
+            DB 行仍会删除。
 
     Returns:
         JSON response with success status
@@ -402,15 +406,13 @@ def delete_task(task_id: int):
         # 存量行的 output_path 可能是相对路径(旧版本只校验不改写)——先归一化
         # 成绝对路径;否则 Path.resolve() 按进程 CWD 解析,CWD≠BASE_DIR 时会
         # 误判成"越界"而拒删,接口却已经返回 success。
+        files_removed = None
         if request.args.get('delete_files', '').lower() in ('1', 'true', 'yes'):
-            remove_task_dir_if_safe(
+            files_removed = remove_task_dir_if_safe(
                 resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
             )
 
-        return jsonify({
-            'success': True,
-            'message': f'Task {task_id} deleted'
-        })
+        return jsonify(_delete_payload(f'Task {task_id} deleted', files_removed))
 
     except Exception as e:
         logger.error(f"Error deleting task {task_id}: {e}")
@@ -587,7 +589,13 @@ def get_history_all():
                     output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message
+                    error_message,
+                    -- L3: 前端 calculateTimeInfo 优先用这个累计值，字段缺失时
+                    -- 才回退按 started_at 算墙钟（那个分支本是给不写该列的
+                    -- dem/contour/local 三条管线兜底的）。缺了它，paused 任务
+                    -- 刷新页面后耗时一直错，拼接/复制阶段的 running 任务 ETA
+                    -- 还会被放大。其余三张表没有该列，补 NULL 对齐 UNION。
+                    total_running_seconds
                 FROM tasks
                 {where_map}
                 UNION ALL
@@ -604,7 +612,8 @@ def get_history_all():
                     NULL AS output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message
+                    error_message,
+                    NULL AS total_running_seconds
                 FROM dem_tasks
                 {where_dem}
                 UNION ALL
@@ -621,7 +630,8 @@ def get_history_all():
                     NULL AS output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message
+                    error_message,
+                    NULL AS total_running_seconds
                 FROM local_terrain_tasks
                 {where_local}
                 UNION ALL
@@ -638,7 +648,8 @@ def get_history_all():
                     NULL AS output_format,
                     output_path,
                     created_at, started_at, completed_at,
-                    error_message
+                    error_message,
+                    NULL AS total_running_seconds
                 FROM contour_tasks
                 {where_contour}
                 ORDER BY created_at DESC, id DESC
@@ -810,6 +821,20 @@ def update_config():
             except ValueError as e:
                 errors.append(f"{key}: {str(e)}")
 
+        # M9：严格全或无 —— 有任何非法键就直接拒绝，**一个键都不写库**。
+        # 此前是「先把非法键过滤掉再调 set_many」，等于在路由层反转了
+        # ConfigManager.set_many 自己声明并测试过的语义（「任一键非法整批拒绝，
+        # callers never observe a half-updated configuration」）。而前端每次保存
+        # 都提交全部键，于是**任何单个字段填错都会让其余键在用户被告知失败的
+        # 同时静默生效** —— 用户以为并发数没改，下一次下载却按新值跑。
+        if errors:
+            return jsonify({
+                'success': False,
+                'updated': [],
+                'errors': errors,
+                'message': '存在非法值，本次未保存任何设置',
+            }), 400
+
         if valid_items:
             try:
                 config_manager.set_many(valid_items)
@@ -879,17 +904,78 @@ def get_cache_stats_api():
         return jsonify({'error': 'Failed to get cache stats'}), 500
 
 
+def _delete_payload(message: str, files_removed):
+    """DELETE 端点的统一响应体（M10）。
+
+    `remove_task_dir_if_safe` 用返回值区分「已删」与「越界拒删」，但四个调用点
+    此前全部丢弃它 —— 任何护栏命中都只写一条 warning，HTTP 仍是
+    200 {"success": true}。用户点了「删除并删文件」，看到成功提示，几十 GB
+    产物却纹丝不动（存量相对 output_path 尤其容易命中，见 M10）。
+
+    files_removed 为 None 表示调用方没要求删文件，响应里就不带这两个字段。
+    """
+    payload = {'success': True, 'message': message}
+    if files_removed is not None:
+        payload['files_removed'] = bool(files_removed)
+        if not files_removed:
+            payload['files_message'] = (
+                '任务记录已删除；产物目录未通过安全校验，磁盘文件已保留')
+    return payload
+
+
+_ACTIVE_TASK_TABLES = (
+    ('tasks', '地图瓦片'),
+    ('dem_tasks', 'DEM'),
+    ('contour_tasks', '等高线'),
+    ('local_terrain_tasks', '本地地形'),
+)
+
+
+def _unfinished_task_labels():
+    """四条管线里所有未终结（pending/running/paused）任务的可读标签。
+
+    M8：查 DB 而不是查四个 manager 的 active_tasks —— 本蓝图只持有 map 管线的
+    manager 全局，查 DB 是唯一不需要额外注入就能覆盖四条管线的口径，且能连
+    「进程重启后仍是 paused」的任务一起算进来。
+    """
+    from core.database import get_connection_context
+
+    labels = []
+    try:
+        with get_connection_context() as conn:
+            for table, label in _ACTIVE_TASK_TABLES:
+                try:
+                    rows = conn.execute(
+                        f"SELECT id FROM {table} "
+                        f"WHERE status IN ('pending','running','paused') ORDER BY id"
+                    ).fetchall()
+                except Exception:
+                    continue  # 表不存在（旧库）时跳过，不阻断清理
+                labels.extend(f"{label} #{row['id']}" for row in rows)
+    except Exception as e:
+        logger.warning(f"Failed to check unfinished tasks before cache clear: {e}")
+    return labels
+
+
 @api_bp.route('/cache/clear', methods=['POST'])
 def clear_cache_api():
     """手动清理一个缓存分类（或 __all__ 全部分类）。
 
     Request Body:
-        {"category": "<key>"} —— key 取自 GET /api/cache/stats 的
-        categories[].key，"__all__" 表示全部分类。
+        {"category": "<key>", "force": false} —— key 取自 GET /api/cache/stats 的
+        categories[].key，"__all__" 表示全部分类；force=true 跳过活动任务检查。
 
     Returns:
         200 {success, cleared: [{key, removed_bytes, removed_files}],
-             total_removed_bytes}；非法/不存在的 category 400。
+             total_removed_bytes}；非法/不存在的 category 400；
+        有未结束任务且未传 force 时 409 {error, active_tasks}。
+
+    为什么要拦（M8）：地图任务在枚举阶段就把 cache 命中的瓦片移出待下载列表并
+    计入 downloaded_tiles，产物目录靠补拷线程从 cache 复制。清掉分类目录后这些
+    瓦片既不会重下、复制失败也只吞成 warning，而完成判定只看 task_tiles 的失败
+    行 —— cache 命中瓦片从不在那张表里。tiles_only 任务因此完全无声：任务
+    completed、计数满值、产物目录静默缺瓦片。检查后仍有 check-then-act 残余窗口
+    （清理途中仍可能有任务被 start），这是刻意接受的取舍，要彻底消除需拿管理器锁。
     """
     from services.task_cleanup import clear_cache_category, get_cache_stats
 
@@ -898,6 +984,18 @@ def clear_cache_api():
         category = data.get('category') if isinstance(data, dict) else None
         if not category or not isinstance(category, str):
             return jsonify({'error': 'Missing category'}), 400
+
+        force = bool(data.get('force')) if isinstance(data, dict) else False
+        if not force:
+            unfinished = _unfinished_task_labels()
+            if unfinished:
+                return jsonify({
+                    'error': (
+                        '有任务尚未结束，清空缓存会让它们的产物静默缺瓦片。'
+                        '请先暂停或取消：' + '、'.join(unfinished)
+                    ),
+                    'active_tasks': unfinished,
+                }), 409
 
         if category == '__all__':
             keys = [c['key'] for c in get_cache_stats()['categories']]
@@ -946,12 +1044,23 @@ def browse_dir():
             return jsonify({'success': True, 'path': '', 'parent': None, 'dirs': drives})
         target = Path('/')
     else:
-        target = Path(raw).expanduser().resolve()
+        # U4: 解析与存在性检查都可能抛 —— `~未知用户` 抛 RuntimeError
+        # (Could not determine home directory)，含空字节的 path 抛 ValueError
+        # (embedded null byte)，都不在下面 iterdir 的 except OSError 覆盖内。
+        # 源码运行默认 DEBUG=1 且绑 0.0.0.0，未捕获异常会让 Werkzeug 调试器把
+        # 完整堆栈回给浏览器。统一按 400 处理。
+        try:
+            target = Path(raw).expanduser().resolve()
+        except (OSError, ValueError, RuntimeError) as e:
+            return jsonify({'success': False, 'error': f'路径无效：{e}'}), 400
 
-    if not target.exists():
-        return jsonify({'success': False, 'error': '目录不存在'}), 400
-    if not target.is_dir():
-        return jsonify({'success': False, 'error': '不是目录'}), 400
+    try:
+        if not target.exists():
+            return jsonify({'success': False, 'error': '目录不存在'}), 400
+        if not target.is_dir():
+            return jsonify({'success': False, 'error': '不是目录'}), 400
+    except (OSError, ValueError) as e:
+        return jsonify({'success': False, 'error': f'路径无效：{e}'}), 400
 
     try:
         dirs = [

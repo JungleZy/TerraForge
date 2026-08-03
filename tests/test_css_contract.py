@@ -4180,6 +4180,13 @@ FILLED_BTN_VARIANTS = {
     'btn-danger':  '--color-danger',
     'btn-info':    '--color-info',
 }
+# ⚠️ `.btn-outline-danger` **刻意不在册**（U8）。它的五态已在 style.css 里补全
+# （base / hover / focus-visible / active），但入册会撞上一个无解的约束：
+# 暗色档启用墨 --color-danger(#f87171) 的相对亮度是 0.3296，
+#   · BTN_DISABLED_MIN_INK_DIMMING 要求禁用墨 L <= 0.3296 - 0.15 = 0.1796；
+#   · BTN_INK_MIN_CONTRAST 要求禁用墨对按钮底 #1c2027 达 4.5:1，即 L >= 0.2392。
+# 两个区间为空 —— 除非把危险色本身调暗（改变语义）或放宽某条阈值，否则
+# 无论选什么禁用墨都必红。要入册请先决定动哪一条，不要直接往元组里加。
 TRANSPARENT_BTN_VARIANTS = ('btn-secondary', 'btn-outline-secondary', 'btn-outline-primary')
 ALL_BTN_VARIANTS = tuple(FILLED_BTN_VARIANTS) + TRANSPARENT_BTN_VARIANTS
 
@@ -5164,6 +5171,13 @@ def _text_contexts(css):
     control = _flatten(_resolve_color(css, _branch_background(css, '.form-control')), panel)
     toast = _flatten(_resolve_color(css, _branch_background(css, '.app-toast')),
                      _palette_var(css, '--color-bg-primary'))
+    # M18 新增的三处背衬：状态栏是 --color-bg-secondary 实心底；地图浮层是
+    # --color-overlay-surface（半透明，压在地图瓦片上 —— 取 bg-primary 作最坏
+    # 近似的下层，与 toast 同一套做法）；弹窗复用上面的 modal。
+    statusbar = _flatten(_resolve_color(css, _branch_background(css, '.workbench-statusbar')),
+                         _palette_var(css, '--color-bg-primary'))
+    overlay = _flatten(_resolve_color(css, _branch_background(css, '.bounds-overlay')),
+                       _palette_var(css, '--color-bg-primary'))
 
     body = _TextEl('body')
     main = _TextEl('main', {'main-content'})
@@ -5255,6 +5269,22 @@ def _text_contexts(css):
         ('Toast 关闭按钮',
          [body, _TextEl('div', {'app-toast-container'}), _TextEl('div', {'app-toast'}),
           _TextEl('button', {'app-toast__close'})], toast, None),
+        # --- M18 补入的三条：整条状态栏、整个地图浮层体系、下载弹窗的
+        # 非表单内容，此前在模型里【没有任何入口】。三处新增回归全部从这个
+        # 缺口逃出去（且都晚于确立「muted 不是文字色」的 A7/Task 12）。
+        ('状态栏最近事件',
+         [body, _TextEl('footer', {'workbench-statusbar'}),
+          _TextEl('span', {'statusbar-item', 'statusbar-event'}, element_id='statusEvent')],
+         statusbar, None),
+        ('地图浮层的编辑提示',
+         [body, main, _TextEl('div', {'index-map'}),
+          _TextEl('div', {'bounds-overlay'}, element_id='boundsInfo'),
+          _TextEl('span', {'bounds-hint'})], overlay, None),
+        ('下载弹窗的瓦片预估',
+         [body, _TextEl('div', {'modal'}, element_id='downloadModal'),
+          _TextEl('div', {'modal-dialog'}), _TextEl('div', {'modal-content'}),
+          _TextEl('div', {'modal-body'}),
+          _TextEl('div', {'tile-estimate'}, element_id='tileEstimate')], modal, None),
     ]
 
 
@@ -5273,7 +5303,7 @@ def test_every_text_context_meets_wcag_aa():
     `.table-hover tbody tr:hover` 的 rgba 压到面板底色上的合成值，
     控件底色从 `.form-control` 解析。改调色板会让这些数字跟着动。
 
-    上下文清单（17 条）的边界：覆盖三个页面上**由 style.css 上色的**全部
+    上下文清单（20 条）的边界：覆盖三个页面上**由 style.css 上色的**全部
     正文类文字位置 —— 单一时间流的行内文本（名称/#类型:id/元信息/状态小字/
     耗时/行2 摘要）、时间流的加载失败提示与空态、状态筛选 chips
     （选中/未选中两态）、首页分组标题、表单说明、详情弹窗的键与值、
@@ -5291,8 +5321,8 @@ def test_every_text_context_meets_wcag_aa():
     """
     css = _css()
     contexts = _text_contexts(css)
-    assert len(contexts) == 17, (
-        f'上下文清单变成 {len(contexts)} 条（期望 17）—— 增删了要同步更新本断言，'
+    assert len(contexts) == 20, (
+        f'上下文清单变成 {len(contexts)} 条（期望 20）—— 增删了要同步更新本断言，'
         '否则「全都覆盖了」是假象'
     )
     problems = []
@@ -5939,7 +5969,9 @@ def _motion_rule_index(css):
 # 37 -> 38（2026-08 状态栏完善）：`.statusbar-copy`（坐标/选区四至读数项
 #   的 hover 底色 0.15s，与 `.statusbar-tasks` 同款，在 reduce 块 `*`
 #   覆盖范围内）。
-_MOTION_BRANCH_COUNT = 38
+# 38 -> 36（U10 删死代码）：`.history-table tbody tr`（表格时代残留，模板/JS
+#   零引用）与 `.action-buttons .btn`（同批残留）随整段删除一并消失。
+_MOTION_BRANCH_COUNT = 36
 
 
 def test_motion_rule_index_is_complete():
@@ -6202,8 +6234,10 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # .task-row.status-running .task-dot（pulse 从左条迁到状态点）。
     # 34 -> 35（2026-08 状态栏完善）：加 .statusbar-copy（坐标/选区四至
     # 读数项的 hover 底色，在 reduce 块 `*` 覆盖范围内）。
-    assert len(ctxs) == 35, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 35：\n'
+    # 35 -> 33（U10 删死代码）：.history-table tbody tr 与 .action-buttons .btn
+    # 两个上下文随零引用的表格时代残留一起删除。
+    assert len(ctxs) == 33, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 33：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -8185,3 +8219,99 @@ def test_task_error_and_modal_backdrop_render_their_background():
             '这正是 vendor 本地化交付时唯一未达标的那一项。'
         )
     assert not problems, '\n'.join('  ' + p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# M16 / M17：可交互控件的「边界看得见」与「焦点看得见」
+# ---------------------------------------------------------------------------
+
+CONTROL_BORDER_MIN_CONTRAST = 3.0   # WCAG 1.4.11 非文本对比，与本文件另外三条同档
+
+
+def _theme_var(css, name, theme):
+    """取某个主题块里的令牌值。theme='dark' 读 :root，'light' 读 light 覆盖块。"""
+    if theme == 'dark':
+        block = css[:css.index(':root[data-bs-theme="light"]')]
+    else:
+        block = css[css.index(':root[data-bs-theme="light"]'):]
+    m = re.search(re.escape(name) + r'\s*:\s*([^;]+);', block)
+    assert m, f'{theme} 主题里找不到 {name} —— 本测试已失效'
+    return m.group(1).strip().lower()
+
+
+def test_unchecked_form_check_border_meets_graphic_contrast():
+    """未勾选的复选框/单选框，其边界对周围表面必须 >= 3:1（WCAG 1.4.11）。
+
+    为什么这条最要紧：复选框除了那个方框什么都没有 —— 边界看不见就等于控件
+    看不见。改前用的是 --color-border（rgba 弱分隔线级别），合成后暗色
+    **1.35:1**、亮色 **1.36:1**，比 Bootstrap 自己的 --bs-border-color(#495057,
+    2.19:1) 还差，站内覆盖把它压成了原来的 62%。而本项目对图形元素反复声明过
+    3:1 下限（PROGRESS_FILL_MIN_CONTRAST / ERROR_BORDER_MIN_CONTRAST /
+    BTN_RING_MIN_CONTRAST 三条都是 3.0），唯独 form-check 一条覆盖都没有
+    （改前 `grep -c "form-check" 本文件` = 0）。
+
+    取值必须实算：常见的 #9ca3af 对白底只有 2.54:1，照抄会写出一个通不过本
+    断言的令牌。
+    """
+    css = _css()
+    m = re.search(r'\.form-check-input\s*\{([^}]*)\}', css)
+    assert m, '找不到 .form-check-input 规则 —— 本测试已失效'
+    decls = _decl_map(m.group(1))
+    border_decl = decls.get('border', '')
+    assert '--color-control-border' in border_decl, (
+        f'.form-check-input 的边框应使用专用令牌 --color-control-border，'
+        f'实际: {border_decl!r}。--color-border 是分隔线级别的弱边框，'
+        f'合成后只有 1.35:1。'
+    )
+
+    for theme in ('dark', 'light'):
+        border = _theme_var(css, '--color-control-border', theme)
+        surface = _theme_var(css, '--color-bg-secondary', theme)
+        fill = _theme_var(css, '--color-bg-tertiary', theme)
+        border_rgb = _flatten(border, surface)
+        ratio = _contrast_ratio(border_rgb, _flatten(surface, surface))
+        assert ratio >= CONTROL_BORDER_MIN_CONTRAST, (
+            f'{theme} 主题：未勾选控件的边界对周围表面只有 {ratio:.2f}:1'
+            f'（要求 >= {CONTROL_BORDER_MIN_CONTRAST}:1）。边界看不见 = 控件看不见。'
+        )
+        inner = _contrast_ratio(border_rgb, _flatten(fill, surface))
+        assert inner >= CONTROL_BORDER_MIN_CONTRAST, (
+            f'{theme} 主题：边界对控件自身填充只有 {inner:.2f}:1'
+            f'（要求 >= {CONTROL_BORDER_MIN_CONTRAST}:1）'
+        )
+
+
+def test_map_panel_button_focus_ring_is_not_clipped_by_its_container():
+    """工具条按钮的键盘焦点圈必须画在 padding box 之内。
+
+    容器 `.map-panel-triggers` 有 `overflow: hidden`（为了让圆角裁掉首尾按钮的
+    hover 底色），且无内边距、内容盒宽度正好等于按钮的 30px。全站通配的
+    `*:focus-visible { outline-offset: 2px }` 画出的整圈都落在 padding box 之外，
+    而 outline 不计入 scrollable overflow region —— 会被直接剪掉。Playwright
+    实测：单按钮分组（「框选」）聚焦后屏幕上一条焦点线都没有；三按钮分组的
+    中间按钮只剩两截压在邻居身上的水平线。
+
+    既有的 test_focus_visible_has_a_visible_outline 照不到它：那条只遍历
+    BUTTON_CONTEXTS 里的 11 个 `.btn` 上下文，且不建模祖先裁剪。
+    """
+    css = _css()
+    container = re.search(r'\.map-panel-triggers\s*\{([^}]*)\}', css)
+    assert container, '找不到 .map-panel-triggers 规则 —— 本测试已失效'
+    clips = _decl_map(container.group(1)).get('overflow', 'visible') != 'visible'
+
+    rule = re.search(r'\.map-panel-btn:focus-visible\s*\{([^}]*)\}', css)
+    if not clips:
+        return  # 容器不再裁剪，通配的正 offset 就够用了
+    assert rule, (
+        '.map-panel-btn 没有自己的 :focus-visible 规则 —— 会落到通配的 '
+        'outline-offset: 2px，整圈被容器的 overflow:hidden 剪掉'
+    )
+    decls = _decl_map(rule.group(1))
+    offset = decls.get('outline-offset', '')
+    assert offset.strip().startswith('-'), (
+        f'outline-offset 是 {offset!r}，非负值会把焦点圈画到 padding box 之外，'
+        f'被 .map-panel-triggers 的 overflow:hidden 裁掉'
+    )
+    outline = decls.get('outline', '')
+    assert outline and 'none' not in outline.lower(), (
+        f'.map-panel-btn:focus-visible 必须画出可见轮廓，实际: {outline!r}')

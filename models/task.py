@@ -136,6 +136,14 @@ class TileStatus(Enum):
     FAILED = "failed"
 
 
+
+def _row_get(row, key, default=None):
+    """sqlite3.Row 没有 .get()——按列名安全取值（列不存在时回退默认值）。"""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
 @dataclass
 class Task:
     """Task data model for map download tasks"""
@@ -158,6 +166,11 @@ class Task:
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
+    # L3: tasks 表里由 pause/complete 累计的运行秒数。前端 calculateTimeInfo
+    # 优先用它，字段缺失时才回退按 started_at 算墙钟（那个分支本是给不写该列的
+    # dem/contour/local 三条管线兜底的）。不输出它会让 /api/tasks?status=active
+    # 的 paused 行在页面刷新后一直显示错误耗时。
+    total_running_seconds: float = 0.0
 
     def __post_init__(self):
         """Validate task parameters after initialization"""
@@ -217,6 +230,7 @@ class Task:
         task.started_at = datetime.fromisoformat(row['started_at']) if row['started_at'] else None
         task.completed_at = datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None
         task.error_message = row['error_message']
+        task.total_running_seconds = _row_get(row, 'total_running_seconds', 0.0) or 0.0
         return task
 
     def to_dict(self) -> Dict[str, Any]:
@@ -241,6 +255,7 @@ class Task:
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'error_message': self.error_message,
+            'total_running_seconds': self.total_running_seconds,
         }
 
     @property

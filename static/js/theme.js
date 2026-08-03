@@ -43,7 +43,19 @@ window.TerraTheme = (function () {
     }
 
     function applyToDom() {
-        document.documentElement.dataset.bsTheme = resolved();
+        var before = document.documentElement.dataset.bsTheme;
+        var now = resolved();
+        document.documentElement.dataset.bsTheme = now;
+        if (before === now) return;
+        // U5：广播主题变更。有模块把 CSS 自定义属性的求值结果缓存了下来
+        // （history.js 的 _statusStrokeCache：小地图矩形描边色，Cesium 要真实
+        // 色值字符串、不认 var()），其前提是「调色板运行期不变」—— 主题切换
+        // 落地后这个前提不再成立，没有失效钩子的话矩形会一直留着旧主题的颜色。
+        try {
+            document.dispatchEvent(new CustomEvent('terraforge:themechange', {
+                detail: { theme: now }
+            }));
+        } catch (e) { /* 老浏览器没有 CustomEvent 构造器，忽略 */ }
     }
 
     function onSystemChange() {

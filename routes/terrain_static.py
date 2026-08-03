@@ -15,6 +15,7 @@ from core.database import get_connection
 from services.config_manager import ConfigManager
 from services.geo_validation import resolve_output_dir
 from services.hillshade_preview import ensure_hillshade
+from services.task_cleanup import resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -61,30 +62,14 @@ def _is_within(path: Path, root: Path) -> bool:
 
 
 def _resolve_config_path(path_str: str) -> Path:
+    """Resolve a stored/config path to an absolute Path.
+
+    M10: 全项目只保留一套 output_path 解析口径 —— `resolve_stored_output_dir`。
+    这里只是它的读侧薄封装（额外做一次 resolve，静态服务要拿真实路径做穿越
+    校验）。此前读侧（前缀剥离）与写/删除侧（一律拼到 DOWNLOADS_DIR 下）是
+    两套规则，同一个 `'./downloads/map'` 会解析成两个不同目录。
     """
-    Resolve config path to an absolute Path.
-
-    Rule:
-      - Absolute paths stay absolute.
-      - Relative paths starting with ./downloads (or downloads) are rebased onto Config.DOWNLOADS_DIR.
-      - Other relative paths are resolved against Config.BASE_DIR.
-    """
-    p = Path((path_str or "").strip())
-    if p.is_absolute():
-        return p.resolve()
-
-    # Normalize common "downloads-relative" forms.
-    s = (path_str or "").strip().replace("\\", "/")
-    if s.startswith("./downloads/"):
-        return (Path(Config.DOWNLOADS_DIR) / s[len("./downloads/"):]).resolve()
-    if s == "./downloads":
-        return Path(Config.DOWNLOADS_DIR).resolve()
-    if s.startswith("downloads/"):
-        return (Path(Config.DOWNLOADS_DIR) / s[len("downloads/"):]).resolve()
-    if s == "downloads":
-        return Path(Config.DOWNLOADS_DIR).resolve()
-
-    return (Path(Config.BASE_DIR) / p).resolve()
+    return resolve_stored_output_dir(path_str).resolve()
 
 
 def _resolve_safe_file(base_dir: Path, subpath: str) -> Path:

@@ -14,10 +14,17 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from services import task_cleanup
 from services.task_cleanup import (
+    _PROCESS_START_TIME,
     _sweep_cache_part_files,
     _sweep_tmp_dirs,
     sweep_startup_residue,
 )
+
+
+def _age(path: Path, seconds: int = 3600) -> None:
+    """把 mtime 调到本进程启动之前，模拟上一次运行留下的残留。"""
+    old = _PROCESS_START_TIME - seconds
+    os.utime(path, (old, old))
 
 
 def test_sweep_tmp_dirs_removes_only_matching_prefix_dirs(tmp_path):
@@ -41,7 +48,10 @@ def test_sweep_tmp_dirs_removes_only_matching_prefix_dirs(tmp_path):
     assert keep_dir.exists() and keep_file.exists() and almost.exists()
 
 
-def test_sweep_cache_part_files_respects_layout_and_depth(tmp_path):
+def test_sweep_cache_part_files_respects_layout_and_depth(tmp_path, monkeypatch):
+    # 写这些 .part 的进程都已经死了(pid 归属判据见下一条用例)。不打桩的话,
+    # 用例结果会取决于本机上恰好有没有 pid=123 的进程 —— 那是 flaky。
+    monkeypatch.setattr("core.process_watchdog.pid_alive", lambda pid: False)
     # dem cache:cache/dem/<granule>.part.*(浅层)
     dem = tmp_path / "dem"
     dem.mkdir()
@@ -67,6 +77,30 @@ def test_sweep_cache_part_files_respects_layout_and_depth(tmp_path):
     assert (deep / "x.png.part.1.2").exists()
 
 
+def test_sweep_cache_part_files_skips_files_owned_by_a_live_process(tmp_path, monkeypatch):
+    """H3:.part 文件名里带写它的进程 pid —— 该进程还活着就不能删,否则会把
+    另一个实例正在做的原子写打断(它的 part_path.replace() 抛 FileNotFoundError)。
+
+    这是三类清扫对象里唯一带归属信息的一类,可以精确判定,不必退到 mtime 近似。
+    """
+    dem = tmp_path / "dem"
+    dem.mkdir()
+    live = dem / "A.tif.part.4242.1"
+    dead = dem / "B.tif.part.4243.1"
+    mine = dem / f"C.tif.part.{os.getpid()}.1"
+    for f in (live, dead, mine):
+        f.write_bytes(b"partial")
+
+    monkeypatch.setattr("core.process_watchdog.pid_alive", lambda pid: pid == 4242)
+
+    removed = _sweep_cache_part_files(tmp_path)
+
+    assert live.exists(), "活进程正在写的 .part 必须留下"
+    assert not dead.exists(), "已退出进程的 .part 应清掉"
+    assert not mine.exists(), "本进程自己的残留(上一轮同 pid)应清掉"
+    assert removed == 2
+
+
 def test_sweep_startup_residue_end_to_end(monkeypatch, tmp_path):
     """gettempdir / CACHE_DIR / contour_warp_tmpdir 全部指到 tmp_path,
     验证三类残留一次清掉,且全程不抛异常。"""
@@ -81,9 +115,16 @@ def test_sweep_startup_residue_end_to_end(monkeypatch, tmp_path):
     (sys_tmp / "contour_warp_b").mkdir()
     (warp_root / "contour_warp_c").mkdir()
     (cache / "g.tif.part.1.2").write_bytes(b"partial")
+    # H3:清扫只处理【早于本进程启动】的临时目录 —— 把三个探针的 mtime 调到
+    # 过去,模拟「上次进程留下的残留」。不调的话它们比本进程新,会被(正确地)跳过。
+    _age(sys_tmp / "map_dl_stitch_a")
+    _age(sys_tmp / "contour_warp_b")
+    _age(warp_root / "contour_warp_c")
 
     monkeypatch.setattr(task_cleanup.tempfile, "gettempdir", lambda: str(sys_tmp))
     monkeypatch.setattr(config.Config, "CACHE_DIR", cache)
+    # 探针 .part 的 pid 是 1(Linux 上 init 恒存活),打桩成已退出。
+    monkeypatch.setattr("core.process_watchdog.pid_alive", lambda pid: False)
     monkeypatch.setattr(
         "services.config_manager.ConfigManager.get",
         lambda self, k, d=None: str(warp_root) if k == "contour_warp_tmpdir" else d,

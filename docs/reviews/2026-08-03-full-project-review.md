@@ -1,6 +1,8 @@
 # 全项目代码审查报告（2026-08-03，11 维度 + 对抗性验证）
 
-**结论：整体健康，46 个真问题，其中 4 个 high、没有 critical。** 没有一条会导致用户数据永久丢失或安全越界；最严重的两类是「静默产出错误的地理数据」（等高线坐标算错）和「静默产出不完整的产物却报成功」（缓存写盘失败仍计 completed）。
+**结论：整体健康，45 个真问题，其中 4 个 high、没有 critical。** 没有一条会导致用户数据永久丢失或安全越界；最严重的两类是「静默产出错误的地理数据」（等高线坐标算错）和「静默产出不完整的产物却报成功」（缓存写盘失败仍计 completed）。
+
+> 原稿写 46 个；二次核对推翻 U9（见下节），故为 45。
 
 ## 审查方式与可信度
 
@@ -8,6 +10,16 @@
 - 每条 medium 及以上发现交给一名**独立怀疑者**做对抗性验证：默认判定为误报，逐条尝试从「上游已兜底 / 有锁或调用方保证 / 场景不可达 / 已有测试证明现状正确 / 已声明为已知取舍 / 报告者读错语义」六个方向推翻，推不翻才保留，并允许下调级别与改写描述。
 - **验证结果：45 条送验、0 条被整条推翻、22 条被下调级别、0 条被上调**（另有 1 条 critical→high）。结论：事实认定可靠，但审查员系统性高估严重度，本报告一律以验证后的级别为准。
 - 多条结论有实机复现（等高线坐标偏移量实测、reset 配置后建任务 400 实测、pytest 互删 /tmp 工作目录实测、emit 抛异常把 completed 改判 failed 实测、GDAL MEM 晕渲内存增量实测），非纯静态推断。
+
+## 二次核对（2026-08-03 晚，修复动工前）
+
+修复动工前又派 6 名独立核对员把全部 52 条逐条对回代码（含未送验的 14 条 low），核对位置、因果链、改法可行性与「是否已被修掉」。结果：
+
+- **51 条属实，1 条推翻**：`U9`（转圈图标的 `@keyframes spin` 缺失）是**误报** —— 该 keyframes 就在 `static/js/map.js:1077`，由同文件 `:1085` 在脚本求值时注入 `<style>`，动画正常工作。审查员只 grep 了 `static/css/` 与 vendor，漏了 JS 运行时注入的样式。已移入误报清单。
+- **2 条已被上一提交修掉**：`M24`、`M25`（提交 `1cd918598`，commit body 逐条复述了这两条发现）；`M26` 修了 README 与 `docs/notes/geolibre-takeaways.md`，**漏了 CLAUDE.md:12 的 `water mask`**。
+- **2 处改法会误导修复，已在条目内订正**：`M17` 建议的亮色令牌 `#9ca3af` 对白底仅 **2.54:1**，低于它自己要求的 3:1；`M12` 建议的「仅在 parent_url 为空时启用 z≤4」在当前代码里恒不成立，照做会把「低层被遮蔽」恶化成「地形完全不加载」。
+- 其余为行号漂移与数字订正（约 26 处），已就地改入各条目，均不影响结论。
+- 核对期间复跑全量 `uv run pytest tests/` = **900 passed**，印证这批发现全部落在测试盲区，不是过期条目。
 
 **沿用 2026-07-31 的部署前提**：本程序运行在可信环境，零鉴权 / 绑 0.0.0.0 / CORS `*` / 凭据明文 / `verify_tile_url` 的 SSRF 探测面均为已接受的设计决策，本轮不再重复列出。
 
@@ -19,8 +31,8 @@
 | high | 4 | 静默数据错误 / 跨进程破坏 / 测试自身具破坏性 |
 | medium | 26 | 特定条件下出错，多数用户可见、可恢复 |
 | low（已验证） | 8 | 触发面窄或纯展示层 |
-| low（未经对抗性验证） | 14 | 按流程 low 项不送验，事实以审查员单方陈述为准 |
-| **合计** | **52** | 去重后 46 个独立根因（6 条为多维度重复报告合并） |
+| low（未经对抗性验证） | 13 | 原 14 条，二次核对推翻 U9 |
+| **合计** | **51** | 去重后 45 个独立根因（6 条为多维度重复报告合并） |
 
 ---
 
@@ -38,7 +50,7 @@ xs = ctx.originX + (col0 + np.arange(arr.shape[1]) + 0.5) * eff_px_w
 
 误差 = `col0*pxW*(win_x-258)/258`，随瓦片在栅格中越靠东/南线性增大；只有 `col0/row0` 被钳到 0（瓦片压在栅格西/北边缘）或窗口 ≤258 源像素（不降采样）时为 0。这是 `_read_band_window` 那次 OOM 修复引入的回归：`git show 38e3e30fc4^` 显示原式用的是 `ctx.pxW`，修复时整体替换成 `eff_px_w` 而漏了拆分偏移项。
 
-**触发场景**：1°/30m DEM、默认 `zoom_min=10` 时，z10/z11 基本整片丢线（偏移 73.6 km / 2.5 km，瓦片宽仅 39.1 km / 19.6 km），z12 从数百米错位渐变到整片丢失，z≥13 因窗口 ≤258 正常。多度区域丢线的 zoom 上界更高。`ax.set_xlim` 是瓦片自身范围，偏出去的等高线全部被裁掉，PNG 里只剩分层设色/晕渲，`drew` 仍为 True，照常落盘、计 rendered、任务标 completed，零告警。
+**触发场景**：1°/30m DEM（warp 到 3857 后 `pxW≈30.9 m`、`nx≈3601`）、默认 `zoom_min=10` 时，z10/z11 基本整片丢线 —— 按上式算最大偏移达 280 km / 130 km 量级，而瓦片宽仅 39.1 km / 19.6 km，等高线全部偏出瓦片外；z12 从数百米错位渐变到整片丢失，z≥13 因窗口 ≤258 正常。（原稿此处写「73.6 km / 2.5 km」，二次核对判定不可复现且自相矛盾 —— 2.5 km 反而小于它对比的 19.6 km 瓦片宽，那只是 13% 错位而非整片丢线；已按 `pxW≈30.9 m` 重算。）多度区域丢线的 zoom 上界更高。`ax.set_xlim` 是瓦片自身范围，偏出去的等高线全部被裁掉，PNG 里只剩分层设色/晕渲，`drew` 仍为 True，照常落盘、计 rendered、任务标 completed，零告警。
 
 **改法**：
 ```python
@@ -55,7 +67,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **问题**：下载成功后写 cache 的整段被 `except Exception as cache_write_error` 包住，只打一条 warning，然后**无条件**调 `progress_callback(tile,'completed',None)` 并返回 `status='completed'`。于是这块瓦片：磁盘上不存在任何文件、`task_tiles` 里没有 failed 行、`tasks.downloaded_tiles` 却 +1。完成判定只看 `SELECT COUNT(*) FROM task_tiles WHERE status='failed'`（`task_manager.py:1462-1468`），failed=0 → 任务标 completed。而 `start_task`（`task_manager.py:417-421`）只允许 pending/paused/failed 重启，completed 任务无法原地续传自愈。
 
-从下载到收尾一共有**三次**能发现「这块瓦片不存在」的机会，三次全部只写日志：边下边复制的 `shutil.copy2` FileNotFoundError（`task_manager.py:150` → 979-982 吞成 warning）、收尾对账的 `cache_path.exists()` 为假（`task_manager.py:1403/1429`）、`copied_count` 与 `total_to_copy` 的差值（1447，只进日志不参与状态判定）。
+从下载到收尾一共有**三次**能发现「这块瓦片不存在」的机会，三次全部只写日志：边下边复制的 `shutil.copy2` FileNotFoundError（`task_manager.py:152` → 979-982 吞成 warning）、收尾对账的 `cache_path.exists()` 为假（`task_manager.py:1404/1428`）、`copied_count` 与 `total_to_copy` 的差值（1447，只进日志不参与状态判定）。
 
 **触发场景**：cache 盘 ENOSPC、cache 目录只读/权限变更、Windows 上 `part_path.replace()` 因目标被杀软/预览进程占用抛 PermissionError。0.2.4 删掉了 LRU 自动淘汰，缓存只增不减，磁盘写满是这个版本设计上必然到达的状态。`tiles_only` 任务完全无声；`both`/`image_only` 任务在拼接时报「Tile not found in cache」，指向的原因完全是错的。
 
@@ -67,7 +79,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **位置**：`services/task_cleanup.py:132-147`（`_sweep_tmp_dirs` 纯前缀 rmtree）、`:150-176`（`.part` unlink）、`:186-194`（用真实 `tempfile.gettempdir()`）、调用点 `app.py:205`
 **受影响的创建点**：`services/download_engine.py:931/936`（`map_dl_stitch_*`）、`services/contour_engine.py:649`（`contour_warp_*`）
-**测试侧触发面**：`tests/conftest.py:81` 及 34 个各自 `_load_app` 的测试文件（全项目只有 `tests/test_startup_residue_sweep.py:85` patch 了 `gettempdir`）
+**测试侧触发面**：`tests/conftest.py:81` 及 27 个各自 `_load_app` 的测试文件（放宽到「任何方式导入 app」也只有 31 个；全项目只有 `tests/test_startup_residue_sweep.py:85` patch 了 `gettempdir`）
 
 **问题**（三个维度各报一次，同一根因）：`sweep_startup_residue()` 按**纯文件名前缀**删除，没有任何 PID 归属、mtime 年龄门槛或锁文件判据，分不清「上次进程的残留」和「另一个活着的进程正在写的工作目录」。它在 `create_app()` 里被无条件调用，而 `create_app()` 在模块导入期就执行，**远早于 `socketio.run()` 绑定 5000 端口** —— 即使第二个实例最终因端口占用崩溃，破坏也已经完成。全项目没有任何跨进程互斥（grep 无 pid 文件 / mutex / flock / 启动前端口探测）。
 
@@ -79,7 +91,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **改法**：两层都要做。
 1. 加进程级互斥：启动时先取 `Config.BASE_DIR` 下的锁文件（flock/LockFileEx），或先试探性 bind 5000，拿不到就跳过清扫与孤儿恢复并直接退出。这同时修掉「第二实例的孤儿恢复把第一实例正在 running 的任务改判 paused/failed」这个 `app.py:148-158` 自己已经承认的危害。
-2. 清扫加存活门槛：临时目录名里本来就带 `os.getpid()`（`download_engine.py:671`、`dem_download_engine.py:84`），可直接用 `core/process_watchdog.py` 已有的 `pid_alive` 跳过活进程；mkdtemp 目录名无归属信息，退而求其次按 mtime 早于本进程启动时间过滤。
+2. 清扫加存活门槛：三类清扫对象里只有 `.part` **文件名**带 `os.getpid()`（`download_engine.py:671`、`dem_download_engine.py:84` —— 形如 `{name}.part.{pid}.{id}`），这一类可直接用 `core/process_watchdog.py` 已有的 `pid_alive` 跳过活进程；两类 mkdtemp **目录**（`map_dl_stitch_*` / `contour_warp_*`）名里不含 pid，只能退而求其次按 mtime 早于本进程启动时间过滤。（原稿把 pid 说成在目录名里，实为 `.part` 文件名。）
 3. 测试侧：conftest 加 autouse fixture 把 `services.task_cleanup.tempfile.gettempdir` 指向 `tmp_path`（或把 `sweep_startup_residue` patch 成 no-op），只保留 `test_startup_residue_sweep.py` 里那份显式的真实调用。
 
 ---
@@ -113,7 +125,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **触发场景**：窗口内唯一能抛的语句就是那一发 emit（`_update_total_running_time`/`_record_time_action` 自带 try 吞异常）。flask_socketio 的广播式 emit 在客户端断开时由 python-socketio 内部吞掉 KeyError、payload 又全是可序列化值，所以概率不高，主要剩服务端关停中、engineio 内部错误、自定义/桩 socketio。DEM 侧只有 emit 一个可抛点，触发面比 map 更窄。
 
-**改法**：两处 WHERE 补 `'completed'`（与 contour 对齐），或干脆改成 `AND status='running'`（与 `local_terrain_task_manager.py:408` 对齐）；同时把收尾 emit 各自包一层 try 只记日志 —— 同函数 1429/1444 的 emit 已经这么做了并注明「emit 故障（客户端断开等）不应打断复制本身」。
+**改法**：两处 WHERE 补 `'completed'`（与 contour 对齐），或干脆改成 `AND status='running'`（与 `local_terrain_task_manager.py:408` 对齐）；同时把收尾 emit 各自包一层 try 只记日志 —— 同文件 1437-1445 的 copy 进度 emit 已经这么做了，注释就在 1436：「emit 故障（客户端断开等）不应打断复制本身」。（原稿引的 1429 是 `shutil.copy2` 的 except，不是 emit 的。）
 
 ## M2. 拼接产物非原子写，半截 GeoTIFF 被断点续跑当成已完成
 
@@ -127,13 +139,17 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 产物是一个**损坏状态不确定**的 tif（从「打不开」到「下半张空白」都可能）。
 
-**改法**：Translate 写到同目录 `<name>.part.<pid>`，`output_ds = None` 关闭后再 `os.replace`，异常路径 finally 删 .part。这样 `task_manager.py:1293` 的「非空即完成」才真正可信，断点逻辑无需改动。对照 `download_engine.py:1414-1420` 的瓦片复制短路用的是「dest 存在**且大小与源一致**」—— 同一函数里两套严格度。
+**改法**：Translate 写到同目录 `<name>.part.<pid>`，`output_ds = None` 关闭后再 `os.replace`，异常路径 finally 删 .part。这样 `task_manager.py:1293` 的「非空即完成」才真正可信，断点逻辑无需改动。对照 `task_manager.py:1416-1418` 的瓦片复制短路用的是「dest 存在**且大小与源一致**」—— 同一条产物链上两套严格度。
+
+**落地 caveat**：驱动由 `TranslateOptions(format=...)`（1034-1052）显式指定，改扩展名不影响驱动选择；但 `output_ext` 允许 `.png`（1039-1044），PNG 驱动会另写 `.aux.xml` 边车，只 rename 主文件会留下 `<name>.part.<pid>.aux.xml`。地图管线固定写 `.tif`（`task_manager.py:1286`）故现网不踩，实现时仍需一并处理边车。
 
 ## M3. 下载回调里同步 copy2 阻塞事件循环，网络盘上并发数形同虚设
 
 **位置**：`services/task_manager.py:1147`（async 回调里同步调 `_stream_copy_quiet`）→ `:131-154`（`_stream_copy_tile`）
 
-**问题**：0.2.4 的「边下边复制」在 `progress_callback`（async，跑在下载的 asyncio 事件循环线程上）里同步执行 `mkdir` + `dest.exists()` + `dest.stat()` + `src.stat()` + `shutil.copy2` + `tmp.replace`，全是阻塞 syscall，没有 `asyncio.to_thread`。而 `_download_single_tile` 里连一次 `cache_path.stat()` 都特意挪出了事件循环（`download_engine.py:640/670/676`），项目本身认这个约定，这里没跟上。
+**问题**：0.2.4 的「边下边复制」在 `progress_callback`（async，跑在下载的 asyncio 事件循环线程上）里同步执行 `mkdir` + `dest.exists()` + `dest.stat()` + `src.stat()` + `shutil.copy2` + `tmp.replace`，全是阻塞 syscall，没有 `asyncio.to_thread`。而 `_download_single_tile` 里连一次 `cache_path.stat()` 都特意挪出了事件循环（`download_engine.py:640/670/676`），下载引擎那一侧是认这个约定的。
+
+**范围说明**（二次核对补充，避免把它说成孤例）：同一个回调里的 `flush_progress_counts()`（定义在 `task_manager.py:1030`、调用在 `:1151`）也在事件循环上做同步 sqlite `executemany`+commit，同样没包 `to_thread`（DEM 侧倒是包了，`dem_task_manager.py:629`）。copy 每块都跑、flush 每 N 块才跑，copy 仍是主要阻塞源，但改完 copy 后事件循环仍不干净。
 
 **触发场景**：默认本地盘影响接近零（一块 10-30KB PNG 的 copy2 是几十微秒，吞吐上限万级/秒）。真正踩到的是 0.2.4「保存目录全盘可选」鼓励的用法：SMB/VPN 网络共享上每次 `exists`/`stat`/`copy2`/`replace` 各一次往返，累计 10-30ms/块 → 吞吐被钉在 30-100 块/秒，`concurrent_downloads` 调多少都没用（0.2.1 的「并发测速推荐」走的是不复制的另一条路径，测出的膝点因此失效）；同时 stop_flag 检查被推迟，暂停/取消响应变慢。网络盘上三次元数据 syscall 往往比数据拷贝本身更贵。
 
@@ -152,13 +168,15 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 ## M5. HTTP 200 的非图片响应被当成瓦片永久写进共享缓存
 
-**位置**：`services/download_engine.py:560-561`（只 `raise_for_status()` 就 `await response.read()`）、写入在 `:665-682`、复命中判据在 `:638-642` 与 `services/task_manager.py:889-896`
+**位置**：`services/download_engine.py:560-561`（只 `raise_for_status()` 就 `await response.read()`）、写入在 `:667-686`、复命中判据在 `:638-642` 与 `services/task_manager.py:889-896`
 
-**问题**：既不看 Content-Type 也不校验 PNG/JPEG 魔数（全仓 grep：下载链路零命中，连 `tile_url_probe.py:164-171` 的验证判定也只看 `status==200 and data 非空`）。这堆字节被原子写进 `cache/<style>/<z>/<x>/<y>.png`，之后两个判定点都只查 `size > 0`。0.2.4 起没有任何自动淘汰 → **永久**命中；缓存跨任务共享 → 污染扩散到之后所有覆盖同一区域同样式的任务。更狠的是 `task_manager.py:897-899` 还会把这些瓦片从 `failed_tile_keys` 里摘掉，把上一轮记为 failed 的瓦片「洗白」成完成。
+**问题**：既不看 Content-Type 也不校验 PNG/JPEG 魔数（全仓 grep：下载链路零命中，连 `tile_url_probe.py:159-164` 的验证判定也只看 `status==200 and data 非空`）。这堆字节被原子写进 `cache/<style>/<z>/<x>/<y>.png`，之后两个判定点都只查 `size > 0`。0.2.4 起没有任何自动淘汰 → **永久**命中；缓存跨任务共享 → 污染扩散到之后所有覆盖同一区域同样式的任务。更狠的是 `task_manager.py:894-896` 会把这些瓦片收进「已完成」集合、`:927-935` 把它们的历史失败行 DELETE 掉，把上一轮记为 failed 的瓦片「洗白」成完成。
 
 **触发场景**：默认 mts0-3 别名展开成**明文 http://**（`tile_url_probe.py:57`），透明代理/酒店 Portal/运营商劫持在明文链路上返 200+HTML 是教科书场景；自建服务对越界坐标返 200+JSON 同理。`tiles_only` 任务：产物目录里躺着一堆扩展名 .png 的 HTML，任务 completed。`both`/`image_only`：拼接失败**不是**静默的（会进 `stitch_failures` 并给出明细），但**不可自愈** —— 修好网络后重建任务，枚举全部命中被污染的缓存、零下载，拼接以完全相同的方式再次失败，除了到配置页手工清整个缓存分类外没有任何恢复途径。
 
-**改法**：`download_tile` 返回前加一道廉价校验：Content-Type 不以 `image/` 开头，或 body 前几字节不是 PNG(`\x89PNG`)/JPEG(`\xff\xd8`)/WebP 魔数时，当作可重试的下载失败抛出（不写缓存）。探测接口已经把 content_type 回传给前端了，下载路径缺的就是同一道检查。
+**改法**：`download_tile` 返回前加一道廉价校验 —— **以魔数为准**：body 前几字节不是 PNG(`\x89PNG`)/JPEG(`\xff\xd8`)/WebP(`RIFF....WEBP`)/GIF 之一时，当作可重试的下载失败抛出（不写缓存）。探测接口已经把 content_type 回传给前端了，下载路径缺的就是同一道检查。
+
+**注意别写成「Content-Type 非 image/\* 或魔数不符」的或逻辑**（原稿如此）：那会误杀返回 `application/octet-stream` 但内容合法的自建瓦片服务 —— 而自建服务恰是 M4 里被称作「一等用法」的场景，两条改法会互相打架。Content-Type 只可用于补充日志，判定以魔数为准。
 
 ## M6. 「恢复默认配置」写回相对保存路径，之后地图/DEM 建任务全部 400
 
@@ -173,11 +191,11 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **恢复成本低但不自明**：报错文案自解释（「可点输入框旁的『浏览』选择」），在任务表单或配置页填一个绝对路径即可一步恢复，重启也会由 `init_database` 静默修好。
 
-**改法**：让 `DEFAULT_CONFIGS` 的 `default_save_path` 由 `str(Config.DOWNLOADS_DIR)` 动态生成绝对值，或把归一化抽成函数供 `init_database` 与 `reset_to_defaults` 共用。补一条「reset 后 `default_save_path` 必为绝对路径」的测试 —— `tests/test_path_browser.py` 目前只覆盖 PUT 和 init。顺带把 `config_manager.py:235` 的 docstring「re-inserts 18 default values」改对（实际 42 项）。
+**改法**：**首选**把归一化抽成函数，供 `init_database` 与 `reset_to_defaults` 共用。次选（有隐患，非必要不用）才是让 `DEFAULT_CONFIGS` 的 `default_save_path` 由 `str(Config.DOWNLOADS_DIR)` 动态生成 —— 那会把模块级常量绑死在导入时刻的 Config 状态，而本项目的测试套路正是「先 monkeypatch `Config.DOWNLOADS_DIR` 再重新导入 app」（CLAUDE.md 明写），只要 `core.database` 在更早的用例里被导入过，常量就固化成上一个 tmp_path。补一条「reset 后 `default_save_path` 必为绝对路径」的测试 —— `tests/test_path_browser.py` 目前只覆盖 PUT 和 init。顺带把 `config_manager.py:235` 的 docstring「re-inserts 18 default values」改对（AST 实测 **44** 项，原稿写 42 也不对）。
 
 ## M7. DEM 海洋颗粒 404 记 skipped 但不计数，完成的任务显示「已完成 · 4 / 10 文件」且进度条卡 40%
 
-**位置**：`services/dem_task_manager.py:33-36`（`_status_count_deltas` 对 skipped 两个增量都是 0）、`:678`（收尾判定把 skipped 算终结）、`:636`（进度 `done` 同样漏 skipped）
+**位置**：`services/dem_task_manager.py:33-36`（`_status_count_deltas` 对 skipped 两个增量都是 0）、`:678`（收尾判定把 skipped 算终结）、`:635`（进度 `done` 同样漏 skipped）
 **复制品**：`services/contour_task_manager.py:157`
 
 **问题**：`dem_download_engine.py:202-209` 对 404 颗粒（海洋/覆盖外，Copernicus GLO-30 对海面本来就没瓦片）上报 `skipped`，这是有意的部分成功语义。但计数增量函数只认 completed/failed（实测 `('downloading','skipped') -> (0,0)`，且 `downloaded_delta or failed_delta` 为假时连 UPDATE 都不发），而收尾判定把 skipped 算作已终结、任务照常 completed。结果终态下 `downloaded_files + failed_files < total_files` 这个不变量被破坏，且恢复路径只把 `pending/failed` 重新入队，skipped 永不回补，全文件没有任何按 `dem_files` 重算 `downloaded_files` 的地方。
@@ -190,7 +208,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **位置**：`routes/api.py:882-924`（clear_cache_api 不查任何 manager 的 active_tasks、不加锁、不延后）→ `services/task_cleanup.py:336-337`（`shutil.rmtree`）
 
-**问题**：同一文件的删除任务路径（`routes/api.py:132-138`、`:369`）是会查 `active_tasks` 的 —— 「检查运行中任务」在本项目是既有惯例，缓存清理漏了。地图任务在枚举阶段就把 cache 命中的瓦片移出待下载列表（`task_manager.py:885-897`）并计入 `downloaded_tiles`（`:944-955`），产物目录靠补拷线程/收尾复制从 cache 复制。清掉分类目录后这些瓦片既不重下，复制失败也只吞成 warning（`:978-982`、`:1427-1430`），完成判定只看 `task_tiles` 的失败行 —— 而 cache 命中瓦片从不在那张表里（`:927-939` 还会主动清掉它们的历史失败行）。前端两次确认弹窗（`static/js/config.js:85-93`）只说「不可恢复」，不提运行中的任务。
+**问题**：删除任务路径是会查运行中任务的 —— 地图侧在 `routes/api.py:369` 锁内查 `active_tasks`，DEM/等高线侧的守卫在各自 manager 的 `delete_task` 里（见 `routes/dem_api.py:88-92`、`routes/contour_api.py:161-165` 的注释）。「检查运行中任务」在本项目是既有惯例，缓存清理漏了。（原稿把 `routes/api.py:132-138` 列为删除路径，实为 `GET /api/tasks?status=active` 的列表分支。）地图任务在枚举阶段就把 cache 命中的瓦片移出待下载列表（`task_manager.py:885-897`）并计入 `downloaded_tiles`（`:944-955`），产物目录靠补拷线程/收尾复制从 cache 复制。清掉分类目录后这些瓦片既不重下，复制失败也只吞成 warning（`:978-982`、`:1427-1430`），完成判定只看 `task_tiles` 的失败行 —— 而 cache 命中瓦片从不在那张表里（`:927-939` 还会主动清掉它们的历史失败行）。前端两次确认弹窗（`static/js/config.js:85-93`）只说「不可恢复」，不提运行中的任务。
 
 （正在下载中的瓦片无害：引擎每块都 `mkdir(parents=True, exist_ok=True)`，会自愈。）
 
@@ -198,9 +216,11 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 - `tiles_only`（不走拼接）：**完全无声** —— 任务 completed、`downloaded_tiles` 满值、产物目录静默缺瓦片、`/tiles/<id>/` 预览大片空洞。缓存在拼接完成之后、收尾复制途中被清时，其他格式也落到这一形态。
 - 默认 `both` / `image_only`：受影响 zoom 拼接失败（`download_engine.py:970-972` 抛 FileNotFoundError），任务标 failed 或 completed 带「部分缩放级别拼接失败」警告 —— 有可见信号，但信号指向拼接、不说明瓦片缺失。
 
-**改法**：清理前查四个 manager 的 active_tasks（或 DB 里 `status IN ('pending','running','paused')`），有活动任务返回 409 并说明「请先暂停或取消任务 #N」；要允许强清就加显式 `force=1` 并回传受影响任务。另建议把补拷/收尾复制里「源文件不存在」从 warning 升级为写入 `task_tiles` 失败行。
+**改法**：清理前查 DB 里 `status IN ('pending','running','paused')`（**首选**，低成本可行 —— `clear_cache_api` 只能拿到 `api.py` 自己的 `task_manager` 全局，要查四个 manager 得额外注入），有活动任务返回 409 并说明「请先暂停或取消任务 #N」；要允许强清就加显式 `force=1` 并回传受影响任务。另建议把补拷/收尾复制里「源文件不存在」从 warning 升级为写入 `task_tiles` 失败行。
 
-**注**：`docs/cache-exclusive-cleanup-plan.md`（未跟踪设计稿）承认了粒度太粗，但把最坏后果断言成「cache miss 后重下，不产生数据丢失」—— 这个心智模型对运行中的地图任务恰恰不成立（枚举快照早于清理，不会重下）。
+**残余竞态需明说**：检查后再清仍是 check-then-act —— 清理途中仍可能有任务被 start。要彻底安全需拿 manager 锁；否则应在文档里明确接受这段残余窗口。
+
+**注**：`docs/notes/cache-exclusive-cleanup-plan.md`（已跟踪，随 `a439aa6e2` 的 docs 重构移入 notes/）承认了粒度太粗，但把最坏后果断言成「cache miss 后重下，不产生数据丢失」—— 这个心智模型对运行中的地图任务恰恰不成立（枚举快照早于清理，不会重下）。
 
 ## M9. PUT /api/config 部分键非法时先写库再返回 400，报「保存失败」却已生效一半
 
@@ -212,13 +232,16 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **改法**：二选一并写进 docstring —— (a) 严格全或无：有任何非法键就直接 400 且不调 set_many；(b) 部分成功：写库后返回 200/207 + `success:true` + `updated`/`errors`，前端按「部分保存」提示并刷新表单。当前是两者最差的组合。
 
-## M10. 删除产物这条链上有三套路径解析口径，且拒删/删错一律谎报 success
+## M10. 删除产物这条链上有四套路径解析口径，且拒删/删错一律谎报 success
 
 **位置**：
 - 口径 A（写侧/地图删除侧）：`services/task_cleanup.py:50-63` `resolve_stored_output_dir` —— 相对值一律拼到 `Config.DOWNLOADS_DIR` 下
 - 口径 B（读侧）：`routes/terrain_static.py:63-87` `_resolve_config_path`（被 `routes/tiles_static.py:62` 复用）—— 对 `./downloads/...` 做前缀剥离
 - 口径 C（DEM/contour 删除侧）：`routes/dem_api.py:101`、`routes/contour_api.py:172` —— 裸 `Path(task["output_path"])`，按**进程 CWD** 解析
-- 返回值丢弃：`routes/api.py:406`、`routes/dem_api.py:101`、`routes/contour_api.py:172`、`services/local_terrain_task_manager.py:220/236`
+- 口径 D（local terrain 删除侧，原稿漏列）：`services/local_terrain_task_manager.py:492-504` —— 完全**忽略**库里的 output_path，按当前 `Config.DOWNLOADS_DIR` 重算路径，自带内联守卫 + `shutil.rmtree(ignore_errors=True)`。它才是真正「删失败也静默、路由（`routes/local_terrain_api.py:122-127`）仍返回 200 success」的那一个
+- 返回值丢弃：`routes/api.py:406`、`routes/dem_api.py:101`、`routes/contour_api.py:172`
+
+> 原稿把 `services/local_terrain_task_manager.py:220/236` 也列进「返回值丢弃」，那是错的 —— 这两处是 **create_task 的失败回滚清理**，其后紧跟 `raise`（`:221`/`:238`），客户端拿到 400/500，不存在假成功。
 
 **问题**：同一个存量字段三套解析规则。`core/database.py:527-533` 的注释已经认定历史语义是口径 B（「'./downloads' 就是 DOWNLOADS_DIR 本身……按 resolve_output_dir 归一会把它错置成 downloads/downloads」）并据此归一了 `default_save_path` 配置键 —— 但**任务行从来没被同样归一过**。实测每一种相对形态两侧都分叉：`'./downloads/map'` → 写/删侧 `<BASE>/downloads/downloads/map`，读侧 `<BASE>/downloads/map`。
 
@@ -228,12 +251,14 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 1. 点「删除并删文件」→ 删的是 `<BASE>/downloads/downloads/task_7`（不存在）→ 接口 200 success，几十 GB 瓦片纹丝不动。
 2. 恢复该任务继续下载 → 新瓦片镜像到 `downloads/downloads/task_7/`，而 `/tiles/7/...` 去 `downloads/task_7/` 找 → 新下的全部 404，产物分裂成两处。
 
-**改法**：收敛成一套 —— 让 `resolve_stored_output_dir` 采用 `core/database.py:529-532` 已认定的历史语义（等价于前缀剥离），`tiles_static`/`terrain_static` 改调它并删掉 `_resolve_config_path`；`dem_api`/`contour_api` 也改调它；在 `init_database()` 里对四张任务表的相对 output_path 做一次性幂等归一，此后下游只用绝对值。同时四个调用点接住返回值，响应带 `files_removed:false` 与原因，前端区分「已清理」与「未通过安全校验、未删除」。
+**改法**：收敛成一套 —— 让 `resolve_stored_output_dir` 采用 `core/database.py:529-532` 已认定的历史语义（等价于前缀剥离），`tiles_static`/`terrain_static` 改调它并删掉 `_resolve_config_path`；`dem_api`/`contour_api` 也改调它；在 `init_database()` 里对四张任务表的相对 output_path 做一次性幂等归一，此后下游只用绝对值。同时三个删除端点接住返回值，响应带 `files_removed:false` 与原因，前端区分「已清理」与「未通过安全校验、未删除」。**口径 D（local terrain）也要一并接住失败并上报**，它现在连失败都吞。
+
+收敛目标自洽性已验证：`core/config.py:64` 是 `DOWNLOADS_DIR = BASE_DIR / 'downloads'`，所以口径 B（前缀剥离 + 其余相对值落 BASE_DIR）与 `core/database.py:543` 的 `_root.parent / _p` 在所有相对形态上等价，可以安全统一。
 
 ## M11. terrain 切片丢弃 build_terrain 的 failed 计数，缺瓦片的作业照样报 completed 且 layer.json 过度声明
 
 **位置**：`services/terrain_tiling/dem_task_tiler.py:56`（调用后丢弃返回值，签名 `-> None`）、消费方 `services/dem_task_manager.py:399-418` 与 `services/local_terrain_task_manager.py:366-393` 均无条件置 completed
-**对照组**：`services/contour_task_manager.py:758-794` 接了 `render_counts`、`rendered==0` 判 failed、`failed>0` 记 warning
+**对照组**：`services/contour_task_manager.py:757-795` 接了 `render_counts`、`rendered==0` 判 failed（`:778`）、`failed>0` 记 warning（`:790-795`）
 
 **问题**：`cesiumlab_terrain.py:586` 返回 `{"total","rendered","failed"}`，注释自己写着「调用方(dem_task_tiler/local_terrain_task_manager)此前忽略返回值,保持兼容」。上一轮给 terrain 补的逐瓦片容错（`:399-401` 异常只记 warning 返回 None）因此变成纯静默；进度 `done = rendered+failed`（`:494`）必然走到 100%。而 `available` 数组是按 `_tile_ranges` 的完整矩形算出来的（`:463`），与实际产出对不上，Cesium 按 availability 请求后拿到 404（parentUrl 也不兜底，因为子层声明了可用）。极端情况：所有瓦片都失败时 `terrain_tiles/` 一片没有，layer.json 照写、`dem_task_tiler.py:68` 的存在性检查照过、job 照标 completed。
 
@@ -241,7 +266,11 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **触发场景**：切片途中磁盘写满，或某个 granule 是被截断的坏 tif。
 
-**改法**：`tile_dem_task_dir` 返回 counts dict；两个 `_run_tiling_job` 参照 contour 收尾：`rendered==0` 判 failed、`failed>0` 记 warning 并写 `error_message`。**注意需要改 schema**：`dem_terrain_jobs` 没有 `failed_tiles` 列（`core/database.py:336-352`、`:509-510`），contour_tasks 才有。进一步可按实际落盘瓦片重算 available。
+**改法**：`tile_dem_task_dir` 返回 counts dict；两个 `_run_tiling_job` 参照 contour 收尾：`rendered==0` 判 failed、`failed>0` 记 warning 并写 `error_message`。进一步可按实际落盘瓦片重算 available。
+
+**两个落地前提**（二次核对补充）：
+1. **schema 现状**：`dem_terrain_jobs` 没有 `failed_tiles` 列（`core/database.py:336-352`、`:509-510`），而 `local_terrain_tasks`（`core/database.py:359-376`）**连 total/rendered/failed 三个瓦片计数列一个都没有**，只有 files 相关列。好在两张表都有 `error_message`，所以「rendered==0 判 failed + 写 error_message」这个最小修法**不需要动 schema**，只有想持久化 failed 计数才需要 ALTER。
+2. **改返回类型会打断 6 处测试替身**：`tests/test_fix_dem_start_tiling_race.py:60`、`tests/test_fix_infra_e.py:235/275/391`、`tests/test_local_terrain_api.py:99/605` 都用返回 `None` 的 fake monkeypatch 掉 `tile_dem_task_dir`，管理器一旦 `counts.get(...)` 就会 AttributeError 把任务打成 failed。`dem_task_tiler.py:26-28` 的注释正好警告过这些契约测试钉住了调用形态 —— 必须连带更新。
 
 ## M12. 低 zoom 地形瓦片虚报 available，把 parentUrl 基础地形整个盖掉
 
@@ -249,17 +278,23 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **问题**（两条发现同一失效模式，合并）：
 1. `_tile_ranges` 在 z≤4 时把范围强制改成全球，与 DEM bbox 的交集完全不参与；`dem_task_tiler.py` 又固定 `min_level=0`，于是每个任务固定生成 2+8+32+128+512=682 片瓦片。DEM 外的采样窗口为空 → 返回全 0 → 由 `encode_quantized_mesh:289-290` 兜成 hmin=0/hmax=1 的平面。
-2. 部分相交的瓦片走另一条路：`np.clip(np.floor(lpx).astype(int), 0, arr.shape[1]-2)` 把越界采样点钳进读窗口，拿到 DEM 最外一行/列的高程；`fx/fy` 也被 clip 到 [0,1]，所以是「边缘剖面沿法向无限拉伸」（幅度有界，不是线性外插）。z0 那片瓦片覆盖半个地球，65×65 顶点几乎全部越界 → 一个 4000 m 的青藏 DEM 会让整个东半球在 z0 视角下变成几块 4 km 高的阶梯台地。
+2. 部分相交的瓦片走另一条路：`np.clip(np.floor(lpx).astype(int), 0, arr.shape[1]-2)` 把越界采样点钳进读窗口，拿到 DEM 最外一行/列的高程；`fx/fy` 也被 clip 到 [0,1]，所以是「边缘剖面沿法向无限拉伸」（幅度有界，不是线性外插）。z0 那片瓦片覆盖半个地球，顶点几乎全部越界 → 一个 4000 m 的青藏 DEM 会让整个东半球在 z0 视角下变成几块高原台地。**实测**解本机产物 `0/1/0.terrain` 头部：hmin=913 m、hmax=2502 m —— 被外拉的是 DEM **边缘剖面**的高程而非内部峰值，所以幅度约 0.9–2.5 km（原稿写「4 km」高估约一倍，且与它自己上一句「幅度有界，不是线性外插」矛盾）。
 
 两类瓦片**都被写进 available**，而 Cesium 1.143 的 `requestTileGeometry` 取「第一个 availability 声明可用的层」、父层是在子层之后才追加的 —— base_z8 的 z0-4 永远不会被请求。
 
 **实测产物佐证**：`downloads/dem/dem_task_1/terrain_tiles/layer.json` 的 valid_bounds 是 [85,41,88,43]，但 available[0..4] 分别是全球 2×1 / 4×2 / 8×4 / 16×8 / 32×16，available[5] 才收缩成 [47,23,47,23]；解 `0/0/0.terrain` 头部得 hmin=0.00 hmax=1.00。
 
-**触发条件收窄**：只在任务的 parentUrl 指向的全局 base（`downloads/terrain/base_z8/`）**真实存在**时才显形 —— 该 base 是用户手工离线构建的可选产物（`docs/terrain/global-base-build.md` 只有说明没有脚本）。未构建 / parent_url 为 null 时是单层 provider，不存在遮蔽。附带代价始终存在：682 片无用瓦片的时间与磁盘，以及 `h_min_global` 被 0 值污染导致 meta.json 的 minHeight 恒为 0。
+**触发条件收窄**：只在任务的 parentUrl 指向的全局 base（`downloads/terrain/base_z8/`）**真实存在**时才显形 —— 该 base 是用户手工离线构建的可选产物（`docs/terrain/global-base-build.md` 只有说明没有脚本）。未构建 / parent_url 为 null 时是单层 provider，不存在遮蔽。附带代价始终存在：682 片无用瓦片的时间与磁盘，以及 `h_min_global` 被 0 值污染 —— meta.json 的 minHeight 被 0 钳住、不反映真实最小高程（严格说是 `min(0, DEM 实际最小值)`，遇到死海/吐鲁番这类负高程 DEM 会是负数；本机实测为 0.0）。
 
 > **勘误（2026-08-03 文档重构时发现）**：上一段括注里的「`docs/terrain/global-base-build.md` 只有说明没有脚本」**不确** —— `scripts/build_global_base_terrain.ps1` 一直存在（748 字节，2026-05-18 起入库），只是从未被任何文档引用过，所以本次审查没看见它。该脚本另有缺陷：漏传 `--tile-size`，走 CLI 默认 17 而应用侧单任务用 65。文档现位于 `docs/reference/terrain/global-base-build.md`，已补完整构建流程与该差异说明。本条其余结论（z0–4 遮蔽机理、实测佐证、改法）经复核仍然成立。
 
-**改法**：去掉 z≤4 的全球分支（根瓦片交给 parentUrl 的 base），或仅在 parent_url 为空时启用；`DemSampler.sample` 对超出 `[0, cols)/[0, rows)` 的 px/py 生成掩码置 NaN 而非钳位；`available` 只声明与 DEM 真正相交且有有效数据的瓦片。
+**改法**（原稿的兜底条件有严重问题，已重排优先级）：
+
+1. **首选、风险最低**：`available` 只声明与 DEM 真正相交且有有效数据的瓦片。这一条单独就能消除遮蔽 —— 子层不声明可用，Cesium 自然回落到 parentUrl 的 base。
+2. `DemSampler.sample` 对超出 `[0, cols)/[0, rows)` 的 px/py 生成掩码置 NaN 而非钳位。注意置 NaN 后仍会走 `:219` 的 `np.where(isnan, 0.0, v)` 落成 0，效果是「DEM 外恒为 0」而非「不出瓦片」，**必须配合第 1 条才完整**。
+3. 去掉 z≤4 全球分支这条 **不要按原稿写的「仅在 parent_url 为空时启用」实现**：`parent_url` 实际恒非空（`dem_task_manager.py:298`、`local_terrain_task_manager.py:33-40` 都是 `config.get(...) or <硬编码 base URL>`，`layer_json.py:7` 又无条件写进 layer.json），该条件形同虚设，等于无条件删掉 z≤4。而 base_z8 **不存在时**（多数用户的状态）删掉 z≤4 会把现状从「低层被遮蔽」恶化成「地形完全不加载」：parent layer.json 404 → provider 退回单层 → Cesium 单层路径根本不查 availability（vendored `Cesium.js` 里 `if(s===1)r=o[0]`）→ 直接请求 `0/0/0.terrain` → 404 → 根瓦片 FAILED、无父可上采样。真要做，条件必须是「parentUrl 指向的 base 真实可解析」（切片时探测其 layer.json），不是「配置为空」。
+
+**佐证产物的一处说明**：上面引的实测 `layer.json`/`meta.json` 出自 `tileSize: 17` 的产物，即 CLI/旧跑法而非应用路径（应用单任务固定 65）。`available` 数组与 tile_size 无关，结论不受影响。
 
 ## M13. 晕渲预览在 Flask 请求线程里按原分辨率做 MEM 晕渲
 
@@ -273,28 +308,36 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **改法**：先 `gdal.Translate('', vrt_path, format='VRT', width=min(RasterXSize,_MAX_WIDTH))` 拿缩略 VRT，再对它 DEMProcessing，最后 CreateCopy 成 PNG；finally 里把 hs/out 置 None。
 
+**两点需要写清**：
+1. 缩略 VRT 上算 hillshade 与「全分辨率算完再缩」**不是同一张图** —— 坡度按已变粗的像元尺寸计算，起伏会明显更平缓、更平滑。对预览图可接受（甚至更干净），但这是视觉行为变化，不是纯性能优化。
+2. 这个改法**不覆盖上面新加的那条** —— BuildVRT 取并集范围的问题依旧（相距 10° 的两片 tif 仍合出 1030×1030 的 VRT），只是从「按满幅分配 1.2 GB」变成「按满幅分配一张 1600px 缩略图」。内存问题解决了，预览图绝大部分仍是 nodata 空白。要治那条得另做（按各输入实际范围裁剪或分别出图）。
+
 ## M14. 回车连击穿透双重确认，直接删磁盘产物
 
 **位置**：`static/js/ui.js:169`（Enter 一律 `cleanup(true)`，无 `e.repeat` 守卫、无节流）、`:151-165`（先 removeEventListener 再 resolve）、`:175`（executor 里同步挂 keydown）
 **受害调用点**：`static/js/history.js:754/760`（删除任务 →「是否同时删除磁盘上的下载产物？」）
 
-**问题**：`cleanup` 摘掉 A 的监听后 `resolve(true)`，续体是微任务，在同一轮事件循环末尾就同步调用第二个 `showConfirm` 并挂上监听 —— 必然早于下一个 keydown 宏任务。浏览器 Enter 自动重复（`e.repeat=true`，preventDefault 拦不住）或用户快速连按两下，第二个确认框会在 `requestAnimationFrame` 淡入动画还没跑完时就被自动确认。全项目 `e.repeat` 零命中。
+**问题**：`cleanup` 摘掉 A 的监听后 `resolve(true)`，续体是微任务，在同一轮事件循环末尾就同步调用第二个 `showConfirm` 并挂上监听 —— 必然早于下一个 keydown 宏任务。浏览器 Enter 自动重复（`e.repeat=true`，preventDefault 拦不住）或用户快速连按两下，第二个确认框在用户看清之前就被自动确认。全项目 `e.repeat` 零命中。
 
-**实质危害限于 history.js:760**：这里第二个框问的是**另一个维度**的问题（默认答案 = 取消 = 保留产物），自动确认会替用户选中破坏性的那一边，发出 `?delete_files=true` 删掉任务目录下的瓦片/GeoTIFF/DEM —— 用户从未做出这个选择。map/dem/contour 三条后端默认 false，是真正的行为翻转；local_terrain 后端默认本就是 true，不算意外。
+（原稿说「在淡入动画还没跑完时就被确认」略夸大：淡入是 200ms（`style.css:2597/2613`），而操作系统按键自动重复的**首次**延迟通常 250–660ms，多数情况下框已淡入完成才被穿透。「动画未跑完就被确认」只在用户手动快速连按两下时成立。风险不变。）
+
+**实质危害限于 history.js:760**：这里第二个框问的是**另一个维度**的问题（默认答案 = 取消 = 保留产物），自动确认会替用户选中破坏性的那一边，发出 `?delete_files=true` 删掉任务目录下的瓦片/GeoTIFF/DEM —— 用户从未做出这个选择。**四条管线一视同仁**：`static/js/history.js:772` 无论如何都显式带上 `?delete_files=true/false`，而 `routes/local_terrain_api.py:122` 会尊重显式的 `false` —— 所以后端默认值在这条链路上根本用不到。（原稿以「local_terrain 后端默认本就是 true」豁免了它，不成立。）
 
 **已修正的夸大**：`static/js/config.js:82-93` 的两道确认问的是**同一件事**，被穿透只是少了停顿思考的机会，清理范围仍由用户先前那次点击决定（只有点「全部缓存」时才是整个 cache/）。Escape 也会连穿，但两次都是取消，方向安全。
 
 **改法**：`onKey` 里加 `if (e.repeat) return;`，并在 `showConfirm` 内记录 `openedAt = performance.now()`，Enter 时忽略挂载后 300ms 内（与淡入动画对齐）的按键。
+
+**两半不可互换，`e.repeat` 是承重的那一半**：按键重复间隔约 30ms，而 Windows 最短首次延迟是 250ms —— 只加 300ms 宽限窗口的话，第一次重复被挡在 ~280ms，紧接着 ~310ms 那次照样穿透。300ms 窗口只能覆盖真人快速双击。
 
 ## M15. 连续编辑两个坐标时，浮层重建与委托点击互踩
 
 **位置**：`static/js/map.js:877`（blur → `commit(true)`）、`_applyBoundsEdit` 的两条出口 `:884/896/901/906`（同步 `updateBoundsInfo`）与 `:912`（→ `:343` rAF 重写）、委托点击在 `:1584`
 
 **问题**：真正的分野是「浮层重写发生在 click 派发之前还是之后」，不是「校验成功还是失败」。只要在编辑态下用鼠标点浮层里的任何东西（另一个 `.bounds-v`、下载按钮、删除按钮），mousedown 就先触发 blur → 提交 → 整层 `innerHTML` 重写：
-- 重写在 click 之前（校验失败必然如此；校验成功时只要间隔跨过一帧也如此）→ `e.target` 已脱离文档，`closest('.bounds-v')` 为 null 或游离节点，**这一次点击完全没反应**，必须再点一次。
+- 重写在 click 之前（校验失败必然如此；校验成功时只要间隔跨过一帧也如此）→ 委托监听器挂在 `#boundsInfo` 上，而 innerHTML 重写后旧节点的事件传播路径已不再包含 `#boundsInfo`，处理器**根本不会被调用**（浏览器在 mousedown 目标脱离文档时通常也干脆不派发 click）→ **这一次点击完全没反应**，必须再点一次。（原稿把原因写成「`closest('.bounds-v')` 返回 null 或游离节点」，那不是起作用的机制 —— `closest()` 在脱离文档的节点上照样能匹配。）
 - 重写在 click 之后（仅校验成功且点击极快）→ 第二个输入框刚建好就被抹掉，焦点丢失，之后敲的字全丢。
 
-**改法**：让重渲染跳过正在编辑的格子（`updateBoundsInfo` 检测 `#boundsInfo` 内是否存在 `.bounds-edit-input`），或把 blur 的提交延到 rAF 之后再判断 `document.contains(input)`，并让失败分支也走 `_scheduleBoundsInfoUpdate` 而不是同步重写。
+**改法**：让重渲染跳过正在编辑的格子（`updateBoundsInfo` 检测 `#boundsInfo` 内是否存在 `.bounds-edit-input`）—— **只有这一条是承重项**。另两条是配套的健壮性改进，单独实施不解决丢点击：把 blur 提交延到 rAF 之后再判断 `document.contains(input)` 挡的是重复提交，rAF 仍在 mouseup/click 之前触发；让失败分支也走 `_scheduleBoundsInfoUpdate` 单独实施反而把成功分支的偶发问题变成必现。
 
 ## M16. 工具条按钮的键盘焦点圈被容器 overflow:hidden 完整裁掉
 
@@ -302,7 +345,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **问题**：容器无内边距、内容盒宽度正好等于按钮的 30px，`outline-offset:2px` 画出的整圈都落在 padding box 之外；outline 不计入 scrollable overflow region，所以是直接剪掉。Playwright 实测（等价最小复现）：单按钮分组（「框选」，`templates/index.html:51` 独占一组）聚焦后**屏幕上一条焦点线都没有**；三按钮分组的中间按钮只剩两截压在邻居身上的 2px 水平线，左右竖边永远不可见。`.map-panel-btn` 也没有任何替代焦点指示（JS 只切 `--active` 类）。
 
-契约测试照不到：`test_focus_visible_has_a_visible_outline` 只遍历 `BUTTON_CONTEXTS` 那 11 个 `.btn` 上下文，且只校验 outline 有没有被声明，不建模祖先裁剪。
+契约测试照不到：`test_focus_visible_has_a_visible_outline` 只遍历 `BUTTON_CONTEXTS` 那 11 个 `.btn` 上下文（`.map-panel-btn` 不在其中），**不建模祖先裁剪** —— 它对入册的上下文其实查得不浅（层叠后的 `outline-width ≥ 2px`、`outline-style` 非 none、焦点环对背衬 ≥ `BTN_RING_MIN_CONTRAST`），问题纯粹是「没入册 + 不管裁剪」。
 
 **改法**：`.map-panel-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; background-color: var(--color-control-hover); }`（负 offset 画进 padding box 内不会被裁），或去掉容器 `overflow:hidden` 改用首尾按钮各自的 border-radius。在 `test_css_contract.py` 补一条「焦点轮廓不得被任何 overflow!=visible 的祖先裁掉」的断言。
 
@@ -310,23 +353,25 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **位置**：`static/css/style.css:2223-2224`（`background: var(--color-bg-tertiary)` + `border: 2px solid var(--color-border)`）
 
-**问题**：暗色边框实算 rgb(44,48,54) 对卡片/弹窗底 #15171c 只有 **1.35:1**，填充 1.10:1；亮色边框 rgb(218,221,225) 对白底 **1.36:1**，填充 1.11:1。而项目对图形元素反复声明过 3:1 下限（`style.css:20-27`、`58-63`、`1313-1316` 的注释，以及 `PROGRESS_FILL_MIN_CONTRAST=3.0`、`ERROR_BORDER_MIN_CONTRAST=3.0`、`BTN_RING_MIN_CONTRAST=3.0` 三条已有断言）。更关键的是：Bootstrap 自己的 `--bs-border-color`(#495057) 能拿到 2.19:1，站内覆盖把它**改差了 62%**。`grep -c "form-check" tests/test_css_contract.py` = **0**。
+**问题**：暗色边框实算 rgb(44,48,54) 对卡片/弹窗底 #15171c 只有 **1.35:1**，填充 1.10:1；亮色边框 rgb(218,221,225) 对白底 **1.36:1**，填充 1.11:1。而项目对图形元素反复声明过 3:1 下限（`style.css:20-27`、`58-63`、`1313-1316` 的注释，以及 `PROGRESS_FILL_MIN_CONTRAST=3.0`、`ERROR_BORDER_MIN_CONTRAST=3.0`、`BTN_RING_MIN_CONTRAST=3.0` 三条已有断言）。更关键的是：Bootstrap 自己的 `--bs-border-color`(#495057) 能拿到 2.19:1，站内覆盖后**只剩它的 62%**（1.35/2.19，即恶化 38%；按「超出 1 的对比度」算则恶化 70%）。原稿写「改差了 62%」是把比值说反了。`grep -c "form-check" tests/test_css_contract.py` = **0**。
 
 勾选态没问题（accent 暗色 8.37:1 / 亮色 7.56:1）。坏的是未勾选时「那个可点的方框在哪」—— 复选框除了这个方框什么都没有，正是 WCAG 1.4.11 要管的。同令牌问题也影响 `.form-control/.form-select`，但它们还有文字/箭头撑起可见性。
 
 **触发场景**：「下载数据」弹窗切到「高程」时的两个未勾选复选框、配置页的「启用瓦片缓存」。
 
-**改法**：新增专用令牌（如 `--color-control-border`，暗色 #6b7280 一档、亮色 #9ca3af 一档）并在 light 块给出亮色值，保证边框对**周围表面**（`--color-bg-secondary`）≥3:1；按 `test_progress_bar_fill_has_sufficient_contrast` 的写法补一条 form-check 边界断言。
+**改法**：新增专用令牌（如 `--color-control-border`）并在 light 块给出亮色值，保证边框对**周围表面**（`--color-bg-secondary`）≥3:1；按 `test_progress_bar_fill_has_sufficient_contrast` 的写法补一条 form-check 边界断言。
+
+**取值必须实算，别照抄原稿**：暗色 `#6b7280` 可用（对 #15171c = 3.71:1）；但原稿给的亮色 `#9ca3af` 对白底只有 **2.54:1**、对控件填充 #f1f3f5 只有 **2.28:1**，比它要修的 3:1 门槛还低，照抄会写出一个通不过自己新断言的令牌。亮色档应取 `#858c97`（白底 3.39:1 / 填充 3.05:1）或直接复用亮色块已有的 `--color-neutral: #6b7280`（4.83:1 / 4.35:1）。
 
 ## M18. 三处正文文字用了被明令禁止当文字色的 --color-text-muted
 
 **位置**：`static/css/style.css:2934`（`.statusbar-event` 状态栏最近事件）、`:2864`（`.bounds-hint`，由 `map.js:821` 渲染「拖拽角点调整 · 点击数值编辑」）、`:3064`（`.tile-estimate` 下载弹窗瓦片预估）
 
-**问题**：该令牌的定义处（`:20-27`、`:210-213`）逐字写明它**不是文字色**、只许用于图形元素，并声称约束由 `test_every_text_context_meets_wcag_aa` 兜住。实算：#5f6670 压 #15171c = **3.07:1**，#8f959f 压 #ffffff = **3.01:1**，字号 12px 够不上大字豁免，全部低于 AA 正文的 4.5:1。`git blame` 显示三处分别出自 c854e12fe4（2026-07-30）与 857cea4bd6（2026-07-31），均晚于确立禁令的 A7/Task 12 —— 是新增回归，不是历史豁免。
+**问题**：该令牌的定义处（`:20-27`、`:210-213`）逐字写明它**不是文字色**、只许用于图形元素，并声称约束由 `test_every_text_context_meets_wcag_aa` 兜住。实算：#5f6670 压 #15171c = **3.09:1**（原稿写 3.07 偏低 0.02；style.css 自己的注释 `:21` 写的就是 3.09），#8f959f 压 #ffffff = **3.01:1**，字号 12px 够不上大字豁免，全部低于 AA 正文的 4.5:1。`git blame` 显示三处分别出自 c854e12fe4（2026-07-30）与 857cea4bd6（2026-07-31），均晚于确立禁令的 A7/Task 12 —— 是新增回归，不是历史豁免。
 
 安全网缺口比「三条不在清单里」更大：`_text_contexts()`（`test_css_contract.py:5152-5258`，手写 17 条并 `assert len == 17`）覆盖的区域只有记录面板、详情弹窗、首页表单和 toast，**整条状态栏、整个地图浮层体系、下载弹窗的非表单内容**在模型里都没有入口。
 
-**改法**：三处一律改 `var(--color-text-secondary)`（暗 6.81:1 / 亮 6.6:1），层级差交给已有的 `font-size: var(--font-size-xs)` 承担（与 A7 对 `.form-text`/`.detail-k` 的处理同一套）；把这三条上下文补进 `_text_contexts()` 并把 17 改成 20 —— 但要意识到补完缺口依然在。
+**改法**：三处一律改 `var(--color-text-secondary)`（暗 6.81:1；亮色下这三处的实际背衬是白底，实测 **7.5:1**，原稿写的 6.6:1 是对 `--color-bg-primary` #eef0f3 的最坏档），层级差交给已有的 `font-size: var(--font-size-xs)` 承担（与 A7 对 `.form-text`/`.detail-k` 的处理同一套）；把这三条上下文补进 `_text_contexts()` 并把 17 改成 20 —— 但要意识到补完缺口依然在。
 
 **注**：`:2185` 的 `.page-item.disabled .page-link` 也用 muted 当 color，但那是 disabled 控件（且叠了 opacity:.5），WCAG 1.4.3 明确豁免，不算违规。
 
@@ -345,9 +390,9 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 **位置**：`build.bat:62`（调用后不看 errorlevel）、`:65`（只用 `if exist "dist\terraforge"` 判定成败）
 **对照组**：`build.sh:6` 有 `set -euo pipefail`，同样的调用失败即以非零码退出
 
-**问题**：`nuitka_build.py:385-390` 在很早就把 `dist/app.dist` 重命名成 `dist/terraforge`，之后才依次执行产物自检 —— 所以这些自检一旦触发，目标目录已经存在了。`build.bat` 里每一个前置步骤（uv 存在性、依赖安装、GDAL pin、osgeo 可导入、版本比对）都检查了 errorlevel，唯独主构建调用没有。被吞掉的三处自检：`:393-394`（exe 未生成）、`:397 → :248-253`（OSGeo4W 等非 conda 布局下 GDAL DLL 闭包补拷失败时主动 raise，错误文案明说是为了防止交付「能构建能启动但每次 GDAL 调用都失败」的包）、`:398`（`alias_conda_tagged_extensions`）。
+**问题**：`nuitka_build.py:385-390` 在很早就把 `dist/app.dist` 重命名成 `dist/terraforge`，之后才依次执行产物自检 —— 所以这些自检一旦触发，目标目录已经存在了。`build.bat` 里每一个前置步骤（uv 存在性、依赖安装、GDAL pin、osgeo 可导入、版本比对）都检查了 errorlevel，唯独主构建调用没有。被吞掉的是**两处自检 + 一处可能抛意外异常的补拷步骤**：`:393-394`（exe 未生成，raise）、`:397 → :248-253`（OSGeo4W 等非 conda 布局下 GDAL DLL 闭包补拷失败时主动 raise，错误文案明说是为了防止交付「能构建能启动但每次 GDAL 调用都失败」的包）、`:398`（`alias_conda_tagged_extensions` —— 读全函数 293-326 确认它自己不 raise，只会因 `import osgeo` 或 `shutil.copy` 抛意外异常而失败；原稿把它算作「自检」不准确）。
 
-**另一条更易发生的路径**（原报告未提）：`build.bat:49-52` 安装的 nuitka **未 pin 版本**，而 `nuitka_build.py:219` 导入的是 Nuitka 私有 API `nuitka.freezer.DllDependenciesWin32.detectBinaryPathDLLsWin32`，Nuitka 升级改签名就会在此抛异常 —— 同样发生在重命名之后，同样被判成「Build successful!」。
+**同一条路径上的第二种失因**（原报告未提）：`build.bat:49-52` 安装的 nuitka **未 pin 版本**，而 `nuitka_build.py:219` 导入的是 Nuitka 私有 API `nuitka.freezer.DllDependenciesWin32.detectBinaryPathDLLsWin32`，Nuitka 升级改签名就会在此抛异常 —— 同样发生在重命名之后，同样被判成「Build successful!」。（原稿称它「更易发生」不成立：`:219` 被 `:214-216` 的 `if _find_bundled_gdal_dll(dist_dir): return` 挡在同一道门后，与 `:248-253` 的触发人群完全相同，只是失因不同。）
 
 **改法**：`:62` 之后立刻加 `if errorlevel 1 ( echo Build failed! & exit /b 1 )`，把 `if exist` 降级为附加断言；顺带给 `uv pip install nuitka` 也补检查。`tests/test_fix_build_scripts.py:39` 只断言 `build.sh` 有 pipefail，对 `build.bat` 没有等价断言 —— 两脚本的不对称从未被约束。
 
@@ -374,7 +419,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 生产配置下 `DOWNLOADS_DIR` 在 exe 目录旁，一个一级目标路径不会命中 home/downloads/cache 中任何一条，浅路径守卫是唯一防线。
 
-**缓解事实**（收窄暴露面，不推翻结论）：`services/geo_validation.py:100-146` 在建任务时已按同口径拒绝 `parts<3`，且该层被 `tests/test_path_browser.py:68-74` 有效覆盖，所以浅 output_path 只能来自 0.2.3 前的存量行或手改 DB；可能拿到的入口是 `routes/dem_api.py:101` 和 `routes/api.py:406`（contour 的 output_path 硬编码，用户输入进不来）。
+**缓解事实**（收窄暴露面，不推翻结论）：`services/geo_validation.py:100-127`（`require_absolute_output_dir`，守卫本体在 `:123`）在建任务时已按同口径拒绝 `parts<3`，且该层被 `tests/test_path_browser.py:68-74` 有效覆盖，所以浅 output_path 只能来自 0.2.3 前的存量行或手改 DB；可能拿到的入口是 `routes/dem_api.py:101` 和 `routes/api.py:406`（contour 的 output_path 硬编码，用户输入进不来）。
 
 **改法**：补一条一级路径断言，例如 `assert tc.remove_task_dir_if_safe(Path(os.path.abspath(os.sep)) / 'tf_shallow_probe') is False`（该路径不存在，即使守卫失效也不会真删，但变异时会翻红）。
 
@@ -382,15 +427,17 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **位置**：`tests/conftest.py:30-59`（`fresh_import` 只恢复 sys.modules 与父包属性）、`:81`（`isolated_app` 只传 `"app"`/`"core.database"`）
 
-**问题**：上轮 MEDIUM #21 的结论是「新增 conftest.fresh_import 统一隔离工具」，但工具只被 conftest 自己和 3 个文件用；47 个测试文件仍各写一份互不相同的 `sys.modules.pop(...)` 清单，其中 **46 个从不恢复**，45 个根本不 pop `routes.*`。conftest 的 docstring 自己也承认「Existing test files should migrate their ad-hoc pop loops to it」。
+**问题**：上轮 MEDIUM #21 的结论是「新增 conftest.fresh_import 统一隔离工具」，但工具只被 conftest 自己和 3 个文件直接用（算上 `isolated_app` 的 4 个使用者，并集 6 个）；47 个测试文件仍各写一份互不相同的 `sys.modules.pop(...)` 清单（共 54 处调用），其中 **46 个从不恢复**（唯一恢复的是 `tests/test_fix_terrain_gdal_import.py`），**44 个**根本不 pop `routes.*`（只有 3 个 pop 了：`test_delete_files_cleanup.py:23-25`、`test_fix_api_hardening.py:36`、`test_fix_dem_delete_tiling_guard.py:154`）。conftest 的 docstring 自己也承认「Existing test files should migrate their ad-hoc pop loops to it」。
 
 更关键的是：`create_app()` 通过 `init_task_manager(...)` 把 manager 注入到 `routes.*` 的**模块级全局**里，任何隔离工具都管不住。实测跑完用 `isolated_app` 的测试后，`sys.modules['app']` 已被恢复成原实例，但 `app.task_manager`（id …847488）与 `routes.api.task_manager`（id …769600）是两个不同对象，后者仍是 fixture 里那个绑定到已删除 `tmp_path` 的管理器。
 
-`tests/test_fix_api_hardening.py:29-36` 的注释逐字描述过这个坑（「测试 patch 新模块、请求却打到旧模块」）并靠手抄 10 个模块名的 pop 清单绕开 —— 是踩出来的而非理论风险。当前全量正序/逆序都绿（全库仅一个不隔离地 import app 的文件，且它 test_client 用量为 0），属潜伏状态：任何人新增一个不做隔离的 app 用例就会引爆，失败模式是静默假绿而非报红。
+`tests/test_fix_api_hardening.py:27-31` 的注释逐字描述过这个坑（「测试 patch 新模块、请求却打到旧模块」）并靠 `:32-38` 手抄 **11** 个模块名的 pop 清单绕开 —— 是踩出来的而非理论风险。当前全量正序/逆序都绿（全库仅一个不隔离地 import app 的文件 `tests/test_app_mp_worker_guard.py`，且它那句 `import app` 跑在 spawn 出来的**子进程**里、根本碰不到父进程的 `sys.modules`），属潜伏状态：任何人新增一个不做隔离的 app 用例就会引爆，失败模式是静默假绿而非报红。
 
 **改法**：47 个清单统一迁到 `fresh_import`/`isolated_app`；给 `fresh_import` 补注入型全局的恢复（重导入前记录 `routes.api`/`dem_api`/`contour_api`/`local_terrain_api`/`terrain_api` 的 `*_task_manager` 原值，teardown 还原）；加一条自检用例钉住「teardown 后 `app.task_manager is routes.api.task_manager`」。
 
-## M24. README 描述的等高线入口和自动下载流程都不存在
+## M24.〔已修，残留一项〕README 描述的等高线入口和自动下载流程都不存在
+
+> **状态**：主体已由提交 `1cd918598` 修掉（该提交 body 逐条复述了本发现），`README.md:130-134` 现已是上传驱动口径。**残留**：README 全文 grep「处理类型 / 数据处理」仍**零命中** —— 现文案只写「切换到等高线」，用户看完仍不知道该点哪个控件，本条点破的「正确入口完全缺失」尚未闭环。
 
 **位置**：`README.md:130-134`
 
@@ -402,9 +449,11 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **改法**：改成上传驱动口径（处理类型选等高线 → 上传 .tif → 远程高程请先跑 DEM 任务，产物在 `downloads/dem/dem_task_<id>/`），删掉「框选区域」和「自动完成 DEM 下载」。同批需修的还有 `README.md:34` 的「水体掩膜均可配置」（见 M26）。
 
-## M25. README 称 DEM 必须 Earthdata 账号，实际默认数据源免认证
+## M25.〔已修〕README 称 DEM 必须 Earthdata 账号，实际默认数据源免认证
 
-**位置**：`README.md:32`、`:125`、`:150`、`:371`（四处一致地说「必须 Earthdata」）；`:8` 与 `:219` 不完整（只提 ASTER）
+> **状态**：已由提交 `1cd918598` 全部修掉，四处现已是「默认 Copernicus GLO-30 免认证 / ASTER 需 Earthdata」口径，`:46` 按要求未动。
+
+**位置**：`README.md:32`、`:125`、`:150`、`:373`（原稿写 `:371`；四处一致地说「必须 Earthdata」）；`:8` 与 `:219` 不完整（只提 ASTER）
 
 **问题**：代码实际默认是 `COP-DEM-GLO-30`（`services/dem_task_manager.py:100`），走公开 AWS 桶（`dem_download_engine.py:58-60`），`_dataset_requires_auth` 明确 `return dataset != "COP-DEM-GLO-30"`，全链路不碰 Earthdata；界面下拉的默认选项文案就是「Copernicus GLO-30（30m，推荐，更干净，免认证）」（`templates/index.html:176-179`）。创建/启动 DEM 任务链路完全不检查账号。测试也钉死了免认证（`test_dem_task_manager_dataset.py:32-37`、`test_dem_download_engine_url.py:31-35`）。等高线更是完全不下载，谈不上需要账号。
 
@@ -412,9 +461,11 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **改法**：四处改为「DEM 默认使用 Copernicus GLO-30（AWS 公开桶，免认证，全球覆盖），界面可切到 ASTER GDEM v3（需 Earthdata，覆盖 83S–83N）」；`:150`/`:371` 的「必需」限定为「仅选 ASTER 时」，并删掉其中的「等高线」。**`:46`「配置页……Earthdata 账号等」是正确的，不要改**。
 
-## M26. 文档称等高线水体掩膜可配置，实际上传路径硬编码 water=0
+## M26.〔部分已修，CLAUDE.md 仍待修〕文档称等高线水体掩膜可配置，实际上传路径硬编码 water=0
 
-**位置**：`CLAUDE.md:12`、`README.md:34`、`docs/geolibre-takeaways.md:68`
+> **状态**：`README.md:34`（已删「水体掩膜」）与 `docs/notes/geolibre-takeaways.md:68`（已加限定）由提交 `1cd918598` 修掉；**`CLAUDE.md:12` 的 `water mask` 三个字被漏掉，至今未改** —— 那次提交改的是同一行的另外半句。CLAUDE.md 是 AI 速查区，错误口径留在这里传染性最强，应优先补上。
+
+**位置**：`CLAUDE.md:12`、`README.md:34`、`docs/notes/geolibre-takeaways.md:68`（原稿写 `docs/geolibre-takeaways.md:68`，`a439aa6e2` 的 docs 分层重构已将其移入 `notes/`，行号未变）
 
 **问题**：当前唯一的创建入口 `create_task_with_files`（`services/contour_task_manager.py:263-373`）既不接收水体参数，也在 INSERT 的 water 列写死常量 0（`:368`），函数自己的 docstring `:277-278` 也承认。前端 `templates/index.html:252-301` 的等高线选项区只有上传、等高距、背景、地形着色、配色自定义五组控件，全仓 `grep water templates/ static/js/` 零命中。渲染期 `:572` 的 `want_water` 因此恒为 False，ASTWBD 枚举永远返回空。
 
@@ -433,7 +484,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **问题**：`'downloading'` 这个中间态在两处都被漏掉，残留行既不会被重下、也不会阻止任务置 completed，渲染在缺几块 1° DEM 的输入上出图，成品带缺口而任务 completed。
 
-**触发条件三重叠加，故为 low**：(1) 当前版本**无法创建**下载驱动的等高线任务（唯一入口是纯上传，下载驱动的 `create_task` 已删除），只有从旧版本升级上来的存量 DB 行能跑进这条路；(2) `'downloading'` 残留只来自进程被**硬杀**（正常暂停时 `dem_download_engine.py:186-188/264-266` 会回写 `pending`）；(3) 必须「部分下完」—— 一颗都没下完时 tiler 返回 rendered=0，会被判 failed，用户看得到。
+**触发条件三重叠加，故为 low**：(1) 当前版本**无法创建**下载驱动的等高线任务（唯一入口是纯上传，下载驱动的 `create_task` 已删除），只有从旧版本升级上来的存量 DB 行能跑进这条路；(2) `'downloading'` 残留只来自进程被**硬杀**（正常暂停时 `dem_download_engine.py:186-188/265-267` 会回写 `pending`；该状态本身是 `dem_download_engine.py:194` 上报、经 `contour_task_manager.py:597` 的回调写进 `contour_files` 的 —— contour 自身 grep `downloading` 零命中，这个反直觉点是真的）；(3) 必须「部分下完」—— 一颗都没下完时 tiler 返回 rendered=0，会被判 failed，用户看得到。
 
 **改法**：`_execute` 取列表前补 `UPDATE contour_files SET status='pending' WHERE task_id=? AND status='downloading'`（dem/water 两种 kind 都要），并把 `pending_count` 改成 `status NOT IN ('completed','skipped','failed')`。
 
@@ -445,6 +496,8 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 **问题**：锁内把 job 行 upsert 成 `running` 并 commit，锁外裸调 `th.start()`，没有 try 回补。线程创建失败（`RuntimeError: can't start new thread`）后 job 行永久停在 running：再次 start_tiling 被 `ON CONFLICT ... WHERE status != 'running'` 的 rowcount=0 判为「已在运行」而 ValueError，`delete_task` 又被 `:503-508` 的 DB 状态检查挡住（`is_alive()` 检查拦不住 —— tiling 线程根本不登记进 `active_tasks`，未 start 的线程 `is_alive()` 返回 False）。`routes/terrain_api.py` 整个 blueprint 没有任何 cancel/reset job 的端点，只有重启进程让孤儿恢复把 job 标 failed 才能解开。contour 那条所幸还能靠 pause 翻回 paused 自救。
 
 **为何是 low**：触发条件不受任何 API 输入控制，必须 OS 真的耗尽线程/内存；无数据损坏、无静默错误产出；本地单用户桌面应用重启即自愈。
+
+**范本的一处差异**：`dem_task_manager.py:203-217` 那份回补退到 `paused`，但切片 job 行没有 paused 态，三处 tiling 应置 `failed` + 写 `error_message`。
 
 **改法**：三处 `th.start()` 包进 try，按 `dem_task_manager.py:203-217` 的既有范本回补（锁内按身份校验清 active_tasks/stop_flags，job 行置 failed 并写 error_message，contour/local 置回 paused/failed），再向上抛。回归测试也需横向同步。
 
@@ -486,7 +539,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **问题**：删除一个 pending/paused 任务（四个 DELETE 端点都只拒 running）后，底部状态栏「N 个活动任务（M 运行中） X%」继续把它算进去；`loadHistory` 又不调 `updateStatusTasks`，文本原地冻结。唯一纠正点是 `loadActiveTasks` 里的 `activeTasks.clear()` —— 只在新建任务、socket 断线重连或整页刷新时发生。
 
-**两条次生结论已证伪**：无 rowid 复用风险（四张任务表都是 `INTEGER PRIMARY KEY AUTOINCREMENT`，且 key 带类型前缀，建任务路径又都先 `loadActiveTasks` 清表）；`updateTimeDisplay` 不产生每秒开销（`tasks.js:765` 对非 running 立即 return）。
+**两条次生结论已证伪**：无 rowid 复用风险（四张任务表都是 `INTEGER PRIMARY KEY AUTOINCREMENT`，且 key 带类型前缀，建任务路径又都先 `loadActiveTasks` 清表）；`updateTimeDisplay` 不产生每秒开销（`tasks.js:766` 对非 running 立即 return）。
 
 **改法**：成功分支加两行（独立页 `/history` 不加载 tasks.js，需 typeof 守卫，与同函数 `stopTaskPreviewForTask`/`closeFailureToast` 的写法一致）：
 ```js
@@ -511,7 +564,7 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
 - `services/task_manager.py:298-299` 与 `services/dem_task_manager.py:101-102`（建任务处注释称「必须落在 Config.DOWNLOADS_DIR 内」）
 - `routes/api.py:349-350`、`routes/dem_api.py:99`、`routes/contour_api.py:170`（DELETE 端点 docstring 称「when it resolves inside DOWNLOADS_DIR」）
 
-**问题**：`require_absolute_output_dir`（`services/geo_validation.py:100-127`）在 0.2.4 已放开 —— 其 docstring 明写「不再强制落在 DOWNLOADS_DIR 内」，函数体只剩绝对路径与 `parts>=3` 两条检查，`base_dir` 形参只为签名兼容保留、不参与校验。`remove_task_dir_if_safe` 同理（自己的 docstring `:91` 是对的，模块 docstring 掉队）。`tests/test_delete_files_cleanup.py:292-300` 已把「允许删 DOWNLOADS_DIR 之外」钉死。
+**问题**：`require_absolute_output_dir`（`services/geo_validation.py:100-127`）在 0.2.4 已放开 —— 其 docstring 明写「不再强制落在 DOWNLOADS_DIR 内」，函数体只剩绝对路径与 `parts>=3` 两条检查，`base_dir` 形参只为签名兼容保留、不参与校验。`remove_task_dir_if_safe` 同理（自己的 docstring `:91` 是对的，模块 docstring 掉队）。`tests/test_delete_files_cleanup.py:293-300` 已把「允许删 DOWNLOADS_DIR 之外」钉死。
 
 **为何仍需修**：这是唯一执行 `shutil.rmtree` 的共用入口，错误的安全承诺出现在这里风险最高 —— 后续开发者可能据此省掉新管线的路径校验；`routes/api.py` 那处还是对外 API 文档。
 
@@ -519,24 +572,23 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
 
 ---
 
-# LOW（未经对抗性验证，事实以审查员单方陈述为准）
+# LOW（原未经对抗性验证，已在二次核对中补验）
 
-按流程 low 项不送验，以下 14 条的行号与语义未经第二人复核，修复前请自行确认。
+按流程 low 项不送验，原稿 14 条的行号与语义未经第二人复核。**二次核对已把这 14 条全部补验完毕**：13 条属实（行号无一漂移，质量高于「未复核」这个标签的暗示），**U9 被推翻为误报已移出**（见文末误报清单）。下表为补验后的 13 条，其中 5 条的建议做法经核对后作了补充。
 
 | # | 位置 | 问题 | 建议 |
 | --- | --- | --- | --- |
 | U1 | `services/dem_task_manager.py:382`、`services/contour_task_manager.py:730` | 切片/渲染进度的 `socketio.emit` 未包 try，而它经回调被 `build_terrain` 在瓦片循环里同步调用；一次 emit 抛出会穿透整个作业被记为切片失败 | 各包一层 try/except 只记日志，与 `task_manager.py:1313-1321`、`1437-1445` 对齐 |
-| U2 | `services/contour_task_manager.py:461` | cancel 对终态任务静默返回成功（rowcount==0 且行存在时 fall through），路由回 `{"success": true}`；map/dem 都改抛 ValueError 了，contour 没跟上 | 终态时抛 `ValueError(f"Cannot cancel contour task {id} with status '{status}'")` |
+| U2 | `services/contour_task_manager.py:461` | cancel 对终态任务静默返回成功（rowcount==0 且行存在时 fall through），路由回 `{"success": true}`；map/dem 都改抛 ValueError 了，contour 没跟上 | 终态时抛 `ValueError(f"Cannot cancel contour task {id} with status '{status}'")`。**必须同步改 `tests/test_cancel_terminal_state.py:198,209`** —— 这两条用例当前直接调 `ctm.cancel_task(...)` 不包 `pytest.raises`，把现行为钉死了；改成 `pytest.raises(ValueError, match="Cannot cancel contour task")`，与同文件 dem 的两条对齐 |
 | U3 | `core/database.py:55` | `history_retention_days` 有默认值、有校验、有配置页输入框、前端会提交，但**全项目无消费方**，历史表无限增长 | 要么实现启动时按天数清理四张任务表的终态行，要么整条删掉（比照 0.2.4 移除 `cache_max_size_mb`）；选择写进 CLAUDE.md |
 | U4 | `routes/api.py:949` | `/api/fs/browse` 对 `~未知用户`（RuntimeError）、含空字节的 path（ValueError）抛未捕获异常返回 500；源码运行默认 DEBUG=1，Werkzeug 调试器会把完整堆栈回给浏览器 | 解析与存在性检查包进 `except (OSError, ValueError, RuntimeError)` 统一 400 |
 | U5 | `static/js/history.js:494` | `_statusStrokeCache` 惰性缓存 6 个状态色令牌，前提是「调色板运行期不变」；主题切换落地后该前提已不成立，`TerraTheme.set` 无缓存失效钩子，小地图矩形留旧主题色 | theme 切换后广播事件置 `_statusStrokeCache = null` 并重跑 `renderHistoryMap`；或把缓存键改成 `resolved()+令牌名` |
 | U6 | `static/js/map.js:1338` | 等高线预览面板作为普通流内块 append 到 `.index-map`（`overflow:hidden` + `#map` 高 100%），起始位置就在容器高度之下，被完整裁掉，永远不可见还白拉接口 | 补绝对定位样式，或承认已被记录面板的预览按钮取代、删掉这一整组函数与监听 |
 | U7 | `static/css/style.css:2222` | `.form-check-input { margin-left: -1.75rem }` 是 (0,1,0)，被 Bootstrap 的 `.form-check .form-check-input`(0,2,0) 压掉 —— 注释描述的对齐修正从未生效 | 提到 `.form-check .form-check-input`；补一条按层叠求值 margin-left 的断言 |
-| U8 | `static/css/style.css:3043` | `.btn-outline-danger` 只写了基态和 hover，缺 `:not(:disabled):focus-visible` 与 `:active`，键盘聚焦时变回 Bootstrap 红（段头注释 `:1467-1503` 已讲明每个变体五态都要写） | 照 `.btn-outline-primary` 补两条；把它加进 `BUTTON_CONTEXTS` |
-| U9 | `static/js/map.js:1017` | 提交按钮的转圈图标行内写 `animation: spin ...`，但全仓 5 个 @keyframes + vendor bootstrap 里都没有名为 `spin` 的，动画静默失效 | 补 `@keyframes spin`，或换成 Bootstrap 的 `.spinner-border spinner-border-sm` |
-| U10 | `static/css/style.css:1414` | 表格时代残留：`.history-table` 六条规则 + 专供它的 `--color-row-hover` 令牌（暗/亮两条）全部零引用；同批零引用的还有 `.action-buttons`（含 @media 两条）、`.container-fluid`、`.input-group`、`.bg-white`、`.alert-dismissible .btn-close` | 按 `:2189-2197` 的既有做法整段删除，同步下调 test_css_contract.py 的 !important 台账与令牌清单 |
-| U11 | `core/logging_setup.py:70` | `root.setLevel(os.environ.get('LOG_LEVEL','INFO').upper())` 非法值直接抛 `ValueError: Unknown level`，且在 handler 装好之前，用户看到裸 traceback 且提示不含变量名 | 白名单校验后回退 INFO 并 warning 打出变量名，与 `core/config.py:17-32` 的 `_parse_max_content_length` 一致 |
-| U12 | `core/process_watchdog.py:79` | 〔上轮已提出仍未修〕PID 复用防护只在 Linux 生效（靠 `/proc/<pid>/cmdline`），Windows 上退化成纯 `pid_alive` 探活，而 Windows 的 PID 回收更激进 —— 看门狗可能永不退出，孤儿子进程占着 5000 端口 | Windows 用 `GetProcessTimes` 读创建时间做身份校验（创建时间+PID 才唯一），或改用 Job Object / 继承匿名事件句柄 |
+| U8 | `static/css/style.css:3043` | `.btn-outline-danger` 只写了基态和 hover，缺 `:not(:disabled):focus-visible` 与 `:active`，键盘聚焦时变回 Bootstrap 红（段头注释 `:1467-1503` 已讲明每个变体五态都要写）。该类是活的：`_config_content.html:134,180`、`config.js:71,179` 四处在用 | 照 `.btn-outline-primary` 补两条；把它加进 `BUTTON_CONTEXTS`，并**同步把 `tests/test_css_contract.py:4235` 的 `assert len(BUTTON_CONTEXTS) == 11` 改成 `== 12`**（否则必红） |
+| U10 | `static/css/style.css:1414` | 表格时代残留：`.history-table` 六条规则（止于 `:1449`）+ 专供它的 `--color-row-hover` 令牌（暗 `:124`/亮 `:254`，唯一消费点就是那条死规则）全部零引用；同批零引用的还有 `.action-buttons`（含 @media 两条）、**`.container, .container-fluid`（分组选择器，`.container` 同样零引用，别只删半边）**、`.input-group`、`.bg-white`、`.alert-dismissible .btn-close` | 按 `:2189-2197` 的既有做法整段删除；`.bg-white` 与 `.container/.container-fluid` 各带 1 处 `!important`，按项目棘轮惯例把 `tests/test_css_contract.py:439` 的 `<= 59` 降到 `<= 57`（实测当前 56，不降也不会红）。**不存在钉住令牌清单的测试**，删 `--color-row-hover` 不打红任何用例 |
+| U11 | `core/logging_setup.py:70` | `root.setLevel(os.environ.get('LOG_LEVEL','INFO').upper())` 非法值直接抛 `ValueError: Unknown level`，用户看到裸 traceback 且提示不含变量名（原稿称「在 handler 装好之前」不确：`:69` 已 `addHandler`，`:70` 才崩；对用户所见无影响） | 白名单校验后回退 INFO 并 warning 打出变量名，与 `core/config.py:17-32` 的 `_parse_max_content_length` 一致 |
+| U12 | `core/process_watchdog.py:79` | 〔上轮已提出仍未修〕PID 复用防护只在 Linux 生效（靠 `/proc/<pid>/cmdline`），Windows 上退化成纯 `pid_alive` 探活，而 Windows 的 PID 回收更激进 —— 看门狗可能永不退出，孤儿子进程占着 5000 端口。**触发范围有限**：`start_parent_watchdog()` 只在 `app.py:341-342` 的 `WERKZEUG_RUN_MAIN=='true'` 分支调用（即只在 reloader 子进程里跑），而打包 exe 默认 `DEBUG=0` 不开 reloader —— 实际只影响「Windows + 源码运行 + DEBUG=1」的开发场景 | Windows 用 `GetProcessTimes` 读创建时间做身份校验（创建时间+PID 才唯一），或改用 Job Object / 继承匿名事件句柄 |
 | U13 | `tests/test_tiles_static.py:72` | `/tiles` 的路径穿越用例断言 `in (400, 404)`，而 404 是该路径的默认结果 —— 实测删掉 `terrain_static.py:103-104` 的守卫，本用例照旧通过（`test_fix_terrain_traversal.py` 已重写过 terrain 链路的同款空洞，tiles 被漏下） | 照 `test_fix_terrain_traversal.py` 改成正向可证：任务目录外放 canary，断言 400 且响应体不含 canary；再补一条直调 `_resolve_safe_file` 断言 `HTTPException.code == 400` |
 | U14 | `CLAUDE.md:85` | 称「migrations/ 目录存在但不是主要机制」，实际该目录在上轮修 HIGH #8 时被清空，git 不追踪空目录，fresh clone 上根本不存在 | 改为「schema 演进只在 `init_database()` 内进行；migrations/ 已废弃，不存在旁路迁移执行器」 |
 
@@ -548,7 +600,13 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
 
 # 被推翻的误报清单
 
-**没有任何一条发现被整条推翻。** 45 条送验发现全部在代码里得到确认（22 条被下调级别、多条被改写描述）。
+**首轮对抗性验证：0 条被整条推翻。** 45 条送验发现全部在代码里得到确认（22 条被下调级别、多条被改写描述）。
+
+**二次核对（覆盖含未送验的 14 条 low）：推翻 1 条 —— U9。**
+
+| 条目 | 原说法 | 实际情况 |
+| --- | --- | --- |
+| **U9** | 提交按钮转圈图标用了 `animation: spin`，但全仓 5 个 @keyframes + vendor 里都没有名为 `spin` 的，动画静默失效 | **`@keyframes spin` 就在 `static/js/map.js:1077`**，与 `fadeOut` 一起写在 `document.createElement('style')` 的 textContent 里，由同文件 `:1085` 在脚本求值时 `document.head.appendChild` 注入 —— 早于任何一次点击。map.js 由 `templates/index.html:400` 加载，`animation: spin` 全仓唯一使用点（`:1017`）就在同一个文件里，动画正常工作。「全仓 5 个 @keyframes」的计数也错：style.css 6 个 + map.js 2 个。根因是审查员只 grep 了 `static/css/` 与 vendor，漏了 JS 运行时注入的 `<style>`。**若照建议去 style.css 补一条 `@keyframes spin`，反而造成重复定义。** |
 
 但验证过程中**有 16 处次生结论被证伪**。这些是审查员在正确的核心发现之上外推出的错误推论，记录在此以免下次重复走同一条弯路：
 
@@ -679,5 +737,71 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
 5. **M1 / L1 / L2 / M11 / U2**（横向同步那五条）—— 建议连参数化测试表一起做，避免第三次重复
 6. **M2**（拼接原子写）、**M6**（reset 配置）、**M19**（发布包卫生）—— 各自独立、改动小、用户可见
 7. **M10 + L8**（路径口径收敛 + 注释对齐）—— 需要一次性存量归一，建议单独一个 PR
-8. **M16-M18**（三条无障碍）与 **M21-M23**（测试设施）—— 建议连同「契约测试白名单改成自动发现」一起做
-9. 文档三条（M24-M26）随手改
+8. **M16-M18**（三条无障碍）与 **M21-M23**（测试设施）—— 建议连同「契约测试白名单改成自动发现」一起做。注意 M17 的令牌取值要实算（原稿给的亮色档不达标）、U8 与 M23 各自会打红一条 `assert len(...) == N`
+9. 文档收尾：**M26 的 `CLAUDE.md:12` `water mask`**（M26 唯一未闭环处，AI 速查区传染性最强）与 **M24 残留的「处理类型」入口缺失**；M24/M25 主体已在 `1cd918598` 修完
+10. 其余未列入上述分组的条目（M3/M4/M7/M9/M12-M15/M20、L3-L7、U1/U3-U8/U10-U14）按各自条目内的改法处理；**U9 已推翻，不要修**
+
+---
+
+# 修复闭环（2026-08-03/04）
+
+**全部 51 条真问题已处理完毕。** 测试从 900 → **962 passed**（+62，全绿；正序与
+逆序各跑一遍稳定）。以下只记录**偏离原建议**的地方和需要后人知情的取舍 ——
+按原建议直接落地的条目不再重复。
+
+## 关键修复的验证方式
+
+高危项一律做了**变异验证**（把修复改回坏写法，确认新测试翻红），而不是只看「加了
+断言且是绿的」：
+
+| 条目 | 变异注入 | 结果 |
+| --- | --- | --- |
+| H1 等高线坐标 | 偏移项改回 `eff_px_w` | 新用例翻红 |
+| H4 / M22 删除守卫 | 分别废掉浅路径守卫、家目录守卫 | 各自翻红，且 rmtree 被 spy 拦住、不再真删 |
+| M1 终态保护 | 三条管线各自去掉 `'completed'` | 各自翻红 |
+| M6 reset 归一 | 去掉 reset 里的归一调用 | 两条用例翻红 |
+| M16/M17 无障碍 | 改回弱边框 / 正 outline-offset / 用审核指出的 `#9ca3af` | 三重变异全部翻红 |
+| M18 muted 当文字色 | `.bounds-hint` 改回 muted | 新增上下文翻红 |
+| U13 `/tiles` 穿越 | 拆掉 `_is_within` 守卫 | 旧断言会全绿，新断言翻红 |
+| M23 隔离设施 | 去掉注入型全局的恢复 | 自检用例翻红 |
+
+## 与原建议不同的三处
+
+1. **U9 未修 —— 它是误报**（见误报清单）。照原建议往 style.css 补
+   `@keyframes spin` 反而会与 `map.js:1077` 运行时注入的那份重复定义。
+
+2. **U8 只做了一半，且是刻意的**：`.btn-outline-danger` 的五态已补全
+   （focus-visible + active），但**没有**加进 `BUTTON_CONTEXTS`。入册会撞上一个
+   数学上无解的约束 —— 暗色档启用墨 `--color-danger`(#f87171) 相对亮度 0.3296：
+   - `BTN_DISABLED_MIN_INK_DIMMING` 要求禁用墨 L ≤ 0.3296 − 0.15 = **0.1796**；
+   - `BTN_INK_MIN_CONTRAST` 要求禁用墨对按钮底 #1c2027 达 4.5:1，即 L ≥ **0.2392**。
+
+   区间为空，选什么禁用墨都必红。要入册得先决定「调暗危险色本身」还是「放宽某条
+   阈值」，那是产品/视觉决策，不该塞进一次 bug 修复。已把这段推导写进
+   `tests/test_css_contract.py` 的 `TRANSPARENT_BTN_VARIANTS` 上方，避免后人
+   照着 U8 的原文直接往元组里加。
+
+3. **M12 只落地了「首选」那一条**（available 只声明与 DEM 真正相交的瓦片），
+   没做「越界采样置 NaN」。理由见 M12 条目内的订正：后者单独实施不解决遮蔽，
+   且置 NaN 后仍会被 `np.where(isnan, 0.0, v)` 落成 0；而收窄 available 单独就
+   足以消除遮蔽，同时**不会**触发「base 不存在时地形完全不加载」那个新故障
+   （低 zoom 照常出图，只是不再声明可用）。
+
+## 顺带修掉的两处（测试逼出来的，不在原报告里）
+
+- `local_terrain_task_manager._mark_failed` 的 UPDATE **没有任何状态守卫**。
+  新增的管线一致性测试把它揪了出来；虽然唯一调用点在 create 阶段、当时任务
+  必是 pending，仍补上了 `AND status='pending'`，让「置 failed 的 UPDATE 一律
+  不得改写终态记录」这条约定在四条管线里没有例外。
+- 同名方法遮蔽：L2 的回补方法起初也叫 `_mark_failed`，直接把上面那个覆盖掉了
+  （测试立刻红）。已改名 `_mark_running_task_failed`。
+
+## 已知未闭环
+
+- **M23 的「47 份 pop 清单统一迁移」没有做全量迁移**。已完成的是根因部分：
+  `fresh_import` 现在会恢复 `routes.*` 的注入型全局，并有自检用例钉住
+  「teardown 后 `app.task_manager is routes.api.task_manager`」。逐个改写 47 个
+  文件属于纯机械重构，收益边际、回归面却覆盖整个套件，留给单独的清理提交。
+- **M13 的 BuildVRT 并集范围问题仍在**：内存已经从「按满幅分配 1.2 GB」降到
+  「按 1600px 缩略图分配」，但预览图在输入稀疏时绝大部分仍是 nodata 空白。
+  要治需按各输入实际范围裁剪或分别出图 —— 那是功能改动，不是本次修复范围。

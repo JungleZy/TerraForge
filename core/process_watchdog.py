@@ -49,13 +49,55 @@ def pid_alive(pid):
 def _read_proc_cmdline(pid):
     """Linux 下读 /proc/<pid>/cmdline,用于识别 PID 复用;读不到返回 None。
 
-    Windows / 无 /proc 的平台恒为 None —— 调用方据此跳过身份校验,退回纯
-    pid_alive 探活(保持原行为)。
+    Windows / 无 /proc 的平台恒为 None —— 那里改用进程创建时间做身份校验
+    (见 _process_create_time)。
     """
     try:
         with open(f'/proc/{pid}/cmdline', 'rb') as f:
             return f.read()
     except OSError:
+        return None
+
+
+def _process_create_time(pid):
+    """进程创建时间（Windows 专用身份指纹）；取不到返回 None。
+
+    U12：PID 复用防护此前只在 Linux 生效（靠 /proc/<pid>/cmdline），Windows 上
+    退化成纯 pid_alive 探活 —— 而 Windows 的 PID 回收比 Linux 激进得多，父进程
+    死后其 pid 被无关进程复用时，看门狗会一直以为父进程还活着，孤儿子进程永远
+    占着 5000 端口（下次启动报 Address already in use）。
+
+    「创建时间 + PID」才唯一标识一个进程，这是 Windows 上的标准做法。
+    GetProcessTimes 的创建时间是 100ns 精度的 FILETIME，进程存活期间恒定。
+
+    触发面有限但真实：start_parent_watchdog 只在 reloader 子进程里跑，而打包
+    exe 默认 DEBUG=0 不开 reloader —— 实际影响的是「Windows + 源码运行」的
+    开发场景。
+    """
+    if os.name != 'nt':
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            creation = wintypes.FILETIME()
+            exit_time = wintypes.FILETIME()
+            kernel_time = wintypes.FILETIME()
+            user_time = wintypes.FILETIME()
+            ok = kernel32.GetProcessTimes(
+                handle, ctypes.byref(creation), ctypes.byref(exit_time),
+                ctypes.byref(kernel_time), ctypes.byref(user_time))
+            if not ok:
+                return None
+            return (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
         return None
 
 
@@ -77,13 +119,19 @@ def start_parent_watchdog(interval=2.0):
     # 它的 cmdline,之后每轮比对 —— pid 易主后 cmdline 必然不同,视为父进程已死。
     # 父进程自己的 cmdline 运行中不会变,无误判风险。Windows 无 /proc,跳过该校验。
     parent_cmdline = _read_proc_cmdline(parent_pid)
+    # Windows 侧的等价指纹（U12）：进程创建时间。两者都取不到时才退回纯探活。
+    parent_create_time = _process_create_time(parent_pid)
+
+    def _identity_changed():
+        if parent_cmdline is not None:
+            return _read_proc_cmdline(parent_pid) != parent_cmdline
+        if parent_create_time is not None:
+            return _process_create_time(parent_pid) != parent_create_time
+        return False
 
     def _watch():
         while True:
-            if not pid_alive(parent_pid) or (
-                parent_cmdline is not None
-                and _read_proc_cmdline(parent_pid) != parent_cmdline
-            ):
+            if not pid_alive(parent_pid) or _identity_changed():
                 logger.warning(
                     "reloader watcher 父进程已消失,孤儿子进程退出(避免残留占用端口)")
                 os._exit(0)

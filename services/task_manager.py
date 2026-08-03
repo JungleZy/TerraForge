@@ -295,8 +295,9 @@ class TaskManager:
         """
         logger.info(f"Creating task: {params.get('name', 'Unnamed')}")
 
-        # output_path 校验:必须是绝对路径且落在 Config.DOWNLOADS_DIR 内,
-        # 否则 require_absolute_output_dir 抛 ValueError(API 层映射 400)。
+        # output_path 校验:必须是绝对路径且至少两级深度(0.2.4 起放开全盘,
+        # 不再要求落在 Config.DOWNLOADS_DIR 内 —— 见 require_absolute_output_dir),
+        # 否则抛 ValueError(API 层映射 400)。
         # 入库的是校验后的绝对路径(与 dem_task_manager.create_task 同口径)——
         # 存原始相对值的话,_execute_task 里 Path(task.output_path) 会按进程
         # CWD 解析,打包 exe 从快捷方式启动(CWD≠BASE_DIR)时文件写到校验范围外。
@@ -1144,7 +1145,15 @@ class TaskManager:
                         completed_tiles.append(tile)
                         # 边下边复制①:cache 落盘即镜像一份到产物目录,下载结束
                         # ≈ 产物就绪,不再在 100% 后整段等待结尾复制阶段。
-                        _stream_copy_quiet(tile)
+                        # M3: 必须 to_thread —— 这里跑在下载的 asyncio 事件循环
+                        # 线程上,而 _stream_copy_tile 是 mkdir + exists + stat*2
+                        # + copy2 + replace 六个阻塞 syscall。本地盘影响接近零,
+                        # 但 0.2.4「保存目录全盘可选」鼓励的 SMB/VPN 网络共享上
+                        # 每次各一个往返,累计 10-30ms/块 -> 吞吐被钉在 30-100
+                        # 块/秒,concurrent_downloads 调多少都没用,同时 stop_flag
+                        # 检查被推迟、暂停/取消响应变慢。下载引擎那侧连一次
+                        # cache_path.stat() 都特意挪出了事件循环。
+                        await asyncio.to_thread(_stream_copy_quiet, tile)
 
                     processed_since_flush += 1
                     if processed_since_flush >= PROGRESS_DB_FLUSH_INTERVAL:
@@ -1540,21 +1549,32 @@ class TaskManager:
                     logger.info(f"Task {task_id}: Completed successfully")
 
                 if self.socketio:
-                    self.socketio.emit('task_completed', {
-                        'task_id': task_id,
-                        'status': 'completed',
-                        'warning': stitch_warning
-                    })
+                    # M1: 收尾 emit 必须自带 try —— 它在 completed 已落库【之后】
+                    # 才执行,一旦抛异常就会落到下面的兜底 except,把这条已终结的
+                    # 记录改写成 failed。同文件 1437-1445 的 copy 进度 emit 早就
+                    # 这么写了(「emit 故障(客户端断开等)不应打断复制本身」)。
+                    try:
+                        self.socketio.emit('task_completed', {
+                            'task_id': task_id,
+                            'status': 'completed',
+                            'warning': stitch_warning
+                        })
+                    except Exception as emit_error:
+                        logger.warning(
+                            f"Task {task_id}: emit task_completed failed "
+                            f"(ignored): {emit_error}")
 
         except Exception as e:
             logger.error(f"Task {task_id} execution failed: {e}")
 
             # Update task status to failed
             try:
+                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写。
+                # 与 contour_task_manager.py 的同款收尾对齐。
                 cursor.execute('''
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?
-                    WHERE id = ? AND status NOT IN ('cancelled', 'paused')
+                    WHERE id = ? AND status NOT IN ('cancelled', 'paused', 'completed')
                 ''', (str(e), utc_now_iso(), task_id))
 
                 conn.commit()

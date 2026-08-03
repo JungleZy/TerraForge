@@ -109,25 +109,34 @@ async function loadStats() {
     }
 }
 
+// L7：请求序号。状态筛选 chip 连点（无防抖、无禁用、无 in-flight 标志）时，
+// 先发的响应可能后返回 —— chip 高亮与 currentStatusFilter 已是新值，表格和
+// allTasks 却是旧筛选集合。currentPage 的赋值也必须挪到守卫之后：它是
+// panels.js / tasks.js 读取的那个全局，先写会被过期响应污染。
+let _historyReqSeq = 0;
+
 async function loadHistory(page = 1) {
+    const seq = ++_historyReqSeq;
     try {
-        currentPage = page;
         const statusParam = currentStatusFilter
             ? `&status=${encodeURIComponent(currentStatusFilter)}`
             : '';
         const response = await fetch(`/api/history_all?page=${page}&per_page=20${statusParam}`, { cache: 'no-store' });
         const data = await response.json();
+        if (seq !== _historyReqSeq) return;   // 已有更新的请求发出，本次结果作废
 
         if (!data.success) {
             throw new Error(data.error || 'Failed to load history');
         }
 
+        currentPage = page;
         allTasks = data.tasks || [];
         renderHistoryTable(allTasks);
         const p = data.pagination || {};
         renderPagination(p.page || 1, p.total_pages || 1);
         renderHistoryMap(allTasks);
     } catch (error) {
+        if (seq !== _historyReqSeq) return;   // 过期请求的错误不该覆盖新结果
         console.error('Failed to load history:', error);
         // 错误提示挂在 .text-danger 上（CSS 类），不写内联 color。
         // ⚠️ 内联 style 里不许带分号：tests/test_css_contract.py 的
@@ -481,6 +490,16 @@ function getStatusColor(status) {
 // 但同一页面只加载一次。
 let _statusStrokeCache = null;
 
+// U5：主题切换后缓存必须失效并重画 —— 缓存的前提「调色板运行期不变」在
+// 主题开关落地后已经不成立（亮色块覆盖了这 6 个令牌全部）。getStatusStroke
+// 只在 renderHistoryMap 里被调用，切主题本身不会触发重渲染，所以要显式重画。
+document.addEventListener('terraforge:themechange', function () {
+    _statusStrokeCache = null;
+    if (typeof allTasks !== 'undefined' && Array.isArray(allTasks) && allTasks.length) {
+        try { renderHistoryMap(allTasks); } catch (e) { /* 地图未就绪时忽略 */ }
+    }
+});
+
 function getStatusStroke(status) {
     const vars = {
         'pending': '--color-text-secondary',
@@ -783,6 +802,18 @@ async function deleteTask(taskId, taskType = 'map') {
             // 独立页 /history 不加载 tasks.js，typeof 守卫兜底。
             if (typeof closeFailureToast === 'function') {
                 closeFailureToast(`${taskType}:${taskId}`);
+            }
+            // L6：删掉 pending/paused 任务后（四个 DELETE 端点都只拒 running），
+            // 底部状态栏「N 个活动任务（M 运行中）X%」会继续把它算进去 ——
+            // loadHistory 不调 updateStatusTasks，文本就原地冻结，唯一纠正点是
+            // loadActiveTasks 里的 activeTasks.clear()（只在新建任务、socket
+            // 断线重连或整页刷新时发生）。独立页 /history 不加载 tasks.js，
+            // 用 typeof 守卫兜底（与上面两处同一写法）。
+            if (typeof activeTasks !== 'undefined') {
+                activeTasks.delete(`${taskType}:${taskId}`);
+            }
+            if (typeof updateStatusTasks === 'function') {
+                updateStatusTasks();
             }
             // 删掉的是当前页最后一条时本页已空，停在原页会看到空白页——回退一页
             if (allTasks.length <= 1 && currentPage > 1) {

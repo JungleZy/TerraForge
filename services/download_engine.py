@@ -20,6 +20,7 @@ from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
 from models.task import Tile
 from services.config_manager import ConfigManager
+from services.tile_url_probe import should_bypass_proxy
 from core.config import Config
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,45 @@ class DownloadCancelled(Exception):
     download failure, so a cancelled tile is reported as 'cancelled' rather than
     'failed' and the retry loop / queued-tile backlog stops immediately.
     """
+
+
+class NotAnImageResponse(aiohttp.ClientError):
+    """HTTP 200 但响应体不是图片（M5）。
+
+    继承 ClientError 使它走 download_tile 既有的重试/服务器轮换逻辑 —— 劫持
+    与瞬时故障通常换一台服务器或重试一次即可恢复；重试全部用尽后才向上抛,
+    由 _download_single_tile 记为 failed(且【不写缓存】)。
+    """
+
+
+# 瓦片图片的魔数。判定以魔数为准而【不看 Content-Type】:自建瓦片服务返回
+# application/octet-stream 是常见且合法的（模块 docstring 把自建服务列为一等
+# 用法），按 Content-Type 拒收会误杀它们。
+_IMAGE_MAGIC_PREFIXES = (
+    b"\x89PNG\r\n\x1a\n",   # PNG
+    b"\xff\xd8\xff",        # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"BM",                  # BMP
+    b"II*\x00",             # TIFF little-endian
+    b"MM\x00*",             # TIFF big-endian
+)
+
+
+def looks_like_image(data: bytes) -> bool:
+    """响应体前几字节是否是已知图片格式的魔数。
+
+    透明代理 / 酒店 Portal / 运营商劫持在明文 http 链路上返回 200 + HTML 是
+    教科书场景（默认 mts0-3 别名就展开成明文 http://），自建服务对越界坐标返
+    200 + JSON 同理。这些字节一旦被原子写进共享 cache,0.2.4 起没有自动淘汰
+    → 永久命中,且跨任务扩散,除手工清空整个缓存分类外没有恢复途径。
+    """
+    if len(data) < 12:
+        return False
+    if data.startswith(_IMAGE_MAGIC_PREFIXES):
+        return True
+    # WebP: 'RIFF' + 4 字节长度 + 'WEBP'
+    return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
 
 
 class DownloadEngine:
@@ -552,13 +592,37 @@ class DownloadEngine:
                 )
 
                 # Download with timeout
+                # M4: 逐 URL 判断是否绕过代理。proxy_url 是给「访问 Google 等
+                # 公网源」配的；套在 127.0.0.1 / 192.168.x.x 这类自建瓦片服务上,
+                # 请求会被代理转发到它自己根本到不了的地址(WSL 下尤其明显)。
+                # 「验证」与「测速」两条路径早就调 should_bypass_proxy 了,下载
+                # 路径一次都没调 —— 于是「验证明明通过了,下载全失败」,而日志
+                # 指不到代理这一层。必须在这里逐 URL 判断而不是按批清空:
+                # tile_servers 可以混配公网 + 内网。
+                # aiohttp 的显式 proxy= 会完全覆盖 trust_env 那一套(包括系统
+                # bypass 列表),连 NO_PROXY 都救不了,所以只能自己判。
+                effective_proxy = proxy_url or None
+                if effective_proxy and should_bypass_proxy(url):
+                    logger.debug(f"Bypassing proxy for intranet/loopback tile URL: {url}")
+                    effective_proxy = None
+
                 async with session.get(
                     url,
                     timeout=aiohttp.ClientTimeout(total=request_timeout),
-                    proxy=proxy_url or None,
+                    proxy=effective_proxy,
                 ) as response:
                     response.raise_for_status()
                     data = await response.read()
+
+                    # M5: 200 不代表拿到的是瓦片。不做这道校验的话,劫持返回的
+                    # HTML / 自建服务返回的 JSON 会被当成瓦片永久写进共享 cache。
+                    if not looks_like_image(data):
+                        ctype = getattr(response, "headers", {}).get("Content-Type", "?")
+                        raise NotAnImageResponse(
+                            f"HTTP 200 but body is not an image "
+                            f"(content-type={ctype}, {len(data)} bytes, "
+                            f"head={data[:16]!r})"
+                        )
 
                     logger.debug(
                         f"Successfully downloaded tile {tile.zoom}/{tile.x}/{tile.y} "
@@ -680,10 +744,30 @@ class DownloadEngine:
 
                     logger.debug(f"Saved tile {tile.zoom}/{tile.x}/{tile.y} to cache")
                 except Exception as cache_write_error:
-                    logger.warning(
-                        f"Failed to write tile {tile.zoom}/{tile.x}/{tile.y} to cache: {cache_write_error}. "
-                        f"Download was successful but tile will not be cached."
+                    # H2: cache_enabled 下,cache 文件是「这块瓦片已完成」的唯一
+                    # 真相 —— 枚举段按 cache 存在且非空重建待下集合,收尾复制也
+                    # 从 cache 取。写盘失败却仍上报 completed 的话,这块瓦片会:
+                    # 磁盘上不存在任何文件、task_tiles 里没有 failed 行、
+                    # tasks.downloaded_tiles 却 +1;而完成判定只数 failed 行,
+                    # 任务照标 completed,completed 任务又不允许重启 —— 用户既
+                    # 看不到异常、也无法原地续传自愈(tiles_only 全程无声)。
+                    # 改为登记失败:稀疏失败表记下它,任务判 failed,点重试即续传。
+                    error_msg = (
+                        f"cache write failed: "
+                        f"{type(cache_write_error).__name__}: {cache_write_error}"
                     )
+                    logger.error(
+                        f"Failed to write tile {tile.zoom}/{tile.x}/{tile.y} to cache: "
+                        f"{cache_write_error}. Recording the tile as failed so the task "
+                        f"does not silently report success with a missing tile."
+                    )
+                    if progress_callback:
+                        await progress_callback(tile, 'failed', error_msg)
+                    return {
+                        'tile': tile,
+                        'status': 'failed',
+                        'error': error_msg,
+                    }
 
             # Report success
             if progress_callback:
@@ -1051,11 +1135,32 @@ class DownloadEngine:
                     resampleAlg=gdal_resampling
                 )
 
-            # Perform translation
-            output_ds = gdal.Translate(str(output_path_obj), translate_source, options=translate_options)
-            if output_ds is None:
-                raise RuntimeError(f"Failed to translate VRT to {output_path_obj}")
-            output_ds = None  # Close output dataset
+            # M2: 原子写 —— 先写 .part.<pid>，关闭数据集后再 os.replace 到最终
+            # 路径。断点判定是「output_path 存在且非空就跳过重拼」，而 GDAL 写
+            # GTiff 是边写边落盘，进程被杀 / Translate 抛异常（磁盘写满、目标盘
+            # 掉线）留下的必然是【非空】半成品，恰好满足那个判据：孤儿恢复翻
+            # paused、用户点继续 → 命中短路 → 该 zoom 记成功 → 任务 completed
+            # 无 warning；failed 任务点一次重试同理，warning 还会消失。产物是
+            # 损坏状态不确定的 tif（从打不开到下半张空白都可能）。
+            # 同文件的瓦片缓存落盘与 _add_georeference 早就是这么写的。
+            part_path_obj = output_path_obj.with_name(
+                f"{output_path_obj.name}.part.{os.getpid()}")
+            try:
+                output_ds = gdal.Translate(str(part_path_obj), translate_source, options=translate_options)
+                if output_ds is None:
+                    raise RuntimeError(f"Failed to translate VRT to {output_path_obj}")
+                output_ds = None  # Close output dataset before replacing
+                os.replace(str(part_path_obj), str(output_path_obj))
+            finally:
+                # 异常路径清残件；顺带清 PNG/JPEG 驱动可能写出的 .aux.xml 边车。
+                for residue in (part_path_obj,
+                                part_path_obj.with_name(part_path_obj.name + '.aux.xml')):
+                    try:
+                        residue.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up partial output {residue}: {e}")
 
             logger.info(f"Translation completed: {output_path_obj}")
         finally:

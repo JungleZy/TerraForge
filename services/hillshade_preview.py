@@ -70,22 +70,62 @@ def _render(raster_dir: Path, png_path: Path):
         south = north + vrt.RasterYSize * gt[5]
         vrt = None
 
-        hs = gdal.DEMProcessing("", vrt_path, "hillshade", format="MEM")
-        if hs is None:
-            raise RuntimeError(f"gdal.DEMProcessing failed for {raster_dir}")
-        x, y = hs.RasterXSize, hs.RasterYSize
-        if x > _MAX_WIDTH:
-            y = max(1, round(y * _MAX_WIDTH / x))
-            x = _MAX_WIDTH
-        tmp_path = png_path.with_name(png_path.stem + ".tmp.png")
-        out = gdal.Translate(str(tmp_path), hs, format="PNG", width=x, height=y)
-        if out is None:
-            raise RuntimeError(f"gdal.Translate failed for {png_path}")
-        out = None
+        # M13: 先缩后算，别先算后缩。此前是对原分辨率直接做 MEM 晕渲、算完再
+        # Translate 到 1600px —— 实测 12000×12000 的 VRT 就是 +143MB / 5.4s，
+        # 线性外推到 36000×36000（10°×10° ASTER）约 1.24GB / ~50s，而产物最终
+        # 只是一张 1600px 宽的 PNG。上游没有面积/颗粒数上限，路由又是在 Flask
+        # 请求线程里同步调用、无超时、无尺寸预检。Linux overcommit 下常见的失败
+        # 形态不是 MemoryError，而是写满时被 OOM killer 杀掉整个进程。
+        #
+        # 副作用要知情：缩略图上算出的坡度按已变粗的像元尺寸计算，起伏会比
+        # 全分辨率结果更平缓、更平滑。对预览图可接受（甚至更干净），但这是
+        # 视觉行为变化，不是纯性能优化。
+        #
+        # 注意这条改法【不覆盖】BuildVRT 取并集范围的问题：两片相距 10° 的
+        # 小 tif 仍会合出一张巨大的稀疏 VRT，只是现在按 1600px 缩略图分配内存，
+        # 预览图绝大部分仍是 nodata 空白。要治那条得按各输入实际范围裁剪或分别出图。
+        src_path = vrt_path
+        thumb_path = None
+        thumb = None
+        vrt_info = gdal.Open(vrt_path)
+        full_x = vrt_info.RasterXSize if vrt_info is not None else 0
+        full_y = vrt_info.RasterYSize if vrt_info is not None else 0
+        vrt_info = None
+        if full_x > _MAX_WIDTH:
+            thumb_y = max(1, round(full_y * _MAX_WIDTH / full_x))
+            thumb_path = f"/vsimem/hillshade_thumb_{os.getpid()}_{threading.get_ident()}.vrt"
+            thumb = gdal.Translate(thumb_path, vrt_path, format="VRT",
+                                   width=_MAX_WIDTH, height=thumb_y)
+            if thumb is None:
+                raise RuntimeError(f"gdal.Translate (thumbnail VRT) failed for {raster_dir}")
+            thumb = None
+            src_path = thumb_path
+
         hs = None
-        # 原子替换：渲染中途被杀不会留下半截 PNG 被当成缓存
-        os.replace(tmp_path, png_path)
-        return [west, south, east, north]
+        out = None
+        try:
+            hs = gdal.DEMProcessing("", src_path, "hillshade", format="MEM")
+            if hs is None:
+                raise RuntimeError(f"gdal.DEMProcessing failed for {raster_dir}")
+            x, y = hs.RasterXSize, hs.RasterYSize
+            if x > _MAX_WIDTH:
+                y = max(1, round(y * _MAX_WIDTH / x))
+                x = _MAX_WIDTH
+            tmp_path = png_path.with_name(png_path.stem + ".tmp.png")
+            out = gdal.Translate(str(tmp_path), hs, format="PNG", width=x, height=y)
+            if out is None:
+                raise RuntimeError(f"gdal.Translate failed for {png_path}")
+            out = None
+            hs = None
+            # 原子替换：渲染中途被杀不会留下半截 PNG 被当成缓存
+            os.replace(tmp_path, png_path)
+            return [west, south, east, north]
+        finally:
+            # 异常路径同样要放掉句柄，否则 MEM 数据集会一直占着内存
+            out = None
+            hs = None
+            if thumb_path:
+                gdal.Unlink(thumb_path)
     finally:
         gdal.Unlink(vrt_path)
 

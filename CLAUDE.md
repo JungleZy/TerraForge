@@ -9,7 +9,7 @@ Flask + Socket.IO web app for acquiring map data in four parallel pipelines:
 1. **Google Maps tile downloader** — selects a bbox in the UI, downloads tiles from `mts0..mts3.googleapis.com`, optionally stitches them into GeoTIFFs via GDAL.
 2. **DEM / terrain pipeline** — downloads DEM granules (default: Copernicus GLO-30 from the public `copernicus-dem-30m` AWS bucket, no auth; or ASTER GDEM v3 `ASTGTM.003` from NASA LP DAAC behind Earthdata Login), then optionally tiles them into Cesium quantized-mesh terrain for serving to CesiumJS.
 3. **Local terrain pipeline** — tiles user-uploaded GeoTIFFs into Cesium quantized-mesh terrain (reuses the DEM pipeline's tiler; nothing is downloaded).
-4. **Contour pipeline** — renders contour-map XYZ PNG tiles from user-uploaded DEM GeoTIFFs (configurable interval, shading, water mask). Legacy download-driven tasks (dataset `ASTGTM.003` / `COP-DEM-GLO-30`) are still runnable, but new tasks are upload-only.
+4. **Contour pipeline** — renders contour-map XYZ PNG tiles from user-uploaded DEM GeoTIFFs (configurable interval, background, shading/hypsometric tint). Legacy download-driven tasks (dataset `ASTGTM.003` / `COP-DEM-GLO-30`) are still runnable, but new tasks are upload-only. **Water masking is legacy-only**: `create_task_with_files` hardcodes `water=0`, there is no UI control for it, and the `ASTWBD.001` fetch is only reachable from the old download-driven path.
 
 The four pipelines have **separate** managers, routes, DB tables, and frontend pages but share the SocketIO instance and `ConfigManager`.
 
@@ -82,7 +82,7 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 
 - SQLite at `Config.DATABASE_PATH` (`data/map_downloader.db`). Connections use `sqlite3.Row` factory and `PRAGMA foreign_keys = ON`.
 - Use `get_connection_context()` (context manager) for short reads; `get_connection()` + manual close inside managers.
-- **Schema evolves inside `init_database()`** with `ALTER TABLE ... ADD COLUMN` wrapped in a try/except that swallows `duplicate column name`. New backward-compatible columns go there; the `migrations/` folder exists but is not the primary mechanism.
+- **Schema evolves inside `init_database()`** with `ALTER TABLE ... ADD COLUMN` wrapped in a try/except that swallows `duplicate column name`. New backward-compatible columns go there. One-shot data migrations guard on `PRAGMA user_version` (currently 2: sparse `task_tiles` = 1, legacy relative `output_path` normalization = 2). There is **no** side-channel migration runner — the `migrations/` folder was emptied in a previous review cycle and git does not track empty directories, so it does not exist on a fresh clone.
 - The `config` table is seeded from `DEFAULT_CONFIGS` in `core/database.py` with `INSERT OR IGNORE`. Adding a new setting means appending there.
 
 ### Theming (dark / light / system)

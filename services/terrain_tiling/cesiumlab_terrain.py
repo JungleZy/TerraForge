@@ -447,24 +447,42 @@ def build_terrain(
                 iy1 = min(ny - 1, int(math.floor((src_n + 90.0) / 180.0 * ny)))
 
                 if z <= 4:
+                    # 低 zoom 仍然出图（根瓦片缺失会让 Cesium 的单层 provider
+                    # 路径直接 404），但 available 只声明真正相交的那部分 ——
+                    # 见下方 available_per_level 的注释。
                     x0, x1, y0, y1 = 0, nx - 1, 0, ny - 1
                 else:
                     x0, x1, y0, y1 = ix0, ix1, iy0, iy1
-                yield z, x0, x1, y0, y1
+                yield z, x0, x1, y0, y1, ix0, ix1, iy0, iy1
 
         available_per_level = []
         # Count tiles arithmetically (no list) — materializing every tile task tuple
         # OOMs at high max_level over large areas (same pitfall contour fixed).
         total = 0
-        for z, x0, x1, y0, y1 in _tile_ranges():
+        for z, x0, x1, y0, y1, ix0, ix1, iy0, iy1 in _tile_ranges():
             if x1 < x0 or y1 < y0:
                 available_per_level.append([])
                 continue
-            available_per_level.append([{"startX": x0, "startY": y0, "endX": x1, "endY": y1}])
+            # M12: available 只声明与 DEM **真正相交** 的瓦片范围（ix*），而不是
+            # 实际出图的整个矩形（x*）。z<=4 时后者被强制成全球，于是每个任务都
+            # 会声明「我有全球 z0-4 地形」—— 而那些瓦片的采样窗口落在 DEM 之外，
+            # 返回全 0 被兜成 hmin=0/hmax=1 的平面，或者被边缘像素钳位拉成台地
+            # （实测东半球 z0 瓦片 hmin=913 hmax=2502 m）。
+            # Cesium 1.143 的 requestTileGeometry 取「第一个 availability 声明可用
+            # 的层」，而父层是在子层【之后】才追加的 —— 于是 parentUrl 指向的
+            # base_z8 的 z0-4 永远不会被请求，整个低层被这些假地形盖掉。
+            # 只收窄声明、仍照常出图：base 不存在时单层 provider 不查 availability，
+            # 根瓦片仍能拿到文件，不会退化成「地形完全不加载」。
+            a0, a1, b0, b1 = max(x0, ix0), min(x1, ix1), max(y0, iy0), min(y1, iy1)
+            if a1 < a0 or b1 < b0:
+                available_per_level.append([])
+            else:
+                available_per_level.append(
+                    [{"startX": a0, "startY": b0, "endX": a1, "endY": b1}])
             total += (x1 - x0 + 1) * (y1 - y0 + 1)
 
         def _iter_tasks():
-            for z, x0, x1, y0, y1 in _tile_ranges():
+            for z, x0, x1, y0, y1, _ix0, _ix1, _iy0, _iy1 in _tile_ranges():
                 if x1 < x0 or y1 < y0:
                     continue
                 for x in range(x0, x1 + 1):

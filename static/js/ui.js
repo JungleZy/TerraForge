@@ -149,6 +149,14 @@
 
             const prevFocus = document.activeElement;
             let closed = false;
+            // M14：确认框挂载时刻。回车连击/自动重复会穿透两级确认 ——
+            // cleanup 摘掉 A 的监听后 resolve(true)，续体是微任务，在同一轮
+            // 事件循环末尾就同步挂上 B 的监听，必然早于下一个 keydown 宏任务。
+            // 受害最重的是 history.js 的删除流程：第二个框问的是【另一个维度】
+            // 的问题（默认答案 = 取消 = 保留产物），自动确认会替用户选中破坏性
+            // 的那一边，直接发 ?delete_files=true 删掉瓦片/GeoTIFF/DEM。
+            const openedAt = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now() : Date.now();
 
             function cleanup(result) {
                 if (closed) return;
@@ -165,8 +173,21 @@
             }
 
             function onKey(e) {
+                // e.repeat 是承重的那一半：按键自动重复的间隔约 30ms，而窗口
+                // 期最长也就几百毫秒 —— 只加时间窗挡不住连续重复（第一次重复
+                // 被挡在 ~280ms，紧接着 ~310ms 那次照样穿透）。preventDefault
+                // 拦不住 repeat，必须显式忽略。
+                if (e.repeat) return;
                 if (e.key === 'Escape') { e.preventDefault(); cleanup(false); }
-                else if (e.key === 'Enter') { e.preventDefault(); cleanup(true); }
+                else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    // 时间窗挡的是真人快速双击：与淡入动画（200ms）对齐，
+                    // 挂载后 300ms 内的回车一律忽略，让用户看清这一框问的是什么。
+                    const now = (typeof performance !== 'undefined' && performance.now)
+                        ? performance.now() : Date.now();
+                    if (now - openedAt < 300) return;
+                    cleanup(true);
+                }
             }
 
             cancelBtn.addEventListener('click', function () { cleanup(false); });

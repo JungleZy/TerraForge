@@ -144,6 +144,7 @@ from services.contour_task_manager import ContourTaskManager
 from routes.contour_api import init_contour_task_manager
 from services.system_proxy import apply_system_proxy
 from services.task_cleanup import sweep_startup_residue
+from core.single_instance import acquire_instance_lock, lock_path
 
 def create_app():
     """构造 Flask app + SocketIO + 全部 TaskManager + 蓝图,返回
@@ -177,6 +178,24 @@ def create_app():
 
     # Initialize application directories
     Config.init_app()
+
+    # 单实例互斥(H3)。下面的 init_database / sweep_startup_residue / 四个
+    # manager 的孤儿恢复全是破坏性的,而且全都跑在 socketio.run() 绑 5000 端口
+    # 【之前】—— 第二个实例即使最终因端口占用崩溃,也已经 rmtree 掉第一个实例
+    # 正在写的拼接/warp 工作目录(GB 级中间产物,窗口数分钟到数十分钟),并把它
+    # 正在 running 的任务改判成了 paused。所以必须在这里就拦住,而不是等端口。
+    # 锁的粒度是数据目录(DATABASE_PATH 同级),因为上述破坏的作用域正是它。
+    if not acquire_instance_lock():
+        _msg = (
+            "TerraForge 已经在运行（同一数据目录下检测到另一个实例）。\n"
+            "  · 请切换到已打开的窗口，而不是再启动一个；\n"
+            f"  · 若确认上一个实例已崩溃退出，删除 {lock_path()} 后重试；\n"
+            "  · 确需并行运行多个实例，设置环境变量 TERRAFORGE_ALLOW_MULTI_INSTANCE=1"
+            "（注意：会重新引入互删临时目录、误判任务状态的风险）。"
+        )
+        logger.error(_msg)
+        print(_msg, file=sys.stderr)
+        raise SystemExit(1)
 
     logger.debug("Flask application created")
 

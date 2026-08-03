@@ -317,7 +317,7 @@ def test_execute_task_legacy_relative_output_path_ignores_cwd(isolated_config, m
     tm = TaskManager()  # 先建 manager,再插 running 行,免得被 orphan 回收降级
     # 存量行:output_path 是旧版本入库的相对原始值
     task_id = _seed_task_row(status='running', output_format='tiles_only',
-                             output_path='legacy_out', total=len(tiles))
+                             output_path='./downloads/legacy_out', total=len(tiles))
 
     # CWD 换到别处:相对路径若按 CWD 解析,产物会写到 stray/legacy_out 下
     stray = isolated_config / 'elsewhere'

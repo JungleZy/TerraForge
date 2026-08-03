@@ -93,21 +93,45 @@ async function clearCacheCategory(category, label, sizeText) {
     if (!second) return;
 
     try {
-        const response = await fetch('/api/cache/clear', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ category: category })
-        });
-        const data = await response.json();
-        if (response.ok && data.success) {
-            showToast(`已清理「${label}」，释放 ${formatCacheBytes(data.total_removed_bytes)}`, 'success');
+        let result = await postCacheClear(category, false);
+        // 409：有任务尚未结束。后端拦下而不是直接清，是因为运行中的地图任务
+        // 已经把 cache 命中的瓦片算成「已完成」，清掉后它们既不重下、复制失败
+        // 也只记 warning，任务照报 completed —— 产物目录静默缺瓦片（M8）。
+        if (result.status === 409) {
+            const forceOk = await showConfirm(
+                (result.data.error || '有任务尚未结束。') + ' 仍要清理吗？',
+                { title: '有任务未结束', confirmText: '仍然清理', danger: true });
+            if (!forceOk) {
+                showToast('已取消清理', 'info');
+                loadCacheStats();
+                return;
+            }
+            result = await postCacheClear(category, true);
+        }
+        if (result.ok && result.data.success) {
+            showToast(`已清理「${label}」，释放 ${formatCacheBytes(result.data.total_removed_bytes)}`, 'success');
         } else {
-            showToast('清理失败: ' + (data.error || ('HTTP ' + response.status)), 'danger');
+            showToast('清理失败: ' + (result.data.error || ('HTTP ' + result.status)), 'danger');
         }
     } catch (error) {
         showToast('清理失败: ' + error.message, 'danger');
     }
     loadCacheStats();
+}
+
+async function postCacheClear(category, force) {
+    const response = await fetch('/api/cache/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: category, force: !!force })
+    });
+    let data = {};
+    try {
+        data = await response.json();
+    } catch (e) {
+        data = {};
+    }
+    return { ok: response.ok, status: response.status, data: data };
 }
 
 // --- 并发下载数：测速推荐 -----------------------------------------------------
@@ -283,7 +307,6 @@ async function saveConfig(e) {
         cache_enabled: document.getElementById('cache_enabled').checked ? 'true' : 'false',
         gdal_compression: document.getElementById('gdal_compression').value,
         gdal_resampling: document.getElementById('gdal_resampling').value,
-        history_retention_days: document.getElementById('history_retention_days').value,
         map_center_lat: document.getElementById('map_center_lat').value,
         map_center_lng: document.getElementById('map_center_lng').value,
         map_initial_zoom: document.getElementById('map_initial_zoom').value,

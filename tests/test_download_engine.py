@@ -462,11 +462,18 @@ def test_download_single_tile_writes_cache_atomically(download_engine):
     assert list(cache_path.parent.glob('*.part.*')) == []
 
 
+# M5 起下载路径按魔数校验响应体,替身必须返回真实 PNG 头(否则会被当成
+# 劫持/错误页拒收) —— 这正是该校验要拦的东西。
+_FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+
 def test_download_tile_passes_proxy_to_session(download_engine):
     """调用方传入的 proxy_url 原样透传给 session.get(空串归一为 None)。"""
     seen = []
 
     class FakeResponse:
+        headers = {'Content-Type': 'image/png'}
+
         async def __aenter__(self):
             return self
 
@@ -477,7 +484,7 @@ def test_download_tile_passes_proxy_to_session(download_engine):
             pass
 
         async def read(self):
-            return b'tile'
+            return _FAKE_PNG
 
     class FakeSession:
         def get(self, url, timeout=None, proxy=None):
@@ -489,7 +496,7 @@ def test_download_tile_passes_proxy_to_session(download_engine):
         proxy_url='http://127.0.0.1:7890',
     ))
 
-    assert data == b'tile'
+    assert data == _FAKE_PNG
     assert seen == ['http://127.0.0.1:7890']
 
 

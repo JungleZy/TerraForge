@@ -8,7 +8,9 @@ Handles reading, updating, and validating application configuration stored in SQ
 import logging
 from typing import Optional, Dict, Any
 import sqlite3
-from core.database import get_connection_context, DEFAULT_CONFIGS, utc_now_iso
+from core.database import (
+    get_connection_context, DEFAULT_CONFIGS, normalize_default_save_path, utc_now_iso,
+)
 from services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)
@@ -42,7 +44,6 @@ class ConfigManager:
         - concurrent_downloads: 1-100
         - request_timeout: 1-300 seconds
         - max_retries: 0-10
-        - history_retention_days: >= 0
         - map_center_lat: -90 to 90
         - map_center_lng: -180 to 180
         - map_initial_zoom: 0-21
@@ -232,8 +233,15 @@ class ConfigManager:
         """
         Reset all configuration to default values
 
-        Deletes all existing configuration and re-inserts 18 default values.
-        Uses explicit transaction with rollback on error to ensure data safety.
+        Deletes all existing configuration and re-inserts the DEFAULT_CONFIGS
+        rows (44 as of 0.2.5). Uses explicit transaction with rollback on error
+        to ensure data safety.
+
+        M6：重插之后必须跑一次 default_save_path 归一化。DEFAULT_CONFIGS 里
+        那一项是相对值 './downloads'，而 validate_config 自己会判它非法 ——
+        本方法绕过了 set/set_many 的校验，不归一的话 reset 会把一个非法值写
+        回库，之后地图/DEM 建任务全部 400「保存路径必须是绝对路径」（重启时
+        init_database 会静默修好，所以现象很不自明）。
 
         Returns:
             True if successful
@@ -254,6 +262,8 @@ class ConfigManager:
                         'INSERT INTO config (key, value) VALUES (?, ?)',
                         DEFAULT_CONFIGS
                     )
+
+                    normalize_default_save_path(cursor)
 
                     conn.commit()
                     logger.info('Configuration reset to defaults')
@@ -291,10 +301,6 @@ class ConfigManager:
             elif key == 'max_retries':
                 val = int(value)
                 return 0 <= val <= 10
-
-            elif key == 'history_retention_days':
-                val = int(value)
-                return val >= 0
 
             elif key == 'default_save_path':
                 # 绝对路径 + 至少两级深度(与建任务同一口径,0.2.4 起全盘可选);

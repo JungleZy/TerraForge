@@ -30,8 +30,18 @@ logger = logging.getLogger(__name__)
 _PROGRESS_EMIT_MIN_INTERVAL = 1.0
 
 
+# M7: 'skipped' 也算「已终结的下载项」。404 的颗粒（海洋 / 覆盖范围外 ——
+# Copernicus GLO-30 对海面本来就没瓦片）由引擎有意上报 skipped，是部分成功
+# 语义；但计数增量此前只认 completed/failed，收尾判定又把 skipped 算作已终结、
+# 任务照常 completed。结果终态下 downloaded_files + failed_files < total_files
+# 这个不变量被破坏：记录面板渲染「已完成 · 4 / 10 文件」，详情弹窗给一个
+# **已完成任务** 40% 的进度条，下载过程中进度条同样封顶、「预计剩余」偏大。
+# 磁盘产物与后续切片都是对的 —— 纯计数/展示口径问题。
+_DONE_STATUSES = ("completed", "skipped")
+
+
 def _status_count_deltas(old_status: Optional[str], new_status: str) -> tuple[int, int]:
-    downloaded_delta = int(new_status == "completed") - int(old_status == "completed")
+    downloaded_delta = int(new_status in _DONE_STATUSES) - int(old_status in _DONE_STATUSES)
     failed_delta = int(new_status == "failed") - int(old_status == "failed")
     return downloaded_delta, failed_delta
 
@@ -98,9 +108,10 @@ class DemTaskManager:
             params.get("east"), params.get("west"),
         )
         dataset = params.get("dataset") or "COP-DEM-GLO-30"
-        # C5: 创建任务时校验 output_path 并强制落在 Config.DOWNLOADS_DIR 内,
-        # 越界抛 ValueError(路由层转 400);输入必须是绝对路径(0.2.3 起,
-        # 见 require_absolute_output_dir),不依赖 CWD。
+        # C5: 创建任务时校验 output_path —— 必须是绝对路径且至少两级深度,
+        # 非法抛 ValueError(路由层转 400)。0.2.4 起不再强制落在
+        # Config.DOWNLOADS_DIR 内(全盘可选,见 require_absolute_output_dir);
+        # 绝对路径的要求(0.2.3 起)保留,避免依赖进程 CWD。
         output_path = require_absolute_output_dir(
             params.get("output_path") or self.config.get("default_save_path", "./downloads")
         )
@@ -348,7 +359,35 @@ class DemTaskManager:
             daemon=True,
             name=f"DemTiling-{task_id}",
         )
-        th.start()
+        try:
+            th.start()
+        except Exception as e:
+            # L2: 上面已把 job 行 upsert 成 running 并 commit。线程创建失败
+            # (RuntimeError: can't start new thread)后不回补的话,job 行永久停在
+            # running:再次 start_tiling 被 `WHERE status != 'running'` 判为「已在
+            # 运行」而 ValueError,delete_task 也被 DB 状态检查挡住(tiling 线程
+            # 不登记进 active_tasks,is_alive() 拦不住),而 routes/terrain_api.py
+            # 没有任何 cancel/reset job 的端点 —— 只能重启进程让孤儿恢复解开。
+            # job 行没有 paused 态,这里置 failed(与下载管线回退 paused 不同)。
+            self._mark_tiling_job_failed(
+                task_id, f"tiling thread failed to start: {e}")
+            raise
+
+    def _mark_tiling_job_failed(self, task_id: int, message: str) -> None:
+        """把切片 job 行从 running 回补成 failed（L2 的线程启动失败路径）。"""
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE dem_terrain_jobs SET status='failed', error_message=?, "
+                "completed_at=? WHERE task_id=? AND status='running'",
+                (message, utc_now_iso(), task_id),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to mark tiling job {task_id} as failed: {e}")
+        finally:
+            conn.close()
 
     def _run_tiling_job(self, task_id: int, task_dir: Path, output_dir: Path, maxzoom: int, parent_url: str) -> None:
         try:
@@ -379,13 +418,21 @@ class DemTaskManager:
                         # 当成 dem 任务行把计数冲掉（见 static/js/tasks.js）。
                         # 前端详情弹窗轮询 GET /api/terrain/dem/<id> 拿全行，
                         # 这发只是实时 nudge。
-                        socketio.emit("terrain_job_progress", {
-                            "task_id": task_id,
-                            "task_type": "dem_terrain",
-                            "status": "running",
-                            "rendered_tiles": tiling_state["done"],
-                            "total_tiles": tiling_state["total"],
-                        })
+                        # U1：这发 emit 经 progress_cb 被 build_terrain 在瓦片
+                        # 循环里同步调用，抛出会一路穿透把整个切片作业记成
+                        # failed。与 task_manager 的收尾 emit 同一约定：只记日志。
+                        try:
+                            socketio.emit("terrain_job_progress", {
+                                "task_id": task_id,
+                                "task_type": "dem_terrain",
+                                "status": "running",
+                                "rendered_tiles": tiling_state["done"],
+                                "total_tiles": tiling_state["total"],
+                            })
+                        except Exception as emit_error:
+                            logger.warning(
+                                f"DEM tiling job {task_id}: emit progress failed "
+                                f"(ignored): {emit_error}")
 
                 def tiling_progress(done: int, total: int) -> None:
                     tiling_state["done"] = done
@@ -396,22 +443,39 @@ class DemTaskManager:
                     _flush_tiling_progress()
 
                 tiling_progress(0, 0)
-                tile_dem_task_dir(
+                # `or {}`：多个契约测试直接 monkeypatch 掉 tile_dem_task_dir
+                # 并返回 None，归一成空计数后行为与改动前一致（不判 failed）。
+                counts = tile_dem_task_dir(
                     task_dir=task_dir,
                     out_dir=output_dir,
                     params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
                                       progress_cb=tiling_progress),
-                )
+                ) or {}
                 _flush_tiling_progress()
             finally:
                 progress_conn.close()
+
+            # M11: 消费 build_terrain 的失败计数（此前整个返回值被丢弃，逐瓦片
+            # 容错因此变成纯静默：缺瓦片的作业照报 completed，layer.json 还按
+            # 完整矩形声明 available）。对齐 contour 的收尾：rendered==0 判
+            # failed，failed>0 记 warning 并写进 error_message。
+            rendered = int(counts.get("rendered", 0) or 0)
+            failed = int(counts.get("failed", 0) or 0)
+            total = int(counts.get("total", 0) or 0)
+            if total > 0 and rendered == 0:
+                raise RuntimeError(
+                    f"terrain tiling produced no tiles ({failed}/{total} failed)")
+            warning = None
+            if failed > 0:
+                warning = f"部分地形瓦片切片失败({failed}/{total})"
+                logger.warning(f"DEM tiling job {task_id}: {warning}")
 
             conn = get_connection()
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE dem_terrain_jobs SET status='completed', completed_at=?, error_message=NULL WHERE task_id=?",
-                    (utc_now_iso(), task_id),
+                    "UPDATE dem_terrain_jobs SET status='completed', completed_at=?, error_message=? WHERE task_id=?",
+                    (utc_now_iso(), warning, task_id),
                 )
                 conn.commit()
             finally:
@@ -699,13 +763,19 @@ class DemTaskManager:
             cur.execute("UPDATE dem_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'", (utc_now_iso(), task_id))
             conn.commit()
             if cur.rowcount and self.socketio:
-                self.socketio.emit("task_completed", {"task_id": task_id, "task_type": "dem", "status": "completed"})
+                # M1: emit 在 completed 落库之后才跑,抛异常会落到兜底 except 把
+                # 这条终态记录改写成 failed —— 必须自带 try 只记日志。
+                try:
+                    self.socketio.emit("task_completed", {"task_id": task_id, "task_type": "dem", "status": "completed"})
+                except Exception as emit_error:
+                    logger.warning(f"DEM task {task_id}: emit task_completed failed (ignored): {emit_error}")
 
         except Exception as e:
             try:
                 cur = conn.cursor()
+                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写。
                 cur.execute(
-                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled', 'paused')",
+                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled', 'paused', 'completed')",
                     (str(e), utc_now_iso(), task_id),
                 )
                 conn.commit()

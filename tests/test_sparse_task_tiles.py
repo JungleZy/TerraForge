@@ -369,7 +369,9 @@ def test_init_database_migration_keeps_only_failed_rows(isolated_config):
 
     conn = get_connection()
     try:
-        assert conn.execute('PRAGMA user_version').fetchone()[0] == 1, (
+        # >= 1：user_version 是全库共用的迁移水位，后续迁移（M10 的存量
+        # output_path 归一 = 2）会继续往上推，钉死 ==1 会让下一次迁移必然打红。
+        assert conn.execute('PRAGMA user_version').fetchone()[0] >= 1, (
             "迁移完成后必须写入 user_version 幂等标记"
         )
     finally:
@@ -387,8 +389,8 @@ def test_init_database_migration_runs_only_once(isolated_config):
     # fixture 已完成首次 init_database,新库应直接带上版本标记
     conn = get_connection()
     try:
-        assert conn.execute('PRAGMA user_version').fetchone()[0] == 1, (
-            "新建库初始化后应立即带上 user_version=1 标记"
+        assert conn.execute('PRAGMA user_version').fetchone()[0] >= 1, (
+            "新建库初始化后应立即带上 user_version 标记"
         )
         cur = conn.cursor()
         cur.execute(

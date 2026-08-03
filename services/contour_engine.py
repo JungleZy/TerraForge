@@ -521,8 +521,13 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
                     drew = True
 
         if draw_lines:
-            xs = ctx.originX + (col0 + np.arange(arr.shape[1]) + 0.5) * eff_px_w
-            ys = ctx.originY + (row0 + np.arange(arr.shape[0]) + 0.5) * eff_px_h
+            # 窗口偏移必须用【原始】像元 pxW/pxH,只有窗口内部的步进才用重采样后
+            # 的 eff_px_*。写成 (col0 + i + 0.5) * eff_px_w 会让偏移项也被缩放,
+            # 误差 col0*pxW*(win_x - arr.shape[1])/arr.shape[1] 随瓦片越靠东/南
+            # 线性增大,低 zoom 下整片等高线被 set_xlim 裁掉(H1)。
+            # 口径与上面 arr_extent 的 originX + col0*ctx.pxW 保持一致。
+            xs = ctx.originX + col0 * ctx.pxW + (np.arange(arr.shape[1]) + 0.5) * eff_px_w
+            ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
             X, Y = np.meshgrid(xs, ys)
             if minor:
                 ax.contour(X, Y, arr, levels=minor, colors=ctx.style.color_intermediate,
@@ -802,6 +807,25 @@ def build_contour_tiles(
         if _fig is not None:
             import matplotlib.pyplot as plt
             plt.close(_fig)
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        # L4: rmtree 之前必须先放掉 GDAL 句柄。ctx.ds / ctx.att_ds 从 _build_render_ctx
+        # 建好后就没被置过 None,凡是「ctx 建成后未清就走到这里」的路径(串行、
+        # BrokenProcessPool 回退里 _render_serial 用 nonlocal 重建的 ctx、渲染中途
+        # 抛异常)都会让 Windows 上的 warp 产物删不掉,而 ignore_errors=True 把
+        # PermissionError 静默吞掉 —— 单次运行期间每跑一次串行/回退任务就泄漏
+        # 一份(大区域数十 GB),直到下次启动清扫才回收。同项目 stitch 路径每个
+        # dataset 在 rmtree 前都显式置 None,注释还自述了 Windows 文件锁的理由。
+        if ctx is not None:
+            for _attr in ("band", "att_band", "ds", "att_ds"):
+                try:
+                    setattr(ctx, _attr, None)
+                except Exception:
+                    pass
+        ctx = None
+
+        def _log_rmtree_failure(func, path, exc_info):
+            # 不再静默吞：删不掉要留下线索（Windows 文件锁是最常见原因）。
+            logger.warning(f"清理等高线 warp 临时目录失败: {path} ({exc_info[1]!r})")
+
+        shutil.rmtree(tmpdir, onerror=_log_rmtree_failure)
 
     return counts

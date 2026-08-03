@@ -52,7 +52,6 @@ DEFAULT_CONFIGS = [
     ('tile_servers', 'mts0,mts1,mts2,mts3'),
     ('cache_enabled', 'true'),
     ('dem_cache_enabled', 'true'),
-    ('history_retention_days', '90'),
     ('map_center_lat', '29.56'),
     ('map_center_lng', '106.55'),
     ('map_initial_zoom', '3'),
@@ -143,6 +142,104 @@ def get_connection_context():
         yield conn
     finally:
         conn.close()
+
+
+def normalize_default_save_path(cursor) -> None:
+    """把 config 表里的相对 default_save_path 归一成绝对路径（幂等）。
+
+    0.2.3 起保存路径一律绝对（建任务/配置保存都拒相对值），UI 不该再有相对值
+    可显示。相对值的历史语义是「相对 BASE_DIR/CWD」（'./downloads' 就是
+    DOWNLOADS_DIR 本身），不是 resolve_output_dir 的「相对 DOWNLOADS_DIR」——
+    按后者归一会把 './downloads' 错置成 downloads/downloads。
+
+    已是绝对值时跳过；归一结果越界的保留原值只警告 —— 启动不能因配置值崩掉，
+    用户在配置页改正即可。
+
+    **两个调用点（M6）**：`init_database()` 与 `ConfigManager.reset_to_defaults()`。
+    后者 DELETE 全表再按 DEFAULT_CONFIGS 重插，会把 `'./downloads'` 这个
+    **validate_config 自己会判非法**的值写回库，之后地图/DEM 建任务全部 400
+    （等高线与本地地形的 output_path 硬编码，不读该键，不受影响）。归一必须
+    跟着走，否则 reset 就是一条绕开校验的旁路。
+    """
+    from pathlib import Path as _Path
+
+    cursor.execute("SELECT value FROM config WHERE key = 'default_save_path'")
+    row = cursor.fetchone()
+    if not row:
+        return
+    _raw = row[0] or ''
+    _p = _Path(_raw).expanduser()
+    if not _raw or _p.is_absolute():
+        return
+    try:
+        _root = _Path(Config.DOWNLOADS_DIR).resolve()
+        _cand = (_root.parent / _p).resolve()
+        if _cand == _root or _root in _cand.parents:
+            cursor.execute(
+                "UPDATE config SET value = ? WHERE key = 'default_save_path'",
+                (str(_cand),))
+            logger.info(f'Normalized default_save_path to absolute: {_cand}')
+        else:
+            logger.warning(
+                f'default_save_path 相对值 {_raw!r} 归一后越出 '
+                f'DOWNLOADS_DIR,保留原值(请在配置页改成绝对路径)')
+    except Exception as e:
+        logger.warning(f'default_save_path 归一化跳过({e!r}),保留原值')
+
+
+_OUTPUT_PATH_TABLES = ('tasks', 'dem_tasks', 'contour_tasks', 'local_terrain_tasks')
+
+
+def normalize_stored_output_paths(cursor) -> int:
+    """把四张任务表里的相对 output_path 一次性归一成绝对路径（M10）。
+
+    返回改写的行数。用 `PRAGMA user_version` 做幂等标记（>=2 时直接跳过），
+    与稀疏失败表那次迁移同一套做法 —— 避免每次启动都全表扫描持写锁。
+
+    **为什么必须做**：0.2.3 起 create_task 入库的已经是绝对路径，但**存量行
+    从未被归一过**，于是同一个字段在下游有多套解释并存（写/删除侧、读侧、
+    按进程 CWD）。收敛解析口径只解决了「以后」，这段负责把「以前」也拉齐 ——
+    否则解析歧义会永久保留在数据里。受影响的是 commit 38e3e30fc（2026-07-29，
+    约 v0.0.9 及更早的多个真实发布版本）之前建的任务行。
+
+    归一用 `resolve_stored_output_dir`（延迟 import 避免 core → services 的
+    模块级依赖），与读侧、删除侧共用同一套规则。
+    """
+    from services.task_cleanup import resolve_stored_output_dir
+
+    if cursor.execute('PRAGMA user_version').fetchone()[0] >= 2:
+        return 0
+
+    changed = 0
+    for table in _OUTPUT_PATH_TABLES:
+        try:
+            rows = cursor.execute(
+                f'SELECT id, output_path FROM {table}').fetchall()
+        except Exception:
+            continue  # 表不存在（旧库）时跳过
+        for row in rows:
+            raw = (row['output_path'] if hasattr(row, 'keys') else row[1]) or ''
+            if not raw:
+                continue
+            from pathlib import Path as _Path
+            if _Path(str(raw)).expanduser().is_absolute():
+                continue
+            try:
+                resolved = str(resolve_stored_output_dir(raw))
+            except Exception as e:
+                logger.warning(f'{table}#{row[0]} output_path 归一化跳过（{e!r}）')
+                continue
+            cursor.execute(
+                f'UPDATE {table} SET output_path = ? WHERE id = ?',
+                (resolved, row[0] if not hasattr(row, 'keys') else row['id']))
+            changed += 1
+
+    cursor.execute('PRAGMA user_version = 2')
+    if changed:
+        logger.info(
+            f'Normalized {changed} legacy relative output_path row(s) '
+            f'to absolute (user_version=2)')
+    return changed
 
 
 def init_database():
@@ -524,34 +621,8 @@ def init_database():
             DEFAULT_CONFIGS
         )
 
-        # 存量相对 default_save_path(如 './downloads')一次性归一成绝对路径:
-        # 0.2.3 起保存路径一律绝对(建任务/配置保存都拒相对值),UI 不该再有
-        # 相对值可显示。相对值的历史语义是「相对 BASE_DIR/CWD」('./downloads'
-        # 就是 DOWNLOADS_DIR 本身),不是 resolve_output_dir 的「相对
-        # DOWNLOADS_DIR」—— 按后者归一会把 './downloads' 错置成
-        # downloads/downloads。幂等(已是绝对值跳过);归一结果越界的保留原值
-        # 只警告,启动不能因配置值崩掉,用户在配置页改正即可。
-        cursor.execute("SELECT value FROM config WHERE key = 'default_save_path'")
-        row = cursor.fetchone()
-        if row:
-            from pathlib import Path as _Path
-            _raw = row[0] or ''
-            _p = _Path(_raw).expanduser()
-            if _raw and not _p.is_absolute():
-                try:
-                    _root = _Path(Config.DOWNLOADS_DIR).resolve()
-                    _cand = (_root.parent / _p).resolve()
-                    if _cand == _root or _root in _cand.parents:
-                        cursor.execute(
-                            "UPDATE config SET value = ? WHERE key = 'default_save_path'",
-                            (str(_cand),))
-                        logger.info(f'Normalized default_save_path to absolute: {_cand}')
-                    else:
-                        logger.warning(
-                            f'default_save_path 相对值 {_raw!r} 归一后越出 '
-                            f'DOWNLOADS_DIR,保留原值(请在配置页改成绝对路径)')
-                except Exception as e:
-                    logger.warning(f'default_save_path 归一化跳过({e!r}),保留原值')
+        normalize_default_save_path(cursor)
+        normalize_stored_output_paths(cursor)
 
         conn.commit()
         logger.info('Database initialized successfully')

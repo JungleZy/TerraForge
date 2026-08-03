@@ -253,16 +253,20 @@ def test_delete_contour_task_outside_downloads_dir_removes_files(monkeypatch, tm
 
 
 def test_delete_map_task_legacy_relative_output_path_removes_artifacts(monkeypatch, tmp_path):
-    """存量行的相对 output_path:delete_files=true 时必须归一化后删除产物。
+    """存量行的相对 output_path:delete_files=true 时必须按【与读侧同一套】口径
+    归一后删除产物。
 
-    旧版本只校验不改写,库里存的是相对原始值;删除路径按进程 CWD resolve,
-    CWD≠BASE_DIR 时会误判越界拒删,接口却已返回 success(删了个寂寞)。
+    真实存量形态是 './downloads/map' —— commit 38e3e30fc 之前表单默认值硬编码
+    成它并原样入库。M10 之前这个值有两套解释:写/删除侧一律拼到 DOWNLOADS_DIR
+    下(→ <BASE>/downloads/downloads/map,不存在),读侧做前缀剥离
+    (→ <BASE>/downloads/map,真实产物所在)。于是「删除并删文件」删了个寂寞却
+    照回 200 success,恢复任务续下的瓦片还会写到第三个地方去。
     """
     app_mod, client = _load_app(monkeypatch, tmp_path)
     from core import config
     db = importlib.import_module("core.database")
     # 存量行:相对路径原始值(旧版本 create_task 入库的形态)
-    task_id = _seed_map_task(db, output_path="legacy_out")
+    task_id = _seed_map_task(db, output_path="./downloads/legacy_out")
     artifact = _make_artifact(
         Path(config.Config.DOWNLOADS_DIR) / "legacy_out" / f"task_{task_id}"
     )
@@ -270,10 +274,29 @@ def test_delete_map_task_legacy_relative_output_path_removes_artifacts(monkeypat
     resp = client.delete(f"/api/tasks/{task_id}?delete_files=true")
 
     assert resp.status_code == 200
+    assert resp.get_json().get("files_removed") is True
     assert not artifact.exists(), (
-        "相对路径存量行必须相对 DOWNLOADS_DIR 归一化后再删产物,不能按进程 CWD"
+        "相对路径存量行必须按读侧同一套口径归一后再删产物"
     )
     assert _task_row(db, "tasks", task_id) is None
+
+
+def test_stored_output_path_resolves_identically_on_read_and_write_sides(monkeypatch, tmp_path):
+    """M10 的核心契约：同一个存量 output_path，读侧与写/删除侧必须解析到同一处。
+
+    分叉的代价不是「路径不好看」，而是产物分裂成两处：删除删不到、
+    /tiles/<id>/ 找不到新下的瓦片。
+    """
+    _load_app(monkeypatch, tmp_path)
+    from services.task_cleanup import resolve_stored_output_dir
+    from routes.terrain_static import _resolve_config_path
+
+    for stored in ("./downloads/map", "downloads/map", "./downloads", "downloads",
+                   "legacy_out", str(tmp_path / "abs" / "out")):
+        write_side = resolve_stored_output_dir(stored).resolve()
+        read_side = _resolve_config_path(stored)
+        assert write_side == read_side, (
+            f"{stored!r} 在两侧解析不一致: 写/删除侧 {write_side} vs 读侧 {read_side}")
 
 
 # ---------------------------------------------------------------------------
@@ -316,10 +339,36 @@ def test_cleanup_refuses_symlink_component(monkeypatch, tmp_path):
 
 
 def test_cleanup_refuses_shallow_and_home(monkeypatch, tmp_path):
-    import pytest
+    """H4/M22:守卫回归时本用例必须在【删除发生之前】翻红。
+
+    旧写法直接把真实 `Path.home()` 喂给 remove_task_dir_if_safe —— 家目录只有
+    task_cleanup.py 那一条守卫兜底,它一旦被改坏(合并条件、调整顺序都可能),
+    控制流会一路走到 shutil.rmtree 把开发者或 CI runner 的家目录删掉,然后才
+    因返回 True 让断言变红:捕获回归的手段是先造成灾难。CI 上三平台的
+    checkout 都位于 HOME 之内,守卫一坏连工作区一起端掉。
+
+    改为把 HOME/USERPROFILE 指到 tmp_path 下(Path.home() 跟随环境变量,断言
+    效力不减),并把 rmtree 换成 spy 做第二道兜底 —— 风险归零。
+    """
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))  # Windows 上 Path.home() 读它
     tc = _cleanup_mod(monkeypatch, tmp_path)
+
+    rmtree_calls = []
+    monkeypatch.setattr(tc.shutil, "rmtree", lambda *a, **k: rmtree_calls.append(a))
+
     assert tc.remove_task_dir_if_safe(Path(os.path.abspath(os.sep))) is False
     assert tc.remove_task_dir_if_safe(Path.home()) is False
+    # M22:上面两条对【浅路径守卫】没有区分力 —— 把 task_cleanup 的 parts<3
+    # 判断删掉后,'/' 会被紧随其后的「DOWNLOADS_DIR 祖先」那条等价兜住,用例
+    # 照样绿。一级路径探针只有浅路径守卫能挡(它不存在,即使守卫失效也不会
+    # 真删掉什么,但变异时会翻红)。
+    probe = Path(os.path.abspath(os.sep)) / "tf_shallow_probe"
+    assert tc.remove_task_dir_if_safe(probe) is False
+
+    assert rmtree_calls == [], f"护栏命中时绝不该调用 rmtree,实际被调用: {rmtree_calls}"
 
 
 def test_cleanup_refuses_cache_and_downloads_root(monkeypatch, tmp_path):
@@ -327,3 +376,60 @@ def test_cleanup_refuses_cache_and_downloads_root(monkeypatch, tmp_path):
     assert tc.remove_task_dir_if_safe(tmp_path / "downloads") is False
     assert tc.remove_task_dir_if_safe(tmp_path / "cache") is False
     assert tc.remove_task_dir_if_safe(tmp_path) is False, "包含 cache 的上级目录也拒删"
+
+
+def test_init_database_normalizes_legacy_relative_output_paths(monkeypatch, tmp_path):
+    """M10：存量相对 output_path 在启动时被一次性归一成绝对路径。
+
+    收敛解析口径只解决「以后」；不把「以前」的行也拉齐的话，解析歧义会永久
+    保留在数据里（受影响的是 38e3e30fc 之前建的任务行）。用 PRAGMA
+    user_version 做幂等标记，重复启动不再全表扫描。
+    """
+    _load_app(monkeypatch, tmp_path)
+    from core import config
+    db = importlib.import_module("core.database")
+
+    task_id = _seed_map_task(db, output_path="./downloads/legacy_out")
+
+    conn = db.get_connection()
+    try:
+        # 模拟旧库：把迁移标记退回，让归一化重新执行
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+        cur = conn.cursor()
+        changed = db.normalize_stored_output_paths(cur)
+        conn.commit()
+        row = conn.execute(
+            "SELECT output_path FROM tasks WHERE id=?", (task_id,)).fetchone()
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert changed == 1
+    expected = str(Path(config.Config.DOWNLOADS_DIR) / "legacy_out")
+    assert row["output_path"] == expected, (
+        f"存量相对路径未被归一: {row['output_path']!r} != {expected!r}")
+    assert version == 2, "归一后必须打上 user_version 标记，否则每次启动都全表扫"
+
+
+def test_output_path_normalization_is_idempotent(monkeypatch, tmp_path):
+    """已经是绝对路径的行不得被再次改写（重复拼接会越走越深）。"""
+    _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("core.database")
+
+    absolute = str(tmp_path / "somewhere" / "out")
+    task_id = _seed_map_task(db, output_path=absolute)
+
+    conn = db.get_connection()
+    try:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+        cur = conn.cursor()
+        db.normalize_stored_output_paths(cur)
+        conn.commit()
+        row = conn.execute(
+            "SELECT output_path FROM tasks WHERE id=?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+
+    assert row["output_path"] == absolute

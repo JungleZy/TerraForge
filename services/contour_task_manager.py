@@ -154,8 +154,18 @@ def _union_tif_extent_lonlat(paths: Sequence[Path]) -> Optional[Tuple[float, flo
     return (north, south, east, west) if found else None
 
 
+# M7: 'skipped' 也算「已终结的下载项」。404 的颗粒（海洋 / 覆盖范围外 ——
+# Copernicus GLO-30 对海面本来就没瓦片）由引擎有意上报 skipped，是部分成功
+# 语义；但计数增量此前只认 completed/failed，收尾判定又把 skipped 算作已终结、
+# 任务照常 completed。结果终态下 downloaded_files + failed_files < total_files
+# 这个不变量被破坏：记录面板渲染「已完成 · 4 / 10 文件」，详情弹窗给一个
+# **已完成任务** 40% 的进度条，下载过程中进度条同样封顶、「预计剩余」偏大。
+# 磁盘产物与后续切片都是对的 —— 纯计数/展示口径问题。
+_DONE_STATUSES = ("completed", "skipped")
+
+
 def _status_count_deltas(old_status: Optional[str], new_status: str) -> tuple[int, int]:
-    downloaded_delta = int(new_status == "completed") - int(old_status == "completed")
+    downloaded_delta = int(new_status in _DONE_STATUSES) - int(old_status in _DONE_STATUSES)
     failed_delta = int(new_status == "failed") - int(old_status == "failed")
     return downloaded_delta, failed_delta
 
@@ -429,7 +439,23 @@ class ContourTaskManager:
                 th = threading.Thread(target=self._run_task, args=(task_id, stop_flag),
                                       daemon=True, name=f"ContourTask-{task_id}")
                 self.active_tasks[task_id] = th
-            th.start()
+            try:
+                th.start()
+            except Exception:
+                # L2: commit 与 thread.start() 之间的异常会留下「DB 是 running、
+                # 线程从未启动」的任务。回退成 paused（可重新 start/resume）并
+                # 清理登记 —— 与 task_manager/dem_task_manager 的下载管线一致。
+                with self._state_lock:
+                    if self.active_tasks.get(task_id) is th:
+                        self.active_tasks.pop(task_id, None)
+                    if self.stop_flags.get(task_id) is stop_flag:
+                        self.stop_flags.pop(task_id, None)
+                cur.execute(
+                    "UPDATE contour_tasks SET status='paused' WHERE id=? AND status='running'",
+                    (task_id,),
+                )
+                conn.commit()
+                raise
         finally:
             conn.close()
 
@@ -462,6 +488,10 @@ class ContourTaskManager:
                 row = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
                 if not row:
                     raise ValueError(f"Contour task {task_id} not found")
+                # U2: 终态任务不能静默返回成功 —— 路由会回 {"success": true},
+                # 用户以为取消生效了。map/dem 都抛 ValueError,contour 跟上。
+                raise ValueError(
+                    f"Cannot cancel contour task {task_id} with status '{row['status']}'")
             conn.commit()
             with self._state_lock:
                 if task_id in self.stop_flags:
@@ -571,6 +601,16 @@ class ContourTaskManager:
             output_dir = Path(task["output_path"]) / f"contour_task_{task_id}"
             want_water = bool(task["water"])
 
+            # L1: 进程被硬杀时 'downloading' 会残留在 contour_files 里（该状态由
+            # dem_download_engine 上报、经本类的进度回调落库；正常暂停会回写
+            # pending）。不重新入队的话这些颗粒既不会被重下、也不会阻止任务置
+            # completed —— 渲染在缺几块 1° DEM 的输入上出图，成品带缺口而任务
+            # 报成功。dem_task_manager 早已这么做（C4），contour 没跟上。
+            cur.execute(
+                "UPDATE contour_files SET status='pending' WHERE task_id=? AND status='downloading'",
+                (task_id,))
+            conn.commit()
+
             dem_granules = [r["granule_id"] for r in cur.execute(
                 "SELECT granule_id FROM contour_files WHERE task_id=? AND kind='dem' AND status IN ('pending','failed') ORDER BY granule_id",
                 (task_id,)).fetchall()]
@@ -665,7 +705,8 @@ class ContourTaskManager:
             counts = cur.execute(
                 """
                 SELECT SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_count,
-                       SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count
+                       SUM(CASE WHEN status NOT IN ('completed','skipped','failed')
+                                THEN 1 ELSE 0 END) AS pending_count
                 FROM contour_files WHERE task_id=? AND kind='dem'
                 """,
                 (task_id,),
@@ -727,7 +768,13 @@ class ContourTaskManager:
                         payload["total_tiles"] = render_state["total"]
                         payload["task_type"] = "contour"
                         payload["phase"] = "render"
-                        self.socketio.emit("task_progress", payload)
+                        # U1：同上 —— 渲染循环里的 emit 抛出会把整个任务记 failed。
+                        try:
+                            self.socketio.emit("task_progress", payload)
+                        except Exception as emit_error:
+                            logger.warning(
+                                f"Contour task {task_id}: emit render progress "
+                                f"failed (ignored): {emit_error}")
 
                 def render_progress(done: int, total: int):
                     # done 是 processed(rendered+skipped+failed,见 contour_engine._emit):

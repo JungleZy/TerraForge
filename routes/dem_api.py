@@ -8,7 +8,8 @@ import logging
 from pathlib import Path
 from flask import Blueprint, jsonify, request
 
-from services.task_cleanup import remove_task_dir_if_safe
+from services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from routes.api import _delete_payload
 from routes import terrain_static
 
 logger = logging.getLogger(__name__)
@@ -96,11 +97,17 @@ def delete_dem_task(task_id: int):
         terrain_static.invalidate_dem_task(task_id)
 
         # Optional best-effort artifact cleanup (<output_path>/dem_task_<id>/)
-        # after the row is gone; only removed when inside DOWNLOADS_DIR.
+        # after the row is gone. 边界见 services/task_cleanup.remove_task_dir_if_safe
+        # 的 docstring（0.2.4 起不再要求落在 DOWNLOADS_DIR 内）。
+        # M10：路径必须走 resolve_stored_output_dir —— 裸 Path() 对存量相对值
+        # 按【进程 CWD】解析，打包 exe 从快捷方式启动时删的是另一个目录（且照回
+        # 200 success）。返回值也要接住，护栏命中时告诉用户文件其实没删。
+        files_removed = None
         if request.args.get("delete_files", "").lower() in ("1", "true", "yes"):
-            remove_task_dir_if_safe(Path(task["output_path"]) / f"dem_task_{task_id}")
+            files_removed = remove_task_dir_if_safe(
+                resolve_stored_output_dir(task["output_path"]) / f"dem_task_{task_id}")
 
-        return jsonify({"success": True, "message": f"DEM task {task_id} deleted"})
+        return jsonify(_delete_payload(f"DEM task {task_id} deleted", files_removed))
 
     except ValueError as e:
         # get_task/delete_task 的 "not found" -> 404;下载中/tiling 中拒绝删除 -> 400

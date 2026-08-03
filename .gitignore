@@ -142,3 +142,6 @@ docs/assets/ui-baseline/
 # SQLite 运行时文件
 data/*.db-wal
 data/*.db-shm
+
+# 单实例互斥锁（core/single_instance.py，随数据目录生成）
+data/.terraforge-instance.lock

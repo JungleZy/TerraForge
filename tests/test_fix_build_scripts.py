@@ -39,6 +39,38 @@ def test_build_sh_strict_error_handling():
     assert 'set -euo pipefail' in _read('build.sh')
 
 
+def test_build_bat_checks_nuitka_build_exit_code():
+    """M20：build.bat 必须查主构建调用的退出码，不能只看目录存在。
+
+    nuitka_build.py 很早就把 dist/app.dist 重命名成 dist/terraforge，之后才依次
+    跑产物自检 —— 那些自检一旦触发，目标目录已经存在了。只用 `if exist` 判定会
+    把失败的构建报成 "Build successful!"，交付一个「能构建能启动但每次 GDAL
+    调用都失败」的包（nuitka_build.py 的 raise 文案原话）。
+
+    build.sh 靠 `set -euo pipefail` 天然有这个保护 —— 两个脚本的不对称此前从未
+    被任何断言约束（本文件只钉了 build.sh 那半边）。
+    """
+    content = _read('build.bat')
+    idx = content.find('uv run python nuitka_build.py')
+    assert idx != -1, 'build.bat 里找不到主构建调用'
+    tail = content[idx:idx + 600]
+    assert 'errorlevel 1' in tail, (
+        'build.bat 调用 nuitka_build.py 之后没有紧跟 errorlevel 检查 —— '
+        '构建失败会被报成成功'
+    )
+    assert 'exit /b 1' in tail, 'errorlevel 命中后必须以非零码退出'
+
+
+def test_build_bat_checks_nuitka_install_exit_code():
+    """M20 顺带：`uv pip install nuitka` 本身也要查退出码。"""
+    content = _read('build.bat')
+    idx = content.find('uv pip install nuitka')
+    assert idx != -1, 'build.bat 里找不到 nuitka 安装步骤'
+    assert 'errorlevel 1' in content[idx:idx + 200], (
+        'nuitka 安装失败必须中止构建，否则后续步骤会以一个不完整的环境继续跑'
+    )
+
+
 # ---------- I20d: GDAL 版本一致性检查 ----------
 
 def test_build_sh_checks_gdal_version_against_pin():

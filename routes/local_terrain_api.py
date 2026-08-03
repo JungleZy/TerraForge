@@ -10,6 +10,7 @@ import os
 from flask import Blueprint, jsonify, request
 
 from services.geo_validation import validate_zoom
+from routes.api import _delete_payload
 from routes import terrain_static
 
 logger = logging.getLogger(__name__)
@@ -120,11 +121,13 @@ def delete_local_terrain_task(task_id: int):
         # Local terrain historically always cleaned up on delete; keep that as
         # the default, but honor an explicit delete_files=false from the UI.
         delete_files = request.args.get("delete_files", "true").lower() in ("1", "true", "yes")
-        local_terrain_task_manager.delete_task(task_id, delete_files=delete_files)
+        files_removed = local_terrain_task_manager.delete_task(
+            task_id, delete_files=delete_files)
         # 行已删：清掉 /terrain/local 静态路由的存在性缓存，否则 delete_files=false
         # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到（同 contour_api 的做法）
         terrain_static.invalidate_known_task(task_id)
-        return jsonify({"success": True, "message": f"Local terrain task {task_id} deleted"})
+        return jsonify(_delete_payload(
+            f"Local terrain task {task_id} deleted", files_removed))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:

@@ -67,7 +67,32 @@ def configure_logging():
     handler = logging.StreamHandler()
     handler.setFormatter(ColoredFormatter(color=use_color(handler.stream)))
     root.addHandler(handler)
-    root.setLevel(os.environ.get('LOG_LEVEL', 'INFO').upper())
+    root.setLevel(_parse_log_level(os.environ.get('LOG_LEVEL')))
+
+
+
+_VALID_LOG_LEVELS = ('CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'NOTSET')
+
+
+def _parse_log_level(raw, default='INFO'):
+    """把 LOG_LEVEL 环境变量解析成合法级别名，非法值回退默认并给出提示。
+
+    U11：`logging` 的 _checkLevel 对未知字符串抛 `ValueError: Unknown level`，
+    而 configure_logging() 在 app.py 顶层无保护调用 —— 一个手滑的
+    `LOG_LEVEL=verbose` 会让启动直接崩在裸 traceback 上，且报错文案不含变量名，
+    用户完全不知道是哪个环境变量的问题。与 core/config.py 的
+    _parse_max_content_length 已确立的「非法值 warning + 回退」口径对齐。
+    """
+    value = (raw or '').strip().upper()
+    if not value:
+        return default
+    if value in _VALID_LOG_LEVELS:
+        return value
+    # handler 已装好（addHandler 在本函数调用点之前），warning 出得来。
+    logging.getLogger(__name__).warning(
+        "环境变量 LOG_LEVEL=%r 不是合法日志级别（可选：%s），已回退 %s",
+        raw, '/'.join(_VALID_LOG_LEVELS), default)
+    return default
 
 
 class WerkzeugAccessLogFilter(logging.Filter):

@@ -793,6 +793,16 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
 function updateBoundsInfo() {
     const boundsInfo = document.getElementById('boundsInfo');
     const statusSel = document.getElementById('statusSelection');
+    // M15：编辑态不重写整层。浮层内容每次都是 innerHTML 全量重建，而委托点击
+    // 监听挂在 #boundsInfo 上 —— 编辑坐标时用鼠标点浮层里的任何东西（另一个
+    // .bounds-v、下载按钮、删除按钮），mousedown 先触发 blur → 提交 → 整层
+    // 重建，等到 click 派发时旧节点的传播路径已不含 #boundsInfo，处理器根本
+    // 不会被调用（浏览器通常也干脆不派发这次 click）：**这一次点击完全没反应**，
+    // 必须再点一次。反过来若重建发生在 click 之后（校验通过且点击极快），
+    // 刚建好的第二个输入框会被立刻抹掉、焦点丢失、之后敲的字全丢。
+    if (boundsInfo && boundsInfo.querySelector('.bounds-edit-input')) {
+        return;
+    }
     if (currentBounds) {
         const f = (v) => v.toFixed(5);
         boundsInfo.innerHTML = `
@@ -1333,8 +1343,13 @@ function contourPreviewPanel() {
         if (!mapEl) return null;
         panel = document.createElement('div');
         panel.id = 'contourPreviewPanel';
-        panel.style.marginTop = '0.75rem';
-        // Place the panel right under the map card body.
+        // U6：必须绝对定位。父节点是 .index-map（position:relative +
+        // overflow:hidden），而 #map 高 100% 已经吃满容器 —— 作为普通流内块
+        // append 进去的话，起始位置就在容器高度之下，被完整裁掉：面板永远
+        // 不可见，却照样会去拉 /api/contour/tasks。定位到左下角（避开右上角
+        // 的 .bounds-overlay 与左侧工具条）。
+        panel.className = 'contour-preview-panel';
+        // Place the panel over the map, anchored to its bottom-left corner.
         mapEl.parentNode.appendChild(panel);
     }
     return panel;

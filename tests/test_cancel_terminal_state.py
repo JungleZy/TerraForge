@@ -196,12 +196,18 @@ def test_dem_cancel_pending_task_marks_cancelled(monkeypatch, tmp_path):
 
 
 def test_contour_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
+    """U2:终态任务 cancel 抛 ValueError(与 map/dem 对齐),状态不变。
+
+    此前 contour 是唯一一条静默 fall through 的管线 —— rowcount==0 且行存在时
+    什么都不改就返回,路由照回 {"success": true},用户以为取消生效了。
+    """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     ctm_mod = importlib.import_module("services.contour_task_manager")
     ctm = ctm_mod.ContourTaskManager(socketio=FakeSocketIO())
     task_id = _seed_contour_task(db, status="completed")
 
-    ctm.cancel_task(task_id)
+    with pytest.raises(ValueError, match="Cannot cancel contour task"):
+        ctm.cancel_task(task_id)
 
     assert _task_status(db, "contour_tasks", task_id) == "completed"
 
@@ -212,7 +218,8 @@ def test_contour_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
     ctm = ctm_mod.ContourTaskManager(socketio=FakeSocketIO())
     task_id = _seed_contour_task(db, status="failed")
 
-    ctm.cancel_task(task_id)
+    with pytest.raises(ValueError, match="Cannot cancel contour task"):
+        ctm.cancel_task(task_id)
 
     assert _task_status(db, "contour_tasks", task_id) == "failed"
 

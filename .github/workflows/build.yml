@@ -133,6 +133,23 @@ jobs:
         fi
         echo "Smoke test OK (HTTP 200)"
 
+    # M19: 冒烟测试那一次启动会在 dist/terraforge/ 里生成运行期数据 ——
+    # frozen 模式下 Config.BASE_DIR = exe 所在目录。其中 data/map_downloader.db
+    # 不是空壳:init_database() 播种 './downloads' 后【在同一次调用里】把它归一
+    # 成当时机器上的绝对路径(如 /home/runner/work/... 或 D:\a\map-download\...),
+    # 而用户端首启的归一化分支只处理相对值、不会再动它。打包进 Release 的话,
+    # 用户解压运行后表单会被预填成 CI 机器的路径:有可写盘时几十 GB 瓦片写进
+    # 一个想不到的位置(且不在 exe 旁边,与「便携」设计相悖),没有则任务必败。
+    - name: Strip smoke-test runtime data before packaging
+      run: |
+        rm -rf dist/terraforge/data dist/terraforge/downloads dist/terraforge/cache
+        rm -f dist/terraforge/smoke.log
+        if [ -d dist/terraforge/data ]; then
+          echo "FAILED: dist/terraforge/data still present after cleanup"
+          exit 1
+        fi
+        echo "Runtime data stripped; dist is clean for packaging"
+
     - name: Package application (Linux/macOS)
       if: runner.os != 'Windows'
       run: |
