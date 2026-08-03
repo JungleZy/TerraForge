@@ -1,5 +1,15 @@
 # 背景色问题排查和解决方案
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05-14 入库（文内自述 2026-05-10）｜ **状态**：一次性排查笔记，前提已作废
+> ⚠️ **不要照本文排查今天的白底**。全文的大前提是「白底 = CSS 没生效」，而明暗主题上线（5c4cbefe7，2026-08-01）后，浅色背景是 `[data-bs-theme="light"]` 的**合法状态**：`--color-bg-primary: #eef0f3`、`--color-bg-secondary: #ffffff`。按本文流程会把亮色模式误判成 bug，去清缓存、重启 Flask、甚至加 `!important` 把深色压回来——那会打坏主题系统。
+> 文内色值也已过期：暗色 `--color-bg-primary` 现为 `#0c0d10`（非 #0a0e1a），`--color-text-primary` 为 `#e8eaed`（非 #e5e7eb），琥珀强调色早已废弃。
+> 仍然成立的部分：它描述的 CSS 机制没变——`static/css/style.css:349-375` 的 `html`/`body` 背景 `!important`、`.container`/`.row` 透明化今天仍在。作为「明暗主题上线前的准确快照」有保留价值。
+> 当前主题事实源：`CLAUDE.md` 的 Theming 节 + `static/css/style.css` 内联注释 + `tests/test_css_contract.py`。
+> *正文保持原样未回改。*
+
+---
+
 ## 问题描述
 用户反馈背景仍然显示为白色，而不是预期的深色主题。
 

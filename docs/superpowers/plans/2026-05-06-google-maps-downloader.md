@@ -1,5 +1,13 @@
 # Google Maps 下载器实现计划
 
+> **⛔ 归档文档 · 非当前实现 · 禁止照抄源码 · 禁止重新执行**
+> **记录时间**：2026-05-06（day-0 首版实施计划）｜ **状态**：已实施，此后代码持续演进三个月（当前 0.2.4）
+> 本文描述的是 2026-05-06 当天的单管线形态。今天的仓库有四条并行管线（地图瓦片 / DEM 地形 / 本地地形 / 等高线），配置与数据库已移入 `core/config.py`、`core/database.py`（正文「文件结构」把它们写在根目录是当日真相，不是笔误）。当前事实源：仓库根 `CLAUDE.md` + 实际代码。
+> ⚠️ 下面那条「REQUIRED SUB-SKILL：逐任务实施」横幅对今天的读者**无效**——不要把本文当待执行工单再跑一遍。复选框状态无效（全未勾选不代表未完成，功能早已上线）；正文内嵌的完整可复制源码与行号均为当日快照，照抄会把已演进三个月的实现整体回退，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 构建基于 Web 的 Google Maps 瓦片下载器，支持交互式地图选择区域、实时进度监控、任务调度和历史记录可视化。

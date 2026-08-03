@@ -1,5 +1,13 @@
 # Agent Team 全面项目审查实施计划
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05-08 ｜ **状态**：从未执行
+> 计划声称产出 10 份审查报告，实际只落地 1 份：`docs/reviews/2026-05-08-comprehensive-review/04-backend-architecture.md`；其余 9 份（含执行摘要、`issues.json`）不存在。文中列出的被审文件结构（根目录 `config.py`/`database.py`、只有一条下载管线）已整体不存在——今天是 `core/config.py`、`core/database.py` 加四条并行管线。后续真正做过的审查见 `docs/reviews/`：`2026-07-29-swarm-review.md`、`2026-07-31-code-only-review.md`、`2026-08-03-docs-audit.md`、`2026-08-03-full-project-review.md`。
+> ⚠️ 已勾选的 15 项全部位于文末「规格覆盖检查 / 占位符检查 / 类型一致性检查」等**计划自审清单**，不是执行进度；正文里的执行步骤（`- [ ]`）一个都没做。复选框状态无效；正文源码与行号为当日快照，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 使用7人精英团队对 Google Maps 瓦片下载器项目进行全方位质量审查，生成评分卡、详细报告和可执行的修复计划。

@@ -1,5 +1,17 @@
 # GIS 工作台界面改版实现计划
 
+> **归档文档 · 非当前实现 · 禁止照此执行**
+> **记录时间**：2026-07-28 ｜ **状态**：**已执行后部分被推翻**（2026-07-29 `38e3e30fc` 落地，核心产物 dock 于 2026-07-30 `c854e12fe` 被删除）
+> ⚠️ **复选框状态无效**：全文 `- [ ]` 全是未勾状态，但本计划**当年已整份执行完毕** —— 别把它当待办认领。
+> ⚠️ **正文内嵌的源码与行号为 2026-07-28 当日快照，禁止照抄、禁止照行号定位。** 全部行号今天均已失效，照行号改会改坏无关代码。最危险的一例：Task 1 Step 2（:51-53）让把 `static/js/map.js:78,101,104` 的青绿色号改成蓝色 —— 那三行今天是 `updateTileEstimate()` 的**反经线 wrap 判断**，照改会破坏瓦片数预估。
+> **已作废**：① 右侧 380px dock（`#workbenchDock` / `#dockReopen` / `.dock-reopen-handle` / `.index-right`）只活了两天，全仓已 grep 不到，`templates/base.html:53-55` 有注释专门反驳它；② 顶部工具栏同样已删；③ **`:9` 的 Tech Stack 写 Leaflet 1.9.4 + Leaflet.draw —— 落地本计划的同一个提交 `38e3e30fc` 就把地图引擎换成了 CesiumJS**（不是「后来才改的」），该行是历史记录，不要当现状也不要回改；④ `:18` 的 `!important` 总量上界 68 已失效 —— 现行上界 **59**（实测 56，见 `tests/test_css_contract.py::test_important_count_under_control`，棘轮规则只降不升）；⑤ `:16` 的「不做浅色主题」已被 2026-08-01 `5c4cbefe7` 反转，明暗/跟随系统三态主题已实现；⑥ `:20`「本环境不做任何 git 提交」只对 2026-07-28 那次会话有效。
+> **仍有效（勿因上面几条就整份丢弃）**：① Task 1 的 accent 五令牌与 `static/css/style.css:31-35` 逐值一致；② Task 2 的 `.workbench` flex 外壳、`.workbench-statusbar`、`window.initConnectionStatus`（`static/js/ui.js:187`，由 `static/js/tasks.js:19` 调用）今天仍在跑；③ Task 5 的 `.page-content` 仍在（`static/css/style.css:736`），独立页 `/history`、`/config` 仍可用。
+> 📌 **点名保留**：`:19` 的 `--color-on-accent: #041e2b` 取值理由 —— 「初稿 `#082f49` 实测 active 态墨/底对比度仅 **4.04:1**，加深到 `#041e2b` 后最差 **4.74:1**」—— 是全仓**唯一**记录该实测数字的地方，且没有任何测试钉住它。改动该令牌前必须先读这条，否则会无声退回不达标配色。
+> 当前事实源：`static/css/style.css`、`tests/test_css_contract.py`、`templates/base.html`、`static/js/ui.js`。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把首页重构为全屏地图工作台（工具栏 + 地图画布 + 右侧 dock + 状态栏），强调色青绿换 GIS 蓝，历史/配置页统一外壳。

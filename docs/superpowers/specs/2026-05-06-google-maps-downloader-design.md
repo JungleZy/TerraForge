@@ -1,5 +1,13 @@
 # Google Maps 下载器设计文档
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05-06（初版设计快照；原文正文未标日期，日期取自文件名）｜ **状态**：部分作废
+> 今天仍成立：Flask + Flask-SocketIO + aiohttp + GDAL + SQLite 的后端骨架、`tasks`/`task_tiles`/`config` 三张表、mts0-3 瓦片源、`cache/{style}/{z}/{x}/{y}.png` 共享缓存布局、`/`、`/history`、`/config` 三个页面路由、`http://0.0.0.0:5000` 启动地址。
+> 已作废：前端地图（Leaflet → CesiumJS 1.143.0）、Python 基线（3.9 → 3.12）、缓存自动淘汰（`cache_max_size_mb` 与 LRU 在 0.2.4 删除）、根目录扁平结构（→ `core/` 分层）、`python database.py` 初始化命令。当前事实源：`CLAUDE.md`、`core/config.py`、`core/database.py`。正文内的作废点已就地内联标注（技术栈、缓存上限配置、缓存淘汰策略、项目结构、部署命令共五处）。
+> *正文保持原样未回改。*
+
+---
+
 ## 1. 项目概述
 
 基于 Web 的 Google Maps 瓦片下载器，支持通过交互式地图选择区域、实时下载进度监控、历史记录可视化和高级配置管理。
@@ -33,6 +41,8 @@
 - Chart.js - 进度可视化（可选）
 
 **Python 版本：** 3.9+
+
+> ⚠️ 已作废：前端地图早已由 Leaflet 换成 CesiumJS 1.143.0（本地 vendor，见 `templates/base.html` 与 `static/js/map.js`）；Python 基线为 3.12（CI 与项目 `.venv` 均为 3.12）。后端一行（Flask / Flask-SocketIO / aiohttp / GDAL / Pillow / SQLite）与 Bootstrap 5.3、Socket.IO Client 仍成立。
 
 ### 2.2 系统架构
 
@@ -133,6 +143,7 @@ CREATE TABLE config (
 - `tile_servers`: 瓦片服务器列表（mts0,mts1,mts2,mts3）
 - `cache_enabled`: 是否启用缓存（true）
 - `cache_max_size_mb`: 缓存最大大小（1000MB）
+  > ⚠️ 已作废：该配置键在 0.2.4 随自动缓存淘汰一并删除，`core/database.py` 的 `DEFAULT_CONFIGS` 中已无此项，全仓代码也不再读它。
 - `history_retention_days`: 历史记录保留天数（90）
 - `map_center_lat`: 地图初始中心纬度（39.9）
 - `map_center_lng`: 地图初始中心经度（116.4）
@@ -180,6 +191,8 @@ http://mts{0-3}.googleapis.com/vt?lyrs={style}&x={x}&y={y}&z={z}
 - 缓存路径：`./cache/{style}/{z}/{x}/{y}.png`
 - LRU 淘汰策略
 - 定期清理超过保留期限的缓存
+
+> ⚠️ 已作废（仅淘汰部分）：缓存路径今天仍是 `cache/<style>/<z>/<x>/<y>.png` 且跨任务共享；但 0.2.4 起**没有任何自动淘汰或定期清理**，缓存改为用户手动查看/清空（`GET /api/cache/stats`、`POST /api/cache/clear`，实现在 `services/task_cleanup.py`）。
 
 **GDAL 集成优势：**
 - **精确的坐标转换：** 使用 GDAL 的坐标转换功能，支持多种投影系统
@@ -335,6 +348,8 @@ class ConfigManager:
 
 ## 4. 项目结构
 
+> ⚠️ 已作废：下面这棵树是 2026-05-06 的扁平结构。今天 `config.py` / `database.py` 已迁入 `core/`（`core/config.py`、`core/database.py`，另有 `core/bundle.py`、`core/logging_setup.py` 等）；`services/` 与 `routes/` 已扩展为四条并行管线（地图瓦片 / DEM / 本地地形 / 等高线）；`static/vendor/` 存放本地化的 Cesium、Bootstrap、Socket.IO 与字体。以实际目录为准，勿按此树定位文件。
+
 ```
 map-download/
 ├── app.py
@@ -426,6 +441,8 @@ map-download/
 - 局域网访问配置
 
 ## 9. 部署
+
+> ⚠️ 部分作废：`python database.py` 已失效——根目录没有 `database.py`，初始化命令现为 `uv run python -c "from core.database import init_database; init_database()"`；依赖安装与启动统一走 uv（`uv pip install -r requirements.txt`、`uv run python app.py`）。本节末尾的 `http://0.0.0.0:5000` 与各平台 GDAL 系统依赖说明今天仍成立。
 
 ```bash
 # 安装系统依赖（Ubuntu/Debian）

@@ -1,5 +1,15 @@
 # v0.1.0 发版后待办
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-07-28 ｜ **状态**：约四分之三已作废
+> **勿按此清单派工。** 三条前提已变：Leaflet 全线换成 Cesium（`static/vendor/` 下已无 leaflet）、PyInstaller 换成 Nuitka（`build.spec` 已删，现为 `nuitka_build.py`）、CI 已补 pytest（`.github/workflows/build.yml` 与 `test-build.yml` 都有 `python -m pytest tests/ -q`）。凡涉及 leaflet / spritesheet / drawLocal / build.spec / 「CI 一条测试都不跑」的条目一律作废。
+> 💣 **照做会造成新损害的一条**：「CRLF 清理的地雷」要求 `.gitattributes` 写 `static/vendor/** -text`。现行 `.gitattributes` 是方向相反的 `* text=auto eol=lf`，注释写明这正是为了让 Windows runner 上的 vendor 字节清单校验成立。今天再加 `-text` 会重新引入 Windows CI 字节数校验失败。
+> 仍成立、可搬进当前 backlog 的五条：① `VENDOR_MANIFEST` 仍只钉字节数、无 sha256（`tests/test_css_contract.py:6302`）；② BuildVRT 丢**内部**瓦片的校验盲区（`services/download_engine.py` 的 `_assert_vrt_covers_tile_grid` docstring 明写 Known blind spot）；③ `.part` 临时文件名仍用 `id(tile)` 内存地址（会被回收复用）；④ 徽章上 pending 与 cancelled 同色；⑤ 焦点环三处（`.nav-link` / `.page-link` / `.form-check-input`）仍未达 3:1。注：「顺带修 `fonts/fonts.css` 不在清单里」那句已不适用 —— 它是**有意豁免**（`tests/test_css_contract.py` 的 `_VENDOR_GENERATED`），不是缺陷。
+> **本文的 34 个变异验证数据是那轮评审唯一幸存的记录，归档后不要删。**
+> *正文保持原样未回改。*
+
+---
+
 来源：2026-07-28 的整分支发版评审（5 路只读审计 + 34 个变异验证 + 裁决）。
 
 **这些都不是当前产物的缺陷** —— 每条都实读过产物、确认今天是对的。它们是**护栏的盲区**和**已知限制**，所以没有一条卡住 0.1.0 发版。按性价比排序。

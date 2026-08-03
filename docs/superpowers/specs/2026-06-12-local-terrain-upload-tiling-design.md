@@ -1,7 +1,10 @@
 # 本地高程切片（上传 GeoTIFF 后切片）设计
 
 日期：2026-06-12
-状态：已与用户确认，待写实现计划
+状态：✅ 已实施（实施计划见 ../plans/2026-06-13-local-terrain-upload-tiling.md）
+
+> **归档说明**：2026-08-03 复核，本文所述架构与当前实现一致——`local_terrain_tasks` / `local_terrain_files` 两表、`services/local_terrain_task_manager.py`、`routes/local_terrain_api.py`（`/api/terrain/local/...`）、`downloads/terrain/local_task_<id>/{source,terrain_tiles}` 布局、`/terrain/local/<id>/...` 静态服务均已上线。唯一路径变化：文中的 `database.py` 后来迁到了 `core/database.py`。
+> *正文保持原样未回改。*
 
 ## 结论
 

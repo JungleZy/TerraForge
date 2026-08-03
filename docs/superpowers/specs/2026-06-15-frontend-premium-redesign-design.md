@@ -1,5 +1,14 @@
 # 前端高级化重设计 — 设计文档
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-06-15 ｜ **状态**：已实施，但设计令牌部分已被后续改版取代
+> **⚠️ 不要把第 3 节当设计系统基准。** 青绿强调色 `--color-accent: #2dd4bf` 一族已被 GIS 蓝 sky 整套替换（`#38bdf8` / `#7dd3fc` / `#0ea5e9`），替换映射见 `2026-07-28-gis-workbench-ui-design.md:74-78`；本文只描述一套深色主题，而现在是 dark / light / system 三态（`<html data-bs-theme>` + localStorage `tf-theme`，见 `static/js/theme.js` 与 `static/css/style.css` 的 `[data-bs-theme="light"]` 块）。当前令牌事实源是 `static/css/style.css` 的 `:root`。
+> 另有五处已作废：§3 的兼容别名 `--color-accent-amber/-warm/-copper` 已全部删除（全仓无引用）；`--font-sans` 现名 `--font-display`；字体不再走 Google Fonts，已本地 vendored 到 `static/vendor/fonts/`（Inter + JetBrains Mono woff2）；Leaflet 已下线，地图引擎改为 CesiumJS 1.143.0；§7 提到的 PyInstaller `build.spec` 已删除，打包改用 Nuitka（`nuitka_build.py`）。
+> 仍成立：§6 的 `GET /api/history_stats` 已上线且响应形状与本文一致（`routes/api.py:679`，只是聚合表从三张扩到四张，含 `contour_tasks`）；§7 的 DOM 契约除 `#activeTasks`（已随 2026-08「单一时间流」改版移除）外仍守着——`#boundsInfo`、`#createTaskBtn`、`#historyTableBody`、`#pagination`、`#searchInput`、全部 `#detail*`（已迁至 `templates/base.html`）与 `status-*` / `badge bg-*` / `progress-bar bg-*` 类名均未变。
+> *正文保持原样未回改。*
+
+---
+
 **日期**: 2026-06-15
 **结论**: 把当前"用力过猛的工业深色风"重做成**克制的高级深色**（Linear/Vercel/Arc 路子），换青绿强调色，做视觉 + 局部布局重构，并为历史页新增统计卡片（含一个后端聚合接口）。功能零回归——所有 JS DOM 契约保持不变。
 

@@ -1,5 +1,15 @@
 # Phase 2：视觉与交互 Implementation Plan
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-07-27 ｜ **状态**：已实施（C1 与 A1-A7 于 2026-07-27/28 全部落地），**勿按此文重跑**
+> 「已核实的基线数字」是改造前的快照：`!important` 92 处、`*{}` 与 `.progress-bar` 的行号今天全部错位。当前 `!important` 上界以 `tests/test_css_contract.py:439`（`test_important_count_under_control`，上界 ≤ 59）为准；注意 `static/css/style.css` 的注释里会逐字讨论代码，裸 `grep` 计数会被注释污染而虚高，计数前必须先剥注释。
+> Task 9「Leaflet 控件深色化 + 汉化 `drawLocal`」在今天的代码里已无作用对象（前端已换成 CesiumJS）。阶段收尾要求的「`app.py` 与 `build.spec` 两处版本号 bump」两处都已失效：`build.spec` 随 Nuitka 迁移删除，版本号唯一真源是 `core/config.py:38` 的 `APP_VERSION`。
+> Task 1「建立视觉基线截图」若被重跑会覆盖 `docs/images/phase2-baseline/` 下的既有基线，**不要重跑**。
+> ⚠️ 复选框状态无效（97 个全未勾 ≠ 未执行）；正文源码与行号为当日快照，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务实施。步骤用 `- [ ]` 复选框跟踪。
 
 **Goal:** 让界面在 1366×768 上一屏放得下，进度条不再骗人，深色主题下没有漏白的控件。

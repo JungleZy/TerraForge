@@ -1,5 +1,14 @@
 # 工作台 UX 重设计：加载动画 / 状态栏 / 框选调整 / 记录中心
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-07-30 ｜ **状态**：**已实现**（`c854e12fe` 落地，0.2.x 沿用至今）
+> 下方正文「状态：已批准」是动工前的语气，**不是待办** —— splash 加载动画、底部状态栏、框选角点可调、dock 移除并入记录中心，全部已落地并在跑。
+> 三点与今日实现的出入：① 第 4 节末「左列工具条按钮文案：历史 → 记录」—— 实际文案是**「任务」**（`templates/index.html:67`，`data-panel="records"`）；② 第 4 节的记录面板结构（顶部「进行中」区 + 下方「历史」区）**已被 2026-08-01 的单一时间流重构取代**（`2d2e2c24f` / `8392bf942`，活动任务并入同一条时间流 + 状态筛选 chips，三分区已废）；③ 第 6 节要求断言的 `#recordsPanel` **并不存在** —— 实现沿用 `#historyPanel` id，`records` 只是 `static/js/panels.js` 里的逻辑名（`PANELS = { history: 'historyPanel', records: 'historyPanel', config: 'configPanel' }`）。
+> 当前事实源：`templates/index.html`、`templates/_history_content.html`、`static/js/panels.js`、`static/js/history.js`。
+> *正文保持原样未回改。*
+
+---
+
 日期：2026-07-30
 状态：已批准（用户授权"根据这个项目设计一套优雅的交互和界面"）
 

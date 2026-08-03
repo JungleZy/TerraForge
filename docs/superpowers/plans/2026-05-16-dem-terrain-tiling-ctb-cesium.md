@@ -1,5 +1,14 @@
 # DEM Terrain Tiling (CTB -> Cesium Quantized-Mesh) Implementation Plan
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05-16 ｜ **状态**：部分作废——核心技术路线（外部 CTB）已被替换，其余产物全部上线
+> **已死的部分**：整份计划建立在外部 `cesium-terrain-builder`（子进程调用 `ctb-tile`）之上，这条路线已废。`services/terrain_tiling/ctb_runner.py` 曾由 `f97299384` 实现，**当日**即被 `1e64065f3` 用 vendored 的 `services/terrain_tiling/cesiumlab_terrain.py`（CesiumLab 4.0.17 quantized-mesh 构建器）取代；残留代码于 2026-07-31 由 `e3a5d82de` 删除。今天全仓没有任何 CTB 调用，切片入口是 `services/terrain_tiling/dem_task_tiler.py::tile_dem_task_dir` → `build_terrain(...)`，纯 Python。
+> **仍然活着的部分**：`dem_terrain_jobs` 表（现位于 `core/database.py`，正文写的是当日的根目录 `database.py`）、`routes/terrain_api.py`、`routes/terrain_static.py`、`services/terrain_tiling/vrt_builder.py` 与 `layer_json.py`、`docs/terrain/cesiumjs-loading.md` 与 `docs/terrain/global-base-build.md`、`scripts/build_global_base_terrain.ps1` —— 均按计划落地且仍在使用。
+> ⚠️ 复选框状态无效；正文源码与行号为当日快照，其中 CTB 相关代码块对应的实现今天已不存在，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为每个 DEM 下载任务把任务目录内全部 `*_dem.tif` 切成 CesiumJS 可加载的 `quantized-mesh-1.0` 地形切片，并通过 `parentUrl` 叠加一个离线“全球基底地形”(maxzoom=8)。

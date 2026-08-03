@@ -1,5 +1,13 @@
 # 任务状态同步问题深度分析与修复
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05 ｜ **状态**：已实施（结论仍成立，示例代码已作废）
+> 仍成立：两条结论——Socket.IO 推送的数据必须全字段同步到前端缓存；后端状态改完库必须立即推送。已作废：正文所有代码示例里的符号今天都不存在了——`activeTasks` 现按 `${taskType}:${taskId}` 复合键索引（`static/js/tasks.js:345`，正文写的 `activeTasks.get(taskId)` 单键会取不到任务），`createTaskCard` 全仓无定义，无条件 `outerHTML` 重建正是 `docs/PARTIAL_DOM_UPDATE.md` 明确否掉的老做法。当前事实源：`static/js/tasks.js` 的 `updateTaskProgress`、`services/task_manager.py`。
+> **必须保住的约束**：状态变更（start / pause）后必须**立即 emit，不走 0.5s 节流**——`services/task_manager.py:455`（`start_task`）与 `:591`（`pause_task`）两处 emit。该约束无代码注释、无测试守卫，只在这份文档里以文字形式存在；将来若把这两发 emit 并入 `PROGRESS_EMIT_MIN_INTERVAL`（`task_manager.py:45`，0.5s）统一节流，按钮横跳会无声复活。
+> *正文保持原样未回改。*
+
+---
+
 ## 问题现象
 
 1. **点击开始按钮后**：

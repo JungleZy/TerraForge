@@ -1,5 +1,15 @@
 # 前端优化文档
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05-14 入库（文内自述 2026-05-10）｜ **状态**：已实施，后被整体取代
+> 本文描述的「Cartographic Explorer」琥珀主题——琥珀色系 #f59e0b/#d97706/#fbbf24、Outfit + Space Mono 字体、导航栏与表格样式、Leaflet 控件深色化、50px 全局网格纹理、`fadeInUp` + `shimmer` 动画——在今天的代码里**全部不存在**。该主题于 61d47155b（2026-05-14）落地，7aa66a214（2026-06-15）被新令牌体系整体替换；当前强调色是 `--color-accent: #38bdf8`。
+> ⚠️ **照本文改代码会直接撞红测试**：`--color-accent-amber` 已被 `tests/test_css_contract.py:522` 的 `FAKE_COLOR_ALIASES` 列入死名清单，前端文件里出现该变量即断言失败。文内 CSS 片段与色值一律禁止照抄。
+> 文末「未来优化建议」把明暗主题切换列为待办，实际已于 5c4cbefe7（2026-08-01）实现。
+> 当前设计的事实源是三重互锁：`CLAUDE.md` 的 Theming 节 + `static/css/style.css` 内联注释 + `tests/test_css_contract.py`。
+> *正文保持原样未回改。*
+
+---
+
 ## 设计理念：Cartographic Explorer（地理探索者）
 
 ### 美学定位

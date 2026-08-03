@@ -1,5 +1,14 @@
 # 任务按钮状态切换问题修复
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05 ｜ **状态**：已实施（方案仍是现行做法，细节已失准）
+> 仍成立：方案本身——前端不做乐观更新，后端改完数据库立即通过 Socket.IO 推送。正文用现在时描述的是当时的故障，不是今天的行为。
+> **必须保住**：「前端为什么不做乐观更新」的根因链条（点暂停 → 本地置 `paused` → 在途 `running` 推送覆盖 → 按钮横跳）只写在这份文档里，代码里 grep 不到，而这个不变量今天仍带电——删掉 `pause_task` 里那发 emit 或重新加乐观更新，故障立刻复活。
+> 三处会把读者带到错地方：(a) 示例写死 `/api/tasks` 前缀，实际 `static/js/tasks.js:781` 的 `apiPrefixForType` 按 taskType 分发四个前缀（map / dem / local_terrain / contour），照抄会把 DEM、等高线、本地地形的暂停请求打到地图管线；(b)「每下载一个瓦片都推送」已改为时间窗节流——地图 0.5s（`services/task_manager.py:45`），DEM 与等高线各 1.0s（`dem_task_manager.py:30`、`contour_task_manager.py:60`）；(c)「相关文件」列的 `routes/socketio_events.py` 今天只有连接/断开日志，所有 `task_progress` emit 都在四个 manager 内部。
+> *正文保持原样未回改。*
+
+---
+
 ## 问题描述
 
 在任务运行时点击暂停按钮，按钮状态会疯狂切换，导致暂停功能无效。

@@ -1,5 +1,14 @@
 # 前端高级化重设计 Implementation Plan
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-06-15 ｜ **状态**：已实施，后被 2026-07 两轮 UI 改造整体取代
+> 本计划确实执行过（青绿 `#2dd4bf` 深色版就是它的产物），但配色与主题机制已被整体替换：强调色现为 sky `#38bdf8`（令牌新旧映射见 `docs/superpowers/specs/2026-07-28-gis-workbench-ui-design.md:74-78`），并新增 dark/light/system 三态主题——当前唯一事实源是 `static/css/style.css` 的 `:root` 与 `[data-bs-theme="light"]` 块。**照本文改 CSS 会把界面改坏。**
+> 仍有参考价值：Task 2 的「廉价特效清单」与全文的 `#detail*` DOM 契约只在这里有完整记录。
+> ⚠️ 复选框状态无效（57 个全未勾 ≠ 未执行）；正文源码与行号为当日快照，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把当前工业深色风重做成克制的高级深色（青绿强调色），三页视觉 + 局部布局重构，功能零回归。

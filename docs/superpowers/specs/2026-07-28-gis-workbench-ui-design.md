@@ -1,5 +1,15 @@
 # GIS 工作台界面改版设计
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-07-28 ｜ **状态**：**2026-07-28 时点设计快照 · 部分作废**（下方正文「状态：已获用户方向性确认」是当日语气，不代表今天）
+> **已作废**：① 顶部工具栏 `.workbench-toolbar` —— 已删，`templates/base.html:53-55` 的注释专门反驳它（现在没有顶部工具栏，历史/配置入口是首页地图上的浮动按钮）；② 380px 右侧 dock `.workbench-dock` / `.index-right` 与展开把手 `.dock-reopen-handle` —— 2026-07-30 `c854e12fe` 整体删除，全仓已 grep 不到 `workbenchDock` / `dockReopen`；③ **Leaflet 相关的一切**（Leaflet.draw 工具栏、`L.control.scale`、`invalidateSize()`）—— 地图引擎已于 2026-07-29 `38e3e30fc` 换成 CesiumJS；④「不做浅色主题」—— 已被 2026-08-01 `5c4cbefe7`（明暗/跟随系统主题切换）反转。
+> **仍有效**：① 第 68 行起的「配色与视觉令牌」表 —— 五个 accent 令牌与 `static/css/style.css:31-35` **逐值一致**（`#38bdf8` / `#7dd3fc` / `#0ea5e9` / `rgba(56,189,248,0.12)` / `#041e2b`）；② 第 114 行起的「追加决策（2026-07-29）：历史/配置改为覆盖面板」—— 该架构今天仍在跑：`.workbench-panel` 480px、`.workbench-panel--wide` 920px（`static/css/style.css:765-784`）、z-index 阶梯（backdrop 1400 < 面板 1401 < modal-backdrop 1450 < modal 1500 < toast 11000）、`static/js/panels.js` 的面板懒初始化。
+> 当前事实源：`static/css/style.css`、`templates/index.html`、`templates/base.html`、`static/js/panels.js`。
+> 📌 本文件被 `../plans/2026-07-28-gis-workbench-ui.md` 的「设计文档」行按路径引用，**请勿移动或改名**。
+> *正文保持原样未回改。*
+
+---
+
 日期：2026-07-28
 状态：已获用户方向性确认（布局 A / 蓝色系 / 固定 dock / 三页统一 / 实现方案 1）
 
@@ -18,6 +28,8 @@
 | 实现路线 | 方案 1：保留 Bootstrap 5.3 基础组件，重构外壳模板 + CSS 令牌 |
 
 ## 布局结构
+
+> ⚠️ **以下布局图及其后各小节（顶部工具栏 / 地图主区 / 右侧 dock / 底部状态栏 / 历史配置页）已作废**：工具栏与 dock 均已删除，Leaflet 已换 CesiumJS。底部状态栏是唯一幸存者（`.workbench-statusbar` 仍在 `static/css/style.css:463`）。当前形态见第 114 行起的 2026-07-29 追加决策。
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -105,6 +117,8 @@
 - 若存在 UI 截图基线流程（`docs/ui-baseline/`），实现后重新出图人工验收，不把截图比对做成自动测试。
 
 ## 明确不做（YAGNI）
+
+> ⚠️ **本段已作废**：dock 本身已删除（前两条无对象）；「不做悬浮面板」被次日的覆盖面板决策推翻（见第 114 行）；「不做浅色主题」被 2026-08-01 `5c4cbefe7` 反转，明暗/跟随系统三态主题现已实现。
 
 - 不做 dock 拖拽调宽、不做面板布局持久化、不做悬浮面板。
 - 不改任何后端 API、下载逻辑、表单字段与校验逻辑。

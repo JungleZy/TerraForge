@@ -1,5 +1,15 @@
 # 等高线地图：山体分层设色 + 晕渲 + 水体 设计
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-06-16 ｜ **状态**：已实施（渲染部分成立，高程源前提已作废）
+> 三层渲染（分层设色 + 晕渲 → 水体 → 等高线）当日即落地并合入 master，今天仍是 `services/contour_engine.py` 的结构。
+> 已作废：高程源写的 ASTGTM.003 —— 其后改为 **COP-DEM-GLO-30**（见同日 `2026-06-16-copernicus-glo30-design.md`），granule 文件名后缀随之由小写 `_dem.tif` 变为大写 `_DEM.tif`；DEM 任务默认数据集见 `services/dem_task_manager.py:100`。
+> 已闭合：正文「云端是单 COG 还是 zip 需实测确认」的开放问题 —— ASTWBD 形态已确认为**单 COG** `ASTWBDV001_{tile}_att.tif`，见 `services/dem_granules.py:129-136`。
+> 当前事实源：`services/dem_granules.py`（粒度命名与数据集 URL）、`services/contour_engine.py`（渲染）。
+> *正文保持原样未回改。*
+
+---
+
 > 扩展现有「等高线瓦片」管线，在画线之前叠加地形着色。复用已下载的 ASTER DEM，
 > 新增 ASTWBD 水体掩膜下载。日期：2026-06-16。
 

@@ -1,5 +1,13 @@
 # Agent Team 全面项目审查设计方案
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05-08 ｜ **状态**：从未执行
+> 这套 7 人 agent 团队审查从未按设计跑完：计划中的 10 份产物只落地 1 份——`docs/reviews/2026-05-08-comprehensive-review/04-backend-architecture.md`；执行摘要、其余 6 份专项报告、修复计划、问题追踪清单均不存在。文中被审的项目形态（根目录 `config.py`/`database.py`、单条下载管线）也已整体不存在，今天是 `core/` 分层 + 四条并行管线。
+> 配套实施计划 `../plans/2026-05-08-agent-team-comprehensive-review.md` 已同批标注。后续真正做过的审查见 `docs/reviews/`：`2026-07-29-swarm-review.md`、`2026-07-31-code-only-review.md`、`2026-08-03-docs-audit.md`、`2026-08-03-full-project-review.md`。
+> *正文保持原样未回改。*
+
+---
+
 ## 项目概述
 
 **项目名称**: Google Maps 瓦片下载器全面质量审查  
@@ -205,6 +213,8 @@ docs/reviews/2026-05-08-comprehensive-review/
 ├── 07-qa-testing-review.md          # 测试质量报告
 └── 08-remediation-plan.md           # 修复实施计划
 ```
+
+> ⚠️ 已作废：这 10 份产物里实际只产出 `04-backend-architecture.md`，其余 9 份从未执行、目录下也不存在（该目录今天只有 `04-backend-architecture.md` 与 `.gitkeep`）。
 
 **每份报告包含**:
 - 审查范围和方法
@@ -576,6 +586,8 @@ docs/reviews/2026-05-08-comprehensive-review/
 ## 交付物清单
 
 ### 立即交付
+
+> ⚠️ 已作废：下面这些 ✅ 是**设计时的意向勾选，不是交付记录**。实际只产出 `04-backend-architecture.md`（属于第 2 条里的「后端架构评估」），执行摘要、修复实施计划、问题追踪清单以及其余 6 份专项报告全部从未执行。
 
 1. ✅ **执行摘要** (`00-executive-summary.md`)
    - 评分卡（8个维度评分）

@@ -1,5 +1,14 @@
 # 等高线地图下载功能 — 设计文档
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-06-16（与正文标注的日期一致）｜ **状态**：部分作废——功能已上线，但用户流程与渲染工具都换了
+> **下面这句「一句话结论」已不成立**：最终实现是**上传驱动**，不是框选下载——`POST /api/contour/tasks` 收 multipart 的 `.tif/.tiff` 文件、不接受 bbox（入口 `routes/contour_api.py` 的 `create_contour_task`）；渲染也不走 `gdal_contour`（全仓已无此调用），而是 matplotlib 直接 `ax.contour` 画线（`services/contour_engine.py`）。旧的下载驱动任务（`ASTGTM.003` / `COP-DEM-GLO-30`）只是仍能跑，新任务一律上传。
+> §1「不做地貌晕渲」已被推翻：现在默认就出**分层设色 + 晕渲**（`contour_tasks.terrain_shade` 默认 1，配置项 `contour_hypsometric_*` / `contour_hillshade_*` 见 `core/database.py` 的 `DEFAULT_CONFIGS`），背景默认色也从透明改成 `#FAF6EC`（可切回透明）。§9 的 Leaflet `L.tileLayer` 预览随地图引擎换成 CesiumJS 一并作废。
+> 仍成立：`contour_tasks` / `contour_files` 两表、独立 `ContourTaskManager`、落盘布局 `downloads/dem/contour_task_<id>/contour_tiles/{z}/{x}/{y}.png`、`/contour/<id>/...` 静态服务复用 `_resolve_safe_file` 的穿越防护、首曲线/计曲线分级与全部色值线宽可配置。
+> *正文保持原样未回改。*
+
+---
+
 **一句话结论**：新增第 4 种下载类型「等高线瓦片」——框选区域后，自动从 NASA 下载该区域的 ASTER DEM，用 `gdal_contour` 生成等高线，再用 matplotlib 渲染成**透明背景的 PNG 瓦片**（解放军军标/国标棕色等高线 + 计曲线高程标注），存盘可下载、本地可在地图上叠加预览。
 
 日期：2026-06-16

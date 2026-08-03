@@ -1,5 +1,14 @@
 # 前端设计对比：优化前 vs 优化后
 
+> **归档文档 · 非当前实现**
+> **记录时间**：记录 2026-05-14 至 2026-06-15 的琥珀主题｜ **状态**：两端都已作废
+> 对照表的**左右两栏如今都是历史**：左栏「优化前」是最初的 Bootstrap 浅色，右栏「优化后」是琥珀主题——它于 61d47155b（2026-05-14）落地、7aa66a214（2026-06-15）被新令牌体系终结（注意不是文内暗示的 05-10）。当前强调色是 `--color-accent: #38bdf8`，字体是 Inter + JetBrains Mono。
+> ⚠️ 把右栏当现状去做新组件会踩雷：`--color-accent-amber` 已进 `tests/test_css_contract.py:522` 的 `FAKE_COLOR_ALIASES` 死名清单，右栏色值也可能触发该文件的对比度断言。另外右栏的「Google Fonts（异步加载）」与本项目「断网必须能用」的离线约束直接冲突——字体已本地 vendored 到 `static/vendor/fonts/`。文内色值与 CSS 片段禁止照抄。
+> 当前设计的事实源：`CLAUDE.md` 的 Theming 节 + `static/css/style.css` 内联注释 + `tests/test_css_contract.py`。
+> *正文保持原样未回改。*
+
+---
+
 ## 设计哲学转变
 
 ### 优化前：通用 Bootstrap 风格

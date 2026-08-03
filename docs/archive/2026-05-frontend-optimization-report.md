@@ -1,5 +1,14 @@
 # 前端优化完成报告
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05-14 入库（文内自述完成于 2026-05-10）｜ **状态**：已实施，后被整体取代
+> 本文是同一次琥珀主题优化最详细的一版。**别被文件修改时间骗成较新**：2026-07-29 的 38e3e30fc 只把品牌名改成 TerraForge，内容仍是 5 月的记录。主题本身于 61d47155b（2026-05-14）落地、7aa66a214（2026-06-15）被替换。
+> ⚠️ 文内 ✅ 是当日结论，今天已失准的至少四处：①「测试结果」勾着「琥珀色强调色一致」，现在恰好相反，当前强调色是 `--color-accent: #38bdf8`，而 `--color-accent-amber` 已进 `tests/test_css_contract.py:522` 的 `FAKE_COLOR_ALIASES` 死名清单；②「任务卡片」`.task-card` 已改为统一任务表里的 `.task-row`；③ toast「自动消失（3秒）」实为默认 3500ms（`static/js/ui.js:44`），且失败 toast 常驻等用户手动关闭（`static/js/tasks.js:619`）；④「短期优化」把明暗主题切换列为待办，已于 5c4cbefe7（2026-08-01）实现。
+> 当前设计的事实源：`CLAUDE.md` 的 Theming 节 + `static/css/style.css` 内联注释 + `tests/test_css_contract.py`。
+> *正文保持原样未回改。*
+
+---
+
 ## 项目信息
 - **项目名称**：TerraForge
 - **优化主题**：Cartographic Explorer（地理探索者）

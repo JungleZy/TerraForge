@@ -1,5 +1,13 @@
 # 本地高程切片（上传 GeoTIFF 后切片）Implementation Plan
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-06-13 ｜ **状态**：已按计划完整实施
+> `local_terrain_tasks` / `local_terrain_files` 两张表、`services/local_terrain_task_manager.py`、`routes/local_terrain_api.py`（前缀 `/api/terrain/local`）、`routes/terrain_static.py` 的 `/terrain/local/<id>/...` 路由全部按计划落地并仍在使用，是这批计划里与现状吻合度最高的一份。两处已失准：建表位置今天是 `core/database.py`（正文写 `database.py`）；前端经 2026-07 的 GIS 工作台重构后，`templates/index.html` 已改为 workbench 面板结构，与文中描述不同。当前事实源：仓库根 `CLAUDE.md` + 实际代码。
+> ⚠️ 复选框状态无效——全未勾选不代表未执行，功能早已上线；正文源码与行号为当日快照，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 用户在首页上传多个 GeoTIFF（`.tif/.tiff`），后端保存到独立任务目录后自动调用现有 terrain tiler 生成 Cesium quantized-mesh 瓦片。

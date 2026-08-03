@@ -1,5 +1,14 @@
 # 任务时长显示功能
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05（原文无日期，通篇现在时） ｜ **状态**：已被两轮改写取代
+> 本文描述的是「当前时间 − started_at」那一代计时。此后经两轮改写：① 后端持久化 `total_running_seconds`，暂停期间不计入；② 前端统一走 `parseTaskDate()`（`static/js/ui.js:221`），裸 SQLite 时间戳按 UTC 解析，口径由 `tests/test_fix_timestamp_utc.py` 钉住。当前口径见 `docs/TIME_TRACKING_SYSTEM.md`。
+> ⚠️ **最高危**：照文中 `calculateTimeInfo` 样例改代码，会一次性撤销上述两轮修复 —— 暂停期间被重新计入时长，且裸时间戳被当本地时间解析（东八区表现为任务一启动就显示「已运行 8 小时」）。全程不报错，只是数字错。正文源码与行号为当日快照，禁止照抄或照行号定位。
+> 其它已失准之处：字段名 `downloaded_tiles`/`total_tiles` 现为 `downloaded_items`/`total_items`；「paused 也每秒更新」不成立（`static/js/tasks.js:763-766` 对非 running 状态直接 return）；「终态已从活动列表移除」不成立（failed 明确保留在活动列表，等用户手动移除）；「未来改进」里的「支持暂停时长统计」早已实现。
+> *正文保持原样未回改。*
+
+---
+
 ## 概述
 
 为活动任务添加了已运行时长和预估剩余时长的实时显示功能，让用户更清楚地了解任务进度。

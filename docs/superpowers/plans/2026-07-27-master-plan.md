@@ -1,5 +1,13 @@
 # GIS 界面专业度改造 · 主计划
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-07-27 ｜ **状态**：已实施（两个阶段于 2026-07-28 全量落地，合并于 `44788878f`）
+> 两条子计划线（Phase 1 数据正确性 / Phase 2 视觉与交互）均已完成并合并，**勿按此文再次执行**。技术栈行写的 PyInstaller 与 Leaflet 1.9.4 已过时：打包现为 Nuitka（`nuitka_build.py` + `build.sh`/`build.bat`），地图引擎现为 CesiumJS。
+> ⚠️ 复选框状态无效（14 个全未勾 ≠ 未执行）；正文源码、行号与 `!important` 等计数是当年执行环境的记录快照，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** 本文是**总览**，不含可执行步骤。实际执行请打开对应阶段的子计划，并使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`。
 
 **Goal:** 把 map-download 从「能跑的网页表单」改造成「GIS 从业者愿意用的空间数据工具」——先保证产出数据正确，再补齐界面专业度。

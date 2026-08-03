@@ -1,5 +1,13 @@
 # 等高线瓦片下载功能 实现计划
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-06-16 ｜ **状态**：部分作废（渲染层契约基本成立，入口与产品定位已被推翻）
+> 已作废的四点：①**入口从「框选 bbox 自动下载 DEM」改成「上传 GeoTIFF」**——下载驱动的 `create_task` 已删除（`services/contour_task_manager.py:11-12` 明写；现存的是 `create_task_with_files`），`routes/contour_api.py:77` 的创建接口只收 multipart 上传、不接受 bbox；②Task 9 的前端 Leaflet 叠加代码已失效，地图引擎现为 CesiumJS；③测试片段里的 `from config import Config` / `from database import get_connection` 路径已失效，两个模块现在都在 `core/` 下；④**产品定位被推翻**——计划把「不做晕渲」列为 YAGNI，现在默认出图就是分层设色 + 晕渲（见 `services/contour_engine.py:100`）。
+> ⚠️ 复选框状态无效；正文源码与行号为当日快照，禁止照抄或照行号定位。
+> *正文保持原样未回改。*
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 新增第 4 种下载类型「等高线瓦片」——框选 bbox 后自动从 NASA 下 ASTER DEM、用 GDAL+matplotlib 渲染成透明背景的棕色等高线 PNG 瓦片（首曲线/计曲线 + 计曲线标高程），存盘可下载、网页地图可叠加预览。

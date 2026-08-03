@@ -1,5 +1,15 @@
 # Socket.IO 实时更新实现
 
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-05 ｜ **状态**：已实施（机制仍在，细节已失准）
+> **改名说明**：原文件名 `docs/SSE_IMPLEMENTATION.md`，但正文从头到尾讲的是 Socket.IO，全仓 `EventSource` / `text/event-stream` 零命中——文件名会让人去找一套根本不存在的 SSE 实现，故改名为 `2026-05-polling-to-socketio.md`。文件名骗人，正文不骗人。
+> 仍成立：删轮询、`activeTasks` Map 缓存、事件驱动更新这套机制今天逐条找得到（`static/js/tasks.js`）。
+> **必须保住**：轮询是被**刻意**删掉的决策，不是遗漏——这是防止后人「进度不刷新？加个 5 秒轮询兜底」的唯一书面依据。
+> 三处小失准：失败任务不再自动从列表移除（原地转红保留，`tests/test_tasks_js_contract.py:249` 的 `test_failed_task_row_is_not_removed` 钉住）；推送载荷实为 19 字段（比正文多 `started_at` / `created_at` / `total_running_seconds`）；前端监听的任务事件实为 6 个（0.2.4 新增 `task_stitch_progress` / `task_copy_progress` / `task_stitch_failed`）。
+> *正文保持原样未回改。*
+
+---
+
 ## 概述
 
 将前端任务进度更新从轮询 API 的方式改为使用 Socket.IO 实时推送，提升了用户体验和系统效率。
