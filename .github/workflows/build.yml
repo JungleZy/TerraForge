@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      upload_artifacts:
+        description: '把三平台产物作为 artifact 上传（三个包约 450MB，免费额度只有 500MB，只在确实要下载调试产物时才开）'
+        type: boolean
+        default: false
 
 # 同一 ref 串行化，但【不】取消进行中的构建:发版构建被中途取消会留下
 # 只挂了部分平台产物的 Release。这里只防止重复 dispatch 同时打架。
@@ -127,6 +132,14 @@ jobs:
     # 第三方库)在两次构建之间逐字节不变 —— 缓存命中即可跳过。
     # key 带 sha 保证每个 commit 都写回一份新缓存(cache 条目不可变,同 key
     # 只写一次);restore-keys 按前缀回退到最近一次可用的缓存。
+    #
+    # ⚠ 缓存有 ref 隔离:一个 run 只能读到【自己这个 ref】和【默认分支】上写的
+    # 缓存。本 workflow 平时只在 tag 上跑,而 tag 写的缓存对下一个 tag 不可见 ——
+    # 光靠发版自己是永远热不起来的,每次发版都会是全 miss 的 41 分钟。
+    # 所以 Windows/macOS 的缓存要靠在 master 上手动 workflow_dispatch 跑一次
+    # 本 workflow 来铺(Linux 的由 test-build.yml 每次 push master 顺带铺好)。
+    # 铺一次能用很久:第三方库那 600 多个 C 文件不随业务代码变,后续 tag 构建
+    # 直接命中;缓存 7 天不被读取才会被 GitHub 回收,而每次发版都会读它。
     - name: Cache Nuitka C compilation
       uses: actions/cache@v4
       with:
@@ -210,7 +223,10 @@ jobs:
       # Skip artifact upload on tag pushes — the Release step below already
       # attaches the same file, and artifacts double-count against the account-
       # level 500 MB Actions storage quota (the v0.0.1 build hit this).
-      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      # 手动 dispatch 也默认不传:三个平台的包加起来约 450MB,一跑就顶满配额,
+      # 而 dispatch 最常见的用途是给 master 预热编译缓存(见文件顶部注释),
+      # 并不需要产物。要产物时在 dispatch 表单里把 upload_artifacts 勾上。
+      if: ${{ !startsWith(github.ref, 'refs/tags/') && inputs.upload_artifacts }}
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
