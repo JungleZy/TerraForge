@@ -81,6 +81,11 @@ def test_failed_stitch_leaves_no_partial_output(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "out")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "out")
+    # 同 test_fix_cache_chain：DownloadEngine 构造即读配置库，不隔离
+    # DATABASE_PATH 的话 CI 的干净 runner 上会「打不开数据库」。
+    monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
+    sys.modules.pop("core.database", None)
+    importlib.import_module("core.database").init_database()
     sys.modules.pop("services.download_engine", None)
     de = importlib.import_module("services.download_engine")
 
@@ -126,6 +131,11 @@ def test_successful_stitch_still_produces_the_output(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "out")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "out")
+    # 同 test_fix_cache_chain：DownloadEngine 构造即读配置库，不隔离
+    # DATABASE_PATH 的话 CI 的干净 runner 上会「打不开数据库」。
+    monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
+    sys.modules.pop("core.database", None)
+    importlib.import_module("core.database").init_database()
     sys.modules.pop("services.download_engine", None)
     de = importlib.import_module("services.download_engine")
 

@@ -63,6 +63,14 @@ class _FakeSession:
 def engine(monkeypatch, tmp_path):
     from core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
+    # DownloadEngine() 构造时会建 ConfigManager 并读 tile_servers —— 必须把
+    # DATABASE_PATH 也指到 tmp_path 并建库，否则用例会去读开发机上真实的
+    # data/map_downloader.db（本地碰巧存在所以全绿，CI 的干净 runner 上直接
+    # `sqlite3.OperationalError: unable to open database file`，而错误经
+    # download_tile 的通用 except 变成一条与本用例无关的失败）。
+    monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
+    from core.database import init_database
+    init_database()
     eng = DownloadEngine()
     # 不要在测试里真的做指数退避;并把重试次数钉成 1(共 2 次尝试)。
     monkeypatch.setattr(eng, "_interruptible_sleep",
