@@ -3,8 +3,9 @@
 ## 前置条件
 
 确保你的系统已安装：
-- Python 3.8+
-- GDAL 库
+- Python 3.12+
+- GDAL 系统库
+- [uv](https://docs.astral.sh/uv/)（本项目用它管理虚拟环境与依赖）
 
 ## 一键启动
 
@@ -13,7 +14,7 @@
 **Ubuntu/Debian:**
 ```bash
 sudo apt-get update
-sudo apt-get install -y gdal-bin libgdal-dev python3-gdal
+sudo apt-get install -y gdal-bin libgdal-dev
 ```
 
 **macOS:**
@@ -24,28 +25,31 @@ brew install gdal
 ### 2. 安装 Python 依赖
 
 ```bash
-pip install -r requirements.txt
+uv venv                              # 如果 .venv 不存在
+uv pip install -r requirements.txt
+```
+
+如果 GDAL Python 绑定安装失败，改用与系统 GDAL 匹配的版本：
+
+```bash
+uv pip install gdal==$(gdal-config --version)
 ```
 
 ### 3. 初始化数据库
 
 ```bash
-python database.py
+uv run python -c "from core.database import init_database; init_database()"
 ```
 
-预期输出：`Database initialized successfully`
+> 启动应用时也会自动执行（幂等），此步骤可跳过。
 
 ### 4. 启动应用
 
 ```bash
-python app.py
+uv run python app.py
 ```
 
-预期输出：
-```
-Database initialized successfully
- * Running on http://0.0.0.0:5000
-```
+应用将在 `http://0.0.0.0:5000` 启动。
 
 ### 5. 访问应用
 
@@ -62,17 +66,18 @@ Database initialized successfully
    - **地图样式**: 选择 "标准地图"
    - **最小缩放级别**: 10
    - **最大缩放级别**: 12（建议先用小范围测试）
-   - **输出格式**: 选择 "瓦片+拼接图"
-   - **保存路径**: 保持默认 `./downloads/map`
+   - **输出格式**: 保持「瓦片」「GeoTIFF」两个复选框都勾选（瓦片+拼接图）
+   - **保存路径**: 默认为配置的默认保存路径下的 `map/` 子目录，必须是绝对路径；可点击「浏览」在弹窗中选择
 4. 点击 "创建下载任务"
 5. 在右侧任务列表中点击 "启动" 按钮
-6. 观察实时进度更新
+6. 观察实时进度更新（下载到 100% 后还会经历拼接/复制阶段，任务行会显示对应进度）
 
 ### 查看下载结果
 
-下载完成后，文件保存在：
-- **瓦片**: `cache/<style>/<zoom>/<x>/<y>.png`
-- **拼接图**: `downloads/map_z<zoom>.tif`
+下载完成后，文件保存在任务产物目录 `<保存路径>/task_<任务ID>/` 下：
+
+- **瓦片**: `<保存路径>/task_<id>/<zoom>/<x>/<y>.png`（下载过程中实时镜像；全局共享缓存另存于 `cache/<style>/<zoom>/<x>/<y>.png`）
+- **拼接图**: `<保存路径>/task_<id>/<任务名>_zoom_<zoom>.tif`
 
 ### 查看历史记录
 
@@ -81,34 +86,34 @@ Database initialized successfully
 ### 修改配置
 
 访问 `http://localhost:5000/config` 修改系统配置，例如：
-- 增加并发下载数（提高速度）
-- 启用/禁用缓存
-- 修改默认保存路径
+- 调整并发下载数（可用「测速推荐」按当前网络实测推荐值）
+- 启用/禁用缓存，或在「缓存管理」按分类查看占用并手动清理
+- 修改默认保存路径（需绝对路径）
 
 ## 常见问题
 
 ### Q: 启动时提示 "ModuleNotFoundError: No module named 'flask'"
-**A:** 运行 `pip install -r requirements.txt` 安装依赖
+**A:** 运行 `uv pip install -r requirements.txt` 安装依赖
 
 ### Q: 启动时提示 "ImportError: No module named 'osgeo'"
-**A:** 安装 GDAL 系统库和 Python 绑定
+**A:** 安装 GDAL 系统库和 Python 绑定，详见 [INSTALL.md](INSTALL.md)
 
 ### Q: 下载速度很慢
-**A:** 
-- 在配置页面增加并发下载数（默认 10，可增加到 20-50）
+**A:**
+- 在配置页面使用「测速推荐」或手动增加并发下载数
 - 检查网络连接
 - 考虑使用代理服务器
 
 ### Q: 任务一直显示 "运行中" 但没有进度
-**A:** 
+**A:**
 - 检查浏览器控制台是否有错误
 - 确认 WebSocket 连接正常（应该看到 "Connected to server"）
 - 重启应用
 
 ### Q: 下载的文件在哪里？
-**A:** 
-- 原始瓦片：`cache/<style>/<zoom>/<x>/<y>.png`
-- 拼接图像：`downloads/` 目录下的 `.tif` 文件
+**A:**
+- 任务产物（瓦片 + 拼接图）：`<保存路径>/task_<任务ID>/`
+- 全局瓦片缓存：`cache/<style>/<zoom>/<x>/<y>.png`
 
 ## 注意事项
 
@@ -120,17 +125,16 @@ Database initialized successfully
 
 ## 下一步
 
-- 阅读完整的 [README.md](README.md) 了解更多功能
-- 查看 [API 文档](README.md#api-端点) 了解如何通过 API 使用
+- 阅读完整的 [README.md](../README.md) 了解更多功能
+- 查看 [API 文档](../README.md#api-端点) 了解如何通过 API 使用
 - 探索配置页面的高级选项
 
 ## 技术支持
 
 如遇到问题，请检查：
-1. Python 版本是否 >= 3.8
-2. GDAL 是否正确安装
+1. Python 版本是否 >= 3.12
+2. GDAL 是否正确安装（`gdal-config --version`）
 3. 所有依赖是否已安装
-4. 数据库是否已初始化
-5. 端口 5000 是否被占用
+4. 端口 5000 是否被占用
 
 祝使用愉快！🎉

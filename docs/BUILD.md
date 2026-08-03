@@ -39,10 +39,11 @@ GitHub Actions 工作流会在以下情况自动构建所有平台的可执行�
    - **macOS**: `brew install gdal`
    - **Windows**: `choco install gdal` 或从 https://gdal.org 下载
 
-3. **安装依赖**：
+3. **安装依赖**（项目使用 uv 管理环境）：
    ```bash
-   pip install -r requirements.txt
-   pip install nuitka
+   uv venv                              # 如果 .venv 不存在
+   uv pip install -r requirements.txt
+   uv pip install nuitka
    ```
 
 ### 构建命令
@@ -59,7 +60,7 @@ build.bat
 
 #### 手动构建
 ```bash
-python nuitka_build.py
+uv run python nuitka_build.py
 ```
 
 ### 输出
@@ -117,7 +118,7 @@ powershell Compress-Archive -Path terraforge/* -DestinationPath terraforge-windo
 2. **验证 GDAL_DATA 路径**（打包模式下由 `core/bundle.py:setup_bundle_env()` 设置）
 
 3. **使用详细输出重新构建**：在 `nuitka_build.py` 的 Nuitka 参数中追加
-   `--show-progress --show-modules`，重新运行 `python nuitka_build.py`
+   `--show-progress --show-modules`，重新运行 `uv run python nuitka_build.py`
 
 ### 缺少依赖
 

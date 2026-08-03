@@ -1,7 +1,8 @@
 """
 DEM granule naming utilities.
 
-Currently supports ASTER GDEM V3 (ASTGTM.003) 1x1 degree tiles.
+Supports ASTER GDEM V3 (ASTGTM.003), Copernicus DEM GLO-30, and ASTWBD V1
+water-body attributes — all keyed to the same 1x1 degree tiles.
 """
 
 from __future__ import annotations

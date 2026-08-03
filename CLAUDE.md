@@ -7,9 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Flask + Socket.IO web app for acquiring map data in four parallel pipelines:
 
 1. **Google Maps tile downloader** — selects a bbox in the UI, downloads tiles from `mts0..mts3.googleapis.com`, optionally stitches them into GeoTIFFs via GDAL.
-2. **DEM / terrain pipeline** — downloads ASTER GDEM v3 (ASTGTM.003) granules from NASA LP DAAC (Earthdata Login), then optionally tiles them into Cesium quantized-mesh terrain for serving to CesiumJS.
+2. **DEM / terrain pipeline** — downloads DEM granules (default: Copernicus GLO-30 from the public `copernicus-dem-30m` AWS bucket, no auth; or ASTER GDEM v3 `ASTGTM.003` from NASA LP DAAC behind Earthdata Login), then optionally tiles them into Cesium quantized-mesh terrain for serving to CesiumJS.
 3. **Local terrain pipeline** — tiles user-uploaded GeoTIFFs into Cesium quantized-mesh terrain (reuses the DEM pipeline's tiler; nothing is downloaded).
-4. **Contour pipeline** — downloads the same ASTER GDEM granules for a bbox, then renders contour-map XYZ PNG tiles (configurable interval, shading, water mask).
+4. **Contour pipeline** — renders contour-map XYZ PNG tiles from user-uploaded DEM GeoTIFFs (configurable interval, shading, water mask). Legacy download-driven tasks (dataset `ASTGTM.003` / `COP-DEM-GLO-30`) are still runnable, but new tasks are upload-only.
 
 The four pipelines have **separate** managers, routes, DB tables, and frontend pages but share the SocketIO instance and `ConfigManager`.
 
@@ -65,13 +65,13 @@ UV_NO_CACHE=1 uv pip install --force-reinstall --no-build-isolation --no-binary 
 | Concern             | Map tile pipeline                                   | DEM pipeline                                            | Local terrain pipeline                                   | Contour pipeline                                        |
 | ------------------- | --------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------- |
 | Manager             | `services/task_manager.py` (`TaskManager`)          | `services/dem_task_manager.py` (`DemTaskManager`)       | `services/local_terrain_task_manager.py` (`LocalTerrainTaskManager`) | `services/contour_task_manager.py` (`ContourTaskManager`) |
-| Engine              | `services/download_engine.py` (aiohttp + GDAL)      | `services/dem_download_engine.py` (+ `earthdata_client`) | none — reuses `tile_dem_task_dir` on the uploaded GeoTIFFs | `dem_download_engine.py` (granule fetch) + `services/contour_engine.py` / `contour_task_tiler.py` (render) |
+| Engine              | `services/download_engine.py` (aiohttp + GDAL)      | `services/dem_download_engine.py` (+ `earthdata_client`) | none — reuses `tile_dem_task_dir` on the uploaded GeoTIFFs | `services/contour_engine.py` / `contour_task_tiler.py` (render). `dem_download_engine.py` is only reached by legacy download-driven tasks |
 | DB tables           | `tasks`, `task_tiles`, `task_time_records`          | `dem_tasks`, `dem_files`, `dem_terrain_jobs`            | `local_terrain_tasks`, `local_terrain_files`             | `contour_tasks`, `contour_files`                        |
 | REST blueprint      | `routes/api.py` → `/api/tasks/...`                  | `routes/dem_api.py` → `/api/dem/...`                    | `routes/local_terrain_api.py` → `/api/terrain/local/...` | `routes/contour_api.py` → `/api/contour/...`            |
-| Tiling / rendering  | n/a                                                 | `routes/terrain_api.py` → `/api/terrain/dem/<id>/start` | the task itself is the tiling job (starts after upload)  | renders in-task once the DEM granules finish downloading |
+| Tiling / rendering  | n/a                                                 | `routes/terrain_api.py` → `/api/terrain/dem/<id>/start` | the task itself is the tiling job (starts after upload)  | renders in-task from the uploaded GeoTIFFs (legacy download-driven tasks render after their granules land) |
 | Static tile serving | `routes/tiles_static.py` → `/tiles/<id>/...` (completed-task preview; the shared tile cache itself is not served) | `routes/terrain_static.py` → `/terrain/base/...` & `/terrain/dem/<id>/...` | `routes/terrain_static.py` → `/terrain/local/<id>/...`   | `routes/contour_static.py` → `/contour/<id>/...`        |
 
-All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and contour managers also keep `stop_flags: Dict[int, threading.Event]` and run an asyncio loop inside background threads; cancel/pause works by setting the event. Local-terrain tiling is a one-shot `build_terrain` call with no stop flags and no pause/resume — cancelling only flips a still-`pending` task to `cancelled`. Progress is pushed via `socketio.emit('task_progress', ...)`.
+All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and contour managers also keep `stop_flags: Dict[int, threading.Event]` and run an asyncio loop inside background threads; cancel/pause works by setting the event. Local-terrain tiling is a one-shot `build_terrain` call with no stop flags and no pause/resume — cancelling only flips a still-`pending` task to `cancelled`. Progress is pushed via `socketio.emit('task_progress', ...)`; the map pipeline additionally emits `task_stitch_progress` / `task_copy_progress` for the post-download phases (stitching per zoom, tile mirror-copy), emitted from the start of each phase so a big task never looks stuck at 100%.
 
 ### Task lifecycle & deletion conventions
 
@@ -95,14 +95,16 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 
 - Style codes used in Google URLs (`lyrs=`): `m` roadmap, `s` satellite, `y` hybrid, `h` roads, `t` terrain. `MapStyle.from_shorthand` accepts both the legacy 1-char codes and the full names (`roadmap`, `satellite`, etc.); `STYLE_MAP` in `task_manager.py` maps full → short.
 - Tiles are cached at `cache/<style>/<zoom>/<x>/<y>.png`. The cache is **shared across tasks** — `Tile.cache_path()` keys only on style + coords. Don't add task-id segments.
+- Since 0.2.4 there is **no automatic cache eviction** (the LRU `cache_max_size_mb` cleanup was removed along with the config key). Inspection and clearing are user-driven: `GET /api/cache/stats` (one category per top-level dir under `cache/`) and `POST /api/cache/clear` (`{"category": key|"__all__"}`), both backed by `services/task_cleanup.py`.
+- The task output dir is a **live mirror** of the cache: each tile is copied to `<output_path>/task_<id>/<z>/<x>/<y>.png` the moment its download lands in cache (download callback), and a separate backfill thread copies cache-hit tiles (resume / repeated bbox) in parallel with the download. A cancelled task keeps its partially-mirrored output dir, matching cache state.
 - `WEB_MERCATOR_MAX_LAT = 85.0511`, zoom is clamped to `0..21`. `WARN_TILES_THRESHOLD = 100000` (in `services/download_engine.py`) only writes a server-side `logger.warning` when the estimated tile count exceeds it — there is no UI warning and no hard cap.
 
 ### DEM / terrain specifics
 
-- Only dataset supported: `ASTGTM.003` (1°×1° granules named `ASTGTMV003_{N|S}LL{E|W}LLL_dem.tif`). See `services/dem_granules.py`.
+- Datasets (see `services/dem_granules.py`): `COP-DEM-GLO-30` (default — Copernicus GLO-30 COGs on the public `copernicus-dem-30m` S3 bucket, no auth; granules are nested `<name>/<name>.tif`) and `ASTGTM.003` (Earthdata; 1°×1° granules named `ASTGTMV003_{N|S}LL{E|W}LLL_dem.tif`, optional `_num.tif`; coverage 83S–83N). Water-body masks come from `ASTWBD.001` (`ASTWBDV001_*_att.tif`, Earthdata, best-effort — 404s don't fail the task).
 - Earthdata Login credentials live in the `config` table (`earthdata_username`, `earthdata_password`). `EarthdataClient` does a manual URS OAuth redirect dance — do not "harden" it (per inline note).
 - Terrain tiling layout:
-  - DEM granules: `downloads/dem/dem_task_<id>/*_dem.tif` (`*_num.tif` is intentionally filtered out by `list_dem_tifs`)
+  - DEM granules: `downloads/dem/dem_task_<id>/*_dem.tif` / `*_DEM.tif` (Copernicus) (`*_num.tif` is intentionally filtered out by `list_dem_tifs`)
   - Output tiles: `downloads/dem/dem_task_<id>/terrain_tiles/{z}/{x}/{y}.terrain` + `layer.json`
   - Global base (offline-built, low-zoom planet coverage): `downloads/terrain/base_z8/` served at `/terrain/base/...`
   - Local DEM tiles `layer.json` is patched (`patch_layer_json_parent`) to carry `parentUrl` pointing at the base, so CesiumJS cascades automatically (see `docs/terrain/cesiumjs-loading.md`).
@@ -112,7 +114,7 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 ### Local terrain & contour specifics
 
 - Local terrain tasks live under `downloads/terrain/local_task_<id>/`: uploads in `source/` (saved as `*_dem.tif` so the existing `tile_dem_task_dir` tiler can consume them), quantized-mesh output in `terrain_tiles/`, served at `/terrain/local/<id>/...`. Static serving recomputes the path from the current `Config.DOWNLOADS_DIR` instead of trusting the absolute path stored at creation time (frozen-mode relocation).
-- Contour tasks default `output_path` to `downloads/dem/`; granules and output live in `contour_task_<id>/` with XYZ PNGs at `contour_tiles/{z}/{x}/{y}.png`, served at `/contour/<id>/...`.
+- Contour tasks default `output_path` to `downloads/dem/`; uploaded GeoTIFFs (and, for legacy download-driven tasks, fetched granules) plus output live in `contour_task_<id>/` with XYZ PNGs at `contour_tiles/{z}/{x}/{y}.png`, served at `/contour/<id>/...`. New tasks carry `dataset='upload'`; water mask is hardcoded to 0 on that path (`ASTWBD.001` is only fetched by the legacy download path).
 - Like the terrain tiler, the contour renderer is lazy-imported for testability: `contour_task_tiler.tile_contour_task_dir` accepts a `build_contour_fn=` stub so tests don't need GDAL/matplotlib.
 
 ### Frozen / Nuitka mode
