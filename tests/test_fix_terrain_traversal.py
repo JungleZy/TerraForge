@@ -76,9 +76,10 @@ def test_resolve_safe_file_guards_traversal_only(isolated_app, tmp_path):
     from routes.terrain_static import _resolve_safe_file
 
     # base_dir 在 downloads 之外不再拒绝 —— 全盘保存路径的任务就靠它服务
+    # (macOS /etc 是符号链接,期望按 resolve 后的形态断言)
     with isolated_app.app.test_request_context("/"):
         target = _resolve_safe_file(Path("/etc"), "passwd")
-    assert str(target) == str(Path("/etc") / "passwd")
+    assert str(target) == str((Path("/etc") / "passwd").resolve())
 
     # subpath 穿越仍然硬拒
     with isolated_app.app.test_request_context("/"):
