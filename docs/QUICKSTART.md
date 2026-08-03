@@ -5,72 +5,51 @@
 确保你的系统已安装：
 - Python 3.12+
 - GDAL 系统库
-- [uv](https://docs.astral.sh/uv/)（本项目用它管理虚拟环境与依赖）
+- [uv](https://docs.astral.sh/uv/)（本项目用它管理虚拟环境与依赖；Windows / Apple Silicon Mac 走下面的 conda 路线时用 conda env 代替）
 
 ## 一键启动
 
-### 1. 安装 GDAL（如果尚未安装）
+### 1. 安装 GDAL 与 Python 依赖
 
-**Ubuntu/Debian:**
-```bash
-sudo apt-get update
-sudo apt-get install -y gdal-bin libgdal-dev
-```
+装法按平台分岔，而且**命令顺序错了会静默装出一个残缺的 GDAL 绑定**（`import` 正常，跑到瓦片拼接/地形切片才炸），所以这里不复述，照 [INSTALL.md](INSTALL.md) 的「1. 安装 GDAL 系统库」+「2. 克隆代码并安装 Python 依赖」做完再回来。一句话版：
 
-**macOS:**
-```bash
-brew install gdal
-```
+- **Linux**：apt 装系统 GDAL，然后按 INSTALL.md 给的固定顺序 `uv pip install`（setuptools/wheel → numpy → GDAL → requirements.txt）。
+- **Windows / Apple Silicon Mac**：用 conda-forge 装 gdal（Windows 无编译环境、arm64 上 pip 编译会链接失败）。走这条路线时，本文后面的 `uv run python xxx` 一律换成 `python xxx`。
 
-### 2. 安装 Python 依赖
+装完用 INSTALL.md「3. 验证安装」的三条命令确认，其中 `from osgeo import gdal_array` 那条是关键。
 
-```bash
-uv venv                              # 如果 .venv 不存在
-uv pip install -r requirements.txt
-```
-
-如果 GDAL Python 绑定安装失败，改用与系统 GDAL 匹配的版本：
-
-```bash
-uv pip install gdal==$(gdal-config --version)
-```
-
-### 3. 初始化数据库
-
-```bash
-uv run python -c "from core.database import init_database; init_database()"
-```
-
-> 启动应用时也会自动执行（幂等），此步骤可跳过。
-
-### 4. 启动应用
+### 2. 启动应用
 
 ```bash
 uv run python app.py
 ```
 
-应用将在 `http://0.0.0.0:5000` 启动。
+应用监听 `0.0.0.0:5000`（端口写死在代码里，不可配置）。数据库在启动时自动初始化（`create_app()` 内部调用 `init_database()`，幂等），**不需要手工执行任何初始化命令**。
 
-### 5. 访问应用
+### 3. 访问应用
 
-在浏览器中打开：`http://localhost:5000`
+在浏览器中打开：`http://localhost:5000`（启动横幅也会把本地和局域网访问地址打印出来）。
 
 ## 快速使用
 
 ### 创建第一个下载任务
 
-1. 在主页地图上，点击矩形工具（□）
-2. 在地图上拖动鼠标框选一个小区域（建议先测试小区域）
-3. 填写任务参数：
+1. 在主页地图左侧的工具条点击「框选」按钮（悬停提示「框选下载区域」），进入绘制态，鼠标变成十字
+2. 在地图上按住左键拖出一个矩形（建议先测试小区域），松开落定。落定后矩形四角会出现手柄，可拖拽微调
+3. 地图右上角出现选区浮层，显示 N/S/E/W 四至读数（数值可点击直接编辑）。**点击浮层上的「下载」按钮**，参数弹窗「下载数据」才会打开——这一步不点就没有下一步
+4. 在弹窗里填写任务参数：
    - **任务名称**: 例如 "测试下载"
+   - **下载类型**: 保持「瓦片」（选「高程」会转成 DEM 下载任务，走另一条管线）
+   - **输出格式**: 保持「瓦片」「GeoTIFF」两个复选框都勾选（瓦片+拼接图）
    - **地图样式**: 选择 "标准地图"
    - **最小缩放级别**: 10
    - **最大缩放级别**: 12（建议先用小范围测试）
-   - **输出格式**: 保持「瓦片」「GeoTIFF」两个复选框都勾选（瓦片+拼接图）
    - **保存路径**: 默认为配置的默认保存路径下的 `map/` 子目录，必须是绝对路径；可点击「浏览」在弹窗中选择
-4. 点击 "创建下载任务"
-5. 在右侧任务列表中点击 "启动" 按钮
-6. 观察实时进度更新（下载到 100% 后还会经历拼接/复制阶段，任务行会显示对应进度）
+5. 点击 "创建下载任务"。创建成功后弹窗自动关闭，右侧「任务」面板滑出，新任务状态是「等待中」
+6. 在任务面板里点击该任务行上的绿色「启动」按钮（▶ 图标，悬停提示「启动任务」）
+7. 观察实时进度更新（下载到 100% 后还会经历拼接/复制阶段，任务行会显示对应进度）
+
+> 关掉下载弹窗不会丢表单内容，可以回地图继续拖角点或改数值，再点浮层的「下载」重新打开。浮层上的「删除」按钮清空选区。
 
 ### 查看下载结果
 
@@ -81,11 +60,11 @@ uv run python app.py
 
 ### 查看历史记录
 
-访问 `http://localhost:5000/history` 查看所有下载任务的历史记录和地图可视化。
+访问 `http://localhost:5000/history` 查看所有下载任务的历史记录和地图可视化。首页左侧工具条的「任务」按钮打开的是同一份内容（活动任务 + 历史），不用离开地图。
 
 ### 修改配置
 
-访问 `http://localhost:5000/config` 修改系统配置，例如：
+访问 `http://localhost:5000/config`（或首页左侧工具条的「配置」按钮）修改系统配置，例如：
 - 调整并发下载数（可用「测速推荐」按当前网络实测推荐值）
 - 启用/禁用缓存，或在「缓存管理」按分类查看占用并手动清理
 - 修改默认保存路径（需绝对路径）
@@ -93,10 +72,13 @@ uv run python app.py
 ## 常见问题
 
 ### Q: 启动时提示 "ModuleNotFoundError: No module named 'flask'"
-**A:** 运行 `uv pip install -r requirements.txt` 安装依赖
+**A:** 运行 `uv pip install -r requirements.txt` 安装依赖。conda 路线别用这条——它会去 PyPI 重新编译 GDAL 源码包，照 INSTALL.md 步骤 2 剥掉 GDAL pin 再装
 
-### Q: 启动时提示 "ImportError: No module named 'osgeo'"
+### Q: 启动时提示 "ModuleNotFoundError: No module named 'osgeo'"
 **A:** 安装 GDAL 系统库和 Python 绑定，详见 [INSTALL.md](INSTALL.md)
+
+### Q: 拼接 GeoTIFF / 地形切片时报 "ImportError: cannot import name '_gdal_array' from 'osgeo'"
+**A:** GDAL Python 绑定编译时没能 import 到 numpy，`_gdal_array` 这个 C 扩展被跳过了。应用启动和瓦片下载都正常，只有真正读写像素的环节（拼接、地形切片、等高线渲染）会炸。按 [INSTALL.md 的「故障排除」](INSTALL.md#importerror-cannot-import-name-_gdal_array-from-osgeo) 重建绑定，别在这里另找偏方。
 
 ### Q: 下载速度很慢
 **A:**
@@ -121,6 +103,8 @@ uv run python app.py
 - 首次使用建议选择小区域和低缩放级别（10-12）进行测试
 - 大区域高缩放级别可能产生数万甚至数百万个瓦片，需要数小时下载
 - 确保有足够的磁盘空间
+- **服务没有任何鉴权**，且固定监听 `0.0.0.0:5000`——同一局域网内谁都能打开它、建任务、删文件。只在可信网络里跑，公网环境自行加反向代理鉴权
+- **同一份数据目录不要同时开两个实例**：启动清扫和四条管线的孤儿恢复都在绑定端口**之前**跑完，第二个实例即使随后因端口占用退出，也已经动过第一个实例正在用的任务状态和临时目录
 - 遵守 Google Maps 服务条款，仅用于个人学习研究
 
 ## 下一步
@@ -133,7 +117,7 @@ uv run python app.py
 
 如遇到问题，请检查：
 1. Python 版本是否 >= 3.12
-2. GDAL 是否正确安装（`gdal-config --version`）
+2. GDAL 绑定是否完整（`uv run python -c "from osgeo import gdal_array; print(gdal_array.__file__)"`，这条过了才算装好）
 3. 所有依赖是否已安装
 4. 端口 5000 是否被占用
 

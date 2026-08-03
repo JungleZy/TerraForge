@@ -197,7 +197,7 @@ map-download/
 │   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、字体）
 ├── scripts/                # 辅助脚本（发版推送、全球基础地形构建）
 ├── tests/                  # pytest 测试套件
-├── docs/                   # 项目文档（构建、设计、评审记录、packaging/ 发版资料）
+├── docs/                   # 项目文档（构建、设计、reviews/ 评审记录、archive/ 历史归档、packaging/ 分发说明）
 ├── downloads/              # 下载文件目录（运行时生成）
 ├── cache/                  # 瓦片缓存目录（运行时生成）
 └── data/                   # SQLite 数据库（运行时生成）
@@ -305,7 +305,7 @@ uv run pytest tests/test_config_manager.py      # 单个测试文件
 
 - [docs/BUILD.md](docs/BUILD.md) — 构建详细说明
 - [docs/QUICKSTART.md](docs/QUICKSTART.md) / [docs/INSTALL.md](docs/INSTALL.md) — 快速启动与安装指南
-- [docs/packaging/](docs/packaging/) — 打包与发版资料（分发说明、发布检查清单、历史记录）
+- [docs/packaging/](docs/packaging/) — `DISTRIBUTION.md` 面向最终用户的分发说明；同目录 `PACKAGING_REVIEW.md` 是 PyInstaller 时期的打包排查记录，打包已改用 Nuitka，仅作存档
 - [RELEASE_NOTES.md](RELEASE_NOTES.md) — 当前版本发版说明（作为 GitHub Release 正文发布）；[CHANGELOG.md](CHANGELOG.md) — 全版本更新历史
 - [CLAUDE.md](CLAUDE.md) — 架构与开发约定（面向 AI 协作者，对人类开发者同样有参考价值）
 
