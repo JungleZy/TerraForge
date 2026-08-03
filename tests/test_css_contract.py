@@ -2,7 +2,7 @@
 
 这些是**文本级**断言：它们守住 CSS 源码的形态（哪条规则声明了什么字号、
 有没有人用 !important 重新覆盖），**守不住**「渲染出来好不好看」——后者
-由 docs/images/phase2-baseline/ 的截图 + 计算值对拍覆盖。
+由 docs/assets/images/phase2-baseline/ 的截图 + 计算值对拍覆盖。
 
 为什么需要这些断言：style.css 曾经有一整块「统一字体大小系统」，用
 !important 重新声明前面已定义过的选择器（.form-label 在 :902 是 .9rem、

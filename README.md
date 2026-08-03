@@ -68,7 +68,7 @@
    - **macOS / Linux**: `./terraforge`
 3. 浏览器访问 `http://localhost:5000`
 
-详见 [docs/packaging/DISTRIBUTION.md](docs/packaging/DISTRIBUTION.md)。
+详见 [docs/guides/DISTRIBUTION.md](docs/guides/DISTRIBUTION.md)。
 
 ### 方式二：从源码运行
 
@@ -89,7 +89,7 @@ uv pip install -r requirements.txt
 uv run python app.py
 ```
 
-应用监听 `http://0.0.0.0:5000`。更详细的安装说明（含 GDAL 绑定编译问题）见 [docs/INSTALL.md](docs/INSTALL.md)。
+应用监听 `http://0.0.0.0:5000`。更详细的安装说明（含 GDAL 绑定编译问题）见 [docs/guides/INSTALL.md](docs/guides/INSTALL.md)。
 
 ## 使用指南
 
@@ -197,7 +197,7 @@ map-download/
 │   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、字体）
 ├── scripts/                # 辅助脚本（发版推送、全球基础地形构建）
 ├── tests/                  # pytest 测试套件
-├── docs/                   # 项目文档（构建、设计、reviews/ 评审记录、archive/ 历史归档、packaging/ 分发说明）
+├── docs/                   # 项目文档（guides/ 上手与构建、reference/ 实现说明、notes/ 调研笔记、reviews/ 评审记录、archive/ 历史归档、assets/ 图片资源）
 ├── downloads/              # 下载文件目录（运行时生成）
 ├── cache/                  # 瓦片缓存目录（运行时生成）
 └── data/                   # SQLite 数据库（运行时生成）
@@ -303,9 +303,11 @@ uv run pytest tests/test_config_manager.py      # 单个测试文件
 
 ### 更多文档
 
-- [docs/BUILD.md](docs/BUILD.md) — 构建详细说明
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) / [docs/INSTALL.md](docs/INSTALL.md) — 快速启动与安装指南
-- [docs/packaging/](docs/packaging/) — `DISTRIBUTION.md` 面向最终用户的分发说明；同目录 `PACKAGING_REVIEW.md` 是 PyInstaller 时期的打包排查记录，打包已改用 Nuitka，仅作存档
+**[docs/README.md](docs/README.md) — 文档总索引**：各目录职责、哪些内容能当现状依据、按需求快速导航。不确定该看哪份时先看它。
+
+- [docs/guides/BUILD.md](docs/guides/BUILD.md) — 构建详细说明
+- [docs/guides/QUICKSTART.md](docs/guides/QUICKSTART.md) / [docs/guides/INSTALL.md](docs/guides/INSTALL.md) — 快速启动与安装指南
+- docs/ 按用途分目录：[guides/](docs/guides/) 照着做的上手与构建文档（含面向最终用户的 `DISTRIBUTION.md`）、[reference/](docs/reference/) 当前实现说明、[notes/](docs/notes/) 调研与未实施计划、[reviews/](docs/reviews/) 带日期的时点审查、[archive/](docs/archive/) 历史归档（正文保留原貌，不再维护）
 - [RELEASE_NOTES.md](RELEASE_NOTES.md) — 当前版本发版说明（作为 GitHub Release 正文发布）；[CHANGELOG.md](CHANGELOG.md) — 全版本更新历史
 - [CLAUDE.md](CLAUDE.md) — 架构与开发约定（面向 AI 协作者，对人类开发者同样有参考价值）
 
@@ -328,7 +330,7 @@ uv run pytest tests/test_config_manager.py      # 单个测试文件
 build.bat
 ```
 
-产物输出到 `dist/terraforge/`。详细说明（CI 构建、分发打包、Nuitka 配置）见 [docs/BUILD.md](docs/BUILD.md)。
+产物输出到 `dist/terraforge/`。详细说明（CI 构建、分发打包、Nuitka 配置）见 [docs/guides/BUILD.md](docs/guides/BUILD.md)。
 
 ## 故障排除
 

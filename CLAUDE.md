@@ -107,7 +107,7 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
   - DEM granules: `downloads/dem/dem_task_<id>/*_dem.tif` / `*_DEM.tif` (Copernicus) (`*_num.tif` is intentionally filtered out by `list_dem_tifs`)
   - Output tiles: `downloads/dem/dem_task_<id>/terrain_tiles/{z}/{x}/{y}.terrain` + `layer.json`
   - Global base (offline-built, low-zoom planet coverage): `downloads/terrain/base_z8/` served at `/terrain/base/...`
-  - Local DEM tiles `layer.json` is patched (`patch_layer_json_parent`) to carry `parentUrl` pointing at the base, so CesiumJS cascades automatically (see `docs/terrain/cesiumjs-loading.md`).
+  - Local DEM tiles `layer.json` is patched (`patch_layer_json_parent`) to carry `parentUrl` pointing at the base, so CesiumJS cascades automatically (see `docs/reference/terrain/cesiumjs-loading.md`).
 - The tiler is `services/terrain_tiling/cesiumlab_terrain.py` — a vendored copy of CesiumLab 4.0.17's quantized-mesh builder. It's used as a library (`build_terrain(...)`) by `dem_task_tiler.tile_dem_task_dir`. The import is **lazy** so tests can inject a `build_terrain_fn=` stub without needing numpy/GDAL at import time.
 - `routes/terrain_static.py` enforces path-traversal safety: every served file must resolve under `Config.DOWNLOADS_DIR`. Don't bypass `_resolve_safe_file`.
 

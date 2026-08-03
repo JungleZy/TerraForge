@@ -136,8 +136,8 @@ ASTGTMV003_*.zip
 # Playwright MCP 临时产物（截图/快照/控制台日志）
 .playwright-mcp/
 
-# UI 改造期间的过程截图（本地留存，不入库；已入库的基线在 docs/images/phase2-baseline/）
-docs/ui-baseline/
+# UI 改造期间的过程截图（本地留存，不入库；已入库的基线在 docs/assets/images/phase2-baseline/）
+docs/assets/ui-baseline/
 
 # SQLite 运行时文件
 data/*.db-wal

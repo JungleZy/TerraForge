@@ -257,6 +257,8 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 **触发条件收窄**：只在任务的 parentUrl 指向的全局 base（`downloads/terrain/base_z8/`）**真实存在**时才显形 —— 该 base 是用户手工离线构建的可选产物（`docs/terrain/global-base-build.md` 只有说明没有脚本）。未构建 / parent_url 为 null 时是单层 provider，不存在遮蔽。附带代价始终存在：682 片无用瓦片的时间与磁盘，以及 `h_min_global` 被 0 值污染导致 meta.json 的 minHeight 恒为 0。
 
+> **勘误（2026-08-03 文档重构时发现）**：上一段括注里的「`docs/terrain/global-base-build.md` 只有说明没有脚本」**不确** —— `scripts/build_global_base_terrain.ps1` 一直存在（748 字节，2026-05-18 起入库），只是从未被任何文档引用过，所以本次审查没看见它。该脚本另有缺陷：漏传 `--tile-size`，走 CLI 默认 17 而应用侧单任务用 65。文档现位于 `docs/reference/terrain/global-base-build.md`，已补完整构建流程与该差异说明。本条其余结论（z0–4 遮蔽机理、实测佐证、改法）经复核仍然成立。
+
 **改法**：去掉 z≤4 的全球分支（根瓦片交给 parentUrl 的 base），或仅在 parent_url 为空时启用；`DemSampler.sample` 对超出 `[0, cols)/[0, rows)` 的 px/py 生成掩码置 NaN 而非钳位；`available` 只声明与 DEM 真正相交且有有效数据的瓦片。
 
 ## M13. 晕渲预览在 Flask 请求线程里按原分辨率做 MEM 晕渲

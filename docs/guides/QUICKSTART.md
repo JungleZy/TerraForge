@@ -109,8 +109,8 @@ uv run python app.py
 
 ## 下一步
 
-- 阅读完整的 [README.md](../README.md) 了解更多功能
-- 查看 [API 文档](../README.md#api-端点) 了解如何通过 API 使用
+- 阅读完整的 [README.md](../../README.md) 了解更多功能
+- 查看 [API 文档](../../README.md#api-端点) 了解如何通过 API 使用
 - 探索配置页面的高级选项
 
 ## 技术支持

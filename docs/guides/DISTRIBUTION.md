@@ -31,7 +31,7 @@
 ## 系统要求
 
 - **Windows**: Windows 10 或更高版本（64位）
-- **macOS**: 仅支持 Apple Silicon (arm64)。发布包在 Apple Silicon 机器上构建，Intel Mac 无法运行，需自行[从源码构建](../BUILD.md)
+- **macOS**: 仅支持 Apple Silicon (arm64)。发布包在 Apple Silicon 机器上构建，Intel Mac 无法运行，需自行[从源码构建](BUILD.md)
 - **Linux**: 与 ubuntu-latest（发布包的构建环境）同等或更新的 64 位发行版
 
 ## 目录结构
@@ -106,7 +106,7 @@ chmod +x terraforge
 
 ## 从源码构建
 
-见 [docs/BUILD.md](../BUILD.md)。
+见 [docs/guides/BUILD.md](BUILD.md)。
 
 ## 技术支持
 

@@ -19,6 +19,6 @@
 
 - `docs/superpowers/plans/2026-07-27-phase2-visual.md` —— 7 处引用
 - `tests/test_css_contract.py:5` —— 模块 docstring 里说明「渲染效果由本目录的截图 + 计算值对拍覆盖」
-- `.gitignore:139` —— 注释「已入库的基线在 docs/images/phase2-baseline/」
+- `.gitignore:139` —— 注释「已入库的基线在 docs/assets/images/phase2-baseline/」
 
-与 `docs/ui-baseline/` 不同，本目录**已入库**。
+与 `docs/assets/ui-baseline/` 不同，本目录**已入库**。

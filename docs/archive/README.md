@@ -14,7 +14,7 @@
 |---|---|
 | 功能总览、版本 | `README.md` |
 | 架构、目录约定、四条管线的分工 | `CLAUDE.md` |
-| 构建 / 安装 / 快速上手 | `docs/BUILD.md`、`docs/INSTALL.md`、`docs/QUICKSTART.md` |
+| 构建 / 安装 / 快速上手 | `docs/guides/BUILD.md`、`docs/guides/INSTALL.md`、`docs/guides/QUICKSTART.md` |
 | 带日期的审查快照 | `docs/reviews/` |
 | 视觉与 CSS 约束 | `static/css/style.css` + `tests/test_css_contract.py` |
 
