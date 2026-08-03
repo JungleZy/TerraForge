@@ -822,10 +822,19 @@ def build_contour_tiles(
                     pass
         ctx = None
 
-        def _log_rmtree_failure(func, path, exc_info):
-            # 不再静默吞：删不掉要留下线索（Windows 文件锁是最常见原因）。
-            logger.warning(f"清理等高线 warp 临时目录失败: {path} ({exc_info[1]!r})")
-
-        shutil.rmtree(tmpdir, onerror=_log_rmtree_failure)
+        # 不再静默吞：删不掉要留下线索（Windows 文件锁是最常见原因）。
+        # onerror 在 3.12 起弃用、3.14 移除，onexc 是替代品 —— 两个签名不同
+        # （onexc 收 (func, path, exc)，onerror 收 (func, path, exc_info)），
+        # 按运行时支持情况分派，别让弃用告警在未来变成硬错误。
+        try:
+            shutil.rmtree(
+                tmpdir,
+                onexc=lambda func, path, exc: logger.warning(
+                    f"清理等高线 warp 临时目录失败: {path} ({exc!r})"))
+        except TypeError:  # Python < 3.12 没有 onexc
+            shutil.rmtree(
+                tmpdir,
+                onerror=lambda func, path, exc_info: logger.warning(
+                    f"清理等高线 warp 临时目录失败: {path} ({exc_info[1]!r})"))
 
     return counts

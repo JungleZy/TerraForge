@@ -66,7 +66,17 @@ def acquire_instance_lock() -> bool:
     try:
         path = lock_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(path, "a+")
+        # 必须是 r+b 而不是 a+：
+        #   1) Windows 的 msvcrt.locking 锁的是【当前文件指针处】开始的 N 个
+        #      字节，不是整个文件。用 a+ 打开时指针在末尾，第一个实例写完 pid
+        #      后文件长度变了，第二个实例打开时指针落在 pid 之后 —— 两个进程
+        #      锁的是不同字节区间，互斥完全失效（Windows CI 实测抓到：第二个
+        #      进程拿到锁并返回 OK）。所以下面锁定前必须显式 seek(0)。
+        #   2) a+ 模式下所有写入都强制追加到末尾，seek/truncate 不起作用，
+        #      pid 会越写越长。
+        if not path.exists():
+            path.touch()
+        handle = open(path, "r+b")
     except OSError as e:
         # 建不出锁文件（只读介质、权限等）不该阻断启动 —— 退化成 0.2.4 的行为。
         logger.warning(f"无法创建单实例锁文件，跳过实例检查: {e}")
@@ -75,6 +85,7 @@ def acquire_instance_lock() -> bool:
     try:
         if os.name == "nt":
             import msvcrt
+            handle.seek(0)                       # 见上：必须锁在固定偏移
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
@@ -88,12 +99,13 @@ def acquire_instance_lock() -> bool:
         return True
 
     try:
-        handle.seek(0)
-        handle.truncate()
-        handle.write(str(os.getpid()))
+        # pid 只是排查用的附带信息，写在被锁字节【之后】，免得和锁区间纠缠。
+        handle.seek(1)
+        handle.truncate(1)
+        handle.write(str(os.getpid()).encode("ascii"))
         handle.flush()
     except OSError:
-        pass  # 写 pid 只为便于排查，失败不影响锁本身
+        pass  # 写 pid 失败不影响锁本身
 
     _lock_handle = handle
     return True
@@ -107,7 +119,7 @@ def release_instance_lock() -> None:
     try:
         if os.name == "nt":
             import msvcrt
-            _lock_handle.seek(0)
+            _lock_handle.seek(0)   # 与加锁时同一偏移，否则解不掉
             msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
