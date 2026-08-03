@@ -6,6 +6,12 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# 同一 ref 串行化，但【不】取消进行中的构建:发版构建被中途取消会留下
+# 只挂了部分平台产物的 Release。这里只防止重复 dispatch 同时打架。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     strategy:
@@ -23,6 +29,20 @@ jobs:
             asset_name: terraforge-macos.tar.gz
 
     runs-on: ${{ matrix.os }}
+
+    env:
+      # Nuitka 把所有缓存都放在这一个根目录下(见 nuitka/utils/AppDirs.py 的
+      # _getCacheDir:NUITKA_CACHE_DIR 是唯一开关,且会走 expanduser,所以 '~'
+      # 写法在三个平台都成立):
+      #   ccache/    Linux+macOS 的 C 编译结果缓存
+      #   clcache/   Windows(MSVC)的 C 编译结果缓存,Nuitka 自带的内置实现
+      #   downloads/ Nuitka 自动下载的 ccache(macOS)与 depends22_x64.zip(Windows)
+      # 不设它的话缓存落在各平台默认 user cache 目录,runner 一销毁就没了 ——
+      # 这正是此前每次构建 690~705 个 C 文件 100% cache miss 的原因。
+      NUITKA_CACHE_DIR: ~/.nuitka-cache
+      # ccache 默认上限 5G。三平台各存一份,单仓库 Actions cache 配额只有 10G,
+      # 这里压到 1G(实测一次完整构建的对象文件量远小于此)。
+      CCACHE_MAXSIZE: 1G
 
     defaults:
       run:
@@ -56,7 +76,9 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y gdal-bin libgdal-dev patchelf
+        # ccache: Linux 上 Nuitka 不会像 macOS 那样自动下载它(只会打印
+        # "You are not using ccache" 的警告继续裸编译),必须由包管理器装。
+        sudo apt-get install -y gdal-bin libgdal-dev patchelf ccache
         echo "GDAL_VERSION=$(gdal-config --version)" >> $GITHUB_ENV
 
     - name: Install GDAL (Windows/macOS, conda-forge)
@@ -100,6 +122,20 @@ jobs:
         grep -viE '^[[:space:]]*gdal([[:space:]=<>!~]|$)' requirements.txt > /tmp/req.txt
         pip install -r /tmp/req.txt
 
+    # 跨 run 复用 C 编译结果。Nuitka 90% 的耗时是把 690+ 个生成的 C 文件
+    # 编译成对象文件,而其中绝大多数(numpy/matplotlib/PIL/aiohttp/flask 等
+    # 第三方库)在两次构建之间逐字节不变 —— 缓存命中即可跳过。
+    # key 带 sha 保证每个 commit 都写回一份新缓存(cache 条目不可变,同 key
+    # 只写一次);restore-keys 按前缀回退到最近一次可用的缓存。
+    - name: Cache Nuitka C compilation
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuitka-cache
+        key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-${{ github.sha }}
+        restore-keys: |
+          nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-
+          nuitka-${{ runner.os }}-
+
     # C7: 先跑完整测试套件再打包——测试失败则构建失败。
     # 三个平台均已装好 GDAL（Linux=apt、Windows/macOS=conda-forge），
     # 测试为离线单元测试，无显示/无网络环境下全部可运行。
@@ -108,6 +144,12 @@ jobs:
 
     - name: Build with Nuitka
       run: python nuitka_build.py
+
+    # 缓存效果自检:Nuitka 会打印 "Compiled N C files using ccache/clcache"
+    # 与命中/未命中计数,这里把缓存体积一并打出来,便于盯 10G 配额。
+    - name: Report compilation cache size
+      if: always()
+      run: du -sh ~/.nuitka-cache 2>/dev/null || echo "no cache dir"
 
     # 冒烟测试:真正启动 exe 并请求首页。构建成功 ≠ 能运行——GDAL DLL 搜索
     # 路径、conda SWIG shim 的 pkg_resources 路径、multiprocessing spawn 等

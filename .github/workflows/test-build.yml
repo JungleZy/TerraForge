@@ -6,10 +6,20 @@ on:
   push:
     branches: [ master ]
 
+# 同一分支/PR 上新的提交到来时,取消还在跑的旧 run。单条 run 要占十几分钟
+# (其中九成是 Nuitka 编译),连续推两次会让两条 run 并行烧机时,而旧那条的
+# 结果已经没人看了。发版用的 build.yml 【不】开这个开关(见该文件注释)。
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test-build:
+  # C7 的「测试失败则构建失败」保障由 build 的 needs: test 承担:测试挂了
+  # build 根本不会启动。拆成两个 job 是为了快反馈 —— 测试本身只要 1 分钟
+  # 量级,不该等打包跑完十几分钟才知道挂没挂。
+  test:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -18,6 +28,9 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+        # 缓存 pip 下载与本地构建的 wheel(含 GDAL 的 sdist 编译产物),
+        # 拆 job 后依赖要装两遍,靠它把第二遍摊薄。
+        cache: 'pip'
 
     - name: Install GDAL
       run: |
@@ -29,7 +42,6 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install nuitka
         # Python 3.12 的托管环境不再自带 setuptools，而 GDAL 走
         # --no-build-isolation 编译时需要它提供 setuptools.build_meta 后端。
         pip install setuptools wheel
@@ -40,16 +52,67 @@ jobs:
         pip install --no-build-isolation GDAL==3.8.4
         pip install -r requirements.txt
 
-    # C7: 先跑完整测试套件再打包——测试失败则构建失败。
     # 测试均为离线单元测试（monkeypatch 隔离 DB/网络/显示），
     # ubuntu-latest 无显示环境可直接运行，无需排除。
     - name: Run test suite
       run: python -m pytest tests/ -q
 
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+
+    env:
+      # 见 build.yml 中同名变量的注释:Nuitka 的 ccache/clcache/downloads
+      # 全部落在这个根目录下,靠 actions/cache 跨 run 保住 C 编译结果。
+      NUITKA_CACHE_DIR: ~/.nuitka-cache
+      CCACHE_MAXSIZE: 1G
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+
+    - name: Install GDAL
+      run: |
+        sudo apt-get update
+        # ccache: Linux 上 Nuitka 不会自动下载它(只打印 "You are not using
+        # ccache" 的警告后裸编译),必须由包管理器装,否则下面的缓存全是空转。
+        sudo apt-get install -y gdal-bin libgdal-dev patchelf ccache
+        export GDAL_VERSION=$(gdal-config --version)
+        echo "GDAL_VERSION=$GDAL_VERSION" >> $GITHUB_ENV
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install nuitka
+        pip install setuptools wheel
+        pip install numpy==1.26.4
+        pip install --no-build-isolation GDAL==3.8.4
+        pip install -r requirements.txt
+
+    # 跨 run 复用 C 编译结果 —— 这一步是整条流水线提速的关键,详见 build.yml。
+    - name: Cache Nuitka C compilation
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuitka-cache
+        key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-${{ github.sha }}
+        restore-keys: |
+          nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-
+          nuitka-${{ runner.os }}-
+
     - name: Test Nuitka build
       run: |
         python nuitka_build.py
         ls -lh dist/
+
+    - name: Report compilation cache size
+      if: always()
+      run: du -sh ~/.nuitka-cache 2>/dev/null || echo "no cache dir"
 
     - name: Verify executable exists
       run: |
