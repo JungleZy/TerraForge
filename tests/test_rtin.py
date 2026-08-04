@@ -416,20 +416,31 @@ def _terrain_tile_stats(out_dir) -> dict:
     return stats
 
 
+def _write_smooth_dem(path, px=64, deg=0.05, west=100.0, south=30.0):
+    """平滑起伏的 DEM：白噪声会让 RTIN 处处都得细分，减面看不出来。"""
+    from osgeo import gdal
+
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), px, px, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((west, deg, 0.0, south + px * deg, 0.0, -deg))
+    yy, xx = np.mgrid[0:px, 0:px].astype(np.float32)
+    ds.GetRasterBand(1).WriteArray(500.0 + 300.0 * np.sin(xx / 9.0) * np.cos(yy / 11.0))
+    ds.FlushCache()
+    ds = None
+
+
 @pytest.mark.parametrize("tile_size", [17, 65])
-def test_build_terrain_defaults_to_martini_and_grid_is_a_real_fallback(tmp_path, tile_size):
-    """接线测试：build_terrain 必须默认走 martini、边界必须满密度、grid 能真退回。
+def test_martini_reduces_triangles_and_pins_the_border_grid_is_a_real_fallback(tmp_path, tile_size):
+    """接线测试：martini 必须真的减面、边界必须满密度、grid 能真退回。
 
     上面两条测试全都直接调 encode_quantized_mesh，一行都没碰 _worker_tile /
     _iter_tasks / build_terrain 的参数透传 —— 也就是说「参数加了但 worker 根本
-    没用上」「默认值没生效」这两种失效它们一条都抓不住。而这正是本项目反复
-    踩到的形态：HTTP 全 200、任务 completed、前端不报错、地形却是老样子。
+    没用上」这种失效它们一条都抓不住。而这正是本项目反复踩到的形态：
+    HTTP 全 200、任务 completed、前端不报错、地形却是老样子。
 
     所以这里跑真实的 build_terrain 落盘，再从字节流里读回来：
       - grid 分支每张瓦片恒为 2*(tile_size-1)^2 个三角形
       - martini 分支必须严格更少
       - **martini 的四条边必须各有 tile_size 个顶点（满密度）**
-      - 不传 triangulator 时必须与显式 martini 逐字节相同（默认开启）
 
     满密度那条守的是 _worker_tile 里的 `pin_border=True`：它是跨瓦片无缝的
     唯一保证（设计稿:86），但在此之前**没有任何测试守着生产路径真的传了 True**。
@@ -440,25 +451,21 @@ def test_build_terrain_defaults_to_martini_and_grid_is_a_real_fallback(tmp_path,
 
     tile_size 参数化到 65 是因为生产值就是 65（TileParams.tile_size），
     mesh= 路径此前只在 17 下跑过。
-    """
-    from osgeo import gdal
 
+    「不传 triangulator 时默认值真的生效」这条原本也在这里，现已挪到
+    test_auto_never_writes_more_bytes_than_either_backend —— 默认值改成 'auto'
+    之后，在这份平滑 DEM 上 auto 张张都选 martini，「默认产物 == 显式 martini」
+    就区分不出默认值到底是 'auto' 还是 'martini' 了。那边的混合 DEM 上
+    auto 与两个单一后端都不同，才真的钉得住。
+    """
     from src.services.terrain_tiling import cesiumlab_terrain as ct
 
-    # 平滑起伏的 DEM：白噪声会让 RTIN 处处都得细分，减面看不出来。
     dem = tmp_path / "dem.tif"
-    px, deg = 64, 0.05
-    ds = gdal.GetDriverByName("GTiff").Create(str(dem), px, px, 1, gdal.GDT_Float32)
-    ds.SetGeoTransform((100.0, deg, 0.0, 30.0 + px * deg, 0.0, -deg))
-    yy, xx = np.mgrid[0:px, 0:px].astype(np.float32)
-    ds.GetRasterBand(1).WriteArray(500.0 + 300.0 * np.sin(xx / 9.0) * np.cos(yy / 11.0))
-    ds.FlushCache()
-    ds = None
+    _write_smooth_dem(dem)
 
     kw = dict(min_level=0, max_level=2, tile_size=tile_size, workers=1)
     ct.build_terrain([str(dem)], str(tmp_path / "grid"), triangulator="grid", **kw)
     ct.build_terrain([str(dem)], str(tmp_path / "mart"), triangulator="martini", **kw)
-    ct.build_terrain([str(dem)], str(tmp_path / "dflt"), **kw)
 
     grid_stats = _terrain_tile_stats(tmp_path / "grid")
     mart_stats = _terrain_tile_stats(tmp_path / "mart")
@@ -486,27 +493,11 @@ def test_build_terrain_defaults_to_martini_and_grid_is_a_real_fallback(tmp_path,
     for key, (_, _, edges) in grid_stats.items():
         assert edges == (tile_size,) * 4, f"{key}: grid 四条边顶点数 {edges} 异常"
 
-    # 默认开启：不传 triangulator 的产物必须与显式 martini 逐字节相同。
-    #
-    # 比的是【解压后】的 quantized-mesh 字节流，不是磁盘上的 gzip 文件：gzip
-    # 头里带 4 字节 mtime（gzip.open 写入 time.time()），两次 build_terrain 相隔
-    # 零点几秒，跨秒时同一张瓦片的 gzip 字节就不同。这条断言原来直接比
-    # read_bytes()，在干净树上实测 8 次跑挂 1 次（差异恰好落在头部第 4 字节），
-    # 是本仓少见的真随机红灯 —— 而它想证明的「默认值生效」跟压缩容器毫无关系。
-    import gzip as _gzip
-
-    for p in sorted((tmp_path / "mart").rglob("*.terrain")):
-        rel = p.relative_to(tmp_path / "mart")
-        assert _gzip.decompress((tmp_path / "dflt" / rel).read_bytes()) == \
-            _gzip.decompress(p.read_bytes()), (
-            f"{rel}: 默认产物与 triangulator='martini' 不一致 —— 默认值没生效"
-        )
-
 
 def test_build_terrain_rejects_unknown_triangulator(tmp_path):
     """triangulator 拼错必须在入口就报，不能静默退回规则网格。
 
-    这是「默认开 martini」新引入的失败面：'martni' 会走 _worker_tile 的 else
+    这是「默认开自适应」新引入的失败面：'martni' 会走 _worker_tile 的 else
     分支出满网格瓦片，作业 rendered==total 完美完成，没有任何信号说自适应根本
     没开 —— 又一款「HTTP 200 + completed + 前端不报错」。而且它在 _worker_tile
     的 try/except 里【根本不会报错】（else 是合法路径），所以校验必须在入口。
@@ -521,23 +512,38 @@ def test_build_terrain_rejects_unknown_triangulator(tmp_path):
         ct.build_terrain([str(tmp_path / "nope.tif")], str(out), triangulator="martni")
     assert not out.exists(), "校验应在建输出目录之前就拦下，不该留下半个产物目录"
 
+    # 'auto' 必须在白名单里 —— 少了它，生产默认值自己会被入口校验拒掉。
+    with pytest.raises(Exception) as ei:
+        ct.build_terrain([str(tmp_path / "nope.tif")], str(out), triangulator="auto")
+    assert "triangulator" not in str(ei.value), (
+        f"'auto' 被入口校验拒了（应该越过校验死在读不到输入文件上），实得 {ei.value!r}"
+    )
 
-def test_build_terrain_rejects_tile_size_martini_cannot_handle(tmp_path):
-    """martini 要求 tile_size = 2^k+1；不满足时必须入口即报，且错误信息点名 tile_size。
+
+@pytest.mark.parametrize("triangulator", [None, "auto", "martini"])
+def test_build_terrain_rejects_tile_size_the_adaptive_path_cannot_handle(tmp_path, triangulator):
+    """自适应路径要求 tile_size = 2^k+1；不满足时必须入口即报，且错误信息点名 tile_size。
 
     实测 tile_size=64 时 rtin_tables 逐瓦片抛 ValueError，被 _worker_tile 的
     容错吞成 warning：rendered=0 / failed=42 外加 42 行刷屏，错误离病因很远。
     生产路径恒为 65（TileParams.tile_size）不受影响，但 CLI 的 --tile-size 收
     任意整数。
 
-    tile_size=64 在 grid 下是合法的，所以这条校验必须只在 martini 时生效 ——
+    **'auto' 也必须报错，不许静默降级成纯 grid**：静默降级正是这个项目栽过
+    三次的失败形态（作业完美完成、什么都不显示）。生产默认 tile_size=65 是
+    合法的，能触发这条说明是配置错了，应该暴露。
+
+    triangulator=None 那一组走的是默认值 —— 默认值必须跟显式 'auto' 同样严。
+
+    tile_size=64 在 grid 下是合法的，所以这条校验必须只在自适应路径生效 ——
     末尾那次调用就是钉这一点的（若把校验写成无条件，它会变红）。
     """
     from src.services.terrain_tiling import cesiumlab_terrain as ct
 
     out = tmp_path / "out"
+    kw = {} if triangulator is None else {"triangulator": triangulator}
     with pytest.raises(ValueError, match=r"tile_size.*64|64.*tile_size"):
-        ct.build_terrain([str(tmp_path / "nope.tif")], str(out), tile_size=64)
+        ct.build_terrain([str(tmp_path / "nope.tif")], str(out), tile_size=64, **kw)
     assert not out.exists(), "校验应在建输出目录之前就拦下，不该留下半个产物目录"
 
     # grid 分支不受 2^k+1 约束：这里必须越过校验，死在读不到输入文件上。
@@ -547,6 +553,153 @@ def test_build_terrain_rejects_tile_size_martini_cannot_handle(tmp_path):
     assert "tile_size" not in str(ei.value), (
         f"grid 分支不该被 tile_size 校验拦下，实得 {ei.value!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 逐瓦片择优（Task 5b）：auto = 两个后端都编一遍，取 gzip 后更小的那个落盘
+# ---------------------------------------------------------------------------
+
+
+def test_choose_tile_bytes_takes_the_smaller_and_breaks_ties_toward_martini():
+    """择优判据：比 **gzip 后**的长度取小；相等时取 martini。
+
+    平局取 martini 不是随手写的分支顺序，是有理由的（顶点更少 => Cesium 侧
+    内存占用与 GPU 上传更省），所以要钉住。判据反向（取大）会让整个方案变成
+    「每张瓦片都挑更差的那个」，而全局字节仍然只是变大不会崩 —— 没有断言的话
+    这又是一款零信号失效。
+    """
+    from src.services.terrain_tiling.cesiumlab_terrain import _choose_tile_bytes
+
+    assert _choose_tile_bytes(b"a", b"bb") == (b"a", "martini")
+    assert _choose_tile_bytes(b"aaa", b"bb") == (b"bb", "grid")
+    assert _choose_tile_bytes(b"aa", b"bb") == (b"aa", "martini"), "平局必须取 martini"
+
+
+def _write_mixed_dem(path, px=256, deg=0.02, west=100.0, north=36.0):
+    """左半平滑、右半白噪声的 DEM —— 逼 auto 在两个后端上都真的选到。
+
+    为什么要混合：全平滑的 DEM 上 martini 张张都赢，全噪声上 grid 张张都赢，
+    两种情况下「逐瓦片」这三个字都没被验证过 —— 一个把选择提到瓦片外面
+    （整个任务选一次）的实现照样全绿。
+    """
+    from osgeo import gdal
+
+    ds = gdal.GetDriverByName("GTiff").Create(str(path), px, px, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((west, deg, 0.0, north, 0.0, -deg))
+    yy, xx = np.mgrid[0:px, 0:px].astype(np.float32)
+    smooth = 500.0 + 300.0 * np.sin(xx / 21.0) * np.cos(yy / 17.0)
+    rough = 1500.0 + np.random.default_rng(7).random((px, px)).astype(np.float32) * 900.0
+    ds.GetRasterBand(1).WriteArray(np.where(xx < px // 2, smooth, rough).astype(np.float32))
+    ds.FlushCache()
+    ds = None
+
+
+def _tile_files(root):
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*.terrain"))}
+
+
+def test_auto_never_writes_more_bytes_than_either_backend(tmp_path):
+    """**方案的立身之本**：auto 每张瓦片的落盘字节严格 ≤ min(grid, martini)。
+
+    背景（实测 112584 张配对瓦片）：瓦片是 gzip 落盘、gzip 原样上线，所以
+    gzip 后的字节既是磁盘占用也是传输量。gzip 后 grid ≈0.91 字节/三角形、
+    martini ≈4.04 字节/三角形，于是「减面 >77.4% 才在字节上打平」—— 山地做到
+    74.8% 就翻成净损失（+17.6%）。逐瓦片择优把变大的那部分全部避免。
+
+    这条测试同时钉住四件事：
+      1. 字节不可能变差（≤ min）；
+      2. auto 的产物是某一个分支的**逐字节副本**，不是某种混合产物；
+      3. 选择真的是**逐瓦片**的 —— 同一次任务里两个后端都被选中过；
+      4. 不传 triangulator 时默认值真的是 'auto'。第 3 条保证了这份 DEM 上
+         auto 与两个单一后端**都不相同**，所以「默认产物 == 显式 auto」在这里
+         是真的区分得开 'auto'/'martini'/'grid' 三者的（换成平滑 DEM 就不行，
+         那上面 auto 张张选 martini，两者字节相同）。
+    """
+    import gzip as _gzip
+
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    dem = tmp_path / "mixed.tif"
+    _write_mixed_dem(dem)
+
+    # min_level=6 跳过 `z<=4` 的强制全球图；z6/z7 的瓦片跨度（2.8125°/1.40625°）
+    # 小于 DEM 的半幅（2.56°），平滑区与噪声区各自都有整块落在内部的瓦片。
+    kw = dict(min_level=6, max_level=7, tile_size=65, workers=1)
+    c_grid = ct.build_terrain([str(dem)], str(tmp_path / "g"), triangulator="grid", **kw)
+    c_mart = ct.build_terrain([str(dem)], str(tmp_path / "m"), triangulator="martini", **kw)
+    c_auto = ct.build_terrain([str(dem)], str(tmp_path / "a"), triangulator="auto", **kw)
+    ct.build_terrain([str(dem)], str(tmp_path / "d"), **kw)  # 不传 = 默认值
+
+    g = _tile_files(tmp_path / "g")
+    m = _tile_files(tmp_path / "m")
+    a = _tile_files(tmp_path / "a")
+    d = _tile_files(tmp_path / "d")
+    assert g and set(g) == set(m) == set(a) == set(d), "各后端产出的瓦片集合必须一致"
+    assert d == a, "默认产物与 triangulator='auto' 不一致 —— 默认值没生效"
+
+    picked = {"martini": 0, "grid": 0}
+    for key in sorted(a):
+        assert len(a[key]) <= min(len(g[key]), len(m[key])), (
+            f"{key}: auto 落盘 {len(a[key])} 字节 > min(grid={len(g[key])}, "
+            f"martini={len(m[key])}) —— 「不可能变差」的保证被打破"
+        )
+        # 必须是某一个分支的逐字节副本：既排除混合产物，也排除「重新压一遍」
+        # 这类看起来无害、实则让产物不可复现的实现。
+        if a[key] == m[key]:
+            picked["martini"] += 1
+        elif a[key] == g[key]:
+            picked["grid"] += 1
+        else:
+            raise AssertionError(
+                f"{key}: auto 产物既不等于 grid 也不等于 martini —— "
+                f"解压后 {'相同' if _gzip.decompress(a[key]) in (_gzip.decompress(g[key]), _gzip.decompress(m[key])) else '也不同'}"
+            )
+
+    assert picked["martini"] > 0 and picked["grid"] > 0, (
+        f"同一次任务里两个后端都该被选中过，实得 {picked} —— 择优很可能不是逐瓦片做的"
+    )
+
+    # 计数必须与逐张实测的选择完全对得上（不是「算了个大概」）。
+    assert (c_auto["chose_martini"], c_auto["chose_grid"]) == (picked["martini"], picked["grid"]), (
+        f"build_terrain 报的 {c_auto['chose_martini']}/{c_auto['chose_grid']} 与实际落盘 "
+        f"{picked['martini']}/{picked['grid']} 对不上"
+    )
+    assert c_auto["chose_martini"] + c_auto["chose_grid"] == c_auto["rendered"]
+
+    # 强制单一后端时，计数必须全落在那一侧（否则统计的语义是错的）。
+    assert (c_grid["chose_grid"], c_grid["chose_martini"]) == (c_grid["rendered"], 0)
+    assert (c_mart["chose_martini"], c_mart["chose_grid"]) == (c_mart["rendered"], 0)
+
+
+def test_tiles_are_written_with_a_fixed_gzip_timestamp(tmp_path):
+    """gzip 头的 4 字节 mtime 必须恒为 0 —— 同输入必须同字节。
+
+    此前用 `gzip.open(tile_file, "wb")` 落盘，头里写的是 time.time()，于是
+    同一份数据两次切片的磁盘字节不同。实测后果：一条比较磁盘字节的接线测试
+    在干净树上连跑 8 次挂 1 次（差异恰好落在头部第 4 字节）。当时是在测试层
+    绕开的（改比解压后的字节流），生产代码的根源留到这里才修 —— 而逐瓦片
+    择优必须先在内存里压两次比大小，正好顺手改掉。
+
+    直接断言头部字段而不是「跑两次比字节」：后者只有在两次运行跨秒时才红，
+    是随机红灯；这条是确定性的。
+    """
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    dem = tmp_path / "dem.tif"
+    _write_smooth_dem(dem)
+    out = tmp_path / "tiles"
+    ct.build_terrain([str(dem)], str(out), min_level=0, max_level=1,
+                     tile_size=17, workers=1)
+
+    files = sorted(out.rglob("*.terrain"))
+    assert files, "没产出瓦片，这条测试等于没跑"
+    for p in files:
+        raw = p.read_bytes()
+        assert raw[:2] == b"\x1f\x8b", f"{p.name}: 不是 gzip 流"
+        (mtime,) = struct.unpack_from("<I", raw, 4)
+        assert mtime == 0, (
+            f"{p.name}: gzip 头 mtime={mtime} 不是 0 —— 同输入会产出不同字节"
+        )
 
 
 def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):

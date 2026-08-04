@@ -53,6 +53,11 @@ def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
     assert captured["tile_size"] == 65
     # 自适应三角化默认开启，且必须真的透传到 build_terrain —— 少了这两条，
     # 把 tile_dem_task_dir 里的两行 triangulator/max_error_k 删掉全量照样绿。
-    # 65 = 2^6+1，满足 martini 对 tile_size 的要求。
-    assert captured["triangulator"] == "martini"
+    # 65 = 2^6+1，满足自适应路径对 tile_size 的要求。
+    # 'auto' = 逐瓦片择优（grid/martini 都编一遍，取 gzip 后更小的）：实测
+    # 山地上 martini 的 gzip 字节反而 +17.6%，全局择优净省 27.6% 且每张瓦片
+    # 字节严格 ≤ min(两者)。这里是这个字面量在全仓的唯一副本，
+    # test_rtin.test_triangulation_defaults_agree_across_every_copy 负责把它
+    # 传导到 DEFAULT_MAX_ERROR_K / build_terrain / CLI 三处。
+    assert captured["triangulator"] == "auto"
     assert captured["max_error_k"] == 0.15

@@ -69,7 +69,11 @@ def test_serial_build_generates_all_tiles_and_counts(tmp_path):
     counts = ct.build_terrain([str(dem)], str(out), min_level=0, max_level=1, workers=1)
 
     # z0 全球 2x1、z1 全球 4x2(z<=4 不按 bbox 裁剪)-> total = 2 + 8 = 10
-    assert counts == {"total": 10, "rendered": 10, "failed": 0}
+    assert counts["total"] == 10 and counts["rendered"] == 10 and counts["failed"] == 0
+    # 择优计数(默认 triangulator='auto' 逐瓦片选后端)必须恰好覆盖每张成功瓦片。
+    # 不写死两侧各多少:那取决于地形。set() 那条保证没有多余/漏掉的 key。
+    assert counts["chose_martini"] + counts["chose_grid"] == counts["rendered"]
+    assert set(counts) == {"total", "rendered", "failed", "chose_martini", "chose_grid"}
     assert len(list(out.rglob("*.terrain"))) == 10
     layer = json.loads((out / "layer.json").read_text(encoding="utf-8"))
     assert layer["minzoom"] == 0 and layer["maxzoom"] == 1
@@ -104,7 +108,7 @@ def test_tasks_streamed_to_pool_in_bounded_batches(tmp_path, monkeypatch):
     # rows=60 * 1deg = 60 度南北向 -> 100E..160E, 20S..40N
 
     def fake_worker(task):  # 真渲染几千瓦片太慢,这里只验证分发行为
-        return (0.0, 1.0)
+        return (0.0, 1.0, "martini")  # (h_min, h_max, 择优选中的后端)
 
     monkeypatch.setattr(ct, "_worker_tile", fake_worker)
     counts = ct.build_terrain([str(dem)], str(tmp_path / "tiles"),
@@ -145,8 +149,49 @@ def test_broken_process_pool_falls_back_to_serial(tmp_path, monkeypatch):
     # workers=4 + total>4 -> 走并行分支 -> 触发 BrokenProcessPool -> 回退串行
     counts = ct.build_terrain([str(dem)], str(out), min_level=0, max_level=1, workers=4)
 
-    assert counts == {"total": 10, "rendered": 10, "failed": 0}
+    assert counts["total"] == 10 and counts["rendered"] == 10 and counts["failed"] == 0
+    # 回退时四个计数器必须一起清零重来 —— 漏清择优计数的话,崩溃前后两轮会叠加,
+    # chose_martini+chose_grid 就大于 rendered。
+    assert counts["chose_martini"] + counts["chose_grid"] == counts["rendered"]
     assert len(list(out.rglob("*.terrain"))) == 10, "回退串行后应补齐全部瓦片"
+
+
+def test_broken_pool_midway_resets_every_counter(tmp_path, monkeypatch):
+    """进程池「跑了一半才崩」时,四个计数器必须一起清零重来。
+
+    上一条测试的假池是一调 map 就抛,崩溃前一张瓦片都没 tally 过 —— 清零逻辑
+    形同虚设也照样绿。这里让它先吐 3 个结果再崩:漏清任何一个计数器,该计数
+    就会把崩溃前那 3 张重复计进去(rendered 变 13、chose_* 之和变 13)。
+    """
+
+    class _DieAfterThree:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def map(self, fn, iterable, chunksize=1):
+            for i, task in enumerate(iterable):
+                if i >= 3:
+                    raise BrokenProcessPool("simulated mid-batch worker crash")
+                yield (100.0, 200.0, "grid")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", _DieAfterThree)
+
+    dem = tmp_path / "dem.tif"
+    _make_dem(dem)
+    out = tmp_path / "tiles"
+
+    counts = ct.build_terrain([str(dem)], str(out), min_level=0, max_level=1, workers=4)
+
+    assert counts["total"] == 10 and counts["rendered"] == 10 and counts["failed"] == 0
+    assert counts["chose_martini"] + counts["chose_grid"] == 10, (
+        f"崩溃前的计数没被清零,实得 {counts}"
+    )
 
 
 def test_worker_tile_returns_none_on_bad_read(tmp_path):
@@ -166,7 +211,7 @@ def test_worker_tile_returns_none_on_bad_read(tmp_path):
     ct._WORKER_SAMPLER = sampler
     try:
         # 任务元组尾部的 (triangulator, max_error_k) 是自适应三角化接线时加的；
-        # 这里走 'grid' 让本条测试只盯坏块容错，不受三角化分支影响。
+        # 这里走 'grid' 让本条测试只盯坏块容错，不受三角化/择优分支影响。
         result = ct._worker_tile(
             (0, 0, 0, -180.0, -90.0, 0.0, 0.0, 17, str(tmp_path), "grid", 0.15))
     finally:
@@ -185,11 +230,14 @@ def test_per_tile_failure_counted_and_excluded_from_meta(tmp_path, monkeypatch):
         z, x, y = task[0], task[1], task[2]
         if (z, x, y) == (1, 2, 1):
             return None  # 模拟该瓦片失败
-        return (100.0, 200.0)
+        # 第三位是择优选中的后端。刻意按 x 奇偶交替,让两侧计数不相等
+        # (4 vs 5):两个计数器写反或都加到同一个上,立刻红。
+        return (100.0, 200.0, "grid" if x % 2 else "martini")
 
     monkeypatch.setattr(ct, "_worker_tile", fake_worker)
     counts = ct.build_terrain([str(dem)], str(out), min_level=0, max_level=1, workers=1)
 
-    assert counts == {"total": 10, "rendered": 9, "failed": 1}
+    assert counts == {"total": 10, "rendered": 9, "failed": 1,
+                      "chose_martini": 4, "chose_grid": 5}
     meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
     assert meta["minHeight"] == 100.0 and meta["maxHeight"] == 200.0

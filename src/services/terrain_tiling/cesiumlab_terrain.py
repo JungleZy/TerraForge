@@ -477,8 +477,51 @@ def _max_error_for_level(z: int, tile_size: int, k: float) -> float:
     return k * spacing_m
 
 
-def _worker_tile(task) -> Tuple[float, float] | None:
-    """Returns (min, max) heights of the written tile, or None on failure.
+# compresslevel=6:quantized-mesh 是高熵二进制,9 级比 6 级压缩率提升可忽略但
+# CPU 开销明显更大,瓦片量大时值得。实测把两个后端都升到 9 对择优比值最多动
+# 0.008,救不了场,所以维持 6。
+#
+# mtime=0 是【必须】的,不是洁癖:gzip 头带 4 字节时间戳,gzip.open 写的是
+# time.time(),于是同一份数据两次切片的磁盘字节不同。实测后果 —— 一条比较磁盘
+# 字节的接线测试在干净树上连跑 8 次挂 1 次,差异恰好落在头部第 4 字节。逐瓦片
+# 择优要拿两次压缩结果比大小、再把胜出的那份原样落盘,更是要求确定性。
+# (顺带:gzip.compress 不写 FNAME 字段,比 gzip.open 每张瓦片少 11 字节。)
+_GZIP_LEVEL = 6
+
+
+def _gzip_tile(data: bytes) -> bytes:
+    return gzip.compress(data, compresslevel=_GZIP_LEVEL, mtime=0)
+
+
+def _choose_tile_bytes(mart_gz: bytes, grid_gz: bytes) -> Tuple[bytes, str]:
+    """逐瓦片择优:取 **gzip 后**更小的那份,平局取 martini。
+
+    为什么比的是 gzip 后:瓦片 gzip 落盘(见 _worker_tile)、terrain_static.py
+    检测 gzip magic 后带 Content-Encoding: gzip 原样发出,所以 gzip 后的字节
+    既是磁盘占用也是传输量,未压缩字节在生产里不代表任何东西。
+
+    为什么需要择优(实测 112584 张配对瓦片,10 个真实 DEM):gzip 后规则网格
+    ≈0.91 字节/三角形、martini ≈4.04 字节/三角形(贵 4.43 倍)—— 规则网格的
+    u/v 是等差 zigzag-delta、索引是周期性 HWM 流,gzip 几乎白送;martini 打散后
+    两者都成了高熵数据。于是**减面必须 >77.4% 才在字节上打平**,而山地只做到
+    74.8%(gzip 后 +17.6% 净亏)、丘陵 75.2%(+9.8%),只有平缓地形 88.0%(-54.2%)
+    是赚的。择优把变大的部分全部避免 => 全局净省 27.6%,且每张瓦片字节严格
+    ≤ min(两者),**不可能变差**。调大 K 也能让 gzip 转正,但 K=0.30 实测会把
+    整条沟谷拉成直线(结构性丢失),所以 K 保持 0.15 —— 质量完全不让步。
+
+    平局取 martini:顶点更少,Cesium 侧内存与 GPU 上传更省。
+    """
+    if len(mart_gz) <= len(grid_gz):
+        return mart_gz, "martini"
+    return grid_gz, "grid"
+
+
+def _worker_tile(task) -> Tuple[float, float, str] | None:
+    """Returns (min, max, backend) of the written tile, or None on failure.
+
+    backend ∈ {'martini','grid'} 是这张瓦片**实际落盘**的那个后端,由 build_terrain
+    汇总成 chose_martini / chose_grid 计数 —— 排障时它直接告诉运维「这批 DEM 是
+    什么地形」(全 grid = 山地,全 martini = 平缓)。
 
     逐瓦片容错:单个坏块(如 ReadAsArray 返回 None、磁盘写失败)只记日志计失败,
     不让一个瓦片炸掉整个任务 —— 与 contour 的 _render_contour_tile_core 同款。
@@ -493,7 +536,7 @@ def _worker_tile(task) -> Tuple[float, float] | None:
         llon, llat = np.meshgrid(lons, lats)
         heights = _WORKER_SAMPLER.sample(llon, llat)
 
-        if triangulator == "martini":
+        if triangulator in ("auto", "martini"):
             # 自适应三角化：按高程误差驱动细分，标准档（K=0.15）减面 73%~83%。
             # pin_border=True 是跨瓦片无缝的唯一保证，不要关。改成 False 实测：
             # 三角形塌 98.7%、公共边顶点数从满密度掉到 2~5、相邻瓦片出现真裂缝。
@@ -506,17 +549,26 @@ def _worker_tile(task) -> Tuple[float, float] | None:
             mesh = rtin_extract(err, tile_size, _max_error_for_level(z, tile_size, max_error_k))
         else:
             mesh = None
-        data = encode_quantized_mesh(west, south, east, north, heights, mesh=mesh)
+
+        if triangulator == "auto":
+            # 两个后端各编一遍、各压一遍，取小者。多出来的成本是第二次编码 +
+            # 第二次 gzip（rtin_errors 本身已向量化，不是大头）。
+            mart_gz = _gzip_tile(encode_quantized_mesh(west, south, east, north,
+                                                       heights, mesh=mesh))
+            grid_gz = _gzip_tile(encode_quantized_mesh(west, south, east, north,
+                                                       heights, mesh=None))
+            blob, backend = _choose_tile_bytes(mart_gz, grid_gz)
+        else:
+            blob = _gzip_tile(encode_quantized_mesh(west, south, east, north,
+                                                    heights, mesh=mesh))
+            backend = triangulator
+
         out_path = Path(out_dir) / str(z) / str(x)
         if out_path not in _WORKER_MKDIRS:
             out_path.mkdir(parents=True, exist_ok=True)
             _WORKER_MKDIRS.add(out_path)
-        tile_file = out_path / f"{y}.terrain"
-        # compresslevel=6:quantized-mesh 是高熵二进制,9 级比 6 级压缩率提升
-        # 可忽略但 CPU 开销明显更大,瓦片量大时值得。
-        with gzip.open(tile_file, "wb", compresslevel=6) as f:
-            f.write(data)
-        return float(np.min(heights)), float(np.max(heights))
+        (out_path / f"{y}.terrain").write_bytes(blob)
+        return float(np.min(heights)), float(np.max(heights)), backend
     except Exception as e:
         logger.warning(f"terrain 瓦片生成失败 z={z} x={x} y={y}: {e!r}")
         return None
@@ -533,7 +585,7 @@ def build_terrain(
     workers: int = 0,
     progress_cb=None,
     stop_flag=None,
-    triangulator: str = "martini",
+    triangulator: str = "auto",
     max_error_k: float = DEFAULT_MAX_ERROR_K,
 ) -> dict:
     # progress_cb(done, total): 逐瓦片进度回调（done = rendered+failed，terrain
@@ -542,9 +594,10 @@ def build_terrain(
     # 式协作停止 —— 串行每瓦片检查、并行批间检查；置位后提前收尾（已生成的
     # 瓦片保留，layer.json/meta.json 照常按已处理部分写出）。
     #
-    # triangulator: 'martini' = RTIN 自适应三角化（默认），'grid' = 原来的满规则
-    # 网格。max_error_k: 允许高程误差 = K * 顶点间距（见 _max_error_for_level）。
-    # 两者都不暴露给 UI/DB/API，只为排障与测试注入而存在。
+    # triangulator: 'auto' = 逐瓦片择优（默认，两个后端都编一遍取 gzip 后更小的，
+    # 见 _choose_tile_bytes 里的实测依据），'martini' / 'grid' = 强制单一后端，
+    # 排障时用。max_error_k: 允许高程误差 = K * 顶点间距（见 _max_error_for_level）。
+    # 三者都不暴露给 UI/DB/API，只为排障与测试注入而存在。
     #
     # 下面这两条校验在入口一次性做掉，不放进 _worker_tile —— 那里的 try/except
     # 是逐瓦片容错，配置错在那里只会变成每张瓦片一行 warning：
@@ -552,16 +605,21 @@ def build_terrain(
     #     rendered==total 完美完成，没有任何信号说自适应根本没开（实测）。
     #   - tile_size 不是 2^k+1 时 rtin_tables 抛 ValueError，实测 10/10 瓦片
     #     全失败。生产路径恒为 65（TileParams.tile_size）不受影响，但 CLI 的
-    #     --tile-size 收任意整数，且默认开 martini 之后这是本任务【新引入】的
-    #     失败面 —— 改成入口即报，错误直指病因而不是刷 N 行瓦片级 warning。
-    if triangulator not in ("martini", "grid"):
+    #     --tile-size 收任意整数，且默认开自适应之后这是【新引入】的失败面 ——
+    #     改成入口即报，错误直指病因而不是刷 N 行瓦片级 warning。
+    #
+    # 'auto' 在 tile_size 上与 'martini' 一样严，**不静默降级成纯 grid**：
+    # 静默降级正是这个项目栽过三次的失败形态（作业 completed、前端不报错、
+    # 什么都不显示）。生产默认 tile_size=65 是合法的，能触发这条就说明配置错了，
+    # 应该当场暴露而不是悄悄退化成一个字节更大的产物。
+    if triangulator not in ("auto", "martini", "grid"):
         raise ValueError(
-            f"triangulator must be 'martini' or 'grid', got {triangulator!r}")
-    if triangulator == "martini":
+            f"triangulator must be 'auto', 'martini' or 'grid', got {triangulator!r}")
+    if triangulator in ("auto", "martini"):
         t = int(tile_size) - 1
         if t < 2 or (t & (t - 1)) != 0:
             raise ValueError(
-                f"triangulator='martini' requires tile_size = 2^k+1 and >= 3, "
+                f"triangulator={triangulator!r} requires tile_size = 2^k+1 and >= 3, "
                 f"got {tile_size} (use triangulator='grid' for arbitrary sizes)")
 
     out = Path(output_dir)
@@ -645,6 +703,10 @@ def build_terrain(
         h_max_global = float("-inf")
         done = 0
         failed = 0
+        # 逐瓦片择优的落点统计。排障价值：全 grid = 这批 DEM 是山地/粗糙地形，
+        # 全 martini = 平缓地形；两者混合才是 auto 在干活。强制单一后端时全部
+        # 落在对应那一侧，可用来确认「切 grid 回退」真的切过去了。
+        chose = {"martini": 0, "grid": 0}
         workers = int(workers or 0)
         if workers <= 0:
             # 保守默认:每个 worker 都要打开 GDAL dataset 并逐瓦片读 DEM 窗口,worker
@@ -664,9 +726,10 @@ def build_terrain(
                 failed += 1
                 _emit()
                 return
-            mn, mx = result
+            mn, mx, backend = result
             h_min_global = min(h_min_global, mn)
             h_max_global = max(h_max_global, mx)
+            chose[backend] += 1
             done += 1
             _emit()
 
@@ -711,9 +774,17 @@ def build_terrain(
                 h_max_global = float("-inf")
                 done = 0
                 failed = 0
+                chose["martini"] = 0
+                chose["grid"] = 0
                 _run_serial()
 
-        _ = time.time() - t0
+        # 收尾日志：择优落点是排障时最直接的一条信息 —— 全 grid 说明这批 DEM
+        # 是山地/粗糙地形（martini 在 gzip 后反而更大），全 martini 说明是平缓
+        # 地形。没有这行，chose_* 计数只有直接调 build_terrain 的人看得到。
+        logger.info(
+            f"terrain 切片完成 triangulator={triangulator} total={total} "
+            f"rendered={done} failed={failed} chose_martini={chose['martini']} "
+            f"chose_grid={chose['grid']} 用时 {time.time() - t0:.1f}s")
 
         layer_name = Path(inputs[0]).stem if len(inputs) == 1 else f"{Path(inputs[0]).stem}+{len(inputs)-1}"
         layer = {
@@ -747,8 +818,9 @@ def build_terrain(
         (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
         # 计数结构对照 contour 的 build_contour_tiles(无 skipped:terrain 没有跳过态)。
-        # 调用方(dem_task_tiler/local_terrain_task_manager)此前忽略返回值,保持兼容。
-        return {"total": total, "rendered": done, "failed": failed}
+        # chose_martini + chose_grid == rendered:每张成功瓦片恰好落在一个后端上。
+        return {"total": total, "rendered": done, "failed": failed,
+                "chose_martini": chose["martini"], "chose_grid": chose["grid"]}
     finally:
         if temp_vrt:
             # 串行路径的全局 worker sampler 可能还持有该 .vrt 的句柄（Windows 上
@@ -771,9 +843,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tile-size", type=int, default=17)
     ap.add_argument("--nodata", type=float, default=None)
     ap.add_argument("--workers", "-j", type=int, default=0)
-    # 排障开关：切 'grid' 回到规则网格做对比。martini 要求 tile_size = 2^k+1
-    # （默认 17 满足），传 64 之类会在 build_terrain 入口报错并指向这个 flag。
-    ap.add_argument("--triangulator", choices=("martini", "grid"), default="martini")
+    # 排障开关：'auto' 逐瓦片择优（默认，与生产一致），'martini'/'grid' 强制
+    # 单一后端做对比。auto/martini 要求 tile_size = 2^k+1（默认 17 满足），
+    # 传 64 之类会在 build_terrain 入口报错并指向这个 flag。
+    ap.add_argument("--triangulator", choices=("auto", "martini", "grid"), default="auto")
     ap.add_argument("--max-error-k", type=float, default=DEFAULT_MAX_ERROR_K)
     args = ap.parse_args(argv)
 
