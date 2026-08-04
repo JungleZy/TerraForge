@@ -390,13 +390,23 @@ assert struct.calcsize(_HEADER_FMT) == HEADER_SIZE
 # 里 `if z <= 4` 强制出全球图，每个 DEM 任务都会真的生成这两张。它是退化情形：
 # 四个经纬角点全部塌到南北极这两个物理点上，离瓦片中心最远的点跑到了
 # **西/东边界的中点**（赤道上），任何「取角点」的推理在这里都会失效。
+#
+# 最后一组是把 z0 的南边界挪了 0.1° 的**假想**瓦片。当前的地理切片方案生不出它，
+# 但它是外接球那条推理唯一的裕度所在：沿一条经线的最远点只有在经度跨度 ≳179.233°
+# 时才会离开端点跑到边内部去，位置约 lat* ≈ -148.4·lat_c；z0 的跨度精确是 180°，
+# 正在这个退化区间里，只是因为 z0 的 lat_c 恰好为 0（=> lat* = 0，极值点正好落在
+# 西边中点上）才没出事。南边界一挪，「角点 + 边中点」那套候选表立刻缺 220 m
+# （挪 0.4° 缺 3493 m）。谁要是以「切片方案生不出这张瓦片」为由删掉它，就等于把
+# 「有人改动纬度分割」这个触发条件重新变成静默失败。
 _HEADER_CASES = [
     ((100.0, 30.0, 101.0, 31.0), 17),
     ((100.0, 30.0, 110.0, 40.0), 257),
     ((-70.0, -40.0, -69.0, -39.0), 17),
     ((-180.0, -90.0, 0.0, 90.0), 17),
+    ((-180.0, -89.9, 0.0, 90.0), 65),
 ]
-_HEADER_IDS = ["ne-1deg-n17", "ne-10deg-n257", "sw-1deg-n17", "z0-west-hemisphere-n17"]
+_HEADER_IDS = ["ne-1deg-n17", "ne-10deg-n257", "sw-1deg-n17", "z0-west-hemisphere-n17",
+               "z0-south-shifted-n65"]
 
 
 def _parse_header(data: bytes) -> dict:
@@ -423,20 +433,28 @@ def _expected_height_range(n: int) -> tuple[float, float]:
 _SURFACE_SAMPLES = 361   # 每个方向的采样数；z0（180° 跨度）上 = 0.5°/格
 
 
-def _tile_surface_max_dist(bbox, n, center):
-    """稠密采样【整块瓦片】，返回 (采样到的最大距离, 采样残差上界)。
+def _tile_prism_max_dist(bbox, n, center):
+    """稠密采样【瓦片所在的高程棱柱】，返回 (采样到的最大距离, 采样残差上界)。
 
-    为什么不再用「实现里那几个候选角点」当期望值：那样测的是「球包住了我
-    挑的这几个点」，不是「球包住了瓦片」。实现挑漏了点，期望值会跟着漏，
-    两边一起错、断言照样绿 —— 本仓上个月的 triangleCount 就是这么漏出去的
-    （设计稿:45），而 z0 瓦片正是这个反模式咬人的地方：最远点不在角点上。
+    棱柱 = bbox 这块经纬范围 × 高程区间 [h_min, h_max]。编码出去的顶点必然
+    落在这个棱柱里（经纬在 bbox 内、高程在 [h_min,h_max] 内），所以这个量是
+    **半径的独立上界**：它完全不看实现的顶点数组，只由 bbox 和高程极值决定。
+    用途也只剩这一个 —— 拦住「半径被吹大」（拿整球半径、把 h 加两遍、×2）。
+
+    ⚠️ 它**不再**当半径的下界用。以前那版断言的是「球必须包住整个棱柱表面」，
+    那个要求太强了：棱柱的 h_max 那一层在「DEM 实际只有 h_min 那么高」的经纬
+    位置上根本没有任何几何，Cesium 只渲染字节流里那些顶点连成的三角形。
+    按棱柱要求半径会让球无谓地变大，也会掩盖「半径到底有没有包住真顶点」这个
+    真问题。下界改由 _decoded_vertices_ecef 提供 —— 那是从字节流里解出来的、
+    真会被渲染的点。顶点是棱柱的子集，所以新保证严格弱于旧保证，
+    但它才是**正确的**保证：定义外接球的是几何，不是包围盒。
 
     采样方式：lon/lat 各 _SURFACE_SAMPLES 个等分点，高程只取 h_min / h_max
     两层。**只取两层是严格的，不是近似** —— lonlat_to_ecef 对 h 是仿射的
     （P(h) = A + h·n̂，n̂ 是单位椭球法向），所以 |P(h) - center| 是 h 的凸函数，
     在 [h_min, h_max] 上的最大值必在端点取到。
 
-    残差上界：任取瓦片上一点 P，同层必有采样点 Q 使 |P-Q| ≤ 半个格子对角线 D/2，
+    残差上界：任取棱柱上一点 P，同层必有采样点 Q 使 |P-Q| ≤ 半个格子对角线 D/2，
     于是 d(P) ≤ d(Q) + D/2 ≤ dmax + D/2。这里的 D 直接从采样出来的 ECEF 点
     量出来（两条对角线取大），不是估的。
     """
@@ -461,6 +479,59 @@ def _tile_surface_max_dist(bbox, n, center):
             float(np.linalg.norm(pts[1:, :-1] - pts[:-1, 1:], axis=-1).max()),
         )
     return dmax, diag / 2.0
+
+
+# 「剥掉量化余量后的半径」与「字节流里顶点最大距离」允许差多少米。
+# 实测 15 组配置（n ∈ {17,65,257} × 1°瓦片 / z0 / z0南边界挪0.1° / 随机 -400~8848 m
+# 地形 / 全平地形）里这个差最大 0.103 m，取 10 倍留余量。
+# 上限这一侧不能取「可证的」_quantisation_slack（z0 上 1223 m）—— 那个界太松，
+# 会把这条测试要抓的 220 m 回归整个吞掉。见 test_header_bounding_sphere_radius_
+# encloses_every_shipped_vertex 的 docstring 第 2 条。
+_GEOMETRIC_RADIUS_TOL = 1.0
+
+
+def _quantisation_slack(bbox, hdr) -> float:
+    """从精确格点到字节流里那个量化过的顶点，位置最多挪多远（米）。
+
+    u/v/height 三段各自量化到 0..32767 的整数格上，所以单个顶点的坐标误差不超过
+    一个量化步：高程 (maxH-minH)/32767，经度 (east-west)/32767，纬度
+    (north-south)/32767。经纬换成弧长时用 (WGS84_A + |maxH|) 当半径 —— 那是地球
+    上任何一点到自转轴/地心距离的上界，所以算出来的是弧长的上界。
+    距离函数 1-Lipschitz（|d(P)-d(Q)| ≤ |P-Q|），三项直接相加就是距离的误差上界。
+
+    全部输入取自 bbox 与 header 的 minH/maxH，不读实现的任何中间变量。
+    """
+    from src.services.terrain_tiling.cesiumlab_terrain import WGS84_A
+
+    w, s, e, nn = bbox
+    return (
+        (hdr["max_h"] - hdr["min_h"]) / 32767.0
+        + (WGS84_A + abs(hdr["max_h"])) * math.radians(abs(e - w) + abs(nn - s)) / 32767.0
+    )
+
+
+def _decoded_vertices_ecef(data: bytes, bbox) -> np.ndarray:
+    """把字节流里的顶点按 spec 还原成 ECEF —— 这是 Cesium 真正会渲染的那些点。
+
+    刻意只经过【字节流 + spec 公式】，不碰实现内部的任何数组，也不重算一遍
+    实现挑候选点的那套逻辑。三段 u/v/height 都是 zigzag(相邻差分) 的 uint16，
+    反解后按 spec 的线性映射还原：
+        lon = west  + (east - west)   * u / 32767
+        lat = south + (north - south) * v / 32767
+        height = minH + (maxH - minH) * h / 32767
+    minH/maxH 取 header 里那两个 float32 —— 那正是 Cesium 拿去 lerp 的值。
+    """
+    from src.services.terrain_tiling.cesiumlab_terrain import lonlat_to_ecef
+
+    w, s, e, nn = bbox
+    (vcount,) = struct.unpack_from("<I", data, HEADER_SIZE)
+    u, v, h = _decode_uvh(data, vcount)
+    hdr = _parse_header(data)
+    return lonlat_to_ecef(
+        w + (e - w) * u / 32767.0,
+        s + (nn - s) * v / 32767.0,
+        hdr["min_h"] + (hdr["max_h"] - hdr["min_h"]) * h / 32767.0,
+    )
 
 
 @pytest.mark.parametrize("bbox,n", _HEADER_CASES, ids=_HEADER_IDS)
@@ -527,47 +598,89 @@ def test_header_center_is_the_tile_centre_in_ecef(bbox, n):
 
 
 @pytest.mark.parametrize("bbox,n", _HEADER_CASES, ids=_HEADER_IDS)
-def test_header_bounding_sphere_radius_encloses_the_tile(bbox, n):
-    """radius 必须外接【整块瓦片】—— 写 0（或写小/写大）都会被 Cesium 拿去做视锥剔除。
+def test_header_bounding_sphere_radius_encloses_every_shipped_vertex(bbox, n):
+    """radius 必须包住【字节流里那些顶点】—— 写 0/写小/写大都会被 Cesium 拿去剔除。
 
     radius=0 时每张瓦片都被剔掉，地形全不可见，且全程 HTTP 200 + 任务 completed。
 
-    期望值走 _tile_surface_max_dist 的稠密采样，**不再用「和实现相同的角点集合」**。
-    这条测试上一版断言的是「球包住了这 8 个角点」并在 docstring 里声称「缺口归零」，
-    对 z0 是假的：z0 跨 lat -90..90，四个经纬角点全部退化到南北两极，离中心最远的
-    是西/东边界的中点（赤道上），比极点角点远 0.17% —— 实测缺 15114 m，而当时
-    2/2 张 z0 瓦片全都没被包住，测试却是绿的。教训不是「角点再补几个」，
-    而是**期望值不能从被测实现的假设里抄**。
+    **下界的期望值从字节流里解出来**（_decoded_vertices_ecef），不从实现挑候选点的
+    那套逻辑里抄。这条测试的前两版都栽在「期望值镜像了实现的假设」上：
+      - 第一版断言「球包住这 8 个角点」，而 z0 的最远点根本不在角点上（四个经纬
+        角点全塌到南北两极），实测 2/2 张 z0 瓦片缺 15114 m，测试却是绿的；
+      - 第二版补了 4 个 h_max 边中点，缺口在当前切片方案下确实归零，但裕度也
+        精确是零 —— 见 _HEADER_CASES 里 z0-south-shifted 那条注释。
+    顶点集合没有这个问题：它就是渲染的对象本身，不需要论证「极值在哪」。
+    三角形都在顶点凸包里、球是凸集，所以「包住全部顶点」= 「包住全部几何」。
 
-    下界几乎零松弛（1e-6 m）：「包住」是外接球的定义性质。留 1e-6 而不是 0，是因为
-    这一版的采样点数（十万量级）与实现里那十几个候选点的数组长度不同，numpy 的
-    sin/cos 走 SIMD 分派，尾部元素可能落进标量路径 —— 上一版「两侧输入下标完全相同
-    因而末位差异共模」的论证在这里不再严格成立。1e-6 m 在 5e6 量级上约 1000 ULP，
-    而真实的「包不住」是米到公里级（z0 缺 15 km），断言的牙齿一颗没掉。
+    记 D = 精确格点的最远距离、dv = 字节流里顶点的最远距离、
+    slack = _quantisation_slack 给出的量化位移上界。实现写的是 radius = D + slack。
 
-    上界不能再零松弛：采样点只是瓦片表面的有限子集，最远点一般不落在采样点上，
-    所以 radius 本来就该比 dmax 略大。放开量取 _tile_surface_max_dist 返回的
-    「半格对角线」—— 这是采样残差的严格上界（|d(P)-d(Q)| ≤ |P-Q|），随采样密度
-    收紧而不是拍脑袋的常数。S=361 下实测相对松弛 0.28%(1° 瓦片)~0.43%(z0)，
-    足以打死任何真实的吹大（radius×2、拿整球半径、把 h 加两遍）。
-    加密到 S=1081 可收到 0.09%~0.14%，但代价是 9 倍采样量，不值当。
+    三道断言各司其职：
+      1. `radius >= dv`（几乎零松弛）—— 定义性质，且是**可证**的：精确格点与它
+         量化后的样子逐点差不超过 slack，max 是 1-Lipschitz 的，所以 D >= dv - slack，
+         于是 radius = D + slack >= dv。实现里那个余量存在的意义就在这 ——
+         它把「包住」从实测事实变成可证事实。
+      2. `|(radius - slack) - dv| <= 1 m` —— **真正有牙的那条**。它要求剥掉余量之后
+         的几何部分**就是**顶点最大距离，不多不少。
+         为什么容差取 1 m 而不是可证的 slack：slack 是个极松的上界（z0 上 1223 m，
+         因为它按「u/v 各错一个量化步 => 位置错一整段弧长」直接相加，而实际上极值
+         附近的距离对位置是二阶不敏感的）。实测 15 组配置（n∈{17,65,257} ×
+         1°/z0/z0南边界挪0.1°/随机-400~8848m 地形/全平）里 |D - dv| 最大只有
+         **0.103 m**。**必须用实测的紧界**：这条测试要抓的回归（半径退回「角点 +
+         边中点」候选表）在 z0 南边界挪 0.1° 时的缺口是 **220 m** —— 用 1223 m 的
+         可证界去卡，那个回归会原样溜过去（实测：M5 变异下全量 1045 条一条不红）。
+         1 m 是实测最坏值的约 10 倍，离 220 m 还差两个数量级，不会偶发红灯。
+         这条断言与实现共享 slack 的算式（_quantisation_slack）—— 那是有意的：
+         余量被删掉或改小时它当场红（实测 M7 变异）。**承重的那半（顶点最大距离）
+         是从字节流独立解出来的，不是从实现的候选点逻辑里抄的。**
+      3. `radius <= 棱柱采样 + 残差` —— 一道完全不看顶点数组的独立天花板，
+         只由 bbox 和高程极值决定（_tile_prism_max_dist）。
 
-    实测（本轮修复后）：4 组 bbox + z0 东半球 + 两张 z1，radius 与 dmax
-    **逐位相等**，缺口和超出量都精确是 0 —— 稠密采样的最大值恰好落在实现的
-    候选点上，说明候选集合这次真的覆盖到了极值点。
+    1e-6 m 的浮点余量：dv 走的是几千个点的 SIMD 归约，实现走的是另一个形状的
+    数组，末位差异不共模。1e-6 m 在 9e6 量级上约 500 ULP。
     """
     data = encode_quantized_mesh(*bbox, _heights(n))
     hdr = _parse_header(data)
-    dmax, resid = _tile_surface_max_dist(bbox, n, hdr["center"])
+    verts = _decoded_vertices_ecef(data, bbox)
+    dv = float(np.linalg.norm(verts - hdr["bs_center"], axis=-1).max())
+    slack = _quantisation_slack(bbox, hdr)
+    prism, resid = _tile_prism_max_dist(bbox, n, hdr["center"])
 
     assert hdr["radius"] > 0.0, "radius 必须为正 —— 写 0 会让 Cesium 剔掉每张瓦片"
-    assert hdr["radius"] >= dmax - 1e-6, (
-        f"radius={hdr['radius']:.3f} 小于瓦片表面采样点的最大距离 {dmax:.3f}"
-        f"（缺 {dmax - hdr['radius']:.3f} m），包不住瓦片"
+    assert hdr["radius"] >= dv - 1e-6, (
+        f"radius={hdr['radius']:.3f} 小于字节流里顶点的最大距离 {dv:.3f}"
+        f"（缺 {dv - hdr['radius']:.3f} m），包不住实际渲染的几何"
     )
-    assert hdr["radius"] <= dmax + resid, (
-        f"radius={hdr['radius']:.3f} 超出采样最大距离 {dmax:.3f} 加采样残差 "
-        f"{resid:.3f}，包围球被吹大了"
+    assert abs((hdr["radius"] - slack) - dv) <= _GEOMETRIC_RADIUS_TOL, (
+        f"剥掉量化余量 {slack:.3f} m 之后 radius 的几何部分是 "
+        f"{hdr['radius'] - slack:.3f}，而字节流里顶点的最大距离是 {dv:.3f}"
+        f"（差 {hdr['radius'] - slack - dv:+.3f} m，容差 {_GEOMETRIC_RADIUS_TOL} m）——"
+        f"半径不是按【全部顶点】算的"
+    )
+    assert hdr["radius"] <= prism + resid, (
+        f"radius={hdr['radius']:.3f} 超出高程棱柱的采样最大距离 {prism:.3f} "
+        f"加采样残差 {resid:.3f}"
+    )
+
+
+def test_bounding_sphere_radius_also_covers_the_adaptive_mesh():
+    """自适应网格的顶点是格点的子集，同一个 radius 必须照样包住它。
+
+    header 由 bbox + 高程极值决定、两条分支逐字节相同（见
+    test_header_is_identical_between_regular_and_adaptive_paths），所以这条真正
+    验的是「子集也被覆盖」这个推论没有被某种奇怪的实现打破 —— 比如哪天有人
+    改成「按 mesh 里实际用到的顶点算半径」，规则网格分支就会和自适应分支分叉。
+    """
+    bbox = (100.0, 30.0, 101.0, 31.0)
+    n = 65
+    h, verts_idx, tris = _rtin_mesh(n)
+    data = encode_quantized_mesh(*bbox, h, mesh=(verts_idx, tris))
+    hdr = _parse_header(data)
+    pts = _decoded_vertices_ecef(data, bbox)
+    dv = float(np.linalg.norm(pts - hdr["bs_center"], axis=-1).max())
+    assert len(pts) < n * n, "构造的网格必须真被简化过，否则这条测试没意义"
+    assert hdr["radius"] >= dv - 1e-6, (
+        f"自适应分支 radius={hdr['radius']:.3f} 包不住它自己的顶点（最远 {dv:.3f}）"
     )
 
 
