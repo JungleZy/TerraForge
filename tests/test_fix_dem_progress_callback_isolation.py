@@ -22,7 +22,7 @@ def _setup(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("core.database", "services.config_manager", "services.dem_download_engine"):
+    for mod in ("core.database"):
         sys.modules.pop(mod, None)
     db = importlib.import_module("core.database")
     db.init_database()

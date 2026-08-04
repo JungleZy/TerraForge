@@ -36,7 +36,7 @@ def _load_app(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.contour_task_manager"):
+    for mod in ("app", "core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True

@@ -15,11 +15,8 @@ def _load_app(monkeypatch, tmp_path):
     for mod in (
         "app",
         "core.database",
-        "models.task",
-        "services.config_manager",
         "services.task_manager",
         "services.dem_task_manager",
-        "services.contour_task_manager",
         "routes.api",
         "routes.dem_api",
         "routes.contour_api",

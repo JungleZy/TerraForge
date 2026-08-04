@@ -802,8 +802,7 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
   「按 1600px 缩略图分配」，但预览图在输入稀疏时绝大部分仍是 nodata 空白。
   要治需按各输入实际范围裁剪或分别出图 —— 那是功能改动，不是本次修复范围。
 
-- **M23 的存量迁移**：4 个模块仍有「裸 pop + 别处模块级 from-import」的组合
-  （见下节的棘轮名单）。它们目前**不引爆**，且已被契约测试挡住不再新增。
+> **M23 已于 2026-08-04 完全闭环**，存量清零，棘轮名单为空。见下节。
 
 ## 补记：M23 的账（2026-08-04）—— 已复现、已修、规模比原判小一个量级
 
@@ -866,8 +865,28 @@ fixture，在每个测试 teardown 时把项目模块的 sys.modules 恢复成�
 3. 变异验证：把 `test_fix_release_hygiene.py` 改回裸 pop，静态棘轮与真实场景
    两条**各自独立翻红**。
 
-**存量 4 个仍在 KNOWN 名单里**，它们目前不引爆（不涉及跨模块的身份比较），
-逐个迁移仍是纯机械工作 —— 但现在有棘轮兜底，不会继续恶化。
+### 存量清零（同日续做）
+
+剩下那 4 个模块（`models.task` / `services.config_manager` /
+`services.contour_task_manager` / `services.dem_download_engine`）也清掉了，
+**棘轮名单现在是空集**。正序与文件级逆序全量均 **968 passed**。
+
+清法**不是**把 27 处裸 pop 迁到 `fresh_import`，而是**直接删掉多余的 pop 项**。
+依据：AST 检查确认这四个模块的**模块级语句、类体直接语句、装饰器**都不捕获
+`Config` 的值 —— 它们只有 `from core.config import Config`（引用类本身，而
+monkeypatch 是 `setattr` 打在类上，对所有引用可见）。既然重导入不会改变任何
+行为，pop 它们就是多余的：删掉之后，测试函数里的 `import_module(...)` 拿到
+全局那一份，运行时照样读到 monkeypatch 后的 Config。实测 21 个文件、27 项
+删除后，受影响文件 250 passed，全量两个方向都 968。
+
+**为什么不用 `fresh_import`**：它会给这些文件新增「teardown 恢复」语义 ——
+正是上面记的那个打红 15 条的机制。删多余项则完全不碰恢复语义，回归面最小。
+判据可以一般化：**pop 一个模块只有在它「模块级捕获了会被 monkeypatch 改动的
+状态」时才有意义**；否则那次 pop 除了制造第二份类对象之外不产生任何效果。
+
+棘轮在空集状态下仍有区分力：变异注入一处
+`sys.modules.pop("services.contour_task_manager")` 后
+`test_no_new_module_double_instance_risk` 立即翻红并点名该模块。
 
 ## 补记：M3 的另一半（2026-08-04）
 

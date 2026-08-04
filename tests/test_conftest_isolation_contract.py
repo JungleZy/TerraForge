@@ -86,15 +86,21 @@ def test_injected_globals_are_restored_after_teardown(tmp_path):
 # `services.download_engine` → 文件级逆序下 `test_download_engine.py` 的两条
 # stop_flag 用例翻红。已改用 `fresh_import` 修掉。
 #
-# 下面这条是棘轮：**不许新增**这种组合。剩下 4 个是存量，逐个迁到 fresh_import
-# 后请同步从 KNOWN 里删掉。
+# 存量已于 2026-08-04 清零。清法不是把 27 处裸 pop 都迁到 `fresh_import`，而是
+# **直接删掉多余的 pop 项** —— `models.task` / `services.config_manager` /
+# `services.contour_task_manager` / `services.dem_download_engine` 这四个模块的
+# 模块级、类体、装饰器都不捕获 `Config` 的值（只 `from core.config import
+# Config`，引用类本身，monkeypatch 打在类上对所有引用可见），所以把它们从 pop
+# 清单里删掉是零行为改变的：测试函数里的 `import_module(...)` 拿到全局那一份，
+# 运行时照样读到 monkeypatch 后的 Config。
+#
+# 之所以不用 `fresh_import`：它会给这些文件新增「teardown 恢复」语义，而现有
+# 测试是建立在「裸 pop 不恢复」这个既成事实上的 —— 上一轮试过在 conftest 里
+# 全局施加恢复，打红 15 条（详见报告 M23 补记）。删多余项则完全不碰恢复语义。
+#
+# 下面两条是棘轮：名单为空 = 不许出现任何这种组合。
 
-KNOWN_DOUBLE_INSTANCE_RISKS = {
-    "models.task",
-    "services.config_manager",
-    "services.contour_task_manager",
-    "services.dem_download_engine",
-}
+KNOWN_DOUBLE_INSTANCE_RISKS: set = set()
 
 
 class _PopFinder(ast.NodeVisitor):

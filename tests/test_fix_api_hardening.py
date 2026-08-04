@@ -30,9 +30,7 @@ def _load_app(monkeypatch, tmp_path):
     # init_task_manager` 又会新建一个 routes.api 模块 —— 测试 patch 新模块、
     # 请求却打到旧模块,I3/I15 的断言就对不上。
     for mod in (
-        "app", "core.database", "models.task", "services.config_manager",
-        "services.task_manager", "services.dem_task_manager",
-        "services.contour_task_manager",
+        "app", "core.database", "services.task_manager", "services.dem_task_manager",
         "routes", "routes.api", "routes.dem_api", "routes.contour_api",
     ):
         sys.modules.pop(mod, None)

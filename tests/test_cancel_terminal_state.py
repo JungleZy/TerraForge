@@ -25,11 +25,8 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
 
     for mod in (
         "core.database",
-        "models.task",
-        "services.config_manager",
         "services.task_manager",
         "services.dem_task_manager",
-        "services.contour_task_manager",
         "app",
     ):
         sys.modules.pop(mod, None)

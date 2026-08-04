@@ -49,7 +49,6 @@ def _fresh_db(monkeypatch, tmp_path):
 
 def _fresh_config_manager(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    sys.modules.pop("services.config_manager", None)
     cm_mod = importlib.import_module("services.config_manager")
     return cm_mod, cm_mod.ConfigManager()
 
