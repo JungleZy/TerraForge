@@ -365,9 +365,18 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float,
         vzz = _zz_delta(vv)
         hzz = _zz_delta(hh_full.reshape(-1)[vert_idx])
         encoded_indices = _hwm_encode(tris.reshape(-1))
-        # 四条边索引：保留顶点中落在各边上的，按 spec 要求的顺序排列
-        # （west/east 由南向北，south/north 由西向东；Cesium 只要求同一条边
-        #  在相邻瓦片间顺序一致，这里用格点坐标排序保证确定性）
+        # 四条边索引：保留顶点中落在各边上的。
+        #
+        # 【槽位】是硬约束：Cesium 按 west/south/east/north 的槽位决定裙边（skirt）
+        # 往哪个方向位移（createVerticesFromQuantizedTerrainMesh.js：west 经度 -δ、
+        # east +δ、south 纬度 -δ、north +δ），串了就错。
+        #
+        # 【顺序】不是。quantized-mesh-1.0 spec 对边内顺序只字未提，且 Cesium 1.143.0
+        # 拿到这四个数组后会无条件复制并各自重排（west 按 v 升序、east 按 v 降序、
+        # south 按 u 降序、north 按 u 升序 —— 见该文件返回的 westIndicesSouthToNorth /
+        # eastIndicesNorthToSouth / southIndicesEastToWest / northIndicesWestToEast），
+        # 生产端给什么顺序都会被覆盖。这里按格点坐标升序只是为了输出确定性
+        # （同输入同字节，便于 golden 比对），不是在满足 spec 要求。
         edge_indices = (
             np.where(cols == 0)[0][np.argsort(rows[cols == 0])].astype(np.uint32),
             np.where(rows == 0)[0][np.argsort(cols[rows == 0])].astype(np.uint32),

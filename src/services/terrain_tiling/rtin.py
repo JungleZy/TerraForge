@@ -129,9 +129,18 @@ def rtin_extract(errors: np.ndarray, grid: int, max_error: float):
             # 发射顺序是 a -> c -> b，不是 a -> b -> c：后者的有向面积恒为负
             # （两个顶层 rec 的有向面积都是 -mx_^2/2，对半分裂时符号不变，
             # 于是整棵树全 CW），与规则网格分支（_mesh_constants 的 [a0,a1,a2]
-            # / [a1,a3,a2] 切法，实测 512/512 全正）方向相反。下游按三角形绕向
-            # 算顶点法线，反了会让法线整体翻转 —— Cesium 开背面剔除后地形直接
-            # 不可见，而且是 HTTP 全 200、任务 completed、前端不报错的静默失败。
+            # / [a1,a3,a2] 切法，实测 512/512 全正）方向相反。
+            #
+            # CCW 不是本地约定，是 quantized-mesh-1.0 **规范明文要求**：
+            # CesiumGS/quantized-mesh README 原文 "Each triplet of indices specifies
+            # one triangle to be rendered, in counter-clockwise winding order."
+            # 而 CCW 正是 WebGL 的正面定义 —— 本仓 vendored CesiumJS 1.143.0 里
+            # RenderState 默认 frontFace=CCW、Globe.backFaceCulling 默认 true、
+            # 地形 render state 的 cull.enabled=true，所以 CW 的三角形会被背面剔除，
+            # 地形直接不可见，且是 HTTP 全 200、任务 completed、前端不报错的静默失败。
+            #
+            # （注意：**不是**因为法线。设计稿明确「法线基于满网格算，不基于简化几何」
+            #  ——法线根本不经过这里的三角形绕向，别再用那个理由把这段改回去。）
             for px, py in ((ax, ay), (cx, cy), (bx, by)):
                 p = py * grid + px
                 idx = idmap.get(p)
