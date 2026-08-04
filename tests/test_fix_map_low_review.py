@@ -177,8 +177,10 @@ def test_flush_failure_does_not_mask_download_error(isolated_config, monkeypatch
     opened = []
     real_get_connection = tm_mod.get_connection
 
-    def tracking_get_connection():
-        conn = real_get_connection()
+    def tracking_get_connection(*args, **kwargs):
+        # 必须透传参数:progress_conn 是用 check_same_thread=False 建的
+        # (批次 flush 的写盘走 asyncio.to_thread,见 task_manager 的 M3 注释)。
+        conn = real_get_connection(*args, **kwargs)
         opened.append(conn)
         return conn
 

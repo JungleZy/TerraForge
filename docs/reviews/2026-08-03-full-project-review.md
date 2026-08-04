@@ -802,6 +802,57 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
   `fresh_import` 现在会恢复 `routes.*` 的注入型全局，并有自检用例钉住
   「teardown 后 `app.task_manager is routes.api.task_manager`」。逐个改写 47 个
   文件属于纯机械重构，收益边际、回归面却覆盖整个套件，留给单独的清理提交。
+
+  > **2026-08-04 补充：这条尾巴已经有可复现的表现，不再只是「潜伏」。**
+  > 按**文件级逆序**跑全量（`ls tests/test_*.py | tac` 交给 pytest），
+  > `tests/test_download_engine.py` 的
+  > `test_download_tile_does_not_request_when_stop_flag_already_set` 与
+  > `test_download_tile_stops_retrying_after_stop_flag_set` 两条必失败
+  > （实测拿到 `DownloadCancelled`；单跑与正序全绿）。最小复现是逆序列表里
+  > 直到 `test_download_engine.py` 为止的 80 个文件（666 passed / 2 failed），
+  > 前面某个文件泄漏了状态。上文「正序与逆序各跑一遍稳定」指的是另一种逆序
+  > 跑法，不覆盖文件级逆序。**这不是新回归** —— 在 `aaeb8d3a9` 的 HEAD 上
+  > 隔离验证过，同样失败。定位具体泄漏源留给 M23 的清理提交。
+
 - **M13 的 BuildVRT 并集范围问题仍在**：内存已经从「按满幅分配 1.2 GB」降到
   「按 1600px 缩略图分配」，但预览图在输入稀疏时绝大部分仍是 nodata 空白。
   要治需按各输入实际范围裁剪或分别出图 —— 那是功能改动，不是本次修复范围。
+
+## 补记：M3 的另一半（2026-08-04）
+
+首轮闭环只挪走了 M3 的主要阻塞源（回调里的瓦片复制 → `asyncio.to_thread`），
+**同一个回调里的 `flush_progress_counts` 仍在下载事件循环上同步做 sqlite
+executemany + commit** —— M3 条目的「范围说明」点破过这一点（「改完 copy 后
+事件循环仍不干净」），但改法只列了 copy，收尾时也没记进本节。现已补完：
+
+- `core/database.py` 的 `get_connection()` 新增 `check_same_thread` 形参（默认
+  `True` 不变）。唯一的 `False` 使用者是 `progress_conn`。
+- flush 拆成三段：`_drain_progress_batch()`（**留在事件循环上**原子摘批）、
+  `_write_progress_batch()`（纯 IO，走 `asyncio.to_thread`）、
+  `_restore_progress_batch()`（写盘失败退回队列）。批次 flush 走新的
+  `flush_progress_async()`，靠 `flush_in_flight` 标志串行化；下载循环收尾
+  （finally）那次仍是同步版 —— 那时已无并发回调，异常路径上不该再引入挂起点。
+
+**摘批为什么必须留在事件循环上**：若让工作线程直接读那三个待写列表，
+`executemany` 执行期间 sqlite3 会释放 GIL，回调此刻 append 进来的新登记会被
+随后的 `clear()` 一起抹掉 —— 失败瓦片静默丢记录，完成判定的 `failed_count>0`
+就守不住（正是本报告「模式 2」那类静默失败）。
+
+三条新用例（`tests/test_fix_progress_flush_offloading.py`）各自做过变异验证：
+
+| 变异注入 | 结果 |
+| --- | --- |
+| 批次 flush 改回事件循环上同步调用 | 「flush 跑在工作线程」翻红（4 次全落在事件循环线程） |
+| 摘批不原子（把活列表交给工作线程，写完再 clear） | 「并发不丢失败行」翻红 |
+| 写盘失败不退回队列 | 「失败批次由后续 flush 补上」翻红（708 → 508 行） |
+
+**第二条变异验证踩了一个坑，值得记下来**：最初的写法测不出东西 —— 708 个上报
+协程之间没有 await 点，事件循环会在 `to_thread` 的调度间隙把它们一口气跑完，
+`executemany` 迭代的是活列表、开始时早已拿到全量，`clear()` 抹掉的全是已落库
+的行，坏实现碰巧无害。要让新登记落进 `executemany` 正在执行的那几毫秒，上报
+必须**分散在时间轴上**（用递增 `asyncio.sleep` 复现真实的网络 IO 到达分布），
+并且撑窗口的延迟要放在 SQL **执行之后**而非之前。这两点写进了测试文件的注释。
+
+测试 962 → **965 passed**（正序）。`get_connection` 加形参连带打断了两处无参的
+测试替身（`test_sparse_task_tiles.py`、`test_fix_map_low_review.py`），已改为
+透传 `*args/**kwargs`。

@@ -93,9 +93,18 @@ DEFAULT_CONFIGS = [
 ]
 
 
-def get_connection():
+def get_connection(check_same_thread: bool = True):
     """
     Get SQLite database connection with Row factory and foreign keys enabled
+
+    Args:
+        check_same_thread: 传 False 才允许跨线程使用该连接。默认 True（sqlite3
+            的默认值）——绝大多数调用方都是「建连接、用完关掉」，同线程即可。
+            唯一的 False 使用者是 task_manager 的进度攒批连接：它在下载事件
+            循环上建立，实际写盘被 asyncio.to_thread 挪到工作线程执行（M3）。
+            SQLite 本身默认编译为 serialized 模式，跨线程共享连接是安全的，
+            check_same_thread 只是 Python 层的线程亲和断言；但调用方仍必须
+            自行保证同一时刻只有一个线程在用它（那边靠 in-flight 标志串行化）。
 
     Returns:
         sqlite3.Connection: Database connection with Row factory enabled
@@ -104,7 +113,7 @@ def get_connection():
         Caller is responsible for closing the connection.
         Consider using get_connection_context() for automatic cleanup.
     """
-    conn = sqlite3.connect(Config.DATABASE_PATH)
+    conn = sqlite3.connect(Config.DATABASE_PATH, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     # Enable foreign key constraints
     conn.execute('PRAGMA foreign_keys = ON')

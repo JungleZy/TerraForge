@@ -1028,55 +1028,130 @@ class TaskManager:
             pending_tile_updates: List[Tuple[Optional[str], int, int, int, int]] = []
             pending_tile_deletes: List[Tuple[int, int, int, int]] = []
 
-            def flush_progress_counts():
-                """把攒批的稀疏失败表写操作和计数增量一次性落库。
+            # M3: flush 的 sqlite 写被挪到工作线程执行,所以同一时刻只允许一个
+            # flush 在跑 —— progress_conn 是 check_same_thread=False 建立的,
+            # Python 层不再拦跨线程使用,串行化得由这里保证。事件循环是单线程,
+            # 「检查 + 置位」天然原子,不需要额外的锁。
+            flush_in_flight = False
 
-                每 PROGRESS_DB_FLUSH_INTERVAL 块以及下载循环结束时各刷一次 ——
-                旧实现每块瓦片都对 tasks 表做 UPDATE、对 task_tiles 做一次
-                INSERT/DELETE + commit,是高频小事务瓶颈。
+            def _drain_progress_batch():
+                """在事件循环线程上原子摘批:换走待写队列,返回快照(无事可做→None)。
+
+                摘批必须留在事件循环上做。若让工作线程直接读那三个列表,
+                executemany 执行期间 sqlite3 会释放 GIL,回调此刻 append 进来的
+                新登记会被随后的 clear() 一起抹掉 —— 失败瓦片静默丢记录,完成
+                判定的 failed_count>0 就守不住,任务被误判 completed。
+                """
+                if not (pending_tile_inserts or pending_tile_updates
+                        or pending_tile_deletes
+                        or unflushed['downloaded'] or unflushed['failed']):
+                    return None
+                batch = (
+                    pending_tile_inserts[:],
+                    pending_tile_updates[:],
+                    pending_tile_deletes[:],
+                    unflushed['downloaded'],
+                    unflushed['failed'],
+                )
+                pending_tile_inserts.clear()
+                pending_tile_updates.clear()
+                pending_tile_deletes.clear()
+                unflushed['downloaded'] = 0
+                unflushed['failed'] = 0
+                return batch
+
+            def _restore_progress_batch(batch):
+                """写盘失败时把批次退回队列头部,交给后续 flush 重试。
+
+                同步版的语义是「executemany 成功后才 clear」——失败时数据留在
+                队列里。摘批式实现必须显式退回才等价,否则一次写盘异常就静默
+                吞掉整批失败行。前插保持相对顺序。
+                """
+                inserts, updates, deletes, downloaded, failed = batch
+                pending_tile_inserts[:0] = inserts
+                pending_tile_updates[:0] = updates
+                pending_tile_deletes[:0] = deletes
+                unflushed['downloaded'] += downloaded
+                unflushed['failed'] += failed
+
+            def _write_progress_batch(batch):
+                """纯 IO:把摘下来的批次落库。跑在工作线程(见 flush_progress_async)。
+
                 一个批次窗口内同一块瓦片只会被上报一次(每次运行每块瓦片只
                 下载一回),所以按操作类型分组 executemany 与逐条执行的最终
                 结果一致。崩溃最多丢一个批次的失败行:对应瓦片没有 cache
                 文件,恢复时自然重下,失败了会重新登记,语义与计数攒批相同。
                 """
-                nonlocal processed_since_flush
-                wrote_anything = False
-                if pending_tile_inserts:
+                inserts, updates, deletes, downloaded, failed = batch
+                if inserts:
                     progress_conn.executemany('''
                         INSERT OR IGNORE INTO task_tiles
                             (task_id, zoom, x, y, status, retry_count, error_message)
                         VALUES (?, ?, ?, ?, 'failed', 1, ?)
-                    ''', pending_tile_inserts)
-                    pending_tile_inserts.clear()
-                    wrote_anything = True
-                if pending_tile_updates:
+                    ''', inserts)
+                if updates:
                     progress_conn.executemany('''
                         UPDATE task_tiles
                         SET retry_count = retry_count + 1, error_message = ?
                         WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                    ''', pending_tile_updates)
-                    pending_tile_updates.clear()
-                    wrote_anything = True
-                if pending_tile_deletes:
+                    ''', updates)
+                if deletes:
                     progress_conn.executemany('''
                         DELETE FROM task_tiles
                         WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                    ''', pending_tile_deletes)
-                    pending_tile_deletes.clear()
-                    wrote_anything = True
-                if unflushed['downloaded'] or unflushed['failed']:
+                    ''', deletes)
+                if downloaded or failed:
                     progress_conn.execute('''
                         UPDATE tasks
                         SET downloaded_tiles = MAX(downloaded_tiles + ?, 0),
                             failed_tiles = MAX(failed_tiles + ?, 0)
                         WHERE id = ?
-                    ''', (unflushed['downloaded'], unflushed['failed'], task_id))
-                    unflushed['downloaded'] = 0
-                    unflushed['failed'] = 0
-                    wrote_anything = True
-                if wrote_anything:
-                    progress_conn.commit()
+                    ''', (downloaded, failed, task_id))
+                progress_conn.commit()
+
+            def flush_progress_counts():
+                """同步落库 —— 只给下载循环收尾(finally)用,那时已无并发回调。
+
+                异常路径上不该再引入新的挂起点,收尾也不存在阻塞事件循环的问题
+                (下载已结束)。批次内的高频 flush 走 flush_progress_async。
+                """
+                nonlocal processed_since_flush
                 processed_since_flush = 0
+                batch = _drain_progress_batch()
+                if batch is None:
+                    return
+                try:
+                    _write_progress_batch(batch)
+                except Exception:
+                    _restore_progress_batch(batch)
+                    raise
+
+            async def flush_progress_async():
+                """批次 flush:摘批留在事件循环上,写盘交给工作线程(M3)。
+
+                每 PROGRESS_DB_FLUSH_INTERVAL 块刷一次 —— 旧实现每块瓦片都对
+                tasks 表做 UPDATE、对 task_tiles 做 INSERT/DELETE + commit,是
+                高频小事务瓶颈;攒批之后瓶颈变成「攒批那一下的同步写盘卡住下载
+                事件循环」,在 SMB/VPN 网络共享上尤其明显(M3 已把同一回调里的
+                瓦片复制挪走,这里补上剩下的一半)。
+                """
+                nonlocal processed_since_flush, flush_in_flight
+                if flush_in_flight:
+                    # 已有批次在写盘。不清零 processed_since_flush,让下一块瓦片
+                    # 立刻再试 —— 本批登记留在队列里,不会丢。
+                    return
+                processed_since_flush = 0
+                batch = _drain_progress_batch()
+                if batch is None:
+                    return
+                flush_in_flight = True
+                try:
+                    await asyncio.to_thread(_write_progress_batch, batch)
+                except Exception:
+                    _restore_progress_batch(batch)
+                    raise
+                finally:
+                    flush_in_flight = False
 
             # Define progress callback
             async def progress_callback(tile: Tile, status: str, error: Optional[str]):
@@ -1157,7 +1232,7 @@ class TaskManager:
 
                     processed_since_flush += 1
                     if processed_since_flush >= PROGRESS_DB_FLUSH_INTERVAL:
-                        flush_progress_counts()
+                        await flush_progress_async()
                 except Exception as e:
                     logger.error(
                         f"Progress callback DB error for tile "
@@ -1228,7 +1303,10 @@ class TaskManager:
                         return
 
                     logger.info(f"Task {task_id}: Starting tile download")
-                    progress_conn = get_connection()
+                    # check_same_thread=False:批次 flush 的写盘被 asyncio.to_thread
+                    # 挪到工作线程执行(M3)。同一时刻只有一个线程用它 —— 由
+                    # flush_progress_async 的 flush_in_flight 标志串行化。
+                    progress_conn = get_connection(check_same_thread=False)
                     try:
                         # 返回值(每块瓦片一条结果)刻意不接收:completed 清单由
                         # progress_callback 逐块并入(见回调里的注释),全量 results

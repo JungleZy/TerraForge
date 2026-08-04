@@ -218,7 +218,11 @@ def test_progress_counts_flushed_in_batches(isolated_config, monkeypatch):
         def __getattr__(self, name):
             return getattr(self._conn, name)
 
-    monkeypatch.setattr(tm_mod, 'get_connection', lambda: SpyingConnection(real_get_connection()))
+    # 透传参数:progress_conn 用 check_same_thread=False 建立(批次 flush 的写盘
+    # 走 asyncio.to_thread,见 task_manager 的 M3 注释)。
+    monkeypatch.setattr(
+        tm_mod, 'get_connection',
+        lambda *a, **kw: SpyingConnection(real_get_connection(*a, **kw)))
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
         for tile in tiles:
