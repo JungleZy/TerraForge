@@ -44,18 +44,17 @@
 
 另外这份文件被 `../plans/2026-07-28-gis-workbench-ui.md` 按路径引用，**请勿移动或改名**。
 
-## 没有配对 plan 的设计稿（7 份）
+## 没有配对 plan 的设计稿（6 份）
 
-`plans/` 与 `specs/` 本该成对（方案 → 步骤），以下 7 份只有设计稿：
+`plans/` 与 `specs/` 本该成对（方案 → 步骤），以下 6 份只有设计稿：
 
 | 文件 | 为什么没有 plan |
 |---|---|
 | `2026-06-16-copernicus-glo30-design.md` | 数据源切换，设计定完直接改代码，没走计划流程 |
 | `2026-06-16-terrain-color-design.md` | 同上，当日即落地合入 master |
-| `2026-07-30-workbench-ux-redesign-design.md` | 2026-07-30 之后项目不再产出 `plans/`——`plans/` 最新一份停在 2026-07-28 |
+| `2026-07-30-workbench-ux-redesign-design.md` | 写下时项目已停止产出 `plans/`（2026-07-28 后停摆，2026-08-04 才随地形三角化计划恢复） |
 | `2026-08-01-concurrency-recommend-design.md` | 同上 |
 | `2026-08-02-absolute-save-path-design.md` | 同上 |
 | `2026-08-04-src-layout-migration-design.md` | 同上；且改动清单本身即步骤，另写 plan 是重复 |
-| `2026-08-04-terrain-triangulation-design.md` | 同上；本轮只做选型验证未动代码，实施时应另起 plan |
 
 反方向（有 plan 没 design）只有一份，见 `../plans/README.md`。

@@ -1,6 +1,8 @@
-# docs/superpowers/plans —— 实施计划归档（10 份）
+# docs/superpowers/plans —— 实施计划归档（11 份，其中 1 份待执行）
 
 > **没有一份代表当前实现。** 这里是 planning 阶段的历史产物，当前架构以仓库根 `CLAUDE.md` 和代码为准。
+>
+> **唯一例外是 `2026-08-04-terrain-triangulation.md`** —— 它是**尚未执行**的新计划，下面三条硬约束（尤其「复选框无效」「源码行号禁止照抄」）**不适用于它**：那份的复选框就是执行进度，代码块就是照着写的。区分办法看清单里的「结果」栏。
 
 ## 三条硬约束
 
@@ -28,6 +30,7 @@
 | `2026-07-27-phase1-data.md` | 2026-07-27 | **已实施**，内容与今天的代码基本一致。**勿当待办重跑**——重跑只会把已修好的代码改回中间态。Task 6 的 `image_only` 语义表已被 0.2.4「边下边复制」推翻 |
 | `2026-07-27-phase2-visual.md` | 2026-07-27 | **已实施**（C1 与 A1-A7 全部落地）。文中「已核实的基线数字」是改造**前**的快照，`!important` 计数与行号今天全部错位。⚠️ Task 1「建立视觉基线截图」若被重跑会覆盖 `../../assets/images/phase2-baseline/` 下唯一的改造前留档 |
 | `2026-07-28-gis-workbench-ui.md` | 2026-07-28 | **已执行后部分被推翻**（`38e3e30fc` 落地，核心产物 dock 两天后被 `c854e12fe` 删除）。仍有效：accent 五令牌、`.workbench` 外壳、状态栏、`.page-content`。📌 该文点名保留的 `--color-on-accent: #041e2b` 对比度实测数据（4.04:1 → 4.74:1）是全仓唯一记录，且没有测试钉住它 |
+| `2026-08-04-terrain-triangulation.md` | 2026-08-04 | **⏳ 待执行**（本目录唯一一份）。8 个任务 + 收尾：RTIN 自适应三角化（新建 `src/services/terrain_tiling/rtin.py`）+ 逐顶点法线。正文的 `rtin_tables`/`rtin_errors`/`rtin_extract` 三段代码**已与设计阶段验证过的原型对拍**（索引表、误差、提取结果逐元素一致），可以照着写。**上面三条硬约束对它不适用** —— 复选框是真实进度，代码块是照着写的。两个批次（Task 1-5 三角化 / Task 6-7 法线）互不依赖，可任选其一或调换顺序；但 Task 3 的索引编码向量化**与 Task 2 绑死不可单做**（理由见该文 Global Constraints） |
 
 ## 与 `../specs/` 的配对
 
@@ -43,6 +46,7 @@
 | `2026-06-16-contour-map.md` | `2026-06-16-contour-map-design.md` |
 | `2026-07-27-master-plan.md` / `-phase1-data.md` / `-phase2-visual.md` | 无 design 稿，三份共同的依据是审查报告 `../../reviews/2026-07-27-ui-review.md` |
 | `2026-07-28-gis-workbench-ui.md` | `2026-07-28-gis-workbench-ui-design.md` |
+| `2026-08-04-terrain-triangulation.md` | `2026-08-04-terrain-triangulation-design.md` |
 
 **唯一有计划没设计稿的是 `2026-05-16-dem-terrain-tiling-ctb-cesium.md`** —— 偏偏就是唯一发生技术路线改道的那条线。CTB → CesiumLab 为什么换、当天换的依据是什么，仓库里查不到任何记录。
 
