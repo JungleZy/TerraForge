@@ -274,6 +274,36 @@ def test_extract_vertex_order_is_first_occurrence():
     )
 
 
+@pytest.mark.parametrize("grid", [17, 65])
+@pytest.mark.parametrize("max_error", [1.0, 50.0])
+def test_extract_triangles_are_counter_clockwise(grid, max_error):
+    """三角形绕向必须是 CCW（有向面积为正），与规则网格分支一致。
+
+    为什么这条不是可有可无的形式检查：下游按三角形绕向算顶点法线。绕向反了
+    法线就整体翻转，Cesium 开背面剔除后【地形直接不可见】—— 而失败形态是
+    HTTP 全 200、任务标 completed、前端一声不吭，只是什么都不显示。
+
+    基准是 cesiumlab_terrain._mesh_constants 那条规则网格路径（切法为
+    [a0,a1,a2] / [a1,a3,a2]），它已经在 Cesium 里验证过能正常渲染，实测
+    512/512 有向面积全正。rtin_extract 起初发射顺序是 a->b->c，实测 25 组
+    grid x max_error 共 43708 个三角形【全部为负】（CW），方向整体反了，
+    改成 a->c->b 后全部转正。
+
+    这个洞当初没有测试钉住，一路漏到接线前才被发现，所以这条断言必须留着。
+    """
+    rng = np.random.default_rng(4)
+    err = rtin_errors(rng.random(grid * grid) * 400.0, grid, True)
+    verts, tris = rtin_extract(err, grid, max_error)
+    vx = (verts % grid).astype(float)
+    vy = (verts // grid).astype(float)
+    a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
+    area = 0.5 * ((vx[b] - vx[a]) * (vy[c] - vy[a]) - (vx[c] - vx[a]) * (vy[b] - vy[a]))
+    assert (area > 0).all(), (
+        f"grid={grid} max_error={max_error}: {int((area <= 0).sum())}/{len(area)} "
+        f"个三角形不是 CCW —— 法线会翻转，Cesium 背面剔除下地形不可见"
+    )
+
+
 def test_larger_max_error_yields_fewer_triangles():
     grid = 65
     rng = np.random.default_rng(5)

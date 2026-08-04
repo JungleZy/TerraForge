@@ -126,7 +126,13 @@ def rtin_extract(errors: np.ndarray, grid: int, max_error: float):
             rec(bx, by, cx, cy, mx, my)
         else:
             tri = []
-            for px, py in ((ax, ay), (bx, by), (cx, cy)):
+            # 发射顺序是 a -> c -> b，不是 a -> b -> c：后者的有向面积恒为负
+            # （两个顶层 rec 的有向面积都是 -mx_^2/2，对半分裂时符号不变，
+            # 于是整棵树全 CW），与规则网格分支（_mesh_constants 的 [a0,a1,a2]
+            # / [a1,a3,a2] 切法，实测 512/512 全正）方向相反。下游按三角形绕向
+            # 算顶点法线，反了会让法线整体翻转 —— Cesium 开背面剔除后地形直接
+            # 不可见，而且是 HTTP 全 200、任务 completed、前端不报错的静默失败。
+            for px, py in ((ax, ay), (cx, cy), (bx, by)):
                 p = py * grid + px
                 idx = idmap.get(p)
                 if idx is None:
