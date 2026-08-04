@@ -437,25 +437,32 @@ def test_header_center_is_the_tile_centre_in_ecef(bbox, n):
 
 @pytest.mark.parametrize("bbox,n", _HEADER_CASES, ids=_HEADER_IDS)
 def test_header_bounding_sphere_radius_encloses_the_tile(bbox, n):
-    """radius 必须约等于瓦片外接球半径 —— 写 0（或写小/写大）都会被 Cesium 拿去做视锥剔除。
+    """radius 必须精确外接瓦片的 8 个角点 —— 写 0（或写小/写大）都会被 Cesium 拿去做视锥剔除。
 
     radius=0 时每张瓦片都被剔掉，地形全不可见，且全程 HTTP 200 + 任务 completed。
 
-    下界给了 0.1% 的松弛而不是「必须 >= 8 个角点的最大距离」：现实现只对 4 个
-    h_min 角点取最大值（外加瓦片中心的 h_max 点），h_max 角点略远一点点，实测缺口
-    是 4.7e-6（1°瓦片，0.35 m / 73 km）到 7.5e-5（10°瓦片，55 m / 726 km）相对量级，
-    几何上可忽略但确实存在。这里如实按「≈外接球」断言并留出松弛，不假装它精确外接。
+    下界是 `>= dmax`，零松弛：「包住」是外接球的定义性质，差 1 nm 也是包不住。
+    此前这里写的是 `>= dmax * 0.999`，因为当时的实现只取 4 个 h_min 角点（外加瓦片
+    中心的 h_max 点），漏掉 4 个 h_max 角点 —— 后者离中心更远（同样经纬跨度在更高
+    高度对应更大的物理距离），实测缺口 0.35 m / 73 km（1°瓦片）到 55 m / 726 km
+    （10°瓦片），且随瓦片尺寸线性放大。实现已改成取全部 8 个角点，缺口归零。
+
+    零松弛不会造成跨平台偶发红灯：dmax 走的就是生产端的 lonlat_to_ecef，两侧喂的
+    经纬高一致，libm / SIMD 的末位差异是共模的，会同时出现在 radius 和 dmax 上。
+    上界留 1e-9 相对松弛（726 km 上约 7e-4 m，是 float64 ULP 的 ~1000 倍），
+    只为吸收「多算一个中心点再取 max」的路径差异，任何真实的吹大都远超它。
     """
     data = encode_quantized_mesh(*bbox, _heights(n))
     hdr = _parse_header(data)
     dmax = float(_tile_corners_ecef(bbox, n, hdr["center"]).max())
 
     assert hdr["radius"] > 0.0, "radius 必须为正 —— 写 0 会让 Cesium 剔掉每张瓦片"
-    assert hdr["radius"] >= dmax * 0.999, (
-        f"radius={hdr['radius']:.3f} 小于瓦片角点最大距离 {dmax:.3f} 的 99.9%，包不住瓦片"
+    assert hdr["radius"] >= dmax, (
+        f"radius={hdr['radius']:.6f} 小于瓦片角点最大距离 {dmax:.6f}"
+        f"（缺 {dmax - hdr['radius']:.6f} m），包不住瓦片"
     )
-    assert hdr["radius"] <= dmax * 1.01, (
-        f"radius={hdr['radius']:.3f} 远大于瓦片角点最大距离 {dmax:.3f}，包围球被吹大了"
+    assert hdr["radius"] <= dmax * (1 + 1e-9), (
+        f"radius={hdr['radius']:.6f} 大于瓦片角点最大距离 {dmax:.6f}，包围球被吹大了"
     )
 
 
