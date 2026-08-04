@@ -133,3 +133,41 @@ def test_mesh_above_65536_vertices_uses_uint32_indices():
     assert vcount == 66049
     assert _hwm_decode(indices)[:6] == _expected_triangles(n)[:6]
     assert list(edges[0]) == [j * n for j in range(n)]  # edges are raw, not HWM-encoded
+
+
+from src.services.terrain_tiling.cesiumlab_terrain import (
+    _high_water_mark_encode,
+    _hwm_encode,
+)
+
+
+def test_vectorised_hwm_matches_loop_on_canonical_indices():
+    """规范形式（顶点按首次出现顺序）下，向量化实现必须与循环版逐元素相同。"""
+    rng = np.random.default_rng(2)
+    for _ in range(20):
+        n_tri = int(rng.integers(4, 400))
+        n_vert = int(rng.integers(3, n_tri * 3))
+        raw = rng.integers(0, n_vert, size=n_tri * 3)
+        # 重排成规范形式：按首次出现顺序重新编号
+        _, first = np.unique(raw, return_index=True)
+        order = raw[np.sort(first)]
+        remap = np.empty(int(raw.max()) + 1, np.int64)
+        remap[order] = np.arange(len(order))
+        canonical = remap[raw].astype(np.uint32)
+
+        assert np.array_equal(_hwm_encode(canonical),
+                              _high_water_mark_encode(canonical))
+
+
+def test_vectorised_hwm_is_decodable():
+    """编码后按 spec 的解码算法还原，必须得回原索引。"""
+    canonical = np.array([0, 1, 2, 1, 3, 2, 4, 3, 1], dtype=np.uint32)
+    enc = _hwm_encode(canonical)
+    highest = 0
+    out = []
+    for code in enc:
+        v = (highest - int(code)) % (1 << 32)
+        out.append(v)
+        if v == highest:
+            highest += 1
+    assert out == list(canonical)

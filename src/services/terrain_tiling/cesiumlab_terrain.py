@@ -234,6 +234,25 @@ def _high_water_mark_encode(indices: np.ndarray) -> np.ndarray:
     return out
 
 
+def _hwm_encode(indices: np.ndarray) -> np.ndarray:
+    """high-water-mark 编码的向量化版本。
+
+    **要求 indices 是规范形式**：顶点按首次出现顺序编号（rtin_extract 的输出
+    天然满足）。此时 highest 在位置 i 的值等于「前 i 个元素中出现过的不同顶点
+    数」，可以用 cumsum 一次算出，不必逐元素循环。
+
+    规则网格分支仍用 _high_water_mark_encode：那边的索引是行优先编号、不是
+    规范形式，且靠 _mesh_constants 的 lru_cache 一个进程只算一次，没有向量化
+    的必要。两者不可互换。
+    """
+    idx = np.asarray(indices, dtype=np.int64)
+    _, first = np.unique(idx, return_index=True)
+    is_first = np.zeros(len(idx), dtype=bool)
+    is_first[np.sort(first)] = True
+    highest = np.cumsum(is_first) - is_first
+    return (highest - idx).astype(np.uint32)
+
+
 def _zz_delta(a: np.ndarray) -> np.ndarray:
     """zigzag-delta 编码:行优先展平 -> 相邻差分 -> zigzag。原先是
     encode_quantized_mesh 里的闭包,提到模块级是为了让 _mesh_constants 复用
