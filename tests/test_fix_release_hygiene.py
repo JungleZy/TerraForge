@@ -16,6 +16,8 @@ import pytest
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
+from conftest import fresh_import  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # M6：reset_to_defaults 必须跟着做 default_save_path 归一化
@@ -26,11 +28,13 @@ def _fresh_db(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.config_manager"):
-        sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    # 走 fresh_import 而不是裸 pop：裸 pop 不恢复，会给后续文件留下第二份模块
+    # 对象（M23）。services.config_manager 被 test_config_manager.py /
+    # test_tile_url_config.py 在**模块级** from-import，正是会踩到的形态。
+    db, cfg = fresh_import(monkeypatch, "app", "core.database",
+                           "services.config_manager")[1:]
     db.init_database()
-    return db, importlib.import_module("services.config_manager")
+    return db, cfg
 
 
 def test_reset_to_defaults_keeps_save_path_absolute(monkeypatch, tmp_path):
@@ -84,10 +88,12 @@ def test_failed_stitch_leaves_no_partial_output(monkeypatch, tmp_path):
     # 同 test_fix_cache_chain：DownloadEngine 构造即读配置库，不隔离
     # DATABASE_PATH 的话 CI 的干净 runner 上会「打不开数据库」。
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
-    sys.modules.pop("core.database", None)
-    importlib.import_module("core.database").init_database()
-    sys.modules.pop("services.download_engine", None)
-    de = importlib.import_module("services.download_engine")
+    # fresh_import 而非裸 pop：download_tile 内 `raise DownloadCancelled()` 解析的是
+    # **它自己模块的全局**，裸 pop 不恢复会让后跑的 test_download_engine.py 在
+    # `pytest.raises(DownloadCancelled)` 里 catch 到另一份类对象，异常穿透（M23，
+    # 文件级逆序下实测两条 stop_flag 用例翻红）。
+    _db, de = fresh_import(monkeypatch, "core.database", "services.download_engine")
+    _db.init_database()
 
     from models.task import Tile
     from PIL import Image
@@ -134,10 +140,12 @@ def test_successful_stitch_still_produces_the_output(monkeypatch, tmp_path):
     # 同 test_fix_cache_chain：DownloadEngine 构造即读配置库，不隔离
     # DATABASE_PATH 的话 CI 的干净 runner 上会「打不开数据库」。
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
-    sys.modules.pop("core.database", None)
-    importlib.import_module("core.database").init_database()
-    sys.modules.pop("services.download_engine", None)
-    de = importlib.import_module("services.download_engine")
+    # fresh_import 而非裸 pop：download_tile 内 `raise DownloadCancelled()` 解析的是
+    # **它自己模块的全局**，裸 pop 不恢复会让后跑的 test_download_engine.py 在
+    # `pytest.raises(DownloadCancelled)` 里 catch 到另一份类对象，异常穿透（M23，
+    # 文件级逆序下实测两条 stop_flag 用例翻红）。
+    _db, de = fresh_import(monkeypatch, "core.database", "services.download_engine")
+    _db.init_database()
 
     from models.task import Tile
     from PIL import Image

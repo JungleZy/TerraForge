@@ -798,25 +798,76 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
 
 ## 已知未闭环
 
-- **M23 的「47 份 pop 清单统一迁移」没有做全量迁移**。已完成的是根因部分：
-  `fresh_import` 现在会恢复 `routes.*` 的注入型全局，并有自检用例钉住
-  「teardown 后 `app.task_manager is routes.api.task_manager`」。逐个改写 47 个
-  文件属于纯机械重构，收益边际、回归面却覆盖整个套件，留给单独的清理提交。
-
-  > **2026-08-04 补充：这条尾巴已经有可复现的表现，不再只是「潜伏」。**
-  > 按**文件级逆序**跑全量（`ls tests/test_*.py | tac` 交给 pytest），
-  > `tests/test_download_engine.py` 的
-  > `test_download_tile_does_not_request_when_stop_flag_already_set` 与
-  > `test_download_tile_stops_retrying_after_stop_flag_set` 两条必失败
-  > （实测拿到 `DownloadCancelled`；单跑与正序全绿）。最小复现是逆序列表里
-  > 直到 `test_download_engine.py` 为止的 80 个文件（666 passed / 2 failed），
-  > 前面某个文件泄漏了状态。上文「正序与逆序各跑一遍稳定」指的是另一种逆序
-  > 跑法，不覆盖文件级逆序。**这不是新回归** —— 在 `aaeb8d3a9` 的 HEAD 上
-  > 隔离验证过，同样失败。定位具体泄漏源留给 M23 的清理提交。
-
 - **M13 的 BuildVRT 并集范围问题仍在**：内存已经从「按满幅分配 1.2 GB」降到
   「按 1600px 缩略图分配」，但预览图在输入稀疏时绝大部分仍是 nodata 空白。
   要治需按各输入实际范围裁剪或分别出图 —— 那是功能改动，不是本次修复范围。
+
+- **M23 的存量迁移**：4 个模块仍有「裸 pop + 别处模块级 from-import」的组合
+  （见下节的棘轮名单）。它们目前**不引爆**，且已被契约测试挡住不再新增。
+
+## 补记：M23 的账（2026-08-04）—— 已复现、已修、规模比原判小一个量级
+
+首轮闭环把 M23 记为「潜伏，逐个改写 47 个文件属纯机械重构，留给单独提交」。
+2026-08-04 复核推翻了「潜伏」这半句，也推翻了「要改 47 个文件」这半句。
+
+**先说结论**：按**文件级逆序**跑全量（`ls tests/test_*.py | tac` 交给 pytest），
+`test_download_engine.py` 的两条 stop_flag 用例**必失败**。已修，正序与文件级
+逆序现在都是 **968 passed**。上文「正序/逆序各跑一遍稳定」指的是另一种逆序跑法，
+不覆盖文件级逆序。这不是那一轮的新回归 —— 在 `aaeb8d3a9` 的 HEAD 上隔离验证过，
+基线同样失败。
+
+**根因**（诊断到类对象 id 层面，非推断）：`test_fix_release_hygiene.py` 裸 pop
+`services.download_engine` 且从不恢复。`test_download_engine.py` 顶部的模块级
+`from services.download_engine import DownloadEngine` 在 collect 期就把名字绑死
+在**旧模块 A** 上，其方法 `download_tile` 的 `__globals__` 里 `DownloadCancelled`
+也是 A 的那份；而测试函数体内 `from services.download_engine import
+DownloadCancelled` 拿到的是 sys.modules 当前的**新模块 B**。实测
+`raises() 捕获的类 id=1029653408` / `download_tile 实际 raise 的类 id=1027048528`
+/ `is` 为 False —— `pytest.raises(B)` 捕不住 A 的异常，异常穿透。正序下三者同一，
+所以只在特定文件顺序下显形。
+
+> **取证方法记一笔**：第一次诊断用 `sys.modules[type(obj).__module__]` 取「实例
+> 所属模块」，那是错的 —— `__module__` 只是字符串，查 sys.modules 拿到的仍是
+> **当前**那份，三个 id 看着一致，把结论引向了错误方向。正确取法是
+> `obj.method.__func__.__globals__['Name']`：函数体内的名字解析走的是它自己的
+> `__globals__`，那才是「代码实际引用的那一份」。
+
+**规模比原判小一个量级**。AST 扫全库（61 处裸 pop，其中 51 处是 `for mod in
+[...]` 的清单式写法，正则会漏）后：被 pop 的模块共 14 个，但
+`app`（45 个文件）和 `core.database`（46 个文件）—— 也就是那「47 份清单」的绝大
+部分 —— **没有任何测试文件在模块级 from-import**（项目规约要求先 monkeypatch
+Config 再在函数内 import），本来就无害。真正危险的组合只有 5 个模块，其中实际
+引爆的只有 1 个（只有它涉及 `pytest.raises` 的类身份比较；另外 4 个实测跑过，
+全绿）。**所以不需要改 47 个文件，改 1 个即可。**
+
+**试过一个更"彻底"的方案，失败了，值得记下来别再走**：在 conftest 加 autouse
+fixture，在每个测试 teardown 时把项目模块的 sys.modules 恢复成测试前的快照。
+第一版打红 1 条（恢复了模块身份却没恢复注入型全局，造出
+`app.task_manager is not routes.api.task_manager` 的新不一致）；补上注入型全局的
+恢复后**打红 15 条**，集中在走 app 的 HTTP 用例。原因是根本性的：**现有 965 个
+测试是建立在「裸 pop 不恢复」这个既成事实上的** —— 强制全局恢复等于改变了所有
+测试的运行前提，回归面覆盖整个套件，正是原报告预警过的那个风险。收益（挡住 4 个
+不引爆的潜伏项）与代价完全不匹配，已撤回。
+
+**最终落地**：
+1. `test_fix_release_hygiene.py` 的 3 处裸 pop 改用 `conftest.fresh_import`
+   （`services.download_engine` ×2、`services.config_manager` ×1）。
+2. `tests/test_conftest_isolation_contract.py` 新增三条契约：
+   - **静态棘轮** `test_no_new_module_double_instance_risk`：AST 扫描全库，
+     「裸 pop 的模块 ∩ 别处模块级 from-import 的模块」不得超出 KNOWN 名单
+     （现存 4 个：`models.task` / `services.config_manager` /
+     `services.contour_task_manager` / `services.dem_download_engine`）。
+     新增一个就翻红，并在断言消息里直接给出改用 `fresh_import` 的指引。
+   - **棘轮另一侧** `test_known_risk_list_has_no_stale_entries`：修掉存量后
+     必须同步从 KNOWN 移除，否则棘轮会悄悄松掉。
+   - **真实场景** `test_release_hygiene_followed_by_download_engine_stays_green`：
+     子进程按「逆序会产生的那个顺序」跑那两个文件，断言退出码为 0。必须用子
+     进程 —— 模块身份问题只在全新解释器 + 特定文件顺序下显形。
+3. 变异验证：把 `test_fix_release_hygiene.py` 改回裸 pop，静态棘轮与真实场景
+   两条**各自独立翻红**。
+
+**存量 4 个仍在 KNOWN 名单里**，它们目前不引爆（不涉及跨模块的身份比较），
+逐个迁移仍是纯机械工作 —— 但现在有棘轮兜底，不会继续恶化。
 
 ## 补记：M3 的另一半（2026-08-04）
 
