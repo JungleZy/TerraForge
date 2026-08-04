@@ -300,7 +300,14 @@ def _mesh_constants(n: int):
     return uzz, vzz, encoded_indices, (west_idx, south_idx, east_idx, north_idx)
 
 
-def encode_quantized_mesh(west: float, south: float, east: float, north: float, heights_grid: np.ndarray) -> bytes:
+def encode_quantized_mesh(west: float, south: float, east: float, north: float,
+                          heights_grid: np.ndarray, mesh=None) -> bytes:
+    """编码一张 quantized-mesh 瓦片。
+
+    mesh=None 时用完整规则网格（索引表走 _mesh_constants 的进程级缓存）。
+    传入 mesh=(vertex_grid_indices, triangles) 时按该三角网编码 —— 顶点是
+    格点的子集，triangles 是局部索引，rtin_extract 的输出直接可用。
+    """
     n = heights_grid.shape[0]
     assert heights_grid.shape == (n, n)
     h_min = float(np.min(heights_grid))
@@ -340,16 +347,37 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float, 
         + struct.pack("<ddd", float(hox), float(hoy), float(hoz))
     )
 
-    # vertices: regular grid。u/v 与三角形索引、边索引只依赖 n,走进程级缓存;
-    # 每瓦片只需现算高度相关的 hh/hzz。
-    uzz, vzz, encoded_indices, edge_indices = _mesh_constants(n)
-    hh = ((heights_grid - h_min) / (h_max - h_min) * 32767.0).astype(np.uint16)
-    hzz = _zz_delta(hh)
+    hh_full = ((heights_grid - h_min) / (h_max - h_min) * 32767.0).astype(np.uint16)
+
+    if mesh is None:
+        uzz, vzz, encoded_indices, edge_indices = _mesh_constants(n)
+        hzz = _zz_delta(hh_full)
+        vertex_count = n * n
+    else:
+        vert_idx, tris = mesh
+        vertex_count = len(vert_idx)
+        rows = (vert_idx // n).astype(np.int64)
+        cols = (vert_idx % n).astype(np.int64)
+        u_axis = np.linspace(0, 32767, n).round().astype(np.uint16)
+        uu = u_axis[cols]
+        vv = u_axis[rows]
+        uzz = _zz_delta(uu)
+        vzz = _zz_delta(vv)
+        hzz = _zz_delta(hh_full.reshape(-1)[vert_idx])
+        encoded_indices = _hwm_encode(tris.reshape(-1))
+        # 四条边索引：保留顶点中落在各边上的，按 spec 要求的顺序排列
+        # （west/east 由南向北，south/north 由西向东；Cesium 只要求同一条边
+        #  在相邻瓦片间顺序一致，这里用格点坐标排序保证确定性）
+        edge_indices = (
+            np.where(cols == 0)[0][np.argsort(rows[cols == 0])].astype(np.uint32),
+            np.where(rows == 0)[0][np.argsort(cols[rows == 0])].astype(np.uint32),
+            np.where(cols == n - 1)[0][np.argsort(rows[cols == n - 1])].astype(np.uint32),
+            np.where(rows == n - 1)[0][np.argsort(cols[rows == n - 1])].astype(np.uint32),
+        )
 
     # quantized-mesh-1.0: index width is chosen by VERTEX COUNT (>65536 -> 32-bit),
     # not by the max encoded value. High-water-mark diffs wrap around, so the u16
     # branch must truncate them (astype(np.uint16)) rather than range-check them.
-    vertex_count = n * n
     index_dtype = np.uint32 if vertex_count > 65536 else np.uint16
 
     def pack_indices(arr: np.ndarray) -> bytes:

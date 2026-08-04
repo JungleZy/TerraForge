@@ -171,3 +171,42 @@ def test_vectorised_hwm_is_decodable():
         if v == highest:
             highest += 1
     assert out == list(canonical)
+
+
+def test_encode_with_explicit_mesh_writes_that_mesh():
+    """传入 mesh 时，写出的顶点数/三角形数必须来自 mesh，而非满网格。"""
+    from src.services.terrain_tiling.rtin import rtin_errors, rtin_extract
+
+    n = 17
+    h = _heights(n)
+    err = rtin_errors(h.reshape(-1), n, pin_border=True)
+    verts, tris = rtin_extract(err, n, max_error=5.0)
+    assert len(tris) < 2 * (n - 1) * (n - 1), "构造的地形应该能被简化，否则测试无意义"
+
+    data = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, mesh=(verts, tris))
+    vcount, indices, edges = _parse(data, np.uint16)
+    assert vcount == len(verts)
+    assert len(indices) == len(tris) * 3
+
+
+def test_encode_with_mesh_keeps_all_border_points_in_edge_indices():
+    """自适应网格下，四条边索引仍必须覆盖整条边（边界满密度的体现）。"""
+    from src.services.terrain_tiling.rtin import rtin_errors, rtin_extract
+
+    n = 17
+    h = _heights(n)
+    err = rtin_errors(h.reshape(-1), n, pin_border=True)
+    verts, tris = rtin_extract(err, n, max_error=5.0)
+    data = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, mesh=(verts, tris))
+    _, _, edges = _parse(data, np.uint16)
+    for e in edges:
+        assert len(e) == n, f"边索引应有 {n} 个点，实得 {len(e)}"
+
+
+def test_encode_without_mesh_is_byte_identical_to_before():
+    """mesh=None 必须走原路径 —— 这是回归护栏，规则网格字节流不能变。"""
+    n = 17
+    h = _heights(n)
+    a = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h)
+    b = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, mesh=None)
+    assert a == b
