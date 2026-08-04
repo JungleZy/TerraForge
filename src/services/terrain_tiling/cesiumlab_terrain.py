@@ -342,7 +342,13 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float, 
     body.write(vzz.tobytes())
     body.write(hzz.tobytes())
 
-    body.write(struct.pack("<I", len(encoded_indices)))
+    # IndexData.triangleCount 是【三角形数】，不是索引元素数 —— 读端按
+    # triangleCount*3 取索引。此前这里写的是 len(encoded_indices)（即元素数），
+    # Cesium 于是去读 3 倍的索引而越界，抛 RangeError: Invalid typed array length
+    # （tile_size=65 时 24576*3=73728），所有瓦片解码失败、地形一片都渲染不出来，
+    # 且全程 HTTP 200、任务标 completed、前端不报错。
+    # 下面 EdgeIndices 的 len(edge) 是对的：那几个字段 spec 定义就是顶点数。
+    body.write(struct.pack("<I", len(encoded_indices) // 3))
     body.write(pack_indices(encoded_indices))
 
     for edge in edge_indices:

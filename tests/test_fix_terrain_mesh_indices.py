@@ -57,9 +57,15 @@ def _parse(data: bytes, index_dtype) -> tuple[int, np.ndarray, list[np.ndarray]]
     off += 4
     # u/v/h zigzag deltas are always uint16.
     off += vcount * 2 * 3
-    (icount,) = struct.unpack_from("<I", data, off)
+    # IndexData.triangleCount 按 spec 是【三角形数】，索引元素数 = triangleCount * 3。
+    # 此前这里直接把该字段当索引元素数读（count=tri_count），与当时的编码端用了
+    # 同一套错误约定，两边自洽所以测试通过 —— 而 Cesium 按 spec 读 triangleCount*3
+    # 个索引，实测抛 RangeError: Invalid typed array length。解析必须照 spec 写，
+    # 不能照实现写，否则这个测试测的是「实现和自己一致」而不是「实现符合 spec」。
+    (tri_count,) = struct.unpack_from("<I", data, off)
     off += 4
     isize = np.dtype(index_dtype).itemsize
+    icount = tri_count * 3
     indices = np.frombuffer(data, dtype=index_dtype, count=icount, offset=off)
     off += icount * isize
     edges = []
@@ -75,6 +81,24 @@ def _parse(data: bytes, index_dtype) -> tuple[int, np.ndarray, list[np.ndarray]]
 def _heights(n: int) -> np.ndarray:
     yy, xx = np.mgrid[0:n, 0:n]
     return (100.0 + xx * 2.5 + yy * 1.25).astype(np.float64)
+
+
+def test_triangle_count_field_holds_triangle_count_not_index_count():
+    """IndexData.triangleCount 必须写【三角形数】，不是索引元素数。
+
+    写成索引元素数时，Cesium 会去读 triangleCount*3 个索引而越界，实测
+    `RangeError: Invalid typed array length: 73728`（tile_size=65 时 24576*3），
+    整个地形管线因此静默失效 —— 请求全 200、任务标 completed、前端不报错，
+    但一片地形都渲染不出来。
+    """
+    for n in (17, 65):
+        data = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, _heights(n))
+        off = HEADER_SIZE + 4 + (n * n) * 2 * 3   # header + vertexCount + u/v/h
+        (tri_count,) = struct.unpack_from("<I", data, off)
+        assert tri_count == 2 * (n - 1) * (n - 1), (
+            f"n={n}: triangleCount={tri_count}, 期望 {2*(n-1)*(n-1)}"
+            f"（若等于 {6*(n-1)*(n-1)} 则是误写成了索引元素数）"
+        )
 
 
 def test_small_mesh_uses_uint16_indices_and_correct_offsets():

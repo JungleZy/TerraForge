@@ -1236,7 +1236,11 @@ async function previewTask(task) {
             if (layerMeta) {
                 const prev = viewer.terrainProvider;
                 // 先 await 到局部变量，序号仍有效才落地，避免过期结果覆盖当前预览
-                const provider = await Cesium.CesiumTerrainProvider.fromUrl(`${base}/layer.json`);
+                // 传目录，不能传 `${base}/layer.json` —— fromUrl 内部会 appendForwardSlash()
+                // 后再拼 layer.json，传后者会请求 .../layer.json/layer.json 得 404。
+                // 更坑的是它不 reject：拿不到 layer.json 时静默按默认假设建 provider
+                // （实测 hasWaterMask 变成 true），随后瓦片请求全 404，前端毫无提示。
+                const provider = await Cesium.CesiumTerrainProvider.fromUrl(base);
                 if (seq !== _previewSeq) return;
                 viewer.terrainProvider = provider;
                 _previewState = { kind: 'terrain', taskId: task.id, taskType: t, name: task.name, prevTerrainProvider: prev };
