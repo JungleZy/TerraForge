@@ -1,4 +1,4 @@
-# docs/superpowers/specs —— 设计稿归档（12 份）
+# docs/superpowers/specs —— 设计稿归档（13 份）
 
 > **没有一份代表当前实现。** 这里是动工前的方案记录，写的是「打算怎么做」，不是「今天怎么跑」。当前架构以仓库根 `CLAUDE.md` 和代码为准。
 
@@ -24,6 +24,7 @@
 | `2026-08-01-concurrency-recommend-design.md` | 2026-08-01 | **已实现**，随当轮改动落地 |
 | `2026-08-02-absolute-save-path-design.md` | 2026-08-02 | **已实现，但一节被 0.2.4 整体推翻（局部失效，见下）** |
 | `2026-08-04-src-layout-migration-design.md` | 2026-08-04 | **待实施**。写下时代码仍是根目录平铺 `core/`/`models/`/`routes/`/`services/`；正文里的 493/302 处计数与 `config.py:58` 等行号是当日快照 |
+| `2026-08-04-terrain-triangulation-design.md` | 2026-08-04 | **主体待实施；「插曲」一节的两个 bug 已修复落地**。给地形切片加「自适应三角化（自写 Martini/RTIN）」与「逐顶点法线」两个可选开关。正文大半是**实测数据与选型排除依据**（3518 个真实瓦片样本，山地 + 平缓两套 DEM）——QEM/PyMeshLab、fast-simplification、自研 TVD + Numba 三条路都实测后排除，附录 B 记了 8 个产生过假数字的坑。**两条必读**：①「插曲」一节记录了 `triangleCount` 字段写错导致**地形从未真正工作过**，以及测试为何镜像了这个 bug；② 实测同屏峰值仅 27.8 万三角形，**几何不是 GPU 瓶颈**，减面的价值在存储而非帧率 |
 
 ## ⚠️ 两份「局部失效」的，点名
 
@@ -43,9 +44,9 @@
 
 另外这份文件被 `../plans/2026-07-28-gis-workbench-ui.md` 按路径引用，**请勿移动或改名**。
 
-## 没有配对 plan 的设计稿（6 份）
+## 没有配对 plan 的设计稿（7 份）
 
-`plans/` 与 `specs/` 本该成对（方案 → 步骤），以下 5 份只有设计稿：
+`plans/` 与 `specs/` 本该成对（方案 → 步骤），以下 7 份只有设计稿：
 
 | 文件 | 为什么没有 plan |
 |---|---|
@@ -55,5 +56,6 @@
 | `2026-08-01-concurrency-recommend-design.md` | 同上 |
 | `2026-08-02-absolute-save-path-design.md` | 同上 |
 | `2026-08-04-src-layout-migration-design.md` | 同上；且改动清单本身即步骤，另写 plan 是重复 |
+| `2026-08-04-terrain-triangulation-design.md` | 同上；本轮只做选型验证未动代码，实施时应另起 plan |
 
 反方向（有 plan 没 design）只有一份，见 `../plans/README.md`。
