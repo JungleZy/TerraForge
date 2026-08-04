@@ -78,9 +78,52 @@ def _parse(data: bytes, index_dtype) -> tuple[int, np.ndarray, list[np.ndarray]]
     return vcount, indices, edges
 
 
+def _zigzag_decode(z: np.ndarray) -> np.ndarray:
+    """zigzag 逆变换。编码端是 (v << 1) ^ (v >> 31)，逆变换是 (z >> 1) ^ -(z & 1)。"""
+    z = z.astype(np.int64)
+    return (z >> 1) ^ -(z & 1)
+
+
+def _decode_uvh(data: bytes, vcount: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """把 VertexData 的 u/v/height 三段反解回原值。
+
+    三段各 vcount 个 uint16，都是 zigzag(相邻差分)，所以逆序是「zigzag 逆 -> 累加」。
+    只断言计数（vcount/triangleCount/边长度）是测不出顶点内容的：u/v 互换、量化尺度
+    写错、高程取错顶点，产出的字节流长度分毫不差，Cesium 也能正常解码正常渲染，
+    只是地形整个错位或变平 —— 又一款「HTTP 200 + 任务 completed + 前端不报错」的
+    静默失效。要钉住这些就必须把顶点数据真解出来比对。
+    """
+    off = HEADER_SIZE + 4
+    raw = np.frombuffer(data, dtype=np.uint16, count=vcount * 3, offset=off)
+    out = []
+    for k in range(3):
+        out.append(np.cumsum(_zigzag_decode(raw[k * vcount:(k + 1) * vcount])))
+    return out[0], out[1], out[2]
+
+
+def _expected_uv_axis(n: int) -> np.ndarray:
+    """u/v 量化轴：n 个格点均匀铺满 0..32767（spec 的说法，与生产实现无关地独立算）。
+
+    这里没有浮点歧义：quantized-mesh 的 tile_size 恒为 2^k+1，n-1 是 2 的幂，
+    i*32767/(n-1) 在 float64 下精确可表示，round 不会踩到 .5 的边界歧义。
+    """
+    return np.round(np.arange(n) * 32767 / (n - 1)).astype(np.int64)
+
+
 def _heights(n: int) -> np.ndarray:
     yy, xx = np.mgrid[0:n, 0:n]
     return (100.0 + xx * 2.5 + yy * 1.25).astype(np.float64)
+
+
+def _rtin_mesh(n: int, max_error: float = 5.0):
+    """构一张真被简化过的自适应网格，返回 (heights, verts, tris)。"""
+    from src.services.terrain_tiling.rtin import rtin_errors, rtin_extract
+
+    h = _heights(n)
+    err = rtin_errors(h.reshape(-1), n, pin_border=True)
+    verts, tris = rtin_extract(err, n, max_error=max_error)
+    assert len(tris) < 2 * (n - 1) * (n - 1), "构造的地形应该能被简化，否则测试无意义"
+    return h, verts, tris
 
 
 def test_triangle_count_field_holds_triangle_count_not_index_count():
@@ -210,3 +253,100 @@ def test_encode_without_mesh_is_byte_identical_to_before():
     a = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h)
     b = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, mesh=None)
     assert a == b
+
+
+# 规则网格路径的 golden 字节指纹。
+#
+# 来历：commit 85a532c（encode_quantized_mesh 新增 mesh 参数）**之前**的实现，
+# 对下列固定输入产出的 payload body 的 sha256：
+#   bbox = (west=100.0, south=30.0, east=101.0, north=31.0)
+#   heights = _heights(n)（本文件顶部那个 100 + 2.5x + 1.25y 的斜面）
+#   n ∈ {17, 65, 257}   —— 65 是生产默认 tile_size，257 走 uint32 索引分支
+#
+# 为什么需要这个：上面的 test_encode_without_mesh_is_byte_identical_to_before 名字
+# 说的是「与改动前一致」，实测它做不到 —— 它比的是同一版本内 encode(...) 与
+# encode(..., mesh=None)，只能证明默认参数是 None。把 mesh is None 分支里的 uzz
+# 整个改错，那条测试连同全部地形测试照样全绿。真正的跨版本护栏只能是钉死的指纹。
+#
+# 为什么只哈希 body 不哈希整包：header 那 88 字节是 ECEF 经纬度换算 + np.linalg.norm
+# 的 float64 结果，跨平台/跨 BLAS 有末位 ULP 漂移的可能，而本项目 Linux 与 Windows
+# 都要出包，拿它当指纹会变成偶发红灯。body 全是整数量化结果（IEEE754 的 +-*/ 保证
+# 正确舍入，处处一致），且顶点/索引/边全在 body 里 —— 要守的就是它。
+#
+# 这个哈希红了不代表它自己脆：它意味着规则网格的字节流真的变了。请先确认那是有意的，
+# 再更新常量，不要直接删掉这个测试。
+_GOLDEN_REGULAR_GRID_BODY_SHA256 = {
+    17: "0772d3632a187bc6400e98ab953361f7ae286b24d4f13a83868534592bb9a792",
+    65: "2d9da4adc5721d4f0805876db352ca0d534c192f0b742117fbcfea2daa3aaf6b",
+    257: "d7868ff5919837613f792c69976d5ce6e272ef60750716e2b3f7a62fe09391b8",
+}
+
+
+@pytest.mark.parametrize("n", sorted(_GOLDEN_REGULAR_GRID_BODY_SHA256))
+def test_regular_grid_bytes_match_golden_fingerprint(n):
+    """mesh=None 的字节流必须与 85a532c 之前逐字节一致（见上方常量的注释）。"""
+    import hashlib
+
+    data = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, _heights(n))
+    got = hashlib.sha256(data[HEADER_SIZE:]).hexdigest()
+    assert got == _GOLDEN_REGULAR_GRID_BODY_SHA256[n], (
+        f"n={n}: 规则网格字节流变了。got={got} "
+        f"expected={_GOLDEN_REGULAR_GRID_BODY_SHA256[n]}"
+    )
+
+
+def test_encode_with_mesh_writes_correct_vertex_uvh():
+    """自适应分支的顶点数据必须逐个对上：u 来自列、v 来自行、高程来自该顶点。
+
+    只断言 vcount 是测不出内容的 —— u/v 互换、量化尺度 32767 写成 32766、
+    高程取错顶点，三种都不改变任何长度字段。
+    """
+    n = 17
+    h, verts, tris = _rtin_mesh(n)
+    data = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, mesh=(verts, tris))
+    vcount, _, _ = _parse(data, np.uint16)
+    assert vcount == len(verts)
+
+    u, v, hq = _decode_uvh(data, vcount)
+    axis = _expected_uv_axis(n)
+    rows, cols = verts // n, verts % n
+    # 顶点不能全落在对角线上，否则 u/v 互换这个变异测不出来
+    assert (rows != cols).any()
+
+    assert np.array_equal(u, axis[cols]), "u 必须由格点【列】决定"
+    assert np.array_equal(v, axis[rows]), "v 必须由格点【行】决定"
+
+    # 高程：量化公式与生产同源，但这里要钉的是「哪个格点的高程进了哪个槽位」
+    h_min, h_max = float(h.min()), float(h.max())
+    expected_h = ((h - h_min) / (h_max - h_min) * 32767.0).astype(np.uint16).reshape(-1)
+    assert np.array_equal(hq, expected_h[verts].astype(np.int64))
+
+
+def test_encode_with_mesh_edge_indices_are_sorted_and_on_the_right_edge():
+    """四条边索引：槽位不能串，边内顺序必须严格递增。
+
+    槽位串了或顺序乱了，相邻瓦片的公共边顶点对不上 -> 地形裂缝，同样是静默的。
+    代码注释写着「按 spec 要求的顺序排列」，这条测试负责让那句话可证伪。
+    """
+    n = 17
+    h, verts, tris = _rtin_mesh(n)
+    data = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, mesh=(verts, tris))
+    vcount, _, edges = _parse(data, np.uint16)
+    u, v, _ = _decode_uvh(data, vcount)
+
+    west, south, east, north = edges
+    # (槽位名, 该边索引, 恒定的那一轴, 恒定值, 递增的那一轴)
+    cases = [
+        ("west", west, u, 0, v),
+        ("south", south, v, 0, u),
+        ("east", east, u, 32767, v),
+        ("north", north, v, 32767, u),
+    ]
+    for name, edge, const_axis, const_val, vary_axis in cases:
+        assert len(edge) == n, f"{name}: 边索引应有 {n} 个点，实得 {len(edge)}"
+        assert (const_axis[edge] == const_val).all(), (
+            f"{name}: 该边上所有点的定值轴必须恒为 {const_val}，实得 "
+            f"{sorted(set(const_axis[edge].tolist()))}（槽位串了？）"
+        )
+        along = vary_axis[edge]
+        assert (np.diff(along) > 0).all(), f"{name}: 边内顺序必须严格递增，实得 {along.tolist()}"
