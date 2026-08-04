@@ -8,7 +8,7 @@ GeoLibre 的定位是「浏览器里的查看/分析平台」（Tauri + React + 
 
 GeoLibre 的 3D 地形用 Mapzen Terrarium 公开瓦片（`packages/map/src/map-controller.ts:88`，`s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`，maxzoom 15，无鉴权，解码公式 `R*256 + G + B/256 - 32768`）。
 
-初判曾建议引入作 DEM 第二数据源，**核实本仓库后撤回**：`services/dem_task_manager.py:100` 的默认数据集已是 `COP-DEM-GLO-30`——AWS 公开桶 `copernicus-dem-30m.s3.amazonaws.com` 免签名（`services/dem_download_engine.py:59-67`），30m 分辨率、全球覆盖，质量优于 Terrarium（混合源、z15 封顶）。
+初判曾建议引入作 DEM 第二数据源，**核实本仓库后撤回**：`src/services/dem_task_manager.py:100` 的默认数据集已是 `COP-DEM-GLO-30`——AWS 公开桶 `copernicus-dem-30m.s3.amazonaws.com` 免签名（`src/services/dem_download_engine.py:59-67`），30m 分辨率、全球覆盖，质量优于 Terrarium（混合源、z15 封顶）。
 
 残余价值仅一点：Terrarium 按 XYZ 金字塔取数，小区块不必整下载 1°×1° 的 COG 颗粒。记录于此，避免将来重复评估。
 
@@ -16,7 +16,7 @@ GeoLibre 的 3D 地形用 Mapzen Terrarium 公开瓦片（`packages/map/src/map-
 
 来源：GeoLibre `apps/geolibre-desktop/src/lib/offline-regions.ts`
 
-对应问题：本项目瓦片 cache（`cache/<style>/<z>/<x>/<y>.png`）跨任务共享，删除任务时 `delete_files` 只敢删任务目录（`services/task_cleanup.py`），共享 cache 没有安全清理手段。
+对应问题：本项目瓦片 cache（`cache/<style>/<z>/<x>/<y>.png`）跨任务共享，删除任务时 `delete_files` 只敢删任务目录（`src/services/task_cleanup.py`），共享 cache 没有安全清理手段。
 
 可借鉴机制：
 
@@ -40,13 +40,13 @@ GeoLibre 的 3D 地形用 Mapzen Terrarium 公开瓦片（`packages/map/src/map-
 来源：GeoLibre `CLAUDE.md` / `.github/workflows/ci.yml`
 
 - **覆盖率 ratchet 地板**：CI 设覆盖率下限（其前端 78% 行/78% 分支/63% 函数、后端 `--cov-fail-under=55`），取值是「当前值下压几点」；覆盖率涨上去就把地板调高锁死。防回归比冲一次性高覆盖现实。本项目可给 pytest 加 `--cov-fail-under`。
-- **镜像常量 + 漂移检测测试**：上游包未导出的常量（如 maplibre-gl-vector 内部 2 GiB 上限）在自己仓库镜像一份，配一个上游升级时会失败的测试。对本项目 vendored 的 CesiumLab tiler（`services/terrain_tiling/cesiumlab_terrain.py`）和 `static/vendor/cesium/1.143.0` 完全适用——vendor 升级时镜像常量不会静默漂移。
+- **镜像常量 + 漂移检测测试**：上游包未导出的常量（如 maplibre-gl-vector 内部 2 GiB 上限）在自己仓库镜像一份，配一个上游升级时会失败的测试。对本项目 vendored 的 CesiumLab tiler（`src/services/terrain_tiling/cesiumlab_terrain.py`）和 `static/vendor/cesium/1.143.0` 完全适用——vendor 升级时镜像常量不会静默漂移。
 
 ## 4. 跨反经线 bbox 拆分（对照检查项）
 
 来源：GeoLibre `apps/geolibre-desktop/src/lib/offline-tiles.ts`——`west > east` 的 bbox 拆成 `[west, 180]` + `[-180, east]` 两段再枚举瓦片。
 
-本项目 `services/dem_granules.py:42` 明确「bbox does not cross antimeridian (caller should split)」。可对照检查各调用方（瓦片下载、GeoTIFF 拼接）是否都做了拆分或显式拒绝，有缺口的补上。
+本项目 `src/services/dem_granules.py:42` 明确「bbox does not cross antimeridian (caller should split)」。可对照检查各调用方（瓦片下载、GeoTIFF 拼接）是否都做了拆分或显式拒绝，有缺口的补上。
 
 ## 5. 低优先级备查
 

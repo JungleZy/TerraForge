@@ -19,10 +19,10 @@
 
 **触发条件**：只在 `downloads/terrain/base_z8/` 真实存在（即用户手工构建过全球 base）时才看得出来。没构建 / `parent_url` 为空时是单层 provider，没有「被遮蔽」这回事——但那 682 片无用瓦片的切片耗时、磁盘占用，以及 `meta.json` 里 minHeight 被 0 值污染恒为 0，是始终存在的代价。
 
-完整分析、代码位置（`services/terrain_tiling/cesiumlab_terrain.py` 的 `_tile_ranges` z≤4 全球分支、`DemSampler.sample` 的越界钳位）和改法见 [`../../reviews/2026-08-03-full-project-review.md`](../../reviews/2026-08-03-full-project-review.md) 的 **M12** 条目。
+完整分析、代码位置（`src/services/terrain_tiling/cesiumlab_terrain.py` 的 `_tile_ranges` z≤4 全球分支、`DemSampler.sample` 的越界钳位）和改法见 [`../../reviews/2026-08-03-full-project-review.md`](../../reviews/2026-08-03-full-project-review.md) 的 **M12** 条目。
 
 ## 两个没有界面的配置键
 
-`terrain_global_base_path`（全球 base 目录，默认 `./downloads/terrain/base_z8`）和 `terrain_base_parent_url`（写进任务 `layer.json` 的 `parentUrl`，默认 `http://localhost:5000/terrain/base/layer.json`）在配置页上**没有对应的输入框**，只能通过 `PUT /api/config` 改，或者直接改数据库 `config` 表。默认值在 `core/database.py` 的 `DEFAULT_CONFIGS` 里。
+`terrain_global_base_path`（全球 base 目录，默认 `./downloads/terrain/base_z8`）和 `terrain_base_parent_url`（写进任务 `layer.json` 的 `parentUrl`，默认 `http://localhost:5000/terrain/base/layer.json`）在配置页上**没有对应的输入框**，只能通过 `PUT /api/config` 改，或者直接改数据库 `config` 表。默认值在 `src/core/database.py` 的 `DEFAULT_CONFIGS` 里。
 
 改 `terrain_base_parent_url` 的典型场景：服务不跑在 `localhost:5000`（换端口、部署到内网 IP 或域名），此时默认值指向的地址在客户端解析不到，级联会静默失败——Cesium 只是拿不到父层数据，同样不报错。

@@ -154,42 +154,43 @@ uv run python app.py
 ```
 map-download/
 ├── app.py                  # Flask 应用入口（组合根：注册蓝图、注入管理器）
-├── core/                   # 应用基础设施
-│   ├── config.py          # 配置类（路径、密钥、版本）
-│   ├── database.py        # 数据库初始化与连接管理（含幂等迁移）
-│   ├── startup_banner.py  # 启动信息横幅
-│   └── process_watchdog.py # reloader 子进程看门狗
-├── nuitka_build.py         # Nuitka 打包配置（GDAL/PROJ 环境设置在 core/bundle.py）
+├── nuitka_build.py         # Nuitka 打包配置（GDAL/PROJ 环境设置在 src/core/bundle.py）
 ├── build.sh / build.bat    # 本地构建脚本
 ├── requirements.txt        # Python 依赖
-├── models/                 # 数据模型（任务/瓦片模型与枚举）
-├── services/               # 业务逻辑
-│   ├── download_engine.py  # Google 瓦片下载引擎
-│   ├── task_manager.py     # 瓦片任务管理器
-│   ├── config_manager.py   # 配置管理器
-│   ├── dem_download_engine.py  # DEM 下载引擎（Copernicus GLO-30 / ASTER GDEM）
-│   ├── dem_task_manager.py     # DEM 任务管理器
-│   ├── dem_granules.py         # 1°×1° 分幅命名工具（GLO-30 / ASTGTM / ASTWBD）
-│   ├── earthdata_client.py     # NASA Earthdata Login 认证
-│   ├── contour_engine.py       # 等高线生成引擎
-│   ├── contour_task_manager.py # 等高线任务管理器
-│   ├── contour_task_tiler.py   # 等高线瓦片切分
-│   ├── local_terrain_task_manager.py  # 本地地形（上传 GeoTIFF）任务管理器
-│   ├── terrain_tiling/         # Cesium quantized-mesh 地形切片
-│   ├── geo_validation.py       # bbox / 缩放级别校验（各管线共用）
-│   ├── system_proxy.py         # 系统代理检测
-│   └── task_cleanup.py         # 任务产物清理与缓存管理
-├── routes/                 # Flask 路由
-│   ├── main.py            # 页面路由
-│   ├── api.py             # 瓦片任务 / 历史 / 配置 / 缓存 API
-│   ├── dem_api.py         # DEM 任务 API
-│   ├── terrain_api.py     # DEM 地形切片 API
-│   ├── local_terrain_api.py  # 本地地形 API
-│   ├── contour_api.py     # 等高线 API
-│   ├── terrain_static.py  # 地形瓦片静态服务
-│   ├── tiles_static.py    # 地图瓦片静态服务
-│   ├── contour_static.py  # 等高线瓦片静态服务
-│   └── socketio_events.py # WebSocket 事件
+├── src/                    # 全部业务源码（可导入包，根目录天然在 sys.path 上）
+│   ├── core/               # 应用基础设施
+│   │   ├── config.py          # 配置类（路径、密钥、版本）
+│   │   ├── database.py        # 数据库初始化与连接管理（含幂等迁移）
+│   │   ├── startup_banner.py  # 启动信息横幅
+│   │   └── process_watchdog.py # reloader 子进程看门狗
+│   ├── models/             # 数据模型（任务/瓦片模型与枚举）
+│   ├── services/           # 业务逻辑
+│   │   ├── download_engine.py  # Google 瓦片下载引擎
+│   │   ├── task_manager.py     # 瓦片任务管理器
+│   │   ├── config_manager.py   # 配置管理器
+│   │   ├── dem_download_engine.py  # DEM 下载引擎（Copernicus GLO-30 / ASTER GDEM）
+│   │   ├── dem_task_manager.py     # DEM 任务管理器
+│   │   ├── dem_granules.py         # 1°×1° 分幅命名工具（GLO-30 / ASTGTM / ASTWBD）
+│   │   ├── earthdata_client.py     # NASA Earthdata Login 认证
+│   │   ├── contour_engine.py       # 等高线生成引擎
+│   │   ├── contour_task_manager.py # 等高线任务管理器
+│   │   ├── contour_task_tiler.py   # 等高线瓦片切分
+│   │   ├── local_terrain_task_manager.py  # 本地地形（上传 GeoTIFF）任务管理器
+│   │   ├── terrain_tiling/         # Cesium quantized-mesh 地形切片
+│   │   ├── geo_validation.py       # bbox / 缩放级别校验（各管线共用）
+│   │   ├── system_proxy.py         # 系统代理检测
+│   │   └── task_cleanup.py         # 任务产物清理与缓存管理
+│   └── routes/             # Flask 路由
+│       ├── main.py            # 页面路由
+│       ├── api.py             # 瓦片任务 / 历史 / 配置 / 缓存 API
+│       ├── dem_api.py         # DEM 任务 API
+│       ├── terrain_api.py     # DEM 地形切片 API
+│       ├── local_terrain_api.py  # 本地地形 API
+│       ├── contour_api.py     # 等高线 API
+│       ├── terrain_static.py  # 地形瓦片静态服务
+│       ├── tiles_static.py    # 地图瓦片静态服务
+│       ├── contour_static.py  # 等高线瓦片静态服务
+│       └── socketio_events.py # WebSocket 事件
 ├── templates/              # HTML 模板（主页 / 历史 / 配置）
 ├── static/                 # 静态资源
 │   ├── css/style.css      # 自定义样式（明暗主题 token）
@@ -298,7 +299,7 @@ uv run pytest tests/test_config_manager.py      # 单个测试文件
 ### 代码组织约定
 
 - 四条任务管线（瓦片 / DEM / 地形 / 等高线）均遵循 `routes/*_api.py`（HTTP 层）→ `services/*_task_manager.py`（状态与调度）→ `services/*_engine.py`（实际执行）的分层
-- 共享的校验逻辑集中在 `services/geo_validation.py`，不要在各管线重复实现
+- 共享的校验逻辑集中在 `src/services/geo_validation.py`，不要在各管线重复实现
 - 任务取消约定：仅 `pending` / `running` / `paused` 状态可取消，取消永不改写终态；`DELETE` 接口通过 `?delete_files=true` 清理磁盘产物（带路径安全护栏）
 
 ### 更多文档

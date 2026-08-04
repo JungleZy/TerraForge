@@ -10,7 +10,7 @@
 
 打 tag 之前逐条过一遍，漏掉任何一条都会发出错版本：
 
-1. **改版本号**：`core/config.py:38` 的 `APP_VERSION` 是**唯一真源**（`app.py` 读取它）。
+1. **改版本号**：`src/core/config.py:38` 的 `APP_VERSION` 是**唯一真源**（`app.py` 读取它）。
    不要再去找 `build.spec` —— 那是 PyInstaller 时代的文件，已随 Nuitka 迁移删除。
 2. **更新仓库根的 `RELEASE_NOTES.md`**：GitHub Release 的正文直接取自这个文件
    （`build.yml` 的 `body_path: RELEASE_NOTES.md`），它只放**本次**发版内容；
@@ -132,7 +132,7 @@ dist/terraforge/
 ```
 
 **必须整目录复制/分发。** 单独拷走可执行文件会缺 `gdal-data/` / `proj-data/` 与依赖库，
-程序启动时 `core/bundle.py:setup_bundle_env()` 找不到数据目录会直接报错。
+程序启动时 `src/core/bundle.py:setup_bundle_env()` 找不到数据目录会直接报错。
 
 ## 分发
 
@@ -175,7 +175,7 @@ powershell Compress-Archive -Path terraforge/* -DestinationPath terraforge-windo
    gdalinfo --version     # Windows
    ```
 
-2. **验证 GDAL_DATA 路径**（打包模式下由 `core/bundle.py:setup_bundle_env()` 设置）
+2. **验证 GDAL_DATA 路径**（打包模式下由 `src/core/bundle.py:setup_bundle_env()` 设置）
 
 3. **使用详细输出重新构建**：在 `nuitka_build.py` 的 Nuitka 参数中追加
    `--show-progress --show-modules`，重新运行 `uv run python nuitka_build.py`

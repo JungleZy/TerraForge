@@ -9,9 +9,9 @@
 要用 §1 的全球 base，必须先满足两条：
 
 1. **base 需要你自己离线构建** —— 仓库里不带地形数据。构建流程见 [`global-base-build.md`](global-base-build.md)。
-2. **构建输出目录必须与配置键 `terrain_global_base_path` 一致**（默认 `./downloads/terrain/base_z8`）。`/terrain/base/...` 这条路由是拿这个配置值去磁盘找文件的（`routes/terrain_static.py:122`、`:158-165`），目录对不上就是 404，没有任何自动发现。
+2. **构建输出目录必须与配置键 `terrain_global_base_path` 一致**（默认 `./downloads/terrain/base_z8`）。`/terrain/base/...` 这条路由是拿这个配置值去磁盘找文件的（`src/routes/terrain_static.py:122`、`:158-165`），目录对不上就是 404，没有任何自动发现。
 
-   路径解析规则（`routes/terrain_static.py:63-87` 的 `_resolve_config_path`）：绝对路径原样使用；`./downloads/...` 或 `downloads/...` 开头的相对路径挂到 `Config.DOWNLOADS_DIR` 下；其他相对路径挂到 `Config.BASE_DIR` 下。改了这个配置最多 5 秒生效（路由层有 5 秒 TTL 缓存），不用重启服务。
+   路径解析规则（`src/routes/terrain_static.py:63-87` 的 `_resolve_config_path`）：绝对路径原样使用；`./downloads/...` 或 `downloads/...` 开头的相对路径挂到 `Config.DOWNLOADS_DIR` 下；其他相对路径挂到 `Config.BASE_DIR` 下。改了这个配置最多 5 秒生效（路由层有 5 秒 TTL 缓存），不用重启服务。
 
 ## 1) Base terrain provider
 
@@ -37,7 +37,7 @@ const localOverlay = await Cesium.CesiumTerrainProvider.fromUrl(
 );
 ```
 
-路由定义在 `routes/terrain_static.py`：`/dem/<int:task_id>/<path:subpath>`（:215）与 `/local/<int:task_id>/<path:subpath>`（:228）。
+路由定义在 `src/routes/terrain_static.py`：`/dem/<int:task_id>/<path:subpath>`（:215）与 `/local/<int:task_id>/<path:subpath>`（:228）。
 
 单任务切片的 `layer.json` 里带 `parentUrl` 指向全球 base，所以**只需要把单任务 provider 传给 Viewer**，不用手动加载两个 provider：
 
@@ -51,9 +51,9 @@ new Cesium.Viewer("cesiumContainer", { terrainProvider: demOverlay });
 
 **结论先说**：`parentUrl` 的级联只在 **zoom > 4** 时真正生效。**z0–4 永远不会请求 base**，Cesium 会用任务自己产出的垃圾瓦片渲染全球，表现为 bbox 之外一片被填成 0 的平坦假地形（或从 DEM 边缘拉伸出去的阶梯台地），**全程不抛错、不打日志、HTTP 全 200**，任务照样标 completed。
 
-**机理**（`services/terrain_tiling/cesiumlab_terrain.py`）：
+**机理**（`src/services/terrain_tiling/cesiumlab_terrain.py`）：
 
-- 两条管线都以 `min_level=0` 调切片器（`services/terrain_tiling/dem_task_tiler.py:59`），所以每个任务都会产出 z0 起的瓦片 —— 哪怕它的 DEM 只有一小块。
+- 两条管线都以 `min_level=0` 调切片器（`src/services/terrain_tiling/dem_task_tiler.py:59`），所以每个任务都会产出 z0 起的瓦片 —— 哪怕它的 DEM 只有一小块。
 - 切片器的 `_tile_ranges` 在 `z <= 4` 时**无条件取全球瓦片范围**，不与 DEM 实际 bbox 求交（`:448-449`）：
 
   ```python
@@ -77,11 +77,11 @@ new Cesium.Viewer("cesiumContainer", { terrainProvider: demOverlay });
 
 ## 4) 配置键 `terrain_base_parent_url`：改了要重新切片
 
-`parentUrl` 写的是哪个地址，由配置键 `terrain_base_parent_url` 决定，默认 `http://localhost:5000/terrain/base/layer.json`（`core/database.py:71`）。
+`parentUrl` 写的是哪个地址，由配置键 `terrain_base_parent_url` 决定，默认 `http://localhost:5000/terrain/base/layer.json`（`src/core/database.py:71`）。
 
 **这个键在配置页上没有输入框**，只能通过 `PUT /api/config` 改，或者直接改数据库 `config` 表。
 
-**改完必须重新切片才对已有任务生效。** `parentUrl` 是在切片收尾时被**固化写进** `layer.json` 的文件字段，不是运行时读配置：`services/terrain_tiling/dem_task_tiler.py` 在 `build_terrain(...)` 返回后调用 `patch_layer_json_parent(layer_json_path, params.parent_url)`，而 `patch_layer_json_parent`（`services/terrain_tiling/layer_json.py`）只做一件事 —— 把 `data["parentUrl"] = parent_url` 写回文件。配置值是任务**启动切片那一刻**从 `ConfigManager` 读的（`services/dem_task_manager.py:298`、`services/local_terrain_task_manager.py:40`），之后再改配置不会回头动已经写好的文件。
+**改完必须重新切片才对已有任务生效。** `parentUrl` 是在切片收尾时被**固化写进** `layer.json` 的文件字段，不是运行时读配置：`src/services/terrain_tiling/dem_task_tiler.py` 在 `build_terrain(...)` 返回后调用 `patch_layer_json_parent(layer_json_path, params.parent_url)`，而 `patch_layer_json_parent`（`src/services/terrain_tiling/layer_json.py`）只做一件事 —— 把 `data["parentUrl"] = parent_url` 写回文件。配置值是任务**启动切片那一刻**从 `ConfigManager` 读的（`src/services/dem_task_manager.py:298`、`src/services/local_terrain_task_manager.py:40`），之后再改配置不会回头动已经写好的文件。
 
 所以三种做法，按代价从低到高：
 

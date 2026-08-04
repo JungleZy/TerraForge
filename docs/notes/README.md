@@ -13,7 +13,7 @@
 
 该文件开头自带「设计稿 · 尚未实施」状态头。它提到的全部新增能力在仓库里**零命中**——`_rect_subtract`、`exclusive_tile_rects`、`exclusive_dem_granules`、`clear_task_exclusive_cache`、`sweep_orphan_cache`、`?clear_cache=1`、`POST /api/cache/sweep_orphans`、`GET /api/tasks/<id>/cache_footprint` 一个都不存在。
 
-现行的缓存能力只有两个：`GET /api/cache/stats` 和 `POST /api/cache/clear`（`services/task_cleanup.py`），且 0.2.4 起缓存**没有任何自动淘汰**。
+现行的缓存能力只有两个：`GET /api/cache/stats` 和 `POST /api/cache/clear`（`src/services/task_cleanup.py`），且 0.2.4 起缓存**没有任何自动淘汰**。
 
 文中对**现状**的代码引用（`file:line`）是撰写当日核实过的，可信；凡描述新增接口的段落一律是拟新增。
 

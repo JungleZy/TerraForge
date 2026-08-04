@@ -8,7 +8,7 @@
 > 全仓零命中。文中对**现状**的代码引用（`file:line`）是撰写当日核实过的，可信；
 > 但凡描述新增接口的段落一律是**拟新增**，不要当成已有 API 调用。
 > 现行的缓存能力只有：`GET /api/cache/stats`、`POST /api/cache/clear`
-> （`services/task_cleanup.py:clear_cache_category`），且 0.2.4 起缓存无自动淘汰。
+> （`src/services/task_cleanup.py:clear_cache_category`），且 0.2.4 起缓存无自动淘汰。
 
 ---
 
@@ -17,7 +17,7 @@
 ## 要解决的问题
 
 - 瓦片 cache（`cache/<style>/<z>/<x>/<y>.png`）和 DEM cache（`cache/dem/<granule>`）跨任务共享、只增不减。
-- 删除任务时 `delete_files` 只删任务产物目录，`remove_task_dir_if_safe` 明确拒绝碰 cache（`services/task_cleanup.py:118-121`）。
+- 删除任务时 `delete_files` 只删任务产物目录，`remove_task_dir_if_safe` 明确拒绝碰 cache（`src/services/task_cleanup.py:118-121`）。
 - 现有清理手段只有配置页按分类整清（`POST /api/cache/clear`），粒度太粗：清一个分类会把其他仍在用的任务缓存一起清掉。
 
 目标：删除任务时可选清理**仅该任务独占**的缓存；另提供**孤儿缓存**（不被任何现存任务覆盖）手动清扫。保持既定约定不变：cache 不做任何自动清理，所有清理都是用户显式触发。
@@ -26,8 +26,8 @@
 
 GeoLibre 需要另建 region manifest，是因为它的 SW cache 不记元数据。本项目不需要：
 
-- 瓦片集合是 `bbox + zoom区间 + style` 的纯函数，唯一枚举入口是 `DownloadEngine._tile_ranges`（`services/download_engine.py:199`，`count_tiles`/`iter_tiles`/`calculate_tiles` 共用，口径一致性已有约定）。
-- DEM 颗粒集合是 `dataset + bbox` 的纯函数（`services/dem_granules.py`：`tiles_for_bbox` + 各 dataset 的 granule 命名）。
+- 瓦片集合是 `bbox + zoom区间 + style` 的纯函数，唯一枚举入口是 `DownloadEngine._tile_ranges`（`src/services/download_engine.py:199`，`count_tiles`/`iter_tiles`/`calculate_tiles` 共用，口径一致性已有约定）。
+- DEM 颗粒集合是 `dataset + bbox` 的纯函数（`src/services/dem_granules.py`：`tiles_for_bbox` + 各 dataset 的 granule 命名）。
 - `tasks` / `dem_tasks` / `contour_tasks` 行持久保存了全部枚举入参，任务创建后参数不可变（无更新四至的接口）。
 
 所以「哪些缓存被谁引用」任何时候都能从现存任务行重建，**不新建任何表**（当年 `task_tiles` 稀疏化掉全量行的理由——DB 膨胀、写放大——依然成立）。
@@ -42,7 +42,7 @@ GeoLibre 需要另建 region manifest，是因为它的 SW cache 不记元数据
 | cache 写入是 .part 原子替换 | `download_engine.py:671-676` | 文件要么完整要么不存在，unlink 不会碰到半成品 |
 | 地图任务产物是从 cache **复制**的 | `task_manager.py:131` `_stream_copy_tile` | 删 cache 不动任务产物与预览 |
 | DEM 颗粒 cache↔任务目录是**硬链接**（退化复制） | `dem_download_engine.py:77-89` | unlink cache 只减链接数，任务目录数据不丢，只损失去重收益 |
-| 枚举失败（历史脏行，见 `Task.from_row` 注释） | `models/task.py:193-199` | 保守降级：该行同 style/dataset 本轮整体放弃清理，宁可保留 |
+| 枚举失败（历史脏行，见 `Task.from_row` 注释） | `src/models/task.py:193-199` | 保守降级：该行同 style/dataset 本轮整体放弃清理，宁可保留 |
 
 误删的最坏结果统一是「cache  miss 后重下」，不产生数据丢失。删除顺序：行删除**前**取枚举快照，行删除**后**执行文件清理（与现有 `remove_task_dir_if_safe` 同序）；文件清理中途失败只意味着部分缓存保留。
 
@@ -64,7 +64,7 @@ GeoLibre 需要另建 region manifest，是因为它的 SW cache 不记元数据
 
 ### 1. 独占集计算（纯函数，先行可测）
 
-落在 `services/task_cleanup.py`（清理逻辑已集中于此）：
+落在 `src/services/task_cleanup.py`（清理逻辑已集中于此）：
 
 - `_rect_subtract(rect, others) -> list[rect]`：标准矩形减法，每个相交他矩形把剩余矩形最多劈成 4 块。
 - `exclusive_tile_rects(task_row, other_rows) -> Iterator[(zoom, x_min, x_max, y_min, y_max)]`：逐 zoom 调用 `_tile_ranges` 取本任务矩形，扣除同 style、zoom 区间覆盖该层、矩形相交的他任务矩形。
@@ -78,8 +78,8 @@ GeoLibre 需要另建 region manifest，是因为它的 SW cache 不记元数据
 
 ### 3. API（与现有参数正交，默认全部关闭）
 
-- `DELETE /api/tasks/<id>?clear_cache=1`（`routes/api.py:339`，在 `_state_lock` 内取快照，行删后执行清理）
-- `DELETE /api/dem/tasks/<id>?clear_cache=1`（`routes/dem_api.py` 同模式）
+- `DELETE /api/tasks/<id>?clear_cache=1`（`src/routes/api.py:339`，在 `_state_lock` 内取快照，行删后执行清理）
+- `DELETE /api/dem/tasks/<id>?clear_cache=1`（`src/routes/dem_api.py` 同模式）
 - `POST /api/cache/sweep_orphans`：孤儿清扫（见下），配置页按钮 + 二次确认，与现有分类整清并列
 - （二期可选）`GET /api/tasks/<id>/cache_footprint`：按需统计该任务缓存占用（总量/独占量），history 页按行触发；不在列表页默认算，避免每行一次枚举
 

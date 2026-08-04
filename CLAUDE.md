@@ -21,13 +21,13 @@ The four pipelines have **separate** managers, routes, DB tables, and frontend p
 # Setup (one-time)
 uv venv                                 # 如果 .venv 不存在
 uv pip install -r requirements.txt
-uv run python -c "from core.database import init_database; init_database()"               # 创建 data/map_downloader.db + 默认配置行
+uv run python -c "from src.core.database import init_database; init_database()"               # 创建 data/map_downloader.db + 默认配置行
 
 # Run dev server (Flask + Socket.IO on :5000)
 uv run python app.py                    # 源码运行 DEBUG=1 by default → use_reloader=True（打包 exe 默认 DEBUG=0）
 DEBUG=0 uv run python app.py            # disable reloader/debug
 
-# Migrations — 无独立迁移脚本：迁移已内联在 core/database.py 的 init_database()
+# Migrations — 无独立迁移脚本：迁移已内联在 src/core/database.py 的 init_database()
 # （幂等 ALTER + PRAGMA user_version 一次性标记），启动时自动执行，无需手动运行。
 
 # Tests
@@ -38,7 +38,7 @@ uv run pytest tests/test_dem_task_tiler.py::test_terrain_output_dir_for_task   #
 # Build standalone executable (Nuitka)
 ./build.sh           # Linux/macOS（脚本内部使用 uv run python nuitka_build.py）
 build.bat            # Windows（脚本内部使用 uv run python nuitka_build.py）
-# Output: dist/terraforge/ — entry nuitka_build.py, GDAL/PROJ 环境设置在 core/bundle.py
+# Output: dist/terraforge/ — entry nuitka_build.py, GDAL/PROJ 环境设置在 src/core/bundle.py
 ```
 
 GDAL system libraries are required (`gdal-bin libgdal-dev` on Debian, `brew install gdal` on macOS). `requirements.txt` pins `GDAL==3.8.4` — keep in sync with the system `gdal-config --version`. 安装 GDAL Python 绑定时，`uv pip install gdal==$(gdal-config --version)` 通常比固定版本更稳。
@@ -64,26 +64,26 @@ UV_NO_CACHE=1 uv pip install --force-reinstall --no-build-isolation --no-binary 
 
 | Concern             | Map tile pipeline                                   | DEM pipeline                                            | Local terrain pipeline                                   | Contour pipeline                                        |
 | ------------------- | --------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------- |
-| Manager             | `services/task_manager.py` (`TaskManager`)          | `services/dem_task_manager.py` (`DemTaskManager`)       | `services/local_terrain_task_manager.py` (`LocalTerrainTaskManager`) | `services/contour_task_manager.py` (`ContourTaskManager`) |
-| Engine              | `services/download_engine.py` (aiohttp + GDAL)      | `services/dem_download_engine.py` (+ `earthdata_client`) | none — reuses `tile_dem_task_dir` on the uploaded GeoTIFFs | `services/contour_engine.py` / `contour_task_tiler.py` (render). `dem_download_engine.py` is only reached by legacy download-driven tasks |
+| Manager             | `src/services/task_manager.py` (`TaskManager`)          | `src/services/dem_task_manager.py` (`DemTaskManager`)       | `src/services/local_terrain_task_manager.py` (`LocalTerrainTaskManager`) | `src/services/contour_task_manager.py` (`ContourTaskManager`) |
+| Engine              | `src/services/download_engine.py` (aiohttp + GDAL)      | `src/services/dem_download_engine.py` (+ `earthdata_client`) | none — reuses `tile_dem_task_dir` on the uploaded GeoTIFFs | `src/services/contour_engine.py` / `contour_task_tiler.py` (render). `dem_download_engine.py` is only reached by legacy download-driven tasks |
 | DB tables           | `tasks`, `task_tiles`, `task_time_records`          | `dem_tasks`, `dem_files`, `dem_terrain_jobs`            | `local_terrain_tasks`, `local_terrain_files`             | `contour_tasks`, `contour_files`                        |
-| REST blueprint      | `routes/api.py` → `/api/tasks/...`                  | `routes/dem_api.py` → `/api/dem/...`                    | `routes/local_terrain_api.py` → `/api/terrain/local/...` | `routes/contour_api.py` → `/api/contour/...`            |
-| Tiling / rendering  | n/a                                                 | `routes/terrain_api.py` → `/api/terrain/dem/<id>/start` | the task itself is the tiling job (starts after upload)  | renders in-task from the uploaded GeoTIFFs (legacy download-driven tasks render after their granules land) |
-| Static tile serving | `routes/tiles_static.py` → `/tiles/<id>/...` (completed-task preview; the shared tile cache itself is not served) | `routes/terrain_static.py` → `/terrain/base/...` & `/terrain/dem/<id>/...` | `routes/terrain_static.py` → `/terrain/local/<id>/...`   | `routes/contour_static.py` → `/contour/<id>/...`        |
+| REST blueprint      | `src/routes/api.py` → `/api/tasks/...`                  | `src/routes/dem_api.py` → `/api/dem/...`                    | `src/routes/local_terrain_api.py` → `/api/terrain/local/...` | `src/routes/contour_api.py` → `/api/contour/...`            |
+| Tiling / rendering  | n/a                                                 | `src/routes/terrain_api.py` → `/api/terrain/dem/<id>/start` | the task itself is the tiling job (starts after upload)  | renders in-task from the uploaded GeoTIFFs (legacy download-driven tasks render after their granules land) |
+| Static tile serving | `src/routes/tiles_static.py` → `/tiles/<id>/...` (completed-task preview; the shared tile cache itself is not served) | `src/routes/terrain_static.py` → `/terrain/base/...` & `/terrain/dem/<id>/...` | `src/routes/terrain_static.py` → `/terrain/local/<id>/...`   | `src/routes/contour_static.py` → `/contour/<id>/...`        |
 
 All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and contour managers also keep `stop_flags: Dict[int, threading.Event]` and run an asyncio loop inside background threads; cancel/pause works by setting the event. Local-terrain tiling is a one-shot `build_terrain` call with no stop flags and no pause/resume — cancelling only flips a still-`pending` task to `cancelled`. Progress is pushed via `socketio.emit('task_progress', ...)`; the map pipeline additionally emits `task_stitch_progress` / `task_copy_progress` for the post-download phases (stitching per zoom, tile mirror-copy), emitted from the start of each phase so a big task never looks stuck at 100%.
 
 ### Task lifecycle & deletion conventions
 
 - **Cancel never rewrites terminal states.** `cancel_task` in `task_manager.py`, `dem_task_manager.py`, and `contour_task_manager.py` only transitions `pending`/`running`/`paused` → `cancelled` via a guarded `UPDATE ... WHERE status IN ('pending','running','paused')` — a `completed`/`failed` record must never be flipped to `cancelled`. Keep this guard when touching state transitions.
-- **DELETE endpoints take a `delete_files` query param.** `DELETE /api/tasks/<id>`, `/api/dem/tasks/<id>`, and `/api/contour/tasks/<id>` treat `delete_files=1/true/yes` (default: **false**) as a request to also remove the task's on-disk artifact directory after the DB row is gone, via `services/task_cleanup.py`'s `remove_task_dir_if_safe` — save paths are full-disk since 0.2.4, so the guardrail is: refuse any path with a symlink component, paths shallower than two directory levels, the user's home directory, `Config.DOWNLOADS_DIR` itself or its ancestors, and anything that is/contains/is contained by `Config.CACHE_DIR`. `DELETE /api/terrain/local/tasks/<id>` supports the same param but **defaults to true** (historical behavior) — pass `delete_files=false` to keep the files.
+- **DELETE endpoints take a `delete_files` query param.** `DELETE /api/tasks/<id>`, `/api/dem/tasks/<id>`, and `/api/contour/tasks/<id>` treat `delete_files=1/true/yes` (default: **false**) as a request to also remove the task's on-disk artifact directory after the DB row is gone, via `src/services/task_cleanup.py`'s `remove_task_dir_if_safe` — save paths are full-disk since 0.2.4, so the guardrail is: refuse any path with a symlink component, paths shallower than two directory levels, the user's home directory, `Config.DOWNLOADS_DIR` itself or its ancestors, and anything that is/contains/is contained by `Config.CACHE_DIR`. `DELETE /api/terrain/local/tasks/<id>` supports the same param but **defaults to true** (historical behavior) — pass `delete_files=false` to keep the files.
 
 ### Database conventions
 
 - SQLite at `Config.DATABASE_PATH` (`data/map_downloader.db`). Connections use `sqlite3.Row` factory and `PRAGMA foreign_keys = ON`.
 - Use `get_connection_context()` (context manager) for short reads; `get_connection()` + manual close inside managers.
 - **Schema evolves inside `init_database()`** with `ALTER TABLE ... ADD COLUMN` wrapped in a try/except that swallows `duplicate column name`. New backward-compatible columns go there. One-shot data migrations guard on `PRAGMA user_version` (currently 2: sparse `task_tiles` = 1, legacy relative `output_path` normalization = 2). There is **no** side-channel migration runner — the `migrations/` folder was emptied in a previous review cycle and git does not track empty directories, so it does not exist on a fresh clone.
-- The `config` table is seeded from `DEFAULT_CONFIGS` in `core/database.py` with `INSERT OR IGNORE`. Adding a new setting means appending there.
+- The `config` table is seeded from `DEFAULT_CONFIGS` in `src/core/database.py` with `INSERT OR IGNORE`. Adding a new setting means appending there.
 
 ### Theming (dark / light / system)
 
@@ -95,21 +95,21 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 
 - Style codes used in Google URLs (`lyrs=`): `m` roadmap, `s` satellite, `y` hybrid, `h` roads, `t` terrain. `MapStyle.from_shorthand` accepts both the legacy 1-char codes and the full names (`roadmap`, `satellite`, etc.); `STYLE_MAP` in `task_manager.py` maps full → short.
 - Tiles are cached at `cache/<style>/<zoom>/<x>/<y>.png`. The cache is **shared across tasks** — `Tile.cache_path()` keys only on style + coords. Don't add task-id segments.
-- Since 0.2.4 there is **no automatic cache eviction** (the LRU `cache_max_size_mb` cleanup was removed along with the config key). Inspection and clearing are user-driven: `GET /api/cache/stats` (one category per top-level dir under `cache/`) and `POST /api/cache/clear` (`{"category": key|"__all__"}`), both backed by `services/task_cleanup.py`.
+- Since 0.2.4 there is **no automatic cache eviction** (the LRU `cache_max_size_mb` cleanup was removed along with the config key). Inspection and clearing are user-driven: `GET /api/cache/stats` (one category per top-level dir under `cache/`) and `POST /api/cache/clear` (`{"category": key|"__all__"}`), both backed by `src/services/task_cleanup.py`.
 - The task output dir is a **live mirror** of the cache: each tile is copied to `<output_path>/task_<id>/<z>/<x>/<y>.png` the moment its download lands in cache (download callback), and a separate backfill thread copies cache-hit tiles (resume / repeated bbox) in parallel with the download. A cancelled task keeps its partially-mirrored output dir, matching cache state.
-- `WEB_MERCATOR_MAX_LAT = 85.0511`, zoom is clamped to `0..21`. `WARN_TILES_THRESHOLD = 100000` (in `services/download_engine.py`) only writes a server-side `logger.warning` when the estimated tile count exceeds it — there is no UI warning and no hard cap.
+- `WEB_MERCATOR_MAX_LAT = 85.0511`, zoom is clamped to `0..21`. `WARN_TILES_THRESHOLD = 100000` (in `src/services/download_engine.py`) only writes a server-side `logger.warning` when the estimated tile count exceeds it — there is no UI warning and no hard cap.
 
 ### DEM / terrain specifics
 
-- Datasets (see `services/dem_granules.py`): `COP-DEM-GLO-30` (default — Copernicus GLO-30 COGs on the public `copernicus-dem-30m` S3 bucket, no auth; granules are nested `<name>/<name>.tif`) and `ASTGTM.003` (Earthdata; 1°×1° granules named `ASTGTMV003_{N|S}LL{E|W}LLL_dem.tif`, optional `_num.tif`; coverage 83S–83N). Water-body masks come from `ASTWBD.001` (`ASTWBDV001_*_att.tif`, Earthdata, best-effort — 404s don't fail the task).
+- Datasets (see `src/services/dem_granules.py`): `COP-DEM-GLO-30` (default — Copernicus GLO-30 COGs on the public `copernicus-dem-30m` S3 bucket, no auth; granules are nested `<name>/<name>.tif`) and `ASTGTM.003` (Earthdata; 1°×1° granules named `ASTGTMV003_{N|S}LL{E|W}LLL_dem.tif`, optional `_num.tif`; coverage 83S–83N). Water-body masks come from `ASTWBD.001` (`ASTWBDV001_*_att.tif`, Earthdata, best-effort — 404s don't fail the task).
 - Earthdata Login credentials live in the `config` table (`earthdata_username`, `earthdata_password`). `EarthdataClient` does a manual URS OAuth redirect dance — do not "harden" it (per inline note).
 - Terrain tiling layout:
   - DEM granules: `downloads/dem/dem_task_<id>/*_dem.tif` / `*_DEM.tif` (Copernicus) (`*_num.tif` is intentionally filtered out by `list_dem_tifs`)
   - Output tiles: `downloads/dem/dem_task_<id>/terrain_tiles/{z}/{x}/{y}.terrain` + `layer.json`
   - Global base (offline-built, low-zoom planet coverage): `downloads/terrain/base_z8/` served at `/terrain/base/...`
   - Local DEM tiles `layer.json` is patched (`patch_layer_json_parent`) to carry `parentUrl` pointing at the base, so CesiumJS cascades automatically (see `docs/reference/terrain/cesiumjs-loading.md`).
-- The tiler is `services/terrain_tiling/cesiumlab_terrain.py` — a vendored copy of CesiumLab 4.0.17's quantized-mesh builder. It's used as a library (`build_terrain(...)`) by `dem_task_tiler.tile_dem_task_dir`. The import is **lazy** so tests can inject a `build_terrain_fn=` stub without needing numpy/GDAL at import time.
-- `routes/terrain_static.py` enforces path-traversal safety: every served file must resolve under `Config.DOWNLOADS_DIR`. Don't bypass `_resolve_safe_file`.
+- The tiler is `src/services/terrain_tiling/cesiumlab_terrain.py` — a vendored copy of CesiumLab 4.0.17's quantized-mesh builder. It's used as a library (`build_terrain(...)`) by `dem_task_tiler.tile_dem_task_dir`. The import is **lazy** so tests can inject a `build_terrain_fn=` stub without needing numpy/GDAL at import time.
+- `src/routes/terrain_static.py` enforces path-traversal safety: every served file must resolve under `Config.DOWNLOADS_DIR`. Don't bypass `_resolve_safe_file`.
 
 ### Local terrain & contour specifics
 
@@ -119,11 +119,11 @@ All four managers keep `active_tasks: Dict[int, Thread]`. The map, DEM, and cont
 
 ### Frozen / Nuitka mode
 
-`core/bundle.py` branches on `'__compiled__' in globals()` (injected by Nuitka into every compiled module); `app.py` and `core/config.py` consume `bundle_dir()`:
+`src/core/bundle.py` branches on `'__compiled__' in globals()` (injected by Nuitka into every compiled module); `app.py` and `src/core/config.py` consume `bundle_dir()`:
 
 - Templates/static come from `bundle_dir()` (the Nuitka standalone dist dir — data dirs sit next to the executable, and `sys.executable` points at the real exe).
 - `Config.BASE_DIR` becomes `Path(sys.executable).parent` so `data/`, `downloads/`, `cache/` live next to the executable, not inside the bundle. Anything writing to disk must go through `Config.*_DIR` to stay portable across frozen vs source runs.
-- `core/bundle.py:setup_bundle_env()` (called at the top of `app.py`, before any `osgeo` import) sets `GDAL_DATA`/`PROJ_DATA` and fails loudly if the bundle lacks them — it replaces the old PyInstaller runtime hook. `nuitka_build.py` collects `flask_socketio`, `socketio`, `engineio`, `aiohttp`, `osgeo.*`, etc., and copies the GDAL/PROJ data dirs per platform.
+- `src/core/bundle.py:setup_bundle_env()` (called at the top of `app.py`, before any `osgeo` import) sets `GDAL_DATA`/`PROJ_DATA` and fails loudly if the bundle lacks them — it replaces the old PyInstaller runtime hook. `nuitka_build.py` collects `flask_socketio`, `socketio`, `engineio`, `aiohttp`, `osgeo.*`, etc., and copies the GDAL/PROJ data dirs per platform.
 - Nuitka only bundles dependency libraries inside the Python/conda prefix. `nuitka_build.py` therefore post-copies the GDAL system-library closure into the dist root on Linux (apt GDAL, `ldd` walk) and on non-conda Windows layouts (OSGeo4W etc., via Nuitka's own Win32 dependency scanner), then self-checks for unresolved libraries. Windows CI uses conda, whose `Library/bin` is inside the prefix, so Nuitka covers it natively.
 
 ### Testing patterns to follow

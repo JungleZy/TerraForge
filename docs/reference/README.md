@@ -14,7 +14,7 @@
 
 ## 易错点：计时字段只有地图管线在写
 
-`time-tracking.md` 描述的 `total_running_seconds` 持久化计时**只适用于地图瓦片管线**（`services/task_manager.py`）。DEM、等高线、本地地形三条管线的 manager **不写这个字段**，它们的任务行里该字段是缺失的。
+`time-tracking.md` 描述的 `total_running_seconds` 持久化计时**只适用于地图瓦片管线**（`src/services/task_manager.py`）。DEM、等高线、本地地形三条管线的 manager **不写这个字段**，它们的任务行里该字段是缺失的。
 
 前端 `calculateTimeInfo`（`static/js/tasks.js`）因此必须区分「字段缺失」和「累计为 0 秒」两种情况：缺失时回退按 `started_at` 算墙钟时长，否则这三条管线的已运行时间会恒显示 0 秒。这条回退被测试钉死了：`tests/test_tasks_js_contract.py:1159`（`test_time_info_falls_back_when_total_running_seconds_missing`）。
 

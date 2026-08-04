@@ -32,6 +32,12 @@
 
 这三类（`reviews/` `archive/` `superpowers/`）每份文件开头都有**状态头**，写清楚它记录于何时、哪几节今天还成立、当前事实源在哪里。动手前先读那一段；`archive/`、`superpowers/` 和 `reviews/2026-05-08-comprehensive-review/` 还各有一份 README 做全目录对照表。
 
+## ⚠️ 源码路径整体变过一次（2026-08-04）
+
+四个顶级包 `core/` `models/` `routes/` `services/` 已整体移入 **`src/`**，导入写法随之从 `from core.config import Config` 变为 `from src.core.config import Config`。`app.py`、`nuitka_build.py`、`templates/`、`static/`、`tests/` 位置不变。
+
+`guides/`、`reference/`、`notes/` 与根目录 `CLAUDE.md`、`README.md` 已同步更新。**`archive/`、`reviews/`、`superpowers/` 三类历史件的正文一律未回改**（改了就不再是当日快照）——读到里面的 `services/task_manager.py`、`core.database` 这类路径时，按旧布局理解，实际文件在 `src/` 下。
+
 ## 我想…… 该看哪份
 
 | 我想…… | 看这份 |
