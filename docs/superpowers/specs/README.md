@@ -1,4 +1,4 @@
-# docs/superpowers/specs —— 设计稿归档（11 份）
+# docs/superpowers/specs —— 设计稿归档（12 份）
 
 > **没有一份代表当前实现。** 这里是动工前的方案记录，写的是「打算怎么做」，不是「今天怎么跑」。当前架构以仓库根 `CLAUDE.md` 和代码为准。
 
@@ -23,6 +23,7 @@
 | `2026-07-30-workbench-ux-redesign-design.md` | 2026-07-30 | **已实现**，0.2.x 沿用至今（splash 动画、底部状态栏、框选角点可调、dock 并入记录中心）。三点出入：按钮文案实际是「任务」不是「记录」；记录面板的三分区结构已被 2026-08-01 单一时间流重构取代；文中要求断言的 `#recordsPanel` 并不存在（实现沿用 `#historyPanel`） |
 | `2026-08-01-concurrency-recommend-design.md` | 2026-08-01 | **已实现**，随当轮改动落地 |
 | `2026-08-02-absolute-save-path-design.md` | 2026-08-02 | **已实现，但一节被 0.2.4 整体推翻（局部失效，见下）** |
+| `2026-08-04-src-layout-migration-design.md` | 2026-08-04 | **待实施**。写下时代码仍是根目录平铺 `core/`/`models/`/`routes/`/`services/`；正文里的 493/302 处计数与 `config.py:58` 等行号是当日快照 |
 
 ## ⚠️ 两份「局部失效」的，点名
 
@@ -42,7 +43,7 @@
 
 另外这份文件被 `../plans/2026-07-28-gis-workbench-ui.md` 按路径引用，**请勿移动或改名**。
 
-## 没有配对 plan 的设计稿（5 份）
+## 没有配对 plan 的设计稿（6 份）
 
 `plans/` 与 `specs/` 本该成对（方案 → 步骤），以下 5 份只有设计稿：
 
@@ -53,5 +54,6 @@
 | `2026-07-30-workbench-ux-redesign-design.md` | 2026-07-30 之后项目不再产出 `plans/`——`plans/` 最新一份停在 2026-07-28 |
 | `2026-08-01-concurrency-recommend-design.md` | 同上 |
 | `2026-08-02-absolute-save-path-design.md` | 同上 |
+| `2026-08-04-src-layout-migration-design.md` | 同上；且改动清单本身即步骤，另写 plan 是重复 |
 
 反方向（有 plan 没 design）只有一份，见 `../plans/README.md`。
