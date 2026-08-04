@@ -61,3 +61,59 @@ def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
     # 传导到 DEFAULT_MAX_ERROR_K / build_terrain / CLI 三处。
     assert captured["triangulator"] == "auto"
     assert captured["max_error_k"] == 0.15
+
+
+def test_tile_dem_task_dir_passes_through_the_backend_choice_counts(tmp_path: Path):
+    """build_terrain 的 chose_martini / chose_grid 必须原样透传出来。
+
+    这两个 key 写在 tile_dem_task_dir 的 docstring 里当契约,但在补这条之前
+    **没有任何测试守着** —— 把它们从返回的 keys 元组里删掉,全量 1035 条一条不红。
+    而"tiler 已经透传了"正是当初决定"两个 manager 不用改"的依据,
+    依据本身无守卫就等于没依据。
+
+    值刻意取互不相同、也不等于 total/rendered/failed 的数:key 之间串位
+    (chose_martini 拿到 chose_grid 的值)照样会被抓住。
+    """
+    from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "A_dem.tif").write_text("", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    def fake_build_terrain(**kwargs):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "layer.json").write_text('{"parentUrl":"OLD","available":[]}\n', encoding="utf-8")
+        return {"total": 40, "rendered": 37, "failed": 3,
+                "chose_martini": 11, "chose_grid": 26}
+
+    got = tile_dem_task_dir(task_dir, out_dir,
+                            TileParams(maxzoom=0, parent_url="https://example.com/p.json"),
+                            build_terrain_fn=fake_build_terrain)
+
+    assert got == {"total": 40, "rendered": 37, "failed": 3,
+                   "chose_martini": 11, "chose_grid": 26}
+
+
+def test_tile_dem_task_dir_zero_fills_counts_for_legacy_stubs(tmp_path: Path):
+    """老的测试替身返回 None 时,五个计数必须齐全地归零,而不是少几个 key。
+
+    调用方按"无计数信息"处理,行为与加计数之前一致;少 key 会让调用方 KeyError。
+    """
+    from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "A_dem.tif").write_text("", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    def fake_build_terrain(**kwargs):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "layer.json").write_text('{"parentUrl":"OLD","available":[]}\n', encoding="utf-8")
+
+    got = tile_dem_task_dir(task_dir, out_dir,
+                            TileParams(maxzoom=0, parent_url="https://example.com/p.json"),
+                            build_terrain_fn=fake_build_terrain)
+
+    assert got == {"total": 0, "rendered": 0, "failed": 0,
+                   "chose_martini": 0, "chose_grid": 0}

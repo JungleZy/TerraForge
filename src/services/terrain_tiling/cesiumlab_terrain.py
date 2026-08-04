@@ -527,7 +527,9 @@ def _max_error_for_level(z: int, tile_size: int, k: float) -> float:
 # time.time(),于是同一份数据两次切片的磁盘字节不同。实测后果 —— 一条比较磁盘
 # 字节的接线测试在干净树上连跑 8 次挂 1 次,差异恰好落在头部第 4 字节。逐瓦片
 # 择优要拿两次压缩结果比大小、再把胜出的那份原样落盘,更是要求确定性。
-# (顺带:gzip.compress 不写 FNAME 字段,比 gzip.open 每张瓦片少 11 字节。)
+# (顺带:gzip.compress 不写 FNAME 字段,而 gzip.open 会把文件名写进 gzip 头。
+#  省下的是 len("{y}.terrain")+1 字节,随 y 的位数变 —— 实测 9.terrain 省 10、
+#  12.terrain 省 11、373.terrain 省 12。这里以前写死"少 11 字节",不准。)
 _GZIP_LEVEL = 6
 
 
@@ -552,6 +554,14 @@ def _choose_tile_bytes(mart_gz: bytes, grid_gz: bytes) -> Tuple[bytes, str]:
     整条沟谷拉成直线(结构性丢失),所以 K 保持 0.15 —— 质量完全不让步。
 
     平局取 martini:顶点更少,Cesium 侧内存与 GPU 上传更省。
+
+    ⚠️ **判据是纯字节数,没有任何质量下限** —— "取更小的那个"读起来无条件安全,
+    其实结构上偏向退化网格:一张塌掉的瓦片正因为塌掉了才字节最少,于是会被主动
+    选中。实测在高程里注入一个 NaN,误差表被污染、martini 塌成 2 个三角形
+    (gzip 后 65 字节) 对 grid 的 243 字节,auto **会选那张塌掉的**。
+    这条路上唯一的闸门是 DemSampler.sample 的 NaN 兜底(它兜的是最终插值结果,
+    不只是 nodata 替换,所以任何来源的 NaN 都拦得住)。谁要动那个兜底,
+    先回来看这一段。
     """
     if len(mart_gz) <= len(grid_gz):
         return mart_gz, "martini"

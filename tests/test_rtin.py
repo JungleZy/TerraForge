@@ -453,10 +453,32 @@ def test_martini_reduces_triangles_and_pins_the_border_grid_is_a_real_fallback(t
     mesh= 路径此前只在 17 下跑过。
 
     「不传 triangulator 时默认值真的生效」这条原本也在这里，现已挪到
-    test_auto_never_writes_more_bytes_than_either_backend —— 默认值改成 'auto'
-    之后，在这份平滑 DEM 上 auto 张张都选 martini，「默认产物 == 显式 martini」
-    就区分不出默认值到底是 'auto' 还是 'martini' 了。那边的混合 DEM 上
-    auto 与两个单一后端都不同，才真的钉得住。
+    test_auto_never_writes_more_bytes_than_either_backend。
+
+    ⚠️ 挪走的理由曾经写错过，这里记下**实测的**版本，免得后人照着错理由把它挪回来：
+    这份 DEM + min_level=0/max_level=2 下，auto 的落点是
+    **chose_martini=0 / chose_grid=42**（tile_size=17 与 65 都一样，auto 产物与
+    显式 grid 42/42 逐字节相同、与显式 martini 0/42 相同）—— 也就是说旧断言
+    「默认产物 == 显式 martini」在默认值改成 'auto' 的那一刻**会当场变红**，
+    它完全区分得出 auto 和 martini。所以挪走**不是因为它失效了**，而是因为
+    在混合 DEM 上与显式 'auto' 比是更强的写法（那里 auto 与两个单一后端都不同）。
+    早先写的「auto 张张都选 martini 所以断言等于失效」把因果说反了。
+
+    为什么这份 DEM 上是 grid 全胜、以及择优为什么必要（实测天山 N42E086
+    z0-11 共 907 张瓦片，按瓦片内高差分桶，martini/grid 的 gzip 字节比中位数）：
+        高差 <1 m      1 张   比值 1.93   martini 胜 0
+        高差 1-30 m    704 张 比值 1.93   martini 胜 14
+        高差 30-100 m  17 张  比值 0.37   martini 胜 15
+        高差 100-300 m 20 张  比值 0.40   martini 胜 20
+        高差 300-800 m 25 张  比值 1.36   martini 胜 11
+        高差 >800 m    140 张 比值 1.76   martini 胜 15
+    是**两头都输、只赢中间带**：平坦瓦片上 grid 的 u/v 是等差 zigzag-delta、
+    高程全相等，整条流几乎零熵，gzip 压到几百字节；而 martini 有 pin_border 撑着
+    的地板（实测顶点数中位恒为 589，压不下去），u/v 还被打散成高熵数据 ——
+    所以**越平坦 grid 赢得越干脆**。另一头山地则是减面不够（gzip 后 martini 每个
+    三角形贵 4.43 倍，减面要 >77.4% 才打平），同样输。
+    这份 DEM 在 z0-2 上绝大多数瓦片是平的或越界的（min_level=0 强制出全球图，
+    3.2°×3.2° 的 DEM 铺到 z0-z2），正好落在左端那一段。
     """
     from src.services.terrain_tiling import cesiumlab_terrain as ct
 
@@ -578,9 +600,14 @@ def test_choose_tile_bytes_takes_the_smaller_and_breaks_ties_toward_martini():
 def _write_mixed_dem(path, px=256, deg=0.02, west=100.0, north=36.0):
     """左半平滑、右半白噪声的 DEM —— 逼 auto 在两个后端上都真的选到。
 
-    为什么要混合：全平滑的 DEM 上 martini 张张都赢，全噪声上 grid 张张都赢，
-    两种情况下「逐瓦片」这三个字都没被验证过 —— 一个把选择提到瓦片外面
-    （整个任务选一次）的实现照样全绿。
+    为什么要混合：单一地形的 DEM 上很容易一个后端通吃，那时「逐瓦片」这三个字
+    没有被验证过 —— 一个把选择提到瓦片外面（整个任务选一次）的实现照样全绿。
+    实测：全白噪声上 grid 通吃（减面不够，gzip 后 martini 每个三角形贵 4.43 倍）；
+    而**平坦地形上也是 grid 通吃**（grid 的流几乎零熵，martini 有 pin_border
+    撑出的顶点地板还带高熵 u/v）。martini 只在「有起伏但不剧烈」的中间带赢
+    —— 分桶实测见 test_martini_reduces_triangles_and_pins_the_border_grid_is_a_real_fallback
+    的 docstring。所以这里必须把平滑区的**尺度**调到那个中间带上
+    （sin/cos 周期 21/17 像素、振幅 300 m），不能随手写个平面。
     """
     from osgeo import gdal
 
@@ -612,8 +639,15 @@ def test_auto_never_writes_more_bytes_than_either_backend(tmp_path):
       3. 选择真的是**逐瓦片**的 —— 同一次任务里两个后端都被选中过；
       4. 不传 triangulator 时默认值真的是 'auto'。第 3 条保证了这份 DEM 上
          auto 与两个单一后端**都不相同**，所以「默认产物 == 显式 auto」在这里
-         是真的区分得开 'auto'/'martini'/'grid' 三者的（换成平滑 DEM 就不行，
-         那上面 auto 张张选 martini，两者字节相同）。
+         真的区分得开 'auto'/'martini'/'grid' 三者。
+
+    第 4 条为什么要用这份混合 DEM，而不是留在
+    test_martini_reduces_triangles_and_pins_the_border_grid_is_a_real_fallback
+    那份平滑 DEM 上：那边实测是 **chose_martini=0 / chose_grid=42**，auto 与显式
+    grid 逐字节相同 —— 所以在那边其实只能钉住「默认不是 martini」，钉不住
+    「默认不是 grid」。这里三者两两不同，才是三选一都拦得住。
+    （早先这里写的是「平滑 DEM 上 auto 张张选 martini 所以区分不出」，方向反了；
+     真实机制见那条测试的 docstring 里按高差分桶的实测表。）
     """
     import gzip as _gzip
 
