@@ -325,12 +325,17 @@ assert struct.calcsize(_HEADER_FMT) == HEADER_SIZE
 
 # (bbox, n)。带一组南半球+西经的 bbox：ECEF 三个分量在那里全变号，
 # 分量互换/取绝对值一类的错误在只测东北半球时可能蒙混过关。
+# 最后一组是地理切片方案的 z0 瓦片（180°×180°，跨南北两极）—— build_terrain
+# 里 `if z <= 4` 强制出全球图，每个 DEM 任务都会真的生成这两张。它是退化情形：
+# 四个经纬角点全部塌到南北极这两个物理点上，离瓦片中心最远的点跑到了
+# **西/东边界的中点**（赤道上），任何「取角点」的推理在这里都会失效。
 _HEADER_CASES = [
     ((100.0, 30.0, 101.0, 31.0), 17),
     ((100.0, 30.0, 110.0, 40.0), 257),
     ((-70.0, -40.0, -69.0, -39.0), 17),
+    ((-180.0, -90.0, 0.0, 90.0), 17),
 ]
-_HEADER_IDS = ["ne-1deg-n17", "ne-10deg-n257", "sw-1deg-n17"]
+_HEADER_IDS = ["ne-1deg-n17", "ne-10deg-n257", "sw-1deg-n17", "z0-west-hemisphere-n17"]
 
 
 def _parse_header(data: bytes) -> dict:
@@ -354,22 +359,47 @@ def _expected_height_range(n: int) -> tuple[float, float]:
     return 100.0, 100.0 + 3.75 * (n - 1)
 
 
-def _tile_corners_ecef(bbox, n, center):
-    """瓦片的 8 个角点（4 个经纬角 × {h_min, h_max}）到 center 的距离。
+_SURFACE_SAMPLES = 361   # 每个方向的采样数；z0（180° 跨度）上 = 0.5°/格
 
-    ECEF 换算复用 lonlat_to_ecef（重写一遍 WGS84 椭球公式没有意义），但喂进去的
-    经纬度和高程都是这里从 bbox / 高程公式独立算出来的，所以被测的是「header 里
-    写的球是不是包住了这些点」，不是「lonlat_to_ecef 等于它自己」。
+
+def _tile_surface_max_dist(bbox, n, center):
+    """稠密采样【整块瓦片】，返回 (采样到的最大距离, 采样残差上界)。
+
+    为什么不再用「实现里那几个候选角点」当期望值：那样测的是「球包住了我
+    挑的这几个点」，不是「球包住了瓦片」。实现挑漏了点，期望值会跟着漏，
+    两边一起错、断言照样绿 —— 本仓上个月的 triangleCount 就是这么漏出去的
+    （设计稿:45），而 z0 瓦片正是这个反模式咬人的地方：最远点不在角点上。
+
+    采样方式：lon/lat 各 _SURFACE_SAMPLES 个等分点，高程只取 h_min / h_max
+    两层。**只取两层是严格的，不是近似** —— lonlat_to_ecef 对 h 是仿射的
+    （P(h) = A + h·n̂，n̂ 是单位椭球法向），所以 |P(h) - center| 是 h 的凸函数，
+    在 [h_min, h_max] 上的最大值必在端点取到。
+
+    残差上界：任取瓦片上一点 P，同层必有采样点 Q 使 |P-Q| ≤ 半个格子对角线 D/2，
+    于是 d(P) ≤ d(Q) + D/2 ≤ dmax + D/2。这里的 D 直接从采样出来的 ECEF 点
+    量出来（两条对角线取大），不是估的。
     """
     from src.services.terrain_tiling.cesiumlab_terrain import lonlat_to_ecef
 
     w, s, e, nn = bbox
     h_min, h_max = _expected_height_range(n)
-    lons = np.array([w, e, w, e] * 2, dtype=np.float64)
-    lats = np.array([s, s, nn, nn] * 2, dtype=np.float64)
-    hs = np.array([h_min] * 4 + [h_max] * 4, dtype=np.float64)
-    corners = lonlat_to_ecef(lons, lats, hs)
-    return np.linalg.norm(corners - np.asarray(center), axis=1)
+    llon, llat = np.meshgrid(
+        np.linspace(w, e, _SURFACE_SAMPLES, dtype=np.float64),
+        np.linspace(s, nn, _SURFACE_SAMPLES, dtype=np.float64),
+    )
+    c = np.asarray(center, dtype=np.float64)
+
+    dmax = 0.0
+    diag = 0.0
+    for h in (h_min, h_max):
+        pts = lonlat_to_ecef(llon, llat, np.full_like(llon, h))
+        dmax = max(dmax, float(np.linalg.norm(pts - c, axis=-1).max()))
+        diag = max(
+            diag,
+            float(np.linalg.norm(pts[1:, 1:] - pts[:-1, :-1], axis=-1).max()),
+            float(np.linalg.norm(pts[1:, :-1] - pts[:-1, 1:], axis=-1).max()),
+        )
+    return dmax, diag / 2.0
 
 
 @pytest.mark.parametrize("bbox,n", _HEADER_CASES, ids=_HEADER_IDS)
@@ -437,32 +467,46 @@ def test_header_center_is_the_tile_centre_in_ecef(bbox, n):
 
 @pytest.mark.parametrize("bbox,n", _HEADER_CASES, ids=_HEADER_IDS)
 def test_header_bounding_sphere_radius_encloses_the_tile(bbox, n):
-    """radius 必须精确外接瓦片的 8 个角点 —— 写 0（或写小/写大）都会被 Cesium 拿去做视锥剔除。
+    """radius 必须外接【整块瓦片】—— 写 0（或写小/写大）都会被 Cesium 拿去做视锥剔除。
 
     radius=0 时每张瓦片都被剔掉，地形全不可见，且全程 HTTP 200 + 任务 completed。
 
-    下界是 `>= dmax`，零松弛：「包住」是外接球的定义性质，差 1 nm 也是包不住。
-    此前这里写的是 `>= dmax * 0.999`，因为当时的实现只取 4 个 h_min 角点（外加瓦片
-    中心的 h_max 点），漏掉 4 个 h_max 角点 —— 后者离中心更远（同样经纬跨度在更高
-    高度对应更大的物理距离），实测缺口 0.35 m / 73 km（1°瓦片）到 55 m / 726 km
-    （10°瓦片），且随瓦片尺寸线性放大。实现已改成取全部 8 个角点，缺口归零。
+    期望值走 _tile_surface_max_dist 的稠密采样，**不再用「和实现相同的角点集合」**。
+    这条测试上一版断言的是「球包住了这 8 个角点」并在 docstring 里声称「缺口归零」，
+    对 z0 是假的：z0 跨 lat -90..90，四个经纬角点全部退化到南北两极，离中心最远的
+    是西/东边界的中点（赤道上），比极点角点远 0.17% —— 实测缺 15114 m，而当时
+    2/2 张 z0 瓦片全都没被包住，测试却是绿的。教训不是「角点再补几个」，
+    而是**期望值不能从被测实现的假设里抄**。
 
-    零松弛不会造成跨平台偶发红灯：dmax 走的就是生产端的 lonlat_to_ecef，两侧喂的
-    经纬高一致，libm / SIMD 的末位差异是共模的，会同时出现在 radius 和 dmax 上。
-    上界留 1e-9 相对松弛（726 km 上约 7e-4 m，是 float64 ULP 的 ~1000 倍），
-    只为吸收「多算一个中心点再取 max」的路径差异，任何真实的吹大都远超它。
+    下界几乎零松弛（1e-6 m）：「包住」是外接球的定义性质。留 1e-6 而不是 0，是因为
+    这一版的采样点数（十万量级）与实现里那十几个候选点的数组长度不同，numpy 的
+    sin/cos 走 SIMD 分派，尾部元素可能落进标量路径 —— 上一版「两侧输入下标完全相同
+    因而末位差异共模」的论证在这里不再严格成立。1e-6 m 在 5e6 量级上约 1000 ULP，
+    而真实的「包不住」是米到公里级（z0 缺 15 km），断言的牙齿一颗没掉。
+
+    上界不能再零松弛：采样点只是瓦片表面的有限子集，最远点一般不落在采样点上，
+    所以 radius 本来就该比 dmax 略大。放开量取 _tile_surface_max_dist 返回的
+    「半格对角线」—— 这是采样残差的严格上界（|d(P)-d(Q)| ≤ |P-Q|），随采样密度
+    收紧而不是拍脑袋的常数。S=361 下实测相对松弛 0.28%(1° 瓦片)~0.43%(z0)，
+    足以打死任何真实的吹大（radius×2、拿整球半径、把 h 加两遍）。
+    加密到 S=1081 可收到 0.09%~0.14%，但代价是 9 倍采样量，不值当。
+
+    实测（本轮修复后）：4 组 bbox + z0 东半球 + 两张 z1，radius 与 dmax
+    **逐位相等**，缺口和超出量都精确是 0 —— 稠密采样的最大值恰好落在实现的
+    候选点上，说明候选集合这次真的覆盖到了极值点。
     """
     data = encode_quantized_mesh(*bbox, _heights(n))
     hdr = _parse_header(data)
-    dmax = float(_tile_corners_ecef(bbox, n, hdr["center"]).max())
+    dmax, resid = _tile_surface_max_dist(bbox, n, hdr["center"])
 
     assert hdr["radius"] > 0.0, "radius 必须为正 —— 写 0 会让 Cesium 剔掉每张瓦片"
-    assert hdr["radius"] >= dmax, (
-        f"radius={hdr['radius']:.6f} 小于瓦片角点最大距离 {dmax:.6f}"
-        f"（缺 {dmax - hdr['radius']:.6f} m），包不住瓦片"
+    assert hdr["radius"] >= dmax - 1e-6, (
+        f"radius={hdr['radius']:.3f} 小于瓦片表面采样点的最大距离 {dmax:.3f}"
+        f"（缺 {dmax - hdr['radius']:.3f} m），包不住瓦片"
     )
-    assert hdr["radius"] <= dmax * (1 + 1e-9), (
-        f"radius={hdr['radius']:.6f} 大于瓦片角点最大距离 {dmax:.6f}，包围球被吹大了"
+    assert hdr["radius"] <= dmax + resid, (
+        f"radius={hdr['radius']:.3f} 超出采样最大距离 {dmax:.3f} 加采样残差 "
+        f"{resid:.3f}，包围球被吹大了"
     )
 
 
@@ -494,7 +538,15 @@ def test_header_horizon_occlusion_point_is_beyond_the_tile_along_the_centre_ray(
     assert hop_mag > ctr_mag, (
         f"缩放空间模长 {hop_mag} 不大于瓦片中心的 {ctr_mag}，遮挡点没在瓦片之外"
     )
-    assert hop_mag <= 2.0, f"缩放空间模长 {hop_mag} 大得离谱"
+    # 上限必须跟着瓦片尺寸走，不能是常数：遮挡点本来就要退到瓦片之外，瓦片越大退得
+    # 越远。z0（180°×180°，外接球半径 9020 km）实测 2.41 —— 旧的 `<= 2.0` 是拿 1° 瓦片
+    # （实测 1.012）标定的魔数，加进 z0 用例后当场变红，而那不是缺陷。
+    # 换成「不超过瓦片中心 + 2 个外接球直径」：对小瓦片反而比 2.0 紧得多
+    # （1° 瓦片上限 1.025），量级写错 / 单位搞混那类错误照样一撞就死。
+    ceiling = ctr_mag + 2.0 * (hdr["radius"] + hdr["max_h"]) / WGS84_B
+    assert hop_mag <= ceiling, (
+        f"缩放空间模长 {hop_mag} 超出 {ceiling}（瓦片中心 {ctr_mag} + 2 个外接球直径），大得离谱"
+    )
     for axis, got, want in zip("xyz", hop_s / hop_mag, ctr_s / ctr_mag):
         assert got == pytest.approx(want, abs=1e-9), (
             f"horizonOcclusionPoint 的方向分量 {axis} 与 center 不一致："

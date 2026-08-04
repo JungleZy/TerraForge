@@ -323,16 +323,28 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float,
     h_c = 0.5 * (h_min + h_max)
     cx, cy, cz = lonlat_to_ecef(np.array([lon_c]), np.array([lat_c]), np.array([h_c]))[0]
 
-    # 瓦片的 8 个角点（4 个经纬角 × {h_min, h_max}）+ 中心点的 h_max。
-    # h_min 那 4 个不够：同样的经纬跨度在更高高度上对应更大的物理距离，所以
-    # h_max 角点比 h_min 角点离中心更远。此前只取 4 个 h_min 角点 + 中心点的
-    # h_max，外接球包不住整块瓦片 —— 实测缺 0.35 m / 73 km（1°瓦片）到
-    # 55 m / 726 km（10°瓦片），且随瓦片尺寸线性放大（地理切片方案 level 0 是
-    # 180°×180°）。后果是 Cesium 视锥剔除可能把边角恰在视锥边缘的瓦片误剔。
+    # 外接球半径的候选点：8 个角点（4 个经纬角 × {h_min, h_max}）+ 中心点
+    # + 4 条边中点（取 h_max）。
+    #
+    # 为什么要 h_max 那 4 个角点：同样的经纬跨度在更高高度上对应更大的物理
+    # 距离，所以 h_max 角点比 h_min 角点离中心更远。此前只取 4 个 h_min 角点
+    # + 中心点的 h_max，实测缺 0.35 m / 73 km（1°瓦片）到 55 m / 726 km（10°瓦片）。
+    #
+    # 为什么光有 8 个角点还不够：**最远点不一定在角点上**。z0 瓦片跨
+    # lat -90..90，四个经纬角点全部退化到南北两极这两个物理点上，而离中心
+    # 最远的是西/东边界的中点（赤道上），比极点角点远 0.17% —— 实测 2/2 张
+    # z0 瓦片都没被包住，缺 15.1 km。z0 瓦片是真会生成的：下面 build_terrain
+    # 里 `if z <= 4` 强制出全球图，每个 DEM 任务都产。
+    #
+    # 后果是 Cesium 视锥剔除可能把边角恰在视锥边缘的瓦片误剔（HTTP 200、
+    # 任务 completed、前端不报错，瓦片就是不显示）。
     # 中心点保留（它恒在球内，不影响 max，但删掉也要重算 golden，不值当）。
-    cor_lon = np.array([west, east, west, east, west, east, west, east, lon_c])
-    cor_lat = np.array([south, south, north, north, south, south, north, north, lat_c])
-    cor_h = np.array([h_min, h_min, h_min, h_min, h_max, h_max, h_max, h_max, h_max])
+    cor_lon = np.array([west, east, west, east, west, east, west, east, lon_c,
+                        west, east, lon_c, lon_c])
+    cor_lat = np.array([south, south, north, north, south, south, north, north, lat_c,
+                        lat_c, lat_c, south, north])
+    cor_h = np.array([h_min, h_min, h_min, h_min, h_max, h_max, h_max, h_max, h_max,
+                      h_max, h_max, h_max, h_max])
     cor_xyz = lonlat_to_ecef(cor_lon, cor_lat, cor_h)
     radius = float(np.max(np.linalg.norm(cor_xyz - np.array([cx, cy, cz]), axis=1)))
 
