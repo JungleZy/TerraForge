@@ -35,7 +35,7 @@ def _parse_max_content_length():
 class Config:
     """Application configuration class"""
 
-    APP_VERSION = '0.2.6'
+    APP_VERSION = '0.2.7'
 
     # Secret key for Flask session management
     SECRET_KEY = os.environ.get('SECRET_KEY')
