@@ -18,7 +18,7 @@ import pytest
 
 
 def _load_client(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -46,7 +46,7 @@ def _make_dem(path, cols=30, rows=30, west=116.0, north=40.0, deg=0.01):
 
 
 def _insert_dem_task(output_path: str) -> int:
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -65,7 +65,7 @@ def _insert_dem_task(output_path: str) -> int:
 
 
 def _insert_local_task() -> int:
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()

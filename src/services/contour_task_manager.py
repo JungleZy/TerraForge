@@ -26,12 +26,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
-from core.config import Config
-from core.database import get_connection, utc_now_iso
-from services.config_manager import ConfigManager
-from services.dem_download_engine import DemDownloadEngine
-from services.geo_validation import MAX_ZOOM, coerce_number, validate_zoom
-from services.dem_granules import coverage_bbox
+from src.core.config import Config
+from src.core.database import get_connection, utc_now_iso
+from src.services.config_manager import ConfigManager
+from src.services.dem_download_engine import DemDownloadEngine
+from src.services.geo_validation import MAX_ZOOM, coerce_number, validate_zoom
+from src.services.dem_granules import coverage_bbox
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +208,7 @@ def style_for_task(config, task) -> "ContourStyle":
     （dict/Row 均可，缺列视为未覆盖）。可单测，无 GDAL 依赖。"""
     from dataclasses import replace
 
-    from services.contour_engine import ContourStyle
+    from src.services.contour_engine import ContourStyle
 
     def _get(key, default=""):
         try:
@@ -723,8 +723,8 @@ class ContourTaskManager:
                 return
 
             # ---- One-stop render phase: DEM downloaded -> contour tiles ----
-            from services.contour_task_tiler import ContourParams, tile_contour_task_dir
-            from services.contour_engine import count_tiles
+            from src.services.contour_task_tiler import ContourParams, tile_contour_task_dir
+            from src.services.contour_engine import count_tiles
 
             style = style_for_task(self.config, task)
             interval = float(task["contour_interval"])

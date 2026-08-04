@@ -1,6 +1,6 @@
 """
 HIGH #6 fix: terrain 链路对齐 contour 已修过的四个坑
-(services/terrain_tiling/cesiumlab_terrain.py, 范本 services/contour_engine.py):
+(src/services/terrain_tiling/cesiumlab_terrain.py, 范本 src/services/contour_engine.py):
 
 1. build_terrain 不再把全部瓦片任务物化成单个 list(大区域高 max_level OOM),
    而是算术计数 total + 生成器按 batch 分发给进程池(Executor.map 会把传入
@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from osgeo import gdal
 
-from services.terrain_tiling import cesiumlab_terrain as ct
+from src.services.terrain_tiling import cesiumlab_terrain as ct
 
 
 def _make_dem(path, cols=60, rows=60, deg_per_px=0.01, west=116.0, north=40.0):

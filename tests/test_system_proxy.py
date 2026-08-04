@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from services import system_proxy
+from src.services import system_proxy
 
 _ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY")
 

@@ -10,7 +10,7 @@ tile_servers 配置（逗号分隔列表）的统一语义，下载引擎 / 底�
                         占位符（Google 兼容镜像用），没有 {style} 的模板
                         样式由地址自身决定，下载时忽略样式选择
 
-通联探测给配置页「验证」按钮用：拆成独立模块而不是塞进 routes/api.py，
+通联探测给配置页「验证」按钮用：拆成独立模块而不是塞进 src/routes/api.py，
 模板校验与坐标换算是纯函数，单测不需要起 Flask；HTTP 抓取收敛在
 _fetch_tile 一处，probe_server_entry 接受 fetcher 注入，成功路径无网可测。
 """
@@ -24,11 +24,11 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
-from services.system_proxy import mask_url_userinfo
+from src.services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)
 
-# 配置里 tile_servers 为空时的回退（与 core/database.py 的默认值一致）。
+# 配置里 tile_servers 为空时的回退（与 src/core/database.py 的默认值一致）。
 DEFAULT_TILE_SERVERS = 'mts0,mts1,mts2,mts3'
 
 # 探测只取前几十 KB，确认链路通即可，不把整张瓦片读进来。

@@ -13,14 +13,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core.database import get_connection, utc_now_iso
-from services.config_manager import ConfigManager
-from services.dem_download_engine import DemDownloadEngine
-from services.geo_validation import require_absolute_output_dir, resolve_output_dir, sanitize_filename, validate_bbox
-from services.dem_granules import (
+from src.core.database import get_connection, utc_now_iso
+from src.services.config_manager import ConfigManager
+from src.services.dem_download_engine import DemDownloadEngine
+from src.services.geo_validation import require_absolute_output_dir, resolve_output_dir, sanitize_filename, validate_bbox
+from src.services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
-from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ class DemTaskManager:
     def create_task(self, params: dict) -> int:
         # NOTE: Keep signature compatible-ish with existing API patterns (dict in, id out).
         name = sanitize_filename(params.get("name") or "DEM Task")
-        # 四至共用校验(范围/顺序/NaN/类型),见 services/geo_validation.py
+        # 四至共用校验(范围/顺序/NaN/类型),见 src/services/geo_validation.py
         north, south, east, west = validate_bbox(
             params.get("north"), params.get("south"),
             params.get("east"), params.get("west"),
@@ -366,7 +366,7 @@ class DemTaskManager:
             # (RuntimeError: can't start new thread)后不回补的话,job 行永久停在
             # running:再次 start_tiling 被 `WHERE status != 'running'` 判为「已在
             # 运行」而 ValueError,delete_task 也被 DB 状态检查挡住(tiling 线程
-            # 不登记进 active_tasks,is_alive() 拦不住),而 routes/terrain_api.py
+            # 不登记进 active_tasks,is_alive() 拦不住),而 src/routes/terrain_api.py
             # 没有任何 cancel/reset job 的端点 —— 只能重启进程让孤儿恢复解开。
             # job 行没有 paused 态,这里置 failed(与下载管线回退 paused 不同)。
             self._mark_tiling_job_failed(
@@ -520,7 +520,7 @@ class DemTaskManager:
     def list_tasks(self, limit: int = 100, status: Optional[str] = None) -> List[Dict[str, Any]]:
         limit = int(limit or 100)
         # 钳到 [1, 100] —— SQLite LIMIT -1 表示无上限、0 返回空，两者都是
-        # 调用方 bug，回退到默认窗口（同 routes/api.py get_tasks 的约定）。
+        # 调用方 bug，回退到默认窗口（同 src/routes/api.py get_tasks 的约定）。
         if limit > 100:
             limit = 100
         if limit < 1:

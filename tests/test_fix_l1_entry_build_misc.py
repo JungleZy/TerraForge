@@ -72,7 +72,7 @@ def test_create_app_docstring_matches_return(isolated_app):
 
 def test_create_app_logs_secret_key_warning(monkeypatch, tmp_path, caplog):
     """SECRET_KEY 自动生成时,create_app 必须 logger.warning(WSGI 路径也经过这里)。"""
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, 'SECRET_KEY_WAS_GENERATED', True)
     monkeypatch.setattr(config.Config, 'DATABASE_PATH', tmp_path / 'test.db')
@@ -81,7 +81,7 @@ def test_create_app_logs_secret_key_warning(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(config.Config, 'CACHE_DIR', tmp_path / 'cache')
 
     with caplog.at_level(logging.WARNING, logger='app'):
-        fresh_import(monkeypatch, 'app', 'core.database')
+        fresh_import(monkeypatch, 'app', 'src.core.database')
 
     assert 'SECRET_KEY' in caplog.text
 
@@ -91,7 +91,7 @@ def test_create_app_logs_secret_key_warning(monkeypatch, tmp_path, caplog):
 def test_busy_timeout_set_before_journal_mode():
     """journal_mode 切换本身也要拿库锁;busy_timeout 必须先生效,否则多实例
     同时启动时 journal_mode 这一步直接 database is locked。"""
-    src = _read(os.path.join('core', 'database.py'))
+    src = _read(os.path.join('src', 'core', 'database.py'))
     busy = src.index("conn.execute('PRAGMA busy_timeout")
     wal = src.index("conn.execute('PRAGMA journal_mode")
     assert busy < wal, 'busy_timeout 必须先于 journal_mode=WAL 设置'
@@ -99,24 +99,24 @@ def test_busy_timeout_set_before_journal_mode():
 
 # --------------------- config.py: MAX_CONTENT_LENGTH 非法值容错
 
-# 注意:这里不用 fresh_import 重导入 core.config —— 同一会话内重导入同一子模块
-# 两次以上时,monkeypatch 只恢复 sys.modules 条目,父包属性 core.config 仍指向
+# 注意:这里不用 fresh_import 重导入 src.core.config —— 同一会话内重导入同一子模块
+# 两次以上时,monkeypatch 只恢复 sys.modules 条目,父包属性 src.core.config 仍指向
 # 最后一次的新模块,后续测试 `from core import config` 与已缓存模块里的
-# `from core.config import Config` 会拿到不同 Config(split-brain)。直接对
+# `from src.core.config import Config` 会拿到不同 Config(split-brain)。直接对
 # 已导入模块调用解析函数即可覆盖同样的行为。
 
 def test_max_content_length_invalid_falls_back_with_warning(monkeypatch, caplog):
-    from core import config
+    from src.core import config
 
     monkeypatch.setenv('MAX_CONTENT_LENGTH', 'not-a-number')
-    with caplog.at_level(logging.WARNING, logger='core.config'):
+    with caplog.at_level(logging.WARNING, logger='src.core.config'):
         value = config._parse_max_content_length()
     assert value == config._DEFAULT_MAX_CONTENT_LENGTH
     assert 'MAX_CONTENT_LENGTH' in caplog.text, '报错必须带变量名'
 
 
 def test_max_content_length_valid_env_still_honored(monkeypatch):
-    from core import config
+    from src.core import config
 
     monkeypatch.setenv('MAX_CONTENT_LENGTH', '12345')
     assert config._parse_max_content_length() == 12345
@@ -124,16 +124,16 @@ def test_max_content_length_valid_env_still_honored(monkeypatch):
 
 def test_max_content_length_config_uses_parser():
     """类属性必须经 _parse_max_content_length 求值(非法值容错才真的生效)。"""
-    from core import config
+    from src.core import config
 
     assert config.Config.MAX_CONTENT_LENGTH == config._parse_max_content_length()
-    src = _read(os.path.join('core', 'config.py'))
+    src = _read(os.path.join('src', 'core', 'config.py'))
     assert 'MAX_CONTENT_LENGTH = _parse_max_content_length()' in src
 
 
 # --------------------- process_watchdog: PID 复用识别
 
-import core.process_watchdog as pw  # noqa: E402
+import src.core.process_watchdog as pw  # noqa: E402
 
 has_proc = pytest.mark.skipif(
     not os.path.exists('/proc/self/cmdline'), reason='需要 Linux /proc')

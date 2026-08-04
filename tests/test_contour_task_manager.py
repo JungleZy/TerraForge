@@ -22,20 +22,20 @@ class _FakeUpload:
 
 
 def _setup(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
-    ctm_mod = importlib.import_module("services.contour_task_manager")
+    ctm_mod = importlib.import_module("src.services.contour_task_manager")
     return db, ctm_mod
 
 
 def _task_dir(task_id):
-    from core import config
+    from src.core import config
     return Path(config.Config.DOWNLOADS_DIR) / "dem" / f"contour_task_{task_id}"
 
 

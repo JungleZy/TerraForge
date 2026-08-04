@@ -24,15 +24,15 @@ from conftest import fresh_import  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _fresh_db(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     # 走 fresh_import 而不是裸 pop：裸 pop 不恢复，会给后续文件留下第二份模块
-    # 对象（M23）。services.config_manager 被 test_config_manager.py /
+    # 对象（M23）。src.services.config_manager 被 test_config_manager.py /
     # test_tile_url_config.py 在**模块级** from-import，正是会踩到的形态。
-    db, cfg = fresh_import(monkeypatch, "app", "core.database",
-                           "services.config_manager")[1:]
+    db, cfg = fresh_import(monkeypatch, "app", "src.core.database",
+                           "src.services.config_manager")[1:]
     db.init_database()
     return db, cfg
 
@@ -81,7 +81,7 @@ def test_failed_stitch_leaves_no_partial_output(monkeypatch, tmp_path):
     产物却是损坏状态不确定的 tif。
     """
     pytest.importorskip("osgeo.gdal")
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "out")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "out")
@@ -92,10 +92,10 @@ def test_failed_stitch_leaves_no_partial_output(monkeypatch, tmp_path):
     # **它自己模块的全局**，裸 pop 不恢复会让后跑的 test_download_engine.py 在
     # `pytest.raises(DownloadCancelled)` 里 catch 到另一份类对象，异常穿透（M23，
     # 文件级逆序下实测两条 stop_flag 用例翻红）。
-    _db, de = fresh_import(monkeypatch, "core.database", "services.download_engine")
+    _db, de = fresh_import(monkeypatch, "src.core.database", "src.services.download_engine")
     _db.init_database()
 
-    from models.task import Tile
+    from src.models.task import Tile
     from PIL import Image
 
     engine = de.DownloadEngine()
@@ -133,7 +133,7 @@ def test_failed_stitch_leaves_no_partial_output(monkeypatch, tmp_path):
 def test_successful_stitch_still_produces_the_output(monkeypatch, tmp_path):
     """对照：正常路径不受原子写改动影响。"""
     pytest.importorskip("osgeo.gdal")
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "out")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "out")
@@ -144,10 +144,10 @@ def test_successful_stitch_still_produces_the_output(monkeypatch, tmp_path):
     # **它自己模块的全局**，裸 pop 不恢复会让后跑的 test_download_engine.py 在
     # `pytest.raises(DownloadCancelled)` 里 catch 到另一份类对象，异常穿透（M23，
     # 文件级逆序下实测两条 stop_flag 用例翻红）。
-    _db, de = fresh_import(monkeypatch, "core.database", "services.download_engine")
+    _db, de = fresh_import(monkeypatch, "src.core.database", "src.services.download_engine")
     _db.init_database()
 
-    from models.task import Tile
+    from src.models.task import Tile
     from PIL import Image
 
     engine = de.DownloadEngine()

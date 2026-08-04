@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.terrain_tiling.cesiumlab_terrain import GeographicTilingScheme
+from src.services.terrain_tiling.cesiumlab_terrain import GeographicTilingScheme
 
 
 def test_estimate_max_level_uses_actual_tile_size():

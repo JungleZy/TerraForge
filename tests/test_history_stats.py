@@ -6,12 +6,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.dem_task_manager"):
+    for mod in ("app", "src.core.database", "src.services.dem_task_manager"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -44,7 +44,7 @@ def _seed(db):
 
 def test_history_stats_aggregates_three_tables(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     _seed(db)
 
     resp = client.get("/api/history_stats")
@@ -58,7 +58,7 @@ def test_history_stats_aggregates_three_tables(monkeypatch, tmp_path):
 
 def test_history_all_includes_contour(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     _seed(db)
 
     resp = client.get("/api/history_all?page=1&per_page=50")

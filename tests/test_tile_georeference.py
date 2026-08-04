@@ -11,8 +11,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from services.download_engine import DownloadEngine
-from models.task import Tile
+from src.services.download_engine import DownloadEngine
+from src.models.task import Tile
 
 
 @pytest.fixture(autouse=True)
@@ -31,8 +31,8 @@ def isolated_config(tmp_path, monkeypatch):
     建库(而不是只把路径指向一个不存在的文件)是为了让取到的值是生产真实默认值:
     config 表由 database.DEFAULT_CONFIGS 播种,gdal_resampling = 'cubic'。
     """
-    from core.config import Config
-    from core import database
+    from src.core.config import Config
+    from src.core import database
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
@@ -50,8 +50,8 @@ def test_resampling_config_is_the_production_default():
     如果哪天 fixture 里的建库被删掉,ConfigManager 会静默退回 'nearest',
     上面所有拼接测试立刻改跑另一条代码路径而**不会变红**。这条会红。
     """
-    from core.database import DEFAULT_CONFIGS
-    from services.config_manager import ConfigManager
+    from src.core.database import DEFAULT_CONFIGS
+    from src.services.config_manager import ConfigManager
 
     defaults = dict(DEFAULT_CONFIGS)
     assert defaults['gdal_resampling'] == 'cubic', (
@@ -229,7 +229,7 @@ def test_adjacent_tiles_are_seamless_with_uniform_pixel_size():
 def test_stitch_default_target_epsg_is_4326():
     """默认输出必须仍是 EPSG:4326,不能静默改变存量用户的产出"""
     import inspect
-    from services.download_engine import DownloadEngine
+    from src.services.download_engine import DownloadEngine
 
     sig = inspect.signature(DownloadEngine.stitch_tiles_with_gdal)
     assert 'target_epsg' in sig.parameters, "stitch_tiles_with_gdal 应有 target_epsg 参数"
@@ -277,7 +277,7 @@ def test_stale_4326_geo_tif_is_never_reused(tmp_path, monkeypatch):
 
     对策：中间文件名带上坐标系标记，新代码只认带标记的文件。
     """
-    from core.config import Config
+    from src.core.config import Config
 
     monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
 
@@ -312,7 +312,7 @@ def test_stitch_cleans_up_georef_tiles_when_stitching_fails(tmp_path, monkeypatc
     缓存缺瓦片（用户清了缓存 / 上次没跑完）会在循环里 raise
     FileNotFoundError，此前处理过的瓦片如果没有 try/finally 就全成了残骸。
     """
-    from core.config import Config
+    from src.core.config import Config
 
     cache_dir = tmp_path / 'cache'
     out_dir = tmp_path / 'downloads'
@@ -346,7 +346,7 @@ def test_stitch_reprojects_to_4326_by_default_and_keeps_3857_on_request(tmp_path
       - target_epsg=3857 时跳过 warp，直接输出原生 3857、范围与瓦片理论范围逐米吻合
       - 两种路径都不能留下任何中间文件
     """
-    from core.config import Config
+    from src.core.config import Config
     from osgeo import gdal
 
     cache_dir = tmp_path / 'cache'
@@ -597,7 +597,7 @@ def test_stitched_palette_tiles_keep_each_tiles_own_colors(tmp_path, monkeypatch
     =3857 跳过 warp，像素原封不动穿过 BuildVRT → Translate，所以可以逐像素
     比对颜色。
     """
-    from core.config import Config
+    from src.core.config import Config
     from osgeo import gdal
 
     cache_dir = tmp_path / 'cache'
@@ -663,7 +663,7 @@ def test_stale_single_band_intermediate_is_never_reused(tmp_path, monkeypatch):
     的复用逻辑升级成了有害，这次是波段形态。对策也同构 —— 把契约编进文件名。
     """
     import numpy as np
-    from core.config import Config
+    from src.core.config import Config
     from osgeo import gdal, osr
 
     monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
@@ -723,7 +723,7 @@ def test_stale_single_band_intermediate_is_never_reused(tmp_path, monkeypatch):
 
 def _georef_path_of(tile_png: Path) -> Path:
     """中间文件路径。共用实现里的 GEOREF_SUFFIX，避免在测试里硬编码文件名"""
-    from services.download_engine import GEOREF_SUFFIX
+    from src.services.download_engine import GEOREF_SUFFIX
 
     return tile_png.with_name(f"{tile_png.stem}{GEOREF_SUFFIX}.tif")
 
@@ -735,7 +735,7 @@ def _private_georef_path_of(work_dir: Path, tile) -> Path:
     且目录内命名带 x 前缀(cache 文件名只是 {y}.png,同 y 不同 x 会撞名)。
     这里共用实现里的 GEOREF_SUFFIX,镜像这套命名。
     """
-    from services.download_engine import GEOREF_SUFFIX
+    from src.services.download_engine import GEOREF_SUFFIX
 
     return work_dir / f"{tile.x}_{tile.y}{GEOREF_SUFFIX}.tif"
 
@@ -748,7 +748,7 @@ def _plant_poison_in_work_dir(monkeypatch, work_dir: Path):
     「名字合规、内容有毒」的残骸放进去,复现 exists() 短路复用残骸、
     BuildVRT 静默踢瓦片的路径。行为断言(必须显式失败,不能缩水)不变。
     """
-    import services.download_engine as de
+    import src.services.download_engine as de
 
     work_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(de.tempfile, 'mkdtemp', lambda prefix=None: str(work_dir))
@@ -785,7 +785,7 @@ def test_half_written_intermediate_fails_instead_of_shrinking_the_mosaic(monkeyp
     只有一条 warning，Translate 照常成功，任务报完成。
     """
     from osgeo import gdal
-    from core.config import Config
+    from src.core.config import Config
 
     engine = DownloadEngine()
     left, right = _two_tiles_with_cache(engine)
@@ -828,7 +828,7 @@ def test_band_count_mismatch_intermediate_fails_instead_of_shrinking_the_mosaic(
     实测未修复时：vrt size 16x16（本该 32x16），Translate 成功，任务报完成。
     """
     from osgeo import gdal, osr
-    from core.config import Config
+    from src.core.config import Config
 
     engine = DownloadEngine()
     left, right = _two_tiles_with_cache(engine)
@@ -871,7 +871,7 @@ def test_interrupted_georeference_leaves_no_name_compliant_leftover(monkeypatch)
     这里在 SetProjection 之前引爆（osr.SpatialReference 抛异常），正好落在
     「文件已创建、配准还没写完」这个最危险的窗口里。
     """
-    import services.download_engine as de
+    import src.services.download_engine as de
 
     engine = DownloadEngine()
     zoom, x, y = 10, 843, 387

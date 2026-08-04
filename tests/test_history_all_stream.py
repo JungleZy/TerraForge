@@ -20,12 +20,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.dem_task_manager"):
+    for mod in ("app", "src.core.database", "src.services.dem_task_manager"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -66,7 +66,7 @@ def test_history_all_orders_by_created_at_desc_not_completed_at(monkeypatch, tmp
     排第一，哪怕它还没有 completed_at。
     """
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -89,7 +89,7 @@ def test_history_all_orders_by_created_at_desc_not_completed_at(monkeypatch, tmp
 def test_history_all_tie_breaks_by_id_desc(monkeypatch, tmp_path):
     """created_at 并列时按 id DESC（id 近似时序，保证同秒创建顺序稳定）。"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -114,7 +114,7 @@ def test_history_all_status_active_covers_three_live_states(monkeypatch, tmp_pat
     也会返回），active 只是把它们单独滤出来。
     """
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -145,7 +145,7 @@ def test_history_all_status_active_covers_three_live_states(monkeypatch, tmp_pat
 def test_history_all_single_status_filter_unchanged(monkeypatch, tmp_path):
     """其它单值过滤语义不变：?status=failed 只回 failed（跨四表等值过滤）。"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()

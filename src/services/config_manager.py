@@ -8,10 +8,10 @@ Handles reading, updating, and validating application configuration stored in SQ
 import logging
 from typing import Optional, Dict, Any
 import sqlite3
-from core.database import (
+from src.core.database import (
     get_connection_context, DEFAULT_CONFIGS, normalize_default_save_path, utc_now_iso,
 )
-from services.system_proxy import mask_url_userinfo
+from src.services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +305,7 @@ class ConfigManager:
             elif key == 'default_save_path':
                 # 绝对路径 + 至少两级深度(与建任务同一口径,0.2.4 起全盘可选);
                 # 相对/浅层都拒绝 —— 存一个建任务时必被 400 的值没有意义
-                from services.geo_validation import require_absolute_output_dir
+                from src.services.geo_validation import require_absolute_output_dir
                 try:
                     require_absolute_output_dir(str(value))
                     return True
@@ -325,7 +325,7 @@ class ConfigManager:
             elif key == 'tile_servers':
                 # 逗号分隔的瓦片服务器列表：每个条目必须是 Google 别名/主机
                 # 或含 {x}/{y}/{z} 的完整 XYZ 模板（tile_url_probe 统一语义）
-                from services.tile_url_probe import validate_server_list
+                from src.services.tile_url_probe import validate_server_list
                 ok, _err = validate_server_list(str(value))
                 return ok
 

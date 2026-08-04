@@ -2,15 +2,15 @@
 
 `create_app()` 通过 init_*_task_manager(...) 把 manager 注入到 routes.* 的
 **模块级全局**里。sys.modules 的恢复管不住这些属性 —— teardown 后
-sys.modules['app'] 已经是原实例，而 routes.api.task_manager 仍指向 fixture 里
+sys.modules['app'] 已经是原实例，而 src.routes.api.task_manager 仍指向 fixture 里
 那个绑定到已删除 tmp_path 的管理器。失败模式是**静默假绿**（测试 patch 新模块、
 请求却打到旧模块），不是报红，所以必须由自检用例守住。
 
 2026-08-04：M23 的另一半（裸 pop 不恢复）已经**不再是潜伏状态** —— 见本文件
 下半部分的模块身份契约。`test_fix_release_hygiene.py` 裸 pop
-`services.download_engine` 且从不恢复，逆序下让 `test_download_engine.py` 的两条
+`src.services.download_engine` 且从不恢复，逆序下让 `test_download_engine.py` 的两条
 stop_flag 用例实测翻红：`download_tile` 内 `raise DownloadCancelled()` 解析的是
-**它自己模块的全局**（旧模块 A），而测试函数内 `from services.download_engine
+**它自己模块的全局**（旧模块 A），而测试函数内 `from src.services.download_engine
 import DownloadCancelled` 拿到的是 sys.modules 当前那份（新模块 B），
 `pytest.raises(B)` 捕不住 A 的异常，异常穿透 → FAILED。
 """
@@ -34,11 +34,11 @@ def test_injected_globals_are_restored_after_teardown(tmp_path):
     """走完一次 isolated_app 的完整生命周期后，app 与 routes.* 必须仍指向同一批
     manager 对象。"""
     import importlib
-    from core import config
+    from src.core import config
 
     # 先确保基线：app 已加载，两侧一致
     app_mod = importlib.import_module("app")
-    routes_api = importlib.import_module("routes.api")
+    routes_api = importlib.import_module("src.routes.api")
     assert app_mod.task_manager is routes_api.task_manager, "基线就不一致，用例失效"
     baseline = {name: getattr(sys.modules[name], attr)
                 for name, attr in _INJECTED_MANAGER_GLOBALS
@@ -50,9 +50,9 @@ def test_injected_globals_are_restored_after_teardown(tmp_path):
         mp.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
         mp.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
         mp.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-        fresh = fresh_import(mp, "app", "core.database")[0]
+        fresh = fresh_import(mp, "app", "src.core.database")[0]
         # fixture 生命周期内：注入的是新 manager
-        assert fresh.task_manager is not baseline["routes.api"]
+        assert fresh.task_manager is not baseline["src.routes.api"]
     finally:
         mp.undo()
 
@@ -65,15 +65,15 @@ def test_injected_globals_are_restored_after_teardown(tmp_path):
         )
 
     app_mod = sys.modules["app"]
-    routes_api = sys.modules["routes.api"]
+    routes_api = sys.modules["src.routes.api"]
     assert app_mod.task_manager is routes_api.task_manager, (
-        "teardown 后 app 与 routes.api 指向了两个不同的 manager 实例")
+        "teardown 后 app 与 src.routes.api 指向了两个不同的 manager 实例")
 
 
 # ---------- 模块身份契约：裸 pop 不得与「别处的模块级 from-import」相撞 ----------
 #
 # 全库有 61 处裸 `sys.modules.pop(...)`，但绝大多数无害：45/46 处 pop 的是
-# `app` / `core.database`，而这两个**没有**任何测试文件在模块级 from-import
+# `app` / `src.core.database`，而这两个**没有**任何测试文件在模块级 from-import
 # （项目规约要求先 monkeypatch Config 再在函数内 import）。
 #
 # 真正会出事的是这个组合：模块 M 被 A 文件裸 pop（不恢复），同时被 B 文件在
@@ -83,13 +83,13 @@ def test_injected_globals_are_restored_after_teardown(tmp_path):
 # 文件执行顺序（正序绿、逆序红）。
 #
 # 实测引爆过的实例：`test_fix_release_hygiene.py` 裸 pop
-# `services.download_engine` → 文件级逆序下 `test_download_engine.py` 的两条
+# `src.services.download_engine` → 文件级逆序下 `test_download_engine.py` 的两条
 # stop_flag 用例翻红。已改用 `fresh_import` 修掉。
 #
 # 存量已于 2026-08-04 清零。清法不是把 27 处裸 pop 都迁到 `fresh_import`，而是
-# **直接删掉多余的 pop 项** —— `models.task` / `services.config_manager` /
-# `services.contour_task_manager` / `services.dem_download_engine` 这四个模块的
-# 模块级、类体、装饰器都不捕获 `Config` 的值（只 `from core.config import
+# **直接删掉多余的 pop 项** —— `src.models.task` / `src.services.config_manager` /
+# `src.services.contour_task_manager` / `src.services.dem_download_engine` 这四个模块的
+# 模块级、类体、装饰器都不捕获 `Config` 的值（只 `from src.core.config import
 # Config`，引用类本身，monkeypatch 打在类上对所有引用可见），所以把它们从 pop
 # 清单里删掉是零行为改变的：测试函数里的 `import_module(...)` 拿到全局那一份，
 # 运行时照样读到 monkeypatch 后的 Config。
@@ -125,7 +125,7 @@ class _PopFinder(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_For(self, node):
-        # for mod in ("app", "core.database"): sys.modules.pop(mod, None)
+        # for mod in ("app", "src.core.database"): sys.modules.pop(mod, None)
         if isinstance(node.target, ast.Name) and isinstance(node.iter, (ast.List, ast.Tuple)):
             names = [e.value for e in node.iter.elts
                      if isinstance(e, ast.Constant) and isinstance(e.value, str)]
@@ -167,8 +167,8 @@ def test_no_new_module_double_instance_risk():
     """棘轮：不得新增「裸 pop 的模块 + 别处模块级 from-import」这种组合。
 
     会让本用例翻红的改动：给某个测试文件新加一句裸
-    `sys.modules.pop("services.xxx")`，而 services.xxx 恰被另一个测试文件在文件
-    顶部 `from services.xxx import ...`。改用 `conftest.fresh_import(monkeypatch,
+    `sys.modules.pop("src.services.xxx")`，而 src.services.xxx 恰被另一个测试文件在文件
+    顶部 `from src.services.xxx import ...`。改用 `conftest.fresh_import(monkeypatch,
     ...)` 即可 —— 它 pop 之后会由 monkeypatch 在 teardown 还原。
     """
     risks = _scan_double_instance_risks()
@@ -193,7 +193,7 @@ def test_release_hygiene_followed_by_download_engine_stays_green():
     """真实场景钉死：这两个文件按此顺序跑必须全绿（文件级逆序下就是这个顺序）。
 
     会让本用例翻红的改动：把 test_fix_release_hygiene.py 改回裸 pop
-    `services.download_engine`。实测届时 test_download_engine.py 的
+    `src.services.download_engine`。实测届时 test_download_engine.py 的
     test_download_tile_does_not_request_when_stop_flag_already_set 与
     test_download_tile_stops_retrying_after_stop_flag_set 两条失败 ——
     `download_tile` 抛旧模块的 DownloadCancelled，测试 catch 的是新模块那份。

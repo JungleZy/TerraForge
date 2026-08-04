@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from models.task import OutputFormat
+from src.models.task import OutputFormat
 
 
 def test_image_only_enum_member_exists():
@@ -46,7 +46,7 @@ def test_unknown_format_still_raises():
 
 def test_task_accepts_image_only():
     """真正会崩的入口是 Task.__post_init__ —— 它在构造时调 from_shorthand"""
-    from models.task import Task
+    from src.models.task import Task
 
     task = Task(name='t', north=1.0, south=0.0, east=1.0, west=0.0,
                 output_format='image_only')
@@ -77,7 +77,7 @@ ACTION_MARKERS = {
 
 TASK_MANAGER_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'services', 'task_manager.py',
+    'src', 'services', 'task_manager.py',
 )
 
 

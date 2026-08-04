@@ -9,9 +9,9 @@ import os
 
 from flask import Blueprint, jsonify, request
 
-from services.geo_validation import validate_zoom
-from routes.api import _delete_payload
-from routes import terrain_static
+from src.services.geo_validation import validate_zoom
+from src.routes.api import _delete_payload
+from src.routes import terrain_static
 
 logger = logging.getLogger(__name__)
 

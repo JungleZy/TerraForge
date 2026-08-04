@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from pathlib import Path
 from enum import Enum
-from core.config import Config
-from services.geo_validation import validate_bbox, validate_zoom
+from src.core.config import Config
+from src.services.geo_validation import validate_bbox, validate_zoom
 
 
 class TaskStatus(Enum):
@@ -181,7 +181,7 @@ class Task:
         self.output_format = OutputFormat.from_shorthand(self.output_format)
 
         # 四至校验(共用规则:纬度 ±90、经度 ±180、north>south、east>west、
-        # 拒绝 NaN/inf/非数字;详见 services/geo_validation.py 模块 docstring)
+        # 拒绝 NaN/inf/非数字;详见 src/services/geo_validation.py 模块 docstring)
         self.north, self.south, self.east, self.west = validate_bbox(
             self.north, self.south, self.east, self.west
         )

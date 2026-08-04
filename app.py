@@ -40,8 +40,8 @@ if '-c' in sys.argv[1:]:
 
 # 打包模式(Nuitka standalone)下设置 GDAL_DATA/PROJ_DATA,必须赶在任何
 # import osgeo 之前(routes/services 在下方 import 时会间接加载 GDAL)。
-# 非打包环境为 no-op。core.bundle 是轻量模块,不引入重量级依赖。
-from core.bundle import bundle_dir, setup_bundle_env
+# 非打包环境为 no-op。src.core.bundle 是轻量模块,不引入重量级依赖。
+from src.core.bundle import bundle_dir, setup_bundle_env
 setup_bundle_env()
 
 # 打包 exe 默认关闭 debug/reloader:热重载对最终用户没有意义,还会让进程模型更复杂
@@ -67,7 +67,7 @@ if __name__ == '__main__' and _DEBUG and os.environ.get('WERKZEUG_RUN_MAIN') != 
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 # Configure logging(按级别着色;核心模块 logging_setup 很轻,赶在重量级 import 前配置)
-from core.logging_setup import configure_logging
+from src.core.logging_setup import configure_logging
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -96,8 +96,8 @@ _SHOW_STARTUP_OUTPUT = (
 # 之前打印,否则这段时间控制台一片空白,看起来像卡死。config 和 startup_banner 都是
 # 轻量模块,先加载它们即可。
 if _PRINT_BANNER:
-    from core.config import Config
-    from core.startup_banner import print_banner
+    from src.core.config import Config
+    from src.core.startup_banner import print_banner
 
     print_banner(
         Config.APP_VERSION,
@@ -113,7 +113,7 @@ if _PRINT_BANNER:
 # 横幅,但也要等同样久的 import)各起一个,在下方 create_app 之前停掉。
 _spinner = None
 if _PRINT_BANNER or _SHOW_STARTUP_OUTPUT:
-    from core.startup_banner import start_spinner
+    from src.core.startup_banner import start_spinner
     _spinner = start_spinner('  正在加载组件,请稍候…')
 
 from flask import Flask, request
@@ -129,22 +129,22 @@ else:
     template_folder = 'templates'
     static_folder = 'static'
 
-from core.config import Config
-from core.database import init_database
-from routes import main_bp, api_bp, dem_api_bp, terrain_api_bp, terrain_static_bp, local_terrain_api_bp, contour_api_bp, contour_static_bp, tiles_static_bp
-from routes.api import init_task_manager
-from routes.socketio_events import register_socketio_events
-from services.task_manager import TaskManager
-from routes.dem_api import init_dem_task_manager
-from routes.terrain_api import init_terrain_dem_task_manager
-from services.dem_task_manager import DemTaskManager
-from services.local_terrain_task_manager import LocalTerrainTaskManager
-from routes.local_terrain_api import init_local_terrain_task_manager
-from services.contour_task_manager import ContourTaskManager
-from routes.contour_api import init_contour_task_manager
-from services.system_proxy import apply_system_proxy
-from services.task_cleanup import sweep_startup_residue
-from core.single_instance import acquire_instance_lock, lock_path
+from src.core.config import Config
+from src.core.database import init_database
+from src.routes import main_bp, api_bp, dem_api_bp, terrain_api_bp, terrain_static_bp, local_terrain_api_bp, contour_api_bp, contour_static_bp, tiles_static_bp
+from src.routes.api import init_task_manager
+from src.routes.socketio_events import register_socketio_events
+from src.services.task_manager import TaskManager
+from src.routes.dem_api import init_dem_task_manager
+from src.routes.terrain_api import init_terrain_dem_task_manager
+from src.services.dem_task_manager import DemTaskManager
+from src.services.local_terrain_task_manager import LocalTerrainTaskManager
+from src.routes.local_terrain_api import init_local_terrain_task_manager
+from src.services.contour_task_manager import ContourTaskManager
+from src.routes.contour_api import init_contour_task_manager
+from src.services.system_proxy import apply_system_proxy
+from src.services.task_cleanup import sweep_startup_residue
+from src.core.single_instance import acquire_instance_lock, lock_path
 
 def create_app():
     """构造 Flask app + SocketIO + 全部 TaskManager + 蓝图,返回
@@ -341,8 +341,8 @@ if __name__ == '__main__':
     # werkzeug 的启动行(Running on xxx / dev-server 警告 / debugger PIN)和横幅里的
     # 访问地址重复,用过滤器精确拦掉这几条;HTTP 请求访问日志(GET /... 200)保留,
     # 但剥掉和 asctime 重复的内嵌日期,并把日志名 werkzeug 换成 http。
-    from core.logging_setup import WerkzeugAccessLogFilter
-    from core.startup_banner import WerkzeugStartupFilter
+    from src.core.logging_setup import WerkzeugAccessLogFilter
+    from src.core.startup_banner import WerkzeugStartupFilter
     logging.getLogger('werkzeug').addFilter(WerkzeugStartupFilter())
     logging.getLogger('werkzeug').addFilter(WerkzeugAccessLogFilter())
 
@@ -356,7 +356,7 @@ if __name__ == '__main__':
     # reloader 的 watcher 父进程被强杀时,fork 出来的子进程会变孤儿继续占着 5000
     # 端口(werkzeug 不处理)。父进程先把 pid 写进环境变量传给子进程;子进程起
     # 看门狗线程轮询,父进程没了就退出。
-    from core.process_watchdog import PARENT_PID_ENV, start_parent_watchdog
+    from src.core.process_watchdog import PARENT_PID_ENV, start_parent_watchdog
     if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         start_parent_watchdog()
     else:
@@ -365,7 +365,7 @@ if __name__ == '__main__':
     # 组件加载完毕的反馈 —— werkzeug 的服务行已被压掉,没有这行的话用户不知道
     # "正在加载组件"已经结束。
     if _SHOW_STARTUP_OUTPUT:
-        from core.startup_banner import safe_print, use_color
+        from src.core.startup_banner import safe_print, use_color
         _ready = '  ✓ 组件加载完成,服务已启动'
         safe_print(f'\033[32m{_ready}\033[0m' if use_color() else _ready)
 

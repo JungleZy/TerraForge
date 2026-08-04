@@ -3,7 +3,7 @@
 修复前:started_at/completed_at 用 datetime.now() 经 sqlite3 默认适配器存成
 空格分隔的本地时间(Python 3.12 起该适配器有 DeprecationWarning),前端
 new Date() 一律按本地时区解析,Safari 对空格格式直接 Invalid Date。
-修复后:所有手写时间戳统一走 core.database.utc_now_iso()(UTC、带 +00:00
+修复后:所有手写时间戳统一走 src.core.database.utc_now_iso()(UTC、带 +00:00
 时区标记、存 str);读取侧的时长计算走 parse_db_timestamp(),历史裸格式
 (无时区)按 UTC 兜底,不会 aware/naive 相减 TypeError。
 """
@@ -24,8 +24,8 @@ ISO_TZ_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$')
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
-    from core.config import Config
-    from core import database
+    from src.core.config import Config
+    from src.core import database
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
@@ -36,8 +36,8 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 def _seed_task_row(status='pending', total=0):
-    from core.config import Config
-    from core.database import get_connection
+    from src.core.config import Config
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -60,7 +60,7 @@ def _seed_task_row(status='pending', total=0):
 
 
 def _fetch_task_row(task_id):
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -74,7 +74,7 @@ def _fetch_task_row(task_id):
 # ---------- utc_now_iso / parse_db_timestamp 单元行为 ----------
 
 def test_utc_now_iso_returns_tz_aware_utc_string():
-    from core.database import utc_now_iso
+    from src.core.database import utc_now_iso
 
     value = utc_now_iso()
     assert isinstance(value, str)
@@ -88,7 +88,7 @@ def test_utc_now_iso_returns_tz_aware_utc_string():
 
 
 def test_parse_db_timestamp_handles_new_and_legacy_formats():
-    from core.database import parse_db_timestamp
+    from src.core.database import parse_db_timestamp
 
     # 新格式:带时区标记,原样解析
     aware = parse_db_timestamp('2026-07-31T09:00:00+00:00')
@@ -111,8 +111,8 @@ def test_parse_db_timestamp_handles_new_and_legacy_formats():
 # ---------- TaskManager 写入点:started_at / completed_at / time_records ----------
 
 def test_task_lifecycle_writes_utc_iso_timestamps(isolated_config):
-    from services.download_engine import DownloadEngine
-    from services.task_manager import TaskManager
+    from src.services.download_engine import DownloadEngine
+    from src.services.task_manager import TaskManager
 
     # 全部瓦片预先命中 cache:任务不起网络直接跑完,走完 completed_at 写入路径
     engine = DownloadEngine()
@@ -137,7 +137,7 @@ def test_task_lifecycle_writes_utc_iso_timestamps(isolated_config):
     # created_at 保持 SQLite CURRENT_TIMESTAMP(UTC 秒级,无时区标记)不动
     assert re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$', row['created_at'])
 
-    from core.database import get_connection, parse_db_timestamp
+    from src.core.database import get_connection, parse_db_timestamp
 
     assert parse_db_timestamp(row['started_at']) <= parse_db_timestamp(row['completed_at'])
 
@@ -157,12 +157,12 @@ def test_task_lifecycle_writes_utc_iso_timestamps(isolated_config):
 def test_running_time_with_legacy_naive_record_does_not_crash(isolated_config):
     """历史裸格式(无时区)的 start 记录与新代码的 aware UTC 当前时间混合,
     get_current_running_time / pause 时长累计不得 TypeError。"""
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager(socketio=None)  # 先建 manager,再插 running 行,免得被 orphan 回收
     task_id = _seed_task_row(status='running')
 
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -189,7 +189,7 @@ def test_running_time_with_legacy_naive_record_does_not_crash(isolated_config):
 # ---------- DEM / 本地地形 manager 的 orphan 恢复写入点 ----------
 
 def test_orphan_recovery_writes_utc_iso_completed_at(isolated_config):
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -219,8 +219,8 @@ def test_orphan_recovery_writes_utc_iso_completed_at(isolated_config):
     finally:
         conn.close()
 
-    from services.dem_task_manager import DemTaskManager
-    from services.local_terrain_task_manager import LocalTerrainTaskManager
+    from src.services.dem_task_manager import DemTaskManager
+    from src.services.local_terrain_task_manager import LocalTerrainTaskManager
 
     DemTaskManager(socketio=None)
     LocalTerrainTaskManager(socketio=None)
@@ -244,8 +244,8 @@ def test_orphan_recovery_writes_utc_iso_completed_at(isolated_config):
 def test_config_updated_at_is_utc_iso(isolated_config):
     """config.updated_at 同样走 utc_now_iso()(原是 datetime.now() 本地时间,
     也是 Python 3.12 sqlite3 默认适配器 DeprecationWarning 的最后来源)。"""
-    from core.database import get_connection
-    from services.config_manager import ConfigManager
+    from src.core.database import get_connection
+    from src.services.config_manager import ConfigManager
 
     ConfigManager().set('request_timeout', '25')
 

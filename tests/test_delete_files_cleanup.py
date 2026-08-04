@@ -7,19 +7,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     for mod in (
         "app",
-        "core.database",
-        "services.task_manager",
-        "services.dem_task_manager",
-        "routes.api",
-        "routes.dem_api",
-        "routes.contour_api",
+        "src.core.database",
+        "src.services.task_manager",
+        "src.services.dem_task_manager",
+        "src.routes.api",
+        "src.routes.dem_api",
+        "src.routes.contour_api",
     ):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
@@ -117,8 +117,8 @@ def _task_row(db, table, task_id):
 
 def test_delete_map_task_with_delete_files_removes_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
     task_id = _seed_map_task(db, output_path=config.Config.DOWNLOADS_DIR)
     artifact = _make_artifact(Path(config.Config.DOWNLOADS_DIR) / f"task_{task_id}")
 
@@ -131,8 +131,8 @@ def test_delete_map_task_with_delete_files_removes_artifacts(monkeypatch, tmp_pa
 
 def test_delete_map_task_default_keeps_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
     task_id = _seed_map_task(db, output_path=config.Config.DOWNLOADS_DIR)
     artifact = _make_artifact(Path(config.Config.DOWNLOADS_DIR) / f"task_{task_id}")
 
@@ -148,7 +148,7 @@ def test_delete_map_task_outside_downloads_dir_removes_files(monkeypatch, tmp_pa
     (护栏:非符号链接、深度足够、非根目录/家目录/cache)"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     task_id = _seed_map_task(db, output_path=outside)
     artifact = _make_artifact(outside / f"task_{task_id}")
 
@@ -161,8 +161,8 @@ def test_delete_map_task_outside_downloads_dir_removes_files(monkeypatch, tmp_pa
 
 def test_delete_dem_task_with_delete_files_removes_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_dem_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"dem_task_{task_id}")
@@ -176,8 +176,8 @@ def test_delete_dem_task_with_delete_files_removes_artifacts(monkeypatch, tmp_pa
 
 def test_delete_dem_task_default_keeps_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_dem_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"dem_task_{task_id}")
@@ -193,7 +193,7 @@ def test_delete_dem_task_outside_downloads_dir_removes_files(monkeypatch, tmp_pa
     """0.2.4 护栏放开:DOWNLOADS_DIR 之外的注册任务目录,delete_files 也删"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     task_id = _seed_dem_task(db, output_path=outside)
     artifact = _make_artifact(outside / f"dem_task_{task_id}")
 
@@ -206,8 +206,8 @@ def test_delete_dem_task_outside_downloads_dir_removes_files(monkeypatch, tmp_pa
 
 def test_delete_contour_task_with_delete_files_removes_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_contour_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"contour_task_{task_id}")
@@ -221,8 +221,8 @@ def test_delete_contour_task_with_delete_files_removes_artifacts(monkeypatch, tm
 
 def test_delete_contour_task_default_keeps_artifacts(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
     dem_root = Path(config.Config.DOWNLOADS_DIR) / "dem"
     task_id = _seed_contour_task(db, output_path=dem_root)
     artifact = _make_artifact(dem_root / f"contour_task_{task_id}")
@@ -238,7 +238,7 @@ def test_delete_contour_task_outside_downloads_dir_removes_files(monkeypatch, tm
     """0.2.4 护栏放开:DOWNLOADS_DIR 之外的注册任务目录,delete_files 也删"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
     outside = tmp_path / "elsewhere"
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     task_id = _seed_contour_task(db, output_path=outside)
     artifact = _make_artifact(outside / f"contour_task_{task_id}")
 
@@ -260,8 +260,8 @@ def test_delete_map_task_legacy_relative_output_path_removes_artifacts(monkeypat
     照回 200 success,恢复任务续下的瓦片还会写到第三个地方去。
     """
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
     # 存量行:相对路径原始值(旧版本 create_task 入库的形态)
     task_id = _seed_map_task(db, output_path="./downloads/legacy_out")
     artifact = _make_artifact(
@@ -285,8 +285,8 @@ def test_stored_output_path_resolves_identically_on_read_and_write_sides(monkeyp
     /tiles/<id>/ 找不到新下的瓦片。
     """
     _load_app(monkeypatch, tmp_path)
-    from services.task_cleanup import resolve_stored_output_dir
-    from routes.terrain_static import _resolve_config_path
+    from src.services.task_cleanup import resolve_stored_output_dir
+    from src.routes.terrain_static import _resolve_config_path
 
     for stored in ("./downloads/map", "downloads/map", "./downloads", "downloads",
                    "legacy_out", str(tmp_path / "abs" / "out")):
@@ -302,11 +302,11 @@ def test_stored_output_path_resolves_identically_on_read_and_write_sides(monkeyp
 
 
 def _cleanup_mod(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
-    import services.task_cleanup as tc
+    import src.services.task_cleanup as tc
     return tc
 
 
@@ -383,8 +383,8 @@ def test_init_database_normalizes_legacy_relative_output_paths(monkeypatch, tmp_
     user_version 做幂等标记，重复启动不再全表扫描。
     """
     _load_app(monkeypatch, tmp_path)
-    from core import config
-    db = importlib.import_module("core.database")
+    from src.core import config
+    db = importlib.import_module("src.core.database")
 
     task_id = _seed_map_task(db, output_path="./downloads/legacy_out")
 
@@ -412,7 +412,7 @@ def test_init_database_normalizes_legacy_relative_output_paths(monkeypatch, tmp_
 def test_output_path_normalization_is_idempotent(monkeypatch, tmp_path):
     """已经是绝对路径的行不得被再次改写（重复拼接会越走越深）。"""
     _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
 
     absolute = str(tmp_path / "somewhere" / "out")
     task_id = _seed_map_task(db, output_path=absolute)

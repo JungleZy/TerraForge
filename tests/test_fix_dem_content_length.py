@@ -51,9 +51,9 @@ class _FakeSession:
 
 
 def _make_engine(monkeypatch, tmp_path, resp, max_retries="0"):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    import services.dem_download_engine as dde
+    import src.services.dem_download_engine as dde
 
     engine = dde.DemDownloadEngine()
     engine.config = _StubConfig({

@@ -4,7 +4,7 @@ Contour rendering engine.
 Pure helpers (tile math, classification, style) have no heavy deps and are unit
 tested directly. The heavy raster->contour->PNG builder (build_contour_tiles)
 imports GDAL/numpy/matplotlib lazily inside the function body so this module is
-import-safe without them (mirrors services/terrain_tiling/dem_task_tiler.py).
+import-safe without them (mirrors src/services/terrain_tiling/dem_task_tiler.py).
 """
 
 from __future__ import annotations
@@ -322,7 +322,7 @@ def absolute_hillshade_intensity(elev, azimuth, altitude, vert_exag=1.0, dx=1.0,
 # 单瓦片读窗口的像素上限(= 256 输出像素 + 2 余量,与输出瓦片对齐)。
 # 低 zoom 时一个瓦片的窗口可能覆盖整幅 DEM —— 按原始分辨率 ReadAsArray 会把
 # 整幅 float64 读进内存(大 DEM 直接 OOM),超过上限时改由 GDAL 端重采样到
-# 上限尺寸再返回(同 services/terrain_tiling/cesiumlab_terrain.py 的做法)。
+# 上限尺寸再返回(同 src/services/terrain_tiling/cesiumlab_terrain.py 的做法)。
 _MAX_READ_DIM = 258
 
 
@@ -643,7 +643,7 @@ def build_contour_tiles(
     # keep RAM bounded regardless of coverage size. tmpdir is removed at the end.
     # 大区域 warp 产物可达数十 GB,默认落系统临时目录;contour_warp_tmpdir 配置键
     # 可指到空间充足的盘(留空 = 系统默认)。
-    from services.config_manager import ConfigManager
+    from src.services.config_manager import ConfigManager
     try:
         warp_tmp_base = (ConfigManager().get("contour_warp_tmpdir", "") or "").strip() or None
     except Exception as e:

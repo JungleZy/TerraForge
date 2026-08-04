@@ -10,12 +10,12 @@ from pathlib import Path
 
 from flask import Blueprint, abort, current_app, jsonify, send_file
 
-from core.config import Config
-from core.database import get_connection
-from services.config_manager import ConfigManager
-from services.geo_validation import resolve_output_dir
-from services.hillshade_preview import ensure_hillshade
-from services.task_cleanup import resolve_stored_output_dir
+from src.core.config import Config
+from src.core.database import get_connection
+from src.services.config_manager import ConfigManager
+from src.services.geo_validation import resolve_output_dir
+from src.services.hillshade_preview import ensure_hillshade
+from src.services.task_cleanup import resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ def terrain_local_static(task_id: int, subpath: str):
 
 
 # ---------------------------------------------------------------------------
-# 无切片任务的源 DEM 晕渲预览（services/hillshade_preview.py）
+# 无切片任务的源 DEM 晕渲预览（src/services/hillshade_preview.py）
 #
 # 路由尾段是静态串（hillshade / hillshade.png），Werkzeug 的静态优先于
 # <path:subpath> 通配，不会被上面的瓦片路由吃掉。

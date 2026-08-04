@@ -1,7 +1,7 @@
 """M13: dem list_tasks 的 limit 必须钳到 [1, 100]。
 
 此前 `min(int(limit or 100), 100)` 不挡负数，SQLite LIMIT -1 表示无上限，
-可绕过上限返回全表。修复后与 routes/api.py get_tasks 同一约定：
+可绕过上限返回全表。修复后与 src/routes/api.py get_tasks 同一约定：
 <1 或 >100 都回退到默认窗口 100。
 """
 
@@ -13,15 +13,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _setup(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.dem_task_manager"):
+    for mod in ("app", "src.core.database", "src.services.dem_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
-    dtm = importlib.import_module("services.dem_task_manager")
+    dtm = importlib.import_module("src.services.dem_task_manager")
     return db, dtm
 
 

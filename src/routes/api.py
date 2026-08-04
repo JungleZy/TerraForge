@@ -9,10 +9,10 @@ import os
 from flask import Blueprint, request, jsonify
 from pathlib import Path
 from typing import Optional
-from core.database import get_connection, DEFAULT_CONFIGS
-from services.config_manager import ConfigManager
-from services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
-from routes import tiles_static
+from src.core.database import get_connection, DEFAULT_CONFIGS
+from src.services.config_manager import ConfigManager
+from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from src.routes import tiles_static
 
 logger = logging.getLogger(__name__)
 
@@ -894,7 +894,7 @@ def get_cache_stats_api():
     只读接口。缓存不做任何自动清理 —— 清理由用户在前端手动触发
     （POST /api/cache/clear，界面带二次确认）。
     """
-    from services.task_cleanup import get_cache_stats
+    from src.services.task_cleanup import get_cache_stats
 
     try:
         stats = get_cache_stats()
@@ -938,7 +938,7 @@ def _unfinished_task_labels():
     manager 全局，查 DB 是唯一不需要额外注入就能覆盖四条管线的口径，且能连
     「进程重启后仍是 paused」的任务一起算进来。
     """
-    from core.database import get_connection_context
+    from src.core.database import get_connection_context
 
     labels = []
     try:
@@ -977,7 +977,7 @@ def clear_cache_api():
     completed、计数满值、产物目录静默缺瓦片。检查后仍有 check-then-act 残余窗口
     （清理途中仍可能有任务被 start），这是刻意接受的取舍，要彻底消除需拿管理器锁。
     """
-    from services.task_cleanup import clear_cache_category, get_cache_stats
+    from src.services.task_cleanup import clear_cache_category, get_cache_stats
 
     try:
         data = request.get_json(silent=True)
@@ -1088,7 +1088,7 @@ def recommend_concurrency_route():
     （约 30 秒）。测速流程自身保证不抛（全失败回退保守值），这里只兜
     意料之外的异常，同样 200 + fallback —— 按钮前端按 fallback 展示。
     """
-    from services.tile_url_probe import (
+    from src.services.tile_url_probe import (
         RECOMMEND_FALLBACK, parse_server_list, recommend_concurrency,
     )
 
@@ -1121,7 +1121,7 @@ def verify_tile_url():
     条目校验失败返回 400；通联结果始终 200 + {success, status_code,
     content_type, elapsed_ms, tile, url, error} —— 连不上也是一次成功的探测。
     """
-    from services.tile_url_probe import probe_server_entry, validate_server_entry
+    from src.services.tile_url_probe import probe_server_entry, validate_server_entry
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):

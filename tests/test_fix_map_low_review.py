@@ -21,8 +21,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
-    from core.config import Config
-    from core import database
+    from src.core.config import Config
+    from src.core import database
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
@@ -34,8 +34,8 @@ def isolated_config(tmp_path, monkeypatch):
 
 def _seed_task_row(status='pending', output_format='tiles_only',
                    started_at=None, zoom=10, total=0):
-    from core.config import Config
-    from core.database import get_connection
+    from src.core.config import Config
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -59,7 +59,7 @@ def _seed_task_row(status='pending', output_format='tiles_only',
 
 
 def _fetch_task_row(task_id):
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -97,7 +97,7 @@ def _fake_batch_writing_cache(tm):
 # ---------- L2-6: started_at 仅首次启动写入 ----------
 
 def test_first_start_sets_started_at(isolated_config):
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager(socketio=_FakeSocketIO())
     _fake_batch_writing_cache(tm)
@@ -112,7 +112,7 @@ def test_first_start_sets_started_at(isolated_config):
 
 
 def test_resume_does_not_overwrite_started_at(isolated_config):
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager(socketio=_FakeSocketIO())
     _fake_batch_writing_cache(tm)
@@ -134,8 +134,8 @@ def test_resume_does_not_overwrite_started_at(isolated_config):
 # ---------- L2-9: cache_enabled=false 明确拒绝 ----------
 
 def test_execute_task_rejects_cache_disabled(isolated_config):
-    from services.config_manager import ConfigManager
-    from services.task_manager import TaskManager
+    from src.services.config_manager import ConfigManager
+    from src.services.task_manager import TaskManager
 
     ConfigManager().set('cache_enabled', 'false')
 
@@ -167,7 +167,7 @@ def test_flush_failure_does_not_mask_download_error(isolated_config, monkeypatch
     结局(error_message 是原始错误),progress_conn 仍被关闭。"""
     import sqlite3
 
-    import services.task_manager as tm_mod
+    import src.services.task_manager as tm_mod
 
     tm = tm_mod.TaskManager(socketio=_FakeSocketIO())
 
@@ -213,7 +213,7 @@ def test_flush_failure_does_not_mask_download_error(isolated_config, monkeypatch
 
 def test_emit_failure_does_not_break_progress_recording(isolated_config):
     """广播层故障与 DB 层分层:socketio.emit 炸了,进度照常落库、任务照常完成。"""
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     class ExplodingSocketIO:
         def emit(self, event, payload):
@@ -236,8 +236,8 @@ def test_emit_failure_does_not_break_progress_recording(isolated_config):
 
 def test_copy_progress_emit_failure_does_not_break_copy(isolated_config):
     """复制阶段 task_copy_progress emit 故障不得打断复制本身(遗留项①)。"""
-    from core.config import Config
-    from services.task_manager import TaskManager
+    from src.core.config import Config
+    from src.services.task_manager import TaskManager
 
     class ExplodingSocketIO:
         def emit(self, event, payload):
@@ -258,7 +258,7 @@ def test_copy_progress_emit_failure_does_not_break_copy(isolated_config):
 # ---------- L2-12: name 类型校验 → 400 ----------
 
 def _map_payload(**overrides):
-    from core.config import Config
+    from src.core.config import Config
 
     payload = {
         'name': 't', 'north': 40.0, 'south': 39.0, 'east': 117.0, 'west': 116.0,

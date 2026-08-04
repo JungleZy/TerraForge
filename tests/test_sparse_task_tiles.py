@@ -1,6 +1,6 @@
 """task_tiles 稀疏失败表重构的语义测试。
 
-新设计(依据见 services/task_manager.py 与 services/download_engine.py 的注释):
+新设计(依据见 src/services/task_manager.py 与 src/services/download_engine.py 的注释):
 - 瓦片集合是 bbox+zoom 的纯函数,由 DownloadEngine.iter_tiles 确定性枚举,
   create_task 只记 total_tiles,不再向 task_tiles 写「每块瓦片一行」;
 - 完成态以磁盘 cache 文件为准(cache 存在且非空 = 已完成),恢复任务时
@@ -32,8 +32,8 @@ class FakeSocketIO:
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
-    from core.config import Config
-    from core import database
+    from src.core.config import Config
+    from src.core import database
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
@@ -44,7 +44,7 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 def _params(**overrides):
-    from core.config import Config
+    from src.core.config import Config
 
     p = dict(
         name='t', north=1.0, south=0.0, east=1.0, west=0.0,
@@ -57,7 +57,7 @@ def _params(**overrides):
 
 
 def _task_row(task_id):
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -69,7 +69,7 @@ def _task_row(task_id):
 
 
 def _tile_rows(task_id):
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -82,7 +82,7 @@ def _tile_rows(task_id):
 
 def _mark_running(task_id):
     """_execute_task 直接跑时需要任务处于 running(正常路径由 start_task 置位)。"""
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -95,8 +95,8 @@ def _mark_running(task_id):
 # ---------- create_task 不再写全量行 ----------
 
 def test_create_task_writes_no_task_tiles_rows(isolated_config):
-    from services.download_engine import DownloadEngine
-    from services.task_manager import TaskManager
+    from src.services.download_engine import DownloadEngine
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = tm.create_task(_params(zoom_min=10, zoom_max=11))
@@ -113,7 +113,7 @@ def test_create_task_writes_no_task_tiles_rows(isolated_config):
 # ---------- iter_tiles 与 calculate_tiles 同序同内容 ----------
 
 def test_iter_tiles_matches_calculate_tiles():
-    from services.download_engine import DownloadEngine
+    from src.services.download_engine import DownloadEngine
 
     engine = DownloadEngine()
     cases = [
@@ -137,8 +137,8 @@ def test_iter_tiles_matches_calculate_tiles():
 # ---------- 恢复:只下载 cache 里缺的部分 ----------
 
 def test_resume_downloads_only_missing_tiles(isolated_config):
-    from services.download_engine import DownloadEngine
-    from services.task_manager import TaskManager
+    from src.services.download_engine import DownloadEngine
+    from src.services.task_manager import TaskManager
 
     socketio = FakeSocketIO()
     tm = TaskManager(socketio=socketio)
@@ -179,7 +179,7 @@ def test_resume_downloads_only_missing_tiles(isolated_config):
 # ---------- 计数批量落库 + 成功清掉历史失败行 ----------
 
 def test_progress_counts_flushed_in_batches(isolated_config, monkeypatch):
-    import services.task_manager as tm_mod
+    import src.services.task_manager as tm_mod
 
     socketio = FakeSocketIO()
     tm = tm_mod.TaskManager(socketio=socketio)
@@ -190,7 +190,7 @@ def test_progress_counts_flushed_in_batches(isolated_config, monkeypatch):
     # 给第一块瓦片预置历史失败行 —— 本次成功后必须被 DELETE 掉
     all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 12, 13, task_id=task_id))
     victim = all_tiles[0]
-    from core.database import get_connection
+    from src.core.database import get_connection
     conn = get_connection()
     try:
         conn.execute(
@@ -258,7 +258,7 @@ def test_progress_counts_flushed_in_batches(isolated_config, monkeypatch):
 
 def test_progress_emit_throttled_but_first_and_last_always_sent(isolated_config, monkeypatch):
     """进度广播按时间节流:极端间隔下只剩首发与末发,两发都不能丢。"""
-    import services.task_manager as tm_mod
+    import src.services.task_manager as tm_mod
 
     # 极端节流间隔:中间的逐瓦片广播全部被压掉
     monkeypatch.setattr(tm_mod, 'PROGRESS_EMIT_MIN_INTERVAL', 3600)
@@ -292,7 +292,7 @@ def test_progress_emit_throttled_but_first_and_last_always_sent(isolated_config,
 # ---------- 失败 UPSERT 稀疏行 + 终态判定 ----------
 
 def test_failed_tile_upsert_marks_task_failed(isolated_config):
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     socketio = FakeSocketIO()
     tm = TaskManager(socketio=socketio)
@@ -334,8 +334,8 @@ def test_failed_tile_upsert_marks_task_failed(isolated_config):
 # ---------- init_database 迁移清理非 failed 行 ----------
 
 def test_init_database_migration_keeps_only_failed_rows(isolated_config):
-    from core import database
-    from core.database import get_connection
+    from src.core import database
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -387,8 +387,8 @@ def test_init_database_migration_keeps_only_failed_rows(isolated_config):
 def test_init_database_migration_runs_only_once(isolated_config):
     """迁移跑过后不再执行:已迁移库里的非 failed 行(运行中正常写入的)
     不应在后续启动时被 DELETE。"""
-    from core import database
-    from core.database import get_connection
+    from src.core import database
+    from src.core.database import get_connection
 
     # fixture 已完成首次 init_database,新库应直接带上版本标记
     conn = get_connection()
@@ -436,7 +436,7 @@ def test_stale_failed_rows_cleared_when_all_tiles_cached(isolated_config):
     直接 continue,全库没有任何路径再清这枚行,完成判定 failed_count>0 恒真,
     任务重试多少次都失败。
     """
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     socketio = FakeSocketIO()
     tm = TaskManager(socketio=socketio)
@@ -444,7 +444,7 @@ def test_stale_failed_rows_cleared_when_all_tiles_cached(isolated_config):
 
     # 全部瓦片已在 cache,且每块都留一枚残留 failed 行
     all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 10, 10, task_id=task_id))
-    from core.database import get_connection
+    from src.core.database import get_connection
     conn = get_connection()
     try:
         for tile in all_tiles:
@@ -479,7 +479,7 @@ def test_stale_failed_rows_cleared_when_all_tiles_cached(isolated_config):
 
 def test_stale_failed_rows_cleared_mixed_with_real_download(isolated_config):
     """混合场景:cache 命中的残留失败行清掉,未命中的失败行保留并重下。"""
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     socketio = FakeSocketIO()
     tm = TaskManager(socketio=socketio)
@@ -488,7 +488,7 @@ def test_stale_failed_rows_cleared_mixed_with_real_download(isolated_config):
     all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 10, 10, task_id=task_id))
     cached_with_stale_row = all_tiles[:3]   # cache 已写 + 残留 failed 行
     missing_with_row = all_tiles[3]         # 无 cache + failed 行(本次应重下成功)
-    from core.database import get_connection
+    from src.core.database import get_connection
     conn = get_connection()
     try:
         for tile in cached_with_stale_row:

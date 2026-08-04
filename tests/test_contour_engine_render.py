@@ -9,7 +9,7 @@ gdal = pytest.importorskip("osgeo.gdal")
 np = pytest.importorskip("numpy")
 pytest.importorskip("matplotlib")
 
-from services.contour_engine import build_contour_tiles, ContourStyle
+from src.services.contour_engine import build_contour_tiles, ContourStyle
 
 
 def _make_dem(path, lon0=116.0, lat0=39.0):
@@ -124,7 +124,7 @@ def test_absolute_hillshade_independent_of_neighborhood():
     """同级瓦片色差根因回归:光照强度必须只由局部坡度坡向决定,与瓦片内是否
     存在更陡/更平的邻域无关 —— matplotlib LightSource 的逐瓦片 min/max 拉伸会
     违反这一点,造成相邻瓦片明暗基准不一致。"""
-    from services.contour_engine import absolute_hillshade_intensity
+    from src.services.contour_engine import absolute_hillshade_intensity
 
     flat = np.full((10, 10), 500.0)
     slope = np.tile(np.linspace(0.0, 600.0, 10), (10, 1))  # 东向斜坡

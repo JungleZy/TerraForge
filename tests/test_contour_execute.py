@@ -8,24 +8,24 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _setup(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
-    ctm_mod = importlib.import_module("services.contour_task_manager")
+    ctm_mod = importlib.import_module("src.services.contour_task_manager")
     return db, ctm_mod
 
 
 def _seed_running_download_task(db, box=None, background=None):
     """直接 SQL 造一个旧版下载驱动的 running 任务（下载驱动 create_task 已删除,
     旧任务的下载→渲染恢复路径仍要测）。行形态对齐旧 create_task:默认
-    COP-DEM-GLO-30 + terrain_shade/water ON,granule 推导沿用 services.dem_granules。"""
-    from core import config
-    from services.dem_granules import (
+    COP-DEM-GLO-30 + terrain_shade/water ON,granule 推导沿用 src.services.dem_granules。"""
+    from src.core import config
+    from src.services.dem_granules import (
         tiles_for_bbox, copernicus_glo30_granules_for_tile,
         astwbd_v1_att_granules_for_tile,
     )
@@ -86,7 +86,7 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
             progress_cb(3, 3)
         return {"total": 3, "rendered": 3, "failed": 0}
 
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -102,8 +102,8 @@ def test_execute_total_tiles_covers_whole_dem_not_bbox(monkeypatch, tmp_path):
     # A tiny framed box inside one 1° granule; contours render over the whole
     # downloaded granule, so total_tiles must reflect that coverage, not the box.
     db, ctm_mod = _setup(monkeypatch, tmp_path)
-    from services.contour_engine import count_tiles
-    from services.dem_granules import coverage_bbox
+    from src.services.contour_engine import count_tiles
+    from src.services.dem_granules import coverage_bbox
 
     mgr = ctm_mod.ContourTaskManager(socketio=None)
     box = dict(north=0.10, south=0.00, east=0.10, west=0.00)
@@ -119,7 +119,7 @@ def test_execute_total_tiles_covers_whole_dem_not_bbox(monkeypatch, tmp_path):
     # initial coverage-based value set before rendering.
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
         return {"total": 0, "rendered": 1, "failed": 0}
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -154,7 +154,7 @@ def test_execute_downloads_water_and_passes_shade_water_flags(monkeypatch, tmp_p
         seen["shade"] = params.shade
         seen["water"] = params.water
         return {"total": 1, "rendered": 1, "failed": 0}
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -184,7 +184,7 @@ def test_execute_water_download_failure_is_not_fatal(monkeypatch, tmp_path):
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
         return {"total": 1, "rendered": 1, "failed": 0}
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -208,7 +208,7 @@ def test_execute_fails_and_skips_render_on_download_failure(monkeypatch, tmp_pat
         called["render"] = True
         return {"total": 0, "rendered": 0, "failed": 0}
 
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -244,7 +244,7 @@ def test_render_progress_is_throttled_and_payload_stays_compatible(monkeypatch, 
             progress_cb(i, 100)
         return {"total": 100, "rendered": 95, "failed": 5}
 
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -292,7 +292,7 @@ def test_render_progress_flushes_pending_counts_on_pause(monkeypatch, tmp_path):
         stop.set()
         return {"total": 100, "rendered": 5, "failed": 0}
 
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, stop))
@@ -342,7 +342,7 @@ def test_render_progress_reuses_one_connection_and_no_per_tile_select(monkeypatc
                 state["in_cb"] = False
         return {"total": 50, "rendered": 50, "failed": 0}
 
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     def _boom(*a, **k):
@@ -371,7 +371,7 @@ def test_download_progress_local_path_uses_flat_basename(monkeypatch, tmp_path):
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
         return {"total": 1, "rendered": 1, "failed": 0}
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -410,7 +410,7 @@ def test_completed_task_not_flipped_to_failed_on_emit_error(monkeypatch, tmp_pat
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
         return {"total": 1, "rendered": 1, "failed": 0}
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     import pytest

@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
-    from core.config import Config
-    from core import database
+    from src.core.config import Config
+    from src.core import database
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
@@ -31,7 +31,7 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 def _params(**overrides):
-    from core.config import Config
+    from src.core.config import Config
 
     p = dict(
         name='t', north=40.0, south=39.0, east=117.0, west=116.0,
@@ -45,8 +45,8 @@ def _params(**overrides):
 
 def _seed_task_row(name='t', status='pending', output_format='tiles_only',
                    output_path=None, total=0):
-    from core.config import Config
-    from core.database import get_connection
+    from src.core.config import Config
+    from src.core.database import get_connection
 
     if output_path is None:
         output_path = str(Config.DOWNLOADS_DIR)
@@ -89,8 +89,8 @@ def _write_png_tile(path, size=16, value=128):
 def test_create_task_output_path_validation(isolated_config):
     import os
 
-    from core.config import Config
-    from services.task_manager import TaskManager
+    from src.core.config import Config
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     # 相对路径新口径:不再代为解析,直接拒绝并要求绝对路径(报错指路「浏览」按钮)
@@ -105,8 +105,8 @@ def test_create_task_output_path_validation(isolated_config):
 
 
 def test_create_task_accepts_output_path_inside_downloads(isolated_config):
-    from core.config import Config
-    from services.task_manager import TaskManager
+    from src.core.config import Config
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = tm.create_task(_params(output_path=str(Config.DOWNLOADS_DIR / 'sub')))
@@ -116,9 +116,9 @@ def test_create_task_accepts_output_path_inside_downloads(isolated_config):
 # ---------- C5: task.name 消毒后才拼输出文件名 ----------
 
 def test_stitch_output_filename_sanitizes_task_name(isolated_config):
-    from core.config import Config
-    from services.download_engine import DownloadEngine
-    from services.task_manager import TaskManager
+    from src.core.config import Config
+    from src.services.download_engine import DownloadEngine
+    from src.services.task_manager import TaskManager
 
     # 完成态由磁盘 cache 推导(task_tiles 只存失败瓦片):把任务枚举出的
     # 全部瓦片写进 cache,拼接阶段才会认为它们已完成。
@@ -147,9 +147,9 @@ def test_stitch_output_filename_sanitizes_task_name(isolated_config):
 # ---------- I5: failed 任务允许重新 start ----------
 
 def test_failed_task_can_be_restarted(isolated_config):
-    from core.database import get_connection
-    from services.download_engine import DownloadEngine
-    from services.task_manager import TaskManager
+    from src.core.database import get_connection
+    from src.services.download_engine import DownloadEngine
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = _seed_task_row(status='failed')
@@ -181,7 +181,7 @@ def test_failed_task_can_be_restarted(isolated_config):
 
 
 def test_completed_task_still_cannot_be_started(isolated_config):
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = _seed_task_row(status='completed')
@@ -198,9 +198,9 @@ def test_stitch_ignores_and_preserves_shared_cache_intermediates(isolated_config
     垃圾文件把拼接带崩;finally 又会把共享文件 unlink 掉(并发互删的根因)。
     修复后:中间文件在每次 stitch 私有的临时目录里生成, cache 只读瓦片本体。
     """
-    from core.config import Config
-    from models.task import Tile
-    from services.download_engine import DownloadEngine, GEOREF_SUFFIX
+    from src.core.config import Config
+    from src.models.task import Tile
+    from src.services.download_engine import DownloadEngine, GEOREF_SUFFIX
 
     cache_dir = Path(Config.CACHE_DIR)
     out_dir = Path(Config.OUTPUT_DIR)
@@ -238,7 +238,7 @@ def test_stitch_ignores_and_preserves_shared_cache_intermediates(isolated_config
 def test_create_task_over_threshold_is_allowed(isolated_config, monkeypatch):
     """0.1.4 放开硬上限：超阈值只记警告、不拒绝创建
     （是否继续由用户在前端大任务确认框里决定，服务端不替用户做决定）。"""
-    import services.task_manager as tm_mod
+    import src.services.task_manager as tm_mod
 
     monkeypatch.setattr(tm_mod, 'WARN_TILES_THRESHOLD', 5)
     tm = tm_mod.TaskManager()
@@ -248,7 +248,7 @@ def test_create_task_over_threshold_is_allowed(isolated_config, monkeypatch):
 
 def test_create_task_over_100k_tiles_for_real(isolated_config):
     """真实阈值下超 10 万张也能创建——守住「不再 400」的接线。"""
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = tm.create_task(_params(
@@ -259,7 +259,7 @@ def test_create_task_over_100k_tiles_for_real(isolated_config):
 
 
 def test_create_task_under_threshold_still_works(isolated_config):
-    from services.task_manager import TaskManager
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = tm.create_task(_params())
@@ -274,9 +274,9 @@ def test_create_task_stores_absolute_output_path_as_is(isolated_config):
     新口径下相对路径在入口就被拒绝(见上方 C5 测试),不再存在「相对值入库、
     _execute_task 按进程 CWD 解析」的旧坑;入库值即用户给的绝对路径,
     与 dem_task_manager 同口径。"""
-    from core.config import Config
-    from core.database import get_connection
-    from services.task_manager import TaskManager
+    from src.core.config import Config
+    from src.core.database import get_connection
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = tm.create_task(_params(output_path=str(Config.DOWNLOADS_DIR / 'sub dir')))
@@ -302,9 +302,9 @@ def test_execute_task_legacy_relative_output_path_ignores_cwd(isolated_config, m
     快捷方式启动)时,旧代码会把产物写到 CWD 下、拼接白名单检查让 image 任务
     必败。修复后执行路径先做兼容归一化。
     """
-    from core.config import Config
-    from services.download_engine import DownloadEngine
-    from services.task_manager import TaskManager
+    from src.core.config import Config
+    from src.services.download_engine import DownloadEngine
+    from src.services.task_manager import TaskManager
 
     # 全部瓦片预先进 cache,执行只走「复制到 output_path」阶段
     engine = DownloadEngine()
@@ -343,8 +343,8 @@ def test_read_paths_tolerate_legacy_invalid_rows(isolated_config):
     zoom_min>zoom_max)—— 严格构造会让一条坏行把 get_active_tasks /
     get_task_status 整个打成 500。写入路径(create_task)的严格校验不变。
     """
-    from core.database import get_connection
-    from services.task_manager import TaskManager
+    from src.core.database import get_connection
+    from src.services.task_manager import TaskManager
 
     # 直接 INSERT 非法行,模拟旧版本校验缺口写入的遗留数据
     conn = get_connection()
@@ -392,8 +392,8 @@ def test_start_task_emit_failure_leaves_no_phantom_running(isolated_config):
     status='running' 但线程从未启动的假运行任务(UI 永远显示在跑,
     且 pause/resume 语义全错)。修复后显式回补为 failed 并清掉线程登记。
     """
-    from core.database import get_connection
-    from services.task_manager import TaskManager
+    from src.core.database import get_connection
+    from src.services.task_manager import TaskManager
 
     class ExplodingSocketIO:
         def emit(self, event, payload):
@@ -424,8 +424,8 @@ def test_start_task_success_still_emits_and_runs(isolated_config):
     """回归护栏:正常 start 不受回补逻辑影响 —— 状态 running、线程在跑。"""
     import threading
 
-    from core.database import get_connection
-    from services.task_manager import TaskManager
+    from src.core.database import get_connection
+    from src.services.task_manager import TaskManager
 
     class FakeSocketIO:
         def __init__(self):
@@ -479,8 +479,8 @@ def test_pause_task_accumulates_running_time_without_post_commit_helpers(
     """
     from datetime import datetime, timedelta, timezone
 
-    from core.database import get_connection
-    from services.task_manager import TaskManager
+    from src.core.database import get_connection
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = _seed_task_row(status='running')
@@ -532,9 +532,9 @@ def test_download_tiles_batch_creates_coroutines_in_batches(isolated_config, mon
     旧实现对全部瓦片一次性预建协程再 gather,百万级瓦片就是百万个待调度
     协程同时挂在事件循环上。结果顺序与「每块瓦片一条结果」的语义不变。
     """
-    import services.download_engine as de_mod
-    from models.task import Tile
-    from services.config_manager import ConfigManager
+    import src.services.download_engine as de_mod
+    from src.models.task import Tile
+    from src.services.config_manager import ConfigManager
 
     monkeypatch.setattr(de_mod, 'DOWNLOAD_BATCH_SIZE', 3)
     ConfigManager().set('concurrent_downloads', '10')  # 信号量大于批大小,才能看出分批效果
@@ -572,9 +572,9 @@ def test_execute_task_enumerates_tiles_only_once(isolated_config):
     completed 列表。修复后:枚举一遍,cache 命中直接进 completed 清单,
     下载成功的瓦片按结果并入 —— iter_tiles 只应被调用一次。
     """
-    from core.config import Config
-    from core.database import get_connection
-    from services.task_manager import TaskManager
+    from src.core.config import Config
+    from src.core.database import get_connection
+    from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = tm.create_task(_params(zoom_min=10, zoom_max=10))

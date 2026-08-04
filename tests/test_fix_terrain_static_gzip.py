@@ -21,14 +21,14 @@ GZ_PAYLOAD = gzip.compress(b"fake-quantized-mesh")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -61,7 +61,7 @@ def test_dem_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
     _app_mod, client = _load_app(monkeypatch, tmp_path)
     # /terrain/dem 按 dem_tasks.output_path 解析并要求任务行存在(与
     # tiles/contour/local 三路一致):先插行,路径指向默认 downloads/dem。
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -88,7 +88,7 @@ def test_dem_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
 
 def test_local_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
     _app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
 
     conn = db.get_connection()
     try:

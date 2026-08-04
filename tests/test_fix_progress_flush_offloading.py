@@ -37,8 +37,8 @@ class FakeSocketIO:
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
-    from core.config import Config
-    from core import database
+    from src.core.config import Config
+    from src.core import database
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
@@ -49,7 +49,7 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 def _params(**overrides):
-    from core.config import Config
+    from src.core.config import Config
 
     p = dict(
         name='t', north=1.0, south=0.0, east=1.0, west=0.0,
@@ -62,7 +62,7 @@ def _params(**overrides):
 
 def _mark_running(task_id):
     """_execute_task 直接跑时需要任务处于 running(正常路径由 start_task 置位)。"""
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -73,7 +73,7 @@ def _mark_running(task_id):
 
 
 def _task_row(task_id):
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -85,7 +85,7 @@ def _task_row(task_id):
 
 
 def _tile_rows(task_id):
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -159,7 +159,7 @@ def test_batch_flush_runs_off_the_event_loop_thread(isolated_config, monkeypatch
     并发回调,同步执行更简单可靠,异常路径上也不该再引入新的挂起点。所以
     断言是「事件循环线程上最多只发生一次计数写」,而不是「一次都没有」。
     """
-    import services.task_manager as tm_mod
+    import src.services.task_manager as tm_mod
 
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     # zoom 12-13 = 708 块,跨过 3 个批次(PROGRESS_DB_FLUSH_INTERVAL=200)
@@ -208,7 +208,7 @@ def test_concurrent_callbacks_lose_no_failed_rows_while_flushing(
     executemany 之后 clear() —— executemany 期间 sqlite3 释放 GIL,事件循环
     上交错 append 进来的登记会被那次 clear() 连带抹掉。
     """
-    import services.task_manager as tm_mod
+    import src.services.task_manager as tm_mod
 
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = tm.create_task(_params(zoom_min=12, zoom_max=13))  # 708 块
@@ -259,7 +259,7 @@ def test_failed_flush_returns_batch_to_queue(isolated_config, monkeypatch):
     会让本用例翻红的生产改动:摘批后不管写成功与否都丢弃批次(同步版是
     executemany 成功后才 clear,失败时数据留在队列里等下次重试)。
     """
-    import services.task_manager as tm_mod
+    import src.services.task_manager as tm_mod
 
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = tm.create_task(_params(zoom_min=12, zoom_max=13))  # 708 块

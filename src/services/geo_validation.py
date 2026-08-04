@@ -16,8 +16,8 @@ east < west(反经线式输入被静默交换,下载的是完全错误的区域)
 
 import math
 
-MIN_ZOOM = 0   # 与 services/download_engine.py 的 MIN_ZOOM 一致
-MAX_ZOOM = 21  # 与 services/download_engine.py 的 MAX_ZOOM 一致
+MIN_ZOOM = 0   # 与 src/services/download_engine.py 的 MIN_ZOOM 一致
+MAX_ZOOM = 21  # 与 src/services/download_engine.py 的 MAX_ZOOM 一致
 
 
 def coerce_number(value, name):
@@ -84,7 +84,7 @@ def resolve_output_dir(raw, base_dir=None):
     from pathlib import Path
 
     if base_dir is None:
-        from core.config import Config
+        from src.core.config import Config
 
         base_dir = Config.DOWNLOADS_DIR
     base = Path(base_dir).resolve()

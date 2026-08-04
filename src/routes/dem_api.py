@@ -8,9 +8,9 @@ import logging
 from pathlib import Path
 from flask import Blueprint, jsonify, request
 
-from services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
-from routes.api import _delete_payload
-from routes import terrain_static
+from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from src.routes.api import _delete_payload
+from src.routes import terrain_static
 
 logger = logging.getLogger(__name__)
 

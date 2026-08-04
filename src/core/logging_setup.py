@@ -14,7 +14,7 @@ import logging
 import os
 import re
 
-from core.startup_banner import _enable_windows_ansi, use_color
+from src.core.startup_banner import _enable_windows_ansi, use_color
 
 _RESET = "\033[0m"
 _DIM = "\033[2m"
@@ -80,7 +80,7 @@ def _parse_log_level(raw, default='INFO'):
     U11：`logging` 的 _checkLevel 对未知字符串抛 `ValueError: Unknown level`，
     而 configure_logging() 在 app.py 顶层无保护调用 —— 一个手滑的
     `LOG_LEVEL=verbose` 会让启动直接崩在裸 traceback 上，且报错文案不含变量名，
-    用户完全不知道是哪个环境变量的问题。与 core/config.py 的
+    用户完全不知道是哪个环境变量的问题。与 src/core/config.py 的
     _parse_max_content_length 已确立的「非法值 warning + 回退」口径对齐。
     """
     value = (raw or '').strip().upper()

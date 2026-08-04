@@ -1,24 +1,24 @@
 #!/bin/bash
 # 推送代码并创建版本标签。
-# 版本来源（单一事实源）：core/config.py 的 Config.APP_VERSION；也可用第一个参数覆盖：
-#   ./push-release.sh            # 用 core/config.py 里的版本
+# 版本来源（单一事实源）：src/core/config.py 的 Config.APP_VERSION；也可用第一个参数覆盖：
+#   ./push-release.sh            # 用 src/core/config.py 里的版本
 #   ./push-release.sh 0.2.0      # 显式指定
 
 set -euo pipefail
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
-    # core/config.py 中该行为类属性（带缩进）：APP_VERSION = 'x.y.z'
-    VERSION=$(grep -oE "^[[:space:]]*APP_VERSION[[:space:]]*=[[:space:]]*'[0-9.]+'" core/config.py 2>/dev/null | head -1 | cut -d"'" -f2 || true)
+    # src/core/config.py 中该行为类属性（带缩进）：APP_VERSION = 'x.y.z'
+    VERSION=$(grep -oE "^[[:space:]]*APP_VERSION[[:space:]]*=[[:space:]]*'[0-9.]+'" src/core/config.py 2>/dev/null | head -1 | cut -d"'" -f2 || true)
 fi
 if [ -z "$VERSION" ]; then
-    echo "❌ 无法确定版本号：请传入参数，或检查 core/config.py 的 Config.APP_VERSION"
+    echo "❌ 无法确定版本号：请传入参数，或检查 src/core/config.py 的 Config.APP_VERSION"
     exit 1
 fi
 TAG="v${VERSION}"
 
 if git rev-parse "$TAG" >/dev/null 2>&1; then
-    echo "❌ 标签 $TAG 已存在，请先 bump core/config.py 的 APP_VERSION 或删除旧标签"
+    echo "❌ 标签 $TAG 已存在，请先 bump src/core/config.py 的 APP_VERSION 或删除旧标签"
     exit 1
 fi
 

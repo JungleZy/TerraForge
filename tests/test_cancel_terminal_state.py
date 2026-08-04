@@ -16,7 +16,7 @@ class FakeSocketIO:
 
 
 def _reload_with_isolated_db(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -24,14 +24,14 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
     for mod in (
-        "core.database",
-        "services.task_manager",
-        "services.dem_task_manager",
+        "src.core.database",
+        "src.services.task_manager",
+        "src.services.dem_task_manager",
         "app",
     ):
         sys.modules.pop(mod, None)
 
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
     return db
 
@@ -120,7 +120,7 @@ def _task_status(db, table, task_id):
 
 def test_map_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db, status="completed")
 
@@ -134,7 +134,7 @@ def test_map_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
 
 def test_map_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db, status="failed")
 
@@ -147,7 +147,7 @@ def test_map_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
 def test_map_cancel_pending_task_marks_cancelled(monkeypatch, tmp_path):
     """对照：pending 任务仍然可以被取消。"""
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db, status="pending")
 
@@ -159,7 +159,7 @@ def test_map_cancel_pending_task_marks_cancelled(monkeypatch, tmp_path):
 def test_dem_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
     """终态任务 cancel 抛 ValueError（与 pause_task 行为对齐），状态不变。"""
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    dtm_mod = importlib.import_module("services.dem_task_manager")
+    dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db, status="completed")
 
@@ -171,7 +171,7 @@ def test_dem_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
 
 def test_dem_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    dtm_mod = importlib.import_module("services.dem_task_manager")
+    dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db, status="failed")
 
@@ -183,7 +183,7 @@ def test_dem_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
 
 def test_dem_cancel_pending_task_marks_cancelled(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    dtm_mod = importlib.import_module("services.dem_task_manager")
+    dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db, status="pending")
 
@@ -199,7 +199,7 @@ def test_contour_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
     什么都不改就返回,路由照回 {"success": true},用户以为取消生效了。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    ctm_mod = importlib.import_module("services.contour_task_manager")
+    ctm_mod = importlib.import_module("src.services.contour_task_manager")
     ctm = ctm_mod.ContourTaskManager(socketio=FakeSocketIO())
     task_id = _seed_contour_task(db, status="completed")
 
@@ -211,7 +211,7 @@ def test_contour_cancel_completed_task_keeps_status(monkeypatch, tmp_path):
 
 def test_contour_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    ctm_mod = importlib.import_module("services.contour_task_manager")
+    ctm_mod = importlib.import_module("src.services.contour_task_manager")
     ctm = ctm_mod.ContourTaskManager(socketio=FakeSocketIO())
     task_id = _seed_contour_task(db, status="failed")
 
@@ -223,7 +223,7 @@ def test_contour_cancel_failed_task_keeps_status(monkeypatch, tmp_path):
 
 def test_contour_cancel_pending_task_marks_cancelled(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    ctm_mod = importlib.import_module("services.contour_task_manager")
+    ctm_mod = importlib.import_module("src.services.contour_task_manager")
     ctm = ctm_mod.ContourTaskManager(socketio=FakeSocketIO())
     task_id = _seed_contour_task(db, status="pending")
 

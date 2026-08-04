@@ -12,9 +12,9 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core import database
-from services.config_manager import ConfigManager
-from core.config import Config
+from src.core import database
+from src.services.config_manager import ConfigManager
+from src.core.config import Config
 
 
 @pytest.fixture

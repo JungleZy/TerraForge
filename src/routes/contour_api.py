@@ -11,11 +11,11 @@ from functools import lru_cache
 from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
-from services.config_manager import ConfigManager
-from services.geo_validation import coerce_number, validate_zoom
-from services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
-from routes.api import _delete_payload
-from routes import contour_static
+from src.services.config_manager import ConfigManager
+from src.services.geo_validation import coerce_number, validate_zoom
+from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from src.routes.api import _delete_payload
+from src.routes import contour_static
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _render_style_preview_cached(style, interval, shade):
     而前端随取色器实时刷新会高频打这个端点，matplotlib 渲染是最贵的一步。
     ContourStyle 是 frozen dataclass（字段全为 str/float/int/tuple），可直接作
     缓存键；配置改动会体现为不同的 style 值，旧条目自然淘汰，无需手动失效。"""
-    from services.contour_engine import render_style_preview
+    from src.services.contour_engine import render_style_preview
     return render_style_preview(style, interval, shade=shade)
 
 contour_api_bp = Blueprint("contour_api", __name__, url_prefix="/api/contour")
@@ -45,7 +45,7 @@ def contour_style_preview():
     """配色样式预览 PNG：合成 DEM + 当前配色参数走渲染管线出图。
     全部参数可选，缺省即现行默认方案（与 style_for_task 同一套回退）。"""
     try:
-        from services.contour_task_manager import style_for_task
+        from src.services.contour_task_manager import style_for_task
 
         config = contour_task_manager.config if contour_task_manager else ConfigManager()
         background = request.args.get("background") or "#FAF6EC"

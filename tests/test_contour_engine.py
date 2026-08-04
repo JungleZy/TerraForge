@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.contour_engine import (
+from src.services.contour_engine import (
     ORIGIN_SHIFT, deg2num, tile_bounds_meters, tiles_for_bbox_xyz,
     count_tiles, is_index_contour, ContourStyle,
 )
@@ -89,7 +89,7 @@ def test_contour_style_from_config_prefers_get_many():
 
 
 def test_interval_for_zoom_standard():
-    from services.contour_engine import interval_for_zoom
+    from src.services.contour_engine import interval_for_zoom
     base = 50
     # detail band: z >= 14 all use base
     for z in (14, 15, 16, 19):
@@ -104,7 +104,7 @@ def test_interval_for_zoom_standard():
 
 
 def test_interval_for_zoom_gentle_coarsens_slower():
-    from services.contour_engine import interval_for_zoom
+    from src.services.contour_engine import interval_for_zoom
     # gentle steps once per two zoom levels -> at z13 still base, coarser only deeper
     assert interval_for_zoom(50, 13, detail_zoom=14, scaling="gentle") == 50
     assert interval_for_zoom(50, 12, detail_zoom=14, scaling="gentle") == 100
@@ -120,8 +120,8 @@ def test_build_contour_tiles_warp_tmpdir_from_config(monkeypatch, tmp_path):
 
     import pytest
 
-    import services.config_manager as cm
-    import services.contour_engine as ce
+    import src.services.config_manager as cm
+    import src.services.contour_engine as ce
 
     warp_root = tmp_path / "warp_tmp"
     warp_root.mkdir()

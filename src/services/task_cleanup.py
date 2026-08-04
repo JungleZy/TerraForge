@@ -10,7 +10,7 @@ Config.CACHE_DIR 相关（是它、在它内部、或包含它）—— 一律�
 注意 local-terrain 管线是**另一套**口径：它的 delete_task 不读库存
 output_path，而是按当前 Config.DOWNLOADS_DIR 重算路径，并自带
 「只删 DOWNLOADS_DIR/terrain 之内」的内联守卫（见
-services/local_terrain_task_manager.py delete_task）—— 那是为了让冻结 exe
+src/services/local_terrain_task_manager.py delete_task）—— 那是为了让冻结 exe
 搬迁后旧的绝对路径不误删旧位置的目录。两者现在是并存的两套规则。
 
 The shared tile cache (Config.CACHE_DIR) must never be removed by task
@@ -32,15 +32,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from core.config import Config
+from src.core.config import Config
 
 logger = logging.getLogger(__name__)
 
 # 启动清扫的匹配前缀/模式 —— 必须与创建点保持一致,宁可漏不可误删:
-#   map_dl_stitch_*  services/download_engine.py stitch 的 tempfile.mkdtemp
-#   contour_warp_*   services/contour_engine.py warp 的 tempfile.mkdtemp
-#   local_upload_*   services/local_terrain_task_manager.py 的上传暂存
-#   contour_upload_* services/contour_task_manager.py 的上传暂存
+#   map_dl_stitch_*  src/services/download_engine.py stitch 的 tempfile.mkdtemp
+#   contour_warp_*   src/services/contour_engine.py warp 的 tempfile.mkdtemp
+#   local_upload_*   src/services/local_terrain_task_manager.py 的上传暂存
+#   contour_upload_* src/services/contour_task_manager.py 的上传暂存
 #   *.part.*         两处引擎落盘的原子写临时件(download_engine /
 #                    dem_download_engine,位于 Config.CACHE_DIR 内)
 # finally 盖不住 SIGKILL/关窗,这些残留只能在下次启动时清。
@@ -51,8 +51,8 @@ _CONTOUR_WARP_PREFIX = "contour_warp_"
 # 上传暂存目录（L5）：两处都是 try/except: rmtree; raise + 函数末尾一条 rmtree，
 #   **没有 finally** —— Ctrl-C / SystemExit 会整个绕过，残留几十 GB 上传件。
 #   它们不在系统临时目录，而在 DOWNLOADS_DIR 下（与任务目录同盘，便于 replace）。
-_LOCAL_UPLOAD_PREFIX = "local_upload_"      # services/local_terrain_task_manager.py
-_CONTOUR_UPLOAD_PREFIX = "contour_upload_"  # services/contour_task_manager.py
+_LOCAL_UPLOAD_PREFIX = "local_upload_"      # src/services/local_terrain_task_manager.py
+_CONTOUR_UPLOAD_PREFIX = "contour_upload_"  # src/services/contour_task_manager.py
 _PART_GLOB = "*.part.*"
 # cache 内 .part 的最深落点:瓦片 cache/{style}/{z}/{x}/{y}.png 的 x 目录
 # (根=0 往下 4 层);dem cache 是 cache/dem/<granule>,更浅,一并覆盖。
@@ -80,7 +80,7 @@ def resolve_stored_output_dir(stored_path) -> Path:
 
     **相对值的口径（M10 收敛后的唯一一套）**：`./downloads/...` 与
     `downloads/...` 做前缀剥离后落到 `Config.DOWNLOADS_DIR`，其余相对值落到
-    `Config.BASE_DIR`。这是 `core/database.py` 归一 `default_save_path` 时
+    `Config.BASE_DIR`。这是 `src/core/database.py` 归一 `default_save_path` 时
     已经认定的历史语义 —— `'./downloads'` 指的就是 DOWNLOADS_DIR 本身，而不是
     它下面的 `downloads/` 子目录。
 
@@ -92,7 +92,7 @@ def resolve_stored_output_dir(stored_path) -> Path:
     去另一处找，产物分裂。
 
     `Config.DOWNLOADS_DIR` 恒等于 `Config.BASE_DIR / 'downloads'`，所以这套口径
-    与 `core/database.py` 里 `_root.parent / _p` 的写法在所有相对形态上等价。
+    与 `src/core/database.py` 里 `_root.parent / _p` 的写法在所有相对形态上等价。
     """
     raw = str(stored_path or "").strip()
     p = Path(raw).expanduser()
@@ -180,7 +180,7 @@ def _sweep_tmp_dirs(root: Path, prefix: str, older_than: Optional[float] = None)
     older_than（H3 第二层防护）：只删 mtime 早于该时刻的目录。mkdtemp 目录名里
     不带任何归属信息（pid 只在 .part 【文件名】里），纯前缀匹配分不清「上次进程
     的残留」和「另一个活着的进程正在写的工作目录」；调用方传入本进程启动时刻，
-    即可放过启动之后才出现的目录。主防护是 core/single_instance.py 的实例锁，
+    即可放过启动之后才出现的目录。主防护是 src/core/single_instance.py 的实例锁，
     这一层用于兜住 TERRAFORGE_ALLOW_MULTI_INSTANCE 等逃生场景。
     """
     removed = 0
@@ -253,7 +253,7 @@ def _sweep_cache_part_files(cache_root: Path) -> int:
                     owner = _part_owner_pid(entry.name)
                     if owner is not None and owner != os.getpid():
                         try:
-                            from core.process_watchdog import pid_alive
+                            from src.core.process_watchdog import pid_alive
                             if pid_alive(owner):
                                 # 另一个活着的进程正在写它 —— 删掉会让那次
                                 # 原子写的 replace 抛异常。pid 复用只会导致漏
@@ -295,7 +295,7 @@ def sweep_startup_residue() -> None:
         # contour_warp_tmpdir 配置键可把 warp 产物指到别的盘（大区域数十 GB）;
         # 配置库不可用(fresh clone、cwd 不同等)时跳过该处,系统临时目录已扫。
         try:
-            from services.config_manager import ConfigManager
+            from src.services.config_manager import ConfigManager
             warp_base = (ConfigManager().get("contour_warp_tmpdir", "") or "").strip()
         except Exception:
             warp_base = ""
@@ -309,7 +309,7 @@ def sweep_startup_residue() -> None:
         # 的意义恰恰是把 GB 级中间产物挪到空间充足的盘,配了它反而进清扫盲区,
         # 而配置页的「缓存管理」只覆盖 Config.CACHE_DIR,没有任何回收入口。
         try:
-            from services.config_manager import ConfigManager
+            from src.services.config_manager import ConfigManager
             stitch_base = (ConfigManager().get("stitch_tmpdir", "") or "").strip()
         except Exception:
             stitch_base = ""

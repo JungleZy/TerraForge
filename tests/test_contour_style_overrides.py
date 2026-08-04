@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.contour_task_manager import style_for_task, validate_tint
+from src.services.contour_task_manager import style_for_task, validate_tint
 
 
 class _FakeConfig:

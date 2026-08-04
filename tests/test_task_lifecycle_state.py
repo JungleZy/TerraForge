@@ -16,7 +16,7 @@ class FakeSocketIO:
 
 
 def _reload_with_isolated_db(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -24,14 +24,14 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
     for mod in (
-        "core.database",
-        "services.task_manager",
-        "services.dem_task_manager",
+        "src.core.database",
+        "src.services.task_manager",
+        "src.services.dem_task_manager",
         "app",
     ):
         sys.modules.pop(mod, None)
 
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
     return db
 
@@ -58,7 +58,7 @@ def _seed_map_task(
     bbox 固定 (1,0,1,0),瓦片集合由 iter_tiles 枚举,与运行时同口径;
     zoom_min/zoom_max 决定枚举范围(默认 0-0,整个 bbox 只有 1 块瓦片)。
     """
-    from services.download_engine import DownloadEngine
+    from src.services.download_engine import DownloadEngine
 
     zooms = list(tile_zooms) if tile_zooms is not None else [zoom_min] * len(tile_statuses)
     assert len(zooms) == len(tile_statuses)
@@ -153,7 +153,7 @@ def _dem_task_row(db, task_id):
 
 def test_map_tile_failure_marks_parent_failed_not_completed(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db)
 
@@ -173,7 +173,7 @@ def test_map_tile_failure_marks_parent_failed_not_completed(monkeypatch, tmp_pat
 
 def test_dem_file_failure_marks_parent_failed_not_completed(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    dtm_mod = importlib.import_module("services.dem_task_manager")
+    dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db)
 
@@ -195,7 +195,7 @@ def test_dem_file_failure_marks_parent_failed_not_completed(monkeypatch, tmp_pat
 
 def test_map_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db)
 
@@ -213,7 +213,7 @@ def test_map_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path)
 
 def test_dem_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    dtm_mod = importlib.import_module("services.dem_task_manager")
+    dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db)
 
@@ -235,7 +235,7 @@ def test_dem_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path)
 def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     task_id = _seed_map_task(db, tile_statuses=("failed",), failed_tiles=1)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
@@ -255,7 +255,7 @@ def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
 def test_dem_progress_counts_status_transitions(monkeypatch, tmp_path):
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     task_id = _seed_dem_task(db, file_statuses=("failed",), failed_files=1)
-    dtm_mod = importlib.import_module("services.dem_task_manager")
+    dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
 
     async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
@@ -291,7 +291,7 @@ def test_map_all_stitch_failures_mark_task_failed(monkeypatch, tmp_path):
     都会复制),一张拼接图都没有还说"完成"就是纯粹的谎报。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(
         db,
@@ -331,7 +331,7 @@ def test_map_partial_stitch_failure_completes_with_warning(monkeypatch, tmp_path
     tasks.error_message(持久,能在任务列表/历史里看到)和 task_completed 事件上。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(
         db,
@@ -372,7 +372,7 @@ def test_map_clean_stitch_leaves_no_error_message(monkeypatch, tmp_path):
     任务不会被顺带打上一条假警告。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(
         db,
@@ -410,7 +410,7 @@ def test_map_stitch_emits_start_event_before_each_zoom(monkeypatch, tmp_path):
     每个 zoom 的 start 事件必须出现在该 zoom 的拼接调用之前。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(
         db,
@@ -461,7 +461,7 @@ def test_stream_copy_writes_output_before_stitch(monkeypatch, tmp_path):
     拼接在流程上先于结尾复制阶段,拼接函数里能看到的产物 = 下载阶段写入的。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(
         db,
@@ -482,7 +482,7 @@ def test_stream_copy_writes_output_before_stitch(monkeypatch, tmp_path):
 
     tm.download_engine.download_tiles_batch = fake_batch
 
-    from services.download_engine import DownloadEngine
+    from src.services.download_engine import DownloadEngine
     engine = DownloadEngine()
     expected = list(engine.iter_tiles(1, 0, 1, 0, 10, 10))
     assert expected, "测试前提:z10 1°x1° 至少 1 块瓦片"
@@ -509,7 +509,7 @@ def test_cache_hit_backfill_writes_output_before_stitch(monkeypatch, tmp_path):
     这些瓦片只能等结尾复制阶段,续跑任务仍要在 100% 后等一次全量复制。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(
         db,
@@ -521,7 +521,7 @@ def test_cache_hit_backfill_writes_output_before_stitch(monkeypatch, tmp_path):
         output_path=str(tmp_path / "out"),
     )
 
-    from services.download_engine import DownloadEngine
+    from src.services.download_engine import DownloadEngine
     engine = DownloadEngine()
     expected = list(engine.iter_tiles(1, 0, 1, 0, 10, 11))
     assert expected
@@ -555,7 +555,7 @@ def test_map_tile_copy_stage_honours_cancel(monkeypatch, tmp_path):
     import threading
 
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
 
     # zoom 10 的 1°x1° bbox 有 12 块瓦片(cache 文件由播种写妥)——
@@ -599,7 +599,7 @@ def test_map_tile_copy_stage_emits_progress(monkeypatch, tmp_path):
     一个事件都没有)。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
 
     # zoom 12-13 的 1°x1° bbox 有几百块瓦片(足够跨过一个 COPY_PROGRESS_INTERVAL

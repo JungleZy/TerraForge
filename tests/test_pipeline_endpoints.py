@@ -57,7 +57,7 @@ def test_action_on_missing_task_is_a_client_error_not_500(isolated_app, label, p
 
 
 def _insert_map_task(status):
-    from core.database import get_connection_context
+    from src.core.database import get_connection_context
     with get_connection_context() as conn:
         cur = conn.execute(
             "INSERT INTO tasks (name, status, north, south, east, west, "
@@ -90,7 +90,7 @@ def test_pause_running_task_succeeds_and_flips_db_state(isolated_app):
     改前地图管线的 pause 只有 ValueError→400 分支被打到过，200 成功路径一行
     没跑过 —— 「端点能返回 200」和「它真的改了状态」是两件事。
     """
-    from core.database import get_connection_context
+    from src.core.database import get_connection_context
     client = isolated_app.app.test_client()
     task_id = _insert_map_task("running")
 
@@ -104,7 +104,7 @@ def test_pause_running_task_succeeds_and_flips_db_state(isolated_app):
 
 
 def test_cancel_pending_task_succeeds_and_flips_db_state(isolated_app):
-    from core.database import get_connection_context
+    from src.core.database import get_connection_context
     client = isolated_app.app.test_client()
     task_id = _insert_map_task("pending")
 
@@ -123,7 +123,7 @@ def test_cancel_on_terminal_task_is_rejected_uniformly(isolated_app, terminal):
     contour 此前是唯一 fall through 的一条（U2），这里用 map 管线钉住约定，
     contour 侧的同款断言在 tests/test_cancel_terminal_state.py。
     """
-    from core.database import get_connection_context
+    from src.core.database import get_connection_context
     client = isolated_app.app.test_client()
     task_id = _insert_map_task(terminal)
 

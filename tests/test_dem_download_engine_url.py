@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.dem_download_engine import DemDownloadEngine
+from src.services.dem_download_engine import DemDownloadEngine
 
 # _dataset_base_url does not use self, so pass None to avoid constructing
 # ConfigManager (which would need a database).

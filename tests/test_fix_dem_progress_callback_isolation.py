@@ -18,15 +18,15 @@ PAYLOAD = b"fake-dem-bytes"
 
 
 def _setup(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("core.database"):
+    for mod in ("src.core.database"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
-    dem_mod = importlib.import_module("services.dem_download_engine")
+    dem_mod = importlib.import_module("src.services.dem_download_engine")
     return db, dem_mod
 
 
@@ -125,7 +125,7 @@ def test_failed_callback_exception_does_not_break_gather(monkeypatch, tmp_path):
     （此前会取消其余 granule 协程、状态半更新）。"""
     db, dem_mod = _setup(monkeypatch, tmp_path)
     # 0 次重试，避免失败路径的退避 sleep 拖慢测试
-    cfg_mod = importlib.import_module("services.config_manager")
+    cfg_mod = importlib.import_module("src.services.config_manager")
     cfg_mod.ConfigManager().set("max_retries", "0")
 
     engine = dem_mod.DemDownloadEngine()

@@ -19,12 +19,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core.config import Config
+    from src.core.config import Config
     monkeypatch.setattr(Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -35,32 +35,32 @@ def _load_app(monkeypatch, tmp_path):
 
 @pytest.fixture()
 def downloads(tmp_path, monkeypatch):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     return tmp_path / "downloads"
 
 
 def test_relative_input_rejected_with_browse_hint(downloads):
-    from services.geo_validation import require_absolute_output_dir
+    from src.services.geo_validation import require_absolute_output_dir
     with pytest.raises(ValueError, match='绝对路径'):
         require_absolute_output_dir('./downloads/map')
 
 
 def test_absolute_inside_downloads_accepted(downloads):
-    from services.geo_validation import require_absolute_output_dir
+    from src.services.geo_validation import require_absolute_output_dir
     assert require_absolute_output_dir(str(downloads / 'map')) == str(downloads / 'map')
 
 
 def test_absolute_outside_downloads_accepted(downloads, tmp_path):
     """0.2.4 全盘化:DOWNLOADS_DIR 之外的绝对路径(深度足够)同样接受"""
-    from services.geo_validation import require_absolute_output_dir
+    from src.services.geo_validation import require_absolute_output_dir
     assert require_absolute_output_dir(str(tmp_path / 'elsewhere')) == str(
         (tmp_path / 'elsewhere').resolve())
 
 
 def test_dotdot_is_normalized_and_accepted(downloads):
     """`..` 由 resolve 归一,不再是逃逸拒绝 —— 归一后深度足够即合法"""
-    from services.geo_validation import require_absolute_output_dir
+    from src.services.geo_validation import require_absolute_output_dir
     assert require_absolute_output_dir(str(downloads / '..' / 'outside')) == str(
         (downloads / '..' / 'outside').resolve())
 
@@ -68,7 +68,7 @@ def test_dotdot_is_normalized_and_accepted(downloads):
 def test_shallow_absolute_rejected(downloads):
     """根目录/盘符根直接当保存目录拒绝 —— 产物 <path>/task_<id> 会落在根级,
     删除保护也守不住(与 require_absolute 的两级深度底线一致)"""
-    from services.geo_validation import require_absolute_output_dir
+    from src.services.geo_validation import require_absolute_output_dir
     with pytest.raises(ValueError, match='两级目录'):
         require_absolute_output_dir(os.path.abspath(os.sep))
 
@@ -129,12 +129,12 @@ def test_put_config_accepts_absolute_default_save_path(monkeypatch, tmp_path):
 # --- 存量相对默认值一次性归一 ---------------------------------------------------
 
 def test_init_database_normalizes_relative_default_save_path(monkeypatch, tmp_path):
-    from core.config import Config
+    from src.core.config import Config
     monkeypatch.setattr(Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(Config, "DOWNLOADS_DIR", tmp_path / "downloads")
-    from core import database
+    from src.core import database
     database.init_database()
-    from services.config_manager import ConfigManager
+    from src.services.config_manager import ConfigManager
     value = ConfigManager().get('default_save_path')
     assert os.path.isabs(value), f'init 后 default_save_path 仍是相对值: {value!r}'
     assert value == str((tmp_path / 'downloads').resolve())

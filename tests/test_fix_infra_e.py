@@ -31,7 +31,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 
 def _patch_config_paths(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -41,31 +41,31 @@ def _patch_config_paths(monkeypatch, tmp_path):
 
 def _fresh_db(monkeypatch, tmp_path):
     _patch_config_paths(monkeypatch, tmp_path)
-    sys.modules.pop("core.database", None)
-    db = importlib.import_module("core.database")
+    sys.modules.pop("src.core.database", None)
+    db = importlib.import_module("src.core.database")
     db.init_database()
     return db
 
 
 def _fresh_config_manager(monkeypatch, tmp_path):
     _fresh_db(monkeypatch, tmp_path)
-    cm_mod = importlib.import_module("services.config_manager")
+    cm_mod = importlib.import_module("src.services.config_manager")
     return cm_mod, cm_mod.ConfigManager()
 
 
 def _fresh_local_mgr(monkeypatch, tmp_path):
     _patch_config_paths(monkeypatch, tmp_path)
-    for mod in ("core.database", "services.local_terrain_task_manager"):
+    for mod in ("src.core.database", "src.services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
-    mgr_mod = importlib.import_module("services.local_terrain_task_manager")
+    mgr_mod = importlib.import_module("src.services.local_terrain_task_manager")
     return db, mgr_mod
 
 
 def _load_app(monkeypatch, tmp_path):
     _patch_config_paths(monkeypatch, tmp_path)
-    for mod in ("app", "core.database", "services.local_terrain_task_manager"):
+    for mod in ("app", "src.core.database", "src.services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -161,7 +161,7 @@ def test_config_get_all_raises_on_error(monkeypatch, tmp_path):
 def test_config_set_masks_username_and_password(monkeypatch, tmp_path, caplog):
     _cm_mod, mgr = _fresh_config_manager(monkeypatch, tmp_path)
 
-    with caplog.at_level(logging.INFO, logger="services.config_manager"):
+    with caplog.at_level(logging.INFO, logger="src.services.config_manager"):
         mgr.set("earthdata_username", "alice@nasa.example")
         mgr.set("earthdata_password", "s3cret-token")
 
@@ -177,7 +177,7 @@ def test_config_set_masks_proxy_url_userinfo(monkeypatch, tmp_path, caplog):
     _cm_mod, mgr = _fresh_config_manager(monkeypatch, tmp_path)
 
     url = "http://proxyuser:p%40ssw0rd@127.0.0.1:7890"
-    with caplog.at_level(logging.INFO, logger="services.config_manager"):
+    with caplog.at_level(logging.INFO, logger="src.services.config_manager"):
         mgr.set("proxy_url", url)
 
     text = "\n".join(r.getMessage() for r in caplog.records)
@@ -189,7 +189,7 @@ def test_config_set_masks_proxy_url_userinfo(monkeypatch, tmp_path, caplog):
 
 
 def test_system_proxy_log_masks_userinfo(monkeypatch, caplog):
-    from services import system_proxy
+    from src.services import system_proxy
 
     monkeypatch.setattr(
         system_proxy.urllib.request,
@@ -199,7 +199,7 @@ def test_system_proxy_log_masks_userinfo(monkeypatch, caplog):
     old_http = os.environ.get("HTTP_PROXY")
     os.environ.pop("HTTP_PROXY", None)
     try:
-        with caplog.at_level(logging.INFO, logger="services.system_proxy"):
+        with caplog.at_level(logging.INFO, logger="src.services.system_proxy"):
             applied = system_proxy.apply_system_proxy()
     finally:
         os.environ.pop("HTTP_PROXY", None)
@@ -434,13 +434,13 @@ else:
 os.environ.pop("TF_RELOADER_PARENT_PID", None)
 sys.path.insert(0, project_root)
 
-from core import config
+from src.core import config
 from pathlib import Path
 config.Config.DATABASE_PATH = Path(tmp) / "test.db"
 config.Config.DOWNLOADS_DIR = Path(tmp) / "downloads"
 config.Config.CACHE_DIR = Path(tmp) / "cache"
 
-from core import database
+from src.core import database
 database.init_database()
 conn = database.get_connection()
 conn.execute(

@@ -6,15 +6,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _reload_db(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    sys.modules.pop("core.database", None)
-    db = importlib.import_module("core.database")
+    sys.modules.pop("src.core.database", None)
+    db = importlib.import_module("src.core.database")
     db.init_database()
     return db
 

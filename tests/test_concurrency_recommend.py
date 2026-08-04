@@ -18,8 +18,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core.config import Config
-from services.tile_url_probe import (
+from src.core.config import Config
+from src.services.tile_url_probe import (
     RECOMMEND_FALLBACK,
     _measure_throughput,
     _pick_concurrency,
@@ -36,7 +36,7 @@ def _load_app(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -159,7 +159,7 @@ def test_recommend_endpoint_returns_recommendation(monkeypatch, tmp_path):
         return {'recommended': 30, 'fallback': False, 'rising': False,
                 'note': 'ok', 'samples': []}
 
-    monkeypatch.setattr('services.tile_url_probe.recommend_concurrency', fake_recommend)
+    monkeypatch.setattr('src.services.tile_url_probe.recommend_concurrency', fake_recommend)
     resp = client.post('/api/config/recommend_concurrency')
     assert resp.status_code == 200
     assert resp.get_json()['recommended'] == 30
@@ -172,7 +172,7 @@ def test_recommend_endpoint_survives_probe_exception(monkeypatch, tmp_path):
     def boom(servers, **kwargs):
         raise RuntimeError('network gone')
 
-    monkeypatch.setattr('services.tile_url_probe.recommend_concurrency', boom)
+    monkeypatch.setattr('src.services.tile_url_probe.recommend_concurrency', boom)
     resp = client.post('/api/config/recommend_concurrency')
     assert resp.status_code == 200
     data = resp.get_json()

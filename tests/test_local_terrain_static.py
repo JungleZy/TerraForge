@@ -6,14 +6,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    for mod in ("app", "core.database", "services.local_terrain_task_manager"):
+    for mod in ("app", "src.core.database", "src.services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -51,7 +51,7 @@ def _insert_task(db, downloads_dir):
 
 def test_serves_layer_json_from_output_dir(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
 
     task_id, out_dir = _insert_task(db, tmp_path / "downloads")
     (out_dir / "layer.json").write_text('{"ok":true}', encoding="utf-8")
@@ -63,7 +63,7 @@ def test_serves_layer_json_from_output_dir(monkeypatch, tmp_path):
 
 def test_blocks_path_traversal(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
 
     task_id, _out_dir = _insert_task(db, tmp_path / "downloads")
 
@@ -84,7 +84,7 @@ def test_serves_from_recomputed_path_when_stored_output_dir_is_stale(monkeypatch
     not trust the absolute output_dir stored at creation time (which breaks when a
     frozen executable is relocated)."""
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
 
     # Real tiles live at the canonical DOWNLOADS_DIR location...
     real_dir = tmp_path / "downloads" / "terrain" / "local_task_1" / "terrain_tiles"

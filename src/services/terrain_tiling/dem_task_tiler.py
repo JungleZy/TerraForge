@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from services.terrain_tiling.layer_json import patch_layer_json_parent
-from services.terrain_tiling.vrt_builder import list_dem_tifs
+from src.services.terrain_tiling.layer_json import patch_layer_json_parent
+from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
 
 def terrain_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
@@ -58,7 +58,7 @@ def tile_dem_task_dir(
     # Import lazily so unit tests can inject a stub without requiring numpy/GDAL.
     if build_terrain_fn is None:
         try:
-            from services.terrain_tiling.cesiumlab_terrain import build_terrain as build_terrain_fn  # type: ignore[assignment]
+            from src.services.terrain_tiling.cesiumlab_terrain import build_terrain as build_terrain_fn  # type: ignore[assignment]
         except Exception as e:  # pragma: no cover
             raise RuntimeError(
                 "Terrain tiling runtime deps missing (need numpy + GDAL bindings). "

@@ -36,13 +36,13 @@ class _BoomThread:
 
 
 def _fresh(monkeypatch, tmp_path, *extra_modules):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database") + extra_modules:
+    for mod in ("app", "src.core.database") + extra_modules:
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
     return db, [importlib.import_module(m) for m in extra_modules]
 
@@ -61,10 +61,10 @@ def _status(db, table, task_id):
 # ---------------------------------------------------------------------------
 
 _TERMINAL_GUARD_CASES = [
-    ("map", "services.task_manager", "tasks"),
-    ("dem", "services.dem_task_manager", "dem_tasks"),
-    ("contour", "services.contour_task_manager", "contour_tasks"),
-    ("local_terrain", "services.local_terrain_task_manager", "local_terrain_tasks"),
+    ("map", "src.services.task_manager", "tasks"),
+    ("dem", "src.services.dem_task_manager", "dem_tasks"),
+    ("contour", "src.services.contour_task_manager", "contour_tasks"),
+    ("local_terrain", "src.services.local_terrain_task_manager", "local_terrain_tasks"),
 ]
 
 
@@ -122,7 +122,7 @@ def test_failure_fallback_never_rewrites_a_completed_row(monkeypatch, tmp_path,
 # ---------------------------------------------------------------------------
 
 def test_dem_start_tiling_thread_failure_reverts_job_status(monkeypatch, tmp_path):
-    db, (dtm,) = _fresh(monkeypatch, tmp_path, "services.dem_task_manager")
+    db, (dtm,) = _fresh(monkeypatch, tmp_path, "src.services.dem_task_manager")
     mgr = dtm.DemTaskManager(socketio=None)
     task_id = mgr.create_task({
         "name": "t", "north": 1.0, "south": 0.0, "east": 1.0, "west": 0.0,
@@ -157,7 +157,7 @@ def test_dem_start_tiling_thread_failure_reverts_job_status(monkeypatch, tmp_pat
 
 
 def test_contour_start_task_thread_failure_reverts_status(monkeypatch, tmp_path):
-    db, (ctm,) = _fresh(monkeypatch, tmp_path, "services.contour_task_manager")
+    db, (ctm,) = _fresh(monkeypatch, tmp_path, "src.services.contour_task_manager")
     mgr = ctm.ContourTaskManager(socketio=None)
     conn = db.get_connection()
     try:

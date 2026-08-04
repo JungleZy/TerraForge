@@ -1,4 +1,4 @@
-"""C 组修复回归测试 —— 共享 API(routes/api.py / routes/dem_api.py)。
+"""C 组修复回归测试 —— 共享 API(src/routes/api.py / src/routes/dem_api.py)。
 
 覆盖:
 - C5 : POST /api/tasks 的 output_path 越界 → 400
@@ -19,19 +19,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     # "routes" 包本身也必须 pop:app.py 里是 `from routes import api_bp`,
-    # 若 routes/__init__ 仍在 sys.modules,注册的是旧 routes.api 模块的旧
-    # blueprint(其视图闭包旧 task_manager),而 `from routes.api import
-    # init_task_manager` 又会新建一个 routes.api 模块 —— 测试 patch 新模块、
+    # 若 routes/__init__ 仍在 sys.modules,注册的是旧 src.routes.api 模块的旧
+    # blueprint(其视图闭包旧 task_manager),而 `from src.routes.api import
+    # init_task_manager` 又会新建一个 src.routes.api 模块 —— 测试 patch 新模块、
     # 请求却打到旧模块,I3/I15 的断言就对不上。
     for mod in (
-        "app", "core.database", "services.task_manager", "services.dem_task_manager",
-        "routes", "routes.api", "routes.dem_api", "routes.contour_api",
+        "app", "src.core.database", "src.services.task_manager", "src.services.dem_task_manager",
+        "src.routes", "src.routes.api", "src.routes.dem_api", "src.routes.contour_api",
     ):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
@@ -40,7 +40,7 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _map_payload(**overrides):
-    from core import config
+    from src.core import config
 
     payload = {
         "name": "t", "north": 40.0, "south": 39.0, "east": 117.0, "west": 116.0,
@@ -158,8 +158,8 @@ def test_create_map_task_output_path_inside_downloads_201(monkeypatch, tmp_path)
 
 def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
-    api_mod = importlib.import_module("routes.api")
+    db = importlib.import_module("src.core.database")
+    api_mod = importlib.import_module("src.routes.api")
     task_id = _seed_map_task(db, status="paused")
 
     fake = _FakeActiveThread()
@@ -175,8 +175,8 @@ def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
 
 def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
-    dem_api_mod = importlib.import_module("routes.dem_api")
+    db = importlib.import_module("src.core.database")
+    dem_api_mod = importlib.import_module("src.routes.dem_api")
     task_id = _seed_dem_task(db, status="paused")
 
     fake = _FakeActiveThread()
@@ -192,7 +192,7 @@ def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
 
 def test_delete_map_task_without_active_thread_still_works(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     task_id = _seed_map_task(db, status="paused")
     resp = client.delete(f"/api/tasks/{task_id}")
     assert resp.status_code == 200, resp.get_json()
@@ -211,7 +211,7 @@ def test_pause_cancel_nonexistent_map_task_400(monkeypatch, tmp_path):
 
 def test_pause_map_task_with_wrong_status_400(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     task_id = _seed_map_task(db, status="pending")
     resp = client.post(f"/api/tasks/{task_id}/pause")
     assert resp.status_code == 400, resp.get_json()
@@ -230,7 +230,7 @@ def test_pause_cancel_nonexistent_dem_task_400(monkeypatch, tmp_path):
 def test_create_map_task_over_tile_soft_cap_still_created(monkeypatch, tmp_path):
     """0.1.4 放开硬上限：超阈值不再 400（前端大任务确认框替用户把关）。"""
     _, client = _load_app(monkeypatch, tmp_path)
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     monkeypatch.setattr(tm_mod, "WARN_TILES_THRESHOLD", 5)
     resp = client.post("/api/tasks", json=_map_payload())
     assert resp.status_code == 201, resp.get_json()
@@ -255,7 +255,7 @@ def test_update_config_unknown_key_rejected(monkeypatch, tmp_path):
     assert resp.get_json()["success"] is False
 
     # 未知键不得落库
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         row = conn.cursor().execute(
@@ -277,7 +277,7 @@ def test_update_config_known_key_still_works(monkeypatch, tmp_path):
 
 def test_get_tasks_limit_zero_clamped_to_default(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     for _ in range(2):
         _seed_map_task(db)
     resp = client.get("/api/tasks?limit=0")
@@ -310,7 +310,7 @@ def test_create_map_task_output_format_none_400(monkeypatch, tmp_path):
 
 
 def test_map_style_from_shorthand_none_raises_valueerror():
-    from models.task import MapStyle, OutputFormat
+    from src.models.task import MapStyle, OutputFormat
     with pytest.raises(ValueError):
         MapStyle.from_shorthand(None)
     with pytest.raises(ValueError):

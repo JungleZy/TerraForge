@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from osgeo import gdal
 
-from services.terrain_tiling.cesiumlab_terrain import build_terrain
+from src.services.terrain_tiling.cesiumlab_terrain import build_terrain
 
 
 def _write_tif(path, west, south, px=40, deg_per_px=0.05):

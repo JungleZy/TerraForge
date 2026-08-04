@@ -1,5 +1,5 @@
 """
-Basic wiring tests for routes/socketio_events.py (review I21 — zero coverage).
+Basic wiring tests for src/routes/socketio_events.py (review I21 — zero coverage).
 
 Uses a fake socketio object to capture registered handlers, then invokes the
 handlers inside a Flask request context with a fake request.sid; the module's
@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import routes.socketio_events as events  # noqa: E402
+import src.routes.socketio_events as events  # noqa: E402
 
 
 class FakeSocketIO:

@@ -24,13 +24,13 @@ gdal = pytest.importorskip("osgeo.gdal")
 np = pytest.importorskip("numpy")
 pytest.importorskip("matplotlib")
 
-from services.contour_engine import (  # noqa: E402
+from src.services.contour_engine import (  # noqa: E402
     ContourStyle,
     _MAX_READ_DIM,
     _build_render_ctx,
     _render_contour_tile_core,
 )
-from services.contour_engine import tile_bounds_meters  # noqa: E402
+from src.services.contour_engine import tile_bounds_meters  # noqa: E402
 
 # 栅格:EPSG:3857,原点 (0, 5000000),100m 像元,2000x2000 (200km x 200km)。
 _ORIGIN_X = 0.0

@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from services.dem_download_engine import DemDownloadEngine
+from src.services.dem_download_engine import DemDownloadEngine
 
 
 GRANULE = "ASTGTMV003_N29E106_dem.tif"
@@ -123,7 +123,7 @@ def test_link_or_copy_falls_back_to_copy_when_link_unsupported(tmp_path, engine,
     def fake_link(_a, _b):
         raise OSError("simulated EXDEV")
 
-    monkeypatch.setattr("services.dem_download_engine.os.link", fake_link)
+    monkeypatch.setattr("src.services.dem_download_engine.os.link", fake_link)
 
     DemDownloadEngine._link_or_copy(src, dst)
 
@@ -139,7 +139,7 @@ def test_save_to_cache_copy_fallback_leaves_no_part_file(tmp_path, engine, monke
     def fake_link(_a, _b):
         raise OSError("simulated EXDEV")
 
-    monkeypatch.setattr("services.dem_download_engine.os.link", fake_link)
+    monkeypatch.setattr("src.services.dem_download_engine.os.link", fake_link)
 
     engine._save_to_cache(src, GRANULE, cache_dir)
 

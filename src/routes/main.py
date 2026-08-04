@@ -6,7 +6,7 @@ Handles rendering of HTML pages for the web interface.
 
 import logging
 from flask import Blueprint, render_template
-from services.config_manager import ConfigManager
+from src.services.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 

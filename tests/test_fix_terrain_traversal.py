@@ -41,7 +41,7 @@ def test_tampered_output_path_outside_downloads_is_not_served(isolated_app, tmp_
     file. The route must never serve it (404 — the canonical recomputed
     location simply has no such file)."""
     client = isolated_app.app.test_client()
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
 
     outside = tmp_path / "attacker_controlled"  # NOT under tmp_path/downloads
     outside.mkdir()
@@ -58,7 +58,7 @@ def test_tampered_output_path_pointing_at_etc_is_not_served(isolated_app):
     """Classic /etc target: even though /etc/passwd exists on disk, a row
     whose output_path says /etc must not make it reachable."""
     client = isolated_app.app.test_client()
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
 
     task_id = _insert_tampered_task(db, "/etc", "/etc")
 
@@ -73,7 +73,7 @@ def test_resolve_safe_file_guards_traversal_only(isolated_app, tmp_path):
     (base_dir 来自任务行/配置,不是请求输入),但仍须硬拒 subpath 穿越。"""
     from werkzeug.exceptions import HTTPException
 
-    from routes.terrain_static import _resolve_safe_file
+    from src.routes.terrain_static import _resolve_safe_file
 
     # base_dir 在 downloads 之外不再拒绝 —— 全盘保存路径的任务就靠它服务
     # (macOS /etc 是符号链接,期望按 resolve 后的形态断言)

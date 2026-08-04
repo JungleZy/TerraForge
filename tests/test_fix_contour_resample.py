@@ -18,7 +18,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from services.contour_engine import _MAX_READ_DIM, _read_band_window
+from src.services.contour_engine import _MAX_READ_DIM, _read_band_window
 
 
 class FakeBand:

@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-CESIUMLAB_MOD = "services.terrain_tiling.cesiumlab_terrain"
+CESIUMLAB_MOD = "src.services.terrain_tiling.cesiumlab_terrain"
 
 
 def _block_gdal(monkeypatch):
@@ -45,7 +45,7 @@ def test_import_without_gdal_raises_importerror_not_systemexit(monkeypatch):
 
 def test_tile_dem_task_dir_wraps_missing_gdal_in_friendly_runtimeerror(monkeypatch, tmp_path):
     _block_gdal(monkeypatch)
-    from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+    from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
     task_dir = tmp_path / "task"
     task_dir.mkdir(parents=True)
@@ -60,14 +60,14 @@ def test_tile_dem_task_dir_wraps_missing_gdal_in_friendly_runtimeerror(monkeypat
 
 
 def test_tiling_job_marked_failed_with_error_message_when_tiler_raises(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    sys.modules.pop("core.database", None)
-    db = importlib.import_module("core.database")
+    sys.modules.pop("src.core.database", None)
+    db = importlib.import_module("src.core.database")
     db.init_database()
 
     conn = db.get_connection()
@@ -91,7 +91,7 @@ def test_tiling_job_marked_failed_with_error_message_when_tiler_raises(monkeypat
     finally:
         conn.close()
 
-    import services.dem_task_manager as mgr_mod
+    import src.services.dem_task_manager as mgr_mod
 
     def boom(**kwargs):
         raise RuntimeError("Terrain tiling runtime deps missing (need numpy + GDAL bindings).")

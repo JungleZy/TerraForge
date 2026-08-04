@@ -7,7 +7,7 @@ import secrets
 import logging
 from pathlib import Path
 
-from core.bundle import bundle_dir
+from src.core.bundle import bundle_dir
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,9 @@ class Config:
         BASE_DIR = Path(sys.executable).parent.absolute()
     else:
         # Running in normal Python environment
-        # (core/ 的上一级才是项目根目录)
-        BASE_DIR = Path(__file__).parent.parent.absolute()
+        # (src/core/ 的上两级才是项目根目录 —— 少数一级会把 data/downloads/cache
+        #  建到 src/ 里面,程序照常启动但等于换了一份空数据,不抛任何异常)
+        BASE_DIR = Path(__file__).parent.parent.parent.absolute()
 
     # Database configuration
     DATABASE_PATH = BASE_DIR / 'data' / 'map_downloader.db'

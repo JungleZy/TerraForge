@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 def _reload_with_isolated_db(monkeypatch, tmp_path):
     """Point Config at tmp_path and reimport database + service modules fresh."""
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -23,15 +23,15 @@ def _reload_with_isolated_db(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
     for mod in (
-        "core.database",
-        "services.task_manager",
-        "services.dem_task_manager",
-        "services.local_terrain_task_manager",
+        "src.core.database",
+        "src.services.task_manager",
+        "src.services.dem_task_manager",
+        "src.services.local_terrain_task_manager",
         "app",
     ):
         sys.modules.pop(mod, None)
 
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
     return db
 
@@ -64,7 +64,7 @@ def test_task_manager_recovers_orphan_running_tasks(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm_mod.TaskManager(socketio=None)
 
     conn = db.get_connection()
@@ -107,7 +107,7 @@ def test_task_manager_recovery_ignores_other_statuses(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    tm_mod = importlib.import_module("services.task_manager")
+    tm_mod = importlib.import_module("src.services.task_manager")
     tm_mod.TaskManager(socketio=None)
 
     conn = db.get_connection()
@@ -154,7 +154,7 @@ def test_dem_task_manager_recovers_orphans(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    dtm_mod = importlib.import_module("services.dem_task_manager")
+    dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm_mod.DemTaskManager(socketio=None)
 
     conn = db.get_connection()
@@ -193,7 +193,7 @@ def test_local_terrain_manager_recovers_orphans(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    ltm_mod = importlib.import_module("services.local_terrain_task_manager")
+    ltm_mod = importlib.import_module("src.services.local_terrain_task_manager")
     ltm_mod.LocalTerrainTaskManager(socketio=None)
 
     conn = db.get_connection()

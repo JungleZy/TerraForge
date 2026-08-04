@@ -16,11 +16,11 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core import database
-from core.config import Config
-from services.config_manager import ConfigManager
-from services.download_engine import DownloadEngine
-from services.tile_url_probe import (
+from src.core import database
+from src.core.config import Config
+from src.services.config_manager import ConfigManager
+from src.services.download_engine import DownloadEngine
+from src.services.tile_url_probe import (
     DEFAULT_TILE_SERVERS,
     build_probe_url,
     expand_server_entry,
@@ -36,7 +36,7 @@ def _load_app(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -228,7 +228,7 @@ def test_probe_log_masks_url_userinfo(caplog):
         return {'success': True, 'status_code': 200, 'content_type': 'image/png',
                 'elapsed_ms': 1, 'bytes_read': 1, 'error': None}
 
-    with caplog.at_level(logging.INFO, logger='services.tile_url_probe'):
+    with caplog.at_level(logging.INFO, logger='src.services.tile_url_probe'):
         result = probe_server_entry(
             'https://user:pass@t.example.com/{z}/{x}/{y}.png', fetcher=_fake)
     assert result['success'] is True
@@ -295,7 +295,7 @@ def test_verify_endpoint_rejects_bad_entry_with_400(monkeypatch, tmp_path):
 
 def test_verify_endpoint_success_with_mocked_fetch(monkeypatch, tmp_path):
     client = _load_app(monkeypatch, tmp_path)
-    monkeypatch.setattr('services.tile_url_probe._fetch_tile', _fake_ok)
+    monkeypatch.setattr('src.services.tile_url_probe._fetch_tile', _fake_ok)
     resp = client.post('/api/config/verify_tile_url',
                        json={'server': 'https://t.example.com/{z}/{x}/{y}.png'})
     data = resp.get_json()

@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from services.geo_validation import (
+from src.services.geo_validation import (
     MAX_ZOOM, MIN_ZOOM, coerce_number, validate_bbox, validate_zoom,
 )
 

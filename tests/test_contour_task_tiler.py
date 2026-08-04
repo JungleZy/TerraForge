@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.contour_engine import ContourStyle
-from services.contour_task_tiler import (
+from src.services.contour_engine import ContourStyle
+from src.services.contour_task_tiler import (
     ContourParams, contour_output_dir_for_task, tile_contour_task_dir,
 )
 

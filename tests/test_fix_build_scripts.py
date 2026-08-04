@@ -4,7 +4,7 @@
 - build.sh / build.bat 必须安装 requirements.txt 依赖（干净环境不再必失败）；
 - build.sh 必须做 GDAL pin 与系统 gdal-config 版本一致性检查；
 - push-release.sh / push-release.bat 不得硬编码 v0.0.1，版本须参数化
-  （命令行参数覆盖，或从 core/config.py 的 Config.APP_VERSION 单一事实源解析；
+  （命令行参数覆盖，或从 src/core/config.py 的 Config.APP_VERSION 单一事实源解析；
   build.spec 已随 PyInstaller→Nuitka 迁移删除，脚本不得再引用）。
 """
 import os
@@ -90,12 +90,12 @@ def test_build_bat_checks_gdal_version():
 # ---------- I20c: push-release 版本参数化 ----------
 
 def _config_app_version():
-    """从单一事实源 core/config.py 解析 Config.APP_VERSION。"""
+    """从单一事实源 src/core/config.py 解析 Config.APP_VERSION。"""
     m = re.search(
         r"APP_VERSION\s*=\s*'([0-9.]+)'",
-        _read(os.path.join('core', 'config.py')),
+        _read(os.path.join('src', 'core', 'config.py')),
     )
-    assert m, 'core/config.py 中未找到 Config.APP_VERSION'
+    assert m, 'src/core/config.py 中未找到 Config.APP_VERSION'
     return m.group(1)
 
 
@@ -155,8 +155,8 @@ def test_push_release_sh_not_hardcoded_v001():
 
 def test_push_release_sh_reads_version_from_core_config():
     content = _read('push-release.sh')
-    assert 'core/config.py' in content, (
-        'push-release.sh 必须从 core/config.py 的 Config.APP_VERSION 读取版本'
+    assert 'src/core/config.py' in content, (
+        'push-release.sh 必须从 src/core/config.py 的 Config.APP_VERSION 读取版本'
     )
     assert 'build.spec' not in content, (
         'build.spec 已随 Nuitka 迁移删除，push-release.sh 不得再引用'
@@ -179,7 +179,7 @@ def test_push_release_sh_cli_arg_overrides_config():
 
 @needs_bash
 def test_push_release_sh_clear_error_when_version_unresolvable(tmp_path):
-    # 在没有 core/config.py 的目录下运行：应给出明确报错而非静默失败
+    # 在没有 src/core/config.py 的目录下运行：应给出明确报错而非静默失败
     proc = _sh_run_version_resolution(cwd=str(tmp_path))
     assert proc.returncode != 0
     assert '无法确定版本号' in proc.stdout + proc.stderr
@@ -195,8 +195,8 @@ def test_push_release_bat_not_hardcoded_v001():
 
 def test_push_release_bat_reads_version_from_core_config():
     content = _read('push-release.bat')
-    assert 'core/config.py' in content, (
-        'push-release.bat 必须从 core/config.py 的 Config.APP_VERSION 读取版本'
+    assert 'src/core/config.py' in content, (
+        'push-release.bat 必须从 src/core/config.py 的 Config.APP_VERSION 读取版本'
     )
     assert 'build.spec' not in content, (
         'build.spec 已随 Nuitka 迁移删除，push-release.bat 不得再引用'

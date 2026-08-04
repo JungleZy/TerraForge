@@ -1,4 +1,4 @@
-"""core.bundle 打包环境测试 —— 缺失 gdal-data/proj-data 时不得静默跳过。
+"""src.core.bundle 打包环境测试 —— 缺失 gdal-data/proj-data 时不得静默跳过。
 
 打包产物若缺 gdal-data/proj-data,必须在启动时就大声报错,
 而不是让 exe 跑起来后在 GDAL 调用处莫名失败(原 I20b hook 行为的 Nuitka 版)。
@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from core import bundle
+from src.core import bundle
 
 _ENV_VARS = ('GDAL_DATA', 'PROJ_LIB', 'PROJ_DATA')
 

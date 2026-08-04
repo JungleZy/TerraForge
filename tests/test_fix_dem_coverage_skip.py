@@ -14,15 +14,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _setup(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.dem_task_manager"):
+    for mod in ("app", "src.core.database", "src.services.dem_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
-    dtm = importlib.import_module("services.dem_task_manager")
+    dtm = importlib.import_module("src.services.dem_task_manager")
     return db, dtm
 
 
@@ -32,7 +32,7 @@ def _setup(monkeypatch, tmp_path):
 
 
 def test_astgtm_granules_clamped_to_coverage():
-    from services.dem_granules import LatLonTile, astgtm_v3_granules_for_tile
+    from src.services.dem_granules import LatLonTile, astgtm_v3_granules_for_tile
 
     assert astgtm_v3_granules_for_tile(LatLonTile(lat=83, lon=0), include_num=False, include_swb=False) == [
         "ASTGTMV003_N83E000_dem.tif"
@@ -115,9 +115,9 @@ def _patch_session(monkeypatch, dde, resp):
 
 
 def test_engine_404_marks_file_skipped(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    import services.dem_download_engine as dde
+    import src.services.dem_download_engine as dde
 
     engine = dde.DemDownloadEngine()
     engine.config = _StubConfig({

@@ -4,7 +4,7 @@ import sys
 
 def _load_client(monkeypatch, tmp_path):
     # Isolate DB and directory side effects before importing app.py (which runs init_database()).
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
@@ -50,7 +50,7 @@ def test_terrain_base_missing_file_returns_404(monkeypatch, tmp_path):
 
 
 def _insert_dem_task(output_path: str) -> int:
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     conn = db.get_connection()
     try:
         cur = conn.cursor()

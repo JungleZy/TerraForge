@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.terrain_tiling.vrt_builder import list_dem_tifs, list_att_tifs
+from src.services.terrain_tiling.vrt_builder import list_dem_tifs, list_att_tifs
 
 
 def test_list_dem_and_att_tifs_are_separate(tmp_path):

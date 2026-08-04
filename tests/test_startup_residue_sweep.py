@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services import task_cleanup
-from services.task_cleanup import (
+from src.services import task_cleanup
+from src.services.task_cleanup import (
     _PROCESS_START_TIME,
     _sweep_cache_part_files,
     _sweep_tmp_dirs,
@@ -51,7 +51,7 @@ def test_sweep_tmp_dirs_removes_only_matching_prefix_dirs(tmp_path):
 def test_sweep_cache_part_files_respects_layout_and_depth(tmp_path, monkeypatch):
     # 写这些 .part 的进程都已经死了(pid 归属判据见下一条用例)。不打桩的话,
     # 用例结果会取决于本机上恰好有没有 pid=123 的进程 —— 那是 flaky。
-    monkeypatch.setattr("core.process_watchdog.pid_alive", lambda pid: False)
+    monkeypatch.setattr("src.core.process_watchdog.pid_alive", lambda pid: False)
     # dem cache:cache/dem/<granule>.part.*(浅层)
     dem = tmp_path / "dem"
     dem.mkdir()
@@ -91,7 +91,7 @@ def test_sweep_cache_part_files_skips_files_owned_by_a_live_process(tmp_path, mo
     for f in (live, dead, mine):
         f.write_bytes(b"partial")
 
-    monkeypatch.setattr("core.process_watchdog.pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr("src.core.process_watchdog.pid_alive", lambda pid: pid == 4242)
 
     removed = _sweep_cache_part_files(tmp_path)
 
@@ -104,7 +104,7 @@ def test_sweep_cache_part_files_skips_files_owned_by_a_live_process(tmp_path, mo
 def test_sweep_startup_residue_end_to_end(monkeypatch, tmp_path):
     """gettempdir / CACHE_DIR / contour_warp_tmpdir 全部指到 tmp_path,
     验证三类残留一次清掉,且全程不抛异常。"""
-    from core import config
+    from src.core import config
 
     sys_tmp = tmp_path / "systmp"
     warp_root = tmp_path / "warp"
@@ -124,9 +124,9 @@ def test_sweep_startup_residue_end_to_end(monkeypatch, tmp_path):
     monkeypatch.setattr(task_cleanup.tempfile, "gettempdir", lambda: str(sys_tmp))
     monkeypatch.setattr(config.Config, "CACHE_DIR", cache)
     # 探针 .part 的 pid 是 1(Linux 上 init 恒存活),打桩成已退出。
-    monkeypatch.setattr("core.process_watchdog.pid_alive", lambda pid: False)
+    monkeypatch.setattr("src.core.process_watchdog.pid_alive", lambda pid: False)
     monkeypatch.setattr(
-        "services.config_manager.ConfigManager.get",
+        "src.services.config_manager.ConfigManager.get",
         lambda self, k, d=None: str(warp_root) if k == "contour_warp_tmpdir" else d,
     )
 
@@ -140,7 +140,7 @@ def test_sweep_startup_residue_end_to_end(monkeypatch, tmp_path):
 
 def test_sweep_startup_residue_never_raises(monkeypatch, tmp_path):
     """配置库不可用 / cache 不存在 / 临时目录不可读,都只能跳过,不能影响启动。"""
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(task_cleanup.tempfile, "gettempdir", lambda: str(tmp_path / "nonexistent"))
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "no-such-cache")
@@ -148,6 +148,6 @@ def test_sweep_startup_residue_never_raises(monkeypatch, tmp_path):
     def boom(self, k, d=None):
         raise RuntimeError("config db unavailable")
 
-    monkeypatch.setattr("services.config_manager.ConfigManager.get", boom)
+    monkeypatch.setattr("src.services.config_manager.ConfigManager.get", boom)
 
     sweep_startup_residue()  # 任何内部失败都吞掉,不向外抛

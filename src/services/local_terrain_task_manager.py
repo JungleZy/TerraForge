@@ -16,12 +16,12 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from core.config import Config
-from core.database import get_connection, utc_now_iso
-from services.config_manager import ConfigManager
-from services.geo_validation import validate_zoom
-from services.task_cleanup import remove_task_dir_if_safe
-from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+from src.core.config import Config
+from src.core.database import get_connection, utc_now_iso
+from src.services.config_manager import ConfigManager
+from src.services.geo_validation import validate_zoom
+from src.services.task_cleanup import remove_task_dir_if_safe
+from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def _parent_layer_url() -> str:
     """layer.json 的 parentUrl（级联到全局 base terrain）。
 
     配置键与 DEM 管线共用：config 表的 terrain_base_parent_url（完整 URL，
-    见 core/database.py DEFAULT_CONFIGS），未配置时回退 localhost:5000 保持
+    见 src/core/database.py DEFAULT_CONFIGS），未配置时回退 localhost:5000 保持
     既有行为。此前两处硬编码，非 5000 端口/反代部署下 parentUrl 必 404（M20）。
     """
     return ConfigManager().get("terrain_base_parent_url", "") or (

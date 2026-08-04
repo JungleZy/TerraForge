@@ -452,7 +452,7 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
     """同一个任务的常驻 toast 只留一条，**不同任务的必须各留一条**。
 
     失败 toast 是 duration: 0 的，不会自己消失。等高线任务在下载阶段和渲染
-    阶段各有一个失败出口（`services/contour_task_manager.py` 有 3 处
+    阶段各有一个失败出口（`src/services/contour_task_manager.py` 有 3 处
     `emit("task_failed")`），同一个 task 重复发事件会让永不消失的提示白白堆高。
 
     但**不能**退化成「全局只留一条」：8 个任务失败就是 8 个不同的原因，
@@ -717,7 +717,7 @@ def test_progress_track_markup_is_nested_and_heightless():
 # A7 / Task 12：状态词表必须覆盖后端真实存在的每一个状态
 #
 # 改前的事实（实测，不是推测）：
-#   - `/api/history_all`（routes/api.py 的四路 UNION ALL）**没有 status 谓词**，
+#   - `/api/history_all`（src/routes/api.py 的四路 UNION ALL）**没有 status 谓词**，
 #     history.js 也不传 status 参数 —— pending / running / paused 的任务照样
 #     出现在历史表格里。
 #   - history.js 的 getStatusColor / getStatusText 只映射 completed / failed /
@@ -728,7 +728,7 @@ def test_progress_track_markup_is_nested_and_heightless():
 #     那三态既没有中文、也没有图标，只剩一块与「已取消」完全同色的灰底，
 #     等于「运行中」和「已取消」在界面上分不出来。
 #
-# 词表的真值来自 models/task.py 的 TaskStatus 枚举（用 ast 解析，不 import，
+# 词表的真值来自 src/models/task.py 的 TaskStatus 枚举（用 ast 解析，不 import，
 # 避免 config.py 的导入副作用）。**不在测试里手抄一份六元组** —— 手抄的清单
 # 会在有人给后端加状态时静默过期，而那正是这条断言唯一要拦的事。
 # --------------------------------------------------------------------------
@@ -737,8 +737,8 @@ import ast  # noqa: E402
 
 
 def _task_status_values():
-    """从 models/task.py 的 TaskStatus 枚举解析出全部状态字面量。"""
-    path = os.path.join(ROOT, 'models', 'task.py')
+    """从 src/models/task.py 的 TaskStatus 枚举解析出全部状态字面量。"""
+    path = os.path.join(ROOT, 'src', 'models', 'task.py')
     with open(path, encoding='utf-8') as f:
         tree = ast.parse(f.read())
     for node in ast.walk(tree):
@@ -751,7 +751,7 @@ def _task_status_values():
             }
             assert vals, 'TaskStatus 里解析不出任何字符串成员 —— 本测试已失效'
             return vals
-    raise AssertionError('models/task.py 里找不到 class TaskStatus —— 本测试已失效')
+    raise AssertionError('src/models/task.py 里找不到 class TaskStatus —— 本测试已失效')
 
 
 # 会把状态字面量写进数据库的四个管理器。engine 层不在内（它写的是瓦片/文件级
@@ -804,7 +804,7 @@ def test_task_status_enum_covers_what_the_managers_actually_write():
     enum_values = _task_status_values()
     found = {}
     for fn in _STATUS_WRITERS:
-        path = os.path.join(ROOT, 'services', fn)
+        path = os.path.join(ROOT, 'src', 'services', fn)
         assert os.path.exists(path), f'{fn} 不存在 —— 本测试已失效（管理器改名/搬家了？）'
         with open(path, encoding='utf-8') as f:
             src = f.read()
@@ -828,7 +828,7 @@ def test_task_status_enum_covers_what_the_managers_actually_write():
         '管理器写了 TaskStatus 里没有的状态：\n'
         + '\n'.join(f'  {k!r} <- {sorted(found[k])}' for k in sorted(extra))
         + '\n枚举是前端词表断言的真值来源，漏一个状态 = 界面上冒出一个英文字面量。'
-        '任务级状态：把它补进 models/task.py 的 TaskStatus，再补进两个 JS 的三张表；'
+        '任务级状态：把它补进 src/models/task.py 的 TaskStatus，再补进两个 JS 的三张表；'
         '文件级状态（dem_files / contour_files / tiles 的 status 列，不进任务徽章）：'
         '补进本文件上方的 _FILE_LEVEL_STATUSES。'
     )
@@ -916,7 +916,7 @@ def test_both_js_files_map_every_backend_status():
     assert len(checked) == 4, f'只检查了 {checked}（期望 4 组）—— 本测试已失效'
     assert not problems, (
         '状态词表没覆盖后端全部状态：\n' + '\n'.join('  ' + p for p in problems)
-        + f'\n真值来自 models/task.py 的 TaskStatus = {sorted(enum_values)}。'
+        + f'\n真值来自 src/models/task.py 的 TaskStatus = {sorted(enum_values)}。'
         '\n漏掉的状态会走 `|| status` / `|| \'\'` 兜底：'
         '中文界面里冒出英文字面量，徽章没有图标。'
     )
@@ -1147,7 +1147,7 @@ def test_upload_contour_task_shows_render_phase_not_fake_download():
     后端创建上传任务时 downloaded_files == total_files（上传即落盘），
     contourPhaseCounts 回落到文件计数会让 pending 任务一出现就显示
     100%「下载 DEM」。判定口径与后端 is_upload 一致（dataset == "upload"，
-    见 services/contour_task_manager.py）。
+    见 src/services/contour_task_manager.py）。
     """
     body = _fn('contourPhaseCounts')
     assert "task.dataset === 'upload'" in body, (

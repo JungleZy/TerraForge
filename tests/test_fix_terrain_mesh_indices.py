@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.terrain_tiling.cesiumlab_terrain import encode_quantized_mesh
+from src.services.terrain_tiling.cesiumlab_terrain import encode_quantized_mesh
 
 HEADER_SIZE = 88  # <ddd ff ddd d ddd
 

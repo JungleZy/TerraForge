@@ -6,12 +6,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -20,7 +20,7 @@ def _load_app(monkeypatch, tmp_path):
 
 def _seed_task(task_id_name="t"):
     """插一条 contour_tasks 行(静态路由先查任务存在性再发文件),返回 task_id。"""
-    from core.database import get_connection
+    from src.core.database import get_connection
     conn = get_connection()
     try:
         cur = conn.cursor()

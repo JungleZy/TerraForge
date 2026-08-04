@@ -3,7 +3,7 @@ Contour task tiler.
 
 Thin wrapper around contour_engine.build_contour_tiles with a lazy default so
 tests can inject build_contour_fn=<fake> without GDAL/matplotlib (mirrors
-services/terrain_tiling/dem_task_tiler.py). DEM listing reuses the existing
+src/services/terrain_tiling/dem_task_tiler.py). DEM listing reuses the existing
 vrt_builder.list_dem_tifs (which filters *_num.tif).
 """
 
@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from services.contour_engine import ContourStyle
-from services.terrain_tiling.vrt_builder import list_dem_tifs, list_att_tifs
+from src.services.contour_engine import ContourStyle
+from src.services.terrain_tiling.vrt_builder import list_dem_tifs, list_att_tifs
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,7 @@ def tile_contour_task_dir(
     att_tifs = list_att_tifs(task_dir) if params.water else []
 
     if build_contour_fn is None:
-        from services.contour_engine import build_contour_tiles as build_contour_fn
+        from src.services.contour_engine import build_contour_tiles as build_contour_fn
 
     return build_contour_fn(
         dem_tifs=dem_tifs,

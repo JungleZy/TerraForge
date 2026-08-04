@@ -9,12 +9,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True
@@ -22,7 +22,7 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _map_task_payload(**overrides):
-    from core import config
+    from src.core import config
 
     payload = {
         "name": "t", "north": 40.0, "south": 39.0, "east": 117.0, "west": 116.0,
@@ -36,7 +36,7 @@ def _map_task_payload(**overrides):
 
 
 def _dem_task_payload(**overrides):
-    from core import config
+    from src.core import config
 
     payload = {
         "name": "t", "north": 40.0, "south": 39.0, "east": 117.0, "west": 116.0,

@@ -7,9 +7,9 @@ from pathlib import Path
 
 from flask import Blueprint, abort, current_app, send_file
 
-from core.config import Config
-from core.database import get_connection
-from routes.terrain_static import _resolve_safe_file
+from src.core.config import Config
+from src.core.database import get_connection
+from src.routes.terrain_static import _resolve_safe_file
 
 logger = logging.getLogger(__name__)
 

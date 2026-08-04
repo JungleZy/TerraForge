@@ -11,8 +11,8 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core import database
-from core.config import Config
+from src.core import database
+from src.core.config import Config
 
 
 def test_dem_terrain_jobs_table_exists(tmp_path, monkeypatch):
@@ -51,7 +51,7 @@ def test_dem_terrain_jobs_table_exists(tmp_path, monkeypatch):
 def test_patch_layer_json_parent(tmp_path):
     import json
 
-    from services.terrain_tiling.layer_json import patch_layer_json_parent
+    from src.services.terrain_tiling.layer_json import patch_layer_json_parent
 
     layer_json_path = tmp_path / "layer.json"
     layer_json_path.write_text("{}", encoding="utf-8")

@@ -57,9 +57,9 @@ class _FakeSession:
 
 
 def test_stop_mid_download_leaves_no_part_file(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    import services.dem_download_engine as dde
+    import src.services.dem_download_engine as dde
 
     engine = dde.DemDownloadEngine()
     engine.config = _StubConfig({

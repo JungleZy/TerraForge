@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.contour_task_manager import estimate_max_zoom
+from src.services.contour_task_manager import estimate_max_zoom
 
 
 def test_estimate_max_zoom_30m_dem():
@@ -50,7 +50,7 @@ def _make_dem(path, pixel_deg, lon0=116.0, lat0=39.0):
 
 
 def test_finest_pixel_size_geographic(tmp_path):
-    from services.contour_task_manager import _finest_pixel_size_3857
+    from src.services.contour_task_manager import _finest_pixel_size_3857
     p = tmp_path / "dem.tif"
     _make_dem(p, 30.0 / 111320.0)  # ≈30m
     px = _finest_pixel_size_3857([p])
@@ -60,7 +60,7 @@ def test_finest_pixel_size_geographic(tmp_path):
 
 
 def test_finest_pixel_size_picks_finest(tmp_path):
-    from services.contour_task_manager import _finest_pixel_size_3857
+    from src.services.contour_task_manager import _finest_pixel_size_3857
     p30 = tmp_path / "a.tif"
     p90 = tmp_path / "b.tif"
     _make_dem(p30, 30.0 / 111320.0)
@@ -70,7 +70,7 @@ def test_finest_pixel_size_picks_finest(tmp_path):
 
 
 def test_finest_pixel_size_unreadable_returns_none(tmp_path):
-    from services.contour_task_manager import _finest_pixel_size_3857
+    from src.services.contour_task_manager import _finest_pixel_size_3857
     bad = tmp_path / "bad.tif"
     bad.write_bytes(b"not a geotiff")
     assert _finest_pixel_size_3857([bad]) is None
@@ -81,12 +81,12 @@ def test_finest_pixel_size_unreadable_returns_none(tmp_path):
 def _load_app(monkeypatch, tmp_path):
     import importlib
 
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True

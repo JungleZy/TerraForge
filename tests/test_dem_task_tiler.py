@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def test_list_dem_tifs_filters_num(tmp_path: Path):
-    from services.terrain_tiling.vrt_builder import list_dem_tifs
+    from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
     (tmp_path / "A_dem.tif").write_text("", encoding="utf-8")
     (tmp_path / "A_num.tif").write_text("", encoding="utf-8")
@@ -21,14 +21,14 @@ def test_list_dem_tifs_filters_num(tmp_path: Path):
 
 
 def test_terrain_output_dir_for_task(tmp_path: Path):
-    from services.terrain_tiling.dem_task_tiler import terrain_output_dir_for_task
+    from src.services.terrain_tiling.dem_task_tiler import terrain_output_dir_for_task
 
     out = terrain_output_dir_for_task(str(tmp_path), 123)
     assert out == tmp_path / "dem_task_123" / "terrain_tiles"
 
 
 def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
-    from services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+    from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
     task_dir = tmp_path / "task"
     task_dir.mkdir(parents=True, exist_ok=True)

@@ -14,10 +14,10 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core import database
-from services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD, MIN_ZOOM, MAX_ZOOM
-from models.task import Tile
-from core.config import Config
+from src.core import database
+from src.services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD, MIN_ZOOM, MAX_ZOOM
+from src.models.task import Tile
+from src.core.config import Config
 
 
 @pytest.fixture
@@ -193,7 +193,7 @@ def test_tile_count_warning(download_engine, caplog):
     should log a warning. The product no longer hard-rejects large jobs."""
     import logging
 
-    with caplog.at_level(logging.WARNING, logger='services.download_engine'):
+    with caplog.at_level(logging.WARNING, logger='src.services.download_engine'):
         tiles = download_engine.calculate_tiles(
             north=50.0,
             south=30.0,
@@ -410,7 +410,7 @@ def test_coordinate_validation_east_west_equal(download_engine):
 
 
 def test_download_tiles_batch_passes_cache_enabled_false(download_engine):
-    from services.config_manager import ConfigManager
+    from src.services.config_manager import ConfigManager
 
     ConfigManager().set('cache_enabled', 'false')
     seen = []
@@ -540,7 +540,7 @@ def _failing_session(attempts, error):
 def test_download_tile_permanent_4xx_is_not_retried(download_engine, status):
     """404 的瓦片重试多少次都不存在:永久 4xx 第一次失败就直接抛出。"""
     import aiohttp
-    from services.config_manager import ConfigManager
+    from src.services.config_manager import ConfigManager
 
     ConfigManager().set('max_retries', '3')
     attempts = []
@@ -557,7 +557,7 @@ def test_download_tile_permanent_4xx_is_not_retried(download_engine, status):
 def test_download_tile_429_is_retried(download_engine, monkeypatch):
     """429 是限流不是永久错误,仍走指数退避重试。"""
     import aiohttp
-    from services.config_manager import ConfigManager
+    from src.services.config_manager import ConfigManager
 
     ConfigManager().set('max_retries', '2')
 
@@ -581,7 +581,7 @@ def test_download_tile_negative_max_retries_clamped(download_engine):
     吞掉真实错误;钳制到 0 后恰好试一次并抛出真实的网络错误。
     (负值进不了 ConfigManager.set 的校验,这里直接写库模拟历史脏数据。)"""
     import aiohttp
-    from core.database import get_connection
+    from src.core.database import get_connection
 
     conn = get_connection()
     try:
@@ -610,7 +610,7 @@ def test_download_tile_negative_max_retries_clamped(download_engine):
 def test_download_tile_does_not_request_when_stop_flag_already_set(download_engine):
     """If the task is already cancelled, download_tile must not hit the network."""
     import threading
-    from services.download_engine import DownloadCancelled
+    from src.services.download_engine import DownloadCancelled
 
     stop = threading.Event()
     stop.set()
@@ -637,7 +637,7 @@ def test_download_tile_stops_retrying_after_stop_flag_set(download_engine):
     Once the stop flag is set after the first failure, no further attempt may run.
     """
     import threading
-    from services.download_engine import DownloadCancelled
+    from src.services.download_engine import DownloadCancelled
 
     stop = threading.Event()
     attempts = []

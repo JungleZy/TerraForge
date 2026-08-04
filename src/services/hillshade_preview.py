@@ -18,7 +18,7 @@ import os
 import threading
 from pathlib import Path
 
-from services.terrain_tiling.vrt_builder import list_dem_tifs
+from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ import sqlite3
 import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from core.config import Config
+from src.core.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,7 @@ def normalize_stored_output_paths(cursor) -> int:
     归一用 `resolve_stored_output_dir`（延迟 import 避免 core → services 的
     模块级依赖），与读侧、删除侧共用同一套规则。
     """
-    from services.task_cleanup import resolve_stored_output_dir
+    from src.services.task_cleanup import resolve_stored_output_dir
 
     if cursor.execute('PRAGMA user_version').fetchone()[0] >= 2:
         return 0

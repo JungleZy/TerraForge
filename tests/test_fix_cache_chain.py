@@ -19,8 +19,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.task import Tile  # noqa: E402
-from services.download_engine import (  # noqa: E402
+from src.models.task import Tile  # noqa: E402
+from src.services.download_engine import (  # noqa: E402
     DownloadEngine,
     NotAnImageResponse,
     looks_like_image,
@@ -61,7 +61,7 @@ class _FakeSession:
 
 @pytest.fixture
 def engine(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
     # DownloadEngine() 构造时会建 ConfigManager 并读 tile_servers —— 必须把
     # DATABASE_PATH 也指到 tmp_path 并建库，否则用例会去读开发机上真实的
@@ -69,7 +69,7 @@ def engine(monkeypatch, tmp_path):
     # `sqlite3.OperationalError: unable to open database file`，而错误经
     # download_tile 的通用 except 变成一条与本用例无关的失败）。
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
-    from core.database import init_database
+    from src.core.database import init_database
     init_database()
     eng = DownloadEngine()
     # 不要在测试里真的做指数退避;并把重试次数钉成 1(共 2 次尝试)。
@@ -188,7 +188,7 @@ def test_successful_download_still_reports_completed(engine):
 # ---------------------------------------------------------------------------
 
 def _insert_task(app_mod, status):
-    from core.database import get_connection_context
+    from src.core.database import get_connection_context
     with get_connection_context() as conn:
         cur = conn.execute(
             "INSERT INTO tasks (name, status, north, south, east, west, "

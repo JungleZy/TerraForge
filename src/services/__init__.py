@@ -7,6 +7,6 @@ This module provides core business logic services:
 - TaskManager: Download task lifecycle management
 """
 
-from services.config_manager import ConfigManager
+from src.services.config_manager import ConfigManager
 
 __all__ = ['ConfigManager']

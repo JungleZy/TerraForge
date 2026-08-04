@@ -9,13 +9,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _reload_db(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
     return db
 
@@ -89,7 +89,7 @@ def test_contour_files_unique_constraint_fresh_db(monkeypatch, tmp_path):
 def test_contour_files_unique_migration_dedupes_existing_db(monkeypatch, tmp_path):
     """存量库：旧表没有 UNIQUE 且已有重复行 —— init_database 先删重复
     （保留最小 rowid），再建唯一索引兜底；建完后重复写入被拒。"""
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
@@ -116,9 +116,9 @@ def test_contour_files_unique_migration_dedupes_existing_db(monkeypatch, tmp_pat
     conn.commit()
     conn.close()
 
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
 
     conn = db.get_connection()

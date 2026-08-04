@@ -1,5 +1,5 @@
 """
-Tests for services/earthdata_client.py (review I21 — previously zero coverage
+Tests for src/services/earthdata_client.py (review I21 — previously zero coverage
 for the only module that handles credentials).
 
 Network layer (aiohttp) is fully faked: FakeSession.get returns canned
@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.earthdata_client import EarthdataClient  # noqa: E402
+from src.services.earthdata_client import EarthdataClient  # noqa: E402
 
 USERNAME = "test-user"
 PASSWORD = "s3cret-password-do-not-leak"
@@ -123,7 +123,7 @@ def test_credentials_never_appear_in_logs_or_errors(caplog):
     ]
     for responses, client in scenarios:
         session = FakeSession(responses)
-        with caplog.at_level(logging.DEBUG, logger="services.earthdata_client"):
+        with caplog.at_level(logging.DEBUG, logger="src.services.earthdata_client"):
             try:
                 run(client.get_signed_url(session, FILE_URL))
             except RuntimeError as e:

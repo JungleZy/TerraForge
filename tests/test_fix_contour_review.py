@@ -21,32 +21,32 @@ from conftest import fresh_import
 
 
 def _setup_db(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    db = fresh_import(monkeypatch, "core.database")
+    db = fresh_import(monkeypatch, "src.core.database")
     db.init_database()
-    ctm_mod = fresh_import(monkeypatch, "services.contour_task_manager")
+    ctm_mod = fresh_import(monkeypatch, "src.services.contour_task_manager")
     return db, ctm_mod
 
 
 def _load_app(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    # routes / routes.contour_api 也必须重导入:app.py 是
-    # `from routes import contour_api_bp` + `from routes.contour_api import
+    # routes / src.routes.contour_api 也必须重导入:app.py 是
+    # `from routes import contour_api_bp` + `from src.routes.contour_api import
     # init_contour_task_manager`,若 sys.modules 里还留着其他测试 pop 后残留的
-    # 旧实例,蓝图用的模块和 `import routes.contour_api` 拿到的就不是同一份
+    # 旧实例,蓝图用的模块和 `import src.routes.contour_api` 拿到的就不是同一份
     # (模块双实例)。fresh_import 在 teardown 时恢复原有 sys.modules 条目,
     # 本文件也不会再把残留泄漏给后面的测试。
     app_mod = fresh_import(
         monkeypatch,
-        "app", "core.database", "services.contour_task_manager",
-        "routes", "routes.contour_api",
+        "app", "src.core.database", "src.services.contour_task_manager",
+        "src.routes", "src.routes.contour_api",
     )[0]
     app_mod.app.config["TESTING"] = True
     return app_mod, app_mod.app.test_client()
@@ -67,7 +67,7 @@ def _fake_world_ctx(np, band_arr=None, band_raises=None, **over):
     用于直接驱动 _render_contour_tile_core。"""
     from types import SimpleNamespace
     from matplotlib.colors import to_rgba
-    from services.contour_engine import ContourStyle, ORIGIN_SHIFT
+    from src.services.contour_engine import ContourStyle, ORIGIN_SHIFT
 
     class _Band:
         def ReadAsArray(self, xoff, yoff, xsize, ysize):
@@ -113,7 +113,7 @@ def _write_dem(gdal, np, path, flat=False):
 def test_fix_i10_tile_read_failure_returns_failed_not_crash(tmp_path):
     np = pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
-    from services.contour_engine import _render_contour_tile_core
+    from src.services.contour_engine import _render_contour_tile_core
 
     ctx = _fake_world_ctx(np, band_raises=RuntimeError("simulated raster I/O failure"),
                           out_dir=tmp_path)
@@ -125,10 +125,10 @@ def test_fix_minor_tile_failure_logs_warning(tmp_path, caplog):
     np = pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
     import logging
-    from services.contour_engine import _render_contour_tile_core
+    from src.services.contour_engine import _render_contour_tile_core
 
     ctx = _fake_world_ctx(np, band_raises=RuntimeError("io boom"), out_dir=tmp_path)
-    with caplog.at_level(logging.WARNING, logger="services.contour_engine"):
+    with caplog.at_level(logging.WARNING, logger="src.services.contour_engine"):
         assert _render_contour_tile_core(2, 1, 1, ctx) == "failed"
     # 瓦片失败必须有日志,且带瓦片坐标便于排查缺片
     assert any("z=2" in r.getMessage() and "x=1" in r.getMessage()
@@ -143,7 +143,7 @@ def test_fix_i19_skipped_tiles_count_toward_progress(tmp_path):
     gdal = pytest.importorskip("osgeo.gdal")
     np = pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
-    from services.contour_engine import build_contour_tiles, ContourStyle
+    from src.services.contour_engine import build_contour_tiles, ContourStyle
 
     dem = tmp_path / "ASTGTMV003_N39E116_dem.tif"
     _write_dem(gdal, np, dem, flat=True)  # 平坦 DEM + 纯线模式 -> 全部瓦片 skipped
@@ -168,7 +168,7 @@ def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
     # 下载驱动 create_task 已删除:直接 SQL 造旧版下载驱动的 running 任务行
     conn = db.get_connection()
     try:
-        from core import config
+        from src.core import config
         cur = conn.cursor()
         cur.execute(
             """
@@ -204,7 +204,7 @@ def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
         if progress_cb:
             progress_cb(10, 10)  # 进度按 processed(rendered+skipped+failed)上报
         return {"total": 10, "rendered": 6, "failed": 1, "skipped": 3}
-    import services.contour_task_tiler as tiler_mod
+    import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
@@ -262,9 +262,9 @@ def test_fix_i3_delete_task_with_active_thread_rejected(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     tid = _post_task(client).get_json()["task_id"]
 
-    # _load_app 已把 routes / routes.contour_api 一并重导入,这里正常 import
+    # _load_app 已把 routes / src.routes.contour_api 一并重导入,这里正常 import
     # 拿到的就是蓝图实际在用的同一个模块实例
-    from routes import contour_api
+    from src.routes import contour_api
     mgr = contour_api.contour_task_manager
 
     class _Alive:
@@ -299,11 +299,11 @@ def test_fix_minor_att_warp_failure_logs_warning(tmp_path, caplog):
     np = pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
     import logging
-    from services.contour_engine import build_contour_tiles, ContourStyle
+    from src.services.contour_engine import build_contour_tiles, ContourStyle
 
     dem = tmp_path / "ASTGTMV003_N39E116_dem.tif"
     _write_dem(gdal, np, dem)
-    with caplog.at_level(logging.WARNING, logger="services.contour_engine"):
+    with caplog.at_level(logging.WARNING, logger="src.services.contour_engine"):
         counts = build_contour_tiles(
             dem_tifs=[dem], out_dir=tmp_path / "tiles", interval=50,
             zoom_min=10, zoom_max=11, style=ContourStyle(), workers=1,
@@ -317,7 +317,7 @@ def test_fix_minor_contour_label_fmt_keeps_non_integer(tmp_path, monkeypatch):
     np = pytest.importorskip("numpy")
     pytest.importorskip("matplotlib")
     import matplotlib.axes
-    from services.contour_engine import _render_contour_tile_core
+    from src.services.contour_engine import _render_contour_tile_core
 
     captured = {}
 

@@ -63,7 +63,7 @@ def isolate_startup_sweep(monkeypatch, _startup_sweep_sandbox):
     行为不变。
     """
     try:
-        import services.task_cleanup as tc
+        import src.services.task_cleanup as tc
     except Exception:  # 环境缺依赖时不阻断收集
         return
     monkeypatch.setattr(tc, "tempfile", _SandboxTempfile(str(_startup_sweep_sandbox)))
@@ -71,15 +71,15 @@ def isolate_startup_sweep(monkeypatch, _startup_sweep_sandbox):
 
 # create_app() 通过 init_*_task_manager(...) 把 manager 注入到这些模块的**模块级
 # 全局**里。sys.modules 的恢复管不住它们：teardown 后 sys.modules['app'] 已是原
-# 实例，而 routes.api.task_manager 仍指向 fixture 里那个绑定到已删除 tmp_path 的
+# 实例，而 src.routes.api.task_manager 仍指向 fixture 里那个绑定到已删除 tmp_path 的
 # 管理器 —— 「测试 patch 新模块、请求却打到旧模块」（M23，
 # tests/test_fix_api_hardening.py 的注释逐字描述过这个坑，是踩出来的）。
 _INJECTED_MANAGER_GLOBALS = (
-    ("routes.api", "task_manager"),
-    ("routes.dem_api", "dem_task_manager"),
-    ("routes.terrain_api", "dem_task_manager"),
-    ("routes.local_terrain_api", "local_terrain_task_manager"),
-    ("routes.contour_api", "contour_task_manager"),
+    ("src.routes.api", "task_manager"),
+    ("src.routes.dem_api", "dem_task_manager"),
+    ("src.routes.terrain_api", "dem_task_manager"),
+    ("src.routes.local_terrain_api", "local_terrain_task_manager"),
+    ("src.routes.contour_api", "contour_task_manager"),
 )
 
 
@@ -106,7 +106,7 @@ def fresh_import(monkeypatch, *names):
     consistently. Returns the module for a single name, otherwise a list in
     the order given.
 
-    Dotted names ("core.database"): importlib also rebinds the submodule
+    Dotted names ("src.core.database"): importlib also rebinds the submodule
     attribute on the parent package, which monkeypatch's sys.modules undo
     does NOT cover — without handling it, the parent package keeps pointing
     at the fresh instance after teardown (split-brain: sys.modules and the
@@ -136,17 +136,17 @@ def isolated_app(monkeypatch, tmp_path):
 
     Returns the imported `app` module (app_mod.app is the Flask instance,
     already in TESTING mode). Modules that bind Config at import time
-    ("app", "core.database") are re-imported via fresh_import so the
+    ("app", "src.core.database") are re-imported via fresh_import so the
     re-import picks up the patched values and the originals are restored
     at teardown.
     """
-    from core import config
+    from src.core import config
 
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    app_mod = fresh_import(monkeypatch, "app", "core.database")[0]
+    app_mod = fresh_import(monkeypatch, "app", "src.core.database")[0]
     app_mod.app.config["TESTING"] = True
     return app_mod

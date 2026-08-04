@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def test_engine_redact_strips_url_query():
-    from services.dem_download_engine import _redact_url_query
+    from src.services.dem_download_engine import _redact_url_query
 
     msg = "Download HTTP 500 for https://x.cloudfront.net/f.tif?Signature=abc&Key-Pair-Id=def"
     out = _redact_url_query(msg)
@@ -24,7 +24,7 @@ def test_engine_redact_strips_url_query():
 
 
 def test_engine_redact_leaves_plain_messages_untouched():
-    from services.dem_download_engine import _redact_url_query
+    from src.services.dem_download_engine import _redact_url_query
 
     assert _redact_url_query("Download HTTP 404") == "Download HTTP 404"
 
@@ -50,7 +50,7 @@ class _FakeSession:
 
 
 def test_earthdata_error_message_redacts_url_query():
-    from services.earthdata_client import EarthdataClient
+    from src.services.earthdata_client import EarthdataClient
 
     client = EarthdataClient(username="u", password="p")
     session = _FakeSession(_FakeResp(status=500))

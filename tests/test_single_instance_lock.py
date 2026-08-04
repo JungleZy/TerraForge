@@ -16,13 +16,13 @@ import pytest
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-from core import single_instance  # noqa: E402
+from src.core import single_instance  # noqa: E402
 
 
 @pytest.fixture
 def lock_db(monkeypatch, tmp_path):
     """把锁指到 tmp_path 下的数据目录，并保证用例结束时释放。"""
-    from core import config
+    from src.core import config
     db = tmp_path / "data" / "map_downloader.db"
     db.parent.mkdir(parents=True)
     monkeypatch.setattr(config.Config, "DATABASE_PATH", db)
@@ -37,9 +37,9 @@ def _acquire_in_subprocess(db_path, env_extra=None):
     """在另一个真实进程里尝试取同一把锁，返回 'OK' / 'BLOCKED'。"""
     code = (
         "import sys; sys.path.insert(0, {root!r});"
-        "from core.config import Config;"
+        "from src.core.config import Config;"
         "Config.DATABASE_PATH = {db!r};"
-        "from core.single_instance import acquire_instance_lock;"
+        "from src.core.single_instance import acquire_instance_lock;"
         "print('OK' if acquire_instance_lock() else 'BLOCKED')"
     ).format(root=PROJECT_ROOT, db=str(db_path))
     env = dict(os.environ)
@@ -85,7 +85,7 @@ def test_escape_hatch_env_var_skips_the_check(lock_db):
 
 def test_unwritable_lock_location_falls_back_to_allowing_startup(monkeypatch, tmp_path):
     """建不出锁文件（只读介质、权限）不该阻断启动 —— 退化成 0.2.4 的行为。"""
-    from core import config
+    from src.core import config
     single_instance.release_instance_lock()
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "d" / "x.db")
     monkeypatch.delenv("TERRAFORGE_ALLOW_MULTI_INSTANCE", raising=False)

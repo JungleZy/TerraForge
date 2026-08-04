@@ -14,27 +14,27 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 def _setup(monkeypatch, tmp_path):
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database", "services.dem_task_manager"):
+    for mod in ("app", "src.core.database", "src.services.dem_task_manager"):
         sys.modules.pop(mod, None)
-    db = importlib.import_module("core.database")
+    db = importlib.import_module("src.core.database")
     db.init_database()
-    dtm = importlib.import_module("services.dem_task_manager")
+    dtm = importlib.import_module("src.services.dem_task_manager")
     return db, dtm
 
 
 def test_astgtm_granules_reject_swb():
-    from services.dem_granules import LatLonTile, astgtm_v3_granules_for_tile
+    from src.services.dem_granules import LatLonTile, astgtm_v3_granules_for_tile
 
     with pytest.raises(ValueError, match="(?i)swb"):
         astgtm_v3_granules_for_tile(LatLonTile(lat=0, lon=0), include_num=False, include_swb=True)
 
 
 def test_astgtm_granules_still_allow_dem_and_num():
-    from services.dem_granules import LatLonTile, astgtm_v3_granules_for_tile
+    from src.services.dem_granules import LatLonTile, astgtm_v3_granules_for_tile
 
     assert astgtm_v3_granules_for_tile(LatLonTile(lat=0, lon=0), include_num=True, include_swb=False) == [
         "ASTGTMV003_N00E000_dem.tif",

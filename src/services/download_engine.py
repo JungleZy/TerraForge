@@ -18,10 +18,10 @@ import aiofiles
 import os
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
-from models.task import Tile
-from services.config_manager import ConfigManager
-from services.tile_url_probe import should_bypass_proxy
-from core.config import Config
+from src.models.task import Tile
+from src.services.config_manager import ConfigManager
+from src.services.tile_url_probe import should_bypass_proxy
+from src.core.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ class DownloadEngine:
 
     def _tile_servers(self) -> List[str]:
         """读取配置的瓦片服务器列表（60s 缓存；为空回退默认 mts0-3）。"""
-        from services.tile_url_probe import parse_server_list
+        from src.services.tile_url_probe import parse_server_list
         now = time.monotonic()
         if self._servers_cache is None or now - self._servers_loaded_at > 60:
             raw = self.config_manager.get('tile_servers', '') or ''
@@ -470,11 +470,11 @@ class DownloadEngine:
         Returns:
             Complete tile URL string
 
-        条目形态见 services.tile_url_probe.expand_server_entry：
+        条目形态见 src.services.tile_url_probe.expand_server_entry：
         别名/主机按 Google vt 格式拼 lyrs={style}；完整 XYZ 模板按占位符
         展开（模板含 {style} 时替换，不含则样式由地址自身决定）。
         """
-        from services.tile_url_probe import expand_server_entry
+        from src.services.tile_url_probe import expand_server_entry
         servers = self._tile_servers()
         entry = servers[server_index % len(servers)]
         template = expand_server_entry(entry, style)
@@ -496,7 +496,7 @@ class DownloadEngine:
 
         Cache Path Format:
             cache/{style}/{zoom}/{x}/{y}.png —— cache 跨任务共享,
-            不带 task_id(见 models/task.py Tile.cache_path)。
+            不带 task_id(见 src/models/task.py Tile.cache_path)。
         """
         return tile.cache_path(style)
 

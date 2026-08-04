@@ -60,11 +60,11 @@ def _theme_js():
 def _load_app(monkeypatch, tmp_path):
     """与 tests/test_statusbar_inside_workbench.py 同一个套路：Config 副作用
     全部重定向到 tmp_path，再新鲜 import app。"""
-    from core import config
+    from src.core import config
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
-    for mod in ("app", "core.database"):
+    for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
     app_mod = importlib.import_module("app")
     app_mod.app.config["TESTING"] = True

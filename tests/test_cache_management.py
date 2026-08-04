@@ -7,8 +7,8 @@ clear_cache_category 由前端二次确认后手动触发;非法/越界/不存�
 
 import pytest
 
-from core.config import Config
-from services.task_cleanup import clear_cache_category, get_cache_stats
+from src.core.config import Config
+from src.services.task_cleanup import clear_cache_category, get_cache_stats
 
 
 def _make_cache(root):

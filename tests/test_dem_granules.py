@@ -3,7 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from services.dem_granules import (
+from src.services.dem_granules import (
     coverage_bbox, tiles_for_bbox, astwbd_v1_att_granules_for_tile,
     copernicus_glo30_granules_for_tile, LatLonTile,
 )
