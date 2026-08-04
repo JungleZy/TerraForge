@@ -218,13 +218,21 @@ def test_adjacent_tiles_share_identical_border_vertex_sets():
 
     构造两块地形，让 A 的最后一列 == B 的第一列（真实切片里靠 linspace
     端点共享保证）。边界满密度下两侧都必须全保留，因此逐点相同。
+
+    地形必须【平滑】。原来用的白噪声 ×800 在 max_error=5 下本来就细分到
+    508/512 三角形、287/289 顶点，边界点是「顺带全留」的，跟 pin 毫无关系 ——
+    把 rtin_errors 里的 inf 全换成 0.0（等于拆掉边界满密度机制），这条测试
+    照样通过，那它就没在测它声称测的东西。换成平滑地形后同样 max_error=5：
+    pin=True 边界 64/64，pin=False 只剩 17/64，拆 pin 立刻打红。
+
+    注意 b2[:, 0] = a2[:, -1] 这行记录的是真实场景（相邻瓦片公共边采样点
+    重合），但它撑不起本断言 —— 边界满密度下两侧全保留，与高程是否相等无关。
+    真正的无缝保证来自「全保留」，这行只是让构造贴近现实。
     """
     grid = 17
-    rng = np.random.default_rng(3)
-    ha = rng.random(grid * grid) * 800.0
-    hb = rng.random(grid * grid) * 800.0
-    a2 = ha.reshape(grid, grid)
-    b2 = hb.reshape(grid, grid)
+    yy, xx = np.mgrid[0:grid, 0:grid]
+    a2 = 100.0 * np.sin(xx / 6.0) * np.cos(yy / 6.0)
+    b2 = 120.0 * np.cos(xx / 5.0) * np.sin(yy / 7.0)
     b2[:, 0] = a2[:, -1]          # 公共边高程一致
     va, _ = rtin_extract(rtin_errors(a2.reshape(-1), grid, True), grid, 5.0)
     vb, _ = rtin_extract(rtin_errors(b2.reshape(-1), grid, True), grid, 5.0)
@@ -235,7 +243,15 @@ def test_adjacent_tiles_share_identical_border_vertex_sets():
 
 def test_extract_vertex_order_is_first_occurrence():
     """顶点必须按【首次出现顺序】编号 —— Task 3 的向量化 high-water-mark
-    编码依赖这个规范形式，顺序错了编码就是错的。"""
+    编码依赖这个规范形式，顺序错了编码就是错的。
+
+    下半段的面积闭合断言不是锦上添花：只查「三角形索引里新值按 0,1,2… 递增
+    出现」的话，该性质对 verts 的【任意置换】都成立 —— 把返回值换成
+    np.sort(verts) 或 verts[::-1]，这条测试照样绿。而下一个任务按 verts 写
+    顶点缓冲、按 tris 写索引缓冲，两者错位则整个几何全错。面积和恰好等于
+    (grid-1)^2 同时钉死了两件事：verts 与 tris 对齐，且网格水密（无洞无重叠、
+    无退化三角形）。verts 一经排序，面积和就从 256 变成 2193.5。
+    """
     grid = 17
     rng = np.random.default_rng(11)
     err = rtin_errors(rng.random(grid * grid) * 100.0, grid, True)
@@ -248,6 +264,14 @@ def test_extract_vertex_order_is_first_occurrence():
             assert v == expected_next, "顶点编号不是按首次出现顺序"
             seen.add(v)
             expected_next += 1
+    xs, ys = verts[tris] % grid, verts[tris] // grid
+    area = 0.5 * np.abs(
+        (xs[:, 1] - xs[:, 0]) * (ys[:, 2] - ys[:, 0])
+        - (xs[:, 2] - xs[:, 0]) * (ys[:, 1] - ys[:, 0])
+    )
+    assert abs(area.sum() - (grid - 1) ** 2) < 1e-9, (
+        f"面积和 {area.sum()} != {(grid-1)**2} —— verts 与 tris 错位或网格不水密"
+    )
 
 
 def test_larger_max_error_yields_fewer_triangles():
@@ -266,9 +290,16 @@ def test_triangle_count_never_exceeds_full_grid():
     地形不能用 np.arange：那是关于 (x,y) 的平面（h = y*grid + x），RTIN 误差
     |(h[a]+h[b])/2 - h[mid]| 对平面恒为 0，而分裂判据是严格大于（0.0 > 0.0 为
     假），于是内部一个都不分，只有边界 inf 传上去的祖先分，实测 184 != 512。
-    判据不能改成 >=：那样平坦地形也会被逼着全细分，与上面的塌陷测试直接冲突。
     随机地形下除 4 个角点外每个格点都是某个三角形的中点且误差 > 0，因此必然
     分到底，512 是结构决定的，不是挑种子挑出来的。
+
+    判据保持严格 > 而不是 >=，理由有三条（曾经写在这里的「>= 会让平坦地形
+    全细分从而打死塌陷测试」是【错的】：那条塌陷测试用 max_error=1.0，平坦
+    地形内部误差 0.0，0.0 >= 1.0 仍为假，换成 >= 后 5 条新测试全部照样通过）：
+      1. brief 逐字规定了实现，改实现去迁就测试是禁止的；
+      2. Martini 原始语义就是严格 >；
+      3. 真正的危害在 max_error=0 这一点上 —— 实测 >= 会让完全平坦的瓦片从
+         2 个三角形炸到满额 512，对最该减面的地形反而零减面。
     """
     grid = 17
     rng = np.random.default_rng(23)
