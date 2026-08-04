@@ -5,10 +5,14 @@
 
 ## 结论先行
 
-给地形切片管线加两个可选能力，**两者独立开关，切片时由用户选择**：
+给地形切片管线加两项能力，**两者都默认开启，UI 上不给开关**（K 固定 0.15）：
 
-1. **自适应三角化** —— 用自写的 Martini/RTIN 替代当前固定 65×65 规则网格，标准档减面 **73.7%（山地）～82.7%（平缓）**。
-2. **逐顶点法线** —— quantized-mesh 的 oct-encoded normals 扩展，配合 Cesium `enableLighting`。必须配套 ghost cells，否则山地会出现可见的网格状接缝。
+1. **自适应三角化** —— 用自写的 Martini/RTIN 替代当前固定 65×65 规则网格，减面 **73.7%（山地）～82.7%（平缓）**。
+2. **逐顶点法线** —— quantized-mesh 的 oct-encoded normals 扩展。必须配套 ghost cells，否则山地会出现可见的网格状接缝。
+
+唯一给用户的开关是 **Cesium 的 `enableLighting`，默认关** —— 它是渲染端开关，切换不需重切片，法线数据先备着。
+
+两项能力**互补而非互斥**：几何走 Martini 简化路径省三角形，法线走满网格路径保留光照细节（实测两者差异仅 1.3–1.6°，且 ghost cells 本就要求满网格采样，满网格法线是顺带产物）。
 
 **排除了两条路，都是实测后排除的，不是没试过**：
 - **QEM（PyMeshLab）** —— 质量确实更好（等质量下省 49% 三角形），但要 +281 MB 和 Qt/OpenGL 依赖，dist 从 378 MB 涨到 659 MB。
@@ -355,10 +359,10 @@ build_terrain(inputs, output_dir, *, min_level, max_level, tile_size,
 | `cesiumlab_terrain.py:encode_quantized_mesh` | 增加 oct-encoded normals 扩展段；索引改逐瓦片现算 |
 | `cesiumlab_terrain.py:_high_water_mark_encode` | 向量化（**绑定顶点重排**，见下） |
 | `layer.json` | `extensions` 声明 vertex-normals |
-| `dem_task_tiler.py:TileParams` | 加 `triangulator` / `max_error_k` / `normals` 字段 |
-| DB schema | `dem_terrain_jobs` / `local_terrain_tasks` 加列（走 `init_database()` 内联 ALTER） |
-| `src/routes/terrain_api.py` | `/api/terrain/dem/<id>/start` 收新参数 |
-| 前端 | 切片对话框加「切片精度」三档 + 高级 K；`map.js:1239` 传 `requestVertexNormals: true`；开 `enableLighting` |
+| `dem_task_tiler.py:TileParams` | 加 `triangulator` / `max_error_k` / `normals` 字段，**默认值即最终值**（`'martini'` / `0.15` / `True`），不从上层传入 |
+| 前端 `map.js` | `fromUrl` 传 `{ requestVertexNormals: true }`；地形光照开关（见下） |
+| ~~DB schema~~ | **不动**——切片参数不暴露给用户，无需持久化 |
+| ~~`src/routes/terrain_api.py`~~ | **不动**——`/api/terrain/dem/<id>/start` 签名不变 |
 
 ### 顶点重排与编码向量化，绑定在自适应上做
 
@@ -377,19 +381,33 @@ encoded = (highest - reordered).astype(np.uint32)
 
 **所以：编码改造不是独立议题，与 Martini 绑在一起做或都不做。**
 
-### UI：三档预设 + 高级 K
+### 参数决策：不给用户选，K 固定 0.15
 
-| 档位 | K | 减面（山地/平缓） | z14 误差 |
+**Martini 与法线都默认开启，UI 上没有任何开关。** 原先设计的「切片精度三档 + 高级 K」取消——多一个用户看不懂的旋钮不如给一个验证过的默认值。
+
+`max_error` 系数固定 **K = 0.15**：
+
+| 档位（仅作选值依据，不进 UI） | K | 减面（山地/平缓） | z14 误差 |
 |---|---|---|---|
 | 精细 | 0.10 | 63.6% / 79.1% | 1.9 m |
-| **标准（默认）** | **0.15** | **73.7% / 82.7%** | 2.9 m |
+| **采用** | **0.15** | **73.7% / 82.7%** | **2.9 m** |
 | 激进 | 0.25 | 82.3% / 85.8% | 4.8 m |
 
-高级选项的 K **硬限制 0.02–0.3**，超过 0.25 已饱和，超过 0.3 纯属自伤。
+选 0.15 的依据：K > 0.25 收益饱和（边界满密度构成 11.2% 的地板，再调只增误差不减三角形）；K < 0.10 时误差 1.9m 已低于 DEM 自身垂直精度（ASTER ±17m、GLO-30 ±4m），那是在精确保留噪声。0.15 是曲线上兼顾两端的点。
 
-### 建议：三角化做成可插拔后端
+### 地形光照：渲染端开关，默认关
 
-`triangulator='grid' | 'martini'`，先只实现前两个。将来若要 QEM 或 TVD，只是新增一个函数 + 一个可选依赖，不用重构。代价几乎为零，但保留后路。
+法线数据**无条件写入**，但 Cesium 的 `globe.enableLighting` 做成 **UI 开关且默认关**。
+
+理由：`enableLighting` 是纯渲染端开关，**切换不需要重切片**。默认开会改变所有现有预览的外观——卫星影像本身已含光照信息，再叠一层可能显得过暗或有双重阴影；`lyrs=m` 路网图是矢量风格，加光照更不协调。默认关则法线数据先备着（每顶点 2 字节，成本可忽略），用户想看地形起伏时随手打开，即时生效。
+
+代价是不开灯时那 2 字节确实白存。接受——它换来的是「随时能开」而不必重切 12000 个瓦片。
+
+### 保留内部开关（不暴露）
+
+`build_terrain(..., triangulator='martini', normals=True)` 作为**默认参数**存在，UI / DB / API 全部看不到。用途是排障与测试：出问题时一行切回 `'grid'` 做对比，测试也能注入桩。这不违背「不给用户选」，只是不把实现细节焊死。
+
+将来若要 QEM 或 TVD 后端，也只是在这个枚举上加一个值。
 
 ---
 

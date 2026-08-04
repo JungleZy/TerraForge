@@ -24,7 +24,7 @@
 | `2026-08-01-concurrency-recommend-design.md` | 2026-08-01 | **已实现**，随当轮改动落地 |
 | `2026-08-02-absolute-save-path-design.md` | 2026-08-02 | **已实现，但一节被 0.2.4 整体推翻（局部失效，见下）** |
 | `2026-08-04-src-layout-migration-design.md` | 2026-08-04 | **待实施**。写下时代码仍是根目录平铺 `core/`/`models/`/`routes/`/`services/`；正文里的 493/302 处计数与 `config.py:58` 等行号是当日快照 |
-| `2026-08-04-terrain-triangulation-design.md` | 2026-08-04 | **主体待实施；「插曲」一节的两个 bug 已修复落地**。给地形切片加「自适应三角化（自写 Martini/RTIN）」与「逐顶点法线」两个可选开关。正文大半是**实测数据与选型排除依据**（3518 个真实瓦片样本，山地 + 平缓两套 DEM）——QEM/PyMeshLab、fast-simplification、自研 TVD + Numba 三条路都实测后排除，附录 B 记了 8 个产生过假数字的坑。**两条必读**：①「插曲」一节记录了 `triangleCount` 字段写错导致**地形从未真正工作过**，以及测试为何镜像了这个 bug；② 实测同屏峰值仅 27.8 万三角形，**几何不是 GPU 瓶颈**，减面的价值在存储而非帧率 |
+| `2026-08-04-terrain-triangulation-design.md` | 2026-08-04 | **主体待实施；「插曲」一节的两个 bug 已修复落地**。给地形切片加「自适应三角化（自写 Martini/RTIN）」与「逐顶点法线」，两者默认开、UI 无开关、K 固定 0.15；唯一暴露给用户的是 Cesium `enableLighting`（渲染端开关，默认关）。正文大半是**实测数据与选型排除依据**（3518 个真实瓦片样本，山地 + 平缓两套 DEM）——QEM/PyMeshLab、fast-simplification、自研 TVD + Numba 三条路都实测后排除，附录 B 记了 8 个产生过假数字的坑。**两条必读**：①「插曲」一节记录了 `triangleCount` 字段写错导致**地形从未真正工作过**，以及测试为何镜像了这个 bug；② 实测同屏峰值仅 27.8 万三角形，**几何不是 GPU 瓶颈**，减面的价值在存储而非帧率 |
 
 ## ⚠️ 两份「局部失效」的，点名
 
