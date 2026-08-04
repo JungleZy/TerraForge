@@ -101,3 +101,44 @@ def rtin_errors(heights_flat: np.ndarray, grid: int, pin_border: bool = True) ->
         if lvl < deepest:
             np.maximum.at(errors, mid, np.maximum(errors[lc], errors[rc]))
     return errors
+
+
+def rtin_extract(errors: np.ndarray, grid: int, max_error: float):
+    """按 max_error 从误差表提取三角网。
+
+    返回 (vertex_grid_indices, triangles)：
+      - vertex_grid_indices: 保留顶点的格点线性索引，**按首次出现顺序**排列。
+        这个顺序不是随意的 —— quantized-mesh 的 high-water-mark 索引编码要求
+        顶点按首次出现顺序编号才能向量化（见 cesiumlab_terrain._hwm_encode）。
+      - triangles: (M,3) 的局部索引，值域 [0, len(vertex_grid_indices))。
+
+    递归深度只有 2*log2(grid-1)（grid=65 时 12 层），不必改写成迭代。
+    """
+    idmap: dict[int, int] = {}
+    tris: list[list[int]] = []
+    mx_ = grid - 1
+
+    def rec(ax, ay, bx, by, cx, cy):
+        mx = (ax + bx) >> 1
+        my = (ay + by) >> 1
+        if abs(ax - cx) + abs(ay - cy) > 1 and errors[my * grid + mx] > max_error:
+            rec(cx, cy, ax, ay, mx, my)
+            rec(bx, by, cx, cy, mx, my)
+        else:
+            tri = []
+            for px, py in ((ax, ay), (bx, by), (cx, cy)):
+                p = py * grid + px
+                idx = idmap.get(p)
+                if idx is None:
+                    idx = len(idmap)
+                    idmap[p] = idx
+                tri.append(idx)
+            tris.append(tri)
+
+    rec(0, 0, mx_, mx_, mx_, 0)
+    rec(mx_, mx_, 0, 0, 0, mx_)
+
+    verts = np.empty(len(idmap), dtype=np.int64)
+    for p, i in idmap.items():
+        verts[i] = p
+    return verts, np.array(tris, dtype=np.int64)

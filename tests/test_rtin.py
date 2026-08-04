@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.services.terrain_tiling.rtin import rtin_errors, rtin_tables
+from src.services.terrain_tiling.rtin import rtin_errors, rtin_extract, rtin_tables
 
 
 def test_tables_cover_every_triangle_exactly_once():
@@ -197,3 +197,82 @@ def test_tables_are_read_only():
             assert not arr.flags.writeable
     with pytest.raises(ValueError):
         tables[1][0][0] = 12345
+
+
+def test_extract_flat_terrain_with_border_pinned_keeps_all_border_points():
+    """平坦地形 + 边界满密度：内部塌到最简，但四条边一个点都不能少。"""
+    grid = 17
+    h = np.full(grid * grid, 50.0)
+    err = rtin_errors(h, grid, pin_border=True)
+    verts, tris = rtin_extract(err, grid, max_error=1.0)
+    rc = np.array([v // grid for v in verts])
+    cc = np.array([v % grid for v in verts])
+    on_border = (rc == 0) | (rc == grid - 1) | (cc == 0) | (cc == grid - 1)
+    assert on_border.sum() == 4 * (grid - 1), (
+        f"边界点保留 {on_border.sum()}，应为 {4*(grid-1)}"
+    )
+
+
+def test_adjacent_tiles_share_identical_border_vertex_sets():
+    """跨瓦片无缝的核心断言：两块地形各自提取后，公共边的保留点必须一致。
+
+    构造两块地形，让 A 的最后一列 == B 的第一列（真实切片里靠 linspace
+    端点共享保证）。边界满密度下两侧都必须全保留，因此逐点相同。
+    """
+    grid = 17
+    rng = np.random.default_rng(3)
+    ha = rng.random(grid * grid) * 800.0
+    hb = rng.random(grid * grid) * 800.0
+    a2 = ha.reshape(grid, grid)
+    b2 = hb.reshape(grid, grid)
+    b2[:, 0] = a2[:, -1]          # 公共边高程一致
+    va, _ = rtin_extract(rtin_errors(a2.reshape(-1), grid, True), grid, 5.0)
+    vb, _ = rtin_extract(rtin_errors(b2.reshape(-1), grid, True), grid, 5.0)
+    east_a = sorted(v // grid for v in va if v % grid == grid - 1)
+    west_b = sorted(v // grid for v in vb if v % grid == 0)
+    assert east_a == west_b == list(range(grid))
+
+
+def test_extract_vertex_order_is_first_occurrence():
+    """顶点必须按【首次出现顺序】编号 —— Task 3 的向量化 high-water-mark
+    编码依赖这个规范形式，顺序错了编码就是错的。"""
+    grid = 17
+    rng = np.random.default_rng(11)
+    err = rtin_errors(rng.random(grid * grid) * 100.0, grid, True)
+    verts, tris = rtin_extract(err, grid, 2.0)
+    flat = tris.reshape(-1)
+    seen = set()
+    expected_next = 0
+    for v in flat:
+        if v not in seen:
+            assert v == expected_next, "顶点编号不是按首次出现顺序"
+            seen.add(v)
+            expected_next += 1
+
+
+def test_larger_max_error_yields_fewer_triangles():
+    grid = 65
+    rng = np.random.default_rng(5)
+    err = rtin_errors(rng.random(grid * grid) * 300.0, grid, True)
+    _, fine = rtin_extract(err, grid, 1.0)
+    _, coarse = rtin_extract(err, grid, 50.0)
+    assert len(coarse) < len(fine)
+    assert len(fine) <= 2 * (grid - 1) * (grid - 1)
+
+
+def test_triangle_count_never_exceeds_full_grid():
+    """max_error=0 时细分到满网格，且【不会超过】满网格 —— 上界是 2*(grid-1)^2。
+
+    地形不能用 np.arange：那是关于 (x,y) 的平面（h = y*grid + x），RTIN 误差
+    |(h[a]+h[b])/2 - h[mid]| 对平面恒为 0，而分裂判据是严格大于（0.0 > 0.0 为
+    假），于是内部一个都不分，只有边界 inf 传上去的祖先分，实测 184 != 512。
+    判据不能改成 >=：那样平坦地形也会被逼着全细分，与上面的塌陷测试直接冲突。
+    随机地形下除 4 个角点外每个格点都是某个三角形的中点且误差 > 0，因此必然
+    分到底，512 是结构决定的，不是挑种子挑出来的。
+    """
+    grid = 17
+    rng = np.random.default_rng(23)
+    h = rng.random(grid * grid) * 100.0
+    err = rtin_errors(h, grid, True)
+    _, tris = rtin_extract(err, grid, 0.0)
+    assert len(tris) == 2 * (grid - 1) * (grid - 1)
