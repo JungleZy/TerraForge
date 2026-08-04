@@ -27,10 +27,15 @@ def rtin_tables(grid: int):
 
     返回 {level: [a, b, mid, left_child, right_child]}，五个都是格点线性索引
     的 int64 数组。a/b 是三角形斜边两端，mid 是斜边中点（即该三角形的分裂点）。
+
+    数组一律置为只读：结果被 lru_cache 全进程共享，任何一个消费者就地改一个
+    元素都会永久污染后续所有调用者拿到的表。
     """
     t = grid - 1
-    if t <= 0 or (t & (t - 1)) != 0:
-        raise ValueError(f"grid must be 2^k+1, got {grid}")
+    # t >= 2：grid=2 形式上是合法的 2^0+1，但退化到 0 个三角形，放过去的话
+    # rtin_errors 会在 levels[0] 抛 IndexError —— 报错点离病因十万八千里。
+    if t < 2 or (t & (t - 1)) != 0:
+        raise ValueError(f"grid must be 2^k+1 and >= 3, got {grid}")
     num_tri = t * t * 2 - 2
     buckets: dict[int, list[list[int]]] = {}
     for i in range(num_tri):
@@ -62,7 +67,15 @@ def rtin_tables(grid: int):
         b[2].append(my * grid + mx)
         b[3].append(((ay + ccy) >> 1) * grid + ((ax + ccx) >> 1))
         b[4].append(((by + ccy) >> 1) * grid + ((bx + ccx) >> 1))
-    return {lvl: [np.array(x, np.int64) for x in v] for lvl, v in buckets.items()}
+    tables = {}
+    for lvl, v in buckets.items():
+        arrays = []
+        for x in v:
+            arr = np.array(x, np.int64)
+            arr.flags.writeable = False
+            arrays.append(arr)
+        tables[lvl] = arrays
+    return tables
 
 
 def rtin_errors(heights_flat: np.ndarray, grid: int, pin_border: bool = True) -> np.ndarray:
