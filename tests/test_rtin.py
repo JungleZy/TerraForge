@@ -351,7 +351,10 @@ def test_max_error_for_level_scales_with_vertex_spacing():
     """max_error 必须按层级缩放 —— 固定绝对值会让高层瓦片压成平面。
 
     设计阶段实测：max_error=20m 时 z14 瓦片只剩 2 个三角形。
-    规则是 K * 顶点间距，含义是坡度误差容限恒定。
+    规则是 K * 顶点间距（米）。注意 DEG_TO_M 是赤道处 1° 经度的度长，只做量级
+    换算 —— 「坡度误差容限恒定」这个说法在赤道以外不成立（东西向按 1/cos(纬度)
+    偏宽松，详见 _max_error_for_level 的 docstring）。这条测试钉的是**逐级翻倍**
+    这一层，与纬度无关。
     """
     from src.services.terrain_tiling.cesiumlab_terrain import _max_error_for_level
 
@@ -381,36 +384,62 @@ def test_build_terrain_martini_produces_fewer_triangles_than_grid():
     assert tri_count == len(tris)
 
 
-def _terrain_triangle_counts(out_dir) -> dict:
-    """从落盘的 .terrain 里按 quantized-mesh-1.0 spec 读出每张瓦片的三角形数。
+def _terrain_tile_stats(out_dir) -> dict:
+    """从落盘的 .terrain 里按 quantized-mesh-1.0 spec 读出 (顶点数, 三角形数, 四条边的顶点数)。
 
-    刻意只解析到 triangleCount 为止：这条测试要回答的是「martini 有没有真的
-    走到编码里」，不是重验编码正确性（那是 test_fix_terrain_mesh_indices 的活）。
+    刻意只解析到 EdgeIndices 为止：这条测试要回答的是「martini 有没有真的走到
+    编码里、边界有没有真的钉住」，不是重验编码正确性（那是
+    test_fix_terrain_mesh_indices 的活）。
+
+    索引宽度按 spec 由**顶点数**决定（>65536 用 uint32）—— 这里的
+    tile_size 恒 ≤ 65（4225 顶点）走 uint16，宽度仍照 spec 算，免得将来
+    有人加大 tile_size 时这个解析器悄悄错位。
     """
     import gzip
 
-    counts = {}
+    stats = {}
     for p in sorted(out_dir.rglob("*.terrain")):
         with gzip.open(p, "rb") as f:
             data = f.read()
         (vcount,) = struct.unpack_from("<I", data, 88)
-        (tcount,) = struct.unpack_from("<I", data, 88 + 4 + vcount * 6)
-        counts[str(p.relative_to(out_dir))] = (vcount, tcount)
-    return counts
+        off = 88 + 4 + vcount * 6
+        (tcount,) = struct.unpack_from("<I", data, off)
+        width = 4 if vcount > 65536 else 2
+        off += 4 + tcount * 3 * width
+        edges = []
+        for _ in range(4):
+            (ecount,) = struct.unpack_from("<I", data, off)
+            edges.append(ecount)
+            off += 4 + ecount * width
+        assert off == len(data), f"{p}: 字节流没被精确消费完（off={off} len={len(data)}）"
+        stats[str(p.relative_to(out_dir))] = (vcount, tcount, tuple(edges))
+    return stats
 
 
-def test_build_terrain_defaults_to_martini_and_grid_is_a_real_fallback(tmp_path):
-    """接线测试：build_terrain 必须默认走 martini，且 triangulator='grid' 能退回规则网格。
+@pytest.mark.parametrize("tile_size", [17, 65])
+def test_build_terrain_defaults_to_martini_and_grid_is_a_real_fallback(tmp_path, tile_size):
+    """接线测试：build_terrain 必须默认走 martini、边界必须满密度、grid 能真退回。
 
     上面两条测试全都直接调 encode_quantized_mesh，一行都没碰 _worker_tile /
     _iter_tasks / build_terrain 的参数透传 —— 也就是说「参数加了但 worker 根本
     没用上」「默认值没生效」这两种失效它们一条都抓不住。而这正是本项目反复
     踩到的形态：HTTP 全 200、任务 completed、前端不报错、地形却是老样子。
 
-    所以这里跑真实的 build_terrain 落盘，再从字节流里读 triangleCount：
-      - grid 分支每张瓦片恒为 2*(tile_size-1)^2 = 512（tile_size=17）
+    所以这里跑真实的 build_terrain 落盘，再从字节流里读回来：
+      - grid 分支每张瓦片恒为 2*(tile_size-1)^2 个三角形
       - martini 分支必须严格更少
+      - **martini 的四条边必须各有 tile_size 个顶点（满密度）**
       - 不传 triangulator 时必须与显式 martini 逐字节相同（默认开启）
+
+    满密度那条守的是 _worker_tile 里的 `pin_border=True`：它是跨瓦片无缝的
+    唯一保证（设计稿:86），但在此之前**没有任何测试守着生产路径真的传了 True**。
+    实测把它改成 False：三角形从 14720 塌到 194（-98.7%）、公共边顶点数从
+    65 掉到 2..5、12 对东西相邻瓦片里有 1 对顶点集合对不上（真裂缝），
+    而全量 1021 条测试一条不红。边长断言是这个洞最直接的封条 ——
+    pin_border 一关，边长立刻从 tile_size 掉到个位数。
+
+    tile_size 参数化到 65 是因为生产值就是 65（TileParams.tile_size），
+    mesh= 路径此前只在 17 下跑过。
     """
     from osgeo import gdal
 
@@ -426,30 +455,154 @@ def test_build_terrain_defaults_to_martini_and_grid_is_a_real_fallback(tmp_path)
     ds.FlushCache()
     ds = None
 
-    kw = dict(min_level=0, max_level=2, tile_size=17, workers=1)
+    kw = dict(min_level=0, max_level=2, tile_size=tile_size, workers=1)
     ct.build_terrain([str(dem)], str(tmp_path / "grid"), triangulator="grid", **kw)
     ct.build_terrain([str(dem)], str(tmp_path / "mart"), triangulator="martini", **kw)
     ct.build_terrain([str(dem)], str(tmp_path / "dflt"), **kw)
 
-    grid_counts = _terrain_triangle_counts(tmp_path / "grid")
-    mart_counts = _terrain_triangle_counts(tmp_path / "mart")
-    assert grid_counts and set(grid_counts) == set(mart_counts)
+    grid_stats = _terrain_tile_stats(tmp_path / "grid")
+    mart_stats = _terrain_tile_stats(tmp_path / "mart")
+    assert grid_stats and set(grid_stats) == set(mart_stats)
 
-    full = 2 * (17 - 1) ** 2
-    assert all(t == full for _, t in grid_counts.values()), (
-        f"grid 分支应恒为满网格 {full} 个三角形，实得 {sorted({t for _, t in grid_counts.values()})}"
+    full = 2 * (tile_size - 1) ** 2
+    assert all(t == full for _, t, _ in grid_stats.values()), (
+        f"grid 分支应恒为满网格 {full} 个三角形，实得 {sorted({t for _, t, _ in grid_stats.values()})}"
     )
-    assert all(v == 17 * 17 for v, _ in grid_counts.values())
+    assert all(v == tile_size * tile_size for v, _, _ in grid_stats.values())
 
-    assert sum(t for _, t in mart_counts.values()) < sum(t for _, t in grid_counts.values()), (
+    assert sum(t for _, t, _ in mart_stats.values()) < sum(t for _, t, _ in grid_stats.values()), (
         "martini 分支没有减面 —— triangulator 参数很可能没透传到 _worker_tile"
     )
-    for key, (_, t_m) in mart_counts.items():
+    for key, (_, t_m, _) in mart_stats.items():
         assert t_m < full, f"{key}: martini 三角形数 {t_m} 未少于满网格 {full}"
 
+    # pin_border=True 的封条：自适应分支的四条边必须一个顶点都不少。
+    for key, (_, _, edges) in mart_stats.items():
+        assert edges == (tile_size,) * 4, (
+            f"{key}: martini 四条边的顶点数 {edges} 不是满密度 {tile_size} —— "
+            f"_worker_tile 的 pin_border 很可能被关掉了，跨瓦片会裂缝"
+        )
+    # grid 分支同样必须满密度（它本来就是满网格，这条顺带钉住边索引没写漏）。
+    for key, (_, _, edges) in grid_stats.items():
+        assert edges == (tile_size,) * 4, f"{key}: grid 四条边顶点数 {edges} 异常"
+
     # 默认开启：不传 triangulator 的产物必须与显式 martini 逐字节相同。
+    #
+    # 比的是【解压后】的 quantized-mesh 字节流，不是磁盘上的 gzip 文件：gzip
+    # 头里带 4 字节 mtime（gzip.open 写入 time.time()），两次 build_terrain 相隔
+    # 零点几秒，跨秒时同一张瓦片的 gzip 字节就不同。这条断言原来直接比
+    # read_bytes()，在干净树上实测 8 次跑挂 1 次（差异恰好落在头部第 4 字节），
+    # 是本仓少见的真随机红灯 —— 而它想证明的「默认值生效」跟压缩容器毫无关系。
+    import gzip as _gzip
+
     for p in sorted((tmp_path / "mart").rglob("*.terrain")):
         rel = p.relative_to(tmp_path / "mart")
-        assert (tmp_path / "dflt" / rel).read_bytes() == p.read_bytes(), (
+        assert _gzip.decompress((tmp_path / "dflt" / rel).read_bytes()) == \
+            _gzip.decompress(p.read_bytes()), (
             f"{rel}: 默认产物与 triangulator='martini' 不一致 —— 默认值没生效"
         )
+
+
+def test_build_terrain_rejects_unknown_triangulator(tmp_path):
+    """triangulator 拼错必须在入口就报，不能静默退回规则网格。
+
+    这是「默认开 martini」新引入的失败面：'martni' 会走 _worker_tile 的 else
+    分支出满网格瓦片，作业 rendered==total 完美完成，没有任何信号说自适应根本
+    没开 —— 又一款「HTTP 200 + completed + 前端不报错」。而且它在 _worker_tile
+    的 try/except 里【根本不会报错】（else 是合法路径），所以校验必须在入口。
+
+    输入文件故意给不存在的路径：校验必须在任何 I/O 之前触发。谁把它挪到
+    build_input_vrt 之后，这里拿到的就是 GDAL 的错误而不是 ValueError，当场变红。
+    """
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match=r"triangulator.*'martni'"):
+        ct.build_terrain([str(tmp_path / "nope.tif")], str(out), triangulator="martni")
+    assert not out.exists(), "校验应在建输出目录之前就拦下，不该留下半个产物目录"
+
+
+def test_build_terrain_rejects_tile_size_martini_cannot_handle(tmp_path):
+    """martini 要求 tile_size = 2^k+1；不满足时必须入口即报，且错误信息点名 tile_size。
+
+    实测 tile_size=64 时 rtin_tables 逐瓦片抛 ValueError，被 _worker_tile 的
+    容错吞成 warning：rendered=0 / failed=42 外加 42 行刷屏，错误离病因很远。
+    生产路径恒为 65（TileParams.tile_size）不受影响，但 CLI 的 --tile-size 收
+    任意整数。
+
+    tile_size=64 在 grid 下是合法的，所以这条校验必须只在 martini 时生效 ——
+    末尾那次调用就是钉这一点的（若把校验写成无条件，它会变红）。
+    """
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match=r"tile_size.*64|64.*tile_size"):
+        ct.build_terrain([str(tmp_path / "nope.tif")], str(out), tile_size=64)
+    assert not out.exists(), "校验应在建输出目录之前就拦下，不该留下半个产物目录"
+
+    # grid 分支不受 2^k+1 约束：这里必须越过校验，死在读不到输入文件上。
+    with pytest.raises(Exception) as ei:
+        ct.build_terrain([str(tmp_path / "nope.tif")], str(out),
+                         tile_size=64, triangulator="grid")
+    assert "tile_size" not in str(ei.value), (
+        f"grid 分支不该被 tile_size 校验拦下，实得 {ei.value!r}"
+    )
+
+
+def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):
+    """三角化默认值有多份独立副本，必须一致 —— 改一处不改另一处就该红。
+
+    副本清单（重复是**被迫的**，不要合并）：
+      1. cesiumlab_terrain.DEFAULT_MAX_ERROR_K
+      2. build_terrain 的关键字默认值
+      3. dem_task_tiler.TileParams 的字段默认值 —— **生产走的是这一份**
+      4. CLI 的 --triangulator / --max-error-k
+    TileParams 不能 `from cesiumlab_terrain import DEFAULT_MAX_ERROR_K`：
+    dem_task_tiler 必须在没有 GDAL/numpy 的环境里也能导入（它的 build_terrain
+    是惰性 import 的），模块级引用会把这个前提打掉。
+
+    没有这条断言时，把名字最像「那个常量」的 DEFAULT_MAX_ERROR_K 改成 0.25
+    是【对生产零影响、全量测试全绿】的 —— 后人想调 K 会改错地方还以为改了。
+    这里刻意不写死 0.15：唯一的字面量归 test_dem_task_tiler（它钉的是
+    TileParams -> build_terrain 的透传），K 真要改时只有那一处需要动。
+    """
+    import inspect
+
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling.dem_task_tiler import TileParams
+
+    sig = inspect.signature(ct.build_terrain)
+    params = TileParams(maxzoom=0, parent_url="x")
+
+    assert sig.parameters["max_error_k"].default == ct.DEFAULT_MAX_ERROR_K, (
+        f"build_terrain 的 max_error_k 默认值 {sig.parameters['max_error_k'].default} "
+        f"与 DEFAULT_MAX_ERROR_K {ct.DEFAULT_MAX_ERROR_K} 不一致"
+    )
+    assert params.max_error_k == ct.DEFAULT_MAX_ERROR_K, (
+        f"TileParams.max_error_k {params.max_error_k}（生产实际用的那份）与 "
+        f"DEFAULT_MAX_ERROR_K {ct.DEFAULT_MAX_ERROR_K} 不一致"
+    )
+    assert params.triangulator == sig.parameters["triangulator"].default, (
+        f"TileParams.triangulator {params.triangulator!r} 与 build_terrain 默认值 "
+        f"{sig.parameters['triangulator'].default!r} 不一致"
+    )
+
+    # CLI 的两个 flag 也必须落在同一组默认值上，否则命令行排障跑出来的
+    # 「对照组」跟生产根本不是同一个配置。走真实的 main()（只替掉 build_terrain）
+    # 而不是去翻 parser 的内部结构 —— 顺带钉住了 CLI 到 build_terrain 的透传。
+    captured = {}
+
+    def fake_build_terrain(inputs, output, **kw):
+        captured.update(kw)
+
+    src = tmp_path / "x.tif"
+    src.write_bytes(b"")
+    monkeypatch.setattr(ct, "build_terrain", fake_build_terrain)
+    assert ct.main(["-i", str(src), "-o", str(tmp_path / "out")]) == 0
+
+    assert captured["triangulator"] == sig.parameters["triangulator"].default, (
+        f"CLI --triangulator 默认 {captured['triangulator']!r} 与 build_terrain 默认值不一致"
+    )
+    assert captured["max_error_k"] == ct.DEFAULT_MAX_ERROR_K, (
+        f"CLI --max-error-k 默认 {captured['max_error_k']} 与 DEFAULT_MAX_ERROR_K 不一致"
+    )

@@ -54,8 +54,8 @@ WGS84_A = 6378137.0
 WGS84_B = 6356752.3142451793
 WGS84_E2 = 1.0 - (WGS84_B * WGS84_B) / (WGS84_A * WGS84_A)
 
-DEG_TO_M = 111320.0          # 赤道处 1° 的米数，仅用于 max_error 的量级换算
-DEFAULT_MAX_ERROR_K = 0.15   # 允许高程误差 = K * 顶点间距（坡度误差容限恒定）
+DEG_TO_M = 111320.0          # 赤道处 1° **经度** 的米数，仅用于 max_error 的量级换算
+DEFAULT_MAX_ERROR_K = 0.15   # 允许高程误差 = K * 顶点间距（见 _max_error_for_level）
 
 
 def lonlat_to_ecef(lon_deg: np.ndarray, lat_deg: np.ndarray, h: np.ndarray) -> np.ndarray:
@@ -458,6 +458,19 @@ def _max_error_for_level(z: int, tile_size: int, k: float) -> float:
 
     顶点间距 = 瓦片纬向跨度 / (tile_size-1)，换算成米后乘 K。固定绝对值不可用 ——
     实测 max_error=20m 时 z14 瓦片只剩 2 个三角形，整块压成平面。
+    （地理切片方案下瓦片的经向跨度 360/2^(z+1) 与纬向跨度 180/2^z 恒等，
+    所以 span_deg 对两个方向都成立。）
+
+    DEG_TO_M 只是**量级换算**，不要理解成「坡度误差容限恒定」：它取的是赤道处
+    1° 经度的度长（111320 m）。实测（tile_size=65）南北向由此得到的米数精确到
+    0.2~0.7%，但东西向的真实顶点间距按 cos(纬度) 收缩，于是等效 K 按 1/cos(纬度)
+    放大 —— lat41 → 0.199、lat52 → 0.243、lat70 → 0.437、lat80 → 0.862，
+    约 62°N 以上东西向就越过了设计稿给 K 定的 0.3 上限。
+
+    公式保持原样，因为影响很小且方向是「高纬更宽松」而非更严：同一份物理地形
+    投到不同纬度，减面率 80.1%（赤道）→ 83.7%（80°），只差 3.6pp（边界满密度的
+    地板占大头），本项目实际数据在 N28~N52，差 1~2pp。更重要的是**绝对高程
+    容限与纬度无关**（z14 恒为 2.87 m），这条才是质量上的硬保证。
     """
     span_deg = 180.0 / (1 << z)
     spacing_m = span_deg / max(1, tile_size - 1) * DEG_TO_M
@@ -482,7 +495,10 @@ def _worker_tile(task) -> Tuple[float, float] | None:
 
         if triangulator == "martini":
             # 自适应三角化：按高程误差驱动细分，标准档（K=0.15）减面 73%~83%。
-            # pin_border=True 是跨瓦片无缝的唯一保证，不要关。
+            # pin_border=True 是跨瓦片无缝的唯一保证，不要关。改成 False 实测：
+            # 三角形塌 98.7%、公共边顶点数从满密度掉到 2~5、相邻瓦片出现真裂缝。
+            # 守它的是 test_rtin.py 的接线测试（断言落盘瓦片四条边各 tile_size
+            # 个顶点）—— 这行以前是零守卫的，关掉全量测试一条不红。
             # 惰性 import：rtin 只依赖 numpy，但放在这里可以让「切 grid 回退」
             # 在 rtin 出问题时是真的完全绕开它。
             from src.services.terrain_tiling.rtin import rtin_errors, rtin_extract
