@@ -1,0 +1,90 @@
+"""RTIN（Right-Triangulated Irregular Network）自适应三角化。
+
+Mapbox Martini 算法的 numpy 实现。相比固定规则网格，按高程误差驱动细分，
+标准档（K=0.15）减面 73.7%（山地）~82.7%（平缓）。
+
+两个关键设计（改动前务必读 docs/superpowers/specs/2026-08-04-terrain-triangulation-design.md）：
+
+1. **误差按 RTIN 层级批量向量化**。同层三角形彼此独立，12 个层级用
+   np.maximum.at 批处理即可，实测比逐三角形循环快 379x（37.47ms -> 0.099ms）。
+
+2. **边界满密度靠 pin_border**，且 inf 必须在自底向上传播【之前】注入 ——
+   RTIN 的误差是从最细层往粗层传的，设在传播之后约束到不了祖先，边界约束
+   会完全失效（设计阶段因此测出 93.4% 的假减面率，真值 84.8%）。
+   边界全保留后，相邻瓦片公共边顶点集合逐点一致，实测 2880/2880 无一例外。
+"""
+
+from __future__ import annotations
+
+import functools
+
+import numpy as np
+
+
+@functools.lru_cache(maxsize=None)
+def rtin_tables(grid: int):
+    """按 RTIN 层级分组的索引表。只依赖 grid，因此可以缓存。
+
+    返回 {level: [a, b, mid, left_child, right_child]}，五个都是格点线性索引
+    的 int64 数组。a/b 是三角形斜边两端，mid 是斜边中点（即该三角形的分裂点）。
+    """
+    t = grid - 1
+    if t <= 0 or (t & (t - 1)) != 0:
+        raise ValueError(f"grid must be 2^k+1, got {grid}")
+    num_tri = t * t * 2 - 2
+    buckets: dict[int, list[list[int]]] = {}
+    for i in range(num_tri):
+        lvl = int(np.log2(i + 2))
+        # 从隐式二叉树下标还原三角形的三个顶点坐标
+        id_ = i + 2
+        ax = ay = bx = by = cx = cy = 0
+        if id_ & 1:
+            bx = by = cx = t
+        else:
+            ax = ay = cy = t
+        id_ >>= 1
+        while id_ > 1:
+            mx = (ax + bx) >> 1
+            my = (ay + by) >> 1
+            if id_ & 1:
+                bx, by, ax, ay = ax, ay, cx, cy
+            else:
+                ax, ay, bx, by = bx, by, cx, cy
+            cx, cy = mx, my
+            id_ >>= 1
+        mx = (ax + bx) >> 1
+        my = (ay + by) >> 1
+        ccx = mx + my - ay
+        ccy = my + ax - mx
+        b = buckets.setdefault(lvl, [[], [], [], [], []])
+        b[0].append(ay * grid + ax)
+        b[1].append(by * grid + bx)
+        b[2].append(my * grid + mx)
+        b[3].append(((ay + ccy) >> 1) * grid + ((ax + ccx) >> 1))
+        b[4].append(((by + ccy) >> 1) * grid + ((bx + ccx) >> 1))
+    return {lvl: [np.array(x, np.int64) for x in v] for lvl, v in buckets.items()}
+
+
+def rtin_errors(heights_flat: np.ndarray, grid: int, pin_border: bool = True) -> np.ndarray:
+    """逐格点的 RTIN 误差。heights_flat 是行优先展平的 grid*grid 高程。
+
+    pin_border=True 时把四条边的误差置 inf，强制这些顶点全部保留 —— 这是
+    跨瓦片无缝的唯一保证，不要改成传播之后再设。
+    """
+    tables = rtin_tables(grid)
+    errors = np.zeros(grid * grid, dtype=np.float64)
+    if pin_border:
+        e2 = errors.reshape(grid, grid)
+        e2[0, :] = np.inf
+        e2[-1, :] = np.inf
+        e2[:, 0] = np.inf
+        e2[:, -1] = np.inf
+    h = np.asarray(heights_flat, dtype=np.float64)
+    levels = sorted(tables, reverse=True)
+    deepest = levels[0]
+    for lvl in levels:
+        a, b, mid, lc, rc = tables[lvl]
+        np.maximum.at(errors, mid, np.abs((h[a] + h[b]) * 0.5 - h[mid]))
+        if lvl < deepest:
+            np.maximum.at(errors, mid, np.maximum(errors[lc], errors[rc]))
+    return errors
