@@ -58,6 +58,15 @@ def _parse(data: bytes, index_dtype) -> tuple[int, np.ndarray, list[np.ndarray]]
     off += 4
     # u/v/h zigzag deltas are always uint16.
     off += vcount * 2 * 3
+    # spec: "To enforce proper byte alignment, padding is added before the IndexData
+    # to ensure 2 byte alignment for IndexData16 and 4 byte alignment for IndexData32."
+    # 解析必须照 spec 补齐，不能照实现写 —— 见 test_index_data_starts_on_a_spec_boundary。
+    isize = np.dtype(index_dtype).itemsize
+    pad = (-off) % isize
+    assert data[off:off + pad] == b"\x00" * pad, (
+        f"IndexData 之前的 {pad} 字节对齐 padding 缺失或非零：{data[off:off + pad]!r}"
+    )
+    off += pad
     # IndexData.triangleCount 按 spec 是【三角形数】，索引元素数 = triangleCount * 3。
     # 此前这里直接把该字段当索引元素数读（count=tri_count），与当时的编码端用了
     # 同一套错误约定，两边自洽所以测试通过 —— 而 Cesium 按 spec 读 triangleCount*3
@@ -65,7 +74,6 @@ def _parse(data: bytes, index_dtype) -> tuple[int, np.ndarray, list[np.ndarray]]
     # 不能照实现写，否则这个测试测的是「实现和自己一致」而不是「实现符合 spec」。
     (tri_count,) = struct.unpack_from("<I", data, off)
     off += 4
-    isize = np.dtype(index_dtype).itemsize
     icount = tri_count * 3
     indices = np.frombuffer(data, dtype=index_dtype, count=icount, offset=off)
     off += icount * isize
@@ -182,6 +190,53 @@ def test_mesh_above_65536_vertices_uses_uint32_indices():
     assert list(edges[0]) == [j * n for j in range(n)]  # edges are raw, not HWM-encoded
 
 
+@pytest.mark.parametrize("n,index_dtype", [(17, np.uint16), (65, np.uint16), (257, np.uint32)])
+def test_index_data_starts_on_a_spec_boundary(n, index_dtype):
+    """IndexData 段必须按索引位宽对齐：uint16 补到 2 字节、uint32 补到 4 字节。
+
+    spec 原文（CesiumGS/quantized-mesh README）："To enforce proper byte alignment,
+    padding is added before the IndexData to ensure 2 byte alignment for
+    IndexData16 and 4 byte alignment for IndexData32."
+
+    这条不是形式主义，它决定读端从哪个字节开始读 triangleCount。IndexData 之前
+    的字节数 = 88（header）+ 4（vertexCount）+ 6*vertexCount（u/v/h 三段 uint16），
+    88 和 4 都是 4 的倍数，所以 6*vertexCount 在 vertexCount 为奇数时 ≡ 2 (mod 4)。
+    而 tile_size 恒为 2^k+1 => vertexCount = (2^k+1)^2 **恒为奇数** =>
+    **只要走 uint32 分支就必然缺 2 字节 padding**。
+    实测 tile_size=257（66049 顶点）：编码端写 triangleCount=131072，Cesium 按 spec
+    补齐 2 字节后读到的是 **2**，后面每个字段整体错位 —— 整块地形静默塌成两个
+    三角形。与已修掉的 triangleCount bug 是同一种失效形态（HTTP 全 200 +
+    任务 completed + 前端不报错 + 什么都不显示）。
+
+    uint16 那两组（17/65）的 padding 长度恒为 0，列在这里是为了钉住「不该补的
+    时候别乱补」—— 给规则网格无条件塞 2 字节会同时打红 golden 指纹。
+
+    可达性：生产的 tile_size 硬编码 65（4225 顶点 => uint16，偏移 25442 本就是
+    偶数），所以 uint32 分支目前只能从 CLI 的 --tile-size 走到。但那正是设计稿:406
+    指定的排障出口，也是唯一能脱离 Flask 单独跑的入口。
+    """
+    data = encode_quantized_mesh(100.0, 30.0, 110.0, 40.0, _heights(n))
+
+    # 完全独立地算偏移，不从被测字节流里反推。
+    vcount = n * n
+    width = np.dtype(index_dtype).itemsize
+    assert (vcount > 65536) == (width == 4), f"n={n}: 用例自身的索引位宽预期写错了"
+    off = HEADER_SIZE + 4 + vcount * 6
+    pad = (-off) % width
+    assert pad == (2 if (width == 4 and vcount % 2 == 1) else 0), "padding 长度的预期算错了"
+
+    assert data[off:off + pad] == b"\x00" * pad, (
+        f"n={n}: IndexData 之前应有 {pad} 字节零 padding，实得 {data[off:off + pad]!r}"
+    )
+    assert (off + pad) % width == 0
+
+    (tri_count,) = struct.unpack_from("<I", data, off + pad)
+    assert tri_count == 2 * (n - 1) ** 2, (
+        f"n={n}: 按 spec 对齐后读到的 triangleCount={tri_count}，期望 {2 * (n - 1) ** 2}"
+        f"（padding 缺失时 Cesium 在 tile_size=257 上读到的是 2）"
+    )
+
+
 from src.services.terrain_tiling.cesiumlab_terrain import (
     _high_water_mark_encode,
     _hwm_encode,
@@ -276,10 +331,16 @@ def test_encode_without_mesh_is_byte_identical_to_before():
 #
 # 这个哈希红了不代表它自己脆：它意味着规则网格的字节流真的变了。请先确认那是有意的，
 # 再更新常量，不要直接删掉这个测试。
+#
+# n=257 的值更新过一次（补上 spec 要求的 uint32 对齐 padding 那轮）：
+#   旧值 d7868ff5919837613f792c69976d5ce6e272ef60750716e2b3f7a62fe09391b8
+# 变更范围已实测确认**只是那 2 个 padding 字节** —— 把新 body 里偏移 396298
+# （= 4 + 6*66049，body 内相对偏移）处的 2 个字节剔掉后重新哈希，与旧值逐字符一致。
+# n=17 / n=65 走 uint16、padding 长度为 0，两个值一字未动，跨版本护栏没有断。
 _GOLDEN_REGULAR_GRID_BODY_SHA256 = {
     17: "0772d3632a187bc6400e98ab953361f7ae286b24d4f13a83868534592bb9a792",
     65: "2d9da4adc5721d4f0805876db352ca0d534c192f0b742117fbcfea2daa3aaf6b",
-    257: "d7868ff5919837613f792c69976d5ce6e272ef60750716e2b3f7a62fe09391b8",
+    257: "8e2fe2b02ef79f8d55a12809ba7bec05270035778d90fe30cfe6fe95c5faab56",
 }
 
 

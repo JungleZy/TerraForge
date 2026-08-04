@@ -420,6 +420,24 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float,
     body.write(vzz.tobytes())
     body.write(hzz.tobytes())
 
+    # spec: "To enforce proper byte alignment, padding is added before the IndexData
+    # to ensure 2 byte alignment for IndexData16 and 4 byte alignment for IndexData32."
+    #
+    # 到这里的绝对偏移 = 88(header) + 4(vertexCount) + 6*vertexCount（u/v/h 三段
+    # uint16）。88 和 4 都是 4 的倍数，所以偏移 ≡ 2*vertexCount (mod 4) ——
+    # uint16 分支永远已经对齐（补 0 字节，规则网格的 golden 指纹不受影响），
+    # 而 tile_size 恒为 2^k+1 => vertexCount=(2^k+1)^2 恒为奇数 =>
+    # **uint32 分支必然要补 2 字节**。
+    #
+    # 漏掉这 2 字节的后果是整段 IndexData 错位：实测 tile_size=257 编码端写
+    # triangleCount=131072，Cesium 的 parseQuantizedMesh 按 spec 补齐后读到 **2**，
+    # 整块地形塌成两个三角形，且 HTTP 全 200、任务 completed、前端不报错 ——
+    # 与已修掉的 triangleCount bug 同一种失效形态。
+    # 生产 tile_size 硬编码 65（uint16）故此前休眠；触发入口是 CLI --tile-size。
+    # len(header) 而不是字面量 88：对齐是相对【整个瓦片】的起点算的，header 若变长
+    # （Task 6/7 要加 extension 段是加在末尾，但难保没人动前面）这里要跟着变。
+    body.write(b"\x00" * ((-(len(header) + body.tell())) % np.dtype(index_dtype).itemsize))
+
     # IndexData.triangleCount 是【三角形数】，不是索引元素数 —— 读端按
     # triangleCount*3 取索引。此前这里写的是 len(encoded_indices)（即元素数），
     # Cesium 于是去读 3 倍的索引而越界，抛 RangeError: Invalid typed array length
