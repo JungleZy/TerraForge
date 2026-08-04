@@ -1,9 +1,12 @@
-"""RTIN（Martini）误差表与误差计算的单元测试。
+"""RTIN（Martini）误差表、误差计算，以及它接进切片流程后的行为。
 
-纯 numpy，不需要 GDAL / 采样，因此不做任何 monkey-patch。
+前半部分（rtin_tables / rtin_errors / rtin_extract）是纯 numpy，不需要
+GDAL / 采样，因此不做任何 monkey-patch。文件末尾的接线测试要跑
+cesiumlab_terrain 的编码与 build_terrain，那部分需要 GDAL。
 """
 
 import os
+import struct
 import sys
 
 import numpy as np
@@ -337,3 +340,116 @@ def test_triangle_count_never_exceeds_full_grid():
     err = rtin_errors(h, grid, True)
     _, tris = rtin_extract(err, grid, 0.0)
     assert len(tris) == 2 * (grid - 1) * (grid - 1)
+
+
+# ---------------------------------------------------------------------------
+# 接入切片流程（Task 5）：max_error 的层级缩放 + build_terrain 的 triangulator 开关
+# ---------------------------------------------------------------------------
+
+
+def test_max_error_for_level_scales_with_vertex_spacing():
+    """max_error 必须按层级缩放 —— 固定绝对值会让高层瓦片压成平面。
+
+    设计阶段实测：max_error=20m 时 z14 瓦片只剩 2 个三角形。
+    规则是 K * 顶点间距，含义是坡度误差容限恒定。
+    """
+    from src.services.terrain_tiling.cesiumlab_terrain import _max_error_for_level
+
+    e14 = _max_error_for_level(14, 65, 0.15)
+    e13 = _max_error_for_level(13, 65, 0.15)
+    assert e13 == pytest.approx(e14 * 2, rel=1e-9), "每降一级，容限应翻倍"
+    assert e14 == pytest.approx(0.15 * (180.0 / (1 << 14)) / 64 * 111320.0, rel=1e-9)
+
+
+def test_build_terrain_martini_produces_fewer_triangles_than_grid():
+    """同一份地形，martini 的瓦片必须比 grid 小。"""
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    n = 65
+    rng = np.random.default_rng(1)
+    heights = (rng.random((n, n)) * 400.0).astype(np.float64)
+
+    grid_bytes = ct.encode_quantized_mesh(86.0, 41.0, 86.01, 41.01, heights)
+    err = rtin_errors(heights.reshape(-1), n, pin_border=True)
+    verts, tris = rtin_extract(err, n, max_error=8.0)
+    mart_bytes = ct.encode_quantized_mesh(86.0, 41.0, 86.01, 41.01, heights,
+                                          mesh=(verts, tris))
+    assert len(mart_bytes) < len(grid_bytes)
+
+    off = 88 + 4 + len(verts) * 2 * 3
+    (tri_count,) = struct.unpack_from("<I", mart_bytes, off)
+    assert tri_count == len(tris)
+
+
+def _terrain_triangle_counts(out_dir) -> dict:
+    """从落盘的 .terrain 里按 quantized-mesh-1.0 spec 读出每张瓦片的三角形数。
+
+    刻意只解析到 triangleCount 为止：这条测试要回答的是「martini 有没有真的
+    走到编码里」，不是重验编码正确性（那是 test_fix_terrain_mesh_indices 的活）。
+    """
+    import gzip
+
+    counts = {}
+    for p in sorted(out_dir.rglob("*.terrain")):
+        with gzip.open(p, "rb") as f:
+            data = f.read()
+        (vcount,) = struct.unpack_from("<I", data, 88)
+        (tcount,) = struct.unpack_from("<I", data, 88 + 4 + vcount * 6)
+        counts[str(p.relative_to(out_dir))] = (vcount, tcount)
+    return counts
+
+
+def test_build_terrain_defaults_to_martini_and_grid_is_a_real_fallback(tmp_path):
+    """接线测试：build_terrain 必须默认走 martini，且 triangulator='grid' 能退回规则网格。
+
+    上面两条测试全都直接调 encode_quantized_mesh，一行都没碰 _worker_tile /
+    _iter_tasks / build_terrain 的参数透传 —— 也就是说「参数加了但 worker 根本
+    没用上」「默认值没生效」这两种失效它们一条都抓不住。而这正是本项目反复
+    踩到的形态：HTTP 全 200、任务 completed、前端不报错、地形却是老样子。
+
+    所以这里跑真实的 build_terrain 落盘，再从字节流里读 triangleCount：
+      - grid 分支每张瓦片恒为 2*(tile_size-1)^2 = 512（tile_size=17）
+      - martini 分支必须严格更少
+      - 不传 triangulator 时必须与显式 martini 逐字节相同（默认开启）
+    """
+    from osgeo import gdal
+
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    # 平滑起伏的 DEM：白噪声会让 RTIN 处处都得细分，减面看不出来。
+    dem = tmp_path / "dem.tif"
+    px, deg = 64, 0.05
+    ds = gdal.GetDriverByName("GTiff").Create(str(dem), px, px, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((100.0, deg, 0.0, 30.0 + px * deg, 0.0, -deg))
+    yy, xx = np.mgrid[0:px, 0:px].astype(np.float32)
+    ds.GetRasterBand(1).WriteArray(500.0 + 300.0 * np.sin(xx / 9.0) * np.cos(yy / 11.0))
+    ds.FlushCache()
+    ds = None
+
+    kw = dict(min_level=0, max_level=2, tile_size=17, workers=1)
+    ct.build_terrain([str(dem)], str(tmp_path / "grid"), triangulator="grid", **kw)
+    ct.build_terrain([str(dem)], str(tmp_path / "mart"), triangulator="martini", **kw)
+    ct.build_terrain([str(dem)], str(tmp_path / "dflt"), **kw)
+
+    grid_counts = _terrain_triangle_counts(tmp_path / "grid")
+    mart_counts = _terrain_triangle_counts(tmp_path / "mart")
+    assert grid_counts and set(grid_counts) == set(mart_counts)
+
+    full = 2 * (17 - 1) ** 2
+    assert all(t == full for _, t in grid_counts.values()), (
+        f"grid 分支应恒为满网格 {full} 个三角形，实得 {sorted({t for _, t in grid_counts.values()})}"
+    )
+    assert all(v == 17 * 17 for v, _ in grid_counts.values())
+
+    assert sum(t for _, t in mart_counts.values()) < sum(t for _, t in grid_counts.values()), (
+        "martini 分支没有减面 —— triangulator 参数很可能没透传到 _worker_tile"
+    )
+    for key, (_, t_m) in mart_counts.items():
+        assert t_m < full, f"{key}: martini 三角形数 {t_m} 未少于满网格 {full}"
+
+    # 默认开启：不传 triangulator 的产物必须与显式 martini 逐字节相同。
+    for p in sorted((tmp_path / "mart").rglob("*.terrain")):
+        rel = p.relative_to(tmp_path / "mart")
+        assert (tmp_path / "dflt" / rel).read_bytes() == p.read_bytes(), (
+            f"{rel}: 默认产物与 triangulator='martini' 不一致 —— 默认值没生效"
+        )

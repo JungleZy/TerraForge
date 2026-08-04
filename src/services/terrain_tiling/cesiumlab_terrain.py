@@ -54,6 +54,9 @@ WGS84_A = 6378137.0
 WGS84_B = 6356752.3142451793
 WGS84_E2 = 1.0 - (WGS84_B * WGS84_B) / (WGS84_A * WGS84_A)
 
+DEG_TO_M = 111320.0          # 赤道处 1° 的米数，仅用于 max_error 的量级换算
+DEFAULT_MAX_ERROR_K = 0.15   # 允许高程误差 = K * 顶点间距（坡度误差容限恒定）
+
 
 def lonlat_to_ecef(lon_deg: np.ndarray, lat_deg: np.ndarray, h: np.ndarray) -> np.ndarray:
     lon = np.radians(lon_deg)
@@ -438,13 +441,24 @@ def _worker_init(input_path: str, nodata: float | None) -> None:
     _WORKER_MKDIRS.clear()
 
 
+def _max_error_for_level(z: int, tile_size: int, k: float) -> float:
+    """该层级的 max_error（米）。
+
+    顶点间距 = 瓦片纬向跨度 / (tile_size-1)，换算成米后乘 K。固定绝对值不可用 ——
+    实测 max_error=20m 时 z14 瓦片只剩 2 个三角形，整块压成平面。
+    """
+    span_deg = 180.0 / (1 << z)
+    spacing_m = span_deg / max(1, tile_size - 1) * DEG_TO_M
+    return k * spacing_m
+
+
 def _worker_tile(task) -> Tuple[float, float] | None:
     """Returns (min, max) heights of the written tile, or None on failure.
 
     逐瓦片容错:单个坏块(如 ReadAsArray 返回 None、磁盘写失败)只记日志计失败,
     不让一个瓦片炸掉整个任务 —— 与 contour 的 _render_contour_tile_core 同款。
     """
-    z, x, y, west, south, east, north, tile_size, out_dir = task
+    z, x, y, west, south, east, north, tile_size, out_dir, triangulator, max_error_k = task
     assert _WORKER_SAMPLER is not None
 
     try:
@@ -454,7 +468,17 @@ def _worker_tile(task) -> Tuple[float, float] | None:
         llon, llat = np.meshgrid(lons, lats)
         heights = _WORKER_SAMPLER.sample(llon, llat)
 
-        data = encode_quantized_mesh(west, south, east, north, heights)
+        if triangulator == "martini":
+            # 自适应三角化：按高程误差驱动细分，标准档（K=0.15）减面 73%~83%。
+            # pin_border=True 是跨瓦片无缝的唯一保证，不要关。
+            # 惰性 import：rtin 只依赖 numpy，但放在这里可以让「切 grid 回退」
+            # 在 rtin 出问题时是真的完全绕开它。
+            from src.services.terrain_tiling.rtin import rtin_errors, rtin_extract
+            err = rtin_errors(heights.reshape(-1), tile_size, pin_border=True)
+            mesh = rtin_extract(err, tile_size, _max_error_for_level(z, tile_size, max_error_k))
+        else:
+            mesh = None
+        data = encode_quantized_mesh(west, south, east, north, heights, mesh=mesh)
         out_path = Path(out_dir) / str(z) / str(x)
         if out_path not in _WORKER_MKDIRS:
             out_path.mkdir(parents=True, exist_ok=True)
@@ -481,12 +505,37 @@ def build_terrain(
     workers: int = 0,
     progress_cb=None,
     stop_flag=None,
+    triangulator: str = "martini",
+    max_error_k: float = DEFAULT_MAX_ERROR_K,
 ) -> dict:
     # progress_cb(done, total): 逐瓦片进度回调（done = rendered+failed，terrain
     # 没有 contour 的 skipped 态），串行/并行每 tally 一次调一次；调用方自行
     # 节流（范本：contour_engine.build_contour_tiles）。stop_flag: threading.Event
     # 式协作停止 —— 串行每瓦片检查、并行批间检查；置位后提前收尾（已生成的
     # 瓦片保留，layer.json/meta.json 照常按已处理部分写出）。
+    #
+    # triangulator: 'martini' = RTIN 自适应三角化（默认），'grid' = 原来的满规则
+    # 网格。max_error_k: 允许高程误差 = K * 顶点间距（见 _max_error_for_level）。
+    # 两者都不暴露给 UI/DB/API，只为排障与测试注入而存在。
+    #
+    # 下面这两条校验在入口一次性做掉，不放进 _worker_tile —— 那里的 try/except
+    # 是逐瓦片容错，配置错在那里只会变成每张瓦片一行 warning：
+    #   - triangulator 拼错（'martni'）会静默走 else 分支退回规则网格，作业
+    #     rendered==total 完美完成，没有任何信号说自适应根本没开（实测）。
+    #   - tile_size 不是 2^k+1 时 rtin_tables 抛 ValueError，实测 10/10 瓦片
+    #     全失败。生产路径恒为 65（TileParams.tile_size）不受影响，但 CLI 的
+    #     --tile-size 收任意整数，且默认开 martini 之后这是本任务【新引入】的
+    #     失败面 —— 改成入口即报，错误直指病因而不是刷 N 行瓦片级 warning。
+    if triangulator not in ("martini", "grid"):
+        raise ValueError(
+            f"triangulator must be 'martini' or 'grid', got {triangulator!r}")
+    if triangulator == "martini":
+        t = int(tile_size) - 1
+        if t < 2 or (t & (t - 1)) != 0:
+            raise ValueError(
+                f"triangulator='martini' requires tile_size = 2^k+1 and >= 3, "
+                f"got {tile_size} (use triangulator='grid' for arbitrary sizes)")
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -557,7 +606,8 @@ def build_terrain(
                 for x in range(x0, x1 + 1):
                     for y in range(y0, y1 + 1):
                         west, south, east, north = scheme.tile_extent_deg(z, x, y)
-                        yield (z, x, y, west, south, east, north, tile_size, str(out))
+                        yield (z, x, y, west, south, east, north, tile_size, str(out),
+                               triangulator, max_error_k)
 
         sampler.ds = None
         sampler.band = None
@@ -693,6 +743,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tile-size", type=int, default=17)
     ap.add_argument("--nodata", type=float, default=None)
     ap.add_argument("--workers", "-j", type=int, default=0)
+    # 排障开关：切 'grid' 回到规则网格做对比。martini 要求 tile_size = 2^k+1
+    # （默认 17 满足），传 64 之类会在 build_terrain 入口报错并指向这个 flag。
+    ap.add_argument("--triangulator", choices=("martini", "grid"), default="martini")
+    ap.add_argument("--max-error-k", type=float, default=DEFAULT_MAX_ERROR_K)
     args = ap.parse_args(argv)
 
     import glob
@@ -718,6 +772,8 @@ def main(argv: list[str] | None = None) -> int:
         tile_size=args.tile_size,
         nodata=args.nodata,
         workers=args.workers,
+        triangulator=args.triangulator,
+        max_error_k=args.max_error_k,
     )
     return 0
 

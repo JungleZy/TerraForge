@@ -23,6 +23,11 @@ class TileParams:
     # derives the per-tile interval from tile_size (180/(tile_size-1) deg).
     tile_size: int = 65
     workers: int = 0
+    # 三角化后端与误差系数。默认即最终值 —— UI/DB/API 都不暴露，这两个字段
+    # 只为排障与测试注入而存在（出问题时切 'grid' 做对比）。
+    # 注意 'martini' 要求 tile_size = 2^k+1（65 满足），build_terrain 入口会校验。
+    triangulator: str = "martini"
+    max_error_k: float = 0.15
     # 进度回调/协作停止透传给 build_terrain（默认 None = 关闭）。放在 params
     # 而不是 tile_dem_task_dir 的独立参数：多个契约测试用 (task_dir, out_dir,
     # params) 三参替身钉住管理器到 tiler 的调用形态，加独立参数会破坏它们。
@@ -74,6 +79,8 @@ def tile_dem_task_dir(
         workers=int(params.workers),
         progress_cb=params.progress_cb,
         stop_flag=params.stop_flag,
+        triangulator=params.triangulator,
+        max_error_k=params.max_error_k,
     )
 
     layer_json_path = out_dir / "layer.json"

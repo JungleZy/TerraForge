@@ -51,3 +51,8 @@ def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
     assert '"parentUrl": "https://example.com/parent.json"' in layer
     # 65x65 grid matches 30 m DEM resolution at the estimated maxzoom (z14).
     assert captured["tile_size"] == 65
+    # 自适应三角化默认开启，且必须真的透传到 build_terrain —— 少了这两条，
+    # 把 tile_dem_task_dir 里的两行 triangulator/max_error_k 删掉全量照样绿。
+    # 65 = 2^6+1，满足 martini 对 tile_size 的要求。
+    assert captured["triangulator"] == "martini"
+    assert captured["max_error_k"] == 0.15

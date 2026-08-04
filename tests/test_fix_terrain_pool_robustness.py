@@ -165,7 +165,10 @@ def test_worker_tile_returns_none_on_bad_read(tmp_path):
     sampler.band = _NoneBand()
     ct._WORKER_SAMPLER = sampler
     try:
-        result = ct._worker_tile((0, 0, 0, -180.0, -90.0, 0.0, 0.0, 17, str(tmp_path)))
+        # 任务元组尾部的 (triangulator, max_error_k) 是自适应三角化接线时加的；
+        # 这里走 'grid' 让本条测试只盯坏块容错，不受三角化分支影响。
+        result = ct._worker_tile(
+            (0, 0, 0, -180.0, -90.0, 0.0, 0.0, 17, str(tmp_path), "grid", 0.15))
     finally:
         ct._WORKER_SAMPLER = None
     assert result is None
