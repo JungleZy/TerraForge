@@ -2,7 +2,13 @@
 
 全球 base 是**可选**产物：只加载单任务 DEM 切片不需要它；它的作用是给单任务切片当父层，让镜头拉远到 DEM 范围之外时仍有地形（见 [`cesiumjs-loading.md`](cesiumjs-loading.md)）。
 
-**先读这条再动手**：即使构建成功，级联在 **z0–4 也不生效** —— 单任务切片会把 base 的低层级整个遮蔽掉，且不报错。原因和规避见 [`cesiumjs-loading.md`](cesiumjs-loading.md) 的 §3。先了解这个限制再决定要不要花时间构建。
+**先读这三条再动手**：
+
+1. **不建 base 是安全的**（2026-08-05 起）。切片时会检查 base 目录里有没有 `layer.json`，没有就**干脆不写 `parentUrl`**（`layer_json.parent_url_if_base_available`）。在此之前，没建 base 的装机会写出一个指向 404 的 `parentUrl`，而 Cesium 拿不到它时不报错、改塞一个假的 heightmap-1.0 图层并污染共享 builder —— 结果是**本任务自己的 quantized-mesh 瓦片也按 heightmap 解析**，实测 4154 m 的山峰解成海平面以下 744 m，且瓦片全 200、控制台无报错。所以「懒得建 base」从来不是问题，**建了一半或路径配错才是**。
+
+2. **建的时候记得带法线**。CLI 默认就写（`normals=True`），但 2026-08-05 之前切出来的 base 没有。而 Cesium 的 `hasVertexNormals` 是 **provider 级单一标志**、不是逐瓦片 —— 只要子层声明了法线，整个地球用同一个着色器分支，没有法线属性的 base 瓦片会读到缺失属性的默认值，**开光照后是近乎纯黑的楔形**（不是「平淡」）。旧 base 要享受光照必须重切。
+
+3. **级联在 z0–4 不生效**：即使构建成功，单任务切片会把 base 的低层级整个遮蔽掉，且不报错。原因和规避见 [`cesiumjs-loading.md`](cesiumjs-loading.md) 的 §3。
 
 ## 前置：自备一份全球 DEM
 
@@ -84,14 +90,16 @@ base 自己的 `layer.json` **不带** `parentUrl`（`patch_layer_json_parent` �
 
 仓库里有一个 Windows PowerShell 封装：[`../../../scripts/build_global_base_terrain.ps1`](../../../scripts/build_global_base_terrain.ps1)。参数 `-DemDir`（必填）、`-MaxZoom`（默认 8）、`-OutDir`（默认 `.\downloads\terrain\base_z8`），做的事就是建目录 + 调上面那条命令。
 
-**它与应用侧参数有一处实际差异，用之前先知道**：脚本调用的是
+参数 `-DemDir`（必填）、`-MaxZoom`（默认 8）、`-OutDir`（默认 `.\downloads\terrain\base_z8`）、`-TileSize`（默认 65）。做的事就是建目录 + 调上面那条命令：
 
 ```powershell
-& python -m src.services.terrain_tiling.cesiumlab_terrain -i $DemDir -o $OutDir --max-level $MaxZoom
+& uv run python -m src.services.terrain_tiling.cesiumlab_terrain `
+    -i $DemDir -o $OutDir --max-level $MaxZoom --tile-size $TileSize
 ```
 
-**没有传 `--tile-size`**，于是走 CLI 默认值 **17**；而应用侧切单任务 DEM 时用的是 **65**（`src/services/terrain_tiling/dem_task_tiler.py:24` 的 `TileParams.tile_size = 65`）。结果是 base 的瓦片顶点网格每轴比子层稀疏 4 倍（17×17 对 65×65），同一层级下两者的几何精度不一致，级联切换时可能看到明显的细节跳变。
+**2026-08-05 修了两处**（此前这一节描述的是修复前的形态）：
 
-想让 base 与应用侧一致，要么手工在脚本第 23 行补上 `--tile-size 65`，要么直接跑上面那条完整命令。
+- **模块路径缺 `src.` 前缀**，src-layout 迁移后一直没跟着改，脚本跑起来直接 `ModuleNotFoundError` —— 也就是说它有一段时间是**完全不能用**的。更麻烦的是本文档当时引用的却是带 `src.` 的正确形态，拿文档去核对脚本只会得出「一切正常」。现已一致，并由 `tests/test_build_scripts_contract.py` 钉住（含「文档引用与脚本实际内容一致」这条）。
+- **没传 `--tile-size`**，于是走 CLI 默认值 **17**，而应用侧是 **65**（`dem_task_tiler.py` 的 `TileParams.tile_size`）。base 的顶点网格每轴比子层稀疏 4 倍，级联切换时几何精度跳变。现在默认 65，且测试钉住它与 `TileParams.tile_size` 相等。
 
-脚本还有两点要留意：它调的是裸 `python`（不是 `uv run python`），所以必须在已激活的、装好 numpy+GDAL 的环境里执行；它也不校验 `-OutDir` 是否与 `terrain_global_base_path` 配置一致 —— 改了 `-OutDir` 就得同步改配置。
+另外改用了 `uv run python`（原先是裸 `python`，要求调用者自己先激活装好 numpy+GDAL 的环境）。仍需留意：脚本**不校验** `-OutDir` 是否与 `terrain_global_base_path` 配置一致 —— 改了 `-OutDir` 就得同步改配置。
