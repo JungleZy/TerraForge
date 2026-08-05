@@ -358,6 +358,12 @@ def main():
         # 应用资源
         '--include-data-dir=templates=templates',
         '--include-data-dir=static=static',
+        # 全球 base 地形的分卷（2 个文件，约 167 MB）。打的是**分卷而非解压后的
+        # 目录**：解压后是 44k 个小文件，让 Nuitka 逐个收集会把构建拖垮，装机体积
+        # 也更大。首次使用前跑 scripts/unpack_base_terrain.py 还原到
+        # downloads/terrain/base_z8。没还原也不会坏 —— parentUrl 闸门检测到 base
+        # 缺失就不写该字段（见 layer_json.parent_url_if_base_available）。
+        '--include-data-dir=assets/terrain=assets/terrain',
         f'--include-data-dir={gdal_data}=gdal-data',
         f'--include-data-dir={proj_data}=proj-data',
         # 动态加载、静态分析跟不住的包

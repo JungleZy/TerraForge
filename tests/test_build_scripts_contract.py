@@ -79,3 +79,61 @@ def test_doc_quotes_the_script_as_it_actually_is():
 def test_required_flags_are_still_passed(flag):
     """三个必传参数不能在重构中掉队。"""
     assert flag in _ps1(), f"脚本不再传 {flag}"
+
+
+# ---------------------------------------------------------------------------
+# 全球 base 地形的分卷与还原脚本
+# ---------------------------------------------------------------------------
+
+UNPACK = ROOT / "scripts" / "unpack_base_terrain.py"
+ASSETS = ROOT / "assets" / "terrain"
+
+
+def test_base_terrain_parts_exist_and_fit_github_limit():
+    """分卷必须存在，且每一卷都在 GitHub 的 100 MB 单文件硬限制之内。
+
+    合起来 167 MB —— 正因为超限才拆卷。哪天有人合并回单文件，push 会被
+    GitHub 拒绝，而那时才发现就晚了（本地 commit 已经进历史）。
+    """
+    parts = sorted(ASSETS.glob("base_z8.tar.gz.part*"))
+    assert parts, f"找不到 base 地形分卷：{ASSETS}"
+    limit = 100 * 1024 * 1024
+    for p in parts:
+        size = p.stat().st_size
+        assert size < limit, (
+            f"{p.name} 有 {size/1048576:.1f} MB，超过 GitHub 单文件 100 MB 限制")
+    total = sum(p.stat().st_size for p in parts)
+    assert total > 50 * 1024 * 1024, f"分卷合计只有 {total/1048576:.1f} MB，像是残缺"
+
+
+def test_unpack_script_targets_the_configured_base_path():
+    """还原脚本的默认目标必须与 DEFAULT_CONFIGS 里的 terrain_global_base_path 一致。
+
+    路由是拿配置值去磁盘找文件的，没有自动发现 —— 两者对不上就是 404，
+    而且是静默的（地形不出来、控制台无报错）。
+    """
+    from src.core.database import DEFAULT_CONFIGS
+
+    cfg = dict(DEFAULT_CONFIGS)["terrain_global_base_path"]
+    text = UNPACK.read_text(encoding="utf-8")
+    # 配置值形如 './downloads/terrain/base_z8'
+    tail = cfg.strip("./").replace("\\", "/")
+    assert tail.replace("/", '" / "') in text or 'DEFAULT_OUT' in text, "脚本没有默认目标"
+    for seg in tail.split("/"):
+        assert f'"{seg}"' in text, f"脚本默认目标缺少路径段 {seg!r}（配置是 {cfg}）"
+
+
+def test_nuitka_packs_the_parts_not_the_expanded_dir():
+    """打包必须收分卷，不能收解压后的目录。
+
+    解压后是 44k 个小文件，让 Nuitka 逐个收集会把构建拖垮、装机体积也更大。
+    """
+    text = (ROOT / "nuitka_build.py").read_text(encoding="utf-8")
+    assert "--include-data-dir=assets/terrain=assets/terrain" in text, \
+        "nuitka_build.py 没有打包 base 地形分卷"
+    # 只看**实际的 --include-data-dir 参数值**，不看注释 —— 注释里提到
+    # downloads/terrain/base_z8 是在说明还原目标，不是打包配置。
+    data_dirs = re.findall(r"--include-data-dir=([^'\"]+)", text)
+    for d in data_dirs:
+        assert "base_z8" not in d, (
+            f"打包参数 {d!r} 收的是解压后的目录（44k 个文件）—— 应当收分卷")
