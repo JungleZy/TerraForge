@@ -541,7 +541,7 @@ def test_build_terrain_rejects_unknown_triangulator(tmp_path):
     的 try/except 里【根本不会报错】（else 是合法路径），所以校验必须在入口。
 
     输入文件故意给不存在的路径：校验必须在任何 I/O 之前触发。谁把它挪到
-    build_input_vrt 之后，这里拿到的就是 GDAL 的错误而不是 ValueError，当场变红。
+    build_input_raster 之后，这里拿到的就是 GDAL 的错误而不是 ValueError，当场变红。
     """
     from src.services.terrain_tiling import cesiumlab_terrain as ct
 

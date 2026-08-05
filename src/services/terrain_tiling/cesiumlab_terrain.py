@@ -187,21 +187,289 @@ class GeographicTilingScheme:
         return max(0, int(math.ceil(math.log2(ratio))))
 
 
-def build_input_vrt(inputs: list[str], vrt_path: str | None = None) -> str:
+def _overview_factors(width: int, height: int, min_side: int = 32) -> list[int]:
+    """2 的幂倍率列表，一直建到最长边降不到 min_side 以下为止。
+
+    **为什么必须是 2 的幂** —— 理由是「让请求精确命中某一层」,不是「防漂移」:
+    DemSampler._align 保证 win 恒等于 buf*scale 且 scale = 1<<k,所以采样器请求的
+    降采样比值恒为 2 的幂;overview 层级也取 2 的幂,该比值就精确落在某一层上。
+    换成 ASTER 那套(2/3/4/7.98/8.98/...),一个 ratio 恰为 8.000 的请求会落到 9x 那层,
+    读到的是比要求更粗的数据。
+
+    ⚠️ 不要把这里的理由写成「非幂次会让选层随窗口漂移」—— 那个因果只在**多源 VRT**
+    上成立,而本函数只作用于已经物化的**单幅**栅格。单幅上带着 ASTER 的非幂次
+    overview 实测也是 0.0 m(scale=8/16/32 三档 × 四个窗口),不会漂。反过来说,
+    幂次集合也不是护身符:实测 [2,4,8,16,32] 在比值 6.36 时照样从 8x 掉到 4x ——
+    真正保证不漂的是「比值恒为 2 的幂」这个**请求侧**的性质。
+
+    min_side 取 32 而不是 contour 那边的 256(见 contour_engine._build_raster_overviews):
+    等高线瓦片是 256px,金字塔到一瓦片大小就够;地形瓦片的顶点网格只有 65,低 zoom
+    时窗口能覆盖整个 DEM 却只采 65²,需要更深的金字塔。
+    """
+    factors: list[int] = []
+    f = 2
+    while max(width, height) // f >= min_side:
+        factors.append(f)
+        f *= 2
+    return factors
+
+
+def _raise_on_gdal_error(what: str, path: str) -> None:
+    """把 CPL 里登记的错误变成异常。
+
+    **`ds is None` / `BuildOverviews() != 0` 挡不住 I/O 写失败。** 实测:磁盘满、
+    配额、RLIMIT_FSIZE、超 4 GiB 时,gdal.Translate 照样返回**非 None** 的 dataset、
+    BuildOverviews 照样返回 **0**,交出去的却是一份数据被截断的栅格 —— 打开正常、
+    尺寸正常、overview 层数正常,只是降采样读回来全是 0。端到端实测的后果:693 张
+    瓦片全部"渲染成功"、作业 completed、瓦片全 200、前端零报错,而 4000 m 的天山
+    在 Cesium 里是一块海平面平板。
+
+    模块顶部有意不开 gdal.UseExceptions()(见文件头注释),所以这些错误只落到 CPL
+    的错误栈里。配合 ErrorReset() 前置,这里就能把它们捞出来。
+    """
+    if gdal.GetLastErrorType() >= gdal.CE_Failure:
+        raise RuntimeError(
+            f"{what} failed for {path}: {gdal.GetLastErrorMsg()!r} "
+            f"(GDAL error {gdal.GetLastErrorNo()})")
+
+
+def _verify_materialised(out_path: str, vrt_path: str) -> None:
+    """物化产物必须与源**逐项对得上**,不能只看「文件建出来了」。
+
+    这一层是给「GDAL 不报错但产物是坏的」兜底的,两类实测过的形态:
+      - 写失败被静默吞掉 => 尺寸/层数全对,但降采样读回来全 0(整幅塌成海平面)
+      - Translate 参数被改坏(如误加 outputType=GDT_Byte 想"省空间")=> 整幅 DEM
+        塌成常数 255,而 11 个单元测试 + 153 个切片相关测试**全部通过**
+
+    所以校验的是与源的一致性(尺寸/数据类型/仿射变换)加上一次真实的降采样读 ——
+    低层级瓦片走的正是降采样路径,全 0 在这里当场暴露。
+    """
+    src = gdal.Open(vrt_path, gdal.GA_ReadOnly)
+    dst = gdal.Open(out_path, gdal.GA_ReadOnly)
+    if src is None or dst is None:
+        raise RuntimeError(f"cannot reopen for verification: {out_path}")
+
+    if (dst.RasterXSize, dst.RasterYSize) != (src.RasterXSize, src.RasterYSize):
+        raise RuntimeError(
+            f"materialised raster size {dst.RasterXSize}x{dst.RasterYSize} != "
+            f"source {src.RasterXSize}x{src.RasterYSize} ({out_path})")
+
+    sb, db = src.GetRasterBand(1), dst.GetRasterBand(1)
+    if db.DataType != sb.DataType:
+        raise RuntimeError(
+            f"materialised raster dtype {gdal.GetDataTypeName(db.DataType)} != "
+            f"source {gdal.GetDataTypeName(sb.DataType)} ({out_path}) —— "
+            "高程会被静默压平/截断")
+
+    sgt, dgt = src.GetGeoTransform(), dst.GetGeoTransform()
+    if max(abs(a - b) for a, b in zip(sgt, dgt)) > 1e-12:
+        raise RuntimeError(
+            f"materialised raster geotransform {dgt} != source {sgt} ({out_path})")
+
+    # --- 与源逐像素比对,必须走**全分辨率** ---
+    # 不能拿降采样读去比:多源 VRT 的降采样读正是本次修复的那条坏路径(选层随窗口
+    # 漂移),拿它当基准等于要求产物复现同一个 bug。全分辨率读 buf==win,不进
+    # overview 路径,两边都是准的。
+    # 右下角这块是冲着**截断**去的:写盘被截断时丢的总是后写的部分,实测 4 GiB
+    # 截断的文件左上角完好(-460.6)、右下角全 0。
+    w = min(64, dst.RasterXSize)
+    h = min(64, dst.RasterYSize)
+    for xoff, yoff, corner in ((0, 0, "左上"),
+                               (dst.RasterXSize - w, dst.RasterYSize - h, "右下")):
+        gdal.ErrorReset()
+        got = db.ReadAsArray(xoff, yoff, w, h)
+        _raise_on_gdal_error("verification read", out_path)
+        if got is None:
+            raise RuntimeError(
+                f"materialised raster unreadable at {corner} corner "
+                f"({xoff},{yoff}) ({out_path}) —— 多半是写盘被截断了")
+        ref = sb.ReadAsArray(xoff, yoff, w, h)
+        if ref is None:
+            raise RuntimeError(f"cannot read source for verification: {vrt_path}")
+        if not np.array_equal(np.asarray(got), np.asarray(ref)):
+            raise RuntimeError(
+                f"materialised raster disagrees with source at {corner} corner "
+                f"({out_path}) —— 产物不是源的忠实副本")
+
+    # --- overview 健全性 ---
+    # BuildOverviews 在写失败时照样返回 0,建出来的层是**空的**:全分辨率读全对、
+    # 降采样读全 0。低层级瓦片走的正是降采样路径,于是整片地形塌成海平面平板而
+    # 作业报 completed。这里拿同一个窗口的两种读法对照 —— 全分辨率有起伏而降采样
+    # 塌成常数,就是 overview 坏了。(源数据本身是常数的区域跳过,不误报。)
+    if dst.GetRasterBand(1).GetOverviewCount() > 0:
+        pw = min(512, dst.RasterXSize)
+        ph = min(512, dst.RasterYSize)
+        gdal.ErrorReset()
+        full = db.ReadAsArray(0, 0, pw, ph)
+        small = db.ReadAsArray(0, 0, pw, ph,
+                               buf_xsize=max(1, pw // 8), buf_ysize=max(1, ph // 8))
+        _raise_on_gdal_error("overview probe", out_path)
+        if full is None or small is None:
+            raise RuntimeError(f"materialised raster overview probe failed "
+                               f"({out_path})")
+        full_a, small_a = np.asarray(full), np.asarray(small)
+        if full_a.min() != full_a.max() and small_a.min() == small_a.max():
+            raise RuntimeError(
+                f"materialised raster has empty overviews ({out_path}): "
+                f"full-res range [{full_a.min()}, {full_a.max()}] but the "
+                f"downsampled read is constant {small_a.min()} —— "
+                "低层级瓦片会整片塌成平板")
+
+
+def _gdal_stage_callback(stage_cb, phase: str):
+    """把 GDAL 的原生进度回调适配成 stage_cb(phase, fraction)。
+
+    ⚠️ **回调里绝不能抛异常**。实测(GDAL 3.8.4):回调抛出时 GDAL 把它当成
+    「用户请求中止」—— 打印 `ERROR 9: User terminated CreateCopy()`、
+    `gdal.Translate` 返回 **None**、产物文件被删掉。也就是说一次 emit 故障
+    (客户端断开等)就能把整个切片搞成失败。所以这里整个包死。
+
+    返回 0 才是「中止」的正常表达方式;这里恒返回 1(继续)。
+    """
+    if stage_cb is None:
+        return None
+
+    def _cb(complete, message, cb_data):
+        try:
+            stage_cb(phase, float(complete))
+        except Exception:
+            pass
+        return 1
+
+    return _cb
+
+
+def build_input_raster(inputs: list[str], work_dir: str | None = None,
+                       stage_cb=None) -> str:
+    """把切片输入归一成**单幅**栅格路径。单幅直通,多幅物化。
+
+    ## 为什么多幅必须物化,而不是交一个 VRT 出去
+
+    ASTER 源 GeoTIFF 自带 8 层内嵌 overview,倍率是 2/3/4/**7.98**/**8.98**/
+    15.9/63/80 —— 不是 2 的幂。降采样读取时 GDAL 会自动切到 overview,而多源 VRT
+    要先按 source 切分请求再分别转发,每段的 win/buf 比值不再整齐,挑中的 overview
+    层随读窗口漂移。相邻瓦片的读窗口本来就不同(南瓦片 win=664/buf=83、北瓦片
+    win=656/buf=82),于是同一个经纬点被采成不同高程。
+
+    实测(6 幅天山 ASTER):z10 有 16 对南北相邻瓦片公共边对不上,**最大 50.9 m**;
+    同一条纬线在 z11/z12 却精确一致(那两层 scale=4/2,够不到 8x 与 9x 这对挨得近的
+    档位)。单幅路径免疫 —— scale=8/16/32 三档、带与不带 overview 各四个窗口,
+    全部 0.0 m。物化后同一批瓦片 z9/z10/z11 共 1063 对公共边全部归零。
+
+    GDAL 侧无解:`OVERVIEW_LEVEL=NONE` 只关掉 VRT **自己**的虚拟 overview,
+    源仍由 VRTSimpleSource 转发后自行选层(实测差值纹丝不动,仍是 19 m)。
+
+    ## 为什么物化之后还要补 overview
+
+    Translate 默认不建 overview,低层级瓦片会退化成全分辨率读取:实测 z6 从
+    0.2 ms/张掉到 13.0 ms/张。补上 2 的幂 overview 后反而快过现状(裸 VRT 2.3 ms)。
+
+    ## 代价
+
+    切片期间多占一份磁盘。实测 6 幅 ASTER(Int16,源 118 MB):物化 + 8 层 overview
+    共 91.8 MB(源的 78%),耗时 **13.6 秒**。
+    ⚠️ 78% 这个比例是 **Int16 + DEFLATE** 的:默认数据集 Copernicus GLO-30 是
+    **Float32**,实测物化后约为源的 **1.9 倍** —— 按最坏情况给磁盘留量。
+    产物由 build_terrain 的 finally 删除;本函数自身失败时在这里就地删除。
+    """
     if len(inputs) == 1:
         return inputs[0]
-    if vrt_path is None:
-        import tempfile
 
-        fd, vrt_path = tempfile.mkstemp(suffix=".vrt", prefix="cesiumlab_terrain_")
-        os.close(fd)
-    opts = gdal.BuildVRTOptions(resampleAlg="bilinear", addAlpha=False)
-    vrt = gdal.BuildVRT(vrt_path, inputs, options=opts)
-    if vrt is None:
-        raise RuntimeError(f"gdal.BuildVRT failed for inputs={inputs}")
-    vrt.FlushCache()
-    vrt = None
-    return vrt_path
+    import tempfile
+    import time
+
+    # 这一步是纯静默的等待：6 幅 ASTER 实测 13.6 秒,大任务到分钟级。不出声的话
+    # 切片入口看起来就是卡住了(contour 的 warp 同理,那边早就有这条日志)。
+    logger.info(f"Terrain: 合并 {len(inputs)} 个 DEM 为单文件"
+                f"(多源 VRT 会开高程接缝),大区域可能耗时数十秒...")
+    _t0 = time.time()
+
+    # 文件名里带 pid,对齐 download_engine 的 `*.part.<pid>.<id>` 形态。这不是
+    # 装饰:正常路径和失败路径都会删它,但 SIGKILL/关窗盖不住,残留只能靠下次启动
+    # 清扫(task_cleanup.sweep_startup_residue)。而那边唯一可靠的归属判据就是 pid
+    # —— mtime 判据在这里近乎无效:物化产物写完 mtime 就冻住,而切片可以再跑几
+    # 小时,晚起的第二个实例会认为它「早于我启动」而放行删除。
+    fd, out_path = tempfile.mkstemp(
+        suffix=".tif", prefix=f"cesiumlab_terrain_{os.getpid()}_", dir=work_dir)
+    os.close(fd)
+    # mkstemp 建的空文件会让 Translate 报「已存在」,先让位
+    try:
+        os.remove(out_path)
+    except OSError:
+        pass
+
+    vrt_path = out_path + ".vrt"
+    try:
+        try:
+            opts = gdal.BuildVRTOptions(resampleAlg="bilinear", addAlpha=False)
+            vrt = gdal.BuildVRT(vrt_path, inputs, options=opts)
+            if vrt is None:
+                raise RuntimeError(f"gdal.BuildVRT failed for inputs={inputs}")
+            vrt.FlushCache()
+            vrt = None
+
+            # 物化。失败必须响 —— 悄悄交出坏产物就是一份平板地形,而任务标记成功、
+            # 瓦片全 200、前端一条错误都没有。光看返回值不够,见 _raise_on_gdal_error。
+            #
+            # BIGTIFF=IF_SAFER 不能省:GTiff 的默认 IF_NEEDED 只在**不压缩**时按未压缩
+            # 体积判断是否升级 BigTIFF,一旦带了 COMPRESS 就一律按经典 TIFF(4 GiB 上限)
+            # 建文件。实测 ~92 幅 Copernicus granule(约 10°×10°)就到顶,而超出部分被
+            # 静默丢弃、两道返回值闸门一个都不触发。contour_engine 的两处 Translate
+            # 早就写了 IF_SAFER,这里对齐它。
+            gdal.ErrorReset()
+            ds = gdal.Translate(
+                out_path, vrt_path, format="GTiff",
+                creationOptions=["TILED=YES", "COMPRESS=DEFLATE", "ZLEVEL=1",
+                                 "BIGTIFF=IF_SAFER", "NUM_THREADS=ALL_CPUS"],
+                callback=_gdal_stage_callback(stage_cb, "merge"))
+            if ds is None:
+                raise RuntimeError(
+                    f"gdal.Translate failed to materialise {len(inputs)} inputs "
+                    f"into {out_path}")
+            width, height = ds.RasterXSize, ds.RasterYSize
+            ds.FlushCache()
+            ds = None
+            _raise_on_gdal_error("gdal.Translate", out_path)
+
+            factors = _overview_factors(width, height)
+            if factors:
+                ds = gdal.Open(out_path, gdal.GA_Update)
+                if ds is None:
+                    raise RuntimeError(
+                        f"cannot reopen materialised raster {out_path}")
+                gdal.ErrorReset()
+                rc = ds.BuildOverviews(
+                    "AVERAGE", factors,
+                    callback=_gdal_stage_callback(stage_cb, "overview"))
+                ds = None
+                if rc != 0:
+                    raise RuntimeError(f"BuildOverviews failed on {out_path}")
+                _raise_on_gdal_error("BuildOverviews", out_path)
+
+            _verify_materialised(out_path, vrt_path)
+        finally:
+            try:
+                os.remove(vrt_path)
+            except OSError:
+                pass
+    except BaseException:
+        # 写盘之后的任何失败都会留下一份与源同量级的半成品。清理挂在 build_terrain
+        # 的 finally 上,而那个 finally 够不着 —— build_input_raster 是在它的 try 之外
+        # 调用的,抛出时 input_path 根本没被赋值。而最可能触发失败的恰恰是磁盘不足:
+        # 用户看到任务失败就重试,每重试一次再多留一份,可用空间被自己的失败残骸吃光。
+        for path in (out_path, out_path + ".ovr", out_path + ".aux.xml"):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+    try:
+        size_mb = os.path.getsize(out_path) / 1048576
+    except OSError:
+        size_mb = 0.0
+    logger.info(f"Terrain: DEM 合并完成, 耗时 {time.time() - _t0:.1f}s, "
+                f"{size_mb:.1f} MB (切片结束后自动删除)")
+    return out_path
 
 
 class DemSampler:
@@ -836,6 +1104,7 @@ def build_terrain(
     nodata: float | None = None,
     workers: int = 0,
     progress_cb=None,
+    stage_cb=None,
     stop_flag=None,
     triangulator: str = "auto",
     max_error_k: float = DEFAULT_MAX_ERROR_K,
@@ -843,7 +1112,15 @@ def build_terrain(
 ) -> dict:
     # progress_cb(done, total): 逐瓦片进度回调（done = rendered+failed，terrain
     # 没有 contour 的 skipped 态），串行/并行每 tally 一次调一次；调用方自行
-    # 节流（范本：contour_engine.build_contour_tiles）。stop_flag: threading.Event
+    # 节流（范本：contour_engine.build_contour_tiles）。
+    #
+    # stage_cb(phase, fraction): 瓦片循环**之前**那些耗时阶段的进度，phase ∈
+    # {'merge','overview'}，fraction 是 0..1。为什么不能复用 progress_cb：多幅
+    # 输入要先物化成单文件（实测 6 幅 13.6 秒、大任务分钟级），而那发生在 total
+    # 算出来**之前** —— total 要靠 sampler，sampler 要靠物化产物，物理上没有分母。
+    # 调用方同样要自行节流：GDAL 的原生回调频率不受这里控制。
+    #
+    # stop_flag: threading.Event
     # 式协作停止 —— 串行每瓦片检查、并行批间检查；置位后提前收尾（已生成的
     # 瓦片保留，layer.json/meta.json 照常按已处理部分写出）。
     #
@@ -895,12 +1172,15 @@ def build_terrain(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    input_path = build_input_vrt(inputs)
-    # 多输入时 build_input_vrt 落在 tempfile.mkstemp 的临时 .vrt，此前从不删除，
+    # 物化产物落在输出目录旁边而不是系统临时目录：它和源数据同量级（6 幅 ASTER
+    # 约 92 MB，大任务可到 GB），/tmp 在部分部署里是内存盘，塞不下。
+    input_path = build_input_raster(inputs, work_dir=str(out.parent),
+                                    stage_cb=stage_cb)
+    # 多输入时 build_input_raster 落在 tempfile.mkstemp 的临时文件，此前从不删除，
     # 每次多输入切片泄漏一个临时文件（M18）。删除时机必须在进程池消费完之后
     # （worker 在 initializer 里各自打开这个文件），所以挂在整个切片过程的
     # finally 上，best-effort 删除。
-    temp_vrt = input_path if input_path not in inputs else None
+    temp_input = input_path if input_path not in inputs else None
     try:
         sampler = DemSampler(input_path, nodata=nodata)
         scheme = GeographicTilingScheme(tile_size=tile_size)
@@ -954,6 +1234,14 @@ def build_terrain(
                 available_per_level.append(
                     [{"startX": a0, "startY": b0, "endX": a1, "endY": b1}])
             total += (x1 - x0 + 1) * (y1 - y0 + 1)
+
+        # total 到这里就已知了，而 progress_cb 要等**第一张瓦片编完**才发出第一
+        # 报 —— 大任务的第一张可能要好几秒，期间前端只能显示 0/0。先上报一次。
+        if progress_cb is not None:
+            try:
+                progress_cb(0, total)
+            except Exception:
+                logger.debug("progress_cb(0, total) failed", exc_info=True)
 
         def _iter_tasks():
             for z, x0, x1, y0, y1, _ix0, _ix1, _iy0, _iy1 in _tile_ranges():
@@ -1097,16 +1385,24 @@ def build_terrain(
         return {"total": total, "rendered": done, "failed": failed,
                 "chose_martini": chose["martini"], "chose_grid": chose["grid"]}
     finally:
-        if temp_vrt:
-            # 串行路径的全局 worker sampler 可能还持有该 .vrt 的句柄（Windows 上
+        if temp_input:
+            # 串行路径的全局 worker sampler 可能还持有该文件的句柄（Windows 上
             # 打开中的文件删不掉），先释放再删；并行路径 pool 退出后 worker 已回收。
             if _WORKER_SAMPLER is not None:
                 _WORKER_SAMPLER.ds = None
                 _WORKER_SAMPLER.band = None
-            try:
-                os.remove(temp_vrt)
-            except OSError as e:
-                logger.warning(f"Failed to remove temp VRT {temp_vrt}: {e}")
+            # 当前路径下 overview 是**内嵌**的：GA_Update 打开 GTiff 再
+            # BuildOverviews 会写进 .tif 本身（实测 GetFileList 只返回一个文件）。
+            # 所以下面 .ovr / .aux.xml 两条纯属防御 —— 改成只读模式打开、或换个
+            # 驱动，GDAL 才会另写外部边车。变异测试里删掉它们不会让任何用例变红，
+            # 这是如实的：它们当前没有可观察行为。
+            for path in (temp_input, temp_input + ".ovr", temp_input + ".aux.xml"):
+                if not os.path.exists(path):
+                    continue
+                try:
+                    os.remove(path)
+                except OSError as e:
+                    logger.warning(f"Failed to remove temp input {path}: {e}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1132,6 +1428,13 @@ def main(argv: list[str] | None = None) -> int:
         if os.path.isdir(spec):
             for ext in ("*.tif", "*.tiff", "*.img", "*.hgt", "*.vrt"):
                 inputs.extend(sorted(glob.glob(os.path.join(spec, ext))))
+            # 排掉自己的中间产物：物化件就落在 work_dir（= 输出目录的父级）,
+            # 而 `-i <目录>` 常常指向同一片区域。SIGKILL 留下的残留会被当成
+            # 一幅 DEM 重新吃进去 —— 它是**上一次全部输入的合并结果**,再合一次
+            # 等于把整片地形叠加两遍。DEM 任务侧躲过这一劫只是因为
+            # list_dem_tifs 匹配的是 *_dem.tif / *_DEM.tif。
+            inputs = [p for p in inputs
+                      if not os.path.basename(p).startswith("cesiumlab_terrain_")]
         elif any(c in spec for c in "*?["):
             inputs.extend(sorted(glob.glob(spec)))
         else:
