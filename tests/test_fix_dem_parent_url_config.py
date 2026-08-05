@@ -54,6 +54,19 @@ def _seed_completed_task(db, output_path):
         conn.close()
 
 
+def _make_base_terrain(tmp_path):
+    """造一份最小 base_z8 —— 闸门要求 base 真的存在才写 parentUrl。
+
+    2026-08-05：base 不可达时 manager 会返回 None 而不是写一个 404 的 URL
+    （见 layer_json.parent_url_if_base_available）。这些用例要测的是「配置值
+    被正确使用」，所以先把前提摆上；「base 不存在」那条另有专门用例。
+    """
+    base = tmp_path / "downloads" / "terrain" / "base_z8"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "layer.json").write_text('{"tilejson":"1.0"}', encoding="utf-8")
+    return base
+
+
 def _no_op_tiling(monkeypatch, dtm):
     monkeypatch.setattr(
         dtm.DemTaskManager, "_run_tiling_job",
@@ -63,6 +76,7 @@ def _no_op_tiling(monkeypatch, dtm):
 
 def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
     db, dtm = _setup(monkeypatch, tmp_path)
+    _make_base_terrain(tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
     _no_op_tiling(monkeypatch, dtm)
     task_id = _seed_completed_task(db, tmp_path / "out")
@@ -74,13 +88,32 @@ def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
 
 def test_parent_url_uses_config_value(monkeypatch, tmp_path):
     db, dtm = _setup(monkeypatch, tmp_path)
+    _make_base_terrain(tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
     _no_op_tiling(monkeypatch, dtm)
     task_id = _seed_completed_task(db, tmp_path / "out")
 
-    custom = "http://terrain.internal:9000/terrain/base/layer.json"
-    mgr.config.set("terrain_base_parent_url", custom)
+    mgr.config.set("terrain_base_parent_url",
+                   "http://terrain.internal:9000/terrain/base/layer.json")
 
     mgr.start_tiling(task_id)
 
-    assert mgr.get_tiling_job(task_id)["parent_url"] == custom
+    # 配置值被采用，且尾部的 /layer.json 在写入前就被剥掉
+    assert mgr.get_tiling_job(task_id)["parent_url"] == "http://terrain.internal:9000/terrain/base"
+
+
+def test_parent_url_is_none_when_base_terrain_was_never_built(monkeypatch, tmp_path):
+    """没建 base_z8（默认装机的常态）时必须不写 parentUrl。
+
+    写一个指向 404 的 parentUrl 会让 Cesium 塞假 heightmap 图层并污染共享
+    builder，本任务自己的 quantized-mesh 瓦片也按 heightmap 解析 ——
+    实测高程 -859 / -956 / -744（真值 2672 / 1086 / 4154），且全程不报错。
+    """
+    db, dtm = _setup(monkeypatch, tmp_path)          # 刻意不建 base
+    mgr = dtm.DemTaskManager(socketio=None)
+    _no_op_tiling(monkeypatch, dtm)
+    task_id = _seed_completed_task(db, tmp_path / "out")
+
+    mgr.start_tiling(task_id)
+
+    assert mgr.get_tiling_job(task_id)["parent_url"] is None

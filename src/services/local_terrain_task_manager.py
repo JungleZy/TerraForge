@@ -20,8 +20,9 @@ from src.core.config import Config
 from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import validate_zoom
-from src.services.task_cleanup import remove_task_dir_if_safe
+from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+from src.services.terrain_tiling.layer_json import parent_url_if_base_available
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +31,24 @@ _ALLOWED_EXT = (".tif", ".tiff")
 # werkzeug FileStorage 的流）。流式写盘，避免把大上传全量读进内存（M5）。
 UploadFile = Tuple[str, Any]
 
-def _parent_layer_url() -> str:
-    """layer.json 的 parentUrl（级联到全局 base terrain）。
+def _parent_layer_url() -> str | None:
+    """layer.json 的 parentUrl（级联到全局 base terrain）；base 不可用时返回 None。
 
     配置键与 DEM 管线共用：config 表的 terrain_base_parent_url（完整 URL，
     见 src/core/database.py DEFAULT_CONFIGS），未配置时回退 localhost:5000 保持
     既有行为。此前两处硬编码，非 5000 端口/反代部署下 parentUrl 必 404（M20）。
+
+    两道闸门缺一不可（见 layer_json）：目录形式 + base 真的存在。任一不满足
+    都是 404，而 Cesium 对 404 的处理是塞假 heightmap 图层并污染共享 builder
+    ⇒ 本任务自己的 quantized-mesh 瓦片也按 heightmap 解析，高程全错且不报错。
+    全球 base 是可选产物，「没建」是默认装机的常态，所以必须能返回 None。
     """
-    # 目录形式，不能带 /layer.json（见 layer_json.normalize_parent_url）。
-    return ConfigManager().get("terrain_base_parent_url", "") or (
-        "http://localhost:5000/terrain/base"
+    cfg = ConfigManager()
+    base_dir = resolve_stored_output_dir(
+        cfg.get("terrain_global_base_path", "./downloads/terrain/base_z8"))
+    return parent_url_if_base_available(
+        cfg.get("terrain_base_parent_url", "") or "http://localhost:5000/terrain/base",
+        base_dir,
     )
 
 

@@ -20,7 +20,9 @@ from src.services.geo_validation import require_absolute_output_dir, resolve_out
 from src.services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
+from src.services.task_cleanup import resolve_stored_output_dir
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+from src.services.terrain_tiling.layer_json import parent_url_if_base_available
 
 logger = logging.getLogger(__name__)
 
@@ -306,11 +308,18 @@ class DemTaskManager:
 
         # M20: layer.json 的 parentUrl 指向全局 base，写死 localhost:5000 会在
         # 非 5000 端口/反代部署下 404 —— 可配置，默认值保持现状兼容。
-        # 目录形式，不能带 /layer.json（见 layer_json.normalize_parent_url —— 
-        # 带了会让整个 provider 降级成 heightmap，高程全错且不报错）。
-        # patch_layer_json_parent 还会再规整一次，兜住存量 config 表里的坏值。
-        parent_url = self.config.get("terrain_base_parent_url", "") or (
-            "http://localhost:5000/terrain/base"
+        #
+        # 两道闸门缺一不可（见 layer_json）：目录形式（带 /layer.json 会让 Cesium
+        # 请求 .../layer.json/layer.json）+ base 真的存在。任一不满足都是 404，
+        # 而 Cesium 对 404 的处理是塞假 heightmap 图层并污染共享 builder ⇒
+        # 本任务自己的 quantized-mesh 瓦片也按 heightmap 解析，高程全错且不报错。
+        # 全球 base 是可选产物，「没建」是默认装机的常态，所以这里必须放行 None。
+        base_dir = resolve_stored_output_dir(
+            self.config.get("terrain_global_base_path", "./downloads/terrain/base_z8"))
+        parent_url = parent_url_if_base_available(
+            self.config.get("terrain_base_parent_url", "")
+            or "http://localhost:5000/terrain/base",
+            base_dir,
         )
 
         maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")

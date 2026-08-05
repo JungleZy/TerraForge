@@ -131,3 +131,78 @@ def test_default_parent_url_is_a_directory_everywhere_it_is_written():
 
     all_urls = set().union(*found.values())
     assert len(all_urls) == 1, f"三处默认值不一致：{found}"
+
+
+# ---------------------------------------------------------------------------
+# base 不可达时必须【不写】parentUrl
+#
+# 2026-08-05 的第一版修复只处理了「URL 带 /layer.json」这一条触发路径，
+# 但根因是「parentUrl 指向一个不可达的资源」—— base_z8 从来没建过的装机上，
+# 目录形式的 URL 照样 404、照样降级。实测（base_z8 不存在，parentUrl 已是
+# 正确的 .../terrain/base）：末层 isHeightmap=true、heightmapStructure 有值、
+# 高程 -859 / -956 / -744（真值 2672/1086/4154）、瓦片类型 HeightmapTerrainData、
+# 法线无。也就是说第一版修复对**默认装机**毫无帮助。
+# ---------------------------------------------------------------------------
+
+def test_parent_url_is_dropped_when_the_base_terrain_is_missing(tmp_path):
+    """base 目录不存在 / 没有 layer.json 时必须返回 None（= 不写 parentUrl）。
+
+    写一个指向 404 的 parentUrl 比不写更糟：Cesium 拿不到它时**不报错**，
+    而是塞一个假的 heightmap-1.0 图层，并把 heightmapStructure 写在共享
+    builder 上 —— 于是本任务自己的 quantized-mesh 瓦片也按 heightmap 解析。
+    不写 parentUrl 则一切正常（实测高程 2656.6/1092.3/4154.2，法线可用）。
+    """
+    from src.services.terrain_tiling.layer_json import parent_url_if_base_available
+
+    url = "http://localhost:5000/terrain/base"
+
+    # 目录压根不存在
+    assert parent_url_if_base_available(url, tmp_path / "nope") is None
+
+    # 目录在但没有 layer.json（切了一半 / 手工建了空目录）
+    empty = tmp_path / "base_empty"
+    empty.mkdir()
+    assert parent_url_if_base_available(url, empty) is None
+
+    # layer.json 是目录而不是文件
+    weird = tmp_path / "base_weird"
+    (weird / "layer.json").mkdir(parents=True)
+    assert parent_url_if_base_available(url, weird) is None
+
+    # base_dir 传 None（配置缺失）
+    assert parent_url_if_base_available(url, None) is None
+
+
+def test_parent_url_is_kept_and_normalized_when_the_base_exists(tmp_path):
+    """base 可用时才写，且仍然要做目录规整。"""
+    from src.services.terrain_tiling.layer_json import parent_url_if_base_available
+
+    base = tmp_path / "base_z8"
+    base.mkdir()
+    (base / "layer.json").write_text('{"tilejson":"1.0"}', encoding="utf-8")
+
+    assert parent_url_if_base_available(
+        "http://localhost:5000/terrain/base", base) == "http://localhost:5000/terrain/base"
+    # 存量 config 表里的坏值仍然要被剥掉
+    assert parent_url_if_base_available(
+        "http://localhost:5000/terrain/base/layer.json", base) == "http://localhost:5000/terrain/base"
+    # 空 URL 仍然是不写
+    assert parent_url_if_base_available("", base) is None
+    assert parent_url_if_base_available(None, base) is None
+
+
+def test_both_managers_gate_parent_url_on_base_availability():
+    """两个 manager 都必须走这个闸门，而不是各自直接读配置值。
+
+    DEM 与 local terrain 是两条独立管线，只修一条 = 另一条仍然产出高程全错的
+    地形，而且失败是静默的（作业 completed、瓦片 200、控制台无报错）。
+    """
+    root = Path(__file__).resolve().parent.parent
+    for rel in ("src/services/dem_task_manager.py",
+                "src/services/local_terrain_task_manager.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "parent_url_if_base_available" in text, (
+            f"{rel} 没有走 base 可用性闸门 —— base 不存在时会写出一个 404 的 "
+            f"parentUrl，导致整个 provider 降级成 heightmap")
+        assert "terrain_global_base_path" in text, (
+            f"{rel} 没有读 terrain_global_base_path，无从判断 base 是否存在")

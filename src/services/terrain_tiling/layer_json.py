@@ -35,6 +35,42 @@ def normalize_parent_url(parent_url: str | None) -> str | None:
     return url or None
 
 
+def parent_url_if_base_available(parent_url: str | None,
+                                 base_dir: Path | None) -> str | None:
+    """base 地形不可达时返回 None（= 不写 parentUrl）；可达时返回规整后的 URL。
+
+    **写一个指向 404 的 parentUrl，比根本不写更糟。** Cesium 拿不到 parentUrl
+    指向的 layer.json 时不报错，而是塞一个假的 heightmap-1.0 图层，并把
+    heightmapStructure 写在**共享的 builder** 上 —— 于是本任务自己的
+    quantized-mesh 瓦片也按 heightmap 解析。
+
+    这条闸门补的是 normalize_parent_url 漏掉的另一半：URL 格式只是两个触发
+    条件之一，根因是「指向不可达资源」。全球 base 是**可选**产物
+    （docs/reference/terrain/global-base-build.md，需自备几 GB 到上百 GB 的全球
+    DEM），所以「没建 base」才是默认装机的常态。
+
+    实测（base_z8 不存在，parentUrl 已是正确的目录形式 .../terrain/base）：
+
+        末层 isHeightmap  true          瓦片类型      HeightmapTerrainData
+        heightmapStructure 有值         法线          无
+        高程              -859.1 / -956.4 / -743.7   （真值 2672 / 1086 / 4154）
+
+    去掉 parentUrl 后同一批瓦片：高程 2656.6 / 1092.3 / 4154.2、法线可用。
+
+    判据用**本地目录里有没有 layer.json**，不去请求那个 URL：切片是服务端行为，
+    此刻 Flask 未必起着（默认 URL 就指向 localhost:5000），网络探测既慢又会
+    引入不确定性；而 base 是本机磁盘上的产物，存在性是可靠的本地事实。
+    """
+    if base_dir is None:
+        return None
+    try:
+        if not (Path(base_dir) / "layer.json").is_file():
+            return None
+    except OSError:
+        return None
+    return normalize_parent_url(parent_url)
+
+
 def patch_layer_json_parent(layer_json_path: Path, parent_url: str | None) -> None:
     data = json.loads(layer_json_path.read_text(encoding="utf-8"))
     normalized = normalize_parent_url(parent_url)

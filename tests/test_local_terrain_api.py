@@ -21,6 +21,19 @@ def _reload(monkeypatch, tmp_path):
     return db, mgr_mod
 
 
+def _make_base_terrain(tmp_path):
+    """造一份最小 base_z8 —— 闸门要求 base 真的存在才写 parentUrl。
+
+    2026-08-05：base 不可达时 manager 会返回 None 而不是写一个 404 的 URL
+    （见 layer_json.parent_url_if_base_available）。这些用例要测的是「配置值
+    被正确使用」，所以先把前提摆上；「base 不存在」那条另有专门用例。
+    """
+    base = tmp_path / "downloads" / "terrain" / "base_z8"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "layer.json").write_text('{"tilejson":"1.0"}', encoding="utf-8")
+    return base
+
+
 def test_create_task_saves_files_and_rows(monkeypatch, tmp_path):
     db, mgr_mod = _reload(monkeypatch, tmp_path)
     mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
@@ -568,6 +581,7 @@ def test_list_tasks_limit_clamped(monkeypatch, tmp_path):
 def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
     """M20: 未配置时 parent_url 保持 localhost:5000 既有行为。"""
     db, mgr_mod = _reload(monkeypatch, tmp_path)
+    _make_base_terrain(tmp_path)
     mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
     monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
 
@@ -582,6 +596,7 @@ def test_parent_url_from_config_key(monkeypatch, tmp_path):
     from src.services.config_manager import ConfigManager
 
     db, mgr_mod = _reload(monkeypatch, tmp_path)
+    _make_base_terrain(tmp_path)
     ConfigManager().set(
         "terrain_base_parent_url", "https://tiles.example.com:8443/terrain/base/layer.json"
     )
@@ -589,12 +604,14 @@ def test_parent_url_from_config_key(monkeypatch, tmp_path):
     monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
 
     task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
-    assert mgr.get_task(task_id)["parent_url"] == "https://tiles.example.com:8443/terrain/base/layer.json"
+    # 配置值被采用，尾部 /layer.json 在写入前被剥掉
+    assert mgr.get_task(task_id)["parent_url"] == "https://tiles.example.com:8443/terrain/base"
 
 
 def test_start_tiling_parent_url_fallback_uses_config(monkeypatch, tmp_path):
     """M20: 存量行 parent_url 为 NULL 时，start_tiling 的回退值也走配置键。"""
     db, mgr_mod = _reload(monkeypatch, tmp_path)
+    _make_base_terrain(tmp_path)
     mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
 
     captured = {}
@@ -627,3 +644,18 @@ def test_start_tiling_parent_url_fallback_uses_config(monkeypatch, tmp_path):
     if th:
         th.join(timeout=5)
     assert captured["parent_url"] == "http://localhost:5000/terrain/base"
+
+
+def test_parent_url_is_none_when_base_terrain_was_never_built(monkeypatch, tmp_path):
+    """没建 base_z8（默认装机的常态）时必须不写 parentUrl。
+
+    与 DEM 管线同一条闸门。两条管线独立，只修一条 = 另一条仍然产出高程全错
+    的地形，而且失败是静默的（作业 completed、瓦片 200、控制台无报错）。
+    """
+    db, mgr_mod = _reload(monkeypatch, tmp_path)     # 刻意不建 base
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
+
+    assert mgr.get_task(task_id)["parent_url"] is None
