@@ -65,7 +65,11 @@ DEFAULT_CONFIGS = [
     ('earthdata_password', ''),
     # Terrain defaults
     ('terrain_global_base_path', './downloads/terrain/base_z8'),
-    ('terrain_global_base_maxzoom', '8'),
+    # 随包分发的 base 实际只到 z7（z8 一层占 76% 体积、顶点间距 1.2 km 只在贴近看
+    # DEM 外围时才用得上）。⚠️ 这个键**全项目零消费** —— 没有任何代码读它，base 的
+    # 层级由 layer.json 的 available 决定。保留是为了兼容存量 config 行；真要用它
+    # 之前先确认有没有第二处事实来源，否则又是一个「改了没反应」的假旋钮。
+    ('terrain_global_base_maxzoom', '7'),
     ('terrain_local_maxzoom', '14'),
     # 必须是**目录**：Cesium 会 appendForwardSlash() 后再拼 layer.json。
     # 带 /layer.json 会让它请求 .../layer.json/layer.json 得 404，而它的 404
