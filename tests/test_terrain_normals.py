@@ -4,7 +4,11 @@
 用假 sampler（monkeypatch DemSampler）绕开 GDAL。
 """
 
+import gzip
+import json
+import math
 import os
+import struct
 import sys
 
 import numpy as np
@@ -15,8 +19,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import src.services.terrain_tiling.cesiumlab_terrain as ct
 from src.services.terrain_tiling.cesiumlab_terrain import (
     GeographicTilingScheme,
+    _oct_encode,
     _tile_normals,
     _vertex_normals_ecef,
+    encode_quantized_mesh,
     lonlat_to_ecef,
 )
 
@@ -357,3 +363,409 @@ def test_build_terrain_turns_normals_on_by_default(tmp_path, monkeypatch):
     ct.build_terrain(["fake.tif"], str(tmp_path), min_level=0, max_level=1,
                      tile_size=17, workers=1)
     assert {t[-1] for t in seen} == {True}
+
+
+# ---------------------------------------------------------------------------
+# oct 编码与 quantized-mesh 的 Oct-Encoded Per-Vertex Normals 扩展段
+# （extensionId=1，每顶点 2 字节）
+#
+# 这一段是法线**第一次**变成落盘字节。扩展段写错在 Cesium 里几乎全是静默的：
+# 解析循环（Cesium.js 的 lFt）拿到 extensionId 后是 `H=new Uint8Array(t,a,v*2)`
+# —— 长度取的是 **vertexCount*2**，根本不看 extensionLength，然后 `a+=Ce` 继续
+# 找下一个扩展。于是 extensionLength 写错时法线照常解出来、循环只是跳到一个错位
+# 的地方，而扩展段又恰好是流的最后一段，循环 `a<byteLength` 一判就退出 ——
+# **不报错、不显示异常**。extensionId 写错则整段被忽略，同样一声不吭。
+# 所以这里的断言必须自己按 spec 走完整条流（下面的 _split_quantized_mesh），
+# 不能指望"Cesium 不抛异常"当验收标准。
+# ---------------------------------------------------------------------------
+
+def _js_math_round(x: float) -> float:
+    """JavaScript 的 `Math.round`：平局一律进位（half-up），**不是** Python /
+    numpy 的 half-to-even。
+
+    这不是吹毛求疵：`toSNorm` 的输入 t=(p*0.5+0.5)*255 真的会精确落在 k+0.5 上
+    （用 nextafter 在 p=(2(k+0.5)/255)-1 附近扫，255 个 k 上共找到 2164 个这样的
+    double），其中 744 个 k 是偶数 —— 那些点上 numpy 的 half-to-even 往下取、
+    Cesium 往上取，差 1 个 LSB。下面 _TIE_VECTORS 就是这么找出来的。
+
+    x 在调用处恒为 [0,255]：floor 精确，t-floor(t) 也精确（结果最多 52 位），
+    所以这个写法与 ES 规范里 Math.round 的定义（"最近的整数，平局取更大的那个"）
+    对 x>=0 逐位相同。
+    """
+    f = math.floor(x)
+    return f + 1 if x - f >= 0.5 else f
+
+
+def _cesium_oct_encode_scalar(vec) -> tuple[int, int]:
+    """逐字转写 vendored CesiumJS 1.143.0 的 `AttributeCompression.octEncodeInRange(v, 255)`。
+
+    源文件 `static/vendor/cesium/1.143.0/Cesium.js`（压缩产物，原文照抄）：
+
+        octEncodeInRange=function(e,t,n){
+          n.x=e.x/(Math.abs(e.x)+Math.abs(e.y)+Math.abs(e.z)),
+          n.y=e.y/(Math.abs(e.x)+Math.abs(e.y)+Math.abs(e.z));
+          if(e.z<0){let i=n.x,o=n.y;
+            n.x=(1-Math.abs(o))*W.signNotZero(i),
+            n.y=(1-Math.abs(i))*W.signNotZero(o)}
+          return n.x=W.toSNorm(n.x,t),n.y=W.toSNorm(n.y,t),n}
+        signNotZero=function(e){return e<0?-1:1}
+        toSNorm=function(e,t){return Math.round((yt.clamp(e,-1,1)*.5+.5)*t)}
+        clamp=function(e,t,n){return e<t?t:e>n?n:e}
+
+    刻意写成标量 + 显式 if，一条对一条 —— 不抄实现的向量化布尔索引，否则这条
+    参考就只是实现的镜像。转写的正确性另有外部佐证：把上面四个函数**按字面量
+    从 Cesium.js 里切出来**丢进 Node 跑（不改一个字符），对 20012 个随机单位
+    向量 + 2164 个平局向量与本函数逐字节一致。
+    """
+    x, y, z = (float(c) for c in vec)
+    l1 = abs(x) + abs(y) + abs(z)
+    px = x / l1
+    py = y / l1
+    if z < 0:                                    # e.z<0 -> 折叠到八面体外圈
+        i, o = px, py
+        px = (1.0 - abs(o)) * (-1.0 if i < 0 else 1.0)
+        py = (1.0 - abs(i)) * (-1.0 if o < 0 else 1.0)
+
+    def to_snorm(e):
+        e = -1.0 if e < -1.0 else (1.0 if e > 1.0 else e)
+        return int(_js_math_round((e * 0.5 + 0.5) * 255.0))
+
+    return to_snorm(px), to_snorm(py)
+
+
+# 精确命中 toSNorm 平局（t == k+0.5 且 k 为偶数）的**单位**向量。
+# 来历：对每个偶数 k 解析求出 v=(-sinθ,0,cosθ) 使 x/L1 ≈ (2(k+0.5)/255)-1，
+# 再用 np.nextafter 在 θ 附近逐 double 扫，取第一个让 t 精确等于 k+0.5 的。
+# 右列是把 Cesium.js 里的 octEncodeInRange 原样丢进 Node 跑出来的结果 ——
+# 半局进位（k+1）。numpy 的 np.round 在这里会给 k，差 1 个 LSB。
+_TIE_VECTORS = [
+    ((-0.9461639849533561, 0.0, 0.3236876790629902), (33, 128)),
+    ((-0.9281245790205044, 0.0, 0.3722697487280044), (37, 128)),
+    ((-0.9065820610798457, 0.0, 0.4220295801578592), (41, 128)),
+    ((-0.8813220663961949, 0.0, 0.4725160476461526), (45, 128)),
+    ((-0.8522134181772287, 0.0, 0.5231943136910835), (49, 128)),
+]
+
+
+def _oct_decode(enc):
+    """spec 的解码算法（= Cesium 的 octDecodeInRange），用于往返验证。"""
+    f = enc.astype(np.float64) / 255.0 * 2.0 - 1.0
+    x, y = f[:, 0].copy(), f[:, 1].copy()
+    z = 1.0 - np.abs(x) - np.abs(y)
+    neg = z < 0
+    if neg.any():
+        ox, oy = x[neg].copy(), y[neg].copy()
+        x[neg] = (1.0 - np.abs(oy)) * np.where(ox >= 0, 1.0, -1.0)
+        y[neg] = (1.0 - np.abs(ox)) * np.where(oy >= 0, 1.0, -1.0)
+    v = np.stack([x, y, z], axis=1)
+    return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+
+def _random_unit_vectors(seed, count):
+    rng = np.random.default_rng(seed)
+    v = rng.normal(size=(count, 3))
+    return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+
+def test_oct_encode_matches_the_vendored_cesium_encoder_bit_for_bit():
+    """与 Cesium 的 AttributeCompression.octEncode **逐字节**相同。
+
+    参考实现是标量转写（见 _cesium_oct_encode_scalar 的 docstring，含 Node
+    交叉验证的来历）。样本刻意覆盖三类：随机方向、六个轴向与对角（z=0 与
+    z<0 的边界）、以及舍入平局向量。
+    """
+    axis = np.array([
+        [0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
+        [1.0, 1.0, 1.0], [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0],
+        [1.0, 0.0, -1.0], [0.0, 1.0, -1.0], [-1.0, 0.0, -1.0], [0.0, -1.0, -1.0],
+    ])
+    axis /= np.linalg.norm(axis, axis=1, keepdims=True)
+    ties = np.array([v for v, _ in _TIE_VECTORS])
+    sample = np.vstack([_random_unit_vectors(20260805, 5000), axis, ties])
+
+    got = _oct_encode(sample)
+    want = np.array([_cesium_oct_encode_scalar(v) for v in sample], dtype=np.uint8)
+    bad = np.where((got != want).any(axis=1))[0]
+    assert len(bad) == 0, (
+        f"{len(bad)}/{len(sample)} 个向量与 Cesium 不符，"
+        f"首例 v={sample[bad[0]]} got={got[bad[0]]} want={want[bad[0]]}")
+
+
+@pytest.mark.parametrize("vec,expected", _TIE_VECTORS)
+def test_oct_encode_rounds_ties_up_like_javascript_not_half_to_even(vec, expected):
+    """量化到 [0,255] 必须是 half-up，不能用 numpy 默认的 half-to-even。
+
+    期望值不是「录当前输出」：它是把 Cesium.js 里的 octEncodeInRange 按字面量
+    切出来丢进 Node 跑出来的。np.round 在这五个向量上全部低一个 LSB。
+    单独列一条（而不是靠上面那条大样本）是为了让失败信息直指舍入模式。
+    """
+    got = _oct_encode(np.array([vec]))
+    assert tuple(int(c) for c in got[0]) == expected
+
+
+def test_oct_encode_roundtrip_within_quantisation_error():
+    """oct16 往返误差应小于 2°（含 z<0 的下半球）。"""
+    v = _random_unit_vectors(9, 500)
+    assert (v[:, 2] < 0).sum() > 100, "样本里没有足够的下半球向量，测不到折叠分支"
+    back = _oct_decode(_oct_encode(v))
+    cos = np.clip((v * back).sum(1), -1, 1)
+    assert np.degrees(np.arccos(cos)).max() < 2.0, "oct16 往返误差应小于 2°"
+
+
+def test_oct_encode_output_is_two_bytes_per_vertex():
+    v = np.tile(np.array([[0.0, 0.0, 1.0]]), (7, 1))
+    enc = _oct_encode(v)
+    assert enc.shape == (7, 2)
+    assert enc.dtype == np.uint8
+
+
+def test_downward_normals_are_folded_not_mirrored_onto_the_upper_hemisphere():
+    """z<0 的折叠分支：删掉它，z 分量为负的法线会被解成正的。
+
+    八面体投影只有 (x,y) 两个数，上下半球靠「|x|+|y| 是否超过 1」区分。不折叠
+    时 |x|+|y|<1 恒成立，解码端算出的 z 恒为正 —— 一整个下半球被镜像到上半球，
+    往返夹角最坏 180°，而 Cesium 那边只表现为"那一块的明暗反了"，不报任何错。
+
+    ⚠️ 这里的 z 是 **ECEF 的 Z 轴**（指向北极），不是"地形朝下"：法线基本沿着
+    地心方向，所以 z 的符号约等于 sin(纬度)，与坡度几乎无关。实测同一块地形
+    搬到各纬度，z<0 的法线个数（33×33 网格）：lat-70 1089/1089、lat-42
+    1089/1089、lat-5 958/1089、lat0 495/1089、lat+5 10/1089、**lat+42 0/1089**。
+    也就是说折叠分支是**南半球专属**路径 —— 本项目手头的 DEM 全在 N28~N52
+    （实测天山 z9-12 共 36 张瓦片、304200 个法线分量，z<0 的一个都没有），
+    所以删掉这个分支在现有数据上**一点症状都没有**，得靠这条测试守。
+    """
+    down = np.array([[0.0, 0.0, -1.0],
+                     [0.3, 0.2, -0.9327379053088816],
+                     [-0.6, 0.5, -0.6244997998398398]])
+    down /= np.linalg.norm(down, axis=1, keepdims=True)
+    back = _oct_decode(_oct_encode(down))
+    assert (back[:, 2] < 0).all(), "下半球法线被折成朝上了 —— 折叠分支没生效"
+    cos = np.clip((down * back).sum(1), -1, 1)
+    assert np.degrees(np.arccos(cos)).max() < 2.0
+
+    # 对照：把 |x|+|y| 压回 1 以内（= 不折叠）确实会翻到上半球，证明上面不恒真
+    l1 = np.abs(down).sum(1, keepdims=True)
+    unfolded = np.round((np.clip(down[:, :2] / l1, -1, 1) * 0.5 + 0.5) * 255.0).astype(np.uint8)
+    assert (_oct_decode(unfolded)[:, 2] > 0).all()
+
+
+def _split_quantized_mesh(data: bytes):
+    """按 quantized-mesh-1.0 spec 从零走完一张瓦片，返回 (vertexCount, 扩展段列表)。
+
+    刻意**不复用** tests/test_fix_terrain_mesh_indices.py 的 `_parse` —— 那个
+    是给规则网格/自适应网格的顶点与索引段写的，它的 `assert off == len(data)`
+    在有扩展段之后本来就要改；两边共用一个解析器的话，解析器写错会同时骗过
+    两边。这里只走「跳到扩展段」所需的最少字段。
+
+    推进方式与 Cesium 的 lFt 完全一致：`a += extensionLength`。因此
+    extensionLength 算错时，最后那句"字节流没被精确消费完"会当场红 ——
+    Cesium 自己反而不会（它读法线用的是 vertexCount*2，不看这个字段）。
+    """
+    (vertex_count,) = struct.unpack_from("<I", data, 88)
+    off = 88 + 4 + 6 * vertex_count
+    width = 4 if vertex_count > 65536 else 2
+    off += (-off) % width                       # spec: IndexData 之前的对齐 padding
+    (tcount,) = struct.unpack_from("<I", data, off)
+    off += 4 + tcount * 3 * width
+    for _ in range(4):
+        (ecount,) = struct.unpack_from("<I", data, off)
+        off += 4 + ecount * width
+
+    exts = []
+    while off < len(data):
+        ext_id, ext_len = struct.unpack_from("<BI", data, off)
+        off += 5
+        exts.append((ext_id, data[off:off + ext_len]))
+        off += ext_len
+    assert off == len(data), f"字节流没被精确消费完（off={off} len={len(data)}）"
+    return vertex_count, exts
+
+
+def _flat_grid(n):
+    yy, xx = np.mgrid[0:n, 0:n]
+    return (100.0 + xx * 2.5 + yy * 1.25).astype(np.float64)
+
+
+def _varying_normals(n):
+    """每个格点一个**互不相同**的方向：子集取错就一定露馅。"""
+    yy, xx = np.mgrid[0:n, 0:n]
+    v = np.stack([(xx - n / 2) / n, (yy - n / 2) / n, np.ones_like(xx, dtype=float)], axis=-1)
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+def test_extension_segment_is_appended_with_correct_header():
+    """extension 段格式：unsigned char id(=1) + unsigned int length(小端) + payload。
+
+    小端不是随口说的：Cesium 读 extensionLength 用的是
+    `S.getUint32(a, littleEndianExtensionSize)`，而 littleEndianExtensionSize
+    在 layer.json 声明 "octvertexnormals" 时为 true（声明成老的 "vertexnormals"
+    才是大端）。
+    """
+    n = 17
+    h = _flat_grid(n)
+    nrm = np.zeros((n, n, 3))
+    nrm[..., 2] = 1.0
+
+    without = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h)
+    withn = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, normals=nrm)
+
+    # 扩展段是**追加**在原有字节流之后的，前面一个字节都不许动
+    assert withn[:len(without)] == without, "加法线改动了 header/顶点/索引/边索引段"
+    assert len(withn) == len(without) + 1 + 4 + 2 * n * n
+
+    ext_id, ext_len = struct.unpack_from("<BI", withn, len(without))
+    assert ext_id == 1, "oct-encoded normals 的 extensionId 必须是 1"
+    assert ext_len == 2 * n * n
+
+    vcount, exts = _split_quantized_mesh(withn)
+    assert vcount == n * n
+    assert [e[0] for e in exts] == [1]
+    assert exts[0][1] == _oct_encode(nrm.reshape(-1, 3)).tobytes()
+
+    assert _split_quantized_mesh(without)[1] == [], "没传 normals 却写了扩展段"
+
+
+def test_normals_follow_the_simplified_vertex_subset():
+    """传 mesh 时法线数量跟随保留顶点，**值仍来自满网格**（粗几何 + 精细法线）。
+
+    只断言数量是不够的：`nrm[:len(vert_idx)]` 这种取前 N 个的写法数量也对。
+    所以这里用逐格点互不相同的法线场，逐字节比对 `nrm[vert_idx]`。
+    """
+    from src.services.terrain_tiling.rtin import rtin_errors, rtin_extract
+
+    n = 17
+    h = _flat_grid(n)
+    nrm = _varying_normals(n)
+    err = rtin_errors(h.reshape(-1), n, pin_border=True)
+    verts, tris = rtin_extract(err, n, max_error=3.0)
+    assert len(verts) < n * n
+
+    data = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h,
+                                 mesh=(verts, tris), normals=nrm)
+    base = encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h, mesh=(verts, tris))
+    assert data[:len(base)] == base
+
+    ext_id, ext_len = struct.unpack_from("<BI", data, len(base))
+    assert ext_id == 1
+    assert ext_len == 2 * len(verts)
+
+    vcount, exts = _split_quantized_mesh(data)
+    assert vcount == len(verts)
+    want = _oct_encode(nrm.reshape(-1, 3)[verts]).tobytes()
+    assert exts[0][1] == want, "自适应分支的法线不是满网格法线在保留顶点上的子集"
+    # 反向对照：取前 N 个（而不是按 vert_idx 取）会得到不同的字节，
+    # 证明上面那条断言是有分辨力的
+    assert want != _oct_encode(nrm.reshape(-1, 3)[:len(verts)]).tobytes()
+
+
+def test_encode_rejects_a_normal_count_that_does_not_match_the_vertices():
+    """法线条数与顶点数对不上必须当场报错。
+
+    Cesium 读法线是 `new Uint8Array(buffer, offset, vertexCount*2)` —— 长度取
+    vertexCount，**不看 extensionLength**。写多了它静默只用前面一截，写少了
+    直接 RangeError 且整张瓦片解码失败。两种都是本项目最怕的形态，所以在
+    编码端一次性挡掉，比让读端去猜强。
+    """
+    n = 17
+    h = _flat_grid(n)
+    with pytest.raises(ValueError, match="normals"):
+        encode_quantized_mesh(100.0, 30.0, 101.0, 31.0, h,
+                              normals=np.tile([[0.0, 0.0, 1.0]], (n * n - 1, 1)))
+
+
+class _FlatSampler(_AnalyticSampler):
+    """全平地形：ledger 实测平坦瓦片上规则网格 gzip 后恒胜（U 形曲线的左端）。"""
+
+    def sample(self, lons, lats):
+        self.calls.append((np.asarray(lons), np.asarray(lats)))
+        return np.full(np.shape(lons), 1200.0)
+
+
+class _SmoothSampler(_AnalyticSampler):
+    """平滑中等起伏：瓦片跨度内只走过几个弧度，martini 在 gzip 后能赢。
+
+    _AnalyticSampler 的 sin(lon*60) 在一张 z5 瓦片里要走 675 弧度，逐格点近似
+    白噪声 —— 那是 U 形曲线的右端，grid 赢。要逼 auto 落在 martini 上必须给
+    中间带（ledger 实测 30~300 m 高差）的平滑地形。
+    """
+
+    SPAN = None                                  # 由 fixture 填瓦片跨度
+
+    def sample(self, lons, lats):
+        lons = np.asarray(lons)
+        lats = np.asarray(lats)
+        self.calls.append((lons, lats))
+        w, s, e, n = self.SPAN
+        return 500.0 + 150.0 * np.sin((lons - w) / (e - w) * 4.0) * \
+            np.cos((lats - s) / (n - s) * 3.0)
+
+
+@pytest.mark.parametrize("sampler_cls,triangulator,expect_backend", [
+    (_SmoothSampler, "martini", "martini"),
+    (_SmoothSampler, "grid", "grid"),
+    (_SmoothSampler, "auto", "martini"),
+    (_FlatSampler, "auto", "grid"),
+])
+def test_every_written_tile_carries_normals_whichever_backend_wins(
+        tmp_path, monkeypatch, sampler_cls, triangulator, expect_backend):
+    """落盘瓦片必须带法线段 —— 三个后端都要，`auto` 的**两条**分支都要。
+
+    auto 会把 grid 与 martini 各编一遍再比字节，法线只传给其中一条的话，
+    另一条胜出时瓦片就没有法线段：作业照样 completed、瓦片照样 200、
+    Cesium 的 hasVertexNormals 照样 true（那是 layer.json 说了算），只是
+    那些瓦片不受光照 —— 又一个"什么都不报，就是不对"。所以这里把两种地形
+    都跑一遍，逼 auto 分别落在 martini 和 grid 上；`expect_backend` 那条断言
+    是这个用例的**前提校验** —— 哪天择优平衡变了、两个用例都落在同一个后端
+    上，它会当场告诉你覆盖没了，而不是让用例悄悄退化成重复。
+
+    tile_size 用生产值 65：ts=17 时 martini 减面空间太小、gzip 后恒大，
+    auto 张张选 grid（实测 4 种地形 × 2 种 normals 开关全是 grid），
+    在那个尺寸上根本构造不出 auto→martini 的用例。
+    """
+    n = 65
+    west, south, east, north = GeographicTilingScheme(tile_size=n).tile_extent_deg(5, 20, 9)
+    sampler = sampler_cls()
+    sampler.SPAN = (west, south, east, north)
+    monkeypatch.setattr(ct, "_WORKER_SAMPLER", sampler)
+
+    result = ct._worker_tile((5, 20, 9, west, south, east, north, n, str(tmp_path),
+                              triangulator, 0.15, True))
+    assert result is not None
+    assert result[2] == expect_backend, f"这张瓦片落在 {result[2]}，用例想测的是 {expect_backend}"
+
+    data = gzip.decompress((tmp_path / "5" / "20" / "9.terrain").read_bytes())
+    vcount, exts = _split_quantized_mesh(data)
+    assert [e[0] for e in exts] == [1], f"{triangulator}/{expect_backend} 的瓦片没有法线扩展段"
+    assert len(exts[0][1]) == 2 * vcount
+
+
+def test_worker_tile_without_normals_writes_no_extension_segment(tmp_path, monkeypatch):
+    """对照组：with_normals=False 时一个扩展字节都不该有。"""
+    n = 17
+    monkeypatch.setattr(ct, "_WORKER_SAMPLER", _AnalyticSampler())
+    west, south, east, north = GeographicTilingScheme(tile_size=n).tile_extent_deg(5, 20, 9)
+    ct._worker_tile((5, 20, 9, west, south, east, north, n, str(tmp_path),
+                     "auto", 0.15, False))
+    data = gzip.decompress((tmp_path / "5" / "20" / "9.terrain").read_bytes())
+    assert _split_quantized_mesh(data)[1] == []
+
+
+@pytest.mark.parametrize("flag,expected", [(True, ["octvertexnormals"]), (False, [])])
+def test_layer_json_declares_octvertexnormals_iff_normals_are_written(
+        tmp_path, monkeypatch, flag, expected):
+    """layer.json 不声明 extensions，法线写了也是白写。
+
+    Cesium 的 CesiumTerrainProvider 是拿 layer.json 的 extensions 数组决定
+    `hasVertexNormals` 的（Cesium.js: `t.extensions.indexOf("octvertexnormals")
+    !==-1 ? hasVertexNormals=true : ...`），而 requestTileGeometry 只有在
+    `_requestVertexNormals && layer.hasVertexNormals` 时才把 extensions 放进
+    Accept 头，解析时也只有这时才去取 OCT_VERTEX_NORMALS 段。也就是说不声明
+    的话，扩展段原封不动躺在字节流里、Cesium 一眼都不看 —— 静默失效。
+    """
+    monkeypatch.setattr(ct, "DemSampler", _AnalyticSampler)
+    monkeypatch.setattr(ct, "_worker_tile", lambda t: (0.0, 1.0, "grid"))
+    ct.build_terrain(["fake.tif"], str(tmp_path), min_level=0, max_level=1,
+                     tile_size=17, workers=1, normals=flag)
+    layer = json.loads((tmp_path / "layer.json").read_text(encoding="utf-8"))
+    assert layer["extensions"] == expected

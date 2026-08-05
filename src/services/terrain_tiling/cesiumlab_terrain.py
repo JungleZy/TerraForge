@@ -112,6 +112,53 @@ def _vertex_normals_ecef(lons: np.ndarray, lats: np.ndarray,
     return out
 
 
+def _oct_encode(normals: np.ndarray) -> np.ndarray:
+    """单位向量 (N,3) -> oct16 编码 (N,2) uint8。
+
+    quantized-mesh-1.0 的 Oct-Encoded Per-Vertex Normals 扩展（extensionId=1）。
+    算法与 Cesium 的 `AttributeCompression.octEncode` 一致：先按 L1 范数投影到
+    八面体，z<0 的那一半折叠到外圈（|x|+|y|>1 就是解码端区分上下半球的唯一
+    依据），再把 [-1,1] 映射到 [0,255]。
+
+    **舍入必须是 half-up，不能用 np.round。** Cesium 的 toSNorm 是
+    `Math.round((clamp(e,-1,1)*.5+.5)*255)`，而 JS 的 Math.round 平局一律进位；
+    numpy 的 np.round 是 half-to-even。平局不是理论边界：t=(p*0.5+0.5)*255
+    精确落在 k+0.5 上的 double 实测有 2164 个（在 p=(2(k+0.5)/255)-1 附近用
+    nextafter 逐 double 扫出来的），其中 744 个 k 是偶数 —— 那些点上两种舍入
+    差 1 个 LSB。
+    ⚠️ **别把它说成"修了一个 bug"**：实测真实地形法线（天山 z9-12 共 36 张
+    瓦片、304200 个分量）平局出现 **0 次**，且 1 个 LSB 的视觉后果本来也可以
+    忽略。这里要的是"与 Cesium 的编码器逐位一致"这句话能成立而不是大概成立 ——
+    代价是一行 floor，那就没有理由用一个已知会分歧的写法。
+    x 恒在 [0,255]：floor 与 x-floor(x) 都是精确运算，所以下面这个写法与
+    ES 规范里 Math.round 对 x>=0 的定义逐位相同。
+
+    l1==0 的兜底：_vertex_normals_ecef 的输出是单位向量（模长为 0 的地方被置成
+    1 再除），L1 范数因此恒 >=1，生产路径到不了这里；留着是因为零向量会让 p 变
+    NaN，而 NaN 转 uint8 在 numpy 里只刷一条 RuntimeWarning（默认不中断）、
+    落出来的字节值是平台相关的 —— 又是一条"不报错但字节是垃圾"的路。
+    """
+    v = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+    l1 = np.abs(v).sum(axis=1, keepdims=True)
+    l1 = np.where(l1 == 0.0, 1.0, l1)
+    p = v[:, :2] / l1
+    # ⚠️ 这里的 z 是 **ECEF 的 Z 轴**（指北极），不是"法线朝下"：法线基本沿地心
+    # 方向，符号约等于 sin(纬度)。实测同一块地形搬到各纬度，z<0 的比例
+    # lat-42 100% / lat0 45% / lat+5 0.9% / lat+42 **0%** —— 折叠分支是**南半球
+    # 专属**路径，本项目手头的 DEM 全在 N28~N52，删掉它在现有数据上零症状。
+    neg = v[:, 2] < 0.0
+    if neg.any():
+        px = p[neg, 0].copy()
+        py = p[neg, 1].copy()
+        # signNotZero: e<0 ? -1 : 1 —— 0 和 -0.0 都算正号（JS 里 -0<0 为 false，
+        # numpy 里 -0.0>=0.0 为 True，两边一致）
+        p[neg, 0] = (1.0 - np.abs(py)) * np.where(px >= 0.0, 1.0, -1.0)
+        p[neg, 1] = (1.0 - np.abs(px)) * np.where(py >= 0.0, 1.0, -1.0)
+    t = (np.clip(p, -1.0, 1.0) * 0.5 + 0.5) * 255.0
+    floor = np.floor(t)
+    return (floor + (t - floor >= 0.5)).astype(np.uint8)
+
+
 @dataclass
 class GeographicTilingScheme:
     tile_size: int = 17
@@ -346,12 +393,18 @@ def _mesh_constants(n: int):
 
 
 def encode_quantized_mesh(west: float, south: float, east: float, north: float,
-                          heights_grid: np.ndarray, mesh=None) -> bytes:
+                          heights_grid: np.ndarray, mesh=None, normals=None) -> bytes:
     """编码一张 quantized-mesh 瓦片。
 
     mesh=None 时用完整规则网格（索引表走 _mesh_constants 的进程级缓存）。
     传入 mesh=(vertex_grid_indices, triangles) 时按该三角网编码 —— 顶点是
     格点的子集，triangles 是局部索引，rtin_extract 的输出直接可用。
+
+    normals 是**满网格**的逐顶点法线 (n,n,3)（或已展平的 (n*n,3)）。传 mesh 时
+    自动按 mesh[0] 取子集：数量跟随简化后的顶点，值仍来自满网格计算 ——
+    粗几何 + 精细法线，类似 normal mapping。设计稿:209 定的就是这个，
+    K 质量验证阶段的着色图给出了实测支撑：几何面晕渲从 K=0.15 起就有明显三角
+    刻面，而逐顶点法线着色平滑无刻面。
     """
     n = heights_grid.shape[0]
     assert heights_grid.shape == (n, n)
@@ -517,6 +570,35 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float,
         body.write(struct.pack("<I", len(edge)))
         body.write(pack_indices(edge))
 
+    # Oct-Encoded Per-Vertex Normals 扩展段（spec 的 ExtensionHeader:
+    # unsigned char extensionId; unsigned int extensionLength;）。
+    #
+    # 追加在 EdgeIndices 之后、整条流的末尾，前面一个字节都不动 —— 于是
+    # normals=None 时字节流与本函数长期以来的输出逐字节相同（golden 指纹不受
+    # 影响）。扩展段不需要对齐 padding：Cesium 读它是 `new Uint8Array(buffer,
+    # offset, vertexCount*2)`，Uint8Array 没有对齐要求（IndexData 那里要补是因为
+    # Uint16Array/Uint32Array 有）。
+    #
+    # extensionLength 用小端：Cesium 读它是 `S.getUint32(a,
+    # littleEndianExtensionSize)`，而 littleEndianExtensionSize 只有在 layer.json
+    # 声明成老的 "vertexnormals" 时才是 false；我们声明的是 "octvertexnormals"，
+    # 走小端。
+    #
+    # ⚠️ 长度校验不是防御性冗余：Cesium 取法线用的是 **vertexCount*2**，
+    # 根本不看 extensionLength。多写了它静默只用前一截，少写了直接 RangeError
+    # 整张瓦片解码失败 —— 前者正是本项目栽过五次的"什么都不报就是不对"。
+    # 在编码端一次性挡掉，比让读端去猜强。
+    if normals is not None:
+        nrm = np.asarray(normals, dtype=np.float64).reshape(-1, 3)
+        if mesh is not None:
+            nrm = nrm[mesh[0]]
+        if len(nrm) != vertex_count:
+            raise ValueError(
+                f"normals count {len(nrm)} != vertex count {vertex_count}")
+        oct_bytes = _oct_encode(nrm).tobytes()
+        body.write(struct.pack("<BI", 1, len(oct_bytes)))
+        body.write(oct_bytes)
+
     payload = header + body.getvalue()
     return payload
 
@@ -678,11 +760,9 @@ def _worker_tile(task) -> Tuple[float, float, str] | None:
         llon, llat = np.meshgrid(lons, lats)
         heights = _WORKER_SAMPLER.sample(llon, llat)
 
-        # ⚠️ normals 目前**算完即弃**：写进 quantized-mesh 的 oct-encoded 扩展段
-        # 是下一步的事（encode_quantized_mesh 还没有 normals 参数）。在此之前
-        # with_normals=True 只带来 CPU 开销、不改变任何落盘字节。
         # 法线基于**满网格**算、两个三角化后端共用同一份：简化只动几何，光照
-        # 细节保留（粗几何 + 精细法线，类似 normal mapping）。
+        # 细节保留（粗几何 + 精细法线，类似 normal mapping）。encode 那边传了
+        # mesh 时会自己按保留顶点取子集。
         normals = _tile_normals(_WORKER_SAMPLER, west, south, east, north,
                                 tile_size) if with_normals else None
 
@@ -703,14 +783,20 @@ def _worker_tile(task) -> Tuple[float, float, str] | None:
         if triangulator == "auto":
             # 两个后端各编一遍、各压一遍，取小者。多出来的成本是第二次编码 +
             # 第二次 gzip（rtin_errors 本身已向量化，不是大头）。
+            # **两条分支都要传 normals**：只传一条的话，另一条胜出的瓦片就没有
+            # 法线段，而 layer.json 照样声明 octvertexnormals、HTTP 照样 200、
+            # Cesium 照样不报错 —— 只是那些瓦片不受光照。
             mart_gz = _gzip_tile(encode_quantized_mesh(west, south, east, north,
-                                                       heights, mesh=mesh))
+                                                       heights, mesh=mesh,
+                                                       normals=normals))
             grid_gz = _gzip_tile(encode_quantized_mesh(west, south, east, north,
-                                                       heights, mesh=None))
+                                                       heights, mesh=None,
+                                                       normals=normals))
             blob, backend = _choose_tile_bytes(mart_gz, grid_gz)
         else:
             blob = _gzip_tile(encode_quantized_mesh(west, south, east, north,
-                                                    heights, mesh=mesh))
+                                                    heights, mesh=mesh,
+                                                    normals=normals))
             backend = triangulator
 
         out_path = Path(out_dir) / str(z) / str(x)
@@ -750,15 +836,22 @@ def build_terrain(
     # 排障时用。max_error_k: 允许高程误差 = K * 顶点间距（见 _max_error_for_level）。
     # 三者都不暴露给 UI/DB/API，只为排障与测试注入而存在。
     #
-    # normals: 逐顶点法线（ECEF 空间 + ghost 环，见 _worker_tile / _vertex_normals_ecef）。
-    # 默认开。成本是每瓦片多一次 (tile_size+2)² 采样加一次向量化叉积累加 ——
-    # 实测（天山 N42E086，z0-11 共 **907** 张，tile_size=65，workers=4，交错 best-of-4）
-    # 墙钟 1.048s → 1.338s，**+27.7%**（+0.32 ms/瓦片）。换配置会明显不同：
-    # z6-11(224 张) +10.4%、tile_size=17 z0-11 +19.4%、tile_size=17 z0-13 +35.3%。
-    # ⚠️ 此刻法线还没有消费者（encode 尚未支持），所以这 27.7% 暂时是纯开销，
-    # 落盘字节与 normals=False 逐字节相同。
-    # ⚠️ 用 build_terrain 直接做性能实验时必须显式传 tile_size=65 —— 本函数默认
-    # 值是 17，生产走的是 TileParams.tile_size=65，两者的法线占比差一倍。
+    # normals: 逐顶点法线（ECEF 空间 + ghost 环，见 _worker_tile / _vertex_normals_ecef），
+    # 落盘成 oct-encoded 扩展段（每顶点 2 字节，见 encode_quantized_mesh 末尾），
+    # 同时决定下面 layer.json 的 extensions 字段。默认开。
+    #
+    # 成本（天山 N42E086，z0-11 共 907 张，tile_size=65，workers=4，交错 best-of-4）：
+    # 墙钟 0.932s → 1.266s，**+35.8%**。其中约 28pp 是采样+叉积（Task 6 在同一
+    # 口径下测的 +27.7%，那时法线还没有消费者），其余是多编一段 + 多压一次。
+    # 字节代价随后端差得很远（4 个真实 DEM、z8-12、3120 张配对瓦片，gzip 后总量）：
+    # **grid +55.4%、martini 只 +22.5%** —— 法线字节正比于顶点数，而 grid 恒是
+    # 4225 个顶点、martini 中位 589~1751 个。于是逐瓦片择优的平衡整体倒向 martini：
+    #   天山 martini 325→**467** / 黄土 38→**187** / 华北 725→730 / 荷兰 621→639，
+    #   3120 张里 314 张从 grid 翻成 martini，**反向翻转 0 张**。
+    # 「auto 不可能比任一单后端差」不受影响（3120 张实测 0 处违反）。
+    # ⚠️ 用 build_terrain 直接做实验时必须显式传 tile_size=65 —— 本函数默认值是
+    # 17，生产走的是 TileParams.tile_size=65，两者的择优落点完全不同
+    # （ts=17 时 martini 减面空间太小，实测张张选 grid）。
     #
     # 下面这两条校验在入口一次性做掉，不放进 _worker_tile —— 那里的 try/except
     # 是逐瓦片容错，配置错在那里只会变成每张瓦片一行 warning：
@@ -963,7 +1056,12 @@ def build_terrain(
             "minzoom": min_level,
             "maxzoom": max_level,
             "available": available_per_level,
-            "extensions": [],
+            # 不声明的话法线写了也是白写：Cesium 的 CesiumTerrainProvider 拿这个
+            # 数组决定 layer.hasVertexNormals，而 requestTileGeometry 只有在
+            # `_requestVertexNormals && hasVertexNormals` 时才把 extensions 放进
+            # Accept 头、解析时也只有这时才去取 OCT_VERTEX_NORMALS 段。声明成老的
+            # "vertexnormals" 会把 extensionLength 切成大端读，别写混。
+            "extensions": ["octvertexnormals"] if normals else [],
         }
         (out / "layer.json").write_text(json.dumps(layer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

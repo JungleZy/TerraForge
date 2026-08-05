@@ -394,6 +394,13 @@ def _terrain_tile_stats(out_dir) -> dict:
     索引宽度按 spec 由**顶点数**决定（>65536 用 uint32）—— 这里的
     tile_size 恒 ≤ 65（4225 顶点）走 uint16，宽度仍照 spec 算，免得将来
     有人加大 tile_size 时这个解析器悄悄错位。
+
+    EdgeIndices 之后还要走一遍扩展段（build_terrain 默认 normals=True，每张
+    瓦片末尾都有 extensionId=1 的 oct-encoded 法线段）。推进方式与 Cesium 的
+    解析循环一致：`off += extensionLength`。这条路径是**唯一**一处从
+    build_terrain 完整跑到磁盘再读回来的检查，所以顺带把「法线段真的落盘了、
+    长度恰好是 vertexCount*2」也钉在这里 —— _worker_tile 那一层的守卫在
+    test_terrain_normals.py，管不到 build_terrain 的透传。
     """
     import gzip
 
@@ -411,6 +418,15 @@ def _terrain_tile_stats(out_dir) -> dict:
             (ecount,) = struct.unpack_from("<I", data, off)
             edges.append(ecount)
             off += 4 + ecount * width
+        ext_ids = []
+        while off < len(data):
+            ext_id, ext_len = struct.unpack_from("<BI", data, off)
+            ext_ids.append(ext_id)
+            if ext_id == 1:
+                assert ext_len == 2 * vcount, (
+                    f"{p}: 法线段长度 {ext_len} != 2*顶点数 {2 * vcount}")
+            off += 5 + ext_len
+        assert ext_ids == [1], f"{p}: 扩展段应恰好是一个 oct 法线段，实得 {ext_ids}"
         assert off == len(data), f"{p}: 字节流没被精确消费完（off={off} len={len(data)}）"
         stats[str(p.relative_to(out_dir))] = (vcount, tcount, tuple(edges))
     return stats
