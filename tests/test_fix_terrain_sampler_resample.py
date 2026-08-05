@@ -57,8 +57,16 @@ def test_sample_downsamples_large_windows_via_gdal_buffer():
     call = band.calls[0]
     assert call["win_x"] > 17 and call["win_y"] > 17
     # Buffer must be capped near the sampling grid density, not native res.
-    assert call["buf_xsize"] is not None and call["buf_xsize"] <= 17 + 2
-    assert call["buf_ysize"] is not None and call["buf_ysize"] <= 17 + 2
+    #
+    # 上界从 (n+2) 放宽到 2*(n+2)：降采样倍率现在取 2 的幂并**向下**取整，
+    # 好处是 buffer 永远不稀疏于输出网格（采样精度），代价是最多比目标大一倍。
+    # 取 2 的幂是为了让降采样格网锚定在源像素上、与请求 bbox 无关 —— 否则
+    # 相邻瓦片相位不同，同一经纬点采出不同高程（实测公共边差 20 m，
+    # 见 test_fix_terrain_sampler_phase.py）。
+    # OOM 防护的实质不变：这里窗口是 100+ 像素，buffer 仍在 30 上下。
+    assert call["buf_xsize"] is not None and call["buf_xsize"] <= 2 * (17 + 2)
+    assert call["buf_ysize"] is not None and call["buf_ysize"] <= 2 * (17 + 2)
+    assert call["buf_xsize"] < call["win_x"] and call["buf_ysize"] < call["win_y"]
 
 
 def test_sample_small_windows_keep_native_resolution():

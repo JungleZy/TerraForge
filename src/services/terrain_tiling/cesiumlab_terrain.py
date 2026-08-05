@@ -259,24 +259,40 @@ class DemSampler:
         # native resolution: low-zoom tiles over a large DEM would otherwise
         # allocate the full source window per worker process (OOM). Sampling
         # density never needs more than the output grid plus a small margin.
-        win_w = x1c - x0c
-        win_h = y1c - y0c
-        buf_w = min(win_w, lons.shape[1] + 2)
-        buf_h = min(win_h, lons.shape[0] + 2)
-        if buf_w < win_w or buf_h < win_h:
-            # GDAL resampling is center-based: buffer pixel j represents the
-            # source around x0c + (j+0.5)*scale - 0.5. Expand the read window by
-            # half a buffer pixel (+1 to keep the original 1px margin) so edge
-            # samples still fall inside the represented range instead of being
-            # clamped to the outermost buffer pixel.
-            pad_x = int(math.ceil(win_w / buf_w / 2.0)) + 1
-            pad_y = int(math.ceil(win_h / buf_h / 2.0)) + 1
-            x0c = max(0, x0c - pad_x)
-            y0c = max(0, y0c - pad_y)
-            x1c = min(self.cols, x1c + pad_x)
-            y1c = min(self.rows, y1c + pad_y)
-            win_w = x1c - x0c
-            win_h = y1c - y0c
+        #
+        # **降采样格网必须锚定在源像素网格上，不能跟着请求的 bbox 走。**
+        # 此前 scale 是 win/buf、而 win 由传入点集的包围盒决定 —— 相邻瓦片包围盒
+        # 不同 ⇒ 降采样格子落在源像素的不同相位上 ⇒ 同一个经纬点采出不同高程。
+        # 实测（1 弧秒合成 DEM，65² 网格）：相邻瓦片公共边最大差 20.2 m；真实
+        # 天山数据上 z12 平均 3.4 m / 最大 16.8 m，而 z14 精确为 0（那层不降采样）。
+        # 这是几何裂缝与「法线接缝在中间层无法归零」的共同根因，与三角化无关。
+        #
+        # 现在：scale 只由「输出网格步长 ÷ 源像素」决定 —— 同层级瓦片的步长相同，
+        # 与瓦片落在哪里无关；再取 2 的幂，避免浮点误差把相邻瓦片挤到不同档。
+        # 读窗口起点对齐到 scale 的整数倍，且 win 恒等于 buf*scale，于是 buffer
+        # 像素 j 永远代表源像素 [x0a+j*scale, x0a+(j+1)*scale)，全局固定。
+        span_x = float(np.nanmax(px) - np.nanmin(px))
+        span_y = float(np.nanmax(py) - np.nanmin(py))
+        step_x = span_x / max(1, lons.shape[1] - 1)
+        step_y = span_y / max(1, lons.shape[0] - 1)
+        scale_x = 1 << max(0, int(math.floor(math.log2(step_x)))) if step_x > 1 else 1
+        scale_y = 1 << max(0, int(math.floor(math.log2(step_y)))) if step_y > 1 else 1
+
+        def _align(lo, hi, limit, scale):
+            """把 [lo,hi) 扩到 scale 网格上；返回 (起点, 窗口宽, buffer 宽)。
+
+            起点向下对齐、终点向上对齐，两端各留一个 scale 的余量，保证边缘采样
+            点仍落在 buffer 覆盖的范围内（GDAL 的重采样是中心制的）。
+            """
+            lo_a = max(0, ((lo // scale) - 1) * scale)
+            hi_a = min(limit, (-(-hi // scale) + 1) * scale)
+            nbuf = (hi_a - lo_a) // scale
+            if nbuf < 1:                       # 源太小，退化成不降采样
+                return lo, max(1, hi - lo), max(1, hi - lo)
+            return lo_a, nbuf * scale, nbuf
+
+        x0c, win_w, buf_w = _align(x0c, x1c, self.cols, scale_x)
+        y0c, win_h, buf_h = _align(y0c, y1c, self.rows, scale_y)
         arr = self.band.ReadAsArray(
             x0c, y0c, win_w, win_h,
             buf_xsize=buf_w, buf_ysize=buf_h,
