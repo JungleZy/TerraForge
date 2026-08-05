@@ -55,6 +55,19 @@
                     <span>框选</span>
                 </button>
             </div>
+            <div class="map-panel-triggers">
+                <!-- 地形光照：Cesium scene.globe.enableLighting 的开关。
+                     偏好存 localStorage（terrain_lighting.js），不进 config 表。 -->
+                <button type="button" class="map-panel-btn" id="mapTerrainLighting"
+                        aria-label="地形光照" title="地形光照（需已加载地形预览）" aria-pressed="false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="4"></circle>
+                        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+                    </svg>
+                    <span>光照</span>
+                </button>
+            </div>
             <div class="map-panel-triggers" id="mapPanelTriggers">
                 <button type="button" class="map-panel-btn" id="processOpenBtn"
                         data-bs-toggle="modal" data-bs-target="#processModal"

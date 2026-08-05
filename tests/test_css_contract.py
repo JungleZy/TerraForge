@@ -6868,8 +6868,12 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # js/theme.js（window.TerraTheme，运行期主题切换/跟随实现）。
     # 17 -> 18（保存路径「浏览」）：base.html 引入 js/path_browser.js
     # （目录选择弹窗交互），字符串字面量。
-    assert len(refs) == 18, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 18 处。"
+    # 18 -> 19（地形光照开关）：base.html 在 theme.js 之后引入
+    # js/terrain_lighting.js（window.TerrainLighting，scene.globe.enableLighting
+    # 的开关，偏好只存 localStorage）。必须排在 index.html 的 extra_js（map.js）
+    # 之前，顺序由 tests/test_terrain_lighting_frontend.py 钉住。
+    assert len(refs) == 19, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 19 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )

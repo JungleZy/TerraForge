@@ -232,6 +232,9 @@ function initMap(config) {
     if (zoomMaxEl && String(config.default_zoom_max ?? '') !== '') zoomMaxEl.value = config.default_zoom_max;
 
     _initMapTools();
+    // 地形光照开关（工具条「光照」按钮）：模块在 base.html 里定义，
+    // 这里把 viewer 交给它并按 localStorage 里的偏好落一次状态。
+    if (window.TerrainLighting) window.TerrainLighting.init(viewer);
 }
 
 // --- 矩形框选（下载区域）-------------------------------------------------------
@@ -1240,7 +1243,20 @@ async function previewTask(task) {
                 // 后再拼 layer.json，传后者会请求 .../layer.json/layer.json 得 404。
                 // 更坑的是它不 reject：拿不到 layer.json 时静默按默认假设建 provider
                 // （实测 hasWaterMask 变成 true），随后瓦片请求全 404，前端毫无提示。
-                const provider = await Cesium.CesiumTerrainProvider.fromUrl(base);
+                //
+                // requestVertexNormals: true 不能省。瓦片里的 oct 法线段是无条件
+                // 落盘的（Task 6/7），少了这个选项**不是少下载几个字节**，而是
+                // vendored Cesium 1.143.0 里三处连锁失效：解码 worker 的扩展段
+                // 循环有 `extensionId === OCT_VERTEX_NORMALS && _requestVertexNormals`
+                // 双条件，法线段被跳过；`provider.hasVertexNormals` getter 是
+                // `_hasVertexNormals && _requestVertexNormals`，恒 false；
+                // 全球着色器于是走 ENABLE_DAYNIGHT_SHADING 而不是
+                // ENABLE_VERTEX_LIGHTING。表现就是「光照开关点了只有一层随太阳
+                // 方位的明暗渐变、地形起伏一点都看不出来」，且全程不报错。
+                // tests/test_terrain_lighting_frontend.py 钉住这一行。
+                const provider = await Cesium.CesiumTerrainProvider.fromUrl(base, {
+                    requestVertexNormals: true,
+                });
                 if (seq !== _previewSeq) return;
                 viewer.terrainProvider = provider;
                 _previewState = { kind: 'terrain', taskId: task.id, taskType: t, name: task.name, prevTerrainProvider: prev };
