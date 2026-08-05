@@ -336,6 +336,59 @@ def test_corrupt_product_is_caught_even_when_gdal_reports_success(
         f"坏产物没被删除：{_leftover_products(tmp_path)}"
 
 
+def test_verification_failure_releases_gdal_handles(
+        dem_pair, tmp_path, monkeypatch):
+    """校验失败后不得有 GDAL dataset 还开着，否则 Windows 上坏产物删不掉。
+
+    ⚠️ 这条护栏在 Linux 上**看不见它防的那个后果**：Linux 允许 unlink 仍被打开
+    的文件，所以句柄泄漏时上面那个 `_leftover_products` 断言照样绿。v0.2.8 的
+    发版 CI 实测过一次：Linux/macOS 全绿，Windows 报「坏产物没被删除」，浪费一轮
+    十几分钟的三平台构建才暴露出来。
+
+    根因是 `raise` 时异常的 traceback 钉住了 `_verify_materialised` 的栈帧，
+    帧里的 src/dst/sb/db 于是一直活着 —— `pytest.raises` 在这里扮演的正是生产
+    代码里 `except BaseException:` 那个清理块所处的位置：异常还没消散，帧还在。
+
+    所以这里不查文件删没删（那在 Linux 上是空断言），直接查句柄：把
+    `gdal.Open` 包一层记下弱引用，异常仍被 `pytest.raises` 持有的情况下
+    gc 一次，所有 dataset 必须已经死掉。把 finally 里的置空删掉，这条当场变红。
+    """
+    import gc
+    import weakref
+
+    from src.services.terrain_tiling import cesiumlab_terrain
+
+    opened = []
+    real_open = cesiumlab_terrain.gdal.Open
+
+    def tracking_open(*a, **k):
+        ds = real_open(*a, **k)
+        if ds is not None:
+            opened.append(weakref.ref(ds))
+        return ds
+
+    real_translate = cesiumlab_terrain.gdal.Translate
+
+    def corrupting(dst, src, **kwargs):
+        kwargs["outputType"] = gdal.GDT_Byte
+        return real_translate(dst, src, **kwargs)
+
+    monkeypatch.setattr(cesiumlab_terrain.gdal, "Translate", corrupting)
+    monkeypatch.setattr(cesiumlab_terrain.gdal, "Open", tracking_open)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        build_input_raster(dem_pair, work_dir=str(tmp_path))
+
+    assert opened, "校验路径一次 gdal.Open 都没走到 —— 断言会变成空断言"
+    assert excinfo.value.__traceback__ is not None, \
+        "异常必须仍持有 traceback，否则复现不出生产里的帧滞留"
+    gc.collect()
+    alive = [r for r in opened if r() is not None]
+    assert not alive, (
+        f"校验失败后仍有 {len(alive)}/{len(opened)} 个 GDAL dataset 未释放 —— "
+        f"Windows 上这会让坏产物删不掉")
+
+
 def test_cpl_error_is_not_swallowed(dem_pair, tmp_path, monkeypatch):
     """CPL 错误栈里登记的失败必须变成异常。
 

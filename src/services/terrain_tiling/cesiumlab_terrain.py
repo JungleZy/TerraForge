@@ -243,77 +243,92 @@ def _verify_materialised(out_path: str, vrt_path: str) -> None:
 
     所以校验的是与源的一致性(尺寸/数据类型/仿射变换)加上一次真实的降采样读 ——
     低层级瓦片走的正是降采样路径,全 0 在这里当场暴露。
+
+    ⚠️ **整个函数体挂在 try/finally 上,退出前把 dataset 与 band 全部置空。**
+    本函数抛出时,异常的 traceback 会钉住这个栈帧,帧里的 src/dst/sb/db 于是一直
+    活着 —— Windows 上文件被占着就删不掉,调用方 `build_input_raster` 的清理
+    静默失败(那里 `except OSError: pass`),留下一份与源同量级的坏产物。
+    v0.2.8 的发版 CI 实测:Linux 全绿、Windows 报「坏产物没被删除」—— Linux
+    允许 unlink 仍被打开的文件,所以这个失败面在 Linux 上完全看不见。
+    band 也要置空:它自己持有 dataset 引用,只放 dataset 不够。
     """
-    src = gdal.Open(vrt_path, gdal.GA_ReadOnly)
-    dst = gdal.Open(out_path, gdal.GA_ReadOnly)
-    if src is None or dst is None:
-        raise RuntimeError(f"cannot reopen for verification: {out_path}")
+    src = dst = sb = db = None
+    try:
+        src = gdal.Open(vrt_path, gdal.GA_ReadOnly)
+        dst = gdal.Open(out_path, gdal.GA_ReadOnly)
+        if src is None or dst is None:
+            raise RuntimeError(f"cannot reopen for verification: {out_path}")
 
-    if (dst.RasterXSize, dst.RasterYSize) != (src.RasterXSize, src.RasterYSize):
-        raise RuntimeError(
-            f"materialised raster size {dst.RasterXSize}x{dst.RasterYSize} != "
-            f"source {src.RasterXSize}x{src.RasterYSize} ({out_path})")
-
-    sb, db = src.GetRasterBand(1), dst.GetRasterBand(1)
-    if db.DataType != sb.DataType:
-        raise RuntimeError(
-            f"materialised raster dtype {gdal.GetDataTypeName(db.DataType)} != "
-            f"source {gdal.GetDataTypeName(sb.DataType)} ({out_path}) —— "
-            "高程会被静默压平/截断")
-
-    sgt, dgt = src.GetGeoTransform(), dst.GetGeoTransform()
-    if max(abs(a - b) for a, b in zip(sgt, dgt)) > 1e-12:
-        raise RuntimeError(
-            f"materialised raster geotransform {dgt} != source {sgt} ({out_path})")
-
-    # --- 与源逐像素比对,必须走**全分辨率** ---
-    # 不能拿降采样读去比:多源 VRT 的降采样读正是本次修复的那条坏路径(选层随窗口
-    # 漂移),拿它当基准等于要求产物复现同一个 bug。全分辨率读 buf==win,不进
-    # overview 路径,两边都是准的。
-    # 右下角这块是冲着**截断**去的:写盘被截断时丢的总是后写的部分,实测 4 GiB
-    # 截断的文件左上角完好(-460.6)、右下角全 0。
-    w = min(64, dst.RasterXSize)
-    h = min(64, dst.RasterYSize)
-    for xoff, yoff, corner in ((0, 0, "左上"),
-                               (dst.RasterXSize - w, dst.RasterYSize - h, "右下")):
-        gdal.ErrorReset()
-        got = db.ReadAsArray(xoff, yoff, w, h)
-        _raise_on_gdal_error("verification read", out_path)
-        if got is None:
+        if (dst.RasterXSize, dst.RasterYSize) != (src.RasterXSize, src.RasterYSize):
             raise RuntimeError(
-                f"materialised raster unreadable at {corner} corner "
-                f"({xoff},{yoff}) ({out_path}) —— 多半是写盘被截断了")
-        ref = sb.ReadAsArray(xoff, yoff, w, h)
-        if ref is None:
-            raise RuntimeError(f"cannot read source for verification: {vrt_path}")
-        if not np.array_equal(np.asarray(got), np.asarray(ref)):
-            raise RuntimeError(
-                f"materialised raster disagrees with source at {corner} corner "
-                f"({out_path}) —— 产物不是源的忠实副本")
+                f"materialised raster size {dst.RasterXSize}x{dst.RasterYSize} != "
+                f"source {src.RasterXSize}x{src.RasterYSize} ({out_path})")
 
-    # --- overview 健全性 ---
-    # BuildOverviews 在写失败时照样返回 0,建出来的层是**空的**:全分辨率读全对、
-    # 降采样读全 0。低层级瓦片走的正是降采样路径,于是整片地形塌成海平面平板而
-    # 作业报 completed。这里拿同一个窗口的两种读法对照 —— 全分辨率有起伏而降采样
-    # 塌成常数,就是 overview 坏了。(源数据本身是常数的区域跳过,不误报。)
-    if dst.GetRasterBand(1).GetOverviewCount() > 0:
-        pw = min(512, dst.RasterXSize)
-        ph = min(512, dst.RasterYSize)
-        gdal.ErrorReset()
-        full = db.ReadAsArray(0, 0, pw, ph)
-        small = db.ReadAsArray(0, 0, pw, ph,
-                               buf_xsize=max(1, pw // 8), buf_ysize=max(1, ph // 8))
-        _raise_on_gdal_error("overview probe", out_path)
-        if full is None or small is None:
-            raise RuntimeError(f"materialised raster overview probe failed "
-                               f"({out_path})")
-        full_a, small_a = np.asarray(full), np.asarray(small)
-        if full_a.min() != full_a.max() and small_a.min() == small_a.max():
+        sb, db = src.GetRasterBand(1), dst.GetRasterBand(1)
+        if db.DataType != sb.DataType:
             raise RuntimeError(
-                f"materialised raster has empty overviews ({out_path}): "
-                f"full-res range [{full_a.min()}, {full_a.max()}] but the "
-                f"downsampled read is constant {small_a.min()} —— "
-                "低层级瓦片会整片塌成平板")
+                f"materialised raster dtype {gdal.GetDataTypeName(db.DataType)} != "
+                f"source {gdal.GetDataTypeName(sb.DataType)} ({out_path}) —— "
+                "高程会被静默压平/截断")
+
+        sgt, dgt = src.GetGeoTransform(), dst.GetGeoTransform()
+        if max(abs(a - b) for a, b in zip(sgt, dgt)) > 1e-12:
+            raise RuntimeError(
+                f"materialised raster geotransform {dgt} != source {sgt} "
+                f"({out_path})")
+
+        # --- 与源逐像素比对,必须走**全分辨率** ---
+        # 不能拿降采样读去比:多源 VRT 的降采样读正是本次修复的那条坏路径(选层随
+        # 窗口漂移),拿它当基准等于要求产物复现同一个 bug。全分辨率读 buf==win,
+        # 不进 overview 路径,两边都是准的。
+        # 右下角这块是冲着**截断**去的:写盘被截断时丢的总是后写的部分,实测 4 GiB
+        # 截断的文件左上角完好(-460.6)、右下角全 0。
+        w = min(64, dst.RasterXSize)
+        h = min(64, dst.RasterYSize)
+        for xoff, yoff, corner in ((0, 0, "左上"),
+                                   (dst.RasterXSize - w, dst.RasterYSize - h, "右下")):
+            gdal.ErrorReset()
+            got = db.ReadAsArray(xoff, yoff, w, h)
+            _raise_on_gdal_error("verification read", out_path)
+            if got is None:
+                raise RuntimeError(
+                    f"materialised raster unreadable at {corner} corner "
+                    f"({xoff},{yoff}) ({out_path}) —— 多半是写盘被截断了")
+            ref = sb.ReadAsArray(xoff, yoff, w, h)
+            if ref is None:
+                raise RuntimeError(
+                    f"cannot read source for verification: {vrt_path}")
+            if not np.array_equal(np.asarray(got), np.asarray(ref)):
+                raise RuntimeError(
+                    f"materialised raster disagrees with source at {corner} corner "
+                    f"({out_path}) —— 产物不是源的忠实副本")
+
+        # --- overview 健全性 ---
+        # BuildOverviews 在写失败时照样返回 0,建出来的层是**空的**:全分辨率读全对、
+        # 降采样读全 0。低层级瓦片走的正是降采样路径,于是整片地形塌成海平面平板而
+        # 作业报 completed。这里拿同一个窗口的两种读法对照 —— 全分辨率有起伏而降采样
+        # 塌成常数,就是 overview 坏了。(源数据本身是常数的区域跳过,不误报。)
+        if db.GetOverviewCount() > 0:
+            pw = min(512, dst.RasterXSize)
+            ph = min(512, dst.RasterYSize)
+            gdal.ErrorReset()
+            full = db.ReadAsArray(0, 0, pw, ph)
+            small = db.ReadAsArray(0, 0, pw, ph,
+                                   buf_xsize=max(1, pw // 8),
+                                   buf_ysize=max(1, ph // 8))
+            _raise_on_gdal_error("overview probe", out_path)
+            if full is None or small is None:
+                raise RuntimeError(f"materialised raster overview probe failed "
+                                   f"({out_path})")
+            full_a, small_a = np.asarray(full), np.asarray(small)
+            if full_a.min() != full_a.max() and small_a.min() == small_a.max():
+                raise RuntimeError(
+                    f"materialised raster has empty overviews ({out_path}): "
+                    f"full-res range [{full_a.min()}, {full_a.max()}] but the "
+                    f"downsampled read is constant {small_a.min()} —— "
+                    "低层级瓦片会整片塌成平板")
+    finally:
+        sb = db = src = dst = None
 
 
 def _gdal_stage_callback(stage_cb, phase: str):
@@ -457,11 +472,19 @@ def build_input_raster(inputs: list[str], work_dir: str | None = None,
         # 的 finally 上,而那个 finally 够不着 —— build_input_raster 是在它的 try 之外
         # 调用的,抛出时 input_path 根本没被赋值。而最可能触发失败的恰恰是磁盘不足:
         # 用户看到任务失败就重试,每重试一次再多留一份,可用空间被自己的失败残骸吃光。
+        # 删不掉必须出声。这里原本是全静默的 `except OSError: pass`,于是
+        # Windows 上「dataset 还开着 → 删除被拒 → 留下 GB 级坏产物」这条链
+        # 一路无声,只有测试断言把它抓了出来。留残骸本身还有下次启动的清扫兜底
+        # (task_cleanup 按文件名里的 pid 判归属),但用户得先知道发生过。
         for path in (out_path, out_path + ".ovr", out_path + ".aux.xml"):
             try:
                 os.remove(path)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                logger.warning(
+                    f"Terrain: 物化失败后删不掉半成品 {path}: {e} —— "
+                    f"它与源同量级,下次启动会被清扫回收")
         raise
     try:
         size_mb = os.path.getsize(out_path) / 1048576
