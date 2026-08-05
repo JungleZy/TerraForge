@@ -306,8 +306,11 @@ class DemTaskManager:
 
         # M20: layer.json 的 parentUrl 指向全局 base，写死 localhost:5000 会在
         # 非 5000 端口/反代部署下 404 —— 可配置，默认值保持现状兼容。
+        # 目录形式，不能带 /layer.json（见 layer_json.normalize_parent_url —— 
+        # 带了会让整个 provider 降级成 heightmap，高程全错且不报错）。
+        # patch_layer_json_parent 还会再规整一次，兜住存量 config 表里的坏值。
         parent_url = self.config.get("terrain_base_parent_url", "") or (
-            "http://localhost:5000/terrain/base/layer.json"
+            "http://localhost:5000/terrain/base"
         )
 
         maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")

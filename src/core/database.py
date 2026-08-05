@@ -67,7 +67,12 @@ DEFAULT_CONFIGS = [
     ('terrain_global_base_path', './downloads/terrain/base_z8'),
     ('terrain_global_base_maxzoom', '8'),
     ('terrain_local_maxzoom', '14'),
-    ('terrain_base_parent_url', 'http://localhost:5000/terrain/base/layer.json'),
+    # 必须是**目录**：Cesium 会 appendForwardSlash() 后再拼 layer.json。
+    # 带 /layer.json 会让它请求 .../layer.json/layer.json 得 404，而它的 404
+    # 处理是塞一个假 heightmap 图层并污染共享 builder => 本任务自己的
+    # quantized-mesh 瓦片也按 heightmap 解析，高程全错且不报错
+    # （实测 4154 m 山峰解成 -744 m）。详见 layer_json.normalize_parent_url。
+    ('terrain_base_parent_url', 'http://localhost:5000/terrain/base'),
     # Contour (等高线) defaults
     ('contour_default_interval', '50'),
     ('contour_warp_tmpdir', ''),

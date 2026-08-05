@@ -572,7 +572,9 @@ def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
     monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
 
     task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
-    assert mgr.get_task(task_id)["parent_url"] == "http://localhost:5000/terrain/base/layer.json"
+    # 目录形式（2026-08-05 改）—— 带 /layer.json 会让 Cesium 降级成 heightmap，
+    # 高程全错且不报错。见 layer_json.normalize_parent_url。
+    assert mgr.get_task(task_id)["parent_url"] == "http://localhost:5000/terrain/base"
 
 
 def test_parent_url_from_config_key(monkeypatch, tmp_path):
@@ -609,7 +611,7 @@ def test_start_tiling_parent_url_fallback_uses_config(monkeypatch, tmp_path):
     if th:
         th.join(timeout=5)
     # 正常创建的行已写入配置值
-    assert captured["parent_url"] == "http://localhost:5000/terrain/base/layer.json"
+    assert captured["parent_url"] == "http://localhost:5000/terrain/base"
 
     # 模拟存量脏行：parent_url 置 NULL，重新 start，回退值同样走配置
     conn = db.get_connection()
@@ -624,4 +626,4 @@ def test_start_tiling_parent_url_fallback_uses_config(monkeypatch, tmp_path):
     th = mgr.active_tasks.get(task_id)
     if th:
         th.join(timeout=5)
-    assert captured["parent_url"] == "http://localhost:5000/terrain/base/layer.json"
+    assert captured["parent_url"] == "http://localhost:5000/terrain/base"

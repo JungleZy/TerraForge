@@ -37,8 +37,9 @@ def _parent_layer_url() -> str:
     见 src/core/database.py DEFAULT_CONFIGS），未配置时回退 localhost:5000 保持
     既有行为。此前两处硬编码，非 5000 端口/反代部署下 parentUrl 必 404（M20）。
     """
+    # 目录形式，不能带 /layer.json（见 layer_json.normalize_parent_url）。
     return ConfigManager().get("terrain_base_parent_url", "") or (
-        "http://localhost:5000/terrain/base/layer.json"
+        "http://localhost:5000/terrain/base"
     )
 
 
