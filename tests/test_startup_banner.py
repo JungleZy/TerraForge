@@ -11,13 +11,12 @@ from src.core.startup_banner import format_banner, print_banner, use_color
 def test_plain_banner_contains_key_info():
     text = format_banner('0.1.0', port=5000, debug=True,
                          downloads_dir='/tmp/downloads',
-                         database_path='/tmp/data/app.db',
                          color=False)
     assert 'TerraForge' in text
     assert 'v0.1.0' in text
     assert 'http://127.0.0.1:5000' in text
     assert '/tmp/downloads' in text
-    assert '/tmp/data/app.db' in text
+    assert '数据库' not in text
     assert 'DEBUG' in text
 
 

@@ -25,8 +25,8 @@ def test_tile_contour_task_dir_injects_and_filters_dem(tmp_path: Path):
     seen = {}
 
     def fake_build(dem_tifs, out_dir, interval, zoom_min, zoom_max, style,
-                   progress_cb=None, stop_flag=None, shade=False, water=False, att_tifs=None,
-                   workers=0):
+                   progress_cb=None, stage_cb=None, stop_flag=None, shade=False,
+                   water=False, att_tifs=None, workers=0):
         seen["dem_tifs"] = list(dem_tifs)
         seen["interval"] = interval
         seen["zooms"] = (zoom_min, zoom_max)
@@ -56,8 +56,8 @@ def test_tile_contour_task_dir_forwards_shade_water_and_att(tmp_path: Path):
     seen = {}
 
     def fake_build(dem_tifs, out_dir, interval, zoom_min, zoom_max, style,
-                   progress_cb=None, stop_flag=None, shade=False, water=False, att_tifs=None,
-                   workers=0):
+                   progress_cb=None, stage_cb=None, stop_flag=None, shade=False,
+                   water=False, att_tifs=None, workers=0):
         seen["shade"] = shade
         seen["water"] = water
         seen["att_tifs"] = list(att_tifs or [])

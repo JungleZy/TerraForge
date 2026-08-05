@@ -59,7 +59,7 @@
 
         const close = document.createElement('button');
         close.className = 'app-toast__close';
-        close.setAttribute('aria-label', '关闭');
+        close.setAttribute('aria-label', t('js.ui.toast.close'));
         close.innerHTML = '&times;';
 
         toast.appendChild(icon);
@@ -104,9 +104,10 @@
     // -------------------------------------------------------------- Confirm
     function showConfirm(message, opts) {
         opts = opts || {};
-        const title = opts.title != null ? opts.title : '确认操作';
-        const confirmText = opts.confirmText != null ? opts.confirmText : '确定';
-        const cancelText = opts.cancelText != null ? opts.cancelText : '取消';
+        // t() 必须在调用期求值（语种取自 window.__I18N__），所以留在函数体里
+        const title = opts.title != null ? opts.title : t('js.ui.confirm.title');
+        const confirmText = opts.confirmText != null ? opts.confirmText : t('js.ui.confirm.ok');
+        const cancelText = opts.cancelText != null ? opts.cancelText : t('js.ui.confirm.cancel');
         const danger = !!opts.danger;
 
         return new Promise(function (resolve) {
@@ -213,7 +214,7 @@
         function apply(connected) {
             el.classList.toggle('conn-status--on', connected);
             el.classList.toggle('conn-status--off', !connected);
-            text.textContent = connected ? '已连接' : '已断开';
+            text.textContent = connected ? t('js.ui.conn.connected') : t('js.ui.conn.disconnected');
         }
         apply(socket.connected);
         socket.on('connect', function () { apply(true); });

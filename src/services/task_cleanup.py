@@ -43,6 +43,11 @@ logger = logging.getLogger(__name__)
 #   contour_upload_* src/services/contour_task_manager.py 的上传暂存
 #   *.part.*         两处引擎落盘的原子写临时件(download_engine /
 #                    dem_download_engine,位于 Config.CACHE_DIR 内)
+#   cesiumlab_terrain_<pid>_*  多幅 DEM 物化成单幅的中间栅格
+#                    (src/services/terrain_tiling/cesiumlab_terrain.py 的
+#                    build_input_raster),与源数据同量级(GB 级任务就是 GB)。
+#                    落在切片输出目录的父级 —— 对 DEM 任务那是用户自选的
+#                    **全盘路径**,不在 DOWNLOADS_DIR 内,所以扫描根要从 DB 取。
 # finally 盖不住 SIGKILL/关窗,这些残留只能在下次启动时清。
 # ⚠️ 新增任何 mkdtemp 型临时目录时,必须把前缀同步登记到这里,否则它就是清扫
 #    盲区(L5 就是这么来的:5 个创建点只有 3 个被扫到)。
@@ -54,6 +59,11 @@ _CONTOUR_WARP_PREFIX = "contour_warp_"
 _LOCAL_UPLOAD_PREFIX = "local_upload_"      # src/services/local_terrain_task_manager.py
 _CONTOUR_UPLOAD_PREFIX = "contour_upload_"  # src/services/contour_task_manager.py
 _PART_GLOB = "*.part.*"
+# 物化中间栅格（cesiumlab_terrain.py:build_input_raster）。它是**文件**不是目录，
+# _sweep_tmp_dirs 的 is_dir 过滤盖不住，所以另有 _sweep_orphan_files。
+# 前缀里带 pid（`cesiumlab_terrain_<pid>_xxxx.tif`），归属判定走 pid 而不是 mtime：
+# 物化产物写完 mtime 就冻住，而切片可以再跑几小时，mtime 判据在这一类上近乎无效。
+_MATERIALISED_PREFIX = "cesiumlab_terrain_"
 # cache 内 .part 的最深落点:瓦片 cache/{style}/{z}/{x}/{y}.png 的 x 目录
 # (根=0 往下 4 层);dem cache 是 cache/dem/<granule>,更浅,一并覆盖。
 # 限深是为了不随 cache 增长无界遍历 —— 瓦片文件本身在叶子层,扫目录名
@@ -228,6 +238,125 @@ def _part_owner_pid(name: str) -> Optional[int]:
         return None
 
 
+def _materialised_owner_pid(name: str) -> Optional[int]:
+    """从 `cesiumlab_terrain_<pid>_xxxx.tif` 里解析出写它的进程 pid。
+
+    与 _part_owner_pid 同一个用途、不同的命名形态（那边是后缀 `.part.<pid>.<id>`，
+    这边是前缀）。取不到返回 None —— 老版本（2026-08-06 之前）的产物名里没有
+    pid，那些只能退到 mtime 判据。
+    """
+    if not name.startswith(_MATERIALISED_PREFIX):
+        return None
+    rest = name[len(_MATERIALISED_PREFIX):]
+    head = rest.split("_", 1)[0]
+    if not head.isdigit():
+        return None
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
+
+def _sweep_orphan_files(root: Path, prefix: str, older_than: Optional[float] = None) -> int:
+    """删除 root **直下**以 prefix 开头的文件（不递归），返回删除数。
+
+    为什么不复用 _sweep_tmp_dirs：那个函数第一件事就是 `entry.is_dir()`，
+    只处理目录型残留。
+
+    为什么不递归：任务目录下面是 terrain_tiles/{z}/{x}/{y}.terrain，可达百万级
+    条目，rglob 会把启动拖到分钟级。物化产物的落点是确定的（恒在 work_dir 直下），
+    不需要走下去。
+
+    归属判定优先用文件名里的 pid（另一个活进程正在用就跳过）；解析不出 pid 的
+    老产物退回 mtime 判据。符号链接一律不碰。
+    """
+    removed = 0
+    try:
+        with os.scandir(root) as it:
+            entries = list(it)
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if not entry.name.startswith(prefix):
+                continue
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            owner = _materialised_owner_pid(entry.name)
+            if owner is not None:
+                if owner == os.getpid():
+                    continue
+                try:
+                    from src.core.process_watchdog import pid_alive
+                    if pid_alive(owner):
+                        # 另一个活着的进程正在拿它切片。pid 复用只会导致漏删
+                        # （下次启动再清），方向是安全的。
+                        continue
+                except Exception:
+                    pass
+            elif older_than is not None:
+                # 没有 pid 的老产物：只能退到 mtime。这条判据对本类残留偏弱
+                # （写完就冻结），保留只是为了不漏掉升级前留下的文件。
+                try:
+                    if entry.stat(follow_symlinks=False).st_mtime >= older_than:
+                        continue
+                except OSError:
+                    continue
+            os.unlink(entry.path)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _materialised_sweep_roots() -> list[Path]:
+    """物化产物可能落在哪些目录 —— work_dir 恒等于「切片输出目录的父级」。
+
+    必须查 DB 而不是只扫 DOWNLOADS_DIR：DEM 任务的 output_path 自 0.2.4 起是
+    用户每次创建任务时必传的**任意绝对路径**（geo_validation 明确放开了全盘），
+    而那正是 GB 级残留最容易发生的一条线。这与 sweep_startup_residue 已经为
+    contour_warp_tmpdir / stitch_tmpdir 读配置键扩根的做法同构。
+    """
+    roots: list[Path] = []
+    # 本地地形任务（固定路径）与全球 base 构建脚本的落点
+    try:
+        roots.append(Path(Config.DOWNLOADS_DIR) / "terrain")
+    except Exception:
+        pass
+    # DEM 切片作业与本地地形任务：从 DB 取真实的输出目录
+    try:
+        from src.core.database import get_connection_context
+
+        with get_connection_context() as conn:
+            for table in ("dem_terrain_jobs", "local_terrain_tasks"):
+                try:
+                    rows = conn.execute(
+                        f"SELECT DISTINCT output_dir FROM {table} "
+                        "WHERE output_dir IS NOT NULL AND output_dir != ''").fetchall()
+                except Exception:
+                    continue
+                for row in rows:
+                    try:
+                        roots.append(Path(row[0]).parent)
+                    except Exception:
+                        continue
+    except Exception:
+        # 数据库不可用（fresh clone、迁移中等）不应让启动清扫失败
+        pass
+
+    seen: set = set()
+    unique: list[Path] = []
+    for r in roots:
+        try:
+            key = str(r.resolve())
+        except OSError:
+            key = str(r)
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
+    return unique
+
+
 def _sweep_cache_part_files(cache_root: Path) -> int:
     """删除 cache 内限深（_CACHE_PART_MAX_DEPTH）的 *.part.* 文件，返回删除数。
 
@@ -277,15 +406,18 @@ def sweep_startup_residue() -> None:
     3. 两处上传暂存目录（local_upload_* / contour_upload_*，位于
        DOWNLOADS_DIR 下 —— 它们的清理只有 except 分支和函数末尾各一条 rmtree、
        **没有 finally**，Ctrl-C / SystemExit 会整个绕过）；
-    4. 共享瓦片/DEM cache 里的原子写临时件（*.part.*）。
+    4. 共享瓦片/DEM cache 里的原子写临时件（*.part.*）；
+    5. 多幅 DEM 物化的中间栅格（cesiumlab_terrain_<pid>_*，与源数据同量级，
+       GB 级任务就是 GB）—— 落在切片输出目录的父级，而 DEM 任务的 output_path
+       是用户自选的全盘路径，所以扫描根要从 DB 取（见 _materialised_sweep_roots）。
 
     只处理 mtime 早于本进程启动时刻的目录（见 _sweep_tmp_dirs 的 older_than）；
-    .part 文件按名字里的 pid 跳过仍存活的写者。
+    .part 文件与物化栅格按名字里的 pid 跳过仍存活的写者。
 
     全程 best-effort：单个删除失败跳过，整体异常只记日志，绝不影响启动。
     匹配规则按前缀/通配精确限定（见模块顶部常量），同步执行、毫秒级。
     """
-    removed = {"stitch": 0, "warp": 0, "upload": 0, "part": 0}
+    removed = {"stitch": 0, "warp": 0, "upload": 0, "part": 0, "materialised": 0}
     started_at = _PROCESS_START_TIME
     try:
         sys_tmp = Path(tempfile.gettempdir())
@@ -333,12 +465,23 @@ def sweep_startup_residue() -> None:
     except Exception as e:
         logger.warning(f"Startup residue sweep failed (ignored): {e}")
         return
+
+    # 第 5 类：多幅 DEM 物化的中间栅格。单独套一层 try —— 它要查 DB，比前四类
+    # 多一个失败面，不该因为数据库暂时不可用就把已经统计好的清扫结果丢掉。
+    try:
+        for root in _materialised_sweep_roots():
+            removed["materialised"] += _sweep_orphan_files(
+                root, _MATERIALISED_PREFIX, started_at)
+    except Exception as e:
+        logger.warning(f"Materialised-raster sweep failed (ignored): {e}")
+
     total = sum(removed.values())
     if total:
         logger.info(
             f"Startup residue sweep removed {total} leftover(s): "
             f"stitch tmp={removed['stitch']}, contour warp tmp={removed['warp']}, "
-            f"cache .part={removed['part']}"
+            f"upload tmp={removed['upload']}, cache .part={removed['part']}, "
+            f"materialised raster={removed['materialised']}"
         )
 
 

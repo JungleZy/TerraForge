@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 
-{% block title %}地图下载 - TerraForge{% endblock %}
+{# 首页不覆盖 title：这里是产品本身（地图瓦片 / DEM / 3D 地形 / 等高线的总工作台），
+   叫「地图下载」只描述了四条管线里的一条。base.html 的默认值就是 TerraForge，
+   与 /history、/config 的「X - TerraForge」形成「产品名 = 首页」的常规层级。 #}
 
 {% block content %}
 <!-- 首屏加载动画：地图引擎（Cesium 同步阻塞初始化）就绪前盖住全屏。
      进度条是「模拟缓动 + 真实就绪事件补完」：map.js 的 initSplash() 驱动，
      viewer 首帧渲染后推满并淡出；JS 异常时原地显示错误而不是永久转圈。 -->
-<div class="splash-screen" id="splashScreen" role="status" aria-label="页面加载中">
+<div class="splash-screen" id="splashScreen" role="status" aria-label="{{ t('tpl.index.splash.loading') }}">
     <div class="splash-grid" aria-hidden="true"></div>
     <div class="splash-scan" aria-hidden="true"></div>
     <div class="splash-core">
@@ -20,7 +22,7 @@
         <div class="splash-track">
             <div class="splash-bar" id="splashBar"></div>
         </div>
-        <div class="splash-stage" id="splashStage">正在初始化地图引擎…</div>
+        <div class="splash-stage" id="splashStage">{{ t('tpl.index.splash.stage_init') }}</div>
     </div>
 </div>
 
@@ -34,65 +36,65 @@
              「下载」「删除」不是常驻入口：框选后出现在选区浮层上。 -->
         <div class="map-toolbar" id="mapToolbar">
             <div class="map-panel-triggers">
-                <button type="button" class="map-panel-btn" id="mapZoomIn" aria-label="放大" title="放大">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <button type="button" class="map-panel-btn" id="mapZoomIn" aria-label="{{ t('tpl.index.toolbar.zoom_in') }}" title="{{ t('tpl.index.toolbar.zoom_in') }}">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                         <line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>
                     </svg>
-                    <span>放大</span>
+                    <span>{{ t('tpl.index.toolbar.zoom_in') }}</span>
                 </button>
-                <button type="button" class="map-panel-btn" id="mapZoomOut" aria-label="缩小" title="缩小">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <button type="button" class="map-panel-btn" id="mapZoomOut" aria-label="{{ t('tpl.index.toolbar.zoom_out') }}" title="{{ t('tpl.index.toolbar.zoom_out') }}">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                         <line x1="5" y1="12" x2="19" y2="12"></line>
                     </svg>
-                    <span>缩小</span>
+                    <span>{{ t('tpl.index.toolbar.zoom_out') }}</span>
                 </button>
             </div>
             <div class="map-panel-triggers">
-                <button type="button" class="map-panel-btn" id="mapDrawRect" aria-label="框选下载区域" title="框选下载区域" aria-pressed="false">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <button type="button" class="map-panel-btn" id="mapDrawRect" aria-label="{{ t('tpl.index.toolbar.draw_rect_title') }}" title="{{ t('tpl.index.toolbar.draw_rect_title') }}" aria-pressed="false">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="4" y="4" width="16" height="16" rx="1"></rect>
                     </svg>
-                    <span>框选</span>
+                    <span>{{ t('tpl.index.toolbar.draw_rect') }}</span>
                 </button>
             </div>
             <div class="map-panel-triggers">
                 <!-- 地形光照：Cesium scene.globe.enableLighting 的开关。
                      偏好存 localStorage（terrain_lighting.js），不进 config 表。 -->
                 <button type="button" class="map-panel-btn" id="mapTerrainLighting"
-                        aria-label="地形光照" title="地形光照（需已加载地形预览）" aria-pressed="false">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        aria-label="{{ t('tpl.index.toolbar.terrain_lighting') }}" title="{{ t('tpl.index.toolbar.terrain_lighting_title') }}" aria-pressed="false">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <circle cx="12" cy="12" r="4"></circle>
                         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
                     </svg>
-                    <span>光照</span>
+                    <span>{{ t('tpl.index.toolbar.lighting') }}</span>
                 </button>
             </div>
             <div class="map-panel-triggers" id="mapPanelTriggers">
                 <button type="button" class="map-panel-btn" id="processOpenBtn"
                         data-bs-toggle="modal" data-bs-target="#processModal"
-                        aria-label="数据处理" title="数据处理">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        aria-label="{{ t('tpl.index.toolbar.process_title') }}" title="{{ t('tpl.index.toolbar.process_title') }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
                     </svg>
-                    <span>处理</span>
+                    <span>{{ t('tpl.index.toolbar.process') }}</span>
                 </button>
-                <button type="button" class="map-panel-btn" data-panel="records" aria-label="任务" title="任务（活动 + 历史）">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <button type="button" class="map-panel-btn" data-panel="records" aria-label="{{ t('tpl.index.toolbar.tasks') }}" title="{{ t('tpl.index.toolbar.tasks_title') }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="3 7 5 9 9 5"></polyline>
                         <polyline points="3 17 5 19 9 15"></polyline>
                         <line x1="13" y1="6" x2="21" y2="6"></line>
                         <line x1="13" y1="12" x2="21" y2="12"></line>
                         <line x1="13" y1="18" x2="21" y2="18"></line>
                     </svg>
-                    <span>任务</span>
+                    <span>{{ t('tpl.index.toolbar.tasks') }}</span>
                 </button>
-                <button type="button" class="map-panel-btn" data-panel="config" aria-label="配置" title="配置">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <button type="button" class="map-panel-btn" data-panel="config" aria-label="{{ t('tpl.index.toolbar.config') }}" title="{{ t('tpl.index.toolbar.config') }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"></circle>
                         <path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path>
                     </svg>
-                    <span>配置</span>
+                    <span>{{ t('tpl.index.toolbar.config') }}</span>
                 </button>
             </div>
         </div>
@@ -114,40 +116,40 @@
                         <polyline points="7 10 12 15 17 10"></polyline>
                         <line x1="12" y1="15" x2="12" y2="3"></line>
                     </svg>
-                    下载数据
+                    {{ t('tpl.index.download.title') }}
                 </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.index.modal.close') }}"></button>
             </div>
             <div class="modal-body">
                 <div class="modal-bounds-summary" id="downloadModalBounds"></div>
                 <div class="tile-estimate" id="tileEstimate" hidden></div>
                 <form id="downloadForm">
-                    <div class="form-group-label">基础</div>
+                    <div class="form-group-label">{{ t('tpl.index.form.section_basic') }}</div>
                     <div class="mb-3">
-                        <label for="taskName" class="form-label">任务名称</label>
-                        <input type="text" class="form-control" id="taskName" placeholder="输入任务名称..." required>
+                        <label for="taskName" class="form-label">{{ t('tpl.index.form.task_name') }}</label>
+                        <input type="text" class="form-control" id="taskName" placeholder="{{ t('tpl.index.form.task_name_placeholder') }}" required>
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label">下载类型</label>
+                        <label class="form-label">{{ t('tpl.index.download.type') }}</label>
                         <div>
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="radio" name="downloadType" id="downloadTypeMap" value="map" checked>
-                                <label class="form-check-label" for="downloadTypeMap">瓦片</label>
+                                <label class="form-check-label" for="downloadTypeMap">{{ t('tpl.index.download.type_map') }}</label>
                             </div>
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="radio" name="downloadType" id="downloadTypeDem" value="dem">
-                                <label class="form-check-label" for="downloadTypeDem">高程</label>
+                                <label class="form-check-label" for="downloadTypeDem">{{ t('tpl.index.download.type_dem') }}</label>
                             </div>
                         </div>
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label">输出格式</label>
+                        <label class="form-label">{{ t('tpl.index.download.output_format') }}</label>
                         <div>
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatTiles" checked>
-                                <label class="form-check-label" for="outputFormatTiles">瓦片</label>
+                                <label class="form-check-label" for="outputFormatTiles">{{ t('tpl.index.download.format_tiles') }}</label>
                             </div>
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatGeoTiff" checked>
@@ -158,56 +160,56 @@
                         </div>
                     </div>
 
-                    <div class="form-group-label">范围与层级</div>
+                    <div class="form-group-label">{{ t('tpl.index.form.section_range') }}</div>
                     <div class="mb-3" id="mapStyleField">
-                        <label for="mapStyle" class="form-label">地图样式</label>
+                        <label for="mapStyle" class="form-label">{{ t('tpl.index.download.map_style') }}</label>
                         <div class="map-style-row">
                             <select class="form-select" id="mapStyle">
-                                <option value="m">标准地图</option>
-                                <option value="s">卫星图</option>
-                                <option value="y">卫星图+标注</option>
-                                <option value="h">道路图</option>
-                                <option value="t">地形图</option>
+                                <option value="m">{{ t('tpl.index.download.style_standard') }}</option>
+                                <option value="s">{{ t('tpl.index.download.style_satellite') }}</option>
+                                <option value="y">{{ t('tpl.index.download.style_satellite_labels') }}</option>
+                                <option value="h">{{ t('tpl.index.download.style_roads') }}</option>
+                                <option value="t">{{ t('tpl.index.download.style_terrain') }}</option>
                             </select>
-                            <img id="mapStylePreview" class="map-style-preview" alt="样式预览" title="当前样式瓦片预览">
+                            <img id="mapStylePreview" class="map-style-preview" alt="{{ t('tpl.index.download.style_preview_alt') }}" title="{{ t('tpl.index.download.style_preview_title') }}">
                         </div>
                     </div>
 
                     <div class="row">
                         <div class="col-6 mb-3">
-                            <label for="zoomMin" class="form-label">最小缩放级别</label>
+                            <label for="zoomMin" class="form-label">{{ t('tpl.index.form.zoom_min') }}</label>
                             <input type="number" class="form-control" id="zoomMin" min="0" max="21" value="10">
                         </div>
                         <div class="col-6 mb-3">
-                            <label for="zoomMax" class="form-label">最大缩放级别</label>
+                            <label for="zoomMax" class="form-label">{{ t('tpl.index.form.zoom_max') }}</label>
                             <input type="number" class="form-control" id="zoomMax" min="0" max="21" value="15">
                         </div>
                     </div>
 
                     <div class="mb-3" id="demOptions" style="display:none;">
-                        <label for="demDataset" class="form-label">数据源</label>
+                        <label for="demDataset" class="form-label">{{ t('tpl.index.download.dem_dataset') }}</label>
                         <select class="form-select mb-2" id="demDataset">
-                            <option value="COP-DEM-GLO-30">Copernicus GLO-30（30m，推荐，更干净，免认证）</option>
-                            <option value="ASTGTM.003">ASTER GDEM v3（30m，需 Earthdata 账号）</option>
+                            <option value="COP-DEM-GLO-30">{{ t('tpl.index.download.dem_glo30') }}</option>
+                            <option value="ASTGTM.003">{{ t('tpl.index.download.dem_aster') }}</option>
                         </select>
-                        <small class="form-text text-muted d-block mb-2">下方 NUM/SWB 仅 ASTER 适用；选 GLO-30 时忽略。</small>
+                        <small class="form-text text-muted d-block mb-2">{{ t('tpl.index.download.dem_hint') }}</small>
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" id="demDownloadNum">
-                            <label class="form-check-label" for="demDownloadNum">同时下载 NUM 质量文件</label>
+                            <label class="form-check-label" for="demDownloadNum">{{ t('tpl.index.download.dem_num') }}</label>
                         </div>
                         <div class="form-check">
                             <input class="form-check-input" type="checkbox" id="demDownloadSwb">
-                            <label class="form-check-label" for="demDownloadSwb">同时下载 SWB 水体掩膜文件</label>
+                            <label class="form-check-label" for="demDownloadSwb">{{ t('tpl.index.download.dem_swb') }}</label>
                         </div>
                     </div>
 
-                    <div class="form-group-label">输出</div>
+                    <div class="form-group-label">{{ t('tpl.index.download.section_output') }}</div>
                     <div class="mb-3">
-                        <label for="outputPath" class="form-label">保存路径</label>
+                        <label for="outputPath" class="form-label">{{ t('tpl.index.download.output_path') }}</label>
                         <div class="d-flex gap-2 align-items-center">
-                            <input type="text" class="form-control" id="outputPath" placeholder="绝对路径,可点「浏览」选择">
+                            <input type="text" class="form-control" id="outputPath" placeholder="{{ t('tpl.index.download.output_path_placeholder') }}">
                             <button type="button" class="btn btn-outline-primary path-browse" id="outputPathBrowse"
-                                    onclick="openPathBrowser('outputPath')">浏览</button>
+                                    onclick="openPathBrowser('outputPath')">{{ t('tpl.index.download.browse') }}</button>
                         </div>
                     </div>
 
@@ -217,7 +219,7 @@
                             <polyline points="7 10 12 15 17 10"></polyline>
                             <line x1="12" y1="15" x2="12" y2="3"></line>
                         </svg>
-                        创建下载任务
+                        {{ t('tpl.index.download.submit') }}
                     </button>
                 </form>
             </div>
@@ -235,105 +237,105 @@
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
                         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
                     </svg>
-                    数据处理
+                    {{ t('tpl.index.process.title') }}
                 </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.index.modal.close') }}"></button>
             </div>
             <div class="modal-body">
                 <form id="processForm">
-                    <div class="form-group-label">基础</div>
+                    <div class="form-group-label">{{ t('tpl.index.form.section_basic') }}</div>
                     <div class="mb-3">
-                        <label for="processTaskName" class="form-label">任务名称</label>
-                        <input type="text" class="form-control" id="processTaskName" placeholder="输入任务名称..." required>
+                        <label for="processTaskName" class="form-label">{{ t('tpl.index.form.task_name') }}</label>
+                        <input type="text" class="form-control" id="processTaskName" placeholder="{{ t('tpl.index.form.task_name_placeholder') }}" required>
                     </div>
 
                     <div class="mb-3">
-                        <label for="processType" class="form-label">处理类型</label>
+                        <label for="processType" class="form-label">{{ t('tpl.index.process.type') }}</label>
                         <select class="form-select" id="processType">
-                            <option value="local_terrain">本地高程切片（上传 GeoTIFF）</option>
-                            <option value="contour">等高线瓦片</option>
+                            <option value="local_terrain">{{ t('tpl.index.process.type_local_terrain') }}</option>
+                            <option value="contour">{{ t('tpl.index.process.type_contour') }}</option>
                         </select>
                     </div>
 
                     <div class="mb-3" id="localTerrainOptions" style="display:none;">
-                        <label for="localTerrainFiles" class="form-label">上传高程文件（可多选 .tif/.tiff）</label>
+                        <label for="localTerrainFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
                         <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
-                        <label for="localTerrainMaxzoom" class="form-label mt-2">最大切片层级</label>
+                        <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
                         <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
                     </div>
 
                     <div class="mb-3" id="contourOptions" style="display:none;">
-                        <label for="contourFiles" class="form-label">上传高程文件（可多选 .tif/.tiff）</label>
+                        <label for="contourFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
                         <input type="file" class="form-control" id="contourFiles" accept=".tif,.tiff" multiple>
-                        <small class="form-text text-muted">等高线从上传的 DEM 渲染；远程高程下载在「下载数据」里做。</small>
+                        <small class="form-text text-muted">{{ t('tpl.index.process.contour_source_hint') }}</small>
 
-                        <label for="contourInterval" class="form-label mt-2">基准等高距（米）</label>
+                        <label for="contourInterval" class="form-label mt-2">{{ t('tpl.index.process.contour_interval') }}</label>
                         <input type="number" class="form-control" id="contourInterval" min="1" step="1" value="50">
-                        <small class="form-text text-muted">基准（最细）等高距；低层级会自动变粗以免线条拥挤。小范围 50m、大范围 100m。</small>
+                        <small class="form-text text-muted">{{ t('tpl.index.process.contour_interval_hint') }}</small>
 
-                        <label class="form-label mt-2">背景</label>
+                        <label class="form-label mt-2">{{ t('tpl.index.process.background') }}</label>
                         <div class="d-flex align-items-center gap-2">
                             <input type="color" id="contourBackground" value="#faf6ec" class="form-control form-control-color" style="max-width:60px;">
                             <div class="form-check mb-0">
                                 <input type="checkbox" id="contourBackgroundTransparent" class="form-check-input">
-                                <label class="form-check-label" for="contourBackgroundTransparent">透明（叠加到底图用）</label>
+                                <label class="form-check-label" for="contourBackgroundTransparent">{{ t('tpl.index.process.background_transparent') }}</label>
                             </div>
                         </div>
-                        <small class="form-text text-muted">默认米白；勾选透明可把等高线叠加到卫星/标准底图上。</small>
+                        <small class="form-text text-muted">{{ t('tpl.index.process.background_hint') }}</small>
 
-                        <label class="form-label mt-2">地形着色</label>
+                        <label class="form-label mt-2">{{ t('tpl.index.process.terrain_shade') }}</label>
                         <div class="form-check mb-0">
                             <input type="checkbox" id="contourTerrainShade" class="form-check-input" checked>
-                            <label class="form-check-label" for="contourTerrainShade">分层设色 + 晕渲（按海拔上色 + 阳光阴影）</label>
+                            <label class="form-check-label" for="contourTerrainShade">{{ t('tpl.index.process.terrain_shade_option') }}</label>
                         </div>
 
                         <details class="contour-style-custom" id="contourStyleCustom">
-                            <summary>配色自定义（不改则用默认方案）</summary>
+                            <summary>{{ t('tpl.index.process.style_custom') }}</summary>
                             <div class="row mt-2">
                                 <div class="col-6 mb-2">
-                                    <label for="lineColorIntermediate" class="form-label">普通等高线</label>
+                                    <label for="lineColorIntermediate" class="form-label">{{ t('tpl.index.process.line_color_intermediate') }}</label>
                                     <input type="color" id="lineColorIntermediate" value="#9C6B3F" class="form-control form-control-color w-100">
                                 </div>
                                 <div class="col-6 mb-2">
-                                    <label for="lineColorIndex" class="form-label">计曲线 / 标签</label>
+                                    <label for="lineColorIndex" class="form-label">{{ t('tpl.index.process.line_color_index') }}</label>
                                     <input type="color" id="lineColorIndex" value="#7A4F2A" class="form-control form-control-color w-100">
                                 </div>
                             </div>
                             <div class="mb-2">
-                                <label for="tintBreaks" class="form-label">分层断点（米，逗号分隔，递增）</label>
+                                <label for="tintBreaks" class="form-label">{{ t('tpl.index.process.tint_breaks') }}</label>
                                 <input type="text" class="form-control" id="tintBreaks" value="0,200,500,1000,2000,3000,4000,5000">
                             </div>
                             <div class="mb-2">
-                                <label class="form-label">分层颜色（按海拔带，断点数+1 个）</label>
+                                <label class="form-label">{{ t('tpl.index.process.tint_colors') }}</label>
                                 <div id="tintColorStops" class="tint-stops"></div>
                             </div>
-                            <button type="button" class="btn btn-sm btn-outline-secondary" id="tintResetBtn">恢复默认配色</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="tintResetBtn">{{ t('tpl.index.process.tint_reset') }}</button>
                             <!-- 样式预览：合成 DEM 按当前配色渲染，改任何配色项都会刷新 -->
-                            <img id="contourStylePreview" class="contour-style-preview" alt="配色预览（分层设色 + 晕渲 + 等高线）">
+                            <img id="contourStylePreview" class="contour-style-preview" alt="{{ t('tpl.index.process.style_preview_alt') }}">
                         </details>
                     </div>
 
                     <!-- 仅等高线需要缩放范围；本地高程切片的层级在上方自己的字段里 -->
                     <div id="processZoomSection" style="display:none;">
-                        <div class="form-group-label">范围与层级</div>
+                        <div class="form-group-label">{{ t('tpl.index.form.section_range') }}</div>
                         <div class="row">
                             <div class="col-6 mb-3">
-                                <label for="processZoomMin" class="form-label">最小缩放级别</label>
+                                <label for="processZoomMin" class="form-label">{{ t('tpl.index.form.zoom_min') }}</label>
                                 <input type="number" class="form-control" id="processZoomMin" min="0" max="21" value="10">
                             </div>
                             <div class="col-6 mb-3">
-                                <label for="processZoomMax" class="form-label">最大缩放级别</label>
-                                <input type="number" class="form-control" id="processZoomMax" min="0" max="21" placeholder="自动">
+                                <label for="processZoomMax" class="form-label">{{ t('tpl.index.form.zoom_max') }}</label>
+                                <input type="number" class="form-control" id="processZoomMax" min="0" max="21" placeholder="{{ t('tpl.index.process.zoom_max_placeholder') }}">
                             </div>
                         </div>
-                        <small class="form-text text-muted d-block mb-2">最大级别留空按高程文件分辨率自动计算；也可手动填更高层级（最高 21）。</small>
+                        <small class="form-text text-muted d-block mb-2">{{ t('tpl.index.process.zoom_hint') }}</small>
                     </div>
 
                     <button type="submit" class="btn btn-primary w-100" id="createProcessBtn">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
                             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
                         </svg>
-                        创建处理任务
+                        {{ t('tpl.index.process.submit') }}
                     </button>
                 </form>
             </div>
@@ -347,7 +349,7 @@
 <!-- 任务面板（右侧滑出，浮在地图上方）：统计 + 单一时间流任务列表
      （活动任务也在流里，socket 原地更新）+ 历史区域地图。
      独立页 /history 仍可用（布局顺序不同）。 -->
-<section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="任务" hidden>
+<section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
     <header class="workbench-panel__header">
         <span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
@@ -357,9 +359,9 @@
                 <line x1="13" y1="12" x2="21" y2="12"></line>
                 <line x1="13" y1="18" x2="21" y2="18"></line>
             </svg>
-            任务
+            {{ t('tpl.index.panel.tasks') }}
         </span>
-        <button type="button" class="dock-collapse-btn" data-panel-close title="关闭面板" aria-label="关闭面板">
+        <button type="button" class="dock-collapse-btn" data-panel-close title="{{ t('tpl.index.panel.close') }}" aria-label="{{ t('tpl.index.panel.close') }}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
     </header>
@@ -372,16 +374,16 @@
 </section>
 
 <!-- 配置面板 -->
-<section class="workbench-panel" id="configPanel" aria-label="配置" hidden>
+<section class="workbench-panel" id="configPanel" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
     <header class="workbench-panel__header">
         <span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
                 <circle cx="12" cy="12" r="3"></circle>
                 <path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path>
             </svg>
-            配置
+            {{ t('tpl.index.panel.config') }}
         </span>
-        <button type="button" class="dock-collapse-btn" data-panel-close title="关闭面板" aria-label="关闭面板">
+        <button type="button" class="dock-collapse-btn" data-panel-close title="{{ t('tpl.index.panel.close') }}" aria-label="{{ t('tpl.index.panel.close') }}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
     </header>
@@ -393,20 +395,20 @@
 {% endblock %}
 
 {% block statusbar %}
-<span class="statusbar-item statusbar-tasks" id="statusTasks" title="活动任务（点击打开任务面板）" data-panel="records">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+<span class="statusbar-item statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
-    <span id="statusTasksText">无活动任务</span>
+    <span id="statusTasksText">{{ t('tpl.index.statusbar.no_active_task') }}</span>
     <span class="statusbar-progress" id="statusTasksProgress" hidden>
         <span class="statusbar-progress__bar" id="statusTasksBar"></span>
     </span>
 </span>
-<span class="statusbar-item statusbar-copy" id="statusCoords" title="鼠标指向地图显示经纬度，点击复制坐标">经度 — 纬度 —</span>
+<span class="statusbar-item statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">{{ t('tpl.index.statusbar.coords_empty') }}</span>
 <span class="statusbar-item" id="statusZoom">z—</span>
-<span class="statusbar-item statusbar-copy" id="statusSelection" title="框选后点击复制四至（W,S,E,N）">未选择区域</span>
+<span class="statusbar-item statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">{{ t('tpl.index.statusbar.no_selection') }}</span>
 <span class="statusbar-item statusbar-event" id="statusEvent" aria-live="polite"></span>
-<span class="statusbar-item statusbar-clock" id="statusClock" title="本地时间">--:--:--</span>
+<span class="statusbar-item statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">--:--:--</span>
 {% endblock %}
 
 {% block extra_js %}

@@ -16,6 +16,8 @@ east < west(反经线式输入被静默交换,下载的是完全错误的区域)
 
 import math
 
+from src.i18n import t
+
 MIN_ZOOM = 0   # 与 src/services/download_engine.py 的 MIN_ZOOM 一致
 MAX_ZOOM = 21  # 与 src/services/download_engine.py 的 MAX_ZOOM 一致
 
@@ -116,13 +118,13 @@ def require_absolute_output_dir(raw, base_dir=None):
     p = Path(str(raw)).expanduser()
     if not p.is_absolute():
         raise ValueError(
-            f"保存路径必须是绝对路径（收到 {raw!r}），可点输入框旁的「浏览」选择"
+            t('val.geo.output_path.must_be_absolute', path=repr(raw))
         )
     resolved = p.resolve()
     # parts 含根（'/' 或 'C:\\'）：('/','a','b') = 3 即两级目录
     if len(resolved.parts) < 3:
         raise ValueError(
-            f"保存路径至少需要两级目录（收到 {raw!r}），不要直接选根目录/盘符根"
+            t('val.geo.output_path.min_depth', path=repr(raw))
         )
     return str(resolved)
 

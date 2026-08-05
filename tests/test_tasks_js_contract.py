@@ -922,6 +922,19 @@ def test_both_js_files_map_every_backend_status():
     )
 
 
+# i18n 改造后，状态词表的值不再是 JS 里的中文字面量，而是
+# `'running': t('js.tasks.status.running')`。真值搬到了 src/i18n/catalog/。
+# 下面三条断言相应改成两段式：先从 JS 里解析出 状态 -> i18n key 的配对
+# （守「这个状态确实去查了那条文案」），再去目录里取值检查中文
+# （守「那条文案确实是对的中文词」）。只查一半都能被绕过：
+#   · 只查 JS：key 在、目录里的词被改成别的意思 —— 绿。
+#   · 只查目录：词对、JS 里根本没引用它 —— 绿。
+def _status_text_keys(js_name):
+    """`getStatusText` 里 状态值 -> i18n key 的映射。"""
+    body = _js_function_body(_strip_js_comments(_js(js_name)), 'getStatusText')
+    return dict(re.findall(r"'([a-z_]+)'\s*:\s*t\('([\w.]+)'\)", body)), body
+
+
 def test_status_labels_are_never_the_raw_backend_literal():
     """`getStatusText` 的每一个值都必须是中文，不能是英文原值。
 
@@ -929,20 +942,26 @@ def test_status_labels_are_never_the_raw_backend_literal():
     就能让键集合合格，而界面上仍然显示英文 —— 中英混杂原样保留，测试全绿。
     这条把值也钉住：必须含中日韩统一表意文字，且不得等于键本身。
     """
+    from src.i18n.catalog import MESSAGES
+
     enum_values = _task_status_values()
     problems = []
     checked = 0
     for js_name in ('tasks.js', 'history.js'):
-        body = _js_function_body(_strip_js_comments(_js(js_name)), 'getStatusText')
-        pairs = re.findall(r"'([a-z_]+)'\s*:\s*'([^']*)'", body)
+        pairs, _body = _status_text_keys(js_name)
         assert len(pairs) == len(enum_values), (
-            f'{js_name} 的 getStatusText 解析出 {len(pairs)} 对映射，'
+            f'{js_name} 的 getStatusText 解析出 {len(pairs)} 对 状态->i18n key 映射，'
             f'期望 {len(enum_values)} 对 —— 本测试已失效'
         )
-        for key, value in pairs:
+        for status, key in pairs.items():
             checked += 1
-            if value == key or not re.search(r'[一-鿿]', value):
-                problems.append(f'{js_name}: {key!r} -> {value!r}')
+            entry = MESSAGES.get(key)
+            if entry is None:
+                problems.append(f'{js_name}: {status!r} -> {key!r} 在文案目录里不存在')
+                continue
+            value = entry['zh']
+            if value == status or not re.search(r'[一-鿿]', value):
+                problems.append(f'{js_name}: {status!r} -> {key} = {value!r}')
     assert checked == 2 * len(enum_values), f'只检查了 {checked} 条映射 —— 本测试已失效'
     assert not problems, (
         '状态文案不是中文（界面会中英混杂）：\n' + '\n'.join('  ' + p for p in problems)
@@ -971,6 +990,8 @@ def test_terrain_job_status_is_translated_too():
     引入会破坏 PyInstaller 的离线打包形态），或者一次 CDP 实测。
     下一个动这块的人：知道边界在这里，别把这条当成语义保障。
     """
+    from src.i18n.catalog import MESSAGES
+
     body = _js_function_body(_strip_js_comments(_js('history.js')), 'refreshTerrainDetail')
     badges = re.findall(r'<span class="badge bg-([^"]*)">([^<]*)</span>', body)
     assert len(badges) == 3, (
@@ -988,18 +1009,31 @@ def test_terrain_job_status_is_translated_too():
         d = re.search(r'\b(?:const|let|var)\s+' + re.escape(m.group(1)) + r'\s*=([^;]*);', body)
         return bool(d) and want in d.group(1)
 
+    # i18n 改造后「未开始」「加载失败」也变成了插值 —— `${t('js.history.terrain.*')}`。
+    # 它们是**定值文案**（查表即定），与作业状态那种「运行期算出来的值」性质不同，
+    # 所以按定值处理：跳过 getStatusText 检查，但要求 key 在文案目录里真的存在，
+    # 免得把 `${t('typo.key')}` 也放过去。
+    def is_static_text(expr):
+        m = re.fullmatch(r"\$\{\s*t\('([\w.]+)'\)\s*\}", expr.strip())
+        if not m:
+            return False
+        assert m.group(1) in MESSAGES, (
+            f'徽章文案引用了不存在的文案 key: {m.group(1)!r}')
+        return True
+
     problems = []
+    dynamic = []
     for color_expr, label_expr in badges:
-        if '${' not in label_expr:
-            continue                      # 中文字面量（「未开始」「加载失败」），合格
+        if '${' not in label_expr or is_static_text(label_expr):
+            continue                      # 定值文案（「未开始」「加载失败」），合格
+        dynamic.append((color_expr, label_expr))
         if not resolve(label_expr, 'getStatusText('):
             problems.append(f'徽章文案 `{label_expr}` 追不到 getStatusText(...)')
         if not resolve('${' + color_expr.strip('${}') + '}', 'getStatusColor('):
             problems.append(f'徽章配色 `{color_expr}` 追不到 getStatusColor(...)')
-    # 自检：三个徽章里必须恰好有一个是插值的，否则上面的循环什么都没查
-    interpolated = [b for b in badges if '${' in b[1]]
-    assert len(interpolated) == 1, (
-        f'期望恰好 1 个插值徽章（作业状态），实际 {len(interpolated)} 个 —— 本测试已失效'
+    # 自检：三个徽章里必须恰好有一个是运行期求值的，否则上面的循环什么都没查
+    assert len(dynamic) == 1, (
+        f'期望恰好 1 个运行期插值徽章（作业状态），实际 {len(dynamic)} 个 —— 本测试已失效'
     )
     assert not problems, (
         '地形切片状态没走统一词表：\n' + '\n'.join('  ' + p for p in problems)
@@ -1048,19 +1082,21 @@ def test_status_labels_are_paired_with_the_right_status():
     钉关键词而不是整句：文案微调（「已完成」->「完成了」）不该误红，
     整体互换必须红。
     """
+    from src.i18n.catalog import MESSAGES
+
     problems, checked = [], 0
     for js_name in ('tasks.js', 'history.js'):
-        body = _js_function_body(_strip_js_comments(_js(js_name)), 'getStatusText')
-        pairs = dict(re.findall(r"'([a-z_]+)'\s*:\s*'([^']*)'", body))
+        pairs, _body = _status_text_keys(js_name)
         assert set(pairs) == set(_STATUS_LABEL_KEYWORD), (
             f'{js_name} 的 getStatusText 键集合是 {sorted(pairs)} —— '
             '先修 test_both_js_files_map_every_backend_status'
         )
         for status, keyword in _STATUS_LABEL_KEYWORD.items():
             checked += 1
-            if keyword not in pairs[status]:
+            label = MESSAGES[pairs[status]]['zh']
+            if keyword not in label:
                 problems.append(
-                    f'{js_name}: {status!r} -> {pairs[status]!r}，应含 {keyword!r}')
+                    f'{js_name}: {status!r} -> {pairs[status]} = {label!r}，应含 {keyword!r}')
     assert checked == 12, f'只检查了 {checked} 组（期望 12）—— 本测试已失效'
     assert not problems, (
         '状态与文案的配对错了（界面会把失败写成已完成这种）：\n'
@@ -1175,14 +1211,21 @@ def test_unknown_status_never_renders_raw_english_literal():
     已知六态由词表覆盖（见上面的 A7 断言）；词表外的状态统一显示「未知」，
     与 A7 修过的中英混杂问题保持同一方案。
     """
+    from src.i18n.catalog import MESSAGES
+
     for js_name in ('tasks.js', 'history.js'):
         body = _fn('getStatusText', js_name)
         assert not re.search(r"\|\|\s*status\b", body), (
             f'{js_name} 的 getStatusText 仍用 `|| status` 兜底——'
             '未知英文状态会被原样渲染进中文界面'
         )
-        assert "'未知'" in body, (
-            f"{js_name} 的 getStatusText 未知状态应统一显示 '未知'"
+        fallback = re.search(r"\|\|\s*t\('([\w.]+)'\)", body)
+        assert fallback, (
+            f"{js_name} 的 getStatusText 没有 `|| t('…')` 形态的兜底文案"
+        )
+        assert MESSAGES[fallback.group(1)]['zh'] == '未知', (
+            f"{js_name} 的 getStatusText 兜底文案 {fallback.group(1)} 的中文是 "
+            f"{MESSAGES[fallback.group(1)]['zh']!r}，应统一显示 '未知'"
         )
 
 

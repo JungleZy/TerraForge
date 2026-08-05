@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from src.i18n import t
 from src.services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)
@@ -61,23 +62,25 @@ def validate_server_entry(entry):
     """校验单个服务器条目。返回 (ok, error_message)。"""
     entry = (entry or '').strip()
     if not entry:
-        return False, '条目不能为空'
+        return False, t('val.tile_url.entry.empty')
     if entry.startswith(('http://', 'https://')):
         parts = urlsplit(entry)
         if not parts.netloc:
-            return False, 'URL 缺少主机名'
+            return False, t('val.tile_url.entry.missing_host')
         missing = [p for p in ('{z}', '{x}', '{y}') if p not in entry]
         if missing:
-            return False, '模板缺少占位符 ' + ' '.join(missing)
+            return False, t('val.tile_url.entry.missing_placeholders',
+                            names=' '.join(missing))
         unknown = [p for p in _PLACEHOLDER_RE.findall(entry)
                    if p not in _ALLOWED_PLACEHOLDERS]
         if unknown:
-            return False, '模板包含不支持的占位符 ' + ' '.join(unknown)
+            return False, t('val.tile_url.entry.unsupported_placeholders',
+                            names=' '.join(unknown))
         return True, None
     if '://' in entry:
-        return False, '只支持 http/https 协议'
+        return False, t('val.tile_url.entry.scheme_unsupported')
     if not _HOST_ENTRY_RE.match(entry):
-        return False, f'无法识别的主机/别名：{entry}'
+        return False, t('val.tile_url.entry.unknown_host', entry=entry)
     return True, None
 
 
@@ -85,7 +88,7 @@ def validate_server_list(value):
     """校验逗号分隔的整个列表（ConfigManager.validate_config 用）。"""
     entries = [s.strip() for s in (value or '').split(',') if s.strip()]
     if not entries:
-        return False, '瓦片服务器列表不能为空'
+        return False, t('val.tile_url.list.empty')
     for entry in entries:
         ok, err = validate_server_entry(entry)
         if not ok:
@@ -159,15 +162,15 @@ async def _fetch_tile(url, proxy_url, timeout_s):
                 if resp.status != 200:
                     result['error'] = f'HTTP {resp.status}'
                 elif not data:
-                    result['error'] = '响应为空（0 字节）'
+                    result['error'] = t('val.tile_url.probe.empty_response')
                 else:
                     result['success'] = True
     except asyncio.TimeoutError:
         result['elapsed_ms'] = round((time.monotonic() - started) * 1000)
-        result['error'] = f'连接超时（{timeout_s}s）'
+        result['error'] = t('val.tile_url.probe.timeout', seconds=timeout_s)
     except aiohttp.ClientError as e:
         result['elapsed_ms'] = round((time.monotonic() - started) * 1000)
-        result['error'] = f'连接失败：{e}'
+        result['error'] = t('val.tile_url.probe.connect_failed', error=e)
     return result
 
 
@@ -339,7 +342,7 @@ def recommend_concurrency(servers, style='s', proxy_url='',
     try:
         urls = _recommend_probe_urls(servers, style, center_lng, center_lat)
         if not urls:
-            result['note'] = '瓦片服务器列表为空，无法测速，给出保守值'
+            result['note'] = t('val.tile_url.recommend.no_servers')
             return result
         if should_bypass_proxy(urls[0]):
             proxy_url = ''
@@ -356,17 +359,18 @@ def recommend_concurrency(servers, style='s', proxy_url='',
 
         picked = _pick_concurrency(samples)
         if picked is None:
-            result['note'] = ('测速样本全部失败（网络/代理不可用或瓦片不存在），'
-                              f'给出保守值 {RECOMMEND_FALLBACK}')
+            result['note'] = t('val.tile_url.recommend.all_failed',
+                               fallback=RECOMMEND_FALLBACK)
             return result
 
         recommended, rising = picked
         recommended = max(1, min(100, recommended))  # 配置校验域 1-100
         best = max(s['tiles_per_sec'] for s in samples if s['ok'] > 0)
         result.update(recommended=recommended, fallback=False, rising=rising)
-        result['note'] = (
-            f'实测最高 {best:.1f} 块/秒；推荐并发 {recommended}'
-            + ('，且顶格仍在上升，可再手动调高试试' if rising else '（膝点：再加并发收益不足 10%）')
+        result['note'] = t(
+            'val.tile_url.recommend.note_rising' if rising
+            else 'val.tile_url.recommend.note_knee',
+            best=f'{best:.1f}', recommended=recommended,
         )
         logger.info(
             f'Concurrency recommendation: {recommended} '
@@ -375,5 +379,7 @@ def recommend_concurrency(servers, style='s', proxy_url='',
         return result
     except Exception as e:
         logger.warning(f'Concurrency recommendation failed ({e!r}), fallback')
-        result['note'] = f'测速出错（{type(e).__name__}），给出保守值 {RECOMMEND_FALLBACK}'
+        result['note'] = t('val.tile_url.recommend.error',
+                           error_type=type(e).__name__,
+                           fallback=RECOMMEND_FALLBACK)
         return result

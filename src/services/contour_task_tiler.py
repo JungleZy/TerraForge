@@ -38,6 +38,7 @@ def tile_contour_task_dir(
     params: ContourParams,
     build_contour_fn: Optional[Callable] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
+    stage_cb: Optional[Callable[[str, float], None]] = None,
     stop_flag=None,
 ) -> dict:
     task_dir = Path(task_dir)
@@ -62,6 +63,7 @@ def tile_contour_task_dir(
         zoom_max=params.zoom_max,
         style=params.style,
         progress_cb=progress_cb,
+        stage_cb=stage_cb,
         stop_flag=stop_flag,
         shade=params.shade,
         water=params.water,

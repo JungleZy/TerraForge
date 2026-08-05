@@ -14,7 +14,7 @@
                             <line x1="4.9" y1="19.1" x2="7" y2="17"></line>
                             <line x1="17" y1="7" x2="19.1" y2="4.9"></line>
                         </svg>
-                        外观
+                        {{ t('tpl.config.appearance.title') }}
                     </h3>
 
                     <!-- 主题分段开关：复用全站既有的 .status-chips / .status-chip
@@ -23,13 +23,26 @@
                          的 initThemeSwitcher 调 TerraTheme.set，全站即时生效；
                          偏好存 localStorage `tf-theme`，不进服务端配置表。 -->
                     <div class="mb-3">
-                        <label class="form-label" id="themeModeLabel">主题</label>
+                        <label class="form-label" id="themeModeLabel">{{ t('tpl.config.appearance.theme') }}</label>
                         <div class="status-chips" id="themeModeGroup" role="group" aria-labelledby="themeModeLabel">
-                            <button type="button" class="status-chip" data-theme-mode="dark">暗黑</button>
-                            <button type="button" class="status-chip" data-theme-mode="light">明亮</button>
-                            <button type="button" class="status-chip" data-theme-mode="system">跟随系统</button>
+                            <button type="button" class="status-chip" data-theme-mode="dark">{{ t('tpl.config.appearance.theme_dark') }}</button>
+                            <button type="button" class="status-chip" data-theme-mode="light">{{ t('tpl.config.appearance.theme_light') }}</button>
+                            <button type="button" class="status-chip" data-theme-mode="system">{{ t('tpl.config.appearance.theme_system') }}</button>
                         </div>
-                        <small class="form-text d-block mt-1">「跟随系统」按系统的明暗配色自动切换；选择立即生效，无需保存。</small>
+                        <small class="form-text d-block mt-1">{{ t('tpl.config.appearance.theme_hint') }}</small>
+                    </div>
+
+                    {# 语言分段开关：与上面的主题开关同一套 .status-chips 风格。
+                       点击经 config.js 的 initLangSwitcher 写 cookie `tf-lang`
+                       再 reload —— 模板是服务端渲染的，语种必须送到服务端。
+                       本块的文案已走 t()，翻译时不用再动。 #}
+                    <div class="mb-3">
+                        <label class="form-label" id="langModeLabel">{{ t('app.language.label') }}</label>
+                        <div class="status-chips" id="langModeGroup" role="group" aria-labelledby="langModeLabel">
+                            <button type="button" class="status-chip{% if locale == 'zh' %} active{% endif %}" data-lang="zh">{{ t('app.language.zh') }}</button>
+                            <button type="button" class="status-chip{% if locale == 'en' %} active{% endif %}" data-lang="en">{{ t('app.language.en') }}</button>
+                        </div>
+                        <small class="form-text d-block mt-1">{{ t('app.language.hint') }}</small>
                     </div>
                 </div>
 
@@ -38,40 +51,40 @@
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
                             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
                         </svg>
-                        基础设置
+                        {{ t('tpl.config.basic.title') }}
                     </h3>
 
                     <div class="mb-3">
-                        <label for="default_save_path" class="form-label">默认保存路径</label>
+                        <label for="default_save_path" class="form-label">{{ t('tpl.config.basic.save_path') }}</label>
                         <div class="d-flex gap-2 align-items-center">
                             <input type="text" class="form-control" id="default_save_path"
-                                   value="{{ config.default_save_path }}" placeholder="绝对路径,可点「浏览」选择">
+                                   value="{{ config.default_save_path }}" placeholder="{{ t('tpl.config.basic.save_path_placeholder') }}">
                             <button type="button" class="btn btn-outline-primary path-browse" id="defaultSavePathBrowse"
-                                    onclick="openPathBrowser('default_save_path')">浏览</button>
+                                    onclick="openPathBrowser('default_save_path')">{{ t('tpl.config.basic.browse') }}</button>
                         </div>
-                        <small class="form-text d-block mt-1">必须是绝对路径且位于下载根目录之内。</small>
+                        <small class="form-text d-block mt-1">{{ t('tpl.config.basic.save_path_hint') }}</small>
                     </div>
 
                     <div class="row">
                         <div class="col-md-4 mb-3">
-                            <label for="default_style" class="form-label">默认地图样式</label>
+                            <label for="default_style" class="form-label">{{ t('tpl.config.basic.default_style') }}</label>
                             <select class="form-select" id="default_style">
-                                <option value="m" {% if config.default_style == 'm' %}selected{% endif %}>标准</option>
-                                <option value="s" {% if config.default_style == 's' %}selected{% endif %}>卫星</option>
-                                <option value="y" {% if config.default_style == 'y' %}selected{% endif %}>卫星+标注</option>
-                                <option value="h" {% if config.default_style == 'h' %}selected{% endif %}>道路</option>
-                                <option value="t" {% if config.default_style == 't' %}selected{% endif %}>地形</option>
+                                <option value="m" {% if config.default_style == 'm' %}selected{% endif %}>{{ t('tpl.config.basic.style_standard') }}</option>
+                                <option value="s" {% if config.default_style == 's' %}selected{% endif %}>{{ t('tpl.config.basic.style_satellite') }}</option>
+                                <option value="y" {% if config.default_style == 'y' %}selected{% endif %}>{{ t('tpl.config.basic.style_satellite_labels') }}</option>
+                                <option value="h" {% if config.default_style == 'h' %}selected{% endif %}>{{ t('tpl.config.basic.style_roads') }}</option>
+                                <option value="t" {% if config.default_style == 't' %}selected{% endif %}>{{ t('tpl.config.basic.style_terrain') }}</option>
                             </select>
                         </div>
 
                         <div class="col-md-4 mb-3">
-                            <label for="default_zoom_min" class="form-label">默认最小缩放</label>
+                            <label for="default_zoom_min" class="form-label">{{ t('tpl.config.basic.zoom_min') }}</label>
                             <input type="number" class="form-control" id="default_zoom_min"
                                    value="{{ config.default_zoom_min }}" min="0" max="21">
                         </div>
 
                         <div class="col-md-4 mb-3">
-                            <label for="default_zoom_max" class="form-label">默认最大缩放</label>
+                            <label for="default_zoom_max" class="form-label">{{ t('tpl.config.basic.zoom_max') }}</label>
                             <input type="number" class="form-control" id="default_zoom_max"
                                    value="{{ config.default_zoom_max }}" min="0" max="21">
                         </div>
@@ -85,42 +98,42 @@
                             <polyline points="7 10 12 15 17 10"></polyline>
                             <line x1="12" y1="15" x2="12" y2="3"></line>
                         </svg>
-                        下载设置
+                        {{ t('tpl.config.download.title') }}
                     </h3>
 
                     <div class="row">
                         <div class="col-md-4 mb-3">
-                            <label for="concurrent_downloads" class="form-label">并发下载数</label>
+                            <label for="concurrent_downloads" class="form-label">{{ t('tpl.config.download.concurrency') }}</label>
                             <input type="number" class="form-control" id="concurrent_downloads"
                                    value="{{ config.concurrent_downloads }}" min="1" max="100">
                             <div class="mt-1">
                                 <button type="button" class="btn btn-outline-primary concurrency-recommend"
-                                        id="concurrencyRecommend">测速推荐</button>
+                                        id="concurrencyRecommend">{{ t('tpl.config.download.concurrency_recommend') }}</button>
                             </div>
-                            <small class="form-text d-block mt-1" id="concurrencyRecommendHint">实测网络吞吐后推荐（约 30 秒），只填入数值，保存后生效。</small>
+                            <small class="form-text d-block mt-1" id="concurrencyRecommendHint">{{ t('tpl.config.download.concurrency_hint') }}</small>
                         </div>
 
                         <div class="col-md-4 mb-3">
-                            <label for="request_timeout" class="form-label">请求超时(秒)</label>
+                            <label for="request_timeout" class="form-label">{{ t('tpl.config.download.request_timeout') }}</label>
                             <input type="number" class="form-control" id="request_timeout"
                                    value="{{ config.request_timeout }}" min="1" max="300">
                         </div>
 
                         <div class="col-md-4 mb-3">
-                            <label for="max_retries" class="form-label">最大重试次数</label>
+                            <label for="max_retries" class="form-label">{{ t('tpl.config.download.max_retries') }}</label>
                             <input type="number" class="form-control" id="max_retries"
                                    value="{{ config.max_retries }}" min="0" max="10">
                         </div>
                     </div>
 
                     <div class="mb-3">
-                        <label for="proxy_url" class="form-label">代理服务器 (可选)</label>
+                        <label for="proxy_url" class="form-label">{{ t('tpl.config.download.proxy') }}</label>
                         <input type="text" class="form-control" id="proxy_url"
                                value="{{ config.proxy_url }}" placeholder="http://proxy.example.com:8080">
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label">瓦片服务器列表</label>
+                        <label class="form-label">{{ t('tpl.config.download.tile_servers') }}</label>
                         <!-- 每行一个条目：Google 别名（mts0–mts3）、主机
                              （mts0.google.cn）或完整 XYZ 模板。行结构由
                              config.js 的 addTileServerRow 生成/增删。 -->
@@ -130,9 +143,9 @@
                                 <div class="d-flex gap-2 align-items-center">
                                     <input type="text" class="form-control flex-grow-1 tile-server-input"
                                            value="{{ srv.strip() }}">
-                                    <button type="button" class="btn btn-outline-primary tile-server-verify">验证</button>
+                                    <button type="button" class="btn btn-outline-primary tile-server-verify">{{ t('tpl.config.download.tile_verify') }}</button>
                                     <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove"
-                                            aria-label="删除该服务器" title="删除该服务器">
+                                            aria-label="{{ t('tpl.config.download.tile_remove') }}" title="{{ t('tpl.config.download.tile_remove') }}">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                                     </button>
                                 </div>
@@ -140,8 +153,8 @@
                             </div>
                             {% endfor %}
                         </div>
-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="tileServerAdd">+ 添加服务器</button>
-                        <small class="form-text d-block mt-1">每行一个：Google 别名（mts0–mts3）、主机（如 mts0.google.cn）或完整 XYZ 模板（含 {z}/{x}/{y}，可选 {style}）。下载按列表轮换；第一个条目同时用作地图底图。</small>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="tileServerAdd">{{ t('tpl.config.download.tile_add') }}</button>
+                        <small class="form-text d-block mt-1">{{ t('tpl.config.download.tile_servers_hint') }}</small>
                     </div>
                 </div>
 
@@ -152,7 +165,7 @@
                             <circle cx="8.5" cy="7" r="4"></circle>
                             <polyline points="17 11 19 13 23 9"></polyline>
                         </svg>
-                        缓存设置
+                        {{ t('tpl.config.cache.title') }}
                     </h3>
 
                     <div class="mb-3">
@@ -160,24 +173,24 @@
                             <input class="form-check-input" type="checkbox" id="cache_enabled"
                                    {% if config.cache_enabled == 'true' %}checked{% endif %}>
                             <label class="form-check-label" for="cache_enabled">
-                                启用瓦片缓存
+                                {{ t('tpl.config.cache.enabled') }}
                             </label>
                         </div>
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label">缓存管理</label>
-                        <small class="form-text d-block mb-2">缓存不会自动清理。按分类查看占用，可手动清理（需二次确认，删除后不可恢复）。</small>
+                        <label class="form-label">{{ t('tpl.config.cache.manage') }}</label>
+                        <small class="form-text d-block mb-2">{{ t('tpl.config.cache.manage_hint') }}</small>
                         <div id="cacheStatsBody" class="mb-2">
-                            <div class="text-muted">加载中…</div>
+                            <div class="text-muted">{{ t('tpl.config.cache.loading') }}</div>
                         </div>
                         <div class="d-flex justify-content-between align-items-center border-top pt-2 mb-2">
-                            <strong>总计</strong>
-                            <span><span id="cacheStatsTotal">—</span>（<span id="cacheStatsTotalFiles">—</span> 个文件）</span>
+                            <strong>{{ t('tpl.config.cache.total') }}</strong>
+                            <span><span id="cacheStatsTotal">—</span>{{ t('tpl.config.cache.total_files', files='<span id="cacheStatsTotalFiles">—</span>')|safe }}</span>
                         </div>
                         <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="cacheStatsRefresh">刷新</button>
-                            <button type="button" class="btn btn-outline-danger btn-sm" id="cacheClearAll">全部清理</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="cacheStatsRefresh">{{ t('tpl.config.cache.refresh') }}</button>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="cacheClearAll">{{ t('tpl.config.cache.clear_all') }}</button>
                         </div>
                     </div>
                 </div>
@@ -189,26 +202,26 @@
                             <line x1="9" y1="9" x2="15" y2="15"></line>
                             <line x1="15" y1="9" x2="9" y2="15"></line>
                         </svg>
-                        GDAL 设置
+                        {{ t('tpl.config.gdal.title') }}
                     </h3>
 
                     <div class="row">
                         <div class="col-md-6 mb-3">
-                            <label for="gdal_compression" class="form-label">压缩方式</label>
+                            <label for="gdal_compression" class="form-label">{{ t('tpl.config.gdal.compression') }}</label>
                             <select class="form-select" id="gdal_compression">
                                 <option value="LZW" {% if config.gdal_compression == 'LZW' %}selected{% endif %}>LZW</option>
                                 <option value="DEFLATE" {% if config.gdal_compression == 'DEFLATE' %}selected{% endif %}>DEFLATE</option>
                                 <option value="JPEG" {% if config.gdal_compression == 'JPEG' %}selected{% endif %}>JPEG</option>
-                                <option value="NONE" {% if config.gdal_compression == 'NONE' %}selected{% endif %}>无压缩</option>
+                                <option value="NONE" {% if config.gdal_compression == 'NONE' %}selected{% endif %}>{{ t('tpl.config.gdal.compression_none') }}</option>
                             </select>
                         </div>
 
                         <div class="col-md-6 mb-3">
-                            <label for="gdal_resampling" class="form-label">重采样算法</label>
+                            <label for="gdal_resampling" class="form-label">{{ t('tpl.config.gdal.resampling') }}</label>
                             <select class="form-select" id="gdal_resampling">
-                                <option value="nearest" {% if config.gdal_resampling == 'nearest' %}selected{% endif %}>最近邻</option>
-                                <option value="bilinear" {% if config.gdal_resampling == 'bilinear' %}selected{% endif %}>双线性</option>
-                                <option value="cubic" {% if config.gdal_resampling == 'cubic' %}selected{% endif %}>三次卷积</option>
+                                <option value="nearest" {% if config.gdal_resampling == 'nearest' %}selected{% endif %}>{{ t('tpl.config.gdal.resampling_nearest') }}</option>
+                                <option value="bilinear" {% if config.gdal_resampling == 'bilinear' %}selected{% endif %}>{{ t('tpl.config.gdal.resampling_bilinear') }}</option>
+                                <option value="cubic" {% if config.gdal_resampling == 'cubic' %}selected{% endif %}>{{ t('tpl.config.gdal.resampling_cubic') }}</option>
                                 <option value="lanczos" {% if config.gdal_resampling == 'lanczos' %}selected{% endif %}>Lanczos</option>
                             </select>
                         </div>
@@ -222,24 +235,24 @@
                             <line x1="8" y1="2" x2="8" y2="18"></line>
                             <line x1="16" y1="6" x2="16" y2="22"></line>
                         </svg>
-                        其他设置
+                        {{ t('tpl.config.misc.title') }}
                     </h3>
 
                     <div class="row">
                         <div class="col-md-4 mb-3">
-                            <label for="map_center_lat" class="form-label">地图中心纬度</label>
+                            <label for="map_center_lat" class="form-label">{{ t('tpl.config.misc.map_center_lat') }}</label>
                             <input type="number" class="form-control" id="map_center_lat"
                                    value="{{ config.map_center_lat }}" step="0.1" min="-90" max="90">
                         </div>
 
                         <div class="col-md-4 mb-3">
-                            <label for="map_center_lng" class="form-label">地图中心经度</label>
+                            <label for="map_center_lng" class="form-label">{{ t('tpl.config.misc.map_center_lng') }}</label>
                             <input type="number" class="form-control" id="map_center_lng"
                                    value="{{ config.map_center_lng }}" step="0.1" min="-180" max="180">
                         </div>
 
                         <div class="col-md-4 mb-3">
-                            <label for="map_initial_zoom" class="form-label">地图初始缩放</label>
+                            <label for="map_initial_zoom" class="form-label">{{ t('tpl.config.misc.map_initial_zoom') }}</label>
                             <input type="number" class="form-control" id="map_initial_zoom"
                                    value="{{ config.map_initial_zoom }}" min="0" max="21">
                         </div>
@@ -254,18 +267,18 @@
                             <circle cx="17" cy="17" r="3"></circle>
                             <circle cx="7" cy="7" r="3"></circle>
                         </svg>
-                        Earthdata 设置
+                        {{ t('tpl.config.earthdata.title') }}
                     </h3>
 
                     <div class="row">
                         <div class="col-md-6 mb-3">
-                            <label for="earthdata_username" class="form-label">Earthdata 用户名</label>
+                            <label for="earthdata_username" class="form-label">{{ t('tpl.config.earthdata.username') }}</label>
                             <input type="text" class="form-control" id="earthdata_username"
                                    value="{{ config.earthdata_username }}" placeholder="Earthdata username">
                         </div>
 
                         <div class="col-md-6 mb-3">
-                            <label for="earthdata_password" class="form-label">Earthdata 密码</label>
+                            <label for="earthdata_password" class="form-label">{{ t('tpl.config.earthdata.password') }}</label>
                             <input type="password" class="form-control" id="earthdata_password"
                                    value="{{ config.earthdata_password }}" placeholder="Earthdata password">
                         </div>
@@ -278,13 +291,13 @@
                             <polyline points="1 4 1 10 7 10"></polyline>
                             <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
                         </svg>
-                        重置为默认值
+                        {{ t('tpl.config.actions.reset') }}
                     </button>
                     <button type="submit" class="btn btn-primary">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
                             <polyline points="20 6 9 17 4 12"></polyline>
                         </svg>
-                        保存配置
+                        {{ t('tpl.config.actions.save') }}
                     </button>
                 </div>
             </form>

@@ -86,6 +86,16 @@
     --radius:    10px;
     --radius-lg: 14px;
 
+    /* 底部状态栏胶囊:本体高度 + 与视口边缘的间距。
+       高度 34 而不是读数行需要的 26:胶囊里还嵌着一颗 26px 的连接状态小胶囊,
+       贴着算它上下只剩 4px,两条弧线会几乎叠在一起。
+       --statusbar-clearance 是「其它底部锚点必须让开的高度」——
+       状态栏浮在内容之上,滑出面板、地图右下的预览条、非地图页的内容容器
+       都靠这个值给它腾地方,别再各写各的字面量。 */
+    --statusbar-h: 34px;
+    --statusbar-inset: 10px;
+    --statusbar-clearance: calc(var(--statusbar-h) + var(--statusbar-inset) * 2);
+
     /* 字号系统（保留） */
     --font-size-xs: 0.75rem;
     --font-size-sm: 0.875rem;
@@ -416,6 +426,7 @@ body {
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+    position: relative;   /* 底部状态栏胶囊的包含块 */
 }
 
 /* 连接状态指示（仅在有 socket 的页面由 initConnectionStatus 点亮），
@@ -428,13 +439,13 @@ body {
     padding: 2px 10px;
     border: 1px solid var(--color-border);
     border-radius: 999px;
-    font-size: var(--font-size-xs);
+    font-size: inherit;              /* 跟随状态栏字号，别再钉在 --font-size-xs 上 */
     color: var(--color-text-secondary);
 }
 
 .conn-dot {
-    width: 8px;
-    height: 8px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
     background: var(--color-neutral);
 }
@@ -452,28 +463,52 @@ body {
     position: relative;
 }
 
-/* Bottom status bar（28px，等宽字体读数，专业 GIS 的标尺位）。
+/* Bottom status bar：浮在内容之上的胶囊（34px 高，等宽字体读数，专业 GIS 的
+   标尺位）。刻意不占布局流 —— 首页地图要一路铺到视口底，胶囊悬在上面；
+   会滚动的非地图页由 .page-content 的 padding-bottom 让位。
    项间用分隔线分组（gap 归 0，padding 进项内），可读性比纯空白好。
    注意：别用 `.a + .a` 兄弟选择器给首项去边线——test_css_contract 的
    按钮层叠模型只支持后代组合符，兄弟选择器会让它整体失效。 */
 .workbench-statusbar {
-    flex: 0 0 28px;
+    position: absolute;
+    left: var(--statusbar-inset);
+    right: var(--statusbar-inset);
+    bottom: var(--statusbar-inset);
+    z-index: 1000;                  /* 与地图浮动控件同层，仍在面板 backdrop(1400) 之下 */
+    height: var(--statusbar-h);
     display: flex;
     align-items: center;
     gap: 0;
-    padding: 0;
+    padding: 0 17px;                /* = 胶囊两端圆弧的半径，首尾读数不进弧线 */
     background: var(--color-bg-secondary);
-    border-top: 1px solid var(--color-border);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-md);
     font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
+    /* 13px 而不是 --font-size-xs(12px)：等宽的 JetBrains Mono x-height 比左上
+       工具条用的 Inter 矮一截，同样 12px 在这里视觉上会小一号。字号只在这里
+       抬，不动全站的 xs 令牌。 */
+    font-size: 13px;
     color: var(--color-text-secondary);
     white-space: nowrap;
-    overflow: hidden;
+    overflow: hidden;               /* 读数项的 hover 底色由圆角裁齐 */
 }
 
+/* 读数项:分隔线用伪元素画成 16px 的短竖线,而不是 border-left 通到顶。
+   胶囊的上下边是圆的,通到顶的发丝线会一直顶到弧线上,看着像没留边距。 */
 .statusbar-item {
-    padding: 0 10px;
+    position: relative;
+    padding: 0 12px;
+}
+
+.statusbar-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    height: 16px;
     border-left: 1px solid var(--color-border);
+    transform: translateY(-50%);
 }
 
 .statusbar-item b {
@@ -481,10 +516,11 @@ body {
     font-weight: 500;
 }
 
-/* 点击可复制的读数项（坐标 / 选区四至）：hover 底色提示可点 */
+/* 点击可复制的读数项（坐标 / 选区四至）：hover 底色提示可点。
+   底色也做成胶囊,和外壳同语言;分隔线是伪元素,盖不住。 */
 .statusbar-copy {
     cursor: pointer;
-    border-radius: 0;
+    border-radius: 999px;
     transition: background-color 0.15s ease;
 }
 
@@ -492,8 +528,19 @@ body {
     background: var(--color-bg-tertiary);
 }
 
-/* 极窄屏状态栏隐藏最后一项（时钟），给读数让位 */
+/* 极窄屏状态栏隐藏最后一项（时钟），给读数让位；字号退回 12px、胶囊两端和
+   项间距一并收紧 —— 桌面那份 13px + 17px/12px 在 430px 宽的窗口里会把最后
+   一项读数挤出胶囊（overflow:hidden 直接裁掉，读不到）。 */
 @media (max-width: 576px) {
+    .workbench-statusbar {
+        padding: 0 10px;
+        font-size: var(--font-size-xs);
+    }
+
+    .workbench-statusbar .statusbar-item {
+        padding: 0 8px;
+    }
+
     .workbench-statusbar .statusbar-item:last-child {
         display: none;
     }
@@ -551,14 +598,13 @@ body {
 }
 
 /* 工具条分组条（下载 / 处理 / 历史 / 配置等功能入口）。
-   视觉与 GIS 控件条同语言（最初对齐 Leaflet .leaflet-bar 的几何）：
    容器持背景/边框/圆角/阴影，按钮透明、之间以 1px 边线分隔。 */
 .map-panel-triggers {
     display: flex;
     flex-direction: column;
     background-color: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
-    border-radius: 4px;              /* 与 .leaflet-bar 一致 */
+    border-radius: 999px;            /* 胶囊：与底部状态栏同一形态语言 */
     box-shadow: var(--shadow-md);
     overflow: hidden;                /* 圆角裁掉首尾按钮的 hover 底色 */
 }
@@ -567,9 +613,9 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 30px;                     /* 与 .leaflet-bar a 同宽 */
-    height: 46px;                    /* 30px 图标区 + 16px 文字区，同 Leaflet 按钮 */
-    padding: 8px 0 0;                /* 14px 图标在上部 30px 里居中 */
+    width: 32px;                     /* 胶囊连边框 34px 宽 */
+    height: 54px;                    /* 8 上距 + 18~20 图标 + 8 间距 + 14 文字 + 余量 */
+    padding: 8px 0 0;
     border: none;
     border-bottom: 1px solid var(--color-border);
     background: transparent;
@@ -581,14 +627,41 @@ body {
 
 .map-panel-btn span {
     display: block;
-    margin-top: 5px;
-    line-height: 12px;
-    font-size: 10px;
+    margin-top: 8px;                 /* 图标与标签之间要看得出是两层信息 */
+    line-height: 14px;
+    font-size: var(--font-size-xs);  /* 12px，与右上范围浮层同一档 */
     color: inherit;
 }
 
+/* 英文标签比两字中文宽一倍不止（Settings / Zoom out ≈ 44~52px），32px 的按钮
+   装不下，`white-space: nowrap` + 容器 `overflow: hidden` 会把它裁成
+   「etting」「roces」（实测）。只在英文界面下让按钮按内容伸展 —— 中文仍然是
+   规定的 34px 胶囊，一个像素不动。lang 属性由服务端按语种渲染（见
+   templates/base.html 的 html_lang）。 */
+html[lang="en"] .map-panel-btn {
+    width: max-content;
+    min-width: 32px;
+    padding-inline: 8px;
+}
+
+/* 胶囊两端各有一段 17px 深的圆弧（半径 = 34px 组宽的一半）。首尾按钮的内容
+   贴着端头排的话会被弧线蹭到：12px 两字标签 24px 宽，要在离端 7.4px 处才有
+   28px 可用宽（左右各 2px 留白）；20px 图标要 3.3px。下面按这个给余量。
+   把余量加在**按钮自己**身上而不是容器 padding 上：hover 底色照旧铺满到端头、
+   由容器圆角裁齐，不会在端头留出一截直角。 */
+.map-panel-btn:first-child {
+    height: 58px;
+    padding-top: 12px;
+}
+
 .map-panel-btn:last-child {
+    height: 60px;
     border-bottom: none;
+}
+
+/* 单按钮分组（框选 / 光照）两端都是弧线，两头都要让 */
+.map-panel-btn:first-child:last-child {
+    height: 64px;
 }
 
 .map-panel-btn:hover {
@@ -598,7 +671,7 @@ body {
 
 /* M16：键盘焦点圈必须画在 padding box 【之内】。
    容器 .map-panel-triggers 有 overflow:hidden（为了让圆角裁掉首尾按钮的 hover
-   底色），且无内边距、内容盒宽度正好等于按钮的 30px —— 全站通配的
+   底色），且无内边距、内容盒宽度正好等于按钮的 40px —— 全站通配的
    `*:focus-visible { outline-offset: 2px }` 画出的整圈都落在 padding box 之外，
    而 outline 不计入 scrollable overflow region，会被直接剪掉。实测：单按钮分组
    （「框选」）聚焦后屏幕上一条焦点线都没有；三按钮分组的中间按钮只剩两截压在
@@ -679,7 +752,7 @@ body {
 .task-preview-chip {
     position: absolute;
     right: 12px;
-    bottom: 12px;
+    bottom: var(--statusbar-clearance);
     z-index: 1000;
     display: flex;
     align-items: center;
@@ -726,7 +799,9 @@ body {
     box-shadow: var(--shadow-lg);
 }
 
-/* 地图上的范围信息浮层（替代原表单底部的 #boundsInfo alert） */
+/* 地图上的范围信息浮层（替代原表单底部的 #boundsInfo alert）。
+   字号与左上工具条标签同为 --font-size-xs(12px)：两者都是浮在地图上的
+   同层提示，字号不一致会显得是两套东西。 */
 .bounds-overlay {
     position: absolute;
     top: 12px;
@@ -739,18 +814,20 @@ body {
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
     color: var(--color-text-primary);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-xs);
 }
 
-/* 非地图页（历史记录 / 配置）的内容容器：居中限宽 */
+/* 非地图页（历史记录 / 配置）的内容容器：居中限宽。
+   底部留出状态栏胶囊的高度 —— 这里是会滚动的页面，不留就会有内容永远压在
+   胶囊底下读不到。 */
 .page-content {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 16px;
+    padding: 16px 16px var(--statusbar-clearance);
 }
 
 /* ---- 覆盖面板（历史记录 / 配置）：右侧滑出，浮在地图上方 --------------
-   单窗口工作台形态：面板只活在视口顶与状态栏(28px)之间的主区内（顶部
+   单窗口工作台形态：面板只活在视口顶与底部状态栏胶囊之间的主区内（顶部
    工具栏已移除），外壳始终可见。z-index 层级：
      Leaflet 控件 ≤ 1000 < 面板 backdrop 1400 < 面板 1401
      < Bootstrap modal-backdrop 1450 < modal 1500（历史详情弹窗在面板之上）
@@ -758,7 +835,7 @@ body {
 .panel-backdrop {
     position: fixed;
     top: 0;
-    bottom: 28px;
+    bottom: var(--statusbar-clearance);
     left: 0;
     right: 0;
     z-index: 1400;
@@ -775,7 +852,7 @@ body {
 .workbench-panel {
     position: fixed;
     top: 0;
-    bottom: 28px;
+    bottom: var(--statusbar-clearance);
     right: 0;
     z-index: 1401;
     width: 480px;
@@ -2397,7 +2474,9 @@ code {
     gap: 2px 4px;
     align-items: baseline;
     font-family: var(--font-mono);
-    font-size: var(--font-size-sm);
+    /* 12px，与浮层其余文字（以及左上工具条标签）一致。上面那段 769px 的实测
+       是在 14px 下量的，缩小只会更宽松，不会碰到那条上界。 */
+    font-size: var(--font-size-xs);
 }
 
 .bounds-k {
@@ -3042,7 +3121,7 @@ code {
 .contour-preview-panel {
     position: absolute;
     left: 12px;
-    bottom: 12px;
+    bottom: var(--statusbar-clearance);
     z-index: 1000;
     max-width: min(320px, calc(100% - 60px));
     max-height: 40%;

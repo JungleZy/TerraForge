@@ -10,6 +10,7 @@ from flask import Blueprint, request, jsonify
 from pathlib import Path
 from typing import Optional
 from src.core.database import get_connection, DEFAULT_CONFIGS
+from src.i18n import t
 from src.services.config_manager import ConfigManager
 from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
 from src.routes import tiles_static
@@ -832,7 +833,7 @@ def update_config():
                 'success': False,
                 'updated': [],
                 'errors': errors,
-                'message': '存在非法值，本次未保存任何设置',
+                'message': t('api.config.invalid_values_not_saved'),
             }), 400
 
         if valid_items:
@@ -918,16 +919,15 @@ def _delete_payload(message: str, files_removed):
     if files_removed is not None:
         payload['files_removed'] = bool(files_removed)
         if not files_removed:
-            payload['files_message'] = (
-                '任务记录已删除；产物目录未通过安全校验，磁盘文件已保留')
+            payload['files_message'] = t('api.tasks.files_kept_unsafe_dir')
     return payload
 
 
 _ACTIVE_TASK_TABLES = (
-    ('tasks', '地图瓦片'),
-    ('dem_tasks', 'DEM'),
-    ('contour_tasks', '等高线'),
-    ('local_terrain_tasks', '本地地形'),
+    ('tasks', 'api.tasks.pipeline.map'),
+    ('dem_tasks', 'api.tasks.pipeline.dem'),
+    ('contour_tasks', 'api.tasks.pipeline.contour'),
+    ('local_terrain_tasks', 'api.tasks.pipeline.local_terrain'),
 )
 
 
@@ -943,7 +943,7 @@ def _unfinished_task_labels():
     labels = []
     try:
         with get_connection_context() as conn:
-            for table, label in _ACTIVE_TASK_TABLES:
+            for table, label_key in _ACTIVE_TASK_TABLES:
                 try:
                     rows = conn.execute(
                         f"SELECT id FROM {table} "
@@ -951,6 +951,7 @@ def _unfinished_task_labels():
                     ).fetchall()
                 except Exception:
                     continue  # 表不存在（旧库）时跳过，不阻断清理
+                label = t(label_key)
                 labels.extend(f"{label} #{row['id']}" for row in rows)
     except Exception as e:
         logger.warning(f"Failed to check unfinished tasks before cache clear: {e}")
@@ -990,9 +991,9 @@ def clear_cache_api():
             unfinished = _unfinished_task_labels()
             if unfinished:
                 return jsonify({
-                    'error': (
-                        '有任务尚未结束，清空缓存会让它们的产物静默缺瓦片。'
-                        '请先暂停或取消：' + '、'.join(unfinished)
+                    'error': t(
+                        'api.tasks.cache_clear_blocked',
+                        tasks=t('api.tasks.label_separator').join(unfinished),
                     ),
                     'active_tasks': unfinished,
                 }), 409
@@ -1052,15 +1053,17 @@ def browse_dir():
         try:
             target = Path(raw).expanduser().resolve()
         except (OSError, ValueError, RuntimeError) as e:
-            return jsonify({'success': False, 'error': f'路径无效：{e}'}), 400
+            return jsonify({'success': False,
+                            'error': t('api.fs.invalid_path', error=e)}), 400
 
     try:
         if not target.exists():
-            return jsonify({'success': False, 'error': '目录不存在'}), 400
+            return jsonify({'success': False, 'error': t('api.fs.dir_not_found')}), 400
         if not target.is_dir():
-            return jsonify({'success': False, 'error': '不是目录'}), 400
+            return jsonify({'success': False, 'error': t('api.fs.not_a_dir')}), 400
     except (OSError, ValueError) as e:
-        return jsonify({'success': False, 'error': f'路径无效：{e}'}), 400
+        return jsonify({'success': False,
+                        'error': t('api.fs.invalid_path', error=e)}), 400
 
     try:
         dirs = [
@@ -1069,7 +1072,8 @@ def browse_dir():
             if e.is_dir() and not e.name.startswith('.')
         ]
     except OSError as e:
-        return jsonify({'success': False, 'error': f'读取目录失败：{e}'}), 400
+        return jsonify({'success': False,
+                        'error': t('api.fs.read_dir_failed', error=e)}), 400
 
     parent = target.parent
     return jsonify({
@@ -1109,7 +1113,9 @@ def recommend_concurrency_route():
     except Exception as e:
         logger.warning(f'recommend_concurrency route failed: {e!r}')
         result = {'recommended': RECOMMEND_FALLBACK, 'fallback': True,
-                  'rising': False, 'note': '测速流程异常，给出保守值', 'samples': []}
+                  'rising': False,
+                  'note': t('api.config.speedtest_fallback_note'),
+                  'samples': []}
     return jsonify(result)
 
 

@@ -7,10 +7,10 @@
    用宏而不是两份 {% if %} 各写一遍卡片：同一份标记只能有一个出处。 #}
 {% macro stats_row() %}
     <div class="row" id="statsRow" style="margin-bottom: 1rem;">
-        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statTotal">-</h3><p>总任务</p></div></div>
-        <div class="col-6 col-md-3"><div class="stat-card accent"><h3 id="statCompleted">-</h3><p>已完成</p></div></div>
-        <div class="col-6 col-md-3"><div class="stat-card danger"><h3 id="statFailed">-</h3><p>失败</p></div></div>
-        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statDownloaded">-</h3><p>累计下载量</p></div></div>
+        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statTotal">-</h3><p>{{ t('tpl.history.stats.total') }}</p></div></div>
+        <div class="col-6 col-md-3"><div class="stat-card accent"><h3 id="statCompleted">-</h3><p>{{ t('tpl.history.stats.completed') }}</p></div></div>
+        <div class="col-6 col-md-3"><div class="stat-card danger"><h3 id="statFailed">-</h3><p>{{ t('tpl.history.stats.failed') }}</p></div></div>
+        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statDownloaded">-</h3><p>{{ t('tpl.history.stats.downloaded') }}</p></div></div>
     </div>
 {% endmacro %}
 
@@ -23,7 +23,7 @@
                             <line x1="8" y1="2" x2="8" y2="18"></line>
                             <line x1="16" y1="6" x2="16" y2="22"></line>
                         </svg>
-                        历史区域地图
+                        {{ t('tpl.history.map.title') }}
                     </h5>
                 </div>
                 <div class="card-body">
@@ -44,7 +44,7 @@
                             <line x1="3" y1="12" x2="3.01" y2="12"></line>
                             <line x1="3" y1="18" x2="3.01" y2="18"></line>
                         </svg>
-                        任务列表
+                        {{ t('tpl.history.tasks.title') }}
                     </h5>
                 </div>
                 <div class="card-body">
@@ -57,19 +57,19 @@
                        （作用于整个时间流，走 /api/history_all ?status=；
                        「进行中」对应特殊值 active = pending/running/paused）。 #}
                     <div class="task-filter-bar">
-                        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="搜索任务...">
-                        <div class="status-chips" id="statusChips" role="group" aria-label="按状态筛选任务">
-                            <button type="button" class="status-chip active" data-status="">全部</button>
-                            <button type="button" class="status-chip" data-status="active">进行中</button>
-                            <button type="button" class="status-chip" data-status="failed">失败</button>
-                            <button type="button" class="status-chip" data-status="completed">已完成</button>
-                            <button type="button" class="status-chip" data-status="cancelled">已取消</button>
+                        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="{{ t('tpl.history.filter.search_placeholder') }}">
+                        <div class="status-chips" id="statusChips" role="group" aria-label="{{ t('tpl.history.filter.group_label') }}">
+                            <button type="button" class="status-chip active" data-status="">{{ t('tpl.history.filter.all') }}</button>
+                            <button type="button" class="status-chip" data-status="active">{{ t('tpl.history.filter.active') }}</button>
+                            <button type="button" class="status-chip" data-status="failed">{{ t('tpl.history.filter.failed') }}</button>
+                            <button type="button" class="status-chip" data-status="completed">{{ t('tpl.history.filter.completed') }}</button>
+                            <button type="button" class="status-chip" data-status="cancelled">{{ t('tpl.history.filter.cancelled') }}</button>
                         </div>
                     </div>
                     <div id="historyTableBody">
                         <div class="spinner-container">
                             <div class="spinner-border" role="status">
-                                <span class="visually-hidden">加载中...</span>
+                                <span class="visually-hidden">{{ t('tpl.history.tasks.loading') }}</span>
                             </div>
                         </div>
                     </div>

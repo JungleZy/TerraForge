@@ -70,6 +70,21 @@ def configure_logging():
     root.setLevel(_parse_log_level(os.environ.get('LOG_LEVEL')))
 
 
+def quiet_reloader_parent():
+    """让 dev reloader 的 watcher 父进程闭嘴 —— 启动输出只由服务子进程负责。
+
+    debug 模式下 werkzeug reloader 会先以「watcher 父进程」身份执行一遍入口模块,
+    再 fork 子进程(WERKZEUG_RUN_MAIN=true)重跑。父进程只是文件监听器,但它的
+    import 副作用和 run_simple 在父进程侧打的启动行(Serving Flask app / Running
+    on / Restarting with stat)都会打一遍,子进程再打一遍,启动输出又乱又重复。
+
+    必须赶在 import config/routes(会触发日志)之前调用。werkzeug 的 _log 首次使用
+    时会把 werkzeug logger 显式设为 INFO(盖过根级别),所以要单独压它。之后的
+    configure_logging() 对已配置过 handler 的父进程是 no-op,不会把级别降回去。
+    """
+    logging.basicConfig(level=logging.ERROR)
+    logging.getLogger('werkzeug').setLevel(logging.ERROR)
+
 
 _VALID_LOG_LEVELS = ('CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG', 'NOTSET')
 

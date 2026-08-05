@@ -2,6 +2,7 @@ function initConfig() {
     document.getElementById('configForm').addEventListener('submit', saveConfig);
     initTileServerEditor();
     initThemeSwitcher();
+    initLangSwitcher();
     initConcurrencyRecommend();
     initCacheManager();
 }
@@ -35,7 +36,7 @@ function initCacheManager() {
     if (clearAllBtn) {
         clearAllBtn.addEventListener('click', function () {
             const total = document.getElementById('cacheStatsTotal').textContent || '—';
-            clearCacheCategory('__all__', '全部缓存', total);
+            clearCacheCategory('__all__', t('js.config.cache.all_label'), total);
         });
     }
 
@@ -51,8 +52,9 @@ async function loadCacheStats() {
         if (!response.ok || !data.success) throw new Error(data.error || ('HTTP ' + response.status));
         renderCacheStats(data);
     } catch (error) {
-        body.innerHTML = '<div class="text-danger">加载失败：' +
-            window.escapeHtml(error.message) + '</div>';
+        body.innerHTML = '<div class="text-danger">' +
+            t('js.config.cache.load_failed', { error: window.escapeHtml(error.message) }) +
+            '</div>';
     }
 }
 
@@ -60,17 +62,20 @@ function renderCacheStats(data) {
     const body = document.getElementById('cacheStatsBody');
     const categories = data.categories || [];
     if (!categories.length) {
-        body.innerHTML = '<div class="text-muted">暂无缓存</div>';
+        body.innerHTML = '<div class="text-muted">' + t('js.config.cache.empty') + '</div>';
     } else {
         body.innerHTML = categories.map(function (c) {
             return '<div class="d-flex justify-content-between align-items-center py-1">' +
                 '<span>' + window.escapeHtml(c.label) + '</span>' +
                 '<span class="d-flex align-items-center gap-2">' +
-                '<span class="text-muted">' + formatCacheBytes(c.size_bytes) +
-                ' · ' + c.file_count + ' 个文件</span>' +
+                '<span class="text-muted">' +
+                t('js.config.cache.size_files',
+                    { size: formatCacheBytes(c.size_bytes), count: c.file_count }) +
+                '</span>' +
                 '<button type="button" class="btn btn-outline-danger btn-sm cache-clear-btn" ' +
                 'data-key="' + window.escapeHtml(c.key) + '" data-label="' + window.escapeHtml(c.label) + '" ' +
-                'data-size="' + formatCacheBytes(c.size_bytes) + '">清理</button>' +
+                'data-size="' + formatCacheBytes(c.size_bytes) + '">' +
+                t('js.config.cache.clear') + '</button>' +
                 '</span></div>';
         }).join('');
     }
@@ -81,15 +86,23 @@ function renderCacheStats(data) {
 
 async function clearCacheCategory(category, label, sizeText) {
     const demWarning = category === 'dem' || category === '__all__'
-        ? ' 注意：DEM 缓存重新下载需要 Earthdata 账号登录。' : '';
+        ? ' ' + t('js.config.cache.dem_warning') : '';
     const first = await showConfirm(
-        `将删除「${label}」的缓存（${sizeText}）。${demWarning}`,
-        { title: '清理缓存', confirmText: '继续', danger: true });
+        t('js.config.cache.clear_confirm', { label: label, size: sizeText, warning: demWarning }),
+        {
+            title: t('js.config.cache.clear_title'),
+            confirmText: t('js.config.cache.continue'),
+            danger: true
+        });
     if (!first) return;
 
     const second = await showConfirm(
-        `再次确认：删除「${label}」后不可恢复，确定删除？`,
-        { title: '再次确认', confirmText: '确认删除', danger: true });
+        t('js.config.cache.clear_confirm_again', { label: label }),
+        {
+            title: t('js.config.cache.confirm_again_title'),
+            confirmText: t('js.config.cache.confirm_delete'),
+            danger: true
+        });
     if (!second) return;
 
     try {
@@ -99,22 +112,31 @@ async function clearCacheCategory(category, label, sizeText) {
         // 也只记 warning，任务照报 completed —— 产物目录静默缺瓦片（M8）。
         if (result.status === 409) {
             const forceOk = await showConfirm(
-                (result.data.error || '有任务尚未结束。') + ' 仍要清理吗？',
-                { title: '有任务未结束', confirmText: '仍然清理', danger: true });
+                t('js.config.cache.force_confirm',
+                    { error: result.data.error || t('js.config.cache.tasks_running') }),
+                {
+                    title: t('js.config.cache.tasks_running_title'),
+                    confirmText: t('js.config.cache.force_clear'),
+                    danger: true
+                });
             if (!forceOk) {
-                showToast('已取消清理', 'info');
+                showToast(t('js.config.cache.clear_cancelled'), 'info');
                 loadCacheStats();
                 return;
             }
             result = await postCacheClear(category, true);
         }
         if (result.ok && result.data.success) {
-            showToast(`已清理「${label}」，释放 ${formatCacheBytes(result.data.total_removed_bytes)}`, 'success');
+            showToast(t('js.config.cache.cleared', {
+                label: label,
+                size: formatCacheBytes(result.data.total_removed_bytes)
+            }), 'success');
         } else {
-            showToast('清理失败: ' + (result.data.error || ('HTTP ' + result.status)), 'danger');
+            showToast(t('js.config.cache.clear_failed',
+                { error: result.data.error || ('HTTP ' + result.status) }), 'danger');
         }
     } catch (error) {
-        showToast('清理失败: ' + error.message, 'danger');
+        showToast(t('js.config.cache.clear_failed', { error: error.message }), 'danger');
     }
     loadCacheStats();
 }
@@ -147,19 +169,23 @@ function initConcurrencyRecommend() {
     btn.addEventListener('click', async function () {
         const originalText = btn.textContent;
         btn.disabled = true;
-        btn.textContent = '测速中…';
-        hint.textContent = '正在按当前网络环境实测吞吐，约 30 秒…';
+        btn.textContent = t('js.config.concurrency.testing');
+        hint.textContent = t('js.config.concurrency.testing_hint');
         try {
             const response = await fetch('/api/config/recommend_concurrency', { method: 'POST' });
             const data = await response.json();
             if (response.ok && data.recommended) {
                 document.getElementById('concurrent_downloads').value = data.recommended;
-                hint.textContent = (data.note || ('推荐 ' + data.recommended)) + '（已填入，保存后生效）';
+                hint.textContent = t('js.config.concurrency.filled', {
+                    note: data.note
+                        || t('js.config.concurrency.recommended', { n: data.recommended })
+                });
             } else {
-                hint.textContent = '推荐失败：' + (data.error || ('HTTP ' + response.status));
+                hint.textContent = t('js.config.concurrency.failed',
+                    { error: data.error || ('HTTP ' + response.status) });
             }
         } catch (error) {
-            hint.textContent = '推荐失败：' + error.message;
+            hint.textContent = t('js.config.concurrency.failed', { error: error.message });
         } finally {
             btn.disabled = false;
             btn.textContent = originalText;
@@ -191,29 +217,48 @@ function initThemeSwitcher() {
     refresh();
 }
 
+// --- 外观：语言分段开关 -------------------------------------------------------
+// 两枚 chip（中文 / English）。语种写 cookie 后必须整页 reload —— 模板文案是
+// 服务端渲染的，只改前端的 window.__I18N__ 换不掉已经渲染好的那半边界面。
+
+function initLangSwitcher() {
+    const group = document.getElementById('langModeGroup');
+    if (!group || !window.TerraI18n) return;
+
+    group.addEventListener('click', function (e) {
+        const chip = e.target.closest('[data-lang]');
+        if (!chip || chip.dataset.lang === TerraI18n.lang) return;
+        TerraI18n.set(chip.dataset.lang);
+        window.location.reload();
+    });
+}
+
 // --- 瓦片服务器列表编辑器 -----------------------------------------------------
 // 每行一个条目：Google 别名（mts0–mts3）、主机（mts0.google.cn）或完整
 // XYZ 模板。行可以增删，各自带「验证」按钮（验证当前输入，无需先保存）。
 // 保存时把所有非空行按逗号合并写回 tile_servers。
 
-const TILE_SERVER_ROW_HTML = `
+// 写成函数而不是模块级常量：t() 要等 i18n.js 把全局装好之后才求值。
+function tileServerRowHtml() {
+    return `
     <div class="d-flex gap-2 align-items-center">
         <input type="text" class="form-control flex-grow-1 tile-server-input">
-        <button type="button" class="btn btn-outline-primary tile-server-verify">验证</button>
+        <button type="button" class="btn btn-outline-primary tile-server-verify">${t('js.config.tile.verify')}</button>
         <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove"
-                aria-label="删除该服务器" title="删除该服务器">
+                aria-label="${t('js.config.tile.remove')}" title="${t('js.config.tile.remove')}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
     </div>
     <div class="tile-url-verify-result" hidden></div>
 `;
+}
 
 function addTileServerRow(value) {
     const rows = document.getElementById('tileServerRows');
     if (!rows) return null;
     const row = document.createElement('div');
     row.className = 'tile-server-row';
-    row.innerHTML = TILE_SERVER_ROW_HTML;
+    row.innerHTML = tileServerRowHtml();
     row.querySelector('.tile-server-input').value = value || '';
     rows.appendChild(row);
     return row;
@@ -256,7 +301,7 @@ async function verifyTileServerRow(row) {
 
     result.hidden = false;
     result.className = 'tile-url-verify-result';
-    result.textContent = '正在验证…';
+    result.textContent = t('js.config.tile.verifying');
     btn.disabled = true;
 
     try {
@@ -269,16 +314,20 @@ async function verifyTileServerRow(row) {
 
         if (response.ok && data.success) {
             result.classList.add('tile-url-verify-result--ok');
-            result.textContent =
-                `通联正常 · HTTP ${data.status_code} · ${data.content_type || '未知类型'}` +
-                ` · ${data.elapsed_ms}ms（样例瓦片 ${data.tile}）`;
+            result.textContent = t('js.config.tile.verify_ok', {
+                status: data.status_code,
+                content_type: data.content_type || t('js.config.tile.unknown_type'),
+                elapsed: data.elapsed_ms,
+                tile: data.tile
+            });
         } else {
             result.classList.add('tile-url-verify-result--fail');
-            result.textContent = '验证失败：' + (data.error || ('HTTP ' + response.status));
+            result.textContent = t('js.config.tile.verify_failed',
+                { error: data.error || ('HTTP ' + response.status) });
         }
     } catch (error) {
         result.classList.add('tile-url-verify-result--fail');
-        result.textContent = '验证失败：' + error.message;
+        result.textContent = t('js.config.tile.verify_failed', { error: error.message });
     } finally {
         btn.disabled = false;
     }
@@ -326,19 +375,20 @@ async function saveConfig(e) {
         const result = await response.json();
 
         if (response.ok) {
-            showToast('配置保存成功！', 'success');
+            showToast(t('js.config.save.ok'), 'success');
         } else {
             const detail = (result.errors && result.errors.length)
-                ? result.errors.join('；') : result.error;
-            showToast('保存失败: ' + detail, 'danger');
+                ? result.errors.join(t('js.config.save.error_sep')) : result.error;
+            showToast(t('js.config.save.failed', { error: detail }), 'danger');
         }
     } catch (error) {
-        showToast('保存失败: ' + error.message, 'danger');
+        showToast(t('js.config.save.failed', { error: error.message }), 'danger');
     }
 }
 
 async function resetConfig() {
-    if (!await showConfirm('确定要重置所有配置为默认值吗？', { title: '重置配置', danger: true })) {
+    if (!await showConfirm(t('js.config.reset.confirm'),
+            { title: t('js.config.reset.title'), danger: true })) {
         return;
     }
 
@@ -346,15 +396,16 @@ async function resetConfig() {
         const response = await fetch('/api/config/reset', { method: 'POST' });
         const result = await response.json().catch(() => ({}));
         if (response.ok) {
-            showToast('已重置为默认配置', 'success');
+            showToast(t('js.config.reset.ok'), 'success');
             // 略等一下让用户看到提示，再刷新（服务端会用默认值重渲染表单）。
             // 首页的配置是覆盖面板：挂上 hash，刷新后 panels.js 自动重开面板。
             location.hash = '#config';
             setTimeout(() => location.reload(), 600);
         } else {
-            showToast('重置失败: ' + (result.error || response.status), 'danger');
+            showToast(t('js.config.reset.failed',
+                { error: result.error || response.status }), 'danger');
         }
     } catch (error) {
-        showToast('重置失败: ' + error.message, 'danger');
+        showToast(t('js.config.reset.failed', { error: error.message }), 'danger');
     }
 }

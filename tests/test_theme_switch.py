@@ -260,20 +260,43 @@ def test_config_partial_has_appearance_section_with_three_buttons():
 
     三枚按钮的可见文字分别是 暗黑 / 明亮 / 跟随系统——纯图标按钮不行，
     契约明确要求文字标签。
+
+    ⚠️ 登记（i18n 改造）：模板里现在是 `{{ t('tpl.config.appearance.*') }}`，
+    中文文案搬进了 src/i18n/catalog/tpl_config.py。所以源码级断言分两半查：
+    模板里必须出现对应的 key 调用，且**目录里那条 key 的中文值**必须是约定的
+    那个词。只查其中一半都能被绕过：只查 key 就允许「key 在、文案被改成别的
+    词」；只查目录就允许「目录里有词、模板根本没引用」。
+    渲染级由下面 test_config_page_renders_appearance_switcher 兜底。
     """
+    from src.i18n.catalog import MESSAGES
+
     src = _read(CONFIG_PARTIAL)
-    assert '外观' in src, (
+    assert "t('tpl.config.appearance.title')" in src, (
         '_config_content.html 缺「外观」分区——主题切换 UI 应落在配置面板'
     )
-    for label in THEME_BUTTON_LABELS:
-        assert label in src, (
-            f'_config_content.html 缺 {label!r} 按钮文字'
+    assert MESSAGES['tpl.config.appearance.title']['zh'] == '外观', (
+        'tpl.config.appearance.title 的中文不再是「外观」'
+    )
+
+    label_keys = {
+        '暗黑': 'tpl.config.appearance.theme_dark',
+        '明亮': 'tpl.config.appearance.theme_light',
+        '跟随系统': 'tpl.config.appearance.theme_system',
+    }
+    assert set(label_keys) == set(THEME_BUTTON_LABELS), (
+        f'本测试的 key 映射覆盖 {sorted(label_keys)}，'
+        f'与契约的按钮清单 {sorted(THEME_BUTTON_LABELS)} 对不上 —— 本测试已失效'
+    )
+    for label, key in label_keys.items():
+        assert MESSAGES[key]['zh'] == label, (
+            f'{key} 的中文是 {MESSAGES[key]["zh"]!r}，期望 {label!r}'
         )
         assert re.search(
-            r'<button\b[^>]*>(?:(?!</button>).)*' + re.escape(label) + r'(?:(?!</button>).)*</button>',
+            r'<button\b[^>]*>(?:(?!</button>).)*' + re.escape(f"t('{key}')")
+            + r'(?:(?!</button>).)*</button>',
             src, re.S,
         ), (
-            f'{label!r} 不在任何 <button> 元素内——'
+            f'{label!r}（{key}）不在任何 <button> 元素内——'
             '契约要求三枚**带可见文字**的按钮，不是图标或裸链接'
         )
 

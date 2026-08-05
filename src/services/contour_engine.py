@@ -605,6 +605,7 @@ def build_contour_tiles(
     zoom_max: int,
     style: ContourStyle,
     progress_cb: Optional[Callable[[int, int], None]] = None,
+    stage_cb: Optional[Callable[[str, float], None]] = None,
     stop_flag=None,
     shade: bool = False,
     water: bool = False,
@@ -656,18 +657,49 @@ def build_contour_tiles(
     att_path = None
     _t_warp = time.time()
     logger.info(f"Contour: 开始 warp {len(dem_paths)} 个 DEM 到 EPSG:3857(大区域可能耗时数十秒)...")
+
+    def _stage(phase: str, fraction: float) -> None:
+        """阶段进度。这一段跑在 progress_cb 有意义之前 —— total 要等 warp 完、
+        建完 ctx 才算得出,所以没有分母,只能报阶段 + 比例。"""
+        if stage_cb is None:
+            return
+        try:
+            stage_cb(phase, float(fraction))
+        except Exception:
+            logger.debug("contour stage_cb failed (ignored)", exc_info=True)
+
+    def _gdal_stage(phase: str):
+        """GDAL 原生进度回调 -> _stage。
+
+        ⚠️ 回调里绝不能抛:实测 GDAL 把回调抛异常当成「用户请求中止」——
+        gdal.Warp 会失败、产物被删。恒返回 1(继续)。
+        """
+        if stage_cb is None:
+            return None
+
+        def _cb(complete, message, cb_data):
+            _stage(phase, float(complete))
+            return 1
+
+        return _cb
+
+    _stage("warp", 0.0)
     try:
         vrt = gdal.BuildVRT("", dem_paths)
         gdal.Warp(dem_path, vrt, format="GTiff",
                   dstSRS="EPSG:3857", resampleAlg="bilinear", dstNodata=-9999,
-                  creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"])
+                  creationOptions=["TILED=YES", "COMPRESS=LZW", "BIGTIFF=IF_SAFER"],
+                  callback=_gdal_stage("warp"))
         vrt = None
     except Exception:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
     logger.info(f"Contour: DEM warp 完成, 耗时 {time.time() - _t_warp:.1f}s")
+    _stage("warp", 1.0)
     # 金字塔与 warp 的 bilinear 重采样口径一致(逐层平均约等于连续 bilinear)
+    _stage("overview", 0.0)
     _build_raster_overviews(dem_path, "BILINEAR")
+    _stage("overview", 1.0)
 
     att_paths = [str(p) for p in (att_tifs or [])]
     if water and att_paths:
@@ -711,6 +743,12 @@ def build_contour_tiles(
                 # completed。
                 progress_cb(counts["rendered"] + counts["failed"] + counts["skipped"],
                             counts["total"])
+
+        # total 到这里就已知了,而 _emit 此前只被逐瓦片的 _tally 调用 —— 第一发要
+        # 等**第一块瓦片渲染完**。上传任务的 total_tiles 在建任务时写死为 0,于是
+        # 界面在整个 warp + 建 ctx + worker 启动期间显示「0 / 0 瓦片 · 0%」不动。
+        # 先上报一次真实分母。
+        _emit()
 
         def _iter_tiles():
             for z in range(zoom_min, zoom_max + 1):

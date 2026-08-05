@@ -79,7 +79,8 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
 
     called = {"render": False, "background": None}
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         called["render"] = True
         called["background"] = params.style.background
         if progress_cb:
@@ -117,7 +118,8 @@ def test_execute_total_tiles_covers_whole_dem_not_bbox(monkeypatch, tmp_path):
 
     # Render succeeds but does NOT report progress, so total_tiles keeps the
     # initial coverage-based value set before rendering.
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         return {"total": 0, "rendered": 1, "failed": 0}
     import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
@@ -150,7 +152,8 @@ def test_execute_downloads_water_and_passes_shade_water_flags(monkeypatch, tmp_p
 
     seen = {}
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         seen["shade"] = params.shade
         seen["water"] = params.water
         return {"total": 1, "rendered": 1, "failed": 0}
@@ -182,7 +185,8 @@ def test_execute_water_download_failure_is_not_fatal(monkeypatch, tmp_path):
                 await progress_callback(g, status, "404" if status == "failed" else None, 1)
     monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         return {"total": 1, "rendered": 1, "failed": 0}
     import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
@@ -239,7 +243,8 @@ def test_render_progress_is_throttled_and_payload_stays_compatible(monkeypatch, 
                 await progress_callback(g, "completed", None, 1)
     monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         for i in range(1, 101):
             progress_cb(i, 100)
         return {"total": 100, "rendered": 95, "failed": 5}
@@ -287,7 +292,8 @@ def test_render_progress_flushes_pending_counts_on_pause(monkeypatch, tmp_path):
 
     stop = threading.Event()
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         progress_cb(5, 100)  # 节流窗口内,不强制 flush 的话这次计数会丢
         stop.set()
         return {"total": 100, "rendered": 5, "failed": 0}
@@ -333,7 +339,8 @@ def test_render_progress_reuses_one_connection_and_no_per_tile_select(monkeypatc
 
     monkeypatch.setattr(ctm_mod, "get_connection", counting_get_connection)
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         for i in range(1, 51):
             state["in_cb"] = True
             try:
@@ -369,7 +376,8 @@ def test_download_progress_local_path_uses_flat_basename(monkeypatch, tmp_path):
                 await progress_callback(g, "completed", None, 1)
     monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         return {"total": 1, "rendered": 1, "failed": 0}
     import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
@@ -408,7 +416,8 @@ def test_completed_task_not_flipped_to_failed_on_emit_error(monkeypatch, tmp_pat
                 await progress_callback(g, "completed", None, 1)
     monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         return {"total": 1, "rendered": 1, "failed": 0}
     import src.services.contour_task_tiler as tiler_mod
     monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)

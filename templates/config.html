@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}配置 - TerraForge{% endblock %}
+{% block title %}{{ t('tpl.config.page_title') }} - {{ t('app.suffix') }}{% endblock %}
 
 {# 本页没有地图也没有实时推送:覆盖掉 base.html 的 Cesium(5.7MB)+socket.io,
    不白付下载与解析。config.js 不消费这两者(grep 可证)。 #}
@@ -12,7 +12,7 @@
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
         <polyline points="15 18 9 12 15 6"></polyline>
     </svg>
-    返回首页
+    {{ t('tpl.config.back_home') }}
 </a>
 {% include "_config_content.html" %}
 </div>

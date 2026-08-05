@@ -97,7 +97,7 @@ function updateTileEstimate() {
     const west = _wrapLngWest(currentBounds.west);
     const east = _wrapLngEast(currentBounds.east);
     if (east < west) {
-        el.textContent = '选区跨反经线，后端会拒绝该四至，无法预估瓦片数';
+        el.textContent = t('js.map.tile_estimate.antimeridian');
         el.classList.remove('tile-estimate--over');
         el.hidden = false;
         return null;
@@ -107,10 +107,10 @@ function updateTileEstimate() {
     const over = count > TASK_TILE_LIMIT;
     if (over) {
         const hours = (count / 10 / 3600).toFixed(1);
-        el.textContent = `预计 ${formatted} 块瓦片 · 按 10 张/秒约 ${hours} 小时（大任务，创建时将要求确认）`;
+        el.textContent = t('js.map.tile_estimate.over', { count: formatted, hours: hours });
         el.classList.add('tile-estimate--over');
     } else {
-        el.textContent = `预计 ${formatted} 块瓦片`;
+        el.textContent = t('js.map.tile_estimate.count', { count: formatted });
         el.classList.remove('tile-estimate--over');
     }
     el.hidden = false;
@@ -129,7 +129,11 @@ function initSplash() {
     if (!splash || _splashTimer) return;
     const bar = document.getElementById('splashBar');
     const stage = document.getElementById('splashStage');
-    const stages = ['正在初始化地图引擎…', '加载影像服务…', '准备工作台…'];
+    const stages = [
+        t('js.map.splash.stage_engine'),
+        t('js.map.splash.stage_imagery'),
+        t('js.map.splash.stage_workbench'),
+    ];
     let progress = 0;
     let stageIdx = 0;
     _splashTimer = setInterval(function () {
@@ -145,7 +149,9 @@ function initSplash() {
     }, 120);
     window.addEventListener('error', function (e) {
         if (_splashDone || !stage) return;
-        stage.textContent = '加载出错：' + (e.message || '未知错误');
+        stage.textContent = t('js.map.splash.error', {
+            message: e.message || t('js.map.splash.unknown_error'),
+        });
         stage.classList.add('splash-stage--error');
     });
     // 兜底：正常路径几百毫秒就就绪；万一渲染管线异常，20s 后也不把用户
@@ -165,7 +171,7 @@ function splashReady() {
     const bar = document.getElementById('splashBar');
     const stage = document.getElementById('splashStage');
     if (bar) bar.style.width = '100%';
-    if (stage) stage.textContent = '就绪';
+    if (stage) stage.textContent = t('js.map.splash.ready');
     splash.classList.add('splash-screen--done');
     setTimeout(function () { splash.remove(); }, 550);
 }
@@ -632,7 +638,7 @@ function _parseTintBreaks(raw) {
 }
 
 function _tintBandLabel(breaks, i) {
-    if (breaks.length === 0) return '全部';
+    if (breaks.length === 0) return t('js.map.tint.band_all');
     if (i === 0) return '<' + breaks[0];
     if (i === breaks.length) return '≥' + breaks[breaks.length - 1];
     return breaks[i - 1] + '~' + breaks[i];
@@ -810,10 +816,10 @@ function updateBoundsInfo() {
         const f = (v) => v.toFixed(5);
         boundsInfo.innerHTML = `
             <div class="bounds-grid">
-                <span class="bounds-k" aria-hidden="true">N</span><span class="bounds-v" data-field="north" title="点击编辑"><span class="bounds-sr">北纬 </span>${f(currentBounds.north)}</span>
-                <span class="bounds-k" aria-hidden="true">S</span><span class="bounds-v" data-field="south" title="点击编辑"><span class="bounds-sr">南纬 </span>${f(currentBounds.south)}</span>
-                <span class="bounds-k" aria-hidden="true">E</span><span class="bounds-v" data-field="east" title="点击编辑"><span class="bounds-sr">东经 </span>${f(currentBounds.east)}</span>
-                <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v" data-field="west" title="点击编辑"><span class="bounds-sr">西经 </span>${f(currentBounds.west)}</span>
+                <span class="bounds-k" aria-hidden="true">N</span><span class="bounds-v" data-field="north" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_north')} </span>${f(currentBounds.north)}</span>
+                <span class="bounds-k" aria-hidden="true">S</span><span class="bounds-v" data-field="south" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_south')} </span>${f(currentBounds.south)}</span>
+                <span class="bounds-k" aria-hidden="true">E</span><span class="bounds-v" data-field="east" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_east')} </span>${f(currentBounds.east)}</span>
+                <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v" data-field="west" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_west')} </span>${f(currentBounds.west)}</span>
             </div>
             <div class="bounds-actions">
                 <button type="button" class="btn btn-primary btn-sm" id="boundsDownloadBtn">
@@ -822,35 +828,35 @@ function updateBoundsInfo() {
                         <polyline points="7 10 12 15 17 10"></polyline>
                         <line x1="12" y1="15" x2="12" y2="3"></line>
                     </svg>
-                    下载
+                    ${t('js.map.bounds.download')}
                 </button>
-                <button type="button" class="btn btn-danger btn-sm" id="boundsClearBtn" title="清除选区">
+                <button type="button" class="btn btn-danger btn-sm" id="boundsClearBtn" title="${t('js.map.bounds.clear_title')}">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
                         <polyline points="3 6 5 6 21 6"></polyline>
                         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                     </svg>
-                    删除
+                    ${t('js.map.bounds.delete')}
                 </button>
-                <span class="bounds-hint">拖拽角点调整 · 点击数值编辑</span>
+                <span class="bounds-hint">${t('js.map.bounds.hint')}</span>
             </div>
         `;
         if (statusSel) {
             const w = (currentBounds.east - currentBounds.west).toFixed(3);
             const h = (currentBounds.north - currentBounds.south).toFixed(3);
-            statusSel.textContent = `已选区域 ${w}° × ${h}°`;
+            statusSel.textContent = t('js.map.status.selection', { w: w, h: h });
         }
     } else {
+        // 不用 <small>：style.css 的全局 `small` 是 --font-size-sm(14px)，比浮层
+        // 自己的字号还大，套上去等于把提示放大一号。字号由 .bounds-overlay 统一给。
         boundsInfo.innerHTML = `
-            <small>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="16" x2="12" y2="12"></line>
-                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                </svg>
-                请在地图上框选下载区域
-            </small>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            ${t('js.map.bounds.empty')}
         `;
-        if (statusSel) statusSel.textContent = '未选择区域';
+        if (statusSel) statusSel.textContent = t('js.map.status.no_selection');
     }
 }
 
@@ -867,7 +873,7 @@ function _beginBoundsEdit(vEl) {
     input.type = 'text';
     input.className = 'bounds-edit-input';
     input.value = currentBounds[field].toFixed(5);
-    input.setAttribute('aria-label', '编辑' + field);
+    input.setAttribute('aria-label', t('js.map.bounds.edit_aria', { field: field }));
     vEl.innerHTML = '';
     vEl.appendChild(input);
     input.focus();
@@ -893,7 +899,7 @@ function _beginBoundsEdit(vEl) {
 function _applyBoundsEdit(field, raw) {
     const v = parseFloat(String(raw).trim());
     if (isNaN(v)) {
-        showNotification('坐标格式无效：' + raw, 'warning');
+        showNotification(t('js.map.edit.invalid_number', { value: raw }), 'warning');
         updateBoundsInfo();
         return;
     }
@@ -905,17 +911,17 @@ function _applyBoundsEdit(field, raw) {
     };
     b[field] = v;
     if (b.north <= b.south) {
-        showNotification('北纬必须大于南纬', 'warning');
+        showNotification(t('js.map.edit.north_gt_south'), 'warning');
         updateBoundsInfo();
         return;
     }
     if (b.north > 90 || b.south < -90) {
-        showNotification('纬度必须在 ±90° 之间', 'warning');
+        showNotification(t('js.map.edit.lat_range'), 'warning');
         updateBoundsInfo();
         return;
     }
     if (Math.abs(b.east - b.west) < 1e-9) {
-        showNotification('东西经不能相同（选区宽度为 0）', 'warning');
+        showNotification(t('js.map.edit.zero_width'), 'warning');
         updateBoundsInfo();
         return;
     }
@@ -934,7 +940,7 @@ function _applyBoundsEdit(field, raw) {
 // 期间用户拖过角点或改过数值，摘要必须反映当前选区。
 function openDownloadModal() {
     if (!currentBounds) {
-        showNotification('请先在地图上框选下载区域', 'warning');
+        showNotification(t('js.map.download.need_selection'), 'warning');
         return;
     }
     const summary = document.getElementById('downloadModalBounds');
@@ -942,9 +948,14 @@ function openDownloadModal() {
         const f = (v) => v.toFixed(5);
         const w = (currentBounds.east - currentBounds.west).toFixed(3);
         const h = (currentBounds.north - currentBounds.south).toFixed(3);
-        summary.textContent =
-            `选区 N ${f(currentBounds.north)} · S ${f(currentBounds.south)} · ` +
-            `E ${f(currentBounds.east)} · W ${f(currentBounds.west)}（${w}° × ${h}°）`;
+        summary.textContent = t('js.map.download.bounds_summary', {
+            north: f(currentBounds.north),
+            south: f(currentBounds.south),
+            east: f(currentBounds.east),
+            west: f(currentBounds.west),
+            width: w,
+            height: h,
+        });
     }
     const modalEl = document.getElementById('downloadModal');
     if (!modalEl || typeof bootstrap === 'undefined') return;
@@ -972,7 +983,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     const downloadType = _radioValue('downloadType', 'map');
 
     if (!currentBounds) {
-        showNotification('请先在地图上框选下载区域', 'warning');
+        showNotification(t('js.map.download.need_selection'), 'warning');
         return;
     }
 
@@ -982,8 +993,11 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     if (est && est.over) {
         const hours = (est.count / 10 / 3600).toFixed(1);
         const ok = await showConfirm(
-            `预计 ${est.count.toLocaleString('zh-CN')} 块瓦片，按 10 张/秒估算耗时约 ${hours} 小时。确定创建吗？`,
-            { title: '大任务确认', danger: true });
+            t('js.map.download.confirm_large', {
+                count: est.count.toLocaleString('zh-CN'),
+                hours: hours,
+            }),
+            { title: t('js.map.download.confirm_large_title'), danger: true });
         if (!ok) return;
     }
 
@@ -1005,7 +1019,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     } else {
         const outputFormat = _outputFormatValue();
         if (!outputFormat) {
-            showNotification('请至少勾选一种输出格式（瓦片 / GeoTIFF）', 'warning');
+            showNotification(t('js.map.download.need_output_format'), 'warning');
             return;
         }
         taskData = {
@@ -1030,7 +1044,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px; animation: spin 1s linear infinite;">
             <circle cx="12" cy="12" r="10"></circle>
         </svg>
-        创建中...
+        ${t('js.map.download.creating')}
     `;
 
     try {
@@ -1045,15 +1059,15 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
         const result = await response.json();
 
         if (response.ok) {
-            showNotification('任务创建成功！ID: ' + result.task_id, 'success');
+            showNotification(t('js.map.download.created', { id: result.task_id }), 'success');
             resetForm();
             loadActiveTasks();
             _afterTaskCreated('downloadModal');
         } else {
-            showNotification('创建任务失败: ' + result.error, 'danger');
+            showNotification(t('js.map.download.create_failed', { error: result.error }), 'danger');
         }
     } catch (error) {
-        showNotification('创建任务失败: ' + error.message, 'danger');
+        showNotification(t('js.map.download.create_failed', { error: error.message }), 'danger');
     } finally {
         btn.innerHTML = originalText;
         refreshSubmitButtonState();
@@ -1112,7 +1126,7 @@ async function submitContour() {
     const fileInput = document.getElementById('contourFiles');
     const files = fileInput?.files;
     if (!files || files.length === 0) {
-        showNotification('请先选择至少一个 .tif/.tiff 文件', 'warning');
+        showNotification(t('js.map.process.need_files'), 'warning');
         return;
     }
 
@@ -1121,7 +1135,8 @@ async function submitContour() {
     const background = bgTransparent ? 'transparent' : (document.getElementById('contourBackground').value || '#faf6ec');
 
     const fd = new FormData();
-    fd.append('name', document.getElementById('processTaskName').value || '等高线瓦片');
+    fd.append('name', document.getElementById('processTaskName').value
+        || t('js.map.process.contour_default_name'));
     fd.append('contour_interval', String(interval));
     fd.append('zoom_min', document.getElementById('processZoomMin').value);
     fd.append('zoom_max', document.getElementById('processZoomMax').value);
@@ -1140,27 +1155,31 @@ async function submitContour() {
     const btn = document.getElementById('createProcessBtn');
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '上传中...';
+    btn.innerHTML = t('js.map.process.uploading');
     try {
         const createResp = await fetch('/api/contour/tasks', { method: 'POST', body: fd });
         const created = await createResp.json();
         if (!createResp.ok) {
-            showNotification('创建失败: ' + (created.error || createResp.status), 'danger');
+            showNotification(t('js.map.process.create_failed', {
+                error: created.error || createResp.status,
+            }), 'danger');
             return;
         }
         const startResp = await fetch(`/api/contour/tasks/${created.task_id}/start`, { method: 'POST' });
         if (!startResp.ok) {
             const started = await startResp.json().catch(() => ({}));
-            showNotification('任务已创建但启动失败: ' + (started.error || startResp.status), 'danger');
+            showNotification(t('js.map.process.start_failed', {
+                error: started.error || startResp.status,
+            }), 'danger');
             return;
         }
-        showNotification('等高线任务已开始（上传 DEM → 渲染瓦片）', 'success');
+        showNotification(t('js.map.process.contour_started'), 'success');
         resetForm({ clearBounds: false, formId: 'processForm' });
         resetContourTintUI();
         loadActiveTasks();
         _afterTaskCreated('processModal');
     } catch (err) {
-        showNotification('创建失败: ' + err.message, 'danger');
+        showNotification(t('js.map.process.create_failed', { error: err.message }), 'danger');
     } finally {
         btn.innerHTML = original;
         refreshSubmitButtonState();
@@ -1213,9 +1232,9 @@ async function previewTask(task) {
     stopTaskPreview();
     const seq = _previewSeq;
     try {
-        const t = task.task_type;
-        if (t === 'map' || t === 'contour') {
-            const base = t === 'map' ? `/tiles/${task.id}` : `/contour/${task.id}`;
+        const taskType = task.task_type;
+        if (taskType === 'map' || taskType === 'contour') {
+            const base = taskType === 'map' ? `/tiles/${task.id}` : `/contour/${task.id}`;
             const layer = viewer.imageryLayers.addImageryProvider(
                 new Cesium.UrlTemplateImageryProvider({
                     url: `${base}/{z}/{x}/{y}.png`,
@@ -1224,10 +1243,10 @@ async function previewTask(task) {
                 })
             );
             layer.alpha = 0.9;
-            _previewState = { kind: 'imagery', taskId: task.id, taskType: t, name: task.name, layer };
-            if (t === 'contour') contourPreviewActiveId = task.id;
-        } else if (t === 'local_terrain' || t === 'dem') {
-            const base = t === 'local_terrain'
+            _previewState = { kind: 'imagery', taskId: task.id, taskType: taskType, name: task.name, layer };
+            if (taskType === 'contour') contourPreviewActiveId = task.id;
+        } else if (taskType === 'local_terrain' || taskType === 'dem') {
+            const base = taskType === 'local_terrain'
                 ? `/terrain/local/${task.id}`
                 : `/terrain/dem/${task.id}`;
             // GET 而非 HEAD：layer.json 里的 valid_bounds 是数据真实范围，
@@ -1282,18 +1301,18 @@ async function previewTask(task) {
                         })
                     );
                     layer.alpha = 0.85;
-                    _previewState = { kind: 'imagery', taskId: task.id, taskType: t, name: task.name, layer };
+                    _previewState = { kind: 'imagery', taskId: task.id, taskType: taskType, name: task.name, layer };
                     if (task.north == null) {
                         viewer.camera.flyTo({
                             destination: Cesium.Rectangle.fromDegrees(hs.bounds[0], hs.bounds[1], hs.bounds[2], hs.bounds[3]),
                             duration: 1.2,
                         });
                     }
-                    showNotification('该任务还没有地形切片，显示源 DEM 的晕渲预览', 'info');
+                    showNotification(t('js.map.preview.hillshade_fallback'), 'info');
                 } else {
-                    showNotification(t === 'dem'
-                        ? '该任务没有地形切片、也没有可渲染的 DEM 源文件，仅定位到区域'
-                        : '切片与源文件都不存在，仅定位到区域', 'info');
+                    showNotification(taskType === 'dem'
+                        ? t('js.map.preview.dem_no_tiles')
+                        : t('js.map.preview.no_tiles_no_source'), 'info');
                 }
             }
         }
@@ -1309,7 +1328,9 @@ async function previewTask(task) {
         // fromUrl reject / 网络异常等：只有仍是当前预览时才打扰用户;
         // 过期调用的报错随结果一起丢弃。
         if (seq === _previewSeq) {
-            showNotification('预览失败: ' + (err && err.message ? err.message : err), 'danger');
+            showNotification(t('js.map.preview.failed', {
+                error: err && err.message ? err.message : err,
+            }), 'danger');
         }
     }
 }
@@ -1328,8 +1349,11 @@ function _renderPreviewChip() {
         document.querySelector('.index-map').appendChild(chip);
     }
     chip.innerHTML = `
-        <span>预览中：<strong>${escapeHtml(_previewState.name)}</strong>（#${_previewState.taskId}）</span>
-        <button type="button" class="btn btn-sm btn-secondary" onclick="stopTaskPreview()">关闭预览</button>
+        <span>${t('js.map.preview.chip', {
+            name: '<strong>' + escapeHtml(_previewState.name) + '</strong>',
+            id: _previewState.taskId,
+        })}</span>
+        <button type="button" class="btn btn-sm btn-secondary" onclick="stopTaskPreview()">${t('js.map.preview.stop')}</button>
     `;
 }
 
@@ -1342,7 +1366,7 @@ function toggleContourPreview(taskId, zoomMax) {
     const info = contourPreviewTasks.get(taskId) || {};
     previewTask({
         id: taskId, task_type: 'contour', zoom_max: zoomMax,
-        name: info.name || ('等高线 #' + taskId),
+        name: info.name || t('js.map.contour.default_name', { id: taskId }),
         // contour_tasks 行有 bbox（列表接口 SELECT * 带出来的）：带上才能
         // flyTo 到任务区域，与历史面板的预览行为对齐。没拿到时不传键，
         // previewTask 的 `task.north != null` 检查会跳过 flyTo。
@@ -1385,18 +1409,21 @@ function updateContourPreviewButtons() {
     const rows = [];
     contourPreviewTasks.forEach((info, id) => {
         const active = contourPreviewActiveId === id;
+        const label = escapeHtml(info.name || t('js.map.contour.default_name', { id: id }));
         rows.push(`
             <button type="button"
                     class="btn btn-sm ${active ? 'btn-primary' : 'btn-outline-primary'}"
                     style="margin: 0 6px 6px 0;"
                     onclick="toggleContourPreview(${id}, ${info.zoom_max || 'null'})">
-                ${active ? '隐藏预览' : '在地图上预览'}：${escapeHtml(info.name || ('等高线 #' + id))}
+                ${active
+                    ? t('js.map.contour.hide_preview', { name: label })
+                    : t('js.map.contour.show_preview', { name: label })}
             </button>
         `);
     });
     panel.innerHTML = `
         <div class="alert alert-info" style="margin-bottom:0;">
-            <small><strong>已完成的等高线瓦片</strong></small><br>
+            <small><strong>${t('js.map.contour.panel_title')}</strong></small><br>
             ${rows.join('')}
         </div>
     `;
@@ -1414,10 +1441,14 @@ async function registerCompletedContourTask(taskId) {
                 north: task.north, south: task.south, east: task.east, west: task.west,
             });
         } else {
-            contourPreviewTasks.set(taskId, { name: '等高线 #' + taskId, zoom_max: null });
+            contourPreviewTasks.set(taskId, {
+                name: t('js.map.contour.default_name', { id: taskId }), zoom_max: null,
+            });
         }
     } catch (e) {
-        contourPreviewTasks.set(taskId, { name: '等高线 #' + taskId, zoom_max: null });
+        contourPreviewTasks.set(taskId, {
+            name: t('js.map.contour.default_name', { id: taskId }), zoom_max: null,
+        });
     }
     updateContourPreviewButtons();
 }
@@ -1457,12 +1488,13 @@ async function submitLocalTerrain() {
     const fileInput = document.getElementById('localTerrainFiles');
     const files = fileInput?.files;
     if (!files || files.length === 0) {
-        showNotification('请先选择至少一个 .tif/.tiff 文件', 'warning');
+        showNotification(t('js.map.process.need_files'), 'warning');
         return;
     }
 
     const fd = new FormData();
-    fd.append('name', document.getElementById('processTaskName').value || '本地高程切片');
+    fd.append('name', document.getElementById('processTaskName').value
+        || t('js.map.process.local_terrain_default_name'));
     fd.append('maxzoom', document.getElementById('localTerrainMaxzoom')?.value || '14');
     for (const f of files) {
         fd.append('files', f);
@@ -1471,20 +1503,22 @@ async function submitLocalTerrain() {
     const btn = document.getElementById('createProcessBtn');
     btn.disabled = true;
     const original = btn.innerHTML;
-    btn.innerHTML = '上传中...';
+    btn.innerHTML = t('js.map.process.uploading');
     try {
         const resp = await fetch('/api/terrain/local/tasks', { method: 'POST', body: fd });
         const result = await resp.json();
         if (resp.ok) {
-            showNotification('上传成功，已开始切片！ID: ' + result.task_id, 'success');
+            showNotification(t('js.map.process.upload_started', { id: result.task_id }), 'success');
             resetForm({ clearBounds: false, formId: 'processForm' });
             loadActiveTasks();
             _afterTaskCreated('processModal');
         } else {
-            showNotification('上传失败: ' + (result.error || resp.status), 'danger');
+            showNotification(t('js.map.process.upload_failed', {
+                error: result.error || resp.status,
+            }), 'danger');
         }
     } catch (err) {
-        showNotification('上传失败: ' + err.message, 'danger');
+        showNotification(t('js.map.process.upload_failed', { error: err.message }), 'danger');
     } finally {
         btn.innerHTML = original;
         refreshSubmitButtonState();
@@ -1516,7 +1550,7 @@ function initMapWorkbench() {
             try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
             ta.remove();
             if (ok) showToast(toastMsg, 'success');
-            else showToast('复制失败，请手动选择复制', 'error');
+            else showToast(t('js.map.copy.failed'), 'error');
         }
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(
@@ -1545,8 +1579,10 @@ function initMapWorkbench() {
             lng: Cesium.Math.toDegrees(carto.longitude),
             lat: Cesium.Math.toDegrees(carto.latitude),
         };
-        coordsEl.textContent =
-            '经度 ' + lastCoords.lng.toFixed(4) + '°  纬度 ' + lastCoords.lat.toFixed(4) + '°';
+        coordsEl.textContent = t('js.map.status.coords', {
+            lng: lastCoords.lng.toFixed(4),
+            lat: lastCoords.lat.toFixed(4),
+        });
     }
     if (coordsEl) {
         const moveHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -1556,14 +1592,14 @@ function initMapWorkbench() {
         viewer.scene.canvas.addEventListener('mouseout', function () {
             pending = null;
             lastCoords = null;
-            coordsEl.textContent = '经度 — 纬度 —';
+            coordsEl.textContent = t('js.map.status.coords_empty');
         });
         // 点击状态栏坐标 -> 复制「经度,纬度」（GIS 惯用顺序，可直接贴进大多数工具）
         coordsEl.addEventListener('click', function () {
             if (!lastCoords) return;
             _copyText(
                 lastCoords.lng.toFixed(6) + ', ' + lastCoords.lat.toFixed(6),
-                '坐标已复制'
+                t('js.map.copy.coords_done')
             );
         });
     }
@@ -1577,7 +1613,7 @@ function initMapWorkbench() {
             _copyText(
                 f(currentBounds.west) + ',' + f(currentBounds.south) + ',' +
                 f(currentBounds.east) + ',' + f(currentBounds.north),
-                '选区四至已复制（W,S,E,N）'
+                t('js.map.copy.bounds_done')
             );
         });
     }

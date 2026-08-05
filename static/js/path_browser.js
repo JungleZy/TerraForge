@@ -28,17 +28,17 @@
         currentPath = data.path;
         // Windows 盘符列表视图 path 为 ''(此时「选择此目录」因 currentPath
         // 为空不会写回,只能继续点盘符下钻)
-        _el('pathBrowserCurrent').textContent = data.path || '(选择盘符)';
+        _el('pathBrowserCurrent').textContent = data.path || t('js.path_browser.pick_drive');
         const list = _el('pathBrowserDirs');
         list.innerHTML = '';
         if (data.parent) {
-            list.appendChild(_item('.. (上一级)', function () { load(data.parent); }));
+            list.appendChild(_item(t('js.path_browser.parent_dir'), function () { load(data.parent); }));
         }
         (data.dirs || []).forEach(function (d) {
             list.appendChild(_item(d.name, function () { load(d.path); }));
         });
         if (!list.children.length) {
-            list.appendChild(_item('(没有子目录)', function () {}, true));
+            list.appendChild(_item(t('js.path_browser.no_subdirs'), function () {}, true));
         }
     }
 
@@ -56,11 +56,11 @@
         } catch (e) {
             // 输入框里可能还是相对值/不存在的目录:回退根级(盘符/根目录),把原因亮出来
             if (path) {
-                errBox.textContent = '起点不可用(' + e.message + '),已回到根目录';
+                errBox.textContent = t('js.path_browser.start_unavailable', { error: e.message });
                 errBox.hidden = false;
                 return load('');
             }
-            errBox.textContent = '目录列表加载失败:' + e.message;
+            errBox.textContent = t('js.path_browser.load_failed', { error: e.message });
             errBox.hidden = false;
         }
     }

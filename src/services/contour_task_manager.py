@@ -801,9 +801,43 @@ class ContourTaskManager:
                 params = ContourParams(interval=interval, zoom_min=zoom_min, zoom_max=zoom_max,
                                        style=style, shade=bool(task["terrain_shade"]), water=want_water,
                                        workers=workers)
+                # 渲染开始之前的准备阶段（warp 到 3857、建金字塔）。它跑在 total
+                # 算出来之前 —— 上传任务的 total_tiles 建任务时写死为 0，于是界面
+                # 在整个 warp 期间显示「0 / 0 瓦片 · 0%」不动，看起来像卡死。
+                #
+                # ⚠️ phase 必须用新值，不能复用 'render'：多个测试按
+                # `p.get('phase') == 'render'` 过滤事件并数个数，混进来会打挂它们。
+                stage_state = {"last_emit": float("-inf")}
+                _STAGE_LABELS = {"warp": "预处理 DEM", "overview": "建金字塔"}
+
+                def render_stage(phase: str, fraction: float) -> None:
+                    now = time.monotonic()
+                    edge = fraction <= 0.0 or fraction >= 1.0
+                    if not edge and \
+                            now - stage_state["last_emit"] < _RENDER_PROGRESS_MIN_INTERVAL:
+                        return
+                    stage_state["last_emit"] = now
+                    if not (self.socketio and base_payload is not None):
+                        return
+                    payload = dict(base_payload)
+                    payload["task_type"] = "contour"
+                    payload["phase"] = "prepare"
+                    payload["stage"] = phase
+                    payload["stage_label"] = _STAGE_LABELS.get(phase, phase)
+                    payload["stage_fraction"] = max(0.0, min(1.0, float(fraction)))
+                    # U1：这发 emit 被 GDAL 的进度回调同步调用，抛出会一路穿透；
+                    # 而 GDAL 把回调抛异常当成「用户请求中止」，warp 会直接失败。
+                    try:
+                        self.socketio.emit("task_progress", payload)
+                    except Exception as emit_error:
+                        logger.warning(
+                            f"Contour task {task_id}: emit prepare stage failed "
+                            f"(ignored): {emit_error}")
+
                 render_counts = tile_contour_task_dir(
                     task_dir=output_dir, out_dir=output_dir / "contour_tiles",
-                    params=params, progress_cb=render_progress, stop_flag=stop_flag,
+                    params=params, progress_cb=render_progress,
+                    stage_cb=render_stage, stop_flag=stop_flag,
                 )
                 # 渲染结束(正常完成/暂停/部分失败)强制 flush:节流窗口内最后
                 # 一段计数不丢。渲染异常由外层 except 标 failed,无需再 flush。

@@ -128,8 +128,16 @@ def test_tile_estimate_uses_backend_formula():
         '换成线性插值会让预估与后端口径脱节'
     )
     assert 'function updateTileEstimate(' in src
-    assert '大任务确认' in src and 'showConfirm(' in src, (
+    # i18n 改造后标题不再是源码里的中文字面量：JS 里是
+    # `t('js.map.download.confirm_large_title')`，中文在文案目录里。
+    # 两段都查，只查一段都能被绕过（key 在但文案被改掉 / 文案在但没人引用）。
+    from src.i18n.catalog import MESSAGES
+
+    assert "t('js.map.download.confirm_large_title')" in src and 'showConfirm(' in src, (
         '瓦片数超软阈值时，提交前必须弹大任务确认框（0.1.4 放开硬上限后的把关）'
+    )
+    assert MESSAGES['js.map.download.confirm_large_title']['zh'] == '大任务确认', (
+        'js.map.download.confirm_large_title 的中文不再是「大任务确认」'
     )
 
 

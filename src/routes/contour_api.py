@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
+from src.i18n import t
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import coerce_number, validate_zoom
 from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
@@ -79,7 +80,7 @@ def create_contour_task():
     if not contour_task_manager:
         return jsonify({"error": "Contour task manager not initialized"}), 500
     try:
-        name = request.form.get("name") or "等高线瓦片"
+        name = request.form.get("name") or t('api.contour.default_task_name')
         zoom_min_raw = request.form.get("zoom_min")
         zoom_max_raw = request.form.get("zoom_max")
         # zoom_max 留空 = 按 DEM 分辨率自动计算；显式填写时校验 0-21，

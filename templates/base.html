@@ -1,9 +1,15 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-bs-theme="dark">
+<html lang="{{ html_lang }}" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}TerraForge{% endblock %}</title>
+    <title>{% block title %}{{ t('app.title') }}{% endblock %}</title>
+
+    {# 界面语言：语种由 cookie `tf-lang` 决定（服务端渲染模板时就要知道，
+       localStorage 送不到服务端）。这里内联的是**浏览器侧**那部分文案
+       （`js.` 前缀），模板文案已经在服务端渲染完，不重复下发。
+       必须排在所有业务脚本之前 —— ui.js / map.js 在解析期就会调 t()。 #}
+    <script>window.__LANG__ = "{{ locale }}"; window.__I18N__ = {{ i18n_client_json | safe }};</script>
 
     {# 主题引导脚本：必须在**所有 CSS 链接之前**同步执行 —— 首帧绘制前就把
        data-bs-theme 定好，否则亮色用户会先看到一帧暗色再跳变。
@@ -64,7 +70,7 @@
         <footer class="workbench-statusbar">
             <!-- 连接状态指示：仅在有 socket 的页面由 initConnectionStatus 点亮 -->
             <span class="conn-status" id="connStatus" hidden>
-                <span class="conn-dot"></span><span id="connStatusText">未连接</span>
+                <span class="conn-dot"></span><span id="connStatusText">{{ t('tpl.base.conn.disconnected') }}</span>
             </span>
             {% block statusbar %}{% endblock %}
         </footer>
@@ -89,50 +95,50 @@
                             <line x1="12" y1="16" x2="12" y2="12"></line>
                             <line x1="12" y1="8" x2="12.01" y2="8"></line>
                         </svg>
-                        任务详情
+                        {{ t('tpl.base.detail.title') }}
                     </h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.base.detail.close') }}"></button>
                 </div>
                 <div class="modal-body">
                     <div class="detail-grid">
-                      <div class="detail-item"><span class="detail-k">任务ID</span><span class="detail-v" id="detailId"></span></div>
-                      <div class="detail-item"><span class="detail-k">任务名称</span><span class="detail-v" id="detailName"></span></div>
-                      <div class="detail-item"><span class="detail-k">状态</span><span class="detail-v" id="detailStatus"></span></div>
-                      <div class="detail-item"><span class="detail-k">地图样式</span><span class="detail-v" id="detailStyle"></span></div>
-                      <div class="detail-item"><span class="detail-k">输出格式</span><span class="detail-v" id="detailFormat"></span></div>
-                      <div class="detail-item"><span class="detail-k">缩放级别</span><span class="detail-v" id="detailZoom"></span></div>
-                      <div class="detail-item"><span class="detail-k">总数量</span><span class="detail-v" id="detailTotal"></span></div>
-                      <div class="detail-item"><span class="detail-k">已下载</span><span class="detail-v" id="detailDownloaded"></span></div>
-                      <div class="detail-item"><span class="detail-k">失败</span><span class="detail-v" id="detailFailed"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.task_id') }}</span><span class="detail-v" id="detailId"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.task_name') }}</span><span class="detail-v" id="detailName"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.status') }}</span><span class="detail-v" id="detailStatus"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.map_style') }}</span><span class="detail-v" id="detailStyle"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.output_format') }}</span><span class="detail-v" id="detailFormat"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.zoom') }}</span><span class="detail-v" id="detailZoom"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.total') }}</span><span class="detail-v" id="detailTotal"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.downloaded') }}</span><span class="detail-v" id="detailDownloaded"></span></div>
+                      <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.failed') }}</span><span class="detail-v" id="detailFailed"></span></div>
                     </div>
-                    <div style="margin-top:1rem;"><span class="detail-k">进度</span> <span id="detailProgress"></span></div>
+                    <div style="margin-top:1rem;"><span class="detail-k">{{ t('tpl.base.detail.progress') }}</span> <span id="detailProgress"></span></div>
                     <hr style="border-color: var(--color-border);">
                     <div class="row">
                         <div class="col-12">
-                            <p class="detail-k" style="margin-bottom: 0.5rem;">区域范围</p>
+                            <p class="detail-k" style="margin-bottom: 0.5rem;">{{ t('tpl.base.detail.bbox') }}</p>
                             <div class="detail-grid">
-                                <div class="detail-item"><span class="detail-k">北纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailNorth"></span></div>
-                                <div class="detail-item"><span class="detail-k">南纬</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailSouth"></span></div>
-                                <div class="detail-item"><span class="detail-k">东经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailEast"></span></div>
-                                <div class="detail-item"><span class="detail-k">西经</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailWest"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.north') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailNorth"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.south') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailSouth"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.east') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailEast"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.west') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailWest"></span></div>
                             </div>
                         </div>
                     </div>
                     <hr style="border-color: var(--color-border);">
                     <div class="row">
                         <div class="col-12">
-                            <div class="detail-item"><span class="detail-k">输出路径</span><span class="detail-v"><code id="detailPath"></code></span></div>
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.output_path') }}</span><span class="detail-v"><code id="detailPath"></code></span></div>
                             <div class="detail-grid" style="margin-top: 0.5rem;">
-                                <div class="detail-item"><span class="detail-k">创建时间</span><span class="detail-v" id="detailCreated"></span></div>
-                                <div class="detail-item"><span class="detail-k">开始时间</span><span class="detail-v" id="detailStarted"></span></div>
-                                <div class="detail-item"><span class="detail-k">完成时间</span><span class="detail-v" id="detailCompleted"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.created_at') }}</span><span class="detail-v" id="detailCreated"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.started_at') }}</span><span class="detail-v" id="detailStarted"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.completed_at') }}</span><span class="detail-v" id="detailCompleted"></span></div>
                             </div>
                         </div>
                     </div>
                     <div class="row" id="detailErrorRow" style="display: none;">
                         <div class="col-12">
                             <hr style="border-color: var(--color-border);">
-                            <p><strong>错误信息:</strong></p>
+                            <p><strong>{{ t('tpl.base.detail.error_label') }}</strong></p>
                             <div class="alert alert-danger" id="detailError"></div>
                         </div>
                     </div>
@@ -142,12 +148,12 @@
                             <hr style="border-color: var(--color-border);">
                             <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
                                 <div>
-                                    <p style="margin-bottom: 0.25rem;"><strong>地形切片:</strong> <span id="detailTerrainStatus"></span></p>
+                                    <p style="margin-bottom: 0.25rem;"><strong>{{ t('tpl.base.detail.terrain_label') }}</strong> <span id="detailTerrainStatus"></span></p>
                                     <div id="detailTerrainInfo" style="font-family: var(--font-mono); font-size: 0.9rem;"></div>
                                 </div>
                                 <div class="btn-group btn-group-sm" style="flex: 0 0 auto;">
-                                    <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="启动地形切片">启动</button>
-                                    <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="刷新切片状态">刷新</button>
+                                    <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="{{ t('tpl.base.detail.terrain_start_title') }}">{{ t('tpl.base.detail.terrain_start') }}</button>
+                                    <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="{{ t('tpl.base.detail.terrain_refresh_title') }}">{{ t('tpl.base.detail.terrain_refresh') }}</button>
                                 </div>
                             </div>
                             <div class="row" id="detailTerrainErrorRow" style="display: none; margin-top: 0.75rem;">
@@ -159,7 +165,7 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('tpl.base.detail.close') }}</button>
                 </div>
             </div>
         </div>
@@ -183,6 +189,10 @@
          Engine.IO v4，换大版本会直接握不上手。 -->
     <script src="{{ url_for('static', filename='vendor/socket.io/4.5.4/socket.io.min.js') }}"></script>
     {% endblock %}
+
+    <!-- 界面语言查表：window.t()。__I18N__ / __LANG__ 在 <head> 里已内联。
+         必须排在所有业务脚本之前 —— 它们在解析期就会调 t()。 -->
+    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
 
     <!-- 全局 UI 组件：自定义 Toast / Confirm（替代原生 alert/confirm） -->
     <script src="{{ url_for('static', filename='js/ui.js') }}"></script>

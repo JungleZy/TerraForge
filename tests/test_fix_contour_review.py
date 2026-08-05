@@ -200,7 +200,8 @@ def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
                 await progress_callback(g, "completed", None, 1)
     monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None, stop_flag=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         if progress_cb:
             progress_cb(10, 10)  # 进度按 processed(rendered+skipped+failed)上报
         return {"total": 10, "rendered": 6, "failed": 1, "skipped": 3}

@@ -151,3 +151,167 @@ def test_sweep_startup_residue_never_raises(monkeypatch, tmp_path):
     monkeypatch.setattr("src.services.config_manager.ConfigManager.get", boom)
 
     sweep_startup_residue()  # 任何内部失败都吞掉,不向外抛
+
+
+# ---------------------------------------------------------------------------
+# 第 5 类：多幅 DEM 物化的中间栅格（cesiumlab_terrain_<pid>_*）
+# ---------------------------------------------------------------------------
+
+
+def test_materialised_owner_pid_parses_and_rejects():
+    """归属判定靠文件名里的 pid —— 解析规则必须精确。
+
+    这一类不能靠 mtime：物化产物写完 mtime 就冻住，而切片可以再跑几小时，
+    晚起的第二个实例会认为它「早于我启动」而放行删除。
+    """
+    from src.services.task_cleanup import _materialised_owner_pid
+
+    assert _materialised_owner_pid("cesiumlab_terrain_12345_ab12cd.tif") == 12345
+    # 老产物（2026-08-06 之前）名里没有 pid，解析不出来 → 退回 mtime 判据
+    assert _materialised_owner_pid("cesiumlab_terrain_ab12cd.tif") is None
+    # 别的东西一律不认
+    assert _materialised_owner_pid("cesiumlab_terrain.py") is None
+    assert _materialised_owner_pid("ASTGTMV003_N42E086_dem.tif") is None
+
+
+def test_sweep_orphan_files_skips_live_writer(monkeypatch, tmp_path):
+    """另一个活着的进程正在切片时，它的物化产物不得被删。
+
+    删掉 = 那次切片当场炸，或者更糟：读到半截数据。pid 复用只会导致漏删
+    （下次启动再清），方向是安全的。
+    """
+    from src.services.task_cleanup import _MATERIALISED_PREFIX, _sweep_orphan_files
+
+    alive = tmp_path / "cesiumlab_terrain_4242_alive.tif"
+    dead = tmp_path / "cesiumlab_terrain_4243_dead.tif"
+    for f in (alive, dead):
+        f.write_bytes(b"x" * 16)
+        _age(f)
+
+    monkeypatch.setattr("src.core.process_watchdog.pid_alive", lambda pid: pid == 4242)
+
+    removed = _sweep_orphan_files(tmp_path, _MATERIALISED_PREFIX, _PROCESS_START_TIME)
+
+    assert removed == 1
+    assert alive.exists(), "活着的进程正在用的产物被删了"
+    assert not dead.exists()
+
+
+def test_sweep_orphan_files_leaves_everything_else_alone(monkeypatch, tmp_path):
+    """只删自己的中间产物 —— DEM 源、成品瓦片、子目录一律不碰。
+
+    宁可漏不可误删：这些目录里放的是用户几十分钟才下完的 DEM 和刚切好的瓦片。
+    """
+    from src.services.task_cleanup import _MATERIALISED_PREFIX, _sweep_orphan_files
+
+    target = tmp_path / "cesiumlab_terrain_777_x.tif"
+    target.write_bytes(b"x")
+    _age(target)
+
+    keep_files = [
+        tmp_path / "ASTGTMV003_N42E086_dem.tif",      # DEM 源
+        tmp_path / "cesiumlab_terrain.py",             # 源码同名前缀（无下划线段）
+        tmp_path / "layer.json",
+    ]
+    for f in keep_files:
+        f.write_bytes(b"keep")
+        _age(f)
+    keep_dir = tmp_path / "cesiumlab_terrain_dir"      # 同前缀但是目录
+    keep_dir.mkdir()
+    _age(keep_dir)
+
+    monkeypatch.setattr("src.core.process_watchdog.pid_alive", lambda pid: False)
+    removed = _sweep_orphan_files(tmp_path, _MATERIALISED_PREFIX, _PROCESS_START_TIME)
+
+    assert removed == 1
+    assert not target.exists()
+    for f in keep_files:
+        assert f.exists(), f"误删了 {f.name}"
+    assert keep_dir.is_dir(), "误删了同前缀的目录"
+
+
+def test_sweep_orphan_files_does_not_recurse(monkeypatch, tmp_path):
+    """不递归：任务目录下是 terrain_tiles/{z}/{x}/{y}.terrain，可达百万级条目，
+    递归会把启动拖到分钟级。产物恒在 work_dir 直下。"""
+    from src.services.task_cleanup import _MATERIALISED_PREFIX, _sweep_orphan_files
+
+    nested = tmp_path / "terrain_tiles" / "10" / "1511"
+    nested.mkdir(parents=True)
+    deep = nested / "cesiumlab_terrain_777_deep.tif"
+    deep.write_bytes(b"x")
+    _age(deep)
+
+    monkeypatch.setattr("src.core.process_watchdog.pid_alive", lambda pid: False)
+    assert _sweep_orphan_files(tmp_path, _MATERIALISED_PREFIX, _PROCESS_START_TIME) == 0
+    assert deep.exists()
+
+
+def test_materialised_sweep_roots_include_db_output_paths(monkeypatch, tmp_path):
+    """扫描根必须从 DB 取 —— DEM 任务的 output_path 是用户自选的全盘路径。
+
+    只扫 DOWNLOADS_DIR 会漏掉 GB 级残留的主场景（0.2.4 起保存路径放开全盘）。
+    """
+    from src.core import config
+    from src.services.task_cleanup import _materialised_sweep_roots
+
+    downloads = tmp_path / "downloads"
+    (downloads / "terrain").mkdir(parents=True)
+    monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", downloads)
+
+    elsewhere = tmp_path / "some" / "other" / "disk" / "dem_task_7"
+    elsewhere.mkdir(parents=True)
+
+    class _FakeConn:
+        def execute(self, sql):
+            if "dem_terrain_jobs" in sql:
+                return _FakeCursor([(str(elsewhere / "terrain_tiles"),)])
+            return _FakeCursor([])
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_ctx():
+        yield _FakeConn()
+
+    monkeypatch.setattr("src.core.database.get_connection_context", fake_ctx)
+
+    roots = [str(Path(r).resolve()) for r in _materialised_sweep_roots()]
+
+    assert str((downloads / "terrain").resolve()) in roots, "漏了本地地形/base 的落点"
+    assert str(elsewhere.resolve()) in roots, \
+        "漏了 DB 里的 DEM 输出路径 —— 那是 GB 级残留的主场景"
+
+
+def test_sweep_orphan_files_refuses_symlinks(monkeypatch, tmp_path):
+    """同名的符号链接不能删。
+
+    os.unlink 对目录会失败（IsADirectoryError 被 except OSError 吞掉），但对
+    符号链接会**成功** —— 删掉的是链接本身。名字是攻击者/误操作可控的，而这个
+    清扫跑在启动时、没有任何确认。项目其它清理路径（remove_task_dir_if_safe）
+    同样明确拒绝带符号链接的路径。
+    """
+    from src.services.task_cleanup import _MATERIALISED_PREFIX, _sweep_orphan_files
+
+    precious = tmp_path / "important_dem.tif"
+    precious.write_bytes(b"user data")
+    link = tmp_path / "cesiumlab_terrain_999_link.tif"
+    try:
+        link.symlink_to(precious)
+    except (OSError, NotImplementedError):
+        import pytest as _pytest
+        _pytest.skip("此平台不支持符号链接")
+    _age(link)
+
+    monkeypatch.setattr("src.core.process_watchdog.pid_alive", lambda pid: False)
+    removed = _sweep_orphan_files(tmp_path, _MATERIALISED_PREFIX, _PROCESS_START_TIME)
+
+    assert removed == 0
+    assert link.is_symlink(), "同名符号链接被删了"
+    assert precious.exists()

@@ -101,7 +101,7 @@ def _lan_ip():
 
 
 def format_banner(version, host='0.0.0.0', port=5000, debug=False,
-                  downloads_dir=None, database_path=None, color=True):
+                  downloads_dir=None, color=True):
     """生成启动横幅文本(color=False 时不含 ANSI 转义,便于测试/日志)。"""
     c = lambda code, text: f"\033[{code}m{text}{_RESET}" if color else text
 
@@ -130,9 +130,6 @@ def format_banner(version, host='0.0.0.0', port=5000, debug=False,
 
     if downloads_dir:
         lines.append(f"  下载目录   {c(_DIM, str(downloads_dir))}")
-    if database_path:
-        lines.append(f"  数据库     {c(_DIM, str(database_path))}")
-    if downloads_dir or database_path:
         lines.append(divider)
 
     if debug:
@@ -145,13 +142,13 @@ def format_banner(version, host='0.0.0.0', port=5000, debug=False,
 
 
 def print_banner(version, host='0.0.0.0', port=5000, debug=False,
-                 downloads_dir=None, database_path=None, stream=None):
+                 downloads_dir=None, stream=None):
     """打印启动横幅。自动处理 Windows ANSI 兼容与无颜色环境退化。"""
     stream = stream if stream is not None else sys.stdout
     _enable_windows_ansi()
     safe_write(stream, format_banner(
         version, host=host, port=port, debug=debug,
-        downloads_dir=downloads_dir, database_path=database_path,
+        downloads_dir=downloads_dir,
         color=use_color(stream),
     ))
     safe_write(stream, '\n')

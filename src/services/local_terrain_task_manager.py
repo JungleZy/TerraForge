@@ -13,6 +13,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -25,6 +26,12 @@ from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task
 from src.services.terrain_tiling.layer_json import parent_url_if_base_available
 
 logger = logging.getLogger(__name__)
+
+# 切片进度的 emit 节流下限（秒）。与 dem_task_manager._PROGRESS_EMIT_MIN_INTERVAL
+# 同一量级：瓦片回调每张一次、GDAL 的阶段回调频率更不受控，裸发就是每秒几十次。
+_TERRAIN_EMIT_MIN_INTERVAL = 1.0
+# 瓦片循环之前那些阶段的中文名，与 dem_task_manager 保持一致。
+_TERRAIN_STAGE_LABELS = {"merge": "合并 DEM", "overview": "建金字塔"}
 
 _ALLOWED_EXT = (".tif", ".tiff")
 # (original_filename, content): bytes 或带 read() 的文件对象（路由直传
@@ -418,12 +425,52 @@ class LocalTerrainTaskManager:
         stop_flag: Optional[threading.Event] = None,
     ) -> None:
         try:
+            # 切片期间的进度。此前这里**一个回调都没传** —— 而任务行的进度条是
+            # 按 uploaded_files 算的，上传一结束就写满，于是整个切片过程（可以是
+            # 几十分钟）界面上恒显 100%，看不出还在跑。
+            emit_state = {"last": float("-inf")}
+
+            def _emit_terrain(payload: Dict[str, Any], edge: bool) -> None:
+                now = time.monotonic()
+                if not edge and now - emit_state["last"] < _TERRAIN_EMIT_MIN_INTERVAL:
+                    return
+                emit_state["last"] = now
+                socketio = getattr(self, "socketio", None)
+                if not socketio:
+                    return
+                # 这发 emit 被 build_terrain 在瓦片循环 / GDAL 回调里**同步**调用，
+                # 抛出会一路穿透把整个作业记成 failed —— 而 GDAL 更把回调抛异常
+                # 当成「用户请求中止」（实测产物会被删掉）。与 dem_task_manager
+                # 的 U1 同一约定：只记日志。
+                try:
+                    socketio.emit("terrain_job_progress", dict(
+                        payload, task_id=task_id, task_type="local_terrain",
+                        status="running"))
+                except Exception as e:
+                    logger.warning(
+                        f"Local terrain task {task_id}: emit progress failed "
+                        f"(ignored): {e}")
+
+            def tiling_progress(done: int, total: int) -> None:
+                _emit_terrain({"rendered_tiles": done, "total_tiles": total},
+                              edge=(total <= 0 or done >= total))
+
+            def tiling_stage(phase: str, fraction: float) -> None:
+                _emit_terrain({
+                    "stage": phase,
+                    "stage_label": _TERRAIN_STAGE_LABELS.get(phase, phase),
+                    "stage_fraction": max(0.0, min(1.0, float(fraction))),
+                }, edge=(fraction <= 0.0 or fraction >= 1.0))
+
             # `or {}`：多个契约测试直接 monkeypatch 掉 tile_dem_task_dir 并
             # 返回 None，归一成空计数后行为与改动前一致（不判 failed）。
             counts = tile_dem_task_dir(
                 task_dir=source_dir,
                 out_dir=output_dir,
-                params=TileParams(maxzoom=maxzoom, parent_url=parent_url, stop_flag=stop_flag),
+                params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
+                                  progress_cb=tiling_progress,
+                                  stage_cb=tiling_stage,
+                                  stop_flag=stop_flag),
             ) or {}
             # M11: 消费 build_terrain 的失败计数 —— 此前返回值被整个丢弃，
             # 逐瓦片容错变成纯静默（缺瓦片仍报 completed，layer.json 过度声明）。

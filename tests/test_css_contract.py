@@ -2886,13 +2886,27 @@ def test_bounds_readout_is_announced_to_screen_readers():
         _js_function_body(_js('map.js'), 'updateBoundsInfo')
     )
     problems = []
+    # i18n 改造后方位词不再是源码里的中文字面量，而是
+    # `${t('js.map.bounds.sr_north')}`。分两段查：源码里方位 key 必须紧挨着对应
+    # 坐标（守配对），目录里那条 key 的中文必须是对应方位词（守文案）。
+    from src.i18n.catalog import MESSAGES
+
     for letter, field in sorted(BOUNDS_LABEL_FIELDS.items()):
         word = BOUNDS_SR_WORDS[field]
+        key = f'js.map.bounds.sr_{field}'
+        if MESSAGES.get(key, {}).get('zh') != word:
+            problems.append(
+                f'{letter}/{field}: 文案 {key} 的中文是 '
+                f'{MESSAGES.get(key, {}).get("zh")!r}，期望 {word!r}')
+            continue
         if not re.search(
-            r'<span class="bounds-sr">\s*' + word + r'\s*</span>\s*'
+            r'<span class="bounds-sr">\s*\$\{\s*t\(\s*[\'"]' + re.escape(key)
+            + r'[\'"]\s*\)\s*\}\s*</span>\s*'
             r'\$\{\s*f\(\s*currentBounds\.' + field + r'\s*\)\s*\}', branch
         ):
-            problems.append(f'{letter}/{field}: 缺少 `<span class="bounds-sr">{word}</span>`')
+            problems.append(
+                f'{letter}/{field}: 缺少 `<span class="bounds-sr">${{t(\'{key}\')}}</span>`'
+                f' 或它没有紧跟 currentBounds.{field}')
     hidden = re.findall(r'class="bounds-k"\s+aria-hidden="true"', branch)
     if len(hidden) != len(BOUNDS_LABEL_FIELDS):
         problems.append(
@@ -3626,7 +3640,11 @@ def _bbox_object_literals(src):
 #   registerCompletedContourTask / initContourPreview 两处 contourPreviewTasks
 #   条目（值取自 /api/contour/tasks 行的同名字段）、toggleContourPreview 传给
 #   previewTask 的条件字面量（info.north 等同名引用）。
-MAP_JS_BBOX_LITERAL_COUNT = 10
+# 10 -> 11（i18n 改造）：updateBoundsInfo 的四至读数改成
+#   `t('js.map.bounds.readout', {north: f(currentBounds.north), …})`，
+#   传给 t() 的参数对象本身就是一个 bbox 字面量。它同样受本条方位配对检查
+#   保护（键名与取值必须同名），所以是「多了一个被查到的构造点」，不是漏检。
+MAP_JS_BBOX_LITERAL_COUNT = 11
 
 
 def test_bbox_literals_never_swap_directions():
@@ -6872,8 +6890,10 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # js/terrain_lighting.js（window.TerrainLighting，scene.globe.enableLighting
     # 的开关，偏好只存 localStorage）。必须排在 index.html 的 extra_js（map.js）
     # 之前，顺序由 tests/test_terrain_lighting_frontend.py 钉住。
-    assert len(refs) == 19, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 19 处。"
+    # 19 -> 20（i18n 改造）：base.html 新增 static/js/i18n.js（全局 t() 查表，
+    # 必须排在所有业务脚本之前加载）。
+    assert len(refs) == 20, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 20 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
@@ -8289,7 +8309,7 @@ def test_map_panel_button_focus_ring_is_not_clipped_by_its_container():
     """工具条按钮的键盘焦点圈必须画在 padding box 之内。
 
     容器 `.map-panel-triggers` 有 `overflow: hidden`（为了让圆角裁掉首尾按钮的
-    hover 底色），且无内边距、内容盒宽度正好等于按钮的 30px。全站通配的
+    hover 底色），且无内边距、内容盒宽度正好等于按钮的 40px。全站通配的
     `*:focus-visible { outline-offset: 2px }` 画出的整圈都落在 padding box 之外，
     而 outline 不计入 scrollable overflow region —— 会被直接剪掉。Playwright
     实测：单按钮分组（「框选」）聚焦后屏幕上一条焦点线都没有；三按钮分组的

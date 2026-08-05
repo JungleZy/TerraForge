@@ -37,6 +37,10 @@ class TileParams:
     # 而不是 tile_dem_task_dir 的独立参数：多个契约测试用 (task_dir, out_dir,
     # params) 三参替身钉住管理器到 tiler 的调用形态，加独立参数会破坏它们。
     progress_cb: Optional[Callable[[int, int], None]] = None
+    # stage_cb(phase, fraction)：瓦片循环之前那些耗时阶段（多幅 DEM 物化成单
+    # 文件、建金字塔）的进度。不能并进 progress_cb —— 那一段发生在 total 算出来
+    # 之前，没有分母（详见 build_terrain 的注释）。
+    stage_cb: Optional[Callable[[str, float], None]] = None
     stop_flag: Optional[threading.Event] = None
 
 
@@ -85,6 +89,7 @@ def tile_dem_task_dir(
         tile_size=int(params.tile_size),
         workers=int(params.workers),
         progress_cb=params.progress_cb,
+        stage_cb=params.stage_cb,
         stop_flag=params.stop_flag,
         triangulator=params.triangulator,
         max_error_k=params.max_error_k,

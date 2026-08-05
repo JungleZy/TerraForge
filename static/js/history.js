@@ -142,14 +142,14 @@ async function loadHistory(page = 1) {
         // ⚠️ 内联 style 里不许带分号：tests/test_css_contract.py 的
         // _history_error_div 用 `(.*?);` 非贪婪切这段模板，分号会让它提前收尾。
         document.getElementById('historyTableBody').innerHTML =
-            '<div class="text-center text-danger" style="padding: 1.5rem 1rem">加载失败</div>';
+            `<div class="text-center text-danger" style="padding: 1.5rem 1rem">${t('js.history.load_failed')}</div>`;
     }
 }
 
 // 时间流失败行的兜底文案（与 tasks.js 的 UNKNOWN_ERROR_TEXT 同语义，
 // 但**不能**同名：首页两个文件共享全局作用域，const 重名会直接
 // SyntaxError 让整个文件失效——函数声明可以重复，const 不行）。
-const HISTORY_UNKNOWN_ERROR = '任务失败，但没有记录失败原因。';
+const HISTORY_UNKNOWN_ERROR = t('js.history.unknown_error');
 
 function renderHistoryTable(tasks) {
     const container = document.getElementById('historyTableBody');
@@ -166,7 +166,7 @@ function renderHistoryTable(tasks) {
                     <line x1="12" y1="8" x2="12" y2="12"></line>
                     <line x1="12" y1="16" x2="12.01" y2="16"></line>
                 </svg>
-                <p style="margin: 0;">暂无任务</p>
+                <p style="margin: 0;">${t('js.history.empty')}</p>
             </div>
         `;
         return;
@@ -191,7 +191,7 @@ function renderHistoryTable(tasks) {
 function historyMetaText(task) {
     if (task.task_type === 'map' || task.task_type === 'contour') {
         const styleText = task.task_type === 'contour'
-            ? '等高线'
+            ? t('js.history.style.contour')
             : (task.style ? getStyleText(task.style) : '');
         const zoom = (task.zoom_min != null && task.zoom_max != null)
             ? `${task.zoom_min}~${task.zoom_max}`
@@ -201,9 +201,9 @@ function historyMetaText(task) {
     if (task.task_type === 'dem') {
         // 两个来源字段名不同：/api/history_all 的 UNION 把 dem_tasks.dataset
         // 映射进 style 列；tasks.js 实时任务对象带的是 dataset 原文。
-        return task.style || task.dataset || '高程';
+        return task.style || task.dataset || t('js.history.meta.dem');
     }
-    return '本地高程切片';
+    return t('js.history.meta.local_terrain');
 }
 
 // 统一时间流行（2026-08 单一时间流定稿）：**全站唯一的行实现**——
@@ -231,8 +231,9 @@ function createTaskRow(task) {
     const downloaded = task.downloaded_items != null ? task.downloaded_items : (task.downloaded || 0);
     const failedItems = task.failed_items || 0;
     const itemLabel = task.items_label
-        || ((task.task_type === 'map' || task.task_type === 'contour') ? '瓦片' : '文件');
-    const progressVerb = task.progress_verb || '已下载';
+        || ((task.task_type === 'map' || task.task_type === 'contour')
+            ? t('js.history.unit.tile') : t('js.history.unit.file'));
+    const progressVerb = task.progress_verb || t('js.history.progress_verb.downloaded');
     const progress = total > 0 ? Math.round((downloaded / total) * 100) : 0;
 
     // 行1 右侧时间。calculateTimeInfo 在 tasks.js（独立页 /history 不加载），
@@ -249,8 +250,8 @@ function createTaskRow(task) {
                 total_items: total
             });
             timeText = timeInfo.show
-                ? [timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : '',
-                   timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : '']
+                ? [timeInfo.elapsed ? t('js.history.row.elapsed', {time: timeInfo.elapsed}) : '',
+                   timeInfo.estimated ? t('js.history.row.estimated', {time: timeInfo.estimated}) : '']
                     .filter(Boolean).join(' · ')
                 : '—';
         }
@@ -262,7 +263,9 @@ function createTaskRow(task) {
                  && task.east != null && task.west != null;
     // 坐标是后端数值（无注入面），单行排版，超宽由 CSS 省略号截断。
     const bboxText = hasBbox
-        ? ` · 区域 ${task.north.toFixed(2)}, ${task.south.toFixed(2)}, ${task.east.toFixed(2)}, ${task.west.toFixed(2)}`
+        ? ' · ' + t('js.history.row.bbox', {
+            north: task.north.toFixed(2), south: task.south.toFixed(2),
+            east: task.east.toFixed(2), west: task.west.toFixed(2)})
         : '';
 
     let line2;
@@ -271,9 +274,12 @@ function createTaskRow(task) {
     } else if (isLive) {
         // stage_text（拼接中/复制瓦片中）由 tasks.js 的阶段事件写入：下载 100%
         // 之后拼接/复制还要跑几分钟到几小时，行上只显示「已下载 N/N」会像卡死。
-        const countText = task.stage_text
-            ? escapeHtml(task.stage_text)
-            : `${progressVerb}: ${downloaded} / ${total} ${itemLabel}${failedItems > 0 ? ` <span style="color: var(--color-danger);">| 失败: ${failedItems}</span>` : ''}`;
+        // tiling_text 优先于 stage_text：本地地形任务在切片期间仍是 running，
+        // 进度条按 uploaded_files 算、上传一结束就写满，行上必须显示切片进度
+        // 才看得出还在跑。
+        const countText = (task.tiling_text || task.stage_text)
+            ? escapeHtml(task.tiling_text || task.stage_text)
+            : `${t('js.history.row.count', {verb: progressVerb, downloaded: downloaded, total: total, unit: itemLabel})}${failedItems > 0 ? ` <span style="color: var(--color-danger);">| ${t('js.history.row.failed', {count: failedItems})}</span>` : ''}`;
         line2 = `
             <div class="task-progress-line">
                 <div class="task-progress">
@@ -287,7 +293,14 @@ function createTaskRow(task) {
                 <span class="task-count progress-detail">${countText}</span>
             </div>`;
     } else {
-        line2 = `<div class="task-line2">${escapeHtml(getStatusText(task.status))} · ${downloaded} / ${total} ${itemLabel}${bboxText}</div>`;
+        // tiling_text（合并 DEM…／切片中 N/M）由 tasks.js 的 terrain_job_progress
+        // 写入。地形切片跑在**下载任务已经 completed 之后**，行落在这个纯文本
+        // 分支——这里原本既没有进度条也没有阶段位置，于是几十分钟的切片在界面上
+        // 完全没有痕迹。
+        const tilingLine = task.tiling_text
+            ? `<div class="task-line2 task-tiling-line">${escapeHtml(task.tiling_text)}</div>`
+            : '';
+        line2 = `<div class="task-line2">${t('js.history.row.summary', {status: escapeHtml(getStatusText(task.status)), downloaded: downloaded, total: total, unit: itemLabel})}${bboxText}</div>${tilingLine}`;
     }
 
     // 任务控制动作（启动/暂停/恢复/取消/移除）是 tasks.js 的函数，
@@ -301,21 +314,21 @@ function createTaskRow(task) {
         <div class="task-row status-${task.status}" id="task-${key}">
             <div class="task-line1">
                 <span class="task-dot" aria-hidden="true"></span>
-                <button type="button" class="task-name" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="查看详情">${escapeHtml(task.name)}</button>
+                <button type="button" class="task-name" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="${t('js.history.row.view_details')}">${escapeHtml(task.name)}</button>
                 <span class="task-id">#${escapeHtml(key)}</span>
                 <span class="task-meta">${escapeHtml(historyMetaText(task))}</span>
                 <span class="task-status-text">${escapeHtml(getStatusText(task.status))}</span>
                 <span class="task-time progress-detail">${timeText}</span>
                 <div class="btn-group btn-group-sm">
                     ${hasTaskActions && isLive && supportsPauseResume && task.status === 'pending' ? `
-                        <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="启动任务" aria-label="启动任务">
+                        <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.start')}" aria-label="${t('js.history.action.start')}">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
                     ${hasTaskActions && isLive && supportsPauseResume && task.status === 'running' ? `
-                        <button class="btn btn-icon btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="暂停任务" aria-label="暂停任务">
+                        <button class="btn btn-icon btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.pause')}" aria-label="${t('js.history.action.pause')}">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="6" y="4" width="4" height="16"></rect>
                                 <rect x="14" y="4" width="4" height="16"></rect>
@@ -323,14 +336,14 @@ function createTaskRow(task) {
                         </button>
                     ` : ''}
                     ${hasTaskActions && isLive && supportsPauseResume && task.status === 'paused' ? `
-                        <button class="btn btn-icon btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="恢复任务" aria-label="恢复任务">
+                        <button class="btn btn-icon btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.resume')}" aria-label="${t('js.history.action.resume')}">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"></polygon>
                             </svg>
                         </button>
                     ` : ''}
                     ${hasTaskActions && isLive && task.status !== 'failed' ? `
-                        <button class="btn btn-icon btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="取消任务" aria-label="取消任务">
+                        <button class="btn btn-icon btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.cancel')}" aria-label="${t('js.history.action.cancel')}">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <line x1="18" y1="6" x2="6" y2="18"></line>
                                 <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -338,13 +351,13 @@ function createTaskRow(task) {
                         </button>
                     ` : ''}
                     ${(canPreview && task.status === 'completed') ? `
-                    <button class="btn btn-icon btn-sm btn-success" onclick="previewHistoryTask(${task.id}, '${task.task_type}')" title="在地图上预览" aria-label="在地图上预览">
+                    <button class="btn btn-icon btn-sm btn-success" onclick="previewHistoryTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.preview')}" aria-label="${t('js.history.action.preview')}">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
                             <circle cx="12" cy="12" r="3"></circle>
                         </svg>
                     </button>` : ''}
-                    <button class="btn btn-icon btn-sm btn-danger" onclick="deleteTask(${task.id}, '${task.task_type}')" title="删除任务" aria-label="删除任务">
+                    <button class="btn btn-icon btn-sm btn-danger" onclick="deleteTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.delete')}" aria-label="${t('js.history.action.delete')}">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -352,7 +365,7 @@ function createTaskRow(task) {
                     </button>
                     ${hasTaskActions && task.status === 'failed' ? `
                         <button class="btn btn-icon btn-secondary" onclick="dismissTask(${task.id}, '${task.task_type}')"
-                                title="从列表中移除这条失败记录" aria-label="移除失败任务行">
+                                title="${t('js.history.action.dismiss_title')}" aria-label="${t('js.history.action.dismiss_label')}">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <line x1="18" y1="6" x2="6" y2="18"></line>
                                 <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -379,7 +392,7 @@ function renderPagination(currentPage, totalPages) {
     let html = '';
 
     if (currentPage > 1) {
-        html += `<li class="page-item"><a class="page-link" href="#" onclick="loadHistory(${currentPage - 1}); return false;">上一页</a></li>`;
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="loadHistory(${currentPage - 1}); return false;">${t('js.history.pagination.prev')}</a></li>`;
     }
 
     for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
@@ -389,7 +402,7 @@ function renderPagination(currentPage, totalPages) {
     }
 
     if (currentPage < totalPages) {
-        html += `<li class="page-item"><a class="page-link" href="#" onclick="loadHistory(${currentPage + 1}); return false;">下一页</a></li>`;
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="loadHistory(${currentPage + 1}); return false;">${t('js.history.pagination.next')}</a></li>`;
     }
 
     pagination.innerHTML = html;
@@ -421,8 +434,8 @@ function renderHistoryMap(tasks) {
             name: task.name,
             description: `
                 <strong style="color: var(--color-accent-hover); font-size: 1.05rem;">${escapeHtml(task.name)}</strong><br>
-                <strong>状态:</strong> ${escapeHtml(getStatusText(task.status))}<br>
-                <strong>${task.task_type === 'dem' ? '文件' : '瓦片'}:</strong>
+                <strong>${t('js.history.map.status_label')}</strong> ${escapeHtml(getStatusText(task.status))}<br>
+                <strong>${task.task_type === 'dem' ? t('js.history.map.files_label') : t('js.history.map.tiles_label')}:</strong>
                 <span style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</span>
             `,
         });
@@ -523,30 +536,30 @@ function getStatusStroke(status) {
 
 function getStatusText(status) {
     const texts = {
-        'pending': '等待中',
-        'running': '运行中',
-        'paused': '已暂停',
-        'completed': '已完成',
-        'failed': '失败',
-        'cancelled': '已取消'
+        'pending': t('js.history.status.pending'),
+        'running': t('js.history.status.running'),
+        'paused': t('js.history.status.paused'),
+        'completed': t('js.history.status.completed'),
+        'failed': t('js.history.status.failed'),
+        'cancelled': t('js.history.status.cancelled')
     };
     // 未知状态不把英文字面量原样渲染进中文界面（与 tasks.js 同一约定）
-    return texts[status] || '未知';
+    return texts[status] || t('js.history.status.unknown');
 }
 
 function getStyleText(style) {
     const styles = {
-        'roadmap': '路线图',
-        'satellite': '卫星图',
-        'hybrid': '混合图',
-        'terrain': '地形图',
+        'roadmap': t('js.history.style.roadmap'),
+        'satellite': t('js.history.style.satellite'),
+        'hybrid': t('js.history.style.hybrid'),
+        'terrain': t('js.history.style.terrain'),
         // 兼容旧的缩写格式
-        'm': '标准',
-        's': '卫星',
-        'y': '卫星+标注',
-        'h': '道路',
-        't': '地形',
-        'contour': '等高线'
+        'm': t('js.history.style.m'),
+        's': t('js.history.style.s'),
+        'y': t('js.history.style.y'),
+        'h': t('js.history.style.h'),
+        't': t('js.history.style.t'),
+        'contour': t('js.history.style.contour')
     };
     return styles[style] || style;
 }
@@ -589,14 +602,14 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailDownloaded').textContent = task.downloaded_files;
             document.getElementById('detailFailed').textContent = task.failed_files;
         } else if (taskType === 'local_terrain') {
-            document.getElementById('detailStyle').textContent = '本地高程切片';
+            document.getElementById('detailStyle').textContent = t('js.history.meta.local_terrain');
             document.getElementById('detailFormat').textContent = '-';
             document.getElementById('detailZoom').textContent = `0 - ${task.maxzoom}`;
             document.getElementById('detailTotal').textContent = task.total_files;
             document.getElementById('detailDownloaded').textContent = task.uploaded_files;
             document.getElementById('detailFailed').textContent = task.failed_files;
         } else if (taskType === 'contour') {
-            document.getElementById('detailStyle').textContent = '等高线瓦片';
+            document.getElementById('detailStyle').textContent = t('js.history.detail.contour_tiles');
             document.getElementById('detailFormat').textContent = '-';
             document.getElementById('detailZoom').textContent = `${task.zoom_min} - ${task.zoom_max}`;
             document.getElementById('detailTotal').textContent = task.total_tiles;
@@ -667,7 +680,7 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         // 同一元素会叠出多个实例（每次打开多一层遮罩，关一层还剩一层）。
         bootstrap.Modal.getOrCreateInstance(document.getElementById('taskDetailModal')).show();
     } catch (error) {
-        showToast('获取任务详情失败', 'danger');
+        showToast(t('js.history.detail.load_failed'), 'danger');
     }
 }
 
@@ -681,7 +694,7 @@ function initTerrainDetailActions(taskId) {
             const r = await fetch(`/api/terrain/dem/${taskId}/start`, { method: 'POST' });
             const j = await r.json().catch(() => ({}));
             if (!r.ok) {
-                throw new Error(j.error || '启动切片失败');
+                throw new Error(j.error || t('js.history.terrain.start_failed'));
             }
         } catch (e) {
             showToast(String(e.message || e), 'danger');
@@ -720,7 +733,7 @@ async function refreshTerrainDetail(taskId) {
         const job = j.job;
 
         if (!job) {
-            statusEl.innerHTML = `<span class="badge bg-secondary">未开始</span>`;
+            statusEl.innerHTML = `<span class="badge bg-secondary">${t('js.history.terrain.not_started')}</span>`;
             infoEl.innerHTML = `
                 <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
                 <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
@@ -733,7 +746,7 @@ async function refreshTerrainDetail(taskId) {
         // 原来这里把 `job.status` **原样**插进徽章，中文界面里显示英文
         // `running`，和历史表格的老毛病是同一个。
         const status = job.status || 'unknown';
-        const label = escapeHtml(status === 'unknown' ? '状态未知' : getStatusText(status));
+        const label = escapeHtml(status === 'unknown' ? t('js.history.terrain.status_unknown') : getStatusText(status));
         statusEl.innerHTML = `<span class="badge bg-${getStatusColor(status)}">${label}</span>`;
 
         const outDir = job.output_dir || '-';
@@ -750,7 +763,7 @@ async function refreshTerrainDetail(taskId) {
             errRow.style.display = 'block';
         }
     } catch (e) {
-        statusEl.innerHTML = `<span class="badge bg-danger">加载失败</span>`;
+        statusEl.innerHTML = `<span class="badge bg-danger">${t('js.history.terrain.load_failed')}</span>`;
         errEl.textContent = String(e.message || e);
         errRow.style.display = 'block';
         infoEl.innerHTML = `
@@ -770,16 +783,16 @@ function previewHistoryTask(taskId, taskType) {
 }
 
 async function deleteTask(taskId, taskType = 'map') {
-    if (!await showConfirm('确定要删除这个任务吗？', { title: '删除任务', danger: true })) {
+    if (!await showConfirm(t('js.history.confirm.delete_task'), { title: t('js.history.confirm.delete_task_title'), danger: true })) {
         return;
     }
 
     // 第二步确认：是否连磁盘上的下载产物一起删。后端 DELETE 端点按
     // ?delete_files=true/false 决定是否清理产物目录，缺省 false（保留）。
-    const deleteFiles = await showConfirm('是否同时删除磁盘上的下载产物？', {
-        title: '清理下载产物',
-        confirmText: '删除产物',
-        cancelText: '保留产物',
+    const deleteFiles = await showConfirm(t('js.history.confirm.delete_files'), {
+        title: t('js.history.confirm.delete_files_title'),
+        confirmText: t('js.history.confirm.delete_files_confirm'),
+        cancelText: t('js.history.confirm.delete_files_cancel'),
         danger: true
     });
 
@@ -791,7 +804,7 @@ async function deleteTask(taskId, taskType = 'map') {
         const response = await fetch(`${deleteUrl}?delete_files=${deleteFiles ? 'true' : 'false'}`, { method: 'DELETE' });
 
         if (response.ok) {
-            showToast('任务已删除', 'success');
+            showToast(t('js.history.toast.deleted'), 'success');
             // 预览中的正是被删任务时联动关闭（map.js 的预览管理器）；
             // 独立页 /history 不加载 map.js，typeof 守卫兜底。
             if (typeof stopTaskPreviewForTask === 'function') {
@@ -823,9 +836,9 @@ async function deleteTask(taskId, taskType = 'map') {
             }
             loadStats();
         } else {
-            showToast('删除失败', 'danger');
+            showToast(t('js.history.toast.delete_failed'), 'danger');
         }
     } catch (error) {
-        showToast('删除失败: ' + error.message, 'danger');
+        showToast(t('js.history.toast.delete_failed_reason', {error: error.message}), 'danger');
     }
 }

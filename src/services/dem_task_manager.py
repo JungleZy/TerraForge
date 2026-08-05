@@ -454,6 +454,42 @@ class DemTaskManager:
                         return
                     _flush_tiling_progress()
 
+                # 瓦片循环之前的耗时阶段（多幅 DEM 物化 + 建金字塔）。它发生在
+                # total 算出来之前，没有分母，所以走 stage 而不是 rendered/total。
+                # 不落库：这是纯瞬时状态，作业记录里没有对应字段，而且落库会在
+                # GDAL 的高频回调下变成每秒几十次写。
+                stage_state = {"last_emit": float("-inf")}
+                _STAGE_LABELS = {"merge": "合并 DEM", "overview": "建金字塔"}
+
+                def tiling_stage(phase: str, fraction: float) -> None:
+                    # 节流：GDAL 的原生回调频率不受我们控制（BuildOverviews 实测
+                    # 每层多次）。首帧与末帧必发，中间按 _PROGRESS_EMIT_MIN_INTERVAL。
+                    now = time.monotonic()
+                    edge = fraction <= 0.0 or fraction >= 1.0
+                    if not edge and now - stage_state["last_emit"] < _PROGRESS_EMIT_MIN_INTERVAL:
+                        return
+                    stage_state["last_emit"] = now
+                    socketio = getattr(self, "socketio", None)
+                    if not socketio:
+                        return
+                    # 与 _flush_tiling_progress 同一约定（U1）：这发 emit 经
+                    # stage_cb 被 GDAL 的进度回调同步调用，抛出会一路穿透 ——
+                    # 而 GDAL 把回调抛异常当成「用户请求中止」，实测会让
+                    # gdal.Translate 返回 None、产物被删、整个作业失败。
+                    try:
+                        socketio.emit("terrain_job_progress", {
+                            "task_id": task_id,
+                            "task_type": "dem_terrain",
+                            "status": "running",
+                            "stage": phase,
+                            "stage_label": _STAGE_LABELS.get(phase, phase),
+                            "stage_fraction": max(0.0, min(1.0, float(fraction))),
+                        })
+                    except Exception as emit_error:
+                        logger.warning(
+                            f"DEM tiling job {task_id}: emit stage failed "
+                            f"(ignored): {emit_error}")
+
                 tiling_progress(0, 0)
                 # `or {}`：多个契约测试直接 monkeypatch 掉 tile_dem_task_dir
                 # 并返回 None，归一成空计数后行为与改动前一致（不判 failed）。
@@ -461,7 +497,8 @@ class DemTaskManager:
                     task_dir=task_dir,
                     out_dir=output_dir,
                     params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
-                                      progress_cb=tiling_progress),
+                                      progress_cb=tiling_progress,
+                                      stage_cb=tiling_stage),
                 ) or {}
                 _flush_tiling_progress()
             finally:

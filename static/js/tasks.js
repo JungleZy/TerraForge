@@ -48,19 +48,27 @@ function initTasks() {
 
     socket.on('task_completed', function(data) {
         handleTaskCompleted(data.task_id, data.task_type || 'map', data.warning);
-        pushStatusEvent('任务 #' + data.task_id + ' 已完成');
+        pushStatusEvent(t('js.tasks.event.completed', {id: data.task_id}));
         updateStatusTasks();
     });
 
     socket.on('task_failed', function(data) {
         handleTaskFailed(data.task_id, data.task_type || 'map', data.error_message);
-        pushStatusEvent('任务 #' + data.task_id + ' 失败');
+        pushStatusEvent(t('js.tasks.event.failed', {id: data.task_id}));
         updateStatusTasks();
     });
 
     socket.on('task_stitch_progress', function(data) {
-        pushStatusEvent('任务 #' + data.task_id + ' 拼接瓦片中…');
-        updateTaskStageText(data.task_id, '拼接中（zoom ' + data.zoom_level + '）…');
+        pushStatusEvent(t('js.tasks.event.stitching', {id: data.task_id}));
+        updateTaskStageText(data.task_id,
+                            t('js.tasks.stage.stitching', {zoom: data.zoom_level}), 'map');
+    });
+
+    // 地形切片作业的进度。后端一直在广播它（dem_task_manager /
+    // local_terrain_task_manager），但在此之前**没有任何前端监听者** —— 切片
+    // 进度只能靠详情弹窗手动点刷新才看得到。
+    socket.on('terrain_job_progress', function(data) {
+        updateTerrainJobProgress(data);
     });
 
     // 某个缩放级别拼接失败。任务可能仍在跑(其余级别继续),所以这里只报,不动行。
@@ -72,10 +80,11 @@ function initTasks() {
 
     // 复制瓦片阶段的心跳。下载进度条此时已经 100%,没有这个事件界面会静止若干分钟。
     socket.on('task_copy_progress', function(data) {
-        pushStatusEvent('任务 #' + data.task_id + ' 复制瓦片中…');
+        pushStatusEvent(t('js.tasks.event.copying', {id: data.task_id}));
         updateTaskStageText(
             data.task_id,
-            '复制瓦片中 ' + data.processed_tiles + ' / ' + data.total_tiles + ' …'
+            t('js.tasks.stage.copying', {done: data.processed_tiles, total: data.total_tiles}),
+            'map'
         );
     });
 
@@ -108,7 +117,7 @@ async function loadActiveTasks() {
         // 列表，会被当成「没有活动任务」把整页卡片清空，看起来就像任务全没了。
         const badResp = [mapResp, demResp, localResp, contourResp].find(r => !r.ok);
         if (badResp) {
-            throw new Error('任务列表接口返回 HTTP ' + badResp.status);
+            throw new Error(t('js.tasks.load.http_error', {status: badResp.status}));
         }
         const mapData = await mapResp.json();
         const demData = await demResp.json();
@@ -142,7 +151,7 @@ async function loadActiveTasks() {
         updateStatusTasks();
     } catch (error) {
         console.error('Failed to load tasks:', error);
-        showToast('加载任务列表失败: ' + error.message, 'danger');
+        showToast(t('js.tasks.load.failed', {error: error.message}), 'danger');
     }
 }
 
@@ -161,8 +170,8 @@ function contourPhaseCounts(task) {
             total: totalTiles,
             done: task.rendered_tiles || 0,
             failed: task.failed_tiles || 0,
-            label: '瓦片',
-            verb: '渲染等高线瓦片'
+            label: t('js.tasks.unit.tile'),
+            verb: t('js.tasks.verb.render_contour_tiles')
         };
     }
     return {
@@ -170,7 +179,7 @@ function contourPhaseCounts(task) {
         done: task.downloaded_files || 0,
         failed: task.failed_files || 0,
         label: 'DEM',
-        verb: '下载 DEM'
+        verb: t('js.tasks.verb.download_dem')
     };
 }
 
@@ -184,7 +193,7 @@ function normalizeTask(task, type) {
             total_items: task.total_files || 0,
             downloaded_items: task.downloaded_files || 0,
             failed_items: task.failed_files || 0,
-            items_label: '文件'
+            items_label: t('js.tasks.unit.file')
         };
     }
     if (type === 'local_terrain') {
@@ -198,7 +207,7 @@ function normalizeTask(task, type) {
             total_items: total,
             downloaded_items: done,
             failed_items: task.failed_files || 0,
-            items_label: '文件'
+            items_label: t('js.tasks.unit.file')
         };
     }
     if (type === 'contour') {
@@ -223,7 +232,7 @@ function normalizeTask(task, type) {
         total_items: task.total_tiles || 0,
         downloaded_items: task.downloaded_tiles || 0,
         failed_items: task.failed_tiles || 0,
-        items_label: '瓦片'
+        items_label: t('js.tasks.unit.tile')
     };
 }
 
@@ -243,8 +252,9 @@ function updateStatusTasks() {
     const live = Array.from(activeTasks.values())
         .filter(t => ['pending', 'running', 'paused'].includes(t.status));
     if (live.length === 0) {
-        if (textEl.textContent !== '无活动任务') {
-            textEl.textContent = '无活动任务';
+        const idle = t('js.tasks.status_bar.idle');
+        if (textEl.textContent !== idle) {
+            textEl.textContent = idle;
         }
         if (barWrap && !barWrap.hidden) {
             barWrap.hidden = true;
@@ -259,7 +269,7 @@ function updateStatusTasks() {
         done += t.downloaded_items || 0;
     });
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    const text = `${live.length} 个活动任务（${running} 运行中） ${pct}%`;
+    const text = t('js.tasks.status_bar.active', {n: live.length, running: running, pct: pct});
     if (textEl.textContent !== text) {
         textEl.textContent = text;
     }
@@ -300,11 +310,52 @@ function rebuildStreamRow(row, task) {
 // 旧界面行上只有「已下载 N/N」，看起来就是卡死（「卡 100%」）。stage_text
 // 写进行模型（history.js 的 line2 渲染）并就地重建该行。事件频率低——
 // 拼接按 zoom 一次、复制每 COPY_PROGRESS_INTERVAL 块一次，重建一行开销可忽略。
-function updateTaskStageText(taskId, stageText) {
-    const key = `map:${taskId}`;
+// taskType 参数化：原先写死 `map:${taskId}`，地形/等高线管线复用不了。
+// stageText 传 null/'' 表示**清除**——这条清除路径不是可选的：
+// updateTaskProgressPartial 只覆盖 DOM 里的 .task-count，不动行模型上的
+// stage_text，于是任何后续 rebuildStreamRow（状态变化、等高线的 phaseChanged）
+// 都会让过期的阶段文字复活并永久顶掉计数。地图管线侥幸无事，只是因为它的
+// 拼接/复制发生在下载彻底结束之后，两类事件永不交错；新阶段夹在两个会发
+// task_progress 的阶段中间（地形：物化 → 逐瓦片；等高线：warp → 渲染），
+// 不清就必然显形。
+function updateTaskStageText(taskId, stageText, taskType) {
+    const key = `${taskType || 'map'}:${taskId}`;
     const task = activeTasks.get(key);
     if (!task) return;   // 任务不在活动窗口里时，状态栏事件仍然可见
-    task.stage_text = stageText;
+    if (stageText) {
+        task.stage_text = stageText;
+    } else {
+        delete task.stage_text;
+    }
+    const row = document.getElementById(`task-${key}`);
+    if (row) rebuildStreamRow(row, task);
+}
+
+// 地形切片（DEM / 本地地形）的行内进度。
+//
+// 与 stage_text 分开的原因：DEM 的切片作业跑在**下载任务已经 completed 之后**，
+// 那时行落在 history.js 的纯文本分支，既没有进度条也没有 stage 位置。所以另开
+// 一个字段，由 history.js 在两个分支都渲染。
+function updateTerrainJobProgress(data) {
+    const taskType = data.task_type === 'local_terrain' ? 'local_terrain' : 'dem';
+    const key = `${taskType}:${data.task_id}`;
+    const task = activeTasks.get(key);
+    if (!task) return;
+
+    if (data.status && data.status !== 'running') {
+        delete task.tiling_text;
+    } else if (data.stage_label) {
+        // 物化 / 建金字塔：这一段跑在 total 算出来之前，没有分母，只能报比例
+        const pct = Math.round((Number(data.stage_fraction) || 0) * 100);
+        task.tiling_text = t('js.tasks.terrain_stage', {
+            stage: data.stage_label, pct: pct});
+    } else if (Number(data.total_tiles) > 0) {
+        task.tiling_text = t('js.tasks.terrain_tiling', {
+            done: Number(data.rendered_tiles) || 0,
+            total: Number(data.total_tiles)});
+    } else {
+        return;
+    }
     const row = document.getElementById(`task-${key}`);
     if (row) rebuildStreamRow(row, task);
 }
@@ -382,7 +433,7 @@ function updateTaskProgress(data) {
             task.total_items = data.total_files || 0;
             task.downloaded_items = data.downloaded_files || 0;
             task.failed_items = data.failed_files || 0;
-            task.items_label = '文件';
+            task.items_label = t('js.tasks.unit.file');
             task.output_path = data.output_path || task.output_path;
             task.started_at = data.started_at || task.started_at;
             task.created_at = data.created_at || task.created_at;
@@ -461,7 +512,7 @@ function updateTaskProgress(data) {
         task.total_items = data.total_tiles || 0;
         task.downloaded_items = data.downloaded_tiles || 0;
         task.failed_items = data.failed_tiles || 0;
-        task.items_label = '瓦片';
+        task.items_label = t('js.tasks.unit.tile');
         task.north = data.north !== undefined ? data.north : task.north;
         task.south = data.south !== undefined ? data.south : task.south;
         task.east = data.east !== undefined ? data.east : task.east;
@@ -527,11 +578,16 @@ function updateTaskProgressPartial(row, task) {
     const downloadDetail = row.querySelector('.task-count');
     if (downloadDetail) {
         const failedText = task.failed_items > 0
-            ? ` <span style="color: var(--color-danger);">| 失败: ${task.failed_items}</span>`
+            ? ` <span style="color: var(--color-danger);">${t('js.tasks.failed_count', {n: task.failed_items})}</span>`
             : '';
 
-        downloadDetail.innerHTML =
-            `${task.progress_verb || '已下载'}: ${task.downloaded_items} / ${task.total_items} ${task.items_label}${failedText}`;
+        const detail = t('js.tasks.progress_detail', {
+            verb: task.progress_verb || t('js.tasks.verb.downloaded'),
+            done: task.downloaded_items,
+            total: task.total_items,
+            unit: task.items_label
+        });
+        downloadDetail.innerHTML = `${detail}${failedText}`;
     }
 }
 
@@ -542,7 +598,7 @@ function handleTaskCompleted(taskId, taskType, warning) {
     // 且任务不在 activeTasks（页面中途加载）时也照样提示。
     // showToast 内部走 textContent，warning 原文无需再转义。
     if (warning) {
-        showToast('任务完成，但有警告：' + warning, 'warning');
+        showToast(t('js.tasks.toast.completed_with_warning', {warning: warning}), 'warning');
     }
     const key = `${taskType}:${taskId}`;
     const task = activeTasks.get(key);
@@ -574,7 +630,7 @@ function handleTaskCompleted(taskId, taskType, warning) {
 }
 
 // 后端没给原因时的兜底文案。空字符串会渲染成一个空红框，比没有红框更让人困惑。
-const UNKNOWN_ERROR_TEXT = '任务失败，但后端没有返回失败原因。请查看服务端日志。';
+const UNKNOWN_ERROR_TEXT = t('js.tasks.unknown_error');
 
 // taskKey -> showToast 返回的句柄。失败 toast 是常驻的（duration: 0），
 // 同一个任务重复发 task_failed（等高线任务下载阶段与渲染阶段各有失败出口）
@@ -619,7 +675,7 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
     // toast 一直留到用户自己点 ×。默认的 3500ms 在这里没用：用户离座一趟
     // 回来照样什么都看不到。
     closeFailureToast(key);   // 同一任务只留最新的一条
-    failureToasts.set(key, showToast(`任务失败：${task.error_message}`, 'danger', { duration: 0 }));
+    failureToasts.set(key, showToast(t('js.tasks.toast.failed', {message: task.error_message}), 'danger', { duration: 0 }));
 
     // 统计卡的「失败」计数跟着走（与 handleTaskCompleted 同一去抖：
     // 批量失败时 N 个事件合并成一次刷新，字面量 loadStats() 同样被契约测试点名）
@@ -681,28 +737,32 @@ function getStatusColor(status) {
 
 function getStatusText(status) {
     const texts = {
-        'pending': '等待中',
-        'running': '运行中',
-        'paused': '已暂停',
-        'completed': '已完成',
-        'failed': '失败',
-        'cancelled': '已取消'
+        'pending': t('js.tasks.status.pending'),
+        'running': t('js.tasks.status.running'),
+        'paused': t('js.tasks.status.paused'),
+        'completed': t('js.tasks.status.completed'),
+        'failed': t('js.tasks.status.failed'),
+        'cancelled': t('js.tasks.status.cancelled')
     };
     // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）
-    return texts[status] || '未知';
+    return texts[status] || t('js.tasks.status.unknown');
 }
 
 function formatDuration(seconds) {
     if (seconds < 60) {
-        return `${Math.round(seconds)}秒`;
+        return t('js.tasks.duration.seconds', {s: Math.round(seconds)});
     } else if (seconds < 3600) {
         const minutes = Math.floor(seconds / 60);
         const secs = Math.round(seconds % 60);
-        return secs > 0 ? `${minutes}分${secs}秒` : `${minutes}分钟`;
+        return secs > 0
+            ? t('js.tasks.duration.min_sec', {m: minutes, s: secs})
+            : t('js.tasks.duration.minutes', {m: minutes});
     } else {
         const hours = Math.floor(seconds / 3600);
         const minutes = Math.floor((seconds % 3600) / 60);
-        return minutes > 0 ? `${hours}小时${minutes}分钟` : `${hours}小时`;
+        return minutes > 0
+            ? t('js.tasks.duration.hour_min', {h: hours, m: minutes})
+            : t('js.tasks.duration.hours', {h: hours});
     }
 }
 
@@ -771,8 +831,8 @@ function updateTimeDisplay() {
         const timeInfo = calculateTimeInfo(task);
         // 时间文本由 formatDuration 的数字组成，无注入面；整格重写 textContent
         timeCell.textContent = timeInfo.show
-            ? [timeInfo.elapsed ? `已运行: ${timeInfo.elapsed}` : '',
-               timeInfo.estimated ? `预计剩余: ${timeInfo.estimated}` : '']
+            ? [timeInfo.elapsed ? t('js.tasks.time.elapsed', {value: timeInfo.elapsed}) : '',
+               timeInfo.estimated ? t('js.tasks.time.remaining', {value: timeInfo.estimated}) : '']
                 .filter(Boolean).join(' · ')
             : '—';
     });
@@ -796,7 +856,7 @@ async function startTask(taskId, taskType = 'map') {
             throw new Error(result.error || ('HTTP ' + response.status));
         }
     } catch (error) {
-        showToast('启动任务失败: ' + error.message, 'danger');
+        showToast(t('js.tasks.toast.start_failed', {error: error.message}), 'danger');
     }
 }
 
@@ -810,7 +870,7 @@ async function pauseTask(taskId, taskType = 'map') {
             throw new Error(result.error || ('HTTP ' + response.status));
         }
     } catch (error) {
-        showToast('暂停任务失败: ' + error.message, 'danger');
+        showToast(t('js.tasks.toast.pause_failed', {error: error.message}), 'danger');
     }
 }
 
@@ -824,12 +884,13 @@ async function resumeTask(taskId, taskType = 'map') {
             throw new Error(result.error || ('HTTP ' + response.status));
         }
     } catch (error) {
-        showToast('恢复任务失败: ' + error.message, 'danger');
+        showToast(t('js.tasks.toast.resume_failed', {error: error.message}), 'danger');
     }
 }
 
 async function cancelTask(taskId, taskType = 'map') {
-    if (!await showConfirm('确定要取消这个任务吗？', { title: '取消任务', danger: true })) {
+    if (!await showConfirm(t('js.tasks.confirm.cancel_message'),
+                           { title: t('js.tasks.confirm.cancel_title'), danger: true })) {
         return;
     }
 
@@ -852,9 +913,9 @@ async function cancelTask(taskId, taskType = 'map') {
             }
         } else {
             const result = await response.json().catch(() => ({}));
-            showToast('取消任务失败: ' + (result.error || response.status), 'danger');
+            showToast(t('js.tasks.toast.cancel_failed', {error: result.error || response.status}), 'danger');
         }
     } catch (error) {
-        showToast('取消任务失败: ' + error.message, 'danger');
+        showToast(t('js.tasks.toast.cancel_failed', {error: error.message}), 'danger');
     }
 }
