@@ -70,6 +70,48 @@ def lonlat_to_ecef(lon_deg: np.ndarray, lat_deg: np.ndarray, h: np.ndarray) -> n
     return np.stack([x, y, z], axis=-1)
 
 
+def _vertex_normals_ecef(lons: np.ndarray, lats: np.ndarray,
+                         heights: np.ndarray) -> np.ndarray:
+    """逐顶点法线（面积加权），在 ECEF 空间计算。输入 (n,n)，输出 (n,n,3) 单位向量。
+
+    **必须用 ECEF 而不是经纬度空间**：经纬度下 1° 经距按 cos(纬度) 收缩，直接在
+    (lon·111320, lat·111320, h) 上叉积等于把地形东西向拉伸 1/cos(lat) 倍，法线
+    随纬度系统性偏斜。实测把同一块真实地形（天山 N42E086 的 z11 瓦片，65×65，
+    高差 1758 m）搬到各纬度，把经纬度空间的结果按 ENU→ECEF 转回来再比，
+    夹角中位数：lat0 0.05° / lat20 0.45° / lat42 **2.37°** / lat60 6.80° /
+    lat80 28.40°。赤道≈0、随纬度单调放大，正是「东西向拉伸」这个解释本身的验证。
+
+    lons/lats 可以是 (n,n) 网格，也可以是 (1,n)/(n,1) 的广播轴 —— 后者让
+    lonlat_to_ecef 里的 radians/sin/cos/sqrt 只算 n 次而不是 n²，结果与
+    meshgrid 版**逐位相同**（5 组 bbox × 3 种 n × 2 种高程场实测 0 差异），
+    heights 的形状 (n,n) 会把结果撑回 (n,n,3)。_tile_normals 走的是广播那条。
+
+    三角形切法与 _mesh_constants 一致（每格两片：(a0,a1,a2) 与 (a1,a3,a2)），
+    权重用未归一化的叉积 —— 其模长 = 2×三角形面积，累加即天然面积加权。
+    最后统一朝外（与地心方向点积为正），因此**不依赖三角形绕序**：RTIN 绕向
+    在本轮改过一次（dad22bd77），法线不该再被同一件事绊一遍。
+    """
+    xyz = lonlat_to_ecef(lons, lats, heights)
+    acc = np.zeros_like(xyz)
+    v0 = xyz[:-1, :-1]      # a0 = (j,   i)
+    v1 = xyz[:-1, 1:]       # a1 = (j,   i+1)
+    v2 = xyz[1:, :-1]       # a2 = (j+1, i)
+    v3 = xyz[1:, 1:]        # a3 = (j+1, i+1)
+    n1 = np.cross(v1 - v0, v2 - v0)      # 三角形 (a0,a1,a2)
+    n2 = np.cross(v3 - v1, v2 - v1)      # 三角形 (a1,a3,a2)
+    # 每片面法线散给它的三个顶点。切片是基本索引（视图），+= 就地累加，
+    # 不需要 np.add.at —— 六条语句各自命中的元素集合内部无重复。
+    for sl, nr in ((np.s_[:-1, :-1], n1), (np.s_[:-1, 1:], n1), (np.s_[1:, :-1], n1),
+                   (np.s_[:-1, 1:], n2), (np.s_[1:, 1:], n2), (np.s_[1:, :-1], n2)):
+        acc[sl] += nr
+    ln = np.linalg.norm(acc, axis=-1, keepdims=True)
+    ln[ln == 0] = 1.0
+    out = acc / ln
+    up = xyz / np.linalg.norm(xyz, axis=-1, keepdims=True)
+    out[(out * up).sum(-1) < 0] *= -1
+    return out
+
+
 @dataclass
 class GeographicTilingScheme:
     tile_size: int = 17
@@ -568,6 +610,53 @@ def _choose_tile_bytes(mart_gz: bytes, grid_gz: bytes) -> Tuple[bytes, str]:
     return grid_gz, "grid"
 
 
+def _tile_normals(sampler: "DemSampler", west: float, south: float, east: float,
+                  north: float, tile_size: int) -> np.ndarray:
+    """一张瓦片的逐顶点法线 (tile_size, tile_size, 3)，用 ghost 环消跨瓦片接缝。
+
+    ghost 环 = 向外各扩一个顶点步长采 (tile_size+2)²，算完法线裁回中间那圈。
+    不扩环时边界顶点只能拿到本瓦片内的三角形，法线天生不完整，而且接缝**沿瓦片
+    边界排成直线**（马赫带把它强化成可见网格，比同幅度的随机噪声显眼得多）。
+
+    **归零是有条件的，条件在采样器上**。两侧邻接三角形集合一致 ⇒ 逐位相同，
+    这一步只在 sampler 是「位置的纯函数」时成立。生产的 DemSampler.sample
+    **不是**：读窗口由传入网格的 bbox 决定、再降采样到 buf = grid+2，相邻瓦片
+    窗口不同 ⇒ 同一经纬点取到不同高程（实测同一批 65² 点，用 65² 窗口取 vs 用
+    67² 窗口取再裁回，最大差 1.96 m）。于是：
+      - 网格比源像素密、不发生降采样的层级 —— 天山 1″ DEM + tile_size=65 即
+        z14（estimate_max_level 也正是 14）—— 实测 8/8 相邻瓦片边**逐位相同**；
+      - 中间层只是大幅压小、不归零：z11 实测 199 对相邻瓦片边，边界法线夹角
+        中位 2.42°→**0.238°**、最大 42.4°→3.27°；不扩环时 45.4% 的边界顶点
+        Lambert 亮度阶跃超过 2% 可察觉阈值（86.4% 的瓦片对至少有一个顶点超）。
+    ⚠️ 中间层的残差**不是法线的锅**：同一现象让瓦片自身的 65² 高程网格在公共边
+    上就对不齐（实测 z9 差 35 m、z10–13 差 3~6 m、z14 差 0），几何裂缝先于法线
+    接缝存在。属既有缺陷，不在本轮范围，但别把它误算成 ghost 环没生效。
+
+    从 _worker_tile 里抽出来是为了可测：Task 6 阶段法线还没有消费者，内联时
+    「ghost 不扩」「裁切下标写错」两种变异在任何测试下都是静默存活的（实测）。
+
+    ⚠️ 已知限制：ghost 环落在 DEM 外时 DemSampler.sample 兜成 0，整个 DEM 最外
+    一圈瓦片的最外一行顶点法线会朝向偏差（实测跨界瓦片最西列法线与地心方向
+    夹角中位 3.70°）。这一条**确实不影响接缝** —— 相邻瓦片在同一地理位置取到
+    同一个兜底 0：在采样器为纯函数的 z14 上实测天山 DEM 西边界 121 组边界瓦片
+    对，0 组有差异。修它要让边缘顶点退化成只用内侧三角形，本轮不做。
+
+    为什么不复用这里的采样结果去掉 _worker_tile 的那次满网格采样：GDAL 在低
+    zoom 按读窗口降采样，67² 窗口与 65² 窗口取到的高程不同，复用会让瓦片几何
+    随 normals 开关变化 —— 法线就从「附加数据」变成「改动既有产物」。
+    """
+    dw = (east - west) / (tile_size - 1)
+    dh = (north - south) / (tile_size - 1)
+    glon = np.linspace(west - dw, east + dw, tile_size + 2, dtype=np.float64)
+    glat = np.linspace(south - dh, north + dh, tile_size + 2, dtype=np.float64)
+    gl, ga = np.meshgrid(glon, glat)
+    gh = sampler.sample(gl, ga)
+    # 法线只喂广播轴（trig 算 n 次而非 n²，与 meshgrid 版逐位相同，见
+    # _vertex_normals_ecef 的 docstring）；meshgrid 仍要给 sampler.sample 用。
+    # 实测 n=67：_vertex_normals_ecef 0.580 ms → 0.508 ms（省 12.5%）。
+    return _vertex_normals_ecef(glon[None, :], glat[:, None], gh)[1:-1, 1:-1]
+
+
 def _worker_tile(task) -> Tuple[float, float, str] | None:
     """Returns (min, max, backend) of the written tile, or None on failure.
 
@@ -578,7 +667,8 @@ def _worker_tile(task) -> Tuple[float, float, str] | None:
     逐瓦片容错:单个坏块(如 ReadAsArray 返回 None、磁盘写失败)只记日志计失败,
     不让一个瓦片炸掉整个任务 —— 与 contour 的 _render_contour_tile_core 同款。
     """
-    z, x, y, west, south, east, north, tile_size, out_dir, triangulator, max_error_k = task
+    (z, x, y, west, south, east, north, tile_size, out_dir,
+     triangulator, max_error_k, with_normals) = task
     assert _WORKER_SAMPLER is not None
 
     try:
@@ -587,6 +677,14 @@ def _worker_tile(task) -> Tuple[float, float, str] | None:
         lats = np.linspace(south, north, tile_size, dtype=np.float64)
         llon, llat = np.meshgrid(lons, lats)
         heights = _WORKER_SAMPLER.sample(llon, llat)
+
+        # ⚠️ normals 目前**算完即弃**：写进 quantized-mesh 的 oct-encoded 扩展段
+        # 是下一步的事（encode_quantized_mesh 还没有 normals 参数）。在此之前
+        # with_normals=True 只带来 CPU 开销、不改变任何落盘字节。
+        # 法线基于**满网格**算、两个三角化后端共用同一份：简化只动几何，光照
+        # 细节保留（粗几何 + 精细法线，类似 normal mapping）。
+        normals = _tile_normals(_WORKER_SAMPLER, west, south, east, north,
+                                tile_size) if with_normals else None
 
         if triangulator in ("auto", "martini"):
             # 自适应三角化：按高程误差驱动细分，标准档（K=0.15）减面 73%~83%。
@@ -639,6 +737,7 @@ def build_terrain(
     stop_flag=None,
     triangulator: str = "auto",
     max_error_k: float = DEFAULT_MAX_ERROR_K,
+    normals: bool = True,
 ) -> dict:
     # progress_cb(done, total): 逐瓦片进度回调（done = rendered+failed，terrain
     # 没有 contour 的 skipped 态），串行/并行每 tally 一次调一次；调用方自行
@@ -650,6 +749,16 @@ def build_terrain(
     # 见 _choose_tile_bytes 里的实测依据），'martini' / 'grid' = 强制单一后端，
     # 排障时用。max_error_k: 允许高程误差 = K * 顶点间距（见 _max_error_for_level）。
     # 三者都不暴露给 UI/DB/API，只为排障与测试注入而存在。
+    #
+    # normals: 逐顶点法线（ECEF 空间 + ghost 环，见 _worker_tile / _vertex_normals_ecef）。
+    # 默认开。成本是每瓦片多一次 (tile_size+2)² 采样加一次向量化叉积累加 ——
+    # 实测（天山 N42E086，z0-11 共 **907** 张，tile_size=65，workers=4，交错 best-of-4）
+    # 墙钟 1.048s → 1.338s，**+27.7%**（+0.32 ms/瓦片）。换配置会明显不同：
+    # z6-11(224 张) +10.4%、tile_size=17 z0-11 +19.4%、tile_size=17 z0-13 +35.3%。
+    # ⚠️ 此刻法线还没有消费者（encode 尚未支持），所以这 27.7% 暂时是纯开销，
+    # 落盘字节与 normals=False 逐字节相同。
+    # ⚠️ 用 build_terrain 直接做性能实验时必须显式传 tile_size=65 —— 本函数默认
+    # 值是 17，生产走的是 TileParams.tile_size=65，两者的法线占比差一倍。
     #
     # 下面这两条校验在入口一次性做掉，不放进 _worker_tile —— 那里的 try/except
     # 是逐瓦片容错，配置错在那里只会变成每张瓦片一行 warning：
@@ -745,7 +854,7 @@ def build_terrain(
                     for y in range(y0, y1 + 1):
                         west, south, east, north = scheme.tile_extent_deg(z, x, y)
                         yield (z, x, y, west, south, east, north, tile_size, str(out),
-                               triangulator, max_error_k)
+                               triangulator, max_error_k, normals)
 
         sampler.ds = None
         sampler.band = None
