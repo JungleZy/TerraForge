@@ -16,7 +16,14 @@
 - `base_terrain.py` **不得 import numpy / osgeo / GDAL**。它要能在没有 GDAL 的环境里单测，与 `layer_json.py` 定位一致。
 - 单测**绝不能**往仓库的 `assets/terrain/` 里解压或写入，一律用 `tmp_path`。CI 流水线里测试跑在打包**之前**，一条测试污染仓库就会让 224 MB 被打进产物。
 - 共享缓存路径：`assets/terrain/base_z8`（相对形态 `./assets/terrain/base_z8`，经 `resolve_stored_output_dir` 落到 `Config.BASE_DIR` 下）。旧值 `./downloads/terrain/base_z8` 只在迁移代码里出现。
-- 底图规格（用于测试断言）：z0–z7，各层 x 目录数 2/8/32/128/512/2048/8192/32768，共 43,690 个 `.terrain`。
+- 底图规格（用于测试断言）。⚠️ **x 目录数与瓦片数是两回事，别混用** —— EPSG:4326 是 2:1 地理网格，z 层有 `2·2^z` 个 x 目录、每个 x 目录下 `2^z` 个 y 文件：
+
+  | | z0 | z1 | z2 | z3 | z4 | z5 | z6 | z7 | 合计 |
+  |---|---|---|---|---|---|---|---|---|---|
+  | x 目录数（`iterdir` 数到的） | 2 | 4 | 8 | 16 | 32 | 64 | 128 | 256 | 510 |
+  | `.terrain` 瓦片数 | 2 | 8 | 32 | 128 | 512 | 2048 | 8192 | 32768 | 43,690 |
+
+  `is_base_ready` 的探针 `_PROBE_LEVELS = ((0,2),(4,32),(7,256))` 用的是**上排**（与既有的 `scripts/unpack_base_terrain.py:55` 逐值一致），造测试夹具时也必须用上排。用下排会把 z7 建成 32,768 个目录 —— 慢 128 倍，而且阈值 256 被远远超过，`good` 用例就再也钉不住边界了。
 - 每个 Task 结束时**只跑该 Task 涉及的测试文件**，不跑全量。全量在最后一个 Task 统一跑。
 - 不要跑 formatter / linter。
 
@@ -53,10 +60,17 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
-def _make_base(root, layers=((0, 2), (1, 8), (2, 32), (3, 128),
-                             (4, 512), (5, 2048), (6, 8192), (7, 32768)),
+def _make_base(root, layers=((0, 2), (1, 4), (2, 8), (3, 16),
+                             (4, 32), (5, 64), (6, 128), (7, 256)),
                dense=False):
-    """造一个 base_z8 骨架。dense=False 时每层只建 x 目录不建瓦片（够就位判据用）。"""
+    """造一个 base_z8 骨架。第二个数是 **x 目录数**，不是瓦片数。
+
+    真实底图 z0-z7 共 510 个 x 目录（2·2^z），照这个建 `is_base_ready` 的三条
+    探针恰好卡在边界上 —— 少一个目录就该红。误用瓦片数（32768）会建出 128 倍
+    的目录，阈值被远远超过，边界断言就失效了。
+
+    dense=False 时只建 x 目录不建瓦片，够就位判据用。
+    """
     root.mkdir(parents=True, exist_ok=True)
     (root / "layer.json").write_text('{"maxzoom": 7, "available": []}', encoding="utf-8")
     for z, nx in layers:
