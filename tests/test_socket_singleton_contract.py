@@ -30,9 +30,17 @@ def _read(*parts):
 # 出现在 `/` 之前就说明它是**正则字面量**而不是除号（标准启发式：除号前面只能是
 # 值，正则前面只能是运算符/分隔符/关键字）。写下这条是被 ui.js:233 的
 # `.replace(/"/g, '&quot;')` 逼出来的 —— 正则里的裸引号会把纯字符串扫描器带偏。
-_REGEX_CAN_FOLLOW = set("(,=:[!&|?{};+-*%~^<>\n")
+#
+# ⚠️ 这里**刻意不含 `+` `-`**：`a++ / b` 的前一个有效字符是 `+`，收进来的话 `/` 会
+# 被当成正则开头，一路扫到同行 `// 尾注释` 的第一个 `/` 当正则收尾 —— 注释就以
+# 「代码」身份留在了输出里，而栈是平衡的、安全网不会抛。这正是本文件要防的假绿，
+# 只是换了触发条件。`a + /re/.test(x)` 这种写法本项目没有，宁可漏判成除号（响亮
+# 失败：正则本行不闭合 → 抛）也不要静默放行。
+# 关键字前缀是 `[^\w$.]` 而不是 `[^\w$]`：`o.of / 2` 里的 `.of` 是属性访问不是关键字，
+# 少了那个 `.` 同样会把 `/` 误判成正则、把同行尾注释救活。
+_REGEX_CAN_FOLLOW = set("(,=:[!&|?{};*%~^<>\n")
 _REGEX_CAN_FOLLOW_WORD_RE = re.compile(
-    r"(?:^|[^\w$])(return|typeof|case|in|of|new|delete|void|do|else|instanceof|yield|await)\s*$")
+    r"(?:^|[^\w$.])(return|typeof|case|in|of|new|delete|void|do|else|instanceof|yield|await|throw)\s*$")
 
 
 def _strip_js_comments(src):
@@ -163,6 +171,21 @@ def _strip_js_comments(src):
     return "".join(out)
 
 
+def _strip_template_comments(markup):
+    """删掉 Jinja `{# #}` 与 HTML `<!-- -->` 注释（换行保留，位置比较不失真）。
+
+    和 js 侧同一个坑，只是挪到了模板：base.html 的 `{# #}` 注释里**已经在逐字讨论
+    socket.io** 了，只差把完整版本路径写进那段注释，「socket.io 存在」「排在
+    socket.js 之前」两条断言就会被注释满足而永远绿。模板侧没有字符串/正则歧义，
+    正则替换就够 —— 用等量换行填回去，保住行号与相对位置。
+    """
+    def _blank(m):
+        return "\n" * m.group(0).count("\n")
+
+    markup = re.sub(r"{#.*?#}", _blank, markup, flags=re.S)
+    return re.sub(r"<!--.*?-->", _blank, markup, flags=re.S)
+
+
 def _jinja_block_spans(markup):
     """返回 [(block 名, 起, 止)]，止是 {% endblock %} 的结束位置。带栈，容忍嵌套。"""
     token = re.compile(r"{%-?\s*(block\s+(\w+)|endblock\s*\w*)\s*-?%}")
@@ -189,6 +212,11 @@ def test_strip_js_comments():
         "var half = total / 2; // 除号不是正则\n"
         "var cls = /[/\"']+/.test(s);\n"          # 字符类里的 / 与引号
         "var tpl = `a//b ${x ? `<i>${y}</i>` : ''} c`; // 嵌套模板串\n"
+        # 下面两条是已知的失败样本（复审实测挖出来的）：曾经 `+` 与 `.of` 会让 `/`
+        # 被误判成正则开头，一路吞到尾注释的第一个 `/`，注释因此以「代码」身份存活，
+        # 而栈是平衡的、安全网不抛 —— 假绿。当回归钉子留着。
+        "var c = a++ / b; // instance = io()\n"
+        "var z = o.of / 2; // io()\n"
     )
     assert "注释里" not in stripped, "注释没剥干净"
     assert "块注释" not in stripped
@@ -198,6 +226,10 @@ def test_strip_js_comments():
     assert "total / 2" in stripped, "除号被当成正则开头，后面的代码被吞了"
     assert "`a//b ${x ? `<i>${y}</i>` : ''} c`" in stripped, "嵌套模板串被剥坏了"
     assert "嵌套模板串" not in stripped, "嵌套模板串之后的行注释没剥掉（状态串味了）"
+    assert "a++ / b" in stripped and "o.of / 2" in stripped, "自增/属性访问后的除号被吞了"
+    assert len(_IO_CALL_RE.findall(stripped)) == 1, (
+        "`a++ /` 或 `.of /` 后面的尾注释以「代码」身份活了下来 —— "
+        "_REGEX_CAN_FOLLOW 又把 + / - 收进去了，或关键字前缀漏了排除 `.`")
     assert len(_IO_CALL_RE.findall(stripped)) == 1, "剥完之后应当只剩代码里那一次 io()"
     # 真实文件全部能扫完（不抛）
     for path in sorted(glob.glob(os.path.join(ROOT, "static", "js", "*.js"))):
@@ -273,7 +305,7 @@ def test_socket_io_vendor_is_loaded_on_every_page():
     block 之外的东西。/config 曾经把 vendor block（Cesium 5.7 MB + socket.io 绑在
     一起）覆盖成空，于是那一页收不到任何实时推送 —— 而底图解压进度是全站可见的要求。
     """
-    base = _read("templates", "base.html")
+    base = _strip_template_comments(_read("templates", "base.html"))
 
     hits = [m.start() for m in _SOCKET_IO_SRC_RE.finditer(base)]
     assert hits, (
@@ -298,7 +330,7 @@ def test_socket_io_vendor_is_loaded_on_every_page():
 
 def test_config_page_only_drops_cesium():
     """/config 只许覆盖 Cesium 那个 block，且不许自己重新引入 socket.io。"""
-    config = _read("templates", "config.html")
+    config = _strip_template_comments(_read("templates", "config.html"))
     assert re.search(r"{%\s*block vendor_map_js\s*%}\s*{%\s*endblock\s*%}", config), (
         "config.html 应当把 vendor_map_js 覆盖成空（只省 Cesium）")
     assert not re.search(r"{%\s*block vendor_js\s*%}", config), (
@@ -313,7 +345,7 @@ def test_socket_io_vendor_loads_before_socket_js():
     顺序反了 socket.js 解析时 `typeof io !== 'function'`，get() 只会返回 null，
     页面**静默**失去实时推送（只有一条 console.warn，没有任何可见报错）。
     """
-    base = _read("templates", "base.html")
+    base = _strip_template_comments(_read("templates", "base.html"))
     vendor = _SOCKET_IO_SRC_RE.search(base)
     assert vendor, "base.html 里找不到 socket.io 的 vendor 引用"
     assert vendor.start() < base.index("js/socket.js"), (
@@ -322,7 +354,7 @@ def test_socket_io_vendor_loads_before_socket_js():
 
 def test_base_html_loads_socket_js_after_ui_js():
     """socket.js 要排在 ui.js 之后 —— 它调 initConnectionStatus（ui.js 定义的）。"""
-    base = _read("templates", "base.html")
+    base = _strip_template_comments(_read("templates", "base.html"))
     ui = base.index("js/ui.js")
     sock = base.index("js/socket.js")
     assert ui < sock, "socket.js 必须排在 ui.js 之后，否则 initConnectionStatus 还没定义"
