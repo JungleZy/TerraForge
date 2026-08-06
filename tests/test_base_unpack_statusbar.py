@@ -460,6 +460,43 @@ def test_narrow_screen_rule_no_longer_depends_on_last_child():
         "窄屏规则应当按语义选中时钟（.statusbar-clock）")
 
 
+def test_narrow_screen_makes_room_for_the_unpack_progress():
+    """窄屏下必须有「解压进度出现时让路」的规则，否则它被 overflow 整个裁掉。
+
+    430px 实测（这条规则落地前）：状态栏可视宽 408、内容宽 788、`overflow-x: hidden`，
+    解压进度落在 left=615 / right=789，而状态栏右边只到 420 —— **超出 369px，一个
+    像素都看不见**。而这里的注释当时写着「底图解压进度在窄屏保留显示」，是句假话。
+
+    钉三样，对应三种改坏方式：
+      1. 让路规则存在（整段删掉 → 元素又被裁光）；
+      2. 四个让路目标一个都不能少（少一个就不够宽 —— 实测只挤掉前三项时，中文富余
+         95px 但**英文溢出 16px**，英文文案才是真正的约束）；
+      3. 条件里必须有 `:not([hidden])`（去掉就变成窄屏永久隐藏这些读数项，
+         而解压只占那几分钟 —— 临时让路变成永久牺牲）。
+    """
+    block = _braced_block(_css(), "@media (max-width: 576px)")
+    yielding = []
+    for sel, decls in re.findall(r"([^{}]+)\{([^{}]*)\}", block):
+        if not re.search(r"display\s*:\s*none", decls):
+            continue
+        yielding += [one.strip() for one in sel.split(",")
+                     if "#statusBaseUnpack" in one.replace(" ", "")]
+    assert yielding, (
+        "窄屏没有任何「解压进度出现时让路」的规则 —— 430px 下状态栏内容宽 788 而可视宽 "
+        "408，overflow: hidden 会把排在最右的解压进度整个裁掉，一个像素都看不见")
+
+    targets = {cls for s in yielding for cls in re.findall(r"\.([A-Za-z0-9_-]+)", s)}
+    missing = {"statusbar-tasks", "statusbar-copy", "statusbar-event", "conn-status"} - targets
+    assert not missing, (
+        f"让路名单里少了 {sorted(missing)} —— 实测宽度不够："
+        "只挤掉 tasks/copy/event 时中文富余 95px 而英文「Unpacking base terrain 100%」"
+        "溢出 16px，四项都挤掉英文才有 65px 富余")
+
+    assert all(":not([hidden])" in s.replace(" ", "") for s in yielding), (
+        "让路条件里没有 :not([hidden]) —— 会变成窄屏**永久**隐藏这些读数项，"
+        "而解压只是那几分钟的临时状态，隐藏后本该自动恢复")
+
+
 def test_narrow_screen_selectors_match_the_real_markup():
     """窄屏隐藏规则用到的类名，必须在模板里真实存在。
 

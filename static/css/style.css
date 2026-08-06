@@ -544,9 +544,35 @@ body {
 
     /* 窄屏隐藏时钟。**不要写回 .statusbar-item:last-child** —— 那条规则的正确性
        依赖「时钟恰好排在最后」这个巧合，往 statusbar 末尾加任何元素都会让它
-       选中别的东西，或者一个都选不中（新元素不带 .statusbar-item 类）。
-       底图解压进度在窄屏保留显示：它是要紧状态，窄屏更需要。 */
+       选中别的东西，或者一个都选不中（新元素不带 .statusbar-item 类）。 */
     .workbench-statusbar .statusbar-clock {
+        display: none;
+    }
+
+    /* 底图解压进度**出现时**才让这几项让路，隐藏后自动恢复。
+       为什么必须让路（430px 实测，别凭感觉调）：可视内容宽 388px，而常态内容
+       宽 768px —— 状态栏是 overflow: hidden，解压进度排在最右，会被整个裁掉，
+       一个像素都看不见（曾经这里的注释写着「窄屏保留显示」，那是句假话）。
+       挤掉谁、留下谁（实测宽度）：
+         挤掉 .statusbar-tasks 276px（活动任务聚合。它是面板入口，但地图工具条
+              上另有一颗 data-panel="records" 的按钮，挤掉不会断路）
+         挤掉 .statusbar-copy  100 + 76px（坐标 / 选区四至，点了才有意义）
+         挤掉 .statusbar-event  16px（事件提示，发生了才有意义）
+         挤掉 .conn-status      73px（连接指示。挤它的理由最硬：**能收到解压进度
+              本身就证明连接是通的**，此刻它是冗余信息）
+         留下 #statusZoom 30px + 解压进度 ≈ 300px（英文文案下）
+       都是「点了/发生了才有意义」或此刻冗余的信息，而解压进度只占那几分钟，
+       所以是临时让路而不是永久牺牲。
+       ⚠️ 英文文案是本规则的真正约束，别只按中文调：中文「底图解压 100%」元素宽
+       181px，英文「Unpacking base terrain 100%」是 291px。只挤掉前三项时中文富余
+       95px 而英文**溢出 16px** —— 把 .conn-status 也挤掉之后英文才有富余。
+       ⚠️ :has() 是「当某个兄弟元素可见时」的**唯一**纯 CSS 表达方式 —— CSS 没有
+       前向选择器，拿不到「后面那个元素现在显示着」这个条件。Chrome 105+ / 2022
+       起支持，远低于本项目 Cesium 1.143 的浏览器基线。 */
+    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .statusbar-tasks,
+    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .statusbar-copy,
+    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .statusbar-event,
+    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .conn-status {
         display: none;
     }
 }

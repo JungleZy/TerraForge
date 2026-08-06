@@ -3858,10 +3858,18 @@ def _btn_branch_applies(branch, ctx, state):
     compounds = []
     for part in branch.split():
         for arg in re.findall(r':not\(([^)]*)\)', part):
-            if not re.fullmatch(r'\s*[.:][-\w]+\s*', arg):
+            # 属性选择器（`:not([hidden])`）记进 neg_attrs，**不在这里**判 None ——
+            # 这里是解析期，还不知道这个 compound 会不会真的命中按钮。一律判 None 的
+            # 话，subject 明显不是按钮的选择器（style.css 的
+            # `.workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .statusbar-tasks`）
+            # 也会把整个按钮模型顶成「已失效」—— 那是误报，不是保护。
+            # 真正可能命中时仍然响亮判 None，见下面 subject / 祖先两处的 neg_attrs 检查。
+            # 这与本函数「先判肯定不命中，再判形态不支持」的既定顺序是同一条原则。
+            if not re.fullmatch(r'\s*(?:[.:][-\w]+|\[[^\]]*\])\s*', arg):
                 return None                   # :not() 里是别的东西
         neg_pseudos = set(re.findall(r':not\(\s*:([-\w]+)\s*\)', part))
         neg_classes = set(re.findall(r':not\(\s*\.([-\w]+)\s*\)', part))
+        neg_attrs = re.findall(r':not\(\s*(\[[^\]]*\])\s*\)', part)
         rest = re.sub(r':not\([^)]*\)', '', part)
         ids = re.findall(r'#([-\w]+)', rest)
         classes = set(re.findall(r'\.([-\w]+)', rest))
@@ -3875,7 +3883,7 @@ def _btn_branch_applies(branch, ctx, state):
             return None                       # 读不懂的残余
         compounds.append(dict(tag=tag, ids=ids, classes=classes, pseudos=pseudos,
                               neg_pseudos=neg_pseudos, neg_classes=neg_classes,
-                              attrs=attrs))
+                              attrs=attrs, neg_attrs=neg_attrs))
     if not compounds:
         return None
 
@@ -3924,8 +3932,11 @@ def _btn_branch_applies(branch, ctx, state):
             return None                       # 例如 [disabled]，模型不认，响亮失败
         if not hit:
             return False
+    if subject['neg_attrs']:
+        return None                           # 例如 .btn:not([disabled])，模型不认，响亮失败
     for anc in compounds[:-1]:
-        if anc['pseudos'] or anc['neg_pseudos'] or anc['ids'] or anc['tag'] is not None:
+        if (anc['pseudos'] or anc['neg_pseudos'] or anc['ids']
+                or anc['tag'] is not None or anc['neg_attrs']):
             return None                       # 祖先侧只支持纯类选择器 / `*`
         if anc['attrs']:
             hit = attrs_match(anc['attrs'], ctx.ancestors)
