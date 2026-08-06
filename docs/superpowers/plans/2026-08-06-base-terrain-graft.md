@@ -1019,15 +1019,56 @@ from src.services.terrain_tiling.layer_json import merge_base_availability, patc
         patch_layer_json_parent(layer_json_path, params.parent_url)
 ```
 
-- [ ] **Step 4: 跑测试确认它绿**
+- [ ] **Step 4: 加全局护栏，防止测试往仓库里解压 224 MB**
 
-Run: `uv run pytest tests/test_dem_task_tiler.py tests/test_terrain_stage_progress.py -q`
-Expected: PASS（`test_terrain_stage_progress.py` 里既有的穿透用例不得变红）
+接入之后，任何调用**真** `tile_dem_task_dir` 的测试都会走到 `ensure_base_unpacked()`。本机仓库里 `assets/terrain/*.part` 是真实存在的 —— 于是这些测试会真的解压 224 MB / 4.3 万个文件进仓库，违反 Global Constraints，而且现象是「测试跑了几分钟」不是报错，极难归因。已知会踩到的有 4 条：`test_dem_task_tiler.py` 的三条、`test_terrain_stage_progress.py` 里的穿透那条。
 
-- [ ] **Step 5: 提交**
+靠「记得给每条测试加 mock」挡不住以后新写的测试。在 `tests/conftest.py` 加 autouse fixture，形制照抄同文件里既有的 `isolate_startup_sweep`（它挡的是启动清扫打到真实 /tmp，同一类问题）：
+
+```python
+@pytest.fixture(scope="session")
+def _base_terrain_sandbox(tmp_path_factory):
+    return tmp_path_factory.mktemp("base_terrain_sandbox")
+
+
+@pytest.fixture(autouse=True)
+def isolate_base_terrain(monkeypatch, _base_terrain_sandbox):
+    """测试侧防护：不让任何测试把随包底图解压进仓库。
+
+    `tile_dem_task_dir` 现在开头就调 `ensure_base_unpacked()`，而仓库里
+    `assets/terrain/*.part` 是真实存在的 —— 任何调用真 tiler 的测试都会解出
+    224 MB / 4.3 万个文件到 `assets/terrain/base_z8`。两个后果：跑一次测试多
+    等几分钟（现象不是报错，是「怎么这么慢」，极难归因），以及 CI 里测试跑在
+    Nuitka 打包**之前**，解出来的东西会被打进三个平台的产物。
+
+    做法是把分卷目录指到一个空沙箱：`base_parts_dir()` 找不到分卷就返回 None，
+    `ensure_base_unpacked()` 随之返回 None，调用方走 parentUrl 兜底 —— 正是
+    这些既有测试原本断言的路径，所以它们一行都不用改。
+
+    要测真解压的用例（`test_base_terrain.py`）在用例内自己 monkeypatch
+    `_assets_terrain_dir`，setattr 打在后面，覆盖本 fixture。
+    """
+    try:
+        from src.services.terrain_tiling import base_terrain as bt
+    except Exception:  # 环境缺依赖时不阻断收集
+        return
+    monkeypatch.setattr(bt, "_assets_terrain_dir",
+                        lambda: Path(_base_terrain_sandbox))
+```
+
+`tests/conftest.py` 顶部若无 `from pathlib import Path` 则加上。
+
+- [ ] **Step 5: 跑测试确认它绿**
+
+Run: `uv run pytest tests/test_dem_task_tiler.py tests/test_terrain_stage_progress.py tests/test_base_terrain.py tests/test_fix_terrain_gdal_import.py -q`
+Expected: PASS。四条既有用例**不改一行**就该继续绿（沙箱让它们走兜底路径，正是它们原本断言的）。若哪条红了，说明护栏没生效或接入顺序不对，别改断言迁就。
+
+计时核对：这几个文件加起来应当是**秒级**。若跑了几分钟，说明护栏漏了，有测试在真解压。
+
+- [ ] **Step 6: 提交**
 
 ```bash
-git add src/services/terrain_tiling/dem_task_tiler.py tests/test_dem_task_tiler.py
+git add src/services/terrain_tiling/dem_task_tiler.py tests/test_dem_task_tiler.py tests/conftest.py
 git commit -m "feat(terrain): 切片流程接入底图 —— 解压→切片(z8+)→植入→合成"
 ```
 
@@ -1506,10 +1547,10 @@ Expected: PASS
 Run: `uv run pytest tests/ -q`
 Expected: 全绿。基线是 v0.2.8 的 1192 项；新增用例后应为 1192 + 本次新增数。
 
-**若有既有用例变红**，最可能是这三处，逐个核对而不是改断言迁就：
-- `tests/test_layer_json.py::test_both_managers_gate_parent_url_on_base_availability` —— 它是源码级断言（两个 manager 里必须出现 `parent_url_if_base_available`）。兜底路径没删，应当仍绿；若红说明 Task 5 误删了兜底。
-- `tests/test_dem_task_tiler.py::test_tile_dem_task_dir_calls_external_tools` —— 它断言 `parentUrl` 被写进 layer.json。该用例没 mock `ensure_base_unpacked`，真实环境里分卷存在就会走植入分支。**给它显式 monkeypatch `ensure_base_unpacked` 返回 None**，让它继续测兜底路径。
-- `tests/test_terrain_stage_progress.py` 的穿透用例 —— 同理，需要 mock 掉 `ensure_base_unpacked`。
+**若有既有用例变红**，逐个核对而不是改断言迁就：
+- `tests/test_layer_json.py::test_both_managers_gate_parent_url_on_base_availability` —— 源码级断言（两个 manager 里必须出现 `parent_url_if_base_available`）。兜底路径没删，应当仍绿；若红说明 Task 5 误删了兜底。
+- `tests/test_dem_task_tiler.py` 的三条、`tests/test_terrain_stage_progress.py` 的穿透那条 —— 它们调用真 tiler，靠 Task 5 加的 `isolate_base_terrain` autouse fixture 走兜底路径。若红，先查那个 fixture 是不是没生效（现象往往是「这几个文件跑了几分钟」而不是断言失败），而不是去改它们的断言。
+- **计时是判据之一**：全量应当仍在 6 分钟量级。若明显变长，多半是有测试在真解压 224 MB —— 用 `pytest --durations=10` 定位。
 
 - [ ] **Step 4: 确认仓库没被污染**
 
