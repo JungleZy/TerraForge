@@ -1117,7 +1117,16 @@ class DownloadEngine:
                 output_format = 'GTiff'
                 translate_options = gdal.TranslateOptions(
                     format=output_format,
-                    creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
+                    # BIGTIFF=IF_SAFER 不能省:GTiff 默认的 IF_NEEDED 只在**不压缩**时
+                    # 按未压缩体积决定是否升级 BigTIFF,一旦带了 COMPRESS 就一律按经典
+                    # TIFF(4 GiB 上限)建文件,超出部分静默丢弃。实测 68000x68000 Byte
+                    # +DEFLATE:产物停在 4294967275 字节、version=42,而 gdal.Translate
+                    # 返回**非 None** 的 dataset、RasterXSize/YSize 报 68000x68000 全对、
+                    # 左上角与源逐字节相等 —— 只有右下角全 0。也就是任务 completed、
+                    # 无 warning、文件打得开、尺寸看着对,下半张却是空白。
+                    # 地形侧 cesiumlab_terrain.build_input_raster 早就写了它,这里对齐。
+                    creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES',
+                                     'BIGTIFF=IF_SAFER'],
                     resampleAlg=gdal_resampling
                 )
             elif output_ext == '.png':
@@ -1131,7 +1140,16 @@ class DownloadEngine:
                 output_format = 'GTiff'
                 translate_options = gdal.TranslateOptions(
                     format=output_format,
-                    creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES'],
+                    # BIGTIFF=IF_SAFER 不能省:GTiff 默认的 IF_NEEDED 只在**不压缩**时
+                    # 按未压缩体积决定是否升级 BigTIFF,一旦带了 COMPRESS 就一律按经典
+                    # TIFF(4 GiB 上限)建文件,超出部分静默丢弃。实测 68000x68000 Byte
+                    # +DEFLATE:产物停在 4294967275 字节、version=42,而 gdal.Translate
+                    # 返回**非 None** 的 dataset、RasterXSize/YSize 报 68000x68000 全对、
+                    # 左上角与源逐字节相等 —— 只有右下角全 0。也就是任务 completed、
+                    # 无 warning、文件打得开、尺寸看着对,下半张却是空白。
+                    # 地形侧 cesiumlab_terrain.build_input_raster 早就写了它,这里对齐。
+                    creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES',
+                                     'BIGTIFF=IF_SAFER'],
                     resampleAlg=gdal_resampling
                 )
 
@@ -1146,11 +1164,50 @@ class DownloadEngine:
             part_path_obj = output_path_obj.with_name(
                 f"{output_path_obj.name}.part.{os.getpid()}")
             try:
-                output_ds = gdal.Translate(str(part_path_obj), translate_source, options=translate_options)
-                if output_ds is None:
-                    raise RuntimeError(f"Failed to translate VRT to {output_path_obj}")
-                output_ds = None  # Close output dataset before replacing
-                os.replace(str(part_path_obj), str(output_path_obj))
+                # 显式钉死「非异常」模式,和 cesiumlab_terrain.build_input_raster 对齐。
+                # gdal.UseExceptions() 是**进程全局**的,contour_engine 无条件调它,
+                # 四条流水线又共用一个 Flask 进程 —— 用户先跑一个等高线任务再跑地图
+                # 任务时,下面那道 GetLastErrorType 检查就会永远读到 0(异常模式下
+                # CE_Failure 直接抛成 Python 异常、不回填 CPL 错误栈),白装一道闸门。
+                with gdal.ExceptionMgr(useExceptions=False):
+                    gdal.ErrorReset()
+                    output_ds = gdal.Translate(str(part_path_obj), translate_source, options=translate_options)
+                    if output_ds is None:
+                        raise RuntimeError(f"Failed to translate VRT to {output_path_obj}")
+                    output_ds = None  # Close output dataset before replacing
+                    # `output_ds is None` 挡不住 I/O 写失败。磁盘满 / 配额 / 超 4 GiB 时,
+                    # Translate 照样返回**非 None** 的 dataset,错误只登记在 CPL 错误栈里,
+                    # 读取侧再查 GetLastErrorType() 已经是 0 —— 实测那次 4 GiB 截断,写入
+                    # 期间栈里堆了 10073 条 `TIFFAppendToStrip:Maximum TIFF file size
+                    # exceeded`,而这里一条都没捞,产物就这么 os.replace 成了正式文件。
+                    # 与 cesiumlab_terrain._raise_on_gdal_error 同形态。
+                    # ⚠️ 已知未覆盖:写失败只发生在最后一次 flush 时,GDAL 连错误记录
+                    # 都不留(GetLastErrorType()==0),这道闸门也拦不住。要堵死得校验
+                    # 产物完整性(如回读右下角),尚未做。
+                    if gdal.GetLastErrorType() >= gdal.CE_Failure:
+                        raise RuntimeError(
+                            f"gdal.Translate reported success but GDAL logged a failure "
+                            f"for {output_path_obj}: {gdal.GetLastErrorMsg()!r} "
+                            f"(GDAL error {gdal.GetLastErrorNo()})")
+                    os.replace(str(part_path_obj), str(output_path_obj))
+                    # PNG/JPEG 格式内部没有地理配准字段,GDAL 把 geotransform + 投影
+                    # 写在**同名 .aux.xml 边车**里。主文件改名时边车必须跟着走 ——
+                    # 否则下面的 finally 会把它当残件删掉,打开产物看到的是
+                    # geotransform=(0,1,0,0,0,1)、投影为空的一张普通图片,而任务
+                    # 报成功、文件也确实在。实测:边车跟着搬之后 gt 与 EPSG:3857 完整。
+                    #
+                    # ⚠️ **当前生产路径走不到这里**:唯一的生产调用点
+                    # task_manager.py 把 output_path 硬编码成 `*_zoom_<z>.tif`,
+                    # 而 GTiff 的地理信息在文件内部、不产生边车。UI 的「输出格式」
+                    # 是「瓦片 / GeoTIFF」两个复选框(both / tiles_only / image_only),
+                    # 产生不了 png/jpg。保留这段是因为 output_format 的枚举里仍收
+                    # 'png'/'jpg' 两个历史值,且将来放开图片格式时这里必须是对的。
+                    # 由 tests/test_fix_gdal_silent_failure_gaps.py 直调 *.png 钉住。
+                    part_aux = part_path_obj.with_name(part_path_obj.name + '.aux.xml')
+                    if part_aux.exists():
+                        os.replace(
+                            str(part_aux),
+                            str(output_path_obj.with_name(output_path_obj.name + '.aux.xml')))
             finally:
                 # 异常路径清残件；顺带清 PNG/JPEG 驱动可能写出的 .aux.xml 边车。
                 for residue in (part_path_obj,
