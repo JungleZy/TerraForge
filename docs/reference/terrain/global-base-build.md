@@ -6,13 +6,18 @@ base 的作用是给单任务 DEM 切片当父层，让镜头拉远到 DEM 范�
 
 ## 一、用自带的那份
 
-仓库里的 `assets/terrain/base_z8.tar.gz.part{aa,ab}` 是打包好的分卷，首次使用前还原一次：
+仓库里的 `assets/terrain/base_z8.tar.gz.part{aa,ab}` 是打包好的分卷。**正常情况下什么都不用做** —— 每次地形切片开头都会调 `ensure_base_unpacked()`（`src/services/terrain_tiling/base_terrain.py`），第一次跑时自动还原到 `assets/terrain/base_z8/`，之后幂等跳过；两个任务同时切片时后到的那个阻塞等待，不会重复解压。
+
+想在第一次切片前先把那几分钟花掉，或者怀疑缓存坏了要强制重解，用手工入口：
 
 ```bash
-uv run python scripts/unpack_base_terrain.py
+uv run python scripts/unpack_base_terrain.py            # 预热
+uv run python scripts/unpack_base_terrain.py --force    # 强制重解
 ```
 
-还原到 `downloads/terrain/base_z8/`（与配置键 `terrain_global_base_path` 的默认值一致）。已存在且完整时脚本直接跳过，`--force` 可强制重解。
+脚本本身不含解压逻辑，全部委托给 `base_terrain`，默认目标也取自 `base_cache_dir()` —— 与配置键 `terrain_global_base_path` 的默认值 `./assets/terrain/base_z8` 解析到同一个目录（`tests/test_build_scripts_contract.py::test_base_cache_dir_matches_the_configured_path` 钉住这条一致性）。
+
+从旧版本升级上来的库里那一行还是 `./downloads/terrain/base_z8`，由 `migrate_base_path_to_assets`（`PRAGMA user_version` 2 → 3）在启动时改写；旧位置已有完整底图时直接搬过去，不重解压。
 
 自带这份的规格：
 
@@ -64,7 +69,7 @@ uv run python scripts/unpack_base_terrain.py
 ```bash
 uv run python -m src.services.terrain_tiling.cesiumlab_terrain \
   -i /path/to/global_dem_dir \
-  -o ./downloads/terrain/base_z8 \
+  -o ./assets/terrain/base_z8 \
   --max-level 8 \
   --tile-size 65
 ```
@@ -110,7 +115,7 @@ meta.json           # minLevel / maxLevel / minHeight / maxHeight / bounds / til
 
 base 自己的 `layer.json` **不带** `parentUrl`（`patch_layer_json_parent` 只在单任务切片路径上调用），这是对的 —— base 就是链条的顶端。
 
-**输出目录必须与配置键 `terrain_global_base_path` 一致**，默认 `./downloads/terrain/base_z8`（`src/core/database.py:68`）。路由 `/terrain/base/<path>` 是拿这个配置值去磁盘找文件的（`src/routes/terrain_static.py:122`、`:158-165`），目录对不上就是 404，没有自动发现。
+**输出目录必须与配置键 `terrain_global_base_path` 一致**，默认 `./assets/terrain/base_z8`（`src/core/database.py` 的 `DEFAULT_CONFIGS`）。路由 `/terrain/base/<path>` 是拿这个配置值去磁盘找文件的（`src/routes/terrain_static.py`），目录对不上就是 404，没有自动发现。切片侧的 `base_terrain.base_cache_dir()` 是同一个落点，两处对不上的后果不止 404 —— 底图判为不可用后会退回 parentUrl 级联，而那个 URL 正指向服务空目录的 `/terrain/base`，Cesium 对这个 404 不报错，会塞一个假 heightmap 图层污染共享 builder，任务自己的瓦片高程也跟着全错。
 
 相对路径的解析规则（`src/routes/terrain_static.py:63-87` 的 `_resolve_config_path`）：`./downloads/...` / `downloads/...` 开头挂到 `Config.DOWNLOADS_DIR`，其他相对路径挂到 `Config.BASE_DIR`，绝对路径原样使用。改配置最多 5 秒生效（路由层 5 秒 TTL 缓存），不用重启。
 

@@ -106,21 +106,60 @@ def test_base_terrain_parts_exist_and_fit_github_limit():
     assert total > 50 * 1024 * 1024, f"分卷合计只有 {total/1048576:.1f} MB，像是残缺"
 
 
-def test_unpack_script_targets_the_configured_base_path():
-    """还原脚本的默认目标必须与 DEFAULT_CONFIGS 里的 terrain_global_base_path 一致。
+def test_unpack_script_delegates_to_the_single_source_of_truth():
+    """还原脚本不再自己拼路径，默认目标与解压逻辑都委托给 base_terrain。
 
-    路由是拿配置值去磁盘找文件的，没有自动发现 —— 两者对不上就是 404，
-    而且是静默的（地形不出来、控制台无报错）。
+    原先这条钉的是「脚本文本里必须出现配置值的每个路径段」。切片流程接入底图
+    之后解压逻辑进了 src/，脚本降级成手工预热/强制重解的入口 —— 再让它自己拼
+    一份路径就是第二处事实来源，正是这条测试当初要防的东西。一致性改由下面的
+    test_base_cache_dir_matches_the_configured_path 直接验证解析结果，比钉字面量强；
+    这条只负责确认委托关系还在（有人把路径拼回去就红）。
     """
-    from src.core.database import DEFAULT_CONFIGS
-
-    cfg = dict(DEFAULT_CONFIGS)["terrain_global_base_path"]
     text = UNPACK.read_text(encoding="utf-8")
-    # 配置值形如 './downloads/terrain/base_z8'
-    tail = cfg.strip("./").replace("\\", "/")
-    assert tail.replace("/", '" / "') in text or 'DEFAULT_OUT' in text, "脚本没有默认目标"
-    for seg in tail.split("/"):
-        assert f'"{seg}"' in text, f"脚本默认目标缺少路径段 {seg!r}（配置是 {cfg}）"
+    assert "base_cache_dir" in text, "脚本没有委托给 base_terrain.base_cache_dir()"
+    assert "ensure_base_unpacked" in text, "脚本没有复用 base_terrain 的解压逻辑"
+    for legacy in ('"downloads"', "'downloads'", '"assets"', "'assets'"):
+        assert legacy not in text, (
+            f"脚本里出现硬编码路径段 {legacy} —— 目标必须来自 base_cache_dir()")
+
+
+def test_base_cache_dir_matches_the_configured_path(monkeypatch, tmp_path):
+    """解压落点与 config 默认值必须解析到同一个目录。
+
+    两处事实来源：`base_terrain.base_cache_dir()`（解压与植入侧）和 config 表的
+    `terrain_global_base_path`（/terrain/base 服务侧、parentUrl 可用性闸门）。对不上
+    的后果不是「不生效」这么轻 —— 底图判为不可用 → 走 parentUrl 兜底 → 那个 URL
+    指向服务空路径的 /terrain/base → 404 → Cesium 塞假 heightmap 图层污染共享
+    builder → 任务自己的 quantized-mesh 瓦片也按 heightmap 解析，高程全错且零报错。
+    """
+    from src.core import config as config_mod
+    from src.core.database import DEFAULT_CONFIGS
+    from src.services.task_cleanup import resolve_stored_output_dir
+    from src.services.terrain_tiling import base_terrain
+
+    monkeypatch.setattr(config_mod.Config, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(config_mod.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
+    # conftest 的 isolate_base_terrain 把 bundle_dir 指到沙箱；这里要测的是源码
+    # 运行模式（bundle_dir() is None → 落到 Config.BASE_DIR），覆盖回来。
+    monkeypatch.setattr(base_terrain, "bundle_dir", lambda: None)
+
+    configured = resolve_stored_output_dir(
+        dict(DEFAULT_CONFIGS)["terrain_global_base_path"])
+    assert base_terrain.base_cache_dir() == configured
+
+
+def test_nuitka_excludes_the_unpacked_base():
+    """打包必须排除解压后的底图目录。
+
+    assets/terrain 是整目录收（--include-data-dir），而运行期会把分卷解压成同目录
+    下的 base_z8 —— 任何在本机跑过一次切片的人再构建，dist 会平白多 224 MB /
+    4.3 万个文件，正是 test_nuitka_packs_the_parts_not_the_expanded_dir 那条注释里
+    说「让 Nuitka 逐个收集会把构建拖垮」而刻意避开的事。
+    """
+    text = (ROOT / "nuitka_build.py").read_text(encoding="utf-8")
+    assert "--include-data-dir=assets/terrain=assets/terrain" in text
+    assert "--noinclude-data-files=assets/terrain/base_z8/**" in text, (
+        "缺了这条排除，dist 会把解压后的 4.3 万个底图瓦片一起打进去")
 
 
 def test_nuitka_packs_the_parts_not_the_expanded_dir():
@@ -131,8 +170,9 @@ def test_nuitka_packs_the_parts_not_the_expanded_dir():
     text = (ROOT / "nuitka_build.py").read_text(encoding="utf-8")
     assert "--include-data-dir=assets/terrain=assets/terrain" in text, \
         "nuitka_build.py 没有打包 base 地形分卷"
-    # 只看**实际的 --include-data-dir 参数值**，不看注释 —— 注释里提到
-    # downloads/terrain/base_z8 是在说明还原目标，不是打包配置。
+    # 只看**实际的 --include-data-dir 参数值**，不看注释、也不看
+    # --noinclude-data-files（那条正是用来排除 assets/terrain/base_z8/** 的，
+    # 名字里出现 base_z8 是它的本职）。
     data_dirs = re.findall(r"--include-data-dir=([^'\"]+)", text)
     for d in data_dirs:
         assert "base_z8" not in d, (

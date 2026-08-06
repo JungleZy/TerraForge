@@ -12,6 +12,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+# 运行期从 assets/terrain/*.part 解压出来的全球底图（4.3 万个文件 / 224 MB）
+assets/terrain/base_z8/
 eggs/
 .eggs/
 lib/
@@ -127,7 +129,6 @@ dmypy.json
 # Project-specific
 data/*.db
 cache/
-downloads/
 *.log
 
 # DEM granule samples (large binary, do not commit)

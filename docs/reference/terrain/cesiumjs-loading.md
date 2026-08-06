@@ -4,14 +4,14 @@
 
 ## 0) 前置条件
 
-**只加载单任务切片不需要任何前置准备**，任务跑完即可用 §2 的 URL。
+**只加载单任务切片不需要任何前置准备**，任务跑完即可用 §2 的 URL —— 而且从「底图随任务植入」这版起，§2 那个目录里**已经包含了 z0–z7 的全球底图**，可以整个拷到别的机器上当地形源用，不需要本程序、也不需要 §1。
 
-要用 §1 的全球 base，必须先满足两条：
+§1 的全球 base 路由仍然保留（历史页的地形预览直接用它）。要用它：
 
-1. **base 需要你自己离线构建** —— 仓库里不带地形数据。构建流程见 [`global-base-build.md`](global-base-build.md)。
-2. **构建输出目录必须与配置键 `terrain_global_base_path` 一致**（默认 `./downloads/terrain/base_z8`）。`/terrain/base/...` 这条路由是拿这个配置值去磁盘找文件的（`src/routes/terrain_static.py:122`、`:158-165`），目录对不上就是 404，没有任何自动发现。
+1. **底图随仓库/安装包分发**（`assets/terrain/base_z8.tar.gz.part{aa,ab}`），首次地形切片时自动解压，不需要自己构建。想提前预热或强制重解见 [`global-base-build.md`](global-base-build.md)。自建一份全球 base（比如换数据源、换层级）也走那篇。
+2. **解压落点必须与配置键 `terrain_global_base_path` 一致**（默认 `./assets/terrain/base_z8`）。`/terrain/base/...` 这条路由是拿这个配置值去磁盘找文件的（`src/routes/terrain_static.py`），目录对不上就是 404，没有任何自动发现。默认路径下两边由 `base_terrain.base_cache_dir()` 与 `DEFAULT_CONFIGS` 各自给出，一致性有测试钉住；自己改过配置就得自己保证。
 
-   路径解析规则（`src/routes/terrain_static.py:63-87` 的 `_resolve_config_path`）：绝对路径原样使用；`./downloads/...` 或 `downloads/...` 开头的相对路径挂到 `Config.DOWNLOADS_DIR` 下；其他相对路径挂到 `Config.BASE_DIR` 下。改了这个配置最多 5 秒生效（路由层有 5 秒 TTL 缓存），不用重启服务。
+   路径解析规则（`src/services/task_cleanup.py` 的 `resolve_stored_output_dir`）：绝对路径原样使用；`./downloads/...` 或 `downloads/...` 开头的相对路径挂到 `Config.DOWNLOADS_DIR` 下；其他相对路径（含默认的 `./assets/...`）挂到 `Config.BASE_DIR` 下。改了这个配置最多 5 秒生效（路由层有 5 秒 TTL 缓存），不用重启服务。
 
 ## 1) Base terrain provider
 

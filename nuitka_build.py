@@ -360,10 +360,15 @@ def main():
         '--include-data-dir=static=static',
         # 全球 base 地形的分卷（2 个文件，约 167 MB）。打的是**分卷而非解压后的
         # 目录**：解压后是 44k 个小文件，让 Nuitka 逐个收集会把构建拖垮，装机体积
-        # 也更大。首次使用前跑 scripts/unpack_base_terrain.py 还原到
-        # downloads/terrain/base_z8。没还原也不会坏 —— parentUrl 闸门检测到 base
-        # 缺失就不写该字段（见 layer_json.parent_url_if_base_available）。
+        # 也更大。首次切片时 base_terrain.ensure_base_unpacked() 会自动还原到
+        # assets/terrain/base_z8（scripts/unpack_base_terrain.py 只是手工预热入口）。
+        # 分卷缺失也不会坏 —— parentUrl 闸门检测到 base 不可用就不写该字段
+        # （见 layer_json.parent_url_if_base_available）。
         '--include-data-dir=assets/terrain=assets/terrain',
+        # 排除解压后的目录：上面那行是整目录收，而运行期解压的落点就在它里面。
+        # 不排除的话，任何在本机跑过一次切片的人再构建，产物就平白多 224 MB /
+        # 4.3 万个文件 —— 正是上面刻意避开的那件事。按**产物内路径**匹配。
+        '--noinclude-data-files=assets/terrain/base_z8/**',
         f'--include-data-dir={gdal_data}=gdal-data',
         f'--include-data-dir={proj_data}=proj-data',
         # 动态加载、静态分析跟不住的包

@@ -69,6 +69,22 @@ def isolate_startup_sweep(monkeypatch, _startup_sweep_sandbox):
     monkeypatch.setattr(tc, "tempfile", _SandboxTempfile(str(_startup_sweep_sandbox)))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def repo_unpacked_base_at_session_start():
+    """会话开始时仓库里有没有解压后的底图 —— test_no_repo_pollution 的基线。
+
+    要守的约束是「**测试运行**不得往仓库的 assets/terrain/ 解压」，不是「那个目录
+    不许存在」：自 user_version=3 起 assets/terrain/base_z8 就是底图的正常落点，
+    开发机上跑过一次切片（或让 init_database 把旧缓存搬过来）之后它合法存在。
+    直接断言「不存在」会在正常开发机上误红，而红的原因与测试无关 —— 那种噪音
+    只会训练人无视它。所以记下会话起点的状态，由用例比对是不是**测试**造成的。
+
+    autouse + session 作用域：在第一个用例之前求值，晚于任何测试可能的污染就没
+    意义了。CI 是全新克隆，起点必然是 False，走的是严格分支。
+    """
+    return os.path.exists(os.path.join(PROJECT_ROOT, "assets", "terrain", "base_z8"))
+
+
 @pytest.fixture(scope="session")
 def _base_terrain_sandbox(tmp_path_factory):
     return tmp_path_factory.mktemp("base_terrain_sandbox")
