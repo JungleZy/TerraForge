@@ -429,7 +429,8 @@ body {
     position: relative;   /* 底部状态栏胶囊的包含块 */
 }
 
-/* 连接状态指示（仅在有 socket 的页面由 initConnectionStatus 点亮），
+/* 连接状态指示（由 initConnectionStatus 点亮）。socket 现在是全站单例
+   （window.TerraSocket），每个页面都会连，不再有「没有 socket 的页面」。
    位于底部状态栏，与读数项同行。 */
 .conn-status {
     display: inline-flex;
@@ -528,9 +529,9 @@ body {
     background: var(--color-bg-tertiary);
 }
 
-/* 极窄屏状态栏隐藏最后一项（时钟），给读数让位；字号退回 12px、胶囊两端和
-   项间距一并收紧 —— 桌面那份 13px + 17px/12px 在 430px 宽的窗口里会把最后
-   一项读数挤出胶囊（overflow:hidden 直接裁掉，读不到）。 */
+/* 极窄屏状态栏隐藏时钟，给读数让位；字号退回 12px、胶囊两端和项间距一并收紧
+   —— 桌面那份 13px + 17px/12px 在 430px 宽的窗口里会把最后一项读数挤出胶囊
+   （overflow:hidden 直接裁掉，读不到）。 */
 @media (max-width: 576px) {
     .workbench-statusbar {
         padding: 0 10px;
@@ -541,7 +542,11 @@ body {
         padding: 0 8px;
     }
 
-    .workbench-statusbar .statusbar-item:last-child {
+    /* 窄屏隐藏时钟。**不要写回 .statusbar-item:last-child** —— 那条规则的正确性
+       依赖「时钟恰好排在最后」这个巧合，往 statusbar 末尾加任何元素都会让它
+       选中别的东西，或者一个都选不中（新元素不带 .statusbar-item 类）。
+       底图解压进度在窄屏保留显示：它是要紧状态，窄屏更需要。 */
+    .workbench-statusbar .statusbar-clock {
         display: none;
     }
 }
@@ -2951,6 +2956,23 @@ code {
     width: 0%;
     background: var(--color-accent);
     transition: width 0.3s ease;
+}
+
+/* 随包底图的解压进度（底部状态栏最右，全局元素）。
+   刻意**不带** .statusbar-item：那个类会画一条左分隔线伪元素，而本元素在
+   99% 的时间里是 hidden 的，带上分隔线会在它出现/消失时让整条状态栏抖一下。 */
+.statusbar-basemap {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 12px;
+    padding: 0 12px;
+    border-left: 1px solid var(--color-border);
+}
+
+.statusbar-basemap--failed {
+    color: var(--color-danger);
+    cursor: help;              /* 提示「这里有 title 可看」 */
 }
 
 /* 最近事件：吃掉剩余宽度，长文本省略号 */

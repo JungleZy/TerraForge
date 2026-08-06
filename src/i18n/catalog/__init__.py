@@ -10,8 +10,8 @@ pkgutil 自动发现：Nuitka 是静态分析，扫不到动态 import 的模块
    在英文界面上看到一句中文。
 """
 
-from src.i18n.catalog import (api, app, js_config, js_history, js_map,
-                              js_tasks, js_ui, tpl_base, tpl_config,
+from src.i18n.catalog import (api, app, js_base_terrain, js_config, js_history,
+                              js_map, js_tasks, js_ui, tpl_base, tpl_config,
                               tpl_history, tpl_index, tpl_path_browser,
                               validation)
 
@@ -26,6 +26,7 @@ _DOMAINS = (
     js_tasks,
     js_history,
     js_config,
+    js_base_terrain,
     js_ui,
     api,
     validation,
