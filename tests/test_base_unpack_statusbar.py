@@ -14,12 +14,28 @@ tests/test_socket_singleton_contract.py 里的 `_strip_js_comments` /
     `.statusbar-item:last-child`（在告诫「不要写回去」）——
     本文件的 `test_narrow_screen_rule_no_longer_depends_on_last_child` 是条否定
     断言，不剥注释的话它永远是红的（注释满足了它），一红就会有人把注释删掉了事。
-本改动的前三个任务各抓到过一次同类假守卫，这不是假想的风险。
 
-CSS 也走 `_strip_js_comments`：CSS 的 `/* */` 与 JS 同形，而那个状态机比
-`re.sub(r'/\\*.*?\\*/')` 更稳（不会被字符串里的注释符号带偏）。已逐行比对过两者
-在 style.css 上的输出完全一致。为防它哪天在某个 CSS 构造上剥过头（剥过头会让
-否定断言假绿），每条 CSS 断言都配一条「被测规则块还在」的正向断言。
+⚠️⚠️ 剥注释是**必要不充分**条件。本文件初版有三条断言剥了注释仍是假守卫，因为它们
+钉的是「全文出现过某个字面量」，而同一个字面量在无关分支里也有一份：
+  - `.title` 在三个分支各出现一次 → 删掉 failed 分支那一次（功能的核心卖点）照样绿；
+  - `'failed'` 在 `onProgress` 的终态判定里也有一份 → 删光 `render` 的 failed
+    分支照样绿；
+  - `hidden = true` 出现三次 → 只把「收起」分支那一次改坏照样绿。
+所以现在的写法是：**先把被测函数的函数体抠出来，再在函数体内钉赋值/分支的完整形态**
+（见 `_function_body`）。变异实测的口径也随之改成「只坏一处」—— 全局替换会连累别的
+断言，抓不到真实的故障形态。
+
+CSS 也走 `_strip_js_comments`：CSS 的 `/* */` 与 JS 同形。已逐行比对过它与
+`re.sub(r'/\\*.*?\\*/')` 在 style.css 上的输出：行数相同、逐行完全一致。
+它在 CSS 上有**两类已知失败**，一响一静，都实测确认过：
+  1. `%` 后面跟 `/`（`calc(100% / 3)`）—— `%` 在它的启发式里属于「后面可以跟正则」，
+     于是 `/` 被当成正则开头、本行内找不到收尾而**抛 AssertionError**。响亮，安全。
+  2. **不加引号**的 `url(...)` 里出现 `//`（`url(http://h/a.png)`、`url(//cdn/x.png)`）
+     —— CSS 允许 url 不加引号，而剥离器只在带引号的字符串里保护 `//`，于是本行剩余
+     被当行注释**静默删光**（实测第二例连它后面那条 `/* */` 注释一起吃掉）。
+     **静默**，而且正是「剥过头 → 否定断言假绿」的路径。
+第 2 类由 `test_css_stripper_preconditions_hold` 直接钉住前提；每条 CSS 断言另配
+「被测规则块还在」的正向哨兵作为第二道网。
 """
 import os
 import re
@@ -32,6 +48,14 @@ from test_socket_singleton_contract import (  # noqa: E402
     _jinja_block_spans, _strip_js_comments, _strip_template_comments)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# get() 与 socket.on() 之间一旦出现这些，注册就跨出了同一个同步块（见 socket.js 文件头）
+_DEFERRAL_TOKENS = ("await", "setTimeout", "setInterval", "requestAnimationFrame",
+                    "queueMicrotask", "addEventListener", ".then(", "import(")
+
+# 窄屏隐藏规则里不许出现的**位置相关**伪类。原来的 `.statusbar-item:last-child`
+# 只是这一类里的一个实例，钉住整类才不会换个巧合再犯。
+_POSITIONAL_PSEUDO_RE = re.compile(r":(?:last|first|only)-(?:child|of-type)|:nth-")
 
 
 def _read(*parts):
@@ -49,6 +73,68 @@ def _status_js():
 
 def _css():
     return _strip_js_comments(_read("static", "css", "style.css"))
+
+
+def _function_body(code, name):
+    """从剥完注释的 JS 里抠出 `function name(...) { ... }` 的函数体（大括号配对）。
+
+    存在的理由见文件头：`'failed'` / `.title` / `hidden = true` 这些字面量在别的
+    函数、别的分支里都另有一份，只在全文里搜「有没有」等于没搜。
+    """
+    m = re.search(r"function\s+" + re.escape(name) + r"\s*\([^)]*\)\s*\{", code)
+    assert m, f"找不到函数 {name}（被删了，还是改成了别的形态？）"
+    start = m.end() - 1
+    depth = 0
+    for i in range(start, len(code)):
+        if code[i] == "{":
+            depth += 1
+        elif code[i] == "}":
+            depth -= 1
+            if depth == 0:
+                body = code[start + 1:i]
+                assert body.strip(), f"函数 {name} 的函数体是空的"
+                return body
+    raise AssertionError(f"函数 {name} 的大括号没有配平 —— 剥离器可能把源码带偏了")
+
+
+def _braced_block(css, marker):
+    """抠出 `marker { ... }` 的块内容（大括号配对），用于 @media。"""
+    i = css.index(marker)
+    j = css.index("{", i)
+    depth = 0
+    for k in range(j, len(css)):
+        if css[k] == "{":
+            depth += 1
+        elif css[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[j + 1:k]
+    raise AssertionError(f"{marker} 的大括号没有配平")
+
+
+def _hidden_selectors_in_narrow_screen_block():
+    """窄屏 @media 块里所有带 `display: none` 的选择器（已剥注释）。"""
+    block = _braced_block(_css(), "@media (max-width: 576px)")
+    assert "display" in block, "剥注释剥过头了：窄屏 @media 块里什么都不剩了"
+    selectors = [sel.strip() for sel, decls in re.findall(r"([^{}]+)\{([^{}]*)\}", block)
+                 if re.search(r"display\s*:\s*none", decls)]
+    assert selectors, "窄屏 @media 块里已经没有任何 display: none 规则了"
+    return selectors
+
+
+def _template_class_tokens():
+    """所有模板里 class="..." 出现过的类名（已剥注释）。"""
+    tokens = set()
+    tpl_dir = os.path.join(ROOT, "templates")
+    for name in sorted(os.listdir(tpl_dir)):
+        if not name.endswith(".html"):
+            continue
+        markup = _strip_template_comments(_read("templates", name))
+        for attr in re.findall(r'class="([^"]*)"', markup):
+            tokens.update(attr.split())
+    assert "workbench-statusbar" in tokens, (
+        "扫不出 workbench-statusbar —— class 扫描器坏了，本文件的类名对账不可信")
+    return tokens
 
 
 def test_statusbar_element_sits_after_the_page_block():
@@ -95,66 +181,168 @@ def test_status_script_is_loaded_on_every_page_after_socket_js():
         "window.TerraSocket 还没定义，判空守卫直接 return，全站失去实时推送")
 
 
-def test_js_handles_running_failed_and_collapses_otherwise():
-    """running / failed 各有自己的分支，其余（idle / ready）收起来。
+def test_listener_registers_in_the_same_synchronous_block_as_get():
+    """socket.on(...) 必须与 window.TerraSocket.get() 在**同一个同步块**里。
 
-    漏掉 failed 分支就等于失败静默 —— 那正是这个功能要消灭的东西。
-    只钉这两个字面量：idle 与 ready 共用「收起」的 else 分支，没有各自的字面量
-    可查，所以改钉那条分支的存在（box.hidden = true）。
+    socket.io **不重放**已经错过的事件，而服务端只在 connect 时推一次底图状态快照
+    （解压失败是终态，之后没有增量事件、也没有 REST 端点能补拿）。第一次 get() 才
+    真正 io() 建连；get() 内部 io() 之后是同步返回的，中间没有让出事件循环的机会，
+    所以在同一个同步块里注册就是零窗口。把注册推迟到 setTimeout / .then / await /
+    DOMContentLoaded 里，事件循环就有机会先派发 connect —— 后果不是「晚一点收到」
+    而是**永远收不到**，且没有任何报错。理由完整写在 static/js/socket.js 的文件头。
+
+    钉三样：顺序、两者之间的括号/大括号净深度为 0（被包进任何回调都会破坏它）、
+    以及中间不出现推迟类 token。两条网互补：包进 `setTimeout(() => { ... })` 破坏
+    大括号深度，包进不带大括号的 `setTimeout(() => socket.on(...))` 破坏括号深度，
+    而 token 名单兜住那些深度恰好平衡的写法。
     """
     src = _status_js()
+    g = re.search(r"window\.TerraSocket(?:\s*&&\s*window\.TerraSocket)?\.get\s*\(\s*\)", src)
+    assert g, "找不到 window.TerraSocket.get() 调用"
+    on = re.search(r"socket\.on\s*\(", src)
+    assert on, "找不到 socket.on(...) 注册"
+    assert g.end() <= on.start(), "socket.on(...) 出现在 get() 之前，不可能拿到实例"
+
+    span = src[g.end():on.start()]
+    assert span.count("{") - span.count("}") == 0 and span.count("(") - span.count(")") == 0, (
+        "get() 与 socket.on() 之间括号/大括号深度不平 —— 注册被包进了某个回调里，"
+        "已经不在同一个同步块，可能错过 connect 时那次一次性的状态快照")
+    offenders = [tok for tok in _DEFERRAL_TOKENS if tok in span]
+    assert not offenders, (
+        f"get() 与 socket.on() 之间出现了 {offenders} —— 注册被推迟到下一轮事件循环，"
+        "connect 时那次一次性的状态快照会永远错过（无报错、无兜底）")
+
+
+def test_render_has_running_failed_and_collapse_branches():
+    """render 里 running / failed / 收起 三条分支都必须在，且各钉各的形态。
+
+    漏掉 failed 分支就等于失败静默 —— 那正是这个功能要消灭的东西。
+    ⚠️ 断言必须在 **render 的函数体内**：`phase === 'failed'` 在 onProgress 的终态
+    判定里另有一份，在全文里搜的话，把 render 的 failed 分支整段删光照样绿
+    （本文件初版就是这么假绿的）。
+    收起分支钉 `box.hidden = true` 而不是任意 `hidden = true`：紧邻的还有一行
+    `prog.hidden = true`，钉宽了的话只把 box 那行改成 false 也能过。
+    """
+    src = _status_js()
+    body = _function_body(src, "render")
+
+    assert re.search(r"phase\s*===\s*'running'", body), "render 里没有 running 分支"
+    assert re.search(r"phase\s*===\s*'failed'", body), (
+        "render 里没有 failed 分支 —— 解压失败在界面上完全不可见")
+    assert re.search(r"\bbox\.hidden\s*=\s*true", body), (
+        "render 里没有把 box 收起来的分支，idle / ready 时元素会一直占着状态栏")
+    assert re.search(r"\bprog\.hidden\s*=\s*true", body), "进度条没有跟着收起"
+
     assert "base_unpack_progress" in src, "没有监听事件"
     assert "window.TerraSocket" in src, "应当复用全局 socket 单例"
-    for phase in ("running", "failed"):
-        assert f"'{phase}'" in src or f'"{phase}"' in src, f"没处理 phase={phase}"
-    assert re.search(r"hidden\s*=\s*true", src), "没有「收起」分支，就绪后元素会一直占着状态栏"
 
 
 def test_failure_reason_goes_into_the_title_attribute():
-    """失败原因必须挂到 title 上。
+    """失败原因必须写进 title，且是 failed 分支里那一次赋值。
 
     状态栏只有「底图不可用」四个字，用户无从下手；原因（多半是 assets/ 不可写）
-    是他唯一能据以行动的信息。
+    是他唯一能据以行动的信息 —— 这是本功能的核心卖点。
+    ⚠️ 钉的是**赋值形态**（`.title = t('js.base_unpack.failed_title'...`），不是
+    `'.title' in src`：`.title` 在另两个分支里各有一次 `= ''` 清空，钉宽了的话把
+    failed 分支这一行整个删掉照样绿（本文件初版就是这么假绿的）。
     """
-    src = _status_js()
-    assert ".title" in src, "失败原因没有写进 title 属性"
+    body = _function_body(_status_js(), "render")
+    assert re.search(r"\.title\s*=\s*t\(\s*['\"]js\.base_unpack\.failed_title['\"]", body), (
+        "failed 分支没有把失败原因写进 title —— 用户只看到「底图不可用」，"
+        "拿不到任何可据以行动的信息")
 
 
 def test_terminal_phase_is_sticky():
-    """收到 ready / failed 之后不再接受降级回 running。
+    """收到 ready / failed 之后不再接受降级回 running / idle。
 
-    这是一个**真实存在的跨线程窗口**，不是防御性编程：服务端的 connect handler
-    在请求线程里读 `snapshot()` 再 `emit` 给本 sid，而后台解压线程同时在广播。
-    交错顺序可以是「handler 读到 running(0.7) → 后台把状态置成 ready 并广播 →
-    handler 才把那份**陈旧的** running 发出去」。客户端于是先收 ready 后收
-    running。不做粘性的话进度条会永远转下去 —— 解压已经结束，**不会再有任何事件
-    来纠正它**（没有增量事件，也没有 REST 端点能补拿）。
+    这是一个**真实存在的跨线程窗口**，不是防御性编程：服务端的 connect handler 在
+    请求线程里先读 `snapshot()` 再 `emit` 给本 sid，而后台解压线程同时在广播
+    （python-socketio 在触发 connect handler **之前**就把 sid 加进了房间，所以广播
+    确实可能先于那份快照送达；反方向不可达）。交错顺序可以是「handler 读到
+    running(0.7) → 后台置 ready 并广播 → handler 才把那份**陈旧的** running 发出去」。
+    不做粘性的话进度条会永远转下去 —— 解压已经结束，**不会再有任何事件来纠正它**。
 
-    终态之间允许互相覆盖（failed 之后又来 ready 要认），所以守卫只挡非终态。
+    ⚠️ 三条断言钉的都是**语义**而不是「有没有 settled 这个词」：
+      - `terminal` 的定义里**只能**有 ready 与 failed（把 running 也算进终态，守卫
+        就形同虚设 —— 那正是它要挡的东西）；
+      - 守卫必须是 `settled && !terminal`（反转成 `settled && terminal` 语义完全相反：
+        终态被丢弃、陈旧的 running 反而放行，而只钉「有 if(settled…)return」拦不住）；
+      - 终态到达时必须置位。
+    终态之间仍允许互相覆盖（failed 之后又来 ready 要认），所以守卫只挡非终态。
     """
-    src = _status_js()
-    assert re.search(r"\bsettled\b", src), "没有记录「已进入终态」的标志位"
-    assert re.search(r"if\s*\(\s*settled\b[^)]*\)\s*(?:\{[^}]*)?return", src), (
-        "缺少「已终态则忽略」的早退守卫 —— 陈旧的 running 会把进度条永远点亮")
-    assert re.search(r"settled\s*=\s*true", src), "标志位从来没被置位，守卫等于不存在"
+    body = _function_body(_status_js(), "onProgress")
+
+    m = re.search(r"\bterminal\s*=\s*([^;]+);", body)
+    assert m, "onProgress 里找不到 terminal 的定义"
+    phases = set(re.findall(r"phase\s*===\s*'(\w+)'", m.group(1)))
+    assert phases == {"ready", "failed"}, (
+        f"terminal 的定义里出现的 phase 是 {sorted(phases)}，必须恰好是 ready 与 failed —— "
+        "多算一个（比如 running）守卫就形同虚设，少算一个则对应的终态挡不住陈旧事件")
+
+    assert re.search(
+        r"if\s*\(\s*(?:settled\s*&&\s*!\s*terminal|!\s*terminal\s*&&\s*settled)\s*\)\s*return",
+        body), (
+        "缺少 `if (settled && !terminal) return;` 形态的守卫 —— "
+        "写成 `settled && terminal` 语义正好相反（终态被丢弃、陈旧的 running 反而放行）")
+
+    assert re.search(r"if\s*\(\s*terminal\s*\)\s*settled\s*=\s*true", body), (
+        "终态到达时没有置位 settled，守卫等于不存在")
+
+
+def test_css_stripper_preconditions_hold():
+    """CSS 剥离器的**静默**失败模式在 style.css 里必须不成立。
+
+    见文件头第 2 类：CSS 允许 `url()` 不加引号，而 `_strip_js_comments` 只在带引号的
+    字符串里保护 `//` —— `url(http://h/a.png)` 会让本行剩余被当行注释静默删光，
+    连它后面的 `/* */` 注释一起吃掉。这是「剥过头 → 否定断言假绿」的路径，没有任何
+    异常可依赖，所以在这里直接钉住前提。
+    （第 1 类 `calc(100% / 3)` 会响亮抛 AssertionError，自带红灯，不需要额外断言。）
+    """
+    raw = _read("static", "css", "style.css")
+    bad = re.findall(r"url\(\s*[^'\")]*//[^)]*\)", raw)
+    assert not bad, (
+        f"style.css 里出现了不加引号且含 // 的 url()：{bad} —— "
+        "剥离器会把本行剩余当行注释静默删光，本文件所有 CSS 否定断言随之变成假绿。"
+        "改成带引号的 url('...') 即可（带引号实测安全）")
 
 
 def test_narrow_screen_rule_no_longer_depends_on_last_child():
-    """窄屏隐藏规则不能再靠 :last-child。
+    """窄屏隐藏规则不能再靠位置相关的伪类。
 
     原规则 `.statusbar-item:last-child { display: none }` 的正确性依赖「时钟恰好
     排最后」这个巧合。新元素插到末尾之后它一个都选不中，时钟在窄屏不再隐藏 ——
-    既有行为被静默改掉。改成按语义选中时钟本身。
+    既有行为被静默改掉。钉的是**整类**位置伪类而不是那一个字面量：换成
+    `:nth-last-child(2)` 之类只是换个巧合再犯一次。
     """
-    css = _css()
     # 正向哨兵：剥注释后被测的规则块必须还在。少了它，一个剥过头的剥离器会让下面
-    # 那条否定断言假绿（什么都没剩，当然搜不到 :last-child）。
-    assert "@media (max-width: 576px)" in css, "剥注释剥过头了：窄屏 @media 块整个不见了"
-    assert ".statusbar-item {" in css, "剥注释剥过头了：.statusbar-item 规则块不见了"
+    # 那些否定断言假绿（什么都没剩，当然搜不到）。
+    assert ".statusbar-item {" in _css(), "剥注释剥过头了：.statusbar-item 规则块不见了"
+    hidden_selectors = _hidden_selectors_in_narrow_screen_block()
 
-    assert ".statusbar-item:last-child" not in css, (
-        "窄屏规则仍依赖 :last-child —— 往 statusbar 末尾加任何东西都会踩到")
-    assert ".statusbar-clock" in css, "窄屏规则应当按语义选中时钟"
+    positional = [s for s in hidden_selectors if _POSITIONAL_PSEUDO_RE.search(s)]
+    assert not positional, (
+        f"窄屏隐藏规则仍靠位置伪类选中元素：{positional} —— "
+        "往 statusbar 末尾加任何东西都会让它选中别的东西或一个都选不中")
+    assert any(".statusbar-clock" in s for s in hidden_selectors), (
+        "窄屏规则应当按语义选中时钟（.statusbar-clock）")
+
+
+def test_narrow_screen_selectors_match_the_real_markup():
+    """窄屏隐藏规则用到的类名，必须在模板里真实存在。
+
+    这条把「CSS 说要隐藏谁」和「markup 上真有这个类」绑在一起。少了它，把
+    templates/index.html 上的 `statusbar-clock` 删掉或改名，全套测试照绿而窄屏隐藏
+    静默失效 —— 与这次要消灭的 `:last-child` 是同一类问题（依赖一个没人钉住的巧合），
+    只是换了个巧合来依赖。
+    """
+    hidden_selectors = _hidden_selectors_in_narrow_screen_block()
+    known = _template_class_tokens()
+    used = {cls for sel in hidden_selectors for cls in re.findall(r"\.([A-Za-z0-9_-]+)", sel)}
+    assert used, "窄屏隐藏规则里一个类选择器都没有 —— 换成标签/属性选择器了？"
+    missing = sorted(used - known)
+    assert not missing, (
+        f"窄屏隐藏规则用到的类名在模板里根本不存在：{missing} —— "
+        "规则选不中任何东西，窄屏隐藏静默失效")
 
 
 def test_i18n_keys_exist_in_both_locales():

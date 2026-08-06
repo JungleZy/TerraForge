@@ -2959,8 +2959,15 @@ code {
 }
 
 /* 随包底图的解压进度（底部状态栏最右，全局元素）。
-   刻意**不带** .statusbar-item：那个类会画一条左分隔线伪元素，而本元素在
-   99% 的时间里是 hidden 的，带上分隔线会在它出现/消失时让整条状态栏抖一下。 */
+   不带 .statusbar-item 的真实原因：本元素要用 inline-flex + gap 排「文字 + 进度条」
+   两个子元素，而 .statusbar-item 只管 padding 与一条分隔线伪元素，给不了这个。
+   （原注释写的「伪元素分隔线会让状态栏抖一下」是错的，别再照抄：
+   .statusbar-item::before 是 position: absolute，不占宽度；真正改变布局宽度的反倒是
+   下面这几行自己的 margin-left + padding + border。）
+   ⚠️ 已知的观感不一致：这里的 border-left 是通到顶的，而 .statusbar-item::before
+   刻意画成 16px 短竖线，就为了不顶到胶囊的上下圆弧上（见那处注释）。本元素 99% 时间
+   是 hidden 的，这点差别没在真实浏览器里看过，先不动；要追平就改成同样的 ::before
+   短线写法。 */
 .statusbar-basemap {
     display: inline-flex;
     align-items: center;
