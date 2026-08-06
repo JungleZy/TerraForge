@@ -127,6 +127,12 @@ _EMIT_MIN_INTERVAL = 0.5
 
 连带效果：`/history` 与 `/config` 从此也有 WebSocket 连接与点亮的连接状态指示器。这是「所有页面都要显示解压进度」的必然结果，不是副作用。
 
+### ⚠️ socket.io 库要从 Cesium 的 block 里拆出来
+
+`base.html` 现在把 Cesium（5.7 MB）与 socket.io（44 KB）放在同一个 `{% block vendor_js %}` 里，而 **`/config` 页覆盖该 block 为空** —— 它连 socket.io 库都不加载（那行注释写着「白付的解析/下载全省」，针对的是 Cesium）。不拆的话，`/config` 页拿不到任何实时推送，「所有页面都显示进度」在那一页直接落空。
+
+拆法：Cesium 留在 `{% block vendor_map_js %}` 里，socket.io 的 `<script>` 移到 block **之外**（全局加载）。`config.html` 把覆盖目标从 `vendor_js` 改成 `vendor_map_js`，仍然省掉 5.7 MB。44 KB 与 5.7 MB 不是一个量级，原注释的意图不受影响。
+
 ### 状态栏元素
 
 `base.html` 的 `{% block statusbar %}` **之后**加一个全局元素（因此排在最右）：
