@@ -24,6 +24,16 @@ def test_create_app_kicks_off_the_warmup(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(w, "start_warmup", lambda sio: calls.append(sio))
 
+    # create_app() 会经 _build_task_managers 把四个 manager 写进 src.routes.* 的
+    # **模块级全局**。这条用例既不走 isolated_app 也不走 fresh_import，那两条路上
+    # 的 _preserve_injected_globals 就不会执行 —— teardown 之后那些全局仍指向绑定
+    # 在已删除 tmp_path 上的 manager，永不还原。这正是 conftest 与
+    # test_conftest_isolation_contract.py 开篇整段注释描述的 M23：失败模式是
+    # **静默假绿**（后面的用例 patch 新模块、请求却打到旧模块），不是报红。
+    # 按文件名字母序本文件排在一大批用例之前，泄漏窗口不小。
+    from conftest import _preserve_injected_globals
+    _preserve_injected_globals(monkeypatch)
+
     import src.app_factory as factory
     app, socketio = factory.create_app()[:2]
 

@@ -65,6 +65,9 @@ def test_connect_tracks_client_and_emits_welcome(registered, flask_app, monkeypa
         "message": "Connected to TerraForge",
         "client_id": "sid-abc",
     })
+    # 数量也要钉:光断言 emitted[0] 的话,「connect 里又多塞了几条广播」这类回归
+    # 一条都拦不住。两条 emit 在 emit 被 patch 之后都是无条件执行的,确定性断言。
+    assert len(emitted) == 2, f"connect 发了多余的事件:{[n for n, _ in emitted]}"
 
 
 def test_disconnect_removes_client(registered, flask_app, monkeypatch):
@@ -117,11 +120,19 @@ def test_connect_pushes_the_base_unpack_snapshot(registered, flask_app, monkeypa
     assert payload["phase"] == "running" and payload["fraction"] == 0.4
 
 
-def test_connect_snapshot_failure_does_not_break_the_connection(registered, flask_app, monkeypatch):
-    """快照取不到时连接照常建立。
+def test_connect_snapshot_failure_does_not_break_the_connection(
+        registered, flask_app, monkeypatch, caplog):
+    """快照取不到时连接照常建立，且异常必须被**内层** try 就地吃掉。
 
     这是个附加信息，不是连接的前提条件。让它把 connect 打挂的话，一个底图相关的
     小毛病会变成「整个实时推送用不了」。
+
+    ⚠️ 只断言 `'connected' in names` 是**假守卫**：欢迎消息在 snapshot() 爆炸之前
+    就已经进 sent 了，而即使内层 try 不存在，异常也会被 handler 最外层那个
+    `except Exception` 接住 —— handler 照样不抛，那条断言照样成立，于是「快照推送
+    必须单独套一层 try」这条硬约束零覆盖。判据只能是**外层错误处理有没有被惊动**：
+    落到外层就会打一条 ERROR，断言它不出现，删掉内层 try 这条用例才会红。
+    （范式取自同文件的 test_handlers_swallow_internal_errors。）
     """
     from src.services import base_terrain_warmup as w
 
@@ -139,3 +150,6 @@ def test_connect_snapshot_failure_does_not_break_the_connection(registered, flas
         registered.handlers["connect"]()
 
     assert "connected" in [n for n, _ in sent], "欢迎消息仍必须发出去"
+    assert "Error handling client connection" not in caplog.text, (
+        "快照失败落到了外层错误处理 —— 内层 try 没了，"
+        "一个底图小毛病会被当成整个 connect 失败")
