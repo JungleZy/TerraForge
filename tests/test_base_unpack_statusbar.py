@@ -221,6 +221,42 @@ def test_listener_registers_in_the_same_synchronous_block_as_get():
         "connect 时那次一次性的状态快照会永远错过（无报错、无兜底）")
 
 
+def test_element_ids_match_on_both_sides():
+    """render 查的每一个 id，都必须在 base.html 上真实存在。
+
+    ⚠️ 这条是本文件性价比最高的一条，因为 render 开头有这么一道守卫：
+
+        if (!box || !text || !prog || !bar) return;
+
+    四个 `getElementById` **任何一个**查空，render 就永久变成空操作 —— 事件照收、
+    状态照算、界面什么都不画，**零报错、零 console 输出**。所以「改错最不起眼的那个
+    `statusBaseUnpackBar`」与「删掉整个组件」的后果完全一样，都是彻底死掉。
+    实测：`statusBaseUnpackText` / `statusBaseUnpackProgress` / `statusBaseUnpackBar`
+    这三个内层 id 曾经在整个 tests/ 目录出现 0 次，markup 上任意改名全套测试照绿。
+
+    写法照搬 tests/test_terrain_lighting_frontend.py::
+    test_lighting_button_id_matches_on_both_sides —— 那条测试的 docstring 一字不差
+    地描述了同一个故障形态（「getElementById 返回 null…就成了一颗永远不接线的死按钮」）。
+    本项目已经是第三次撞上这类问题，用同一个路子解决，不另造轮子。
+
+    这一条同时守住：JS 侧改错任一 id、markup 侧改名任一 id、markup 侧删掉内层的
+    `<span class="statusbar-progress">`（连 bar 一起没了）。
+    """
+    body = _function_body(_status_js(), "render")
+    js_ids = set(re.findall(r'getElementById\(\s*["\']([^"\']+)["\']', body))
+    assert len(js_ids) == 4, (
+        f"render 里查了 {sorted(js_ids)} 这些 id，预期恰好 4 个（box/text/prog/bar）—— "
+        "元素增减了就更新本断言，顺便复核 render 开头那道 `if (!box || ...) return` "
+        "是否也跟着覆盖了新元素（漏一个就是永久空操作且零报错）")
+
+    markup_ids = set(re.findall(r'id="([^"]+)"', _base_html()))
+    missing = sorted(js_ids - markup_ids)
+    assert not missing, (
+        f"render 查的这些 id 在 base.html 上不存在：{missing} —— "
+        "getElementById 返回 null，render 开头的守卫直接 return，"
+        "组件永久变成空操作：事件照收、界面什么都不画、零报错")
+
+
 def test_the_event_actually_reaches_render():
     """「收到事件 → 画出来」这条主链路必须完整接上。
 
@@ -258,6 +294,17 @@ def test_render_has_running_failed_and_collapse_branches():
     assert re.search(r"phase\s*===\s*'running'", body), "render 里没有 running 分支"
     assert re.search(r"phase\s*===\s*'failed'", body), (
         "render 里没有 failed 分支 —— 解压失败在界面上完全不可见")
+
+    # 元素默认 hidden，所以每条要露面的分支都必须自己把 hidden 撤掉。这条按分支体钉：
+    # 删掉 running 分支里的 `box.hidden = false`，解压全程元素保持隐藏，**只有失败态
+    # 才会露面** —— 进度条这个主要卖点静默消失，而失败分支那份 `box.hidden = false`
+    # 会让「全文搜一下」照样绿。
+    assert re.search(r"\bbox\.hidden\s*=\s*false", _phase_branch_body(body, "running")), (
+        "running 分支没有把元素显示出来 —— 元素默认 hidden，解压全程都不会露面，"
+        "只剩失败态可见")
+    assert re.search(r"\bbox\.hidden\s*=\s*false", _phase_branch_body(body, "failed")), (
+        "failed 分支没有把元素显示出来 —— 解压失败在界面上仍然不可见")
+
     assert re.search(r"\bbox\.hidden\s*=\s*true", body), (
         "render 里没有把 box 收起来的分支，idle / ready 时元素会一直占着状态栏")
     assert re.search(r"\bprog\.hidden\s*=\s*true", body), "进度条没有跟着收起"
@@ -368,6 +415,28 @@ def test_css_stripper_preconditions_hold():
         f"style.css 里出现了不加引号且含 // 的 url()：{bad} —— "
         "剥离器会把本行剩余当行注释静默删光，本文件所有 CSS 否定断言随之变成假绿。"
         "改成带引号的 url('...') 即可（带引号实测安全）")
+
+
+def test_progress_bar_container_has_dimensions():
+    """`.statusbar-progress` 必须有一条给出尺寸的规则，且 markup 上真的用了这个类。
+
+    进度条容器是个空 `<span>`，尺寸完全来自 CSS。删掉 `.statusbar-progress` 整段，
+    容器塌成 0×0，**进度条不可见** —— 而 JS 侧的 `prog.hidden = false`、
+    `bar.style.width = x%` 全部照常执行，没有任何报错，所有 JS 断言照绿。
+    这与 `test_narrow_screen_selectors_match_the_real_markup` 是同一个思路：
+    把「CSS 说了什么」和「markup 用了什么」绑在一起，任何一边单独消失都得红。
+    """
+    css = _css()
+    assert ".statusbar-progress {" in css, (
+        "style.css 里没有 .statusbar-progress 规则 —— 进度条容器没有尺寸，塌成 0×0 "
+        "不可见，而 JS 侧照常执行、零报错")
+    block = _braced_block(css, ".statusbar-progress {")
+    for prop in ("width", "height"):
+        assert re.search(r"\b" + prop + r"\s*:", block), (
+            f".statusbar-progress 规则里没有 {prop} —— 容器在这个方向上塌成 0，进度条不可见")
+
+    assert "statusbar-progress" in _template_class_tokens(), (
+        "模板里没有任何元素带 statusbar-progress 类 —— CSS 规则打不到东西")
 
 
 def test_narrow_screen_rule_no_longer_depends_on_last_child():
