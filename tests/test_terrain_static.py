@@ -10,6 +10,9 @@ def _load_client(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
+    # 全球底图缓存自 user_version=3 起落在 BASE_DIR/assets/terrain/base_z8；
+    # 不 patch BASE_DIR 的话 /terrain/base 会去服务真实仓库根。
+    monkeypatch.setattr(config.Config, "BASE_DIR", tmp_path)
 
     sys.modules.pop("app", None)
     app_mod = importlib.import_module("app")
@@ -22,9 +25,9 @@ def _load_client(monkeypatch, tmp_path):
 def test_terrain_base_serves_existing_layer_json(monkeypatch, tmp_path):
     client = _load_client(monkeypatch, tmp_path)
 
-    # Default terrain_global_base_path is ./downloads/terrain/base_z8, rebased
-    # onto Config.DOWNLOADS_DIR.
-    base_dir = tmp_path / "downloads" / "terrain" / "base_z8"
+    # Default terrain_global_base_path is ./assets/terrain/base_z8, rebased
+    # onto Config.BASE_DIR (assets/ ships with the package; downloads/ is user output).
+    base_dir = tmp_path / "assets" / "terrain" / "base_z8"
     base_dir.mkdir(parents=True)
     (base_dir / "layer.json").write_text('{"tilejson":"2.1.0"}', encoding="utf-8")
 

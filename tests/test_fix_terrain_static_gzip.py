@@ -27,6 +27,9 @@ def _load_app(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
+    # 全球底图缓存自 user_version=3 起落在 BASE_DIR/assets/terrain/base_z8；
+    # 不 patch BASE_DIR 的话 /terrain/base 会去服务真实仓库根。
+    monkeypatch.setattr(config.Config, "BASE_DIR", tmp_path)
 
     for mod in ("app", "src.core.database"):
         sys.modules.pop(mod, None)
@@ -42,8 +45,8 @@ def _write(path, data: bytes):
 
 def test_base_route_gzip_tile_has_content_encoding(monkeypatch, tmp_path):
     _app_mod, client = _load_app(monkeypatch, tmp_path)
-    # ConfigManager default for terrain_global_base_path is ./downloads/terrain/base_z8
-    base = tmp_path / "downloads" / "terrain" / "base_z8"
+    # ConfigManager default for terrain_global_base_path is ./assets/terrain/base_z8
+    base = tmp_path / "assets" / "terrain" / "base_z8"
     _write(base / "0" / "0" / "0.terrain", GZ_PAYLOAD)
     _write(base / "layer.json", b'{"ok":true}')
 

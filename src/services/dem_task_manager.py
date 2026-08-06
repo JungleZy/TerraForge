@@ -315,7 +315,9 @@ class DemTaskManager:
         # 本任务自己的 quantized-mesh 瓦片也按 heightmap 解析，高程全错且不报错。
         # 全球 base 是可选产物，「没建」是默认装机的常态，所以这里必须放行 None。
         base_dir = resolve_stored_output_dir(
-            self.config.get("terrain_global_base_path", "./downloads/terrain/base_z8"))
+            # 兜底值与 DEFAULT_CONFIGS 逐字一致（旧的 ./downloads/... 会把底图判成
+            # 不可用，然后写一个 404 的 parentUrl —— 上面说的那条链）。
+            self.config.get("terrain_global_base_path", "./assets/terrain/base_z8"))
         parent_url = parent_url_if_base_available(
             self.config.get("terrain_base_parent_url", "")
             or "http://localhost:5000/terrain/base",

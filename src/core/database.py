@@ -3,8 +3,10 @@ Database initialization and connection management for TerraForge
 """
 import sqlite3
 import logging
+import shutil
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from src.core.config import Config
 
 logger = logging.getLogger(__name__)
@@ -64,11 +66,17 @@ DEFAULT_CONFIGS = [
     ('earthdata_username', ''),
     ('earthdata_password', ''),
     # Terrain defaults
-    ('terrain_global_base_path', './downloads/terrain/base_z8'),
+    # 解压后的全球底图与分卷同目录（assets/ 是随包分发的数据，downloads/ 是用户
+    # 产出，解压出来的底图属于前者）。改这个默认值的同时**必须**跑
+    # migrate_base_path_to_assets —— INSERT OR IGNORE 只对新建的库生效，存量行还是
+    # 旧路径，两处不一致会让底图被判为不可用并掉进 heightmap 陷阱（见该函数）。
+    ('terrain_global_base_path', './assets/terrain/base_z8'),
     # 随包分发的 base 实际只到 z7（z8 一层占 76% 体积、顶点间距 1.2 km 只在贴近看
     # DEM 外围时才用得上）。⚠️ 这个键**全项目零消费** —— 没有任何代码读它，base 的
     # 层级由 layer.json 的 available 决定。保留是为了兼容存量 config 行；真要用它
     # 之前先确认有没有第二处事实来源，否则又是一个「改了没反应」的假旋钮。
+    # （注意上面的 terrain_global_base_path 不是零消费：terrain_static、
+    # dem_task_manager、local_terrain_task_manager 三处都读它。）
     ('terrain_global_base_maxzoom', '7'),
     ('terrain_local_maxzoom', '14'),
     # 必须是**目录**：Cesium 会 appendForwardSlash() 后再拼 layer.json。
@@ -257,6 +265,63 @@ def normalize_stored_output_paths(cursor) -> int:
         logger.info(
             f'Normalized {changed} legacy relative output_path row(s) '
             f'to absolute (user_version=2)')
+    return changed
+
+
+_OLD_BASE_PATH = './downloads/terrain/base_z8'
+_NEW_BASE_PATH = './assets/terrain/base_z8'
+
+
+def migrate_base_path_to_assets(cursor) -> bool:
+    """底图缓存位置 downloads/ → assets/ 的一次性迁移（user_version 2 → 3）。
+
+    **只改 DEFAULT_CONFIGS 不够**：它走 INSERT OR IGNORE，只对新建的库生效。
+    存量库那行还是旧路径，于是解压去新位置、服务与可用性判定按旧位置 → 底图
+    判为不可用 → 走 parentUrl 兜底 → 那个 URL 指向服务旧空路径的 /terrain/base
+    → 404 → Cesium 塞假 heightmap 图层污染共享 builder → 任务自己的
+    quantized-mesh 瓦片也按 heightmap 解析，高程全错且零报错。正是 v0.2.8 刚修过
+    的那条链。
+
+    只在该行**仍等于旧默认值**时改写：用户自定义过的路径不动。
+    旧位置已有底图时直接搬过去，不删掉重解压 224 MB；搬不动（跨盘）就留着，
+    新位置重新解压 —— 多占一份磁盘，但不会坏。
+
+    整段包在 try 里且 `PRAGMA user_version = 3` 无条件执行：迁移出问题也不能
+    阻断启动，更不能每次启动重试一遍（config 表缺失的畸形库会无限刷 warning）。
+    """
+    if cursor.execute('PRAGMA user_version').fetchone()[0] >= 3:
+        return False
+
+    changed = False
+    try:
+        row = cursor.execute(
+            "SELECT value FROM config WHERE key = 'terrain_global_base_path'"
+        ).fetchone()
+        current = (row['value'] if row is not None and hasattr(row, 'keys')
+                   else (row[0] if row else None))
+        if current is not None and str(current).strip() == _OLD_BASE_PATH:
+            cursor.execute(
+                "UPDATE config SET value = ? WHERE key = 'terrain_global_base_path'",
+                (_NEW_BASE_PATH,))
+            changed = True
+
+            old_dir = Path(Config.DOWNLOADS_DIR) / 'terrain' / 'base_z8'
+            new_dir = Path(Config.BASE_DIR) / 'assets' / 'terrain' / 'base_z8'
+            if old_dir.is_dir() and not new_dir.exists():
+                try:
+                    new_dir.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(old_dir), str(new_dir))
+                    logger.info(f'底图缓存已搬到 {new_dir}')
+                except OSError as e:
+                    logger.warning(
+                        f'底图缓存搬迁失败（{e!r}），旧目录保留在 {old_dir}，'
+                        f'新位置会重新解压')
+    except Exception as e:
+        logger.warning(f'terrain_global_base_path 迁移跳过（{e!r}）')
+
+    cursor.execute('PRAGMA user_version = 3')
+    if changed:
+        logger.info('terrain_global_base_path 迁移到 assets/ (user_version=3)')
     return changed
 
 
@@ -641,6 +706,7 @@ def init_database():
 
         normalize_default_save_path(cursor)
         normalize_stored_output_paths(cursor)
+        migrate_base_path_to_assets(cursor)
 
         conn.commit()
         logger.info('Database initialized successfully')

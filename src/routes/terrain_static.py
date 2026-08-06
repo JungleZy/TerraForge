@@ -104,7 +104,11 @@ def _base_path_cached() -> str:
     entry = current_app.extensions.get(_CACHE_KEY_BASE_PATH)
     if entry is not None and now - entry[0] < _BASE_PATH_TTL_SECONDS:
         return entry[1]
-    value = ConfigManager().get("terrain_global_base_path", "./downloads/terrain/base_z8")
+    # 兜底值必须与 DEFAULT_CONFIGS 逐字一致：键缺失时用旧的 ./downloads/... 会让
+    # 服务指向一个空目录，而解压去的是 assets/ —— 底图判为不可用后走 parentUrl
+    # 兜底，那个 URL 又正好指向这里，404 → Cesium 塞假 heightmap 图层污染共享
+    # builder（v0.2.8 修过的那条链）。
+    value = ConfigManager().get("terrain_global_base_path", "./assets/terrain/base_z8")
     current_app.extensions[_CACHE_KEY_BASE_PATH] = (now, value)
     return value
 

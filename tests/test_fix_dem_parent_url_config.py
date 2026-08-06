@@ -27,6 +27,10 @@ def _setup(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
+    # 全球底图缓存自 user_version=3 起落在 BASE_DIR/assets/terrain/base_z8；
+    # 不 patch BASE_DIR 的话可用性闸门会去看真实仓库根，本机有没有解压过底图
+    # 就成了测试结果的一部分。
+    monkeypatch.setattr(config.Config, "BASE_DIR", tmp_path)
     for mod in ("app", "src.core.database", "src.services.dem_task_manager"):
         sys.modules.pop(mod, None)
     db = importlib.import_module("src.core.database")
@@ -61,7 +65,7 @@ def _make_base_terrain(tmp_path):
     （见 layer_json.parent_url_if_base_available）。这些用例要测的是「配置值
     被正确使用」，所以先把前提摆上；「base 不存在」那条另有专门用例。
     """
-    base = tmp_path / "downloads" / "terrain" / "base_z8"
+    base = tmp_path / "assets" / "terrain" / "base_z8"
     base.mkdir(parents=True, exist_ok=True)
     (base / "layer.json").write_text('{"tilejson":"1.0"}', encoding="utf-8")
     return base

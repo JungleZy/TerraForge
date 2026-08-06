@@ -22,6 +22,10 @@ def _load_app(monkeypatch, tmp_path):
     monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "OUTPUT_DIR", tmp_path / "downloads")
     monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
+    # 全球底图缓存自 user_version=3 起落在 BASE_DIR/assets/terrain/base_z8；
+    # 不 patch BASE_DIR 的话 /terrain/base 会去服务真实仓库根，本机有没有解压过
+    # 底图就成了测试结果的一部分。
+    monkeypatch.setattr(config.Config, "BASE_DIR", tmp_path)
     for mod in ("app", "src.core.database", "src.services.dem_task_manager",
                 "src.services.local_terrain_task_manager"):
         sys.modules.pop(mod, None)
@@ -119,7 +123,7 @@ def _write(path, data: bytes):
 
 def test_terrain_tile_has_immutable_cache_but_layer_json_not(monkeypatch, tmp_path):
     _app_mod, client = _load_app(monkeypatch, tmp_path)
-    base = tmp_path / "downloads" / "terrain" / "base_z8"
+    base = tmp_path / "assets" / "terrain" / "base_z8"
     _write(base / "0" / "0" / "0.terrain", gzip.compress(b"fake-quantized-mesh"))
     _write(base / "layer.json", b'{"ok":true}')
 

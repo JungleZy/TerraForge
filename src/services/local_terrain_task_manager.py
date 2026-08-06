@@ -52,7 +52,9 @@ def _parent_layer_url() -> str | None:
     """
     cfg = ConfigManager()
     base_dir = resolve_stored_output_dir(
-        cfg.get("terrain_global_base_path", "./downloads/terrain/base_z8"))
+        # 兜底值与 DEFAULT_CONFIGS 逐字一致（旧的 ./downloads/... 会把底图判成
+        # 不可用，然后写一个 404 的 parentUrl —— v0.2.8 修过的 heightmap 陷阱）。
+        cfg.get("terrain_global_base_path", "./assets/terrain/base_z8"))
     return parent_url_if_base_available(
         cfg.get("terrain_base_parent_url", "") or "http://localhost:5000/terrain/base",
         base_dir,
