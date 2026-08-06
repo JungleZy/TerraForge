@@ -233,6 +233,100 @@ def _raise_on_gdal_error(what: str, path: str) -> None:
             f"(GDAL error {gdal.GetLastErrorNo()})")
 
 
+def _assert_no_input_dropped(inputs: list, vrt_path: str) -> None:
+    """BuildVRT 丢掉一个源时**不会失败**,必须自己查。
+
+    它只打一行 `Warning 1: Can't open <file>. Skipping it`,返回一个完全有效的
+    dataset。致命之处在于下游校验是**自洽**的:_verify_materialised 拿产物与
+    **这个已经缺了源的 VRT** 比对,尺寸/dtype/仿射/逐像素处处一致,于是全程无
+    异常。结果是一批 granule 里坏了一幅,地形任务「成功」但少切一整块地 ——
+    瓦片全 200、layer.json 正常、前端零报错,正是这个项目反复吃过的静默失败。
+
+    实测(GDAL 3.11.4,两幅相邻 600x600 拼 1200x600):
+      - 垃圾内容 / 0 字节 / 文件不存在 => BuildVRT 跳过,VRT 只剩 600x600,
+        build_input_raster 静默返回,**少切 50% 的地**。这三种正是本函数要挡的。
+      - 头部完好的**截断**文件 => BuildVRT 不跳过(VRT 仍 1200x600、
+        gdal.Open 照样成功、尺寸照样报 600x600),坏在读取阶段,由 Translate
+        失败 + _verify_materialised 抓住,不归本函数管。
+
+    三道闸门,缺一不可:
+      1. 逐个 gdal.Open 探测 —— 能点名是**哪个**文件坏了,错误信息最有用。
+      2. 拿 VRT 的 GetFileList() 与 inputs 对账 —— 这道才是彻底的:它直接问
+         「你到底用了哪些文件」,不依赖我们去枚举 GDAL 的跳过原因。
+         **不要退回成只查包围盒**:被跳过的源如果位于并集**内部**(A|B|C 里的 B),
+         包围盒纹丝不动。实测两种触发且第 1、3 道都看不见的情况 ——
+         `does not support heterogeneous band numbers`(B 是 3 波段)和
+         `heterogeneous band data type`(B 是 Float32):产物宽度看着完全正确,
+         中间那一整块却全是 0,任务照报 completed。
+      3. 四至并集比对 —— 兜住「源被采纳但范围仍然不对」这类剩余情形,成本极低。
+    """
+    unreadable = []
+    ext = None          # [minx, miny, maxx, maxy] —— 所有可读源的并集
+    tol = 0.0           # 容差取最大像素边长,只抓整幅缺失,不抓浮点噪声
+    sig = {}            # realpath -> (波段数, 数据类型名),仅用于诊断信息
+    for p in inputs:
+        ds = None
+        try:
+            ds = gdal.Open(p, gdal.GA_ReadOnly)
+            if ds is None:
+                unreadable.append(p)
+                continue
+            sig[os.path.realpath(p)] = (
+                ds.RasterCount,
+                gdal.GetDataTypeName(ds.GetRasterBand(1).DataType))
+            gt = ds.GetGeoTransform()
+            w, h = ds.RasterXSize, ds.RasterYSize
+            xs = (gt[0], gt[0] + gt[1] * w + gt[2] * h)
+            ys = (gt[3], gt[3] + gt[4] * w + gt[5] * h)
+            e = (min(xs), min(ys), max(xs), max(ys))
+            ext = list(e) if ext is None else [
+                min(ext[0], e[0]), min(ext[1], e[1]),
+                max(ext[2], e[2]), max(ext[3], e[3])]
+            tol = max(tol, abs(gt[1]), abs(gt[5]))
+        finally:
+            ds = None   # Windows 上不放手就删不掉,见 _verify_materialised 的注释
+
+    if unreadable:
+        raise RuntimeError(
+            f"{len(unreadable)}/{len(inputs)} 个输入 DEM 打不开,BuildVRT 会静默跳过"
+            f"它们、少切这片地而任务仍报成功: {unreadable}")
+
+    if ext is None:
+        return
+
+    vds = None
+    try:
+        vds = gdal.Open(vrt_path, gdal.GA_ReadOnly)
+        if vds is None:
+            raise RuntimeError(f"cannot reopen VRT for coverage check: {vrt_path}")
+        used = {os.path.realpath(f) for f in (vds.GetFileList() or [])}
+        gt = vds.GetGeoTransform()
+        w, h = vds.RasterXSize, vds.RasterYSize
+        xs = (gt[0], gt[0] + gt[1] * w + gt[2] * h)
+        ys = (gt[3], gt[3] + gt[4] * w + gt[5] * h)
+        vext = (min(xs), min(ys), max(xs), max(ys))
+    finally:
+        vds = None
+
+    dropped = [p for p in inputs if os.path.realpath(p) not in used]
+    if dropped:
+        detail = ", ".join(
+            f"{os.path.basename(p)}(波段数,类型)={sig.get(os.path.realpath(p))}"
+            for p in dropped)
+        raise RuntimeError(
+            f"BuildVRT 排除了 {len(dropped)}/{len(inputs)} 个源,地形会缺一块而任务"
+            f"仍报成功: {dropped} —— {detail};首个源是 "
+            f"{sig.get(os.path.realpath(inputs[0]))}。BuildVRT 要求所有源的波段数、"
+            f"数据类型、投影一致,不一致的会被静默跳过。")
+
+    t = max(tol, 1e-9) * 1.5
+    if (vext[0] > ext[0] + t or vext[1] > ext[1] + t
+            or vext[2] < ext[2] - t or vext[3] < ext[3] - t):
+        raise RuntimeError(
+            f"VRT 覆盖范围 {vext} 小于 {len(inputs)} 个输入的并集 {ext} —— "
+            f"BuildVRT 排除了至少一个源,切出来的地形会缺一块 ({vrt_path})")
+
+
 def _verify_materialised(out_path: str, vrt_path: str) -> None:
     """物化产物必须与源**逐项对得上**,不能只看「文件建出来了」。
 
@@ -416,52 +510,64 @@ def build_input_raster(inputs: list[str], work_dir: str | None = None,
     vrt_path = out_path + ".vrt"
     try:
         try:
-            opts = gdal.BuildVRTOptions(resampleAlg="bilinear", addAlpha=False)
-            vrt = gdal.BuildVRT(vrt_path, inputs, options=opts)
-            if vrt is None:
-                raise RuntimeError(f"gdal.BuildVRT failed for inputs={inputs}")
-            vrt.FlushCache()
-            vrt = None
+            # ⚠️ 显式钉死「非异常」模式,不要依赖没人开过 gdal.UseExceptions()。
+            # 那个开关是**进程全局**的:四条流水线共用一个 Flask 进程,contour_engine
+            # 无条件调它,于是用户跑过任意一个等高线任务之后,这里的语义就被换掉了。
+            # 后果是下面每一处 _raise_on_gdal_error 退化成空转 —— 异常模式下 GDAL 把
+            # CE_Failure 直接抛成 Python 异常、不回填 CPL 错误栈,而这个函数捞的正是
+            # 那个栈。第一道闸门没了,只剩 _verify_materialised 兜底。
+            # 用 ExceptionMgr 就地声明本段所需的模式,退出时自动还原,既不受别人影响、
+            # 也不影响别人;GDAL 4.0 把默认翻成异常模式后这段依然成立(3.7+ 均支持)。
+            with gdal.ExceptionMgr(useExceptions=False):
+                opts = gdal.BuildVRTOptions(resampleAlg="bilinear", addAlpha=False)
+                vrt = gdal.BuildVRT(vrt_path, inputs, options=opts)
+                if vrt is None:
+                    raise RuntimeError(f"gdal.BuildVRT failed for inputs={inputs}")
+                vrt.FlushCache()
+                vrt = None
+                # BuildVRT 返回非 None 不代表所有源都进去了 —— 打不开的会被静默跳过,
+                # 而后面所有校验都是拿产物跟这个已经缺了源的 VRT 比,永远自洽。
+                _assert_no_input_dropped(inputs, vrt_path)
 
-            # 物化。失败必须响 —— 悄悄交出坏产物就是一份平板地形,而任务标记成功、
-            # 瓦片全 200、前端一条错误都没有。光看返回值不够,见 _raise_on_gdal_error。
-            #
-            # BIGTIFF=IF_SAFER 不能省:GTiff 的默认 IF_NEEDED 只在**不压缩**时按未压缩
-            # 体积判断是否升级 BigTIFF,一旦带了 COMPRESS 就一律按经典 TIFF(4 GiB 上限)
-            # 建文件。实测 ~92 幅 Copernicus granule(约 10°×10°)就到顶,而超出部分被
-            # 静默丢弃、两道返回值闸门一个都不触发。contour_engine 的两处 Translate
-            # 早就写了 IF_SAFER,这里对齐它。
-            gdal.ErrorReset()
-            ds = gdal.Translate(
-                out_path, vrt_path, format="GTiff",
-                creationOptions=["TILED=YES", "COMPRESS=DEFLATE", "ZLEVEL=1",
-                                 "BIGTIFF=IF_SAFER", "NUM_THREADS=ALL_CPUS"],
-                callback=_gdal_stage_callback(stage_cb, "merge"))
-            if ds is None:
-                raise RuntimeError(
-                    f"gdal.Translate failed to materialise {len(inputs)} inputs "
-                    f"into {out_path}")
-            width, height = ds.RasterXSize, ds.RasterYSize
-            ds.FlushCache()
-            ds = None
-            _raise_on_gdal_error("gdal.Translate", out_path)
-
-            factors = _overview_factors(width, height)
-            if factors:
-                ds = gdal.Open(out_path, gdal.GA_Update)
+                # 物化。失败必须响 —— 悄悄交出坏产物就是一份平板地形,而任务标记成功、
+                # 瓦片全 200、前端一条错误都没有。光看返回值不够,见 _raise_on_gdal_error。
+                #
+                # BIGTIFF=IF_SAFER 不能省:GTiff 的默认 IF_NEEDED 只在**不压缩**时按未压缩
+                # 体积判断是否升级 BigTIFF,一旦带了 COMPRESS 就一律按经典 TIFF(4 GiB 上限)
+                # 建文件。实测 ~92 幅 Copernicus granule(约 10°×10°)就到顶,而超出部分被
+                # 静默丢弃、两道返回值闸门一个都不触发。contour_engine 的两处 Translate
+                # 早就写了 IF_SAFER,这里对齐它。
+                gdal.ErrorReset()
+                ds = gdal.Translate(
+                    out_path, vrt_path, format="GTiff",
+                    creationOptions=["TILED=YES", "COMPRESS=DEFLATE", "ZLEVEL=1",
+                                     "BIGTIFF=IF_SAFER", "NUM_THREADS=ALL_CPUS"],
+                    callback=_gdal_stage_callback(stage_cb, "merge"))
                 if ds is None:
                     raise RuntimeError(
-                        f"cannot reopen materialised raster {out_path}")
-                gdal.ErrorReset()
-                rc = ds.BuildOverviews(
-                    "AVERAGE", factors,
-                    callback=_gdal_stage_callback(stage_cb, "overview"))
+                        f"gdal.Translate failed to materialise {len(inputs)} inputs "
+                        f"into {out_path}")
+                width, height = ds.RasterXSize, ds.RasterYSize
+                ds.FlushCache()
                 ds = None
-                if rc != 0:
-                    raise RuntimeError(f"BuildOverviews failed on {out_path}")
-                _raise_on_gdal_error("BuildOverviews", out_path)
+                _raise_on_gdal_error("gdal.Translate", out_path)
 
-            _verify_materialised(out_path, vrt_path)
+                factors = _overview_factors(width, height)
+                if factors:
+                    ds = gdal.Open(out_path, gdal.GA_Update)
+                    if ds is None:
+                        raise RuntimeError(
+                            f"cannot reopen materialised raster {out_path}")
+                    gdal.ErrorReset()
+                    rc = ds.BuildOverviews(
+                        "AVERAGE", factors,
+                        callback=_gdal_stage_callback(stage_cb, "overview"))
+                    ds = None
+                    if rc != 0:
+                        raise RuntimeError(f"BuildOverviews failed on {out_path}")
+                    _raise_on_gdal_error("BuildOverviews", out_path)
+
+                _verify_materialised(out_path, vrt_path)
         finally:
             try:
                 os.remove(vrt_path)
