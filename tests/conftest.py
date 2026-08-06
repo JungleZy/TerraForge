@@ -87,7 +87,27 @@ def repo_unpacked_base_at_session_start():
 
 @pytest.fixture(scope="session")
 def _base_terrain_sandbox(tmp_path_factory):
-    return tmp_path_factory.mktemp("base_terrain_sandbox")
+    """空沙箱 + 会话级【永久】替换 bundle_dir(不走 monkeypatch)。
+
+    永久替换是为了堵住一个用例边界管不住的窗口:`create_app()` 现在会调
+    `start_warmup()`,底图缺失时它起一个**后台线程**去解压。那个线程什么时候读
+    `bundle_dir` 不受用例生命周期约束 —— 实测 8 次里有 2 次,`create_app()` 都
+    返回了它还没读到。只要这一读落在下面 `isolate_base_terrain` 的 teardown 之后,
+    线程看到的就是真实仓库路径,于是把 assets/terrain 里 167 MB 的分卷解进
+    assets/terrain/base_z8 —— 正是本文件与 test_no_repo_pollution.py 合力要挡的事,
+    而且 CI 里测试跑在 Nuitka 打包之前,解出来的会被打进三个平台的产物。
+
+    永久替换之后,用例之外的时刻 bundle_dir 同样指向沙箱,窗口不复存在。下面那个
+    函数级 fixture 保留不动:它的 monkeypatch undo 现在还原到本替身而非真身,
+    「用例自己 patch 一层来覆盖」的既有语义完全不变。
+    """
+    sandbox = tmp_path_factory.mktemp("base_terrain_sandbox")
+    try:
+        from src.services.terrain_tiling import base_terrain as bt
+    except Exception:  # 环境缺依赖时不阻断收集
+        return sandbox
+    bt.bundle_dir = lambda: str(sandbox)
+    return sandbox
 
 
 @pytest.fixture(autouse=True)

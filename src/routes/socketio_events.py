@@ -45,6 +45,19 @@ def register_socketio_events(socketio):
                 'client_id': client_id
             })
 
+            # 底图预热状态快照。必须单独套一层 try:这是附加信息不是连接的前提,
+            # 让它把 connect 打挂的话,一个底图相关的小毛病会变成「整个实时推送
+            # 用不了」。
+            #
+            # 为什么 connect 时要推:进度是广播的,中途连上的客户端只会收到之后
+            # 的增量。而解压**失败**是终态,事件早就发完了 —— 几小时后才打开
+            # 浏览器的用户永远看不到那条失败标记,可「失败要一直显示」是既定要求。
+            try:
+                from src.services.base_terrain_warmup import EVENT_NAME, snapshot
+                emit(EVENT_NAME, snapshot())
+            except Exception:
+                logger.debug("底图状态快照推送失败(已忽略)", exc_info=True)
+
         except Exception as e:
             logger.error(f"Error handling client connection: {e}")
 

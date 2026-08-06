@@ -58,10 +58,13 @@ def test_connect_tracks_client_and_emits_welcome(registered, flask_app, monkeypa
         registered.handlers["connect"]()
 
     assert "sid-abc" in events.connected_clients
-    assert emitted == [("connected", {
+    # connect 之后还会追加一条底图预热快照(见
+    # test_connect_pushes_the_base_unpack_snapshot),所以这里不再对整个列表做全等,
+    # 只钉住欢迎消息本身与它的位置 —— 欢迎消息必须是第一条,附加信息排在后面。
+    assert emitted[0] == ("connected", {
         "message": "Connected to TerraForge",
         "client_id": "sid-abc",
-    })]
+    })
 
 
 def test_disconnect_removes_client(registered, flask_app, monkeypatch):
@@ -88,3 +91,51 @@ def test_handlers_swallow_internal_errors(registered, flask_app, monkeypatch, ca
         registered.handlers["connect"]()  # must not propagate
 
     assert "Error handling client connection" in caplog.text
+
+
+def test_connect_pushes_the_base_unpack_snapshot(registered, flask_app, monkeypatch):
+    """新客户端连上时必须收到一次底图状态快照。
+
+    没有这一步，两个真实场景失效：用户在解压跑到一半才打开浏览器（要等下一个
+    节流窗口）；以及用户在**解压失败几小时后**才打开浏览器 —— 终态事件早发完了，
+    他永远看不到那条失败标记，而「失败要一直显示」是既定要求。
+    """
+    from src.services import base_terrain_warmup as w
+
+    sent = []
+    monkeypatch.setattr(events, "emit", lambda name, payload=None: sent.append((name, payload)))
+    monkeypatch.setattr(w, "snapshot", lambda: {"phase": "running", "fraction": 0.4, "error": None})
+
+    with flask_app.test_request_context():
+        from flask import request
+        request.sid = "sid-1"
+        registered.handlers["connect"]()
+
+    names = [n for n, _ in sent]
+    assert w.EVENT_NAME in names, f"connect 没推底图快照，只发了 {names}"
+    payload = dict(sent)[w.EVENT_NAME]
+    assert payload["phase"] == "running" and payload["fraction"] == 0.4
+
+
+def test_connect_snapshot_failure_does_not_break_the_connection(registered, flask_app, monkeypatch):
+    """快照取不到时连接照常建立。
+
+    这是个附加信息，不是连接的前提条件。让它把 connect 打挂的话，一个底图相关的
+    小毛病会变成「整个实时推送用不了」。
+    """
+    from src.services import base_terrain_warmup as w
+
+    sent = []
+    monkeypatch.setattr(events, "emit", lambda name, payload=None: sent.append((name, payload)))
+
+    def boom():
+        raise RuntimeError("snapshot exploded")
+
+    monkeypatch.setattr(w, "snapshot", boom)
+
+    with flask_app.test_request_context():
+        from flask import request
+        request.sid = "sid-2"
+        registered.handlers["connect"]()
+
+    assert "connected" in [n for n, _ in sent], "欢迎消息仍必须发出去"

@@ -29,6 +29,7 @@ import src.core.single_instance  # noqa: F401
 import src.routes  # noqa: F401
 import src.i18n  # noqa: F401
 import src.routes.socketio_events  # noqa: F401
+import src.services.base_terrain_warmup  # noqa: F401
 import src.services.contour_task_manager  # noqa: F401
 import src.services.dem_task_manager  # noqa: F401
 import src.services.local_terrain_task_manager  # noqa: F401
@@ -192,6 +193,7 @@ def create_app():
     """
     from src.core.database import init_database
     from src.routes.socketio_events import register_socketio_events
+    from src.services.base_terrain_warmup import start_warmup
     from src.services.system_proxy import apply_system_proxy
     from src.services.task_cleanup import sweep_startup_residue
 
@@ -218,5 +220,15 @@ def create_app():
     _register_blueprints(app)
 
     register_socketio_events(socketio)
+
+    # 随包底图的后台预热。放在 socketio 与蓝图都就绪之后:它会立刻 emit 一次
+    # 初始状态,而 connect handler 要能拿到同一个模块的快照。
+    # 已就位时这里连线程都不起(三次 iterdir 计数就返回),是 99% 的启动路径;
+    # 缺失时起一个后台线程,绝不阻塞启动 —— 解压 4.3 万个小文件在 Windows 上
+    # 要几分钟,同步做的话用户看到的就是一个卡死的启动。
+    # create_app 只在 StartupRole.should_create_app 时被调用,所以 dev reloader
+    # 的观察者父进程、multiprocessing worker 都不会重复解压。
+    start_warmup(socketio)
+
     logger.debug("Application initialization complete")
     return (app, socketio) + managers
