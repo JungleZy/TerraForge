@@ -811,3 +811,76 @@ def test_ungraft_fails_loudly_when_a_link_cannot_be_removed(tmp_path):
             ungraft_base_from(tiles, base)
     finally:
         locked.chmod(0o755)
+
+
+# ---------------------------------------------------------------------------
+# 端到端：解压 → 植入 → 合成之后，任务目录能脱离本程序独立当地形源用
+# ---------------------------------------------------------------------------
+
+
+def test_grafted_dir_is_self_contained(tmp_path, monkeypatch):
+    """「拷走还能不能用」的三个必要条件一次钉住。
+
+    上面每条用例只覆盖链条的一环，绿的组合仍可能拼不出一个能用的目录 —— 比如
+    植入成功但 layer.json 仍写着 parentUrl（拷到别的机器上那个 localhost 必然
+    404，而 Cesium 的 404 处理会把整个 provider 降级成 heightmap），或者
+    available 没并到 z0（文件在目录里，Cesium 却根本不去请求根瓦片）。
+
+    只造 z0-z2 三层并把 _PROBE_LEVELS 一起缩到同样三层：这条用例验的是链条串起来
+    对不对，不是就位判据的边界（那条边界由
+    test_is_base_ready_requires_layer_json_and_all_probe_levels 用真实的 510 个
+    目录钉着）。层数与 x 目录数仍取真实网格值（z0:2 / z1:4 / z2:8），免得读的人
+    以为可以随便填。
+    """
+    import json
+
+    from src.services.terrain_tiling import base_terrain
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    levels = ((0, 2), (1, 4), (2, 8))
+    src = _make_base(tmp_path / "src", layers=levels, dense=True)
+    # 真实底图的 layer.json 带逐层的全球 available；_make_base 的默认骨架写的是
+    # 空数组（那些用例只关心就位判据，不关心声明）。合成要验的正是这份声明被并进
+    # 任务的 layer.json，所以这里必须摆上真数据。每层一个覆盖全球的矩形：
+    # EPSG:4326 下 z 层的 x 是 0..2·2^z-1、y 是 0..2^z-1。
+    (src / "layer.json").write_text(json.dumps({
+        "minzoom": 0, "maxzoom": 2,
+        "available": [[{"startX": 0, "startY": 0,
+                        "endX": 2 * 2 ** z - 1, "endY": 2 ** z - 1}]
+                      for z, _ in levels],
+    }), encoding="utf-8")
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+    monkeypatch.setattr(base_terrain, "_PROBE_LEVELS", levels)
+
+    base = base_terrain.ensure_base_unpacked()
+    assert base is not None
+
+    tiles = tmp_path / "task" / "terrain_tiles"
+    tiles.mkdir(parents=True)
+    (tiles / "layer.json").write_text(
+        json.dumps({"minzoom": 0, "maxzoom": 9, "available": [[]] * 9 + [
+            [{"startX": 1, "startY": 1, "endX": 1, "endY": 1}]],
+            "parentUrl": "http://localhost:5000/terrain/base"}),
+        encoding="utf-8")
+    (tiles / "9" / "1").mkdir(parents=True)
+    (tiles / "9" / "1" / "1.terrain").write_bytes(b"\x1f\x8btask")
+
+    base_terrain.graft_base_into(tiles, base)
+    merge_base_availability(tiles / "layer.json", base / "layer.json")
+
+    for z, nx in levels:
+        for x in range(nx):
+            assert (tiles / str(z) / str(x) / "0.terrain").is_file(), \
+                f"z{z}/{x} 没植入 —— 拷走后这一块就是空的"
+    assert (tiles / "9" / "1" / "1.terrain").read_bytes() == b"\x1f\x8btask", \
+        "任务自己的瓦片被底图顶替了"
+
+    data = json.loads((tiles / "layer.json").read_text(encoding="utf-8"))
+    assert "parentUrl" not in data, "自包含之后 parentUrl 是一次 404 的邀请"
+    assert data["minzoom"] == 0
+    assert data["maxzoom"] == 9
+    # available 是按绝对层号对齐的密集数组：下标 i 就是 z(minzoom + i)
+    assert len(data["available"]) == 10
+    assert data["available"][0], "z0 没被声明，Cesium 不会去请求根瓦片"
+    assert data["available"][9] == [{"startX": 1, "startY": 1, "endX": 1, "endY": 1}]
