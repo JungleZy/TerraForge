@@ -14,6 +14,8 @@ dist/
 downloads/
 # 运行期从 assets/terrain/*.part 解压出来的全球底图（4.3 万个文件 / 224 MB）
 assets/terrain/base_z8/
+# 上面那次解压的跨进程互斥锁（base_terrain._CacheLock），运行期产物
+assets/terrain/.base_unpack.lock
 eggs/
 .eggs/
 lib/

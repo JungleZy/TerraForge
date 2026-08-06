@@ -10,6 +10,7 @@ assets/terrain 放进去的地方，所以两种运行模式路径都对得上�
 """
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import shutil
@@ -40,6 +41,27 @@ _LOCK_SLOW_WARN_SECONDS = 30.0
 # 就位判据抽查这三层的顶层 x 目录数，而不是全量 walk：44k 个文件在 Windows 上
 # 数一遍要几秒，而这个判据在每次切片开头都会跑。
 _PROBE_LEVELS = ((0, 2), (4, 32), (7, 256))
+
+# 最后那一步 os.replace（临时目录 → 最终位置）的退避重试参数，见
+# _replace_with_retry 的 docstring。总尝试 6 次、间隔 0.5/1/2/4/8 s，
+# 累计最多等 15.5 s。
+#
+# 6 次这个数是两头夹出来的：
+# ① 下限来自要覆盖的窗口 —— 杀软扫完刚落盘的一批文件是「秒」量级，0.5 s 的
+#    首次重试能吃掉绝大多数，指数退避到 15.5 s 给最坏情况留足余量；
+# ② 上限来自失败场景的体感 —— 这一步真的坏了（比如目标被别的程序常驻占用）
+#    时，用户看到的是「解压完了又卡住」，15 s 还能忍，一分钟就该报错了。
+# 指数退避而不是等间隔：常见情况在第一次 0.5 s 就过了，长尾才付长等待。
+_REPLACE_RETRY_ATTEMPTS = 6
+_REPLACE_RETRY_FIRST_WAIT = 0.5
+_REPLACE_RETRY_BACKOFF = 2.0
+
+# **只有这几个 errno 才重试**。它们的共同含义是「这一刻被别人占着」，等一等有意义。
+# 其余错误一律立刻抛：磁盘满（ENOSPC）、目标非空（ENOTEMPTY）、跨设备（EXDEV）
+# 重试多少次都是同一个结果，白白把失败拖慢 15 s。EBUSY 是给 Windows 留的余量 ——
+# 那边的「目标正被占用」不保证一律映射成 EACCES，漏掉它就等于在主力平台上少一条
+# 可重试路径（本次现场是 WSL2，抓到的是 EACCES=13）。
+_REPLACE_RETRYABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EBUSY})
 
 
 def _assets_terrain_dir() -> Path:
@@ -229,6 +251,53 @@ def _extract_stream(parts: list[Path], dest: Path, total_bytes: int, stage_cb) -
         tf.extractall(dest, filter="data")
 
 
+def _replace_with_retry(src: Path, dst: Path) -> None:
+    """把解压产物原子改名到最终位置，遇到**瞬时**占用错误退避重试。
+
+    为什么需要重试：v0.2.9 真机验收时，解压跑满 19 分钟之后，最后这一步抛
+
+        [Errno 13] Permission denied:
+          assets/terrain/.base_unpack_34971_oeg4o9m2/base_z8
+          -> assets/terrain/base_z8
+
+    19 分钟全部白费，临时目录被 finally 清掉，底图永远装不上。
+
+    **判定它是瞬时锁而不是文件系统限制，靠的是两次探针：**
+    ① 空目录在同样两个路径之间 rename：成功；
+    ② **同一个 4.3 万文件的真实底图目录**，在空闲时（不是刚写完那一刻）做同样
+       的跨目录 rename：成功，耗时 **0.14 秒**。
+    也就是说，同样的源、同样的目标、同样的文件系统，空闲时 0.14 s 就过，刚写完
+    那一刻却失败 —— 所以既不是「目录太大 rename 不动」，也不是「9p/drvfs 不支持
+    目录 rename」，而是**刚落盘那一瞬间目标还被别人持着句柄**。现场环境是 WSL2
+    的 /mnt/d（9p + drvfs 转发到 Windows），Windows 侧的 Defender 实时扫描与搜索
+    索引器在文件刚写完时仍持有句柄，MoveFile 就返回 Permission denied。
+    这类错误**可重试**，等杀软扫完这批文件就好了。
+
+    ⚠️ 后来的人要改这里，先重跑上面两条探针：只要「空闲时同一个目录 rename 得动」
+    还成立，问题就在时机而不在容量，重试就是对的解法；哪天探针本身失败了，才轮到
+    考虑换策略（比如逐层移动或整树复制）。
+
+    重试用尽后把**最后一次的原始异常**原样抛出，交给上层包装成 RuntimeError ——
+    调用方（dem_task_tiler / base_terrain_warmup）按的是那条契约。
+    """
+    wait = _REPLACE_RETRY_FIRST_WAIT
+    for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as e:
+            if (e.errno not in _REPLACE_RETRYABLE_ERRNOS
+                    or attempt >= _REPLACE_RETRY_ATTEMPTS):
+                raise
+            # 这条日志是卡住时唯一的诊断线索：外面看起来只是「解压完了没反应」。
+            logger.warning(
+                f"Terrain: 底图改名到最终位置失败（第 {attempt}/"
+                f"{_REPLACE_RETRY_ATTEMPTS} 次，errno={e.errno} {e.strerror}），"
+                f"疑似杀软/索引器仍持有刚落盘的文件，{wait:.1f} s 后重试 → {dst}")
+            time.sleep(wait)
+            wait *= _REPLACE_RETRY_BACKOFF
+
+
 def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path | None:
     """幂等解压随包底图。已就位直接返回；分卷缺失返回 None；解压失败抛。
 
@@ -272,7 +341,9 @@ def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path |
                 raise RuntimeError(f"解压产物不完整：{extracted}")
             if cache_dir.exists():
                 shutil.rmtree(cache_dir, ignore_errors=True)
-            os.replace(extracted, cache_dir)
+            # 不是裸 os.replace：刚写完 4.3 万个文件那一刻目标可能还被杀软/索引器
+            # 持着句柄，而失败一次就是白扔 19 分钟。见 _replace_with_retry。
+            _replace_with_retry(extracted, cache_dir)
     except Exception as e:
         # 只捕 Exception，不捕 BaseException：Ctrl-C 必须原样往上冒，把
         # KeyboardInterrupt 伪装成「解压失败」会让上层误判成底图坏了。临时目录的

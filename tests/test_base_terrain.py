@@ -400,6 +400,134 @@ def test_keyboard_interrupt_is_not_disguised_as_a_failed_unpack(tmp_path, monkey
     assert leftovers == [], f"Ctrl-C 之后临时目录没清掉：{leftovers}"
 
 
+def _stub_replace(monkeypatch, base_terrain, behaviour):
+    """把 os.replace 换成打桩版并记录调用；顺带让退避不真的 sleep。
+
+    返回 (calls, slept)：calls 是每次调用的 (src, dst)，slept 是每次退避的秒数。
+    behaviour(n) 在第 n 次调用（从 1 起）时被调，返回 True 表示「这次放行、
+    走真正的 os.replace」，抛异常表示「这次这样失败」。
+    """
+    real_replace = base_terrain.os.replace
+    calls = []
+    slept = []
+
+    def stub(src, dst, **k):
+        calls.append((src, dst))
+        behaviour(len(calls))
+        return real_replace(src, dst, **k)
+
+    monkeypatch.setattr(base_terrain.os, "replace", stub)
+    monkeypatch.setattr(base_terrain.time, "sleep", slept.append)
+    return calls, slept
+
+
+def test_replace_retries_a_transient_permission_denied(tmp_path, monkeypatch, caplog):
+    """最后那步改名撞上瞬时占用 → 退避重试，最终成功。
+
+    真机验收实测：解压跑满 19 分钟之后 `os.replace` 抛 `[Errno 13] Permission
+    denied`，19 分钟全部白费、临时目录被 finally 清掉、底图永远装不上。判定它
+    是瞬时锁而不是文件系统限制靠两条探针：空目录 rename 成功；**同一个 4.3 万
+    文件的真实底图目录**在空闲时做同样的跨目录 rename 也成功，耗时 0.14 秒。
+    同源同目标同文件系统，空闲 0.14 s 就过、刚写完那一刻却失败 —— 只可能是刚
+    落盘时目标仍被 Windows 侧的 Defender / 索引器持着句柄（现场是 WSL2 的
+    /mnt/d，9p + drvfs）。
+
+    三条断言各钉一件事，缺一条这个 bug 就能溜回来：
+    ① 整体成功且底图真就位 —— 光「不抛异常」不算数，改名没落地也不抛；
+    ② 退避间隔递增 —— 等间隔重试撑不到杀软扫完一批文件的窗口；
+    ③ 每次重试都有 warning —— 卡住时这是唯一的诊断线索。
+    """
+    import logging
+
+    from src.services.terrain_tiling import base_terrain
+
+    src = _make_base(tmp_path / "src", dense=True)
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+
+    def flaky(n):
+        if n <= 2:
+            raise PermissionError(13, "Permission denied")
+
+    calls, slept = _stub_replace(monkeypatch, base_terrain, flaky)
+
+    with caplog.at_level(logging.WARNING, logger=base_terrain.__name__):
+        cache = base_terrain.ensure_base_unpacked()
+
+    assert cache == parts / "base_z8"
+    assert base_terrain.is_base_ready(cache), "改名没真的落地"
+    assert len(calls) == 3, f"重试次数不对：{len(calls)}"
+    # ⚠️ 这里必须拿**字面量**比，不能写成 `slept == [FIRST_WAIT, FIRST_WAIT *
+    # BACKOFF]`：那样断言会跟着常量一起变，把 BACKOFF 改成 1.0（退化成等间隔）
+    # 也照样绿 —— 实测过，这条曾经就是那么写的假守卫。
+    assert len(slept) == 2, f"重试了 {len(calls)} 次却退避了 {len(slept)} 次"
+    assert slept[0] == pytest.approx(0.5), f"首次重试等太久，长尾都在等它：{slept}"
+    assert slept[1] > slept[0], f"退避间隔没有递增：{slept}"
+
+    warns = [r.getMessage() for r in caplog.records
+             if r.levelno == logging.WARNING and r.name == base_terrain.__name__]
+    assert len(warns) == 2, f"每次重试都该留一条 warning：{warns}"
+    assert all("Permission denied" in m for m in warns), warns
+    assert "1/6" in warns[0] and "2/6" in warns[1], warns
+
+
+def test_replace_does_not_retry_a_permanent_error(tmp_path, monkeypatch):
+    """磁盘满（ENOSPC）不是瞬时占用 → 立刻抛 RuntimeError，一次都不重试。
+
+    重试只对「这一刻被别人占着」有意义。把 ENOSPC 也纳入重试，换来的是每次
+    磁盘满都白等满一轮退避，而结果一模一样 —— 打桩计数就是这条边界的证据：
+    `len(calls) == 1` 且完全没 sleep 过。
+    """
+    import errno
+
+    from src.services.terrain_tiling import base_terrain
+
+    src = _make_base(tmp_path / "src", dense=True)
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+
+    def disk_full(n):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    calls, slept = _stub_replace(monkeypatch, base_terrain, disk_full)
+
+    with pytest.raises(RuntimeError):
+        base_terrain.ensure_base_unpacked()
+
+    assert len(calls) == 1, f"不可重试的错误被重试了 {len(calls)} 次"
+    assert slept == [], f"不可重试的错误还退避了：{slept}"
+    assert not base_terrain.is_base_ready(parts / "base_z8")
+
+
+def test_replace_gives_up_after_the_budget_and_keeps_the_runtime_error_contract(
+        tmp_path, monkeypatch):
+    """一直被占着 → 用尽预算后仍抛 RuntimeError（契约不变），且预算是有限的。
+
+    契约那一半是给调用方的：dem_task_tiler 与 base_terrain_warmup 都写的
+    `except RuntimeError`，重试把原始 PermissionError 漏出去就整类接不住。
+    预算那一半是给用户的：这一步真坏了的时候不能无限等 —— 总等待钉成常量算出
+    来的值（0.5+1+2+4+8 = 15.5 s），改动常量时这条会红，逼人重新想清楚上下界。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    src = _make_base(tmp_path / "src", dense=True)
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+
+    def always_locked(n):
+        raise PermissionError(13, "Permission denied")
+
+    calls, slept = _stub_replace(monkeypatch, base_terrain, always_locked)
+
+    with pytest.raises(RuntimeError):
+        base_terrain.ensure_base_unpacked()
+
+    assert len(calls) == base_terrain._REPLACE_RETRY_ATTEMPTS
+    assert len(slept) == base_terrain._REPLACE_RETRY_ATTEMPTS - 1, \
+        "最后一次失败之后不该再白等一轮"
+    assert sum(slept) == pytest.approx(15.5), f"总等待预算变了：{sum(slept)} s"
+
+
 def test_unwritable_assets_dir_raises_runtime_error_not_bare_oserror(tmp_path, monkeypatch):
     """加锁与建临时目录也在「失败抛 RuntimeError」这条契约里。
 
