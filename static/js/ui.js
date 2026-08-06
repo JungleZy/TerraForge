@@ -204,8 +204,10 @@
     }
 
     // ------------------------------------------------------ Connection status
-    // 工具栏连接状态点。有 socket 的页面（首页 tasks.js）在 socket 建立后调用；
-    // 无 socket 的页面不调用，指示器保持 hidden。
+    // 底部状态栏的连接状态点。**唯一调用方是 socket.js 的 get()**（socket 实例刚
+    // 建好时调一次），不是 tasks.js —— 连接的创建权在 socket.js 提走之后就易主了。
+    // 而 socket 现在是全站单例、每页都会连，所以「无 socket 的页面」已经不存在；
+    // hidden 只是首帧到建连之间的那一小段。
     function initConnectionStatus(socket) {
         const el = document.getElementById('connStatus');
         const text = document.getElementById('connStatusText');

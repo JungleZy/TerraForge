@@ -61,6 +61,11 @@ _REPLACE_RETRY_BACKOFF = 2.0
 # 重试多少次都是同一个结果，白白把失败拖慢 15 s。EBUSY 是给 Windows 留的余量 ——
 # 那边的「目标正被占用」不保证一律映射成 EACCES，漏掉它就等于在主力平台上少一条
 # 可重试路径（本次现场是 WSL2，抓到的是 EACCES=13）。
+# ⚠️ 上面那句「目标非空重试也没用」**在 Windows 上不成立**，别拿它当全平台结论：
+# 那边目标非空时 `os.replace` 报的常常是 EACCES 而不是 ENOTEMPTY，于是它会落进
+# 重试白名单、白等满 15.5 s 再抛。触发路径是上游 `rmtree(ignore_errors=True)` 部分
+# 失败留下了非空目标。代价只是失败慢一点（不影响正确性），所以没有为它单开分支 ——
+# 但排查 Windows 上「改名失败前先卡 15 s」时，先想到这条。
 _REPLACE_RETRYABLE_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EBUSY})
 
 

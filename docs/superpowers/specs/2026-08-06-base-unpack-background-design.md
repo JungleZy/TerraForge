@@ -1,6 +1,28 @@
 # 底图解压移到启动后台，进度显示在底部状态栏
 
-> **状态**：设计已批准，待实施 ｜ **记录时间**：2026-08-06
+> **归档文档 · 非当前实现**
+> **记录时间**：2026-08-06 ｜ **状态**：**已实施**（2026-08-06/07 落地，共 17 个 commit，真实环境验收通过：启动不阻塞、解压 11 分 28 秒就位、四态逐一验证），**但下面两条论断被执行期推翻**。正文里「设计已批准，待实施」是当日语气。
+> 落地形态以代码与仓库根 `CLAUDE.md` 为准；执行期的全部实测数据、变异实验与历次裁定原文在 `.superpowers/sdd/2026-08-06-base-unpack-background/`（尤其 `task-4-report.md`）。
+>
+> **🔴 ① `:122`「暴露 `window.TerraSocket.get()` 惰性单例，**并在加载时立即建立连接**」—— 后半句被判为 Critical 并反转了。**
+> 解析期建连会**早于所有消费者注册监听**，而 socket.io **不重放**已经错过的事件。后果不是「晚一点收到」而是**永远收不到**：`tasks.js` 的 `hasConnectedOnce` 永远停在 false（断线重连后不补拉数据）；服务端只在 connect 时推一次底图状态快照，而解压失败是终态、之后没有增量事件、也没有 REST 端点能补拿 —— 错过就永远不显示失败。
+> 最终形态：`socket.js` **刻意不在解析期建连**，连接由第一个消费者的 `get()` 触发，且调用方**必须在同一个同步块里**紧接着 `socket.on(...)`（`get()` 内部 `io()` 之后是同步返回的，中间没有让出事件循环的机会，所以第一个消费者是零窗口）。理由完整写在 `static/js/socket.js` 的文件头，由 `tests/test_socket_singleton_contract.py::test_socket_js_does_not_connect_at_parse_time` 与 `tests/test_base_unpack_statusbar.py::test_listener_registers_in_the_same_synchronous_block_as_get` 两侧钉住。
+> **连带后果**：`/config` 与 `/history` 因此没有别的消费者，`static/js/base_terrain_status.js` 成了那两页**唯一**的连接触发者 —— 删了它那两页会整个失去实时推送（连接指示灯都不亮）。这层责任写在该文件的文件头与 `base.html` 的 `<script>` 注释里。
+>
+> **🔴 ② `:168`「新元素在窄屏**保留显示**：它是要紧状态，窄屏更需要」—— 浏览器实测证明按这个写法它一个像素都看不见。**
+> 430px 实测：状态栏可视宽 408、内容宽 788、`overflow-x: hidden`，新元素排在最右、落在 left=615/right=789 而状态栏右边只到 420 —— **超出 369px，被整个裁掉**。「保留显示」是句做不到的话。
+> 最终方案分两层：**running 态**用 `.workbench-statusbar:has(#statusBaseUnpack:not([hidden]):not(.statusbar-basemap--failed))` 让 `.statusbar-tasks` / `.statusbar-copy` / `.statusbar-event` **临时**让路（隐藏后自动恢复），并把元素自己的 36px 装饰（margin-left 12 + padding 0 12 + 左边框 1）在窄屏清零；**failed 态刻意不让路**（failed 在 JS 侧是粘性终态、服务端是进程级单例且每次 connect 重推快照，让路会一直持续到进程结束 = 永久牺牲那几项读数），改用 `order: -1` 把它排到最左，从而必然完整可见。
+> 两处易踩的坑：让路名单**不含** `.conn-status`（那三个类只在 `index.html`，而 `.conn-status` 在 `base.html` 每页都有，在 `/config`、`/history` 上挤它是纯亏）；装饰清零的选择器**必须带 `.workbench-statusbar` 前缀**（基础规则同特异度且在文件更靠后，裸选择器会被整条压掉，实测清零完全不生效）。
+> 也别只按中文文案调宽度：中文「底图解压 100%」元素宽 181px，英文「Unpacking base terrain 100%」是 291px —— **英文才是真正的约束**。
+>
+> **📌 执行期新增的、设计稿完全没有的事实**
+> - **`_replace_with_retry` 是执行期发现的既有 bug，不在本设计范围内。** 解压跑满 19 分钟之后最后那步 `os.replace` 抛 `[Errno 13] Permission denied`，19 分钟全部白费、临时目录被 `finally` 清掉、底图永远装不上。两条探针判定它是**瞬时锁**而非文件系统限制：空目录跨目录 rename 成功；**同一个 4.3 万文件的真实底图目录**在空闲时做同样的 rename 也成功、耗时 0.14 秒 —— 同源同目标同文件系统，空闲 0.14 s 就过、刚写完那一刻却失败，只可能是刚落盘时目标仍被 Windows 侧的 Defender / 索引器持着句柄（现场是 WSL2 的 `/mnt/d`，9p + drvfs）。修法是白名单式退避重试（`EACCES` / `EPERM` / `EBUSY`，0.5 s 起步 ×2 退避、总预算 15.5 s，用尽后仍抛 `RuntimeError` 保持调用方契约）。
+> - **服务端的进度必须节流**：解压是流式读，`_extract_stream` 的 `readinto` 每次调用都触发一次 `stage_cb`，167 MB 下是上万次。`_EMIT_MIN_INTERVAL = 0.5`（不是照抄切片那边的 1.0 —— 解压是分钟级一次性过程，同样的绝对间隔在短过程上显得迟钝）。
+> - **`ready` / `failed` 必须当成粘性终态**：connect handler 在请求线程里读快照、后台解压线程同时在广播，而 python-socketio 在触发 connect handler **之前**就把 sid 加进了房间 —— 客户端可能先收到广播的 `ready`、再收到 handler 读到的**陈旧** `running`。不做粘性的话那个客户端的进度条会永远转下去，且不会再有任何事件来纠正它。
+> - **粘性守卫与服务端重试语义有耦合**：`start_warmup` 的 docstring 明确写着「`phase == 'failed'` 时会重新尝试」，今天只有一个调用点所以挡不到真东西，但一旦加了重试入口（重试按钮 / 切片前兜底），合法的 failed→running 会被守卫**永久**挡在外面。改法记在 `base_terrain_status.js` 的注释里（服务端带递增 attempt 序号，客户端见新序号重置 `settled`），不是删守卫。
+>
+> **✅ 仍成立**：正文的整体架构判断 —— 后台预热 + `socketio.emit` 广播 + connect 时补推快照、进度显示在状态栏最右、解压与切片解耦、`base_terrain.py` 保持不 import numpy/osgeo/flask 以便无 GDAL 单测 —— 全部照此落地，没有被推翻。
+>
 > 前置版本：v0.2.9（底图随任务植入，`597d4ba3e`）
 > 前置设计：`docs/superpowers/specs/2026-08-06-base-terrain-graft-design.md`
 

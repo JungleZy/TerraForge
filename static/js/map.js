@@ -1453,8 +1453,9 @@ async function registerCompletedContourTask(taskId) {
     updateContourPreviewButtons();
 }
 
-// Hook the shared socket (created in tasks.js' initTasks). Called from the page
-// init block after initTasks(), so `socket` is already assigned.
+// Hook the shared socket. 实例由 socket.js 的 window.TerraSocket.get() 创建，
+// tasks.js 的 initTasks 只是把它取回来赋给全局 `socket`。本函数从页面 init 块里
+// 排在 initTasks() 之后调用，所以那时 `socket` 已经赋好值。
 function initContourPreview() {
     if (typeof socket === 'undefined' || !socket) return;
     socket.on('task_completed', function(data) {

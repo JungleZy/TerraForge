@@ -25,17 +25,13 @@ tests/test_socket_singleton_contract.py 里的 `_strip_js_comments` /
 （见 `_function_body`）。变异实测的口径也随之改成「只坏一处」—— 全局替换会连累别的
 断言，抓不到真实的故障形态。
 
-CSS 也走 `_strip_js_comments`：CSS 的 `/* */` 与 JS 同形。已逐行比对过它与
-`re.sub(r'/\\*.*?\\*/')` 在 style.css 上的输出：行数相同、逐行完全一致。
-它在 CSS 上有**两类已知失败**，一响一静，都实测确认过：
-  1. `%` 后面跟 `/`（`calc(100% / 3)`）—— `%` 在它的启发式里属于「后面可以跟正则」，
-     于是 `/` 被当成正则开头、本行内找不到收尾而**抛 AssertionError**。响亮，安全。
-  2. **不加引号**的 `url(...)` 里出现 `//`（`url(http://h/a.png)`、`url(//cdn/x.png)`）
-     —— CSS 允许 url 不加引号，而剥离器只在带引号的字符串里保护 `//`，于是本行剩余
-     被当行注释**静默删光**（实测第二例连它后面那条 `/* */` 注释一起吃掉）。
-     **静默**，而且正是「剥过头 → 否定断言假绿」的路径。
-第 2 类由 `test_css_stripper_preconditions_hold` 直接钉住前提；每条 CSS 断言另配
-「被测规则块还在」的正向哨兵作为第二道网。
+⚠️ **CSS 那边刻意不复用 JS 剥离器**（`_css()` 用朴素的 `re.sub(r'/\\*.*?\\*/')`）。
+一度复用过，是负收益：状态机的价值在于处理字符串/正则歧义，而 CSS 里根本没有这种
+歧义；换来的却是它自己的两类失败 —— `calc(100% / 3)` 误判成正则而抛（响亮，还行），
+**不加引号**的 `url(http://…)` 把本行剩余当行注释**静默删光**（CSS 允许 url 不加引号，
+而它只在带引号的字符串里保护 `//`）。后者恰好是「剥过头 → 否定断言假绿」的路径，当时
+只能靠一条额外的前提断言去兜。朴素版在 style.css 上与状态机版输出逐行完全一致，且没有
+任何静默失败模式。每条 CSS 断言另配「被测规则块还在」的正向哨兵作为第二道网。
 """
 import glob
 import os
@@ -82,7 +78,19 @@ def _status_js():
 
 
 def _css():
-    return _strip_js_comments(_read("static", "css", "style.css"))
+    """style.css，剥掉 `/* */` 注释。
+
+    CSS 这边**刻意用朴素正则**，不复用 JS 那个状态机剥离器。曾经复用过，是负收益：
+    CSS 里根本没有字符串/正则歧义（那才是状态机存在的理由），而状态机在 CSS 上反倒
+    带进来两类它自己的失败 —— `calc(100% / 3)` 会误判成正则而抛，**不加引号**的
+    `url(http://…)` 会把本行剩余当行注释**静默删光**（CSS 允许 url 不加引号，而它只在
+    带引号的字符串里保护 `//`）。后者正是「剥过头 → 否定断言假绿」的路径，当时只能靠
+    一条额外的前提断言去兜。
+    朴素版在 style.css 上与状态机版输出**逐行完全一致**（比对过），且没有任何静默失败
+    模式。用更聪明的工具换更多风险，不划算。
+    """
+    return re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"),
+                  _read("static", "css", "style.css"), flags=re.S)
 
 
 def _function_body(code, name):
@@ -389,6 +397,27 @@ def test_each_branch_uses_its_own_i18n_key():
         "failed 分支里出现了 running 的文案 key —— 失败被伪装成了进行中")
 
 
+def test_running_branch_actually_drives_the_progress_bar():
+    """running 分支必须把百分比同时喂给**文案**和**进度条宽度**。
+
+    两条都实测是假绿过的，各自的后果都无声：
+      - 删掉 `bar.style.width = percent + '%'` → 进度条永远 0 宽，解压全程一条空槽；
+      - `t('js.base_unpack.running', ...)` 少传第二个实参 → 界面原样显示
+        「底图解压 {percent}%」，占位符没被替换（i18n 的 t() 查不到 params 就把
+        `{percent}` 原样留下）。
+    分支形态、文案 key 都钉住了也拦不住这两条 —— 它们钉的是「用了哪条 key」，
+    不是「值算出来了、送到位了」。
+    """
+    running = _phase_branch_body(_function_body(_status_js(), "render"), "running")
+
+    assert re.search(r"\bbar\.style\.width\s*=", running), (
+        "running 分支没有设置 bar.style.width —— 进度条永远 0 宽，"
+        "解压全程只有一条空槽，而文案照常跳数字")
+    assert re.search(r"t\(\s*'js\.base_unpack\.running'\s*,", running), (
+        "t('js.base_unpack.running') 没有传第二个实参 —— 占位符不会被替换，"
+        "界面原样显示「底图解压 {percent}%」")
+
+
 def test_failure_reason_goes_into_the_title_attribute():
     """失败原因必须写进 title，且是 failed 分支里那一次赋值。
 
@@ -398,10 +427,25 @@ def test_failure_reason_goes_into_the_title_attribute():
     `'.title' in src`：`.title` 在另两个分支里各有一次 `= ''` 清空，钉宽了的话把
     failed 分支这一行整个删掉照样绿（本文件初版就是这么假绿的）。
     """
-    body = _function_body(_status_js(), "render")
-    assert re.search(r"\.title\s*=\s*t\(\s*['\"]js\.base_unpack\.failed_title['\"]", body), (
+    failed = _phase_branch_body(_function_body(_status_js(), "render"), "failed")
+    assert re.search(r"\.title\s*=\s*t\(\s*['\"]js\.base_unpack\.failed_title['\"]", failed), (
         "failed 分支没有把失败原因写进 title —— 用户只看到「底图不可用」，"
         "拿不到任何可据以行动的信息")
+
+    # ⚠️ 这一行是最后那条 CSS 守卫的**地基**：窄屏让路规则写的是
+    # `:has(#statusBaseUnpack:not([hidden]):not(.statusbar-basemap--failed))`，
+    # 那个 `:not()` 的全部作用都依赖 JS 真的会加这个类。整行删掉的后果是三重的，
+    # 且全都无声：① 让路条件恒真 → 窄屏三项读数在 failed 态被**永久**隐藏；
+    # ② 失去 `color: var(--color-danger)`；③ 失去 `cursor: help`（没有任何提示
+    # 说明这里挂着 title）—— 失败在界面上变成一条灰色普通读数。
+    # `test_narrow_screen_selectors_match_the_real_markup` 拦不住它：
+    # `_js_class_tokens()` 只要文件里出现过 classList.remove('statusbar-basemap--failed')
+    # （running / 收起分支各一次）就认这个类存在。所以必须在 failed 分支里钉 **add**。
+    assert re.search(r"classList\.add\(\s*['\"]statusbar-basemap--failed['\"]", failed), (
+        "failed 分支没有 classList.add('statusbar-basemap--failed') —— "
+        "窄屏让路规则里那条 :not(.statusbar-basemap--failed) 会恒真，"
+        "三项读数在 failed 态被永久隐藏；同时失去红色与 cursor: help，"
+        "失败在界面上变成一条灰色普通读数")
 
 
 def test_terminal_phase_is_sticky():
@@ -448,23 +492,6 @@ def test_terminal_phase_is_sticky():
 
     assert re.search(r"if\s*\(\s*terminal\s*\)\s*settled\s*=\s*true", body), (
         "终态到达时没有置位 settled，守卫等于不存在")
-
-
-def test_css_stripper_preconditions_hold():
-    """CSS 剥离器的**静默**失败模式在 style.css 里必须不成立。
-
-    见文件头第 2 类：CSS 允许 `url()` 不加引号，而 `_strip_js_comments` 只在带引号的
-    字符串里保护 `//` —— `url(http://h/a.png)` 会让本行剩余被当行注释静默删光，
-    连它后面的 `/* */` 注释一起吃掉。这是「剥过头 → 否定断言假绿」的路径，没有任何
-    异常可依赖，所以在这里直接钉住前提。
-    （第 1 类 `calc(100% / 3)` 会响亮抛 AssertionError，自带红灯，不需要额外断言。）
-    """
-    raw = _read("static", "css", "style.css")
-    bad = re.findall(r"url\(\s*[^'\")]*//[^)]*\)", raw)
-    assert not bad, (
-        f"style.css 里出现了不加引号且含 // 的 url()：{bad} —— "
-        "剥离器会把本行剩余当行注释静默删光，本文件所有 CSS 否定断言随之变成假绿。"
-        "改成带引号的 url('...') 即可（带引号实测安全）")
 
 
 def test_progress_bar_container_has_dimensions():

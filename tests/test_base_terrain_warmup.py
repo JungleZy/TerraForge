@@ -234,12 +234,24 @@ def test_throttle_window_actually_releases_and_fraction_advances(monkeypatch, tm
     """把节流窗口设成 0 → 每一次回调都发得出去，且 fraction 单调递增。
 
     上一条用例的 500 次回调在 1 ms 内跑完，所以它只证明了「1 ms 内最多发 1 条」
-    和「终态绕过节流」。它证明不了**窗口会正常释放**：把 _EMIT_MIN_INTERVAL 改成
-    巨大值、或者把时间戳写成永不过期的形式，那条用例照样全绿，而线上表现是进度条
-    在几分钟的解压里冻在 0% —— 这个特性一半的价值就没了。fraction 也一样：上一条
-    不看载荷里的数值，「永远上报 0.0」在它眼里同样是绿的。
+    和「终态绕过节流」。它证明不了**窗口会正常释放**：把时间戳写成永不过期的形式，
+    那条用例照样全绿，而线上表现是进度条在几分钟的解压里冻在 0% —— 这个特性一半的
+    价值就没了。fraction 也一样：上一条不看载荷里的数值，「永远上报 0.0」在它眼里
+    同样是绿的。
+
+    ⚠️ **本用例同样抓不到「常量被改成巨大值」**——它第一件事就是把
+    `_EMIT_MIN_INTERVAL` monkeypatch 成 0（这份 docstring 曾经暗示它能抓，是吹牛）。
+    常量本身此前**零覆盖**：改成 60 也好、300 也好，全套测试照绿，而用户在几分钟的
+    解压里只看得到一两次进度跳动。所以下面单独钉住它的值。
     """
     from src.services import base_terrain_warmup as w
+
+    # 常量本身的守卫（必须在 monkeypatch 之前读）：0.5 s 是「解压是分钟级一次性过程，
+    # 比切片那边的 1.0 s 更跟手」算出来的，整个解压最多几百次 emit。改大到分钟级
+    # 会让进度条看着像冻住，改成 0 会把前端打爆（167 MB 下 stage_cb 有上万次）。
+    assert w._EMIT_MIN_INTERVAL == 0.5, (
+        f"_EMIT_MIN_INTERVAL 现在是 {w._EMIT_MIN_INTERVAL}，预期 0.5 —— "
+        "改动它就要重新想清楚上下界：太大进度条像冻住，太小前端被上万次 emit 打爆")
 
     monkeypatch.setattr(w, "is_base_ready", lambda _p: False)
     monkeypatch.setattr(w, "_EMIT_MIN_INTERVAL", 0)
