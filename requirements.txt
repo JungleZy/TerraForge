@@ -14,7 +14,18 @@ simple-websocket==1.1.0
 aiohttp==3.9.1
 aiofiles==23.2.1
 certifi>=2024.2.2
-GDAL==3.8.4
+# ⚠ 这里【不能】用精确钉。GDAL 的 Python 绑定是 sdist 现编的,编译时要对上
+# 系统 libgdal 的头文件,所以它的版本是【跟随机器】的,不是我们能选的:
+#   开发机(ubuntugis-unstable PPA) 3.11.4 / CI ubuntu-latest(noble apt) 3.8.4
+#   / Windows+macOS(conda-forge)   3.8
+# 钉任何一个具体值,都会在另外两处触发「卸掉已装的、按钉的版本重编」——而重编
+# 这一次没有 --no-build-isolation,numpy 不可见,编出来的绑定缺 _gdal_array,
+# 所有走 ReadAsArray/WriteArray 的测试全炸。范围约束则会让 pip 安静跳过。
+# 装法(本地与 CI 一致): pip install --no-build-isolation "GDAL==$(gdal-config --version)"
+# 上限 <4 有实测依据:GDAL 4.0 默认开异常,而异常模式下写失败不回填 CPL 错误栈
+# (实测 GetLastErrorType 3→0),cesiumlab_terrain 的 _raise_on_gdal_error 会退化
+# 成空转,那道专防「返回成功但产物截断」的闸门就没了。升 4.0 前必须先改错误检查。
+GDAL>=3.8,<4
 numpy==1.26.4
 matplotlib
 Pillow==10.1.0

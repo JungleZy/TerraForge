@@ -114,7 +114,9 @@ jobs:
         # GDAL sdist 编译时必须能 import numpy，否则编不出 _gdal_array：
         # 先装 numpy，再关闭 build isolation 编译 GDAL。
         pip install numpy==1.26.4
-        pip install --no-build-isolation GDAL==3.8.4
+        # 跟随 apt 实际装上的 libgdal,别硬编码(见 requirements.txt 顶部注释)。
+        # $GDAL_VERSION 由上面的 gdal-config --version 写进 $GITHUB_ENV。
+        pip install --no-build-isolation "GDAL==$GDAL_VERSION"
         pip install -r requirements.txt
 
     - name: Install Python dependencies (Windows/macOS)
