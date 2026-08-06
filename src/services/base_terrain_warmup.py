@@ -107,16 +107,28 @@ def start_warmup(socketio) -> None:
         return
 
     logger.info("Terrain: 随包底图未就位，启动后台预热")
-    socketio.start_background_task(_run, socketio)
+    try:
+        socketio.start_background_task(_run, socketio)
+    except Exception as e:
+        # 上面已经在锁里把 phase 置成 running 了，而 running 那道闸会挡掉之后的
+        # 每一次调用 —— 起线程失败时不在这里改回来，状态就永远停在 running，前端
+        # 进度条一直转，没有任何东西告诉用户已经没救了。与 _run 里那个「未预期的
+        # 异常也要落到 failed」是同一条约束，只是入口不同。
+        # 重抛：起不了线程是真问题（进程资源耗尽之类），不该被静默成一条状态。
+        logger.exception("Terrain: 启动底图预热后台任务失败")
+        _emit(socketio, _set("failed", 0.0, str(e)))
+        raise
 
 
 def _run(socketio) -> None:
     """后台执行体：解压 + 节流上报。任何异常都转成 failed，绝不冒到线程外。"""
-    last_emit = [0.0]
+    # 哨兵取 -inf 而不是 0.0：让「第一次回调必发」成为无条件的事实。0.0 依赖
+    # 「time.monotonic() 返回一个大数」，而它的参考点在文档里明确是未定义的
+    # （范本 dem_task_manager 用的也是 -inf，成本完全一样）。
+    last_emit = [float("-inf")]
 
     def stage_cb(_phase, fraction):
-        # last_emit 初值 0.0 而 time.monotonic() 是个大数 —— 第一次回调必发，
-        # 前端立刻看到进度条而不是等满一个窗口。
+        # 第一次回调必发，前端立刻看到进度条而不是等满一个窗口。
         now = time.monotonic()
         if now - last_emit[0] < _EMIT_MIN_INTERVAL:
             return

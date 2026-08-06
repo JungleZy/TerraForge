@@ -19,10 +19,11 @@ class FakeSocketIO:
     执行体是个普通函数，直接调它就能覆盖全部逻辑。
     """
 
-    def __init__(self, emit_raises=False):
+    def __init__(self, emit_raises=False, spawn_raises=False):
         self.events = []
         self.tasks = []
         self._emit_raises = emit_raises
+        self._spawn_raises = spawn_raises
 
     def emit(self, name, payload=None):
         if self._emit_raises:
@@ -30,6 +31,8 @@ class FakeSocketIO:
         self.events.append((name, payload))
 
     def start_background_task(self, target, *args, **kwargs):
+        if self._spawn_raises:
+            raise RuntimeError("can't start new thread")
         self.tasks.append((target, args, kwargs))
 
     # 用例便利：只看 base_unpack_progress 的载荷序列
@@ -101,6 +104,30 @@ def test_repeated_start_does_not_spawn_a_second_task(monkeypatch):
     w.start_warmup(sio)
 
     assert len(sio.tasks) == 1
+
+
+def test_spawn_failure_does_not_wedge_the_state_at_running(monkeypatch):
+    """起后台任务本身失败 → 状态落到 failed，而不是永远卡在 running。
+
+    start_warmup 是先在锁里置 running、再调 start_background_task。这一调用抛
+    异常（起线程/greenlet 失败）时，phase 已经是 running 了 —— 而 running 那道
+    闸会挡掉之后的每一次重试，状态永远转下去，没有任何东西告诉用户已经没救了。
+    与「后台线程漏出的异常不能让状态停在 running」是同一条硬约束，只是入口不同。
+
+    异常本身要往上冒：起不了线程是真问题，不该静默。
+    """
+    from src.services import base_terrain_warmup as w
+
+    monkeypatch.setattr(w, "is_base_ready", lambda _p: False)
+    sio = FakeSocketIO(spawn_raises=True)
+
+    with pytest.raises(RuntimeError):
+        w.start_warmup(sio)
+
+    state = w.snapshot()
+    assert state["phase"] == "failed", "起线程失败后状态卡在 running 就再也退不出来了"
+    assert state["error"], "必须带上原因"
+    assert sio.payloads()[-1]["phase"] == "failed"
 
 
 def test_failed_state_allows_a_retry(monkeypatch, tmp_path):
@@ -201,6 +228,52 @@ def test_progress_is_throttled_but_the_terminal_event_always_fires(monkeypatch, 
     running = [p for p in payloads if p["phase"] == "running"]
     assert len(running) < 20, f"节流没生效：500 次回调发出了 {len(running)} 条"
     assert payloads[-1] == {"phase": "ready", "fraction": 1.0, "error": None}
+
+
+def test_throttle_window_actually_releases_and_fraction_advances(monkeypatch, tmp_path):
+    """把节流窗口设成 0 → 每一次回调都发得出去，且 fraction 单调递增。
+
+    上一条用例的 500 次回调在 1 ms 内跑完，所以它只证明了「1 ms 内最多发 1 条」
+    和「终态绕过节流」。它证明不了**窗口会正常释放**：把 _EMIT_MIN_INTERVAL 改成
+    巨大值、或者把时间戳写成永不过期的形式，那条用例照样全绿，而线上表现是进度条
+    在几分钟的解压里冻在 0% —— 这个特性一半的价值就没了。fraction 也一样：上一条
+    不看载荷里的数值，「永远上报 0.0」在它眼里同样是绿的。
+    """
+    from src.services import base_terrain_warmup as w
+
+    monkeypatch.setattr(w, "is_base_ready", lambda _p: False)
+    monkeypatch.setattr(w, "_EMIT_MIN_INTERVAL", 0)
+
+    def fake_unpack(stage_cb=None):
+        for i in range(500):
+            stage_cb("base_unpack", i / 500.0)
+        return tmp_path
+
+    monkeypatch.setattr(w, "ensure_base_unpacked", fake_unpack)
+    sio = FakeSocketIO()
+
+    w.start_warmup(sio)
+    # start_warmup 自己会先发一条 running（fraction=0.0），那条不是节流的产物，
+    # 从这里切掉，只数后台执行体发出来的。
+    baseline = len(sio.payloads())
+    sio.tasks[0][0](*sio.tasks[0][1])
+
+    running = [p for p in sio.payloads()[baseline:] if p["phase"] == "running"]
+    assert len(running) == 500, f"窗口没释放：500 次回调只发出 {len(running)} 条"
+    fractions = [p["fraction"] for p in running]
+    assert fractions == sorted(fractions), "fraction 必须随解压推进"
+    assert fractions[0] == 0.0 and fractions[-1] == 499 / 500.0
+
+
+def test_event_name_is_pinned_to_the_wire_string():
+    """钉住线上事件名。
+
+    FakeSocketIO.payloads() 是从被测模块 import EVENT_NAME 来过滤的，所以把
+    EVENT_NAME 改成别的值，其余用例全绿 —— 而前端监听写的是字面量，会静默失联。
+    """
+    from src.services import base_terrain_warmup as w
+
+    assert w.EVENT_NAME == "base_unpack_progress"
 
 
 def test_emit_failure_does_not_break_the_state_machine(monkeypatch, tmp_path):
