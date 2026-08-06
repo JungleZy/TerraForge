@@ -210,6 +210,47 @@ def test_tiler_falls_back_to_parent_url_without_base(tmp_path: Path, monkeypatch
     assert '"parentUrl": "https://example.com/parent"' in layer
 
 
+def test_unpack_failure_falls_back_instead_of_killing_the_job(tmp_path: Path, monkeypatch):
+    """解压失败 → 退回 parentUrl 兜底，**不能**让整个切片任务失败。
+
+    ensure_base_unpacked 把「assets/ 不可写」也包装成 RuntimeError（打包安装到
+    Program Files、从只读介质运行都会命中，它自己的 docstring 就是这么写的）。
+    不接住的话，v0.2.8 能正常切片的场景在这版变成整个地形任务失败 —— 功能回归，
+    而且报错文案是「随包底图解压失败」，用户不会知道这本来是可以忽略的。
+
+    这里退回兜底是干净的：解压阶段失败时任务目录一个字节都还没被碰过，语义与
+    「分卷缺失返回 None」完全一致。graft 阶段失败则必须让任务失败 —— 那时目录里
+    已经躺着半个底图，缺的瓦片会让 Cesium 拿 404 并把整个 provider 降级成
+    heightmap（另有用例钉住，别把两者混为一谈）。
+    """
+    from src.services.terrain_tiling import dem_task_tiler as mod
+
+    task_dir = _make_task_dir(tmp_path)
+    out_dir = tmp_path / "out"
+
+    seen = {}
+
+    def fake_build_terrain(**kwargs):
+        seen.update(kwargs)
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text("{}", encoding="utf-8")
+
+    def boom(**k):
+        raise RuntimeError("随包底图解压失败：[Errno 30] Read-only file system")
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", boom)
+
+    mod.tile_dem_task_dir(
+        task_dir, out_dir,
+        mod.TileParams(maxzoom=10, parent_url="https://example.com/parent"),
+        build_terrain_fn=fake_build_terrain)
+
+    assert seen["min_level"] == 0, "退回兜底后必须从 z0 开始切，否则低层级整个空缺"
+    layer = (out_dir / "layer.json").read_text(encoding="utf-8")
+    assert '"parentUrl": "https://example.com/parent"' in layer
+
+
 def test_degenerate_maxzoom_still_tiles_something(tmp_path: Path, monkeypatch):
     """maxzoom < 8 的任务不能因为 min_level=8 切出零张瓦片却报成功。
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ from src.services.terrain_tiling.layer_json import (
     patch_layer_json_parent,
 )
 from src.services.terrain_tiling.vrt_builder import list_dem_tifs
+
+logger = logging.getLogger(__name__)
 
 
 def terrain_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
@@ -91,7 +94,22 @@ def tile_dem_task_dir(
 
     # 解压排在切片前：首次解压是分钟级，要独占 stage_cb 上报通道，否则和切片
     # 进度抢同一条通道，前端只能看到进度条来回跳。
-    base_dir = ensure_base_unpacked(stage_cb=params.stage_cb)
+    try:
+        base_dir = ensure_base_unpacked(stage_cb=params.stage_cb)
+    except RuntimeError as e:
+        # 解压失败 = 底图不可用，退回 parentUrl 级联，**不让整个切片任务失败**。
+        # ensure_base_unpacked 把「assets/ 不可写」也包装成 RuntimeError（打包
+        # 安装到 Program Files、从只读介质运行都会命中）。不接住的话，v0.2.8 能
+        # 正常切片的场景在这版变成整个地形任务失败，而报错文案是「随包底图解压
+        # 失败」，用户不会知道这本来可以忽略。
+        # 这里退回兜底是干净的：此刻任务目录一个字节都还没被碰过，语义与「分卷
+        # 缺失返回 None」一致。graft 阶段失败则必须让任务失败 —— 那时目录里已经
+        # 躺着半个底图，缺的瓦片会让 Cesium 拿 404 并把整个 provider 降级成
+        # heightmap，比根本没有底图更糟。
+        logger.warning(
+            f"Terrain: 随包底图不可用（{e}），本次切片退回 parentUrl 级联；"
+            f"产出目录不会自包含")
+        base_dir = None
 
     if base_dir is not None:
         # 上一轮植入留下的是**指向共享缓存的硬链接**，而瓦片落盘走
