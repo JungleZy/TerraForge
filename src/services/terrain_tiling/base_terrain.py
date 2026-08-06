@@ -287,7 +287,6 @@ def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path |
     return cache_dir
 
 
-
 def _probe_hardlink(base_dir: Path, tiles_dir: Path) -> bool:
     """在目标目录里试链一次，成败决定整批策略。
 
@@ -314,6 +313,17 @@ def _probe_hardlink(base_dir: Path, tiles_dir: Path) -> bool:
     return True
 
 
+def _walk_error(err: OSError) -> None:
+    """`os.walk` 的错误回调 —— 唯一的作用是把错误重新抛出来。
+
+    默认 `onerror=None` 时 scandir 失败会被直接 continue 掉，整棵子树静默消失，
+    植入照样返回一个「成功」的计数。那正是最坏的结果：调用方以为底图就位，
+    合成出来的 layer.json 宣告 z0-7 都 available，Cesium 对着不存在的瓦片拿 404。
+    宁可整批抛出去回滚。
+    """
+    raise err
+
+
 def graft_base_into(tiles_dir: Path, base_dir: Path) -> dict[str, int]:
     """把底图植入任务瓦片目录，返回 {linked, copied, skipped}。
 
@@ -325,9 +335,19 @@ def graft_base_into(tiles_dir: Path, base_dir: Path) -> dict[str, int]:
     报错，而是塞一个假的 heightmap-1.0 图层并污染共享 builder，连任务自己的
     quantized-mesh 瓦片都被按 heightmap 解析（v0.2.8 实测：4154 m 山峰解成
     -744 m，控制台零报错）。所以宁可整批撤掉、退回 parentUrl 级联。
+
+    **前提：植入必须发生在任务自己切片完成之后。** 冲突判断（`dst_dir.is_dir()`
+    的目录级快照 + 逐文件 `exists()`）是遍历时读一次的，与切片并发跑的话，先被
+    判成「目录不存在、必然无冲突」的那一批就绕过了 skip-if-exists，随后任务写下
+    的瓦片可能撞上已植入的底图瓦片。串行调用就没有这个问题。
     """
     tiles_dir = Path(tiles_dir)
     base_dir = Path(base_dir)
+    # 底图目录不对就当场抛，别返回一个全零的「成功」：调用方会据此认为底图已
+    # 就位。layer.json 同时也是探针源，它缺失时探针会静默降级成整批实体复制
+    # （167 MB、慢一个量级、占双份磁盘），这一次校验把两个洞一起堵上。
+    if not (base_dir / "layer.json").is_file():
+        raise FileNotFoundError(2, "底图目录缺少 layer.json", str(base_dir))
     tiles_dir.mkdir(parents=True, exist_ok=True)
 
     use_link = _probe_hardlink(base_dir, tiles_dir)
@@ -338,7 +358,7 @@ def graft_base_into(tiles_dir: Path, base_dir: Path) -> dict[str, int]:
     try:
         # 用 os.walk 而不是 rglob：一次拿一整个目录的名字，不为 4.3 万个瓦片各
         # 造一个 Path，目录级的准备工作（mkdir / 冲突判断）也只做 518 次。
-        for dirpath, dirnames, filenames in os.walk(base_str):
+        for dirpath, dirnames, filenames in os.walk(base_str, onerror=_walk_error):
             # 排序遍历：磁盘满时植入到一半，留下的前缀每次都一样，排障能对得上。
             dirnames.sort()
             filenames.sort()
@@ -362,13 +382,18 @@ def graft_base_into(tiles_dir: Path, base_dir: Path) -> dict[str, int]:
                     dst_dir.mkdir(parents=True, exist_ok=True)
                     dst_ready = True
                 src = os.path.join(dirpath, name)
+                # 先登记再动手：copy2 不是原子的（copyfile 先建好并截断目标再灌
+                # 数据），写到一半炸掉时目标位置已经躺着一个截断的瓦片。操作后
+                # 才 append 会让它漏出回滚网，然后被下一次重试当成「任务自己的
+                # 瓦片」永久 skip 掉。link 分支多出的那次 unlink 抛
+                # FileNotFoundError，被回滚里的 except OSError 吃掉，零副作用。
+                written.append(dst)
                 if use_link:
                     os.link(src, dst)
                     stats["linked"] += 1
                 else:
                     shutil.copy2(src, dst)
                     stats["copied"] += 1
-                written.append(dst)
     except BaseException:
         # 捕到 BaseException 才连 Ctrl-C 一起兜住 —— 半成品底图的危害与是不是
         # 用户按的键无关。回滚只删 written 里的：被 skip 的、以及任务自己写的

@@ -604,3 +604,99 @@ def test_graft_rolls_back_only_what_it_wrote_on_failure(tmp_path, monkeypatch):
     assert (tiles / "9" / "1" / "1.terrain").read_bytes() == b"TASK-OWN"
     assert (tiles / "0" / "0" / "0.terrain").read_bytes() == b"TASK-OWN", \
         "被 skip 的瓦片是任务自己的，不属于本次植入"
+
+
+def test_graft_rolls_back_a_half_written_copy(tmp_path, monkeypatch):
+    """复制分支写到一半炸掉，那个截断的半成品也必须被回滚带走。
+
+    `os.link` 是原子的，`shutil.copy2` 不是：copyfile 先 `open(dst,'wb')` 建好并
+    截断目标再灌数据，ENOSPC 打在写的中途就会在目标位置留下一个长度不对的
+    `.terrain`。而复制是这份代码自己认定的**常态分支**（跨盘），ENOSPC 又正是它
+    最可能的死法。
+
+    截断比缺失更毒：缺失是 404（已知的 heightmap 污染链），截断是 200 + 解析炸。
+    更要命的是它会**永久粘住** —— 回滚不删空目录，重试时 `dst_dir.is_dir()` 与
+    `dst.exists()` 双双为真，这个残片会被当成「任务自己的瓦片」skip 掉，此后
+    每次重试都绕过它。所以末尾那次重试断言不是锦上添花，它才是「粘住」的证据。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    base = _make_base(tmp_path / "base", layers=((0, 2), (1, 4)), dense=True)
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+    monkeypatch.setattr(base_terrain.os, "link", _link_unsupported)
+
+    n = {"i": 0}
+    real_copy = base_terrain.shutil.copy2
+
+    def half_written(src, dst, **k):
+        n["i"] += 1
+        if n["i"] <= 2:
+            return real_copy(src, dst, **k)
+        # 复刻 shutil.copyfile 的现场：目标已经建好并写进去一截，然后才抛
+        with open(dst, "wb") as fh:
+            fh.write(b"\x1f")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(base_terrain.shutil, "copy2", half_written)
+
+    with pytest.raises(OSError):
+        base_terrain.graft_base_into(tiles, base)
+
+    leftover = sorted(str(p.relative_to(tiles)) for p in tiles.rglob("*.terrain"))
+    assert leftover == [], f"截断的半成品粘在目标目录里：{leftover}"
+
+    monkeypatch.setattr(base_terrain.shutil, "copy2", real_copy)
+    assert base_terrain.graft_base_into(tiles, base) == \
+        {"linked": 0, "copied": 6, "skipped": 0}, "重试把残片当成任务自己的瓦片跳过了"
+
+
+def test_graft_refuses_a_base_dir_that_has_no_layer_json(tmp_path):
+    """底图目录不在 / layer.json 缺失 → 抛，不许返回一个全零的「植入成功」。
+
+    静默成功是这里最坏的结果：Task 5 认为底图已就位，Task 4 接着合成一份宣告
+    z0-7 available 的 layer.json，Cesium 对着根本不存在的瓦片拿 404 —— 正是这个
+    Task 存在的理由本身。
+
+    顺带堵掉探针的降级洞：探针源就是 layer.json，它缺失时 `os.link` 抛
+    FileNotFoundError（⊂ OSError）→ 探针返回 False → 整批 167 MB 静默走实体复制，
+    慢一个量级还占双份磁盘，没有任何断言兜得住。入口校验一次两个洞一起堵。
+    """
+    from src.services.terrain_tiling.base_terrain import graft_base_into
+
+    tiles = tmp_path / "tiles"
+
+    with pytest.raises(OSError):
+        graft_base_into(tiles, tmp_path / "nope")
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(OSError):
+        graft_base_into(tiles, empty)
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason="靠 chmod 造读取失败：Windows 权限语义不同，root 无视权限位")
+def test_graft_fails_loudly_when_a_subtree_cannot_be_read(tmp_path):
+    """遍历中途读不了某棵子树 → 抛并回滚，不许静默跳过后报「植入完成」。
+
+    `os.walk` 的 `onerror` 默认是 None：scandir 失败时它直接 continue，整棵子树
+    被无声吞掉。那样就得到「半个底图 + 成功返回」，而「宁可整批撤掉」这条设计
+    前提直接失效 —— 缺的那半正好落进 Cesium 的 404 → 假 heightmap 图层链。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    base = _make_base(tmp_path / "base", layers=((0, 2), (1, 4)), dense=True)
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+
+    blocked = base / "1" / "0"
+    blocked.chmod(0o000)
+    try:
+        with pytest.raises(OSError):
+            base_terrain.graft_base_into(tiles, base)
+    finally:
+        blocked.chmod(0o755)
+
+    leftover = sorted(str(p.relative_to(tiles)) for p in tiles.rglob("*.terrain"))
+    assert leftover == [], f"子树读不了还留下了半个底图：{leftover}"
