@@ -28,17 +28,22 @@ def _read(*parts):
 
 
 # 出现在 `/` 之前就说明它是**正则字面量**而不是除号（标准启发式：除号前面只能是
-# 值，正则前面只能是运算符/分隔符/关键字）。写下这条是被 ui.js:233 的
+# **值**，正则前面只能是运算符/分隔符/关键字）。写下这条是被 ui.js:233 的
 # `.replace(/"/g, '&quot;')` 逼出来的 —— 正则里的裸引号会把纯字符串扫描器带偏。
 #
-# ⚠️ 这里**刻意不含 `+` `-`**：`a++ / b` 的前一个有效字符是 `+`，收进来的话 `/` 会
-# 被当成正则开头，一路扫到同行 `// 尾注释` 的第一个 `/` 当正则收尾 —— 注释就以
-# 「代码」身份留在了输出里，而栈是平衡的、安全网不会抛。这正是本文件要防的假绿，
-# 只是换了触发条件。`a + /re/.test(x)` 这种写法本项目没有，宁可漏判成除号（响亮
-# 失败：正则本行不闭合 → 抛）也不要静默放行。
+# ⚠️ 判错的两个方向后果**不对称**，两边都得防，不能靠取舍：
+#   - 把除号当正则（`a++ / b; // 尾注释`）：正则一路扫到 `//` 的第一个 `/` 收尾，
+#     尾注释以「代码」身份留在输出里 —— 栈平衡、不抛、**静默假绿**；
+#   - 把正则当除号（`a + /\//.test(s); var hidden = io();`）：`/` 之后被当成行注释，
+#     本行剩余代码被删光 —— 一个**真实的** io() 从输出里凭空消失，同样**静默**。
+#     （注意：此时正则分支根本没进，「正则本行未闭合 → 抛」那条安全网对它永远不会
+#     触发。那条网只兜相反方向。）
+# 所以按 token 精确区分，而不是把 `+ -` 一删了之：`++`/`--` 是**后缀自增自减**、
+# 结果是值 → 后面的 `/` 是除号；单个 `+ -` 是二元/一元运算符 → 后面的 `/` 是正则。
+# 见 _regex_allowed 里的 endswith("++") / endswith("--")。
 # 关键字前缀是 `[^\w$.]` 而不是 `[^\w$]`：`o.of / 2` 里的 `.of` 是属性访问不是关键字，
-# 少了那个 `.` 同样会把 `/` 误判成正则、把同行尾注释救活。
-_REGEX_CAN_FOLLOW = set("(,=:[!&|?{};*%~^<>\n")
+# 少了那个 `.` 会把 `/` 误判成正则、把同行尾注释救活。
+_REGEX_CAN_FOLLOW = set("(,=:[!&|?{};+-*%~^<>")
 _REGEX_CAN_FOLLOW_WORD_RE = re.compile(
     r"(?:^|[^\w$.])(return|typeof|case|in|of|new|delete|void|do|else|instanceof|yield|await|throw)\s*$")
 
@@ -65,6 +70,8 @@ def _strip_js_comments(src):
         tail = "".join(out).rstrip()
         if not tail:
             return True
+        if tail.endswith("++") or tail.endswith("--"):
+            return False  # 后缀自增自减的结果是值 → 后面的 `/` 是除号，不是正则
         return tail[-1] in _REGEX_CAN_FOLLOW or bool(_REGEX_CAN_FOLLOW_WORD_RE.search(tail))
 
     while i < n:
@@ -212,11 +219,14 @@ def test_strip_js_comments():
         "var half = total / 2; // 除号不是正则\n"
         "var cls = /[/\"']+/.test(s);\n"          # 字符类里的 / 与引号
         "var tpl = `a//b ${x ? `<i>${y}</i>` : ''} c`; // 嵌套模板串\n"
-        # 下面两条是已知的失败样本（复审实测挖出来的）：曾经 `+` 与 `.of` 会让 `/`
-        # 被误判成正则开头，一路吞到尾注释的第一个 `/`，注释因此以「代码」身份存活，
-        # 而栈是平衡的、安全网不抛 —— 假绿。当回归钉子留着。
+        # 下面两组是已知的失败样本（两轮复审各挖出一组），互为反方向，必须同时钉住：
+        # A. 除号被当成正则：`/` 一路吞到尾注释的第一个 `/` 当收尾，注释以「代码」
+        #    身份存活 —— 栈平衡、不抛、假绿。
         "var c = a++ / b; // instance = io()\n"
         "var z = o.of / 2; // io()\n"
+        # B. 正则被当成除号：`/` 之后被当成行注释，本行剩余代码被删光 —— 一个**真实
+        #    的** io() 从输出里凭空消失，同样静默。修 A 时若把 `+ -` 一删了之就会开这个洞。
+        "var ok = a + /\\/\\//.test(u); var hidden = io(); // io()\n"
     )
     assert "注释里" not in stripped, "注释没剥干净"
     assert "块注释" not in stripped
@@ -226,11 +236,21 @@ def test_strip_js_comments():
     assert "total / 2" in stripped, "除号被当成正则开头，后面的代码被吞了"
     assert "`a//b ${x ? `<i>${y}</i>` : ''} c`" in stripped, "嵌套模板串被剥坏了"
     assert "嵌套模板串" not in stripped, "嵌套模板串之后的行注释没剥掉（状态串味了）"
+    # A 方向：除号没被当成正则，尾注释确实被剥掉了
     assert "a++ / b" in stripped and "o.of / 2" in stripped, "自增/属性访问后的除号被吞了"
-    assert len(_IO_CALL_RE.findall(stripped)) == 1, (
-        "`a++ /` 或 `.of /` 后面的尾注释以「代码」身份活了下来 —— "
-        "_REGEX_CAN_FOLLOW 又把 + / - 收进去了，或关键字前缀漏了排除 `.`")
-    assert len(_IO_CALL_RE.findall(stripped)) == 1, "剥完之后应当只剩代码里那一次 io()"
+    # B 方向：正则没被当成除号 —— 注释剥掉了，而**本行后面的真代码还在**。
+    # 只断言前半句会漏掉整条 B（代码被删光时注释当然也不在了）。
+    assert "var hidden = io();" in stripped, (
+        "`a + /re/` 里的正则被当成了除号，本行剩余代码被当行注释删光 —— "
+        "一个真实的 io() 从剥离结果里消失了，唯一创建点那条断言会绿着放行第二个连接")
+    assert "/\\/\\//.test(u)" in stripped, "正则字面量本身被剥坏了"
+    # 全文只应剩代码里那一次 io()（`instance = io();`）：A 方向的两条尾注释、
+    # B 方向那行的尾注释都必须已经剥掉，而 B 行的 `var hidden = io();` 是代码…
+    # 所以这里期望 2 次：instance = io() 与 var hidden = io()。
+    assert len(_IO_CALL_RE.findall(stripped)) == 2, (
+        f"剥完之后 io() 应当恰好剩 2 次（两处代码），实际 {len(_IO_CALL_RE.findall(stripped))} 次 —— "
+        "多了说明某条尾注释以「代码」身份活了下来（A 方向），"
+        "少了说明某行真代码被当注释删光了（B 方向）")
     # 真实文件全部能扫完（不抛）
     for path in sorted(glob.glob(os.path.join(ROOT, "static", "js", "*.js"))):
         with open(path, encoding="utf-8") as f:
