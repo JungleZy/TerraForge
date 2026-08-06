@@ -206,3 +206,203 @@ def test_both_managers_gate_parent_url_on_base_availability():
             f"parentUrl，导致整个 provider 降级成 heightmap")
         assert "terrain_global_base_path" in text, (
             f"{rel} 没有读 terrain_global_base_path，无从判断 base 是否存在")
+
+
+# ---------------------------------------------------------------------------
+# layer.json 合成（底图植入之后的收尾）
+#
+# 植入把底图的 z0-z7 瓦片放进了任务目录，但 Cesium 只看 layer.json：声明里没
+# 有的层它根本不请求，文件在磁盘上也等于不存在。而声明错、maxzoom 声明浅、
+# parentUrl 留着指向 localhost，三者任何一个都会把整个 provider 拖进
+# heightmap 降级链（详见 normalize_parent_url 的实测表）。
+# ---------------------------------------------------------------------------
+
+def _write_layer(path, *, maxzoom, available, parent=None, minzoom=0):
+    import json
+    data = {"tilejson": "1.0", "format": "quantized-mesh-1.0", "scheme": "tms",
+            "projection": "EPSG:4326", "tiles": ["{z}/{x}/{y}.terrain"],
+            "minzoom": minzoom, "maxzoom": maxzoom, "available": available}
+    if parent:
+        data["parentUrl"] = parent
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_merge_base_availability_unions_levels_and_drops_parent_url(tmp_path):
+    """available 逐层并集，parentUrl 必须被删掉。
+
+    自包含之后 parentUrl 是一次多余请求，而且它指向 localhost —— 目录拷到别的
+    机器上必然 404，而 Cesium 的 404 处理会把整个 provider 降级成 heightmap。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = _write_layer(tmp_path / "base" / "layer.json", maxzoom=7,
+                        available=[[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8)
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=10,
+                        available=[[]] * 8 + [
+                            [{"startX": 5, "startY": 5, "endX": 6, "endY": 6}],
+                            [{"startX": 10, "startY": 10, "endX": 12, "endY": 12}],
+                            [{"startX": 20, "startY": 20, "endX": 24, "endY": 24}]],
+                        parent="http://localhost:5000/terrain/base")
+
+    merge_base_availability(task, base)
+    data = json.loads(task.read_text(encoding="utf-8"))
+
+    assert "parentUrl" not in data
+    assert data["minzoom"] == 0
+    assert data["maxzoom"] == 10
+    assert len(data["available"]) == 11
+    # z0-z7 来自底图
+    assert data["available"][0] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+    assert data["available"][7] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+    # z8+ 来自任务；底图在这几层没有声明，并集结果就只有任务的
+    assert data["available"][8] == [{"startX": 5, "startY": 5, "endX": 6, "endY": 6}]
+    assert data["available"][10] == [{"startX": 20, "startY": 20, "endX": 24, "endY": 24}]
+    # 其余字段原样保留：合成只碰 available / minzoom / maxzoom / parentUrl
+    assert data["format"] == "quantized-mesh-1.0"
+    assert data["tiles"] == ["{z}/{x}/{y}.terrain"]
+
+
+def test_merge_keeps_base_levels_deeper_than_the_task(tmp_path):
+    """maxzoom < 8 的退化任务：maxzoom 必须取 max(7, 任务的)。
+
+    直接取任务的会把底图的 z6/z7 声明掉，Cesium 从此不请求它们 —— 明明文件
+    就在目录里，却看不到。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = _write_layer(tmp_path / "base" / "layer.json", maxzoom=7,
+                        available=[[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8)
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=5,
+                        available=[[]] * 5 + [[{"startX": 3, "startY": 3, "endX": 3, "endY": 3}]])
+
+    merge_base_availability(task, base)
+    data = json.loads(task.read_text(encoding="utf-8"))
+
+    assert data["maxzoom"] == 7
+    assert len(data["available"]) == 8
+    # 同层相撞时两边的声明都保留（任务瓦片在磁盘上胜出，声明是并集）
+    assert {"startX": 3, "startY": 3, "endX": 3, "endY": 3} in data["available"][5]
+    assert {"startX": 0, "startY": 0, "endX": 1, "endY": 0} in data["available"][5]
+    assert len(data["available"][5]) == 2
+    assert data["available"][7] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+
+
+def test_merge_forces_minzoom_to_zero_even_when_the_task_starts_deeper(tmp_path):
+    """minzoom 必须硬置 0，不能沿用任务原值。
+
+    ctb-tile 对一个只覆盖小范围的任务会写出 minzoom>0 的 layer.json。植入之后
+    z0 起的底图瓦片就躺在目录里，但 Cesium 用 minzoom 决定从哪一层开始请求 ——
+    留着 8 就等于把刚植入的 8 层全部作废，屏幕上依旧只有那一小块。
+
+    任务书给的两条用例里任务侧 minzoom 本来就是 0，杀不掉「删掉 minzoom=0 这
+    一行」的变异体，所以补这条。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = _write_layer(tmp_path / "base" / "layer.json", maxzoom=7,
+                        available=[[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8)
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=10, minzoom=8,
+                        available=[[]] * 8 + [
+                            [{"startX": 5, "startY": 5, "endX": 6, "endY": 6}]] * 3)
+
+    merge_base_availability(task, base)
+    data = json.loads(task.read_text(encoding="utf-8"))
+
+    assert data["minzoom"] == 0
+
+
+def test_merge_declares_base_levels_when_the_task_produced_no_tiles(tmp_path):
+    """任务侧一张瓦片都没切出来时，结果必须仍然声明底图的 8 层。
+
+    切片失败/范围落空会产出 available 全空的 layer.json。此时目录里唯一有内容
+    的就是植入的底图，合成如果跟着塌成空声明，用户看到的是一个纯黑的球，而不是
+    「底图有、细节没有」—— 后者才对得上磁盘上的事实。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = _write_layer(tmp_path / "base" / "layer.json", maxzoom=7,
+                        available=[[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8)
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=10,
+                        available=[[]] * 11)
+
+    merge_base_availability(task, base)
+    data = json.loads(task.read_text(encoding="utf-8"))
+
+    assert data["maxzoom"] == 10
+    assert data["available"][0] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+    assert data["available"][7] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+    assert data["available"][8] == []
+
+
+def test_merge_tolerates_missing_and_null_fields(tmp_path):
+    """字段缺失 / 为 null 不能把合成打断在半路。
+
+    layer.json 不是只有 ctb-tile 会产出（底图允许用户自备，见
+    docs/reference/terrain/global-base-build.md），少写 available 或 maxzoom 都
+    见得到。这里的取舍是：**结构性缺失容忍，内容损坏不容忍** —— JSON 本身解不开
+    就让异常抛出去，由调用方回滚，静默吞掉只会产出一个没人知道是坏的 layer.json。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = tmp_path / "base" / "layer.json"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_text(json.dumps({"tilejson": "1.0"}), encoding="utf-8")
+
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=9,
+                        available=[[]] * 9 + [[{"startX": 1, "startY": 1,
+                                                "endX": 1, "endY": 1}]])
+
+    merge_base_availability(task, base)
+    data = json.loads(task.read_text(encoding="utf-8"))
+
+    assert data["maxzoom"] == 9
+    assert data["available"][9] == [{"startX": 1, "startY": 1, "endX": 1, "endY": 1}]
+
+    # available / maxzoom 显式为 null 也一样（json.dumps(None) 会走到这一支）
+    base.write_text(json.dumps({"available": None, "maxzoom": None}), encoding="utf-8")
+    task2 = _write_layer(tmp_path / "task2" / "layer.json", maxzoom=None,
+                         available=None)
+
+    merge_base_availability(task2, base)
+    data2 = json.loads(task2.read_text(encoding="utf-8"))
+
+    assert data2["available"] == []
+    assert data2["maxzoom"] == 0
+
+
+def test_merge_is_idempotent(tmp_path):
+    """重跑一次不能把声明翻倍。
+
+    植入失败重试、或者用户对同一个任务目录再点一次「合成」，都会让这个函数在
+    已合成过的 layer.json 上再跑一遍。重复的 range 不会让 Cesium 报错，但声明
+    会随重试次数线性膨胀，而 layer.json 是每次加载都要下载解析的。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = _write_layer(tmp_path / "base" / "layer.json", maxzoom=7,
+                        available=[[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8)
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=8,
+                        available=[[]] * 8 + [[{"startX": 5, "startY": 5,
+                                                "endX": 6, "endY": 6}]])
+
+    merge_base_availability(task, base)
+    first = json.loads(task.read_text(encoding="utf-8"))
+    merge_base_availability(task, base)
+    second = json.loads(task.read_text(encoding="utf-8"))
+
+    assert second == first
+    assert len(second["available"][0]) == 1

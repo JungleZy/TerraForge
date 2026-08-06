@@ -82,3 +82,51 @@ def patch_layer_json_parent(layer_json_path: Path, parent_url: str | None) -> No
         json.dumps(data, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+
+
+
+def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> None:
+    """把底图的 available 并进任务的 layer.json，并删掉 parentUrl。
+
+    植入之后任务目录是自包含的，parentUrl 就成了多余的一次请求 —— 更糟的是它
+    指向 localhost:5000，目录拷到别的机器上必然 404，而 Cesium 对这个 404 不
+    报错，它塞一个假的 heightmap-1.0 图层并把 heightmapStructure 写在共享的
+    builder 上，于是任务自己的 quantized-mesh 瓦片也按 heightmap 解析
+    （v0.2.8 实测：4154 m 山峰解成 -744 m，控制台零报错）。
+
+    maxzoom 取 max(底图, 任务)：maxzoom < 8 的退化任务里底图的 z6/z7 比任务更
+    深，写任务的值会把这两层声明掉，Cesium 从此不请求它们 —— 文件在目录里却
+    看不到。minzoom 同理硬置 0：ctb-tile 给小范围任务写的 minzoom 可能大于 0，
+    留着就等于把刚植入的 z0-z7 全部作废。
+
+    同层两边都有声明时取并集而不是二选一：磁盘上任务瓦片覆盖了底图的同名文件
+    （植入是 skip-if-exists），但两边的 range 覆盖的 x/y 区间未必互相包含，丢
+    掉任何一边都会漏声明真实存在的瓦片。range 去重只做逐字比较，不做区间归并
+    —— Cesium 接受重叠声明，而重跑合成时的等值重复必须挡掉，否则声明会随重试
+    次数线性膨胀。
+
+    容忍 available / maxzoom 缺失或为 null（底图允许用户自备），但不容忍 JSON
+    本身解不开：那时让异常抛给调用方回滚，静默吞掉只会产出一个没人知道是坏的
+    layer.json。
+    """
+    task = json.loads(task_layer_path.read_text(encoding="utf-8"))
+    base = json.loads(base_layer_path.read_text(encoding="utf-8"))
+
+    task_av = task.get("available") or []
+    base_av = base.get("available") or []
+    merged = []
+    for z in range(max(len(task_av), len(base_av))):
+        ranges = list(base_av[z]) if z < len(base_av) else []
+        for r in (task_av[z] if z < len(task_av) else []):
+            if r not in ranges:
+                ranges.append(r)
+        merged.append(ranges)
+
+    task["available"] = merged
+    task["minzoom"] = 0
+    task["maxzoom"] = max(int(base.get("maxzoom", 0) or 0),
+                          int(task.get("maxzoom", 0) or 0))
+    task.pop("parentUrl", None)
+
+    task_layer_path.write_text(
+        json.dumps(task, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
