@@ -16,6 +16,12 @@ let _loadStatsDebounceTimer = null;
 
 function initTasks() {
     socket = window.TerraSocket.get();
+    // 必须在 get() 之后的**同一个同步块**里就把监听挂上（见 socket.js 的说明）：
+    // socket.io 不重放错过的事件，中间一让出事件循环就可能漏掉 connect。
+    // 这一行兜的是「连接不是本页建的」那种情况：若已有别的消费者先 get() 过、
+    // 此刻连接已经建好，本页的 connect 回调就永远不会触发，hasConnectedOnce 会
+    // 卡在 false —— 于是断线重连后不补拉数据（那正是它存在的唯一理由）。
+    if (socket.connected) hasConnectedOnce = true;
 
     socket.on('connect', function() {
         console.log('Connected to server');
