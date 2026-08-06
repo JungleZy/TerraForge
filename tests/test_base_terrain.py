@@ -499,6 +499,44 @@ def test_replace_does_not_retry_a_permanent_error(tmp_path, monkeypatch):
     assert not base_terrain.is_base_ready(parts / "base_z8")
 
 
+@pytest.mark.parametrize("errno_name", ["EACCES", "EPERM", "EBUSY"])
+def test_every_whitelisted_errno_is_actually_retried(tmp_path, monkeypatch, errno_name):
+    """白名单里的**每一个** errno 都要真的走重试，一个都不许是摆设。
+
+    上面那条只喂 EACCES=13（现场在 WSL2 抓到的那个），于是 `EPERM` 与 `EBUSY`
+    从来没被任何测试碰过 —— 实测把它俩从 `_REPLACE_RETRYABLE_ERRNOS` 里删掉，
+    整个文件 31 条全绿。而代码注释专门论证过「EBUSY 是给 Windows 留的余量：
+    那边的『目标正被占用』不保证一律映射成 EACCES」，论证了却没人守，等于没有。
+
+    参数化而不是循环：哪一个错误码退化了，测试名直接点出来。
+    """
+    import errno as errno_mod
+
+    from src.services.terrain_tiling import base_terrain
+
+    code = getattr(errno_mod, errno_name)
+    assert code in base_terrain._REPLACE_RETRYABLE_ERRNOS, (
+        f"{errno_name} 不在重试白名单里 —— 要么是被误删了，要么是本测试的名单过期了")
+
+    src = _make_base(tmp_path / "src", dense=True)
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+
+    def flaky(n):
+        if n == 1:
+            raise OSError(code, f"stubbed {errno_name}")
+
+    calls, slept = _stub_replace(monkeypatch, base_terrain, flaky)
+
+    cache = base_terrain.ensure_base_unpacked()
+
+    assert cache == parts / "base_z8"
+    assert base_terrain.is_base_ready(cache), f"{errno_name} 重试后改名没真的落地"
+    assert len(calls) == 2, (
+        f"{errno_name} 没有被重试（调用 {len(calls)} 次）—— 它在白名单里却不生效")
+    assert len(slept) == 1, f"{errno_name} 重试了却没退避：{slept}"
+
+
 def test_replace_gives_up_after_the_budget_and_keeps_the_runtime_error_contract(
         tmp_path, monkeypatch):
     """一直被占着 → 用尽预算后仍抛 RuntimeError（契约不变），且预算是有限的。

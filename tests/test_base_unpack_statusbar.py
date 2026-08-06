@@ -37,9 +37,12 @@ CSS 也走 `_strip_js_comments`：CSS 的 `/* */` 与 JS 同形。已逐行比�
 第 2 类由 `test_css_stripper_preconditions_hold` 直接钉住前提；每条 CSS 断言另配
 「被测规则块还在」的正向哨兵作为第二道网。
 """
+import glob
 import os
 import re
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -56,6 +59,13 @@ _DEFERRAL_TOKENS = ("await", "setTimeout", "setInterval", "requestAnimationFrame
 # 窄屏隐藏规则里不许出现的**位置相关**伪类。原来的 `.statusbar-item:last-child`
 # 只是这一类里的一个实例，钉住整类才不会换个巧合再犯。
 _POSITIONAL_PSEUDO_RE = re.compile(r":(?:last|first|only)-(?:child|of-type)|:nth-")
+
+# 让路规则里的 id。**必须带右边界** `(?![-\w])`：markup 上还有
+# #statusBaseUnpackText / #statusBaseUnpackProgress / #statusBaseUnpackBar，
+# 全都以它为前缀，裸子串匹配会被它们满足。实测过这条假守卫：把规则里的 id 换成
+# #statusBaseUnpackText，测试全绿，而那个元素**从来不带 hidden** ——
+# `:not([hidden])` 恒真，窄屏那几项被**永久**隐藏，正是本断言声称要防的事。
+_UNPACK_ID_RE = re.compile(r"#statusBaseUnpack(?![-\w])")
 
 
 def _read(*parts):
@@ -130,9 +140,49 @@ def _hidden_selectors_in_narrow_screen_block():
     return selectors
 
 
-def _template_class_tokens():
-    """所有模板里 class="..." 出现过的类名（已剥注释）。"""
+def _js_class_tokens():
+    """静态 JS 里通过 classList.add/remove/toggle 操作过的类名（已剥注释）。
+
+    与模板里的静态 class 合起来才是「这个类名真的存在」的完整口径：
+    `statusbar-basemap--failed` 只由 base_terrain_status.js 加，markup 上没有 ——
+    只查模板会把一条完全正确的 CSS 规则误判成「选不中任何东西」。
+    剥注释同理：注释里逐字讨论这些类名。
+    """
     tokens = set()
+    for path in sorted(glob.glob(os.path.join(ROOT, "static", "js", "*.js"))):
+        with open(path, encoding="utf-8") as f:
+            code = _strip_js_comments(f.read())
+        for cls in re.findall(r"classList\.(?:add|remove|toggle)\(\s*['\"]([^'\"]+)['\"]", code):
+            tokens.update(cls.split())
+    return tokens
+
+
+def _rules_declaring(css, prop, class_token):
+    """[(选择器, 声明块, 起始位置)]：选择器提到 class_token 且声明了 prop（已剥注释）。
+
+    `([^{}]+)\\{([^{}]*)\\}` 扫到的是**最内层**规则：`@media` 的外层因为内部还有 `{`
+    匹配不上，里面那几条会被逐条扫出来，位置也是它们各自的真实位置 —— 正好是比较
+    层叠所需要的。
+    """
+    out = []
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        sel, decls = m.group(1).strip(), m.group(2)
+        if class_token in sel and re.search(r"(?:^|;|\s)" + prop + r"\s*:", decls):
+            out.append((sel, decls, m.start()))
+    return out
+
+
+def _specificity(selector):
+    """(#id, #类与伪类, #类型) —— 够本文件用的近似，遇到不认识的写法就让调用方判失效。"""
+    return (len(re.findall(r"#[A-Za-z0-9_-]+", selector)),
+            len(re.findall(r"\.[A-Za-z0-9_-]+", selector))
+            + len(re.findall(r":(?!:)[a-z-]+", selector)),
+            0)
+
+
+def _template_class_tokens():
+    """所有模板里 class="..." 出现过的类名（已剥注释），并上 JS 动态加的那些。"""
+    tokens = set(_js_class_tokens())
     tpl_dir = os.path.join(ROOT, "templates")
     for name in sorted(os.listdir(tpl_dir)):
         if not name.endswith(".html"):
@@ -461,18 +511,25 @@ def test_narrow_screen_rule_no_longer_depends_on_last_child():
 
 
 def test_narrow_screen_makes_room_for_the_unpack_progress():
-    """窄屏下必须有「解压进度出现时让路」的规则，否则它被 overflow 整个裁掉。
+    """窄屏下必须有「running 出现时让路」的规则，否则它被 overflow 整个裁掉。
 
     430px 实测（这条规则落地前）：状态栏可视宽 408、内容宽 788、`overflow-x: hidden`，
     解压进度落在 left=615 / right=789，而状态栏右边只到 420 —— **超出 369px，一个
     像素都看不见**。而这里的注释当时写着「底图解压进度在窄屏保留显示」，是句假话。
 
-    钉三样，对应三种改坏方式：
+    钉四样，对应四种改坏方式：
       1. 让路规则存在（整段删掉 → 元素又被裁光）；
-      2. 四个让路目标一个都不能少（少一个就不够宽 —— 实测只挤掉前三项时，中文富余
-         95px 但**英文溢出 16px**，英文文案才是真正的约束）；
+      2. 三个让路目标一个都不能少；
       3. 条件里必须有 `:not([hidden])`（去掉就变成窄屏永久隐藏这些读数项，
-         而解压只占那几分钟 —— 临时让路变成永久牺牲）。
+         而 running 只占那几分钟 —— 临时让路变成永久牺牲）；
+      4. 条件里必须排除 failed（`:not(.statusbar-basemap--failed)`）。这条是
+         **JS 与服务端两侧语义合起来才成立的约束**：failed 在 JS 侧是粘性终态
+         （settled 之后不接受任何降级），在服务端是进程级单例且每次 connect 都重推
+         快照 —— 一旦失败，这几项会在整个进程生命周期内、所有页面、每次刷新都不再
+         出现，直到某次重启真的解压成功。那已经不是「临时让路」。
+
+    ⚠️ 匹配 id 用带右边界的 `_UNPACK_ID_RE`，不是裸子串 —— 理由见该常量的注释
+    （本断言初版就是被 #statusBaseUnpackText 这类前缀 id 骗过去的假守卫）。
     """
     block = _braced_block(_css(), "@media (max-width: 576px)")
     yielding = []
@@ -480,21 +537,89 @@ def test_narrow_screen_makes_room_for_the_unpack_progress():
         if not re.search(r"display\s*:\s*none", decls):
             continue
         yielding += [one.strip() for one in sel.split(",")
-                     if "#statusBaseUnpack" in one.replace(" ", "")]
+                     if _UNPACK_ID_RE.search(one.replace(" ", ""))]
     assert yielding, (
         "窄屏没有任何「解压进度出现时让路」的规则 —— 430px 下状态栏内容宽 788 而可视宽 "
         "408，overflow: hidden 会把排在最右的解压进度整个裁掉，一个像素都看不见")
 
     targets = {cls for s in yielding for cls in re.findall(r"\.([A-Za-z0-9_-]+)", s)}
-    missing = {"statusbar-tasks", "statusbar-copy", "statusbar-event", "conn-status"} - targets
+    missing = {"statusbar-tasks", "statusbar-copy", "statusbar-event"} - targets
     assert not missing, (
-        f"让路名单里少了 {sorted(missing)} —— 实测宽度不够："
-        "只挤掉 tasks/copy/event 时中文富余 95px 而英文「Unpacking base terrain 100%」"
-        "溢出 16px，四项都挤掉英文才有 65px 富余")
+        f"让路名单里少了 {sorted(missing)} —— 实测宽度不够：只挤 copy/event 那 192px "
+        "填不上 369px 的缺口（.statusbar-tasks 一项就 276px）")
+    assert "conn-status" not in targets, (
+        "不该挤掉 .conn-status：它在 base.html、**每一页都有**，而其余三项只在 "
+        "index.html。在 /config 与 /history 上这条规则唯一能挤掉的就是连接指示灯，"
+        "而那两页的状态栏本来就只有它和解压进度两个元素，根本不缺那 73px —— 挤了纯亏。"
+        "差的宽度从 .statusbar-basemap 自己的 36px 装饰里出")
 
-    assert all(":not([hidden])" in s.replace(" ", "") for s in yielding), (
-        "让路条件里没有 :not([hidden]) —— 会变成窄屏**永久**隐藏这些读数项，"
-        "而解压只是那几分钟的临时状态，隐藏后本该自动恢复")
+    for s in yielding:
+        compact = s.replace(" ", "")
+        assert ":not([hidden])" in compact, (
+            f"让路条件 {s!r} 里没有 :not([hidden]) —— 会变成窄屏**永久**隐藏这些读数项，"
+            "而 running 只是那几分钟的临时状态，隐藏后本该自动恢复")
+        assert ":not(.statusbar-basemap--failed)" in compact, (
+            f"让路条件 {s!r} 没有排除 failed 态 —— failed 在 JS 侧是粘性终态、在服务端是"
+            "进程级单例且每次 connect 重推快照，让路会一直生效到进程结束：那几项读数在"
+            "所有页面、每次刷新都不再出现，直到某次重启真的解压成功")
+
+
+@pytest.mark.parametrize("prop", ["margin-left", "padding", "border-left"])
+def test_narrow_screen_decoration_reset_actually_wins_the_cascade(prop):
+    """窄屏那条装饰清零必须真的**胜出**，不能只是写在那里。
+
+    这 36px（margin-left 12 + padding 0 12 + 左边框 1）是英文文案能装下的关键：
+    不清零的话元素 291px、溢出 16px。
+
+    实测踩过这个坑：清零规则写成裸 `.statusbar-basemap`（特异度 0,1,0）时，基础规则
+    同特异度且写在本文件**更靠后**的位置 —— 同特异度靠后者胜，清零**完全不生效**，
+    元素仍是 291px、英文照样被裁，而当时所有断言全绿。所以这里不查「有没有写」，
+    而是按「特异度 → 源码顺序」真算一遍层叠，断言赢家的值是 0。
+    """
+    css = _css()
+    rules = _rules_declaring(css, prop, "statusbar-basemap")
+    assert len(rules) >= 2, (
+        f"只找到 {len(rules)} 条声明 {prop} 且与 .statusbar-basemap 有关的规则，"
+        "预期至少两条（基础规则 + 窄屏清零）—— 本测试已失效，先核对选择器写法")
+    assert not any("!important" in d for _, d, _ in rules), (
+        "有规则用了 !important，本测试的层叠模型算不了 —— 已失效（不是通过）")
+
+    # 同源、无 !important 下的层叠：先比特异度，再比源码顺序
+    sel, decls, _pos = max(rules, key=lambda r: (_specificity(r[0]), r[2]))
+    value = re.search(r"(?:^|;|\s)" + prop + r"\s*:\s*([^;]+)", decls).group(1).strip()
+    assert re.fullmatch(r"0(?:px)?", value), (
+        f"窄屏下 {prop} 的层叠赢家是 `{sel} {{ {prop}: {value} }}` —— 装饰没被清零。"
+        f"多半是清零规则的特异度不够又写在基础规则之前（基础规则在本文件更靠后，"
+        f"同特异度靠后者胜）。给清零规则加个祖先前缀即可")
+
+
+def test_narrow_screen_keeps_the_failure_badge_visible():
+    """failed 态不让路，所以必须靠 order 把它挪到最左，否则它自己被裁光。
+
+    430px 实测（加 order 之前）：failed 态没有任何让路，解压进度排在最右，
+    中文 **-280px**、英文 **-393px**，一个像素都看不见。而 failed 是粘性终态 ——
+    看不见就等于「失败永远不可见」，那正是这个功能要消灭的东西。
+
+    挪到最左之后实测：中文富余 339px、英文 226px，且六项读数一项没少。
+    代价是它右边的读数被挤出可视区，但那几项在窄屏下**本来就**被裁
+    （元素隐藏时内容宽 602 > 可视宽 408），没有新增损失。
+
+    只在 failed 态改顺序：running 是临时状态，「进度在最右」的语义值得保留。
+    所以这里同时钉「有 order」和「选择器带 --failed」——去掉后者会把 running 也
+    挪到最左，静默改掉它的位置语义。
+    """
+    block = _braced_block(_css(), "@media (max-width: 576px)")
+    ordered = [(sel.strip(), decls) for sel, decls in re.findall(r"([^{}]+)\{([^{}]*)\}", block)
+               if re.search(r"\border\s*:", decls)]
+    assert ordered, (
+        "窄屏没有任何 order 规则 —— failed 态不让路又排在最右，会被 overflow 裁光"
+        "（实测中文 -280px / 英文 -393px），失败永远不可见")
+    sels = " ".join(sel for sel, _ in ordered)
+    assert "statusbar-basemap--failed" in sels, (
+        f"order 规则没有钉在 failed 态上（当前 {sels!r}）—— 挂到 .statusbar-basemap "
+        "上会把 running 也挪到最左，静默改掉「进度在最右」的位置语义")
+    assert any(re.search(r"\border\s*:\s*-\d", decls) for _, decls in ordered), (
+        "order 不是负值 —— 只有负值才排到那些 order:0 的读数项之前")
 
 
 def test_narrow_screen_selectors_match_the_real_markup():

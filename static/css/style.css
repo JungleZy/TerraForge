@@ -558,22 +558,56 @@ body {
               上另有一颗 data-panel="records" 的按钮，挤掉不会断路）
          挤掉 .statusbar-copy  100 + 76px（坐标 / 选区四至，点了才有意义）
          挤掉 .statusbar-event  16px（事件提示，发生了才有意义）
-         挤掉 .conn-status      73px（连接指示。挤它的理由最硬：**能收到解压进度
-              本身就证明连接是通的**，此刻它是冗余信息）
-         留下 #statusZoom 30px + 解压进度 ≈ 300px（英文文案下）
-       都是「点了/发生了才有意义」或此刻冗余的信息，而解压进度只占那几分钟，
+         留下 .conn-status、#statusZoom 与解压进度本身
+       都是「点了/发生了才有意义」的辅助信息，而 running 只占那几分钟，
        所以是临时让路而不是永久牺牲。
+       ⚠️ **刻意不挤 .conn-status**：上面那三个类只存在于 index.html，而
+       .conn-status 在 base.html、每一页都有 —— 在 /config 与 /history 上这条规则
+       唯一能挤掉的就是连接指示灯，而那两页的状态栏本来就只有它和解压进度两个
+       元素，根本不缺那 73px。挤了是纯亏。差的那点宽度改从本元素自己的装饰里出
+       （见下面那条 .statusbar-basemap 的窄屏规则，36px 纯装饰）。
        ⚠️ 英文文案是本规则的真正约束，别只按中文调：中文「底图解压 100%」元素宽
-       181px，英文「Unpacking base terrain 100%」是 291px。只挤掉前三项时中文富余
-       95px 而英文**溢出 16px** —— 把 .conn-status 也挤掉之后英文才有富余。
+       181px，英文「Unpacking base terrain 100%」是 291px。只挤掉这三项时中文富余
+       95px 而英文**溢出 16px** —— 靠下面那条清零装饰的规则补回来。
+       ⚠️ **failed 态刻意不让路**（`:not(.statusbar-basemap--failed)`）：failed 在
+       JS 侧是**粘性终态**、在服务端是**进程级单例**且每次 connect 都重推快照，
+       所以一旦失败，这几项会在整个进程生命周期内、所有页面、每次刷新都不再出现，
+       直到某次重启真的解压成功 —— 那就不是「临时让路」而是永久牺牲了。
        ⚠️ :has() 是「当某个兄弟元素可见时」的**唯一**纯 CSS 表达方式 —— CSS 没有
        前向选择器，拿不到「后面那个元素现在显示着」这个条件。Chrome 105+ / 2022
        起支持，远低于本项目 Cesium 1.143 的浏览器基线。 */
-    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .statusbar-tasks,
-    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .statusbar-copy,
-    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .statusbar-event,
-    .workbench-statusbar:has(#statusBaseUnpack:not([hidden])) .conn-status {
+    .workbench-statusbar:has(#statusBaseUnpack:not([hidden]):not(.statusbar-basemap--failed)) .statusbar-tasks,
+    .workbench-statusbar:has(#statusBaseUnpack:not([hidden]):not(.statusbar-basemap--failed)) .statusbar-copy,
+    .workbench-statusbar:has(#statusBaseUnpack:not([hidden]):not(.statusbar-basemap--failed)) .statusbar-event {
         display: none;
+    }
+
+    /* 窄屏下本元素自己的装饰全部清零：margin-left 12 + padding 0 12 + 左边框 1
+       = 36px 纯装饰，而英文文案的缺口只有 16px，够补。
+       为什么要单独写一条：本元素**不带** .statusbar-item，上面那条
+       `.workbench-statusbar .statusbar-item { padding: 0 8px }` 管不到它。
+       这 36px 是从自己身上省的，比再挤掉一项别人的读数便宜。
+       ⚠️ 选择器必须带 .workbench-statusbar 前缀（0,2,0）：基础规则
+       `.statusbar-basemap`（0,2,0 里的 0,1,0）写在本文件**更靠后**的位置，
+       同特异度下靠后者胜 —— 这里写成裸 `.statusbar-basemap` 会被它整条压掉，
+       实测清零完全不生效（元素仍是 291px，英文照样溢出 16px）。 */
+    .workbench-statusbar .statusbar-basemap {
+        margin-left: 0;
+        padding: 0;
+        border-left: 0;
+    }
+
+    /* failed 态改排到最左（order: -1）。
+       为什么需要它：failed 不让路（见上），于是解压进度排在最右、被 overflow
+       整个裁掉 —— 实测中文 -280px、英文 -393px，**一个像素都看不见**。而
+       failed 是粘性终态，看不见就等于「失败永远不可见」，这正是本功能要消灭的
+       东西。挪到最左侧则必然完整可见，代价是它右边的读数被挤出可视区 —— 但那
+       几项在窄屏下**本来就**被裁（元素隐藏时内容宽 602 > 可视宽 408），没有新增
+       损失。
+       只在 failed 态改顺序：running 是临时状态，「进度在最右」的语义值得保留；
+       failed 是长期状态，可见性优先。 */
+    .workbench-statusbar .statusbar-basemap--failed {
+        order: -1;
     }
 }
 

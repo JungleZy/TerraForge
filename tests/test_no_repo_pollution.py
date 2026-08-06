@@ -42,3 +42,29 @@ def test_gitignore_blocks_the_unpacked_base():
         lines = [ln.strip() for ln in f]
     assert "assets/terrain/base_z8/" in lines, (
         ".gitignore 要挡住解压后的 4.3 万个文件，否则 git status 会被淹掉")
+
+
+def test_gitignore_blocks_the_unpack_runtime_artifacts():
+    """解压的另外两样运行期产物也要挡住：跨进程锁与中转目录。
+
+    三样东西是同一次解压留下的，只挡了最大的那个不够：
+      - `.base_unpack.lock`（`base_terrain._CacheLock` 的跨进程互斥锁）——
+        解压跑过一次就在，且**不会**被清掉；
+      - `.base_unpack_<pid>_*/`（`UNPACK_TMP_PREFIX` + pid 的中转目录）——
+        正常路径由 finally 清掉，但崩溃 / SIGKILL 之后会留在仓库里直到下次启动
+        清扫，期间它装着几万个文件，`git status` 直接被淹掉。
+
+    ⚠️ 中转目录那条的通配必须与代码里的前缀常量对得上，所以这里**从代码读**
+    `UNPACK_TMP_PREFIX` 再拼，而不是手抄一个字面量 —— 手抄的话改了常量这里照绿，
+    而 .gitignore 已经不匹配了。
+    """
+    from src.services.terrain_tiling.base_terrain import UNPACK_TMP_PREFIX
+
+    with open(os.path.join(_REPO, ".gitignore"), encoding="utf-8") as f:
+        lines = [ln.strip() for ln in f]
+
+    assert "assets/terrain/.base_unpack.lock" in lines, (
+        ".gitignore 要挡住解压的跨进程锁文件（运行期产物，解压过一次就在且不会清掉）")
+    assert f"assets/terrain/{UNPACK_TMP_PREFIX}*/" in lines, (
+        f".gitignore 要挡住解压中转目录 assets/terrain/{UNPACK_TMP_PREFIX}*/ —— "
+        "崩溃 / SIGKILL 之后它带着几万个文件留在仓库里，直到下次启动清扫")

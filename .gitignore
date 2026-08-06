@@ -16,6 +16,9 @@ downloads/
 assets/terrain/base_z8/
 # 上面那次解压的跨进程互斥锁（base_terrain._CacheLock），运行期产物
 assets/terrain/.base_unpack.lock
+# 解压中转目录（base_terrain.UNPACK_TMP_PREFIX + pid）。正常路径由 finally 清掉，
+# 但崩溃 / SIGKILL 之后会留在仓库里，直到下次启动清扫 —— 期间 git status 被它淹掉
+assets/terrain/.base_unpack_*/
 eggs/
 .eggs/
 lib/
