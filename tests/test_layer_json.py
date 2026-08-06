@@ -293,12 +293,50 @@ def test_merge_keeps_base_levels_deeper_than_the_task(tmp_path):
     assert data["available"][7] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
 
 
+def test_merge_aligns_by_absolute_level_not_by_index(tmp_path):
+    """两侧 available 的原点不同时必须按**绝对层号**对齐，输出归一到 z0。
+
+    `available[i]` 的绝对层号是 `minzoom + i` —— 见
+    cesiumlab_terrain.py:1218（`for z in range(min_level, max_level + 1)` 逐层
+    append）与 :1383（`"minzoom": min_level`）。今天任务侧下标 0 恰好就是 z0，
+    只是因为 dem_task_tiler.py:87 把 min_level 写死成 0；底图可用时任务只需要切
+    z8+，任务侧的原点就变成 8 了。
+
+    按下标对齐会把任务的 z8 声明并到底图的 z0 上：文件全在，声明全错，Cesium
+    拿着错声明去请求不存在的瓦片 → 404 → 假 heightmap 图层 → 共享 builder 污染
+    → 高程全错且零报错。正是这个函数要防的那条链。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = _write_layer(tmp_path / "base" / "layer.json", maxzoom=7,
+                        available=[[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8)
+    # 真实形状：minzoom=8/maxzoom=10 的任务产出的是 **3 层** available，下标 0 是 z8
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=10, minzoom=8,
+                        available=[[{"startX": 5, "startY": 5, "endX": 6, "endY": 6}],
+                                   [{"startX": 10, "startY": 10, "endX": 12, "endY": 12}],
+                                   [{"startX": 20, "startY": 20, "endX": 24, "endY": 24}]])
+
+    merge_base_availability(task, base)
+    data = json.loads(task.read_text(encoding="utf-8"))
+
+    assert len(data["available"]) == 11
+    # 底图的 z0 声明落在下标 0
+    assert data["available"][0] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+    assert data["available"][7] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+    # 任务的 z8 声明落在下标 8，而不是被并到下标 0 上
+    assert data["available"][8] == [{"startX": 5, "startY": 5, "endX": 6, "endY": 6}]
+    assert data["available"][10] == [{"startX": 20, "startY": 20, "endX": 24, "endY": 24}]
+    assert data["maxzoom"] == 10
+
+
 def test_merge_forces_minzoom_to_zero_even_when_the_task_starts_deeper(tmp_path):
     """minzoom 必须硬置 0，不能沿用任务原值。
 
-    ctb-tile 对一个只覆盖小范围的任务会写出 minzoom>0 的 layer.json。植入之后
-    z0 起的底图瓦片就躺在目录里，但 Cesium 用 minzoom 决定从哪一层开始请求 ——
-    留着 8 就等于把刚植入的 8 层全部作废，屏幕上依旧只有那一小块。
+    底图可用时任务只切 z8+，它自己的 layer.json 写的就是 minzoom=8。植入之后
+    z0 起的底图瓦片躺在同一个目录里，但 Cesium 用 minzoom 决定从哪一层开始请求
+    —— 留着 8 就等于把刚植入的 8 层全部作废，屏幕上依旧只有那一小块。
 
     任务书给的两条用例里任务侧 minzoom 本来就是 0，杀不掉「删掉 minzoom=0 这
     一行」的变异体，所以补这条。
@@ -310,13 +348,45 @@ def test_merge_forces_minzoom_to_zero_even_when_the_task_starts_deeper(tmp_path)
     base = _write_layer(tmp_path / "base" / "layer.json", maxzoom=7,
                         available=[[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8)
     task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=10, minzoom=8,
-                        available=[[]] * 8 + [
-                            [{"startX": 5, "startY": 5, "endX": 6, "endY": 6}]] * 3)
+                        available=[[{"startX": 5, "startY": 5, "endX": 6, "endY": 6}]] * 3)
 
     merge_base_availability(task, base)
     data = json.loads(task.read_text(encoding="utf-8"))
 
     assert data["minzoom"] == 0
+
+
+def test_merge_maxzoom_never_shallower_than_the_declared_levels(tmp_path):
+    """底图漏写 maxzoom 时，maxzoom 仍不能浅于 available 的最深层。
+
+    底图有 8 层 available 却没写 maxzoom（用户自备的 layer.json 常见），任务又
+    是 maxzoom=5 的退化任务 —— 只取两边 maxzoom 的话结果是 8 层声明配 maxzoom=5，
+    底图 z6/z7 的文件躺在目录里但永远不会被请求，一字不差就是本函数要防的那条。
+
+    往深了报是安全边：两个方向的代价不对称 —— 报浅是硬闸门，整层直接消失；报深
+    由 available 逐层兜住（空层 isTileAvailable 返回 false，Cesium 不去请求），
+    代价是零。
+    """
+    import json
+
+    from src.services.terrain_tiling.layer_json import merge_base_availability
+
+    base = tmp_path / "base" / "layer.json"
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_text(json.dumps({
+        "tilejson": "1.0", "minzoom": 0,
+        "available": [[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8,
+    }), encoding="utf-8")
+
+    task = _write_layer(tmp_path / "task" / "layer.json", maxzoom=5,
+                        available=[[]] * 5 + [[{"startX": 3, "startY": 3,
+                                                "endX": 3, "endY": 3}]])
+
+    merge_base_availability(task, base)
+    data = json.loads(task.read_text(encoding="utf-8"))
+
+    assert len(data["available"]) == 8
+    assert data["maxzoom"] == 7
 
 
 def test_merge_declares_base_levels_when_the_task_produced_no_tiles(tmp_path):

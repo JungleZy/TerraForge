@@ -84,7 +84,6 @@ def patch_layer_json_parent(layer_json_path: Path, parent_url: str | None) -> No
     )
 
 
-
 def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> None:
     """把底图的 available 并进任务的 layer.json，并删掉 parentUrl。
 
@@ -94,10 +93,19 @@ def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> Non
     builder 上，于是任务自己的 quantized-mesh 瓦片也按 heightmap 解析
     （v0.2.8 实测：4154 m 山峰解成 -744 m，控制台零报错）。
 
-    maxzoom 取 max(底图, 任务)：maxzoom < 8 的退化任务里底图的 z6/z7 比任务更
-    深，写任务的值会把这两层声明掉，Cesium 从此不请求它们 —— 文件在目录里却
-    看不到。minzoom 同理硬置 0：ctb-tile 给小范围任务写的 minzoom 可能大于 0，
-    留着就等于把刚植入的 z0-z7 全部作废。
+    maxzoom 取 max(底图, 任务, 声明层数-1)：maxzoom < 8 的退化任务里底图的 z6/z7
+    比任务更深，写任务的值会把这两层声明掉，Cesium 从此不请求它们 —— 文件在目录
+    里却看不到。第三项兜的是底图漏写 maxzoom 的情况。两个方向的代价不对称：报浅
+    是硬闸门（整层直接消失），报深由 available 逐层兜住（空层 isTileAvailable
+    返回 false，Cesium 不去请求，代价是零），所以安全边是往深了报。
+
+    **available[i] 的绝对层号是 minzoom + i，不是 i。** 见
+    cesiumlab_terrain.py:1218（`for z in range(min_level, max_level + 1)` 逐层
+    append）与 :1383（`"minzoom": min_level`）。底图的原点是 0，任务的原点在底图
+    可用时是 min(8, maxzoom) —— 按下标对齐会把任务的 z8 声明并到底图的 z0 上，
+    文件全在而声明全错，Cesium 拿着错声明去请求不存在的瓦片，又踩回上面那条
+    404 → 假 heightmap → 共享 builder 污染的链。所以按绝对层号对齐，输出统一归一
+    到 z0 为原点，minzoom 随之硬置 0（留着任务的 8 等于把刚植入的 z0-z7 全作废）。
 
     同层两边都有声明时取并集而不是二选一：磁盘上任务瓦片覆盖了底图的同名文件
     （植入是 skip-if-exists），但两边的 range 覆盖的 x/y 区间未必互相包含，丢
@@ -105,19 +113,23 @@ def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> Non
     —— Cesium 接受重叠声明，而重跑合成时的等值重复必须挡掉，否则声明会随重试
     次数线性膨胀。
 
-    容忍 available / maxzoom 缺失或为 null（底图允许用户自备），但不容忍 JSON
-    本身解不开：那时让异常抛给调用方回滚，静默吞掉只会产出一个没人知道是坏的
-    layer.json。
+    容忍 available / minzoom / maxzoom 缺失或为 null（底图允许用户自备），但不
+    容忍 JSON 本身解不开：那时让异常抛给调用方回滚，静默吞掉只会产出一个没人知
+    道是坏的 layer.json。
     """
     task = json.loads(task_layer_path.read_text(encoding="utf-8"))
     base = json.loads(base_layer_path.read_text(encoding="utf-8"))
 
     task_av = task.get("available") or []
     base_av = base.get("available") or []
+    task_min = int(task.get("minzoom", 0) or 0)
+    base_min = int(base.get("minzoom", 0) or 0)
+
     merged = []
-    for z in range(max(len(task_av), len(base_av))):
-        ranges = list(base_av[z]) if z < len(base_av) else []
-        for r in (task_av[z] if z < len(task_av) else []):
+    for z in range(max(base_min + len(base_av), task_min + len(task_av))):
+        bi, ti = z - base_min, z - task_min
+        ranges = list(base_av[bi] or []) if 0 <= bi < len(base_av) else []
+        for r in ((task_av[ti] or []) if 0 <= ti < len(task_av) else []):
             if r not in ranges:
                 ranges.append(r)
         merged.append(ranges)
@@ -125,7 +137,8 @@ def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> Non
     task["available"] = merged
     task["minzoom"] = 0
     task["maxzoom"] = max(int(base.get("maxzoom", 0) or 0),
-                          int(task.get("maxzoom", 0) or 0))
+                          int(task.get("maxzoom", 0) or 0),
+                          len(merged) - 1)
     task.pop("parentUrl", None)
 
     task_layer_path.write_text(
