@@ -47,7 +47,7 @@ v0.2.8 首次把底图分卷打进安装包（`assets/terrain/base_z8.tar.gz.par
 assets/terrain/*.part          分卷（随包）
         │ ensure_base_unpacked   幂等 · 跨进程锁 · 临时目录 + 原子改名
         ▼
-downloads/terrain/base_z8      共享缓存 224 MB（也是 /terrain/base 的服务目录）
+assets/terrain/base_z8         共享缓存 224 MB（也是 /terrain/base 的服务目录）
         │ graft_base_into       硬链接（跨盘回退 copy2）· skip-if-exists
         ▼
 <任务输出>/terrain_tiles/       ← build_terrain(min_level=8) 写入 z8+
@@ -55,6 +55,10 @@ downloads/terrain/base_z8      共享缓存 224 MB（也是 /terrain/base 的服
         ▼
         自包含地形源
 ```
+
+**共享缓存与分卷同目录**（`assets/terrain/`），不放 `downloads/`：`assets/` 是随包分发的数据，`downloads/` 是用户产出，解压出来的底图属于前者。两种运行模式下路径都对得上 —— `resolve_stored_output_dir('./assets/terrain/base_z8')` 落到 `Config.BASE_DIR/assets/terrain/base_z8`，而打包模式的 `Config.BASE_DIR`（`Path(sys.executable).parent`）恒等于 `bundle_dir()`，正是 `--include-data-dir` 放 `assets/terrain` 的地方。
+
+这个位置**不触发**静态服务的穿越校验问题：`_resolve_safe_file` 从 0.2.4 起已不要求 `base_dir` 落在 `DOWNLOADS_DIR` 内（`src/routes/terrain_static.py:78-80`），它只把请求方能控制的 `subpath` 锁在 `base_dir` 里。⚠️ `CLAUDE.md:146` 仍写着旧规则，实施时一并订正。
 
 执行顺序是**解压 → 切片 → 植入**。解压排在切片前有两个实打实的理由，不是随手排的：
 
@@ -118,6 +122,34 @@ base_dir 为 None: patch_layer_json_parent()   ← 现有兜底路径不动
 
 `/terrain/base` 路由与共享缓存**保留** —— `static/js/history.js:727` 直接用 `${location.origin}/terrain/base/layer.json` 做历史页的地形预览。`parentUrl` 相关代码（`normalize_parent_url` / `parent_url_if_base_available` / `patch_layer_json_parent`、配置项 `terrain_base_parent_url`）在底图可用路径上停用，但底图缺失时它们是唯一兜底，不删。
 
+## 缓存挪进 assets/ 的三处连带必改
+
+这三条都是「不做就出事」，不是可选项。
+
+### 1. 打包必须排除解压后的目录
+
+`nuitka_build.py` 现在是 `--include-data-dir=assets/terrain=assets/terrain`，整棵树都收。缓存挪进来之后，**任何在本机跑过一次切片的开发者再去构建，dist 会平白多 224 MB / 4.3 万个文件** —— 正是那行注释里说「让 Nuitka 逐个收集会把构建拖垮」而刻意避开的事。
+
+加 `--noinclude-data-files=assets/terrain/base_z8/**`（按产物内路径匹配，Nuitka 原生支持）。
+
+**连带的测试约束**：单测**绝不能**往仓库的 `assets/terrain/` 里解压，必须全部走 `tmp_path`。CI 是全新克隆，本来没有 `base_z8`，但构建流水线里测试跑在打包**之前** —— 有一条测试解压到仓库里，CI 就会把它打进产物。
+
+### 2. `.gitignore` 要挡住它
+
+`.gitignore` 现在只有 `downloads/`（且重复出现两次，第 14 与第 130 行，顺手去重）。加 `assets/terrain/base_z8/`，否则 4.3 万个文件会淹掉 `git status`，Windows 上尤其慢。
+
+### 3. 存量 config 行要迁移，不能只改默认值
+
+`terrain_global_base_path` 的默认值从 `./downloads/terrain/base_z8` 改成 `./assets/terrain/base_z8`。**只改 `DEFAULT_CONFIGS` 是不够的** —— 它走 `INSERT OR IGNORE`，只对新建的库生效，存量库里那一行还是旧路径。后果不是「不生效」这么轻：
+
+解压去了新位置 → 旧位置空 → `/terrain/base` 按旧路径服务、`parent_url_if_base_available` 按旧路径判定 → 底图判为不可用 → 走 parentUrl 兜底，而那个 URL 指向的正是服务旧空路径的 `/terrain/base` → 404 → Cesium 塞假 heightmap 图层污染共享 builder → **任务自己的瓦片也按 heightmap 解析，高程全错且零报错**。这就是 v0.2.8 刚修过的那条链。
+
+做法：`init_database()` 里加一次性迁移，`PRAGMA user_version` 2 → 3。
+
+- **只在该行仍等于旧默认值时改写**，用户自定义过的路径不动。
+- 旧位置已有完整底图时**直接 `rename` 过去**（同盘是瞬时的），而不是删掉重解压 224 MB。`rename` 失败（跨盘等）就留着旧的不动，让新位置重新解压 —— 多占一份磁盘，但不会坏。
+- 迁移要能重入：`user_version` 已是 3 就跳过。
+
 ## 磁盘账
 
 | 项 | 硬链接可用 | 跨盘回退 |
@@ -143,6 +175,13 @@ DEM 任务的输出路径是用户自选的全盘路径，跨盘是常态而不�
 | `maxzoom=5` 的任务：`min_level` 取 5 而不是 8，切出的瓦片数 > 0 | 退化任务不静默切零张 |
 | 底图不可用（`base_parts_dir()` 返回 None）→ 走 parentUrl 兜底，行为与 v0.2.8 一致 | 兜底路径没被改坏 |
 | 植入后目录自包含：z0–z7 全在，layer.json 声明覆盖全球 | 端到端契约 |
+| 存量库（`user_version=2`，config 行是旧默认值）→ 迁移后指向 `./assets/terrain/base_z8`，`user_version=3` | 存量装机不掉进 heightmap 陷阱 |
+| 存量库里该行是**用户自定义**路径 → 迁移不动它 | 不覆盖用户设置 |
+| 旧位置有完整底图 → 迁移后新位置就位、旧位置不再存在（rename 而非重解压） | 不白解压 224 MB |
+| `rename` 抛 `OSError` → 迁移不失败，旧目录保留，新位置留待重新解压 | 跨盘不阻断启动 |
+| 迁移重入：`user_version` 已是 3 时不再改写 config 行 | 幂等 |
+| `nuitka_build.py` 的参数表里有 `--noinclude-data-files=assets/terrain/base_z8/**` | 源码级契约，防止有人删掉后 dist 悄悄涨 224 MB |
+| 全量测试跑完后仓库的 `assets/terrain/` 下不存在 `base_z8` | 测试不得往仓库里解压（否则 CI 会把它打进产物） |
 
 ## 排除的方案
 
