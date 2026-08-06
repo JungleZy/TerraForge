@@ -15,8 +15,7 @@ let latestContourTasks = [];
 let _loadStatsDebounceTimer = null;
 
 function initTasks() {
-    socket = io();
-    if (window.initConnectionStatus) window.initConnectionStatus(socket);
+    socket = window.TerraSocket.get();
 
     socket.on('connect', function() {
         console.log('Connected to server');

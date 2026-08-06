@@ -6892,8 +6892,11 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 之前，顺序由 tests/test_terrain_lighting_frontend.py 钉住。
     # 19 -> 20（i18n 改造）：base.html 新增 static/js/i18n.js（全局 t() 查表，
     # 必须排在所有业务脚本之前加载）。
-    assert len(refs) == 20, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 20 处。"
+    # 20 -> 21（底图解压进度）：base.html 新增 static/js/socket.js
+    # （window.TerraSocket 全局单例；socket 实例原本由 tasks.js 独占创建，
+    # 只有首页有，而解压进度要求全站可见）。
+    assert len(refs) == 21, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 21 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )

@@ -174,21 +174,25 @@
     <!-- Bootstrap 5.3 JS Bundle（含 Popper） -->
     <script src="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.bundle.min.js') }}"></script>
 
-    {# 地图/实时推送的重型 vendor(Cesium 5.7MB + socket.io):只有首页和
-       历史页用得到,/config 独立页覆盖本 block 为空,白付的解析/下载全省。
-       url_for 必须保持字符串字面量 —— tests/test_css_contract.py 按正则
-       抠模板源码对账 vendor 清单与引用数。 #}
-    {% block vendor_js %}
+    {# 地图重型 vendor(Cesium 5.7MB):只有首页和历史页用得到,/config 独立页
+       覆盖本 block 为空,白付的解析/下载全省。
+       ⚠️ socket.io **不在**这里 —— 它原本与 Cesium 同 block,于是 /config 连它
+       一起省掉了,那一页收不到任何实时推送(包括底图解压进度,而那是全站可见的
+       要求)。44 KB 与 5.7 MB 不是一个量级,拆开各管各的。
+       url_for 必须保持字符串字面量 —— tests/test_css_contract.py 按正则抠模板
+       源码对账 vendor 清单与引用数。 #}
+    {% block vendor_map_js %}
     <!-- CesiumJS 1.143.0（本地 vendor，断网可用；CESIUM_BASE_URL 必须在
          Cesium.js 之前设好，workers/assets 都按它解析） -->
     <script>window.CESIUM_BASE_URL = "{{ url_for('static', filename='vendor/cesium/1.143.0') }}/";</script>
     <script src="{{ url_for('static', filename='vendor/cesium/1.143.0/Cesium.js') }}"></script>
+    {% endblock %}
 
     <!-- Socket.IO 4.5.4 —— 版本必须锁在 4.x：服务端 Flask-SocketIO 5.3.4 /
          python-socketio 5.9.0 / python-engineio 4.7.1 对应 Socket.IO 协议 v5 +
-         Engine.IO v4，换大版本会直接握不上手。 -->
+         Engine.IO v4，换大版本会直接握不上手。
+         全局加载（不在任何 block 里）：底图解压进度要在所有页面显示。 -->
     <script src="{{ url_for('static', filename='vendor/socket.io/4.5.4/socket.io.min.js') }}"></script>
-    {% endblock %}
 
     <!-- 界面语言查表：window.t()。__I18N__ / __LANG__ 在 <head> 里已内联。
          必须排在所有业务脚本之前 —— 它们在解析期就会调 t()。 -->
@@ -196,6 +200,10 @@
 
     <!-- 全局 UI 组件：自定义 Toast / Confirm（替代原生 alert/confirm） -->
     <script src="{{ url_for('static', filename='js/ui.js') }}"></script>
+
+    <!-- 全局 Socket.IO 单例（window.TerraSocket）。必须排在 ui.js 之后 ——
+         它建立连接后立刻调 initConnectionStatus 点亮底部状态栏的连接指示。 -->
+    <script src="{{ url_for('static', filename='js/socket.js') }}"></script>
 
     <!-- 全站主题（dark / light / system）：<head> 的内联引导脚本已同步定好
          首帧主题；这里挂上运行期实现 —— 配置面板「外观」组的切换、

@@ -2,9 +2,11 @@
 
 {% block title %}{{ t('tpl.config.page_title') }} - {{ t('app.suffix') }}{% endblock %}
 
-{# 本页没有地图也没有实时推送:覆盖掉 base.html 的 Cesium(5.7MB)+socket.io,
-   不白付下载与解析。config.js 不消费这两者(grep 可证)。 #}
-{% block vendor_js %}{% endblock %}
+{# 本页没有地图:覆盖掉 base.html 的 Cesium(5.7MB),不白付下载与解析。
+   config.js 不消费它(grep 可证)。
+   ⚠️ 只清 Cesium —— socket.io 已挪到 block 之外做全局加载,本页要靠它收
+   底图解压进度(全站可见的要求)。 #}
+{% block vendor_map_js %}{% endblock %}
 
 {% block content %}
 <div class="page-content">
