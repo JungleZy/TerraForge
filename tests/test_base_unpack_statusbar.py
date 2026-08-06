@@ -83,33 +83,41 @@ def _function_body(code, name):
     """
     m = re.search(r"function\s+" + re.escape(name) + r"\s*\([^)]*\)\s*\{", code)
     assert m, f"找不到函数 {name}（被删了，还是改成了别的形态？）"
-    start = m.end() - 1
+    body = _brace_body(code, m.end() - 1, f"函数 {name}")
+    assert body.strip(), f"函数 {name} 的函数体是空的"
+    return body
+
+
+def _brace_body(text, open_idx, what):
+    """从 `text[open_idx] == '{'` 起做大括号配对，返回大括号之间的内容。"""
+    assert text[open_idx] == "{", f"{what}：给定位置不是左大括号"
     depth = 0
-    for i in range(start, len(code)):
-        if code[i] == "{":
+    for i in range(open_idx, len(text)):
+        if text[i] == "{":
             depth += 1
-        elif code[i] == "}":
+        elif text[i] == "}":
             depth -= 1
             if depth == 0:
-                body = code[start + 1:i]
-                assert body.strip(), f"函数 {name} 的函数体是空的"
-                return body
-    raise AssertionError(f"函数 {name} 的大括号没有配平 —— 剥离器可能把源码带偏了")
+                return text[open_idx + 1:i]
+    raise AssertionError(f"{what} 的大括号没有配平 —— 剥离器可能把源码带偏了")
+
+
+def _phase_branch_body(render_body, phase):
+    """抠出 render 里 `if (phase === '<phase>') { ... }` 那条分支的分支体。
+
+    存在的理由和 `_function_body` 同源，只是又深了一层：文案 key、`hidden` 赋值这些
+    在**别的分支**里也各有一份，只在整个 render 体内搜「有没有」，等于允许把 failed
+    分支的文案换成 running 的（界面在失败时显示「底图解压 %」）而测试照绿。
+    """
+    m = re.search(r"if\s*\(\s*phase\s*===\s*'" + re.escape(phase) + r"'\s*\)\s*\{", render_body)
+    assert m, f"render 里没有 phase === '{phase}' 分支"
+    return _brace_body(render_body, m.end() - 1, f"phase === '{phase}' 分支")
 
 
 def _braced_block(css, marker):
     """抠出 `marker { ... }` 的块内容（大括号配对），用于 @media。"""
     i = css.index(marker)
-    j = css.index("{", i)
-    depth = 0
-    for k in range(j, len(css)):
-        if css[k] == "{":
-            depth += 1
-        elif css[k] == "}":
-            depth -= 1
-            if depth == 0:
-                return css[j + 1:k]
-    raise AssertionError(f"{marker} 的大括号没有配平")
+    return _brace_body(css, css.index("{", i), marker)
 
 
 def _hidden_selectors_in_narrow_screen_block():
@@ -213,6 +221,27 @@ def test_listener_registers_in_the_same_synchronous_block_as_get():
         "connect 时那次一次性的状态快照会永远错过（无报错、无兜底）")
 
 
+def test_the_event_actually_reaches_render():
+    """「收到事件 → 画出来」这条主链路必须完整接上。
+
+    这是整个功能的**全部价值**所在，而它一度没有任何断言钉住：把 `onProgress` 里的
+    `render(state);` 整行删掉，组件彻底死掉（事件照收，界面什么都不画），11 条测试
+    全绿。分支形态、文案 key、粘性守卫钉得再细，主链路断了全是空的。
+
+    钉两截：
+      1. 监听回调确实接到了 `onProgress`（而不是别的东西 —— 直接接 `render` 会绕开
+         粘性守卫，接 `null` 之类则等于没接）；
+      2. `onProgress` 的函数体里确实调用了 `render(`。
+    """
+    src = _status_js()
+    assert re.search(r"socket\.on\s*\(\s*'base_unpack_progress'\s*,\s*onProgress\s*\)", src), (
+        "socket.on 没有接上 onProgress —— 要么没监听，要么绕开了粘性守卫直接接 render")
+    body = _function_body(src, "onProgress")
+    assert re.search(r"\brender\s*\(", body), (
+        "onProgress 里没有调用 render() —— 事件照收，界面什么都不画，"
+        "这个功能的全部价值就没了（且没有任何报错）")
+
+
 def test_render_has_running_failed_and_collapse_branches():
     """render 里 running / failed / 收起 三条分支都必须在，且各钉各的形态。
 
@@ -235,6 +264,32 @@ def test_render_has_running_failed_and_collapse_branches():
 
     assert "base_unpack_progress" in src, "没有监听事件"
     assert "window.TerraSocket" in src, "应当复用全局 socket 单例"
+
+
+def test_each_branch_uses_its_own_i18n_key():
+    """running / failed 两条分支各自用**对应的**文案 key。
+
+    没有这条的话，把 failed 分支的 key 换成 `js.base_unpack.running`，界面会在解压
+    失败时显示「底图解压 %」（还是个没填的占位符），而所有分支/形态断言照绿 ——
+    「失败要看得见」这个需求被静默改成了「失败伪装成进行中」。
+
+    两个方向都钉（各自的 key 必须在、对方的 key 必须不在），这样对调两处也拦得住。
+    ⚠️ `js.base_unpack.failed` 的正则要带上收尾引号，否则 `failed_title` 也会命中。
+    """
+    body = _function_body(_status_js(), "render")
+
+    running = _phase_branch_body(body, "running")
+    assert re.search(r"text\.textContent\s*=\s*t\(\s*'js\.base_unpack\.running'", running), (
+        "running 分支没有用 js.base_unpack.running 渲染文案")
+    assert "js.base_unpack.failed" not in running, (
+        "running 分支里出现了 failed 的文案 key —— 两条分支的 key 被对调了？")
+
+    failed = _phase_branch_body(body, "failed")
+    assert re.search(r"text\.textContent\s*=\s*t\(\s*'js\.base_unpack\.failed'", failed), (
+        "failed 分支没有用 js.base_unpack.failed 渲染文案 —— "
+        "界面在解压失败时会显示成别的东西（比如「底图解压 %」）")
+    assert "js.base_unpack.running" not in failed, (
+        "failed 分支里出现了 running 的文案 key —— 失败被伪装成了进行中")
 
 
 def test_failure_reason_goes_into_the_title_attribute():
@@ -267,6 +322,8 @@ def test_terminal_phase_is_sticky():
         就形同虚设 —— 那正是它要挡的东西）；
       - 守卫必须是 `settled && !terminal`（反转成 `settled && terminal` 语义完全相反：
         终态被丢弃、陈旧的 running 反而放行，而只钉「有 if(settled…)return」拦不住）；
+      - 守卫必须排在 `render(` **之前**（挪到后面：形态一字不差、语义完全失效，
+        陈旧的 running 照样被画出去 —— 只钉形态不钉顺序是拦不住的）；
       - 终态到达时必须置位。
     终态之间仍允许互相覆盖（failed 之后又来 ready 要认），所以守卫只挡非终态。
     """
@@ -279,11 +336,18 @@ def test_terminal_phase_is_sticky():
         f"terminal 的定义里出现的 phase 是 {sorted(phases)}，必须恰好是 ready 与 failed —— "
         "多算一个（比如 running）守卫就形同虚设，少算一个则对应的终态挡不住陈旧事件")
 
-    assert re.search(
+    guard = re.search(
         r"if\s*\(\s*(?:settled\s*&&\s*!\s*terminal|!\s*terminal\s*&&\s*settled)\s*\)\s*return",
-        body), (
+        body)
+    assert guard, (
         "缺少 `if (settled && !terminal) return;` 形态的守卫 —— "
         "写成 `settled && terminal` 语义正好相反（终态被丢弃、陈旧的 running 反而放行）")
+
+    render_call = re.search(r"\brender\s*\(", body)
+    assert render_call, "onProgress 里没有调用 render()"
+    assert guard.start() < render_call.start(), (
+        "粘性守卫排在了 render() 之后 —— 形态一字不差，语义完全失效："
+        "陈旧的 running 照样被画出去，进度条仍然永远转下去")
 
     assert re.search(r"if\s*\(\s*terminal\s*\)\s*settled\s*=\s*true", body), (
         "终态到达时没有置位 settled，守卫等于不存在")
