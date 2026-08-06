@@ -409,3 +409,71 @@ def graft_base_into(tiles_dir: Path, base_dir: Path) -> dict[str, int]:
     logger.info(f"Terrain: 底图植入完成 linked={stats['linked']} "
                 f"copied={stats['copied']} skipped={stats['skipped']} → {tiles_dir}")
     return stats
+
+
+def ungraft_base_from(tiles_dir: Path, base_dir: Path) -> int:
+    """摘掉 tiles_dir 里与底图**共享 inode** 的文件，返回摘掉的个数。
+
+    **必须在每次切片之前调用**，与 graft_base_into 成对。理由是硬链接 + 落盘
+    方式的组合：cesiumlab_terrain._worker_tile 写瓦片用
+    `(out_path / f"{y}.terrain").write_bytes(blob)`，而 `Path.write_bytes` 是
+    `open(path, 'wb')` + write —— **就地截断同一个 inode**，不是先删再建。上一轮
+    植入留下的硬链接指向共享缓存 assets/terrain/base_z8，于是这一笔直接改写了
+    全局底图里的那份文件：之后所有任务都拿到被污染的 z0-7，且没有任何信号。
+
+    可达路径不是理论上的：maxzoom <= 7 的任务 min_level = min(8, maxzoom) = maxzoom，
+    自己就要写 z0-7；重跑一次就正好打在上一轮植入的硬链接上。
+
+    判据用 (st_dev, st_ino) 而不是「底图里有同名文件」：同一位置也可能躺着任务
+    自己上一轮写的瓦片（退化任务与底图同层相撞），按名字摘会删掉任务数据，随后
+    skip-if-exists 用底图瓦片把坑填上 —— 任务的 DEM 被底图静默顶替。跨盘回退的
+    实体复制天然是独立 inode，摘不到也不需要摘。
+
+    只扫底图占据的那几层（z0-z7 共 510 个目录）：任务的 z8+ 在底图里没有对应
+    位置，永远不可能共享 inode，而那才是瓦片数量的大头。目标里整层目录都不存在
+    时（首次切片的常态）连 os.walk 都不进，8 次 is_dir() 就返回。
+
+    unlink 失败不吞：摘不掉就意味着接下来那一笔写穿共享缓存，宁可让任务当场失败。
+    """
+    tiles_dir = Path(tiles_dir)
+    base_dir = Path(base_dir)
+    if not tiles_dir.is_dir():
+        return 0
+
+    removed = 0
+    base_str = str(base_dir)
+    try:
+        level_names = sorted(os.listdir(base_str))
+    except FileNotFoundError:
+        return 0
+
+    for level in level_names:
+        # 只走层号目录：底图根下的 layer.json 从来不参与植入（由
+        # merge_base_availability 合成），任务那份更是不能碰。
+        src_level = os.path.join(base_str, level)
+        if not os.path.isdir(src_level):
+            continue
+        if not (tiles_dir / level).is_dir():
+            continue
+        # 层级里面不再逐目录剪枝：目标子目录不存在时下面每个 dst.stat() 都直接
+        # FileNotFoundError，与先探一次目录同样是一次 stat，省不下来。也不排序：
+        # 摘到一半失败会让整个任务失败，重试时从头再摘一遍，没有「留下的前缀要
+        # 对得上」这回事（graft 排序是因为它的半成品会留在盘上）。
+        for dirpath, _dirnames, filenames in os.walk(src_level, onerror=_walk_error):
+            dst_dir = tiles_dir / os.path.relpath(dirpath, base_str)
+            for name in filenames:
+                dst = dst_dir / name
+                try:
+                    dst_st = dst.stat()
+                except OSError:
+                    # 目标没有这个瓦片是常态（首次切片、或上一轮只植入了一部分）。
+                    continue
+                src_st = os.stat(os.path.join(dirpath, name))
+                if (dst_st.st_dev, dst_st.st_ino) != (src_st.st_dev, src_st.st_ino):
+                    continue
+                dst.unlink()
+                removed += 1
+
+    if removed:
+        logger.info(f"Terrain: 切片前摘掉上一轮植入的底图硬链接 {removed} 个 → {tiles_dir}")
+    return removed

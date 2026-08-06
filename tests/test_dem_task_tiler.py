@@ -2,9 +2,12 @@
 Tests for DEM task tiler helpers.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
+
+import pytest
 
 
 # Add parent directory to path for imports (match repo test style)
@@ -117,3 +120,262 @@ def test_tile_dem_task_dir_zero_fills_counts_for_legacy_stubs(tmp_path: Path):
 
     assert got == {"total": 0, "rendered": 0, "failed": 0,
                    "chose_martini": 0, "chose_grid": 0}
+
+
+# ---------------------------------------------------------------------------
+# 接入底图：解压 → 摘链 → 切片(z8+) → 植入 → 合成
+# ---------------------------------------------------------------------------
+
+
+def _make_task_dir(tmp_path: Path) -> Path:
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "a_dem.tif").write_bytes(b"x")
+    return task_dir
+
+
+def test_tiler_grafts_base_and_merges_layer_json(tmp_path: Path, monkeypatch):
+    """底图可用时：切片走 min_level=8，切完植入并合成，不再写 parentUrl。"""
+    from src.services.terrain_tiling import dem_task_tiler as mod
+
+    task_dir = _make_task_dir(tmp_path)
+    out_dir = tmp_path / "out"
+
+    base = tmp_path / "base"
+    (base / "0" / "0").mkdir(parents=True)
+    (base / "0" / "0" / "0.terrain").write_bytes(b"\x1f\x8bbase")
+    (base / "layer.json").write_text(
+        json.dumps({"maxzoom": 7,
+                    "available": [[{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]] * 8}),
+        encoding="utf-8")
+
+    seen = {}
+
+    def fake_build_terrain(**kwargs):
+        seen.update(kwargs)
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text(
+            json.dumps({"maxzoom": 10, "available": [[]] * 10 + [
+                [{"startX": 1, "startY": 1, "endX": 2, "endY": 2}]]}),
+            encoding="utf-8")
+        return {"total": 1, "rendered": 1, "failed": 0}
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", lambda **k: base)
+
+    mod.tile_dem_task_dir(
+        task_dir, out_dir,
+        mod.TileParams(maxzoom=10, parent_url="http://localhost:5000/terrain/base"),
+        build_terrain_fn=fake_build_terrain)
+
+    assert seen["min_level"] == 8, "底图可用时任务只切 z8+"
+    assert seen["max_level"] == 10
+    assert (out_dir / "0" / "0" / "0.terrain").is_file(), "底图没被植入"
+
+    data = json.loads((out_dir / "layer.json").read_text(encoding="utf-8"))
+    # 底图可用时 parentUrl 必须消失：留着它 Cesium 会既加载本地 z0-7、又去级联
+    # 请求那个多半不存在的父级服务。
+    assert "parentUrl" not in data
+    # 合成的两个方向都要钉住：只取底图（丢任务自己的 z10）和只取任务（底图那 8 层
+    # 全空）都会让 Cesium 对着「声明没有、实际有」的层级不发请求。
+    assert data["available"][0] == [{"startX": 0, "startY": 0, "endX": 1, "endY": 0}]
+    assert data["available"][10] == [{"startX": 1, "startY": 1, "endX": 2, "endY": 2}]
+    assert data["maxzoom"] == 10
+
+
+def test_tiler_falls_back_to_parent_url_without_base(tmp_path: Path, monkeypatch):
+    """底图不可用（分卷被删）→ 行为与 v0.2.8 完全一致：min_level=0 + 写 parentUrl。"""
+    from src.services.terrain_tiling import dem_task_tiler as mod
+
+    task_dir = _make_task_dir(tmp_path)
+    out_dir = tmp_path / "out"
+
+    seen = {}
+
+    def fake_build_terrain(**kwargs):
+        seen.update(kwargs)
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", lambda **k: None)
+
+    mod.tile_dem_task_dir(
+        task_dir, out_dir,
+        mod.TileParams(maxzoom=10, parent_url="https://example.com/parent"),
+        build_terrain_fn=fake_build_terrain)
+
+    assert seen["min_level"] == 0
+    layer = (out_dir / "layer.json").read_text(encoding="utf-8")
+    assert '"parentUrl": "https://example.com/parent"' in layer
+
+
+def test_degenerate_maxzoom_still_tiles_something(tmp_path: Path, monkeypatch):
+    """maxzoom < 8 的任务不能因为 min_level=8 切出零张瓦片却报成功。
+
+    min_level 死写 8 时 max_level(5) < min_level(8)，_tile_ranges() 产出空区间，
+    任务 rendered=0 却 completed —— 又一款静默成功。
+    """
+    from src.services.terrain_tiling import dem_task_tiler as mod
+
+    task_dir = _make_task_dir(tmp_path)
+
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "layer.json").write_text('{"maxzoom": 7, "available": []}', encoding="utf-8")
+
+    seen = {}
+
+    def fake_build_terrain(**kwargs):
+        seen.update(kwargs)
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text('{"maxzoom": 5, "available": []}', encoding="utf-8")
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", lambda **k: base)
+
+    mod.tile_dem_task_dir(task_dir, tmp_path / "out",
+                          mod.TileParams(maxzoom=5, parent_url=""),
+                          build_terrain_fn=fake_build_terrain)
+
+    assert seen["min_level"] == 5, "min_level 必须是 min(8, maxzoom)"
+    assert seen["min_level"] <= seen["max_level"], "min_level > max_level = 一张瓦片都不切"
+
+
+def test_base_pipeline_runs_in_the_right_order(tmp_path: Path, monkeypatch):
+    """解压 → 摘链 → 切片 → 植入 → 合成，顺序错一步就有真实后果。
+
+    - 解压排在切片**前**：首次解压是分钟级，要独占 stage_cb 上报通道，否则和
+      切片进度抢同一条通道，前端只看到进度条来回跳。stage_cb 必须真的传进去，
+      不传等于这几分钟整段黑屏。
+    - 摘链排在切片**前**：晚一步，切片就已经就地截断了共享缓存的 inode。
+    - 植入排在切片**后**：graft_base_into 的冲突判断是遍历时读一次的目录级快照，
+      与切片并发跑会绕过 skip-if-exists（它 docstring 里写死的前提）。
+    """
+    from src.services.terrain_tiling import dem_task_tiler as mod
+
+    task_dir = _make_task_dir(tmp_path)
+    out_dir = tmp_path / "out"
+
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "layer.json").write_text('{"maxzoom": 7, "available": []}', encoding="utf-8")
+
+    calls = []
+    marker = lambda phase, frac: None  # noqa: E731
+
+    def fake_unpack(**kwargs):
+        calls.append("unpack")
+        assert kwargs.get("stage_cb") is marker, "解压阶段没拿到 stage_cb，几分钟黑屏"
+        return base
+
+    def fake_ungraft(tiles_dir, base_dir):
+        calls.append("ungraft")
+        assert Path(tiles_dir) == out_dir and Path(base_dir) == base
+        return 0
+
+    def fake_graft(tiles_dir, base_dir):
+        calls.append("graft")
+        assert Path(tiles_dir) == out_dir and Path(base_dir) == base
+        return {"linked": 0, "copied": 0, "skipped": 0}
+
+    def fake_merge(task_layer_path, base_layer_path):
+        calls.append("merge")
+        assert Path(base_layer_path) == base / "layer.json"
+
+    def fake_build_terrain(**kwargs):
+        calls.append("tile")
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text('{"maxzoom": 9, "available": []}', encoding="utf-8")
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", fake_unpack)
+    monkeypatch.setattr(mod, "ungraft_base_from", fake_ungraft)
+    monkeypatch.setattr(mod, "graft_base_into", fake_graft)
+    monkeypatch.setattr(mod, "merge_base_availability", fake_merge)
+
+    mod.tile_dem_task_dir(task_dir, out_dir,
+                          mod.TileParams(maxzoom=9, parent_url="", stage_cb=marker),
+                          build_terrain_fn=fake_build_terrain)
+
+    assert calls == ["unpack", "ungraft", "tile", "graft", "merge"]
+
+
+def test_tiler_unlinks_grafted_base_before_tiling(tmp_path: Path, monkeypatch):
+    """重跑 maxzoom<8 的任务不许把瓦片写穿进共享底图缓存。
+
+    可达路径：maxzoom=5 → min_level=min(8,5)=5，任务自己就要写 z5。上一轮植入
+    在 out_dir 里留下的是**指向共享缓存的硬链接**，而落盘走 Path.write_bytes
+    （就地截断同一 inode），于是第二轮的 z5 瓦片直接改写 assets/terrain/base_z8
+    里那份文件 —— 全局底图被污染，影响之后所有任务，零信号。
+    """
+    from src.services.terrain_tiling import dem_task_tiler as mod
+    from src.services.terrain_tiling.base_terrain import graft_base_into
+
+    base = tmp_path / "base"
+    (base / "5" / "1").mkdir(parents=True)
+    cached = base / "5" / "1" / "2.terrain"
+    cached.write_bytes(b"\x1f\x8bBASE")
+    (base / "layer.json").write_text('{"maxzoom": 7, "available": []}', encoding="utf-8")
+
+    task_dir = _make_task_dir(tmp_path)
+    out_dir = tmp_path / "out"
+
+    # 上一轮跑完的现场
+    assert graft_base_into(out_dir, base)["linked"] > 0, \
+        "本用例要求硬链接生效，否则测不出写穿"
+
+    def fake_build_terrain(**kwargs):
+        out = Path(kwargs["output_dir"])
+        d = out / "5" / "1"
+        d.mkdir(parents=True, exist_ok=True)
+        # 与 cesiumlab_terrain._worker_tile 的落盘方式逐字一致
+        (d / "2.terrain").write_bytes(b"TASK-Z5")
+        (out / "layer.json").write_text('{"maxzoom": 5, "available": []}', encoding="utf-8")
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", lambda **k: base)
+
+    mod.tile_dem_task_dir(task_dir, out_dir,
+                          mod.TileParams(maxzoom=5, parent_url=""),
+                          build_terrain_fn=fake_build_terrain)
+
+    assert cached.read_bytes() == b"\x1f\x8bBASE", "任务瓦片写穿到了共享底图缓存"
+    assert (out_dir / "5" / "1" / "2.terrain").read_bytes() == b"TASK-Z5", \
+        "植入把任务自己的瓦片盖掉了（skip-if-exists 失效）"
+
+
+def test_graft_failure_fails_the_whole_task(tmp_path: Path, monkeypatch):
+    """植入失败必须上抛，不许吞掉后退回 parentUrl 兜底。
+
+    半个底图比没有底图更糟：缺的瓦片让 Cesium 拿 404 → 它不报错，而是塞一个假的
+    heightmap-1.0 图层并污染共享 builder，连任务自己的 quantized-mesh 瓦片都被按
+    heightmap 解析（v0.2.8 实测 4154 m 山峰解成 -744 m，控制台零报错）。
+    """
+    from src.services.terrain_tiling import dem_task_tiler as mod
+
+    task_dir = _make_task_dir(tmp_path)
+    out_dir = tmp_path / "out"
+
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "layer.json").write_text('{"maxzoom": 7, "available": []}', encoding="utf-8")
+
+    def fake_build_terrain(**kwargs):
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text('{"maxzoom": 9, "available": []}', encoding="utf-8")
+
+    def boom(tiles_dir, base_dir):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", lambda **k: base)
+    monkeypatch.setattr(mod, "graft_base_into", boom)
+
+    with pytest.raises(OSError):
+        mod.tile_dem_task_dir(task_dir, out_dir,
+                              mod.TileParams(maxzoom=9,
+                                             parent_url="https://example.com/parent"),
+                              build_terrain_fn=fake_build_terrain)
+
+    layer = (out_dir / "layer.json").read_text(encoding="utf-8")
+    assert "parentUrl" not in layer, "植入失败后偷偷退回了 parentUrl 兜底"

@@ -6,7 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from src.services.terrain_tiling.layer_json import patch_layer_json_parent
+from src.services.terrain_tiling.base_terrain import (
+    ensure_base_unpacked,
+    graft_base_into,
+    ungraft_base_from,
+)
+from src.services.terrain_tiling.layer_json import (
+    merge_base_availability,
+    patch_layer_json_parent,
+)
 from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
 
@@ -81,10 +89,27 @@ def tile_dem_task_dir(
                 "Install them, or inject build_terrain_fn for tests."
             ) from e
 
+    # 解压排在切片前：首次解压是分钟级，要独占 stage_cb 上报通道，否则和切片
+    # 进度抢同一条通道，前端只能看到进度条来回跳。
+    base_dir = ensure_base_unpacked(stage_cb=params.stage_cb)
+
+    if base_dir is not None:
+        # 上一轮植入留下的是**指向共享缓存的硬链接**，而瓦片落盘走
+        # Path.write_bytes（就地截断同一 inode）。maxzoom <= 7 的任务自己就要写
+        # z0-7，重跑时那一笔会直接改写 assets/terrain/base_z8 里的底图，全局污染
+        # 且零信号。必须赶在 build_terrain 之前摘干净。
+        ungraft_base_from(out_dir, base_dir)
+
+    # 底图独占 z0-z7，任务只出 z8+：两边零冲突，也没有「半张瓦片是真数据、
+    # 半张是采到 DEM 外的外推值」那种接缝。
+    # min(8, maxzoom) 而不是死写 8 —— maxzoom < 8 时 min_level > max_level 会让
+    # _tile_ranges() 产出空区间，任务切零张瓦片却报 completed，又一款静默成功。
+    min_level = min(8, int(params.maxzoom)) if base_dir is not None else 0
+
     counts = build_terrain_fn(
         inputs=[str(p) for p in dem_tifs],
         output_dir=str(out_dir),
-        min_level=0,
+        min_level=min_level,
         max_level=int(params.maxzoom),
         tile_size=int(params.tile_size),
         workers=int(params.workers),
@@ -99,7 +124,15 @@ def tile_dem_task_dir(
     if not layer_json_path.is_file():
         raise FileNotFoundError(f"Missing layer.json at {layer_json_path}")
 
-    patch_layer_json_parent(layer_json_path, params.parent_url)
+    if base_dir is not None:
+        # 植入必须在切片**之后**：graft_base_into 的冲突判断是遍历时读一次的
+        # 目录级快照，与切片并发会绕过 skip-if-exists（它 docstring 里的前提）。
+        # 失败即任务失败：半个底图会让 Cesium 拿 404 并把整个 provider 降级成
+        # heightmap，比根本没有底图更糟。
+        graft_base_into(out_dir, base_dir)
+        merge_base_availability(layer_json_path, base_dir / "layer.json")
+    else:
+        patch_layer_json_parent(layer_json_path, params.parent_url)
 
     keys = ("total", "rendered", "failed", "chose_martini", "chose_grid")
     if not isinstance(counts, dict):

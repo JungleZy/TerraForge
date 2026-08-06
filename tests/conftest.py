@@ -69,6 +69,40 @@ def isolate_startup_sweep(monkeypatch, _startup_sweep_sandbox):
     monkeypatch.setattr(tc, "tempfile", _SandboxTempfile(str(_startup_sweep_sandbox)))
 
 
+@pytest.fixture(scope="session")
+def _base_terrain_sandbox(tmp_path_factory):
+    return tmp_path_factory.mktemp("base_terrain_sandbox")
+
+
+@pytest.fixture(autouse=True)
+def isolate_base_terrain(monkeypatch, _base_terrain_sandbox):
+    """测试侧防护:不让任何测试把随包底图解压进仓库。
+
+    `tile_dem_task_dir` 现在开头就调 `ensure_base_unpacked()`,而仓库里
+    `assets/terrain/*.part` 是真实存在的 167 MB —— 任何调用真 tiler 的测试都会
+    解出 224 MB / 4.3 万个文件到 `assets/terrain/base_z8`。两个后果:跑一次测试
+    多等几分钟(现象不是报错,是「怎么这么慢」,极难归因),以及 CI 里测试跑在
+    Nuitka 打包**之前**,解出来的东西会被打进三个平台的产物。
+
+    做法是把分卷目录指到一个空沙箱:`base_parts_dir()` 找不到分卷就返回 None,
+    `ensure_base_unpacked()` 随之返回 None,调用方走 parentUrl 兜底 —— 正是
+    这些既有测试原本断言的路径,所以它们一行都不用改。
+
+    打在 `bundle_dir` 而不是 `_assets_terrain_dir` 上:后者本身是两条用例的**被测
+    对象**(`test_base_parts_dir_returns_none_without_parts` /
+    `test_base_cache_dir_sits_next_to_the_parts` 验证的正是「打包目录 → assets/
+    terrain」这层解析),把它整个换掉就等于把被测对象抽走。`bundle_dir` 低一层,
+    那两条用例自己也 patch 它,setattr 打在后面覆盖本 fixture;要测真解压的用例
+    (`test_base_terrain.py` 其余部分)patch 更上层的 `_assets_terrain_dir`,
+    同样覆盖本 fixture。
+    """
+    try:
+        from src.services.terrain_tiling import base_terrain as bt
+    except Exception:  # 环境缺依赖时不阻断收集
+        return
+    monkeypatch.setattr(bt, "bundle_dir", lambda: str(_base_terrain_sandbox))
+
+
 # create_app() 通过 init_*_task_manager(...) 把 manager 注入到这些模块的**模块级
 # 全局**里。sys.modules 的恢复管不住它们：teardown 后 sys.modules['app'] 已是原
 # 实例，而 src.routes.api.task_manager 仍指向 fixture 里那个绑定到已删除 tmp_path 的

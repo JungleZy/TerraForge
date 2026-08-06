@@ -700,3 +700,114 @@ def test_graft_fails_loudly_when_a_subtree_cannot_be_read(tmp_path):
 
     leftover = sorted(str(p.relative_to(tiles)) for p in tiles.rglob("*.terrain"))
     assert leftover == [], f"子树读不了还留下了半个底图：{leftover}"
+
+
+
+# ---------------------------------------------------------------------------
+# 摘链：切片写穿共享缓存的防线
+# ---------------------------------------------------------------------------
+
+
+def test_ungraft_unlinks_shared_inodes_and_keeps_task_own_files(tmp_path):
+    """只摘与底图共享 inode 的那些，任务自己的文件一个都不许带走。
+
+    摘掉的判据必须是 (st_dev, st_ino) 而不是「底图里有同名文件」：maxzoom < 8 的
+    退化任务重跑时，上一轮任务自己在 z0-7 写的瓦片与底图**同名**，按名字摘就会
+    把任务数据删掉，而 skip-if-exists 随后用底图瓦片把那个位置填上 —— 任务的
+    DEM 数据被底图静默顶替。
+    """
+    from src.services.terrain_tiling.base_terrain import graft_base_into, ungraft_base_from
+
+    base = _make_base(tmp_path / "base", layers=((0, 2), (1, 4)), dense=True)
+    tiles = tmp_path / "tiles"
+    stats = graft_base_into(tiles, base)
+    assert stats["linked"] > 0, "本用例要求硬链接生效，否则测不出共享 inode"
+
+    # 与底图同名、但是任务自己写的（独立 inode）：不能被摘
+    same_name = tiles / "1" / "0" / "0.terrain"
+    same_name.unlink()
+    same_name.write_bytes(b"task-own-same-name")
+    # 底图里没有的名字：不能被摘
+    (tiles / "8" / "1").mkdir(parents=True)
+    (tiles / "8" / "1" / "2.terrain").write_bytes(b"task-z8")
+    (tiles / "layer.json").write_text('{"maxzoom": 5}', encoding="utf-8")
+
+    removed = ungraft_base_from(tiles, base)
+
+    assert removed == stats["linked"] - 1, "摘掉的个数不等于剩下的硬链接数"
+    assert not (tiles / "0" / "0" / "0.terrain").exists(), "共享 inode 的硬链接没摘掉"
+    assert same_name.read_bytes() == b"task-own-same-name", "按名字摘掉了任务自己的瓦片"
+    assert (tiles / "8" / "1" / "2.terrain").read_bytes() == b"task-z8"
+    assert (tiles / "layer.json").is_file(), "顶层 layer.json 是任务的，不许碰"
+
+
+def test_ungraft_makes_tiling_writes_stop_hitting_the_shared_cache(tmp_path):
+    """摘链之后再落盘，共享缓存里那份必须原样不动。
+
+    cesiumlab_terrain._worker_tile 落盘用 `(out/f"{y}.terrain").write_bytes(blob)`，
+    而 `Path.write_bytes` = `open(path,'wb')` + write —— **就地截断同一个 inode**，
+    不是先删再建。硬链接下这一笔直接改写共享缓存 assets/terrain/base_z8 里的那份
+    文件：全局底图被静默污染，影响之后所有任务，且没有任何信号。
+    """
+    from src.services.terrain_tiling.base_terrain import graft_base_into, ungraft_base_from
+
+    base = _make_base(tmp_path / "base", layers=((5, 2),), dense=True)
+    cached = base / "5" / "0" / "0.terrain"
+    tiles = tmp_path / "tiles"
+    assert graft_base_into(tiles, base)["linked"] > 0
+
+    ungraft_base_from(tiles, base)
+    (tiles / "5" / "0" / "0.terrain").write_bytes(b"TASK")
+
+    assert cached.read_bytes() == b"\x1f\x8bfake", "任务瓦片写穿到了共享底图缓存"
+
+
+def test_ungraft_prunes_whole_levels_that_were_never_grafted(tmp_path, monkeypatch):
+    """首次切片（out_dir 里还没有 z0-7）不许抛，也不许去遍历底图那 43k 个文件。
+
+    这条路径每次切片开头都会走，而底图整棵树有 510 个目录 / 43,690 个文件。
+    目标里整个层级目录都不存在时，它下面的每一个文件都必然不存在，必须在
+    进 os.walk 之前就整层剪掉。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    base = _make_base(tmp_path / "base", layers=((0, 2), (1, 4)), dense=True)
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+
+    def no_walk(*a, **k):
+        raise AssertionError("目标层级一个都不存在，还是遍历了整棵底图")
+
+    monkeypatch.setattr(base_terrain.os, "walk", no_walk)
+    assert base_terrain.ungraft_base_from(tiles, base) == 0
+
+
+def test_ungraft_tolerates_a_missing_tiles_dir(tmp_path):
+    """out_dir 还没建出来（全新任务）→ 返回 0，不抛。"""
+    from src.services.terrain_tiling.base_terrain import ungraft_base_from
+
+    base = _make_base(tmp_path / "base", layers=((0, 2),), dense=True)
+    assert ungraft_base_from(tmp_path / "nope", base) == 0
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason="靠 chmod 造删除失败：Windows 权限语义不同，root 无视权限位")
+def test_ungraft_fails_loudly_when_a_link_cannot_be_removed(tmp_path):
+    """摘不掉就必须抛，不许吞掉继续。
+
+    吞掉 = 那个硬链接留在原地，紧接着的 build_terrain 一笔 write_bytes 就把共享
+    缓存改写了 —— 正是这个函数存在的全部理由。宁可让任务当场失败。
+    """
+    from src.services.terrain_tiling.base_terrain import graft_base_into, ungraft_base_from
+
+    base = _make_base(tmp_path / "base", layers=((0, 2),), dense=True)
+    tiles = tmp_path / "tiles"
+    assert graft_base_into(tiles, base)["linked"] > 0
+
+    locked = tiles / "0" / "0"
+    locked.chmod(0o555)  # 目录不可写 → 里面的文件删不掉
+    try:
+        with pytest.raises(OSError):
+            ungraft_base_from(tiles, base)
+    finally:
+        locked.chmod(0o755)
