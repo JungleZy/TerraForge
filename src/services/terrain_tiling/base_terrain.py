@@ -285,3 +285,102 @@ def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path |
     _emit(stage_cb, 1.0)
     logger.info(f"Terrain: 底图就位 {cache_dir}")
     return cache_dir
+
+
+
+def _probe_hardlink(base_dir: Path, tiles_dir: Path) -> bool:
+    """在目标目录里试链一次，成败决定整批策略。
+
+    **不做 4.3 万次逐个 try**：源和目标各自固定在一个文件系统上，能不能硬链接
+    在同一个目标目录里不会中途改变，探一次就够了；而 Windows 上抛/接一次异常
+    是微秒级开销，乘以 4.3 万个瓦片就是可测量的一截。
+
+    探针源用 layer.json：它是底图里唯一被 is_base_ready 强制要求存在的文件。
+    硬链接只要求对源可读，所以 assets/ 只读也照样能探。
+    """
+    probe_dst = tiles_dir / ".hardlink_probe"
+    try:
+        if probe_dst.exists():
+            probe_dst.unlink()
+        os.link(base_dir / "layer.json", probe_dst)
+    except OSError:
+        return False
+    finally:
+        # 探针文件必须收走：它会跟着任务产出一起打包/分发出去。
+        try:
+            probe_dst.unlink()
+        except OSError:
+            pass
+    return True
+
+
+def graft_base_into(tiles_dir: Path, base_dir: Path) -> dict[str, int]:
+    """把底图植入任务瓦片目录，返回 {linked, copied, skipped}。
+
+    skip-if-exists：任务已经写过的瓦片不被覆盖。正常情况零冲突（任务 z8+、
+    底图 z0-7），这条规则兜的是 maxzoom < 8 的退化任务 —— 那时两边在同一层
+    相撞，任务自己的 DEM 数据必须赢。
+
+    失败即失败并回滚：留半个底图比没有更糟 —— 缺的瓦片让 Cesium 拿 404，它不
+    报错，而是塞一个假的 heightmap-1.0 图层并污染共享 builder，连任务自己的
+    quantized-mesh 瓦片都被按 heightmap 解析（v0.2.8 实测：4154 m 山峰解成
+    -744 m，控制台零报错）。所以宁可整批撤掉、退回 parentUrl 级联。
+    """
+    tiles_dir = Path(tiles_dir)
+    base_dir = Path(base_dir)
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+
+    use_link = _probe_hardlink(base_dir, tiles_dir)
+    stats = {"linked": 0, "copied": 0, "skipped": 0}
+    written: list[Path] = []
+    base_str = str(base_dir)
+
+    try:
+        # 用 os.walk 而不是 rglob：一次拿一整个目录的名字，不为 4.3 万个瓦片各
+        # 造一个 Path，目录级的准备工作（mkdir / 冲突判断）也只做 518 次。
+        for dirpath, dirnames, filenames in os.walk(base_str):
+            # 排序遍历：磁盘满时植入到一半，留下的前缀每次都一样，排障能对得上。
+            dirnames.sort()
+            filenames.sort()
+            rel_dir = os.path.relpath(dirpath, base_str)
+            at_root = rel_dir == os.curdir
+            dst_dir = tiles_dir if at_root else tiles_dir / rel_dir
+            # 目标目录整个不存在 → 里面每个文件都必然是新的，逐文件 exists() 可以
+            # 全省掉。正常情况零冲突，这一下把 4.3 万次 stat 压到 518 次 is_dir()。
+            may_collide = dst_dir.is_dir()
+            dst_ready = may_collide
+            for name in filenames:
+                # 顶层 layer.json 由 merge_layer_json 合成；直接搬会拿底图的
+                # maxzoom / available 盖掉任务自己的，Cesium 会去请求不存在的层级。
+                if at_root and name == "layer.json":
+                    continue
+                dst = dst_dir / name
+                if may_collide and dst.exists():
+                    stats["skipped"] += 1
+                    continue
+                if not dst_ready:
+                    dst_dir.mkdir(parents=True, exist_ok=True)
+                    dst_ready = True
+                src = os.path.join(dirpath, name)
+                if use_link:
+                    os.link(src, dst)
+                    stats["linked"] += 1
+                else:
+                    shutil.copy2(src, dst)
+                    stats["copied"] += 1
+                written.append(dst)
+    except BaseException:
+        # 捕到 BaseException 才连 Ctrl-C 一起兜住 —— 半成品底图的危害与是不是
+        # 用户按的键无关。回滚只删 written 里的：被 skip 的、以及任务自己写的
+        # 瓦片都不在里面，一个都不能带走。空目录留着无害（重试时 mkdir 直接复用），
+        # 而 Cesium 只看文件在不在。
+        for p in written:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        raise
+
+    logger.info(f"Terrain: 底图植入完成 linked={stats['linked']} "
+                f"copied={stats['copied']} skipped={stats['skipped']} → {tiles_dir}")
+    return stats

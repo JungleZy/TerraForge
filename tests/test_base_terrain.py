@@ -426,3 +426,181 @@ def test_unwritable_assets_dir_raises_runtime_error_not_bare_oserror(tmp_path, m
         m.setattr(base_terrain.tempfile, "mkdtemp", denied)
         with pytest.raises(RuntimeError):
             base_terrain.ensure_base_unpacked()
+
+
+# ----------------------------------------------------------------- 植入任务目录
+
+
+def _link_unsupported(*a, **k):
+    """模拟跨盘 / 目标盘不支持硬链接。EXDEV 是 DEM 任务的常态：输出路径由用户
+    自选，底图缓存在 assets/ 下，两者不同盘的概率比同盘还高。"""
+    raise OSError(18, "Invalid cross-device link")
+
+
+def test_graft_prefers_hardlinks_and_walks_in_a_reproducible_order(tmp_path, monkeypatch):
+    """同盘走硬链接（磁盘只占一份），并且按名字排序遍历。
+
+    顺序不是可有可无的细节：磁盘满时植入到一半，留下的前缀必须可复现，否则
+    同一批数据每次留下不同的半成品，排障对不上，回滚测试也只能靠运气。
+    夹具铺到 z3（16 个 x 目录）正是为了让「排序」与「创建顺序」分叉
+    ——  sorted 是 0,1,10,11,…,2,3，创建是 0,1,2,…,15 —— readdir 恰好等于
+    排序的巧合杀不掉这条断言。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    layers = ((0, 2), (1, 4), (2, 8), (3, 16))
+    base = _make_base(tmp_path / "base", layers=layers, dense=True)
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+
+    order = []
+    real_link = base_terrain.os.link
+
+    def spy(src, dst, **k):
+        order.append(os.path.relpath(str(src), str(base)).replace(os.sep, "/"))
+        return real_link(src, dst, **k)
+
+    monkeypatch.setattr(base_terrain.os, "link", spy)
+
+    got = base_terrain.graft_base_into(tiles, base)
+
+    assert got == {"linked": 30, "copied": 0, "skipped": 0}
+    src = base / "0" / "0" / "0.terrain"
+    dst = tiles / "0" / "0" / "0.terrain"
+    assert dst.is_file()
+    assert os.stat(src).st_ino == os.stat(dst).st_ino, "同盘应当是硬链接"
+
+    assert order[0] == "layer.json", "第一次 link 是探针，探针只探一次"
+    assert order[1:] == [f"{z}/{x}/0.terrain"
+                         for z, nx in layers
+                         for x in sorted(str(i) for i in range(nx))]
+    assert list(tiles.glob(".hardlink_probe*")) == [], "探针文件没清掉"
+
+
+def test_graft_falls_back_to_copy_when_link_unsupported(tmp_path, monkeypatch):
+    """跨盘 / 文件系统不支持硬链接时回退实体复制，内容必须逐字节一致。
+
+    DEM 任务的输出路径是用户自选的全盘路径，跨盘是常态不是例外 —— 这条分支
+    要当主路径测。
+
+    `len(calls) == 1` 钉的是「策略一次性决定」：探针失败之后不许再对 4.3 万个
+    瓦片逐个 try —— 同一个目标目录里策略不会中途改变，而逐个 try 的异常开销在
+    Windows 上是可测量的。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    base = _make_base(tmp_path / "base", layers=((0, 2), (1, 4)), dense=True)
+    tiles = tmp_path / "tiles"
+    tiles.mkdir()
+
+    calls = []
+
+    def no_link(src, dst, **k):
+        calls.append(str(dst))
+        _link_unsupported()
+
+    monkeypatch.setattr(base_terrain.os, "link", no_link)
+
+    got = base_terrain.graft_base_into(tiles, base)
+
+    assert got == {"linked": 0, "copied": 6, "skipped": 0}
+    src = base / "0" / "0" / "0.terrain"
+    dst = tiles / "0" / "0" / "0.terrain"
+    assert dst.read_bytes() == src.read_bytes()
+    assert os.stat(src).st_ino != os.stat(dst).st_ino
+    assert len(calls) == 1, f"探针之外还在逐文件试链：{calls}"
+
+
+@pytest.mark.parametrize("strategy", ["link", "copy"])
+def test_graft_never_overwrites_task_tiles(tmp_path, monkeypatch, strategy):
+    """任务已经写过的瓦片胜出，两条策略分支都要守住。
+
+    正常情况零冲突（任务 z8+、底图 z0-7），这条是为了兜住 maxzoom < 8 的退化
+    任务 —— 那时两边在同一层相撞，任务的 DEM 数据必须赢。复制分支单独测是因为
+    它的失效方式和链接分支不同：os.link 撞名会抛 FileExistsError（吵闹地坏），
+    shutil.copy2 则**静默覆盖**（安静地坏），少了这一半就漏掉更危险的那一半。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    base = _make_base(tmp_path / "base", layers=((0, 2),), dense=True)
+    tiles = tmp_path / "tiles"
+    (tiles / "0" / "0").mkdir(parents=True)
+    (tiles / "0" / "0" / "0.terrain").write_bytes(b"TASK-OWN")
+
+    if strategy == "copy":
+        monkeypatch.setattr(base_terrain.os, "link", _link_unsupported)
+
+    got = base_terrain.graft_base_into(tiles, base)
+
+    assert got["skipped"] == 1
+    assert got["linked"] + got["copied"] == 1, "另一个 x 目录该照常植入"
+    assert (tiles / "0" / "0" / "0.terrain").read_bytes() == b"TASK-OWN"
+
+
+def test_graft_never_carries_the_base_layer_json_over(tmp_path):
+    """底图的 layer.json 不许搬 —— 它由 Task 4 的合成函数处理。
+
+    直接搬过去会盖掉任务自己的 layer.json（available 范围、maxzoom 全是任务
+    的），Cesium 拿着底图的元数据去请求任务瓦片，请求的层级根本不存在。
+    第一段（目标目录里本来没有 layer.json）才是真正的守卫：如果实现只是靠
+    skip-if-exists 兜着，第二段照样绿，第一段会红。
+    """
+    from src.services.terrain_tiling.base_terrain import graft_base_into
+
+    base = _make_base(tmp_path / "base", layers=((0, 2),), dense=True)
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    graft_base_into(fresh, base)
+    assert not (fresh / "layer.json").exists(), "底图的 layer.json 被搬过来了"
+
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    (owned / "layer.json").write_bytes(b'{"maxzoom": 12}')
+    graft_base_into(owned, base)
+    assert (owned / "layer.json").read_bytes() == b'{"maxzoom": 12}'
+
+
+def test_graft_rolls_back_only_what_it_wrote_on_failure(tmp_path, monkeypatch):
+    """植入中途失败 → 抛出，且**只**清掉本次写进去的文件。
+
+    半个底图比没有更糟：缺的瓦片让 Cesium 拿 404，它不报错而是塞一个假的
+    heightmap-1.0 图层并污染共享 builder，连任务自己的 quantized-mesh 瓦片都
+    被按 heightmap 解析（v0.2.8 实测：4154 m 山峰解成 -744 m，控制台零报错）。
+
+    任务自己的瓦片有两类，回滚一类都不能带走：
+    ① `0/0/0.terrain` 与底图撞名，被 skip —— 它压根不属于本次植入；
+    ② `9/1/1.terrain` 不撞名 —— 回滚不许整目录清场。
+    ① 一定排在失败点之前，靠的是实现按名字排序遍历（见上面那条顺序用例）。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    base = _make_base(tmp_path / "base", layers=((0, 2), (1, 4)), dense=True)
+    tiles = tmp_path / "tiles"
+    (tiles / "0" / "0").mkdir(parents=True)
+    (tiles / "0" / "0" / "0.terrain").write_bytes(b"TASK-OWN")
+    (tiles / "9" / "1").mkdir(parents=True)
+    (tiles / "9" / "1" / "1.terrain").write_bytes(b"TASK-OWN")
+
+    n = {"i": 0}
+    real_link = base_terrain.os.link
+
+    def flaky(src, dst, **k):
+        # 只数瓦片，不数探针 —— 免得这条用例依赖探针有没有走 os.link
+        if str(dst).endswith(".terrain"):
+            n["i"] += 1
+            if n["i"] > 2:
+                raise OSError(28, "No space left on device")
+        return real_link(src, dst, **k)
+
+    monkeypatch.setattr(base_terrain.os, "link", flaky)
+
+    with pytest.raises(OSError):
+        base_terrain.graft_base_into(tiles, base)
+
+    leftover = [p for p in tiles.rglob("*.terrain")
+                if p.read_bytes() != b"TASK-OWN"]
+    assert leftover == [], f"回滚不干净：{leftover}"
+    assert (tiles / "9" / "1" / "1.terrain").read_bytes() == b"TASK-OWN"
+    assert (tiles / "0" / "0" / "0.terrain").read_bytes() == b"TASK-OWN", \
+        "被 skip 的瓦片是任务自己的，不属于本次植入"
