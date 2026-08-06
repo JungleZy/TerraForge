@@ -315,3 +315,55 @@ def test_sweep_orphan_files_refuses_symlinks(monkeypatch, tmp_path):
     assert removed == 0
     assert link.is_symlink(), "同名符号链接被删了"
     assert precious.exists()
+
+
+# ---------------------------------------------------------------------------
+# 第 6 类：随包底图的解压临时目录（.base_unpack_<pid>_*，位于 assets/terrain）
+# ---------------------------------------------------------------------------
+
+
+def test_base_unpack_tmp_dirs_are_swept_from_assets_terrain(monkeypatch, tmp_path):
+    """assets/terrain 下的解压残留要清掉；分卷、成品底图、活进程的目录都不能碰。
+
+    这个落点前五类的扫描根一条都覆盖不到（不在系统临时目录、不在 DOWNLOADS_DIR、
+    不在 CACHE_DIR），而单次残留最多 167 MB / 4.3 万个文件；更要紧的是
+    assets/terrain 是 Nuitka 的 --include-data-dir 源目录，清不掉就会被打进三个
+    平台的发布产物，且没有任何其他回收入口。
+    """
+    from src.core import config
+    from src.services.terrain_tiling import base_terrain
+
+    assets = tmp_path / "assets" / "terrain"
+    assets.mkdir(parents=True)
+    monkeypatch.setattr(config.Config, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(base_terrain, "bundle_dir", lambda: None)
+
+    stale = assets / f"{base_terrain.UNPACK_TMP_PREFIX}999999_abc"
+    stale.mkdir()
+    (stale / "layer.json").write_text("{}", encoding="utf-8")
+    _age(stale)
+
+    # 宁可漏不可误删：另一个活进程正在写的目录（mtime 比本进程新）、随包分卷、
+    # 已就位的成品底图 —— 三者一个都不能动。
+    live = assets / f"{base_terrain.UNPACK_TMP_PREFIX}{os.getpid()}_live"
+    live.mkdir()
+    part = assets / "base_z8.tar.gz.partaa"
+    part.write_bytes(b"x")
+    ready = assets / "base_z8"
+    ready.mkdir()
+    _age(ready)      # 成品同样是「旧」的，只靠前缀不匹配保住
+
+    # 其余五类的扫描根全部指到不存在的目录，免得这条用例碰到真实系统临时目录。
+    monkeypatch.setattr(task_cleanup.tempfile, "gettempdir",
+                        lambda: str(tmp_path / "nosys"))
+    monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "nocache")
+    monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "nodl")
+    monkeypatch.setattr("src.services.config_manager.ConfigManager.get",
+                        lambda self, k, d=None: d)
+
+    sweep_startup_residue()
+
+    assert not stale.exists(), "上次进程留下的解压残留没被清掉"
+    assert live.exists(), "另一个活进程正在写的临时目录被删了"
+    assert part.exists(), "随包分卷被误删了"
+    assert ready.exists(), "已就位的成品底图被误删了"

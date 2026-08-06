@@ -266,3 +266,163 @@ def test_cache_lock_is_exclusive_and_released(tmp_path):
     with open(lock_file, "a+b") as rival:
         fcntl.flock(rival.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(rival.fileno(), fcntl.LOCK_UN)
+
+
+def test_cache_lock_closes_its_handle_when_acquire_fails(tmp_path, monkeypatch):
+    """`__enter__` 里失败必须自己把句柄关掉。
+
+    `__enter__` 抛异常时 with 语句还没成立，`__exit__` 不会被调用 —— 不在那里关
+    就是每次失败漏一个 fd，进程不退不回收。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    def denied(self):
+        raise OSError("lock unavailable")
+
+    monkeypatch.setattr(base_terrain._CacheLock, "_acquire", denied)
+    lock = base_terrain._CacheLock(tmp_path / ".base_unpack.lock")
+
+    with pytest.raises(OSError):
+        lock.__enter__()
+    assert lock._fh is None, "加锁失败后句柄没关，fd 泄漏"
+
+
+# 子进程脚本：等锁，拿到就打印等了多久。必须是真子进程 —— 同一进程内
+# msvcrt.locking 对自己已持有的字节区间可重入，测不出跨进程互斥。
+_CHILD_WAIT_FOR_LOCK = '''\
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from src.services.terrain_tiling.base_terrain import _CacheLock
+
+started = time.monotonic()
+with _CacheLock(Path(sys.argv[2])):
+    print(f"ACQUIRED {time.monotonic() - started:.2f}", flush=True)
+'''
+
+
+@pytest.mark.skipif(os.name != "nt",
+                    reason="只在 Windows 上有意义：POSIX 分支由上面那条 flock 探针覆盖")
+def test_cache_lock_makes_a_second_process_wait_on_windows(tmp_path):
+    """Windows 上第二个进程必须**等**，而不是报错退出。
+
+    这是本模块最核心的需求在主力平台上的唯一护栏。`msvcrt.LK_LOCK` 听起来像阻塞
+    锁，实际是「每隔 1 秒重试、10 次之后抛 OSError」—— 最多等约 10 秒就崩。而解压
+    4.3 万个小文件在 Windows 上要几分钟，所以用 LK_LOCK 的话，两个并发切片任务里
+    后到的那个必然失败。
+
+    父进程故意持锁 13 s（> LK_LOCK 的 ~10 s 上限）：持锁时间短于 10 s 的话
+    LK_LOCK 也能在超时前拿到锁，这个 bug 就漏了。代价是这条用例在 Windows CI 上
+    要跑 13 s —— 换本模块唯一的跨进程互斥证据，值。
+    """
+    import subprocess
+
+    from src.services.terrain_tiling.base_terrain import _CacheLock
+
+    hold = 13.0
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    script = tmp_path / "wait_for_lock.py"
+    script.write_text(_CHILD_WAIT_FOR_LOCK, encoding="utf-8")
+    lock_file = tmp_path / ".base_unpack.lock"
+
+    lock = _CacheLock(lock_file)
+    with lock:
+        child = subprocess.Popen(
+            [sys.executable, str(script), repo_root, str(lock_file)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            child.wait(timeout=hold)
+        except subprocess.TimeoutExpired:
+            pass   # 期望路径：它还在等
+        assert child.poll() is None, (
+            "子进程在父进程持锁期间就返回了 —— 要么没上锁，要么等待有上限崩了："
+            + child.communicate()[1])
+
+    out, err = child.communicate(timeout=60)
+    assert child.returncode == 0, f"子进程应当等到锁而不是报错：{err}"
+    waited = float(out.split("ACQUIRED", 1)[1].split()[0])
+    assert waited >= hold - 1.0, f"子进程没有真的等（{waited:.2f}s < {hold}s）"
+
+
+def test_tmp_dir_is_named_and_placed_for_the_startup_sweep(tmp_path, monkeypatch):
+    """临时目录必须叫 `.base_unpack_<pid>_*`，且落在 assets/terrain。
+
+    finally 盖不住 SIGKILL / 关窗 / 断电，残留只能靠下次启动清扫
+    （task_cleanup.sweep_startup_residue 第 6 类）。前缀不对或落点不对，残留就
+    永久留在 assets/terrain —— 那是 Nuitka 的 --include-data-dir 源目录，会被打进
+    三个平台的发布产物，且没有任何其他路径会回收它。pid 是唯一可靠的归属判据
+    （与 cesiumlab_terrain_<pid>_* 同一套约定）。
+    """
+    from src.services import task_cleanup
+    from src.services.terrain_tiling import base_terrain
+
+    src = _make_base(tmp_path / "src", dense=True)
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+
+    seen = []
+    real = base_terrain._extract_stream
+    monkeypatch.setattr(base_terrain, "_extract_stream",
+                        lambda p, dest, t, cb: (seen.append(dest), real(p, dest, t, cb))[1])
+
+    base_terrain.ensure_base_unpacked()
+
+    assert len(seen) == 1
+    tmp = seen[0]
+    assert tmp.parent == parts, "临时目录必须落在启动清扫扫得到的 assets/terrain"
+    assert tmp.name.startswith(f"{task_cleanup._BASE_UNPACK_PREFIX}{os.getpid()}_"), tmp.name
+
+
+def test_keyboard_interrupt_is_not_disguised_as_a_failed_unpack(tmp_path, monkeypatch):
+    """Ctrl-C 必须原样往上冒，不能被包成 RuntimeError。
+
+    包成 RuntimeError 会让上层把「用户按了 Ctrl-C」误判成「随包底图坏了」。
+    顺带钉住：临时目录的清理不依赖捕获 BaseException —— finally 无条件执行。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    src = _make_base(tmp_path / "src", dense=True)
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+
+    def interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(base_terrain, "_extract_stream", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        base_terrain.ensure_base_unpacked()
+
+    leftovers = [p.name for p in parts.iterdir()
+                 if p.name.startswith(base_terrain.UNPACK_TMP_PREFIX)]
+    assert leftovers == [], f"Ctrl-C 之后临时目录没清掉：{leftovers}"
+
+
+def test_unwritable_assets_dir_raises_runtime_error_not_bare_oserror(tmp_path, monkeypatch):
+    """加锁与建临时目录也在「失败抛 RuntimeError」这条契约里。
+
+    assets/ 在打包安装场景下经常不可写（Program Files 权限、只读介质），
+    `open(锁文件)` 和 `mkdtemp` 抛的都是裸 OSError。这两步留在 try 之外，调用方
+    按 docstring 写的 `except RuntimeError` 就会整类漏掉，任务崩在没人接的
+    PermissionError 上。
+    """
+    from src.services.terrain_tiling import base_terrain
+
+    src = _make_base(tmp_path / "src", dense=True)
+    parts = _make_parts(tmp_path / "assets" / "terrain", src)
+    monkeypatch.setattr(base_terrain, "_assets_terrain_dir", lambda: parts)
+
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    with monkeypatch.context() as m:
+        m.setattr(base_terrain._CacheLock, "__enter__", denied)
+        with pytest.raises(RuntimeError):
+            base_terrain.ensure_base_unpacked()
+
+    with monkeypatch.context() as m:
+        m.setattr(base_terrain.tempfile, "mkdtemp", denied)
+        with pytest.raises(RuntimeError):
+            base_terrain.ensure_base_unpacked()

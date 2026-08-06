@@ -33,6 +33,9 @@ from pathlib import Path
 from typing import Optional
 
 from src.core.config import Config
+# base_terrain 只依赖 src.core.bundle / src.core.config（刻意不碰 numpy / osgeo），
+# 顶层导入不会成环，也不会把 GDAL 拖进启动路径。
+from src.services.terrain_tiling import base_terrain
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +51,20 @@ logger = logging.getLogger(__name__)
 #                    build_input_raster),与源数据同量级(GB 级任务就是 GB)。
 #                    落在切片输出目录的父级 —— 对 DEM 任务那是用户自选的
 #                    **全盘路径**,不在 DOWNLOADS_DIR 内,所以扫描根要从 DB 取。
+#   .base_unpack_<pid>_*  随包全球底图的解压临时目录
+#                    (src/services/terrain_tiling/base_terrain.py 的
+#                    ensure_base_unpacked),最多 167 MB / 4.3 万个文件。落在
+#                    assets/terrain —— 既不在系统临时目录也不在 DOWNLOADS_DIR
+#                    下,前五类一条都扫不到;而那是 Nuitka 的 --include-data-dir
+#                    源目录,残留会被打进三个平台的发布产物。
 # finally 盖不住 SIGKILL/关窗,这些残留只能在下次启动时清。
 # ⚠️ 新增任何 mkdtemp 型临时目录时,必须把前缀同步登记到这里,否则它就是清扫
 #    盲区(L5 就是这么来的:5 个创建点只有 3 个被扫到)。
 _STITCH_TMP_PREFIX = "map_dl_stitch_"
 _CONTOUR_WARP_PREFIX = "contour_warp_"
+# 底图解压临时目录的前缀与落点：从创建点导入，不在这里重抄一份字面量 —— 抄一份
+# 就有走样的机会，而走样的后果正是上面那条警告说的清扫盲区。
+_BASE_UNPACK_PREFIX = base_terrain.UNPACK_TMP_PREFIX
 # 上传暂存目录（L5）：两处都是 try/except: rmtree; raise + 函数末尾一条 rmtree，
 #   **没有 finally** —— Ctrl-C / SystemExit 会整个绕过，残留几十 GB 上传件。
 #   它们不在系统临时目录，而在 DOWNLOADS_DIR 下（与任务目录同盘，便于 replace）。
@@ -398,7 +410,7 @@ def _sweep_cache_part_files(cache_root: Path) -> int:
 
 
 def sweep_startup_residue() -> None:
-    """启动一次性清扫三类 finally 盖不住（SIGKILL/关窗）的临时残留：
+    """启动一次性清扫六类 finally 盖不住（SIGKILL/关窗）的临时残留：
 
     1. stitch work_dir（map_dl_stitch_*，系统临时目录 + 配置的 stitch_tmpdir）；
     2. contour warp tmpdir（contour_warp_*，系统临时目录 + 配置的
@@ -409,7 +421,10 @@ def sweep_startup_residue() -> None:
     4. 共享瓦片/DEM cache 里的原子写临时件（*.part.*）；
     5. 多幅 DEM 物化的中间栅格（cesiumlab_terrain_<pid>_*，与源数据同量级，
        GB 级任务就是 GB）—— 落在切片输出目录的父级，而 DEM 任务的 output_path
-       是用户自选的全盘路径，所以扫描根要从 DB 取（见 _materialised_sweep_roots）。
+       是用户自选的全盘路径，所以扫描根要从 DB 取（见 _materialised_sweep_roots）；
+    6. 随包底图的解压临时目录（.base_unpack_<pid>_*，位于 assets/terrain）——
+       最多 167 MB / 4.3 万个文件，且那是 Nuitka 的 --include-data-dir 源目录，
+       残留会被打进发布产物；前五类的扫描根一条都覆盖不到那里。
 
     只处理 mtime 早于本进程启动时刻的目录（见 _sweep_tmp_dirs 的 older_than）；
     .part 文件与物化栅格按名字里的 pid 跳过仍存活的写者。
@@ -417,7 +432,8 @@ def sweep_startup_residue() -> None:
     全程 best-effort：单个删除失败跳过，整体异常只记日志，绝不影响启动。
     匹配规则按前缀/通配精确限定（见模块顶部常量），同步执行、毫秒级。
     """
-    removed = {"stitch": 0, "warp": 0, "upload": 0, "part": 0, "materialised": 0}
+    removed = {"stitch": 0, "warp": 0, "upload": 0, "part": 0, "materialised": 0,
+               "base_unpack": 0}
     started_at = _PROCESS_START_TIME
     try:
         sys_tmp = Path(tempfile.gettempdir())
@@ -462,6 +478,12 @@ def sweep_startup_residue() -> None:
             Path(Config.DOWNLOADS_DIR) / "dem", _CONTOUR_UPLOAD_PREFIX, started_at)
 
         removed["part"] += _sweep_cache_part_files(Path(Config.CACHE_DIR))
+
+        # 第 6 类：随包底图的解压临时目录。落点 = 缓存目录的父级 = 分卷所在的
+        # assets/terrain。只读安装（Program Files / 只读介质）下 scandir 直接
+        # 失败返回 0，不需要额外分支。
+        removed["base_unpack"] += _sweep_tmp_dirs(
+            base_terrain.base_cache_dir().parent, _BASE_UNPACK_PREFIX, started_at)
     except Exception as e:
         logger.warning(f"Startup residue sweep failed (ignored): {e}")
         return
@@ -481,7 +503,8 @@ def sweep_startup_residue() -> None:
             f"Startup residue sweep removed {total} leftover(s): "
             f"stitch tmp={removed['stitch']}, contour warp tmp={removed['warp']}, "
             f"upload tmp={removed['upload']}, cache .part={removed['part']}, "
-            f"materialised raster={removed['materialised']}"
+            f"materialised raster={removed['materialised']}, "
+            f"base unpack tmp={removed['base_unpack']}"
         )
 
 

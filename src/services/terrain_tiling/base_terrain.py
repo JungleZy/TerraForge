@@ -15,6 +15,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 from src.core.bundle import bundle_dir
@@ -24,6 +25,17 @@ logger = logging.getLogger(__name__)
 
 PARTS_GLOB = "base_z8.tar.gz.part*"
 BASE_DIR_NAME = "base_z8"
+
+# 解压临时目录的前缀，名字里带 pid。**必须与 task_cleanup 的启动清扫登记保持
+# 一致**（见 sweep_startup_residue 的第 6 类）：finally 盖不住 SIGKILL / 关窗 /
+# 断电，而落点 assets/terrain 既不在系统临时目录、也不在 downloads 下，前五类
+# 清扫一条都扫不到 —— 残留最多 167 MB / 4.3 万个文件，并且这个目录会被 Nuitka
+# 打进三个平台的发布产物，没有任何其他路径会回收它。
+UNPACK_TMP_PREFIX = ".base_unpack_"
+
+# Windows 上等锁的轮询间隔与「等太久了」的告警门槛（见 _CacheLock._acquire）。
+_LOCK_POLL_SECONDS = 0.5
+_LOCK_SLOW_WARN_SECONDS = 30.0
 
 # 就位判据抽查这三层的顶层 x 目录数，而不是全量 walk：44k 个文件在 Windows 上
 # 数一遍要几秒，而这个判据在每次切片开头都会跑。
@@ -94,18 +106,56 @@ class _CacheLock:
     def __enter__(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self._path, "a+b")
-        self._fh.seek(0)
-        if os.name == "nt":
-            import msvcrt
-            msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        try:
+            self._acquire()
+        except BaseException:
+            # __enter__ 里抛异常时 with 语句根本没成立，__exit__ 不会被调用 ——
+            # 不在这里关掉句柄就是 fd 泄漏（每次失败漏一个，进程不退不回收）。
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+            raise
         return self
 
+    def _acquire(self) -> None:
+        """一直等到拿到独占锁。两个平台的等待语义必须一致 —— 不引入平台差异。"""
+        self._fh.seek(0)                     # 见类 docstring：必须锁在固定偏移
+        if os.name != "nt":
+            import fcntl
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)   # 无限等待
+            return
+
+        # Windows 没有「无限等待」的原语。msvcrt.LK_LOCK 听起来像阻塞锁，实际是
+        # 「每隔 1 秒重试、10 次之后抛 OSError」—— 也就是**最多等约 10 秒然后崩**。
+        # 而解压 4.3 万个小文件在 Windows 上要几分钟，所以用 LK_LOCK 的话，两个
+        # 并发切片任务里后到的那个必然在 10 秒后失败，本模块最核心的需求在主力
+        # 平台上直接不成立。因此自己拿 LK_NBLCK 轮询，不设次数上限。
+        import msvcrt
+
+        started = time.monotonic()
+        warned = False
+        while True:
+            try:
+                self._fh.seek(0)             # 每轮都要：重试之间指针可能被动过
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                waited = time.monotonic() - started
+                if not warned and waited >= _LOCK_SLOW_WARN_SECONDS:
+                    # 不打这条日志的话，卡住时无从诊断：外面看起来就是任务不动。
+                    warned = True
+                    logger.info(
+                        f"Terrain: 已等待另一个进程解压底图 {waited:.0f} s"
+                        f"（锁文件 {self._path}），继续等")
+                time.sleep(_LOCK_POLL_SECONDS)
+
     def __exit__(self, *exc):
+        if self._fh is None:
+            return False
         try:
-            self._fh.seek(0)
+            self._fh.seek(0)                 # 与加锁时同一偏移，否则解不掉
             if os.name == "nt":
                 import msvcrt
                 msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
@@ -185,6 +235,11 @@ def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path |
     解到临时目录再原子改名：中途被打断时，最终位置上不会出现一个「layer.json
     齐全但瓦片残缺」的目录 —— 那种半成品会被 is_base_ready 之外的任何粗判据
     认成就位，然后让 Cesium 拿 404。
+
+    「解压失败抛 RuntimeError」这条契约覆盖**加锁与建临时目录**在内的整段：
+    assets/ 在打包安装场景下经常不可写（Program Files 权限、只读介质），锁文件
+    open 和 mkdtemp 都会抛裸 OSError。这两步要是留在 try 之外，调用方按契约写的
+    `except RuntimeError` 就会整类漏掉。
     """
     cache_dir = Path(cache_dir) if cache_dir is not None else base_cache_dir()
     if is_base_ready(cache_dir):
@@ -198,15 +253,19 @@ def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path |
     parts = sorted(parts_dir.glob(PARTS_GLOB))
     total = sum(p.stat().st_size for p in parts)
 
-    with _CacheLock(cache_dir.parent / ".base_unpack.lock"):
-        # 拿到锁之后重查一次：等锁期间别的进程可能已经解完了。
-        if is_base_ready(cache_dir):
-            return cache_dir
+    tmp = None
+    try:
+        with _CacheLock(cache_dir.parent / ".base_unpack.lock"):
+            # 拿到锁之后重查一次：等锁期间别的进程可能已经解完了。
+            if is_base_ready(cache_dir):
+                return cache_dir
 
-        logger.info(f"Terrain: 解压随包底图 {total / 1048576:.0f} MB "
-                    f"→ {cache_dir}（4.3 万个小文件，Windows 上可能要几分钟）")
-        tmp = Path(tempfile.mkdtemp(prefix=".base_unpack_", dir=str(cache_dir.parent)))
-        try:
+            logger.info(f"Terrain: 解压随包底图 {total / 1048576:.0f} MB "
+                        f"→ {cache_dir}（4.3 万个小文件，Windows 上可能要几分钟）")
+            # 目录名里带 pid：启动清扫要靠它分清「上次进程的残留」和「另一个活着
+            # 的进程正在写的目录」（与 cesiumlab_terrain_<pid>_* 同一套约定）。
+            tmp = Path(tempfile.mkdtemp(
+                prefix=f"{UNPACK_TMP_PREFIX}{os.getpid()}_", dir=str(cache_dir.parent)))
             _extract_stream(parts, tmp, total, stage_cb)
             extracted = tmp / BASE_DIR_NAME
             if not is_base_ready(extracted):
@@ -214,9 +273,13 @@ def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path |
             if cache_dir.exists():
                 shutil.rmtree(cache_dir, ignore_errors=True)
             os.replace(extracted, cache_dir)
-        except BaseException as e:
-            raise RuntimeError(f"随包底图解压失败：{e}") from e
-        finally:
+    except Exception as e:
+        # 只捕 Exception，不捕 BaseException：Ctrl-C 必须原样往上冒，把
+        # KeyboardInterrupt 伪装成「解压失败」会让上层误判成底图坏了。临时目录的
+        # 清理不依赖这里 —— 下面的 finally 无条件执行。
+        raise RuntimeError(f"随包底图解压失败：{e}") from e
+    finally:
+        if tmp is not None:
             shutil.rmtree(tmp, ignore_errors=True)
 
     _emit(stage_cb, 1.0)
