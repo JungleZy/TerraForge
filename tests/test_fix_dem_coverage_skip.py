@@ -181,7 +181,7 @@ def test_skipped_file_does_not_block_task_completion(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         await progress_callback("land.tif", "completed", None, 10)
         await progress_callback("ocean.tif", "skipped", "no data (HTTP 404)", None)
 

@@ -837,37 +837,57 @@ class ContourTaskManager:
             # 且计数没变时只落库不广播（同 dem）；计数变化或到窗口必发，
             # payload 结构不变（task 整行 + task_type + phase='download'）。
             last_emit: Dict[str, Any] = {"at": float("-inf"), "counts": None}
-            # 下载吞吐计。判据与 dem_task_manager 相同（共用 DemDownloadEngine）：
-            # size_bytes 同时要落 contour_files.size_bytes 列，缓存命中时也是
-            # 真实大小，所以不能直接当网络字节；引擎只在真要发请求前发一次
-            # status="downloading"，以此识别。渲染阶段没有网络字节，不设计。
+            # 下载吞吐计。字节**只**来自引擎的在途回调（bytes_callback），理由同
+            # dem_task_manager：单颗 DEM 几十 MB、要跑几分钟，颗粒级状态回调在这
+            # 期间一发都不出，速度会被前端判过期显示 0 B/s。缓存命中不读网络、
+            # 不触发该回调，「这颗真的走了网络吗」的旧判别可以整个删掉。
+            # 渲染阶段没有网络字节，本来就不带速度。
             speed_meter = SpeedMeter()
-            network_granules: set[str] = set()
 
-            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
-                # 记在所有 early return 之前：每次回调都要推进时间窗，否则
-                # 速率会冻在最后那个高值上。
-                if status == "downloading":
-                    network_granules.add(granule_id)
-                    speed_meter.record(0)
-                else:
-                    from_network = granule_id in network_granules
-                    network_granules.discard(granule_id)
-                    speed_meter.record((size_bytes or 0) if from_network else 0)
-                row = await asyncio.to_thread(_record_progress, granule_id, status, error, size_bytes)
-                if not row or not self.socketio:
+            def _fetch_task_row() -> Optional[Dict[str, Any]]:
+                row_conn = get_connection()
+                try:
+                    trow = row_conn.execute(
+                        "SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
+                    return dict(trow) if trow else None
+                finally:
+                    row_conn.close()
+
+            async def _emit_progress(row: Optional[Dict[str, Any]]) -> None:
+                """row=None 表示这一发由在途字节触发（计数没变），只过时间窗。"""
+                if not self.socketio:
                     return
-                counts = (row["downloaded_files"], row["failed_files"])
                 now = time.monotonic()
-                if now - last_emit["at"] < _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL and counts == last_emit["counts"]:
-                    return
+                if row is None:
+                    if now - last_emit["at"] < _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL:
+                        return
+                    row = await asyncio.to_thread(_fetch_task_row)
+                    if not row:
+                        return
+                else:
+                    counts = (row["downloaded_files"], row["failed_files"])
+                    if now - last_emit["at"] < _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL \
+                            and counts == last_emit["counts"]:
+                        return
                 last_emit["at"] = now
-                last_emit["counts"] = counts
+                last_emit["counts"] = (row["downloaded_files"], row["failed_files"])
                 row["task_type"] = "contour"
                 row["phase"] = "download"
                 # 瞬时网络吞吐（字节/秒）。contour_tasks 表没有这一列。
                 row["download_speed_bps"] = round(speed_meter.bps())
                 self.socketio.emit("task_progress", row)
+
+            async def on_bytes(granule_id: str, n_bytes: int) -> None:
+                speed_meter.record(n_bytes)
+                await _emit_progress(None)
+
+            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
+                # record(0) 推的是**时间窗**不是字节：漏推会让速率一直冻在最后
+                # 那个高值上（见 download_speed 的说明）。
+                speed_meter.record(0)
+                row = await asyncio.to_thread(_record_progress, granule_id, status, error, size_bytes)
+                if row:
+                    await _emit_progress(row)
 
             # 本地源任务（上传 / 复用 DEM 任务目录）没有下载阶段：文件行创建时
             # 就是 completed，直接进渲染。
@@ -883,14 +903,14 @@ class ContourTaskManager:
                 try:
                     await self.engine.download_files(
                         dataset=dataset, granules=dem_granules, output_dir=output_dir,
-                        progress_callback=progress, stop_flag=stop_ev,
+                        progress_callback=progress, bytes_callback=on_bytes, stop_flag=stop_ev,
                     )
                     # Water (ASTWBD) is best-effort: tiles with no water bodies may have
                     # no att granule (404), which must not fail the task.
                     if att_granules and not stop_ev.is_set():
                         await self.engine.download_files(
                             dataset="ASTWBD.001", granules=att_granules, output_dir=output_dir,
-                            progress_callback=progress, stop_flag=stop_ev,
+                            progress_callback=progress, bytes_callback=on_bytes, stop_flag=stop_ev,
                         )
                 finally:
                     watcher.cancel()

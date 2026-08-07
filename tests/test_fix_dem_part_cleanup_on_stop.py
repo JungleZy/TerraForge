@@ -1,8 +1,10 @@
-"""M18: 下载途中暂停（stop）也必须清理 .part 临时文件。
+"""M18: 下载途中暂停（stop）也必须清理原子写临时件。
 
-此前 except 分支里 stop 路径在 .part 清理代码之前 return，中断路径留下
-半成品 .part（与自身注释"失败/中断不留垃圾"矛盾）。修复后清理先于
-stop 判断执行。
+此前 except 分支里 stop 路径在清理代码之前 return，中断路径留下半成品
+（与自身注释"失败/中断不留垃圾"矛盾）。修复后清理先于 stop 判断执行。
+
+临时件的落点后来从任务目录挪进了缓存目录（cache/dem/<name>.part.<pid>.<id>），
+两处都必须干净。
 """
 
 import asyncio
@@ -97,6 +99,8 @@ def test_stop_mid_download_leaves_no_part_file(monkeypatch, tmp_path):
 
     # 暂停语义：回写 pending（不是 failed）
     assert events[-1] == ("tile/G.tif", "pending"), f"实际事件: {events}"
-    # 关键断言：不留 .part 残留，也不落半成品 dest
-    assert not (out / "G.tif.part").exists(), "stop 路径不得留下 .part 残留"
+    # 关键断言：两处落点都不留残留，也不落半成品 dest。
+    assert list((tmp_path / "cache" / "dem").glob("*.part.*")) == [], \
+        "缓存暂存区不得留下 .part 残留"
+    assert list(out.glob("*.part*")) == [], "任务目录不得出现任何 .part 残留"
     assert not (out / "G.tif").exists()

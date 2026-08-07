@@ -768,33 +768,20 @@ class DemTaskManager:
             }
             total_files = int(task["total_files"] or 0)
             last_emit_at = float("-inf")
-            # 下载吞吐计 + 「这颗粒真的走了网络吗」的判据集合。
+            # 下载吞吐计。字节**只**来自引擎的在途回调（bytes_callback）：单颗
+            # DEM 是 30-50MB 的 COG，走完要几分钟，而颗粒级状态回调
+            # （downloading → completed）在这几分钟里一次都不发 —— 只按收尾的
+            # size_bytes 记账的话速率是脉冲式的，前端 5s 就判过期、把行上的速度
+            # 显示成 0 B/s（static/js/task_list.js 的 SPEED_STALE_MS）。
             #
-            # size_bytes 在 DEM 这边是**双重用途**的:它要写进 dem_files.size_bytes
-            # 列,所以缓存命中 / 文件已存在时引擎照样上报真实大小
-            # (dem_download_engine.py:172,177)——直接拿它当网络字节会让速度虚高
-            # 一个数量级。区分依据不是字节数本身,而是引擎只在**真要发起网络
-            # 请求之前**发一次 status="downloading"(同文件 :197),缓存命中路径
-            # 根本不发这一下。
+            # 顺带解决了旧口径的坑：size_bytes 是双重用途的（还要写进
+            # dem_files.size_bytes 列），缓存命中 / 文件已存在时引擎照样上报真实
+            # 大小，直接当网络字节会让速度虚高一个数量级。在途回调只在真的读到
+            # 网络字节时才触发，缓存命中天然不进这条路，判别逻辑可以整个删掉。
             speed_meter = SpeedMeter()
-            network_granules: set[str] = set()
 
-            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
+            async def _maybe_emit() -> None:
                 nonlocal last_emit_at
-                # 吞吐计要在下面任何 early return 之前记 —— 每次回调都得推进
-                # 时间窗,漏记会让速率冻在最后那个高值上。
-                if status == "downloading":
-                    network_granules.add(granule_id)
-                    speed_meter.record(0)
-                else:
-                    from_network = granule_id in network_granules
-                    network_granules.discard(granule_id)
-                    speed_meter.record((size_bytes or 0) if from_network else 0)
-                # Mirror existing naming: emit task_progress updates.
-                downloaded_delta, failed_delta = await asyncio.to_thread(
-                    _record_progress, granule_id, status, error, size_bytes)
-                progress_counts["downloaded"] += downloaded_delta
-                progress_counts["failed"] += failed_delta
                 if not self.socketio:
                     return
                 done = progress_counts["downloaded"] + progress_counts["failed"]
@@ -809,6 +796,20 @@ class DemTaskManager:
                 # 瞬时网络吞吐(字节/秒)。dem_tasks 表没有这一列,只活在推送里。
                 row["download_speed_bps"] = round(speed_meter.bps())
                 self.socketio.emit("task_progress", row)
+
+            async def on_bytes(granule_id: str, n_bytes: int) -> None:
+                speed_meter.record(n_bytes)
+                await _maybe_emit()
+
+            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
+                # record(0) 是在推**时间窗**，不是记字节：只在有字节时 record，
+                # 下载停滞/失败时速率会一直冻在最后那个高值上（见 download_speed）。
+                speed_meter.record(0)
+                downloaded_delta, failed_delta = await asyncio.to_thread(
+                    _record_progress, granule_id, status, error, size_bytes)
+                progress_counts["downloaded"] += downloaded_delta
+                progress_counts["failed"] += failed_delta
+                await _maybe_emit()
 
             # Wire stop flag polling: map threading.Event -> asyncio.Event
             async def stop_watcher():
@@ -825,6 +826,7 @@ class DemTaskManager:
                     granules=granules,
                     output_dir=output_dir,
                     progress_callback=progress,
+                    bytes_callback=on_bytes,
                     stop_flag=stop_ev,
                 )
             finally:

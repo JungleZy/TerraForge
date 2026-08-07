@@ -70,7 +70,7 @@ def test_downloading_file_is_requeued_on_resume(monkeypatch, tmp_path):
 
     received = []
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         received.extend(granules)
         for g in granules:
             await progress_callback(g, "completed", None, 10)
@@ -89,7 +89,7 @@ def test_unfinished_downloading_file_prevents_completed(monkeypatch, tmp_path):
     mgr = dtm.DemTaskManager(socketio=None)
     task_id = _seed_dem_task(db, tmp_path / "out", ["completed", "downloading"])
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         # 引擎什么都没完成（模拟暂停/崩溃后文件仍处于未完成状态）
         return
 

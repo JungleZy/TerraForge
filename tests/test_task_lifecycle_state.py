@@ -177,7 +177,7 @@ def test_dem_file_failure_marks_parent_failed_not_completed(monkeypatch, tmp_pat
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db)
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         await progress_callback(granules[0], "failed", "boom", None)
 
     dtm.engine.download_files = fake_download_files
@@ -217,7 +217,7 @@ def test_dem_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path)
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db)
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         dtm.cancel_task(task_id)
         raise RuntimeError("network died after cancel")
 
@@ -258,7 +258,7 @@ def test_dem_progress_counts_status_transitions(monkeypatch, tmp_path):
     dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         await progress_callback(granules[0], "completed", None, 10)
         await progress_callback(granules[0], "completed", None, 10)
 

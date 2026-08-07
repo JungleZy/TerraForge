@@ -45,7 +45,10 @@ logger = logging.getLogger(__name__)
 #   local_upload_*   src/services/local_terrain_task_manager.py 的上传暂存
 #   contour_upload_* src/services/contour_task_manager.py 的上传暂存
 #   *.part.*         两处引擎落盘的原子写临时件(download_engine /
-#                    dem_download_engine,位于 Config.CACHE_DIR 内)
+#                    dem_download_engine,位于 Config.CACHE_DIR 内)。DEM 在
+#                    dem_cache_enabled=false 时没有缓存目录可用,临时件退回任
+#                    务目录 —— 那是用户自选的全盘路径,本清扫覆盖不到,只能靠
+#                    引擎自己的 finally 清理(见 dem_download_engine 的 tmp)。
 #   cesiumlab_terrain_<pid>_*  多幅 DEM 物化成单幅的中间栅格
 #                    (src/services/terrain_tiling/cesiumlab_terrain.py 的
 #                    build_input_raster),与源数据同量级(GB 级任务就是 GB)。

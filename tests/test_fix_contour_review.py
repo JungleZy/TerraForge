@@ -194,7 +194,7 @@ def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 1)

@@ -106,7 +106,7 @@ def test_execute_resolves_relative_output_path_against_downloads(monkeypatch, tm
 
     seen = {}
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         seen["output_dir"] = output_dir
         await progress_callback("G.tif", "completed", None, 10)
 
@@ -149,7 +149,7 @@ def test_local_path_uses_actual_on_disk_basename(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag):
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
         await progress_callback(granule, "completed", None, 10)
 
     mgr.engine.download_files = fake_download_files

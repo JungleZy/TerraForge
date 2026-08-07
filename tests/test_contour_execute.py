@@ -71,7 +71,7 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
     mgr = ctm_mod.ContourTaskManager(socketio=None)
     task_id = _seed_running_download_task(db, background="transparent")
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 123)
@@ -110,7 +110,7 @@ def test_execute_total_tiles_covers_whole_dem_not_bbox(monkeypatch, tmp_path):
     box = dict(north=0.10, south=0.00, east=0.10, west=0.00)
     task_id = _seed_running_download_task(db, box=box)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 123)
@@ -143,7 +143,7 @@ def test_execute_downloads_water_and_passes_shade_water_flags(monkeypatch, tmp_p
 
     calls = []
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         calls.append((dataset, list(granules)))
         for g in granules:
             if progress_callback:
@@ -177,7 +177,7 @@ def test_execute_water_download_failure_is_not_fatal(monkeypatch, tmp_path):
     mgr = ctm_mod.ContourTaskManager(socketio=None)
     task_id = _seed_running_download_task(db)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         # DEM (any source) succeeds; only the ASTWBD water download fails (404).
         status = "failed" if dataset == "ASTWBD.001" else "completed"
         for g in granules:
@@ -200,7 +200,7 @@ def test_execute_fails_and_skips_render_on_download_failure(monkeypatch, tmp_pat
     mgr = ctm_mod.ContourTaskManager(socketio=None)
     task_id = _seed_running_download_task(db)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "failed", "boom", None)
@@ -237,7 +237,7 @@ def test_render_progress_is_throttled_and_payload_stays_compatible(monkeypatch, 
     mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
     task_id = _seed_running_download_task(db)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 1)
@@ -284,7 +284,7 @@ def test_render_progress_flushes_pending_counts_on_pause(monkeypatch, tmp_path):
     mgr = ctm_mod.ContourTaskManager(socketio=None)
     task_id = _seed_running_download_task(db)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 1)
@@ -323,7 +323,7 @@ def test_render_progress_reuses_one_connection_and_no_per_tile_select(monkeypatc
     mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
     task_id = _seed_running_download_task(db)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 1)
@@ -370,7 +370,7 @@ def test_download_progress_local_path_uses_flat_basename(monkeypatch, tmp_path):
     mgr = ctm_mod.ContourTaskManager(socketio=None)
     task_id = _seed_running_download_task(db)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 1)
@@ -410,7 +410,7 @@ def test_completed_task_not_flipped_to_failed_on_emit_error(monkeypatch, tmp_pat
     mgr = ctm_mod.ContourTaskManager(socketio=BoomSocket())
     task_id = _seed_running_download_task(db)
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None):
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
         for g in granules:
             if progress_callback:
                 await progress_callback(g, "completed", None, 1)
@@ -427,3 +427,63 @@ def test_completed_task_not_flipped_to_failed_on_emit_error(monkeypatch, tmp_pat
         asyncio.run(mgr._execute(task_id, None))
 
     assert mgr.get_task(task_id)["status"] == "completed"
+
+
+def test_in_flight_bytes_drive_download_speed(monkeypatch, tmp_path):
+    """等高线的下载阶段与 DEM 共用引擎，速度同样来自在途字节回调。
+
+    单颗 DEM 几十 MB、几分钟才下完，颗粒级状态回调期间一发都不出 —— 只有
+    bytes_callback 能让任务行在下载途中显示真实速度。同时钉死另一半契约：
+    completed 事件的 size_bytes（缓存命中时也是真实大小）绝不计入网络字节。
+    """
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+
+    class _RecordingMeter:
+        def __init__(self, *a, **k):
+            self.records = []
+
+        def record(self, n_bytes):
+            self.records.append(n_bytes)
+
+        def bps(self):
+            return 2048.0
+
+    meter = _RecordingMeter()
+    monkeypatch.setattr(ctm_mod, "SpeedMeter", lambda *a, **k: meter)
+
+    emitted = []
+
+    class _Sock:
+        def emit(self, event, payload=None):
+            emitted.append((event, payload))
+
+    mgr = ctm_mod.ContourTaskManager(socketio=_Sock())
+    # 单颗粒（不要 water），下载事件序列才好断言
+    task_id = _seed_running_download_task(
+        db, box=dict(north=0.5, south=0.1, east=0.5, west=0.1))
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None,
+                            stop_flag=None, bytes_callback=None):
+        for g in granules:
+            await progress_callback(g, "downloading", None, None)
+            await bytes_callback(g, 1024)
+            await progress_callback(g, "completed", None, 987654)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
+        return {"total": 1, "rendered": 1, "failed": 0}
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, None))
+
+    # 每颗粒三笔：downloading -> 0（只推时间窗）、在途 1024、completed -> 0
+    assert meter.records and set(meter.records) == {0, 1024}, meter.records
+    assert meter.records.count(1024) * 1024 == sum(meter.records), (
+        f"只有在途字节能进吞吐计: {meter.records}")
+
+    download_pushes = [p for e, p in emitted
+                       if e == "task_progress" and p.get("phase") == "download"]
+    assert download_pushes, "下载阶段必须有带 phase=download 的推送"
+    assert all(p["download_speed_bps"] == 2048 for p in download_pushes)
