@@ -171,7 +171,7 @@
         return state.active[key];
     }
 
-    /** 任务进入终态后出活动集，但**留在时间流里**（失败行要能看见）。 */
+    /** 任务进入终态后立刻出活动集，但**留在时间流里**（失败行要能看见）。 */
     function dropActive(key) {
         delete state.active[key];
     }
@@ -181,7 +181,22 @@
      *
      * 时间流里没有这个 key（任务落在别的分页窗口）时只更新活动集：
      * 状态栏读数照样准，而那一行本来就不显示。改造前这是「更新 Map 但
-     * getElementById 拿不到行就跳过」的同一语义，只是不再需要调用方自己判断。
+     * getElementById 拿不到行就跳过」的同一语义,只是不再需要调用方自己判断。
+     *
+     * ⚠️ 这里**故意不做**「终态不可被活动态推送覆盖」的钳制。试过一版,是错的:
+     *
+     * 现象确实存在 —— 取消任务后 0.5s 内会到一发 status='running' 的
+     * task_progress,把「已取消」翻回「运行中」且永久卡住(库里已是 cancelled,
+     * _complete_task 看到就直接 return,再也不发任何终态事件)。
+     *
+     * 但根因在后端:下载循环要跑到当前批次边界才停,期间 progress_callback
+     * 照发,而载荷里的 status 取自内存对象 —— cancel/pause 只改库不碰它。
+     * 已在 task_manager.py 的 progress_callback 里按 stop flag 掐掉这些广播。
+     *
+     * 前端不能替后端兜底:**重启**一个已取消/已失败的任务时,后端发的那发
+     * 权威 running 广播(task_manager.py:456,status 取自刚查的库行)和迟到的
+     * 推送长得一模一样,任何基于「这个 key 曾经进过终态」的钳制都会把重启
+     * 一起拦掉 —— 用户看到的是「点了启动没反应」。
      */
     function commit(key, patch) {
         const row = index.get(key);

@@ -99,7 +99,13 @@
             </div>
         </div>
         <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「下载」「删除」入口 -->
-        <div class="bounds-overlay" id="boundsInfo" role="status" aria-live="polite"></div>
+        <!-- 这里**不能**是 live region：浮层整层由 map.js 的 updateBoundsInfo()
+             innerHTML 全量重建，拖角点时经 rAF 最高 60 次/秒，polite 队列会积压到
+             松手之后还在念；而且里面装着按钮，交互控件本就不该塞进 live region。
+             播报改由下面的 #boundsAnnounce 承担，只在选区**落定**时写一次 ——
+             鼠标框选结束、点读数改数生效、手动输入面板确定，共三处。 -->
+        <div class="bounds-overlay" id="boundsInfo"></div>
+        <span id="boundsAnnounce" class="bounds-sr" role="status" aria-live="polite"></span>
     </div>
 </div>
 
@@ -213,7 +219,11 @@
                         </div>
                     </div>
 
-                    <button type="submit" class="btn btn-primary w-100" id="createTaskBtn" disabled>
+                    <!-- 不带 disabled：disabled 的按钮不可聚焦、不在 tab 序里，
+                         键盘用户 Tab 过整张表单碰不到它，也读不到「为什么不能提交」。
+                         缺选区由 map.js 的 submit 处理器 toast
+                         js.map.download.need_selection 当场说明。 -->
+                    <button type="submit" class="btn btn-primary w-100" id="createTaskBtn">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                             <polyline points="7 10 12 15 17 10"></polyline>
@@ -244,7 +254,7 @@
             <div class="modal-body">
                 <form id="processForm">
                     <div class="form-group-label">{{ t('tpl.index.form.section_basic') }}</div>
-                    <div class="mb-3">
+                    <div class="mb-3" id="processNameRow">
                         <label for="processTaskName" class="form-label">{{ t('tpl.index.form.task_name') }}</label>
                         <input type="text" class="form-control" id="processTaskName" placeholder="{{ t('tpl.index.form.task_name_placeholder') }}" required>
                     </div>
@@ -257,17 +267,35 @@
                         </select>
                     </div>
 
+                    <div class="mb-3">
+                        <label for="processSource" class="form-label">{{ t('tpl.index.process.source') }}</label>
+                        <select class="form-select" id="processSource">
+                            <option value="upload">{{ t('tpl.index.process.source_upload') }}</option>
+                            <option value="dem_task">{{ t('tpl.index.process.source_dem_task') }}</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3" id="processDemTaskRow" style="display:none;">
+                        <label for="processDemTask" class="form-label">{{ t('tpl.index.process.dem_task') }}</label>
+                        <select class="form-select" id="processDemTask"></select>
+                        <small class="form-text text-muted">{{ t('tpl.index.process.dem_task_hint') }}</small>
+                    </div>
+
                     <div class="mb-3" id="localTerrainOptions" style="display:none;">
-                        <label for="localTerrainFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
-                        <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
+                        <div id="localTerrainUploadRow">
+                            <label for="localTerrainFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
+                            <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
+                        </div>
                         <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
                         <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
                     </div>
 
                     <div class="mb-3" id="contourOptions" style="display:none;">
-                        <label for="contourFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
-                        <input type="file" class="form-control" id="contourFiles" accept=".tif,.tiff" multiple>
-                        <small class="form-text text-muted">{{ t('tpl.index.process.contour_source_hint') }}</small>
+                        <div id="contourUploadRow">
+                            <label for="contourFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
+                            <input type="file" class="form-control" id="contourFiles" accept=".tif,.tiff" multiple>
+                            <small class="form-text text-muted">{{ t('tpl.index.process.contour_source_hint') }}</small>
+                        </div>
 
                         <label for="contourInterval" class="form-label mt-2">{{ t('tpl.index.process.contour_interval') }}</label>
                         <input type="number" class="form-control" id="contourInterval" min="1" step="1" value="50">
@@ -365,7 +393,8 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
     </header>
-    <div class="workbench-panel__body">
+    {# --fill：任务列表卡吃满剩余高度、列表在卡内滚动（.history-layout）。 #}
+    <div class="workbench-panel__body workbench-panel__body--fill">
         {# records_panel：告诉共享 partial 这里是首页任务面板——任务列表
            排在历史区域地图之前（独立页 /history 顺序相反，不设这个变量）。 #}
         {% set records_panel = true %}
@@ -387,7 +416,9 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
     </header>
-    <div class="workbench-panel__body">
+    {# --fill：滚动交给 _config_content.html 内部的 .config-scroll，
+       底部操作条常驻。body 自己不再滚，否则两层都滚出双滚动条。 #}
+    <div class="workbench-panel__body workbench-panel__body--fill">
         {% include "_config_content.html" %}
     </div>
 </section>
@@ -395,7 +426,7 @@
 {% endblock %}
 
 {% block statusbar %}
-<span class="statusbar-item statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records">
+<span class="statusbar-item statusbar-pill statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
@@ -404,11 +435,11 @@
         <span class="statusbar-progress__bar" id="statusTasksBar"></span>
     </span>
 </span>
-<span class="statusbar-item statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">{{ t('tpl.index.statusbar.coords_empty') }}</span>
-<span class="statusbar-item" id="statusZoom">z—</span>
-<span class="statusbar-item statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">{{ t('tpl.index.statusbar.no_selection') }}</span>
-<span class="statusbar-item statusbar-event" id="statusEvent" aria-live="polite"></span>
-<span class="statusbar-item statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">--:--:--</span>
+<span class="statusbar-item statusbar-pill statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">{{ t('tpl.index.statusbar.coords_empty') }}</span>
+<span class="statusbar-item statusbar-pill" id="statusZoom"><span id="statusZoomZ">z—</span><span id="statusZoomAlt"></span></span>
+<span class="statusbar-item statusbar-pill statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">{{ t('tpl.index.statusbar.no_selection') }}</span>
+<span class="statusbar-item statusbar-pill statusbar-event" id="statusEvent" aria-live="polite"></span>
+<span class="statusbar-item statusbar-pill statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">--:--:--</span>
 {% endblock %}
 
 {% block extra_js %}
@@ -419,7 +450,7 @@
 <script src="{{ url_for('static', filename='js/panels.js') }}"></script>
 <script>
     const config = {{ config|tojson }};
-    initMap(config);
+    initMap(config, {{ basemap|tojson }});
     initMapWorkbench();
     initDownloadTypeToggle();
     initProcessTypeToggle();

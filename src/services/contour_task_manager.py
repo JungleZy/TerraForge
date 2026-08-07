@@ -11,6 +11,10 @@ dataset='upload' 即上传任务；早期版本下载驱动的任务（dataset �
 ASTGTM.003 / COP-DEM-GLO-30，由已删除的下载驱动 create_task 创建）
 仍走旧的下载→渲染路径恢复执行。Lifecycle/threading mirror DemTaskManager
 (active_tasks + stop_flags + orphan recovery)。
+
+dataset='dem_task' 表示源是某个已完成 DEM 下载任务的目录：零拷贝引用，
+源 tif 留在原地不拷进来，产物仍落在本等高线任务自己的目录里；删除该等高线
+任务不会动源 DEM 任务的文件。
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from src.services.config_manager import ConfigManager
 from src.services.dem_download_engine import DemDownloadEngine
 from src.services.geo_validation import MAX_ZOOM, coerce_number, validate_zoom
 from src.services.dem_granules import coverage_bbox
+from src.services.download_speed import SpeedMeter
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +275,63 @@ class ContourTaskManager:
         finally:
             conn.close()
 
+    def _normalize_render_params(
+        self,
+        contour_interval: Any = None,
+        zoom_min: Any = 10,
+        zoom_max: Any = None,
+        background: Optional[str] = None,
+        terrain_shade: Any = 1,
+        line_color_intermediate: Optional[str] = None,
+        line_color_index: Optional[str] = None,
+        tint_breaks: Optional[str] = None,
+        tint_colors: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """两个构造方法（上传 / 复用 DEM 任务目录）共用的间距、层级、配色校验。
+
+        auto_zoom_max=True 时返回的 zoom_max 仍是调用方传进来的空值 —— 自动
+        层级要按源 tif 的实际分辨率算，而这里只做不碰文件的纯参数校验。
+        """
+        if contour_interval in (None, ""):
+            contour_interval = self.config.get("contour_default_interval", "50")
+        interval = coerce_number(contour_interval, 'contour_interval')
+        if interval <= 0:
+            raise ValueError(f"contour_interval must be > 0, got {interval}")
+
+        zoom_min = validate_zoom(zoom_min, 'zoom_min')
+        # zoom_max 留空/None = 按 DEM 分辨率自动计算（源文件就位后由调用方算）
+        auto_zoom_max = zoom_max in (None, "")
+        if not auto_zoom_max:
+            zoom_max = validate_zoom(zoom_max, 'zoom_max')
+            if zoom_min > zoom_max:
+                raise ValueError(f"zoom_min ({zoom_min}) must be <= zoom_max ({zoom_max})")
+
+        background = background or "#FAF6EC"
+        if background != "transparent" and not str(background).startswith("#"):
+            background = "#FAF6EC"
+        shade = 1 if str(terrain_shade).strip().lower() in ("1", "true", "yes", "on") else 0
+
+        # 配色自定义（可选，空 = 默认方案）
+        line_mid = (line_color_intermediate or "").strip()
+        line_idx = (line_color_index or "").strip()
+        for c in (line_mid, line_idx):
+            if c and not c.startswith("#"):
+                raise ValueError(f"Invalid color '{c}' (expect #RRGGBB)")
+        tint_breaks, tint_colors = validate_tint(tint_breaks, tint_colors)
+
+        return {
+            "interval": interval,
+            "zoom_min": zoom_min,
+            "zoom_max": zoom_max,
+            "auto_zoom_max": auto_zoom_max,
+            "background": background,
+            "shade": shade,
+            "line_mid": line_mid,
+            "line_idx": line_idx,
+            "tint_breaks": tint_breaks,
+            "tint_colors": tint_colors,
+        }
+
     def create_task_with_files(
         self,
         name: str,
@@ -304,32 +366,19 @@ class ContourTaskManager:
         if not valid:
             raise ValueError("No valid .tif/.tiff files uploaded")
 
-        if contour_interval in (None, ""):
-            contour_interval = self.config.get("contour_default_interval", "50")
-        interval = coerce_number(contour_interval, 'contour_interval')
-        if interval <= 0:
-            raise ValueError(f"contour_interval must be > 0, got {interval}")
-
-        zoom_min = validate_zoom(zoom_min, 'zoom_min')
-        # zoom_max 留空/None = 按 DEM 分辨率自动计算（文件落盘后在下面算）
-        auto_zoom_max = zoom_max in (None, "")
-        if not auto_zoom_max:
-            zoom_max = validate_zoom(zoom_max, 'zoom_max')
-            if zoom_min > zoom_max:
-                raise ValueError(f"zoom_min ({zoom_min}) must be <= zoom_max ({zoom_max})")
-
-        background = background or "#FAF6EC"
-        if background != "transparent" and not str(background).startswith("#"):
-            background = "#FAF6EC"
-        shade = 1 if str(terrain_shade).strip().lower() in ("1", "true", "yes", "on") else 0
-
-        # 配色自定义（可选，空 = 默认方案）
-        line_mid = (line_color_intermediate or "").strip()
-        line_idx = (line_color_index or "").strip()
-        for c in (line_mid, line_idx):
-            if c and not c.startswith("#"):
-                raise ValueError(f"Invalid color '{c}' (expect #RRGGBB)")
-        tint_breaks, tint_colors = validate_tint(tint_breaks, tint_colors)
+        render = self._normalize_render_params(
+            contour_interval, zoom_min, zoom_max, background, terrain_shade,
+            line_color_intermediate, line_color_index, tint_breaks, tint_colors)
+        interval = render["interval"]
+        zoom_min = render["zoom_min"]
+        zoom_max = render["zoom_max"]
+        auto_zoom_max = render["auto_zoom_max"]
+        background = render["background"]
+        shade = render["shade"]
+        line_mid = render["line_mid"]
+        line_idx = render["line_idx"]
+        tint_breaks = render["tint_breaks"]
+        tint_colors = render["tint_colors"]
 
         output_path = str(Path(Config.DOWNLOADS_DIR) / "dem")
         Path(output_path).mkdir(parents=True, exist_ok=True)
@@ -412,6 +461,118 @@ class ContourTaskManager:
             raise
         # 全部 os.replace 后暂存目录已空;部分失败路径走上面的 except
         shutil.rmtree(staging, ignore_errors=True)
+
+    def create_task_from_dem_task(
+        self,
+        name: str,
+        dem_task_id: Any,
+        contour_interval: Any = None,
+        zoom_min: Any = 10,
+        zoom_max: Any = None,
+        background: Optional[str] = None,
+        terrain_shade: Any = 1,
+        line_color_intermediate: Optional[str] = None,
+        line_color_index: Optional[str] = None,
+        tint_breaks: Optional[str] = None,
+        tint_colors: Optional[str] = None,
+    ) -> int:
+        """复用某个已完成 DEM 下载任务的目录当源（dataset='dem_task'）。
+
+        源 tif 零拷贝：contour_files.local_path 直接指向 DEM 任务目录里的原
+        文件，本任务目录只放产物（contour_tiles）。所以删任务只会清自己的
+        目录，源 DEM 任务的数据不受影响。没有下载阶段，文件行建的时候就是
+        completed。
+        """
+        from src.services.task_cleanup import resolve_stored_output_dir
+        from src.services.terrain_tiling.vrt_builder import list_dem_tifs
+
+        name = (name or "等高线瓦片").strip() or "等高线瓦片"
+        dem_task_id = int(dem_task_id)
+
+        conn = get_connection()
+        try:
+            dem_row = conn.execute(
+                "SELECT status, output_path FROM dem_tasks WHERE id=?", (dem_task_id,)).fetchone()
+        finally:
+            conn.close()
+        if not dem_row:
+            raise ValueError(f"DEM task {dem_task_id} not found")
+        # 与 dem_task_manager.start_tiling 同一道闸门：没下完的任务数据残缺，
+        # 在它上面渲染会"成功"产出带缺口的等高线瓦片。
+        if dem_row["status"] != "completed":
+            raise ValueError(
+                f"Cannot use DEM task {dem_task_id} with status "
+                f"'{dem_row['status']}'; wait for the download to complete"
+            )
+
+        source_dir = resolve_stored_output_dir(dem_row["output_path"]) / f"dem_task_{dem_task_id}"
+        tifs = list_dem_tifs(source_dir)
+        if not tifs:
+            raise ValueError(f"No DEM tifs found under {source_dir}")
+
+        render = self._normalize_render_params(
+            contour_interval, zoom_min, zoom_max, background, terrain_shade,
+            line_color_intermediate, line_color_index, tint_breaks, tint_colors)
+        zoom_min = render["zoom_min"]
+        zoom_max = render["zoom_max"]
+
+        # bbox 只用于历史记录地图展示，读不出保持 0（同上传路径）。
+        extent = _union_tif_extent_lonlat(tifs)
+        north, south, east, west = extent if extent else (0.0, 0.0, 0.0, 0.0)
+        if render["auto_zoom_max"]:
+            # 最高层级按 DEM 原始分辨率自动计算；读不出分辨率时用兜底默认值
+            px = _finest_pixel_size_3857(tifs)
+            zoom_max = estimate_max_zoom(px, zoom_min) if px else max(zoom_min, _FALLBACK_MAX_ZOOM)
+
+        output_path = str(Path(Config.DOWNLOADS_DIR) / "dem")
+        Path(output_path).mkdir(parents=True, exist_ok=True)
+
+        task_dir: Optional[Path] = None
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO contour_tasks (
+                    name, status, north, south, east, west, dataset,
+                    contour_interval, background, terrain_shade, water,
+                    zoom_min, zoom_max, output_path,
+                    line_color_intermediate, line_color_index, tint_breaks, tint_colors,
+                    source_dem_task_id,
+                    total_files, downloaded_files, failed_files,
+                    total_tiles, rendered_tiles, failed_tiles
+                )
+                VALUES (?, 'pending', ?, ?, ?, ?, 'dem_task', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
+                """,
+                (name, north, south, east, west, render["interval"], render["background"],
+                 render["shade"], zoom_min, zoom_max, output_path, render["line_mid"],
+                 render["line_idx"], render["tint_breaks"], render["tint_colors"],
+                 dem_task_id, len(tifs), len(tifs)),
+            )
+            task_id = cur.lastrowid
+
+            # 只建产物目录（contour_tiles 的落点）；源 tif 不拷进来。
+            task_dir = Path(output_path) / f"contour_task_{task_id}"
+            task_dir.mkdir(parents=True, exist_ok=True)
+            for tif in tifs:
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO contour_files (task_id, granule_id, kind, status, local_path, size_bytes, retry_count)
+                    VALUES (?, ?, 'dem', 'completed', ?, ?, 0)
+                    """,
+                    (task_id, tif.name, str(tif), tif.stat().st_size),
+                )
+            conn.commit()
+            return task_id
+        except Exception:
+            conn.rollback()
+            # rowid 复用后残留目录会被下一个同 id 任务当成自己的产物目录，清掉。
+            # 只清本任务目录 —— 源 DEM 目录是别人的数据，绝不能动。
+            if task_dir is not None:
+                shutil.rmtree(task_dir, ignore_errors=True)
+            raise
+        finally:
+            conn.close()
 
     def start_task(self, task_id: int) -> None:
         conn = get_connection()
@@ -597,8 +758,29 @@ class ContourTaskManager:
                 raise ValueError(f"Contour task {task_id} not found")
 
             dataset = task["dataset"]
-            is_upload = dataset == "upload"
+            # 两种「本地源」没有下载阶段：'upload'（文件已落在任务目录里）和
+            # 'dem_task'（零拷贝引用某个已完成 DEM 下载任务的目录）。
+            has_local_source = dataset in ("upload", "dem_task")
+            # output_dir 语义不变：本任务自己的目录 —— 产物落点，上传源也在这里。
             output_dir = Path(task["output_path"]) / f"contour_task_{task_id}"
+            # source_dir 是渲染读源 DEM 的目录。dem_task 来源每次执行都重新解析
+            # （downloads 根目录可能被改过）；源任务行没了、或目录里已经没有 tif
+            # 时必须抛 —— 否则渲染会在空输入上静默产出 0 张瓦片。
+            source_dir = output_dir
+            source_dem_task_id = task["source_dem_task_id"]
+            if source_dem_task_id is not None:
+                from src.services.task_cleanup import resolve_stored_output_dir
+                from src.services.terrain_tiling.vrt_builder import list_dem_tifs
+
+                source_dem_task_id = int(source_dem_task_id)
+                dem_row = cur.execute(
+                    "SELECT output_path FROM dem_tasks WHERE id=?", (source_dem_task_id,)).fetchone()
+                if not dem_row:
+                    raise ValueError(f"Source DEM task {source_dem_task_id} not found")
+                source_dir = (resolve_stored_output_dir(dem_row["output_path"])
+                              / f"dem_task_{source_dem_task_id}")
+                if not list_dem_tifs(source_dir):
+                    raise ValueError(f"No DEM tifs found under {source_dir}")
             want_water = bool(task["water"])
 
             # L1: 进程被硬杀时 'downloading' 会残留在 contour_files 里（该状态由
@@ -655,8 +837,23 @@ class ContourTaskManager:
             # 且计数没变时只落库不广播（同 dem）；计数变化或到窗口必发，
             # payload 结构不变（task 整行 + task_type + phase='download'）。
             last_emit: Dict[str, Any] = {"at": float("-inf"), "counts": None}
+            # 下载吞吐计。判据与 dem_task_manager 相同（共用 DemDownloadEngine）：
+            # size_bytes 同时要落 contour_files.size_bytes 列，缓存命中时也是
+            # 真实大小，所以不能直接当网络字节；引擎只在真要发请求前发一次
+            # status="downloading"，以此识别。渲染阶段没有网络字节，不设计。
+            speed_meter = SpeedMeter()
+            network_granules: set[str] = set()
 
             async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
+                # 记在所有 early return 之前：每次回调都要推进时间窗，否则
+                # 速率会冻在最后那个高值上。
+                if status == "downloading":
+                    network_granules.add(granule_id)
+                    speed_meter.record(0)
+                else:
+                    from_network = granule_id in network_granules
+                    network_granules.discard(granule_id)
+                    speed_meter.record((size_bytes or 0) if from_network else 0)
                 row = await asyncio.to_thread(_record_progress, granule_id, status, error, size_bytes)
                 if not row or not self.socketio:
                     return
@@ -668,10 +865,13 @@ class ContourTaskManager:
                 last_emit["counts"] = counts
                 row["task_type"] = "contour"
                 row["phase"] = "download"
+                # 瞬时网络吞吐（字节/秒）。contour_tasks 表没有这一列。
+                row["download_speed_bps"] = round(speed_meter.bps())
                 self.socketio.emit("task_progress", row)
 
-            # 上传任务没有下载阶段：文件行创建时就是 completed，直接进渲染。
-            if not is_upload:
+            # 本地源任务（上传 / 复用 DEM 任务目录）没有下载阶段：文件行创建时
+            # 就是 completed，直接进渲染。
+            if not has_local_source:
                 async def stop_watcher():
                     while True:
                         if stop_flag and stop_flag.is_set():
@@ -729,8 +929,8 @@ class ContourTaskManager:
             style = style_for_task(self.config, task)
             interval = float(task["contour_interval"])
             zoom_min = int(task["zoom_min"]); zoom_max = int(task["zoom_max"])
-            if is_upload:
-                # 上传任务的覆盖就是 DEM 文件本身的范围（不是 1° granule 并集），
+            if has_local_source:
+                # 本地源的覆盖就是 DEM 文件本身的范围（不是 1° granule 并集），
                 # 预计算没有意义 —— total 由渲染引擎 warp 后按实际覆盖上报。
                 total_tiles = 0
             else:
@@ -835,7 +1035,7 @@ class ContourTaskManager:
                             f"(ignored): {emit_error}")
 
                 render_counts = tile_contour_task_dir(
-                    task_dir=output_dir, out_dir=output_dir / "contour_tiles",
+                    task_dir=source_dir, out_dir=output_dir / "contour_tiles",
                     params=params, progress_cb=render_progress,
                     stage_cb=render_stage, stop_flag=stop_flag,
                 )

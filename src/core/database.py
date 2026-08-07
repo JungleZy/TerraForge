@@ -51,7 +51,15 @@ DEFAULT_CONFIGS = [
     ('request_timeout', '30'),
     ('max_retries', '3'),
     ('proxy_url', ''),
+    # 手动 proxy_url 为空时自动发现可用代理（环境变量 / Windows PAC / 本机与
+    # WSL 宿主的常见代理端口，逐个用真实瓦片验证）。见 services/proxy_autodetect。
+    # 手动填了 proxy_url 就以手动值为准，这个开关不参与。
+    ('proxy_auto_detect', 'true'),
     ('tile_servers', 'mts0,mts1,mts2,mts3'),
+    # 地图底图源。与 tile_servers 分开的理由见 services/basemap_source.py：
+    # 底图走浏览器直连（不吃 proxy_url），下载走 Python（吃）。默认 Esri
+    # 卫星影像 —— Google 在国内直连不通，而底图没有代理可用。
+    ('basemap_source', 'esri'),
     ('cache_enabled', 'true'),
     ('dem_cache_enabled', 'true'),
     ('map_center_lat', '29.56'),
@@ -684,6 +692,9 @@ def init_database():
             ("contour_tasks", "line_color_index TEXT DEFAULT ''"),
             ("contour_tasks", "tint_breaks TEXT DEFAULT ''"),
             ("contour_tasks", "tint_colors TEXT DEFAULT ''"),
+            # 非空表示该等高线任务的源 DEM 是某个已完成 DEM 下载任务的目录
+            # （零拷贝引用，源文件不拷进本任务目录），此时 dataset='dem_task'。
+            ("contour_tasks", "source_dem_task_id INTEGER DEFAULT NULL"),
             # DEM 地形切片进度（dem_task_manager._run_tiling_job 节流落库，
             # 前端详情弹窗轮询读取）：渲染中 rendered_tiles 是 processed 进度。
             ("dem_terrain_jobs", "rendered_tiles INTEGER DEFAULT 0"),

@@ -498,6 +498,7 @@ class LocalTerrainTaskManager:
                         (utc_now_iso(), task_id),
                     )
                     conn.commit()
+                    self._emit_tiling_finished(task_id, "cancelled")
                     return
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
@@ -507,6 +508,7 @@ class LocalTerrainTaskManager:
                 conn.commit()
             finally:
                 conn.close()
+            self._emit_tiling_finished(task_id, "completed")
             if self.socketio:
                 # emit 在 completed 落库之后才跑，抛异常会落到兜底 except 把这条
                 # 终态记录改写成 failed（M1 同款）—— 自带 try 只记日志。
@@ -532,6 +534,7 @@ class LocalTerrainTaskManager:
                 conn.commit()
             finally:
                 conn.close()
+            self._emit_tiling_finished(task_id, "failed")
             logger.error(f"Local terrain tiling failed for task {task_id}: {e}")
             if self.socketio:
                 self.socketio.emit(
@@ -544,6 +547,26 @@ class LocalTerrainTaskManager:
                 if self.active_tasks.get(task_id) is threading.current_thread():
                     self.active_tasks.pop(task_id, None)
                     self.stop_flags.pop(task_id, None)
+
+    def _emit_tiling_finished(self, task_id: int, status: str) -> None:
+        """切片收尾时补一发 terrain_job_progress（与 dem_task_manager 同款）。
+
+        没有它，前端 updateTerrainJobProgress 里 `status !== 'running'` 那条
+        清空分支永不触发，行上的「切片中 N / N」会一直挂到刷新页面为止。
+        """
+        socketio = getattr(self, "socketio", None)
+        if not socketio:
+            return
+        try:
+            socketio.emit("terrain_job_progress", {
+                "task_id": task_id,
+                "task_type": "local_terrain",
+                "status": status,
+            })
+        except Exception as emit_error:
+            logger.warning(
+                f"Local terrain task {task_id}: emit finish failed "
+                f"(ignored): {emit_error}")
 
     def cancel_task(self, task_id: int) -> None:
         """Cancel if not yet tiling; a running tiling job is rejected.

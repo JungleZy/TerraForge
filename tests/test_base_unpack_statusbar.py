@@ -526,7 +526,7 @@ def test_narrow_screen_rule_no_longer_depends_on_last_child():
     """
     # 正向哨兵：剥注释后被测的规则块必须还在。少了它，一个剥过头的剥离器会让下面
     # 那些否定断言假绿（什么都没剩，当然搜不到）。
-    assert ".statusbar-item {" in _css(), "剥注释剥过头了：.statusbar-item 规则块不见了"
+    assert ".statusbar-item" in _css(), "剥注释剥过头了：.statusbar-item 规则块不见了"
     hidden_selectors = _hidden_selectors_in_narrow_screen_block()
 
     positional = [s for s in hidden_selectors if _POSITIONAL_PSEUDO_RE.search(s)]
@@ -578,7 +578,7 @@ def test_narrow_screen_makes_room_for_the_unpack_progress():
         "不该挤掉 .conn-status：它在 base.html、**每一页都有**，而其余三项只在 "
         "index.html。在 /config 与 /history 上这条规则唯一能挤掉的就是连接指示灯，"
         "而那两页的状态栏本来就只有它和解压进度两个元素，根本不缺那 73px —— 挤了纯亏。"
-        "差的宽度从 .statusbar-basemap 自己的 36px 装饰里出")
+        "差的宽度从 .statusbar-basemap 自己的胶囊装饰里出")
 
     for s in yielding:
         compact = s.replace(" ", "")
@@ -591,33 +591,42 @@ def test_narrow_screen_makes_room_for_the_unpack_progress():
             "所有页面、每次刷新都不再出现，直到某次重启真的解压成功")
 
 
-@pytest.mark.parametrize("prop", ["margin-left", "padding", "border-left"])
-def test_narrow_screen_decoration_reset_actually_wins_the_cascade(prop):
+@pytest.mark.parametrize("prop,expected", [
+    ("padding", "0"),
+    ("border", "0"),
+    ("background", "transparent"),
+    ("box-shadow", "none"),
+])
+def test_narrow_screen_decoration_reset_actually_wins_the_cascade(prop, expected):
     """窄屏那条装饰清零必须真的**胜出**，不能只是写在那里。
 
-    这 36px（margin-left 12 + padding 0 12 + 左边框 1）是英文文案能装下的关键：
-    不清零的话元素 291px、溢出 16px。
+    状态栏胶囊化（2026-08）之后，每个元素各自成胶囊：装饰（padding 0 12 +
+    边框 1px + 底色 + 阴影 ≈ 26px 纯装饰）写在共享规则 `.statusbar-pill`
+    上，清零它们省出的宽度是英文文案能装下的关键（缺口 16px）。
 
-    实测踩过这个坑：清零规则写成裸 `.statusbar-basemap`（特异度 0,1,0）时，基础规则
-    同特异度且写在本文件**更靠后**的位置 —— 同特异度靠后者胜，清零**完全不生效**，
-    元素仍是 291px、英文照样被裁，而当时所有断言全绿。所以这里不查「有没有写」，
-    而是按「特异度 → 源码顺序」真算一遍层叠，断言赢家的值是 0。
+    实测踩过这个坑：清零规则特异度不够时会被基础规则整条压掉，清零**完全不
+    生效**，英文照样被裁，而当时所有断言全绿。所以这里不查「有没有写」，而是
+    把共享装饰规则与窄屏清零规则一起按「特异度 → 源码顺序」真算一遍层叠，
+    断言赢家是清零值。
     """
     css = _css()
-    rules = _rules_declaring(css, prop, "statusbar-basemap")
+    # 胶囊装饰在共享规则 `.statusbar-pill` 上（不点名 basemap），
+    # 两条来源都要纳入层叠比较。
+    rules = (_rules_declaring(css, prop, "statusbar-basemap")
+             + _rules_declaring(css, prop, "statusbar-pill"))
     assert len(rules) >= 2, (
-        f"只找到 {len(rules)} 条声明 {prop} 且与 .statusbar-basemap 有关的规则，"
-        "预期至少两条（基础规则 + 窄屏清零）—— 本测试已失效，先核对选择器写法")
+        f"只找到 {len(rules)} 条声明 {prop} 且与状态栏胶囊有关的规则，"
+        "预期至少两条（共享装饰 + 窄屏清零）—— 本测试已失效，先核对选择器写法")
     assert not any("!important" in d for _, d, _ in rules), (
         "有规则用了 !important，本测试的层叠模型算不了 —— 已失效（不是通过）")
 
     # 同源、无 !important 下的层叠：先比特异度，再比源码顺序
     sel, decls, _pos = max(rules, key=lambda r: (_specificity(r[0]), r[2]))
     value = re.search(r"(?:^|;|\s)" + prop + r"\s*:\s*([^;]+)", decls).group(1).strip()
-    assert re.fullmatch(r"0(?:px)?", value), (
+    assert value == expected, (
         f"窄屏下 {prop} 的层叠赢家是 `{sel} {{ {prop}: {value} }}` —— 装饰没被清零。"
-        f"多半是清零规则的特异度不够又写在基础规则之前（基础规则在本文件更靠后，"
-        f"同特异度靠后者胜）。给清零规则加个祖先前缀即可")
+        f"多半是清零规则的特异度不够（共享装饰规则是 `.statusbar-pill`，"
+        f"清零规则需要带 .workbench-statusbar 前缀才有 (0,2,0)）")
 
 
 def test_narrow_screen_keeps_the_failure_badge_visible():

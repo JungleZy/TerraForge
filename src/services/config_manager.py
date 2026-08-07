@@ -329,6 +329,12 @@ class ConfigManager:
                 ok, _err = validate_server_list(str(value))
                 return ok
 
+            elif key == 'basemap_source':
+                # 预设别名 / download_source / 完整 XYZ 模板
+                from src.services.basemap_source import validate_basemap_source
+                ok, _err = validate_basemap_source(str(value))
+                return ok
+
             # For keys without specific validation, accept any value
             return True
 

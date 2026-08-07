@@ -84,13 +84,16 @@ def _strip_js_comments(src):
 # 「守禁止性契约、不守存在性契约」的不对称：只断言 getProgressColor 消失的话，
 # 把整行 className 赋值删掉也能全绿，而进度条会永远停在 Bootstrap 默认蓝。
 #
-# 登记（2026-08 单一时间流定稿）：行渲染从 tasks.js 收口到 history.js 的
-# createTaskRow（全站唯一行实现），tasks.js 那处模板插值随之搬家——
-# tasks.js 从 2 处变 1 处（updateTaskProgressPartial 的 className），
-# history.js 从 1 处变 2 处（createTaskRow 行2 发丝条 + viewTaskDetails 模态）。
+# 登记（2026-08 Vue 化）：行渲染从 history.js 的 createTaskRow 收口到
+# task_list.js 的 TaskRow 组件，模板插值 `bg-${getStatusColor(...)}` 随之
+# 变成响应式绑定 `:class="'bg-' + statusColor"`（statusColor 是 computed）。
+#   tasks.js   1 -> 0：updateTaskProgressPartial 整个删除，增量写 DOM 由
+#              Vue diff 接管，不再有任何 className 字符串拼接。
+#   history.js 2 -> 1：只剩 viewTaskDetails 详情模态框那处。
+# 行2 那条发丝进度条的配色契约改由 test_progress_bar_color_comes_from_status
+# 的组件分支来守（绑定 + computed 两端都钉）。
 PROGRESS_BAR_CALL_SITES = {
-    'tasks.js': 1,      # updateTaskProgressPartial 的 className（Socket.IO 增量主路径）
-    'history.js': 2,    # createTaskRow 行2 发丝条 + viewTaskDetails 详情模态框
+    'history.js': 1,    # viewTaskDetails 详情模态框
 }
 
 # `progress-bar bg-${<表达式>}` 里允许出现的表达式（唯一形态）。
@@ -115,19 +118,20 @@ def test_get_progress_color_is_gone():
 
 
 def test_progress_bar_color_comes_from_status():
-    """每一处 `progress-bar bg-${...}` 插值都必须是 getStatusColor(task.status)。
+    """进度条配色必须由**状态**决定，不是按百分比。
 
     这条是 J 条要求补的**存在性**契约，守三件事：
 
       1. 调用点没被删掉（每个文件的处数不低于 PROGRESS_BAR_CALL_SITES）。
-         漏改/删掉 tasks.js 里 updateTaskProgressPartial 那处是最可能的失误——
-         它是 Socket.IO 增量刷新的实际主路径，页面初次渲染看不出问题，
-         任务跑起来才暴露。
       2. 插值里确实调的是 getStatusColor，不是别的什么函数或裸变量。
          history.js 原来就是裸变量 `bg-${progressColor}`（一个本地算出来的
          百分比阶梯），只断言「没有 getProgressColor( 字样」的话它照样全绿。
       3. 传进去的是 task.status 而不是 progress——`getStatusColor(progress)`
          能编译、能跑，返回永远是兜底的 'secondary'，肉眼看是一条灰条。
+
+    Vue 化后行2 那条发丝条走响应式绑定，两端分开钉：模板里必须是
+    `:class="'bg-' + statusColor"`，statusColor computed 里必须是
+    `getStatusColor(this.task.status)`。少任何一端都会让配色悄悄退回默认。
     """
     problems = []
     for name, min_sites in PROGRESS_BAR_CALL_SITES.items():
@@ -144,24 +148,50 @@ def test_progress_bar_color_comes_from_status():
                     f'{name}: `progress-bar bg-${{{expr}}}` 不是 '
                     'getStatusColor(task.status)——进度条颜色必须由状态决定'
                 )
+
+    tpl = _tpl('TaskRow')
+    if not re.search(r""":class="'bg-'\s*\+\s*statusColor\"""", tpl):
+        problems.append(
+            "TaskRow 模板里的 .progress-bar 没有绑定 :class=\"'bg-' + statusColor\""
+            '——进度条配色会退回 Bootstrap 默认')
+    comp = _js('task_list.js')
+    if not re.search(r'statusColor\(\)\s*\{\s*return getStatusColor\(this\.task\.status\)',
+                     _strip_js_comments(comp)):
+        problems.append(
+            'statusColor computed 不是 getStatusColor(this.task.status)——'
+            '传 progress 进去能跑，但返回永远是兜底的 secondary，是一条灰条')
     assert not problems, '进度条配色调用点不合契约：\n' + '\n'.join('  ' + p for p in problems)
 
 
 def test_socketio_incremental_path_is_wired():
-    """点名守住 Socket.IO 增量刷新路径上那行 className 赋值。
+    """Socket.IO 增量刷新必须真的能改到进度条。
 
-    上一条已经覆盖了它，这里再钉一次只是为了让回潮时的失败信息直接指向
-    正确的地方——这行是任务跑起来之后真正决定进度条颜色的那一行，
-    createTaskRow 只在状态切换时才重建整行。
+    改造前这里点名钉 updateTaskProgressPartial 里那行
+    `progressBar.className = \\`progress-bar bg-${getStatusColor(task.status)}\\``
+    ——它是任务跑起来之后真正决定颜色的那一行，漏改的话页面初次渲染正常、
+    一跑起来颜色就错。
+
+    Vue 化后那行 DOM 写入不存在了，链路变成
+    `socket → updateTaskProgress → TaskStore.commit → 响应式 → 组件重渲染`。
+    钉这条链的两个端点：推送处理器必须把结果写进 store（而不是又去摸 DOM），
+    模板里的进度条必须绑在响应式数据上。
     """
     src = _strip_js_comments(_js('tasks.js'))
-    assert re.search(
-        r'progressBar\.className\s*=\s*`progress-bar\s+bg-\$\{getStatusColor\(\s*task\.status\s*\)\}`',
-        src,
-    ), (
-        'updateTaskProgressPartial 里的 progressBar.className 没有用 '
-        'getStatusColor(task.status)——这是 Socket.IO 增量刷新的主路径，'
-        '漏改它的话页面初次渲染正常、任务一跑起来颜色就错'
+    body = _fn('updateTaskProgress')
+    assert 'TaskStore.commit(' in body, (
+        'updateTaskProgress 没有把推送写进 TaskStore —— Socket.IO 增量刷新断链'
+    )
+    assert 'getElementById' not in body and 'querySelector' not in body, (
+        'updateTaskProgress 又开始直接摸 DOM 了 —— 渲染归组件，这里只写数据。'
+        '双写正是 Vue 化要消灭的东西'
+    )
+    assert '.innerHTML' not in src and '.outerHTML' not in src, (
+        'tasks.js 又出现了 innerHTML/outerHTML —— 任务行的渲染必须留在 '
+        'task_list.js 的组件里'
+    )
+    tpl = _tpl('TaskRow')
+    assert ':style="{ width: progress + \'%\' }"' in tpl, (
+        '进度条宽度不再绑定 progress —— 增量刷新推不动它'
     )
 
 
@@ -246,6 +276,34 @@ def _fn(name, js_name='tasks.js'):
     return body
 
 
+# Vue 化（2026-08）后行 markup 不再是「一个叫 createTaskRow 的函数返回的模板
+# 字符串」，而是 task_list.js 里的 `const XXX_TEMPLATE = \`...\`` 常量，由
+# TaskRow / TaskList 组件的 template 字段消费。本文件原先那批「切
+# createTaskRow 函数体再逐字 grep」的断言，钉点整体迁到这里 —— 守的契约一条
+# 没少（类名、动作的状态门控、转义、进度条 aria），只是 markup 换了个出处。
+_TEMPLATE_CONSTS = {
+    'TaskRow': 'ROW_TEMPLATE',
+    'empty': 'EMPTY_TEMPLATE',
+    'error': 'ERROR_TEMPLATE',
+}
+
+
+def _tpl(name='TaskRow', js_name='task_list.js'):
+    """切出组件模板常量的内容。
+
+    刻意**不剥 JS 注释**：模板体是 HTML，`_strip_js_comments` 会把
+    `<path d="M19 6v14a2 2 0 0 1-2 2H7..."/>` 这类路径数据里的 `//` 误当成
+    行注释吃掉半个模板。
+    """
+    const = _TEMPLATE_CONSTS[name]
+    src = _js(js_name)
+    m = re.search(const + r'\s*=\s*`(.*?)`;', src, re.S)
+    assert m, f'{js_name} 里找不到模板常量 {const} —— 本测试已失效（不是通过）'
+    body = m.group(1)
+    assert body.strip(), f'{const} 切出来是空的 —— 本测试已失效'
+    return body
+
+
 def test_failed_task_row_is_not_removed():
     """任务失败时不许删行、也不许把任务从 activeTasks 里摘掉。
 
@@ -323,52 +381,59 @@ def test_toast_duration_zero_really_means_persistent():
 
 
 def test_error_message_never_reaches_innerhtml():
-    """错误文本只能经 textContent 落地，绝不进 HTML 模板。
+    """错误文本绝不能当 HTML 解析。
 
     error_message 是后端异常的字符串化结果（URL、文件路径、第三方库的
-    报错原文都可能在里面）。它一旦被拼进 createTaskRow 的模板字符串，
-    `container.innerHTML = ...` 就会把里面的 `<img onerror=...>` 当标签解析。
-    ui.js 里同样的地方已经写了 `// textContent 防 XSS` 的注释，这里是同一条规矩。
+    报错原文都可能在里面）。改造前的做法是让行模板只吐一个**空**的
+    `.task-error` 容器，文本事后用 textContent 填 —— 因为模板字符串最终
+    会进 `container.innerHTML`，拼进去等于把 `<img onerror=...>` 当标签解析。
 
-    做法上让 createTaskRow（2026-08 单一时间流定稿后收口在 history.js，
-    全站唯一行实现）只吐一个**空**的 `.task-error` 容器（连 error_message
-    都不引用），文本由 applyTaskErrorText / renderHistoryTable 单独填。
-    所以这条可以直接断言「行模板函数里根本没有 error_message 这个词」。
+    Vue 化后这条路整个消失：模板用 `{{ errorText }}` 插值，Vue 自动 HTML
+    转义。所以契约改成钉住「用的是插值不是 v-html」——**整个组件文件禁止
+    出现 v-html**，那是唯一能把字符串当 HTML 塞进去的口子。
     """
-    row_body = _js_function_body(_strip_js_comments(_js('history.js')), 'createTaskRow')
-    assert 'error_message' not in row_body, (
-        'createTaskRow 里出现了 error_message——它的返回值会被塞进 innerHTML，'
-        '后端错误原文里的 HTML 会被当标签解析（XSS）。'
-        '错误文本请交给 applyTaskErrorText / renderHistoryTable 用 textContent 填'
+    # 只扫模板体：v-html 只可能出现在模板里，而本文件的说明性注释里就写着
+    # 「禁止出现 v-html」这句话 —— 扫全文会被自己的注释误伤（同样的坑在
+    # test_css_contract 的 `.config-section .btn` 断言上踩过一次）。
+    for tpl_name in _TEMPLATE_CONSTS:
+        assert 'v-html' not in _tpl(tpl_name), (
+            f'{tpl_name} 模板里出现了 v-html —— 它会把字符串当 HTML 解析，'
+            '而任务名/错误原文都是不可信输入。一律用 {{ }} 插值（Vue 自动转义）'
+        )
+    tpl = _tpl('TaskRow')
+    assert '{{ errorText }}' in tpl, (
+        '失败行不再用 {{ errorText }} 插值渲染错误原文 —— 换成别的写法前'
+        '先确认它同样会转义'
     )
-
-    apply_body = _js_function_body(_strip_js_comments(_js('tasks.js')), 'applyTaskErrorText')
-    assert re.search(r'\.textContent\s*=', apply_body), (
-        'applyTaskErrorText 没有用 textContent 赋值'
-    )
-    assert 'innerHTML' not in apply_body, (
-        'applyTaskErrorText 用了 innerHTML——错误原文必须走 textContent'
-    )
+    # 反向：整个 static/js 下不许再有人把 error_message 拼进 innerHTML
+    for name in ('tasks.js', 'history.js', 'task_list.js', 'task_store.js'):
+        body = _strip_js_comments(_js(name))
+        for m in re.finditer(r'\.innerHTML\s*=([^;]*);', body, re.S):
+            assert 'error_message' not in m.group(1), (
+                f'{name} 把 error_message 拼进了 innerHTML —— 后端错误原文里的 '
+                'HTML 会被当标签解析（XSS）'
+            )
 
 
 def test_row_rebuild_refills_the_error_text():
-    """原地重建（rebuildStreamRow）之后错误文本必须被重新填回去。
+    """状态跃迁后失败行的错误文本必须还在。
 
-    存在性契约。单一时间流里 socket 事件对行做的是 outerHTML 原地重建
-    （rebuildStreamRow），重建出来的失败行 .task-error 是空容器。
-    漏掉回填这一步的话：失败当场看得见错误，之后随便一个进度事件
-    触发重建，红框就变空了——而所有文本断言依然全绿。
-    （前身 test_full_rerender_keeps_the_error_text：守的是 renderActiveTasks
-    整体重绘的回填。renderActiveTasks 随「活动/失败」分区删除，重建入口
-    收口为 rebuildStreamRow 一处。）
+    改造前 socket 事件对行做的是 outerHTML 原地重建，重建出来的
+    `.task-error` 是空容器，必须再调一次 applyTaskErrorText 回填 —— 漏掉
+    这一步的话：失败当场看得见错误，之后随便一个进度事件触发重建，红框就
+    变空了，而所有文本断言依然全绿。
+
+    Vue 化后错误文本是 store 里的字段、模板里的插值，重建这个概念没了，
+    契约相应变成：handleTaskFailed 必须把 error_message 写进 store，
+    组件必须有兜底文案（空字符串会渲染成一个空红框，比没有红框更让人困惑）。
     """
-    body = _fn('rebuildStreamRow')
-    assert 'createTaskRow(' in body, (
-        'rebuildStreamRow 没有调 createTaskRow——行重建的实现变了？本测试已失效'
+    body = _fn('handleTaskFailed')
+    assert 'error_message' in body and 'TaskStore.commit(' in body, (
+        'handleTaskFailed 没有把 error_message 写进 store —— 失败行的红框会是空的'
     )
-    assert 'applyTaskErrorText' in body, (
-        'rebuildStreamRow 重建 outerHTML 之后没有回填错误文本，'
-        '失败行的红框会在下一次原地重建时被清空'
+    comp = _strip_js_comments(_js('task_list.js'))
+    assert re.search(r'errorText\(\)\s*\{[^}]*task\.error_message\s*\|\|', comp), (
+        'errorText computed 没有兜底文案 —— 后端没给原因时会渲染一个空红框'
     )
 
 
@@ -392,11 +457,10 @@ _STATUS_GUARD_RE = re.compile(r"task\.status\s*(===|!==)\s*'(\w+)'")
 def test_card_actions_are_gated_by_the_right_status():
     """行上每个动作按钮都必须挂在正确的状态分支下。
 
-    实现方式：对 createTaskRow 体内每一处 `onclick="xxxTask(`，往前找
-    **最近**的 `task.status === / !== '...'`，与 _ACTION_GUARDS 对表。
-    （2026-08 单一时间流定稿：createTaskRow 收口在 history.js，
-    全站唯一行实现，任务控制按钮只在 tasks.js 已加载时渲染——
-    门控表达式里的 hasTaskActions/isLive 前缀不影响「最近的状态判断」。）
+    实现方式：对 TaskRow 模板里每一处 `@click="act('xxxTask')"`，在**同一个
+    <button> 标签内**找它的 v-if，与 _ACTION_GUARDS 对表。改造前钉的是
+    `onclick="xxxTask(`「往前找最近的 task.status 判断」那套启发式；Vue 的
+    v-if 与按钮同在一个标签里，比「最近的前置判断」精确得多。
 
     这条同时守三件事：
       1. 失败行**没有**重试按钮（后端会抛 ValueError，见上面表里的注释）。
@@ -404,29 +468,26 @@ def test_card_actions_are_gated_by_the_right_status():
          用户就没有任何办法清掉它，只能刷新页面。
       3. 失败行不再显示「取消」——对一个已经 failed 的任务调
          /cancel 是无意义的后端往返。
-
-    已知弱点（诚实说明）：「最近的前置判断」是启发式的。若有人把按钮写成
-    多层嵌套三元、或者用 `${cond ? ... : ...}` 之外的方式生成 onclick，
-    这条可能失配。所以每个动作还额外断言了「至少出现一次」——完全找不到
-    比匹配错更危险。
     """
-    body = _fn('createTaskRow', 'history.js')
+    tpl = _tpl('TaskRow')
+    # 按 <button ...> 切标签，每个动作的 v-if 必须与它同标签
+    buttons = re.findall(r'<button\b(.*?)>', tpl, re.S)
+    assert buttons, 'TaskRow 模板里一个 <button> 都没有 —— 本测试已失效'
     problems = []
     for action, expected in _ACTION_GUARDS.items():
-        hits = list(re.finditer(r'onclick="' + action + r'\(', body))
-        if not hits:
-            problems.append(f'{action}: createTaskRow 里一处调用都没有')
+        owners = [b for b in buttons if f"act('{action}')" in b]
+        if not owners:
+            problems.append(f'{action}: TaskRow 模板里一处调用都没有')
             continue
-        for h in hits:
-            guards = _STATUS_GUARD_RE.findall(body[:h.start()])
+        for b in owners:
+            guards = _STATUS_GUARD_RE.findall(b)
             if not guards:
-                problems.append(f'{action}: 前面找不到任何 task.status 判断')
+                problems.append(f'{action}: 按钮上找不到任何 task.status 判断（v-if 丢了？）')
                 continue
-            if guards[-1] != expected:
+            if expected not in guards:
                 problems.append(
-                    f'{action}: 最近的状态判断是 '
-                    f"task.status {guards[-1][0]} '{guards[-1][1]}'，"
-                    f"期望 task.status {expected[0]} '{expected[1]}'"
+                    f'{action}: 按钮的状态门控是 {guards}，'
+                    f"期望包含 task.status {expected[0]} '{expected[1]}'"
                 )
     assert not problems, '行动作按钮的状态门控不对：\n' + '\n'.join('  ' + p for p in problems)
 
@@ -443,8 +504,8 @@ def test_dismiss_is_purely_local():
     assert 'fetch(' not in body, (
         'dismissTask 里有 fetch()——「移除」应当只是前端清卡片，不碰后端'
     )
-    assert 'activeTasks.delete(' in body, (
-        'dismissTask 没有把任务从 activeTasks 摘掉，卡片会在下次重绘时回来'
+    assert 'TaskStore.remove(' in body, (
+        'dismissTask 没有把任务从 store 摘掉，行不会消失'
     )
 
 
@@ -580,30 +641,27 @@ def test_percentage_is_an_overlay_not_a_child_of_the_bar():
 
 
 def test_socketio_incremental_path_updates_the_label_not_the_bar():
-    """Socket.IO 增量刷新路径必须改条外百分比的文字，且**不能**再往进度条里写文字。
+    """百分比显示在条**外**，不在条里。
 
-    `updateTaskProgressPartial` 是任务跑起来之后真正在刷新界面的那条路
-    （createTaskRow 只在状态切换时重建整行）。漏改这里的后果很具体：
-    行初次渲染是对的（条外一个百分比），第一个 task_progress 事件一到，
-    `progressBar.textContent = '37%'` 又在条里塞回一个 —— 同一条进度条上
-    出现**两个**百分比，而所有只看模板的断言依然全绿。
+    漏改这里的后果很具体：行初次渲染是对的（条外一个百分比），第一个
+    task_progress 事件一到，又往条里塞回一个 —— 同一条进度条上出现**两个**
+    百分比，而所有只看模板的断言依然全绿。改造前这个坑在
+    updateTaskProgressPartial（`progressBar.textContent = '37%'`）；Vue 化后
+    模板只有一份，坑变成「有人往 .progress-bar 里加插值」。
 
     （统一任务表改版：百分比从 .progress 里的覆盖层 .progress__label
     改成紧凑条右边的 .task-pct——14px 的条装不下 18px 的 chip。
-    守护的语义不变：增量路径更新的是条外文本，不是条。）
+    守护的语义不变：更新的是条外文本，不是条。）
     """
-    body = _fn('updateTaskProgressPartial')
-
-    assert re.search(r"querySelector\(\s*'\.task-pct'\s*\)", body), (
-        'updateTaskProgressPartial 没有取 .task-pct —— '
-        '进度数字在 Socket.IO 刷新时不会更新（会一直停在初次渲染的值）'
+    tpl = _tpl('TaskRow')
+    assert '<span class="task-pct" aria-hidden="true">{{ progress }}%</span>' in tpl, (
+        '条外百分比 .task-pct 不再渲染 {{ progress }}% —— 进度数字不会更新'
     )
-    assert re.search(r'\.textContent\s*=\s*`\$\{progress\}%`', body), (
-        'updateTaskProgressPartial 没有把 `${progress}%` 写进条外百分比'
-    )
-    assert not re.search(r'progressBar\.textContent\s*=', body), (
-        'updateTaskProgressPartial 仍在给 progressBar.textContent 赋值 —— '
-        '条外文本 + 条内文字会同时存在，同一条进度条上出现两个百分比'
+    bar = re.search(r'<div class="progress-bar"(.*?)></div>', tpl, re.S)
+    assert bar, 'TaskRow 模板里找不到 .progress-bar —— 本测试已失效'
+    assert '{{' not in bar.group(0), (
+        '.progress-bar 里出现了文本插值 —— 条外文本 + 条内文字会同时存在，'
+        '同一条进度条上出现两个百分比'
     )
 
 
@@ -612,10 +670,14 @@ def test_progress_bar_keeps_a_programmatic_value_after_losing_its_text():
 
     改之前进度条元素里就是那串「37%」文本，屏幕阅读器至少还能读到点东西。
     文字搬到兄弟节点之后，`.progress-bar` 变成一个**空**的 progressbar，
-    没有 aria-valuenow 就等于什么值都不报。history.js 那处原本就漏了
-    aria-valuenow（只有 role 和内联 width），这条一并钉住。
+    没有 aria-valuenow 就等于什么值都不报。
+
+    Vue 化后 aria-valuenow 是响应式绑定（`:aria-valuenow="progress"`），
+    它和视觉宽度绑的是同一个 computed，「视觉在涨、报给辅助技术的值停在
+    初始值」这种分叉在结构上不再可能 —— 改造前那是两行独立的 DOM 写入。
     """
     problems = []
+    # history.js 详情模态框里还有一处手写的 progress-bar
     for name in ('tasks.js', 'history.js'):
         src = _strip_js_comments(_js(name))
         for m in _PROGRESS_BAR_ELEMENT_RE.finditer(src):
@@ -630,14 +692,18 @@ def test_progress_bar_keeps_a_programmatic_value_after_losing_its_text():
                 problems.append(
                     f'{name}: aria-valuenow 不是 `${{progress}}` —— 报出去的值和画面对不上'
                 )
+
+    tpl = _tpl('TaskRow')
+    bar = re.search(r'<div class="progress-bar"(.*?)></div>', tpl, re.S)
+    assert bar, 'TaskRow 模板里找不到 .progress-bar —— 本测试已失效'
+    attrs = bar.group(1)
+    if ':aria-valuenow="progress"' not in attrs:
+        problems.append('TaskRow: aria-valuenow 没有绑定 progress computed')
+    for attr in ('aria-valuemin="0"', 'aria-valuemax="100"', 'role="progressbar"'):
+        if attr not in attrs:
+            problems.append(f'TaskRow: .progress-bar 缺 {attr}')
     assert problems == [], (
         '空进度条没有可编程的数值：\n' + '\n'.join('  ' + p for p in problems))
-
-    body = _fn('updateTaskProgressPartial')
-    assert re.search(r"setAttribute\(\s*'aria-valuenow'\s*,\s*progress\s*\)", body), (
-        'updateTaskProgressPartial 没有同步 aria-valuenow —— '
-        '视觉上在涨，报给辅助技术的值停在初始值'
-    )
 
 
 def _element_inner_html(src, open_tag_start):
@@ -1289,75 +1355,80 @@ def test_panel_close_guard_compares_elements_not_names():
 # --------------------------------------------------------------------------
 
 def test_row_rendering_is_unified_in_history_js():
-    """行渲染全站只有一处：history.js 的 createTaskRow。
+    """行渲染全站只有一处：task_list.js 的 TaskRow 组件。
 
-    （前身 test_active_tasks_render_into_the_records_panel_list：守 tasks.js
-    渲染进 #activeTasksBody 实时区。实时区随三分区删除，锚点翻面为
-    「tasks.js 不再持有行模板」。）
+    （前身守 tasks.js 不再持有行模板。2026-08 Vue 化后锚点再挪一次：
+    history.js 的 createTaskRow 也删了，模板收口到组件。）
 
-    两套近似实现必然漂移（上一轮 tasks.js createTaskRow / history.js
-    createHistoryRow 的按钮组、时间语义就各不相同），所以 tasks.js 那套
-    createTaskRow / createTaskErrorRow / taskMetaText / renderActiveTasks
-    整体删除，实时更新（socket 事件的原地重建）也调 history.js 那份。
+    两套近似实现必然漂移（历史上 tasks.js createTaskRow / history.js
+    createHistoryRow 的按钮组、时间语义就各不相同），所以任何一个业务文件
+    都不许再长出行模板。
     """
-    tasks_src = _strip_js_comments(_js('tasks.js'))
-    for fn in ('createTaskRow', 'createTaskErrorRow', 'taskMetaText',
-               'renderActiveTasks', 'toggleFailedTaskGroup'):
-        assert f'function {fn}(' not in tasks_src, (
-            f'tasks.js 仍定义 {fn}()——行渲染已收口到 history.js createTaskRow，'
-            '留着第二份实现必然漂移（「两种行语言」是「太乱」的根因之一）'
+    for name in ('tasks.js', 'history.js'):
+        src = _strip_js_comments(_js(name))
+        for fn in ('createTaskRow', 'createTaskErrorRow', 'taskMetaText',
+                   'renderActiveTasks', 'toggleFailedTaskGroup'):
+            assert f'function {fn}(' not in src, (
+                f'{name} 仍定义 {fn}()——行渲染已收口到 task_list.js 的 TaskRow '
+                '组件，留着第二份实现必然漂移（「两种行语言」是「太乱」的根因之一）'
+            )
+        assert 'task-row' not in src, (
+            f'{name} 里出现了 task-row 类名 —— 行 markup 只能在组件模板里'
         )
-    hist_src = _strip_js_comments(_js('history.js'))
-    assert 'function createTaskRow(' in hist_src, (
-        'history.js 没有定义 createTaskRow——统一行实现没了，本测试已失效'
+
+    # 渲染层锚点：组件挂到 #historyTableBody
+    comp = _strip_js_comments(_js('task_list.js'))
+    assert "getElementById('historyTableBody')" in comp, (
+        'task_list.js 没有以 #historyTableBody 为挂载点'
     )
-    # 时间流容器锚点：renderHistoryTable 渲染进 #historyTableBody
-    render_body = _js_function_body(hist_src, 'renderHistoryTable')
-    assert "getElementById('historyTableBody')" in render_body, (
-        'renderHistoryTable 没有以 #historyTableBody 为容器'
+    assert re.search(r'v-for="task in tasks"\s+:key="task\._key"', _js('task_list.js')), (
+        '时间流不是 keyed v-for —— :key 是「同一个任务不会渲染出两行」的'
+        '结构保证，改造前那套 getElementById 查重就是因为没有它'
     )
-    assert 'createTaskRow' in render_body, (
-        'renderHistoryTable 没有用统一行实现 createTaskRow 渲染时间流'
+    # 数据入口：history.js 只写 store，不碰 DOM
+    render_body = _js_function_body(_strip_js_comments(_js('history.js')),
+                                    'renderHistoryTable')
+    assert 'TaskStore.replaceAll(' in render_body, (
+        'renderHistoryTable 没有把数据交给 store —— 时间流不会更新'
     )
-    assert "innerHTML = tasks.map(createTaskRow).join('')" in render_body, (
-        '时间流应直接由 tasks.map(createTaskRow) 构成——多出来的中间层复查'
+    assert 'innerHTML' not in render_body, (
+        'renderHistoryTable 又开始直接写 innerHTML 了 —— 渲染归组件'
     )
 
 
 def test_task_row_is_the_unified_two_line_structure():
     """时间流行是同一种「统一流式行」结构，且覆盖全部状态变体。
 
-    （前身守「活动行与历史行同一种结构」——两套实现对比。行渲染收口后
-    只剩一套，锚点改守这一套自身的结构完整。）
-
-    这条守三件事：
+    这条守四件事：
       1. 结构锚点存在（行1 = task-line1：状态点/名称/#类型:id/元信息/
          状态小字/时间；行2 按状态变体）；
-      2. 增量更新依赖的稳定类名没有改名——updateTaskProgressPartial /
-         updateTimeDisplay 按 .progress-bar/.task-pct/.task-count/.task-time
-         原地更新，模板里类名一换，Socket.IO 刷新就静默失效而本文件其它
-         断言未必红；
+      2. 稳定类名没有改名——tests/test_css_contract.py 的层叠模型按
+         `.task-row > .task-line1 > .task-dot` 这样的祖先链算最终样式，
+         模板里类名一换，那边整片断言就对着不存在的元素空转；
       3. 三种行2 变体齐全：进度行（task-progress-line，活动态）/
          引文式错误（task-error，failed）/ 单行摘要（task-line2，终态）。
       4. 徽章 pill 不再存在（状态识别 = 状态点 + 小字状态文本）。
     """
-    body = _fn('createTaskRow', 'history.js')
-    for anchor in ('task-row status-', 'task-line1', 'task-dot', 'task-name',
+    body = _tpl('TaskRow')
+    for anchor in ('task-row', 'task-line1', 'task-dot', 'task-name',
                    'task-id', 'task-meta', 'task-status-text', 'task-time'):
         assert anchor in body, (
-            f'createTaskRow 缺 {anchor} —— 统一流式行的结构锚点（见 docstring）'
+            f'TaskRow 模板缺 {anchor} —— 统一流式行的结构锚点（见 docstring）'
         )
+    # 状态类名是绑定形态：:class="'status-' + task.status"
+    assert re.search(r""":class="'status-'\s*\+\s*task\.status\"""", body), (
+        'TaskRow 根节点没有绑定 status-* 类 —— 六态配色（.task-row.status-x '
+        '.task-dot）会全部失效'
+    )
     for cls in ('task-pct', 'task-count', 'progress-bar'):
-        assert cls in body, (
-            f'createTaskRow 缺稳定类名 {cls} —— Socket.IO 增量更新按它定位元素'
-        )
+        assert cls in body, f'TaskRow 模板缺稳定类名 {cls}'
     for variant in ('task-progress-line', 'task-error', 'task-line2'):
         assert variant in body, (
-            f'createTaskRow 缺行2 变体 {variant} —— 进度/错误/摘要三种形态要齐全'
+            f'TaskRow 模板缺行2 变体 {variant} —— 进度/错误/摘要三种形态要齐全'
         )
     for forbidden in ('<tr', '<td', 'colspan', 'badge'):
         assert forbidden not in body, (
-            f'createTaskRow 里还有 {forbidden} —— 退回 9 列网格/徽章形态了'
+            f'TaskRow 模板里还有 {forbidden} —— 退回 9 列网格/徽章形态了'
         )
 
 
@@ -1432,13 +1503,17 @@ def test_terminal_row_shows_created_at_and_live_row_shows_elapsed():
     来自 calculateTimeInfo（tasks.js），独立页 /history 不加载它，
     所以调用点必须带 typeof 守卫。
     """
-    body = _fn('createTaskRow', 'history.js')
-    assert 'formatShortDate(task.created_at)' in body, (
+    comp = _strip_js_comments(_js('task_list.js'))
+    assert 'formatShortDate(this.task.created_at)' in comp, (
         '终态行的行1 时间不是创建时间短日期——列表按创建排序，展示完成时间不自洽'
     )
-    assert "typeof calculateTimeInfo === 'function'" in body, (
+    assert "typeof calculateTimeInfo !== 'function'" in comp, (
         '非终态耗时没有 typeof 守卫——独立页 /history 不加载 tasks.js，'
         '直接调用会 ReferenceError 让整列渲染挂掉'
+    )
+    assert 'store.state.tick' in comp, (
+        'timeText 没有依赖 store.state.tick —— 耗时不会每秒刷新，'
+        '会一直停在首次渲染的值'
     )
     src = _strip_js_comments(_js('history.js'))
     assert 'function formatShortDate(' in src, (
@@ -1447,20 +1522,23 @@ def test_terminal_row_shows_created_at_and_live_row_shows_elapsed():
 
 
 def test_history_error_text_only_lands_via_textcontent():
-    """失败行的错误原文不进 innerHTML 模板（与上一条同一条规矩的时间流侧）。
+    """失败行的错误原文不会被当 HTML 解析（与上一条同一条规矩的时间流侧）。
 
     /api/history_all 返回的 error_message 同样是后端异常的字符串化结果。
-    createTaskRow 只吐一个**空**的 .task-error 容器（连 error_message
-    都不引用——见 test_error_message_never_reaches_innerhtml），文本由
-    renderHistoryTable 在渲染后用 textContent 补。
+    改造前 createTaskRow 只吐一个**空**的 .task-error 容器，文本由
+    renderHistoryTable 在渲染后用 textContent 补；Vue 化后统一走
+    `{{ errorText }}` 插值（自动转义），那条两步路没了。
+
+    这里守的是：数据入口不许自己动手渲染错误文本。
     """
     src = _strip_js_comments(_js('history.js'))
     render_body = _js_function_body(src, 'renderHistoryTable')
-    assert 'error_message' in render_body and re.search(r'\.textContent\s*=', render_body), (
-        'renderHistoryTable 没有在渲染后用 textContent 回填失败行的错误文本'
+    assert 'innerHTML' not in render_body and 'textContent' not in render_body, (
+        'renderHistoryTable 又在自己写 DOM 了 —— 错误文本的渲染归组件，'
+        '这里只负责把数据交给 store'
     )
-    assert 'innerHTML' not in render_body.split('forEach')[1] if 'forEach' in render_body else True, (
-        '错误文本回填走了 innerHTML——必须走 textContent'
+    assert 'TaskStore' in render_body, (
+        'renderHistoryTable 没有把数据交给 store'
     )
 
 
@@ -1486,14 +1564,14 @@ def test_completed_task_is_rebuilt_in_place_not_removed():
     body = _fn('handleTaskCompleted')
     assert not re.search(r'\.remove\(\s*\)', body), (
         'handleTaskCompleted 里出现了 .remove()——完成的任务要留在时间流里，'
-        '原地重建为 completed 态，不是删除'
+        '只换形态，不是删除'
     )
     assert 'loadHistory(' not in body, (
-        'handleTaskCompleted 还在 loadHistory 重拉——原地重建已经够了，'
+        'handleTaskCompleted 还在 loadHistory 重拉——改数据已经够了，'
         '重拉会把用户正在看的页码/滚动位置冲掉'
     )
-    assert 'rebuildStreamRow(' in body or 'outerHTML' in body, (
-        'handleTaskCompleted 没有原地重建行——完成的任务会停留在 running 形态'
+    assert re.search(r"TaskStore\.commit\([^)]*\{\s*status:\s*'completed'", body), (
+        'handleTaskCompleted 没有把状态改成 completed —— 行不会换形态'
     )
     assert re.search(r'loadStats\(\s*\)', body), (
         'handleTaskCompleted 没有调 loadStats()——统计卡还是旧数字'
@@ -1509,8 +1587,8 @@ def test_failed_task_is_rebuilt_in_place_with_error_refilled():
     处理路径确实走原地重建」。
     """
     body = _fn('handleTaskFailed')
-    assert 'rebuildStreamRow(' in body or 'outerHTML' in body, (
-        'handleTaskFailed 没有原地重建行——失败的任务会停留在 running 形态'
+    assert re.search(r"TaskStore\.commit\([^)]*status:\s*'failed'", body), (
+        'handleTaskFailed 没有把状态改成 failed——失败的任务会停留在 running 形态'
     )
     assert re.search(r'loadStats\(\s*\)', body), (
         'handleTaskFailed 没有调 loadStats()——统计卡的失败计数还是旧数字'
@@ -1532,8 +1610,14 @@ def test_new_task_prepends_only_on_first_page_and_matching_chip():
         'prependStreamRow 没有「chip 为 全部/进行中」的门禁——'
         '失败/已完成/已取消筛选下会插进不符合筛选条件的行'
     )
-    assert re.search(r"insertAdjacentHTML\(\s*'afterbegin'", body), (
-        'prependStreamRow 没有插到容器顶部（afterbegin）——新任务应出现在流顶'
+    assert 'TaskStore.upsert(' in body, (
+        'prependStreamRow 没有把新任务写进 store——新任务不会出现在流顶'
+    )
+    # 重复推送必须合并而不是插第二行。改造前靠 getElementById 查重；
+    # 现在 store 按 key 合并 + 组件 keyed v-for，两层结构性保证。
+    assert 'TaskStore.has(' in body and 'TaskStore.patch(' in body, (
+        'prependStreamRow 没有「已在流里就合并」的分支——'
+        '活动任务被分页窗口挤掉后又收到推送时会插出第二行'
     )
     # updateTaskProgress 的未知 key 分支必须走它
     progress_body = _fn('updateTaskProgress')
@@ -1552,11 +1636,11 @@ def test_dismiss_removes_the_row_purely_on_the_frontend():
     「确实把行拿走、且不整体重绘」。
     """
     body = _fn('dismissTask')
-    assert re.search(r'\.remove\(\s*\)', body), (
-        'dismissTask 没有删行——「移除」按钮成了摆设'
+    assert 'TaskStore.remove(' in body, (
+        'dismissTask 没有把任务从 store 摘掉——「移除」按钮成了摆设'
     )
     assert 'loadHistory(' not in body and 'renderHistoryTable(' not in body, (
-        'dismissTask 不该触发重拉/整体重绘——纯前端删行就够了'
+        'dismissTask 不该触发重拉/整体重绘——从 store 摘掉就够了'
     )
 
 def test_panel_reopen_refreshes_timeline():

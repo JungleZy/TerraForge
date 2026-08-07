@@ -106,6 +106,59 @@ MESSAGES = {
         'en': 'Recommendation failed: {error}',
     },
 
+    # --- 代理自动检测 ---
+    'js.config.proxy.detecting': {
+        'zh': '检测中…',
+        'en': 'Detecting…',
+    },
+    'js.config.proxy.detecting_hint': {
+        'zh': '正在枚举并实测候选代理，最长约 25 秒…',
+        'en': 'Enumerating and testing proxy candidates, up to about 25 s…',
+    },
+    'js.config.proxy.manual': {
+        'zh': '当前使用手动配置的代理 {url} —— 自动检测不参与。清空上面的输入框即可交给自动检测。',
+        'en': 'Using the manually configured proxy {url} — auto-detection is '
+              'not involved. Clear the field above to hand it over to '
+              'auto-detection.',
+    },
+    'js.config.proxy.found': {
+        'zh': '已自动检测到可用代理：{url}（来源：{source}，实测通过）',
+        'en': 'Found a working proxy automatically: {url} (source: {source}, '
+              'verified)',
+    },
+    'js.config.proxy.none': {
+        'zh': '未找到可用代理，当前为直连。试过 {tried} 个候选。如果你在用 Clash/v2rayN，请确认它正在运行；WSL 下还需在客户端开启「允许局域网连接」并放行 Windows 防火墙。',
+        'en': 'No working proxy found — connecting directly. Tried {tried} '
+              'candidate(s). If you use Clash/v2rayN, make sure it is running; '
+              'under WSL you also need to enable "Allow LAN" in the client and '
+              'open the Windows firewall.',
+    },
+    'js.config.proxy.disabled': {
+        'zh': '自动检测已关闭，代理服务器留空即为直连。',
+        'en': 'Auto-detection is off; an empty proxy field means a direct '
+              'connection.',
+    },
+    'js.config.proxy.pending': {
+        'zh': '尚未检测。点「立即检测」或保存后重启生效。',
+        'en': 'Not detected yet. Click "Detect now", or save and restart.',
+    },
+    'js.config.proxy.failed': {
+        'zh': '检测失败：{error}',
+        'en': 'Detection failed: {error}',
+    },
+    'js.config.proxy.source_env': {
+        'zh': '环境变量/系统代理',
+        'en': 'environment / system proxy',
+    },
+    'js.config.proxy.source_pac': {
+        'zh': 'Windows PAC 脚本',
+        'en': 'Windows PAC script',
+    },
+    'js.config.proxy.source_scan': {
+        'zh': '本机端口扫描',
+        'en': 'local port scan',
+    },
+
     # --- 瓦片服务器列表编辑器 ---
     'js.config.tile.verify': {
         'zh': '验证',

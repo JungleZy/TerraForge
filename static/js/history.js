@@ -6,6 +6,10 @@ let allTasks = [];
 let currentStatusFilter = '';
 
 function initHistory() {
+    // 时间流的渲染层（Vue）挂到 #historyTableBody。幂等，首页由 initTasks
+    // 也调一次——两个入口哪个先跑都行。必须在 loadHistory 之前：晚于它的话
+    // 首屏那批数据写进 store 时还没有消费者。
+    if (window.TaskList) window.TaskList.mount();
     initHistoryMap();
     loadHistory(1);
     loadStats();
@@ -84,7 +88,11 @@ async function initHistoryMap() {
         fullscreenButton: false,
         selectionIndicator: false,
         infoBox: true,      // 点矩形弹任务摘要（替代 Leaflet bindPopup）
+        // 与主视图同一口径：星空盒（864 KB 贴图 + 1.8 MB IAU2006_XYS）关掉，
+        // 大气辉光 skyAtmosphere 保留（shader 算的，不吃贴图）。
+        skyBox: false,
     });
+    historyViewer.scene.moon = undefined;
     // 按需渲染：小地图非交互主视图，常开会空转渲染循环。画面更新点
     // （renderHistoryMap 增删实体、panels.js 重开面板）各自显式 requestRender 兜底。
     historyViewer.scene.requestRenderMode = true;
@@ -138,11 +146,9 @@ async function loadHistory(page = 1) {
     } catch (error) {
         if (seq !== _historyReqSeq) return;   // 过期请求的错误不该覆盖新结果
         console.error('Failed to load history:', error);
-        // 错误提示挂在 .text-danger 上（CSS 类），不写内联 color。
-        // ⚠️ 内联 style 里不许带分号：tests/test_css_contract.py 的
-        // _history_error_div 用 `(.*?);` 非贪婪切这段模板，分号会让它提前收尾。
-        document.getElementById('historyTableBody').innerHTML =
-            `<div class="text-center text-danger" style="padding: 1.5rem 1rem">${t('js.history.load_failed')}</div>`;
+        // 错误提示走 store，由组件渲染 —— #historyTableBody 已经被 Vue 接管，
+        // 直接写它的 innerHTML 会在下一次 patch 时被覆盖掉。
+        if (window.TaskStore) window.TaskStore.setLoadError(t('js.history.load_failed'));
     }
 }
 
@@ -151,39 +157,18 @@ async function loadHistory(page = 1) {
 // SyntaxError 让整个文件失效——函数声明可以重复，const 不行）。
 const HISTORY_UNKNOWN_ERROR = t('js.history.unknown_error');
 
+// 时间流的数据入口。渲染由 task_list.js 的 Vue 组件负责——这里只把数据
+// 交给 store，DOM 跟着变。
+//
+// 改造前这个函数干三件事：拼 innerHTML、按行 getElementById 找失败行、
+// 用 textContent 补错误原文。后两件是因为 error_message 是后端异常的字符串化
+// 结果，不能进 innerHTML 模板；现在组件用 `{{ }}` 插值，Vue 自动转义，
+// 那两步在结构上不再需要。
+//
+// 空态（.task-empty）也搬进了组件的模板：数组为空时它自己渲染。
 function renderHistoryTable(tasks) {
-    const container = document.getElementById('historyTableBody');
-
-    // 单一时间流（2026-08 定稿）：无分组、无折叠、**无去重**——四表
-    // UNION 里每个任务只有一行，天然只出现一次。上一版的「按 activeTasks
-    // 精确去重」是活动/失败/历史三分区时代的补丁（同一任务可能同时挂在
-    // 实时区和历史流里），分区废掉后它失去存在理由，跟着删除。
-    if (tasks.length === 0) {
-        container.innerHTML = `
-            <div class="task-empty">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.3; margin-bottom: 1rem;">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="8" x2="12" y2="12"></line>
-                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                </svg>
-                <p style="margin: 0;">${t('js.history.empty')}</p>
-            </div>
-        `;
-        return;
-    }
-
-    container.innerHTML = tasks.map(createTaskRow).join('');
-    // 失败行的错误原文不能进 innerHTML 模板（error_message 是后端异常的
-    // 字符串化结果），渲染后按行用 textContent 补——与 tasks.js 的
-    // applyTaskErrorText 同一形态（首页失败行的实时重建走的就是它）。
-    tasks.forEach(task => {
-        if (task.status !== 'failed') return;
-        const row = document.getElementById(`task-${task.task_type}:${task.id}`);
-        const box = row && row.querySelector('.task-error');
-        if (box) {
-            box.textContent = task.error_message || HISTORY_UNKNOWN_ERROR;
-        }
-    });
+    if (!window.TaskStore) return;
+    window.TaskStore.replaceAll(tasks);
 }
 
 // 行1 的元信息（#类型:id 之后）：地图/等高线是「样式 缩放」，高程是数据源名，
@@ -206,178 +191,17 @@ function historyMetaText(task) {
     return t('js.history.meta.local_terrain');
 }
 
-// 统一时间流行（2026-08 单一时间流定稿）：**全站唯一的行实现**——
-// 时间流里的所有任务（含活动任务）都由它渲染，tasks.js 的实时更新
-// （task_progress/completed/failed 的原地重建）也调它，同一份真相只有一处。
-//   行1 状态点 + 名称 + #类型:id + 元信息 + 状态小字 …… 时间 + 动作组
-//   行2 pending/running/paused → 5px 发丝进度条 + 条外百分比(.task-pct)
-//       + 计数(.task-count)；failed → 引文式错误（空 .task-error 容器，
-//       文本由 renderHistoryTable / applyTaskErrorText 用 textContent 补）；
-//       completed/cancelled → `已完成 · 54 / 60 瓦片 · 区域 …` 单行弱化
-// 行1 右侧时间：非终态显示耗时（首页由 updateTimeDisplay 每秒刷新），
-// 终态显示创建时间短日期（列表按创建时间倒序，展示创建时间才自洽；
-// 完成时间在详情模态里）。
-// 数据来源有两种形状，这里鸭子类型归一：/api/history_all 的行是
-// downloaded/total/style；tasks.js normalizeTask 的实时对象是
-// downloaded_items/total_items/items_label/dataset。
-// .progress-bar/.task-pct/.task-count/.task-time 是 Socket.IO 增量更新
-// 依赖的稳定类名（updateTaskProgressPartial / updateTimeDisplay），不能换。
-function createTaskRow(task) {
-    const key = task._key || `${task.task_type}:${task.id}`;
-    const isLive = ['pending', 'running', 'paused'].includes(task.status);
-    const isFailed = task.status === 'failed';
-
-    const total = task.total_items != null ? task.total_items : (task.total || 0);
-    const downloaded = task.downloaded_items != null ? task.downloaded_items : (task.downloaded || 0);
-    const failedItems = task.failed_items || 0;
-    const itemLabel = task.items_label
-        || ((task.task_type === 'map' || task.task_type === 'contour')
-            ? t('js.history.unit.tile') : t('js.history.unit.file'));
-    const progressVerb = task.progress_verb || t('js.history.progress_verb.downloaded');
-    const progress = total > 0 ? Math.round((downloaded / total) * 100) : 0;
-
-    // 行1 右侧时间。calculateTimeInfo 在 tasks.js（独立页 /history 不加载），
-    // 拿不到就显示 '—'；首页的每秒刷新由 updateTimeDisplay 兜底。
-    let timeText;
-    if (isLive) {
-        timeText = '—';
-        if (typeof calculateTimeInfo === 'function') {
-            const timeInfo = calculateTimeInfo({
-                started_at: task.started_at,
-                status: task.status,
-                total_running_seconds: task.total_running_seconds,
-                downloaded_items: downloaded,
-                total_items: total
-            });
-            timeText = timeInfo.show
-                ? [timeInfo.elapsed ? t('js.history.row.elapsed', {time: timeInfo.elapsed}) : '',
-                   timeInfo.estimated ? t('js.history.row.estimated', {time: timeInfo.estimated}) : '']
-                    .filter(Boolean).join(' · ')
-                : '—';
-        }
-    } else {
-        timeText = formatShortDate(task.created_at);
-    }
-
-    const hasBbox = task.north != null && task.south != null
-                 && task.east != null && task.west != null;
-    // 坐标是后端数值（无注入面），单行排版，超宽由 CSS 省略号截断。
-    const bboxText = hasBbox
-        ? ' · ' + t('js.history.row.bbox', {
-            north: task.north.toFixed(2), south: task.south.toFixed(2),
-            east: task.east.toFixed(2), west: task.west.toFixed(2)})
-        : '';
-
-    let line2;
-    if (isFailed) {
-        line2 = '<div class="task-error" role="alert"></div>';
-    } else if (isLive) {
-        // stage_text（拼接中/复制瓦片中）由 tasks.js 的阶段事件写入：下载 100%
-        // 之后拼接/复制还要跑几分钟到几小时，行上只显示「已下载 N/N」会像卡死。
-        // tiling_text 优先于 stage_text：本地地形任务在切片期间仍是 running，
-        // 进度条按 uploaded_files 算、上传一结束就写满，行上必须显示切片进度
-        // 才看得出还在跑。
-        const countText = (task.tiling_text || task.stage_text)
-            ? escapeHtml(task.tiling_text || task.stage_text)
-            : `${t('js.history.row.count', {verb: progressVerb, downloaded: downloaded, total: total, unit: itemLabel})}${failedItems > 0 ? ` <span style="color: var(--color-danger);">| ${t('js.history.row.failed', {count: failedItems})}</span>` : ''}`;
-        line2 = `
-            <div class="task-progress-line">
-                <div class="task-progress">
-                    <div class="progress-bar bg-${getStatusColor(task.status)}" role="progressbar"
-                         style="width: ${progress}%"
-                         aria-valuenow="${progress}"
-                         aria-valuemin="0"
-                         aria-valuemax="100"></div>
-                </div>
-                <span class="task-pct" aria-hidden="true">${progress}%</span>
-                <span class="task-count progress-detail">${countText}</span>
-            </div>`;
-    } else {
-        // tiling_text（合并 DEM…／切片中 N/M）由 tasks.js 的 terrain_job_progress
-        // 写入。地形切片跑在**下载任务已经 completed 之后**，行落在这个纯文本
-        // 分支——这里原本既没有进度条也没有阶段位置，于是几十分钟的切片在界面上
-        // 完全没有痕迹。
-        const tilingLine = task.tiling_text
-            ? `<div class="task-line2 task-tiling-line">${escapeHtml(task.tiling_text)}</div>`
-            : '';
-        line2 = `<div class="task-line2">${t('js.history.row.summary', {status: escapeHtml(getStatusText(task.status)), downloaded: downloaded, total: total, unit: itemLabel})}${bboxText}</div>${tilingLine}`;
-    }
-
-    // 任务控制动作（启动/暂停/恢复/取消/移除）是 tasks.js 的函数，
-    // 独立页 /history 不加载它——那里只给预览/详情/删除。
-    const hasTaskActions = typeof startTask === 'function';
-    const supportsPauseResume = task.task_type !== 'local_terrain';
-    // 预览按钮只在首页覆盖面板里有意义（主视图在旁边）；独立页没有主视图。
-    const canPreview = typeof previewTask === 'function';
-
-    return `
-        <div class="task-row status-${task.status}" id="task-${key}">
-            <div class="task-line1">
-                <span class="task-dot" aria-hidden="true"></span>
-                <button type="button" class="task-name" onclick="viewTaskDetails(${task.id}, '${task.task_type}')" title="${t('js.history.row.view_details')}">${escapeHtml(task.name)}</button>
-                <span class="task-id">#${escapeHtml(key)}</span>
-                <span class="task-meta">${escapeHtml(historyMetaText(task))}</span>
-                <span class="task-status-text">${escapeHtml(getStatusText(task.status))}</span>
-                <span class="task-time progress-detail">${timeText}</span>
-                <div class="btn-group btn-group-sm">
-                    ${hasTaskActions && isLive && supportsPauseResume && task.status === 'pending' ? `
-                        <button class="btn btn-icon btn-success" onclick="startTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.start')}" aria-label="${t('js.history.action.start')}">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${hasTaskActions && isLive && supportsPauseResume && task.status === 'running' ? `
-                        <button class="btn btn-icon btn-warning" onclick="pauseTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.pause')}" aria-label="${t('js.history.action.pause')}">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <rect x="6" y="4" width="4" height="16"></rect>
-                                <rect x="14" y="4" width="4" height="16"></rect>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${hasTaskActions && isLive && supportsPauseResume && task.status === 'paused' ? `
-                        <button class="btn btn-icon btn-success" onclick="resumeTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.resume')}" aria-label="${t('js.history.action.resume')}">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${hasTaskActions && isLive && task.status !== 'failed' ? `
-                        <button class="btn btn-icon btn-danger" onclick="cancelTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.cancel')}" aria-label="${t('js.history.action.cancel')}">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                            </svg>
-                        </button>
-                    ` : ''}
-                    ${(canPreview && task.status === 'completed') ? `
-                    <button class="btn btn-icon btn-sm btn-success" onclick="previewHistoryTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.preview')}" aria-label="${t('js.history.action.preview')}">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                            <circle cx="12" cy="12" r="3"></circle>
-                        </svg>
-                    </button>` : ''}
-                    <button class="btn btn-icon btn-sm btn-danger" onclick="deleteTask(${task.id}, '${task.task_type}')" title="${t('js.history.action.delete')}" aria-label="${t('js.history.action.delete')}">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="3 6 5 6 21 6"></polyline>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                        </svg>
-                    </button>
-                    ${hasTaskActions && task.status === 'failed' ? `
-                        <button class="btn btn-icon btn-secondary" onclick="dismissTask(${task.id}, '${task.task_type}')"
-                                title="${t('js.history.action.dismiss_title')}" aria-label="${t('js.history.action.dismiss_label')}">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                            </svg>
-                        </button>
-                    ` : ''}
-                </div>
-            </div>
-            ${line2}
-        </div>
-    `;
-}
+// 行模板已迁到 static/js/task_list.js 的 TaskRow 组件（Vue）。
+//
+// 这里曾是全站唯一的行实现（一个返回 170 行模板字符串的 createTaskRow），
+// tasks.js 的实时更新靠 outerHTML 整行调它重建。迁走的直接收益：
+//   1. 转义不再靠人。改造前行1 有 5 处必须手写 escapeHtml(...)，漏一处就是
+//      一个 XSS 注入面；组件全走 `{{ }}`，Vue 自动转义。
+//   2. 失败行的 error_message 不用再走「渲染空容器 → 事后 textContent 补」
+//      这条两步路（它存在的唯一理由就是不能进 innerHTML）。
+//   3. 增量更新不用再手写。改造前 tasks.js 要自己判断「状态变了就整行
+//      outerHTML 重建、只是进度变了就 querySelector 逐节点写」，并手写脏
+//      检查避免高频事件下白付 layout；现在这是 Vue diff 的份内事。
 
 function renderPagination(currentPage, totalPages) {
     const pagination = document.getElementById('pagination');
@@ -453,12 +277,12 @@ function renderHistoryMap(tasks) {
     historyViewer.scene.requestRender();
 }
 
+// 客户端搜索：只写 store 的 searchTerm，过滤由组件的 visibleTasks 派生。
+// 改造前是 renderHistoryTable(filtered) —— 拿过滤结果**覆盖整个列表**，
+// 于是搜索期间到达的 socket 增量会写进一个已经被顶掉的数组，清空搜索框
+// 才看得到。现在数据真相始终完整。
 function filterTasks(searchTerm) {
-    const filtered = allTasks.filter(task =>
-        task.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        task.id.toString().includes(searchTerm)
-    );
-    renderHistoryTable(filtered);
+    if (window.TaskStore) window.TaskStore.setSearchTerm(searchTerm);
 }
 
 // A7 / Task 12：这两张表原先只映射 completed / failed / cancelled 三态。
@@ -776,7 +600,13 @@ async function refreshTerrainDetail(taskId) {
 // 「在地图上预览」：把任务的可视化输出叠加到主视图（map.js 的 previewTask），
 // 并关掉历史面板让用户直接看到。数据来自当前页已加载的行（含 bbox / zoom）。
 function previewHistoryTask(taskId, taskType) {
-    const task = allTasks.find(t => t.id === taskId && t.task_type === taskType);
+    // 必须读 store,不能读 allTasks —— allTasks 只是 loadHistory 的响应快照,
+    // socket 增量(tasks.js prependStreamRow)插进来的新行只进了 store,不在
+    // 这个数组里。对那些行点「预览」会走进下面的 `if (!task) return`,按钮
+    // 看起来就是坏的(无提示、无动作)。store.state.tasks 是渲染的真相,且
+    // 是 allTasks 的超集 —— renderHistoryTable 就是 replaceAll 的包装(:169)。
+    const store = window.TaskStore;
+    const task = store && store.get(`${taskType}:${taskId}`);
     if (!task) return;
     previewTask(Object.assign({}, task, { task_type: taskType }));
     if (typeof closePanel === 'function') closePanel();
@@ -819,11 +649,11 @@ async function deleteTask(taskId, taskType = 'map') {
             // L6：删掉 pending/paused 任务后（四个 DELETE 端点都只拒 running），
             // 底部状态栏「N 个活动任务（M 运行中）X%」会继续把它算进去 ——
             // loadHistory 不调 updateStatusTasks，文本就原地冻结，唯一纠正点是
-            // loadActiveTasks 里的 activeTasks.clear()（只在新建任务、socket
-            // 断线重连或整页刷新时发生）。独立页 /history 不加载 tasks.js，
-            // 用 typeof 守卫兜底（与上面两处同一写法）。
-            if (typeof activeTasks !== 'undefined') {
-                activeTasks.delete(`${taskType}:${taskId}`);
+            // loadActiveTasks 里的 setActive（只在新建任务、socket 断线重连
+            // 或整页刷新时发生）。独立页 /history 不加载 tasks.js，用 typeof
+            // 守卫兜底（与上面两处同一写法）。
+            if (window.TaskStore) {
+                window.TaskStore.remove(`${taskType}:${taskId}`);
             }
             if (typeof updateStatusTasks === 'function') {
                 updateStatusTasks();

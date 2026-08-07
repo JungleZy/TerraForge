@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional
 from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
 from src.services.dem_download_engine import DemDownloadEngine
-from src.services.geo_validation import require_absolute_output_dir, resolve_output_dir, sanitize_filename, validate_bbox
+from src.services.download_speed import SpeedMeter
+from src.services.geo_validation import require_absolute_output_dir, resolve_output_dir, sanitize_filename, validate_bbox, validate_zoom
 from src.services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
@@ -284,7 +285,7 @@ class DemTaskManager:
             return p
         return Path(resolve_output_dir(output_path))
 
-    def start_tiling(self, task_id: int) -> None:
+    def start_tiling(self, task_id: int, maxzoom: Optional[int] = None) -> None:
         task_id = int(task_id)
 
         # Resolve task output path first; tiling is based on existing DEM outputs.
@@ -324,11 +325,16 @@ class DemTaskManager:
             base_dir,
         )
 
-        maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")
-        try:
-            maxzoom = int(maxzoom_raw) if maxzoom_raw is not None else 14
-        except Exception:
-            maxzoom = 14
+        # 处理弹窗「对已下载的高程任务做地形切片」允许调用方覆盖最大层级；
+        # 缺省（None）仍读配置，保持原有装机默认不变。
+        if maxzoom is not None:
+            maxzoom = validate_zoom(maxzoom, "maxzoom")
+        else:
+            maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")
+            try:
+                maxzoom = int(maxzoom_raw) if maxzoom_raw is not None else 14
+            except Exception:
+                maxzoom = 14
 
         task_dir = self._resolve_task_output_dir(output_path) / f"dem_task_{task_id}"
         output_dir = task_dir / "terrain_tiles"
@@ -531,6 +537,7 @@ class DemTaskManager:
                 conn.commit()
             finally:
                 conn.close()
+            self._emit_tiling_finished(task_id, "completed")
 
         except Exception as e:
             conn = get_connection()
@@ -543,7 +550,31 @@ class DemTaskManager:
                 conn.commit()
             finally:
                 conn.close()
+            self._emit_tiling_finished(task_id, "failed")
             logger.error(f"DEM tiling job failed for task {task_id}: {e}")
+
+    def _emit_tiling_finished(self, task_id: int, status: str) -> None:
+        """切片作业收尾时补一发 terrain_job_progress。
+
+        没有它，前端 updateTerrainJobProgress 里那条 `status !== 'running'
+        → 清空 tiling_text` 的分支永远不会被触发：作业期间逐瓦片事件把
+        「切片中 N / N」写进任务行，作业结束后这行字一直挂着，要刷新页面才
+        消失。DEM 的切片跑在下载任务已 completed 之后，行本来就停在终态，
+        没有任何别的事件会重建它。
+        """
+        socketio = getattr(self, "socketio", None)
+        if not socketio:
+            return
+        try:
+            socketio.emit("terrain_job_progress", {
+                "task_id": task_id,
+                "task_type": "dem_terrain",
+                "status": status,
+            })
+        except Exception as emit_error:
+            logger.warning(
+                f"DEM tiling job {task_id}: emit finish failed "
+                f"(ignored): {emit_error}")
 
     def get_tiling_job(self, task_id: int) -> Optional[Dict[str, Any]]:
         task_id = int(task_id)
@@ -737,9 +768,28 @@ class DemTaskManager:
             }
             total_files = int(task["total_files"] or 0)
             last_emit_at = float("-inf")
+            # 下载吞吐计 + 「这颗粒真的走了网络吗」的判据集合。
+            #
+            # size_bytes 在 DEM 这边是**双重用途**的:它要写进 dem_files.size_bytes
+            # 列,所以缓存命中 / 文件已存在时引擎照样上报真实大小
+            # (dem_download_engine.py:172,177)——直接拿它当网络字节会让速度虚高
+            # 一个数量级。区分依据不是字节数本身,而是引擎只在**真要发起网络
+            # 请求之前**发一次 status="downloading"(同文件 :197),缓存命中路径
+            # 根本不发这一下。
+            speed_meter = SpeedMeter()
+            network_granules: set[str] = set()
 
             async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
                 nonlocal last_emit_at
+                # 吞吐计要在下面任何 early return 之前记 —— 每次回调都得推进
+                # 时间窗,漏记会让速率冻在最后那个高值上。
+                if status == "downloading":
+                    network_granules.add(granule_id)
+                    speed_meter.record(0)
+                else:
+                    from_network = granule_id in network_granules
+                    network_granules.discard(granule_id)
+                    speed_meter.record((size_bytes or 0) if from_network else 0)
                 # Mirror existing naming: emit task_progress updates.
                 downloaded_delta, failed_delta = await asyncio.to_thread(
                     _record_progress, granule_id, status, error, size_bytes)
@@ -756,6 +806,8 @@ class DemTaskManager:
                 if not row:
                     return
                 row["task_type"] = "dem"
+                # 瞬时网络吞吐(字节/秒)。dem_tasks 表没有这一列,只活在推送里。
+                row["download_speed_bps"] = round(speed_meter.bps())
                 self.socketio.emit("task_progress", row)
 
             # Wire stop flag polling: map threading.Event -> asyncio.Event

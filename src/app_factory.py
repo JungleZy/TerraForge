@@ -33,6 +33,7 @@ import src.services.base_terrain_warmup  # noqa: F401
 import src.services.contour_task_manager  # noqa: F401
 import src.services.dem_task_manager  # noqa: F401
 import src.services.local_terrain_task_manager  # noqa: F401
+import src.services.proxy_autodetect  # noqa: F401
 import src.services.system_proxy  # noqa: F401
 import src.services.task_cleanup  # noqa: F401
 import src.services.task_manager  # noqa: F401
@@ -128,6 +129,55 @@ def _enforce_single_instance():
     logger.error(msg)
     print(msg, file=sys.stderr)
     raise SystemExit(1)
+
+
+def probe_url_from_config(config_manager):
+    """用配置里 tile_servers 的第一条构造一张样例瓦片 URL，给代理验证用。
+
+    验证要打的必须是**用户真正要下的源**：默认 mts0.googleapis.com 需要代理，
+    但换成国内自建镜像的用户根本不该因为"连不上 Google"被判定成没有可用代理。
+    读不到配置/条目非法就回退到 proxy_autodetect 的默认 Google 瓦片。
+    """
+    from src.services.proxy_autodetect import DEFAULT_PROBE_URL
+    from src.services.tile_url_probe import (
+        build_probe_url, expand_server_entry, parse_server_list,
+        validate_server_entry,
+    )
+    try:
+        entry = parse_server_list(config_manager.get('tile_servers', '') or '')[0]
+        ok, _err = validate_server_entry(entry)
+        if not ok:
+            return DEFAULT_PROBE_URL
+        url, _tile = build_probe_url(expand_server_entry(entry, style='m'),
+                                     float(config_manager.get('map_center_lng', '106.55')),
+                                     float(config_manager.get('map_center_lat', '29.56')))
+        return url
+    except (IndexError, TypeError, ValueError) as e:
+        logger.debug(f"Falling back to default proxy probe URL: {e}")
+        return DEFAULT_PROBE_URL
+
+
+def _start_proxy_autodetect():
+    """没手动配代理且开关开着时，后台探一轮可用代理。返回是否起了线程。"""
+    from src.services.config_manager import ConfigManager
+    from src.services.proxy_autodetect import (
+        auto_detect_enabled, start_background_autodetect,
+    )
+
+    config_manager = ConfigManager()
+    try:
+        manual = (config_manager.get('proxy_url', '') or '').strip()
+        if manual:
+            logger.info("Proxy autodetect skipped: proxy_url is configured manually")
+            return False
+        if not auto_detect_enabled(config_manager):
+            logger.info("Proxy autodetect disabled by config (proxy_auto_detect=false)")
+            return False
+        return start_background_autodetect(probe_url=probe_url_from_config(config_manager))
+    except Exception as e:
+        # 探测是锦上添花,任何故障都不能挡住启动
+        logger.warning(f"Failed to start proxy autodetect: {e!r}")
+        return False
 
 
 def _build_task_managers(socketio):
@@ -229,6 +279,14 @@ def create_app():
     # create_app 只在 StartupRole.should_create_app 时被调用,所以 dev reloader
     # 的观察者父进程、multiprocessing worker 都不会重复解压。
     start_warmup(socketio)
+
+    # 代理自动发现的后台探测。必须在 init_database 之后（要读 proxy_url /
+    # proxy_auto_detect 两个配置键），且只在"没手动配代理 + 开关没关"时才起
+    # 线程 —— 手动配了就以手动值为准,探测纯属浪费。
+    # 后台跑:枚举候选(端口扫描 ~0.4s + PAC 下载 ~3s)加逐个真实瓦片验证
+    # (每个最坏 6s)合计可到二十几秒,同步做就是一个卡死的启动。下载任务若在
+    # 探测完成前提交,resolve_proxy_url 会等这一轮出结果再走。
+    _start_proxy_autodetect()
 
     logger.debug("Application initialization complete")
     return (app, socketio) + managers

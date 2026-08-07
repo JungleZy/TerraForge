@@ -46,6 +46,14 @@ MESSAGES = {
         'zh': '瓦片服务器列表不能为空',
         'en': 'Tile server list cannot be empty',
     },
+    'val.basemap.empty': {
+        'zh': '底图源不能为空',
+        'en': 'Basemap source cannot be empty',
+    },
+    'val.basemap.unknown': {
+        'zh': '无法识别的底图源：{value}（应为预设名或完整 XYZ 模板）',
+        'en': 'Unrecognized basemap source: {value} (expected a preset name or a full XYZ template)',
+    },
 
     # --- tile_url_probe：通联探测结果 -----------------------------------------
     'val.tile_url.probe.empty_response': {

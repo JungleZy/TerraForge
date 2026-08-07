@@ -292,31 +292,37 @@ def test_stage_text_helper_is_not_hardcoded_to_map():
 def test_stage_text_has_a_clear_path():
     """stage_text 必须能被清除，否则会变成幽灵文本。
 
-    updateTaskProgressPartial 只覆盖 DOM 里的 .task-count，不动行模型上的
-    stage_text；于是任何后续 rebuildStreamRow（状态变化、等高线的 phaseChanged）
-    都会让过期的阶段文字复活并**永久顶掉**计数。地图管线侥幸无事只是因为它的
-    拼接/复制发生在下载彻底结束之后，两类事件永不交错；新阶段夹在两个会发
-    task_progress 的阶段中间，不清就必然显形。
+    进度更新只覆盖计数、不动 stage_text；于是任何后续的状态跃迁（含等高线的
+    phaseChanged）都会让过期的阶段文字复活并**永久顶掉**计数。地图管线侥幸
+    无事只是因为它的拼接/复制发生在下载彻底结束之后，两类事件永不交错；
+    新阶段夹在两个会发 task_progress 的阶段中间，不清就必然显形。
+
+    Vue 化后清除的形态从 `delete task.stage_text` 变成写空串：store 里的行是
+    响应式对象，`delete` 属性在 Vue 3 的 reactive 下虽然能触发更新，但组件里
+    这两个字段都参与 `||` 取值，写 '' 语义更直白也更难写错。
     """
     code = _js_code("tasks.js")
-    assert "delete task.stage_text" in code, \
+    assert re.search(r"stage_text:\s*stageText\s*\|\|\s*''", code), \
         "stage_text 只写不清 —— 过期的阶段文字会复活并顶掉计数"
-    assert "delete task.tiling_text" in code, \
+    assert re.search(r"tilingText\s*=\s*''", code), \
         "tiling_text 只写不清 —— 切片结束后文字会一直挂在行上"
 
 
 def test_tiling_text_renders_in_the_completed_branch():
     """已完成任务行也要能显示切片进度。
 
-    DEM 的切片作业跑在**下载任务已经 completed 之后** —— 行落在 history.js 的
-    纯文本分支，那里原本既没有进度条也没有阶段位置，于是几十分钟的切片在界面上
+    DEM 的切片作业跑在**下载任务已经 completed 之后** —— 行落在组件的终态
+    分支，那里原本既没有进度条也没有阶段位置，于是几十分钟的切片在界面上
     完全没有痕迹。
     """
-    code = _js_code("history.js")
-    assert "tiling_text" in code, "history.js 不渲染 tiling_text"
-    # 钉实现形态而不是解析分支结构：非贪婪正则会被 isLive 分支里的 const 截断，
-    # split("} else {")[-1] 又会被文件里别处的 else 带偏。
-    assert re.search(r"const tilingLine\s*=\s*task\.tiling_text", code), \
-        "else（已完成）分支没有从 tiling_text 取值"
-    assert "</div>${tilingLine}`" in code, \
-        "tilingLine 没有拼进纯文本分支的 line2 —— DEM 切片时任务已 completed，走的正是那条"
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "static", "js", "task_list.js"), encoding="utf-8") as f:
+        code = f.read()
+    assert "tiling_text" in code, "TaskRow 组件不渲染 tiling_text"
+    # 活动态分支：tiling_text 优先于 stage_text（本地地形切片期间仍是 running，
+    # 进度条一上传完就写满，行上必须显示切片进度才看得出还在跑）
+    assert re.search(r"task\.tiling_text\s*\|\|\s*this\.task\.stage_text", code), \
+        "stageText computed 没有让 tiling_text 优先于 stage_text"
+    # 终态分支：DEM 切片时任务已 completed，走的正是那条
+    assert 'class="task-line2 task-tiling-line" v-if="task.tiling_text"' in code, \
+        "终态分支没有渲染 tiling_text —— DEM 切片时任务已 completed，走的正是那条"

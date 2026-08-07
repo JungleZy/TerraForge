@@ -6,7 +6,7 @@ Endpoints for starting and querying DEM terrain tiling jobs.
 
 import logging
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,15 @@ def start_dem_tiling(task_id: int):
     if not dem_task_manager:
         return jsonify({"error": "DEM task manager not initialized"}), 500
     try:
-        dem_task_manager.start_tiling(task_id)
+        # 处理弹窗可以指定切片最大层级（JSON body 或表单皆可）；不传则沿用配置默认。
+        # 具体校验交给 manager 的 validate_zoom，非法值抛 ValueError → 下面转 400。
+        payload = request.get_json(silent=True) or {}
+        maxzoom = payload.get("maxzoom")
+        if maxzoom is None:
+            maxzoom = request.form.get("maxzoom")
+        if maxzoom == "":
+            maxzoom = None
+        dem_task_manager.start_tiling(task_id, maxzoom=maxzoom)
         return jsonify({"success": True, "message": f"DEM tiling started for task {task_id}"}), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

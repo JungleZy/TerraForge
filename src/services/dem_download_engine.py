@@ -18,6 +18,7 @@ import aiohttp
 from src.core.config import Config
 from src.services.config_manager import ConfigManager
 from src.services.earthdata_client import EarthdataAuthError, EarthdataClient
+from src.services.proxy_autodetect import resolve_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,9 @@ class DemDownloadEngine:
         concurrent_downloads = int(self.config.get("concurrent_downloads", "5"))
         request_timeout = int(self.config.get("request_timeout", "60"))
         max_retries = int(self.config.get("max_retries", "3"))
-        proxy_url = self.config.get("proxy_url", "") or ""
+        # 生效代理：手动 proxy_url > 自动探测（见 services/proxy_autodetect）。
+        # to_thread 见 download_engine 同处注释：解析可能阻塞等后台探测。
+        proxy_url = await asyncio.to_thread(resolve_from_config, self.config)
 
         username = self.config.get("earthdata_username", "") or ""
         password = self.config.get("earthdata_password", "") or ""

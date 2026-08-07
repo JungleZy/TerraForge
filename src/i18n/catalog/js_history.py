@@ -52,6 +52,10 @@ MESSAGES = {
         'zh': '预计剩余: {time}',
         'en': 'Remaining: {time}',
     },
+    'js.history.row.speed': {
+        'zh': '速度: {speed}',
+        'en': 'Speed: {speed}',
+    },
     'js.history.row.bbox': {
         'zh': '区域 {north}, {south}, {east}, {west}',
         'en': 'Area {north}, {south}, {east}, {west}',

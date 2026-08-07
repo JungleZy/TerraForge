@@ -14,6 +14,11 @@ MESSAGES = {
         'zh': '测速流程异常，给出保守值',
         'en': 'Speed test failed — falling back to a conservative value',
     },
+    'api.config.proxy_autodetect_disabled': {
+        'zh': '代理自动检测已关闭，请先勾选「自动检测代理」并保存',
+        'en': 'Proxy autodetect is disabled — enable "Auto-detect proxy" and '
+              'save first',
+    },
 
     # ---- /api/tasks（含四条管线共用的删除响应与缓存清理拦截）----
     'api.tasks.files_kept_unsafe_dir': {

@@ -1,8 +1,10 @@
 """
-Contour API routes — 上传 GeoTIFF 渲染等高线瓦片的任务。
+Contour API routes — 从本地 DEM 渲染等高线瓦片的任务。
 
 数据处理不下载：远程 DEM 的下载统一在「数据下载」的 DEM 任务里
-（/api/dem/tasks），等高线任务只吃用户上传的 .tif/.tiff。
+（/api/dem/tasks）。等高线任务的源有两种、二者互斥：用户上传的 .tif/.tiff，
+或 dem_task_id 指向的某个已完成 DEM 下载任务的目录（零拷贝复用它已经下好的
+tif，不必再上传一遍）。
 """
 
 import logging
@@ -88,7 +90,31 @@ def create_contour_task():
         zoom_min = validate_zoom(zoom_min_raw, "zoom_min") if zoom_min_raw not in (None, "") else 10
         zoom_max = validate_zoom(zoom_max_raw, "zoom_max") if zoom_max_raw not in (None, "") else None
 
+        # dem_task_id：零拷贝复用某个已完成 DEM 下载任务的目录当源，不必再传
+        # 一遍文件。与 files 互斥 —— 两个都给说明前端状态错乱，宁可报错。
+        dem_task_id_raw = (request.form.get("dem_task_id") or "").strip()
         uploads = request.files.getlist("files")
+        if dem_task_id_raw and uploads:
+            return jsonify({"error": "Provide either files or dem_task_id, not both"}), 400
+        if dem_task_id_raw:
+            try:
+                dem_task_id = int(dem_task_id_raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "Invalid dem_task_id"}), 400
+            task_id = contour_task_manager.create_task_from_dem_task(
+                name=name,
+                dem_task_id=dem_task_id,
+                contour_interval=request.form.get("contour_interval"),
+                zoom_min=zoom_min,
+                zoom_max=zoom_max,
+                background=request.form.get("background"),
+                terrain_shade=request.form.get("terrain_shade", "1"),
+                line_color_intermediate=request.form.get("line_color_intermediate"),
+                line_color_index=request.form.get("line_color_index"),
+                tint_breaks=request.form.get("tint_breaks"),
+                tint_colors=request.form.get("tint_colors"),
+            )
+            return jsonify({"success": True, "task_id": task_id}), 201
 
         # 与 local_terrain_api 同款的廉价前置校验：先卡数量和扩展名，
         # 请求体总尺寸由 Config.MAX_CONTENT_LENGTH 在前面挡（413）。

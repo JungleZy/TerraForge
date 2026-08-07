@@ -6,6 +6,7 @@ Handles rendering of HTML pages for the web interface.
 
 import logging
 from flask import Blueprint, render_template
+from src.services.basemap_source import resolve_basemap
 from src.services.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,21 @@ def index():
         for key, data in config_raw.items():
             template_config[key] = data.get('value', '')
 
-        return render_template('index.html', config=template_config)
+        # 底图在**服务端**解析成最终图层描述，前端拿到就能直接用。
+        # 别名展开逻辑只此一份：改造前 map.js 里有一个 _baseMapUrl 平行实现，
+        # 与 services/tile_url_probe 的语义各写各的，改一边漏一边。
+        basemap = resolve_basemap(
+            template_config.get('basemap_source'),
+            tile_servers=template_config.get('tile_servers'),
+            default_style=template_config.get('default_style', 'm'),
+        )
+
+        return render_template('index.html', config=template_config, basemap=basemap)
 
     except Exception as e:
         logger.error(f"Error rendering index page: {e}")
-        return render_template('index.html', config={})
+        return render_template('index.html', config={},
+                               basemap=resolve_basemap(None))
 
 
 @main_bp.route('/history')

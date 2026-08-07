@@ -1,6 +1,20 @@
-    <div class="row">
-        <div class="col-12">
-            <form id="configForm">
+{# 说明图标：把原先每个控件下面三四行的 <small> 说明收进一个 16px 的 ⓘ，
+   hover / 键盘聚焦时展开气泡（纯 CSS，见 style.css 的 .hint 段）。
+   type="button" 不能省 —— 整块包在 <form> 里，裸 button 默认是 submit。
+
+   aria-label 里**必须带上正文**：气泡是 ::after + content: attr(data-hint)，
+   而 aria-label 按 accname 计算规范优先于「name from content」(CSS 生成内容
+   也算 content)。只写动作名的话 data-hint 的正文对读屏用户 100% 不可见 ——
+   9 条说明全部拿不到，念出来只有「查看说明 按钮」。
+   不要改成往按钮里塞 .visually-hidden 的 <span>{{ text }}</span>：契约的
+   _MARKUP_NOISE_RE 不剥 `{{ }}`，那会被当可见文本，这颗按钮直接掉出纯图标
+   集合，ICON_ONLY_BUTTON_COUNT 从 19 掉到 17（宏在 index/config 各展开一次）。 #}
+{% macro hint(text, extra='') %}<button type="button" class="hint {{ extra }}" data-hint="{{ text }}" aria-label="{{ t('tpl.config.hint.aria') }}: {{ text }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></button>{% endmacro %}
+
+{# 三层 flex：撑满可用高度 / 中间滚动 / 底部操作条常驻。宿主容器要带
+   --fill 修饰符提供确定高度（config.html 与 index.html 各加了一处）。 #}
+<div class="config-layout">
+    <form id="configForm" class="config-scroll">
                 <div class="config-section">
                     <h3>
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
@@ -23,13 +37,15 @@
                          的 initThemeSwitcher 调 TerraTheme.set，全站即时生效；
                          偏好存 localStorage `tf-theme`，不进服务端配置表。 -->
                     <div class="mb-3">
-                        <label class="form-label" id="themeModeLabel">{{ t('tpl.config.appearance.theme') }}</label>
+                        <div class="label-row">
+                            <label class="form-label" id="themeModeLabel">{{ t('tpl.config.appearance.theme') }}</label>
+                            {{ hint(t('tpl.config.appearance.theme_hint')) }}
+                        </div>
                         <div class="status-chips" id="themeModeGroup" role="group" aria-labelledby="themeModeLabel">
                             <button type="button" class="status-chip" data-theme-mode="dark">{{ t('tpl.config.appearance.theme_dark') }}</button>
                             <button type="button" class="status-chip" data-theme-mode="light">{{ t('tpl.config.appearance.theme_light') }}</button>
                             <button type="button" class="status-chip" data-theme-mode="system">{{ t('tpl.config.appearance.theme_system') }}</button>
                         </div>
-                        <small class="form-text d-block mt-1">{{ t('tpl.config.appearance.theme_hint') }}</small>
                     </div>
 
                     {# 语言分段开关：与上面的主题开关同一套 .status-chips 风格。
@@ -37,12 +53,14 @@
                        再 reload —— 模板是服务端渲染的，语种必须送到服务端。
                        本块的文案已走 t()，翻译时不用再动。 #}
                     <div class="mb-3">
-                        <label class="form-label" id="langModeLabel">{{ t('app.language.label') }}</label>
+                        <div class="label-row">
+                            <label class="form-label" id="langModeLabel">{{ t('app.language.label') }}</label>
+                            {{ hint(t('app.language.hint')) }}
+                        </div>
                         <div class="status-chips" id="langModeGroup" role="group" aria-labelledby="langModeLabel">
                             <button type="button" class="status-chip{% if locale == 'zh' %} active{% endif %}" data-lang="zh">{{ t('app.language.zh') }}</button>
                             <button type="button" class="status-chip{% if locale == 'en' %} active{% endif %}" data-lang="en">{{ t('app.language.en') }}</button>
                         </div>
-                        <small class="form-text d-block mt-1">{{ t('app.language.hint') }}</small>
                     </div>
                 </div>
 
@@ -55,14 +73,16 @@
                     </h3>
 
                     <div class="mb-3">
-                        <label for="default_save_path" class="form-label">{{ t('tpl.config.basic.save_path') }}</label>
+                        <div class="label-row">
+                            <label for="default_save_path" class="form-label">{{ t('tpl.config.basic.save_path') }}</label>
+                            {{ hint(t('tpl.config.basic.save_path_hint')) }}
+                        </div>
                         <div class="d-flex gap-2 align-items-center">
                             <input type="text" class="form-control" id="default_save_path"
                                    value="{{ config.default_save_path }}" placeholder="{{ t('tpl.config.basic.save_path_placeholder') }}">
                             <button type="button" class="btn btn-outline-primary path-browse" id="defaultSavePathBrowse"
                                     onclick="openPathBrowser('default_save_path')">{{ t('tpl.config.basic.browse') }}</button>
                         </div>
-                        <small class="form-text d-block mt-1">{{ t('tpl.config.basic.save_path_hint') }}</small>
                     </div>
 
                     <div class="row">
@@ -106,11 +126,15 @@
                             <label for="concurrent_downloads" class="form-label">{{ t('tpl.config.download.concurrency') }}</label>
                             <input type="number" class="form-control" id="concurrent_downloads"
                                    value="{{ config.concurrent_downloads }}" min="1" max="100">
-                            <div class="mt-1">
+                            <div class="d-flex align-items-center mt-1">
                                 <button type="button" class="btn btn-outline-primary concurrency-recommend"
                                         id="concurrencyRecommend">{{ t('tpl.config.download.concurrency_recommend') }}</button>
+                                {{ hint(t('tpl.config.download.concurrency_hint')) }}
                             </div>
-                            <small class="form-text d-block mt-1" id="concurrencyRecommendHint">{{ t('tpl.config.download.concurrency_hint') }}</small>
+                            {# 测速**结果**留在版面上：那是用户点了按钮要看的反馈，
+                               不是说明，藏进 tooltip 就等于没有反馈。静态说明已
+                               经搬进上面那个 ⓘ，这里初始为空。 #}
+                            <small class="form-text d-block mt-1" id="concurrencyRecommendHint"></small>
                         </div>
 
                         <div class="col-md-4 mb-3">
@@ -127,13 +151,53 @@
                     </div>
 
                     <div class="mb-3">
-                        <label for="proxy_url" class="form-label">{{ t('tpl.config.download.proxy') }}</label>
+                        <div class="label-row">
+                            <label for="proxy_url" class="form-label">{{ t('tpl.config.download.proxy') }}</label>
+                            {{ hint(t('tpl.config.download.proxy_hint')) }}
+                        </div>
                         <input type="text" class="form-control" id="proxy_url"
                                value="{{ config.proxy_url }}" placeholder="http://proxy.example.com:8080">
                     </div>
 
+                    <!-- 代理自动检测：proxy_url 留空时的兜底。
+                         #proxyStatusIcon 由 config.js 的 initProxyAutodetect 填充
+                         —— 图标颜色表状态（绿=已找到 / 灰=直连 / 蓝转=检测中 /
+                         黄=用的是手动值），完整说明进它的 data-hint。
+                         「立即检测」走 POST /api/config/proxy_status 强制重探。 -->
                     <div class="mb-3">
-                        <label class="form-label">{{ t('tpl.config.download.tile_servers') }}</label>
+                        <div class="label-row">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="proxy_auto_detect"
+                                       {% if config.proxy_auto_detect != 'false' %}checked{% endif %}>
+                                <label class="form-check-label" for="proxy_auto_detect">
+                                    {{ t('tpl.config.download.proxy_auto') }}
+                                </label>
+                            </div>
+                            {{ hint(t('tpl.config.download.proxy_auto_hint')) }}
+                            <button type="button" class="btn btn-outline-primary btn-compact ms-2"
+                                    id="proxyDetectNow">{{ t('tpl.config.download.proxy_detect') }}</button>
+                            {# 状态图标排在动作按钮**之后**：它是这个按钮的结果指示。
+                               排在说明 ⓘ 旁边时两个 16px 灰圆圈紧挨着，分不清谁是谁。
+                               --end：它是这一行最靠右的元素，气泡若以图标为参照,
+                               左右两边都放不下（实测左对齐右溢出 51px、右对齐左溢出
+                               8px）——该修饰符让气泡改以 .label-row 整行为参照,详见
+                               style.css 的 .hint--end 注释。
+                               aria-label 在这里只是**前缀**:正文由 config.js 的
+                               setProxyIcon 随 data-hint 一起拼进去（状态是动态的）。 #}
+                            <button type="button" class="hint hint--status hint--end" id="proxyStatusIcon" data-hint=""
+                                    aria-label="{{ t('tpl.config.download.proxy_status_aria') }}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                    <circle cx="12" cy="12" r="9"></circle>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <div class="label-row">
+                            <label class="form-label">{{ t('tpl.config.download.tile_servers') }}</label>
+                            {{ hint(t('tpl.config.download.tile_servers_hint')) }}
+                        </div>
                         <!-- 每行一个条目：Google 别名（mts0–mts3）、主机
                              （mts0.google.cn）或完整 XYZ 模板。行结构由
                              config.js 的 addTileServerRow 生成/增删。 -->
@@ -153,8 +217,31 @@
                             </div>
                             {% endfor %}
                         </div>
-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="tileServerAdd">{{ t('tpl.config.download.tile_add') }}</button>
-                        <small class="form-text d-block mt-1">{{ t('tpl.config.download.tile_servers_hint') }}</small>
+                        <button type="button" class="btn btn-outline-secondary btn-compact" id="tileServerAdd">{{ t('tpl.config.download.tile_add') }}</button>
+                    </div>
+
+                    {% set bm_raw = config.basemap_source or 'esri' %}
+                    {% set bm_custom = bm_raw.startswith('http') %}
+                    {% set bm_preset = 'custom' if bm_custom else bm_raw %}
+                    <div class="mb-3">
+                        <div class="label-row">
+                            <label for="basemap_source_preset" class="form-label">{{ t('tpl.config.download.basemap') }}</label>
+                            {{ hint(t('tpl.config.download.basemap_hint')) }}
+                        </div>
+                        {# 底图与下载源是两个独立配置：底图走浏览器直连，下载走
+                           Python（可配代理）。选「自定义」时下面的模板输入框显形，
+                           显隐由 config.js 的 syncBasemapCustom 管。 #}
+                        <select class="form-select" id="basemap_source_preset">
+                            <option value="esri" {% if bm_preset == 'esri' %}selected{% endif %}>{{ t('tpl.config.download.basemap_esri') }}</option>
+                            <option value="google_satellite" {% if bm_preset == 'google_satellite' %}selected{% endif %}>{{ t('tpl.config.download.basemap_google_sat') }}</option>
+                            <option value="google_roadmap" {% if bm_preset == 'google_roadmap' %}selected{% endif %}>{{ t('tpl.config.download.basemap_google_map') }}</option>
+                            <option value="download_source" {% if bm_preset == 'download_source' %}selected{% endif %}>{{ t('tpl.config.download.basemap_follow') }}</option>
+                            <option value="custom" {% if bm_custom %}selected{% endif %}>{{ t('tpl.config.download.basemap_custom') }}</option>
+                        </select>
+                        <input type="text" class="form-control mt-2" id="basemap_source_custom"
+                               placeholder="https://example.com/tiles/{z}/{x}/{y}.png"
+                               value="{{ bm_raw if bm_custom else '' }}"
+                               {% if not bm_custom %}hidden{% endif %}>
                     </div>
                 </div>
 
@@ -179,8 +266,10 @@
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label">{{ t('tpl.config.cache.manage') }}</label>
-                        <small class="form-text d-block mb-2">{{ t('tpl.config.cache.manage_hint') }}</small>
+                        <div class="label-row">
+                            <label class="form-label">{{ t('tpl.config.cache.manage') }}</label>
+                            {{ hint(t('tpl.config.cache.manage_hint')) }}
+                        </div>
                         <div id="cacheStatsBody" class="mb-2">
                             <div class="text-muted">{{ t('tpl.config.cache.loading') }}</div>
                         </div>
@@ -189,8 +278,8 @@
                             <span><span id="cacheStatsTotal">—</span>{{ t('tpl.config.cache.total_files', files='<span id="cacheStatsTotalFiles">—</span>')|safe }}</span>
                         </div>
                         <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="cacheStatsRefresh">{{ t('tpl.config.cache.refresh') }}</button>
-                            <button type="button" class="btn btn-outline-danger btn-sm" id="cacheClearAll">{{ t('tpl.config.cache.clear_all') }}</button>
+                            <button type="button" class="btn btn-outline-secondary btn-compact" id="cacheStatsRefresh">{{ t('tpl.config.cache.refresh') }}</button>
+                            <button type="button" class="btn btn-outline-danger btn-compact" id="cacheClearAll">{{ t('tpl.config.cache.clear_all') }}</button>
                         </div>
                     </div>
                 </div>
@@ -238,17 +327,22 @@
                         {{ t('tpl.config.misc.title') }}
                     </h3>
 
+                    {# step="any"：坐标必须是任意精度。写 step="0.1" 会让 HTML5
+                       约束校验判定默认值 29.56 / 106.55 非法，而 <form> 一旦
+                       :invalid，点「保存」submit 事件根本不触发 —— 整个配置页
+                       静默存不进去（不只是这两个字段）。范围由后端
+                       ConfigManager._is_valid_lat/_is_valid_lng 兜住。 #}
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="map_center_lat" class="form-label">{{ t('tpl.config.misc.map_center_lat') }}</label>
                             <input type="number" class="form-control" id="map_center_lat"
-                                   value="{{ config.map_center_lat }}" step="0.1" min="-90" max="90">
+                                   value="{{ config.map_center_lat }}" step="any" min="-90" max="90">
                         </div>
 
                         <div class="col-md-4 mb-3">
                             <label for="map_center_lng" class="form-label">{{ t('tpl.config.misc.map_center_lng') }}</label>
                             <input type="number" class="form-control" id="map_center_lng"
-                                   value="{{ config.map_center_lng }}" step="0.1" min="-180" max="180">
+                                   value="{{ config.map_center_lng }}" step="any" min="-180" max="180">
                         </div>
 
                         <div class="col-md-4 mb-3">
@@ -285,21 +379,24 @@
                     </div>
                 </div>
 
-                <div class="d-flex justify-content-between" style="margin: 2rem 0; padding-top: 1.5rem; border-top: 1px solid var(--color-border);">
-                    <button type="button" class="btn btn-secondary" onclick="resetConfig()">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                            <polyline points="1 4 1 10 7 10"></polyline>
-                            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
-                        </svg>
-                        {{ t('tpl.config.actions.reset') }}
-                    </button>
-                    <button type="submit" class="btn btn-primary">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                            <polyline points="20 6 9 17 4 12"></polyline>
-                        </svg>
-                        {{ t('tpl.config.actions.save') }}
-                    </button>
-                </div>
             </form>
-        </div>
-    </div>
+
+            <!-- 常驻底部操作条：此前这两个按钮跟着 2200px 的表单一起滚，
+                 改完配置永远要先滚到底才能保存。submit 移出 <form> 后靠
+                 form="configForm" 关联，提交行为不变。 -->
+            <div class="config-footer">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="resetConfig()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                        <polyline points="1 4 1 10 7 10"></polyline>
+                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+                    </svg>
+                    {{ t('tpl.config.actions.reset') }}
+                </button>
+                <button type="submit" form="configForm" class="btn btn-primary btn-sm">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                    {{ t('tpl.config.actions.save') }}
+                </button>
+            </div>
+</div>

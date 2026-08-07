@@ -197,3 +197,62 @@ def test_records_panel_flag_only_controls_card_order():
     assert m.group(2).index('history_map_card()') < m.group(2).index('task_list_card()'), (
         '独立页分支：历史区域地图卡必须在任务列表卡之前'
     )
+
+
+def test_stats_row_does_not_use_bootstrap_negative_margin_grid(monkeypatch, tmp_path):
+    """统计卡不许用 Bootstrap 的 `.row` / `.col-*`（任务页横向滚动条的根因）。
+
+    `.row` 自带 `margin-inline: calc(-.5 * var(--bs-gutter-x))` = ±12px，
+    本该由祖先 `.container` / `.col` 的横向内边距抵消。但统计卡的宿主是
+    `.history-layout`，它横向内边距为 0 —— 于是这一行比容器宽 24px。
+    `.history-layout` 只声明了 `overflow-y: auto`，按 CSS 规范另一轴的
+    `visible` 会被计算成 `auto`，那 24px 就变成一条真的横向滚动条。
+
+    实测（Chrome headless，1440x900）：
+        独立页 /history    .history-layout 1080/1068  ← 多出 12px 可滚
+        首页任务面板        .history-layout  907/895   ← 同上
+    改成 `.stats-row` 网格后两处都是 scrollWidth == clientWidth。
+
+    这条钉的是「统计卡这一行不能带负外边距」，不是钉某个具体类名：换回
+    `.row` 或给任意子项加 `col-*` 都会红。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    for page in ('/', '/history'):
+        html = client.get(page).get_data(as_text=True)
+        start = html.index('id="statsRow"')
+        # 取这一行的开标签 + 到 </div> 收尾为止的整段（统计卡内部无嵌套 div 之外的结构）
+        tag_start = html.rindex('<div', 0, start)
+        block = html[tag_start:html.index('</div>', html.index('stat-card', start))]
+        assert 'class="row' not in block and ' row ' not in block.split('>')[0], (
+            f'{page}：统计卡又用回 Bootstrap .row —— ±12px 负外边距在 '
+            '.history-layout 里没人抵消，会逼出一条横向滚动条'
+        )
+        assert 'col-' not in block, (
+            f'{page}：统计卡里出现了 Bootstrap 栅格列（col-*）。它的 12px 内边距'
+            '与 .row 的负外边距是一对，单独出现同样会错位'
+        )
+        assert 'class="stats-row' in block, (
+            f'{page}：统计卡的容器类不再是 .stats-row —— style.css 里的网格'
+            '（含 minmax(0, 1fr) 防溢出）就落不到它头上了'
+        )
+
+
+def test_stats_row_grid_tracks_cannot_be_pushed_wide_by_content():
+    """`.stats-row` 的列必须是 `minmax(0, 1fr)` 而不是裸 `1fr`。
+
+    裸 `1fr` 的下限是 min-content：「累计下载量」那一格是等宽字体的大数字，
+    位数一多就把轨道顶宽，网格整体溢出 `.history-layout`，横向滚动条原样复活。
+    """
+    path = os.path.join(ROOT, 'static', 'css', 'style.css')
+    with open(path, encoding='utf-8') as f:
+        css = f.read()
+    m = re.search(r'\.stats-row\s*\{([^}]*)\}', css)
+    assert m, 'style.css 里找不到 .stats-row —— 本测试已失效'
+    body = m.group(1)
+    assert 'minmax(0' in body, (
+        '.stats-row 的列不是 minmax(0, 1fr)：长数字会把轨道顶宽并重新溢出'
+    )
+    assert 'margin-left' not in body and 'margin-right' not in body \
+        and 'margin-inline' not in body, (
+        '.stats-row 不该有横向外边距 —— 负外边距正是被替换掉的那套写法'
+    )

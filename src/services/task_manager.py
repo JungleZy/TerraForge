@@ -18,6 +18,7 @@ from src.services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import require_absolute_output_dir, sanitize_filename
 from src.services.task_cleanup import resolve_stored_output_dir
+from src.services.download_speed import SpeedMeter
 
 logger = logging.getLogger(__name__)
 
@@ -1013,6 +1014,10 @@ class TaskManager:
             # 上次 socketio 广播的 monotonic 时间戳;初始 -inf 让首块瓦片必发
             # (见 PROGRESS_EMIT_MIN_INTERVAL)。
             last_emit_at = float('-inf')
+            # 下载吞吐计。只吃真正走网络的字节(缓存命中在上面的枚举段就已
+            # 剔出待下清单,引擎那条兜底缓存分支也传 None),所以它反映的是
+            # 网速而不是读盘速度。瞬时量,不落库。
+            speed_meter = SpeedMeter()
             progress_conn = None  # 下载循环开启时建立,结束(finally)时关闭
 
             # 稀疏失败表的内存镜像 + 攒批写队列。回调不再逐瓦片 INSERT/DELETE
@@ -1154,7 +1159,12 @@ class TaskManager:
                     flush_in_flight = False
 
             # Define progress callback
-            async def progress_callback(tile: Tile, status: str, error: Optional[str]):
+            async def progress_callback(
+                tile: Tile,
+                status: str,
+                error: Optional[str],
+                size_bytes: Optional[int] = None,
+            ):
                 """维护稀疏失败表、累计计数增量,并按时间节流 emit socketio 事件
 
                 为什么不再每块瓦片写一行:瓦片集合是 bbox+zoom 的纯函数(见
@@ -1170,6 +1180,12 @@ class TaskManager:
                 if self._is_stop_requested(task_id, stop_flag):
                     logger.info(f"Task {task_id}: Stop flag detected in progress callback")
                     return
+
+                # 吞吐计:**每次回调都记**,没有网络字节时记 0 —— 传 0 让时间窗
+                # 照常前进,速率才会在下载变慢/停滞时如实回落;只在有字节时才记
+                # 会让界面一直冻在最后那个高速度上。缓存命中与失败的 size_bytes
+                # 是 None(见 download_engine 的回调契约),自然只推进时间。
+                speed_meter.record(size_bytes or 0)
 
                 key = (tile.zoom, tile.x, tile.y)
                 old_status = session_status.get(key)
@@ -1245,9 +1261,23 @@ class TaskManager:
                 try:
                     # 时间节流(见 PROGRESS_EMIT_MIN_INTERVAL):done 达到
                     # 总数那一发(完成进度)必发,其余距上次不足间隔只记内存。
+                    #
+                    # stop 已被请求(cancel_task:683 / pause_task:579 置了
+                    # stop flag)时**一律不再广播进度**。下载循环不是立刻停的
+                    # —— 它要跑到当前批次边界,期间本回调仍会被调用,而下面
+                    # 载荷里的 `task.status` 取自内存对象:cancel_task 与
+                    # pause_task 都只改库、不碰它,所以它仍然是 'running'。
+                    # 发出去的后果是把前端刚显示的「已取消」/「已暂停」覆盖回
+                    # 「运行中」,而 _complete_task 见库里已是终态会直接 return、
+                    # 再也不发 task_completed —— 界面永久停在错误状态,且没有
+                    # 任何自愈路径(实测:点取消 -> 变已取消 -> 0.5s 后翻回运行中)。
+                    #
+                    # 状态迁移本来就不该走进度流:pause 由 :592 广播库里的真值,
+                    # cancel 由前端点击时自己置位。计数在收尾时落库,前端下次
+                    # 拉列表即准 —— 已停的任务少几发实时进度没有任何影响。
                     done_tiles = progress_counts['downloaded'] + progress_counts['failed']
                     now = time.monotonic()
-                    if self.socketio and (
+                    if self.socketio and not self._is_stop_requested(task_id, stop_flag) and (
                         done_tiles >= task.total_tiles
                         or now - last_emit_at >= PROGRESS_EMIT_MIN_INTERVAL
                     ):
@@ -1283,7 +1313,11 @@ class TaskManager:
                             'output_path': task.output_path,
                             'started_at': task_row['started_at'],
                             'created_at': task_row['created_at'],
-                            'total_running_seconds': total_running_seconds
+                            'total_running_seconds': total_running_seconds,
+                            # 瞬时网络吞吐(字节/秒)。不落库 —— tasks 表没有这
+                            # 一列,它只活在这发推送里;页面刷新后等下一发
+                            # (<=PROGRESS_EMIT_MIN_INTERVAL)就有了。
+                            'download_speed_bps': round(speed_meter.bps()),
                         })
                 except Exception as e:
                     logger.error(

@@ -43,7 +43,7 @@
 ### 平台能力
 
 - 🎨 深色 / 浅色 / 跟随系统主题
-- ⚙️ 完善的配置页：并发数（支持实测网速推荐）、代理、缓存管理、GDAL 参数、Earthdata 账号等
+- ⚙️ 完善的配置页：并发数（支持实测网速推荐）、代理（留空即自动检测可用代理）、缓存管理、GDAL 参数、Earthdata 账号等
 - 🧹 缓存管理：按分类查看占用、手动清理，缓存不会被静默删除
 - 🌐 局域网访问支持，适合内网部署
 - 📦 Nuitka 打包为独立可执行文件，目标机器零依赖
@@ -123,14 +123,16 @@ uv run python app.py
 ### DEM 高程与 3D 地形
 
 1. 下载类型切换为 DEM，选择数据源后框选区域创建任务（默认 Copernicus GLO-30 免认证；选 ASTER GDEM v3 需先在配置页填写 Earthdata 账号）
-2. DEM 任务下载完成后，可对其启动「地形切片」，生成 Cesium quantized-mesh 地形
+2. DEM 任务下载完成后，可对其启动「地形切片」，生成 Cesium quantized-mesh 地形 —— 入口有两个：任务详情弹窗里的「地形切片」，或「数据处理」弹窗把**处理类型**选「本地高程切片」、**数据来源**选「已下载的高程任务」（后者可以顺手改最大切片层级）
 3. 已有 GeoTIFF 可直接上传为**本地地形任务**，跳过下载直接切片
 4. 历史记录页可预览地形效果（无切片时按需渲染晕渲图）
 
 ### 等高线地图
 
-1. 在左侧「数据处理」面板把**处理类型**切到「等高线瓦片」，上传高程文件（.tif/.tiff，可多选），设置间距、配色、晕渲等样式（支持样式预览）
-2. 任务从上传的 DEM 渲染等高线并输出 XYZ 瓦片；远程高程数据请先用 DEM 任务下载
+1. 在「数据处理」弹窗把**处理类型**切到「等高线瓦片」，设置间距、配色、晕渲等样式（支持样式预览）
+2. **数据来源**二选一：
+   - 「上传文件」—— 直接上传高程文件（.tif/.tiff，可多选）
+   - 「已下载的高程任务」—— 复用某个已完成 DEM 任务下载好的 DEM，不用再上传；源文件零拷贝，删除等高线任务不会动源 DEM
 3. 产物以标准 XYZ 瓦片组织，可直接供 Leaflet / OpenLayers / CesiumJS 使用
 
 ### 历史记录
@@ -144,6 +146,8 @@ uv run python app.py
 - **外观** — 深色 / 浅色 / 跟随系统
 - **基础设置** — 默认保存路径（绝对路径，支持「浏览」）、默认样式与缩放级别
 - **下载设置** — 并发数（「测速推荐」按当前网络实测给出建议值）、超时、重试、代理、瓦片服务器列表（逐条验证连通性）
+  - **代理自动检测（默认开启）**：代理服务器一栏留空时，程序自己找可用代理 —— 环境变量与系统代理设置、Windows 的 PAC 自动配置脚本、本机（WSL 下含 Windows 宿主）上 Clash/v2rayN 等常见代理端口。每个候选都会用一张真实瓦片实测，通过了才采用；都不通就直连。手动填了代理地址就以手动值为准，自动检测不参与。配置页有「立即检测」按钮和当前状态显示。
+  - WSL 下用宿主机上的代理，还需要在代理客户端开启「允许局域网连接」并放行 Windows 防火墙，否则 WSL 连不到宿主的代理端口（自动检测同样探不到）。
 - **缓存设置** — 启用/禁用瓦片缓存；缓存管理按分类查看占用并手动清理（二次确认），缓存不会自动删除
 - **GDAL 设置** — 压缩方式、重采样算法
 - **其他设置** — 历史记录保留天数、地图初始位置
@@ -178,7 +182,8 @@ map-download/
 │   │   ├── local_terrain_task_manager.py  # 本地地形（上传 GeoTIFF）任务管理器
 │   │   ├── terrain_tiling/         # Cesium quantized-mesh 地形切片
 │   │   ├── geo_validation.py       # bbox / 缩放级别校验（各管线共用）
-│   │   ├── system_proxy.py         # 系统代理检测
+│   │   ├── system_proxy.py         # 系统代理检测（注册表 / scutil → 环境变量）
+│   │   ├── proxy_autodetect.py     # 代理自动发现（PAC / 端口扫描 / 真实瓦片验证）
 │   │   └── task_cleanup.py         # 任务产物清理与缓存管理
 │   └── routes/             # Flask 路由
 │       ├── main.py            # 页面路由
@@ -195,9 +200,10 @@ map-download/
 ├── static/                 # 静态资源
 │   ├── css/style.css      # 自定义样式（明暗主题 token）
 │   ├── js/                # map / tasks / history / config / panels / ui
-│   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、字体）
+│   │                      # task_store + task_list：任务时间流的响应式数据层与 Vue 行组件
+│   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、Vue 3、字体）
+│                          # Cesium 已按实测请求裁剪：390 → 157 个文件（14 → 8.1 MB）
 ├── scripts/                # 辅助脚本（发版推送、全球基础地形构建）
-├── tests/                  # pytest 测试套件
 ├── docs/                   # 项目文档（guides/ 上手与构建、reference/ 实现说明、notes/ 调研笔记、reviews/ 评审记录、archive/ 历史归档、assets/ 图片资源）
 ├── downloads/              # 下载文件目录（运行时生成）
 ├── cache/                  # 瓦片缓存目录（运行时生成）
@@ -230,7 +236,7 @@ map-download/
 
 ### 地形切片（Cesium quantized-mesh）
 
-- `POST /api/terrain/dem/<id>/start` - 对已下载的 DEM 任务启动地形切片
+- `POST /api/terrain/dem/<id>/start` - 对已下载的 DEM 任务启动地形切片（可选 `maxzoom` 覆盖配置默认层级，JSON 或表单均可）
 - `GET /api/terrain/dem/<id>` - 查询切片任务状态
 - `POST /api/terrain/local/tasks` - 上传 GeoTIFF 创建本地地形任务
 - `GET /api/terrain/local/tasks` - 获取所有本地地形任务
@@ -241,7 +247,7 @@ map-download/
 ### 等高线任务
 
 - `GET /api/contour/style_preview` - 等高线样式预览
-- `POST /api/contour/tasks` - 创建等高线任务
+- `POST /api/contour/tasks` - 创建等高线任务（multipart：`files` 上传 DEM，或 `dem_task_id` 复用某个已完成 DEM 任务的目录；二者互斥）
 - `GET /api/contour/tasks` - 获取所有等高线任务
 - `GET /api/contour/tasks/<id>` - 获取等高线任务详情
 - `POST /api/contour/tasks/<id>/start` - 启动
@@ -363,7 +369,7 @@ UV_NO_CACHE=1 uv pip install --force-reinstall --no-build-isolation --no-binary 
 ### 下载速度慢
 
 - 在配置页使用「测速推荐」或手动提高并发数
-- 检查网络连接，必要时配置代理服务器
+- 检查网络连接。代理默认自动检测（配置页「立即检测」可看结果），检测不到时再手动填写代理地址
 - 确认瓦片服务器列表中的条目连通正常（配置页逐条「验证」）
 
 ## 注意事项

@@ -34,22 +34,35 @@ def _body(js_name, fn_name):
 
 
 def test_prepend_stream_row_dedups_against_existing_row():
-    """prependStreamRow 开头必须查重：行已存在就原地重建，不插第二行。
+    """prependStreamRow 必须查重：行已存在就合并，不插第二行。
 
     单一时间流「无去重」定稿的前提是四表 UNION 每任务一行；prepend 是
     唯一可能造出重复行的入口（100 条窗口挤掉 + 启动竞态），必须在这里兜住。
+
+    2026-08 Vue 化后有两层保证，两层都钉：
+      1. 数据层 —— store 按 key 合并（has → patch），不会出现两条记录；
+      2. 渲染层 —— 组件是 keyed v-for，同一个 :key 在结构上不可能渲染两行。
+    改造前只有一层，而且是手写的（getElementById 查重 + 改走整行重建），
+    查重写在插入之后就会失效。
     """
     body = _body('tasks.js', 'prependStreamRow')
-    assert re.search(r"getElementById\(\s*`task-\$\{task\._key\}`\s*\)", body), (
-        'prependStreamRow 没有按 task._key 查已有行——'
+    assert 'TaskStore.has(' in body, (
+        'prependStreamRow 没有查 store 里是否已有该 key——'
         '被 100 条窗口挤掉的活动任务会在时间流里出现两行'
     )
-    assert 'rebuildStreamRow(' in body, (
-        '查重命中后没有原地重建——已存在的行应保持单份并更新到最新形态'
+    assert 'TaskStore.patch(' in body, (
+        '查重命中后没有合并——已存在的行应保持单份并更新到最新形态'
     )
     # 查重必须发生在插入之前
-    assert body.index('getElementById') < body.index("insertAdjacentHTML('afterbegin'"), (
+    assert body.index('TaskStore.has(') < body.index('TaskStore.upsert('), (
         '查重发生在插入之后——重复行已经插进去了'
+    )
+    # 渲染层：keyed v-for
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'js', 'task_list.js'), encoding='utf-8') as f:
+        comp = f.read()
+    assert re.search(r'v-for="task in tasks"\s+:key="task\._key"', comp), (
+        '时间流不是 keyed v-for —— 少了这层结构性保证，重复行只能靠数据层兜'
     )
 
 

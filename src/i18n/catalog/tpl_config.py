@@ -5,6 +5,15 @@ key 命名：`tpl.<区域>.<短名>`；zh 必须与改造前的原文逐字一�
 """
 
 MESSAGES = {
+    # 说明图标（.hint）无障碍名的**前缀**。宏把它拼成
+    # `aria-label="<前缀>: <正文>"` —— 气泡文本在 data-hint 上、由 ::after
+    # 渲染,而 aria-label 按 accname 规范优先于 CSS 生成内容,所以正文只有
+    # 拼进 aria-label 才进得了无障碍树。改前这里只有动作名,9 条说明对读屏
+    # 用户完全不可见。
+    'tpl.config.hint.aria': {
+        'zh': '查看说明',
+        'en': 'Show help',
+    },
     'tpl.config.page_title': {
         'zh': '配置',
         'en': 'Settings',
@@ -125,9 +134,76 @@ MESSAGES = {
         'zh': '代理服务器 (可选)',
         'en': 'Proxy server (optional)',
     },
+    'tpl.config.download.proxy_hint': {
+        'zh': '留空即交给下方的自动检测；填了就以填的为准。',
+        'en': 'Leave empty to let auto-detection handle it; a value here always '
+              'wins.',
+    },
+    'tpl.config.download.proxy_auto': {
+        'zh': '自动检测代理',
+        'en': 'Auto-detect proxy',
+    },
+    'tpl.config.download.proxy_auto_hint': {
+        'zh': '代理服务器留空时，自动查找可用代理：环境变量与系统代理设置、Windows 的 PAC 自动配置脚本、本机（WSL 下含 Windows 宿主）上 Clash/v2rayN 等常见代理端口。每个候选都会用一张真实瓦片实测，通过了才采用；都不通就直连。',
+        'en': 'When the proxy field is empty, look for a working proxy: '
+              'environment variables and OS proxy settings, the Windows PAC '
+              'script, and the common Clash/v2rayN proxy ports on this machine '
+              '(plus the Windows host when running under WSL). Every candidate '
+              'is checked with a real tile request and only adopted if it '
+              'works; if none do, it connects directly.',
+    },
+    'tpl.config.download.proxy_detect': {
+        'zh': '立即检测',
+        'en': 'Detect now',
+    },
+    # 代理状态图标（#proxyStatusIcon）：颜色表状态，完整说明由 config.js
+    # 写进 data-hint。这里是读屏用的固定动作名。
+    'tpl.config.download.proxy_status_aria': {
+        'zh': '代理检测状态',
+        'en': 'Proxy detection status',
+    },
     'tpl.config.download.tile_servers': {
         'zh': '瓦片服务器列表',
         'en': 'Tile servers',
+    },
+    'tpl.config.download.basemap': {
+        'zh': '地图底图',
+        'en': 'Basemap',
+    },
+    # 这里刻意不传参，花括号原样输出。
+    'tpl.config.download.basemap_hint': {
+        'zh': '框选时看到的底图，与上面的下载源相互独立 —— 底图由浏览器直连加载，'
+              '不经过代理设置；下载走后端，走代理。Esri 卫星影像与 Google 影像同为 '
+              'WGS-84，框选位置对得上；不要填高德/腾讯的卫星地址，它们是 GCJ-02 '
+              '偏移坐标，在国内会错位数百米。自定义需填完整 XYZ 模板（含 {z}/{x}/{y}）。',
+        'en': 'The imagery you see while drawing a box. Independent of the download '
+              'source above: the basemap is loaded by the browser directly and does '
+              'NOT go through the proxy settings, while downloads go through the '
+              'backend and do. Esri imagery shares WGS-84 with Google imagery, so the '
+              'box you draw matches what you download; do not point this at AMap or '
+              'Tencent satellite tiles — they are GCJ-02 shifted and will be off by '
+              'hundreds of metres in China. Custom requires a full XYZ template '
+              '(with {z}/{x}/{y}).',
+    },
+    'tpl.config.download.basemap_esri': {
+        'zh': 'Esri 卫星影像（推荐，国内直连可用）',
+        'en': 'Esri World Imagery (recommended)',
+    },
+    'tpl.config.download.basemap_google_sat': {
+        'zh': 'Google 卫星影像（国内通常需要代理）',
+        'en': 'Google satellite',
+    },
+    'tpl.config.download.basemap_google_map': {
+        'zh': 'Google 路网图（国内通常需要代理）',
+        'en': 'Google roadmap',
+    },
+    'tpl.config.download.basemap_follow': {
+        'zh': '跟随下载源（用上面列表的第一条）',
+        'en': 'Follow download source (first entry above)',
+    },
+    'tpl.config.download.basemap_custom': {
+        'zh': '自定义 XYZ 模板',
+        'en': 'Custom XYZ template',
     },
     'tpl.config.download.tile_verify': {
         'zh': '验证',
@@ -144,11 +220,11 @@ MESSAGES = {
     # 含 {z}/{x}/{y}/{style} 字面花括号：t() 不带 params 时不走 str.format，
     # 这里刻意不传参，花括号原样输出。
     'tpl.config.download.tile_servers_hint': {
-        'zh': '每行一个：Google 别名（mts0–mts3）、主机（如 mts0.google.cn）或完整 XYZ 模板（含 {z}/{x}/{y}，可选 {style}）。下载按列表轮换；第一个条目同时用作地图底图。',
+        'zh': '每行一个：Google 别名（mts0–mts3）、主机（如 mts0.google.cn）或完整 XYZ 模板（含 {z}/{x}/{y}，可选 {style}）。下载按列表轮换。底图是**另一个**设置，见下面的「地图底图」。',
         'en': 'One per line: a Google alias (mts0–mts3), a host (e.g. '
               'mts0.google.cn) or a full XYZ template (with {z}/{x}/{y}, '
-              'optionally {style}). Downloads rotate through the list; the '
-              'first entry is also used as the map basemap.',
+              'optionally {style}). Downloads rotate through the list. The '
+              'basemap is a separate setting — see "Basemap" below.',
     },
 
     # 缓存设置

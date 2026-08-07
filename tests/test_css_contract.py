@@ -181,7 +181,11 @@ MERGED_FONT_SIZES = {
     # 声明字号是死代码。值原样不变（0.875rem），承载它的元素换了个。
     '.progress__label': 'var(--font-size-sm)',
     '.badge': 'var(--font-size-xs)',
-    '.status-badge': 'var(--font-size-xs)',
+    # 这里原本还有 '.status-badge': 'var(--font-size-xs)'。整个 .status-badge
+    # 组件（基规则 + 五个状态分支前缀）已从 style.css 删除：任务行改用
+    # .task-dot + .task-status-text 之后没有任何 markup 会带上这个类，
+    # 全仓只剩 history.js / tasks.js 两处注释在提它。同组的 .badge.bg-* 是活的，
+    # 由 getStatusColor() 映射出来，仍受上面这条 '.badge' 保护。
     '.modal-title': 'var(--font-size-lg)',
     '.modal-body': 'var(--font-size-base)',
     '.page-link': 'var(--font-size-sm)',
@@ -568,28 +572,30 @@ def test_no_fake_color_aliases_anywhere_in_frontend():
     )
 
 
-def test_text_center_declares_no_color():
-    """纯布局类 .text-center 不该管颜色。
+def test_text_center_is_not_redefined_locally():
+    """style.css 不许自己定义 `.text-center` —— 一条都不许。
 
-    强度说明（计划原文用 `re.search` + `if match:`）：`re.search` 只返回
-    第一个匹配——实测 style.css 里 `.text-center` 有两条规则，第二条会被
-    漏检；而正则一旦失配（选择器写成 `.text-center, .foo {`）`match` 为
-    None，`if match:` 直接跳过，测试变成**永真**。这里遍历全部规则、把
-    分组/后代选择器里的 .text-center 也算上，并先断言至少匹配到一条。
+    这条从「.text-center 不该设 color」收紧而来，防线只增不减。
+    原因：Bootstrap 的 `.text-center{text-align:center!important}` 自带
+    !important，与源码顺序无关地压过任何不带 !important 的同名声明。所以
+    「style.css 排在 vendor 之后」这条全站惯例在工具类上**不成立**，本地手抄
+    的 `.text-center` 从来没有生效过（2026-08 随另外 8 条工具类复制品一并删除）。
+    既然本地规则一律无效，「不许设 color」就退化成「不许存在」：
+    后者是前者的超集 —— 有人重新写 `.text-center { color: red }`，这里照样翻红，
+    而且连「写了个永远不生效的布局声明」也一起拦下。
+
+    要真的让 .text-center 带上颜色，只能显式写 !important 并说明理由；
+    那也会被这条拦住，届时请连同本 docstring 一起改口径。
     """
     matched = [
         (sel, body)
         for sel, body in _rules(_css())
         if re.search(r'\.text-center(?![-\w])', sel)
     ]
-    assert matched, '没有匹配到任何 .text-center 规则——选择器写法变了，本测试已失效'
-    offenders = [
-        f'{sel} {{ color: {_decl_map(body)["color"]} }}'
-        for sel, body in matched
-        if 'color' in _decl_map(body)
-    ]
-    assert not offenders, (
-        '.text-center 是布局类，不该设 color：\n' + '\n'.join('  ' + o for o in offenders)
+    assert not matched, (
+        'style.css 里又出现了 .text-center 规则；Bootstrap 的同名工具类带 '
+        '!important，本地这份压不过它，等于死代码：\n'
+        + '\n'.join(f'  {sel} {{ {body.strip()} }}' for sel, body in matched)
     )
 
 
@@ -3644,7 +3650,15 @@ def _bbox_object_literals(src):
 #   `t('js.map.bounds.readout', {north: f(currentBounds.north), …})`，
 #   传给 t() 的参数对象本身就是一个 bbox 字面量。它同样受本条方位配对检查
 #   保护（键名与取值必须同名），所以是「多了一个被查到的构造点」，不是漏检。
-MAP_JS_BBOX_LITERAL_COUNT = 11
+# 11 -> 12（D1 选区播报解耦）：#boundsInfo 不再是 live region（拖角点时整层每帧
+#   重建，polite 队列会积压到松手之后还在念），播报改由 announceBounds() 在
+#   LEFT_UP 与 _applyBoundsEdit 校验通过后各写一次。它传给
+#   `t('js.map.bounds.announce', {north: f(currentBounds.north), …})` 的参数对象
+#   又是一个 bbox 字面量，同样受本条方位配对检查保护 —— 多了一个被查到的构造点。
+# 12 -> 13（B4 手动输入范围）：空态浮层新增的键盘可达入口，落定时
+#   `_applyManualBounds()` 用校验后的四至重建 `_rectDegrees` —— 与鼠标框选
+#   同一套写入路径，所以也是一个受本条方位配对检查保护的构造点。
+MAP_JS_BBOX_LITERAL_COUNT = 13
 
 
 def test_bbox_literals_never_swap_directions():
@@ -4672,17 +4686,40 @@ def test_button_ink_is_readable_in_every_state():
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
-ICON_ONLY_BUTTON_COUNT = 15
+# 15 -> 19（配置页说明图标 .hint）：config.html 与 index.html 各扫出 2 颗——
+# `_config_content.html` 里 `{% macro hint() %}` 宏体那一颗（宏**调用**是
+# `{{ hint(...) }}`，源码里不产生 <button>，所以每个模板只计宏定义一次），
+# 加代理状态图标 #proxyStatusIcon。两者都带 aria-label，且都**不走 .btn 体系**
+# （class 是 hint，不是 btn），所以只参与标签断言、不参与 .btn-icon 尺寸断言。
+# 19 -> 20（把 static/js/map.js 与 static/js/config.js 补进扫描列表）：
+# 净增的只有 `config.js` 动态渲染的瓦片服务器行里那颗「删除该服务器」
+# （`.btn.btn-icon.btn-outline-danger.tile-server-remove`，已带 aria-label）——
+# 它与上面 `_config_content.html` 里静态那两颗是同一个功能的两种渲染路径：
+# 首屏由 Jinja for 出，用户点「添加」新增的行由 config.js 出。之前只钉住了
+# 静态那份，JS 那份漏在扫描外。
+# **map.js 净增 0**：它的按钮（框选下载/删除、预览停止、手动输入范围的
+# 确定/取消等）文字都写成 `${t('...')}`，是有可见文本的按钮 —— 这也正是
+# 必须先让 _MARKUP_NOISE_RE 认得 `${t(...)}` 才能扩大扫描列表的原因，
+# 否则它们会集体变成假的「纯图标按钮」。
+ICON_ONLY_BUTTON_COUNT = 20
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
 # 纯图标按钮里允许出现的「不是可见文本」的东西：标签、HTML 实体、以及
-# **非 escapeHtml 的**模板插值。`${escapeHtml(...)}` 是项目里「插值一段服务端
-# 文本」的固定写法（task.name 等）——2026-08 任务名按钮化后，
-# <button class="task-name"> 的内容就是 ${escapeHtml(task.name)}；把它当噪声
-# 剥掉会将这颗有可见文本的按钮误扫成纯图标（占掉一个计数名额、还缺
-# aria-label），所以这里用负向前瞻把它认作可见文本。
-_MARKUP_NOISE_RE = re.compile(r'<[^>]*>|\$\{(?!escapeHtml\()[^}]*\}|&[a-zA-Z]+;|&#\d+;')
+# **既不是 escapeHtml 也不是 t 的**模板插值。两个负向前瞻各有来由：
+#
+#   `${escapeHtml(...)}` 是项目里「插值一段服务端文本」的固定写法(task.name
+#   等)——2026-08 任务名按钮化后，<button class="task-name"> 的内容就是
+#   ${escapeHtml(task.name)}；把它当噪声剥掉会将这颗有可见文本的按钮误扫成
+#   纯图标（占掉一个计数名额、还缺 aria-label）。
+#
+#   `${t(...)}` 是 i18n 改造**之后** JS 模板里可见文本的主要形态 —— map.js /
+#   config.js 里的按钮文字几乎全写成 ${t('...')}。正则原先不认它，于是这两个
+#   文件里 4 颗有可见文本的按钮会被判成纯图标。这正是它们一直进不了下面
+#   扫描列表的真实原因：不先认下 t(，一加进来就是一批假失败，而假失败会
+#   逼着后来的人去调 ICON_ONLY_BUTTON_COUNT，把计数账本彻底搞脏。
+_MARKUP_NOISE_RE = re.compile(
+    r'<[^>]*>|\$\{(?!escapeHtml\(|t\()[^}]*\}|&[a-zA-Z]+;|&#\d+;')
 
 
 def _icon_only_buttons():
@@ -4695,10 +4732,13 @@ def _icon_only_buttons():
     base.html <body> 直下（.btn-close 是纯图标按钮）。
     """
     sources = []
-    # tasks.js 不在扫描列表里：行渲染收口 history.js 后（2026-08 单一时间流
-    # 定稿）它不再有任何 <button> 模板，留下只会触发上面的响亮失败。
-    # 将来若往 tasks.js 加按钮模板，把它加回扫描列表。
-    for name in ('history.js',):
+    # map.js / config.js 是 2026-08 才补进来的：在 _MARKUP_NOISE_RE 认得
+    # ${t(...)} 之前，它们里面用 ${t('...')} 写可见文本的按钮会被误判成纯
+    # 图标按钮，加进来就是一批假失败 —— 见那条正则的注释。
+    # tasks.js / history.js 仍然不在列表里：任务行的按钮模板 2026-08 Vue 化后
+    # 收口到 task_list.js 的 TaskRow 组件 template，那两个文件已经没有任何
+    # <button> 标记，留下只会触发上面那条响亮失败。
+    for name in ('task_list.js', 'map.js', 'config.js'):
         sources.append((f'static/js/{name}', _strip_js_comments(_js(name))))
     for name in ('base.html', 'index.html', 'history.html', 'config.html'):
         sources.append((f'templates/{name}', _template(name)))
@@ -5166,14 +5206,13 @@ def _history_error_div():
     模型就会对着一个没有 .text-danger 的节点算，直接给出
     --color-text-primary 而不是 --color-danger，断言立刻变红。
     """
-    src = _strip_js_comments(_js('history.js'))
-    body = _js_function_body(src, 'loadHistory')
-    # 只认 catch 分支里那次 innerHTML 赋值 —— 正常分支不写 markup。
-    m = re.search(r'\.innerHTML\s*=\s*(.*?);', body, re.S)
-    assert m, 'loadHistory 里找不到 innerHTML 赋值 —— 加载失败提示的 markup 变形了，本测试已失效'
-    literal = m.group(1)
-    strings = re.findall(r"'([^']*)'|\"([^\"]*)\"|`([^`]*)`", literal, re.S)
-    markup = ''.join(a or b or c for a, b, c in strings)
+    src = _strip_js_comments(_js('task_list.js'))
+    # Vue 化后加载失败提示是组件的 ERROR_TEMPLATE 常量（改造前是 history.js
+    # loadHistory 的 catch 分支里一次 innerHTML 赋值）。节点本身没变：
+    # 一个 .text-center.text-danger 的 div。
+    m = re.search(r'ERROR_TEMPLATE\s*=\s*`(.*?)`', src, re.S)
+    assert m, 'task_list.js 里找不到 ERROR_TEMPLATE —— 加载失败提示的 markup 变形了，本测试已失效'
+    markup = m.group(1)
     assert '<div' in markup, (
         f'从 loadHistory 的 innerHTML 里解析不出 <div>（拿到 {markup[:80]!r}）—— 本测试已失效'
     )
@@ -5200,10 +5239,11 @@ def _text_contexts(css):
     control = _flatten(_resolve_color(css, _branch_background(css, '.form-control')), panel)
     toast = _flatten(_resolve_color(css, _branch_background(css, '.app-toast')),
                      _palette_var(css, '--color-bg-primary'))
-    # M18 新增的三处背衬：状态栏是 --color-bg-secondary 实心底；地图浮层是
+    # M18 新增的三处背衬：状态栏每颗胶囊的底色在 `.statusbar-pill` 共享规则
+    # 上（--color-bg-secondary 实心底；外壳本身透明）；地图浮层是
     # --color-overlay-surface（半透明，压在地图瓦片上 —— 取 bg-primary 作最坏
     # 近似的下层，与 toast 同一套做法）；弹窗复用上面的 modal。
-    statusbar = _flatten(_resolve_color(css, _branch_background(css, '.workbench-statusbar')),
+    statusbar = _flatten(_resolve_color(css, _branch_background(css, '.statusbar-pill')),
                          _palette_var(css, '--color-bg-primary'))
     overlay = _flatten(_resolve_color(css, _branch_background(css, '.bounds-overlay')),
                        _palette_var(css, '--color-bg-primary'))
@@ -5498,8 +5538,11 @@ def test_inline_style_colors_meet_wcag_aa_everywhere():
     assert {'static/js/tasks.js', 'static/js/history.js', 'templates'} <= set(scanned), (
         f'扫描范围不完整（实际 {scanned}）—— 本测试已失效'
     )
-    assert len(hits) >= 3, (
-        f'只扫到 {len(hits)} 处内联 color（期望 >= 3）—— '
+    # >= 2（原 3）：Vue 化前「失败: N」的红字在 history.js createTaskRow 与
+    # tasks.js updateTaskProgressPartial 里各写一遍（同一段 markup 的两份实现）；
+    # 收口到 TaskRow 组件后只剩一处，加上模板里那处共 2 处。
+    assert len(hits) >= 2, (
+        f'只扫到 {len(hits)} 处内联 color（期望 >= 2）—— '
         '正则失效的话下面的负向断言就是永真\n' + '\n'.join('  ' + h for h in hits)
     )
     assert not problems, (
@@ -6000,7 +6043,20 @@ def _motion_rule_index(css):
 #   覆盖范围内）。
 # 38 -> 36（U10 删死代码）：`.history-table tbody tr`（表格时代残留，模板/JS
 #   零引用）与 `.action-buttons .btn`（同批残留）随整段删除一并消失。
-_MOTION_BRANCH_COUNT = 36
+# 36 -> 38（配置页说明图标 .hint + 代理状态转圈）：
+#   删 1 个分支：`.config-section .btn`（那条把配置页按钮撑成 47px 粗体的大
+#     padding 规则整条移除，它带一条 background-color/border-color/... 过渡）。
+#   加 3 个分支：`.hint`（图标色 0.15s）、`.hint::after`（气泡 opacity/
+#     visibility 0.12s）、`.hint-spin`（检测中的 rotate 无限循环）。
+#     前两个在 reduce 块通用选择器 `*` / `*::after` 覆盖范围内；`.hint-spin`
+#     被 `*` 覆盖。都无需豁免登记。
+#     ⚠️ `.hint-spin` 刻意写成单类而不是 `.hint.is-busy > svg`：本文件的
+#     层叠模型只支持后代组合符，子组合符会让本节 20 条断言集体判「模型已失效」。
+# 38 -> 37（删死代码）：`.status-badge` 基规则带一条 background-color/
+#   border-color/color/box-shadow 过渡，随整个组件删除。任务行早已改用
+#   `.task-dot` + `.task-status-text`，全仓只剩 history.js / tasks.js 两处
+#   注释在提这个类名，没有任何 markup 会带上它。少掉的分支就是 `.status-badge`。
+_MOTION_BRANCH_COUNT = 37
 
 
 def test_motion_rule_index_is_complete():
@@ -6265,8 +6321,12 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 读数项的 hover 底色，在 reduce 块 `*` 覆盖范围内）。
     # 35 -> 33（U10 删死代码）：.history-table tbody tr 与 .action-buttons .btn
     # 两个上下文随零引用的表格时代残留一起删除。
-    assert len(ctxs) == 33, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 33：\n'
+    # 33 -> 35：`.hint`（+ `::after` 伪元素上下文）与 `.hint-spin` 三个新分支
+    # 反解出 2 个新元素上下文（button.hint 与它的 ::after）。
+    # 35 -> 34（删死代码）：`.status-badge` 随整个零引用组件从 style.css 删除，
+    # 它反解出的那一个元素上下文（span.status-badge）一并消失。
+    assert len(ctxs) == 34, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 34：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -6366,14 +6426,54 @@ VENDOR_MANIFEST = {
     'bootstrap/5.3.0/bootstrap.min.css': 232914,
     'bootstrap/5.3.0/bootstrap.bundle.min.js': 80421,
     'socket.io/4.5.4/socket.io.min.js': 44191,
+    # Vue 3 global build（含 runtime compiler —— 组件用 template 字符串写，
+    # 全站无构建步骤，这是选 global build 而不是 runtime-only 的唯一理由）。
+    # 渲染任务时间流，见 static/js/task_list.js。
+    'vue/3.5.13/vue.global.prod.js': 157924,
     'fonts/inter-latin.woff2': 48256,
     'fonts/inter-latin-ext.woff2': 85068,
     'fonts/jetbrains-mono-latin.woff2': 31432,
     'fonts/jetbrains-mono-latin-ext.woff2': 11624,
 }
 
-# CesiumJS 1.143.0（390 个文件）：workers / assets / widgets 全部由
-# Cesium.js 运行时按 CESIUM_BASE_URL 动态拉取，模板 grep 不出来，必须登记。
+# CesiumJS 1.143.0（157 个文件，上游发行版是 390 个）：workers / assets /
+# widgets 全部由 Cesium.js 运行时按 CESIUM_BASE_URL 动态拉取，模板 grep
+# 不出来，必须登记。
+#
+# 2026-08 瘦身：删掉 233 个本项目**实测零请求**的文件（14 MB -> 11 MB）。
+# 判定方法不是看名字猜，是用 CDP 监听 network，把首页地图 / 框选绘制 /
+# 地形加载（quantized-mesh 真解码）/ 光照 / 历史小地图 全流程走一遍，
+# 记录实际请求过的 URL；再逐条回到 Cesium.js 里确认触发条件。删掉的是：
+#   ThirdParty/ 全部 —— basis(KTX2) / draco / wasm_splats / zip(KMZ) /
+#     google-earth-dbroot，都是 glTF·3D Tiles·KMZ·Google Earth Enterprise
+#     的依赖，本项目一个都不用
+#   Assets/Textures/NaturalEarthII —— BaseLayerPicker 的 Cesium ion 底图，
+#     而两个 Viewer 都是 baseLayerPicker:false
+#   Assets/Textures/maki —— PinBuilder 的图标集，本项目用 point 不用 pin
+#   Assets/Textures/LensFlare —— 镜头光晕后处理，默认关闭
+#   Assets/Textures/waterNormals.jpg —— Globe 只引用 waterNormalsSmall.jpg
+#   Widgets/Images/{ImageryProviders,TerrainProviders,NavigationHelp} ——
+#     对应的 widget 全部 false
+#   Workers/{decodeGoogleEarthEnterprisePacket,transcodeKTX2}.js —— 同上
+# ⚠️ Workers/ 的其余文件**刻意保留**：实测全流程零请求（1.143 把 worker
+# 内联进了 Cesium.js），但 `_defaultWorkerModulePrefix="Workers/"` 说明
+# TaskProcessor 仍可能在未覆盖到的路径上按这个前缀取模块，1.2 MB 不值得赌。
+#
+# ⚠️ Assets/Textures/SkyBox 与 moonSmall.jpg 已删 —— 两个 Viewer 都传
+# `skyBox: false` 并把 scene.moon 置空（见 map.js / history.js）。
+# skyAtmosphere（地球边缘的蓝色大气辉光）**保留**：它是 shader 算的、不吃贴图。
+#
+# ⚠️ Assets/IAU2006_XYS 只保留 18–27 号，删掉 0–17。这是**按时间分段**裁的，
+# 不是拍脑袋：Cesium 的 Iau2006XysData 参数为
+# sampleZeroJulianEphemerisDate=2442396.5 / stepSizeDays=1 / samplesPerXysFile=1000，
+# 即每个文件覆盖 1000 天（约 2.74 年），28 个文件覆盖 1974-12 → 2050-01。
+# 本工具算的永远是「当前时间」的太阳位置（地形光照），不查历史日期，
+# 所以 0–17（1974-12 → 2024-03）是死数据。保留的 18 号覆盖
+# 2024-03-27 → 2026-12-22，与实测请求的文件号吻合；末号 27 到 2050-01。
+# ⚠️⚠️ 这批文件**不能全删**：实测（必须禁用浏览器缓存，否则是假绿灯）
+# 显示 Cesium 会真的去请求当前时间对应的那一个，全删就是每次启动一个
+# 404 + 一条控制台红字。加载失败处 Cesium 是空 `catch{}`，功能会静默降级
+# 而不报错 —— 正因为不报错，只靠「功能还正常」判断会漏掉这个 404。
 #
 # ⚠️ Cesium.js 有一处**有意的本地补丁**（2026-08，用户要求）：CesiumWidget
 # 构造时创建的 .cesium-widget-credits div 不再挂载进 DOM（删了
@@ -6382,21 +6482,8 @@ VENDOR_MANIFEST = {
 # 用户明确不保留）。上游原版是 5909848 B，补丁后为下方数字；
 # 升级 Cesium 版本时这个补丁需要重新打。
 VENDOR_MANIFEST.update({
-    'cesium/1.143.0/Cesium.js': 5909997,
-    'cesium/1.143.0/Assets/approximateTerrainHeights.json': 299471,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_0.json': 67428,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_1.json': 67313,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_10.json': 65984,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_11.json': 65007,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_12.json': 64663,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_13.json': 65854,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_14.json': 65547,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_15.json': 65709,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_16.json': 66030,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_17.json': 65622,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_18.json': 65310,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_19.json': 65537,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_2.json': 67802,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_20.json': 65328,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_21.json': 64843,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_22.json': 64977,
@@ -6405,200 +6492,14 @@ VENDOR_MANIFEST.update({
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_25.json': 64953,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_26.json': 65311,
     'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_27.json': 27595,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_3.json': 66400,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_4.json': 65900,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_5.json': 65378,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_6.json': 65596,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_7.json': 67099,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_8.json': 66931,
-    'cesium/1.143.0/Assets/IAU2006_XYS/IAU2006_XYS_9.json': 66857,
     'cesium/1.143.0/Assets/Images/bing_maps_credit.png': 18831,
     'cesium/1.143.0/Assets/Images/cesium_credit.png': 4242,
     'cesium/1.143.0/Assets/Images/google_earth_credit.png': 7703,
     'cesium/1.143.0/Assets/Images/ion-credit.png': 6028,
-    'cesium/1.143.0/Assets/Textures/moonSmall.jpg': 18196,
     'cesium/1.143.0/Assets/Textures/pin.svg': 348,
-    'cesium/1.143.0/Assets/Textures/waterNormals.jpg': 294196,
     'cesium/1.143.0/Assets/Textures/waterNormalsSmall.jpg': 34121,
-    'cesium/1.143.0/Assets/Textures/LensFlare/DirtMask.jpg': 113718,
-    'cesium/1.143.0/Assets/Textures/LensFlare/StarBurst.jpg': 195728,
-    'cesium/1.143.0/Assets/Textures/maki/airfield.png': 1188,
-    'cesium/1.143.0/Assets/Textures/maki/airport.png': 1554,
-    'cesium/1.143.0/Assets/Textures/maki/alcohol-shop.png': 1293,
-    'cesium/1.143.0/Assets/Textures/maki/america-football.png': 2595,
-    'cesium/1.143.0/Assets/Textures/maki/art-gallery.png': 3159,
-    'cesium/1.143.0/Assets/Textures/maki/bakery.png': 2714,
-    'cesium/1.143.0/Assets/Textures/maki/bank.png': 936,
-    'cesium/1.143.0/Assets/Textures/maki/bar.png': 1435,
-    'cesium/1.143.0/Assets/Textures/maki/baseball.png': 1838,
-    'cesium/1.143.0/Assets/Textures/maki/basketball.png': 1318,
-    'cesium/1.143.0/Assets/Textures/maki/beer.png': 1403,
-    'cesium/1.143.0/Assets/Textures/maki/bicycle.png': 3989,
-    'cesium/1.143.0/Assets/Textures/maki/building.png': 1765,
-    'cesium/1.143.0/Assets/Textures/maki/bus.png': 998,
-    'cesium/1.143.0/Assets/Textures/maki/cafe.png': 1518,
-    'cesium/1.143.0/Assets/Textures/maki/camera.png': 1976,
-    'cesium/1.143.0/Assets/Textures/maki/campsite.png': 2411,
-    'cesium/1.143.0/Assets/Textures/maki/car.png': 1498,
-    'cesium/1.143.0/Assets/Textures/maki/cemetery.png': 967,
-    'cesium/1.143.0/Assets/Textures/maki/cesium.png': 3610,
-    'cesium/1.143.0/Assets/Textures/maki/chemist.png': 1603,
-    'cesium/1.143.0/Assets/Textures/maki/cinema.png': 1492,
-    'cesium/1.143.0/Assets/Textures/maki/circle-stroked.png': 2126,
-    'cesium/1.143.0/Assets/Textures/maki/circle.png': 1459,
-    'cesium/1.143.0/Assets/Textures/maki/city.png': 788,
-    'cesium/1.143.0/Assets/Textures/maki/clothing-store.png': 2037,
-    'cesium/1.143.0/Assets/Textures/maki/college.png': 2502,
-    'cesium/1.143.0/Assets/Textures/maki/commercial.png': 1002,
-    'cesium/1.143.0/Assets/Textures/maki/cricket.png': 1677,
-    'cesium/1.143.0/Assets/Textures/maki/cross.png': 1888,
-    'cesium/1.143.0/Assets/Textures/maki/dam.png': 1703,
-    'cesium/1.143.0/Assets/Textures/maki/danger.png': 2429,
-    'cesium/1.143.0/Assets/Textures/maki/disability.png': 3437,
-    'cesium/1.143.0/Assets/Textures/maki/dog-park.png': 3146,
-    'cesium/1.143.0/Assets/Textures/maki/embassy.png': 1680,
-    'cesium/1.143.0/Assets/Textures/maki/emergency-telephone.png': 1533,
-    'cesium/1.143.0/Assets/Textures/maki/entrance.png': 1307,
-    'cesium/1.143.0/Assets/Textures/maki/farm.png': 1686,
-    'cesium/1.143.0/Assets/Textures/maki/fast-food.png': 2019,
-    'cesium/1.143.0/Assets/Textures/maki/ferry.png': 2879,
-    'cesium/1.143.0/Assets/Textures/maki/fire-station.png': 2228,
-    'cesium/1.143.0/Assets/Textures/maki/fuel.png': 1741,
-    'cesium/1.143.0/Assets/Textures/maki/garden.png': 2057,
-    'cesium/1.143.0/Assets/Textures/maki/gift.png': 1606,
-    'cesium/1.143.0/Assets/Textures/maki/golf.png': 1999,
-    'cesium/1.143.0/Assets/Textures/maki/grocery.png': 1425,
-    'cesium/1.143.0/Assets/Textures/maki/hairdresser.png': 3301,
-    'cesium/1.143.0/Assets/Textures/maki/harbor.png': 2048,
-    'cesium/1.143.0/Assets/Textures/maki/heart.png': 1745,
-    'cesium/1.143.0/Assets/Textures/maki/heliport.png': 2059,
-    'cesium/1.143.0/Assets/Textures/maki/hospital.png': 909,
-    'cesium/1.143.0/Assets/Textures/maki/ice-cream.png': 1602,
-    'cesium/1.143.0/Assets/Textures/maki/industrial.png': 1092,
-    'cesium/1.143.0/Assets/Textures/maki/land-use.png': 1773,
-    'cesium/1.143.0/Assets/Textures/maki/laundry.png': 2407,
-    'cesium/1.143.0/Assets/Textures/maki/library.png': 1355,
-    'cesium/1.143.0/Assets/Textures/maki/lighthouse.png': 1944,
-    'cesium/1.143.0/Assets/Textures/maki/lodging.png': 1362,
-    'cesium/1.143.0/Assets/Textures/maki/logging.png': 1378,
-    'cesium/1.143.0/Assets/Textures/maki/london-underground.png': 2979,
-    'cesium/1.143.0/Assets/Textures/maki/marker-stroked.png': 3414,
-    'cesium/1.143.0/Assets/Textures/maki/marker.png': 2448,
-    'cesium/1.143.0/Assets/Textures/maki/minefield.png': 1907,
-    'cesium/1.143.0/Assets/Textures/maki/mobilephone.png': 1474,
-    'cesium/1.143.0/Assets/Textures/maki/monument.png': 1376,
-    'cesium/1.143.0/Assets/Textures/maki/museum.png': 2578,
-    'cesium/1.143.0/Assets/Textures/maki/music.png': 1371,
-    'cesium/1.143.0/Assets/Textures/maki/oil-well.png': 3357,
-    'cesium/1.143.0/Assets/Textures/maki/park.png': 2059,
-    'cesium/1.143.0/Assets/Textures/maki/park2.png': 2284,
-    'cesium/1.143.0/Assets/Textures/maki/parking-garage.png': 1563,
-    'cesium/1.143.0/Assets/Textures/maki/parking.png': 1250,
-    'cesium/1.143.0/Assets/Textures/maki/pharmacy.png': 2258,
-    'cesium/1.143.0/Assets/Textures/maki/pitch.png': 3288,
-    'cesium/1.143.0/Assets/Textures/maki/place-of-worship.png': 1111,
-    'cesium/1.143.0/Assets/Textures/maki/playground.png': 3856,
-    'cesium/1.143.0/Assets/Textures/maki/police.png': 2194,
-    'cesium/1.143.0/Assets/Textures/maki/polling-place.png': 1772,
-    'cesium/1.143.0/Assets/Textures/maki/post.png': 1273,
-    'cesium/1.143.0/Assets/Textures/maki/prison.png': 1371,
-    'cesium/1.143.0/Assets/Textures/maki/rail-above.png': 2071,
-    'cesium/1.143.0/Assets/Textures/maki/rail-light.png': 2816,
-    'cesium/1.143.0/Assets/Textures/maki/rail-metro.png': 2249,
-    'cesium/1.143.0/Assets/Textures/maki/rail-underground.png': 1996,
-    'cesium/1.143.0/Assets/Textures/maki/rail.png': 2073,
-    'cesium/1.143.0/Assets/Textures/maki/religious-christian.png': 948,
-    'cesium/1.143.0/Assets/Textures/maki/religious-jewish.png': 2384,
-    'cesium/1.143.0/Assets/Textures/maki/religious-muslim.png': 3925,
-    'cesium/1.143.0/Assets/Textures/maki/restaurant.png': 2499,
-    'cesium/1.143.0/Assets/Textures/maki/roadblock.png': 1312,
-    'cesium/1.143.0/Assets/Textures/maki/rocket.png': 1653,
-    'cesium/1.143.0/Assets/Textures/maki/school.png': 3838,
-    'cesium/1.143.0/Assets/Textures/maki/scooter.png': 2942,
-    'cesium/1.143.0/Assets/Textures/maki/shop.png': 1544,
-    'cesium/1.143.0/Assets/Textures/maki/skiing.png': 3345,
-    'cesium/1.143.0/Assets/Textures/maki/slaughterhouse.png': 2270,
-    'cesium/1.143.0/Assets/Textures/maki/soccer.png': 2420,
-    'cesium/1.143.0/Assets/Textures/maki/square-stroked.png': 650,
-    'cesium/1.143.0/Assets/Textures/maki/square.png': 582,
-    'cesium/1.143.0/Assets/Textures/maki/star-stroked.png': 3460,
-    'cesium/1.143.0/Assets/Textures/maki/star.png': 2703,
-    'cesium/1.143.0/Assets/Textures/maki/suitcase.png': 1129,
-    'cesium/1.143.0/Assets/Textures/maki/swimming.png': 2106,
-    'cesium/1.143.0/Assets/Textures/maki/telephone.png': 1702,
-    'cesium/1.143.0/Assets/Textures/maki/tennis.png': 1658,
-    'cesium/1.143.0/Assets/Textures/maki/theatre.png': 3233,
-    'cesium/1.143.0/Assets/Textures/maki/toilets.png': 2917,
-    'cesium/1.143.0/Assets/Textures/maki/town-hall.png': 2005,
-    'cesium/1.143.0/Assets/Textures/maki/town.png': 1125,
-    'cesium/1.143.0/Assets/Textures/maki/triangle-stroked.png': 2837,
-    'cesium/1.143.0/Assets/Textures/maki/triangle.png': 2137,
-    'cesium/1.143.0/Assets/Textures/maki/village.png': 2145,
-    'cesium/1.143.0/Assets/Textures/maki/warehouse.png': 1908,
-    'cesium/1.143.0/Assets/Textures/maki/waste-basket.png': 1917,
-    'cesium/1.143.0/Assets/Textures/maki/water.png': 2411,
-    'cesium/1.143.0/Assets/Textures/maki/wetland.png': 2151,
-    'cesium/1.143.0/Assets/Textures/maki/zoo.png': 2681,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/tilemapresource.xml': 780,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/0/0/0.jpg': 12067,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/0/1/0.jpg': 14055,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/0/0.jpg': 7278,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/0/1.jpg': 11399,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/1/0.jpg': 10652,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/1/1.jpg': 13142,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/2/0.jpg': 9643,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/2/1.jpg': 15312,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/3/0.jpg': 10532,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/1/3/1.jpg': 13262,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/0.jpg': 8157,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/1.jpg': 9307,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/2.jpg': 7891,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/0/3.jpg': 10341,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/0.jpg': 7852,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/1.jpg': 6850,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/2.jpg': 11581,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/1/3.jpg': 15862,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/0.jpg': 10657,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/1.jpg': 12456,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/2.jpg': 12262,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/2/3.jpg': 14940,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/0.jpg': 9531,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/1.jpg': 10234,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/2.jpg': 11678,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/3/3.jpg': 10754,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/0.jpg': 8474,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/1.jpg': 12265,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/2.jpg': 16477,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/4/3.jpg': 11888,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/0.jpg': 7540,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/1.jpg': 10274,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/2.jpg': 16112,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/5/3.jpg': 11877,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/0.jpg': 6636,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/1.jpg': 11564,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/2.jpg': 16411,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/6/3.jpg': 12756,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/0.jpg': 9032,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/1.jpg': 12957,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/2.jpg': 11362,
-    'cesium/1.143.0/Assets/Textures/NaturalEarthII/2/7/3.jpg': 11859,
-    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_mx.jpg': 118775,
-    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_my.jpg': 152501,
-    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_mz.jpg': 167980,
-    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_px.jpg': 122746,
-    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_py.jpg': 152999,
-    'cesium/1.143.0/Assets/Textures/SkyBox/tycho2t3_80_pz.jpg': 152537,
-    'cesium/1.143.0/ThirdParty/basis_transcoder.wasm': 500839,
-    'cesium/1.143.0/ThirdParty/draco_decoder.wasm': 285948,
-    'cesium/1.143.0/ThirdParty/google-earth-dbroot-parser.js': 218747,
-    'cesium/1.143.0/ThirdParty/wasm_splats_bg.wasm': 26522,
-    'cesium/1.143.0/ThirdParty/zip-module.wasm': 50264,
-    'cesium/1.143.0/ThirdParty/Workers/package.json': 19,
-    'cesium/1.143.0/ThirdParty/Workers/zip-web-worker.js': 18493,
-    'cesium/1.143.0/Widgets/lighter.css': 6142,
-    'cesium/1.143.0/Widgets/lighterShared.css': 1062,
-    'cesium/1.143.0/Widgets/shared.css': 1952,
-    'cesium/1.143.0/Widgets/widgets.css': 30710,
+    'cesium/1.143.0/Assets/approximateTerrainHeights.json': 299471,
+    'cesium/1.143.0/Cesium.js': 5909997,
     'cesium/1.143.0/Widgets/Animation/Animation.css': 2748,
     'cesium/1.143.0/Widgets/Animation/lighter.css': 1919,
     'cesium/1.143.0/Widgets/BaseLayerPicker/BaseLayerPicker.css': 2544,
@@ -6613,42 +6514,6 @@ VENDOR_MANIFEST.update({
     'cesium/1.143.0/Widgets/I3SBuildingSceneLayerExplorer/I3SBuildingSceneLayerExplorer.css': 636,
     'cesium/1.143.0/Widgets/Images/TimelineIcons.png': 781,
     'cesium/1.143.0/Widgets/Images/info-loading.gif': 723,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/ArcGisMapServiceWorldHillshade.png': 8624,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/ArcGisMapServiceWorldImagery.png': 12290,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/ArcGisMapServiceWorldOcean.png': 9905,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/azureAerial.png': 32446,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/azureRoads.png': 25152,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/bingAerial.png': 9943,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/bingAerialLabels.png': 10374,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/bingRoads.png': 8076,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/blueMarble.png': 7403,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/earthAtNight.png': 5836,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleContour.png': 40737,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleRoadmap.png': 32232,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleSatellite.png': 40898,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/googleSatelliteLabels.png': 40267,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapQuestOpenStreetMap.png': 11342,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapboxSatellite.png': 9242,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapboxStreets.png': 7270,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/mapboxTerrain.png': 8300,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/naturalEarthII.png': 7491,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/openStreetMap.png': 2663,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/sentinel-2.png': 10086,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/stadiaAlidadeSmooth.png': 7302,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/stadiaAlidadeSmoothDark.png': 7289,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/stamenToner.png': 4119,
-    'cesium/1.143.0/Widgets/Images/ImageryProviders/stamenWatercolor.png': 10806,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/Mouse.svg': 5623,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/MouseLeft.svg': 5581,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/MouseMiddle.svg': 5579,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/MouseRight.svg': 5572,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/Touch.svg': 3446,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchDrag.svg': 6288,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchRotate.svg': 5626,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchTilt.svg': 5862,
-    'cesium/1.143.0/Widgets/Images/NavigationHelp/TouchZoom.svg': 5482,
-    'cesium/1.143.0/Widgets/Images/TerrainProviders/CesiumWorldTerrain.png': 10080,
-    'cesium/1.143.0/Widgets/Images/TerrainProviders/Ellipsoid.png': 6173,
     'cesium/1.143.0/Widgets/InfoBox/InfoBox.css': 1950,
     'cesium/1.143.0/Widgets/InfoBox/InfoBoxDescription.css': 4675,
     'cesium/1.143.0/Widgets/NavigationHelpButton/NavigationHelpButton.css': 2074,
@@ -6659,9 +6524,13 @@ VENDOR_MANIFEST.update({
     'cesium/1.143.0/Widgets/SelectionIndicator/SelectionIndicator.css': 472,
     'cesium/1.143.0/Widgets/Timeline/Timeline.css': 2910,
     'cesium/1.143.0/Widgets/Timeline/lighter.css': 467,
+    'cesium/1.143.0/Widgets/VRButton/VRButton.css': 169,
     'cesium/1.143.0/Widgets/Viewer/Viewer.css': 1958,
     'cesium/1.143.0/Widgets/VoxelInspector/VoxelInspector.css': 449,
-    'cesium/1.143.0/Widgets/VRButton/VRButton.css': 169,
+    'cesium/1.143.0/Widgets/lighter.css': 6142,
+    'cesium/1.143.0/Widgets/lighterShared.css': 1062,
+    'cesium/1.143.0/Widgets/shared.css': 1952,
+    'cesium/1.143.0/Widgets/widgets.css': 30710,
     'cesium/1.143.0/Workers/chunk-2AIOP76V.js': 20253,
     'cesium/1.143.0/Workers/chunk-37ETYCYM.js': 7545,
     'cesium/1.143.0/Workers/chunk-3E7FIXV7.js': 8890,
@@ -6763,12 +6632,10 @@ VENDOR_MANIFEST.update({
     'cesium/1.143.0/Workers/createWallGeometry.js': 6500,
     'cesium/1.143.0/Workers/createWallOutlineGeometry.js': 4861,
     'cesium/1.143.0/Workers/decodeDraco.js': 5045,
-    'cesium/1.143.0/Workers/decodeGoogleEarthEnterprisePacket.js': 36097,
     'cesium/1.143.0/Workers/decodeI3S.js': 17157,
     'cesium/1.143.0/Workers/gaussianSplatSorter.js': 1266,
     'cesium/1.143.0/Workers/gaussianSplatTextureGenerator.js': 1304,
     'cesium/1.143.0/Workers/incrementallyBuildTerrainPicker.js': 2098,
-    'cesium/1.143.0/Workers/transcodeKTX2.js': 60183,
     'cesium/1.143.0/Workers/transferTypedArrayTest.js': 979,
     'cesium/1.143.0/Workers/upsampleQuantizedTerrainMesh.js': 9688,
     'cesium/1.143.0/Workers/upsampleVerticesFromCesium3DTilesTerrain.js': 2241,
@@ -6908,8 +6775,10 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 只有首页有，而解压进度要求全站可见）。
     # 21 -> 22（底图解压进度）：base.html 新增 static/js/base_terrain_status.js
     # （底部状态栏最右的解压进度，监听 base_unpack_progress）。
-    assert len(refs) == 22, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 22 处。"
+    # 25（原 22）：base.html 新增 vue.global.prod.js / task_store.js /
+    # task_list.js 三个 <script>（任务时间流的渲染层）。
+    assert len(refs) == 25, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 25 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
@@ -7263,8 +7132,8 @@ def test_vendor_files_are_not_swallowed_by_gitignore():
     """
     repo_root = os.path.dirname(_STATIC_DIR)
     on_disk = _vendor_files_on_disk()
-    assert len(on_disk) == 398, (
-        f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 15 个 —— '
+    assert len(on_disk) == 166, (
+        f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 166 个 —— '
         '本条按目录遍历，数量本身会变，但请顺手确认 VENDOR_MANIFEST 也同步了'
     )
     try:
@@ -7689,8 +7558,8 @@ _PAGE_CHAIN_PREFIX = (
 # 运行时才出现、grep 模板永远看不到的 <div>。
 #
 # 为什么必须显式登记：`.modal-backdrop` 由 Bootstrap 的 Modal 组件插到
-# <body> 末尾，`.task-error` 错误框由 history.js createTaskRow 拼字符串
-# 塞进时间流的 innerHTML——只扫模板的话，这两类一个都看不见，而「弹窗遮罩
+# <body> 末尾，`.task-error` 错误框由 task_list.js 的 TaskRow 组件渲染进
+# 时间流——只扫模板的话，这两类一个都看不见，而「弹窗遮罩
 # 从来没暗过」正是 C1 收尾要修的那个缺陷。祖先链按真实 DOM 写（CDP 实测
 # 确认过层级）。
 # （演进：原先的 .task-card 条目随卡片删除，换成同样运行时注入、
@@ -7700,8 +7569,8 @@ _PAGE_CHAIN_PREFIX = (
 # 每一条都由 test_runtime_injected_div_table_is_grounded 反查来源，防止表烂掉。
 _RUNTIME_INJECTED_DIVS = (
     (
-        'history.js createTaskRow 生成的失败原因框（时间流失败行的行2 div）',
-        'static/js/history.js', 'task-error',
+        'TaskRow 组件渲染的失败原因框（时间流失败行的行2 div）',
+        'static/js/task_list.js', 'task-error',
         _task_error_chain(),
     ),
     (

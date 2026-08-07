@@ -3,7 +3,8 @@
 {% block title %}{{ t('tpl.history.page_title') }} - {{ t('app.suffix') }}{% endblock %}
 
 {% block content %}
-<div class="page-content">
+{# --fill：任务列表吃满剩余高度、在卡内滚动（见 _history_content.html）。 #}
+<div class="page-content page-content--fill">
 <a class="back-home-link" href="/">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
         <polyline points="15 18 9 12 15 6"></polyline>

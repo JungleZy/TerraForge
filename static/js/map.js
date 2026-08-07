@@ -176,32 +176,28 @@ function splashReady() {
     setTimeout(function () { splash.remove(); }, 550);
 }
 
-function initMap(config) {
+function initMap(config, basemap) {
     initSplash();
 
     const centerLat = parseFloat(config.map_center_lat || 29.56);
     const centerLng = parseFloat(config.map_center_lng || 106.55);
     const initialZoom = parseInt(config.map_initial_zoom || 3);
 
-    // 底图 = tile_servers 列表的第一个条目（与下载共用一份配置，配置页可改）：
-    // 别名/主机按 Google vt 格式拼 lyrs=m；完整 XYZ 模板原样用（{style} 替换为 m）。
-    // 列表为空时回退内置 OSM。条目语义与 services/tile_url_probe.py 保持一致。
-    function _baseMapUrl(serversRaw) {
-        const first = (serversRaw || '').split(',').map(s => s.trim()).filter(Boolean)[0];
-        if (!first) return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-        if (first.startsWith('http://') || first.startsWith('https://')) {
-            return first.replace('{style}', 'm');
-        }
-        const host = first.includes('.') ? first : first + '.googleapis.com';
-        // 协议相对：页面走 https 时硬编码 http:// 会被混合内容拦截
-        return `//${host}/vt?lyrs=m&x={x}&y={y}&z={z}`;
-    }
-    const tileUrl = _baseMapUrl(config.tile_servers);
+    // 底图由**服务端**解析（src/services/basemap_source.py -> routes/main.py），
+    // 这里不再自己展开别名。改造前这里有一份 _baseMapUrl 平行实现：它写死
+    // lyrs=m（路网图，不是卫星图）、写死署名 © OpenStreetMap（而实际加载的
+    // 是 Google 瓦片），并且与 services/tile_url_probe 的条目语义各写各的。
+    // 底图与下载源现在是两个配置：底图走浏览器直连（不吃 proxy_url），
+    // 下载走 Python（吃）—— 可达性不同，不能共用一份地址。
+    const bm = basemap || {};
     viewer = new Cesium.Viewer('map', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-            url: tileUrl,
+            url: bm.url,
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
-            credit: '© OpenStreetMap contributors',
+            // 超出这一层瓦片服务器返回 404，Cesium 画成空白 —— 不设上限的话
+            // 放大过头是一片黑，看不出是缩放过头还是底图挂了。
+            maximumLevel: bm.max_level == null ? undefined : bm.max_level,
+            credit: bm.credit || '',
         })),
         baseLayerPicker: false,
         geocoder: false,
@@ -213,7 +209,17 @@ function initMap(config) {
         fullscreenButton: false,
         infoBox: false,
         selectionIndicator: false,
+        // 星空盒关掉：864 KB 的六面贴图，加上它触发的 1.8 MB IAU2006_XYS
+        // 岁差章动数据（星空是惯性系固定的，渲染它要做 ICRF→Fixed 变换）。
+        // 本工具是俯视地图作业，正常视角根本看不到星空。
+        // ⚠️ skyAtmosphere **不关**：地球边缘那圈蓝色大气辉光是 shader 算的、
+        // 不吃贴图，关掉纯亏视觉。
+        skyBox: false,
     });
+    // 月亮同理（moonSmall.jpg）。sun 留着 —— 它是 shader 画的不吃贴图，
+    // 而且地形光照（enableLighting）用的是 scene.light 的太阳方向，
+    // 与这个可见圆盘是两回事，关它并不省什么。
+    viewer.scene.moon = undefined;
     // 按需渲染：默认模式每帧重绘（60fps 空转耗电），改为仅在场景变化时渲染。
     // 注意：CallbackProperty（选区矩形/角点手柄）的值变化不会自动触发重绘，
     // 拖拽等直接改 _rectDegrees 的路径必须显式调 scene.requestRender()。
@@ -477,6 +483,7 @@ function _initMapTools() {
             _exitDrawMode();
             _ensureHandles();
             updateBoundsInfo();
+            announceBounds();
             refreshSubmitButtonState();
 
             // 选区落定后 pulse 浮层上的「下载」按钮，引导下一步
@@ -594,28 +601,114 @@ function initDownloadTypeToggle() {
 
 function initProcessTypeToggle() {
     // 数据处理表单（#processForm）：本地高程切片 / 等高线瓦片。
+    // 字段可见性是「处理类型 × 数据来源」二维的：来源为已下载的 DEM 任务时
+    // 用不上上传控件，改成从 #processDemTask 里挑任务。
     const typeEl = document.getElementById('processType');
     if (!typeEl) return;
 
+    const sourceEl = document.getElementById('processSource');
     const localOptions = document.getElementById('localTerrainOptions');
     const contourOptions = document.getElementById('contourOptions');
     const zoomSection = document.getElementById('processZoomSection');
+    const localUploadRow = document.getElementById('localTerrainUploadRow');
+    const contourUploadRow = document.getElementById('contourUploadRow');
+    const demTaskRow = document.getElementById('processDemTaskRow');
+    const nameRow = document.getElementById('processNameRow');
+    const nameInput = document.getElementById('processTaskName');
 
     function apply() {
-        const t = typeEl.value;
-        const isLocal = t === 'local_terrain';
-        const isContour = t === 'contour';
+        const type = typeEl.value;
+        const source = sourceEl?.value || 'upload';
+        const isLocal = type === 'local_terrain';
+        const isContour = type === 'contour';
+        const fromDemTask = source === 'dem_task';
         if (localOptions) localOptions.style.display = isLocal ? '' : 'none';
         if (contourOptions) contourOptions.style.display = isContour ? '' : 'none';
         // 缩放范围只有等高线用；本地高程的层级在它自己的字段里
         if (zoomSection) zoomSection.style.display = isContour ? '' : 'none';
 
+        if (localUploadRow) localUploadRow.style.display = (isLocal && !fromDemTask) ? '' : 'none';
+        if (contourUploadRow) contourUploadRow.style.display = (isContour && !fromDemTask) ? '' : 'none';
+        if (demTaskRow) demTaskRow.style.display = fromDemTask ? '' : 'none';
+
+        // 「本地高程切片 + DEM 任务」这一格复用 DEM 任务自己的地形切片作业，
+        // 不新建任务、没有独立任务名，留着输入框是误导。required 必须跟着摘掉：
+        // 隐藏的 required 字段会让浏览器原生校验拦下 submit 事件，按钮点了没反应。
+        const nameless = isLocal && fromDemTask;
+        if (nameRow) nameRow.style.display = nameless ? 'none' : '';
+        if (nameInput) nameInput.required = !nameless;
+
         refreshSubmitButtonState();
     }
 
     typeEl.addEventListener('change', apply);
+    if (sourceEl) {
+        sourceEl.addEventListener('change', () => {
+            apply();
+            // 每次切到 DEM 来源都重拉：任务列表随下载进度变化，陈旧列表会让
+            // 用户选到一个当时还没完成的任务。
+            if (sourceEl.value === 'dem_task') loadProcessDemTasks();
+        });
+    }
     apply();
     initContourTintUI();
+}
+
+// 处理表单当前选中的 DEM 任务 id；下拉处在空态（disabled 占位）时返回 null。
+function _selectedProcessDemTaskId() {
+    const sel = document.getElementById('processDemTask');
+    if (!sel || sel.disabled) return null;
+    return sel.value || null;
+}
+
+// 用「已完成」的 DEM 下载任务填 #processDemTask。
+// 刻意不带 status 查询参数：后端只对 status=active 做特殊处理，completed 不过滤，
+// 所以拉全量在前端筛。
+async function loadProcessDemTasks() {
+    const sel = document.getElementById('processDemTask');
+    if (!sel) return;
+
+    function setEmpty() {
+        sel.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.disabled = true;
+        opt.textContent = t('js.map.process.no_completed_dem_task');
+        sel.appendChild(opt);
+        sel.disabled = true;
+    }
+
+    try {
+        const resp = await fetch('/api/dem/tasks');
+        if (!resp.ok) {
+            showNotification(t('js.map.process.dem_task_load_failed', {
+                error: resp.status,
+            }), 'danger');
+            setEmpty();
+            return;
+        }
+        const data = await resp.json();
+        const tasks = (data.tasks || [])
+            .filter((task) => task.status === 'completed')
+            .sort((a, b) => b.id - a.id);
+        if (tasks.length === 0) {
+            setEmpty();
+            return;
+        }
+        sel.innerHTML = '';
+        sel.disabled = false;
+        for (const task of tasks) {
+            const opt = document.createElement('option');
+            opt.value = String(task.id);
+            opt.textContent = `#${task.id} ${task.name || ''}`.trim();
+            sel.appendChild(opt);
+        }
+    } catch (err) {
+        showNotification(t('js.map.process.dem_task_load_failed', {
+            error: err.message,
+        }), 'danger');
+        setEmpty();
+    }
 }
 
 // --- 等高线配色自定义 UI ------------------------------------------------------
@@ -738,13 +831,21 @@ function initContourTintUI() {
 }
 
 // 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
-// 两张表单各自一颗按钮：数据下载（瓦片/高程）必须先框选（瓦片数只是
-// 提示项，0.1.4 起不禁用按钮）；处理类（本地高程切片 / 等高线）都是
-// 上传驱动，没有 bbox，无条件启用（不检查文件）—— 文件是否已选在提交时
-// 由 submitLocalTerrain() / submitContour() 各自校验。
+// 两张表单各自一颗按钮，**都不按业务前置条件禁用**，只在提交进行中由各自的
+// 提交处理器临时 disabled 上锁（finally 里回到这里解锁）。
+//
+// 下载按钮为什么不再按 currentBounds 禁用（B4）：disabled 的元素不可聚焦、
+// 不在 tab 序里，键盘用户 Tab 过整张表单根本碰不到它，也就无从知道「为什么
+// 不能提交」——把解释挂成 aria-describedby 也没用，读屏不会去念一个焦点永远
+// 落不上去的元素。改成常态可用后，缺选区由 #downloadForm 的 submit 处理器
+// toast js.map.download.need_selection 当场说明原因，与 openDownloadModal()
+// 同一条文案、同一个口径。
+// 处理类（本地高程切片 / 等高线）都是上传驱动，没有 bbox，同样无条件启用
+//（不检查文件）—— 文件是否已选在提交时由 submitLocalTerrain() /
+// submitContour() 各自校验。
 function refreshSubmitButtonState() {
     const dlBtn = document.getElementById('createTaskBtn');
-    if (dlBtn) dlBtn.disabled = !currentBounds;
+    if (dlBtn) dlBtn.disabled = false;
     const prBtn = document.getElementById('createProcessBtn');
     if (prBtn) prBtn.disabled = false;
 }
@@ -778,6 +879,13 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
     const typeEl = document.getElementById(fieldName)
         || document.querySelector(`input[name="${fieldName}"]:checked`);
     if (typeEl) typeEl.dispatchEvent(new Event('change'));
+    // form.reset() 会把 #processSource 拨回默认的「上传文件」，来源相关字段
+    // （上传控件 / DEM 任务下拉）必须跟着复位，否则下次打开弹窗看到的是上一次
+    // 来源的字段组合。
+    if (formId === 'processForm') {
+        const sourceEl = document.getElementById('processSource');
+        if (sourceEl) sourceEl.dispatchEvent(new Event('change'));
+    }
 
     refreshSubmitButtonState();
 }
@@ -845,9 +953,20 @@ function updateBoundsInfo() {
             const h = (currentBounds.north - currentBounds.south).toFixed(3);
             statusSel.textContent = t('js.map.status.selection', { w: w, h: h });
         }
+    } else if (_manualBoundsOpen) {
+        // 手动输入面板展开时不重建浮层，否则用户正在敲的四至会被抹掉。
+        // 面板里的 input 带 .bounds-edit-input，上面那道编辑态守卫通常已经
+        // 拦下来了；这里兜住「面板该在却不在」的路径（例如别处刚清过 innerHTML）。
+        if (!boundsInfo.querySelector('.bounds-manual')) _renderManualBounds(boundsInfo);
+        if (statusSel) statusSel.textContent = t('js.map.status.no_selection');
     } else {
         // 不用 <small>：style.css 的全局 `small` 是 --font-size-sm(14px)，比浮层
         // 自己的字号还大，套上去等于把提示放大一号。字号由 .bounds-overlay 统一给。
+        //
+        // 「手动输入范围」是键盘用户**唯一**的选区入口（B4）：矩形只能由 canvas 的
+        // LEFT_DOWN→MOUSE_MOVE→LEFT_UP 鼠标手势产生，没有它 currentBounds 恒为
+        // null，整条下载链路对键盘 100% 不可达。放在空态里而不是工具条上，是因为
+        // 这层浮层本来就是「当前选区」的归属地，用户找选区自然会看这里。
         boundsInfo.innerHTML = `
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
                 <circle cx="12" cy="12" r="10"></circle>
@@ -855,9 +974,40 @@ function updateBoundsInfo() {
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
             ${t('js.map.bounds.empty')}
+            <div class="bounds-actions">
+                <button type="button" class="btn btn-secondary btn-sm" id="boundsManualBtn">${t('js.map.bounds.manual')}</button>
+            </div>
         `;
         if (statusSel) statusSel.textContent = t('js.map.status.no_selection');
     }
+}
+
+/**
+ * 把当前四至播报给读屏软件（#boundsAnnounce，视觉隐藏的 role="status"）。
+ *
+ * 为什么另起一个元素而不复用 #boundsInfo：那层浮层由 updateBoundsInfo() 整层
+ * innerHTML 重建，而重建走 MOUSE_MOVE → _scheduleBoundsInfoUpdate → rAF，
+ * 拖角点时最高 60 次/秒且每帧坐标都变。它若是 live region，polite 队列会一路
+ * 积压到用户松手之后还在念（拖 3 秒 ≈ 180 条公告）；浮层里还有按钮，交互控件
+ * 塞进 live region 本身也不对。
+ *
+ * 所以播报只在**落定时刻**写,一共三处,拖拽过程中一条都不发:
+ *   1. LEFT_UP —— 鼠标框选结束;
+ *   2. _applyBoundsEdit 校验通过 —— 点四至读数改数生效;
+ *   3. _applyManualBounds —— 手动输入面板确定(键盘用户的选区入口,见 B4)。
+ *
+ * 小数 5 位与浮层读数一致（≈1.1m）。
+ */
+function announceBounds() {
+    const el = document.getElementById('boundsAnnounce');
+    if (!el || !currentBounds) return;
+    const f = (v) => v.toFixed(5);
+    el.textContent = t('js.map.bounds.announce', {
+        north: f(currentBounds.north),
+        south: f(currentBounds.south),
+        east: f(currentBounds.east),
+        west: f(currentBounds.west),
+    });
 }
 
 // --- 选区数值点击编辑 ----------------------------------------------------------
@@ -882,7 +1032,24 @@ function _beginBoundsEdit(vEl) {
     function commit(apply) {
         if (done) return;
         done = true;
-        if (apply) _applyBoundsEdit(field, input.value);
+        // 先把输入框从 DOM 摘掉,再走后续的重渲染。
+        //
+        // updateBoundsInfo() 开头那道 M15 守卫(见 :924)靠「浮层里还有
+        // .bounds-edit-input」判断「正处于编辑态,不要重写整层」。而本函数建的
+        // input 用的正是这个类 —— 留着它的话,下面无论走哪条路,那次重渲染都会
+        // 被守卫拦掉:
+        //   - Escape 取消:回不到原读数,格子里永远停着一个 input;
+        //   - 校验失败(_applyBoundsEdit 里 4 条 return 前的 updateBoundsInfo):
+        //     同样回不去,提示弹了但输入框还在;
+        //   - 校验通过:_syncBoundsFromRect 排的那次重渲染也被拦。
+        // 更远的连带:input 一直留着,之后点「删除」时 clearSelection 触发的
+        // 重渲染继续被拦,currentBounds 已是 null 而浮层还显示着旧四至。
+        //
+        // done 已在上面置位,所以 remove() 万一在某些浏览器上触发 blur,
+        // 那次重入会被第一行的守卫挡掉,不会重复提交。
+        const value = input.value;
+        input.remove();
+        if (apply) _applyBoundsEdit(field, value);
         else updateBoundsInfo();    // 取消：重渲染回原读数
     }
     input.addEventListener('keydown', function (e) {
@@ -931,7 +1098,169 @@ function _applyBoundsEdit(field, raw) {
     _syncBoundsFromRect();
     // 矩形/手柄是 CallbackProperty，改 _rectDegrees 不会自动重绘，显式请求一帧
     viewer.scene.requestRender();
+    announceBounds();
     refreshSubmitButtonState();
+}
+
+// --- 手动输入范围（键盘可达的选区入口，B4）--------------------------------------
+//
+// 矩形选区原本只能由 Cesium canvas 的 LEFT_DOWN → MOUSE_MOVE → LEFT_UP 产生，
+// 键盘用户拿不到 currentBounds，整条下载链路对他们不可用。这里在范围浮层的
+// **空态**里提供一颗普通 <button>（天然可 Tab 可 Enter），展开后填 N/S/E/W 四个
+// 数字即可落定选区。
+//
+// 刻意**不做**「键盘画矩形」：那要为方向键设计移动步长、锚点、缩放语义，
+// 是另一套交互，而这里真正缺的只是「把四至喂进去」。
+//
+// 落定走的是与鼠标框选同一套状态写入（_rectDegrees → 实体 + 手柄 →
+// currentBounds），所以手动输入出来的选区和框出来的没有区别：角点能拖、
+// 四至读数能点开编辑、下载/删除按钮照常。
+
+// 面板是否展开。updateBoundsInfo() 的空态分支据此决定渲染提示还是面板。
+let _manualBoundsOpen = false;
+
+// 输入框 id 由方位名直接派生，不列查找表：方位与输入框接反是数据正确性缺陷
+//（和四至读数标反同一类），由构造保证配对比列表逐条核对更硬。
+function _manualBoundsInputId(field) {
+    return 'manualBounds_' + field;
+}
+
+// 步长 1e-5 度 ≈ 1.1m，与浮层读数的 5 位小数同精度；再细的位数读数也显示不出来。
+const _MANUAL_BOUNDS_STEP = '0.00001';
+
+function _renderManualBounds(boundsInfo) {
+    // 复用 .bounds-edit-input（点击编辑用的那套外观），行内 width 覆盖它的
+    // 10ch 定宽：这里的输入框是 .bounds-grid 的 1fr 轨道成员，定宽会在窄视口
+    // 撑破浮层。min-width:0 是网格项能收缩的前提。
+    const box = (field, letter) => `
+                <label class="bounds-k" for="${_manualBoundsInputId(field)}">${letter}</label><input
+                    type="number" step="${_MANUAL_BOUNDS_STEP}" class="bounds-edit-input"
+                    id="${_manualBoundsInputId(field)}" data-field="${field}"
+                    style="width: 100%; min-width: 0;"
+                    aria-label="${t('js.map.bounds.sr_' + field)}">`;
+    boundsInfo.innerHTML = `
+        <div class="bounds-manual">
+            <div class="bounds-grid">${box('north', 'N')}${box('south', 'S')}${box('east', 'E')}${box('west', 'W')}
+            </div>
+            <div class="bounds-actions">
+                <button type="button" class="btn btn-primary btn-sm" id="manualBoundsApply">${t('js.map.bounds.manual_apply')}</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="manualBoundsCancel">${t('js.map.bounds.manual_cancel')}</button>
+            </div>
+        </div>
+    `;
+}
+
+function _openManualBounds() {
+    _manualBoundsOpen = true;
+    updateBoundsInfo();
+    const first = document.getElementById(_manualBoundsInputId('north'));
+    if (first) first.focus();
+}
+
+// 关闭面板。必须先把面板从 DOM 里拿掉再让调用方重渲染：面板里的 input 带
+// .bounds-edit-input，而 updateBoundsInfo() 开头正是靠这个类判断「编辑态，
+// 不要重写整层」—— 留着它，之后那次重渲染会被自己拦掉，浮层永远停在面板上。
+function _closeManualBounds() {
+    _manualBoundsOpen = false;
+    const boundsInfo = document.getElementById('boundsInfo');
+    if (boundsInfo) boundsInfo.innerHTML = '';
+}
+
+// 校验口径与 _applyBoundsEdit 逐条对齐（顺序、判据、文案 key 全同），
+// 不另立一套：同一个选区被两个入口用不同标准放行，是更难查的缺陷。
+//   1. 非数字        -> js.map.edit.invalid_number
+//   2. north <= south -> js.map.edit.north_gt_south
+//   3. 纬度越界 ±90   -> js.map.edit.lat_range
+//   4. |east-west| < 1e-9 -> js.map.edit.zero_width
+// 注意第 4 条只禁「零宽」不要求 east > west —— 与 _applyBoundsEdit 一致，
+// west=170/east=-170 这类跨 180° 经线的矩形照样放行。
+// 返回 {north, south, east, west}（度），任一条不过则 toast 并返回 null。
+function _readManualBounds() {
+    const num = {};
+    for (const field of ['north', 'south', 'east', 'west']) {
+        const el = document.getElementById(_manualBoundsInputId(field));
+        const raw = el ? el.value : '';
+        const v = parseFloat(String(raw).trim());
+        if (isNaN(v)) {
+            showNotification(t('js.map.edit.invalid_number', { value: raw }), 'warning');
+            if (el) el.focus();
+            return null;
+        }
+        num[field] = v;
+    }
+    if (num.north <= num.south) {
+        showNotification(t('js.map.edit.north_gt_south'), 'warning');
+        return null;
+    }
+    if (num.north > 90 || num.south < -90) {
+        showNotification(t('js.map.edit.lat_range'), 'warning');
+        return null;
+    }
+    if (Math.abs(num.east - num.west) < 1e-9) {
+        showNotification(t('js.map.edit.zero_width'), 'warning');
+        return null;
+    }
+    return num;
+}
+
+function _applyManualBounds() {
+    const b = _readManualBounds();
+    if (!b) return;                 // 校验失败：面板留在原地，用户就地改
+    _closeManualBounds();
+    // 与 LEFT_UP 落定同一套写入：_rectDegrees 是几何真值，矩形实体与四个角点
+    // 手柄都从它读，所以这之后拖角点、点读数编辑的行为与框选出来的完全一致。
+    _rectDegrees = { west: b.west, south: b.south, east: b.east, north: b.north };
+    _ensureSelectionEntity();
+    _ensureHandles();
+    _syncBoundsFromRect();
+    // 矩形/手柄是 CallbackProperty，改 _rectDegrees 不会自动重绘，显式请求一帧
+    if (viewer) viewer.scene.requestRender();
+    updateBoundsInfo();
+    announceBounds();
+    refreshSubmitButtonState();
+    // 焦点不能留在刚被删掉的「确定」上（会掉回 <body>，键盘用户丢失位置）。
+    // 交给新出现的「下载」按钮 —— 正好是这条流程的下一步。
+    const dlBtn = document.getElementById('boundsDownloadBtn');
+    if (dlBtn) dlBtn.focus();
+}
+
+function _cancelManualBounds() {
+    _closeManualBounds();
+    updateBoundsInfo();
+    const btn = document.getElementById('boundsManualBtn');
+    if (btn) btn.focus();           // 焦点回到打开面板的那颗按钮
+}
+
+// #boundsInfo 上的委托点击里调用（浮层每次都是 innerHTML 全量重建，
+// 不能给面板里的按钮直接挂监听）。命中返回 true，让调用方短路。
+function _handleManualBoundsClick(e) {
+    if (e.target.closest('#boundsManualBtn')) {
+        _openManualBounds();
+        return true;
+    }
+    if (e.target.closest('#manualBoundsApply')) {
+        _applyManualBounds();
+        return true;
+    }
+    if (e.target.closest('#manualBoundsCancel')) {
+        _cancelManualBounds();
+        return true;
+    }
+    return false;
+}
+
+// 面板内 Enter 直接落定、Esc 取消 —— 不用让键盘用户从第四个输入框再 Tab 两下
+// 才够得着「确定」。限定在 .bounds-manual 内，避免和点击编辑那套输入框
+//（它们自己处理 Enter/Esc，同挂在 #boundsInfo 上）互相抢事件。
+function _handleManualBoundsKeydown(e) {
+    if (!e.target.closest('.bounds-manual')) return;
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        _applyManualBounds();
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        _cancelManualBounds();
+    }
 }
 
 // --- 下载 / 处理弹窗 -----------------------------------------------------------
@@ -1120,12 +1449,20 @@ document.head.appendChild(style);
 // ---------------------------------------------------------------------------
 
 async function submitContour() {
-    // 等高线从上传的 GeoTIFF 渲染（数据处理不下载，远程高程下载在「数据下载」
-    // 的 DEM 任务里做）。没有 bbox：瓦片范围由后端按 DEM 实际覆盖决定，
-    // 文件是否已选在这里校验。
+    // 等高线有两种数据来源：上传 GeoTIFF，或直接用某个已完成 DEM 任务已经下载好
+    // 的 .tif（零拷贝，后端按 dem_task_id 指向那个任务目录）。数据处理本身不下载，
+    // 远程高程下载在「数据下载」的 DEM 任务里做。没有 bbox：瓦片范围由后端按 DEM
+    // 实际覆盖决定；来源是否已选齐在这里校验。
+    const fromDemTask = (document.getElementById('processSource')?.value || 'upload') === 'dem_task';
+    const demTaskId = _selectedProcessDemTaskId();
     const fileInput = document.getElementById('contourFiles');
     const files = fileInput?.files;
-    if (!files || files.length === 0) {
+    if (fromDemTask) {
+        if (!demTaskId) {
+            showNotification(t('js.map.process.need_dem_task'), 'warning');
+            return;
+        }
+    } else if (!files || files.length === 0) {
         showNotification(t('js.map.process.need_files'), 'warning');
         return;
     }
@@ -1148,23 +1485,32 @@ async function submitContour() {
     fd.append('line_color_index', document.getElementById('lineColorIndex').value);
     fd.append('tint_breaks', document.getElementById('tintBreaks').value);
     fd.append('tint_colors', [...document.querySelectorAll('#tintColorStops input[type=color]')].map((el) => el.value).join(','));
-    for (const f of files) {
-        fd.append('files', f);
+    if (fromDemTask) {
+        fd.append('dem_task_id', demTaskId);
+    } else {
+        for (const f of files) {
+            fd.append('files', f);
+        }
     }
 
     const btn = document.getElementById('createProcessBtn');
     const original = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = t('js.map.process.uploading');
+    btn.innerHTML = t(fromDemTask ? 'js.map.process.submitting' : 'js.map.process.uploading');
     try {
         const createResp = await fetch('/api/contour/tasks', { method: 'POST', body: fd });
-        const created = await createResp.json();
         if (!createResp.ok) {
+            // .json() 必须在 resp.ok **之后**:上传超 2 GiB 时 Flask 的 413
+            // 返回的是 HTML 错误页,先 .json() 会抛 SyntaxError 被外层 catch
+            // 接住 —— 用户看到的是「Unexpected token '<'」而不是「文件过大」。
+            // 正确写法 9 行之后就有一份(startResp 那条 .catch(() => ({})))。
+            const failed = await createResp.json().catch(() => ({}));
             showNotification(t('js.map.process.create_failed', {
-                error: created.error || createResp.status,
+                error: failed.error || createResp.status,
             }), 'danger');
             return;
         }
+        const created = await createResp.json();
         const startResp = await fetch(`/api/contour/tasks/${created.task_id}/start`, { method: 'POST' });
         if (!startResp.ok) {
             const started = await startResp.json().catch(() => ({}));
@@ -1173,7 +1519,9 @@ async function submitContour() {
             }), 'danger');
             return;
         }
-        showNotification(t('js.map.process.contour_started'), 'success');
+        showNotification(fromDemTask
+            ? t('js.map.process.contour_started_dem_task', { id: demTaskId })
+            : t('js.map.process.contour_started'), 'success');
         resetForm({ clearBounds: false, formId: 'processForm' });
         resetContourTintUI();
         loadActiveTasks();
@@ -1278,7 +1626,7 @@ async function previewTask(task) {
                 });
                 if (seq !== _previewSeq) return;
                 viewer.terrainProvider = provider;
-                _previewState = { kind: 'terrain', taskId: task.id, taskType: t, name: task.name, prevTerrainProvider: prev };
+                _previewState = { kind: 'terrain', taskId: task.id, taskType: taskType, name: task.name, prevTerrainProvider: prev };
                 if (task.north == null && Array.isArray(layerMeta.valid_bounds) && layerMeta.valid_bounds.length === 4) {
                     const b = layerMeta.valid_bounds;   // [west, south, east, north]
                     viewer.camera.flyTo({
@@ -1359,7 +1707,15 @@ function _renderPreviewChip() {
 
 function toggleContourPreview(taskId, zoomMax) {
     // 当前预览就是这个任务 -> 再点一次关掉；否则切过去（预览管理器统一管）。
-    if (_previewState && _previewState.kind === 'imagery' && _previewState.taskId === taskId) {
+    //
+    // taskType 必须一起比:四张任务表(tasks / dem_tasks / contour_tasks /
+    // local_terrain_tasks)的 id 各自自增,`contour:5` 与 `map:5` 会同时存在;
+    // 而 kind === 'imagery' 是 map、contour、DEM 晕渲回退三者共用的。只比
+    // taskId 的话,正在预览 map 任务 5 时点 contour 任务 5 的预览按钮会走进
+    // 这个分支、把 map 的预览关掉而不是切过去 —— 用户看到的是「第一次点
+    // 没反应,再点一次才出来」。
+    if (_previewState && _previewState.kind === 'imagery'
+        && _previewState.taskType === 'contour' && _previewState.taskId === taskId) {
         stopTaskPreview();
         return;
     }
@@ -1486,6 +1842,12 @@ function initContourPreview() {
 }
 
 async function submitLocalTerrain() {
+    // 来源是已下载的 DEM 任务时不走上传管线，见 startDemTaskTerrainTiling()。
+    if ((document.getElementById('processSource')?.value || 'upload') === 'dem_task') {
+        await startDemTaskTerrainTiling();
+        return;
+    }
+
     const fileInput = document.getElementById('localTerrainFiles');
     const files = fileInput?.files;
     if (!files || files.length === 0) {
@@ -1507,21 +1869,64 @@ async function submitLocalTerrain() {
     btn.innerHTML = t('js.map.process.uploading');
     try {
         const resp = await fetch('/api/terrain/local/tasks', { method: 'POST', body: fd });
-        const result = await resp.json();
-        if (resp.ok) {
-            showNotification(t('js.map.process.upload_started', { id: result.task_id }), 'success');
-            resetForm({ clearBounds: false, formId: 'processForm' });
-            loadActiveTasks();
-            _afterTaskCreated('processModal');
-        } else {
+        if (!resp.ok) {
+            // 同 submitContour:.json() 必须在 resp.ok 之后。本地高程整包上传
+            // 比等高线更容易撞 413,先解析就会把「文件过大」变成
+            // 「Unexpected token '<'」。
+            const failed = await resp.json().catch(() => ({}));
             showNotification(t('js.map.process.upload_failed', {
-                error: result.error || resp.status,
+                error: failed.error || resp.status,
             }), 'danger');
+            return;
         }
+        const result = await resp.json();
+        showNotification(t('js.map.process.upload_started', { id: result.task_id }), 'success');
+        resetForm({ clearBounds: false, formId: 'processForm' });
+        loadActiveTasks();
+        _afterTaskCreated('processModal');
     } catch (err) {
         showNotification(t('js.map.process.upload_failed', { error: err.message }), 'danger');
     } finally {
         btn.innerHTML = original;
+        refreshSubmitButtonState();
+    }
+}
+
+// 「本地高程切片 + 已下载的 DEM 任务」刻意不新建 local_terrain 任务，而是复用 DEM
+// 任务自己的地形切片管线（POST /api/terrain/dem/<id>/start）：它的产物落在
+// /terrain/dem/<id>/，主视图预览、任务详情面板、terrain_job_progress 进度推送全都
+// 已经接好。另建一条 local_terrain 任务只会把同一份 DEM 切出第二个副本，白占磁盘，
+// 还让历史记录里出现两条指向同一数据的任务。
+async function startDemTaskTerrainTiling() {
+    const demTaskId = _selectedProcessDemTaskId();
+    if (!demTaskId) {
+        showNotification(t('js.map.process.need_dem_task'), 'warning');
+        return;
+    }
+
+    // 这条分支不上传任何文件，所以不套「上传中...」的按钮文案，只在请求期间禁用。
+    const btn = document.getElementById('createProcessBtn');
+    btn.disabled = true;
+    try {
+        const resp = await fetch(`/api/terrain/dem/${demTaskId}/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ maxzoom: document.getElementById('localTerrainMaxzoom')?.value || '' }),
+        });
+        if (resp.ok) {
+            showNotification(t('js.map.process.dem_tiling_started', { id: demTaskId }), 'success');
+            resetForm({ clearBounds: false, formId: 'processForm' });
+            loadActiveTasks();
+            _afterTaskCreated('processModal');
+        } else {
+            const result = await resp.json().catch(() => ({}));
+            showNotification(t('js.map.process.start_failed', {
+                error: result.error || resp.status,
+            }), 'danger');
+        }
+    } catch (err) {
+        showNotification(t('js.map.process.start_failed', { error: err.message }), 'danger');
+    } finally {
         refreshSubmitButtonState();
     }
 }
@@ -1563,9 +1968,20 @@ function initMapWorkbench() {
         }
     }
 
-    // 缩放级别：相机高度换算的近似 zoom，300ms 轮询（camera.changed 太高频）
+    // 缩放级别 + 镜头高度：高度换算的近似 zoom，300ms 轮询（camera.changed 太高频）
+    function _fmtHeight(h) {
+        if (h >= 100000) return Math.round(h / 1000) + ' km';
+        if (h >= 1000) return (h / 1000).toFixed(1) + ' km';
+        return Math.round(h) + ' m';
+    }
     function updateZoom() {
-        if (zoomEl) zoomEl.textContent = 'z' + _heightToZoom(viewer.camera.positionCartographic.height);
+        if (!zoomEl) return;
+        const h = viewer.camera.positionCartographic.height;
+        // 级别与高度分两个 span：窄屏 CSS 只藏高度、保住 z 读数
+        document.getElementById('statusZoomZ').textContent =
+            t('js.map.status.zoom', { z: _heightToZoom(h) });
+        document.getElementById('statusZoomAlt').textContent =
+            t('js.map.status.alt', { h: _fmtHeight(h) });
     }
 
     // 鼠标经纬度：50ms 节流，避免 mousemove 高频刷新
@@ -1591,9 +2007,9 @@ function initMapWorkbench() {
             pending = event.endPosition;
         }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
         viewer.scene.canvas.addEventListener('mouseout', function () {
+            // 只停止拾取，不清读数：移开后保留最后一个坐标（仍可点击复制），
+            // 比闪回「经度 — 纬度 —」占位符更符合读数栏的定位。
             pending = null;
-            lastCoords = null;
-            coordsEl.textContent = t('js.map.status.coords_empty');
         });
         // 点击状态栏坐标 -> 复制「经度,纬度」（GIS 惯用顺序，可直接贴进大多数工具）
         coordsEl.addEventListener('click', function () {
@@ -1650,10 +2066,12 @@ function initMapWorkbench() {
     }, 50);
 
     // bounds 浮层交互（事件代理，浮层内容每次 updateBoundsInfo 都重渲染）：
-    // 「下载」按钮 -> 下载弹窗；「删除」按钮 -> 清空选区；.bounds-v 数值 -> 点击编辑。
+    // 「下载」按钮 -> 下载弹窗；「删除」按钮 -> 清空选区；.bounds-v 数值 -> 点击编辑；
+    // 空态的「手动输入范围」及其面板 -> _handleManualBoundsClick。
     const boundsInfo = document.getElementById('boundsInfo');
     if (boundsInfo) {
         boundsInfo.addEventListener('click', function (e) {
+            if (_handleManualBoundsClick(e)) return;
             const dl = e.target.closest('#boundsDownloadBtn');
             if (dl) {
                 openDownloadModal();
@@ -1667,6 +2085,8 @@ function initMapWorkbench() {
             const v = e.target.closest('.bounds-v');
             if (v && currentBounds) _beginBoundsEdit(v);
         });
+        // 手动输入面板里 Enter 落定 / Esc 取消（同样代理，面板是重建出来的）
+        boundsInfo.addEventListener('keydown', _handleManualBoundsKeydown);
     }
 
     // 首屏填充「请在地图上框选下载区域」提示与状态栏选区摘要

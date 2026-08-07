@@ -11,6 +11,7 @@
 import asyncio
 import importlib
 import os
+import re
 import sys
 import time
 
@@ -186,8 +187,8 @@ def test_config_page_has_recommend_button(monkeypatch, tmp_path):
         html = client.get(path).get_data(as_text=True)
         assert 'id="concurrencyRecommend"' in html, f'{path} 缺少测速推荐按钮'
         assert 'id="concurrent_downloads"' in html
-        # 紧凑配方类:`.config-section .btn` 的大 padding(0.75rem 2rem 粗体)
-        # 会把裸 btn 撑成与整体风格不协调的大块头,必须带专用类压住
+        # 紧凑配方类:配置页的行内动作按钮统一锁在 --ctl-h(28px),与相邻
+        # input 同高。裸 .btn 是 36–37px,和「验证」「浏览」并排就是两种高度。
         assert 'concurrency-recommend' in html, (
             f'{path} 的测速推荐按钮缺少紧凑样式类 concurrency-recommend'
         )
@@ -196,21 +197,30 @@ def test_config_page_has_recommend_button(monkeypatch, tmp_path):
 def test_recommend_button_compact_css_recipe():
     """`.btn.concurrency-recommend` 必须按「验证」按钮同款紧凑配方声明。
 
-    (0,2,0) 与 `.config-section .btn` 同优先级、靠文件内位置靠后取胜,
-    所以这条同时钉「规则存在」和「用了 --ctl-h 密度令牌」。
+    钉的是「测速推荐与相邻控件同高」这个观感契约:规则存在 + 高度走 --ctl-h
+    密度令牌。四个紧凑档选择器(.btn-compact / .tile-server-verify /
+    .concurrency-recommend / .path-browse)共用同一份声明块。
+
+    历史注记:这里原本还断言本规则必须排在 `.config-section .btn` 之后(同
+    (0,2,0) 优先级靠后写取胜)。那条大 padding 规则已从源头删除 —— 它把配置页
+    每个按钮撑成 47px 粗体,却要三条例外去救,而它想美化的底部保存/重置根本不在
+    .config-section 里。被压的规则没了,顺序断言也就没有对象了。
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, 'static', 'css', 'style.css'), encoding='utf-8') as f:
         src = f.read()
-    assert '.btn.concurrency-recommend' in src, '缺少紧凑按钮规则'
-    rule_start = src.index('.btn.concurrency-recommend')
-    rule_end = src.index('}', rule_start)
-    rule = src[rule_start:rule_end]
-    assert 'var(--ctl-h)' in rule, '紧凑按钮必须用 --ctl-h 高度令牌(与验证按钮一致)'
-    # 必须在 .config-section .btn 之后声明,同优先级才压得住
-    assert src.index('.btn.concurrency-recommend') > src.index('.config-section .btn'), (
-        '规则顺序错误:同优先级下后写者胜,紧凑规则要放在 .config-section .btn 之后'
+    # 必须剥掉注释再查：删除那条规则时留了一段说明「这里曾有
+    # `.config-section .btn { ... }`」，裸 `in` 会把说明本身当成规则复活。
+    live = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    assert '.config-section .btn {' not in live, (
+        '.config-section .btn 的大 padding 规则不该回来:它会把配置页所有按钮'
+        '撑成 47px 粗体,每个紧凑按钮都得再写一条例外去压'
     )
+    assert '.btn.concurrency-recommend' in live, '缺少紧凑按钮规则'
+    rule_start = live.index('.btn.concurrency-recommend')
+    rule_end = live.index('}', rule_start)
+    rule = live[rule_start:rule_end]
+    assert 'var(--ctl-h)' in rule, '紧凑按钮必须用 --ctl-h 高度令牌(与验证按钮一致)'
 
 
 def test_config_js_recommend_wiring():

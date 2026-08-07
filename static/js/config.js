@@ -1,10 +1,42 @@
 function initConfig() {
     document.getElementById('configForm').addEventListener('submit', saveConfig);
     initTileServerEditor();
+    initBasemapSource();
     initThemeSwitcher();
     initLangSwitcher();
     initConcurrencyRecommend();
+    initProxyAutodetect();
     initCacheManager();
+}
+
+// --- 底图源 -------------------------------------------------------------------
+// 底图与下载源（tile_servers）是两个独立配置，理由见
+// src/services/basemap_source.py：底图走浏览器直连、不吃 proxy_url，
+// 下载走 Python、吃 —— 可达性不同，不能共用一份地址。
+//
+// 存库的值只有一个字符串：预设名（esri / google_satellite / google_roadmap /
+// download_source）或一条完整 XYZ 模板。UI 上拆成「下拉 + 自定义输入框」两个
+// 控件，collectBasemapSource 负责合回一个值。
+
+function syncBasemapCustom() {
+    const sel = document.getElementById('basemap_source_preset');
+    const custom = document.getElementById('basemap_source_custom');
+    if (!sel || !custom) return;
+    custom.hidden = sel.value !== 'custom';
+}
+
+function collectBasemapSource() {
+    const sel = document.getElementById('basemap_source_preset');
+    if (!sel) return '';
+    if (sel.value !== 'custom') return sel.value;
+    return document.getElementById('basemap_source_custom').value.trim();
+}
+
+function initBasemapSource() {
+    const sel = document.getElementById('basemap_source_preset');
+    if (!sel) return;
+    sel.addEventListener('change', syncBasemapCustom);
+    syncBasemapCustom();
 }
 
 // --- 缓存管理 -----------------------------------------------------------------
@@ -72,7 +104,7 @@ function renderCacheStats(data) {
                 t('js.config.cache.size_files',
                     { size: formatCacheBytes(c.size_bytes), count: c.file_count }) +
                 '</span>' +
-                '<button type="button" class="btn btn-outline-danger btn-sm cache-clear-btn" ' +
+                '<button type="button" class="btn btn-outline-danger btn-compact cache-clear-btn" ' +
                 'data-key="' + window.escapeHtml(c.key) + '" data-label="' + window.escapeHtml(c.label) + '" ' +
                 'data-size="' + formatCacheBytes(c.size_bytes) + '">' +
                 t('js.config.cache.clear') + '</button>' +
@@ -191,6 +223,115 @@ function initConcurrencyRecommend() {
             btn.textContent = originalText;
         }
     });
+}
+
+// --- 代理自动检测 -------------------------------------------------------------
+// proxy_url 留空时后端会自己找代理（环境变量/系统代理、Windows PAC、本机与 WSL
+// 宿主的常见代理端口），每个候选都用真实瓦片实测。这里只做两件事：进页面拉一次
+// 当前状态、点按钮强制重探。开关本身随「保存配置」落库，与其它字段口径一致。
+//
+// 状态呈现是**一个图标**：颜色表结论（绿=找到 / 灰=直连 / 黄=用的手动值 /
+// 蓝转=检测中 / 红=请求失败），完整说明写进 data-hint，hover 才展开。
+// 说明文字有五六十个字，常驻在版面上会把这一块压成一堵墙。
+
+const PROXY_ICONS = {
+    ok: '<circle cx="12" cy="12" r="9"></circle><polyline points="8.5 12.5 11 15 15.5 9.5"></polyline>',
+    none: '<circle cx="12" cy="12" r="9"></circle><line x1="8" y1="12" x2="16" y2="12"></line>',
+    manual: '<circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line>',
+    busy: '<path d="M12 3a9 9 0 1 0 9 9"></path>',
+    error: '<circle cx="12" cy="12" r="9"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>',
+};
+
+function proxySourceLabel(source) {
+    const key = { env: 'js.config.proxy.source_env',
+                  pac: 'js.config.proxy.source_pac',
+                  scan: 'js.config.proxy.source_scan' }[source];
+    return key ? t(key) : (source || '');
+}
+
+// shape: PROXY_ICONS 的键，同时决定 .hint 的状态色类。
+function setProxyIcon(icon, shape, text) {
+    // 必须写进 <svg> 而不是外层 <button>：innerHTML 走 HTML 解析器，裸
+    // <circle>/<line> 落在 HTML 命名空间里既不是 SVG 元素也不渲染，
+    // 图标会变成一块什么都没有的空白（改前实测就是全黑的 18×18）。
+    const svg = icon.querySelector('svg');
+    if (svg) {
+        svg.innerHTML = PROXY_ICONS[shape] || PROXY_ICONS.none;
+        // 转圈挂在 svg 上（转 button 会把 hover 气泡一起转），且必须是单类
+        // 选择器 —— 理由见 style.css 的 .hint-spin 注释。
+        svg.classList.toggle('hint-spin', shape === 'busy');
+    }
+    icon.classList.remove('is-ok', 'is-warn', 'is-danger', 'is-busy');
+    const tone = { ok: 'is-ok', manual: 'is-warn', busy: 'is-busy',
+                   error: 'is-danger' }[shape];
+    if (tone) icon.classList.add(tone);
+    // data-hint 为空时 CSS 把图标整个隐藏，所以任何分支都必须给出文本
+    icon.dataset.hint = text;
+    // 无障碍名必须跟着一起更新:气泡是 ::after + content: attr(data-hint),而
+    // aria-label 按 accname 规范优先于 CSS 生成内容 —— 只留模板里那个固定的
+    // 「代理检测状态」,读屏用户永远拿不到检测结果本身。
+    // 前缀取模板渲染的初始 aria-label,记进 dataset:setProxyIcon 每次检测都
+    // 会被调用多次(busy -> ok),不缓存前缀就会一层层累积拼接。
+    if (icon.dataset.ariaPrefix === undefined) {
+        icon.dataset.ariaPrefix = icon.getAttribute('aria-label') || '';
+    }
+    icon.setAttribute('aria-label', `${icon.dataset.ariaPrefix}: ${text}`);
+}
+
+function renderProxyStatus(icon, data) {
+    if (data.manual) {
+        setProxyIcon(icon, 'manual', t('js.config.proxy.manual', { url: data.manual }));
+    } else if (!data.auto_enabled) {
+        setProxyIcon(icon, 'none', t('js.config.proxy.disabled'));
+    } else if (data.url) {
+        setProxyIcon(icon, 'ok', t('js.config.proxy.found', {
+            url: data.url, source: proxySourceLabel(data.source),
+        }));
+    } else if (data.status === 'done') {
+        setProxyIcon(icon, 'none', t('js.config.proxy.none',
+            { tried: (data.candidates || []).length }));
+    } else {
+        // idle（从没探过）或 detecting（启动那轮还在跑）
+        setProxyIcon(icon, 'busy', t('js.config.proxy.pending'));
+    }
+}
+
+async function fetchProxyStatus(icon, { force = false } = {}) {
+    try {
+        const response = await fetch('/api/config/proxy_status',
+            { method: force ? 'POST' : 'GET' });
+        const data = await response.json();
+        if (!response.ok) {
+            setProxyIcon(icon, 'error', t('js.config.proxy.failed',
+                { error: data.error || ('HTTP ' + response.status) }));
+            return;
+        }
+        renderProxyStatus(icon, data);
+    } catch (error) {
+        setProxyIcon(icon, 'error',
+            t('js.config.proxy.failed', { error: error.message }));
+    }
+}
+
+function initProxyAutodetect() {
+    const icon = document.getElementById('proxyStatusIcon');
+    const btn = document.getElementById('proxyDetectNow');
+    if (!icon || !btn) return;
+
+    btn.addEventListener('click', async function () {
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = t('js.config.proxy.detecting');
+        setProxyIcon(icon, 'busy', t('js.config.proxy.detecting_hint'));
+        try {
+            await fetchProxyStatus(icon, { force: true });
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    });
+
+    fetchProxyStatus(icon);
 }
 
 // --- 外观：主题分段开关 -------------------------------------------------------
@@ -352,7 +493,9 @@ async function saveConfig(e) {
         request_timeout: document.getElementById('request_timeout').value,
         max_retries: document.getElementById('max_retries').value,
         proxy_url: document.getElementById('proxy_url').value,
+        proxy_auto_detect: document.getElementById('proxy_auto_detect').checked ? 'true' : 'false',
         tile_servers: collectTileServers(),
+        basemap_source: collectBasemapSource(),
         cache_enabled: document.getElementById('cache_enabled').checked ? 'true' : 'false',
         gdal_compression: document.getElementById('gdal_compression').value,
         gdal_resampling: document.getElementById('gdal_resampling').value,

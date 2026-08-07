@@ -39,6 +39,17 @@ def _fn_body(src, name):
     raise AssertionError(f'{name} 函数体花括号不配对')
 
 
+def _strip_comments(src):
+    """剥掉 // 与 /* */ 注释。
+
+    本仓库的注释**逐字讨论**被删掉的那些代码（map.js 底图那段就写着
+    `_baseMapUrl` / `lyrs=m`），不剥的话「这个符号不许再出现」类断言会把
+    注释当成违规。与 test_socket_singleton_contract.py 同一路数。
+    """
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
 def test_reset_form_helper_exists():
     """三处重复的表单重置逻辑必须收敛成一个函数"""
     src = _map_js()
@@ -89,7 +100,7 @@ def test_submit_button_is_always_unlocked_in_finally():
     没有一条要求解锁调用**必须存在**——守「不能写 X」而不守「必须调用 Y」
     是不对称的。
 
-    三处提交处理器开头都会 btn.disabled = true 给按钮上锁,唯一的解锁路径
+    四处提交处理器开头都会 btn.disabled = true 给按钮上锁,唯一的解锁路径
     就是 finally 里那一行 refreshSubmitButtonState()。删掉它,提交失败后
     按钮会永久卡死,而其他断言全绿。这里补上存在性断言。
     """
@@ -97,8 +108,9 @@ def test_submit_button_is_always_unlocked_in_finally():
 
     # finally 块内目前没有嵌套花括号,所以 [^}]* 足够界定块体
     finally_blocks = re.findall(r'\}\s*finally\s*\{([^}]*)\}', src)
-    assert len(finally_blocks) == 3, (
-        "预期 3 处提交处理器各有一个 finally 块(map/dem、contour、local_terrain);"
+    assert len(finally_blocks) == 4, (
+        "预期 4 处提交处理器各有一个 finally 块(map/dem、contour、local_terrain 上传、"
+        "local_terrain 复用已下载 DEM 任务);"
         f"实际找到 {len(finally_blocks)} 个。块结构变了就要同步更新本测试"
     )
     for block in finally_blocks:
@@ -107,10 +119,10 @@ def test_submit_button_is_always_unlocked_in_finally():
             "否则提交失败后按钮永久禁用"
         )
 
-    # 9 = 1 处定义 + apply() + CREATED + DELETED + syncBoundsFromDrawnItems()
-    #     + resetForm() + 3 处 finally
-    assert src.count('refreshSubmitButtonState(') >= 9, (
-        "refreshSubmitButtonState 的定义/调用点少于 9 处,说明某个状态变更路径"
+    # 10 = 1 处定义 + apply() + CREATED + DELETED + syncBoundsFromDrawnItems()
+    #      + resetForm() + 4 处 finally
+    assert src.count('refreshSubmitButtonState(') >= 10, (
+        "refreshSubmitButtonState 的定义/调用点少于 10 处,说明某个状态变更路径"
         "(绘制、编辑、类型切换、表单重置、提交收尾)漏了统一刷新"
     )
 
@@ -299,16 +311,30 @@ def test_tile_estimate_rejects_antimeridian_selection():
     )
 
 
-def test_base_map_host_entry_is_protocol_relative():
-    """_baseMapUrl 的主机条目（mts0 / mts0.google.cn）不许硬编码 http://。
+def test_map_js_does_not_resolve_the_basemap_url_itself():
+    """底图地址的解析必须只有一份，在服务端（src/services/basemap_source.py）。
 
-    页面走 https 时 http:// 的瓦片请求会被混合内容拦截，底图白屏。
+    改造前 map.js 里有一个 _baseMapUrl 平行实现，与 services/tile_url_probe
+    的条目语义各写各的 —— 而且它写死 lyrs=m（选卫星也给你路网图）、写死
+    署名 © OpenStreetMap（实际加载的是 Google 瓦片）。协议相对、层级上限、
+    署名这些不变量现在由 tests/test_basemap_source.py 守。
+
+    这条守的是「别再长回来」：map.js 不许再出现拼 URL 的痕迹。
     """
     src = _map_js()
-    body = _fn_body(src, '_baseMapUrl')
-    assert 'http://${host}' not in body, (
-        '_baseMapUrl 的主机条目仍硬编码 http://——https 部署下会被混合内容拦截'
+    # 先剥注释：上面那段代码的**注释里**逐字写着 _baseMapUrl / lyrs=m，
+    # 解释它们为什么被删（见 _strip_comments 的说明）。
+    code = _strip_comments(src)
+    assert '_baseMapUrl' not in code, (
+        'map.js 又出现了 _baseMapUrl —— 底图地址解析已收敛到服务端，'
+        '这里只消费 initMap(config, basemap) 传进来的结果'
     )
-    assert '//${host}' in body, (
-        '_baseMapUrl 的主机条目应使用协议相对 URL（//host/...）'
+    assert 'googleapis.com' not in code, (
+        'map.js 不该再硬编码瓦片主机：别名展开在 services/basemap_source.py'
+    )
+    assert 'lyrs=' not in code, (
+        'map.js 不该再硬编码 lyrs 样式码 —— 卫星/路网由配置项 basemap_source 决定'
+    )
+    assert re.search(r'function initMap\(\s*config\s*,\s*basemap\s*\)', src), (
+        'initMap 必须接收服务端解析好的 basemap（templates/index.html 传入）'
     )

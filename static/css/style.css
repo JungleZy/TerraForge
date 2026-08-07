@@ -87,8 +87,7 @@
     --radius-lg: 14px;
 
     /* 底部状态栏胶囊:本体高度 + 与视口边缘的间距。
-       高度 34 而不是读数行需要的 26:胶囊里还嵌着一颗 26px 的连接状态小胶囊,
-       贴着算它上下只剩 4px,两条弧线会几乎叠在一起。
+       高度 34 而不是读数行需要的 26:上下各留 4px 呼吸位,读数不顶胶囊边。
        --statusbar-clearance 是「其它底部锚点必须让开的高度」——
        状态栏浮在内容之上,滑出面板、地图右下的预览条、非地图页的内容容器
        都靠这个值给它腾地方,别再各写各的字面量。 */
@@ -319,7 +318,7 @@
      1. `*` 让样式引擎给**每一个**节点挂过渡簿记。首页地图上 Leaflet
         动态生成的节点数以千计，它们一条过渡也用不上。
      2. 真正需要过渡反馈的元素（.btn / .form-control / .card /
-        .status-badge / .page-link / .form-check-input …）
+        .page-link / .form-check-input …）
         本来就各自写了一条 transition，`*` 那条对它们完全是死声明。
    删除本身由 tests/test_css_contract.py::test_no_blanket_motion_on_the_universal_selector
    钉住（那条同时禁止 animation-* 回潮）。 */
@@ -431,19 +430,8 @@ body {
 
 /* 连接状态指示（由 initConnectionStatus 点亮）。socket 现在是全站单例
    （window.TerraSocket），每个页面都会连，不再有「没有 socket 的页面」。
-   位于底部状态栏，与读数项同行。 */
-.conn-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: 8px;
-    padding: 2px 10px;
-    border: 1px solid var(--color-border);
-    border-radius: 999px;
-    font-size: inherit;              /* 跟随状态栏字号，别再钉在 --font-size-xs 上 */
-    color: var(--color-text-secondary);
-}
-
+   位于底部状态栏，胶囊外壳由 `.statusbar-pill` 共享规则给，
+   这里只剩圆点。 */
 .conn-dot {
     width: 9px;
     height: 9px;
@@ -464,12 +452,13 @@ body {
     position: relative;
 }
 
-/* Bottom status bar：浮在内容之上的胶囊（34px 高，等宽字体读数，专业 GIS 的
-   标尺位）。刻意不占布局流 —— 首页地图要一路铺到视口底，胶囊悬在上面；
-   会滚动的非地图页由 .page-content 的 padding-bottom 让位。
-   项间用分隔线分组（gap 归 0，padding 进项内），可读性比纯空白好。
-   注意：别用 `.a + .a` 兄弟选择器给首项去边线——test_css_contract 的
-   按钮层叠模型只支持后代组合符，兄弟选择器会让它整体失效。 */
+/* Bottom status bar：一排各自独立的胶囊，浮在内容之上（34px 高，等宽字体读数，
+   专业 GIS 的标尺位）。刻意不占布局流 —— 首页地图要一路铺到视口底，胶囊悬在
+   上面；会滚动的非地图页由 .page-content 的 padding-bottom 让位。
+   外壳只是透明的 flex 行，胶囊形态由下面那条 `.statusbar-pill` 规则给 ——
+   新增读数元素记得挂这个类。
+   注意：外壳不能再写 overflow:hidden —— 胶囊高度 = 外壳高度，shadow 会被
+   上下裁掉。窄屏放不下的胶囊改由 body{overflow:hidden} 裁在视口边缘。 */
 .workbench-statusbar {
     position: absolute;
     left: var(--statusbar-inset);
@@ -479,12 +468,7 @@ body {
     height: var(--statusbar-h);
     display: flex;
     align-items: center;
-    gap: 0;
-    padding: 0 17px;                /* = 胶囊两端圆弧的半径，首尾读数不进弧线 */
-    background: var(--color-bg-secondary);
-    border: 1px solid var(--color-border);
-    border-radius: 999px;
-    box-shadow: var(--shadow-md);
+    gap: 8px;
     font-family: var(--font-mono);
     /* 13px 而不是 --font-size-xs(12px)：等宽的 JetBrains Mono x-height 比左上
        工具条用的 Inter 矮一截，同样 12px 在这里视觉上会小一号。字号只在这里
@@ -492,24 +476,22 @@ body {
     font-size: 13px;
     color: var(--color-text-secondary);
     white-space: nowrap;
-    overflow: hidden;               /* 读数项的 hover 底色由圆角裁齐 */
 }
 
-/* 读数项:分隔线用伪元素画成 16px 的短竖线,而不是 border-left 通到顶。
-   胶囊的上下边是圆的,通到顶的发丝线会一直顶到弧线上,看着像没留边距。 */
-.statusbar-item {
-    position: relative;
+/* 每个读数元素一颗胶囊（.statusbar-pill）：等高填满外壳，自带底色/边框/阴影。
+   胶囊类而不是 `.workbench-statusbar > *` 子选择器 —— test_css_contract 的
+   按钮/动画层叠模型读不懂 `>` 组合符，会把整片模型判失效。 */
+.statusbar-pill {
+    box-sizing: border-box;
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     padding: 0 12px;
-}
-
-.statusbar-item::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 50%;
-    height: 16px;
-    border-left: 1px solid var(--color-border);
-    transform: translateY(-50%);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    box-shadow: var(--shadow-md);
 }
 
 .statusbar-item b {
@@ -517,11 +499,9 @@ body {
     font-weight: 500;
 }
 
-/* 点击可复制的读数项（坐标 / 选区四至）：hover 底色提示可点。
-   底色也做成胶囊,和外壳同语言;分隔线是伪元素,盖不住。 */
+/* 点击可复制的读数项（坐标 / 选区四至）：hover 换底色提示可点。 */
 .statusbar-copy {
     cursor: pointer;
-    border-radius: 999px;
     transition: background-color 0.15s ease;
 }
 
@@ -529,12 +509,12 @@ body {
     background: var(--color-bg-tertiary);
 }
 
-/* 极窄屏状态栏隐藏时钟，给读数让位；字号退回 12px、胶囊两端和项间距一并收紧
-   —— 桌面那份 13px + 17px/12px 在 430px 宽的窗口里会把最后一项读数挤出胶囊
-   （overflow:hidden 直接裁掉，读不到）。 */
+/* 极窄屏状态栏隐藏时钟，给读数让位；字号退回 12px、项内边距与胶囊间距一并收紧
+   —— 桌面那份 13px + 12px 内边距 + 8px 间距在 430px 宽的窗口里放不下所有胶囊，
+   排不下的会被推出视口（裁掉，读不到）。 */
 @media (max-width: 576px) {
     .workbench-statusbar {
-        padding: 0 10px;
+        gap: 6px;
         font-size: var(--font-size-xs);
     }
 
@@ -542,17 +522,19 @@ body {
         padding: 0 8px;
     }
 
-    /* 窄屏隐藏时钟。**不要写回 .statusbar-item:last-child** —— 那条规则的正确性
+    /* 窄屏隐藏时钟；镜头高度同理只藏 #statusZoomAlt 这个 span，保住 z 级读数。
+       **都不要写回 .statusbar-item:last-child** —— 那条规则的正确性
        依赖「时钟恰好排在最后」这个巧合，往 statusbar 末尾加任何元素都会让它
        选中别的东西，或者一个都选不中（新元素不带 .statusbar-item 类）。 */
-    .workbench-statusbar .statusbar-clock {
+    .workbench-statusbar .statusbar-clock,
+    .workbench-statusbar #statusZoomAlt {
         display: none;
     }
 
     /* 底图解压进度**出现时**才让这几项让路，隐藏后自动恢复。
-       为什么必须让路（430px 实测，别凭感觉调）：可视内容宽 388px，而常态内容
-       宽 768px —— 状态栏是 overflow: hidden，解压进度排在最右，会被整个裁掉，
-       一个像素都看不见（曾经这里的注释写着「窄屏保留显示」，那是句假话）。
+       为什么必须让路（430px 实测，别凭感觉调）：整排胶囊比视口宽得多，
+       解压进度排在最右，会被推出视口整个裁掉，一个像素都看不见
+       （曾经这里的注释写着「窄屏保留显示」，那是句假话）。
        挤掉谁、留下谁（实测宽度）：
          挤掉 .statusbar-tasks 276px（活动任务聚合。它是面板入口，但地图工具条
               上另有一颗 data-panel="records" 的按钮，挤掉不会断路）
@@ -565,7 +547,7 @@ body {
        .conn-status 在 base.html、每一页都有 —— 在 /config 与 /history 上这条规则
        唯一能挤掉的就是连接指示灯，而那两页的状态栏本来就只有它和解压进度两个
        元素，根本不缺那 73px。挤了是纯亏。差的那点宽度改从本元素自己的装饰里出
-       （见下面那条 .statusbar-basemap 的窄屏规则，36px 纯装饰）。
+       （见下面那条 .statusbar-basemap 的窄屏规则，26px 纯装饰）。
        ⚠️ 英文文案是本规则的真正约束，别只按中文调：中文「底图解压 100%」元素宽
        181px，英文「Unpacking base terrain 100%」是 291px。只挤掉这三项时中文富余
        95px 而英文**溢出 16px** —— 靠下面那条清零装饰的规则补回来。
@@ -582,23 +564,27 @@ body {
         display: none;
     }
 
-    /* 窄屏下本元素自己的装饰全部清零：margin-left 12 + padding 0 12 + 左边框 1
-       = 36px 纯装饰，而英文文案的缺口只有 16px，够补。
+    /* 窄屏下本元素自己的胶囊装饰全部清零：padding 0 12 + 边框 1px = 26px
+       纯装饰（阴影与底色一并去掉，裸文字最省），而英文文案的缺口只有
+       16px，够补。
        为什么要单独写一条：本元素**不带** .statusbar-item，上面那条
        `.workbench-statusbar .statusbar-item { padding: 0 8px }` 管不到它。
-       这 36px 是从自己身上省的，比再挤掉一项别人的读数便宜。
-       ⚠️ 选择器必须带 .workbench-statusbar 前缀（0,2,0）：基础规则
-       `.statusbar-basemap`（0,2,0 里的 0,1,0）写在本文件**更靠后**的位置，
-       同特异度下靠后者胜 —— 这里写成裸 `.statusbar-basemap` 会被它整条压掉，
-       实测清零完全不生效（元素仍是 291px，英文照样溢出 16px）。 */
+       这 26px 是从自己身上省的，比再挤掉一项别人的读数便宜。
+       ⚠️ 选择器必须带 .workbench-statusbar 前缀（0,2,0）：胶囊装饰写在共享
+       规则 `.statusbar-pill`（0,1,0）上，特异度压得住；但养成带前缀
+       的习惯 —— 曾经写成裸 `.statusbar-basemap`（0,1,0）时被文件更靠后的同
+       特异度基础规则整条压掉，清零完全不生效（元素仍是 291px，英文照样溢出
+       16px）。tests/test_base_unpack_statusbar.py 的
+       test_narrow_screen_decoration_reset_actually_wins_the_cascade 钉住。 */
     .workbench-statusbar .statusbar-basemap {
-        margin-left: 0;
         padding: 0;
-        border-left: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
     }
 
     /* failed 态改排到最左（order: -1）。
-       为什么需要它：failed 不让路（见上），于是解压进度排在最右、被 overflow
+       为什么需要它：failed 不让路（见上），于是解压进度排在最右、被推出视口
        整个裁掉 —— 实测中文 -280px、英文 -393px，**一个像素都看不见**。而
        failed 是粘性终态，看不见就等于「失败永远不可见」，这正是本功能要消灭的
        东西。挪到最左侧则必然完整可见，代价是它右边的读数被挤出可视区 —— 但那
@@ -749,8 +735,13 @@ html[lang="en"] .map-panel-btn {
 }
 
 /* 面板打开 / dock 展开时点亮对应入口（panels.js / map.js 切换） */
+/* 第三支 `--active:focus-visible` 不是冗余：上面那条 `.map-panel-btn:focus-visible`
+   也是 (0,2,0)，只靠 `.map-panel-btn--active`(0,1,0) 赢不了它。缺这一支时，
+   激活态按钮一被 Tab 聚焦就丢掉「面板开着」的品牌蓝。实测：未聚焦
+   rgb(56,189,248) → 聚焦后 rgb(232,234,237)。`:hover` 分支早就补过，漏的是键盘路径。 */
 .map-panel-btn--active,
-.map-panel-btn--active:hover {
+.map-panel-btn--active:hover,
+.map-panel-btn--active:focus-visible {
     color: var(--color-accent);
 }
 
@@ -892,15 +883,16 @@ html[lang="en"] .map-panel-btn {
 }
 
 /* ---- 覆盖面板（历史记录 / 配置）：右侧滑出，浮在地图上方 --------------
-   单窗口工作台形态：面板只活在视口顶与底部状态栏胶囊之间的主区内（顶部
-   工具栏已移除），外壳始终可见。z-index 层级：
+   单窗口工作台形态：面板与遮罩都撑满整个视口（顶部工具栏已移除；底部
+   状态栏是悬浮胶囊、不占布局流，面板打开时随地图一起被压暗、被面板
+   盖住右下角时钟是正常层级）。z-index 层级：
      Leaflet 控件 ≤ 1000 < 面板 backdrop 1400 < 面板 1401
      < Bootstrap modal-backdrop 1450 < modal 1500（历史详情弹窗在面板之上）
      < toast 11000 < confirm 12000（ui.js 组件永远最顶） */
 .panel-backdrop {
     position: fixed;
     top: 0;
-    bottom: var(--statusbar-clearance);
+    bottom: 0;
     left: 0;
     right: 0;
     z-index: 1400;
@@ -917,7 +909,7 @@ html[lang="en"] .map-panel-btn {
 .workbench-panel {
     position: fixed;
     top: 0;
-    bottom: var(--statusbar-clearance);
+    bottom: 0;
     right: 0;
     z-index: 1401;
     width: 480px;
@@ -1120,7 +1112,8 @@ html[lang="en"] .map-panel-btn {
 }
 
 .task-progress-line .task-pct,
-.task-progress-line .task-count {
+.task-progress-line .task-count,
+.task-progress-line .task-speed {
     white-space: nowrap;
     flex: 0 0 auto;
 }
@@ -1130,6 +1123,15 @@ html[lang="en"] .map-panel-btn {
     font-variant-numeric: tabular-nums;
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
+}
+
+/* 下载速度。等宽 + tabular-nums 与 .task-pct 同款：数字每 0.5-1s 换一次，
+   比例字体下 "1.2 MB/s" → "11.4 MB/s" 会把右侧内容推着左右晃。 */
+.task-speed {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
 }
 
 /* 行1：状态点 + 名称 + #类型:id + 元信息 + 状态小字 …… 时间 + 动作组。
@@ -1284,19 +1286,11 @@ html[lang="en"] .map-panel-btn {
     font-size: var(--font-size-xs);
 }
 
-.status-badge {
-    display: inline-block;
-    padding: 0.35rem 0.85rem;
-    border-radius: 6px;
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    font-family: var(--font-mono);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
-    box-shadow: none;
-}
-
-.status-badge.running,
+/* 这里曾经还有一个 `.status-badge` 组件（基规则 + 五个状态分支的 `.status-badge.xxx`
+   前缀）。任务行改用 `.task-dot` + `.task-status-text` 之后它就没有任何 markup
+   会带上这个类了，全仓仅剩 history.js / tasks.js 两处注释在引用，故整体删除。
+   下面五组保留的 `.badge.bg-*` 是活的：getStatusColor() 把状态映射成 bg-* 后
+   由 Bootstrap 的 .badge 渲染，必须留。 */
 .badge.bg-primary,
 .badge.bg-info {
     background: var(--color-info-bg) !important;
@@ -1305,7 +1299,6 @@ html[lang="en"] .map-panel-btn {
     box-shadow: none !important;
 }
 
-.status-badge.completed,
 .badge.bg-success {
     background: var(--color-success-bg) !important;
     color: var(--color-success) !important;
@@ -1313,7 +1306,6 @@ html[lang="en"] .map-panel-btn {
     box-shadow: none !important;
 }
 
-.status-badge.failed,
 .badge.bg-danger {
     background: var(--color-danger-bg) !important;
     color: var(--color-danger) !important;
@@ -1321,7 +1313,6 @@ html[lang="en"] .map-panel-btn {
     box-shadow: none !important;
 }
 
-.status-badge.paused,
 .badge.bg-warning {
     background: var(--color-warning-bg) !important;
     color: var(--color-warning) !important;
@@ -1329,7 +1320,6 @@ html[lang="en"] .map-panel-btn {
     box-shadow: none !important;
 }
 
-.status-badge.pending,
 .badge.bg-secondary,
 .badge.bg-dark {
     background: var(--color-badge-neutral-bg) !important;
@@ -1454,8 +1444,8 @@ html[lang="en"] .map-panel-btn {
 
 /* 进度条颜色由任务状态决定（getStatusColor），不由完成百分比决定。
    运行中走上面已有的 .bg-info —— getStatusColor 把 running 映射成 'info'
-   而不是 'primary'，这样徽章侧的 `.status-badge.running, .badge.bg-primary,
-   .badge.bg-info` 共用声明块渲染完全一致，运行中的徽章与进度条同色系，
+   而不是 'primary'，这样徽章侧的 `.badge.bg-primary, .badge.bg-info`
+   共用声明块渲染完全一致，运行中的徽章与进度条同色系，
    且不必为 .bg-primary 再写一条覆盖。
 
    secondary(等待中) / dark(已取消) 原来没有覆盖，会回落到 Bootstrap 默认的
@@ -1553,14 +1543,17 @@ html[lang="en"] .map-panel-btn {
     color: var(--color-text-secondary);
 }
 
-.config-section .btn {
-    padding: 0.75rem 2rem;
-    border-radius: 8px;
-    font-weight: 700;
-    font-family: var(--font-display);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
-}
+/* ⚠️ 这里曾有一条 `.config-section .btn { padding:.75rem 2rem; font-weight:700 }`。
+   已删除，理由：它把配置页每个按钮都撑成 47px 高的粗体大块头，与全站 .btn
+   （37px）和 .btn-sm（28px）都不是一路，于是每个真正需要紧凑的按钮都得写一条
+   (0,2,0) 的豁免去压它 —— 「验证」「测速推荐」「浏览」三条已经在文件末尾各写了
+   一份，「立即检测」「刷新」「全部清理」「+ 添加服务器」则是漏网的，实测
+   47–49px。更要命的是它想美化的底部「保存/重置」根本不在 .config-section 里，
+   压根没被它命中。一条谁都不服务、却要三条例外去救的规则，删掉比再加第四条例外
+   便宜。删除后按钮各回各家：带 .btn-sm 的走 28px 紧凑档，其余走全局 .btn。
+   `.btn.tile-server-verify` / `.btn.concurrency-recommend` / `.btn.path-browse`
+   的 --ctl-h 规则**继续保留** —— 它们要与相邻 input 同高，这是独立诉求，
+   与本规则存在与否无关。 */
 
 /* History Table Styles */
 
@@ -1591,11 +1584,16 @@ html[lang="en"] .map-panel-btn {
       所以本段所有状态规则都写成 `.btn-X:not(:disabled):STATE` = (0,3,0)，
       赢下 Bootstrap 的每一条；`:not(:disabled)` 同时保证禁用态不被状态色点亮。
 
-   2. `.btn { border: none }`（下方第一条）会吃掉 Bootstrap 给 outline 变体的
-      边框简写，所以 `.btn-outline-*` 必须**显式重新声明 border**。
-      `.btn-secondary` 早就这么补过一次，只是漏了 outline 变体 —— 改前
-      history.html 的「刷新」按钮实测 `border: 0px none`、
-      文字 #6c757d 对卡片底 3.82:1，渲染成一坨灰字。
+   2. `.btn` 基态写的是 `border: 1px solid transparent` 而不是 `border: none`：
+      Bootstrap 的填充变体靠 `border-color` 上色、描边变体靠同一条简写画边，
+      基态一旦归零，填充变体是 0 边框而 `.btn-outline-*` / `.btn-secondary`
+      各自重声明 1px，**同一排的两类变体差 2px**。实测过两处：map.js 的等高线
+      预览按钮在 btn-primary↔btn-outline-primary 之间切类时高度 33.8↔35.8px
+      跳变，_path_browser_modal.html 的「取消」36.5px 与「选择此目录」34.5px
+      底边不齐。留 1px 透明边框后两类变体同高，描边变体只需覆盖 border-color。
+      简写仍然吃掉 Bootstrap 给 outline 变体的边框色，所以 `.btn-outline-*`
+      必须**显式重新声明 border**——改前 history.html 的「刷新」按钮实测
+      `border: 0px none`、文字 #6c757d 对卡片底 3.82:1，渲染成一坨灰字。
 
    墨色统一用 `--color-on-accent`（近黑）：它是本调色板里「打在高亮填充上的
    墨」这个角色的唯一取值，不再为每个变体各写一个硬编码近黑。
@@ -1604,7 +1602,7 @@ html[lang="en"] .map-panel-btn {
    等于图标近乎看不见。换成 --color-on-accent 后是 8.89 / 6.18 / 6.72。
    ========================================================================== */
 .btn {
-    border: none;
+    border: 1px solid transparent;
     transition: background-color 0.15s ease, border-color 0.15s ease,
                 color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
     position: relative;
@@ -2000,6 +1998,30 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* Statistics Styles */
+
+/* 统计卡一行四张。原先是 Bootstrap 的 `.row` + `.col-6 col-md-3`：`.row` 自带
+   ±12px 负外边距，本该由祖先 `.container` / `.col` 的横向内边距抵消 —— 而
+   .history-layout 一点横向内边距都没有，于是这一行比容器整整宽 24px。
+   .history-layout 只声明了 overflow-y:auto，另一轴按规范计算成 auto，
+   那 24px 就变成了任务页上一条横向滚动条（首页任务面板与独立页 /history 都有）。
+   换成不带负边距的网格：gap 1.5rem 与原来的槽宽等价，卡片外缘依旧与下方
+   地图卡 / 任务列表卡齐平，视觉零变化。 */
+.stats-row {
+    display: grid;
+    /* 必须是 minmax(0, 1fr) 而不是 1fr：1fr 的下限是 min-content，
+       累计下载量那种长数字会把轨道顶宽，横向溢出原样复活。 */
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+/* 断点与被替换掉的 `col-6 col-md-3` 一致：md 以下两列。 */
+@media (max-width: 767.98px) {
+    .stats-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
 .stat-card {
     text-align: left;
     padding: 1.25rem 1.5rem;
@@ -2352,9 +2374,11 @@ code {
         min-height: 0;
     }
 
-    .history-map {
-        height: 300px;
-    }
+    /* 这里原先还有一条 `.history-map { height: 300px }`。媒体查询不增加特异度，
+       它是 (0,1,0)，被 `.history-layout .history-map`(0,2,0) 的
+       clamp(180px,30vh,400px) 永久压死 —— 而全站每个 .history-map 都在
+       .history-layout 内（_history_content.html 的 history_map_card()
+       只在那个容器里被调用），窄屏也一次都没生效过。 */
 
     .config-section {
         padding: 1rem;
@@ -2362,42 +2386,14 @@ code {
 
 }
 
-/* Additional Utility Classes */
-.text-center {
-    text-align: center;
-}
-
-.d-flex {
-    display: flex;
-}
-
-.justify-content-between {
-    justify-content: space-between;
-}
-
-.justify-content-center {
-    justify-content: center;
-}
-
-.align-items-center {
-    align-items: center;
-}
-
-.align-items-start {
-    align-items: flex-start;
-}
-
-.mt-2 {
-    margin-top: 0.5rem;
-}
-
-.mt-3 {
-    margin-top: 1rem;
-}
-
-.w-100 {
-    width: 100%;
-}
+/* Bootstrap 工具类的本地手抄已删除（.text-center / .d-flex /
+   .justify-content-between / .justify-content-center / .align-items-center /
+   .align-items-start / .mt-2 / .mt-3 / .w-100 共 9 条）。
+   本站惯例「style.css 排在 vendor 之后所以能赢」对工具类**不成立**：
+   Bootstrap 的工具类每一条都自带 !important，与源码顺序无关地压过普通声明，
+   而这 9 条的取值又与 Bootstrap 逐字相同 —— 它们从来没有生效过，删掉零视觉差。
+   （.mt-3 更是双重死亡：全仓模板里根本没有元素带这个类。）
+   .text-muted 不在此列，它显式带 !important 且换成了本站文字色，是活的。 */
 
 /* Row / Column 的本地兜底已删除（vendor 本地化）。
    这里原先有一份 .row / .col-6 / .col-12 / .col-md-6 的手抄定义，理由是
@@ -2751,7 +2747,11 @@ code {
 .app-confirm__btn--ok:hover { background: var(--color-accent-hover); }
 .app-confirm__btn--ok.is-danger {
     background: var(--color-danger);
-    color: #fff;
+    /* 墨色必须走 --color-on-accent（近黑），不能是 #fff：暗色主题下白字压
+       --color-danger 实测 2.77:1，低于 AA 4.5:1。同一个 bug 在 `.btn-*` 上
+       的修复见本文件 `.btn` 段头注释（1.92/2.77/2.54 → 8.89/6.18/6.72）；
+       ui.js 的 confirm 按钮不走 `.btn` 体系，所以当时漏网。 */
+    color: var(--color-on-accent);
 }
 .app-confirm__btn--ok.is-danger:hover { background: var(--color-danger-deep); }
 .app-confirm__btn:focus-visible {
@@ -2988,12 +2988,7 @@ code {
    底部状态栏扩展：活动任务聚合 / 最近事件 / 时钟
    ========================================================================== */
 .statusbar-tasks {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
     cursor: pointer;
-    padding: 0 6px;
-    margin-left: 2px;
     transition: background-color 0.15s ease;
 }
 
@@ -3019,22 +3014,11 @@ code {
 }
 
 /* 随包底图的解压进度（底部状态栏最右，全局元素）。
-   不带 .statusbar-item 的真实原因：本元素要用 inline-flex + gap 排「文字 + 进度条」
-   两个子元素，而 .statusbar-item 只管 padding 与一条分隔线伪元素，给不了这个。
-   （原注释写的「伪元素分隔线会让状态栏抖一下」是错的，别再照抄：
-   .statusbar-item::before 是 position: absolute，不占宽度；真正改变布局宽度的反倒是
-   下面这几行自己的 margin-left + padding + border。）
-   ⚠️ 已知的观感不一致：这里的 border-left 是通到顶的，而 .statusbar-item::before
-   刻意画成 16px 短竖线，就为了不顶到胶囊的上下圆弧上（见那处注释）。本元素 99% 时间
-   是 hidden 的，这点差别没在真实浏览器里看过，先不动；要追平就改成同样的 ::before
-   短线写法。 */
+   不带 .statusbar-item：本元素要用 inline-flex + gap 排「文字 + 进度条」
+   两个子元素，读数项不需要这个。胶囊外壳由 `.statusbar-pill`
+   共享规则统一给，这里只留自己的间距。 */
 .statusbar-basemap {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    margin-left: 12px;
-    padding: 0 12px;
-    border-left: 1px solid var(--color-border);
+    gap: 8px;              /* 文字与进度条的间距，比胶囊默认的 6px 松一点 */
 }
 
 .statusbar-basemap--failed {
@@ -3042,13 +3026,19 @@ code {
     cursor: help;              /* 提示「这里有 title 可看」 */
 }
 
-/* 最近事件：吃掉剩余宽度，长文本省略号 */
+/* 最近事件：吃掉剩余宽度，长文本省略号。
+   平时为空 —— 空胶囊是一条没用的装饰，:empty 时整颗隐藏；用 visibility
+   而不是 display，宽度占住不抖（flex:1 的剩余宽度始终归它）。 */
 .statusbar-event {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     color: var(--color-text-secondary);
+}
+
+.statusbar-event:empty {
+    visibility: hidden;
 }
 
 .statusbar-clock {
@@ -3101,26 +3091,19 @@ code {
     margin-top: 4px;
 }
 
-/* 「验证」按钮与输入框同高（--ctl-h 密度令牌 28px），
-   选择器 `.btn.tile-server-verify`(0,2,0) 才能压住 Bootstrap 的 .btn padding
-   （与 .btn.btn-icon 同一理由，见纯图标按钮那条的注释）。 */
-.btn.tile-server-verify {
-    height: var(--ctl-h);
-    padding: 0 10px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: var(--font-size-sm);
-    /* Bootstrap 的 .btn 行高 1.5，CJK 文字没有西文降部，
-       在 28px 盒子里视觉偏上；行高收回 1 后由 flex 居中才是真正的居中 */
-    line-height: 1;
-    white-space: nowrap;    /* 两个汉字不许折行 */
-}
+/* 配置页的行内动作按钮统一紧凑档：高度锁 --ctl-h（28px），与相邻 input
+   / select 同高。
 
-/* 「测速推荐」(配置页并发下载数旁)/「浏览」(保存路径旁)与「验证」同款紧凑配方。
-   裸 .btn 会吃到 .config-section .btn 的大 padding(0.75rem 2rem) 和粗体,
-   在窄列里撑成两行高的大块头(input-group 因此被挤成上下堆叠);
-   本规则与它同优先级 (0,2,0)、靠文件位置靠后取胜,理由同 .btn.tile-server-verify。 */
+   `.btn-compact` 是这一档的语义类名，新按钮加它即可；后面三个具名类是历史
+   入口，保留是因为模板与测试都在按名字找它们（如
+   test_recommend_button_compact_css_recipe 钉 `.btn.concurrency-recommend`
+   必须含 var(--ctl-h)）。四个选择器共用同一份声明，避免此前那种「两条几乎
+   一样、只差 font-weight」的双胞胎规则再长出第三条。
+
+   选择器写成 `.btn.xxx`(0,2,0) 而不是裸 `.btn-compact`(0,1,0)：要压住
+   Bootstrap 的 `.btn`/`.btn-sm` padding（同 .btn.btn-icon，见纯图标按钮注释）。 */
+.btn.btn-compact,
+.btn.tile-server-verify,
 .btn.concurrency-recommend,
 .btn.path-browse {
     height: var(--ctl-h);
@@ -3130,8 +3113,10 @@ code {
     justify-content: center;
     font-size: var(--font-size-sm);
     font-weight: 400;
+    /* Bootstrap 的 .btn 行高 1.5，CJK 文字没有西文降部，
+       在 28px 盒子里视觉偏上；行高收回 1 后由 flex 居中才是真正的居中 */
     line-height: 1;
-    white-space: nowrap;
+    white-space: nowrap;    /* 两个汉字不许折行 */
     flex-shrink: 0;         /* 旁边的说明小字换行时按钮不被压扁 */
 }
 
@@ -3219,4 +3204,290 @@ code {
 
 .contour-preview-panel:empty {
     display: none;   /* 无可预览任务时不占位、不挡地图 */
+}
+
+/* ==========================================================================
+   .hint —— 说明图标 + 悬浮气泡
+
+   把配置页那些三四行长的 <small> 说明收进一个 16px 的图标：版面只剩控件，
+   说明按需展开。纯 CSS（:hover / :focus-visible + ::after 取 attr(data-hint)），
+   不引 Bootstrap Tooltip —— 那要 popper + 逐元素 JS 初始化，而本站全部
+   tooltip 语义此前都是原生 title=，没有任何 JS tooltip 基建可复用。
+
+   用 <button type="button"> 而不是 <span>：键盘要能 Tab 到、读屏要念得出。
+   type="button" 不能省，配置页整个包在 <form> 里，裸 button 默认是 submit。
+
+   气泡向下 + 左对齐展开。父级滚动容器（.workbench-panel__body 等）是
+   overflow-y:auto → overflow-x 计算成 auto，所以气泡**不能**向右溢出容器；
+   max-width 取 min(280px, ...) 保证 480px 窄面板里也放得下。贴右边缘的图标
+   用 .hint--end 变体改成右对齐。
+   ========================================================================== */
+.hint {
+    appearance: none;
+    -webkit-appearance: none;
+    border: none;
+    background: none;
+    padding: 0;
+    margin: 0 0 0 5px;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    position: relative;
+    border-radius: 50%;
+    color: var(--color-text-secondary);
+    cursor: help;
+    transition: color 0.15s ease;
+}
+
+.hint:hover,
+.hint:focus-visible {
+    color: var(--color-accent);
+}
+
+.hint:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+}
+
+/* 后代而非子组合符：test_css_contract 的按钮/动画层叠模型只支持后代组合符，
+   子组合符会让 20 条断言集体判「模型已失效」。.hint 里只有这一个 svg，等价。 */
+.hint svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.hint::after {
+    content: attr(data-hint);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: -8px;
+    z-index: 20;
+    width: max-content;
+    max-width: min(280px, 60vw);
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border-strong);
+    box-shadow: var(--shadow-md);
+    color: var(--color-text-primary);
+    font-family: var(--font-display);
+    font-size: var(--font-size-xs);
+    font-weight: 400;
+    line-height: 1.55;
+    text-align: left;
+    white-space: pre-line;   /* 文案里的 \n 用来分段，不靠两个气泡 */
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.12s ease, visibility 0.12s;
+    pointer-events: none;    /* 气泡自己不吃鼠标，划过它不会闪烁 */
+}
+
+/* --end:把气泡的参照物从「图标」换成「整行」。
+
+   .hint 自己是 position: relative(3253),所以气泡的包含块默认就是那个
+   16~18px 的图标 —— 不管 left 还是 right 对齐,它只能贴着图标展开。实测
+   (配置面板 480px 宿主、.config-scroll 可视宽 455):图标左缘在 x=246、
+   右侧只剩 191px,而气泡 280px 宽,**两边都放不下** —— 左对齐右溢出 51px,
+   right:-8px 右对齐则左溢出 8px(气泡左缘落在 x=-8,被 overflow 裁掉)。
+
+   position: static 让 ::after 的包含块升到 .label-row(下面给了 relative),
+   行内可用宽 429px > 280px,任意面板宽度下都装得下。top: calc(100% + 6px)
+   随之变成「整行下方」而不是「图标下方」,视觉上反而更整齐。
+
+   ⚠️ 约束:.hint--end 必须放在 .label-row 内。否则包含块会继续往上找最近
+   的 positioned 祖先(最坏一路到初始包含块),气泡会飞到页面别处。 */
+.hint--end {
+    position: static;
+}
+
+.hint--end::after {
+    left: 0;
+    right: auto;
+}
+
+/* 状态指示（代理自动检测）：比说明 ⓘ 大一号、离动作按钮远一点。
+   同尺寸同色时它和旁边的说明图标糊成两个一样的灰点，看不出是两件事。 */
+.hint--status {
+    width: 18px;
+    height: 18px;
+    margin-left: 8px;
+}
+
+/* `.hint--up`（气泡向上翻转）已删除：全仓零调用，是给「图标贴近视口底部时
+   把气泡翻上去」准备的，但没有任何元素用过它。真要做翻转时按需重建。 */
+
+.hint:hover::after,
+.hint:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* data-hint 为空时整个图标不出现：动态状态图标在拿到数据之前不该先闪一个
+   点不开的问号。 */
+.hint[data-hint=""] {
+    display: none;
+}
+
+/* 状态色变体（代理自动检测 / 测速推荐的结果指示）。 */
+.hint.is-ok { color: var(--color-success); }
+.hint.is-warn { color: var(--color-warning); }
+.hint.is-danger { color: var(--color-danger); }
+.hint.is-busy { color: var(--color-accent); }
+
+.hint.is-ok:hover, .hint.is-ok:focus-visible { color: var(--color-success); }
+.hint.is-warn:hover, .hint.is-warn:focus-visible { color: var(--color-warning); }
+.hint.is-danger:hover, .hint.is-danger:focus-visible { color: var(--color-danger); }
+
+/* 检测中的转圈。两个约束决定了这个写法：
+   1. 动画挂在 <svg> 上而不是外层 <button> —— 转 button 会把 hover 时的
+      ::after 气泡一起转起来。
+   2. 选择器是单类 .hint-spin 而不是 `.hint.is-busy > svg` ——
+      test_css_contract 的动画层叠模型解析不了子组合符（实测 16 条断言集体
+      判「模型已失效」，那不是通过而是失效）。config.js 的 setProxyIcon
+      按状态给 svg 加/摘这个类。
+   reduced-motion 由本文件上方那条全局 `*, *::before, *::after` 的 reduce
+   规则统一停掉，这里**不能**再写自己的 @media：契约把 reduce 块钉死为
+   正好 3 个选择器分支。 */
+.hint-spin {
+    animation: hint-spin 0.9s linear infinite;
+}
+
+@keyframes hint-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* label 与它的说明图标同一行：label 自带 display:block + margin-bottom，
+   包一层 flex 才不会把图标挤到下一行。 */
+.label-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    /* .hint--end 的气泡以本行为参照展开 —— 见 .hint--end 的注释。
+       只影响把 position 让给本行的 .hint--end;普通 .hint 自带 relative,
+       它的气泡包含块仍是图标本身,不受这条影响。 */
+    position: relative;
+}
+
+.label-row .form-label,
+.label-row .form-check {
+    margin-bottom: 0;
+}
+
+/* ==========================================================================
+   配置页布局：内容滚动区 + 常驻底部操作条
+
+   此前「重置 / 保存」跟着 2200px 的表单一起滚，改配置永远要先滚到底。改成
+   三层 flex：外层撑满可用高度、中间滚动、底部固定。
+
+   撑满的前提是父级有确定高度，两个宿主各自加 --fill 修饰符提供：
+     独立页 /config  → .page-content--fill（父 .main-content 是 flex:1 of 100vh）
+     首页配置面板    → .workbench-panel__body--fill（父面板 fixed 且 top/bottom 都定死）
+   ========================================================================== */
+.config-layout {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* 两个宿主都是 flex 列容器（--fill 修饰符加的），所以靠 flex 吃满剩余
+       高度，而不是 height:100% —— 独立页里上面还有一条「返回首页」，
+       height:100% 会算成父高的 100% 再溢出那条链接的高度。 */
+    flex: 1 1 auto;
+}
+
+.config-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    /* 滚动条与内容之间留一点，卡片圆角不被压在条上 */
+    padding-right: 6px;
+}
+
+.config-footer {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 6px 0 0;
+    margin-top: 4px;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-bg-primary);
+}
+
+/* 面板底色比页面底色浅一层，操作条要跟着所在容器走，否则贴着卡片会出现一条
+   突兀的深色带。 */
+.workbench-panel__body--fill .config-footer {
+    background: var(--color-bg-secondary);
+}
+
+.page-content--fill {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
+.workbench-panel__body--fill {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;   /* 滚动交给内部的 .config-scroll，两层都滚会出双滚动条 */
+}
+
+/* 底部两个主操作等高：.btn { border:none } 之后 .btn-secondary 又单独补回了
+   1px 边框，两个按钮因此差 2px，并排看得出来。锁死高度比逐个对齐边框省事。 */
+.config-footer .btn {
+    height: 34px;
+}
+
+/* 独立页 /history 与首页任务面板：任务列表卡吃掉剩余高度，列表在卡内滚动。
+   此前整页一起滚 —— 面板里筛选 chips 会被滚出视野，翻页控件则永远在
+   1000px 之外。 */
+.history-layout {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    /* 与 .config-layout 同理：宿主是 flex 列容器，靠 flex 吃满而非 height:100% */
+    flex: 1 1 auto;
+    /* 窗口特别矮时（列表下限 + 地图下限 > 可用高）整体兜底滚动，
+       好过把两个都压成看不清的一条。 */
+    overflow-y: auto;
+}
+
+/* 统计卡与地图卡按内容高，不参与收缩；只有任务列表卡（.card--grow）长个子。
+   用显式类而不是 `> *`：层叠模型不支持子组合符（见 .hint svg 处的说明）。 */
+.history-layout__fixed {
+    flex: 0 0 auto;
+}
+
+.card--grow {
+    flex: 1 1 auto;
+    /* 下限：任务列表是这个面板的主体，再挤也要看得见几行 */
+    min-height: 240px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 撑满布局下地图不吃 400px 的死高度：面板总高 846，400 的地图加上统计卡会把
+   任务列表压到 170px（实测），而这个面板就叫「任务」。改成跟着视口伸缩，
+   上限仍是原来的 400。 */
+.history-layout .history-map {
+    height: clamp(180px, 30vh, 400px);
+}
+
+.card--grow .card-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.card--grow #historyTableBody {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
 }

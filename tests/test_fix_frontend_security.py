@@ -62,12 +62,21 @@ def test_task_name_never_enters_innerhtml_raw():
         assert '${task.name}' not in src, (
             f'{name} 仍把 task.name 裸拼进 HTML 模板（存储型 XSS）'
         )
-    # 2026-08 单一时间流定稿：行渲染收口 history.js createTaskRow，tasks.js
-    # 不再有行模板（原先这里断言 tasks.js 的 escapeHtml(task.name)）。
+    # 2026-08 Vue 化：行渲染收口到 task_list.js 的 TaskRow 组件，转义由
+    # `{{ }}` 插值自动完成，不再需要（也不应该）手写 escapeHtml —— 手写的
+    # 那套是「漏一处就是一个注入面」，插值是默认安全。
+    tpl_src = _js('task_list.js')
+    assert '{{ task.name }}' in tpl_src, (
+        'TaskRow 模板没有用 {{ task.name }} 插值渲染任务名 —— 换写法前先'
+        '确认它同样会转义'
+    )
+    assert '${task.name}' not in tpl_src, (
+        'task_list.js 把 task.name 裸拼进了模板字符串（存储型 XSS）'
+    )
+    # history.js 只剩历史地图 InfoBox description 那一处仍是手拼 HTML
     hist = _strip_js_comments(_js('history.js'))
-    assert hist.count('escapeHtml(task.name)') >= 2, (
-        'history.js 应至少有两处转义 task.name：时间流行（createTaskRow）'
-        ' + 历史地图 InfoBox description'
+    assert hist.count('escapeHtml(task.name)') >= 1, (
+        'history.js 的历史地图 InfoBox description 不再转义 task.name'
     )
 
 
@@ -94,9 +103,10 @@ def test_history_secondary_fields_escaped():
     assert 'getStyleText(task.style)' in meta_body, (
         'historyMetaText 没有调 getStyleText——样式元信息的来源变了？本测试已失效'
     )
-    assert 'escapeHtml(historyMetaText(task))' in src, (
-        'createTaskRow 没有转义 historyMetaText 的输出——'
-        'getStyleText 的 `|| style` 兜底会把 DB 里的 style 原文渲染进行1'
+    assert '{{ metaText }}' in _js('task_list.js'), (
+        'TaskRow 模板没有用 {{ metaText }} 插值渲染元信息——'
+        'getStyleText 的 `|| style` 兜底会把 DB 里的 style 原文渲染进行1，'
+        '插值是它唯一的转义保障'
     )
     assert 'escapeHtml(getStatusText(task.status))' in src, (
         '详情模态框徽章里 getStatusText 的 `|| status` 兜底原文未转义'

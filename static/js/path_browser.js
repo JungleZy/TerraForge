@@ -42,9 +42,8 @@
         }
     }
 
-    async function load(path) {
+    async function load(path, keepError) {
         const errBox = _el('pathBrowserError');
-        errBox.hidden = true;
         const url = '/api/fs/browse' + (path ? '?path=' + encodeURIComponent(path) : '');
         try {
             const resp = await fetch(url);
@@ -53,12 +52,19 @@
                 throw new Error(data.error || ('HTTP ' + resp.status));
             }
             _render(data);
+            // 清错误只能在**渲染成功之后**,而且回退那一跳必须能保留原因。
+            // 原来这是入口处一句无条件的 `errBox.hidden = true`:下面
+            // 「设好 start_unavailable -> return load('')」的回退分支,刚写好的
+            // 错误会被那次递归调用的入口立刻抹掉 —— start_unavailable 因此是
+            // 一条永远看不到的死文案,用户填了不存在的路径只会看到一个盘符
+            // 列表,完全不知道自己填的值有问题。
+            if (!keepError) errBox.hidden = true;
         } catch (e) {
             // 输入框里可能还是相对值/不存在的目录:回退根级(盘符/根目录),把原因亮出来
             if (path) {
                 errBox.textContent = t('js.path_browser.start_unavailable', { error: e.message });
                 errBox.hidden = false;
-                return load('');
+                return load('', true);
             }
             errBox.textContent = t('js.path_browser.load_failed', { error: e.message });
             errBox.hidden = false;

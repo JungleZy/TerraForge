@@ -330,13 +330,54 @@ def test_config_partial_renders_server_row_editor(monkeypatch, tmp_path):
         assert html.count('tile-server-input') >= 4
 
 
-def test_map_js_base_layer_uses_tile_servers():
+def test_map_js_consumes_server_resolved_basemap():
+    """底图不再从 tile_servers 推导 —— 它有自己的配置项 basemap_source。
+
+    分开的理由：底图走浏览器直连、**不吃 proxy_url**，下载走 Python、吃。
+    两者网络可达性不同，共用一份地址的后果是给下载配好了代理、底图仍是
+    一个蓝色球体（这正是改造前的实际故障）。
+    """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, 'static', 'js', 'map.js'), encoding='utf-8') as f:
         src = f.read()
-    assert 'config.tile_servers' in src, 'map.js 的底图源必须读 tile_servers 列表'
+    assert 'config.tile_servers' not in src, (
+        '底图已改由 basemap_source 决定，map.js 不该再读下载源列表'
+    )
     assert 'map_tile_url' not in src, '独立的 map_tile_url 已并入 tile_servers'
-    assert 'googleapis.com' in src, '别名展开逻辑应保留在 map.js 底图接线里'
+    assert 'basemap' in src, 'map.js 必须消费服务端解析好的 basemap'
+
+
+def test_index_route_injects_resolved_basemap(monkeypatch, tmp_path):
+    """首页必须把解析好的底图图层描述渲染进页面，前端拿到即可用。"""
+    client = _load_app(monkeypatch, tmp_path)
+    html = client.get('/').get_data(as_text=True)
+    assert 'initMap(config,' in html, '首页必须把 basemap 传给 initMap'
+    # 默认预设是 Esri 卫星影像 —— Google 在国内直连不通，而底图没有代理可用。
+    assert 'server.arcgisonline.com' in html
+    assert 'World_Imagery' in html
+
+
+def test_config_partial_renders_basemap_selector(monkeypatch, tmp_path):
+    client = _load_app(monkeypatch, tmp_path)
+    for path in ('/', '/config'):
+        html = client.get(path).get_data(as_text=True)
+        assert 'id="basemap_source_preset"' in html, f'{path} 缺少底图源下拉'
+        assert 'id="basemap_source_custom"' in html, f'{path} 缺少自定义模板输入框'
+        assert 'value="download_source"' in html, f'{path} 缺少「跟随下载源」选项'
+        # 默认值应当预选中 Esri
+        assert 'value="esri" selected' in html, f'{path} 未按已保存值预选'
+
+
+def test_config_js_collects_basemap_source():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'js', 'config.js'), encoding='utf-8') as f:
+        src = f.read()
+    assert 'function collectBasemapSource(' in src, (
+        '下拉 + 自定义输入框两个控件必须合回一个字符串再提交'
+    )
+    assert 'basemap_source: collectBasemapSource()' in src, (
+        'saveConfig 漏了 basemap_source —— 改了下拉点保存不会生效'
+    )
 
 
 def test_config_js_row_editor_and_verify_wiring():

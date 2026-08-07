@@ -20,6 +20,7 @@ from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
 from src.models.task import Tile
 from src.services.config_manager import ConfigManager
+from src.services.proxy_autodetect import resolve_from_config
 from src.services.tile_url_probe import should_bypass_proxy
 from src.core.config import Config
 
@@ -683,7 +684,11 @@ class DownloadEngine:
             style: Map style code
             session: aiohttp ClientSession
             cache_enabled: Whether to check/use cache
-            progress_callback: Optional async callback function(tile, status, error)
+            progress_callback: Optional async callback
+                function(tile, status, error, size_bytes)。size_bytes 只在
+                「这块瓦片真的走了网络」时是字节数，缓存命中与失败一律 None
+                —— 调用方拿它算下载速度，把读盘字节算进去会让网速虚高一个
+                数量级（见 src/services/download_speed.py）。
 
         Returns:
             Dictionary with download result:
@@ -706,9 +711,13 @@ class DownloadEngine:
                         if file_size > 0:
                             logger.debug(f"Tile {tile.zoom}/{tile.x}/{tile.y} found in cache ({file_size} bytes)")
 
-                            # Report success from cache
+                            # 缓存命中:字节数传 None。这块瓦片来自磁盘,不是
+                            # 网络。task_manager 虽然在下载前就把缓存命中剔出了
+                            # 待下清单,这条分支仍然可达 —— 两个 bbox 重叠的任务
+                            # 并发时,枚举之后、下载之前会有瓦片被另一个任务写进
+                            # 缓存。
                             if progress_callback:
-                                await progress_callback(tile, 'completed', None)
+                                await progress_callback(tile, 'completed', None, None)
 
                             return {
                                 'tile': tile,
@@ -762,16 +771,16 @@ class DownloadEngine:
                         f"does not silently report success with a missing tile."
                     )
                     if progress_callback:
-                        await progress_callback(tile, 'failed', error_msg)
+                        await progress_callback(tile, 'failed', error_msg, None)
                     return {
                         'tile': tile,
                         'status': 'failed',
                         'error': error_msg,
                     }
 
-            # Report success
+            # Report success —— 唯一真正产生网络字节的出口。
             if progress_callback:
-                await progress_callback(tile, 'completed', None)
+                await progress_callback(tile, 'completed', None, len(data))
 
             return {
                 'tile': tile,
@@ -794,7 +803,7 @@ class DownloadEngine:
 
             # Report failure
             if progress_callback:
-                await progress_callback(tile, 'failed', error_msg)
+                await progress_callback(tile, 'failed', error_msg, None)
 
             return {
                 'tile': tile,
@@ -816,7 +825,8 @@ class DownloadEngine:
             tiles: Tiles to download — any iterable (list or generator);
                 it is consumed lazily in batches of DOWNLOAD_BATCH_SIZE
             style: Map style code
-            progress_callback: Optional async callback function(tile, status, error)
+            progress_callback: Optional async callback
+                function(tile, status, error, size_bytes)
 
         Returns:
             List of download result dictionaries, in input order.
@@ -834,7 +844,10 @@ class DownloadEngine:
         concurrent_downloads = int(self.config_manager.get('concurrent_downloads', '10'))
         request_timeout = int(self.config_manager.get('request_timeout', '30'))
         cache_enabled = (self.config_manager.get('cache_enabled', 'true') or 'true').lower() == 'true'
-        proxy_url = self.config_manager.get('proxy_url', '') or ''
+        # 生效代理：手动 proxy_url > 自动探测到的可用代理 > 直连（见
+        # services/proxy_autodetect）。to_thread 是必须的 —— 解析在后台探测
+        # 尚未完成时会阻塞等待，就地调用会把整个事件循环连同并发下载一起冻住。
+        proxy_url = await asyncio.to_thread(resolve_from_config, self.config_manager)
         # max_retries/request_timeout 在入口读一次,整批复用 —— 逐瓦片读就是
         # 每块瓦片两次新开 SQLite 连接(见 download_tile 里的回退逻辑)。
         self._batch_retry_config = (
@@ -861,10 +874,11 @@ class DownloadEngine:
 
         results: List[Dict[str, Any]] = []
 
-        # trust_env=True lets aiohttp read HTTP_PROXY/HTTPS_PROXY from env.
-        # app.py's apply_system_proxy() populates those from the Windows
-        # registry / macOS scutil on startup, so this is what makes the
-        # packaged exe usable from behind a Clash/V2Ray system proxy.
+        # 显式 proxy= 才是主路径(见上面 proxy_url 的解析,以及 download_tile 里的
+        # 逐 URL bypass 判断)。trust_env=True 留作兜底:自动探测的候选全部验证
+        # 失败时 proxy_url 为空,此时仍让 aiohttp 读 HTTP(S)_PROXY —— 那是
+        # apply_system_proxy() 从 Windows 注册表/macOS scutil 灌进来的系统代理,
+        # 我们验不通不代表它对别的目标主机也不通,不该主动把它掐掉。
         async with aiohttp.ClientSession(connector=connector, trust_env=True) as session:
 
             async def download_with_semaphore(tile: Tile):

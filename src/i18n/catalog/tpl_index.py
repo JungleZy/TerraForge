@@ -208,12 +208,33 @@ MESSAGES = {
         'en': 'Processing type',
     },
     'tpl.index.process.type_local_terrain': {
-        'zh': '本地高程切片（上传 GeoTIFF）',
-        'en': 'Local DEM tiling (upload GeoTIFF)',
+        'zh': '本地高程切片',
+        'en': 'Local DEM tiling',
     },
     'tpl.index.process.type_contour': {
         'zh': '等高线瓦片',
         'en': 'Contour tiles',
+    },
+    'tpl.index.process.source': {
+        'zh': '数据来源',
+        'en': 'Data source',
+    },
+    'tpl.index.process.source_upload': {
+        'zh': '上传文件',
+        'en': 'Upload files',
+    },
+    'tpl.index.process.source_dem_task': {
+        'zh': '已下载的高程任务',
+        'en': 'Downloaded DEM task',
+    },
+    'tpl.index.process.dem_task': {
+        'zh': '选择高程任务',
+        'en': 'Select DEM task',
+    },
+    'tpl.index.process.dem_task_hint': {
+        'zh': '直接使用该任务已下载的 DEM 文件，无需上传。',
+        'en': 'Uses the DEM files already downloaded by that task; no upload '
+              'needed.',
     },
     'tpl.index.process.upload_dem': {
         'zh': '上传高程文件（可多选 .tif/.tiff）',

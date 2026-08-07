@@ -1092,6 +1092,7 @@ def recommend_concurrency_route():
     （约 30 秒）。测速流程自身保证不抛（全失败回退保守值），这里只兜
     意料之外的异常，同样 200 + fallback —— 按钮前端按 fallback 展示。
     """
+    from src.services.proxy_autodetect import resolve_from_config
     from src.services.tile_url_probe import (
         RECOMMEND_FALLBACK, parse_server_list, recommend_concurrency,
     )
@@ -1106,7 +1107,7 @@ def recommend_concurrency_route():
         result = recommend_concurrency(
             parse_server_list(config_manager.get('tile_servers', '') or ''),
             style=config_manager.get('default_style', 's') or 's',
-            proxy_url=config_manager.get('proxy_url', '') or '',
+            proxy_url=resolve_from_config(config_manager),
             center_lng=_float('map_center_lng', 106.55),
             center_lat=_float('map_center_lat', 29.56),
         )
@@ -1127,6 +1128,7 @@ def verify_tile_url():
     条目校验失败返回 400；通联结果始终 200 + {success, status_code,
     content_type, elapsed_ms, tile, url, error} —— 连不上也是一次成功的探测。
     """
+    from src.services.proxy_autodetect import resolve_from_config
     from src.services.tile_url_probe import probe_server_entry, validate_server_entry
 
     data = request.get_json(silent=True)
@@ -1146,8 +1148,52 @@ def verify_tile_url():
 
     result = probe_server_entry(
         server,
-        proxy_url=config_manager.get('proxy_url', '') or '',
+        proxy_url=resolve_from_config(config_manager),
         center_lng=_float('map_center_lng', 106.55),
         center_lat=_float('map_center_lat', 29.56),
     )
     return jsonify(result)
+
+
+@api_bp.route('/config/proxy_status', methods=['GET', 'POST'])
+def proxy_status():
+    """代理自动发现的状态（GET）/ 强制重新探测（POST），配置页用。
+
+    POST 是同步的：清空上一轮结果后重新枚举 + 验证，最坏二十几秒。前端按钮
+    自己转圈等 —— 用户点了「立即检测」就是在等一个确定的答复,给异步 202 反而
+    要再轮询一遍。
+
+    返回体除 state 快照外附带 effective / manual / auto_enabled 三个字段,
+    让配置页能直说「现在实际用的是哪个、为什么」,而不是让用户对着一个开关猜。
+    """
+    from src.services.proxy_autodetect import (
+        auto_detect_enabled, autodetect, get_state, mask_url_userinfo,
+        reset_state, resolve_from_config,
+    )
+    from src.app_factory import probe_url_from_config
+
+    manual = (config_manager.get('proxy_url', '') or '').strip()
+    auto_enabled = auto_detect_enabled(config_manager)
+
+    if request.method == 'POST':
+        if not auto_enabled:
+            return jsonify({'error': t('api.config.proxy_autodetect_disabled')}), 400
+        reset_state()
+        try:
+            autodetect(probe_url=probe_url_from_config(config_manager))
+        except Exception as e:
+            # autodetect 自己已经兜了异常并写进 state.error,这里只防意料之外
+            logger.warning(f'proxy_status forced detection failed: {e!r}')
+
+    state = get_state()
+    # effective 走与下载引擎同一个解析器,但不等后台探测(wait_s=0)——
+    # 配置页只是展示当前事实,不该为了一个状态查询挂住请求。
+    effective = resolve_from_config(config_manager, wait_s=0)
+    state.update({
+        'manual': mask_url_userinfo(manual) if manual else '',
+        'auto_enabled': auto_enabled,
+        'effective': mask_url_userinfo(effective) if effective else '',
+        'effective_source': ('manual' if manual
+                             else (state['source'] if effective else '')),
+    })
+    return jsonify(state)

@@ -33,6 +33,11 @@
     const { createApp, computed } = window.Vue;
     const store = window.TaskStore;
 
+    // 速度多久没刷新就算「停滞」，显示 0 B/s。
+    // 下界：后端 emit 节流最慢的一条是 DEM / 等高线的 1s，留 5 倍余量，
+    // 正常下载不会误判。上界：再长用户就会盯着一个假速度发呆。
+    const SPEED_STALE_MS = 5000;
+
     // 拉取失败提示。改造前是 loadHistory 的 catch 直接往 #historyTableBody
     // 写 innerHTML，Vue 接管容器后那样写会被下次 patch 抹掉。
     const ERROR_TEMPLATE = `
@@ -117,7 +122,11 @@
                     </button>
                 </div>
             </div>
-            <div class="task-error" role="alert" v-if="isFailed">{{ errorText }}</div>
+            <!-- 不挂 role="alert"/"status"：这是**历史失败记录**的既存状态，不是刚发生的
+                 事件，而列表每次渲染都会把它整批插进 DOM —— 一屏 N 条失败任务就等于 N 条
+                 assertive 公告同时抢读，打断读屏用户正在听的任何内容。失败**事件**的即时
+                 通报由 handleTaskFailed 的 toast 承担，那才是「刚刚发生」。 -->
+            <div class="task-error" v-if="isFailed">{{ errorText }}</div>
             <div class="task-progress-line" v-else-if="isLive">
                 <div class="task-progress">
                     <div class="progress-bar" :class="'bg-' + statusColor" role="progressbar"
@@ -129,6 +138,7 @@
                 <span class="task-pct" aria-hidden="true">{{ progress }}%</span>
                 <span class="task-count progress-detail" v-if="stageText">{{ stageText }}</span>
                 <span class="task-count progress-detail" v-else>{{ countText }}<span v-if="failedItems > 0" style="color: var(--color-danger);"> | {{ failedText }}</span></span>
+                <span class="task-speed progress-detail" v-if="speedText">{{ speedText }}</span>
             </div>
             <template v-else>
                 <div class="task-line2">{{ summaryText }}{{ bboxText }}</div>
@@ -245,6 +255,21 @@
                     info.elapsed ? this.t('js.history.row.elapsed', { time: info.elapsed }) : '',
                     info.estimated ? this.t('js.history.row.estimated', { time: info.estimated }) : '',
                 ].filter(Boolean).join(' · ') || '—';
+            },
+            // 下载速度。只在**下载阶段**出现，三种情况各自不同：
+            //   - stageText 有值 = 已进入拼接 / 复制 / 切片，没有网络下载，隐藏；
+            //   - speed_at 为空 = 后端这一发没带速度（等高线渲染阶段），隐藏；
+            //   - speed_at 过期 = 推送停了但任务还在 running（网断了却没判失败），
+            //     显示 0 B/s。不这么做界面会永远冻在最后那个 2.3 MB/s，看着像还在跑。
+            speedText() {
+                if (this.task.status !== 'running') return '';
+                if (this.stageText) return '';
+                const at = this.task.speed_at;
+                if (!at || typeof formatSpeed !== 'function') return '';
+                void store.state.tick;      // 每秒心跳，过期归零靠它触发，勿删
+                const stale = Date.now() - at > SPEED_STALE_MS;
+                const bps = stale ? 0 : (this.task.download_speed_bps || 0);
+                return this.t('js.history.row.speed', { speed: formatSpeed(bps) });
             },
         },
         methods: {

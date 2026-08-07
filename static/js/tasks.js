@@ -1,5 +1,7 @@
 let socket;
-let activeTasks = new Map();
+// 任务状态与时间流都在 window.TaskStore（static/js/task_store.js）。
+// 这里曾有一个裸 `activeTasks = new Map()`：它只是缓存，不驱动渲染，
+// 每次写它都得再手动 getElementById 改一次 DOM —— 11 处这样的配对。
 let timeUpdateInterval = null;
 // 标记是否已经完成首次 socket 连接。initTasks 末尾会直接调一次
 // loadActiveTasks 负责首屏，connect 回调只在**断线重连**时补拉——
@@ -15,6 +17,9 @@ let latestContourTasks = [];
 let _loadStatsDebounceTimer = null;
 
 function initTasks() {
+    // 时间流的渲染层（Vue）挂到 #historyTableBody。幂等——独立页由
+    // initHistory 调，首页两个入口都会走到，谁先谁后都行。
+    if (window.TaskList) window.TaskList.mount();
     socket = window.TerraSocket.get();
     // 必须在 get() 之后的**同一个同步块**里就把监听挂上（见 socket.js 的说明）：
     // socket.io 不重放错过的事件，中间一让出事件循环就可能漏掉 connect。
@@ -143,16 +148,11 @@ async function loadActiveTasks() {
             ['pending', 'running', 'paused', 'failed'].includes(t.status)
         );
 
-        activeTasks.clear();
-        all.forEach(task => {
-            activeTasks.set(task._key, task);
-        });
-
-        // 2026-08 单一时间流定稿：activeTasks 不再驱动列表渲染——时间流由
-        // history.js 从 /api/history_all 一次拉全（活动任务也在流里，
-        // 没有独立分区，也没有去重）。这个 Map 的消费者只剩三个：
-        // 状态栏聚合（updateStatusTasks）、行1 耗时每秒刷新（updateTimeDisplay）、
-        // socket 事件按 `类型:id` 找任务（updateTaskProgress 等）。
+        // 活动任务集进 store：状态栏聚合（updateStatusTasks）与行1 耗时
+        // 每秒刷新都读它。时间流（渲染源）是另一个集合，由 history.js 的
+        // loadHistory 从 /api/history_all 分页拉——两者的区别见 task_store.js
+        // 里 state.active 的注释。
+        if (window.TaskStore) window.TaskStore.setActive(all);
         updateStatusTasks();
     } catch (error) {
         console.error('Failed to load tasks:', error);
@@ -164,12 +164,14 @@ async function loadActiveTasks() {
 // `phase` ("download"/"render") comes from the backend; we fall back to the
 // render counts once tiles have started so a single progress bar tracks the
 // currently-active phase.
-// 上传来源的任务（dataset='upload'，与后端 is_upload 同一判定）没有下载阶段：
-// 文件计数在创建时就已记满（downloaded_files == total_files），拿它当进度
-// 会让 pending 任务一出现就显示 100%「下载 DEM」——直接按渲染阶段显示。
+// 没有下载阶段的来源（dataset='upload' 上传、'dem_task' 复用已下载的 DEM 任务，
+// 与后端 is_upload / 目录直取同一判定）：文件计数在创建时就已记满
+// （downloaded_files == total_files），拿它当进度会让 pending 任务一出现就显示
+// 100%「下载 DEM」——直接按渲染阶段显示。
 function contourPhaseCounts(task) {
     const totalTiles = task.total_tiles || 0;
-    const renderStarted = task.dataset === 'upload' || (task.phase === 'render') || totalTiles > 0;
+    const renderStarted = task.dataset === 'upload' || task.dataset === 'dem_task'
+        || (task.phase === 'render') || totalTiles > 0;
     if (renderStarted) {
         return {
             total: totalTiles,
@@ -254,8 +256,7 @@ function updateStatusTasks() {
     if (!textEl) return;
     const barWrap = document.getElementById('statusTasksProgress');
     const barFill = document.getElementById('statusTasksBar');
-    const live = Array.from(activeTasks.values())
-        .filter(t => ['pending', 'running', 'paused'].includes(t.status));
+    const live = window.TaskStore ? window.TaskStore.liveTasks() : [];
     if (live.length === 0) {
         const idle = t('js.tasks.status_bar.idle');
         if (textEl.textContent !== idle) {
@@ -297,302 +298,154 @@ function pushStatusEvent(msg) {
     el.textContent = msg;
 }
 
-// 2026-08 单一时间流定稿：行渲染整体收口到 history.js 的 createTaskRow
-// （全站唯一行实现，活动/失败/历史任务共用）。本文件原先那套
-// taskMetaText / createTaskRow / createTaskErrorRow 随之删除——同一套行结构
-// 两份实现必然漂移，「两种行语言」正是当初「太乱」的根因之一。
-// tasks.js 只剩实时更新职责：socket 事件 → 找到时间流里的行 →
-// 原地重建（调 history.js 的 createTaskRow）或增量更新。
+// 2026-08 单一时间流定稿：行渲染整体收口到 history.js 的 createTaskRow。
+// 2026-08 Vue 化：渲染再次搬家，这次搬进 task_list.js 的 TaskRow 组件，
+// 本文件**一行 DOM 都不再写**。
+//
+// 改造前这里有四条几乎一样的分支（map / dem / contour / local_terrain），
+// 每条都干同样五件事：
+//   1. 手写脏检查算 statusChanged / progressChanged
+//   2. 把 data 的字段一个个抄进 task 对象
+//   3. activeTasks.set(key, task)
+//   4. document.getElementById(`task-${key}`)
+//   5. 按脏检查结果分派「整行 outerHTML 重建」还是「querySelector 逐节点写」
+// 第 3 步和第 4 步的配对在本文件里出现过 11 次 —— 漏掉后半截就是「数据变了
+// 界面不动」，没有任何机制会报错。第 1 步和第 5 步是人肉实现的 diff。
+//
+// 现在只剩第 2 步（字段归一，normalizeTask 的份内事）和一次 store 写入，
+// 其余四步全部由 Vue 的响应式 + keyed diff 负责。
 
-// 原地重建时间流里的一行。失败行的 .task-error 容器是空的
-// （错误原文不能进 innerHTML），重建后顺手用 textContent 回填。
-function rebuildStreamRow(row, task) {
-    row.outerHTML = createTaskRow(task);
-    applyTaskErrorText(task);
+/** 把一条 socket 推送合并进时间流。不存在的任务按 prepend 策略插入。 */
+function commitTaskUpdate(key, patch) {
+    if (!window.TaskStore) return null;
+    return window.TaskStore.patch(key, patch);
 }
 
 // 拼接/复制阶段的行内阶段提示：下载 100% 后这两个阶段还要跑几分钟到几小时，
-// 旧界面行上只有「已下载 N/N」，看起来就是卡死（「卡 100%」）。stage_text
-// 写进行模型（history.js 的 line2 渲染）并就地重建该行。事件频率低——
-// 拼接按 zoom 一次、复制每 COPY_PROGRESS_INTERVAL 块一次，重建一行开销可忽略。
+// 旧界面行上只有「已下载 N/N」，看起来就是卡死（「卡 100%」）。
 // taskType 参数化：原先写死 `map:${taskId}`，地形/等高线管线复用不了。
-// stageText 传 null/'' 表示**清除**——这条清除路径不是可选的：
-// updateTaskProgressPartial 只覆盖 DOM 里的 .task-count，不动行模型上的
-// stage_text，于是任何后续 rebuildStreamRow（状态变化、等高线的 phaseChanged）
-// 都会让过期的阶段文字复活并永久顶掉计数。地图管线侥幸无事，只是因为它的
-// 拼接/复制发生在下载彻底结束之后，两类事件永不交错；新阶段夹在两个会发
-// task_progress 的阶段中间（地形：物化 → 逐瓦片；等高线：warp → 渲染），
-// 不清就必然显形。
+// stageText 传 null/'' 表示**清除**——这条清除路径不是可选的：进度更新只
+// 覆盖计数、不动 stage_text，过期的阶段文字会永久顶掉计数。地图管线侥幸
+// 无事，只因它的拼接/复制发生在下载彻底结束之后，两类事件永不交错；新阶段
+// 夹在两个会发 task_progress 的阶段中间（地形：物化 → 逐瓦片；等高线：
+// warp → 渲染），不清就必然显形。
 function updateTaskStageText(taskId, stageText, taskType) {
     const key = `${taskType || 'map'}:${taskId}`;
-    const task = activeTasks.get(key);
-    if (!task) return;   // 任务不在活动窗口里时，状态栏事件仍然可见
-    if (stageText) {
-        task.stage_text = stageText;
-    } else {
-        delete task.stage_text;
-    }
-    const row = document.getElementById(`task-${key}`);
-    if (row) rebuildStreamRow(row, task);
+    // 传 '' 而不是 delete：组件里 stage_text 参与 `||` 取值，空串即视为无。
+    commitTaskUpdate(key, { stage_text: stageText || '' });
 }
 
 // 地形切片（DEM / 本地地形）的行内进度。
 //
 // 与 stage_text 分开的原因：DEM 的切片作业跑在**下载任务已经 completed 之后**，
-// 那时行落在 history.js 的纯文本分支，既没有进度条也没有 stage 位置。所以另开
-// 一个字段，由 history.js 在两个分支都渲染。
+// 那时行落在组件的终态分支，既没有进度条也没有 stage 位置。所以另开一个
+// 字段，组件在活动态与终态两个分支都渲染它。
 function updateTerrainJobProgress(data) {
     const taskType = data.task_type === 'local_terrain' ? 'local_terrain' : 'dem';
     const key = `${taskType}:${data.task_id}`;
-    const task = activeTasks.get(key);
-    if (!task) return;
+    if (!window.TaskStore || !window.TaskStore.has(key)) return;
 
+    let tilingText;
     if (data.status && data.status !== 'running') {
-        delete task.tiling_text;
+        tilingText = '';
     } else if (data.stage_label) {
         // 物化 / 建金字塔：这一段跑在 total 算出来之前，没有分母，只能报比例
         const pct = Math.round((Number(data.stage_fraction) || 0) * 100);
-        task.tiling_text = t('js.tasks.terrain_stage', {
-            stage: data.stage_label, pct: pct});
+        tilingText = t('js.tasks.terrain_stage', { stage: data.stage_label, pct: pct });
     } else if (Number(data.total_tiles) > 0) {
-        task.tiling_text = t('js.tasks.terrain_tiling', {
+        tilingText = t('js.tasks.terrain_tiling', {
             done: Number(data.rendered_tiles) || 0,
             total: Number(data.total_tiles)});
     } else {
         return;
     }
-    const row = document.getElementById(`task-${key}`);
-    if (row) rebuildStreamRow(row, task);
+    commitTaskUpdate(key, { tiling_text: tilingText });
 }
 
-// 新任务到达（updateTaskProgress 的未知 key 分支）时插到时间流顶部。
-// 条件：当前在第 1 页且筛选 chip 是 全部/进行中——其它页码/其它筛选下
-// 硬插会破坏「按创建时间倒序 + 状态筛选」的语义（任务会出现在它不该
-// 出现的页里）。不满足时不插：翻页/切 chip 会从 /api/history_all 重拉，
-// 任务自然出现。currentPage / currentStatusFilter / createTaskRow 都是
-// history.js 的全局（首页两个文件都加载，typeof 守卫兜底）。
+// 新任务到达时插到时间流顶部。
+// 条件：当前在第 1 页且筛选 chip 是 全部/进行中——其它页码/其它筛选下硬插
+// 会破坏「按创建时间倒序 + 状态筛选」的语义（任务会出现在它不该出现的页里）。
+// 不满足时不插：翻页/切 chip 会从 /api/history_all 重拉，任务自然出现。
+// currentPage / currentStatusFilter 是 history.js 的全局（首页两个文件都
+// 加载，typeof 守卫兜底）。
+//
+// 改造前这里还要自己防重复插行：先 getElementById 查重、命中就改走整行
+// 重建，再手动清掉空态/spinner 占位，最后 insertAdjacentHTML。现在
+// store.upsert 按 key 合并、组件是 keyed v-for，同一个 key 在结构上不可能
+// 渲染出两行；空态也由组件自己按数组长度决定。
 function prependStreamRow(task) {
-    // 查重兜底：行已在流里就原地重建，绝不插第二行。两条重复路径：
-    //   1. 活动任务被列表接口的 100 条窗口挤掉后，task_progress 到达时
-    //      activeTasks 里查不到，被当成「新任务」；
-    //   2. 启动竞态：loadHistory 已经渲染了该行，首个 task_progress 又到达。
-    if (task._key) {
-        const existing = document.getElementById(`task-${task._key}`);
-        if (existing) {
-            rebuildStreamRow(existing, task);
-            return;
-        }
+    if (!window.TaskStore) return;
+    const key = task._key || window.TaskStore.keyOf(task);
+    // 已在流里（被分页窗口挤掉后又收到推送、或与首屏 loadHistory 竞态）：
+    // 合并进去，不新增。
+    if (window.TaskStore.has(key)) {
+        window.TaskStore.patch(key, task);
+        return;
     }
     if (typeof currentPage === 'undefined' || currentPage !== 1) return;
     if (typeof currentStatusFilter !== 'undefined'
         && currentStatusFilter !== '' && currentStatusFilter !== 'active') return;
-    const container = document.getElementById('historyTableBody');
-    if (!container) return;
-    // 空态/加载中占位与行不能共存，先清掉再插
-    if (container.querySelector('.task-empty') || container.querySelector('.spinner-container')) {
-        container.innerHTML = '';
-    }
-    container.insertAdjacentHTML('afterbegin', createTaskRow(task));
+    window.TaskStore.upsert(key, task);
 }
 
+// 一条 socket 推送 → 一次 store 写入。
+//
+// 改造前这里是 154 行、四条管线（map/dem/contour/local_terrain）各自把
+// data 的字段一个个抄进 task 对象，再各自算脏检查、各自 getElementById、
+// 各自分派整行重建还是逐节点增量。四份几乎一样的代码。
+//
+// 现在归一交给 normalizeTask（它本来就是干这个的），合并与渲染交给 store
+// 和 Vue。字段兜底也不用手写了：normalizeTask 用 `...task` 展开，推送里
+// 没有的元信息字段（name / style / output_path / zoom_* 等）根本不会出现在
+// 结果里，Object.assign 自然不会把它们覆盖成 undefined —— 这正是改造前那
+// 一长串 `task.x = data.x || task.x` 的语义。
 function updateTaskProgress(data) {
+    if (!window.TaskStore) return;
     const taskType = data.task_type || 'map';
     const taskId = data.task_id || data.id;
     const key = `${taskType}:${taskId}`;
-    let task = activeTasks.get(key);
+    // 推送里任务主键叫 task_id，normalizeTask 读的是 id
+    const normalized = normalizeTask(Object.assign({}, data, { id: taskId }), taskType);
 
-    if (task) {
-        const statusChanged = data.status && data.status !== task.status;
+    // 速度是**瞬时量**，不能像计数那样在行上长期挂着：
+    //   - 带 download_speed_bps 的推送 = 这一发来自下载阶段。记下到达时刻，
+    //     task_list.js 靠它判断「这个数还新鲜吗」（网断了但任务没判失败时，
+    //     推送会停，行上的速度必须归零而不是冻在最后那个高值）。
+    //   - 不带的推送 = 后端明说这一发不是下载阶段（等高线渲染、地形切片）。
+    //     必须**显式清掉**：store 是 Object.assign 合并，不清的话旧速度会
+    //     一直留在任务对象上。
+    const hasSpeed = typeof data.download_speed_bps === 'number';
+    normalized.download_speed_bps = hasSpeed ? data.download_speed_bps : null;
+    normalized.speed_at = hasSpeed ? Date.now() : null;
 
-        if (taskType === 'local_terrain') {
-            const normalized = normalizeTask(data, 'local_terrain');
-            const progressChanged = normalized.downloaded_items !== task.downloaded_items ||
-                                   normalized.failed_items !== task.failed_items;
-
-            normalized._key = key;
-            activeTasks.set(key, normalized);
-
-            const row = document.getElementById(`task-${key}`);
-            if (row) {
-                if (statusChanged) {
-                    rebuildStreamRow(row, normalized);
-                } else if (progressChanged) {
-                    updateTaskProgressPartial(row, normalized);
-                }
-            }
-            return;
-        }
-
-        if (taskType === 'dem') {
-            const progressChanged = data.downloaded_files !== task.downloaded_files ||
-                                   data.failed_files !== task.failed_files;
-
-            task.id = taskId;
-            task.task_type = 'dem';
-            task._key = key;
-            task.name = data.name || task.name;
-            task.status = data.status || task.status;
-            task.downloaded_files = data.downloaded_files;
-            task.failed_files = data.failed_files;
-            task.total_files = data.total_files;
-            task.total_items = data.total_files || 0;
-            task.downloaded_items = data.downloaded_files || 0;
-            task.failed_items = data.failed_files || 0;
-            task.items_label = t('js.tasks.unit.file');
-            task.output_path = data.output_path || task.output_path;
-            task.started_at = data.started_at || task.started_at;
-            task.created_at = data.created_at || task.created_at;
-
-            activeTasks.set(key, task);
-
-            const row = document.getElementById(`task-${key}`);
-            if (row) {
-                if (statusChanged) {
-                    rebuildStreamRow(row, task);
-                } else if (progressChanged) {
-                    updateTaskProgressPartial(row, task);
-                }
-            }
-            return;
-        }
-
-        if (taskType === 'contour') {
-            // Phase-aware: download counts until rendering starts, then tiles.
-            const phaseChanged = (data.phase || task.phase) !== task.phase;
-            const progressChanged = phaseChanged ||
-                                   data.downloaded_files !== task.downloaded_files ||
-                                   data.failed_files !== task.failed_files ||
-                                   data.rendered_tiles !== task.rendered_tiles ||
-                                   data.failed_tiles !== task.failed_tiles;
-
-            task.id = taskId;
-            task.task_type = 'contour';
-            task._key = key;
-            task.name = data.name || task.name;
-            task.status = data.status || task.status;
-            task.phase = data.phase || task.phase;
-            task.total_files = data.total_files;
-            task.downloaded_files = data.downloaded_files;
-            task.failed_files = data.failed_files;
-            task.total_tiles = data.total_tiles;
-            task.rendered_tiles = data.rendered_tiles;
-            task.failed_tiles = data.failed_tiles;
-            task.zoom_min = data.zoom_min !== undefined ? data.zoom_min : task.zoom_min;
-            task.zoom_max = data.zoom_max !== undefined ? data.zoom_max : task.zoom_max;
-            task.contour_interval = data.contour_interval !== undefined ? data.contour_interval : task.contour_interval;
-            task.started_at = data.started_at || task.started_at;
-            task.created_at = data.created_at || task.created_at;
-
-            const counts = contourPhaseCounts(task);
-            task.total_items = counts.total;
-            task.downloaded_items = counts.done;
-            task.failed_items = counts.failed;
-            task.items_label = counts.label;
-            task.progress_verb = counts.verb;
-
-            activeTasks.set(key, task);
-
-            const row = document.getElementById(`task-${key}`);
-            if (row) {
-                if (statusChanged || phaseChanged) {
-                    rebuildStreamRow(row, task);
-                } else if (progressChanged) {
-                    updateTaskProgressPartial(row, task);
-                }
-            }
-            return;
-        }
-
-        const progressChanged = data.downloaded_tiles !== task.downloaded_tiles ||
-                               data.failed_tiles !== task.failed_tiles;
-
-        task.id = taskId;
-        task.task_type = 'map';
-        task._key = key;
-        task.name = data.name || task.name;
-        task.status = data.status || task.status;
-        task.downloaded_tiles = data.downloaded_tiles;
-        task.failed_tiles = data.failed_tiles;
-        task.total_tiles = data.total_tiles;
-        task.total_items = data.total_tiles || 0;
-        task.downloaded_items = data.downloaded_tiles || 0;
-        task.failed_items = data.failed_tiles || 0;
-        task.items_label = t('js.tasks.unit.tile');
-        task.north = data.north !== undefined ? data.north : task.north;
-        task.south = data.south !== undefined ? data.south : task.south;
-        task.east = data.east !== undefined ? data.east : task.east;
-        task.west = data.west !== undefined ? data.west : task.west;
-        task.zoom_min = data.zoom_min !== undefined ? data.zoom_min : task.zoom_min;
-        task.zoom_max = data.zoom_max !== undefined ? data.zoom_max : task.zoom_max;
-        task.style = data.style || task.style;
-        task.output_format = data.output_format || task.output_format;
-        task.output_path = data.output_path || task.output_path;
-        task.started_at = data.started_at || task.started_at;
-        task.created_at = data.created_at || task.created_at;
-        task.total_running_seconds = data.total_running_seconds !== undefined ? data.total_running_seconds : task.total_running_seconds;
-
-        activeTasks.set(key, task);
-
-        const row = document.getElementById(`task-${key}`);
-        if (row) {
-            if (statusChanged) {
-                rebuildStreamRow(row, task);
-            } else if (progressChanged) {
-                updateTaskProgressPartial(row, task);
-            }
-        }
-    } else {
-        // 新任务：进 activeTasks（状态栏/耗时刷新/socket 查找用），
-        // 并按条件 prepend 到时间流顶部（见 prependStreamRow 的条件注释）。
-        const normalized = normalizeTask(data, taskType);
-        activeTasks.set(key, normalized);
+    // 首次见到这个任务:试着插进时间流(只有在第 1 页、且状态筛选允许时
+    // prependStreamRow 才会真插 —— 见它自己的守卫 :385-387)。**插没插都
+    // 要继续 commit** —— 活动集必须写:
+    //   1. 不写状态栏就漏算这个任务(进行中数量、汇总进度全少一份);
+    //   2. 更糟的是 handleTaskFailed 的 known 守卫(:486)会为 false,
+    //      直接 return —— 没 toast、没红行,任务失败得完全静默。
+    // 时间流里没这一行时 commit 只写活动集,这正是它的既定语义。
+    if (!window.TaskStore.has(key) && !window.TaskStore.getActive(key)) {
         prependStreamRow(normalized);
     }
-}
 
-function updateTaskProgressPartial(row, task) {
-    const progress = task.total_items > 0
-        ? Math.round((task.downloaded_items / task.total_items) * 100)
-        : 0;
+    window.TaskStore.commit(key, normalized);
 
-    // 更新进度条（行2 的 5px 发丝条，进度条/百分比/计数同一行）
-    const progressBar = row.querySelector('.progress-bar');
-    if (progressBar) {
-        // 数值没变就不重写 width/aria：写 style.width 必然触发 layout，
-        // task_progress 高频事件下值得挡掉（aria-valuenow 即 DOM 里的现值）。
-        if (progressBar.getAttribute('aria-valuenow') !== String(progress)) {
-            progressBar.style.width = `${progress}%`;
-            progressBar.setAttribute('aria-valuenow', progress);
+    // 等高线两阶段计数必须基于**合并后**的对象重算：renderStarted 要看
+    // dataset === 'upload'，而 dataset 不在 task_progress 的推送里，
+    // 只在合并后的任务对象上才有。
+    if (taskType === 'contour') {
+        const merged = window.TaskStore.get(key) || window.TaskStore.getActive(key);
+        if (merged) {
+            const counts = contourPhaseCounts(merged);
+            window.TaskStore.commit(key, {
+                total_items: counts.total,
+                downloaded_items: counts.done,
+                failed_items: counts.failed,
+                items_label: counts.label,
+                progress_verb: counts.verb,
+            });
         }
-        // 状态色同理：className 不变时重写也会触发 restyle，先比再写。
-        // 赋值保持这行字面量——契约测试用正则点名钉住它（Socket.IO 增量主路径）。
-        if (progressBar.className !== `progress-bar bg-${getStatusColor(task.status)}`) {
-            progressBar.className = `progress-bar bg-${getStatusColor(task.status)}`;
-        }
-    }
-
-    // 百分比在条右边的 .task-pct，不在条里。这行原本是 progressBar.textContent = ...，
-    // 是这条路径最容易漏改的一处：行初次渲染看不出问题，第一个
-    // task_progress 事件一到就会在同一条进度条上多出第二个百分比。
-    const progressLabel = row.querySelector('.task-pct');
-    if (progressLabel) {
-        progressLabel.textContent = `${progress}%`;
-    }
-
-    // 更新下载数量（数字与失败计数都是数值字段，没有注入面）
-    const downloadDetail = row.querySelector('.task-count');
-    if (downloadDetail) {
-        const failedText = task.failed_items > 0
-            ? ` <span style="color: var(--color-danger);">${t('js.tasks.failed_count', {n: task.failed_items})}</span>`
-            : '';
-
-        const detail = t('js.tasks.progress_detail', {
-            verb: task.progress_verb || t('js.tasks.verb.downloaded'),
-            done: task.downloaded_items,
-            total: task.total_items,
-            unit: task.items_label
-        });
-        downloadDetail.innerHTML = `${detail}${failedText}`;
     }
 }
 
@@ -606,19 +459,12 @@ function handleTaskCompleted(taskId, taskType, warning) {
         showToast(t('js.tasks.toast.completed_with_warning', {warning: warning}), 'warning');
     }
     const key = `${taskType}:${taskId}`;
-    const task = activeTasks.get(key);
-    if (task) {
-        task.status = 'completed';
-        activeTasks.delete(key);   // 终态出 Map：状态栏/耗时刷新只看活动任务
-
-        // 单一时间流（2026-08 定稿）：原地重建为 completed 态——任务就留在
-        // 时间流里，**不是删除**。上一版「删实时行 + loadHistory(1) 重拉」
-        // 是活动/历史分区时代的做法（完成的任务要从活动区搬进历史区）；
-        // 流里没有分区，换状态只是换一行的形态。
-        const row = document.getElementById(`task-${key}`);
-        if (row) {
-            rebuildStreamRow(row, task);
-        }
+    if (window.TaskStore) {
+        // 单一时间流：任务留在流里，只是换一行的形态（**不是删除**）。
+        // 上一版「删实时行 + loadHistory(1) 重拉」是活动/历史分区时代的做法。
+        window.TaskStore.commit(key, { status: 'completed' });
+        // 终态出活动集：状态栏聚合与耗时刷新只看活动任务
+        window.TaskStore.dropActive(key);
     }
 
     // 统计卡（总任务/已完成/失败/累计下载量）跟着终态走。loadStats 是
@@ -653,34 +499,24 @@ function closeFailureToast(key) {
 
 function handleTaskFailed(taskId, taskType, errorMessage) {
     const key = `${taskType}:${taskId}`;
-    const task = activeTasks.get(key);
-    if (!task) return;
+    if (!window.TaskStore) return;
+    const known = window.TaskStore.has(key) || window.TaskStore.getActive(key);
+    if (!known) return;
 
-    task.status = 'failed';
-    task.error_message = errorMessage || UNKNOWN_ERROR_TEXT;
-    task._key = key;   // applyTaskErrorText 靠它定位错误行；normalizeTask 之外的路径不一定设过
-
-    // 既不 activeTasks.delete 也不删行：失败行必须留在页面上（转红 + 错误行）。
-    // 原实现两件事一起做，于是用户盯着 63% 的进度条，卡片突然消失、零提示，
+    const errorText = errorMessage || UNKNOWN_ERROR_TEXT;
+    // 既不出活动集也不删行：失败行必须留在页面上（转红 + 错误行）。
+    // 原实现两件事一起做，于是用户盯着 63% 的进度条，行突然消失、零提示，
     // 分不清是失败、被别人取消、还是自己看花了眼。
     // 清理改由用户点行上的「移除」按钮触发（dismissTask）。
-    activeTasks.set(key, task);
+    window.TaskStore.commit(key, { status: 'failed', error_message: errorText, _key: key });
 
-    // 单一时间流（2026-08 定稿）：原地重建为 failed 态（含引文式错误行），
-    // 不再整体重绘——流里没有「失败」分组，分组头计数/折叠裁剪都不存在了，
-    // 换状态只是换这一行的形态。rebuildStreamRow 内部会用
-    // applyTaskErrorText 以 textContent 回填错误原文。
-    const row = document.getElementById(`task-${key}`);
-    if (row) {
-        rebuildStreamRow(row, task);
-    }
+    console.error(`Task ${taskId} failed: ${errorText}`);
 
-    console.error(`Task ${taskId} failed: ${task.error_message}`);
     // duration: 0 → ui.js 里 `if (duration > 0)` 不成立，不挂定时器，
     // toast 一直留到用户自己点 ×。默认的 3500ms 在这里没用：用户离座一趟
     // 回来照样什么都看不到。
     closeFailureToast(key);   // 同一任务只留最新的一条
-    failureToasts.set(key, showToast(t('js.tasks.toast.failed', {message: task.error_message}), 'danger', { duration: 0 }));
+    failureToasts.set(key, showToast(t('js.tasks.toast.failed', {message: errorText}), 'danger', { duration: 0 }));
 
     // 统计卡的「失败」计数跟着走（与 handleTaskCompleted 同一去抖：
     // 批量失败时 N 个事件合并成一次刷新，字面量 loadStats() 同样被契约测试点名）
@@ -693,19 +529,10 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
     }
 }
 
-// 把错误文本填进失败行里那个**空的** .task-error 容器。
-//
-// 为什么不直接拼进行模板：createTaskRow 的返回值最终进 innerHTML，
-// 而 error_message 是后端异常的字符串化结果（URL、路径、第三方库报错原文
-// 都可能在里面），拼进去等于把它当 HTML 解析。ui.js 的 toast 里是同一条规矩。
-function applyTaskErrorText(task) {
-    if (!task || task.status !== 'failed') return;
-    const row = document.getElementById(`task-${task._key}`);
-    if (!row) return;
-    const box = row.querySelector('.task-error');
-    if (!box) return;
-    box.textContent = task.error_message || UNKNOWN_ERROR_TEXT;  // textContent 防 XSS
-}
+// 错误原文的渲染已经交给组件：`{{ errorText }}` 走 Vue 插值，自动 HTML
+// 转义。改造前必须先渲染一个空的 .task-error 容器、再用 textContent 事后
+// 回填，唯一的理由就是 error_message（后端异常的字符串化结果，URL、路径、
+// 第三方库报错原文都可能在里面）绝不能进 innerHTML 模板。这条路没了。
 
 // 「移除」按钮：只把失败行从界面上拿走，不碰后端。
 //
@@ -715,14 +542,10 @@ function applyTaskErrorText(task) {
 // 重试得先改后端状态机。
 function dismissTask(taskId, taskType = 'map') {
     const key = `${taskType}:${taskId}`;
-    activeTasks.delete(key);
     closeFailureToast(key);   // 行都不要了，那条常驻 toast 也别留着占地方
     // 纯前端删行：任务仍在后端（要彻底删除用行上的 🗑），下次翻页/刷新
     // 从 /api/history_all 重拉时它会回来——这正是「移除」与「删除」的区别。
-    const row = document.getElementById(`task-${key}`);
-    if (row) {
-        row.remove();
-    }
+    if (window.TaskStore) window.TaskStore.remove(key);
 }
 
 function getStatusColor(status) {
@@ -769,6 +592,22 @@ function formatDuration(seconds) {
             ? t('js.tasks.duration.hour_min', {h: hours, m: minutes})
             : t('js.tasks.duration.hours', {h: hours});
     }
+}
+
+// 字节/秒 → 人类可读。1024 进制，与全站文件大小口径一致。
+// 单位不翻译（B/s、MB/s 中英通用），只有「速度: 」前缀走 i18n。
+// ≥100 时取整、否则保留一位小数：避免 99.9 → 100.0 之间字宽来回跳。
+function formatSpeed(bps) {
+    if (!(bps > 0)) return '0 B/s';
+    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    let value = bps;
+    let i = 0;
+    while (value >= 1024 && i < units.length - 1) {
+        value /= 1024;
+        i += 1;
+    }
+    const shown = (i === 0 || value >= 100) ? Math.round(value) : value.toFixed(1);
+    return `${shown} ${units[i]}`;
 }
 
 function calculateTimeInfo(task) {
@@ -825,22 +664,13 @@ function calculateTimeInfo(task) {
     return result;
 }
 
+// 行1 右侧的「已运行 / 预计剩余」每秒重算。
+//
+// 改造前这里遍历 activeTasks、逐个 getElementById 找行、再写 .task-time 的
+// textContent。现在只推一下 store 的 tick，依赖它的 timeText computed 自己
+// 失效重算 —— 组件里 `void store.state.tick` 那行建立的就是这个依赖。
 function updateTimeDisplay() {
-    activeTasks.forEach((task, taskId) => {
-        // 只更新运行中的任务时间（行1 右侧的 已运行/预计剩余）
-        if (task.status !== 'running') return;
-        const row = document.getElementById(`task-${taskId}`);
-        if (!row) return;
-        const timeCell = row.querySelector('.task-time');
-        if (!timeCell) return;
-        const timeInfo = calculateTimeInfo(task);
-        // 时间文本由 formatDuration 的数字组成，无注入面；整格重写 textContent
-        timeCell.textContent = timeInfo.show
-            ? [timeInfo.elapsed ? t('js.tasks.time.elapsed', {value: timeInfo.elapsed}) : '',
-               timeInfo.estimated ? t('js.tasks.time.remaining', {value: timeInfo.estimated}) : '']
-                .filter(Boolean).join(' · ')
-            : '—';
-    });
+    if (window.TaskStore) window.TaskStore.bumpTick();
 }
 
 function apiPrefixForType(taskType) {
@@ -905,16 +735,11 @@ async function cancelTask(taskId, taskType = 'map') {
         });
         if (response.ok) {
             const key = `${taskType}:${taskId}`;
-            const task = activeTasks.get(key);
-            activeTasks.delete(key);
-            // 单一时间流：取消的任务留在流里，原地重建为 cancelled 态
-            // （与 task_completed/task_failed 的原地重建同一形态），不删行。
-            if (task) {
-                task.status = 'cancelled';
-                const row = document.getElementById(`task-${key}`);
-                if (row) {
-                    rebuildStreamRow(row, task);
-                }
+            // 单一时间流：取消的任务留在流里，只换形态（与 completed/failed
+            // 同一处理），不删行。终态出活动集。
+            if (window.TaskStore) {
+                window.TaskStore.commit(key, { status: 'cancelled' });
+                window.TaskStore.dropActive(key);
             }
         } else {
             const result = await response.json().catch(() => ({}));

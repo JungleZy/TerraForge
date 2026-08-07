@@ -5,17 +5,20 @@
    （2026-08 单一时间流定稿前它还控制 #activeTasksBody 实时区——
    活动/失败/历史三分区已废，活动任务就在时间流里，那个容器随之删除。）
    用宏而不是两份 {% if %} 各写一遍卡片：同一份标记只能有一个出处。 #}
+{# 统计卡：自有网格（.stats-row），刻意**不用** Bootstrap 的 .row/.col ——
+   .row 的 ±12px 负外边距在 .history-layout（无横向内边距）里没人抵消，
+   会让这一行宽出 24px 并逼出一条横向滚动条。理由详见 style.css .stats-row。 #}
 {% macro stats_row() %}
-    <div class="row" id="statsRow" style="margin-bottom: 1rem;">
-        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statTotal">-</h3><p>{{ t('tpl.history.stats.total') }}</p></div></div>
-        <div class="col-6 col-md-3"><div class="stat-card accent"><h3 id="statCompleted">-</h3><p>{{ t('tpl.history.stats.completed') }}</p></div></div>
-        <div class="col-6 col-md-3"><div class="stat-card danger"><h3 id="statFailed">-</h3><p>{{ t('tpl.history.stats.failed') }}</p></div></div>
-        <div class="col-6 col-md-3"><div class="stat-card"><h3 id="statDownloaded">-</h3><p>{{ t('tpl.history.stats.downloaded') }}</p></div></div>
+    <div class="stats-row history-layout__fixed" id="statsRow">
+        <div class="stat-card"><h3 id="statTotal">-</h3><p>{{ t('tpl.history.stats.total') }}</p></div>
+        <div class="stat-card accent"><h3 id="statCompleted">-</h3><p>{{ t('tpl.history.stats.completed') }}</p></div>
+        <div class="stat-card danger"><h3 id="statFailed">-</h3><p>{{ t('tpl.history.stats.failed') }}</p></div>
+        <div class="stat-card"><h3 id="statDownloaded">-</h3><p>{{ t('tpl.history.stats.downloaded') }}</p></div>
     </div>
 {% endmacro %}
 
 {% macro history_map_card() %}
-            <div class="card mb-3">
+            <div class="card mb-3 history-layout__fixed">
                 <div class="card-header">
                     <h5>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
@@ -33,7 +36,7 @@
 {% endmacro %}
 
 {% macro task_list_card() %}
-            <div class="card">
+            <div class="card card--grow">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5 style="margin: 0;">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
@@ -82,19 +85,19 @@
             </div>
 {% endmacro %}
 
-    <div class="row">
-        <div class="col-12">
-            {{ stats_row() }}
-        </div>
-        <div class="col-12">
-            {% if records_panel|default(false) %}
-            {{ task_list_card() }}
-            {{ history_map_card() }}
-            {% else %}
-            {{ history_map_card() }}
-            {{ task_list_card() }}
-            {% endif %}
-        </div>
+    {# .history-layout：统计卡与地图卡按内容高，任务列表卡（.card--grow）吃掉
+       剩余高度、列表在卡内滚动。此前是整页一起滚——面板里筛选 chips 会被滚出
+       视野，翻页控件永远在 1000px 之外。宿主容器要撑满高度：
+       首页面板走 .workbench-panel__body--fill，独立页走 .page-content--fill。 #}
+    <div class="history-layout">
+        {{ stats_row() }}
+        {% if records_panel|default(false) %}
+        {{ task_list_card() }}
+        {{ history_map_card() }}
+        {% else %}
+        {{ history_map_card() }}
+        {{ task_list_card() }}
+        {% endif %}
     </div>
 
 {# 任务详情模态框不在这里——在 base.html 的 <body> 直下。

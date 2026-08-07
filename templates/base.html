@@ -71,15 +71,15 @@
             <!-- 连接状态指示：由 initConnectionStatus 点亮。socket 现在是全站单例
                  （window.TerraSocket），所有页面都会连，这里不再有「没有 socket 的
                  页面」；hidden 只是首帧到建连之间的那一小段。 -->
-            <span class="conn-status" id="connStatus" hidden>
+            <span class="conn-status statusbar-pill" id="connStatus" hidden>
                 <span class="conn-dot"></span><span id="connStatusText">{{ t('tpl.base.conn.disconnected') }}</span>
             </span>
             {% block statusbar %}{% endblock %}
             <!-- 随包底图的解压进度（全局事件，所有页面可见）。默认 hidden ——
                  99% 的启动底图已就位，状态栏不该多出一块常驻空位。
-                 位置在页面 statusbar block 之后 = 最右；statusbar 是 flex 且
-                 gap: 0，位置完全由 DOM 顺序决定。 -->
-            <span class="statusbar-basemap" id="statusBaseUnpack" hidden>
+                 位置在页面 statusbar block 之后 = 最右；statusbar 是 flex 行，
+                 位置完全由 DOM 顺序决定。 -->
+            <span class="statusbar-basemap statusbar-pill" id="statusBaseUnpack" hidden>
                 <span id="statusBaseUnpackText"></span>
                 <span class="statusbar-progress" id="statusBaseUnpackProgress" hidden>
                     <span class="statusbar-progress__bar" id="statusBaseUnpackBar"></span>
@@ -237,6 +237,18 @@
     <!-- 保存路径「浏览」的目录选择弹窗 + 组件(首页任务表单/配置页共用) -->
     {% include "_path_browser_modal.html" %}
     <script src="{{ url_for('static', filename='js/path_browser.js') }}"></script>
+
+    <!-- 任务时间流的渲染层：Vue 3 global build（自带 runtime compiler，
+         组件用 template 字符串写，**无构建步骤**）+ 响应式 store + 行组件。
+         必须排在 tasks.js / history.js 之前 —— 那两个文件只写 TaskStore，
+         渲染由这里接管。
+         单独开 block 的理由同 vendor_map_js：/config 页没有 #historyTableBody，
+         不该白下 154KB（config.html 把这个 block 覆盖成空）。 -->
+    {% block vendor_task_list_js %}
+    <script src="{{ url_for('static', filename='vendor/vue/3.5.13/vue.global.prod.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/task_store.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/task_list.js') }}"></script>
+    {% endblock %}
 
     {% block extra_js %}{% endblock %}
 </body>

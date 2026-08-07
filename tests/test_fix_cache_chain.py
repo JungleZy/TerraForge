@@ -149,8 +149,8 @@ def test_cache_write_failure_reports_tile_as_failed(engine, monkeypatch):
 
     reported = []
 
-    async def _cb(t, status, err):
-        reported.append((t.zoom, t.x, t.y, status, err))
+    async def _cb(t, status, err, size_bytes):
+        reported.append((t.zoom, t.x, t.y, status, err, size_bytes))
 
     result = asyncio.run(engine._download_single_tile(
         tile, "s", session, cache_enabled=True, progress_callback=_cb,
@@ -160,27 +160,65 @@ def test_cache_write_failure_reports_tile_as_failed(engine, monkeypatch):
     assert "cache write failed" in result["error"]
     assert len(reported) == 1
     assert reported[0][3] == "failed"
+    # 失败的瓦片没有网络产出可言，字节数必须是 None —— 上层拿它算下载速度
+    # （SpeedMeter），漏报成 0 以外的值会把速度算高。
+    assert reported[0][5] is None
     assert not engine._get_cache_path(tile, "s").exists()
 
 
-def test_successful_download_still_reports_completed(engine):
-    """对照:正常路径不受影响 —— 写盘成功仍报 completed 且缓存落盘。"""
+def test_successful_download_reports_byte_count(engine):
+    """对照：正常路径不受影响 —— 写盘成功仍报 completed 且缓存落盘。
+
+    并且必须带上真实字节数：这是任务行「下载速度」的唯一数据来源
+    （src/services/download_speed.py）。
+    """
     session = _FakeSession(_PNG)
     tile = Tile(task_id=1, zoom=3, x=2, y=1)
 
     reported = []
 
-    async def _cb(t, status, err):
-        reported.append(status)
+    async def _cb(t, status, err, size_bytes):
+        reported.append((status, size_bytes))
 
     result = asyncio.run(engine._download_single_tile(
         tile, "s", session, cache_enabled=True, progress_callback=_cb,
     ))
 
     assert result["status"] == "completed"
-    assert reported == ["completed"]
+    assert reported == [("completed", len(_PNG))]
     cache_path = engine._get_cache_path(tile, "s")
     assert cache_path.exists() and cache_path.read_bytes() == _PNG
+
+
+def test_cache_hit_reports_no_bytes(engine):
+    """缓存命中上报 completed 但字节数为 None —— 读盘不是下载。
+
+    这条是任务行速度显示的核心不变量：把缓存命中的字节算进吞吐，
+    显示出来的「网速」会虚高一个数量级（本地盘 vs 网络差着几百倍），
+    用户就再也没法拿它判断网络是不是卡住了。
+
+    这条分支在 task_manager 之下**确实可达**：它虽然在下载前就把缓存命中
+    剔出了待下清单，但两个 bbox 重叠的任务并发时，枚举之后、下载之前会有
+    瓦片被另一个任务写进缓存。
+    """
+    tile = Tile(task_id=1, zoom=3, x=2, y=1)
+    cache_path = engine._get_cache_path(tile, "s")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(_PNG)
+
+    session = _FakeSession(_PNG)
+    reported = []
+
+    async def _cb(t, status, err, size_bytes):
+        reported.append((status, size_bytes))
+
+    result = asyncio.run(engine._download_single_tile(
+        tile, "s", session, cache_enabled=True, progress_callback=_cb,
+    ))
+
+    assert result["status"] == "completed"
+    assert session.calls == 0, "缓存命中不该发起网络请求"
+    assert reported == [("completed", None)]
 
 
 # ---------------------------------------------------------------------------

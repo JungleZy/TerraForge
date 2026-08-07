@@ -90,6 +90,27 @@ MESSAGES = {
         'zh': '请在地图上框选下载区域',
         'en': 'Draw a selection on the map to download',
     },
+    # 手动输入范围：空态里那颗入口按钮 + 面板的确定/取消。这是键盘用户唯一的
+    # 选区入口，文案要说清「输入的是范围」，不能只写「手动输入」。
+    'js.map.bounds.manual': {
+        'zh': '手动输入范围',
+        'en': 'Enter bounds manually',
+    },
+    'js.map.bounds.manual_apply': {
+        'zh': '确定',
+        'en': 'Apply',
+    },
+    'js.map.bounds.manual_cancel': {
+        'zh': '取消',
+        'en': 'Cancel',
+    },
+    # 读屏播报（#boundsAnnounce）：只在框选落定 / 手动改数校验通过后写一次。
+    # 不复用浮层里的 sr_* 方位词——那些是「N」旁边的补充词，这里要的是一句
+    # 能独立听懂的完整摘要。
+    'js.map.bounds.announce': {
+        'zh': '已选定下载范围：北纬 {north}，南纬 {south}，东经 {east}，西经 {west}',
+        'en': 'Selection set: north {north}, south {south}, east {east}, west {west}',
+    },
 
     # --- 状态栏读数 -----------------------------------------------------------
     'js.map.status.selection': {
@@ -103,6 +124,14 @@ MESSAGES = {
     'js.map.status.coords': {
         'zh': '经度 {lng}°  纬度 {lat}°',
         'en': 'Lon {lng}°  Lat {lat}°',
+    },
+    'js.map.status.zoom': {
+        'zh': 'z{z}',
+        'en': 'z{z}',
+    },
+    'js.map.status.alt': {
+        'zh': ' · 高度 {h}',
+        'en': ' · Alt {h}',
     },
     'js.map.status.coords_empty': {
         'zh': '经度 — 纬度 —',
@@ -146,9 +175,13 @@ MESSAGES = {
     },
 
     # --- 下载弹窗 -------------------------------------------------------------
+    # 下载提交按钮不再按选区禁用（disabled 元素键盘够不着，也读不到原因），
+    # 缺选区时改由这条文案当场解释。所以它必须把**两条**入口都说出来：
+    # 只写「框选」等于把键盘用户指回他们唯一做不到的那件事。
     'js.map.download.need_selection': {
-        'zh': '请先在地图上框选下载区域',
-        'en': 'Draw a selection on the map first',
+        'zh': '请先在地图上框选下载区域，或用范围浮层的「手动输入范围」填写四至',
+        'en': 'Draw a selection on the map first, or use "Enter bounds manually" '
+              'in the bounds overlay',
     },
     'js.map.download.bounds_summary': {
         'zh': '选区 N {north} · S {south} · E {east} · W {west}（{width}° × {height}°）',
@@ -185,6 +218,22 @@ MESSAGES = {
         'zh': '请先选择至少一个 .tif/.tiff 文件',
         'en': 'Select at least one .tif/.tiff file first',
     },
+    'js.map.process.need_dem_task': {
+        'zh': '请先选择一个已完成的高程任务',
+        'en': 'Select a completed DEM task first',
+    },
+    'js.map.process.no_completed_dem_task': {
+        'zh': '暂无已完成的高程任务',
+        'en': 'No completed DEM tasks yet',
+    },
+    'js.map.process.dem_task_load_failed': {
+        'zh': '高程任务列表加载失败: {error}',
+        'en': 'Failed to load DEM tasks: {error}',
+    },
+    'js.map.process.dem_tiling_started': {
+        'zh': '已开始对高程任务 #{id} 做地形切片',
+        'en': 'Terrain tiling started for DEM task #{id}',
+    },
     'js.map.process.contour_default_name': {
         'zh': '等高线瓦片',
         'en': 'Contour tiles',
@@ -208,6 +257,16 @@ MESSAGES = {
     'js.map.process.contour_started': {
         'zh': '等高线任务已开始（上传 DEM → 渲染瓦片）',
         'en': 'Contour task started (upload DEM → render tiles)',
+    },
+    'js.map.process.contour_started_dem_task': {
+        'zh': '等高线任务已开始（复用高程任务 #{id} 已下载的 DEM → 渲染瓦片）',
+        'en': 'Contour task started (reusing DEM already downloaded by task '
+              '#{id} → render tiles)',
+    },
+    # 来源是已下载的高程任务时按钮不能写「上传中」——这条分支一个字节都不上传。
+    'js.map.process.submitting': {
+        'zh': '提交中...',
+        'en': 'Submitting...',
     },
     'js.map.process.upload_started': {
         'zh': '上传成功，已开始切片！ID: {id}',
