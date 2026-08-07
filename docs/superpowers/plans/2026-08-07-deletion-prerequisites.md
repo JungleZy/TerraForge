@@ -15,7 +15,12 @@
 - 注释与文档一律中文，风格是**解释为什么，不解释是什么**——照抄仓库现有注释的密度。
 - 测试文件命名 `tests/test_fix_<topic>.py`，模块 docstring 说明这条测试守的是什么契约。
 - 不跑格式化工具、不跑 lint、不做无关重构。
-- 每个 Task 结束时跑一次全量 `python -m pytest tests/ -q`，基线是 **1467 passed / 3 skipped**（含本计划新增用例后会上升）。
+- 本计划在隔离 worktree `../map-download-wt/dem-stop-flag`（分支 `dem-stop-flag`，基于 `f72a484`）里执行。
+- 解释器用主仓的虚拟环境：**`/home/zhang/workspace/map-download/.venv/bin/python`**。worktree 下没有
+  `.venv`，直接敲 `python` 多半不是 3.12.3 那个带 GDAL 的环境。测试靠 `sys.path.insert` 定位
+  `src/`，所以会正确加载 worktree 这一份代码。
+- 每个 Task 结束时跑一次全量测试，**本 worktree 的干净基线是 1423 passed / 1 skipped**（已实测）。
+  注意别拿主仓的数字对照：主仓工作区有一批未提交改动带进了额外 44 个用例，那不是本分支的基线。
 - `remove_task_dir_if_safe` 的返回值语义是「**是否符合删除条件**」，不是「是否真的删掉了」——它内部用 `shutil.rmtree(target, ignore_errors=True)`（`task_cleanup.py:194`），Windows 上文件被占用会静默失败却仍返回 `True`。任何依赖它的逻辑都必须自己再查一次 `target.exists()`。
 - **不要碰 `src/services/download_engine.py` 里的 `'cancelled'`**——那是瓦片级结果状态（`DownloadCancelled` 异常），与任务状态无关。
 
