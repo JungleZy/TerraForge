@@ -373,8 +373,14 @@ class DemTaskManager:
         finally:
             conn.close()
 
-        # 切片线程与下载线程共用 stop_flags / active_tasks 两张表：切片只在
-        # 下载已 completed 之后才启动，同一 task_id 不会有两个线程并存。
+        # 切片线程与下载线程共用 stop_flags / active_tasks 两张表，而且两者
+        # 确实会短暂并存：_execute 是先 commit status='completed'(:907-908)、
+        # 再 emit task_completed(:913),下载线程要一路退回 _run_task 的
+        # finally(:704-709)才把自己从两张表里摘掉。前端收到 task_completed
+        # 立刻打 /api/terrain/dem/<id>/start 就落在这段窗口里:状态闸门看到
+        # 'completed' 放行,下面两行会盖掉下载线程还在的登记。盖掉是安全的 ——
+        # 下载线程摘登记时做的是身份比较(:706/:708),盖掉之后它一条都不命中,
+        # 什么都不摸。别把这里或那里的身份比较简化成无条件 pop。
         # 登记进 active_tasks 是 delete_task 的 is_alive() 守卫能看见它的前提。
         stop_flag = threading.Event()
         with self._state_lock:
@@ -579,8 +585,12 @@ class DemTaskManager:
             self._emit_tiling_finished(task_id, "failed")
             logger.error(f"DEM tiling job failed for task {task_id}: {e}")
         finally:
-            # 与 _run_task 同一约定：只在自己就是登记的那个线程/flag 时才摘，
-            # 否则会把下一轮 start_tiling 刚放进去的登记误删。
+            # 与 _run_task 同一约定：只在自己就是登记的那个线程/flag 时才摘。
+            # 首先防的是并发重叠 —— 起切片那段（:376）说明了下载收尾与
+            # start_tiling 有真实的窗口，谁被谁盖掉取决于抢锁顺序，被盖掉的
+            # 一方靠这里的身份比较认出「表里的已经不是我」而收手；其次才是
+            # 串行的下一轮 start_tiling 刚放进去的登记不能被上一轮误删。
+            # 无条件 pop 会同时踩掉这两条。
             # getattr 而非 self._state_lock：与上面的 socketio 同一原因 ——
             # 契约测试用 __new__ 构造的管理器直调本方法，压根没有登记表，
             # 也就没有什么可摘的。
