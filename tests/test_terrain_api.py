@@ -60,7 +60,7 @@ def test_terrain_api_start_creates_running_job(monkeypatch, tmp_path):
     db = importlib.import_module("src.core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
 
-    def fake_run_tiling_job(self, task_id, task_dir, output_dir, maxzoom, parent_url):
+    def fake_run_tiling_job(self, *args, **kwargs):
         return None
 
     monkeypatch.setattr(app_mod.dem_task_manager.__class__, "_run_tiling_job", fake_run_tiling_job)
@@ -118,7 +118,7 @@ def test_terrain_api_rejects_duplicate_running_start(monkeypatch, tmp_path):
     db = importlib.import_module("src.core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
 
-    def fake_run_tiling_job(self, task_id, task_dir, output_dir, maxzoom, parent_url):
+    def fake_run_tiling_job(self, *args, **kwargs):
         return None
 
     monkeypatch.setattr(app_mod.dem_task_manager.__class__, "_run_tiling_job", fake_run_tiling_job)

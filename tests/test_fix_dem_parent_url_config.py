@@ -74,7 +74,7 @@ def _make_base_terrain(tmp_path):
 def _no_op_tiling(monkeypatch, dtm):
     monkeypatch.setattr(
         dtm.DemTaskManager, "_run_tiling_job",
-        lambda self, task_id, task_dir, output_dir, maxzoom, parent_url: None,
+        lambda self, *args, **kwargs: None,
     )
 
 

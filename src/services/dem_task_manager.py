@@ -373,22 +373,34 @@ class DemTaskManager:
         finally:
             conn.close()
 
-        th = threading.Thread(
-            target=self._run_tiling_job,
-            args=(task_id, task_dir, output_dir, maxzoom, parent_url),
-            daemon=True,
-            name=f"DemTiling-{task_id}",
-        )
+        # 切片线程与下载线程共用 stop_flags / active_tasks 两张表：切片只在
+        # 下载已 completed 之后才启动，同一 task_id 不会有两个线程并存。
+        # 登记进 active_tasks 是 delete_task 的 is_alive() 守卫能看见它的前提。
+        stop_flag = threading.Event()
+        with self._state_lock:
+            self.stop_flags[task_id] = stop_flag
+            th = threading.Thread(
+                target=self._run_tiling_job,
+                args=(task_id, task_dir, output_dir, maxzoom, parent_url, stop_flag),
+                daemon=True,
+                name=f"DemTiling-{task_id}",
+            )
+            self.active_tasks[task_id] = th
         try:
             th.start()
         except Exception as e:
             # L2: 上面已把 job 行 upsert 成 running 并 commit。线程创建失败
             # (RuntimeError: can't start new thread)后不回补的话,job 行永久停在
             # running:再次 start_tiling 被 `WHERE status != 'running'` 判为「已在
-            # 运行」而 ValueError,delete_task 也被 DB 状态检查挡住(tiling 线程
-            # 不登记进 active_tasks,is_alive() 拦不住),而 src/routes/terrain_api.py
-            # 没有任何 cancel/reset job 的端点 —— 只能重启进程让孤儿恢复解开。
+            # 运行」而 ValueError,delete_task 也被 DB 状态检查挡住,而
+            # src/routes/terrain_api.py 没有任何 cancel/reset job 的端点 ——
+            # 只能重启进程让孤儿恢复解开。
             # job 行没有 paused 态,这里置 failed(与下载管线回退 paused 不同)。
+            with self._state_lock:
+                if self.active_tasks.get(task_id) is th:
+                    self.active_tasks.pop(task_id, None)
+                if self.stop_flags.get(task_id) is stop_flag:
+                    self.stop_flags.pop(task_id, None)
             self._mark_tiling_job_failed(
                 task_id, f"tiling thread failed to start: {e}")
             raise
@@ -409,7 +421,9 @@ class DemTaskManager:
         finally:
             conn.close()
 
-    def _run_tiling_job(self, task_id: int, task_dir: Path, output_dir: Path, maxzoom: int, parent_url: str) -> None:
+    def _run_tiling_job(self, task_id: int, task_dir: Path, output_dir: Path,
+                        maxzoom: int, parent_url: str,
+                        stop_flag: Optional[threading.Event] = None) -> None:
         try:
             # 切片进度节流落库/emit（范本：contour_task_manager 渲染阶段的
             # render_progress）：build_terrain 逐瓦片回调，不节流时每次回调
@@ -506,7 +520,8 @@ class DemTaskManager:
                     out_dir=output_dir,
                     params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
                                       progress_cb=tiling_progress,
-                                      stage_cb=tiling_stage),
+                                      stage_cb=tiling_stage,
+                                      stop_flag=stop_flag),
                 ) or {}
                 _flush_tiling_progress()
             finally:
@@ -519,13 +534,24 @@ class DemTaskManager:
             rendered = int(counts.get("rendered", 0) or 0)
             failed = int(counts.get("failed", 0) or 0)
             total = int(counts.get("total", 0) or 0)
-            if total > 0 and rendered == 0:
+            stopped = stop_flag is not None and stop_flag.is_set()
+            # 中途停止时 rendered 可以合法地是 0（刚进瓦片循环就被叫停），
+            # 不豁免的话会被下面这条「切片器什么都没产出」的失败判据误命中。
+            # 范本逐字对照 local_terrain_task_manager.py:482。
+            if total > 0 and rendered == 0 and not stopped:
                 raise RuntimeError(
                     f"terrain tiling produced no tiles ({failed}/{total} failed)")
             warning = None
             if failed > 0:
                 warning = f"部分地形瓦片切片失败({failed}/{total})"
                 logger.warning(f"DEM tiling job {task_id}: {warning}")
+
+            if stopped:
+                # 中途停止的唯一入口是删除任务（DEM 切片没有暂停/恢复语义）——
+                # dem_tasks 行连同 CASCADE 的 job 行此刻都已经不在了。写状态是
+                # 静默 no-op，_emit_tiling_finished 也没有行可更新。直接收工，
+                # 不是漏了状态迁移。
+                return
 
             conn = get_connection()
             try:
@@ -552,6 +578,19 @@ class DemTaskManager:
                 conn.close()
             self._emit_tiling_finished(task_id, "failed")
             logger.error(f"DEM tiling job failed for task {task_id}: {e}")
+        finally:
+            # 与 _run_task 同一约定：只在自己就是登记的那个线程/flag 时才摘，
+            # 否则会把下一轮 start_tiling 刚放进去的登记误删。
+            # getattr 而非 self._state_lock：与上面的 socketio 同一原因 ——
+            # 契约测试用 __new__ 构造的管理器直调本方法，压根没有登记表，
+            # 也就没有什么可摘的。
+            state_lock = getattr(self, "_state_lock", None)
+            if state_lock is not None:
+                with state_lock:
+                    if self.active_tasks.get(task_id) is threading.current_thread():
+                        self.active_tasks.pop(task_id, None)
+                    if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
+                        self.stop_flags.pop(task_id, None)
 
     def _emit_tiling_finished(self, task_id: int, status: str) -> None:
         """切片作业收尾时补一发 terrain_job_progress。

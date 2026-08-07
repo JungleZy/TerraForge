@@ -86,7 +86,7 @@ def test_start_tiling_accepts_completed_task(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         dtm.DemTaskManager, "_run_tiling_job",
-        lambda self, task_id, task_dir, output_dir, maxzoom, parent_url: None,
+        lambda self, *args, **kwargs: None,
     )
     mgr.start_tiling(task_id)
 
