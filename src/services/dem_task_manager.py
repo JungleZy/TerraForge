@@ -374,13 +374,13 @@ class DemTaskManager:
             conn.close()
 
         # 切片线程与下载线程共用 stop_flags / active_tasks 两张表，而且两者
-        # 确实会短暂并存：_execute 是先 commit status='completed'(:907-908)、
-        # 再 emit task_completed(:913),下载线程要一路退回 _run_task 的
-        # finally(:704-709)才把自己从两张表里摘掉。前端收到 task_completed
-        # 立刻打 /api/terrain/dem/<id>/start 就落在这段窗口里:状态闸门看到
-        # 'completed' 放行,下面两行会盖掉下载线程还在的登记。盖掉是安全的 ——
-        # 下载线程摘登记时做的是身份比较(:706/:708),盖掉之后它一条都不命中,
-        # 什么都不摸。别把这里或那里的身份比较简化成无条件 pop。
+        # 确实会短暂并存：_execute 是先 commit status='completed'(:917-918)、
+        # 再 emit task_completed(:923),下载线程要一路退回 _run_task 的
+        # finally(:714-719)才把自己从两张表里摘掉。任何调用方（详情弹窗点
+        # 「开始切片」,或别的客户端直接打这个端点）都可能落在这段窗口里:
+        # 状态闸门看到 'completed' 放行,下面两行会盖掉下载线程还在的登记。
+        # 盖掉是安全的 —— 下载线程摘登记时做的是身份比较(:716/:718),盖掉
+        # 之后它一条都不命中,什么都不摸。别把身份比较简化成无条件 pop。
         # 登记进 active_tasks 是 delete_task 的 is_alive() 守卫能看见它的前提。
         stop_flag = threading.Event()
         with self._state_lock:
