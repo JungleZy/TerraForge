@@ -413,7 +413,10 @@ def _sweep_cache_part_files(cache_root: Path) -> int:
 
 
 def _sweep_pending_deletions() -> int:
-    """补删 pending_deletions 里残留的任务产物目录，返回真正删掉的个数。
+    """补删 pending_deletions 里残留的任务产物目录。
+
+    返回本次从清单里销账的目录数 —— 含「早就不在了」的那些（用户手工删过），
+    所以不等于本次真正 rmtree 掉的个数。
 
     与前六类不同，这一类的线索来自 DB 而不是文件名模式：删除任务时先记清单再
     删任务行（同一事务），后台线程删成功后清行。进程被强杀时行会留下来。
@@ -427,12 +430,18 @@ def _sweep_pending_deletions() -> int:
         静默失败却仍然返回 True —— 只看返回值就会把没删干净的目录从清单里
         抹掉，那正是这张表要防的事。
 
+    非绝对路径（空串 / '.' / 相对路径）不交给护栏，直接清行丢弃：护栏按【进程
+    当前工作目录】解释它们，那是一个能删掉无关目录的口子，详见循环里的注释。
+
     表不存在（老库、迁移中）时返回 0，不抛 —— 启动清扫全程 best-effort。
     """
-    from src.core.database import get_connection_context
-
     removed = 0
     try:
+        # 延迟 import 必须在 try 【里面】（与 _materialised_sweep_roots 的 :343
+        # 同构）：它存在的理由就是防未来成环，一旦抛，外面没有任何一层接得住
+        # —— 调用点 sweep_startup_residue 没套 try，会一路穿到 create_app()。
+        from src.core.database import get_connection_context
+
         with get_connection_context() as conn:
             try:
                 rows = conn.execute(
@@ -442,7 +451,22 @@ def _sweep_pending_deletions() -> int:
                     f"Pending-deletion sweep: table unavailable (ignored): {e}")
                 return 0
             for row in rows:
-                target = Path(row["path"])
+                # expanduser 在这里做一次，并且【同一个 target】既喂护栏又拿去
+                # exists()：护栏内部自己会 expanduser（见 :169），拿没展开的
+                # `~/...` 去 exists() 恒为 False（实测），「删不干净就保留行」
+                # 那一支会对整类 ~ 路径失效 —— 正是这张表要防的事。
+                target = Path(row["path"]).expanduser()
+                if not target.is_absolute():
+                    # 空串 / '.' / 相对路径会被护栏按【进程 cwd】解释（它用的是
+                    # absolute()，基准就是 cwd）。冻结 exe 的 cwd 是用户双击时
+                    # 所在的任意目录（桌面、下载夹、数据盘），实测 '' 和 '.'
+                    # 会把 cwd 整个 rmtree 掉。清行丢弃，不交给护栏。
+                    logger.warning(
+                        "Pending-deletion sweep: dropping non-absolute path: "
+                        f"{row['path']!r}")
+                    conn.execute(
+                        "DELETE FROM pending_deletions WHERE id = ?", (row["id"],))
+                    continue
                 eligible = remove_task_dir_if_safe(target)
                 if eligible and target.exists():
                     # 没删干净（占用中）—— 留着行，下次启动再试

@@ -9,6 +9,8 @@ pending_deletions 是这条承诺的兜底：删任务行的同一事务里先�
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from conftest import fresh_import  # noqa: E402
@@ -107,6 +109,64 @@ def test_row_survives_when_directory_could_not_be_removed(monkeypatch, tmp_path)
     assert probed == [target], "补删必须真的处理过这一行"
     assert removed == 0
     assert _rows(db) == [str(target)], "目录还在时清单行必须保留"
+
+
+def test_non_absolute_path_never_reaches_the_guard(monkeypatch, tmp_path):
+    """空串 / '.' / 相对路径绝不能进护栏 —— 它会按【进程 cwd】解释掉。
+
+    remove_task_dir_if_safe 内部是 expanduser().absolute().resolve()，非绝对
+    路径的基准就是 cwd。而冻结 exe 的 cwd 是用户双击时所在的那个目录（桌面、
+    下载夹、任意数据盘）。实测 '' 和 '.' 会让护栏把整个 cwd rmtree 掉，而且
+    它还返回 True。补删跑在启动路径、无人值守、全体用户上，这类值必须在进护栏
+    之前就丢弃。
+    """
+    db, cleanup = _setup(monkeypatch, tmp_path)
+    victim = tmp_path / "cwd" / "payload"
+    victim.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path / "cwd")
+    for raw in ("", ".", "sub/deeper"):
+        _queue(db, raw)
+
+    # 进了护栏就算漏 —— 别只靠「cwd 恰好没被删掉」来判定，那取决于运气
+    # （默认部署下 cwd 等于 BASE_DIR，会被「downloads 的祖先」那条顺手挡掉）。
+    monkeypatch.setattr(
+        cleanup, "remove_task_dir_if_safe",
+        lambda p: pytest.fail(f"非绝对路径进了护栏: {str(p)!r}"))
+
+    removed = cleanup._sweep_pending_deletions()
+
+    assert removed == 0, "丢弃不算删除数"
+    assert victim.exists(), "cwd 下的无关目录被删了"
+    assert _rows(db) == [], "非绝对路径要从清单里丢弃，不能无限重试"
+
+
+def test_tilde_path_row_survives_when_directory_could_not_be_removed(
+        monkeypatch, tmp_path):
+    """`~` 路径也得走「删不干净就保留行」那一支。
+
+    护栏内部会 expanduser 后再 rmtree，所以判「删干净了没」必须拿**展开后**的
+    路径去 exists()：`Path('~/x').exists()` 恒为 False（实测），用没展开的路径
+    探，整类 ~ 路径都会被误判成「已删掉」而清行 —— 正是这张表要防的事。
+    """
+    db, cleanup = _setup(monkeypatch, tmp_path)
+    home = tmp_path / "home"
+    (home / "dem" / "dem_task_5").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Windows 上 expanduser 认这个
+    _queue(db, "~/dem/dem_task_5")
+
+    # 模拟「符合删除条件、但实际没删掉」（占用中）。同 dem_task_8 那条：两个
+    # 断言在「补删压根没跑」时同样成立，记下调用才不是假绿。护栏收到的必须是
+    # **展开后**的路径 —— 它就是接下来拿去 exists() 的那一个。
+    probed = []
+    monkeypatch.setattr(
+        cleanup, "remove_task_dir_if_safe", lambda p: probed.append(p) or True)
+
+    removed = cleanup._sweep_pending_deletions()
+
+    assert probed == [home / "dem" / "dem_task_5"], "护栏必须收到展开后的路径"
+    assert removed == 0
+    assert _rows(db) == ["~/dem/dem_task_5"], "目录还在时清单行必须保留"
 
 
 def test_missing_directory_clears_the_row(monkeypatch, tmp_path):
