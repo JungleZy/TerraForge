@@ -141,11 +141,20 @@ def _normalize_proxy_url(value: str) -> str:
 
 def _env_candidates():
     """环境变量里的代理。apply_system_proxy() 已经把 OS 系统代理灌到这里，
-    所以这一条同时覆盖了"用户手动 export"和"Windows 注册表系统代理"两种。"""
-    out = []
+    所以这一条同时覆盖了"用户手动 export"和"Windows 注册表系统代理"两种。
+
+    **同一个地址只排一次。** 两个原因，任一单独成立都要求去重：
+    Windows 的 os.environ 是**大小写不敏感**的（Python 把 key 统一大写），
+    `HTTPS_PROXY` 与 `https_proxy` 读到的是同一个变量，四个 key 会拿到两两
+    重复的值；而在 Linux/macOS 上，同时 export 大小写两份本来就是常见做法。
+    不去重的话同一个代理会被排进候选两次，验证也就跑两次 —— 每次验证都是一
+    次真实的网络往返，而候选列表是有验证预算的。
+    """
+    out, seen = [], set()
     for key in ('HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'):
         url = _normalize_proxy_url(os.environ.get(key, ''))
-        if url:
+        if url and url not in seen:
+            seen.add(url)
             out.append(ProxyCandidate(url, 'env'))
     return out
 

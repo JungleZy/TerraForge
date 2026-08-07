@@ -186,6 +186,24 @@ def test_env_candidates_prefer_https_then_http(monkeypatch):
     ]
 
 
+def test_env_candidates_dedupe_same_url_across_case_variants(monkeypatch):
+    """同一个地址只排一次 —— 每个候选都要花一次真实网络往返去验证。
+
+    这条在 Windows CI 上真实红过（v0.2.11 首次发版构建）：Windows 的
+    os.environ 大小写不敏感，Python 把 key 统一成大写，于是 HTTPS_PROXY 与
+    https_proxy 读到的是**同一个变量**，四个 key 拿到两两重复的值，候选从 2 个
+    变成 4 个。Linux/macOS 上同时 export 大小写两份也是常见做法，所以这里按
+    后者构造 —— 两个平台都能跑，也都能在去重逻辑被拆掉时变红。
+    """
+    monkeypatch.setenv("HTTPS_PROXY", "http://2.2.2.2:2222")
+    monkeypatch.setenv("https_proxy", "http://2.2.2.2:2222")
+    monkeypatch.setenv("HTTP_PROXY", "http://1.1.1.1:1111")
+    monkeypatch.setenv("http_proxy", "http://1.1.1.1:1111")
+    assert [c.url for c in pa._env_candidates()] == [
+        "http://2.2.2.2:2222", "http://1.1.1.1:1111",
+    ]
+
+
 def test_env_candidates_drop_socks(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "socks5://127.0.0.1:1080")
     assert pa._env_candidates() == []
