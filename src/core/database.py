@@ -544,6 +544,22 @@ def init_database():
             ON dem_terrain_jobs(status)
         ''')
 
+        # 待删产物清单。删除任务时若用户选了「同时删除磁盘产物」，先在这里记
+        # 一行、再删任务行（同一事务）；后台清理线程删成功后清掉该行。进程被
+        # 强杀（SIGKILL / 关窗）时行会留下来，由启动清扫补删
+        # （task_cleanup._sweep_pending_deletions）。
+        #
+        # 刻意没有外键：任务行先删、这行后删，反过来关联就悬空了 —— 这张表存在
+        # 的意义恰恰是「任务已经不在了，但产物还在」。
+        # path UNIQUE：同一目录重复入队没有意义，用 INSERT OR IGNORE 幂等。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pending_deletions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS local_terrain_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

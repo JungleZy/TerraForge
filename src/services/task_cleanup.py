@@ -412,8 +412,54 @@ def _sweep_cache_part_files(cache_root: Path) -> int:
     return removed
 
 
+def _sweep_pending_deletions() -> int:
+    """补删 pending_deletions 里残留的任务产物目录，返回真正删掉的个数。
+
+    与前六类不同，这一类的线索来自 DB 而不是文件名模式：删除任务时先记清单再
+    删任务行（同一事务），后台线程删成功后清行。进程被强杀时行会留下来。
+
+    三种结局，**不能只看 remove_task_dir_if_safe 的返回值**：
+      - 返回 False（越界）→ 清行。它永远不会被删掉，留着只会每次启动重试一遍
+        并刷一条 warning。
+      - 返回 True 且目录确实没了 → 清行，计入删除数。
+      - 返回 True 但目录还在 → **保留行**。那个函数用的是
+        `rmtree(..., ignore_errors=True)`（见 :194），Windows 上文件被占用会
+        静默失败却仍然返回 True —— 只看返回值就会把没删干净的目录从清单里
+        抹掉，那正是这张表要防的事。
+
+    表不存在（老库、迁移中）时返回 0，不抛 —— 启动清扫全程 best-effort。
+    """
+    from src.core.database import get_connection_context
+
+    removed = 0
+    try:
+        with get_connection_context() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT id, path FROM pending_deletions").fetchall()
+            except Exception as e:
+                logger.warning(
+                    f"Pending-deletion sweep: table unavailable (ignored): {e}")
+                return 0
+            for row in rows:
+                target = Path(row["path"])
+                eligible = remove_task_dir_if_safe(target)
+                if eligible and target.exists():
+                    # 没删干净（占用中）—— 留着行，下次启动再试
+                    continue
+                conn.execute(
+                    "DELETE FROM pending_deletions WHERE id = ?", (row["id"],))
+                if eligible:
+                    removed += 1
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Pending-deletion sweep failed (ignored): {e}")
+        return removed
+    return removed
+
+
 def sweep_startup_residue() -> None:
-    """启动一次性清扫六类 finally 盖不住（SIGKILL/关窗）的临时残留：
+    """启动一次性清扫七类 finally 盖不住（SIGKILL/关窗）的临时残留：
 
     1. stitch work_dir（map_dl_stitch_*，系统临时目录 + 配置的 stitch_tmpdir）；
     2. contour warp tmpdir（contour_warp_*，系统临时目录 + 配置的
@@ -428,6 +474,8 @@ def sweep_startup_residue() -> None:
     6. 随包底图的解压临时目录（.base_unpack_<pid>_*，位于 assets/terrain）——
        最多 167 MB / 4.3 万个文件，且那是 Nuitka 的 --include-data-dir 源目录，
        残留会被打进发布产物；前五类的扫描根一条都覆盖不到那里。
+    7. 上次进程没删完的任务产物目录（pending_deletions 表）—— 唯一一类线索来自
+       DB 而不是文件名模式的残留，见 _sweep_pending_deletions。
 
     只处理 mtime 早于本进程启动时刻的目录（见 _sweep_tmp_dirs 的 older_than）；
     .part 文件与物化栅格按名字里的 pid 跳过仍存活的写者。
@@ -436,7 +484,7 @@ def sweep_startup_residue() -> None:
     匹配规则按前缀/通配精确限定（见模块顶部常量），同步执行、毫秒级。
     """
     removed = {"stitch": 0, "warp": 0, "upload": 0, "part": 0, "materialised": 0,
-               "base_unpack": 0}
+               "base_unpack": 0, "pending": 0}
     started_at = _PROCESS_START_TIME
     try:
         sys_tmp = Path(tempfile.gettempdir())
@@ -500,6 +548,12 @@ def sweep_startup_residue() -> None:
     except Exception as e:
         logger.warning(f"Materialised-raster sweep failed (ignored): {e}")
 
+    # 第 7 类：上次进程没删完的任务产物目录。与第 5 类同理排在前六类的 except
+    # 之后 —— 它要查 DB，多一个失败面，不该因为数据库暂时不可用就把已统计的
+    # 清扫结果丢掉。异常在 _sweep_pending_deletions 内部就已吞掉并记日志，
+    # 这里不必再套一层 try。
+    removed["pending"] += _sweep_pending_deletions()
+
     total = sum(removed.values())
     if total:
         logger.info(
@@ -507,7 +561,8 @@ def sweep_startup_residue() -> None:
             f"stitch tmp={removed['stitch']}, contour warp tmp={removed['warp']}, "
             f"upload tmp={removed['upload']}, cache .part={removed['part']}, "
             f"materialised raster={removed['materialised']}, "
-            f"base unpack tmp={removed['base_unpack']}"
+            f"base unpack tmp={removed['base_unpack']}, "
+            f"pending deletions={removed['pending']}"
         )
 
 
