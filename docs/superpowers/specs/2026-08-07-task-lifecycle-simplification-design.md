@@ -304,3 +304,52 @@ i18n 中英两份都要删干净——`tests/test_i18n.py` 强制两个 locale �
 
 前两步不改变任何用户可见行为，可以先落地验证。第 4 步之前，`cancelled` 仍然存在——
 这样每一步都能单独跑通全量测试。
+
+## 计划 A 执行完毕 —— 留给计划 B 的输入
+
+第 1、2 步已作为独立分支 `dem-stop-flag` 落地并合入（计划文档：
+`docs/superpowers/plans/2026-08-07-deletion-prerequisites.md`）。执行中挖出四件计划 B
+必须知道的事，写在这里是因为 SDD 台账是 git-ignored 的，随工作区一起销毁。
+
+### 1. 计划 B 必须处理：完成事件早于登记摘除
+
+`_emit_tiling_finished` 在 `finally` 摘 `active_tasks` **之前**发出。收到完成事件后立刻发起的
+`DELETE` 会撞上 `is_alive()` 守卫拿 400。窗口是微秒级、远小于一次 HTTP RTT，而且
+`_run_task` 是完全相同的形状（先 emit 后摘）——所以计划 A 没有改它，改成先摘后 emit 反而
+制造第二套约定。但 `delete_task` 正是这条链的目的地，计划 B 重写它时必须正面处理。
+
+### 2. 计划 B 必须处理：非绝对路径的根治不在补删这一侧
+
+`remove_task_dir_if_safe` 对非绝对路径以**进程 cwd** 为基准解析（它内部用 `absolute()`）。
+冻结 exe 的 cwd 是用户双击时所在的任意目录。实测 `''` 与 `'.'` 会让护栏返回 `True` 并把
+整个 cwd rmtree 掉。
+
+计划 A 已在补删侧加了「非绝对路径不进护栏，直接清行丢弃」的拦截，但那是**纵深防御的最后
+一道**。根治在写入侧：`delete_task` 往 `pending_deletions` 入队**之前**就必须保证绝对路径、
+并过一次护栏判断。计划 B 合入的瞬间这个洞就带电（在那之前没有生产写入方）。
+
+### 3. 计划 B 落地时顺手正过来的三条
+
+- 切片期间 `delete_task` 的错误文案现在是「Please pause or cancel it first.」——对 `completed`
+  状态的任务而言那是坏建议（两个操作都必然 400）。守卫命中顺序因 Task 1 登记切片线程而改变；
+  用户看不到（前端丢弃后端 `error` 字符串，统一显示「删除失败」），但直连 API 的人会被误导。
+  计划 B 重写这三道守卫时一并修正。
+- `task_cleanup.py` 的 `_sweep_pending_deletions` docstring 对返回值的口径不准：`removed` 只在
+  「护栏放行且目录确已不在」时 +1，而越界与非绝对路径**也会清行销账却不计数**。
+- `dem_task_manager.py` 注释里引的按钮文案「开始切片」与 UI 不符，实际是
+  `tpl.base.detail.terrain_start` = 「启动」。
+
+### 4. 一条全仓级别的建议（该进计划 B 的 Global Constraints）
+
+**注释里引符号名，不要引行号。** 计划 A 有整整一轮修复是白跑的：一个只交付「注释准确性」的
+提交，被它自己插入的 10 行把注释里的四组行号引用整体推移后全部作废。行号在任何插入行的提交
+之后都会重新腐烂。若要保留行号，改完必须按**最终文件**机检一遍再落笔。
+
+### 5. 已知的测试债（不阻塞，但计划 B 会碰到这些文件）
+
+- `tests/test_fix_dem_tiling_stoppable.py:107-110` 与 `:144-147` 两个用例在「线程压根没跑起来」
+  时会假绿：job 行被 `start_tiling` 写成 `running`，线程若在进入 `_run_tiling_job` 前就死掉，
+  断言依然满足。补法是 join 后加 `assert task_id not in mgr.active_tasks`（顺带证明 finally
+  执行过）。同文件用例 1 用 Event 握手做了确定性兜底，所以只是债不是洞。
+- `dem_task_manager.py` 的 `finally` 拿 `_state_lock` 当「两张登记表存在」的哨兵，成立只因
+  `__init__` 的赋值顺序恰好是 `active_tasks` → `stop_flags` → `_state_lock`。
