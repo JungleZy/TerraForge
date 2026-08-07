@@ -78,9 +78,28 @@ def _write_dem(path, west, north=40.0, px=120, deg=0.001):
 
 
 def _stitch_engine(tmp_path, monkeypatch):
-    """一个 CACHE_DIR 指向 tmp 的 DownloadEngine + 两张相邻瓦片。"""
+    """一个 CACHE_DIR 指向 tmp、且**不依赖配置库**的 DownloadEngine + 两张相邻瓦片。
+
+    ⚠️ 架空 ConfigManager.get 是必须的，不是图省事。CI 是全新克隆、没有 data/
+    目录，而 `ConfigManager.get` 对 sqlite 错误是**有意重抛**的（同类注释见
+    contour_engine），`stitch_tiles_with_gdal` 读 gdal_compression 那处没有兜底
+    —— 于是这几个用例在 CI 上全部
+    `sqlite3.OperationalError: unable to open database file`（实测 macOS job，
+    5 failed）。本机看不出来：data/map_downloader.db 早就建好了。
+
+    套件里其他 stitch 用例（test_tile_georeference.py）在 CI 上能过，靠的是按
+    字母序排在它们之前的用例导入过 app、顺带把库建了出来 —— 那是**隐式的执行
+    顺序依赖**，单独跑那个文件同样会炸。不要跟着学。
+
+    这些用例测的是 GDAL 行为、不是配置读取，所以让 config 恒返回调用方给的
+    默认值（gdal_compression 默认 'LZW'），彻底断开对数据库的依赖。
+    """
     from src.core.config import Config
+    from src.services.config_manager import ConfigManager
     from src.services.download_engine import DownloadEngine, Tile
+
+    monkeypatch.setattr(ConfigManager, 'get',
+                        lambda self, key, default=None: default)
 
     cache_dir = tmp_path / 'cache'
     cache_dir.mkdir(parents=True, exist_ok=True)
