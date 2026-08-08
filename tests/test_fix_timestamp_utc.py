@@ -259,3 +259,42 @@ def test_config_updated_at_is_utc_iso(isolated_config):
 
     assert row['value'] == '25'
     assert ISO_TZ_RE.match(row['updated_at']), f"updated_at 非 UTC ISO: {row['updated_at']!r}"
+
+
+def test_task_from_row_returns_only_aware_datetimes(isolated_config):
+    """`Task.from_row` 的三个时间戳必须全是 aware，不能 naive/aware 混着。
+
+    created_at 来自表默认值 CURRENT_TIMESTAMP（朴素 'YYYY-MM-DD HH:MM:SS'），
+    started_at/completed_at 由 utc_now_iso() 写入（带 +00:00）。修复前 from_row
+    用裸 `datetime.fromisoformat` 逐个解析，于是同一个 Task 对象里两种形状并存，
+    `to_dict()` 也吐出两种形状。今天前端的 parseTaskDate 兜住了，所以没有可见
+    故障 —— 真正的代价是陷阱：Python 侧任何 `utc_now() - task.started_at` 碰上
+    这种行就 TypeError。三个字段现在统一走 parse_db_timestamp。
+    """
+    from src.core.database import get_connection, utc_now, utc_now_iso
+    from src.models.task import Task
+
+    task_id = _seed_task_row(status='running')
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE tasks SET started_at = ?, completed_at = ? WHERE id = ?",
+            (utc_now_iso(), utc_now_iso(), task_id))
+        conn.commit()
+        row = conn.cursor().execute(
+            'SELECT * FROM tasks WHERE id = ?', (task_id,)).fetchone()
+    finally:
+        conn.close()
+
+    # created_at 就是表默认值写的朴素格式 —— 前提成立才有这条用例
+    assert '+' not in str(row['created_at']), (
+        'created_at 已经带时区了，本用例的前提需要重新评估')
+
+    task = Task.from_row(row)
+    for field in ('created_at', 'started_at', 'completed_at'):
+        value = getattr(task, field)
+        assert value is not None and value.tzinfo is not None, (
+            f'{field} 是 naive datetime —— from_row 又在用裸 fromisoformat 了')
+
+    # 真正会炸的那个操作:aware 相减。修复前 created_at 这一支必然 TypeError。
+    assert (utc_now() - task.created_at).total_seconds() >= 0

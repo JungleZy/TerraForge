@@ -51,11 +51,15 @@
                        「进行中」对应特殊值 active = pending/running/paused）。 #}
                     <div class="task-filter-bar">
                         <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="{{ t('tpl.history.filter.search_placeholder') }}">
+                        {# aria-pressed 必须与 .active 同步：两者只差一个 CSS
+                           类时读屏用户听不出当前筛的是哪一档（.status-chip.active
+                           与基态只差 color/border-color）。初值在这里给全，
+                           点击后的同步由 history.js 与 .active 同一处完成。 #}
                         <div class="status-chips" id="statusChips" role="group" aria-label="{{ t('tpl.history.filter.group_label') }}">
-                            <button type="button" class="status-chip active" data-status="">{{ t('tpl.history.filter.all') }}</button>
-                            <button type="button" class="status-chip" data-status="active">{{ t('tpl.history.filter.active') }}</button>
-                            <button type="button" class="status-chip" data-status="failed">{{ t('tpl.history.filter.failed') }}</button>
-                            <button type="button" class="status-chip" data-status="completed">{{ t('tpl.history.filter.completed') }}</button>
+                            <button type="button" class="status-chip active" data-status="" aria-pressed="true">{{ t('tpl.history.filter.all') }}</button>
+                            <button type="button" class="status-chip" data-status="active" aria-pressed="false">{{ t('tpl.history.filter.active') }}</button>
+                            <button type="button" class="status-chip" data-status="failed" aria-pressed="false">{{ t('tpl.history.filter.failed') }}</button>
+                            <button type="button" class="status-chip" data-status="completed" aria-pressed="false">{{ t('tpl.history.filter.completed') }}</button>
                         </div>
                     </div>
                     <div id="historyTableBody">

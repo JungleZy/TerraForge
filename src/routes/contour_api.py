@@ -16,7 +16,7 @@ from flask import Blueprint, current_app, jsonify, request
 from src.i18n import t
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import coerce_number, validate_zoom
-from src.services.task_cleanup import resolve_stored_output_dir
+from src.services.task_cleanup import record_retained_output, resolve_stored_output_dir
 from src.routes.api import _delete_payload
 from src.routes import contour_static
 
@@ -197,15 +197,17 @@ def delete_contour_task(task_id: int):
         # Optional best-effort artifact cleanup (output_path/contour_task_<id>/)。
         # 边界见 remove_task_dir_if_safe 的 docstring。M10：走
         # resolve_stored_output_dir（裸 Path() 对存量相对值按进程 CWD 解析）。
-        artifact_dir = None
-        if (request.args.get("delete_files", "").lower() in ("1", "true", "yes")
-                and task.get("output_path")):
-            artifact_dir = (
+        delete_files = request.args.get("delete_files", "").lower() in ("1", "true", "yes")
+        # 两条路都要算出目录：要删的那条交给 manager，保留的那条得登记 ——
+        # 否则它就是零引用目录（见下面 record_retained_output 那段）。
+        task_dir = None
+        if task.get("output_path"):
+            task_dir = (
                 resolve_stored_output_dir(task["output_path"]) / f"contour_task_{task_id}")
 
         outcome = contour_task_manager.delete_task(
             task_id,
-            artifact_dir=artifact_dir,
+            artifact_dir=task_dir if delete_files else None,
             # 行删掉后同步清 /contour 静态路由的存在性缓存，否则 delete_files=false
             # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
             # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
@@ -214,9 +216,26 @@ def delete_contour_task(task_id: int):
         if not outcome.row_deleted:
             return jsonify({"error": f"Contour task {task_id} not found"}), 404
 
-        return jsonify(_delete_payload(
+        payload = _delete_payload(
             f"Contour task {task_id} deleted", outcome.files_removed,
-            files_deferred=outcome.files_deferred))
+            files_deferred=outcome.files_deferred)
+
+        # delete_files=false 是删除对话框的默认。行一走，contour_files 随外键级联
+        # 消失，<output_path>/contour_task_<id>/ 从此没有任何 DB 引用 —— 启动清扫
+        # 只认 pending_deletions 和任务表，扫不到它，渲染到一半的瓦片金字塔就永久
+        # 留在用户盘上。登记一行把引用接回来（与 dem_api / api / local_terrain_api
+        # 同一套，四条管线口径一致）。
+        # 【只登记，不删文件】—— 用户说了保留，一个字节都不动。
+        if not delete_files and task_dir is not None:
+            try:
+                if task_dir.exists():
+                    record_retained_output(task_dir)
+                    payload["files_retained_path"] = str(task_dir)
+            except OSError as e:
+                logger.warning(
+                    f"Contour task {task_id}: cannot stat retained output dir: {e}")
+
+        return jsonify(payload)
     except ValueError as e:
         # get_task 的 "not found" -> 404。运行中不再拒删，这里没有 400 分支了。
         return jsonify({"error": str(e)}), 404

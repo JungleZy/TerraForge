@@ -104,7 +104,9 @@ def test_resampled_sampling_is_numerically_correct(tmp_path):
     got = sampler.sample(llon, llat)
     px = (llon - west0) / deg_per_px
     py = (north0 - llat) / deg_per_px
-    expected = 0.5 * px + 0.25 * py
+    # arr[j,i] 是【像素中心】的取值，中心在边坐标 (i+0.5, j+0.5)。
+    # 所以把场写成边坐标的函数要减半像素。
+    expected = 0.5 * (px - 0.5) + 0.25 * (py - 0.5)
 
     assert got.shape == (n, n)
     # 梯度 0.5/0.25 per px:半像素偏移会产生 0.375 的系统误差。
@@ -113,11 +115,16 @@ def test_resampled_sampling_is_numerically_correct(tmp_path):
 
 
 def test_sampling_has_no_half_pixel_bias(tmp_path):
-    """M19 复核：审查报告称采样坐标恒偏 +0.5 源像素、公式应改成
-    (px - x0c)/sx - 0.5。实测 GDAL RasterIO 的 bilinear 降采样是以
-    (j+0.5)*sx - 0.5 为中心的帐篷滤波，现行公式正是其逆映射，本身无偏；
-    按报告改才会引入 +0.5 源像素偏移。本测试用陡峭线性场钉住正确行为：
-    半像素偏移在梯度 1.0/0.7 per px 下产生 ~0.85 系统误差，远超容差。"""
+    """采样坐标不得偏移半个源像素。
+
+    历史：M19 复核提出「公式应改成 (px - x0c)/sx - 0.5」，当时被本测试的旧版
+    驳回。**旧版是错的** —— 它用 `WriteArray(a*i + b*j)` 造线性场，却拿
+    `expected = a*px_edge + b*py_edge` 对账，等于把「arr[j,i] 位于边坐标 i」
+    这个错误前提写进了基准，于是与同样错的实现自洽、测得过。
+
+    2026-08-08 用 GDAL 自己当裁判重判（见 test_sampling_matches_gdal_warp）：
+    中心制 RMS 0.0000 m、旧式 RMS 8.0 m。M19 是对的，已修。
+    """
     cols = rows = 2000
     west0, north0, deg_per_px = 100.0, 40.0, 0.01
     tif = tmp_path / "steep_dem.tif"
@@ -137,9 +144,59 @@ def test_sampling_has_no_half_pixel_bias(tmp_path):
     got = sampler.sample(llon, llat)
     px = (llon - west0) / deg_per_px
     py = (north0 - llat) / deg_per_px
-    expected = 1.0 * px + 0.7 * py
+    expected = 1.0 * (px - 0.5) + 0.7 * (py - 0.5)
 
     err = got - expected
     np.testing.assert_allclose(got, expected, atol=0.05)
-    # 系统性偏移检查：无偏采样的平均误差应趋于 0（半像素偏移则 ~-0.85）
+    # 系统性偏移检查：无偏采样的平均误差应趋于 0（半像素偏移则 ~+0.85）
     assert abs(float(err.mean())) < 0.01
+
+
+def test_sampling_matches_gdal_warp(tmp_path):
+    """用 GDAL 自己当预言机 —— 不依赖任何人对「边/中心」约定的解读。
+
+    把源栅格 warp 到一个**像素中心恰好落在查询点上**的网格，GRA_Bilinear。
+    DemSampler 在同样这批经纬点上的输出必须与之一致。
+
+    这条测试存在的理由：半像素约定在本仓库上被判过两次、反过一次（见
+    test_sampling_has_no_half_pixel_bias 的 docstring）。合成线性场 + 手算
+    expected 的测法容易把错误前提写进基准；拿 GDAL 的重采样结果对账则不会。
+    """
+    cols = rows = 400
+    west0, north0, deg_per_px = 100.0, 40.0, 0.01
+    tif = tmp_path / "wavy_dem.tif"
+    ds = gdal.GetDriverByName("GTiff").Create(str(tif), cols, rows, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform((west0, deg_per_px, 0.0, north0, 0.0, -deg_per_px))
+    py_px, px_px = np.mgrid[0:rows, 0:cols].astype(np.float32)
+    # 非线性场：线性场对任何相位偏移都只产生常数误差，验不出方向性问题。
+    ds.GetRasterBand(1).WriteArray(
+        100.0 * np.sin(px_px / 7.0) + 60.0 * np.cos(py_px / 5.0))
+    ds.FlushCache()
+    ds = None
+
+    src = gdal.Open(str(tif))
+    n = 65
+    # 查询网格必须比源【更细】：gdal.Warp 在降采样时会对源footprint做核平均，
+    # 与「纯双线性点采样」不可比（实测 1.3x 粗网格上两者差 1.97，那不是相位问题）。
+    # 上采样时 GRA_Bilinear 就是纯双线性，此时两者只剩相位这一个变量。
+    # 步长取源像素的非整数倍，避免与源网格同相而掩盖偏移。
+    step = deg_per_px * 0.7
+    lons = west0 + 50 * deg_per_px + np.arange(n) * step
+    lats = north0 - 50 * deg_per_px - np.arange(n) * step
+    llon, llat = np.meshgrid(lons, lats)
+
+    # 目标栅格的像素中心 = 上面那批点
+    dst = gdal.GetDriverByName("GTiff").Create(
+        str(tmp_path / "warped.tif"), n, n, 1, gdal.GDT_Float64)
+    dst.SetGeoTransform((lons[0] - step / 2, step, 0.0,
+                         lats[0] + step / 2, 0.0, -step))
+    dst.SetProjection(src.GetProjection())
+    gdal.Warp(dst, src, resampleAlg=gdal.GRA_Bilinear)
+    ref = dst.GetRasterBand(1).ReadAsArray().astype(float)
+    dst = None
+
+    got = DemSampler(str(tif)).sample(llon, llat).astype(float)
+
+    # 去掉最外一圈，避开 warp 的边界处理差异
+    inner = (slice(1, -1), slice(1, -1))
+    np.testing.assert_allclose(got[inner], ref[inner], atol=1e-3)

@@ -6,10 +6,13 @@ Endpoints for uploading GeoTIFF files and tiling them into Cesium terrain.
 
 import logging
 import os
+from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
+from src.core.config import Config
 from src.services.geo_validation import validate_zoom
+from src.services.task_cleanup import record_retained_output
 from src.routes.api import _delete_payload
 from src.routes import terrain_static
 
@@ -123,9 +126,27 @@ def delete_local_terrain_task(task_id: int):
         )
         if not outcome.row_deleted:
             return jsonify({"error": f"Local terrain task {task_id} not found"}), 404
-        return jsonify(_delete_payload(
+        payload = _delete_payload(
             f"Local terrain task {task_id} deleted", outcome.files_removed,
-            files_deferred=outcome.files_deferred))
+            files_deferred=outcome.files_deferred)
+
+        # delete_files=false 时行一走，产物目录就没有任何 DB 引用了 —— 启动清扫
+        # 只认 pending_deletions 和任务表，从此谁都找不回它。登记一行把引用接
+        # 回来；【只登记，不删文件】。
+        # 路径按固定布局从当前 DOWNLOADS_DIR 重算，与 manager.delete_task 和
+        # terrain_static 同一套口径（库存 output_path 在 exe 搬迁后指向旧位置）。
+        if not delete_files:
+            task_dir = (
+                Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}")
+            try:
+                if task_dir.exists():
+                    record_retained_output(task_dir)
+                    payload["files_retained_path"] = str(task_dir)
+            except OSError as e:
+                logger.warning(
+                    f"Local terrain task {task_id}: cannot stat retained dir: {e}")
+
+        return jsonify(payload)
     except Exception as e:
         logger.error(f"Error deleting local terrain task {task_id}: {e}")
         return jsonify({"error": "Failed to delete local terrain task"}), 500

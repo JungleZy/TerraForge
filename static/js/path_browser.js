@@ -83,9 +83,18 @@
         }
     }
 
-    window.openPathBrowser = function (inputId) {
+    // 具名函数表达式：栈帧里显示 openPathBrowser 而不是匿名，源码契约测试也
+    // 才能按名字切出函数体。名字只绑定在函数自身作用域内，不污染 IIFE。
+    window.openPathBrowser = function openPathBrowser(inputId) {
         targetInput = document.getElementById(inputId);
         if (!targetInput) return;
+        // 必须清掉上一次会话留下的 currentPath：请求的目录失败、回退根级又
+        // 失败时 _render 一次都不会跑，弹窗于是顶着一条错误横幅显示**上一次**
+        // 浏览的目录，「选择此目录」把那个陈旧路径写回输入框 —— 与 _reqSeq
+        // 守卫防的是同一件事：写回一个用户没在看的值。
+        currentPath = null;
+        const cur = _el('pathBrowserCurrent');
+        if (cur) cur.textContent = '';
         const modalEl = _el('pathBrowserModal');
         modalInst = bootstrap.Modal.getOrCreateInstance(modalEl);
         modalInst.show();
@@ -104,5 +113,19 @@
                 if (modalInst) modalInst.hide();
             });
         }
+
+        // 「浏览」按钮统一在这里接线。模板里原来是
+        // onclick="openPathBrowser('outputPath')" 这样的内联属性：它逼着
+        // openPathBrowser 必须是全局函数，还和 CSP 的 unsafe-inline 绑死。
+        // 目标输入框的 id 现在从 data-path-target 读，不在 JS 里再抄一份。
+        // 用委托而不是 querySelectorAll 逐个绑：首页的配置面板是一段服务端
+        // 渲染的隐藏子树，将来改成动态插入时这里不用跟着改。模板那边的
+        // onclick 已同步删掉 —— 两边都留着会点一次弹两次。
+        document.addEventListener('click', function (e) {
+            const btn = e.target && e.target.closest && e.target.closest('[data-path-target]');
+            if (!btn) return;
+            const id = btn.getAttribute('data-path-target');
+            if (id) window.openPathBrowser(id);
+        });
     });
 })();

@@ -33,20 +33,34 @@ def test_validate_tint_rejects_one_sided():
 
 
 def test_validate_tint_rejects_non_ascending_breaks():
+    # 颜色用合法值：颜色校验发生在断点检查之前，用 '#1' 之类的占位色会让这条
+    # 用例其实是在测颜色而不是断点顺序。
     with pytest.raises(ValueError):
-        validate_tint("0,500,200", "#1,#2,#3,#4")
+        validate_tint("0,500,200", "#111111,#222222,#333333,#444444")
 
 
 def test_validate_tint_rejects_count_mismatch():
     with pytest.raises(ValueError):
-        validate_tint("0,500", "#1,#2")          # 2 断点要 3 色
+        validate_tint("0,500", "#111111,#222222")          # 2 断点要 3 色
     with pytest.raises(ValueError):
-        validate_tint("0,500", "#1,#2,#3,#4")
+        validate_tint("0,500", "#111111,#222222,#333333,#444444")
 
 
 def test_validate_tint_rejects_bad_color():
+    """判据换成渲染器自己的解析器（matplotlib.colors.to_rgba），不再是 `#` 前缀。
+
+    原用例断言 `validate_tint("0", "red,#fff")` 报错 —— 那钉的是旧判据的**错误
+    一侧**：'red' 渲染器认得，拒它只是把 `#` 前缀这条规则写进了测试。真正要拦的
+    是「带 `#` 但渲染器不认」的值，那才是评审 P1#10：`#zzzzzz` 一路通到 per-tile
+    渲染，把每张瓦片吞成 failed。
+    """
     with pytest.raises(ValueError):
-        validate_tint("0", "red,#fff")
+        validate_tint("0", "#zzzzzz,#fff")
+    with pytest.raises(ValueError):
+        validate_tint("0", "#12345,#fff")
+    # 渲染器认得的写法必须放行（旧判据会把这两个都拒掉）
+    assert validate_tint("0", "red,#fff") == ("0.0", "red,#fff")
+    assert validate_tint("0", "#aabbccdd,#fff")[1] == "#aabbccdd,#fff"
 
 
 def test_validate_tint_normalizes():

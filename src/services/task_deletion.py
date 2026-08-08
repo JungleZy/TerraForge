@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 from src.core.database import get_connection
-from src.services.task_cleanup import remove_task_dir_if_safe
+from src.services.task_cleanup import remove_task_dir_and_confirm
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +57,24 @@ _JOIN_TIMEOUT_SECONDS = 600
 _START_WAIT_SECONDS = 0.1
 _START_POLL_SECONDS = 0.005
 
+# 表名直接拼进 SQL,只接受这四张任务表的字面量。四条管线全都传字面量,今天注不
+# 进来 —— 但「调用方传字面量」此前只是一句 docstring,而 docstring 不会在有人
+# 把某个 ?table= 透传下来的那天报错。与 task_cleanup._STRANDED_TASK_TABLES 同
+# 一套做法;这里多一张 local_terrain_tasks:本函数服务四条管线,那个助手只服务
+# 有 `_run_task` 的三条。
+_DELETABLE_TASK_TABLES = frozenset(
+    {'tasks', 'dem_tasks', 'contour_tasks', 'local_terrain_tasks'})
+
 
 class DeleteOutcome(NamedTuple):
     """删除结果。
 
-    files_removed 三态：True=删掉了 / False=护栏拦下或删除出错 / None=没要求删，
-    或者要求了但延后到后台（此时 files_deferred 为 True）。
+    files_removed 三态：True=目录确实不在了 / False=没删掉（护栏拦下、删除出错，
+    或 Windows 上文件被占导致 rmtree(ignore_errors=True) 静默失败）/ None=没要求
+    删，或者要求了但延后到后台（此时 files_deferred 为 True）。
+
+    False 那一档【不是】「护栏拦下」的同义词：判据统一走
+    task_cleanup.remove_task_dir_and_confirm 的 removed 字段，理由见 P1#6。
     """
     row_deleted: bool
     files_removed: Optional[bool]
@@ -110,6 +122,27 @@ def _wait_until_started(thread: threading.Thread) -> bool:
     return True
 
 
+def _remove_artifacts_and_settle(artifact_dir: Path) -> bool:
+    """删产物目录，按结果销 pending_deletions 的账，返回「目录确实不在了」。
+
+    两条删除路径（快路径、后台收尾）共用这一份判据。以前只有后台那条在调用点
+    后面补了 `and not dir.exists()`，快路径直接把护栏的返回值当结果 —— 而护栏
+    内部是 `rmtree(ignore_errors=True)`，Windows 上任意一个文件被占就静默失败
+    却照样返回 True。后果是接口回 `files_removed: true`、整个瓦片金字塔留在盘
+    上、且清单里没有行，启动清扫永远收不回（2026-08-08 评审 P1#6）。
+
+    销账的两种情形：
+      - removed：真删干净了，清单上的线索没用了。
+      - not eligible：越界路径永远删不掉，留着只会每次启动重试并刷一条 warning。
+    剩下那一种（可删但没删掉）**保留清单行**，下次启动补删 —— 那正是这张表
+    存在的理由。
+    """
+    outcome = remove_task_dir_and_confirm(artifact_dir)
+    if outcome.removed or not outcome.eligible:
+        _clear_pending_deletion(artifact_dir)
+    return outcome.removed
+
+
 def _background_cleanup(task_id: int, thread: threading.Thread,
                         artifact_dir: Optional[Path],
                         tombstone: Optional[set]) -> None:
@@ -149,15 +182,7 @@ def _background_cleanup(task_id: int, thread: threading.Thread,
                 return
         worker_done = True
         if artifact_dir is not None:
-            eligible = remove_task_dir_if_safe(artifact_dir)
-            # 与启动补删同一判据：remove_task_dir_if_safe 返回的是「符合删除
-            # 条件」而不是「真的删掉了」（它内部 rmtree(ignore_errors=True)，
-            # Windows 上文件被占用会静默失败却仍返回 True）。目录还在就别销账。
-            if eligible and not artifact_dir.exists():
-                _clear_pending_deletion(artifact_dir)
-            elif not eligible:
-                # 越界路径永远删不掉，留在清单里只会每次启动重试并刷 warning
-                _clear_pending_deletion(artifact_dir)
+            _remove_artifacts_and_settle(artifact_dir)
     except Exception as e:
         # join 本身抛出时 worker_done 还是 False —— 线程状态未知就按「还活着」
         # 保守处理，同样不摘墓碑。
@@ -180,7 +205,8 @@ def delete_task_row(
 
     Args:
         manager: 持有 `_state_lock` / `active_tasks` / `stop_flags` 的任务管理器。
-        table: 任务表名。调用方传字面量，不接受外部输入 —— 它直接进 SQL。
+        table: 任务表名。它直接拼进 SQL，只接受 _DELETABLE_TASK_TABLES 里的字面量，
+            传别的抛 ValueError。
         artifact_dir: 产物目录；None 表示调用方没要求删产物。非绝对路径会被拒收
             并当作 None 处理（理由见函数体内的卫兵注释）。删行没命中任何行时同样
             当作 None —— 产物删除以「行真的被删掉了」为前提，同上。
@@ -189,6 +215,9 @@ def delete_task_row(
         on_row_gone: 行删掉后**同步**执行的回调，用于清静态路由的存在性缓存。
             不能丢给后台 —— 否则已删任务的瓦片在缓存失效前仍能被访问到。
     """
+    if table not in _DELETABLE_TASK_TABLES:
+        raise ValueError(f'delete_task_row: 未知任务表 {table!r}')
+
     if artifact_dir is not None:
         # expanduser 在这里做一次，并且【同一个 target】既喂护栏又拿去
         # exists()：护栏内部自己会 expanduser，拿没展开的 `~/...` 去 exists()
@@ -210,6 +239,21 @@ def delete_task_row(
     conn = get_connection()
     try:
         try:
+            # 为什么 DELETE + commit 留在锁里（2026-08-08 评审复核后维持原状）。
+            # 代价是真的：get_connection 设了 busy_timeout=30000，写竞争下这把锁
+            # 最长能被按住 30 秒，start_task / pause_task / 并发删除 / worker 退出
+            # 时的登记回收全排在后面。但挪出去会开一个更坏的窗口 ——
+            #   1. 本函数在锁内看到 active_tasks 里没有它 → running=False，出锁；
+            #   2. start_task 拿到锁，读到 status='paused' → UPDATE 成 'running'
+            #      → commit → 登记 active_tasks → 出锁 → thread.start()；
+            #   3. 本函数才发出 DELETE，rowcount=1，而 running 是上一步的旧结论：
+            #      既不写 pending_deletions 也不置停止标志、不写墓碑。
+            # 结果就是快路径 rmtree 完，刚起来的线程把目录重建出来写满瓦片 ——
+            # 零引用的孤儿目录（本地地形一路跑到底，最重），外加 map 的进度批次
+            # 拿已删的 task_id 撞外键直到进程重启。start_task 的「读状态 → UPDATE
+            # → 登记线程」整段就在同一把锁内（task_manager.py:414-458），所以
+            # 「判在跑」与「删行」必须同为一个临界区，只挪 commit 也不行：DELETE
+            # 没提交就等于没发生。
             with manager._state_lock:
                 thread = manager.active_tasks.get(task_id)
                 # 为什么 is_alive() 之外还要看 ident：四条管线的 start_* 都是锁内
@@ -251,10 +295,17 @@ def delete_task_row(
                     # 这道闸对本地地形是必需的：只有它的 artifact_dir 在 manager
                     # 内部按 task_id 硬算，另外三条在路由层算、算之前先查过行。
                     artifact_dir = None
-                if artifact_dir is not None and running:
+                if artifact_dir is not None:
                     # 记清单与删行同一事务 —— 中间崩掉就丢了产物线索。放在 DELETE
                     # 之后只是为了先拿到 rowcount 喂上面那道闸；一次 commit，语句
                     # 先后不影响原子性。
+                    #
+                    # 快路径（没在跑）也要入队，且必须在删产物【之前】：护栏用的
+                    # 是 rmtree(ignore_errors=True)，Windows 上文件被占会静默删不
+                    # 掉，先删后判就来不及补一条清单行了 —— 事务已经提交，行也没
+                    # 了，那个瓦片金字塔从此没有任何线索（P1#6）。删成功的那条路
+                    # 上这行会被 _remove_artifacts_and_settle 当场销掉，正常删除
+                    # 不会在表里留下痕迹。
                     _queue_pending_deletion(conn, artifact_dir)
                 conn.commit()
         finally:
@@ -269,7 +320,9 @@ def delete_task_row(
         if not running:
             files_removed = None
             if artifact_dir is not None:
-                files_removed = remove_task_dir_if_safe(artifact_dir)
+                # 与后台收尾同一个助手：护栏返回的是「可删」，报给用户的必须是
+                # 「真删了」，而清单行只有在真删了（或永远删不掉）时才销账。
+                files_removed = _remove_artifacts_and_settle(artifact_dir)
             return DeleteOutcome(row_deleted, files_removed, False)
 
         threading.Thread(
@@ -282,9 +335,13 @@ def delete_task_row(
         # 墓碑写了但后台收尾线程还没接手 —— 从这里抛出去就再没人摘它了。
         # 可抛点：_queue_pending_deletion 的 INSERT、DELETE、commit（三者都可能
         # database is locked），以及 Thread.start() 的「can't start new thread」。
-        # 不摘的话留下的状态是：行还在（事务回滚）+ 停止标志已置 + 进度写入被
-        # 永久短路，用户看到任务卡在 running 且进度不动，只能重启进程。
-        # stop flag 不回滚：线程停下来是幂等的，重试删除仍然要它停。
+        # 不摘的话留下的状态是:行还在(事务回滚)+ 停止标志已置 + 进度写入被
+        # 永久短路。stop flag 不回滚是有意的:线程停下来是幂等的,重试删除仍然要
+        # 它停。worker 随后走某个 stop 分支【正常】return —— 没有异常,所以
+        # `_run_task` 的 except 盖不住它;把行从 running 捞出来的是线程退出处的
+        # `task_cleanup.fail_stranded_running_task`(2026-08-08 评审 P1#2)。
+        # 在那之前这里的状态是「永久 running 且没有线程」,而 start_task 只接受
+        # pending/paused —— 用户点不动,只能先点暂停或重启进程。
         if tombstoned:
             tombstone.discard(task_id)
         raise

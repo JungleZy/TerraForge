@@ -7,7 +7,7 @@
 任务自己的瓦片高程全错且零报错。正是 v0.2.8 刚修过的那条链。
 
 ⚠️ **每条用例都必须把 Config.BASE_DIR / DOWNLOADS_DIR 打到 tmp_path**，哪怕
-用例本身不关心搬迁。迁移会在旧位置有底图时 shutil.move 过去，而开发机上
+用例本身不关心搬迁。迁移会在旧位置有底图时搬过去，而开发机上
 `downloads/terrain/base_z8` 是真实存在的 224 MB —— 不 patch 就会把它搬进仓库的
 `assets/terrain/`，既毁了本机缓存，又违反「测试不得往仓库 assets/ 写」的约束
 （CI 里测试跑在 Nuitka 打包之前，解出来的东西会被打进三个平台的产物）。
@@ -97,8 +97,14 @@ def test_migration_moves_an_existing_unpacked_base(tmp_path):
     assert not old.exists()
 
 
-def test_migration_survives_a_failing_rename(tmp_path, monkeypatch):
-    """rename 失败（跨盘等）不能阻断启动：旧目录留着，新位置留待重新解压。"""
+def test_migration_survives_a_failing_move(tmp_path, monkeypatch):
+    """两条搬迁路径全失败（跨盘 + 拷贝也不成）不能阻断启动。
+
+    旧目录留着、新位置留待重新解压、user_version 照样推到 3（不重试）。
+    注入点是 os.replace 与 shutil.copytree —— 2026-08-08 起实现不再用
+    shutil.move 直连最终位置（那会在跨盘中断时留一棵只有 layer.json 的半树，
+    见 tests/test_fix_review_20260808.py 的 T2 一节）。
+    """
     from src.core import database as db_mod
 
     old = tmp_path / "downloads" / "terrain" / "base_z8"
@@ -108,11 +114,15 @@ def test_migration_survives_a_failing_rename(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise OSError(18, "Invalid cross-device link")
 
-    monkeypatch.setattr(db_mod.shutil, "move", boom)
+    monkeypatch.setattr(db_mod.os, "replace", boom)
+    monkeypatch.setattr(db_mod.shutil, "copytree", boom)
 
     conn = _legacy_db(tmp_path / "e.db", "./downloads/terrain/base_z8")
     db_mod.migrate_base_path_to_assets(conn.cursor())
     conn.commit()
 
-    assert old.is_dir(), "rename 失败时旧目录必须保留"
+    assert old.is_dir(), "搬不动时旧目录必须保留"
+    assert not (tmp_path / "assets" / "terrain" / "base_z8").exists(), (
+        "搬不动却在目标位置留下了东西 —— 半成品底图会被判为可用")
     assert _read(conn) == "./assets/terrain/base_z8"
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3

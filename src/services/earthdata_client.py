@@ -29,6 +29,30 @@ def _redact_url(url: str) -> str:
     return str(url).split("?", 1)[0]
 
 
+# 只有这个域下的主机才配收到 BasicAuth 明文凭据。
+_URS_HOST_SUFFIX = ".earthdata.nasa.gov"
+
+
+def _is_urs_host(url: str) -> bool:
+    """URL 是否指向 Earthdata Login(URS)—— 即「要不要把凭据发给它」。
+
+    此前判据是 `"urs.earthdata.nasa.gov" in loc` 的**子串**匹配,
+    `https://attacker.example/cb?next=https://urs.earthdata.nasa.gov/oauth`
+    照样通过,随后 BasicAuth 明文凭据就发给了攻击者的主机(前置条件是上游存在
+    开放重定向或 TLS 被攻破)。这里按解析出的 hostname 判,子串再也骗不进来。
+
+    要求 https:BasicAuth 在 http 上就是明文口令。
+    取域后缀白名单而不是钉死单个主机名:凭据本来就只在 *.earthdata.nasa.gov
+    内有效(URS 另有 uat.urs.earthdata.nasa.gov 这类部署),钉死一个主机名会在
+    上游换 URS 主机时把流程掐死在含糊的 "Unexpected redirect chain" 上,指错方向。
+    """
+    parts = urlparse(url)
+    if parts.scheme != "https":
+        return False
+    host = parts.hostname or ""
+    return host == "earthdata.nasa.gov" or host.endswith(_URS_HOST_SUFFIX)
+
+
 class EarthdataClient:
     def __init__(self, username: str, password: str, proxy_url: str = ""):
         self.username = username or ""
@@ -60,7 +84,7 @@ class EarthdataClient:
                     return loc
 
                 # If redirected to URS, do login flow
-                if "urs.earthdata.nasa.gov" in loc:
+                if _is_urs_host(loc):
                     return await self._login_and_resolve(session=session, file_url=file_url, authorize_url=loc)
 
                 # Some intermediate redirects (rare): follow one step and retry.
@@ -81,6 +105,12 @@ class EarthdataClient:
             raise RuntimeError(f"Unexpected response while resolving signed URL for {_redact_url(file_url)}: HTTP {resp.status}")
 
     async def _login_and_resolve(self, session: aiohttp.ClientSession, file_url: str, authorize_url: str) -> str:
+        # 凭据要不要发,由主机名说了算 —— 这道闸放在真正带 auth 发请求的这一侧,
+        # 不管调用方是 get_signed_url 还是别处,凭据都不会离开 Earthdata 域。
+        if not _is_urs_host(authorize_url):
+            raise EarthdataAuthError(
+                "Refusing to send Earthdata credentials to non-URS host: "
+                f"{_redact_url(authorize_url)}")
         auth = self._auth()
         if not auth:
             # 缺凭据同样不可重试 —— 配置没填,重试不会凭空变出凭据。

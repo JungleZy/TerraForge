@@ -8,8 +8,9 @@
 1. ProcessPoolExecutor 的渲染 worker:exe 带 `--multiprocessing-fork` 重启;
 2. multiprocessing 的 resource_tracker:以 `exe -c '<程序段>'` 形式拉起。
 
-本模块只依赖标准库,import 开销可忽略,所以能放在 app.py 的第一行 —— 这正是它
-存在的意义:守卫必须赶在 flask/routes/services 那几秒重量级 import 之前生效。
+本模块只依赖标准库,import 开销可忽略,所以能排在 app.py 的最前面(紧跟着
+setup_bundle_env,理由见那里的注释)—— 这正是它存在的意义:守卫必须赶在
+flask/routes/services 那几秒重量级 import 之前生效。
 """
 
 import multiprocessing
@@ -22,10 +23,17 @@ def install_entry_guards():
     两个分支都以 sys.exit() 收尾(freeze_support 内部退出),调用方不需要判断返回值。
     """
     # freeze_support() 检测到 worker(sys.argv 带 --multiprocessing-fork)就直接运行
-    # worker 逻辑并 sys.exit(),根本到不了 create_app。放在 app.py 的 __main__ 块里
-    # 太晚 —— 模块级 create_app() 会先跑,worker 重跑孤儿恢复就把运行中的任务误标了;
-    # 而 parent_process() guard 在 frozen worker 这一刻还没设好父进程标记(返回
-    # None),拦不住。这才是 frozen 下真正有效的拦截点。
+    # worker 逻辑并 sys.exit()。**但它不是本项目的主要拦截点**,别指望它:
+    #   1. CPython 的 BaseContext.freeze_support 在 sys.platform != 'win32' 时整个
+    #      短路;win32 上还要求 sys.frozen 为真 —— 那是 bundle_dir() 设的,所以
+    #      app.py 必须先调 setup_bundle_env()(它就在本函数上一行,别再换回来)。
+    #   2. Nuitka 打出来的 worker 根本走不到 Python 层的 __main__:它的 C bootstrap
+    #      自己扫 argv 里的 --multiprocessing-fork,把主模块伪造成 __parents_main__
+    #      重跑。真正拦住这条路的是 runtime_mode._MP_RERUN_NAMES 里那个名字
+    #      (should_create_app 为假 → 不建 app、不做孤儿恢复)。
+    # 留着它是为了 Windows 上 spawn 起 worker 的那条标准路径(sys.frozen 已就位时
+    # 它会在这里直接跑完 worker 并退出,比走到模块级 create_app() 再靠身份判定
+    # 空转一遍更早、更省)。
     multiprocessing.freeze_support()
 
     # CPython 对冻结应用同样用 `-c` 拉起 resource_tracker(resource_tracker.

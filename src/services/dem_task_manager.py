@@ -17,11 +17,20 @@ from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
 from src.services.dem_download_engine import DemDownloadEngine
 from src.services.download_speed import SpeedMeter
-from src.services.geo_validation import require_absolute_output_dir, resolve_output_dir, sanitize_filename, validate_bbox, validate_zoom
+from src.services.geo_validation import (require_absolute_output_dir, sanitize_filename,
+                                         validate_bbox, validate_zoom)
 from src.services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
-from src.services.task_cleanup import resolve_stored_output_dir
+# resolve_stored_output_dir 是【读存量 output_path 的唯一一套口径】——
+# 不要换回 geo_validation.resolve_output_dir:那是给**请求里**新传进来的路径做
+# 校验的（强制落在 DOWNLOADS_DIR 内），两者对相对值的解释不同
+# （'./downloads/dem' → <DL>/dem vs <DL>/downloads/dem），而 M10 的存量归一
+# （src/core/database.py:264）认的是前者。混用会让升级后的旧 DEM 任务指针指到
+# 空目录：/terrain/dem/<id> 404、恢复即全量重下、删除报成功而产物滞留。
+# 见 docs/reviews/2026-08-08-full-project-review.md 的 P1#5。
+from src.services.task_cleanup import (fail_stranded_running_task,
+                                       resolve_stored_output_dir)
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 from src.services.terrain_tiling.layer_json import parent_url_if_base_available
 
@@ -253,18 +262,6 @@ class DemTaskManager:
     def resume_task(self, task_id: int) -> None:
         self.start_task(task_id)
 
-    @staticmethod
-    def _resolve_task_output_dir(output_path: str) -> Path:
-        """相对 output_path 相对 Config.DOWNLOADS_DIR 解析（不依赖进程 CWD）。
-
-        创建任务时 output_path 已经过 resolve_output_dir 校验并存为绝对路径；
-        这里兼容历史任务入库的相对路径（按 DOWNLOADS_DIR 解析）与绝对路径（原样）。
-        """
-        p = Path(output_path)
-        if p.is_absolute():
-            return p
-        return Path(resolve_output_dir(output_path))
-
     def start_tiling(self, task_id: int, maxzoom: Optional[int] = None) -> None:
         task_id = int(task_id)
 
@@ -316,7 +313,7 @@ class DemTaskManager:
             except Exception:
                 maxzoom = 14
 
-        task_dir = self._resolve_task_output_dir(output_path) / f"dem_task_{task_id}"
+        task_dir = resolve_stored_output_dir(output_path) / f"dem_task_{task_id}"
         output_dir = task_dir / "terrain_tiles"
 
         conn = get_connection()
@@ -423,12 +420,26 @@ class DemTaskManager:
                 tiling_state = {"done": 0, "total": 0, "last_flush": float("-inf")}
 
                 def _flush_tiling_progress() -> None:
-                    progress_conn.execute(
-                        "UPDATE dem_terrain_jobs SET rendered_tiles=?, total_tiles=? WHERE task_id=?",
-                        (tiling_state["done"], tiling_state["total"], task_id),
-                    )
-                    progress_conn.commit()
+                    # U1（落库侧）：本函数经 progress_cb 被 build_terrain 在瓦片
+                    # 循环里**同步**调用，抛出会一路穿透 ex.map / ProcessPoolExecutor
+                    # 到 _run_tiling_job 的 catch-all，把一个瓦片已 99% 落盘的作业
+                    # 记成 failed；切片没有恢复模型（_worker_tile 不跳过已存在的
+                    # 瓦片），重跑要从 z8 全量重算。rendered/total 只是展示字段，
+                    # 一次 database is locked 或写满磁盘不该有作废产物的权力 ——
+                    # 与下面的 emit 同一约定：只记日志。
+                    # last_flush 无论成败都推进：失败后立刻重试只会在每张瓦片上
+                    # 再撞一次同样的锁，把切片拖成串行等锁。
                     tiling_state["last_flush"] = time.monotonic()
+                    try:
+                        progress_conn.execute(
+                            "UPDATE dem_terrain_jobs SET rendered_tiles=?, total_tiles=? WHERE task_id=?",
+                            (tiling_state["done"], tiling_state["total"], task_id),
+                        )
+                        progress_conn.commit()
+                    except Exception as db_error:
+                        logger.warning(
+                            f"DEM tiling job {task_id}: persist progress failed "
+                            f"(ignored): {db_error}")
                     # getattr 而非 self.socketio:契约测试用 __new__ 构造的管理器
                     # 直调本方法（无 __init__、无 socketio 属性）验证失败落库路径。
                     socketio = getattr(self, "socketio", None)
@@ -677,16 +688,25 @@ class DemTaskManager:
         )
 
     def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
+        failure = None
         try:
             asyncio.run(self._execute(task_id, stop_flag))
         except Exception as e:
             logger.error(f"DEM task {task_id} thread failed: {e}")
+            failure = e
         finally:
             with self._state_lock:
-                if self.active_tasks.get(task_id) is threading.current_thread():
+                deregistered = (
+                    self.active_tasks.get(task_id) is threading.current_thread())
+                if deregistered:
                     self.active_tasks.pop(task_id, None)
                 if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
                     self.stop_flags.pop(task_id, None)
+            if deregistered:
+                # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的 docstring）。
+                fail_stranded_running_task(
+                    'dem_tasks', task_id,
+                    f'线程异常: {failure}' if failure is not None else '')
 
     async def _execute(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
         conn = get_connection()
@@ -698,7 +718,7 @@ class DemTaskManager:
                 raise ValueError(f"DEM task {task_id} not found")
 
             dataset = task["dataset"]
-            output_dir = self._resolve_task_output_dir(task["output_path"]) / f"dem_task_{task_id}"
+            output_dir = resolve_stored_output_dir(task["output_path"]) / f"dem_task_{task_id}"
 
             # C4: 暂停/崩溃时下载中的文件停留在 downloading —— 恢复时重新入队，
             # 否则下面的查询会跳过它们、终态统计也漏掉（任务被误报 completed）。

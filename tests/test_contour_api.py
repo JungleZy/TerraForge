@@ -3,7 +3,15 @@ import io
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from conftest import geotiff_bytes
+
+# 创建路径现在会用 GDAL 校验上传的是不是可读栅格（2026-08-08 评审 contour P2），
+# 所以「上传成功」类用例需要真栅格 —— GDAL 是本项目的硬依赖（build 有闸门）。
+pytest.importorskip("osgeo.gdal")
 
 
 def _load_app(monkeypatch, tmp_path):
@@ -20,10 +28,11 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _post_task(client, name="bj", files=None, **fields):
-    """multipart 上传创建等高线任务。files 默认一个假 tif（内容不是真
-    GeoTIFF —— 管理器只做扩展名/非空校验，范围并集读不出来就保持 0）。"""
+    """multipart 上传创建等高线任务。files 默认一个**真** GeoTIFF —— 创建路径
+    用 GDAL 打开每个文件求范围并集，GDAL 在位却打不开就 400（以前只查扩展名和
+    非空，一段随便的字节也能拿到 201，失败要等 warp 之后）。"""
     if files is None:
-        files = [("dem1.tif", b"fake-tif-bytes")]
+        files = [("dem1.tif", geotiff_bytes())]
     data = dict(fields)
     data["name"] = name
     data["files"] = [(io.BytesIO(content), fname) for fname, content in files]
@@ -157,9 +166,12 @@ def test_list_and_get_contour_task(monkeypatch, tmp_path):
 
 def test_create_contour_task_saves_upload_streamed_to_disk(monkeypatch, tmp_path):
     """路由不再 f.read() 全读内存：FileStorage 直传 manager，save() 落盘，
-    磁盘文件内容与上传一致。"""
+    磁盘文件内容与上传一致。
+
+    载荷是「真 GeoTIFF + 尾部填充」：既保证创建路径的栅格校验过得去，又让内容
+    足够大，落盘拷贝真的走分块。以前这里用纯填充字节，那已经是被修掉的漏收。"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    payload = b"tif-content-" + b"x" * 100000
+    payload = geotiff_bytes() + b"x" * 100000
     tid = _post_task(client, files=[("dem1.tif", payload)]).get_json()["task_id"]
     saved = tmp_path / "downloads" / "dem" / f"contour_task_{tid}" / "upload_1_dem.tif"
     assert saved.read_bytes() == payload
@@ -168,7 +180,7 @@ def test_create_contour_task_saves_upload_streamed_to_disk(monkeypatch, tmp_path
 def test_create_contour_task_empty_file_400_and_no_residue(monkeypatch, tmp_path):
     """空文件 -> 400；中途失败清掉已落盘目录、DB 无残留行。"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
-    resp = _post_task(client, files=[("a.tif", b"data"), ("b.tif", b"")])
+    resp = _post_task(client, files=[("a.tif", geotiff_bytes()), ("b.tif", b"")])
     assert resp.status_code == 400
     lst = client.get("/api/contour/tasks").get_json()
     assert lst["count"] == 0

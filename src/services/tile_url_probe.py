@@ -120,6 +120,32 @@ def build_probe_url(template, center_lng, center_lat, zoom=3):
             .replace('{y}', str(y))), (zoom, x, y)
 
 
+def is_link_local_host(host) -> bool:
+    """169.254.0.0/16 与 fe80::/10 —— 云厂商的实例元数据端点就住在这里。
+
+    单独一个判据，与 should_bypass_proxy 分开:那个把回环与私网也算进去,是
+    「该不该走代理」的路由判断;这个是安全边界。两者的差别有意义 ——
+    自建瓦片镜像住在 127.0.0.1 或 192.168.x.x 是**正当用法**(项目文档里就有),
+    而 169.254.169.254 从来不是一个瓦片服务地址,只可能是拿服务端当跳板去读
+    实例元数据。
+
+    域名判不了(解析结果随部署而变),按不是链路本地处理 —— 这是已知缺口,
+    补它需要在取瓦片前做一次 DNS 解析并防 rebinding,不在当前边界内。
+    """
+    host = (host or '').lower()
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_link_local
+    except ValueError:
+        return False
+
+
+def is_link_local_url(url) -> bool:
+    """URL 的主机是否落在链路本地段。见 is_link_local_host。"""
+    return is_link_local_host(urlsplit(url or '').hostname)
+
+
 def should_bypass_proxy(url):
     """本机/内网地址不走代理。
 

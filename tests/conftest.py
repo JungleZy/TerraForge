@@ -18,6 +18,7 @@ sys.path.insert having run first — fragile when tests run in isolation).
 
 import importlib
 import os
+import shutil
 import sys
 import tempfile
 
@@ -209,6 +210,36 @@ def fresh_import(monkeypatch, *names):
                 monkeypatch.setattr(parent, attr, getattr(parent, attr))
     modules = [importlib.import_module(name) for name in names]
     return modules[0] if len(modules) == 1 else modules
+
+
+def geotiff_bytes(pixel_deg=30.0 / 111320.0, lon0=116.0, lat0=39.0,
+                  width=8, height=8):
+    """一小块真 GeoTIFF 的字节串（EPSG:4326，Float32）。
+
+    等高线的创建路径会用 GDAL 打开每个上传文件求范围并集，并且（2026-08-08
+    评审的 contour P2）在 GDAL 在位却打不开文件时直接 400 —— 所以「上传成功」
+    类用例不能再喂 b"fake-tif-bytes"，那是在测一个已经被修掉的漏收。
+
+    pixel_deg=0 会写出一个可读但地理变换退化的栅格：范围读得出、分辨率读不出，
+    正好用来验证自动层级的兜底分支。
+    """
+    from osgeo import gdal, osr
+
+    tmpdir = tempfile.mkdtemp(prefix="test_geotiff_")
+    try:
+        path = os.path.join(tmpdir, "dem.tif")
+        ds = gdal.GetDriverByName("GTiff").Create(
+            path, width, height, 1, gdal.GDT_Float32)
+        ds.SetGeoTransform((lon0, pixel_deg, 0, lat0, 0, -pixel_deg))
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(4326)
+        ds.SetProjection(srs.ExportToWkt())
+        ds.FlushCache()
+        ds = None
+        with open(path, "rb") as f:
+            return f.read()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @pytest.fixture

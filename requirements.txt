@@ -27,6 +27,16 @@ certifi>=2024.2.2
 # 成空转,那道专防「返回成功但产物截断」的闸门就没了。升 4.0 前必须先改错误检查。
 GDAL>=3.8,<4
 numpy==1.26.4
-matplotlib
+# 等高线渲染的运行期依赖,还靠 --include-package-data=matplotlib 把 mpl-data
+# 一起打进产物。不钉版本的话,同一个 commit 在两台机器上打出的包内容不同,
+# 而渲染结果的回归(色标、clabel 布局)只有用户看得见,任何测试都不会红。
+matplotlib==3.11.1
 Pillow==10.1.0
 pytest==7.4.3
+# 构建期依赖(只有 nuitka_build.py 用),钉死是因为它是本项目最容易在发版当天
+# 炸掉的一环:nuitka_build.py 调的是【私有】API
+# nuitka.freezer.DllDependenciesWin32.detectBinaryPathDLLsWin32(八个关键字参数),
+# 上游改签名不算 breaking change。裸 `pip install nuitka` 会让 tag 一推、上游刚发
+# 新版的那次构建直接失败,而两次构建同一 commit 也不再可复现。
+# 升级流程:本地 build.sh/build.bat 跑通一次完整打包,再改这里的版本号。
+nuitka==4.1.3

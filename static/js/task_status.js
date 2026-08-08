@@ -95,12 +95,12 @@ function getStatusStroke(status) {
 // U5：主题切换后缓存必须失效并重画 —— 缓存的前提「调色板运行期不变」在
 // 主题开关落地后已经不成立（亮色块覆盖了这 6 个令牌全部）。getStatusStroke
 // 只在 renderHistoryMap 里被调用，切主题本身不会触发重渲染，所以要显式重画。
-// renderHistoryMap / allTasks 是 history.js 的全局，没有地图的页面（/config）
-// 加载本文件时它们不存在，typeof 守卫兜底。
+// renderHistoryMap 是 history.js 的全局，没有地图的页面（/config）加载本文件
+// 时它不存在，typeof 守卫兜底。它自己从 TaskStore 取数据，所以这里不传参 ——
+// 改前传的是 history.js 的 allTasks（loadHistory 的响应快照），主题切换时会
+// 拿一份可能已经过期的列表重画。
 document.addEventListener('terraforge:themechange', function () {
     _statusStrokeCache = null;
     if (typeof renderHistoryMap !== 'function') return;
-    if (typeof allTasks !== 'undefined' && Array.isArray(allTasks) && allTasks.length) {
-        try { renderHistoryMap(allTasks); } catch (e) { /* 地图未就绪时忽略 */ }
-    }
+    try { renderHistoryMap(); } catch (e) { /* 地图未就绪时忽略 */ }
 });

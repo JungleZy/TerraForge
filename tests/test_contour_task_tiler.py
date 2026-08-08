@@ -5,14 +5,12 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.services.contour_engine import ContourStyle
-from src.services.contour_task_tiler import (
-    ContourParams, contour_output_dir_for_task, tile_contour_task_dir,
-)
+from src.services.contour_task_tiler import ContourParams, tile_contour_task_dir
 
-
-def test_contour_output_dir_for_task(tmp_path: Path):
-    out = contour_output_dir_for_task(str(tmp_path), 7)
-    assert out == tmp_path / "contour_task_7" / "contour_tiles"
+# 原本这里还有 test_contour_output_dir_for_task —— 那个 helper 已删除：零生产
+# 调用，而它用裸 Path 把产物根的规则又写了一遍（2026-08-08 评审判为错的那条）。
+# 产物根的唯一口径是 task_cleanup.resolve_stored_output_dir，由
+# tests/test_fix_contour_hardening.py 的「writer 与路由同源」用例守。
 
 
 def test_tile_contour_task_dir_injects_and_filters_dem(tmp_path: Path):

@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from enum import Enum
 from src.core.config import Config
+from src.core.database import parse_db_timestamp
 from src.services.geo_validation import validate_bbox, validate_zoom
 
 
@@ -225,9 +226,18 @@ class Task:
         task.total_tiles = row['total_tiles']
         task.downloaded_tiles = row['downloaded_tiles']
         task.failed_tiles = row['failed_tiles']
-        task.created_at = datetime.fromisoformat(row['created_at']) if row['created_at'] else None
-        task.started_at = datetime.fromisoformat(row['started_at']) if row['started_at'] else None
-        task.completed_at = datetime.fromisoformat(row['completed_at']) if row['completed_at'] else None
+        # 三个时间戳必须走同一个解析器。它们在库里的形态**不一样**:
+        # created_at 来自表默认值 CURRENT_TIMESTAMP → 朴素的 'YYYY-MM-DD HH:MM:SS';
+        # started_at / completed_at 由 utc_now_iso() 写入 → 带 '+00:00'。
+        # 裸 fromisoformat 会让同一个 Task 对象里既有 naive 又有 aware 的
+        # datetime,to_dict 也就吐出两种形状。今天前端的 parseTaskDate 帮着兜住了,
+        # 所以没有可见故障 —— 真正的代价是陷阱:任何 Python 侧写
+        # `utc_now() - task.started_at` 的代码,碰上存量行就 TypeError
+        # (can't subtract offset-naive and offset-aware datetimes)。
+        # parse_db_timestamp 正是为收口这件事写的,别处已经在用。
+        task.created_at = parse_db_timestamp(row['created_at']) if row['created_at'] else None
+        task.started_at = parse_db_timestamp(row['started_at']) if row['started_at'] else None
+        task.completed_at = parse_db_timestamp(row['completed_at']) if row['completed_at'] else None
         task.error_message = row['error_message']
         task.total_running_seconds = _row_get(row, 'total_running_seconds', 0.0) or 0.0
         return task

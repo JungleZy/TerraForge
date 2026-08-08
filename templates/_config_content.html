@@ -1,3 +1,5 @@
+{% import "_macros.html" as m with context %}
+
 {# 说明图标：把原先每个控件下面三四行的 <small> 说明收进一个 16px 的 ⓘ，
    hover / 键盘聚焦时展开气泡（纯 CSS，见 style.css 的 .hint 段）。
    type="button" 不能省 —— 整块包在 <form> 里，裸 button 默认是 submit。
@@ -9,9 +11,7 @@
    不要改成往按钮里塞 .visually-hidden 的 <span>{{ text }}</span>：契约的
    _MARKUP_NOISE_RE 只剥 `{{ ...icon_*(...) }}` 这类图标插值，不剥普通
    `{{ text }}`，那会被当可见文本，这颗按钮直接掉出纯图标集合。 #}
-{% macro hint(text, extra='') %}<button type="button" class="hint {{ extra }}" data-hint="{{ text }}" aria-label="{{ t('tpl.config.hint.aria') }}: {{ text }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></button>{% endmacro %}
-
-{% import "_macros.html" as m with context %}
+{% macro hint(text, extra='') %}<button type="button" class="hint {{ extra }}" data-hint="{{ text }}" aria-label="{{ t('tpl.config.hint.aria') }}: {{ text }}">{{ m.icon_info(16, gap='') }}</button>{% endmacro %}
 
 {# 三层 flex：撑满可用高度 / 中间滚动 / 底部操作条常驻。宿主容器要带
    --fill 修饰符提供确定高度（config.html 与 index.html 各加了一处）。 #}
@@ -43,10 +43,13 @@
                             <label class="form-label" id="themeModeLabel">{{ t('tpl.config.appearance.theme') }}</label>
                             {{ hint(t('tpl.config.appearance.theme_hint')) }}
                         </div>
+                        {# aria-pressed 的初值一律 false：主题偏好存 localStorage，
+                           服务端渲染时不知道用户选的是哪一档，由 config.js 的
+                           initThemeSwitcher 在挂载时把 .active 与 aria-pressed 一起摆正。 #}
                         <div class="status-chips" id="themeModeGroup" role="group" aria-labelledby="themeModeLabel">
-                            <button type="button" class="status-chip" data-theme-mode="dark">{{ t('tpl.config.appearance.theme_dark') }}</button>
-                            <button type="button" class="status-chip" data-theme-mode="light">{{ t('tpl.config.appearance.theme_light') }}</button>
-                            <button type="button" class="status-chip" data-theme-mode="system">{{ t('tpl.config.appearance.theme_system') }}</button>
+                            <button type="button" class="status-chip" data-theme-mode="dark" aria-pressed="false">{{ t('tpl.config.appearance.theme_dark') }}</button>
+                            <button type="button" class="status-chip" data-theme-mode="light" aria-pressed="false">{{ t('tpl.config.appearance.theme_light') }}</button>
+                            <button type="button" class="status-chip" data-theme-mode="system" aria-pressed="false">{{ t('tpl.config.appearance.theme_system') }}</button>
                         </div>
                     </div>
 
@@ -59,9 +62,12 @@
                             <label class="form-label" id="langModeLabel">{{ t('app.language.label') }}</label>
                             {{ hint(t('app.language.hint')) }}
                         </div>
+                        {# 语言这组**没有** JS 同步：切语言是写 cookie 后整页
+                           reload，选中态全由服务端渲染。aria-pressed 必须跟着
+                           .active 一起在这里算出来，否则读屏永远听不到当前语种。 #}
                         <div class="status-chips" id="langModeGroup" role="group" aria-labelledby="langModeLabel">
-                            <button type="button" class="status-chip{% if locale == 'zh' %} active{% endif %}" data-lang="zh">{{ t('app.language.zh') }}</button>
-                            <button type="button" class="status-chip{% if locale == 'en' %} active{% endif %}" data-lang="en">{{ t('app.language.en') }}</button>
+                            <button type="button" class="status-chip{% if locale == 'zh' %} active{% endif %}" data-lang="zh" aria-pressed="{{ 'true' if locale == 'zh' else 'false' }}">{{ t('app.language.zh') }}</button>
+                            <button type="button" class="status-chip{% if locale == 'en' %} active{% endif %}" data-lang="en" aria-pressed="{{ 'true' if locale == 'en' else 'false' }}">{{ t('app.language.en') }}</button>
                         </div>
                     </div>
                 </div>
@@ -82,8 +88,12 @@
                         <div class="d-flex gap-2 align-items-center">
                             <input type="text" class="form-control" id="default_save_path"
                                    value="{{ config.default_save_path }}" placeholder="{{ t('tpl.config.basic.save_path_placeholder') }}">
+                            {# data-path-target 是给 path_browser.js 的接线钩子：
+                               目标输入框的 id 从这里读，不必在 JS 里再抄一遍。
+                               内联 onclick 已删，接线在 path_browser.js 的委托监听里
+                               —— 两边都留着会点一次弹两次。 #}
                             <button type="button" class="btn btn-outline-primary path-browse" id="defaultSavePathBrowse"
-                                    onclick="openPathBrowser('default_save_path')">{{ t('tpl.config.basic.browse') }}</button>
+                                    data-path-target="default_save_path">{{ t('tpl.config.basic.browse') }}</button>
                         </div>
                     </div>
 
@@ -115,11 +125,7 @@
 
                 <div class="config-section">
                     <h3>
-                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                            <polyline points="7 10 12 15 17 10"></polyline>
-                            <line x1="12" y1="15" x2="12" y2="3"></line>
-                        </svg>
+                        {{ m.icon_download(20, gap='lg') }}
                         {{ t('tpl.config.download.title') }}
                     </h3>
 
@@ -212,7 +218,7 @@
                                     <button type="button" class="btn btn-outline-primary tile-server-verify">{{ t('tpl.config.download.tile_verify') }}</button>
                                     <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove"
                                             aria-label="{{ t('tpl.config.download.tile_remove') }}" title="{{ t('tpl.config.download.tile_remove') }}">
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                                        {{ m.icon_close(14) }}
                                     </button>
                                 </div>
                                 <div class="tile-url-verify-result" hidden></div>
@@ -230,8 +236,10 @@
                             <label for="basemap_source_preset" class="form-label">{{ t('tpl.config.download.basemap') }}</label>
                             {{ hint(t('tpl.config.download.basemap_hint')) }}
                         </div>
-                        {# 底图与下载源是两个独立配置：底图走浏览器直连，下载走
-                           Python（可配代理）。选「自定义」时下面的模板输入框显形，
+                        {# 底图与下载源是两个用途不同的地址（底图给页面看、
+                           tile_servers 是下载源），不是两条不同的出网路径 ——
+                           底图瓦片由服务端转发（同源 /basemap/{z}/{x}/{y}），一样吃
+                           proxy_url。选「自定义」时下面的模板输入框显形，
                            显隐由 config.js 的 syncBasemapCustom 管。 #}
                         <select class="form-select" id="basemap_source_preset">
                             <option value="esri" {% if bm_preset == 'esri' %}selected{% endif %}>{{ t('tpl.config.download.basemap_esri') }}</option>
@@ -383,7 +391,9 @@
                  改完配置永远要先滚到底才能保存。submit 移出 <form> 后靠
                  form="configForm" 关联，提交行为不变。 -->
             <div class="config-footer">
-                <button type="button" class="btn btn-secondary btn-sm" onclick="resetConfig()">
+                {# id 是给 config.js 的接线钩子：内联 onclick="resetConfig()" 已删，
+                   接线在 initConfig 里 —— 两边都留着会点一次跑两次。 #}
+                <button type="button" class="btn btn-secondary btn-sm" id="configResetBtn">
                     <svg class="icon-inline icon-inline--md" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="1 4 1 10 7 10"></polyline>
                         <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>

@@ -110,6 +110,15 @@ class DownloadCancelled(Exception):
     """
 
 
+class StitchCancelled(Exception):
+    """拼接过程中检测到任务停止标志时抛出。
+
+    与拼接**失败**必须分开:失败要记进 stitch_failures、最终把任务标 failed 或
+    带警告完成,而用户主动暂停/删除不是故障,调用方见到它应当和其它停止检查
+    一样直接收尾返回。
+    """
+
+
 class NotAnImageResponse(aiohttp.ClientError):
     """HTTP 200 但响应体不是图片（M5）。
 
@@ -929,7 +938,8 @@ class DownloadEngine:
         output_path: str,
         zoom_level: int,
         target_epsg: int = 4326,
-        extra_allowed_dir: str = None
+        extra_allowed_dir: str = None,
+        stop_flag: Optional[threading.Event] = None
     ) -> str:
         """
         Stitch tiles into a single georeferenced image using GDAL
@@ -944,6 +954,15 @@ class DownloadEngine:
                 native EPSG:3857 (see tile_geotransform) and then reprojected
                 once at the end. Pass 3857 to skip the reprojection and get the
                 resample-free native mosaic.
+            extra_allowed_dir: Extra directory the output path may live under
+                (the calling task's registered output root).
+            stop_flag: 协作停止标志。整段拼接是单次同步调用,唯一天然的逐块
+                循环是「每块瓦片配准一次」(见下面的 _georef_one)——检查点就
+                挂在它以及三个 GDAL 阶段(BuildVRT / Warp / Translate)之前。
+                置位时抛 StitchCancelled。
+                ⚠️ 仍然拦不住的:最后那次 gdal.Translate 是**单个不可中断的
+                调用**,大 zoom 一层可以跑十分钟级。检查点把「暂停到真正停下」
+                的窗口从「整段拼接」缩到「当前这一次 Translate」,不能缩到零。
 
         Returns:
             Path to the stitched output file
@@ -965,6 +984,13 @@ class DownloadEngine:
         logger.info(f"Starting GDAL tile stitching: {len(tiles)} tiles at zoom {zoom_level}")
 
         from osgeo import gdal  # 惰性 import,见模块级 __getattr__
+
+        def _abort_if_stopped(stage: str) -> None:
+            """协作停止检查点。见签名里 stop_flag 的说明。"""
+            if stop_flag is not None and stop_flag.is_set():
+                raise StitchCancelled(
+                    f"Stitching zoom {zoom_level} cancelled before {stage}"
+                )
 
         # Validate and normalize output path
         output_path_obj = Path(output_path).resolve()
@@ -1042,6 +1068,7 @@ class DownloadEngine:
             # (存量契约,见 _add_georeference 里的注释)。
             cleaned_legacy_dirs = set()
             for tile in tiles_at_zoom:
+                _abort_if_stopped('legacy georef cleanup')
                 cache_parent = self._get_cache_path(tile, style).parent
                 if cache_parent in cleaned_legacy_dirs:
                     continue
@@ -1065,6 +1092,11 @@ class DownloadEngine:
             # map 保序,georef_paths 顺序与串行一致;任一瓦片失败时 with 退出
             # 会等所有 worker 收尾,再由 finally 清掉整个 work_dir。
             def _georef_one(tile: Tile) -> str:
+                # 逐瓦片检查点 —— 整段拼接里唯一天然的 N 次循环就在这里。
+                # ThreadPoolExecutor.map 一次性把全部瓦片排进队列,标志置位后
+                # 剩余任务各自在这一行立刻抛出,队列毫秒级排空。
+                _abort_if_stopped(f"georeferencing tile {tile.zoom}/{tile.x}/{tile.y}")
+
                 cache_path = self._get_cache_path(tile, style)
                 if not cache_path.exists():
                     raise FileNotFoundError(f"Tile not found in cache: {cache_path}")
@@ -1085,6 +1117,7 @@ class DownloadEngine:
             # Build VRT (Virtual Dataset) from georeferenced tiles
             # Use Path operations instead of string replace for robustness
             logger.info(f"Building VRT: {vrt_path}")
+            _abort_if_stopped('BuildVRT')
 
             vrt_options = gdal.BuildVRTOptions(
                 resampleAlg=gdal_resampling,
@@ -1124,6 +1157,7 @@ class DownloadEngine:
 
             # Translate VRT to final format
             logger.info(f"Translating VRT to final format: {output_path}")
+            _abort_if_stopped('Translate')
 
             # Determine output format based on file extension
             output_ext = Path(output_path).suffix.lower()

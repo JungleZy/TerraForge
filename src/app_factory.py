@@ -119,10 +119,21 @@ def _enforce_single_instance():
     if acquire_instance_lock():
         return
 
+    # 这里【不能】建议用户删锁文件。锁锁的是「已打开句柄对应的 inode」
+    # (fcntl.flock / msvcrt.locking),不是路径:POSIX 上 unlink 一个被锁的文件
+    # 永远成功,下一次启动走 single_instance 的 `path.touch()` 建出【新 inode】
+    # 再锁住它 —— 两个实例同时认为自己持锁,而第二个实例的 sweep_startup_residue()
+    # 会 rmtree 掉第一个实例正在写的 GB 级拼接/warp 工作目录,四轮孤儿恢复还会把
+    # 它 running 的任务改判 paused。这正是本函数存在的理由,不能由错误提示引导用户
+    # 去触发。而且前提也不成立:进程死了(含崩溃、强杀)OS 就已经释放了锁,
+    # 不存在需要手工清理的陈旧锁文件。详见 docs/reviews/2026-08-08-full-project-review.md 的 B2。
     msg = (
         "TerraForge 已经在运行（同一数据目录下检测到另一个实例）。\n"
         "  · 请切换到已打开的窗口，而不是再启动一个；\n"
-        f"  · 若确认上一个实例已崩溃退出，删除 {lock_path()} 后重试；\n"
+        "  · 锁由操作系统在进程退出时自动释放（崩溃、强杀也一样），"
+        f"不需要、也不要手动删除 {lock_path()}\n"
+        "    —— 删掉它不会解锁，只会让两个实例同时认为自己持锁，"
+        "第二个实例的启动清扫会删掉第一个实例正在写的中间产物；\n"
         "  · 确需并行运行多个实例，设置环境变量 TERRAFORGE_ALLOW_MULTI_INSTANCE=1"
         "（注意：会重新引入互删临时目录、误判任务状态的风险）。"
     )

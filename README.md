@@ -55,7 +55,7 @@
 | 后端 | Flask · Flask-SocketIO · aiohttp · GDAL · SQLite |
 | 前端 | CesiumJS 1.143 · Bootstrap 5.3 · Socket.IO（第三方库全部本地 vendor 于 `static/vendor/`，不依赖 CDN） |
 | 打包 | Nuitka（standalone，自动收集 GDAL/PROJ 数据与系统库闭包） |
-| 测试 | pytest（含 API 契约、任务生命周期、路径安全等 90+ 测试文件） |
+| 测试 | pytest（API 契约、任务生命周期、路径安全，以及对 JS/CSS/模板的源码契约测试） |
 | 环境管理 | uv |
 
 ## 快速开始
@@ -75,21 +75,21 @@
 **前置要求**：Python 3.12+、GDAL 系统库、[uv](https://docs.astral.sh/uv/)
 
 ```bash
-# 1. 安装 GDAL 系统库
-#    Ubuntu/Debian:
+# 1. 安装 GDAL 系统库（Ubuntu/Debian）
 sudo apt-get install -y gdal-bin libgdal-dev
-#    macOS:
-brew install gdal
 
-# 2. 安装 Python 依赖（uv 管理虚拟环境）
-uv venv                              # .venv 不存在时
+# 2. 安装 Python 依赖 —— 这四条的顺序不能调换
+uv venv                                                          # .venv 不存在时
+uv pip install setuptools wheel
+uv pip install numpy==1.26.4
+uv pip install --no-build-isolation "GDAL==$(gdal-config --version)"
 uv pip install -r requirements.txt
 
 # 3. 启动（数据库首次启动时自动初始化）
 uv run python app.py
 ```
 
-应用监听 `http://0.0.0.0:5000`。更详细的安装说明（含 GDAL 绑定编译问题）见 [docs/guides/INSTALL.md](docs/guides/INSTALL.md)。
+应用监听 `http://0.0.0.0:5000`。**Windows / Apple Silicon Mac 走 conda-forge 路线，不是上面这套**；顺序为什么不能换、装坏了怎么重建，全部见 [docs/guides/INSTALL.md](docs/guides/INSTALL.md)。
 
 ## 使用指南
 
@@ -155,63 +155,37 @@ uv run python app.py
 
 ## 项目结构
 
+按**目录**列，不按文件列：上一版是 2026-08-04 的逐文件快照，四天就漏掉了整个 `src/i18n/`、`src/app_factory.py` 和 `src/core/` 一半的文件——逐文件的树只会一直烂下去。要模块级的分工与调用关系，看 [CLAUDE.md](CLAUDE.md)。
+
 ```
 map-download/
-├── app.py                  # Flask 应用入口（组合根：注册蓝图、注入管理器）
+├── app.py                  # 入口：只排启动时序（进程守卫 → GDAL 环境 → 横幅 → create_app → run_server）
+├── src/
+│   ├── app_factory.py      # 唯一的组合根：create_app() 造四个管理器、注入蓝图、再注册蓝图
+│   ├── core/               # 基础设施：配置、SQLite 与内联迁移、日志、单实例锁、打包与进程身份判定
+│   ├── models/             # 任务 / 瓦片数据模型与状态枚举
+│   ├── services/           # 业务逻辑：四条管线的 manager 与 engine、地形切片、配置 / 代理 / 清理等共享服务
+│   ├── routes/             # Flask 蓝图：四组 REST API、三组静态瓦片服务、/basemap 转发、页面与 WebSocket
+│   └── i18n/               # 界面语言（zh / en）：catalog/<domain>.py 消息表 + Jinja 与 JS 侧注入
+├── templates/              # 服务端渲染模板（主页 / 历史 / 配置）
+├── static/                 # CSS、JS，以及本地 vendor 的第三方库（CesiumJS / Bootstrap / Socket.IO / Vue / 字体，不依赖 CDN）
+├── tests/                  # pytest 套件（conftest.py 提供隔离设施与沙箱）
+├── scripts/                # 辅助脚本：GDAL 构建闸门 check_gdal.py、发版推送、全球基础地形构建
+├── assets/terrain/         # 随包的全球基础地形分卷（base_z8.tar.gz.part{aa,ab}，167 MB）
+├── docs/                   # 项目文档，分层与可信度见 docs/README.md
 ├── nuitka_build.py         # Nuitka 打包配置（GDAL/PROJ 环境设置在 src/core/bundle.py）
-├── build.sh / build.bat    # 本地构建脚本
+├── build.sh / build.bat    # 本地构建脚本（调用前先过 scripts/check_gdal.py）
 ├── requirements.txt        # Python 依赖
-├── src/                    # 全部业务源码（可导入包，根目录天然在 sys.path 上）
-│   ├── core/               # 应用基础设施
-│   │   ├── config.py          # 配置类（路径、密钥、版本）
-│   │   ├── database.py        # 数据库初始化与连接管理（含幂等迁移）
-│   │   ├── startup_banner.py  # 启动信息横幅
-│   │   └── process_watchdog.py # reloader 子进程看门狗
-│   ├── models/             # 数据模型（任务/瓦片模型与枚举）
-│   ├── services/           # 业务逻辑
-│   │   ├── download_engine.py  # Google 瓦片下载引擎
-│   │   ├── task_manager.py     # 瓦片任务管理器
-│   │   ├── config_manager.py   # 配置管理器
-│   │   ├── dem_download_engine.py  # DEM 下载引擎（Copernicus GLO-30 / ASTER GDEM）
-│   │   ├── dem_task_manager.py     # DEM 任务管理器
-│   │   ├── dem_granules.py         # 1°×1° 分幅命名工具（GLO-30 / ASTGTM / ASTWBD）
-│   │   ├── earthdata_client.py     # NASA Earthdata Login 认证
-│   │   ├── contour_engine.py       # 等高线生成引擎
-│   │   ├── contour_task_manager.py # 等高线任务管理器
-│   │   ├── contour_task_tiler.py   # 等高线瓦片切分
-│   │   ├── local_terrain_task_manager.py  # 本地地形（上传 GeoTIFF）任务管理器
-│   │   ├── terrain_tiling/         # Cesium quantized-mesh 地形切片
-│   │   ├── geo_validation.py       # bbox / 缩放级别校验（各管线共用）
-│   │   ├── system_proxy.py         # 系统代理检测（注册表 / scutil → 环境变量）
-│   │   ├── proxy_autodetect.py     # 代理自动发现（PAC / 端口扫描 / 真实瓦片验证）
-│   │   └── task_cleanup.py         # 任务产物清理与缓存管理
-│   └── routes/             # Flask 路由
-│       ├── main.py            # 页面路由
-│       ├── api.py             # 瓦片任务 / 历史 / 配置 / 缓存 API
-│       ├── dem_api.py         # DEM 任务 API
-│       ├── terrain_api.py     # DEM 地形切片 API
-│       ├── local_terrain_api.py  # 本地地形 API
-│       ├── contour_api.py     # 等高线 API
-│       ├── terrain_static.py  # 地形瓦片静态服务
-│       ├── tiles_static.py    # 地图瓦片静态服务
-│       ├── contour_static.py  # 等高线瓦片静态服务
-│       └── socketio_events.py # WebSocket 事件
-├── templates/              # HTML 模板（主页 / 历史 / 配置）
-├── static/                 # 静态资源
-│   ├── css/style.css      # 自定义样式（明暗主题 token）
-│   ├── js/                # map / tasks / history / config / panels / ui
-│   │                      # task_store + task_list：任务时间流的响应式数据层与 Vue 行组件
-│   └── vendor/            # 本地第三方库（CesiumJS、Bootstrap、Socket.IO、Vue 3、字体）
-│                          # Cesium 已按实测请求裁剪：390 → 157 个文件（14 → 8.1 MB）
-├── scripts/                # 辅助脚本（发版推送、全球基础地形构建）
-├── docs/                   # 项目文档（guides/ 上手与构建、reference/ 实现说明、notes/ 调研笔记、reviews/ 评审记录、archive/ 历史归档、assets/ 图片资源）
-├── downloads/              # 下载文件目录（运行时生成）
-├── cache/                  # 瓦片缓存目录（运行时生成）
-├── logs/                   # 运行日志（运行时生成，按天轮转保留 7 天）
-└── data/                   # SQLite 数据库（运行时生成）
+└── data/ downloads/ cache/ logs/   # 运行时生成：SQLite 库、下载产物、瓦片缓存、按天轮转的日志
 ```
 
 ## API 端点
+
+### 页面
+
+- `GET /` - 主页：地图选区、任务面板、数据处理弹窗
+- `GET /history` - 历史记录页
+- `GET /config` - 配置页
 
 ### 瓦片任务（Google 地图下载）
 
@@ -260,6 +234,15 @@ map-download/
 - `GET /terrain/dem/<task_id>/<path>` - DEM 地形切片
 - `GET /terrain/local/<task_id>/<path>` - 本地地形切片
 - `GET /contour/<task_id>/<path>` - 等高线瓦片
+- `GET /terrain/dem/<task_id>/hillshade` - DEM 任务源高程的晕渲预览元信息（PNG 地址 + 地理四至），没做地形切片时按需渲染
+- `GET /terrain/dem/<task_id>/hillshade.png` - 上一条对应的 PNG 本体
+- `GET /terrain/local/<task_id>/hillshade` - 本地地形任务上传文件的晕渲预览元信息
+- `GET /terrain/local/<task_id>/hillshade.png` - 上一条对应的 PNG 本体
+
+### 底图
+
+- `GET /basemap/<z>/<x>/<y>` - 底图瓦片的**同源转发，这一跳是强制的**：浏览器只拿得到这条路径，真实上游地址不出服务端。直连上游会被 CORS 把真实状态码埋成一句 CORS 报错，而且浏览器不吃配置里的 `proxy_url` —— 底图和下载会走成两条出网路径，代理配好了底图仍然是个蓝球
+- `GET /api/basemap` - 底图图层描述符（同源 url、最大层级、署名、源标识）。`/history` 独立页取它；首页由模板内联下发，不走这个接口
 
 ### 历史记录
 
@@ -274,6 +257,7 @@ map-download/
 - `POST /api/config/reset` - 重置为默认配置
 - `POST /api/config/recommend_concurrency` - 实测当前网络吞吐，推荐并发数（约 30 秒）
 - `POST /api/config/verify_tile_url` - 校验单个瓦片服务器条目的连通性
+- `GET|POST /api/config/proxy_status` - 代理自动检测：GET 读当前状态，POST 强制重新探测（同步执行，最坏二十几秒）
 
 ### 缓存管理
 
@@ -350,24 +334,7 @@ build.bat
 
 ### GDAL 导入错误
 
-`ImportError: No module named 'osgeo'` — GDAL 未正确安装：
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install gdal-bin libgdal-dev
-uv pip install gdal==$(gdal-config --version)
-
-# macOS
-brew install gdal
-uv pip install gdal==$(gdal-config --version)
-```
-
-`ImportError: cannot import name '_gdal_array' from 'osgeo'` — GDAL 绑定编译时缺少 numpy 支持，需强制从源码重建：
-
-```bash
-uv pip install numpy setuptools wheel
-UV_NO_CACHE=1 uv pip install --force-reinstall --no-build-isolation --no-binary :all: "GDAL==$(gdal-config --version)"
-```
+`ImportError: No module named 'osgeo'`（绑定没装）与 `ImportError: cannot import name '_gdal_array' from 'osgeo'`（绑定装了但编译时没看到 numpy，拼接 / 切片 / 等高线全炸）都在 [docs/guides/INSTALL.md](docs/guides/INSTALL.md) 里处理：前者见「2. 克隆代码并安装 Python 依赖」，后者见「故障排除」。**别在这里凭记忆敲一条 `uv pip install gdal==...`** —— 不带 `--no-build-isolation` 装出来的正是第二种坏绑定。
 
 ### 数据库锁定错误
 

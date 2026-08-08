@@ -28,10 +28,13 @@ class ContourParams:
     workers: int = 0  # 0 = auto (min(4, os.cpu_count())，见 contour_engine); 1 = serial
 
 
-def contour_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
-    return Path(task_output_path) / f"contour_task_{task_id}" / "contour_tiles"
-
-
+# 曾有一个 contour_output_dir_for_task(task_output_path, task_id) 住在这里，
+# 把 `Path(存储值)/contour_task_<id>/contour_tiles` 又写了一遍。它零生产调用
+# （writer 在 _execute 里自己算，路由和删除各有一处），但用的是**裸 Path**，
+# 也就是那条被 2026-08-08 评审判为错的规则 —— 存量相对值按进程 CWD 解析、
+# frozen exe 搬动后按旧绝对路径解析。留一个没人调用、写法又是错的第四份拷贝，
+# 只会把下一个人引到错的那条路上。产物根的唯一口径是
+# task_cleanup.resolve_stored_output_dir。
 def tile_contour_task_dir(
     task_dir,
     out_dir,

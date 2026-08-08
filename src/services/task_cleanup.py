@@ -30,7 +30,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from src.core.config import Config
 # base_terrain 只依赖 src.core.bundle / src.core.config（刻意不碰 numpy / osgeo），
@@ -44,11 +44,31 @@ logger = logging.getLogger(__name__)
 #   contour_warp_*   src/services/contour_engine.py warp 的 tempfile.mkdtemp
 #   local_upload_*   src/services/local_terrain_task_manager.py 的上传暂存
 #   contour_upload_* src/services/contour_task_manager.py 的上传暂存
-#   *.part.*         两处引擎落盘的原子写临时件(download_engine /
-#                    dem_download_engine,位于 Config.CACHE_DIR 内)。DEM 在
-#                    dem_cache_enabled=false 时没有缓存目录可用,临时件退回任
-#                    务目录 —— 那是用户自选的全盘路径,本清扫覆盖不到,只能靠
-#                    引擎自己的 finally 清理(见 dem_download_engine 的 tmp)。
+#   *.part.*         原子写临时件。共四个生产者,但只有落在 Config.CACHE_DIR
+#                    内的那些进本清扫(_sweep_cache_part_files):
+#                      1. download_engine 瓦片缓存落盘 `.part.<pid>.<id>`
+#                         (CACHE_DIR 内,本清扫覆盖)
+#                      2. dem_download_engine 粒度落盘 `.part.<pid>.<id>`
+#                         (CACHE_DIR 内;dem_cache_enabled=false 时退回任务目录
+#                          —— 那是用户自选的全盘路径,只能靠引擎自己的 finally)
+#                      3. download_engine 的拼接产物 `.part.<pid>`(任务输出目录)
+#                         与配准中间件 `.part.<pid>.<id>`(stitch work_dir,随
+#                         map_dl_stitch_* 整个目录被扫掉)
+#                      4. task_manager._stream_copy_tile 的
+#                         `.part.<pid>.<thread_ident>`(任务输出目录;线程 id 段
+#                         只为让下载回调线程与补拷线程的临时件不互踩)
+#                    ⚠️ 名字里必须放 os.getpid():归属判定 _part_owner_pid 拿这个
+#                    数去和活进程比对,把线程 id 塞进 pid 槽位会让「另一个活进程
+#                    正在写」和「上次进程留下的垃圾」判反。四个生产者现在都带
+#                    pid,新增第五个必须照办。
+#                    **任务输出目录不纳入 .part 清扫根**(评估后的决定,不是遗漏):
+#                    要在那里找 .part 就得遍历每个历史任务的 {style}/{z}/{x} 三层
+#                    目录(百万瓦片任务就是几万个目录 × 任务数),而能收回的只是
+#                    SIGKILL 瞬间在途的那几个 KB 碎片 —— 启动开销与收益差几个数
+#                    量级。该处的清理责任留在生产者自己的 except 里
+#                    (task_manager._stream_copy_tile 会 unlink 后重抛)。
+#                    (同一个目录确实是【物化栅格】那一类的扫描根,但那是直下一层
+#                    scandir + GB 级收益,与这里的取舍不是一回事。)
 #   cesiumlab_terrain_<pid>_*  多幅 DEM 物化成单幅的中间栅格
 #                    (src/services/terrain_tiling/cesiumlab_terrain.py 的
 #                    build_input_raster),与源数据同量级(GB 级任务就是 GB)。
@@ -74,6 +94,12 @@ _BASE_UNPACK_PREFIX = base_terrain.UNPACK_TMP_PREFIX
 _LOCAL_UPLOAD_PREFIX = "local_upload_"      # src/services/local_terrain_task_manager.py
 _CONTOUR_UPLOAD_PREFIX = "contour_upload_"  # src/services/contour_task_manager.py
 _PART_GLOB = "*.part.*"
+# pid 的量级上限,用来兜住「线程 id 被塞进了名字的 pid 槽位」这类命名走样
+# (登记表第 4 条)。CPython 在 Linux/macOS 上 threading.get_ident() 返回的是
+# pthread_t 指针,量级 1e14,与 pid 差七八个数量级(Linux pid_max 默认 2^22);
+# Windows 的 get_ident() 与 pid 同量级,名字上根本分不出来 —— 所以真正的防线
+# 是生产者必须写 os.getpid(),这里只是最后一道。
+_MAX_PLAUSIBLE_PID = 2 ** 31
 # 物化中间栅格（cesiumlab_terrain.py:build_input_raster）。它是**文件**不是目录，
 # _sweep_tmp_dirs 的 is_dir 过滤盖不住，所以另有 _sweep_orphan_files。
 # 前缀里带 pid（`cesiumlab_terrain_<pid>_xxxx.tif`），归属判定走 pid 而不是 mtime：
@@ -92,6 +118,62 @@ _PROCESS_START_TIME = time.time()
 # 手动清理的分类名白名单:cache 顶层目录名(各 style 代码 / dem),
 # 拒绝路径分隔符与 ..,配合 resolve 校验防越界。
 _CATEGORY_NAME_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+# fail_stranded_running_task 的表名白名单 —— 表名直接进 SQL,只接受字面量。
+# 没有 local_terrain_tasks:它没有 `_run_task`,切片线程 `_run_tiling_job`
+# 自己有兜底 except 把行判 failed(dem 的切片 job 同理)。
+_STRANDED_TASK_TABLES = frozenset({'tasks', 'dem_tasks', 'contour_tasks'})
+
+_STRANDED_ERROR = '任务线程已退出但状态仍是「运行中」，已置为失败；可以重新开始这个任务。'
+
+
+def fail_stranded_running_task(table: str, task_id: int, reason: str = '') -> bool:
+    """工作线程退出时行仍停在 'running' → 判 failed。返回是否真的改了行。
+
+    **为什么需要这道网。** 三个 manager 的 `_run_task` 只 `logger.error` 就把异常
+    吃掉,而 `_execute*` 自己的失败兜底(把行改成 failed 那段)活在
+    `conn = get_connection()` 【之后】的 try 里 —— 建连接失败(库被锁/损坏/磁盘满)
+    或 `asyncio.run` 建不出事件循环(EMFILE,几个任务 × concurrent_downloads 就够)
+    都绕过它。另一条路是删除:`task_deletion.delete_task_row` 先置停止标志再 DELETE,
+    commit 失败时事务回滚而标志【不】回滚(那是有意的,重试删除仍要它停),worker
+    于是走某个 stop 分支**正常** return —— 没有异常,也没人写终态。
+
+    两条路的结果一样:行永远是 running 且没有线程。而三条管线的 start_task 都只
+    接受 pending/paused,用户点「开始」被拒,唯一的出路是先点「暂停」
+    (`UPDATE ... WHERE status='running'` 仍然命中)或重启进程。
+
+    **放在线程退出处**是因为那里能一次盖住两条路,不用去动 890 行的 `_execute_task`。
+    竞态是安全的:行只要还是 running 就不可能有新 worker 被登记(start_task 的门),
+    所以 `WHERE status='running'` 命中的必然是搁死的那一行;正常收尾
+    (completed/failed/paused)与已删除的行都命不中,是无害的 no-op。
+
+    本函数**绝不抛**:调用点在 finally 里,从那儿抛出去会盖掉真正的异常。
+    """
+    if table not in _STRANDED_TASK_TABLES:
+        raise ValueError(f'fail_stranded_running_task: 未知任务表 {table!r}')
+
+    message = f'{_STRANDED_ERROR}（{reason}）' if reason else _STRANDED_ERROR
+    try:
+        from src.core.database import get_connection_context, utc_now_iso
+
+        with get_connection_context() as conn:
+            cur = conn.execute(
+                f"UPDATE {table} SET status = 'failed', error_message = ?, "
+                f"completed_at = ? WHERE id = ? AND status = 'running'",
+                (message, utc_now_iso(), task_id))
+            changed = cur.rowcount > 0
+            conn.commit()
+    except Exception as e:
+        # 连补偿都写不进去(库彻底不可用)只能记账:重启时的孤儿恢复会把它捞成 paused。
+        logger.error(f'{table} id={task_id}: 搁死状态补偿失败: {e!r}')
+        return False
+
+    if changed:
+        logger.warning(
+            f'{table} id={task_id}: 线程已退出而行仍是 running,已判 failed'
+            + (f'({reason})' if reason else ''))
+    return changed
 
 
 def resolve_stored_output_dir(stored_path) -> Path:
@@ -158,6 +240,13 @@ def remove_task_dir_if_safe(task_dir) -> bool:
         True if the directory was eligible for removal (whether or not it
         existed), False if it fell outside the safety boundary.
 
+    ⚠️ 返回值是「护栏放行了」,**不是**「目录真的没了」:下面用的是
+    `rmtree(..., ignore_errors=True)`,Windows 上任意一个文件被占(资源管理器
+    预览、看图软件、杀软扫描)就会静默失败,而这里照样返回 True。凡是要把结果
+    报给用户、或者拿它去销 pending_deletions 账的调用方,一律改用
+    remove_task_dir_and_confirm —— 那个函数把「放行」和「真没了」分成两个字段,
+    照抄本函数的返回值就是 2026-08-08 评审 P1#6 那条 bug。
+
     Safety boundary（0.2.4 全盘保存路径后重定,不再要求在 DOWNLOADS_DIR 内）:
         - 路径任一层是符号链接 → 拒绝(rmtree 会跟着链接删到别处);
         - 不足两级目录深度(根目录/盘符根/单级目录) → 拒绝;
@@ -199,6 +288,44 @@ def remove_task_dir_if_safe(task_dir) -> bool:
         return False
 
 
+class DirRemoval(NamedTuple):
+    """remove_task_dir_and_confirm 的结果。
+
+    eligible: 护栏放行了(路径在安全边界内)。False 表示这个目录**永远**删不掉,
+        再排队重试只会每次启动刷一条 warning。
+    removed: 走完之后目录确实不在了(含「本来就不存在」)。这才是能报给用户、
+        能拿去销 pending_deletions 账的那一位。
+    """
+    eligible: bool
+    removed: bool
+
+
+def remove_task_dir_and_confirm(task_dir) -> DirRemoval:
+    """删产物目录,并复查它是不是真的没了。
+
+    为什么单独有这个函数:remove_task_dir_if_safe 内部是
+    `rmtree(..., ignore_errors=True)`,只要护栏放行就返回 True —— 它报的是
+    「可删」不是「已删」。三个需要真相的消费者(删除快路径、后台收尾、启动补删)
+    此前各自在调用点后面补一句 `and not dir.exists()`,漏抄一处的后果是
+    Windows 上文件被占时接口回 `files_removed: true` 而整个瓦片金字塔留在盘上
+    (2026-08-08 评审 P1#6,快路径就是漏抄的那一处)。判据收到这里一份,
+    第四个消费者不必再抄一遍。
+
+    exists() 用与护栏同一套展开(expanduser):拿没展开的 `~/...` 去 exists()
+    恒为 False,会把整类 ~ 路径误报成「删掉了」。
+    """
+    eligible = remove_task_dir_if_safe(task_dir)
+    if not eligible:
+        return DirRemoval(False, False)
+    try:
+        removed = not Path(task_dir).expanduser().exists()
+    except OSError:
+        # 连 stat 都做不了(权限/断开的网络盘)——不敢说删掉了
+        removed = False
+    return DirRemoval(True, removed)
+
+
+
 def _sweep_tmp_dirs(root: Path, prefix: str, older_than: Optional[float] = None) -> int:
     """删除 root 直下所有 `prefix*` 目录（不递归匹配、不碰文件），返回删除数。
 
@@ -234,11 +361,19 @@ def _sweep_tmp_dirs(root: Path, prefix: str, older_than: Optional[float] = None)
 
 
 def _part_owner_pid(name: str) -> Optional[int]:
-    """从 `<name>.part.<pid>.<id>` 里解析出写它的进程 pid，取不到返回 None。
+    """从 `<name>.part.<pid>[.<id>]` 里解析出写它的进程 pid，取不到返回 None。
 
-    两个引擎的原子写临时件名里本来就带 `os.getpid()`（download_engine 与
-    dem_download_engine），这是三类清扫对象里唯一带归属信息的一类 —— 可以用它
+    落在 CACHE_DIR 内的三处原子写临时件名里本来就带 `os.getpid()`（download_engine
+    与 dem_download_engine），这是三类清扫对象里唯一带归属信息的一类 —— 可以用它
     精确跳过另一个活进程正在写的文件，而不必退到 mtime 这种近似判据（H3）。
+
+    量级兜底（2026-08-08 评审）：四个生产者【现在】都把 `os.getpid()` 写在
+    pid 槽位上，但 task_manager._stream_copy_tile 是这次评审才改的 —— 改名之前
+    它写的是 `.part.<thread_ident>`，形态与 `.part.<pid>` 一模一样，靠形状分不
+    出来。用户盘上那批存量文件不会自己消失，所以对超出 pid 量级的值一律返回
+    None（当作「归属未知」），免得拿一个线程 id 去和活进程表比对得出反向结论。
+    这不是完备判据（Windows 的线程 id 与 pid 同量级），完备性靠的是生产者都写
+    os.getpid() —— 见模块顶部登记表的 ⚠️。
     """
     marker = ".part."
     idx = name.rfind(marker)
@@ -248,9 +383,10 @@ def _part_owner_pid(name: str) -> Optional[int]:
     if not head or not head[0].isdigit():
         return None
     try:
-        return int(head[0])
+        pid = int(head[0])
     except ValueError:
         return None
+    return pid if 0 < pid < _MAX_PLAUSIBLE_PID else None
 
 
 def _materialised_owner_pid(name: str) -> Optional[int]:
@@ -324,6 +460,83 @@ def _sweep_orphan_files(root: Path, prefix: str, older_than: Optional[float] = N
     return removed
 
 
+def record_retained_output(artifact_dir) -> bool:
+    """登记一个「任务行已删、文件按用户要求保留」的产物目录。返回是否登记成功。
+
+    为什么必须登记：删除任务时不勾「同时删除磁盘产物」是四条管线的**默认**，
+    而任务行一走（DEM 还会连带级联掉 dem_terrain_jobs），
+    `<output_path>/<pipeline>_task_<id>/` 就成了零引用目录 —— 启动清扫只认
+    pending_deletions 与几张任务表，从此谁都找不回它。半成品切片目录（用户点
+    删除时任务多半还没跑完）就这么永久留在用户盘上，而目录直下还可能压着一个
+    与源数据同量级的物化中间栅格（cesiumlab_terrain_<pid>_*.tif）——
+    _materialised_sweep_roots 把本表当扫描根，正是为了把那条回收路径接回来。
+
+    **这张表不授权删任何东西**：用户说了留文件，就一个字节都不许动。它只保证
+    「app 建的目录始终有一条 DB 引用」，与 pending_deletions（读到一行=删掉它）
+    是两个动词，不要混。
+
+    non-absolute 一律拒收：相对路径的基准是进程 cwd，冻结 exe 的 cwd 是用户
+    双击时所在的任意目录，登记一条按 cwd 解释的路径等于给清扫根埋一个随机目录。
+    全程 best-effort —— 登记失败不该让删除接口报错（行已经删了）。
+    """
+    try:
+        target = Path(artifact_dir).expanduser()
+        if not target.is_absolute():
+            logger.warning(
+                f"Refusing to record non-absolute retained output: {str(target)!r}")
+            return False
+        from src.core.database import get_connection_context
+
+        with get_connection_context() as conn:
+            # path UNIQUE + INSERT OR IGNORE：同一目录重复登记没有意义
+            conn.execute(
+                "INSERT OR IGNORE INTO retained_outputs (path) VALUES (?)",
+                (str(target),))
+            conn.commit()
+        logger.info(f"Recorded retained output directory: {target}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to record retained output {artifact_dir}: {e}")
+        return False
+
+
+def _retained_output_roots() -> list[Path]:
+    """读出 retained_outputs 里仍然存在的目录，顺手把已经消失的行销掉。
+
+    销账放在这里而不是单开一类清扫：这张表唯一的消费者就是扫描根，用户在资源
+    管理器里手工删掉目录之后行留着只会让每次启动多 scandir 一个不存在的路径，
+    而「目录不在了」正好就是这条引用可以退休的判据 —— 表因此不会无界增长。
+
+    与其它 DB 相关的清扫一样全程 best-effort：表不存在（老库、迁移中）返回空。
+    """
+    roots: list[Path] = []
+    try:
+        from src.core.database import get_connection_context
+
+        with get_connection_context() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT id, path FROM retained_outputs").fetchall()
+            except Exception:
+                return []
+            for row in rows:
+                target = Path(row["path"]).expanduser()
+                try:
+                    alive = target.is_absolute() and target.exists()
+                except OSError:
+                    # 断开的网络盘：查不了就当它还在，别把引用丢了
+                    alive = True
+                if alive:
+                    roots.append(target)
+                else:
+                    conn.execute(
+                        "DELETE FROM retained_outputs WHERE id = ?", (row["id"],))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Retained-output roots lookup failed (ignored): {e}")
+    return roots
+
+
 def _materialised_sweep_roots() -> list[Path]:
     """物化产物可能落在哪些目录 —— work_dir 恒等于「切片输出目录的父级」。
 
@@ -331,6 +544,10 @@ def _materialised_sweep_roots() -> list[Path]:
     用户每次创建任务时必传的**任意绝对路径**（geo_validation 明确放开了全盘），
     而那正是 GB 级残留最容易发生的一条线。这与 sweep_startup_residue 已经为
     contour_warp_tmpdir / stitch_tmpdir 读配置键扩根的做法同构。
+
+    retained_outputs 也是一个根：任务被「删记录、留文件」删掉之后，
+    dem_terrain_jobs 行随外键级联一起没了，上面那条查询再也推不出这个 work_dir，
+    而物化中间栅格恰恰就躺在里面（见 record_retained_output）。
     """
     roots: list[Path] = []
     # 本地地形任务（固定路径）与全球 base 构建脚本的落点
@@ -358,6 +575,8 @@ def _materialised_sweep_roots() -> list[Path]:
     except Exception:
         # 数据库不可用（fresh clone、迁移中等）不应让启动清扫失败
         pass
+    # 已经没有任务行、但用户选择保留文件的产物目录（它自己就是 work_dir）
+    roots.extend(_retained_output_roots())
 
     seen: set = set()
     unique: list[Path] = []
@@ -421,14 +640,14 @@ def _sweep_pending_deletions() -> int:
     与前六类不同，这一类的线索来自 DB 而不是文件名模式：删除任务时先记清单再
     删任务行（同一事务），后台线程删成功后清行。进程被强杀时行会留下来。
 
-    三种结局，**不能只看 remove_task_dir_if_safe 的返回值**：
-      - 返回 False（越界）→ 清行。它永远不会被删掉，留着只会每次启动重试一遍
-        并刷一条 warning。
-      - 返回 True 且目录确实没了 → 清行，计入删除数。
-      - 返回 True 但目录还在 → **保留行**。那个函数用的是
-        `rmtree(..., ignore_errors=True)`（见 :194），Windows 上文件被占用会
-        静默失败却仍然返回 True —— 只看返回值就会把没删干净的目录从清单里
-        抹掉，那正是这张表要防的事。
+    三种结局，**不能只看护栏的返回值** —— 判据统一在 remove_task_dir_and_confirm
+    里（它把「可删」和「真没了」拆成两个字段，理由见那边的 docstring）：
+      - eligible=False（越界）→ 清行。它永远不会被删掉，留着只会每次启动重试
+        一遍并刷一条 warning。
+      - removed=True → 清行，计入删除数（含「早就不在了」）。
+      - eligible=True 但 removed=False → **保留行**。Windows 上文件被占用时
+        rmtree(ignore_errors=True) 会静默失败，只看「可删」就会把没删干净的
+        目录从清单里抹掉，那正是这张表要防的事。
 
     非绝对路径（空串 / '.' / 相对路径）不交给护栏，直接清行丢弃：护栏按【进程
     当前工作目录】解释它们，那是一个能删掉无关目录的口子，详见循环里的注释。
@@ -467,13 +686,13 @@ def _sweep_pending_deletions() -> int:
                     conn.execute(
                         "DELETE FROM pending_deletions WHERE id = ?", (row["id"],))
                     continue
-                eligible = remove_task_dir_if_safe(target)
-                if eligible and target.exists():
+                outcome = remove_task_dir_and_confirm(target)
+                if outcome.eligible and not outcome.removed:
                     # 没删干净（占用中）—— 留着行，下次启动再试
                     continue
                 conn.execute(
                     "DELETE FROM pending_deletions WHERE id = ?", (row["id"],))
-                if eligible:
+                if outcome.removed:
                     removed += 1
             conn.commit()
     except Exception as e:

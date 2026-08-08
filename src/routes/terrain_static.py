@@ -13,8 +13,10 @@ from flask import Blueprint, abort, current_app, jsonify, send_file
 from src.core.config import Config
 from src.core.database import get_connection
 from src.services.config_manager import ConfigManager
-from src.services.geo_validation import resolve_output_dir
 from src.services.hillshade_preview import ensure_hillshade
+# 读存量 output_path 的【唯一一套口径】。曾经这里另有一份
+# _resolve_dem_task_output_dir 走 geo_validation.resolve_output_dir，与 M10 的存量
+# 归一（src/core/database.py:264）对相对值的解释不同 —— 见 P1#5。
 from src.services.task_cleanup import resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)
@@ -75,9 +77,22 @@ def _resolve_config_path(path_str: str) -> Path:
 def _resolve_safe_file(base_dir: Path, subpath: str) -> Path:
     """把 subpath 限制在 base_dir 之内,防路径穿越。
 
-    0.2.4 起不再要求 base_dir 落在 DOWNLOADS_DIR 内:base_dir 全部来自
-    DB 任务行的 output_path(建任务时已校验)或管理员配置,不是请求方
-    输入;请求方能控制的只有 subpath,把它锁在 base_dir 里即可。
+    0.2.4 起不再要求 base_dir 落在 DOWNLOADS_DIR 内。**但别把「base_dir 可信」
+    当成前提** —— `/terrain/base` 的 base_dir 就是配置键
+    `terrain_global_base_path`,而 `PUT /api/config` 是未鉴权的:它是用户(在既定
+    的「可信环境」部署前提下)可写的值,不是 DB 任务行那种建任务时校验过的路径。
+
+    实际成立的保证只有两条,且分属两层:
+
+    1. 请求方能直接控制的只有 subpath,本函数把它锁死在 base_dir 之内;
+    2. base_dir **本身**的可信度由 config_manager 的路径类校验负责 ——
+       `terrain_global_base_path` 必须解析到 BASE_DIR/DOWNLOADS_DIR/CACHE_DIR
+       之内(见 `_VALUE_RULES`)。
+
+    第 2 条是 2026-08-08 评审补上的:在那之前该键零校验,设成 `/` 之后下面的
+    包含检查恒真,`GET /terrain/base/etc/passwd` 直接返回 /etc/passwd。也就是说
+    **这个包含检查是一个配置值与整块文件系统之间唯一的东西** —— 删掉它、或者
+    放宽那条配置校验,任意文件读立刻复活。
     """
     base_dir = base_dir.resolve()
 
@@ -187,27 +202,14 @@ def _get_dem_output_path(task_id: int):
     return row["output_path"]
 
 
-def _resolve_dem_task_output_dir(output_path: str) -> Path:
-    """与切片写入侧 dem_task_manager._resolve_task_output_dir 同口径：
-
-    绝对路径原样；相对路径（存量任务行的历史值）按 DOWNLOADS_DIR 解析。
-    读侧必须镜像写侧 —— 此前这里硬编码 DOWNLOADS_DIR/dem，用户自定义保存路径
-    （仍在 DOWNLOADS_DIR 内，合法）时切片写在 <output_path>/dem_task_<id>/，
-    路由读不到，地形预览 404 退化成「仅定位到区域」。
-    """
-    p = Path(output_path)
-    if p.is_absolute():
-        return p
-    return Path(resolve_output_dir(output_path))
-
-
 @terrain_static_bp.route("/dem/<int:task_id>/<path:subpath>", methods=["GET"])
 def terrain_dem_static(task_id: int, subpath: str):
     output_path = _get_dem_output_path(task_id)
     if output_path is None:
         abort(404)
 
-    base_dir = _resolve_dem_task_output_dir(output_path) / f"dem_task_{task_id}" / "terrain_tiles"
+    base_dir = (resolve_stored_output_dir(output_path)
+                / f"dem_task_{task_id}" / "terrain_tiles")
     target = _resolve_safe_file(base_dir, subpath)
     if not target.exists() or target.is_dir():
         abort(404)
@@ -264,7 +266,7 @@ def _dem_task_dir_or_404(task_id: int) -> Path:
     output_path = _get_dem_output_path(task_id)
     if output_path is None:
         abort(404)
-    return _resolve_dem_task_output_dir(output_path) / f"dem_task_{task_id}"
+    return resolve_stored_output_dir(output_path) / f"dem_task_{task_id}"
 
 
 def _local_task_dir_or_404(task_id: int) -> Path:

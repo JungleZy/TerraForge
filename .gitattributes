@@ -21,3 +21,9 @@
 *.tif binary
 *.tiff binary
 *.db binary
+
+# 全球 base 地形的分卷(约 167MB,仓库里最大的二进制)。后缀 .partaa/.partab
+# 不在上面任何一条里,现在只靠 git 的 NUL 字节启发式活着。而文档写明的装机流程
+# 是 `cat base_z8.tar.gz.part* > base_z8.tar.gz` 再解压 —— 一旦被当文本做行尾
+# 转换,拼出来的 gzip 校验和就不对,报错发生在用户机器上。
+assets/terrain/base_z8.tar.gz.part* binary

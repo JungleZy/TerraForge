@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional, Tuple
 from src.i18n import t
 from src.services.tile_url_probe import (
     expand_server_entry,
+    is_link_local_url,
     parse_server_list,
     validate_server_entry,
 )
@@ -136,5 +137,17 @@ def validate_basemap_source(value: Optional[str]) -> Tuple[bool, Optional[str]]:
     if raw in BASEMAP_PRESETS or raw == DOWNLOAD_SOURCE:
         return True, None
     if raw.startswith(('http://', 'https://')):
-        return validate_server_entry(raw)
+        ok, err = validate_server_entry(raw)
+        if not ok:
+            return ok, err
+        # 链路本地段(169.254.0.0/16、fe80::/10)拒收。这个值与其他配置项不同:
+        # /basemap/{z}/{x}/{y} 会**由服务端**去取它并把响应体原样回吐给浏览器,
+        # 所以一个指向 169.254.169.254 的模板等于把服务端当跳板去读云实例元数据。
+        # 有意只拦链路本地,不拦回环/私网 —— 自建瓦片镜像住在 127.0.0.1 或
+        # 192.168.x.x 是项目文档里就有的正当用法,而 169.254.x.x 从来不是一个
+        # 瓦片服务地址。取瓦片时另有一道同样的闸(routes/basemap_static.py),
+        # 因为存量库里可能已经存着这样的值 —— 校验只管新写入。
+        if is_link_local_url(raw):
+            return False, t('val.basemap.link_local', value=raw)
+        return True, None
     return False, t('val.basemap.unknown', value=raw)

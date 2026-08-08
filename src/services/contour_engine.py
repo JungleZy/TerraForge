@@ -95,6 +95,14 @@ def interval_for_zoom(base_interval: float, z: int, detail_zoom: int = 14, scali
     return base_interval * _zoom_interval_multiplier(delta, scaling)
 
 
+# 单张图(瓦片 / 样式预览)允许的等高线级数上限。
+# 没有上限时 interval 相对起伏过小就会炸开:0.1m 间距叠 1000m 起伏 ≈ 单瓦片
+# 1 万条 trace,而瓦片**内部**没有停止检查(串行在瓦片之间查、并行在 512 张的
+# 批之间查),暂停和删除都打不断它。下限 2 是「至少要有一条线可画」。
+_MIN_CONTOUR_LEVELS = 2
+_MAX_CONTOUR_LEVELS = 200
+
+
 def render_style_preview(style, interval, width=640, height=200, shade=True) -> bytes:
     """样式预览 PNG：用合成 DEM（沿 x 的海拔斜坡 + 正弦起伏）按与瓦片渲染
     相同的管线出图 —— 分层设色 + 绝对晕渲混合 + 普通/计曲线等高线与标签。
@@ -164,7 +172,7 @@ def render_style_preview(style, interval, width=640, height=200, shade=True) -> 
         lo = math.floor(zmin / interval) * interval
         hi = math.ceil(zmax / interval) * interval
         n_levels = int(round((hi - lo) / interval)) + 1
-        if 2 <= n_levels <= 200:
+        if _MIN_CONTOUR_LEVELS <= n_levels <= _MAX_CONTOUR_LEVELS:
             levels = [lo + i * interval for i in range(n_levels)]
             minor = [lv for lv in levels if not is_index_contour(lv, interval, style.index_step)]
             major = [lv for lv in levels if is_index_contour(lv, interval, style.index_step)]
@@ -443,10 +451,26 @@ def _render_contour_tile_core(z, tx, ty, ctx) -> str:
         if draw_lines:
             lo = math.floor(zmin / eff) * eff
             hi = math.ceil(zmax / eff) * eff
-            levels = [lo + i * eff for i in range(int(round((hi - lo) / eff)) + 1)]
-            minor = [lv for lv in levels if not is_index_contour(lv, eff, ctx.style.index_step)]
-            major = [lv for lv in levels if is_index_contour(lv, eff, ctx.style.index_step)]
-            draw_lines = bool(minor or major)
+            n_levels = int(round((hi - lo) / eff)) + 1
+            # 与 render_style_preview 同一道闸门(_MAX_CONTOUR_LEVELS)。创建时
+            # 已按 interval 下限拒收,这里兜住的是存量行:级数无上限时单瓦片
+            # 会跑到分钟级,而瓦片内部没有停止检查,暂停/删除都打不断。
+            # 不按倍数放粗 eff 来"救"这张瓦片 —— eff 只依赖 zoom 才能保证同层
+            # 相邻瓦片的等高线接得上(见 interval_for_zoom),一旦改成依赖本瓦片
+            # 自己的 zmin/zmax,边界就会错位。
+            if n_levels > _MAX_CONTOUR_LEVELS:
+                if not getattr(ctx, "levels_capped", False):
+                    ctx.levels_capped = True
+                    logger.warning(
+                        f"Contour: interval={eff:g} 在 z={z} 需要 {n_levels} 级"
+                        f"(上限 {_MAX_CONTOUR_LEVELS}),该瓦片不画等高线;"
+                        f"请把 contour_interval 调大")
+                draw_lines = False
+            else:
+                levels = [lo + i * eff for i in range(n_levels)]
+                minor = [lv for lv in levels if not is_index_contour(lv, eff, ctx.style.index_step)]
+                major = [lv for lv in levels if is_index_contour(lv, eff, ctx.style.index_step)]
+                draw_lines = bool(minor or major)
 
         # Pure-line mode on a featureless tile: nothing to draw, leave a gap.
         if not ctx.shade and not ctx.water and not draw_lines:
@@ -802,16 +826,25 @@ def build_contour_tiles(
             # 串行:主进程 ctx 直接渲染,stop_flag 每瓦片即时检查。
             _render_serial()
         else:
-            # 并行:释放主进程 dataset handle(避免 fork 继承),worker 各自打开。
+            # 并行:释放主进程 dataset handle(worker 各自打开)。
             from concurrent.futures import ProcessPoolExecutor
             from concurrent.futures.process import BrokenProcessPool
+            import multiprocessing
             init_args = (dem_path, att_path, style, interval, shade, water, str(out_dir))
             BATCH = 512  # 批内并行,批间检查 stop_flag;不物化整张瓦片列表。
             # 2048 -> 512:暂停/停止要等当前批跑完才生效,批小 4 倍响应约快 4 倍;
             # 单批 list 内存从 2048 个 (z,x,y) 元组降到 512 个,本身都可忽略。
+            #
+            # 显式 spawn,不用 Linux 默认的 fork:本进程是多线程的(Flask +
+            # SocketIO + 任务线程),fork 一个持锁的多线程进程,子进程可能带着
+            # 一把已被别的线程持有的锁启动然后死锁;CPython 已经为此发
+            # DeprecationWarning,3.14 起 Linux 默认改 forkserver。Windows 打包
+            # 目标本来就只有 spawn,所以 worker 早已必须是 spawn-safe 的
+            # (initargs 全可 pickle,ctx 在 initializer 里各自重建)。
             try:
                 ctx = None
                 with ProcessPoolExecutor(max_workers=n_workers,
+                                         mp_context=multiprocessing.get_context("spawn"),
                                          initializer=_contour_worker_init,
                                          initargs=init_args) as ex:
                     logger.info(f"Contour: {n_workers} 个渲染 worker 已就绪, 开始分批渲染(每批 {BATCH})")

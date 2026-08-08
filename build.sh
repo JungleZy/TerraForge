@@ -18,36 +18,19 @@ fi
 echo "Installing dependencies..."
 uv pip install -r requirements.txt
 
-# GDAL version consistency check (I20d): the pip pin in requirements.txt must
-# match the GDAL the bindings were built against (major.minor), otherwise the
-# bindings fail to compile or silently misbehave at runtime. Prefer the osgeo
-# binding's own version — that is what actually gets bundled; gdal-config may
-# belong to a different GDAL installation on the same machine.
-REQUIRED_GDAL=$(grep -oE '^GDAL==[0-9.]+' requirements.txt | head -1 | cut -d= -f3)
-if [ -z "$REQUIRED_GDAL" ]; then
-    echo "Error: requirements.txt 缺少 GDAL== pin"
-    exit 1
-fi
-SYSTEM_GDAL=$(uv run python -c "from osgeo import gdal; print(gdal.__version__)" 2>/dev/null || gdal-config --version 2>/dev/null || true)
-if [ -z "$SYSTEM_GDAL" ]; then
-    echo "Error: no GDAL found (osgeo not importable and gdal-config missing)."
-    echo "Install system GDAL first (e.g. apt-get install gdal-bin libgdal-dev / conda install gdal)."
-    exit 1
-fi
-REQ_MM=$(echo "$REQUIRED_GDAL" | cut -d. -f1,2)
-SYS_MM=$(echo "$SYSTEM_GDAL" | cut -d. -f1,2)
-if [ "$REQ_MM" != "$SYS_MM" ]; then
-    echo "Error: requirements.txt pins GDAL==$REQUIRED_GDAL but system GDAL is $SYSTEM_GDAL."
-    echo "Fix: update the pin in requirements.txt to match the system GDAL (major.minor must agree),"
-    echo "     or install system GDAL $REQUIRED_GDAL."
-    exit 1
-fi
-echo "GDAL version check OK (pin $REQUIRED_GDAL, system $SYSTEM_GDAL)"
+# GDAL 一致性检查(I20d)。判据与解析都在 scripts/check_gdal.py —— build.bat 调的是
+# 同一个文件。这里【不能】查 `GDAL==` 精确钉:requirements.txt 顶部写明了绑定版本
+# 跟随机器、必须给范围,而 2026-08-08 前这里查的正是 `^GDAL==`,配上 `set -euo
+# pipefail` 让脚本在赋值那一行就静默 exit 1(见 check_gdal.py 的模块注释)。
+uv run python scripts/check_gdal.py
 
-# Check if Nuitka is installed in the uv environment
+# Nuitka 从 requirements.txt 装,不能裸 `uv pip install nuitka`:nuitka_build.py 调
+# 的是 Nuitka 的**私有** API(DllDependenciesWin32.detectBinaryPathDLLsWin32,
+# 八个关键字参数),上游改签名就会在 tag 已经推出去之后打断 Windows 构建。
+# requirements.txt 里已经钉了版本,这里只在缺失时按那份清单补装。
 if ! uv run python -c "import nuitka" &> /dev/null; then
-    echo "Installing Nuitka..."
-    uv pip install nuitka
+    echo "Installing Nuitka (pinned in requirements.txt)..."
+    uv pip install -r requirements.txt
 fi
 
 # Clean previous builds

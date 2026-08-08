@@ -13,6 +13,11 @@ concurrency:
   group: test-build-${{ github.ref }}
   cancel-in-progress: true
 
+# 两个 job 都只读仓库:没有 permissions: 块时 GITHUB_TOKEN 按仓库默认档签发,
+# 而这里没有任何一步需要写。
+permissions:
+  contents: read
+
 jobs:
   # C7 的「测试失败则构建失败」保障由 build 的 needs: test 承担:测试挂了
   # build 根本不会启动。拆成两个 job 是为了快反馈 —— 测试本身只要 1 分钟
@@ -92,24 +97,27 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install nuitka
         pip install setuptools wheel
         pip install numpy==1.26.4
         # 跟随 apt 实际装上的 libgdal,别硬编码(见 requirements.txt 顶部注释)。
         # $GDAL_VERSION 由上一步 gdal-config --version 写进 $GITHUB_ENV;
         # 硬编码的话,GitHub 把 ubuntu-latest 从 noble(3.8.4)翻到下一版时会静默编错。
         pip install --no-build-isolation "GDAL==$GDAL_VERSION"
+        # Nuitka 由 requirements.txt 按钉的版本装(不再 `pip install nuitka` 拉最新):
+        # nuitka_build.py 依赖 nuitka.freezer 的私有 API,版本一飘就是构建期炸。
         pip install -r requirements.txt
+        echo "NUITKA_VERSION=$(python -c "import importlib.metadata as m; print(m.version('nuitka'))")" >> $GITHUB_ENV
 
-    # 跨 run 复用 C 编译结果 —— 这一步是整条流水线提速的关键,详见 build.yml。
+    # 跨 run 复用 C 编译结果 —— 这一步是整条流水线提速的关键,详见 build.yml
+    # (key 里带 Nuitka 版本的理由也在那里)。
     - name: Cache Nuitka C compilation
       uses: actions/cache@v4
       with:
         path: ~/.nuitka-cache
-        key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-${{ github.sha }}
+        key: nuitka-${{ runner.os }}-n${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-${{ github.sha }}
         restore-keys: |
-          nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-
-          nuitka-${{ runner.os }}-
+          nuitka-${{ runner.os }}-n${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-
+          nuitka-${{ runner.os }}-n${{ env.NUITKA_VERSION }}-
 
     - name: Test Nuitka build
       run: |

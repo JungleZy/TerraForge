@@ -20,6 +20,7 @@ worker 加了守卫，没覆盖「用户双击第二个 exe」这个更常见的
 逃生阀：环境变量 `TERRAFORGE_ALLOW_MULTI_INSTANCE=1` 跳过整个机制。
 """
 
+import errno
 import logging
 import os
 from pathlib import Path
@@ -49,8 +50,8 @@ def acquire_instance_lock() -> bool:
     """尝试取得本数据目录的单实例锁。
 
     Returns:
-        True  —— 本进程持有锁（或机制被跳过 / 无法建锁文件时的宽容回退），
-                 可以安全执行清扫与孤儿恢复；
+        True  —— 本进程持有锁（或机制被跳过 / 建不出锁文件 / 该文件系统给不了
+                 锁时的宽容回退），可以安全执行清扫与孤儿恢复；
         False —— 同一数据目录已有实例在运行，调用方必须跳过所有破坏性初始化。
 
     同一进程内重复调用直接返回 True（已持锁），不会自相冲突。
@@ -90,9 +91,17 @@ def acquire_instance_lock() -> bool:
         else:
             import fcntl
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as e:
+        # 只有「锁被别人拿着」这几个 errno 才算冲突。flock/msvcrt 在数据目录位于
+        # NFS/CIFS/部分 FUSE 上时会抛 ENOLCK/EINVAL/ENOTSUP —— 同样是 OSError,
+        # 但含义是「这个文件系统给不了锁」。都当成冲突的话,网络盘上的数据目录
+        # 会被「另一个实例正在运行」直接拒绝启动,而实际上一个实例都没有。
+        if e.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            handle.close()
+            return False
         handle.close()
-        return False
+        logger.warning(f"单实例锁不可用（{e}），跳过实例检查")
+        return True
     except Exception as e:  # 平台不支持锁语义时同样宽容回退
         handle.close()
         logger.warning(f"单实例锁不可用，跳过实例检查: {e}")

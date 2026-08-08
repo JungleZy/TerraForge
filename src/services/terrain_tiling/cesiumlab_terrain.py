@@ -187,6 +187,33 @@ class GeographicTilingScheme:
         return max(0, int(math.ceil(math.log2(ratio))))
 
 
+def intersecting_tile_range(nx: int, ny: int, west: float, south: float,
+                            east: float, north: float) -> Tuple[int, int, int, int]:
+    """与 [west,east]x[south,north] 真正相交的瓦片索引闭区间 (ix0, ix1, iy0, iy1)。
+
+    上界**不能用 floor**:瓦片是半开区间 [w,e) / [s,n),DEM 四至恰好落在瓦片边界上
+    时 floor 会多算一格,而那一格与 DEM 零重叠。这不是罕见情形 —— granule 是
+    1°×1°、四至是整度,而 (45+90)/180*2^z = 0.75*2^z 对 z≥2 恒为整数,所以凡是
+    北界落在 45 的倍数上的 granule,**每一级都会多出一整行**;东界在
+    {0,±45,±90,±135} 上同理多一列。
+
+    多出来的那一行不是空的:它照样出图(DemSampler 把读窗口外扩 1px 后 ix/iy 被
+    np.clip 钳死 → 一张「最北一行像素向北抹平」的台地),而且会被写进 layer.json 的
+    available。Cesium 取「首个声明可用的层」,不会回落到 base/parentUrl,于是用户
+    看到真实地形旁边贴着一块几十度宽的假高原,HTTP 全 200、作业 completed、零报错。
+    M12 收窄 available 就是为了堵这条链,这里补上残留的 off-by-one。
+    见 docs/reviews/2026-08-08-full-project-review.md 的 T1。
+
+    `ceil(...) - 1` 在非边界值上与 `floor` 完全等价;外层 max(ix0, ...) 兜住
+    「DEM 窄于一格且整体贴在边界上」时上界掉到下界之下。
+    """
+    ix0 = max(0, int(math.floor((west + 180.0) / 360.0 * nx)))
+    ix1 = min(nx - 1, max(ix0, int(math.ceil((east + 180.0) / 360.0 * nx)) - 1))
+    iy0 = max(0, int(math.floor((south + 90.0) / 180.0 * ny)))
+    iy1 = min(ny - 1, max(iy0, int(math.ceil((north + 90.0) / 180.0 * ny)) - 1))
+    return ix0, ix1, iy0, iy1
+
+
 def _overview_factors(width: int, height: int, min_side: int = 32) -> list[int]:
     """2 的幂倍率列表，一直建到最长边降不到 min_side 以下为止。
 
@@ -698,18 +725,30 @@ class DemSampler:
         if self.nodata is not None:
             arr = np.where(arr == self.nodata, np.nan, arr)
 
-        # Map source pixel coords into the resampled buffer. GDAL's resampling
-        # is center-based: buffer pixel j represents source position
-        # (j+0.5)*scale - 0.5 (verified against gdal 3.x RasterIO — its
-        # "bilinear" downsample is a tent filter centred exactly there), so the
-        # inverse mapping is p/sx - 0.5*(1 - 1/sx). Do NOT "simplify" this to
-        # p/sx - 0.5: that introduces a +0.5 source-pixel shift (measured on a
-        # synthetic linear-field DEM; pinned by test_fix_terrain_sampler_resample).
-        # The correction vanishes when buf == win.
+        # 把源像素坐标映射成 buffer 里的连续下标。
+        #
+        # px 是 GDAL 的**像素边**坐标（`ApplyGeoTransform(gt,0,0)` 给的是左上角，
+        # 0 号像素中心在 0.5）。buffer 像素 j 覆盖源 [x0c+j*sx, x0c+(j+1)*sx)，
+        # 其中心在边坐标 x0c+(j+0.5)*sx。令 px = x0c+(t+0.5)*sx 解出
+        #     t = (px - x0c)/sx - 0.5
+        # 两个 -0.5 是**同一个**：边→中心的转换，与 sx 无关。
+        #
+        # ⚠️ 这里曾经写成 `- 0.5*(1 - 1/sx)`，即 t + 0.5/sx —— 恒偏 **+0.5 个源
+        # 像素**（1 弧秒 DEM 上是 15.5 m 的水平错位，每张瓦片每个层级都吃）。
+        # M19 复核提过、被 test_sampling_has_no_half_pixel_bias 驳回，但那个测试
+        # 用合成线性场 `WriteArray(a*i + b*j)` 又拿 `expected = a*px_edge+b*py_edge`
+        # 对账 —— 把「arr[j,i] 位于边坐标 i」这个错误前提写进了基准，自洽所以测得过。
+        #
+        # 2026-08-08 用 GDAL 自己当裁判重判（真实 Copernicus GLO-30，把源 warp 到
+        # 一个像素中心恰好落在查询点上的网格，`gdal.Warp` + GRA_Bilinear）：
+        #     中心制 (px-0.5) vs Warp  RMS 0.0000 m
+        #     现行式  (edge)   vs Warp  RMS 8.0056 m / 最大 21.2 m
+        # 逐瓦片端到端复核（loess z14，grid 后端）RMS 6.835 m -> 0.511 m。
+        # sx=1 的层级（1 弧秒源上是 z13/z14，占生产瓦片 93.8%）修正后与 Warp 逐点相同。
         sx = win_w / buf_w
         sy = win_h / buf_h
-        lpx = (px - x0c) / sx - 0.5 * (1.0 - 1.0 / sx)
-        lpy = (py - y0c) / sy - 0.5 * (1.0 - 1.0 / sy)
+        lpx = (px - x0c) / sx - 0.5
+        lpy = (py - y0c) / sy - 0.5
         ix = np.clip(np.floor(lpx).astype(int), 0, arr.shape[1] - 2)
         iy = np.clip(np.floor(lpy).astype(int), 0, arr.shape[0] - 2)
         fx = np.clip(lpx - ix, 0, 1)
@@ -1017,7 +1056,6 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float,
 
 
 _WORKER_SAMPLER: DemSampler | None = None
-_WORKER_NODATA: float | None = None
 # worker 进程内已创建过的 {z}/{x} 目录集合:每瓦片都 mkdir(parents=True,
 # exist_ok=True) 是一次多余 syscall,去重后每目录只建一次。去重只在单次切片
 # 任务内有效 —— _worker_init(并行:每 worker 进程一次;串行:_run_serial 调)
@@ -1026,10 +1064,14 @@ _WORKER_MKDIRS: set = set()
 
 
 def _worker_init(input_path: str, nodata: float | None) -> None:
-    global _WORKER_SAMPLER, _WORKER_NODATA
+    global _WORKER_SAMPLER
     _WORKER_SAMPLER = DemSampler(input_path, nodata=nodata)
-    _WORKER_NODATA = nodata
     _WORKER_MKDIRS.clear()
+
+
+def _finite_or_none(value: float) -> float | None:
+    """非有限值（±inf/NaN）归一成 None —— 写进 JSON 就是 null，而不是裸 Infinity。"""
+    return float(value) if math.isfinite(value) else None
 
 
 def _max_error_for_level(z: int, tile_size: int, k: float) -> float:
@@ -1167,7 +1209,8 @@ def _worker_tile(task) -> Tuple[float, float, str] | None:
     assert _WORKER_SAMPLER is not None
 
     try:
-        scheme = GeographicTilingScheme(tile_size=tile_size)
+        # 瓦片边界（west/south/east/north）由调用方算好放进任务元组，worker 侧
+        # 不需要 tiling scheme。
         lons = np.linspace(west, east, tile_size, dtype=np.float64)
         lats = np.linspace(south, north, tile_size, dtype=np.float64)
         llon, llat = np.meshgrid(lons, lats)
@@ -1323,11 +1366,8 @@ def build_terrain(
             # compute intersected tile ranges per level
             for z in range(min_level, max_level + 1):
                 nx, ny = scheme.tile_count(z)
-                # project bbox to tile index range (clamp)
-                ix0 = max(0, int(math.floor((src_w + 180.0) / 360.0 * nx)))
-                ix1 = min(nx - 1, int(math.floor((src_e + 180.0) / 360.0 * nx)))
-                iy0 = max(0, int(math.floor((src_s + 90.0) / 180.0 * ny)))
-                iy1 = min(ny - 1, int(math.floor((src_n + 90.0) / 180.0 * ny)))
+                ix0, ix1, iy0, iy1 = intersecting_tile_range(
+                    nx, ny, src_w, src_s, src_e, src_n)
 
                 if z <= 4:
                     # 低 zoom 仍然出图（根瓦片缺失会让 Cesium 的单层 provider
@@ -1439,8 +1479,23 @@ def build_terrain(
             BATCH = 512  # 批内并行,批间检查 stop_flag;不物化整张瓦片列表。
             # 2048 -> 512(同 contour_engine):停止/暂停要等当前批跑完才生效,
             # 批小 4 倍响应约快 4 倍;单批 list 内存本身可忽略。
+            # 显式 spawn，不用平台默认。Linux 的默认是 fork，而这里的父进程是
+            # 多线程的 Flask（CPython 3.12 起就为此打 DeprecationWarning「use of
+            # fork() may lead to deadlocks in the child」：子进程只继承调用线程，
+            # 父进程里被别的线程持有的锁在子进程里永远解不开）。三条理由：
+            #   1. Windows / macOS 的打包产物本来就走 spawn —— 那是主要交付平台，
+            #      也就是说 worker 早已必须是 spawn-safe（模块级函数、initargs 全
+            #      可 pickle），Linux 走 fork 只是让三平台行为不一致；
+            #   2. Python 3.14 会把 Linux 默认改成 forkserver，迟早要面对；
+            #   3. contour_engine 的池已经是 spawn（同一批改的），两处不该分叉。
+            # 代价：每个 worker 要重新 import numpy/GDAL，池创建慢几秒。池在一个
+            # 切片作业里只建一次，相对整轮切片可忽略。
+            from multiprocessing import get_context
             try:
-                with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init, initargs=(input_path, nodata)) as ex:
+                with ProcessPoolExecutor(max_workers=workers,
+                                         mp_context=get_context("spawn"),
+                                         initializer=_worker_init,
+                                         initargs=(input_path, nodata)) as ex:
                     tasks = _iter_tasks()
                     while True:
                         if stop_flag is not None and stop_flag.is_set():
@@ -1501,8 +1556,16 @@ def build_terrain(
         meta = {
             "minLevel": min_level,
             "maxLevel": max_level,
-            "minHeight": h_min_global,
-            "maxHeight": h_max_global,
+            # 全部瓦片都失败时（rendered==0 且 total>0）两个哨兵值一次都没被
+            # 收窄，仍是 ±inf，而 json.dumps 默认把它们写成裸 Infinity ——
+            # 不是合法 JSON，任何严格解析器（浏览器 JSON.parse、Go、Rust）读
+            # meta.json 直接报错。归一成 null 而不是用 allow_nan=False：后者
+            # 会在所有瓦片都已落盘之后抛 ValueError，把「切了但没切出东西」
+            # 变成异常，counts 丢失、上层看不到 rendered/failed，正是 P1#7
+            # 那种「记账失败作废产物」。null 是可解析的「无高度范围」，与
+            # rendered==0 的判失败逻辑正交。
+            "minHeight": _finite_or_none(h_min_global),
+            "maxHeight": _finite_or_none(h_max_global),
             "bounds": list(sampler.bounds),
             "tileSize": tile_size,
             "scheme": "EPSG:4326",
@@ -1514,12 +1577,19 @@ def build_terrain(
         return {"total": total, "rendered": done, "failed": failed,
                 "chose_martini": chose["martini"], "chose_grid": chose["grid"]}
     finally:
+        # 串行路径（workers==1 / total<=4 / BrokenProcessPool 回退）在**本进程**
+        # 里跑 _worker_init，留下的全局 sampler 一直握着源 DEM 的 GDAL dataset 和
+        # 块缓存直到进程退出。此前这段挂在 `if temp_input:` 下，而单输入 tif 时
+        # temp_input 恒为 None（见上面那行），于是串行路径必漏：Windows 上源文件
+        # 被占，删除任务时 rmtree(ignore_errors=True) 静默失败，UI 报删除成功而
+        # 上传的 tif 还在盘上。置 None 而不只清 ds/band —— 不把释放时机压在 GC 上，
+        # 也让下一次 _worker_init 从干净状态开始。
+        global _WORKER_SAMPLER
+        if _WORKER_SAMPLER is not None:
+            _WORKER_SAMPLER.ds = None
+            _WORKER_SAMPLER.band = None
+            _WORKER_SAMPLER = None
         if temp_input:
-            # 串行路径的全局 worker sampler 可能还持有该文件的句柄（Windows 上
-            # 打开中的文件删不掉），先释放再删；并行路径 pool 退出后 worker 已回收。
-            if _WORKER_SAMPLER is not None:
-                _WORKER_SAMPLER.ds = None
-                _WORKER_SAMPLER.band = None
             # 当前路径下 overview 是**内嵌**的：GA_Update 打开 GTiff 再
             # BuildOverviews 会写进 .tif 本身（实测 GetFileList 只返回一个文件）。
             # 所以下面 .ovr / .aux.xml 两条纯属防御 —— 改成只读模式打开、或换个

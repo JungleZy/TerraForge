@@ -37,14 +37,22 @@ def _make_dem(path, cols=60, rows=60, deg_per_px=0.01, west=116.0, north=40.0):
 
 
 class _InProcessPool:
-    """记录 max_workers / 每批 map 输入,并在本进程内真正执行任务。"""
+    """记录 max_workers / mp_context / 每批 map 输入,并在本进程内真正执行任务。
+
+    `mp_context` 必须在签名里:产品代码显式传 spawn 上下文(理由见
+    cesiumlab_terrain 的注释),替身漏了这个参数就会以 TypeError 把无关用例带红 ——
+    替身的签名要跟着真 API 走,那不是一条需要守住的不变量。顺手把它记下来,让
+    「启动方式是 spawn」这件事有个可断言的落点。
+    """
 
     instances = []
 
-    def __init__(self, max_workers=None, initializer=None, initargs=()):
+    def __init__(self, max_workers=None, initializer=None, initargs=(),
+                 mp_context=None):
         self.max_workers = max_workers
         self.initializer = initializer
         self.initargs = initargs
+        self.mp_context = mp_context
         self.map_inputs = []
         _InProcessPool.instances.append(self)
 

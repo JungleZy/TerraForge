@@ -12,8 +12,9 @@ from typing import Optional
 from src.core.database import get_connection, DEFAULT_CONFIGS
 from src.i18n import t
 from src.services.basemap_source import client_descriptor, resolve_basemap
-from src.services.config_manager import ConfigManager
-from src.services.task_cleanup import resolve_stored_output_dir
+from src.services.config_manager import (ConfigManager, is_unchanged_secret,
+                                         redact_secret_value)
+from src.services.task_cleanup import record_retained_output, resolve_stored_output_dir
 from src.routes import tiles_static
 
 logger = logging.getLogger(__name__)
@@ -333,16 +334,18 @@ def delete_task(task_id: int):
         if not row:
             return jsonify({'error': f'Task {task_id} not found'}), 404
 
-        artifact_dir = None
-        if request.args.get('delete_files', '').lower() in ('1', 'true', 'yes'):
-            # 存量行的 output_path 可能是相对路径(旧版本只校验不改写)——先归一化
-            # 成绝对路径;否则 Path.resolve() 按进程 CWD 解析,CWD≠BASE_DIR 时会
-            # 误判成"越界"而拒删,接口却已经返回 success。
-            artifact_dir = resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
+        delete_files = request.args.get('delete_files', '').lower() in ('1', 'true', 'yes')
+        # 存量行的 output_path 可能是相对路径(旧版本只校验不改写)——先归一化
+        # 成绝对路径;否则 Path.resolve() 按进程 CWD 解析,CWD≠BASE_DIR 时会
+        # 误判成"越界"而拒删,接口却已经返回 success。
+        # 两条路都要算:要删的那条交给 manager,保留的那条得登记(见下)。
+        task_dir = None
+        if row['output_path']:
+            task_dir = resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
 
         outcome = task_manager.delete_task(
             task_id,
-            artifact_dir=artifact_dir,
+            artifact_dir=task_dir if delete_files else None,
             # 行删掉后同步清 /tiles 静态路由的 output_path 缓存，否则
             # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
             # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
@@ -352,9 +355,23 @@ def delete_task(task_id: int):
             return jsonify({'error': f'Task {task_id} not found'}), 404
 
         logger.info(f"Task {task_id} deleted via API")
-        return jsonify(_delete_payload(
+        payload = _delete_payload(
             f'Task {task_id} deleted', outcome.files_removed,
-            files_deferred=outcome.files_deferred))
+            files_deferred=outcome.files_deferred)
+
+        # delete_files=false 是删除对话框的默认。行一走，<output_path>/task_<id>/
+        # 就没有任何 DB 引用了 —— 启动清扫只认 pending_deletions 和任务表，从此
+        # 谁都找不回它。登记一行把引用接回来；【只登记，不删文件】。
+        if not delete_files and task_dir is not None:
+            try:
+                if task_dir.exists():
+                    record_retained_output(task_dir)
+                    payload['files_retained_path'] = str(task_dir)
+            except OSError as e:
+                logger.warning(
+                    f"Task {task_id}: cannot stat retained output dir: {e}")
+
+        return jsonify(payload)
 
     except Exception as e:
         logger.error(f"Error deleting task {task_id}: {e}")
@@ -698,11 +715,20 @@ def get_config():
     """
     Get all configuration settings
 
+    密钥类键（earthdata_password）回的是「已保存，未修改」哨兵而不是真值 ——
+    这个端点无鉴权,真值一旦回出去就等于交给局域网上的任意主机与任何浏览器扩展。
+    PUT 收到哨兵会跳过该键,所以「读回来再原样提交」不会把密码写成哨兵字面量。
+    见 src/services/config_manager.py 的 SECRET_UNCHANGED。
+
     Returns:
         JSON response with all configuration key-value pairs
     """
     try:
-        config = config_manager.get_all()
+        config = {
+            key: {**entry, 'value': redact_secret_value(key, entry.get('value'))}
+            if isinstance(entry, dict) else redact_secret_value(key, entry)
+            for key, entry in config_manager.get_all().items()
+        }
 
         return jsonify({
             'success': True,
@@ -786,6 +812,12 @@ def update_config():
         for key, value in data.items():
             if key not in known_keys:
                 errors.append(f"{key}: unknown config key")
+                continue
+            if is_unchanged_secret(key, value):
+                # 密码框回填的是哨兵(见 config_manager.SECRET_UNCHANGED)。前端每次
+                # 保存都提交全部键,原样回来的哨兵意思是「没改」—— 写进去就把真密码
+                # 换成了哨兵字面量,下一次 Earthdata 登录 401。清空密码不受影响:
+                # 空串不等于哨兵,照常落库。
                 continue
             try:
                 if not config_manager.validate_config(key, str(value)):

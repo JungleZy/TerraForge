@@ -19,22 +19,6 @@
 
 ## 一条必须先知道的坑：GDAL 装的顺序
 
-`INSTALL.md` 和 `BUILD.md` 都要装 GDAL，**两处的命令顺序都不能调换**：先 `setuptools wheel` → 再 `numpy` → 最后 `--no-build-isolation` 装 GDAL。
+先 `setuptools wheel` → 再 `numpy` → 最后 `--no-build-isolation` 装 GDAL。顺序反了会**静默**装出一个缺 `_gdal_array` 的绑定：`import gdal` 成功、应用能起、瓦片能下、打包不报错、CI 冒烟也照样绿，只有真正读写像素的环节（拼接 GeoTIFF、地形切片、等高线渲染）才炸——这是本项目最难发现的坑。
 
-原因：GDAL 的 Python 绑定在 PyPI 上只有源码包，装的时候现场编译，而 `_gdal_array` 这个 C 扩展**只有在编译当时能 `import numpy` 才会被编出来**。默认的 build isolation 会把 GDAL 丢进一个没有 numpy 的临时干净环境里编译，于是 `_gdal_array` 被静默跳过，安装照样报「成功」。
-
-为什么它是本项目最难发现的坑：
-
-- `import gdal` 照常成功，应用能启动，瓦片能下载 —— 表面上一切正常；
-- **打包不会报错，CI 冒烟测试也照样绿**（冒烟只请求首页，完全不碰 GDAL 代码路径），坏包能一路发到用户手里；
-- 只有真正读写像素的环节才炸：瓦片拼接 GeoTIFF、地形切片、等高线渲染，报 `ImportError: cannot import name '_gdal_array' from 'osgeo'`。
-
-所以装完必须验证这一条（只验 `import gdal` 查不出问题）：
-
-```bash
-uv run python -c "from osgeo import gdal_array; print(gdal_array.__file__)"
-```
-
-已经装坏了怎么重建，见 [`INSTALL.md` 的故障排除](INSTALL.md#importerror-cannot-import-name-_gdal_array-from-osgeo)——注意重建时 `UV_NO_CACHE=1` 不能省，否则 uv 会静默复用之前那个没有 numpy 的构建缓存，白重装一遍。
-
-> 走 conda-forge 路线（Windows / Apple Silicon Mac）不会遇到这个问题：conda 的 gdal 包自带已含 numpy 支持的预编译绑定，不需要编译。但这条路线下所有 `uv run python xxx` 要换成直接 `python xxx`。
+**这个话题只有一个主人：[`INSTALL.md`](INSTALL.md)。** 分平台路线、验证命令、以及「已经装坏了怎么重建」都在那里，本文不复述命令——同一串命令抄在多处，就会各自漂移。

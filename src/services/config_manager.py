@@ -5,8 +5,12 @@ Provides centralized configuration management with validation and persistence.
 Handles reading, updating, and validating application configuration stored in SQLite.
 """
 
+import ipaddress
 import logging
+import tempfile
+from pathlib import Path
 from typing import Optional, Dict, Any
+from urllib.parse import urlsplit
 import sqlite3
 from src.core.database import (
     get_connection_context, DEFAULT_CONFIGS, normalize_default_save_path, utc_now_iso,
@@ -31,6 +35,288 @@ def _mask_log_value(key: str, value: str) -> str:
         # user:pass@ 形式的代理凭据不进日志（host 保留便于排查）
         return mask_url_userinfo(value)
     return value
+
+
+# 「已保存，未修改」哨兵。密码框回填真值等于把它交给页面 DOM 与
+# GET /api/config 的任何读者（局域网上的任意主机、任何浏览器扩展）。改为回填这个
+# 哨兵:用户看到密码已设置、可以改，而真值不出服务端;PUT /api/config 收到它就
+# 跳过该键不覆盖。清空密码仍然可用 —— 把框清空提交，存的就是空串。
+# 见 docs/reviews/2026-08-08-full-project-review.md 的「安全姿态」第 1 项。
+SECRET_UNCHANGED = '__TF_UNCHANGED__'
+
+# 只有「用户永远不需要读回」的键才适用哨兵。proxy_url **不在**其中:它是一个
+# 用户必须看得见才能改的文本框，塞哨兵会让「改主机名」变成「先重打整条 URL」。
+# 它的 userinfo 仍会随配置表单下发,这一条留在既定的「可信环境」部署前提里。
+_SENTINEL_KEYS = frozenset({'earthdata_password'})
+
+
+def redact_secret_value(key: str, value):
+    """下发给浏览器前的脱敏:已设置的密钥类键换成哨兵值，未设置的原样(空串)。"""
+    if key in _SENTINEL_KEYS and value:
+        return SECRET_UNCHANGED
+    return value
+
+
+def is_unchanged_secret(key: str, value) -> bool:
+    """这个键值对是不是「原样回传的哨兵」—— 是就该跳过，不能当新值写库。"""
+    return key in _SENTINEL_KEYS and value == SECRET_UNCHANGED
+
+
+# --------------------------------------------------------------------------
+# 键 -> 校验规则表
+#
+# validate_config 过去是一串 if/elif，尾部一句「其余键一律 return True」——
+# **全部路径类与 URL 类键都落在那个兜底里**。后果不是「少一道校验」这么轻：
+#   - terrain_global_base_path 是 /terrain/base/<path> 的根
+#     （routes/terrain_static.py）。设成 '/' 之后 _resolve_safe_file 的包含检查
+#     恒真，两个未鉴权请求就能读走任意文件（2026-08-08 评审「安全姿态」第 3 项
+#     有实测：PUT 配置 200 → GET /terrain/base/etc/passwd 拿到 1427 字节）。
+#   - stitch_tmpdir 被 download_engine.py 直接 os.makedirs(..., exist_ok=True)，
+#     写错就是在任意位置建目录。
+#   - terrain_base_parent_url 被固化进 layer.json 的 parentUrl 交给浏览器，
+#     javascript:/data:/带 userinfo 的值会原样发到客户端。
+# 改成显式的表：新增配置键必须在这里登记一条（哪怕是「不加约束」），
+# tests/test_fix_config_path_validation.py 的覆盖用例会钉住这一点，
+# 不会再有键靠「什么都不写」就默默拿到 accept-anything 待遇。
+# --------------------------------------------------------------------------
+
+
+def _allowed_path_roots(allow_temp: bool):
+    """路径类配置键允许落到的根目录集合。
+
+    惰性读 Config：测试用 monkeypatch 换 DOWNLOADS_DIR/CACHE_DIR，模块级绑定
+    会拿到导入那一刻的旧值。
+    """
+    from src.core.config import Config
+
+    roots = [Config.BASE_DIR, Config.DOWNLOADS_DIR, Config.CACHE_DIR]
+    if allow_temp:
+        roots.append(tempfile.gettempdir())
+    return roots
+
+
+def _validate_contained_path(value, *, allow_empty: bool, allow_temp: bool) -> bool:
+    """路径类键：解析后必须落在允许的根之内。
+
+    解析口径必须与**读取侧**一致 —— 读取侧是
+    terrain_static._resolve_config_path，即 resolve_stored_output_dir + resolve。
+    换一套口径校验等于校验了一个没人会去读的路径，'../' 这类值会在校验时看着
+    合规、在服务时指向别处。
+    """
+    from src.services.task_cleanup import resolve_stored_output_dir
+
+    raw = str(value or '').strip()
+    if not raw:
+        return allow_empty
+    try:
+        resolved = resolve_stored_output_dir(raw).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    for root in _allowed_path_roots(allow_temp):
+        try:
+            r = Path(root).resolve()
+        except OSError:
+            continue
+        if resolved == r or r in resolved.parents:
+            return True
+    return False
+
+
+def _is_link_local_host(host: str) -> bool:
+    """169.254.0.0/16 与 fe80::/10 —— 云厂商的实例元数据端点就住在这里。
+
+    有意**不**复用 tile_url_probe.should_bypass_proxy：它把回环与私网也算进去，
+    那是「该不该走代理」的路由判断，不是安全边界。而本项目的 parentUrl 出厂值
+    就是 http://localhost:5000/terrain/base，换端口/部署到内网 IP 更是
+    docs/reference/terrain/global-base-build.md 明写的正常用法 —— 照搬那个谓词
+    会把默认值和文档化的部署方式一起判非法。
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False        # 域名：解析结果随部署而变，这里判不了
+    return ip.is_link_local
+
+
+def _validate_browser_url(value) -> bool:
+    """交给浏览器去取的 URL：同源相对路径，或 http(s) 绝对地址。"""
+    raw = str(value or '').strip()
+    if not raw:
+        return True         # 空 = 不写该字段（layer_json.normalize_parent_url 返回 None）
+    if any(ch in raw for ch in ' \t\r\n'):
+        return False        # 换行会把值拆进 layer.json 的其它位置
+    if raw.startswith('//'):
+        return False        # 协议相对地址继承页面协议，绕开下面的 scheme 白名单
+    if raw.startswith('/'):
+        return '\\' not in raw          # 同源相对路径
+    parts = urlsplit(raw)
+    if parts.scheme not in ('http', 'https'):
+        return False        # javascript:/data:/file: 一律挡在写库之前
+    if parts.username or parts.password:
+        return False        # userinfo 会随 layer.json 原样发到浏览器
+    host = parts.hostname or ''
+    if not host:
+        return False
+    port = parts.port       # 端口越界在这里抛 ValueError -> False
+    if port is not None and not 0 < port <= 65535:
+        return False
+    return not _is_link_local_host(host)
+
+
+def _validate_proxy_url(value) -> bool:
+    """代理地址：空 = 自动探测/直连；非空必须带 http(s) scheme 与主机。
+
+    判据与 proxy_autodetect._normalize_proxy_url 一致（aiohttp 只吃 http(s)）。
+    少写 scheme 的 '127.0.0.1:7890' 过去能存进库，之后每一张瓦片都在
+    aiohttp 里抛 InvalidURL —— 报错离配置页十万八千里。
+    回环/私网**不拦**：代理正常就住在本机或局域网。
+    """
+    raw = str(value or '').strip()
+    if not raw:
+        return True
+    parts = urlsplit(raw)
+    if parts.scheme not in ('http', 'https'):
+        return False
+    if not parts.hostname:
+        return False
+    port = parts.port       # 端口越界 -> ValueError -> False
+    return port is None or 0 < port <= 65535
+
+
+def _validate_int_range(value, low: int, high: int) -> bool:
+    return low <= int(value) <= high
+
+
+def _is_valid_lat(value) -> bool:
+    return -90 <= float(value) <= 90
+
+
+def _is_valid_lng(value) -> bool:
+    return -180 <= float(value) <= 180
+
+
+def _validate_save_path(value) -> bool:
+    # 绝对路径 + 至少两级深度(与建任务同一口径,0.2.4 起全盘可选);
+    # 相对/浅层都拒绝 —— 存一个建任务时必被 400 的值没有意义。
+    # 这个键**不受**上面的根集合约束:用户可以把产物存到任意一块盘。
+    from src.services.geo_validation import require_absolute_output_dir
+    try:
+        require_absolute_output_dir(str(value))
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_tile_servers(value) -> bool:
+    # 逗号分隔的瓦片服务器列表：每个条目必须是 Google 别名/主机
+    # 或含 {x}/{y}/{z} 的完整 XYZ 模板（tile_url_probe 统一语义）
+    from src.services.tile_url_probe import validate_server_list
+    ok, _err = validate_server_list(str(value))
+    return ok
+
+
+def _validate_basemap_source(value) -> bool:
+    # 预设别名 / download_source / 完整 XYZ 模板
+    from src.services.basemap_source import validate_basemap_source
+    ok, _err = validate_basemap_source(str(value))
+    return ok
+
+
+def _is_valid_color(value) -> bool:
+    # 判据用渲染器自己的解析器（见 contour_task_manager.validate_color）：
+    # 「配置里收得下的」必须恰好等于「渲染时画得出的」。以前这里不校验，
+    # '#zzzzzz' 一路通到 per-tile 渲染，在那个吞异常的 except 里把**每一张**
+    # 瓦片记成 failed，任务最后报「No contour tiles rendered」——指着三个都
+    # 正确的参数（评审 P1#10）。惰性导入：contour_task_manager 在模块级
+    # import 本模块，顶层 import 会成环。
+    from src.services.contour_task_manager import validate_color
+    try:
+        validate_color(str(value))
+        return True
+    except ValueError:
+        return False
+
+
+def _is_valid_color_or_transparent(value) -> bool:
+    # 背景色多一个合法特值 'transparent'（引擎按它出全透明底图）。
+    return str(value).strip().lower() == 'transparent' or _is_valid_color(value)
+
+
+def _is_valid_color_csv(value) -> bool:
+    # 分层设色色带：逗号分隔逐个校验。空值在这里不合法 —— 读取侧拿它建
+    # ListedColormap，空色表构造即抛。
+    parts = [p.strip() for p in str(value).split(',') if p.strip()]
+    return bool(parts) and all(_is_valid_color(p) for p in parts)
+
+
+def _is_valid_contour_interval(value) -> bool:
+    # 与建任务同一道闸门（contour_task_manager._MIN_CONTOUR_INTERVAL）。这个键
+    # 就是建任务时 contour_interval 留空的取值来源：配成 0.1，等高线级数在单张
+    # 瓦片里会炸到上万条，而瓦片内部没有停止检查，暂停/删除都打不断（P1#11）。
+    from src.services.contour_task_manager import _MIN_CONTOUR_INTERVAL
+    return float(value) >= _MIN_CONTOUR_INTERVAL
+
+
+_VALUE_RULES = {
+    # --- 数值 / 坐标 / 枚举（判据与改造前逐字相同）---
+    'concurrent_downloads': lambda v: _validate_int_range(v, 1, 100),
+    'request_timeout': lambda v: _validate_int_range(v, 1, 300),
+    'max_retries': lambda v: _validate_int_range(v, 0, 10),
+    'map_initial_zoom': lambda v: _validate_int_range(v, 0, 21),
+    'default_zoom_min': lambda v: _validate_int_range(v, 0, 21),
+    'default_zoom_max': lambda v: _validate_int_range(v, 0, 21),
+    'map_center_lat': _is_valid_lat,
+    'map_center_lng': _is_valid_lng,
+    'tile_servers': _validate_tile_servers,
+    'basemap_source': _validate_basemap_source,
+    # --- 路径类 ---
+    'default_save_path': _validate_save_path,
+    # 留空会让 /terrain/base 的根落到 BASE_DIR 本身，等于把整个安装目录
+    # （含 data/map_downloader.db）挂上静态服务，所以这个键不接受空值。
+    'terrain_global_base_path': lambda v: _validate_contained_path(
+        v, allow_empty=False, allow_temp=False),
+    # 两个 tmpdir 出厂值就是空串（= 用系统临时目录），且它们存在的意义就是
+    # 把 GB 级中间产物挪到别的盘 —— 系统临时目录进允许根集合。
+    'stitch_tmpdir': lambda v: _validate_contained_path(
+        v, allow_empty=True, allow_temp=True),
+    'contour_warp_tmpdir': lambda v: _validate_contained_path(
+        v, allow_empty=True, allow_temp=True),
+    # --- URL 类 ---
+    'terrain_base_parent_url': _validate_browser_url,
+    'proxy_url': _validate_proxy_url,
+    # --- 等高线颜色与间距（评审 P1#10 / P1#11）---
+    'contour_color_intermediate': _is_valid_color,
+    'contour_color_index': _is_valid_color,
+    'contour_color_label': _is_valid_color,
+    'contour_water_color_ocean': _is_valid_color,
+    'contour_water_color_inland': _is_valid_color,
+    'contour_background': _is_valid_color_or_transparent,
+    'contour_hypsometric_colors': _is_valid_color_csv,
+    'contour_default_interval': _is_valid_contour_interval,
+}
+
+# 有意不加约束的键。留在这里不是「忘了」，每一条都有理由：
+#   - 布尔开关：读取侧一律 `!= 'false'` / `== 'true'`，脏值等价于取默认，
+#     没有可被利用的失败模式；
+#   - 凭据与枚举：earthdata_* 是自由文本；default_style / default_output_format /
+#     gdal_* / contour_zoom_scaling / contour_hillshade_blend 的合法取值表住在
+#     各自的引擎里，在这里再抄一份就是第二处事实来源；
+#   - contour_* 里剩下的数值（线宽 / index_step / detail_zoom / hillshade_*）：
+#     取值表住在 contour_engine 的 ContourStyle 里，在这里再抄一份就是第二处
+#     事实来源；颜色与间距已按 P1#10 / P1#11 登记到 _VALUE_RULES。
+#   - terrain_*_maxzoom / terrain_local_maxzoom：纯数值上限，同上不在本条范围。
+_UNCONSTRAINED_KEYS = frozenset({
+    'default_style', 'default_output_format',
+    'proxy_auto_detect', 'cache_enabled', 'dem_cache_enabled',
+    'gdal_compression', 'gdal_resampling',
+    'earthdata_username', 'earthdata_password',
+    'terrain_global_base_maxzoom', 'terrain_local_maxzoom',
+    'contour_width_intermediate', 'contour_width_index',
+    'contour_index_step', 'contour_detail_zoom',
+    'contour_zoom_scaling', 'contour_hypsometric_breaks',
+    'contour_hillshade_azimuth', 'contour_hillshade_altitude',
+    'contour_hillshade_vert_exag', 'contour_hillshade_blend',
+})
 
 
 class ConfigManager:
@@ -278,97 +564,34 @@ class ConfigManager:
             raise
 
     def validate_config(self, key: str, value: str) -> bool:
+        """按 _VALUE_RULES 里登记的规则校验单个配置值。
+
+        协议不变：返回 bool，False 由 set / set_many / routes.api.update_config
+        转成带键名的 ValueError / 400。
+
+        未登记的键返回 True —— PUT /api/config 只放行 DEFAULT_CONFIGS 里的键，
+        而 DEFAULT_CONFIGS 的每一个键都必须在 _VALUE_RULES 或
+        _UNCONSTRAINED_KEYS 中出现（覆盖用例钉住）。这里保留宽松兜底是为了
+        内部代码写临时键时不被拦下。
         """
-        Validate configuration value based on key-specific rules
-
-        Args:
-            key: Configuration key
-            value: Configuration value to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        try:
-            # Validation rules for specific keys
-            if key == 'concurrent_downloads':
-                val = int(value)
-                return 1 <= val <= 100
-
-            elif key == 'request_timeout':
-                val = int(value)
-                return 1 <= val <= 300
-
-            elif key == 'max_retries':
-                val = int(value)
-                return 0 <= val <= 10
-
-            elif key == 'default_save_path':
-                # 绝对路径 + 至少两级深度(与建任务同一口径,0.2.4 起全盘可选);
-                # 相对/浅层都拒绝 —— 存一个建任务时必被 400 的值没有意义
-                from src.services.geo_validation import require_absolute_output_dir
-                try:
-                    require_absolute_output_dir(str(value))
-                    return True
-                except ValueError:
-                    return False
-
-            elif key == 'map_center_lat':
-                return self._is_valid_lat(value)
-
-            elif key == 'map_center_lng':
-                return self._is_valid_lng(value)
-
-            elif key in ['map_initial_zoom', 'default_zoom_min', 'default_zoom_max']:
-                val = int(value)
-                return 0 <= val <= 21
-
-            elif key == 'tile_servers':
-                # 逗号分隔的瓦片服务器列表：每个条目必须是 Google 别名/主机
-                # 或含 {x}/{y}/{z} 的完整 XYZ 模板（tile_url_probe 统一语义）
-                from src.services.tile_url_probe import validate_server_list
-                ok, _err = validate_server_list(str(value))
-                return ok
-
-            elif key == 'basemap_source':
-                # 预设别名 / download_source / 完整 XYZ 模板
-                from src.services.basemap_source import validate_basemap_source
-                ok, _err = validate_basemap_source(str(value))
-                return ok
-
-            # For keys without specific validation, accept any value
+        rule = _VALUE_RULES.get(key)
+        if rule is None:
             return True
-
+        try:
+            return bool(rule(value))
         except (ValueError, TypeError):
             return False
 
     def _is_valid_lat(self, value: str) -> bool:
-        """
-        Validate latitude value
-
-        Args:
-            value: Latitude value as string
-
-        Returns:
-            True if valid latitude (-90 to 90), False otherwise
-        """
+        """Validate latitude value (-90..90)."""
         try:
-            lat = float(value)
-            return -90 <= lat <= 90
+            return _is_valid_lat(value)
         except (ValueError, TypeError):
             return False
 
     def _is_valid_lng(self, value: str) -> bool:
-        """
-        Validate longitude value
-
-        Args:
-            value: Longitude value as string
-
-        Returns:
-            True if valid longitude (-180 to 180), False otherwise
-        """
+        """Validate longitude value (-180..180)."""
         try:
-            lng = float(value)
-            return -180 <= lng <= 180
+            return _is_valid_lng(value)
         except (ValueError, TypeError):
             return False

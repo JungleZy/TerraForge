@@ -66,7 +66,7 @@ uv pip install -r requirements.txt                # 其余依赖
 conda create -n terraforge -c conda-forge python=3.12 gdal=3.8 numpy
 conda activate terraforge
 
-# GDAL 已由 conda 提供，装其余依赖前要剥掉 requirements.txt 里的 GDAL pin，
+# GDAL 已由 conda 提供，装其余依赖前要把 requirements.txt 里的 GDAL 那一行剥掉，
 # 否则 pip 会去 PyPI 重新编译源码包。下面这条命令在 bash / cmd / PowerShell 里都能跑：
 python -c "import re,pathlib; src=pathlib.Path('requirements.txt').read_text(encoding='utf-8'); pathlib.Path('req-no-gdal.txt').write_text(''.join(l for l in src.splitlines(True) if not re.match(r'\s*GDAL\s*[=<>!~]', l, re.I)), encoding='utf-8')"
 pip install -r req-no-gdal.txt
@@ -117,7 +117,7 @@ gdal-config --version                  # 系统 GDAL 版本
 uv pip install --no-build-isolation GDAL==$(gdal-config --version)
 ```
 
-换版本后**要同步把 `requirements.txt` 里的 `GDAL==3.8.4` 改成同一个版本**：`build.sh` / `build.bat` 开头有硬校验，比对该 pin 与实际 `osgeo.gdal.__version__` 的 major.minor，对不上直接报错退出，打包根本跑不起来。
+换版本**不需要动 `requirements.txt`**：那里给的是范围 `GDAL>=3.8,<4`（原因见该文件顶部的注释——绑定是 sdist 现编，版本跟随机器），装什么具体版本都不必回填。`build.sh` / `build.bat` 开头会调 `scripts/check_gdal.py` 校验两件事：装出来的版本落在这个范围内，且 `_gdal_array` 在位（带 build isolation 装会静默丢掉它）。任一条不满足就报错退出，附带正确的装法。
 
 ### pip 命令未找到 / 权限错误
 

@@ -7,14 +7,15 @@ contour_task_tiler 渲染等高线 PNG 瓦片。渲染引擎按 warp 后的 DEM 
 覆盖决定瓦片范围，任务 bbox 只用于历史记录地图展示（创建时从上传文件
 的范围并集算出来）。
 
-dataset='upload' 即上传任务；早期版本下载驱动的任务（dataset 为
-ASTGTM.003 / COP-DEM-GLO-30，由已删除的下载驱动 create_task 创建）
-仍走旧的下载→渲染路径恢复执行。Lifecycle/threading mirror DemTaskManager
-(active_tasks + stop_flags + orphan recovery)。
+dataset 只有两种可达取值。'upload' 是用户上传的 tif（文件落在任务目录里）；
+'dem_task' 是引用某个已完成 DEM 下载任务的目录 —— 零拷贝，源 tif 留在原地
+不拷进来，产物仍落在本等高线任务自己的目录里，所以删除该等高线任务不会动
+源 DEM 任务的文件。
 
-dataset='dem_task' 表示源是某个已完成 DEM 下载任务的目录：零拷贝引用，
-源 tif 留在原地不拷进来，产物仍落在本等高线任务自己的目录里；删除该等高线
-任务不会动源 DEM 任务的文件。
+早期版本还有下载驱动的任务（dataset 为 ASTGTM.003 / COP-DEM-GLO-30），它的
+create_task 与执行分支都已删除 —— _execute 只留一行守卫，把这类存量行直接
+判失败并说明原因。Lifecycle/threading mirror DemTaskManager
+(active_tasks + stop_flags + orphan recovery)。
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -33,10 +35,9 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 from src.core.config import Config
 from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
-from src.services.dem_download_engine import DemDownloadEngine
 from src.services.geo_validation import MAX_ZOOM, coerce_number, validate_zoom
-from src.services.dem_granules import coverage_bbox
-from src.services.download_speed import SpeedMeter
+from src.services.task_cleanup import (fail_stranded_running_task,
+                                       resolve_stored_output_dir)
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,11 @@ _AUTO_ZOOM_OVERSAMPLE = 1
 # 渲染进度落库/广播的最小间隔(秒):引擎逐瓦片回调,高 zoom 大区域百万级
 # 瓦片,不节流就是百万次写事务+广播
 _RENDER_PROGRESS_MIN_INTERVAL = 0.5
-# 下载进度广播的最小间隔(秒),对齐 dem_task_manager 的 1s 时间窗;
-# 落库不节流(每颗粒终态必须如实记账),只节流 emit
-_DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL = 1.0
+# 等高线间距下限(米)。UI 的 min="1" 从来没被真正执行(提交路径 parseFloat 后
+# 直接 FormData 提交,不走 checkValidity),而间距相对起伏过小时级数会炸开:
+# 0.1m 间距叠 1000m 起伏 ≈ 单瓦片 1 万条 trace,瓦片内部又没有停止检查,
+# 暂停/删除都打不断。这里就是那个 min="1" 的服务端执行点。
+_MIN_CONTOUR_INTERVAL = 1.0
 
 
 def estimate_max_zoom(pixel_size_3857_m: float, zoom_min: int) -> int:
@@ -122,21 +125,39 @@ def _finest_pixel_size_3857(paths: Sequence[Path]) -> Optional[float]:
     return best
 
 
-def _union_tif_extent_lonlat(paths: Sequence[Path]) -> Optional[Tuple[float, float, float, float]]:
-    """上传 tif 的 WGS84 范围并集，返回 (north, south, east, west)；
-    GDAL 不可用或全部读失败时返回 None（任务仍可渲染，只是历史地图没框）。"""
+def _union_tif_extent_lonlat(
+    paths: Sequence[Path],
+    display_names: Optional[Sequence[str]] = None,
+) -> Optional[Tuple[float, float, float, float]]:
+    """上传 tif 的 WGS84 范围并集，返回 (north, south, east, west)。
+
+    这同时是「上传的到底是不是可读栅格」的唯一闸门 —— 创建路径本来就要为
+    bbox 把每个文件用 GDAL 打开一次，顺手把结论用掉，不必再读一遍。
+
+    两种读失败必须分开：
+    * GDAL 装不上（ImportError）→ 返回 None，宽容放过。此时任何本地校验都做
+      不了，卡住用户没有意义，渲染阶段自会因为缺 GDAL 而失败。
+    * GDAL 在位但这个文件打不开 / 读不出角点 → 抛 ValueError（路由转 400）。
+      以前这里只记一条 warning、bbox 保持 (0,0,0,0)，任务照常 201；真正的
+      失败要等到 warp 之后，以一句原始 GDAL 报错落在一个 failed 任务上 ——
+      用户上传了一个 .tif 后缀的 zip 也要等几分钟才知道。
+
+    display_names 与 paths 一一对应，用来在报错里说**用户自己那个文件名**：
+    上传路径已经把文件改名成 upload_<i>_dem.tif 落到暂存目录了，报那个名字
+    等于让用户自己去数第几个文件。缺省时用磁盘上的名字。
+    """
     try:
         from osgeo import gdal, osr
-    except Exception:
+    except ImportError:
         return None
     west = south = float("inf")
     east = north = float("-inf")
     found = False
-    for p in paths:
+    for idx, p in enumerate(paths):
         try:
             ds = gdal.Open(str(p))
             if ds is None:
-                continue
+                raise ValueError("GDAL 打不开这个文件")
             gt = ds.GetGeoTransform()
             w, h = ds.RasterXSize, ds.RasterYSize
             src = osr.SpatialReference()
@@ -155,24 +176,12 @@ def _union_tif_extent_lonlat(paths: Sequence[Path]) -> Optional[Tuple[float, flo
             found = True
             ds = None
         except Exception as e:
-            logger.warning(f"读取上传 tif 范围失败 {p}: {e}")
+            try:
+                shown = display_names[idx]
+            except (TypeError, IndexError):
+                shown = Path(p).name
+            raise ValueError(f"不是可读的 GeoTIFF 栅格: {shown} ({e})") from e
     return (north, south, east, west) if found else None
-
-
-# M7: 'skipped' 也算「已终结的下载项」。404 的颗粒（海洋 / 覆盖范围外 ——
-# Copernicus GLO-30 对海面本来就没瓦片）由引擎有意上报 skipped，是部分成功
-# 语义；但计数增量此前只认 completed/failed，收尾判定又把 skipped 算作已终结、
-# 任务照常 completed。结果终态下 downloaded_files + failed_files < total_files
-# 这个不变量被破坏：记录面板渲染「已完成 · 4 / 10 文件」，详情弹窗给一个
-# **已完成任务** 40% 的进度条，下载过程中进度条同样封顶、「预计剩余」偏大。
-# 磁盘产物与后续切片都是对的 —— 纯计数/展示口径问题。
-_DONE_STATUSES = ("completed", "skipped")
-
-
-def _status_count_deltas(old_status: Optional[str], new_status: str) -> tuple[int, int]:
-    downloaded_delta = int(new_status in _DONE_STATUSES) - int(old_status in _DONE_STATUSES)
-    failed_delta = int(new_status == "failed") - int(old_status == "failed")
-    return downloaded_delta, failed_delta
 
 
 def _parse_csv_floats(raw: str) -> tuple:
@@ -180,11 +189,42 @@ def _parse_csv_floats(raw: str) -> tuple:
     return tuple(float(x) for x in parts)
 
 
+# 严格 #RGB / #RRGGBB / #RRGGBBAA。只在 matplotlib 装不上时兜底用。
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+
+
+def validate_color(value: str, field: str = "color") -> str:
+    """校验单个颜色值，返回原值；非法抛 ValueError（路由转 400）。
+
+    判据用渲染器自己的解析器 matplotlib.colors.to_rgba —— 「创建时收下的」
+    必须恰好等于「渲染时画得出的」。以前只查 `#` 前缀，于是 '#zzzzzz' 一路
+    通到 per-tile 渲染，在那个吞异常的 except 里把**每一张**瓦片记成 failed，
+    任务最后报「No contour tiles rendered (check DEM coverage / interval /
+    zoom range)」—— 指着三个都正确的参数，而且要在整轮 warp + 全量瓦片
+    (数分钟到数小时)之后才报。同一个值 /api/contour/style_preview 直接 400。
+
+    不用纯正则：正则会连 'red'、'#FAF6ECFF' 这些渲染器接得住的值一起拒掉，
+    那是另一种口径分歧。matplotlib 缺失时才退回正则 —— 此时渲染本来也跑不了，
+    但「#zzzzzz 必须被拒」这条不能因为依赖缺失而失效。
+    """
+    v = str(value).strip()
+    try:
+        from matplotlib.colors import to_rgba
+    except ImportError:
+        if not _HEX_COLOR_RE.match(v):
+            raise ValueError(f"Invalid {field} '{value}' (expect #RRGGBB)")
+        return v
+    try:
+        to_rgba(v)
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Invalid {field} '{value}': {e}") from e
+    return v
+
+
 def _parse_csv_colors(raw: str) -> tuple:
     parts = [x.strip() for x in str(raw).split(",") if x.strip() != ""]
     for c in parts:
-        if not c.startswith("#"):
-            raise ValueError(f"Invalid color '{c}' (expect #RRGGBB)")
+        validate_color(c, "tint color")
     return tuple(parts)
 
 
@@ -209,8 +249,9 @@ def validate_tint(breaks_raw: str, colors_raw: str) -> tuple:
 
 
 def style_for_task(config, task) -> "ContourStyle":
-    """全局默认方案（config）+ 任务级配色覆盖。task 是 contour_tasks 行
-    （dict/Row 均可，缺列视为未覆盖）。可单测，无 GDAL 依赖。"""
+    """全局默认方案（config）+ 任务级配色覆盖 + detail_zoom 夹到 zoom_max。
+    task 是 contour_tasks 行（dict/Row 均可，缺列视为未覆盖）。可单测，无
+    GDAL 依赖。"""
     from dataclasses import replace
 
     from src.services.contour_engine import ContourStyle
@@ -243,6 +284,21 @@ def style_for_task(config, task) -> "ContourStyle":
             hypsometric_breaks=_parse_csv_floats(tint_breaks),
             hypsometric_colors=_parse_csv_colors(tint_colors),
         )
+
+    # detail_zoom 夹到本任务真正会产出的最高层级。interval_for_zoom 按
+    # (detail_zoom - z) 沿 1-2-5 阶梯放粗，而 detail_zoom 默认 14、zoom_max
+    # 却是按 DEM 分辨率自动算出来的：粗源算出 zoom_max=9 时，用户填的 50m 在
+    # **最细**的那一层就已经被放粗成 2500m，而 API 响应和界面都不报告这件事,
+    # 用户看到的只是「我填的间距被无视了」。夹住之后 zoom_max 这一层恒等于
+    # 用户填的间距，更低层照旧逐级放粗（间距只依赖 zoom，跨瓦片仍然对得上）。
+    zoom_max = _get("zoom_max", default=None)
+    if zoom_max is not None:
+        try:
+            zmax = int(zoom_max)
+        except (TypeError, ValueError):
+            zmax = None
+        if zmax is not None and zmax < style.detail_zoom:
+            style = replace(style, detail_zoom=zmax)
     return style
 
 
@@ -250,7 +306,6 @@ class ContourTaskManager:
     def __init__(self, socketio=None):
         self.socketio = socketio
         self.config = ConfigManager()
-        self.engine = DemDownloadEngine()
         self.active_tasks: Dict[int, threading.Thread] = {}
         self.stop_flags: Dict[int, threading.Event] = {}
         self._state_lock = threading.Lock()
@@ -295,8 +350,10 @@ class ContourTaskManager:
         if contour_interval in (None, ""):
             contour_interval = self.config.get("contour_default_interval", "50")
         interval = coerce_number(contour_interval, 'contour_interval')
-        if interval <= 0:
-            raise ValueError(f"contour_interval must be > 0, got {interval}")
+        if interval < _MIN_CONTOUR_INTERVAL:
+            raise ValueError(
+                f"contour_interval must be >= {_MIN_CONTOUR_INTERVAL:g}, "
+                f"got {interval:g}")
 
         zoom_min = validate_zoom(zoom_min, 'zoom_min')
         # zoom_max 留空/None = 按 DEM 分辨率自动计算（源文件就位后由调用方算）
@@ -306,17 +363,21 @@ class ContourTaskManager:
             if zoom_min > zoom_max:
                 raise ValueError(f"zoom_min ({zoom_min}) must be <= zoom_max ({zoom_max})")
 
+        # 背景色空值走默认；'transparent' 是合法特值；其余必须是渲染器认得的
+        # 颜色。以前非 '#' 开头的值被静默换成默认色、而 '#zzzzzz' 因为带 '#'
+        # 被放过（然后在 _build_render_ctx 里炸掉整个任务）——两头都不对。
         background = background or "#FAF6EC"
-        if background != "transparent" and not str(background).startswith("#"):
-            background = "#FAF6EC"
+        if str(background).strip().lower() != "transparent":
+            background = validate_color(background, "background")
         shade = 1 if str(terrain_shade).strip().lower() in ("1", "true", "yes", "on") else 0
 
         # 配色自定义（可选，空 = 默认方案）
         line_mid = (line_color_intermediate or "").strip()
         line_idx = (line_color_index or "").strip()
-        for c in (line_mid, line_idx):
-            if c and not c.startswith("#"):
-                raise ValueError(f"Invalid color '{c}' (expect #RRGGBB)")
+        if line_mid:
+            validate_color(line_mid, "line_color_intermediate")
+        if line_idx:
+            validate_color(line_idx, "line_color_index")
         tint_breaks, tint_colors = validate_tint(tint_breaks, tint_colors)
 
         return {
@@ -402,8 +463,11 @@ class ContourTaskManager:
             saved = [staging / stored for stored, _ in staged]
 
             # bbox/最高层级按暂存文件预读(GDAL 只读头部元数据,毫秒级),
-            # 不拖进后面的写事务。bbox 只用于历史记录地图展示,读不出保持 0。
-            extent = _union_tif_extent_lonlat(saved)
+            # 不拖进后面的写事务。bbox 只用于历史记录地图展示,读不出保持 0;
+            # 但「GDAL 在位却打不开」是硬错误 —— 这一步同时是栅格校验闸门,
+            # 报错要说用户自己那个文件名而不是暂存后的 upload_N_dem.tif。
+            extent = _union_tif_extent_lonlat(
+                saved, display_names=[f.filename for f in valid])
             north, south, east, west = extent if extent else (0.0, 0.0, 0.0, 0.0)
             if auto_zoom_max:
                 # 最高层级按 DEM 原始分辨率自动计算；读不出分辨率时用兜底默认值
@@ -454,13 +518,17 @@ class ContourTaskManager:
         except Exception:
             # 文件已落盘后失败（空文件/DB 异常等）：rowid 复用后
             # 残留 tif 会被下一个同 id 任务按 *_dem.tif 扫进渲染，清掉整个
-            # 任务目录与暂存目录。best-effort，清理失败不掩盖原异常。
+            # 任务目录。best-effort，清理失败不掩盖原异常。
             if task_dir is not None:
                 shutil.rmtree(task_dir, ignore_errors=True)
-            shutil.rmtree(staging, ignore_errors=True)
             raise
-        # 全部 os.replace 后暂存目录已空;部分失败路径走上面的 except
-        shutil.rmtree(staging, ignore_errors=True)
+        finally:
+            # 暂存目录必须走 finally：成功路径是 try 内的 `return task_id`
+            # 退出的，跟在 try/except 之后的清理语句永远执行不到 —— 每个
+            # 成功的上传任务都会泄漏一个空的 contour_upload_* 目录。
+            # （同族的 local_terrain_task_manager 只是因为 return 后面还有
+            # 语句才碰巧执行到。）
+            shutil.rmtree(staging, ignore_errors=True)
 
     def create_task_from_dem_task(
         self,
@@ -483,7 +551,6 @@ class ContourTaskManager:
         目录，源 DEM 任务的数据不受影响。没有下载阶段，文件行建的时候就是
         completed。
         """
-        from src.services.task_cleanup import resolve_stored_output_dir
         from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
         name = (name or "等高线瓦片").strip() or "等高线瓦片"
@@ -713,16 +780,25 @@ class ContourTaskManager:
             conn.close()
 
     def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
+        failure = None
         try:
             asyncio.run(self._execute(task_id, stop_flag))
         except Exception as e:
             logger.error(f"Contour task {task_id} thread failed: {e}")
+            failure = e
         finally:
             with self._state_lock:
-                if self.active_tasks.get(task_id) is threading.current_thread():
+                deregistered = (
+                    self.active_tasks.get(task_id) is threading.current_thread())
+                if deregistered:
                     self.active_tasks.pop(task_id, None)
                 if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
                     self.stop_flags.pop(task_id, None)
+            if deregistered:
+                # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的 docstring）。
+                fail_stranded_running_task(
+                    'contour_tasks', task_id,
+                    f'线程异常: {failure}' if failure is not None else '')
 
     async def _execute(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
         conn = get_connection()
@@ -733,18 +809,30 @@ class ContourTaskManager:
                 raise ValueError(f"Contour task {task_id} not found")
 
             dataset = task["dataset"]
-            # 两种「本地源」没有下载阶段：'upload'（文件已落在任务目录里）和
-            # 'dem_task'（零拷贝引用某个已完成 DEM 下载任务的目录）。
-            has_local_source = dataset in ("upload", "dem_task")
+            # 只有本地源可执行：'upload'（文件已落在任务目录里）与 'dem_task'
+            # （零拷贝引用某个已完成 DEM 下载任务的目录）。下载驱动的那半程连同
+            # 它的 create_task 一起删掉了 —— 两个构造器只会写这两个值，那段从
+            # dem_task_manager 拷来的 ~110 行没有任何用户可达路径能执行到，于是
+            # 一直在无声漂移（emit 节流的 counts 豁免、per-callback SELECT *、
+            # 终态 emit 未包 try 三处都已与 dem 侧不一致），注释却仍声称对齐。
+            # 存量下载行在这里直接判失败并说清原因，而不是靠一份跑不起来的拷贝
+            # 假装还支持。
+            if dataset not in ("upload", "dem_task"):
+                raise ValueError(
+                    f"数据源 '{dataset}' 是已移除的下载驱动类型，本任务无法执行；"
+                    f"请先在「数据下载」里下好 DEM，再用该 DEM 任务新建等高线任务")
             # output_dir 语义不变：本任务自己的目录 —— 产物落点，上传源也在这里。
-            output_dir = Path(task["output_path"]) / f"contour_task_{task_id}"
+            # 存储的 output_path 一律走 resolve_stored_output_dir（全仓唯一一套
+            # 口径，/contour 静态路由与删除路径用的也是它）：frozen exe 被搬动后
+            # BASE_DIR 会变，直接 Path(存储值) 会把瓦片写到旧的绝对路径下，而
+            # 路由按新根去取 —— 瓦片明明在盘上却永久 404。
+            output_dir = resolve_stored_output_dir(task["output_path"]) / f"contour_task_{task_id}"
             # source_dir 是渲染读源 DEM 的目录。dem_task 来源每次执行都重新解析
             # （downloads 根目录可能被改过）；源任务行没了、或目录里已经没有 tif
             # 时必须抛 —— 否则渲染会在空输入上静默产出 0 张瓦片。
             source_dir = output_dir
             source_dem_task_id = task["source_dem_task_id"]
             if source_dem_task_id is not None:
-                from src.services.task_cleanup import resolve_stored_output_dir
                 from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
                 source_dem_task_id = int(source_dem_task_id)
@@ -758,139 +846,9 @@ class ContourTaskManager:
                     raise ValueError(f"No DEM tifs found under {source_dir}")
             want_water = bool(task["water"])
 
-            # L1: 进程被硬杀时 'downloading' 会残留在 contour_files 里（该状态由
-            # dem_download_engine 上报、经本类的进度回调落库；正常暂停会回写
-            # pending）。不重新入队的话这些颗粒既不会被重下、也不会阻止任务置
-            # completed —— 渲染在缺几块 1° DEM 的输入上出图，成品带缺口而任务
-            # 报成功。dem_task_manager 早已这么做（C4），contour 没跟上。
-            cur.execute(
-                "UPDATE contour_files SET status='pending' WHERE task_id=? AND status='downloading'",
-                (task_id,))
-            conn.commit()
-
-            dem_granules = [r["granule_id"] for r in cur.execute(
-                "SELECT granule_id FROM contour_files WHERE task_id=? AND kind='dem' AND status IN ('pending','failed') ORDER BY granule_id",
-                (task_id,)).fetchall()]
-            att_granules = [r["granule_id"] for r in cur.execute(
-                "SELECT granule_id FROM contour_files WHERE task_id=? AND kind='water' AND status IN ('pending','failed') ORDER BY granule_id",
-                (task_id,)).fetchall()] if want_water else []
-
-            stop_ev = asyncio.Event()
+            # 本地源没有下载阶段（文件行建的时候就是 completed），但用户可能在
+            # 进入渲染之前就按了暂停/删除。
             if stop_flag and stop_flag.is_set():
-                stop_ev.set()
-
-            # 进度记账（同步 sqlite I/O：新开连接 + SELECT + UPDATE + commit）
-            # 整体放 worker 线程 —— 回调在下载事件循环里被 await，直接在循环
-            # 上跑会堵住所有并发颗粒的下载协程（对齐 dem_task_manager）。
-            def _record_progress(granule_id: str, status: str, error: Optional[str],
-                                 size_bytes: Optional[int]) -> Optional[Dict[str, Any]]:
-                tile_conn = get_connection()
-                try:
-                    c = tile_conn.cursor()
-                    existing = c.execute("SELECT status FROM contour_files WHERE task_id=? AND granule_id=?",
-                                         (task_id, granule_id)).fetchone()
-                    old_status = existing["status"] if existing else None
-                    c.execute(
-                        "UPDATE contour_files SET status=?, error_message=?, size_bytes=?, local_path=? WHERE task_id=? AND granule_id=?",
-                        # 引擎按扁平 basename 落盘(dem_download_engine.download_files:
-                        # Copernicus granule 是 name/name.tif 嵌套),写库路径保持一致
-                        (status, error, size_bytes, str(output_dir / Path(granule_id).name), task_id, granule_id),
-                    )
-                    d_delta, f_delta = _status_count_deltas(old_status, status)
-                    if d_delta or f_delta:
-                        c.execute(
-                            "UPDATE contour_tasks SET downloaded_files=MAX(downloaded_files+?,0), failed_files=MAX(failed_files+?,0) WHERE id=?",
-                            (d_delta, f_delta, task_id),
-                        )
-                    tile_conn.commit()
-                    trow = c.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-                    return dict(trow) if trow else None
-                finally:
-                    tile_conn.close()
-
-            # emit 节流：距上次广播不足 _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL
-            # 且计数没变时只落库不广播（同 dem）；计数变化或到窗口必发，
-            # payload 结构不变（task 整行 + task_type + phase='download'）。
-            last_emit: Dict[str, Any] = {"at": float("-inf"), "counts": None}
-            # 下载吞吐计。字节**只**来自引擎的在途回调（bytes_callback），理由同
-            # dem_task_manager：单颗 DEM 几十 MB、要跑几分钟，颗粒级状态回调在这
-            # 期间一发都不出，速度会被前端判过期显示 0 B/s。缓存命中不读网络、
-            # 不触发该回调，「这颗真的走了网络吗」的旧判别可以整个删掉。
-            # 渲染阶段没有网络字节，本来就不带速度。
-            speed_meter = SpeedMeter()
-
-            def _fetch_task_row() -> Optional[Dict[str, Any]]:
-                row_conn = get_connection()
-                try:
-                    trow = row_conn.execute(
-                        "SELECT * FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-                    return dict(trow) if trow else None
-                finally:
-                    row_conn.close()
-
-            async def _emit_progress(row: Optional[Dict[str, Any]]) -> None:
-                """row=None 表示这一发由在途字节触发（计数没变），只过时间窗。"""
-                if not self.socketio:
-                    return
-                now = time.monotonic()
-                if row is None:
-                    if now - last_emit["at"] < _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL:
-                        return
-                    row = await asyncio.to_thread(_fetch_task_row)
-                    if not row:
-                        return
-                else:
-                    counts = (row["downloaded_files"], row["failed_files"])
-                    if now - last_emit["at"] < _DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL \
-                            and counts == last_emit["counts"]:
-                        return
-                last_emit["at"] = now
-                last_emit["counts"] = (row["downloaded_files"], row["failed_files"])
-                row["task_type"] = "contour"
-                row["phase"] = "download"
-                # 瞬时网络吞吐（字节/秒）。contour_tasks 表没有这一列。
-                row["download_speed_bps"] = round(speed_meter.bps())
-                self.socketio.emit("task_progress", row)
-
-            async def on_bytes(granule_id: str, n_bytes: int) -> None:
-                speed_meter.record(n_bytes)
-                await _emit_progress(None)
-
-            async def progress(granule_id: str, status: str, error: Optional[str], size_bytes: Optional[int]):
-                # record(0) 推的是**时间窗**不是字节：漏推会让速率一直冻在最后
-                # 那个高值上（见 download_speed 的说明）。
-                speed_meter.record(0)
-                row = await asyncio.to_thread(_record_progress, granule_id, status, error, size_bytes)
-                if row:
-                    await _emit_progress(row)
-
-            # 本地源任务（上传 / 复用 DEM 任务目录）没有下载阶段：文件行创建时
-            # 就是 completed，直接进渲染。
-            if not has_local_source:
-                async def stop_watcher():
-                    while True:
-                        if stop_flag and stop_flag.is_set():
-                            stop_ev.set()
-                            return
-                        await asyncio.sleep(0.2)
-
-                watcher = asyncio.create_task(stop_watcher())
-                try:
-                    await self.engine.download_files(
-                        dataset=dataset, granules=dem_granules, output_dir=output_dir,
-                        progress_callback=progress, bytes_callback=on_bytes, stop_flag=stop_ev,
-                    )
-                    # Water (ASTWBD) is best-effort: tiles with no water bodies may have
-                    # no att granule (404), which must not fail the task.
-                    if att_granules and not stop_ev.is_set():
-                        await self.engine.download_files(
-                            dataset="ASTWBD.001", granules=att_granules, output_dir=output_dir,
-                            progress_callback=progress, bytes_callback=on_bytes, stop_flag=stop_ev,
-                        )
-                finally:
-                    watcher.cancel()
-
-            if stop_ev.is_set():
                 return
 
             current = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
@@ -919,22 +877,15 @@ class ContourTaskManager:
                     self.socketio.emit("task_failed", {"task_id": task_id, "task_type": "contour", "status": "failed", "error_message": msg})
                 return
 
-            # ---- One-stop render phase: DEM downloaded -> contour tiles ----
+            # ---- Render phase: local DEM -> contour tiles ----
             from src.services.contour_task_tiler import ContourParams, tile_contour_task_dir
-            from src.services.contour_engine import count_tiles
 
             style = style_for_task(self.config, task)
             interval = float(task["contour_interval"])
             zoom_min = int(task["zoom_min"]); zoom_max = int(task["zoom_max"])
-            if has_local_source:
-                # 本地源的覆盖就是 DEM 文件本身的范围（不是 1° granule 并集），
-                # 预计算没有意义 —— total 由渲染引擎 warp 后按实际覆盖上报。
-                total_tiles = 0
-            else:
-                # Contours render over the whole downloaded DEM (union of 1° granule
-                # tiles), not just the framed bbox, so count tiles over that coverage.
-                cov_n, cov_s, cov_e, cov_w = coverage_bbox(task["north"], task["south"], task["east"], task["west"])
-                total_tiles = count_tiles(cov_n, cov_s, cov_e, cov_w, zoom_min, zoom_max)
+            # 覆盖范围就是 DEM 文件本身的范围（不是 1° granule 并集），预计算
+            # 没有意义 —— total 由渲染引擎 warp 完按实际覆盖上报。
+            total_tiles = 0
 
             # 渲染进度节流 + 连接复用:引擎 _emit 逐瓦片回调(见
             # contour_engine._emit),不节流时每次回调都是"新连接 + UPDATE +

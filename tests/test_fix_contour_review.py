@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from conftest import fresh_import
+from conftest import fresh_import, geotiff_bytes
 
 
 def _setup_db(monkeypatch, tmp_path):
@@ -53,8 +53,10 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _post_task(client, name="t", files=None, **fields):
+    """默认一个**真** GeoTIFF：创建路径用 GDAL 打开求范围并集，GDAL 在位却
+    打不开就 400（2026-08-08 评审 contour P2）。"""
     if files is None:
-        files = [("dem1.tif", b"fake-tif-bytes")]
+        files = [("dem1.tif", geotiff_bytes())]
     data = dict(fields)
     data["name"] = name
     data["files"] = [(io.BytesIO(content), fname) for fname, content in files]
@@ -163,9 +165,17 @@ def test_fix_i19_skipped_tiles_count_toward_progress(tmp_path):
 
 
 def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
+    """收尾后 rendered_tiles/failed_tiles 必须是**真实**渲染/失败数，不是渲染
+    期间借这一列暂存的 processed(rendered+skipped+failed) 进度。
+
+    原用例用 dataset='COP-DEM-GLO-30' 合成一条下载驱动的行来走这条路 —— 那半程
+    已经整段删除（没有任何用户可达路径能创建这种行，见 contour_task_manager 的
+    模块 docstring），现在同样的行只会被守卫判失败。断言的不变量与数据源无关，
+    所以改用真正可达的 dataset='upload' 行；只把 skipped=3 的进度上报换成
+    upload 路径的形态。反事实：把收尾的重写去掉，rendered_tiles 会停在 10。
+    """
     db, ctm_mod = _setup_db(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    # 下载驱动 create_task 已删除:直接 SQL 造旧版下载驱动的 running 任务行
     conn = db.get_connection()
     try:
         from src.core import config
@@ -179,26 +189,20 @@ def test_fix_i19_final_render_counts_written_honestly(monkeypatch, tmp_path):
                 total_files, downloaded_files, failed_files,
                 total_tiles, rendered_tiles, failed_tiles
             )
-            VALUES ('t', 'running', 1.0, 0.0, 1.0, 0.0, 'COP-DEM-GLO-30', 50,
-                    '#FAF6EC', 1, 0, 12, 12, ?, 1, 0, 0, 0, 0, 0)
+            VALUES ('t', 'running', 1.0, 0.0, 1.0, 0.0, 'upload', 50,
+                    '#FAF6EC', 1, 0, 12, 12, ?, 1, 1, 0, 0, 0, 0)
             """,
             (str(Path(config.Config.DOWNLOADS_DIR) / "dem"),),
         )
         task_id = cur.lastrowid
         cur.execute(
             "INSERT INTO contour_files (task_id, granule_id, kind, status, retry_count)"
-            " VALUES (?, ?, 'dem', 'pending', 0)",
-            (task_id, "Copernicus_DSM_COG_10_N00_00_E000_00_DEM/Copernicus_DSM_COG_10_N00_00_E000_00_DEM.tif"),
+            " VALUES (?, ?, 'dem', 'completed', 0)",
+            (task_id, "upload_1_dem.tif"),
         )
         conn.commit()
     finally:
         conn.close()
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
                    stage_cb=None, stop_flag=None):

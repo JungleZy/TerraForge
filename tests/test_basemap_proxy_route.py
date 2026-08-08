@@ -209,3 +209,115 @@ def test_index_page_points_the_basemap_at_the_local_route(app_ctx):
     assert 'arcgisonline' not in html, (
         '上游地址不该出现在页面里 —— 前端只认同源路径'
     )
+
+
+def test_config_is_not_read_from_sqlite_on_every_tile(app_ctx, monkeypatch):
+    """瓦片热路径不能每张都开 sqlite 连接。
+
+    改造前 basemap_tile 每次请求都读三个配置项（basemap_source / tile_servers /
+    default_style），而 ConfigManager.get 每次都新开一条连接 —— 首屏几十上百张
+    瓦片就是几百次连接开销，并且与 _PROXY_WAIT_S 的线程占用叠加。同仓
+    terrain_static 早就为同一个问题写了 5 秒 TTL 缓存并留了注释说明理由；
+    这里现在缓存的是解析【结果】，顺带省掉每瓦片一次 resolve_basemap。
+
+    断言 get 的调用次数而不是「有缓存对象」：后者在实现换成别的形态时会变成
+    空断言，而调用次数直接就是这条缺陷的量纲。
+    """
+    client, route_mod = app_ctx
+    _stub(monkeypatch, route_mod, _FakeUpstream())
+
+    calls = []
+    real_get = route_mod.config_manager.get
+    monkeypatch.setattr(route_mod.config_manager, 'get',
+                        lambda key, default=None: (calls.append(key),
+                                                   real_get(key, default))[1])
+
+    for x in range(8):
+        assert client.get(f'/basemap/3/{x}/6').status_code == 200
+
+    assert len(calls) <= 3, (
+        f'8 张瓦片读了 {len(calls)} 次配置（{calls}）—— TTL 缓存没生效，'
+        '每张瓦片都在开 sqlite 连接')
+
+
+def test_changing_the_source_still_takes_effect_after_the_ttl(app_ctx, monkeypatch):
+    """缓存不能把配置改动锁死 —— TTL 到期必须重读。
+
+    没有失效钩子是有意的（同 terrain_static），代价是最多 TTL 秒延迟；
+    但「永远不生效」是缺陷，所以这一条必须钉住。
+    """
+    client, route_mod = app_ctx
+    up = _FakeUpstream()
+    _stub(monkeypatch, route_mod, up)
+
+    assert client.get('/basemap/1/0/1').status_code == 200
+    first = up.requests[0].full_url
+
+    from src.services.config_manager import ConfigManager
+    ConfigManager().set('basemap_source', 'https://example.invalid/t/{z}/{x}/{y}.png')
+
+    # 模拟 TTL 到期：把缓存条目的时间戳推到过去，而不是 sleep 5 秒
+    with client.application.app_context():
+        cached = client.application.extensions.get(route_mod._CACHE_KEY_SOURCE)
+        assert cached is not None, '第一次请求应当已经填过缓存'
+        client.application.extensions[route_mod._CACHE_KEY_SOURCE] = (
+            cached[0] - route_mod._SOURCE_TTL_S - 1.0, cached[1])
+
+    assert client.get('/basemap/1/0/1').status_code == 200
+    assert up.requests[-1].full_url != first, 'TTL 到期后仍在用旧的上游地址'
+    assert 'example.invalid' in up.requests[-1].full_url
+
+
+def test_link_local_basemap_source_is_rejected_at_write_time():
+    """`basemap_source` 不许指向链路本地段。
+
+    这个值与其他配置项不同：`/basemap/{z}/{x}/{y}` 会**由服务端**去取它，并把
+    上游响应体**原样回吐**给浏览器。所以一个指向 169.254.169.254 的模板等于把
+    服务端当跳板去读云实例元数据 —— 实测过：靶机返回的正文完整地出现在
+    /basemap/1/0/0 的响应里。
+
+    只拦链路本地，**不**拦回环与私网：自建瓦片镜像住在 127.0.0.1 或
+    192.168.x.x 是项目文档里就有的正当用法，而 169.254.x.x 从来不是一个瓦片
+    服务地址。这条区分本身也钉在下面。
+    """
+    from src.services.basemap_source import validate_basemap_source
+
+    ok, err = validate_basemap_source(
+        'http://169.254.169.254/latest/meta-data/?a={z}{x}{y}')
+    assert ok is False and err, '链路本地地址必须被拒'
+    assert '169.254' in err, '报错要带上被拒的值'
+
+    ok6, _ = validate_basemap_source('http://[fe80::1]/t/{z}/{x}/{y}.png')
+    assert ok6 is False, 'IPv6 链路本地同样要拒'
+
+    # 正当用法不能被顺手拦掉
+    for good in ('http://127.0.0.1:8080/t/{z}/{x}/{y}.png',
+                 'http://192.168.1.10/tiles/{z}/{x}/{y}.png',
+                 'https://tiles.example.com/{z}/{x}/{y}.png'):
+        ok_good, err_good = validate_basemap_source(good)
+        assert ok_good is True, f'{good} 被误拒：{err_good}'
+
+
+def test_link_local_upstream_is_refused_at_fetch_time(app_ctx, monkeypatch):
+    """存量库里可能已经存着链路本地的值 —— 校验只管新写入，取瓦片时要再拦一次。
+
+    直接把配置写进库（绕过校验，模拟升级前存下来的值），然后请求瓦片：
+    必须 502 且**一次上游请求都不发**。
+    """
+    client, route_mod = app_ctx
+    up = _FakeUpstream()
+    _stub(monkeypatch, route_mod, up)
+
+    from src.core.database import get_connection
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES ('basemap_source', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            ('http://169.254.169.254/latest/meta-data/?a={z}{x}{y}',))
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert client.get('/basemap/1/0/0').status_code == 502
+    assert up.requests == [], '拒绝之后不该有任何上游请求发出去'

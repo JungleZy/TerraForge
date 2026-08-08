@@ -172,7 +172,11 @@
     --color-warning-border: rgba(245,158,11,0.30);
 
     /* .alert-* 的底色（注意 alert-info 历史上用的是调色板外的 #3b82f6 蓝，
-       暗色默认值保持现状不动；亮色档已归并到 info 色系） */
+       暗色默认值保持现状不动；亮色档已归并到 info 色系）。
+       ⚠️ success / warning 两档**当前无消费者**：`.alert-success` /
+       `.alert-warning` 零引用，2026-08 评审 P2 已删。令牌留着是为了让
+       四档 alert 底色成套（深浅两档一并配对），下一个真要用 success/warning
+       信息条的人不用重新配色 —— 不是还有规则在读它们。 */
     --color-alert-info-bg:    rgba(59,130,246,0.1);
     --color-alert-success-bg: rgba(16,185,129,0.1);
     --color-alert-warning-bg: rgba(245,158,11,0.1);
@@ -510,7 +514,13 @@ body {
 
 /* 每个读数元素一颗胶囊（.statusbar-pill）：等高填满外壳，自带底色/边框/阴影。
    胶囊类而不是 `.workbench-statusbar > *` 子选择器 —— test_css_contract 的
-   按钮/动画层叠模型读不懂 `>` 组合符，会把整片模型判失效。 */
+   按钮/动画层叠模型读不懂 `>` 组合符，会把整片模型判失效。
+
+   font / color / text-align 这三条 inherit 是给 <button> 用的：可点的三个
+   读数项（#statusTasks / #statusCoords / #statusSelection）是真按钮，
+   不这样抹平 UA 样式的话它们会用系统按钮字体、系统 buttontext 墨色、
+   并把内容居中 —— 与旁边同为胶囊的 <span> 读数明显不是一套。
+   底色与边框本来就在下面显式声明，不需要再 reset。 */
 .statusbar-pill {
     box-sizing: border-box;
     height: 100%;
@@ -518,6 +528,9 @@ body {
     align-items: center;
     gap: 6px;
     padding: 0 12px;
+    font: inherit;
+    color: inherit;
+    text-align: inherit;
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-pill);
@@ -1679,6 +1692,15 @@ html[lang="en"] .map-panel-btn {
     box-shadow: none;
 }
 
+/* ⚠️ `.btn-info` 的四条规则**没有任何 markup 引用**（全仓 grep templates/
+   static/js/ src/ app.py 零命中，唯一的用例「历史表查看详情」在 2026-08
+   随任务名按钮化下线）。它们**故意留着**：变体登记在
+   tests/test_css_contract.py 的 FILLED_BTN_VARIANTS 里，四个状态
+   （base / hover / focus-visible / active）都被按钮层叠模型逐格算过，
+   删掉不是「清死代码」而是拆掉一组现役断言的被测对象。
+   要删请先从 FILLED_BTN_VARIANTS 里摘掉它并把 BUTTON_CONTEXTS 的期望数
+   从 11 改成 10。同批被判零引用的 .alert-success / .alert-warning /
+   .text-success / .text-warning / .text-info 没有这层保护，已删除。 */
 .btn-info {
     background: var(--color-info);
     color: var(--color-on-accent);
@@ -1932,18 +1954,6 @@ html[lang="en"] .map-panel-btn {
     color: var(--color-text-primary);
 }
 
-.alert-success {
-    background: var(--color-alert-success-bg);
-    border-color: var(--color-success);
-    color: var(--color-text-primary);
-}
-
-.alert-warning {
-    background: var(--color-alert-warning-bg);
-    border-color: var(--color-warning);
-    color: var(--color-text-primary);
-}
-
 .alert-danger {
     background: var(--color-alert-danger-bg);
     border-color: var(--color-danger);
@@ -2008,18 +2018,6 @@ html[lang="en"] .map-panel-btn {
    抢——布局类不该参与颜色级联。 */
 .text-danger {
     color: var(--color-danger) !important;
-}
-
-.text-success {
-    color: var(--color-success) !important;
-}
-
-.text-warning {
-    color: var(--color-warning) !important;
-}
-
-.text-info {
-    color: var(--color-info) !important;
 }
 
 /* h1-h6 的默认色。
@@ -2591,10 +2589,22 @@ code {
     font-weight: 700;
 }
 
+/* 值：等宽 + 可点击编辑。改前这条被拆成两块、隔着 451 行
+   （这里管排版，「数值可点击编辑」那节管交互），两块无属性冲突所以谁也不会
+   变红，但第二块的 padding/margin 直接改的是上面 .bounds-grid 那 2 行网格的
+   几何 —— 调 gap 的人翻不到 451 行外的另一半。合成一条。
+   状态分支 `.bounds-v:hover` 仍留在交互那一节（它属于 hover 提示那组）。 */
 .bounds-v {
     color: var(--color-text-primary);
     /* 等宽数字：四个纬度/经度上下对齐，扫一眼就能比大小 */
     font-variant-numeric: tabular-nums;
+    /* 以下四条来自「数值可点击编辑」：光标提示可改，负 margin 抵掉左右
+       padding，让底色提示不撑开网格列宽。 */
+    cursor: text;
+    border-radius: var(--radius-xxs);
+    padding: 0 2px;
+    margin: 0 -2px;
+    transition: background-color 0.15s ease;
 }
 
 /* 只给读屏软件的方位词。
@@ -2630,6 +2640,24 @@ code {
 .detail-k { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
 .detail-v { font-size: var(--font-size-sm); color: var(--color-text-primary); }
 @media (max-width: 576px) { .detail-grid { grid-template-columns: 1fr; } }
+
+/* 任务详情弹窗的排版类。改前这些全是 base.html 里的内联 `style=` —— 整棵
+   模板树 18 个内联 style 有 17 个挤在那一个组件里，其中 font-family 与
+   border-color 各重复 4 遍，改一处要记得改另外三处。本文件开头写着
+   「颜色走 CSS 类，不写内联 style」，这里把那批声明接过来。 */
+.detail-v--num { font-family: var(--font-mono); }
+.detail-sep { border-color: var(--color-border); }
+.detail-progress-row { margin-top: 1rem; }
+.detail-k--head { margin-bottom: 0.5rem; }
+.detail-grid--spaced { margin-top: 0.5rem; }
+.detail-terrain-row { gap: 1rem; }
+.detail-terrain-title { margin-bottom: 0.25rem; }
+/* 0.9rem 不在 --font-size-* 刻度上（sm 0.875 / base 0.9375 之间）。原样搬过来
+   而不是就近吸附到某个令牌：这一步只做「内联搬进类」，改字号是另一件事。 */
+.detail-terrain-info { font-family: var(--font-mono); font-size: 0.9rem; }
+.detail-terrain-actions { flex: 0 0 auto; }
+.detail-terrain-error-row { margin-top: 0.75rem; }
+.detail-alert-flush { margin: 0; }
 
 /* ========================================================================
    全局 UI 组件：Toast 通知 + Confirm 模态框（替代原生 alert/confirm）
@@ -3041,15 +3069,9 @@ code {
     white-space: nowrap;
 }
 
-/* 数值可点击编辑：hover 给一点提示底色；编辑态换成输入框 */
-.bounds-v {
-    cursor: text;
-    border-radius: var(--radius-xxs);
-    padding: 0 2px;
-    margin: 0 -2px;
-    transition: background-color 0.15s ease;
-}
-
+/* 数值可点击编辑：hover 给一点提示底色；编辑态换成输入框。
+   基态的 cursor/padding/margin 不在这里 —— 它们与排版声明合成了一条
+   `.bounds-v`，在上面 `.bounds-grid` 那一节（网格几何和它们互相牵制）。 */
 .bounds-v:hover {
     background: var(--color-accent-muted);
 }

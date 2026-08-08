@@ -156,6 +156,9 @@ def test_resume_downloads_only_missing_tiles(isolated_config):
     downloaded = []
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+        # tiles 是生成器(任务侧不再物化全网格待下载清单),只能遍历一次 ——
+        # 本替身要遍历三遍,先自己收下来。
+        tiles = list(tiles)
         downloaded.extend(tiles)
         for tile in tiles:
             await progress_callback(tile, 'completed', None)
@@ -514,6 +517,8 @@ def test_stale_failed_rows_cleared_mixed_with_real_download(isolated_config):
     downloaded = []
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+        # 同上:生成器只能遍历一次。
+        tiles = list(tiles)
         downloaded.extend(tiles)
         for tile in tiles:
             await progress_callback(tile, 'completed', None)

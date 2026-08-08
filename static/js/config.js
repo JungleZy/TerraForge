@@ -1,5 +1,10 @@
 function initConfig() {
     document.getElementById('configForm').addEventListener('submit', saveConfig);
+    // 「恢复默认」原来是模板里的 onclick="resetConfig()"：内联处理器强制
+    // resetConfig 必须是全局函数，且与 CSP 的 unsafe-inline 绑死。接线挪到这里，
+    // 模板那边的 onclick 已同步删掉 —— 两边都留着会点一次跑两次。
+    const resetBtn = document.getElementById('configResetBtn');
+    if (resetBtn) resetBtn.addEventListener('click', resetConfig);
     initTileServerEditor();
     initBasemapSource();
     initThemeSwitcher();
@@ -11,8 +16,9 @@ function initConfig() {
 
 // --- 底图源 -------------------------------------------------------------------
 // 底图与下载源（tile_servers）是两个独立配置，理由见
-// src/services/basemap_source.py：底图走浏览器直连、不吃 proxy_url，
-// 下载走 Python、吃 —— 可达性不同，不能共用一份地址。
+// src/services/basemap_source.py：两者是不同用途的地址（底图给页面看、
+// tile_servers 是下载源），不是不同的出网路径 —— 底图瓦片由服务端转发
+// （同源 /basemap/{z}/{x}/{y}，见 routes/basemap_static.py），一样吃 proxy_url。
 //
 // 存库的值只有一个字符串：预设名（esri / google_satellite / google_roadmap /
 // download_source）或一条完整 XYZ 模板。UI 上拆成「下拉 + 自定义输入框」两个
@@ -345,7 +351,13 @@ function initThemeSwitcher() {
 
     function refresh() {
         const mode = TerraTheme.get();
-        chips.forEach(chip => chip.classList.toggle('active', chip.dataset.themeMode === mode));
+        chips.forEach(chip => {
+            const on = chip.dataset.themeMode === mode;
+            chip.classList.toggle('active', on);
+            // aria-pressed 与 .active 必须同步翻：只有 CSS class 时读屏用户
+            // 听不出当前生效的是哪一档主题（map.js 的 .map-panel-btn 同写法）。
+            chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
     }
 
     group.addEventListener('click', function (e) {

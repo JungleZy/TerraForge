@@ -94,15 +94,22 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _post_task(client, **fields):
+    """默认上传一个**可读但地理变换退化**的 GeoTIFF（像素尺寸 0）：范围读得出、
+    分辨率读不出，正是自动层级兜底分支的输入。
+
+    以前这里喂 b"fake-tif-bytes" —— 那同时踩中了另一个缺陷（GDAL 在位却打不开
+    的文件被 201 收下，失败要等 warp 之后才以一句原始 GDAL 报错出现），现在
+    创建时就 400。所以「读不出分辨率」必须用真栅格来构造，不能用非栅格。"""
+    from conftest import geotiff_bytes
     data = dict(fields)
     data.setdefault("name", "auto-zoom")
-    data["files"] = [(io.BytesIO(b"fake-tif-bytes"), "dem1.tif")]
+    data["files"] = [(io.BytesIO(geotiff_bytes(pixel_deg=0)), "dem1.tif")]
     return client.post("/api/contour/tasks", data=data,
                        content_type="multipart/form-data")
 
 
 def test_empty_zoom_max_uses_fallback_when_unreadable(monkeypatch, tmp_path):
-    """zoom_max 留空 → 自动；假 tif 读不出分辨率 → 兜底 15，zoom_min 默认 10。"""
+    """zoom_max 留空 → 自动；分辨率读不出 → 兜底 15，zoom_min 默认 10。"""
     client = _load_app(monkeypatch, tmp_path)
     resp = _post_task(client)
     assert resp.status_code == 201

@@ -62,28 +62,46 @@ def test_build_bat_checks_nuitka_build_exit_code():
 
 
 def test_build_bat_checks_nuitka_install_exit_code():
-    """M20 顺带：`uv pip install nuitka` 本身也要查退出码。"""
+    """M20 顺带：nuitka 的补装步骤本身也要查退出码。
+
+    锚点不再是 `uv pip install nuitka` 那串字面量 —— 2026-08-08 起 nuitka 从
+    requirements.txt 带版本安装（裸装 latest 会在 tag 推出去之后打断 Windows
+    构建，见 P1#13），命令变了而**不变量没变**：安装失败必须中止构建，否则
+    后续步骤会以一个不完整的环境继续跑。所以按「补装 nuitka 的那个分支」定位。
+    """
     content = _read('build.bat')
-    idx = content.find('uv pip install nuitka')
-    assert idx != -1, 'build.bat 里找不到 nuitka 安装步骤'
-    assert 'errorlevel 1' in content[idx:idx + 200], (
+    idx = content.find('Installing Nuitka')
+    assert idx != -1, 'build.bat 里找不到 nuitka 补装步骤'
+    tail = content[idx:idx + 300]
+    assert 'uv pip install' in tail, '补装分支里应当真的执行安装'
+    assert 'uv pip install nuitka' not in tail, (
+        '又在裸装 latest nuitka —— 版本必须来自 requirements.txt')
+    assert 'errorlevel 1' in tail, (
         'nuitka 安装失败必须中止构建，否则后续步骤会以一个不完整的环境继续跑'
     )
 
 
-# ---------- I20d: GDAL 版本一致性检查 ----------
+# ---------- I20d: GDAL 闸门（scripts/check_gdal.py，两个脚本共用） ----------
+#
+# 旧断言钉的是 `gdal-config --version` 出现在 build.sh 里，以及 build.bat 含
+# 'GDAL'+'requirements.txt' —— 两条都能被一个**恒定失败**的闸门满足，实际上
+# build.sh 在 `set -euo pipefail` 下会在读 pin 那一行静默 exit 1。行为断言在
+# tests/test_fix_l1_entry_build_misc.py（喂真 requirements.txt 的写法跑闸门）。
 
-def test_build_sh_checks_gdal_version_against_pin():
+def test_build_sh_calls_the_shared_gdal_gate():
     content = _read('build.sh')
-    assert 'gdal-config --version' in content, (
-        'build.sh 必须读取系统 GDAL 版本与 requirements.txt 的 pin 做一致性检查'
+    assert 'scripts/check_gdal.py' in content, (
+        'build.sh 必须调用共享的 GDAL 闸门 scripts/check_gdal.py'
     )
 
 
-def test_build_bat_checks_gdal_version():
+def test_build_bat_calls_the_shared_gdal_gate():
     content = _read('build.bat')
-    assert 'GDAL' in content and 'requirements.txt' in content, (
-        'build.bat 必须做 GDAL pin 版本一致性检查'
+    # 找命令行本身，不是上面那段解释历史的 REM 注释
+    idx = content.find('check_gdal.py', content.find('uv run python scripts'))
+    assert idx != -1, 'build.bat 必须调用共享的 GDAL 闸门 scripts\\check_gdal.py'
+    assert 'errorlevel 1' in content[idx:idx + 200], (
+        'build.bat 里闸门失败必须中止构建 —— batch 不会自动传播退出码'
     )
 
 
@@ -97,6 +115,21 @@ def _config_app_version():
     )
     assert m, 'src/core/config.py 中未找到 Config.APP_VERSION'
     return m.group(1)
+
+
+def test_app_version_matches_the_release_notes_heading():
+    """APP_VERSION 与 RELEASE_NOTES.md 顶部标题必须一致。
+
+    2026-08-08 评审抓到的漂移：`APP_VERSION='0.2.11'` 而发版说明写 v0.2.12。
+    危险的不是无参发版（`push-release.sh` 从 APP_VERSION 取 tag，撞已存在的
+    v0.2.11 会响亮中止），而是文档化的 `./push-release.sh 0.2.12` —— 它照样
+    打 tag、发版，而产物启动横幅印的是 0.2.11。
+    """
+    heading = re.search(r'^##\s*v([0-9.]+)', _read('RELEASE_NOTES.md'), re.M)
+    assert heading, 'RELEASE_NOTES.md 顶部找不到 `## vX.Y.Z` 标题'
+    assert _config_app_version() == heading.group(1), (
+        f"Config.APP_VERSION={_config_app_version()} 与 RELEASE_NOTES.md 的 "
+        f"v{heading.group(1)} 不一致 —— 发版会印错版本号")
 
 
 def _sh_run_version_resolution(*args, cwd=ROOT):

@@ -77,26 +77,15 @@
                 <button type="button" class="map-panel-btn" id="processOpenBtn"
                         data-bs-toggle="modal" data-bs-target="#processModal"
                         aria-label="{{ t('tpl.index.toolbar.process_title') }}" title="{{ t('tpl.index.toolbar.process_title') }}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-                    </svg>
+                    {{ m.icon_process(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.process') }}</span>
                 </button>
                 <button type="button" class="map-panel-btn" data-panel="records" aria-label="{{ t('tpl.index.toolbar.tasks') }}" title="{{ t('tpl.index.toolbar.tasks_title') }}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="3 7 5 9 9 5"></polyline>
-                        <polyline points="3 17 5 19 9 15"></polyline>
-                        <line x1="13" y1="6" x2="21" y2="6"></line>
-                        <line x1="13" y1="12" x2="21" y2="12"></line>
-                        <line x1="13" y1="18" x2="21" y2="18"></line>
-                    </svg>
+                    {{ m.icon_tasks(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.tasks') }}</span>
                 </button>
                 <button type="button" class="map-panel-btn" data-panel="config" aria-label="{{ t('tpl.index.toolbar.config') }}" title="{{ t('tpl.index.toolbar.config') }}">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="3"></circle>
-                        <path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path>
-                    </svg>
+                    {{ m.icon_config(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.config') }}</span>
                 </button>
             </div>
@@ -120,11 +109,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="downloadModalLabel">
-                    <svg class="icon-inline icon-inline--md" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                        <polyline points="7 10 12 15 17 10"></polyline>
-                        <line x1="12" y1="15" x2="12" y2="3"></line>
-                    </svg>
+                    {{ m.icon_download(18) }}
                     {{ t('tpl.index.download.title') }}
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.index.modal.close') }}"></button>
@@ -217,8 +202,10 @@
                         <label for="outputPath" class="form-label">{{ t('tpl.index.download.output_path') }}</label>
                         <div class="d-flex gap-2 align-items-center">
                             <input type="text" class="form-control" id="outputPath" placeholder="{{ t('tpl.index.download.output_path_placeholder') }}">
+                            {# data-path-target：见 _config_content.html 同名钩子。
+                               接线在 static/js/path_browser.js 的委托监听里。 #}
                             <button type="button" class="btn btn-outline-primary path-browse" id="outputPathBrowse"
-                                    onclick="openPathBrowser('outputPath')">{{ t('tpl.index.download.browse') }}</button>
+                                    data-path-target="outputPath">{{ t('tpl.index.download.browse') }}</button>
                         </div>
                     </div>
 
@@ -227,11 +214,7 @@
                          缺选区由 map.js 的 submit 处理器 toast
                          js.map.download.need_selection 当场说明。 -->
                     <button type="submit" class="btn btn-primary w-100" id="createTaskBtn">
-                        <svg class="icon-inline icon-inline--md" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                            <polyline points="7 10 12 15 17 10"></polyline>
-                            <line x1="12" y1="15" x2="12" y2="3"></line>
-                        </svg>
+                        {{ m.icon_download(16) }}
                         {{ t('tpl.index.download.submit') }}
                     </button>
                 </form>
@@ -247,9 +230,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="processModalLabel">
-                    <svg class="icon-inline icon-inline--md" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-                    </svg>
+                    {{ m.icon_process(18) }}
                     {{ t('tpl.index.process.title') }}
                 </h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.index.modal.close') }}"></button>
@@ -363,9 +344,7 @@
                     </div>
 
                     <button type="submit" class="btn btn-primary w-100" id="createProcessBtn">
-                        <svg class="icon-inline icon-inline--md" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-                        </svg>
+                        {{ m.icon_process(16) }}
                         {{ t('tpl.index.process.submit') }}
                     </button>
                 </form>
@@ -380,7 +359,12 @@
 <!-- 任务面板（右侧滑出，浮在地图上方）：统计 + 单一时间流任务列表
      （活动任务也在流里，socket 原地更新）+ 历史区域地图。
      独立页 /history 仍可用（布局顺序不同）。 -->
-<section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
+{# role/aria-modal：这两个面板行为上就是模态 —— 有点击即关的 backdrop
+   （z-index 1400）和 Esc 关闭，打开后 backdrop 之下的控件在视觉上已经不可
+   用，却仍留在 Tab 序里。声明成 dialog 之后读屏才会把面板当成一层，
+   焦点收拢/归还由 panels.js 负责（关闭钮是 [data-panel-close]，
+   面板自身带 tabindex="-1" 供程序化聚焦）。ui.js 的自定义 confirm 是同一套。 #}
+<section class="workbench-panel workbench-panel--wide" id="historyPanel" role="dialog" aria-modal="true" tabindex="-1" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
     {{ m.panel_header(m.icon_tasks(16), t('tpl.index.panel.tasks'), t('tpl.index.panel.close')) }}
     {# --fill：任务列表卡吃满剩余高度、列表在卡内滚动（.history-layout）。 #}
     <div class="workbench-panel__body workbench-panel__body--fill">
@@ -392,7 +376,7 @@
 </section>
 
 <!-- 配置面板 -->
-<section class="workbench-panel" id="configPanel" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
+<section class="workbench-panel" id="configPanel" role="dialog" aria-modal="true" tabindex="-1" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
     {{ m.panel_header(m.icon_config(16), t('tpl.index.panel.config'), t('tpl.index.panel.close')) }}
     {# --fill：滚动交给 _config_content.html 内部的 .config-scroll，
        底部操作条常驻。body 自己不再滚，否则两层都滚出双滚动条。 #}
@@ -404,7 +388,12 @@
 {% endblock %}
 
 {% block statusbar %}
-<span class="statusbar-item statusbar-pill statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records">
+{# 这三个读数项是**按钮**而不是 <span>：#statusTasks 打开任务面板，
+   #statusCoords / #statusSelection 把读数复制到剪贴板。写成 span 时它们
+   既不在 Tab 序里也没有 Enter/Space 路径，`.statusbar-copy { cursor: pointer }`
+   只对鼠标用户兑现了「这里能点」这个承诺。UA 的按钮字体与墨色由
+   `.statusbar-pill` 的 font/color: inherit 抹平，盒子与 span 时期一致。 #}
+<button type="button" class="statusbar-item statusbar-pill statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
@@ -412,10 +401,10 @@
     <span class="statusbar-progress" id="statusTasksProgress" hidden>
         <span class="statusbar-progress__bar" id="statusTasksBar"></span>
     </span>
-</span>
-<span class="statusbar-item statusbar-pill statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">{{ t('tpl.index.statusbar.coords_empty') }}</span>
+</button>
+<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">{{ t('tpl.index.statusbar.coords_empty') }}</button>
 <span class="statusbar-item statusbar-pill" id="statusZoom"><span id="statusZoomZ">z—</span><span id="statusZoomAlt"></span></span>
-<span class="statusbar-item statusbar-pill statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">{{ t('tpl.index.statusbar.no_selection') }}</span>
+<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">{{ t('tpl.index.statusbar.no_selection') }}</button>
 <span class="statusbar-item statusbar-pill statusbar-event" id="statusEvent" aria-live="polite"></span>
 <span class="statusbar-item statusbar-pill statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">--:--:--</span>
 {% endblock %}
@@ -435,8 +424,14 @@
    它挂 socket 任务监听，丢了就整页收不到实时推送，而用户只看到一张打不开
    的地图，不会想到「任务列表也一起哑了」。
    失败原因照旧走 window.onerror -> splash 的错误位（见 map.js initSplash）。 #}
+{# JS 全局 `config` 只含 map.js 真正读的那几个键（服务端白名单
+   routes/main.py:MAP_CONFIG_KEYS）。曾经是全量的 config|tojson（45 个键）——
+   里面有 earthdata_password、proxy_url（含 user:pass@）和 tile_servers（上游
+   地址），后者正好绕开 basemap_source.client_descriptor 特意剥掉 upstream 的
+   那道门。说明写在 Jinja 注释里而不是 // 注释里：后者会原样吐进页面，而本项目
+   的模板不许有裸中文（tests/test_i18n.py 钉住）。 #}
 <script>
-    const config = {{ config|tojson }};
+    const config = {{ map_config|tojson }};
 
     function _boot(label, fn) {
         try {

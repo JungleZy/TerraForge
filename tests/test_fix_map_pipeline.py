@@ -559,12 +559,19 @@ def test_download_tiles_batch_creates_coroutines_in_batches(isolated_config, mon
     )
 
 
-def test_execute_task_enumerates_tiles_only_once(isolated_config):
-    """completed 清单与待下载清单由同一遍枚举产出,不再有两遍全量 stat。
+def test_execute_task_never_re_enumerates_the_grid_after_downloading(isolated_config):
+    """completed 清单不得靠「下载后再全量枚举 + stat 一遍」重建。
 
-    旧实现下载前枚举一遍(物化待下载列表),下载后再枚举+stat 一遍重建
-    completed 列表。修复后:枚举一遍,cache 命中直接进 completed 清单,
-    下载成功的瓦片按结果并入 —— iter_tiles 只应被调用一次。
+    旧实现下载前枚举一遍(物化待下载列表),下载后再枚举 + 全量 stat 一遍
+    重建 completed 列表 —— 两遍全量 stat,外加两份全网格 List[Tile]。
+
+    这条原先断言 `iter_tiles 只被调用 1 次`。P1#4 之后待下载清单不再物化,
+    而是以生成器形态喂给 download_tiles_batch(引擎按 DOWNLOAD_BATCH_SIZE
+    惰性 islice),所以枚举确实变成两趟:第一趟做 cache 分类(唯一一趟
+    stat),第二趟是纯内存归并、随下载批次惰性推进、一次 stat 都不做。
+    「只枚举一次」因此不再是真实不变量,而**它当初要防的东西**是:枚举发生在
+    下载之后。断言改成钉这一点 —— 记录每次枚举开始时所处的阶段,下载收工后
+    不许再有任何一趟。旧 bug 会在日志里多出一条 'after-download',仍然红。
     """
     from src.core.config import Config
     from src.core.database import get_connection
@@ -592,12 +599,14 @@ def test_execute_task_enumerates_tiles_only_once(isolated_config):
     finally:
         conn.close()
 
-    iter_calls = 0
+    # 每趟枚举开始时所处的阶段。分类那趟发生在 'before-download',
+    # 待下载生成器那趟在下载消费第一块瓦片时才启动 → 'during-download'。
+    phase = {'name': 'before-download'}
+    enumeration_phases = []
     real_iter_tiles = tm.download_engine.iter_tiles
 
     def counting_iter_tiles(*args, **kwargs):
-        nonlocal iter_calls
-        iter_calls += 1
+        enumeration_phases.append(phase['name'])
         return real_iter_tiles(*args, **kwargs)
 
     tm.download_engine.iter_tiles = counting_iter_tiles
@@ -605,6 +614,7 @@ def test_execute_task_enumerates_tiles_only_once(isolated_config):
     downloaded = []
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+        phase['name'] = 'during-download'
         results = []
         for tile in tiles:
             # 模拟真实下载:落 cache(复制/完成判定的真实输入)再报完成
@@ -614,14 +624,16 @@ def test_execute_task_enumerates_tiles_only_once(isolated_config):
             await progress_callback(tile, 'completed', None)
             results.append({'tile': tile, 'status': 'completed'})
             downloaded.append(tile)
+        phase['name'] = 'after-download'
         return results
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
     asyncio.run(tm._execute_task(task_id))
 
-    assert iter_calls == 1, (
-        f"iter_tiles 被调用了 {iter_calls} 次 —— completed 清单仍在第二遍枚举重建"
+    assert enumeration_phases == ['before-download', 'during-download'], (
+        f"枚举趟次/时机不对,实际 {enumeration_phases} —— 拼接与结尾复制阶段"
+        f"一趟都不许有(那就是下载后重建 completed 清单的老 bug)"
     )
     assert len(downloaded) == len(all_tiles) - len(cached), "cache 命中的瓦片不应重下"
 

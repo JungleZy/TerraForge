@@ -254,7 +254,7 @@ def test_font_size_scale_variables_unchanged():
 # --------------------------------------------------------------------------
 
 def test_important_count_under_control():
-    """!important 声明总量上界 = 68.
+    """!important 声明总量上界 = 37（历史记账见下，headline 随棘轮走）。
 
     阈值构成（全部实测，不是估的）：
       Task 2 清理前 92 处
@@ -428,10 +428,22 @@ def test_important_count_under_control():
     清掉的 26 处是「自我覆盖的死规则」，而这些新增是「压第三方库的必要手段」，
     两者性质不同。
 
-    ⚠️ 当前余量为 **3**（实测 56 / 上界 59）：2026-08 统一流式列表重设计
-    删掉 `.table*` 整段 10 处 !important（见上方登记），余量从 2 升到 3。
+    ⚠️ 当前余量为 **3**（实测 34 / 上界 37）。
 
-    余下 56 处几乎全是压 Bootstrap 背景/文字色的历史债
+      - 3 处：**2026-08 评审 P2「死 CSS」删除**（清理型任务）。
+              `.text-success` / `.text-warning` / `.text-info` 各一条 color
+              !important，三个类在 templates/ static/js/ src/ app.py 全部零引用
+              （`bg-${getStatusColor(...)}` 只到 `.bg-*`，`'app-toast--' + type`
+              只到 `.app-toast--*`，两条动态拼接路径都够不到 `.text-*`）。
+              同批删掉的 `.alert-success` / `.alert-warning` 不带 !important。
+              本次**新增 0 处**。
+
+    ⚠️ 上面那串从 92 一路减到 56 的账**对不上今天的实测**：本次改动前
+    `git show HEAD:static/css/style.css` 实测就是 37，不是 56。那 19 处的去向
+    没有登记，不是本次删的，这里不追溯 —— 但上界必须按**实测**重设，否则
+    22 个空名额会被后来的人悄悄填回去，棘轮就白装了。
+
+    余下 34 处几乎全是压 Bootstrap 背景/文字色的历史债
     （`background: transparent !important`、`color: ... !important`），
     属于 Phase 2 其他任务的范围，本次不动。
 
@@ -440,15 +452,10 @@ def test_important_count_under_control():
     """
     css = re.sub(r'/\*.*?\*/', '', _css(), flags=re.S)
     count = css.count('!important')
-    assert count <= 59, (
-        f'!important 声明有 {count} 处，应 <= 59（Task 2 前 92 → Task 2 后 67 → '
-        'Task 3 后 66 → Task 5 +2 条进度条覆盖后实测 68 → '
-        'Task 9 Leaflet +5 / -5 净 0，仍是 68 → '
-        'Task 12 删掉表格段 3 条压错对象的 color 后实测 65 → '
-        'Task 13 +3 条 reduced-motion 后 68 → '
-        'C1 收尾删掉 2 条压 div 兜底重置的 background-color 后实测 66 → '
-        '2026-08 统一流式列表删掉 .table* 整段 10 处后实测 56，'
-        '上界按棘轮规则降到 59）'
+    assert count <= 37, (
+        f'!important 声明有 {count} 处，应 <= 37（上界按棘轮规则从 59 降到 37：'
+        '改动前实测 37，本次删掉 .text-success/.text-warning/.text-info 三条'
+        '零引用的 color !important 后实测 34，余量 3）'
     )
 
 

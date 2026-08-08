@@ -18,9 +18,8 @@ The four pipelines have **separate** managers, routes, DB tables, and frontend p
 本项目使用 **uv** 管理虚拟环境（`.venv/` 已存在于项目根目录）。所有 Python 命令都通过 `uv run` 执行，无需手动 `source .venv/bin/activate`。
 
 ```bash
-# Setup (one-time)
-uv venv                                 # 如果 .venv 不存在
-uv pip install -r requirements.txt
+# Setup (one-time) — 装 GDAL 系统库与 Python 依赖的**命令顺序不能调换**，
+# 全部步骤见 docs/guides/INSTALL.md（本仓唯一的安装事实源）。
 uv run python -c "from src.core.database import init_database; init_database()"               # 创建 data/map_downloader.db + 默认配置行
 
 # Run dev server (Flask + Socket.IO on :5000)
@@ -41,18 +40,9 @@ build.bat            # Windows（脚本内部使用 uv run python nuitka_build.p
 # Output: dist/terraforge/ — entry nuitka_build.py, GDAL/PROJ 环境设置在 src/core/bundle.py
 ```
 
-GDAL system libraries are required (`gdal-bin libgdal-dev` on Debian, `brew install gdal` on macOS). **`requirements.txt` deliberately carries a range (`GDAL>=3.8,<4`), not a pin** — the Python bindings are compiled from sdist against the system `libgdal` headers, so their version *follows the machine* and is not ours to choose: dev box (ubuntugis-unstable PPA) 3.11.4, CI `ubuntu-latest` (noble apt) 3.8.4, Windows/macOS (conda-forge) 3.8. Pinning any one value makes the other two uninstall the working binding and recompile — and that recompile runs *without* `--no-build-isolation`, so numpy is invisible, `_gdal_array` is missing, and every `ReadAsArray`/`WriteArray` test explodes. A range lets pip skip it silently. Install with `uv pip install --no-build-isolation "GDAL==$(gdal-config --version)"`; CI does the same via `$GDAL_VERSION` (computed by `gdal-config --version` into `$GITHUB_ENV`). The `<4` upper bound is measured, not cautious: GDAL 4.0 enables exceptions by default, and in exception mode a write failure does **not** refill the CPL error stack (measured `GetLastErrorType` 3→0), which turns `cesiumlab_terrain`'s `_raise_on_gdal_error` into a no-op — that gate must be reworked before 4.0.
+GDAL system libraries are required. **`requirements.txt` deliberately carries a range (`GDAL>=3.8,<4`), not a pin** — the Python bindings are compiled from sdist against the system `libgdal` headers, so their version *follows the machine* and is not ours to choose: dev box (ubuntugis-unstable PPA) 3.11.4, CI `ubuntu-latest` (noble apt) 3.8.4, Windows/macOS (conda-forge) 3.8. Pinning any one value makes the other two uninstall the working binding and recompile without `--no-build-isolation`, which silently drops `_gdal_array`. The `<4` upper bound is measured, not cautious: GDAL 4.0 enables exceptions by default, and in exception mode a write failure does **not** refill the CPL error stack (measured `GetLastErrorType` 3→0), which turns `cesiumlab_terrain`'s `_raise_on_gdal_error` into a no-op — that gate must be reworked before 4.0.
 
-**Version-skew note (measured 2026-08-07 on 3.11.4 vs 3.8.4):** the only user-visible output difference is contour tiles at low zoom. GDAL 3.9.0 (PR #9040) tightened RasterIO's overview auto-selection oversampling tolerance from a hardcoded 1.2 to 1.0, which hits `contour_engine.py`'s bilinear `_read_band_window` (win/buf ratios there are arbitrary reals). 9 of 28 z6–z9 PNGs differ byte-wise; the new output is *more* accurate (RMSE 0.44–0.65 m vs 1.01–1.42 m against a full-resolution read). Terrain tiling is immune — `DemSampler` forces power-of-two scales, so both rule sets pick the same level.
-
-**`ImportError: cannot import name '_gdal_array' from 'osgeo'`** — GDAL Python bindings were built without numpy support. The `gdal_array` C extension is only compiled when numpy is import-able at *sdist build time*. Triggered by `band.ReadAsArray()`/`WriteArray()` (used in `cesiumlab_terrain.py` and `download_engine.py`'s stitching path) and by `gdal.UseExceptions()`. Fix by rebuilding from sdist with numpy + setuptools in the venv:
-
-```bash
-uv pip install numpy setuptools wheel
-UV_NO_CACHE=1 uv pip install --force-reinstall --no-build-isolation --no-binary :all: "GDAL==$(gdal-config --version)"
-```
-
-`UV_NO_CACHE=1` is required because uv caches sdist builds; without it, a previously broken build (made before numpy was in the env) is silently reused. Verify with `ls .venv/lib/python3.12/site-packages/osgeo/ | grep _gdal_array` — the `.so` must be present.
+Install order, the `_gdal_array` trap and its recovery live in **`docs/guides/INSTALL.md`** — do not restate them here. `build.sh` / `build.bat` gate on `scripts/check_gdal.py` (installed version inside the declared range **and** `_gdal_array` importable); `python nuitka_build.py` skips that gate.
 
 ## Architecture
 
@@ -127,6 +117,15 @@ All four managers keep `active_tasks: Dict[int, Thread]` **and** `stop_flags: Di
 - `WEB_MERCATOR_MAX_LAT = 85.0511`, zoom is clamped to `0..21`. `WARN_TILES_THRESHOLD = 100000` (in `src/services/download_engine.py`) only writes a server-side `logger.warning` when the estimated tile count exceeds it — there is no UI warning and no hard cap.
 - Stitching to GeoTIFF **must** pass `BIGTIFF=IF_SAFER` and check `gdal.GetLastErrorType()` after `Translate` (both added 2026-08-07; the terrain side had them since 0.2.8, this path did not). Measured on 3.11.4, 68000×68000 Byte + `COMPRESS=DEFLATE`: the file stops at 4294967275 bytes as a classic TIFF while `gdal.Translate` returns a **non-None** dataset reporting the full 68000×68000, the top-left block matches the source byte-for-byte and the bottom-right is all zeros — task `completed`, no warning, file opens, size looks right, bottom half blank. The `ErrorReset()` before `Translate` is defensive only: `Translate` resets error state internally on 3.11.4, so **no test can guard it** (both removing the reset and widening the threshold to `CE_Warning` survive the suite — verified by mutation). The PNG branch must **not** get `BIGTIFF`; that driver rejects the option.
 
+### Basemap
+
+The basemap is what you *see* while drawing a bbox; `tile_servers` is what you *download*. Two invariants, both load-bearing, and until now both lived only in `src/services/basemap_source.py`'s comments plus two tests:
+
+- **WGS-84 sources only — never Gaode / Tencent / Baidu.** They tile in GCJ-02, which shifts 100–700 m inside China: the valley you box on the basemap is the next one over in the tiles you download. Only Esri World Imagery and Google `lyrs=s` / `lyrs=m` are WGS-84, and those three *are* the whole `BASEMAP_PRESETS` table. Adding a preset means establishing its datum first; a custom `https://.../{z}/{x}/{y}` template is the user's own problem, but nothing GCJ-02 ships as a preset.
+- **The upstream URL never reaches the browser.** `resolve_basemap()` returns `upstream` for server-side use only, and `client_descriptor()` deliberately strips it, handing the page the same-origin `BASEMAP_TILE_PATH = '/basemap/{z}/{x}/{y}'` served by `src/routes/basemap_static.py`. Leak `upstream` and someone will "simplify" the frontend into connecting directly, which resurrects both reasons the hop exists: an upstream 4xx carries no CORS header, so the real status code (measured: Esri 403) is buried under "blocked by CORS policy"; and the browser does **not** honour the project's `proxy_url`, so a correctly proxied download run can still show a blue sphere.
+
+That route landed 2026-08-08, so **basemap tiles do go through `proxy_url` / `proxy_autodetect`** — same egress as downloads, configure once and both work. Comments claiming 「底图走浏览器直连」 predate it and are wrong; the two that existed (`src/core/database.py`'s `basemap_source` default, `templates/_config_content.html`) are already corrected. Treat any survivor as stale, not as a second opinion.
+
 ### DEM / terrain specifics
 
 - Datasets (see `src/services/dem_granules.py`): `COP-DEM-GLO-30` (default — Copernicus GLO-30 COGs on the public `copernicus-dem-30m` S3 bucket, no auth; granules are nested `<name>/<name>.tif`) and `ASTGTM.003` (Earthdata; 1°×1° granules named `ASTGTMV003_{N|S}LL{E|W}LLL_dem.tif`, optional `_num.tif`; coverage 83S–83N). Water-body masks come from `ASTWBD.001` (`ASTWBDV001_*_att.tif`, Earthdata, best-effort — 404s don't fail the task).
@@ -165,6 +164,7 @@ All four managers keep `active_tasks: Dict[int, Thread]` **and** `stop_flags: Di
 
 ### Testing patterns to follow
 
-- `sys.path.insert(0, ...)` at top of test files (no `conftest.py`/no installed package).
-- For anything that imports `app` or touches the DB: monkey-patch `Config.DATABASE_PATH`/`DOWNLOADS_DIR`/`CACHE_DIR` **first**, then `sys.modules.pop("app", None)` and reimport — `init_database()` runs at import time.
+- **`tests/conftest.py` exists — it is the entry point, not an absence.** It puts the project root on `sys.path` before collection (so a new file needs no `sys.path.insert` of its own) and installs session-scoped autouse sandboxes: the startup sweep cannot rmtree the real `/tmp`, and base-terrain unpack cannot write 224 MB into `assets/terrain/`.
+- **Never hand-roll a `sys.modules.pop(...)` list — use `fresh_import()` or the `isolated_app` fixture.** A bare pop never restores, so the popped module keeps a second live instance and a later file can hold a *different* class object than the one the app's blueprints use; `pytest.raises` / `except` / `isinstance` then pass or fail depending on file order. `tests/test_conftest_isolation_contract.py` is a two-sided ratchet over this: `KNOWN_DOUBLE_INSTANCE_RISKS` is empty and must stay empty (a bare-popped module that some other file `from`-imports at module level is red), and a stale entry left in the list is also red.
+- For anything that imports `app` or touches the DB: monkey-patch `Config.DATABASE_PATH`/`DOWNLOADS_DIR`/`CACHE_DIR` **first**, then re-import through `fresh_import` / `isolated_app` — `init_database()` runs at import time.
 - For terrain/contour tiler tests, pass `build_terrain_fn=<fake>` to `tile_dem_task_dir` (or `build_contour_fn=<fake>` to `tile_contour_task_dir`) instead of installing numpy/GDAL/matplotlib — the production code has lazy-import hooks for exactly this.

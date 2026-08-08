@@ -19,16 +19,24 @@ def _load_app(monkeypatch, tmp_path):
 
 
 def _seed_task(task_id_name="t"):
-    """插一条 contour_tasks 行(静态路由先查任务存在性再发文件),返回 task_id。"""
+    """插一条 contour_tasks 行(静态路由按行里的 output_path 解析瓦片根),返回 task_id。
+
+    output_path 必须给 —— 两个 create_* 都写 `DOWNLOADS_DIR/dem`，而路由现在
+    按存储值解析（此前它重算 `DOWNLOADS_DIR/dem`，所以不填也能对上；两套根
+    巧合一致正是 2026-08-08 评审记下的那条 P2）。
+    """
+    from pathlib import Path
+
+    from src.core.config import Config
     from src.core.database import get_connection
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO contour_tasks (name, status, north, south, east, west,"
-            " contour_interval, zoom_min, zoom_max)"
-            " VALUES (?, 'completed', 1, 0, 1, 0, 50, 12, 12)",
-            (task_id_name,),
+            " contour_interval, zoom_min, zoom_max, output_path)"
+            " VALUES (?, 'completed', 1, 0, 1, 0, 50, 12, 12, ?)",
+            (task_id_name, str(Path(Config.DOWNLOADS_DIR) / "dem")),
         )
         conn.commit()
         return cur.lastrowid

@@ -138,6 +138,23 @@ def tile_dem_task_dir(
         max_error_k=params.max_error_k,
     )
 
+    # 注入的 build_terrain_fn 返回 None（老测试替身）时归一成全 0 计数；提前到
+    # 这里归一，停止分支与正常分支共用同一个返回值。
+    keys = ("total", "rendered", "failed", "chose_martini", "chose_grid")
+    counts = (dict.fromkeys(keys, 0) if not isinstance(counts, dict)
+              else {k: int(counts.get(k, 0) or 0) for k in keys})
+
+    if params.stop_flag is not None and params.stop_flag.is_set():
+        # build_terrain 中途被停了就不要再植底图：graft_base_into 是 4.3 万个
+        # 硬链接 / 518 个目录，而 DEM/local terrain 的唯一停止入口是**删除任务**,
+        # 输出目录马上就要被 rmtree —— 用户点了删除还得干等一整轮 graft。更糟的
+        # 是 graft 失败（磁盘满）会抛出去，把一个用户取消的作业记成 failed，
+        # 错误文案还指向随包底图，指错方向。
+        # 这个检查也顺带越过了下面的 layer.json 存在性校验：停止时产物本就残缺，
+        # 缺 layer.json 不该报成 FileNotFoundError。
+        logger.info("Terrain: 切片被停止，跳过底图植入与 availability 合并")
+        return counts
+
     layer_json_path = out_dir / "layer.json"
     if not layer_json_path.is_file():
         raise FileNotFoundError(f"Missing layer.json at {layer_json_path}")
@@ -152,7 +169,4 @@ def tile_dem_task_dir(
     else:
         patch_layer_json_parent(layer_json_path, params.parent_url)
 
-    keys = ("total", "rendered", "failed", "chose_martini", "chose_grid")
-    if not isinstance(counts, dict):
-        return dict.fromkeys(keys, 0)
-    return {k: int(counts.get(k, 0) or 0) for k in keys}
+    return counts

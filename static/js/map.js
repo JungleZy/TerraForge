@@ -124,6 +124,20 @@ function updateTileEstimate() {
 let _splashTimer = null;
 let _splashDone = false;
 
+// 具名而不是写成 initSplash 里的内联匿名函数：匿名版本没有引用可以传给
+// removeEventListener，于是这个 window 级监听器会活到页面关闭 —— 而
+// splashReady 里 splash.remove() 之后，它闭包持有的整棵 splash 子树已经脱离
+// 文档却仍被钉在内存里。这里改成现查 DOM + 由 splashReady 显式摘除。
+function _onSplashError(e) {
+    if (_splashDone) return;
+    const stage = document.getElementById('splashStage');
+    if (!stage) return;
+    stage.textContent = t('js.map.splash.error', {
+        message: e.message || t('js.map.splash.unknown_error'),
+    });
+    stage.classList.add('splash-stage--error');
+}
+
 function initSplash() {
     const splash = document.getElementById('splashScreen');
     if (!splash || _splashTimer) return;
@@ -147,13 +161,7 @@ function initSplash() {
             if (stage) stage.textContent = stages[stageIdx];
         }
     }, 120);
-    window.addEventListener('error', function (e) {
-        if (_splashDone || !stage) return;
-        stage.textContent = t('js.map.splash.error', {
-            message: e.message || t('js.map.splash.unknown_error'),
-        });
-        stage.classList.add('splash-stage--error');
-    });
+    window.addEventListener('error', _onSplashError);
     // 兜底：正常路径几百毫秒就就绪；万一渲染管线异常，20s 后也不把用户
     // 关在 splash 里（地图已在后面可用）。
     setTimeout(splashReady, 20000);
@@ -162,6 +170,9 @@ function initSplash() {
 function splashReady() {
     if (_splashDone) return;
     _splashDone = true;
+    // 摘监听必须排在下面 `if (!splash) return` 之前：否则 splash 已被移除的
+    // 那条路径会带着监听器直接返回，泄漏原样留着。
+    window.removeEventListener('error', _onSplashError);
     if (_splashTimer) {
         clearInterval(_splashTimer);
         _splashTimer = null;
@@ -187,8 +198,8 @@ function initMap(config, basemap) {
     // 这里不再自己展开别名。改造前这里有一份 _baseMapUrl 平行实现：它写死
     // lyrs=m（路网图，不是卫星图）、写死署名 © OpenStreetMap（而实际加载的
     // 是 Google 瓦片），并且与 services/tile_url_probe 的条目语义各写各的。
-    // 底图与下载源现在是两个配置：底图走浏览器直连（不吃 proxy_url），
-    // 下载走 Python（吃）—— 可达性不同，不能共用一份地址。
+    // 底图与下载源现在是两个配置：用途不同（底图给页面看、tile_servers 是下载
+    // 源），出网路径其实相同 —— 底图瓦片由服务端转发，一样吃 proxy_url。
     const bm = basemap || {};
     viewer = new Cesium.Viewer('map', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
@@ -1975,7 +1986,10 @@ function initMapWorkbench() {
             try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
             ta.remove();
             if (ok) showToast(toastMsg, 'success');
-            else showToast(t('js.map.copy.failed'), 'error');
+            // 'danger' 而不是 'error'：ui.js 的 VALID_TYPES 里没有 'error'，
+            // 会被静默降级成蓝色 ⓘ —— 而这条分支服务的正是局域网 http://IP
+            // 这种非安全上下文，复制失败读起来像复制成功。
+            else showToast(t('js.map.copy.failed'), 'danger');
         }
         if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(

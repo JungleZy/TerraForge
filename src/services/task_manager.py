@@ -6,6 +6,7 @@ Coordinates between database, download engine, and WebSocket notifications.
 """
 
 import logging
+import os
 import shutil
 import threading
 import asyncio
@@ -14,10 +15,12 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from src.core.database import get_connection, parse_db_timestamp, utc_now, utc_now_iso
 from src.models.task import Task, Tile
-from src.services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD
+from src.services.download_engine import (DownloadEngine, StitchCancelled,
+                                          WARN_TILES_THRESHOLD)
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import require_absolute_output_dir, sanitize_filename
-from src.services.task_cleanup import resolve_stored_output_dir
+from src.services.task_cleanup import (fail_stranded_running_task,
+                                       resolve_stored_output_dir)
 from src.services.download_speed import SpeedMeter
 
 logger = logging.getLogger(__name__)
@@ -44,6 +47,15 @@ PROGRESS_DB_FLUSH_INTERVAL = 200
 # 同步 DB 查询 + 广播,全部跑在下载事件循环里把它堵死。节流后前端进度
 # 仍以 2Hz 刷新,末块瓦片(完成那一发)不受节流限制。
 PROGRESS_EMIT_MIN_INTERVAL = 0.5
+
+
+class TaskStillStoppingError(ValueError):
+    """上一轮执行线程尚未收尾时的启动拒绝。
+
+    继承 ValueError 是刻意的:routes/api.py 的 start/resume 两个端点都按
+    ValueError 统一映射成 4xx + str(e),这条错误因此不需要改路由层就能带着
+    自己的文案回到前端。区别只在文案 —— 见 start_task 里的判定注释。
+    """
 
 
 class TaskManager:
@@ -143,7 +155,9 @@ class TaskManager:
         与结尾复制阶段共用「同尺寸已存在即跳过」的幂等判定 —— 恢复/对账重跑
         不会复写。保留 copy2 字面量:取消钩子测试 monkeypatch copy2 作为取消
         触发器(见结尾复制段注释),即时复制与补拷线程同样走它,取消语义不变。
-        临时名带线程 id:下载回调(事件循环线程)与补拷线程临时件不互踩。
+        临时名 `.part.<pid>.<thread_ident>`:pid 段是 task_cleanup 那张
+        `*.part.*` 登记表的解析口径(`_part_owner_pid` 只认 pid 在前),线程 id
+        段让下载回调(事件循环线程)与补拷线程的临时件不互踩。
         """
         src = tile.cache_path(style_code)
         dest = output_base / str(tile.zoom) / str(tile.x) / f"{tile.y}.png"
@@ -156,9 +170,17 @@ class TaskManager:
                 return False
         except OSError:
             pass  # stat 竞态(文件刚好被删):按需要复制处理,失败由外层记 warning
-        tmp = dest.with_name(f"{dest.name}.part.{threading.get_ident()}")
-        shutil.copy2(src, tmp)
-        tmp.replace(dest)
+        tmp = dest.with_name(f"{dest.name}.part.{os.getpid()}.{threading.get_ident()}")
+        try:
+            shutil.copy2(src, tmp)
+            tmp.replace(dest)
+        except BaseException:
+            # 任务产物目录不在任何启动清扫根里(清扫只走 CACHE_DIR),生产者
+            # 自己不清就没有第二次机会 —— 磁盘满/目标盘掉线会在每个
+            # {z}/{x} 目录下留一堆 .part 文件,且下次复制的同尺寸判定看的是
+            # dest 不是它们,永远不会被覆盖。
+            tmp.unlink(missing_ok=True)
+            raise
         return True
 
     @staticmethod
@@ -394,7 +416,10 @@ class TaskManager:
             task_id: Task ID to start
 
         Raises:
-            ValueError: If task status is not pending, paused or failed
+            TaskStillStoppingError: If the previous run's thread is still
+                winding down (row already flipped to paused/pending)
+            ValueError: If the task is genuinely running, or its status is
+                neither pending nor paused
             sqlite3.Error: If database operation fails
         """
         logger.info(f"Starting task {task_id}")
@@ -412,20 +437,36 @@ class TaskManager:
 
             with self._state_lock:
                 active_thread = self.active_tasks.get(task_id)
-                if active_thread and active_thread.is_alive():
-                    raise ValueError(f"Task {task_id} is already running")
+                thread_alive = bool(active_thread and active_thread.is_alive())
 
                 cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
                 row = cursor.fetchone()
                 if not row:
                     raise ValueError(f"Task {task_id} not found")
+                status = row['status']
+
+                # 「线程还活着」有两种完全不同的含义,必须分开报:
+                #  · 库里也是 running —— 真的在跑,拒绝重复启动(旧文案不变);
+                #  · 库里已是 paused/pending —— pause_task 已提交状态并置了停止
+                #    标志,但上一轮线程还卡在没有取消点的收尾步骤里(最长的是
+                #    单个大 zoom 的 gdal.Translate)。此时沿用「already running」
+                #    会让界面显示「已暂停」而每次点恢复都收到一条与之直接矛盾
+                #    的报错,用户只能盲目重试十几分钟;报「正在停止,稍后重试」
+                #    才与界面一致,也才提示了正确的动作。
+                if thread_alive:
+                    if status == 'running':
+                        raise ValueError(f"Task {task_id} is already running")
+                    raise TaskStillStoppingError(
+                        f"Task {task_id} is still stopping from its previous run "
+                        f"(finishing the current stitch/copy step); "
+                        f"please retry in a few seconds"
+                    )
 
                 # 只准 pending/paused:'failed' 曾经也放行,为的是让失败任务
                 # 直接重按开始就续传。但失败是终态,重跑一条终态记录等于把它
                 # 曾经失败过这件事从历史里擦掉;另外三条管线也都只收
                 # pending/paused,map 单开一个口子只会让前端按钮的可用条件
                 # 每条管线一套(切片类管线另说,它没有续传模型)。
-                status = row['status']
                 if status not in ['pending', 'paused']:
                     raise ValueError(
                         f"Cannot start task {task_id} with status '{status}'. "
@@ -744,16 +785,25 @@ class TaskManager:
             Creates new event loop and runs _execute_task coroutine
         """
         logger.info(f"Task {task_id} thread started")
+        failure = None
         try:
             asyncio.run(self._execute_task(task_id, stop_flag))
         except Exception as e:
             logger.error(f"Task {task_id} thread failed: {e}")
+            failure = e
         finally:
             with self._state_lock:
-                if self.active_tasks.get(task_id) is threading.current_thread():
+                deregistered = (
+                    self.active_tasks.get(task_id) is threading.current_thread())
+                if deregistered:
                     self.active_tasks.pop(task_id, None)
                 if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
                     self.stop_flags.pop(task_id, None)
+            if deregistered:
+                # 行还停在 running 就是搁死了(理由与竞态分析见 helper 的 docstring)。
+                fail_stranded_running_task(
+                    'tasks', task_id,
+                    f'线程异常: {failure}' if failure is not None else '')
             logger.info(f"Task {task_id} thread finished")
 
     def _write_progress_batch(self, progress_conn, task_id, batch) -> None:
@@ -808,13 +858,17 @@ class TaskManager:
             task_id: Task ID to execute
 
         Process:
-            1. Enumerate the tile set once: pending (download) vs cache hits
+            1. Classify the tile set: cache hits are materialised into
+               completed_tiles, the rest is only counted — the pending set is
+               re-derived lazily as a generator (see _iter_pending_tiles)
             2. Stream-copy to the output dir as tiles land (progress_callback),
                plus a backfill thread for cache-hit tiles — both concurrent
                with the download
-            3. Call download_engine.download_tiles_batch()
+            3. Call download_engine.download_tiles_batch() with that generator
             4. Check stop_flag between operations
-            5. If output_format includes image, call stitch_tiles_with_gdal for each zoom
+            5. If output_format includes image, call stitch_tiles_with_gdal for
+               each zoom (the stop flag is threaded in — it has its own
+               cancellation point)
             6. Final copy pass — mostly a same-size reconciliation after step 2
             7. Update task status to 'completed'
 
@@ -884,24 +938,33 @@ class TaskManager:
                     (row['zoom'], row['x'], row['y']) for row in cursor.fetchall()
                 }
 
-            # 单遍枚举同时产出「待下载」与「已完成」两份清单(互不重叠,每块
-            # 瓦片只物化一次)。旧实现下载前只建待下载列表,下载后再第二遍
-            # 全量 stat 重建 completed 列表 —— 两遍枚举 + 部分瓦片两份对象;
-            # 现在下载结束后直接把本次下载成功的瓦片并入 completed_tiles
-            # (见下载调用处),省掉第二遍。
-            tiles: List[Tile] = []
+            # 单遍枚举产出「已完成」清单与「待下载」计数。**待下载清单刻意不
+            # 物化**:它以生成器形态直接喂给 download_tiles_batch(引擎按
+            # DOWNLOAD_BATCH_SIZE islice 惰性消费,签名文档写明可传生成器,
+            # create_task 也早就用 count_tiles 而不是 calculate_tiles)。硬上限
+            # 改成软告警之后,百万级瓦片是被文档化的用法,而一份全网格
+            # List[Tile] 就是几百 MB,两个并发任务直接翻倍。
+            #
+            # completed_tiles 是**唯一**保留的全网格列表,别顺手把它也改成
+            # 生成器:拼接要按 zoom 分组遍历它、结尾复制阶段要再遍历一次对账,
+            # 而下载回调还在往它追加本次下载成功的瓦片 —— 它必须是一份可以
+            # 重复遍历的实体清单。
+            def _iter_all_tiles():
+                return self.download_engine.iter_tiles(
+                    north=task.north,
+                    south=task.south,
+                    east=task.east,
+                    west=task.west,
+                    zoom_min=task.zoom_min,
+                    zoom_max=task.zoom_max,
+                    task_id=task_id,
+                )
+
             completed_tiles: List[Tile] = []
             cache_hits = 0
+            pending_count = 0
             stale_failed_keys: List[Tuple[int, int, int]] = []
-            for tile in self.download_engine.iter_tiles(
-                north=task.north,
-                south=task.south,
-                east=task.east,
-                west=task.west,
-                zoom_min=task.zoom_min,
-                zoom_max=task.zoom_max,
-                task_id=task_id,
-            ):
+            for tile in _iter_all_tiles():
                 if cache_enabled:
                     try:
                         # 单次 stat 同时回答「存在吗」与「非空吗」—— 旧写法
@@ -922,19 +985,39 @@ class TaskManager:
                             f"Task {task_id}: Cache check failed for tile "
                             f"{tile.zoom}/{tile.x}/{tile.y}: {e}"
                         )
-                tiles.append(tile)
+                pending_count += 1
 
             logger.info(
-                f"Task {task_id}: {len(tiles)} tiles to download "
+                f"Task {task_id}: {pending_count} tiles to download "
                 f"({cache_hits} already in cache)"
             )
 
-            # 命中清单快照:补拷线程遍历它往产物目录复制,与下载并行(见下文
-            # 「边下边复制」)。必须快照 —— 下载回调还会往 completed_tiles
-            # 追加本次下载的瓦片,迭代中不能共享同一列表。
-            cache_hit_tiles = list(completed_tiles)
+            # 命中清单的边界。旧实现在这里 list(completed_tiles) 拷了**第二份
+            # 全网格列表**给补拷线程;只记长度即可 —— 下载回调只会往
+            # completed_tiles 尾部 append,前 cache_hit_count 项此后不再变动,
+            # 按下标读它们与读快照等价(list.append 与按下标读在 GIL 下都是
+            # 原子操作,不会读到半个元素)。
+            cache_hit_count = len(completed_tiles)
 
-            if len(tiles) == 0:
+            # 待下载瓦片生成器:按同一确定性顺序重跑枚举,与上面产出的命中
+            # 清单做归并 —— 跳过的正是 completed_tiles 的前 cache_hit_count
+            # 项,产出集合与旧实现物化的那份 tiles 列表逐块相同(iter_tiles 是
+            # bbox+zoom 的纯函数,两遍顺序必然一致,见其 docstring)。
+            # 为什么归并而不在这里重新 stat 一遍 cache:重新 stat 会把命中判定
+            # 推迟到下载**期间**才发生,另一个并发任务此刻往共享 cache 写入同一
+            # 块瓦片,这块就会被静默跳过、永不上报,downloaded_tiles 收尾时少算。
+            # 归并只读内存,无此风险,也不多一次 syscall。
+            def _iter_pending_tiles():
+                hit_index = 0
+                for tile in _iter_all_tiles():
+                    if hit_index < cache_hit_count:
+                        hit = completed_tiles[hit_index]
+                        if (hit.zoom, hit.x, hit.y) == (tile.zoom, tile.x, tile.y):
+                            hit_index += 1
+                            continue
+                    yield tile
+
+            if pending_count == 0:
                 logger.info(f"Task {task_id}: No tiles to download, proceeding to stitching")
 
             # 对账:清掉 cache 命中瓦片残留在稀疏表里的 failed 行。
@@ -1002,15 +1085,20 @@ class TaskManager:
                     )
 
             def _backfill_cache_hits() -> None:
+                # 按下标只走命中前缀,不 for-in 列表对象本身:下载回调会并发
+                # 往 completed_tiles 尾部 append,而 list 的迭代器会一路跟进
+                # 新元素 —— 补拷线程会把回调刚复制过的瓦片再复制一遍,并被
+                # 拖到下载结束才停。旧实现靠 list(completed_tiles) 快照规避,
+                # 代价是第二份全网格列表(见 cache_hit_count 处的注释)。
                 copied = 0
-                for tile in cache_hit_tiles:
+                for index in range(cache_hit_count):
                     if self._is_stop_requested(task_id, stop_flag):
                         break
-                    _stream_copy_quiet(tile)
+                    _stream_copy_quiet(completed_tiles[index])
                     copied += 1
                 logger.info(
                     f"Task {task_id}: cache-hit backfill copied "
-                    f"{copied}/{len(cache_hit_tiles)} tiles"
+                    f"{copied}/{cache_hit_count} tiles"
                 )
 
             backfill_thread = threading.Thread(
@@ -1021,11 +1109,14 @@ class TaskManager:
             backfill_thread.start()
 
             # --- 进度回调:稀疏失败表 + 计数批量落库 ---
-            # session_status 记录本次运行里每块瓦片已上报的状态,和稀疏表里的
-            # 历史失败行一起还原 _status_count_deltas 需要的 old_status ——
-            # 同一块瓦片重复上报(如同一次运行里 completed 两次)不会重复计数,
-            # 任务暂停/取消时计数语义与旧版一致。
-            session_status: Dict[Tuple[int, int, int], str] = {}
+            # _status_count_deltas 需要的 old_status 完全由稀疏失败表的内存镜像
+            # failed_keys 给出(在表里 → 'failed';不在 → None)。旧实现另外维护
+            # 一份 session_status: Dict[(z,x,y), str],为的是「同一块瓦片在一次
+            # 运行里重复上报 completed 不重复计数」—— 那是一份**每块瓦片一项、
+            # 从不裁剪**的全网格字典,而它防的情况在真实链路上不存在:
+            # _download_single_tile 的四个出口都是「回调一次后立刻 return」,
+            # 每块瓦片每次运行恰好上报一次(由
+            # tests/test_fix_pause_resume_and_memory.py 钉住)。
             progress_counts = {'downloaded': base_downloaded, 'failed': base_failed}
             unflushed = {'downloaded': 0, 'failed': 0}
             processed_since_flush = 0
@@ -1172,7 +1263,6 @@ class TaskManager:
                 speed_meter.record(size_bytes or 0)
 
                 key = (tile.zoom, tile.x, tile.y)
-                old_status = session_status.get(key)
 
                 # DB 层:稀疏失败表攒批登记 + 计数累计/攒批落库。这一层的故障
                 # 必须显眼地记 error —— 失败瓦片若静默丢记录,完成判定的
@@ -1203,10 +1293,11 @@ class TaskManager:
                             )
                             failed_keys.discard(key)
 
-                    if old_status is None and row_existed:
-                        old_status = 'failed'
+                    # old_status 只有两种可能:这块瓦片在稀疏失败表里留着历史
+                    # 失败行 → 'failed';否则本次运行前它没有任何已计数状态 →
+                    # None。每块瓦片每次运行只上报一次,不存在「上一发的状态」。
+                    old_status = 'failed' if row_existed else None
                     downloaded_delta, failed_delta = self._status_count_deltas(old_status, status)
-                    session_status[key] = status
                     progress_counts['downloaded'] += downloaded_delta
                     progress_counts['failed'] += failed_delta
                     unflushed['downloaded'] += downloaded_delta
@@ -1214,9 +1305,8 @@ class TaskManager:
 
                     # 本次下载成功的瓦片直接并入 completed 清单(替代旧的
                     # 「下载后从 results 再筛一遍 completed」):回调本来就逐块
-                    # 上报,results 不必再为这件事全量保留。重复上报同一块
-                    # (如测试里的 completed 两连发)只并一次。
-                    if status == 'completed' and old_status != 'completed':
+                    # 上报,results 不必再为这件事全量保留。
+                    if status == 'completed':
                         completed_tiles.append(tile)
                         # 边下边复制①:cache 落盘即镜像一份到产物目录,下载结束
                         # ≈ 产物就绪,不再在 100% 后整段等待结尾复制阶段。
@@ -1313,7 +1403,7 @@ class TaskManager:
             # (完成/stop return/异常)都在拼接与结尾对账前收尾」—— 此后产物
             # 目录只剩零头缺口,结尾复制阶段基本退化为 stat 对账。
             try:
-                if len(tiles) > 0:
+                if pending_count > 0:
                     # Check stop flag before downloading
                     if self._is_stop_requested(task_id, stop_flag):
                         logger.info(f"Task {task_id}: Stop flag detected before download")
@@ -1333,7 +1423,7 @@ class TaskManager:
                         # download_tiles_batch 换成四参替身,见引擎 __init__ 注释)。
                         self.download_engine._collect_batch_results = False
                         await self.download_engine.download_tiles_batch(
-                            tiles=tiles,
+                            tiles=_iter_pending_tiles(),
                             style=style_code,
                             progress_callback=progress_callback,
                             stop_flag=stop_flag
@@ -1427,6 +1517,12 @@ class TaskManager:
                         # to_thread 把 GDAL 拼接挪出事件循环:大 mosaic 拼接是
                         # 分钟级 CPU/IO 活,同步调用的期间暂停/取消/进度回调
                         # 全被堵死,只能等拼完才生效。
+                        #
+                        # stop_flag 必须传进去:单层 zoom 的拼接本身就是十分钟级,
+                        # 而这个循环只在**每层之间**查停止标志。不传的话
+                        # pause_task 提交完 'paused' 之后线程还要跑满一整层,
+                        # 期间 start_task 只能拒绝恢复 —— 就是界面显示「已暂停」
+                        # 却恢复不了的那十几分钟(见 TaskStillStoppingError)。
                         await asyncio.to_thread(
                             self.download_engine.stitch_tiles_with_gdal,
                             tiles=completed_tiles,
@@ -1435,6 +1531,7 @@ class TaskManager:
                             zoom_level=zoom,
                             # 保存路径全盘化后,拼接白名单要认该任务的注册产物根
                             extra_allowed_dir=str(output_dir),
+                            stop_flag=stop_flag,
                         )
                         logger.info(f"Task {task_id}: Zoom level {zoom} stitched successfully")
                         stitched_zooms.append(zoom)
@@ -1446,6 +1543,15 @@ class TaskManager:
                                 'zoom_level': zoom,
                                 'output_path': str(output_path)
                             })
+
+                    except StitchCancelled:
+                        # 用户主动停的,不是故障:不记 stitch_failures(那会把任务
+                        # 标 failed 或挂警告),按与其它停止检查相同的方式收尾。
+                        logger.info(
+                            f"Task {task_id}: Stop flag detected inside stitching "
+                            f"(zoom {zoom})"
+                        )
+                        return
 
                     except Exception as e:
                         logger.error(f"Task {task_id}: Failed to stitch zoom level {zoom}: {e}")

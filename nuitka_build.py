@@ -12,6 +12,7 @@ mode. Output layout matches the old PyInstaller COLLECT layout:
     ├── proj-data/          # PROJ 数据
     └── [Python 运行时与依赖库]
 """
+import glob
 import os
 import re
 import shutil
@@ -20,6 +21,30 @@ import sys
 
 APP_NAME = 'terraforge'
 ENTRY = 'app.py'
+
+# 产物里必须存在的「自有数据」哨兵。gdal-data / proj-data 各有构建期与运行期
+# 两道硬失败,而 --include-data-dir=templates / static 一道都没有:静默漏收时
+# exe 照样能启动,CI 冒烟测试请求 `/` 也照样 200(它只用到 templates/),
+# 用户拿到的是一张白地图,而且没有任何一处日志会报错。
+# 用 glob 而不是写死路径:Cesium 在 static/vendor/cesium/<版本>/ 下。
+APP_DATA_SENTINELS = (
+    'templates/index.html',
+    'static/vendor/cesium/*/Cesium.js',
+    'static/vendor/fonts/fonts.css',
+)
+
+
+def verify_app_data(dist_dir):
+    """校验 templates/ 与 static/ 的关键文件真的落进产物;缺的一次全列出来。"""
+    missing = [rel for rel in APP_DATA_SENTINELS
+               if not glob.glob(os.path.join(dist_dir, *rel.split('/')))]
+    if missing:
+        raise RuntimeError(
+            'App data collection failed, these are missing from the bundle:\n'
+            + '\n'.join('  ' + m for m in missing)
+            + '\nCheck the --include-data-dir=templates / static options — such a '
+              'bundle starts up fine and then serves a blank map to the user.'
+        )
 
 
 def _first_existing_dir(candidates, required_file=None):
@@ -403,6 +428,7 @@ def main():
     exe = os.path.join(dst, APP_NAME + ('.exe' if sys.platform == 'win32' else ''))
     if not os.path.isfile(exe):
         raise RuntimeError(f'Build finished but executable not found: {exe}')
+    verify_app_data(dst)
 
     copy_extension_system_libs(dst)
     copy_extension_system_dlls_windows(dst)

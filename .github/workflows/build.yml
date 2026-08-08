@@ -33,6 +33,12 @@ jobs:
             artifact_name: terraforge-macos
             asset_name: terraforge-macos.tar.gz
 
+    # 只给这个 job 它真正需要的写权限。不声明 permissions: 时 GITHUB_TOKEN 按
+    # 仓库默认档(常见是 write-all)签发,而下面的 Create Release 是第三方 action,
+    # 拿到的就是那把全权令牌。发版只需要往 Releases 写。
+    permissions:
+      contents: write
+
     runs-on: ${{ matrix.os }}
 
     env:
@@ -55,7 +61,13 @@ jobs:
         # for the why). A login shell ensures the conda env activated by
         # setup-miniconda is on PATH for every subsequent step. bash -l works
         # on all three runners (Linux is unaffected — it uses system apt GDAL).
-        shell: bash -l {0}
+        #
+        # -eo pipefail 必须显式写回:自定义 shell 会整串替换掉 GitHub 默认的
+        # `bash --noprofile --norc -eo pipefail {0}`,于是每个多命令 step 只由
+        # 最后一条命令的退出码定成败。「Install GDAL (Windows/macOS)」正是以一句
+        # 恒成功的 `echo >> $GITHUB_ENV` 收尾 —— conda 装失败会报绿,几步之后
+        # 变成一个风马牛不相及的 ImportError。
+        shell: bash -leo pipefail {0}
 
     steps:
     - name: Checkout code
@@ -107,7 +119,6 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         python -m pip install --upgrade pip
-        pip install nuitka
         # Python 3.12 的托管环境不再自带 setuptools，而 GDAL 走
         # --no-build-isolation 编译时需要它提供 setuptools.build_meta 后端。
         pip install setuptools wheel
@@ -117,17 +128,22 @@ jobs:
         # 跟随 apt 实际装上的 libgdal,别硬编码(见 requirements.txt 顶部注释)。
         # $GDAL_VERSION 由上面的 gdal-config --version 写进 $GITHUB_ENV。
         pip install --no-build-isolation "GDAL==$GDAL_VERSION"
+        # Nuitka 从 requirements.txt 里【按钉的版本】装,不再 `pip install nuitka`
+        # 拉最新:nuitka_build.py 调的是 nuitka.freezer 的私有 API,上游一改签名
+        # 就是 tag 推上去之后才炸的 Windows 构建。
         pip install -r requirements.txt
+        echo "NUITKA_VERSION=$(python -c "import importlib.metadata as m; print(m.version('nuitka'))")" >> $GITHUB_ENV
 
     - name: Install Python dependencies (Windows/macOS)
       if: runner.os != 'Linux'
       run: |
         python -m pip install --upgrade pip
-        pip install nuitka
         # GDAL already comes from conda; pip-installing it again would try to
-        # build from sdist and fail. Strip the GDAL pin and install the rest.
+        # build from sdist and fail. Strip the GDAL pin and install the rest
+        # (Nuitka included — it is pinned in requirements.txt, see the Linux step).
         grep -viE '^[[:space:]]*gdal([[:space:]=<>!~]|$)' requirements.txt > /tmp/req.txt
         pip install -r /tmp/req.txt
+        echo "NUITKA_VERSION=$(python -c "import importlib.metadata as m; print(m.version('nuitka'))")" >> $GITHUB_ENV
 
     # 跨 run 复用 C 编译结果。Nuitka 90% 的耗时是把 690+ 个生成的 C 文件
     # 编译成对象文件,而其中绝大多数(numpy/matplotlib/PIL/aiohttp/flask 等
@@ -142,14 +158,18 @@ jobs:
     # 本 workflow 来铺(Linux 的由 test-build.yml 每次 push master 顺带铺好)。
     # 铺一次能用很久:第三方库那 600 多个 C 文件不随业务代码变,后续 tag 构建
     # 直接命中;缓存 7 天不被读取才会被 GitHub 回收,而每次发版都会读它。
+    #
+    # key 里带 Nuitka 版本:ccache 的对象文件是【Nuitka 生成的 C 源】编出来的,
+    # 换一个 Nuitka 版本这些源就变了。光靠 hashFiles(requirements.txt) 不够 ——
+    # 最宽的那条 restore-key 会绕过 hash,把旧版本留下的缓存拉回来。
     - name: Cache Nuitka C compilation
       uses: actions/cache@v4
       with:
         path: ~/.nuitka-cache
-        key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-${{ github.sha }}
+        key: nuitka-${{ runner.os }}-n${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-${{ github.sha }}
         restore-keys: |
-          nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-
-          nuitka-${{ runner.os }}-
+          nuitka-${{ runner.os }}-n${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt', 'nuitka_build.py') }}-
+          nuitka-${{ runner.os }}-n${{ env.NUITKA_VERSION }}-
 
     # C7: 先跑完整测试套件再打包——测试失败则构建失败。
     # 三个平台均已装好 GDAL（Linux=apt、Windows/macOS=conda-forge），
@@ -201,8 +221,29 @@ jobs:
       run: |
         rm -rf dist/terraforge/data dist/terraforge/downloads dist/terraforge/cache
         rm -f dist/terraforge/smoke.log
-        if [ -d dist/terraforge/data ]; then
-          echo "FAILED: dist/terraforge/data still present after cleanup"
+        # logs/terraforge.log:frozen 单进程的 show_startup_output 为真,
+        # configure_logging(log_to_file=True) 会建出它 —— 光是那条
+        # 「SECRET_KEY 未配置」的 warning 就足以落盘,内容里带 CI runner 路径。
+        rm -rf dist/terraforge/logs
+        # base_z8 与 .base_unpack_* :Nuitka 排掉了解压后的 base_z8 却照样打进
+        # 分卷,所以 is_base_ready 恒假,冒烟那一次启动会有后台线程开始解 4.3 万
+        # 个文件,进程被 kill 时留下一棵解到一半的树 + 一个 pid 命名的临时目录。
+        # 运行期没有任何路径会回收它们(见 base_terrain 的 UNPACK_TMP_PREFIX
+        # 注释),不在这里删就会被 tar/7z 原样打进发布包。
+        rm -rf dist/terraforge/assets/terrain/base_z8
+        rm -rf dist/terraforge/assets/terrain/.base_unpack_*
+        rm -f dist/terraforge/assets/terrain/.base_unpack.lock
+        # 断言与删除逐项对齐:以后再多一类残留,漏删就会在这里红,而不是静默
+        # 混进用户下载的包里。
+        for leftover in data downloads cache logs smoke.log \
+                        assets/terrain/base_z8 assets/terrain/.base_unpack.lock; do
+          if [ -e "dist/terraforge/$leftover" ]; then
+            echo "FAILED: dist/terraforge/$leftover still present after cleanup"
+            exit 1
+          fi
+        done
+        if compgen -G "dist/terraforge/assets/terrain/.base_unpack_*" > /dev/null; then
+          echo "FAILED: base-terrain unpack temp dirs still present after cleanup"
           exit 1
         fi
         echo "Runtime data stripped; dist is clean for packaging"
@@ -238,7 +279,9 @@ jobs:
 
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
+      # 钉到 commit SHA(v2.6.2)而不是 v1 这种可变 tag:tag 能被上游重新指向,
+      # 而这一步拿着 GITHUB_TOKEN 的 contents:write。
+      uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
       with:
         files: dist/${{ matrix.asset_name }}
         body_path: RELEASE_NOTES.md

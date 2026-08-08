@@ -20,36 +20,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM GDAL version consistency check (I20d): the pip pin in requirements.txt must
-REM match the installed GDAL (major.minor). On Windows GDAL usually comes from
-REM conda-forge, so read the version from the osgeo binding.
-set REQ_GDAL=
-for /f "tokens=3 delims==" %%v in ('findstr /b /c:"GDAL==" requirements.txt') do set REQ_GDAL=%%v
-if "%REQ_GDAL%"=="" (
-    echo Error: requirements.txt 缺少 GDAL== pin
-    exit /b 1
-)
-set SYS_GDAL=
-for /f "delims=" %%v in ('uv run python -c "from osgeo import gdal; print(gdal.__version__)" 2^>nul') do set SYS_GDAL=%%v
-if "%SYS_GDAL%"=="" (
-    echo Error: osgeo not importable — install GDAL first ^(e.g. conda install -c conda-forge gdal^).
-    exit /b 1
-)
-for /f "tokens=1,2 delims=." %%a in ("%REQ_GDAL%") do set REQ_MM=%%a.%%b
-for /f "tokens=1,2 delims=." %%a in ("%SYS_GDAL%") do set SYS_MM=%%a.%%b
-if not "%REQ_MM%"=="%SYS_MM%" (
-    echo Error: requirements.txt pins GDAL==%REQ_GDAL% but installed GDAL is %SYS_GDAL%.
-    echo Fix: update the pin in requirements.txt to match the installed GDAL ^(major.minor must agree^),
-    echo      or install GDAL %REQ_GDAL%.
-    exit /b 1
-)
-echo GDAL version check OK ^(pin %REQ_GDAL%, system %SYS_GDAL%^)
+REM GDAL consistency check (I20d). 判据与解析都在 scripts\check_gdal.py —— build.sh
+REM 调的是同一个文件。这里【不能】查 `GDAL==` 精确钉:requirements.txt 顶部写明了
+REM 绑定版本跟随机器、必须给范围,而 2026-08-08 前这里查的正是 findstr "GDAL==",
+REM 于是每次构建都命中「缺少 GDAL== pin」直接拒绝(见 check_gdal.py 的模块注释)。
+uv run python scripts\check_gdal.py
+if errorlevel 1 exit /b 1
 
-REM Check if Nuitka is installed in the uv environment
+REM Nuitka 从 requirements.txt 装,不能裸 `uv pip install nuitka`:nuitka_build.py
+REM 调的是 Nuitka 的【私有】API(八个关键字参数),上游改签名就会在 tag 已经推出去
+REM 之后打断 Windows 构建。requirements.txt 里已经钉了版本,这里只按那份清单补装。
 uv run python -c "import nuitka" >nul 2>&1
 if errorlevel 1 (
-    echo Installing Nuitka...
-    uv pip install nuitka
+    echo Installing Nuitka ^(pinned in requirements.txt^)...
+    uv pip install -r requirements.txt
     if errorlevel 1 (
         echo ERROR: Failed to install Nuitka
         exit /b 1

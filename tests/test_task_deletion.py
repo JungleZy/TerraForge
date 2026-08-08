@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from conftest import fresh_import  # noqa: E402
 
+from src.services.task_cleanup import DirRemoval  # noqa: E402
+
 
 class _FakeManager:
     """只提供共享助手真正用到的三样东西。"""
@@ -514,8 +516,11 @@ def test_non_absolute_artifact_dir_is_refused(monkeypatch, tmp_path):
     db, td = _setup(monkeypatch, tmp_path)
     _seed(db)
     removed = []
-    monkeypatch.setattr(td, "remove_task_dir_if_safe",
-                        lambda p: removed.append(p) or True)
+    # 快路径现在走 remove_task_dir_and_confirm（「可删」与「真删了」分开报，
+    # 见 P1#6）；护栏的入口换了名字，这里跟着换，钉的仍是「相对路径不许进护栏」。
+    monkeypatch.setattr(
+        td, "remove_task_dir_and_confirm",
+        lambda p: removed.append(p) or DirRemoval(True, True))
 
     out = td.delete_task_row(manager=_FakeManager(), task_id=1, table="tasks",
                              artifact_dir=".")
@@ -535,8 +540,9 @@ def test_tilde_artifact_dir_is_expanded_at_the_entry(monkeypatch, tmp_path):
     db, td = _setup(monkeypatch, tmp_path)
     _seed(db)
     seen = []
-    monkeypatch.setattr(td, "remove_task_dir_if_safe",
-                        lambda p: seen.append(p) or True)
+    monkeypatch.setattr(
+        td, "remove_task_dir_and_confirm",
+        lambda p: seen.append(p) or DirRemoval(True, True))
 
     td.delete_task_row(manager=_FakeManager(), task_id=1, table="tasks",
                        artifact_dir="~/map-download-probe/task_1")

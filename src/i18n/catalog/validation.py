@@ -50,6 +50,14 @@ MESSAGES = {
         'zh': '底图源不能为空',
         'en': 'Basemap source cannot be empty',
     },
+    'val.basemap.link_local': {
+        'zh': '底图源不能指向链路本地地址：{value}'
+              '（169.254.0.0/16 与 fe80::/10 是云实例元数据端点，不是瓦片服务；'
+              '自建镜像用 127.0.0.1 或局域网 IP 是可以的）',
+        'en': 'Basemap source must not point at a link-local address: {value} '
+              '(169.254.0.0/16 and fe80::/10 are cloud instance-metadata endpoints, '
+              'not tile services; a self-hosted mirror on 127.0.0.1 or a LAN IP is fine)',
+    },
     'val.basemap.unknown': {
         'zh': '无法识别的底图源：{value}（应为预设名或完整 XYZ 模板）',
         'en': 'Unrecognized basemap source: {value} (expected a preset name or a full XYZ template)',

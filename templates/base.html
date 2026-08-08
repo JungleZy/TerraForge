@@ -1,3 +1,6 @@
+{#- 共用小组件宏（图标）。放在 doctype 之前并用 `-%}` 吃掉换行：Jinja 标签
+    本身不产出内容，但它后面那个换行会跑到 doctype 前面去。 -#}
+{%- import "_macros.html" as m with context -%}
 <!DOCTYPE html>
 <html lang="{{ html_lang }}" data-bs-theme="dark">
 <head>
@@ -102,11 +105,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="taskDetailModalLabel">
-                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <line x1="12" y1="16" x2="12" y2="12"></line>
-                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                        </svg>
+                        {{ m.icon_info(20) }}
                         {{ t('tpl.base.detail.title') }}
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.base.detail.close') }}"></button>
@@ -123,24 +122,24 @@
                       <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.downloaded') }}</span><span class="detail-v" id="detailDownloaded"></span></div>
                       <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.failed') }}</span><span class="detail-v" id="detailFailed"></span></div>
                     </div>
-                    <div style="margin-top:1rem;"><span class="detail-k">{{ t('tpl.base.detail.progress') }}</span> <span id="detailProgress"></span></div>
-                    <hr style="border-color: var(--color-border);">
+                    <div class="detail-progress-row"><span class="detail-k">{{ t('tpl.base.detail.progress') }}</span> <span id="detailProgress"></span></div>
+                    <hr class="detail-sep">
                     <div class="row">
                         <div class="col-12">
-                            <p class="detail-k" style="margin-bottom: 0.5rem;">{{ t('tpl.base.detail.bbox') }}</p>
+                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.bbox') }}</p>
                             <div class="detail-grid">
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.north') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailNorth"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.south') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailSouth"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.east') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailEast"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.west') }}</span><span class="detail-v" style="font-family: var(--font-mono);" id="detailWest"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.north') }}</span><span class="detail-v detail-v--num" id="detailNorth"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.south') }}</span><span class="detail-v detail-v--num" id="detailSouth"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.east') }}</span><span class="detail-v detail-v--num" id="detailEast"></span></div>
+                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.west') }}</span><span class="detail-v detail-v--num" id="detailWest"></span></div>
                             </div>
                         </div>
                     </div>
-                    <hr style="border-color: var(--color-border);">
+                    <hr class="detail-sep">
                     <div class="row">
                         <div class="col-12">
                             <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.output_path') }}</span><span class="detail-v"><code id="detailPath"></code></span></div>
-                            <div class="detail-grid" style="margin-top: 0.5rem;">
+                            <div class="detail-grid detail-grid--spaced">
                                 <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.created_at') }}</span><span class="detail-v" id="detailCreated"></span></div>
                                 <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.started_at') }}</span><span class="detail-v" id="detailStarted"></span></div>
                                 <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.completed_at') }}</span><span class="detail-v" id="detailCompleted"></span></div>
@@ -149,7 +148,7 @@
                     </div>
                     <div class="row" id="detailErrorRow" hidden>
                         <div class="col-12">
-                            <hr style="border-color: var(--color-border);">
+                            <hr class="detail-sep">
                             <p><strong>{{ t('tpl.base.detail.error_label') }}</strong></p>
                             <div class="alert alert-danger" id="detailError"></div>
                         </div>
@@ -157,20 +156,20 @@
 
                     <div class="row" id="detailTerrainRow" hidden>
                         <div class="col-12">
-                            <hr style="border-color: var(--color-border);">
-                            <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
+                            <hr class="detail-sep">
+                            <div class="d-flex justify-content-between align-items-start detail-terrain-row">
                                 <div>
-                                    <p style="margin-bottom: 0.25rem;"><strong>{{ t('tpl.base.detail.terrain_label') }}</strong> <span id="detailTerrainStatus"></span></p>
-                                    <div id="detailTerrainInfo" style="font-family: var(--font-mono); font-size: 0.9rem;"></div>
+                                    <p class="detail-terrain-title"><strong>{{ t('tpl.base.detail.terrain_label') }}</strong> <span id="detailTerrainStatus"></span></p>
+                                    <div class="detail-terrain-info" id="detailTerrainInfo"></div>
                                 </div>
-                                <div class="btn-group btn-group-sm" style="flex: 0 0 auto;">
+                                <div class="btn-group btn-group-sm detail-terrain-actions">
                                     <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="{{ t('tpl.base.detail.terrain_start_title') }}">{{ t('tpl.base.detail.terrain_start') }}</button>
                                     <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="{{ t('tpl.base.detail.terrain_refresh_title') }}">{{ t('tpl.base.detail.terrain_refresh') }}</button>
                                 </div>
                             </div>
-                            <div class="row" id="detailTerrainErrorRow" hidden style="margin-top: 0.75rem;">
+                            <div class="row detail-terrain-error-row" id="detailTerrainErrorRow" hidden>
                                 <div class="col-12">
-                                    <div class="alert alert-danger" id="detailTerrainError" style="margin: 0;"></div>
+                                    <div class="alert alert-danger detail-alert-flush" id="detailTerrainError"></div>
                                 </div>
                             </div>
                         </div>

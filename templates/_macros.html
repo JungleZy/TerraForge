@@ -14,6 +14,18 @@
    按钮标记：宏定义算一次，宏调用展开后不出现在源码里。所以把重复的纯图标
    按钮收进宏会让那个计数下降，改这里记得同步那边的账。
 
+   2026-08 图标收口（download / process / info 三组重复 + tasks / config /
+   close 三处漏网的重贴）：模板里的 SVG 字面量 31 -> 23，**恰好 23 个不同
+   几何体，零重复**。ICON_ONLY_BUTTON_COUNT **不动，仍是 17** —— 收进宏的
+   六处调用点，其按钮要么本来就有可见文本（工具条、弹窗标题、提交钮），
+   要么原本就已经计过一次（_config_content.html 的「删除该服务器」、
+   hint 宏体），一颗纯图标按钮都没有增减。
+
+   ## gap 参数
+   带 `gap=''` 调用时整个 class 属性都不输出。给两类调用点用：
+   flex 列布局的按钮（右外边距会把图标推离水平中心），以及自己写死了
+   width/height/display 的宿主（`.hint svg`）。
+
    ⚠️ 别在本文件的注释里写出按钮标签的字面量：那个扫描器按正则找
    `<button ...>...</button>`，注释里的字面量会被当成真标记匹配进去，
    把后面一整段散文吞成「按钮内容」（实测踩过，计数直接错 2 颗）。 #}
@@ -24,11 +36,26 @@
 {# 返回首页的左箭头（config.html / history.html 共用）。 #}
 {% macro icon_back() %}<svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>{% endmacro %}
 
-{# 任务列表图标（首页任务面板头）。 #}
-{% macro icon_tasks(size=16) %}<svg class="icon-inline icon-inline--md" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 7 5 9 9 5"></polyline><polyline points="3 17 5 19 9 15"></polyline><line x1="13" y1="6" x2="21" y2="6"></line><line x1="13" y1="12" x2="21" y2="12"></line><line x1="13" y1="18" x2="21" y2="18"></line></svg>{% endmacro %}
+{# 任务列表图标（首页任务面板头 + 左列工具条的「任务」入口）。
+   gap='' 关掉 .icon-inline--* 的右外边距：工具条按钮是 flex 列（图标在上
+   文字在下），带右外边距会把图标从水平居中位置推偏半个间距。 #}
+{% macro icon_tasks(size=16, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 7 5 9 9 5"></polyline><polyline points="3 17 5 19 9 15"></polyline><line x1="13" y1="6" x2="21" y2="6"></line><line x1="13" y1="12" x2="21" y2="12"></line><line x1="13" y1="18" x2="21" y2="18"></line></svg>{% endmacro %}
 
-{# 配置齿轮（首页配置面板头）。 #}
-{% macro icon_config(size=16) %}<svg class="icon-inline icon-inline--md" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path></svg>{% endmacro %}
+{# 配置齿轮（首页配置面板头 + 左列工具条的「配置」入口）。gap 同 icon_tasks。 #}
+{% macro icon_config(size=16, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path></svg>{% endmacro %}
+
+{# 下载（托盘 + 下箭头）。改前在 index.html 的下载弹窗标题、提交按钮和
+   _config_content.html 的「下载设置」组头各内联一遍，三份尺寸 18/16/20、
+   右间距 md/md/lg 各不相同 —— 差异全部落在参数上，几何体只有一个。 #}
+{% macro icon_download(size=18, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>{% endmacro %}
+
+{# 数据处理（扳手）。三处：左列工具条入口、处理弹窗标题、处理表单提交钮。 #}
+{% macro icon_process(size=18, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>{% endmacro %}
+
+{# 说明 ⓘ。两处：任务详情弹窗标题、_config_content.html 的 hint 宏体。
+   hint 那处传 gap=''：`.hint svg` 自己写死 width/height/display，
+   .icon-inline 的 inline-block 与右间距在那里只会是噪声。 #}
+{% macro icon_info(size=20, gap='lg') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>{% endmacro %}
 
 {# 地图图层（历史区域地图卡片头 + 配置页「其他」组）。改前两处逐字相同，
    只有尺寸/间距不同：18px+6px vs 20px+8px。 #}

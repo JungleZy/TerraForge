@@ -1,6 +1,7 @@
 """
 Database initialization and connection management for TerraForge
 """
+import os
 import sqlite3
 import logging
 import shutil
@@ -57,8 +58,9 @@ DEFAULT_CONFIGS = [
     ('proxy_auto_detect', 'true'),
     ('tile_servers', 'mts0,mts1,mts2,mts3'),
     # 地图底图源。与 tile_servers 分开的理由见 services/basemap_source.py：
-    # 底图走浏览器直连（不吃 proxy_url），下载走 Python（吃）。默认 Esri
-    # 卫星影像 —— Google 在国内直连不通，而底图没有代理可用。
+    # 两者是不同用途的地址（底图给页面看、tile_servers 是下载源），不是不同的
+    # 出网路径 —— 底图瓦片自 0.2.12 起由 routes/basemap_static.py 在服务端转发
+    # （同源 /basemap/{z}/{x}/{y}），所以它**吃** proxy_url。默认 Esri 卫星影像。
     ('basemap_source', 'esri'),
     ('cache_enabled', 'true'),
     ('dem_cache_enabled', 'true'),
@@ -291,11 +293,18 @@ def migrate_base_path_to_assets(cursor) -> bool:
     的那条链。
 
     只在该行**仍等于旧默认值**时改写：用户自定义过的路径不动。
-    旧位置已有底图时直接搬过去，不删掉重解压 224 MB；搬不动（跨盘）就留着，
-    新位置重新解压 —— 多占一份磁盘，但不会坏。
+    旧位置已有底图时搬过去，不删掉重解压 224 MB —— 但**必须原子落地**：同盘先试
+    `os.replace`（一次改名）；跨盘退化成 copytree 时先拷进同级 `.part` 暂存目录、
+    拷完才 `os.replace` 上去。直接 `shutil.move` 到最终位置是不行的：跨盘时它退化成
+    copytree+rmtree，可被中断，而 `os.walk` 先拷根级文件 —— 中断后典型状态是
+    **有 layer.json 没有瓦片层级**，而 `layer_json.parent_url_if_base_available`
+    只看 layer.json 判可用，于是又回到上面那条「高程全错且零报错」的链，并且因为
+    user_version 已经推到 3 而永不重试。见 docs/reviews/2026-08-08-full-project-review.md 的 T2。
+    搬不动就留着旧目录，新位置重新解压 —— 多占一份磁盘，但不会坏。
 
     整段包在 try 里且 `PRAGMA user_version = 3` 无条件执行：迁移出问题也不能
     阻断启动，更不能每次启动重试一遍（config 表缺失的畸形库会无限刷 warning）。
+    这条不变 —— 上面的原子性保证了「没搬成」等价于「没搬」，重解压那条路仍然通。
     """
     if cursor.execute('PRAGMA user_version').fetchone()[0] >= 3:
         return False
@@ -316,11 +325,22 @@ def migrate_base_path_to_assets(cursor) -> bool:
             old_dir = Path(Config.DOWNLOADS_DIR) / 'terrain' / 'base_z8'
             new_dir = Path(Config.BASE_DIR) / 'assets' / 'terrain' / 'base_z8'
             if old_dir.is_dir() and not new_dir.exists():
+                new_dir.parent.mkdir(parents=True, exist_ok=True)
+                staging = new_dir.with_name(new_dir.name + '.part')
                 try:
-                    new_dir.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(old_dir), str(new_dir))
+                    try:
+                        # 同盘:一次改名,不可能留半棵树。
+                        os.replace(old_dir, new_dir)
+                    except OSError:
+                        # 跨盘(含 Windows 跨卷):拷到同级 .part,拷完才改名上去。
+                        shutil.rmtree(staging, ignore_errors=True)
+                        shutil.copytree(old_dir, staging)
+                        os.replace(staging, new_dir)
+                        shutil.rmtree(old_dir, ignore_errors=True)
                     logger.info(f'底图缓存已搬到 {new_dir}')
                 except OSError as e:
+                    # 暂存目录必须清掉:留着就是 224 MB 无主残留,五类启动清扫都不认它。
+                    shutil.rmtree(staging, ignore_errors=True)
                     logger.warning(
                         f'底图缓存搬迁失败（{e!r}），旧目录保留在 {old_dir}，'
                         f'新位置会重新解压')
@@ -592,6 +612,28 @@ def init_database():
             )
         ''')
 
+        # 保留产物登记表。删任务时用户**没**勾「同时删除磁盘产物」的那一支:
+        # 任务行(以及 ON DELETE CASCADE 掉的 dem_terrain_jobs 行)一走,
+        # <output_path>/<pipeline>_task_<id>/ 这个目录就再没有任何 DB 引用 ——
+        # 启动清扫只认 pending_deletions 和几张任务表,从此永远扫不到它。
+        # 代价不只是「用户自己知道文件在哪」:多幅 DEM 物化的中间栅格
+        # (cesiumlab_terrain_<pid>_*.tif,与源数据同量级)就落在这个目录直下,
+        # 而 task_cleanup._materialised_sweep_roots 的扫描根正是从
+        # dem_terrain_jobs.output_dir 推出来的 —— 引用一断,GB 级残留同时失去
+        # 唯一的回收入口。
+        #
+        # 为什么不复用 pending_deletions 加一个 flag:那张表的每一个消费者读到
+        # 一行的含义都是「删掉它」,往里塞一行「永远不许删」是给下一个维护者埋雷
+        # (2026-08-08 评审 P1#6 就是这一类误读)。两张表、两个动词,不混。
+        # 同样刻意没有外键:任务行先删、这行后写,关联天生悬空。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS retained_outputs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS local_terrain_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -678,6 +720,17 @@ def init_database():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_contour_tasks_created_at
             ON contour_tasks(created_at)
+        ''')
+
+        # contour_tasks 是四张任务表里唯一漏了 status 索引的一张（另三张都有
+        # idx_*_status）。它的按状态查询有两处:list_tasks 的 status='active'
+        # 展开、以及 __init__ 里的孤儿恢复。表小,今天的运行代价可以忽略 ——
+        # 补上是为了消掉这份不对称:下一个在这里加状态查询的人既没有索引、
+        # 也没有任何信号提示本该有一个。IF NOT EXISTS 让存量库下次启动自动补建,
+        # 不需要 user_version 迁移。
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_contour_tasks_status
+            ON contour_tasks(status)
         ''')
 
         # 等高线 DEM 文件表

@@ -103,6 +103,10 @@ def _render(raster_dir: Path, png_path: Path):
 
         hs = None
         out = None
+        # tmp_path 在 try 之外定义：DEMProcessing 失败（gdal.Translate 返回
+        # None 时我们抛 RuntimeError）时 finally 里也要能引用它做清理，
+        # 定义在 try 内会变成 NameError 盖掉真正的错误。
+        tmp_path = png_path.with_name(png_path.stem + ".tmp.png")
         try:
             hs = gdal.DEMProcessing("", src_path, "hillshade", format="MEM")
             if hs is None:
@@ -111,7 +115,6 @@ def _render(raster_dir: Path, png_path: Path):
             if x > _MAX_WIDTH:
                 y = max(1, round(y * _MAX_WIDTH / x))
                 x = _MAX_WIDTH
-            tmp_path = png_path.with_name(png_path.stem + ".tmp.png")
             out = gdal.Translate(str(tmp_path), hs, format="PNG", width=x, height=y)
             if out is None:
                 raise RuntimeError(f"gdal.Translate failed for {png_path}")
@@ -124,6 +127,14 @@ def _render(raster_dir: Path, png_path: Path):
             # 异常路径同样要放掉句柄，否则 MEM 数据集会一直占着内存
             out = None
             hs = None
+            # Translate 失败或 os.replace 失败时 .tmp.png 会留在任务产物目录里
+            # （成功路径已被 replace 搬走，这里是 no-op）。它不是缓存、没人认，
+            # 每次失败的预览请求攒一份，只能靠删任务清掉。
+            # PNG 驱动不写 .aux.xml 边车，所以只有这一个残留物。
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning(f"Failed to remove temp hillshade {tmp_path}: {e}")
             if thumb_path:
                 gdal.Unlink(thumb_path)
     finally:

@@ -23,14 +23,16 @@ Access-Control-Allow-Origin。上游一旦返回 4xx，错误页通常不带这�
 """
 
 import logging
+import time
 import urllib.error
 import urllib.request
 
-from flask import Blueprint, Response, abort
+from flask import Blueprint, Response, abort, current_app
 
 from src.services.basemap_source import resolve_basemap
 from src.services.config_manager import ConfigManager
 from src.services.proxy_autodetect import resolve_from_config
+from src.services.tile_url_probe import is_link_local_url
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,32 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 _MAX_ZOOM = 24
 
+# 底图源解析结果的短 TTL 缓存。这是瓦片热路径:改造前每张瓦片要读三个配置项
+# (basemap_source / tile_servers / default_style),而 ConfigManager.get 每次都
+# 新开一条 sqlite 连接 —— 首屏几十上百张瓦片就是几百次连接开销,还与
+# _PROXY_WAIT_S 的线程占用叠加。缓存挂 app.extensions 而非模块级:测试
+# fresh-import app 时能拿到干净缓存,routes 模块本身不会被重导入
+# (口径与 terrain_static._base_path_cached 一致,那边为同一个问题写过同一套)。
+# TTL 到期即失效,所以配置页改完底图源最多 _SOURCE_TTL_S 秒生效,不需要
+# 失效钩子;缓存的是解析【结果】而不是三个原始值,顺带省掉每瓦片一次
+# resolve_basemap。
+_CACHE_KEY_SOURCE = "basemap_static_resolved_source"
+_SOURCE_TTL_S = 5.0
+
+
+def _resolved_basemap_cached():
+    now = time.monotonic()
+    entry = current_app.extensions.get(_CACHE_KEY_SOURCE)
+    if entry is not None and now - entry[0] < _SOURCE_TTL_S:
+        return entry[1]
+    resolved = resolve_basemap(
+        config_manager.get("basemap_source", ""),
+        tile_servers=config_manager.get("tile_servers", ""),
+        default_style=config_manager.get("default_style", "m"),
+    )
+    current_app.extensions[_CACHE_KEY_SOURCE] = (now, resolved)
+    return resolved
+
 
 @basemap_static_bp.route("/<int:z>/<int:x>/<int:y>", methods=["GET"])
 def basemap_tile(z: int, x: int, y: int):
@@ -63,17 +91,21 @@ def basemap_tile(z: int, x: int, y: int):
     if not (0 <= x < limit and 0 <= y < limit):
         abort(404)
 
-    resolved = resolve_basemap(
-        config_manager.get("basemap_source", ""),
-        tile_servers=config_manager.get("tile_servers", ""),
-        default_style=config_manager.get("default_style", "m"),
-    )
+    resolved = _resolved_basemap_cached()
     upstream = (resolved["upstream"]
                 .replace("{z}", str(z))
                 .replace("{x}", str(x))
                 .replace("{y}", str(y)))
     if not upstream.startswith(("http://", "https://")):
         logger.error(f"底图上游地址不是 http(s)：{upstream!r}")
+        abort(502)
+    # 链路本地段拒取。这条路会把上游响应体**原样回吐**给浏览器,所以一个指向
+    # 169.254.169.254 的模板等于把服务端当跳板去读云实例元数据。写入侧
+    # (basemap_source.validate_basemap_source) 已经拦了,这里再拦一次是因为
+    # 存量库里可能已经存着这样的值 —— 校验只管新写入,不会回溯改写已有配置。
+    # 只拦链路本地:自建镜像在 127.0.0.1 / 局域网 IP 是正当用法。
+    if is_link_local_url(upstream):
+        logger.error(f"底图上游指向链路本地地址,拒绝取瓦片：{upstream!r}")
         abort(502)
 
     proxy = resolve_from_config(config_manager, wait_s=_PROXY_WAIT_S)

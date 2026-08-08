@@ -131,8 +131,13 @@ def _seed_dem_task(db, status="running", file_statuses=("pending",), failed_file
         conn.close()
 
 
-def _seed_contour_task(db, status="running", file_statuses=("pending",)):
-    """一条正在下载 DEM 的等高线任务（water=0，避开 best-effort 的 ASTWBD 支线）。"""
+def _seed_contour_task(db, status="running", file_statuses=("completed",)):
+    """一条准备进渲染的等高线任务（dataset='upload'，water=0）。
+
+    下载驱动的那半程（dataset='ASTGTM.003' + pending 文件行）已整段删除，
+    存量此类行只会被 _execute 的守卫判失败 —— 所以本用例改用真正可达的上传行，
+    文件行建的时候就是 completed（上传路径没有下载阶段）。
+    """
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -141,7 +146,7 @@ def _seed_contour_task(db, status="running", file_statuses=("pending",)):
             INSERT INTO contour_tasks
               (name, status, north, south, east, west, dataset, contour_interval,
                water, zoom_min, zoom_max, output_path, total_files)
-            VALUES ('contour-task', ?, 1, 0, 1, 0, 'ASTGTM.003', 10, 0, 10, 12, ?, ?)
+            VALUES ('contour-task', ?, 1, 0, 1, 0, 'upload', 10, 0, 10, 12, ?, ?)
             """,
             (status, tempfile.gettempdir(), len(file_statuses)),
         )
@@ -152,7 +157,7 @@ def _seed_contour_task(db, status="running", file_statuses=("pending",)):
                 INSERT INTO contour_files (task_id, granule_id, kind, status)
                 VALUES (?, ?, 'dem', ?)
                 """,
-                (task_id, f"ASTGTMV003_N00E00{idx}_dem.tif", file_status),
+                (task_id, f"upload_{idx}_dem.tif", file_status),
             )
         conn.commit()
         return task_id
@@ -197,8 +202,10 @@ def test_map_tile_failure_marks_parent_failed_not_completed(monkeypatch, tmp_pat
     task_id = _seed_map_task(db)
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
-        await progress_callback(tiles[0], "failed", "boom")
-        return [{"tile": tiles[0], "status": "failed", "error": "boom"}]
+        # tiles 是生成器(任务侧不再物化全网格待下载清单),只能取一次。
+        tile = next(iter(tiles))
+        await progress_callback(tile, "failed", "boom")
+        return [{"tile": tile, "status": "failed", "error": "boom"}]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -256,7 +263,13 @@ def test_map_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
 
 
 def test_contour_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
-    """等高线侧同款：见 test_map_paused_task_is_not_overwritten_by_failure。"""
+    """等高线侧同款：见 test_map_paused_task_is_not_overwritten_by_failure。
+
+    原用例把「暂停之后抛异常」注入在下载回调里；下载半程已整段删除，所以改注入
+    到渲染这一步（唯一还存在的长耗时阶段）。被断言的不变量没变：收尾兜底那句
+    UPDATE 带 `status NOT IN ('paused','completed')`，不得把用户的暂停抢成
+    failed。反事实：去掉那个 NOT IN 条件，这里立刻读到 'failed'。
+    """
     from conftest import fresh_import
 
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
@@ -267,11 +280,13 @@ def test_contour_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path
     ctm = ctm_mod.ContourTaskManager(socketio=FakeSocketIO())
     task_id = _seed_contour_task(db)
 
-    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
         ctm.pause_task(task_id)
-        raise RuntimeError("network died after pause")
+        raise RuntimeError("render died after pause")
 
-    ctm.engine.download_files = fake_download_files
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
 
     try:
         asyncio.run(ctm._execute(task_id))
@@ -305,15 +320,31 @@ def test_dem_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
 
 
 def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
+    """稀疏表里留着历史 failed 行的瓦片这次成功 → downloaded +1 **且** failed -1。
+
+    钉的是 _status_count_deltas 的 old_status 口径:它必须从稀疏失败表的
+    内存镜像 failed_keys 推出来,而不是默认 None(默认 None 会得到
+    downloaded=1/failed=1,任务带着一条不存在的失败被判 failed)。
+
+    这条测试原先是**连报两发 completed**、断言 downloaded_tiles==1,钉的其实是
+    「同一次运行里重复上报不重复计数」。支撑那条语义的是一份
+    session_status: Dict[(z,x,y), str] —— 每块瓦片一项、从不裁剪的全网格字典,
+    正是 2026-08-08 评审 P1#4 点名的内存放大器之一。而它防的情况在真实链路上
+    不存在:download_engine._download_single_tile 的四个出口都是「回调一次后
+    立刻 return」。所以改成上报一次(与引擎的真实契约一致),而「每块瓦片每次
+    运行恰好上报一次」这条前提由
+    tests/test_fix_pause_resume_and_memory.py::test_engine_reports_each_tile_exactly_once
+    直接钉在引擎上。
+    """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     task_id = _seed_map_task(db, tile_statuses=("failed",), failed_tiles=1)
     tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
-        await progress_callback(tiles[0], "completed", None)
-        await progress_callback(tiles[0], "completed", None)
-        return [{"tile": tiles[0], "status": "completed"}]
+        tile = next(iter(tiles))
+        await progress_callback(tile, "completed", None)
+        return [{"tile": tile, "status": "completed"}]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -321,7 +352,9 @@ def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
 
     row = _map_task_row(db, task_id)
     assert row["downloaded_tiles"] == 1
-    assert row["failed_tiles"] == 0
+    assert row["failed_tiles"] == 0, (
+        "历史 failed 行在同一块瓦片成功后必须被抵消,否则任务被误判 failed"
+    )
 
 
 def test_dem_progress_counts_status_transitions(monkeypatch, tmp_path):

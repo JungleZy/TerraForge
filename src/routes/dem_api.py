@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from flask import Blueprint, jsonify, request
 
-from src.services.task_cleanup import resolve_stored_output_dir
+from src.services.task_cleanup import record_retained_output, resolve_stored_output_dir
 from src.routes.api import _delete_payload
 from src.routes import terrain_static
 
@@ -100,14 +100,17 @@ def delete_dem_task(task_id: int):
         # M10：路径必须走 resolve_stored_output_dir —— 裸 Path() 对存量相对值
         # 按【进程 CWD】解析，打包 exe 从快捷方式启动时删的是另一个目录（且照回
         # 200 success）。
-        artifact_dir = None
-        if request.args.get("delete_files", "").lower() in ("1", "true", "yes"):
-            artifact_dir = (
+        delete_files = request.args.get("delete_files", "").lower() in ("1", "true", "yes")
+        # 产物目录两条路都要算出来：要删的那条交给 manager，保留的那条得登记，
+        # 否则它就是零引用目录（见下面 record_retained_output 那段）。
+        task_dir = None
+        if task.get("output_path"):
+            task_dir = (
                 resolve_stored_output_dir(task["output_path"]) / f"dem_task_{task_id}")
 
         outcome = dem_task_manager.delete_task(
             task_id,
-            artifact_dir=artifact_dir,
+            artifact_dir=task_dir if delete_files else None,
             # 行删掉后同步清 /terrain/dem 静态路由的 output_path 缓存，否则
             # delete_files=false（磁盘切片保留）时已删任务的瓦片仍能被访问到。
             # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
@@ -116,9 +119,26 @@ def delete_dem_task(task_id: int):
         if not outcome.row_deleted:
             return jsonify({"error": f"DEM task {task_id} not found"}), 404
 
-        return jsonify(_delete_payload(
+        payload = _delete_payload(
             f"DEM task {task_id} deleted", outcome.files_removed,
-            files_deferred=outcome.files_deferred))
+            files_deferred=outcome.files_deferred)
+
+        # delete_files=false 是删除对话框的默认。行一走，dem_terrain_jobs 也随
+        # 外键级联消失，<output_path>/dem_task_<id>/ 从此没有任何 DB 引用 ——
+        # 启动清扫只认 pending_deletions 和任务表，扫不到它；半成品切片目录
+        # （用户点删除时任务往往还没跑完）与目录直下那个与源数据同量级的物化
+        # 中间栅格就永久留在用户盘上。登记一行把引用接回来。
+        # 【只登记，不删文件】—— 用户说了保留，一个字节都不动。
+        if not delete_files and task_dir is not None:
+            try:
+                if task_dir.exists():
+                    record_retained_output(task_dir)
+                    payload["files_retained_path"] = str(task_dir)
+            except OSError as e:
+                logger.warning(
+                    f"DEM task {task_id}: cannot stat retained output dir: {e}")
+
+        return jsonify(payload)
 
     except ValueError as e:
         # get_task 的 "not found" -> 404。运行中不再拒删，这里没有 400 分支了。

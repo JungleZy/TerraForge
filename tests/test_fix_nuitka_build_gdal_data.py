@@ -57,6 +57,11 @@ def build_env(monkeypatch, tmp_path):
     monkeypatch.setattr(nuitka_build, 'copy_extension_system_libs', lambda d: None)
     monkeypatch.setattr(nuitka_build, 'copy_extension_system_dlls_windows', lambda d: None)
     monkeypatch.setattr(nuitka_build, 'verify_no_missing_libs', lambda d: None)
+    # 同上:本文件测的是 gdal-data/proj-data 的发现逻辑，产物自检不在范围内。
+    # verify_app_data 走真实的 glob（不吃下面的 os_shim），在这个假 dist 目录上
+    # 必然报「哨兵缺失」，把无关的 main() 用例全带红。它自己的用例在
+    # tests/test_fix_build_ci_hardening.py 里。
+    monkeypatch.setattr(nuitka_build, 'verify_app_data', lambda d: None)
     monkeypatch.setattr(os_shim.path, 'isfile', lambda p: True)
     monkeypatch.setattr(os_shim, 'rename', lambda s, d: None)
     monkeypatch.setattr(shutil_shim, 'rmtree', lambda p, **k: None)

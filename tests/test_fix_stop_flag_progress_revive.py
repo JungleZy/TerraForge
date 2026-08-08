@@ -102,7 +102,9 @@ def _run_two_progress_pushes(tm, sio, task_id, stop, *, set_stop_between):
     counts = {}
 
     async def fake_batch(tiles, style, progress_callback, stop_flag=None):
-        tile = tiles[0]
+        # tiles 是生成器(引擎按 DOWNLOAD_BATCH_SIZE 惰性 islice,任务侧不再
+        # 物化全网格清单),不能下标取。
+        tile = next(iter(tiles))
         cache_path = tile.cache_path(style)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(b'fresh-tile')

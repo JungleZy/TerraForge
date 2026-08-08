@@ -79,8 +79,20 @@ def test_create_task_sanitizes_name(monkeypatch, tmp_path):
     )
 
 
-def test_execute_resolves_relative_output_path_against_downloads(monkeypatch, tmp_path):
-    """I16: 历史数据里相对 output_path 不能按进程 CWD 解析。"""
+def test_execute_resolves_relative_output_path_without_using_cwd(monkeypatch, tmp_path):
+    """I16: 历史数据里相对 output_path 不能按进程 CWD 解析。
+
+    钉的是「不依赖 CWD」+「与存量归一化同一套口径」，**不是**某个具体目录：
+    2026-08-08 起 DEM 侧统一走 `task_cleanup.resolve_stored_output_dir`（M10 归一
+    化用的就是它），裸相对值落到 BASE_DIR；此前 DEM 侧另有一份走
+    `geo_validation.resolve_output_dir` 的私有 helper，落到 DOWNLOADS_DIR ——
+    同一字段两套解析规则，正是 M10 要消灭的东西（见 P1#5）。
+
+    注意这一行是**直接 INSERT** 造出来的:`create_task` 走
+    `require_absolute_output_dir`，实测拒收一切相对值，所以线上的
+    `dem_tasks.output_path` 恒为绝对路径（两套口径对绝对值一致）。本用例守的是
+    手工改库/远古存量这类边角输入不会被按 CWD 解析。
+    """
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
 
@@ -113,10 +125,16 @@ def test_execute_resolves_relative_output_path_against_downloads(monkeypatch, tm
     mgr.engine.download_files = fake_download_files
     asyncio.run(mgr._execute(task_id))
 
-    expected = (tmp_path / "downloads" / "rel_out" / f"dem_task_{task_id}").resolve()
+    from src.services.task_cleanup import resolve_stored_output_dir
+
+    expected = (resolve_stored_output_dir("rel_out") / f"dem_task_{task_id}").resolve()
     assert os.path.realpath(str(seen["output_dir"])) == os.path.realpath(str(expected)), (
-        f"相对 output_path 必须相对 DOWNLOADS_DIR 解析，实际: {seen['output_dir']}"
+        f"DEM 侧必须走 resolve_stored_output_dir（与 M10 存量归一同一套口径），"
+        f"实际: {seen['output_dir']}"
     )
+    # 「不依赖进程 CWD」那一半单独钉住:CWD 换到别处结果必须不变。
+    monkeypatch.chdir(tmp_path / "downloads")
+    assert (resolve_stored_output_dir("rel_out") / f"dem_task_{task_id}").resolve() == expected
 
 
 def test_local_path_uses_actual_on_disk_basename(monkeypatch, tmp_path):

@@ -9,12 +9,12 @@
 - process_watchdog 用 /proc/<pid>/cmdline 识别 PID 复用；
 - nuitka_build pkg-config 调用加 win32 守卫、darwin gdal 候选去重、
   verify_no_missing_libs 把 exe 本体纳入 ldd 检查；
-- build.sh / build.bat 在 requirements.txt 缺少 GDAL== pin 时给出明确报错。
+- build.sh / build.bat 的 GDAL 闸门收口到 scripts/check_gdal.py：接受
+  requirements.txt 声明的范围、拒绝越界版本、拒绝缺 _gdal_array 的绑定。
 """
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -298,81 +298,132 @@ def test_verify_no_missing_libs_ok_when_resolved(monkeypatch, tmp_path):
     nuitka_build.verify_no_missing_libs(str(tmp_path))
 
 
-# --------------------- build.sh / build.bat: GDAL pin 缺失明确报错
+# --------------------- build.sh / build.bat 的 GDAL 闸门(scripts/check_gdal.py)
+#
+# 2026-08-08 前这里钉的是「requirements.txt 缺少 GDAL== pin 时报错」——那条断言
+# 把缺陷本身钉住了:requirements.txt 故意给的是范围(见该文件 :17),所以 `^GDAL==`
+# 恒不命中,build.sh 在 `set -euo pipefail` 下于赋值那一行静默 exit 1(连报错都打
+# 不出来),build.bat 则每次都拒绝构建。旧测试只截取「读 pin」那一段跑,喂的又是
+# 手写的 `GDAL==3.8.4`,所以永远看不到真 requirements.txt 会让脚本死掉。
+# 现在钉的是闸门真正该判的两件事,并且用真 requirements.txt 的写法喂它。
 
-def _find_real_bash():
-    """找真正可用的 bash，找不到返回 None。
+CHECK_GDAL = os.path.join('scripts', 'check_gdal.py')
 
-    Windows 的 System32\\bash.exe 是 WSL 安装占位 stub：which 找得到、能执行，
-    但没有发行版时只打印「Windows Subsystem for Linux … to install」（UTF-16）
-    并以非零退出——而且它对本该失败的调用的退出码与参数长度相关，功能验证
-    用 `true` 挡不住。可靠的验明正身：`--version` 必须输出 GNU bash
-    （WSL/git-bash 都是 GNU，stub 只会打印安装提示）。
-    Windows 上 GitHub Actions 的 git-bash 常不在 pytest 的 PATH 里，
-    额外探测 Git for Windows 的默认安装位置。
+
+def _run_check_gdal(req_text, tmp_path, *, osgeo_version='3.11.4',
+                    with_gdal_array=True):
+    """子进程跑 scripts/check_gdal.py,返回 (returncode, 合并输出)。
+
+    用 PYTHONPATH 前置一个 osgeo 桩包来控制「装的是哪个版本」「_gdal_array 在不
+    在」:真 osgeo 已经 import 进本进程了,这两件事同进程内无法伪造,而它们恰恰是
+    这道闸门唯一要判的东西。桩目录排在 site-packages 之前,所以能盖住真包。
     """
-    candidates = []
-    found = shutil.which('bash')
-    if found:
-        candidates.append(found)
-    if os.name == 'nt':
-        candidates += [
-            os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
-                         'Git', 'bin', 'bash.exe'),
-            os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
-                         'Git', 'bin', 'bash.exe'),
-        ]
-    for exe in candidates:
-        try:
-            proc = subprocess.run([exe, '--version'], capture_output=True, timeout=10)
-        except Exception:
-            continue
-        if proc.returncode == 0 and b'GNU bash' in proc.stdout:
-            return exe
-    return None
+    stub = tmp_path / 'stub'
+    (stub / 'osgeo').mkdir(parents=True)
+    (stub / 'osgeo' / '__init__.py').write_text('', encoding='utf-8')
+    (stub / 'osgeo' / 'gdal.py').write_text(
+        f'__version__ = {osgeo_version!r}\n', encoding='utf-8')
+    if with_gdal_array:
+        (stub / 'osgeo' / 'gdal_array.py').write_text('', encoding='utf-8')
 
+    req = tmp_path / 'requirements.txt'
+    req.write_text(req_text, encoding='utf-8')
 
-_BASH = _find_real_bash()
-needs_bash = pytest.mark.skipif(
-    _BASH is None,
-    reason='需要可用的 GNU bash（Windows 的 WSL 占位 stub 不算）')
-
-
-def _build_sh_pin_check_segment():
-    """截取 build.sh 中「读 pin + 缺失检查」一段单独执行(避开 uv install)。"""
-    content = _read('build.sh')
-    return 'REQUIRED_GDAL=' + content.split('REQUIRED_GDAL=', 1)[1].split(
-        'SYSTEM_GDAL=', 1)[0]
-
-
-@needs_bash
-def test_build_sh_missing_gdal_pin_clear_error(tmp_path):
-    (tmp_path / 'requirements.txt').write_text('flask\n', encoding='utf-8')
+    env = dict(os.environ)
+    env['PYTHONPATH'] = str(stub) + os.pathsep + env.get('PYTHONPATH', '')
     proc = subprocess.run(
-        [_BASH, '-c', _build_sh_pin_check_segment()],
-        cwd=tmp_path, capture_output=True, text=True,
-        # 脚本输出含 UTF-8 中文；Windows 上 text=True 默认 cp1252，会解成乱码
-        encoding='utf-8', errors='replace',
+        [sys.executable, os.path.join(ROOT, CHECK_GDAL), str(req)],
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        env=env, cwd=str(tmp_path),
     )
-    assert proc.returncode != 0
-    assert 'requirements.txt 缺少 GDAL== pin' in proc.stdout + proc.stderr
+    return proc.returncode, proc.stdout + proc.stderr
 
 
-@needs_bash
-def test_build_sh_pin_present_passes_check(tmp_path):
-    """回归保护:pin 存在时检查放行,且解析出版本号。"""
-    (tmp_path / 'requirements.txt').write_text('GDAL==3.8.4\n', encoding='utf-8')
+# requirements.txt 里 GDAL 那一行的真实写法。写死在这里是有意的:政策变了就该
+# 有用例红,而不是像旧版那样两个脚本悄悄失效。
+_REAL_SPEC_LINE = 'aiohttp==3.9.1\nGDAL>=3.8,<4\nnumpy==1.26.4\n'
+
+
+def test_gdal_gate_accepts_the_range_that_requirements_actually_declares(tmp_path):
+    """核心回归:范围(而非 == pin)必须放行。旧实现在这条上 exit 1。"""
+    rc, out = _run_check_gdal(_REAL_SPEC_LINE, tmp_path)
+    assert rc == 0, out
+    assert '3.11.4' in out
+
+
+def test_gdal_gate_range_matches_the_real_requirements_file():
+    """真 requirements.txt 必须能过闸门 —— 否则 ./build.sh 又不可用了。"""
     proc = subprocess.run(
-        [_BASH, '-c', _build_sh_pin_check_segment() + '\necho "PIN:$REQUIRED_GDAL"'],
-        cwd=tmp_path, capture_output=True, text=True,
-        encoding='utf-8', errors='replace',
+        [sys.executable, os.path.join(ROOT, CHECK_GDAL)],
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        cwd=ROOT,
     )
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip().endswith('PIN:3.8.4')
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def test_build_bat_missing_gdal_pin_clear_error():
-    content = _read('build.bat')
-    assert 'requirements.txt 缺少 GDAL== pin' in content, (
-        'build.bat 必须在 GDAL== pin 缺失时给出明确报错'
-    )
+def test_gdal_gate_rejects_version_outside_the_declared_range(tmp_path):
+    """上限 `<4` 有实测依据(GDAL 4 默认开异常会让 _raise_on_gdal_error 空转)。"""
+    rc, out = _run_check_gdal(_REAL_SPEC_LINE, tmp_path, osgeo_version='4.0.1')
+    assert rc != 0
+    assert '<4' in out
+
+
+def test_gdal_gate_rejects_bindings_without_gdal_array(tmp_path):
+    """带 build isolation 装出来的绑定缺 _gdal_array,而版本号照样读得出。
+
+    旧闸门只比 major.minor,检不出这一类 —— exe 能构建、能启动、能服务首页,
+    所有走 ReadAsArray/WriteArray 的 DEM/地形/等高线作业才在运行时炸。
+    """
+    rc, out = _run_check_gdal(_REAL_SPEC_LINE, tmp_path, with_gdal_array=False)
+    assert rc != 0
+    assert 'gdal_array' in out
+    assert '--no-build-isolation' in out, '报错必须带上正确的装法'
+
+
+def test_gdal_gate_reports_a_missing_dependency_line(tmp_path):
+    """依赖行整行不见了要响亮报错 —— 且必须真的打出来(旧版这句是死代码)。"""
+    rc, out = _run_check_gdal('flask\n', tmp_path)
+    assert rc != 0
+    assert 'GDAL' in out and 'requirements.txt' in out
+
+
+def test_gdal_gate_ignores_the_install_hint_in_requirements_comments(tmp_path):
+    """requirements.txt 的注释里就有 `GDAL==$(gdal-config --version)` 示例。
+
+    依赖行匹配是行首锚定的,注释里的示例不能被当成声明的约束。
+    """
+    rc, out = _run_check_gdal(
+        '# pip install --no-build-isolation "GDAL==2.4.0"\nGDAL>=3.8,<4\n', tmp_path)
+    assert rc == 0, out
+
+
+def _strip_script_comments(name, content):
+    """去掉整行注释 —— 注释里提 `GDAL==` / requirements.txt 是解释历史，不是实现。"""
+    prefix = 'REM' if name.endswith('.bat') else '#'
+    return '\n'.join(
+        line for line in content.splitlines()
+        if not line.lstrip().upper().startswith(prefix.upper())
+        or (prefix == '#' and line.startswith('#!')))
+
+
+def test_build_scripts_do_not_reimplement_requirements_parsing():
+    """两个脚本都只许调共享闸门,不许自己再解析一遍 requirements.txt。
+
+    「一份规则两处实现」正是这个缺陷的成因:requirements.txt 的 pin/range 政策
+    改了,两个脚本里的正则没跟上,而 CI 走 nuitka_build.py 绕开了它们。
+    """
+    for name in ('build.sh', 'build.bat'):
+        raw = _read(name)
+        assert 'check_gdal.py' in raw, f'{name} 必须调用 scripts/check_gdal.py'
+        code = _strip_script_comments(name, raw)
+        assert 'GDAL==' not in code, (
+            f'{name} 又在自己解析 GDAL== pin —— requirements.txt 给的是范围')
+        # requirements.txt 可以被【安装】任意多次(依赖安装 + nuitka 缺失时补装),
+        # 也可以在 echo/注释里被提到 —— 但一次都不许被【读取解析】。原来这里断言
+        # 出现次数 == 1,那是把「不许自己解析」误当成「只许提一次」,nuitka 改成从
+        # requirements.txt 带版本安装之后就误报了。改成直接钉「没有解析构造」。
+        assert not re.search(
+            r'(grep|findstr|awk|sed|cat|type|for\s*/f)[^\n]*requirements\.txt', code), (
+            f'{name} 又在自己解析 requirements.txt —— 判据只许住在 scripts/check_gdal.py')
+        assert 'uv pip install -r requirements.txt' in code, (
+            f'{name} 仍然必须按 requirements.txt 装依赖')

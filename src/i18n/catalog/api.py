@@ -21,10 +21,17 @@ MESSAGES = {
     },
 
     # ---- /api/tasks（含四条管线共用的删除响应与缓存清理拦截）----
+    # files_removed=False 有两种成因，文案必须都盖住：产物目录没通过删除护栏
+    # （越界，永远删不掉），或者文件正被占用导致 rmtree 静默失败（Windows 上
+    # 资源管理器预览、看图软件、杀软扫描都会造成）。后者已经登记进
+    # pending_deletions，下次启动会自动补删 —— 只说「未通过安全校验」会把这一
+    # 半说成另一半（2026-08-08 评审 P1#6 之后 files_removed 才有第二种成因）。
     'api.tasks.files_kept_unsafe_dir': {
-        'zh': '任务记录已删除；产物目录未通过安全校验，磁盘文件已保留',
-        'en': 'Task record deleted; the output directory failed the safety '
-              'check, so files on disk were kept',
+        'zh': '任务记录已删除；产物目录未能删除（未通过安全校验，或文件正被占用），'
+              '磁盘文件已保留。占用导致的失败会在下次启动时自动重试',
+        'en': 'Task record deleted, but the output directory could not be removed '
+              '(it failed the safety check, or its files are in use), so files on '
+              'disk were kept. In-use failures are retried on the next startup',
     },
     'api.tasks.cache_clear_blocked': {
         'zh': '有任务尚未结束，清空缓存会让它们的产物静默缺瓦片。'

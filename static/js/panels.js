@@ -20,6 +20,13 @@
     var PANELS = { history: 'historyPanel', records: 'historyPanel', config: 'configPanel' };
     var inited = {};
     var current = null;
+    // 面板打开前那个焦点元素（通常是触发它的 .map-panel-btn），关闭时焦点还给它。
+    var restoreFocus = null;
+
+    // 焦点环用的候选集。`[tabindex="-1"]` 排除在外：面板自身就带 -1，
+    // 它只供程序化聚焦，不该出现在 Tab 序里。
+    var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),'
+        + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
     function panelEl(name) { return document.getElementById(PANELS[name]); }
     function backdrop() { return document.getElementById('panelBackdrop'); }
@@ -28,13 +35,24 @@
         var el = panelEl(name);
         if (!el) return;                    // 非首页：无面板，链接正常跳转
         if (current === name) return;
+        // 必须赶在 closePanel 之前取：面板互切时 closePanel 可能把焦点交还出去，
+        // 之后再读 activeElement 拿到的就是上一个面板的触发钮了。
+        var opener = document.activeElement;
         closePanel(true);
+        restoreFocus = (opener && opener !== document.body && typeof opener.focus === 'function')
+            ? opener : null;
         current = name;
         backdrop().hidden = false;
         el.hidden = false;
         requestAnimationFrame(function () {
             backdrop().classList.add('panel-backdrop--in');
             el.classList.add('workbench-panel--in');
+            // 焦点收进面板：面板行为上是模态（遮罩 + Esc 关闭），焦点留在外面
+            // 等于读屏与键盘用户还站在被遮罩盖住的那半个界面上。落点选关闭钮
+            // 而不是第一个表单控件 —— 用户至少能立刻退出去（ui.js 的自定义
+            // confirm 是同一套：挂载后 focus 到默认按钮）。
+            var closeBtn = el.querySelector('[data-panel-close]');
+            try { (closeBtn || el).focus(); } catch (e) { /* 元素可能已被移除 */ }
         });
         document.addEventListener('keydown', onKey);
 
@@ -96,6 +114,14 @@
         el.addEventListener('transitionend', done, { once: true });
         setTimeout(done, 350);              // transitionend 不触发的兜底
         document.removeEventListener('keydown', onKey);
+        // 焦点归还：面板马上要 hidden，焦点若还落在它子树里，浏览器会把焦点
+        // 甩回 <body>，键盘用户得从头 Tab 一遍。判据是「焦点确实在面板里」而
+        // 不是无条件还原 —— 面板互切时焦点在刚点的那颗触发钮上（面板之外），
+        // 无条件还原会把它抢走再塞进新面板，白跳一次。
+        if (el.contains(document.activeElement) && restoreFocus) {
+            try { restoreFocus.focus(); } catch (e) { /* 触发钮可能已不在文档里 */ }
+        }
+        restoreFocus = null;
         document.querySelectorAll('[data-panel]').forEach(function (b) {
             b.classList.remove('map-panel-btn--active');
         });
@@ -105,7 +131,41 @@
         }
     }
 
-    function onKey(e) { if (e.key === 'Escape') closePanel(); }
+    // 可聚焦且**当前可见**的后代。offsetParent 为空即被 hidden/display:none
+    // 收起（配置面板里有一大票这种控件），把它们算进环里会出现「Tab 一下焦点
+    // 消失」。
+    function focusables(el) {
+        return [].slice.call(el.querySelectorAll(FOCUSABLE)).filter(function (n) {
+            return n.offsetParent !== null;
+        });
+    }
+
+    function onKey(e) {
+        if (e.key === 'Escape') { closePanel(); return; }
+        if (e.key !== 'Tab' || !current) return;
+        // 自定义确认框开着时让位：它的浮层是运行时 append 到 document.body 的，
+        // 不在面板子树里，焦点环会把焦点从「确定/取消」上抢回面板。
+        // 这也是这里做焦点环、而不是给面板之外的兄弟节点批量上 inert 的原因 ——
+        // 那会让从面板里弹出的 confirm / toast 一起变成不可交互。
+        if (document.querySelector('.app-confirm-overlay')) return;
+        var el = panelEl(current);
+        if (!el) return;
+        var list = focusables(el);
+        if (!list.length) { e.preventDefault(); try { el.focus(); } catch (err) {} return; }
+        var first = list[0];
+        var last = list[list.length - 1];
+        if (!el.contains(document.activeElement)) {
+            // 焦点已经溜到面板外（点了遮罩、或上一次 Tab 漏出去）：拉回来
+            e.preventDefault();
+            (e.shiftKey ? last : first).focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+        } else if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+        }
+    }
 
     document.addEventListener('DOMContentLoaded', function () {
         // 任何带 data-panel 的元素（地图浮动按钮等）：首页有面板就拦截开面板；

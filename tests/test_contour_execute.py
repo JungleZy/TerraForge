@@ -1,8 +1,30 @@
+"""ContourTaskManager._execute 的行为测试。
+
+2026-08-08 评审之后，_execute 只服务本地源（dataset='upload' / 'dem_task'）：
+下载驱动的那半程连同它的 create_task 一起删掉了（约 110 行从 dem_task_manager
+拷来的代码，没有任何用户可达路径能执行到它，因此一直在无声漂移）。存量下载行
+由一行守卫直接判失败。
+
+因此本文件里的种子行从 `dataset='COP-DEM-GLO-30'` 换成了 `dataset='upload'`：
+被断言的不变量（进度节流、载荷形态、删除后不许再推送、暂停不被误伤、收尾列语义）
+与数据源无关，只有「怎么进到渲染阶段」变了。
+
+随之删掉的用例（它们的被测对象整段不存在了，留着就是在测死代码）：
+* test_execute_total_tiles_covers_whole_dem_not_bbox —— 按 1° granule 并集预算
+  total_tiles 是下载路径独有的；本地源的 total 由引擎 warp 完按实际覆盖上报，
+  由本文件的节流用例断言（total_tiles == 100 来自 progress_cb）。
+* test_execute_water_download_failure_is_not_fatal / ASTWBD 下载支线。
+* test_download_progress_local_path_uses_flat_basename —— 扁平 basename 是
+  dem_download_engine 的落盘约定，只有下载回调会写 local_path。
+* test_in_flight_bytes_drive_download_speed —— 渲染阶段没有网络字节；
+  SpeedMeter 的契约由 tests/test_download_speed.py 与 DEM 侧用例守。
+* test_deleted_task_emits_no_further_download_progress —— 下载阶段不复存在。
+"""
+
 import asyncio
 import importlib
 import os
 import sys
-from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -20,19 +42,17 @@ def _setup(monkeypatch, tmp_path):
     return db, ctm_mod
 
 
-def _seed_running_download_task(db, box=None, background=None):
-    """直接 SQL 造一个旧版下载驱动的 running 任务（下载驱动 create_task 已删除,
-    旧任务的下载→渲染恢复路径仍要测）。行形态对齐旧 create_task:默认
-    COP-DEM-GLO-30 + terrain_shade/water ON,granule 推导沿用 src.services.dem_granules。"""
+def _seed_running_task(db, background=None, dataset="upload",
+                       file_statuses=("completed",)):
+    """一条 running 的等高线任务行 + 它的 contour_files 行。
+
+    默认形态对齐 create_task_with_files 建出来的行：dataset='upload'、water=0、
+    文件行建的时候就是 completed（没有下载阶段）。dataset 可以传别的值来构造
+    存量下载行，专给守卫用例。
+    """
+    from pathlib import Path
+
     from src.core import config
-    from src.services.dem_granules import (
-        tiles_for_bbox, copernicus_glo30_granules_for_tile,
-        astwbd_v1_att_granules_for_tile,
-    )
-    box = box or dict(north=1.0, south=0.0, east=1.0, west=0.0)
-    tiles = tiles_for_bbox(**box)
-    dem_granules = [g for t in tiles for g in copernicus_glo30_granules_for_tile(t)]
-    att_granules = [g for t in tiles for g in astwbd_v1_att_granules_for_tile(t)]
     conn = db.get_connection()
     try:
         cur = conn.cursor()
@@ -45,20 +65,20 @@ def _seed_running_download_task(db, box=None, background=None):
                 total_files, downloaded_files, failed_files,
                 total_tiles, rendered_tiles, failed_tiles
             )
-            VALUES ('t', 'running', ?, ?, ?, ?, 'COP-DEM-GLO-30', 50, ?, 1, 1,
-                    12, 12, ?, ?, 0, 0, 0, 0, 0)
+            VALUES ('t', 'running', 1.0, 0.0, 1.0, 0.0, ?, 50, ?, 1, 0,
+                    12, 12, ?, ?, ?, 0, 0, 0, 0)
             """,
-            (box["north"], box["south"], box["east"], box["west"],
-             background or "#FAF6EC",
+            (dataset, background or "#FAF6EC",
              str(Path(config.Config.DOWNLOADS_DIR) / "dem"),
-             len(dem_granules) + len(att_granules)),
+             len(file_statuses),
+             sum(1 for s in file_statuses if s == "completed")),
         )
         task_id = cur.lastrowid
         cur.executemany(
             "INSERT INTO contour_files (task_id, granule_id, kind, status, retry_count)"
-            " VALUES (?, ?, ?, 'pending', 0)",
-            [(task_id, g, "dem") for g in dem_granules]
-            + [(task_id, g, "water") for g in att_granules],
+            " VALUES (?, ?, 'dem', ?, 0)",
+            [(task_id, f"upload_{i}_dem.tif", s)
+             for i, s in enumerate(file_statuses, start=1)],
         )
         conn.commit()
         return task_id
@@ -66,16 +86,15 @@ def _seed_running_download_task(db, box=None, background=None):
         conn.close()
 
 
-def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
+def _patch_tiler(monkeypatch, fn):
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fn)
+
+
+def test_execute_completes_after_render(monkeypatch, tmp_path):
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = _seed_running_download_task(db, background="transparent")
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 123)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db, background="transparent")
 
     called = {"render": False, "background": None}
 
@@ -87,8 +106,7 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
             progress_cb(3, 3)
         return {"total": 3, "rendered": 3, "failed": 0}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
 
@@ -99,56 +117,44 @@ def test_execute_completes_after_download_and_render(monkeypatch, tmp_path):
     assert task["rendered_tiles"] == 3
 
 
-def test_execute_total_tiles_covers_whole_dem_not_bbox(monkeypatch, tmp_path):
-    # A tiny framed box inside one 1° granule; contours render over the whole
-    # downloaded granule, so total_tiles must reflect that coverage, not the box.
+def test_execute_fails_legacy_download_driven_row_with_clear_message(monkeypatch, tmp_path):
+    """存量下载驱动的行（dataset 为 ASTGTM.003 / COP-DEM-GLO-30）必须当场判失败，
+    错误信息说清「这是已移除的下载驱动类型 + 该怎么办」，且**不得**进渲染。
+
+    以前这类行会走那段没人能创建、因此从没被执行过的下载拷贝。留一行守卫比留
+    一份跑不起来的拷贝诚实：拷贝不会报错，只会继续漂移。
+    """
+    import pytest
+
     db, ctm_mod = _setup(monkeypatch, tmp_path)
-    from src.services.contour_engine import count_tiles
-    from src.services.dem_granules import coverage_bbox
-
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    box = dict(north=0.10, south=0.00, east=0.10, west=0.00)
-    task_id = _seed_running_download_task(db, box=box)
+    task_id = _seed_running_task(db, dataset="ASTGTM.003",
+                                 file_statuses=("pending",))
 
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 123)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    called = {"render": False}
 
-    # Render succeeds but does NOT report progress, so total_tiles keeps the
-    # initial coverage-based value set before rendering.
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
-                   stage_cb=None, stop_flag=None):
-        return {"total": 0, "rendered": 1, "failed": 0}
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    def fake_tiler(*a, **k):
+        called["render"] = True
+        return {"total": 0, "rendered": 0, "failed": 0}
 
-    asyncio.run(mgr._execute(task_id, None))
+    _patch_tiler(monkeypatch, fake_tiler)
+
+    with pytest.raises(ValueError, match="ASTGTM.003"):
+        asyncio.run(mgr._execute(task_id, None))
 
     task = mgr.get_task(task_id)
-    cov = coverage_bbox(**box)
-    expected = count_tiles(*cov, 12, 12)
-    bbox_only = count_tiles(box["north"], box["south"], box["east"], box["west"], 12, 12)
-    assert task["total_tiles"] == expected
-    assert expected > bbox_only
+    assert task["status"] == "failed"
+    assert "ASTGTM.003" in (task["error_message"] or "")
+    # 错误信息必须给出出路，而不只是「不支持」
+    assert "数据下载" in (task["error_message"] or "")
+    assert called["render"] is False
 
 
-def test_execute_downloads_water_and_passes_shade_water_flags(monkeypatch, tmp_path):
-    # Defaults: terrain_shade + water ON. _execute must download DEM (ASTGTM.003)
-    # AND water att (ASTWBD.001), and forward both flags to the tiler.
+def test_execute_passes_shade_water_flags_to_tiler(monkeypatch, tmp_path):
+    # terrain_shade/water 两列必须透传给渲染参数（种子行 shade=1 / water=0）。
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = _seed_running_download_task(db)
-
-    calls = []
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        calls.append((dataset, list(granules)))
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     seen = {}
 
@@ -157,54 +163,21 @@ def test_execute_downloads_water_and_passes_shade_water_flags(monkeypatch, tmp_p
         seen["shade"] = params.shade
         seen["water"] = params.water
         return {"total": 1, "rendered": 1, "failed": 0}
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
 
-    datasets = [c[0] for c in calls]
-    assert "COP-DEM-GLO-30" in datasets and "ASTWBD.001" in datasets  # default DEM = GLO-30
-    astwbd = next(c for c in calls if c[0] == "ASTWBD.001")
-    assert astwbd[1] == ["ASTWBDV001_N00E000_att.tif"]
-    assert seen["shade"] is True and seen["water"] is True
+    assert seen["shade"] is True and seen["water"] is False
     assert mgr.get_task(task_id)["status"] == "completed"
 
 
-def test_execute_water_download_failure_is_not_fatal(monkeypatch, tmp_path):
-    # ASTWBD att 404 (e.g. tile with no water bodies) must NOT fail the task;
-    # DEM succeeded, so render proceeds.
+def test_execute_fails_and_skips_render_on_incomplete_dem_files(monkeypatch, tmp_path):
+    """有 failed / 未终结的 DEM 文件行时必须判失败并跳过渲染 —— 在缺文件的输入上
+    渲染会「成功」产出带缺口的瓦片，而任务报完成。"""
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        # DEM (any source) succeeds; only the ASTWBD water download fails (404).
-        status = "failed" if dataset == "ASTWBD.001" else "completed"
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, status, "404" if status == "failed" else None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
-
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
-                   stage_cb=None, stop_flag=None):
-        return {"total": 1, "rendered": 1, "failed": 0}
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
-
-    asyncio.run(mgr._execute(task_id, None))
-    assert mgr.get_task(task_id)["status"] == "completed"  # water failure tolerated
-
-
-def test_execute_fails_and_skips_render_on_download_failure(monkeypatch, tmp_path):
-    db, ctm_mod = _setup(monkeypatch, tmp_path)
-    mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "failed", "boom", None)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db, file_statuses=("completed", "failed"))
 
     called = {"render": False}
 
@@ -212,8 +185,7 @@ def test_execute_fails_and_skips_render_on_download_failure(monkeypatch, tmp_pat
         called["render"] = True
         return {"total": 0, "rendered": 0, "failed": 0}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
 
@@ -235,13 +207,7 @@ def test_render_progress_is_throttled_and_payload_stays_compatible(monkeypatch, 
             events.append((event, dict(payload)))
 
     mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
                    stage_cb=None, stop_flag=None):
@@ -249,8 +215,7 @@ def test_render_progress_is_throttled_and_payload_stays_compatible(monkeypatch, 
             progress_cb(i, 100)
         return {"total": 100, "rendered": 95, "failed": 5}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, None))
 
@@ -282,13 +247,7 @@ def test_render_progress_flushes_pending_counts_on_pause(monkeypatch, tmp_path):
     db, ctm_mod = _setup(monkeypatch, tmp_path)
     monkeypatch.setattr(ctm_mod, "_RENDER_PROGRESS_MIN_INTERVAL", 3600)
     mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     stop = threading.Event()
 
@@ -298,8 +257,7 @@ def test_render_progress_flushes_pending_counts_on_pause(monkeypatch, tmp_path):
         stop.set()
         return {"total": 100, "rendered": 5, "failed": 0}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, stop))
 
@@ -321,13 +279,7 @@ def test_render_progress_reuses_one_connection_and_no_per_tile_select(monkeypatc
             events.append((event, dict(payload)))
 
     mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     real_get_connection = ctm_mod.get_connection
     state = {"in_cb": False, "conns_in_cb": 0}
@@ -349,8 +301,7 @@ def test_render_progress_reuses_one_connection_and_no_per_tile_select(monkeypatc
                 state["in_cb"] = False
         return {"total": 50, "rendered": 50, "failed": 0}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     def _boom(*a, **k):
         raise AssertionError("渲染期间不应逐瓦片 SELECT 全行")
@@ -361,40 +312,6 @@ def test_render_progress_reuses_one_connection_and_no_per_tile_select(monkeypatc
     assert state["conns_in_cb"] == 0  # 50 次 flush 没有新开一个连接
     render_events = [p for e, p in events if e == "task_progress" and p.get("phase") == "render"]
     assert render_events[-1]["rendered_tiles"] == 50
-
-
-def test_download_progress_local_path_uses_flat_basename(monkeypatch, tmp_path):
-    # Copernicus granule 是 name/name.tif 嵌套路径,引擎按扁平 basename 落盘
-    # (dem_download_engine.download_files),写库的 local_path 必须一致。
-    db, ctm_mod = _setup(monkeypatch, tmp_path)
-    mgr = ctm_mod.ContourTaskManager(socketio=None)
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
-
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
-                   stage_cb=None, stop_flag=None):
-        return {"total": 1, "rendered": 1, "failed": 0}
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
-
-    asyncio.run(mgr._execute(task_id, None))
-
-    conn = db.get_connection()
-    try:
-        rows = conn.execute(
-            "SELECT granule_id, local_path FROM contour_files WHERE task_id=?", (task_id,)).fetchall()
-    finally:
-        conn.close()
-    assert rows, "expected progress callback to have written local_path"
-    for r in rows:
-        assert Path(r["local_path"]).name == Path(r["granule_id"]).name
-        # 嵌套 granule 的中间目录不能出现在落盘路径里
-        assert Path(r["granule_id"]).parent.name not in Path(r["local_path"]).parts
 
 
 def test_completed_task_not_flipped_to_failed_on_emit_error(monkeypatch, tmp_path):
@@ -408,85 +325,19 @@ def test_completed_task_not_flipped_to_failed_on_emit_error(monkeypatch, tmp_pat
                 raise RuntimeError("client gone")
 
     mgr = ctm_mod.ContourTaskManager(socketio=BoomSocket())
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
                    stage_cb=None, stop_flag=None):
         return {"total": 1, "rendered": 1, "failed": 0}
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    _patch_tiler(monkeypatch, fake_tiler)
 
     import pytest
     with pytest.raises(RuntimeError, match="client gone"):
         asyncio.run(mgr._execute(task_id, None))
 
     assert mgr.get_task(task_id)["status"] == "completed"
-
-
-def test_in_flight_bytes_drive_download_speed(monkeypatch, tmp_path):
-    """等高线的下载阶段与 DEM 共用引擎，速度同样来自在途字节回调。
-
-    单颗 DEM 几十 MB、几分钟才下完，颗粒级状态回调期间一发都不出 —— 只有
-    bytes_callback 能让任务行在下载途中显示真实速度。同时钉死另一半契约：
-    completed 事件的 size_bytes（缓存命中时也是真实大小）绝不计入网络字节。
-    """
-    db, ctm_mod = _setup(monkeypatch, tmp_path)
-
-    class _RecordingMeter:
-        def __init__(self, *a, **k):
-            self.records = []
-
-        def record(self, n_bytes):
-            self.records.append(n_bytes)
-
-        def bps(self):
-            return 2048.0
-
-    meter = _RecordingMeter()
-    monkeypatch.setattr(ctm_mod, "SpeedMeter", lambda *a, **k: meter)
-
-    emitted = []
-
-    class _Sock:
-        def emit(self, event, payload=None):
-            emitted.append((event, payload))
-
-    mgr = ctm_mod.ContourTaskManager(socketio=_Sock())
-    # 单颗粒（不要 water），下载事件序列才好断言
-    task_id = _seed_running_download_task(
-        db, box=dict(north=0.5, south=0.1, east=0.5, west=0.1))
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None,
-                            stop_flag=None, bytes_callback=None):
-        for g in granules:
-            await progress_callback(g, "downloading", None, None)
-            await bytes_callback(g, 1024)
-            await progress_callback(g, "completed", None, 987654)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
-
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
-                   stage_cb=None, stop_flag=None):
-        return {"total": 1, "rendered": 1, "failed": 0}
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
-
-    asyncio.run(mgr._execute(task_id, None))
-
-    # 每颗粒三笔：downloading -> 0（只推时间窗）、在途 1024、completed -> 0
-    assert meter.records and set(meter.records) == {0, 1024}, meter.records
-    assert meter.records.count(1024) * 1024 == sum(meter.records), (
-        f"只有在途字节能进吞吐计: {meter.records}")
-
-    download_pushes = [p for e, p in emitted
-                       if e == "task_progress" and p.get("phase") == "download"]
-    assert download_pushes, "下载阶段必须有带 phase=download 的推送"
-    assert all(p["download_speed_bps"] == 2048 for p in download_pushes)
 
 
 def _delete_contour_row(db, task_id):
@@ -527,13 +378,7 @@ def test_deleted_task_emits_no_further_render_progress(monkeypatch, tmp_path):
             events.append((event, dict(payload)))
 
     mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     stop = threading.Event()
     mark = {}
@@ -548,14 +393,14 @@ def test_deleted_task_emits_no_further_render_progress(monkeypatch, tmp_path):
         progress_cb(9, 100)
         return {"total": 100, "rendered": 9, "failed": 0}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, stop))
 
     # 删除之后一个事件都不许有（含 tiler 返回后那一发无条件收尾 flush）
     # 比整个 events 而不是只比 (event, phase)：失败时要能看见 payload 里那句
     # status='running' —— 那才是「幽灵行」的直接证据
+    assert mark.get("at", 0) > 0, "删除之前必须先有正常推送，否则这条用例没测到闸门"
     assert events[mark["at"]:] == [], (
         f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")
 
@@ -580,13 +425,7 @@ def test_deleted_task_emits_no_further_prepare_stage(monkeypatch, tmp_path):
             events.append((event, dict(payload)))
 
     mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     stop = threading.Event()
     mark = {}
@@ -601,11 +440,11 @@ def test_deleted_task_emits_no_further_prepare_stage(monkeypatch, tmp_path):
         stage_cb("warp", 1.0)            # fraction=1.0 是 edge，节流豁免，必发
         return {"total": 0, "rendered": 0, "failed": 0}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, stop))
 
+    assert mark.get("at", 0) > 0, "删除之前必须先有正常推送，否则这条用例没测到闸门"
     assert events[mark["at"]:] == [], (
         f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")
 
@@ -629,13 +468,7 @@ def test_paused_render_still_emits_the_final_flush(monkeypatch, tmp_path):
             events.append((event, dict(payload)))
 
     mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
-    task_id = _seed_running_download_task(db)
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if progress_callback:
-                await progress_callback(g, "completed", None, 1)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+    task_id = _seed_running_task(db)
 
     stop = threading.Event()
 
@@ -646,8 +479,7 @@ def test_paused_render_still_emits_the_final_flush(monkeypatch, tmp_path):
         mgr.pause_task(task_id)             # 真暂停:库置 paused + 置停止标志
         return {"total": 100, "rendered": 5, "failed": 0}
 
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+    _patch_tiler(monkeypatch, fake_tiler)
 
     asyncio.run(mgr._execute(task_id, stop))
 
@@ -658,61 +490,3 @@ def test_paused_render_still_emits_the_final_flush(monkeypatch, tmp_path):
     assert len(render_events) == 2, [p["rendered_tiles"] for p in render_events]
     assert render_events[-1]["rendered_tiles"] == 5
     assert render_events[-1]["total_tiles"] == 100
-
-
-def test_deleted_task_emits_no_further_download_progress(monkeypatch, tmp_path):
-    """下载阶段同样不许在行删掉之后继续发。
-
-    这条与上面两条不是重复：渲染阶段的闸门是本轮新加的 row_alive/rowcount，
-    下载阶段靠的却是**另一套、而且是偶然的**机制 —— 在途路径每次重查行
-    （:839-841 `if not row: return`）、状态路径靠 _record_progress 提交后重查
-    整行返回 None（:806-807 → :864 `if row:`）。那两次重查的本意都是拿最新
-    计数，挡住幽灵行只是副作用。谁把 payload 换成缓存的行快照（渲染阶段的
-    base_payload 就是这么翻车的），幽灵行就在下载阶段重新长出来，而在此之前
-    没有任何用例会红。
-    """
-    import threading
-
-    db, ctm_mod = _setup(monkeypatch, tmp_path)
-    # 节流窗口不是本用例的被测对象：留着的话删除之后那几发会被时间窗吞掉，
-    # 用例就变成在测节流、反事实探针也照样绿。
-    monkeypatch.setattr(ctm_mod, "_DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL", 0)
-
-    events = []
-
-    class FakeSocket:
-        def emit(self, event, payload):
-            events.append((event, dict(payload)))
-
-    mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
-    task_id = _seed_running_download_task(db)
-
-    mark = {}
-
-    async def fake_download(dataset, granules, output_dir, progress_callback=None,
-                            stop_flag=None, bytes_callback=None):
-        for g in granules:
-            if "at" not in mark:
-                await progress_callback(g, "completed", None, 1024)  # 删除前的正常一发
-                _delete_contour_row(db, task_id)
-                mark["at"] = len(events)
-                continue
-            # 下载协程不会因为行没了就当场停 —— 剩下的颗粒照跑，两条推送路径
-            # （在途字节 / 颗粒状态）都还会被踩到
-            await bytes_callback(g, 4 * 1024 * 1024)
-            await progress_callback(g, "completed", None, 1024)
-    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
-
-    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
-                   stage_cb=None, stop_flag=None):
-        return {"total": 0, "rendered": 0, "failed": 0}
-
-    import src.services.contour_task_tiler as tiler_mod
-    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
-
-    asyncio.run(mgr._execute(task_id, threading.Event()))
-
-    assert mark.get("at", 0) > 0, "删除之前必须先有正常推送，否则这条用例没测到闸门"
-    # 删除之后一个事件都不许有 —— 含后面渲染阶段和收尾
-    assert events[mark["at"]:] == [], (
-        f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")

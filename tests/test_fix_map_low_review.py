@@ -190,7 +190,7 @@ def test_flush_failure_does_not_mask_download_error(isolated_config, monkeypatch
         progress_conn = opened[-1]
         # 先报一块完成,让 unflushed 非零(finally 的 flush 才会真的执行 SQL),
         # 再关掉 progress_conn 让 flush 必炸,最后抛原始下载错误。
-        await progress_callback(tiles[0], 'completed', None)
+        await progress_callback(next(iter(tiles)), 'completed', None)
         progress_conn.close()
         raise RuntimeError('download boom')
 

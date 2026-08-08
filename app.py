@@ -12,17 +12,23 @@ TerraForge 进程入口。
 顺序是有讲究的,每一步的注释说明了为什么必须排在这个位置。
 """
 
-# 入口守卫必须是第一件事:frozen worker / resource_tracker 会重新执行本模块,让它们
-# 走到下面任何一步都意味着重跑 app 初始化(改写运行中任务的状态、抢库、占端口)。
-from src.core.process_entry import install_entry_guards
-
-install_entry_guards()
-
 # 打包模式下设置 GDAL_DATA/PROJ_DATA,必须赶在任何 import osgeo 之前(下面的
 # app_factory 会间接加载 GDAL)。非打包环境为 no-op。
+#
+# 它还必须排在下面的入口守卫【之前】:守卫里的 multiprocessing.freeze_support()
+# 在 win32 上只有 sys.frozen 为真时才做事,而 sys.frozen 是 bundle_dir() 设的
+# (Nuitka 自己不设)。反过来排的话,Windows 上那个拦截点纯属空转。
+# 这样排不会削弱守卫:setup_bundle_env 只依赖 os/sys、只设环境变量,守卫要赶在
+# 前面的是下面 app_factory 那几秒重量级 import。
 from src.core.bundle import setup_bundle_env
 
 setup_bundle_env()
+
+# 入口守卫:frozen worker / resource_tracker 会重新执行本模块,让它们走到下面
+# 任何一步都意味着重跑 app 初始化(改写运行中任务的状态、抢库、占端口)。
+from src.core.process_entry import install_entry_guards
+
+install_entry_guards()
 
 from src.core.runtime_mode import SERVER_HOST, SERVER_PORT, detect_startup_role
 

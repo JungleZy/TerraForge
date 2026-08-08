@@ -40,6 +40,13 @@
     }
 
     function showToast(message, type, opts) {
+        // 降级本身保留（一个拼错的 type 不该让提示整个消失），但必须出声：
+        // 静默降级把 map.js 传的 'error' 显示成蓝色 ⓘ，复制失败读起来像成功，
+        // 而控制台里没有任何痕迹可查。type 省略（undefined）是合法用法，不警告。
+        if (type != null && VALID_TYPES.indexOf(type) === -1) {
+            console.warn('[showToast] 未知 type ' + JSON.stringify(type) +
+                '，已降级为 info；有效值：' + VALID_TYPES.join(' / '));
+        }
         type = VALID_TYPES.indexOf(type) !== -1 ? type : 'info';
         opts = opts || {};
         const duration = opts.duration != null ? opts.duration : 3500;

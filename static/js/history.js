@@ -1,19 +1,17 @@
 let historyViewer;
 let currentPage = 1;
-let allTasks = [];
 // 状态筛选 chips 的当前取值（'' = 全部，'active' = 进行中三态）。
 // 作用于整个时间流：透传给 /api/history_all 的 ?status= 参数（后端已支持）。
 let currentStatusFilter = '';
 
-function initHistory() {
+async function initHistory() {
     // 时间流的渲染层（Vue）挂到 #historyTableBody。幂等，首页由 initTasks
     // 也调一次——两个入口哪个先跑都行。必须在 loadHistory 之前：晚于它的话
     // 首屏那批数据写进 store 时还没有消费者。
     if (window.TaskList) window.TaskList.mount();
-    initHistoryMap();
-    loadHistory(1);
-    loadStats();
 
+    // 接线必须排在下面那句 await 之前：await 会把本函数挂起一次
+    // /api/basemap 往返，期间搜索框和状态 chip 不能是死的。
     document.getElementById('searchInput').addEventListener('input', function(e) {
         filterTasks(e.target.value);
     });
@@ -25,12 +23,35 @@ function initHistory() {
         chip.addEventListener('click', function() {
             document.querySelectorAll('#statusChips .status-chip').forEach(function(c) {
                 c.classList.remove('active');
+                // aria-pressed 与 .active 必须同步翻：只有 CSS class 时读屏
+                // 用户听不出当前选中的是哪一档筛选（map.js 的 .map-panel-btn
+                // 已经是这个写法）。
+                c.setAttribute('aria-pressed', 'false');
             });
             this.classList.add('active');
+            this.setAttribute('aria-pressed', 'true');
             currentStatusFilter = this.dataset.status || '';
             loadHistory(1);
         });
     });
+
+    loadStats();
+
+    // 必须 await：initHistoryMap 在 await _resolveHistoryBasemap() 处挂起，
+    // 之后才给 historyViewer 赋值。不 await 时 loadHistory 往往先跑完，
+    // renderHistoryMap 撞上 `if (!historyViewer) return` 空转 —— 独立
+    // /history 页没有任何重渲染入口（不加载 tasks.js、无面板重开钩子），
+    // 小地图会一直空白到用户点 chip / 翻页 / 删除为止。
+    // 用 await 而不是「在 initHistoryMap 末尾补一次 renderHistoryMap」：后者
+    // 在地图先就绪的那条时序上会白渲染一次空 store，await 则不可能重复渲染。
+    // 异常就地吞掉再继续：Cesium 起不来是小地图一个人的事，不能连表格一起
+    // 赔进去（history.html 外面那层 try/catch 也接不住 async 函数的 rejection）。
+    try {
+        await initHistoryMap();
+    } catch (e) {
+        console.error('Failed to init history map:', e);
+    }
+    loadHistory(1);
 }
 
 // 历史小地图与主视图共用**服务端解析**的底图描述符
@@ -49,11 +70,15 @@ function initHistory() {
 const HISTORY_BASEMAP_FALLBACK = { url: '/basemap/{z}/{x}/{y}', max_level: 19, credit: '' };
 
 async function _resolveHistoryBasemap() {
-    // 首页（index.html）已由 routes/main.py 内联下发；独立历史页的路由不注入
-    // 模板变量，走 /api/basemap 拿同一份描述符。
-    if (typeof basemap !== 'undefined' && basemap && basemap.url) {
-        return basemap;
-    }
+    // 一律走 /api/basemap 取服务端解析的同一份描述符。
+    //
+    // 这里曾有一条 `typeof basemap !== 'undefined'` 的「首页免一次请求」快
+    // 路径，它在**每个页面**都是死的：唯一的生产者 index.html 是把描述符当
+    // 实参传进 initMap(config, basemap) 的，函数参数不是全局，那个 typeof
+    // 永远等于 'undefined'。而它注释里承诺省下的那次往返，正是 initHistory
+    // 里竞态的成因。删掉而不是让服务端补一个真全局：补全局等于给同一份数据
+    // 开第二个出口（模板内联 + 接口），而这一次同源请求现在已经被
+    // initHistory 的 await 挡在竞态之外，没什么可省的了。
     try {
         const r = await fetch('/api/basemap', { cache: 'no-store' });
         const j = await r.json();
@@ -125,7 +150,7 @@ async function loadStats() {
 
 // L7：请求序号。状态筛选 chip 连点（无防抖、无禁用、无 in-flight 标志）时，
 // 先发的响应可能后返回 —— chip 高亮与 currentStatusFilter 已是新值，表格和
-// allTasks 却是旧筛选集合。currentPage 的赋值也必须挪到守卫之后：它是
+// store 却是旧筛选集合。currentPage 的赋值也必须挪到守卫之后：它是
 // panels.js / tasks.js 读取的那个全局，先写会被过期响应污染。
 let _historyReqSeq = 0;
 
@@ -144,11 +169,10 @@ async function loadHistory(page = 1) {
         }
 
         currentPage = page;
-        allTasks = data.tasks || [];
-        renderHistoryTable(allTasks);
+        renderHistoryTable(data.tasks || []);
         const p = data.pagination || {};
         renderPagination(p.page || 1, p.total_pages || 1);
-        renderHistoryMap(allTasks);
+        renderHistoryMap();
     } catch (error) {
         if (seq !== _historyReqSeq) return;   // 过期请求的错误不该覆盖新结果
         console.error('Failed to load history:', error);
@@ -157,11 +181,6 @@ async function loadHistory(page = 1) {
         if (window.TaskStore) window.TaskStore.setLoadError(t('js.history.load_failed'));
     }
 }
-
-// 时间流失败行的兜底文案（与 tasks.js 的 UNKNOWN_ERROR_TEXT 同语义，
-// 但**不能**同名：首页两个文件共享全局作用域，const 重名会直接
-// SyntaxError 让整个文件失效——函数声明可以重复，const 不行）。
-const HISTORY_UNKNOWN_ERROR = t('js.history.unknown_error');
 
 // 时间流的数据入口。渲染由 task_list.js 的 Vue 组件负责——这里只把数据
 // 交给 store，DOM 跟着变。
@@ -238,8 +257,14 @@ function renderPagination(currentPage, totalPages) {
     pagination.innerHTML = html;
 }
 
-function renderHistoryMap(tasks) {
+// 数据源是 store，不是 loadHistory 的响应快照：socket 增量（tasks.js）只
+// 写 store，读快照会让运行中任务的矩形停在上一次拉取时的颜色，socket 新插
+// 进来的行则连矩形都没有。previewHistoryTask / deleteTask 早就改读 store 了
+// （见那两处的说明），这里是漏网的第三处。
+function renderHistoryMap() {
     if (!historyViewer) return;
+    const store = window.TaskStore;
+    const tasks = store ? store.state.tasks : [];
     historyViewer.entities.removeAll();
 
     // Local-terrain tasks have no bbox; only map/dem tasks appear on the map.
@@ -622,8 +647,12 @@ async function deleteTask(taskId, taskType = 'map') {
             if (typeof updateStatusTasks === 'function') {
                 updateStatusTasks();
             }
-            // 删掉的是当前页最后一条时本页已空，停在原页会看到空白页——回退一页
-            if (allTasks.length <= 1 && currentPage > 1) {
+            // 删掉的是当前页最后一条时本页已空，停在原页会看到空白页——回退一页。
+            // 判据是「删完就空了」而不是旧代码的 `<= 1`：上面的 store.remove 已经
+            // 把这一行摘掉，这里读的是删除**后**的长度；旧代码读的 allTasks 是
+            // loadHistory 的响应快照，删除不改它，所以那边才要留 1 条余量。
+            const remaining = store ? store.state.tasks.length : 1;
+            if (remaining === 0 && currentPage > 1) {
                 loadHistory(currentPage - 1);
             } else {
                 loadHistory(currentPage);

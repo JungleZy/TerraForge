@@ -10,7 +10,9 @@
 
 打 tag 之前逐条过一遍，漏掉任何一条都会发出错版本：
 
-1. **改版本号**：`src/core/config.py:38` 的 `APP_VERSION` 是**唯一真源**（`app.py` 读取它）。
+1. **改版本号**：`src/core/config.py` 的 `APP_VERSION` 是**唯一真源**（`app.py` 读取它，
+   `push-release.sh` 从它取 tag）。它必须与下一条的 `RELEASE_NOTES.md` 顶部标题一致，
+   `tests/test_fix_build_scripts.py::test_app_version_matches_the_release_notes_heading` 钉着这一条。
    不要再去找 `build.spec` —— 那是 PyInstaller 时代的文件，已随 Nuitka 迁移删除。
 2. **更新仓库根的 `RELEASE_NOTES.md`**：GitHub Release 的正文直接取自这个文件
    （`build.yml` 的 `body_path: RELEASE_NOTES.md`），它只放**本次**发版内容；
@@ -52,49 +54,28 @@ GitHub Actions 工作流会在以下情况自动构建所有平台的可执行�
 ### 前置要求
 
 1. **Python 3.12+** 已安装
-2. **GDAL 与 Python 依赖**（项目使用 uv 管理环境，CI 用的就是下面这套流程）
+2. **GDAL 与 Python 依赖** —— 装法与顺序不在本文，见
+   [INSTALL.md「2. 克隆代码并安装 Python 依赖」](INSTALL.md#2-克隆代码并安装-python-依赖)
+   （Linux 走 apt + uv pip 现编，Windows / macOS 走 conda-forge；CI 用的就是同一套）。
+   构建比运行**多一样**：Linux 上还要 `patchelf`（Nuitka 补拷系统库时用它改 RPATH，
+   缺了就停在这一步）。
 
-   **顺序不能颠倒**：GDAL 的 Python 绑定是从源码编译的，编译时必须能 `import numpy`，
-   否则编不出 `_gdal_array` 扩展 —— 而缺了它构建照样成功、CI 冒烟测试照样绿，
-   只有运行时调 `band.ReadAsArray()` / `WriteArray()`（拼接 GeoTIFF、地形切片）才炸。
-
-   **Linux（apt + uv pip 编译）**
    ```bash
-   sudo apt-get update
-   sudo apt-get install -y gdal-bin libgdal-dev patchelf
-   uv venv                                                  # 如果 .venv 不存在
-   uv pip install setuptools wheel                          # --no-build-isolation 需要 setuptools.build_meta 后端
-   uv pip install numpy==1.26.4                             # 必须在 GDAL 之前
-   uv pip install --no-build-isolation GDAL==3.8.4          # 版本要与 gdal-config --version 的 major.minor 一致
-   uv pip install -r requirements.txt
-   uv pip install nuitka
+   sudo apt-get install -y patchelf   # 仅 Linux
    ```
 
-   **Windows / macOS（conda-forge 预编译包）**
+   **不要单独 `pip install nuitka`。** Nuitka 已经钉在 `requirements.txt` 里
+   （`nuitka_build.py` 调的是 `nuitka.freezer` 的私有 API，上游改签名不算 breaking
+   change，裸装最新版 = tag 推上去之后才炸的构建）。升级 Nuitka 的流程是：先本地
+   `./build.sh` 跑通一次完整打包，再改 `requirements.txt` 里的版本号——理由与升级
+   步骤都写在那一行的注释上。
+
+3. **验证 GDAL 绑定完整** —— 不用手工验，`./build.sh` / `build.bat` 开头就会跑
+   `scripts/check_gdal.py`（判据见下面「构建命令」）。想单独跑一次：
+
    ```bash
-   conda install -y -c conda-forge gdal=3.8 numpy
-   # GDAL 已由 conda 提供，再 pip 装一遍会去编译 sdist 并失败 —— 剥掉 pin 装其余依赖
-   grep -viE '^[[:space:]]*gdal([[:space:]=<>!~]|$)' requirements.txt > /tmp/req.txt
-   uv pip install -r /tmp/req.txt
-   uv pip install nuitka
+   uv run python scripts/check_gdal.py
    ```
-   Windows 上这段要在 bash 里跑（Git Bash 或 conda 自带的 bash，CI 用的也是 `bash -l`）；
-   在 cmd/PowerShell 里没有 `grep`，可手工复制一份 `requirements.txt` 删掉 `GDAL==` 那行再装。
-
-   这两个平台不用 brew / choco：Windows 的 choco gdal 包已废弃；macOS 运行器是
-   Apple Silicon(arm64)，brew 的 gdal 只有 arm64，而 pip 的 GDAL sdist 会尝试构建
-   universal2 wheel 并链接失败。conda-forge 提供匹配的 arm64 预编译包和 Python 绑定，无需编译。
-
-3. **验证 GDAL 绑定完整**（这一步必做）：
-   ```bash
-   uv run python -c "from osgeo import gdal_array; print('gdal_array OK')"
-   ```
-   只 `import gdal` 是查不出问题的 —— 缺 `_gdal_array` 时 `gdal` 本身照常导入。
-   也可以直接看文件是否存在：`ls .venv/lib/python3.12/site-packages/osgeo/ | grep _gdal_array`
-   （Windows 下是 `_gdal_array*.pyd`）。
-
-   报 `ImportError: cannot import name '_gdal_array'` 时的修复步骤见
-   [INSTALL.md 的故障排除](INSTALL.md#importerror-cannot-import-name-_gdal_array-from-osgeo)。
 
 ### 构建命令
 
@@ -113,10 +94,17 @@ build.bat
 uv run python nuitka_build.py
 ```
 
-`build.sh` / `build.bat` 在调用 Nuitka 前会做一次 **GDAL 版本一致性硬校验**：
-比对 `requirements.txt` 里的 `GDAL==` pin 与实际绑定版本（`osgeo.gdal.__version__`，
-取不到时回退 `gdal-config --version`），major.minor 不一致直接报错退出。
-直接跑 `nuitka_build.py` 会跳过这个校验。
+`build.sh` / `build.bat` 在调用 Nuitka 前先跑 **`scripts/check_gdal.py`**，校验两件真正决定
+「产物能不能用」的事：装出来的 GDAL 版本落在 `requirements.txt` 声明的**范围**（`GDAL>=3.8,<4`）
+内，且 `_gdal_array` 能 import。任一条不满足就报错退出，并打印正确的装法。
+
+**判据不是精确钉。** 依赖声明里没有、也不该有 `GDAL==x.y.z` 这样一行
+（绑定是 sdist 现编，版本跟随机器，理由写在 `requirements.txt` 顶部）。
+2026-08-08 之前两个脚本查的正是这个不存在的 pin：
+`build.sh` 在 `set -euo pipefail` 下于赋值那行静默 exit 1，`build.bat` 每次都拒绝构建。
+
+直接跑 `uv run python nuitka_build.py` 会跳过这道闸门 —— CI 走的就是这条路，所以 CI 全绿也
+挡不住一个缺 `_gdal_array` 的坏包（见下面「CI 覆盖范围」）。
 
 ### 输出
 
@@ -285,8 +273,9 @@ Nuitka standalone 产物启动比 `python app.py` 略慢，主要开销在加载
 ## 已知问题
 
 ### Windows GDAL 安装
-Windows 上的 GDAL 安装可能不稳定。**首选 conda-forge**（CI 就是这么装的，见「前置要求」）：
-`conda install -y -c conda-forge gdal=3.8 numpy`。choco 的 gdal 包已废弃，不要用。
+Windows 上的 GDAL 安装可能不稳定。**首选 conda-forge**，命令与理由见
+[INSTALL.md 步骤 2 的「Windows / macOS」一节](INSTALL.md#2-克隆代码并安装-python-依赖)（CI 就是这么装的）。
+choco 的 gdal 包已废弃，不要用。
 
 conda 不可用时的备选：
 - 用 OSGeo4W 安装 GDAL（`nuitka_build.py` 支持这种布局，构建后会补拷 DLL 闭包）
