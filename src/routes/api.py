@@ -13,6 +13,7 @@ from src.core.database import get_connection, DEFAULT_CONFIGS
 from src.i18n import t
 from src.services.config_manager import ConfigManager
 from src.services.task_cleanup import resolve_stored_output_dir
+from src.routes import tiles_static
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +372,14 @@ def delete_task(task_id: int):
             # 误判成"越界"而拒删,接口却已经返回 success。
             artifact_dir = resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
 
-        outcome = task_manager.delete_task(task_id, artifact_dir=artifact_dir)
+        outcome = task_manager.delete_task(
+            task_id,
+            artifact_dir=artifact_dir,
+            # 行删掉后同步清 /tiles 静态路由的 output_path 缓存，否则
+            # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
+            # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
+            on_row_gone=lambda: tiles_static.invalidate_output_path_cache(task_id),
+        )
         if not outcome.row_deleted:
             return jsonify({'error': f'Task {task_id} not found'}), 404
 

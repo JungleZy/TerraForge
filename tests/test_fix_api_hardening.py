@@ -184,6 +184,36 @@ def test_delete_map_task_with_active_thread_succeeds(monkeypatch, tmp_path):
         api_mod.task_manager.active_tasks.pop(task_id, None)
 
 
+def test_delete_running_map_task_with_files_defers_cleanup(monkeypatch, tmp_path):
+    """HTTP 层：running 的行 + delete_files=1 → 200 + files_deferred，行当场消失。
+
+    两条只有这里守得住的契约：
+    ① status='running' 的行经 HTTP 能删 —— 这是本次拆掉的第二道守卫（另一道是
+       活跃线程）。其余 map DELETE 用例播的都是 completed/paused/pending，把
+       守卫加回路由它们照样绿。
+    ② files_deferred=true 是这次给公开 API 新加的字段，且它出现时
+       files_removed/files_message 一律不下发 —— 产物还没删，给不出真假。
+    """
+    _, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    api_mod = importlib.import_module("src.routes.api")
+    task_id = _seed_map_task(db, status="running")
+
+    fake = _FakeActiveThread()
+    api_mod.task_manager.active_tasks[task_id] = fake
+    try:
+        resp = client.delete(f"/api/tasks/{task_id}?delete_files=1")
+        assert resp.status_code == 200, resp.get_json()
+        body = resp.get_json()
+        assert body['files_deferred'] is True, body
+        assert 'files_removed' not in body, body
+        assert 'files_message' not in body, body
+        assert _task_row(db, "tasks", task_id) is None, "running 的行没被删掉"
+    finally:
+        fake.release()
+        api_mod.task_manager.active_tasks.pop(task_id, None)
+
+
 def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")

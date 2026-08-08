@@ -700,14 +700,18 @@ class TaskManager:
         finally:
             conn.close()
 
-    def delete_task(self, task_id: int, artifact_dir=None):
+    def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
         """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
         砍掉「取消」之后这是唯一的销毁动作，任何状态都能调 —— 不再有
         「Cannot delete running task. Please pause or cancel it first.」。
+
+        on_row_gone 由调用方给：清 /tiles 静态路由缓存的那个 hook 依赖 Flask
+        请求上下文（走 current_app.extensions），放在这里等于让服务层持有一个
+        只对路由调用方有效的回调 —— 非路由调用方那里它会静默失效，比不放更糟。
+        另外三条管线的清缓存也都留在路由层，这里跟着同一套约定。
         """
         from src.services.task_deletion import delete_task_row
-        from src.routes import tiles_static
 
         return delete_task_row(
             manager=self,
@@ -715,9 +719,7 @@ class TaskManager:
             table="tasks",
             artifact_dir=artifact_dir,
             tombstone=self._deleting,
-            # 行已删：清掉 /tiles 静态路由的 output_path 缓存，否则
-            # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到
-            on_row_gone=lambda: tiles_static.invalidate_output_path_cache(task_id),
+            on_row_gone=on_row_gone,
         )
 
     def get_task_status(self, task_id: int) -> dict:
@@ -809,16 +811,49 @@ class TaskManager:
                     self.stop_flags.pop(task_id, None)
             logger.info(f"Task {task_id} thread finished")
 
-    def _write_progress_batch_for_test(self, task_id, inserts):
-        """契约测试用的薄入口：只覆盖墓碑短路这一段判断。
+    def _write_progress_batch(self, progress_conn, task_id, batch) -> None:
+        """纯 IO:把摘下来的批次落库。跑在工作线程(见 flush_progress_async)。
 
-        真正的 _write_progress_batch 是 _execute_task 里的闭包（它捕获
-        progress_conn 等一堆局部状态），测试拿不到。这里复刻的只有短路判断
-        本身 —— 短路逻辑必须与闭包里那份保持一致，改一处要改两处。
+        一个批次窗口内同一块瓦片只会被上报一次(每次运行每块瓦片只
+        下载一回),所以按操作类型分组 executemany 与逐条执行的最终
+        结果一致。崩溃最多丢一个批次的失败行:对应瓦片没有 cache
+        文件,恢复时自然重下,失败了会重新登记,语义与计数攒批相同。
+
+        它本来是 _execute_task 里的闭包。提成方法只为了让墓碑短路可测 ——
+        闭包够不着，短路被误删时没有任何用例会红。自由变量只有
+        progress_conn 和 task_id 两个，搬运是机械的。
         """
         if task_id in self._deleting:
-            return False
-        return True
+            # 任务已被删除，父行不在了。这批进度写不进去也不该写进去 ——
+            # 直接丢弃，不要走 _restore_progress_batch 退回队列（那会让
+            # pending_tile_inserts 单调增长到下载结束）。
+            return
+        inserts, updates, deletes, downloaded, failed = batch
+        if inserts:
+            progress_conn.executemany('''
+                INSERT OR IGNORE INTO task_tiles
+                    (task_id, zoom, x, y, status, retry_count, error_message)
+                VALUES (?, ?, ?, ?, 'failed', 1, ?)
+            ''', inserts)
+        if updates:
+            progress_conn.executemany('''
+                UPDATE task_tiles
+                SET retry_count = retry_count + 1, error_message = ?
+                WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
+            ''', updates)
+        if deletes:
+            progress_conn.executemany('''
+                DELETE FROM task_tiles
+                WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
+            ''', deletes)
+        if downloaded or failed:
+            progress_conn.execute('''
+                UPDATE tasks
+                SET downloaded_tiles = MAX(downloaded_tiles + ?, 0),
+                    failed_tiles = MAX(failed_tiles + ?, 0)
+                WHERE id = ?
+            ''', (downloaded, failed, task_id))
+        progress_conn.commit()
 
     async def _execute_task(self, task_id: int, stop_flag: Optional[threading.Event] = None):
         """
@@ -1117,47 +1152,6 @@ class TaskManager:
                 unflushed['downloaded'] += downloaded
                 unflushed['failed'] += failed
 
-            def _write_progress_batch(batch):
-                """纯 IO:把摘下来的批次落库。跑在工作线程(见 flush_progress_async)。
-
-                一个批次窗口内同一块瓦片只会被上报一次(每次运行每块瓦片只
-                下载一回),所以按操作类型分组 executemany 与逐条执行的最终
-                结果一致。崩溃最多丢一个批次的失败行:对应瓦片没有 cache
-                文件,恢复时自然重下,失败了会重新登记,语义与计数攒批相同。
-                """
-                if task_id in self._deleting:
-                    # 任务已被删除，父行不在了。这批进度写不进去也不该写进去 ——
-                    # 直接丢弃，不要走 _restore_progress_batch 退回队列（那会让
-                    # pending_tile_inserts 单调增长到下载结束）。
-                    return False
-                inserts, updates, deletes, downloaded, failed = batch
-                if inserts:
-                    progress_conn.executemany('''
-                        INSERT OR IGNORE INTO task_tiles
-                            (task_id, zoom, x, y, status, retry_count, error_message)
-                        VALUES (?, ?, ?, ?, 'failed', 1, ?)
-                    ''', inserts)
-                if updates:
-                    progress_conn.executemany('''
-                        UPDATE task_tiles
-                        SET retry_count = retry_count + 1, error_message = ?
-                        WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                    ''', updates)
-                if deletes:
-                    progress_conn.executemany('''
-                        DELETE FROM task_tiles
-                        WHERE task_id = ? AND zoom = ? AND x = ? AND y = ?
-                    ''', deletes)
-                if downloaded or failed:
-                    progress_conn.execute('''
-                        UPDATE tasks
-                        SET downloaded_tiles = MAX(downloaded_tiles + ?, 0),
-                            failed_tiles = MAX(failed_tiles + ?, 0)
-                        WHERE id = ?
-                    ''', (downloaded, failed, task_id))
-                progress_conn.commit()
-                return True
-
             def flush_progress_counts():
                 """同步落库 —— 只给下载循环收尾(finally)用,那时已无并发回调。
 
@@ -1170,7 +1164,7 @@ class TaskManager:
                 if batch is None:
                     return
                 try:
-                    _write_progress_batch(batch)
+                    self._write_progress_batch(progress_conn, task_id, batch)
                 except Exception:
                     _restore_progress_batch(batch)
                     raise
@@ -1195,7 +1189,8 @@ class TaskManager:
                     return
                 flush_in_flight = True
                 try:
-                    await asyncio.to_thread(_write_progress_batch, batch)
+                    await asyncio.to_thread(
+                        self._write_progress_batch, progress_conn, task_id, batch)
                 except Exception:
                     _restore_progress_batch(batch)
                     raise

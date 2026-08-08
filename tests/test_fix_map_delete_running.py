@@ -73,7 +73,11 @@ def test_delete_running_map_task_succeeds_and_sets_stop_flag(monkeypatch, tmp_pa
 
 
 def test_tombstoned_task_skips_tile_inserts(monkeypatch, tmp_path):
-    """墓碑必须挡住 task_tiles 的 INSERT —— 这是墓碑存在的唯一理由。"""
+    """墓碑必须挡住 task_tiles 的 INSERT —— 这是墓碑存在的唯一理由。
+
+    打的是 _execute_task 真正用的那个 _write_progress_batch（真方法 + 真连接 +
+    已删父行）。拿薄封装代打不行：那样短路被误删时这条用例照样绿。
+    """
     db, tm_mod = _setup(monkeypatch, tmp_path)
     mgr = tm_mod.TaskManager(socketio=None)
     _seed(db)
@@ -87,7 +91,15 @@ def test_tombstoned_task_skips_tile_inserts(monkeypatch, tmp_path):
         conn.close()
     mgr._deleting.add(1)
 
-    # 不加短路的话这里抛 IntegrityError
-    written = mgr._write_progress_batch_for_test(
-        task_id=1, inserts=[(1, 5, 1, 1, "boom")])
-    assert written is False, "墓碑命中时必须整批丢弃"
+    progress_conn = db.get_connection()
+    try:
+        # 不加短路的话这里抛 sqlite3.IntegrityError: FOREIGN KEY constraint failed
+        mgr._write_progress_batch(
+            progress_conn, 1,
+            ([(1, 5, 1, 1, "boom")], [], [], 3, 1),
+        )
+        left = progress_conn.execute(
+            "SELECT COUNT(*) FROM task_tiles WHERE task_id = 1").fetchone()[0]
+        assert left == 0, "墓碑命中时必须整批丢弃，一行都不该落库"
+    finally:
+        progress_conn.close()
