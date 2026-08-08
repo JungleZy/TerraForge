@@ -60,7 +60,8 @@
     --color-danger-hover:  #fca5a5;
     --color-warning-hover: #fcd34d;
     --color-info-hover:    #93c5fd;
-    /* 中性状态填充色。为「已取消」这类无语义色的终态准备。
+    /* 中性状态填充色。原为「已取消」这类无语义色的终态准备，该状态已随
+       「取消任务」下线，现只剩连接状态圆点的未知态在用。
        不能直接复用 --color-text-muted(#5f6670)：它对 --color-bg-tertiary
        只有 2.82:1，低于本项目 3:1 的图形元素下限（见
        tests/test_css_contract.py 的 test_progress_bar_fill_has_sufficient_contrast）。

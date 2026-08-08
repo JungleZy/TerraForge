@@ -353,3 +353,56 @@ i18n 中英两份都要删干净——`tests/test_i18n.py` 强制两个 locale �
   执行过）。同文件用例 1 用 Event 握手做了确定性兜底，所以只是债不是洞。
 - `dem_task_manager.py` 的 `finally` 拿 `_state_lock` 当「两张登记表存在」的哨兵，成立只因
   `__init__` 的赋值顺序恰好是 `active_tasks` → `stop_flags` → `_state_lock`。
+
+## 计划 B 执行完毕 —— 执行结论
+
+第 3-6 步已作为分支 `simplify-task-actions` 落地（计划文档：
+`docs/superpowers/plans/2026-08-07-simplify-task-actions.md`，七个 Task）。
+同样写在这里，因为 SDD 台账 git-ignored，随工作区一起销毁。
+
+### 上一节留的两条输入，怎么处理的
+
+1. **完成事件早于登记摘除** —— 不再是问题：`delete_task` 不看状态也不拒 running，
+   `is_alive()` 只用来选「同步删还是后台删」。踩中那个微秒级窗口的后果从「400」
+   降级成「多起一个后台线程 join 一个刚退出的线程」。
+2. **非绝对路径的根治在入队侧** —— 已做，但走了弯路：Task 1 的助手一开始只在
+   出口有卫兵，与 `_sweep_pending_deletions` 已付过学费的两条路径卫生（绝对性校验、
+   入口 `expanduser`）不对称。教训是**同一道护栏的多个消费者，判据必须对称**。
+
+### spec 之外的决策（D-A 到 D-D 都成立，以下是执行中新增的）
+
+- **产物删除以 `row_deleted` 为前提。** spec 没写这条。本地地形的 `artifact_dir`
+  在 manager 内按 task_id 硬算、无条件交给助手，于是「删一个不存在的 id」会
+  **返回 404 的同时把同名残留目录 rmtree 掉**。修法不是「本地地形先查行」
+  （check-then-act 窗口关不上），而是把 `DELETE` 提到入队之前、拿它自己的
+  `rowcount` 当闸门 —— 一次修掉四条管线。
+- **本地地形 not-found 从 400 改成 404，是主动对齐而非必然结果。** 路由完全可以
+  自己决定返回码；四条管线里只有它是异类，前端只看 `response.ok`，所以对齐。
+- **spec 的「存量数据零迁移」是错的。** 当时的依据「四张任务表全空」来自开发环境。
+  真实用户库里有 `cancelled` 行，删掉枚举后后端零报错（`Task.from_row` 走
+  `cls.__new__`，所有 SQL 都是 `IN ('pending','running','paused')` 的正列表语义），
+  但前端渲染成一列「未知」。决策：`init_database()` 里四张表 `cancelled` → `failed`
+  加说明性 `error_message`。⚠️ **不能迁 `paused`** —— `start_task` 收 `paused`，
+  老任务会诈尸进活动列表。
+- **清静态路由存在性缓存的 hook 透传给路由层。** 原设计让服务层 import 路由层
+  （全仓唯一一处反向依赖），且 hook 只在 Flask 上下文里有效，非路由调用方静默失效。
+- **`_write_progress_batch` 从闭包提成方法。** 计划原文写「不要把闭包搬出来重构」，
+  裁定**计划是错的**：墓碑短路留在闭包里就没有任何测试够得着（reviewer 实地探针
+  删掉短路，全量一条不红）。测试必须驱动真方法，不接受同源复制的薄封装。
+
+### 发版约束（已进 RELEASE_NOTES 之外，这里再钉一次）
+
+`5062e34..e393a71` 之间任何 commit **不得单独打 tag**：Task 4 删了后端四条
+`/cancel` 路由，前端按钮到 Task 5 才删，中间发版点「取消」会 404 并弹 toast。
+**Task 4 与 Task 5 必须进同一个发布版本。**
+
+### 留给后续的两条（本计划未做）
+
+- **等高线幽灵行（存量缺陷，本计划新增了触发路径）。** 删掉渲染中的等高线任务后
+  界面长出一行永久卡在「运行中」的幽灵行。根因在 `contour_task_manager` 渲染
+  emit 的 `base_payload` 没有 stop flag 闸门 + 收尾无条件强制 flush，前端对陌生
+  key 的 `task_progress` 是 upsert 插行并按 running 计进活动集。本计划之前经
+  pause 就能触发，不算回归。最小修法在 `_flush_render_progress` 内部：用
+  `cur.rowcount == 0` 或 `stop_flag.is_set()` 短路掉 emit（它本来就在跑 UPDATE）。
+- **`_JOIN_TIMEOUT_SECONDS = 600`。** 一次删 N 个在跑的任务就有 N 个 daemon 线程
+  各挂最多 10 分钟。超时不丢数据（清单还在，下次启动补删），只是线程占用。

@@ -981,8 +981,8 @@ class TaskManager:
             # 两条写入路径,与下载并行,结尾复制阶段(下方)退化为同尺寸对账:
             #   ① 下载回调:瓦片落 cache 成功后立即复制一份到产物目录;
             #   ② 补拷线程:枚举出的 cache 命中瓦片(不经回调)开案就复制。
-            # 两份清单天然不相交(命中 vs 待下载),写盘不冲突;取消时保留已
-            # 复制部分 —— 与 cache 的状态一致,取消任务的产物即部分下载内容。
+            # 两份清单天然不相交(命中 vs 待下载),写盘不冲突;中断时保留已
+            # 复制部分 —— 与 cache 的状态一致,半途停下的任务产物即部分下载内容。
             stream_output_base = output_dir / f"task_{task_id}"
             stream_made_dirs: set = set()
             stream_dirs_lock = threading.Lock()

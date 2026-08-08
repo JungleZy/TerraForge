@@ -18,7 +18,7 @@ function initHistory() {
         filterTasks(e.target.value);
     });
 
-    // 状态筛选 chips（2026-08 单一时间流定稿）：全部/进行中/失败/已完成/已取消。
+    // 状态筛选 chips（2026-08 单一时间流定稿）：全部/进行中/失败/已完成。
     // 作用于整个时间流（活动任务也在流里）：取值透传给 /api/history_all
     // 的 ?status= 参数，「进行中」对应特殊值 active（pending/running/paused）。
     document.querySelectorAll('#statusChips .status-chip').forEach(function(chip) {

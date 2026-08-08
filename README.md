@@ -36,9 +36,9 @@
 ### 任务与进度
 
 - 📊 WebSocket 实时进度：下载速度、剩余时间、分 zoom 拼接与复制阶段全程可见，大任务不再「卡 100%」
-- ⏸️ 任务调度：暂停 / 恢复 / 取消，断点续传，已下载瓦片不重复下载
+- ⏸️ 任务调度：暂停 / 恢复，断点续传，已下载瓦片不重复下载
 - 🗂 下载历史可视化：历史区域叠加在地图上，已完成任务可直接预览瓦片 / 地形 / 晕渲效果
-- 💾 保存路径全盘可选：任意绝对路径 + 目录浏览弹窗；删除任务可选是否清理磁盘产物（带安全护栏）
+- 💾 保存路径全盘可选：任意绝对路径 + 目录浏览弹窗；删除任务可选是否清理磁盘产物（带安全护栏），运行中的任务也能直接删
 
 ### 平台能力
 
@@ -220,7 +220,6 @@ map-download/
 - `POST /api/tasks/<id>/start` - 启动任务
 - `POST /api/tasks/<id>/pause` - 暂停任务
 - `POST /api/tasks/<id>/resume` - 恢复任务
-- `POST /api/tasks/<id>/cancel` - 取消任务（仅 pending/running/paused 可取消）
 - `DELETE /api/tasks/<id>` - 删除任务（`?delete_files=true` 同时清理磁盘产物）
 
 ### DEM 任务（高程下载）
@@ -231,8 +230,7 @@ map-download/
 - `POST /api/dem/tasks/<id>/start` - 启动
 - `POST /api/dem/tasks/<id>/pause` - 暂停
 - `POST /api/dem/tasks/<id>/resume` - 恢复
-- `POST /api/dem/tasks/<id>/cancel` - 取消（仅 pending/running/paused 可取消）
-- `DELETE /api/dem/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物；running 任务需先暂停或取消）
+- `DELETE /api/dem/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物）
 
 ### 地形切片（Cesium quantized-mesh）
 
@@ -241,7 +239,6 @@ map-download/
 - `POST /api/terrain/local/tasks` - 上传 GeoTIFF 创建本地地形任务
 - `GET /api/terrain/local/tasks` - 获取所有本地地形任务
 - `GET /api/terrain/local/tasks/<id>` - 获取本地地形任务详情
-- `POST /api/terrain/local/tasks/<id>/cancel` - 取消（仅 pending 可取消）
 - `DELETE /api/terrain/local/tasks/<id>` - 删除（默认清理磁盘产物，`?delete_files=false` 保留）
 
 ### 等高线任务
@@ -253,8 +250,7 @@ map-download/
 - `POST /api/contour/tasks/<id>/start` - 启动
 - `POST /api/contour/tasks/<id>/pause` - 暂停
 - `POST /api/contour/tasks/<id>/resume` - 恢复
-- `POST /api/contour/tasks/<id>/cancel` - 取消（仅 pending/running/paused 可取消）
-- `DELETE /api/contour/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物；running 任务需先暂停或取消）
+- `DELETE /api/contour/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物）
 
 ### 静态瓦片服务
 
@@ -306,7 +302,7 @@ uv run pytest tests/test_config_manager.py      # 单个测试文件
 
 - 四条任务管线（瓦片 / DEM / 地形 / 等高线）均遵循 `routes/*_api.py`（HTTP 层）→ `services/*_task_manager.py`（状态与调度）→ `services/*_engine.py`（实际执行）的分层
 - 共享的校验逻辑集中在 `src/services/geo_validation.py`，不要在各管线重复实现
-- 任务取消约定：仅 `pending` / `running` / `paused` 状态可取消，取消永不改写终态；`DELETE` 接口通过 `?delete_files=true` 清理磁盘产物（带路径安全护栏）
+- 任务删除约定：四条管线的 `DELETE` 在**任何状态**下都受理，没有前置的停止动作。任务没在跑就同步删完；在跑就置停止标志、行立即消失，磁盘产物留给后台线程收尾（响应带 `files_deferred: true`，此时不下发 `files_removed` / `files_message`）。行不存在一律 404。产物清理由 `?delete_files` 控制，带路径安全护栏
 
 ### 更多文档
 
