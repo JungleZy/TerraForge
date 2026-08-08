@@ -276,7 +276,10 @@ def test_no_unreferenced_catalog_key():
     assert not orphans, (
         '这些 catalog 键全仓无人引用 —— 删掉它们。\n'
         '若确属运行时拼接（错误码→文案之类），把拼接点连同**完整后缀清单**\n'
-        '登记进本文件的 _DYNAMIC_KEY_SITES，并写清是哪一行在拼。\n  '
+        '登记进本文件的 _DYNAMIC_KEY_SITES，并写清是哪一行在拼。\n'
+        '第三种可能：这个键的字面量登记在本文件的 _NOT_A_KEY 里 —— 那张表宣告过\n'
+        '「它不是 i18n 引用」，于是这一侧不再认它。先把它从那张表里摘掉再判断，\n'
+        '否则你删的是一个**真有引用**的键，界面上会原样漏出键名。\n  '
         + '\n  '.join(orphans)
     )
 
