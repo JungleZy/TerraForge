@@ -65,7 +65,7 @@ def _seed_dem_task(db, output_path, status):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("status", ["pending", "running", "paused", "failed", "cancelled"])
+@pytest.mark.parametrize("status", ["pending", "running", "paused", "failed"])
 def test_start_tiling_rejects_non_completed_task(monkeypatch, tmp_path, status):
     db, dtm = _setup_manager(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)

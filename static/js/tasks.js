@@ -536,10 +536,9 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
 
 // 「移除」按钮：只把失败行从界面上拿走，不碰后端。
 //
-// 失败任务在后端已经是终态，再 POST /cancel 最好的情况也只是白跑一趟。
-// 也刻意**没有**「重试」：三个 manager 的 start_task 都要求
-// status in ('pending','paused')，对 failed 调用直接抛 ValueError，
-// 重试得先改后端状态机。
+// 刻意**没有**「重试」：map/dem/contour 三条下载管线的 start_task 都只收
+// status in ('pending','paused')，对 failed 调用直接抛 ValueError —— 失败是
+// 终态，重跑请新建任务。
 function dismissTask(taskId, taskType = 'map') {
     const key = `${taskType}:${taskId}`;
     closeFailureToast(key);   // 行都不要了，那条常驻 toast 也别留着占地方
@@ -557,8 +556,7 @@ function getStatusColor(status) {
         'running': 'info',
         'paused': 'warning',
         'completed': 'success',
-        'failed': 'danger',
-        'cancelled': 'dark'
+        'failed': 'danger'
     };
     return colors[status] || 'secondary';
 }
@@ -569,8 +567,7 @@ function getStatusText(status) {
         'running': t('js.tasks.status.running'),
         'paused': t('js.tasks.status.paused'),
         'completed': t('js.tasks.status.completed'),
-        'failed': t('js.tasks.status.failed'),
-        'cancelled': t('js.tasks.status.cancelled')
+        'failed': t('js.tasks.status.failed')
     };
     // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）
     return texts[status] || t('js.tasks.status.unknown');

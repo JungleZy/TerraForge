@@ -129,10 +129,6 @@ MESSAGES = {
         'zh': '失败',
         'en': 'Failed',
     },
-    'js.tasks.status.cancelled': {
-        'zh': '已取消',
-        'en': 'Cancelled',
-    },
     'js.tasks.status.unknown': {
         'zh': '未知',
         'en': 'Unknown',

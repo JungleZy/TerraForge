@@ -265,19 +265,3 @@ def resume_contour_task(task_id: int):
     except Exception as e:
         logger.error(f"Error resuming contour task {task_id}: {e}")
         return jsonify({"error": "Failed to resume contour task"}), 500
-
-
-@contour_api_bp.route("/tasks/<int:task_id>/cancel", methods=["POST"])
-def cancel_contour_task(task_id: int):
-    try:
-        if not contour_task_manager:
-            return jsonify({"error": "Contour task manager not initialized"}), 500
-        contour_task_manager.cancel_task(task_id)
-        return jsonify({"success": True, "message": f"Contour task {task_id} cancelled"})
-    except ValueError as e:
-        # cancel_task 对不存在任务抛 "not found" -> 404（与 delete 端点同款分流）
-        msg = str(e)
-        return jsonify({"error": msg}), (404 if "not found" in msg else 400)
-    except Exception as e:
-        logger.error(f"Error cancelling contour task {task_id}: {e}")
-        return jsonify({"error": "Failed to cancel contour task"}), 500

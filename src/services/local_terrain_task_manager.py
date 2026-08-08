@@ -78,9 +78,8 @@ class LocalTerrainTaskManager:
         self.config = ConfigManager()
         self.active_tasks: Dict[int, threading.Thread] = {}
         # 切片协作停止标记：随 start_tiling 登记、_run_tiling_job 结束清理。
-        # build_terrain 批间/逐瓦片检查（见 cesiumlab_terrain.py）；当前 cancel
-        # 仍只拦 pending（有意折中，API 契约被测试钉住），这里把 flag 传下去
-        # 让切片具备中途停的能力，后续开放运行中取消时 set 即可生效。
+        # build_terrain 批间/逐瓦片检查（见 cesiumlab_terrain.py），所以运行中的
+        # 切片能被叫停 —— 置位的唯一入口是 delete_task。
         self.stop_flags: Dict[int, threading.Event] = {}
         self._state_lock = threading.Lock()
         self._recover_orphan_running_tasks()
@@ -486,20 +485,16 @@ class LocalTerrainTaskManager:
             if warning:
                 logger.warning(f"Local terrain task {task_id}: {warning}")
 
+            if stop_flag is not None and stop_flag.is_set():
+                # 中途停止的唯一入口是删除任务（切片没有暂停/恢复语义）——
+                # local_terrain_tasks 行此刻已经不在了。写状态是静默 no-op，
+                # _emit_tiling_finished 也没有行可更新。直接收工，不是漏了状态
+                # 迁移。范本见 dem_task_manager._run_tiling_job。
+                return
+
             conn = get_connection()
             try:
                 cur = conn.cursor()
-                if stop_flag is not None and stop_flag.is_set():
-                    # 中途停止：build_terrain 提前收尾（部分瓦片 + layer.json 已
-                    # 落盘），不能报 completed —— 落 cancelled，重跑请重新 start。
-                    cur.execute(
-                        "UPDATE local_terrain_tasks SET status='cancelled', completed_at=?, "
-                        "error_message=NULL WHERE id=? AND status='running'",
-                        (utc_now_iso(), task_id),
-                    )
-                    conn.commit()
-                    self._emit_tiling_finished(task_id, "cancelled")
-                    return
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
                     "error_message=? WHERE id=? AND status='running'",
@@ -567,37 +562,6 @@ class LocalTerrainTaskManager:
             logger.warning(
                 f"Local terrain task {task_id}: emit finish failed "
                 f"(ignored): {emit_error}")
-
-    def cancel_task(self, task_id: int) -> None:
-        """Cancel if not yet tiling; a running tiling job is rejected.
-
-        build_terrain 现在支持 stop_flag 协作停止（批间/逐瓦片检查，见
-        cesiumlab_terrain.py），运行中的切片技术上已能中途停（flag 在
-        self.stop_flags）；但 cancel 仍只拦 pending 是有意折中 —— 「取消
-        运行中任务」的语义（部分瓦片去留、是否自动重跑）没定，且该 API
-        契约被测试钉住。后续开放时在 running 分支 set stop_flags[task_id]
-        即可生效。"""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE local_terrain_tasks SET status='cancelled' "
-                "WHERE id=? AND status='pending'",
-                (task_id,),
-            )
-            if cur.rowcount == 0:
-                cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
-                r = cur.fetchone()
-                if not r:
-                    raise ValueError(f"Local terrain task {task_id} not found")
-                if r["status"] == "running":
-                    raise ValueError(
-                        "Tiling is in progress and cannot be interrupted; "
-                        "wait for it to finish"
-                    )
-            conn.commit()
-        finally:
-            conn.close()
 
     def delete_task(self, task_id: int, delete_files: bool = True, on_row_gone=None):
         """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。

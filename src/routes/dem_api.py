@@ -168,17 +168,3 @@ def resume_dem_task(task_id: int):
     except Exception as e:
         logger.error(f"Error resuming DEM task {task_id}: {e}")
         return jsonify({"error": "Failed to resume DEM task"}), 500
-
-
-@dem_api_bp.route("/tasks/<int:task_id>/cancel", methods=["POST"])
-def cancel_dem_task(task_id: int):
-    try:
-        if not dem_task_manager:
-            return jsonify({"error": "DEM task manager not initialized"}), 500
-        dem_task_manager.cancel_task(task_id)
-        return jsonify({"success": True, "message": f"DEM task {task_id} cancelled"})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.error(f"Error cancelling DEM task {task_id}: {e}")
-        return jsonify({"error": "Failed to cancel DEM task"}), 500

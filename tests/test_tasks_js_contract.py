@@ -942,7 +942,7 @@ _STATUS_MAPS = (
 
 
 def test_both_js_files_map_every_backend_status():
-    """history.js 与 tasks.js 的两张状态表都必须覆盖 TaskStatus 的全部六态。
+    """history.js 与 tasks.js 的两张状态表都必须覆盖 TaskStatus 的全部五态。
 
     强度说明 —— 为什么不写成 `assert "'paused'" in src`：
     那种断言在 history.js 里查的是「文件里有没有出现过这个词」，
@@ -952,14 +952,15 @@ def test_both_js_files_map_every_backend_status():
     有人在前端凭空造了一个界面上永远到不了的分支。
 
     覆盖数的边界：2 个文件 x 2 张表 = 4 组（2026-08 前是 x3：第三张
-    statusIcons 随徽章 pill 删除，见 _STATUS_MAPS 的登记），每组 6 个键。
+    statusIcons 随徽章 pill 删除，见 _STATUS_MAPS 的登记），每组 5 个键
+    （cancelled 随「取消任务」退出状态机后从 6 降到 5）。
     断言先钉住组数，再逐组比对 —— 只比对不钉组数的话，解析逻辑挂掉
     返回空列表时是永真。
     """
     enum_values = _task_status_values()
-    assert len(enum_values) == 6, (
+    assert len(enum_values) == 5, (
         f'TaskStatus 现在有 {len(enum_values)} 个成员：{sorted(enum_values)}。'
-        '不是 6 个不一定是错，但下面每张表的期望值要跟着改，先确认是有意的'
+        '不是 5 个不一定是错，但下面每张表的期望值要跟着改，先确认是有意的'
     )
     checked = []
     problems = []
@@ -1121,11 +1122,10 @@ _STATUS_LABEL_KEYWORD = {
     'paused': '暂停',
     'completed': '完成',
     'failed': '失败',
-    'cancelled': '取消',
 }
 
 # 每个状态在历史地图上的描边色应该走哪个调色板令牌。
-# pending / cancelled 是中性档，与徽章的中性档一致（见
+# pending 是唯一的中性档，与徽章的中性档一致（见
 # test_status_badge_color_matches_the_semantic_token 的说明）。
 _STATUS_STROKE_TOKEN = {
     'pending': '--color-text-secondary',
@@ -1133,7 +1133,6 @@ _STATUS_STROKE_TOKEN = {
     'paused': '--color-warning',
     'completed': '--color-success',
     'failed': '--color-danger',
-    'cancelled': '--color-neutral',
 }
 
 
@@ -1163,7 +1162,7 @@ def test_status_labels_are_paired_with_the_right_status():
             if keyword not in label:
                 problems.append(
                     f'{js_name}: {status!r} -> {pairs[status]} = {label!r}，应含 {keyword!r}')
-    assert checked == 12, f'只检查了 {checked} 组（期望 12）—— 本测试已失效'
+    assert checked == 10, f'只检查了 {checked} 组（期望 10）—— 本测试已失效'
     assert not problems, (
         '状态与文案的配对错了（界面会把失败写成已完成这种）：\n'
         + '\n'.join('  ' + p for p in problems)
@@ -1185,16 +1184,16 @@ def test_status_labels_are_paired_with_the_right_status():
 # 行2 都带 getStatusText 的状态文字，颜色不再是唯一通道。
 
 def test_map_rectangle_stroke_covers_every_status():
-    """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖六态、走调色板令牌。
+    """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖五态、走调色板令牌。
 
     评审找到的漏网：改前 `renderHistoryMap` 里是一条内联三元阶梯，
-    只认 completed / failed，其余四态（pending / running / paused / cancelled）
+    只认 completed / failed，其余三态（pending / running / paused）
     全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷，只是发生在第四处。
 
     而且三个色号是**硬编码且离调色板**的：`#10b981` 是 emerald-500，
     本项目的 `--color-success` 是 emerald-400 `#34d399`，改调色板时这里会静默漂移。
 
-    这条同时守两件事：六态全覆盖、且每一态指向正确的语义令牌（配对，不只是集合）。
+    这条同时守两件事：五态全覆盖、且每一态指向正确的语义令牌（配对，不只是集合）。
     """
     src = _strip_js_comments(_js('history.js'))
     body = _js_function_body(src, 'getStatusStroke')

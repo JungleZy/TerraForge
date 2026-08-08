@@ -193,33 +193,39 @@ def test_dem_file_failure_marks_parent_failed_not_completed(monkeypatch, tmp_pat
     assert not any(event == "task_completed" for event, _ in dtm.socketio.events)
 
 
-def test_map_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
+def test_map_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
+    """暂停在收尾兜底之前落库，兜底的 UPDATE 不得把它抢成 failed。
+
+    「暂停」是用户「等会儿接着下」的明确意图，被改写成 failed 就再也 resume
+    不回来了 —— 这是失败兜底排除列表里 'paused' 那一项的唯一守卫。
+    """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db)
 
     async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
-        tm.cancel_task(task_id)
-        raise RuntimeError("network died after cancel")
+        tm.pause_task(task_id)
+        raise RuntimeError("network died after pause")
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
     asyncio.run(tm._execute_task(task_id))
 
     row = _map_task_row(db, task_id)
-    assert row["status"] == "cancelled"
+    assert row["status"] == "paused"
 
 
-def test_dem_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
+def test_dem_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
+    """DEM 侧同款：见 test_map_paused_task_is_not_overwritten_by_failure。"""
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     dtm_mod = importlib.import_module("src.services.dem_task_manager")
     dtm = dtm_mod.DemTaskManager(socketio=FakeSocketIO())
     task_id = _seed_dem_task(db)
 
     async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
-        dtm.cancel_task(task_id)
-        raise RuntimeError("network died after cancel")
+        dtm.pause_task(task_id)
+        raise RuntimeError("network died after pause")
 
     dtm.engine.download_files = fake_download_files
 
@@ -229,7 +235,7 @@ def test_dem_cancelled_task_is_not_overwritten_by_failure(monkeypatch, tmp_path)
         pass
 
     row = _dem_task_row(db, task_id)
-    assert row["status"] == "cancelled"
+    assert row["status"] == "paused"
 
 
 def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
@@ -542,15 +548,15 @@ def test_cache_hit_backfill_writes_output_before_stitch(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 复制瓦片阶段（所有格式都会复制）必须响应取消,并给出进度
+# 复制瓦片阶段（所有格式都会复制）必须响应停止标志,并给出进度
 # ---------------------------------------------------------------------------
 
 
-def test_map_tile_copy_stage_honours_cancel(monkeypatch, tmp_path):
+def test_map_tile_copy_stage_honours_stop_flag(monkeypatch, tmp_path):
     """复制循环里必须检查 stop_flag。
 
     both 是下拉框的默认项,升级后它多跑一整个复制阶段。10 万瓦片下没有这个
-    检查,用户点取消要等整个复制跑完才生效。
+    检查,用户点暂停/删除要等整个复制跑完才生效。
     """
     import threading
 
@@ -570,26 +576,26 @@ def test_map_tile_copy_stage_honours_cancel(monkeypatch, tmp_path):
         output_path=str(tmp_path / "out"),
     )
 
-    # cancel_task 只在 stop_flags 里已有该任务时才 set,所以先登记
+    # 复制循环查的是登记表里那一份 flag（见 _is_stop_requested）
     tm.stop_flags[task_id] = threading.Event()
 
     copied = []
     real_copy2 = tm_mod.shutil.copy2
 
-    def cancelling_copy2(src, dst):
+    def stopping_copy2(src, dst):
         real_copy2(src, dst)
         copied.append(str(src))
-        tm.cancel_task(task_id)  # 用户在复制过程中点了取消
+        # 用户在复制过程中按了暂停/删除 —— 两条路都只是置这个标志
+        tm.stop_flags[task_id].set()
 
-    monkeypatch.setattr(tm_mod.shutil, "copy2", cancelling_copy2)
+    monkeypatch.setattr(tm_mod.shutil, "copy2", stopping_copy2)
 
     asyncio.run(tm._execute_task(task_id))
 
     assert len(copied) == 1, (
-        f"取消后又复制了 {len(copied)} 个瓦片 —— 复制循环没检查 stop_flag,"
-        "取消要等整个复制跑完才生效"
+        f"置位停止标志后又复制了 {len(copied)} 个瓦片 —— 复制循环没检查 "
+        "stop_flag,停止要等整个复制跑完才生效"
     )
-    assert _map_task_row(db, task_id)["status"] == "cancelled"
 
 
 def test_map_tile_copy_stage_emits_progress(monkeypatch, tmp_path):

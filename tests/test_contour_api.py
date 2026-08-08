@@ -175,23 +175,6 @@ def test_create_contour_task_empty_file_400_and_no_residue(monkeypatch, tmp_path
     assert not (tmp_path / "downloads" / "dem" / "contour_task_1").exists()
 
 
-def test_cancel_nonexistent_contour_task_404(monkeypatch, tmp_path):
-    """cancel_task 对不存在任务抛 ValueError("... not found")，
-    端点此前缺 except ValueError 直接 500。"""
-    app_mod, client = _load_app(monkeypatch, tmp_path)
-    resp = client.post("/api/contour/tasks/999/cancel")
-    assert resp.status_code == 404
-
-
-def test_cancel_pending_contour_task_200(monkeypatch, tmp_path):
-    app_mod, client = _load_app(monkeypatch, tmp_path)
-    tid = _post_task(client).get_json()["task_id"]
-    resp = client.post(f"/api/contour/tasks/{tid}/cancel")
-    assert resp.status_code == 200
-    task = client.get(f"/api/contour/tasks/{tid}").get_json()["task"]
-    assert task["status"] == "cancelled"
-
-
 def test_list_contour_tasks_limit_minus_one_not_unlimited(monkeypatch, tmp_path):
     """limit=-1 在 SQLite 里不限行数：路由透传 manager 后仍钳到 >=1。"""
     app_mod, client = _load_app(monkeypatch, tmp_path)

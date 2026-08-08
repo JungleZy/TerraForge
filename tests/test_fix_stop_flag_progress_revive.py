@@ -1,29 +1,29 @@
-"""取消/暂停后进度广播必须立刻停止 —— 否则任务状态会自己「复活」。
+"""置位停止标志后进度广播必须立刻停止 —— 否则任务状态会自己「复活」。
 
 ## 缺陷
 
-点「取消」后界面变成「已取消」，约 0.5 秒后自己翻回「运行中」，并**永久**停在
+点「暂停」后界面变成「已暂停」，约 0.5 秒后自己翻回「运行中」，并**永久**停在
 那里 —— 刷新页面才恢复。
 
 四个环节叠加而成：
 
-1. `cancel_task()` 只 `UPDATE tasks SET status='cancelled'` + 置位 stop flag，
-   **不发任何 socket 事件**；
+1. `pause_task()` 只 `UPDATE tasks SET status='paused'` + 置位 stop flag，
+   **不发任何进度事件**；
 2. 下载循环不是立刻停的，要跑到当前批次边界，期间 `progress_callback` 照发；
-3. 那个载荷里的 `'status': task.status` 取自**内存** Task 对象 —— cancel 只改
+3. 那个载荷里的 `'status': task.status` 取自**内存** Task 对象 —— pause 只改
    库、不碰它，所以仍然是 `'running'`；
-4. 前端把这发推送合并进任务行，「已取消」被覆盖回「运行中」。而库里已经是
-   cancelled，收尾时 `_complete_task` 看到终态直接 return，**再也不发**
+4. 前端把这发推送合并进任务行，「已暂停」被覆盖回「运行中」。而库里已经是
+   paused，收尾时 `_complete_task` 看到它直接 return，**再也不发**
    `task_completed` —— 没有任何事件能把界面纠正回来。
 
-`pause_task()` 走同一条路（`:579` 同样置位 stop flag、同样不改内存对象），
-症状是「已暂停」翻回「运行中」。
+`delete_task` 走同一条路（同样置位 stop flag、同样不改内存对象），只是它连行
+都删了，那几发进度打在不存在的任务上。
 
 ## 修法
 
 `progress_callback` 的广播分支加 `_is_stop_requested` 守卫：stop 一旦被请求就
 不再广播进度。状态迁移本来就不该由进度流承载 —— pause 由 `pause_task` 自己
-广播库里的真值，cancel 由前端点击时置位。计数在收尾时落库，前端下次拉列表即准。
+广播库里的真值。计数在收尾时落库，前端下次拉列表即准。
 
 ## 为什么必须有对照组
 
@@ -112,8 +112,8 @@ def _run_two_progress_pushes(tm, sio, task_id, stop, *, set_stop_between):
         counts['first'] = sum(1 for e, _ in sio.events if e == 'task_progress')
 
         if set_stop_between:
-            # cancel_task / pause_task 做的事:改库 + 置位 stop flag,
-            # 内存里的 task.status 保持 'running' 不变。
+            # pause_task / delete_task 做的事:改库(或删行) + 置位 stop
+            # flag,内存里的 task.status 保持 'running' 不变。
             stop.set()
 
         # 第 2 发:同样满足 done >= total,不会被节流拦掉。
@@ -197,7 +197,7 @@ def test_removing_the_guard_reproduces_the_bug(isolated_config, monkeypatch):
 
 
 def test_stop_requested_falls_back_to_registered_flag(isolated_config):
-    """cancel_task 置位的是 self.stop_flags[task_id] 那一份。
+    """pause_task 置位的是 self.stop_flags[task_id] 那一份。
 
     _execute_task 拿到的 stop_flag 参数与登记表里的是同一个 Event 对象
     (start_task 建好后同时放进 stop_flags 和线程参数)。这里直接验证
@@ -217,5 +217,5 @@ def test_stop_requested_falls_back_to_registered_flag(isolated_config):
 
     flag.set()
     assert tm._is_stop_requested(task_id) is True, (
-        '只置位登记表里的 flag 时守卫也必须生效 —— cancel_task 走的就是这条路'
+        '只置位登记表里的 flag 时守卫也必须生效 —— pause_task 走的就是这条路'
     )

@@ -304,39 +304,6 @@ def resume_task(task_id: int):
         return jsonify({'error': 'Failed to resume task'}), 500
 
 
-@api_bp.route('/tasks/<int:task_id>/cancel', methods=['POST'])
-def cancel_task(task_id: int):
-    """
-    Cancel a task
-
-    Args:
-        task_id: Task ID to cancel
-
-    Returns:
-        JSON response with success status
-    """
-    try:
-        if not task_manager:
-            return jsonify({'error': 'Task manager not initialized'}), 500
-
-        task_manager.cancel_task(task_id)
-
-        logger.info(f"Task {task_id} cancelled via API")
-
-        return jsonify({
-            'success': True,
-            'message': f'Task {task_id} cancelled'
-        })
-
-    except ValueError as e:
-        logger.error(f"Error cancelling task {task_id}: {e}")
-        return jsonify({'error': str(e)}), 400
-
-    except Exception as e:
-        logger.error(f"Error cancelling task {task_id}: {e}")
-        return jsonify({'error': 'Failed to cancel task'}), 500
-
-
 @api_bp.route('/tasks/<int:task_id>', methods=['DELETE'])
 def delete_task(task_id: int):
     """

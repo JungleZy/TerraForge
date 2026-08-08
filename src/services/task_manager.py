@@ -1,7 +1,7 @@
 """
 Task Manager Service
 
-Manages download task lifecycle including creation, execution, pause/resume, and cancellation.
+Manages download task lifecycle including creation, execution, pause/resume, and deletion.
 Coordinates between database, download engine, and WebSocket notifications.
 """
 
@@ -51,12 +51,12 @@ class TaskManager:
     Task manager for orchestrating map download tasks
 
     Manages task lifecycle from creation through execution to completion.
-    Provides pause/resume/cancel capabilities with real-time progress updates.
+    Provides pause/resume capabilities with real-time progress updates.
 
     Features:
         - Task creation with tile calculation
         - Background task execution with threading
-        - Pause/resume/cancel controls with stop flags
+        - Pause/resume controls with stop flags
         - Real-time progress updates via WebSocket
         - Database persistence for task state
         - GDAL tile stitching for image output
@@ -420,14 +420,16 @@ class TaskManager:
                 if not row:
                     raise ValueError(f"Task {task_id} not found")
 
-                # 'failed' 也在准许列表里:_execute_task 本就按 pending/failed
-                # 捞瓦片(续传语义写好了),入口不能把失败任务关死 —— 否则一次
-                # 网络波动失败的任务永远无法重试。
+                # 只准 pending/paused:'failed' 曾经也放行,为的是让失败任务
+                # 直接重按开始就续传。但失败是终态,重跑一条终态记录等于把它
+                # 曾经失败过这件事从历史里擦掉;另外三条管线也都只收
+                # pending/paused,map 单开一个口子只会让前端按钮的可用条件
+                # 每条管线一套(切片类管线另说,它没有续传模型)。
                 status = row['status']
-                if status not in ['pending', 'paused', 'failed']:
+                if status not in ['pending', 'paused']:
                     raise ValueError(
                         f"Cannot start task {task_id} with status '{status}'. "
-                        f"Task must be 'pending', 'paused' or 'failed'."
+                        f"Task must be 'pending' or 'paused'."
                     )
 
                 # started_at 只在首次启动时写入(COALESCE):resume/重试不再
@@ -436,7 +438,7 @@ class TaskManager:
                 cursor.execute('''
                     UPDATE tasks
                     SET status = 'running', started_at = COALESCE(started_at, ?)
-                    WHERE id = ? AND status IN ('pending', 'paused', 'failed')
+                    WHERE id = ? AND status IN ('pending', 'paused')
                 ''', (utc_now_iso(), task_id))
                 if cursor.rowcount != 1:
                     raise ValueError(f"Task {task_id} could not be started because its status changed")
@@ -643,68 +645,11 @@ class TaskManager:
         logger.info(f"Resuming task {task_id}")
         self.start_task(task_id)
 
-    def cancel_task(self, task_id: int):
-        """
-        Cancel a task
-
-        Args:
-            task_id: Task ID to cancel
-
-        Raises:
-            ValueError: If task not found, or already in a terminal state
-                (completed/failed/cancelled) — 终态任务无可取消,如实抛错
-                而不是什么都不改却报 'cancelled'
-            sqlite3.Error: If database operation fails
-
-        Process:
-            1. Set stop_flag to signal task to stop
-            2. Update status to 'cancelled' in database
-        """
-        logger.info(f"Cancelling task {task_id}")
-
-        conn = get_connection()
-        try:
-            cursor = conn.cursor()
-
-            # Only pending/running/paused may transition to cancelled — a
-            # terminal completed/failed record must never be rewritten.
-            cursor.execute('''
-                UPDATE tasks
-                SET status = 'cancelled'
-                WHERE id = ? AND status IN ('pending', 'running', 'paused')
-            ''', (task_id,))
-
-            if cursor.rowcount == 0:
-                cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
-                row = cursor.fetchone()
-                if not row:
-                    raise ValueError(f"Task {task_id} not found")
-                raise ValueError(
-                    f"Cannot cancel task {task_id} with status '{row['status']}'. "
-                    f"Task must be 'pending', 'running' or 'paused'."
-                )
-
-            conn.commit()
-
-            with self._state_lock:
-                if task_id in self.stop_flags:
-                    self.stop_flags[task_id].set()
-                    logger.debug(f"Stop flag set for task {task_id}")
-
-            logger.info(f"Task {task_id} cancelled")
-
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Failed to cancel task {task_id}: {e}")
-            raise
-        finally:
-            conn.close()
-
     def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
         """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
-        砍掉「取消」之后这是唯一的销毁动作，任何状态都能调 —— 不再有
-        「Cannot delete running task. Please pause or cancel it first.」。
+        砍掉「取消」之后这是唯一的销毁动作，任何状态都能调 —— 不再要求调用方
+        先把运行中的任务停下来。
 
         on_row_gone 由调用方给：清 /tiles 静态路由缓存的那个 hook 依赖 Flask
         请求上下文（走 current_app.extensions），放在这里等于让服务层持有一个
@@ -1301,19 +1246,18 @@ class TaskManager:
                     # 时间节流(见 PROGRESS_EMIT_MIN_INTERVAL):done 达到
                     # 总数那一发(完成进度)必发,其余距上次不足间隔只记内存。
                     #
-                    # stop 已被请求(cancel_task:683 / pause_task:579 置了
-                    # stop flag)时**一律不再广播进度**。下载循环不是立刻停的
-                    # —— 它要跑到当前批次边界,期间本回调仍会被调用,而下面
-                    # 载荷里的 `task.status` 取自内存对象:cancel_task 与
-                    # pause_task 都只改库、不碰它,所以它仍然是 'running'。
-                    # 发出去的后果是把前端刚显示的「已取消」/「已暂停」覆盖回
-                    # 「运行中」,而 _complete_task 见库里已是终态会直接 return、
-                    # 再也不发 task_completed —— 界面永久停在错误状态,且没有
-                    # 任何自愈路径(实测:点取消 -> 变已取消 -> 0.5s 后翻回运行中)。
+                    # stop 已被请求(pause_task / delete_task 置了 stop flag)
+                    # 时**一律不再广播进度**。下载循环不是立刻停的 —— 它要跑到
+                    # 当前批次边界,期间本回调仍会被调用,而下面载荷里的
+                    # `task.status` 取自内存对象:pause_task 只改库、不碰它,
+                    # 所以它仍然是 'running'。发出去的后果是把前端刚显示的
+                    # 「已暂停」覆盖回「运行中」,而 _complete_task 见库里已是
+                    # 终态会直接 return、再也不发 task_completed —— 界面永久停在
+                    # 错误状态,且没有任何自愈路径。
                     #
-                    # 状态迁移本来就不该走进度流:pause 由 :592 广播库里的真值,
-                    # cancel 由前端点击时自己置位。计数在收尾时落库,前端下次
-                    # 拉列表即准 —— 已停的任务少几发实时进度没有任何影响。
+                    # 状态迁移本来就不该走进度流:pause 自己广播库里的真值,
+                    # delete 连行都不留。计数在收尾时落库,前端下次拉列表即准
+                    # —— 已停的任务少几发实时进度没有任何影响。
                     done_tiles = progress_counts['downloaded'] + progress_counts['failed']
                     now = time.monotonic()
                     if self.socketio and not self._is_stop_requested(task_id, stop_flag) and (
@@ -1539,10 +1483,9 @@ class TaskManager:
                 # 10 万块瓦片就是 10 万次多余的 syscall。
                 made_dirs = set()
                 for copy_index, tile in enumerate(completed_tiles, start=1):
-                    # 'both' is the default output format, so this loop runs for
-                    # most tasks and at 100k tiles it takes minutes. Without a stop
-                    # check inside it, cancelling only takes effect once the whole
-                    # copy has finished.
+                    # 'both' 是默认输出格式,大多数任务都会走这个循环,10 万块
+                    # 瓦片要跑几分钟。循环里不查停止标志,暂停/删除就得等整轮
+                    # 拷贝跑完才生效。
                     if self._is_stop_requested(task_id, stop_flag):
                         logger.info(
                             f"Task {task_id}: Stop flag detected during tile copy "
@@ -1612,7 +1555,9 @@ class TaskManager:
 
             cursor.execute('SELECT status FROM tasks WHERE id = ?', (task_id,))
             current_row = cursor.fetchone()
-            if not current_row or current_row['status'] in ('cancelled', 'paused'):
+            # 只剩 'paused' 要挡:用户明确按了暂停,收尾不得把它改写成终态。
+            # 行不在了(删除)同样直接退出。
+            if not current_row or current_row['status'] == 'paused':
                 logger.info(f"Task {task_id}: Current status prevents completion")
                 return
 
@@ -1720,12 +1665,13 @@ class TaskManager:
 
             # Update task status to failed
             try:
-                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写。
+                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写;
+                # 'paused' 留着是因为它是用户的明确意图,兜底不该把它抢走。
                 # 与 contour_task_manager.py 的同款收尾对齐。
                 cursor.execute('''
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?
-                    WHERE id = ? AND status NOT IN ('cancelled', 'paused', 'completed')
+                    WHERE id = ? AND status NOT IN ('paused', 'completed')
                 ''', (str(e), utc_now_iso(), task_id))
 
                 conn.commit()

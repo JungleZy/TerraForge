@@ -28,9 +28,9 @@ MESSAGES = {
     },
     'api.tasks.cache_clear_blocked': {
         'zh': '有任务尚未结束，清空缓存会让它们的产物静默缺瓦片。'
-              '请先暂停或取消：{tasks}',
+              '请先暂停或删除：{tasks}',
         'en': 'Some tasks are still unfinished; clearing the cache would '
-              'silently leave their output missing tiles. Pause or cancel '
+              'silently leave their output missing tiles. Pause or delete '
               'them first: {tasks}',
     },
     # 上面那条消息里任务标签之间的分隔符（英文用逗号，中文用顿号）

@@ -260,7 +260,7 @@ def test_clear_cache_blocked_for_every_live_status(isolated_app, status):
     assert resp.status_code == 409
 
 
-@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+@pytest.mark.parametrize("status", ["completed", "failed"])
 def test_clear_cache_allowed_when_all_tasks_are_terminal(isolated_app, status):
     """终态任务不阻塞清理 —— 否则用户永远清不掉缓存。"""
     client = isolated_app.app.test_client()

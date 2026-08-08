@@ -1039,17 +1039,10 @@ html[lang="en"] .map-panel-btn {
     background: var(--color-warning);
 }
 
-/* pending 用 --color-text-secondary 而不是 --color-text-muted
-   （对面板底只有 3.09:1，紧贴 3:1 下限），且与 cancelled 的
-   --color-neutral 保持区分——两个状态语义不同，状态点不该同色。 */
+/* pending 用 --color-text-secondary 而不是 --color-text-muted：后者对面板底
+   只有 3.09:1，紧贴 3:1 下限。 */
 .task-row.status-pending .task-dot {
     background: var(--color-text-secondary);
-}
-
-/* 没有这条的话，已取消的行会落到 .task-dot 的兜底色——与「等待中」同色，
-   读起来像「还没开始」。 */
-.task-row.status-cancelled .task-dot {
-    background: var(--color-neutral);
 }
 
 /* 失败行**不铺底色**（沿用 2026-08 扁平化结论）：整行红洗 + 红框错误框

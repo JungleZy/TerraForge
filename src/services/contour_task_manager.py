@@ -640,26 +640,6 @@ class ContourTaskManager:
     def resume_task(self, task_id: int) -> None:
         self.start_task(task_id)
 
-    def cancel_task(self, task_id: int) -> None:
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("UPDATE contour_tasks SET status='cancelled' WHERE id=? AND status IN ('pending','running','paused')", (task_id,))
-            if cur.rowcount == 0:
-                row = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-                if not row:
-                    raise ValueError(f"Contour task {task_id} not found")
-                # U2: 终态任务不能静默返回成功 —— 路由会回 {"success": true},
-                # 用户以为取消生效了。map/dem 都抛 ValueError,contour 跟上。
-                raise ValueError(
-                    f"Cannot cancel contour task {task_id} with status '{row['status']}'")
-            conn.commit()
-            with self._state_lock:
-                if task_id in self.stop_flags:
-                    self.stop_flags[task_id].set()
-        finally:
-            conn.close()
-
     def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
         """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
@@ -914,7 +894,9 @@ class ContourTaskManager:
                 return
 
             current = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-            if not current or current["status"] in ("cancelled", "paused"):
+            # 只剩 "paused" 要挡：用户明确按了暂停，收尾不得改写它。行不在了
+            # （被删）同样直接退出。
+            if not current or current["status"] == "paused":
                 return
 
             counts = cur.execute(
@@ -1101,7 +1083,9 @@ class ContourTaskManager:
                 cur = conn.cursor()
                 # 'completed' 也要排除:上面的 emit("task_completed") 抛异常时会走到
                 # 这里,不能把已经完成的任务改判 failed
-                cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled','paused','completed')",
+                # 'completed' 是终态不可改写；'paused' 是用户的明确意图，
+                # 失败兜底也不该把它抢走。
+                cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('paused','completed')",
                             (str(e), utc_now_iso(), task_id))
                 conn.commit()
                 if cur.rowcount and self.socketio:

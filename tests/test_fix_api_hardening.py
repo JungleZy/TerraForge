@@ -3,7 +3,7 @@
 覆盖:
 - C5 : POST /api/tasks 的 output_path 越界 → 400
 - I3 : DELETE 绕开 manager 锁的竞态 —— 有活跃线程的任务拒绝删除(400),记录保留
-- I4 : pause/cancel 的 ValueError 不再吞成 500(映射 400,与 start/resume 一致)
+- I4 : pause 的 ValueError 不再吞成 500(映射 400,与 start/resume 一致)
 - I15: 预计瓦片数超阈值 → 创建直接 400(不是 warning)
 - minors: PUT /api/config 非法 JSON 不 500 + 键白名单;limit/page 负数钳制;
           style/output_format 为 None → 400(不是 AttributeError → 500)
@@ -245,13 +245,11 @@ def test_delete_map_task_without_active_thread_still_works(monkeypatch, tmp_path
     assert _task_row(db, "tasks", task_id) is None
 
 
-# ---------- I4: pause/cancel 的 ValueError → 400(不吞成 500) ----------
+# ---------- I4: pause 的 ValueError → 400(不吞成 500) ----------
 
-def test_pause_cancel_nonexistent_map_task_400(monkeypatch, tmp_path):
+def test_pause_nonexistent_map_task_400(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
     resp = client.post("/api/tasks/9999/pause")
-    assert resp.status_code == 400, resp.get_json()
-    resp = client.post("/api/tasks/9999/cancel")
     assert resp.status_code == 400, resp.get_json()
 
 
@@ -263,11 +261,9 @@ def test_pause_map_task_with_wrong_status_400(monkeypatch, tmp_path):
     assert resp.status_code == 400, resp.get_json()
 
 
-def test_pause_cancel_nonexistent_dem_task_400(monkeypatch, tmp_path):
+def test_pause_nonexistent_dem_task_400(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
     resp = client.post("/api/dem/tasks/9999/pause")
-    assert resp.status_code == 400, resp.get_json()
-    resp = client.post("/api/dem/tasks/9999/cancel")
     assert resp.status_code == 400, resp.get_json()
 
 

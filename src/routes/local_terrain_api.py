@@ -99,20 +99,6 @@ def get_local_terrain_task(task_id: int):
         return jsonify({"error": "Failed to get local terrain task"}), 500
 
 
-@local_terrain_api_bp.route("/tasks/<int:task_id>/cancel", methods=["POST"])
-def cancel_local_terrain_task(task_id: int):
-    if not local_terrain_task_manager:
-        return jsonify({"error": "Local terrain task manager not initialized"}), 500
-    try:
-        local_terrain_task_manager.cancel_task(task_id)
-        return jsonify({"success": True, "message": f"Local terrain task {task_id} cancelled"})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.error(f"Error cancelling local terrain task {task_id}: {e}")
-        return jsonify({"error": "Failed to cancel local terrain task"}), 500
-
-
 @local_terrain_api_bp.route("/tasks/<int:task_id>", methods=["DELETE"])
 def delete_local_terrain_task(task_id: int):
     """删除本地地形任务。

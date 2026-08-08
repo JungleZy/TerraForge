@@ -253,26 +253,6 @@ class DemTaskManager:
     def resume_task(self, task_id: int) -> None:
         self.start_task(task_id)
 
-    def cancel_task(self, task_id: int) -> None:
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("UPDATE dem_tasks SET status='cancelled' WHERE id=? AND status IN ('pending','running','paused')", (task_id,))
-            if cur.rowcount == 0:
-                cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
-                row = cur.fetchone()
-                if not row:
-                    raise ValueError(f"DEM task {task_id} not found")
-                # 与 pause_task 一致：终态（completed/failed/cancelled）不可取消，
-                # 抛错而非静默成功。
-                raise ValueError(f"Cannot cancel DEM task {task_id} with status '{row['status']}'")
-            conn.commit()
-            with self._state_lock:
-                if task_id in self.stop_flags:
-                    self.stop_flags[task_id].set()
-        finally:
-            conn.close()
-
     @staticmethod
     def _resolve_task_output_dir(output_path: str) -> Path:
         """相对 output_path 相对 Config.DOWNLOADS_DIR 解析（不依赖进程 CWD）。
@@ -399,7 +379,7 @@ class DemTaskManager:
             # (RuntimeError: can't start new thread)后不回补的话,job 行永久停在
             # running:再次 start_tiling 被 `WHERE status != 'running'` 判为「已在
             # 运行」而 ValueError,delete_task 也被 DB 状态检查挡住,而
-            # src/routes/terrain_api.py 没有任何 cancel/reset job 的端点 ——
+            # src/routes/terrain_api.py 没有任何重置 job 的端点 ——
             # 只能重启进程让孤儿恢复解开。
             # job 行没有 paused 态,这里置 failed(与下载管线回退 paused 不同)。
             with self._state_lock:
@@ -876,7 +856,9 @@ class DemTaskManager:
 
             cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
             current = cur.fetchone()
-            if not current or current["status"] in ("cancelled", "paused"):
+            # 只剩 "paused" 要挡：用户明确按了暂停，收尾不得改写它。行不在了
+            # （被删）同样直接退出。
+            if not current or current["status"] == "paused":
                 return
 
             cur.execute(
@@ -917,9 +899,10 @@ class DemTaskManager:
         except Exception as e:
             try:
                 cur = conn.cursor()
-                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写。
+                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写；
+                # 'paused' 是用户的明确意图，失败兜底也不该把它抢走。
                 cur.execute(
-                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled', 'paused', 'completed')",
+                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('paused', 'completed')",
                     (str(e), utc_now_iso(), task_id),
                 )
                 conn.commit()

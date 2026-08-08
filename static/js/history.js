@@ -286,12 +286,13 @@ function filterTasks(searchTerm) {
 }
 
 // A7 / Task 12：这两张表原先只映射 completed / failed / cancelled 三态。
+// （cancelled 已随「取消任务」一并退出状态机，见 models/task.py 的 TaskStatus。）
 // /api/history_all 默认不带 status 过滤（路由的 ?status= 是可选参数，
 // 状态筛选 chips 选中时才传），pending / running / paused 的任务照样可能
 // 进历史流（例如独立页 /history 全量渲染）。落在表外的状态会走
 // `|| status` 兜底，把后端的**英文字面量**直接渲染进中文界面
 // —— 这就是历史页里 `paused` 与「✓ 已完成」中英混杂的根源。
-// 现在与 tasks.js 的同名函数逐字对齐，覆盖 models/task.py 的 TaskStatus 全部六态。
+// 现在与 tasks.js 的同名函数逐字对齐，覆盖 models/task.py 的 TaskStatus 全部五态。
 // 两份实现仍然重复（没有构建工具、没有 ES module，两个页面不会同时加载），
 // 收敛到公共文件属于第三档，本次只对齐行为。
 function getStatusColor(status) {
@@ -302,8 +303,7 @@ function getStatusColor(status) {
         'running': 'info',
         'paused': 'warning',
         'completed': 'success',
-        'failed': 'danger',
-        'cancelled': 'dark'
+        'failed': 'danger'
     };
     return colors[status] || 'secondary';
 }
@@ -311,15 +311,14 @@ function getStatusColor(status) {
 // 历史地图上矩形的描边色。这是**第四处**状态映射点（前三处是 getStatusColor /
 // getStatusText / statusIcons），A7 / Task 12 一并补齐。
 //
-// 改前是内联三元阶梯，只认 completed / failed，其余四态（pending / running /
-// paused / cancelled）全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷。
+// 改前是内联三元阶梯，只认 completed / failed，其余三态（pending / running /
+// paused）全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷。
 // 而且三个色号 #10b981 / #ef4444 / #60a5fa 是**硬编码且离调色板**的：
 // #10b981 是 emerald-500，本项目的 --color-success 是 emerald-400 #34d399，
 // 改调色板时这里会静默漂移。
 //
 // 现在读 CSS 自定义属性，与徽章/进度条/卡片边条走同一套语义令牌：
 //   pending -> --color-text-secondary（与 .badge.bg-secondary 同色）
-//   cancelled -> --color-neutral（与 .progress-bar.bg-dark 同色）
 // Leaflet 要的是真实色值字符串，不认 var()，所以必须在这里求值。
 // 状态色惰性缓存：getComputedStyle 每次调用都强制样式计算，renderHistoryMap
 // 逐任务调用时成本放大；调色板运行期不变，首次调用把 6 个令牌求值后查表。
@@ -343,8 +342,7 @@ function getStatusStroke(status) {
         'running': '--color-info',
         'paused': '--color-warning',
         'completed': '--color-success',
-        'failed': '--color-danger',
-        'cancelled': '--color-neutral'
+        'failed': '--color-danger'
     };
     const name = vars[status] || '--color-text-secondary';
     if (!_statusStrokeCache) {
@@ -364,8 +362,7 @@ function getStatusText(status) {
         'running': t('js.history.status.running'),
         'paused': t('js.history.status.paused'),
         'completed': t('js.history.status.completed'),
-        'failed': t('js.history.status.failed'),
-        'cancelled': t('js.history.status.cancelled')
+        'failed': t('js.history.status.failed')
     };
     // 未知状态不把英文字面量原样渲染进中文界面（与 tasks.js 同一约定）
     return texts[status] || t('js.history.status.unknown');

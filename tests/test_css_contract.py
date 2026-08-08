@@ -1123,7 +1123,7 @@ def test_every_status_color_has_a_progress_bar_override():
       5. **解析出的色值不能等于 `.progress` 轨道底色**。计划原文建议
          `.progress-bar.bg-dark { background: var(--color-bg-tertiary) }`，
          而 `.progress` 的底色恰恰就是 var(--color-bg-tertiary)——
-         规则在、变量对、测试全绿，而已取消任务的进度条与轨道同色，
+         规则在、变量对、测试全绿，而那一档的进度条与轨道同色，
          肉眼完全看不见。这一条就是为了拦住这种「写了等于没写」。
          更一般的可辨识度下限见 test_progress_bar_fill_has_sufficient_contrast
          （同色只是对比度 1:1 的极端情形）。
@@ -1134,11 +1134,12 @@ def test_every_status_color_has_a_progress_bar_override():
     css = _css()
     required = _status_color_names('tasks.js') | _status_color_names('history.js')
     # 自检：running 走 info（复用早就存在的 .progress-bar.bg-info），
-    # secondary/dark 是本任务补上的。解析要是出了岔子导致 required 变小，
+    # secondary 是 A1/Task 5 补上的（'dark' 随 cancelled 退出状态机一起
+    # 不再被 getStatusColor 返回）。解析要是出了岔子导致 required 变小，
     # 负向遍历会静默变绿。
-    assert {'info', 'secondary', 'dark'} <= required, (
+    assert {'info', 'secondary'} <= required, (
         f'从 getStatusColor 解析出的颜色名是 {sorted(required)}，'
-        '缺了 info/secondary/dark —— 解析逻辑已失效'
+        '缺了 info/secondary —— 解析逻辑已失效'
     )
 
     rules = _progress_bar_color_rules(css)
@@ -1206,7 +1207,7 @@ def test_progress_bar_fill_has_sufficient_contrast():
     **2.82:1**，低于本项目自己在 C1/Task 4 刚立起来的 3:1 图形元素下限；
     同批的另外两条是 6.21:1 和 3.94:1，只有它掉在门槛下。
 
-    而 bg-secondary 恰恰是最承重的一格：`static/js/history.js` 的
+    而 bg-secondary 恰恰是最承重的一格：改前 `static/js/history.js` 的
     getStatusColor 只映射 completed/failed/cancelled，**running / pending /
     paused 全部兜底成 secondary**，而 `/api/history_all` 默认不过滤非终态。
     所以历史页详情里一个跑到 63% 的运行中任务，进度条就是这一格。改前那条
@@ -5438,10 +5439,10 @@ def test_status_badge_text_is_readable_in_every_state():
     """
     css = _css()
     names = _status_color_names('tasks.js') | _status_color_names('history.js')
-    assert names == {'secondary', 'info', 'warning', 'success', 'danger', 'dark'}, (
+    assert names == {'secondary', 'info', 'warning', 'success', 'danger'}, (
         f'从两个 getStatusColor 解析出的颜色名是 {sorted(names)}，'
-        "期望 {'danger','dark','info','secondary','success','warning'} —— "
-        '六态 x 两个文件的映射变了，先确认是有意的再改本断言'
+        "期望 {'danger','info','secondary','success','warning'} —— "
+        '五态 x 两个文件的映射变了，先确认是有意的再改本断言'
     )
     fallbacks = set()
     for js_name in ('tasks.js', 'history.js'):
@@ -5562,9 +5563,9 @@ def test_inline_style_colors_meet_wcag_aa_everywhere():
 # 但钉的是**语义令牌名**，不是色号 —— 调色板改值时这条不动，
 # 有人把「失败」画成绿色时它变红。
 #
-# `None` = 中性档：这两个状态**故意**没有语义色（等待中还没开始、已取消是
-# 无褒贬的终态）。对它们的要求反过来：最终色**不许**等于四个语义色中的任何一个
-# —— 「已取消」被画成青绿品牌色正是本轮补掉的缺陷之一。
+# `None` = 中性档：pending **故意**没有语义色（等待中还没开始）。对它的要求
+# 反过来：最终色**不许**等于四个语义色中的任何一个 —— 中性态被画成青绿品牌色
+# 正是本轮补掉的缺陷之一。
 # --------------------------------------------------------------------------
 
 _STATUS_SEMANTIC_TOKEN = {
@@ -5573,7 +5574,6 @@ _STATUS_SEMANTIC_TOKEN = {
     'paused': '--color-warning',
     'completed': '--color-success',
     'failed': '--color-danger',
-    'cancelled': None,
 }
 
 
@@ -5601,9 +5601,9 @@ def test_status_badge_color_matches_the_semantic_token():
     `.badge.bg-X` 规则，其 color 必须解析成 `--color-danger` 的字面值。
 
     钉的是语义令牌不是色号：调色板改值时本条不动。
-    中性档（pending / cancelled）反向断言 —— 不许等于四个语义色中的任何一个。
+    中性档（pending）反向断言 —— 不许等于四个语义色中的任何一个。
 
-    覆盖边界：2 个文件 × 6 个状态 = 12 组，先钉组数再逐组比对。
+    覆盖边界：2 个文件 × 5 个状态 = 10 组，先钉组数再逐组比对。
     """
     css = _css()
     semantic = _semantic_palette_values(css)
@@ -5633,7 +5633,7 @@ def test_status_badge_color_matches_the_semantic_token():
                     problems.append(
                         f'{js_name}: {status!r} -> bg-{name} -> {got}，'
                         f'期望 {token}({want})')
-    assert len(checked) == 12, f'只检查了 {len(checked)} 组（期望 12）—— 本测试已失效'
+    assert len(checked) == 10, f'只检查了 {len(checked)} 组（期望 10）—— 本测试已失效'
     assert not problems, (
         '状态与语义色的配对错了：\n' + '\n'.join('  ' + p for p in problems)
         + '\n\n全部映射：\n' + '\n'.join('  ' + c for c in checked)
@@ -5641,7 +5641,7 @@ def test_status_badge_color_matches_the_semantic_token():
 
 
 def test_task_row_status_dot_covers_every_status():
-    """行1 的 8px 状态点：六态**每一态**都要有自己的规则，且色对、够看得见。
+    """行1 的 8px 状态点：五态**每一态**都要有自己的规则，且色对、够看得见。
 
     （前身 test_task_row_status_bar_covers_every_status。2026-08 统一流式
     列表重设计：4px 状态左条随 9 列表格一起废除，状态识别改由行1 的
@@ -5691,8 +5691,8 @@ def test_task_row_status_dot_covers_every_status():
             problems.append(
                 f'`{branch}` 的 {got} 对面板底 {panel} 只有 {ratio:.2f}:1，'
                 '低于 WCAG 1.4.11 给图形元素的 3:1')
-    assert len(report) + len([p for p in problems if '条声明了背景色' in p]) == 6, (
-        '没有恰好检查 6 个状态 —— 本测试已失效'
+    assert len(report) + len([p for p in problems if '条声明了背景色' in p]) == 5, (
+        '没有恰好检查 5 个状态 —— 本测试已失效'
     )
     assert not problems, (
         '状态点配色有问题：\n' + '\n'.join('  ' + p for p in problems)
