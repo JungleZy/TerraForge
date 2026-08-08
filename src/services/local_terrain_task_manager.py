@@ -622,6 +622,16 @@ class LocalTerrainTaskManager:
             # TypeError，再把 payload 改成缓存快照就直接漏出幽灵行；而且正常的
             # 并发删除每次都往日志里记一条 warning，是假警报。
             return
+        except Exception as e:
+            # 取行本身失败（database is locked 等）不该逃出去：唯一调用点
+            # start_tiling:389 在「已置 running、线程已登记进 active_tasks /
+            # stop_flags」之后、L2 回补块（:390-402）之前 —— 异常从这里逃出去
+            # 谁也接不住，留下的是一个行停在 running、登记里挂着永不启动的线程、
+            # 路由却返 500 的任务。上面收窄成 ValueError 是为了把「行没了」和
+            # 「取行失败」分开，不是为了把后者放出去。
+            logger.warning(
+                f"Failed to load local terrain task {task_id} for progress emit: {e}")
+            return
         try:
             task["task_type"] = "local_terrain"
             self.socketio.emit("task_progress", task)

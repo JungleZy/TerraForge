@@ -554,7 +554,10 @@ def test_deleted_task_emits_no_further_render_progress(monkeypatch, tmp_path):
     asyncio.run(mgr._execute(task_id, stop))
 
     # 删除之后一个事件都不许有（含 tiler 返回后那一发无条件收尾 flush）
-    assert [(e, p.get("phase")) for e, p in events[mark["at"]:]] == []
+    # 比整个 events 而不是只比 (event, phase)：失败时要能看见 payload 里那句
+    # status='running' —— 那才是「幽灵行」的直接证据
+    assert events[mark["at"]:] == [], (
+        f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")
 
 
 def test_deleted_task_emits_no_further_prepare_stage(monkeypatch, tmp_path):
@@ -603,7 +606,8 @@ def test_deleted_task_emits_no_further_prepare_stage(monkeypatch, tmp_path):
 
     asyncio.run(mgr._execute(task_id, stop))
 
-    assert [(e, p.get("phase")) for e, p in events[mark["at"]:]] == []
+    assert events[mark["at"]:] == [], (
+        f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")
 
 
 def test_paused_render_still_emits_the_final_flush(monkeypatch, tmp_path):
@@ -654,3 +658,61 @@ def test_paused_render_still_emits_the_final_flush(monkeypatch, tmp_path):
     assert len(render_events) == 2, [p["rendered_tiles"] for p in render_events]
     assert render_events[-1]["rendered_tiles"] == 5
     assert render_events[-1]["total_tiles"] == 100
+
+
+def test_deleted_task_emits_no_further_download_progress(monkeypatch, tmp_path):
+    """下载阶段同样不许在行删掉之后继续发。
+
+    这条与上面两条不是重复：渲染阶段的闸门是本轮新加的 row_alive/rowcount，
+    下载阶段靠的却是**另一套、而且是偶然的**机制 —— 在途路径每次重查行
+    （:839-841 `if not row: return`）、状态路径靠 _record_progress 提交后重查
+    整行返回 None（:806-807 → :864 `if row:`）。那两次重查的本意都是拿最新
+    计数，挡住幽灵行只是副作用。谁把 payload 换成缓存的行快照（渲染阶段的
+    base_payload 就是这么翻车的），幽灵行就在下载阶段重新长出来，而在此之前
+    没有任何用例会红。
+    """
+    import threading
+
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    # 节流窗口不是本用例的被测对象：留着的话删除之后那几发会被时间窗吞掉，
+    # 用例就变成在测节流、反事实探针也照样绿。
+    monkeypatch.setattr(ctm_mod, "_DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL", 0)
+
+    events = []
+
+    class FakeSocket:
+        def emit(self, event, payload):
+            events.append((event, dict(payload)))
+
+    mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
+    task_id = _seed_running_download_task(db)
+
+    mark = {}
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None,
+                            stop_flag=None, bytes_callback=None):
+        for g in granules:
+            if "at" not in mark:
+                await progress_callback(g, "completed", None, 1024)  # 删除前的正常一发
+                _delete_contour_row(db, task_id)
+                mark["at"] = len(events)
+                continue
+            # 下载协程不会因为行没了就当场停 —— 剩下的颗粒照跑，两条推送路径
+            # （在途字节 / 颗粒状态）都还会被踩到
+            await bytes_callback(g, 4 * 1024 * 1024)
+            await progress_callback(g, "completed", None, 1024)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
+        return {"total": 0, "rendered": 0, "failed": 0}
+
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, threading.Event()))
+
+    assert mark.get("at", 0) > 0, "删除之前必须先有正常推送，否则这条用例没测到闸门"
+    # 删除之后一个事件都不许有 —— 含后面渲染阶段和收尾
+    assert events[mark["at"]:] == [], (
+        f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")

@@ -155,6 +155,11 @@ def test_deleted_local_terrain_task_emits_nothing_and_logs_nothing(
     也会被宽 except 吞掉），单独断言它是重言式。真正钉得住的是**机制**：行没了
     是正常的并发结果，不是异常，不该走异常路径、更不该在日志里留一条
     "Failed to emit ..." —— 那是会把人引去查根本不存在的故障的假线索。
+
+    但下面那句 `assert sock.events == []` **不要删**：它只对「拿掉显式
+    except」这一种改法是重言式，对另外两种是唯一的防线 —— get_task 改成返回
+    None（TypeError 那条路就没了）、以及 payload 换成缓存的行快照。两句合起来
+    才是「静默返回」的完整契约。
     """
     db, ltm = _setup(monkeypatch, tmp_path, "src.services.local_terrain_task_manager")
 
@@ -192,3 +197,34 @@ def test_local_terrain_emit_failure_is_still_logged(monkeypatch, tmp_path, caplo
 
     assert any("socket is down" in r.getMessage() for r in caplog.records), (
         f"广播失败必须留下日志: {[r.getMessage() for r in caplog.records]}")
+
+
+def test_local_terrain_row_lookup_failure_never_escapes(monkeypatch, tmp_path, caplog):
+    """取行本身失败（database is locked 等）只许记日志，不许往外抛。
+
+    唯一调用点 start_tiling:389 站在一个没有补偿的位置上：状态已 commit 成
+    running、线程已登记进 active_tasks/stop_flags，而 L2 的回补块（清登记 +
+    置 failed）要到下一行 th.start() 才开始。异常从 :389 逃出去谁也接不住，
+    留下的是一个行停在 running、登记里挂着永不启动的线程、路由却返 500 的
+    任务 —— 可恢复，但不该发生。
+
+    这条挡的是把「行没了」收窄成 ValueError 时顺手丢掉的那部分健壮性。
+    """
+    import sqlite3
+
+    db, ltm = _setup(monkeypatch, tmp_path, "src.services.local_terrain_task_manager")
+
+    sock = _Sock()
+    mgr = ltm.LocalTerrainTaskManager(socketio=sock)
+    task_id = _seed_local_terrain_task(db, tmp_path)
+
+    def boom(_task_id):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(mgr, "get_task", boom)
+
+    with caplog.at_level(logging.WARNING, logger=ltm.__name__):
+        mgr._emit_progress(task_id)   # 不抛就是通过
+
+    assert sock.events == []
+    assert any("database is locked" in r.getMessage() for r in caplog.records), (
+        f"取行失败必须留下日志，不能静默丢: {[r.getMessage() for r in caplog.records]}")
