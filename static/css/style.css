@@ -2458,8 +2458,7 @@ code {
    `container.innerHTML = ...` 全量重建。实测 5 张卡的场景：
      · 新任务到达（updateTaskProgress 的未知 key 分支）→ fadeInUp × 5
      · 任务完成 handleTaskCompleted                    → fadeInUp × 5
-     另有 deleteTask / loadActiveTasks 同路径（当时还有「取消」「移除」
-     两条，已随「取消任务」一并下线）。
+     另有 loadActiveTasks 同路径（当时同名单里的另两条已随「取消任务」下线）。
    即「别人完成了一个任务，我这四张卡集体上浮一遍」。这是真实缺陷，
    只是频率没有简报说的那么高。根治是增量渲染（第三档 C5），在那之前
    删动画是成本最低的止血。

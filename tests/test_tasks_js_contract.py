@@ -488,26 +488,6 @@ def test_card_actions_are_gated_by_the_right_status():
     assert not problems, '行动作按钮的状态门控不对：\n' + '\n'.join('  ' + p for p in problems)
 
 
-def test_deleting_a_failed_task_also_closes_its_toast():
-    """删掉失败行时，那条常驻失败 toast 必须一起关掉。
-
-    （前身是 test_dismiss_is_purely_local。「移除」按钮随「取消任务」一并下线，
-    原来它守的两件事——把失败行清掉、把常驻 toast 一起关掉——现在都落在 🗑
-    的 deleteTask 上，契约没消失，只是换了宿主。）
-
-    这条与 test_delete_removes_the_row_purely_on_the_frontend 互补：那条守
-    「行确实被摘掉」，这条守「提示不留在右上角」。两件事都在同一个 ok 分支里，
-    漏掉任何一件用户都会看到「记录没了但红条还在」。
-    """
-    body = _fn('deleteTask', 'history.js')
-    assert 'closeFailureToast(' in body, (
-        'deleteTask 没关那条常驻失败 toast——失败记录都删了，提示还赖在右上角'
-    )
-    assert 'TaskStore.remove(' in body, (
-        'deleteTask 没有把任务从 store 摘掉，行不会消失'
-    )
-
-
 def test_failure_toasts_are_deduped_per_task_not_globally():
     """同一个任务的常驻 toast 只留一条，**不同任务的必须各留一条**。
 
@@ -519,9 +499,6 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
     合并掉等于把前 7 条错误信息扔了。所以这里同时钉两件事：
       1. 合并逻辑存在（`closeFailureToast(key)` 在 set 之前被调用）；
       2. 合并的键是 `key`（taskType:taskId），不是常量、不是全局单例。
-
-    另外钉住「删掉失败任务时顺手关掉那条 toast」——记录都没了还留一条永久提示
-    占着右上角，等于把 I2 的堆叠问题换个地方保留。
     """
     body = _fn('handleTaskFailed')
     assert re.search(r'closeFailureToast\(\s*key\s*\)', body), (
@@ -535,12 +512,6 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
     close_body = _fn('closeFailureToast')
     assert '.close()' in close_body and 'failureToasts.delete(' in close_body, (
         'closeFailureToast 必须既关 toast 又清 Map，否则句柄会一直攒着'
-    )
-
-    delete_body = _fn('deleteTask', 'history.js')
-    assert 'closeFailureToast(' in delete_body, (
-        '删掉失败任务之后那条常驻 toast 还留在右上角——记录都没了，提示也该走。'
-        '（原先这件事由「移除」按钮做，那颗按钮已随「取消任务」下线。）'
     )
 
 
@@ -1626,17 +1597,21 @@ def test_new_task_prepends_only_on_first_page_and_matching_chip():
     )
 
 
-def test_delete_removes_the_row_purely_on_the_frontend():
-    """deleteTask 删成功后：本地把行摘掉，不靠整体重拉把它变没。
+def test_delete_also_drops_the_row_from_the_store():
+    """deleteTask 删成功后，除了重拉分页，还必须把行从 store 本地摘掉。
 
     （前身是 test_dismiss_removes_the_row_purely_on_the_frontend。「移除」按钮
-    随「取消任务」一并下线后，「把失败行从眼前拿走」这件事由 🗑 承担 ——
-    契约没变，守的函数换成 history.js 的 deleteTask。）
+    随「取消任务」一并下线后，「把失败行从眼前拿走」这件事由 🗑 承担。）
 
-    deleteTask 确实还会调 loadHistory 重新分页（后端行真的没了，页码可能要
-    回退），所以这条不能再钉「不许重拉」。它钉的是**本地摘行必须发生**：
-    只靠 loadHistory 的话，状态栏的活动任务聚合读的是 store.active，
-    那份不会被重拉刷新，被删任务会一直算在「N 个活动任务」里。
+    名字里刻意**没有** purely-on-the-frontend：那是 dismiss 时代的语义，
+    deleteTask 既打 DELETE 也调 loadHistory 重新分页（后端行真的没了，页码
+    可能要回退）。这条钉的是**本地摘行必须额外发生**：只靠 loadHistory 不够，
+    状态栏的活动任务聚合读的是 store.active，那份不会被重拉刷新，被删任务会
+    一直算在「N 个活动任务」里。
+
+    「删成功后一并关掉那条常驻失败 toast」是同一分支里的另一半契约，由
+    test_fix_realtime_chain.py::test_delete_task_closes_the_persistent_failure_toast
+    守着（那条还额外钉了 typeof 守卫，独立页 /history 不加载 tasks.js）。
     """
     body = _fn('deleteTask', 'history.js')
     assert 'TaskStore.remove(' in body, (

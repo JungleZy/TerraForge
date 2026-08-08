@@ -4654,6 +4654,9 @@ def test_button_ink_is_readable_in_every_state():
 
 # **全站**纯图标按钮（无可见文本）的数量，JS 模板与 HTML 模板一起扫。
 #   static/js/history.js 启动/暂停/恢复/取消/移除/删除/预览  7
+#     （**该行是历史记录**：扫描列表现为 task_list.js / map.js / config.js，
+#     见 _icon_only_buttons；「取消」「移除」两颗也已随「取消任务」下线，
+#     账本按下面的增减量逐条推到最终值，不要拿这一行当现状）
 #     （2026-08 单一时间流定稿：行渲染收口 history.js createTaskRow，
 #     tasks.js 的 5 颗任务控制按钮随迁——tasks.js 不再有任何 <button>，
 #     也从 _icon_only_buttons 的扫描列表移除，见那里的说明；

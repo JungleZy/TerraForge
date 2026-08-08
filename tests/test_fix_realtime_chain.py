@@ -79,7 +79,7 @@ def test_load_active_tasks_passes_status_active_except_contour():
                 "/api/terrain/local/tasks?status=active"):
         assert f"fetch('{url}')" in body, (
             f'loadActiveTasks 没有给 {url.split("?")[0]} 加 ?status=active——'
-            'completed/cancelled 仍随每次补拉往返'
+            'completed 仍随每次补拉往返'
         )
     assert "fetch('/api/contour/tasks?status=active')" not in body, (
         'contour 路带了 ?status=active——预览面板筛不到 completed 任务，'

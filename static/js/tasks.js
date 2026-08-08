@@ -113,7 +113,7 @@ function initTasks() {
 async function loadActiveTasks() {
     try {
         // 三路带 ?status=active：服务端只回活动三态（不传行为不变——后端
-        // 未上线该参数时返回全量，下面白名单照样滤），completed/cancelled
+        // 未上线该参数时返回全量，下面白名单照样滤），completed
         // 不再随每次补拉往返。contour 路刻意不带：这份响应同时是地图预览
         // 面板的数据源（initContourPreview 要从里面筛 completed 任务，
         // 见 map.js），带上的话首屏还得再拉一遍全量。
@@ -141,7 +141,7 @@ async function loadActiveTasks() {
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
         const contourTasks = (contourData.tasks || []).map(t => normalizeTask(t, 'contour'));
         const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks].filter(t =>
-            // completed/cancelled 由服务端 ?status=active 挡掉（contour 路拉的是
+            // completed 由服务端 ?status=active 挡掉（contour 路拉的是
             // 全量，终态在这里被白名单丢弃——它只需要活动态进这个 Map）。
             // failed 仍保留：失败行的「删除」（deleteTask）与 socket 失败事件
             // 都按 key 在这个 Map 里找任务；状态栏聚合自己会再滤掉非活动态。
