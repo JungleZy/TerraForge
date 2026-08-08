@@ -140,8 +140,6 @@ def delete_local_terrain_task(task_id: int):
         return jsonify(_delete_payload(
             f"Local terrain task {task_id} deleted", outcome.files_removed,
             files_deferred=outcome.files_deferred))
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Error deleting local terrain task {task_id}: {e}")
         return jsonify({"error": "Failed to delete local terrain task"}), 500

@@ -465,16 +465,37 @@ def test_http_delete_delete_files_param(monkeypatch, tmp_path):
 
 
 def test_http_delete_missing_task_returns_404(monkeypatch, tmp_path):
-    """行不存在 → 404（此前 manager 抛 ValueError、路由一律回 400）。
-
-    共享助手不为「行不存在」抛异常，改由 outcome.row_deleted=False 走 404，
-    与另外三条管线的 DELETE 对齐。
-    """
+    """行不存在 → 404。此前 manager 抛 ValueError、路由一律回 400；共享助手不为
+    「行不存在」抛异常，路由这里主动对齐另外三条管线的 404。"""
     app_mod, client = _load_app(monkeypatch, tmp_path)
 
     resp = client.delete("/api/terrain/local/tasks/99999")
 
     assert resp.status_code == 404, resp.get_json()
+
+
+def test_http_delete_missing_task_keeps_same_named_dir(monkeypatch, tmp_path):
+    """删不存在的 id 必须一片磁盘都不碰 —— 否则就是「404 + 静默真删」。
+
+    只有本地地形的 artifact_dir 在 manager 内部按 task_id 硬算（delete_files 缺省
+    就是 true），另外三条在路由层算、算之前先查过任务行。所以助手若不以
+    row_deleted 为前提删产物，这条管线会在返回 404 的同时把同名目录 rmtree 掉。
+    残留同名目录的真实来路：先 delete_files=false 删了行、目录留着，客户端重试
+    再带 delete_files=true。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    from pathlib import Path
+
+    stale = Path(tmp_path) / "downloads" / "terrain" / "local_task_99999"
+    stale.mkdir(parents=True)
+    leftover = stale / "terrain_tiles" / "layer.json"
+    leftover.parent.mkdir(parents=True)
+    leftover.write_text('{"stale":true}', encoding="utf-8")
+
+    resp = client.delete("/api/terrain/local/tasks/99999?delete_files=true")
+
+    assert resp.status_code == 404, resp.get_json()
+    assert leftover.exists(), "行不存在却把同名目录删了 —— 404 掩盖了一次真删"
 
 
 # ---------------------------------------------------------------------------

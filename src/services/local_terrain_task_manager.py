@@ -606,8 +606,9 @@ class LocalTerrainTaskManager:
         前端总是显式传参，改默认值只影响直连 API 的人，不值得为对称制造破坏性变更。
 
         产物路径不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
-        terrain_static 的约定）：冻结 exe 搬迁后库存的旧绝对路径既会让下面的护栏
-        失效、又会误删旧位置的目录。
+        terrain_static 的约定）：冻结 exe 搬迁后库存的还是旧位置的绝对路径，信它
+        的话下面那道 parent 护栏会因为 parent 对不上而一律拒删，delete_files
+        静默退化成空操作。
 
         on_row_gone 由调用方给：清 /terrain/local 静态路由缓存的那个 hook 依赖
         Flask 请求上下文（走 current_app.extensions），放在这里等于让服务层持有

@@ -135,7 +135,8 @@ def delete_task_row(
         manager: 持有 `_state_lock` / `active_tasks` / `stop_flags` 的任务管理器。
         table: 任务表名。调用方传字面量，不接受外部输入 —— 它直接进 SQL。
         artifact_dir: 产物目录；None 表示调用方没要求删产物。非绝对路径会被拒收
-            并当作 None 处理（理由见函数体内的卫兵注释）。
+            并当作 None 处理（理由见函数体内的卫兵注释）。删行没命中任何行时同样
+            当作 None —— 产物删除以「行真的被删掉了」为前提，同上。
         tombstone: 只有 map 传（见设计文档 D-C）。运行期有 INSERT 的管线才需要，
             用来让进度批次在父行消失后短路，避开外键 IntegrityError。
         on_row_gone: 行删掉后**同步**执行的回调，用于清静态路由的存在性缓存。
@@ -177,11 +178,23 @@ def delete_task_row(
                     if flag is not None:
                         flag.set()
 
-                if artifact_dir is not None and running:
-                    # 先记清单再删行，同一事务 —— 中间崩掉就丢了产物线索
-                    _queue_pending_deletion(conn, artifact_dir)
                 cur = conn.execute(f"DELETE FROM {table} WHERE id = ?", (task_id,))
                 row_deleted = cur.rowcount > 0
+                if not row_deleted:
+                    # 行本来就不存在 —— 一片磁盘都不能碰。产物目录名只由 task_id
+                    # 推出来，删一个不存在的 id 时那个同名目录多半是别的生命周期
+                    # 留下的残留（典型：先 delete_files=false 删了行、目录留着，
+                    # 客户端重试再带 delete_files=true）。调用方把 row_deleted=False
+                    # 翻成 404，这时还去 rmtree 就是「404 + 静默真删」。
+                    #
+                    # 这道闸对本地地形是必需的：只有它的 artifact_dir 在 manager
+                    # 内部按 task_id 硬算，另外三条在路由层算、算之前先查过行。
+                    artifact_dir = None
+                if artifact_dir is not None and running:
+                    # 记清单与删行同一事务 —— 中间崩掉就丢了产物线索。放在 DELETE
+                    # 之后只是为了先拿到 rowcount 喂上面那道闸；一次 commit，语句
+                    # 先后不影响原子性。
+                    _queue_pending_deletion(conn, artifact_dir)
                 conn.commit()
         finally:
             conn.close()
