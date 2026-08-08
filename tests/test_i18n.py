@@ -66,11 +66,20 @@ def test_english_values_are_not_chinese():
 # JS 的 `t('k')`、Jinja 的 `{{ t('k') }}`、Python 的 `t('k')` —— 但**键字面量出现在
 # 源码里**才是三者唯一的共同特征。有一批键根本不紧跟在 `t(` 后面：
 #   - static/js/config.js:246 的 `{ env: 'js.config.proxy.source_env', … }[source]`
-#   - src/routes/api.py:873 的 `_ACTIVE_TASK_TABLES` 元组
-#   - src/services/tile_url_probe.py:370 的跨行三元表达式
-# 按 `t(` 抓这些全是漏网，孤儿键那一侧就会成批误报。
-# 代价是「任何 key 形状的字面量都算引用」；实测全仓 467 处这种字面量里只有 1 处
-# 不是完整键（下面那张表登记的拼接前缀），代价目前是零。
+#   - src/routes/api.py:874 的 `_ACTIVE_TASK_TABLES` 元组（`t(label_key)` 在 27 行外）
+#   - static/js/map.js:1499 的同行三元 `t(cond ? 'a' : 'b')`
+#   - src/services/tile_url_probe.py:372 跨行三元的 else 分支
+# 实测：按 `t(` 扫只够得到 466 个键里的 457 个，**方向二会凭空多出 9 个假孤儿**
+# （上面四处共 9 个键）。那不是少一层保护，是会诱导下一个人真去删掉在用的键。
+#
+# 代价：任何 key 形状的字面量都算引用。api/app/js/tpl/val 都是普通英文词，
+# `'app.py'`、`'api.v1.users'` 这种普通常量一样会命中 —— 今天没炸只是因为
+# nuitka_build.py（`ENTRY='app.py'`）恰好在扫描面外，是**边界的运气不是正则的
+# 性质**。伤到的只有方向一，逃生口是下面的 `_NOT_A_KEY`；方向二反而需要这份
+# 宽松，收紧正则就是上面那 9 个假孤儿。
+#
+# 今天的实测口径：467 个不同字面量 / 531 处出现；467 - 1（下面登记的拼接前缀）
+# = 466 = MESSAGES 全量 —— 键与引用严格双射。
 
 _CATALOG_DIR = os.path.join(PROJECT_ROOT, 'src', 'i18n', 'catalog')
 
@@ -84,15 +93,26 @@ _KEY_LITERAL = re.compile(
 #
 # **往这张表加东西请照抄下面的体例：前缀 → 完整后缀清单。**
 # 不许退化成前缀通配 / startswith 一拳打死。理由：清单展开出的键一边算「已引用」，
-# 一边被 test_dynamic_key_sites_expand_to_real_keys 反过来断言确实在 catalog 里 ——
-# 这张表因此不是消音器，而是一条**额外**的活契约。谁删了 js.map.bounds.sr_east，
-# 红的是这张表本身，且失败信息直接点到拼接点；换成通配就会被整片吞掉，
-# 拼接点在运行时把键名原样显示给用户，而测试一片绿。
+# 一边被 test_dynamic_key_sites_expand_to_real_keys 从**两头**反过来断言 —— 拼接点
+# 还在源码里、展开出的键还在 catalog 里。这张表因此不是消音器，而是一条**额外**的
+# 活契约：谁删了 js.map.bounds.sr_east、或者重构掉了那个拼接点，红的都是这张表
+# 本身，且失败信息直接点到位。换成通配就会被整片吞掉，拼接点在运行时把键名原样
+# 显示给用户，而测试一片绿。
 _DYNAMIC_KEY_SITES = {
     # static/js/map.js:_renderManualBounds —— 手动录入四个边界时，输入框的
     # aria-label 由 `t('js.map.bounds.sr_' + field)` 拼出，field 只可能是这四个方向。
     'js.map.bounds.sr_': ('north', 'south', 'east', 'west'),
 }
+
+
+# 长得像 i18n 键、但其实不是的普通字符串常量。
+#
+# 只对方向一开口（方向二不需要：它本来就只认 catalog 里有的键）。
+# _KEY_LITERAL 的域名单 api/app/js/tpl/val 全是普通英文词，`'app.py'`、
+# `'app.config'`、`'api.v1.users'`、`'js.min'` 这类常量一样会命中。
+# **撞上了往这里加，别去动 _KEY_LITERAL** —— 把正则收紧到只认 `t(` 调用点，
+# 方向二会凭空多出 9 个假孤儿（见本节开头），那一侧的代价大得多。
+_NOT_A_KEY = frozenset()
 
 
 def _iter_source_files():
@@ -107,10 +127,10 @@ def _iter_source_files():
         (os.path.join(PROJECT_ROOT, 'src'), '.py'),
     ):
         for dirpath, dirnames, filenames in os.walk(root):
-            if os.path.abspath(dirpath).startswith(_CATALOG_DIR):
+            if os.path.abspath(dirpath).startswith(_CATALOG_DIR + os.sep):
                 dirnames[:] = []
                 continue
-            dirnames[:] = [d for d in dirnames if d != '__pycache__']
+            dirnames[:] = sorted(d for d in dirnames if d != '__pycache__')
             for name in sorted(filenames):
                 if name.endswith(suffix):
                     yield os.path.join(dirpath, name)
@@ -137,9 +157,22 @@ def _catalog_definitions():
 
 
 def test_dynamic_key_sites_expand_to_real_keys():
-    """动态拼接表必须对得上 catalog —— 对不上它就成了一张过期的免死金牌。"""
-    known = _catalog_definitions()
-    assert known, '定义端一个键都扫不出来，_KEY_LITERAL 或 _CATALOG_DIR 写错了'
+    """动态拼接表两头都得对得上 —— 对不上它就成了一张过期的免死金牌。
+
+    两头指：拼接点还在源码里（否则这条豁免白吊着一批键，孤儿检查从此抓不到
+    它们，而三条用例全绿）、展开出的键确实在 catalog 里。
+    """
+    sanity = _catalog_definitions()
+    assert sanity, '定义端一个键都扫不出来，_KEY_LITERAL 或 _CATALOG_DIR 写错了'
+
+    literals = _scan_key_literals(_iter_source_files())
+    stale = [prefix for prefix in _DYNAMIC_KEY_SITES if prefix not in literals]
+    assert not stale, (
+        '_DYNAMIC_KEY_SITES 登记的拼接点在源码里已经找不到了 —— 这条豁免会白白\n'
+        '吊着它展开的那些键，孤儿检查从此抓不到它们。删掉这条:\n  '
+        + '\n  '.join(stale)
+    )
+
     bad = [
         f'{prefix}{suffix}（登记在 _DYNAMIC_KEY_SITES 的 {prefix!r} 一条下）'
         for prefix, suffixes in _DYNAMIC_KEY_SITES.items()
@@ -161,13 +194,15 @@ def test_no_reference_to_a_missing_key():
     """
     missing = []
     for key, sites in sorted(_scan_key_literals(_iter_source_files()).items()):
-        if key in MESSAGES or key in _DYNAMIC_KEY_SITES:
+        if key in MESSAGES or key in _DYNAMIC_KEY_SITES or key in _NOT_A_KEY:
             continue
         missing.append(f'{key}\n      ' + '\n      '.join(sites))
     assert not missing, (
         '这些键被引用但 catalog 里没有 —— 界面上会原样漏出键名。\n'
-        '修法二选一：补进 src/i18n/catalog/ 对应模块，或删掉这些引用处；\n'
-        '若它是动态拼接的前缀，登记进本文件的 _DYNAMIC_KEY_SITES。\n  '
+        '修法三选一：补进 src/i18n/catalog/ 对应模块；删掉这些引用处；\n'
+        '若它是动态拼接的前缀，登记进本文件的 _DYNAMIC_KEY_SITES。\n'
+        '第四种可能：它根本不是 i18n 键（只是长得像的普通常量）—— 登记进\n'
+        '本文件的 _NOT_A_KEY，别去改 _KEY_LITERAL。\n  '
         + '\n  '.join(missing)
     )
 
