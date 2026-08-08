@@ -1,11 +1,12 @@
 # terrain/ — 地形运维说明
 
-两份文档：
+三份文档：
 
 | 文档 | 讲什么 |
 |---|---|
 | [`cesiumjs-loading.md`](cesiumjs-loading.md) | CesiumJS 端怎么加载本项目产出的 quantized-mesh 地形：base provider、单任务 DEM / 本地地形 provider、`parentUrl` 级联的**实际行为**（见下方已知问题），以及 `terrain_base_parent_url` 配置的生效时机 |
 | [`global-base-build.md`](global-base-build.md) | 全球低层级基础地形（`assets/terrain/base_z8/`）：随包分卷的自动解压与手工预热入口，以及自建一份时的完整构建流程 —— 自备全球 DEM 的前置成本、可直接跑的命令与完整参数表、`--max-level` 省略后果的实算量级、输出目录与 `terrain_global_base_path` 的对齐要求 |
+| [`triangulation-backends-measured.md`](triangulation-backends-measured.md) | 高程切片精度实测（3 个真实 granule、z8–14）：**`DemSampler` 半个源像素偏移的发现与修复**（1 弧秒 DEM 上 15.5 m 错位，端到端 RMS 8.07→1.03 m）、修完之后采样与三角化各占一半误差、为什么**暂不**再上更强的简化后端、`max_error_k` 在平缓地形上为何完全失灵、法线占 19%～38% 字节而光照默认关、以及对设计稿三处口径的修正 |
 
 仓库里有构建脚本 [`scripts/build_global_base_terrain.ps1`](../../../scripts/build_global_base_terrain.ps1)，但它**漏传 `--tile-size`**（走 CLI 默认 17，而应用侧单任务用 65），照它建出的 base 顶点网格比子层稀疏 4 倍/轴。详见 `global-base-build.md` 的说明与两种对齐办法。
 
