@@ -600,12 +600,21 @@ def test_tombstoned_task_skips_tile_inserts(monkeypatch, tmp_path):
     mgr._deleting.add(1)
 
     # 不加短路的话这里抛 IntegrityError
-    written = mgr._write_progress_batch_for_test(
-        task_id=1, inserts=[(1, 5, 1, 1, "boom")])
-    assert written is False, "墓碑命中时必须整批丢弃"
+    mgr._write_progress_batch(conn, task_id=1, batch=([(1, 5, 1, 1, "boom")], [], [], 0, 0))
+    # 墓碑命中 → 整批丢弃，task_tiles 不该有新行、也不该抛外键错
 ```
 
-> **实现提示：** 上面用到的 `_write_progress_batch_for_test` 是本 Task 要新增的一个薄封装 —— `_write_progress_batch` 是 `_execute` 里的闭包，测试够不着。加一个模块级或方法级的可测入口，内部与闭包共用同一个短路判断；**不要**把闭包整个搬出来重构。
+> **实现提示（经 review 裁决修订）：** `_write_progress_batch` 原本是 `_execute` 里的闭包，
+> 测试够不着。**把它整个提成方法** `def _write_progress_batch(self, progress_conn, task_id, batch) -> None`
+> —— 自由变量只有 `task_id` 与 `progress_conn` 两个，是机械搬运。两个调用点改成
+> `self._write_progress_batch(progress_conn, task_id, batch)` 与
+> `asyncio.to_thread(self._write_progress_batch, progress_conn, task_id, batch)`。
+> 顺手删掉 `return True/False`（返回值没人消费，是死代码）。
+>
+> **初版计划要求加一个 `_write_progress_batch_for_test` 薄封装并说「不要把闭包搬出来重构」，
+> 那是错的** —— review 实地验证：薄封装是同源复制，把**闭包里**那份短路删掉，全量
+> `1447 passed` 一条不红，墓碑在生产路径上零保护。测试必须驱动真函数。
+> 仓库已有范式：`tests/test_fix_map_low_review.py:149-201` 直接摆弄 `progress_conn`。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -628,7 +637,7 @@ Expected: FAIL — `AttributeError: 'TaskManager' object has no attribute 'delet
 新增方法（放在 `cancel_task` 原来的位置附近）：
 
 ```python
-    def delete_task(self, task_id: int, artifact_dir=None):
+    def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
         """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
         砍掉「取消」之后这是唯一的销毁动作，任何状态都能调 —— 不再有
@@ -643,9 +652,12 @@ Expected: FAIL — `AttributeError: 'TaskManager' object has no attribute 'delet
             table="tasks",
             artifact_dir=artifact_dir,
             tombstone=self._deleting,
-            # 行已删：清掉 /tiles 静态路由的 output_path 缓存，否则
-            # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到
-            on_row_gone=lambda: tiles_static.invalidate_output_path_cache(task_id),
+            # hook 由调用方传入，不在 manager 里 import 路由层：
+            # invalidate_output_path_cache 走 current_app.extensions，只在 Flask
+            # 请求上下文里有效，收进 manager 会让非路由调用方静默失效（异常被
+            # best-effort 吞成 warning）—— 「每个调用方都不会忘」这个卖点反而是假的。
+            # 另外三条管线的清缓存本来就留在路由层，这里保持同一套约定。
+            on_row_gone=on_row_gone,
         )
 ```
 
@@ -658,23 +670,11 @@ Expected: FAIL — `AttributeError: 'TaskManager' object has no attribute 'delet
                     # 任务已被删除，父行不在了。这批进度写不进去也不该写进去 ——
                     # 直接丢弃，不要走 _restore_progress_batch 退回队列（那会让
                     # pending_tile_inserts 单调增长到下载结束）。
-                    return False
+                    return
 ```
 
-并让函数在正常路径末尾 `return True`。同时新增可测入口（`_write_progress_batch` 是闭包，测试够不着）：
-
-```python
-    def _write_progress_batch_for_test(self, task_id, inserts):
-        """契约测试用的薄入口：只覆盖墓碑短路这一段判断。
-
-        真正的 _write_progress_batch 是 _execute 里的闭包（它捕获 progress_conn
-        等一堆局部状态），测试拿不到。这里复刻的只有短路判断本身 —— 短路逻辑
-        必须与闭包里那份保持一致，改一处要改两处。
-        """
-        if task_id in self._deleting:
-            return False
-        return True
-```
+短路放在提取后的 `_write_progress_batch` 方法体最前面。**不要再加任何「可测入口」薄封装** ——
+测试直接驱动这个真方法（见 Step 1 的用例）。
 
 - [ ] **Step 5: 路由改为调 manager**
 
@@ -716,7 +716,15 @@ def delete_task(task_id: int):
             # 误判成"越界"而拒删,接口却已经返回 success。
             artifact_dir = resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
 
-        outcome = task_manager.delete_task(task_id, artifact_dir=artifact_dir)
+        outcome = task_manager.delete_task(
+            task_id,
+            artifact_dir=artifact_dir,
+            # 行已删：清掉 /tiles 静态路由的 output_path 缓存，否则
+            # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
+            # hook 在路由层传而不是收进 manager：它走 current_app.extensions，
+            # 只在 Flask 请求上下文里有效（另外三条管线同此约定）。
+            on_row_gone=lambda: tiles_static.invalidate_output_path_cache(task_id),
+        )
         if not outcome.row_deleted:
             return jsonify({'error': f'Task {task_id} not found'}), 404
 
@@ -804,10 +812,17 @@ git commit -m "feat(map): delete_task 下沉进 manager + 内存墓碑，运行�
 
 - [ ] **Step 1: 三个 manager 的 `delete_task` 换实现**
 
-三处都改成调 `delete_task_row`，`tombstone` **一律不传**（见 D-C）。以 DEM 为例：
+三处都改成调 `delete_task_row`，`tombstone` **一律不传**（见 D-C），`on_row_gone` **一律由
+路由层传入**（与 Task 2 的 map 同一形状）。
+
+**为什么 hook 不收进 manager**：`invalidate_*` 系列走 `current_app.extensions`，只在 Flask
+请求上下文里有效。收进 manager 的话，非路由调用方（CLI、后台任务）会静默失效——异常被
+`delete_task_row` 的 best-effort try/except 吞成一条 warning，缓存不清而没人知道。
+「每个调用方都不会忘」这个卖点在那里恰恰是假的。而且服务层 import 路由层是全仓唯一一处
+分层倒置。以 DEM 为例：
 
 ```python
-    def delete_task(self, task_id: int, artifact_dir=None):
+    def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
         """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
         切片线程自 v0.2.11 起也登记进 active_tasks / stop_flags，所以「切片中
@@ -816,21 +831,33 @@ git commit -m "feat(map): delete_task 下沉进 manager + 内存墓碑，运行�
         （见 _recover_orphan_running_tasks）。
         """
         from src.services.task_deletion import delete_task_row
-        from src.routes import terrain_static
 
         return delete_task_row(
             manager=self,
             task_id=task_id,
             table="dem_tasks",
             artifact_dir=artifact_dir,
+            on_row_gone=on_row_gone,
+        )
+```
+
+对应路由（`dem_api.py`）传 hook：
+
+```python
+        outcome = dem_task_manager.delete_task(
+            task_id,
+            artifact_dir=artifact_dir,
             on_row_gone=lambda: terrain_static.invalidate_dem_task(task_id),
         )
 ```
 
-本地地形保留 `delete_files` 参数与默认值 True，产物路径在 manager 内算：
+等高线同形，hook 是 `contour_static.invalidate_known_task(task_id)`。
+
+本地地形保留 `delete_files` 参数与默认值 True，产物路径**在 manager 内算**（它刻意不信库存
+`output_path`）：
 
 ```python
-    def delete_task(self, task_id: int, delete_files: bool = True):
+    def delete_task(self, task_id: int, delete_files: bool = True, on_row_gone=None):
         """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
         delete_files 默认 True 是本管线的历史约定（另外三条的路由默认 false）。
@@ -841,26 +868,40 @@ git commit -m "feat(map): delete_task 下沉进 manager + 内存墓碑，运行�
         护栏失效、也不会误删旧位置的目录。
         """
         from src.services.task_deletion import delete_task_row
-        from src.routes import terrain_static
 
         artifact_dir = None
         if delete_files:
             artifact_dir = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
+            # 第二道护栏：只允许删 DOWNLOADS_DIR/terrain 直下的目录。这道是本管线
+            # 原有的，与 remove_task_dir_if_safe 的通用护栏**两道都要**，别顺手删掉。
+            terrain_root = (Path(Config.DOWNLOADS_DIR) / "terrain").resolve()
+            if artifact_dir.resolve().parent != terrain_root:
+                logger.warning(
+                    f"Refusing to remove local terrain dir outside {terrain_root}: {artifact_dir}")
+                artifact_dir = None
 
         return delete_task_row(
             manager=self,
             task_id=task_id,
             table="local_terrain_tasks",
             artifact_dir=artifact_dir,
-            on_row_gone=lambda: terrain_static.invalidate_known_task(task_id),
+            on_row_gone=on_row_gone,
         )
 ```
 
-> **注意本地地形丢掉了一道护栏**：原实现有 `if task_root.resolve().parent != terrain_root: return False`（只允许删 `DOWNLOADS_DIR/terrain` 下的目录）。改用共享助手后走的是 `remove_task_dir_if_safe` 的通用护栏。**两道都要**：在算出 `artifact_dir` 之后、传给助手之前，保留那道 parent 检查，不通过就把 `artifact_dir` 置 None 并记 warning。
+> **本地地形那道 parent 护栏别顺手删掉**：上面代码块里已经保留了它
+> （`artifact_dir.resolve().parent != terrain_root` → 置 None + warning）。它和
+> `remove_task_dir_if_safe` 的通用护栏是**两道，都要**。原实现里它是 `return False`，
+> 改用共享助手后改成「不把这个路径交给助手」，效果等价。
 
-- [ ] **Step 2: 三条路由改为消费 `DeleteOutcome`**
+- [ ] **Step 2: 三条路由改为消费 `DeleteOutcome` 并传 hook**
 
-去掉各自的 400 拒删分支，`_delete_payload` 带上 `files_deferred=outcome.files_deferred`。DEM 路由的 `except ValueError` 按文案分流 404/400 那段（`dem_api.py:112-115`）只保留 404 分支。
+每条路由三件事：
+1. 去掉 400 拒删分支（DEM 路由的 `except ValueError` 按文案分流 404/400 那段只保留 404）；
+2. 调 manager 时传 `on_row_gone=lambda: <各自的 invalidate 调用>`（见 Step 1 的表）；
+3. `_delete_payload` 带上 `files_deferred=outcome.files_deferred`。
+
+三个 `invalidate_*` 的 import 留在各自路由文件里（本来就在），**不要**挪进 manager。
 
 - [ ] **Step 3: 跑全量，翻面拒删断言**
 
@@ -1148,7 +1189,7 @@ git commit -m "docs: 任务生命周期简化的文档跟进"
 
 **1. Spec 覆盖：** 覆盖 spec 实现顺序的第 3-6 步全部内容，外加 spec 之外发现的四条（D-A 到 D-D）。spec 的第 1-2 步已由计划 A 完成并发版 v0.2.11。
 
-**2. 占位符扫描：** 有两处**有意的**实现提示而非占位符——Task 2 的 `_write_progress_batch_for_test`（闭包不可测，给了明确的薄封装写法与「两处要同步改」的警告）、Task 6 的 `_all_keys()`（要求先读现有收集器名字，不要新造）。两处都写明了做法和理由，不是「TBD」。
+**2. 占位符扫描：** 一处**有意的**实现提示而非占位符——Task 6 的 `_all_keys()`（要求先读现有收集器名字，不要新造）。Task 2 原本还有一处 `_write_progress_batch_for_test` 的薄封装写法，已按 review 裁决删除：那个薄封装是同源复制，实地验证过「删掉闭包里的短路全量一条不红」，测试必须驱动真方法。
 
 **3. 类型一致性：** `DeleteOutcome(row_deleted, files_removed, files_deferred)` 三个字段名在 Task 1 定义、Task 2/3 消费、Task 2 的 `_delete_payload(message, files_removed, files_deferred=False)` 对齐；`delete_task_row` 的关键字参数名在四处调用点一致。
 
