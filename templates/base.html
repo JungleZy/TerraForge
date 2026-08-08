@@ -102,7 +102,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="taskDetailModalLabel">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"></circle>
                             <line x1="12" y1="16" x2="12" y2="12"></line>
                             <line x1="12" y1="8" x2="12.01" y2="8"></line>
@@ -147,7 +147,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="row" id="detailErrorRow" style="display: none;">
+                    <div class="row" id="detailErrorRow" hidden>
                         <div class="col-12">
                             <hr style="border-color: var(--color-border);">
                             <p><strong>{{ t('tpl.base.detail.error_label') }}</strong></p>
@@ -155,7 +155,7 @@
                         </div>
                     </div>
 
-                    <div class="row" id="detailTerrainRow" style="display: none;">
+                    <div class="row" id="detailTerrainRow" hidden>
                         <div class="col-12">
                             <hr style="border-color: var(--color-border);">
                             <div class="d-flex justify-content-between align-items-start" style="gap: 1rem;">
@@ -168,7 +168,7 @@
                                     <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="{{ t('tpl.base.detail.terrain_refresh_title') }}">{{ t('tpl.base.detail.terrain_refresh') }}</button>
                                 </div>
                             </div>
-                            <div class="row" id="detailTerrainErrorRow" style="display: none; margin-top: 0.75rem;">
+                            <div class="row" id="detailTerrainErrorRow" hidden style="margin-top: 0.75rem;">
                                 <div class="col-12">
                                     <div class="alert alert-danger" id="detailTerrainError" style="margin: 0;"></div>
                                 </div>
@@ -237,6 +237,13 @@
     <!-- 保存路径「浏览」的目录选择弹窗 + 组件(首页任务表单/配置页共用) -->
     {% include "_path_browser_modal.html" %}
     <script src="{{ url_for('static', filename='js/path_browser.js') }}"></script>
+
+    <!-- 任务状态的显示映射（颜色 / 文案 / 地图描边色）：全站唯一一份。
+         必须排在 task_list.js（Vue 行组件的 computed 里调）与业务脚本
+         tasks.js / history.js 之前；i18n.js 必须更早（getStatusText 调 t()）。
+         改前这三个函数在 tasks.js 与 history.js 各有一份，首页两文件同时加载、
+         后者静默遮蔽前者，且两份查的 i18n key 前缀不同 —— 见该文件的说明。 -->
+    <script src="{{ url_for('static', filename='js/task_status.js') }}"></script>
 
     <!-- 任务时间流的渲染层：Vue 3 global build（自带 runtime compiler，
          组件用 template 字符串写，**无构建步骤**）+ 响应式 store + 行组件。

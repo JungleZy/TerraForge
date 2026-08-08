@@ -25,6 +25,14 @@ def _silence_duplicate_startup_lines():
     精确拦掉;HTTP 访问日志(GET /... 200)保留,但剥掉和 asctime 重复的内嵌日期,
     并把日志名 werkzeug 换成 http。
 
+    两个过滤器都挂在 **logger** 上,所以对控制台和日志文件同时生效:启动行是
+    横幅的重复内容,两个 sink 都不需要;改名与剥日期则是两边都想要的规整。
+    瓦片噪音是**只有控制台才有**的问题,所以那个过滤器挂在控制台 handler 上,
+    由 logging_setup.configure_logging 负责,不在这里。
+
+    顺序:先丢启动行,再让 WerkzeugAccessLogFilter 改写 record.msg —— 反过来
+    等于给注定被丢掉的行做无用功。
+
     Flask 的 " * Serving Flask app / * Debug mode" 两行由 app.run ->
     flask.cli.show_server_banner 用 click.echo 直接写 stdout,日志级别拦不住,
     只能替换成 no-op(flask.app 是通过 cli.show_server_banner 模块属性调用的,

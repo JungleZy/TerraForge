@@ -29,11 +29,16 @@ from src.core.runtime_mode import SERVER_HOST, SERVER_PORT, detect_startup_role
 _role = detect_startup_role(__name__)
 
 # 日志配置要赶在 import config/routes(会触发日志)之前;watcher 父进程则要先闭嘴。
+#
+# log_to_file 只给**真正提供服务**的那个进程开(show_startup_output 的判定恰好
+# 就是它,见 runtime_mode 的身份表)。按天轮转要重命名文件,多进程同时持有必然
+# 打架 —— 而 reloader 的 watcher 父进程、multiprocessing 的 worker 都会把本模块
+# 重跑一遍。它们只写控制台。
 from src.core.logging_setup import configure_logging, quiet_reloader_parent
 
 if _role.reloader_parent:
     quiet_reloader_parent()
-configure_logging()
+configure_logging(log_to_file=_role.show_startup_output)
 
 # 横幅必须赶在下面 app_factory 那几秒重量级 import 之前打印,否则这段时间控制台
 # 一片空白,看起来像卡死。config 和 startup_banner 都是轻量模块,先加载它们即可。

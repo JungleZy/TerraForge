@@ -123,31 +123,11 @@ MESSAGES = {
         'en': 'Files',
     },
 
-    # 任务状态词表（models/task.py TaskStatus 五态 + 兜底）
-    'js.history.status.pending': {
-        'zh': '等待中',
-        'en': 'Pending',
-    },
-    'js.history.status.running': {
-        'zh': '运行中',
-        'en': 'Running',
-    },
-    'js.history.status.paused': {
-        'zh': '已暂停',
-        'en': 'Paused',
-    },
-    'js.history.status.completed': {
-        'zh': '已完成',
-        'en': 'Completed',
-    },
-    'js.history.status.failed': {
-        'zh': '失败',
-        'en': 'Failed',
-    },
-    'js.history.status.unknown': {
-        'zh': '未知',
-        'en': 'Unknown',
-    },
+    # 任务状态词表在 js_tasks.py（js.tasks.status.*）—— 全站唯一一份。
+    # 这里曾有一份逐字相同的 js.history.status.*，因为 getStatusText 在
+    # tasks.js / history.js 各有一份实现、各查一个前缀。两份实现已收口到
+    # static/js/task_status.js，文案也随之只留一处：一个状态一处文案，
+    # 改中文不必想「改的是哪个页面看到的那份」。
 
     # 地图样式词表
     'js.history.style.roadmap': {

@@ -135,6 +135,13 @@ async function loadActiveTasks() {
         const contourData = await contourResp.json();
         // 全量（含 completed）共享给 map.js 的等高线预览面板，首屏只拉这一遍
         latestContourTasks = contourData.tasks || [];
+        // 每次拉取都顺带对齐预览注册表（幂等）。断线重连必须走这一步：
+        // socket.io 不重放错过的事件，断线窗口内完成的等高线任务收不到
+        // task_completed，不在这里补的话要到整页刷新才会出现预览按钮。
+        // 独立页不加载 map.js，typeof 守卫兜底。
+        if (typeof syncContourPreviewFromLatest === 'function') {
+            syncContourPreviewFromLatest();
+        }
 
         const mapTasks = (mapData.tasks || []).map(t => normalizeTask(t, 'map'));
         const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
@@ -534,31 +541,9 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
 // 回填，唯一的理由就是 error_message（后端异常的字符串化结果，URL、路径、
 // 第三方库报错原文都可能在里面）绝不能进 innerHTML 模板。这条路没了。
 
-function getStatusColor(status) {
-    const colors = {
-        'pending': 'secondary',
-        // running 用 'info' 而不是 'primary'：徽章侧 .status-badge.running /
-        // .badge.bg-primary / .badge.bg-info 是同一条声明块，渲染完全一致；
-        // 而进度条侧 .progress-bar.bg-info 已经存在，不必再写 .bg-primary 覆盖。
-        'running': 'info',
-        'paused': 'warning',
-        'completed': 'success',
-        'failed': 'danger'
-    };
-    return colors[status] || 'secondary';
-}
-
-function getStatusText(status) {
-    const texts = {
-        'pending': t('js.tasks.status.pending'),
-        'running': t('js.tasks.status.running'),
-        'paused': t('js.tasks.status.paused'),
-        'completed': t('js.tasks.status.completed'),
-        'failed': t('js.tasks.status.failed')
-    };
-    // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）
-    return texts[status] || t('js.tasks.status.unknown');
-}
+// getStatusColor / getStatusText 已收口到 static/js/task_status.js（全站唯一
+// 一份，base.html 全局加载）。这里曾各有一份顶层声明，与 history.js 的同名
+// 函数在首页共享全局作用域、由加载顺序决定谁胜出 —— 见那个文件的说明。
 
 function formatDuration(seconds) {
     if (seconds < 60) {
@@ -653,8 +638,13 @@ function calculateTimeInfo(task) {
 // 改造前这里遍历 activeTasks、逐个 getElementById 找行、再写 .task-time 的
 // textContent。现在只推一下 store 的 tick，依赖它的 timeText computed 自己
 // 失效重算 —— 组件里 `void store.state.tick` 那行建立的就是这个依赖。
+//
+// 没有活动任务时直接跳过：那时没有任何 computed 依赖 tick，改它等于白唤醒
+// 一次 Vue 的调度器。页面开着不动时这个 interval 是永久运行的。
 function updateTimeDisplay() {
-    if (window.TaskStore) window.TaskStore.bumpTick();
+    if (!window.TaskStore) return;
+    if (window.TaskStore.liveTasks().length === 0) return;
+    window.TaskStore.bumpTick();
 }
 
 function apiPrefixForType(taskType) {

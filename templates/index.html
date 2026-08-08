@@ -4,6 +4,9 @@
    叫「地图下载」只描述了四条管线里的一条。base.html 的默认值就是 TerraForge，
    与 /history、/config 的「X - TerraForge」形成「产品名 = 首页」的常规层级。 #}
 
+{# 共用小组件宏（图标 / 面板头部）。with context：宏体里用到 t()。 #}
+{% import "_macros.html" as m with context %}
+
 {% block content %}
 <!-- 首屏加载动画：地图引擎（Cesium 同步阻塞初始化）就绪前盖住全屏。
      进度条是「模拟缓动 + 真实就绪事件补完」：map.js 的 initSplash() 驱动，
@@ -104,7 +107,7 @@
              松手之后还在念；而且里面装着按钮，交互控件本就不该塞进 live region。
              播报改由下面的 #boundsAnnounce 承担，只在选区**落定**时写一次 ——
              鼠标框选结束、点读数改数生效、手动输入面板确定，共三处。 -->
-        <div class="bounds-overlay" id="boundsInfo"></div>
+        <div class="map-overlay-chip bounds-overlay" id="boundsInfo"></div>
         <span id="boundsAnnounce" class="bounds-sr" role="status" aria-live="polite"></span>
     </div>
 </div>
@@ -117,7 +120,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="downloadModalLabel">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                    <svg class="icon-inline icon-inline--md" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                         <polyline points="7 10 12 15 17 10"></polyline>
                         <line x1="12" y1="15" x2="12" y2="3"></line>
@@ -192,7 +195,7 @@
                         </div>
                     </div>
 
-                    <div class="mb-3" id="demOptions" style="display:none;">
+                    <div class="mb-3" id="demOptions" hidden>
                         <label for="demDataset" class="form-label">{{ t('tpl.index.download.dem_dataset') }}</label>
                         <select class="form-select mb-2" id="demDataset">
                             <option value="COP-DEM-GLO-30">{{ t('tpl.index.download.dem_glo30') }}</option>
@@ -224,7 +227,7 @@
                          缺选区由 map.js 的 submit 处理器 toast
                          js.map.download.need_selection 当场说明。 -->
                     <button type="submit" class="btn btn-primary w-100" id="createTaskBtn">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                        <svg class="icon-inline icon-inline--md" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                             <polyline points="7 10 12 15 17 10"></polyline>
                             <line x1="12" y1="15" x2="12" y2="3"></line>
@@ -244,7 +247,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="processModalLabel">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                    <svg class="icon-inline icon-inline--md" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
                     </svg>
                     {{ t('tpl.index.process.title') }}
@@ -275,13 +278,13 @@
                         </select>
                     </div>
 
-                    <div class="mb-3" id="processDemTaskRow" style="display:none;">
+                    <div class="mb-3" id="processDemTaskRow" hidden>
                         <label for="processDemTask" class="form-label">{{ t('tpl.index.process.dem_task') }}</label>
                         <select class="form-select" id="processDemTask"></select>
                         <small class="form-text text-muted">{{ t('tpl.index.process.dem_task_hint') }}</small>
                     </div>
 
-                    <div class="mb-3" id="localTerrainOptions" style="display:none;">
+                    <div class="mb-3" id="localTerrainOptions" hidden>
                         <div id="localTerrainUploadRow">
                             <label for="localTerrainFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
                             <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
@@ -290,7 +293,7 @@
                         <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
                     </div>
 
-                    <div class="mb-3" id="contourOptions" style="display:none;">
+                    <div class="mb-3" id="contourOptions" hidden>
                         <div id="contourUploadRow">
                             <label for="contourFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
                             <input type="file" class="form-control" id="contourFiles" accept=".tif,.tiff" multiple>
@@ -344,7 +347,7 @@
                     </div>
 
                     <!-- 仅等高线需要缩放范围；本地高程切片的层级在上方自己的字段里 -->
-                    <div id="processZoomSection" style="display:none;">
+                    <div id="processZoomSection" hidden>
                         <div class="form-group-label">{{ t('tpl.index.form.section_range') }}</div>
                         <div class="row">
                             <div class="col-6 mb-3">
@@ -360,7 +363,7 @@
                     </div>
 
                     <button type="submit" class="btn btn-primary w-100" id="createProcessBtn">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                        <svg class="icon-inline icon-inline--md" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
                         </svg>
                         {{ t('tpl.index.process.submit') }}
@@ -378,21 +381,7 @@
      （活动任务也在流里，socket 原地更新）+ 历史区域地图。
      独立页 /history 仍可用（布局顺序不同）。 -->
 <section class="workbench-panel workbench-panel--wide" id="historyPanel" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
-    <header class="workbench-panel__header">
-        <span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                <polyline points="3 7 5 9 9 5"></polyline>
-                <polyline points="3 17 5 19 9 15"></polyline>
-                <line x1="13" y1="6" x2="21" y2="6"></line>
-                <line x1="13" y1="12" x2="21" y2="12"></line>
-                <line x1="13" y1="18" x2="21" y2="18"></line>
-            </svg>
-            {{ t('tpl.index.panel.tasks') }}
-        </span>
-        <button type="button" class="dock-collapse-btn" data-panel-close title="{{ t('tpl.index.panel.close') }}" aria-label="{{ t('tpl.index.panel.close') }}">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-        </button>
-    </header>
+    {{ m.panel_header(m.icon_tasks(16), t('tpl.index.panel.tasks'), t('tpl.index.panel.close')) }}
     {# --fill：任务列表卡吃满剩余高度、列表在卡内滚动（.history-layout）。 #}
     <div class="workbench-panel__body workbench-panel__body--fill">
         {# records_panel：告诉共享 partial 这里是首页任务面板——任务列表
@@ -404,18 +393,7 @@
 
 <!-- 配置面板 -->
 <section class="workbench-panel" id="configPanel" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
-    <header class="workbench-panel__header">
-        <span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path>
-            </svg>
-            {{ t('tpl.index.panel.config') }}
-        </span>
-        <button type="button" class="dock-collapse-btn" data-panel-close title="{{ t('tpl.index.panel.close') }}" aria-label="{{ t('tpl.index.panel.close') }}">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-        </button>
-    </header>
+    {{ m.panel_header(m.icon_config(16), t('tpl.index.panel.config'), t('tpl.index.panel.close')) }}
     {# --fill：滚动交给 _config_content.html 内部的 .config-scroll，
        底部操作条常驻。body 自己不再滚，否则两层都滚出双滚动条。 #}
     <div class="workbench-panel__body workbench-panel__body--fill">
@@ -443,19 +421,56 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/map.js') }}"></script>
-<script src="{{ url_for('static', filename='js/tasks.js') }}"></script>
-<script src="{{ url_for('static', filename='js/history.js') }}"></script>
-<script src="{{ url_for('static', filename='js/config.js') }}"></script>
-<script src="{{ url_for('static', filename='js/panels.js') }}"></script>
+<script src="{{ url_for('static', filename='js/map.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/tasks.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/history.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/config.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/panels.js') }}" defer></script>
+{# 上面五个文件带 defer，解析期不再阻塞渲染，但它们的执行也随之推到
+   DOMContentLoaded 之前 —— 所以本块必须等那个事件。
+   ⚠️ 内联脚本的 defer 属性是**无效**的（规范只对有 src 的脚本生效），
+   写了也会立刻执行，那时 initMap 等函数一个都还不存在。 #}
+{# 每个 init 单独 try/catch：改前它们是一串裸调用，initMap 抛异常
+   （WebGL 不可用、Cesium 资源缺失）会带走后面全部 —— 尤其是 initTasks，
+   它挂 socket 任务监听，丢了就整页收不到实时推送，而用户只看到一张打不开
+   的地图，不会想到「任务列表也一起哑了」。
+   失败原因照旧走 window.onerror -> splash 的错误位（见 map.js initSplash）。 #}
 <script>
     const config = {{ config|tojson }};
-    initMap(config, {{ basemap|tojson }});
-    initMapWorkbench();
-    initDownloadTypeToggle();
-    initProcessTypeToggle();
-    initMapStylePreview();
-    initTasks();
-    initContourPreview();
+
+    function _boot(label, fn) {
+        try {
+            fn();
+        } catch (e) {
+            console.error('[boot] ' + label + ' failed:', e);
+        }
+    }
+
+    {# splash 先启动（只读 DOM，不碰 Cesium），再让出两帧才做同步阻塞的那段。
+
+       Cesium 的 Viewer 构造是**同步**的：5.7MB 引擎解析完之后还要建 WebGL
+       上下文、发首批瓦片请求，整段占住主线程。紧挨着 initSplash() 调用时
+       splash 的第一帧到不了屏幕 —— 进度条和「正在初始化地图引擎」的文案要等
+       构造结束才一起出现，用户看到的是一段黑屏而不是加载动画。
+
+       两个 rAF 而不是一个：单个 rAF 的回调仍在**本帧**渲染前执行，浏览器还没
+       把 splash 合成上屏；要等第二帧的回调才保证前一帧已经上屏。
+
+       顺序不能动：initMapWorkbench 等读 viewer（map.js 里有
+       `if (!viewer) return` 守卫），排在 initMap 之前会静默失效。 #}
+    document.addEventListener('DOMContentLoaded', function () {
+        _boot('splash', initSplash);
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+                _boot('map', function () { initMap(config, {{ basemap|tojson }}); });
+                _boot('workbench', initMapWorkbench);
+                _boot('downloadTypeToggle', initDownloadTypeToggle);
+                _boot('processTypeToggle', initProcessTypeToggle);
+                _boot('mapStylePreview', initMapStylePreview);
+                _boot('tasks', initTasks);
+                _boot('contourPreview', initContourPreview);
+            });
+        });
+    });
 </script>
 {% endblock %}

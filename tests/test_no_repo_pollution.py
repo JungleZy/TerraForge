@@ -68,3 +68,41 @@ def test_gitignore_blocks_the_unpack_runtime_artifacts():
     assert f"assets/terrain/{UNPACK_TMP_PREFIX}*/" in lines, (
         f".gitignore 要挡住解压中转目录 assets/terrain/{UNPACK_TMP_PREFIX}*/ —— "
         "崩溃 / SIGKILL 之后它带着几万个文件留在仓库里，直到下次启动清扫")
+
+
+def test_test_run_did_not_write_logs_into_the_repo(repo_logs_at_session_start):
+    """跑测试不得让仓库根目录多出 logs/。
+
+    日志落盘（logging_setup）写的是 `<Config.BASE_DIR>/logs`，而 BASE_DIR 默认
+    就是仓库根。任何在子进程里把 app.py 当 `__main__` 跑的测试都必须把
+    `Config.BASE_DIR` 指到 tmp_path —— 只改 DATABASE_PATH / DOWNLOADS_DIR /
+    CACHE_DIR 是不够的，那是本条要拦的确切失败方式（tests/test_fix_infra_e.py
+    的 `_RUN_AS_MAIN` 就漏过一次）。
+
+    与上面那条底图断言同构：比对会话起点而不是「目录不存在」，因为开发机上
+    真跑过一次程序之后 logs/ 合法存在。CI 全新克隆走严格分支。
+    """
+    from src.core.logging_setup import LOG_DIR_NAME
+
+    logs_dir = os.path.join(_REPO, LOG_DIR_NAME)
+    if repo_logs_at_session_start:
+        pytest.skip(f"会话开始前仓库里就有 {logs_dir}（正常跑过程序的开发机），"
+                    f"不是测试造成的；CI 全新克隆走严格分支")
+    assert not os.path.exists(logs_dir), (
+        f"跑测试期间仓库里出现了运行日志目录：{logs_dir}\n"
+        f"某条测试把 app.py 当 __main__ 跑却没有把 Config.BASE_DIR 指到 tmp_path。")
+
+
+def test_gitignore_blocks_the_log_dir():
+    """`*.log` 挡不住轮转产物 —— 后缀在 .log **之后**（terraforge.log.2026-08-07）。
+
+    目录名从代码读（LOG_DIR_NAME），手抄字面量的话改了常量这里照绿，
+    而 .gitignore 已经不匹配了。
+    """
+    from src.core.logging_setup import LOG_DIR_NAME
+
+    with open(os.path.join(_REPO, ".gitignore"), encoding="utf-8") as f:
+        lines = [ln.strip() for ln in f]
+    assert f"{LOG_DIR_NAME}/" in lines, (
+        f".gitignore 要整个挡住 {LOG_DIR_NAME}/：轮转后的文件叫 "
+        f"terraforge.log.2026-08-07，`*.log` 那条盖不住它")

@@ -348,13 +348,19 @@ def test_map_js_consumes_server_resolved_basemap():
 
 
 def test_index_route_injects_resolved_basemap(monkeypatch, tmp_path):
-    """首页必须把解析好的底图图层描述渲染进页面，前端拿到即可用。"""
+    """首页把底图图层描述渲染进页面，但地址是**同源**的转发路径。
+
+    上游地址不下发：浏览器直连上游会撞 CORS（上游 4xx 时真实状态码被埋成
+    一句 CORS 报错），而且浏览器不吃项目的 proxy_url。瓦片由
+    routes/basemap_static.py 转发，行为细节见 tests/test_basemap_proxy_route.py。
+    """
     client = _load_app(monkeypatch, tmp_path)
     html = client.get('/').get_data(as_text=True)
     assert 'initMap(config,' in html, '首页必须把 basemap 传给 initMap'
-    # 默认预设是 Esri 卫星影像 —— Google 在国内直连不通，而底图没有代理可用。
-    assert 'server.arcgisonline.com' in html
-    assert 'World_Imagery' in html
+    assert '/basemap/{z}/{x}/{y}' in html
+    # 默认预设是 Esri，但它的地址只存在于服务端。
+    assert '"source": "esri"' in html
+    assert 'arcgisonline' not in html, '上游地址不该出现在页面里'
 
 
 def test_config_partial_renders_basemap_selector(monkeypatch, tmp_path):

@@ -436,6 +436,7 @@ sys.path.insert(0, project_root)
 
 from src.core import config
 from pathlib import Path
+config.Config.BASE_DIR = Path(tmp)          # 运行日志落在 <BASE_DIR>/logs
 config.Config.DATABASE_PATH = Path(tmp) / "test.db"
 config.Config.DOWNLOADS_DIR = Path(tmp) / "downloads"
 config.Config.CACHE_DIR = Path(tmp) / "cache"

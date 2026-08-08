@@ -7,9 +7,11 @@
    也算 content)。只写动作名的话 data-hint 的正文对读屏用户 100% 不可见 ——
    9 条说明全部拿不到，念出来只有「查看说明 按钮」。
    不要改成往按钮里塞 .visually-hidden 的 <span>{{ text }}</span>：契约的
-   _MARKUP_NOISE_RE 不剥 `{{ }}`，那会被当可见文本，这颗按钮直接掉出纯图标
-   集合，ICON_ONLY_BUTTON_COUNT 从 19 掉到 17（宏在 index/config 各展开一次）。 #}
+   _MARKUP_NOISE_RE 只剥 `{{ ...icon_*(...) }}` 这类图标插值，不剥普通
+   `{{ text }}`，那会被当可见文本，这颗按钮直接掉出纯图标集合。 #}
 {% macro hint(text, extra='') %}<button type="button" class="hint {{ extra }}" data-hint="{{ text }}" aria-label="{{ t('tpl.config.hint.aria') }}: {{ text }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></button>{% endmacro %}
+
+{% import "_macros.html" as m with context %}
 
 {# 三层 flex：撑满可用高度 / 中间滚动 / 底部操作条常驻。宿主容器要带
    --fill 修饰符提供确定高度（config.html 与 index.html 各加了一处）。 #}
@@ -17,7 +19,7 @@
     <form id="configForm" class="config-scroll">
                 <div class="config-section">
                     <h3>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="4"></circle>
                             <line x1="12" y1="2" x2="12" y2="5"></line>
                             <line x1="12" y1="19" x2="12" y2="22"></line>
@@ -66,7 +68,7 @@
 
                 <div class="config-section">
                     <h3>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
                         </svg>
                         {{ t('tpl.config.basic.title') }}
@@ -113,7 +115,7 @@
 
                 <div class="config-section">
                     <h3>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                             <polyline points="7 10 12 15 17 10"></polyline>
                             <line x1="12" y1="15" x2="12" y2="3"></line>
@@ -247,7 +249,7 @@
 
                 <div class="config-section">
                     <h3>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
                             <circle cx="8.5" cy="7" r="4"></circle>
                             <polyline points="17 11 19 13 23 9"></polyline>
@@ -286,7 +288,7 @@
 
                 <div class="config-section">
                     <h3>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                             <line x1="9" y1="9" x2="15" y2="15"></line>
                             <line x1="15" y1="9" x2="9" y2="15"></line>
@@ -319,11 +321,7 @@
 
                 <div class="config-section">
                     <h3>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
-                            <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon>
-                            <line x1="8" y1="2" x2="8" y2="18"></line>
-                            <line x1="16" y1="6" x2="16" y2="22"></line>
-                        </svg>
+                        {{ m.icon_map(20, 'lg') }}
                         {{ t('tpl.config.misc.title') }}
                     </h3>
 
@@ -355,7 +353,7 @@
 
                 <div class="config-section">
                     <h3>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 8px;">
+                        <svg class="icon-inline icon-inline--lg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M20 7h-9"></path>
                             <path d="M14 17H5"></path>
                             <circle cx="17" cy="17" r="3"></circle>
@@ -386,14 +384,14 @@
                  form="configForm" 关联，提交行为不变。 -->
             <div class="config-footer">
                 <button type="button" class="btn btn-secondary btn-sm" onclick="resetConfig()">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                    <svg class="icon-inline icon-inline--md" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="1 4 1 10 7 10"></polyline>
                         <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
                     </svg>
                     {{ t('tpl.config.actions.reset') }}
                 </button>
                 <button type="submit" form="configForm" class="btn btn-primary btn-sm">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px;">
+                    <svg class="icon-inline icon-inline--md" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="20 6 9 17 4 12"></polyline>
                     </svg>
                     {{ t('tpl.config.actions.save') }}

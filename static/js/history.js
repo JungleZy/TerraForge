@@ -33,50 +33,49 @@ function initHistory() {
     });
 }
 
-// 历史小地图底图与主视图同一份配置（tile_servers 第一条，语法与
-// map.js _baseMapUrl 一致），不再硬编码外网 OSM——断网/内网部署时
-// 主视图可用而小地图白屏是矛盾的。拿不到配置时保持 OSM 回退。
-// 与 map.js 是刻意重复的两份（无构建工具、独立历史页不加载 map.js，
-// 收敛到公共文件属于第三档）。
-function _historyBaseMapUrl(serversRaw) {
-    // 两种配置形态都认：首页内联 config 的 tile_servers 是裸逗号串；
-    // 独立页 /history 走 /api/config，配置项是 {"updated_at":..., "value": ...}
-    // 包装对象——不拆包的话 (serversRaw||'').split 直接 TypeError，
-    // initHistoryMap 整个挂掉、小地图白屏（2026-08 实测）。
-    if (serversRaw && typeof serversRaw === 'object') {
-        serversRaw = serversRaw.value || '';
-    }
-    const first = (serversRaw || '').split(',').map(s => s.trim()).filter(Boolean)[0];
-    if (!first) return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-    if (first.startsWith('http://') || first.startsWith('https://')) {
-        return first.replace('{style}', 'm');
-    }
-    const host = first.includes('.') ? first : first + '.googleapis.com';
-    return `//${host}/vt?lyrs=m&x={x}&y={y}&z={z}`;
-}
+// 历史小地图与主视图共用**服务端解析**的底图描述符
+// （src/services/basemap_source.py -> client_descriptor）：url 永远是同源的
+// /basemap/{z}/{x}/{y}，真实上游地址不出服务端。
+//
+// 这里曾有一份 _historyBaseMapUrl 平行实现，在浏览器侧自己拼地址：拿不到
+// 配置回退外网 OSM、拿到主机别名拼 `//host/vt?lyrs=m`。三条硬约束一次全破：
+//   1. 离线 —— 断网/内网部署时小地图必白屏；
+//   2. 同源代理 —— 浏览器直连上游会撞 CORS（上游 4xx 的错误页不带 CORS 头，
+//      真实状态码被埋成一句 CORS 报错），而且浏览器**不吃** proxy_url，
+//      底图与下载走两条不同出网路径，配好代理底图照样可能是蓝球；
+//   3. WGS-84 —— lyrs=m 是路网图，中国区为 GCJ-02 偏移，而叠在上面的任务
+//      矩形是 WGS-84 坐标，国内区域必然错位（项目只允许 lyrs=s）。
+// 署名也曾写死 © OpenStreetMap 而实际加载的是 Google 瓦片。
+const HISTORY_BASEMAP_FALLBACK = { url: '/basemap/{z}/{x}/{y}', max_level: 19, credit: '' };
 
-async function _resolveHistoryTileServers() {
-    // 首页（index.html）内联了全局 config；独立历史页没有，走 /api/config 拿。
-    if (typeof config !== 'undefined' && config && config.tile_servers) {
-        return config.tile_servers;
+async function _resolveHistoryBasemap() {
+    // 首页（index.html）已由 routes/main.py 内联下发；独立历史页的路由不注入
+    // 模板变量，走 /api/basemap 拿同一份描述符。
+    if (typeof basemap !== 'undefined' && basemap && basemap.url) {
+        return basemap;
     }
     try {
-        const r = await fetch('/api/config', { cache: 'no-store' });
+        const r = await fetch('/api/basemap', { cache: 'no-store' });
         const j = await r.json();
-        return (j.config && j.config.tile_servers) || '';
+        if (j && j.success && j.basemap && j.basemap.url) return j.basemap;
     } catch (e) {
-        return '';      // 接口失败：_historyBaseMapUrl 回退 OSM
+        console.error('Failed to load basemap descriptor:', e);
     }
+    // 接口失败也只回退到同源路径：瓦片能不能取到是服务端的事，前端不该
+    // 因为一次接口失败就绕过代理去直连外网。
+    return HISTORY_BASEMAP_FALLBACK;
 }
 
 async function initHistoryMap() {
     // 历史区域小地图：Cesium 只读视图（地图系统已从 Leaflet 切到 CesiumJS）
-    const tileUrl = _historyBaseMapUrl(await _resolveHistoryTileServers());
+    const bm = await _resolveHistoryBasemap();
     historyViewer = new Cesium.Viewer('historyMap', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-            url: tileUrl,
+            url: bm.url,
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
-            credit: '© OpenStreetMap contributors',
+            // 超出这一层上游返回 404，Cesium 画成空白。与主视图同一口径。
+            maximumLevel: bm.max_level == null ? undefined : bm.max_level,
+            credit: bm.credit || '',
         })),
         baseLayerPicker: false,
         geocoder: false,
@@ -108,10 +107,17 @@ async function loadStats() {
         const j = await r.json();
         if (!j.success) return;
         const s = j.stats;
-        document.getElementById('statTotal').textContent = s.total_tasks;
-        document.getElementById('statCompleted').textContent = s.completed;
-        document.getElementById('statFailed').textContent = s.failed;
-        document.getElementById('statDownloaded').textContent = s.total_downloaded.toLocaleString();
+        // 逐个判空：统计卡是否在页面上取决于 _history_content.html 有没有被
+        // include。缺元素时裸解引用会抛 TypeError，被下面的 catch 吞成一条
+        // console.error —— 每个终态事件刷一条，而统计卡静默不更新。
+        const set = function (id, value) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+        set('statTotal', s.total_tasks);
+        set('statCompleted', s.completed);
+        set('statFailed', s.failed);
+        set('statDownloaded', s.total_downloaded.toLocaleString());
     } catch (e) {
         console.error('Failed to load stats:', e);
     }
@@ -285,88 +291,11 @@ function filterTasks(searchTerm) {
     if (window.TaskStore) window.TaskStore.setSearchTerm(searchTerm);
 }
 
-// A7 / Task 12：这两张表原先只映射 completed / failed / cancelled 三态。
-// （cancelled 已随「取消任务」一并退出状态机，见 models/task.py 的 TaskStatus。）
-// /api/history_all 默认不带 status 过滤（路由的 ?status= 是可选参数，
-// 状态筛选 chips 选中时才传），pending / running / paused 的任务照样可能
-// 进历史流（例如独立页 /history 全量渲染）。落在表外的状态会走
-// `|| status` 兜底，把后端的**英文字面量**直接渲染进中文界面
-// —— 这就是历史页里 `paused` 与「✓ 已完成」中英混杂的根源。
-// 现在与 tasks.js 的同名函数逐字对齐，覆盖 models/task.py 的 TaskStatus 全部五态。
-// 两份实现仍然重复（没有构建工具、没有 ES module，两个页面不会同时加载），
-// 收敛到公共文件属于第三档，本次只对齐行为。
-function getStatusColor(status) {
-    const colors = {
-        'pending': 'secondary',
-        // running 用 'info' 而不是 'primary'：`.status-badge.running /
-        // .badge.bg-primary / .badge.bg-info` 是同一条声明块，渲染完全一致。
-        'running': 'info',
-        'paused': 'warning',
-        'completed': 'success',
-        'failed': 'danger'
-    };
-    return colors[status] || 'secondary';
-}
-
-// 历史地图上矩形的描边色。这是**第四处**状态映射点（前三处是 getStatusColor /
-// getStatusText / statusIcons），A7 / Task 12 一并补齐。
-//
-// 改前是内联三元阶梯，只认 completed / failed，其余三态（pending / running /
-// paused）全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷。
-// 而且三个色号 #10b981 / #ef4444 / #60a5fa 是**硬编码且离调色板**的：
-// #10b981 是 emerald-500，本项目的 --color-success 是 emerald-400 #34d399，
-// 改调色板时这里会静默漂移。
-//
-// 现在读 CSS 自定义属性，与徽章/进度条/卡片边条走同一套语义令牌：
-//   pending -> --color-text-secondary（与 .badge.bg-secondary 同色）
-// Leaflet 要的是真实色值字符串，不认 var()，所以必须在这里求值。
-// 状态色惰性缓存：getComputedStyle 每次调用都强制样式计算，renderHistoryMap
-// 逐任务调用时成本放大；调色板运行期不变，首次调用把 6 个令牌求值后查表。
-// 缓存按令牌名键控、放模块级变量：history.js 在独立页和首页都会加载，
-// 但同一页面只加载一次。
-let _statusStrokeCache = null;
-
-// U5：主题切换后缓存必须失效并重画 —— 缓存的前提「调色板运行期不变」在
-// 主题开关落地后已经不成立（亮色块覆盖了这 6 个令牌全部）。getStatusStroke
-// 只在 renderHistoryMap 里被调用，切主题本身不会触发重渲染，所以要显式重画。
-document.addEventListener('terraforge:themechange', function () {
-    _statusStrokeCache = null;
-    if (typeof allTasks !== 'undefined' && Array.isArray(allTasks) && allTasks.length) {
-        try { renderHistoryMap(allTasks); } catch (e) { /* 地图未就绪时忽略 */ }
-    }
-});
-
-function getStatusStroke(status) {
-    const vars = {
-        'pending': '--color-text-secondary',
-        'running': '--color-info',
-        'paused': '--color-warning',
-        'completed': '--color-success',
-        'failed': '--color-danger'
-    };
-    const name = vars[status] || '--color-text-secondary';
-    if (!_statusStrokeCache) {
-        const style = getComputedStyle(document.documentElement);
-        _statusStrokeCache = {};
-        Object.keys(vars).forEach(function (key) {
-            const token = vars[key];
-            _statusStrokeCache[token] = style.getPropertyValue(token).trim();
-        });
-    }
-    return _statusStrokeCache[name];
-}
-
-function getStatusText(status) {
-    const texts = {
-        'pending': t('js.history.status.pending'),
-        'running': t('js.history.status.running'),
-        'paused': t('js.history.status.paused'),
-        'completed': t('js.history.status.completed'),
-        'failed': t('js.history.status.failed')
-    };
-    // 未知状态不把英文字面量原样渲染进中文界面（与 tasks.js 同一约定）
-    return texts[status] || t('js.history.status.unknown');
-}
+// getStatusColor / getStatusText / getStatusStroke（以及主题切换时的描边色
+// 缓存失效）已收口到 static/js/task_status.js，全站唯一一份、base.html 全局
+// 加载。这里曾有一份与 tasks.js 并行的实现：两者在首页共享全局作用域，后
+// 加载的本文件静默遮蔽 tasks.js 那份，而两份 getStatusText 查的是不同的
+// i18n key 前缀 —— 详见那个文件开头的说明。
 
 function getStyleText(style) {
     const styles = {
@@ -482,19 +411,19 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         // 显示错误信息（如果有）
         if (task.error_message) {
             document.getElementById('detailError').textContent = task.error_message;
-            document.getElementById('detailErrorRow').style.display = 'block';
+            document.getElementById('detailErrorRow').hidden = false;
         } else {
-            document.getElementById('detailErrorRow').style.display = 'none';
+            document.getElementById('detailErrorRow').hidden = true;
         }
 
         // DEM: 地形切片入口
         const terrainRow = document.getElementById('detailTerrainRow');
         if (taskType === 'dem') {
-            terrainRow.style.display = 'block';
+            terrainRow.hidden = false;
             initTerrainDetailActions(taskId);
             await refreshTerrainDetail(taskId);
         } else {
-            terrainRow.style.display = 'none';
+            terrainRow.hidden = true;
         }
 
         // 显示模态框。getOrCreateInstance 与全站一致：重复 new bootstrap.Modal
@@ -541,7 +470,7 @@ async function refreshTerrainDetail(taskId) {
     const errRow = document.getElementById('detailTerrainErrorRow');
     const errEl = document.getElementById('detailTerrainError');
 
-    errRow.style.display = 'none';
+    errRow.hidden = true;
     errEl.textContent = '';
 
     // 固定 URL 约定（后端 terrain_static_bp）
@@ -581,12 +510,12 @@ async function refreshTerrainDetail(taskId) {
 
         if (job.error_message) {
             errEl.textContent = job.error_message;
-            errRow.style.display = 'block';
+            errRow.hidden = false;
         }
     } catch (e) {
         statusEl.innerHTML = `<span class="badge bg-danger">${t('js.history.terrain.load_failed')}</span>`;
         errEl.textContent = String(e.message || e);
-        errRow.style.display = 'block';
+        errRow.hidden = false;
         infoEl.innerHTML = `
             <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
             <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>

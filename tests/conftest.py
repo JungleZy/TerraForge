@@ -85,6 +85,19 @@ def repo_unpacked_base_at_session_start():
     return os.path.exists(os.path.join(PROJECT_ROOT, "assets", "terrain", "base_z8"))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def repo_logs_at_session_start():
+    """会话开始时仓库根目录有没有 logs/ —— test_no_repo_pollution 的基线。
+
+    与上面那条同理:logs/ 是运行日志的正常落点(logging_setup),开发机上真跑过
+    一次程序之后它合法存在。要守的是「**测试运行**不得往仓库写运行日志」——
+    任何在子进程里把 app.py 当 __main__ 跑的测试都必须把 Config.BASE_DIR
+    指到 tmp_path,否则日志会写进真仓库。
+    """
+    from src.core.logging_setup import LOG_DIR_NAME
+    return os.path.exists(os.path.join(PROJECT_ROOT, LOG_DIR_NAME))
+
+
 @pytest.fixture(scope="session")
 def _base_terrain_sandbox(tmp_path_factory):
     """空沙箱 + 会话级【永久】替换 bundle_dir(不走 monkeypatch)。

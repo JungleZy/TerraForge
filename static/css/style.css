@@ -3,6 +3,18 @@
    而它原先指向的正是 fonts.googleapis.com —— 是藏在 CSS 里的第 9 个 CDN 依赖，
    只改 base.html 会漏掉它。要换字体请改 vendor/fonts/fonts.css。 */
 
+/* ── 断点清单（全站只有这三档，加新档请登记在此） ──────────────────
+   767.98px  md 上界：首页左右分栏堆叠成单列、统计卡 4 列 -> 2 列。
+             .98 尾数跟 Bootstrap 对齐（`col-md-*` 从 768 起生效，max-width
+             是闭区间，写 768 会把 768 本身也算进窄屏）。改前这两处一处写
+             768、一处写 767.98，视口恰好 768px 时布局已堆叠而统计卡仍 4 列，
+             四张卡被压成一排细条。
+   576px     sm 上界：状态栏胶囊按优先级隐藏、详情弹窗网格转单列。
+   480px     手机档：toast 左右贴边、confirm 按钮竖排。刻意比 576 更窄，
+             理由见该 @media 块上方的注释。
+   另有 prefers-reduced-motion / prefers-color-scheme 两个能力查询，
+   不属于尺寸断点。 */
+
 /* CSS Variables */
 :root {
     /* 背景三层 */
@@ -82,10 +94,22 @@
     --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
     --shadow-lg: 0 12px 32px rgba(0,0,0,0.45);
 
-    /* 圆角 */
+    /* 圆角刻度。字面量绕过这套刻度是「样式一致性」类缺陷的高发点：
+       改前 8px / 10px 明明有 token 却写字面量（.form-control 2120、
+       .page-link 2299、.alert 1909），而卡片系一律 12px —— 那一档
+       刻度里根本没有，于是「卡片圆角」游离在体系外。--radius-xs(6px)
+       同理：.btn-sm 独一份，没名字就没人知道它是刻度的一部分。 */
+    /* 4px 是「贴在文字上的小块」那一档：内联 <code>、滚动条滑块、
+       数值点击编辑的高亮底。5 处，同样值得有名字。 */
+    --radius-xxs: 4px;
+    --radius-xs: 6px;
     --radius-sm: 8px;
     --radius:    10px;
+    --radius-card: 12px;
     --radius-lg: 14px;
+    /* 全圆胶囊。999px 的字面量在全站出现 10 次，语义都是「两端全圆」，
+       与上面那套「几 px」的刻度不是同一类东西，所以单独命名。 */
+    --radius-pill: 999px;
 
     /* 底部状态栏胶囊:本体高度 + 与视口边缘的间距。
        高度 34 而不是读数行需要的 26:上下各留 4px 呼吸位,读数不顶胶囊边。
@@ -424,7 +448,12 @@ body {
 .workbench {
     display: flex;
     flex-direction: column;
+    /* 100vh 打底、100dvh 覆盖（不认 dvh 的浏览器忽略后一条）。
+       手机浏览器（局域网访问本机服务的场景）的动态工具栏会让 100vh 大于实际
+       可视高，底部状态栏胶囊（bottom: var(--statusbar-inset)，包含块是本元素）
+       会被推到地址栏/手势条后面点不到。 */
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     position: relative;   /* 底部状态栏胶囊的包含块 */
 }
@@ -491,7 +520,7 @@ body {
     padding: 0 12px;
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     box-shadow: var(--shadow-md);
 }
 
@@ -656,7 +685,7 @@ body {
     flex-direction: column;
     background-color: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
-    border-radius: 999px;            /* 胶囊：与底部状态栏同一形态语言 */
+    border-radius: var(--radius-pill);            /* 胶囊：与底部状态栏同一形态语言 */
     box-shadow: var(--shadow-md);
     overflow: hidden;                /* 圆角裁掉首尾按钮的 hover 底色 */
 }
@@ -760,6 +789,25 @@ html[lang="en"] .map-panel-btn {
     color: var(--color-accent-hover);
 }
 
+/* ==========================================================================
+   .icon-inline —— 行内图标的对齐与右间距
+
+   改前这是 20 处内联 `style="display:inline-block; vertical-align:middle;
+   margin-right:Npx"`，散在 6 个模板里，右间距有 4/6/8px 三档。图标对齐是
+   横切关注点：散成内联样式就没法统一调整，而且 .btn 已经是 inline-flex
+   居中（见按钮段），按钮内那些 vertical-align 其实是死声明。
+
+   宏在 templates/_macros.html，图标本身带这两个 class。
+   ========================================================================== */
+.icon-inline {
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.icon-inline--sm { margin-right: 4px; }
+.icon-inline--md { margin-right: 6px; }
+.icon-inline--lg { margin-right: 8px; }
+
 /* 等高线配色自定义（数据处理表单内）：海拔带色块 + 范围小字 */
 .contour-style-custom {
     margin-top: 8px;
@@ -805,21 +853,35 @@ html[lang="en"] .map-panel-btn {
     background: repeating-conic-gradient(var(--color-checker-a) 0% 25%, var(--color-checker-b) 0% 50%) 0 0 / 12px 12px;
 }
 
-/* 历史任务预览提示条（地图右下、状态栏上方）：当前在主视图叠加的是哪个任务 */
-.task-preview-chip {
+/* ==========================================================================
+   .map-overlay-chip —— 浮在地图上的小信息条的共同底座
+
+   两个消费者：右上的范围信息浮层（.bounds-overlay）与右下的历史预览提示条
+   （.task-preview-chip）。改前这两条规则是复制粘贴级重复：定位方式、底色、
+   描边、圆角、阴影、文字色、内边距 7 项逐字相同，只有锚点（上/下）与字号
+   不同。改浮层配色时要同步改两处，必然漂移。
+
+   两个元素都由 JS 创建（map.js 的 updateBoundsInfo / _renderPreviewChip），
+   基类要在那里一起加上。
+   ========================================================================== */
+.map-overlay-chip {
     position: absolute;
-    right: 12px;
-    bottom: var(--statusbar-clearance);
     z-index: 1000;
-    display: flex;
-    align-items: center;
-    gap: 10px;
     padding: 6px 10px;
     background: var(--color-overlay-surface);
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
     color: var(--color-text-primary);
+}
+
+/* 历史任务预览提示条（地图右下、状态栏上方）：当前在主视图叠加的是哪个任务 */
+.task-preview-chip {
+    right: 12px;
+    bottom: var(--statusbar-clearance);
+    display: flex;
+    align-items: center;
+    gap: 10px;
     font-size: var(--font-size-sm);
 }
 
@@ -860,17 +922,9 @@ html[lang="en"] .map-panel-btn {
    字号与左上工具条标签同为 --font-size-xs(12px)：两者都是浮在地图上的
    同层提示，字号不一致会显得是两套东西。 */
 .bounds-overlay {
-    position: absolute;
     top: 12px;
     right: 12px;
-    z-index: 1000;
     max-width: min(420px, calc(100% - 60px));
-    padding: 6px 10px;
-    background: var(--color-overlay-surface);
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-sm);
-    box-shadow: var(--shadow-md);
-    color: var(--color-text-primary);
     font-size: var(--font-size-xs);
 }
 
@@ -980,9 +1034,8 @@ html[lang="en"] .map-panel-btn {
 .history-map {
     height: 400px;
     width: 100%;
-    border-radius: 12px;
+    border-radius: var(--radius-card);
     box-shadow: var(--shadow-md);
-    margin-bottom: 1.5rem;
     border: 1px solid var(--color-border);
     overflow: hidden;
 }
@@ -1088,7 +1141,7 @@ html[lang="en"] .map-panel-btn {
 .task-progress {
     height: 5px;
     background: var(--color-bg-tertiary);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
     display: flex;
 }
@@ -1234,7 +1287,7 @@ html[lang="en"] .map-panel-btn {
 .status-chip {
     padding: 0.125rem 0.625rem;
     border: 1px solid var(--color-border);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: none;
     font-family: inherit;
     font-size: var(--font-size-xs);
@@ -1333,7 +1386,7 @@ html[lang="en"] .map-panel-btn {
    下限由 tests/test_css_contract.py::test_every_progress_height_fits_the_label 守住。 */
 .progress {
     height: 28px;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--color-bg-tertiary);
     overflow: hidden;
     border: none;
@@ -1409,7 +1462,7 @@ html[lang="en"] .map-panel-btn {
     display: inline-flex;
     align-items: center;
     padding: 0.125rem 0.5rem;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background: var(--color-bg-tertiary);
     color: var(--color-text-primary);
     font-family: var(--font-mono);
@@ -1471,9 +1524,9 @@ html[lang="en"] .map-panel-btn {
 /* Config Section Styles */
 .config-section {
     background: var(--color-bg-secondary);
-    border-radius: 12px;
+    border-radius: var(--radius-card);
     padding: 12px;
-    margin-bottom: 1.5rem;
+    margin-bottom: 12px;
     box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-border);
     transition: background-color 0.15s ease, border-color 0.15s ease,
@@ -1517,21 +1570,12 @@ html[lang="en"] .map-panel-btn {
         它就成了通用 `.form-select { padding-right: 2.25rem }` 的重复。
         test_form_select_reserves_room_for_the_arrow 会继续为「配置页」这个上下文
         算一遍最终生效的右内边距（现在由通用规则提供 36px），删掉不会留下盲区。
-   保留下面的 :focus / ::placeholder 两条（它们同样与全局重复，属于另一笔清理，
-   本任务不动 —— 见 p2-task-10-report.md 的「遗留」）。 */
-.config-section .form-control:focus,
-.config-section .form-select:focus {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px var(--color-accent-muted);
-    background-color: var(--color-bg-secondary);
-    outline: none;
-}
-
-/* 与全局 `.form-control::placeholder` 重复的一条（Task 10 报告里记的「遗留」），
-   本次不删只对齐取值，否则配置页的占位符会留在 2.82:1。 */
-.config-section .form-control::placeholder {
-    color: var(--color-text-secondary);
-}
+   `:focus` / `::placeholder` 两条也已删除（Task 10 报告里记的「遗留」，
+   那时留着是因为怕全局规则盖不到配置页）：逐条比对过，它们与全局的
+   `.form-control:focus, .form-select:focus`（2232）和
+   `.form-control::placeholder`（2245）完全重复 —— 全局那条还多给一条 color，
+   是本地这份的超集。挡路的 (0,2,0) 规则上面已经删掉，全局规则现在正常命中
+   配置页，留着两份只是让「改焦点色要改两处」。 */
 
 /* ⚠️ 这里曾有一条 `.config-section .btn { padding:.75rem 2rem; font-weight:700 }`。
    已删除，理由：它把配置页每个按钮都撑成 47px 高的粗体大块头，与全站 .btn
@@ -1852,7 +1896,7 @@ html[lang="en"] .map-panel-btn {
 .btn-sm {
     font-size: var(--font-size-sm);
     padding: 0.4rem 0.8rem;
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
 }
 
 /* 纯图标按钮：正方形，边长 = 控件密度令牌 --ctl-h。
@@ -1871,7 +1915,7 @@ html[lang="en"] .map-panel-btn {
 
 /* Alert Styles */
 .alert {
-    border-radius: 10px;
+    border-radius: var(--radius);
     border: 1px solid;
     /* A5 / Task 10：1rem 1.25rem(16/20px) -> 8px/--pad-card。
        站内的 .alert 全是**信息条**（#boundsInfo 的四至、history 的错误提示），
@@ -1908,7 +1952,7 @@ html[lang="en"] .map-panel-btn {
 
 /* Card Styles */
 .card {
-    border-radius: 12px;
+    border-radius: var(--radius-card);
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-sm);
     background: var(--color-bg-secondary);
@@ -1978,13 +2022,20 @@ html[lang="en"] .map-panel-btn {
     color: var(--color-info) !important;
 }
 
-/* Ensure all text is visible on dark background */
-p, span, div, td, th, li, a {
-    color: inherit;
-}
+/* h1-h6 的默认色。
 
+   改前这里带 !important，代价是下游每一处情境化标题都被迫跟着上 !important
+   —— .stat-card h3 / .stat-card.accent h3 / .stat-card.danger h3 三处的
+   !important 全是被它逼出来的（那三条的特异度 (0,1,1)/(0,2,1) 本来就赢），
+   而 .config-section h3 的 color 声明（不带 !important）被它永久压死成死声明。
+   元素选择器特异度 (0,0,1) 是最弱的一档，正常 class 规则都盖得住，不需要它。
+
+   同时删掉的还有上面那条 `p, span, div, td, th, li, a { color: inherit }`：
+   UA 样式表不给这些元素设 color，继承父级本来就是默认行为，那条规则不改变
+   任何渲染结果（注释写的「让暗色底上文字可见」由 body 的 color 声明承担），
+   是旧 CDN 时代兜底重置的残留。 */
 h1, h2, h3, h4, h5, h6 {
-    color: var(--color-text-primary) !important;
+    color: var(--color-text-primary);
 }
 
 /* Statistics Styles */
@@ -2034,7 +2085,7 @@ h1, h2, h3, h4, h5, h6 {
 .stat-card h3 {
     font-weight: 600;
     font-family: var(--font-mono);
-    color: var(--color-text-primary) !important;
+    color: var(--color-text-primary);
     margin: 0 0 0.25rem 0;
     text-shadow: none;
 }
@@ -2047,11 +2098,11 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .stat-card.accent h3 {
-    color: var(--color-accent) !important;
+    color: var(--color-accent);
 }
 
 .stat-card.danger h3 {
-    color: var(--color-danger) !important;
+    color: var(--color-danger);
 }
 
 /* Loading Spinner */
@@ -2082,7 +2133,7 @@ h1, h2, h3, h4, h5, h6 {
     background-color: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding-top: var(--ctl-pad-y);
     padding-bottom: var(--ctl-pad-y);
     padding-left: var(--ctl-pad-x);
@@ -2205,7 +2256,7 @@ h1, h2, h3, h4, h5, h6 {
 .modal-content {
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
-    border-radius: 12px;
+    border-radius: var(--radius-card);
     box-shadow: var(--shadow-lg);
 }
 
@@ -2261,7 +2312,7 @@ h1, h2, h3, h4, h5, h6 {
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     padding: 0.5rem 0.75rem;
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
@@ -2304,7 +2355,7 @@ code {
     background: var(--color-bg-tertiary);
     color: var(--color-accent-hover);
     padding: 0.25rem 0.5rem;
-    border-radius: 4px;
+    border-radius: var(--radius-xxs);
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
 }
@@ -2353,8 +2404,13 @@ code {
     user-select: none;
 }
 
-/* Responsive Styles */
-@media (max-width: 768px) {
+/* Responsive Styles
+   断点口径统一为 Bootstrap 的 md 上界 767.98px。改前这里写 768px，而
+   .stats-row 写 767.98px —— 视口**恰好** 768px 时两者分裂：布局已经堆叠成
+   单列，统计卡却仍按 4 列排，四张卡在窄栏里被压成一排细条。
+   .98 尾数不是洁癖：max-width 是闭区间，写 768 会把 768 本身也算进「窄屏」，
+   与 Bootstrap 的 `col-md-*`（>=768 生效）刚好错开一格。 */
+@media (max-width: 767.98px) {
     .index-layout {
         flex-direction: column;
     }
@@ -2400,12 +2456,12 @@ code {
 
 *::-webkit-scrollbar-track {
     background: var(--color-bg-secondary);
-    border-radius: 4px;
+    border-radius: var(--radius-xxs);
 }
 
 *::-webkit-scrollbar-thumb {
     background: var(--color-border-strong);
-    border-radius: 4px;
+    border-radius: var(--radius-xxs);
     /* A8 / Task 13：0.3s -> 0.15s。⚠️ 这条**压不进**
        @media (prefers-reduced-motion: reduce) —— 那一块的选择器是
        `*, *::before, *::after`，覆盖不到 ::-webkit-scrollbar-thumb 这个
@@ -2592,14 +2648,18 @@ code {
    代价是容器四边的 box-shadow 会被裁，深色底上肉眼几乎看不出来。 */
 #app-toast-container {
     position: fixed;
-    top: 76px;
+    /* 20px 与 right 对称。改前是 76px —— 那是给已经拆掉的 fixed-top 导航栏
+       让位留下的偏移（引入 toast 时 base.html 还有 `<nav class="navbar
+       ... fixed-top">`，现在全站没有顶部工具栏，见 .workbench 段的说明）。
+       参照物没了之后，toast 无故从距顶 76px 处才开始堆叠。 */
+    top: 20px;
     right: 20px;
     z-index: 11000;
     display: flex;
     flex-direction: column;
     gap: 0.625rem;
     max-width: min(380px, calc(100vw - 40px));
-    max-height: calc(100vh - 96px);   /* top:76px + 底部留 20px */
+    max-height: calc(100vh - 40px);   /* top:20px + 底部留 20px */
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: contain;     /* 滚到头不要把整页也带着滚 */
@@ -2777,6 +2837,10 @@ code {
     outline-offset: 2px;
 }
 
+/* 480px 是比 sm(576) 更窄的一档，刻意保留：这里让 toast 左右贴边、confirm
+   按钮改竖排，是「手机上单手够得着」的适配。收进 576 会让 481~576px 的
+   平板竖屏也变成全宽 toast —— 那是行为改变，不是口径统一。
+   全站断点清单见文件头部的「断点」段。 */
 @media (max-width: 480px) {
     #app-toast-container { left: 16px; right: 16px; max-width: none; }
     .app-confirm__actions { flex-direction: column-reverse; }
@@ -2933,7 +2997,7 @@ code {
     width: 220px;
     height: 3px;
     background: var(--color-bg-tertiary);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
 }
 
@@ -2941,7 +3005,7 @@ code {
     height: 100%;
     width: 0%;
     background: linear-gradient(90deg, var(--color-accent-strong), var(--color-accent));
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     box-shadow: 0 0 8px var(--color-splash-bar-glow);
     transition: width 0.12s linear;
 }
@@ -2980,7 +3044,7 @@ code {
 /* 数值可点击编辑：hover 给一点提示底色；编辑态换成输入框 */
 .bounds-v {
     cursor: text;
-    border-radius: 4px;
+    border-radius: var(--radius-xxs);
     padding: 0 2px;
     margin: 0 -2px;
     transition: background-color 0.15s ease;
@@ -2997,7 +3061,7 @@ code {
     background: var(--color-bg-tertiary);
     color: var(--color-text-primary);
     border: 1px solid var(--color-accent);
-    border-radius: 4px;
+    border-radius: var(--radius-xxs);
     padding: 0 2px;
     outline: none;
 }
@@ -3019,7 +3083,7 @@ code {
     width: 64px;
     height: 4px;
     background: var(--color-bg-tertiary);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     overflow: hidden;
 }
 

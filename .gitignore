@@ -135,6 +135,9 @@ dmypy.json
 data/*.db
 cache/
 *.log
+# 按天轮转的运行日志（logging_setup）。轮转产物叫 terraforge.log.2026-08-07，
+# 后缀在 .log 之后，上面那条 *.log 盖不住 —— 整个目录一起忽略。
+logs/
 
 # DEM granule samples (large binary, do not commit)
 ASTGTMV003_*.zip

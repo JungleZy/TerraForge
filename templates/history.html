@@ -2,23 +2,28 @@
 
 {% block title %}{{ t('tpl.history.page_title') }} - {{ t('app.suffix') }}{% endblock %}
 
+{% import "_macros.html" as m with context %}
+
 {% block content %}
 {# --fill：任务列表吃满剩余高度、在卡内滚动（见 _history_content.html）。 #}
 <div class="page-content page-content--fill">
-<a class="back-home-link" href="/">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-        <polyline points="15 18 9 12 15 6"></polyline>
-    </svg>
-    {{ t('tpl.history.back_home') }}
-</a>
+<a class="back-home-link" href="/">{{ m.icon_back() }}{{ t('tpl.history.back_home') }}</a>
 {% include "_history_content.html" %}
 </div>
 
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/history.js') }}"></script>
+<script src="{{ url_for('static', filename='js/history.js') }}" defer></script>
+{# defer 之后 history.js 的执行推到 DOMContentLoaded 之前，本块必须等那个
+   事件（内联脚本的 defer 属性无效，写了也立刻执行）。 #}
 <script>
-    initHistory();
+    document.addEventListener('DOMContentLoaded', function () {
+        try {
+            initHistory();
+        } catch (e) {
+            console.error('[boot] history failed:', e);
+        }
+    });
 </script>
 {% endblock %}

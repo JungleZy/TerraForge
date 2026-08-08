@@ -218,13 +218,15 @@ def _build_task_managers(socketio):
 
 def _register_blueprints(app):
     """注册全部蓝图。必须在 manager 注入之后。"""
-    from src.routes import (api_bp, contour_api_bp, contour_static_bp,
-                            dem_api_bp, local_terrain_api_bp, main_bp,
-                            terrain_api_bp, terrain_static_bp, tiles_static_bp)
+    from src.routes import (api_bp, basemap_static_bp, contour_api_bp,
+                            contour_static_bp, dem_api_bp,
+                            local_terrain_api_bp, main_bp, terrain_api_bp,
+                            terrain_static_bp, tiles_static_bp)
 
     for blueprint in (main_bp, api_bp, dem_api_bp, terrain_api_bp,
                       terrain_static_bp, local_terrain_api_bp,
-                      contour_api_bp, contour_static_bp, tiles_static_bp):
+                      contour_api_bp, contour_static_bp, tiles_static_bp,
+                      basemap_static_bp):
         app.register_blueprint(blueprint)
 
     logger.debug("Blueprints registered")

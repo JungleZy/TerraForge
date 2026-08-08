@@ -24,7 +24,7 @@
     function panelEl(name) { return document.getElementById(PANELS[name]); }
     function backdrop() { return document.getElementById('panelBackdrop'); }
 
-    function openPanel(name) {
+    function openPanel(name, syncUrl) {
         var el = panelEl(name);
         if (!el) return;                    // 非首页：无面板，链接正常跳转
         if (current === name) return;
@@ -66,7 +66,13 @@
             if (typeof loadStats === 'function') loadStats();
         }
 
-        if (window.history && history.pushState) history.pushState(null, '', '#' + name);
+        // hash 已经是本面板时不再 pushState。前进/后退回到 `#name` 会触发
+        // hashchange -> openPanel，再 push 一条同 hash 的历史条目就会：①堆出
+        // 一串重复条目（用户要连按好几次后退才出得去）②销毁前进栈。
+        if (syncUrl !== false && window.history && history.pushState
+            && location.hash !== '#' + name) {
+            history.pushState(null, '', '#' + name);
+        }
     }
 
     function closePanel(silent) {
@@ -118,17 +124,21 @@
         document.querySelectorAll('[data-panel-close]').forEach(function (b) {
             b.addEventListener('click', function () { closePanel(); });
         });
-        // hash 直达
+        // hash 直达：URL 已经是目标 hash，不要再 push 一条重复条目
         var h = location.hash.replace('#', '');
-        if (PANELS[h]) openPanel(h);
+        if (PANELS[h]) openPanel(h, false);
     });
 
     // 同文档 hash 变化（前进/后退、地址栏改 hash）：openPanel/closePanel 内部
     // 用的是 pushState/replaceState，不会触发本事件，不会成环。
+    //
+    // 但**必须**传 syncUrl=false：后退/前进到 `#name` 时 URL 已经是目标值，
+    // 再 push 一条就是「堆重复条目 + 销毁前进栈」。closePanel(true) 同理 ——
+    // 空 hash 是浏览器导航的结果，不该再 replaceState 一次。
     window.addEventListener('hashchange', function () {
         var h = location.hash.replace('#', '');
-        if (PANELS[h]) openPanel(h);
-        else closePanel();
+        if (PANELS[h]) openPanel(h, false);
+        else closePanel(true);
     });
 
     window.openPanel = openPanel;

@@ -195,17 +195,31 @@ def test_socketio_incremental_path_is_wired():
     )
 
 
-def test_get_status_color_defined_in_both_files():
-    """两个文件各自都要有 getStatusColor 定义（它们没有共享模块）。
+def test_status_map_lives_in_exactly_one_file():
+    """getStatusColor / getStatusText 只能有**一份**定义，在 task_status.js。
 
-    没有构建工具、没有 ES module，history.js 与 tasks.js 不会同时加载，
-    所以各自都得有一份。少一份 = 详情模态框直接抛 ReferenceError。
+    改前这条测试要求 tasks.js 与 history.js **各有一份**，理由写的是
+    「两个页面不会同时加载」—— 那个前提是错的：index.html 的 extra_js 把
+    map.js / tasks.js / history.js / config.js / panels.js 全部一起加载，
+    共享同一个全局作用域，后加载的 history.js 静默遮蔽 tasks.js 那份。
+    两份 getStatusText 查的还是不同的 i18n 前缀（js.tasks.status.* vs
+    js.history.status.*），改任一份在首页都不生效。
+
+    所以现在反过来钉：唯一实现在 task_status.js，两个业务文件都不许再长出
+    自己的那一份（第二份必然与第一份漂移，而遮蔽是静默的）。
     """
+    canonical = _strip_js_comments(_js('task_status.js'))
+    for fn in ('getStatusColor', 'getStatusText', 'getStatusStroke'):
+        assert f'function {fn}(' in canonical, (
+            f'task_status.js 没有定义 {fn}() —— 调用点会抛 ReferenceError'
+        )
     for name in ('tasks.js', 'history.js'):
         src = _strip_js_comments(_js(name))
-        assert 'function getStatusColor(' in src, (
-            f'{name} 没有定义 getStatusColor()，插值会抛 ReferenceError'
-        )
+        for fn in ('getStatusColor', 'getStatusText', 'getStatusStroke'):
+            assert f'function {fn}(' not in src, (
+                f'{name} 又长出了第二份 {fn}() —— 首页两文件同时加载，'
+                '后者会静默遮蔽 task_status.js 那份，两份必然漂移'
+            )
 
 
 # 「数值比较 + Bootstrap 颜色名」同处一条语句 = 百分比阶梯。
@@ -906,27 +920,30 @@ def _js_object_literal_keys(body, var_name):
 #   · 状态点的五态配色（图形侧，替代图标的 WCAG 1.4.1 职责）改由
 #     tests/test_css_contract.py::test_task_row_status_dot_covers_every_status 守；
 #   原 test_status_icons_are_real_distinct_glyphs 随之删除（无表可查）。
+# 状态映射的唯一来源（改前 tasks.js / history.js 各有一份）。
+STATUS_JS = 'task_status.js'
+
 _STATUS_MAPS = (
     ('getStatusColor', 'colors', None),
     ('getStatusText', 'texts', None),
 )
 
 
-def test_both_js_files_map_every_backend_status():
-    """history.js 与 tasks.js 的两张状态表都必须覆盖 TaskStatus 的全部五态。
+def test_status_map_covers_every_backend_status():
+    """两张状态表都必须覆盖 TaskStatus 的全部五态。
 
     强度说明 —— 为什么不写成 `assert "'paused'" in src`：
-    那种断言在 history.js 里查的是「文件里有没有出现过这个词」，
-    而 getStatusColor 与 getStatusText 是两张独立的表，补了一张漏了另一张
-    照样绿。这里按函数体逐张表解析键集合，并要求**等于**枚举
-    （不是「包含」）—— 多一个不在后端存在的状态同样报错，因为那说明
-    有人在前端凭空造了一个界面上永远到不了的分支。
+    那种断言查的是「文件里有没有出现过这个词」，而 getStatusColor 与
+    getStatusText 是两张独立的表，补了一张漏了另一张照样绿。这里按函数体
+    逐张表解析键集合，并要求**等于**枚举（不是「包含」）—— 多一个不在后端
+    存在的状态同样报错，因为那说明有人在前端凭空造了一个界面上永远到不了
+    的分支。
 
-    覆盖数的边界：2 个文件 x 2 张表 = 4 组（2026-08 前是 x3：第三张
-    statusIcons 随徽章 pill 删除，见 _STATUS_MAPS 的登记），每组 5 个键
-    （cancelled 随「取消任务」退出状态机后从 6 降到 5）。
-    断言先钉住组数，再逐组比对 —— 只比对不钉组数的话，解析逻辑挂掉
-    返回空列表时是永真。
+    覆盖数的边界：2 张表 = 2 组，每组 5 个键。两处收缩各有来由：组数从 4 降到 2
+    是因为两个业务文件各有一份实现、已收口到 task_status.js；键数从 6 降到 5 是
+    因为 cancelled 随「取消任务」退出状态机。（第三张 statusIcons 更早随徽章 pill
+    删除，见 _STATUS_MAPS 的登记。）断言先钉住组数，再逐组比对 —— 只比对不钉组数
+    的话，解析逻辑挂掉返回空列表时是永真。
     """
     enum_values = _task_status_values()
     assert len(enum_values) == 5, (
@@ -935,28 +952,24 @@ def test_both_js_files_map_every_backend_status():
     )
     checked = []
     problems = []
-    for js_name in ('tasks.js', 'history.js'):
-        src = _strip_js_comments(_js(js_name))
-        for var_label, var_name, holders in _STATUS_MAPS:
-            body = src if holders is None else _js_function_body(src, holders[js_name])
-            if holders is None:
-                body = _js_function_body(src, var_label)
-            keys, _inner = _js_object_literal_keys(body, var_name)
-            checked.append(f'{js_name}:{var_label}')
-            if keys != enum_values:
-                missing = sorted(enum_values - keys)
-                extra = sorted(keys - enum_values)
-                problems.append(
-                    f'{js_name} 的 {var_label} 键集合 {sorted(keys)}'
-                    + (f'，缺 {missing}' if missing else '')
-                    + (f'，多出 {extra}' if extra else '')
-                )
-    assert len(checked) == 4, f'只检查了 {checked}（期望 4 组）—— 本测试已失效'
+    src = _strip_js_comments(_js(STATUS_JS))
+    for var_label, var_name, _holders in _STATUS_MAPS:
+        body = _js_function_body(src, var_label)
+        keys, _inner = _js_object_literal_keys(body, var_name)
+        checked.append(var_label)
+        if keys != enum_values:
+            missing = sorted(enum_values - keys)
+            extra = sorted(keys - enum_values)
+            problems.append(
+                f'{var_label} 键集合 {sorted(keys)}'
+                + (f'，缺 {missing}' if missing else '')
+                + (f'，多出 {extra}' if extra else '')
+            )
+    assert len(checked) == 2, f'只检查了 {checked}（期望 2 组）—— 本测试已失效'
     assert not problems, (
         '状态词表没覆盖后端全部状态：\n' + '\n'.join('  ' + p for p in problems)
         + f'\n真值来自 src/models/task.py 的 TaskStatus = {sorted(enum_values)}。'
-        '\n漏掉的状态会走 `|| status` / `|| \'\'` 兜底：'
-        '中文界面里冒出英文字面量，徽章没有图标。'
+        '\n漏掉的状态会走 `|| status` 兜底：中文界面里冒出英文字面量。'
     )
 
 
@@ -967,7 +980,7 @@ def test_both_js_files_map_every_backend_status():
 # （守「那条文案确实是对的中文词」）。只查一半都能被绕过：
 #   · 只查 JS：key 在、目录里的词被改成别的意思 —— 绿。
 #   · 只查目录：词对、JS 里根本没引用它 —— 绿。
-def _status_text_keys(js_name):
+def _status_text_keys(js_name=STATUS_JS):
     """`getStatusText` 里 状态值 -> i18n key 的映射。"""
     body = _js_function_body(_strip_js_comments(_js(js_name)), 'getStatusText')
     return dict(re.findall(r"'([a-z_]+)'\s*:\s*t\('([\w.]+)'\)", body)), body
@@ -985,22 +998,21 @@ def test_status_labels_are_never_the_raw_backend_literal():
     enum_values = _task_status_values()
     problems = []
     checked = 0
-    for js_name in ('tasks.js', 'history.js'):
-        pairs, _body = _status_text_keys(js_name)
-        assert len(pairs) == len(enum_values), (
-            f'{js_name} 的 getStatusText 解析出 {len(pairs)} 对 状态->i18n key 映射，'
-            f'期望 {len(enum_values)} 对 —— 本测试已失效'
-        )
-        for status, key in pairs.items():
-            checked += 1
-            entry = MESSAGES.get(key)
-            if entry is None:
-                problems.append(f'{js_name}: {status!r} -> {key!r} 在文案目录里不存在')
-                continue
-            value = entry['zh']
-            if value == status or not re.search(r'[一-鿿]', value):
-                problems.append(f'{js_name}: {status!r} -> {key} = {value!r}')
-    assert checked == 2 * len(enum_values), f'只检查了 {checked} 条映射 —— 本测试已失效'
+    pairs, _body = _status_text_keys()
+    assert len(pairs) == len(enum_values), (
+        f'{STATUS_JS} 的 getStatusText 解析出 {len(pairs)} 对 状态->i18n key 映射，'
+        f'期望 {len(enum_values)} 对 —— 本测试已失效'
+    )
+    for status, key in pairs.items():
+        checked += 1
+        entry = MESSAGES.get(key)
+        if entry is None:
+            problems.append(f'{status!r} -> {key!r} 在文案目录里不存在')
+            continue
+        value = entry['zh']
+        if value == status or not re.search(r'[一-鿿]', value):
+            problems.append(f'{status!r} -> {key} = {value!r}')
+    assert checked == len(enum_values), f'只检查了 {checked} 条映射 —— 本测试已失效'
     assert not problems, (
         '状态文案不是中文（界面会中英混杂）：\n' + '\n'.join('  ' + p for p in problems)
     )
@@ -1121,19 +1133,18 @@ def test_status_labels_are_paired_with_the_right_status():
     from src.i18n.catalog import MESSAGES
 
     problems, checked = [], 0
-    for js_name in ('tasks.js', 'history.js'):
-        pairs, _body = _status_text_keys(js_name)
-        assert set(pairs) == set(_STATUS_LABEL_KEYWORD), (
-            f'{js_name} 的 getStatusText 键集合是 {sorted(pairs)} —— '
-            '先修 test_both_js_files_map_every_backend_status'
-        )
-        for status, keyword in _STATUS_LABEL_KEYWORD.items():
-            checked += 1
-            label = MESSAGES[pairs[status]]['zh']
-            if keyword not in label:
-                problems.append(
-                    f'{js_name}: {status!r} -> {pairs[status]} = {label!r}，应含 {keyword!r}')
-    assert checked == 10, f'只检查了 {checked} 组（期望 10）—— 本测试已失效'
+    pairs, _body = _status_text_keys()
+    assert set(pairs) == set(_STATUS_LABEL_KEYWORD), (
+        f'{STATUS_JS} 的 getStatusText 键集合是 {sorted(pairs)} —— '
+        '先修 test_status_map_covers_every_backend_status'
+    )
+    for status, keyword in _STATUS_LABEL_KEYWORD.items():
+        checked += 1
+        label = MESSAGES[pairs[status]]['zh']
+        if keyword not in label:
+            problems.append(
+                f'{status!r} -> {pairs[status]} = {label!r}，应含 {keyword!r}')
+    assert checked == 5, f'只检查了 {checked} 组（期望 5）—— 本测试已失效'
     assert not problems, (
         '状态与文案的配对错了（界面会把失败写成已完成这种）：\n'
         + '\n'.join('  ' + p for p in problems)
@@ -1166,10 +1177,14 @@ def test_map_rectangle_stroke_covers_every_status():
 
     这条同时守两件事：五态全覆盖、且每一态指向正确的语义令牌（配对，不只是集合）。
     """
-    src = _strip_js_comments(_js('history.js'))
+    # 令牌表在模块级常量 _STATUS_STROKE_TOKENS（getStatusStroke 只做求值+缓存），
+    # 兜底仍在函数体里。
+    src = _strip_js_comments(_js(STATUS_JS))
+    table = re.search(r'_STATUS_STROKE_TOKENS\s*=\s*\{(.*?)\}', src, re.S)
+    assert table, '解析不出 _STATUS_STROKE_TOKENS 表 —— 本测试已失效'
+    pairs = dict(re.findall(r"'([a-z_]+)'\s*:\s*'(--[-\w]+)'", table.group(1)))
+    assert pairs, '_STATUS_STROKE_TOKENS 里解析不出 {状态: 令牌} 映射 —— 本测试已失效'
     body = _js_function_body(src, 'getStatusStroke')
-    pairs = dict(re.findall(r"'([a-z_]+)'\s*:\s*'(--[-\w]+)'", body))
-    assert pairs, 'getStatusStroke 里解析不出 {状态: 令牌} 映射 —— 本测试已失效'
     fallback = re.findall(r"\|\|\s*'(--[-\w]+)'", body)
     assert len(fallback) == 1, (
         f"getStatusStroke 的 `|| '--...'` 兜底解析出 {fallback} —— 本测试已失效"
@@ -1185,7 +1200,8 @@ def test_map_rectangle_stroke_covers_every_status():
         '地图矩形描边的状态映射错了：\n' + '\n'.join('  ' + p for p in problems)
     )
     # 渲染函数里不许再出现硬编码色号 —— 那是改调色板时静默漂移的入口。
-    render = _js_function_body(src, 'renderHistoryMap')
+    # renderHistoryMap 仍在 history.js（只有映射表收口到 task_status.js）。
+    render = _js_function_body(_strip_js_comments(_js('history.js')), 'renderHistoryMap')
     hardcoded = re.findall(r'#[0-9a-fA-F]{3,8}\b', render)
     assert not hardcoded, (
         f'renderHistoryMap 里还有硬编码色号 {hardcoded} —— 描边色必须走 getStatusStroke'
@@ -1249,20 +1265,19 @@ def test_unknown_status_never_renders_raw_english_literal():
     """
     from src.i18n.catalog import MESSAGES
 
-    for js_name in ('tasks.js', 'history.js'):
-        body = _fn('getStatusText', js_name)
-        assert not re.search(r"\|\|\s*status\b", body), (
-            f'{js_name} 的 getStatusText 仍用 `|| status` 兜底——'
-            '未知英文状态会被原样渲染进中文界面'
-        )
-        fallback = re.search(r"\|\|\s*t\('([\w.]+)'\)", body)
-        assert fallback, (
-            f"{js_name} 的 getStatusText 没有 `|| t('…')` 形态的兜底文案"
-        )
-        assert MESSAGES[fallback.group(1)]['zh'] == '未知', (
-            f"{js_name} 的 getStatusText 兜底文案 {fallback.group(1)} 的中文是 "
-            f"{MESSAGES[fallback.group(1)]['zh']!r}，应统一显示 '未知'"
-        )
+    body = _fn('getStatusText', STATUS_JS)
+    assert not re.search(r"\|\|\s*status\b", body), (
+        'getStatusText 仍用 `|| status` 兜底——'
+        '未知英文状态会被原样渲染进中文界面'
+    )
+    fallback = re.search(r"\|\|\s*t\('([\w.]+)'\)", body)
+    assert fallback, (
+        "getStatusText 没有 `|| t('…')` 形态的兜底文案"
+    )
+    assert MESSAGES[fallback.group(1)]['zh'] == '未知', (
+        f"getStatusText 兜底文案 {fallback.group(1)} 的中文是 "
+        f"{MESSAGES[fallback.group(1)]['zh']!r}，应统一显示 '未知'"
+    )
 
 
 def test_delete_last_item_on_page_steps_back_a_page():
@@ -1276,23 +1291,30 @@ def test_delete_last_item_on_page_steps_back_a_page():
     )
 
 
-def test_history_map_uses_configured_tile_server_with_osm_fallback():
-    """历史小地图底图必须与主视图同源（tile_servers 第一条），OSM 只做回退。
+def test_history_map_goes_through_same_origin_basemap_proxy():
+    """历史小地图必须走同源 /basemap 代理，前端不许自己拼上游地址。
 
-    改前硬编码 https://tile.openstreetmap.org/...，与「断网/内网可用」的
-    定位矛盾：主视图走内网瓦片正常，历史小地图白屏。
+    改前 history.js 有一份 _historyBaseMapUrl 平行实现：拿不到配置回退外网
+    OSM、拿到别名拼 `//host/vt?lyrs=m`。三条硬约束一次全破 —— 离线（断网即
+    白屏）、同源代理（浏览器直连撞 CORS 且不吃 proxy_url）、WGS-84
+    （lyrs=m 在中国区是 GCJ-02 偏移，叠在上面的任务矩形必然错位）。
     """
     src = _strip_js_comments(_js('history.js'))
+    assert '_historyBaseMapUrl' not in src, (
+        'history.js 又出现了浏览器侧拼底图地址的平行实现'
+    )
+    assert 'tile.openstreetmap.org' not in src, (
+        'history.js 仍引用外网 OSM 底图 —— 违反离线约束'
+    )
+    assert 'lyrs=' not in src, (
+        'history.js 仍自己拼上游瓦片参数（lyrs=）—— 上游地址不该出现在前端'
+    )
+    assert '/basemap/{z}/{x}/{y}' in src, (
+        'history.js 没有同源底图路径回退'
+    )
     body = _js_function_body(src, 'initHistoryMap')
-    assert 'https://tile.openstreetmap.org' not in body, (
-        'initHistoryMap 仍硬编码外网 OSM 底图'
-    )
-    assert 'tile_servers' in src, (
-        'history.js 没有读 tile_servers 配置——历史小地图与主视图不同源'
-    )
-    fb = _js_function_body(src, '_historyBaseMapUrl')
-    assert 'https://tile.openstreetmap.org/{z}/{x}/{y}.png' in fb, (
-        '_historyBaseMapUrl 必须保留 OSM 回退（拿不到配置时小地图仍要能用）'
+    assert '/api/basemap' in src and '_resolveHistoryBasemap' in body, (
+        'initHistoryMap 必须消费服务端下发的底图描述符（内联 basemap 或 /api/basemap）'
     )
 
 

@@ -2,6 +2,8 @@
 
 {% block title %}{{ t('tpl.config.page_title') }} - {{ t('app.suffix') }}{% endblock %}
 
+{% import "_macros.html" as m with context %}
+
 {# 本页没有地图:覆盖掉 base.html 的 Cesium(5.7MB),不白付下载与解析。
    config.js 不消费它(grep 可证)。
    ⚠️ 只清 Cesium —— socket.io 已挪到 block 之外做全局加载,本页要靠它收
@@ -16,19 +18,22 @@
 {# --fill：让 .page-content 撑满 .main-content 的高度，配置页内部才能分成
    「滚动区 + 常驻底部操作条」两层（见 style.css 的 .config-layout 段）。 #}
 <div class="page-content page-content--fill">
-<a class="back-home-link" href="/">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
-        <polyline points="15 18 9 12 15 6"></polyline>
-    </svg>
-    {{ t('tpl.config.back_home') }}
-</a>
+<a class="back-home-link" href="/">{{ m.icon_back() }}{{ t('tpl.config.back_home') }}</a>
 {% include "_config_content.html" %}
 </div>
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/config.js') }}"></script>
+<script src="{{ url_for('static', filename='js/config.js') }}" defer></script>
+{# defer 之后 config.js 的执行推到 DOMContentLoaded 之前，本块必须等那个
+   事件（内联脚本的 defer 属性无效，写了也立刻执行）。 #}
 <script>
-    initConfig();
+    document.addEventListener('DOMContentLoaded', function () {
+        try {
+            initConfig();
+        } catch (e) {
+            console.error('[boot] config failed:', e);
+        }
+    });
 </script>
 {% endblock %}

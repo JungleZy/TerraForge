@@ -207,6 +207,7 @@ map-download/
 ├── docs/                   # 项目文档（guides/ 上手与构建、reference/ 实现说明、notes/ 调研笔记、reviews/ 评审记录、archive/ 历史归档、assets/ 图片资源）
 ├── downloads/              # 下载文件目录（运行时生成）
 ├── cache/                  # 瓦片缓存目录（运行时生成）
+├── logs/                   # 运行日志（运行时生成，按天轮转保留 7 天）
 └── data/                   # SQLite 数据库（运行时生成）
 ```
 
@@ -336,6 +337,16 @@ build.bat
 产物输出到 `dist/terraforge/`。详细说明（CI 构建、分发打包、Nuitka 配置）见 [docs/guides/BUILD.md](docs/guides/BUILD.md)。
 
 ## 故障排除
+
+### 查看日志
+
+运行日志落在程序目录下的 `logs/terraforge.log`（打包版本是可执行文件旁边），每天零点轮转一次，旧文件叫 `terraforge.log.2026-08-07`，保留 7 天。
+
+**控制台与日志文件的内容故意不一样**：控制台不打印**成功**的瓦片请求（浏览地图一次就是几十上百条 `GET /basemap/3/4/4 200`，会把有用的信息顶掉），日志文件全都留着。失败的瓦片请求（403 / 404 / 504）两边都打 —— 底图变蓝球、地形不显示时，那一行往往是唯一的线索。
+
+- 想让控制台也打印瓦片请求：用 `LOG_LEVEL=DEBUG` 启动。
+- `LOG_LEVEL` 可取 `CRITICAL/ERROR/WARNING/INFO/DEBUG`，默认 `INFO`；填错会警告并回退默认值，不会启动失败。
+- 日志目录不可写时（装在只读目录）会打一条警告后继续运行，只是没有落盘。
 
 ### GDAL 导入错误
 

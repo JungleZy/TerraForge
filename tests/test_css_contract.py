@@ -660,7 +660,7 @@ def _form_select_rules(css):
 #   1. 存在性契约——`.form-select` 必须仍然显式声明背景色。光禁止 background
 #      简写的话，「把整条声明删掉」也能通过，而那样背景色会回落到 Bootstrap
 #      的 `--bs-body-bg`（实测 #fff）——深色面板上开一块纯白，比丢箭头更糟。
-#   2. 有效性自检——四条都找不到就说明选择器写法变了，测试已失效。
+#   2. 有效性自检——两条都找不到就说明选择器写法变了，测试已失效。
 #
 # ⚠️ 给后续任务的说明：本表钉的是「Task 4 当时的值」，不是禁止后续改配色。
 #    A5（密度）/ A7（层级）若要调整表单配色，同步更新本表即可。
@@ -676,12 +676,17 @@ def _form_select_rules(css):
 #    background-color，所以通用规则确实赢得下来。CDP 实测配置页 18 个控件
 #    computed background-color 全部是 rgb(28,32,39) = --color-bg-tertiary，
 #    与首页一致（记在 p2-task-10-report.md）。
+# ⚠️ 2026-08 又删掉一行（同型的第二笔）：
+#    `.config-section .form-control:focus, .config-section .form-select:focus`。
+#    它与全局 `.form-control:focus, .form-select:focus` 逐条重复（全局那条还
+#    多给一条 color，是它的超集），是上面 Task 10 那笔清理自己记下的「遗留」。
+#    挡路的 (0,2,0) 规则那时已经删掉，全局规则现在正常命中配置页，留着两份
+#    只是让「改焦点色要改两处」。同批删除的还有
+#    `.config-section .form-control::placeholder`（与全局完全相同）。
 FORM_SELECT_BG_COLORS = {
     '.form-control, .form-select':
         'var(--color-bg-tertiary)',
     '.form-control:focus, .form-select:focus':
-        'var(--color-bg-secondary)',
-    '.config-section .form-control:focus, .config-section .form-select:focus':
         'var(--color-bg-secondary)',
 }
 
@@ -1045,8 +1050,17 @@ def _js_function_body(src, name):
     raise AssertionError(f'function {name} 花括号不配对 —— 本测试已失效')
 
 
-def _status_color_names(js_name):
-    """某个 JS 文件里 getStatusColor 可能返回的全部 Bootstrap 颜色名。
+# 状态映射的唯一来源。改前 getStatusColor 在 tasks.js / history.js 各有一份，
+# 本文件因此到处 `_status_color_names('tasks.js') | _status_color_names('history.js')`
+# 求并集。两份实现已收口到 static/js/task_status.js（首页两文件同时加载、
+# 后者静默遮蔽前者，且两份 getStatusText 查不同的 i18n 前缀），并集随之退化
+# 成单文件解析 —— 但**不要**把它内联回字面量清单：从源码解析才能在有人加
+# 状态时红。
+STATUS_JS = 'task_status.js'
+
+
+def _status_color_names(js_name=STATUS_JS):
+    """getStatusColor 可能返回的全部 Bootstrap 颜色名。
 
     直接从 JS 源码解析（映射表的值 + `|| 'xxx'` 兜底），而不是在测试里
     手抄一份清单——手抄的清单会在有人给 getStatusColor 加状态时静默过期，
@@ -1132,7 +1146,7 @@ def test_every_status_color_has_a_progress_bar_override():
     「浏览器最终算出来是什么颜色」——那部分由 CDP 实测覆盖。
     """
     css = _css()
-    required = _status_color_names('tasks.js') | _status_color_names('history.js')
+    required = _status_color_names()
     # 自检：running 走 info（复用早就存在的 .progress-bar.bg-info），
     # secondary 是 A1/Task 5 补上的（'dark' 随 cancelled 退出状态机一起
     # 不再被 getStatusColor 返回）。解析要是出了岔子导致 required 变小，
@@ -1222,7 +1236,7 @@ def test_progress_bar_fill_has_sufficient_contrast():
     要给进度条换灰色之前先在这里算一下。
     """
     css = _css()
-    required = _status_color_names('tasks.js') | _status_color_names('history.js')
+    required = _status_color_names()
     rules = _progress_bar_color_rules(css)
 
     track_raw = _progress_track_color(css)
@@ -1712,7 +1726,7 @@ def test_progress_label_readability_does_not_depend_on_the_fill():
     )
 
     fills = _progress_fill_hexes(css)
-    required = _status_color_names('tasks.js') | _status_color_names('history.js')
+    required = _status_color_names()
     missing = sorted(required - set(fills))
     assert not missing, (
         f'解析不出 {missing} 的填充色 —— 六档没算全，本测试已失效'
@@ -4670,7 +4684,12 @@ def test_button_ink_is_readable_in_every_state():
 #     test_task_detail_modal_is_not_trapped_inside_workbench_panel）
 #   templates/index.html 下载/处理两个弹窗的 .btn-close      2（2026-07 弹窗化新增；
 #     替代的 dock-collapse-btn / dock-reopen-handle 两颗已随 dock 移除）
-#   templates/index.html 两个覆盖面板的关闭按钮            2（记录/配置面板）
+#   templates/_macros.html panel_header 宏里的关闭钮              1（2026-08 抽宏：
+#     记录/配置两个面板的头部改前是逐字重复的两段、各带一颗关闭钮，
+#     现在收进 {% macro panel_header %}。宏定义算一次，宏调用不产生
+#     <button>（同 _config_content.html 的 hint 宏，见下面 15->19 的登记）。
+#     ⚠️ _macros.html 必须在 _icon_only_buttons 的扫描列表里，否则这颗
+#     没有可见文本的按钮会整个逃出无障碍名称断言。
 #   templates/_path_browser_modal.html 目录选择弹窗的 .btn-close  1（2026-08
 #     保存路径「浏览」功能新增;经 base.html 的 {% include %} 文本展开扫到,
 #     已带 aria-label="关闭"）
@@ -4707,7 +4726,10 @@ def test_button_ink_is_readable_in_every_state():
 # 否则它们会集体变成假的「纯图标按钮」。
 # 20 -> 18（task_list.js 的 TaskRow 删掉「取消」与「移除」两颗叉号）：
 # 「取消任务」整条链下线后任务行只剩 开始/暂停/恢复/预览/删除 五颗。
-ICON_ONLY_BUTTON_COUNT = 18
+# 18 -> 17（面板头部抽宏）：index.html 两颗覆盖面板关闭钮（记录/配置，改前
+# 是逐字重复的两段头部）收进 _macros.html 的 panel_header 宏 —— 2 颗变 1 处
+# 宏定义。净 -1。
+ICON_ONLY_BUTTON_COUNT = 17
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -4724,8 +4746,15 @@ _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 #   文件里 4 颗有可见文本的按钮会被判成纯图标。这正是它们一直进不了下面
 #   扫描列表的真实原因：不先认下 t(，一加进来就是一批假失败，而假失败会
 #   逼着后来的人去调 ICON_ONLY_BUTTON_COUNT，把计数账本彻底搞脏。
+#
+#   `{{ icon_close(14) }}` 是 Jinja 侧的图标插值（_macros.html 的 panel_header
+#   宏体）。它**必须**被当成噪声剥掉：那颗按钮的内容只有一个 SVG 图标，
+#   剥不掉的话残留一段 `{{ ... }}` 文本，按钮会被判成「有可见文本」而整个
+#   逃出无障碍名称断言 —— 实测就是这样漏掉的（宏抽取后计数从 20 掉到 18
+#   而不是预期的 19）。图标宏一律以 icon_ 开头，只认这个前缀：把所有
+#   `{{ }}` 都当噪声会把内容是 `{{ t('...') }}` 的按钮误判成纯图标。
 _MARKUP_NOISE_RE = re.compile(
-    r'<[^>]*>|\$\{(?!escapeHtml\(|t\()[^}]*\}|&[a-zA-Z]+;|&#\d+;')
+    r'<[^>]*>|\$\{(?!escapeHtml\(|t\()[^}]*\}|\{\{\s*m?\.?icon_[^}]*\}\}|&[a-zA-Z]+;|&#\d+;')
 
 
 def _icon_only_buttons():
@@ -4746,7 +4775,9 @@ def _icon_only_buttons():
     # <button> 标记，留下只会触发上面那条响亮失败。
     for name in ('task_list.js', 'map.js', 'config.js'):
         sources.append((f'static/js/{name}', _strip_js_comments(_js(name))))
-    for name in ('base.html', 'index.html', 'history.html', 'config.html'):
+    # _macros.html：panel_header 宏体里那颗关闭钮只在这里出现（调用点展开后
+    # 不在模板源码里），漏掉它就等于把那颗按钮移出无障碍名称断言。
+    for name in ('base.html', 'index.html', 'history.html', 'config.html', '_macros.html'):
         sources.append((f'templates/{name}', _template(name)))
 
     found = []
@@ -5251,7 +5282,9 @@ def _text_contexts(css):
     # 近似的下层，与 toast 同一套做法）；弹窗复用上面的 modal。
     statusbar = _flatten(_resolve_color(css, _branch_background(css, '.statusbar-pill')),
                          _palette_var(css, '--color-bg-primary'))
-    overlay = _flatten(_resolve_color(css, _branch_background(css, '.bounds-overlay')),
+    # 底色在 .map-overlay-chip 基类上（2026-08 抽出：右上范围浮层与右下预览
+    # 提示条共用同一套定位/底色/描边/圆角/阴影，改前是复制粘贴的两份）。
+    overlay = _flatten(_resolve_color(css, _branch_background(css, '.map-overlay-chip')),
                        _palette_var(css, '--color-bg-primary'))
 
     body = _TextEl('body')
@@ -5353,7 +5386,7 @@ def _text_contexts(css):
          statusbar, None),
         ('地图浮层的编辑提示',
          [body, main, _TextEl('div', {'index-map'}),
-          _TextEl('div', {'bounds-overlay'}, element_id='boundsInfo'),
+          _TextEl('div', {'map-overlay-chip', 'bounds-overlay'}, element_id='boundsInfo'),
           _TextEl('span', {'bounds-hint'})], overlay, None),
         ('下载弹窗的瓦片预估',
          [body, _TextEl('div', {'modal'}, element_id='downloadModal'),
@@ -5443,16 +5476,14 @@ def test_status_badge_text_is_readable_in_every_state():
     与屏幕上完全无关的数字。
     """
     css = _css()
-    names = _status_color_names('tasks.js') | _status_color_names('history.js')
+    names = _status_color_names()
     assert names == {'secondary', 'info', 'warning', 'success', 'danger'}, (
-        f'从两个 getStatusColor 解析出的颜色名是 {sorted(names)}，'
+        f'从 getStatusColor 解析出的颜色名是 {sorted(names)}，'
         "期望 {'danger','info','secondary','success','warning'} —— "
-        '五态 x 两个文件的映射变了，先确认是有意的再改本断言'
+        '五态映射变了，先确认是有意的再改本断言'
     )
-    fallbacks = set()
-    for js_name in ('tasks.js', 'history.js'):
-        body = _js_function_body(_js(js_name), 'getStatusColor')
-        fallbacks |= set(re.findall(r"\|\|\s*'([a-z]+)'", body))
+    body = _js_function_body(_js(STATUS_JS), 'getStatusColor')
+    fallbacks = set(re.findall(r"\|\|\s*'([a-z]+)'", body))
     assert fallbacks <= names, f'兜底色 {sorted(fallbacks - names)} 不在被检查的名单里 —— 已失效'
 
     panel = _effective_task_card_backdrop(css)
@@ -5589,7 +5620,7 @@ def _semantic_palette_values(css):
     }
 
 
-def _status_color_map(js_name):
+def _status_color_map(js_name=STATUS_JS):
     """`getStatusColor` 的 {状态: Bootstrap 颜色名}。"""
     body = _js_function_body(_js(js_name), 'getStatusColor')
     pairs = re.findall(r"'([a-z_]+)'\s*:\s*'([a-z]+)'", body)
@@ -5608,37 +5639,39 @@ def test_status_badge_color_matches_the_semantic_token():
     钉的是语义令牌不是色号：调色板改值时本条不动。
     中性档（pending）反向断言 —— 不许等于四个语义色中的任何一个。
 
-    覆盖边界：2 个文件 × 5 个状态 = 10 组，先钉组数再逐组比对。
+    覆盖边界：5 个状态 = 5 组，先钉组数再逐组比对。
+    （改前是 2 个文件 × 6 = 12 组：getStatusColor 在 tasks.js / history.js
+    各有一份、且各含 cancelled；实现已收口到 static/js/task_status.js，
+    状态也随「取消任务」下线减为五态。）
     """
     css = _css()
     semantic = _semantic_palette_values(css)
     checked, problems = [], []
-    for js_name in ('tasks.js', 'history.js'):
-        cmap = _status_color_map(js_name)
-        assert set(cmap) == set(_STATUS_SEMANTIC_TOKEN), (
-            f'{js_name} 的 getStatusColor 键集合是 {sorted(cmap)}，'
-            f'期望 {sorted(_STATUS_SEMANTIC_TOKEN)} —— 先修 '
-            'test_both_js_files_map_every_backend_status'
-        )
-        for status, token in _STATUS_SEMANTIC_TOKEN.items():
-            name = cmap[status]
-            chain = [_TextEl('div', {'card'}), _TextEl('div', {'card-body'}),
-                     _TextEl('span', {'badge', f'bg-{name}'})]
-            _branch, raw = _winning_color_decl(css, chain, f'{js_name} {status} 徽章')
-            got = _resolve_color(css, raw)
-            checked.append(f'{js_name} {status} -> bg-{name} -> {got}')
-            if token is None:
-                if got in semantic:
-                    problems.append(
-                        f'{js_name}: {status!r} 是中性档，却映射到 bg-{name}，'
-                        f'解析出语义色 {got} —— 它会冒充「运行中/已完成/失败/已暂停」')
-            else:
-                want = _palette_var(css, token)
-                if got != want:
-                    problems.append(
-                        f'{js_name}: {status!r} -> bg-{name} -> {got}，'
-                        f'期望 {token}({want})')
-    assert len(checked) == 10, f'只检查了 {len(checked)} 组（期望 10）—— 本测试已失效'
+    cmap = _status_color_map()
+    assert set(cmap) == set(_STATUS_SEMANTIC_TOKEN), (
+        f'{STATUS_JS} 的 getStatusColor 键集合是 {sorted(cmap)}，'
+        f'期望 {sorted(_STATUS_SEMANTIC_TOKEN)} —— 先修 '
+        'test_status_map_covers_every_backend_status'
+    )
+    for status, token in _STATUS_SEMANTIC_TOKEN.items():
+        name = cmap[status]
+        chain = [_TextEl('div', {'card'}), _TextEl('div', {'card-body'}),
+                 _TextEl('span', {'badge', f'bg-{name}'})]
+        _branch, raw = _winning_color_decl(css, chain, f'{status} 徽章')
+        got = _resolve_color(css, raw)
+        checked.append(f'{status} -> bg-{name} -> {got}')
+        if token is None:
+            if got in semantic:
+                problems.append(
+                    f'{status!r} 是中性档，却映射到 bg-{name}，'
+                    f'解析出语义色 {got} —— 它会冒充「运行中/已完成/失败/已暂停」')
+        else:
+            want = _palette_var(css, token)
+            if got != want:
+                problems.append(
+                    f'{status!r} -> bg-{name} -> {got}，'
+                    f'期望 {token}({want})')
+    assert len(checked) == 5, f'只检查了 {len(checked)} 组（期望 5）—— 本测试已失效'
     assert not problems, (
         '状态与语义色的配对错了：\n' + '\n'.join('  ' + p for p in problems)
         + '\n\n全部映射：\n' + '\n'.join('  ' + c for c in checked)
@@ -6707,8 +6740,10 @@ def test_no_template_references_an_external_url():
     # 两个 include partial，内容与原页面相同，均无外链。
     # 6 -> 7（保存路径「浏览」）：新增 _path_browser_modal.html 目录选择弹窗
     # partial，无外链。
-    assert len(templates) == 7, (
-        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 7 个 —— '
+    # 7 -> 8（组件化）：新增 _macros.html 共用小组件宏（图标 + 面板头部），
+    # 只有本地 SVG 标记，无外链。
+    assert len(templates) == 8, (
+        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 8 个 —— '
         '新增页面不需要改本断言（它按目录遍历），但请确认新页面也没有外链，'
         '然后把这个数字更新掉'
     )
@@ -6782,8 +6817,11 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # （底部状态栏最右的解压进度，监听 base_unpack_progress）。
     # 25（原 22）：base.html 新增 vue.global.prod.js / task_store.js /
     # task_list.js 三个 <script>（任务时间流的渲染层）。
-    assert len(refs) == 25, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 25 处。"
+    # 25 -> 26（状态映射收口）：base.html 新增 static/js/task_status.js
+    # （getStatusColor / getStatusText / getStatusStroke 的唯一实现；改前
+    # tasks.js 与 history.js 各有一份，首页同时加载时后者静默遮蔽前者）。
+    assert len(refs) == 26, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 26 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )

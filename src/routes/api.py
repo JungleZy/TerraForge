@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 from src.core.database import get_connection, DEFAULT_CONFIGS
 from src.i18n import t
+from src.services.basemap_source import client_descriptor, resolve_basemap
 from src.services.config_manager import ConfigManager
 from src.services.task_cleanup import resolve_stored_output_dir
 from src.routes import tiles_static
@@ -711,6 +712,39 @@ def get_config():
     except Exception as e:
         logger.error(f"Error getting config: {e}")
         return jsonify({'error': 'Failed to get config'}), 500
+
+
+@api_bp.route('/basemap', methods=['GET'])
+def get_basemap():
+    """独立页（/history）取底图图层描述符。
+
+    首页由 routes/main.py 内联下发，不需要这个接口；/history 的路由不注入
+    模板变量，历史小地图只能从这里拿。返回的是 client_descriptor 的结果
+    —— url 永远是同源的 /basemap/{z}/{x}/{y}，真实上游地址不出服务端
+    （理由见 src/routes/basemap_static.py：浏览器直连上游会撞 CORS，而且
+    不吃项目的 proxy_url）。
+    """
+    try:
+        config = config_manager.get_all()
+
+        def _val(key, default=''):
+            entry = config.get(key)
+            if isinstance(entry, dict):
+                return entry.get('value', default)
+            return entry if entry is not None else default
+
+        return jsonify({
+            'success': True,
+            'basemap': client_descriptor(resolve_basemap(
+                _val('basemap_source'),
+                tile_servers=_val('tile_servers'),
+                default_style=_val('default_style', 'm') or 'm',
+            )),
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting basemap descriptor: {e}")
+        return jsonify({'error': 'Failed to get basemap descriptor'}), 500
 
 
 @api_bp.route('/config', methods=['PUT'])

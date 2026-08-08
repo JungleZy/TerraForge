@@ -1,8 +1,8 @@
 """底图源（basemap_source）的预设解析与校验。
 
-底图与下载源（tile_servers）是两个独立配置 —— 底图走浏览器直连、不吃
-proxy_url，下载走 Python、吃。这些断言守的就是「两者不再共用一份地址」
-以及各预设的坐标系/署名/层级上限没被悄悄改坏。
+底图与下载源（tile_servers）是两个独立配置。底图瓦片由后端转发
+（routes/basemap_static.py），所以前端只拿到同源路径、真实上游不出服务端 ——
+这些断言守的就是这条边界，以及各预设的坐标系/署名/层级上限没被悄悄改坏。
 """
 import os
 import sys
@@ -10,11 +10,12 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.services.basemap_source import (  # noqa: E402
     BASEMAP_PRESETS,
+    BASEMAP_TILE_PATH,
     DEFAULT_BASEMAP_SOURCE,
     DOWNLOAD_SOURCE,
+    client_descriptor,
     resolve_basemap,
     validate_basemap_source,
 )
@@ -31,8 +32,8 @@ def test_default_is_esri_satellite():
     """
     assert DEFAULT_BASEMAP_SOURCE == 'esri'
     bm = resolve_basemap(None)
-    assert 'server.arcgisonline.com' in bm['url']
-    assert 'World_Imagery' in bm['url']
+    assert 'server.arcgisonline.com' in bm['upstream']
+    assert 'World_Imagery' in bm['upstream']
 
 
 def test_every_preset_has_placeholders_level_and_credit():
@@ -74,13 +75,20 @@ def test_no_gcj02_source_is_preset():
 def test_preset_resolves_to_itself(name):
     bm = resolve_basemap(name)
     assert bm['source'] == name
-    assert bm['url'] == BASEMAP_PRESETS[name]['url']
+    assert bm['upstream'] == BASEMAP_PRESETS[name]['url']
 
 
-def test_google_presets_are_protocol_relative():
-    """页面走 https 时硬编码 http:// 会被混合内容策略拦掉，底图直接不加载。"""
-    for name in ('google_satellite', 'google_roadmap'):
-        assert BASEMAP_PRESETS[name]['url'].startswith('//')
+def test_upstream_urls_carry_an_explicit_scheme():
+    """上游地址只在服务端用，必须带 scheme。
+
+    改造前这里是协议相对（//host/...），那是为了让浏览器直连时不触发混合
+    内容拦截。现在瓦片走后端转发，浏览器根本看不到上游地址，而 urllib 是
+    打不开 `//host/...` 的 —— 留着协议相对会让每一块瓦片 502。
+    """
+    for name, preset in BASEMAP_PRESETS.items():
+        assert preset['url'].startswith(('http://', 'https://')), (
+            f'{name} 的上游地址缺少 scheme，服务端 urllib 打不开'
+        )
 
 
 def test_google_satellite_uses_lyrs_s():
@@ -93,28 +101,55 @@ def test_download_source_follows_tile_servers_and_style():
     """跟随下载源：取列表第一条 + 当前默认样式（不是写死 m）。"""
     bm = resolve_basemap(DOWNLOAD_SOURCE, tile_servers='mts2,mts3', default_style='s')
     assert bm['source'] == DOWNLOAD_SOURCE
-    assert 'mts2.googleapis.com' in bm['url']
-    assert 'lyrs=s' in bm['url']
+    assert 'mts2.googleapis.com' in bm['upstream']
+    assert 'lyrs=s' in bm['upstream']
 
 
 def test_download_source_with_empty_list_falls_back():
     bm = resolve_basemap(DOWNLOAD_SOURCE, tile_servers='')
-    assert 'mts0.googleapis.com' in bm['url']
+    assert 'mts0.googleapis.com' in bm['upstream']
 
 
 def test_custom_template_passes_through_untouched():
     url = 'https://example.com/t/{z}/{x}/{y}.png'
     bm = resolve_basemap(url)
-    assert bm['url'] == url
+    assert bm['upstream'] == url
     # 自定义源不知道对方支持到几级，交给服务器去 404，不替用户猜。
     assert bm['max_level'] is None
+
+
+# --- 下发给浏览器的描述 -------------------------------------------------------
+
+@pytest.mark.parametrize('value', list(BASEMAP_PRESETS) + [
+    DOWNLOAD_SOURCE, 'https://example.com/secret/{z}/{x}/{y}.png', None,
+])
+def test_client_descriptor_never_leaks_the_upstream_url(value):
+    """前端只能拿到同源路径。
+
+    这不是保密，是架构约束：前端一旦拿到上游地址，早晚有人图省事直连回去，
+    CORS（上游 4xx 时真实状态码被埋掉）和「底图不吃 proxy_url」这两个坑
+    立刻复活 —— 那正是这次故障的两个成因。
+    """
+    resolved = resolve_basemap(value, tile_servers='mts0')
+    desc = client_descriptor(resolved)
+    assert desc['url'] == BASEMAP_TILE_PATH
+    assert 'upstream' not in desc
+    for host in ('arcgisonline', 'googleapis', 'example.com'):
+        assert host not in repr(desc), f'客户端描述里泄露了上游地址：{host}'
+
+
+def test_client_descriptor_keeps_level_and_credit():
+    desc = client_descriptor(resolve_basemap('esri'))
+    assert desc['max_level'] == 19
+    assert 'Esri' in desc['credit']
+    assert desc['source'] == 'esri'
 
 
 def test_unknown_value_falls_back_instead_of_raising():
     """坏值不能让首页 500 —— 解析跑在渲染途中，校验拦在写入侧。"""
     bm = resolve_basemap('this-is-not-a-source')
     assert bm['source'] == DEFAULT_BASEMAP_SOURCE
-    assert 'arcgisonline' in bm['url']
+    assert 'arcgisonline' in bm['upstream']
 
 
 # --- 校验（写入侧） -----------------------------------------------------------

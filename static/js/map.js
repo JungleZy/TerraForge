@@ -552,7 +552,7 @@ function initDownloadTypeToggle() {
         swbCheckbox.checked = false;
         swbCheckbox.disabled = true;
         const swbWrap = swbCheckbox.closest('.form-check');
-        if (swbWrap) swbWrap.style.display = 'none';
+        if (swbWrap) swbWrap.hidden = true;
     }
 
     function apply() {
@@ -560,11 +560,11 @@ function initDownloadTypeToggle() {
         const isMap = t === 'map';
         const isDem = t === 'dem';
         // Zoom range is map-only; DEM zoom is fixed by the dataset.
-        if (zoomRow) zoomRow.style.display = isDem ? 'none' : '';
+        if (zoomRow) zoomRow.hidden = isDem;
         // Output format (tiles/stitch) is map-only.
-        if (outputFormatField) outputFormatField.style.display = isMap ? '' : 'none';
-        if (mapStyleField) mapStyleField.style.display = isMap ? '' : 'none';
-        if (demOptions) demOptions.style.display = isDem ? '' : 'none';
+        if (outputFormatField) outputFormatField.hidden = !(isMap);
+        if (mapStyleField) mapStyleField.hidden = !(isMap);
+        if (demOptions) demOptions.hidden = !(isDem);
 
         const outputPath = document.getElementById('outputPath');
         if (outputPath && !outputPath.dataset.userEdited) {
@@ -622,20 +622,20 @@ function initProcessTypeToggle() {
         const isLocal = type === 'local_terrain';
         const isContour = type === 'contour';
         const fromDemTask = source === 'dem_task';
-        if (localOptions) localOptions.style.display = isLocal ? '' : 'none';
-        if (contourOptions) contourOptions.style.display = isContour ? '' : 'none';
+        if (localOptions) localOptions.hidden = !(isLocal);
+        if (contourOptions) contourOptions.hidden = !(isContour);
         // 缩放范围只有等高线用；本地高程的层级在它自己的字段里
-        if (zoomSection) zoomSection.style.display = isContour ? '' : 'none';
+        if (zoomSection) zoomSection.hidden = !(isContour);
 
-        if (localUploadRow) localUploadRow.style.display = (isLocal && !fromDemTask) ? '' : 'none';
-        if (contourUploadRow) contourUploadRow.style.display = (isContour && !fromDemTask) ? '' : 'none';
-        if (demTaskRow) demTaskRow.style.display = fromDemTask ? '' : 'none';
+        if (localUploadRow) localUploadRow.hidden = !(isLocal && !fromDemTask);
+        if (contourUploadRow) contourUploadRow.hidden = !(isContour && !fromDemTask);
+        if (demTaskRow) demTaskRow.hidden = !(fromDemTask);
 
         // 「本地高程切片 + DEM 任务」这一格复用 DEM 任务自己的地形切片作业，
         // 不新建任务、没有独立任务名，留着输入框是误导。required 必须跟着摘掉：
         // 隐藏的 required 字段会让浏览器原生校验拦下 submit 事件，按钮点了没反应。
         const nameless = isLocal && fromDemTask;
-        if (nameRow) nameRow.style.display = nameless ? 'none' : '';
+        if (nameRow) nameRow.hidden = nameless;
         if (nameInput) nameInput.required = !nameless;
 
         refreshSubmitButtonState();
@@ -931,7 +931,7 @@ function updateBoundsInfo() {
             </div>
             <div class="bounds-actions">
                 <button type="button" class="btn btn-primary btn-sm" id="boundsDownloadBtn">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                    <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                         <polyline points="7 10 12 15 17 10"></polyline>
                         <line x1="12" y1="15" x2="12" y2="3"></line>
@@ -939,7 +939,7 @@ function updateBoundsInfo() {
                     ${t('js.map.bounds.download')}
                 </button>
                 <button type="button" class="btn btn-danger btn-sm" id="boundsClearBtn" title="${t('js.map.bounds.clear_title')}">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                    <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="3 6 5 6 21 6"></polyline>
                         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                     </svg>
@@ -968,7 +968,7 @@ function updateBoundsInfo() {
         // null，整条下载链路对键盘 100% 不可达。放在空态里而不是工具条上，是因为
         // 这层浮层本来就是「当前选区」的归属地，用户找选区自然会看这里。
         boundsInfo.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+            <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="16" x2="12" y2="12"></line>
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
@@ -1306,7 +1306,10 @@ function _afterTaskCreated(modalId) {
     if (window.openPanel) window.openPanel('records');
 }
 
-document.getElementById('downloadForm').addEventListener('submit', async function(e) {
+// ?. 而不是包一层 if：处理器有近百行，缩进进去只会让 diff 噪声盖住逻辑。
+// 缺元素时整个文件后面的部分（等高线预览、预览管理器初始化）会全部不执行
+// —— 本文件其它入口（initDownloadTypeToggle 等）都判了空，这里是例外。
+document.getElementById('downloadForm')?.addEventListener('submit', async function(e) {
     e.preventDefault();
 
     const downloadType = _radioValue('downloadType', 'map');
@@ -1370,7 +1373,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     const originalText = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 6px; animation: spin 1s linear infinite;">
+        <svg class="icon-inline icon-inline--md" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation: spin 1s linear infinite;">
             <circle cx="12" cy="12" r="10"></circle>
         </svg>
         ${t('js.map.download.creating')}
@@ -1403,7 +1406,7 @@ document.getElementById('downloadForm').addEventListener('submit', async functio
     }
 });
 
-document.getElementById('processForm').addEventListener('submit', async function(e) {
+document.getElementById('processForm')?.addEventListener('submit', async function(e) {
     e.preventDefault();
 
     const processType = document.getElementById('processType')?.value || 'local_terrain';
@@ -1691,10 +1694,16 @@ function _renderPreviewChip() {
         return;
     }
     if (!chip) {
+        // 与右上的 .bounds-overlay 共用 .map-overlay-chip 底座（定位/底色/描边/
+        // 圆角/阴影/文字色），本类只留右下锚点与字号差异。
+        const host = document.querySelector('.index-map');
+        // 只有首页有这个容器。改前是直接 .appendChild 解引用查询结果 ——
+        // 同文件的 contourPreviewPanel 对 #map 判了空，这里是唯一的例外。
+        if (!host) return;
         chip = document.createElement('div');
         chip.id = 'taskPreviewChip';
-        chip.className = 'task-preview-chip';
-        document.querySelector('.index-map').appendChild(chip);
+        chip.className = 'map-overlay-chip task-preview-chip';
+        host.appendChild(chip);
     }
     chip.innerHTML = `
         <span>${t('js.map.preview.chip', {
@@ -1819,7 +1828,7 @@ function initContourPreview() {
             registerCompletedContourTask(data.task_id);
         }
     });
-    // On page load, surface any already-completed contour tasks for preview.
+    // 首屏 + 每次重新拉取活动列表时，把已完成的等高线任务补进预览注册表。
     // 首屏不再自己 fetch /api/contour/tasks：loadActiveTasks（tasks.js）首屏
     // 必拉同一份响应，且 contour 路刻意不带 ?status=active（预览要从里面筛
     // completed）——等它 resolve 后共享，首屏同接口只拉一遍。
@@ -1827,18 +1836,28 @@ function initContourPreview() {
     const shared = (typeof firstActiveTasksLoad !== 'undefined' && firstActiveTasksLoad)
         ? firstActiveTasksLoad
         : Promise.resolve();
-    shared.then(function() {
-        const tasks = (typeof latestContourTasks !== 'undefined') ? latestContourTasks : [];
-        tasks.forEach(function(t) {
-            if (t.status === 'completed') {
-                contourPreviewTasks.set(t.id, {
-                    name: t.name, zoom_max: t.zoom_max,
-                    north: t.north, south: t.south, east: t.east, west: t.west,
-                });
-            }
+    shared.then(syncContourPreviewFromLatest).catch(function() {});
+}
+
+// 把 latestContourTasks（tasks.js 每次 loadActiveTasks 都会刷新）里已完成的
+// 任务并进预览注册表。**幂等**，可以反复调。
+//
+// 除首屏外，断线重连也必须走这里：socket.io 不重放错过的事件，断线窗口内
+// 完成的等高线任务收不到 task_completed，光靠事件注册的话那些任务要到整页
+// 刷新才会出现预览按钮。loadActiveTasks 本来就是重连补拉的一环，挂在它的
+// 尾巴上比只补一个 connect 分支更严：任何一次重新拉取都顺带对齐注册表。
+function syncContourPreviewFromLatest() {
+    const tasks = (typeof latestContourTasks !== 'undefined') ? latestContourTasks : [];
+    let added = false;
+    tasks.forEach(function(task) {
+        if (task.status !== 'completed' || contourPreviewTasks.has(task.id)) return;
+        contourPreviewTasks.set(task.id, {
+            name: task.name, zoom_max: task.zoom_max,
+            north: task.north, south: task.south, east: task.east, west: task.west,
         });
-        updateContourPreviewButtons();
-    }).catch(function() {});
+        added = true;
+    });
+    if (added) updateContourPreviewButtons();
 }
 
 async function submitLocalTerrain() {

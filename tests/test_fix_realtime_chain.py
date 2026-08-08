@@ -152,13 +152,43 @@ def test_detail_modal_uses_get_or_create_instance():
 
 def test_contour_preview_shares_the_first_load_instead_of_refetching():
     """initContourPreview 不再自己 fetch /api/contour/tasks，改为等
-    firstActiveTasksLoad resolve 后消费 latestContourTasks（首屏只拉一遍）。"""
+    firstActiveTasksLoad resolve 后消费 latestContourTasks（首屏只拉一遍）。
+
+    消费动作本体在 syncContourPreviewFromLatest（2026-08 抽出）：断线重连时
+    loadActiveTasks 也要调它补录，两个调用点必须是同一份实现。
+    """
     body = _body('map.js', 'initContourPreview')
     assert 'fetch(' not in body, (
         'initContourPreview 仍在 fetch——/api/contour/tasks 首屏拉两遍'
     )
-    assert 'firstActiveTasksLoad' in body and 'latestContourTasks' in body, (
+    assert 'firstActiveTasksLoad' in body, (
+        'initContourPreview 没有等 loadActiveTasks 的首屏共享 promise'
+    )
+    assert 'syncContourPreviewFromLatest' in body, (
         'initContourPreview 没有消费 loadActiveTasks 共享的 contour 数据'
+    )
+    sync = _body('map.js', 'syncContourPreviewFromLatest')
+    assert 'latestContourTasks' in sync, (
+        'syncContourPreviewFromLatest 的数据源不是 latestContourTasks'
+    )
+    assert 'fetch(' not in sync, (
+        'syncContourPreviewFromLatest 在自己拉接口——它只该消费共享数据'
+    )
+
+
+def test_reconnect_backfills_contour_preview_registry():
+    """断线重连必须补录预览注册表。
+
+    socket.io 不重放错过的事件：断线窗口内完成的等高线任务收不到
+    task_completed，只靠事件注册的话那些任务要到整页刷新才会出现预览按钮。
+    补录挂在 loadActiveTasks（它本来就是 connect 重连分支补拉的一环）。
+    """
+    body = _body('tasks.js', 'loadActiveTasks')
+    assert 'syncContourPreviewFromLatest' in body, (
+        'loadActiveTasks 没有补录等高线预览注册表——断线期间完成的任务不会出现预览按钮'
+    )
+    assert "typeof syncContourPreviewFromLatest === 'function'" in body, (
+        '补录调用缺 typeof 守卫——独立页不加载 map.js，会 ReferenceError'
     )
 
 

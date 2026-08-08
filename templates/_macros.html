@@ -1,0 +1,50 @@
+{# 全站共用的小组件宏。
+
+   为什么要有这个文件：图标 SVG 与面板头部在模板间是**逐字复制**的。
+   复制的代价不是行数，是改一处要记得改另外几处 —— 关闭图标曾在
+   index.html 出现两次、_config_content.html 一次，三份各自维护。
+
+   ## 图标对齐
+   `.icon-inline` 承担 display:inline-block + vertical-align:middle + 右间距
+   （见 style.css）。改前这段是 20 处内联 style，三档 margin-right（4/6/8px）
+   散在 6 个模板里，无法统一调整。
+
+   ## 计数账本
+   tests/test_css_contract.py 的 ICON_ONLY_BUTTON_COUNT 按**模板源码**扫
+   按钮标记：宏定义算一次，宏调用展开后不出现在源码里。所以把重复的纯图标
+   按钮收进宏会让那个计数下降，改这里记得同步那边的账。
+
+   ⚠️ 别在本文件的注释里写出按钮标签的字面量：那个扫描器按正则找
+   `<button ...>...</button>`，注释里的字面量会被当成真标记匹配进去，
+   把后面一整段散文吞成「按钮内容」（实测踩过，计数直接错 2 颗）。 #}
+
+{# 关闭用的 X 图标。size 走调用点：面板头 14，弹窗内 16。 #}
+{% macro icon_close(size=14) %}<svg width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>{% endmacro %}
+
+{# 返回首页的左箭头（config.html / history.html 共用）。 #}
+{% macro icon_back() %}<svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="15 18 9 12 15 6"></polyline></svg>{% endmacro %}
+
+{# 任务列表图标（首页任务面板头）。 #}
+{% macro icon_tasks(size=16) %}<svg class="icon-inline icon-inline--md" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="3 7 5 9 9 5"></polyline><polyline points="3 17 5 19 9 15"></polyline><line x1="13" y1="6" x2="21" y2="6"></line><line x1="13" y1="12" x2="21" y2="12"></line><line x1="13" y1="18" x2="21" y2="18"></line></svg>{% endmacro %}
+
+{# 配置齿轮（首页配置面板头）。 #}
+{% macro icon_config(size=16) %}<svg class="icon-inline icon-inline--md" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path></svg>{% endmacro %}
+
+{# 地图图层（历史区域地图卡片头 + 配置页「其他」组）。改前两处逐字相同，
+   只有尺寸/间距不同：18px+6px vs 20px+8px。 #}
+{% macro icon_map(size=18, gap='md') %}<svg class="icon-inline icon-inline--{{ gap }}" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>{% endmacro %}
+
+{# 列表（任务列表卡片头）。 #}
+{% macro icon_list(size=18) %}<svg class="icon-inline icon-inline--md" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>{% endmacro %}
+
+{# 覆盖面板的头部：图标 + 标题 + 关闭钮。
+
+   两个面板（记录 / 配置）改前是逐字重复的两段，连内联的 X SVG 都各写一遍。
+   close_label 走调用点传入 —— 面板的 aria-label 与 title 用的是同一句文案，
+   宏里不再自己调 t()，免得把文案 key 藏进宏体。 #}
+{% macro panel_header(icon, title, close_label) %}
+    <header class="workbench-panel__header">
+        <span>{{ icon }}{{ title }}</span>
+        <button type="button" class="dock-collapse-btn" data-panel-close title="{{ close_label }}" aria-label="{{ close_label }}">{{ icon_close(14) }}</button>
+    </header>
+{% endmacro %}

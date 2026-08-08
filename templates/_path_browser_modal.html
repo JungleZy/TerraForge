@@ -9,7 +9,10 @@
             </div>
             <div class="modal-body">
                 <div class="small text-muted mb-1">{{ t('tpl.path_browser.current') }}</div>
-                <div class="path-browser-current font-monospace small text-break mb-2"
+                {# 外观全靠 Bootstrap 工具类。这里曾多挂一个 .path-browser-current，
+                   全仓零定义、零引用（JS 走的是 id）—— 悬空的样式钩子只会让
+                   后来的人猜「样式是不是漏写了」。 #}
+                <div class="font-monospace small text-break mb-2"
                      id="pathBrowserCurrent">…</div>
                 <div class="list-group" id="pathBrowserDirs"></div>
                 <div class="text-danger small mt-2" id="pathBrowserError" hidden></div>

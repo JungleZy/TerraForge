@@ -42,12 +42,20 @@
         }
     }
 
+    // 请求序号：目录项连点（无防抖、无禁用）时先发的响应可能后返回，
+    // 于是列表渲染成一个**较早**点击的目录，而 currentPath 已经是新值 ——
+    // 「选择此目录」会写回一个用户没在看的路径。与 history.js loadHistory
+    // 的 _historyReqSeq 同一套守卫。
+    var _reqSeq = 0;
+
     async function load(path, keepError) {
         const errBox = _el('pathBrowserError');
         const url = '/api/fs/browse' + (path ? '?path=' + encodeURIComponent(path) : '');
+        const seq = ++_reqSeq;
         try {
             const resp = await fetch(url);
             const data = await resp.json();
+            if (seq !== _reqSeq) return;    // 已有更新的请求发出，本次结果作废
             if (!resp.ok || !data.success) {
                 throw new Error(data.error || ('HTTP ' + resp.status));
             }
@@ -60,6 +68,10 @@
             // 列表,完全不知道自己填的值有问题。
             if (!keepError) errBox.hidden = true;
         } catch (e) {
+            // 过期请求的失败同样不许写界面：否则一次早点击的超时会把用户
+            // 正在看的新目录覆盖成错误态。回退那一跳（load('', true)）自己
+            // 会再取一个新序号，不受这条守卫影响。
+            if (seq !== _reqSeq) return;
             // 输入框里可能还是相对值/不存在的目录:回退根级(盘符/根目录),把原因亮出来
             if (path) {
                 errBox.textContent = t('js.path_browser.start_unavailable', { error: e.message });
