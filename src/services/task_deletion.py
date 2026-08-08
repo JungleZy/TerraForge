@@ -13,14 +13,20 @@ worker 被占死，用户重复点击还会 double-delete。
 分流：
   - **快路径**（任务没在跑）—— 同步删行 + 同步删产物。绝大多数删除走这条，
     `files_removed` 的既有语义（删没删成）原样保住。
-  - **后台路径**（线程还活着）—— 置停止标志 → 写墓碑 → 同一事务里记
-    pending_deletions + 删行 → 立即返回 → daemon 线程 join 完再删产物。
+  - **后台路径**（线程还活着）—— 置停止标志 → 写墓碑 → 同一事务里删行 + 记
+    pending_deletions → 立即返回 → daemon 线程 join 完再删产物。
     用户视角是「点了就没了」，后台收尾不冒出来变成第六个状态。
 
-## 为什么产物要先记 pending_deletions 再删行，且同一事务
+## 为什么记 pending_deletions 与删行必须在同一个事务里
 
-反过来的话，进程在两者之间被强杀就丢了产物线索。清单的另一端是启动清扫
+约束是**同一事务**，不是两条语句谁先谁后：一次 commit，进程在中间被强杀两边一起
+回滚，不会留下「行没了、产物线索也没了」。清单的另一端是启动清扫
 （task_cleanup._sweep_pending_deletions），它会在下次启动时补删。
+
+当前顺序是先 DELETE、后记清单，而且**必须**是这个顺序：闸门要拿 DELETE 的
+rowcount —— 行本来就不存在时一片磁盘都不能碰，否则删一个不存在的 task_id 会
+「返回 404 的同时把同名残留目录 rmtree 掉」（见 delete_task_row 里那道闸）。
+把 DELETE 挪回记清单之后就会把那个静默真删放回来。
 """
 
 from __future__ import annotations

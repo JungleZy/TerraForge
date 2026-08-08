@@ -315,6 +315,46 @@ def test_tombstone_is_released_when_the_delete_transaction_blows_up(monkeypatch,
     th.join(timeout=10)
 
 
+def test_queue_and_delete_commit_or_roll_back_together(monkeypatch, tmp_path):
+    """记清单与删行必须在【同一个事务】里 —— 中间炸掉两边一起回滚。
+
+    这条不变式管的是「进程在两者之间挂掉会不会留下行没了、产物线索也没了」，
+    与两条语句谁先谁后无关（DELETE 现在排在前面，是因为闸门要拿它的 rowcount，
+    防「行不存在还去 rmtree」）。
+
+    探针：让 _queue_pending_deletion 先真的把清单写进去、再抛 —— 此刻 DELETE
+    已经执行过、INSERT 也执行过，两条都还没 commit。异常传出后三件事都要成立。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    _seed(db, status="running")
+
+    release = threading.Event()
+    th = threading.Thread(target=release.wait, kwargs={"timeout": 10}, daemon=True)
+    th.start()
+    mgr = _FakeManager(thread=th)
+    tomb = set()
+
+    real_queue = td._queue_pending_deletion
+
+    def queue_then_blow_up(conn, artifact_dir):
+        real_queue(conn, artifact_dir)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(td, "_queue_pending_deletion", queue_then_blow_up)
+
+    with pytest.raises(sqlite3.OperationalError):
+        td.delete_task_row(manager=mgr, task_id=1, table="tasks",
+                           artifact_dir=str(tmp_path / "downloads" / "task_1"),
+                           tombstone=tomb)
+
+    assert _row_exists(db), "DELETE 没提交就炸 —— 行必须随事务一起回滚"
+    assert _pending_paths(db) == [], "清单写入必须和删行一起回滚，不能单独留下"
+    assert tomb == set(), "抛出前必须摘墓碑，否则进度写入被永久短路"
+
+    release.set()
+    th.join(timeout=10)
+
+
 def test_non_absolute_artifact_dir_is_refused(monkeypatch, tmp_path):
     """相对路径不许进护栏 —— 它会按【进程 cwd】解释，'' 和 '.' 能删掉 cwd。
 
