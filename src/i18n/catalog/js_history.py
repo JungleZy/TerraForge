@@ -219,34 +219,44 @@ MESSAGES = {
         'en': 'Failed to load',
     },
 
-    # 删除任务的两步确认与结果提示
-    'js.history.confirm.delete_task': {
-        'zh': '确定要删除这个任务吗？',
-        'en': 'Delete this task?',
-    },
+    # 删除任务的单一确认框与结果提示。
+    # 三个活动状态各有各的措辞：pending 还没开始跑，写「正在运行」就是撒谎；
+    # paused 停在半路，说「立即停止」也不准 —— 用户要判断「删了会失去什么」，
+    # 靠的正是这句里对当前处境的描述，含糊一句话通用反而帮不上忙。
     'js.history.confirm.delete_task_title': {
         'zh': '删除任务',
         'en': 'Delete task',
     },
-    'js.history.confirm.delete_files': {
-        'zh': '是否同时删除磁盘上的下载产物？',
-        'en': 'Also delete the downloaded output on disk?',
+    'js.history.confirm.delete_task': {
+        'zh': '确定要删除这个任务吗？记录不可恢复。',
+        'en': 'Delete this task? The record cannot be recovered.',
     },
-    'js.history.confirm.delete_files_title': {
-        'zh': '清理下载产物',
-        'en': 'Clean up output',
+    'js.history.confirm.delete_task_running': {
+        'zh': '该任务正在运行，删除会立即停止它，已下载的进度不保留。确定删除吗？',
+        'en': 'This task is running. Deleting it stops the task immediately and the '
+              'progress so far is lost. Delete it anyway?',
     },
-    'js.history.confirm.delete_files_confirm': {
-        'zh': '删除产物',
-        'en': 'Delete output',
+    'js.history.confirm.delete_task_pending': {
+        'zh': '该任务还在排队、尚未开始，删除会把它移出队列。确定删除吗？',
+        'en': 'This task is queued and has not started yet. Deleting it removes it '
+              'from the queue. Delete it anyway?',
     },
-    'js.history.confirm.delete_files_cancel': {
-        'zh': '保留产物',
-        'en': 'Keep output',
+    'js.history.confirm.delete_task_paused': {
+        'zh': '该任务已暂停但还没结束，删除会直接终止它，已下载的进度不保留。确定删除吗？',
+        'en': 'This task is paused but not finished. Deleting it terminates the task '
+              'and the progress so far is lost. Delete it anyway?',
+    },
+    'js.history.confirm.delete_files_checkbox': {
+        'zh': '同时删除磁盘上的下载产物',
+        'en': 'Also delete the downloaded output on disk',
     },
     'js.history.toast.deleted': {
         'zh': '任务已删除',
         'en': 'Task deleted',
+    },
+    'js.history.toast.deleted_files_deferred': {
+        'zh': '任务已删除，磁盘产物正在后台清理',
+        'en': 'Task deleted; the disk output is being cleaned up in the background',
     },
     'js.history.toast.delete_failed': {
         'zh': '删除失败',

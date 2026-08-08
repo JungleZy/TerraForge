@@ -1643,3 +1643,251 @@ def test_panel_reopen_refreshes_timeline():
     assert 'loadStats(' in body, (
         'openPanel 重开时应一并刷新统计卡片,否则总数与列表口径不一致'
     )
+
+
+# --------------------------------------------------------------------------
+# 删除流程：两级确认合成一个框（v0.2.12 final review 的 UX 三条）
+#
+# 旧形态是串起来的两个 showConfirm。第二个框问的是**另一个维度**的问题
+# （产物删不删），于是三条路殊途同归：「删除产物」/「保留产物」/ ESC 全都
+# 照发 DELETE，区别只在 ?delete_files=。用户按 ESC 以为自己撤销了删除，
+# 任务照删不误 —— 而这一版删除已经能杀 running（v0.2.11 那层 400 拒绝没了），
+# 🗑 成了唯一的销毁入口，承重比以前大得多。
+# --------------------------------------------------------------------------
+
+
+def _active_statuses():
+    """`?status=active` 的三态，取自 src/routes/api.py 里那条 SQL 谓词。
+
+    不在测试里硬写 {'pending','running','paused'}：那样后端哪天多一个未终结
+    状态（比如 'queued'），前端漏了它的警告文案，这里照样全绿。
+    """
+    with open(os.path.join(ROOT, 'src', 'routes', 'api.py'), encoding='utf-8') as f:
+        src = f.read()
+    m = re.search(r'active_clause\s*=\s*"status IN \(([^)]*)\)"', src)
+    assert m, 'src/routes/api.py 里找不到 active_clause 的 SQL 谓词 —— 本测试已失效'
+    vals = set(re.findall(r"'([a-z_]+)'", m.group(1)))
+    assert vals, 'active_clause 里解析不出任何状态字面量 —— 本测试已失效'
+    assert vals <= _task_status_values(), (
+        f'active_clause 里的 {sorted(vals - _task_status_values())} 不在 TaskStatus 里'
+    )
+    return vals
+
+
+def test_delete_asks_once_and_a_cancel_sends_nothing():
+    """删除只弹**一个**确认框，且取消 / ESC / 点遮罩之后**不发 DELETE**。
+
+    这是本次修复的核心：旧实现里 `const deleteFiles = await showConfirm(...)`
+    的返回值只被拿去拼 `?delete_files=`，false 分支照样往下走到 fetch。也就是
+    说第二个框根本没有「不删」这个出口 —— 而它长得就像一个「要不要删除」的
+    确认框（左边那颗按钮写着「保留产物」，占的是取消位）。
+
+    断言的三件事缺一不可：
+      1. 只有一次 showConfirm —— 否则「合成一个框」这件事就没发生；
+      2. 有一条以确认结果为条件的 return；
+      3. 那条 return 出现在 fetch 之前 —— 位置颠倒的话它拦不住任何请求。
+    """
+    body = _fn('deleteTask', 'history.js')
+    assert body.count('showConfirm(') == 1, (
+        f'deleteTask 里有 {body.count("showConfirm(")} 处 showConfirm —— '
+        '删除流程只许问一次；串起来的第二个框，它的取消位问的是另一个维度，'
+        '用户按 ESC 时以为撤销了删除，实际上主动作照做'
+    )
+    guard = re.search(r'if\s*\(\s*!\s*(\w+)\.confirmed\s*\)\s*\{?\s*return', body)
+    assert guard, (
+        'deleteTask 里找不到「用户没确认就 return」的门禁 —— '
+        '取消 / ESC / 点遮罩会继续往下走，照样发 DELETE'
+    )
+    fetch_at = body.find('fetch(')
+    assert fetch_at >= 0, 'deleteTask 里找不到 fetch( —— 本测试已失效'
+    assert guard.end() < fetch_at, (
+        '「没确认就 return」的门禁排在 fetch 之后 —— 请求已经发出去了才判断，'
+        '拦不住任何东西'
+    )
+
+
+def test_delete_files_checkbox_defaults_to_unchecked():
+    """「同时删除磁盘产物」默认**不勾**，且勾选值真的驱动 ?delete_files=。
+
+    默认不勾是在延续旧行为的安全侧：旧的第二个框里 ESC 与取消位都落在
+    delete_files=false。产物是用户花了几小时下下来的，默认值只能站在
+    「少删」这边。
+
+    第二半断言（勾选值 -> 查询参数）不能省：只钉 `checked: false` 的话，
+    把 deleteFiles 写死成 true 也全绿 —— 勾选框成了个装饰，而默认行为变成
+    了最具破坏性的那一种。
+    """
+    body = _fn('deleteTask', 'history.js')
+    m = re.search(r'checkbox:\s*\{(.*?)\}', body, re.S)
+    assert m, (
+        'deleteTask 的 showConfirm 没有传 checkbox —— 产物删不删这个问题没地方问了'
+    )
+    assert re.search(r'checked:\s*false', m.group(1)), (
+        f'确认框的勾选框默认值不是 false（实际写的是 {m.group(1).strip()!r}）—— '
+        '默认勾上等于替用户选了最具破坏性的那一边'
+    )
+    assert re.search(r'deleteFiles\s*=\s*\w+\.checked', body), (
+        'deleteFiles 不是从勾选结果取的 —— 勾选框成了装饰品'
+    )
+    assert re.search(r'delete_files=\$\{\s*deleteFiles\s*\?', body), (
+        '?delete_files= 不是由 deleteFiles 拼出来的 —— 用户勾没勾传不到后端'
+    )
+
+
+def test_confirm_checkbox_only_serves_the_delete_flow():
+    """`opts.checkbox` 只许 history.js 的删除流程用。
+
+    为什么要钉这条：带 checkbox 时 showConfirm 改 resolve `{confirmed, checked}`，
+    而对象**恒为真**。既有调用点全是 `if (!await showConfirm(...)) return;` 的
+    写法，谁顺手给自己加一个 checkbox 又忘了改判断，那个确认框就再也拦不住人 ——
+    静默失效，没有任何报错。
+    """
+    js_dir = os.path.join(ROOT, 'static', 'js')
+    users = set()
+    for name in sorted(n for n in os.listdir(js_dir) if n.endswith('.js')):
+        if name == 'ui.js':      # 定义端
+            continue
+        if 'checkbox:' in _strip_js_comments(_js(name)):
+            users.add(name)
+    assert users == {'history.js'}, (
+        f'showConfirm 的 checkbox 选项被 {sorted(users)} 使用 —— 期望只有 history.js。\n'
+        '带 checkbox 时 resolve 的是对象（恒为真），`if (!await showConfirm(...))` '
+        '那种写法会静默失效'
+    )
+    assert 'checkbox:' in _fn('deleteTask', 'history.js'), (
+        'history.js 里的 checkbox 不在 deleteTask 内 —— 钉点跑偏了，本测试已失效'
+    )
+
+
+def test_cancelling_the_confirm_never_reports_a_checked_box():
+    """取消时 checked 必须被压成 false —— 「什么都不做」不能漏出勾选值。
+
+    调用方只判 confirmed 的话这条无关紧要；可一旦有人写成
+    `if (answer.checked) cleanupFiles();`，一个「用户勾了框又按 ESC」的操作
+    就会把产物删掉。让 ui.js 在源头保证，比要求每个调用方记得判断可靠。
+    """
+    body = _js_function_body(_strip_js_comments(_js('ui.js')), 'showConfirm')
+    assert body.strip(), 'ui.js 的 showConfirm 函数体切出来是空的 —— 本测试已失效'
+    assert re.search(
+        r'checked:\s*result\s*&&', body,
+    ), (
+        'showConfirm 的 resolve 没有把 checked 与 result 相与 —— '
+        '用户勾了框再按 ESC，取消的结果里仍带着 checked: true'
+    )
+    assert re.search(r'confirmed:\s*result', body), (
+        'showConfirm 带 checkbox 时没有下发 confirmed —— 调用方判不出用户到底点了哪颗'
+    )
+
+
+def test_deleting_an_unfinished_task_says_what_will_be_lost():
+    """未终结的任务：确认文案必须点明「删了会怎样」；终态走通用文案，不带警告。
+
+    v0.2.11 里删一个正在跑的任务会被后端 400 挡下（用户看到「删除失败」），
+    那层拒绝事实上在替用户兜底。这一版放开了 —— 拒绝没了，文案就得补上。
+
+    三个活动状态各说各的，不合并成一句「该任务尚未结束」：pending 什么都还
+    没跑（只是排队），对它说「正在运行」是撒谎；running / paused 有已下载的
+    进度会丢。用户按下删除前要判断的正是「我会失去什么」。
+    """
+    from src.i18n.catalog import MESSAGES
+
+    active = _active_statuses()
+    src = _strip_js_comments(_js('history.js'))
+    m = re.search(r'const DELETE_CONFIRM_KEYS\s*=\s*\{(.*?)\};', src, re.S)
+    assert m, 'history.js 里找不到 DELETE_CONFIRM_KEYS —— 状态感知的文案表没了'
+    pairs = dict(re.findall(r"(\w+)\s*:\s*'([\w.]+)'", m.group(1)))
+    assert set(pairs) == active, (
+        f'DELETE_CONFIRM_KEYS 覆盖的是 {sorted(pairs)}，后端的未终结状态是 '
+        f'{sorted(active)} —— 对不上的那些状态会拿到不带警告的通用文案'
+    )
+
+    # 每个活动态都得说到自己那件事，且三句彼此不同（共用一句 = 状态感知白做）
+    keyword = {'running': '正在运行', 'pending': '排队', 'paused': '已暂停'}
+    assert set(keyword) == active, (
+        f'关键词表 {sorted(keyword)} 与后端活动态 {sorted(active)} 脱节 —— 本测试已失效'
+    )
+    seen = set()
+    for status, key in sorted(pairs.items()):
+        assert key in MESSAGES, f'DELETE_CONFIRM_KEYS[{status}] 指向不存在的键 {key}'
+        zh = MESSAGES[key]['zh']
+        assert keyword[status] in zh, (
+            f'{status} 的确认文案里没有「{keyword[status]}」，实际是 {zh!r} —— '
+            '用户看不出这个任务现在处于什么处境'
+        )
+        assert MESSAGES[key]['en'], f'{key} 缺英文'
+        seen.add(zh)
+    assert len(seen) == len(pairs), (
+        f'{len(pairs)} 个活动态只用了 {len(seen)} 句文案 —— 共用一句就等于没有状态感知'
+    )
+
+    # 终态（completed / failed）走通用文案，且通用文案里不许混进活动态的字眼
+    generic = 'js.history.confirm.delete_task'
+    assert generic in MESSAGES, f'通用删除文案 {generic} 不在 catalog 里'
+    assert f"'{generic}'" in src, (
+        f'history.js 不再引用 {generic} —— 终态任务没有兜底文案'
+    )
+    for word in sorted(set(keyword.values())):
+        assert word not in MESSAGES[generic]['zh'], (
+            f'通用文案里出现了「{word}」：{MESSAGES[generic]["zh"]!r} —— '
+            '已完成 / 失败的任务会被警告「它还在跑」'
+        )
+    body = _fn('deleteTask', 'history.js')
+    assert 'DELETE_CONFIRM_KEYS[' in body, (
+        'deleteTask 没有查 DELETE_CONFIRM_KEYS —— 表定义了但没人用，文案不会变'
+    )
+
+
+def test_background_artifact_cleanup_is_reported_to_the_user():
+    """响应带 files_deferred 时要换一句 toast，告诉用户产物在后台清。
+
+    不告知的后果：删掉一个跑了两小时的等高线任务、勾了删产物，界面说
+    「任务已删除」，用户转头去文件管理器发现几十 GB 还在 —— 他分不清该等
+    还是该手删。
+
+    末尾那条负向断言钉的是**判据形态**：files_deferred 的语义是「有没有产物
+    要延后删」（后端判据是 artifact_dir is not None），没要求删产物时这个字段
+    **根本不下发**。写成 `=== false` / `!== false` 的话，最常见的那条路径
+    （键不存在）会掉进错误的分支。
+    """
+    body = _fn('deleteTask', 'history.js')
+    assert 'response.json()' in body, (
+        'deleteTask 没有解析响应体 —— files_deferred 拿不到，后台清理无从告知'
+    )
+    assert 'files_deferred' in body, (
+        'deleteTask 没有读 files_deferred —— 产物在后台删这件事用户看不见'
+    )
+    assert "t('js.history.toast.deleted_files_deferred')" in body, (
+        '延后清理没有专属 toast —— 用户看到的还是那句平淡的「任务已删除」'
+    )
+    assert "t('js.history.toast.deleted')" in body, (
+        '普通删除的 toast 没了 —— 快路径（同步删完）不该说成「正在后台清理」'
+    )
+    assert not re.search(r'files_deferred\s*[!=]==', body), (
+        'files_deferred 被拿去做全等比较 —— 这个字段在「没要求删产物」时根本'
+        '不出现，必须按「键不存在 = 默认路径」处理'
+    )
+
+
+def test_delete_confirm_texts_are_bilingual_and_distinct():
+    """删除流程新增的每条文案中英都要有，且英文不是把中文抄过去。
+
+    tests/test_i18n.py 的双向闭合检查只管「键有没有人引用」，管不了文案本身。
+    """
+    from src.i18n.catalog import MESSAGES
+
+    src = _strip_js_comments(_js('history.js'))
+    keys = sorted(set(re.findall(
+        r"t\('(js\.history\.(?:confirm\.delete|toast\.deleted)[\w.]*)'\)", src,
+    )) | set(re.findall(r"'(js\.history\.confirm\.delete_task_\w+)'", src)))
+    assert len(keys) >= 6, (
+        f'只从 history.js 里扫到 {len(keys)} 个删除相关的文案键（{keys}）—— '
+        '本测试已失效（单框方案有 1 个标题 + 4 句正文 + 1 个勾选框标签 + 2 条 toast）'
+    )
+    for key in keys:
+        entry = MESSAGES.get(key)
+        assert entry, f'{key} 被 history.js 引用但 catalog 里没有'
+        assert entry['zh'] and entry['en'], f'{key} 中英缺一'
+        assert entry['zh'] != entry['en'], f'{key} 的英文就是中文原文'
+        assert not re.search(r'[\u4e00-\u9fff]', entry['en']), (
+            f'{key} 的英文里还有中文：{entry["en"]!r}'
+        )

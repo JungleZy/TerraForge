@@ -609,19 +609,41 @@ function previewHistoryTask(taskId, taskType) {
     if (typeof closePanel === 'function') closePanel();
 }
 
+// 活动状态 -> 确认文案的键。终态（completed / failed）不在表里，走通用文案。
+// 三态各说各的，不合并成一句「该任务尚未结束」：用户按下删除前要判断的是
+// 「我会失去什么」，pending 什么都还没跑（只是排队），running / paused 有
+// 已下载的进度会丢 —— 这三件事对决策的分量不一样。
+const DELETE_CONFIRM_KEYS = {
+    running: 'js.history.confirm.delete_task_running',
+    pending: 'js.history.confirm.delete_task_pending',
+    paused: 'js.history.confirm.delete_task_paused',
+};
+
 async function deleteTask(taskId, taskType = 'map') {
-    if (!await showConfirm(t('js.history.confirm.delete_task'), { title: t('js.history.confirm.delete_task_title'), danger: true })) {
+    // 状态取自 store 而不是 allTasks：socket 增量插进来的行只进了 store
+    // （同 previewHistoryTask 的说明）。查不到就退回通用文案 —— 宁可少一句
+    // 警告，也不能对着一个不知道状态的任务瞎说「正在运行」。
+    const store = window.TaskStore;
+    const task = store && store.get(`${taskType}:${taskId}`);
+    const confirmKey = (task && DELETE_CONFIRM_KEYS[task.status])
+        || 'js.history.confirm.delete_task';
+
+    // 单一确认框：任务删不删走确定/取消，产物删不删走勾选框（默认不勾）。
+    // 原来是串起来的两个框，第二个框问的是产物 —— 它的取消位（ESC / 点遮罩 /
+    // 「保留产物」）看起来像在撤销整个删除，实际上照样发 DELETE。现在取消就是
+    // 取消：不发请求，什么都不做。
+    const answer = await showConfirm(t(confirmKey), {
+        title: t('js.history.confirm.delete_task_title'),
+        danger: true,
+        checkbox: {
+            label: t('js.history.confirm.delete_files_checkbox'),
+            checked: false,
+        },
+    });
+    if (!answer.confirmed) {
         return;
     }
-
-    // 第二步确认：是否连磁盘上的下载产物一起删。后端 DELETE 端点按
-    // ?delete_files=true/false 决定是否清理产物目录，缺省 false（保留）。
-    const deleteFiles = await showConfirm(t('js.history.confirm.delete_files'), {
-        title: t('js.history.confirm.delete_files_title'),
-        confirmText: t('js.history.confirm.delete_files_confirm'),
-        cancelText: t('js.history.confirm.delete_files_cancel'),
-        danger: true
-    });
+    const deleteFiles = answer.checked;
 
     try {
         const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
@@ -631,7 +653,22 @@ async function deleteTask(taskId, taskType = 'map') {
         const response = await fetch(`${deleteUrl}?delete_files=${deleteFiles ? 'true' : 'false'}`, { method: 'DELETE' });
 
         if (response.ok) {
-            showToast(t('js.history.toast.deleted'), 'success');
+            // files_deferred 的语义是「有产物要延后删」，不是「任务在跑」
+            // （后端判据是 artifact_dir is not None）。没要求删产物时这个字段
+            // 根本不下发，所以只认「键为真」，不能写成 === false。
+            // 不告诉用户的后果：删掉一个跑了两小时的任务并勾了删产物，看到
+            // 「任务已删除」，转头去文件管理器发现几十 GB 还在 —— 他分不清
+            // 该等还是该手删。
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (e) {
+                // 四条 DELETE 端点都回 JSON；解析不了也只是少一句提示，
+                // 不能因此把后面的摘行/刷新整串跳过。
+            }
+            showToast(payload && payload.files_deferred
+                ? t('js.history.toast.deleted_files_deferred')
+                : t('js.history.toast.deleted'), 'success');
             // 预览中的正是被删任务时联动关闭（map.js 的预览管理器）；
             // 独立页 /history 不加载 map.js，typeof 守卫兜底。
             if (typeof stopTaskPreviewForTask === 'function') {

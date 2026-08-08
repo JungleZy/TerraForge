@@ -2706,6 +2706,34 @@ code {
     margin-bottom: 1.5rem;
     word-break: break-word;
 }
+/* ---- Confirm 里的勾选框 ---- */
+/* 「删不删任务」是主问题，「顺带删不删磁盘产物」是附带选项 —— 后者不配再占
+   一个确认框（串起来的第二个框，它的取消位问的是另一个维度，用户按 ESC 时
+   以为自己撤销了删除，其实只是选了「保留产物」）。负的上边距是把它贴回
+   .app-confirm__msg 的 1.5rem 下边距里：选项属于问题，不是另起一段。 */
+.app-confirm__check {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin: -0.9rem 0 1.4rem;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    line-height: 1.45;
+    cursor: pointer;
+}
+.app-confirm__check:hover { color: var(--color-text-primary); }
+.app-confirm__check-box {
+    flex: none;
+    width: 0.95rem;
+    height: 0.95rem;
+    margin-top: 0.18rem;
+    accent-color: var(--color-accent);
+    cursor: pointer;
+}
+.app-confirm__check-box:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+}
 .app-confirm__actions {
     display: flex;
     justify-content: flex-end;
