@@ -90,10 +90,6 @@ MESSAGES = {
         'zh': '恢复任务',
         'en': 'Resume task',
     },
-    'js.history.action.cancel': {
-        'zh': '取消任务',
-        'en': 'Cancel task',
-    },
     'js.history.action.preview': {
         'zh': '在地图上预览',
         'en': 'Preview on map',
@@ -101,14 +97,6 @@ MESSAGES = {
     'js.history.action.delete': {
         'zh': '删除任务',
         'en': 'Delete task',
-    },
-    'js.history.action.dismiss_title': {
-        'zh': '从列表中移除这条失败记录',
-        'en': 'Remove this failed record from the list',
-    },
-    'js.history.action.dismiss_label': {
-        'zh': '移除失败任务行',
-        'en': 'Remove failed task row',
     },
 
     # 分页

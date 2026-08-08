@@ -309,7 +309,7 @@ def test_failed_task_row_is_not_removed():
 
     （前身是 test_failed_task_card_is_not_removed。统一任务表改版把卡片改成
     表格行，契约不变：失败行必须留在页面上——转红 + 错误行，
-    清理只能由用户点「移除」触发（dismissTask）。）
+    清理只能由用户点「删除」触发（deleteTask）。）
 
     这是本任务的核心禁止性契约。原实现两件事一起做：
         activeTasks.delete(key);  →  卡片下次整体重绘时不会再出现
@@ -330,7 +330,7 @@ def test_failed_task_row_is_not_removed():
 
     assert not re.search(r'\.remove\(\s*\)', body), (
         'handleTaskFailed 里出现了 .remove() 调用——失败行必须留在页面上，'
-        '清理只能由用户点「移除」触发（dismissTask）。'
+        '清理只能由用户点「删除」触发（deleteTask）。'
         '（错误行的去重要用 outerHTML 原位重建，不许走 .remove()。）'
     )
     assert 'activeTasks.delete(' not in body, (
@@ -447,8 +447,6 @@ _ACTION_GUARDS = {
     'startTask': ('===', 'pending'),
     'pauseTask': ('===', 'running'),
     'resumeTask': ('===', 'paused'),
-    'cancelTask': ('!==', 'failed'),   # 失败任务不能再调后端 cancel
-    'dismissTask': ('===', 'failed'),  # 只有失败卡片给「移除」
 }
 
 _STATUS_GUARD_RE = re.compile(r"task\.status\s*(===|!==)\s*'(\w+)'")
@@ -462,12 +460,10 @@ def test_card_actions_are_gated_by_the_right_status():
     `onclick="xxxTask(`「往前找最近的 task.status 判断」那套启发式；Vue 的
     v-if 与按钮同在一个标签里，比「最近的前置判断」精确得多。
 
-    这条同时守三件事：
+    这条同时守两件事：
       1. 失败行**没有**重试按钮（后端会抛 ValueError，见上面表里的注释）。
-      2. 失败行**有**「移除」按钮。行不再自动消失了，没有这个按钮
-         用户就没有任何办法清掉它，只能刷新页面。
-      3. 失败行不再显示「取消」——对一个已经 failed 的任务调
-         /cancel 是无意义的后端往返。
+      2. 失败行的清理入口只剩 🗑（deleteTask，没有 v-if 所以恒在），
+         它不走 act() 转发，因此不在这张表里。
     """
     tpl = _tpl('TaskRow')
     # 按 <button ...> 切标签，每个动作的 v-if 必须与它同标签
@@ -492,19 +488,23 @@ def test_card_actions_are_gated_by_the_right_status():
     assert not problems, '行动作按钮的状态门控不对：\n' + '\n'.join('  ' + p for p in problems)
 
 
-def test_dismiss_is_purely_local():
-    """「移除」只清前端卡片，不许打后端。
+def test_deleting_a_failed_task_also_closes_its_toast():
+    """删掉失败行时，那条常驻失败 toast 必须一起关掉。
 
-    失败任务在后端已经是终态：能打的端点只有 DELETE（那是「删除」按钮的
-    活儿，会连产物一起清掉），而用户按「移除」想要的只是「把这张卡片从我眼前
-    拿走」——记录留着，下次翻页还能看见。
+    （前身是 test_dismiss_is_purely_local。「移除」按钮随「取消任务」一并下线，
+    原来它守的两件事——把失败行清掉、把常驻 toast 一起关掉——现在都落在 🗑
+    的 deleteTask 上，契约没消失，只是换了宿主。）
+
+    这条与 test_delete_removes_the_row_purely_on_the_frontend 互补：那条守
+    「行确实被摘掉」，这条守「提示不留在右上角」。两件事都在同一个 ok 分支里，
+    漏掉任何一件用户都会看到「记录没了但红条还在」。
     """
-    body = _fn('dismissTask')
-    assert 'fetch(' not in body, (
-        'dismissTask 里有 fetch()——「移除」应当只是前端清卡片，不碰后端'
+    body = _fn('deleteTask', 'history.js')
+    assert 'closeFailureToast(' in body, (
+        'deleteTask 没关那条常驻失败 toast——失败记录都删了，提示还赖在右上角'
     )
     assert 'TaskStore.remove(' in body, (
-        'dismissTask 没有把任务从 store 摘掉，行不会消失'
+        'deleteTask 没有把任务从 store 摘掉，行不会消失'
     )
 
 
@@ -520,7 +520,7 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
       1. 合并逻辑存在（`closeFailureToast(key)` 在 set 之前被调用）；
       2. 合并的键是 `key`（taskType:taskId），不是常量、不是全局单例。
 
-    另外钉住「点移除时顺手关掉那条 toast」——卡片都不要了还留一条永久提示
+    另外钉住「删掉失败任务时顺手关掉那条 toast」——记录都没了还留一条永久提示
     占着右上角，等于把 I2 的堆叠问题换个地方保留。
     """
     body = _fn('handleTaskFailed')
@@ -537,9 +537,10 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
         'closeFailureToast 必须既关 toast 又清 Map，否则句柄会一直攒着'
     )
 
-    dismiss_body = _fn('dismissTask')
-    assert 'closeFailureToast(' in dismiss_body, (
-        '点「移除」之后那条常驻 toast 还留在右上角——卡片都清了，提示也该走'
+    delete_body = _fn('deleteTask', 'history.js')
+    assert 'closeFailureToast(' in delete_body, (
+        '删掉失败任务之后那条常驻 toast 还留在右上角——记录都没了，提示也该走。'
+        '（原先这件事由「移除」按钮做，那颗按钮已随「取消任务」下线。）'
     )
 
 
@@ -1228,7 +1229,7 @@ def test_map_rectangle_stroke_covers_every_status():
 # --------------------------------------------------------------------------
 
 def test_start_pause_resume_surface_server_error_reason():
-    """start/pause/resume 非 2xx 时必须透出服务端 error，与 cancelTask 同口径。
+    """start/pause/resume 非 2xx 时必须透出服务端 error，三个函数同一口径。
 
     改前三个函数都是 `throw new Error('启动任务失败')`，后端给的具体原因
     （如"任务已在运行"）被整个丢掉，用户只看到一句套话。
@@ -1237,7 +1238,7 @@ def test_start_pause_resume_surface_server_error_reason():
         body = _fn(fn)
         assert 'result.error' in body, (
             f'{fn} 没有读响应体里的 result.error——服务端错误原因被丢弃，'
-            '应与 cancelTask 的 `result.error || response.status` 对齐'
+            '三个函数都应统一读 `result.error || response.status`'
         )
 
 
@@ -1625,21 +1626,27 @@ def test_new_task_prepends_only_on_first_page_and_matching_chip():
     )
 
 
-def test_dismiss_removes_the_row_purely_on_the_frontend():
-    """dismiss（失败行的移除按钮）：纯前端删行，不碰后端、不触发重拉。
+def test_delete_removes_the_row_purely_on_the_frontend():
+    """deleteTask 删成功后：本地把行摘掉，不靠整体重拉把它变没。
 
-    「移除」与「删除」的区别：dismiss 只把行从界面上拿走（任务仍在后端，
-    下次翻页/刷新会回来）；🗑 是 deleteTask 的事。这条与
-    test_dismiss_is_purely_local 互补：那条守「不打后端」，这条守
-    「确实把行拿走、且不整体重绘」。
+    （前身是 test_dismiss_removes_the_row_purely_on_the_frontend。「移除」按钮
+    随「取消任务」一并下线后，「把失败行从眼前拿走」这件事由 🗑 承担 ——
+    契约没变，守的函数换成 history.js 的 deleteTask。）
+
+    deleteTask 确实还会调 loadHistory 重新分页（后端行真的没了，页码可能要
+    回退），所以这条不能再钉「不许重拉」。它钉的是**本地摘行必须发生**：
+    只靠 loadHistory 的话，状态栏的活动任务聚合读的是 store.active，
+    那份不会被重拉刷新，被删任务会一直算在「N 个活动任务」里。
     """
-    body = _fn('dismissTask')
+    body = _fn('deleteTask', 'history.js')
     assert 'TaskStore.remove(' in body, (
-        'dismissTask 没有把任务从 store 摘掉——「移除」按钮成了摆设'
+        'deleteTask 没有把任务从 store 摘掉——行要等下一次整页刷新才消失，'
+        '状态栏的活动任务计数也会一直多算它一个'
     )
-    assert 'loadHistory(' not in body and 'renderHistoryTable(' not in body, (
-        'dismissTask 不该触发重拉/整体重绘——从 store 摘掉就够了'
+    assert 'updateStatusTasks(' in body, (
+        'deleteTask 摘完行没有刷新状态栏——底部「N 个活动任务 X%」会原地冻结'
     )
+
 
 def test_panel_reopen_refreshes_timeline():
     """记录面板重开必须重新拉取时间流 + 统计,不能只吃懒初始化那一遍。

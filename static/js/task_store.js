@@ -142,7 +142,7 @@
         return existing;
     }
 
-    /** 从流里移除一行（dismissTask 的「移除」，不碰后端）。同时出活动集。 */
+    /** 从流里移除一行（deleteTask 删成功后同步界面用）。同时出活动集。 */
     function remove(key) {
         const i = state.tasks.findIndex(t => t._key === key);
         if (i >= 0) state.tasks.splice(i, 1);

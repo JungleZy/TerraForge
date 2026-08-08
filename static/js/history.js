@@ -643,7 +643,8 @@ async function deleteTask(taskId, taskType = 'map') {
             if (typeof closeFailureToast === 'function') {
                 closeFailureToast(`${taskType}:${taskId}`);
             }
-            // L6：删掉 pending/paused 任务后（四个 DELETE 端点都只拒 running），
+            // L6：删掉任意活动任务后（四条 DELETE 端点现在连 running 也收 ——
+            // 置停止标志后当场删行，见 routes/api.py 的 delete_task），
             // 底部状态栏「N 个活动任务（M 运行中）X%」会继续把它算进去 ——
             // loadHistory 不调 updateStatusTasks，文本就原地冻结，唯一纠正点是
             // loadActiveTasks 里的 setActive（只在新建任务、socket 断线重连

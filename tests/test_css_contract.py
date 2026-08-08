@@ -4702,7 +4702,9 @@ def test_button_ink_is_readable_in_every_state():
 # 确定/取消等）文字都写成 `${t('...')}`，是有可见文本的按钮 —— 这也正是
 # 必须先让 _MARKUP_NOISE_RE 认得 `${t(...)}` 才能扩大扫描列表的原因，
 # 否则它们会集体变成假的「纯图标按钮」。
-ICON_ONLY_BUTTON_COUNT = 20
+# 20 -> 18（task_list.js 的 TaskRow 删掉「取消」与「移除」两颗叉号）：
+# 「取消任务」整条链下线后任务行只剩 开始/暂停/恢复/预览/删除 五颗。
+ICON_ONLY_BUTTON_COUNT = 18
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 

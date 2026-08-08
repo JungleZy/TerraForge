@@ -89,14 +89,6 @@
                             <polygon points="5 3 19 12 5 21 5 3"></polygon>
                         </svg>
                     </button>
-                    <button v-if="hasTaskActions && isLive && task.status !== 'failed'"
-                            class="btn btn-icon btn-danger" @click="act('cancelTask')"
-                            :title="t('js.history.action.cancel')" :aria-label="t('js.history.action.cancel')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                    </button>
                     <button v-if="canPreview && task.status === 'completed'"
                             class="btn btn-icon btn-sm btn-success" @click="preview"
                             :title="t('js.history.action.preview')" :aria-label="t('js.history.action.preview')">
@@ -110,14 +102,6 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                        </svg>
-                    </button>
-                    <button v-if="hasTaskActions && task.status === 'failed'"
-                            class="btn btn-icon btn-secondary" @click="act('dismissTask')"
-                            :title="t('js.history.action.dismiss_title')" :aria-label="t('js.history.action.dismiss_label')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
                         </svg>
                     </button>
                 </div>

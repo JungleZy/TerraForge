@@ -177,16 +177,4 @@ MESSAGES = {
         'zh': '恢复任务失败: {error}',
         'en': 'Failed to resume task: {error}',
     },
-    'js.tasks.toast.cancel_failed': {
-        'zh': '取消任务失败: {error}',
-        'en': 'Failed to cancel task: {error}',
-    },
-    'js.tasks.confirm.cancel_title': {
-        'zh': '取消任务',
-        'en': 'Cancel task',
-    },
-    'js.tasks.confirm.cancel_message': {
-        'zh': '确定要取消这个任务吗？',
-        'en': 'Cancel this task?',
-    },
 }
