@@ -189,7 +189,7 @@
             function cleanup(result) {
                 if (closed) return;
                 closed = true;
-                document.removeEventListener('keydown', onKey);
+                document.removeEventListener('keydown', onKey, true);
                 overlay.classList.remove('app-confirm-overlay--in');
                 overlay.classList.add('app-confirm-overlay--out');
                 overlay.addEventListener('transitionend', function () { overlay.remove(); }, { once: true });
@@ -205,27 +205,36 @@
             }
 
             function onKey(e) {
-                // e.repeat 是承重的那一半：按键自动重复的间隔约 30ms，而窗口
-                // 期最长也就几百毫秒 —— 只加时间窗挡不住连续重复（第一次重复
-                // 被挡在 ~280ms，紧接着 ~310ms 那次照样穿透）。preventDefault
-                // 拦不住 repeat，必须显式忽略。
+                if (e.key !== 'Escape' && e.key !== 'Enter') return;
+                // 确认框开着时 ESC/Enter 归它独占。为什么必须是
+                // stopImmediatePropagation + 捕获阶段：panels.js 的关面板监听
+                // 也挂在 document 上，同一节点上的监听按注册顺序跑，
+                // stopPropagation 对它无效；而面板先开、监听先注册，所以只有
+                // 排在捕获阶段才能抢在它前面。否则一次 ESC 既关确认框又把整个
+                // 任务面板收掉（任务没被删，纯打断感）。
+                //
+                // 挡在 repeat 判断【之前】：面板监听没有 repeat 判断，长按 ESC
+                // 时第一发被我们吞掉、后面每一次重复都会漏过去关掉面板。
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                // e.repeat 是承重的那一半：按键自动重复的间隔约 30ms，而下面
+                // 那道时间窗最长也就几百毫秒 —— 只加时间窗挡不住连续重复（第一
+                // 次重复被挡在 ~280ms，紧接着 ~310ms 那次照样穿透，于是两级
+                // 确认被一路自动按穿）。preventDefault 拦不住 repeat，必须显式忽略。
                 if (e.repeat) return;
-                if (e.key === 'Escape') { e.preventDefault(); cleanup(false); }
-                else if (e.key === 'Enter') {
-                    e.preventDefault();
-                    // 时间窗挡的是真人快速双击：与淡入动画（200ms）对齐，
-                    // 挂载后 300ms 内的回车一律忽略，让用户看清这一框问的是什么。
-                    const now = (typeof performance !== 'undefined' && performance.now)
-                        ? performance.now() : Date.now();
-                    if (now - openedAt < 300) return;
-                    cleanup(true);
-                }
+                if (e.key === 'Escape') { cleanup(false); return; }
+                // 时间窗挡的是真人快速双击：与淡入动画（200ms）对齐，
+                // 挂载后 300ms 内的回车一律忽略，让用户看清这一框问的是什么。
+                const now = (typeof performance !== 'undefined' && performance.now)
+                    ? performance.now() : Date.now();
+                if (now - openedAt < 300) return;
+                cleanup(true);
             }
 
             cancelBtn.addEventListener('click', function () { cleanup(false); });
             okBtn.addEventListener('click', function () { cleanup(true); });
             overlay.addEventListener('click', function (e) { if (e.target === overlay) cleanup(false); });
-            document.addEventListener('keydown', onKey);
+            document.addEventListener('keydown', onKey, true);
 
             requestAnimationFrame(function () {
                 overlay.classList.add('app-confirm-overlay--in');

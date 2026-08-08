@@ -234,6 +234,72 @@ def test_registered_but_not_yet_started_thread_takes_the_background_path(
     _join_cleanup_thread(1)
 
 
+def test_late_started_thread_still_gets_its_artifacts_cleaned(monkeypatch, tmp_path):
+    """「登记了但还没 start()」这一支的后台收尾必须真的收完尾。
+
+    分流判据（is_alive() or ident is None）把这段窗口正确地送进后台路径，但
+    `Thread.join()` 对一个从未 start() 的线程直接抛
+    `RuntimeError: cannot join thread before it is started` —— 整个
+    `_background_cleanup` 被 except 接住提前退出，产物一个没删、清单没销账、
+    墓碑没摘。实测日志：`Background cleanup for task 1 failed: cannot join
+    thread before it is started`。
+
+    这里把等 start 的上限调得远大于测试自己 start() 的延迟，让「先等到 ident
+    再 join」成为确定性路径，不靠调度运气。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(td, "_START_WAIT_SECONDS", 30.0)
+    _seed(db, status="running")
+    art = tmp_path / "downloads" / "task_1"
+    art.mkdir(parents=True)
+    (art / "a.png").write_bytes(b"x")
+
+    th = threading.Thread(target=lambda: None, daemon=True)
+    mgr = _FakeManager(thread=th)
+    tomb = set()
+
+    out = td.delete_task_row(manager=mgr, task_id=1, table="tasks",
+                             artifact_dir=art, tombstone=tomb)
+    assert out.files_deferred is True
+
+    # 真实管线里这就是 start_* 出锁后的下一条语句
+    th.start()
+    th.join(timeout=10)
+    _join_cleanup_thread(1)
+
+    assert not art.exists(), "线程收工后产物必须被删掉，不能等下次启动补删"
+    assert _pending_paths(db) == [], "删干净了就要销账"
+    assert tomb == set(), "线程死透了，墓碑必须摘"
+
+
+def test_never_started_thread_still_gets_its_artifacts_cleaned(monkeypatch, tmp_path):
+    """线程永远不会启动时也要走到「删产物 + 销账 + 摘墓碑」，不能静默跳过。
+
+    这不是假想：四条管线的 `th.start()` 都带 L2 回补块，
+    `RuntimeError: can't start new thread` 时会把状态回退并清掉 active_tasks
+    —— 那个线程对象再也不会启动。等不到就按「没启动 = 不会再写盘」直接删，
+    否则 GB 级的本地地形目录要挂到下次进程启动才释放。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(td, "_START_WAIT_SECONDS", 0.02)
+    _seed(db, status="running")
+    art = tmp_path / "downloads" / "task_1"
+    art.mkdir(parents=True)
+    (art / "a.png").write_bytes(b"x")
+
+    th = threading.Thread(target=lambda: None, daemon=True)
+    mgr = _FakeManager(thread=th)
+    tomb = set()
+
+    td.delete_task_row(manager=mgr, task_id=1, table="tasks",
+                       artifact_dir=art, tombstone=tomb)
+    _join_cleanup_thread(1)
+
+    assert not art.exists(), "线程不会启动了，产物没有任何理由留着"
+    assert _pending_paths(db) == [], "删干净了就要销账"
+    assert tomb == set(), "线程永不启动 = 永不写进度，墓碑必须摘，否则永久泄漏一个 int"
+
+
 def test_tombstone_receives_task_id_before_row_is_deleted(monkeypatch, tmp_path):
     """墓碑必须在删行【之前】写入，否则 map 的进度批次会撞外键。
 

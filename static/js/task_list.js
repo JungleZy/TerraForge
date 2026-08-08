@@ -144,7 +144,9 @@
             isFailed() {
                 return this.task.status === 'failed';
             },
-            // 独立页 /history 不加载 tasks.js：那里只给预览/详情/删除。
+            // 独立页 /history 不加载 tasks.js：那里只剩详情（点任务名）和删除。
+            // 预览也没有 —— 它由 canPreview 单独把关，而 previewTask 来自 map.js，
+            // /history 同样不加载。
             hasTaskActions() {
                 return typeof startTask === 'function';
             },

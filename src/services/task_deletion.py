@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
@@ -45,6 +46,16 @@ logger = logging.getLogger(__name__)
 # pending_deletions 里，下次启动的清扫会接着删。这个上限只是防止 daemon 线程
 # 无限挂着 —— GDAL 阻塞区没有可靠的时间上界，等不到就交给下次启动。
 _JOIN_TIMEOUT_SECONDS = 600
+
+# 后台收尾等「已登记但还没 start()」的线程真正启动的上限，以及自旋间隔。
+# 为什么需要它：分流判据把 `active_tasks[id]=th` 与 `th.start()` 之间那段窗口
+# 判成「在跑」（走后台路径），但 `Thread.join()` 对从未 start() 的线程直接抛
+# RuntimeError —— 后台收尾会整个提前退出，产物一个都不删。
+# 上限取得很小：那段窗口在真实管线里只隔一条语句（微秒级），100ms 是三个数量级
+# 的余量；等不到就说明线程再也不会启动（`th.start()` 抛异常时四条管线的 L2 块
+# 会把登记清掉），继续等只是白占一个 daemon 线程。
+_START_WAIT_SECONDS = 0.1
+_START_POLL_SECONDS = 0.005
 
 
 class DeleteOutcome(NamedTuple):
@@ -83,29 +94,59 @@ def _clear_pending_deletion(artifact_dir: Path) -> None:
         logger.warning(f"Failed to clear pending deletion for {artifact_dir}: {e}")
 
 
+def _wait_until_started(thread: threading.Thread) -> bool:
+    """有界自旋等 `thread.ident` 出现，返回「这个线程 start() 过」。
+
+    ident 是唯一能区分「还没 start()」和「跑完死了」的属性（两种情况
+    `is_alive()` 都是 False）：start() 前为 None，start() 之后恒非 None。
+    """
+    if thread.ident is not None:
+        return True
+    deadline = time.monotonic() + _START_WAIT_SECONDS
+    while thread.ident is None:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_START_POLL_SECONDS)
+    return True
+
+
 def _background_cleanup(task_id: int, thread: threading.Thread,
                         artifact_dir: Optional[Path],
                         tombstone: Optional[set]) -> None:
     """等线程收工，然后删产物、销账、摘墓碑。全程 best-effort。
 
-    摘墓碑的唯一前提是「线程已经死透」—— 见 worker_done。
+    「收工」有两种：线程跑完死了，或者线程压根没 start()（分流判据故意把那段
+    窗口算作在跑，见 delete_task_row）。两种都要走完整收尾 —— 唯一不收尾的是
+    join 超时那一支，因为那时线程还活着、还在写盘。
+
+    摘墓碑的唯一前提是「线程不会再写进度」—— 见 worker_done。
     """
     worker_done = False
     try:
-        thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
-        if thread.is_alive():
-            # 多半卡在 GDAL 阻塞区里。产物线索还在清单上，下次启动会补删。
-            #
-            # 墓碑【不能】在这一支摘：这里刚刚证明了线程还活着，它走出阻塞区后
-            # 的进度批次仍要靠墓碑短路，否则会拿已删的 task_id 去 INSERT
-            # task_tiles 撞外键，然后每次 flush 再炸一次直到进程重启。产物有
-            # pending_deletions 兜底，墓碑没有第二道 —— 摘早了没人能补。
-            # 代价对比：泄漏一个 int，对上一条永不自愈的外键失败链。
-            logger.warning(
-                f"Task {task_id}: worker still running after "
-                f"{_JOIN_TIMEOUT_SECONDS}s; leaving artifact cleanup to the "
-                f"startup sweep")
-            return
+        if not _wait_until_started(thread):
+            # 等不到 start() —— 按「没启动 = 不会再写盘」处理，和线程跑完收工
+            # 走同一条收尾（删产物 + 销账 + 摘墓碑）。这一支必须真的收尾：
+            # 直接 return 会把 GB 级的本地地形目录挂到下次进程启动才释放。
+            # 墓碑在这一支摘是安全的：从未启动的线程不会有进度批次去 INSERT
+            # task_tiles，没有需要短路的写入。
+            logger.info(
+                f"Task {task_id}: worker never started within "
+                f"{_START_WAIT_SECONDS}s; cleaning artifacts now")
+        else:
+            thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
+            if thread.is_alive():
+                # 多半卡在 GDAL 阻塞区里。产物线索还在清单上，下次启动会补删。
+                #
+                # 墓碑【不能】在这一支摘：这里刚刚证明了线程还活着，它走出阻塞
+                # 区后的进度批次仍要靠墓碑短路，否则会拿已删的 task_id 去 INSERT
+                # task_tiles 撞外键，然后每次 flush 再炸一次直到进程重启。产物有
+                # pending_deletions 兜底，墓碑没有第二道 —— 摘早了没人能补。
+                # 代价对比：泄漏一个 int，对上一条永不自愈的外键失败链。
+                logger.warning(
+                    f"Task {task_id}: worker still running after "
+                    f"{_JOIN_TIMEOUT_SECONDS}s; leaving artifact cleanup to the "
+                    f"startup sweep")
+                return
         worker_done = True
         if artifact_dir is not None:
             eligible = remove_task_dir_if_safe(artifact_dir)
