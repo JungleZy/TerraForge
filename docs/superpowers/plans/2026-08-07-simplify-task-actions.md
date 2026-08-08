@@ -144,8 +144,8 @@ def _seed(db, status="paused"):
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO tasks (id, name, status, north, south, east, west, "
-            "zoom_min, zoom_max, style, output_path, total_tiles) "
-            "VALUES (1, 't', ?, 1, 0, 1, 0, 1, 1, 'satellite', ?, 1)",
+            "zoom_min, zoom_max, style, output_format, output_path, total_tiles) "
+            "VALUES (1, 't', ?, 1, 0, 1, 0, 1, 1, 'satellite', 'png', ?, 1)",
             (status, "/tmp/x"),
         )
         conn.commit()
@@ -548,8 +548,8 @@ def _seed(db, status="running"):
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO tasks (id, name, status, north, south, east, west, "
-            "zoom_min, zoom_max, style, output_path, total_tiles) "
-            "VALUES (1, 't', ?, 1, 0, 1, 0, 1, 1, 'satellite', ?, 1)",
+            "zoom_min, zoom_max, style, output_format, output_path, total_tiles) "
+            "VALUES (1, 't', ?, 1, 0, 1, 0, 1, 1, 'satellite', 'png', ?, 1)",
             (status, "/tmp/x"),
         )
         conn.commit()
