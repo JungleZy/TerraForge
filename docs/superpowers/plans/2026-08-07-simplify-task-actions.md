@@ -1034,6 +1034,7 @@ git commit -m "refactor: 删掉 cancel_task 与四条 /cancel 路由，cancelled
 
 | 文件 | 删什么 |
 |---|---|
+| `history.js` | `:649` 那句「四个 DELETE 端点都只拒 running」的注释已过时 —— Task 2/3 让四条都能删运行中任务。它是 L6 状态栏补正逻辑的**依据**，读者会据此以为运行中任务不可能从这里被删。逻辑不用改，只改注释 |
 | `tasks.js` | `cancelTask:726-751`、`dismissTask:543-549`、`getStatusColor:561` 的 `'cancelled': 'dark'`、`getStatusText:573` |
 | `history.js` | `getStatusColor:306`、`getStatusStroke:347`、`getStatusText:368` 各一行 |
 
@@ -1170,7 +1171,19 @@ git commit -m "test: 补 i18n 反向检查 —— 引用了不存在的键必须
 
 - [ ] **Step 3: RELEASE_NOTES.md**
 
-这是**破坏性变更**（四条公开 API 端点消失），单开一节写清楚：谁会受影响（直连 API 的脚本）、迁移方式（改调 `DELETE`）、以及用户能看到的变化（按钮从 7 个变 5 个、删除不用先取消）。
+这是**破坏性变更**，单开一节写清楚：谁会受影响、怎么迁移、以及用户能看到的变化
+（按钮从 7 个变 5 个、删除不用先取消）。
+
+**破坏性变更清单必须包含下面五条**（前两条是本计划的主体，后三条由 Task 2/3 引入，
+它们原本只活在 Task 报告里，没有任何机制能带到这里 —— 这份清单就是那个机制）：
+
+| 变更 | 谁受影响 | 迁移 |
+|---|---|---|
+| 四条 `POST .../cancel` 端点消失 | 直连 API 的脚本 | 改调 `DELETE`（现在任何状态都能删） |
+| 失败任务不再能重新开始 | 直连 API 的脚本（前端本来就没入口） | 删掉重建 |
+| **四条管线运行中删除不再回 400**，改为 200 + `files_deferred: true` | 靠 400 判断「删不了」的脚本 | 看 `files_deferred` 决定要不要等产物清理 |
+| **响应新增 `files_deferred` 字段**，为 true 时**不下发** `files_removed` / `files_message` | 解析删除响应的脚本 | 三态改四态处理 |
+| **本地地形 DELETE 的 not-found 从 400 变 404** | 靠 400 判断的脚本 | 四条管线现在统一 404 |
 
 - [ ] **Step 4: 设计文档标记完成**
 
