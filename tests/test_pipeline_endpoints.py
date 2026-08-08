@@ -12,6 +12,9 @@ pause 也只打到过 ValueError→400 分支。
 
 本文件不追求覆盖成功路径（start 会真拉起下载线程），只钉住**错误分支**：
 它们零副作用、极易补，而漏抄 except 的失败形态正是 500。
+
+文件末尾另有一条**反向**的管线路由断言：四条 `/cancel` 不能重新出现在 url_map
+里。放这里是因为它盯的是同一张表——四条管线各自暴露哪些任务动作端点。
 """
 
 import os
@@ -103,3 +106,42 @@ def test_pause_running_task_succeeds_and_flips_db_state(isolated_app):
         row = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
     assert row["status"] == "paused"
 
+
+# Task 4 删掉的四条取消路由（含蓝图前缀）。只用于失败时点名，不参与断言——
+# 断言查的是 url_map 里的真实 rule 集合，不是这张表。
+_REMOVED_CANCEL_ROUTES = (
+    "map           POST /api/tasks/<int:task_id>/cancel",
+    "dem           POST /api/dem/tasks/<int:task_id>/cancel",
+    "contour       POST /api/contour/tasks/<int:task_id>/cancel",
+    "local terrain POST /api/terrain/local/tasks/<int:task_id>/cancel",
+)
+
+
+def test_no_pipeline_exposes_a_cancel_route(isolated_app):
+    """四条 /cancel 路由不能被加回来。
+
+    查 url_map 而不是 grep 源码：路由存不存在是**运行时**事实。源码文本搜索会
+    被注释掉的旧代码误报，也会被 URL 字符串拼接、`add_url_rule`、装饰器变体绕
+    过；url_map 是 Flask 自己认的那一份，绕不过去。
+
+    匹配放宽到「rule 里出现 cancel」而不是「以 /cancel 结尾」：加回来的形状不
+    一定逐字复刻（`/cancel_task`、`/cancel/<reason>` 都算），此刻仓里零条合法
+    路由带这个词，放宽不会误报。
+    """
+    offenders = sorted(
+        rule.rule
+        for rule in isolated_app.app.url_map.iter_rules()
+        if "cancel" in rule.rule.lower()
+    )
+
+    assert not offenders, (
+        "检出取消路由：" + "、".join(offenders) + "\n"
+        "「取消」这个动作已经无事可做：删除现在任何状态都能用（含运行中），"
+        "原先「先取消、再删除」的两步已经合并成一步，取消不再是任何操作的前置。\n"
+        "更硬的一条：TaskStatus.CANCELLED 已从枚举里删除，存量 cancelled 行也已"
+        "由 migrate_cancelled_tasks_to_failed 迁成 failed。加回 /cancel 就是往库里"
+        "写一个状态机里不存在的状态——前端两张状态词表落到「未知」兜底，"
+        "start_task 只收 pending/paused 也恢复不回来，任务卡死。\n"
+        "确实要恢复取消能力，得连枚举、迁移、前端词表一起改回来，然后再删这条用例。\n"
+        "历史上被删掉的四条：\n  " + "\n  ".join(_REMOVED_CANCEL_ROUTES)
+    )
