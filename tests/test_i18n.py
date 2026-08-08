@@ -98,6 +98,11 @@ _KEY_LITERAL = re.compile(
 # 活契约：谁删了 js.map.bounds.sr_east、或者重构掉了那个拼接点，红的都是这张表
 # 本身，且失败信息直接点到位。换成通配就会被整片吞掉，拼接点在运行时把键名原样
 # 显示给用户，而测试一片绿。
+#
+# 入表前提：**登记的前缀必须在源码里是一个完整的引号字面量**，因为「拼接点还在吗」
+# 那条断言就是拿 _KEY_LITERAL 去源码里找它。反引号模板串、或者
+# `'js.map.bounds.sr' + '_' + field` 这种把前缀本身也拆开的拼法，会让那条断言永远红 ——
+# 遇到这种拼法请改拼接点让前缀成为一个完整字面量，不要去删断言。
 _DYNAMIC_KEY_SITES = {
     # static/js/map.js:_renderManualBounds —— 手动录入四个边界时，输入框的
     # aria-label 由 `t('js.map.bounds.sr_' + field)` 拼出，field 只可能是这四个方向。
@@ -127,7 +132,11 @@ def _iter_source_files():
         (os.path.join(PROJECT_ROOT, 'src'), '.py'),
     ):
         for dirpath, dirnames, filenames in os.walk(root):
-            if os.path.abspath(dirpath).startswith(_CATALOG_DIR + os.sep):
+            # 目录**自身**和它的子目录都要排除。只写 startswith(_CATALOG_DIR + os.sep)
+            # 会漏掉 dirpath 恰好等于 _CATALOG_DIR 的那一层 —— 那正是 15 个 catalog
+            # 文件所在的一层，漏掉就等于把定义端整个放进扫描面（见下面那条元断言）。
+            abs_dir = os.path.abspath(dirpath)
+            if abs_dir == _CATALOG_DIR or abs_dir.startswith(_CATALOG_DIR + os.sep):
                 dirnames[:] = []
                 continue
             dirnames[:] = sorted(d for d in dirnames if d != '__pycache__')
@@ -156,6 +165,43 @@ def _catalog_definitions():
     return {k: v[0] for k, v in _scan_key_literals(paths).items()}
 
 
+def test_catalog_dir_stays_out_of_the_scan_face():
+    """定义端绝不能出现在扫描面里 —— 漏进去，孤儿检查会**永远绿**。
+
+    这条元断言是踩出来的：为了排除 catalog 曾把谓词写成
+    `startswith(_CATALOG_DIR + os.sep)`，恰好漏掉 dirpath == _CATALOG_DIR 的那一层，
+    于是 15 个 catalog 文件全进了扫描面，每个键在自己的定义处自证被引用。
+    失效是**静默**的：三条用例照样全绿，只有字面量出现次数从 531 涨到 997
+    （delta 恰好等于 MESSAGES 全量）才看得出来。
+    """
+    leaked = sorted(
+        os.path.relpath(p, PROJECT_ROOT).replace(os.sep, '/')
+        for p in _iter_source_files()
+        if os.path.abspath(p).startswith(_CATALOG_DIR + os.sep)
+    )
+    assert not leaked, (
+        '定义端漏进了扫描面 —— 每个键都会在自己的定义处自证被引用，\n'
+        'test_no_unreferenced_catalog_key 从此永远绿。检查 _iter_source_files 的\n'
+        '排除谓词:\n  ' + '\n  '.join(leaked)
+    )
+
+
+def test_not_a_key_entries_are_still_in_the_source():
+    """_NOT_A_KEY 也要有回收机制 —— 白名单一造出来就得能被回收。
+
+    round 1 的教训就是「造白名单时忘了装回收机制」：豁免只会越攒越多，
+    而没有任何东西会告诉你哪一条已经过期了。这条与 _DYNAMIC_KEY_SITES 的
+    「拼接点还在吗」对称。
+    """
+    literals = _scan_key_literals(_iter_source_files())
+    stale = sorted(lit for lit in _NOT_A_KEY if lit not in literals)
+    assert not stale, (
+        '_NOT_A_KEY 登记的字面量在源码里已经找不到了 —— 这条豁免只剩下副作用:\n'
+        '万一将来 catalog 里真进了同名的键，它会替方向一把真问题吞掉。删掉这条:\n  '
+        + '\n  '.join(stale)
+    )
+
+
 def test_dynamic_key_sites_expand_to_real_keys():
     """动态拼接表两头都得对得上 —— 对不上它就成了一张过期的免死金牌。
 
@@ -169,7 +215,10 @@ def test_dynamic_key_sites_expand_to_real_keys():
     stale = [prefix for prefix in _DYNAMIC_KEY_SITES if prefix not in literals]
     assert not stale, (
         '_DYNAMIC_KEY_SITES 登记的拼接点在源码里已经找不到了 —— 这条豁免会白白\n'
-        '吊着它展开的那些键，孤儿检查从此抓不到它们。删掉这条:\n  '
+        '吊着它展开的那些键，孤儿检查从此抓不到它们。删掉这条。\n'
+        '但先确认一下方向：若拼接点其实**还在**，那就是 _KEY_LITERAL 抓不到它了\n'
+        '（比如有人给正则加了「不许以 _ 结尾」之类的限制）—— 那种情况要改的是\n'
+        '正则，不是这张表。照着字面意思删条目就是删掉一条活契约:\n  '
         + '\n  '.join(stale)
     )
 
@@ -210,6 +259,10 @@ def test_no_reference_to_a_missing_key():
 def test_no_unreferenced_catalog_key():
     """定义了没人用的键 = 死重量，`js.` 那批还会被 client_catalog 白塞进每个页面。"""
     referenced = set(_scan_key_literals(_iter_source_files()))
+    # _NOT_A_KEY 宣告过「这条字面量不是 i18n 引用」，那这一侧也不能拿它当引用。
+    # 今天它是空集所以无影响；哪天 catalog 里真进了同名的键，不减掉就等于让一条
+    # 已被宣告不是引用的字面量把孤儿检查喂饱，静默放行。
+    referenced -= _NOT_A_KEY
     referenced.update(
         prefix + suffix
         for prefix, suffixes in _DYNAMIC_KEY_SITES.items()
