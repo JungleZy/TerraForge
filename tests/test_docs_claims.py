@@ -300,6 +300,17 @@ def _readme_structure_tree():
     return section.split("```")[1]
 
 
+# 运行时才创建、且被 .gitignore 排除的目录。它们**应该**出现在结构树里（用户第一次
+# 启动后就会看到），但在干净 clone / CI checkout 里并不存在 —— 所以「必须真的存在」
+# 那条断言要放它们过去。
+#
+# 这个豁免本身有闸：下面 test_runtime_dirs_exemption_is_not_a_hole 断言每一项都真的
+# 被 .gitignore 排除。否则豁免就是个洞 —— 拼错一个名字、或者某个真目录被误删，
+# 都会被它悄悄吞掉。（本条正是 CI 抓到的：开发机上这四个目录都在，本地全绿，
+# 到干净 checkout 才红。）
+_RUNTIME_DIRS = frozenset({"data", "downloads", "cache", "logs"})
+
+
 def test_readme_structure_tree_lists_the_real_top_level_dirs():
     """结构树里出现的每个仓内路径都必须真的存在。
 
@@ -332,9 +343,37 @@ def test_readme_structure_tree_lists_the_real_top_level_dirs():
             parents[depth + 1] = os.path.join(parent, tokens[0]) if tokens else parent
         for token in tokens:
             rel = os.path.join(parent, token)
+            if rel in _RUNTIME_DIRS:
+                continue
             if not os.path.exists(os.path.join(PROJECT_ROOT, rel)):
                 missing.append(f"{rel!r}（来自 {entry!r}）")
     assert not missing, "README 项目结构树里不存在的条目：\n  " + "\n  ".join(missing)
+
+
+def test_runtime_dirs_exemption_is_not_a_hole():
+    """上面那条豁免的每一项都必须（1）确实不会被 checkout 建出来，（2）确实还在树里。
+
+    没有这道闸，`_RUNTIME_DIRS` 就是一张万能通行证：写错一个名字、或者哪天某个
+    真目录被删掉而树里还留着，都会被静默放过 —— 而那条断言存在的全部意义就是
+    「树里列的东西不许是幻觉」。
+
+    判据是「没有任何被 git 跟踪的文件」而不是「在 .gitignore 里」：`data/` 只
+    忽略了内容（`data/*.db`），目录本身没写进 .gitignore，但 git 不跟踪空目录，
+    所以干净 checkout 里照样没有它 —— 「没有跟踪文件」才是让豁免成立的那个性质。
+    第二条（必须出现在树里）负责让豁免不会变成陈旧名单。
+    """
+    import subprocess
+
+    block = _readme_structure_tree()
+    for name in sorted(_RUNTIME_DIRS):
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", name],
+            cwd=PROJECT_ROOT, capture_output=True, text=True).stdout.strip()
+        assert not tracked, (
+            f"{name}/ 有被跟踪的文件（{tracked.splitlines()[:3]}），"
+            "干净 checkout 里就会存在，不该豁免")
+        assert re.search(rf"(^|[\s│├└─]){re.escape(name)}/", block, re.M), (
+            f"{name}/ 已经不在 README 结构树里了 —— 豁免名单该同步删掉这一项")
 
 
 def test_readme_structure_tree_names_the_real_composition_root():
