@@ -1,10 +1,12 @@
 """界面语言（zh / en）契约。
 
-机制见 src/i18n/__init__.py。这里钉三层：
+机制见 src/i18n/__init__.py。这里钉四层：
 1. 目录本身的完整性（key 唯一、每条都有两种语言）——漏翻在测试期就红，
    而不是让用户在英文界面上看到一句中文；
-2. 语种解析（cookie → 校验 → 缺省 zh）与占位符；
-3. 端到端：同一个页面，带不带 cookie 渲染出的确实是两种语言，且**中文那份
+2. key ↔ 引用的**双向闭合**：引用了不存在的键、以及定义了没人用的键，两个
+   方向都红。第 1 层全是「对已有键做检查」，删键/漏删引用一概不报警；
+3. 语种解析（cookie → 校验 → 缺省 zh）与占位符；
+4. 端到端：同一个页面，带不带 cookie 渲染出的确实是两种语言，且**中文那份
    与改造前逐字一致**（大量既有测试断言中文原文，这条是它们的护栏）。
 """
 import os
@@ -56,6 +58,139 @@ def test_english_values_are_not_chinese():
         if key not in allowed and _HAN.search(entry['en'])
     ]
     assert not leftovers, f'这些 key 的英文还是中文: {leftovers}'
+
+
+# ---------------------------------------------------------------- 双向闭合
+#
+# 为什么按「key 形状的字面量」扫而不是按 `t(` 调用点扫：取文案有三种形状 ——
+# JS 的 `t('k')`、Jinja 的 `{{ t('k') }}`、Python 的 `t('k')` —— 但**键字面量出现在
+# 源码里**才是三者唯一的共同特征。有一批键根本不紧跟在 `t(` 后面：
+#   - static/js/config.js:246 的 `{ env: 'js.config.proxy.source_env', … }[source]`
+#   - src/routes/api.py:873 的 `_ACTIVE_TASK_TABLES` 元组
+#   - src/services/tile_url_probe.py:370 的跨行三元表达式
+# 按 `t(` 抓这些全是漏网，孤儿键那一侧就会成批误报。
+# 代价是「任何 key 形状的字面量都算引用」；实测全仓 467 处这种字面量里只有 1 处
+# 不是完整键（下面那张表登记的拼接前缀），代价目前是零。
+
+_CATALOG_DIR = os.path.join(PROJECT_ROOT, 'src', 'i18n', 'catalog')
+
+# 域名单从 MESSAGES 现算，不写死 —— 写死就是第二份目录知识，迟早跟 catalog 漂。
+_KEY_LITERAL = re.compile(
+    r"""['"]((?:%s)(?:\.[A-Za-z0-9_]+)+)['"]"""
+    % '|'.join(sorted({key.split('.')[0] for key in MESSAGES}))
+)
+
+# 运行时才拼出完整键的地方。
+#
+# **往这张表加东西请照抄下面的体例：前缀 → 完整后缀清单。**
+# 不许退化成前缀通配 / startswith 一拳打死。理由：清单展开出的键一边算「已引用」，
+# 一边被 test_dynamic_key_sites_expand_to_real_keys 反过来断言确实在 catalog 里 ——
+# 这张表因此不是消音器，而是一条**额外**的活契约。谁删了 js.map.bounds.sr_east，
+# 红的是这张表本身，且失败信息直接点到拼接点；换成通配就会被整片吞掉，
+# 拼接点在运行时把键名原样显示给用户，而测试一片绿。
+_DYNAMIC_KEY_SITES = {
+    # static/js/map.js:_renderManualBounds —— 手动录入四个边界时，输入框的
+    # aria-label 由 `t('js.map.bounds.sr_' + field)` 拼出，field 只可能是这四个方向。
+    'js.map.bounds.sr_': ('north', 'south', 'east', 'west'),
+}
+
+
+def _iter_source_files():
+    """扫描面：产品代码。
+
+    刻意不含两处：catalog 自身是定义端，算进去每个键都会「自证被引用」；
+    tests 算进去等于让测试给测试盖章 —— 只被测试引用的键就是死重量。
+    """
+    for root, suffix in (
+        (os.path.join(PROJECT_ROOT, 'static', 'js'), '.js'),
+        (os.path.join(PROJECT_ROOT, 'templates'), '.html'),
+        (os.path.join(PROJECT_ROOT, 'src'), '.py'),
+    ):
+        for dirpath, dirnames, filenames in os.walk(root):
+            if os.path.abspath(dirpath).startswith(_CATALOG_DIR):
+                dirnames[:] = []
+                continue
+            dirnames[:] = [d for d in dirnames if d != '__pycache__']
+            for name in sorted(filenames):
+                if name.endswith(suffix):
+                    yield os.path.join(dirpath, name)
+    yield os.path.join(PROJECT_ROOT, 'app.py')
+
+
+def _scan_key_literals(paths):
+    """key 形状的字面量 -> [(相对路径:行号)]，行号是为了让失败信息能直接跳过去。"""
+    found = {}
+    for path in paths:
+        rel = os.path.relpath(path, PROJECT_ROOT).replace(os.sep, '/')
+        with open(path, encoding='utf-8') as fh:
+            for lineno, line in enumerate(fh, 1):
+                for key in _KEY_LITERAL.findall(line):
+                    found.setdefault(key, []).append(f'{rel}:{lineno}')
+    return found
+
+
+def _catalog_definitions():
+    """key -> 定义它的 catalog 文件:行号。删孤儿键时不用再自己 grep。"""
+    paths = [os.path.join(_CATALOG_DIR, n)
+             for n in sorted(os.listdir(_CATALOG_DIR)) if n.endswith('.py')]
+    return {k: v[0] for k, v in _scan_key_literals(paths).items()}
+
+
+def test_dynamic_key_sites_expand_to_real_keys():
+    """动态拼接表必须对得上 catalog —— 对不上它就成了一张过期的免死金牌。"""
+    known = _catalog_definitions()
+    assert known, '定义端一个键都扫不出来，_KEY_LITERAL 或 _CATALOG_DIR 写错了'
+    bad = [
+        f'{prefix}{suffix}（登记在 _DYNAMIC_KEY_SITES 的 {prefix!r} 一条下）'
+        for prefix, suffixes in _DYNAMIC_KEY_SITES.items()
+        for suffix in suffixes
+        if prefix + suffix not in MESSAGES
+    ]
+    assert not bad, (
+        '_DYNAMIC_KEY_SITES 展开出 catalog 里没有的键 —— 拼接点会在运行时把\n'
+        '键名原样显示给用户。要么把键补回 catalog，要么改拼接点、同步这张表:\n  '
+        + '\n  '.join(bad)
+    )
+
+
+def test_no_reference_to_a_missing_key():
+    """引用了不存在的键 = 用户看到 `js.foo.bar` 这种原始键名（见 t() 的回落口径）。
+
+    砍「取消任务」时删掉 9 个 catalog 键，全靠人工 grep 确认没漏引用，测试
+    全程没出过声。这一侧就是为那次改动补的。
+    """
+    missing = []
+    for key, sites in sorted(_scan_key_literals(_iter_source_files()).items()):
+        if key in MESSAGES or key in _DYNAMIC_KEY_SITES:
+            continue
+        missing.append(f'{key}\n      ' + '\n      '.join(sites))
+    assert not missing, (
+        '这些键被引用但 catalog 里没有 —— 界面上会原样漏出键名。\n'
+        '修法二选一：补进 src/i18n/catalog/ 对应模块，或删掉这些引用处；\n'
+        '若它是动态拼接的前缀，登记进本文件的 _DYNAMIC_KEY_SITES。\n  '
+        + '\n  '.join(missing)
+    )
+
+
+def test_no_unreferenced_catalog_key():
+    """定义了没人用的键 = 死重量，`js.` 那批还会被 client_catalog 白塞进每个页面。"""
+    referenced = set(_scan_key_literals(_iter_source_files()))
+    referenced.update(
+        prefix + suffix
+        for prefix, suffixes in _DYNAMIC_KEY_SITES.items()
+        for suffix in suffixes
+    )
+    defined_at = _catalog_definitions()
+    orphans = [
+        f'{key}\n      定义于 {defined_at.get(key, "src/i18n/catalog/?")}'
+        for key in sorted(set(MESSAGES) - referenced)
+    ]
+    assert not orphans, (
+        '这些 catalog 键全仓无人引用 —— 删掉它们。\n'
+        '若确属运行时拼接（错误码→文案之类），把拼接点连同**完整后缀清单**\n'
+        '登记进本文件的 _DYNAMIC_KEY_SITES，并写清是哪一行在拼。\n  '
+        + '\n  '.join(orphans)
+    )
 
 
 # ---------------------------------------------------------------- 语种解析

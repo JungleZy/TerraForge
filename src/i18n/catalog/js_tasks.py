@@ -70,18 +70,6 @@ MESSAGES = {
         'zh': '下载 DEM',
         'en': 'Downloading DEM',
     },
-    'js.tasks.verb.downloaded': {
-        'zh': '已下载',
-        'en': 'Downloaded',
-    },
-    'js.tasks.progress_detail': {
-        'zh': '{verb}: {done} / {total} {unit}',
-        'en': '{verb}: {done} / {total} {unit}',
-    },
-    'js.tasks.failed_count': {
-        'zh': '| 失败: {n}',
-        'en': '| Failed: {n}',
-    },
 
     # --- 底部状态栏「活动任务」聚合读数 ---
     'js.tasks.status_bar.idle': {
@@ -154,14 +142,6 @@ MESSAGES = {
     'js.tasks.duration.hours': {
         'zh': '{h}小时',
         'en': '{h}h',
-    },
-    'js.tasks.time.elapsed': {
-        'zh': '已运行: {value}',
-        'en': 'Elapsed: {value}',
-    },
-    'js.tasks.time.remaining': {
-        'zh': '预计剩余: {value}',
-        'en': 'ETA: {value}',
     },
 
     # --- 任务操作 ---
