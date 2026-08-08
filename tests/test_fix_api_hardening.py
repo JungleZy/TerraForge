@@ -116,6 +116,11 @@ class _FakeActiveThread:
     def is_alive(self):
         return self._thread.is_alive()
 
+    def join(self, timeout=None):
+        # task_deletion 的后台收尾会 join 工作线程。缺了这个方法它只会记一条
+        # warning 就放弃，墓碑也摘不掉 —— 假线程必须在这一点上像真线程。
+        self._thread.join(timeout)
+
     def release(self):
         self._stop.set()
         self._thread.join(timeout=5)
@@ -154,9 +159,15 @@ def test_create_map_task_output_path_inside_downloads_201(monkeypatch, tmp_path)
     assert resp.status_code == 201, resp.get_json()
 
 
-# ---------- I3: DELETE 不得删掉有活跃线程的任务 ----------
+# ---------- I3: DELETE 与活跃线程 ----------
 
-def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
+def test_delete_map_task_with_active_thread_succeeds(monkeypatch, tmp_path):
+    """语义翻面：活跃的 map 任务现在可以直接删。
+
+    原断言是「拒删，返回 400」。砍掉「取消」之后删除是唯一的销毁动作，再拒下去
+    用户就没有任何办法销毁一个正在跑的任务了。删除自己置停止标志、当场删行，
+    产物清理交给后台（见 services/task_deletion）。
+    """
     _, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     api_mod = importlib.import_module("src.routes.api")
@@ -166,8 +177,8 @@ def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
     api_mod.task_manager.active_tasks[task_id] = fake
     try:
         resp = client.delete(f"/api/tasks/{task_id}")
-        assert resp.status_code == 400, resp.get_json()
-        assert _task_row(db, "tasks", task_id) is not None, "活跃任务被删掉了"
+        assert resp.status_code == 200, resp.get_json()
+        assert _task_row(db, "tasks", task_id) is None, "活跃任务没被删掉"
     finally:
         fake.release()
         api_mod.task_manager.active_tasks.pop(task_id, None)

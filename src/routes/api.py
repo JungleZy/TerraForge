@@ -12,8 +12,7 @@ from typing import Optional
 from src.core.database import get_connection, DEFAULT_CONFIGS
 from src.i18n import t
 from src.services.config_manager import ConfigManager
-from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
-from src.routes import tiles_static
+from src.services.task_cleanup import resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -342,20 +341,14 @@ def delete_task(task_id: int):
     """
     Delete a task and its associated tiles
 
-    Args:
-        task_id: Task ID to delete
-
     Query Parameters:
         delete_files: Optional (1/true/yes). Also remove the task's on-disk
             artifact directory (output_path/task_<id>). Defaults to false.
-            0.2.4 起保存路径全盘可选，删除边界见
-            services/task_cleanup.remove_task_dir_if_safe（符号链接分量 /
-            不足两级深度 / 家目录 / DOWNLOADS_DIR 本身或祖先 / CACHE_DIR
-            相关一律拒绝）。护栏命中时响应会带 files_removed:false 与说明，
-            DB 行仍会删除。
+            删除边界见 services/task_cleanup.remove_task_dir_if_safe。
 
-    Returns:
-        JSON response with success status
+    正在运行的任务**可以**直接删：删除会自己置停止标志、当场删行、把产物清理
+    交给后台线程（见 services/task_deletion）。响应里的 files_deferred=true
+    表示产物还没删完 —— 后台在等工作线程收工。
     """
     try:
         if not task_manager:
@@ -363,57 +356,29 @@ def delete_task(task_id: int):
 
         conn = get_connection()
         try:
-            cursor = conn.cursor()
-
-            # Serialize with start_task via the manager lock: start_task holds
-            # _state_lock while flipping a paused task to running and spawning
-            # its thread, so holding the same lock across the check + delete
-            # closes the window where a paused task is deleted while a
-            # concurrent start is bringing it back to life.
-            with task_manager._state_lock:
-                active_thread = task_manager.active_tasks.get(task_id)
-                if active_thread and active_thread.is_alive():
-                    return jsonify({
-                        'error': 'Cannot delete running task. Please pause or cancel it first.'
-                    }), 400
-
-                # Check if task exists
-                cursor.execute('SELECT id, status, output_path FROM tasks WHERE id = ?', (task_id,))
-                row = cursor.fetchone()
-
-                if not row:
-                    return jsonify({'error': f'Task {task_id} not found'}), 404
-
-                # Prevent deletion of running tasks
-                if row['status'] == 'running':
-                    return jsonify({
-                        'error': 'Cannot delete running task. Please pause or cancel it first.'
-                    }), 400
-
-                # Delete task (tiles will be deleted via CASCADE)
-                cursor.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
-                conn.commit()
-
-            logger.info(f"Task {task_id} deleted via API")
-
+            row = conn.execute(
+                'SELECT id, status, output_path FROM tasks WHERE id = ?',
+                (task_id,)).fetchone()
         finally:
             conn.close()
+        if not row:
+            return jsonify({'error': f'Task {task_id} not found'}), 404
 
-        # 行已删：清掉 /tiles 静态路由的 output_path 缓存，否则 delete_files=false
-        # （默认，磁盘瓦片保留）时已删任务的瓦片仍能被访问到
-        tiles_static.invalidate_output_path_cache(task_id)
-
-        # Optional best-effort artifact cleanup after the row is gone.
-        # 存量行的 output_path 可能是相对路径(旧版本只校验不改写)——先归一化
-        # 成绝对路径;否则 Path.resolve() 按进程 CWD 解析,CWD≠BASE_DIR 时会
-        # 误判成"越界"而拒删,接口却已经返回 success。
-        files_removed = None
+        artifact_dir = None
         if request.args.get('delete_files', '').lower() in ('1', 'true', 'yes'):
-            files_removed = remove_task_dir_if_safe(
-                resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
-            )
+            # 存量行的 output_path 可能是相对路径(旧版本只校验不改写)——先归一化
+            # 成绝对路径;否则 Path.resolve() 按进程 CWD 解析,CWD≠BASE_DIR 时会
+            # 误判成"越界"而拒删,接口却已经返回 success。
+            artifact_dir = resolve_stored_output_dir(row['output_path']) / f"task_{task_id}"
 
-        return jsonify(_delete_payload(f'Task {task_id} deleted', files_removed))
+        outcome = task_manager.delete_task(task_id, artifact_dir=artifact_dir)
+        if not outcome.row_deleted:
+            return jsonify({'error': f'Task {task_id} not found'}), 404
+
+        logger.info(f"Task {task_id} deleted via API")
+        return jsonify(_delete_payload(
+            f'Task {task_id} deleted', outcome.files_removed,
+            files_deferred=outcome.files_deferred))
 
     except Exception as e:
         logger.error(f"Error deleting task {task_id}: {e}")
@@ -905,7 +870,7 @@ def get_cache_stats_api():
         return jsonify({'error': 'Failed to get cache stats'}), 500
 
 
-def _delete_payload(message: str, files_removed):
+def _delete_payload(message: str, files_removed, files_deferred: bool = False):
     """DELETE 端点的统一响应体（M10）。
 
     `remove_task_dir_if_safe` 用返回值区分「已删」与「越界拒删」，但四个调用点
@@ -914,8 +879,15 @@ def _delete_payload(message: str, files_removed):
     产物却纹丝不动（存量相对 output_path 尤其容易命中，见 M10）。
 
     files_removed 为 None 表示调用方没要求删文件，响应里就不带这两个字段。
+
+    files_deferred=True 是删除**正在运行**的任务时的新形态：行已经没了，但产物
+    要等工作线程收工才能删（四条管线都有分钟级的 GDAL 阻塞区，见 task_deletion）。
+    此时 files_removed 必然是 None —— 还没删，给不出真假。
     """
     payload = {'success': True, 'message': message}
+    if files_deferred:
+        payload['files_deferred'] = True
+        return payload
     if files_removed is not None:
         payload['files_removed'] = bool(files_removed)
         if not files_removed:

@@ -78,6 +78,13 @@ class TaskManager:
         self.stop_flags: Dict[int, threading.Event] = {}
         self._state_lock = threading.Lock()
 
+        # 已经被删除、但工作线程还没收工的 task_id。唯一用途见 _write_progress_batch：
+        # map 是四条管线里唯一在运行期 INSERT 的（失败瓦片写 task_tiles），父行删掉
+        # 后那条 INSERT 会撞外键 —— 实测 INSERT OR IGNORE 不豁免外键约束。
+        # 另外三条管线运行期只有 UPDATE ... WHERE id=?，对不存在的行是静默 no-op，
+        # 所以它们不需要墓碑，别为了对称加。
+        self._deleting: set[int] = set()
+
         # Any task still marked 'running' in the DB at this point must be an
         # orphan from a previous process — no thread can have survived a restart.
         # Demote them so the UI stops reporting them as live, and so their
@@ -693,6 +700,26 @@ class TaskManager:
         finally:
             conn.close()
 
+    def delete_task(self, task_id: int, artifact_dir=None):
+        """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
+
+        砍掉「取消」之后这是唯一的销毁动作，任何状态都能调 —— 不再有
+        「Cannot delete running task. Please pause or cancel it first.」。
+        """
+        from src.services.task_deletion import delete_task_row
+        from src.routes import tiles_static
+
+        return delete_task_row(
+            manager=self,
+            task_id=task_id,
+            table="tasks",
+            artifact_dir=artifact_dir,
+            tombstone=self._deleting,
+            # 行已删：清掉 /tiles 静态路由的 output_path 缓存，否则
+            # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到
+            on_row_gone=lambda: tiles_static.invalidate_output_path_cache(task_id),
+        )
+
     def get_task_status(self, task_id: int) -> dict:
         """
         Get task status and details
@@ -781,6 +808,17 @@ class TaskManager:
                 if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
                     self.stop_flags.pop(task_id, None)
             logger.info(f"Task {task_id} thread finished")
+
+    def _write_progress_batch_for_test(self, task_id, inserts):
+        """契约测试用的薄入口：只覆盖墓碑短路这一段判断。
+
+        真正的 _write_progress_batch 是 _execute_task 里的闭包（它捕获
+        progress_conn 等一堆局部状态），测试拿不到。这里复刻的只有短路判断
+        本身 —— 短路逻辑必须与闭包里那份保持一致，改一处要改两处。
+        """
+        if task_id in self._deleting:
+            return False
+        return True
 
     async def _execute_task(self, task_id: int, stop_flag: Optional[threading.Event] = None):
         """
@@ -1087,6 +1125,11 @@ class TaskManager:
                 结果一致。崩溃最多丢一个批次的失败行:对应瓦片没有 cache
                 文件,恢复时自然重下,失败了会重新登记,语义与计数攒批相同。
                 """
+                if task_id in self._deleting:
+                    # 任务已被删除，父行不在了。这批进度写不进去也不该写进去 ——
+                    # 直接丢弃，不要走 _restore_progress_batch 退回队列（那会让
+                    # pending_tile_inserts 单调增长到下载结束）。
+                    return False
                 inserts, updates, deletes, downloaded, failed = batch
                 if inserts:
                     progress_conn.executemany('''
@@ -1113,6 +1156,7 @@ class TaskManager:
                         WHERE id = ?
                     ''', (downloaded, failed, task_id))
                 progress_conn.commit()
+                return True
 
             def flush_progress_counts():
                 """同步落库 —— 只给下载循环收尾(finally)用,那时已无并发回调。
