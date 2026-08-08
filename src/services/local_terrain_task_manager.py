@@ -599,64 +599,43 @@ class LocalTerrainTaskManager:
         finally:
             conn.close()
 
-    def delete_task(self, task_id: int, delete_files: bool = True) -> Optional[bool]:
-        """Delete a task's DB rows and, unless delete_files=False, its on-disk
-        files. Refuses while running：切片虽能经 stop_flag 中途停（见
-        cancel_task），但 delete 会 rmtree 整个输出目录，不能跟在写的
-        GDAL 进程后面删。Removing the row CASCADEs to the files table; the
-        local_task_<id> directory (source uploads + output tiles) is also
-        removed so cancelled/failed tasks don't leave large GeoTIFFs behind."""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            # 与 start_tiling 同一把 _state_lock 锁内复查 active 线程 + DB 状态
-            # (范本: contour_task_manager.delete_task) —— 此前无锁、不查 active
-            # 线程,与正在跑的 tiling 线程存在 check-then-act 竞态。
-            with self._state_lock:
-                active = self.active_tasks.get(task_id)
-                if active and active.is_alive():
-                    raise ValueError(
-                        "Tiling is in progress and cannot be interrupted; "
-                        "wait for it to finish before deleting"
-                    )
-                cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
-                row = cur.fetchone()
-                if not row:
-                    raise ValueError(f"Local terrain task {task_id} not found")
-                if row["status"] == "running":
-                    raise ValueError(
-                        "Tiling is in progress and cannot be interrupted; "
-                        "wait for it to finish before deleting"
-                    )
-                cur.execute("DELETE FROM local_terrain_tasks WHERE id=?", (task_id,))
-                conn.commit()
-        finally:
-            conn.close()
+    def delete_task(self, task_id: int, delete_files: bool = True, on_row_gone=None):
+        """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
-        # Best-effort directory cleanup after the row is gone.
-        # 返回值（M10）：True=已删 / False=护栏拦下或删除出错 / None=调用方没要求
-        # 删文件。此前无论哪种情况路由都回 200 {"success": true}，护栏命中时用户
-        # 会以为文件已经清掉了。
-        if not delete_files:
-            return None
-        try:
-            # 不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
-            # terrain_static 的约定）：冻结 exe 搬迁后库存的旧绝对路径不会让
-            # 下面的守卫失效、也不会误删旧位置的目录。
-            task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
-            # Guard: only remove inside DOWNLOADS_DIR/terrain.
+        delete_files 默认 True 是本管线的历史约定（另外三条的路由默认 false）。
+        前端总是显式传参，改默认值只影响直连 API 的人，不值得为对称制造破坏性变更。
+
+        产物路径不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
+        terrain_static 的约定）：冻结 exe 搬迁后库存的旧绝对路径既会让下面的护栏
+        失效、又会误删旧位置的目录。
+
+        on_row_gone 由调用方给：清 /terrain/local 静态路由缓存的那个 hook 依赖
+        Flask 请求上下文（走 current_app.extensions），放在这里等于让服务层持有
+        一个只对路由调用方有效的回调，非路由调用方那里它会静默失效。
+        """
+        from src.services.task_deletion import delete_task_row
+
+        artifact_dir = None
+        if delete_files:
+            artifact_dir = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
+            # 第二道护栏：只允许删 DOWNLOADS_DIR/terrain 直下的目录。它与
+            # remove_task_dir_if_safe 的通用护栏是两道，都要 —— 通用护栏只认
+            # 「别删到 BASE_DIR 之外/根目录」，管不住本管线自己的目录布局。
+            # 越界时不把路径交给助手，等价于原实现的「拒删并返回 False」。
             terrain_root = (Path(Config.DOWNLOADS_DIR) / "terrain").resolve()
-            if task_root.resolve().parent != terrain_root:
+            if artifact_dir.resolve().parent != terrain_root:
                 logger.warning(
                     f"Refusing to remove local terrain dir outside "
-                    f"{terrain_root}: {task_root}")
-                return False
-            if task_root.exists():
-                shutil.rmtree(task_root, ignore_errors=True)
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to remove local terrain dir for task {task_id}: {e}")
-            return False
+                    f"{terrain_root}: {artifact_dir}")
+                artifact_dir = None
+
+        return delete_task_row(
+            manager=self,
+            task_id=task_id,
+            table="local_terrain_tasks",
+            artifact_dir=artifact_dir,
+            on_row_gone=on_row_gone,
+        )
 
     def _emit_progress(self, task_id: int) -> None:
         if not self.socketio:

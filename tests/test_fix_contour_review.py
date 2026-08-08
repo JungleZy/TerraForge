@@ -256,10 +256,10 @@ def test_fix_i15_style_preview_rejects_non_finite_interval(monkeypatch, tmp_path
 
 
 # ---------------------------------------------------------------------------
-# I3: DELETE 绕开 manager 锁,可删实际在跑的任务
+# DELETE 在 manager 锁内做：任何状态都能删，运行中的走后台收尾
 # ---------------------------------------------------------------------------
 
-def test_fix_i3_delete_task_with_active_thread_rejected(monkeypatch, tmp_path):
+def test_delete_task_with_active_thread_still_deletes(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     tid = _post_task(client).get_json()["task_id"]
 
@@ -272,15 +272,15 @@ def test_fix_i3_delete_task_with_active_thread_rejected(monkeypatch, tmp_path):
         def is_alive(self):
             return True
 
-    # DB 状态还是 pending,但执行线程已活(check-then-act 竞态窗口):
-    # 绕开 manager 锁的删除会把实际在跑的任务行删掉
+    # 执行线程还活着 —— 行照样当场消失，产物清理交后台（这里没要求删产物，
+    # 后台线程只 join 一下就收工）
     mgr.active_tasks[tid] = _Alive()
     try:
         resp = client.delete(f"/api/contour/tasks/{tid}")
     finally:
         mgr.active_tasks.pop(tid, None)
-    assert resp.status_code == 400
-    assert client.get(f"/api/contour/tasks/{tid}").status_code == 200
+    assert resp.status_code == 200, resp.get_json()
+    assert client.get(f"/api/contour/tasks/{tid}").status_code == 404
 
 
 def test_fix_i3_delete_pending_task_still_works(monkeypatch, tmp_path):

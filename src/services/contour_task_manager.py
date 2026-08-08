@@ -660,29 +660,24 @@ class ContourTaskManager:
         finally:
             conn.close()
 
-    def delete_task(self, task_id: int) -> None:
-        """删除任务行。与 start_task 同一把 _state_lock 锁内复查 active 线程 +
-        DB 状态:运行中(active 线程存活或 status='running')抛 ValueError 拒绝 ——
-        路由层此前绕开 manager 锁直查 DB 再删,与正在跑的任务线程存在
-        check-then-act 竞态。磁盘产物清理由路由层负责(delete_files)。"""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            with self._state_lock:
-                active = self.active_tasks.get(task_id)
-                if active and active.is_alive():
-                    raise ValueError(
-                        f"Cannot delete running contour task {task_id}. Pause or cancel it first.")
-                row = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-                if not row:
-                    raise ValueError(f"Contour task {task_id} not found")
-                if row["status"] == "running":
-                    raise ValueError(
-                        f"Cannot delete running contour task {task_id}. Pause or cancel it first.")
-                cur.execute("DELETE FROM contour_tasks WHERE id=?", (task_id,))
-                conn.commit()
-        finally:
-            conn.close()
+    def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
+        """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
+
+        砍掉「取消」之后这是唯一的销毁动作，任何状态都能调 —— 不再有运行中拒删。
+
+        on_row_gone 由调用方给：清 /contour 静态路由缓存的那个 hook 依赖 Flask
+        请求上下文（走 current_app.extensions），放在这里等于让服务层持有一个
+        只对路由调用方有效的回调，非路由调用方那里它会静默失效。
+        """
+        from src.services.task_deletion import delete_task_row
+
+        return delete_task_row(
+            manager=self,
+            task_id=task_id,
+            table="contour_tasks",
+            artifact_dir=artifact_dir,
+            on_row_gone=on_row_gone,
+        )
 
     def get_task(self, task_id: int) -> Dict[str, Any]:
         conn = get_connection()

@@ -674,37 +674,27 @@ class DemTaskManager:
         finally:
             conn.close()
 
-    def delete_task(self, task_id: int) -> None:
-        """删除任务行。与 start_task/start_tiling 同一把 _state_lock 锁内复查
-        下载线程 + dem_tasks 状态 + dem_terrain_jobs 状态:下载中或 tiling 中的
-        任务抛 ValueError 拒删 —— tiling 中删除会 rmtree 正在被 GDAL 写入的
-        terrain_tiles/,job 行被 ON DELETE CASCADE 删掉,结果静默丢失
-        (范本: contour_task_manager.delete_task)。
-        磁盘产物清理由路由层负责(delete_files)。"""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            with self._state_lock:
-                active = self.active_tasks.get(task_id)
-                if active and active.is_alive():
-                    raise ValueError(
-                        f"Cannot delete running DEM task {task_id}. Please pause or cancel it first.")
-                row = cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,)).fetchone()
-                if not row:
-                    raise ValueError(f"DEM task {task_id} not found")
-                if row["status"] == "running":
-                    raise ValueError(
-                        f"Cannot delete running DEM task {task_id}. Please pause or cancel it first.")
-                job = cur.execute(
-                    "SELECT status FROM dem_terrain_jobs WHERE task_id=?", (task_id,)).fetchone()
-                if job and job["status"] == "running":
-                    raise ValueError(
-                        f"Cannot delete DEM task {task_id} while terrain tiling is running. "
-                        "Wait for it to finish first.")
-                cur.execute("DELETE FROM dem_tasks WHERE id=?", (task_id,))
-                conn.commit()
-        finally:
-            conn.close()
+    def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
+        """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
+
+        切片线程自 v0.2.11 起也登记进 active_tasks / stop_flags（见 start_tiling），
+        「切片中删除」因此走的是同一条后台路径 —— 等线程收工再删产物，不再需要
+        dem_terrain_jobs 那道单独的守卫来拒绝。job 行本身仍由
+        _recover_orphan_running_tasks 在进程重启后收拾孤儿。
+
+        on_row_gone 由调用方给：清 /terrain/dem 静态路由缓存的那个 hook 依赖
+        Flask 请求上下文（走 current_app.extensions），放在这里等于让服务层持有
+        一个只对路由调用方有效的回调，非路由调用方那里它会静默失效。
+        """
+        from src.services.task_deletion import delete_task_row
+
+        return delete_task_row(
+            manager=self,
+            task_id=task_id,
+            table="dem_tasks",
+            artifact_dir=artifact_dir,
+            on_row_gone=on_row_gone,
+        )
 
     def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
         try:

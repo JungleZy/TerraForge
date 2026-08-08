@@ -214,7 +214,9 @@ def test_delete_running_map_task_with_files_defers_cleanup(monkeypatch, tmp_path
         api_mod.task_manager.active_tasks.pop(task_id, None)
 
 
-def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
+def test_delete_dem_task_with_active_thread_defers_cleanup(monkeypatch, tmp_path):
+    """DEM 侧的 running 删除契约，与上面 map 那条同构：活跃线程 + delete_files=1
+    → 200 + files_deferred，行当场消失。"""
     _, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     dem_api_mod = importlib.import_module("src.routes.dem_api")
@@ -223,9 +225,12 @@ def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
     fake = _FakeActiveThread()
     dem_api_mod.dem_task_manager.active_tasks[task_id] = fake
     try:
-        resp = client.delete(f"/api/dem/tasks/{task_id}")
-        assert resp.status_code == 400, resp.get_json()
-        assert _task_row(db, "dem_tasks", task_id) is not None, "活跃 DEM 任务被删掉了"
+        resp = client.delete(f"/api/dem/tasks/{task_id}?delete_files=1")
+        assert resp.status_code == 200, resp.get_json()
+        body = resp.get_json()
+        assert body['files_deferred'] is True, body
+        assert 'files_removed' not in body, body
+        assert _task_row(db, "dem_tasks", task_id) is None, "活跃 DEM 任务的行没被删掉"
     finally:
         fake.release()
         dem_api_mod.dem_task_manager.active_tasks.pop(task_id, None)
