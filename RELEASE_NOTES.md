@@ -32,12 +32,12 @@
 |---|---|---|
 | 四条 `POST .../cancel` 端点删除（`/api/tasks/<id>/cancel`、`/api/dem/tasks/<id>/cancel`、`/api/contour/tasks/<id>/cancel`、`/api/terrain/local/tasks/<id>/cancel`） | 调取消接口的脚本 | 改调对应的 `DELETE`（现在任何状态都能删）；只想停不想删就用 `pause` |
 | 失败的任务不能再重新开始（`start` 只收 `pending` / `paused`） | 直连 API 的脚本（界面上本来就没这个入口） | 删掉重建一个 |
-| 四条管线的 `DELETE` 遇到正在跑的任务**不再回 400**，改为 200 + `files_deferred: true` | 靠 400 判断「删不了」的脚本 | 看 `files_deferred` 决定要不要等产物清理 |
-| 删除响应新增 `files_deferred` 字段；它为 true 时**不下发** `files_removed` / `files_message` | 解析删除响应的脚本 | 从三态处理改成四态处理 |
+| 四条管线的 `DELETE` 遇到正在跑的任务**不再回 400**，改为 200；**同时要求清理磁盘产物**时响应带 `files_deferred: true`（产物留给后台删） | 靠 400 判断「删不了」的脚本 | 看 `files_deferred` 决定要不要等产物清理 |
+| 删除响应新增 `files_deferred` 字段；它为 true 时**不下发** `files_removed` / `files_message`。**没要求清理产物时这个字段根本不出现**（`delete_files` 对地图 / 高程 / 等高线默认关，界面上选「保留产物」也走这条） | 解析删除响应的脚本 | 从三态处理改成四态处理，并按「键不存在」处理默认路径 |
 | 本地地形 `DELETE` 找不到任务时从 400 改成 **404** | 靠 400 判断的脚本 | 四条管线现在统一 404 |
 
 **验证**
-- 本版全量测试 1438 项通过 / 1 项跳过（跳过的那条只在 Windows 上有意义，是个文件锁用例）。
+- 本版全量测试 1448 项通过 / 1 项跳过（跳过的那条只在 Windows 上有意义，是个文件锁用例）。
 - 上面「破坏性变更」五条各有常驻用例钉着（含一条反向断言：四条 `/cancel` 路由不许重新出现在路由表里）；「删正在跑的任务」四条管线另有各自的端到端用例。
 
 ---

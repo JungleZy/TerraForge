@@ -302,7 +302,7 @@ uv run pytest tests/test_config_manager.py      # 单个测试文件
 
 - 四条任务管线（瓦片 / DEM / 地形 / 等高线）均遵循 `routes/*_api.py`（HTTP 层）→ `services/*_task_manager.py`（状态与调度）→ `services/*_engine.py`（实际执行）的分层
 - 共享的校验逻辑集中在 `src/services/geo_validation.py`，不要在各管线重复实现
-- 任务删除约定：四条管线的 `DELETE` 在**任何状态**下都受理，没有前置的停止动作。任务没在跑就同步删完；在跑就置停止标志、行立即消失，磁盘产物留给后台线程收尾（响应带 `files_deferred: true`，此时不下发 `files_removed` / `files_message`）。行不存在一律 404。产物清理由 `?delete_files` 控制，带路径安全护栏
+- 任务删除约定：四条管线的 `DELETE` 在**任何状态**下都受理，没有前置的停止动作。任务没在跑就同步删完；在跑就置停止标志、行立即消失，产物清理留给后台线程收尾。产物清理由 `?delete_files` 控制（带路径安全护栏）；**只有「在跑 + 要求删产物」这一种组合**才会在响应里带 `files_deferred: true`，此时不下发 `files_removed` / `files_message`，其余情况该字段根本不出现。行不存在一律 404
 
 ### 更多文档
 
