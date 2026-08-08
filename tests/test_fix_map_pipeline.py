@@ -144,31 +144,26 @@ def test_stitch_output_filename_sanitizes_task_name(isolated_config):
     )
 
 
-# ---------- I5: failed 任务允许重新 start ----------
+# ---------- failed 是终态,不得重新 start(原 I5 的反向契约) ----------
 
-def test_failed_task_can_be_restarted(isolated_config):
+def test_failed_task_cannot_be_restarted(isolated_config):
+    """failed 曾经在 start_task 的准许列表里(I5),现在被收回。
+
+    「失败任务重按开始就续传」听着方便,代价是终态记录被改写成 running ——
+    这条任务曾经失败过这件事从历史里消失了。另外两条下载管线也只收
+    pending/paused,map 单开口子还会让前端按钮的可用条件每条管线一套。
+    重跑请新建任务。
+    """
     from src.core.database import get_connection
-    from src.services.download_engine import DownloadEngine
     from src.services.task_manager import TaskManager
 
     tm = TaskManager()
     task_id = _seed_task_row(status='failed')
 
-    # 稀疏表语义下「无待下载瓦片」= 枚举出的瓦片全部已在 cache 里
-    # (完成态从磁盘 cache 推导,不再看 task_tiles 的 pending/failed 行)。
-    engine = DownloadEngine()
-    for tile in engine.iter_tiles(1, 0, 1, 0, 10, 10):
-        cache_path = tile.cache_path('s')
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_bytes(b'cached-tile')
+    with pytest.raises(ValueError, match='Cannot start'):
+        tm.start_task(task_id)
 
-    tm.start_task(task_id)  # 旧代码在这里 raise ValueError
-
-    thread = tm.active_tasks.get(task_id)
-    assert thread is not None, "failed 任务重新 start 后应有后台线程"
-    thread.join(timeout=30)
-    assert not thread.is_alive()
-
+    assert tm.active_tasks.get(task_id) is None, "被拒绝的 start 不得留下线程"
     conn = get_connection()
     try:
         row = conn.cursor().execute(
@@ -176,8 +171,7 @@ def test_failed_task_can_be_restarted(isolated_config):
         ).fetchone()
     finally:
         conn.close()
-    # 无待下载瓦片(全部命中 cache):重跑直接走到完成 —— 证明 start 这条路真的通了
-    assert row['status'] == 'completed'
+    assert row['status'] == 'failed', "终态记录不得被拒绝的 start 改写"
 
 
 def test_completed_task_still_cannot_be_started(isolated_config):

@@ -17,7 +17,6 @@ class TaskStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
-    CANCELLED = "cancelled"
 
 
 class MapStyle(Enum):
@@ -149,7 +148,7 @@ class Task:
     """Task data model for map download tasks"""
     id: Optional[int] = None
     name: str = ""
-    status: str = "pending"  # pending, running, completed, failed, paused, cancelled
+    status: str = "pending"  # pending, running, completed, failed, paused
     north: float = 0.0
     south: float = 0.0
     east: float = 0.0

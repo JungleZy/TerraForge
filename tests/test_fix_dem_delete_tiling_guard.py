@@ -1,14 +1,15 @@
-"""HIGH #3: 删除 DEM 任务必须在 manager 层锁内统一复查下载线程 + 任务状态 +
-tiling job 状态 —— 下载中或 tiling 中的任务拒删，否则 rmtree 会删掉正在被
-GDAL 写入的 terrain_tiles/，dem_terrain_jobs 行被 ON DELETE CASCADE 静默删除。
+"""删除 DEM 任务：任何状态都能删 —— 下载中、切片中都不再拒绝。
+
+切片线程自 v0.2.11 起也登记进 active_tasks / stop_flags（见 start_tiling），
+「切片中删除」因此和「下载中删除」走同一条后台路径：当场删行 + 置停止标志，
+产物等线程收工后由 task_deletion 的后台收尾删。本文件钉住这条语义，外加
+dem_terrain_jobs 行随 ON DELETE CASCADE 一起消失。
 """
 
 import importlib
 import os
 import sys
 import threading
-
-import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -72,22 +73,30 @@ def _row_exists(db, table, where, args):
         conn.close()
 
 
-def test_delete_refuses_while_tiling_job_running(monkeypatch, tmp_path):
-    """任务本身已 completed，但 tiling job 正在跑 —— 必须拒删且两表行都保留。"""
+def test_delete_while_tiling_job_running(monkeypatch, tmp_path):
+    """dem_terrain_jobs 还是 running —— 照样删，两表行都消失。
+
+    active_tasks 里没有登记（模拟进程重启后残留的孤儿 job 行），所以走同步
+    快路径；job 行由 ON DELETE CASCADE 带走。
+    """
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
     task_id = _seed_dem_task(db, tmp_path / "out", status="completed")
     _seed_tiling_job(db, task_id, "running")
 
-    with pytest.raises(ValueError):
-        mgr.delete_task(task_id)
+    outcome = mgr.delete_task(task_id)
 
-    assert _row_exists(db, "dem_tasks", "id=?", (task_id,))
-    assert _row_exists(db, "dem_terrain_jobs", "task_id=?", (task_id,))
+    assert outcome.row_deleted is True
+    assert not _row_exists(db, "dem_tasks", "id=?", (task_id,))
+    assert not _row_exists(db, "dem_terrain_jobs", "task_id=?", (task_id,))
 
 
-def test_delete_refuses_active_download_thread(monkeypatch, tmp_path):
-    """DB 状态是 paused，但 active_tasks 里有存活下载线程 —— 必须拒删。"""
+def test_delete_with_active_thread_stops_it_and_drops_row(monkeypatch, tmp_path):
+    """active_tasks 里有存活线程 —— 行当场消失，且工作线程的停止标志被置上。
+
+    停止标志是「运行中删除」区别于快路径的唯一同步可观察点：产物清理挪到了
+    后台线程，行删除两条路径都做。
+    """
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
     task_id = _seed_dem_task(db, tmp_path / "out", status="paused")
@@ -95,24 +104,30 @@ def test_delete_refuses_active_download_thread(monkeypatch, tmp_path):
     gate = threading.Event()
     th = threading.Thread(target=lambda: gate.wait(timeout=30), daemon=True)
     th.start()
+    stop_flag = threading.Event()
     mgr.active_tasks[task_id] = th
+    mgr.stop_flags[task_id] = stop_flag
     try:
-        with pytest.raises(ValueError):
-            mgr.delete_task(task_id)
-        assert _row_exists(db, "dem_tasks", "id=?", (task_id,))
+        outcome = mgr.delete_task(task_id)
+
+        assert outcome.row_deleted is True
+        assert not _row_exists(db, "dem_tasks", "id=?", (task_id,))
+        assert stop_flag.is_set(), "运行中删除必须让工作线程停下来"
     finally:
         gate.set()
         th.join(timeout=5)
 
 
-def test_delete_refuses_running_task(monkeypatch, tmp_path):
+def test_delete_running_task(monkeypatch, tmp_path):
+    """DB 状态是 running 但没有活线程（进程重启后的孤儿行）—— 同步删掉。"""
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
     task_id = _seed_dem_task(db, tmp_path / "out", status="running")
 
-    with pytest.raises(ValueError):
-        mgr.delete_task(task_id)
-    assert _row_exists(db, "dem_tasks", "id=?", (task_id,))
+    outcome = mgr.delete_task(task_id)
+
+    assert outcome.row_deleted is True
+    assert not _row_exists(db, "dem_tasks", "id=?", (task_id,))
 
 
 def test_delete_allows_after_tiling_finished(monkeypatch, tmp_path):
@@ -128,12 +143,15 @@ def test_delete_allows_after_tiling_finished(monkeypatch, tmp_path):
     assert not _row_exists(db, "dem_terrain_jobs", "task_id=?", (task_id,))
 
 
-def test_delete_not_found_raises(monkeypatch, tmp_path):
+def test_delete_not_found_reports_row_not_deleted(monkeypatch, tmp_path):
+    """行不存在不再抛 ValueError —— 共享助手返回 row_deleted=False，
+    由路由层翻成 404（见 test_http_delete_not_found_returns_404）。"""
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
 
-    with pytest.raises(ValueError):
-        mgr.delete_task(9999)
+    outcome = mgr.delete_task(9999)
+
+    assert outcome.row_deleted is False
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +177,7 @@ def _load_app(monkeypatch, tmp_path):
     return app_mod, app_mod.app.test_client()
 
 
-def test_http_delete_refuses_while_tiling(monkeypatch, tmp_path):
+def test_http_delete_while_tiling_returns_200(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     task_id = _seed_dem_task(db, tmp_path / "out", status="completed")
@@ -167,20 +185,20 @@ def test_http_delete_refuses_while_tiling(monkeypatch, tmp_path):
 
     resp = client.delete(f"/api/dem/tasks/{task_id}")
 
-    assert resp.status_code == 400
-    assert _row_exists(db, "dem_tasks", "id=?", (task_id,))
-    assert _row_exists(db, "dem_terrain_jobs", "task_id=?", (task_id,))
+    assert resp.status_code == 200, resp.get_json()
+    assert not _row_exists(db, "dem_tasks", "id=?", (task_id,))
+    assert not _row_exists(db, "dem_terrain_jobs", "task_id=?", (task_id,))
 
 
-def test_http_delete_running_task_returns_400(monkeypatch, tmp_path):
+def test_http_delete_running_task_returns_200(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     task_id = _seed_dem_task(db, tmp_path / "out", status="running")
 
     resp = client.delete(f"/api/dem/tasks/{task_id}")
 
-    assert resp.status_code == 400
-    assert _row_exists(db, "dem_tasks", "id=?", (task_id,))
+    assert resp.status_code == 200, resp.get_json()
+    assert not _row_exists(db, "dem_tasks", "id=?", (task_id,))
 
 
 def test_http_delete_not_found_returns_404(monkeypatch, tmp_path):

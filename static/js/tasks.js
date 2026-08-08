@@ -113,7 +113,7 @@ function initTasks() {
 async function loadActiveTasks() {
     try {
         // 三路带 ?status=active：服务端只回活动三态（不传行为不变——后端
-        // 未上线该参数时返回全量，下面白名单照样滤），completed/cancelled
+        // 未上线该参数时返回全量，下面白名单照样滤），completed
         // 不再随每次补拉往返。contour 路刻意不带：这份响应同时是地图预览
         // 面板的数据源（initContourPreview 要从里面筛 completed 任务，
         // 见 map.js），带上的话首屏还得再拉一遍全量。
@@ -141,9 +141,9 @@ async function loadActiveTasks() {
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
         const contourTasks = (contourData.tasks || []).map(t => normalizeTask(t, 'contour'));
         const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks].filter(t =>
-            // completed/cancelled 由服务端 ?status=active 挡掉（contour 路拉的是
+            // completed 由服务端 ?status=active 挡掉（contour 路拉的是
             // 全量，终态在这里被白名单丢弃——它只需要活动态进这个 Map）。
-            // failed 仍保留：失败行的「移除」（dismissTask）与 socket 失败事件
+            // failed 仍保留：失败行的「删除」（deleteTask）与 socket 失败事件
             // 都按 key 在这个 Map 里找任务；状态栏聚合自己会再滤掉非活动态。
             ['pending', 'running', 'paused', 'failed'].includes(t.status)
         );
@@ -507,7 +507,7 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
     // 既不出活动集也不删行：失败行必须留在页面上（转红 + 错误行）。
     // 原实现两件事一起做，于是用户盯着 63% 的进度条，行突然消失、零提示，
     // 分不清是失败、被别人取消、还是自己看花了眼。
-    // 清理改由用户点行上的「移除」按钮触发（dismissTask）。
+    // 清理改由用户点行上的「删除」按钮（deleteTask）触发。
     window.TaskStore.commit(key, { status: 'failed', error_message: errorText, _key: key });
 
     console.error(`Task ${taskId} failed: ${errorText}`);
@@ -534,20 +534,6 @@ function handleTaskFailed(taskId, taskType, errorMessage) {
 // 回填，唯一的理由就是 error_message（后端异常的字符串化结果，URL、路径、
 // 第三方库报错原文都可能在里面）绝不能进 innerHTML 模板。这条路没了。
 
-// 「移除」按钮：只把失败行从界面上拿走，不碰后端。
-//
-// 失败任务在后端已经是终态，再 POST /cancel 最好的情况也只是白跑一趟。
-// 也刻意**没有**「重试」：三个 manager 的 start_task 都要求
-// status in ('pending','paused')，对 failed 调用直接抛 ValueError，
-// 重试得先改后端状态机。
-function dismissTask(taskId, taskType = 'map') {
-    const key = `${taskType}:${taskId}`;
-    closeFailureToast(key);   // 行都不要了，那条常驻 toast 也别留着占地方
-    // 纯前端删行：任务仍在后端（要彻底删除用行上的 🗑），下次翻页/刷新
-    // 从 /api/history_all 重拉时它会回来——这正是「移除」与「删除」的区别。
-    if (window.TaskStore) window.TaskStore.remove(key);
-}
-
 function getStatusColor(status) {
     const colors = {
         'pending': 'secondary',
@@ -557,8 +543,7 @@ function getStatusColor(status) {
         'running': 'info',
         'paused': 'warning',
         'completed': 'success',
-        'failed': 'danger',
-        'cancelled': 'dark'
+        'failed': 'danger'
     };
     return colors[status] || 'secondary';
 }
@@ -569,8 +554,7 @@ function getStatusText(status) {
         'running': t('js.tasks.status.running'),
         'paused': t('js.tasks.status.paused'),
         'completed': t('js.tasks.status.completed'),
-        'failed': t('js.tasks.status.failed'),
-        'cancelled': t('js.tasks.status.cancelled')
+        'failed': t('js.tasks.status.failed')
     };
     // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）
     return texts[status] || t('js.tasks.status.unknown');
@@ -686,7 +670,7 @@ async function startTask(taskId, taskType = 'map') {
             method: 'POST'
         });
         if (!response.ok) {
-            // 与 cancelTask 同口径：透出服务端给的具体原因，不只报"失败"
+            // 与 pause/resume 同口径：透出服务端给的具体原因，不只报"失败"
             const result = await response.json().catch(() => ({}));
             throw new Error(result.error || ('HTTP ' + response.status));
         }
@@ -720,32 +704,5 @@ async function resumeTask(taskId, taskType = 'map') {
         }
     } catch (error) {
         showToast(t('js.tasks.toast.resume_failed', {error: error.message}), 'danger');
-    }
-}
-
-async function cancelTask(taskId, taskType = 'map') {
-    if (!await showConfirm(t('js.tasks.confirm.cancel_message'),
-                           { title: t('js.tasks.confirm.cancel_title'), danger: true })) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/cancel`, {
-            method: 'POST'
-        });
-        if (response.ok) {
-            const key = `${taskType}:${taskId}`;
-            // 单一时间流：取消的任务留在流里，只换形态（与 completed/failed
-            // 同一处理），不删行。终态出活动集。
-            if (window.TaskStore) {
-                window.TaskStore.commit(key, { status: 'cancelled' });
-                window.TaskStore.dropActive(key);
-            }
-        } else {
-            const result = await response.json().catch(() => ({}));
-            showToast(t('js.tasks.toast.cancel_failed', {error: result.error || response.status}), 'danger');
-        }
-    } catch (error) {
-        showToast(t('js.tasks.toast.cancel_failed', {error: error.message}), 'danger');
     }
 }

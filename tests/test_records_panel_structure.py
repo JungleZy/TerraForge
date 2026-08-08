@@ -3,7 +3,7 @@
 2026-08 定稿（用户明确不要「活动/失败/历史」三个分区）：记录面板的
 任务列表是**按创建时间倒序的单一时间流 + 顶部状态筛选**——
 
-    统计卡 → 任务列表卡（筛选行：搜索框 + 状态 chips（五枚）→
+    统计卡 → 任务列表卡（筛选行：搜索框 + 状态 chips（四枚）→
         #historyTableBody（单一时间流，分页；活动任务也在流里））→ 历史区域地图
 
 无分组头、无失败组折叠、无 #activeTasksBody 实时区、无 activeTasks 去重
@@ -19,7 +19,8 @@ records_panel（index.html 在 include 前 set）现在只决定一件事：
      锚点 #activeTasksBody/#historyTableBody 从 <tbody> 变 <div>）；
   2. 本轮：活动/失败/历史三分区 → 单一时间流。#activeTasksBody 与
      task-group-header 的断言从「必须存在/按条件存在」翻面为「必须不存在」，
-     chips 从四枚（全部/已完成/失败/已取消）变五枚（新增「进行中」= active）。
+     chips 从四枚（全部/已完成/失败/已取消）变五枚（新增「进行中」= active），
+     之后又随「取消任务」下线回到四枚（去掉「已取消」）。
 history.js 的单一时间流语义依赖这个渲染结果，所以用 test_client 真实渲染
 两页来钉住，而不只查模板源码。
 """
@@ -33,12 +34,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 五枚状态筛选 chip 的取值（顺序即模板里的顺序）：
-#   全部 / 进行中 / 失败 / 已完成 / 已取消。
+# 四枚状态筛选 chip 的取值（顺序即模板里的顺序）：
+#   全部 / 进行中 / 失败 / 已完成。
 # 'active' 是特殊值，后端 /api/history_all 把它展开成
 # status IN ('pending','running','paused')——活动任务在时间流里，
 # 靠这枚 chip 单独滤出来（不再有独立的活动分区）。
-EXPECTED_CHIP_STATUSES = ('', 'active', 'failed', 'completed', 'cancelled')
+# 「已取消」随「取消任务」下线：状态机里已经没有这个状态，留着的 chip
+# 永远筛不出任何一行。
+EXPECTED_CHIP_STATUSES = ('', 'active', 'failed', 'completed')
 
 
 def _load_app(monkeypatch, tmp_path):
@@ -93,22 +96,27 @@ def test_index_records_panel_has_no_task_table(monkeypatch, tmp_path):
 
 
 def test_status_filter_chips_render_on_both_pages(monkeypatch, tmp_path):
-    """状态筛选 chips（全部/进行中/失败/已完成/已取消，五枚）两个页面都要有。
+    """状态筛选 chips（全部/进行中/失败/已完成，四枚）两个页面都要有。
 
     chips 作用于整个时间流（history.js 把取值透传给 /api/history_all
     的 ?status= 参数）。「进行中」是本轮新增：活动任务进了时间流之后，
     原来「活动分区」的查看入口由这枚 chip 接替（data-status="active"）。
+
+    这里断言的是**按模板顺序全等**而不只是「每枚都在」：presence-only 的写法拦不住
+    多出来的 chip，而多出来的那枚恰恰是最危险的 —— 「已取消」下线后如果被谁
+    加回来，它永远筛不出任何一行（状态机里已经没有 cancelled），用户点了只会
+    看到一个空列表。
     """
     client = _load_app(monkeypatch, tmp_path)
     for page in ('/', '/history'):
         html = client.get(page).get_data(as_text=True)
         assert 'id="statusChips"' in html, f'{page} 缺状态筛选 chips 容器'
         assert 'id="searchInput"' in html, f'{page} 缺搜索框'
-        for status in EXPECTED_CHIP_STATUSES:
-            assert f'data-status="{status}"' in html, (
-                f'{page} 的 chips 缺 data-status="{status}"（五枚：'
-                '全部/进行中/失败/已完成/已取消）'
-            )
+        rendered = re.findall(r'class="status-chip[^"]*" data-status="([^"]*)"', html)
+        assert tuple(rendered) == EXPECTED_CHIP_STATUSES, (
+            f'{page} 的 chips 是 {rendered}，期望 {list(EXPECTED_CHIP_STATUSES)}'
+            '（四枚：全部/进行中/失败/已完成，顺序即模板顺序）'
+        )
 
 
 def test_card_order_differs_between_pages_via_records_panel(monkeypatch, tmp_path):

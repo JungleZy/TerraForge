@@ -78,9 +78,8 @@ class LocalTerrainTaskManager:
         self.config = ConfigManager()
         self.active_tasks: Dict[int, threading.Thread] = {}
         # 切片协作停止标记：随 start_tiling 登记、_run_tiling_job 结束清理。
-        # build_terrain 批间/逐瓦片检查（见 cesiumlab_terrain.py）；当前 cancel
-        # 仍只拦 pending（有意折中，API 契约被测试钉住），这里把 flag 传下去
-        # 让切片具备中途停的能力，后续开放运行中取消时 set 即可生效。
+        # build_terrain 批间/逐瓦片检查（见 cesiumlab_terrain.py），所以运行中的
+        # 切片能被叫停 —— 置位的唯一入口是 delete_task。
         self.stop_flags: Dict[int, threading.Event] = {}
         self._state_lock = threading.Lock()
         self._recover_orphan_running_tasks()
@@ -486,20 +485,16 @@ class LocalTerrainTaskManager:
             if warning:
                 logger.warning(f"Local terrain task {task_id}: {warning}")
 
+            if stop_flag is not None and stop_flag.is_set():
+                # 中途停止的唯一入口是删除任务（切片没有暂停/恢复语义）——
+                # local_terrain_tasks 行此刻已经不在了。写状态是静默 no-op，
+                # _emit_tiling_finished 也没有行可更新。直接收工，不是漏了状态
+                # 迁移。范本见 dem_task_manager._run_tiling_job。
+                return
+
             conn = get_connection()
             try:
                 cur = conn.cursor()
-                if stop_flag is not None and stop_flag.is_set():
-                    # 中途停止：build_terrain 提前收尾（部分瓦片 + layer.json 已
-                    # 落盘），不能报 completed —— 落 cancelled，重跑请重新 start。
-                    cur.execute(
-                        "UPDATE local_terrain_tasks SET status='cancelled', completed_at=?, "
-                        "error_message=NULL WHERE id=? AND status='running'",
-                        (utc_now_iso(), task_id),
-                    )
-                    conn.commit()
-                    self._emit_tiling_finished(task_id, "cancelled")
-                    return
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
                     "error_message=? WHERE id=? AND status='running'",
@@ -568,101 +563,76 @@ class LocalTerrainTaskManager:
                 f"Local terrain task {task_id}: emit finish failed "
                 f"(ignored): {emit_error}")
 
-    def cancel_task(self, task_id: int) -> None:
-        """Cancel if not yet tiling; a running tiling job is rejected.
+    def delete_task(self, task_id: int, delete_files: bool = True, on_row_gone=None):
+        """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
-        build_terrain 现在支持 stop_flag 协作停止（批间/逐瓦片检查，见
-        cesiumlab_terrain.py），运行中的切片技术上已能中途停（flag 在
-        self.stop_flags）；但 cancel 仍只拦 pending 是有意折中 —— 「取消
-        运行中任务」的语义（部分瓦片去留、是否自动重跑）没定，且该 API
-        契约被测试钉住。后续开放时在 running 分支 set stop_flags[task_id]
-        即可生效。"""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE local_terrain_tasks SET status='cancelled' "
-                "WHERE id=? AND status='pending'",
-                (task_id,),
-            )
-            if cur.rowcount == 0:
-                cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
-                r = cur.fetchone()
-                if not r:
-                    raise ValueError(f"Local terrain task {task_id} not found")
-                if r["status"] == "running":
-                    raise ValueError(
-                        "Tiling is in progress and cannot be interrupted; "
-                        "wait for it to finish"
-                    )
-            conn.commit()
-        finally:
-            conn.close()
+        delete_files 默认 True 是本管线的历史约定（另外三条的路由默认 false）。
+        前端总是显式传参，改默认值只影响直连 API 的人，不值得为对称制造破坏性变更。
 
-    def delete_task(self, task_id: int, delete_files: bool = True) -> Optional[bool]:
-        """Delete a task's DB rows and, unless delete_files=False, its on-disk
-        files. Refuses while running：切片虽能经 stop_flag 中途停（见
-        cancel_task），但 delete 会 rmtree 整个输出目录，不能跟在写的
-        GDAL 进程后面删。Removing the row CASCADEs to the files table; the
-        local_task_<id> directory (source uploads + output tiles) is also
-        removed so cancelled/failed tasks don't leave large GeoTIFFs behind."""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            # 与 start_tiling 同一把 _state_lock 锁内复查 active 线程 + DB 状态
-            # (范本: contour_task_manager.delete_task) —— 此前无锁、不查 active
-            # 线程,与正在跑的 tiling 线程存在 check-then-act 竞态。
-            with self._state_lock:
-                active = self.active_tasks.get(task_id)
-                if active and active.is_alive():
-                    raise ValueError(
-                        "Tiling is in progress and cannot be interrupted; "
-                        "wait for it to finish before deleting"
-                    )
-                cur.execute("SELECT status FROM local_terrain_tasks WHERE id=?", (task_id,))
-                row = cur.fetchone()
-                if not row:
-                    raise ValueError(f"Local terrain task {task_id} not found")
-                if row["status"] == "running":
-                    raise ValueError(
-                        "Tiling is in progress and cannot be interrupted; "
-                        "wait for it to finish before deleting"
-                    )
-                cur.execute("DELETE FROM local_terrain_tasks WHERE id=?", (task_id,))
-                conn.commit()
-        finally:
-            conn.close()
+        产物路径不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
+        terrain_static 的约定）：冻结 exe 搬迁后库存的还是旧位置的绝对路径，信它
+        的话下面那道 parent 护栏会因为 parent 对不上而一律拒删，delete_files
+        静默退化成空操作。
 
-        # Best-effort directory cleanup after the row is gone.
-        # 返回值（M10）：True=已删 / False=护栏拦下或删除出错 / None=调用方没要求
-        # 删文件。此前无论哪种情况路由都回 200 {"success": true}，护栏命中时用户
-        # 会以为文件已经清掉了。
-        if not delete_files:
-            return None
-        try:
-            # 不信库存 output_path，从当前 Config.DOWNLOADS_DIR 重算（同
-            # terrain_static 的约定）：冻结 exe 搬迁后库存的旧绝对路径不会让
-            # 下面的守卫失效、也不会误删旧位置的目录。
-            task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
-            # Guard: only remove inside DOWNLOADS_DIR/terrain.
+        on_row_gone 由调用方给：清 /terrain/local 静态路由缓存的那个 hook 依赖
+        Flask 请求上下文（走 current_app.extensions），放在这里等于让服务层持有
+        一个只对路由调用方有效的回调，非路由调用方那里它会静默失效。
+        """
+        from src.services.task_deletion import delete_task_row
+
+        artifact_dir = None
+        if delete_files:
+            artifact_dir = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
+            # 第二道护栏：只允许删 DOWNLOADS_DIR/terrain 直下的目录。它与
+            # remove_task_dir_if_safe 的通用护栏是两道，都要 —— 通用护栏只认
+            # 「别删到 BASE_DIR 之外/根目录」，管不住本管线自己的目录布局。
+            # 越界时不把路径交给助手，等价于原实现的「拒删并返回 False」。
             terrain_root = (Path(Config.DOWNLOADS_DIR) / "terrain").resolve()
-            if task_root.resolve().parent != terrain_root:
+            if artifact_dir.resolve().parent != terrain_root:
                 logger.warning(
                     f"Refusing to remove local terrain dir outside "
-                    f"{terrain_root}: {task_root}")
-                return False
-            if task_root.exists():
-                shutil.rmtree(task_root, ignore_errors=True)
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to remove local terrain dir for task {task_id}: {e}")
-            return False
+                    f"{terrain_root}: {artifact_dir}")
+                artifact_dir = None
+
+        return delete_task_row(
+            manager=self,
+            task_id=task_id,
+            table="local_terrain_tasks",
+            artifact_dir=artifact_dir,
+            on_row_gone=on_row_gone,
+        )
 
     def _emit_progress(self, task_id: int) -> None:
         if not self.socketio:
             return
         try:
             task = self.get_task(task_id)
+        except ValueError:
+            # 行没了 = 任务已被删除，这不是故障，静默返回。
+            #
+            # 为什么要显式挡：这一发推送的 payload 是**整行**，里面
+            # status='running'（start_tiling 刚提交完才调到这里）。用户在这个
+            # 窗口里删掉任务的话，前端收到后既在时间流里找不到这个 key、也不在
+            # 活动集里（deleteTask 已经摘干净），于是走 prependStreamRow 把行
+            # 插回去（static/js/tasks.js），变成一条永远停在「运行中」、只能刷
+            # 新页面才消失的幽灵行 —— 与 contour 渲染进度那条是同一个 bug。
+            #
+            # 之前靠下面那个宽 except 兜住 get_task 抛的 ValueError，结果对但
+            # 机制是意外：把 get_task 改成返回 None 的重构会静悄悄换成
+            # TypeError，再把 payload 改成缓存快照就直接漏出幽灵行；而且正常的
+            # 并发删除每次都往日志里记一条 warning，是假警报。
+            return
+        except Exception as e:
+            # 取行本身失败（database is locked 等）不该逃出去：唯一调用点
+            # start_tiling:389 在「已置 running、线程已登记进 active_tasks /
+            # stop_flags」之后、L2 回补块（:390-402）之前 —— 异常从这里逃出去
+            # 谁也接不住，留下的是一个行停在 running、登记里挂着永不启动的线程、
+            # 路由却返 500 的任务。上面收窄成 ValueError 是为了把「行没了」和
+            # 「取行失败」分开，不是为了把后者放出去。
+            logger.warning(
+                f"Failed to load local terrain task {task_id} for progress emit: {e}")
+            return
+        try:
             task["task_type"] = "local_terrain"
             self.socketio.emit("task_progress", task)
         except Exception as e:

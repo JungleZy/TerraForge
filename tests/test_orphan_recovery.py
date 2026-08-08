@@ -93,7 +93,7 @@ def test_task_manager_recovery_ignores_other_statuses(monkeypatch, tmp_path):
     conn = db.get_connection()
     try:
         cur = conn.cursor()
-        for status in ("pending", "paused", "completed", "failed", "cancelled"):
+        for status in ("pending", "paused", "completed", "failed"):
             cur.execute(
                 """
                 INSERT INTO tasks
@@ -124,7 +124,6 @@ def test_task_manager_recovery_ignores_other_statuses(monkeypatch, tmp_path):
         ("paused", "paused"),
         ("completed", "completed"),
         ("failed", "failed"),
-        ("cancelled", "cancelled"),
     ]
 
 

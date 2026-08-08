@@ -123,7 +123,6 @@ def test_history_all_status_active_covers_three_live_states(monkeypatch, tmp_pat
         _insert_contour(cur, 'c_paused', 'paused', '2026-08-01 03:00:00')
         _insert_map(cur, 'm_completed', 'completed', '2026-08-01 04:00:00')
         _insert_map(cur, 'm_failed', 'failed', '2026-08-01 05:00:00')
-        _insert_map(cur, 'm_cancelled', 'cancelled', '2026-08-01 06:00:00')
         conn.commit()
     finally:
         conn.close()

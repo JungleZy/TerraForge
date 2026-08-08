@@ -18,7 +18,7 @@ function initHistory() {
         filterTasks(e.target.value);
     });
 
-    // 状态筛选 chips（2026-08 单一时间流定稿）：全部/进行中/失败/已完成/已取消。
+    // 状态筛选 chips（2026-08 单一时间流定稿）：全部/进行中/失败/已完成。
     // 作用于整个时间流（活动任务也在流里）：取值透传给 /api/history_all
     // 的 ?status= 参数，「进行中」对应特殊值 active（pending/running/paused）。
     document.querySelectorAll('#statusChips .status-chip').forEach(function(chip) {
@@ -286,12 +286,13 @@ function filterTasks(searchTerm) {
 }
 
 // A7 / Task 12：这两张表原先只映射 completed / failed / cancelled 三态。
+// （cancelled 已随「取消任务」一并退出状态机，见 models/task.py 的 TaskStatus。）
 // /api/history_all 默认不带 status 过滤（路由的 ?status= 是可选参数，
 // 状态筛选 chips 选中时才传），pending / running / paused 的任务照样可能
 // 进历史流（例如独立页 /history 全量渲染）。落在表外的状态会走
 // `|| status` 兜底，把后端的**英文字面量**直接渲染进中文界面
 // —— 这就是历史页里 `paused` 与「✓ 已完成」中英混杂的根源。
-// 现在与 tasks.js 的同名函数逐字对齐，覆盖 models/task.py 的 TaskStatus 全部六态。
+// 现在与 tasks.js 的同名函数逐字对齐，覆盖 models/task.py 的 TaskStatus 全部五态。
 // 两份实现仍然重复（没有构建工具、没有 ES module，两个页面不会同时加载），
 // 收敛到公共文件属于第三档，本次只对齐行为。
 function getStatusColor(status) {
@@ -302,8 +303,7 @@ function getStatusColor(status) {
         'running': 'info',
         'paused': 'warning',
         'completed': 'success',
-        'failed': 'danger',
-        'cancelled': 'dark'
+        'failed': 'danger'
     };
     return colors[status] || 'secondary';
 }
@@ -311,15 +311,14 @@ function getStatusColor(status) {
 // 历史地图上矩形的描边色。这是**第四处**状态映射点（前三处是 getStatusColor /
 // getStatusText / statusIcons），A7 / Task 12 一并补齐。
 //
-// 改前是内联三元阶梯，只认 completed / failed，其余四态（pending / running /
-// paused / cancelled）全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷。
+// 改前是内联三元阶梯，只认 completed / failed，其余三态（pending / running /
+// paused）全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷。
 // 而且三个色号 #10b981 / #ef4444 / #60a5fa 是**硬编码且离调色板**的：
 // #10b981 是 emerald-500，本项目的 --color-success 是 emerald-400 #34d399，
 // 改调色板时这里会静默漂移。
 //
 // 现在读 CSS 自定义属性，与徽章/进度条/卡片边条走同一套语义令牌：
 //   pending -> --color-text-secondary（与 .badge.bg-secondary 同色）
-//   cancelled -> --color-neutral（与 .progress-bar.bg-dark 同色）
 // Leaflet 要的是真实色值字符串，不认 var()，所以必须在这里求值。
 // 状态色惰性缓存：getComputedStyle 每次调用都强制样式计算，renderHistoryMap
 // 逐任务调用时成本放大；调色板运行期不变，首次调用把 6 个令牌求值后查表。
@@ -343,8 +342,7 @@ function getStatusStroke(status) {
         'running': '--color-info',
         'paused': '--color-warning',
         'completed': '--color-success',
-        'failed': '--color-danger',
-        'cancelled': '--color-neutral'
+        'failed': '--color-danger'
     };
     const name = vars[status] || '--color-text-secondary';
     if (!_statusStrokeCache) {
@@ -364,8 +362,7 @@ function getStatusText(status) {
         'running': t('js.history.status.running'),
         'paused': t('js.history.status.paused'),
         'completed': t('js.history.status.completed'),
-        'failed': t('js.history.status.failed'),
-        'cancelled': t('js.history.status.cancelled')
+        'failed': t('js.history.status.failed')
     };
     // 未知状态不把英文字面量原样渲染进中文界面（与 tasks.js 同一约定）
     return texts[status] || t('js.history.status.unknown');
@@ -612,19 +609,41 @@ function previewHistoryTask(taskId, taskType) {
     if (typeof closePanel === 'function') closePanel();
 }
 
+// 活动状态 -> 确认文案的键。终态（completed / failed）不在表里，走通用文案。
+// 三态各说各的，不合并成一句「该任务尚未结束」：用户按下删除前要判断的是
+// 「我会失去什么」，pending 什么都还没跑（只是排队），running / paused 有
+// 已下载的进度会丢 —— 这三件事对决策的分量不一样。
+const DELETE_CONFIRM_KEYS = {
+    running: 'js.history.confirm.delete_task_running',
+    pending: 'js.history.confirm.delete_task_pending',
+    paused: 'js.history.confirm.delete_task_paused',
+};
+
 async function deleteTask(taskId, taskType = 'map') {
-    if (!await showConfirm(t('js.history.confirm.delete_task'), { title: t('js.history.confirm.delete_task_title'), danger: true })) {
+    // 状态取自 store 而不是 allTasks：socket 增量插进来的行只进了 store
+    // （同 previewHistoryTask 的说明）。查不到就退回通用文案 —— 宁可少一句
+    // 警告，也不能对着一个不知道状态的任务瞎说「正在运行」。
+    const store = window.TaskStore;
+    const task = store && store.get(`${taskType}:${taskId}`);
+    const confirmKey = (task && DELETE_CONFIRM_KEYS[task.status])
+        || 'js.history.confirm.delete_task';
+
+    // 单一确认框：任务删不删走确定/取消，产物删不删走勾选框（默认不勾）。
+    // 原来是串起来的两个框，第二个框问的是产物 —— 它的取消位（ESC / 点遮罩 /
+    // 「保留产物」）看起来像在撤销整个删除，实际上照样发 DELETE。现在取消就是
+    // 取消：不发请求，什么都不做。
+    const answer = await showConfirm(t(confirmKey), {
+        title: t('js.history.confirm.delete_task_title'),
+        danger: true,
+        checkbox: {
+            label: t('js.history.confirm.delete_files_checkbox'),
+            checked: false,
+        },
+    });
+    if (!answer.confirmed) {
         return;
     }
-
-    // 第二步确认：是否连磁盘上的下载产物一起删。后端 DELETE 端点按
-    // ?delete_files=true/false 决定是否清理产物目录，缺省 false（保留）。
-    const deleteFiles = await showConfirm(t('js.history.confirm.delete_files'), {
-        title: t('js.history.confirm.delete_files_title'),
-        confirmText: t('js.history.confirm.delete_files_confirm'),
-        cancelText: t('js.history.confirm.delete_files_cancel'),
-        danger: true
-    });
+    const deleteFiles = answer.checked;
 
     try {
         const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
@@ -634,7 +653,22 @@ async function deleteTask(taskId, taskType = 'map') {
         const response = await fetch(`${deleteUrl}?delete_files=${deleteFiles ? 'true' : 'false'}`, { method: 'DELETE' });
 
         if (response.ok) {
-            showToast(t('js.history.toast.deleted'), 'success');
+            // files_deferred 的语义是「有产物要延后删」，不是「任务在跑」
+            // （后端判据是 artifact_dir is not None）。没要求删产物时这个字段
+            // 根本不下发，所以只认「键为真」，不能写成 === false。
+            // 不告诉用户的后果：删掉一个跑了两小时的任务并勾了删产物，看到
+            // 「任务已删除」，转头去文件管理器发现几十 GB 还在 —— 他分不清
+            // 该等还是该手删。
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (e) {
+                // 四条 DELETE 端点都回 JSON；解析不了也只是少一句提示，
+                // 不能因此把后面的摘行/刷新整串跳过。
+            }
+            showToast(payload && payload.files_deferred
+                ? t('js.history.toast.deleted_files_deferred')
+                : t('js.history.toast.deleted'), 'success');
             // 预览中的正是被删任务时联动关闭（map.js 的预览管理器）；
             // 独立页 /history 不加载 map.js，typeof 守卫兜底。
             if (typeof stopTaskPreviewForTask === 'function') {
@@ -646,7 +680,8 @@ async function deleteTask(taskId, taskType = 'map') {
             if (typeof closeFailureToast === 'function') {
                 closeFailureToast(`${taskType}:${taskId}`);
             }
-            // L6：删掉 pending/paused 任务后（四个 DELETE 端点都只拒 running），
+            // L6：删掉任意活动任务后（四条 DELETE 端点现在连 running 也收 ——
+            // 置停止标志后当场删行，见 routes/api.py 的 delete_task），
             // 底部状态栏「N 个活动任务（M 运行中）X%」会继续把它算进去 ——
             // loadHistory 不调 updateStatusTasks，文本就原地冻结，唯一纠正点是
             // loadActiveTasks 里的 setActive（只在新建任务、socket 断线重连

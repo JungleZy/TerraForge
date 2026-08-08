@@ -70,18 +70,6 @@ MESSAGES = {
         'zh': '下载 DEM',
         'en': 'Downloading DEM',
     },
-    'js.tasks.verb.downloaded': {
-        'zh': '已下载',
-        'en': 'Downloaded',
-    },
-    'js.tasks.progress_detail': {
-        'zh': '{verb}: {done} / {total} {unit}',
-        'en': '{verb}: {done} / {total} {unit}',
-    },
-    'js.tasks.failed_count': {
-        'zh': '| 失败: {n}',
-        'en': '| Failed: {n}',
-    },
 
     # --- 底部状态栏「活动任务」聚合读数 ---
     'js.tasks.status_bar.idle': {
@@ -129,10 +117,6 @@ MESSAGES = {
         'zh': '失败',
         'en': 'Failed',
     },
-    'js.tasks.status.cancelled': {
-        'zh': '已取消',
-        'en': 'Cancelled',
-    },
     'js.tasks.status.unknown': {
         'zh': '未知',
         'en': 'Unknown',
@@ -159,14 +143,6 @@ MESSAGES = {
         'zh': '{h}小时',
         'en': '{h}h',
     },
-    'js.tasks.time.elapsed': {
-        'zh': '已运行: {value}',
-        'en': 'Elapsed: {value}',
-    },
-    'js.tasks.time.remaining': {
-        'zh': '预计剩余: {value}',
-        'en': 'ETA: {value}',
-    },
 
     # --- 任务操作 ---
     'js.tasks.toast.start_failed': {
@@ -180,17 +156,5 @@ MESSAGES = {
     'js.tasks.toast.resume_failed': {
         'zh': '恢复任务失败: {error}',
         'en': 'Failed to resume task: {error}',
-    },
-    'js.tasks.toast.cancel_failed': {
-        'zh': '取消任务失败: {error}',
-        'en': 'Failed to cancel task: {error}',
-    },
-    'js.tasks.confirm.cancel_title': {
-        'zh': '取消任务',
-        'en': 'Cancel task',
-    },
-    'js.tasks.confirm.cancel_message': {
-        'zh': '确定要取消这个任务吗？',
-        'en': 'Cancel this task?',
     },
 }

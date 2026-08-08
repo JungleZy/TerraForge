@@ -133,10 +133,6 @@ MESSAGES = {
         'zh': ' · 高度 {h}',
         'en': ' · Alt {h}',
     },
-    'js.map.status.coords_empty': {
-        'zh': '经度 — 纬度 —',
-        'en': 'Lon — Lat —',
-    },
 
     # --- 选区数值点击编辑 -----------------------------------------------------
     'js.map.bounds.edit_aria': {

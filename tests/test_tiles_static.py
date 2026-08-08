@@ -57,6 +57,27 @@ def test_serve_map_task_tile(monkeypatch, tmp_path):
     assert resp.data.startswith(b"\x89PNG")
 
 
+def test_delete_task_invalidates_output_path_cache(monkeypatch, tmp_path):
+    """删任务后同一块瓦片必须立刻 404 —— 即使磁盘文件还在。
+
+    output_path 缓存只存正结果，删除时不清就会一直命中：任务记录没了，
+    /tiles/<id>/ 却还在照常发瓦片（delete_files 默认 false，文件确实还在）。
+    清缓存的 hook 由 DELETE 路由传给 TaskManager.delete_task；它没被接上时
+    这条会绿着骗人 —— 所以第一次 GET 是必需的，它把缓存喂热。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    task_dir = _make_task_with_tile(tmp_path)
+
+    assert client.get("/tiles/1/10/757/380.png").status_code == 200
+
+    assert client.delete("/api/tasks/1").status_code == 200
+    assert (task_dir / "10" / "757" / "380.png").exists(), (
+        "delete_files 默认 false，磁盘瓦片本就该留着 —— 留着才测得出缓存有没有清")
+
+    resp = client.get("/tiles/1/10/757/380.png")
+    assert resp.status_code == 404, "任务已删，缓存没清，瓦片仍可访问"
+
+
 def test_missing_task_404(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     resp = client.get("/tiles/999/10/757/380.png")

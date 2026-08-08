@@ -16,7 +16,7 @@ from flask import Blueprint, current_app, jsonify, request
 from src.i18n import t
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import coerce_number, validate_zoom
-from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from src.services.task_cleanup import resolve_stored_output_dir
 from src.routes.api import _delete_payload
 from src.routes import contour_static
 
@@ -183,30 +183,43 @@ def get_contour_task(task_id: int):
 
 @contour_api_bp.route("/tasks/<int:task_id>", methods=["DELETE"])
 def delete_contour_task(task_id: int):
+    """删除等高线任务。
+
+    正在跑的任务**可以**直接删：删除会自己置停止标志、当场删行、把产物清理交给
+    后台线程（见 services/task_deletion）。响应里的 files_deferred=true 表示产物
+    还没删完 —— 后台在等工作线程收工。
+    """
     try:
         if not contour_task_manager:
             return jsonify({"error": "Contour task manager not initialized"}), 500
         task = contour_task_manager.get_task(task_id)
-        # 锁内复查 active 线程 + DB 状态(范本: ContourTaskManager.start_task),
-        # 运行中的任务拒绝删除 —— 此前这里绕开 manager 锁直查 DB 再删,
-        # 与正在跑的任务线程存在 check-then-act 竞态。
-        contour_task_manager.delete_task(task_id)
-        # 行已删：清掉 /contour 静态路由的存在性缓存，否则 delete_files=false
-        # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到
-        contour_static.invalidate_known_task(task_id)
-        # Optional best-effort artifact cleanup (output_path/contour_task_<id>/)
-        # after the row is gone. 边界见 remove_task_dir_if_safe 的 docstring。
-        # M10：走 resolve_stored_output_dir（裸 Path() 对存量相对值按进程 CWD
-        # 解析），并接住返回值 —— 护栏命中时要如实告诉用户文件没删。
-        files_removed = None
-        if request.args.get("delete_files", "").lower() in ("1", "true", "yes") and task.get("output_path"):
-            files_removed = remove_task_dir_if_safe(
+
+        # Optional best-effort artifact cleanup (output_path/contour_task_<id>/)。
+        # 边界见 remove_task_dir_if_safe 的 docstring。M10：走
+        # resolve_stored_output_dir（裸 Path() 对存量相对值按进程 CWD 解析）。
+        artifact_dir = None
+        if (request.args.get("delete_files", "").lower() in ("1", "true", "yes")
+                and task.get("output_path")):
+            artifact_dir = (
                 resolve_stored_output_dir(task["output_path"]) / f"contour_task_{task_id}")
-        return jsonify(_delete_payload(f"Contour task {task_id} deleted", files_removed))
+
+        outcome = contour_task_manager.delete_task(
+            task_id,
+            artifact_dir=artifact_dir,
+            # 行删掉后同步清 /contour 静态路由的存在性缓存，否则 delete_files=false
+            # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
+            # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
+            on_row_gone=lambda: contour_static.invalidate_known_task(task_id),
+        )
+        if not outcome.row_deleted:
+            return jsonify({"error": f"Contour task {task_id} not found"}), 404
+
+        return jsonify(_delete_payload(
+            f"Contour task {task_id} deleted", outcome.files_removed,
+            files_deferred=outcome.files_deferred))
     except ValueError as e:
-        # get_task/delete_task 的 "not found" -> 404;运行中拒绝删除 -> 400
-        msg = str(e)
-        return jsonify({"error": msg}), (404 if "not found" in msg else 400)
+        # get_task 的 "not found" -> 404。运行中不再拒删，这里没有 400 分支了。
+        return jsonify({"error": str(e)}), 404
     except Exception as e:
         logger.error(f"Error deleting contour task {task_id}: {e}")
         return jsonify({"error": "Failed to delete contour task"}), 500
@@ -252,19 +265,3 @@ def resume_contour_task(task_id: int):
     except Exception as e:
         logger.error(f"Error resuming contour task {task_id}: {e}")
         return jsonify({"error": "Failed to resume contour task"}), 500
-
-
-@contour_api_bp.route("/tasks/<int:task_id>/cancel", methods=["POST"])
-def cancel_contour_task(task_id: int):
-    try:
-        if not contour_task_manager:
-            return jsonify({"error": "Contour task manager not initialized"}), 500
-        contour_task_manager.cancel_task(task_id)
-        return jsonify({"success": True, "message": f"Contour task {task_id} cancelled"})
-    except ValueError as e:
-        # cancel_task 对不存在任务抛 "not found" -> 404（与 delete 端点同款分流）
-        msg = str(e)
-        return jsonify({"error": msg}), (404 if "not found" in msg else 400)
-    except Exception as e:
-        logger.error(f"Error cancelling contour task {task_id}: {e}")
-        return jsonify({"error": "Failed to cancel contour task"}), 500

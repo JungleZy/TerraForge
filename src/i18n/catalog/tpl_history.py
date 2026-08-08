@@ -65,8 +65,4 @@ MESSAGES = {
         'zh': '已完成',
         'en': 'Completed',
     },
-    'tpl.history.filter.cancelled': {
-        'zh': '已取消',
-        'en': 'Cancelled',
-    },
 }

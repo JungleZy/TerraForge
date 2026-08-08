@@ -48,6 +48,30 @@ def test_serve_contour_tile(monkeypatch, tmp_path):
     assert resp.data.startswith(b"\x89PNG")
 
 
+def test_delete_task_invalidates_existence_cache(monkeypatch, tmp_path):
+    """删任务后同一块瓦片必须立刻 404 —— 即使磁盘文件还在。
+
+    存在性缓存只存正结果，删除时不清就会一直命中：任务记录没了，/contour/<id>/
+    却还在照常发瓦片（delete_files 默认 false，文件确实还在）。清缓存的 hook 由
+    DELETE 路由传给 ContourTaskManager.delete_task；它没被接上时这条会绿着骗人
+    —— 所以第一次 GET 是必需的，它把缓存喂热。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    task_id = _seed_task()
+    tile = tmp_path / "downloads" / "dem" / f"contour_task_{task_id}" / "contour_tiles" / "12" / "5" / "6.png"
+    tile.parent.mkdir(parents=True, exist_ok=True)
+    tile.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    assert client.get(f"/contour/{task_id}/12/5/6.png").status_code == 200
+
+    assert client.delete(f"/api/contour/tasks/{task_id}").status_code == 200
+    assert tile.exists(), (
+        "delete_files 默认 false，磁盘瓦片本就该留着 —— 留着才测得出缓存有没有清")
+
+    resp = client.get(f"/contour/{task_id}/12/5/6.png")
+    assert resp.status_code == 404, "任务已删，缓存没清，瓦片仍可访问"
+
+
 def test_unknown_task_404_even_if_file_on_disk(monkeypatch, tmp_path):
     # 与 tiles_static/terrain_static 一致:任务行不存在直接 404,
     # 即使磁盘上恰好有同 id 目录的瓦片

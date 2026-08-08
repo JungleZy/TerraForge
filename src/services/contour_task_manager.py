@@ -640,49 +640,24 @@ class ContourTaskManager:
     def resume_task(self, task_id: int) -> None:
         self.start_task(task_id)
 
-    def cancel_task(self, task_id: int) -> None:
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("UPDATE contour_tasks SET status='cancelled' WHERE id=? AND status IN ('pending','running','paused')", (task_id,))
-            if cur.rowcount == 0:
-                row = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-                if not row:
-                    raise ValueError(f"Contour task {task_id} not found")
-                # U2: 终态任务不能静默返回成功 —— 路由会回 {"success": true},
-                # 用户以为取消生效了。map/dem 都抛 ValueError,contour 跟上。
-                raise ValueError(
-                    f"Cannot cancel contour task {task_id} with status '{row['status']}'")
-            conn.commit()
-            with self._state_lock:
-                if task_id in self.stop_flags:
-                    self.stop_flags[task_id].set()
-        finally:
-            conn.close()
+    def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
+        """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
 
-    def delete_task(self, task_id: int) -> None:
-        """删除任务行。与 start_task 同一把 _state_lock 锁内复查 active 线程 +
-        DB 状态:运行中(active 线程存活或 status='running')抛 ValueError 拒绝 ——
-        路由层此前绕开 manager 锁直查 DB 再删,与正在跑的任务线程存在
-        check-then-act 竞态。磁盘产物清理由路由层负责(delete_files)。"""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            with self._state_lock:
-                active = self.active_tasks.get(task_id)
-                if active and active.is_alive():
-                    raise ValueError(
-                        f"Cannot delete running contour task {task_id}. Pause or cancel it first.")
-                row = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-                if not row:
-                    raise ValueError(f"Contour task {task_id} not found")
-                if row["status"] == "running":
-                    raise ValueError(
-                        f"Cannot delete running contour task {task_id}. Pause or cancel it first.")
-                cur.execute("DELETE FROM contour_tasks WHERE id=?", (task_id,))
-                conn.commit()
-        finally:
-            conn.close()
+        砍掉「取消」之后这是唯一的销毁动作，任何状态都能调 —— 不再有运行中拒删。
+
+        on_row_gone 由调用方给：清 /contour 静态路由缓存的那个 hook 依赖 Flask
+        请求上下文（走 current_app.extensions），放在这里等于让服务层持有一个
+        只对路由调用方有效的回调，非路由调用方那里它会静默失效。
+        """
+        from src.services.task_deletion import delete_task_row
+
+        return delete_task_row(
+            manager=self,
+            task_id=task_id,
+            table="contour_tasks",
+            artifact_dir=artifact_dir,
+            on_row_gone=on_row_gone,
+        )
 
     def get_task(self, task_id: int) -> Dict[str, Any]:
         conn = get_connection()
@@ -919,7 +894,9 @@ class ContourTaskManager:
                 return
 
             current = cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,)).fetchone()
-            if not current or current["status"] in ("cancelled", "paused"):
+            # 只剩 "paused" 要挡：用户明确按了暂停，收尾不得改写它。行不在了
+            # （被删）同样直接退出。
+            if not current or current["status"] == "paused":
                 return
 
             counts = cur.execute(
@@ -976,12 +953,50 @@ class ContourTaskManager:
                 # last_flush 初始 -inf:首次回调(进入渲染阶段的 0/total)必落库
                 render_state = {"done": 0, "total": total_tiles, "last_flush": float("-inf")}
 
+                # 行还在吗。删除运行中的任务会把行 DELETE 掉，而 base_payload 是
+                # 【渲染开始前】的整行快照,里面 status='running' —— 行没了还继续
+                # emit,前端那边 key 既不在时间流也不在活动集(deleteTask 刚摘干净),
+                # 于是走 prependStreamRow 把行插回来(static/js/tasks.js:428);而
+                # 停止后本方法直接 return、再不发任何终态事件,那行就永久卡在
+                # 「运行中」,只能刷新页面才消失。
+                #
+                # 判据只能是「行还在吗」,不能是 stop_flag.is_set():暂停同样置停止
+                # 标志,但暂停时行还在、那一发收尾 flush 是对的(保住节流窗口内最后
+                # 一段计数)。拿 stop_flag 拦会把暂停一起误伤。
+                # 一旦确认行没了就记住 —— 删除不可逆,不必反复回查。
+                row_alive = {"ok": True}
+
+                def _stage_row_alive() -> bool:
+                    """prepare 阶段的闸门。它没有 DB 写、拿不到 rowcount,只能自己查。
+
+                    时序:进入渲染阶段那一发 render_progress(0, total) 在 tiler 之前
+                    就跑过,所以 warp 期间 row_alive 里已经有一次 rowcount 结论 ——
+                    但删除可以发生在那之后、warp 期间,那个结论会过期。所以只信任
+                    「已确认行没了」这一侧短路,仍认为活着时必须再查一次。
+                    每次 stage emit 一条按主键的 SELECT,复用同一连接:stage emit 本身
+                    已被 _RENDER_PROGRESS_MIN_INTERVAL 节流,频率与 flush 同量级。
+                    """
+                    if not row_alive["ok"]:
+                        return False
+                    if progress_conn.execute(
+                            "SELECT 1 FROM contour_tasks WHERE id=?",
+                            (task_id,)).fetchone() is None:
+                        row_alive["ok"] = False
+                    return row_alive["ok"]
+
                 def _flush_render_progress():
-                    progress_conn.execute(
+                    cur_flush = progress_conn.execute(
                         "UPDATE contour_tasks SET rendered_tiles=?, total_tiles=? WHERE id=?",
                         (render_state["done"], render_state["total"], task_id))
                     progress_conn.commit()
                     render_state["last_flush"] = time.monotonic()
+                    # rowcount=0 → 行已被删除:这次 UPDATE 本来就是空转,emit 才是
+                    # 有害的那一半。「写完看 rowcount 再决定发不发」是本仓既有约定
+                    # (见 CLAUDE.md 的删除约定、task_deletion.delete_task_row)。
+                    if cur_flush.rowcount == 0:
+                        row_alive["ok"] = False
+                    if not row_alive["ok"]:
+                        return
                     if self.socketio and base_payload is not None:
                         payload = dict(base_payload)
                         payload["rendered_tiles"] = render_state["done"]
@@ -1039,6 +1054,8 @@ class ContourTaskManager:
                     stage_state["last_emit"] = now
                     if not (self.socketio and base_payload is not None):
                         return
+                    if not _stage_row_alive():
+                        return
                     payload = dict(base_payload)
                     payload["task_type"] = "contour"
                     payload["phase"] = "prepare"
@@ -1059,8 +1076,9 @@ class ContourTaskManager:
                     params=params, progress_cb=render_progress,
                     stage_cb=render_stage, stop_flag=stop_flag,
                 )
-                # 渲染结束(正常完成/暂停/部分失败)强制 flush:节流窗口内最后
-                # 一段计数不丢。渲染异常由外层 except 标 failed,无需再 flush。
+                # 渲染结束(正常完成/暂停/已删除/部分失败)强制 flush:节流窗口内
+                # 最后一段计数不丢。已删除时 UPDATE 是空转、emit 被 rowcount 闸掉,
+                # 走到这里不必分支。渲染异常由外层 except 标 failed,无需再 flush。
                 _flush_render_progress()
             finally:
                 progress_conn.close()
@@ -1104,9 +1122,10 @@ class ContourTaskManager:
         except Exception as e:
             try:
                 cur = conn.cursor()
-                # 'completed' 也要排除:上面的 emit("task_completed") 抛异常时会走到
-                # 这里,不能把已经完成的任务改判 failed
-                cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled','paused','completed')",
+                # 'completed' 也要排除:上面的 emit("task_completed") 抛异常时会
+                # 走到这里,不能把已经完成的任务改判 failed。'paused' 排除的理由
+                # 不同 —— 它是用户的明确意图,失败兜底不该把它抢走。
+                cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('paused','completed')",
                             (str(e), utc_now_iso(), task_id))
                 conn.commit()
                 if cur.rowcount and self.socketio:

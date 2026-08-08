@@ -28,7 +28,7 @@
     }
     const { reactive } = window.Vue;
 
-    // 活动态：三者之外都是终态。与后端 TaskStatus 六态对齐。
+    // 活动态：三者之外都是终态。与后端 TaskStatus 五态对齐。
     const LIVE_STATUSES = ['pending', 'running', 'paused'];
 
     const state = reactive({
@@ -142,7 +142,7 @@
         return existing;
     }
 
-    /** 从流里移除一行（dismissTask 的「移除」，不碰后端）。同时出活动集。 */
+    /** 从流里移除一行（deleteTask 删成功后同步界面用）。同时出活动集。 */
     function remove(key) {
         const i = state.tasks.findIndex(t => t._key === key);
         if (i >= 0) state.tasks.splice(i, 1);
@@ -184,6 +184,11 @@
      * getElementById 拿不到行就跳过」的同一语义,只是不再需要调用方自己判断。
      *
      * ⚠️ 这里**故意不做**「终态不可被活动态推送覆盖」的钳制。试过一版,是错的:
+     *
+     * （下面这段推理写于「取消任务」还在的时候,原文照录不改。该功能已下线,见
+     *   models/task.py 的 TaskStatus。结论仍成立,只是触发者换了人:置停止标志的
+     *   现在是暂停与删除,迟到广播的形态一模一样。第二条论据「重启」则已失效 ——
+     *   start_task 现在只收 pending / paused,终态任务不能重启。）
      *
      * 现象确实存在 —— 取消任务后 0.5s 内会到一发 status='running' 的
      * task_progress,把「已取消」翻回「运行中」且永久卡住(库里已是 cancelled,

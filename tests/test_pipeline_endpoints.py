@@ -1,17 +1,20 @@
-"""四条管线 start/pause/resume/cancel 端点的对称覆盖（M21）。
+"""三条下载管线 start/pause/resume 端点的对称覆盖（M21）。
 
 穷举全测试套件打过的 URL 字面量后确认：改前**没有任何一条**请求过四条管线的
-`/start`、`/resume`，contour 的 `/pause`，local 的 `/cancel`，或
-`GET /api/tasks/<id>`；地图管线的 pause/cancel 也只打到过 ValueError→400 分支。
+`/start`、`/resume`，contour 的 `/pause`，或 `GET /api/tasks/<id>`；地图管线的
+pause 也只打到过 ValueError→400 分支。
 
 这些端点里各自**手抄**了一份 8-10 行的 `except ValueError → 400`（contour/dem
-的 delete/cancel 还手抄了 `404 if "not found" in msg else 400` 的分流）——
-复制粘贴最容易漏的地方，恰恰零覆盖。上一轮 review 的 MEDIUM #15 就是这类漏抄
-的实例（contour 的 cancel 漏了 `except ValueError`，用户点取消得到 500），靠人
-读代码发现，测试全绿。
+的 delete 还手抄了 `404 if "not found" in msg else 400` 的分流）——复制粘贴最
+容易漏的地方，恰恰零覆盖。上一轮 review 的 MEDIUM #15 就是这类漏抄的实例
+（contour 端点漏了 `except ValueError`，用户点一下得到 500），靠人读代码发现，
+测试全绿。
 
 本文件不追求覆盖成功路径（start 会真拉起下载线程），只钉住**错误分支**：
 它们零副作用、极易补，而漏抄 except 的失败形态正是 500。
+
+文件末尾另有一条**反向**的管线路由断言：四条 `/cancel` 不能重新出现在 url_map
+里。放这里是因为它盯的是同一张表——四条管线各自暴露哪些任务动作端点。
 """
 
 import os
@@ -24,11 +27,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 # (标签, URL 前缀, 支持的动作)
 _PIPELINES = [
-    ("map", "/api/tasks", ("start", "pause", "resume", "cancel")),
-    ("dem", "/api/dem/tasks", ("start", "pause", "resume", "cancel")),
-    ("contour", "/api/contour/tasks", ("start", "pause", "resume", "cancel")),
-    # local terrain 的切片是一次性 build_terrain，没有 pause/resume 模型
-    ("local_terrain", "/api/terrain/local/tasks", ("cancel",)),
+    ("map", "/api/tasks", ("start", "pause", "resume")),
+    ("dem", "/api/dem/tasks", ("start", "pause", "resume")),
+    ("contour", "/api/contour/tasks", ("start", "pause", "resume")),
+    # local terrain 的切片是一次性 build_terrain，没有 pause/resume 模型；
+    # 销毁走 DELETE（另有 test_local_terrain_api 覆盖），所以它一条 POST 动作
+    # 都不剩，整行从这张表里消失。
 ]
 
 _CASES = [(label, prefix, action)
@@ -39,7 +43,7 @@ _CASES = [(label, prefix, action)
 @pytest.mark.parametrize("label,prefix,action", _CASES,
                          ids=[f"{c[0]}-{c[2]}" for c in _CASES])
 def test_action_on_missing_task_is_a_client_error_not_500(isolated_app, label, prefix, action):
-    """对不存在的任务做 start/pause/resume/cancel 必须回 4xx，且带 JSON error。
+    """对不存在的任务做 start/pause/resume 必须回 4xx，且带 JSON error。
 
     漏抄 `except ValueError` 的失败形态正是 500 —— 这条断言就是冲它去的。
     """
@@ -103,34 +107,41 @@ def test_pause_running_task_succeeds_and_flips_db_state(isolated_app):
     assert row["status"] == "paused"
 
 
-def test_cancel_pending_task_succeeds_and_flips_db_state(isolated_app):
-    from src.core.database import get_connection_context
-    client = isolated_app.app.test_client()
-    task_id = _insert_map_task("pending")
-
-    resp = client.post(f"/api/tasks/{task_id}/cancel")
-
-    assert resp.status_code == 200, resp.data
-    with get_connection_context() as conn:
-        row = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
-    assert row["status"] == "cancelled"
+# Task 4 删掉的四条取消路由（含蓝图前缀）。只用于失败时点名，不参与断言——
+# 断言查的是 url_map 里的真实 rule 集合，不是这张表。
+_REMOVED_CANCEL_ROUTES = (
+    "map           POST /api/tasks/<int:task_id>/cancel",
+    "dem           POST /api/dem/tasks/<int:task_id>/cancel",
+    "contour       POST /api/contour/tasks/<int:task_id>/cancel",
+    "local terrain POST /api/terrain/local/tasks/<int:task_id>/cancel",
+)
 
 
-@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
-def test_cancel_on_terminal_task_is_rejected_uniformly(isolated_app, terminal):
-    """终态任务 cancel：四条管线都必须拒绝，而不是静默回 success。
+def test_no_pipeline_exposes_a_cancel_route(isolated_app):
+    """四条 /cancel 路由不能被加回来。
 
-    contour 此前是唯一 fall through 的一条（U2），这里用 map 管线钉住约定，
-    contour 侧的同款断言在 tests/test_cancel_terminal_state.py。
+    查 url_map 而不是 grep 源码：路由存不存在是**运行时**事实。源码文本搜索会
+    被注释掉的旧代码误报，也会被 URL 字符串拼接、`add_url_rule`、装饰器变体绕
+    过；url_map 是 Flask 自己认的那一份，绕不过去。
+
+    匹配放宽到「rule 里出现 cancel」而不是「以 /cancel 结尾」：加回来的形状不
+    一定逐字复刻（`/cancel_task`、`/cancel/<reason>` 都算），此刻仓里零条合法
+    路由带这个词，放宽不会误报。
     """
-    from src.core.database import get_connection_context
-    client = isolated_app.app.test_client()
-    task_id = _insert_map_task(terminal)
+    offenders = sorted(
+        rule.rule
+        for rule in isolated_app.app.url_map.iter_rules()
+        if "cancel" in rule.rule.lower()
+    )
 
-    resp = client.post(f"/api/tasks/{task_id}/cancel")
-
-    assert resp.status_code in (400, 404), (
-        f"终态({terminal})任务的 cancel 应被拒绝，实际 {resp.status_code}")
-    with get_connection_context() as conn:
-        row = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
-    assert row["status"] == terminal, "终态记录绝不可被 cancel 改写"
+    assert not offenders, (
+        "检出取消路由：" + "、".join(offenders) + "\n"
+        "「取消」这个动作已经无事可做：删除现在任何状态都能用（含运行中），"
+        "原先「先取消、再删除」的两步已经合并成一步，取消不再是任何操作的前置。\n"
+        "更硬的一条：TaskStatus.CANCELLED 已从枚举里删除，存量 cancelled 行也已"
+        "由 migrate_cancelled_tasks_to_failed 迁成 failed。加回 /cancel 就是往库里"
+        "写一个状态机里不存在的状态——前端两张状态词表落到「未知」兜底，"
+        "start_task 只收 pending/paused 也恢复不回来，任务卡死。\n"
+        "确实要恢复取消能力，得连枚举、迁移、前端词表一起改回来，然后再删这条用例。\n"
+        "历史上被删掉的四条：\n  " + "\n  ".join(_REMOVED_CANCEL_ROUTES)
+    )

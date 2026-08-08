@@ -253,26 +253,6 @@ class DemTaskManager:
     def resume_task(self, task_id: int) -> None:
         self.start_task(task_id)
 
-    def cancel_task(self, task_id: int) -> None:
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("UPDATE dem_tasks SET status='cancelled' WHERE id=? AND status IN ('pending','running','paused')", (task_id,))
-            if cur.rowcount == 0:
-                cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
-                row = cur.fetchone()
-                if not row:
-                    raise ValueError(f"DEM task {task_id} not found")
-                # 与 pause_task 一致：终态（completed/failed/cancelled）不可取消，
-                # 抛错而非静默成功。
-                raise ValueError(f"Cannot cancel DEM task {task_id} with status '{row['status']}'")
-            conn.commit()
-            with self._state_lock:
-                if task_id in self.stop_flags:
-                    self.stop_flags[task_id].set()
-        finally:
-            conn.close()
-
     @staticmethod
     def _resolve_task_output_dir(output_path: str) -> Path:
         """相对 output_path 相对 Config.DOWNLOADS_DIR 解析（不依赖进程 CWD）。
@@ -399,7 +379,7 @@ class DemTaskManager:
             # (RuntimeError: can't start new thread)后不回补的话,job 行永久停在
             # running:再次 start_tiling 被 `WHERE status != 'running'` 判为「已在
             # 运行」而 ValueError,delete_task 也被 DB 状态检查挡住,而
-            # src/routes/terrain_api.py 没有任何 cancel/reset job 的端点 ——
+            # src/routes/terrain_api.py 没有任何重置 job 的端点 ——
             # 只能重启进程让孤儿恢复解开。
             # job 行没有 paused 态,这里置 failed(与下载管线回退 paused 不同)。
             with self._state_lock:
@@ -674,37 +654,27 @@ class DemTaskManager:
         finally:
             conn.close()
 
-    def delete_task(self, task_id: int) -> None:
-        """删除任务行。与 start_task/start_tiling 同一把 _state_lock 锁内复查
-        下载线程 + dem_tasks 状态 + dem_terrain_jobs 状态:下载中或 tiling 中的
-        任务抛 ValueError 拒删 —— tiling 中删除会 rmtree 正在被 GDAL 写入的
-        terrain_tiles/,job 行被 ON DELETE CASCADE 删掉,结果静默丢失
-        (范本: contour_task_manager.delete_task)。
-        磁盘产物清理由路由层负责(delete_files)。"""
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            with self._state_lock:
-                active = self.active_tasks.get(task_id)
-                if active and active.is_alive():
-                    raise ValueError(
-                        f"Cannot delete running DEM task {task_id}. Please pause or cancel it first.")
-                row = cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,)).fetchone()
-                if not row:
-                    raise ValueError(f"DEM task {task_id} not found")
-                if row["status"] == "running":
-                    raise ValueError(
-                        f"Cannot delete running DEM task {task_id}. Please pause or cancel it first.")
-                job = cur.execute(
-                    "SELECT status FROM dem_terrain_jobs WHERE task_id=?", (task_id,)).fetchone()
-                if job and job["status"] == "running":
-                    raise ValueError(
-                        f"Cannot delete DEM task {task_id} while terrain tiling is running. "
-                        "Wait for it to finish first.")
-                cur.execute("DELETE FROM dem_tasks WHERE id=?", (task_id,))
-                conn.commit()
-        finally:
-            conn.close()
+    def delete_task(self, task_id: int, artifact_dir=None, on_row_gone=None):
+        """删除任务。没在跑就同步删，在跑就置停止标志 + 后台收尾。
+
+        切片线程自 v0.2.11 起也登记进 active_tasks / stop_flags（见 start_tiling），
+        「切片中删除」因此走的是同一条后台路径 —— 等线程收工再删产物，不再需要
+        dem_terrain_jobs 那道单独的守卫来拒绝。job 行本身仍由
+        _recover_orphan_running_tasks 在进程重启后收拾孤儿。
+
+        on_row_gone 由调用方给：清 /terrain/dem 静态路由缓存的那个 hook 依赖
+        Flask 请求上下文（走 current_app.extensions），放在这里等于让服务层持有
+        一个只对路由调用方有效的回调，非路由调用方那里它会静默失效。
+        """
+        from src.services.task_deletion import delete_task_row
+
+        return delete_task_row(
+            manager=self,
+            task_id=task_id,
+            table="dem_tasks",
+            artifact_dir=artifact_dir,
+            on_row_gone=on_row_gone,
+        )
 
     def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
         try:
@@ -886,7 +856,9 @@ class DemTaskManager:
 
             cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
             current = cur.fetchone()
-            if not current or current["status"] in ("cancelled", "paused"):
+            # 只剩 "paused" 要挡：用户明确按了暂停，收尾不得改写它。行不在了
+            # （被删）同样直接退出。
+            if not current or current["status"] == "paused":
                 return
 
             cur.execute(
@@ -927,9 +899,10 @@ class DemTaskManager:
         except Exception as e:
             try:
                 cur = conn.cursor()
-                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写。
+                # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写；
+                # 'paused' 是用户的明确意图，失败兜底也不该把它抢走。
                 cur.execute(
-                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('cancelled', 'paused', 'completed')",
+                    "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('paused', 'completed')",
                     (str(e), utc_now_iso(), task_id),
                 )
                 conn.commit()

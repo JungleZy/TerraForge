@@ -99,37 +99,33 @@ def get_local_terrain_task(task_id: int):
         return jsonify({"error": "Failed to get local terrain task"}), 500
 
 
-@local_terrain_api_bp.route("/tasks/<int:task_id>/cancel", methods=["POST"])
-def cancel_local_terrain_task(task_id: int):
-    if not local_terrain_task_manager:
-        return jsonify({"error": "Local terrain task manager not initialized"}), 500
-    try:
-        local_terrain_task_manager.cancel_task(task_id)
-        return jsonify({"success": True, "message": f"Local terrain task {task_id} cancelled"})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.error(f"Error cancelling local terrain task {task_id}: {e}")
-        return jsonify({"error": "Failed to cancel local terrain task"}), 500
-
-
 @local_terrain_api_bp.route("/tasks/<int:task_id>", methods=["DELETE"])
 def delete_local_terrain_task(task_id: int):
+    """删除本地地形任务。
+
+    正在切片的任务**可以**直接删：删除会自己置停止标志、当场删行、把产物清理
+    交给后台线程（见 services/task_deletion）。响应里的 files_deferred=true
+    表示产物还没删完 —— 后台在等切片线程收工。
+    """
     if not local_terrain_task_manager:
         return jsonify({"error": "Local terrain task manager not initialized"}), 500
     try:
         # Local terrain historically always cleaned up on delete; keep that as
         # the default, but honor an explicit delete_files=false from the UI.
         delete_files = request.args.get("delete_files", "true").lower() in ("1", "true", "yes")
-        files_removed = local_terrain_task_manager.delete_task(
-            task_id, delete_files=delete_files)
-        # 行已删：清掉 /terrain/local 静态路由的存在性缓存，否则 delete_files=false
-        # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到（同 contour_api 的做法）
-        terrain_static.invalidate_known_task(task_id)
+        outcome = local_terrain_task_manager.delete_task(
+            task_id,
+            delete_files=delete_files,
+            # 行删掉后同步清 /terrain/local 静态路由的存在性缓存，否则
+            # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
+            # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
+            on_row_gone=lambda: terrain_static.invalidate_known_task(task_id),
+        )
+        if not outcome.row_deleted:
+            return jsonify({"error": f"Local terrain task {task_id} not found"}), 404
         return jsonify(_delete_payload(
-            f"Local terrain task {task_id} deleted", files_removed))
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+            f"Local terrain task {task_id} deleted", outcome.files_removed,
+            files_deferred=outcome.files_deferred))
     except Exception as e:
         logger.error(f"Error deleting local terrain task {task_id}: {e}")
         return jsonify({"error": "Failed to delete local terrain task"}), 500

@@ -3,7 +3,7 @@
 覆盖:
 - C5 : POST /api/tasks 的 output_path 越界 → 400
 - I3 : DELETE 绕开 manager 锁的竞态 —— 有活跃线程的任务拒绝删除(400),记录保留
-- I4 : pause/cancel 的 ValueError 不再吞成 500(映射 400,与 start/resume 一致)
+- I4 : pause 的 ValueError 不再吞成 500(映射 400,与 start/resume 一致)
 - I15: 预计瓦片数超阈值 → 创建直接 400(不是 warning)
 - minors: PUT /api/config 非法 JSON 不 500 + 键白名单;limit/page 负数钳制;
           style/output_format 为 None → 400(不是 AttributeError → 500)
@@ -116,6 +116,11 @@ class _FakeActiveThread:
     def is_alive(self):
         return self._thread.is_alive()
 
+    def join(self, timeout=None):
+        # task_deletion 的后台收尾会 join 工作线程。缺了这个方法它只会记一条
+        # warning 就放弃，墓碑也摘不掉 —— 假线程必须在这一点上像真线程。
+        self._thread.join(timeout)
+
     def release(self):
         self._stop.set()
         self._thread.join(timeout=5)
@@ -154,9 +159,15 @@ def test_create_map_task_output_path_inside_downloads_201(monkeypatch, tmp_path)
     assert resp.status_code == 201, resp.get_json()
 
 
-# ---------- I3: DELETE 不得删掉有活跃线程的任务 ----------
+# ---------- I3: DELETE 与活跃线程 ----------
 
-def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
+def test_delete_map_task_with_active_thread_succeeds(monkeypatch, tmp_path):
+    """语义翻面：活跃的 map 任务现在可以直接删。
+
+    原断言是「拒删，返回 400」。砍掉「取消」之后删除是唯一的销毁动作，再拒下去
+    用户就没有任何办法销毁一个正在跑的任务了。删除自己置停止标志、当场删行，
+    产物清理交给后台（见 services/task_deletion）。
+    """
     _, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     api_mod = importlib.import_module("src.routes.api")
@@ -166,14 +177,46 @@ def test_delete_map_task_with_active_thread_rejected(monkeypatch, tmp_path):
     api_mod.task_manager.active_tasks[task_id] = fake
     try:
         resp = client.delete(f"/api/tasks/{task_id}")
-        assert resp.status_code == 400, resp.get_json()
-        assert _task_row(db, "tasks", task_id) is not None, "活跃任务被删掉了"
+        assert resp.status_code == 200, resp.get_json()
+        assert _task_row(db, "tasks", task_id) is None, "活跃任务没被删掉"
     finally:
         fake.release()
         api_mod.task_manager.active_tasks.pop(task_id, None)
 
 
-def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
+def test_delete_running_map_task_with_files_defers_cleanup(monkeypatch, tmp_path):
+    """HTTP 层：running 的行 + delete_files=1 → 200 + files_deferred，行当场消失。
+
+    两条只有这里守得住的契约：
+    ① status='running' 的行经 HTTP 能删 —— 这是本次拆掉的第二道守卫（另一道是
+       活跃线程）。其余 map DELETE 用例播的都是 completed/paused/pending，把
+       守卫加回路由它们照样绿。
+    ② files_deferred=true 是这次给公开 API 新加的字段，且它出现时
+       files_removed/files_message 一律不下发 —— 产物还没删，给不出真假。
+    """
+    _, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    api_mod = importlib.import_module("src.routes.api")
+    task_id = _seed_map_task(db, status="running")
+
+    fake = _FakeActiveThread()
+    api_mod.task_manager.active_tasks[task_id] = fake
+    try:
+        resp = client.delete(f"/api/tasks/{task_id}?delete_files=1")
+        assert resp.status_code == 200, resp.get_json()
+        body = resp.get_json()
+        assert body['files_deferred'] is True, body
+        assert 'files_removed' not in body, body
+        assert 'files_message' not in body, body
+        assert _task_row(db, "tasks", task_id) is None, "running 的行没被删掉"
+    finally:
+        fake.release()
+        api_mod.task_manager.active_tasks.pop(task_id, None)
+
+
+def test_delete_dem_task_with_active_thread_defers_cleanup(monkeypatch, tmp_path):
+    """DEM 侧的 running 删除契约，与上面 map 那条同构：活跃线程 + delete_files=1
+    → 200 + files_deferred，行当场消失。"""
     _, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     dem_api_mod = importlib.import_module("src.routes.dem_api")
@@ -182,9 +225,12 @@ def test_delete_dem_task_with_active_thread_rejected(monkeypatch, tmp_path):
     fake = _FakeActiveThread()
     dem_api_mod.dem_task_manager.active_tasks[task_id] = fake
     try:
-        resp = client.delete(f"/api/dem/tasks/{task_id}")
-        assert resp.status_code == 400, resp.get_json()
-        assert _task_row(db, "dem_tasks", task_id) is not None, "活跃 DEM 任务被删掉了"
+        resp = client.delete(f"/api/dem/tasks/{task_id}?delete_files=1")
+        assert resp.status_code == 200, resp.get_json()
+        body = resp.get_json()
+        assert body['files_deferred'] is True, body
+        assert 'files_removed' not in body, body
+        assert _task_row(db, "dem_tasks", task_id) is None, "活跃 DEM 任务的行没被删掉"
     finally:
         fake.release()
         dem_api_mod.dem_task_manager.active_tasks.pop(task_id, None)
@@ -199,13 +245,11 @@ def test_delete_map_task_without_active_thread_still_works(monkeypatch, tmp_path
     assert _task_row(db, "tasks", task_id) is None
 
 
-# ---------- I4: pause/cancel 的 ValueError → 400(不吞成 500) ----------
+# ---------- I4: pause 的 ValueError → 400(不吞成 500) ----------
 
-def test_pause_cancel_nonexistent_map_task_400(monkeypatch, tmp_path):
+def test_pause_nonexistent_map_task_400(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
     resp = client.post("/api/tasks/9999/pause")
-    assert resp.status_code == 400, resp.get_json()
-    resp = client.post("/api/tasks/9999/cancel")
     assert resp.status_code == 400, resp.get_json()
 
 
@@ -217,11 +261,9 @@ def test_pause_map_task_with_wrong_status_400(monkeypatch, tmp_path):
     assert resp.status_code == 400, resp.get_json()
 
 
-def test_pause_cancel_nonexistent_dem_task_400(monkeypatch, tmp_path):
+def test_pause_nonexistent_dem_task_400(monkeypatch, tmp_path):
     _, client = _load_app(monkeypatch, tmp_path)
     resp = client.post("/api/dem/tasks/9999/pause")
-    assert resp.status_code == 400, resp.get_json()
-    resp = client.post("/api/dem/tasks/9999/cancel")
     assert resp.status_code == 400, resp.get_json()
 
 

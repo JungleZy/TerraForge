@@ -60,7 +60,8 @@
     --color-danger-hover:  #fca5a5;
     --color-warning-hover: #fcd34d;
     --color-info-hover:    #93c5fd;
-    /* 中性状态填充色。为「已取消」这类无语义色的终态准备。
+    /* 中性状态填充色。原为「已取消」这类无语义色的终态准备，该状态已随
+       「取消任务」下线，现只剩连接状态圆点的未知态在用。
        不能直接复用 --color-text-muted(#5f6670)：它对 --color-bg-tertiary
        只有 2.82:1，低于本项目 3:1 的图形元素下限（见
        tests/test_css_contract.py 的 test_progress_bar_fill_has_sufficient_contrast）。
@@ -138,7 +139,7 @@
     --color-control-hover:    rgba(255,255,255,0.12);   /* .map-panel-btn hover */
     --color-btn-ghost-hover:  rgba(255,255,255,0.08);   /* .btn-secondary / .btn-outline-secondary hover */
     --color-btn-ghost-active: rgba(255,255,255,0.16);   /* 同上的 active */
-    --color-badge-neutral-bg: rgba(255,255,255,0.06);   /* pending / bg-secondary / bg-dark 徽章底 */
+    --color-badge-neutral-bg: rgba(255,255,255,0.06);   /* pending / bg-secondary 徽章底 */
 
     /* 状态徽章的描边（与各自 --color-*-bg 同色系、更高 alpha） */
     --color-info-border:    rgba(96,165,250,0.30);
@@ -1010,9 +1011,9 @@ html[lang="en"] .map-panel-btn {
    1px 发丝线（落在分组头/分页条之前）是可接受的代价。 */
 
 /* 状态点：8px 圆点承担状态识别（与小字状态文本一起，替代原徽章 pill）。
-   六态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
+   五态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
    「任务还活着」的唯一动效信号（动画降噪时刻意保留的那一类）。
-   兜底色是品牌色 var(--color-accent)：六态各有专属规则，落到兜底 = 有态
+   兜底色是品牌色 var(--color-accent)：五态各有专属规则，落到兜底 = 有态
    没写规则（测试会红）；不能用中性灰当兜底——那会让缺规则的态冒充 pending。 */
 .task-dot {
     width: 8px;
@@ -1039,17 +1040,10 @@ html[lang="en"] .map-panel-btn {
     background: var(--color-warning);
 }
 
-/* pending 用 --color-text-secondary 而不是 --color-text-muted
-   （对面板底只有 3.09:1，紧贴 3:1 下限），且与 cancelled 的
-   --color-neutral 保持区分——两个状态语义不同，状态点不该同色。 */
+/* pending 用 --color-text-secondary 而不是 --color-text-muted：后者对面板底
+   只有 3.09:1，紧贴 3:1 下限。 */
 .task-row.status-pending .task-dot {
     background: var(--color-text-secondary);
-}
-
-/* 没有这条的话，已取消的行会落到 .task-dot 的兜底色——与「等待中」同色，
-   读起来像「还没开始」。 */
-.task-row.status-cancelled .task-dot {
-    background: var(--color-neutral);
 }
 
 /* 失败行**不铺底色**（沿用 2026-08 扁平化结论）：整行红洗 + 红框错误框
@@ -1320,8 +1314,7 @@ html[lang="en"] .map-panel-btn {
     box-shadow: none !important;
 }
 
-.badge.bg-secondary,
-.badge.bg-dark {
+.badge.bg-secondary {
     background: var(--color-badge-neutral-bg) !important;
     color: var(--color-text-secondary) !important;
     border: 1px solid var(--color-border-strong);
@@ -1448,25 +1441,22 @@ html[lang="en"] .map-panel-btn {
    共用声明块渲染完全一致，运行中的徽章与进度条同色系，
    且不必为 .bg-primary 再写一条覆盖。
 
-   secondary(等待中) / dark(已取消) 原来没有覆盖，会回落到 Bootstrap 默认的
-   #6c757d / #212529。!important 是必需的：Bootstrap 的 .bg-* 工具类自带
-   !important，不带的话我们更高的特异性也赢不了。
+   secondary(等待中) 原来没有覆盖，会回落到 Bootstrap 默认的 #6c757d。
+   !important 是必需的：Bootstrap 的 .bg-* 工具类自带 !important，
+   不带的话我们更高的特异性也赢不了。
 
-   两条都必须对 `.progress` 轨道底色(--color-bg-tertiary #1c2027) 有
+   它必须对 `.progress` 轨道底色(--color-bg-tertiary #1c2027) 有
    >= 3:1 对比度，见 test_progress_bar_fill_has_sufficient_contrast。
    所以等待中用 --color-text-secondary(6.21:1) 而不是
    --color-text-muted(2.82:1)。
 
    ⚠️ 这段注释原本还写着「history.js 的 getStatusColor 把 running/pending/paused
-   全兜底成 secondary」—— A7 / Task 12 已经把 history.js 的映射补齐到六态，
+   全兜底成 secondary」—— A7 / Task 12 已经把 history.js 的映射补齐到全部状态，
    那句话过期了。secondary 现在只对应 pending，以及后端冒出新状态时的兜底档；
-   兜底档同样要可读，见 test_status_badge_text_is_readable_in_every_state。 */
+   兜底档同样要可读，见 test_status_badge_text_is_readable_in_every_state。
+   （原来还有一条 .progress-bar.bg-dark 给「已取消」，随该状态退出状态机删除。） */
 .progress-bar.bg-secondary {
     background: var(--color-text-secondary) !important;
-}
-
-.progress-bar.bg-dark {
-    background: var(--color-neutral) !important;
 }
 
 /* 这里原本是一整块 `.zoom-progress` / `.zoom-level` / `.zoom-level-label` /
@@ -2469,7 +2459,7 @@ code {
    `container.innerHTML = ...` 全量重建。实测 5 张卡的场景：
      · 新任务到达（updateTaskProgress 的未知 key 分支）→ fadeInUp × 5
      · 任务完成 handleTaskCompleted                    → fadeInUp × 5
-     另有 dismissTask / cancelTask / loadActiveTasks 同路径。
+     另有 loadActiveTasks 同路径（当时同名单里的另两条已随「取消任务」下线）。
    即「别人完成了一个任务，我这四张卡集体上浮一遍」。这是真实缺陷，
    只是频率没有简报说的那么高。根治是增量渲染（第三档 C5），在那之前
    删动画是成本最低的止血。
@@ -2715,6 +2705,34 @@ code {
     line-height: 1.55;
     margin-bottom: 1.5rem;
     word-break: break-word;
+}
+/* ---- Confirm 里的勾选框 ---- */
+/* 「删不删任务」是主问题，「顺带删不删磁盘产物」是附带选项 —— 后者不配再占
+   一个确认框（串起来的第二个框，它的取消位问的是另一个维度，用户按 ESC 时
+   以为自己撤销了删除，其实只是选了「保留产物」）。负的上边距是把它贴回
+   .app-confirm__msg 的 1.5rem 下边距里：选项属于问题，不是另起一段。 */
+.app-confirm__check {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin: -0.9rem 0 1.4rem;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    line-height: 1.45;
+    cursor: pointer;
+}
+.app-confirm__check:hover { color: var(--color-text-primary); }
+.app-confirm__check-box {
+    flex: none;
+    width: 0.95rem;
+    height: 0.95rem;
+    margin-top: 0.18rem;
+    accent-color: var(--color-accent);
+    cursor: pointer;
+}
+.app-confirm__check-box:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
 }
 .app-confirm__actions {
     display: flex;

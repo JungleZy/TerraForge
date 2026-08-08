@@ -487,3 +487,232 @@ def test_in_flight_bytes_drive_download_speed(monkeypatch, tmp_path):
                        if e == "task_progress" and p.get("phase") == "download"]
     assert download_pushes, "下载阶段必须有带 phase=download 的推送"
     assert all(p["download_speed_bps"] == 2048 for p in download_pushes)
+
+
+def _delete_contour_row(db, task_id):
+    """把「删除运行中的等高线任务」在库里留下的状态复现出来：行没了
+    （contour_files 由 FK ON DELETE CASCADE 跟着走）。
+
+    不走 task_deletion.delete_task_row：它按 manager.active_tasks 判「线程还
+    活着吗」再决定同步删还是起后台收尾线程，而这里 _execute 是 asyncio.run
+    直跑的、没有登记线程，走进去只会命中快路径。删除留给渲染线程的可观察
+    状态就两样 —— 行没了 + 停止标志置位 —— 后者由各用例自己 set()。
+    """
+    conn = db.get_connection()
+    try:
+        conn.execute("DELETE FROM contour_tasks WHERE id=?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_deleted_task_emits_no_further_render_progress(monkeypatch, tmp_path):
+    """删掉运行中的等高线任务之后，渲染线程不许再发一发 task_progress。
+
+    base_payload 是【渲染开始前】的整行快照，里面 status='running'。行已经
+    DELETE 了还继续发，前端那边 key 既不在时间流也不在活动集（deleteTask 刚
+    摘干净），于是走 prependStreamRow 把行插回来（static/js/tasks.js:428）；
+    而停止后 _execute 直接 return、再不发任何终态事件，那行就永久卡在
+    「运行中」，只能刷新页面才消失。
+    """
+    import threading
+
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(ctm_mod, "_RENDER_PROGRESS_MIN_INTERVAL", 0)  # 每次回调都 flush
+
+    events = []
+
+    class FakeSocket:
+        def emit(self, event, payload):
+            events.append((event, dict(payload)))
+
+    mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
+    task_id = _seed_running_download_task(db)
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
+        for g in granules:
+            if progress_callback:
+                await progress_callback(g, "completed", None, 1)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    stop = threading.Event()
+    mark = {}
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
+        progress_cb(5, 100)              # 删除之前的正常一发
+        _delete_contour_row(db, task_id)
+        stop.set()
+        mark["at"] = len(events)
+        # 渲染循环要跑到批边界才停，这中间回调照来 —— 幽灵行就是这儿发出来的
+        progress_cb(9, 100)
+        return {"total": 100, "rendered": 9, "failed": 0}
+
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, stop))
+
+    # 删除之后一个事件都不许有（含 tiler 返回后那一发无条件收尾 flush）
+    # 比整个 events 而不是只比 (event, phase)：失败时要能看见 payload 里那句
+    # status='running' —— 那才是「幽灵行」的直接证据
+    assert events[mark["at"]:] == [], (
+        f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")
+
+
+def test_deleted_task_emits_no_further_prepare_stage(monkeypatch, tmp_path):
+    """warp / 建金字塔阶段同样不许在行删掉之后继续发。
+
+    render_stage 用的是同一份 base_payload，但它【没有 DB 写】、拿不到
+    rowcount，所以它的闸门必须另有来源。删除完全可以发生在 warp 期间：那时
+    只有「进入渲染阶段」那一发 flush 跑过（rowcount 当时还是 1），凭那次结论
+    判活是过期的。
+    """
+    import threading
+
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(ctm_mod, "_RENDER_PROGRESS_MIN_INTERVAL", 0)
+
+    events = []
+
+    class FakeSocket:
+        def emit(self, event, payload):
+            events.append((event, dict(payload)))
+
+    mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
+    task_id = _seed_running_download_task(db)
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
+        for g in granules:
+            if progress_callback:
+                await progress_callback(g, "completed", None, 1)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    stop = threading.Event()
+    mark = {}
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
+        stage_cb("warp", 0.0)            # 删除之前：正常进入 warp
+        _delete_contour_row(db, task_id)
+        stop.set()
+        mark["at"] = len(events)
+        stage_cb("warp", 0.5)
+        stage_cb("warp", 1.0)            # fraction=1.0 是 edge，节流豁免，必发
+        return {"total": 0, "rendered": 0, "failed": 0}
+
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, stop))
+
+    assert events[mark["at"]:] == [], (
+        f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")
+
+
+def test_paused_render_still_emits_the_final_flush(monkeypatch, tmp_path):
+    """暂停不能被误伤：行还在，收尾那一发 flush 必须照旧落库【并广播】。
+
+    这是「删除时闸掉 emit」最容易撞坏的东西 —— 判据要是取 stop_flag.is_set()，
+    暂停也置停止标志，这一发就被一起掐掉，节流窗口内最后一段计数在界面上就
+    丢了（库里靠 flush 保住了，界面上没有）。rowcount 恰好只在行没了时为 0。
+    """
+    import threading
+
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(ctm_mod, "_RENDER_PROGRESS_MIN_INTERVAL", 3600)  # 全程在节流窗口内
+
+    events = []
+
+    class FakeSocket:
+        def emit(self, event, payload):
+            events.append((event, dict(payload)))
+
+    mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
+    task_id = _seed_running_download_task(db)
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None, stop_flag=None, bytes_callback=None):
+        for g in granules:
+            if progress_callback:
+                await progress_callback(g, "completed", None, 1)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    stop = threading.Event()
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
+        progress_cb(5, 100)                 # 节流窗口内,只记内存
+        mgr.stop_flags[task_id] = stop      # start_task 会做的登记
+        mgr.pause_task(task_id)             # 真暂停:库置 paused + 置停止标志
+        return {"total": 100, "rendered": 5, "failed": 0}
+
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, stop))
+
+    assert stop.is_set(), "pause_task 必须置停止标志,否则这条用例没在测暂停"
+    assert mgr.get_task(task_id)["status"] == "paused"
+    render_events = [p for e, p in events if e == "task_progress" and p.get("phase") == "render"]
+    # 进入渲染阶段那一发 + 收尾强制 flush 那一发
+    assert len(render_events) == 2, [p["rendered_tiles"] for p in render_events]
+    assert render_events[-1]["rendered_tiles"] == 5
+    assert render_events[-1]["total_tiles"] == 100
+
+
+def test_deleted_task_emits_no_further_download_progress(monkeypatch, tmp_path):
+    """下载阶段同样不许在行删掉之后继续发。
+
+    这条与上面两条不是重复：渲染阶段的闸门是本轮新加的 row_alive/rowcount，
+    下载阶段靠的却是**另一套、而且是偶然的**机制 —— 在途路径每次重查行
+    （:839-841 `if not row: return`）、状态路径靠 _record_progress 提交后重查
+    整行返回 None（:806-807 → :864 `if row:`）。那两次重查的本意都是拿最新
+    计数，挡住幽灵行只是副作用。谁把 payload 换成缓存的行快照（渲染阶段的
+    base_payload 就是这么翻车的），幽灵行就在下载阶段重新长出来，而在此之前
+    没有任何用例会红。
+    """
+    import threading
+
+    db, ctm_mod = _setup(monkeypatch, tmp_path)
+    # 节流窗口不是本用例的被测对象：留着的话删除之后那几发会被时间窗吞掉，
+    # 用例就变成在测节流、反事实探针也照样绿。
+    monkeypatch.setattr(ctm_mod, "_DOWNLOAD_PROGRESS_EMIT_MIN_INTERVAL", 0)
+
+    events = []
+
+    class FakeSocket:
+        def emit(self, event, payload):
+            events.append((event, dict(payload)))
+
+    mgr = ctm_mod.ContourTaskManager(socketio=FakeSocket())
+    task_id = _seed_running_download_task(db)
+
+    mark = {}
+
+    async def fake_download(dataset, granules, output_dir, progress_callback=None,
+                            stop_flag=None, bytes_callback=None):
+        for g in granules:
+            if "at" not in mark:
+                await progress_callback(g, "completed", None, 1024)  # 删除前的正常一发
+                _delete_contour_row(db, task_id)
+                mark["at"] = len(events)
+                continue
+            # 下载协程不会因为行没了就当场停 —— 剩下的颗粒照跑，两条推送路径
+            # （在途字节 / 颗粒状态）都还会被踩到
+            await bytes_callback(g, 4 * 1024 * 1024)
+            await progress_callback(g, "completed", None, 1024)
+    monkeypatch.setattr(mgr.engine, "download_files", fake_download)
+
+    def fake_tiler(task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+                   stage_cb=None, stop_flag=None):
+        return {"total": 0, "rendered": 0, "failed": 0}
+
+    import src.services.contour_task_tiler as tiler_mod
+    monkeypatch.setattr(tiler_mod, "tile_contour_task_dir", fake_tiler)
+
+    asyncio.run(mgr._execute(task_id, threading.Event()))
+
+    assert mark.get("at", 0) > 0, "删除之前必须先有正常推送，否则这条用例没测到闸门"
+    # 删除之后一个事件都不许有 —— 含后面渲染阶段和收尾
+    assert events[mark["at"]:] == [], (
+        f"行已删除，之后不得再有任何推送: {events[mark['at']:]}")

@@ -309,7 +309,7 @@ def test_failed_task_row_is_not_removed():
 
     （前身是 test_failed_task_card_is_not_removed。统一任务表改版把卡片改成
     表格行，契约不变：失败行必须留在页面上——转红 + 错误行，
-    清理只能由用户点「移除」触发（dismissTask）。）
+    清理只能由用户点「删除」触发（deleteTask）。）
 
     这是本任务的核心禁止性契约。原实现两件事一起做：
         activeTasks.delete(key);  →  卡片下次整体重绘时不会再出现
@@ -330,7 +330,7 @@ def test_failed_task_row_is_not_removed():
 
     assert not re.search(r'\.remove\(\s*\)', body), (
         'handleTaskFailed 里出现了 .remove() 调用——失败行必须留在页面上，'
-        '清理只能由用户点「移除」触发（dismissTask）。'
+        '清理只能由用户点「删除」触发（deleteTask）。'
         '（错误行的去重要用 outerHTML 原位重建，不许走 .remove()。）'
     )
     assert 'activeTasks.delete(' not in body, (
@@ -447,8 +447,6 @@ _ACTION_GUARDS = {
     'startTask': ('===', 'pending'),
     'pauseTask': ('===', 'running'),
     'resumeTask': ('===', 'paused'),
-    'cancelTask': ('!==', 'failed'),   # 失败任务不能再调后端 cancel
-    'dismissTask': ('===', 'failed'),  # 只有失败卡片给「移除」
 }
 
 _STATUS_GUARD_RE = re.compile(r"task\.status\s*(===|!==)\s*'(\w+)'")
@@ -462,12 +460,10 @@ def test_card_actions_are_gated_by_the_right_status():
     `onclick="xxxTask(`「往前找最近的 task.status 判断」那套启发式；Vue 的
     v-if 与按钮同在一个标签里，比「最近的前置判断」精确得多。
 
-    这条同时守三件事：
+    这条同时守两件事：
       1. 失败行**没有**重试按钮（后端会抛 ValueError，见上面表里的注释）。
-      2. 失败行**有**「移除」按钮。行不再自动消失了，没有这个按钮
-         用户就没有任何办法清掉它，只能刷新页面。
-      3. 失败行不再显示「取消」——对一个已经 failed 的任务调
-         /cancel 是无意义的后端往返。
+      2. 失败行的清理入口只剩 🗑（deleteTask，没有 v-if 所以恒在），
+         它不走 act() 转发，因此不在这张表里。
     """
     tpl = _tpl('TaskRow')
     # 按 <button ...> 切标签，每个动作的 v-if 必须与它同标签
@@ -492,23 +488,6 @@ def test_card_actions_are_gated_by_the_right_status():
     assert not problems, '行动作按钮的状态门控不对：\n' + '\n'.join('  ' + p for p in problems)
 
 
-def test_dismiss_is_purely_local():
-    """「移除」只清前端卡片，不许打后端。
-
-    失败任务在后端已经是终态，dismissTask 若像 cancelTask 那样 POST
-    /cancel，三个 manager 的 cancel_task 对 failed 的反应各不相同
-    （最好的情况是白跑一趟，最坏是 500），而用户想要的只是「把这张卡片
-    从我眼前拿走」。
-    """
-    body = _fn('dismissTask')
-    assert 'fetch(' not in body, (
-        'dismissTask 里有 fetch()——「移除」应当只是前端清卡片，不碰后端'
-    )
-    assert 'TaskStore.remove(' in body, (
-        'dismissTask 没有把任务从 store 摘掉，行不会消失'
-    )
-
-
 def test_failure_toasts_are_deduped_per_task_not_globally():
     """同一个任务的常驻 toast 只留一条，**不同任务的必须各留一条**。
 
@@ -520,9 +499,6 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
     合并掉等于把前 7 条错误信息扔了。所以这里同时钉两件事：
       1. 合并逻辑存在（`closeFailureToast(key)` 在 set 之前被调用）；
       2. 合并的键是 `key`（taskType:taskId），不是常量、不是全局单例。
-
-    另外钉住「点移除时顺手关掉那条 toast」——卡片都不要了还留一条永久提示
-    占着右上角，等于把 I2 的堆叠问题换个地方保留。
     """
     body = _fn('handleTaskFailed')
     assert re.search(r'closeFailureToast\(\s*key\s*\)', body), (
@@ -536,11 +512,6 @@ def test_failure_toasts_are_deduped_per_task_not_globally():
     close_body = _fn('closeFailureToast')
     assert '.close()' in close_body and 'failureToasts.delete(' in close_body, (
         'closeFailureToast 必须既关 toast 又清 Map，否则句柄会一直攒着'
-    )
-
-    dismiss_body = _fn('dismissTask')
-    assert 'closeFailureToast(' in dismiss_body, (
-        '点「移除」之后那条常驻 toast 还留在右上角——卡片都清了，提示也该走'
     )
 
 
@@ -836,7 +807,7 @@ _STATUS_WRITERS = (
 #     （无数据跳过，不算失败），dem_task_manager 的终态统计因此出现
 #     `status NOT IN ('completed','skipped','failed')`（FROM dem_files）。
 # 新增文件级状态时下面会响亮失败（extra 非空），把新状态加进这里即可——
-# 不要加进 TaskStatus：那会连带要求两个 JS 的六态词表覆盖一个永远到不了
+# 不要加进 TaskStatus：那会连带要求两个 JS 的状态词表覆盖一个永远到不了
 # 任务徽章的状态。
 _FILE_LEVEL_STATUSES = frozenset({'downloading', 'skipped'})
 # 仅作查询过滤的伪状态（永远不会写进任务行）：?status=active 是路由/列表
@@ -930,9 +901,9 @@ def _js_object_literal_keys(body, var_name):
 #
 # 登记（2026-08 统一流式列表重设计）：第三张表 statusIcons（行内徽章 SVG
 # 图标表）随徽章 pill 一并删除——定稿设计的状态识别 = 状态点配色 +
-# 小字状态文本，行里不再有徽章。六态覆盖的守卫相应搬家：
-#   · getStatusColor / getStatusText 的六态覆盖仍由本节的下面两条守；
-#   · 状态点的六态配色（图形侧，替代图标的 WCAG 1.4.1 职责）改由
+# 小字状态文本，行里不再有徽章。全状态覆盖的守卫相应搬家：
+#   · getStatusColor / getStatusText 的五态覆盖仍由本节的下面两条守；
+#   · 状态点的五态配色（图形侧，替代图标的 WCAG 1.4.1 职责）改由
 #     tests/test_css_contract.py::test_task_row_status_dot_covers_every_status 守；
 #   原 test_status_icons_are_real_distinct_glyphs 随之删除（无表可查）。
 _STATUS_MAPS = (
@@ -942,7 +913,7 @@ _STATUS_MAPS = (
 
 
 def test_both_js_files_map_every_backend_status():
-    """history.js 与 tasks.js 的两张状态表都必须覆盖 TaskStatus 的全部六态。
+    """history.js 与 tasks.js 的两张状态表都必须覆盖 TaskStatus 的全部五态。
 
     强度说明 —— 为什么不写成 `assert "'paused'" in src`：
     那种断言在 history.js 里查的是「文件里有没有出现过这个词」，
@@ -952,14 +923,15 @@ def test_both_js_files_map_every_backend_status():
     有人在前端凭空造了一个界面上永远到不了的分支。
 
     覆盖数的边界：2 个文件 x 2 张表 = 4 组（2026-08 前是 x3：第三张
-    statusIcons 随徽章 pill 删除，见 _STATUS_MAPS 的登记），每组 6 个键。
+    statusIcons 随徽章 pill 删除，见 _STATUS_MAPS 的登记），每组 5 个键
+    （cancelled 随「取消任务」退出状态机后从 6 降到 5）。
     断言先钉住组数，再逐组比对 —— 只比对不钉组数的话，解析逻辑挂掉
     返回空列表时是永真。
     """
     enum_values = _task_status_values()
-    assert len(enum_values) == 6, (
+    assert len(enum_values) == 5, (
         f'TaskStatus 现在有 {len(enum_values)} 个成员：{sorted(enum_values)}。'
-        '不是 6 个不一定是错，但下面每张表的期望值要跟着改，先确认是有意的'
+        '不是 5 个不一定是错，但下面每张表的期望值要跟着改，先确认是有意的'
     )
     checked = []
     problems = []
@@ -1121,11 +1093,10 @@ _STATUS_LABEL_KEYWORD = {
     'paused': '暂停',
     'completed': '完成',
     'failed': '失败',
-    'cancelled': '取消',
 }
 
 # 每个状态在历史地图上的描边色应该走哪个调色板令牌。
-# pending / cancelled 是中性档，与徽章的中性档一致（见
+# pending 是唯一的中性档，与徽章的中性档一致（见
 # test_status_badge_color_matches_the_semantic_token 的说明）。
 _STATUS_STROKE_TOKEN = {
     'pending': '--color-text-secondary',
@@ -1133,7 +1104,6 @@ _STATUS_STROKE_TOKEN = {
     'paused': '--color-warning',
     'completed': '--color-success',
     'failed': '--color-danger',
-    'cancelled': '--color-neutral',
 }
 
 
@@ -1163,7 +1133,7 @@ def test_status_labels_are_paired_with_the_right_status():
             if keyword not in label:
                 problems.append(
                     f'{js_name}: {status!r} -> {pairs[status]} = {label!r}，应含 {keyword!r}')
-    assert checked == 12, f'只检查了 {checked} 组（期望 12）—— 本测试已失效'
+    assert checked == 10, f'只检查了 {checked} 组（期望 10）—— 本测试已失效'
     assert not problems, (
         '状态与文案的配对错了（界面会把失败写成已完成这种）：\n'
         + '\n'.join('  ' + p for p in problems)
@@ -1177,7 +1147,7 @@ def test_status_labels_are_paired_with_the_right_status():
 # 承担状态识别），statusIcons 表随之从 createTaskRow / renderHistoryTable
 # 删除，该断言失去检查对象，整条删除。
 # 「不只靠颜色」的职责没有丢，由两条一起接住：
-#   · 图形侧（六态状态点配色 + 对比度）：
+#   · 图形侧（五态状态点配色 + 对比度）：
 #     tests/test_css_contract.py::test_task_row_status_dot_covers_every_status
 #   · 文字侧（小字状态文本必须来自 getStatusText 的中文词表）：
 #     本文件 test_status_labels_are_paired_with_the_right_status 等 A7 断言
@@ -1185,16 +1155,16 @@ def test_status_labels_are_paired_with_the_right_status():
 # 行2 都带 getStatusText 的状态文字，颜色不再是唯一通道。
 
 def test_map_rectangle_stroke_covers_every_status():
-    """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖六态、走调色板令牌。
+    """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖五态、走调色板令牌。
 
     评审找到的漏网：改前 `renderHistoryMap` 里是一条内联三元阶梯，
-    只认 completed / failed，其余四态（pending / running / paused / cancelled）
+    只认 completed / failed，其余三态（pending / running / paused）
     全折叠成同一个蓝色 —— 与徽章那三张表是完全同型的缺陷，只是发生在第四处。
 
     而且三个色号是**硬编码且离调色板**的：`#10b981` 是 emerald-500，
     本项目的 `--color-success` 是 emerald-400 `#34d399`，改调色板时这里会静默漂移。
 
-    这条同时守两件事：六态全覆盖、且每一态指向正确的语义令牌（配对，不只是集合）。
+    这条同时守两件事：五态全覆盖、且每一态指向正确的语义令牌（配对，不只是集合）。
     """
     src = _strip_js_comments(_js('history.js'))
     body = _js_function_body(src, 'getStatusStroke')
@@ -1230,7 +1200,7 @@ def test_map_rectangle_stroke_covers_every_status():
 # --------------------------------------------------------------------------
 
 def test_start_pause_resume_surface_server_error_reason():
-    """start/pause/resume 非 2xx 时必须透出服务端 error，与 cancelTask 同口径。
+    """start/pause/resume 非 2xx 时必须透出服务端 error，三个函数同一口径。
 
     改前三个函数都是 `throw new Error('启动任务失败')`，后端给的具体原因
     （如"任务已在运行"）被整个丢掉，用户只看到一句套话。
@@ -1239,7 +1209,7 @@ def test_start_pause_resume_surface_server_error_reason():
         body = _fn(fn)
         assert 'result.error' in body, (
             f'{fn} 没有读响应体里的 result.error——服务端错误原因被丢弃，'
-            '应与 cancelTask 的 `result.error || response.status` 对齐'
+            '三个函数都应统一读 `result.error || response.status`'
         )
 
 
@@ -1274,7 +1244,7 @@ def test_time_info_falls_back_when_total_running_seconds_missing():
 def test_unknown_status_never_renders_raw_english_literal():
     """getStatusText 的兜底不许把未知英文状态原样渲染进中文界面。
 
-    已知六态由词表覆盖（见上面的 A7 断言）；词表外的状态统一显示「未知」，
+    已知五态由词表覆盖（见上面的 A7 断言）；词表外的状态统一显示「未知」，
     与 A7 修过的中英混杂问题保持同一方案。
     """
     from src.i18n.catalog import MESSAGES
@@ -1417,7 +1387,7 @@ def test_task_row_is_the_unified_two_line_structure():
         )
     # 状态类名是绑定形态：:class="'status-' + task.status"
     assert re.search(r""":class="'status-'\s*\+\s*task\.status\"""", body), (
-        'TaskRow 根节点没有绑定 status-* 类 —— 六态配色（.task-row.status-x '
+        'TaskRow 根节点没有绑定 status-* 类 —— 状态点配色（.task-row.status-x '
         '.task-dot）会全部失效'
     )
     for cls in ('task-pct', 'task-count', 'progress-bar'):
@@ -1627,21 +1597,31 @@ def test_new_task_prepends_only_on_first_page_and_matching_chip():
     )
 
 
-def test_dismiss_removes_the_row_purely_on_the_frontend():
-    """dismiss（失败行的移除按钮）：纯前端删行，不碰后端、不触发重拉。
+def test_delete_also_drops_the_row_from_the_store():
+    """deleteTask 删成功后，除了重拉分页，还必须把行从 store 本地摘掉。
 
-    「移除」与「删除」的区别：dismiss 只把行从界面上拿走（任务仍在后端，
-    下次翻页/刷新会回来）；🗑 是 deleteTask 的事。这条与
-    test_dismiss_is_purely_local 互补：那条守「不打后端」，这条守
-    「确实把行拿走、且不整体重绘」。
+    （前身是 test_dismiss_removes_the_row_purely_on_the_frontend。「移除」按钮
+    随「取消任务」一并下线后，「把失败行从眼前拿走」这件事由 🗑 承担。）
+
+    名字里刻意**没有** purely-on-the-frontend：那是 dismiss 时代的语义，
+    deleteTask 既打 DELETE 也调 loadHistory 重新分页（后端行真的没了，页码
+    可能要回退）。这条钉的是**本地摘行必须额外发生**：只靠 loadHistory 不够，
+    状态栏的活动任务聚合读的是 store.active，那份不会被重拉刷新，被删任务会
+    一直算在「N 个活动任务」里。
+
+    「删成功后一并关掉那条常驻失败 toast」是同一分支里的另一半契约，由
+    test_fix_realtime_chain.py::test_delete_task_closes_the_persistent_failure_toast
+    守着（那条还额外钉了 typeof 守卫，独立页 /history 不加载 tasks.js）。
     """
-    body = _fn('dismissTask')
+    body = _fn('deleteTask', 'history.js')
     assert 'TaskStore.remove(' in body, (
-        'dismissTask 没有把任务从 store 摘掉——「移除」按钮成了摆设'
+        'deleteTask 没有把任务从 store 摘掉——行要等下一次整页刷新才消失，'
+        '状态栏的活动任务计数也会一直多算它一个'
     )
-    assert 'loadHistory(' not in body and 'renderHistoryTable(' not in body, (
-        'dismissTask 不该触发重拉/整体重绘——从 store 摘掉就够了'
+    assert 'updateStatusTasks(' in body, (
+        'deleteTask 摘完行没有刷新状态栏——底部「N 个活动任务 X%」会原地冻结'
     )
+
 
 def test_panel_reopen_refreshes_timeline():
     """记录面板重开必须重新拉取时间流 + 统计,不能只吃懒初始化那一遍。
@@ -1663,3 +1643,251 @@ def test_panel_reopen_refreshes_timeline():
     assert 'loadStats(' in body, (
         'openPanel 重开时应一并刷新统计卡片,否则总数与列表口径不一致'
     )
+
+
+# --------------------------------------------------------------------------
+# 删除流程：两级确认合成一个框（v0.2.12 final review 的 UX 三条）
+#
+# 旧形态是串起来的两个 showConfirm。第二个框问的是**另一个维度**的问题
+# （产物删不删），于是三条路殊途同归：「删除产物」/「保留产物」/ ESC 全都
+# 照发 DELETE，区别只在 ?delete_files=。用户按 ESC 以为自己撤销了删除，
+# 任务照删不误 —— 而这一版删除已经能杀 running（v0.2.11 那层 400 拒绝没了），
+# 🗑 成了唯一的销毁入口，承重比以前大得多。
+# --------------------------------------------------------------------------
+
+
+def _active_statuses():
+    """`?status=active` 的三态，取自 src/routes/api.py 里那条 SQL 谓词。
+
+    不在测试里硬写 {'pending','running','paused'}：那样后端哪天多一个未终结
+    状态（比如 'queued'），前端漏了它的警告文案，这里照样全绿。
+    """
+    with open(os.path.join(ROOT, 'src', 'routes', 'api.py'), encoding='utf-8') as f:
+        src = f.read()
+    m = re.search(r'active_clause\s*=\s*"status IN \(([^)]*)\)"', src)
+    assert m, 'src/routes/api.py 里找不到 active_clause 的 SQL 谓词 —— 本测试已失效'
+    vals = set(re.findall(r"'([a-z_]+)'", m.group(1)))
+    assert vals, 'active_clause 里解析不出任何状态字面量 —— 本测试已失效'
+    assert vals <= _task_status_values(), (
+        f'active_clause 里的 {sorted(vals - _task_status_values())} 不在 TaskStatus 里'
+    )
+    return vals
+
+
+def test_delete_asks_once_and_a_cancel_sends_nothing():
+    """删除只弹**一个**确认框，且取消 / ESC / 点遮罩之后**不发 DELETE**。
+
+    这是本次修复的核心：旧实现里 `const deleteFiles = await showConfirm(...)`
+    的返回值只被拿去拼 `?delete_files=`，false 分支照样往下走到 fetch。也就是
+    说第二个框根本没有「不删」这个出口 —— 而它长得就像一个「要不要删除」的
+    确认框（左边那颗按钮写着「保留产物」，占的是取消位）。
+
+    断言的三件事缺一不可：
+      1. 只有一次 showConfirm —— 否则「合成一个框」这件事就没发生；
+      2. 有一条以确认结果为条件的 return；
+      3. 那条 return 出现在 fetch 之前 —— 位置颠倒的话它拦不住任何请求。
+    """
+    body = _fn('deleteTask', 'history.js')
+    assert body.count('showConfirm(') == 1, (
+        f'deleteTask 里有 {body.count("showConfirm(")} 处 showConfirm —— '
+        '删除流程只许问一次；串起来的第二个框，它的取消位问的是另一个维度，'
+        '用户按 ESC 时以为撤销了删除，实际上主动作照做'
+    )
+    guard = re.search(r'if\s*\(\s*!\s*(\w+)\.confirmed\s*\)\s*\{?\s*return', body)
+    assert guard, (
+        'deleteTask 里找不到「用户没确认就 return」的门禁 —— '
+        '取消 / ESC / 点遮罩会继续往下走，照样发 DELETE'
+    )
+    fetch_at = body.find('fetch(')
+    assert fetch_at >= 0, 'deleteTask 里找不到 fetch( —— 本测试已失效'
+    assert guard.end() < fetch_at, (
+        '「没确认就 return」的门禁排在 fetch 之后 —— 请求已经发出去了才判断，'
+        '拦不住任何东西'
+    )
+
+
+def test_delete_files_checkbox_defaults_to_unchecked():
+    """「同时删除磁盘产物」默认**不勾**，且勾选值真的驱动 ?delete_files=。
+
+    默认不勾是在延续旧行为的安全侧：旧的第二个框里 ESC 与取消位都落在
+    delete_files=false。产物是用户花了几小时下下来的，默认值只能站在
+    「少删」这边。
+
+    第二半断言（勾选值 -> 查询参数）不能省：只钉 `checked: false` 的话，
+    把 deleteFiles 写死成 true 也全绿 —— 勾选框成了个装饰，而默认行为变成
+    了最具破坏性的那一种。
+    """
+    body = _fn('deleteTask', 'history.js')
+    m = re.search(r'checkbox:\s*\{(.*?)\}', body, re.S)
+    assert m, (
+        'deleteTask 的 showConfirm 没有传 checkbox —— 产物删不删这个问题没地方问了'
+    )
+    assert re.search(r'checked:\s*false', m.group(1)), (
+        f'确认框的勾选框默认值不是 false（实际写的是 {m.group(1).strip()!r}）—— '
+        '默认勾上等于替用户选了最具破坏性的那一边'
+    )
+    assert re.search(r'deleteFiles\s*=\s*\w+\.checked', body), (
+        'deleteFiles 不是从勾选结果取的 —— 勾选框成了装饰品'
+    )
+    assert re.search(r'delete_files=\$\{\s*deleteFiles\s*\?', body), (
+        '?delete_files= 不是由 deleteFiles 拼出来的 —— 用户勾没勾传不到后端'
+    )
+
+
+def test_confirm_checkbox_only_serves_the_delete_flow():
+    """`opts.checkbox` 只许 history.js 的删除流程用。
+
+    为什么要钉这条：带 checkbox 时 showConfirm 改 resolve `{confirmed, checked}`，
+    而对象**恒为真**。既有调用点全是 `if (!await showConfirm(...)) return;` 的
+    写法，谁顺手给自己加一个 checkbox 又忘了改判断，那个确认框就再也拦不住人 ——
+    静默失效，没有任何报错。
+    """
+    js_dir = os.path.join(ROOT, 'static', 'js')
+    users = set()
+    for name in sorted(n for n in os.listdir(js_dir) if n.endswith('.js')):
+        if name == 'ui.js':      # 定义端
+            continue
+        if 'checkbox:' in _strip_js_comments(_js(name)):
+            users.add(name)
+    assert users == {'history.js'}, (
+        f'showConfirm 的 checkbox 选项被 {sorted(users)} 使用 —— 期望只有 history.js。\n'
+        '带 checkbox 时 resolve 的是对象（恒为真），`if (!await showConfirm(...))` '
+        '那种写法会静默失效'
+    )
+    assert 'checkbox:' in _fn('deleteTask', 'history.js'), (
+        'history.js 里的 checkbox 不在 deleteTask 内 —— 钉点跑偏了，本测试已失效'
+    )
+
+
+def test_cancelling_the_confirm_never_reports_a_checked_box():
+    """取消时 checked 必须被压成 false —— 「什么都不做」不能漏出勾选值。
+
+    调用方只判 confirmed 的话这条无关紧要；可一旦有人写成
+    `if (answer.checked) cleanupFiles();`，一个「用户勾了框又按 ESC」的操作
+    就会把产物删掉。让 ui.js 在源头保证，比要求每个调用方记得判断可靠。
+    """
+    body = _js_function_body(_strip_js_comments(_js('ui.js')), 'showConfirm')
+    assert body.strip(), 'ui.js 的 showConfirm 函数体切出来是空的 —— 本测试已失效'
+    assert re.search(
+        r'checked:\s*result\s*&&', body,
+    ), (
+        'showConfirm 的 resolve 没有把 checked 与 result 相与 —— '
+        '用户勾了框再按 ESC，取消的结果里仍带着 checked: true'
+    )
+    assert re.search(r'confirmed:\s*result', body), (
+        'showConfirm 带 checkbox 时没有下发 confirmed —— 调用方判不出用户到底点了哪颗'
+    )
+
+
+def test_deleting_an_unfinished_task_says_what_will_be_lost():
+    """未终结的任务：确认文案必须点明「删了会怎样」；终态走通用文案，不带警告。
+
+    v0.2.11 里删一个正在跑的任务会被后端 400 挡下（用户看到「删除失败」），
+    那层拒绝事实上在替用户兜底。这一版放开了 —— 拒绝没了，文案就得补上。
+
+    三个活动状态各说各的，不合并成一句「该任务尚未结束」：pending 什么都还
+    没跑（只是排队），对它说「正在运行」是撒谎；running / paused 有已下载的
+    进度会丢。用户按下删除前要判断的正是「我会失去什么」。
+    """
+    from src.i18n.catalog import MESSAGES
+
+    active = _active_statuses()
+    src = _strip_js_comments(_js('history.js'))
+    m = re.search(r'const DELETE_CONFIRM_KEYS\s*=\s*\{(.*?)\};', src, re.S)
+    assert m, 'history.js 里找不到 DELETE_CONFIRM_KEYS —— 状态感知的文案表没了'
+    pairs = dict(re.findall(r"(\w+)\s*:\s*'([\w.]+)'", m.group(1)))
+    assert set(pairs) == active, (
+        f'DELETE_CONFIRM_KEYS 覆盖的是 {sorted(pairs)}，后端的未终结状态是 '
+        f'{sorted(active)} —— 对不上的那些状态会拿到不带警告的通用文案'
+    )
+
+    # 每个活动态都得说到自己那件事，且三句彼此不同（共用一句 = 状态感知白做）
+    keyword = {'running': '正在运行', 'pending': '排队', 'paused': '已暂停'}
+    assert set(keyword) == active, (
+        f'关键词表 {sorted(keyword)} 与后端活动态 {sorted(active)} 脱节 —— 本测试已失效'
+    )
+    seen = set()
+    for status, key in sorted(pairs.items()):
+        assert key in MESSAGES, f'DELETE_CONFIRM_KEYS[{status}] 指向不存在的键 {key}'
+        zh = MESSAGES[key]['zh']
+        assert keyword[status] in zh, (
+            f'{status} 的确认文案里没有「{keyword[status]}」，实际是 {zh!r} —— '
+            '用户看不出这个任务现在处于什么处境'
+        )
+        assert MESSAGES[key]['en'], f'{key} 缺英文'
+        seen.add(zh)
+    assert len(seen) == len(pairs), (
+        f'{len(pairs)} 个活动态只用了 {len(seen)} 句文案 —— 共用一句就等于没有状态感知'
+    )
+
+    # 终态（completed / failed）走通用文案，且通用文案里不许混进活动态的字眼
+    generic = 'js.history.confirm.delete_task'
+    assert generic in MESSAGES, f'通用删除文案 {generic} 不在 catalog 里'
+    assert f"'{generic}'" in src, (
+        f'history.js 不再引用 {generic} —— 终态任务没有兜底文案'
+    )
+    for word in sorted(set(keyword.values())):
+        assert word not in MESSAGES[generic]['zh'], (
+            f'通用文案里出现了「{word}」：{MESSAGES[generic]["zh"]!r} —— '
+            '已完成 / 失败的任务会被警告「它还在跑」'
+        )
+    body = _fn('deleteTask', 'history.js')
+    assert 'DELETE_CONFIRM_KEYS[' in body, (
+        'deleteTask 没有查 DELETE_CONFIRM_KEYS —— 表定义了但没人用，文案不会变'
+    )
+
+
+def test_background_artifact_cleanup_is_reported_to_the_user():
+    """响应带 files_deferred 时要换一句 toast，告诉用户产物在后台清。
+
+    不告知的后果：删掉一个跑了两小时的等高线任务、勾了删产物，界面说
+    「任务已删除」，用户转头去文件管理器发现几十 GB 还在 —— 他分不清该等
+    还是该手删。
+
+    末尾那条负向断言钉的是**判据形态**：files_deferred 的语义是「有没有产物
+    要延后删」（后端判据是 artifact_dir is not None），没要求删产物时这个字段
+    **根本不下发**。写成 `=== false` / `!== false` 的话，最常见的那条路径
+    （键不存在）会掉进错误的分支。
+    """
+    body = _fn('deleteTask', 'history.js')
+    assert 'response.json()' in body, (
+        'deleteTask 没有解析响应体 —— files_deferred 拿不到，后台清理无从告知'
+    )
+    assert 'files_deferred' in body, (
+        'deleteTask 没有读 files_deferred —— 产物在后台删这件事用户看不见'
+    )
+    assert "t('js.history.toast.deleted_files_deferred')" in body, (
+        '延后清理没有专属 toast —— 用户看到的还是那句平淡的「任务已删除」'
+    )
+    assert "t('js.history.toast.deleted')" in body, (
+        '普通删除的 toast 没了 —— 快路径（同步删完）不该说成「正在后台清理」'
+    )
+    assert not re.search(r'files_deferred\s*[!=]==', body), (
+        'files_deferred 被拿去做全等比较 —— 这个字段在「没要求删产物」时根本'
+        '不出现，必须按「键不存在 = 默认路径」处理'
+    )
+
+
+def test_delete_confirm_texts_are_bilingual_and_distinct():
+    """删除流程新增的每条文案中英都要有，且英文不是把中文抄过去。
+
+    tests/test_i18n.py 的双向闭合检查只管「键有没有人引用」，管不了文案本身。
+    """
+    from src.i18n.catalog import MESSAGES
+
+    src = _strip_js_comments(_js('history.js'))
+    keys = sorted(set(re.findall(
+        r"t\('(js\.history\.(?:confirm\.delete|toast\.deleted)[\w.]*)'\)", src,
+    )) | set(re.findall(r"'(js\.history\.confirm\.delete_task_\w+)'", src)))
+    assert len(keys) >= 6, (
+        f'只从 history.js 里扫到 {len(keys)} 个删除相关的文案键（{keys}）—— '
+        '本测试已失效（单框方案有 1 个标题 + 4 句正文 + 1 个勾选框标签 + 2 条 toast）'
+    )
+    for key in keys:
+        entry = MESSAGES.get(key)
+        assert entry, f'{key} 被 history.js 引用但 catalog 里没有'
+        assert entry['zh'] and entry['en'], f'{key} 中英缺一'
+        assert entry['zh'] != entry['en'], f'{key} 的英文就是中文原文'
+        assert not re.search(r'[\u4e00-\u9fff]', entry['en']), (
+            f'{key} 的英文里还有中文：{entry["en"]!r}'
+        )

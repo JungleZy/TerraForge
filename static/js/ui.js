@@ -5,6 +5,7 @@
  * 全局暴露：
  *   window.showToast(message, type, opts)      —— 右上角通知，type: success|danger|warning|info
  *   window.showConfirm(message, opts) -> Promise<boolean>  —— 居中确认框
+ *       opts.checkbox = {label, checked} 时改 resolve {confirmed, checked}
  *   window.showNotification(message, type)     —— showToast 的别名（兼容旧调用）
  *   window.parseTaskDate(value) -> Date|null   —— 任务时间字段统一解析（裸格式按 UTC）
  */
@@ -109,6 +110,14 @@
         const confirmText = opts.confirmText != null ? opts.confirmText : t('js.ui.confirm.ok');
         const cancelText = opts.cancelText != null ? opts.cancelText : t('js.ui.confirm.cancel');
         const danger = !!opts.danger;
+        // opts.checkbox = { label, checked } —— 给「一个框同时问两件事」用：主问题走
+        // 确定/取消，附带的布尔选项走勾选框。为什么不再串第二个框：第二个框的取消位
+        // （ESC / 点遮罩 / 左边那颗按钮）落到的是**另一个维度**的默认答案，用户以为
+        // 自己取消了整件事，实际上主动作照做 —— history.js 的删除流程就栽在这。
+        //
+        // 带 checkbox 时 resolve 的是 {confirmed, checked}，不带时仍是 boolean，
+        // 既有调用点（config.js×3 / map.js×1）一个字都不用改。
+        const checkboxOpt = opts.checkbox || null;
 
         return new Promise(function (resolve) {
             const overlay = document.createElement('div');
@@ -140,10 +149,28 @@
             okBtn.className = 'app-confirm__btn app-confirm__btn--ok' + (danger ? ' is-danger' : '');
             okBtn.textContent = confirmText;
 
+            // 用 <label> 而不是 <div>：点文字也能勾是 label 的本分；顺带避开
+            // test_css_contract.py 那张逐条建模 <div> 背景层叠的运行时注入表。
+            let checkEl = null;
+            let checkWrap = null;
+            if (checkboxOpt) {
+                checkWrap = document.createElement('label');
+                checkWrap.className = 'app-confirm__check';
+                checkEl = document.createElement('input');
+                checkEl.type = 'checkbox';
+                checkEl.className = 'app-confirm__check-box';
+                checkEl.checked = !!checkboxOpt.checked;
+                const checkText = document.createElement('span');
+                checkText.textContent = checkboxOpt.label == null ? '' : String(checkboxOpt.label);
+                checkWrap.appendChild(checkEl);
+                checkWrap.appendChild(checkText);
+            }
+
             actions.appendChild(cancelBtn);
             actions.appendChild(okBtn);
             dialog.appendChild(titleEl);
             dialog.appendChild(msgEl);
+            if (checkWrap) dialog.appendChild(checkWrap);
             dialog.appendChild(actions);
             overlay.appendChild(dialog);
             document.body.appendChild(overlay);
@@ -170,7 +197,11 @@
                 if (prevFocus && typeof prevFocus.focus === 'function') {
                     try { prevFocus.focus(); } catch (e) { /* ignore */ }
                 }
-                resolve(result);
+                // 取消（ESC / 点遮罩 / 取消键）一律把 checked 压成 false ——
+                // 「什么都不做」不该顺带漏出一个用户已经放弃的勾选值。
+                resolve(checkboxOpt
+                    ? { confirmed: result, checked: result && !!checkEl.checked }
+                    : result);
             }
 
             function onKey(e) {

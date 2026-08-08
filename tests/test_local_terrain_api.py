@@ -226,43 +226,6 @@ def test_http_upload_no_valid_files_returns_400(monkeypatch, tmp_path):
     assert resp.status_code == 400
 
 
-def test_cancel_rejects_running_task(monkeypatch, tmp_path):
-    db, mgr_mod = _reload(monkeypatch, tmp_path)
-    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
-    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
-
-    task_id = mgr.create_task_with_files(name="c1", files=[("a.tif", b"x")], maxzoom=12)
-
-    # Force the row into 'running' as if tiling were in flight.
-    conn = db.get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE local_terrain_tasks SET status='running' WHERE id=?", (task_id,))
-        conn.commit()
-    finally:
-        conn.close()
-
-    import pytest
-    with pytest.raises(ValueError):
-        mgr.cancel_task(task_id)
-
-    # Row must remain 'running' — cancel did not interrupt the in-flight tiling.
-    assert mgr.get_task(task_id)["status"] == "running"
-
-
-def test_cancel_marks_pending_task_cancelled(monkeypatch, tmp_path):
-    db, mgr_mod = _reload(monkeypatch, tmp_path)
-    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
-    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
-
-    task_id = mgr.create_task_with_files(name="c2", files=[("a.tif", b"x")], maxzoom=12)
-    # start_tiling was a no-op, so the row is still 'pending'.
-    assert mgr.get_task(task_id)["status"] == "pending"
-
-    mgr.cancel_task(task_id)
-    assert mgr.get_task(task_id)["status"] == "cancelled"
-
-
 def test_history_all_includes_local_terrain(monkeypatch, tmp_path):
     app_mod, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
@@ -352,7 +315,8 @@ def test_delete_task_removes_row_and_dir(monkeypatch, tmp_path):
         mgr.get_task(task_id)
 
 
-def test_delete_task_refuses_running(monkeypatch, tmp_path):
+def test_delete_running_task_still_deletes(monkeypatch, tmp_path):
+    """DB 状态是 running 但没有活线程（进程重启后的孤儿行）—— 同步删掉。"""
     db, mgr_mod = _reload(monkeypatch, tmp_path)
     mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
     monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
@@ -366,15 +330,20 @@ def test_delete_task_refuses_running(monkeypatch, tmp_path):
     finally:
         conn.close()
 
+    outcome = mgr.delete_task(task_id)
+
+    assert outcome.row_deleted is True
     import pytest
     with pytest.raises(ValueError):
-        mgr.delete_task(task_id)
-    assert mgr.get_task(task_id)["status"] == "running"
+        mgr.get_task(task_id)
 
 
-def test_delete_task_refuses_active_thread(monkeypatch, tmp_path):
-    """DB 状态不是 running、但 active_tasks 里登记了存活线程（start_tiling
-    刚起线程的窗口）时也必须拒删 —— 锁内复查 active 线程。"""
+def test_delete_with_active_thread_stops_it_and_drops_row(monkeypatch, tmp_path):
+    """active_tasks 里有存活的切片线程 —— 行当场消失，且停止标志被置上。
+
+    停止标志是「运行中删除」区别于快路径的唯一同步可观察点：产物清理挪到了
+    后台线程，行删除两条路径都做。
+    """
     db, mgr_mod = _reload(monkeypatch, tmp_path)
     mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
     monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling", lambda self, task_id: None)
@@ -386,12 +355,17 @@ def test_delete_task_refuses_active_thread(monkeypatch, tmp_path):
     gate = threading.Event()
     th = threading.Thread(target=lambda: gate.wait(timeout=30), daemon=True)
     th.start()
+    stop_flag = threading.Event()
     mgr.active_tasks[task_id] = th
+    mgr.stop_flags[task_id] = stop_flag
     try:
+        outcome = mgr.delete_task(task_id)
+
+        assert outcome.row_deleted is True
+        assert stop_flag.is_set(), "运行中删除必须让切片线程停下来"
         import pytest
         with pytest.raises(ValueError):
-            mgr.delete_task(task_id)
-        assert mgr.get_task(task_id)["status"] == "pending"
+            mgr.get_task(task_id)
     finally:
         gate.set()
         th.join(timeout=5)
@@ -451,6 +425,40 @@ def test_http_delete_delete_files_param(monkeypatch, tmp_path):
     r2 = client.delete(f"/api/terrain/local/tasks/{created[1]}?delete_files=true")
     assert r2.status_code == 200
     assert not dirs[created[1]].exists()
+
+
+def test_http_delete_missing_task_returns_404(monkeypatch, tmp_path):
+    """行不存在 → 404。此前 manager 抛 ValueError、路由一律回 400；共享助手不为
+    「行不存在」抛异常，路由这里主动对齐另外三条管线的 404。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+
+    resp = client.delete("/api/terrain/local/tasks/99999")
+
+    assert resp.status_code == 404, resp.get_json()
+
+
+def test_http_delete_missing_task_keeps_same_named_dir(monkeypatch, tmp_path):
+    """删不存在的 id 必须一片磁盘都不碰 —— 否则就是「404 + 静默真删」。
+
+    只有本地地形的 artifact_dir 在 manager 内部按 task_id 硬算（delete_files 缺省
+    就是 true），另外三条在路由层算、算之前先查过任务行。所以助手若不以
+    row_deleted 为前提删产物，这条管线会在返回 404 的同时把同名目录 rmtree 掉。
+    残留同名目录的真实来路：先 delete_files=false 删了行、目录留着，客户端重试
+    再带 delete_files=true。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    from pathlib import Path
+
+    stale = Path(tmp_path) / "downloads" / "terrain" / "local_task_99999"
+    stale.mkdir(parents=True)
+    leftover = stale / "terrain_tiles" / "layer.json"
+    leftover.parent.mkdir(parents=True)
+    leftover.write_text('{"stale":true}', encoding="utf-8")
+
+    resp = client.delete("/api/terrain/local/tasks/99999?delete_files=true")
+
+    assert resp.status_code == 404, resp.get_json()
+    assert leftover.exists(), "行不存在却把同名目录删了 —— 404 掩盖了一次真删"
 
 
 # ---------------------------------------------------------------------------
