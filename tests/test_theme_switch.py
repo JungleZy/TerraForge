@@ -245,9 +245,11 @@ def test_theme_js_writes_data_bs_theme_on_document_element():
 def test_theme_js_passes_node_syntax_check():
     """static/js/theme.js 必须通过 node --check 语法校验（项目 JS 验证套路）。"""
     assert os.path.exists(THEME_JS), 'static/js/theme.js 不存在——实现未落地'
+    # timeout 放宽到 120 秒，理由同 test_terrain_lighting_frontend 里那条：
+    # Windows runner 上 node 冷启动能吃掉几十秒，30 秒打断过一次发版构建。
     subprocess.run(
         ['node', '--check', THEME_JS],
-        capture_output=True, text=True, check=True, timeout=30,
+        capture_output=True, text=True, check=True, timeout=120,
     )
 
 

@@ -237,9 +237,12 @@ def test_lighting_defaults_to_off_when_localstorage_is_unreadable():
 def test_lighting_js_passes_node_syntax_check():
     """terrain_lighting.js 必须通过 node --check（项目 JS 验证套路）。"""
     assert os.path.exists(LIGHTING_JS), 'static/js/terrain_lighting.js 不存在——实现未落地'
+    # timeout 放宽到 120 秒：Windows runner 上 node 冷启动 + 杀毒扫描能吃掉几十秒，
+    # 30 秒曾把 v0.2.12 的发版构建打断过一次（同批的 test_map_js_contract）。
+    # 这里保留「超时即失败」——它是语法校验，没有不依赖 node 的兜底断言。
     subprocess.run(
         ['node', '--check', LIGHTING_JS],
-        capture_output=True, text=True, check=True, timeout=30,
+        capture_output=True, text=True, check=True, timeout=120,
     )
 
 

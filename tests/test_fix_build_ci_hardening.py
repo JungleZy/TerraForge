@@ -30,6 +30,8 @@ import sys
 
 import pytest
 
+from conftest import REAL_BASH, needs_bash
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -99,10 +101,14 @@ def _fake_dist(tmp_path):
 
 
 def _run_cleanup(script, cwd):
-    return subprocess.run(["bash", "-eo", "pipefail", "-c", script],
+    # 必须用 conftest.find_real_bash 找出来的那个 bash：Windows runner 上裸
+    # `bash` 命中的是 System32 的 WSL 占位 stub，它只用 UTF-16 打一句
+    # 「no installed distributions」并非零退出，用例全红且报错看不出原因。
+    return subprocess.run([REAL_BASH, "-eo", "pipefail", "-c", script],
                           cwd=str(cwd), capture_output=True, text=True, timeout=60)
 
 
+@needs_bash
 def test_cleanup_removes_every_kind_of_smoke_residue(tmp_path):
     """真跑清理脚本：残留全清，随包数据一个不少。
 
@@ -127,6 +133,7 @@ def test_cleanup_removes_every_kind_of_smoke_residue(tmp_path):
     "data", "downloads", "cache", "logs",
     "assets/terrain/base_z8", ".base_unpack_",
 ])
+@needs_bash
 def test_cleanup_assertion_catches_whatever_the_rm_lines_missed(tmp_path, residue_token):
     """删掉某一类残留的 rm 行后，脚本必须**红**。
 
@@ -241,9 +248,14 @@ def _default_shell_argv():
     assert m, "build.yml 没有 defaults.run.shell"
     argv = m.group(1).split()
     assert argv[-1] == "{0}", f"shell 末尾必须是脚本占位符: {m.group(1)}"
-    return argv[:-1]
+    # argv[0] 是 workflow 里写的字面量 "bash"。本地执行时必须换成 conftest 找出来
+    # 的那个**真** bash：Windows runner 上裸 `bash` 命中 System32 的 WSL 占位 stub
+    # （UTF-16 打一句 no installed distributions 后非零退出），断言会全红且看不出
+    # 原因。校验的是 workflow 给的那些**标志位**，用哪个 bash 二进制不影响结论。
+    return [REAL_BASH] + argv[1:-1]
 
 
+@needs_bash
 def test_default_shell_keeps_errexit():
     """拿真 bash 验：多命令 step 里前面的命令失败必须当场终止。
 
@@ -258,6 +270,7 @@ def test_default_shell_keeps_errexit():
     assert "REACHED_THE_END" not in proc.stdout
 
 
+@needs_bash
 def test_default_shell_keeps_pipefail():
     """管道中段失败也要算失败（`conda install ... | tee` 这类写法的唯一保障）。"""
     argv = _default_shell_argv()

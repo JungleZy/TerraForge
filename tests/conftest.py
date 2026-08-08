@@ -29,6 +29,55 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 
+def find_real_bash():
+    """返回一个**真的** GNU bash 路径，找不到返回 None。
+
+    Windows 的 `C:\\Windows\\System32\\bash.exe` 是 WSL 的安装占位 stub：
+    `shutil.which('bash')` 找得到、也能执行，但没装发行版时它只打印
+    「Windows Subsystem for Linux has no installed distributions」（**UTF-16**，
+    所以 `text=True` 读出来是一串夹 NUL 的乱码）并以非零码退出。用它跑脚本的
+    用例于是全红，而且报错完全看不出真正原因 —— 2026-08-08 的发版就是这么断的：
+    一个新用例直接 `subprocess.run(['bash', ...])`，本地和 Linux CI 全绿，
+    Windows runner 上炸。
+
+    可靠的验明正身：`--version` 必须输出 `GNU bash`（WSL/git-bash 都是 GNU，
+    stub 只会打印安装提示）。Windows 上 git-bash 常不在 pytest 的 PATH 里，
+    额外探测 Git for Windows 的默认安装位置。
+
+    这个知识点原来住在 tests/test_fix_l1_entry_build_misc.py 里，随那批用例一起
+    被删掉了，紧接着就有新用例重新踩坑 —— 所以挪到 conftest：任何要跑 shell
+    的用例都该从这里取 bash，配 `needs_bash` 跳过。
+    """
+    candidates = []
+    found = shutil.which("bash")
+    if found:
+        candidates.append(found)
+    if os.name == "nt":
+        candidates += [
+            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                         "Git", "bin", "bash.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                         "Git", "bin", "bash.exe"),
+        ]
+    import subprocess
+
+    for exe in candidates:
+        try:
+            proc = subprocess.run([exe, "--version"], capture_output=True, timeout=10)
+        except Exception:
+            continue
+        if proc.returncode == 0 and b"GNU bash" in proc.stdout:
+            return exe
+    return None
+
+
+REAL_BASH = find_real_bash()
+
+needs_bash = pytest.mark.skipif(
+    REAL_BASH is None,
+    reason="需要可用的 GNU bash（Windows 的 WSL 占位 stub 不算）")
+
+
 class _SandboxTempfile:
     """gettempdir 指向沙箱,其余属性透传给真实 tempfile 模块。"""
 

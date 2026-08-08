@@ -9,12 +9,16 @@
 """
 import os
 import re
-import shutil
 import subprocess
+import sys
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from conftest import REAL_BASH, needs_bash  # noqa: E402
 
 
 def _read(name):
@@ -144,42 +148,12 @@ def _sh_run_version_resolution(*args, cwd=ROOT):
     )
 
 
-def _find_real_bash():
-    """找真正可用的 bash，找不到返回 None。
-
-    Windows 的 System32\\bash.exe 是 WSL 安装占位 stub：which 找得到、能执行，
-    但没有发行版时只打印「Windows Subsystem for Linux … to install」（UTF-16）
-    并以非零退出——而且它对本该失败的调用的退出码与参数长度相关，功能验证
-    用 `true` 挡不住。可靠的验明正身：`--version` 必须输出 GNU bash
-    （WSL/git-bash 都是 GNU，stub 只会打印安装提示）。
-    Windows 上 GitHub Actions 的 git-bash 常不在 pytest 的 PATH 里，
-    额外探测 Git for Windows 的默认安装位置。
-    """
-    candidates = []
-    found = shutil.which('bash')
-    if found:
-        candidates.append(found)
-    if os.name == 'nt':
-        candidates += [
-            os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
-                         'Git', 'bin', 'bash.exe'),
-            os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
-                         'Git', 'bin', 'bash.exe'),
-        ]
-    for exe in candidates:
-        try:
-            proc = subprocess.run([exe, '--version'], capture_output=True, timeout=10)
-        except Exception:
-            continue
-        if proc.returncode == 0 and b'GNU bash' in proc.stdout:
-            return exe
-    return None
-
-
-_BASH = _find_real_bash()
-needs_bash = pytest.mark.skipif(
-    _BASH is None,
-    reason='需要可用的 GNU bash（Windows 的 WSL 占位 stub 不算）')
+# 真 bash 的探测收口到 tests/conftest.py 的 find_real_bash()。这里原本有一份
+# 逐字相同的实现，test_fix_l1_entry_build_misc.py 里还有第三份 —— 后者随那批
+# 用例被删之后，新写的 CI 用例直接 `subprocess.run(['bash', ...])`，在 Windows
+# runner 上撞了同一个 WSL 占位 stub，把 v0.2.12 的发版构建打断了一次。
+# 一份规则三处实现，删掉任一处知识就跟着丢 —— 所以只留 conftest 那一份。
+_BASH = REAL_BASH
 
 
 def test_push_release_sh_not_hardcoded_v001():
