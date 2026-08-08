@@ -135,7 +135,7 @@ MESSAGES = {
         'en': 'Files',
     },
 
-    # 任务状态词表（models/task.py TaskStatus 六态 + 兜底）
+    # 任务状态词表（models/task.py TaskStatus 五态 + 兜底）
     'js.history.status.pending': {
         'zh': '等待中',
         'en': 'Pending',

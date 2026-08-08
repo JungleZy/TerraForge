@@ -5647,11 +5647,11 @@ def test_task_row_status_dot_covers_every_status():
     列表重设计：4px 状态左条随 9 列表格一起废除，状态识别改由行1 的
     .task-dot 圆点 + 小字状态文本承担。接替的这条同时是 WCAG 1.4.1
     「不只靠颜色」链条的图形侧——文字侧由两个 JS 的 getStatusText
-    六态词表断言守，原徽章 SVG 图标表断言 test_status_icons_are_real_
+    五态词表断言守，原徽章 SVG 图标表断言 test_status_icons_are_real_
     distinct_glyphs 随徽章 pill 删除，登记在 tests/test_tasks_js_contract.py。）
 
     三件事一起断言：
-      1. 六态各有一条顶层规则（缺一条就会落到 .task-dot 的兜底色——
+      1. 五态各有一条顶层规则（缺一条就会落到 .task-dot 的兜底色——
          兜底是中性灰，「失败」掉到灰色 = 状态信号丢失）；
       2. 语义档的色值等于对应令牌，中性档不许等于任何语义色；
       3. 对面板底 >= 3:1 —— 它是图形元素不是文字，走 WCAG 1.4.11 的下限。

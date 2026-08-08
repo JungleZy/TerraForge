@@ -1081,10 +1081,9 @@ class ContourTaskManager:
         except Exception as e:
             try:
                 cur = conn.cursor()
-                # 'completed' 也要排除:上面的 emit("task_completed") 抛异常时会走到
-                # 这里,不能把已经完成的任务改判 failed
-                # 'completed' 是终态不可改写；'paused' 是用户的明确意图，
-                # 失败兜底也不该把它抢走。
+                # 'completed' 也要排除:上面的 emit("task_completed") 抛异常时会
+                # 走到这里,不能把已经完成的任务改判 failed。'paused' 排除的理由
+                # 不同 —— 它是用户的明确意图,失败兜底不该把它抢走。
                 cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status NOT IN ('paused','completed')",
                             (str(e), utc_now_iso(), task_id))
                 conn.commit()

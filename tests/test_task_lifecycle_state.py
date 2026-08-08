@@ -131,6 +131,45 @@ def _seed_dem_task(db, status="running", file_statuses=("pending",), failed_file
         conn.close()
 
 
+def _seed_contour_task(db, status="running", file_statuses=("pending",)):
+    """一条正在下载 DEM 的等高线任务（water=0，避开 best-effort 的 ASTWBD 支线）。"""
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO contour_tasks
+              (name, status, north, south, east, west, dataset, contour_interval,
+               water, zoom_min, zoom_max, output_path, total_files)
+            VALUES ('contour-task', ?, 1, 0, 1, 0, 'ASTGTM.003', 10, 0, 10, 12, ?, ?)
+            """,
+            (status, tempfile.gettempdir(), len(file_statuses)),
+        )
+        task_id = cur.lastrowid
+        for idx, file_status in enumerate(file_statuses):
+            cur.execute(
+                """
+                INSERT INTO contour_files (task_id, granule_id, kind, status)
+                VALUES (?, ?, 'dem', ?)
+                """,
+                (task_id, f"ASTGTMV003_N00E00{idx}_dem.tif", file_status),
+            )
+        conn.commit()
+        return task_id
+    finally:
+        conn.close()
+
+
+def _contour_task_row(db, task_id):
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM contour_tasks WHERE id=?", (task_id,))
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def _map_task_row(db, task_id):
     conn = db.get_connection()
     try:
@@ -213,6 +252,33 @@ def test_map_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
     asyncio.run(tm._execute_task(task_id))
 
     row = _map_task_row(db, task_id)
+    assert row["status"] == "paused"
+
+
+def test_contour_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
+    """等高线侧同款：见 test_map_paused_task_is_not_overwritten_by_failure。"""
+    from conftest import fresh_import
+
+    db = _reload_with_isolated_db(monkeypatch, tmp_path)
+    # contour manager 走 fresh_import 而不是本文件的裸 pop 表：它在别的测试文件
+    # 里是模块级 import，裸 pop 不还原会留下双实例（见 conftest 的说明与
+    # test_conftest_isolation_contract）。
+    ctm_mod = fresh_import(monkeypatch, "src.services.contour_task_manager")
+    ctm = ctm_mod.ContourTaskManager(socketio=FakeSocketIO())
+    task_id = _seed_contour_task(db)
+
+    async def fake_download_files(dataset, granules, output_dir, progress_callback, stop_flag, bytes_callback=None):
+        ctm.pause_task(task_id)
+        raise RuntimeError("network died after pause")
+
+    ctm.engine.download_files = fake_download_files
+
+    try:
+        asyncio.run(ctm._execute(task_id))
+    except RuntimeError:
+        pass
+
+    row = _contour_task_row(db, task_id)
     assert row["status"] == "paused"
 
 

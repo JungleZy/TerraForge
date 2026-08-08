@@ -495,10 +495,9 @@ def test_card_actions_are_gated_by_the_right_status():
 def test_dismiss_is_purely_local():
     """「移除」只清前端卡片，不许打后端。
 
-    失败任务在后端已经是终态，dismissTask 若像 cancelTask 那样 POST
-    /cancel，三个 manager 的 cancel_task 对 failed 的反应各不相同
-    （最好的情况是白跑一趟，最坏是 500），而用户想要的只是「把这张卡片
-    从我眼前拿走」。
+    失败任务在后端已经是终态：能打的端点只有 DELETE（那是「删除」按钮的
+    活儿，会连产物一起清掉），而用户按「移除」想要的只是「把这张卡片从我眼前
+    拿走」——记录留着，下次翻页还能看见。
     """
     body = _fn('dismissTask')
     assert 'fetch(' not in body, (
@@ -836,7 +835,7 @@ _STATUS_WRITERS = (
 #     （无数据跳过，不算失败），dem_task_manager 的终态统计因此出现
 #     `status NOT IN ('completed','skipped','failed')`（FROM dem_files）。
 # 新增文件级状态时下面会响亮失败（extra 非空），把新状态加进这里即可——
-# 不要加进 TaskStatus：那会连带要求两个 JS 的六态词表覆盖一个永远到不了
+# 不要加进 TaskStatus：那会连带要求两个 JS 的状态词表覆盖一个永远到不了
 # 任务徽章的状态。
 _FILE_LEVEL_STATUSES = frozenset({'downloading', 'skipped'})
 # 仅作查询过滤的伪状态（永远不会写进任务行）：?status=active 是路由/列表
@@ -930,9 +929,9 @@ def _js_object_literal_keys(body, var_name):
 #
 # 登记（2026-08 统一流式列表重设计）：第三张表 statusIcons（行内徽章 SVG
 # 图标表）随徽章 pill 一并删除——定稿设计的状态识别 = 状态点配色 +
-# 小字状态文本，行里不再有徽章。六态覆盖的守卫相应搬家：
-#   · getStatusColor / getStatusText 的六态覆盖仍由本节的下面两条守；
-#   · 状态点的六态配色（图形侧，替代图标的 WCAG 1.4.1 职责）改由
+# 小字状态文本，行里不再有徽章。全状态覆盖的守卫相应搬家：
+#   · getStatusColor / getStatusText 的五态覆盖仍由本节的下面两条守；
+#   · 状态点的五态配色（图形侧，替代图标的 WCAG 1.4.1 职责）改由
 #     tests/test_css_contract.py::test_task_row_status_dot_covers_every_status 守；
 #   原 test_status_icons_are_real_distinct_glyphs 随之删除（无表可查）。
 _STATUS_MAPS = (
@@ -1176,7 +1175,7 @@ def test_status_labels_are_paired_with_the_right_status():
 # 承担状态识别），statusIcons 表随之从 createTaskRow / renderHistoryTable
 # 删除，该断言失去检查对象，整条删除。
 # 「不只靠颜色」的职责没有丢，由两条一起接住：
-#   · 图形侧（六态状态点配色 + 对比度）：
+#   · 图形侧（五态状态点配色 + 对比度）：
 #     tests/test_css_contract.py::test_task_row_status_dot_covers_every_status
 #   · 文字侧（小字状态文本必须来自 getStatusText 的中文词表）：
 #     本文件 test_status_labels_are_paired_with_the_right_status 等 A7 断言
@@ -1273,7 +1272,7 @@ def test_time_info_falls_back_when_total_running_seconds_missing():
 def test_unknown_status_never_renders_raw_english_literal():
     """getStatusText 的兜底不许把未知英文状态原样渲染进中文界面。
 
-    已知六态由词表覆盖（见上面的 A7 断言）；词表外的状态统一显示「未知」，
+    已知五态由词表覆盖（见上面的 A7 断言）；词表外的状态统一显示「未知」，
     与 A7 修过的中英混杂问题保持同一方案。
     """
     from src.i18n.catalog import MESSAGES
@@ -1416,7 +1415,7 @@ def test_task_row_is_the_unified_two_line_structure():
         )
     # 状态类名是绑定形态：:class="'status-' + task.status"
     assert re.search(r""":class="'status-'\s*\+\s*task\.status\"""", body), (
-        'TaskRow 根节点没有绑定 status-* 类 —— 六态配色（.task-row.status-x '
+        'TaskRow 根节点没有绑定 status-* 类 —— 状态点配色（.task-row.status-x '
         '.task-dot）会全部失效'
     )
     for cls in ('task-pct', 'task-count', 'progress-bar'):

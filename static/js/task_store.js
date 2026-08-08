@@ -28,7 +28,7 @@
     }
     const { reactive } = window.Vue;
 
-    // 活动态：三者之外都是终态。与后端 TaskStatus 六态对齐。
+    // 活动态：三者之外都是终态。与后端 TaskStatus 五态对齐。
     const LIVE_STATUSES = ['pending', 'running', 'paused'];
 
     const state = reactive({

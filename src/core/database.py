@@ -333,6 +333,38 @@ def migrate_base_path_to_assets(cursor) -> bool:
     return changed
 
 
+# 迁移后写进 error_message 的说明：没有它，用户看到的是一条没有原因的失败。
+_CANCELLED_MIGRATION_NOTE = '此版本移除了「取消任务」，该任务原为已取消'
+
+
+def migrate_cancelled_tasks_to_failed(cursor) -> int:
+    """存量 'cancelled' 行迁成 'failed'（「取消任务」被移除后的一次性收尾）。
+
+    枚举里没有 cancelled 之后，后端读这些行是安全的（`Task.from_row` 走
+    `cls.__new__` 不校验，所有状态判定都是 `IN ('pending','running','paused')`
+    的正列表语义），坏的是**渲染层**：前端两张状态词表跟着枚举收敛到五态，
+    老行落到 `|| '未知'` 兜底，用户看到一列「未知」。
+
+    为什么迁成 failed 而不是别的：failed 是终态，语义最接近「没跑完」；而且
+    start_task 已经收回了 failed 白名单，这批陈年任务不会诈尸回活动列表。
+    **绝不能迁成 paused** —— start_task 收 paused，那等于把它们全部复活成
+    「可恢复」。error_message 写明来历，否则用户只会看到一条没有原因的失败。
+
+    `WHERE status='cancelled'` 天然幂等：迁完就没有行可匹配，不需要
+    user_version 闸门（新库同样是零行匹配的空转）。
+    """
+    moved = 0
+    for table in ('tasks', 'dem_tasks', 'contour_tasks', 'local_terrain_tasks'):
+        cursor.execute(
+            f"UPDATE {table} SET status='failed', error_message=? "
+            "WHERE status='cancelled'",
+            (_CANCELLED_MIGRATION_NOTE,))
+        moved += cursor.rowcount
+    if moved:
+        logger.info(f"{moved} 条已取消任务迁移为 failed（「取消任务」已移除）")
+    return moved
+
+
 def init_database():
     """
     Initialize database schema and default configuration
@@ -734,6 +766,7 @@ def init_database():
         normalize_default_save_path(cursor)
         normalize_stored_output_paths(cursor)
         migrate_base_path_to_assets(cursor)
+        migrate_cancelled_tasks_to_failed(cursor)
 
         conn.commit()
         logger.info('Database initialized successfully')

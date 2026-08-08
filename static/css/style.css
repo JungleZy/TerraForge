@@ -138,7 +138,7 @@
     --color-control-hover:    rgba(255,255,255,0.12);   /* .map-panel-btn hover */
     --color-btn-ghost-hover:  rgba(255,255,255,0.08);   /* .btn-secondary / .btn-outline-secondary hover */
     --color-btn-ghost-active: rgba(255,255,255,0.16);   /* 同上的 active */
-    --color-badge-neutral-bg: rgba(255,255,255,0.06);   /* pending / bg-secondary / bg-dark 徽章底 */
+    --color-badge-neutral-bg: rgba(255,255,255,0.06);   /* pending / bg-secondary 徽章底 */
 
     /* 状态徽章的描边（与各自 --color-*-bg 同色系、更高 alpha） */
     --color-info-border:    rgba(96,165,250,0.30);
@@ -1010,9 +1010,9 @@ html[lang="en"] .map-panel-btn {
    1px 发丝线（落在分组头/分页条之前）是可接受的代价。 */
 
 /* 状态点：8px 圆点承担状态识别（与小字状态文本一起，替代原徽章 pill）。
-   六态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
+   五态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
    「任务还活着」的唯一动效信号（动画降噪时刻意保留的那一类）。
-   兜底色是品牌色 var(--color-accent)：六态各有专属规则，落到兜底 = 有态
+   兜底色是品牌色 var(--color-accent)：五态各有专属规则，落到兜底 = 有态
    没写规则（测试会红）；不能用中性灰当兜底——那会让缺规则的态冒充 pending。 */
 .task-dot {
     width: 8px;
@@ -1313,8 +1313,7 @@ html[lang="en"] .map-panel-btn {
     box-shadow: none !important;
 }
 
-.badge.bg-secondary,
-.badge.bg-dark {
+.badge.bg-secondary {
     background: var(--color-badge-neutral-bg) !important;
     color: var(--color-text-secondary) !important;
     border: 1px solid var(--color-border-strong);
@@ -1441,25 +1440,22 @@ html[lang="en"] .map-panel-btn {
    共用声明块渲染完全一致，运行中的徽章与进度条同色系，
    且不必为 .bg-primary 再写一条覆盖。
 
-   secondary(等待中) / dark(已取消) 原来没有覆盖，会回落到 Bootstrap 默认的
-   #6c757d / #212529。!important 是必需的：Bootstrap 的 .bg-* 工具类自带
-   !important，不带的话我们更高的特异性也赢不了。
+   secondary(等待中) 原来没有覆盖，会回落到 Bootstrap 默认的 #6c757d。
+   !important 是必需的：Bootstrap 的 .bg-* 工具类自带 !important，
+   不带的话我们更高的特异性也赢不了。
 
-   两条都必须对 `.progress` 轨道底色(--color-bg-tertiary #1c2027) 有
+   它必须对 `.progress` 轨道底色(--color-bg-tertiary #1c2027) 有
    >= 3:1 对比度，见 test_progress_bar_fill_has_sufficient_contrast。
    所以等待中用 --color-text-secondary(6.21:1) 而不是
    --color-text-muted(2.82:1)。
 
    ⚠️ 这段注释原本还写着「history.js 的 getStatusColor 把 running/pending/paused
-   全兜底成 secondary」—— A7 / Task 12 已经把 history.js 的映射补齐到六态，
+   全兜底成 secondary」—— A7 / Task 12 已经把 history.js 的映射补齐到全部状态，
    那句话过期了。secondary 现在只对应 pending，以及后端冒出新状态时的兜底档；
-   兜底档同样要可读，见 test_status_badge_text_is_readable_in_every_state。 */
+   兜底档同样要可读，见 test_status_badge_text_is_readable_in_every_state。
+   （原来还有一条 .progress-bar.bg-dark 给「已取消」，随该状态退出状态机删除。） */
 .progress-bar.bg-secondary {
     background: var(--color-text-secondary) !important;
-}
-
-.progress-bar.bg-dark {
-    background: var(--color-neutral) !important;
 }
 
 /* 这里原本是一整块 `.zoom-progress` / `.zoom-level` / `.zoom-level-label` /
