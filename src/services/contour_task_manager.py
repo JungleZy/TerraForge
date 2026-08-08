@@ -953,12 +953,50 @@ class ContourTaskManager:
                 # last_flush 初始 -inf:首次回调(进入渲染阶段的 0/total)必落库
                 render_state = {"done": 0, "total": total_tiles, "last_flush": float("-inf")}
 
+                # 行还在吗。删除运行中的任务会把行 DELETE 掉，而 base_payload 是
+                # 【渲染开始前】的整行快照,里面 status='running' —— 行没了还继续
+                # emit,前端那边 key 既不在时间流也不在活动集(deleteTask 刚摘干净),
+                # 于是走 prependStreamRow 把行插回来(static/js/tasks.js:428);而
+                # 停止后本方法直接 return、再不发任何终态事件,那行就永久卡在
+                # 「运行中」,只能刷新页面才消失。
+                #
+                # 判据只能是「行还在吗」,不能是 stop_flag.is_set():暂停同样置停止
+                # 标志,但暂停时行还在、那一发收尾 flush 是对的(保住节流窗口内最后
+                # 一段计数)。拿 stop_flag 拦会把暂停一起误伤。
+                # 一旦确认行没了就记住 —— 删除不可逆,不必反复回查。
+                row_alive = {"ok": True}
+
+                def _stage_row_alive() -> bool:
+                    """prepare 阶段的闸门。它没有 DB 写、拿不到 rowcount,只能自己查。
+
+                    时序:进入渲染阶段那一发 render_progress(0, total) 在 tiler 之前
+                    就跑过,所以 warp 期间 row_alive 里已经有一次 rowcount 结论 ——
+                    但删除可以发生在那之后、warp 期间,那个结论会过期。所以只信任
+                    「已确认行没了」这一侧短路,仍认为活着时必须再查一次。
+                    每次 stage emit 一条按主键的 SELECT,复用同一连接:stage emit 本身
+                    已被 _RENDER_PROGRESS_MIN_INTERVAL 节流,频率与 flush 同量级。
+                    """
+                    if not row_alive["ok"]:
+                        return False
+                    if progress_conn.execute(
+                            "SELECT 1 FROM contour_tasks WHERE id=?",
+                            (task_id,)).fetchone() is None:
+                        row_alive["ok"] = False
+                    return row_alive["ok"]
+
                 def _flush_render_progress():
-                    progress_conn.execute(
+                    cur_flush = progress_conn.execute(
                         "UPDATE contour_tasks SET rendered_tiles=?, total_tiles=? WHERE id=?",
                         (render_state["done"], render_state["total"], task_id))
                     progress_conn.commit()
                     render_state["last_flush"] = time.monotonic()
+                    # rowcount=0 → 行已被删除:这次 UPDATE 本来就是空转,emit 才是
+                    # 有害的那一半。「写完看 rowcount 再决定发不发」是本仓既有约定
+                    # (见 CLAUDE.md 的删除约定、task_deletion.delete_task_row)。
+                    if cur_flush.rowcount == 0:
+                        row_alive["ok"] = False
+                    if not row_alive["ok"]:
+                        return
                     if self.socketio and base_payload is not None:
                         payload = dict(base_payload)
                         payload["rendered_tiles"] = render_state["done"]
@@ -1016,6 +1054,8 @@ class ContourTaskManager:
                     stage_state["last_emit"] = now
                     if not (self.socketio and base_payload is not None):
                         return
+                    if not _stage_row_alive():
+                        return
                     payload = dict(base_payload)
                     payload["task_type"] = "contour"
                     payload["phase"] = "prepare"
@@ -1036,8 +1076,9 @@ class ContourTaskManager:
                     params=params, progress_cb=render_progress,
                     stage_cb=render_stage, stop_flag=stop_flag,
                 )
-                # 渲染结束(正常完成/暂停/部分失败)强制 flush:节流窗口内最后
-                # 一段计数不丢。渲染异常由外层 except 标 failed,无需再 flush。
+                # 渲染结束(正常完成/暂停/已删除/部分失败)强制 flush:节流窗口内
+                # 最后一段计数不丢。已删除时 UPDATE 是空转、emit 被 rowcount 闸掉,
+                # 走到这里不必分支。渲染异常由外层 except 标 failed,无需再 flush。
                 _flush_render_progress()
             finally:
                 progress_conn.close()

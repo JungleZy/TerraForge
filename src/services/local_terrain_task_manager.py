@@ -607,6 +607,22 @@ class LocalTerrainTaskManager:
             return
         try:
             task = self.get_task(task_id)
+        except ValueError:
+            # 行没了 = 任务已被删除，这不是故障，静默返回。
+            #
+            # 为什么要显式挡：这一发推送的 payload 是**整行**，里面
+            # status='running'（start_tiling 刚提交完才调到这里）。用户在这个
+            # 窗口里删掉任务的话，前端收到后既在时间流里找不到这个 key、也不在
+            # 活动集里（deleteTask 已经摘干净），于是走 prependStreamRow 把行
+            # 插回去（static/js/tasks.js），变成一条永远停在「运行中」、只能刷
+            # 新页面才消失的幽灵行 —— 与 contour 渲染进度那条是同一个 bug。
+            #
+            # 之前靠下面那个宽 except 兜住 get_task 抛的 ValueError，结果对但
+            # 机制是意外：把 get_task 改成返回 None 的重构会静悄悄换成
+            # TypeError，再把 payload 改成缓存快照就直接漏出幽灵行；而且正常的
+            # 并发删除每次都往日志里记一条 warning，是假警报。
+            return
+        try:
             task["task_type"] = "local_terrain"
             self.socketio.emit("task_progress", task)
         except Exception as e:
