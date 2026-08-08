@@ -15,6 +15,7 @@
 
 import asyncio
 import importlib
+import itertools
 import os
 import sys
 
@@ -259,11 +260,28 @@ def test_speed_is_pushed_while_the_granule_is_still_downloading(monkeypatch, tmp
 
     这正是现场看不到速度的根因：过去只有状态回调触发 emit，一颗 30-50MB 的
     COG 中间几分钟一发都没有，前端 5s 后就把行上的速度显示成 0 B/s。
+
+    **时钟必须注进去，不能用真 time.monotonic()。** 三个回调在这里是背靠背跑的，
+    中间没有真实 I/O；而 Windows 上 `time.monotonic()` 的分辨率约 15.6 ms
+    （GetTickCount64），三个样本很可能落在同一个 tick 上 → `SpeedMeter.bps()` 的
+    `dt <= 0` 分支返回 0.0 → 断言红。Linux/macOS 是纳秒级所以一直是绿的。
+    v0.2.12 的发版构建被这条打断过一次（同一提交的前一轮 Windows 上它还是绿的
+    —— 典型的靠时钟分辨率碰运气）。`SpeedMeter(clock=...)` 这个参数本来就是为
+    可测性留的，用它把 dt 钉成确定值，产品代码一个字不用改：真实下载的跨度
+    远大于 15.6 ms，这不是产品缺陷。
     """
     db, dtm = _setup(monkeypatch, tmp_path)
     # 节流窗口不是本用例的被测对象：不关掉的话第一发（downloading）之后的
     # 在途推送会被 1s 窗口吞掉，用例只能靠 sleep 等，纯属 flaky 来源。
     monkeypatch.setattr(dtm, "_PROGRESS_EMIT_MIN_INTERVAL", 0.0)
+
+    # 每次读表都前进 10 ms —— 足够让窗口跨度恒为正，又远小于 SpeedMeter 默认的
+    # 3 秒窗口，不会把样本挤出窗外。
+    ticks = itertools.count(0.0, 0.010)
+    real_meter_cls = dtm.SpeedMeter
+    monkeypatch.setattr(
+        dtm, "SpeedMeter",
+        lambda *a, **k: real_meter_cls(*a, clock=lambda: next(ticks), **k))
 
     sock = _Sock()
     mgr = dtm.DemTaskManager(socketio=sock)
