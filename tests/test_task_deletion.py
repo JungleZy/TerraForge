@@ -6,10 +6,13 @@ HTTP 请求里等线程退出」不可行，只能行立即消失、产物后台
 """
 
 import os
+import sqlite3
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -26,6 +29,49 @@ class _FakeManager:
         if thread is not None:
             self.active_tasks[1] = thread
             self.stop_flags[1] = threading.Event()
+
+
+class _DeleteSpyConn:
+    """包住真连接，只为在 `DELETE FROM tasks` 发出的【那一刻】拍一张快照。
+
+    删除有两条顺序契约 —— 墓碑先于删行、缓存失效后于删行 —— 都只能在 DELETE
+    那一刻观察。事后在回调里看只能证明「最终做了」，会把顺序搞反的实现放过去。
+    """
+
+    def __init__(self, conn, on_delete):
+        self._conn = conn
+        self._on_delete = on_delete
+
+    def execute(self, sql, *args, **kwargs):
+        if sql.lstrip().upper().startswith("DELETE FROM TASKS"):
+            self._on_delete()
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _spy_on_delete(monkeypatch, td, on_delete):
+    """让 td 拿到的连接在发 DELETE 时先回调 on_delete。
+
+    模块导入时就把 get_connection 绑进了自己的命名空间，所以换 td 上的名字即可。
+    """
+    real_get_connection = td.get_connection
+    monkeypatch.setattr(
+        td, "get_connection",
+        lambda: _DeleteSpyConn(real_get_connection(), on_delete))
+
+
+def _join_cleanup_thread(task_id=1, timeout=10):
+    """等 delete_task_row 起的后台收尾线程真正跑完。
+
+    不等有两个后果：后台那半段（删产物 / 销账 / 摘墓碑）一条也没被断言；而且
+    线程会在 monkeypatch teardown 之后才去 get_connection()，打到真实库上 ——
+    典型的只在 CI 偶发的污染源。
+    """
+    for t in threading.enumerate():
+        if t.name == f"DeleteCleanup-{task_id}":
+            t.join(timeout=timeout)
 
 
 def _setup(monkeypatch, tmp_path):
@@ -64,6 +110,15 @@ def _row_exists(db):
         conn.close()
 
 
+def _pending_paths(db):
+    conn = db.get_connection()
+    try:
+        return [r["path"] for r in
+                conn.execute("SELECT path FROM pending_deletions ORDER BY id")]
+    finally:
+        conn.close()
+
+
 def test_idle_task_deletes_synchronously_and_reports_files(monkeypatch, tmp_path):
     """快路径：没在跑的任务同步删行 + 同步删产物，files_removed 保持真实结果。"""
     db, td = _setup(monkeypatch, tmp_path)
@@ -94,21 +149,27 @@ def test_idle_task_without_artifact_request_reports_none(monkeypatch, tmp_path):
     assert not _row_exists(db)
 
 
-def test_running_task_returns_immediately_and_defers_files(monkeypatch, tmp_path):
-    """后台路径：线程还活着时行当场消失、立即返回，产物进清单交后台。"""
+def test_running_task_defers_files_then_background_finishes_the_job(monkeypatch, tmp_path):
+    """后台路径两段都要验：行当场消失 + 立即返回，之后后台真的把尾收完。
+
+    只验前半段的话，把 `_background_cleanup` 整个改成 `return` 也照样绿 ——
+    后台收尾（删产物 / 销账 / 摘墓碑）正是这个模块的头号卖点。
+    """
     db, td = _setup(monkeypatch, tmp_path)
     _seed(db, status="running")
     art = tmp_path / "downloads" / "task_1"
     art.mkdir(parents=True)
+    (art / "a.png").write_bytes(b"x")
 
     release = threading.Event()
     th = threading.Thread(target=release.wait, kwargs={"timeout": 10}, daemon=True)
     th.start()
     mgr = _FakeManager(thread=th)
+    tomb = set()
 
     started = time.monotonic()
     out = td.delete_task_row(manager=mgr, task_id=1, table="tasks",
-                             artifact_dir=art)
+                             artifact_dir=art, tombstone=tomb)
     elapsed = time.monotonic() - started
 
     assert elapsed < 2.0, f"删除运行中任务不得阻塞等线程，实际 {elapsed:.1f}s"
@@ -117,17 +178,20 @@ def test_running_task_returns_immediately_and_defers_files(monkeypatch, tmp_path
     assert out.files_removed is None, "延后时不得给出 files_removed（还没删）"
     assert not _row_exists(db), "行必须当场消失"
     assert mgr.stop_flags[1].is_set(), "必须置停止标志，否则线程不会收工"
+    # 此刻后台必定还堵在 join 上（假线程要等 release），所以这条是确定性的
+    assert art.exists(), "延后期间产物必须还在 —— 不然就不叫延后"
+    assert tomb == {1}, "线程没死透之前墓碑不许摘"
 
     # 产物线索必须落进清单 —— 进程被强杀时靠它补删
-    conn = db.get_connection()
-    try:
-        rows = [r["path"] for r in conn.execute("SELECT path FROM pending_deletions")]
-    finally:
-        conn.close()
-    assert rows == [str(art)]
+    assert _pending_paths(db) == [str(art)]
 
     release.set()
     th.join(timeout=10)
+    _join_cleanup_thread(1)
+
+    assert not art.exists(), "线程收工后后台必须把产物删掉"
+    assert _pending_paths(db) == [], "删干净了就要销账，否则每次启动重扫"
+    assert tomb == set(), "线程死透了才摘墓碑 —— 此刻必须已摘"
 
 
 def test_tombstone_receives_task_id_before_row_is_deleted(monkeypatch, tmp_path):
@@ -148,24 +212,8 @@ def test_tombstone_receives_task_id_before_row_is_deleted(monkeypatch, tmp_path)
 
     tomb = set()
     seen = {}
-    real_get_connection = td.get_connection
-
-    class _SpyConn:
-        """只拦一件事：DELETE 发出时把墓碑当时的状态记下来，其余原样转发。"""
-
-        def __init__(self, conn):
-            self._conn = conn
-
-        def execute(self, sql, *args, **kwargs):
-            if sql.lstrip().upper().startswith("DELETE FROM TASKS"):
-                seen["tombstoned_at_delete"] = 1 in tomb
-            return self._conn.execute(sql, *args, **kwargs)
-
-        def __getattr__(self, name):
-            return getattr(self._conn, name)
-
-    monkeypatch.setattr(td, "get_connection",
-                        lambda: _SpyConn(real_get_connection()))
+    _spy_on_delete(monkeypatch, td,
+                   lambda: seen.__setitem__("tombstoned_at_delete", 1 in tomb))
 
     td.delete_task_row(manager=mgr, task_id=1, table="tasks", artifact_dir=None,
                        tombstone=tomb)
@@ -173,18 +221,29 @@ def test_tombstone_receives_task_id_before_row_is_deleted(monkeypatch, tmp_path)
     assert seen["tombstoned_at_delete"] is True
     release.set()
     th.join(timeout=10)
+    _join_cleanup_thread(1)
 
 
-def test_on_row_gone_runs_synchronously_even_on_fast_path(monkeypatch, tmp_path):
-    """静态路由缓存失效不能丢给后台：丢了的话已删任务的瓦片还能被访问到。"""
+def test_on_row_gone_runs_synchronously_after_delete_on_fast_path(monkeypatch, tmp_path):
+    """静态路由缓存失效：必须同步执行，且必须在行删掉【之后】。
+
+    丢给后台的话，已删任务的瓦片在缓存失效前仍能被访问到；反过来抢在 DELETE
+    之前清缓存也不行 —— 那段窗口里并发请求会把「存在」重新灌回缓存，等于没清。
+    所以观察点和墓碑用例一样落在 DELETE 那一刻，只断言「调过了」会把顺序反过来
+    的实现放过去。
+    """
     db, td = _setup(monkeypatch, tmp_path)
     _seed(db)
     calls = []
+    seen = {}
+    _spy_on_delete(monkeypatch, td,
+                   lambda: seen.__setitem__("calls_at_delete", len(calls)))
 
     td.delete_task_row(manager=_FakeManager(), task_id=1, table="tasks",
                        artifact_dir=None, on_row_gone=lambda: calls.append(1))
 
-    assert calls == [1]
+    assert seen["calls_at_delete"] == 0, "缓存失效不能抢在 DELETE 之前"
+    assert calls == [1], "必须同步执行，不能丢给后台"
 
 
 def test_missing_row_reports_not_deleted(monkeypatch, tmp_path):
@@ -195,3 +254,102 @@ def test_missing_row_reports_not_deleted(monkeypatch, tmp_path):
                              artifact_dir=None)
 
     assert out.row_deleted is False
+
+
+def test_join_timeout_keeps_the_tombstone(monkeypatch, tmp_path):
+    """join 超时说明线程还活着 —— 这一刻【不能】摘墓碑。
+
+    这一支刚刚证明了 worker 还在 GDAL 阻塞区里（模块自己的注释写着阻塞区是
+    「分钟级到数十分钟」，600s 就在这个区间里面）。它出来后 flush 进度仍要靠
+    墓碑短路，否则拿已删的 task_id 撞外键，每次 flush 再炸一次直到进程重启。
+    产物有 pending_deletions 兜底，墓碑没有第二道。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(td, "_JOIN_TIMEOUT_SECONDS", 0.05)
+
+    release = threading.Event()
+    th = threading.Thread(target=release.wait, kwargs={"timeout": 10}, daemon=True)
+    th.start()
+    tomb = {1}
+    try:
+        td._background_cleanup(1, th, None, tomb)
+
+        assert th.is_alive(), "前提没成立：超时时线程必须还活着"
+        assert tomb == {1}, "线程还活着时摘墓碑 = 进度批次撞外键，且永不自愈"
+    finally:
+        release.set()
+        th.join(timeout=10)
+
+
+def test_tombstone_is_released_when_the_delete_transaction_blows_up(monkeypatch,
+                                                                    tmp_path):
+    """墓碑写了但后台线程没接手成功时必须摘掉，否则永久泄漏。
+
+    墓碑写入到 Thread.start() 之间有四个可抛点：INSERT / DELETE / commit（都可能
+    database is locked）以及 start() 的「can't start new thread」。抛出去而不摘，
+    留下的是行还在（事务回滚）+ 停止标志已置 + 进度写入被永久短路，用户看到任务
+    卡在 running 且进度不动，只能重启进程。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    _seed(db, status="running")
+
+    release = threading.Event()
+    th = threading.Thread(target=release.wait, kwargs={"timeout": 10}, daemon=True)
+    th.start()
+    mgr = _FakeManager(thread=th)
+    tomb = set()
+
+    def blow_up():
+        raise sqlite3.OperationalError("database is locked")
+
+    _spy_on_delete(monkeypatch, td, blow_up)
+
+    with pytest.raises(sqlite3.OperationalError):
+        td.delete_task_row(manager=mgr, task_id=1, table="tasks",
+                           artifact_dir=None, tombstone=tomb)
+
+    assert tomb == set(), "抛出前必须摘墓碑，否则进度写入被永久短路"
+    assert _row_exists(db), "前提没成立：事务应当回滚，行还在"
+
+    release.set()
+    th.join(timeout=10)
+
+
+def test_non_absolute_artifact_dir_is_refused(monkeypatch, tmp_path):
+    """相对路径不许进护栏 —— 它会按【进程 cwd】解释，'' 和 '.' 能删掉 cwd。
+
+    同一张 pending_deletions 表的另一个消费者
+    (task_cleanup._sweep_pending_deletions) 有同样一道卫兵；两边判据必须对称，
+    否则迟早从没卫兵的这一侧漏进去。拒收后当作「没要求删产物」。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    _seed(db)
+    removed = []
+    monkeypatch.setattr(td, "remove_task_dir_if_safe",
+                        lambda p: removed.append(p) or True)
+
+    out = td.delete_task_row(manager=_FakeManager(), task_id=1, table="tasks",
+                             artifact_dir=".")
+
+    assert removed == [], "相对路径绝不能喂给护栏"
+    assert out.row_deleted is True, "拒收产物路径不影响删行"
+    assert out.files_removed is None and out.files_deferred is False
+
+
+def test_tilde_artifact_dir_is_expanded_at_the_entry(monkeypatch, tmp_path):
+    """喂护栏的和拿去 exists() 销账的必须是【同一个】展开后的 target。
+
+    护栏内部自己会 expanduser，但助手若留着没展开的 `~/...` 去 exists()，那个
+    判断恒为 False，`_background_cleanup` 里「删不干净就别销账」那一支会对整类
+    ~ 路径静默失效 —— 正是 pending_deletions 这张表要防的事。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    _seed(db)
+    seen = []
+    monkeypatch.setattr(td, "remove_task_dir_if_safe",
+                        lambda p: seen.append(p) or True)
+
+    td.delete_task_row(manager=_FakeManager(), task_id=1, table="tasks",
+                       artifact_dir="~/map-download-probe/task_1")
+
+    assert seen == [Path.home() / "map-download-probe" / "task_1"]

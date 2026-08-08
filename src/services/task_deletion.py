@@ -80,16 +80,27 @@ def _clear_pending_deletion(artifact_dir: Path) -> None:
 def _background_cleanup(task_id: int, thread: threading.Thread,
                         artifact_dir: Optional[Path],
                         tombstone: Optional[set]) -> None:
-    """等线程收工，然后删产物、销账、摘墓碑。全程 best-effort。"""
+    """等线程收工，然后删产物、销账、摘墓碑。全程 best-effort。
+
+    摘墓碑的唯一前提是「线程已经死透」—— 见 worker_done。
+    """
+    worker_done = False
     try:
         thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
         if thread.is_alive():
             # 多半卡在 GDAL 阻塞区里。产物线索还在清单上，下次启动会补删。
+            #
+            # 墓碑【不能】在这一支摘：这里刚刚证明了线程还活着，它走出阻塞区后
+            # 的进度批次仍要靠墓碑短路，否则会拿已删的 task_id 去 INSERT
+            # task_tiles 撞外键，然后每次 flush 再炸一次直到进程重启。产物有
+            # pending_deletions 兜底，墓碑没有第二道 —— 摘早了没人能补。
+            # 代价对比：泄漏一个 int，对上一条永不自愈的外键失败链。
             logger.warning(
                 f"Task {task_id}: worker still running after "
                 f"{_JOIN_TIMEOUT_SECONDS}s; leaving artifact cleanup to the "
                 f"startup sweep")
             return
+        worker_done = True
         if artifact_dir is not None:
             eligible = remove_task_dir_if_safe(artifact_dir)
             # 与启动补删同一判据：remove_task_dir_if_safe 返回的是「符合删除
@@ -101,9 +112,11 @@ def _background_cleanup(task_id: int, thread: threading.Thread,
                 # 越界路径永远删不掉，留在清单里只会每次启动重试并刷 warning
                 _clear_pending_deletion(artifact_dir)
     except Exception as e:
+        # join 本身抛出时 worker_done 还是 False —— 线程状态未知就按「还活着」
+        # 保守处理，同样不摘墓碑。
         logger.warning(f"Background cleanup for task {task_id} failed: {e}")
     finally:
-        if tombstone is not None:
+        if worker_done and tombstone is not None:
             tombstone.discard(task_id)
 
 
@@ -121,56 +134,84 @@ def delete_task_row(
     Args:
         manager: 持有 `_state_lock` / `active_tasks` / `stop_flags` 的任务管理器。
         table: 任务表名。调用方传字面量，不接受外部输入 —— 它直接进 SQL。
-        artifact_dir: 产物目录；None 表示调用方没要求删产物。
+        artifact_dir: 产物目录；None 表示调用方没要求删产物。非绝对路径会被拒收
+            并当作 None 处理（理由见函数体内的卫兵注释）。
         tombstone: 只有 map 传（见设计文档 D-C）。运行期有 INSERT 的管线才需要，
             用来让进度批次在父行消失后短路，避开外键 IntegrityError。
         on_row_gone: 行删掉后**同步**执行的回调，用于清静态路由的存在性缓存。
             不能丢给后台 —— 否则已删任务的瓦片在缓存失效前仍能被访问到。
     """
     if artifact_dir is not None:
-        artifact_dir = Path(artifact_dir)
+        # expanduser 在这里做一次，并且【同一个 target】既喂护栏又拿去
+        # exists()：护栏内部自己会 expanduser，拿没展开的 `~/...` 去 exists()
+        # 恒为 False，`_background_cleanup` 里「删不干净就别销账」那一支会对整类
+        # ~ 路径静默失效 —— 正是 pending_deletions 这张表要防的事。
+        artifact_dir = Path(artifact_dir).expanduser()
+        if not artifact_dir.is_absolute():
+            # 护栏用 absolute() 按【进程 cwd】解释相对路径，实测 '' 和 '.' 会把
+            # cwd 整个 rmtree 掉。同一张表的另一个消费者
+            # task_cleanup._sweep_pending_deletions 有同样一道卫兵；两个消费者
+            # 的判据必须对称，否则迟早从没卫兵的那一侧漏进去。
+            # 当作「调用方没要求删产物」丢弃，不交给护栏。
+            logger.warning(
+                f"Task {task_id}: refusing non-absolute artifact dir: "
+                f"{str(artifact_dir)!r}")
+            artifact_dir = None
 
+    tombstoned = False
     conn = get_connection()
     try:
-        with manager._state_lock:
-            thread = manager.active_tasks.get(task_id)
-            running = bool(thread and thread.is_alive())
-
-            if running:
-                # 墓碑必须在删行【之前】写入：删行之后、线程发现之前的这段窗口里，
-                # map 的进度批次会拿已经不存在的 task_id 去 INSERT task_tiles，
-                # 撞上外键约束（实测 INSERT OR IGNORE 不豁免外键）。
-                if tombstone is not None:
-                    tombstone.add(task_id)
-                flag = manager.stop_flags.get(task_id)
-                if flag is not None:
-                    flag.set()
-
-            if artifact_dir is not None and running:
-                # 先记清单再删行，同一事务 —— 中间崩掉就丢了产物线索
-                _queue_pending_deletion(conn, artifact_dir)
-            cur = conn.execute(f"DELETE FROM {table} WHERE id = ?", (task_id,))
-            row_deleted = cur.rowcount > 0
-            conn.commit()
-    finally:
-        conn.close()
-
-    if on_row_gone is not None:
         try:
-            on_row_gone()
-        except Exception as e:
-            logger.warning(f"Task {task_id}: on_row_gone hook failed: {e}")
+            with manager._state_lock:
+                thread = manager.active_tasks.get(task_id)
+                running = bool(thread and thread.is_alive())
 
-    if not running:
-        files_removed = None
-        if artifact_dir is not None:
-            files_removed = remove_task_dir_if_safe(artifact_dir)
-        return DeleteOutcome(row_deleted, files_removed, False)
+                if running:
+                    # 墓碑必须在删行【之前】写入：删行之后、线程发现之前的这段
+                    # 窗口里，map 的进度批次会拿已经不存在的 task_id 去 INSERT
+                    # task_tiles，撞上外键约束（实测 INSERT OR IGNORE 不豁免外键）。
+                    if tombstone is not None:
+                        tombstone.add(task_id)
+                        tombstoned = True
+                    flag = manager.stop_flags.get(task_id)
+                    if flag is not None:
+                        flag.set()
 
-    threading.Thread(
-        target=_background_cleanup,
-        args=(task_id, thread, artifact_dir, tombstone),
-        daemon=True,
-        name=f"DeleteCleanup-{task_id}",
-    ).start()
+                if artifact_dir is not None and running:
+                    # 先记清单再删行，同一事务 —— 中间崩掉就丢了产物线索
+                    _queue_pending_deletion(conn, artifact_dir)
+                cur = conn.execute(f"DELETE FROM {table} WHERE id = ?", (task_id,))
+                row_deleted = cur.rowcount > 0
+                conn.commit()
+        finally:
+            conn.close()
+
+        if on_row_gone is not None:
+            try:
+                on_row_gone()
+            except Exception as e:
+                logger.warning(f"Task {task_id}: on_row_gone hook failed: {e}")
+
+        if not running:
+            files_removed = None
+            if artifact_dir is not None:
+                files_removed = remove_task_dir_if_safe(artifact_dir)
+            return DeleteOutcome(row_deleted, files_removed, False)
+
+        threading.Thread(
+            target=_background_cleanup,
+            args=(task_id, thread, artifact_dir, tombstone),
+            daemon=True,
+            name=f"DeleteCleanup-{task_id}",
+        ).start()
+    except Exception:
+        # 墓碑写了但后台收尾线程还没接手 —— 从这里抛出去就再没人摘它了。
+        # 可抛点：_queue_pending_deletion 的 INSERT、DELETE、commit（三者都可能
+        # database is locked），以及 Thread.start() 的「can't start new thread」。
+        # 不摘的话留下的状态是：行还在（事务回滚）+ 停止标志已置 + 进度写入被
+        # 永久短路，用户看到任务卡在 running 且进度不动，只能重启进程。
+        # stop flag 不回滚：线程停下来是幂等的，重试删除仍然要它停。
+        if tombstoned:
+            tombstone.discard(task_id)
+        raise
     return DeleteOutcome(row_deleted, None, artifact_dir is not None)
