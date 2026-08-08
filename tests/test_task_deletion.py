@@ -194,6 +194,46 @@ def test_running_task_defers_files_then_background_finishes_the_job(monkeypatch,
     assert tomb == set(), "线程死透了才摘墓碑 —— 此刻必须已摘"
 
 
+def test_registered_but_not_yet_started_thread_takes_the_background_path(
+        monkeypatch, tmp_path):
+    """线程「登记了但还没 start()」的那段窗口必须算在跑。
+
+    四条管线的 start_* 都是：锁内提交 status='running' + `active_tasks[id]=th`，
+    出锁之后才 `th.start()`。`Thread.is_alive()` 在 start() 之前是 False，只看它
+    就会把这段窗口判成「没在跑」而走快路径 —— 不置停止标志、不写墓碑、**同步
+    rmtree**、也不记 pending_deletions。
+
+    本地地形是最重的受害者：`_run_tiling_job` 全程不回查行，上传的 DEM 被删掉后
+    切片照跑到底、把目录重新建出来写满瓦片，而清单是空的，
+    `_sweep_pending_deletions` 只认清单 —— 留下 GB 级、永远无人认领的孤儿目录。
+
+    分支之前 contour / local_terrain 的 delete_task 除 is_alive() 外还查了 DB
+    `status=='running'`，那条判据恰好封死这个窗口；共享助手把它丢了。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    _seed(db, status="running")
+    art = tmp_path / "downloads" / "task_1"
+    art.mkdir(parents=True)
+    (art / "a.png").write_bytes(b"x")
+
+    # 关键：登记进 active_tasks 但【不】 start()，正是 start_* 出锁前的状态
+    th = threading.Thread(target=lambda: None, daemon=True)
+    mgr = _FakeManager(thread=th)
+    tomb = set()
+
+    out = td.delete_task_row(manager=mgr, task_id=1, table="tasks",
+                             artifact_dir=art, tombstone=tomb)
+
+    assert out.files_deferred is True, "还没 start() 的线程马上就要跑，产物必须延后删"
+    assert out.files_removed is None, "延后时不得给出 files_removed"
+    assert art.exists(), "同步 rmtree 会被随后启动的线程把目录重建出来写满，成为孤儿"
+    assert mgr.stop_flags[1].is_set(), "不置停止标志，线程起来后会一路跑到底"
+    assert _pending_paths(db) == [str(art)], "清单是孤儿目录唯一的线索"
+    assert tomb == {1}, "线程即将启动，进度批次仍要靠墓碑短路"
+
+    _join_cleanup_thread(1)
+
+
 def test_tombstone_receives_task_id_before_row_is_deleted(monkeypatch, tmp_path):
     """墓碑必须在删行【之前】写入，否则 map 的进度批次会撞外键。
 
@@ -313,6 +353,49 @@ def test_tombstone_is_released_when_the_delete_transaction_blows_up(monkeypatch,
 
     release.set()
     th.join(timeout=10)
+
+
+def test_second_delete_failing_must_not_strip_the_first_deletes_tombstone(
+        monkeypatch, tmp_path):
+    """墓碑是无引用计数的 set —— 只有【真的是自己写进去的】才有资格回滚它。
+
+    同一个运行中任务收到第二发 DELETE 时 `tombstone.add()` 是幂等的，但
+    `tombstoned=True` 照置。第二发若在之后任何一点抛出（commit / Thread.start()，
+    典型是另一连接持写事务撞上 database is locked），except 就会 discard 掉
+    **第一发还在用的**墓碑。
+
+    后果不可自愈：第一发的 worker 还活着，墓碑没了之后它的进度批次拿已删的
+    task_id 去 INSERT task_tiles 撞外键，每次 flush 再炸一次直到进程重启
+    （见 _background_cleanup 里 join 超时那一支的注释）。
+    """
+    db, td = _setup(monkeypatch, tmp_path)
+    _seed(db, status="running")
+
+    release = threading.Event()
+    th = threading.Thread(target=release.wait, kwargs={"timeout": 10}, daemon=True)
+    th.start()
+    mgr = _FakeManager(thread=th)
+    tomb = set()
+
+    td.delete_task_row(manager=mgr, task_id=1, table="tasks", artifact_dir=None,
+                       tombstone=tomb)
+    assert tomb == {1}, "前提没成立：第一发应当写下墓碑"
+
+    # 第二发落在同一个仍在跑的任务上，并在 DELETE 处撞 database is locked
+    def blow_up():
+        raise sqlite3.OperationalError("database is locked")
+
+    _spy_on_delete(monkeypatch, td, blow_up)
+
+    with pytest.raises(sqlite3.OperationalError):
+        td.delete_task_row(manager=mgr, task_id=1, table="tasks",
+                           artifact_dir=None, tombstone=tomb)
+
+    assert tomb == {1}, "第二发没写过这块墓碑，无权摘 —— 第一发的 worker 还活着"
+
+    release.set()
+    th.join(timeout=10)
+    _join_cleanup_thread(1)
 
 
 def test_queue_and_delete_commit_or_roll_back_together(monkeypatch, tmp_path):

@@ -171,13 +171,27 @@ def delete_task_row(
         try:
             with manager._state_lock:
                 thread = manager.active_tasks.get(task_id)
-                running = bool(thread and thread.is_alive())
+                # 为什么 is_alive() 之外还要看 ident：四条管线的 start_* 都是锁内
+                # 提交 status='running' + 登记 active_tasks，出锁之后才 start()。
+                # 这段窗口里 is_alive() 仍是 False，只看它会判成「没在跑」而走快
+                # 路径同步 rmtree —— 线程随后启动、把目录重新建出来写满瓦片，而
+                # pending_deletions 是空的，启动清扫只认清单，扫不到这个孤儿目录
+                # （本地地形最重：_run_tiling_job 全程不回查行，一路跑到底）。
+                # ident 在 start() 前为 None、start() 之后（含线程已死）恒非 None，
+                # 正好只补上这段窗口，不会把跑完的线程重新算成在跑。
+                running = bool(thread) and (thread.is_alive() or thread.ident is None)
 
                 if running:
                     # 墓碑必须在删行【之前】写入：删行之后、线程发现之前的这段
                     # 窗口里，map 的进度批次会拿已经不存在的 task_id 去 INSERT
                     # task_tiles，撞上外键约束（实测 INSERT OR IGNORE 不豁免外键）。
-                    if tombstone is not None:
+                    # 只有【自己写进去的】墓碑才置 tombstoned：墓碑是没有引用计数
+                    # 的 set，同一个运行中任务的第二发 DELETE 撞上 add() 的幂等，
+                    # 无条件置位的话它在后面任何一点抛出（commit / Thread.start()
+                    # 都可能 database is locked）都会 discard 掉第一发还在用的墓碑，
+                    # 而第一发的 worker 还活着 —— 之后每次 flush 都撞外键，直到进程
+                    # 重启（同下面 _background_cleanup join 超时那一支的理由）。
+                    if tombstone is not None and task_id not in tombstone:
                         tombstone.add(task_id)
                         tombstoned = True
                     flag = manager.stop_flags.get(task_id)
