@@ -34,16 +34,33 @@ class TileParams:
     # derives the per-tile interval from tile_size (180/(tile_size-1) deg).
     tile_size: int = 65
     workers: int = 0
-    # 三角化后端与误差系数。默认即最终值 —— UI/DB/API 都不暴露，这两个字段
-    # 只为排障与测试注入而存在（出问题时切 'grid' / 'martini' 做对比）。
-    # 'auto' = 逐瓦片择优：grid 与 martini 都编一遍，取 gzip 后更小的那个落盘。
-    # 瓦片是 gzip 落盘、gzip 原样上线，所以 gzip 后的字节才是磁盘与传输的真实
-    # 成本；实测山地上 martini 反而 +17.6%，择优后全局净省 27.6% 且每张瓦片
-    # 严格不劣于两者（详见 cesiumlab_terrain._choose_tile_bytes）。
-    # 注意 'auto'/'martini' 要求 tile_size = 2^k+1（65 满足），build_terrain
-    # 入口会校验并报错，不会静默降级。
-    triangulator: str = "auto"
+    # 三角化后端与误差系数。
+    #
+    # 后端默认 'grid'：实测 6 个真实 DEM、20 个配置的三轴（墙钟/字节/精度）
+    # 支配判定里，'auto' 一个 Pareto 前沿都没进 —— 它多花 2.6~5.9 倍时间，而
+    # 省下的体积用「降一级」买要便宜 2.4~3.9 倍。崎岖地形上它 98.8% 的瓦片
+    # 本来就选 grid，纯属把同一个产物用 6 倍 CPU 重算一遍。
+    # 依据：docs/reference/terrain/tiling-presets-measured.md 第三、四节。
+    #
+    # ⚠️ CLI（cesiumlab_terrain.main）与全球底图构建脚本仍用 'auto'，那是
+    # **有意分叉**：底图覆盖海洋与大片平原（martini 收益最大），且只构建一次，
+    # CPU 代价无所谓。不要"顺手统一"这两处，见同文档第八节末尾。
+    #
+    # max_error_k 在 grid 后端下不参与计算，保留是为了排障时切 'martini' 做对比。
+    triangulator: str = "grid"
     max_error_k: float = 0.15
+    # 逐顶点法线（oct 编码扩展段）。默认【关】：前端 enableLighting 默认关
+    # （static/js/terrain_lighting.js:46-52），而实测法线吃 +35%~+100% 字节、
+    # 约 2.1 倍切片时间，几何精度分毫不涨。此前这个开关根本没透传到
+    # build_terrain，恒走它的 kwarg 默认 True。
+    # ⚠️ 关掉后 layer.json 的 extensions 写成 []，Cesium 的 hasVertexNormals 是
+    # provider 级单一标志 —— 光照按钮会静默退化成全球日夜渐变，且连植入的随包
+    # 底图自带的法线也一起作废。UI 上必须写明这一点。
+    normals: bool = False
+    # 档位偏移：精度 +1 / 均衡 0 / 速度 -1，叠加在 maxzoom 上，由 build_terrain
+    # 落地（那里是 max_level 唯一的解析点）。取值表住在
+    # geo_validation.TILING_QUALITY_OFFSETS，不要在这里抄第二份。
+    level_offset: int = 0
     # 进度回调/协作停止透传给 build_terrain（默认 None = 关闭）。放在 params
     # 而不是 tile_dem_task_dir 的独立参数：多个契约测试用 (task_dir, out_dir,
     # params) 三参替身钉住管理器到 tiler 的调用形态，加独立参数会破坏它们。
@@ -64,7 +81,9 @@ def tile_dem_task_dir(
     """切片一个 DEM 任务目录，返回 build_terrain 的计数 dict。
 
     Returns:
-        {"total", "rendered", "failed", "chose_martini", "chose_grid"}。后两个是
+        {"total", "rendered", "failed", "max_level", "chose_martini",
+        "chose_grid"}。max_level 是**实际**切到的最深层级（档位偏移后可能不等于
+        请求的 maxzoom）。后两个是
         逐瓦片择优的落点统计（哪个三角化后端赢了），排障用：全 grid 说明这批
         DEM 是山地/粗糙地形，全 martini 说明是平缓地形。M11 之前这里丢弃返回值
         （签名 `-> None`），于是 build_terrain 的逐瓦片容错（异常只记 warning）
@@ -120,9 +139,10 @@ def tile_dem_task_dir(
 
     # 底图独占 z0-z7，任务只出 z8+：两边零冲突，也没有「半张瓦片是真数据、
     # 半张是采到 DEM 外的外推值」那种接缝。
-    # min(8, maxzoom) 而不是死写 8 —— maxzoom < 8 时 min_level > max_level 会让
-    # _tile_ranges() 产出空区间，任务切零张瓦片却报 completed，又一款静默成功。
-    min_level = min(8, int(params.maxzoom)) if base_dir is not None else 0
+    # 恒传 8，不再在这里 min(8, maxzoom)：档位偏移后的最终层级只有
+    # build_terrain 知道（它可能还要走 estimate），钳位因此挪进了那边
+    # （见 cesiumlab_terrain 里 min_level = min(min_level, max_level) 那行）。
+    min_level = 8 if base_dir is not None else 0
 
     counts = build_terrain_fn(
         inputs=[str(p) for p in dem_tifs],
@@ -136,11 +156,14 @@ def tile_dem_task_dir(
         stop_flag=params.stop_flag,
         triangulator=params.triangulator,
         max_error_k=params.max_error_k,
+        normals=params.normals,
+        level_offset=params.level_offset,
     )
 
     # 注入的 build_terrain_fn 返回 None（老测试替身）时归一成全 0 计数；提前到
     # 这里归一，停止分支与正常分支共用同一个返回值。
-    keys = ("total", "rendered", "failed", "chose_martini", "chose_grid")
+    keys = ("total", "rendered", "failed", "max_level",
+            "chose_martini", "chose_grid")
     counts = (dict.fromkeys(keys, 0) if not isinstance(counts, dict)
               else {k: int(counts.get(k, 0) or 0) for k in keys})
 

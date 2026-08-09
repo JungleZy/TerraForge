@@ -54,16 +54,59 @@ def test_tile_dem_task_dir_calls_external_tools(tmp_path: Path):
     assert '"parentUrl": "https://example.com/parent.json"' in layer
     # 65x65 grid matches 30 m DEM resolution at the estimated maxzoom (z14).
     assert captured["tile_size"] == 65
-    # 自适应三角化默认开启，且必须真的透传到 build_terrain —— 少了这两条，
-    # 把 tile_dem_task_dir 里的两行 triangulator/max_error_k 删掉全量照样绿。
-    # 65 = 2^6+1，满足自适应路径对 tile_size 的要求。
-    # 'auto' = 逐瓦片择优（grid/martini 都编一遍，取 gzip 后更小的）：实测
-    # 山地上 martini 的 gzip 字节反而 +17.6%，全局择优净省 27.6% 且每张瓦片
-    # 字节严格 ≤ min(两者)。这里是这个字面量在全仓的唯一副本，
-    # test_rtin.test_triangulation_defaults_agree_across_every_copy 负责把它
-    # 传导到 DEFAULT_MAX_ERROR_K / build_terrain / CLI 三处。
-    assert captured["triangulator"] == "auto"
+    # 应用侧默认后端是 grid，不是 auto —— 实测 auto 在 6 个真实 DEM 上一个
+    # Pareto 前沿都没进（多花 2.6~5.9 倍时间，省下的体积用「降一级」买更便宜）。
+    # 依据见 docs/reference/terrain/tiling-presets-measured.md 第三、四节。
+    # CLI 与全球底图脚本仍用 auto，那是有意分叉，见同文档第八节。
+    # 少了这两条断言，把 tile_dem_task_dir 里的 triangulator/max_error_k 两行
+    # 删掉全量照样绿。
+    assert captured["triangulator"] == "grid"
     assert captured["max_error_k"] == 0.15
+
+
+def test_tile_dem_task_dir_threads_normals_and_offset(tmp_path: Path):
+    """TileParams 的 normals / level_offset 必须真的进到 build_terrain 的 kwarg。
+
+    normals 此前【根本没传】，走 build_terrain 的 kwarg 默认 True —— 应用侧
+    因此拿不到关掉法线的能力，而实测法线吃 +35%~+100% 字节、约 2.1 倍时间，
+    几何精度分毫不涨（tiling-presets-measured.md 第五节）。
+    """
+    from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "A_dem.tif").write_text("", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    captured = {}
+
+    def fake_build_terrain(**kwargs):
+        captured.update(kwargs)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "layer.json").write_text(
+            '{"parentUrl":"OLD","available":[]}\n', encoding="utf-8")
+        return {"total": 1, "rendered": 1, "failed": 0, "max_level": 13,
+                "chose_martini": 0, "chose_grid": 1}
+
+    params = TileParams(maxzoom=14, parent_url="https://example.com/p.json",
+                        normals=True, level_offset=-1)
+    counts = tile_dem_task_dir(task_dir, out_dir, params,
+                               build_terrain_fn=fake_build_terrain)
+
+    assert captured["normals"] is True
+    assert captured["level_offset"] == -1
+    # 基准仍按用户的 maxzoom 传，偏移由 build_terrain 叠加 —— tiler 不自己算终值。
+    assert captured["max_level"] == 14
+    # build_terrain 回报的实际层级必须穿过白名单活着出来。
+    assert counts["max_level"] == 13
+
+
+def test_tile_dem_task_dir_defaults_normals_off():
+    """应用侧默认不出法线：前端 enableLighting 默认关，白背 26%~50% 字节。"""
+    from src.services.terrain_tiling.dem_task_tiler import TileParams
+
+    assert TileParams(maxzoom=14, parent_url="").normals is False
+    assert TileParams(maxzoom=14, parent_url="").level_offset == 0
 
 
 def test_tile_dem_task_dir_passes_through_the_backend_choice_counts(tmp_path: Path):
@@ -94,12 +137,14 @@ def test_tile_dem_task_dir_passes_through_the_backend_choice_counts(tmp_path: Pa
                             TileParams(maxzoom=0, parent_url="https://example.com/p.json"),
                             build_terrain_fn=fake_build_terrain)
 
-    assert got == {"total": 40, "rendered": 37, "failed": 3,
+    # max_level 不在替身的返回里，白名单归零 —— 它自己的守卫在
+    # test_tile_dem_task_dir_threads_normals_and_offset。
+    assert got == {"total": 40, "rendered": 37, "failed": 3, "max_level": 0,
                    "chose_martini": 11, "chose_grid": 26}
 
 
 def test_tile_dem_task_dir_zero_fills_counts_for_legacy_stubs(tmp_path: Path):
-    """老的测试替身返回 None 时,五个计数必须齐全地归零,而不是少几个 key。
+    """老的测试替身返回 None 时,六个计数必须齐全地归零,而不是少几个 key。
 
     调用方按"无计数信息"处理,行为与加计数之前一致;少 key 会让调用方 KeyError。
     """
@@ -118,7 +163,7 @@ def test_tile_dem_task_dir_zero_fills_counts_for_legacy_stubs(tmp_path: Path):
                             TileParams(maxzoom=0, parent_url="https://example.com/p.json"),
                             build_terrain_fn=fake_build_terrain)
 
-    assert got == {"total": 0, "rendered": 0, "failed": 0,
+    assert got == {"total": 0, "rendered": 0, "failed": 0, "max_level": 0,
                    "chose_martini": 0, "chose_grid": 0}
 
 
@@ -254,8 +299,15 @@ def test_unpack_failure_falls_back_instead_of_killing_the_job(tmp_path: Path, mo
 def test_degenerate_maxzoom_still_tiles_something(tmp_path: Path, monkeypatch):
     """maxzoom < 8 的任务不能因为 min_level=8 切出零张瓦片却报成功。
 
-    min_level 死写 8 时 max_level(5) < min_level(8)，_tile_ranges() 产出空区间，
-    任务 rendered=0 却 completed —— 又一款静默成功。
+    max_level(5) < min_level(8) 时 _tile_ranges() 产出空区间，任务 rendered=0
+    却 completed —— 又一款静默成功。
+
+    钳位不在这里做：档位偏移后的最终层级只有 build_terrain 知道，所以 tiler
+    恒传 8，由 build_terrain 的 `min_level = min(min_level, max_level)` 收口
+    （守卫在 tests/test_fix_terrain_estimate_max_level.py 的
+    test_min_level_is_clamped_below_the_effective_max）。这里钉的是 tiler 这一
+    侧：它必须把**原始的** maxzoom 一起交出去，下游才钳得动 —— 若哪天有人在
+    tiler 里改传偏移后的终值，下游那道钳位就会钳错基准。
     """
     from src.services.terrain_tiling import dem_task_tiler as mod
 
@@ -279,8 +331,9 @@ def test_degenerate_maxzoom_still_tiles_something(tmp_path: Path, monkeypatch):
                           mod.TileParams(maxzoom=5, parent_url=""),
                           build_terrain_fn=fake_build_terrain)
 
-    assert seen["min_level"] == 5, "min_level 必须是 min(8, maxzoom)"
-    assert seen["min_level"] <= seen["max_level"], "min_level > max_level = 一张瓦片都不切"
+    assert seen["min_level"] == 8, "min_level 恒传 8，钳位由 build_terrain 负责"
+    assert seen["max_level"] == 5, (
+        "tiler 必须原样交出用户请求的 maxzoom，下游才有正确的钳位基准")
 
 
 def test_base_pipeline_runs_in_the_right_order(tmp_path: Path, monkeypatch):

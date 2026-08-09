@@ -1376,10 +1376,9 @@ def build_terrain(
         # 到这里切出 z25；而 local_terrain_task_manager.py:149 那条路径是有
         # validate_zoom 的 —— 两条入口本就不对称。封顶 21 是堵这个缺口。
         max_level = max(0, min(MAX_ZOOM, int(max_level) + int(level_offset)))
-        # 调用方钳的是【请求值】，钳不到偏移后的实际层级。dem_task_tiler.py:125
-        # 是 `min(8, int(params.maxzoom))`，只保证 min_level 不超过**请求的**
-        # maxzoom；maxzoom <= 8 且 level_offset < 0 时它就失效 —— maxzoom=8 时
-        # 调用方算出 min_level=8，进来后 -1 偏移把 max_level 压到 7，于是 8 > 7。
+        # 调用方钳不到偏移后的实际层级。dem_task_tiler 恒传 min_level=8（底图独占
+        # z0-z7），它连**请求的** maxzoom 都不看 —— maxzoom < 8、或 maxzoom = 8
+        # 叠上 -1 偏移把 max_level 压到 7 时，都会出现 min_level > max_level。
         # min_level > max_level 会让 _tile_ranges 产出空区间 —— 切 0 张瓦片却报
         # completed，本仓栽过的同款静默成功。最终层级只有这里知道，所以这道钳位
         # 删不得，也没法挪到调用方。

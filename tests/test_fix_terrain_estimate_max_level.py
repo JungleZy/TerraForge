@@ -91,8 +91,8 @@ def test_level_offset_is_clamped_into_the_valid_range(monkeypatch, tmp_path):
 def test_min_level_is_clamped_below_the_effective_max(monkeypatch, tmp_path):
     """min_level > max_level 会让 _tile_ranges 产出空区间 —— 切 0 张却报 completed。
 
-    调用方按【请求值】算 min_level（dem_task_tiler.py:125 是 min(8, maxzoom)），
-    钳不到偏移后的实际层级；这条钉住 build_terrain 自己那道钳位。
+    dem_task_tiler 恒传 min_level=8（底图独占 z0-z7），钳位全靠 build_terrain
+    这一侧；这条钉的就是它。maxzoom=5 的任务命中的正是这个组合。
     """
     r = _run_build(monkeypatch, tmp_path / "h", min_level=8, max_level=5)
     assert r["max_level"] == 5
@@ -102,8 +102,8 @@ def test_min_level_is_clamped_below_the_effective_max(monkeypatch, tmp_path):
 def test_min_level_is_clamped_when_a_negative_offset_drops_below_it(monkeypatch, tmp_path):
     """本次改动真正引入的触发条件：maxzoom <= 8 且 level_offset < 0。
 
-    dem_task_tiler.py:125 按 min(8, maxzoom) 算 min_level，maxzoom=8 时得 8；
-    -1 偏移把实际层级压到 7，调用方钳过的值反而高于最终层级。
+    dem_task_tiler 恒传 min_level=8；maxzoom=8 时 -1 偏移把实际层级压到 7，
+    min_level 反而高于最终层级。
     """
     r = _run_build(monkeypatch, tmp_path / "i", min_level=8, max_level=8,
                    level_offset=-1)
