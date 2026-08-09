@@ -187,6 +187,103 @@ function splashReady() {
     setTimeout(function () { splash.remove(); }, 550);
 }
 
+// 底图源名 -> 界面文案。前缀写成完整字面量（不是模板串）：tests/test_i18n.py 的
+// _DYNAMIC_KEY_SITES 靠在源码里找到这个字面量来确认拼接点还活着。
+function _basemapSourceLabel(source) {
+    const key = 'js.map.basemap.src_' + source;
+    const label = t(key);
+    return label === key ? source : label;     // 自定义模板等未登记的源报原值
+}
+
+// 配置的底图源取不到瓦片时后端会自动换一张（见 services/basemap_source.py 的
+// AUTO_FALLBACK_ORDER）。换了必须说 —— 用户点开配置页看到的还是 Esri，屏幕上
+// 却是 OSM，不解释一句就是本项目最不能接受的那种静默。
+//
+// 为什么首屏之后还得接着查：首屏渲染时后端一块瓦片都还没取过，回退状态是未知的，
+// 内联下发的描述符只能如实报配置值。等第一批瓦片落定（几秒）状态才成立 —— 而且
+// 它之后还会变，上游可能在会话中途挂掉、也可能又活过来。
+
+// 已经通告过、且当前正画在屏幕上的那张底图。
+// _announcedBasemapSource 用来判「变了没」：轮询每 30 秒一轮，不记住上一次就会
+// 把同一条 toast 每轮弹一遍。_renderedBasemap 用来判「要不要重建图层」：首屏那次
+// 通告拿到的就是构造 Viewer 用的那份描述符，重建等于把整屏瓦片白重新拉一遍。
+let _announcedBasemapSource = null;
+let _renderedBasemap = null;
+
+function _watchBasemapFallback(descriptor) {
+    if (descriptor && descriptor.fallback) {
+        _announceBasemapFallback(descriptor);
+    } else if (descriptor && descriptor.source) {
+        _announcedBasemapSource = descriptor.source;
+    }
+    // 首屏 5 秒查一次，之后每 30 秒一轮。回退是会中途才发生的（用户平移了一小时，
+    // 上游这时候挂了），一次性的 setTimeout 意味着这种回退只有刷新才看得见 ——
+    // 与本函数上面那句「换了必须说」自相矛盾。
+    setTimeout(function () {
+        _checkBasemapFallback();
+        setInterval(_checkBasemapFallback, 30000);
+    }, 5000);
+}
+
+async function _checkBasemapFallback() {
+    try {
+        const resp = await fetch('/api/basemap');
+        const data = await resp.json();
+        const bm = data && data.basemap;
+        if (!bm || !bm.source || bm.source === _announcedBasemapSource) return;
+        if (bm.fallback) {
+            _announceBasemapFallback(bm);
+        } else {
+            // 回到配置的那张同样要说：用户看着「已切换到 OSM」的提示，屏幕上却
+            // 早就换回 Esri 了，一样是对不上。
+            _announceBasemapRestored(bm);
+        }
+    } catch (err) {
+        console.warn('[basemap] fallback check failed:', err);
+    }
+}
+
+// maximumLevel 和 credit 在 UrlTemplateImageryProvider 构造完之后是只读的，
+// 换源只能整层替掉。不替的后果是两条：配置 Google（21 层）回退到 Esri（19 层）
+// 后 Cesium 照旧请求 z20+，后端 _MAX_ZOOM 是 24 放行、上游 404，用户看到的是
+// 一片黑；署名也还挂着配置那张源的名字，而 Esri / OSM 的署名是许可要求。
+function _rebuildBaseImagery(bm) {
+    if (!viewer || !bm || !bm.url) return;
+    if (_renderedBasemap
+        && _renderedBasemap.url === bm.url
+        && _renderedBasemap.max_level === bm.max_level
+        && _renderedBasemap.credit === bm.credit) {
+        return;                                 // 没换源，别把整屏瓦片重拉一遍
+    }
+    const layer = new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
+        url: bm.url,
+        tilingScheme: new Cesium.WebMercatorTilingScheme(),
+        maximumLevel: bm.max_level == null ? undefined : bm.max_level,
+        credit: bm.credit || '',
+    }));
+    const previous = viewer.imageryLayers.get(0);
+    viewer.imageryLayers.add(layer, 0);         // 先加后删：中间不留没有底图的那一帧
+    if (previous) viewer.imageryLayers.remove(previous, true);
+    _renderedBasemap = bm;
+}
+
+function _announceBasemapFallback(bm) {
+    showNotification(t('js.map.basemap.fallback', {
+        source: _basemapSourceLabel(bm.source),
+        configured: _basemapSourceLabel(bm.configured_source),
+    }), 'warning');
+    _announcedBasemapSource = bm.source;
+    _rebuildBaseImagery(bm);
+}
+
+function _announceBasemapRestored(bm) {
+    showNotification(t('js.map.basemap.restored', {
+        source: _basemapSourceLabel(bm.source),
+    }), 'info');
+    _announcedBasemapSource = bm.source;
+    _rebuildBaseImagery(bm);
+}
+
 function initMap(config, basemap) {
     initSplash();
 
@@ -236,6 +333,11 @@ function initMap(config, basemap) {
     // 拖拽等直接改 _rectDegrees 的路径必须显式调 scene.requestRender()。
     viewer.scene.requestRenderMode = true;
     viewer.scene.maximumRenderTimeChange = Infinity;
+    // _watchBasemapFallback 必须排在 Viewer 之后：首屏描述符里 fallback 已经为
+    // true 时它会立刻通告并重建底图图层，而重建要拿 viewer.imageryLayers ——
+    // 排在前面的话那条分支跑在 viewer 还是 null 的时候。
+    _renderedBasemap = bm;
+    _watchBasemapFallback(bm);
 
     viewer.camera.setView({
         destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, _zoomToHeight(initialZoom)),
@@ -661,8 +763,282 @@ function initProcessTypeToggle() {
             if (sourceEl.value === 'dem_task') loadProcessDemTasks();
         });
     }
+    const localFilesEl = document.getElementById('localTerrainFiles');
+    if (localFilesEl) localFilesEl.addEventListener('change', updateLocalTerrainTifInfo);
+    const contourFilesEl = document.getElementById('contourFiles');
+    if (contourFilesEl) contourFilesEl.addEventListener('change', updateContourTifInfo);
     apply();
     initContourTintUI();
+}
+
+// --- 选完 tif 立刻显示的有效信息（本地高程切片 / 等高线共用）--------------------
+//
+// 不为了看一眼元信息先整包上传：DEM 动辄几百 MB 到 2 GB，而
+// static/js/geotiff_meta.js 用 File.slice 只读几 KB 的 TIFF 目录就能拿到全部
+// 标签。地理解释（EPSG -> 坐标系名称、投影坐标 -> 经纬度、像素 -> 建议层级）
+// 交给带 GDAL 的后端 /api/raster/inspect —— 那需要一份完整 CRS 库，
+// 前端手写换算在国内常见的 CGCS2000 分带上迟早出错。
+//
+// mode 一定要传对：高程切片按 Cesium 经纬度分块估层级、等高线按 Web Mercator
+// 瓦片估，同一份 DEM 两者给出的数不一样（见 raster_probe._estimate_maxzoom）。
+// 传错的话卡片上写的层级与不填层级时真正切出来的对不上，比不显示更糟。
+//
+// _tifInfoSeq 按卡片记：用户可以连着改选好几次，每次都有「读头部 + 一次 fetch」
+// 两段异步。读一个 2 GB 文件的头部可能比一次 localhost fetch 慢，晚发的请求会
+// 先回来；不带序号就会把旧文件的信息盖在新选择上。两张卡各记各的。
+const _tifInfoSeq = new Map();
+
+// 同一张卡上一次还没答完的请求。seq 闸门已经保证晚到的响应盖不掉新的渲染，
+// 这里管的是另一件事：那个注定被丢弃的请求不该继续占着连接、让后端把一份
+// 几百 MB DEM 的头部白解释一遍。按卡片记，两张卡互不打断。
+const _tifInfoAbort = new Map();
+
+// 这些警告意味着「这个文件切不了片」，用红色；其余只是提醒。
+const _TIF_FATAL_WARNINGS = new Set([
+    'header_unreadable', 'no_georeference', 'unknown_crs', 'some_unusable',
+]);
+
+function _fmtBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let v = n / 1024;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+// 有效数字截断 + 去掉尾随零：0.000277777778 -> 0.000277778，30.0 -> 30
+function _sig(value, digits) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '—';
+    return String(parseFloat(n.toPrecision(digits || 6)));
+}
+
+function _fmtLonLat(bounds) {
+    const lon = (v) => `${Math.abs(v).toFixed(4)}°${v < 0 ? 'W' : 'E'}`;
+    const lat = (v) => `${Math.abs(v).toFixed(4)}°${v < 0 ? 'S' : 'N'}`;
+    return `${lon(bounds[0])} ${lat(bounds[1])} → ${lon(bounds[2])} ${lat(bounds[3])}`;
+}
+
+function _fmtResolution(file) {
+    const scale = file.pixel_size;
+    if (!scale || !scale[0]) return null;
+    const [sx, sy] = scale;
+    const square = !sy || Math.abs(sx - sy) / sx < 1e-6;
+    if (file.crs_unit === 'degree') {
+        const deg = square ? `${_sig(sx)}°` : `${_sig(sx)}° × ${_sig(sy)}°`;
+        return file.pixel_meters ? `${deg} ≈ ${_sig(file.pixel_meters, 3)} m` : deg;
+    }
+    const unit = file.crs_unit || 'm';
+    return square ? `${_sig(sx)} ${unit}` : `${_sig(sx)} × ${_sig(sy)} ${unit}`;
+}
+
+// 一行键值。wide=true 占满两列（范围/坐标系这种长串挤在半列里会折成三行）。
+function _tifInfoRow(grid, key, value, wide) {
+    if (value === null || value === undefined || value === '') return;
+    const item = document.createElement('div');
+    item.className = wide ? 'detail-item tif-info__item--wide' : 'detail-item';
+    const k = document.createElement('span');
+    k.className = 'detail-k';
+    k.textContent = key;
+    const v = document.createElement('span');
+    v.className = 'detail-v detail-v--num';
+    v.textContent = value;
+    item.append(k, v);
+    grid.appendChild(item);
+}
+
+function _tifInfoWarnings(box, warnings) {
+    (warnings || []).forEach(function (code) {
+        const line = document.createElement('div');
+        line.className = _TIF_FATAL_WARNINGS.has(code)
+            ? 'tif-info__warn tif-info__warn--fatal'
+            : 'tif-info__warn';
+        // 前缀写成完整字面量（不是模板串）：tests/test_i18n.py 的
+        // _DYNAMIC_KEY_SITES 靠在源码里找到这个字面量来确认拼接点还活着。
+        line.textContent = t('js.map.tifinfo.warn_' + code);
+        box.appendChild(line);
+    });
+}
+
+// index>0 时加 --sep 画分隔线。用修饰类而不是 CSS 的 `+` 兄弟组合符：
+// tests/test_css_contract.py 的层叠模型不支持组合符（见 _btn_branch_applies）。
+function _tifInfoFileBlock(file, index) {
+    const box = document.createElement('div');
+    box.className = index > 0 ? 'tif-info__file tif-info__file--sep' : 'tif-info__file';
+
+    const head = document.createElement('div');
+    head.className = 'tif-info__name';
+    // 文件名必须自成一个元素：裸文本节点在 flex 容器里是匿名 flex item，
+    // text-overflow 管不到它（那条属性只作用于块容器自己的行内内容），
+    // 而且 min-width:auto 让它拒绝收缩，长名字会把 .tif-info__size 顶出卡片。
+    const name = document.createElement('span');
+    name.className = 'tif-info__filename';
+    name.textContent = file.name;
+    const size = document.createElement('span');
+    size.className = 'tif-info__size';
+    size.textContent = _fmtBytes(file.size);
+    head.append(name, size);
+    box.appendChild(head);
+
+    const grid = document.createElement('div');
+    grid.className = 'detail-grid';
+    if (file.width && file.height) {
+        _tifInfoRow(grid, t('js.map.tifinfo.dimensions'),
+            `${file.width} × ${file.height} px`);
+    }
+    _tifInfoRow(grid, t('js.map.tifinfo.resolution'), _fmtResolution(file));
+    if (file.dtype) {
+        const parts = [file.dtype, t('js.map.tifinfo.bands', { n: file.bands || 1 })];
+        if (file.nodata !== null && file.nodata !== undefined) {
+            parts.push(`NoData ${_sig(file.nodata)}`);
+        }
+        _tifInfoRow(grid, t('js.map.tifinfo.data'), parts.join(' · '));
+    }
+    if (file.elevation) {
+        _tifInfoRow(grid, t('js.map.tifinfo.elevation'),
+            `${_sig(file.elevation.min, 6)} ~ ${_sig(file.elevation.max, 6)} m`);
+    }
+    if (file.recommended_maxzoom !== null && file.recommended_maxzoom !== undefined) {
+        _tifInfoRow(grid, t('js.map.tifinfo.recommended_maxzoom'),
+            String(file.recommended_maxzoom));
+    }
+    if (file.epsg) {
+        _tifInfoRow(grid, t('js.map.tifinfo.crs'),
+            file.crs_name ? `EPSG:${file.epsg} · ${file.crs_name}` : `EPSG:${file.epsg}`,
+            true);
+    }
+    if (file.bounds_wgs84) {
+        _tifInfoRow(grid, t('js.map.tifinfo.bounds'), _fmtLonLat(file.bounds_wgs84), true);
+    } else if (file.bounds_native) {
+        // 换算不出经纬度时报原生坐标，并说清楚它不是经纬度
+        _tifInfoRow(grid, t('js.map.tifinfo.bounds_native'),
+            file.bounds_native.map((v) => _sig(v, 9)).join(', '), true);
+    }
+    box.appendChild(grid);
+
+    _tifInfoWarnings(box, file.warnings);
+    return box;
+}
+
+function _tifInfoSummaryBlock(summary) {
+    const box = document.createElement('div');
+    box.className = 'tif-info__summary';
+
+    const head = document.createElement('div');
+    head.className = 'tif-info__name';
+    head.textContent = t('js.map.tifinfo.summary', { n: summary.count });
+    const size = document.createElement('span');
+    size.className = 'tif-info__size';
+    size.textContent = _fmtBytes(summary.total_size);
+    head.appendChild(size);
+    box.appendChild(head);
+
+    const grid = document.createElement('div');
+    grid.className = 'detail-grid';
+    if (summary.pixel_meters) {
+        _tifInfoRow(grid, t('js.map.tifinfo.finest_resolution'),
+            `${_sig(summary.pixel_meters, 3)} m`);
+    }
+    if (summary.recommended_maxzoom !== null && summary.recommended_maxzoom !== undefined) {
+        _tifInfoRow(grid, t('js.map.tifinfo.recommended_maxzoom'),
+            String(summary.recommended_maxzoom));
+    }
+    if (summary.bounds_wgs84) {
+        _tifInfoRow(grid, t('js.map.tifinfo.merged_bounds'),
+            _fmtLonLat(summary.bounds_wgs84), true);
+    }
+    box.appendChild(grid);
+
+    _tifInfoWarnings(box, summary.warnings);
+    return box;
+}
+
+function _tifInfoMessage(el, text, fatal) {
+    el.textContent = '';
+    el.classList.remove('tif-info--scroll');
+    const line = document.createElement('div');
+    line.className = fatal ? 'tif-info__warn tif-info__warn--fatal' : 'tif-info__msg';
+    line.textContent = text;
+    el.appendChild(line);
+    el.hidden = false;
+}
+
+// 读头部 -> 后端解释 -> 填卡片。inputId 是 file input，cardId 是信息卡，
+// mode 见本节头注释（'terrain' | 'contour'）。
+async function updateTifInfo(inputId, cardId, mode) {
+    const el = document.getElementById(cardId);
+    if (!el) return;
+    const files = document.getElementById(inputId)?.files;
+    const seq = (_tifInfoSeq.get(cardId) || 0) + 1;
+    _tifInfoSeq.set(cardId, seq);
+    const stale = () => _tifInfoSeq.get(cardId) !== seq;
+    _tifInfoAbort.get(cardId)?.abort();          // 上一次的请求已经没人要了
+
+    if (!files || files.length === 0) {
+        el.hidden = true;
+        el.textContent = '';
+        el.classList.remove('tif-info--scroll');
+        return;
+    }
+
+    _tifInfoMessage(el, t('js.map.tifinfo.reading'), false);
+
+    const entries = [];
+    for (const file of files) {
+        try {
+            entries.push(await window.GeoTiffMeta.read(file));
+        } catch (err) {
+            // 读不出头部不是致命错：其余文件照常解释，这一个带
+            // header_unreadable 出现在结果里（后端按缺字段判定）。
+            console.warn('[tif-info] header read failed:', file.name, err);
+            entries.push({ name: file.name, size: file.size });
+        }
+    }
+    if (stale()) return;
+
+    let data;
+    const ctrl = new AbortController();
+    _tifInfoAbort.set(cardId, ctrl);
+    try {
+        const resp = await fetch('/api/raster/inspect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ files: entries, mode: mode }),
+            signal: ctrl.signal,
+        });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(payload.error || resp.status);
+        data = payload;
+    } catch (err) {
+        // 自己取消的不是失败：只有新的一次选择会取消它，那次会自己重画卡片。
+        // 报出来的话用户每改选一次文件都要先看见一条红字。
+        if (err && err.name === 'AbortError') return;
+        if (stale()) return;
+        _tifInfoMessage(el, t('js.map.tifinfo.failed', { error: err.message }), true);
+        return;
+    }
+    if (stale()) return;
+
+    el.textContent = '';
+    // 多文件才封高（见 style.css 的 .tif-info--scroll）
+    el.classList.toggle('tif-info--scroll', (data.files || []).length > 1);
+    (data.files || []).forEach(function (file, index) {
+        el.appendChild(_tifInfoFileBlock(file, index));
+    });
+    if (data.summary && data.summary.count > 1) {
+        el.appendChild(_tifInfoSummaryBlock(data.summary));
+    }
+    el.hidden = false;
+}
+
+function updateLocalTerrainTifInfo() {
+    return updateTifInfo('localTerrainFiles', 'localTerrainTifInfo', 'terrain');
+}
+
+function updateContourTifInfo() {
+    return updateTifInfo('contourFiles', 'contourTifInfo', 'contour');
 }
 
 // 处理表单当前选中的 DEM 任务 id；下拉处在空态（disabled 占位）时返回 null。
@@ -896,6 +1272,10 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
     if (formId === 'processForm') {
         const sourceEl = document.getElementById('processSource');
         if (sourceEl) sourceEl.dispatchEvent(new Event('change'));
+        // form.reset() 已经清空两个文件选择框，两张信息卡必须跟着收起，
+        // 否则下一次打开弹窗还挂着上一个任务那份 tif 的范围和层级。
+        updateLocalTerrainTifInfo();
+        updateContourTifInfo();
     }
 
     refreshSubmitButtonState();

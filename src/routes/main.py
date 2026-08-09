@@ -7,6 +7,7 @@ Handles rendering of HTML pages for the web interface.
 import logging
 from flask import Blueprint, render_template
 from src.services.basemap_source import client_descriptor, resolve_basemap
+from src.routes.basemap_static import active_basemap
 from src.services.config_manager import ConfigManager, redact_secret_value
 
 logger = logging.getLogger(__name__)
@@ -58,11 +59,14 @@ def index():
         # 只有同源路径 /basemap/{z}/{x}/{y} —— 真实上游地址不出服务端。
         # 瓦片由 routes/basemap_static.py 转发：浏览器直连上游会撞 CORS，
         # 而且不吃项目的 proxy_url。
-        basemap = client_descriptor(resolve_basemap(
+        # 报的是**实际在出图**的那个源（active_basemap）：配置的源取不到瓦片时
+        # 后端会自动回退到链上的下一张（见 basemap_static.fallback_candidates），
+        # 描述符还报配置值的话，max_level / 署名 / 界面提示全是错的。
+        basemap = client_descriptor(active_basemap(resolve_basemap(
             template_config.get('basemap_source'),
             tile_servers=template_config.get('tile_servers'),
             default_style=template_config.get('default_style', 'm'),
-        ))
+        )))
 
         return render_template('index.html', config=template_config,
                                map_config=map_config, basemap=basemap)

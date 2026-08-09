@@ -273,6 +273,153 @@ MESSAGES = {
         'en': 'Upload failed: {error}',
     },
 
+    # --- 底图自动回退（map.js _watchBasemapFallback）-------------------------
+    # src_* 是按后端返回的源名拼出来的，拼接点登记在 tests/test_i18n.py 的
+    # _DYNAMIC_KEY_SITES；源名表在 src/services/basemap_source.py。
+    'js.map.basemap.fallback': {
+        'zh': '底图已自动切换到{source}：{configured}取不到瓦片。'
+              '需要固定用某一张请到配置页「地图底图」里选。',
+        'en': 'Basemap switched to {source}: {configured} could not be reached. '
+              'Pick one explicitly under Map basemap in Settings.',
+    },
+    'js.map.basemap.restored': {
+        'zh': '底图已恢复为{source}。',
+        'en': 'Basemap restored to {source}.',
+    },
+    'js.map.basemap.src_esri': {
+        'zh': 'Esri 卫星影像',
+        'en': 'Esri satellite imagery',
+    },
+    'js.map.basemap.src_google_satellite': {
+        'zh': 'Google 卫星影像',
+        'en': 'Google satellite imagery',
+    },
+    'js.map.basemap.src_google_roadmap': {
+        'zh': 'Google 路网图',
+        'en': 'Google roadmap',
+    },
+    'js.map.basemap.src_osm': {
+        'zh': 'OpenStreetMap 路网图',
+        'en': 'OpenStreetMap road map',
+    },
+    'js.map.basemap.src_download_source': {
+        'zh': '下载源的底图',
+        'en': 'the download source basemap',
+    },
+    'js.map.basemap.src_custom': {
+        'zh': '自定义底图',
+        'en': 'the custom basemap',
+    },
+
+    # --- 高程切片：选完 tif 后的有效信息卡（map.js updateLocalTerrainTifInfo）---
+    # warn_* 是运行时按后端返回的警告码拼出来的，拼接点登记在
+    # tests/test_i18n.py 的 _DYNAMIC_KEY_SITES 里。
+    'js.map.tifinfo.reading': {
+        'zh': '正在读取文件信息...',
+        'en': 'Reading file info...',
+    },
+    'js.map.tifinfo.failed': {
+        'zh': '读取文件信息失败: {error}',
+        'en': 'Failed to read file info: {error}',
+    },
+    'js.map.tifinfo.dimensions': {
+        'zh': '尺寸',
+        'en': 'Dimensions',
+    },
+    'js.map.tifinfo.resolution': {
+        'zh': '分辨率',
+        'en': 'Resolution',
+    },
+    'js.map.tifinfo.crs': {
+        'zh': '坐标系',
+        'en': 'CRS',
+    },
+    'js.map.tifinfo.bounds': {
+        'zh': '范围（WGS84）',
+        'en': 'Extent (WGS84)',
+    },
+    'js.map.tifinfo.bounds_native': {
+        'zh': '范围（原生坐标）',
+        'en': 'Extent (native CRS)',
+    },
+    'js.map.tifinfo.data': {
+        'zh': '数据',
+        'en': 'Data',
+    },
+    'js.map.tifinfo.bands': {
+        'zh': '{n} 波段',
+        'en': '{n} band(s)',
+    },
+    'js.map.tifinfo.elevation': {
+        'zh': '高程范围',
+        'en': 'Elevation range',
+    },
+    'js.map.tifinfo.recommended_maxzoom': {
+        'zh': '建议最大层级',
+        'en': 'Suggested max zoom',
+    },
+    'js.map.tifinfo.summary': {
+        'zh': '合计 {n} 个文件',
+        'en': '{n} files in total',
+    },
+    'js.map.tifinfo.finest_resolution': {
+        'zh': '最细分辨率',
+        'en': 'Finest resolution',
+    },
+    'js.map.tifinfo.merged_bounds': {
+        'zh': '合并范围（WGS84）',
+        'en': 'Merged extent (WGS84)',
+    },
+    'js.map.tifinfo.warn_header_unreadable': {
+        'zh': '读不出 TIFF 头部：可能不是 GeoTIFF，或文件已损坏',
+        'en': 'Cannot read the TIFF header: not a GeoTIFF, or the file is '
+              'corrupt',
+    },
+    'js.map.tifinfo.warn_no_georeference': {
+        'zh': '缺少地理参考（没有像元大小/绑定点），无法切片',
+        'en': 'No georeference (missing pixel scale / tie point); cannot be '
+              'tiled',
+    },
+    'js.map.tifinfo.warn_unknown_crs': {
+        'zh': '坐标系缺失或是自定义投影，无法切片',
+        'en': 'CRS is missing or user-defined; cannot be tiled',
+    },
+    'js.map.tifinfo.warn_gdal_unavailable': {
+        'zh': '服务端缺少 GDAL，只能显示原生坐标下的范围',
+        'en': 'GDAL is unavailable on the server; only native-CRS extent is '
+              'shown',
+    },
+    'js.map.tifinfo.warn_reprojected': {
+        'zh': '不是 WGS84 经纬度，切片前会自动重投影',
+        'en': 'Not WGS84 lon/lat; it will be reprojected before tiling',
+    },
+    'js.map.tifinfo.warn_rotated': {
+        'zh': '栅格带旋转，切片前会重采样',
+        'en': 'Raster is rotated; it will be resampled before tiling',
+    },
+    'js.map.tifinfo.warn_multi_band': {
+        'zh': '多波段文件，切片只使用第 1 波段',
+        'en': 'Multi-band file; only band 1 is used for tiling',
+    },
+    'js.map.tifinfo.warn_mixed_crs': {
+        'zh': '所选文件的坐标系不一致，请确认没有选错文件',
+        'en': 'The selected files use different CRSs; check your selection',
+    },
+    'js.map.tifinfo.warn_some_unusable': {
+        'zh': '有文件缺少可用的地理信息，切片会失败',
+        'en': 'Some files lack usable georeference; tiling will fail',
+    },
+    'js.map.tifinfo.warn_crs_unresolved': {
+        'zh': '服务端无法解析该坐标系（EPSG 码未知或不受支持），只能显示原生坐标下的范围',
+        'en': 'The server cannot resolve this CRS (unknown or unsupported EPSG '
+              'code); only the native-CRS extent is shown',
+    },
+    'js.map.tifinfo.warn_antimeridian': {
+        'zh': '数据横跨 180° 经线，东边界已按 +360 展开（如 180.4 即 -179.6）',
+        'en': 'The data crosses the 180° meridian; the eastern bound is '
+              'unwrapped past 180 (e.g. 180.4 means -179.6)',
+    },
+
     # --- 等高线配色自定义 -----------------------------------------------------
     'js.map.tint.band_all': {
         'zh': '全部',

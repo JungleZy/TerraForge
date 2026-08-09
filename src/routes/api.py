@@ -14,7 +14,11 @@ from src.i18n import t
 from src.services.basemap_source import client_descriptor, resolve_basemap
 from src.services.config_manager import (ConfigManager, is_unchanged_secret,
                                          redact_secret_value)
+from src.services.raster_probe import (
+    MAX_INSPECT_BODY, InspectError, describe_headers,
+)
 from src.services.task_cleanup import record_retained_output, resolve_stored_output_dir
+from src.routes.basemap_static import active_basemap
 from src.routes import tiles_static
 
 logger = logging.getLogger(__name__)
@@ -761,11 +765,11 @@ def get_basemap():
 
         return jsonify({
             'success': True,
-            'basemap': client_descriptor(resolve_basemap(
+            'basemap': client_descriptor(active_basemap(resolve_basemap(
                 _val('basemap_source'),
                 tile_servers=_val('tile_servers'),
                 default_style=_val('default_style', 'm') or 'm',
-            )),
+            ))),
         })
 
     except Exception as e:
@@ -1095,6 +1099,46 @@ def browse_dir():
         'parent': None if parent == target else str(parent),
         'dirs': dirs,
     })
+
+
+@api_bp.route('/raster/inspect', methods=['POST'])
+def inspect_raster_headers():
+    """解释浏览器读出的 GeoTIFF 头部，回给「选完 tif 立刻看到的有效信息」。
+
+    **刻意不接收文件本身。** 前端 static/js/geotiff_meta.js 用 File.slice 只读了
+    几 KB 的 IFD，把原始标签发过来，这里只做地理解释（EPSG -> 坐标系名称、
+    投影坐标 -> WGS84、像素尺寸 -> 建议层级）。一份 2 GB 的 DEM 因此不会为了
+    看一眼元信息先整包上传一遍 —— 真正的上传只发生在创建任务时。
+
+    Body: {"files": [<geotiff_meta.js 的 read() 返回值>, ...],
+           "mode": "terrain" | "contour"}
+    mode 决定建议层级按哪条管线算（两条管线的分块方式不同，见 raster_probe）。
+
+    放在通用 /api 蓝图而不是某条任务管线下：本地高程切片与等高线两个表单都用
+    它，而它不碰任何任务状态。
+    """
+    # 体积在解析之前挡。全局的 MAX_CONTENT_LENGTH 是 2 GiB（给真上传留的），
+    # 而这条接口按设计只收几 KB 标签 —— 不先看 content_length，就等于允许对方
+    # 让服务端先把 2 GiB 缓存下来解析完，再被 MAX_INSPECT_FILES 拒掉。
+    if (request.content_length or 0) > MAX_INSPECT_BODY:
+        return jsonify({'error': t('api.raster.body_too_large')}), 413
+
+    # 数组/字符串体是合法 JSON 且为真，但没有 .get —— `or {}` 接不住它们。
+    # 口径与同文件的 verify_tile_url 一致。
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+
+    try:
+        result = describe_headers(payload.get('files'),
+                                  mode=payload.get('mode') or 'terrain')
+        return jsonify({'success': True, **result})
+    except InspectError as e:
+        # 键 + 参数由服务层给，这里只负责按当前语种翻译；异常原文不回显。
+        return jsonify({'error': t(e.key, **e.params)}), 400
+    except Exception as e:
+        logger.error(f"Error inspecting raster headers: {e}")
+        return jsonify({'error': t('api.raster.inspect_failed')}), 500
 
 
 @api_bp.route('/config/recommend_concurrency', methods=['POST'])

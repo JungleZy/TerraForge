@@ -107,6 +107,21 @@ _DYNAMIC_KEY_SITES = {
     # static/js/map.js:_renderManualBounds —— 手动录入四个边界时，输入框的
     # aria-label 由 `t('js.map.bounds.sr_' + field)` 拼出，field 只可能是这四个方向。
     'js.map.bounds.sr_': ('north', 'south', 'east', 'west'),
+    # static/js/map.js:_tifInfoWarnings —— 高程切片信息卡把后端返回的警告码
+    # 拼成键（`t('js.map.tifinfo.warn_' + code)`）。码表定义在
+    # src/services/raster_probe.py，两侧必须同步。
+    'js.map.tifinfo.warn_': (
+        'header_unreadable', 'no_georeference', 'unknown_crs',
+        'gdal_unavailable', 'crs_unresolved', 'reprojected', 'rotated',
+        'multi_band', 'antimeridian', 'mixed_crs', 'some_unusable',
+    ),
+    # static/js/map.js:_basemapSourceLabel —— 底图自动回退的提示要说出源名，
+    # 键由 `t('js.map.basemap.src_' + source)` 拼出。源名表在
+    # src/services/basemap_source.py（BASEMAP_PRESETS + DOWNLOAD_SOURCE/CUSTOM_SOURCE）。
+    'js.map.basemap.src_': (
+        'esri', 'google_satellite', 'google_roadmap', 'osm',
+        'download_source', 'custom',
+    ),
 }
 
 
@@ -232,6 +247,33 @@ def test_dynamic_key_sites_expand_to_real_keys():
         '_DYNAMIC_KEY_SITES 展开出 catalog 里没有的键 —— 拼接点会在运行时把\n'
         '键名原样显示给用户。要么把键补回 catalog，要么改拼接点、同步这张表:\n  '
         + '\n  '.join(bad)
+    )
+
+
+def test_every_basemap_source_has_a_label():
+    """反方向：源名表里的每一项都得有 src_ 文案。
+
+    上面那条只查「_DYNAMIC_KEY_SITES 里手写的六个后缀在不在 catalog 里」——
+    单向的。给 BASEMAP_PRESETS 加第五个预设而忘了配文案，两条都绿，用户在
+    回退提示里看到的却是一句原样的 `js.map.basemap.src_xxx`（见 t() 的回落
+    口径）。所以要从**真正的源名表**这一头再钉一次。
+
+    反过来「catalog 里有而源名表里没有」的死键，由 test_no_unreferenced_catalog_key
+    管（那种键不在后缀清单里就没人引用它）。
+    """
+    from src.services.basemap_source import (BASEMAP_PRESETS, CUSTOM_SOURCE,
+                                             DOWNLOAD_SOURCE)
+
+    sources = list(BASEMAP_PRESETS) + [DOWNLOAD_SOURCE, CUSTOM_SOURCE]
+    assert sources, '源名表一个都读不出来 —— 是不是 basemap_source 改了结构？'
+
+    missing = [f'js.map.basemap.src_{name}' for name in sources
+               if f'js.map.basemap.src_{name}' not in MESSAGES]
+    assert not missing, (
+        'src/services/basemap_source.py 里的源名没有对应文案 —— 底图自动回退的\n'
+        '提示会把键名原样显示给用户。补进 src/i18n/catalog/js_map.py，并把后缀\n'
+        '同步进本文件 _DYNAMIC_KEY_SITES 的 js.map.basemap.src_ 一条:\n  '
+        + '\n  '.join(missing)
     )
 
 

@@ -242,6 +242,7 @@ map-download/
 ### 底图
 
 - `GET /basemap/<z>/<x>/<y>` - 底图瓦片的**同源转发，这一跳是强制的**：浏览器只拿得到这条路径，真实上游地址不出服务端。直连上游会被 CORS 把真实状态码埋成一句 CORS 报错，而且浏览器不吃配置里的 `proxy_url` —— 底图和下载会走成两条出网路径，代理配好了底图仍然是个蓝球
+- 取不到瓦片时会**自动回退**到链上的下一张（Esri 卫星 → Google 卫星 → OpenStreetMap 路网），换了会在界面上说一句。链里只放 WGS-84 的源：底图是用来框选下载范围的，静默换上一张 GCJ-02 的图等于让人框错地方。Google 路网（`lyrs=m`）因此不在链里——它中国区是 GCJ-02，而且与 Google 卫星同主机，卫星取不到时它也取不到
 - `GET /api/basemap` - 底图图层描述符（同源 url、最大层级、署名、源标识）。`/history` 独立页取它；首页由模板内联下发，不走这个接口
 
 ### 历史记录
@@ -267,6 +268,10 @@ map-download/
 ### 目录浏览
 
 - `GET /api/fs/browse?path=<绝对路径>` - 列出目录的非隐藏子目录（保存路径「浏览」弹窗的数据源；0.2.4 起全盘可浏览，Windows 根级返回盘符列表）
+
+### 栅格头部探测
+
+- `POST /api/raster/inspect` - 解释浏览器读出的 GeoTIFF 头部标签，返回坐标系、WGS84 范围、分辨率、数据类型与建议最大层级。**不接收文件本身**：前端 `static/js/geotiff_meta.js` 用 `File.slice` 只读几 KB 的 IFD，几百 MB 的 DEM 不会为看一眼元信息先整包上传。Body `{"files": [...], "mode": "terrain"|"contour"}`，`mode` 决定建议层级按哪条切片管线算
 
 ### WebSocket 事件
 
