@@ -489,6 +489,15 @@ function initTerrainDetailActions(taskId) {
     };
 }
 
+// 后端存的档位是枚举字面量（geo_validation.TILING_QUALITY_OFFSETS 的键）。
+// 这里逐档写成完整的键字面量、不做字符串拼接：tests/test_i18n.py 的双向闭合
+// 是按「key 形状的字面量」扫源码的，拼出来的键会被当成无人引用而判死。
+const TERRAIN_QUALITY_KEYS = {
+    precision: 'js.history.terrain.quality_precision',
+    balanced: 'js.history.terrain.quality_balanced',
+    speed: 'js.history.terrain.quality_speed',
+};
+
 async function refreshTerrainDetail(taskId) {
     const statusEl = document.getElementById('detailTerrainStatus');
     const infoEl = document.getElementById('detailTerrainInfo');
@@ -526,8 +535,19 @@ async function refreshTerrainDetail(taskId) {
 
         const outDir = job.output_dir || '-';
         const maxzoom = job.maxzoom ?? '-';
+        // 这个面板的起切按钮（initTerrainDetailActions）POST 时不带 body，档位与
+        // 法线都取配置默认值，面板上也没有对应控件 —— 用户唯一能知道「切出来的
+        // 是哪一档」的途径，就是把作业回吐的实际值显示出来。
+        const qualityKey = TERRAIN_QUALITY_KEYS[job.quality];
+        // 认不出的值（旧作业 / 手改过库）宁可原样显示，也好过悄悄说成「均衡」。
+        const quality = qualityKey ? t(qualityKey) : escapeHtml(String(job.quality ?? '-'));
+        const normals = t(job.vertex_normals
+            ? 'js.history.terrain.normals_on'
+            : 'js.history.terrain.normals_off');
         infoEl.innerHTML = `
             <div>MaxZoom: ${maxzoom}</div>
+            <div>${t('js.history.terrain.quality_label')}: ${quality}</div>
+            <div>${t('js.history.terrain.normals_label')}: ${normals}</div>
             <div>Out: ${escapeHtml(outDir)}</div>
             <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
             <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>

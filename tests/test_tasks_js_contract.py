@@ -1913,3 +1913,68 @@ def test_delete_confirm_texts_are_bilingual_and_distinct():
         assert not re.search(r'[\u4e00-\u9fff]', entry['en']), (
             f'{key} 的英文里还有中文：{entry["en"]!r}'
         )
+
+
+def test_terrain_detail_shows_the_preset_actually_used():
+    """详情面板必须显示实际用的档位与法线状态。
+
+    起切按钮（history.js 的 initTerrainDetailActions）POST 时**不带 body**，
+    面板里也没有任何档位控件 —— 从这里起切走的是配置默认值。不显示的话，
+    用户切完两小时也不知道切出来的是哪一档、带没带法线。
+
+    只断言字符串 "quality" 太弱：history.js 里另有底图/样式相关的同名词。
+    这里锁的是**字段读取形态** `job.quality` / `job.vertex_normals`，
+    并且要在 refreshTerrainDetail 这一个函数体内。
+    """
+    body = _fn('refreshTerrainDetail', 'history.js')
+
+    assert re.search(r'\bjob\.quality\b', body), (
+        'refreshTerrainDetail 没有读作业的 quality 字段 —— 面板不显示实际档位'
+    )
+    assert re.search(r'\bjob\.vertex_normals\b', body), (
+        'refreshTerrainDetail 没有读作业的 vertex_normals 字段 —— 法线开关看不见'
+    )
+    assert 'infoEl.innerHTML' in body, (
+        'refreshTerrainDetail 不再往 infoEl 写内容 —— 本测试已失效，重写它'
+    )
+
+
+def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
+    """三个档位值必须经查表换成人话，不能把 precision/balanced/speed 直接吐给用户。
+
+    后端存的是枚举字面量（TILING_QUALITY_OFFSETS 的键）。直接插进 innerHTML
+    的话，中文界面上会冒出三个英文单词，而且 "balanced" 对用户毫无信息量 ——
+    他要知道的是「比默认多切一级 / 少切一级」。
+    """
+    from src.i18n.catalog import MESSAGES
+
+    src = _strip_js_comments(_js('history.js'))
+
+    # 查表必须覆盖全部三档，且每一档都映到一个完整的键字面量
+    # （拼接式的键会被 tests/test_i18n.py 的孤儿检查判死）。
+    for preset in ('precision', 'balanced', 'speed'):
+        m = re.search(
+            r"\b%s\s*:\s*'(js\.history\.terrain\.[\w.]+)'" % preset, src,
+        )
+        assert m, f'档位 {preset} 没有对应的文案键 —— 它会以英文原文漏给用户'
+        entry = MESSAGES.get(m.group(1))
+        assert entry, f'{m.group(1)} 被 history.js 引用但 catalog 里没有'
+        assert entry['zh'] and entry['en'], f'{m.group(1)} 中英缺一'
+        assert preset not in entry['zh'], (
+            f'{m.group(1)} 的中文就是枚举字面量本身：{entry["zh"]!r}'
+        )
+
+    # 法线两态各有各的文案：只显示「开」而不显示「关」等于没显示。
+    for key in ('js.history.terrain.normals_on', 'js.history.terrain.normals_off'):
+        assert f"'{key}'" in src, f'history.js 没有引用 {key} —— 法线状态缺一态'
+        entry = MESSAGES.get(key)
+        assert entry and entry['zh'] and entry['en'], f'{key} 在 catalog 里缺失或缺语种'
+    assert (MESSAGES['js.history.terrain.normals_on']['zh']
+            != MESSAGES['js.history.terrain.normals_off']['zh']), (
+        '法线开与关的文案一模一样 —— 显示了等于没显示'
+    )
+
+    # 两行都得有标题词，否则面板上只是两个孤零零的值。
+    for key in ('js.history.terrain.quality_label', 'js.history.terrain.normals_label'):
+        assert f"'{key}'" in src, f'history.js 没有引用 {key} —— 显示的值没有标题'
+        assert MESSAGES.get(key), f'{key} 被 history.js 引用但 catalog 里没有'

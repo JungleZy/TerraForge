@@ -199,6 +199,38 @@ MESSAGES = {
         'en': 'Failed to load',
     },
 
+    # 详情面板里那个起切按钮不带任何参数，走的是配置默认档位 —— 用户在这里
+    # 没有选择权，那就至少得让他看见实际用的是哪一档。档位名不能直吐后端的
+    # precision/balanced/speed，那三个词说不清「和默认比差在哪」。
+    'js.history.terrain.quality_label': {
+        'zh': '切片档位',
+        'en': 'Tiling preset',
+    },
+    'js.history.terrain.quality_precision': {
+        'zh': '精细（比默认多切一级）',
+        'en': 'Precision (one level deeper)',
+    },
+    'js.history.terrain.quality_balanced': {
+        'zh': '均衡（默认）',
+        'en': 'Balanced (default)',
+    },
+    'js.history.terrain.quality_speed': {
+        'zh': '快速（比默认少切一级）',
+        'en': 'Fast (one level shallower)',
+    },
+    'js.history.terrain.normals_label': {
+        'zh': '顶点法线',
+        'en': 'Vertex normals',
+    },
+    'js.history.terrain.normals_on': {
+        'zh': '已开启',
+        'en': 'On',
+    },
+    'js.history.terrain.normals_off': {
+        'zh': '未开启',
+        'en': 'Off',
+    },
+
     # 删除任务的单一确认框与结果提示。
     # 三个活动状态各有各的措辞：pending 还没开始跑，写「正在运行」就是撒谎；
     # paused 停在半路，说「立即停止」也不准 —— 用户要判断「删了会失去什么」，
