@@ -136,8 +136,15 @@ def test_tmpdir_on_any_absolute_path_is_accepted(cm, key):
     docstring 自己写着「挪到别的盘」，而规则不许挪出安装目录），可信环境前提
     确认后取消。
     """
-    assert cm.validate_config(key, '/mnt/fast-ssd/terraforge-scratch') is True
-    assert cm.validate_config(key, '/') is True
+    # 「绝对」在两个平台上不是一回事：ntpath 下 `/mnt/...` 与 `/` 都是**根相对**
+    # 路径（挂在当前盘上），Path.is_absolute() 判 False。这正是校验器应当拒的那
+    # 类不确定路径（与下一条用例拒相对值同一个理由），所以要钉「另一块盘照收」
+    # 就得各平台各写各的 —— 硬编码 POSIX 写法会让 Windows 发版构建变红。
+    other_disk = (r'D:\fast-ssd\terraforge-scratch' if os.name == 'nt'
+                  else '/mnt/fast-ssd/terraforge-scratch')
+    fs_root = 'C:\\' if os.name == 'nt' else '/'
+    assert cm.validate_config(key, other_disk) is True
+    assert cm.validate_config(key, fs_root) is True
 
 
 @pytest.mark.parametrize('key', ['stitch_tmpdir', 'contour_warp_tmpdir'])
