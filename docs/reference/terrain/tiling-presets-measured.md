@@ -358,7 +358,7 @@ loess @est 实测（法线统一关，只比几何）：
 - `tests/test_build_scripts_contract.py` —— 预判「只要不动 `tile_size` 就不受影响」，属实，全程未红。
 - 另外补了三层测试，注意后两个钉的是**互为镜像**的两面，别记混：
   - `tests/test_terrain_api.py` —— HTTP → 管理器 → `build_terrain` 的档位偏移全链路。
-  - `tests/test_terrain_lighting_frontend.py` —— **渲染级**：三个控件的初值真的跟着配置走（`:511`），以及 `config={}` 的异常兜底落在均衡而不是精细（`:548`）。另有法线后果文案 zh/en 两份都在的断言。
+  - `tests/test_terrain_lighting_frontend.py` —— **渲染级**：三个控件的初值真的跟着配置走（`:524`），以及 `config={}` 的异常兜底落在均衡而不是精细（`:568`）。另有法线后果文案 zh/en 两份都在的断言。
   - `tests/test_map_js_contract.py` —— **提交级**：两个入口都带上档位字段（`:364`），且三个字段的兜底一律是空串、前端不许自己抄一份默认值（`:413`）。
 
 ---

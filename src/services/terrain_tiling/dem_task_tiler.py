@@ -83,16 +83,25 @@ def tile_dem_task_dir(
     Returns:
         {"total", "rendered", "failed", "max_level", "chose_martini",
         "chose_grid"}。max_level 是**实际**切到的最深层级（档位偏移后可能不等于
-        请求的 maxzoom）。后两个是
-        逐瓦片择优的落点统计（哪个三角化后端赢了），排障用：全 grid 说明这批
-        DEM 是山地/粗糙地形，全 martini 说明是平缓地形。M11 之前这里丢弃返回值
+        请求的 maxzoom）。
+
+        后两个是逐瓦片择优的落点统计（哪个三角化后端赢了）。⚠️ **应用侧读它没有
+        排障价值**：TileParams.triangulator 恒为 'grid'（非 auto 分支里
+        cesiumlab_terrain._worker_tile 直接 backend = triangulator），于是
+        (chose_martini, chose_grid) 无条件等于 (0, rendered)，与地形是山地还是
+        平原毫无关系。只有直接调 build_terrain 并传 triangulator='auto' 时，
+        「全 grid = 粗糙地形 / 全 martini = 平缓地形」那套读法才成立。
+
+        M11 之前这里丢弃返回值
         （签名 `-> None`），于是 build_terrain 的逐瓦片容错（异常只记 warning）
         变成纯静默：缺瓦片的作业照报 completed，layer.json 还按完整矩形声明
         available，Cesium 请求后拿 404 且父层不兜底。极端情况下所有瓦片都失败、
         terrain_tiles/ 一片没有，job 仍标 completed。
 
-        注入的 build_terrain_fn 返回 None（老测试替身）时归一成全 0 计数，
-        调用方按「无计数信息」处理，行为与改动前一致。
+        注入的 build_terrain_fn 返回 None（老测试替身）时计数归一成全 0，
+        调用方按「无计数信息」处理，行为与改动前一致；但 max_level 归一成
+        **None** 而不是 0 —— 0 是合法层级，拿它当「未知」会让调用方把
+        `effective_maxzoom` 落成 0。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 

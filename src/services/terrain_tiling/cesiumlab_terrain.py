@@ -1645,8 +1645,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tile-size", type=int, default=17)
     ap.add_argument("--nodata", type=float, default=None)
     ap.add_argument("--workers", "-j", type=int, default=0)
-    # 排障开关：'auto' 逐瓦片择优（默认，与生产一致），'martini'/'grid' 强制
-    # 单一后端做对比。auto/martini 要求 tile_size = 2^k+1（默认 17 满足），
+    # 排障开关：'auto' 逐瓦片择优（CLI 默认），'martini'/'grid' 强制单一后端做
+    # 对比。⚠️ 与应用侧**有意分叉**：应用侧（dem_task_tiler.TileParams）固定
+    # 'grid'，CLI 与全球底图构建脚本保持 'auto'（见 tiling-presets-measured.md
+    # 第八节末尾）。想用 CLI 复现生产切片问题必须显式 `--triangulator grid`，
+    # 否则拿到的是另一个后端的产物，体积/耗时/三角形数都对不上。
+    # auto/martini 要求 tile_size = 2^k+1（默认 17 满足），
     # 传 64 之类会在 build_terrain 入口报错并指向这个 flag。
     ap.add_argument("--triangulator", choices=("auto", "martini", "grid"), default="auto")
     ap.add_argument("--max-error-k", type=float, default=DEFAULT_MAX_ERROR_K)
