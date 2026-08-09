@@ -198,8 +198,8 @@ def test_parent_url_keeps_the_documented_deployment_shapes(cm, value):
     """**有意偏离评审建议的一条**：不拦回环/私网。
 
     出厂默认值就是 `http://localhost:5000/terrain/base`，而
-    `docs/reference/terrain/global-base-build.md:131` 明写改这个键的典型场景
-    就是「换端口、部署到内网 IP 或域名」。按「非回环非私网」一刀切会把默认值
+    `docs/reference/terrain/README.md` 的「改 `terrain_base_parent_url` 的典型场景」
+    一段明写那就是「换端口、部署到内网 IP 或域名」。按「非回环非私网」一刀切会把默认值
     和文档化的部署方式一起判非法，而对真正的威胁（指到攻击者的**公网**站点）
     毫无作用。拦的是链路本地段与非 http(s)/带 userinfo 的形态。
     """

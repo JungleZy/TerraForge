@@ -251,7 +251,8 @@ def delete_task_row(
             # 结果就是快路径 rmtree 完，刚起来的线程把目录重建出来写满瓦片 ——
             # 零引用的孤儿目录（本地地形一路跑到底，最重），外加 map 的进度批次
             # 拿已删的 task_id 撞外键直到进程重启。start_task 的「读状态 → UPDATE
-            # → 登记线程」整段就在同一把锁内（task_manager.py:414-458），所以
+            # → 登记线程」整段就在同一把锁内（task_manager.TaskManager.start_task
+            # 里那个 `with self._state_lock` 块），所以
             # 「判在跑」与「删行」必须同为一个临界区，只挪 commit 也不行：DELETE
             # 没提交就等于没发生。
             with manager._state_lock:

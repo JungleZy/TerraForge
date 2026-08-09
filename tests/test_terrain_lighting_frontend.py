@@ -457,17 +457,18 @@ def test_preset_control_ids_match_on_both_sides():
 def test_normals_checkbox_spells_out_what_turning_it_off_costs(monkeypatch, tmp_path):
     """渲染级：中英两种语种下，界面上都必须写明关掉法线的两条后果。
 
-    这个勾选框是**不可逆**的：法线烘焙进瓦片，切完再想开只能重切
-    （database.py:98）。而且 Cesium 的 hasVertexNormals 是 provider 级单一
+    这个勾选框是**不可逆**的：法线烘焙进瓦片，切完再想开只能重切（见
+    `database.DEFAULT_CONFIGS` 里 terrain_vertex_normals 上方那条 ⚠️
+    注释）。而且 Cesium 的 hasVertexNormals 是 provider 级单一
     标志 —— 这份地形没有法线，地图上的光照按钮就对整幅场景失效，连随包底图
     自带的法线也一并作废。用户在勾选那一刻看不到这两条，就会在几小时的切片
     之后才发现按钮点不亮。
 
     两种语种都要查：只查中文的话，把英文那份后果删光仍然全绿 —— 英文用户
     照样会在几小时之后才发现，而失效是静默的。语种走 cookie tf-lang
-    （src/i18n/__init__.py:55），且必须用 client.set_cookie 换：Werkzeug 3.1 的
-    测试客户端有自己的 cookie jar，手写 headers={'Cookie': ...} 会被它盖掉，
-    页面照样渲染中文（本测试第一版就是这么写的，英文那半边恒真）。
+    （`src/i18n/__init__.py` 的 `get_locale`），且必须用 client.set_cookie 换：
+    Werkzeug 3.1 的测试客户端有自己的 cookie jar，手写 headers={'Cookie': ...}
+    会被它盖掉，页面照样渲染中文（本测试第一版就是这么写的，英文那半边恒真）。
     """
     client = _load_app(monkeypatch, tmp_path)
 
@@ -488,10 +489,10 @@ def test_normals_checkbox_spells_out_what_turning_it_off_costs(monkeypatch, tmp_
 def test_preset_wording_anchors_to_the_base_level_like_the_detail_panel():
     """档位文案的参照物必须是「基准层级」，且与任务详情面板用同一套词。
 
-    偏移表（geo_validation.py:77-81）的 +1/0/-1 是相对**基准层级**算的，与
-    terrain_quality_preset 当前配成哪一档无关。写成「比默认多一级」的话，运维把
-    默认改成 speed 之后这句话就是假的（js_history.py:206-210 已为详情面板定过
-    同一口径）。两处用不同说法，用户会以为是两回事。
+    偏移表（`geo_validation.TILING_QUALITY_OFFSETS`）的 +1/0/-1 是相对**基准层级**
+    算的，与 terrain_quality_preset 当前配成哪一档无关。写成「比默认多一级」的话，
+    运维把默认改成 speed 之后这句话就是假的（`js_history.py` 里 quality_label
+    上方那段注释已为详情面板定过同一口径）。两处用不同说法，用户会以为是两回事。
     """
     from src.i18n.catalog import MESSAGES
     from src.services.geo_validation import TILING_QUALITY_OFFSETS
@@ -528,7 +529,7 @@ def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path, c
     vertex_normals）和历史页详情面板的起切按钮（不带 body，走配置默认）。
     初值写死就意味着同一份 DEM 从两个入口切出来的产物不一样 —— 层级不同、
     带不带法线不同，而界面上零提示。本仓给这个形态命过名：
-    local_terrain_task_manager.py:135-136 的「改了没反应的假旋钮」。
+    local_terrain_task_manager._default_quality 的「改了没反应的假旋钮」。
 
     法线那半边还是**不可逆**的：运维把 terrain_vertex_normals 配成 true，
     用户不动这个复选框，表单就会显式发 false 把它关掉，几小时切完之后光照
@@ -639,8 +640,10 @@ def test_out_of_range_maxzoom_is_clamped_out_loud(monkeypatch, tmp_path, caplog)
     「创建」点了没反应（tests/test_config_form_submittable.py 钉的就是这条）。
 
     问题只在于它此前是**静默**的：运维 PUT 了 99，打开处理表单看到 14，中间没有
-    任何信号，一直要等到作业真跑起来才由 local_terrain_task_manager.py:128-130
-    吭一声。与 tests/test_terrain_api.py:312 那条同形，只是这里守的是渲染入口。
+    任何信号，一直要等到作业真跑起来才由 local_terrain_task_manager._default_maxzoom
+    的那条 warning 吭一声。与 tests/test_terrain_api.py 的
+    test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range 那条同形，
+    只是这里守的是渲染入口。
     """
     client = _load_app(monkeypatch, tmp_path)
     from src.routes import main as main_route

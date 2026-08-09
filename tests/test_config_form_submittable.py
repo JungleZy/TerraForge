@@ -90,13 +90,16 @@ def test_config_number_inputs_pass_their_own_constraints(client, path):
 
 # 配置渲染进 min/max 输入框的键里，有一部分**写入侧不校验**（登记在
 # config_manager._UNCONSTRAINED_KEYS）：PUT /api/config 收得下
-# terrain_local_maxzoom=99，而仓库自己的 tests/test_local_terrain_api.py:835-854
+# terrain_local_maxzoom=99，而仓库自己的 tests/test_local_terrain_api.py 的
+# test_out_of_range_maxzoom_config_falls_back
 # 把「越界配置软退回 14 继续跑」当成受支持状态。这类值照直渲染进 value=""，
 # 就把上面那条出厂配置扫不到的路径炸开了：受害的不是那个字段，而是它所在的
 # **整张表单** —— #processForm 变 :invalid，原生校验拦下 submit 事件，
-# static/js/map.js:1420 的监听根本不触发。而 #localTerrainOptions 只用 hidden
+# static/js/map.js 上挂在 #processForm 的 submit 监听根本不触发。
+# 而 #localTerrainOptions 只用 hidden
 # 属性隐藏、字段不 disable，非法控件仍参与校验且不可聚焦：气泡弹不出来，
-# 连与地形无关的等高线任务也一起建不了（map.js:646-650 记过同一形态）。
+# 连与地形无关的等高线任务也一起建不了（map.js 的 initProcessTypeToggle 里
+# 「nameInput.required 跟着 hidden 一起摘」那段记过同一形态）。
 # 钳位本身住在 main._terrain_form_defaults（模板记不了日志，被丢掉的值必须在
 # 服务端留一条 warning；那条日志由 test_terrain_lighting_frontend.py 钉）。
 # 本表只管一件事：不管库里存的是什么，渲染出来的 value 都得过控件自己的约束。

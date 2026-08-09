@@ -1425,7 +1425,7 @@ function _beginBoundsEdit(vEl) {
         done = true;
         // 先把输入框从 DOM 摘掉,再走后续的重渲染。
         //
-        // updateBoundsInfo() 开头那道 M15 守卫(见 :924)靠「浮层里还有
+        // updateBoundsInfo() 开头那道 M15 守卫靠「浮层里还有
         // .bounds-edit-input」判断「正处于编辑态,不要重写整层」。而本函数建的
         // input 用的正是这个类 —— 留着它的话,下面无论走哪条路,那次重渲染都会
         // 被守卫拦掉:
@@ -2271,7 +2271,8 @@ async function submitLocalTerrain() {
     fd.append('name', document.getElementById('processTaskName').value
         || t('js.map.process.local_terrain_default_name'));
     // 三个字段的兜底一律是空串，不是前端自己抄一份默认值：空串 = 未传 = 走配置
-    // 默认（后端 local_terrain_api.py:39-47 把空串当未传）。写死 '14' / 'balanced'
+    // 默认（后端 local_terrain_api 的 create_local_terrain_task 把空串当未传）。
+    // 写死 '14' / 'balanced'
     // 会在控件缺席或被清空时用前端的默认盖掉运维配的 terrain_local_maxzoom /
     // terrain_quality_preset —— 而 DEM 分支（startDemTaskTerrainTiling）本来就送空串，
     // 两边不一致就是同一份 DEM 从两个入口切出不同产物。
@@ -2332,7 +2333,8 @@ async function startDemTaskTerrainTiling() {
     const btn = document.getElementById('createProcessBtn');
     btn.disabled = true;
     try {
-        // 三个字段的空串一律表示「未传，走配置默认」（terrain_api.py:38-51）。
+        // 三个字段的空串一律表示「未传，走配置默认」（后端 terrain_api 的
+        // start_dem_tiling 把空串归一成 None）。
         // 法线在这条分支送的是真布尔：JSON body 不做字符串化，后端
         // coerce_vertex_normals 同时收真布尔与 'true'/'false' 两种形态。
         // 同样不能读 checkbox 的 .value —— 它恒为 'on'，后端白名单不认，400。

@@ -384,7 +384,7 @@ def test_terrain_submit_sends_the_preset_fields():
 def test_normals_checkbox_is_submitted_as_its_checked_state():
     """法线开关必须提交 checked 状态，不能提交 checkbox 的 .value。
 
-    后端 coerce_vertex_normals（src/services/geo_validation.py:98-131）是**严格
+    后端的 `src/services/geo_validation.py` 里 `coerce_vertex_normals` 是**严格
     白名单**：只认真布尔与字面量 'true'/'false'，'on' 一律 400。而
     - checkbox 的 `.value` 恒为 'on'，与勾没勾无关（照抄本文件其它字段的
       `el?.value || '默认'` 写法就是这个下场）；
@@ -413,8 +413,9 @@ def test_normals_checkbox_is_submitted_as_its_checked_state():
 def test_terrain_submit_lets_the_backend_supply_the_defaults():
     """三个字段的兜底一律是空串，前端不许自己抄一份默认值。
 
-    空串 = 未传 = 走配置默认，这是后端定的三态语义（local_terrain_api.py:39-51、
-    terrain_api.py:38-51 都把空串当未传）。前端写 `|| '14'` / `|| 'balanced'`
+    空串 = 未传 = 走配置默认，这是后端定的三态语义（local_terrain_api
+    的 create_local_terrain_task、terrain_api 的 start_dem_tiling
+    都把空串当未传）。前端写 `|| '14'` / `|| 'balanced'`
     的后果不是「多一层保险」，是**同一份 DEM 从两个入口切出不同产物**：历史页
     详情面板的起切按钮不带 body，走的是配置里的 terrain_local_maxzoom /
     terrain_quality_preset；这张表单一旦控件缺席或被清空，就用前端抄的那份默认

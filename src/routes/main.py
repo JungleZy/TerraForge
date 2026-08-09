@@ -43,9 +43,9 @@ def _flat_config():
             for key, data in config_manager.get_all().items()}
 
 
-# 出厂默认，与 DEFAULT_CONFIGS 逐字一致（database.py:91）—— 兜底值和出厂默认
-# 不一致就会造出「改了没反应」的假旋钮（local_terrain_task_manager.py:134-136
-# 为同一个键定过这条规矩）。
+# 出厂默认，与 `database.DEFAULT_CONFIGS` 里的 terrain_local_maxzoom 逐字一致
+# —— 兜底值和出厂默认不一致就会造出「改了没反应」的假旋钮
+# （local_terrain_task_manager._default_quality 为另一个配置键定过同一条规矩）。
 _FACTORY_LOCAL_MAXZOOM = 14
 
 
@@ -55,7 +55,8 @@ def _terrain_form_defaults(cfg):
     为什么不放在模板里：模板是这条链路上唯一记不了日志的一环。它此前自己钳层级、
     自己拿「均衡」那条 option 当兜底档，于是库里的 99 渲染成 14、'ultra' 渲染成
     均衡，页面看起来一切正常，运维要等到真起了切片作业才由
-    local_terrain_task_manager.py:128-130 吭一声。档位那半边还两个入口互相打架：
+    local_terrain_task_manager._default_maxzoom 的那条 warning 吭一声。
+    档位那半边还两个入口互相打架：
     同一个脏值从历史页详情面板起切（不带 body、走 validate_tiling_quality）是当场
     400，从这张表单却被静默改写成 balanced 一路切完 —— 一个入口硬拒、另一个悄悄改。
     这里是配置进模板前最后一个还有 logger 的地方，所以收口放在这里。
@@ -92,7 +93,7 @@ def _terrain_form_defaults(cfg):
     raw_preset = cfg.get('terrain_quality_preset') or ''
     if raw_preset != '':
         # 白名单直接取 geo_validation 的取值表，不抄第二份三个档位名
-        # （config_manager.py:292-294 定的规矩）。
+        # （config_manager._VALUE_RULES 里 terrain_quality_preset 那条定的规矩）。
         if raw_preset in TILING_QUALITY_OFFSETS:
             preset = raw_preset
         else:

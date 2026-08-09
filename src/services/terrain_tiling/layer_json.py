@@ -99,9 +99,10 @@ def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> Non
     是硬闸门（整层直接消失），报深由 available 逐层兜住（空层 isTileAvailable
     返回 false，Cesium 不去请求，代价是零），所以安全边是往深了报。
 
-    **available[i] 的绝对层号是 minzoom + i，不是 i。** 见
-    cesiumlab_terrain.py:1218（`for z in range(min_level, max_level + 1)` 逐层
-    append）与 :1383（`"minzoom": min_level`）。底图的原点是 0，任务的原点在底图
+    **available[i] 的绝对层号是 minzoom + i，不是 i。** 见 `cesiumlab_terrain.build_terrain`
+    里 `for z in range(min_level, max_level + 1)` 逐层 append 出的
+    `available_per_level`，以及它写进 layer.json 的 `"minzoom": min_level`。
+    底图的原点是 0，任务的原点在底图
     可用时是 min(8, 有效 max_level)（tiler 恒传 8，build_terrain 再往下钳）——
     按下标对齐会把任务的 z8 声明并到底图的 z0 上，
     文件全在而声明全错，Cesium 拿着错声明去请求不存在的瓦片，又踩回上面那条

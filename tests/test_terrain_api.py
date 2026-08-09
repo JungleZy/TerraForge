@@ -270,7 +270,8 @@ def test_terrain_start_rejects_unrecognized_vertex_normals(monkeypatch, tmp_path
     """认不出来的法线开关当场 400，不静默折成 False。
 
     静默折成 False 的话，用户勾了法线、瓦片却没烘 —— 而法线是烘进瓦片的，
-    事后想开只能重切（database.py:98）。
+    事后想开只能重切（见 `database.DEFAULT_CONFIGS` 里 terrain_vertex_normals
+    上方那条 ⚠️ 注释）。
     """
     app_mod, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")

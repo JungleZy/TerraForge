@@ -141,7 +141,8 @@ _CLICKABLE_READOUTS = {
 def test_clickable_statusbar_readouts_are_focusable_controls(isolated_app):
     """状态栏三个绑了 click 的读数项必须是 <button>，不能是 <span>。
 
-    旧行为（index.html:407,416,418）：三者都是
+    旧行为（templates/index.html 里 #statusTasks / #statusCoords /
+    #statusSelection 三处）：三者都是
     `<span class="statusbar-item statusbar-pill ...">`，没有 tabindex、
     没有 role、没有 keydown 分支，而 `.statusbar-copy { cursor: pointer }`
     只对鼠标兑现「这里能点」。键盘用户既开不了任务面板，也复制不到坐标。

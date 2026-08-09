@@ -1,7 +1,8 @@
 """DEM 地形切片必须能被中途停止。
 
-TileParams.stop_flag 字段（dem_task_tiler.py:55）、tile_dem_task_dir 的透传
-（:136）、build_terrain 的逐瓦片检查（cesiumlab_terrain.py:1427/1446）全都是
+TileParams.stop_flag 字段、tile_dem_task_dir 里把它透传给 build_terrain 的
+`stop_flag=params.stop_flag`、build_terrain 的逐瓦片检查（串行分支每瓦片、
+并行分支批间各一处 `stop_flag.is_set()`）全都是
 现成的 —— 缺的一直是 dem_task_manager 这个调用方。后果不止「停不下来」：切片
 线程不进 active_tasks，delete_task 的 is_alive() 守卫对它完全无效。
 """
@@ -91,7 +92,7 @@ def test_stopped_tiling_with_zero_rendered_is_not_a_failure(monkeypatch, tmp_pat
     dem_task_manager 的 `if total > 0 and rendered == 0: raise` 是给「切片器真的
     什么都没产出」准备的失败判据。中途停止会让它误命中：作业被记 failed、
     error_message 写成 "produced no tiles"，而真实原因是用户主动停的。
-    local_terrain_task_manager.py:482 早就有逐字对应的豁免。
+    local_terrain_task_manager._run_tiling_job 早就有逐字对应的豁免。
     """
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)

@@ -362,7 +362,7 @@ def test_deleted_task_emits_no_further_render_progress(monkeypatch, tmp_path):
 
     base_payload 是【渲染开始前】的整行快照，里面 status='running'。行已经
     DELETE 了还继续发，前端那边 key 既不在时间流也不在活动集（deleteTask 刚
-    摘干净），于是走 prependStreamRow 把行插回来（static/js/tasks.js:428）；
+    摘干净），于是走 static/js/tasks.js 的 prependStreamRow 把行插回来；
     而停止后 _execute 直接 return、再不发任何终态事件，那行就永久卡在
     「运行中」，只能刷新页面才消失。
     """

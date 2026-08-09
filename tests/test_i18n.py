@@ -65,10 +65,10 @@ def test_english_values_are_not_chinese():
 # 为什么按「key 形状的字面量」扫而不是按 `t(` 调用点扫：取文案有三种形状 ——
 # JS 的 `t('k')`、Jinja 的 `{{ t('k') }}`、Python 的 `t('k')` —— 但**键字面量出现在
 # 源码里**才是三者唯一的共同特征。有一批键根本不紧跟在 `t(` 后面：
-#   - static/js/config.js:246 的 `{ env: 'js.config.proxy.source_env', … }[source]`
-#   - src/routes/api.py:874 的 `_ACTIVE_TASK_TABLES` 元组（`t(label_key)` 在 27 行外）
-#   - static/js/map.js:1499 的同行三元 `t(cond ? 'a' : 'b')`
-#   - src/services/tile_url_probe.py:372 跨行三元的 else 分支
+#   - static/js/config.js 的 proxySourceLabel：`{ env: 'js.config.proxy.source_env', … }[source]`
+#   - src/routes/api.py 的 `_ACTIVE_TASK_TABLES` 元组（`t(label_key)` 在 27 行外）
+#   - static/js/map.js 的 submitContour：同行三元 `t(cond ? 'a' : 'b')`
+#   - src/services/tile_url_probe.py 的 recommend_concurrency：跨行三元的 else 分支
 # 实测：按 `t(` 扫只够得到 466 个键里的 457 个，**方向二会凭空多出 9 个假孤儿**
 # （上面四处共 9 个键）。那不是少一层保护，是会诱导下一个人真去删掉在用的键。
 #

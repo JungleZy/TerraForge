@@ -656,7 +656,8 @@ def _sweep_pending_deletions() -> int:
     """
     removed = 0
     try:
-        # 延迟 import 必须在 try 【里面】（与 _materialised_sweep_roots 的 :343
+        # 延迟 import 必须在 try 【里面】（与 _materialised_sweep_roots 里那句
+        # `from src.core.database import get_connection_context`
         # 同构）：它存在的理由就是防未来成环，一旦抛，外面没有任何一层接得住
         # —— 调用点 sweep_startup_residue 没套 try，会一路穿到 create_app()。
         from src.core.database import get_connection_context
@@ -671,7 +672,8 @@ def _sweep_pending_deletions() -> int:
                 return 0
             for row in rows:
                 # expanduser 在这里做一次，并且【同一个 target】既喂护栏又拿去
-                # exists()：护栏内部自己会 expanduser（见 :169），拿没展开的
+                # exists()：护栏内部自己会 expanduser（remove_task_dir_if_safe 里
+                # 的 `Path(task_dir).expanduser().absolute()`），拿没展开的
                 # `~/...` 去 exists() 恒为 False（实测），「删不干净就保留行」
                 # 那一支会对整类 ~ 路径失效 —— 正是这张表要防的事。
                 target = Path(row["path"]).expanduser()

@@ -77,7 +77,7 @@ new Cesium.Viewer("cesiumContainer", { terrainProvider: demOverlay });
 
 ## 4) 配置键 `terrain_base_parent_url`：改了要重新切片
 
-`parentUrl` 写的是哪个地址，由配置键 `terrain_base_parent_url` 决定，默认 `http://localhost:5000/terrain/base/layer.json`（`src/core/database.py:71`）。
+`parentUrl` 写的是哪个地址，由配置键 `terrain_base_parent_url` 决定，默认 `http://localhost:5000/terrain/base/layer.json`（`src/core/database.py` 的 `DEFAULT_CONFIGS`）。
 
 **这个键在配置页上没有输入框**，只能通过 `PUT /api/config` 改，或者直接改数据库 `config` 表。
 

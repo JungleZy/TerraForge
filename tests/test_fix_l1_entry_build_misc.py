@@ -301,7 +301,8 @@ def test_verify_no_missing_libs_ok_when_resolved(monkeypatch, tmp_path):
 # --------------------- build.sh / build.bat 的 GDAL 闸门(scripts/check_gdal.py)
 #
 # 2026-08-08 前这里钉的是「requirements.txt 缺少 GDAL== pin 时报错」——那条断言
-# 把缺陷本身钉住了:requirements.txt 故意给的是范围(见该文件 :17),所以 `^GDAL==`
+# 把缺陷本身钉住了:requirements.txt 故意给的是范围(见该文件 GDAL 那行上方的
+# 「⚠ 这里【不能】用精确钉」注释),所以 `^GDAL==`
 # 恒不命中,build.sh 在 `set -euo pipefail` 下于赋值那一行静默 exit 1(连报错都打
 # 不出来),build.bat 则每次都拒绝构建。旧测试只截取「读 pin」那一段跑,喂的又是
 # 手写的 `GDAL==3.8.4`,所以永远看不到真 requirements.txt 会让脚本死掉。

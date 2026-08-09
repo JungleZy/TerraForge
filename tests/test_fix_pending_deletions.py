@@ -76,7 +76,8 @@ def test_pending_deletion_is_swept_and_row_cleared(monkeypatch, tmp_path):
 def test_out_of_bounds_path_is_dropped_not_retried_forever(monkeypatch, tmp_path):
     """越界路径永远删不掉，留在清单里只会每次启动重试一遍并刷 warning。"""
     db, cleanup = _setup(monkeypatch, tmp_path)
-    # DOWNLOADS_DIR 本身 —— remove_task_dir_if_safe 明确拒绝（:185-187）
+    # DOWNLOADS_DIR 本身 —— remove_task_dir_if_safe 明确拒绝
+    # （"Refusing to delete downloads root or its ancestor" 那条守卫）
     downloads_root = tmp_path / "downloads"
     _queue(db, downloads_root)
 

@@ -245,9 +245,10 @@ MESSAGES = {
         'en': 'Max tiling zoom level',
     },
 
-    # 档位三档的措辞与任务详情面板（js_history.py:202-226）保持同一套词：
+    # 档位三档的措辞与任务详情面板（`js_history.py` 的 `js.history.terrain.quality_*`
+    # 那组键）保持同一套词：
     # 精细 / 均衡 / 快速，参照物一律写「基准层级」。参照物不能写「默认」——
-    # 偏移表（geo_validation.py:77-81）的 +1/0/-1 是相对基准层级算的，与
+    # 偏移表（`geo_validation.TILING_QUALITY_OFFSETS`）的 +1/0/-1 是相对基准层级算的，与
     # terrain_quality_preset 当前配成哪一档无关；两处措辞不一致，用户会以为
     # 表单里选的档位和详情里显示的档位是两回事。
     'tpl.index.process.terrain_quality': {

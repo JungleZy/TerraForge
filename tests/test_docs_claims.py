@@ -211,7 +211,7 @@ _VERSION_CLAIM = re.compile(r"GDAL\s*(?:==|>=|<=|!=|~=|<|>)\s*\d[\d.,<>=!~]*")
 def test_no_doc_misquotes_the_requirements_gdal_spec():
     """凡是把某个 GDAL 版本表达式归给 `requirements.txt` 的行，必须逐字引对。
 
-    旧的 `INSTALL.md:120` 让读者去改 `requirements.txt` 里的 `GDAL==3.8.4`——那行
+    旧的 `docs/guides/INSTALL.md` 让读者去改 `requirements.txt` 里的 `GDAL==3.8.4`——那行
     从来不存在（实际是范围 `GDAL>=3.8,<4`，因为绑定是 sdist 现编、版本跟随机器）。
     同一处漂移也是 `./build.sh` 静默 exit 1 的成因：两个脚本查的是这个不存在的钉。
     """

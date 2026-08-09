@@ -117,13 +117,13 @@ base 自己的 `layer.json` **不带** `parentUrl`（`patch_layer_json_parent` �
 
 **输出目录必须与配置键 `terrain_global_base_path` 一致**，默认 `./assets/terrain/base_z8`（`src/core/database.py` 的 `DEFAULT_CONFIGS`）。路由 `/terrain/base/<path>` 是拿这个配置值去磁盘找文件的（`src/routes/terrain_static.py`），目录对不上就是 404，没有自动发现。切片侧的 `base_terrain.base_cache_dir()` 是同一个落点，两处对不上的后果不止 404 —— 底图判为不可用后会退回 parentUrl 级联，而那个 URL 正指向服务空目录的 `/terrain/base`，Cesium 对这个 404 不报错，会塞一个假 heightmap 图层污染共享 builder，任务自己的瓦片高程也跟着全错。
 
-相对路径的解析规则（`src/routes/terrain_static.py:63-87` 的 `_resolve_config_path`）：`./downloads/...` / `downloads/...` 开头挂到 `Config.DOWNLOADS_DIR`，其他相对路径挂到 `Config.BASE_DIR`，绝对路径原样使用。改配置最多 5 秒生效（路由层 5 秒 TTL 缓存），不用重启。
+相对路径的解析规则（`src/routes/terrain_static.py` 的 `_resolve_config_path`）：`./downloads/...` / `downloads/...` 开头挂到 `Config.DOWNLOADS_DIR`，其他相对路径挂到 `Config.BASE_DIR`，绝对路径原样使用。改配置最多 5 秒生效（路由层 5 秒 TTL 缓存），不用重启。
 
 构建完的加载 URL：`http://localhost:5000/terrain/base/layer.json`
 
 ## 两个没有配置界面的键
 
-`terrain_global_base_path` 和 `terrain_base_parent_url` 在配置页上**都没有输入框**（`templates/` 与 `static/` 里没有任何引用），只能通过 `PUT /api/config` 修改，或直接改数据库 `config` 表。默认值在 `src/core/database.py` 的 `DEFAULT_CONFIGS`（`:68`、`:71`）。
+`terrain_global_base_path` 和 `terrain_base_parent_url` 在配置页上**都没有输入框**（`templates/` 与 `static/` 里没有任何引用），只能通过 `PUT /api/config` 修改，或直接改数据库 `config` 表。默认值在 `src/core/database.py` 的 `DEFAULT_CONFIGS` 里这两个键上。
 
 两者的生效方式**不一样**，别搞混：
 

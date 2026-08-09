@@ -836,7 +836,8 @@ def test_out_of_range_maxzoom_config_falls_back(monkeypatch, tmp_path):
     """配置里的越界 maxzoom 软退回 14，不能把建任务整个打成 400。
 
     terrain_local_maxzoom 在 config_manager._UNCONSTRAINED_KEYS 里，写入侧
-    不校验。DEM 那条读同一个键是软退回（dem_task_manager.py:312-330）；
+    不校验。DEM 那条读同一个键是软退回（dem_task_manager.start_tiling 里
+    maxzoom is None 的分支）；
     这边裸 int() 会把 99 原样交给 validate_zoom 当场抛 —— 同一个坏配置在
     两个入口一个照跑一个 400。
     """
@@ -1108,7 +1109,8 @@ def test_dirty_config_quality_names_the_config_key_not_the_request_field(
 
     报成 `quality ('ultra') must be one of…` 会把用户指到一个他从未提交过的
     字段上 —— 真正要改的是设置页里的 terrain_quality_preset。DEM 侧
-    （dem_task_manager.py:337-343）早就这么做了，本地侧一直没跟。
+    （dem_task_manager.start_tiling 里 quality is None 的分支）早就这么做了，
+    本地侧一直没跟。
     """
     import pytest
 

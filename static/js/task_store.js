@@ -14,8 +14,9 @@
  * 改造前这两条路各写各的 DOM，是「双写」的根源；现在汇到同一个 state.tasks。
  *
  * ## 为什么不用 ES module
- * 全站脚本是普通 <script> 顺序加载、共享全局作用域（index.html:418-422），
- * 没有构建步骤。这里用 IIFE 挂 window.TaskStore，与 TerraSocket / TerraTheme
+ * 全站脚本是普通 <script> 顺序加载、共享全局作用域（templates/index.html 的
+ * extra_js 块），没有构建步骤。这里用 IIFE 挂 window.TaskStore，与
+ * TerraSocket / TerraTheme
  * 同一形态。IIFE 内的 const 不会和 history.js/tasks.js 的顶层 const 撞名
  * （那两个文件共享全局作用域，const 重名会直接 SyntaxError）。
  */
@@ -36,8 +37,8 @@
         // 顺序即渲染顺序，不在渲染层再排一次。
         tasks: [],
         // 每秒自增，唯一作用是让「耗时」这类依赖 Date.now() 的 computed 失效
-        // 重算。改造前这件事由 updateTimeDisplay 每秒遍历 DOM 写 textContent
-        // 完成（tasks.js:828-844）。
+        // 重算。改造前这件事由 tasks.js 的 updateTimeDisplay 每秒遍历 DOM 写
+        // textContent 完成。
         tick: 0,
         // 列表拉取失败的提示文案（''=无错）。改造前是直接往
         // #historyTableBody 写 innerHTML，Vue 接管容器后那么写会被下次
@@ -199,7 +200,8 @@
      * 已在 task_manager.py 的 progress_callback 里按 stop flag 掐掉这些广播。
      *
      * 前端不能替后端兜底:**重启**一个已取消/已失败的任务时,后端发的那发
-     * 权威 running 广播(task_manager.py:456,status 取自刚查的库行)和迟到的
+     * 权威 running 广播(task_manager.start_task 末尾那发 task_progress,status
+     * 取自刚查的库行)和迟到的
      * 推送长得一模一样,任何基于「这个 key 曾经进过终态」的钳制都会把重启
      * 一起拦掉 —— 用户看到的是「点了启动没反应」。
      */

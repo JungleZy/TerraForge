@@ -5,8 +5,8 @@
 由 docs/assets/images/phase2-baseline/ 的截图 + 计算值对拍覆盖。
 
 为什么需要这些断言：style.css 曾经有一整块「统一字体大小系统」，用
-!important 重新声明前面已定义过的选择器（.form-label 在 :902 是 .9rem、
-在 :1338 变 .875rem!important）。后果是改前面的规则不生效。本文件的核心
+!important 重新声明前面已定义过的选择器（`.form-label` 先声明成 .9rem、
+后面那一块又把它改成 .875rem!important）。后果是改前面的规则不生效。本文件的核心
 断言就是防止这种自我覆盖的形态复活。
 """
 
@@ -1965,7 +1965,8 @@ def test_bootstrap_dark_theme_is_enabled_on_the_html_element():
 
     为什么这一个属性是整个任务的核心：Bootstrap 5.3 的
     `[data-bs-theme=dark]` 选择器块里第一条声明就是 `color-scheme: dark`
-    （已核对 CDN 源码 bootstrap@5.3.0/dist/css/bootstrap.css:127-128），
+    （已核对 CDN 源码 bootstrap@5.3.0/dist/css/bootstrap.css 的
+    `[data-bs-theme=dark]` 块），
     浏览器据此把**原生控件**——select 弹层、number 微调箭头、文件选择按钮
     ——整体渲染成深色。同时它把 `--bs-tertiary-bg` 从 #f8f9fa 翻成 #2b3035，
     修掉 `.form-control::file-selector-button` 的灰白底。
@@ -3568,7 +3569,7 @@ def _strip_js_comments(src):
     """剥掉 JS 注释。
 
     行注释的正则带 `(?<!:)`，避免把 `https://...` 的后半截当注释吃掉
-    （map.js:64 的 OSM 瓦片 URL 就是这个形态）。
+    （`static/js/map.js` 里出现在字符串/注释中的 `http://` 就是这个形态）。
     """
     src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
     return re.sub(r'(?<![:\\])//[^\n]*', '', src)
@@ -4279,7 +4280,8 @@ _ctx_variants = [
     _BtnCtx({'btn', v}, label=f'.{v}（无特殊祖先）') for v in ALL_BTN_VARIANTS
 ]
 BUTTON_CONTEXTS = _ctx_variants + [
-    # index.html:168 —— 提交按钮，**默认 disabled**，本任务的核心缺陷所在
+    # templates/index.html 的 #createTaskBtn —— 提交按钮，**默认 disabled**，
+    # 本任务的核心缺陷所在
     _BtnCtx({'btn', 'btn-primary', 'w-100'}, element_id='createTaskBtn',
             label='#createTaskBtn（首页提交按钮）'),
     # tasks.js —— 活动任务行图标按钮，祖先是 .btn-group.btn-group-sm
@@ -4288,7 +4290,7 @@ BUTTON_CONTEXTS = _ctx_variants + [
     # （曾有一条「历史表 .btn-icon.btn-sm.btn-info（无 btn-group 祖先）」——
     #  「查看详情」图标按钮的上下文；2026-08 详情入口改为任务名按钮
     #  <button class="task-name">（不走 .btn 体系），该上下文随之移除。）
-    # config.html:218 / history.html:171 —— .config-section 内的按钮
+    # templates/_config_content.html 的 #configResetBtn —— .config-section 内的按钮
     _BtnCtx({'btn', 'btn-secondary'}, {'config-section'},
             label='配置页 .btn-secondary（.config-section 内）'),
 ]
@@ -7600,7 +7602,7 @@ class _DomChainCollector(HTMLParser):
                 return
 
 
-# base.html 把页面内容放进 `<main class="main-content">`（:95-97）。
+# base.html 把页面内容放进 `<main class="main-content">`。
 # 页面模板里的元素在浏览器里的真实祖先链因此多这两层。
 _PAGE_CHAIN_PREFIX = (
     ('html', set(), '', {}),

@@ -16,7 +16,7 @@ from src.services.config_manager import ConfigManager
 from src.services.hillshade_preview import ensure_hillshade
 # 读存量 output_path 的【唯一一套口径】。曾经这里另有一份
 # _resolve_dem_task_output_dir 走 geo_validation.resolve_output_dir，与 M10 的存量
-# 归一（src/core/database.py:264）对相对值的解释不同 —— 见 P1#5。
+# 归一（`database.normalize_stored_output_paths`）对相对值的解释不同 —— 见 P1#5。
 from src.services.task_cleanup import resolve_stored_output_dir
 
 logger = logging.getLogger(__name__)

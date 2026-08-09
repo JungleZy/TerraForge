@@ -202,9 +202,10 @@ def test_local_terrain_emit_failure_is_still_logged(monkeypatch, tmp_path, caplo
 def test_local_terrain_row_lookup_failure_never_escapes(monkeypatch, tmp_path, caplog):
     """取行本身失败（database is locked 等）只许记日志，不许往外抛。
 
-    唯一调用点 start_tiling:389 站在一个没有补偿的位置上：状态已 commit 成
+    唯一调用点 —— start_tiling 里的 `self._emit_progress(task_id)` —— 站在一个
+    没有补偿的位置上：状态已 commit 成
     running、线程已登记进 active_tasks/stop_flags，而 L2 的回补块（清登记 +
-    置 failed）要到下一行 th.start() 才开始。异常从 :389 逃出去谁也接不住，
+    置 failed）要到下一行 th.start() 才开始。异常从这里逃出去谁也接不住，
     留下的是一个行停在 running、登记里挂着永不启动的线程、路由却返 500 的
     任务 —— 可恢复，但不该发生。
 

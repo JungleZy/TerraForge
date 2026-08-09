@@ -907,7 +907,7 @@ class ContourTaskManager:
                 # 行还在吗。删除运行中的任务会把行 DELETE 掉，而 base_payload 是
                 # 【渲染开始前】的整行快照,里面 status='running' —— 行没了还继续
                 # emit,前端那边 key 既不在时间流也不在活动集(deleteTask 刚摘干净),
-                # 于是走 prependStreamRow 把行插回来(static/js/tasks.js:428);而
+                # 于是走 static/js/tasks.js 的 prependStreamRow 把行插回来;而
                 # 停止后本方法直接 return、再不发任何终态事件,那行就永久卡在
                 # 「运行中」,只能刷新页面才消失。
                 #

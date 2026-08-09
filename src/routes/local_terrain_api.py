@@ -41,11 +41,12 @@ def create_local_terrain_task():
         maxzoom = validate_zoom(maxzoom_raw, "maxzoom") if maxzoom_raw not in (None, "") else None
         quality_raw = request.form.get("quality")
         # 档位跟 maxzoom 同形：路由先挡一道（管理器的 create_task_with_files
-        # 还会再校验一次，local_terrain_task_manager.py:181），非法值在任何
+        # 里那次 validate_tiling_quality 还会再校验一次），非法值在任何
         # 文件落盘之前就 400。
         quality = (validate_tiling_quality(quality_raw)
                    if quality_raw not in (None, "") else None)
-        # 法线没有第二道网：管理器只做 bool()（同文件 :184），而
+        # 法线没有第二道网：管理器只做 bool()（create_task_with_files 里的
+        # `vertex_normals = bool(vertex_normals)`），而
         # bool('false') is True。这里的 coerce_vertex_normals 是唯一把关点，
         # 它同时区分「未传（None/空串）走配置默认」与「显式 false 是用户关掉」。
         vertex_normals = coerce_vertex_normals(request.form.get("vertex_normals"))

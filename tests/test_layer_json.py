@@ -296,11 +296,11 @@ def test_merge_keeps_base_levels_deeper_than_the_task(tmp_path):
 def test_merge_aligns_by_absolute_level_not_by_index(tmp_path):
     """两侧 available 的原点不同时必须按**绝对层号**对齐，输出归一到 z0。
 
-    `available[i]` 的绝对层号是 `minzoom + i` —— 见
-    cesiumlab_terrain.py:1218（`for z in range(min_level, max_level + 1)` 逐层
-    append）与 :1383（`"minzoom": min_level`）。今天任务侧下标 0 恰好就是 z0，
-    只是因为 dem_task_tiler.py:87 把 min_level 写死成 0；底图可用时任务只需要切
-    z8+，任务侧的原点就变成 8 了。
+    `available[i]` 的绝对层号是 `minzoom + i` —— 见 `cesiumlab_terrain.build_terrain`
+    里 `for z in range(min_level, max_level + 1)` 逐层 append 出的
+    `available_per_level`，以及它写进 layer.json 的 `"minzoom": min_level`。
+    今天任务侧下标 0 恰好就是 z0，只是因为随包底图不可用时 `tile_dem_task_dir`
+    的 `min_level` 取 0；底图可用时任务只需要切 z8+，任务侧的原点就变成 8 了。
 
     按下标对齐会把任务的 z8 声明并到底图的 z0 上：文件全在，声明全错，Cesium
     拿着错声明去请求不存在的瓦片 → 404 → 假 heightmap 图层 → 共享 builder 污染

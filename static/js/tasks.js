@@ -426,10 +426,12 @@ function updateTaskProgress(data) {
     normalized.speed_at = hasSpeed ? Date.now() : null;
 
     // 首次见到这个任务:试着插进时间流(只有在第 1 页、且状态筛选允许时
-    // prependStreamRow 才会真插 —— 见它自己的守卫 :385-387)。**插没插都
+    // prependStreamRow 才会真插 —— 见它自己开头那道「已在流里就原地更新」的
+    // 守卫)。**插没插都
     // 要继续 commit** —— 活动集必须写:
     //   1. 不写状态栏就漏算这个任务(进行中数量、汇总进度全少一份);
-    //   2. 更糟的是 handleTaskFailed 的 known 守卫(:486)会为 false,
+    //   2. 更糟的是 handleTaskFailed 的 known 守卫(它开头那句
+    //      `if (!known) return;`)会为 false,
     //      直接 return —— 没 toast、没红行,任务失败得完全静默。
     // 时间流里没这一行时 commit 只写活动集,这正是它的既定语义。
     if (!window.TaskStore.has(key) && !window.TaskStore.getActive(key)) {
