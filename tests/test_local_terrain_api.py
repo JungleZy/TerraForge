@@ -1054,3 +1054,76 @@ def test_task_detail_response_carries_the_preset_and_normals(monkeypatch, tmp_pa
     # 前端据此回落到基准值并标明。
     assert task["effective_maxzoom"] is None
     assert task["maxzoom"] == 10
+
+
+# --------------------------------------------------------------------------
+# #9 / #7：脏库值与脏配置值的失败形态
+# --------------------------------------------------------------------------
+
+
+def test_dirty_db_quality_does_not_strand_the_task_in_running(monkeypatch, tmp_path):
+    """start_tiling 抛出去时行不能停在 running。
+
+    读库值的三行转换（maxzoom / quality / vertex_normals）此前排在
+    conn.commit() 之后：脏值抛出去时 status='running' 已经落地，except 里的
+    rollback 是 no-op，切片线程又根本没起来 —— 行永久卡在 running，界面上是一个
+    永远转不完的任务，删都得手动。
+    """
+    import pytest
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    def fake_tile(task_dir, out_dir, params):
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+    task_id = mgr.create_task_with_files(
+        name="local-dirty", files=[("a.tif", b"fake")], maxzoom=11)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+    assert mgr.get_task(task_id)["status"] == "completed"
+
+    # 只有直接改库才造得出这种值（PUT /api/config 与两个路由都挡得住）。
+    conn = db.get_connection()
+    try:
+        conn.execute("UPDATE local_terrain_tasks SET quality='ultra' WHERE id=?",
+                     (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(ValueError):
+        mgr.start_tiling(task_id)
+
+    assert mgr.get_task(task_id)["status"] != "running", (
+        "脏库值抛在 commit 之后，任务卡死在 running")
+
+
+def test_dirty_config_quality_names_the_config_key_not_the_request_field(
+        monkeypatch, tmp_path):
+    """未传 quality 时校验的是配置值，报错就必须点名配置键。
+
+    报成 `quality ('ultra') must be one of…` 会把用户指到一个他从未提交过的
+    字段上 —— 真正要改的是设置页里的 terrain_quality_preset。DEM 侧
+    （dem_task_manager.py:337-343）早就这么做了，本地侧一直没跟。
+    """
+    import pytest
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    # ConfigManager.set() 有白名单挡着，绕过它直接写库造脏值。
+    conn = db.get_connection()
+    try:
+        conn.execute("UPDATE config SET value='ultra' WHERE key='terrain_quality_preset'")
+        conn.commit()
+    finally:
+        conn.close()
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    with pytest.raises(ValueError) as e:
+        mgr.create_task_with_files(name="local-badcfg-quality",
+                                   files=[("a.tif", b"fake")], maxzoom=11)
+
+    assert "terrain_quality_preset" in str(e.value), str(e.value)

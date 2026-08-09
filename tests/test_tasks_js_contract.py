@@ -1954,6 +1954,48 @@ def test_terrain_detail_shows_the_preset_actually_used():
     )
 
 
+def test_terrain_detail_shows_the_level_actually_tiled():
+    """两个面板显示的层级必须是产物事实（effective_maxzoom），不是请求的基准值。
+
+    `maxzoom` 那一列存的是用户填的基准层级，precision/speed 两档下它比实际切到
+    的层级差一级。改动前 DEM 面板写 `MaxZoom: 12` 而 layer.json 写 13，本地地形
+    模态更是把 `0 - ${task.maxzoom}` 当成一个精确范围显示 —— 两个都是具体的错
+    数字，不是「可以推导」。
+
+    落库那一半由 tests/test_terrain_api.py::
+    test_speed_preset_persists_the_level_it_actually_tiled 钉（它还顺带核对
+    layer.json）；这里钉前端真的读了那一列。
+    """
+    from src.i18n.catalog import MESSAGES
+
+    row_fn = _fn('terrainMaxzoomRowHtml', 'history.js')
+    assert re.search(r'\brow\.effective_maxzoom\b', row_fn), (
+        'terrainMaxzoomRowHtml 没读 effective_maxzoom —— 面板显示的还是基准值'
+    )
+    # 拿不到实际值时必须换标签 + 挂说明，不能让基准值顶着「实际」的名头。
+    for key in ('js.history.terrain.maxzoom_actual_label',
+                'js.history.terrain.maxzoom_base_label',
+                'js.history.terrain.maxzoom_base_hint'):
+        assert f"'{key}'" in row_fn, f'terrainMaxzoomRowHtml 没有引用 {key}'
+        entry = MESSAGES.get(key)
+        assert entry and entry['zh'] and entry['en'], f'{key} 在 catalog 里缺失或缺语种'
+    assert (MESSAGES['js.history.terrain.maxzoom_actual_label']['zh']
+            != MESSAGES['js.history.terrain.maxzoom_base_label']['zh']), (
+        '「实际层级」与「基准层级」用了同一个词 —— 那就分不出显示的是哪一个'
+    )
+
+    assert 'terrainMaxzoomRowHtml(job)' in _fn('refreshTerrainDetail', 'history.js'), (
+        'DEM 详情面板没有走 terrainMaxzoomRowHtml —— 显示的仍是请求的基准值'
+    )
+    # 本地地形的层级住在通用的 Zoom 那一格（`0 - N`），不走上面那个函数，
+    # 但同样必须优先取实际值。
+    view = _fn('viewTaskDetails', 'history.js')
+    assert re.search(r'task\.effective_maxzoom\s*\?\?\s*task\.maxzoom', view), (
+        '本地地形详情的 Zoom 那一格还在直接用 task.maxzoom —— '
+        'precision/speed 两档下它就是个错数字'
+    )
+
+
 def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
     """三个档位值必须经查表换成人话，不能把 precision/balanced/speed 直接吐给用户。
 
