@@ -69,6 +69,32 @@ def validate_zoom(zoom, name):
     return z
 
 
+# 切片档位 -> 相对基准层级的偏移。**这是全项目唯一的取值表**：config_manager
+# 的校验规则、管理器的缺省、路由的收参都从这里取，不要抄第二份。
+# 三档为什么是「基准 ±1」而不是换三角化后端：实测层级旋钮的性价比是简化后端
+# 的 2.4~3.9 倍，且它省时间、后端花时间。
+# 依据：docs/reference/terrain/tiling-presets-measured.md 第四节。
+TILING_QUALITY_OFFSETS = {
+    'precision': 1,   # 基准 +1：约 3.3 倍体积换 2.8 倍精度
+    'balanced': 0,    # 基准，默认
+    'speed': -1,      # 基准 -1：约 1/3.3 体积、1/2.5 耗时
+}
+DEFAULT_TILING_QUALITY = 'balanced'
+
+
+def validate_tiling_quality(value, name='quality'):
+    """校验切片档位,返回规范化后的 str。只接受取值表里的三个字面量。
+
+    刻意不做大小写归一、不做前后空白裁剪、不静默退回默认档:
+    build_terrain 早年有过「triangulator 拼错静默走 else 分支、作业照样
+    completed」的坑,这里当场报错、错误直指病因。
+    """
+    if not isinstance(value, str) or value not in TILING_QUALITY_OFFSETS:
+        allowed = ', '.join(sorted(TILING_QUALITY_OFFSETS))
+        raise ValueError(f"{name} ({value!r}) must be one of: {allowed}")
+    return value
+
+
 def resolve_output_dir(raw, base_dir=None):
     """把请求里的 output_path 解析成绝对路径，并强制落在 base_dir 之内。
 
