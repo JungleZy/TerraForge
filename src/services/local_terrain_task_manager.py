@@ -177,8 +177,13 @@ class LocalTerrainTaskManager:
         # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
         # 「改了档位重切、产物却一模一样且零报错」是这条路径最难查的假象。
         if quality is None:
-            quality = self._default_quality()
-        quality = validate_tiling_quality(quality)
+            # 报错里点名配置键而不是请求字段（范本 dem_task_manager.py:337-343）：
+            # 走到这条分支说明用户根本没提交过 quality，说 "quality (...) must be
+            # one of" 会把他指到一个不存在的输入上，真正该改的是配置页那一项。
+            quality = validate_tiling_quality(self._default_quality(),
+                                              "terrain_quality_preset")
+        else:
+            quality = validate_tiling_quality(quality)
         if vertex_normals is None:
             vertex_normals = self._default_vertex_normals()
         vertex_normals = bool(vertex_normals)
@@ -398,8 +403,6 @@ class LocalTerrainTaskManager:
                         f"Local terrain task {task_id} could not be started "
                         "because its status changed"
                     )
-                conn.commit()
-
                 maxzoom = int(row["maxzoom"])
                 # 档位/法线必须从库读回：本方法不带参，而「创建即切片」这条
                 # 唯一路径正是走它 —— create_task_with_files 末尾直接调
@@ -409,6 +412,13 @@ class LocalTerrainTaskManager:
                 # `or DEFAULT_TILING_QUALITY`：存量行的 quality 可能是 NULL。
                 quality = validate_tiling_quality(row["quality"] or DEFAULT_TILING_QUALITY)
                 vertex_normals = bool(row["vertex_normals"])
+                # ⚠️ 上面这三行读库值的转换都可能抛（脏库值），必须排在
+                # conn.commit() **之前**。抛在 commit 之后的话，except 里的
+                # conn.rollback() 是 no-op —— status='running' 已经落地而切片
+                # 线程根本没起来，行就永久卡在 running（_mark_running_task_failed
+                # 只覆盖「线程创建失败」那一条路径，覆盖不到这里）。
+                conn.commit()
+
                 parent_url = row["parent_url"] or _parent_layer_url()
                 # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
                 # 的约定）：冻结 exe 搬迁后旧绝对路径不会把切片写去错的地方。

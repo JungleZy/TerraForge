@@ -116,8 +116,12 @@ def test_unvalidated_config_cannot_make_the_page_unsubmittable(client, monkeypat
                                                                raw, expected):
     """写入侧不校验的配置值，渲染出来也必须过得了控件自己的 min/max。"""
     from src.routes import main as main_route
+    # stub 必须**叠在真实 get_all() 之上**，不能整个替成单键 dict：那样页面上
+    # 其余由配置驱动的数字框全渲染成 value=""，被 _violations 的空值分支跳过，
+    # 下面那句「将来新增的配置驱动数字框也会在这里红」就成了假话。
+    real = main_route.config_manager.get_all()
     monkeypatch.setattr(main_route.config_manager, 'get_all',
-                        lambda: {'terrain_local_maxzoom': {'value': raw}})
+                        lambda: {**real, 'terrain_local_maxzoom': {'value': raw}})
 
     html = client.get('/').get_data(as_text=True)
     tag = next(t for t in _INPUT_RE.findall(html)
