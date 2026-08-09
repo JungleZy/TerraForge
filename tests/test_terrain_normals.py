@@ -356,7 +356,13 @@ def test_build_terrain_threads_the_normals_flag_into_every_task(tmp_path, monkey
 
 
 def test_build_terrain_turns_normals_on_by_default(tmp_path, monkeypatch):
-    """默认必须是开 —— 设计稿定的是「法线数据无条件写入，开关只在 Cesium 渲染端」。"""
+    """build_terrain 这一层的默认必须是开。
+
+    钉的是 **build_terrain 签名**那份默认，不是生产实际用的那份：应用侧
+    dem_task_tiler.TileParams.normals 默认已改成【关】（三档预设），显式透传
+    覆盖这里。留着这条是因为不显式传参的实验代码与新调用方继承的正是这一份，
+    而 CLI / 全球底图也走它。
+    """
     seen = []
     monkeypatch.setattr(ct, "DemSampler", _AnalyticSampler)
     monkeypatch.setattr(ct, "_worker_tile", lambda t: seen.append(t) or (0.0, 1.0, "grid"))

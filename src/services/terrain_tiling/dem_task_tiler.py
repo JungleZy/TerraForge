@@ -59,7 +59,7 @@ class TileParams:
     normals: bool = False
     # 档位偏移：精度 +1 / 均衡 0 / 速度 -1，叠加在 maxzoom 上，由 build_terrain
     # 落地（那里是 max_level 唯一的解析点）。取值表住在
-    # geo_validation.TILING_QUALITY_OFFSETS，不要在这里抄第二份。
+    # geo_validation.TILING_QUALITY_OFFSETS（Task 4 落地），不要在这里抄第二份。
     level_offset: int = 0
     # 进度回调/协作停止透传给 build_terrain（默认 None = 关闭）。放在 params
     # 而不是 tile_dem_task_dir 的独立参数：多个契约测试用 (task_dir, out_dir,

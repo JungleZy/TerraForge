@@ -1625,8 +1625,10 @@ async function previewTask(task) {
                 // 更坑的是它不 reject：拿不到 layer.json 时静默按默认假设建 provider
                 // （实测 hasWaterMask 变成 true），随后瓦片请求全 404，前端毫无提示。
                 //
-                // requestVertexNormals: true 不能省。瓦片里的 oct 法线段是无条件
-                // 落盘的（Task 6/7），少了这个选项**不是少下载几个字节**，而是
+                // requestVertexNormals: true 不能省。build_terrain 默认仍出 oct
+                // 法线段，但应用侧 TileParams.normals 默认【关】（三档预设），
+                // 所以任务瓦片可能有也可能没有 —— 随包底图与显式开了法线的任务
+                // 都还要它。少了这个选项**不是少下载几个字节**，而是
                 // vendored Cesium 1.143.0 里三处连锁失效：解码 worker 的扩展段
                 // 循环有 `extensionId === OCT_VERTEX_NORMALS && _requestVertexNormals`
                 // 双条件，法线段被跳过；`provider.hasVertexNormals` getter 是

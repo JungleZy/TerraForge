@@ -296,18 +296,18 @@ def test_unpack_failure_falls_back_instead_of_killing_the_job(tmp_path: Path, mo
     assert '"parentUrl": "https://example.com/parent"' in layer
 
 
-def test_degenerate_maxzoom_still_tiles_something(tmp_path: Path, monkeypatch):
-    """maxzoom < 8 的任务不能因为 min_level=8 切出零张瓦片却报成功。
+def test_tiler_hands_the_raw_maxzoom_and_a_constant_min_level(tmp_path: Path, monkeypatch):
+    """底图可用时 tiler 恒传 min_level=8，并原样交出用户请求的 maxzoom。
 
-    max_level(5) < min_level(8) 时 _tile_ranges() 产出空区间，任务 rendered=0
-    却 completed —— 又一款静默成功。
+    这两个值决定下游那道钳位的两个输入。maxzoom=5 是最能说明问题的取值：
+    交出去的是 8 和 5，min_level > max_level —— 若没人钳，_tile_ranges() 产出
+    空区间，任务 rendered=0 却报 completed，又一款静默成功。
 
-    钳位不在这里做：档位偏移后的最终层级只有 build_terrain 知道，所以 tiler
-    恒传 8，由 build_terrain 的 `min_level = min(min_level, max_level)` 收口
-    （守卫在 tests/test_fix_terrain_estimate_max_level.py 的
-    test_min_level_is_clamped_below_the_effective_max）。这里钉的是 tiler 这一
-    侧：它必须把**原始的** maxzoom 一起交出去，下游才钳得动 —— 若哪天有人在
-    tiler 里改传偏移后的终值，下游那道钳位就会钳错基准。
+    钳位**不在这里做**：档位偏移后的最终层级只有 build_terrain 知道，所以由它的
+    `min_level = min(min_level, max_level)` 收口。「真的没切成零张」由
+    tests/test_fix_terrain_estimate_max_level.py::test_min_level_is_clamped_below_the_effective_max
+    钉（同样的 8/5 组合，跑真实 build_terrain，断言 total > 0）；本条只钉 tiler
+    这一侧交出的两个入参，替身根本不切瓦片。
     """
     from src.services.terrain_tiling import dem_task_tiler as mod
 
@@ -333,7 +333,10 @@ def test_degenerate_maxzoom_still_tiles_something(tmp_path: Path, monkeypatch):
 
     assert seen["min_level"] == 8, "min_level 恒传 8，钳位由 build_terrain 负责"
     assert seen["max_level"] == 5, (
-        "tiler 必须原样交出用户请求的 maxzoom，下游才有正确的钳位基准")
+        "tiler 必须原样交出用户请求的 maxzoom，不能自己叠偏移 —— 否则下游会拿"
+        "偏移过的值当基准再叠一次。这里 level_offset 恒为 0，钉住『不自己算终值』"
+        "的是 test_tile_dem_task_dir_threads_normals_and_offset（offset=-1、"
+        "maxzoom=14，断言交出去的仍是 14）")
 
 
 def test_base_pipeline_runs_in_the_right_order(tmp_path: Path, monkeypatch):
@@ -398,7 +401,7 @@ def test_base_pipeline_runs_in_the_right_order(tmp_path: Path, monkeypatch):
 def test_tiler_unlinks_grafted_base_before_tiling(tmp_path: Path, monkeypatch):
     """重跑 maxzoom<8 的任务不许把瓦片写穿进共享底图缓存。
 
-    可达路径：maxzoom=5 → min_level=min(8,5)=5，任务自己就要写 z5。上一轮植入
+    可达路径：maxzoom=5 → 实际起切层级被钳成 5，任务自己就要写 z5。上一轮植入
     在 out_dir 里留下的是**指向共享缓存的硬链接**，而落盘走 Path.write_bytes
     （就地截断同一 inode），于是第二轮的 z5 瓦片直接改写 assets/terrain/base_z8
     里那份文件 —— 全局底图被污染，影响之后所有任务，零信号。

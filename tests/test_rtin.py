@@ -761,12 +761,18 @@ def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):
       - CLI / 全球底图    -> 'auto'（一次性构建，覆盖海洋与大片平原）
     依据见 docs/reference/terrain/tiling-presets-measured.md 第三节与第八节。
 
-    分叉之后这里还能钉的是：两份默认值都必须是 build_terrain 白名单里的值。
-    拼错会静默退回规则网格（build_terrain 入口校验的注释里记着这个坑），
-    而白名单本身由 test_build_terrain_rejects_unknown_triangulator 守。
-    两个具体字面量各有唯一的家，不在这里抄第三份：
-      'grid' -> tests/test_dem_task_tiler.py（TileParams -> build_terrain 透传）
-      'auto' -> tests/test_build_scripts_contract.py（全球底图脚本走 CLI 默认）
+    分叉之后 triangulator 这边还钉两样：**应用侧只钉合法性**（'grid' 的字面量
+    归它自己的家），**另外两份 'auto' 各有守卫**。三份副本一份不漏：
+      1. TileParams          -> 'grid'：这里只断言 in 白名单；字面量的家是
+         tests/test_dem_task_tiler.py（TileParams -> build_terrain 透传）
+      2. build_terrain 签名  -> 'auto'：**就钉在下面那条**。它没有别的家 ——
+         不显式传参的实验代码与未来的新调用方继承的正是这一份
+         （见 build_terrain 里「用 build_terrain 直接做实验时」那段注释）
+      3. CLI argparse        -> 'auto'：家在 tests/test_build_scripts_contract.py
+         ::test_global_base_build_keeps_the_adaptive_backend（全球底图走 CLI 默认）；
+         这里只断言 in 白名单，不抄第二份字面量
+    白名单本身由 test_build_terrain_rejects_unknown_triangulator 守；拼错会静默
+    退回规则网格（build_terrain 入口校验的注释里记着这个坑）。
 
     K 这里刻意不写死 0.15：唯一的字面量归 test_dem_task_tiler。
     """
@@ -790,6 +796,9 @@ def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):
     assert params.triangulator in accepted, (
         f"TileParams.triangulator {params.triangulator!r} 不是 build_terrain "
         f"接受的值，会被入口校验拒掉")
+    assert sig.parameters["triangulator"].default == "auto", (
+        f"build_terrain 签名默认变成了 {sig.parameters['triangulator'].default!r}；"
+        f"它是不显式传参的实验/新调用方继承的那一份，唯一的守卫就是这条")
 
     # CLI 的 K 必须与 DEFAULT_MAX_ERROR_K 同源，后端只钉合法性（有意分叉，
     # 'auto' 这个字面量的家在 tests/test_build_scripts_contract.py）。走真实的

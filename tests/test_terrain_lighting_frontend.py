@@ -118,10 +118,13 @@ def _from_url_call(src):
 def test_terrain_provider_requests_vertex_normals():
     """`CesiumTerrainProvider.fromUrl` 必须传 `requestVertexNormals: true`。
 
-    瓦片里的 oct 法线段是无条件落盘的，所以少了这个选项**不会**有任何
-    错误信号：瓦片照下、解析照过、layer.json 照样声明 octvertexnormals，
-    只是 Cesium 把那段字节跳过去，光照开关退化成全球日夜渐变。
-    这一行被「顺手清理」掉不会红任何别的测试。
+    随包底图与显式开了法线的任务瓦片都带 oct 法线段（应用侧 TileParams.normals
+    默认关，但 build_terrain 默认仍出），所以少了这个选项**不会**有任何错误
+    信号：瓦片照下、解析照过、layer.json 照样声明 octvertexnormals，只是
+    Cesium 把那段字节跳过去，光照开关退化成全球日夜渐变。
+    更糟的是 hasVertexNormals 是 provider 级单一标志：一个不带法线的任务图层
+    就能把随包底图的法线一起作废，所以这一行只会更重要，不会更可有可无。
+    它被「顺手清理」掉不会红任何别的测试。
     """
     args = _from_url_call(_strip_js_comments(_map_js()))
     assert re.search(r'requestVertexNormals\s*:\s*true', args), (

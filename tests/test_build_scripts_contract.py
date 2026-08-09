@@ -188,6 +188,11 @@ def test_global_base_build_keeps_the_adaptive_backend(tmp_path, monkeypatch):
     在全仓的家**（'grid' 的家在 tests/test_dem_task_tiler.py）。
     依据：docs/reference/terrain/tiling-presets-measured.md 第八节末尾。
     """
+    # 本文件其余各条只钉文本，这条要真跑 CLI 的 main()，会拖进 GDAL/numpy ——
+    # 见模块 docstring 里「只能钉文本」那句。没有 GDAL 的环境跳过，而不是把
+    # 整个文件从全绿变 ImportError。
+    pytest.importorskip("osgeo.gdal")
+
     from src.services.terrain_tiling import cesiumlab_terrain as ct
 
     # 前提：脚本不传 --triangulator，所以它拿的是 CLI argparse 的默认值。
@@ -195,7 +200,8 @@ def test_global_base_build_keeps_the_adaptive_backend(tmp_path, monkeypatch):
         "脚本显式传了 --triangulator，这条测试的前提（走 CLI 默认）不再成立")
 
     # 走真实 main()（只替掉 build_terrain），不去翻 parser 的内部结构 ——
-    # 与 tests/test_rtin.py:796-804 用的是同一手法，顺带钉住 CLI 到
+    # 与 test_rtin.py::test_triangulation_defaults_agree_across_every_copy 用的是
+    # 同一手法，顺带钉住 CLI 到
     # build_terrain 的透传。
     captured = {}
 

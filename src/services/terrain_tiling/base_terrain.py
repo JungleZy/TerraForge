@@ -497,8 +497,9 @@ def ungraft_base_from(tiles_dir: Path, base_dir: Path) -> int:
     植入留下的硬链接指向共享缓存 assets/terrain/base_z8，于是这一笔直接改写了
     全局底图里的那份文件：之后所有任务都拿到被污染的 z0-7，且没有任何信号。
 
-    可达路径不是理论上的：maxzoom <= 7 的任务 min_level = min(8, maxzoom) = maxzoom，
-    自己就要写 z0-7；重跑一次就正好打在上一轮植入的硬链接上。
+    可达路径不是理论上的：maxzoom <= 7 的任务实际起切层级就是 maxzoom（tiler 恒传
+    min_level=8，由 build_terrain 钳到有效 max_level 以下），自己就要写 z0-7；
+    重跑一次就正好打在上一轮植入的硬链接上。
 
     判据用 (st_dev, st_ino) 而不是「底图里有同名文件」：同一位置也可能躺着任务
     自己上一轮写的瓦片（退化任务与底图同层相撞），按名字摘会删掉任务数据，随后

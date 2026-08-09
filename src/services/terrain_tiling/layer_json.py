@@ -102,7 +102,8 @@ def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> Non
     **available[i] 的绝对层号是 minzoom + i，不是 i。** 见
     cesiumlab_terrain.py:1218（`for z in range(min_level, max_level + 1)` 逐层
     append）与 :1383（`"minzoom": min_level`）。底图的原点是 0，任务的原点在底图
-    可用时是 min(8, maxzoom) —— 按下标对齐会把任务的 z8 声明并到底图的 z0 上，
+    可用时是 min(8, 有效 max_level)（tiler 恒传 8，build_terrain 再往下钳）——
+    按下标对齐会把任务的 z8 声明并到底图的 z0 上，
     文件全在而声明全错，Cesium 拿着错声明去请求不存在的瓦片，又踩回上面那条
     404 → 假 heightmap → 共享 builder 污染的链。所以按绝对层号对齐，输出统一归一
     到 z0 为原点，minzoom 随之硬置 0（留着任务的 8 等于把刚植入的 z0-z7 全作废）。
