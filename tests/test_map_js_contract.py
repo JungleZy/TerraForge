@@ -350,3 +350,62 @@ def test_map_js_does_not_resolve_the_basemap_url_itself():
     assert re.search(r'function initMap\(\s*config\s*,\s*basemap\s*\)', src), (
         'initMap 必须接收服务端解析好的 basemap（templates/index.html 传入）'
     )
+
+
+
+def _preset_submit_bodies():
+    """两个提交入口的函数体（已剥注释）。上传走 FormData，DEM 走 JSON body。"""
+    code = _strip_comments(_map_js())
+    return {
+        'submitLocalTerrain': _fn_body(code, 'submitLocalTerrain'),
+        'startDemTaskTerrainTiling': _fn_body(code, 'startDemTaskTerrainTiling'),
+    }
+
+
+def test_terrain_submit_sends_the_preset_fields():
+    """两个提交入口都必须带上档位，否则用户选的档位静默丢失。
+
+    只接一个入口是这条链路最像「已完成」的半成品：上传 DEM 时档位生效、
+    对已下载的 DEM 任务起切时不生效（或反过来），两条路径的产物不一样大、
+    不一样细，而界面上是同一个下拉框、同一个按钮，零报错。
+    """
+    bodies = _preset_submit_bodies()
+    for name, body in bodies.items():
+        assert 'localTerrainQuality' in body, f'{name} 没读档位下拉'
+        assert 'localTerrainNormals' in body, f'{name} 没读法线复选框'
+    # 字段名要和后端对上：表单分支是 append('quality', ...)，JSON 分支是 quality:。
+    assert re.search(r"append\(\s*'quality'\s*,", bodies['submitLocalTerrain']), (
+        "submitLocalTerrain 的 FormData 里没有 quality 字段 —— "
+        "POST /api/terrain/local/tasks 会退回配置默认档")
+    assert re.search(r"\bquality\s*:", bodies['startDemTaskTerrainTiling']), (
+        "startDemTaskTerrainTiling 的 JSON body 里没有 quality 字段 —— "
+        "POST /api/terrain/dem/<id>/start 会退回配置默认档")
+
+
+def test_normals_checkbox_is_submitted_as_its_checked_state():
+    """法线开关必须提交 checked 状态，不能提交 checkbox 的 .value。
+
+    后端 coerce_vertex_normals（src/services/geo_validation.py:98-131）是**严格
+    白名单**：只认真布尔与字面量 'true'/'false'，'on' 一律 400。而
+    - checkbox 的 `.value` 恒为 'on'，与勾没勾无关（照抄本文件其它字段的
+      `el?.value || '默认'` 写法就是这个下场）；
+    - 把原生 checkbox 直接塞进 FormData 同样送 'on'、没勾时干脆不发字段。
+    两种写法都是每次提交 400，而错误只在通知条上一闪。
+    """
+    bodies = _preset_submit_bodies()
+
+    form = re.search(r"append\(\s*'vertex_normals'\s*,([^\n]*)\)",
+                     bodies['submitLocalTerrain'])
+    assert form, "submitLocalTerrain 的 FormData 里没有 vertex_normals 字段"
+    json_field = re.search(r"\bvertex_normals\s*:([^\n]*)",
+                           bodies['startDemTaskTerrainTiling'])
+    assert json_field, "startDemTaskTerrainTiling 的 JSON body 里没有 vertex_normals 字段"
+
+    for label, expr in (('FormData 分支', form.group(1)),
+                        ('JSON 分支', json_field.group(1))):
+        assert '.checked' in expr, (
+            f'{label} 提交的不是 checkbox 的 checked 状态：{expr.strip()}')
+        assert '.value' not in expr, (
+            f'{label} 读了 checkbox 的 .value（恒为 on，后端 400）：{expr.strip()}')
+        assert "'on'" not in expr, (
+            f"{label} 出现了 'on' —— 后端白名单只认 true/false：{expr.strip()}")

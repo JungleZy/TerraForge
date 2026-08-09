@@ -433,6 +433,21 @@ def test_tiling_preset_controls_exist_in_the_process_form():
         f'法线控件不是复选框：{tag.group(0)}')
 
 
+def test_preset_control_ids_match_on_both_sides():
+    """两边各写各的 id 不会报任何错：getElementById 返回 null，参数悄悄不发。
+
+    与 test_lighting_button_id_matches_on_both_sides 同一路数 —— 单边改名是
+    这类文本契约最常见的回归。
+    """
+    js = _strip_js_comments(_map_js())
+    html = _read(INDEX_HTML)
+    for el_id in ('localTerrainQuality', 'localTerrainNormals'):
+        assert f"getElementById('{el_id}')" in js, (
+            f'map.js 没有取 {el_id} —— 提交时不会带上这个参数')
+        assert f'id="{el_id}"' in html, (
+            f'index.html 上没有 id="{el_id}" —— map.js 那一侧会取到 null')
+
+
 def test_normals_checkbox_spells_out_what_turning_it_off_costs(monkeypatch, tmp_path):
     """渲染级：界面上必须写明关掉法线的两条后果，不能只写「省体积」。
 

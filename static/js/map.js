@@ -1891,6 +1891,16 @@ async function submitLocalTerrain() {
     fd.append('name', document.getElementById('processTaskName').value
         || t('js.map.process.local_terrain_default_name'));
     fd.append('maxzoom', document.getElementById('localTerrainMaxzoom')?.value || '14');
+    // 档位空串 = 不传 = 走配置默认（后端 local_terrain_api.py:42-47 把空串当未传）。
+    // 这里不写死 'balanced' 兜底：那等于在前端抄一份默认值，控件万一没渲染出来
+    // 就会用前端的默认覆盖掉运维配的 terrain_quality_preset。
+    fd.append('quality', document.getElementById('localTerrainQuality')?.value || '');
+    // ⚠️ 法线必须送 checked 状态。checkbox 的 .value 恒为 'on'（与勾没勾无关），
+    // 把它或 checkbox 本身丢进 FormData 送出去的都是 'on'，而后端
+    // coerce_vertex_normals 是严格白名单，'on' 一律 400。控件不在时送空串走
+    // 配置默认，不要送 'undefined'。
+    const normalsEl = document.getElementById('localTerrainNormals');
+    fd.append('vertex_normals', normalsEl ? String(normalsEl.checked) : '');
     for (const f of files) {
         fd.append('files', f);
     }
@@ -1940,10 +1950,19 @@ async function startDemTaskTerrainTiling() {
     const btn = document.getElementById('createProcessBtn');
     btn.disabled = true;
     try {
+        // 三个字段的空串一律表示「未传，走配置默认」（terrain_api.py:38-51）。
+        // 法线在这条分支送的是真布尔：JSON body 不做字符串化，后端
+        // coerce_vertex_normals 同时收真布尔与 'true'/'false' 两种形态。
+        // 同样不能读 checkbox 的 .value —— 它恒为 'on'，后端白名单不认，400。
+        const normalsEl = document.getElementById('localTerrainNormals');
         const resp = await fetch(`/api/terrain/dem/${demTaskId}/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ maxzoom: document.getElementById('localTerrainMaxzoom')?.value || '' }),
+            body: JSON.stringify({
+                maxzoom: document.getElementById('localTerrainMaxzoom')?.value || '',
+                quality: document.getElementById('localTerrainQuality')?.value || '',
+                vertex_normals: normalsEl ? normalsEl.checked : '',
+            }),
         });
         if (resp.ok) {
             showNotification(t('js.map.process.dem_tiling_started', { id: demTaskId }), 'success');
