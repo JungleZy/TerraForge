@@ -2631,7 +2631,10 @@ code {
     border: 0;
 }
 
-.detail-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem 1.5rem; }
+/* minmax(0, 1fr) 而不是 1fr：1fr 是 minmax(auto, 1fr)，某一格的 min-content
+   （长坐标串、长文件名）超过轨道宽时整张网格会被撑宽，套在 overflow-y:auto
+   的容器里（.tif-info--scroll）就换来一条幽灵横向滚动条。 */
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1.5rem; }
 .detail-item { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0; border-bottom: 1px solid var(--color-border); }
 /* A7 / Task 12：详情弹窗的**全部** 19 个字段名走这条规则。
    改前 --color-text-muted 对 .modal-content 底 #15171c 实测 3.09:1（不达 AA），
@@ -2639,7 +2642,7 @@ code {
    仍由 12px vs 14px 的字号断层承担。 */
 .detail-k { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
 .detail-v { font-size: var(--font-size-sm); color: var(--color-text-primary); }
-@media (max-width: 576px) { .detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 576px) { .detail-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* 任务详情弹窗的排版类。改前这些全是 base.html 里的内联 `style=` —— 整棵
    模板树 18 个内联 style 有 17 个挤在那一个组件里，其中 font-family 与
@@ -3289,6 +3292,88 @@ code {
 /* 超软阈值是「提醒」不是「错误」（0.1.4 起放开硬上限，创建时二次确认） */
 .tile-estimate--over {
     color: var(--color-warning);
+}
+
+
+/* ==========================================================================
+   数据处理弹窗：本地高程切片选完 tif 后的有效信息卡（#localTerrainTifInfo）
+
+   键值网格直接复用任务详情弹窗的 .detail-grid/.detail-item/.detail-k/.detail-v
+   （见本文件 2634 行附近）—— 同一个应用里「一组元数据」只该有一种长相。
+   这里只补外框、文件名行、长值占满两列、以及警告行三档配色。
+   ========================================================================== */
+.tif-info {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-tertiary);
+}
+
+/* 只有多文件时才给卡片封高：单个文件（最常见）永远不在已经会滚的弹窗里
+   再套一层滚动条 —— 嵌套滚动比长弹窗更难用。多文件不封高的话，选 100 个
+   granule 会把「创建处理任务」按钮顶到几千像素之外。类由 map.js
+   updateLocalTerrainTifInfo() 按文件数加。 */
+.tif-info--scroll {
+    max-height: 340px;
+    overflow-y: auto;
+}
+
+/* 分隔线由 map.js 给第 2 个起的文件块加 --sep 决定，而不是 `+` 兄弟组合符：
+   tests/test_css_contract.py 的按钮层叠模型不支持组合符，见那里的 _btn_branch_applies。 */
+.tif-info__file--sep,
+.tif-info__summary {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--color-border);
+}
+
+.tif-info__name {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-primary);
+}
+
+/* 截断发生在文件名这一层，不是 .tif-info__name 上：text-overflow 只作用于块
+   容器自己的行内内容，写在 flex 容器上完全不生效；而 flex item 默认
+   min-width:auto，nowrap 的长文件名会拒绝收缩、把 .tif-info__size 顶到卡片
+   外面被 overflow:hidden 裁掉 —— 文件大小整个看不见。 */
+.tif-info__filename {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tif-info__size {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+/* 坐标系名称、四至这类长值横跨两列，否则在 230px 的半列里要折三行 */
+.tif-info__item--wide {
+    grid-column: 1 / -1;
+}
+
+.tif-info__msg,
+.tif-info__warn {
+    margin-top: 6px;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+.tif-info__warn {
+    color: var(--color-warning);
+}
+
+/* 「这个文件切不了片」与「只是提醒」必须一眼分得开 */
+.tif-info__warn--fatal {
+    color: var(--color-danger);
 }
 
 /* 等高线预览面板（U6）：由 map.js contourPreviewPanel() 动态创建并 append 到

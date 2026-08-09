@@ -81,6 +81,40 @@ MESSAGES = {
         'en': 'Failed to read directory: {error}',
     },
 
+    # ---- /api/raster/inspect（选完 tif 的信息卡）----
+    # 这几条会被前端原样写进信息卡，所以必须是译文：服务层用 InspectError 带
+    # 键抛出，路由翻译后才回给浏览器（回 str(e) 就是中文界面上一句生英文）。
+    # 服务端自身的异常一律折成 inspect_failed，不把内部细节回显出去。
+    'api.raster.unknown_mode': {
+        'zh': '未知的解析模式',
+        'en': 'Unknown inspection mode',
+    },
+    'api.raster.files_not_a_list': {
+        'zh': 'files 必须是一个列表',
+        'en': 'files must be a list',
+    },
+    'api.raster.no_files': {
+        'zh': '没有需要解析的文件',
+        'en': 'No files to inspect',
+    },
+    'api.raster.too_many_files': {
+        'zh': '一次最多解析 {max} 个文件',
+        'en': 'Too many files (max {max} per request)',
+    },
+    'api.raster.entry_not_object': {
+        'zh': '每个文件条目必须是一个对象',
+        'en': 'Each file entry must be an object',
+    },
+    'api.raster.inspect_failed': {
+        'zh': '解析源文件失败',
+        'en': 'Failed to inspect source files',
+    },
+    'api.raster.body_too_large': {
+        'zh': '请求体过大：这条接口只接收文件头部标签，不接收文件本身',
+        'en': 'Request body too large: this endpoint accepts header tags only, '
+              'not the files themselves',
+    },
+
     # ---- /api/contour ----
     'api.contour.default_task_name': {
         'zh': '等高线瓦片',

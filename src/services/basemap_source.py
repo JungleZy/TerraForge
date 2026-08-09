@@ -54,24 +54,51 @@ BASEMAP_TILE_PATH = '/basemap/{z}/{x}/{y}'
 # max_level：超出这一层瓦片服务器返回 404，Cesium 会画成空白。不设上限的话
 #   用户一放大就是一片黑，且看不出是缩放过头还是底图挂了。
 # credit：Esri 的影像署名是使用条款要求的，不是可选装饰。
+# wgs84：这张图的瓦片格网是不是 WGS-84。**决定它能不能进自动回退链**，
+#   见下面 AUTO_FALLBACK_ORDER 的说明。
 BASEMAP_PRESETS: Dict[str, Dict[str, Any]] = {
     'esri': {
         'url': 'https://server.arcgisonline.com/ArcGIS/rest/services'
                '/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         'max_level': 19,
         'credit': 'Esri, Maxar, Earthstar Geographics',
+        'wgs84': True,
     },
     'google_satellite': {
         'url': 'https://mts0.googleapis.com/vt?lyrs=s&x={x}&y={y}&z={z}',
         'max_level': 21,
         'credit': '© Google',
+        'wgs84': True,
     },
     'google_roadmap': {
         'url': 'https://mts0.googleapis.com/vt?lyrs=m&x={x}&y={y}&z={z}',
         'max_level': 21,
         'credit': '© Google',
+        # lyrs=m 的中国区路网按 GCJ-02 绘制，与 WGS-84 的框选矩形错位数百米。
+        # 用户在配置页显式选它是他自己的决定；自动回退**不许**走到这里。
+        'wgs84': False,
+    },
+    'osm': {
+        'url': 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        'max_level': 19,
+        'credit': '© OpenStreetMap contributors',
+        'wgs84': True,
     },
 }
+
+# 自动回退链：配置的源取不到瓦片时，按这个顺序往下试（见
+# routes/basemap_static.py）。三条硬约束决定了这张表的内容：
+#
+# 1. **只放 WGS-84 的源。** 底图是用来框选下载范围的，静默换上一张 GCJ-02 的
+#    图等于让用户框错地方（中国境内偏移 100-700 米），而且没有任何提示。
+#    google_roadmap 因此不在链里。
+# 2. **同主机的源不算冗余。** google_roadmap 与 google_satellite 同为
+#    mts0.googleapis.com：卫星取不到时它也取不到，放进来是拿坐标系风险换零可用性。
+# 3. **链尾要换一条网络路径。** 实测过一种真实故障：Esri 的 CDN(Akamai) 封了
+#    代理出口 IP（403），而 Google 只有走代理才通 —— 两张卫星图分属两条路径，
+#    互为备份。osm 是第三条路径上的路网图（矢量风格、WGS-84），两张卫星图
+#    都不通时它还有机会出图，总比一颗蓝球强。
+AUTO_FALLBACK_ORDER = ('esri', 'google_satellite', 'osm')
 
 
 def resolve_basemap(value: Optional[str], *, tile_servers: Optional[str] = None,
@@ -114,6 +141,27 @@ def resolve_basemap(value: Optional[str], *, tile_servers: Optional[str] = None,
     }
 
 
+def fallback_candidates(resolved: Dict[str, Any]) -> list:
+    """配置的源 + 自动回退候选，按尝试顺序排列（第一个永远是用户配置的那个）。
+
+    候选只从 AUTO_FALLBACK_ORDER 里取，且跳过与配置源同名的那条。用户显式
+    选的源哪怕不是 WGS-84（google_roadmap / 自定义模板）也照样排第一 —— 那是
+    他自己的决定；自动**追加**的候选则一律是 WGS-84，理由见 AUTO_FALLBACK_ORDER。
+    """
+    chain = [resolved]
+    for name in AUTO_FALLBACK_ORDER:
+        preset = BASEMAP_PRESETS[name]
+        if name == resolved['source'] or not preset['wgs84']:
+            continue
+        chain.append({
+            'upstream': preset['url'],
+            'max_level': preset['max_level'],
+            'credit': preset['credit'],
+            'source': name,
+        })
+    return chain
+
+
 def client_descriptor(resolved: Dict[str, Any]) -> Dict[str, Any]:
     """resolve_basemap 的结果 -> 下发给浏览器的图层描述。
 
@@ -126,6 +174,10 @@ def client_descriptor(resolved: Dict[str, Any]) -> Dict[str, Any]:
         'max_level': resolved['max_level'],
         'credit': resolved['credit'],
         'source': resolved['source'],
+        # 实际在用的源与配置的源不一致时，前端要能说出来 —— 底图默默换了一张
+        # 而用户不知道，正是本项目最不能接受的那种「静默」。
+        'configured_source': resolved.get('configured_source', resolved['source']),
+        'fallback': resolved.get('fallback', False),
     }
 
 

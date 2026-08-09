@@ -6827,8 +6827,11 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 25 -> 26（状态映射收口）：base.html 新增 static/js/task_status.js
     # （getStatusColor / getStatusText / getStatusStroke 的唯一实现；改前
     # tasks.js 与 history.js 各有一份，首页同时加载时后者静默遮蔽前者）。
-    assert len(refs) == 26, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 26 处。"
+    # 26 -> 27（高程切片 TIF 信息卡）：index.html 新增 static/js/geotiff_meta.js
+    # （浏览器侧 GeoTIFF 头部解析；只在首页的处理弹窗里用到，故挂在
+    # index.html 的 extra_js 而不是 base.html）。
+    assert len(refs) == 27, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 27 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )

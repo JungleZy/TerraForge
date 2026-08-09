@@ -269,6 +269,11 @@
                         <div id="localTerrainUploadRow">
                             <label for="localTerrainFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
                             <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
+                            {# 选完 tif 立刻填的有效信息卡：坐标系 / 范围 / 分辨率 /
+                               数据类型 / 建议层级。内容由 map.js updateTifInfo()
+                               写入（前端读 GeoTIFF 头部 -> POST /api/raster/inspect
+                               做地理解释）。等高线下面还有一张同款。 #}
+                            <div class="tif-info" id="localTerrainTifInfo" aria-live="polite" hidden></div>
                         </div>
                         <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
                         {# 与下面档位同一个理由：写死 14 会和配置里的 terrain_local_maxzoom
@@ -322,6 +327,9 @@
                             <label for="contourFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
                             <input type="file" class="form-control" id="contourFiles" accept=".tif,.tiff" multiple>
                             <small class="form-text text-muted">{{ t('tpl.index.process.contour_source_hint') }}</small>
+                            {# 与高程切片同一张卡（map.js updateTifInfo），区别只在
+                               「建议最大层级」按等高线的 Web Mercator 口径算。 #}
+                            <div class="tif-info" id="contourTifInfo" aria-live="polite" hidden></div>
                         </div>
 
                         <label for="contourInterval" class="form-label mt-2">{{ t('tpl.index.process.contour_interval') }}</label>
@@ -454,6 +462,7 @@
 
 {% block extra_js %}
 <script src="{{ url_for('static', filename='js/map.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/geotiff_meta.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/tasks.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/history.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/config.js') }}" defer></script>

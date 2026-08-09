@@ -17,14 +17,21 @@
 """
 import importlib
 import os
+import re
 import sys
+import threading
 import urllib.error
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from conftest import fresh_import  # noqa: E402
 from src.core.config import Config  # noqa: E402
+from src.services import proxy_autodetect  # noqa: E402
+from src.services.basemap_source import (  # noqa: E402
+    BASEMAP_PRESETS, DOWNLOAD_SOURCE, fallback_candidates, resolve_basemap,
+)
 
 _PNG = b'\x89PNG\r\n\x1a\n' + b'\x00' * 32
 
@@ -65,9 +72,19 @@ def app_ctx(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'test.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
     monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
-    for mod in ('app', 'src.core.database'):
-        sys.modules.pop(mod, None)
-    app_mod = importlib.import_module('app')
+    # create_app() 会起一条 proxy-autodetect 后台线程，而它探代理用的正是
+    # urllib.request.build_opener —— 与下面 _stub 打的是同一个 stdlib 符号
+    # （route_mod.urllib 就是 urllib 包本身）。任何有代理候选的机器上
+    # （设了 HTTP_PROXY，或本地开着 7890）那条线程都会抢到替身 opener，
+    # 把自己的探测 URL 追加进 up.requests —— `up.requests == []`、
+    # `len(up.requests) == 1` 这些断言全变成竞态，而且只在部分机器上翻红
+    # （发布流程三个平台都跑一遍）。探测对本文件毫无价值：代理值一律由
+    # _stub 直接给定，所以起手就把它关掉。
+    monkeypatch.setattr(proxy_autodetect, 'start_background_autodetect',
+                        lambda *a, **k: False)
+    # fresh_import 而不是裸 sys.modules.pop：裸 pop 不还原，会把绑在已删除
+    # tmp_path 上的 app 实例留给后面的测试文件（conftest 开篇的 M23）。
+    app_mod = fresh_import(monkeypatch, 'app', 'src.core.database')[0]
     app_mod.app.config['TESTING'] = True
     route_mod = importlib.import_module('src.routes.basemap_static')
     return app_mod.app.test_client(), route_mod
@@ -225,6 +242,11 @@ def test_config_is_not_read_from_sqlite_on_every_tile(app_ctx, monkeypatch):
     """
     client, route_mod = app_ctx
     _stub(monkeypatch, route_mod, _FakeUpstream())
+    # TTL 必须大到这 8 次请求不可能跨过去：真 5 秒下这条用例是在赌墙钟
+    # ——机器一慢（CI、并行跑）缓存就在中途过期重填，calls 变成 6 而断言翻红，
+    # 与被测的那条缺陷毫无关系。下面 test_changing_the_source... 已经单独
+    # 钉住「TTL 到期要重读」，这里只关心命中期内的读库次数。
+    monkeypatch.setattr(route_mod, '_SOURCE_TTL_S', 1e9)
 
     calls = []
     real_get = route_mod.config_manager.get
@@ -321,3 +343,356 @@ def test_link_local_upstream_is_refused_at_fetch_time(app_ctx, monkeypatch):
 
     assert client.get('/basemap/1/0/0').status_code == 502
     assert up.requests == [], '拒绝之后不该有任何上游请求发出去'
+
+
+
+# ---------------------------------------------------------------- 自动回退链
+#
+# 真实故障（2026-08）：Esri 的 CDN(Akamai) 封了用户代理的出口 IP，每块底图瓦片
+# 403；而这台机器上 Google 只有走代理才通 —— 两张卫星图分属两条网络路径。
+# 结果是配置里选着 Esri 的用户对着一颗蓝色地球，日志里有 403 但界面上没有。
+
+class _PerHostUpstream:
+    """按上游主机分别决定成功/失败的替身 opener。
+
+    routes 里 build_opener 只调一次拿到 opener、之后每个候选各 open 一次，
+    所以一个实例就能覆盖「第一张源挂了、第二张通」这条链。
+    """
+
+    def __init__(self, failures):
+        self.failures = failures        # {url 子串: 要抛的异常}
+        self.requests = []
+
+    def open(self, request, timeout=None):
+        self.requests.append(request.full_url)
+        for needle, error in self.failures.items():
+            if needle in request.full_url:
+                raise error
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return _PNG
+
+    @property
+    def headers(self):
+        return {'Content-Type': 'image/jpeg'}
+
+
+def _esri_403():
+    return urllib.error.HTTPError('http://x', 403, 'Forbidden', {}, None)
+
+
+def _http_error(code, reason='Upstream said so'):
+    return urllib.error.HTTPError('http://x', code, reason, {}, None)
+
+
+def test_auto_fallback_only_offers_wgs84_sources():
+    """回退链是自动的、无人确认的 —— 放一张 GCJ-02 的图进去，用户会在偏移
+    100-700 米的底图上框选而毫不知情。google_roadmap（lyrs=m）因此必须缺席。"""
+    chain = fallback_candidates(resolve_basemap('esri'))
+    assert [c['source'] for c in chain][0] == 'esri', '配置的源永远排第一'
+    for candidate in chain[1:]:
+        assert BASEMAP_PRESETS[candidate['source']]['wgs84'], (
+            f"{candidate['source']} 不是 WGS-84，不能进自动回退链")
+    assert 'google_roadmap' not in [c['source'] for c in chain]
+
+
+def test_blocked_source_falls_back_to_the_next_one(app_ctx, monkeypatch):
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403()})
+    _stub(monkeypatch, route_mod, up)
+
+    r = client.get('/basemap/2/1/1')
+
+    assert r.status_code == 200 and r.data == _PNG
+    assert 'arcgisonline.com' in up.requests[0], '配置的源必须先试'
+    assert 'googleapis.com' in up.requests[1], '再退到链上的下一张卫星图'
+
+
+def test_fallback_is_reported_to_the_client(app_ctx, monkeypatch):
+    """底图默默换了一张而界面不说，正是本项目最不能接受的那种静默。"""
+    client, route_mod = app_ctx
+    _stub(monkeypatch, route_mod, _PerHostUpstream({'arcgisonline.com': _esri_403()}))
+
+    client.get('/basemap/2/1/1')
+    bm = client.get('/api/basemap').get_json()['basemap']
+
+    assert bm['fallback'] is True
+    assert bm['source'] == 'google_satellite'
+    assert bm['configured_source'] == 'esri'
+    # max_level / 署名必须跟着实际那张图走，否则放大层数和版权字样都是错的
+    assert bm['max_level'] == 21
+    assert bm['credit'] == '© Google'
+
+
+def test_working_source_reports_no_fallback(app_ctx, monkeypatch):
+    client, route_mod = app_ctx
+    _stub(monkeypatch, route_mod, _PerHostUpstream({}))
+
+    client.get('/basemap/2/1/1')
+    bm = client.get('/api/basemap').get_json()['basemap']
+
+    assert bm['fallback'] is False
+    assert bm['source'] == bm['configured_source'] == 'esri'
+
+
+def test_a_dead_source_is_not_retried_on_every_tile(app_ctx, monkeypatch):
+    """没有冷却的话首屏几十张瓦片每张都要先把挂掉的源整整超时一遍。"""
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403()})
+    _stub(monkeypatch, route_mod, up)
+
+    client.get('/basemap/2/1/1')
+    up.requests.clear()
+    client.get('/basemap/2/1/2')
+
+    assert all('arcgisonline.com' not in u for u in up.requests), (
+        '冷却期内不该再碰挂掉的源')
+    assert len(up.requests) == 1
+
+
+def test_the_configured_source_is_retried_after_the_cooldown(app_ctx, monkeypatch):
+    """上游恢复了要能自己回来，不能等用户重启程序。"""
+    client, route_mod = app_ctx
+    monkeypatch.setattr(route_mod, '_COOLDOWN_S', 0.0)
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403()})
+    _stub(monkeypatch, route_mod, up)
+    client.get('/basemap/2/1/1')
+
+    up.failures.clear()          # Esri 恢复
+    up.requests.clear()
+    r = client.get('/basemap/2/1/2')
+
+    assert r.status_code == 200
+    assert 'arcgisonline.com' in up.requests[0]
+    assert client.get('/api/basemap').get_json()['basemap']['fallback'] is False
+
+
+def test_whole_chain_down_reports_the_configured_sources_status(app_ctx, monkeypatch):
+    """整条链都挂时，用户想知道的是**他选的那张**怎么了，不是链尾那张。"""
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({
+        'arcgisonline.com': _esri_403(),
+        'googleapis.com': OSError('no route'),
+        'openstreetmap.org': OSError('no route'),
+    })
+    _stub(monkeypatch, route_mod, up)
+
+    assert client.get('/basemap/2/1/1').status_code == 403
+    assert len(up.requests) == 3, '放弃之前每个候选都要试过一次'
+
+
+def test_upstream_404_is_a_missing_tile_not_an_outage(app_ctx, monkeypatch):
+    """404 是每个 XYZ 服务说「这里没有图」的方式，不是故障信号。
+
+    Esri 的 World Imagery 在覆盖空洞和超出层级上限时就这么答。把它当上游挂掉
+    的话，一张缺图会让整个配置源冷却 60 秒、后续每张瓦片都换供应商、界面弹一次
+    根本没发生过的「底图已切换」——回退特性引入之前，缺图就只是缺图。
+    """
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _http_error(404, 'Not Found')})
+    _stub(monkeypatch, route_mod, up)
+
+    r = client.get('/basemap/2/1/1')
+
+    assert r.status_code == 404, '缺图要原样透传 404'
+    assert len(up.requests) == 1, '缺一张图不该把整条回退链走一遍'
+    assert client.application.extensions.get(route_mod._CACHE_KEY_COOLDOWN) == {}, (
+        '404 不该把源标记成挂掉')
+    assert client.get('/api/basemap').get_json()['basemap']['fallback'] is False
+
+    # 冷却没写、回退状态没动 —— 下一张瓦片必须还是先打配置的源
+    up.failures.clear()
+    up.requests.clear()
+    assert client.get('/basemap/2/1/0').status_code == 200
+    assert 'arcgisonline.com' in up.requests[0]
+
+
+def test_a_one_off_4xx_does_not_mark_the_whole_source_down(app_ctx, monkeypatch):
+    """只有 403（封 IP）/429（限流）/5xx（上游自己崩了）是源级故障信号。
+
+    410 之类是针对**这一次请求**的答复：拿它冷却整个源 60 秒，等于让一块坏瓦片
+    决定其余几十块去哪儿取，而且会连带弹出一次「底图已切换」。回退照走，冷却
+    不写。
+    """
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _http_error(410, 'Gone')})
+    _stub(monkeypatch, route_mod, up)
+
+    assert client.get('/basemap/2/1/1').status_code == 200, '这一张仍要靠回退出图'
+    assert client.application.extensions[route_mod._CACHE_KEY_COOLDOWN] == {}, (
+        '单张瓦片的 410 不是「这个源挂了」')
+
+    up.failures.clear()
+    up.requests.clear()
+    assert client.get('/basemap/2/1/0').status_code == 200
+    assert 'arcgisonline.com' in up.requests[0], '没写冷却就该继续先试配置的源'
+
+
+def test_fallback_tiles_are_not_baked_into_the_browser_cache_for_a_day(app_ctx,
+                                                                       monkeypatch):
+    """回退瓦片长缓存会把地图永久变成两家拼图。
+
+    上游抖动 30 秒，浏览器就按 max-age=86400 存下另一家的影像；配置的源恢复后
+    缓存命中不再回源，用户对着一张 Esri/Google 混拼的地图，界面上没有任何补救
+    手段，而且它永远不会自己好。回退特性引入之前失败是 502，什么都不缓存。
+    """
+    client, route_mod = app_ctx
+    monkeypatch.setattr(route_mod, '_COOLDOWN_S', 0.0)
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403()})
+    _stub(monkeypatch, route_mod, up)
+
+    fallback = client.get('/basemap/2/1/1')
+    assert fallback.status_code == 200
+    max_age = re.search(r'max-age=(\d+)', fallback.headers['Cache-Control'])
+    assert max_age is not None, f"回退瓦片没有 Cache-Control：{fallback.headers}"
+    assert 0 < int(max_age.group(1)) <= 300, (
+        f'回退瓦片缓存了 {max_age.group(1)}s —— 上游恢复后地图会一直是拼图')
+
+    # 配置的源自己出的图仍然要长缓存：平移/缩放的重复请求得挡在本机
+    up.failures.clear()
+    direct = client.get('/basemap/2/1/2')
+    assert direct.status_code == 200
+    assert 'arcgisonline.com' in up.requests[-1], '前置条件：这张是配置源出的'
+    assert direct.headers['Cache-Control'] == 'public, max-age=86400'
+
+
+def test_configured_status_wins_even_after_the_source_was_cooled_down(app_ctx,
+                                                                     monkeypatch):
+    """「报配置源的状态码」这条契约恰好在配置源进了冷却时才会破。
+
+    冷却中的源被排到链尾，于是「第一个报错的候选」不再是配置的那个：Esri 403
+    之后的第二张瓦片里，链是 [google, osm, esri]，Google 超时先写下 504，用户
+    拿到的诊断信息与他配的那张图毫无关系。配置的源在链里只出现一次，让它
+    无条件覆盖即可。
+    """
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403()})
+    _stub(monkeypatch, route_mod, up)
+
+    assert client.get('/basemap/2/1/1').status_code == 200, '前置条件：先回退一次'
+
+    up.failures['googleapis.com'] = OSError('timed out')
+    up.failures['openstreetmap.org'] = OSError('no route')
+    up.requests.clear()
+
+    r = client.get('/basemap/2/1/2')
+
+    assert r.status_code == 403, (
+        f'整条链都挂时要报配置源(Esri)的 403，实际拿到 {r.status_code}')
+    assert any('arcgisonline.com' in u for u in up.requests), (
+        '冷却中的源排到链尾但不能被剔除，否则永远拿不到它的状态码')
+
+
+def test_nonstandard_upstream_status_does_not_become_a_500(app_ctx, monkeypatch):
+    """werkzeug 的 Aborter 对 520 这类没有异常类的状态码抛 LookupError。
+
+    Flask 把它转成 500，于是一个 Cloudflare 前置的自建镜像返回 520 时，用户看到
+    的是「服务端崩了」——正是本模块存在的理由（真实状态码被埋掉）的复现。
+    499/520/521/522/525/530 都在 default_exceptions 之外。
+    """
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({
+        'arcgisonline.com': _http_error(520, 'Web Server Returned an Unknown Error'),
+        'googleapis.com': _http_error(520, 'Web Server Returned an Unknown Error'),
+        'openstreetmap.org': _http_error(520, 'Web Server Returned an Unknown Error'),
+    })
+    _stub(monkeypatch, route_mod, up)
+
+    r = client.get('/basemap/2/1/1')
+
+    assert r.status_code == 502, (
+        f'抬不动的状态码要降级成 502，实际 {r.status_code}')
+
+
+def test_concurrent_tiles_fall_back_without_corrupting_the_cooldown(app_ctx,
+                                                                   monkeypatch):
+    """首屏是几十张瓦片同时打进来的 —— 回退与冷却全在这个并发下发生。
+
+    单线程用例看不见的问题在这里才会露头：候选顺序、冷却表写入、回退状态记录
+    都被多个请求线程同时碰。要求是全部出图、一个异常都不许有，且冷却表里只留
+    真正挂掉的那个源。
+    """
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403()})
+    _stub(monkeypatch, route_mod, up)
+
+    flask_app = client.application
+    results, errors = [], []
+
+    def fetch(n):
+        try:
+            results.append(flask_app.test_client().get(f'/basemap/4/{n}/3').status_code)
+        except Exception as e:                      # noqa: BLE001 —— 就是要抓住任何异常
+            errors.append(repr(e))
+
+    threads = [threading.Thread(target=fetch, args=(n,)) for n in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert errors == [], f'并发回退里抛了异常：{errors}'
+    assert results == [200] * 12, f'并发下有瓦片没出图：{sorted(results)}'
+    assert set(flask_app.extensions[route_mod._CACHE_KEY_COOLDOWN]) == {'esri'}, (
+        '只有真正挂掉的源该进冷却表')
+
+
+def test_fallback_never_leaks_the_upstream_address_to_the_browser(app_ctx, monkeypatch):
+    """回退是「上游地址不下发」这条硬约束上唯一的新开口。
+
+    前端一旦拿到上游地址就会有人图省事直连回去，CORS 与「底图不吃代理」两个坑
+    立刻复活。回退状态下描述符走的是另一条分支（active_basemap 叠加），所以这条
+    要在回退真的生效之后再查一遍首页与 /api/basemap。
+    """
+    client, route_mod = app_ctx
+    _stub(monkeypatch, route_mod, _PerHostUpstream({'arcgisonline.com': _esri_403()}))
+
+    assert client.get('/basemap/2/1/1').status_code == 200
+    bm = client.get('/api/basemap').get_json()['basemap']
+    assert bm['fallback'] is True, '前置条件：这条用例只在回退生效时有意义'
+    assert 'upstream' not in bm
+
+    for name, body in (('/', client.get('/').get_data(as_text=True)),
+                       ('/api/basemap', client.get('/api/basemap').get_data(as_text=True))):
+        for needle in ('arcgisonline', 'googleapis', 'upstream'):
+            assert needle not in body, f'回退状态下 {needle} 漏进了 {name} 的响应体'
+
+    # 描述符这一层剥不剥 upstream 不是全部：active_basemap 本身是被
+    # src/routes/api.py 与 src/routes/main.py 两处 import 的**公开函数**，
+    # 今天两个调用点都恰好套了 client_descriptor，但只要有一处直接 jsonify 它，
+    # 上游地址就下发了。所以在函数出口上单独钉一次。
+    with client.application.app_context():
+        active = route_mod.active_basemap(resolve_basemap('esri'))
+    assert active['fallback'] is True and active['source'] == 'google_satellite', active
+    assert 'upstream' not in active, 'active_basemap 的返回值里不许有上游地址'
+
+
+@pytest.mark.parametrize('configured', [
+    *sorted(BASEMAP_PRESETS),
+    DOWNLOAD_SOURCE,
+    'https://mirror.example.com/tiles/{z}/{x}/{y}.png',
+])
+def test_fallback_chain_is_wgs84_for_every_configured_source(configured):
+    """回退是自动且无人确认的：链上任何一张非 WGS-84 的图都会让用户在偏移
+    100-700 米的底图上框选而毫不知情。
+
+    按**每一个**可配置的源各钉一遍，而不是只钉默认的 esri —— 新增预设时漏标
+    wgs84、或者给自定义模板/download_source 走了另一条建链分支，都会在这里翻红。
+    """
+    resolved = resolve_basemap(configured, tile_servers='', default_style='m')
+    chain = fallback_candidates(resolved)
+    sources = [c['source'] for c in chain]
+
+    assert sources[0] == resolved['source'], (
+        f'{configured}：配置的源永远排第一，实际 {sources}')
+    for candidate in chain[1:]:
+        assert BASEMAP_PRESETS[candidate['source']]['wgs84'], (
+            f"{configured} 的回退链里有非 WGS-84 的 {candidate['source']}")
+    assert len(sources) == len(set(sources)), f'{configured} 的回退链里有重复源：{sources}'
