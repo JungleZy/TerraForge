@@ -273,8 +273,18 @@
                         <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
                         {# 与下面档位同一个理由：写死 14 会和配置里的 terrain_local_maxzoom
                            打架 —— 详情面板的起切按钮走配置，这张表单走写死值，同一份 DEM
-                           从两个入口切出来的层级不一样。 #}
-                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="{{ config.terrain_local_maxzoom or 14 }}">
+                           从两个入口切出来的层级不一样。
+                           但配置值必须先过一遍这个控件自己的 min/max：这个键登记在
+                           config_manager._UNCONSTRAINED_KEYS（:316），写入侧不校验，
+                           PUT /api/config 收得下 99；两个管理器读到越界值也都是软退回 14
+                           （local_terrain_task_manager.py:124-129），照直渲染成 value="99"
+                           就会让整张 #processForm 变 :invalid —— 原生校验拦下 submit 事件，
+                           map.js:1420 的监听根本不触发，「创建」点了没反应；而
+                           #localTerrainOptions 只用 hidden 藏、字段不 disable，所以连
+                           等高线任务也一起建不了，气泡还弹不出来（map.js:646-650 记过
+                           同一形态）。 #}
+                        {% set lmz = (config.terrain_local_maxzoom or '')|int(-1) %}
+                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="{{ lmz if 0 <= lmz <= 21 else 14 }}">
                         {# 档位与法线的初值必须由**服务端**按配置渲染，不能写死。
                            同一个 DEM 任务能从两个入口起切：这里（map.js 显式发字段）
                            与历史页的起切按钮（不带 body、走配置默认）。写死初值就意味着

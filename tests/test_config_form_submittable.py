@@ -88,6 +88,48 @@ def test_config_number_inputs_pass_their_own_constraints(client, path):
     )
 
 
+# 配置渲染进 min/max 输入框的键里，有一部分**写入侧不校验**（登记在
+# config_manager._UNCONSTRAINED_KEYS）：PUT /api/config 收得下
+# terrain_local_maxzoom=99，而仓库自己的 tests/test_local_terrain_api.py:835-854
+# 把「越界配置软退回 14 继续跑」当成受支持状态。这类值照直渲染进 value=""，
+# 就把上面那条出厂配置扫不到的路径炸开了：受害的不是那个字段，而是它所在的
+# **整张表单** —— #processForm 变 :invalid，原生校验拦下 submit 事件，
+# static/js/map.js:1420 的监听根本不触发。而 #localTerrainOptions 只用 hidden
+# 属性隐藏、字段不 disable，非法控件仍参与校验且不可聚焦：气泡弹不出来，
+# 连与地形无关的等高线任务也一起建不了（map.js:646-650 记过同一形态）。
+_OUT_OF_RANGE_CASES = [
+    ('99', '14'),     # 越上界：min/max 是 0-21
+    ('-3', '14'),     # 越下界
+    ('abc', '14'),    # 非数字
+    ('', '14'),       # 空串（键存在但值被清空）
+    ('0', '0'),       # 合法边界值必须原样透出，别被兜底吃掉
+    ('16', '16'),     # 合法值必须跟着配置走，否则这个控件又成了假旋钮
+]
+
+
+@pytest.mark.parametrize('raw,expected', _OUT_OF_RANGE_CASES)
+def test_unvalidated_config_cannot_make_the_page_unsubmittable(client, monkeypatch,
+                                                               raw, expected):
+    """写入侧不校验的配置值，渲染出来也必须过得了控件自己的 min/max。"""
+    from src.routes import main as main_route
+    monkeypatch.setattr(main_route.config_manager, 'get_all',
+                        lambda: {'terrain_local_maxzoom': {'value': raw}})
+
+    html = client.get('/').get_data(as_text=True)
+    tag = next(t for t in _INPUT_RE.findall(html)
+               if _attr(t, 'id') == 'localTerrainMaxzoom')
+    assert _attr(tag, 'value') == expected, (
+        f'terrain_local_maxzoom={raw!r} 渲染成 {_attr(tag, "value")!r}，'
+        f'应为 {expected!r}')
+    # 顺带整页复扫：这一侧不针对某个 id，将来谁再往页面上加一个由配置驱动的
+    # 数字输入框，它越界时也会在这里红。
+    bad = _violations(html)
+    assert not bad, (
+        f'terrain_local_maxzoom={raw!r} 时页面上出现了自相矛盾的数字输入框 —— '
+        f'整张表单 :invalid，创建按钮点了没反应：\n'
+        + '\n'.join(f'  #{i}: value="{v}" 违反 {why}' for i, v, why in bad))
+
+
 def test_coordinate_inputs_use_step_any(client):
     """坐标是任意精度的量，不该被 step 量化。
 
