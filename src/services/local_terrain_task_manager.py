@@ -113,10 +113,21 @@ class LocalTerrainTaskManager:
             conn.close()
 
     def _default_maxzoom(self) -> int:
+        # 配置值过 validate_zoom 而不是裸 int()：terrain_local_maxzoom 在
+        # config_manager._UNCONSTRAINED_KEYS 里，写入侧没有取值规则，越界值原样
+        # 返回后会被 create_task_with_files 的 validate_zoom 当场抛出 → 400，
+        # 而 DEM 那条读同一个配置键是软退回（dem_task_manager.py:312-330）。
+        # 同一个坏配置在两个入口一个 400 一个照跑，是最难查的一类不一致。
+        # 校验失败不抛：配置是装机默认，一个坏值不该让所有任务都建不起来。
+        # 但必须留痕，否则「我明明配了 25」在系统里一处都查不到。
+        # （显式传参那条相反：调用方给了非法值必须当场报错，不能静默改写。）
         raw = self.config.get("terrain_local_maxzoom", "14")
         try:
-            return int(raw) if raw is not None else 14
-        except Exception:
+            return validate_zoom(raw, "terrain_local_maxzoom")
+        except Exception as e:
+            logger.warning(
+                f"配置 terrain_local_maxzoom={raw!r} 不可用({e})，"
+                f"本次改用出厂默认 14")
             return 14
 
     def _default_quality(self) -> str:
@@ -390,9 +401,11 @@ class LocalTerrainTaskManager:
                 conn.commit()
 
                 maxzoom = int(row["maxzoom"])
-                # 档位/法线必须从库读回：本方法不带参，重跑（切片失败后再点一次）
-                # 走的正是这里。漏读回的话「建任务选 speed、重跑变 balanced」——
-                # 产物悄悄换了档、状态仍是 completed、全程零报错。
+                # 档位/法线必须从库读回：本方法不带参，而「创建即切片」这条
+                # 唯一路径正是走它 —— create_task_with_files 末尾直接调
+                # start_tiling，档位只在建任务时算过一次、落进了任务行。
+                # 不读回的话所有本地任务都用 balanced 切，界面上选的档位形同虚设：
+                # 状态照样 completed、全程零报错，只有产物不对。
                 # `or DEFAULT_TILING_QUALITY`：存量行的 quality 可能是 NULL。
                 quality = validate_tiling_quality(row["quality"] or DEFAULT_TILING_QUALITY)
                 vertex_normals = bool(row["vertex_normals"])

@@ -795,6 +795,65 @@ def test_invalid_quality_rejected(monkeypatch, tmp_path):
             quality="turbo")
 
 
+def test_quality_default_comes_from_config(monkeypatch, tmp_path):
+    """省略 quality 时必须真的去读 terrain_quality_preset，而不是写死 balanced。
+
+    钉住 _default_quality() 的读配置这一步：忽略配置直接返回常量的实现，
+    在没有这条用例时全绿 —— 用户在设置页改了默认档，界面照收、切片照跑，
+    产物却永远是 balanced。
+    """
+    from src.services.config_manager import ConfigManager
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    ConfigManager().set("terrain_quality_preset", "speed")
+    ConfigManager().set("terrain_vertex_normals", "true")
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    calls = {}
+
+    def fake_tile(task_dir, out_dir, params):
+        calls["level_offset"] = params.level_offset
+        calls["normals"] = params.normals
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+
+    task_id = mgr.create_task_with_files(
+        name="local-cfg", files=[("a.tif", b"fake")], maxzoom=11)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+
+    row = mgr.get_task(task_id)
+    assert row["quality"] == "speed"
+    assert row["vertex_normals"] == 1
+    assert calls["level_offset"] == -1
+    assert calls["normals"] is True
+
+
+def test_out_of_range_maxzoom_config_falls_back(monkeypatch, tmp_path):
+    """配置里的越界 maxzoom 软退回 14，不能把建任务整个打成 400。
+
+    terrain_local_maxzoom 在 config_manager._UNCONSTRAINED_KEYS 里，写入侧
+    不校验。DEM 那条读同一个键是软退回（dem_task_manager.py:312-330）；
+    这边裸 int() 会把 99 原样交给 validate_zoom 当场抛 —— 同一个坏配置在
+    两个入口一个照跑一个 400。
+    """
+    from src.services.config_manager import ConfigManager
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    ConfigManager().set("terrain_local_maxzoom", "99")
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling",
+                        lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(
+        name="local-badcfg", files=[("a.tif", b"fake")])
+
+    assert mgr.get_task(task_id)["maxzoom"] == 14
+
+
 # --------------------------------------------------------------------------
 # 路由层收参（Task 8）：档位/法线从 multipart 表单进来，一路落到任务行。
 # 上面那批直调 manager 的用例钉的是管理器契约；下面这批钉的是「表单字段真的
