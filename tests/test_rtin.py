@@ -753,21 +753,22 @@ def test_tiles_are_written_with_a_fixed_gzip_timestamp(tmp_path):
 
 
 def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):
-    """三角化默认值有多份独立副本，必须一致 —— 改一处不改另一处就该红。
+    """三角化默认值有多份副本。K 必须处处一致；后端**有意分叉**，只钉合法性。
 
-    副本清单（重复是**被迫的**，不要合并）：
-      1. cesiumlab_terrain.DEFAULT_MAX_ERROR_K
-      2. build_terrain 的关键字默认值
-      3. dem_task_tiler.TileParams 的字段默认值 —— **生产走的是这一份**
-      4. CLI 的 --triangulator / --max-error-k
-    TileParams 不能 `from cesiumlab_terrain import DEFAULT_MAX_ERROR_K`：
-    dem_task_tiler 必须在没有 GDAL/numpy 的环境里也能导入（它的 build_terrain
-    是惰性 import 的），模块级引用会把这个前提打掉。
+    历史上三份 triangulator 默认值（TileParams / build_terrain 签名 / CLI
+    argparse）被钉成同一个值。三档预设之后这个前提不再成立：
+      - 应用侧 TileParams -> 'grid'（用户任务，实测 auto 不在 Pareto 前沿）
+      - CLI / 全球底图    -> 'auto'（一次性构建，覆盖海洋与大片平原）
+    依据见 docs/reference/terrain/tiling-presets-measured.md 第三节与第八节。
 
-    没有这条断言时，把名字最像「那个常量」的 DEFAULT_MAX_ERROR_K 改成 0.25
-    是【对生产零影响、全量测试全绿】的 —— 后人想调 K 会改错地方还以为改了。
-    这里刻意不写死 0.15：唯一的字面量归 test_dem_task_tiler（它钉的是
-    TileParams -> build_terrain 的透传），K 真要改时只有那一处需要动。
+    分叉之后这里还能钉的是：两份默认值都必须是 build_terrain 白名单里的值。
+    拼错会静默退回规则网格（build_terrain 入口校验的注释里记着这个坑），
+    而白名单本身由 test_build_terrain_rejects_unknown_triangulator 守。
+    两个具体字面量各有唯一的家，不在这里抄第三份：
+      'grid' -> tests/test_dem_task_tiler.py（TileParams -> build_terrain 透传）
+      'auto' -> tests/test_build_scripts_contract.py（全球底图脚本走 CLI 默认）
+
+    K 这里刻意不写死 0.15：唯一的字面量归 test_dem_task_tiler。
     """
     import inspect
 
@@ -785,14 +786,15 @@ def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):
         f"TileParams.max_error_k {params.max_error_k}（生产实际用的那份）与 "
         f"DEFAULT_MAX_ERROR_K {ct.DEFAULT_MAX_ERROR_K} 不一致"
     )
-    assert params.triangulator == sig.parameters["triangulator"].default, (
-        f"TileParams.triangulator {params.triangulator!r} 与 build_terrain 默认值 "
-        f"{sig.parameters['triangulator'].default!r} 不一致"
-    )
+    accepted = ("auto", "martini", "grid")
+    assert params.triangulator in accepted, (
+        f"TileParams.triangulator {params.triangulator!r} 不是 build_terrain "
+        f"接受的值，会被入口校验拒掉")
 
-    # CLI 的两个 flag 也必须落在同一组默认值上，否则命令行排障跑出来的
-    # 「对照组」跟生产根本不是同一个配置。走真实的 main()（只替掉 build_terrain）
-    # 而不是去翻 parser 的内部结构 —— 顺带钉住了 CLI 到 build_terrain 的透传。
+    # CLI 的 K 必须与 DEFAULT_MAX_ERROR_K 同源，后端只钉合法性（有意分叉，
+    # 'auto' 这个字面量的家在 tests/test_build_scripts_contract.py）。走真实的
+    # main()（只替掉 build_terrain）而不是去翻 parser 的内部结构 —— 顺带钉住了
+    # CLI 到 build_terrain 的透传。
     captured = {}
 
     def fake_build_terrain(inputs, output, **kw):
@@ -803,9 +805,9 @@ def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(ct, "build_terrain", fake_build_terrain)
     assert ct.main(["-i", str(src), "-o", str(tmp_path / "out")]) == 0
 
-    assert captured["triangulator"] == sig.parameters["triangulator"].default, (
-        f"CLI --triangulator 默认 {captured['triangulator']!r} 与 build_terrain 默认值不一致"
-    )
+    assert captured["triangulator"] in accepted, (
+        f"CLI --triangulator 默认 {captured['triangulator']!r} 不是 build_terrain "
+        f"接受的值")
     assert captured["max_error_k"] == ct.DEFAULT_MAX_ERROR_K, (
         f"CLI --max-error-k 默认 {captured['max_error_k']} 与 DEFAULT_MAX_ERROR_K 不一致"
     )

@@ -177,3 +177,36 @@ def test_nuitka_packs_the_parts_not_the_expanded_dir():
     for d in data_dirs:
         assert "base_z8" not in d, (
             f"打包参数 {d!r} 收的是解压后的目录（44k 个文件）—— 应当收分卷")
+
+
+def test_global_base_build_keeps_the_adaptive_backend(tmp_path, monkeypatch):
+    """全球底图必须走 auto，不能跟着应用侧改成 grid。
+
+    底图覆盖海洋与大片平原 —— 正是 martini 减面收益最大、grid 字节代价最高的
+    地方 —— 而它只构建一次，CPU 代价无所谓。应用侧用户任务的取舍条件正好相反
+    （反复构建、用户指定 AOI），所以两边有意分叉。**这里是 'auto' 这个字面量
+    在全仓的家**（'grid' 的家在 tests/test_dem_task_tiler.py）。
+    依据：docs/reference/terrain/tiling-presets-measured.md 第八节末尾。
+    """
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    # 前提：脚本不传 --triangulator，所以它拿的是 CLI argparse 的默认值。
+    assert "--triangulator" not in _ps1(), (
+        "脚本显式传了 --triangulator，这条测试的前提（走 CLI 默认）不再成立")
+
+    # 走真实 main()（只替掉 build_terrain），不去翻 parser 的内部结构 ——
+    # 与 tests/test_rtin.py:796-804 用的是同一手法，顺带钉住 CLI 到
+    # build_terrain 的透传。
+    captured = {}
+
+    def fake_build_terrain(inputs, output, **kw):
+        captured.update(kw)
+
+    src = tmp_path / "x.tif"
+    src.write_bytes(b"")
+    monkeypatch.setattr(ct, "build_terrain", fake_build_terrain)
+    assert ct.main(["-i", str(src), "-o", str(tmp_path / "out")]) == 0
+
+    assert captured["triangulator"] == "auto", (
+        f"CLI --triangulator 默认变成了 {captured['triangulator']!r}；"
+        f"全球底图会跟着变，而它正是 martini 收益最大的场景")
