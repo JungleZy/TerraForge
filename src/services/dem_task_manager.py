@@ -17,8 +17,9 @@ from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
 from src.services.dem_download_engine import DemDownloadEngine
 from src.services.download_speed import SpeedMeter
-from src.services.geo_validation import (require_absolute_output_dir, sanitize_filename,
-                                         validate_bbox, validate_zoom)
+from src.services.geo_validation import (DEFAULT_TILING_QUALITY, TILING_QUALITY_OFFSETS,
+                                         require_absolute_output_dir, sanitize_filename,
+                                         validate_bbox, validate_tiling_quality, validate_zoom)
 from src.services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
@@ -262,7 +263,9 @@ class DemTaskManager:
     def resume_task(self, task_id: int) -> None:
         self.start_task(task_id)
 
-    def start_tiling(self, task_id: int, maxzoom: Optional[int] = None) -> None:
+    def start_tiling(self, task_id: int, maxzoom: Optional[int] = None,
+                     quality: Optional[str] = None,
+                     vertex_normals: Optional[bool] = None) -> None:
         task_id = int(task_id)
 
         # Resolve task output path first; tiling is based on existing DEM outputs.
@@ -307,11 +310,35 @@ class DemTaskManager:
         if maxzoom is not None:
             maxzoom = validate_zoom(maxzoom, "maxzoom")
         else:
-            maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")
+            # 配置值也过 validate_zoom（范本 local_terrain_task_manager.py:149，
+            # 那边两条路径都校验）。此前这里是裸 int()：terrain_local_maxzoom
+            # 在 config_manager._UNCONSTRAINED_KEYS 里没有取值规则，写进去的 99
+            # 能一路传到 build_terrain，只靠那边的 MAX_ZOOM 封顶兜住 —— 兜底离
+            # 读取太远，中间任何一个新调用方都会漏掉它。
+            # 校验失败不抛：配置是装机默认，一个坏值不该让所有切片都启动不了。
+            # 与原有 except 分支同一约定 —— 退回出厂默认 14。
+            # （显式传参那条相反：调用方给了非法值必须当场报错，不能静默改写。）
             try:
-                maxzoom = int(maxzoom_raw) if maxzoom_raw is not None else 14
+                maxzoom = validate_zoom(
+                    self.config.get("terrain_local_maxzoom", "14"), "maxzoom")
             except Exception:
                 maxzoom = 14
+
+        # 档位与法线：请求未给就取配置默认，与 maxzoom 完全同形。兜底值与
+        # DEFAULT_CONFIGS 逐字一致（同 :299 注释的规矩：兜底和出厂默认不一致
+        # 会造出「改了没反应」的假旋钮）。
+        # 校验落在管理器而不是路由层：DEM 这条路径的 maxzoom 校验就在这里
+        # （local 那条在路由层），两个新参数跟着各自路径的既有位置走。
+        if quality is None:
+            quality = (self.config.get("terrain_quality_preset", DEFAULT_TILING_QUALITY)
+                       or DEFAULT_TILING_QUALITY)
+        # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
+        # 「改了档位重切、结果一模一样且零报错」是这条路径最难查的一类假象。
+        quality = validate_tiling_quality(quality)
+        if vertex_normals is None:
+            vertex_normals = (
+                self.config.get("terrain_vertex_normals", "false") or "false") == "true"
+        vertex_normals = bool(vertex_normals)
 
         task_dir = resolve_stored_output_dir(output_path) / f"dem_task_{task_id}"
         output_dir = task_dir / "terrain_tiles"
@@ -326,20 +353,27 @@ class DemTaskManager:
                     """
                     INSERT INTO dem_terrain_jobs (
                         task_id, status, output_dir, maxzoom, parent_url,
+                        quality, vertex_normals,
                         started_at, completed_at, error_message
                     )
-                    VALUES (?, 'running', ?, ?, ?, ?, NULL, NULL)
+                    VALUES (?, 'running', ?, ?, ?, ?, ?, ?, NULL, NULL)
                     ON CONFLICT(task_id) DO UPDATE SET
                         status='running',
                         output_dir=excluded.output_dir,
                         maxzoom=excluded.maxzoom,
                         parent_url=excluded.parent_url,
+                        -- 这两列必须跟着一起更新：重切走的正是 DO UPDATE 分支，
+                        -- 漏掉的话「改了档位重切」会沉默沿用上一轮的旧档位 ——
+                        -- 产物没变、全程零报错，用户只会以为旋钮是假的。
+                        quality=excluded.quality,
+                        vertex_normals=excluded.vertex_normals,
                         started_at=excluded.started_at,
                         completed_at=NULL,
                         error_message=NULL
                     WHERE dem_terrain_jobs.status != 'running'
                     """,
-                    (task_id, str(output_dir), maxzoom, parent_url, utc_now_iso()),
+                    (task_id, str(output_dir), maxzoom, parent_url,
+                     quality, 1 if vertex_normals else 0, utc_now_iso()),
                 )
                 if cur.rowcount != 1:
                     raise ValueError(f"DEM tiling job for task {task_id} is already running")
@@ -364,7 +398,8 @@ class DemTaskManager:
             self.stop_flags[task_id] = stop_flag
             th = threading.Thread(
                 target=self._run_tiling_job,
-                args=(task_id, task_dir, output_dir, maxzoom, parent_url, stop_flag),
+                args=(task_id, task_dir, output_dir, maxzoom, parent_url, stop_flag,
+                      quality, vertex_normals),
                 daemon=True,
                 name=f"DemTiling-{task_id}",
             )
@@ -406,7 +441,9 @@ class DemTaskManager:
 
     def _run_tiling_job(self, task_id: int, task_dir: Path, output_dir: Path,
                         maxzoom: int, parent_url: str,
-                        stop_flag: Optional[threading.Event] = None) -> None:
+                        stop_flag: Optional[threading.Event] = None,
+                        quality: str = DEFAULT_TILING_QUALITY,
+                        vertex_normals: bool = False) -> None:
         try:
             # 切片进度节流落库/emit（范本：contour_task_manager 渲染阶段的
             # render_progress）：build_terrain 逐瓦片回调，不节流时每次回调
@@ -516,6 +553,8 @@ class DemTaskManager:
                     task_dir=task_dir,
                     out_dir=output_dir,
                     params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
+                                      normals=vertex_normals,
+                                      level_offset=TILING_QUALITY_OFFSETS[quality],
                                       progress_cb=tiling_progress,
                                       stage_cb=tiling_stage,
                                       stop_flag=stop_flag),
