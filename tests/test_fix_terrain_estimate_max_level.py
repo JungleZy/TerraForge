@@ -38,7 +38,6 @@ def test_estimate_max_level_degenerate_inputs():
     assert GeographicTilingScheme(tile_size=1).estimate_max_level(0.5) >= 0
 
 
-
 def _fake_sampler_cls(pixel_deg, bounds=(116.0, 39.0, 116.1, 39.1)):
     """最小可用的 DemSampler 替身：build_terrain 只用它的 pixel_size_deg 与 bounds。"""
     class _S:
@@ -50,11 +49,16 @@ def _fake_sampler_cls(pixel_deg, bounds=(116.0, 39.0, 116.1, 39.1)):
     return _S
 
 
-def _run_build(monkeypatch, tmp_path, **kw):
-    """跑 build_terrain 但不真切瓦片：替掉 sampler 与 worker，只看层级决策。"""
+def _run_build(monkeypatch, tmp_path, bounds=(116.0, 39.0, 116.1, 39.1), **kw):
+    """跑 build_terrain 但不真切瓦片：替掉 sampler 与 worker，只看层级决策。
+
+    bounds 决定要枚举多少张瓦片任务（_worker_tile 是替身，纯 Python 循环）。
+    高 max_level 的用例传小选区，否则光枚举就要秒级。
+    """
     from src.services.terrain_tiling import cesiumlab_terrain as ct
 
-    monkeypatch.setattr(ct, "DemSampler", _fake_sampler_cls(180.0 / (64 * 2 ** 10)))
+    monkeypatch.setattr(ct, "DemSampler",
+                        _fake_sampler_cls(180.0 / (64 * 2 ** 10), bounds))
     monkeypatch.setattr(ct, "_worker_tile", lambda task: (0.0, 1.0, "grid"))
     return ct.build_terrain(["fake.tif"], str(tmp_path), tile_size=65, workers=1, **kw)
 
@@ -77,16 +81,31 @@ def test_level_offset_is_clamped_into_the_valid_range(monkeypatch, tmp_path):
     """负偏移不得把层级压到 0 以下，正偏移不得越过 MAX_ZOOM。"""
     assert _run_build(monkeypatch, tmp_path / "f", max_level=0,
                       level_offset=-1)["max_level"] == 0
-    assert _run_build(monkeypatch, tmp_path / "g", max_level=21,
-                      level_offset=1)["max_level"] == 21
+    # 0.001° 选区：默认的 0.1° 会让 z21 真枚举约 180 万个瓦片任务（实测 1.1s）。
+    # 这条只断言 max_level，缩小选区不减断言强度。
+    assert _run_build(monkeypatch, tmp_path / "g",
+                      bounds=(116.0, 39.0, 116.001, 39.001),
+                      max_level=21, level_offset=1)["max_level"] == 21
 
 
 def test_min_level_is_clamped_below_the_effective_max(monkeypatch, tmp_path):
     """min_level > max_level 会让 _tile_ranges 产出空区间 —— 切 0 张却报 completed。
 
-    调用方按基准层级算 min_level（dem_task_tiler 恒传 8），下调偏移后基准可能
-    低于 8，钳位必须在 build_terrain 里做，调用方不知道最终层级。
+    调用方按【请求值】算 min_level（dem_task_tiler.py:125 是 min(8, maxzoom)），
+    钳不到偏移后的实际层级；这条钉住 build_terrain 自己那道钳位。
     """
     r = _run_build(monkeypatch, tmp_path / "h", min_level=8, max_level=5)
     assert r["max_level"] == 5
     assert r["total"] > 0, "min_level 未被钳到 max_level 以下，产出了空区间"
+
+
+def test_min_level_is_clamped_when_a_negative_offset_drops_below_it(monkeypatch, tmp_path):
+    """本次改动真正引入的触发条件：maxzoom <= 8 且 level_offset < 0。
+
+    dem_task_tiler.py:125 按 min(8, maxzoom) 算 min_level，maxzoom=8 时得 8；
+    -1 偏移把实际层级压到 7，调用方钳过的值反而高于最终层级。
+    """
+    r = _run_build(monkeypatch, tmp_path / "i", min_level=8, max_level=8,
+                   level_offset=-1)
+    assert r["max_level"] == 7
+    assert r["total"] > 0, "负偏移后 min_level 未被钳到实际层级以下，产出了空区间"

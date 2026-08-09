@@ -1368,11 +1368,21 @@ def build_terrain(
         # 3.3 倍体积换 2.8 倍精度，与源分辨率无关。
         # 钳位到 [0, MAX_ZOOM]：负层级会让 _tile_ranges 的 range() 直接空转，
         # 越界层级会让瓦片数按 4^n 爆炸。
+        # 注意这一行对 level_offset=0 **不是**恒等变换 —— max_level 自身越界时
+        # 它照样收紧，也就是说从不传偏移的既有调用方同样受影响。这是有意的：
+        # dem_task_manager.py:310 在 maxzoom=None 时用裸 int() 读配置
+        # terrain_local_maxzoom，绕过 validate_zoom（该键登记在
+        # config_manager.py:308 的 _UNCONSTRAINED_KEYS 里），配置写 25 就能一路
+        # 到这里切出 z25；而 local_terrain_task_manager.py:149 那条路径是有
+        # validate_zoom 的 —— 两条入口本就不对称。封顶 21 是堵这个缺口。
         max_level = max(0, min(MAX_ZOOM, int(max_level) + int(level_offset)))
-        # min_level 由调用方按【基准】算（dem_task_tiler 恒传 8），下调偏移后
-        # 基准可能低于它。min_level > max_level 会让 _tile_ranges 产出空区间 ——
-        # 切 0 张瓦片却报 completed，本仓栽过的同款静默成功。调用方拿不到最终
-        # 层级，所以钳位只能在这里做。
+        # 调用方钳的是【请求值】，钳不到偏移后的实际层级。dem_task_tiler.py:125
+        # 是 `min(8, int(params.maxzoom))`，只保证 min_level 不超过**请求的**
+        # maxzoom；maxzoom <= 8 且 level_offset < 0 时它就失效 —— maxzoom=8 时
+        # 调用方算出 min_level=8，进来后 -1 偏移把 max_level 压到 7，于是 8 > 7。
+        # min_level > max_level 会让 _tile_ranges 产出空区间 —— 切 0 张瓦片却报
+        # completed，本仓栽过的同款静默成功。最终层级只有这里知道，所以这道钳位
+        # 删不得，也没法挪到调用方。
         min_level = min(int(min_level), max_level)
 
         src_w, src_s, src_e, src_n = sampler.bounds
