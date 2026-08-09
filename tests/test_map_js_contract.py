@@ -181,43 +181,159 @@ def test_rectangle_selection_is_wired():
 
 
 # ---------------------------------------------------------------------------
-# MEDIUM #3：_wrapLngEast(180) 必须保持 180
+# 2026-08-09 全项目评审 P1：选区四至「一条规则，三个入口，三种答案」
+#
+# 后端 geo_validation.validate_bbox 只有四条规则（north > south、|lat| <= 90、
+# |lon| <= 180、east > west）。改前前端三个入口各判各的：框选落定层零面积照收
+#（单击就能造出 0°×0° 的选区，预估框还报「约 6 张瓦片」）、点读数编辑与手动
+# 输入面板只校纬度不校经度量级（east=400 收下，状态栏读「300.000° × 20.000°」）、
+# 三处又都刻意放行跨反经线矩形（状态栏读出负宽度 -340.000°、按钮不禁用、点下去
+# 把后端英文原文弹进中文界面）。这一组把「只有一份口径、三个入口都走它」钉住。
 # ---------------------------------------------------------------------------
 
-def test_wrap_lng_east_keeps_180_structure():
-    """_wrapLngEast 必须把 -180 的结果翻到 180（东边界口径 (-180,180]）。
+# 闸门里的四条判据，与后端 validate_bbox 逐条对应；顺序即首个失败的报错顺序。
+_BOUNDS_RULE_EXPRS = (
+    'b.north > b.south',
+    'b.south >= -90 && b.south <= 90 && b.north >= -90 && b.north <= 90',
+    'b.west >= -180 && b.west <= 180 && b.east >= -180 && b.east <= 180',
+    'b.east > b.west',
+)
+_BOUNDS_RULE_KEYS = (
+    'js.map.edit.north_gt_south',
+    'js.map.edit.lat_range',
+    'js.map.edit.lon_range',
+    'js.map.edit.east_gt_west',
+)
 
-    无 node 环境下的兜底结构断言；真实数值行为由下面 node 用例覆盖。
+
+def _squeeze(text):
+    return re.sub(r'\s+', ' ', text)
+
+
+def _left_up_handler(src):
+    """_initMapTools 里注册到 LEFT_UP 的那个 handler 的源码。
+
+    它是匿名函数，_fn_body 够不着，按「上一个 handler.setInputAction( 到
+    ScreenSpaceEventType.LEFT_UP 之间」截取。
+    """
+    body = _fn_body(src, '_initMapTools')
+    end = body.index('Cesium.ScreenSpaceEventType.LEFT_UP')
+    start = body.rindex('handler.setInputAction(', 0, end)
+    return body[start:end]
+
+
+def test_bounds_rules_live_in_exactly_one_function():
+    """四条规则与四句报错各只有一份，且都在 validateBoundsRules 里。
+
+    第二份拷贝正是这次要拆的缺陷本体：三个入口曾经各写各的判据，
+    「同一个选区在两个入口得到两种答案」比「哪条判据写错了」难查得多。
     """
     src = _map_js()
-    body = _fn_body(src, '_wrapLngEast')
-    assert '_wrapLngWest' in body, (
-        '_wrapLngEast 应复用 _wrapLngWest 的基础 wrap，再修正端点'
+    assert 'function validateBoundsRules(' in src, (
+        'map.js 应定义 validateBoundsRules() —— 选区四至的唯一校验口径'
     )
-    assert re.search(r'===\s*-180\s*\?\s*180', body), (
-        '_wrapLngEast 必须把 wrap 结果 -180 翻成 180，'
-        '否则东经 180 被折成 -180 → east < west → 后端 400'
+    code = _squeeze(_strip_comments(src))
+    gate = _squeeze(_fn_body(src, 'validateBoundsRules'))
+    for expr in _BOUNDS_RULE_EXPRS:
+        assert code.count(expr) == 1, (
+            f'判据 `{expr}` 在 map.js 里出现 {code.count(expr)} 次，应恰好 1 次：'
+            '0 次 = 规则丢了，>1 次 = 又长出了第二份口径'
+        )
+        assert expr in gate, f'判据 `{expr}` 不在 validateBoundsRules 里'
+    for key in _BOUNDS_RULE_KEYS:
+        assert code.count(f"'{key}'") == 1, (
+            f'文案 key {key} 不止一处引用 —— 报错也要只有一个出处'
+        )
+        assert key in gate, f'{key} 不是 validateBoundsRules 返回的'
+
+
+def test_all_three_selection_entries_go_through_the_gate():
+    """框选落定 / 点读数编辑 / 手动输入面板，三个入口都必须调同一个闸门。"""
+    src = _map_js()
+    code = _strip_comments(src)
+    entries = {
+        'LEFT_UP 框选落定': _left_up_handler(code),
+        '_applyBoundsEdit（点四至读数编辑）': _fn_body(code, '_applyBoundsEdit'),
+        '_readManualBounds（手动输入范围面板）': _fn_body(code, '_readManualBounds'),
+    }
+    for label, body in entries.items():
+        assert 'validateBoundsRules(' in body, (
+            f'{label} 没走 validateBoundsRules —— 又是一个自带口径的入口'
+        )
+    # 1 处定义 + 3 处调用。多出来的调用点不一定是错，但必须有人看过：
+    # 第四个入口（例如拖角点手柄）走的是几何钳位而不是闸门，见 map.js 里的说明。
+    assert code.count('validateBoundsRules(') == 4, (
+        f'validateBoundsRules 的定义/调用点共 {code.count("validateBoundsRules(")} 处，'
+        '期望 4 处（1 定义 + 3 入口）'
+    )
+
+
+def test_zero_area_drag_is_discarded_instead_of_becoming_a_selection():
+    """鼠标单击（按下抬起同一像素）落成的零面积矩形必须被丢弃。
+
+    改前它照样写进 currentBounds：浮层读 0.00000 四个相同的数、状态栏
+    「已选区域 0.000° × 0.000°」、预估框还报「约 6 张瓦片」，而后端必然 400。
+    """
+    handler = _strip_comments(_left_up_handler(_map_js()))
+    m = re.search(r'if \(validateBoundsRules\(_rectDegrees\)\) \{(.*?)\}', handler, re.S)
+    assert m, 'LEFT_UP 落定必须先过 validateBoundsRules(_rectDegrees)'
+    branch = m.group(1)
+    assert 'clearSelection()' in branch, (
+        '不合法的落定必须 clearSelection() 丢弃 —— 留着它就是一个点下去必然 400 的选区'
+    )
+    assert "js.map.bounds.no_area" in branch, (
+        '丢弃时要 toast 告诉用户「单击不构成选区」，否则框没了也没人知道为什么'
+    )
+    assert branch.index('return') > branch.index('clearSelection()'), (
+        '丢弃分支必须 return，不能继续往下写 currentBounds'
+    )
+
+
+def test_submit_payload_does_not_rewrite_the_users_longitudes():
+    """提交前不许再 wrap 经度。
+
+    改前 payload 走 _wrapLngEast(east)：用户填 190（越界，本该当场拒绝），
+    被改写成 -170 送给后端，于是报错里出现一个用户从来没输入过的数字。
+    现在 |lon| <= 180 由闸门在输入时就挡下，wrap 恒等于原值 —— 是一条永远
+    不会生效的改写，删掉。
+    """
+    code = _strip_comments(_map_js())
+    assert '_wrapLng' not in code, (
+        'map.js 又出现了 _wrapLngWest/_wrapLngEast —— 经度量级现在由 '
+        'validateBoundsRules 在入口挡下，提交前的 wrap 只会改写用户输入'
     )
 
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='node 不可用，跳过 JS 行为断言')
-def test_wrap_lng_east_numeric_behavior():
-    """把 map.js 里真实的 _wrapLngWest/_wrapLngEast 抠出来用 node 跑数值断言。
+def test_bounds_rules_accept_exactly_what_the_backend_accepts():
+    """把 map.js 里真实的 validateBoundsRules 抠出来用 node 跑，
+    逐格与后端 geo_validation.validate_bbox 对拍。
 
-    超时按「环境不可用」处理而不是失败：v0.2.12 的发版构建在 Windows runner 上
-    被这条 `node -e`（脚本只有几行）的 30 秒超时打断过一次 —— 那是 node 冷启动
-    加杀毒扫描的代价，不是产品缺陷。上面那条结构断言无条件跑，覆盖的是同一个
-    契约（`=== -180 ? 180`），所以这里跳过不会留下无人看守的行为。
-    超时上限一并放宽到 120 秒。
+    这条是「前端放行的后端必然也放行」的直接证据，也是四条规则各自的行为看守：
+    删掉任何一条，网格里都有一批四至只有一侧接受，用例即红。
+    顺带钉住状态栏那条不变量 —— 凡是被放行的四至，宽高都是正数。
     """
+    from src.services.geo_validation import validate_bbox
+
     src = _map_js()
-    # 按花括号配对抠出两个函数定义
-    west_def = 'function _wrapLngWest(lng) ' + _fn_body(src, '_wrapLngWest')
-    east_def = 'function _wrapLngEast(lng) ' + _fn_body(src, '_wrapLngEast')
+    gate_def = 'function validateBoundsRules(b) ' + _fn_body(src, 'validateBoundsRules')
+    lats = [-91, -90, -89.5, -45, 0, 45, 89.5, 90, 91]
+    lons = [-400, -181, -180, -179.5, -170, 0, 170, 179.5, 180, 181, 400]
+    cases = [
+        {'north': n, 'south': s, 'east': e, 'west': w}
+        for n in lats for s in lats for e in lons for w in lons
+    ]
+    # 网格在 node 里现搭（两边同序四重循环），不把 6 千多个 case 展开成 argv：
+    # `node -e` 的命令行有长度上限，展开后直接 E2BIG。
     script = (
-        west_def + '\n' + east_def + '\n'
-        'const cases = [180, -180, 179.9, 180.1, 540, -540, 0, 360, -360];\n'
-        'console.log(JSON.stringify(cases.map(c => [_wrapLngEast(c), _wrapLngWest(c)])));\n'
+        gate_def + '\n'
+        'const lats = ' + json.dumps(lats) + ';\n'
+        'const lons = ' + json.dumps(lons) + ';\n'
+        'const out = [];\n'
+        'for (const north of lats) for (const south of lats)\n'
+        '  for (const east of lons) for (const west of lons)\n'
+        '    out.push(validateBoundsRules({ north, south, east, west }));\n'
+        'console.log(JSON.stringify(out));\n'
     )
     try:
         out = subprocess.run(
@@ -226,15 +342,70 @@ def test_wrap_lng_east_numeric_behavior():
         ).stdout.strip()
     except subprocess.TimeoutExpired:
         pytest.skip('node 启动超过 120 秒（CI runner 冷启动），'
-                    '契约由 test_wrap_lng_east_keeps_180_structure 无条件守着')
-    results = json.loads(out)
-    east_expected = [180, 180, 179.9, -179.9, 180, 180, 0, 0, 0]
-    west_expected = [-180, -180, 179.9, -179.9, -180, -180, 0, 0, 0]
-    for (east, west), e, w, c in zip(
-            results, east_expected, west_expected,
-            [180, -180, 179.9, 180.1, 540, -540, 0, 360, -360]):
-        assert abs(east - e) < 1e-9, f'_wrapLngEast({c}) = {east}，期望 {e}'
-        assert abs(west - w) < 1e-9, f'_wrapLngWest({c}) = {west}，期望 {w}'
+                    '结构契约由 test_bounds_rules_live_in_exactly_one_function 守着')
+    reasons = json.loads(out)
+    assert len(reasons) == len(cases)
+
+    # 后端报错文本 -> 前端应给出的同一类文案 key。
+    def backend_key(msg):
+        if 'must be greater than south' in msg:
+            return 'js.map.edit.north_gt_south'
+        if 'between -90 and 90' in msg:
+            return 'js.map.edit.lat_range'
+        if 'between -180 and 180' in msg:
+            return 'js.map.edit.lon_range'
+        if 'must be greater than west' in msg:
+            return 'js.map.edit.east_gt_west'
+        raise AssertionError(f'后端多了一条前端没有的规则: {msg}')
+
+    mismatched = []
+    for case, reason in zip(cases, reasons):
+        try:
+            validate_bbox(**case)
+            expected = None
+        except ValueError as exc:
+            expected = backend_key(str(exc))
+        if reason != expected:
+            mismatched.append(f'{case}: 前端 {reason!r}，后端 {expected!r}')
+        if reason is None:
+            assert case['east'] - case['west'] > 0 and case['north'] - case['south'] > 0, (
+                f'放行了一个零/负面积四至 {case} —— 状态栏会读出负数宽高'
+            )
+    assert not mismatched, (
+        '前后端口径不一致（前 12 条）：\n  ' + '\n  '.join(mismatched[:12])
+        + f'\n共 {len(mismatched)} 格不一致'
+    )
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node 不可用，跳过 JS 行为断言')
+def test_the_three_measured_defects_are_rejected():
+    """评审实测的三个具体输入，逐个必须被拒 —— 上面的对拍是网格，这条是留痕。"""
+    src = _map_js()
+    gate_def = 'function validateBoundsRules(b) ' + _fn_body(src, 'validateBoundsRules')
+    cases = [
+        # 单击落成的零面积选区：改前浮层收下，预估框报「约 6 张瓦片」
+        {'north': 30, 'south': 30, 'east': 120, 'west': 120},
+        # east=400：改前状态栏读「已选区域 300.000° × 20.000°」
+        {'north': 40, 'south': 20, 'east': 400, 'west': 100},
+        # 跨反经线：改前状态栏读出负宽度「-340.000°」，按钮不禁用
+        {'north': 40, 'south': 39, 'east': -170, 'west': 170},
+    ]
+    expected = ['js.map.edit.north_gt_south',
+                'js.map.edit.lon_range',
+                'js.map.edit.east_gt_west']
+    script = (
+        gate_def + '\n'
+        'const cases = ' + json.dumps(cases) + ';\n'
+        'console.log(JSON.stringify(cases.map(validateBoundsRules)));\n'
+    )
+    try:
+        out = subprocess.run(
+            ['node', '-e', script], capture_output=True, text=True, check=True,
+            timeout=120,
+        ).stdout.strip()
+    except subprocess.TimeoutExpired:
+        pytest.skip('node 启动超过 120 秒（CI runner 冷启动）')
+    assert json.loads(out) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -306,20 +477,48 @@ def test_download_type_toggle_refreshes_tile_estimate():
     )
 
 
-def test_tile_estimate_rejects_antimeridian_selection():
-    """跨反经线选区（wrap 后 east < west）不许静默 swap 东西边界算瓦片数。
+def test_tile_estimate_has_no_unreachable_backend_will_reject_branch():
+    """预估框不许再留「后端会拒绝该四至」那条分支。
 
-    与后端拒绝语义对齐：这种选区提交必然 400，预估应显示「不可用」提示，
-    而不是拿交换后的边界算一个注定提交失败的数字。
+    它是一条只可能在闸门破了以后才生效的兜底：currentBounds 的每个写入点
+    都过 validateBoundsRules 之后，跨反经线的选区根本进不来。更糟的是它当初
+    对 east=400 也照说「选区跨反经线」——而 400 不是跨反经线，是越界。
+    连同 estimateTileCount 里那两处静默 swap 一起清掉（swap 会把一个必然 400
+    的四至算成一个像模像样的瓦片数）。
     """
-    src = _map_js()
-    body = _fn_body(src, 'updateTileEstimate')
-    assert '_wrapLngWest(' in body and '_wrapLngEast(' in body, (
-        'updateTileEstimate 必须按提交口径 wrap 经度后再判断/计算'
+    from src.i18n.catalog import MESSAGES
+
+    assert 'js.map.tile_estimate.antimeridian' not in MESSAGES, (
+        '文案还在 —— 分支删了文案不删就是死重量，且下一个人会照它把分支加回来'
     )
-    assert re.search(r'east\s*<\s*west\s*\)\s*\{[^}]*return null', body), (
-        '检测到跨反经线（wrap 后 east < west）后必须 return null（不算数），'
-        '而不是继续用 estimateTileCount 的静默 swap 算一个必然 400 的瓦片数'
+    src = _map_js()
+    body = _strip_comments(_fn_body(src, 'updateTileEstimate'))
+    assert 'east < west' not in body, (
+        'updateTileEstimate 又长出了「east < west 就不算数」的兜底分支'
+    )
+    estimate = _strip_comments(_fn_body(src, 'estimateTileCount'))
+    assert '[xMin, xMax] = [xMax, xMin]' not in estimate, (
+        'estimateTileCount 又开始静默 swap 东西边界 —— 闸门保证 east > west，'
+        'swap 只会把口径错误算成一个看着正常的数字'
+    )
+
+
+def test_status_bar_area_is_east_minus_west():
+    """状态栏宽高必须是 east-west / north-south，不许为了躲负数取绝对值。
+
+    改前跨反经线选区在这里读出「已选区域 -340.000° × 1.000°」。正确的修法是
+    让负数**不可能出现**（闸门），不是在读数处 Math.abs 掩盖掉 —— 那样用户会
+    看到一个 340° 宽的合理读数，然后提交被后端 400。
+    """
+    body = _strip_comments(_fn_body(_map_js(), 'updateBoundsInfo'))
+    assert 'currentBounds.east - currentBounds.west' in body, (
+        '状态栏宽度不再是 east - west'
+    )
+    assert 'currentBounds.north - currentBounds.south' in body, (
+        '状态栏高度不再是 north - south'
+    )
+    assert not re.search(r'Math\.abs\([^)]*currentBounds', body), (
+        '状态栏用 Math.abs 掩盖了负宽高 —— 负数应该在入口就不可能产生'
     )
 
 

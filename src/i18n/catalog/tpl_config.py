@@ -171,19 +171,26 @@ MESSAGES = {
         'en': 'Basemap',
     },
     # 这里刻意不传参，花括号原样输出。
+    #
+    # 底图瓦片自 basemap_static 蓝图落地起就由服务端取，和下载共用
+    # proxy_autodetect.resolve_from_config —— 这段文案曾经写着相反的话，
+    # 而「底图打不开」的用户正是照着它跳过了唯一能修好它的那一步。
     'tpl.config.download.basemap_hint': {
-        'zh': '框选时看到的底图，与上面的下载源相互独立 —— 底图由浏览器直连加载，'
-              '不经过代理设置；下载走后端，走代理。Esri 卫星影像与 Google 影像同为 '
-              'WGS-84，框选位置对得上；不要填高德/腾讯的卫星地址，它们是 GCJ-02 '
-              '偏移坐标，在国内会错位数百米。自定义需填完整 XYZ 模板（含 {z}/{x}/{y}）。',
-        'en': 'The imagery you see while drawing a box. Independent of the download '
-              'source above: the basemap is loaded by the browser directly and does '
-              'NOT go through the proxy settings, while downloads go through the '
-              'backend and do. Esri imagery shares WGS-84 with Google imagery, so the '
-              'box you draw matches what you download; do not point this at AMap or '
-              'Tencent satellite tiles — they are GCJ-02 shifted and will be off by '
-              'hundreds of metres in China. Custom requires a full XYZ template '
-              '(with {z}/{x}/{y}).',
+        'zh': '框选时看到的底图由服务端同源转发（/basemap/{z}/{x}/{y}），与下载走'
+              '同一条出网路径，一样吃代理服务器设置与代理自动检测 —— 底图加载不出来'
+              '（只剩一个蓝色球体）时，先去检查上面的代理。Esri 卫星影像与 Google '
+              '影像同为 WGS-84，框选位置对得上；不要填高德/腾讯的卫星地址，它们是 '
+              'GCJ-02 偏移坐标，在国内会错位数百米。自定义需填完整 XYZ 模板'
+              '（含 {z}/{x}/{y}）。',
+        'en': 'The imagery you see while drawing a box is served same-origin by the '
+              'backend (/basemap/{z}/{x}/{y}): it takes the same network path as '
+              'downloads and obeys the proxy server setting and proxy '
+              'auto-detection — if it will not load (you only get a blue globe), '
+              'check the proxy above first. Esri imagery shares WGS-84 with Google '
+              'imagery, so the box you draw matches what you download; do not point '
+              'this at AMap or Tencent satellite tiles — they are GCJ-02 shifted and '
+              'will be off by hundreds of metres in China. Custom requires a full '
+              'XYZ template (with {z}/{x}/{y}).',
     },
     'tpl.config.download.basemap_esri': {
         'zh': 'Esri 卫星影像（推荐，国内直连可用）',

@@ -108,6 +108,13 @@ jobs:
         pip install -r requirements.txt
         echo "NUITKA_VERSION=$(python -c "import importlib.metadata as m; print(m.version('nuitka'))")" >> $GITHUB_ENV
 
+    # GDAL 闸门:与 build.yml / build.sh / build.bat 共用 scripts/check_gdal.py。
+    # 判据(requirements.txt 的版本范围 + _gdal_array 在位)只此一份实现。缺
+    # _gdal_array 的绑定打出来的 exe 能构建、能启动、冒烟请求 `/` 也 200,只有
+    # DEM/地形/等高线作业会炸 —— 必须在装完依赖之后、Nuitka 之前拦住。
+    - name: Verify GDAL binding
+      run: python scripts/check_gdal.py
+
     # 跨 run 复用 C 编译结果 —— 这一步是整条流水线提速的关键,详见 build.yml
     # (key 里带 Nuitka 版本的理由也在那里)。
     - name: Cache Nuitka C compilation

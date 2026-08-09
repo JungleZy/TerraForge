@@ -32,11 +32,6 @@ MESSAGES = {
     },
 
     # --- 瓦片数量预估（下载弹窗读数）------------------------------------------
-    'js.map.tile_estimate.antimeridian': {
-        'zh': '选区跨反经线，后端会拒绝该四至，无法预估瓦片数',
-        'en': 'Selection crosses the antimeridian; the server rejects these '
-              'bounds, so the tile count cannot be estimated',
-    },
     'js.map.tile_estimate.count': {
         'zh': '预计 {count} 块瓦片',
         'en': 'About {count} tiles',
@@ -134,7 +129,11 @@ MESSAGES = {
         'en': ' · Alt {h}',
     },
 
-    # --- 选区数值点击编辑 -----------------------------------------------------
+    # --- 选区四至校验（validateBoundsRules，三个入口共用）----------------------
+    # 一句一条规则，与 src/services/geo_validation.validate_bbox 一一对应。
+    # 后端的报错是英文且带原始数值（`east (-170.0) must be greater than west
+    # (170.0)`），改前它会原样弹进中文界面；现在前端在提交前就用这几条挡下，
+    # 后端那句话到不了用户眼前。
     'js.map.bounds.edit_aria': {
         'zh': '编辑{field}',
         'en': 'Edit {field}',
@@ -151,9 +150,22 @@ MESSAGES = {
         'zh': '纬度必须在 ±90° 之间',
         'en': 'Latitude must be within ±90°',
     },
-    'js.map.edit.zero_width': {
-        'zh': '东西经不能相同（选区宽度为 0）',
-        'en': 'East and west cannot be equal (selection width is 0)',
+    'js.map.edit.lon_range': {
+        'zh': '经度必须在 ±180° 之间',
+        'en': 'Longitude must be within ±180°',
+    },
+    # 零宽（东西经相同）与跨反经线（west=170/east=-170）在后端是同一条规则
+    # `east > west`，所以这里也是同一句话——分两句说会让人以为后端有两条口子。
+    'js.map.edit.east_gt_west': {
+        'zh': '东边界必须大于西边界：东西经相同（零宽）或跨 180° 经线的选区都不支持',
+        'en': 'East must be greater than west: zero-width and '
+              'antimeridian-crossing selections are not supported',
+    },
+    # 框选落定时零面积（单击而非拖拽）不念规则名——用户要听的是「怎么做对」。
+    'js.map.bounds.no_area': {
+        'zh': '单击不构成选区：请按住左键在地图上拖出一个矩形',
+        'en': 'A click is not a selection: hold the left button and drag a '
+              'rectangle on the map',
     },
 
     # --- 复制到剪贴板 ---------------------------------------------------------

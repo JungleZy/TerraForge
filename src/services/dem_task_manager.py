@@ -471,6 +471,7 @@ class DemTaskManager:
                         stop_flag: Optional[threading.Event] = None,
                         quality: str = DEFAULT_TILING_QUALITY,
                         vertex_normals: bool = False) -> None:
+        failure = None
         try:
             # 切片进度节流落库/emit（范本：contour_task_manager 渲染阶段的
             # render_progress）：build_terrain 逐瓦片回调，不节流时每次回调
@@ -615,9 +616,12 @@ class DemTaskManager:
 
             if stopped:
                 # 中途停止的唯一入口是删除任务（DEM 切片没有暂停/恢复语义）——
-                # dem_tasks 行连同 CASCADE 的 job 行此刻都已经不在了。写状态是
-                # 静默 no-op，_emit_tiling_finished 也没有行可更新。直接收工，
-                # 不是漏了状态迁移。
+                # 正常情况下 dem_tasks 行连同 CASCADE 的 job 行此刻都已经不在了，
+                # 写状态是静默 no-op，_emit_tiling_finished 也没有行可更新。
+                # 但「行一定已经没了」这个假设不成立：task_deletion.delete_task_row
+                # 的 commit 失败分支回滚 DELETE 却【不】回滚停止标志（有意的），
+                # 于是行还在、标志已置、这里正常 return —— 没有异常给下面的兜底
+                # except 接。那种行由 finally 的搁死补偿判 failed，不是靠这里。
                 return
 
             conn = get_connection()
@@ -639,6 +643,10 @@ class DemTaskManager:
             self._emit_tiling_finished(task_id, "completed")
 
         except Exception as e:
+            # failure 必须在开连接之前先记下：下面这句 get_connection() 自己就会抛
+            # （库被锁/磁盘满），抛了就没人再写终态，只剩 finally 的搁死补偿，而它
+            # 要拿这个原因写进 error_message。
+            failure = e
             conn = get_connection()
             try:
                 cur = conn.cursor()
@@ -664,12 +672,24 @@ class DemTaskManager:
             # 契约测试用 __new__ 构造的管理器直调本方法，压根没有登记表，
             # 也就没有什么可摘的。
             state_lock = getattr(self, "_state_lock", None)
+            # 没有登记表 = 契约测试用 __new__ 直调本方法，那种调用不可能有第二个
+            # worker 来抢这一行，按「登记的就是自己」处理，补偿照常做。
+            stranded_owner = True
             if state_lock is not None:
                 with state_lock:
-                    if self.active_tasks.get(task_id) is threading.current_thread():
+                    stranded_owner = (
+                        self.active_tasks.get(task_id) is threading.current_thread())
+                    if stranded_owner:
                         self.active_tasks.pop(task_id, None)
                     if stop_flag is None or self.stop_flags.get(task_id) is stop_flag:
                         self.stop_flags.pop(task_id, None)
+            if stranded_owner:
+                # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的
+                # docstring）。盖住两条路：上面那个兜底 except 自己抛出去了，
+                # 以及 stopped 分支正常 return 而行没被删掉。
+                fail_stranded_running_task(
+                    'dem_terrain_jobs', task_id,
+                    f'切片线程异常: {failure}' if failure is not None else '')
 
     def _emit_tiling_finished(self, task_id: int, status: str) -> None:
         """切片作业收尾时补一发 terrain_job_progress。

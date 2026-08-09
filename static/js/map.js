@@ -1,20 +1,35 @@
 let viewer = null;
 let currentBounds = null;
 
-// 选区经度归一化:在环绕显示（拖过 ±180）的视图上画框时，东/西边界可能超出
-// ±180。后端会拒绝超出 ±180 的四至，这里先 wrap 回标准范围:
-// 西边界 wrap 到 [-180,180)，东边界 wrap 到 (-180,180](让 180 保持 180;
-// 东边界输入 -180 与 180 是同一条经线，同样归一到 180)。
-// wrap 只在提交给后端的 payload 里做;
-// wrap 后若 east < west(选区跨反经线),由后端报错提示,不在前端静默交换。
-function _wrapLngWest(lng) {
-    return ((lng + 180) % 360 + 360) % 360 - 180;
-}
-function _wrapLngEast(lng) {
-    // 先按西边界口径 wrap 到 [-180,180)，再把 -180 翻到 180，
-    // 保证东经 180 不会被折成 -180(east < west 会被后端 400 拒掉)。
-    const w = _wrapLngWest(lng);
-    return w === -180 ? 180 : w;
+// 选区四至的唯一校验口径 —— 与后端 geo_validation.validate_bbox 的四条规则
+// 逐条同构：north > south、|lat| <= 90、|lon| <= 180、east > west。
+//
+// 为什么必须只有一份：改前三个选区入口各判各的 —— 框选落定层零面积照收
+//（单击就能造出 0°×0° 的「选区」，预估框还报「约 6 张瓦片」），
+// _applyBoundsEdit 与 _readManualBounds 只校纬度、不校经度量级（east=400 照收，
+// 状态栏读出「300.000° × 20.000°」），三处又都刻意放行 west=170/east=-170
+// 这类跨反经线矩形。后端对这些一律 400，于是用户拿到的是一条**负宽度**读数、
+// 一颗点下去必然失败的按钮，和一句直接漏进中文界面的英文报错。
+//
+// 跨反经线没有「前端宽容一点」的余地：后端无条件拒绝它，放行只能换来 400。
+// 要支持得先改后端的 validate_bbox，不在这里开口子。
+//
+// 每条判据都写成双边、且顺序照抄后端 —— 不是冗余，是**报错理由**的对拍口径。
+// 只写单边会把越界漏给下一条：east=-400 时缺了「east >= -180」，
+// 落到 east > west 上报「东边界必须大于西边界」，而后端说的是「经度越界」。
+// 放行集合一样、理由不一样，用户照着改还是过不了。
+//
+// 返回 null 表示通过；否则返回该说给用户听的文案 key。
+function validateBoundsRules(b) {
+    if (!(b.north > b.south)) return 'js.map.edit.north_gt_south';
+    if (!(b.south >= -90 && b.south <= 90 && b.north >= -90 && b.north <= 90)) {
+        return 'js.map.edit.lat_range';
+    }
+    if (!(b.west >= -180 && b.west <= 180 && b.east >= -180 && b.east <= 180)) {
+        return 'js.map.edit.lon_range';
+    }
+    if (!(b.east > b.west)) return 'js.map.edit.east_gt_west';
+    return null;
 }
 
 // --- Cesium 基础 --------------------------------------------------------------
@@ -48,10 +63,11 @@ function _latLonToTile(lat, lon, zoom) {
 function estimateTileCount(bounds, zoomMin, zoomMax) {
     let total = 0;
     for (let z = zoomMin; z <= zoomMax; z++) {
-        let [xMin, yMax] = _latLonToTile(bounds.south, bounds.west, z);
-        let [xMax, yMin] = _latLonToTile(bounds.north, bounds.east, z);
-        if (xMin > xMax) [xMin, xMax] = [xMax, xMin];
-        if (yMin > yMax) [yMin, yMax] = [yMax, yMin];
+        // 下标不再 swap：currentBounds 的每一个写入点都过了 validateBoundsRules
+        //（east > west、north > south），xMin > xMax 与 yMin > yMax 已不可达，
+        // swap 只会掩盖真出现时的口径错误。
+        const [xMin, yMax] = _latLonToTile(bounds.south, bounds.west, z);
+        const [xMax, yMin] = _latLonToTile(bounds.north, bounds.east, z);
         total += (xMax - xMin + 1) * (yMax - yMin + 1);
     }
     return total;
@@ -91,18 +107,7 @@ function updateTileEstimate() {
         el.hidden = true;
         return null;
     }
-    // 与提交时的 wrap 口径一致（_wrapLngWest/_wrapLngEast）：wrap 后 east < west
-    // 说明选区跨反经线，后端会 400 拒绝——预估同样给不出有意义的数，不算数，
-    // 而不是静默 swap 东西边界算一个必然提交失败的瓦片数。
-    const west = _wrapLngWest(currentBounds.west);
-    const east = _wrapLngEast(currentBounds.east);
-    if (east < west) {
-        el.textContent = t('js.map.tile_estimate.antimeridian');
-        el.classList.remove('tile-estimate--over');
-        el.hidden = false;
-        return null;
-    }
-    const count = estimateTileCount({ ...currentBounds, west, east }, zMin, zMax);
+    const count = estimateTileCount(currentBounds, zMin, zMax);
     const formatted = count.toLocaleString('zh-CN');
     const over = count > TASK_TILE_LIMIT;
     if (over) {
@@ -567,8 +572,13 @@ function _initMapTools() {
             else d.east = Math.max(lng, d.west + 1e-6);
             if (_draggingHandle.indexOf('n') !== -1) d.north = Math.max(lat, d.south + 1e-6);
             else d.south = Math.min(lat, d.north - 1e-6);
+            // 与 validateBoundsRules 的量级规则同向兜住手柄拖拽这条不走闸门的
+            // 路径：对侧钳位用的 ±1e-6 会把紧贴 180°/90° 的边推出合法域，
+            // 提交时后端 400 报一个用户根本没输入过的数。
             d.north = Math.min(90, d.north);
             d.south = Math.max(-90, d.south);
+            d.east = Math.min(180, d.east);
+            d.west = Math.max(-180, d.west);
             _syncBoundsFromRect();
             // 同上：拖手柄只改 _rectDegrees，需显式请求重绘
             viewer.scene.requestRender();
@@ -583,6 +593,17 @@ function _initMapTools() {
             scc.enableRotate = true;
             scc.enableTilt = true;
             scc.enableTranslate = true;
+            // 单击（按下与抬起落在同一像素）会落成 west === east、
+            // south === north 的零面积矩形。改前它照样入库：浮层读出
+            // 0.000° × 0.000°，预估框还报「约 6 张瓦片」，而后端必然 400。
+            // 这里与另外两个入口过同一道闸门；鼠标手势唯一能造出的违规就是
+            // 零宽/零高（经纬度量级由拾取结果保证），所以不过就按
+            // 「没画出选区」丢弃，而不是把闸门的具体理由念给用户听。
+            if (validateBoundsRules(_rectDegrees)) {
+                clearSelection();
+                showNotification(t('js.map.bounds.no_area'), 'warning');
+                return;
+            }
             _ensureSelectionEntity();
             // 落定点可能与最后一次 MOUSE_MOVE 不同，矩形仍是 CallbackProperty，
             // 显式请求一帧保证落定形状立即显示
@@ -1340,6 +1361,9 @@ function updateBoundsInfo() {
             </div>
         `;
         if (statusSel) {
+            // 宽高恒正的依据只有一条：currentBounds 的每个写入点都过了
+            // validateBoundsRules。改前跨反经线选区在这里读出「-340.000°」
+            // 并当成正常读数显示 —— 状态栏不做二次防御，闸门破了这里就错。
             const w = (currentBounds.east - currentBounds.west).toFixed(3);
             const h = (currentBounds.north - currentBounds.south).toFixed(3);
             statusSel.textContent = t('js.map.status.selection', { w: w, h: h });
@@ -1403,7 +1427,7 @@ function announceBounds() {
 
 // --- 选区数值点击编辑 ----------------------------------------------------------
 // 点击 .bounds-v 把读数换成输入框；Enter / 失焦提交，Esc 取消。
-// 提交经 _applyBoundsEdit 校验（北纬>南纬、纬度 ±90、经度非零宽），
+// 提交经 _applyBoundsEdit → validateBoundsRules（与后端同一套四条规则），
 // 非法输入回退原值并 toast。
 
 function _beginBoundsEdit(vEl) {
@@ -1430,7 +1454,7 @@ function _beginBoundsEdit(vEl) {
         // input 用的正是这个类 —— 留着它的话,下面无论走哪条路,那次重渲染都会
         // 被守卫拦掉:
         //   - Escape 取消:回不到原读数,格子里永远停着一个 input;
-        //   - 校验失败(_applyBoundsEdit 里 4 条 return 前的 updateBoundsInfo):
+        //   - 校验失败(_applyBoundsEdit 里两条 return 前的 updateBoundsInfo):
         //     同样回不去,提示弹了但输入框还在;
         //   - 校验通过:_syncBoundsFromRect 排的那次重渲染也被拦。
         // 更远的连带:input 一直留着,之后点「删除」时 clearSelection 触发的
@@ -1468,18 +1492,9 @@ function _applyBoundsEdit(field, raw) {
         west: currentBounds.west,
     };
     b[field] = v;
-    if (b.north <= b.south) {
-        showNotification(t('js.map.edit.north_gt_south'), 'warning');
-        updateBoundsInfo();
-        return;
-    }
-    if (b.north > 90 || b.south < -90) {
-        showNotification(t('js.map.edit.lat_range'), 'warning');
-        updateBoundsInfo();
-        return;
-    }
-    if (Math.abs(b.east - b.west) < 1e-9) {
-        showNotification(t('js.map.edit.zero_width'), 'warning');
+    const reason = validateBoundsRules(b);
+    if (reason) {
+        showNotification(t(reason), 'warning');
         updateBoundsInfo();
         return;
     }
@@ -1557,14 +1572,9 @@ function _closeManualBounds() {
     if (boundsInfo) boundsInfo.innerHTML = '';
 }
 
-// 校验口径与 _applyBoundsEdit 逐条对齐（顺序、判据、文案 key 全同），
-// 不另立一套：同一个选区被两个入口用不同标准放行，是更难查的缺陷。
-//   1. 非数字        -> js.map.edit.invalid_number
-//   2. north <= south -> js.map.edit.north_gt_south
-//   3. 纬度越界 ±90   -> js.map.edit.lat_range
-//   4. |east-west| < 1e-9 -> js.map.edit.zero_width
-// 注意第 4 条只禁「零宽」不要求 east > west —— 与 _applyBoundsEdit 一致，
-// west=170/east=-170 这类跨 180° 经线的矩形照样放行。
+// 非数字先各自 toast 并把焦点送回那一格（面板留在原地就地改），四至齐了再过
+// validateBoundsRules —— 与框选落定、点读数编辑同一道闸门，不另立一套：
+// 同一个选区被三个入口用三种标准放行，正是这次要拆掉的缺陷。
 // 返回 {north, south, east, west}（度），任一条不过则 toast 并返回 null。
 function _readManualBounds() {
     const num = {};
@@ -1579,16 +1589,9 @@ function _readManualBounds() {
         }
         num[field] = v;
     }
-    if (num.north <= num.south) {
-        showNotification(t('js.map.edit.north_gt_south'), 'warning');
-        return null;
-    }
-    if (num.north > 90 || num.south < -90) {
-        showNotification(t('js.map.edit.lat_range'), 'warning');
-        return null;
-    }
-    if (Math.abs(num.east - num.west) < 1e-9) {
-        showNotification(t('js.map.edit.zero_width'), 'warning');
+    const reason = validateBoundsRules(num);
+    if (reason) {
+        showNotification(t(reason), 'warning');
         return null;
     }
     return num;
@@ -1731,8 +1734,8 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
             name: document.getElementById('taskName').value,
             north: currentBounds.north,
             south: currentBounds.south,
-            east: _wrapLngEast(currentBounds.east),
-            west: _wrapLngWest(currentBounds.west),
+            east: currentBounds.east,
+            west: currentBounds.west,
             dataset: document.getElementById('demDataset')?.value || 'COP-DEM-GLO-30',
             output_path: document.getElementById('outputPath').value,
             download_num: document.getElementById('demDownloadNum')?.checked ? 'true' : 'false',
@@ -1749,8 +1752,8 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
             name: document.getElementById('taskName').value,
             north: currentBounds.north,
             south: currentBounds.south,
-            east: _wrapLngEast(currentBounds.east),
-            west: _wrapLngWest(currentBounds.west),
+            east: currentBounds.east,
+            west: currentBounds.west,
             zoom_min: parseInt(document.getElementById('zoomMin').value),
             zoom_max: parseInt(document.getElementById('zoomMax').value),
             style: document.getElementById('mapStyle').value,

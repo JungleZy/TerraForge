@@ -52,11 +52,13 @@ GDAL 的 Python 绑定在 PyPI 上只有源码包，安装时要现场编译，�
 uv venv --python 3.12                             # 创建 .venv（如已存在可跳过）
 uv pip install setuptools wheel                   # --no-build-isolation 下要自备构建后端，Python 3.12 不再自带 setuptools
 uv pip install numpy==1.26.4                      # 必须早于 GDAL：编译 GDAL 时能 import numpy，才编得出 _gdal_array
-uv pip install --no-build-isolation GDAL==3.8.4   # 关掉 build isolation，编译时才看得见上面装的 numpy
+uv pip install --no-build-isolation "GDAL==$(gdal-config --version)"   # 版本必须跟随系统 libgdal，见下方
 uv pip install -r requirements.txt                # 其余依赖
 ```
 
 默认的 build isolation 会把 GDAL 丢到一个临时的干净环境里编译，那里没有 numpy，于是 `_gdal_array` 被跳过、编译却照样"成功"——这就是残缺绑定的由来。项目 CI 在 Linux 上也是这个顺序。
+
+**为什么这里不写一个具体的版本号。** Python 绑定是 sdist 现场编译的，编译时要对上系统 `libgdal` 的头文件，所以它的版本**跟随机器**：开发机（ubuntugis-unstable PPA）3.11.4、CI `ubuntu-latest`（noble apt）3.8.4、Windows/macOS（conda-forge）3.8。`$(gdal-config --version)` 正是「问机器要它自己那一版」。钉一个具体值，在另外两台机器上就会卸掉能用的绑定、按钉的版本重编 —— 而那次重编没有 `--no-build-isolation`，编出来的绑定又缺 `_gdal_array`，绕回本节开头那个坑。依赖声明因此给的是范围（见 `requirements.txt` 顶部的注释），换版本不需要回填任何文件；`scripts/check_gdal.py` 校验的也正是「装出来的版本落在那个范围内 + `_gdal_array` 在位」，而不是某个精确值。
 
 **Windows / macOS（conda-forge 装 GDAL）：**
 

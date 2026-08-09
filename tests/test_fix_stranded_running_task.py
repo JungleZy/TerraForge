@@ -109,14 +109,13 @@ def test_deleted_row_is_a_harmless_noop(db):
 
 
 def test_unknown_table_is_rejected(db):
-    """表名直接进 SQL —— 白名单是硬约束，不是文档约定。"""
+    """表名与定位列都直接进 SQL —— 白名单是硬约束，不是文档约定。"""
     from src.services.task_cleanup import fail_stranded_running_task
 
     with pytest.raises(ValueError):
         fail_stranded_running_task("tasks; DROP TABLE tasks", 1)
     with pytest.raises(ValueError):
-        # local_terrain 没有 _run_task，切片线程自己兜底 —— 不在白名单里
-        fail_stranded_running_task("local_terrain_tasks", 1)
+        fail_stranded_running_task("dem_files", 1)
 
 
 def test_helper_never_raises_even_when_the_db_is_unusable(db, monkeypatch):

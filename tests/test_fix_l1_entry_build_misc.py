@@ -298,6 +298,25 @@ def test_verify_no_missing_libs_ok_when_resolved(monkeypatch, tmp_path):
     nuitka_build.verify_no_missing_libs(str(tmp_path))
 
 
+# --------------------- nuitka_build: 产物哨兵覆盖全球 base 地形分卷
+
+def test_app_data_sentinels_cover_the_global_base_terrain_volumes(tmp_path):
+    """分卷漏收是所有随包资产里最难发现的一种:exe 能启动、冒烟请求 `/` 返回 200、
+    切片任务也能跑完,只是 layer.json 不写 parentUrl,用户拿到的地形静默少了 z0-7
+    的底 —— 没有任何一条日志会提这件事。所以只能在构建期拦住。"""
+    for rel in ('templates/index.html',
+                'static/vendor/cesium/1.143.0/Cesium.js',
+                'static/vendor/fonts/fonts.css'):
+        p = tmp_path.joinpath(*rel.split('/'))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('x', encoding='utf-8')
+
+    with pytest.raises(RuntimeError) as exc:
+        nuitka_build.verify_app_data(str(tmp_path))
+    assert 'base_z8.tar.gz.part' in str(exc.value), (
+        f'哨兵没覆盖 base 地形分卷,缺了也构建成功: {exc.value}')
+
+
 # --------------------- build.sh / build.bat 的 GDAL 闸门(scripts/check_gdal.py)
 #
 # 2026-08-08 前这里钉的是「requirements.txt 缺少 GDAL== pin 时报错」——那条断言

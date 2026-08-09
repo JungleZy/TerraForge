@@ -90,9 +90,12 @@ def test_stopped_tiling_with_zero_rendered_is_not_a_failure(monkeypatch, tmp_pat
     """刚开始切就被停掉时 rendered 本来就是 0 —— 不能误判成「一张瓦片都没切出来」。
 
     dem_task_manager 的 `if total > 0 and rendered == 0: raise` 是给「切片器真的
-    什么都没产出」准备的失败判据。中途停止会让它误命中：作业被记 failed、
-    error_message 写成 "produced no tiles"，而真实原因是用户主动停的。
+    什么都没产出」准备的失败判据。中途停止会让它误命中：error_message 写成
+    "produced no tiles"，而真实原因是用户主动停的。
     local_terrain_task_manager._run_tiling_job 早就有逐字对应的豁免。
+
+    钉的是**这条判据没误命中**，不是终态：本用例没人删这一行（真实场景里删除
+    已经把它 CASCADE 掉了），活下来的行会被 finally 的搁死补偿判 failed。
     """
     db, dtm = _setup(monkeypatch, tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)
@@ -111,19 +114,23 @@ def test_stopped_tiling_with_zero_rendered_is_not_a_failure(monkeypatch, tmp_pat
         th.join(timeout=10)
 
     job = mgr.get_tiling_job(task_id)
-    assert job["status"] != "failed", (
-        f"中途停止不是失败，实际 status={job['status']} error={job['error_message']}")
+    assert "produced no tiles" not in (job["error_message"] or ""), (
+        f"中途停止被「切片器什么都没产出」判据误命中，error={job['error_message']}")
     # 中途停止也不能报 completed —— 产物是残缺的
     assert job["status"] != "completed", (
         "中途停止的切片不能记 completed（产物残缺）")
 
 
-def test_stopped_tiling_writes_no_terminal_state(monkeypatch, tmp_path):
-    """中途停止时不写状态、不广播 —— 置位的唯一入口是删除，行已经不在了。
+def test_stopped_tiling_does_not_leave_the_job_row_running(monkeypatch, tmp_path):
+    """中途停止不写 completed、不广播终态；行要是还活着，必须被搁死补偿判 failed。
 
-    DEM 切片没有暂停语义。改造后能置这个 flag 的只有「删除任务」，那时
-    dem_tasks 行连同 CASCADE 的 dem_terrain_jobs 行都已经没了：UPDATE 是静默
-    no-op，emit 也没有行可更新。写死这条契约，免得后来者「补上遗漏的状态迁移」。
+    DEM 切片没有暂停语义，能置这个 flag 的只有「删除任务」。正常情况下 dem_tasks
+    行连同 CASCADE 的 dem_terrain_jobs 行都已经没了，补偿是静默 no-op。但
+    task_deletion.delete_task_row 的 commit 失败分支回滚 DELETE 却【不】回滚停止
+    标志（有意的，重试删除仍要它停）—— 行就这么活下来，而切片线程走 stop 分支
+    **正常** return，没有异常给兜底 except 接。此前的契约是「这时什么都不写」，
+    留下的正是一条永久 running 的 job 行：start_tiling 的 `status != 'running'`
+    闸门一直判「已在运行」，terrain_api 又没有重置 job 的端点，只有重启进程能解开。
     """
     db, dtm = _setup(monkeypatch, tmp_path)
 
@@ -148,9 +155,11 @@ def test_stopped_tiling_writes_no_terminal_state(monkeypatch, tmp_path):
         th.join(timeout=10)
 
     job = mgr.get_tiling_job(task_id)
-    assert job["status"] == "running", (
-        f"中途停止不该改写 job 状态，实际 {job['status']}")
-    assert job["completed_at"] is None
+    assert job["status"] == "failed", (
+        f"停止标志置位后行还活着却没落终态，实际 {job['status']} —— "
+        "job 行永久 running，用户点不动「开始切片」")
+    assert "运行中" in (job["error_message"] or ""), (
+        f"要向用户说清行为什么被判失败，实际 error={job['error_message']}")
     finished = [p for e, p in emitted
                 if e == "terrain_job_progress" and p.get("status") in ("completed", "failed")]
     assert finished == [], f"中途停止不该广播终态，实际 {finished}"

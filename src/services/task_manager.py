@@ -961,6 +961,14 @@ class TaskManager:
                 )
 
             completed_tiles: List[Tile] = []
+            # 本次运行**新下载**到的瓦片所在的 zoom。拼接短路（产物已存在就跳过）
+            # 只有在「这一层一块新瓦片都没有」时才成立 —— 上一轮如果是在缺瓦片的
+            # 情况下拼的（旧版本没有下面那道 failed 闸门时会发生），恢复后补齐的
+            # 瓦片必然落在这里，于是强制重拼，而不是把那张残缺 mosaic 当成品留下。
+            zooms_with_fresh_tiles: set = set()
+            # 最后一次进度落库的异常。完成判定必须知道它 —— 见下载循环 finally
+            # 里那段说明：计数与失败行都在那一次 flush 里。
+            progress_flush_error: Optional[Exception] = None
             cache_hits = 0
             pending_count = 0
             stale_failed_keys: List[Tuple[int, int, int]] = []
@@ -1308,6 +1316,7 @@ class TaskManager:
                     # 上报,results 不必再为这件事全量保留。
                     if status == 'completed':
                         completed_tiles.append(tile)
+                        zooms_with_fresh_tiles.add(tile.zoom)
                         # 边下边复制①:cache 落盘即镜像一份到产物目录,下载结束
                         # ≈ 产物就绪,不再在 100% 后整段等待结尾复制阶段。
                         # M3: 必须 to_thread —— 这里跑在下载的 asyncio 事件循环
@@ -1430,11 +1439,21 @@ class TaskManager:
                         )
                     finally:
                         # 下载循环结束时把最后不满一批的计数增量落库 —— 暂停/取消/
-                        # 异常都不能丢这部分进度。flush 失败只记 error:收尾异常不能
-                        # 掩盖下载循环抛出的原始异常,且连接无论如何都要关闭。
+                        # 异常都不能丢这部分进度。这里不能抛:收尾异常会掩盖下载
+                        # 循环抛出的原始异常,且连接无论如何都要关闭。
+                        #
+                        # 但**也不能只记一条 log 就算了**：完成判定读的是库
+                        # （task_tiles 的 failed 行 + tasks 的计数），而这一批
+                        # 失败瓦片的行就在这次 flush 里。丢了它，「有瓦片失败」
+                        # 这件事对完成判定就不存在了 —— 小任务（< 一个批次）
+                        # 整轮进度只有这一次 flush，一次 database is locked 就能
+                        # 把「N 块瓦片失败」写成「completed，无 error_message」，
+                        # 而 completed 是终态、start_task 拒绝重启，用户没有自愈
+                        # 路径。所以记下来，交给下面的完成判定判失败。
                         try:
                             flush_progress_counts()
                         except Exception as flush_error:
+                            progress_flush_error = flush_error
                             logger.error(
                                 f"Task {task_id}: Failed to flush progress counts: {flush_error}"
                             )
@@ -1457,6 +1476,9 @@ class TaskManager:
             # to find out short of opening the output directory.
             stitched_zooms: List[int] = []
             stitch_failures: List[Tuple[int, str]] = []
+            # 因为本层还有失败瓦片而**没有拼**的 zoom。与 stitch_failures 分开记:
+            # 那是「拼了但炸了」,这是「不该拼」。
+            unstitchable_zooms: List[int] = []
 
             # Stitch tiles if output format includes image
             # NOTE: 'png'/'jpg' are legacy synonyms of 'image_only' — the output
@@ -1474,20 +1496,57 @@ class TaskManager:
                         logger.info(f"Task {task_id}: Stop flag detected during stitching")
                         return
 
+                    # 本层还有失败瓦片就整层不拼。拼接段拿到的是 completed_tiles,
+                    # 失败的瓦片根本不在里面 —— 于是 BuildVRT 会用一个比任务网格
+                    # 小的瓦片集合拼出一张「完整」的图,而引擎侧的
+                    # _assert_vrt_covers_tile_grid 期望值正是由**它收到的那批瓦片**
+                    # 推出来的(见该函数),边缘瓦片缺失时期望跟着一起缩小,结构上
+                    # 不可能发现「任务网格少了瓦片」。产物于是是一张地理范围比
+                    # 用户选区小(或内部有洞)的 GeoTIFF:文件打得开、看着正常、
+                    # 任务 completed、error_message 为 NULL,唯一的发现途径是自己
+                    # 拿 GIS 去量四至。
+                    #
+                    # 不拼不等于丢东西:失败瓦片会让下面的完成判定把整个任务判
+                    # failed,用户重试补齐后这一层才会被拼出来。
+                    cursor.execute(
+                        "SELECT COUNT(*) AS c FROM task_tiles "
+                        "WHERE task_id = ? AND zoom = ? AND status = 'failed'",
+                        (task_id, zoom),
+                    )
+                    if cursor.fetchone()['c'] > 0:
+                        logger.warning(
+                            f"Task {task_id}: zoom {zoom} 仍有失败瓦片,跳过拼接"
+                            f"(拼出来会是一张范围偏小的图)"
+                        )
+                        unstitchable_zooms.append(zoom)
+                        continue
+
                     # task.name 是用户输入,直接拼进文件名可携 '..' / 路径分隔符
                     # 逃逸出任务目录 —— 先消毒再拼。
                     safe_name = sanitize_filename(task.name)
                     output_path = output_dir / f"task_{task_id}" / f"{safe_name}_zoom_{zoom}.tif"
 
                     # 拼接断点:任务重试/恢复时,已产出且非空的 zoom mosaic 直接
-                    # 保留不重算(大 zoom 单层拼接是十分钟级活)。判定口径与瓦片
-                    # cache「存在且非空即完成」一致。已知取舍:进程在 Translate
-                    # 写盘中途被杀会留下非空半成品 tif,这里无法区分,会当作完成
-                    # 保留 —— 用户删掉该层文件重跑即可强制重算。
-                    if output_path.exists() and output_path.stat().st_size > 0:
+                    # 保留不重算(大 zoom 单层拼接是十分钟级活)。
+                    #
+                    # 但「文件在」不等于「文件对」:本次运行**新下载**到瓦片的
+                    # 那些层必须重拼。上一轮如果是在缺瓦片的情况下拼的(旧版本
+                    # 没有上面那道 failed 闸门),恢复补齐后短路会把那张残缺
+                    # mosaic 原样当成品留下,任务照报 completed —— 这正是这道
+                    # 判据要挡的。反过来,纯粹的重跑(全部命中 cache、一块新瓦片
+                    # 都没下)仍然短路,十分钟级的重算照样省掉。
+                    #
+                    # 已知取舍:进程在 Translate 写盘中途被杀不会留下半成品
+                    # (产物走 .part + os.replace,见 stitch_tiles_with_gdal)。
+                    if (
+                        zoom not in zooms_with_fresh_tiles
+                        and output_path.exists()
+                        and output_path.stat().st_size > 0
+                    ):
                         logger.info(
                             f"Task {task_id}: Zoom level {zoom} output already exists "
-                            f"({output_path}), skipping stitch"
+                            f"({output_path}) and no tile at this zoom was downloaded "
+                            f"this run, skipping stitch"
                         )
                         stitched_zooms.append(zoom)
                         if self.socketio:
@@ -1676,8 +1735,37 @@ class TaskManager:
             ''', (task_id,))
             failed_count = cursor.fetchone()['failed_count']
 
+            # 进度落库失败过 → 上面这个 failed_count 不可信(那一批失败行就在
+            # 丢掉的 flush 里)。不能拿一个读不全的库判 completed:那是终态,
+            # start_task 拒绝重启,用户没有自愈路径。判 failed 并说清原因,
+            # 用户可以删了重来。
+            if progress_flush_error is not None:
+                error_message = (
+                    f"进度落库失败,本轮计数与失败瓦片记录不可信"
+                    f"({progress_flush_error});请重新创建该任务"
+                )
+                cursor.execute('''
+                    UPDATE tasks
+                    SET status = 'failed', error_message = ?, completed_at = ?
+                    WHERE id = ? AND status = 'running'
+                ''', (error_message, utc_now_iso(), task_id))
+                conn.commit()
+                logger.error(f"Task {task_id}: {error_message}")
+                if cursor.rowcount and self.socketio:
+                    self.socketio.emit('task_failed', {
+                        'task_id': task_id,
+                        'status': 'failed',
+                        'error_message': error_message
+                    })
+                return
+
             if failed_count > 0:
                 error_message = f"{failed_count} tile(s) failed"
+                # 有失败瓦片时整层不拼(见拼接段)。用户看到的是「任务失败」
+                # 加一句「这些层没有拼接产物」,而不是一张范围偏小的图。
+                if unstitchable_zooms:
+                    levels = ', '.join(str(z) for z in unstitchable_zooms)
+                    error_message += f";缩放级别 {levels} 因此未拼接"
                 cursor.execute('''
                     UPDATE tasks
                     SET status = 'failed', error_message = ?, completed_at = ?

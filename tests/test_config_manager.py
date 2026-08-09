@@ -244,3 +244,38 @@ def test_is_valid_lng(config_manager):
     assert config_manager._is_valid_lng('-181') is False
     assert config_manager._is_valid_lng('181') is False
     assert config_manager._is_valid_lng('invalid') is False
+
+
+
+# ---------------------------------------------------------------------------
+# 路由到 manager 的接线：POST /api/config/reset
+# ---------------------------------------------------------------------------
+
+
+def test_reset_endpoint_actually_writes_the_defaults_back(isolated_app):
+    """端点必须真的重置，不能只回一个 success。
+
+    reset_to_defaults 本体有 test_reset_to_defaults 守着，但**路由到 manager
+    的那段接线**此前零覆盖：把 `config_manager.reset_to_defaults()` 换成 pass
+    仍然全绿。失败形态是纯静默 —— 用户在配置页点「恢复默认」拿到成功提示、
+    配置一条没变，而成功路径不记日志，唯一现象就是「点了没用」。
+    """
+    from src.core.database import DEFAULT_CONFIGS
+
+    defaults = dict(DEFAULT_CONFIGS)
+    client = isolated_app.app.test_client()
+
+    changed = {'tile_servers': 'mts0', 'contour_default_interval': '25'}
+    for key, value in changed.items():
+        assert value != defaults[key], f'{key} 被改成了出厂值本身，断言会变成空的'
+    assert client.put('/api/config', json=changed).status_code == 200
+    before = client.get('/api/config').get_json()['config']
+    assert {k: before[k]['value'] for k in changed} == changed, '前置改动没落库'
+
+    resp = client.post('/api/config/reset')
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert resp.get_json()['success'] is True
+    after = client.get('/api/config').get_json()['config']
+    assert {k: after[k]['value'] for k in changed} == \
+        {k: defaults[k] for k in changed}, '端点回了 success，配置却一条都没变'

@@ -22,7 +22,8 @@ from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import (DEFAULT_TILING_QUALITY, TILING_QUALITY_OFFSETS,
                                          validate_tiling_quality, validate_zoom)
-from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
+from src.services.task_cleanup import (fail_stranded_running_task, remove_task_dir_if_safe,
+                                       resolve_stored_output_dir)
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 from src.services.terrain_tiling.layer_json import parent_url_if_base_available
 
@@ -443,8 +444,9 @@ class LocalTerrainTaskManager:
                 # Path(Config.DOWNLOADS_DIR)（DOWNLOADS_DIR 为 None 时 TypeError）、
                 # threading.Thread(...) 构造。任何一处抛在 commit 之后，except 里
                 # 的 conn.rollback() 就是 no-op —— status='running' 已经落地而切片
-                # 线程根本没起来，行永久卡在 running：再次 start 被状态检查拒、
-                # delete 也被拒，只能重启进程靠 _recover_orphan_running_tasks 解开。
+                # 线程根本没起来，行永久卡在 running：再次 start 被状态检查拒，
+                # 只能删掉重建，或重启进程靠 _recover_orphan_running_tasks 解开
+                # （delete 是通的 —— delete_task_row 按 id 无条件 DELETE）。
                 # 下面那个 L2 回补块（`try: th.start()` 的 except）只包
                 # th.start()，够不到这段窗口。
                 #
@@ -490,8 +492,9 @@ class LocalTerrainTaskManager:
             th.start()
         except Exception as e:
             # L2: 锁内已把任务置 running 并 commit。线程创建失败后不回补的话,
-            # 任务永久停在 running —— 再次 start 被状态检查拒、delete 也被拒,
-            # 只能重启进程靠孤儿恢复解开。回补:清登记 + 置 failed。
+            # 任务永久停在 running —— 再次 start 被状态检查拒,只能删掉重建或
+            # 重启进程靠孤儿恢复解开（delete 本身不受影响,是通的）。
+            # 回补:清登记 + 置 failed。
             with self._state_lock:
                 if self.active_tasks.get(task_id) is th:
                     self.active_tasks.pop(task_id, None)
@@ -526,6 +529,7 @@ class LocalTerrainTaskManager:
         quality: str = DEFAULT_TILING_QUALITY,
         vertex_normals: bool = False,
     ) -> None:
+        failure = None
         try:
             # 切片期间的进度。此前这里**一个回调都没传** —— 而任务行的进度条是
             # 按 uploaded_files 算的，上传一结束就写满，于是整个切片过程（可以是
@@ -593,9 +597,13 @@ class LocalTerrainTaskManager:
 
             if stop_flag is not None and stop_flag.is_set():
                 # 中途停止的唯一入口是删除任务（切片没有暂停/恢复语义）——
-                # local_terrain_tasks 行此刻已经不在了。写状态是静默 no-op，
-                # _emit_tiling_finished 也没有行可更新。直接收工，不是漏了状态
-                # 迁移。范本见 dem_task_manager._run_tiling_job。
+                # 正常情况下 local_terrain_tasks 行此刻已经不在了，写状态是静默
+                # no-op，_emit_tiling_finished 也没有行可更新。但「行一定已经
+                # 没了」这个假设不成立：task_deletion.delete_task_row 的 commit
+                # 失败分支回滚 DELETE 却【不】回滚停止标志（有意的），于是行还在、
+                # 标志已置、这里正常 return —— 没有异常给下面的兜底 except 接。
+                # 那种行由 finally 的搁死补偿判 failed。范本见
+                # dem_task_manager._run_tiling_job。
                 return
 
             conn = get_connection()
@@ -626,6 +634,10 @@ class LocalTerrainTaskManager:
                         f"Local terrain task {task_id}: emit task_completed "
                         f"failed (ignored): {emit_error}")
         except Exception as e:
+            # failure 必须在开连接之前先记下：下面这句 get_connection() 自己就会抛
+            # （库被锁/磁盘满），抛了就没人再写终态，只剩 finally 的搁死补偿，而它
+            # 要拿这个原因写进 error_message。
+            failure = e
             conn = get_connection()
             try:
                 cur = conn.cursor()
@@ -647,9 +659,18 @@ class LocalTerrainTaskManager:
                 )
         finally:
             with self._state_lock:
-                if self.active_tasks.get(task_id) is threading.current_thread():
+                stranded_owner = (
+                    self.active_tasks.get(task_id) is threading.current_thread())
+                if stranded_owner:
                     self.active_tasks.pop(task_id, None)
                     self.stop_flags.pop(task_id, None)
+            if stranded_owner:
+                # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的
+                # docstring）。盖住两条路：上面那个兜底 except 自己抛出去了，
+                # 以及 stop 分支正常 return 而行没被删掉。
+                fail_stranded_running_task(
+                    'local_terrain_tasks', task_id,
+                    f'切片线程异常: {failure}' if failure is not None else '')
 
     def _emit_tiling_finished(self, task_id: int, status: str) -> None:
         """切片收尾时补一发 terrain_job_progress（与 dem_task_manager 同款）。

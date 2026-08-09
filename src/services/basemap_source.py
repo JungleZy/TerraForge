@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, Optional, Tuple
 
 from src.i18n import t
@@ -48,6 +49,7 @@ DEFAULT_BASEMAP_SOURCE = 'esri'
 # 理由见 src/routes/basemap_static.py：浏览器直连上游会撞 CORS（上游返回 4xx
 # 时错误页没有 CORS 头，真实状态码被埋成一句 CORS 报错），而且浏览器不吃项目
 # 的 proxy_url —— 底图与下载走两条不同的出网路径，配好代理底图照样可能是蓝球。
+# client_descriptor 下发时会在后面缀一个版本串，见 source_version。
 BASEMAP_TILE_PATH = '/basemap/{z}/{x}/{y}'
 
 # url：**上游**地址模板，只在服务端使用，不下发给浏览器。
@@ -101,16 +103,53 @@ BASEMAP_PRESETS: Dict[str, Dict[str, Any]] = {
 AUTO_FALLBACK_ORDER = ('esri', 'google_satellite', 'osm')
 
 
+def source_version(upstream: str) -> str:
+    """由**上游地址模板**算出的短版本串，缀在同源 URL 后面下发给浏览器。
+
+    存在的理由是缓存：瓦片带 24 小时浏览器缓存，而同源路径里一旦没有源标识，
+    用户在配置页换完底图源之后，已经浏览过的区域会继续显示旧那家的影像整整
+    一天 —— 缓存命中不回源，界面上没有任何补救手段，只能硬刷新/清缓存。
+    换源即换 URL 空间，这个问题就不存在了。
+
+    哈希的是上游模板而不是 source 名：'custom' 与 'download_source' 这两个名字
+    底下的真实上游是会变的（换自定义模板、换 tile_servers 第一条），只认名字
+    的话这两种切换照样落在同一个 URL 空间里，一天的旧图照旧。
+
+    压成哈希不是保密（本项目零鉴权，上游地址本来就是用户自己填的），是因为
+    client_descriptor 的硬约束是「前端拿不到上游地址」—— 明文塞进 URL 等于
+    把那道门拆了。
+    """
+    return hashlib.sha256((upstream or '').encode('utf-8')).hexdigest()[:8]
+
+
+def _layer(upstream: str, max_level: Optional[int], credit: str,
+           source: str) -> Dict[str, Any]:
+    """服务端图层描述的唯一构造口。
+
+    version 统一在这里附上：漏掉一处就意味着那条路径下发的 URL 不带源标识，
+    换源之后浏览器继续吃一天旧影像。
+    """
+    return {
+        'upstream': upstream,
+        'max_level': max_level,
+        'credit': credit,
+        'source': source,
+        'version': source_version(upstream),
+    }
+
+
 def resolve_basemap(value: Optional[str], *, tile_servers: Optional[str] = None,
                     default_style: str = 'm') -> Dict[str, Any]:
     """把 basemap_source 的配置值解析成**服务端**用的图层描述。
 
-    返回 {'upstream', 'max_level', 'credit', 'source'}。upstream 是真实的上游
-    地址模板，只给 routes/basemap_static.py 取瓦片用；下发给浏览器的描述由
-    client_descriptor() 生成，那里的地址永远是同源的 BASEMAP_TILE_PATH。
+    返回 {'upstream', 'max_level', 'credit', 'source', 'version'}。upstream 是
+    真实的上游地址模板，只给 routes/basemap_static.py 取瓦片用；下发给浏览器的
+    描述由 client_descriptor() 生成，那里的地址永远是同源的 BASEMAP_TILE_PATH
+    加上 version（见 source_version）。
 
-    max_level 为 None 表示不限制（自定义模板：我们不知道对方支持到几级，
-    交给服务器去 404）。
+    max_level 为 None、credit 为空表示**我们不知道**，不是「无上限/无署名」：
+    自定义模板与 download_source 指向的都是任意一个上游（自建镜像也算），
+    替用户断言它支持到几级、署名是谁，只会让界面显示一个编造出来的事实。
 
     空值/未知值回落到默认预设而不是抛错 —— 这条路径跑在渲染首页和取每一块
     底图瓦片的途中，一个坏掉的配置值不该让页面 500；校验拦在写入侧（见下面的
@@ -119,26 +158,20 @@ def resolve_basemap(value: Optional[str], *, tile_servers: Optional[str] = None,
     raw = (value or '').strip()
 
     if raw.startswith(('http://', 'https://')):
-        return {'upstream': raw, 'max_level': None, 'credit': '',
-                'source': CUSTOM_SOURCE}
+        return _layer(raw, None, '', CUSTOM_SOURCE)
 
     if raw == DOWNLOAD_SOURCE:
         first = parse_server_list(tile_servers)[0]
-        return {
-            'upstream': expand_server_entry(first, default_style or 'm'),
-            'max_level': 21,
-            'credit': '© Google',
-            'source': DOWNLOAD_SOURCE,
-        }
+        # 不跟着 Google 预设报 max_level=21 / '© Google'：tile_servers 可以是
+        # 任何一条 XYZ 模板（文档里就把自建镜像列为一等用法），那两个值只是
+        # 「默认配置下恰好成立」，换成镜像就是编造。同一函数的自定义模板分支
+        # 对同一个未知量如实报 None/''，两支必须同口径。
+        return _layer(expand_server_entry(first, default_style or 'm'),
+                      None, '', DOWNLOAD_SOURCE)
 
     name = raw if raw in BASEMAP_PRESETS else DEFAULT_BASEMAP_SOURCE
     preset = BASEMAP_PRESETS[name]
-    return {
-        'upstream': preset['url'],
-        'max_level': preset['max_level'],
-        'credit': preset['credit'],
-        'source': name,
-    }
+    return _layer(preset['url'], preset['max_level'], preset['credit'], name)
 
 
 def fallback_candidates(resolved: Dict[str, Any]) -> list:
@@ -153,12 +186,8 @@ def fallback_candidates(resolved: Dict[str, Any]) -> list:
         preset = BASEMAP_PRESETS[name]
         if name == resolved['source'] or not preset['wgs84']:
             continue
-        chain.append({
-            'upstream': preset['url'],
-            'max_level': preset['max_level'],
-            'credit': preset['credit'],
-            'source': name,
-        })
+        chain.append(_layer(preset['url'], preset['max_level'],
+                            preset['credit'], name))
     return chain
 
 
@@ -168,9 +197,13 @@ def client_descriptor(resolved: Dict[str, Any]) -> Dict[str, Any]:
     **不含 upstream**：前端只知道同源路径，不知道真实上游是谁。这不是保密，
     是架构约束 —— 前端一旦拿到上游地址就会有人图省事直连回去，CORS 与
     「底图不吃代理」这两个坑立刻复活。
+
+    url 是同源路径 + `?v=<version>`。`{z}/{x}/{y}` 仍由 Cesium 自己代入，
+    路由**忽略** v —— 它只用来把「换了源」变成「换了 URL 空间」，否则换源之后
+    浏览器会拿着一天的旧缓存继续显示上一家的影像（见 source_version）。
     """
     return {
-        'url': BASEMAP_TILE_PATH,
+        'url': f"{BASEMAP_TILE_PATH}?v={resolved['version']}",
         'max_level': resolved['max_level'],
         'credit': resolved['credit'],
         'source': resolved['source'],

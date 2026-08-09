@@ -367,10 +367,12 @@ def test_verify_app_data_reports_every_missing_sentinel(tmp_path):
 
 
 def test_verify_app_data_accepts_a_complete_bundle(tmp_path):
-    """对照：三个哨兵齐全就放行（Cesium 目录带版本号，靠 glob 匹配）。"""
+    """对照：哨兵齐全就放行（Cesium 目录带版本号、base 分卷带 part 后缀，靠 glob 匹配）。"""
     for rel in ("templates/index.html",
                 "static/vendor/cesium/1.143.0/Cesium.js",
-                "static/vendor/fonts/fonts.css"):
+                "static/vendor/fonts/fonts.css",
+                "assets/terrain/base_z8.tar.gz.partaa",
+                "assets/terrain/base_z8.tar.gz.partab"):
         p = tmp_path.joinpath(*rel.split("/"))
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("x", encoding="utf-8")

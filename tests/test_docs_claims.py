@@ -25,6 +25,8 @@ import ast
 import os
 import re
 
+from src.i18n.catalog import MESSAGES
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 # README 的端点清单只覆盖 HTTP 路由；socketio_events.py 没有 route 装饰器，
@@ -392,3 +394,270 @@ def test_readme_structure_tree_names_the_real_composition_root():
     for line in root_lines:
         assert "app_factory.py" in line, (
             f"「组合根」标错了位置——它属于 app_factory.py，不是这一行：{line.strip()}")
+
+
+# --------------------------------------------------- 界面文案里的可机检事实
+#
+# 底图瓦片由 `routes/basemap_static` 在**服务端**取，代理经
+# `proxy_autodetect.resolve_from_config` 解析 —— 与下载完全同一条出网路径。
+# 配置页的 `tpl.config.download.basemap_hint` 曾经中英两版都反着说（「底图由
+# 浏览器直连加载，不经过代理设置」），而「底图打不开、只剩蓝球」是本仓最高频的
+# 现场问题：用户照着这句话认定代理与底图无关，于是跳过了唯一能修好它的那一步。
+#
+# 为什么不能只 grep 「直连」：`js.config.proxy.none` 的「当前为直连」、
+# `js.config.proxy.disabled` 的「留空即为直连」说的是「没有代理在用」，
+# `tpl.config.download.basemap_esri` 的「国内直连可用」说的是上游本身可达 ——
+# 三条都对。判据只能是「底图」与「绕过代理」这两个意思落在**同一句**里。
+_SENTENCE = r"[^。；;.\n]"
+
+_BASEMAP_SKIPS_PROXY = (
+    # 底图……不经过/不走/不吃/不使用/不受……代理（及反序）
+    rf"(?:底图|basemap){_SENTENCE}*?不(?:经过|走|吃|使用|受){_SENTENCE}*?代理",
+    rf"不(?:经过|走|吃|使用|受){_SENTENCE}*?代理{_SENTENCE}*?(?:底图|basemap)",
+    # 底图……浏览器……直连（及反序）——旧文案的 zh 半句
+    rf"(?:底图|basemap){_SENTENCE}*?浏览器{_SENTENCE}*?直连",
+    rf"浏览器{_SENTENCE}*?直连{_SENTENCE}*?(?:底图|basemap)",
+    # 代理……对底图……无效（及反序）
+    rf"代理{_SENTENCE}*?(?:底图|basemap){_SENTENCE}*?无效",
+    rf"(?:底图|basemap){_SENTENCE}*?代理{_SENTENCE}*?无效",
+    # basemap … does not / never … go through|use|obey|honour … proxy
+    rf"basemap{_SENTENCE}*?(?:does not|doesn't|do not|don't|never|is not|are not)"
+    rf"{_SENTENCE}*?(?:go(?:es)? through|use|obey|respect|honou?r){_SENTENCE}*?prox",
+    # basemap … loaded/fetched/served … browser … direct（及反序）——旧文案的 en 半句
+    rf"basemap{_SENTENCE}*?browser{_SENTENCE}*?direct",
+    rf"browser{_SENTENCE}*?direct{_SENTENCE}*?basemap",
+    # basemap … bypass/skip/ignore … proxy
+    rf"basemap{_SENTENCE}*?(?:bypass|skip|ignor)\w*{_SENTENCE}*?prox",
+    # proxy … does not apply to / has no effect on … basemap
+    rf"prox\w*{_SENTENCE}*?(?:does not|doesn't|has no|have no)"
+    rf"{_SENTENCE}*?(?:apply|affect|effect){_SENTENCE}*?basemap",
+)
+
+
+def test_no_i18n_string_tells_the_user_the_basemap_skips_the_proxy():
+    """整本文案目录里不许再出现「底图绕过代理」这个主张 —— 它是假的。
+
+    扫的是合并后的 `MESSAGES`（zh 与 en 两栏都扫），不是某个文件的字面，
+    这样把文案挪去别的 catalog 模块也逃不掉。
+    """
+    patterns = [re.compile(p, re.I) for p in _BASEMAP_SKIPS_PROXY]
+    offenders = []
+    for key, entry in MESSAGES.items():
+        for loc, text in entry.items():
+            hit = next((m for m in map(lambda p: p.search(text), patterns) if m), None)
+            if hit:
+                offenders.append(f"{key} [{loc}]: {hit.group(0)}")
+    assert not offenders, (
+        "这些文案又在说底图不吃代理——底图由 basemap_static 在服务端取，"
+        "走 resolve_from_config，和下载同一条出网路径：\n  "
+        + "\n  ".join(offenders))
+
+
+def test_the_basemap_hint_states_the_same_origin_hop_and_the_proxy():
+    """反向：上面那条只禁一种说法，空文案同样能满足它。
+
+    这条钉住配置页必须**正面**告诉用户这一跳存在（同源路径）以及代理管用 ——
+    否则「底图打不开」的用户仍然不知道该去动哪个设置。同时保留另外两条仍然
+    成立的事实：两个预设同为 WGS-84（框选位置对得上），以及被禁的 GCJ-02 源。
+    """
+    entry = MESSAGES["tpl.config.download.basemap_hint"]
+    for loc, proxy_token in (("zh", "代理"), ("en", "prox")):
+        text = entry[loc]
+        assert "/basemap/{z}/{x}/{y}" in text, (
+            f"basemap_hint[{loc}] 没写出浏览器实际请求的同源路径")
+        assert proxy_token in text.lower(), (
+            f"basemap_hint[{loc}] 没告诉用户代理设置对底图生效")
+        for token in ("WGS-84", "GCJ-02"):
+            assert token in text, f"basemap_hint[{loc}] 丢了 {token} 这条约束"
+
+
+
+# ------------------------------------------------- 文档写出来的默认值 vs 代码
+#
+# 2026-08-09 评审在这一层抓到四条「照做会出事」：`CLAUDE.md` 说 `TileParams`
+# 默认 `triangulator="auto"` / `normals=True`（实际是 `grid` / `False`）、说这几个
+# 旋钮「不暴露给 UI/DB/API」（实际有两个配置键、两条路由在收）、
+# `cesiumjs-loading.md` 把 `terrain_base_parent_url` 的默认值写成带 `/layer.json`
+# 的形态（那正是 heightmap 陷阱本身：Cesium 拿 404 不报错，塞一个假 heightmap
+# 图层污染共享 builder，实测 4154 m 山峰解成 −744 m），`INSTALL.md` 把 GDAL 钉成
+# 一个具体版本（绑定是 sdist 现编，版本跟随机器）。
+#
+# 四条的共同点：读者照着做，全程零报错。所以判据一律是「文档里的字面量 ==
+# 代码里解析出来的字面量」，用 AST 取值而不是 import —— 这个文件不该把 Flask、
+# GDAL、数据库全拉起来。
+
+# 与代码同步的文档。`docs/archive/` 与 `docs/reviews/` 不在其中：前者按约定保留
+# 撰写当时的原貌（见 docs/reference/README.md「与 archive/ 的区别」），后者引用的
+# 恰恰是修复前的错误原文。
+_LIVE_DOC_DIRS = (
+    os.path.join("docs", "reference"),
+    os.path.join("docs", "guides"),
+)
+_LIVE_DOC_FILES = ("README.md", "CLAUDE.md", os.path.join("docs", "README.md"))
+
+
+def _live_docs():
+    rels = list(_LIVE_DOC_FILES)
+    for rel_dir in _LIVE_DOC_DIRS:
+        for root, _dirs, files in os.walk(os.path.join(PROJECT_ROOT, rel_dir)):
+            rels += [os.path.relpath(os.path.join(root, f), PROJECT_ROOT)
+                     for f in files if f.endswith(".md")]
+    return sorted(rels)
+
+
+def _module_ast(rel):
+    return ast.parse(_read(rel))
+
+
+def _assigned(tree, name):
+    """模块级 `NAME = <literal>` 的值。"""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == name for t in node.targets):
+            return node.value
+    raise AssertionError(f"找不到模块级赋值 {name}")
+
+
+def _default_configs():
+    """`src/core/database.py` 的 `DEFAULT_CONFIGS`，解析成 {key: value}。"""
+    elts = _assigned(_module_ast(os.path.join("src", "core", "database.py")),
+                     "DEFAULT_CONFIGS").elts
+    return {e.elts[0].value: e.elts[1].value for e in elts}
+
+
+def _tile_params_defaults():
+    """`TileParams` 字段的默认值（只取字面量的那些）。"""
+    tree = _module_ast(os.path.join("src", "services", "terrain_tiling",
+                                    "dem_task_tiler.py"))
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "TileParams")
+    return {n.target.id: n.value.value for n in cls.body
+            if isinstance(n, ast.AnnAssign) and isinstance(n.value, ast.Constant)}
+
+
+_ABSOLUTE_URL = re.compile(r"https?://[^\s`)（）、，,]+")
+
+
+def test_no_live_doc_misquotes_the_terrain_parent_url_default():
+    """凡是提到 `terrain_base_parent_url` 的行，行内的 URL 必须就是它的默认值。
+
+    `docs/reference/terrain/cesiumjs-loading.md` 曾把默认值写成
+    `http://localhost:5000/terrain/base/layer.json`。那一节的主题恰恰是「什么时候
+    必须改这个键」，照它手改配置或改任务 `layer.json` 的人会写出带 `/layer.json`
+    的值 —— Cesium `appendForwardSlash()` 后再拼一次 `layer.json` 得 404，而它对
+    这个 404 不报错：塞一个假 heightmap-1.0 图层，`heightmapStructure` 落在**共享**
+    builder 上，任务自己的 quantized-mesh 瓦片也按 heightmap 解析。实测 4154 m
+    山峰解成 −744 m，`hasVertexNormals` 仍报 true，瓦片全 200，控制台干净。
+
+    只看「同一行里既提这个键又给了 URL」，不是全局禁 `/terrain/base/layer.json`
+    —— 后者是 §1 里 base provider 自己的加载地址，完全合法。
+    """
+    expected = _default_configs()["terrain_base_parent_url"]
+    assert not expected.endswith("/layer.json"), (
+        "DEFAULT_CONFIGS 里的 terrain_base_parent_url 自己就带上了 /layer.json")
+
+    offenders = []
+    for rel in _live_docs():
+        for lineno, line in enumerate(_read(rel).splitlines(), 1):
+            if "terrain_base_parent_url" not in line:
+                continue
+            for url in _ABSOLUTE_URL.findall(line):
+                if url != expected:
+                    offenders.append(f"{rel}:{lineno} 写的是 {url!r}，默认值是 {expected!r}")
+    assert not offenders, (
+        "文档给 terrain_base_parent_url 写错了默认值（带 /layer.json 就是 heightmap 陷阱）：\n  "
+        + "\n  ".join(offenders))
+
+
+def test_no_doc_pins_a_gdal_version_the_machine_must_choose():
+    """安装类文档里 `GDAL==` 后面只能跟 `$(gdal-config --version)`，不能跟数字。
+
+    `INSTALL.md` 曾写 `uv pip install --no-build-isolation GDAL==3.8.4`，而它自己
+    的故障排除一节、`requirements.txt`、`README.md` 用的都是 `$(gdal-config
+    --version)`。开发机 libgdal 是 3.11.4，照那行装等于拿 3.8.4 的 sdist 去对 3.11
+    的头文件现编 —— 正是 `requirements.txt` 顶部整段注释在反对的操作，而
+    `scripts/check_gdal.py` 只查范围，拦不住。
+
+    上面 `test_no_doc_misquotes_the_requirements_gdal_spec` 抓不到这一条：那行
+    压根没提 `requirements.txt`。
+    """
+    offenders = [
+        f"{rel}:{lineno}: {line.strip()}"
+        for rel in GDAL_DOCS
+        for lineno, line in enumerate(_read(rel).splitlines(), 1)
+        if re.search(r"GDAL\s*==\s*\d", line)
+    ]
+    assert not offenders, (
+        "文档把 GDAL 钉成了一个具体版本 —— 绑定是 sdist 现编、版本跟随机器，"
+        '唯一正确的写法是 "GDAL==$(gdal-config --version)"：\n  '
+        + "\n  ".join(offenders))
+
+
+def test_claude_md_states_the_real_tileparams_defaults():
+    """`CLAUDE.md` 写的**应用侧**默认值必须与 `TileParams` 解析出来的一致。
+
+    它曾写 `triangulator="auto"` / `normals=True`（那是 `build_terrain` 签名的默认，
+    应用侧一步也走不到）。照它排障的人会以为产物带法线而实际不带 —— v0.2.13
+    发版说明里那条「法线静默无效」正是这个失效形态。
+
+    判据锚在**声称应用默认的那一行**上，不是全文搜字符串：全球底图那一节合法地
+    写着 `triangulator="auto"`（底图确实用 auto，是有意分叉），全文搜会被它满足，
+    把代码默认改回 auto 也照样绿。
+    """
+    defaults = _tile_params_defaults()
+    claims = [l for l in _read(CLAUDE_MD).splitlines()
+              if "application default is" in l]
+    assert len(claims) == 1, (
+        f"CLAUDE.md 里声称「应用侧默认」的行有 {len(claims)} 条，应当恰好 1 条")
+
+    # 整句比对，不是「这一行里出现过这两个字符串」：同一行还合法地写着
+    # `build_terrain` 签名默认 `normals=True`，散着搜会被它满足。
+    expected = ('The application default is `triangulator="{}"` + `normals={}`'
+                .format(defaults["triangulator"], defaults["normals"]))
+    assert expected in claims[0], (
+        f"CLAUDE.md 声称的应用默认与 TileParams 不一致，应为：{expected}\n"
+        f"实际那一行：{claims[0].strip()[:200]}")
+
+
+def test_claude_md_quotes_the_layer_json_extensions_expression_verbatim():
+    """`extensions` 那一句必须**逐字**抄 `cesiumlab_terrain` 里的条件表达式。
+
+    旧版断言「瓦片带 oct 法线且 layer.json 声明 `extensions:
+    ["octvertexnormals"]`」—— 漏掉了 `if normals else []` 这半句，而应用侧默认
+    走的正是 `[]`。抄整条表达式，改哪一半都会红。
+    """
+    expr = '["octvertexnormals"] if normals else []'
+    tiler = _read(os.path.join("src", "services", "terrain_tiling",
+                               "cesiumlab_terrain.py"))
+    assert expr in tiler, (
+        f"源码里已经没有 {expr!r} 这条表达式了 —— 先确认代码改成了什么，再改文档")
+    assert expr in _read(CLAUDE_MD), (
+        f"CLAUDE.md 没有逐字写出 layer.json 的 extensions 表达式 {expr!r}，"
+        "读者会以为产物恒带法线")
+
+
+def test_claude_md_names_the_preset_source_of_truth_and_both_gates():
+    """三档预设：取值表的三个档名、唯一事实源、两个把关点、两个配置键都要在。
+
+    `CLAUDE.md` 曾断言 `triangulator` / `max_error_k` / `normals`「不暴露给
+    UI / DB / API，配置表、env、请求体、query string 都读不到」。照它写代码的人
+    会认定改法线只能改代码或 CLI，于是绕开 `validate_tiling_quality` /
+    `coerce_vertex_normals` —— 而这两个函数的 docstring 明写自己是唯一把关点，
+    过了它们管理器只做 `bool()`，`bool('false')` 是 True。
+    """
+    text = _read(CLAUDE_MD)
+    offsets = ast.literal_eval(_assigned(
+        _module_ast(os.path.join("src", "services", "geo_validation.py")),
+        "TILING_QUALITY_OFFSETS"))
+
+    for preset in offsets:
+        assert f"`{preset}`" in text, f"CLAUDE.md 没写出档位 {preset}"
+    for symbol in ("TILING_QUALITY_OFFSETS", "validate_tiling_quality",
+                   "coerce_vertex_normals", "effective_maxzoom"):
+        assert symbol in text, f"CLAUDE.md 没指名 {symbol}"
+
+    cfg = _default_configs()
+    for key in ("terrain_quality_preset", "terrain_vertex_normals"):
+        assert key in cfg, f"{key} 已经不在 DEFAULT_CONFIGS 里了"
+        assert key in text, (
+            f"CLAUDE.md 没写出配置键 {key} —— 上一版正是因此断言这些旋钮「不暴露」")

@@ -376,6 +376,36 @@ def test_panel_traps_tab_but_yields_to_the_confirm_overlay():
     )
 
 
+def test_panel_key_handler_yields_to_a_bootstrap_modal_before_it_acts():
+    """面板之上开着 Bootstrap 弹窗时，onKey 必须整个让位 —— Esc 与 Tab 都是。
+
+    让位判据以前排在 Escape 分支【下面】，于是它只管 Tab：从配置面板里点
+    「浏览」开出 #pathBrowserModal，按一次 Esc，Bootstrap 在目标阶段 hide 掉
+    弹窗，事件继续冒泡到 document，这里再把身后的面板一起关掉。实测（无头
+    Chromium 驱动真实服务端）：modalOpen ["pathBrowserModal"]→[]、panelOpen
+    ["configPanel"]→[] —— 一次 Esc 两层全没，hash 被 replaceState 抹掉、焦点
+    掉回 body。
+
+    判据必须是 body.modal-open：Bootstrap 5.3.0 的 hide() **同步**摘掉
+    .show（`this._element.classList.remove(Li)`）再排队做过渡收尾，事件冒泡到
+    document 时 `.modal.show` 已经不匹配 —— 实测拿它当判据面板照样被关掉。
+    """
+    src = _clean('panels.js')
+    body = _js_function_body(src, 'onKey')
+    assert 'modal-open' in body, (
+        'onKey 没有为 Bootstrap 弹窗让位 —— 一次 Esc 会把身后的面板一起关掉'
+    )
+    escape_at = body.index("'Escape'")
+    yield_at = body.index('modal-open')
+    confirm_at = body.index('app-confirm-overlay')
+    assert yield_at < escape_at and confirm_at < escape_at, (
+        '让位判据必须排在 Escape 分支之前，否则它只管 Tab —— 这正是原缺陷'
+    )
+    assert '.modal.show' not in body, (
+        'hide() 同步摘掉 .show，冒泡到 document 时它已经不匹配；判据要用 body.modal-open'
+    )
+
+
 # --- 9. 内联 onclick 收口 ---------------------------------------------------------
 
 def _strip_jinja_comments(html):

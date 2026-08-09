@@ -210,3 +210,76 @@ def test_push_release_bat_reads_version_from_core_config():
     )
     assert '%~1' in content, 'push-release.bat 必须保留命令行参数覆盖'
     assert 'APP_VERSION' in content
+
+
+# ---------- P2: CI 治理 —— 闸门要真挂在 CI 上，matrix 不许连坐 ----------
+#
+# 上面两条钉的是 build.sh / build.bat 调 scripts/check_gdal.py，而发版走的是
+# workflow 里的打包步骤，从旁边绕过了闸门：缺 _gdal_array 的绑定打出来的 exe
+# 能构建、能启动、冒烟请求 `/` 也 200，只有用户机器上的 DEM/地形/等高线作业
+# 会炸。所以「谁调闸门」这件事必须对 CI 也有断言。
+#
+# 认的是真实的 `run:` 命令行而不是文件里任意一处提及：注释里写一句「闸门」不
+# 该让这些断言变绿。
+
+# workflow 里跑闸门的那一行（认命令，不认注释）
+_GATE_RUN = re.compile(r'^\s*run: python scripts/check_gdal\.py\s*$', re.MULTILINE)
+
+_WORKFLOW_DIR = os.path.join('.github', 'workflows')
+_WORKFLOWS = ['build.yml', 'test-build.yml']
+
+
+def _workflow(name):
+    return _read(os.path.join(_WORKFLOW_DIR, name))
+
+
+def _jobs(text):
+    """按 job 把 workflow 文本切开（jobs: 下缩进两格的键）。
+
+    项目不依赖 PyYAML（见 tests/test_fix_ci_workflows.py 的文本契约先例），而
+    「每个 job 各自都要有闸门」这条判据必须按 job 看：整文件看的话，test-build.yml
+    里 test job 有闸门就能替真正打包的 build job 顶包。
+    """
+    body = text[text.index('\njobs:') + 1:]
+    heads = list(re.finditer(r'^  ([A-Za-z_][\w-]*):$', body, re.MULTILINE))
+    assert heads, 'workflow 里一个 job 都没解析出来'
+    return {m.group(1): body[m.start():(heads[i + 1].start() if i + 1 < len(heads) else len(body))]
+            for i, m in enumerate(heads)}
+
+
+@pytest.mark.parametrize('name', _WORKFLOWS)
+def test_every_job_that_builds_runs_the_gdal_gate_first(name):
+    """凡是跑 nuitka_build.py 的 job，都必须先跑 scripts/check_gdal.py。"""
+    building = {jn: src for jn, src in _jobs(_workflow(name)).items()
+                if 'python nuitka_build.py' in src}
+    assert building, f'{name} 里找不到打包 job'
+    for jn, src in building.items():
+        gate = _GATE_RUN.search(src)
+        assert gate, (
+            f'{name} 的 {jn} job 直接打包，没跑 GDAL 闸门 scripts/check_gdal.py')
+        assert gate.start() < src.index('python nuitka_build.py'), (
+            f'{name} 的 {jn} job 把闸门排在 Nuitka 之后 —— 坏绑定已经打进产物了')
+
+
+def test_gdal_gate_runs_after_the_conda_pin_that_it_polices():
+    """Windows/macOS 那句 `conda install gdal=<x.y>` 是硬编码的构建输入，
+    它凭什么可以硬编码：闸门排在它【之后】，拿 requirements.txt 的范围去量真装上
+    的版本，钉值一旦漂出范围就是 CI 红。顺序反了，硬编码就重新变成没人管的
+    第二处版本规则（评审 P2：一份规则两处实现，而 CI 那处不读另一处）。"""
+    wf = _workflow('build.yml')
+    pin = re.search(r'^\s*conda install .*\bgdal=', wf, re.MULTILINE)
+    assert pin, 'conda 装 GDAL 的那行不见了 —— 本用例的前提变了，请重看闸门顺序'
+    gate = _GATE_RUN.search(wf)
+    assert gate and pin.start() < gate.start(), (
+        'GDAL 闸门必须排在 conda 硬编码版本之后，否则那个钉值无人校验')
+
+
+def test_build_matrix_does_not_fail_fast():
+    """Create Release 跑在每个 matrix job 内部：默认的 fail-fast: true 会让一个
+    平台失败连带取消另外两个，Release 就停在只挂了一两个平台产物的状态 —— 与文件
+    顶部为同一件事设的 cancel-in-progress: false 直接冲突。"""
+    wf = _workflow('build.yml')
+    strategy = wf[wf.index('    strategy:'):wf.index('        os: [')]
+    assert re.search(r'^\s*fail-fast:\s*false\s*$', strategy, re.MULTILINE), (
+        'build.yml 的 matrix 缺 fail-fast: false —— 一个平台挂掉会连坐另外两个，'
+        '发布出去的 Release 只带部分平台产物')

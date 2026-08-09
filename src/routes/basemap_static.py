@@ -27,10 +27,14 @@ import time
 import urllib.error
 import urllib.request
 
-from flask import Blueprint, Response, abort, current_app
+from flask import Blueprint, Response, abort, current_app, request
 from werkzeug.exceptions import default_exceptions
 
-from src.services.basemap_source import fallback_candidates, resolve_basemap
+from src.services.basemap_source import (
+    fallback_candidates,
+    resolve_basemap,
+    source_version,
+)
 from src.services.config_manager import ConfigManager
 from src.services.proxy_autodetect import resolve_from_config
 from src.services.tile_url_probe import is_link_local_url
@@ -94,10 +98,11 @@ def _resolved_basemap_cached():
 _CACHE_KEY_COOLDOWN = "basemap_static_source_cooldown"
 _COOLDOWN_S = 60.0
 
-# 回退瓦片的浏览器缓存时长。与冷却期同量级：冷却一到期配置的源就会被再试一次，
-# 缓存也该在同一时间尺度上过期，否则「上游恢复了」和「用户看到恢复」之间会隔着
-# 一天的缓存。
-_FALLBACK_MAX_AGE_S = 60
+# 短缓存时长。回退瓦片、以及请求的 URL 空间与真正出图的源对不上的瓦片都用它
+# （判定见 basemap_tile 结尾）。与冷却期同量级：冷却一到期配置的源就会被再试
+# 一次，缓存也该在同一时间尺度上过期，否则「上游恢复了」和「用户看到恢复」
+# 之间会隔着一天的缓存。
+_SHORT_MAX_AGE_S = 60
 
 
 def _cooldown_map():
@@ -116,15 +121,20 @@ def _marks_source_down(code: int) -> bool:
 
 def _fetch_upstream(url: str, proxy):
     """取一块上游瓦片，返回 (body, content_type)。失败抛异常。"""
-    # 传空 dict 而不是不装 handler：ProxyHandler({}) 会**关掉** urllib 对
-    # HTTP_PROXY 等环境变量的隐式读取。代理的唯一事实源是 proxy_autodetect
-    # （它本来就把环境变量算作候选之一），这里再隐式吃一次会造成
-    # 「配置页显示直连、实际走了环境变量代理」的分叉。
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {})
-    )
-    request = urllib.request.Request(url, headers={"User-Agent": _UA})
-    with opener.open(request, timeout=_TIMEOUT_S) as response:
+    # 没有显式代理时**不装** ProxyHandler，让 urllib 照默认行为读
+    # HTTP(S)_PROXY。这条口径必须与下载路径一致：download_engine 的 aiohttp
+    # 开着 trust_env=True，proxy_url 为空时照样吃环境变量。这里曾经传
+    # ProxyHandler({})（关掉环境变量），于是「export 了 HTTP_PROXY 又关掉代理
+    # 自动发现」的 WSL 用户得到的是「下载正常、底图一颗蓝球」—— 正是本路由
+    # 要消灭的那种分叉。自动探测验不通某个环境变量代理，也不代表它对底图上游
+    # 不通，不该主动掐掉（同 download_engine 里 trust_env 那段理由）。
+    handlers = ([urllib.request.ProxyHandler({"http": proxy, "https": proxy})]
+                if proxy else [])
+    opener = urllib.request.build_opener(*handlers)
+    # 局部名不叫 request：模块级的 request 是 flask 的请求对象（basemap_tile
+    # 读它的查询参数），同名会让读到这里的人以为拿的是同一个东西。
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    with opener.open(req, timeout=_TIMEOUT_S) as response:
         return response.read(), response.headers.get("Content-Type", "image/jpeg")
 
 
@@ -159,6 +169,10 @@ def active_basemap(resolved):
     还没取过任何瓦片时（首次打开页面），以及配置的源在记录之后被改过时，
     回退状态都是未知的，如实报配置的源；第一批瓦片取完状态就落定了，
     下次刷新页面描述符就是准的。
+
+    version 跟的始终是**配置的**源（记录里没有它，upstream 被特意剥掉了）：
+    浏览器要请求的 URL 空间由用户配的那张图决定，回退只是这条空间里临时出的
+    图。跟着回退源走的话，配置的源一恢复，页面手里的 URL 就成了旧空间。
     """
     entry = current_app.extensions.get(_CACHE_KEY_ACTIVE)
     if not entry:
@@ -166,7 +180,8 @@ def active_basemap(resolved):
     configured_source, active = entry
     if configured_source != resolved["source"] or active["source"] == resolved["source"]:
         return resolved
-    return {**active, "configured_source": resolved["source"], "fallback": True}
+    return {**active, "configured_source": resolved["source"],
+            "version": resolved["version"], "fallback": True}
 
 
 @basemap_static_bp.route("/<int:z>/<int:x>/<int:y>", methods=["GET"])
@@ -257,16 +272,24 @@ def basemap_tile(z: int, x: int, y: int):
         _remember_fallback(configured, candidate)
 
         response = Response(body, mimetype=content_type)
-        # 底图瓦片内容基本不变，但源可以被用户随时改掉，所以不能 immutable。
-        # 一天的浏览器缓存足够把平移/缩放的重复请求挡在本机。
-        #
-        # 回退出来的瓦片**不能**照这个存：上游抖动 30 秒，浏览器就会把另一家的
-        # 影像烤进缓存一整天，等配置的源恢复后地图变成两家拼图，且因为缓存命中
-        # 不再回源，它永远不会自己好 —— 用户在界面上也没有任何补救手段。短缓存
-        # 仍然挡得住一次平移里的重复请求，又能让恢复在一分钟内自动生效。
+        # 一天的浏览器缓存足够把平移/缩放的重复请求挡在本机，但只发给「请求
+        # 所在的 URL 空间 == 这张图真正的出处」的那些瓦片：判据是请求里的 v
+        # 与**本次真正出图的那个源**的 version 相等。v 由 client_descriptor 按
+        # 当次实时解析的配置源算出（见 basemap_source.source_version），所以
+        # 三种「存下来就撤不回」的情形自动落到短缓存：
+        #   - 回退出的图：上游抖动 30 秒，浏览器把另一家的影像烤进缓存一整天，
+        #     配置的源恢复后缓存命中不再回源，地图永远是两家拼图，界面上没有
+        #     任何补救手段；
+        #   - 用户刚改完配置、页面已经拿到新 v，而这里还在 _SOURCE_TTL_S 的
+        #     窗口里按旧配置出图 —— 拿旧源的图占住新 URL 空间一整天；
+        #   - 不带 v 的请求（旧页面、手输地址）：它的 URL 空间不随源变化，
+        #     长缓存在那里同样撤不回。
+        # 用 v 比对而不是「重读一次配置」：后者是每张瓦片再开一条 sqlite 连接，
+        # 正是 _SOURCE_TTL_S 那份缓存要避免的开销。
         response.headers["Cache-Control"] = (
-            "public, max-age=86400" if candidate["source"] == configured["source"]
-            else f"public, max-age={_FALLBACK_MAX_AGE_S}")
+            "public, max-age=86400"
+            if request.args.get("v") == source_version(candidate["upstream"])
+            else f"public, max-age={_SHORT_MAX_AGE_S}")
         return response
 
     abort(first_error or 502)

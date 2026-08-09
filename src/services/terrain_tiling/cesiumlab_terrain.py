@@ -216,6 +216,65 @@ def intersecting_tile_range(nx: int, ny: int, west: float, south: float,
     return ix0, ix1, iy0, iy1
 
 
+# 声明 available 所需的**单轴**最低覆盖率。
+#
+# 为什么「相交」不够:DEM 之外的采样点不是 nodata,而是被 DemSampler 用最外圈
+# 源像素钳位外推(见 sample() 里的 np.clip)—— 一张只和 DEM 沾了一个像素的瓦片
+# 会整片长成那一圈边缘像素拉出来的台地,高差可达数千米。intersecting_tile_range
+# 只保证「有交集」,交集可以任意小。
+#
+# 实测:z8 一格跨 0.703125°,而本地地形上传常见的 AOI 是 0.05° 见方 —— 那一格
+# 真实数据只占 **0.51%** 面积(4225 个顶点里 16 个),其余 95.4% 是某一侧边缘的
+# 钳位值。底图只到 z7,z8 没有任何回落,这张假瓦片就是该层唯一数据源:HTTP 全
+# 200、作业 completed、日志零告警。
+#
+# 判据按**轴**而不是按面积,因为 available 只能表达成矩形:面积判据
+# (fx*fy >= T)的解集不是矩形,而单轴判据的解集恰好是。取 0.25 是因为它把实测
+# 的两类清楚分开 —— 病态情形(0.05° AOI 在 z8 是 7.1%/轴、0.1° 是 14.2%/轴)全部
+# 落在下面,而真实 DEM 的边界瓦片(实测 1°×1° DEM 在 z8 的三块边界瓦片面积覆盖
+# 41.5% / 57.3% / 34.4%)全部落在上面。
+#
+# 被排除的层仍然**照常出图**,只是不写进 available:Cesium 于是从父层(有底图时
+# 就是真实的 z0-7 底图)上采样,而不是拿一块假高原盖住。瓦片越深覆盖率越高,
+# 所以这道闸只会砍掉最浅的那几层 —— 用户的 DEM 在它真正有意义的层级上出现。
+_MIN_TILE_AXIS_COVERAGE = 0.25
+
+
+def _axis_coverage(idx: int, count: int, span: float, origin: float,
+                   lo: float, hi: float) -> float:
+    """瓦片 idx 在该轴上被 [lo,hi] 覆盖的比例。"""
+    step = span / count
+    tile_lo = origin + idx * step
+    overlap = min(hi, tile_lo + step) - max(lo, tile_lo)
+    return max(0.0, overlap) / step
+
+
+def well_covered_tile_range(
+    nx: int, ny: int, west: float, south: float, east: float, north: float,
+    min_axis_fraction: float = _MIN_TILE_AXIS_COVERAGE,
+) -> Optional[Tuple[int, int, int, int]]:
+    """可以**声明 available** 的瓦片闭区间;整层都不够格时返回 None。
+
+    在 intersecting_tile_range 的结果上,把两端覆盖率不足的行/列削掉。只有首尾
+    行列可能不足 —— 中间的行列必然被 DEM 完整跨过,覆盖率恒为 1。理由与阈值见
+    _MIN_TILE_AXIS_COVERAGE。
+    """
+    ix0, ix1, iy0, iy1 = intersecting_tile_range(nx, ny, west, south, east, north)
+
+    while ix0 <= ix1 and _axis_coverage(ix0, nx, 360.0, -180.0, west, east) < min_axis_fraction:
+        ix0 += 1
+    while ix1 >= ix0 and _axis_coverage(ix1, nx, 360.0, -180.0, west, east) < min_axis_fraction:
+        ix1 -= 1
+    while iy0 <= iy1 and _axis_coverage(iy0, ny, 180.0, -90.0, south, north) < min_axis_fraction:
+        iy0 += 1
+    while iy1 >= iy0 and _axis_coverage(iy1, ny, 180.0, -90.0, south, north) < min_axis_fraction:
+        iy1 -= 1
+
+    if ix1 < ix0 or iy1 < iy0:
+        return None
+    return ix0, ix1, iy0, iy1
+
+
 def _overview_factors(width: int, height: int, min_side: int = 32) -> list[int]:
     """2 的幂倍率列表，一直建到最长边降不到 min_side 以下为止。
 
@@ -1429,12 +1488,22 @@ def build_terrain(
             # base_z8 的 z0-4 永远不会被请求，整个低层被这些假地形盖掉。
             # 只收窄声明、仍照常出图：base 不存在时单层 provider 不查 availability，
             # 根瓦片仍能拿到文件，不会退化成「地形完全不加载」。
-            a0, a1, b0, b1 = max(x0, ix0), min(x1, ix1), max(y0, iy0), min(y1, iy1)
-            if a1 < a0 or b1 < b0:
+            #
+            # 「相交」本身还不够：交集可以只有一个像素，那张瓦片整片都是钳位
+            # 外推值。覆盖率闸门见 well_covered_tile_range / _MIN_TILE_AXIS_COVERAGE。
+            covered = well_covered_tile_range(
+                *scheme.tile_count(z), src_w, src_s, src_e, src_n)
+            if covered is None:
                 available_per_level.append([])
             else:
-                available_per_level.append(
-                    [{"startX": a0, "startY": b0, "endX": a1, "endY": b1}])
+                cx0, cx1, cy0, cy1 = covered
+                a0, a1 = max(x0, cx0), min(x1, cx1)
+                b0, b1 = max(y0, cy0), min(y1, cy1)
+                if a1 < a0 or b1 < b0:
+                    available_per_level.append([])
+                else:
+                    available_per_level.append(
+                        [{"startX": a0, "startY": b0, "endX": a1, "endY": b1}])
             total += (x1 - x0 + 1) * (y1 - y0 + 1)
 
         # total 到这里就已知了，而 progress_cb 要等**第一张瓦片编完**才发出第一

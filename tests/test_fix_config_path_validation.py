@@ -18,6 +18,11 @@
 **必然返回 True** 的值（旧代码对这四个键从不返回 False），因此把实现换回
 `return True` 兜底，本文件的所有 `is False` 断言都会变红。反向的接受用例则守住
 出厂默认值与文档化的部署形态，防止「一刀切拒绝」这种假修复。
+
+2026-08-09 评审 P1 追加两个 tmpdir 键的 `~` 一节：判据曾是
+`Path(raw).expanduser().is_absolute()`，而三个读取侧一个都不展开 —— 同一个存量
+值三种解释，配置页保存时还是 200。除了拒绝用例，还钉了它背后的**规则**
+（test_accepted_tmpdir_needs_no_transformation_the_validator_skipped）。
 """
 import os
 import sys
@@ -157,6 +162,94 @@ def test_tmpdir_relative_is_rejected(cm, key):
     """
     assert cm.validate_config(key, 'scratch') is False
     assert cm.validate_config(key, './tmp/warp') is False
+
+
+@pytest.mark.parametrize('key', ['stitch_tmpdir', 'contour_warp_tmpdir'])
+@pytest.mark.parametrize('raw', ['~/tf_warp', '~', '~/', '~root/scratch'])
+def test_tmpdir_tilde_is_rejected(cm, key, raw):
+    """`~` 一并拒（2026-08-09 评审 P1「一份规则多处实现」）。
+
+    旧判据是 `Path(raw).expanduser().is_absolute()`：`~/tf_warp` 判合法，`set()`
+    不归一、原样入库，于是同一个存量值有三种解释 ——
+    `download_engine.stitch_tiles_with_gdal`、`contour_engine.build_contour_tiles`、
+    `task_cleanup.sweep_startup_residue` 谁都不展开 `~`。而配置页保存时是 200。
+    """
+    assert cm.validate_config(key, raw) is False
+
+
+def test_tilde_tmpdir_is_unusable_on_the_reader_side(tmp_path, monkeypatch):
+    """反证上一条不是洁癖：读取侧拿这个字面量真的用不了。
+
+    `contour_engine.build_contour_tiles` 的 mkdtemp 不在任何 try 内（try 只包
+    `ConfigManager().get`），FileNotFoundError 直接打穿整个等高线任务；
+    `download_engine.stitch_tiles_with_gdal` 先 makedirs，于是 GB 级拼接中间产物
+    落进一个字面名叫 `~` 的目录 —— 而用户配的是家目录。
+    """
+    monkeypatch.chdir(tmp_path)
+    raw = '~/tf_warp'
+
+    with pytest.raises(FileNotFoundError):
+        tempfile.mkdtemp(prefix='contour_warp_', dir=raw)
+
+    os.makedirs(raw, exist_ok=True)
+    assert (tmp_path / '~' / 'tf_warp').is_dir()
+    assert Path(os.path.abspath(raw)) != Path(raw).expanduser()
+
+
+def _reader_interpretations(raw):
+    """三个读取侧对同一个存量配置值的解释，逐字复刻。
+
+    不 import 引擎本体：download_engine / contour_engine 会把 GDAL 拖进来，
+    而这里要钉的只是「它们怎么解释这个字符串」这一行语义。
+    """
+    return {
+        # download_engine.stitch_tiles_with_gdal:
+        #   os.makedirs(stitch_tmp_base) + tempfile.mkdtemp(dir=stitch_tmp_base)
+        'download_engine': os.path.abspath(raw),
+        # contour_engine.build_contour_tiles:
+        #   tempfile.mkdtemp(prefix="contour_warp_", dir=warp_tmp_base)
+        'contour_engine': os.path.abspath(raw),
+        # task_cleanup.sweep_startup_residue: Path(warp_base) / Path(stitch_base)
+        'task_cleanup': str(Path(raw).absolute()),
+    }
+
+
+@pytest.mark.parametrize('key', ['stitch_tmpdir', 'contour_warp_tmpdir'])
+def test_accepted_tmpdir_needs_no_transformation_the_validator_skipped(
+        cm, key, tmp_path, monkeypatch):
+    """不变量：凡校验侧收下的值，三个读取侧解释出的绝对路径必须是同一个，
+    并且就等于库里那个字面量本身。
+
+    这是上面那条拒绝用例背后的**规则**，而不是又一个取值样本：校验侧多做一步
+    读取侧不做的变换（历史上是 `expanduser()`，下一次可能是 `normcase` 或
+    `resolve`），这条就红。在一个陌生 CWD 下跑，是因为「按进程 CWD 解析」正是
+    这两个键要求绝对路径的**唯一**理由 —— 打包 exe 的 CWD 是用户双击时所在的
+    任意目录。
+    """
+    monkeypatch.chdir(tmp_path)
+    candidates = [
+        '~/tf_warp', '~', '~/', '~root/scratch',
+        'scratch', './tmp/warp', '../sibling/warp',
+        tempfile.gettempdir(),
+        str(Path(tempfile.gettempdir()) / 'terraforge_scratch'),
+        (r'D:\fast-ssd\terraforge-scratch' if os.name == 'nt'
+         else '/mnt/fast-ssd/terraforge-scratch'),
+        'C:\\' if os.name == 'nt' else '/',
+    ]
+
+    checked = 0
+    for raw in candidates:
+        if not cm.validate_config(key, raw):
+            continue
+        checked += 1
+        stored = Path(raw)      # set() 不归一：读取侧拿到的就是这个字面量
+        assert stored.is_absolute(), f'{raw!r} 被收下却不是字面绝对路径'
+        assert os.path.expanduser(raw) == raw, f'{raw!r} 还需要一次 expanduser'
+        for reader, root in _reader_interpretations(raw).items():
+            assert os.path.normpath(root) == os.path.normpath(str(stored)), (
+                f'{reader} 对 {raw!r} 的解释与校验侧判定的路径不同')
+
+    assert checked, '取值矩阵里一个都没被收下，这条用例成了空断言'
 
 
 # --------------------------------------------------------------------------

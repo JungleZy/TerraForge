@@ -68,7 +68,7 @@
 
 ## 三、为什么现行默认必须换掉
 
-> **已换掉。** `TileParams.triangulator` 的**默认值**现在是 `'grid'`（`dem_task_tiler.py:50`），生产两个调用方（`dem_task_manager` / `local_terrain_task_manager`）都没传 `triangulator=`，所以走的就是它。字段本身仍可覆盖 —— 排障时构造 `TileParams(triangulator='martini')` 完全合法，同文件 `:49` 保留 `max_error_k` 的理由正是这个。本节说的「现行默认」指的是换掉之前的那个（`auto` + `max_error_k=0.15` + 法线开），不是今天的默认。
+> **已换掉。** `TileParams.triangulator` 的**默认值**现在是 `'grid'`（`dem_task_tiler` 的 `TileParams`），生产两个调用方（`dem_task_manager` / `local_terrain_task_manager`）都没传 `triangulator=`，所以走的就是它。字段本身仍可覆盖 —— 排障时构造 `TileParams(triangulator='martini')` 完全合法，同一个 `TileParams` 里保留 `max_error_k` 的理由正是这个。本节说的「现行默认」指的是换掉之前的那个（`auto` + `max_error_k=0.15` + 法线开），不是今天的默认。
 
 ### 3.1 它不在 Pareto 前沿上 —— 6 个 DEM，0 次
 
@@ -128,7 +128,7 @@ loess @est 实测（法线统一关，只比几何）：
 两个反直觉点：
 
 - **GDAL 采样只占 2.5%**，不是瓶颈。切片是 CPU-bound 在纯 Python 的三角化上。
-- `rtin_extract`（`rtin.py:106-159`）是纯 Python 递归，每个三角形 3 次 dict 查找，成本正比于**产出三角形数** —— 所以它在崎岖地形上更贵（loess 2606 三角形 → 4.43 ms）、平缓地形上便宜（huabei 930 三角形 → 1.02 ms）。这解释了为什么 `auto` 相对 `grid` 的减速是 2.6×~5.9× 随地形浮动。
+- `rtin_extract`（`terrain_tiling/rtin.py`）是纯 Python 递归，每个三角形 3 次 dict 查找，成本正比于**产出三角形数** —— 所以它在崎岖地形上更贵（loess 2606 三角形 → 4.43 ms）、平缓地形上便宜（huabei 930 三角形 → 1.02 ms）。这解释了为什么 `auto` 相对 `grid` 的减速是 2.6×~5.9× 随地形浮动。
 
 改用 `grid` 直接绕开整条 rtin 路径 + 第二次编码 + 第二次压缩：**单瓦片 7.68 ms → 1.71 ms，快 4.5 倍**。
 
@@ -191,7 +191,7 @@ loess @est 实测（法线统一关，只比几何）：
 | jiangnan | 91.9 MB / 3.87 s | 153.3 MB / 8.03 s | **+67%** | **2.08×** |
 | loess | 94.5 MB / 3.84 s | 189.3 MB / 8.16 s | **+100%** | **2.13×** |
 
-而前端 `enableLighting` **默认是关的**（`static/js/terrain_lighting.js:46-52`），偏好只存 localStorage 键 `tf-terrain-lighting`（`:34`、`:72`），不进配置表。
+而前端 `enableLighting` **默认是关的**（`static/js/terrain_lighting.js` 的 `get()`），偏好只存 localStorage 键 `tf-terrain-lighting`（`get()` / `set()` 各读写一次），不进配置表。
 
 ### 一条非显然的连锁反应：法线会把 `auto` 推向更差的后端
 
@@ -206,10 +206,10 @@ loess @est 实测（法线统一关，只比几何）：
 
 ### 风险：关法线是**静默**降级
 
-`normals=False` 会让 `layer.json` 的 `extensions` 写成 `[]`（`cesiumlab_terrain.py:1581`）。Cesium 的 `hasVertexNormals` 是 **provider 级单一标志**，于是：
+`normals=False` 会让 `layer.json` 的 `extensions` 写成 `[]`（`build_terrain` 写 `layer.json` 那一段）。Cesium 的 `hasVertexNormals` 是 **provider 级单一标志**，于是：
 
 - 光照按钮点了没有地形明暗，退化成全球日夜渐变，**全程零报错**；
-- 植入的随包 base 自带法线也一起作废（`merge_base_availability` 不修改 `extensions`，`layer_json.py:138-143`）。
+- 植入的随包 base 自带法线也一起作废（`terrain_tiling/layer_json.py` 的 `merge_base_availability` 不修改 `extensions`）。
 
 **这个项目栽过三次「作业 completed、HTTP 200、前端不报错、就是不对」的跟头。** 所以法线该做成独立勾选项并在 UI 上写明「关闭后地形光照不可用」，而不是藏在档位里静默生效。切完再想开只能重切 —— 法线是烘焙进瓦片的。
 
@@ -219,12 +219,12 @@ loess @est 实测（法线统一关，只比几何）：
 
 ## 六、顺带查出的现存缺陷：`maxzoom` 不看源分辨率
 
-应用侧**恒传** `maxzoom`（配置键 `terrain_local_maxzoom` 默认 14，`database.py:91`；`dem_task_manager.py:308-330`），`build_terrain` 里的 `estimate_max_level` 因此从不生效。后果双向：
+应用侧**恒传** `maxzoom`（配置键 `terrain_local_maxzoom` 默认 14，`database.DEFAULT_CONFIGS`；`DemTaskManager.start_tiling`），`build_terrain` 里的 `estimate_max_level` 因此从不生效。后果双向：
 
 - **源比 30 m 粗时超建。** 3″（93 m）DEM 建到 z14 = 77.4 MB / 12071 张；按 `est`(=12) 建 = 6.9 MB / 1445 张。**11 倍体积**换来的只是对同一批 93 m 数据更平滑的插值，不含任何新地形。
 - **源比 30 m 细时欠建。** 5 m DEM 的 `est` 约 17，被固定的 14 截断，源数据的细节根本没进瓦片。
 
-**这条缺陷没有随三档一起修掉 —— 落地时口径变了。** 选型阶段设想的是「三档按 `est` 现算，顺手把它修了」，实际落地没有这么做：档位偏移叠加在**用户填的 `maxzoom`** 上（`build_terrain(level_offset=)`，`cesiumlab_terrain.py:1363-1383`），而应用侧的 `dem_task_tiler` 依旧**恒传** `max_level=int(params.maxzoom)`（`dem_task_tiler.py:151`）。`estimate_max_level` 那条分支只在 `max_level is None` 时才走，也就是只有 CLI 省略 `--max-level` 时 —— 上面这两条超建 / 欠建照旧成立。
+**这条缺陷没有随三档一起修掉 —— 落地时口径变了。** 选型阶段设想的是「三档按 `est` 现算，顺手把它修了」，实际落地没有这么做：档位偏移叠加在**用户填的 `maxzoom`** 上（`cesiumlab_terrain.build_terrain` 的 `level_offset=`），而应用侧的 `dem_task_tiler` 依旧**恒传** `max_level=int(params.maxzoom)`（`tile_dem_task_dir`）。`estimate_max_level` 那条分支只在 `max_level is None` 时才走，也就是只有 CLI 省略 `--max-level` 时 —— 上面这两条超建 / 欠建照旧成立。
 
 **为什么改口径**：`maxzoom` 是表单上一个用户看得见、自己填出来的数字，档位相对它 ±1 才说得清「精细 = 比你填的多切一级」。锚在一个用户看不见的估算值上，档位就成了结果无法预期的旋钮 —— 同一份 DEM 换个源分辨率，「精细」切出来的层级能跳好几级，而界面上没有任何东西能提前告诉他。
 
@@ -273,7 +273,7 @@ loess @est 实测（法线统一关，只比几何）：
 三条：
 
 1. **同屏瓦片数逐格相同**（23/23、45/45、48/48，层级分布也一致）。Cesium 的 LOD 选择由 `layer.json` 的几何误差与 `maximumScreenSpaceError` 驱动，**与瓦片内三角形数无关** —— grid 不会让客户端多请求一张瓦片。
-2. **帧时在噪声内，grid 甚至略快**（0.3 vs 0.5 ms）。32 万同屏三角形对任何 GPU 都是小数目；这个量级下瓶颈是逐瓦片的 draw call 与剔除开销，而那部分两者完全一样。这也与设计稿 `:159` 早先「同屏峰值几何不是 GPU 瓶颈」的判断一致。
+2. **帧时在噪声内，grid 甚至略快**（0.3 vs 0.5 ms）。32 万同屏三角形对任何 GPU 都是小数目；这个量级下瓶颈是逐瓦片的 draw call 与剔除开销，而那部分两者完全一样。这也与设计稿早先「同屏峰值几何不是 GPU 瓶颈」的判断一致。
 3. **显存 3~6 MB**，即便 4.5 倍也是从一个可忽略的基数涨起来的。
 
 ### 唯一真实的代价：首次加载
@@ -289,7 +289,7 @@ loess @est 实测（法线统一关，只比几何）：
 
 ### 一条范围界定：全球底图不在本方案内，且应当继续用 `auto`
 
-随包底图（`assets/terrain/base_z8/`）不经过 `build_terrain`，它是预先切好、随包分发、由 `graft_base_into` 物理植入任务目录的（`base_terrain.py:403`），构建脚本是 `scripts/build_global_base_terrain.ps1`。该脚本**显式传 `--tile-size $TileSize`（参数默认 65，与应用侧对齐；2026-08-05 的 a6da59e 之前是漏传、走 CLI 默认 17）**，但后端确实没传，走的是 CLI 默认 `auto` —— 也正是下一段说的「应该继续用 `auto`」。**三档预设只影响用户任务，不改变底图。**
+随包底图（`assets/terrain/base_z8/`）不经过 `build_terrain`，它是预先切好、随包分发、由 `terrain_tiling/base_terrain.py` 的 `graft_base_into` 物理植入任务目录的，构建脚本是 `scripts/build_global_base_terrain.ps1`。该脚本**显式传 `--tile-size $TileSize`（参数默认 65，与应用侧对齐；2026-08-05 的 a6da59e 之前是漏传、走 CLI 默认 17）**，但后端确实没传，走的是 CLI 默认 `auto` —— 也正是下一段说的「应该继续用 `auto`」。**三档预设只影响用户任务，不改变底图。**
 
 而底图**应该继续用 `auto`**：它覆盖海洋与大片平原 —— 正是 martini 减面收益最大、grid 字节代价最高的地方 —— 而它的构建是一次性的，CPU 代价无所谓。这与「用户任务用 grid」不矛盾：两者的取舍条件本来就相反（一次性构建 + 全球平缓 vs 反复构建 + 用户指定 AOI）。
 
@@ -303,7 +303,7 @@ loess @est 实测（法线统一关，只比几何）：
 
 | 层 | 位置 | 落成什么 |
 |---|---|---|
-| **取值表** | `src/services/geo_validation.py` 的 `TILING_QUALITY_OFFSETS` / `DEFAULT_TILING_QUALITY` | `{'precision': +1, 'balanced': 0, 'speed': −1}`，默认 `balanced`。**档位→偏移的映射与校验白名单是唯一事实来源** —— 配置校验、两个管理器的缺省、路由收参、首页渲染前的收敛全部 import 它，没有第二份。⚠️ 但**默认档的字面量 `'balanced'` 另有副本**，那是语言限制、不是疏漏：`database.py` 5 处（`:95` `DEFAULT_CONFIGS`、`:590` / `:665` 两张建表、`:826` / `:828` 两条迁移）写在 SQL DDL 的 `DEFAULT` 里，`templates/index.html` 1 处（option 的 `value="balanced"`）写在模板里 —— SQL 与 HTML 都取不到 Python 常量。改默认档必须人工把这 6 处一起对齐，`local_terrain_task_manager.py:134` 的注释就是为这件事留的 |
+| **取值表** | `src/services/geo_validation.py` 的 `TILING_QUALITY_OFFSETS` / `DEFAULT_TILING_QUALITY` | `{'precision': +1, 'balanced': 0, 'speed': −1}`，默认 `balanced`。**档位→偏移的映射与校验白名单是唯一事实来源** —— 配置校验、两个管理器的缺省、路由收参、首页渲染前的收敛全部 import 它，没有第二份。⚠️ 但**默认档的字面量 `'balanced'` 另有副本**，那是语言限制、不是疏漏：`database.py` 5 处（`DEFAULT_CONFIGS` 一处、`dem_terrain_jobs` / `local_terrain_tasks` 两张建表各一处、`init_database` 里给这两张表补列的两条 ALTER 各一处）写在 SQL DDL 的 `DEFAULT` 里，`templates/index.html` 1 处（option 的 `value="balanced"`）写在模板里 —— SQL 与 HTML 都取不到 Python 常量。改默认档必须人工把这 6 处一起对齐，`LocalTerrainTaskManager._default_quality` 里的注释就是为这件事留的 |
 | **校验** | 同文件 `validate_tiling_quality` / `coerce_vertex_normals` | 档位只认三个字面量，不做大小写归一、不裁空白、不静默退回默认档，拼错当场 `ValueError` → 400。法线收成**三态** True / False / None（`None` 与空串 = 未传 = 走配置默认），只认真布尔与 `'true'` / `'false'`：收下 `'on'` 就等于把「用户取消勾选」和「用户没表态」压成同一态 |
 | **层级偏移** | `src/services/terrain_tiling/cesiumlab_terrain.py` 的 `build_terrain(level_offset=)` | `max_level = max(0, min(21, max_level + level_offset))` —— 这里是 `max_level` 唯一的解析点。偏移后 `min_level` 再钳到实际 `max_level` 以下，否则 `maxzoom ≤ 8` 配负偏移会切 0 张瓦片还报 completed。返回 dict 新增 `"max_level"` = **实际**切到的最深层级，调用方据此落库与展示，不许拿请求值当产物事实 |
 | **参数体** | `src/services/terrain_tiling/dem_task_tiler.py` 的 `TileParams` | 新增 `normals`（默认 **False**）与 `level_offset`（默认 0）；`triangulator` 默认由 `'auto'` 改成 `'grid'`。`max_error_k` 保留 0.15 但在 grid 下不参与计算，留着排障时切 `'martini'` 做对比。⚠️ CLI 与全球底图脚本仍走 `'auto'`，是**有意分叉**，见第八节末尾 |
@@ -311,8 +311,8 @@ loess @est 实测（法线统一关，只比几何）：
 | **建表** | `src/core/database.py` | `dem_terrain_jobs` 与 `local_terrain_tasks` 两张表各加 `quality TEXT DEFAULT 'balanced'`、`vertex_normals INTEGER DEFAULT 0` 与 `effective_maxzoom INTEGER DEFAULT NULL`；**建表与 ALTER TABLE 迁移两条路径都加了**（新库走建表、存量库走迁移，漏一条就是一半用户没有这些列）。⚠️ `effective_maxzoom` 的 `DEFAULT NULL` 是有语义的、不是省事：0 是合法层级（`maxzoom ≤ 1` 配 speed 档真的只切到 z0），拿 0 当「未知」就分不出「还没切完 / 存量行」与「切到了 z0」 |
 | **管理器** | `src/services/dem_task_manager.py`、`src/services/local_terrain_task_manager.py` | 收参 → 校验 → 落库 → 构造 `TileParams(normals=…, level_offset=TILING_QUALITY_OFFSETS[quality])`。未传时读配置默认。切片收尾时把 `build_terrain` 回报的 `max_level` 写进 `effective_maxzoom`（`COALESCE(?, effective_maxzoom)`：切片器没回报就别把已有值抹掉），起切/重切时先置回 NULL。两侧不对称：**只有 local 侧从库里读回档位**（任务是先建后跑），所以只有它需要「存量行 `quality` 为 NULL 时退回 `balanced`」；DEM 侧起切时档位是当场算出来直接用的，全文没有从库读 `quality` 的路径 |
 | **路由** | `src/routes/terrain_api.py`、`src/routes/local_terrain_api.py` | DEM 侧收 JSON body（同时兼容表单字段），本地地形侧收 multipart 表单且**在文件落盘之前**就校验；非法值 → 400 |
-| **表单** | `templates/index.html`、`static/js/map.js`、`src/routes/main.py` | 下拉 `localTerrainQuality` + 复选框 `localTerrainNormals`。**初值由服务端按配置渲染**，不写死 —— 同一份 DEM 有两个起切入口（这张表单、历史页详情面板的起切按钮），写死初值就意味着两个入口切出的产物不一样。收敛在 `main._terrain_form_defaults()` 里做完再交给模板：越界的 `terrain_local_maxzoom`（该键在 `_UNCONSTRAINED_KEYS` 里，`PUT /api/config` 收得下 99）与认不出的档位都会**先 `logger.warning` 点名被丢的原值再替换**。放在路由而不是模板，是因为模板是这条链上唯一记不了日志的一环 —— 在那儿修好的值不会在任何地方留痕，运维填的 99 会静默变成 14。JS 侧三个字段的兜底一律送**空串**（= 未传 = 走配置默认），不在前端抄第二份默认值。⚠️ 法线两条分支的形态**故意不同**：本地地形走 multipart，必须 `String(el.checked)`（`map.js:2285`）—— checkbox 的 `.value` 恒为 `'on'`，照 `el?.value \|\| '默认值'` 的既有写法抄过去每次都 400；DEM 走 JSON body，直接送**原始布尔** `el.checked`（`map.js:2346`），`coerce_vertex_normals` 真布尔与 `'true'`/`'false'` 都收 |
-| **i18n** | `src/i18n/catalog/tpl_index.py`、`src/i18n/catalog/js_history.py` | 表单标签、三档选项、两条提示（含「关闭法线后地形光照不可用」）、详情面板的档位与法线文案，zh / en 各一份。⚠️ **三档文案的参照物一律写「基准层级」，不许写「比默认」**（`tpl_index.py:248-252` 有整段论证）：偏移表的 +1/0/−1 是相对基准层级算的，与 `terrain_quality_preset` 当前配成哪一档无关，写「比默认多切一级」在默认档不是均衡时就是错的。实际文案是「精细（比基准层级多切一级，体积约 3.3 倍）」这一套，表单与详情面板共用同一组词 |
+| **表单** | `templates/index.html`、`static/js/map.js`、`src/routes/main.py` | 下拉 `localTerrainQuality` + 复选框 `localTerrainNormals`。**初值由服务端按配置渲染**，不写死 —— 同一份 DEM 有两个起切入口（这张表单、历史页详情面板的起切按钮），写死初值就意味着两个入口切出的产物不一样。收敛在 `main._terrain_form_defaults()` 里做完再交给模板：越界的 `terrain_local_maxzoom`（该键在 `_UNCONSTRAINED_KEYS` 里，`PUT /api/config` 收得下 99）与认不出的档位都会**先 `logger.warning` 点名被丢的原值再替换**。放在路由而不是模板，是因为模板是这条链上唯一记不了日志的一环 —— 在那儿修好的值不会在任何地方留痕，运维填的 99 会静默变成 14。JS 侧三个字段的兜底一律送**空串**（= 未传 = 走配置默认），不在前端抄第二份默认值。⚠️ 法线两条分支的形态**故意不同**：本地地形走 multipart，必须 `String(el.checked)`（`submitLocalTerrain`）—— checkbox 的 `.value` 恒为 `'on'`，照 `el?.value \|\| '默认值'` 的既有写法抄过去每次都 400；DEM 走 JSON body，直接送**原始布尔** `el.checked`（`startDemTaskTerrainTiling`），`coerce_vertex_normals` 真布尔与 `'true'`/`'false'` 都收 |
+| **i18n** | `src/i18n/catalog/tpl_index.py`、`src/i18n/catalog/js_history.py` | 表单标签、三档选项、两条提示（含「关闭法线后地形光照不可用」）、详情面板的档位与法线文案，zh / en 各一份。⚠️ **三档文案的参照物一律写「基准层级」，不许写「比默认」**（`tpl_index.py` 里 `tpl.index.process.terrain_quality` 上方那段注释有整段论证）：偏移表的 +1/0/−1 是相对基准层级算的，与 `terrain_quality_preset` 当前配成哪一档无关，写「比默认多切一级」在默认档不是均衡时就是错的。实际文案是「精细（比基准层级多切一级，体积约 3.3 倍）」这一套，表单与详情面板共用同一组词 |
 | **详情面板** | `static/js/history.js` | 显示作业**实际**用的档位、法线状态与**实际切到的层级**，DEM 作业与本地地形任务共用 `terrainPresetRowsHtml`（两张表的列同名同义）。DEM 面板的起切按钮 POST 不带 body、走配置默认，用户在那里没有选择权；本地地形恰恰相反 —— 上传表单是用户唯一能亲手选档位的入口，切完回来更该查得到。层级那一格优先显示 `effective_maxzoom`（= `layer.json` 的 `maxzoom`），为 NULL 时回落到 `maxzoom` 并**换成「基准层级」标签 + 悬停说明**，不拿基准值冒充产物事实。认不出的档位值（旧作业 / 手改过库）原样显示，不悄悄说成「均衡」 |
 
 第十节「明确不要动的旋钮」**全部照办**：`tile_size` 仍是 65、`max_error_k` 没有暴露到任何接口、`workers` 没有放宽。
@@ -358,8 +358,8 @@ loess @est 实测（法线统一关，只比几何）：
 - `tests/test_build_scripts_contract.py` —— 预判「只要不动 `tile_size` 就不受影响」，属实，全程未红。
 - 另外补了三层测试，注意后两个钉的是**互为镜像**的两面，别记混：
   - `tests/test_terrain_api.py` —— HTTP → 管理器 → `build_terrain` 的档位偏移全链路。
-  - `tests/test_terrain_lighting_frontend.py` —— **渲染级**：三个控件的初值真的跟着配置走（`:524`），以及 `config={}` 的异常兜底落在均衡而不是精细（`:568`）。另有法线后果文案 zh/en 两份都在的断言。
-  - `tests/test_map_js_contract.py` —— **提交级**：两个入口都带上档位字段（`:364`），且三个字段的兜底一律是空串、前端不许自己抄一份默认值（`:413`）。
+  - `tests/test_terrain_lighting_frontend.py` —— **渲染级**：三个控件的初值真的跟着配置走（`test_preset_controls_render_the_configured_defaults`），以及 `config={}` 的异常兜底落在均衡而不是精细（`test_preset_controls_fall_back_to_balanced_when_config_is_empty`）。另有法线后果文案 zh/en 两份都在的断言。
+  - `tests/test_map_js_contract.py` —— **提交级**：两个入口都带上档位字段（`test_terrain_submit_sends_the_preset_fields`），法线提交的是 checked 状态而不是 checkbox 的 `.value`（`test_normals_checkbox_is_submitted_as_its_checked_state`），且三个字段的兜底一律是空串、前端不许自己抄一份默认值（`test_terrain_submit_lets_the_backend_supply_the_defaults`）。
 
 ---
 
@@ -367,13 +367,13 @@ loess @est 实测（法线统一关，只比几何）：
 
 **`tile_size` 保持 65。** 三个理由，按硬度排序：
 
-1. 随包 base 是 65×65 且**物理植入**任务目录（`dem_task_tiler.py:190` 调 `graft_base_into`），任务改 `tile_size` 会让 z7→z8 交界处顶点密度跳变（`global-base-build.md:147` 有原文记载）。
+1. 随包 base 是 65×65 且**物理植入**任务目录（`tile_dem_task_dir` 调 `graft_base_into`），任务改 `tile_size` 会让 z7→z8 交界处顶点密度跳变（`global-base-build.md` 的「关于 `scripts/build_global_base_terrain.ps1`」一节有原文记载）。
 2. 实测也不划算：同分辨率下 `tile_size=129`（z13）对比 `tile_size=65`（z14），精度**完全相同**（RMS 均为 0.082），体积只小 9%，而扫描阶段测到它明显更慢（19.5 s vs 6.5 s，同一批扫描内的相对值）。
-3. `tests/test_dem_task_tiler.py:56`、`tests/test_build_scripts_contract.py:48-62` 都钉着它。
+3. `tests/test_dem_task_tiler.py` 的 `test_tile_dem_task_dir_calls_external_tools` 与 `tests/test_build_scripts_contract.py` 的 `test_tile_size_matches_the_application_side` 都钉着它。
 
 **`max_error_k` 不必暴露。** 三档都用 `grid`，这个参数不参与计算。而且实测它本身就是个坏旋钮：K 从 0.30 加到 0.60，体积只再省 1.8%，RMS 却从 1.710 掉到 1.961（netherlands）；loess 上更是从 2.056 掉到 3.906。
 
-**`workers` 可以另行放宽，但不属于本次三档。** 它是唯一零精度代价的速度旋钮，当前硬封顶 `min(4, cpu_count)`（`cesiumlab_terrain.py:1467-1471`）。20 核实测：
+**`workers` 可以另行放宽，但不属于本次三档。** 它是唯一零精度代价的速度旋钮，当前硬封顶 `min(4, cpu_count)`（`build_terrain` 里解析 `workers` 那几行）。20 核实测：
 
 | 后端 | w=1 | w=4 | w=12 | w=20 | 每 worker 峰值 RSS |
 |---|---|---|---|---|---|
@@ -400,7 +400,7 @@ loess @est 实测（法线统一关，只比几何）：
 
 顶点数 / 三角形数与编码端逐一相等、三角形面积和 = 1.000000（完整覆盖单位方格）、martini 分支三角形与编码端输入逐条相同、插值无 NaN。
 
-踩过一个坑：`encoded_indices` 在 uint16 上**回绕**（`cesiumlab_terrain.py:981` 明确写了这一点），解码必须按索引位宽取模，否则解出负索引。
+踩过一个坑：`encoded_indices` 在 uint16 上**回绕**（`encode_quantized_mesh` 的注释明确写了这一点），解码必须按索引位宽取模，否则解出负索引。
 
 ### 四个测量陷阱（都实际踩到了，记下来免得重犯）
 

@@ -110,6 +110,18 @@ def test_download_source_with_empty_list_falls_back():
     assert 'mts0.googleapis.com' in bm['upstream']
 
 
+def test_download_source_does_not_invent_a_credit_or_a_max_level():
+    """跟随下载源时 tile_servers 可以是任何一条 XYZ 模板（自建镜像是文档里
+    的一等用法），此时「最高 21 级、署名 © Google」是编造出来的事实：界面会
+    按一个不存在的层级上限建图层，并挂上一家与这张图无关的署名。同一函数的
+    自定义模板分支对同一个未知量报 None/''，两支必须同口径。
+    """
+    bm = resolve_basemap(DOWNLOAD_SOURCE,
+                         tile_servers='https://mirror.example.com/t/{z}/{x}/{y}.png')
+    assert bm['max_level'] is None, '不知道镜像支持到几级就不许报一个数'
+    assert bm['credit'] == '', '不知道是谁的图就不许署名'
+
+
 def test_custom_template_passes_through_untouched():
     url = 'https://example.com/t/{z}/{x}/{y}.png'
     bm = resolve_basemap(url)
@@ -132,7 +144,7 @@ def test_client_descriptor_never_leaks_the_upstream_url(value):
     """
     resolved = resolve_basemap(value, tile_servers='mts0')
     desc = client_descriptor(resolved)
-    assert desc['url'] == BASEMAP_TILE_PATH
+    assert desc['url'].startswith(BASEMAP_TILE_PATH + '?v='), desc['url']
     assert 'upstream' not in desc
     for host in ('arcgisonline', 'googleapis', 'example.com'):
         assert host not in repr(desc), f'客户端描述里泄露了上游地址：{host}'
@@ -143,6 +155,35 @@ def test_client_descriptor_keeps_level_and_credit():
     assert desc['max_level'] == 19
     assert 'Esri' in desc['credit']
     assert desc['source'] == 'esri'
+
+
+@pytest.mark.parametrize('a,b', [
+    ('esri', 'google_satellite'),
+    ('https://a.example.com/t/{z}/{x}/{y}.png', 'https://b.example.com/t/{z}/{x}/{y}.png'),
+])
+def test_switching_the_source_switches_the_url_the_browser_is_given(a, b):
+    """换源必须换 URL 空间。
+
+    瓦片带 24 小时浏览器缓存，同源路径里一旦没有源标识，用户在配置页换完源
+    之后，已经浏览过的区域会继续显示旧那家的影像整整一天 —— 缓存命中不回源，
+    界面上没有任何补救手段，表现成「这个设置项坏了」。
+
+    第二组参数钉的是「按上游算而不是按 source 名算」：两条自定义模板的
+    source 都是 'custom'，只认名字的话它们共用同一条 URL。
+    """
+    ua = client_descriptor(resolve_basemap(a))['url']
+    ub = client_descriptor(resolve_basemap(b))['url']
+    assert ua != ub, f'{a} 与 {b} 下发了同一条 URL：{ua}'
+    for url in (ua, ub):
+        # 同源、且 {z}/{x}/{y} 仍留给 Cesium 代入 —— 版本串不能破坏这两条。
+        assert url.startswith(BASEMAP_TILE_PATH + '?v=')
+
+
+def test_the_url_is_stable_for_the_same_source():
+    """同一个源两次解析必须给出同一条 URL：版本串一抖动，浏览器缓存全作废，
+    每次刷新都要把整屏瓦片重下一遍。"""
+    assert (client_descriptor(resolve_basemap('esri'))['url']
+            == client_descriptor(resolve_basemap('esri'))['url'])
 
 
 def test_unknown_value_falls_back_instead_of_raising():

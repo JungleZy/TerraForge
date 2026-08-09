@@ -20,6 +20,11 @@ concurrency:
 jobs:
   build:
     strategy:
+      # 【不】开 fail-fast:下面的 Create Release 跑在【每个 matrix job 内部】,
+      # 一个平台在打包阶段失败会连带取消另外两个,于是已经发布出去的 Release
+      # 停在只挂了一两个平台产物的状态 —— 与文件顶部 cancel-in-progress: false
+      # 想防的是同一件事,而默认的 fail-fast: true 正好把它抵消掉。
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         include:
@@ -107,6 +112,14 @@ jobs:
         #    gdal, but pip's GDAL sdist tries to build a universal2 wheel and
         #    fails to link against the arm64-only libgdal. conda-forge ships a
         #    matching arm64 prebuilt + Python binding, no pip compile needed.
+        # gdal=3.8 是【钉死的构建输入】,不是「哪个 GDAL 可接受」这条规则的第二处
+        # 实现:conda 这边不受 Linux 那条「绑定要对上系统 libgdal」的约束,钉住才能
+        # 让同一个 tag 两次构建打出同样的 DLL。它与 requirements.txt 的
+        # `GDAL>=3.8,<4` 谁说了算,由下面的「Verify GDAL binding」裁决 —— 那一步
+        # 排在本步之后,读 requirements.txt 的范围、量这里真装上的版本,所以这个钉
+        # 值一旦漂出范围就是 CI 红。规则本身仍然只有那一个脚本一处实现;
+        # 在 YAML 里把范围反过来喂给 conda 则会让发版产物随 conda-forge 当日最新的
+        # 3.x 漂移,与「同一 commit 打出同样的包」冲突。
         conda install -y -c conda-forge gdal=3.8 numpy
         GDAL_VERSION=$(python -c "from osgeo import gdal; print(gdal.__version__)")
         echo "GDAL_VERSION=$GDAL_VERSION" >> $GITHUB_ENV
@@ -144,6 +157,14 @@ jobs:
         grep -viE '^[[:space:]]*gdal([[:space:]=<>!~]|$)' requirements.txt > /tmp/req.txt
         pip install -r /tmp/req.txt
         echo "NUITKA_VERSION=$(python -c "import importlib.metadata as m; print(m.version('nuitka'))")" >> $GITHUB_ENV
+
+    # GDAL 闸门:与 build.sh / build.bat 共用 scripts/check_gdal.py,判据只此一份
+    # (requirements.txt 声明的版本范围 + _gdal_array 在位)。此前闸门只挂在那两个
+    # 本地脚本上,CI 的打包步骤从旁边绕了过去 —— 而带 build isolation 装出来的绑定
+    # 缺 _gdal_array 时,exe 照样构建成功、照样启动、冒烟请求 `/` 照样 200,只有
+    # 用户机器上的 DEM/地形/等高线作业会炸。必须排在装完依赖之后、打包之前。
+    - name: Verify GDAL binding
+      run: python scripts/check_gdal.py
 
     # 跨 run 复用 C 编译结果。Nuitka 90% 的耗时是把 690+ 个生成的 C 文件
     # 编译成对象文件,而其中绝大多数(numpy/matplotlib/PIL/aiohttp/flask 等
@@ -277,6 +298,13 @@ jobs:
         # Short retention so manual-dispatch / branch builds don't accumulate.
         retention-days: 7
 
+    # ⚠ 残留风险:这一步跑在【每个 matrix job 内部】,Release 是被三个平台先后
+    # 追加文件「长出来」的 —— 最先跑完的那个平台一提交,Release 就已经是
+    # published 状态,而另外两个还在编译。上面的 fail-fast: false 保证失败的平台
+    # 不会连带取消其余两个(补跑那一个 job 即可把产物补齐),但「Release 短暂只挂
+    # 着一两份产物」这个窗口仍然存在。根治的做法是把发布挪到 needs: build 的汇总
+    # job:三个平台只上传 artifact,汇总 job 下载齐了再一次性发布。那要改产物传递
+    # 方式并重跑一整轮三平台验证,发版在即,本轮不做。
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       # 钉到 commit SHA(v2.6.2)而不是 v1 这种可变 tag:tag 能被上游重新指向,

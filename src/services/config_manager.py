@@ -95,12 +95,23 @@ def _validate_scratch_dir(value) -> bool:
     `download_engine` 那侧按【进程 CWD】解析（`os.makedirs(stitch_tmp_base)`），
     打包 exe 从快捷方式启动时 CWD 不是安装目录，中间产物会落到一个谁也想不到
     的地方 —— 这正是 M10 给 output_path 修过的那一类坑。
+
+    判据**有意不做 `expanduser()`**，别再加回来：三个读取侧
+    （`download_engine.stitch_tiles_with_gdal` 的 `os.makedirs` +
+    `tempfile.mkdtemp(dir=...)`、`contour_engine.build_contour_tiles` 的
+    `tempfile.mkdtemp(dir=...)`、`task_cleanup.sweep_startup_residue` 的
+    `Path(...)`）拿的都是库里的字面量，一个都不展开 `~`。校验侧一旦展开，
+    `~/tf_warp` 就被判合法并原样入库，然后同一个值有三种解释：拼接把 GB 级
+    中间产物写进 `<CWD>/~/tf_warp/`（真的建一个名叫 `~` 的目录）、每个等高线
+    任务在 warp 阶段抛 FileNotFoundError（那行不在 try 内）、清扫扫的是第三个
+    根 —— 而配置页保存时是 200。这个键的语义是「用户明确指定的另一块盘」，
+    `~` 支持恰好把上面那道 CWD 闸门打穿，不需要。
     """
     raw = str(value or '').strip()
     if not raw:
         return True
     try:
-        return Path(raw).expanduser().is_absolute()
+        return Path(raw).is_absolute()
     except (OSError, ValueError, RuntimeError):
         return False
 

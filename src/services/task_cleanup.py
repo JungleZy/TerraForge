@@ -120,12 +120,43 @@ _PROCESS_START_TIME = time.time()
 _CATEGORY_NAME_RE = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
-# fail_stranded_running_task 的表名白名单 —— 表名直接进 SQL,只接受字面量。
-# 没有 local_terrain_tasks:它没有 `_run_task`,切片线程 `_run_tiling_job`
-# 自己有兜底 except 把行判 failed(dem 的切片 job 同理)。
-_STRANDED_TASK_TABLES = frozenset({'tasks', 'dem_tasks', 'contour_tasks'})
+# fail_stranded_running_task 的表名/列名白名单 —— 两者都直接进 SQL，只接受字面量。
+#
+# 入网判据是**「行先置 running、终态由另一段代码负责写」**，不是「有没有
+# `_run_task`」。曾按后者把 local_terrain_tasks 与 dem_terrain_jobs 排除在外
+# （当时写的理由是「切片线程 `_run_tiling_job` 自己有兜底 except 把行判
+# failed」），这两条管线各自证伪了它：兜底 except 的第一句就是
+# `conn = get_connection()`，它在自己的 try【之外】，建连接失败时新异常穿透
+# 线程、行留在 running；而 stop 分支是**正常 return**，压根没有异常给那个
+# except 接。往后新增这种表一律登记进来。
+#
+# id_column：定位「这个任务的那一行」的列。四张任务表按主键 id；
+# dem_terrain_jobs 是挂在 dem_tasks 下的从表（一个任务一行，唯一键是 task_id，
+# 见 DemTaskManager.start_tiling 的 `ON CONFLICT(task_id)`），按 task_id 定位。
+# recovery：判 failed 之后用户**真正**做得到的动作。两类表不一样，统一写死
+# 「可以重新开始这个任务」对下载类是骗人的：那三条管线的 start/resume 只收
+# pending/paused（TaskManager.start_task 里的注释说明这是有意的 —— 失败是
+# 终态，重跑会把「它失败过」从历史里擦掉），failed 行按「开始」只会再吃一个
+# ValueError，用户拿着一句「可以重新开始」找不到能按的地方。切片类相反，
+# start_tiling 的闸门是 `status != 'running'`，failed 行重切本来就是通的。
+_RESTART_TILING = '可以重新开始切片。'
+_RESTART_NEW_TASK = '失败是终态，「开始 / 继续」不再接受这条记录，请新建一个同样的任务。'
 
-_STRANDED_ERROR = '任务线程已退出但状态仍是「运行中」，已置为失败；可以重新开始这个任务。'
+
+class _StrandedTable(NamedTuple):
+    id_column: str
+    recovery: str
+
+
+_STRANDED_TASK_TABLES = {
+    'tasks': _StrandedTable('id', _RESTART_NEW_TASK),
+    'dem_tasks': _StrandedTable('id', _RESTART_NEW_TASK),
+    'contour_tasks': _StrandedTable('id', _RESTART_NEW_TASK),
+    'local_terrain_tasks': _StrandedTable('id', _RESTART_TILING),
+    'dem_terrain_jobs': _StrandedTable('task_id', _RESTART_TILING),
+}
+
+_STRANDED_ERROR = '任务线程已退出但状态仍是「运行中」，已置为失败'
 
 
 def fail_stranded_running_task(table: str, task_id: int, reason: str = '') -> bool:
@@ -135,32 +166,39 @@ def fail_stranded_running_task(table: str, task_id: int, reason: str = '') -> bo
     吃掉,而 `_execute*` 自己的失败兜底(把行改成 failed 那段)活在
     `conn = get_connection()` 【之后】的 try 里 —— 建连接失败(库被锁/损坏/磁盘满)
     或 `asyncio.run` 建不出事件循环(EMFILE,几个任务 × concurrent_downloads 就够)
-    都绕过它。另一条路是删除:`task_deletion.delete_task_row` 先置停止标志再 DELETE,
-    commit 失败时事务回滚而标志【不】回滚(那是有意的,重试删除仍要它停),worker
-    于是走某个 stop 分支**正常** return —— 没有异常,也没人写终态。
+    都绕过它。两条切片线程(`DemTaskManager._run_tiling_job` /
+    `LocalTerrainTaskManager._run_tiling_job`)是同一个形状:它们的兜底 except 里
+    第一句也是 `conn = get_connection()`,同样在自己的 try 之外。另一条路是删除:
+    `task_deletion.delete_task_row` 先置停止标志再 DELETE,commit 失败时事务回滚而
+    标志【不】回滚(那是有意的,重试删除仍要它停),worker 于是走某个 stop 分支
+    **正常** return —— 没有异常,也没人写终态。
 
-    两条路的结果一样:行永远是 running 且没有线程。而三条管线的 start_task 都只
-    接受 pending/paused,用户点「开始」被拒,唯一的出路是先点「暂停」
-    (`UPDATE ... WHERE status='running'` 仍然命中)或重启进程。
+    两条路的结果一样:行永远是 running 且没有线程。下载类三条管线的 start_task 只
+    接受 pending/paused,用户点「开始」被拒;两张切片表则被各自 start_tiling 的
+    `status != 'running'` 闸门判成「已在运行」而 ValueError —— 都只剩重启进程。
 
     **放在线程退出处**是因为那里能一次盖住两条路,不用去动 890 行的 `_execute_task`。
-    竞态是安全的:行只要还是 running 就不可能有新 worker 被登记(start_task 的门),
-    所以 `WHERE status='running'` 命中的必然是搁死的那一行;正常收尾
-    (completed/failed/paused)与已删除的行都命不中,是无害的 no-op。
+    竞态是安全的:行只要还是 running 就不可能有新 worker 被登记(start_task 与
+    start_tiling 的门都在这一条上),所以 `WHERE status='running'` 命中的必然是搁死
+    的那一行;正常收尾(completed/failed/paused)与已删除的行都命不中,是无害的
+    no-op。
 
     本函数**绝不抛**:调用点在 finally 里,从那儿抛出去会盖掉真正的异常。
     """
-    if table not in _STRANDED_TASK_TABLES:
+    spec = _STRANDED_TASK_TABLES.get(table)
+    if spec is None:
         raise ValueError(f'fail_stranded_running_task: 未知任务表 {table!r}')
 
-    message = f'{_STRANDED_ERROR}（{reason}）' if reason else _STRANDED_ERROR
+    message = f'{_STRANDED_ERROR}；{spec.recovery}'
+    if reason:
+        message += f'（{reason}）'
     try:
         from src.core.database import get_connection_context, utc_now_iso
 
         with get_connection_context() as conn:
             cur = conn.execute(
                 f"UPDATE {table} SET status = 'failed', error_message = ?, "
-                f"completed_at = ? WHERE id = ? AND status = 'running'",
+                f"completed_at = ? WHERE {spec.id_column} = ? AND status = 'running'",
                 (message, utc_now_iso(), task_id))
             changed = cur.rowcount > 0
             conn.commit()

@@ -23,27 +23,34 @@ APP_NAME = 'terraforge'
 ENTRY = 'app.py'
 
 # 产物里必须存在的「自有数据」哨兵。gdal-data / proj-data 各有构建期与运行期
-# 两道硬失败,而 --include-data-dir=templates / static 一道都没有:静默漏收时
-# exe 照样能启动,CI 冒烟测试请求 `/` 也照样 200(它只用到 templates/),
+# 两道硬失败,而 --include-data-dir=templates / static / assets 一道都没有:静默
+# 漏收时 exe 照样能启动,CI 冒烟测试请求 `/` 也照样 200(它只用到 templates/),
 # 用户拿到的是一张白地图,而且没有任何一处日志会报错。
 # 用 glob 而不是写死路径:Cesium 在 static/vendor/cesium/<版本>/ 下。
+#
+# 全球 base 地形分卷是这里最隐蔽的一个:它漏收之后连白地图都算不上——切片能跑完、
+# 服务照常 200,只是所有任务的 z0-7 都没有底,用户只看到「地形不对」而无从判断
+# 少了什么(运行期按设计静默退回 parentUrl 级联,见 base_terrain.base_parts_dir)。
+# 分卷有两个,少一个解压就会中途失败,所以哨兵匹配 part* 整组。
 APP_DATA_SENTINELS = (
     'templates/index.html',
     'static/vendor/cesium/*/Cesium.js',
     'static/vendor/fonts/fonts.css',
+    'assets/terrain/base_z8.tar.gz.part*',
 )
 
 
 def verify_app_data(dist_dir):
-    """校验 templates/ 与 static/ 的关键文件真的落进产物;缺的一次全列出来。"""
+    """校验 templates/ / static/ / assets/ 的关键文件真的落进产物;缺的一次全列出来。"""
     missing = [rel for rel in APP_DATA_SENTINELS
                if not glob.glob(os.path.join(dist_dir, *rel.split('/')))]
     if missing:
         raise RuntimeError(
             'App data collection failed, these are missing from the bundle:\n'
             + '\n'.join('  ' + m for m in missing)
-            + '\nCheck the --include-data-dir=templates / static options — such a '
-              'bundle starts up fine and then serves a blank map to the user.'
+            + '\nCheck the --include-data-dir=templates / static / assets options — such '
+              'a bundle starts up fine and then serves a blank map (or terrain with no '
+              'global base) to the user.'
         )
 
 
@@ -387,8 +394,10 @@ def main():
         # 目录**：解压后是 44k 个小文件，让 Nuitka 逐个收集会把构建拖垮，装机体积
         # 也更大。首次切片时 base_terrain.ensure_base_unpacked() 会自动还原到
         # assets/terrain/base_z8（scripts/unpack_base_terrain.py 只是手工预热入口）。
-        # 分卷缺失也不会坏 —— parentUrl 闸门检测到 base 不可用就不写该字段
-        # （见 layer_json.parent_url_if_base_available）。
+        # 分卷缺失【运行期】不会坏 —— parentUrl 闸门检测到 base 不可用就不写该字段
+        # （见 layer_json.parent_url_if_base_available）。但那是给「用户自己删了
+        # 分卷」准备的退路,不是发布产物可以少东西的许可:漏收的包照常 200、切片
+        # 照常完成,用户只看到地形不对 —— 所以 APP_DATA_SENTINELS 在构建期挡住它。
         '--include-data-dir=assets/terrain=assets/terrain',
         # 排除解压后的目录：上面那行是整目录收，而运行期解压的落点就在它里面。
         # 不排除的话，任何在本机跑过一次切片的人再构建，产物就平白多 224 MB /

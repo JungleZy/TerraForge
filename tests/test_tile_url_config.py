@@ -333,9 +333,10 @@ def test_config_partial_renders_server_row_editor(monkeypatch, tmp_path):
 def test_map_js_consumes_server_resolved_basemap():
     """底图不再从 tile_servers 推导 —— 它有自己的配置项 basemap_source。
 
-    分开的理由：底图走浏览器直连、**不吃 proxy_url**，下载走 Python、吃。
-    两者网络可达性不同，共用一份地址的后果是给下载配好了代理、底图仍是
-    一个蓝色球体（这正是改造前的实际故障）。
+    分开的理由是**用途**不同，不是出网路径不同：底图给页面看、tile_servers 是
+    下载源。自 0.2.12 起底图瓦片由 routes/basemap_static 在服务端同源转发，
+    与下载走同一条出网路径、同样吃 proxy_url —— 这条注释此前写的「底图走浏览器
+    直连、不吃 proxy_url」是转发之前的旧事实。
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, 'static', 'js', 'map.js'), encoding='utf-8') as f:

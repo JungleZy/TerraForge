@@ -54,7 +54,7 @@ uv run python scripts/unpack_base_terrain.py --force    # 强制重解
 
 ⚠️ **后端选 `auto` 不选 `grid`**：直觉上 base 大半是海洋、平坦瓦片「grid 恒胜」，但那是**法线关闭时**的结论。加法线后每顶点多 2 字节，grid 恒 4225 顶点（8450 B）而 martini 平坦瓦片只有 589 顶点（1178 B），结论反转 —— 实测同一份数据 grid 2.1 GB、auto 942 MB，**省 55% 且零质量损失**。
 
-你需要准备的是一个目录，里面放全球 DEM 栅格文件。切片器接受的扩展名（`cesiumlab_terrain.py:616`）：`.tif` / `.tiff` / `.img` / `.hgt` / `.vrt`。
+你需要准备的是一个目录，里面放全球 DEM 栅格文件。切片器接受的扩展名（`cesiumlab_terrain.main` 里展开目录用的那张后缀表）：`.tif` / `.tiff` / `.img` / `.hgt` / `.vrt`。
 
 ⚠️ **多文件输入会先被物化成一整份单文件副本**（`build_input_raster`，2026-08-05 起）。多源 VRT 上 GDAL 的 overview 选层会随读窗口漂移，实测开出 50.9 m 的瓦片接缝，所以多幅输入一律先合并成单个 GeoTIFF 再补一套 2 的幂 overview。
 
@@ -74,7 +74,7 @@ uv run python -m src.services.terrain_tiling.cesiumlab_terrain \
   --tile-size 65
 ```
 
-参数（全部来自 `cesiumlab_terrain.py:601-608` 的 argparse 定义）：
+参数（全部来自 `cesiumlab_terrain.main` 的 argparse 定义）：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
@@ -84,13 +84,13 @@ uv run python -m src.services.terrain_tiling.cesiumlab_terrain \
 | `--max-level` | `None` | 最高层级。**见下节：实践上必填** |
 | `--tile-size` | `17` | 每瓦片顶点网格边长。**见下节：应用侧用的是 65** |
 | `--nodata` | `None` | 覆盖源数据的 nodata 值；不传则用文件里声明的 |
-| `--workers` / `-j` | `0` | 并行进程数。`0` 或负数 = `min(4, cpu_count())`（`:483-488`，刻意封顶 4，每个 worker 都要开 GDAL dataset，进程太多会 OOM 被 OS 杀掉） |
+| `--workers` / `-j` | `0` | 并行进程数。`0` 或负数 = `min(4, cpu_count())`（`build_terrain` 里定的上限，刻意封顶 4，每个 worker 都要开 GDAL dataset，进程太多会 OOM 被 OS 杀掉） |
 
 运行需要装了 numpy + GDAL Python 绑定的 Python 环境（见 CLAUDE.md 的 GDAL 章节）。
 
 ## `--max-level` 实践上必填
 
-**省略 `--max-level` 不会给你一个保守的默认值，而是按源数据像素尺寸自动估算一个层级**（`:434-435` → `GeographicTilingScheme.estimate_max_level`，`:85-95`）。公式是 `ceil(log2((180/(tile_size-1)) / 源像素度数))` —— 也就是「一直细分到瓦片顶点间距追上源像素尺寸」。对全球数据这个数会大到没法接受：
+**省略 `--max-level` 不会给你一个保守的默认值，而是按源数据像素尺寸自动估算一个层级**（`build_terrain` 在 `max_level is None` 时调 `GeographicTilingScheme.estimate_max_level`）。公式是 `ceil(log2((180/(tile_size-1)) / 源像素度数))` —— 也就是「一直细分到瓦片顶点间距追上源像素尺寸」。对全球数据这个数会大到没法接受：
 
 | 源数据分辨率 | `--tile-size 65` 时估出的 max-level | z0..max 全球瓦片总数 |
 |---|---|---|

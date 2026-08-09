@@ -21,6 +21,7 @@ import re
 import sys
 import threading
 import urllib.error
+import urllib.request
 
 import pytest
 
@@ -31,7 +32,9 @@ from src.core.config import Config  # noqa: E402
 from src.services import proxy_autodetect  # noqa: E402
 from src.services.basemap_source import (  # noqa: E402
     BASEMAP_PRESETS, DOWNLOAD_SOURCE, fallback_candidates, resolve_basemap,
+    source_version,
 )
+
 
 _PNG = b'\x89PNG\r\n\x1a\n' + b'\x00' * 32
 
@@ -161,22 +164,39 @@ def test_configured_proxy_is_applied(app_ctx, monkeypatch):
                                'https': 'http://127.0.0.1:7890'}
 
 
-def test_no_proxy_disables_environment_proxies(app_ctx, monkeypatch):
-    """代理为空时传空 dict，而不是不装 handler。
+def test_no_configured_proxy_leaves_the_environment_to_urllib(app_ctx, monkeypatch):
+    """代理为空时**不装** ProxyHandler，让 urllib 照默认行为读环境变量。
 
-    ProxyHandler({}) 会关掉 urllib 对 HTTP_PROXY 等环境变量的隐式读取。
-    代理的唯一事实源是 proxy_autodetect（它本来就把环境变量算作候选），
-    这里再隐式吃一次会造成「配置页显示直连、实际走了环境变量代理」的分叉。
+    这条口径必须与下载路径一致：download_engine 的 aiohttp 开着
+    trust_env=True，proxy_url 为空时下载照样吃 HTTP(S)_PROXY。这里曾经传
+    ProxyHandler({})（**关掉**环境变量），于是「export 了 HTTP_PROXY 又把代理
+    自动发现关掉」的 WSL 用户（文档里写着的工作流）得到的是「下载正常、底图
+    一颗蓝球」—— 正是这条路由存在的理由所要消灭的那种分叉。
+
+    断言落在**真的会被拿去取瓦片的那个 opener** 上，而不是「没传某个参数」：
+    后者是实现形状，换个写法就变成空断言。
     """
     client, route_mod = app_ctx
-    seen = {}
-    monkeypatch.setattr(route_mod.urllib.request, 'ProxyHandler',
-                        lambda mapping: seen.setdefault('mapping', mapping))
-    _stub(monkeypatch, route_mod, _FakeUpstream(), proxy='')
+    monkeypatch.setenv('HTTP_PROXY', 'http://127.0.0.1:7899')
+    monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:7899')
+    up = _FakeUpstream()
+    real_build_opener = route_mod.urllib.request.build_opener
+    built = []
 
-    client.get('/basemap/2/1/1')
+    def spy(*handlers):
+        built.append(real_build_opener(*handlers))
+        return up
 
-    assert seen['mapping'] == {}
+    monkeypatch.setattr(route_mod.urllib.request, 'build_opener', spy)
+    monkeypatch.setattr(route_mod, 'resolve_from_config', lambda cm, wait_s=None: '')
+
+    assert client.get('/basemap/2/1/1').status_code == 200
+
+    proxies = [h.proxies for h in built[0].handlers
+               if isinstance(h, urllib.request.ProxyHandler)]
+    assert proxies, 'opener 里连默认 ProxyHandler 都没有 —— 环境变量代理被掐掉了'
+    assert proxies[0].get('http') == 'http://127.0.0.1:7899', (
+        f'取瓦片的 opener 没读到环境变量代理：{proxies[0]}')
 
 
 def test_browser_user_agent_is_sent(app_ctx, monkeypatch):
@@ -535,6 +555,12 @@ def test_a_one_off_4xx_does_not_mark_the_whole_source_down(app_ctx, monkeypatch)
     assert 'arcgisonline.com' in up.requests[0], '没写冷却就该继续先试配置的源'
 
 
+def _version_of(configured, **kw):
+    """浏览器实际会用的 v。走的是下发描述符的同一条路径（client_descriptor
+    把它缀在同源 URL 后面），所以这里算出来的就是真浏览器会请求的那一个。"""
+    return source_version(resolve_basemap(configured, **kw)['upstream'])
+
+
 def test_fallback_tiles_are_not_baked_into_the_browser_cache_for_a_day(app_ctx,
                                                                        monkeypatch):
     """回退瓦片长缓存会把地图永久变成两家拼图。
@@ -542,13 +568,17 @@ def test_fallback_tiles_are_not_baked_into_the_browser_cache_for_a_day(app_ctx,
     上游抖动 30 秒，浏览器就按 max-age=86400 存下另一家的影像；配置的源恢复后
     缓存命中不再回源，用户对着一张 Esri/Google 混拼的地图，界面上没有任何补救
     手段，而且它永远不会自己好。回退特性引入之前失败是 502，什么都不缓存。
+
+    两次请求都带配置源（Esri）的 v —— 那就是浏览器手里那份描述符给它的 URL。
+    不带 v 的请求一律走短缓存，用它来测回退的话这条用例永远绿，测不到东西。
     """
     client, route_mod = app_ctx
     monkeypatch.setattr(route_mod, '_COOLDOWN_S', 0.0)
     up = _PerHostUpstream({'arcgisonline.com': _esri_403()})
     _stub(monkeypatch, route_mod, up)
+    v = _version_of('esri')
 
-    fallback = client.get('/basemap/2/1/1')
+    fallback = client.get(f'/basemap/2/1/1?v={v}')
     assert fallback.status_code == 200
     max_age = re.search(r'max-age=(\d+)', fallback.headers['Cache-Control'])
     assert max_age is not None, f"回退瓦片没有 Cache-Control：{fallback.headers}"
@@ -557,10 +587,80 @@ def test_fallback_tiles_are_not_baked_into_the_browser_cache_for_a_day(app_ctx,
 
     # 配置的源自己出的图仍然要长缓存：平移/缩放的重复请求得挡在本机
     up.failures.clear()
-    direct = client.get('/basemap/2/1/2')
+    direct = client.get(f'/basemap/2/1/2?v={v}')
     assert direct.status_code == 200
     assert 'arcgisonline.com' in up.requests[-1], '前置条件：这张是配置源出的'
     assert direct.headers['Cache-Control'] == 'public, max-age=86400'
+
+
+def test_a_tile_from_a_stale_source_resolution_is_not_baked_in_for_a_day(app_ctx,
+                                                                        monkeypatch):
+    """换完源的头几秒里出的还是旧那家的图，它不许占住新 URL 空间一整天。
+
+    用户在配置页把底图从 Esri 换成 Google 并刷新：页面立刻拿到新描述符
+    （/api/basemap 每次实时解析配置），而路由这边最多还有 _SOURCE_TTL_S 秒
+    在按缓存里那份旧解析出图。长缓存的判据一旦比的是【缓存里那份】配置源，
+    这几秒取到的 Esri 瓦片就会以 Google 的 URL 被烤进浏览器缓存一整天 ——
+    缓存命中不回源，用户只能硬刷新/清缓存，表现成「这个设置项坏了」。
+    """
+    client, route_mod = app_ctx
+    up = _FakeUpstream()
+    _stub(monkeypatch, route_mod, up)
+
+    assert client.get('/basemap/2/1/1').status_code == 200, '先把 TTL 缓存焐热'
+    assert 'arcgisonline.com' in up.requests[0].full_url, '前置条件：起手是 Esri'
+
+    route_mod.config_manager.set('basemap_source', 'google_satellite')
+    url = client.get('/api/basemap').get_json()['basemap']['url']
+    assert '?v=' in url, '描述符里没有源标识 —— 换源根本不换 URL 空间'
+    v = url.split('?v=')[1]
+
+    r = client.get(f'/basemap/2/1/2?v={v}')
+
+    assert r.status_code == 200
+    assert 'arcgisonline.com' in up.requests[-1].full_url, (
+        '前置条件：TTL 没到期，这张仍该是旧源出的')
+    assert r.headers['Cache-Control'] == f'public, max-age={route_mod._SHORT_MAX_AGE_S}', (
+        f"旧源的图拿到了 {r.headers['Cache-Control']} —— 新 URL 空间被旧影像占住一天")
+
+
+def test_switching_the_basemap_source_switches_the_url_the_browser_requests(app_ctx,
+                                                                            monkeypatch):
+    """换源必须换 URL 空间，否则浏览器压根不会回源。
+
+    这是上一条的另一半：就算服务端已经改按新源出图，只要下发给浏览器的 URL
+    一个字没变，已经浏览过的区域仍然命中 24 小时的旧缓存 —— 用户看到的画面
+    完全不变，而界面上没有任何补救手段。
+    """
+    client, route_mod = app_ctx
+    _stub(monkeypatch, route_mod, _FakeUpstream())
+
+    before = client.get('/api/basemap').get_json()['basemap']['url']
+    route_mod.config_manager.set('basemap_source', 'google_satellite')
+    after = client.get('/api/basemap').get_json()['basemap']['url']
+
+    assert after != before, f'换源之后浏览器拿到的还是同一条 URL：{after}'
+    for url in (before, after):
+        # 同源 + Cesium 自己代入 {z}/{x}/{y}：版本串不许破坏这两条契约。
+        assert url.startswith('/basemap/{z}/{x}/{y}?v='), url
+        for host in ('arcgisonline', 'googleapis', 'http'):
+            assert host not in url, f'URL 里泄露了上游地址：{url}'
+
+
+def test_a_tile_requested_without_a_version_is_not_baked_in_for_a_day(app_ctx,
+                                                                      monkeypatch):
+    """不带 v 的请求（旧页面、手输地址、history.js 的兜底常量）只给短缓存。
+
+    它的 URL 空间不随源变化，一旦发出 24 小时缓存就再也撤不回：换源之后那些
+    地址依然命中旧影像，而服务端没有任何办法让浏览器回源。
+    """
+    client, route_mod = app_ctx
+    _stub(monkeypatch, route_mod, _FakeUpstream())
+
+    r = client.get('/basemap/2/1/1')
+
+    assert r.status_code == 200
+    assert r.headers['Cache-Control'] == f'public, max-age={route_mod._SHORT_MAX_AGE_S}'
 
 
 def test_configured_status_wins_even_after_the_source_was_cooled_down(app_ctx,

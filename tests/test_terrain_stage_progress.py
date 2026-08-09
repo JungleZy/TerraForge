@@ -20,8 +20,6 @@ import os
 import re
 import sys
 
-import pytest
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.services.terrain_tiling.cesiumlab_terrain import _gdal_stage_callback
@@ -113,47 +111,53 @@ class _RecordingSocket:
             raise RuntimeError("client disconnected")
 
 
-def _make_stage_cb_from_manager(socketio, task_id=7):
-    """复刻 dem_task_manager._run_tiling_job 里的 tiling_stage 闭包。
+def _real_stage_cb(monkeypatch, tmp_path, socketio, task_id=7):
+    """从真实的 DemTaskManager._run_tiling_job 里截下 tiling_stage 闭包。
 
-    直接构造而不是跑整个作业：那需要 DB、任务行、真实 DEM。这里要钉的是闭包
-    本身的两条性质（节流、异常吞掉），跑整个作业反而会把它们淹掉。
+    这里原来手抄了一份闭包副本，三条用例于是对生产代码零覆盖：实测把真闭包的
+    edge 判定、节流、except 宽度、stage_label 兜底各打一个变异，4/4 全部存活。
+    换成把切片器替身塞进去、截 params.stage_cb —— 取法同上面的
+    test_stage_cb_is_threaded_through_the_tiler。
+
+    截取那一趟把 socketio 挂 None：作业本身的 tiling_progress 与
+    _emit_tiling_finished 也发 terrain_job_progress，混进来会污染调用方
+    对事件条数的断言。
     """
-    import time as _time
+    from src.core import config
 
-    from src.services.dem_task_manager import _PROGRESS_EMIT_MIN_INTERVAL
+    monkeypatch.setattr(config.Config, "DATABASE_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(config.Config, "DOWNLOADS_DIR", tmp_path / "downloads")
+    monkeypatch.setattr(config.Config, "CACHE_DIR", tmp_path / "cache")
 
-    state = {"last_emit": float("-inf")}
-    labels = {"merge": "合并 DEM", "overview": "建金字塔"}
+    from src.core import database as db
+    from src.services import dem_task_manager as dtm
 
-    def tiling_stage(phase, fraction):
-        now = _time.monotonic()
-        edge = fraction <= 0.0 or fraction >= 1.0
-        if not edge and now - state["last_emit"] < _PROGRESS_EMIT_MIN_INTERVAL:
-            return
-        state["last_emit"] = now
-        if not socketio:
-            return
-        try:
-            socketio.emit("terrain_job_progress", {
-                "task_id": task_id, "task_type": "dem_terrain", "status": "running",
-                "stage": phase, "stage_label": labels.get(phase, phase),
-                "stage_fraction": max(0.0, min(1.0, float(fraction))),
-            })
-        except Exception:
-            pass
+    db.init_database()
 
-    return tiling_stage
+    captured = {}
+
+    def fake_tiler(task_dir, out_dir, params):
+        captured["stage_cb"] = params.stage_cb
+        return {"total": 0, "rendered": 0, "failed": 0}
+
+    monkeypatch.setattr(dtm, "tile_dem_task_dir", fake_tiler)
+
+    mgr = dtm.DemTaskManager(socketio=None)
+    mgr._run_tiling_job(task_id, tmp_path / "src", tmp_path / "tiles", 8, "")
+
+    assert "stage_cb" in captured, "切片器替身没被调用 —— 闭包没截到，下面的断言全是空的"
+    mgr.socketio = socketio
+    return mgr, captured["stage_cb"]
 
 
-def test_stage_emit_is_throttled_but_always_sends_the_edges():
+def test_stage_emit_is_throttled_but_always_sends_the_edges(monkeypatch, tmp_path):
     """中间帧节流，首帧与末帧必发。
 
     首帧不发 = 界面在整个阶段开始时没有任何反馈（就是这次要修的症状）；
     末帧不发 = 进度永远停在 87% 之类的地方。
     """
     sock = _RecordingSocket()
-    stage = _make_stage_cb_from_manager(sock)
+    _, stage = _real_stage_cb(monkeypatch, tmp_path, sock)
 
     stage("merge", 0.0)
     for f in (0.1, 0.2, 0.3, 0.4, 0.5):   # 同一节流窗口内的中间帧
@@ -166,7 +170,25 @@ def test_stage_emit_is_throttled_but_always_sends_the_edges():
     assert len(sock.events) < 7, f"中间帧没有节流：发了 {len(sock.events)} 次"
 
 
-def test_stage_emit_failure_never_escapes():
+def test_stage_label_falls_back_to_the_raw_phase(monkeypatch, tmp_path):
+    """stage_label 是界面直接显示的那串字。
+
+    没有映射就等于把内部标识 'merge'/'overview' 摆给用户看；而映射表里没有的
+    新 phase 必须原样兜底，否则新增阶段会在界面上显示成空白。
+    """
+    sock = _RecordingSocket()
+    _, stage = _real_stage_cb(monkeypatch, tmp_path, sock)
+
+    stage("merge", 0.0)
+    stage("overview", 1.0)
+    stage("brand_new_phase", 1.0)   # 三帧都是 edge，不会被节流吃掉
+
+    labels = [p["stage_label"] for _, p in sock.events]
+    assert labels == ["合并 DEM", "建金字塔", "brand_new_phase"], \
+        f"stage_label 没走映射表兜底：{labels}"
+
+
+def test_stage_emit_failure_never_escapes(monkeypatch, tmp_path):
     """emit 抛异常绝不能穿透。
 
     这发 emit 被 GDAL 的进度回调**同步**调用，而 GDAL 把回调抛异常当成
@@ -174,7 +196,7 @@ def test_stage_emit_failure_never_escapes():
     作业记 failed。
     """
     sock = _RecordingSocket(explode=True)
-    stage = _make_stage_cb_from_manager(sock)
+    _, stage = _real_stage_cb(monkeypatch, tmp_path, sock)
 
     stage("merge", 0.0)     # 不抛即过
     stage("overview", 1.0)
@@ -182,9 +204,15 @@ def test_stage_emit_failure_never_escapes():
     assert len(sock.events) == 2, "emit 被调用了，但异常必须被吞掉"
 
 
-def test_stage_cb_tolerates_missing_socketio():
-    """契约测试会用 __new__ 构造管理器（没有 socketio 属性）。"""
-    stage = _make_stage_cb_from_manager(None)
+def test_stage_cb_tolerates_missing_socketio(monkeypatch, tmp_path):
+    """契约测试会用 __new__ 构造管理器（压根没有 socketio 属性）。
+
+    闭包必须 getattr 兜底：写成 self.socketio 就是一发 AttributeError 穿透进
+    GDAL 的进度回调，与上一条同样的后果。
+    """
+    mgr, stage = _real_stage_cb(monkeypatch, tmp_path, None)
+    del mgr.socketio
+
     stage("merge", 0.5)     # 不抛即过
 
 

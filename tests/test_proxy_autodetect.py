@@ -477,3 +477,93 @@ def test_verify_proxy_swallows_network_errors(monkeypatch, real_verify_proxy):
 
 def test_verify_proxy_rejects_empty_url(real_verify_proxy):
     assert real_verify_proxy("") is False
+
+
+
+# ---------------------------------------------------------------------------
+# 配置页端点：GET/POST /api/config/proxy_status
+# ---------------------------------------------------------------------------
+#
+# 这个端点是 get_state() / reset_state() 的唯一消费者，此前整段零覆盖：把返回
+# 体里的 auto_enabled 反转，5 个代理相关测试文件全绿。配置页的代理面板会因此
+# 说反话 —— auto_enabled 决定开关显示与「立即检测」按钮可不可点。
+#
+# 所有用例都不出网：autouse 的 clean_module_state 已经把 _port_open /
+# verify_proxy / PAC 读取钉死成「什么都没有」，POST 那条更是在探测之前就返回。
+
+
+def _set_config(key, value):
+    from src.services.config_manager import ConfigManager
+    assert ConfigManager().set(key, value), f"配置 {key} 没写进去"
+
+
+def test_proxy_status_reports_nothing_configured_as_empty(isolated_app):
+    """什么都没配时 effective_source 必须是 ''，不能编一个来源出来。
+
+    三元式写错会让面板显示一个根本没在用的来源（比如常驻 'scan'），用户按着
+    这个假事实去排查下载失败。
+    """
+    body = isolated_app.app.test_client().get('/api/config/proxy_status').get_json()
+
+    assert body['auto_enabled'] is True, '出厂默认 proxy_auto_detect=true，开关不能显示成关'
+    assert body['effective'] == ''
+    assert body['effective_source'] == '', \
+        f"没有生效代理却报了来源 {body['effective_source']!r}"
+
+
+def test_proxy_status_reports_manual_source_and_masks_credentials(isolated_app):
+    """手动值压过自动探测，且带凭据的地址不能明文回给浏览器。"""
+    _set_config('proxy_url', 'http://alice:s3cret@127.0.0.1:7890')
+
+    body = isolated_app.app.test_client().get('/api/config/proxy_status').get_json()
+
+    assert body['effective_source'] == 'manual'
+    assert 's3cret' not in body['manual'] and 's3cret' not in body['effective'], \
+        '代理口令原样回给了浏览器'
+
+
+def test_proxy_status_source_follows_what_is_actually_in_use(isolated_app, monkeypatch):
+    """来源字段跟着「此刻真的在用什么」走，不是跟着上一轮探测结果走。
+
+    关掉自动探测之后那一轮的结果就不生效了，面板还报 'env' 就是在指一条不存在
+    的出网路径，用户会照着它去排查下载失败。
+    """
+    # 启动钩子可能已经甩出一轮后台探测：不先收干净的话下面这次 autodetect()
+    # 会撞上「已有一轮在跑」的守卫直接返回，state 里根本没有 env 这一条。
+    for th in threading.enumerate():
+        if th.name == 'proxy-autodetect':
+            th.join(timeout=10)
+    pa.reset_state()
+
+    monkeypatch.setenv('HTTP_PROXY', 'http://127.0.0.1:7890')
+    monkeypatch.setattr(pa, 'verify_proxy', lambda url, **kw: True)
+    pa.autodetect()
+    assert pa.get_state()['source'] == 'env', '前置没造出「探到了代理」的状态'
+    client = isolated_app.app.test_client()
+
+    body = client.get('/api/config/proxy_status').get_json()
+    assert body['effective'] == 'http://127.0.0.1:7890'
+    assert body['effective_source'] == 'env'
+
+    _set_config('proxy_auto_detect', 'false')
+
+    body = client.get('/api/config/proxy_status').get_json()
+    assert body['effective'] == ''
+    assert body['effective_source'] == '', \
+        '自动探测已关，上一轮探到的来源不能继续当成生效来源'
+
+
+def test_proxy_status_post_is_rejected_when_autodetect_is_off(isolated_app):
+    """关掉自动探测后强制重探测必须回 400。
+
+    放行的话按钮会去跑一轮最坏二十几秒的同步探测，而用户明确关掉了这件事。
+    """
+    _set_config('proxy_auto_detect', 'false')
+    client = isolated_app.app.test_client()
+
+    assert client.get('/api/config/proxy_status').get_json()['auto_enabled'] is False
+
+    resp = client.post('/api/config/proxy_status')
+
+    assert resp.status_code == 400, resp.get_data(as_text=True)
+    assert resp.get_json()['error']

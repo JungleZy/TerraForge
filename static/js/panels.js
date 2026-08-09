@@ -140,14 +140,32 @@
         });
     }
 
+    // 面板之上还盖着一层浮层（自定义确认框 / Bootstrap 弹窗）时，这个处理器
+    // 必须整个让位 —— Esc 与 Tab 都是。
+    //
+    // 让位判据以前排在 Escape 分支【下面】，于是它只管 Tab：从面板里开出来的
+    // 弹窗按一次 Esc，Bootstrap 在目标阶段先 hide 弹窗、事件继续冒泡到
+    // document，这里再把身后的面板一起关掉（实测：开配置面板 → 点「浏览」开
+    // #pathBrowserModal → 一次 Esc，modal 与 configPanel 同时消失、hash 被
+    // replaceState 抹掉、焦点掉回 body）。自定义 confirm 之所以一直没出事，
+    // 靠的是它自己那侧 —— ui.js 用 capture 阶段注册并 stopImmediatePropagation，
+    // 这里根本收不到那个 Esc；不做这个动作的浮层（Bootstrap 就不做）全部暴露。
+    //
+    // Tab 侧同理：弹窗在 body 直下、不在面板子树里（base.html 写明它必须留在
+    // 面板外 —— 面板恒带 transform，会成为 fixed 后代的包含块），焦点环会把
+    // 焦点从弹窗第一个控件上反复抢回面板，键盘用户到不了目录列表。
+    //
+    // 判据用 body.modal-open 而不是 .modal.show：Bootstrap 的 hide() 是**同步**
+    // 摘掉 .show 再排队做过渡收尾的（vendored 5.3.0：`this._element.classList
+    // .remove(Li)` 紧接 `_queueCallback(()=>this._hideModal())`），等事件冒泡到
+    // document 时 .modal.show 已经不匹配了 —— 实测用它当判据这里照样会把面板
+    // 关掉。modal-open 相反：show() 第一步就 `document.body.classList.add(ki)`，
+    // 直到过渡结束的 _hideModal() 才摘，正好覆盖「弹窗开着或正在关」整段。
     function onKey(e) {
+        if (document.querySelector('.app-confirm-overlay')) return;
+        if (document.body.classList.contains('modal-open')) return;
         if (e.key === 'Escape') { closePanel(); return; }
         if (e.key !== 'Tab' || !current) return;
-        // 自定义确认框开着时让位：它的浮层是运行时 append 到 document.body 的，
-        // 不在面板子树里，焦点环会把焦点从「确定/取消」上抢回面板。
-        // 这也是这里做焦点环、而不是给面板之外的兄弟节点批量上 inert 的原因 ——
-        // 那会让从面板里弹出的 confirm / toast 一起变成不可交互。
-        if (document.querySelector('.app-confirm-overlay')) return;
         var el = panelEl(current);
         if (!el) return;
         var list = focusables(el);
