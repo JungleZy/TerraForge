@@ -1,7 +1,10 @@
 import importlib
+import json
 import logging
 import os
+import pathlib
 import sys
+import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -374,3 +377,120 @@ def test_terrain_start_treats_empty_strings_as_omitted(monkeypatch, tmp_path):
     job = _job_row(db, task_id)
     assert job["quality"] == "speed"
     assert job["vertex_normals"] == 1
+
+
+
+# ---------------------------------------------------------------------------
+# HTTP → 管理器 → TileParams → build_terrain 全链路
+#
+# ⚠️ 下面三条**故意不打桩 `_run_tiling_job`**，这是它们存在的全部理由，别顺手
+# 加回去。本文件其余用例都打了那个桩，而
+# `TileParams(level_offset=TILING_QUALITY_OFFSETS[quality])` 恰恰就在
+# `_run_tiling_job` 里面（src/services/dem_task_manager.py）—— 打上桩，被测的
+# 那行就在桩后面，用例退化成空跑。删掉那行 `level_offset=...`，全量测试仍会
+# 全绿，只有这三条会红。
+#
+# 桩打在最底层的 `cesiumlab_terrain.build_terrain` 上：`tile_dem_task_dir` 是
+# 在调用点才 lazy import 它的，所以换模块属性拦得住，而中间的路由收参、管理器
+# 校验/落库、TileParams 构造全都跑真的。
+# ---------------------------------------------------------------------------
+
+
+def _record_build_terrain(monkeypatch, captured):
+    """把 build_terrain 换成录参替身：记下 kwargs，写一份最小 layer.json 交差。
+
+    layer.json 是必须写的 —— tile_dem_task_dir 在 build_terrain 之后校验它存在，
+    缺了会抛 FileNotFoundError，作业记成 failed。
+    """
+    from src.services.terrain_tiling import cesiumlab_terrain
+
+    def fake_build_terrain(**kwargs):
+        captured.append(kwargs)
+        out = pathlib.Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text(
+            json.dumps({"tilejson": "2.1.0", "extensions": [], "available": []}),
+            encoding="utf-8")
+        return {"total": 1, "rendered": 1, "failed": 0,
+                "max_level": int(kwargs["max_level"]) + int(kwargs["level_offset"]),
+                "chose_martini": 1, "chose_grid": 0}
+
+    monkeypatch.setattr(cesiumlab_terrain, "build_terrain", fake_build_terrain)
+
+
+def _start_and_settle(monkeypatch, tmp_path, payload):
+    """POST /start 后等作业线程落到终态，返回 (job 行, build_terrain 收到的 kwargs)。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    out_root = tmp_path / "downloads"
+    task_id = _insert_dem_task(db, out_root)
+    # 真 tiler 要求任务目录里有 *_dem.tif（内容无所谓，build_terrain 已被替身接管）。
+    task_dir = out_root / f"dem_task_{task_id}"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "a_dem.tif").write_bytes(b"stub-dem")
+
+    captured = []
+    _record_build_terrain(monkeypatch, captured)
+
+    resp = client.post(f"/api/terrain/dem/{task_id}/start", json=payload)
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+
+    deadline = time.time() + 60
+    row = None
+    while time.time() < deadline:
+        row = _job_row(db, task_id)
+        if row is not None and row["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.02)
+
+    assert row is not None, "作业行没建出来"
+    assert len(captured) == 1, f"build_terrain 调用次数不对：{len(captured)}"
+    return row, captured[0]
+
+
+def test_http_speed_reaches_build_terrain_as_level_offset_minus_one(monkeypatch, tmp_path):
+    """`{"quality":"speed"}` 一路走到 build_terrain 必须变成 level_offset=-1。
+
+    基准层级原样传（max_level=12），偏移单独传 —— 两者在 build_terrain 里才合并，
+    这是全链路唯一一次能验证「路由收到的档位字符串真的变成了层级偏移」的地方。
+    """
+    row, kw = _start_and_settle(monkeypatch, tmp_path, {"quality": "speed", "maxzoom": 12})
+
+    assert row["quality"] == "speed"
+    assert row["maxzoom"] == 12
+    assert row["vertex_normals"] == 0
+    assert kw["max_level"] == 12, kw["max_level"]
+    assert kw["level_offset"] == -1, kw["level_offset"]
+    assert kw["normals"] is False, kw["normals"]
+    assert row["status"] == "completed", row["error_message"]
+
+
+def test_http_precision_with_normals_reaches_build_terrain(monkeypatch, tmp_path):
+    """精度档 + 开法线：offset=+1 且 normals=True 同时抵达，落库 vertex_normals=1。
+
+    法线这一路要过三次类型转换（HTTP 的 bool/'true' → DB 的 INTEGER 0/1 →
+    TileParams 的 bool），任何一处折错都只在真实链路上显形。
+    """
+    row, kw = _start_and_settle(
+        monkeypatch, tmp_path,
+        {"quality": "precision", "maxzoom": 12, "vertex_normals": True})
+
+    assert row["quality"] == "precision"
+    assert row["vertex_normals"] == 1
+    assert kw["level_offset"] == 1, kw["level_offset"]
+    assert kw["normals"] is True, kw["normals"]
+    assert row["status"] == "completed", row["error_message"]
+
+
+def test_http_default_preset_reaches_build_terrain_as_zero_offset(monkeypatch, tmp_path):
+    """不传档位：落库 balanced，且 build_terrain 收到的偏移是 0 而不是 None。
+
+    默认档必须是货真价实的 0 —— 传 None 会在 build_terrain 里的 int() 上炸，
+    而 `or 0` 之类的兜底又会把 precision 的 +1 之外的一切都抹平。
+    """
+    row, kw = _start_and_settle(monkeypatch, tmp_path, {"maxzoom": 12})
+
+    assert row["quality"] == "balanced"
+    assert kw["level_offset"] == 0, kw["level_offset"]
+    assert kw["normals"] is False
+    assert row["status"] == "completed", row["error_message"]
