@@ -201,22 +201,28 @@ MESSAGES = {
 
     # 详情面板里那个起切按钮不带任何参数，走的是配置默认档位 —— 用户在这里
     # 没有选择权，那就至少得让他看见实际用的是哪一档。档位名不能直吐后端的
-    # precision/balanced/speed，那三个词说不清「和默认比差在哪」。
+    # precision/balanced/speed，那三个词说不清「和什么比、差在哪」。
+    #
+    # 参照物写「基准层级」而不是「默认档位」：TILING_QUALITY_OFFSETS
+    # （src/services/geo_validation.py:77-81）的 +1/0/-1 是相对**基准层级**算的，
+    # 与 terrain_quality_preset 当前配成哪一档无关。写成「比默认多切一级」的话，
+    # 运维把默认改成 speed 之后，一个存成 balanced 的作业仍会被标成「默认」——
+    # 那时它其实比默认多切了一级。用偏移表自己的词汇才无条件为真。
     'js.history.terrain.quality_label': {
         'zh': '切片档位',
         'en': 'Tiling preset',
     },
     'js.history.terrain.quality_precision': {
-        'zh': '精细（比默认多切一级）',
-        'en': 'Precision (one level deeper)',
+        'zh': '精细（比基准层级多切一级）',
+        'en': 'Precision (one level above the base level)',
     },
     'js.history.terrain.quality_balanced': {
-        'zh': '均衡（默认）',
-        'en': 'Balanced (default)',
+        'zh': '均衡（基准层级）',
+        'en': 'Balanced (the base level)',
     },
     'js.history.terrain.quality_speed': {
-        'zh': '快速（比默认少切一级）',
-        'en': 'Fast (one level shallower)',
+        'zh': '快速（比基准层级少切一级）',
+        'en': 'Fast (one level below the base level)',
     },
     'js.history.terrain.normals_label': {
         'zh': '顶点法线',
@@ -226,9 +232,20 @@ MESSAGES = {
         'zh': '已开启',
         'en': 'On',
     },
+    # 「未开启」后面那句括号不是补充说明，是这一档唯一要紧的信息：
+    # Cesium 的 hasVertexNormals 是 provider 级的单一标志，这份地形没有法线，
+    # 光照开关就对整幅场景失效，连随包底图自带的法线也一起作废。悬停另有全文。
     'js.history.terrain.normals_off': {
-        'zh': '未开启',
-        'en': 'Off',
+        'zh': '未开启（无光照数据）',
+        'en': 'Off (no lighting data)',
+    },
+    'js.history.terrain.normals_off_hint': {
+        'zh': '这份地形不含法线，开启光照只会得到全球日夜渐变，随包底图自带的法线'
+              '也一并失效。法线是烘焙进瓦片的，改配置不影响已经切完的产物。',
+        'en': 'This terrain carries no normals: enabling lighting only yields the '
+              'global day/night gradient, and the bundled base terrain loses its '
+              'normals too. Normals are baked into the tiles, so changing the '
+              'setting later does not affect output that has already been tiled.',
     },
 
     # 删除任务的单一确认框与结果提示。

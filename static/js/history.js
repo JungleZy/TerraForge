@@ -538,16 +538,32 @@ async function refreshTerrainDetail(taskId) {
         // 这个面板的起切按钮（initTerrainDetailActions）POST 时不带 body，档位与
         // 法线都取配置默认值，面板上也没有对应控件 —— 用户唯一能知道「切出来的
         // 是哪一档」的途径，就是把作业回吐的实际值显示出来。
-        const qualityKey = TERRAIN_QUALITY_KEYS[job.quality];
+        //
+        // 查表必须走 hasOwnProperty：对象字面量继承 Object.prototype，
+        // `constructor` / `__proto__` / `toString` 这几个值会命中原型上的成员、
+        // 被当成「认得出的档位」，最后把 `function Object() { [native code] }`
+        // 绕过下面那道 escapeHtml 插进界面。正常写入路径上 validate_tiling_quality
+        // 挡得住，但「认不出的值原样显示」这条契约不该只对好输入成立。
+        const qualityKey = Object.prototype.hasOwnProperty.call(TERRAIN_QUALITY_KEYS, job.quality)
+            ? TERRAIN_QUALITY_KEYS[job.quality]
+            : null;
         // 认不出的值（旧作业 / 手改过库）宁可原样显示，也好过悄悄说成「均衡」。
         const quality = qualityKey ? t(qualityKey) : escapeHtml(String(job.quality ?? '-'));
-        const normals = t(job.vertex_normals
+        const normalsOn = !!job.vertex_normals;
+        const normals = t(normalsOn
             ? 'js.history.terrain.normals_on'
             : 'js.history.terrain.normals_off');
+        // 关掉法线不是「少一个效果」：hasVertexNormals 是 provider 级的单一标志，
+        // 这份地形没有法线，Cesium 的光照开关就对**整幅场景**退化成全球日夜渐变，
+        // 随包底图自带的法线也一并作废。而且法线是烘焙进瓦片的，事后改配置救不回
+        // 已经切完的产物 —— 用户在这里看到「未开启」时必须同时看到这个后果。
+        const normalsTitle = normalsOn
+            ? ''
+            : ` title="${escapeHtml(t('js.history.terrain.normals_off_hint'))}"`;
         infoEl.innerHTML = `
             <div>MaxZoom: ${maxzoom}</div>
             <div>${t('js.history.terrain.quality_label')}: ${quality}</div>
-            <div>${t('js.history.terrain.normals_label')}: ${normals}</div>
+            <div${normalsTitle}>${t('js.history.terrain.normals_label')}: ${normals}</div>
             <div>Out: ${escapeHtml(outDir)}</div>
             <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
             <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
@@ -599,7 +615,12 @@ async function deleteTask(taskId, taskType = 'map') {
     // 警告，也不能对着一个不知道状态的任务瞎说「正在运行」。
     const store = window.TaskStore;
     const task = store && store.get(`${taskType}:${taskId}`);
-    const confirmKey = (task && DELETE_CONFIRM_KEYS[task.status])
+    // hasOwnProperty 同 refreshTerrainDetail 的档位查表：`task.status` 若是
+    // `constructor` / `toString`，裸下标会取到原型上的成员并当成一个真键，
+    // t() 拿到函数后原样回落，确认框上就是一坨 `function Object()...`。
+    const confirmKey = (task
+        && Object.prototype.hasOwnProperty.call(DELETE_CONFIRM_KEYS, task.status)
+        && DELETE_CONFIRM_KEYS[task.status])
         || 'js.history.confirm.delete_task';
 
     // 单一确认框：任务删不删走确定/取消，产物删不删走勾选框（默认不勾）。

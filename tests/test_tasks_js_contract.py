@@ -1934,8 +1934,17 @@ def test_terrain_detail_shows_the_preset_actually_used():
     assert re.search(r'\bjob\.vertex_normals\b', body), (
         'refreshTerrainDetail 没有读作业的 vertex_normals 字段 —— 法线开关看不见'
     )
+    # 光有「读了字段」还不够：把模板改成 `${maxzoom}` 也能让上面两条全绿，
+    # 而面板上两行显示的都是层级数。这里钉「算出来的值确实进了 infoEl」，
+    # 且各自跟在自己的标题词后面（换成对方的值同样是错的）。
     assert 'infoEl.innerHTML' in body, (
         'refreshTerrainDetail 不再往 infoEl 写内容 —— 本测试已失效，重写它'
+    )
+    assert re.search(r"quality_label'\)\}: \$\{quality\}", body), (
+        '档位那一行没有插值算出来的 quality —— 显示的是别的东西'
+    )
+    assert re.search(r"normals_label'\)\}: \$\{normals\}", body), (
+        '法线那一行没有插值算出来的 normals —— 显示的是别的东西'
     )
 
 
@@ -1963,6 +1972,37 @@ def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
         assert preset not in entry['zh'], (
             f'{m.group(1)} 的中文就是枚举字面量本身：{entry["zh"]!r}'
         )
+
+    # 查表的下标必须**就是** job.quality。只钉 `\bjob\.quality\b` 挡不住把这里
+    # 拼错成 job.qualityy：下一行的兜底表达式里还有一个 job.quality，正则照样
+    # 命中，而每个作业都会渲染出生英文枚举 —— 正是本用例声称要防的那件事。
+    body = _fn('refreshTerrainDetail', 'history.js')
+    assert re.search(r'TERRAIN_QUALITY_KEYS\[job\.quality\]', body), (
+        '档位查表的下标不是 job.quality —— 查不到就走兜底，界面上是英文枚举原文'
+    )
+    # 裸下标会命中 Object.prototype：quality === 'constructor' 时取到构造函数、
+    # 被当成「认得出的档位」，最后绕过 escapeHtml 插进 innerHTML。
+    assert re.search(
+        r'hasOwnProperty\.call\(\s*TERRAIN_QUALITY_KEYS\s*,\s*job\.quality\s*\)', body,
+    ), '档位查表没有挡原型链 —— constructor/__proto__/toString 会走进「认得出」分支'
+    # 查到了键就必须走 t()。缺这一条的话，把显示表达式改回
+    # `escapeHtml(String(job.quality))` 也全绿 —— 查表建好了却没人用，
+    # 界面上照样是三个英文枚举词。
+    assert re.search(r'const quality = qualityKey \?\s*t\(qualityKey\)', body), (
+        '认出来的档位没有过 t() —— 查表白建了，界面上还是 precision/balanced/speed'
+    )
+
+    # 「未开启」不能只是一个状态词：法线是烘焙进瓦片的，关掉之后 Cesium 的
+    # 光照开关对整幅场景失效，事后改配置也救不回来。这个后果必须出现在面板上，
+    # 且只在关闭时出现（开启的作业没有这回事）。
+    hint = 'js.history.terrain.normals_off_hint'
+    assert MESSAGES.get(hint) and MESSAGES[hint]['zh'] and MESSAGES[hint]['en'], (
+        f'{hint} 在 catalog 里缺失或缺语种'
+    )
+    assert re.search(r"normalsOn\s*\n?\s*\?\s*''\s*\n?\s*:\s*` title=", body), (
+        '关闭法线的后果提示不是「仅在关闭时」给出 —— 开启的作业也会被警告'
+    )
+    assert hint in body, f'refreshTerrainDetail 没有引用 {hint} —— 关掉法线的后果没人告诉用户'
 
     # 法线两态各有各的文案：只显示「开」而不显示「关」等于没显示。
     for key in ('js.history.terrain.normals_on', 'js.history.terrain.normals_off'):
