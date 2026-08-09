@@ -352,7 +352,6 @@ def test_map_js_does_not_resolve_the_basemap_url_itself():
     )
 
 
-
 def _preset_submit_bodies():
     """两个提交入口的函数体（已剥注释）。上传走 FormData，DEM 走 JSON body。"""
     code = _strip_comments(_map_js())
@@ -409,3 +408,27 @@ def test_normals_checkbox_is_submitted_as_its_checked_state():
             f'{label} 读了 checkbox 的 .value（恒为 on，后端 400）：{expr.strip()}')
         assert "'on'" not in expr, (
             f"{label} 出现了 'on' —— 后端白名单只认 true/false：{expr.strip()}")
+
+
+def test_terrain_submit_lets_the_backend_supply_the_defaults():
+    """三个字段的兜底一律是空串，前端不许自己抄一份默认值。
+
+    空串 = 未传 = 走配置默认，这是后端定的三态语义（local_terrain_api.py:39-51、
+    terrain_api.py:38-51 都把空串当未传）。前端写 `|| '14'` / `|| 'balanced'`
+    的后果不是「多一层保险」，是**同一份 DEM 从两个入口切出不同产物**：历史页
+    详情面板的起切按钮不带 body，走的是配置里的 terrain_local_maxzoom /
+    terrain_quality_preset；这张表单一旦控件缺席或被清空，就用前端抄的那份默认
+    盖过去。层级和法线都不可逆，发现时只能重切。
+    """
+    bodies = _preset_submit_bodies()
+    for field in ('maxzoom', 'quality'):
+        m = re.search(r"append\(\s*'" + field + r"'\s*,([^\n]*)\)",
+                      bodies['submitLocalTerrain'])
+        assert m, f'submitLocalTerrain 的 FormData 里没有 {field} 字段'
+        assert "|| ''" in m.group(1), (
+            f"submitLocalTerrain 的 {field} 兜底不是空串 —— 前端在抄一份默认值，"
+            f"会盖掉配置：{m.group(1).strip()}")
+        m = re.search(r'\b' + field + r'\s*:([^\n]*)', bodies['startDemTaskTerrainTiling'])
+        assert m, f'startDemTaskTerrainTiling 的 JSON body 里没有 {field} 字段'
+        assert "|| ''" in m.group(1), (
+            f"startDemTaskTerrainTiling 的 {field} 兜底不是空串：{m.group(1).strip()}")

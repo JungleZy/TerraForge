@@ -271,17 +271,37 @@
                             <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
                         </div>
                         <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
-                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
+                        {# 与下面档位同一个理由：写死 14 会和配置里的 terrain_local_maxzoom
+                           打架 —— 详情面板的起切按钮走配置，这张表单走写死值，同一份 DEM
+                           从两个入口切出来的层级不一样。 #}
+                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="{{ config.terrain_local_maxzoom or 14 }}">
+                        {# 档位与法线的初值必须由**服务端**按配置渲染，不能写死。
+                           同一个 DEM 任务能从两个入口起切：这里（map.js 显式发字段）
+                           与历史页的起切按钮（不带 body、走配置默认）。写死初值就意味着
+                           两个入口的产物不一样 —— local_terrain_task_manager.py:135-136
+                           管这叫「改了没反应的假旋钮」。法线那条还不可逆：运维配了 true，
+                           用户不动复选框就会显式发 false，几小时切完才发现光照点不亮。 #}
+                        {# `or 'balanced'`：让 tq 无条件是个普通字符串。config={} 时
+                           config.terrain_quality_preset 是 Jinja 的 Undefined，下面的
+                           比较虽然也能跑对，但那是 Jinja 的语义细节，不该让人读到这里
+                           还得先想一遍。真正的兜底在均衡那条 option 上。 #}
+                        {% set tq = config.terrain_quality_preset or 'balanced' %}
                         <label for="localTerrainQuality" class="form-label mt-2">{{ t('tpl.index.process.terrain_quality') }}</label>
                         <select class="form-select" id="localTerrainQuality">
-                            <option value="precision">{{ t('tpl.index.process.terrain_quality_precision') }}</option>
-                            <option value="balanced" selected>{{ t('tpl.index.process.terrain_quality_balanced') }}</option>
-                            <option value="speed">{{ t('tpl.index.process.terrain_quality_speed') }}</option>
+                            <option value="precision" {% if tq == 'precision' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_precision') }}</option>
+                            {# 均衡这条是兜底档，不是等值判断：三个 if 全假时浏览器会
+                               自动选中第一个 option（精细，体积 3.3 倍）。走到这里的有
+                               两种情况 —— config={} 的异常兜底渲染（main.py:71-73），
+                               以及库里被直接改成没见过的值（ConfigManager 挡得住走接口
+                               写进来的脏值，挡不住 sqlite3 改库）。 #}
+                            <option value="balanced" {% if tq != 'precision' and tq != 'speed' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_balanced') }}</option>
+                            <option value="speed" {% if tq == 'speed' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_speed') }}</option>
                         </select>
                         <small class="form-text text-muted">{{ t('tpl.index.process.terrain_quality_hint') }}</small>
 
                         <div class="form-check mt-2">
-                            <input type="checkbox" id="localTerrainNormals" class="form-check-input">
+                            {# 布尔配置在库里存的是字符串（database.py:99），照 _config_content.html:271 的写法比 'true'。 #}
+                            <input type="checkbox" id="localTerrainNormals" class="form-check-input" {% if config.terrain_vertex_normals == 'true' %}checked{% endif %}>
                             <label class="form-check-label" for="localTerrainNormals">{{ t('tpl.index.process.terrain_normals') }}</label>
                         </div>
                         <small class="form-text text-muted">{{ t('tpl.index.process.terrain_normals_hint') }}</small>

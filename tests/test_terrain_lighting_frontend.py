@@ -449,21 +449,34 @@ def test_preset_control_ids_match_on_both_sides():
 
 
 def test_normals_checkbox_spells_out_what_turning_it_off_costs(monkeypatch, tmp_path):
-    """渲染级：界面上必须写明关掉法线的两条后果，不能只写「省体积」。
+    """渲染级：中英两种语种下，界面上都必须写明关掉法线的两条后果。
 
     这个勾选框是**不可逆**的：法线烘焙进瓦片，切完再想开只能重切
     （database.py:98）。而且 Cesium 的 hasVertexNormals 是 provider 级单一
     标志 —— 这份地形没有法线，地图上的光照按钮就对整幅场景失效，连随包底图
     自带的法线也一并作废。用户在勾选那一刻看不到这两条，就会在几小时的切片
     之后才发现按钮点不亮。
+
+    两种语种都要查：只查中文的话，把英文那份后果删光仍然全绿 —— 英文用户
+    照样会在几小时之后才发现，而失效是静默的。语种走 cookie tf-lang
+    （src/i18n/__init__.py:55），且必须用 client.set_cookie 换：Werkzeug 3.1 的
+    测试客户端有自己的 cookie jar，手写 headers={'Cookie': ...} 会被它盖掉，
+    页面照样渲染中文（本测试第一版就是这么写的，英文那半边恒真）。
     """
     client = _load_app(monkeypatch, tmp_path)
-    html = client.get('/').get_data(as_text=True)
-    block = _local_terrain_options_block(html)
-    assert '地形光照' in block and '失效' in block, (
-        '法线开关旁没有写「不勾选则地形光照按钮失效」—— 用户会以为只是省体积')
-    assert '重新切片' in block, (
-        '法线开关旁没有写「事后想开只能重新切片」—— 这个选择是不可逆的')
+
+    zh = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    assert '地形光照' in zh and '失效' in zh, (
+        '中文：法线开关旁没有写「不勾选则地形光照按钮失效」—— 用户会以为只是省体积')
+    assert '重新切片' in zh, (
+        '中文：法线开关旁没有写「事后想开只能重新切片」—— 这个选择是不可逆的')
+
+    client.set_cookie('tf-lang', 'en')
+    en = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    assert 'lighting' in en and 'stops working' in en, (
+        f'英文：法线开关旁没有写清光照按钮会失效：{en}')
+    assert 're-tiling' in en, (
+        f'英文：法线开关旁没有写「事后只能重切」：{en}')
 
 
 def test_preset_wording_anchors_to_the_base_level_like_the_detail_panel():
@@ -487,3 +500,90 @@ def test_preset_wording_anchors_to_the_base_level_like_the_detail_panel():
     assert '21' in hint['zh'] and '21' in hint['en'], (
         '档位说明没有交代 0/21 边界会被钳住 —— 边界上选了档位却毫无变化，'
         '用户只会当成 bug')
+
+
+def _option_tag(block, value):
+    m = re.search(r'<option[^>]*value="' + re.escape(value) + r'"[^>]*>', block)
+    assert m, f'档位下拉里找不到 value="{value}" 的 option'
+    return m.group(0)
+
+
+def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path):
+    """渲染级：三个控件（层级 / 档位 / 法线）的初值都必须跟着配置走，不能写死。
+
+    同一个 DEM 任务有**两个**起切入口：这张表单（map.js 显式发 quality /
+    vertex_normals）和历史页详情面板的起切按钮（不带 body，走配置默认）。
+    初值写死就意味着同一份 DEM 从两个入口切出来的产物不一样 —— 层级不同、
+    带不带法线不同，而界面上零提示。本仓给这个形态命过名：
+    local_terrain_task_manager.py:135-136 的「改了没反应的假旋钮」。
+
+    法线那半边还是**不可逆**的：运维把 terrain_vertex_normals 配成 true，
+    用户不动这个复选框，表单就会显式发 false 把它关掉，几小时切完之后光照
+    按钮点不亮，只能重切。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    from src.services.config_manager import ConfigManager
+    cm = ConfigManager()
+    assert cm.set('terrain_local_maxzoom', '16'), 'ConfigManager 没能写入层级配置'
+    assert cm.set('terrain_quality_preset', 'speed'), 'ConfigManager 没能写入档位配置'
+    assert cm.set('terrain_vertex_normals', 'true'), 'ConfigManager 没能写入法线配置'
+
+    block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    assert 'selected' in _option_tag(block, 'speed'), (
+        '配置是 speed，渲染出来的下拉却没选中它 —— 表单会把 balanced 显式发出去，'
+        '同一个任务从详情面板起切却是 speed')
+    assert 'selected' not in _option_tag(block, 'balanced'), (
+        '两个 option 同时 selected，浏览器取最后一个 —— 初值就成了掷骰子')
+    maxzoom = re.search(r'<input[^>]*id="localTerrainMaxzoom"[^>]*>', block)
+    assert maxzoom and 'value="16"' in maxzoom.group(0), (
+        f'配置 terrain_local_maxzoom=16，输入框却不是 16 —— 详情面板起切用 16、'
+        f'这张表单发 14，同一份 DEM 两个入口切出不同层级：'
+        f'{maxzoom.group(0) if maxzoom else "找不到控件"}')
+    normals = re.search(r'<input[^>]*id="localTerrainNormals"[^>]*>', block)
+    assert normals and 'checked' in normals.group(0), (
+        f'配置开了法线，复选框却没勾上 —— 用户不动它就会显式关掉法线：'
+        f'{normals.group(0) if normals else "找不到控件"}')
+
+
+def test_preset_controls_fall_back_to_balanced_when_config_is_empty(monkeypatch, tmp_path):
+    """渲染级：config={} 的异常兜底路径必须落在均衡，不能落在精细。
+
+    main.py:71-73 在渲染首页出任何异常时会用 `config={}` 再渲染一次。那时三个
+    `{% if %}` 全假，若没有兜底档，**浏览器会自动选中第一个 option**（精细）——
+    默认档位从均衡悄悄变成精细，体积 3.3 倍，没有任何提示。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    from src.routes import main as main_route
+    monkeypatch.setattr(main_route.config_manager, 'get_all',
+                        lambda: (_ for _ in ()).throw(RuntimeError('boom')))
+
+    block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    assert 'selected' in _option_tag(block, 'balanced'), (
+        'config={} 兜底渲染时没有任何 option 被选中 —— 浏览器会自动选第一个'
+        '（精细），默认档位静默变成体积 3.3 倍的那一档')
+    assert 'selected' not in _option_tag(block, 'precision'), (
+        'config={} 兜底渲染选中了精细档')
+    normals = re.search(r'<input[^>]*id="localTerrainNormals"[^>]*>', block)
+    assert normals and 'checked' not in normals.group(0), (
+        f'config={{}} 兜底渲染把法线勾上了 —— 出厂默认是关：{normals.group(0) if normals else "找不到控件"}')
+
+
+def test_quality_select_falls_back_to_balanced_on_an_unknown_config_value(monkeypatch, tmp_path):
+    """渲染级：库里是没见过的档位值时，也必须落在均衡。
+
+    ConfigManager 挡得住走接口写进来的脏值（_VALUE_RULES 里那条
+    `v in TILING_QUALITY_OFFSETS`），挡不住有人直接 sqlite3 改库，也挡不住
+    以后新增第四档时忘了同步模板。任一情况下三个 `{% if %}` 全假，浏览器
+    自动选中第一个 option（精细，体积 3.3 倍）—— 静默且反直觉，所以均衡
+    那条必须是兜底档而不是等值判断。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    from src.routes import main as main_route
+    monkeypatch.setattr(main_route.config_manager, 'get_all',
+                        lambda: {'terrain_quality_preset': {'value': 'ultra'}})
+
+    block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    assert 'selected' in _option_tag(block, 'balanced'), (
+        "库里是 'ultra' 时没有任何 option 被选中 —— 浏览器会自动选第一个（精细）")
+    assert 'selected' not in _option_tag(block, 'precision'), (
+        "库里是 'ultra' 时选中了精细档")

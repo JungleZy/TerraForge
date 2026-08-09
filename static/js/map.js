@@ -1890,10 +1890,12 @@ async function submitLocalTerrain() {
     const fd = new FormData();
     fd.append('name', document.getElementById('processTaskName').value
         || t('js.map.process.local_terrain_default_name'));
-    fd.append('maxzoom', document.getElementById('localTerrainMaxzoom')?.value || '14');
-    // 档位空串 = 不传 = 走配置默认（后端 local_terrain_api.py:42-47 把空串当未传）。
-    // 这里不写死 'balanced' 兜底：那等于在前端抄一份默认值，控件万一没渲染出来
-    // 就会用前端的默认覆盖掉运维配的 terrain_quality_preset。
+    // 三个字段的兜底一律是空串，不是前端自己抄一份默认值：空串 = 未传 = 走配置
+    // 默认（后端 local_terrain_api.py:39-47 把空串当未传）。写死 '14' / 'balanced'
+    // 会在控件缺席或被清空时用前端的默认盖掉运维配的 terrain_local_maxzoom /
+    // terrain_quality_preset —— 而 DEM 分支（startDemTaskTerrainTiling）本来就送空串，
+    // 两边不一致就是同一份 DEM 从两个入口切出不同产物。
+    fd.append('maxzoom', document.getElementById('localTerrainMaxzoom')?.value || '');
     fd.append('quality', document.getElementById('localTerrainQuality')?.value || '');
     // ⚠️ 法线必须送 checked 状态。checkbox 的 .value 恒为 'on'（与勾没勾无关），
     // 把它或 checkbox 本身丢进 FormData 送出去的都是 'on'，而后端
