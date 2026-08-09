@@ -671,3 +671,125 @@ def test_parent_url_is_none_when_base_terrain_was_never_built(monkeypatch, tmp_p
     task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
 
     assert mgr.get_task(task_id)["parent_url"] is None
+
+
+
+def test_preset_reaches_tile_params(monkeypatch, tmp_path):
+    """档位 -> level_offset、法线 -> normals，必须原样进到 TileParams。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    calls = {}
+
+    def fake_tile(task_dir, out_dir, params):
+        calls["level_offset"] = params.level_offset
+        calls["normals"] = params.normals
+        calls["triangulator"] = params.triangulator
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+
+    task_id = mgr.create_task_with_files(
+        name="local-preset", files=[("a.tif", b"fake")], maxzoom=11,
+        quality="speed", vertex_normals=True)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+
+    assert calls["level_offset"] == -1
+    assert calls["normals"] is True
+    # 应用侧后端恒为 grid，档位不改后端。
+    assert calls["triangulator"] == "grid"
+
+
+def test_preset_defaults_when_omitted(monkeypatch, tmp_path):
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    calls = {}
+
+    def fake_tile(task_dir, out_dir, params):
+        calls["level_offset"] = params.level_offset
+        calls["normals"] = params.normals
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+
+    task_id = mgr.create_task_with_files(
+        name="local-default", files=[("a.tif", b"fake")], maxzoom=11)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+
+    assert calls["level_offset"] == 0
+    assert calls["normals"] is False
+
+
+def test_preset_survives_restart(monkeypatch, tmp_path):
+    """重跑必须从库读回档位/法线，不能静默退回默认档。
+
+    start_tiling 不带参（唯一入口就是 `start_tiling(task_id)`），档位只能来自
+    建任务时落库的那两列。漏读回的话「建任务选 speed、重跑变 balanced」——
+    产物变了、状态仍是 completed、全程零报错，用户只会以为档位没生效。
+    """
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    calls = {}
+
+    def fake_tile(task_dir, out_dir, params):
+        calls["level_offset"] = params.level_offset
+        calls["normals"] = params.normals
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+
+    task_id = mgr.create_task_with_files(
+        name="local-restart", files=[("a.tif", b"fake")], maxzoom=11,
+        quality="speed", vertex_normals=True)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+    assert calls["level_offset"] == -1
+
+    calls.clear()
+    mgr.start_tiling(task_id)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+
+    assert calls["level_offset"] == -1
+    assert calls["normals"] is True
+
+
+def test_preset_persisted_on_task_row(monkeypatch, tmp_path):
+    """两列真的落库 —— 重跑读回的前提。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling",
+                        lambda self, task_id: None)
+
+    task_id = mgr.create_task_with_files(
+        name="local-row", files=[("a.tif", b"fake")], maxzoom=12,
+        quality="precision", vertex_normals=True)
+
+    row = mgr.get_task(task_id)
+    assert row["quality"] == "precision"
+    assert row["vertex_normals"] == 1
+
+
+def test_invalid_quality_rejected(monkeypatch, tmp_path):
+    """拼错的档位当场 ValueError（路由转 400），不静默退回 balanced。"""
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+    monkeypatch.setattr(mgr_mod.LocalTerrainTaskManager, "start_tiling",
+                        lambda self, task_id: None)
+
+    import pytest
+    with pytest.raises(ValueError):
+        mgr.create_task_with_files(
+            name="bad-quality", files=[("a.tif", b"fake")], maxzoom=12,
+            quality="turbo")

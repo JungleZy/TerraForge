@@ -20,7 +20,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from src.core.config import Config
 from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
-from src.services.geo_validation import validate_zoom
+from src.services.geo_validation import (DEFAULT_TILING_QUALITY, TILING_QUALITY_OFFSETS,
+                                         validate_tiling_quality, validate_zoom)
 from src.services.task_cleanup import remove_task_dir_if_safe, resolve_stored_output_dir
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 from src.services.terrain_tiling.layer_json import parent_url_if_base_available
@@ -118,11 +119,23 @@ class LocalTerrainTaskManager:
         except Exception:
             return 14
 
+    def _default_quality(self) -> str:
+        # 兜底值与 DEFAULT_CONFIGS 逐字一致（database.py:95）：兜底和出厂默认
+        # 不一致会造出「改了没反应」的假旋钮。
+        return (self.config.get("terrain_quality_preset", DEFAULT_TILING_QUALITY)
+                or DEFAULT_TILING_QUALITY)
+
+    def _default_vertex_normals(self) -> bool:
+        # 布尔配置在库里存的是字符串 'true'/'false'（database.py:99）。
+        return (self.config.get("terrain_vertex_normals", "false") or "false") == "true"
+
     def create_task_with_files(
         self,
         name: str,
         files: Sequence[UploadFile],
         maxzoom: Optional[int] = None,
+        quality: Optional[str] = None,
+        vertex_normals: Optional[bool] = None,
     ) -> int:
         """Create a task, persist uploaded tifs, then auto-start tiling.
 
@@ -147,6 +160,17 @@ class LocalTerrainTaskManager:
         if maxzoom is None:
             maxzoom = self._default_maxzoom()
         maxzoom = validate_zoom(maxzoom, "maxzoom")
+
+        # 档位与法线跟 maxzoom 同形：请求未给就取配置默认。校验落在管理器而
+        # 不是路由层 —— 上一行的 maxzoom 校验就在这里，新参数跟着它放。
+        # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
+        # 「改了档位重切、产物却一模一样且零报错」是这条路径最难查的假象。
+        if quality is None:
+            quality = self._default_quality()
+        quality = validate_tiling_quality(quality)
+        if vertex_normals is None:
+            vertex_normals = self._default_vertex_normals()
+        vertex_normals = bool(vertex_normals)
 
         base = Path(Config.DOWNLOADS_DIR) / "terrain"
         parent_url = _parent_layer_url()
@@ -181,10 +205,12 @@ class LocalTerrainTaskManager:
                     """
                     INSERT INTO local_terrain_tasks
                       (name, status, output_path, source_dir, output_dir,
-                       total_files, uploaded_files, failed_files, maxzoom, parent_url)
-                    VALUES (?, 'pending', '', '', '', ?, 0, 0, ?, ?)
+                       total_files, uploaded_files, failed_files, maxzoom,
+                       quality, vertex_normals, parent_url)
+                    VALUES (?, 'pending', '', '', '', ?, 0, 0, ?, ?, ?, ?)
                     """,
-                    (name, len(valid), maxzoom, parent_url),
+                    (name, len(valid), maxzoom, quality,
+                     1 if vertex_normals else 0, parent_url),
                 )
                 task_id = cur.lastrowid
 
@@ -341,7 +367,7 @@ class LocalTerrainTaskManager:
                     raise ValueError(f"Local terrain task {task_id} is already running")
 
                 cur.execute(
-                    "SELECT status, maxzoom, parent_url "
+                    "SELECT status, maxzoom, quality, vertex_normals, parent_url "
                     "FROM local_terrain_tasks WHERE id=?",
                     (task_id,),
                 )
@@ -364,6 +390,12 @@ class LocalTerrainTaskManager:
                 conn.commit()
 
                 maxzoom = int(row["maxzoom"])
+                # 档位/法线必须从库读回：本方法不带参，重跑（切片失败后再点一次）
+                # 走的正是这里。漏读回的话「建任务选 speed、重跑变 balanced」——
+                # 产物悄悄换了档、状态仍是 completed、全程零报错。
+                # `or DEFAULT_TILING_QUALITY`：存量行的 quality 可能是 NULL。
+                quality = validate_tiling_quality(row["quality"] or DEFAULT_TILING_QUALITY)
+                vertex_normals = bool(row["vertex_normals"])
                 parent_url = row["parent_url"] or _parent_layer_url()
                 # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
                 # 的约定）：冻结 exe 搬迁后旧绝对路径不会把切片写去错的地方。
@@ -375,7 +407,8 @@ class LocalTerrainTaskManager:
                 self.stop_flags[task_id] = stop_flag
                 th = threading.Thread(
                     target=self._run_tiling_job,
-                    args=(task_id, source_dir, output_dir, maxzoom, parent_url, stop_flag),
+                    args=(task_id, source_dir, output_dir, maxzoom, parent_url,
+                          stop_flag, quality, vertex_normals),
                     daemon=True,
                     name=f"LocalTerrainTiling-{task_id}",
                 )
@@ -424,6 +457,8 @@ class LocalTerrainTaskManager:
     def _run_tiling_job(
         self, task_id: int, source_dir: Path, output_dir: Path, maxzoom: int, parent_url: str,
         stop_flag: Optional[threading.Event] = None,
+        quality: str = DEFAULT_TILING_QUALITY,
+        vertex_normals: bool = False,
     ) -> None:
         try:
             # 切片期间的进度。此前这里**一个回调都没传** —— 而任务行的进度条是
@@ -469,6 +504,8 @@ class LocalTerrainTaskManager:
                 task_dir=source_dir,
                 out_dir=output_dir,
                 params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
+                                  normals=vertex_normals,
+                                  level_offset=TILING_QUALITY_OFFSETS[quality],
                                   progress_cb=tiling_progress,
                                   stage_cb=tiling_stage,
                                   stop_flag=stop_flag),
