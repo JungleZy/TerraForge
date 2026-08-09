@@ -115,6 +115,43 @@ def test_history_secondary_fields_escaped():
     assert 'escapeHtml(outDir)' in src, 'job.output_dir（用户可控路径）未转义'
 
 
+def test_terrain_preset_and_maxzoom_fields_escaped():
+    """ca8cd33 新增的三个转义点：档位兜底原文、层级两列、层级说明的属性上下文。
+
+    这三处都是 DB 列直接插进 innerHTML 模板字面量，且当时一条断言都没配 ——
+    把三个 `escapeHtml(` 全删掉，整套测试照样全绿，等于没人守。
+
+    - quality 列是 `TEXT DEFAULT 'balanced'`、没有 CHECK 约束，
+      validate_tiling_quality 只守 HTTP 入口；「认不出的值原样显示」这条兜底
+      分支正是为旧作业 / 手改过库准备的，是这个渲染器里唯一的不可信输入。
+    - effective_maxzoom / maxzoom 同样是库里的列。
+    - maxzoom_base_hint 插在 `title="..."` 里，是**属性上下文**：一个没转义的
+      `"` 就闭合了属性，后面能直接接 onerror= —— 三处里这处后果最重。
+    """
+    preset_body = _body('history.js', 'terrainPresetRowsHtml')
+    # 只匹配到 `t(qualityKey)` 就停的断言（test_tasks_js_contract.py 那条）看不见
+    # 冒号后面的兜底分支，删掉那里的 escapeHtml 它不会红。这里专钉兜底分支。
+    assert re.search(
+        r'const quality = qualityKey \?[^:]*:\s*escapeHtml\(String\(row\.quality',
+        preset_body,
+    ), (
+        '认不出的档位走兜底时没过 escapeHtml —— quality 是无 CHECK 约束的 TEXT 列，'
+        '手改过库的行能把 `<img onerror=...>` 原样插进详情面板的 innerHTML'
+    )
+
+    row_body = _body('history.js', 'terrainMaxzoomRowHtml')
+    assert re.search(r'title="\$\{escapeHtml\(t\(', row_body), (
+        '层级说明插进 title 属性时没转义 —— 属性上下文里一个 `"` 就闭合属性，'
+        '紧接着就能挂任意 on* 事件处理器（escapeHtml 转 & < > " \'，正是为此）'
+    )
+    assert 'escapeHtml(String(actual))' in row_body, (
+        'effective_maxzoom（DB 列，非空时直接显示）未转义就进了 innerHTML'
+    )
+    assert re.search(r"escapeHtml\(String\(row\.maxzoom \?\? '-'\)\)", row_body), (
+        'maxzoom（DB 列，存量行 / 未切完时的回落值）未转义就进了 innerHTML'
+    )
+
+
 def test_active_row_meta_text_escaped():
     """tasks.js 不再持有行模板——行渲染收口在 history.js（2026-08 单一时间流定稿）。
 

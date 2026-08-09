@@ -1955,11 +1955,26 @@ def test_terrain_detail_shows_the_preset_actually_used():
     # 上一行的 `terrainPresetRowsHtml(job)` 只证明「算了」，不证明「写进了 DOM」：
     # 把 refreshTerrainDetail 里的 `infoEl.innerHTML = \`…\`` 改成算完丢弃，
     # 上面两条照样全绿而面板一片空白。这两条钉的是「结果真的落到那个容器上」。
-    assert 'infoEl.innerHTML' in _fn('refreshTerrainDetail', 'history.js'), (
-        'refreshTerrainDetail 算出的 HTML 没有写回 infoEl —— DEM 详情面板是空的'
+    #
+    # 光钉 `'infoEl.innerHTML' in body` 不够：refreshTerrainDetail 里有三处
+    # `infoEl.innerHTML =`（未起切分支 / 正常分支 / catch 分支），把**正常分支**
+    # 整段删掉——恰好是本条声称要守的那个赋值——另外两处还在，断言照样绿。
+    # 同理 `'detailTerrainInfo' in body` 只证明这个 id 在函数里被提过一次。
+    # 所以容器与载荷必须钉在同一条断言里：赋给该容器的那段模板里得有对应的调用。
+    assert re.search(
+        r'infoEl\.innerHTML\s*=\s*`[^`]*terrainPresetRowsHtml\(job\)',
+        _fn('refreshTerrainDetail', 'history.js'),
+    ), (
+        'refreshTerrainDetail 算出的档位/法线 HTML 没有赋给 infoEl —— '
+        'DEM 详情面板上这两行是空的'
     )
-    assert 'detailTerrainInfo' in _fn('viewTaskDetails', 'history.js'), (
-        'viewTaskDetails 没有往 detailTerrainInfo 容器里写 —— 本地地形详情是空的'
+    assert re.search(
+        r"getElementById\('detailTerrainInfo'\)\.innerHTML\s*=\s*"
+        r'terrainPresetRowsHtml\(task\)',
+        _fn('viewTaskDetails', 'history.js'),
+    ), (
+        'viewTaskDetails 没有把 terrainPresetRowsHtml(task) 赋给 detailTerrainInfo —— '
+        '本地地形详情的档位/法线两行是空的'
     )
 
 
