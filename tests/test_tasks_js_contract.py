@@ -1952,6 +1952,15 @@ def test_terrain_detail_shows_the_preset_actually_used():
     assert 'terrainPresetRowsHtml(task)' in _fn('viewTaskDetails', 'history.js'), (
         '本地地形任务详情没有渲染档位/法线两行 —— 用户唯一能选档位的入口回显不了'
     )
+    # 上一行的 `terrainPresetRowsHtml(job)` 只证明「算了」，不证明「写进了 DOM」：
+    # 把 refreshTerrainDetail 里的 `infoEl.innerHTML = \`…\`` 改成算完丢弃，
+    # 上面两条照样全绿而面板一片空白。这两条钉的是「结果真的落到那个容器上」。
+    assert 'infoEl.innerHTML' in _fn('refreshTerrainDetail', 'history.js'), (
+        'refreshTerrainDetail 算出的 HTML 没有写回 infoEl —— DEM 详情面板是空的'
+    )
+    assert 'detailTerrainInfo' in _fn('viewTaskDetails', 'history.js'), (
+        'viewTaskDetails 没有往 detailTerrainInfo 容器里写 —— 本地地形详情是空的'
+    )
 
 
 def test_terrain_detail_shows_the_level_actually_tiled():
