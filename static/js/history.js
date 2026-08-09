@@ -336,7 +336,11 @@ function getStyleText(style) {
         't': t('js.history.style.t'),
         'contour': t('js.history.style.contour')
     };
-    return styles[style] || style;
+    // 查表走 hasOwnProperty，与 terrainPresetRowsHtml / confirmDelete 的两张表
+    // 同一条约定：对象字面量继承 Object.prototype，style === 'constructor' 时
+    // 裸下标取到的是构造函数本身（真值，`||` 兜底不了），这一格就渲染成
+    // `function Object() { [native code] }` —— 一段函数源码冒充样式名。
+    return (Object.prototype.hasOwnProperty.call(styles, style) && styles[style]) || style;
 }
 
 function formatDate(dateStr) {
@@ -382,10 +386,19 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             // 实际切到的最深层级优先。`0 - N` 是一个自称精确的范围，而 maxzoom
             // 那一列存的是用户填的**基准**层级 —— 精细/快速两档下它与产物实际的
             // 最深层级差一级，直接显示就是错数字（precision 档写 0 - 14、
-            // layer.json 里是 15）。切完之前 effective_maxzoom 为 NULL，回落到
-            // 基准值并由下面那句 title 说明它是基准值。
+            // layer.json 里是 15）。切完之前 effective_maxzoom 为 NULL，只能回落
+            // 到基准值 —— 那就必须让**文字本身**说出这是基准值。
+            //
+            // 这一格的标签写死在 templates/base.html 里（DEM 侧是自己拼的 HTML，
+            // 可以像 terrainMaxzoomRowHtml 那样换标签，这里换不了），所以把限定词
+            // 缀在值后面。只靠下面那句 title 不够：悬停在触摸设备上根本不存在、
+            // 键盘也够不着，而且 `0 - 14` 与 `0 - 14` 长得一模一样，用户连
+            // 「这里有话要说」都看不出来。
+            const localTerrainActualMaxzoom = task.effective_maxzoom;
             document.getElementById('detailZoom').textContent =
-                `0 - ${task.effective_maxzoom ?? task.maxzoom}`;
+                localTerrainActualMaxzoom != null
+                    ? `0 - ${localTerrainActualMaxzoom}`
+                    : `0 - ${task.maxzoom} (${t('js.history.terrain.maxzoom_base_label')})`;
             document.getElementById('detailTotal').textContent = task.total_files;
             document.getElementById('detailDownloaded').textContent = task.uploaded_files;
             document.getElementById('detailFailed').textContent = task.failed_files;
@@ -556,17 +569,27 @@ function terrainPresetRowsHtml(row) {
         : null;
     // 认不出的值（旧作业 / 手改过库）宁可原样显示，也好过悄悄说成「均衡」。
     const quality = qualityKey ? t(qualityKey) : escapeHtml(String(row.quality ?? '-'));
-    const normalsOn = !!row.vertex_normals;
-    const normals = t(normalsOn
-        ? 'js.history.terrain.normals_on'
-        : 'js.history.terrain.normals_off');
+    // vertex_normals 是**三态**，不是布尔：NULL = 这一行没有记录过法线状态
+    // （列是后加的，加列之前切的作业一律为 NULL），0 = 明确关闭，1 = 明确开启。
+    // 原来写的是 `!!row.vertex_normals`，NULL 被压成 false，面板于是用
+    // 「未开启（无光照数据）」这种确定语气，去描述一件这一行根本没记录的事；
+    // 而且方向恰好说反 —— 加这一列之前法线是默认开着的。宁可说「未知」，
+    // 也不能给一个看起来确定的错值。
+    const normalsRecorded = row.vertex_normals != null;
+    const normalsOff = normalsRecorded && !row.vertex_normals;
+    const normals = t(!normalsRecorded
+        ? 'js.history.terrain.normals_unknown'
+        : normalsOff
+            ? 'js.history.terrain.normals_off'
+            : 'js.history.terrain.normals_on');
     // 关掉法线不是「少一个效果」：hasVertexNormals 是 provider 级的单一标志，
     // 这份地形没有法线，Cesium 的光照开关就对**整幅场景**退化成全球日夜渐变，
     // 随包底图自带的法线也一并作废。而且法线是烘焙进瓦片的，事后改配置救不回
     // 已经切完的产物 —— 用户在这里看到「未开启」时必须同时看到这个后果。
-    const normalsTitle = normalsOn
-        ? ''
-        : ` title="${escapeHtml(t('js.history.terrain.normals_off_hint'))}"`;
+    // 只挂在**明确关闭**这一档：未知状态下挂上去，等于拿一件没记录的事吓用户。
+    const normalsTitle = normalsOff
+        ? ` title="${escapeHtml(t('js.history.terrain.normals_off_hint'))}"`
+        : '';
     return `
             <div>${t('js.history.terrain.quality_label')}: ${quality}</div>
             <div${normalsTitle}>${t('js.history.terrain.normals_label')}: ${normals}</div>`;
@@ -638,7 +661,7 @@ function previewHistoryTask(taskId, taskType) {
     // socket 增量(tasks.js prependStreamRow)插进来的新行只进了 store,不在
     // 这个数组里。对那些行点「预览」会走进下面的 `if (!task) return`,按钮
     // 看起来就是坏的(无提示、无动作)。store.state.tasks 是渲染的真相,且
-    // 是 allTasks 的超集 —— renderHistoryTable 就是 replaceAll 的包装(:169)。
+    // 是 allTasks 的超集 —— renderHistoryTable 就是 TaskStore.replaceAll 的包装。
     const store = window.TaskStore;
     const task = store && store.get(`${taskType}:${taskId}`);
     if (!task) return;

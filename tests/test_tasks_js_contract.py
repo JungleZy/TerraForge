@@ -2012,12 +2012,50 @@ def test_terrain_detail_shows_the_level_actually_tiled():
         'DEM 详情面板没有走 terrainMaxzoomRowHtml —— 显示的仍是请求的基准值'
     )
     # 本地地形的层级住在通用的 Zoom 那一格（`0 - N`），不走上面那个函数，
-    # 但同样必须优先取实际值。
+    # 但同样必须优先取实际值 —— 而且拿不到实际值、退回基准值时，**文字本身**
+    # 必须说出这是基准值。那一格的标签写死在 templates/base.html 里换不掉
+    # （DEM 侧是自己拼 HTML，所以能像 terrainMaxzoomRowHtml 那样换标签），
+    # 只能把限定词缀在值后面。只挂一句 title 不算数：悬停在触摸设备上根本不
+    # 存在、键盘也够不着，而两种情况都渲染成 `0 - 14`，用户连「这里有话要说」
+    # 都看不出来 —— 那正是「看起来确定的错值」。
     view = _fn('viewTaskDetails', 'history.js')
-    assert re.search(r'task\.effective_maxzoom\s*\?\?\s*task\.maxzoom', view), (
-        '本地地形详情的 Zoom 那一格还在直接用 task.maxzoom —— '
-        'precision/speed 两档下它就是个错数字'
+    zoom_exprs = [
+        expr for expr in re.findall(
+            r"getElementById\('detailZoom'\)\.textContent\s*=(.*?);", view, re.S)
+        if 'maxzoom' in expr
+    ]
+    assert len(zoom_exprs) == 1, (
+        f'viewTaskDetails 里涉及 maxzoom 的 detailZoom 赋值有 {len(zoom_exprs)} 处，'
+        '期望 1 处 —— 本测试已失效'
     )
+    branches = re.findall(r'`[^`]*`', zoom_exprs[0])
+    assert len(branches) == 2, (
+        f'本地地形的层级只拼出 {len(branches)} 段文本 —— 实际层级与基准层级必须是'
+        '两段**不同的文字**；`0 - ${task.effective_maxzoom ?? task.maxzoom}` 这种'
+        '写法两种情况长得一模一样，只有 title 能区分'
+    )
+    labelled = [b for b in branches if 'js.history.terrain.maxzoom_base_label' in b]
+    assert len(labelled) == 1, (
+        '恰好一段文字要带「基准层级」限定词：两段都带 = 把实际值也说成基准值，'
+        '一段都不带 = 退回「只有悬停能区分」'
+    )
+    assert 'task.maxzoom' in labelled[0], (
+        '带「基准层级」限定词的那一段显示的不是 task.maxzoom —— 标签与值对不上'
+    )
+    actual_branch = [b for b in branches if b is not labelled[0]][0]
+    assert 'task.maxzoom' not in actual_branch, (
+        '不带限定词的那一段插的仍是基准值 —— 它顶着「实际层级」的名头显示错数字'
+    )
+    ref = re.search(r'\$\{([\w.]+)\}', actual_branch)
+    assert ref, '实际层级那一段不是插值 —— 本测试已失效'
+    if ref.group(1) != 'task.effective_maxzoom':
+        # 允许先取个局部别名（读起来更清楚），但别名必须真的来自那一列。
+        assert re.search(
+            r'\b(?:const|let)\s+%s\s*=\s*task\.effective_maxzoom\b' % re.escape(ref.group(1)),
+            view,
+        ), (
+            f'实际层级那一段插的是 {ref.group(1)}，而它不是从 task.effective_maxzoom 取的'
+        )
 
 
 def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
@@ -2025,7 +2063,8 @@ def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
 
     后端存的是枚举字面量（TILING_QUALITY_OFFSETS 的键）。直接插进 innerHTML
     的话，中文界面上会冒出三个英文单词，而且 "balanced" 对用户毫无信息量 ——
-    他要知道的是「比默认多切一级 / 少切一级」。
+    他要知道的是「比基准层级多切一级 / 少切一级」（参照点必须是基准层级：
+    「比默认」会随 terrain_quality_preset 配成哪一档而漂移，见 catalog 里的说明）。
     """
     from src.i18n.catalog import MESSAGES
 
@@ -2064,29 +2103,141 @@ def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
         '认出来的档位没有过 t() —— 查表白建了，界面上还是 precision/balanced/speed'
     )
 
+    # vertex_normals 是**三态**，不是布尔：NULL = 这一行没有记录过法线状态
+    # （列是后加的，加列之前切的作业整列为 NULL），0 = 明确关闭，1 = 明确开启。
+    # 改前这里是 `!!row.vertex_normals`，NULL 被压成 false，面板于是用
+    # 「未开启（无光照数据）」这种确定语气去描述一件没有记录的事，而且方向恰好
+    # 说反 —— 加列之前法线是默认开着的。
+    assert '!!row.vertex_normals' not in body, (
+        'vertex_normals 又被强转成布尔 —— NULL（没记录）会被说成「未开启」，'
+        '那是一个看起来确定的错值'
+    )
+    recorded = re.search(r'const (\w+) = row\.vertex_normals != null', body)
+    assert recorded, (
+        '法线状态没有把「没记录」与「明确关闭」分开 —— 三态塌回两态，'
+        'NULL 会被当成关闭'
+    )
+    off = re.search(
+        r'const (\w+) = %s && !row\.vertex_normals' % recorded.group(1), body,
+    )
+    assert off, '「明确关闭」没有以「这一行有记录」为前提 —— 没记录的行会走进关闭分支'
+    assert re.search(
+        r"!%s\s*\n?\s*\?\s*'js\.history\.terrain\.normals_unknown'" % recorded.group(1),
+        body,
+    ), '没记录的行没有落到「未知」文案上'
+
     # 「未开启」不能只是一个状态词：法线是烘焙进瓦片的，关掉之后 Cesium 的
     # 光照开关对整幅场景失效，事后改配置也救不回来。这个后果必须出现在面板上，
-    # 且只在关闭时出现（开启的作业没有这回事）。
+    # 且**只**在明确关闭时出现 —— 挂到「未知」那一档，就是拿一件没记录的事
+    # 去吓用户。
     hint = 'js.history.terrain.normals_off_hint'
     assert MESSAGES.get(hint) and MESSAGES[hint]['zh'] and MESSAGES[hint]['en'], (
         f'{hint} 在 catalog 里缺失或缺语种'
     )
-    assert re.search(r"normalsOn\s*\n?\s*\?\s*''\s*\n?\s*:\s*` title=", body), (
-        '关闭法线的后果提示不是「仅在关闭时」给出 —— 开启的作业也会被警告'
+    assert re.search(r"normalsTitle = %s\s*\n?\s*\?\s*` title=" % off.group(1), body), (
+        '关闭法线的后果提示不是「仅在明确关闭时」给出 —— 开启或未记录的作业也会被警告'
     )
     assert hint in body, f'terrainPresetRowsHtml 没有引用 {hint} —— 关掉法线的后果没人告诉用户'
 
-    # 法线两态各有各的文案：只显示「开」而不显示「关」等于没显示。
-    for key in ('js.history.terrain.normals_on', 'js.history.terrain.normals_off'):
+    # 法线三态各有各的文案：塌成两态就等于用确定语气说不知道的事。
+    normals_keys = ('js.history.terrain.normals_on',
+                    'js.history.terrain.normals_off',
+                    'js.history.terrain.normals_unknown')
+    for key in normals_keys:
         assert f"'{key}'" in src, f'history.js 没有引用 {key} —— 法线状态缺一态'
         entry = MESSAGES.get(key)
         assert entry and entry['zh'] and entry['en'], f'{key} 在 catalog 里缺失或缺语种'
-    assert (MESSAGES['js.history.terrain.normals_on']['zh']
-            != MESSAGES['js.history.terrain.normals_off']['zh']), (
-        '法线开与关的文案一模一样 —— 显示了等于没显示'
+    assert len({MESSAGES[k]['zh'] for k in normals_keys}) == 3, (
+        '法线三态里有两态文案一模一样 —— 显示了等于没显示'
+    )
+    # 「未知」那一档只描述这一行的记录状态，不许顺带对产物下结论：
+    # 写成「未知（可能未开启）」就又变成一个看起来确定的猜测。
+    assert '开启' not in MESSAGES['js.history.terrain.normals_unknown']['zh'], (
+        '「未知」的文案里出现了「开启」—— 不知道就别对法线开关下任何结论'
     )
 
     # 两行都得有标题词，否则面板上只是两个孤零零的值。
     for key in ('js.history.terrain.quality_label', 'js.history.terrain.normals_label'):
         assert f"'{key}'" in src, f'history.js 没有引用 {key} —— 显示的值没有标题'
         assert MESSAGES.get(key), f'{key} 被 history.js 引用但 catalog 里没有'
+
+
+# 全部「状态/样式值 -> 显示值」的查表点。表是对象字面量，继承 Object.prototype，
+# 所以下标必须先过 hasOwnProperty —— 这条约定 history.js 的档位表
+# （terrainPresetRowsHtml）与删除确认表（confirmDeleteTask）已经在守，
+# 这里把剩下四处拉齐。
+#
+# 不是 XSS：颜色落在 `class="badge bg-${...}"` 里，`String(Object)` 不含引号、
+# 闭不掉属性；状态文案两个调用点都过了 escapeHtml；样式文案进的是 textContent。
+# 是**正确性**缺陷：`|| 兜底` 拦不住原型上取到的函数值（函数是真值），
+# 徽章 class 变成 `bg-function Object() { [native code] }` 静默退化成无色，
+# 描边色查缓存得到 undefined，样式格里则是一段函数源码冒充样式名。
+_PROTOTYPE_SAFE_LOOKUPS = (
+    ('task_status.js', 'getStatusColor', 'colors', 'status'),
+    ('task_status.js', 'getStatusText', 'texts', 'status'),
+    ('task_status.js', 'getStatusStroke', '_STATUS_STROKE_TOKENS', 'status'),
+    ('history.js', 'getStyleText', 'styles', 'style'),
+)
+
+
+def test_display_lookups_guard_the_prototype_chain():
+    """每一处查表的下标都必须先过 hasOwnProperty，且不许留下第二处裸下标。
+
+    只断言「函数体里出现过 hasOwnProperty」是不够的：补一句守卫、旧的那行
+    `return colors[status] || 'secondary'` 留着不删，函数照样走裸下标，
+    而断言全绿。所以按语句（分号切）逐条查：凡是出现 `表[下标]` 的语句，
+    同一条语句里必须有对同一张表的守卫。
+    """
+    for js_name, fn, table, key in _PROTOTYPE_SAFE_LOOKUPS:
+        body = _fn(fn, js_name)
+        subscript = f'{table}[{key}]'
+        # 自检：查表点本身还在。表被改名/查表被删的话下面的循环会零轮空转。
+        assert subscript in body, (
+            f'{js_name} 的 {fn} 里找不到 {subscript} —— 查表点变了，本测试已失效'
+        )
+        for stmt in body.split(';'):
+            if subscript not in stmt:
+                continue
+            assert re.search(
+                r'hasOwnProperty\.call\(\s*%s\s*,\s*%s\s*\)' % (re.escape(table), key),
+                stmt,
+            ), (
+                f'{js_name} 的 {fn} 里有一处 {subscript} 没挡原型链：\n'
+                f'{stmt.strip()}\n'
+                f"{key} === 'constructor' / '__proto__' / 'toString' 会取到原型上的"
+                '成员，那是个真值，`||` 兜底永远轮不上'
+            )
+
+
+def test_zoom_tooltip_reset_is_unconditional():
+    """详情模态框的 Zoom 那一格，title 的清空必须在任务类型分支**之外**。
+
+    模态框复用同一棵 DOM：先看一个本地地形任务（title 是「这是基准层级…」），
+    再看一个 DEM 任务，如果清空那句被挪进 local_terrain 分支，DEM 那一行就
+    顶着上一个任务留下的悬停说明 —— 一句针对别的任务的解释，粘在一个完全
+    不适用的数字上。
+
+    源码里有注释说明这件事，但此前没有任何断言：把那两行挪进分支里，
+    整个测试目录全绿。这里按花括号深度钉「它是 if/else 链的兄弟，不是某一
+    支的孩子」，而不是查字符串在不在 —— 挪位置不会改变字符串。
+    """
+    view = _fn('viewTaskDetails', 'history.js')
+
+    def depth_at(needle):
+        assert view.count(needle) >= 1, f'viewTaskDetails 里找不到 {needle} —— 本测试已失效'
+        i = view.index(needle)
+        return view.count('{', 0, i) - view.count('}', 0, i)
+
+    chain = depth_at("if (taskType === 'dem')")
+    # 自检：分支体确实比链头深一层，否则下面的比较量的不是「在不在分支里」。
+    inside = depth_at("t('js.history.meta.local_terrain')")
+    assert inside == chain + 1, (
+        f'分支体深度 {inside} 不等于链头深度 {chain} + 1 —— 花括号计数已失效'
+        '（有人给分支加了块级作用域？）'
+    )
+    reset = depth_at("getElementById('detailZoom').title")
+    assert reset == chain, (
+        f'detailZoom 的 title 赋值在深度 {reset}（if/else 链在 {chain}）—— '
+        '它被关进某一个任务类型分支里了。其余类型不再清空，上一个本地地形任务'
+        '留下的「这是基准层级」会粘在 DEM/等高线/瓦片任务的层级上'
+    )

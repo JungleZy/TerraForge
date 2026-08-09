@@ -39,7 +39,13 @@ function getStatusColor(status) {
         'completed': 'success',
         'failed': 'danger'
     };
-    return colors[status] || 'secondary';
+    // 查表走 hasOwnProperty，与 history.js 的档位表 / 删除确认表同一条约定：
+    // 对象字面量继承 Object.prototype，status === 'constructor' / '__proto__' /
+    // 'toString' 时裸下标会取到原型上的成员。那些值都是真值，`|| 'secondary'`
+    // 根本兜不到，class 变成 `bg-function Object() { [native code] }`，
+    // 徽章静默退化成无色 —— 界面上看不出这是个坏状态值。
+    return (Object.prototype.hasOwnProperty.call(colors, status) && colors[status])
+        || 'secondary';
 }
 
 function getStatusText(status) {
@@ -50,8 +56,11 @@ function getStatusText(status) {
         'completed': t('js.tasks.status.completed'),
         'failed': t('js.tasks.status.failed')
     };
-    // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）
-    return texts[status] || t('js.tasks.status.unknown');
+    // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）。
+    // hasOwnProperty 同 getStatusColor：裸下标下 status === 'constructor'
+    // 会取到构造函数，兜底分支永远走不到，徽章里是一坨函数源码。
+    return (Object.prototype.hasOwnProperty.call(texts, status) && texts[status])
+        || t('js.tasks.status.unknown');
 }
 
 // 历史地图上矩形的描边色。
@@ -80,7 +89,11 @@ const _STATUS_STROKE_TOKENS = {
 };
 
 function getStatusStroke(status) {
-    const name = _STATUS_STROKE_TOKENS[status] || '--color-text-secondary';
+    // 同 getStatusColor 的理由：裸下标下 status === 'constructor' 会取到构造
+    // 函数，`||` 兜不到，name 不是令牌名，下面查缓存得到 undefined，
+    // Cesium 拿到 undefined 描边色 —— 矩形边框静默消失。
+    const name = (Object.prototype.hasOwnProperty.call(_STATUS_STROKE_TOKENS, status)
+        && _STATUS_STROKE_TOKENS[status]) || '--color-text-secondary';
     if (!_statusStrokeCache) {
         const style = getComputedStyle(document.documentElement);
         _statusStrokeCache = {};

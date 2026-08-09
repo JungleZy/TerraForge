@@ -203,8 +203,8 @@ MESSAGES = {
     # 没有选择权，那就至少得让他看见实际用的是哪一档。档位名不能直吐后端的
     # precision/balanced/speed，那三个词说不清「和什么比、差在哪」。
     #
-    # 参照物写「基准层级」而不是「默认档位」：TILING_QUALITY_OFFSETS
-    # （src/services/geo_validation.py:77-81）的 +1/0/-1 是相对**基准层级**算的，
+    # 参照物写「基准层级」而不是「默认档位」：`geo_validation.TILING_QUALITY_OFFSETS`
+    # 的 +1/0/-1 是相对**基准层级**算的，
     # 与 terrain_quality_preset 当前配成哪一档无关。写成「比默认多切一级」的话，
     # 运维把默认改成 speed 之后，一个存成 balanced 的作业仍会被标成「默认」——
     # 那时它其实比默认多切了一级。用偏移表自己的词汇才无条件为真。
@@ -246,6 +246,14 @@ MESSAGES = {
               'global day/night gradient, and the bundled base terrain loses its '
               'normals too. Normals are baked into the tiles, so changing the '
               'setting later does not affect output that has already been tiled.',
+    },
+    # 第三态：vertex_normals 那一列是后加的，加列之前切的作业整列为 NULL。
+    # 拿不到记录时只能说「没记录」—— 说成「未开启」是在给一个看起来确定的
+    # 错值（那批作业的法线其实是开着的），说成「已开启」同样是编。
+    # 措辞只描述**这一行的记录状态**，不对产物本身下任何结论。
+    'js.history.terrain.normals_unknown': {
+        'zh': '未知（这一行没有记录）',
+        'en': 'Unknown (not recorded for this job)',
     },
 
     # 「层级」那一格。两种标签不是措辞变体，是两种不同的事实：
