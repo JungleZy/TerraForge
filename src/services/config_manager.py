@@ -15,8 +15,8 @@ import sqlite3
 from src.core.database import (
     get_connection_context, DEFAULT_CONFIGS, normalize_default_save_path, utc_now_iso,
 )
-from src.services.system_proxy import mask_url_userinfo
 from src.services.geo_validation import TILING_QUALITY_OFFSETS
+from src.services.system_proxy import mask_url_userinfo
 
 logger = logging.getLogger(__name__)
 
@@ -523,7 +523,7 @@ class ConfigManager:
         Reset all configuration to default values
 
         Deletes all existing configuration and re-inserts the DEFAULT_CONFIGS
-        rows (44 as of 0.2.5). Uses explicit transaction with rollback on error
+        rows (47 as of 0.2.12). Uses explicit transaction with rollback on error
         to ensure data safety.
 
         M6：重插之后必须跑一次 default_save_path 归一化。DEFAULT_CONFIGS 里
