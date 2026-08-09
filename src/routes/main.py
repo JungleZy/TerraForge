@@ -9,6 +9,8 @@ from flask import Blueprint, render_template
 from src.services.basemap_source import client_descriptor, resolve_basemap
 from src.routes.basemap_static import active_basemap
 from src.services.config_manager import ConfigManager, redact_secret_value
+from src.services.geo_validation import (DEFAULT_TILING_QUALITY,
+                                         TILING_QUALITY_OFFSETS, validate_zoom)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,67 @@ def _flat_config():
             for key, data in config_manager.get_all().items()}
 
 
+# 出厂默认，与 DEFAULT_CONFIGS 逐字一致（database.py:91）—— 兜底值和出厂默认
+# 不一致就会造出「改了没反应」的假旋钮（local_terrain_task_manager.py:134-136
+# 为同一个键定过这条规矩）。
+_FACTORY_LOCAL_MAXZOOM = 14
+
+
+def _terrain_form_defaults(cfg):
+    """把处理表单的两个地形初值在**服务端**收干净，每改写一个键留一条 warning。
+
+    为什么不放在模板里：模板是这条链路上唯一记不了日志的一环。它此前自己钳层级、
+    自己拿「均衡」那条 option 当兜底档，于是库里的 99 渲染成 14、'ultra' 渲染成
+    均衡，页面看起来一切正常，运维要等到真起了切片作业才由
+    local_terrain_task_manager.py:128-130 吭一声。档位那半边还两个入口互相打架：
+    同一个脏值从历史页详情面板起切（不带 body、走 validate_tiling_quality）是当场
+    400，从这张表单却被静默改写成 balanced 一路切完 —— 一个入口硬拒、另一个悄悄改。
+    这里是配置进模板前最后一个还有 logger 的地方，所以收口放在这里。
+
+    层级那次钳位本身必须保留（只是补上日志）：terrain_local_maxzoom 登记在
+    config_manager._UNCONSTRAINED_KEYS，写入侧不校验，PUT /api/config 收得下 99；
+    照直渲染成 value="99" 会违反控件自己的 min/max，让整张 #processForm 变
+    :invalid —— 原生校验拦下 submit 事件，map.js 的监听根本不触发，「创建」点了
+    没反应，而 #localTerrainOptions 只用 hidden 藏、字段不 disable，连与地形无关的
+    等高线任务也一起建不了。
+
+    空值与缺键都算「没配过」，不告警：config={} 的异常兜底渲染和被清空的字段都走
+    这条路，每刷一次首页就刷一条 warning 只会把真正的脏值淹掉。
+
+    Args:
+        cfg: _flat_config() 的扁平配置（异常兜底路径传 {}）
+
+    Returns:
+        (maxzoom, preset)：maxzoom 保证落在 [MIN_ZOOM, MAX_ZOOM] 内，
+        preset 保证是 TILING_QUALITY_OFFSETS 里的键。
+    """
+    maxzoom = _FACTORY_LOCAL_MAXZOOM
+    raw_zoom = cfg.get('terrain_local_maxzoom') or ''
+    if raw_zoom != '':
+        try:
+            # 与两个管理器同一把尺（validate_zoom），不在这里另抄一份 0/21 的上下界。
+            maxzoom = validate_zoom(raw_zoom, 'terrain_local_maxzoom')
+        except Exception as e:
+            logger.warning(
+                f"配置 terrain_local_maxzoom={raw_zoom!r} 不可用({e})，"
+                f"处理表单初值改用出厂默认 {maxzoom}")
+
+    preset = DEFAULT_TILING_QUALITY
+    raw_preset = cfg.get('terrain_quality_preset') or ''
+    if raw_preset != '':
+        # 白名单直接取 geo_validation 的取值表，不抄第二份三个档位名
+        # （config_manager.py:292-294 定的规矩）。
+        if raw_preset in TILING_QUALITY_OFFSETS:
+            preset = raw_preset
+        else:
+            logger.warning(
+                f"配置 terrain_quality_preset={raw_preset!r} 不在取值表 "
+                f"{sorted(TILING_QUALITY_OFFSETS)} 内，处理表单初值改用出厂默认 "
+                f"{preset}（同一个值从历史页详情面板起切会直接 400）")
+
+    return maxzoom, preset
+
+
 @main_bp.route('/')
 def index():
     """
@@ -68,13 +131,24 @@ def index():
             default_style=template_config.get('default_style', 'm'),
         )))
 
+        # 模板不再自己钳层级、自己兜档位：那两处静默修复在这里做完并留日志，
+        # 详见 _terrain_form_defaults。
+        maxzoom, quality = _terrain_form_defaults(template_config)
+
         return render_template('index.html', config=template_config,
-                               map_config=map_config, basemap=basemap)
+                               map_config=map_config, basemap=basemap,
+                               terrain_local_maxzoom=maxzoom,
+                               terrain_quality_preset=quality)
 
     except Exception as e:
         logger.error(f"Error rendering index page: {e}")
+        # 空配置走同一个函数拿出厂默认：这条路径上什么都没被丢弃，
+        # 不该再刷一条「配置不可用」的假警报（上面那条 error 已经说清了病因）。
+        maxzoom, quality = _terrain_form_defaults({})
         return render_template('index.html', config={}, map_config={},
-                               basemap=client_descriptor(resolve_basemap(None)))
+                               basemap=client_descriptor(resolve_basemap(None)),
+                               terrain_local_maxzoom=maxzoom,
+                               terrain_quality_preset=quality)
 
 
 @main_bp.route('/history')

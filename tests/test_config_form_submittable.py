@@ -97,10 +97,14 @@ def test_config_number_inputs_pass_their_own_constraints(client, path):
 # static/js/map.js:1420 的监听根本不触发。而 #localTerrainOptions 只用 hidden
 # 属性隐藏、字段不 disable，非法控件仍参与校验且不可聚焦：气泡弹不出来，
 # 连与地形无关的等高线任务也一起建不了（map.js:646-650 记过同一形态）。
+# 钳位本身住在 main._terrain_form_defaults（模板记不了日志，被丢掉的值必须在
+# 服务端留一条 warning；那条日志由 test_terrain_lighting_frontend.py 钉）。
+# 本表只管一件事：不管库里存的是什么，渲染出来的 value 都得过控件自己的约束。
 _OUT_OF_RANGE_CASES = [
     ('99', '14'),     # 越上界：min/max 是 0-21
     ('-3', '14'),     # 越下界
     ('abc', '14'),    # 非数字
+    ('16.5', '14'),   # 小数：层级是整数，半级切不出来（与 validate_zoom 同一口径）
     ('', '14'),       # 空串（键存在但值被清空）
     ('0', '0'),       # 合法边界值必须原样透出，别被兜底吃掉
     ('16', '16'),     # 合法值必须跟着配置走，否则这个控件又成了假旋钮

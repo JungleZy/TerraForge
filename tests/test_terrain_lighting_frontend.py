@@ -30,6 +30,7 @@ uint32 索引段缺对齐 padding），共同点都是「没有任何自动化�
 """
 
 import importlib
+import logging
 import os
 import re
 import shutil
@@ -423,7 +424,12 @@ def test_tiling_preset_controls_exist_in_the_process_form():
     # 会跟着「等高线」显隐，选本地高程时根本看不见。
     assert 'id="localTerrainQuality"' in block, (
         '#localTerrainOptions 里没有 id=localTerrainQuality 的档位下拉')
-    for value in ('precision', 'balanced', 'speed'):
+    # 遍历取值表而不是写死三个名字：模板那三条 option 现在都是等值判断（兜底档
+    # 已经收进 main._terrain_form_defaults），新增第四档时漏加一条 option，
+    # 就是「配置里存着 X、下拉里没有 X、浏览器自动选中第一个（精细，体积 3.3 倍）」。
+    # 写死名字的话这条断言对新增档位一无所知，只会一直绿。
+    from src.services.geo_validation import TILING_QUALITY_OFFSETS
+    for value in TILING_QUALITY_OFFSETS:
         assert f'value="{value}"' in block, f'档位下拉缺 {value} 选项'
     # 不能只断言 'type="checkbox"' 存在 —— index.html 本来就有别的复选框，
     # 那样写恒真、什么都保不住。必须锁定这一个控件本身。
@@ -488,7 +494,10 @@ def test_preset_wording_anchors_to_the_base_level_like_the_detail_panel():
     同一口径）。两处用不同说法，用户会以为是两回事。
     """
     from src.i18n.catalog import MESSAGES
-    for suffix in ('precision', 'balanced', 'speed'):
+    from src.services.geo_validation import TILING_QUALITY_OFFSETS
+    # 遍历取值表：新增第四档却忘了写文案时，这里 KeyError 报出缺的是哪一档，
+    # 而不是让那一档带着空文案（或英文 key）上线。
+    for suffix in TILING_QUALITY_OFFSETS:
         entry = MESSAGES[f'tpl.index.process.terrain_quality_{suffix}']
         assert '基准层级' in entry['zh'], (
             f'{suffix} 档的中文文案没写参照物「基准层级」：{entry["zh"]}')
@@ -497,9 +506,13 @@ def test_preset_wording_anchors_to_the_base_level_like_the_detail_panel():
     hint = MESSAGES['tpl.index.process.terrain_quality_hint']
     # build_terrain 把结果钳到 [0, 21]：maxzoom=21 选精度档切出来还是 21。
     # 概率极低，但文案不能把「一定多一级」说死。
-    assert '21' in hint['zh'] and '21' in hint['en'], (
-        '档位说明没有交代 0/21 边界会被钳住 —— 边界上选了档位却毫无变化，'
-        '用户只会当成 bug')
+    # 断言整句钳位说明，而不是「文案里出现过 21 这两个数字」：层级上限、体积倍数
+    # 里到处是数字，只查 '21' 的话，把钳位那半句整段删掉仍然全绿。
+    assert '0 或 21 上限时不再偏移' in hint['zh'], (
+        f'中文档位说明没有交代 0/21 边界会被钳住 —— 边界上选了档位却毫无变化，'
+        f'用户只会当成 bug：{hint["zh"]}')
+    assert '0 / 21 limits' in hint['en'] and 'offset is clamped' in hint['en'], (
+        f'英文档位说明没有交代 0/21 边界会被钳住：{hint["en"]}')
 
 
 def _option_tag(block, value):
@@ -508,7 +521,7 @@ def _option_tag(block, value):
     return m.group(0)
 
 
-def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path):
+def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path, caplog):
     """渲染级：三个控件（层级 / 档位 / 法线）的初值都必须跟着配置走，不能写死。
 
     同一个 DEM 任务有**两个**起切入口：这张表单（map.js 显式发 quality /
@@ -528,7 +541,14 @@ def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path):
     assert cm.set('terrain_quality_preset', 'speed'), 'ConfigManager 没能写入档位配置'
     assert cm.set('terrain_vertex_normals', 'true'), 'ConfigManager 没能写入法线配置'
 
-    block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    with caplog.at_level(logging.WARNING, logger='src.routes.main'):
+        block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    # 三个值全合法，就一条 warning 都不许留：修复日志只在真丢了值时才有意义，
+    # 每刷一次首页刷一条的话，真正的脏值会被淹在噪声里，等于没有日志。
+    repaired = [r.getMessage() for r in caplog.records
+                if 'terrain_local_maxzoom' in r.getMessage()
+                or 'terrain_quality_preset' in r.getMessage()]
+    assert not repaired, f'配置完全合法，却报告了「改用出厂默认」：{repaired}'
     assert 'selected' in _option_tag(block, 'speed'), (
         '配置是 speed，渲染出来的下拉却没选中它 —— 表单会把 balanced 显式发出去，'
         '同一个任务从详情面板起切却是 speed')
@@ -548,9 +568,10 @@ def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path):
 def test_preset_controls_fall_back_to_balanced_when_config_is_empty(monkeypatch, tmp_path):
     """渲染级：config={} 的异常兜底路径必须落在均衡，不能落在精细。
 
-    main.py:71-73 在渲染首页出任何异常时会用 `config={}` 再渲染一次。那时三个
-    `{% if %}` 全假，若没有兜底档，**浏览器会自动选中第一个 option**（精细）——
-    默认档位从均衡悄悄变成精细，体积 3.3 倍，没有任何提示。
+    main.index() 在渲染首页出任何异常时会用 `config={}` 再渲染一次，档位初值这时
+    由 _terrain_form_defaults({}) 给出厂默认。给错的话（或者干脆不传这个变量），
+    三条 `{% if %}` 全假，**浏览器会自动选中第一个 option**（精细）—— 默认档位从
+    均衡悄悄变成体积 3.3 倍的那一档，没有任何提示。
     """
     client = _load_app(monkeypatch, tmp_path)
     from src.routes import main as main_route
@@ -568,22 +589,76 @@ def test_preset_controls_fall_back_to_balanced_when_config_is_empty(monkeypatch,
         f'config={{}} 兜底渲染把法线勾上了 —— 出厂默认是关：{normals.group(0) if normals else "找不到控件"}')
 
 
-def test_quality_select_falls_back_to_balanced_on_an_unknown_config_value(monkeypatch, tmp_path):
-    """渲染级：库里是没见过的档位值时，也必须落在均衡。
+def test_quality_select_repairs_an_unknown_config_value_out_loud(monkeypatch, tmp_path,
+                                                                 caplog):
+    """渲染级：库里是没见过的档位值时仍渲染成均衡，但**必须**同时留下一条 warning。
+
+    两半缺一不可。
+
+    「仍渲染成均衡」：浏览器一定会选中某个 option，三条 `{% if %}` 全假时它自动
+    选第一个（精细，体积 3.3 倍）—— 比落在均衡更糟。
+
+    「必须留 warning」：均衡在这里是**修复**，不是用户配的值。同一个脏值从历史页
+    详情面板起切（不带 body、走 validate_tiling_quality）是当场 400，从这张表单却
+    照切不误 —— 一个入口硬拒、一个静默改写。没有日志的话，运维手里两个入口一个
+    报错一个成功，无从判断库里到底存的是什么。修复点必须落在
+    main._terrain_form_defaults：模板是这条链路上唯一记不了日志的一环。
 
     ConfigManager 挡得住走接口写进来的脏值（_VALUE_RULES 里那条
-    `v in TILING_QUALITY_OFFSETS`），挡不住有人直接 sqlite3 改库，也挡不住
-    以后新增第四档时忘了同步模板。任一情况下三个 `{% if %}` 全假，浏览器
-    自动选中第一个 option（精细，体积 3.3 倍）—— 静默且反直觉，所以均衡
-    那条必须是兜底档而不是等值判断。
+    `v in TILING_QUALITY_OFFSETS`），挡不住有人直接 sqlite3 改库，也挡不住以后
+    新增第四档时忘了同步模板。
     """
     client = _load_app(monkeypatch, tmp_path)
     from src.routes import main as main_route
     monkeypatch.setattr(main_route.config_manager, 'get_all',
                         lambda: {'terrain_quality_preset': {'value': 'ultra'}})
 
-    block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    with caplog.at_level(logging.WARNING, logger=main_route.__name__):
+        block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+
     assert 'selected' in _option_tag(block, 'balanced'), (
         "库里是 'ultra' 时没有任何 option 被选中 —— 浏览器会自动选第一个（精细）")
     assert 'selected' not in _option_tag(block, 'precision'), (
         "库里是 'ultra' 时选中了精细档")
+    dropped = [r.getMessage() for r in caplog.records
+               if r.levelno == logging.WARNING
+               and 'terrain_quality_preset' in r.getMessage()]
+    assert dropped, (
+        "不认识的档位值被换成了均衡却没留下任何日志 —— 这正是本仓最不能容忍的"
+        "「作业完成、HTTP 200、前端不报错、就是不对」")
+    assert "'ultra'" in dropped[0] and 'balanced' in dropped[0], (
+        f'日志里必须同时点名被丢弃的值和替换成的值，否则排查时还得靠猜：{dropped[0]}')
+
+
+def test_out_of_range_maxzoom_is_clamped_out_loud(monkeypatch, tmp_path, caplog):
+    """渲染级：库里的越界层级仍钳回出厂默认 14，但必须留下一条点名 99 的 warning。
+
+    钳位本身是对的、绝不能去掉：terrain_local_maxzoom 登记在
+    config_manager._UNCONSTRAINED_KEYS，PUT /api/config 收得下 99，照直渲染成
+    value="99" 会违反控件自己的 min/max，让整张 #processForm 变 :invalid，
+    「创建」点了没反应（tests/test_config_form_submittable.py 钉的就是这条）。
+
+    问题只在于它此前是**静默**的：运维 PUT 了 99，打开处理表单看到 14，中间没有
+    任何信号，一直要等到作业真跑起来才由 local_terrain_task_manager.py:128-130
+    吭一声。与 tests/test_terrain_api.py:312 那条同形，只是这里守的是渲染入口。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    from src.routes import main as main_route
+    monkeypatch.setattr(main_route.config_manager, 'get_all',
+                        lambda: {'terrain_local_maxzoom': {'value': '99'}})
+
+    with caplog.at_level(logging.WARNING, logger=main_route.__name__):
+        block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+
+    maxzoom = re.search(r'<input[^>]*id="localTerrainMaxzoom"[^>]*>', block)
+    assert maxzoom and 'value="14"' in maxzoom.group(0), (
+        f'越界的 terrain_local_maxzoom=99 必须钳回 14，否则整张表单 :invalid：'
+        f'{maxzoom.group(0) if maxzoom else "找不到控件"}')
+    dropped = [r.getMessage() for r in caplog.records
+               if r.levelno == logging.WARNING
+               and 'terrain_local_maxzoom' in r.getMessage()]
+    assert dropped, (
+        '越界层级被丢弃却没留下任何日志 —— 运维看到的只是一个正常的 14，'
+        '要等作业跑起来才知道自己配的 99 没生效')
+    assert '99' in dropped[0] and '14' in dropped[0], (
+        f'日志里必须同时点名被丢弃的值和替换成的值：{dropped[0]}')
