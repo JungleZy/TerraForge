@@ -589,6 +589,12 @@ def init_database():
                 maxzoom INTEGER NOT NULL,
                 quality TEXT DEFAULT 'balanced',
                 vertex_normals INTEGER DEFAULT 0,
+                -- 切片**实际**切到的最深层级（档位偏移 + [0,21] 钳位之后，由
+                -- build_terrain 回报）。maxzoom 那一列存的是用户填的**基准**
+                -- 层级，precision/speed 两档下两者差 1 —— 详情面板与 layer.json
+                -- 对不上就是因为此前只有基准值落库。NULL = 还没切完 / 存量行，
+                -- 消费方回落到 maxzoom 并说明那是基准值。
+                effective_maxzoom INTEGER DEFAULT NULL,
                 parent_url TEXT,
                 rendered_tiles INTEGER DEFAULT 0,
                 total_tiles INTEGER DEFAULT 0,
@@ -658,6 +664,8 @@ def init_database():
                 maxzoom INTEGER NOT NULL,
                 quality TEXT DEFAULT 'balanced',
                 vertex_normals INTEGER DEFAULT 0,
+                -- 实际切到的最深层级，语义同 dem_terrain_jobs.effective_maxzoom。
+                effective_maxzoom INTEGER DEFAULT NULL,
                 parent_url TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
@@ -819,6 +827,11 @@ def init_database():
             ("dem_terrain_jobs", "vertex_normals INTEGER DEFAULT 0"),
             ("local_terrain_tasks", "quality TEXT DEFAULT 'balanced'"),
             ("local_terrain_tasks", "vertex_normals INTEGER DEFAULT 0"),
+            # 实际切到的最深层级（档位偏移 + 钳位之后的产物事实）。同样两张表
+            # 都要。DEFAULT NULL 是有语义的、不是省事：0 是合法层级，不能拿它
+            # 当「未知」用，存量行与未切完的作业必须与「真的切到了 z0」可区分。
+            ("dem_terrain_jobs", "effective_maxzoom INTEGER DEFAULT NULL"),
+            ("local_terrain_tasks", "effective_maxzoom INTEGER DEFAULT NULL"),
         ):
             try:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")

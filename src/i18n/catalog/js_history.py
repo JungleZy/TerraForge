@@ -248,6 +248,29 @@ MESSAGES = {
               'setting later does not affect output that has already been tiled.',
     },
 
+    # 「层级」那一格。两种标签不是措辞变体，是两种不同的事实：
+    # 实际层级 = 作业切完后 build_terrain 回报的最深层级（= layer.json 的
+    # maxzoom）；基准层级 = 用户填的那个数，精细/快速两档下它比实际值差一级。
+    # 拿不到实际值时（存量行 / 还没切完）必须换标签 + 挂说明，不能让基准值
+    # 顶着「实际」的名头显示 —— 那正是这次要修的错数字。
+    'js.history.terrain.maxzoom_actual_label': {
+        'zh': '实际层级',
+        'en': 'Actual max level',
+    },
+    'js.history.terrain.maxzoom_base_label': {
+        'zh': '基准层级',
+        'en': 'Base level',
+    },
+    'js.history.terrain.maxzoom_base_hint': {
+        'zh': '这是提交时填的基准层级，不是产物实际切到的最深层级：精细档会多切'
+              '一级、快速档少切一级。作业切完后这里会换成实际层级（与 layer.json '
+              '一致）。',
+        'en': 'This is the base level submitted with the job, not the deepest '
+              'level actually tiled: the precision preset goes one level deeper '
+              'and the fast preset one level shallower. Once the job finishes '
+              'this switches to the actual level (matching layer.json).',
+    },
+
     # 删除任务的单一确认框与结果提示。
     # 三个活动状态各有各的措辞：pending 还没开始跑，写「正在运行」就是撒谎；
     # paused 停在半路，说「立即停止」也不准 —— 用户要判断「删了会失去什么」，

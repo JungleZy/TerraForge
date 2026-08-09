@@ -395,7 +395,10 @@ class LocalTerrainTaskManager:
 
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='running', started_at=?, "
-                    "completed_at=NULL, error_message=NULL WHERE id=? AND status != 'running'",
+                    # effective_maxzoom 一并清空：上一轮的实际层级是上一轮的产物
+                    # 事实，本轮切完之前显示它就是撒谎（DEM 侧的 upsert 同理）。
+                    "completed_at=NULL, error_message=NULL, effective_maxzoom=NULL "
+                    "WHERE id=? AND status != 'running'",
                     (utc_now_iso(), task_id),
                 )
                 if cur.rowcount != 1:
@@ -538,6 +541,9 @@ class LocalTerrainTaskManager:
             rendered = int(counts.get("rendered", 0) or 0)
             failed = int(counts.get("failed", 0) or 0)
             total = int(counts.get("total", 0) or 0)
+            # 实际切到的最深层级：档位偏移 + 钳位之后的产物事实，与 layer.json
+            # 的 maxzoom 同源。None = 切片器没回报（注入的替身），保持库里原值。
+            effective_maxzoom = counts.get("max_level")
             if total > 0 and rendered == 0 and not (stop_flag is not None and stop_flag.is_set()):
                 raise RuntimeError(
                     f"terrain tiling produced no tiles ({failed}/{total} failed)")
@@ -557,8 +563,10 @@ class LocalTerrainTaskManager:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='completed', completed_at=?, "
-                    "error_message=? WHERE id=? AND status='running'",
-                    (utc_now_iso(), warning, task_id),
+                    # COALESCE：没回报层级时不要把已有值抹成 NULL。
+                    "error_message=?, effective_maxzoom=COALESCE(?, effective_maxzoom) "
+                    "WHERE id=? AND status='running'",
+                    (utc_now_iso(), warning, effective_maxzoom, task_id),
                 )
                 conn.commit()
             finally:

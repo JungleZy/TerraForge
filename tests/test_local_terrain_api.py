@@ -963,3 +963,94 @@ def test_http_upload_treats_empty_strings_as_omitted(monkeypatch, tmp_path):
     row = app_mod.local_terrain_task_manager.get_task(resp.get_json()["task_id"])
     assert row["quality"] == "precision"
     assert row["vertex_normals"] == 1
+
+
+# --------------------------------------------------------------------------
+# I1 / I2：实际切到的层级要落库；任务详情要拿得到档位、法线与实际层级
+# --------------------------------------------------------------------------
+
+
+def test_effective_maxzoom_is_persisted_from_the_tiler(monkeypatch, tmp_path):
+    """切片器回报的实际层级必须落进 local_terrain_tasks.effective_maxzoom。
+
+    改动前这个返回值在管理器里被就地丢弃，详情模态的 `0 - ${task.maxzoom}` 显示
+    的是用户填的**基准**层级 —— speed 档实际只切到 10，界面却写 `0 - 11`。
+    """
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    def fake_tile(task_dir, out_dir, params):
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        # 替身照 build_terrain 的口径回报：基准 + 偏移。
+        return {"total": 3, "rendered": 3, "failed": 0,
+                "max_level": params.maxzoom + params.level_offset,
+                "chose_martini": 0, "chose_grid": 3}
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+
+    task_id = mgr.create_task_with_files(
+        name="local-effective", files=[("a.tif", b"fake")], maxzoom=11,
+        quality="speed")
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+
+    row = mgr.get_task(task_id)
+    assert row["status"] == "completed", row["error_message"]
+    assert row["maxzoom"] == 11, "基准层级那一列被改写了"
+    assert row["effective_maxzoom"] == 10, (
+        f"speed 档实际切到 11-1=10，库里是 {row['effective_maxzoom']!r}")
+
+
+def test_effective_maxzoom_stays_null_when_the_tiler_reports_nothing(
+        monkeypatch, tmp_path):
+    """切片器不回报层级时该列保持 NULL —— **不能**被归一成 0。
+
+    0 是合法层级（maxzoom=0 真的只切 z0）。拿 0 当「未知」，详情模态会显示
+    `0 - 0`，而这个作业其实切到了别的层级。
+    """
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    def fake_tile(task_dir, out_dir, params):
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+
+    task_id = mgr.create_task_with_files(
+        name="local-noreport", files=[("a.tif", b"fake")], maxzoom=11)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+
+    row = mgr.get_task(task_id)
+    assert row["status"] == "completed", row["error_message"]
+    assert row["effective_maxzoom"] is None
+
+
+def test_task_detail_response_carries_the_preset_and_normals(monkeypatch, tmp_path):
+    """I2：GET 任务详情必须带上档位、法线与实际层级三样。
+
+    本地地形是用户**唯一能亲手选档位**的入口（上传表单里的下拉框），几十分钟
+    切完回来却查不到自己当时选了什么。数据一直在库里、也在这个响应里，缺的
+    只是详情面板去读它 —— 前端那一半由
+    tests/test_tasks_js_contract.py::test_terrain_detail_shows_the_preset_actually_used
+    钉住，这条钉响应里真的有可读的字段。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+
+    resp = _http_upload(client, maxzoom="10", quality="speed",
+                        vertex_normals="true")
+    assert resp.status_code == 201, resp.get_json()
+    task_id = resp.get_json()["task_id"]
+
+    task = client.get(f"/api/terrain/local/tasks/{task_id}").get_json()["task"]
+    assert task["quality"] == "speed"
+    assert task["vertex_normals"] == 1
+    # 还没切（start_tiling 被替掉了），实际层级尚不成立 —— 必须是 NULL，
+    # 前端据此回落到基准值并标明。
+    assert task["effective_maxzoom"] is None
+    assert task["maxzoom"] == 10

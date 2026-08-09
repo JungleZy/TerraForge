@@ -169,6 +169,26 @@ def test_new_db_gets_preset_columns_from_the_create_statement(
         f"{table} 的 vertex_normals 排在末尾，说明建表语句里没有它、是迁移补的"
 
 
+@pytest.mark.parametrize("table", ["dem_terrain_jobs", "local_terrain_tasks"])
+def test_new_db_gets_the_effective_level_column_from_the_create_statement(
+        monkeypatch, tmp_path, table):
+    """实际层级列同样要走建表语句，且默认值必须是 NULL 而不是 0。
+
+    这一列的 DEFAULT 是有语义的：0 是合法层级（maxzoom<=1 配 speed 档真的只切
+    到 z0），把「还没切完 / 存量行」也存成 0 就分不出「未知」与「切到了 z0」，
+    详情面板会拿 0 冒充产物事实。
+    """
+    names, cols = _columns(_init_db(monkeypatch, tmp_path), table)
+
+    assert "effective_maxzoom" in cols, f"{table} 没有 effective_maxzoom 列"
+    assert cols["effective_maxzoom"][4] in (None, "NULL"), (
+        f"{table}.effective_maxzoom 的默认值是 {cols['effective_maxzoom'][4]!r}，"
+        "不是 NULL —— 0 是合法层级，不能当「未知」用")
+    assert cols["effective_maxzoom"][3] == 0, "这一列必须允许 NULL"
+    assert names.index("effective_maxzoom") < names.index("parent_url"), \
+        f"{table} 的 effective_maxzoom 排在末尾，说明建表语句里没有它、是迁移补的"
+
+
 @pytest.mark.parametrize("table,row_sql", [
     ("dem_terrain_jobs", "SELECT quality, vertex_normals FROM dem_terrain_jobs"),
     ("local_terrain_tasks",
@@ -194,3 +214,29 @@ def test_legacy_db_gets_preset_columns_from_the_migration(
     finally:
         conn.close()
     assert (row[0], row[1]) == ("balanced", 0), f"{table} 存量行没拿到默认值"
+
+
+@pytest.mark.parametrize("table", ["dem_terrain_jobs", "local_terrain_tasks"])
+def test_legacy_db_gets_the_effective_level_column_from_the_migration(
+        monkeypatch, tmp_path, table):
+    """存量库靠 ALTER 补出实际层级列，存量行读出来是 NULL（不是 0）。
+
+    删掉这条迁移元组时新库自带列会替它遮住 —— 存量用户的详情面板会
+    OperationalError（no such column）。
+    """
+    db = _legacy_db(monkeypatch, tmp_path)
+    names, cols = _columns(db, table)
+
+    assert "effective_maxzoom" in cols, f"{table} 的迁移没补出 effective_maxzoom"
+    assert names.index("effective_maxzoom") > names.index("error_message"), \
+        f"{table} 的 effective_maxzoom 没排在末尾，这张表被重建了，没走到迁移"
+
+    conn = db.get_connection()
+    try:
+        value = conn.execute(
+            f"SELECT effective_maxzoom FROM {table}").fetchone()[0]
+    finally:
+        conn.close()
+    assert value is None, (
+        f"{table} 存量行的 effective_maxzoom 回填成了 {value!r} —— 那些作业当年"
+        "切到哪一层没人知道，只能是 NULL")

@@ -379,7 +379,13 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         } else if (taskType === 'local_terrain') {
             document.getElementById('detailStyle').textContent = t('js.history.meta.local_terrain');
             document.getElementById('detailFormat').textContent = '-';
-            document.getElementById('detailZoom').textContent = `0 - ${task.maxzoom}`;
+            // 实际切到的最深层级优先。`0 - N` 是一个自称精确的范围，而 maxzoom
+            // 那一列存的是用户填的**基准**层级 —— 精细/快速两档下它与产物实际的
+            // 最深层级差一级，直接显示就是错数字（precision 档写 0 - 14、
+            // layer.json 里是 15）。切完之前 effective_maxzoom 为 NULL，回落到
+            // 基准值并由下面那句 title 说明它是基准值。
+            document.getElementById('detailZoom').textContent =
+                `0 - ${task.effective_maxzoom ?? task.maxzoom}`;
             document.getElementById('detailTotal').textContent = task.total_files;
             document.getElementById('detailDownloaded').textContent = task.uploaded_files;
             document.getElementById('detailFailed').textContent = task.failed_files;
@@ -398,6 +404,13 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailDownloaded').textContent = task.downloaded_tiles;
             document.getElementById('detailFailed').textContent = task.failed_tiles;
         }
+        // 上一格只有本地地形会带「这是基准值、不是实际切到的层级」那句悬停说明。
+        // 其余分支必须显式清空：模态复用同一个 DOM，不清的话上一个任务留下的
+        // 提示会粘在下一个任务身上。
+        document.getElementById('detailZoom').title =
+            (taskType === 'local_terrain' && task.effective_maxzoom == null)
+                ? t('js.history.terrain.maxzoom_base_hint')
+                : '';
 
         const total = taskType === 'dem' ? (task.total_files || 0)
                     : taskType === 'local_terrain' ? (task.total_files || 0)
@@ -441,12 +454,24 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailErrorRow').hidden = true;
         }
 
-        // DEM: 地形切片入口
+        // 地形切片信息区。DEM 是一条独立的切片作业（要拉 /api/terrain/dem/<id>，
+        // 还带起切/刷新按钮）；本地地形没有独立作业行 —— 切片状态就是任务状态、
+        // 上面已经显示过，也没有起切端点，所以只借这块地方回显档位与法线，
+        // 数据直接取自 task（local_terrain_tasks 行本身就带这两列），不再发请求。
         const terrainRow = document.getElementById('detailTerrainRow');
+        const terrainActions = document.getElementById('detailTerrainActions');
         if (taskType === 'dem') {
             terrainRow.hidden = false;
+            terrainActions.hidden = false;
             initTerrainDetailActions(taskId);
             await refreshTerrainDetail(taskId);
+        } else if (taskType === 'local_terrain') {
+            terrainRow.hidden = false;
+            terrainActions.hidden = true;
+            document.getElementById('detailTerrainStatus').textContent = '';
+            document.getElementById('detailTerrainErrorRow').hidden = true;
+            document.getElementById('detailTerrainInfo').innerHTML =
+                terrainPresetRowsHtml(task);
         } else {
             terrainRow.hidden = true;
         }
@@ -498,6 +523,55 @@ const TERRAIN_QUALITY_KEYS = {
     speed: 'js.history.terrain.quality_speed',
 };
 
+// 「层级」那一行。显示的必须是**产物事实**：effective_maxzoom 是 build_terrain
+// 回报、切完才落库的实际最深层级，与 layer.json 的 maxzoom 同源；maxzoom 那一列
+// 存的是用户填的基准层级，精细/快速两档下两者差一级。此前面板只有后者，于是
+// precision 档的作业面板写 12、layer.json 里却是 13。
+// 为 NULL（存量行 / 还没切完）时回落到基准值，但**换一个标签并挂上说明**，
+// 不冒充实际值 —— 后端同理不能拿 0 当「未知」，0 是合法层级。
+function terrainMaxzoomRowHtml(row) {
+    const actual = row.effective_maxzoom;
+    if (actual != null) {
+        return `<div>${t('js.history.terrain.maxzoom_actual_label')}: `
+            + `${escapeHtml(String(actual))}</div>`;
+    }
+    return `<div title="${escapeHtml(t('js.history.terrain.maxzoom_base_hint'))}">`
+        + `${t('js.history.terrain.maxzoom_base_label')}: `
+        + `${escapeHtml(String(row.maxzoom ?? '-'))}</div>`;
+}
+
+// 档位与法线两行，DEM 切片作业（dem_terrain_jobs 行）与本地地形任务
+// （local_terrain_tasks 行）共用 —— 两张表的 quality / vertex_normals 同名同义。
+// 两边都必须回显，理由各不相同：DEM 面板的起切按钮 POST 不带 body、走配置默认，
+// 用户在那里没有选择权；本地地形则恰恰相反，上传表单是用户**唯一能亲手选档位**
+// 的入口，几十分钟切完回来查不到自己当时选了什么更说不过去。
+function terrainPresetRowsHtml(row) {
+    // 查表必须走 hasOwnProperty：对象字面量继承 Object.prototype，
+    // `constructor` / `__proto__` / `toString` 这几个值会命中原型上的成员、
+    // 被当成「认得出的档位」，最后把 `function Object() { [native code] }`
+    // 绕过下面那道 escapeHtml 插进界面。正常写入路径上 validate_tiling_quality
+    // 挡得住，但「认不出的值原样显示」这条契约不该只对好输入成立。
+    const qualityKey = Object.prototype.hasOwnProperty.call(TERRAIN_QUALITY_KEYS, row.quality)
+        ? TERRAIN_QUALITY_KEYS[row.quality]
+        : null;
+    // 认不出的值（旧作业 / 手改过库）宁可原样显示，也好过悄悄说成「均衡」。
+    const quality = qualityKey ? t(qualityKey) : escapeHtml(String(row.quality ?? '-'));
+    const normalsOn = !!row.vertex_normals;
+    const normals = t(normalsOn
+        ? 'js.history.terrain.normals_on'
+        : 'js.history.terrain.normals_off');
+    // 关掉法线不是「少一个效果」：hasVertexNormals 是 provider 级的单一标志，
+    // 这份地形没有法线，Cesium 的光照开关就对**整幅场景**退化成全球日夜渐变，
+    // 随包底图自带的法线也一并作废。而且法线是烘焙进瓦片的，事后改配置救不回
+    // 已经切完的产物 —— 用户在这里看到「未开启」时必须同时看到这个后果。
+    const normalsTitle = normalsOn
+        ? ''
+        : ` title="${escapeHtml(t('js.history.terrain.normals_off_hint'))}"`;
+    return `
+            <div>${t('js.history.terrain.quality_label')}: ${quality}</div>
+            <div${normalsTitle}>${t('js.history.terrain.normals_label')}: ${normals}</div>`;
+}
+
 async function refreshTerrainDetail(taskId) {
     const statusEl = document.getElementById('detailTerrainStatus');
     const infoEl = document.getElementById('detailTerrainInfo');
@@ -534,36 +608,9 @@ async function refreshTerrainDetail(taskId) {
         statusEl.innerHTML = `<span class="badge bg-${getStatusColor(status)}">${label}</span>`;
 
         const outDir = job.output_dir || '-';
-        const maxzoom = job.maxzoom ?? '-';
-        // 这个面板的起切按钮（initTerrainDetailActions）POST 时不带 body，档位与
-        // 法线都取配置默认值，面板上也没有对应控件 —— 用户唯一能知道「切出来的
-        // 是哪一档」的途径，就是把作业回吐的实际值显示出来。
-        //
-        // 查表必须走 hasOwnProperty：对象字面量继承 Object.prototype，
-        // `constructor` / `__proto__` / `toString` 这几个值会命中原型上的成员、
-        // 被当成「认得出的档位」，最后把 `function Object() { [native code] }`
-        // 绕过下面那道 escapeHtml 插进界面。正常写入路径上 validate_tiling_quality
-        // 挡得住，但「认不出的值原样显示」这条契约不该只对好输入成立。
-        const qualityKey = Object.prototype.hasOwnProperty.call(TERRAIN_QUALITY_KEYS, job.quality)
-            ? TERRAIN_QUALITY_KEYS[job.quality]
-            : null;
-        // 认不出的值（旧作业 / 手改过库）宁可原样显示，也好过悄悄说成「均衡」。
-        const quality = qualityKey ? t(qualityKey) : escapeHtml(String(job.quality ?? '-'));
-        const normalsOn = !!job.vertex_normals;
-        const normals = t(normalsOn
-            ? 'js.history.terrain.normals_on'
-            : 'js.history.terrain.normals_off');
-        // 关掉法线不是「少一个效果」：hasVertexNormals 是 provider 级的单一标志，
-        // 这份地形没有法线，Cesium 的光照开关就对**整幅场景**退化成全球日夜渐变，
-        // 随包底图自带的法线也一并作废。而且法线是烘焙进瓦片的，事后改配置救不回
-        // 已经切完的产物 —— 用户在这里看到「未开启」时必须同时看到这个后果。
-        const normalsTitle = normalsOn
-            ? ''
-            : ` title="${escapeHtml(t('js.history.terrain.normals_off_hint'))}"`;
         infoEl.innerHTML = `
-            <div>MaxZoom: ${maxzoom}</div>
-            <div>${t('js.history.terrain.quality_label')}: ${quality}</div>
-            <div${normalsTitle}>${t('js.history.terrain.normals_label')}: ${normals}</div>
+            ${terrainMaxzoomRowHtml(job)}
+            ${terrainPresetRowsHtml(job)}
             <div>Out: ${escapeHtml(outDir)}</div>
             <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
             <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>

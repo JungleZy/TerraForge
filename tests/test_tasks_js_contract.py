@@ -1916,35 +1916,41 @@ def test_delete_confirm_texts_are_bilingual_and_distinct():
 
 
 def test_terrain_detail_shows_the_preset_actually_used():
-    """详情面板必须显示实际用的档位与法线状态。
+    """两个详情面板都必须显示实际用的档位与法线状态。
 
-    起切按钮（history.js 的 initTerrainDetailActions）POST 时**不带 body**，
-    面板里也没有任何档位控件 —— 从这里起切走的是配置默认值。不显示的话，
-    用户切完两小时也不知道切出来的是哪一档、带没带法线。
+    DEM 侧：起切按钮（history.js 的 initTerrainDetailActions）POST 时**不带
+    body**，面板里也没有任何档位控件 —— 从这里起切走的是配置默认值。
+    本地地形侧：上传表单是用户**唯一能亲手选档位**的入口，切完回来查不到自己
+    当时选了什么更说不过去。两边共用 terrainPresetRowsHtml 渲染这两行。
 
     只断言字符串 "quality" 太弱：history.js 里另有底图/样式相关的同名词。
-    这里锁的是**字段读取形态** `job.quality` / `job.vertex_normals`，
-    并且要在 refreshTerrainDetail 这一个函数体内。
+    这里锁的是**字段读取形态** `row.quality` / `row.vertex_normals`，
+    并且要在 terrainPresetRowsHtml 这一个函数体内。
     """
-    body = _fn('refreshTerrainDetail', 'history.js')
+    body = _fn('terrainPresetRowsHtml', 'history.js')
 
-    assert re.search(r'\bjob\.quality\b', body), (
-        'refreshTerrainDetail 没有读作业的 quality 字段 —— 面板不显示实际档位'
+    assert re.search(r'\brow\.quality\b', body), (
+        'terrainPresetRowsHtml 没有读 quality 字段 —— 面板不显示实际档位'
     )
-    assert re.search(r'\bjob\.vertex_normals\b', body), (
-        'refreshTerrainDetail 没有读作业的 vertex_normals 字段 —— 法线开关看不见'
+    assert re.search(r'\brow\.vertex_normals\b', body), (
+        'terrainPresetRowsHtml 没有读 vertex_normals 字段 —— 法线开关看不见'
     )
     # 光有「读了字段」还不够：把模板改成 `${maxzoom}` 也能让上面两条全绿，
-    # 而面板上两行显示的都是层级数。这里钉「算出来的值确实进了 infoEl」，
+    # 而面板上两行显示的都是层级数。这里钉「算出来的值确实进了返回的 HTML」，
     # 且各自跟在自己的标题词后面（换成对方的值同样是错的）。
-    assert 'infoEl.innerHTML' in body, (
-        'refreshTerrainDetail 不再往 infoEl 写内容 —— 本测试已失效，重写它'
-    )
     assert re.search(r"quality_label'\)\}: \$\{quality\}", body), (
         '档位那一行没有插值算出来的 quality —— 显示的是别的东西'
     )
     assert re.search(r"normals_label'\)\}: \$\{normals\}", body), (
         '法线那一行没有插值算出来的 normals —— 显示的是别的东西'
+    )
+    # 两个面板都得真的调它。少一边就退回改动前的状态：本地地形任务详情里
+    # 一行档位、一行法线都没有，而数据一直躺在 local_terrain_tasks 行里。
+    assert 'terrainPresetRowsHtml(job)' in _fn('refreshTerrainDetail', 'history.js'), (
+        'DEM 详情面板没有渲染档位/法线两行'
+    )
+    assert 'terrainPresetRowsHtml(task)' in _fn('viewTaskDetails', 'history.js'), (
+        '本地地形任务详情没有渲染档位/法线两行 —— 用户唯一能选档位的入口回显不了'
     )
 
 
@@ -1973,20 +1979,20 @@ def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
             f'{m.group(1)} 的中文就是枚举字面量本身：{entry["zh"]!r}'
         )
 
-    # 查表的下标必须**就是** job.quality。只钉 `\bjob\.quality\b` 挡不住把这里
-    # 拼错成 job.qualityy：下一行的兜底表达式里还有一个 job.quality，正则照样
+    # 查表的下标必须**就是** row.quality。只钉 `\brow\.quality\b` 挡不住把这里
+    # 拼错成 row.qualityy：下一行的兜底表达式里还有一个 row.quality，正则照样
     # 命中，而每个作业都会渲染出生英文枚举 —— 正是本用例声称要防的那件事。
-    body = _fn('refreshTerrainDetail', 'history.js')
-    assert re.search(r'TERRAIN_QUALITY_KEYS\[job\.quality\]', body), (
-        '档位查表的下标不是 job.quality —— 查不到就走兜底，界面上是英文枚举原文'
+    body = _fn('terrainPresetRowsHtml', 'history.js')
+    assert re.search(r'TERRAIN_QUALITY_KEYS\[row\.quality\]', body), (
+        '档位查表的下标不是 row.quality —— 查不到就走兜底，界面上是英文枚举原文'
     )
     # 裸下标会命中 Object.prototype：quality === 'constructor' 时取到构造函数、
     # 被当成「认得出的档位」，最后绕过 escapeHtml 插进 innerHTML。
     assert re.search(
-        r'hasOwnProperty\.call\(\s*TERRAIN_QUALITY_KEYS\s*,\s*job\.quality\s*\)', body,
+        r'hasOwnProperty\.call\(\s*TERRAIN_QUALITY_KEYS\s*,\s*row\.quality\s*\)', body,
     ), '档位查表没有挡原型链 —— constructor/__proto__/toString 会走进「认得出」分支'
     # 查到了键就必须走 t()。缺这一条的话，把显示表达式改回
-    # `escapeHtml(String(job.quality))` 也全绿 —— 查表建好了却没人用，
+    # `escapeHtml(String(row.quality))` 也全绿 —— 查表建好了却没人用，
     # 界面上照样是三个英文枚举词。
     assert re.search(r'const quality = qualityKey \?\s*t\(qualityKey\)', body), (
         '认出来的档位没有过 t() —— 查表白建了，界面上还是 precision/balanced/speed'
@@ -2002,7 +2008,7 @@ def test_terrain_preset_is_shown_as_words_not_the_raw_enum():
     assert re.search(r"normalsOn\s*\n?\s*\?\s*''\s*\n?\s*:\s*` title=", body), (
         '关闭法线的后果提示不是「仅在关闭时」给出 —— 开启的作业也会被警告'
     )
-    assert hint in body, f'refreshTerrainDetail 没有引用 {hint} —— 关掉法线的后果没人告诉用户'
+    assert hint in body, f'terrainPresetRowsHtml 没有引用 {hint} —— 关掉法线的后果没人告诉用户'
 
     # 法线两态各有各的文案：只显示「开」而不显示「关」等于没显示。
     for key in ('js.history.terrain.normals_on', 'js.history.terrain.normals_off'):

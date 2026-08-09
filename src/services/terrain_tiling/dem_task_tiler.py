@@ -171,10 +171,15 @@ def tile_dem_task_dir(
 
     # 注入的 build_terrain_fn 返回 None（老测试替身）时归一成全 0 计数；提前到
     # 这里归一，停止分支与正常分支共用同一个返回值。
-    keys = ("total", "rendered", "failed", "max_level",
-            "chose_martini", "chose_grid")
-    counts = (dict.fromkeys(keys, 0) if not isinstance(counts, dict)
-              else {k: int(counts.get(k, 0) or 0) for k in keys})
+    raw = counts if isinstance(counts, dict) else {}
+    counts = {k: int(raw.get(k, 0) or 0)
+              for k in ("total", "rendered", "failed", "chose_martini", "chose_grid")}
+    # ⚠️ max_level 是**层级**不是计数，不能跟着上面那行归零：z0 是合法层级
+    # （maxzoom<=1 配 speed 档就会切到 0），拿 0 当「未知」会让调用方把
+    # effective_maxzoom 落成一个假的 0，界面上显示 "0 - 0"。缺失一律 None，
+    # 调用方据此决定「回落到请求值」还是「显示产物事实」。
+    max_level = raw.get("max_level")
+    counts["max_level"] = None if max_level is None else int(max_level)
 
     if params.stop_flag is not None and params.stop_flag.is_set():
         # build_terrain 中途被停了就不要再植底图：graft_base_into 是 4.3 万个

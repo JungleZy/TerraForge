@@ -377,6 +377,10 @@ class DemTaskManager:
                         -- 产物没变、全程零报错，用户只会以为旋钮是假的。
                         quality=excluded.quality,
                         vertex_normals=excluded.vertex_normals,
+                        -- 重切先把上一轮的产物事实清空：新档位切出来的实际层级
+                        -- 要到收尾才知道，中间这段时间显示旧值等于撒谎。NULL 期间
+                        -- 详情面板回落到 maxzoom（基准值）并标明。
+                        effective_maxzoom=NULL,
                         started_at=excluded.started_at,
                         completed_at=NULL,
                         error_message=NULL
@@ -580,6 +584,10 @@ class DemTaskManager:
             rendered = int(counts.get("rendered", 0) or 0)
             failed = int(counts.get("failed", 0) or 0)
             total = int(counts.get("total", 0) or 0)
+            # 实际切到的最深层级：档位偏移 + 钳位之后的**产物事实**，与
+            # layer.json 的 maxzoom 同源。None = 切片器没回报（老测试替身），
+            # 那时保持库里原值不动，由界面回落到基准值。
+            effective_maxzoom = counts.get("max_level")
             stopped = stop_flag is not None and stop_flag.is_set()
             # 中途停止时 rendered 可以合法地是 0（刚进瓦片循环就被叫停），
             # 不豁免的话会被下面这条「切片器什么都没产出」的失败判据误命中。
@@ -603,8 +611,12 @@ class DemTaskManager:
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE dem_terrain_jobs SET status='completed', completed_at=?, error_message=? WHERE task_id=?",
-                    (utc_now_iso(), warning, task_id),
+                    "UPDATE dem_terrain_jobs SET status='completed', completed_at=?, "
+                    # COALESCE 而不是直接赋值：切片器没回报层级时（注入的替身）
+                    # 不该把已有值抹成 NULL。
+                    "error_message=?, effective_maxzoom=COALESCE(?, effective_maxzoom) "
+                    "WHERE task_id=?",
+                    (utc_now_iso(), warning, effective_maxzoom, task_id),
                 )
                 conn.commit()
             finally:

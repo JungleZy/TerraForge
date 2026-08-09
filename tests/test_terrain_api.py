@@ -494,3 +494,129 @@ def test_http_default_preset_reaches_build_terrain_as_zero_offset(monkeypatch, t
     assert kw["level_offset"] == 0, kw["level_offset"]
     assert kw["normals"] is False
     assert row["status"] == "completed", row["error_message"]
+
+
+# ---------------------------------------------------------------------------
+# I1：实际切到的层级必须落库，且与 layer.json 里的那个数字是同一个
+# ---------------------------------------------------------------------------
+
+
+def _run_real_build_terrain(monkeypatch):
+    """让 build_terrain **真跑**，只替掉真正需要 GDAL 的两处：采样器与逐瓦片编码。
+
+    层级决策（偏移 + [0,21] 钳位 + min_level 收口）和 layer.json 都是
+    build_terrain 自己写的。这是本文件里唯一一条不 stub 掉它的链路，而 I1 要
+    证明的正是「落库的层级 == layer.json 里的层级」—— 拿替身自己回报的数字去
+    对它自己写的 layer.json 是循环论证，证不了任何东西。
+    """
+    from src.services.terrain_tiling import cesiumlab_terrain as ct
+
+    class _FakeSampler:
+        def __init__(self, path, nodata=None):
+            # build_terrain 只用 pixel_size_deg（估算分支用，本用例显式传了
+            # maxzoom 所以走不到）与 bounds（决定枚举多少张瓦片，取小选区）。
+            self.pixel_size_deg = 180.0 / (64 * 2 ** 10)
+            self.bounds = (116.0, 39.0, 116.1, 39.1)
+            self.ds = None
+            self.band = None
+
+    monkeypatch.setattr(ct, "DemSampler", _FakeSampler)
+    monkeypatch.setattr(ct, "_worker_tile", lambda task: (0.0, 1.0, "grid"))
+    # 必须走串行分支：并行分支在 spawn 出来的子进程里跑**真的** _worker_tile，
+    # 上面两个替身进不去，桩 tif 会让每张瓦片都失败。workers<=0 时
+    # build_terrain 取 min(4, os.cpu_count())，把它压成 1 就落到串行。
+    monkeypatch.setattr(ct.os, "cpu_count", lambda: 1)
+
+
+def test_speed_preset_persists_the_level_it_actually_tiled(monkeypatch, tmp_path):
+    """speed 档切完：库里的 effective_maxzoom = 基准−1，且 == layer.json 的 maxzoom。
+
+    改动前 build_terrain 回报的实际层级在两个管理器里被就地丢弃，详情面板显示
+    的是 maxzoom 那一列（用户填的**基准**值）—— precision/speed 两档下它和产物
+    差一级，面板写 12 而 layer.json 写 13，是具体的错数字而不是「可以推导」。
+
+    三个断言缺一不可：基准列没被改写、实际列是偏移后的值、实际列与产物里那份
+    layer.json 逐字一致。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    out_root = tmp_path / "downloads"
+    task_id = _insert_dem_task(db, out_root)
+    task_dir = out_root / f"dem_task_{task_id}"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "a_dem.tif").write_bytes(b"stub-dem")
+
+    _run_real_build_terrain(monkeypatch)
+
+    resp = client.post(f"/api/terrain/dem/{task_id}/start",
+                       json={"quality": "speed", "maxzoom": 12})
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+
+    deadline = time.time() + 60
+    row = None
+    while time.time() < deadline:
+        row = _job_row(db, task_id)
+        if row is not None and row["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.02)
+    assert row is not None and row["status"] == "completed", (
+        row["error_message"] if row is not None else "作业行没建出来")
+
+    assert row["maxzoom"] == 12, "基准层级那一列被改写了 —— 它必须是用户填的值"
+    assert row["effective_maxzoom"] == 11, (
+        f"speed 档实际切到的层级应是 12-1=11，库里是 {row['effective_maxzoom']!r}")
+
+    layer = json.loads(
+        (pathlib.Path(row["output_dir"]) / "layer.json").read_text(encoding="utf-8"))
+    assert layer["maxzoom"] == row["effective_maxzoom"], (
+        f"落库的实际层级 {row['effective_maxzoom']} 与 layer.json 声明的 "
+        f"{layer['maxzoom']} 对不上 —— 面板显示的和 Cesium 拿到的不是同一件事")
+
+
+def test_running_job_reports_no_effective_level_yet(monkeypatch, tmp_path):
+    """还没切完的作业 effective_maxzoom 必须是 NULL，不能预填基准值。
+
+    NULL 是「未知」，界面据此回落到基准值并标明那是基准值。预填的话面板会拿
+    一个尚不成立的数字冒充产物事实（而且 speed/precision 档下它还是错的）。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    task_id = _insert_dem_task(db, tmp_path / "downloads")
+    monkeypatch.setattr(app_mod.dem_task_manager.__class__, "_run_tiling_job",
+                        lambda self, *a, **kw: None)
+
+    assert client.post(f"/api/terrain/dem/{task_id}/start",
+                       json={"quality": "speed", "maxzoom": 12}).status_code == 200
+
+    row = _job_row(db, task_id)
+    assert row["status"] == "running"
+    assert row["effective_maxzoom"] is None
+
+
+def test_restart_clears_the_previous_effective_level(monkeypatch, tmp_path):
+    """重切先把上一轮的实际层级清空 —— 新档位切完之前显示旧值就是撒谎。"""
+    row, _kw = _start_and_settle(monkeypatch, tmp_path, {"quality": "speed", "maxzoom": 12})
+    assert row["effective_maxzoom"] == 11
+
+    db = importlib.import_module("src.core.database")
+    task_id = row["task_id"]
+    conn = db.get_connection()
+    try:
+        conn.execute("UPDATE dem_terrain_jobs SET status='completed' WHERE task_id=?",
+                     (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    from src.services import dem_task_manager as dtm
+    mgr = dtm.DemTaskManager.__new__(dtm.DemTaskManager)
+    mgr.config = {}
+    mgr._state_lock = __import__("threading").RLock()
+    mgr.active_tasks = {}
+    mgr.stop_flags = {}
+    monkeypatch.setattr(dtm.DemTaskManager, "_run_tiling_job",
+                        lambda self, *a, **kw: None)
+    mgr.start_tiling(task_id, maxzoom=12, quality="precision")
+
+    assert _job_row(db, task_id)["effective_maxzoom"] is None, (
+        "重切没把上一轮的实际层级清空 —— 面板会拿上一档的产物事实冒充这一档的")

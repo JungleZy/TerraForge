@@ -137,16 +137,22 @@ def test_tile_dem_task_dir_passes_through_the_backend_choice_counts(tmp_path: Pa
                             TileParams(maxzoom=0, parent_url="https://example.com/p.json"),
                             build_terrain_fn=fake_build_terrain)
 
-    # max_level 不在替身的返回里，白名单归零 —— 它自己的守卫在
+    # max_level 不在替身的返回里 —— 归一成 None（「未知」）而不是 0：0 是合法
+    # 层级（maxzoom<=1 配 speed 档就切到 0），拿它当未知会让管理器把
+    # effective_maxzoom 落成假的 0。它自己的守卫在
     # test_tile_dem_task_dir_threads_normals_and_offset。
-    assert got == {"total": 40, "rendered": 37, "failed": 3, "max_level": 0,
+    assert got == {"total": 40, "rendered": 37, "failed": 3, "max_level": None,
                    "chose_martini": 11, "chose_grid": 26}
 
 
 def test_tile_dem_task_dir_zero_fills_counts_for_legacy_stubs(tmp_path: Path):
-    """老的测试替身返回 None 时,六个计数必须齐全地归零,而不是少几个 key。
+    """老的测试替身返回 None 时,六个 key 必须齐全,而不是少几个。
 
     调用方按"无计数信息"处理,行为与加计数之前一致;少 key 会让调用方 KeyError。
+
+    五个**计数**归零，但 max_level 归 None：它是层级不是计数，0 有它自己的含义
+    （真的只切到 z0），与「切片器没回报」必须可区分 —— 两个管理器正是靠这个
+    区分决定要不要把 effective_maxzoom 落库。
     """
     from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 
@@ -163,8 +169,36 @@ def test_tile_dem_task_dir_zero_fills_counts_for_legacy_stubs(tmp_path: Path):
                             TileParams(maxzoom=0, parent_url="https://example.com/p.json"),
                             build_terrain_fn=fake_build_terrain)
 
-    assert got == {"total": 0, "rendered": 0, "failed": 0, "max_level": 0,
+    assert got == {"total": 0, "rendered": 0, "failed": 0, "max_level": None,
                    "chose_martini": 0, "chose_grid": 0}
+
+
+def test_tile_dem_task_dir_keeps_level_zero_distinct_from_unknown(tmp_path: Path):
+    """build_terrain 回报 max_level=0 时必须原样出来，不能被当成「未知」。
+
+    0 是合法层级：maxzoom=0（或 maxzoom=1 配 speed 档）真的只切 z0。若白名单
+    把它和「替身没回报」压成同一个值，两个管理器要么把 effective_maxzoom 落成
+    假 0、要么把真 0 当成 NULL 回落到基准值 —— 两种都是错数字。
+    """
+    from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "A_dem.tif").write_text("", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    def fake_build_terrain(**kwargs):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "layer.json").write_text('{"parentUrl":"OLD","available":[]}\n', encoding="utf-8")
+        return {"total": 1, "rendered": 1, "failed": 0, "max_level": 0,
+                "chose_martini": 0, "chose_grid": 1}
+
+    got = tile_dem_task_dir(task_dir, out_dir,
+                            TileParams(maxzoom=0, parent_url="https://example.com/p.json"),
+                            build_terrain_fn=fake_build_terrain)
+
+    assert got["max_level"] == 0, "真的切到 z0 被归成了别的值"
+    assert got["max_level"] is not None
 
 
 # ---------------------------------------------------------------------------
