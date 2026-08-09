@@ -372,6 +372,10 @@ class LocalTerrainTaskManager:
 
     def start_tiling(self, task_id: int) -> None:
         task_id = int(task_id)
+        # 预置成 None：下面 except 里的登记回收要在「异常抛在线程对象构造之前」
+        # 的情况下也能安全跑，那时这两个名字还没绑定。
+        th = None
+        stop_flag = None
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -415,12 +419,19 @@ class LocalTerrainTaskManager:
                 # `or DEFAULT_TILING_QUALITY`：存量行的 quality 可能是 NULL。
                 quality = validate_tiling_quality(row["quality"] or DEFAULT_TILING_QUALITY)
                 vertex_normals = bool(row["vertex_normals"])
-                # ⚠️ 上面这三行读库值的转换都可能抛（脏库值），必须排在
-                # conn.commit() **之前**。抛在 commit 之后的话，except 里的
-                # conn.rollback() 是 no-op —— status='running' 已经落地而切片
-                # 线程根本没起来，行就永久卡在 running（_mark_running_task_failed
-                # 只覆盖「线程创建失败」那一条路径，覆盖不到这里）。
-                conn.commit()
+                # ⚠️ conn.commit() 必须是这把锁里的**最后一行**。从这里到锁尾
+                # 的每一步都可能抛：读库值转换（脏库值）、_parent_layer_url()
+                # 另开连接读 config 表（database is locked / 磁盘错误）、
+                # Path(Config.DOWNLOADS_DIR)（DOWNLOADS_DIR 为 None 时 TypeError）、
+                # threading.Thread(...) 构造。任何一处抛在 commit 之后，except 里
+                # 的 conn.rollback() 就是 no-op —— status='running' 已经落地而切片
+                # 线程根本没起来，行永久卡在 running：再次 start 被状态检查拒、
+                # delete 也被拒，只能重启进程靠 _recover_orphan_running_tasks 解开。
+                # 下面 :450 的 L2 回补块只包 th.start()，够不到这段窗口。
+                #
+                # 推迟 commit 不会自锁：_parent_layer_url() 走的是另一条连接，而
+                # get_connection() 开的是 WAL（src/core/database.py:165），WAL 下
+                # 读者不被未提交的写者阻塞，那条 SELECT 立即返回。
 
                 parent_url = row["parent_url"] or _parent_layer_url()
                 # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
@@ -439,8 +450,17 @@ class LocalTerrainTaskManager:
                     name=f"LocalTerrainTiling-{task_id}",
                 )
                 self.active_tasks[task_id] = th
+                conn.commit()
         except Exception:
             conn.rollback()
+            # commit 自己抛（磁盘满等）时上面两行登记已经落进 dict，而这个线程
+            # 永远不会 start()。留着它 delete_task 会被 task_deletion.py 的
+            # `thread.ident is None ⇒ 视为在跑` 判据误导，走后台收尾路径空等。
+            with self._state_lock:
+                if th is not None and self.active_tasks.get(task_id) is th:
+                    self.active_tasks.pop(task_id, None)
+                if stop_flag is not None and self.stop_flags.get(task_id) is stop_flag:
+                    self.stop_flags.pop(task_id, None)
             raise
         finally:
             conn.close()

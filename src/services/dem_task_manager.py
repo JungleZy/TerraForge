@@ -408,17 +408,24 @@ class DemTaskManager:
         # 之后它一条都不命中,什么都不摸。别把身份比较简化成无条件 pop。
         # 登记进 active_tasks 是 delete_task 的 is_alive() 守卫能看见它的前提。
         stop_flag = threading.Event()
-        with self._state_lock:
-            self.stop_flags[task_id] = stop_flag
-            th = threading.Thread(
-                target=self._run_tiling_job,
-                args=(task_id, task_dir, output_dir, maxzoom, parent_url, stop_flag,
-                      quality, vertex_normals),
-                daemon=True,
-                name=f"DemTiling-{task_id}",
-            )
-            self.active_tasks[task_id] = th
+        # 线程构造 + 登记必须与 th.start() 同处一个 try：job 行在 :394 已经
+        # commit 成 running,而 threading.Thread(...) 构造本身、以及登记那两行
+        # 都可能抛。抛在 try 外面的话下面的回补块够不着,job 行永久停在 running
+        # （再次 start_tiling 被 `WHERE status != 'running'` 判为已在运行,
+        # delete_task 也被挡,只能重启进程靠孤儿恢复解开）。
+        # th 预置 None：构造就抛时 except 里的身份比较不能撞 NameError。
+        th = None
         try:
+            with self._state_lock:
+                self.stop_flags[task_id] = stop_flag
+                th = threading.Thread(
+                    target=self._run_tiling_job,
+                    args=(task_id, task_dir, output_dir, maxzoom, parent_url, stop_flag,
+                          quality, vertex_normals),
+                    daemon=True,
+                    name=f"DemTiling-{task_id}",
+                )
+                self.active_tasks[task_id] = th
             th.start()
         except Exception as e:
             # L2: 上面已把 job 行 upsert 成 running 并 commit。线程创建失败
@@ -615,7 +622,9 @@ class DemTaskManager:
                     # COALESCE 而不是直接赋值：切片器没回报层级时（注入的替身）
                     # 不该把已有值抹成 NULL。
                     "error_message=?, effective_maxzoom=COALESCE(?, effective_maxzoom) "
-                    "WHERE task_id=?",
+                    # AND status='running'：终态 UPDATE 不能改写一条已经是终态
+                    # 的记录（同 _mark_failed 的约定，local terrain 侧亦然）。
+                    "WHERE task_id=? AND status='running'",
                     (utc_now_iso(), warning, effective_maxzoom, task_id),
                 )
                 conn.commit()
@@ -628,7 +637,9 @@ class DemTaskManager:
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE dem_terrain_jobs SET status='failed', completed_at=?, error_message=? WHERE task_id=?",
+                    "UPDATE dem_terrain_jobs SET status='failed', completed_at=?, "
+                    # 同上：已落终态的 job 行不该被这条兜底再改一次。
+                    "error_message=? WHERE task_id=? AND status='running'",
                     (utc_now_iso(), str(e), task_id),
                 )
                 conn.commit()

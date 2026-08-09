@@ -1127,3 +1127,56 @@ def test_dirty_config_quality_names_the_config_key_not_the_request_field(
                                    files=[("a.tif", b"fake")], maxzoom=11)
 
     assert "terrain_quality_preset" in str(e.value), str(e.value)
+
+
+def test_parent_url_lookup_failure_does_not_strand_the_task_in_running(
+        monkeypatch, tmp_path):
+    """commit 之后、线程起来之前抛异常时，行不能停在 running。
+
+    `parent_url = row["parent_url"] or _parent_layer_url()` 会另开一条连接读
+    config 表，`database is locked` / 磁盘错误都从这里抛。这段代码此前排在
+    `conn.commit()` **之后**：抛出去时 status='running' 已经落地，except 里的
+    rollback 是 no-op，切片线程一根都没起 —— 行永久卡在 running，再次 start 被
+    状态检查拒、delete 也被拒，只能重启进程靠孤儿恢复解开。
+    """
+    import pytest
+
+    db, mgr_mod = _reload(monkeypatch, tmp_path)
+    mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
+
+    def fake_tile(task_dir, out_dir, params):
+        from pathlib import Path
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mgr_mod, "tile_dem_task_dir", fake_tile)
+    task_id = mgr.create_task_with_files(
+        name="local-parent-url", files=[("a.tif", b"fake")], maxzoom=11)
+    th = mgr.active_tasks.get(task_id)
+    if th:
+        th.join(timeout=5)
+    assert mgr.get_task(task_id)["status"] == "completed"
+
+    # 库里 parent_url 为空才会走到 _parent_layer_url()（本用例没造 base_z8，
+    # 建任务时存的本就是 NULL；显式清一次，不让前提依赖那个副作用）。
+    conn = db.get_connection()
+    try:
+        conn.execute("UPDATE local_terrain_tasks SET parent_url=NULL WHERE id=?",
+                     (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    def boom():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(mgr_mod, "_parent_layer_url", boom)
+
+    with pytest.raises(RuntimeError):
+        mgr.start_tiling(task_id)
+
+    assert mgr.get_task(task_id)["status"] != "running", (
+        "parent_url 查询抛在 commit 之后，任务卡死在 running")
+    # 登记也不能留：task_deletion 把「登记了但 ident is None」判成在跑，
+    # 残留会让后续 delete 走后台收尾路径空等一个永不启动的线程。
+    assert task_id not in mgr.active_tasks
+    assert task_id not in mgr.stop_flags

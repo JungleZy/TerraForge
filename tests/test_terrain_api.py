@@ -620,3 +620,108 @@ def test_restart_clears_the_previous_effective_level(monkeypatch, tmp_path):
 
     assert _job_row(db, task_id)["effective_maxzoom"] is None, (
         "重切没把上一轮的实际层级清空 —— 面板会拿上一档的产物事实冒充这一档的")
+
+
+def test_thread_construction_failure_does_not_strand_the_dem_job_in_running(
+        monkeypatch, tmp_path):
+    """线程构造抛出去时 job 行不能停在 running。
+
+    job 行在 `conn.commit()` 那一刻就已经是 running,而 `threading.Thread(...)`
+    构造与 active_tasks / stop_flags 登记此前排在包住 `th.start()` 的 try
+    **外面** —— 构造抛出去时 L2 回补块够不着,job 行永久停在 running:再次
+    start_tiling 被 `WHERE status != 'running'` 判为已在运行,delete_task 也被
+    挡,只能重启进程靠孤儿恢复解开。
+    """
+    import pytest
+    import threading as _threading
+
+    app_mod, _client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    mgr_mod = importlib.import_module("src.services.dem_task_manager")
+    task_id = _insert_dem_task(db, tmp_path / "downloads")
+    mgr = app_mod.dem_task_manager
+
+    class _NoThreads:
+        """只让 Thread 构造抛（模拟 can't start new thread），其余转发给真模块。
+
+        换掉的是模块名字而不是全局 threading.Thread：后者会在用例期间影响进程里
+        任何别的线程创建。
+        """
+
+        def __getattr__(self, name):
+            return getattr(_threading, name)
+
+        def Thread(self, *args, **kwargs):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(mgr_mod, "threading", _NoThreads())
+
+    with pytest.raises(RuntimeError):
+        mgr.start_tiling(task_id)
+
+    job = _job_row(db, task_id)
+    assert job is not None
+    assert job["status"] == "failed", "线程构造失败，job 行卡死在 running"
+    assert "failed to start" in (job["error_message"] or "")
+    assert task_id not in mgr.active_tasks
+    assert task_id not in mgr.stop_flags
+
+
+def test_dem_terminal_updates_never_overwrite_an_already_terminal_job(
+        monkeypatch, tmp_path):
+    """_run_tiling_job 的两条终态 UPDATE 都不能改写一条已落终态的 job 行。
+
+    两条语句此前只有 `WHERE task_id=?`。仓库约定（见 _mark_failed / 本地地形侧）
+    是终态 UPDATE 必须带 `AND status='running'`：否则一条迟到的收尾会把别的路径
+    刚写下的终态盖掉，界面上的成败结论会莫名其妙地反转。
+    """
+    from src.services import dem_task_manager as dtm
+
+    _app_mod, _client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    task_id = _insert_dem_task(db, tmp_path / "downloads")
+
+    def _seed_job(status):
+        conn = db.get_connection()
+        try:
+            conn.execute("DELETE FROM dem_terrain_jobs WHERE task_id=?", (task_id,))
+            conn.execute(
+                """
+                INSERT INTO dem_terrain_jobs
+                  (task_id, status, output_dir, maxzoom, parent_url, started_at)
+                VALUES (?, ?, ?, 12, '', ?)
+                """,
+                (task_id, status, str(tmp_path / "tiles"),
+                 datetime.now().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # __new__ 构造：本方法对 socketio / _state_lock 都用 getattr 兜底，直调即可。
+    mgr = dtm.DemTaskManager.__new__(dtm.DemTaskManager)
+    task_dir = tmp_path / "downloads" / f"dem_task_{task_id}"
+    out_dir = task_dir / "terrain_tiles"
+
+    # 失败兜底那条：行已是 completed，不能被改写成 failed。
+    _seed_job("completed")
+
+    def boom_tiler(**kwargs):
+        raise RuntimeError("tiler exploded")
+
+    monkeypatch.setattr(dtm, "tile_dem_task_dir", boom_tiler)
+    mgr._run_tiling_job(task_id, task_dir, out_dir, 12, "")
+
+    row = _job_row(db, task_id)
+    assert row["status"] == "completed", "失败兜底盖掉了一条已经是 completed 的行"
+    assert row["error_message"] is None
+
+    # 成功收尾那条：行已是 failed，不能被改写成 completed。
+    _seed_job("failed")
+    monkeypatch.setattr(
+        dtm, "tile_dem_task_dir",
+        lambda **kwargs: {"rendered": 1, "total": 1, "failed": 0, "max_level": 12})
+    mgr._run_tiling_job(task_id, task_dir, out_dir, 12, "")
+
+    row = _job_row(db, task_id)
+    assert row["status"] == "failed", "成功收尾盖掉了一条已经是 failed 的行"
