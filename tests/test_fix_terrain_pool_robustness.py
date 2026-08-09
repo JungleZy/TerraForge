@@ -81,7 +81,8 @@ def test_serial_build_generates_all_tiles_and_counts(tmp_path):
     # 择优计数(默认 triangulator='auto' 逐瓦片选后端)必须恰好覆盖每张成功瓦片。
     # 不写死两侧各多少:那取决于地形。set() 那条保证没有多余/漏掉的 key。
     assert counts["chose_martini"] + counts["chose_grid"] == counts["rendered"]
-    assert set(counts) == {"total", "rendered", "failed", "chose_martini", "chose_grid"}
+    assert set(counts) == {"total", "rendered", "failed", "max_level",
+                           "chose_martini", "chose_grid"}
     assert len(list(out.rglob("*.terrain"))) == 10
     layer = json.loads((out / "layer.json").read_text(encoding="utf-8"))
     assert layer["minzoom"] == 0 and layer["maxzoom"] == 1
@@ -246,7 +247,7 @@ def test_per_tile_failure_counted_and_excluded_from_meta(tmp_path, monkeypatch):
     monkeypatch.setattr(ct, "_worker_tile", fake_worker)
     counts = ct.build_terrain([str(dem)], str(out), min_level=0, max_level=1, workers=1)
 
-    assert counts == {"total": 10, "rendered": 9, "failed": 1,
+    assert counts == {"total": 10, "rendered": 9, "failed": 1, "max_level": 1,
                       "chose_martini": 4, "chose_grid": 5}
     meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
     assert meta["minHeight"] == 100.0 and meta["maxHeight"] == 200.0

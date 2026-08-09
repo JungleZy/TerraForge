@@ -35,6 +35,8 @@ from typing import Tuple
 
 import numpy as np
 
+from src.services.geo_validation import MAX_ZOOM
+
 try:
     from osgeo import gdal, osr
 except ImportError as e:
@@ -1281,6 +1283,7 @@ def build_terrain(
     triangulator: str = "auto",
     max_error_k: float = DEFAULT_MAX_ERROR_K,
     normals: bool = True,
+    level_offset: int = 0,
 ) -> dict:
     # progress_cb(done, total): 逐瓦片进度回调（done = rendered+failed，terrain
     # 没有 contour 的 skipped 态），串行/并行每 tally 一次调一次；调用方自行
@@ -1357,8 +1360,20 @@ def build_terrain(
         sampler = DemSampler(input_path, nodata=nodata)
         scheme = GeographicTilingScheme(tile_size=tile_size)
 
+        # 基准层级：显式传了就用它，否则按源像素尺寸估算。
         if max_level is None:
             max_level = scheme.estimate_max_level(sampler.pixel_size_deg)
+        # 档位偏移叠加在基准上（精度 +1 / 均衡 0 / 速度 -1，见
+        # docs/reference/terrain/tiling-presets-measured.md）。实测每加一级约
+        # 3.3 倍体积换 2.8 倍精度，与源分辨率无关。
+        # 钳位到 [0, MAX_ZOOM]：负层级会让 _tile_ranges 的 range() 直接空转，
+        # 越界层级会让瓦片数按 4^n 爆炸。
+        max_level = max(0, min(MAX_ZOOM, int(max_level) + int(level_offset)))
+        # min_level 由调用方按【基准】算（dem_task_tiler 恒传 8），下调偏移后
+        # 基准可能低于它。min_level > max_level 会让 _tile_ranges 产出空区间 ——
+        # 切 0 张瓦片却报 completed，本仓栽过的同款静默成功。调用方拿不到最终
+        # 层级，所以钳位只能在这里做。
+        min_level = min(int(min_level), max_level)
 
         src_w, src_s, src_e, src_n = sampler.bounds
 
@@ -1575,6 +1590,9 @@ def build_terrain(
         # 计数结构对照 contour 的 build_contour_tiles(无 skipped:terrain 没有跳过态)。
         # chose_martini + chose_grid == rendered:每张成功瓦片恰好落在一个后端上。
         return {"total": total, "rendered": done, "failed": failed,
+                # 实际切到的最深层级。档位偏移后它可能不等于调用方传进来的
+                # max_level，调用方要据此落库/展示，不能拿请求值当产物事实。
+                "max_level": max_level,
                 "chose_martini": chose["martini"], "chose_grid": chose["grid"]}
     finally:
         # 串行路径（workers==1 / total<=4 / BrokenProcessPool 回退）在**本进程**
