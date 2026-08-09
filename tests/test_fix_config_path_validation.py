@@ -224,6 +224,27 @@ def test_proxy_url_shape(cm, value, ok):
 
 
 # --------------------------------------------------------------------------
+# 枚举类：terrain_quality_preset
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize('value,ok', [
+    ('precision', True),
+    ('balanced', True),
+    ('speed', True),
+    ('fast', False),        # 不存在的档位
+    ('', False),            # 空值不等于“用默认”
+    ('Balanced', False),    # 刻意不做大小写归一
+])
+def test_tiling_quality_shape(cm, value, ok):
+    """档位是枚举，脏值必须被配置接口拒掉。
+
+    白名单从 geo_validation.TILING_QUALITY_OFFSETS 取，不在 config_manager
+    里抄第二份 —— 见 _UNCONSTRAINED_KEYS 注释里关于“第二处事实来源”的说明。
+    """
+    assert cm.validate_config('terrain_quality_preset', value) is ok
+
+
+# --------------------------------------------------------------------------
 # 治理：不允许再有键靠「什么都不写」拿到 accept-anything
 # --------------------------------------------------------------------------
 

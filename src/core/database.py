@@ -89,6 +89,14 @@ DEFAULT_CONFIGS = [
     # dem_task_manager、local_terrain_task_manager 三处都读它。）
     ('terrain_global_base_maxzoom', '7'),
     ('terrain_local_maxzoom', '14'),
+    # 切片档位：precision / balanced / speed，语义是相对 maxzoom 的层级偏移
+    # （+1 / 0 / -1）。取值表在 src/services/geo_validation.TILING_QUALITY_OFFSETS，
+    # 这里只放默认值。选型实测见 docs/reference/terrain/tiling-presets-measured.md。
+    ('terrain_quality_preset', 'balanced'),
+    # 地形光照法线（oct 编码扩展段）。默认关：前端 enableLighting 默认也是关的，
+    # 而法线吃 +35%~+100% 字节、约 2.1 倍切片时间，几何精度分毫不涨。
+    # ⚠️ 关着切出来的瓦片，事后想开只能重切 —— 法线是烘焙进瓦片的。
+    ('terrain_vertex_normals', 'false'),
     # 必须是**目录**：Cesium 会 appendForwardSlash() 后再拼 layer.json。
     # 带 /layer.json 会让它请求 .../layer.json/layer.json 得 404，而它的 404
     # 处理是塞一个假 heightmap 图层并污染共享 builder => 本任务自己的
@@ -579,6 +587,8 @@ def init_database():
                 status TEXT NOT NULL,
                 output_dir TEXT NOT NULL,
                 maxzoom INTEGER NOT NULL,
+                quality TEXT DEFAULT 'balanced',
+                vertex_normals INTEGER DEFAULT 0,
                 parent_url TEXT,
                 rendered_tiles INTEGER DEFAULT 0,
                 total_tiles INTEGER DEFAULT 0,
@@ -646,6 +656,8 @@ def init_database():
                 uploaded_files INTEGER DEFAULT 0,
                 failed_files INTEGER DEFAULT 0,
                 maxzoom INTEGER NOT NULL,
+                quality TEXT DEFAULT 'balanced',
+                vertex_normals INTEGER DEFAULT 0,
                 parent_url TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
@@ -800,6 +812,13 @@ def init_database():
             # 前端详情弹窗轮询读取）：渲染中 rendered_tiles 是 processed 进度。
             ("dem_terrain_jobs", "rendered_tiles INTEGER DEFAULT 0"),
             ("dem_terrain_jobs", "total_tiles INTEGER DEFAULT 0"),
+            # 三档预设（precision/balanced/speed）与法线开关。两张地形任务表
+            # 都要：DEM 切片走 dem_terrain_jobs，本地地形走 local_terrain_tasks。
+            # 必须带 DEFAULT —— tests/test_terrain_api.py 有不列新列的裸 INSERT。
+            ("dem_terrain_jobs", "quality TEXT DEFAULT 'balanced'"),
+            ("dem_terrain_jobs", "vertex_normals INTEGER DEFAULT 0"),
+            ("local_terrain_tasks", "quality TEXT DEFAULT 'balanced'"),
+            ("local_terrain_tasks", "vertex_normals INTEGER DEFAULT 0"),
         ):
             try:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")

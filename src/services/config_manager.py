@@ -16,6 +16,7 @@ from src.core.database import (
     get_connection_context, DEFAULT_CONFIGS, normalize_default_save_path, utc_now_iso,
 )
 from src.services.system_proxy import mask_url_userinfo
+from src.services.geo_validation import TILING_QUALITY_OFFSETS
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,9 @@ _VALUE_RULES = {
     'contour_background': _is_valid_color_or_transparent,
     'contour_hypsometric_colors': _is_valid_color_csv,
     'contour_default_interval': _is_valid_contour_interval,
+    # 档位是小而稳定的枚举，白名单直接从 geo_validation 的取值表取 ——
+    # 不在这里抄第二份（那正是 _UNCONSTRAINED_KEYS 注释里说的第二处事实来源）。
+    'terrain_quality_preset': lambda v: v in TILING_QUALITY_OFFSETS,
 }
 
 # 有意不加约束的键。留在这里不是「忘了」，每一条都有理由：
@@ -300,9 +304,13 @@ _VALUE_RULES = {
 #     取值表住在 contour_engine 的 ContourStyle 里，在这里再抄一份就是第二处
 #     事实来源；颜色与间距已按 P1#10 / P1#11 登记到 _VALUE_RULES。
 #   - terrain_*_maxzoom / terrain_local_maxzoom：纯数值上限，同上不在本条范围。
+#   - terrain_vertex_normals：布尔开关，按本表第一条理由；
+#     terrain_quality_preset 反过来登记在 _VALUE_RULES —— 它的取值表只有三个
+#     值且住在 geo_validation 里，直接 import 白名单不构成第二处事实来源。
 _UNCONSTRAINED_KEYS = frozenset({
     'default_style', 'default_output_format',
     'proxy_auto_detect', 'cache_enabled', 'dem_cache_enabled',
+    'terrain_vertex_normals',
     'gdal_compression', 'gdal_resampling',
     'earthdata_username', 'earthdata_password',
     'terrain_global_base_maxzoom', 'terrain_local_maxzoom',
