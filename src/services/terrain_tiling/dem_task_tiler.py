@@ -50,7 +50,7 @@ class TileParams:
     triangulator: str = "grid"
     max_error_k: float = 0.15
     # 逐顶点法线（oct 编码扩展段）。默认【关】：前端 enableLighting 默认关
-    # （static/js/terrain_lighting.js:46-52），而实测法线吃 +35%~+100% 字节、
+    # （`static/js/terrain_lighting.js` 的 `get()`），而实测法线吃 +35%~+100% 字节、
     # 约 2.1 倍切片时间，几何精度分毫不涨。此前这个开关根本没透传到
     # build_terrain，恒走它的 kwarg 默认 True。
     # ⚠️ 关掉后 layer.json 的 extensions 写成 []，Cesium 的 hasVertexNormals 是

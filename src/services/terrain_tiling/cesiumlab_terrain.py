@@ -1200,8 +1200,12 @@ def _worker_tile(task) -> Tuple[float, float, str] | None:
     """Returns (min, max, backend) of the written tile, or None on failure.
 
     backend ∈ {'martini','grid'} 是这张瓦片**实际落盘**的那个后端,由 build_terrain
-    汇总成 chose_martini / chose_grid 计数 —— 排障时它直接告诉运维「这批 DEM 是
-    什么地形」(全 grid = 山地,全 martini = 平缓)。
+    汇总成 chose_martini / chose_grid 计数。⚠️ **这个计数只有在
+    triangulator='auto' 时才带信息** —— 那时它直接告诉运维「这批 DEM 是什么
+    地形」(全 grid = 山地,全 martini = 平缓)。非 auto 分支下面直接
+    `backend = triangulator`,所以应用侧(TileParams.triangulator 恒为 'grid')
+    的 chose_grid 无条件等于 rendered,与地形毫无关系 —— 照上面那条读法会把
+    每一批 DEM 都误判成山地。
 
     逐瓦片容错:单个坏块(如 ReadAsArray 返回 None、磁盘写失败)只记日志计失败,
     不让一个瓦片炸掉整个任务 —— 与 contour 的 _render_contour_tile_core 同款。
@@ -1459,9 +1463,10 @@ def build_terrain(
         h_max_global = float("-inf")
         done = 0
         failed = 0
-        # 逐瓦片择优的落点统计。排障价值：全 grid = 这批 DEM 是山地/粗糙地形，
-        # 全 martini = 平缓地形；两者混合才是 auto 在干活。强制单一后端时全部
-        # 落在对应那一侧，可用来确认「切 grid 回退」真的切过去了。
+        # 逐瓦片择优的落点统计。⚠️ 排障价值**只在 triangulator='auto' 下成立**：
+        # 那时全 grid = 这批 DEM 是山地/粗糙地形，全 martini = 平缓地形，两者
+        # 混合才是 auto 在干活。强制单一后端（应用侧恒为 'grid'）时全部落在对应
+        # 那一侧、与地形无关，只能用来确认「切 grid 回退」真的切过去了。
         chose = {"martini": 0, "grid": 0}
         workers = int(workers or 0)
         if workers <= 0:
@@ -1549,9 +1554,13 @@ def build_terrain(
                 chose["grid"] = 0
                 _run_serial()
 
-        # 收尾日志：择优落点是排障时最直接的一条信息 —— 全 grid 说明这批 DEM
-        # 是山地/粗糙地形（martini 在 gzip 后反而更大），全 martini 说明是平缓
-        # 地形。没有这行，chose_* 计数只有直接调 build_terrain 的人看得到。
+        # 收尾日志：择优落点是排障时最直接的一条信息 —— ⚠️ 但这条读法**只对
+        # triangulator='auto' 成立**，所以这行把 triangulator= 一起印出来：
+        # auto 下全 grid 说明这批 DEM 是山地/粗糙地形（martini 在 gzip 后反而
+        # 更大）、全 martini 说明是平缓地形；而应用侧恒为 'grid'，非 auto 分支
+        # 里 _worker_tile 直接 backend = triangulator，chose_grid 无条件等于
+        # rendered，谁不看 triangulator= 就照山地那条读，会把每一批 DEM 都判成
+        # 山地。没有这行，chose_* 计数只有直接调 build_terrain 的人看得到。
         logger.info(
             f"terrain 切片完成 triangulator={triangulator} total={total} "
             f"rendered={done} failed={failed} chose_martini={chose['martini']} "
@@ -1648,8 +1657,10 @@ def main(argv: list[str] | None = None) -> int:
     # 排障开关：'auto' 逐瓦片择优（CLI 默认），'martini'/'grid' 强制单一后端做
     # 对比。⚠️ 与应用侧**有意分叉**：应用侧（dem_task_tiler.TileParams）固定
     # 'grid'，CLI 与全球底图构建脚本保持 'auto'（见 tiling-presets-measured.md
-    # 第八节末尾）。想用 CLI 复现生产切片问题必须显式 `--triangulator grid`，
-    # 否则拿到的是另一个后端的产物，体积/耗时/三角形数都对不上。
+    # 第八节末尾）。想用 CLI 复现生产切片问题，**两个默认值都要显式覆盖**：
+    # `--triangulator grid --tile-size 65`。CLI 默认是 auto + 17，生产是
+    # grid + 65（TileParams.triangulator / TileParams.tile_size）—— 只改后端
+    # 顶点密度仍差 4 倍，体积/耗时/三角形数照样对不上，等于没复现。
     # auto/martini 要求 tile_size = 2^k+1（默认 17 满足），
     # 传 64 之类会在 build_terrain 入口报错并指向这个 flag。
     ap.add_argument("--triangulator", choices=("auto", "martini", "grid"), default="auto")
