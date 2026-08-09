@@ -6,10 +6,10 @@
 |---|---|
 | [`cesiumjs-loading.md`](cesiumjs-loading.md) | CesiumJS 端怎么加载本项目产出的 quantized-mesh 地形：base provider、单任务 DEM / 本地地形 provider、`parentUrl` 级联的**实际行为**（见下方已知问题），以及 `terrain_base_parent_url` 配置的生效时机 |
 | [`global-base-build.md`](global-base-build.md) | 全球低层级基础地形（`assets/terrain/base_z8/`）：随包分卷的自动解压与手工预热入口，以及自建一份时的完整构建流程 —— 自备全球 DEM 的前置成本、可直接跑的命令与完整参数表、`--max-level` 省略后果的实算量级、输出目录与 `terrain_global_base_path` 的对齐要求 |
-| [`triangulation-backends-measured.md`](triangulation-backends-measured.md) | 高程切片精度实测（3 个真实 granule、z8–14）：**`DemSampler` 半个源像素偏移的发现与修复**（1 弧秒 DEM 上 15.5 m 错位，端到端 RMS 8.07→1.03 m）、修完之后采样与三角化各占一半误差、为什么**暂不**再上更强的简化后端、`max_error_k` 在平缓地形上为何完全失灵、法线占 19%～38% 字节而光照默认关、以及对设计稿三处口径的修正 |
-| [`tiling-presets-measured.md`](tiling-presets-measured.md) | **高程切片三档预设（精度/均衡/速度）的实测选型**（6 个真实 granule、102 组完整金字塔）：为什么三档都该用 `grid` 而现行默认 `auto` 在 6 个 DEM 上一个 Pareto 前沿都没进、为什么档位要靠 `max_level` 拉开而不是靠简化后端（兑换率差 2.4~3.9 倍）、法线为何该拆成独立开关（+35%~+100% 字节、1.5~2.2 倍时间、几何零收益）、`grid` 的三角形数暴涨为何不影响 Cesium 渲染（真实 WebGL 实测：同屏瓦片数不变、帧时在噪声内）、以及 `maxzoom` 不看源分辨率这条现存缺陷 |
+| [`triangulation-backends-measured.md`](triangulation-backends-measured.md) | 高程切片精度实测（3 个真实 granule、z8–14）：**`DemSampler` 半个源像素偏移的发现与修复**（1 弧秒 DEM 上 15.5 m 错位，端到端 RMS 8.07→1.03 m）、修完之后采样与三角化各占一半误差、为什么**暂不**再上更强的简化后端、`max_error_k` 在平缓地形上为何完全失灵、法线占 19%～38% 字节而光照默认关、以及对设计稿三处口径的修正。**其中「暂不再上更强简化后端」这条结论已被 `tiling-presets-measured.md` 取代**：应用侧现在连 `auto` 都不用了，三档统一走 `grid`，减面后端在用户任务这条路径上整个退场（`build_terrain` 与 CLI / 全球底图仍保留 `auto`）；该文第七节「还剩什么可做」的法线一条也已落地 |
+| [`tiling-presets-measured.md`](tiling-presets-measured.md) | **高程切片三档预设（精度/均衡/速度）的实测选型与落地**（6 个真实 granule、102 组完整金字塔）：为什么三档都该用 `grid` 而落地前的默认 `auto` 在 6 个 DEM 上一个 Pareto 前沿都没进、为什么档位要靠 `max_level` 拉开而不是靠简化后端（兑换率差 2.4~3.9 倍）、法线为何该拆成独立开关（+35%~+100% 字节、1.5~2.2 倍时间、几何零收益）、`grid` 的三角形数暴涨为何不影响 Cesium 渲染（真实 WebGL 实测：同屏瓦片数不变、帧时在噪声内）、以及 `maxzoom` 不看源分辨率这条**至今仍在**的缺陷。**第九节是落地后的实现位置与真实切片复测**（含「张数比 ≠ 体积比、`speed` 档对小范围 DEM 不划算」那条反直觉），并说明档位的基准层级最终锚在**用户填的 `maxzoom`** 上，而不是本文测量时用的 `est` |
 
-仓库里有构建脚本 [`scripts/build_global_base_terrain.ps1`](../../../scripts/build_global_base_terrain.ps1)，但它**漏传 `--tile-size`**（走 CLI 默认 17，而应用侧单任务用 65），照它建出的 base 顶点网格比子层稀疏 4 倍/轴。详见 `global-base-build.md` 的说明与两种对齐办法。
+仓库里有构建脚本 [`scripts/build_global_base_terrain.ps1`](../../../scripts/build_global_base_terrain.ps1)。它**曾经漏传 `--tile-size`**（走 CLI 默认 17，而应用侧单任务用 65），照那时的脚本建出的 base 顶点网格比子层稀疏 4 倍/轴；**现已显式传 `--tile-size 65`**，且 `tests/test_build_scripts_contract.py` 钉住它与 `TileParams.tile_size` 相等。手上还有旧脚本建出的 base 时，对齐办法见 `global-base-build.md`。
 
 ## ⚠️ 已知问题：parentUrl 级联在 z0–4 不生效，且全程不报错
 
