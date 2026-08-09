@@ -57,20 +57,26 @@ def cm(isolated_app):
 # 路径类：terrain_global_base_path
 # --------------------------------------------------------------------------
 
-def test_base_path_root_is_rejected(cm):
-    """`/` 是评审实测里那条任意文件读的第一步 —— 旧代码 200 放行。"""
-    assert cm.validate_config('terrain_global_base_path', '/') is False
+# 2026-08-08：用户裁定「系统运行在可信环境中，不用考虑安全」，随之取消了路径类
+# 键的**根目录约束**。下面三条原来钉的是「落在 BASE_DIR/DOWNLOADS_DIR/CACHE_DIR
+# 之外一律拒」，那是安全边界；现在钉的是**功能性**判据。改判的理由写在
+# config_manager._validate_base_terrain_path / _validate_scratch_dir 里。
+
+def test_base_path_on_another_disk_is_accepted(cm):
+    """随包底图 224 MB / 4.3 万个文件，放到另一块盘是正常需求。
+
+    这条原来叫 test_base_path_absolute_outside_roots_is_rejected，断言相反 ——
+    根目录约束取消后它就是在拦一个正当用法。
+    """
+    outside = str(Path(tempfile.gettempdir()) / 'terraforge_base_on_other_disk')
+    assert cm.validate_config('terrain_global_base_path', outside) is True
 
 
-def test_base_path_parent_escape_is_rejected(cm):
-    """相对值也能逃逸：`../../etc` 按读取侧口径解析后落在 BASE_DIR 之外。"""
-    assert cm.validate_config('terrain_global_base_path', '../../etc') is False
-
-
-def test_base_path_absolute_outside_roots_is_rejected(cm):
-    """指到系统临时目录同样拒绝 —— 只有两个 tmpdir 键才允许 temp 根。"""
-    outside = str(Path(tempfile.gettempdir()) / 'terraforge_not_a_root')
-    assert cm.validate_config('terrain_global_base_path', outside) is False
+def test_base_path_relative_is_accepted(cm):
+    """出厂值 `./assets/terrain/base_z8` 本身就是相对的，不能拒相对值。"""
+    assert cm.validate_config(
+        'terrain_global_base_path', './assets/terrain/base_z8') is True
+    assert cm.validate_config('terrain_global_base_path', '../sibling/base') is True
 
 
 def test_base_path_empty_is_rejected(cm):
@@ -122,10 +128,28 @@ def test_tmpdir_system_temp_is_accepted(cm, key):
 
 
 @pytest.mark.parametrize('key', ['stitch_tmpdir', 'contour_warp_tmpdir'])
-def test_tmpdir_outside_every_root_is_rejected(cm, key):
-    """`/etc/terraforge` 会被 download_engine 的 os.makedirs 当场建出来。"""
-    assert cm.validate_config(key, '/etc/terraforge') is False
-    assert cm.validate_config(key, '/') is False
+def test_tmpdir_on_any_absolute_path_is_accepted(cm, key):
+    """把 scratch 放到任意一块盘 —— 这两个键存在的**全部**意义。
+
+    原来这条叫 test_tmpdir_outside_every_root_is_rejected，断言 `/etc/terraforge`
+    与 `/` 一律拒。那条根目录约束与这两个键的用途直接冲突（上一条用例的
+    docstring 自己写着「挪到别的盘」，而规则不许挪出安装目录），可信环境前提
+    确认后取消。
+    """
+    assert cm.validate_config(key, '/mnt/fast-ssd/terraforge-scratch') is True
+    assert cm.validate_config(key, '/') is True
+
+
+@pytest.mark.parametrize('key', ['stitch_tmpdir', 'contour_warp_tmpdir'])
+def test_tmpdir_relative_is_rejected(cm, key):
+    """相对值仍然拒 —— 这条与安全无关，是正确性。
+
+    `download_engine` 那侧是 `os.makedirs(stitch_tmp_base)`，相对值按【进程
+    CWD】解析；打包 exe 从快捷方式启动时 CWD 不是安装目录，GB 级中间产物会落到
+    一个谁也想不到的位置。同一类坑 M10 已经给 output_path 修过一遍。
+    """
+    assert cm.validate_config(key, 'scratch') is False
+    assert cm.validate_config(key, './tmp/warp') is False
 
 
 # --------------------------------------------------------------------------
@@ -228,14 +252,21 @@ def test_all_shipped_defaults_pass_their_own_rule(cm):
 
 
 # --------------------------------------------------------------------------
-# 端到端：那条任意文件读被挡在 PUT 上
+# 端到端：PUT 的校验闸门还在，只是判据换了
 # --------------------------------------------------------------------------
 
-def test_put_config_rejects_the_arbitrary_file_read_root(isolated_app, tmp_path):
-    """评审实测那两步的第一步现在返回 400，配置行原样不动。"""
+def test_put_config_rejects_an_unusable_base_path(isolated_app, tmp_path):
+    """空值仍然 400，且配置行原样不动。
+
+    这条原来叫 test_put_config_rejects_the_arbitrary_file_read_root，喂的是
+    `/`（评审实测那条任意文件读的第一步）。可信环境前提确认后 `/` 不再是安全
+    问题，根目录约束取消；留下来的判据是**功能性**的：空值会让 /terrain/base
+    的根落到 BASE_DIR 本身，把整个安装目录（含 data/map_downloader.db）挂上
+    静态服务，而且底图判定必然失败。
+    """
     client = isolated_app.app.test_client()
 
-    resp = client.put('/api/config', json={'terrain_global_base_path': '/'})
+    resp = client.put('/api/config', json={'terrain_global_base_path': ''})
 
     assert resp.status_code == 400
     body = resp.get_json()
@@ -245,25 +276,16 @@ def test_put_config_rejects_the_arbitrary_file_read_root(isolated_app, tmp_path)
     assert ConfigManager().get('terrain_global_base_path') == './assets/terrain/base_z8'
 
 
-def test_the_route_itself_has_no_defense_so_the_config_gate_is_the_boundary(
-        isolated_app, tmp_path):
-    """反证：绕过校验直接写库（= 旧的 PUT 行为），/terrain/base 立刻交出
-    根外的任意文件。这条钉住 terrain_static._resolve_safe_file 的新 docstring
-    ——「包含检查是配置值与整块文件系统之间唯一的东西」不是修辞。
+def test_put_config_accepts_a_base_path_on_another_disk(isolated_app, tmp_path):
+    """反面：另一块盘上的绝对路径必须收下并真的落库。
 
-    没有这条，上面那个 400 用例可能只是在挡一个本来就打不通的请求。
+    根目录约束取消之后，这才是这个键的主要用法（224 MB 的底图放大盘）。
+    没有这条，上面那个 400 用例可能是在一刀切拒绝。
     """
-    secret = tmp_path / 'outside_every_root.txt'
-    secret.write_text('INTERNAL-SECRET-TOKEN-abc123', encoding='utf-8')
-
-    from src.core.database import get_connection_context
-    with get_connection_context() as conn:
-        conn.execute("UPDATE config SET value = ? WHERE key = 'terrain_global_base_path'",
-                     (str(tmp_path),))
-        conn.commit()
-
     client = isolated_app.app.test_client()
-    resp = client.get('/terrain/base/outside_every_root.txt')
+    elsewhere = str(tmp_path / 'other_disk' / 'base_z8')
 
-    assert resp.status_code == 200
-    assert b'INTERNAL-SECRET-TOKEN-abc123' in resp.data
+    resp = client.put('/api/config', json={'terrain_global_base_path': elsewhere})
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert ConfigManager().get('terrain_global_base_path') == elsewhere

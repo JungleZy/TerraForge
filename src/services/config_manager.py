@@ -81,45 +81,47 @@ def is_unchanged_secret(key: str, value) -> bool:
 # --------------------------------------------------------------------------
 
 
-def _allowed_path_roots(allow_temp: bool):
-    """路径类配置键允许落到的根目录集合。
+def _validate_scratch_dir(value) -> bool:
+    """临时/中间产物目录：空 = 用系统临时目录；非空必须是**绝对**路径。
 
-    惰性读 Config：测试用 monkeypatch 换 DOWNLOADS_DIR/CACHE_DIR，模块级绑定
-    会拿到导入那一刻的旧值。
+    这两个键（stitch_tmpdir / contour_warp_tmpdir）存在的意义就是把 GB 级中间
+    产物挪到另一块盘，所以**不做根目录约束** —— 部署前提是可信环境（见
+    docs/reviews/2026-07-31-code-only-review.md 的「部署前提」，2026-08-08 重新
+    确认），用户想把 scratch 放哪就放哪，与 default_save_path 自 0.2.4 起的
+    「全盘可选」口径一致。
+
+    仍然要求绝对路径，理由与安全无关而是**正确性**：相对值会被
+    `download_engine` 那侧按【进程 CWD】解析（`os.makedirs(stitch_tmp_base)`），
+    打包 exe 从快捷方式启动时 CWD 不是安装目录，中间产物会落到一个谁也想不到
+    的地方 —— 这正是 M10 给 output_path 修过的那一类坑。
     """
-    from src.core.config import Config
+    raw = str(value or '').strip()
+    if not raw:
+        return True
+    try:
+        return Path(raw).expanduser().is_absolute()
+    except (OSError, ValueError, RuntimeError):
+        return False
 
-    roots = [Config.BASE_DIR, Config.DOWNLOADS_DIR, Config.CACHE_DIR]
-    if allow_temp:
-        roots.append(tempfile.gettempdir())
-    return roots
 
+def _validate_base_terrain_path(value) -> bool:
+    """随包底图目录：非空且可解析即可，允许相对（出厂值就是相对的）。
 
-def _validate_contained_path(value, *, allow_empty: bool, allow_temp: bool) -> bool:
-    """路径类键：解析后必须落在允许的根之内。
-
-    解析口径必须与**读取侧**一致 —— 读取侧是
-    terrain_static._resolve_config_path，即 resolve_stored_output_dir + resolve。
-    换一套口径校验等于校验了一个没人会去读的路径，'../' 这类值会在校验时看着
-    合规、在服务时指向别处。
+    不做根目录约束：224 MB / 4.3 万个文件，用户把它放到另一块盘是正常需求。
+    只拦空值 —— 空值会让 `resolve_stored_output_dir('')` 落到 BASE_DIR 本身，
+    于是 /terrain/base 把整个安装目录（含 data/map_downloader.db）挂上静态服务，
+    而且底图判定也必然失败。这是功能性错误，不是安全考虑。
     """
     from src.services.task_cleanup import resolve_stored_output_dir
 
     raw = str(value or '').strip()
     if not raw:
-        return allow_empty
+        return False
     try:
-        resolved = resolve_stored_output_dir(raw).resolve()
+        resolve_stored_output_dir(raw).resolve()
+        return True
     except (OSError, ValueError, RuntimeError):
         return False
-    for root in _allowed_path_roots(allow_temp):
-        try:
-            r = Path(root).resolve()
-        except OSError:
-            continue
-        if resolved == r or r in resolved.parents:
-            return True
-    return False
 
 
 def _is_link_local_host(host: str) -> bool:
@@ -271,16 +273,9 @@ _VALUE_RULES = {
     'basemap_source': _validate_basemap_source,
     # --- 路径类 ---
     'default_save_path': _validate_save_path,
-    # 留空会让 /terrain/base 的根落到 BASE_DIR 本身，等于把整个安装目录
-    # （含 data/map_downloader.db）挂上静态服务，所以这个键不接受空值。
-    'terrain_global_base_path': lambda v: _validate_contained_path(
-        v, allow_empty=False, allow_temp=False),
-    # 两个 tmpdir 出厂值就是空串（= 用系统临时目录），且它们存在的意义就是
-    # 把 GB 级中间产物挪到别的盘 —— 系统临时目录进允许根集合。
-    'stitch_tmpdir': lambda v: _validate_contained_path(
-        v, allow_empty=True, allow_temp=True),
-    'contour_warp_tmpdir': lambda v: _validate_contained_path(
-        v, allow_empty=True, allow_temp=True),
+    'terrain_global_base_path': _validate_base_terrain_path,
+    'stitch_tmpdir': _validate_scratch_dir,
+    'contour_warp_tmpdir': _validate_scratch_dir,
     # --- URL 类 ---
     'terrain_base_parent_url': _validate_browser_url,
     'proxy_url': _validate_proxy_url,
