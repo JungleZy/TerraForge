@@ -27,8 +27,8 @@ from src.services.dem_granules import (
 # 不要换回 geo_validation.resolve_output_dir:那是给**请求里**新传进来的路径做
 # 校验的（强制落在 DOWNLOADS_DIR 内），两者对相对值的解释不同
 # （'./downloads/dem' → <DL>/dem vs <DL>/downloads/dem），而 M10 的存量归一
-# （src/core/database.py:264）认的是前者。混用会让升级后的旧 DEM 任务指针指到
-# 空目录：/terrain/dem/<id> 404、恢复即全量重下、删除报成功而产物滞留。
+# （`database.normalize_stored_output_paths`）认的是前者。混用会让升级后的旧
+# DEM 任务指针指到空目录：/terrain/dem/<id> 404、恢复即全量重下、删除报成功而产物滞留。
 # 见 docs/reviews/2026-08-08-full-project-review.md 的 P1#5。
 from src.services.task_cleanup import (fail_stranded_running_task,
                                        resolve_stored_output_dir)
@@ -310,7 +310,7 @@ class DemTaskManager:
         if maxzoom is not None:
             maxzoom = validate_zoom(maxzoom, "maxzoom")
         else:
-            # 配置值也过 validate_zoom（范本 local_terrain_task_manager.py:149，
+            # 配置值也过 validate_zoom（范本 local_terrain_task_manager._default_maxzoom，
             # 那边两条路径都校验）。此前这里是裸 int()：terrain_local_maxzoom
             # 在 config_manager._UNCONSTRAINED_KEYS 里没有取值规则，写进去的 99
             # 能一路传到 build_terrain，只靠那边的 MAX_ZOOM 封顶兜住 —— 兜底离
@@ -330,8 +330,8 @@ class DemTaskManager:
                     f"本次切片改用出厂默认 {maxzoom}")
 
         # 档位与法线：请求未给就取配置默认，与 maxzoom 完全同形。兜底值与
-        # DEFAULT_CONFIGS 逐字一致（同 :299 注释的规矩：兜底和出厂默认不一致
-        # 会造出「改了没反应」的假旋钮）。
+        # DEFAULT_CONFIGS 逐字一致（同上面 terrain_global_base_path 兜底那条注释
+        # 的规矩：兜底和出厂默认不一致会造出「改了没反应」的假旋钮）。
         # 校验落在管理器而不是路由层：DEM 这条路径的 maxzoom 校验就在这里
         # （local 那条在路由层），两个新参数跟着各自路径的既有位置走。
         if quality is None:
@@ -364,6 +364,10 @@ class DemTaskManager:
                     INSERT INTO dem_terrain_jobs (
                         task_id, status, output_dir, maxzoom, parent_url,
                         quality, vertex_normals,
+                        -- vertex_normals 必须显式给值：这一列的 DEFAULT 是 NULL
+                        -- （= 未知，见 database.py 建表处），从列表里漏掉它，
+                        -- 新作业的详情面板会显示「法线未知」——明明本次切片用的
+                        -- 就是下面绑的这个 0/1。
                         started_at, completed_at, error_message
                     )
                     VALUES (?, 'running', ?, ?, ?, ?, ?, ?, NULL, NULL)
@@ -399,17 +403,19 @@ class DemTaskManager:
             conn.close()
 
         # 切片线程与下载线程共用 stop_flags / active_tasks 两张表，而且两者
-        # 确实会短暂并存：_execute 是先 commit status='completed'(:917-918)、
-        # 再 emit task_completed(:923),下载线程要一路退回 _run_task 的
-        # finally(:714-719)才把自己从两张表里摘掉。任何调用方（详情弹窗点
+        # 确实会短暂并存：_execute 是先 commit dem_tasks 的 status='completed'、
+        # 再 emit task_completed,下载线程要一路退回 _run_task 的
+        # finally 才把自己从两张表里摘掉。任何调用方（详情弹窗点
         # 「开始切片」,或别的客户端直接打这个端点）都可能落在这段窗口里:
         # 状态闸门看到 'completed' 放行,下面两行会盖掉下载线程还在的登记。
-        # 盖掉是安全的 —— 下载线程摘登记时做的是身份比较(:716/:718),盖掉
-        # 之后它一条都不命中,什么都不摸。别把身份比较简化成无条件 pop。
+        # 盖掉是安全的 —— 下载线程摘登记时做的是身份比较(_run_task 的 finally 里
+        # 那两个 `is` 判断),盖掉之后它一条都不命中,什么都不摸。
+        # 别把身份比较简化成无条件 pop。
         # 登记进 active_tasks 是 delete_task 的 is_alive() 守卫能看见它的前提。
         stop_flag = threading.Event()
-        # 线程构造 + 登记必须与 th.start() 同处一个 try：job 行在 :394 已经
-        # commit 成 running,而 threading.Thread(...) 构造本身、以及登记那两行
+        # 线程构造 + 登记必须与 th.start() 同处一个 try：job 行在上面那条
+        # dem_terrain_jobs UPSERT 里已经 commit 成 running,
+        # 而 threading.Thread(...) 构造本身、以及登记那两行
         # 都可能抛。抛在 try 外面的话下面的回补块够不着,job 行永久停在 running
         # （再次 start_tiling 被 `WHERE status != 'running'` 判为已在运行,
         # delete_task 也被挡,只能重启进程靠孤儿恢复解开）。
@@ -598,7 +604,7 @@ class DemTaskManager:
             stopped = stop_flag is not None and stop_flag.is_set()
             # 中途停止时 rendered 可以合法地是 0（刚进瓦片循环就被叫停），
             # 不豁免的话会被下面这条「切片器什么都没产出」的失败判据误命中。
-            # 范本逐字对照 local_terrain_task_manager.py:482。
+            # 范本逐字对照 local_terrain_task_manager._run_tiling_job 的同一条判据。
             if total > 0 and rendered == 0 and not stopped:
                 raise RuntimeError(
                     f"terrain tiling produced no tiles ({failed}/{total} failed)")
@@ -649,8 +655,8 @@ class DemTaskManager:
             logger.error(f"DEM tiling job failed for task {task_id}: {e}")
         finally:
             # 与 _run_task 同一约定：只在自己就是登记的那个线程/flag 时才摘。
-            # 首先防的是并发重叠 —— 起切片那段（:376）说明了下载收尾与
-            # start_tiling 有真实的窗口，谁被谁盖掉取决于抢锁顺序，被盖掉的
+            # 首先防的是并发重叠 —— start_tiling 里登记线程前那段注释说明了
+            # 下载收尾与 start_tiling 有真实的窗口，谁被谁盖掉取决于抢锁顺序，被盖掉的
             # 一方靠这里的身份比较认出「表里的已经不是我」而收手；其次才是
             # 串行的下一轮 start_tiling 刚放进去的登记不能被上一轮误删。
             # 无条件 pop 会同时踩掉这两条。

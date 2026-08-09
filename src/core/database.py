@@ -588,7 +588,18 @@ def init_database():
                 output_dir TEXT NOT NULL,
                 maxzoom INTEGER NOT NULL,
                 quality TEXT DEFAULT 'balanced',
-                vertex_normals INTEGER DEFAULT 0,
+                -- DEFAULT NULL 与下面的 effective_maxzoom 同理、理由更硬：0 是
+                -- 合法取值（「明确关闭法线」），不能再兼职当「未知」用。
+                -- 三态：NULL = 这一行没有记录过法线状态，0 = 明确关，1 = 明确开。
+                -- 为什么不能回填 0：本列出现之前切的作业，切片器的默认是**开**
+                -- （docs/reference/terrain/tiling-presets-measured.md 第三节，
+                -- 落地前默认 = auto + 法线开），回填 0 会让详情面板对着一批真的
+                -- 带光照的产物断言「未开启（无光照数据）」—— 正好说反，而且用户
+                -- 无从分辨。宁可显示「未知」。
+                -- 已知局限：v0.2.13 装过的库里，存量行已被迁移回填成 0，和「用户
+                -- 真的关了法线」在库里逐位相同，无法区分 —— 所以刻意不做数据修
+                -- 复迁移：猜错方向的批量改写比一个错标签更糟。
+                vertex_normals INTEGER DEFAULT NULL,
                 -- 切片**实际**切到的最深层级（档位偏移 + [0,21] 钳位之后，由
                 -- build_terrain 回报）。maxzoom 那一列存的是用户填的**基准**
                 -- 层级，precision/speed 两档下两者差 1 —— 详情面板与 layer.json
@@ -663,7 +674,8 @@ def init_database():
                 failed_files INTEGER DEFAULT 0,
                 maxzoom INTEGER NOT NULL,
                 quality TEXT DEFAULT 'balanced',
-                vertex_normals INTEGER DEFAULT 0,
+                -- 三态，语义同 dem_terrain_jobs.vertex_normals（NULL = 未记录）。
+                vertex_normals INTEGER DEFAULT NULL,
                 -- 实际切到的最深层级，语义同 dem_terrain_jobs.effective_maxzoom。
                 effective_maxzoom INTEGER DEFAULT NULL,
                 parent_url TEXT,
@@ -824,9 +836,17 @@ def init_database():
             # 都要：DEM 切片走 dem_terrain_jobs，本地地形走 local_terrain_tasks。
             # 必须带 DEFAULT —— tests/test_terrain_api.py 有不列新列的裸 INSERT。
             ("dem_terrain_jobs", "quality TEXT DEFAULT 'balanced'"),
-            ("dem_terrain_jobs", "vertex_normals INTEGER DEFAULT 0"),
+            # vertex_normals 的 DEFAULT NULL 与下面 effective_maxzoom 同理，
+            # 但更要命：0 是合法取值（明确关闭），拿它兼职「未知」就等于对存量
+            # 行撒谎 —— 本列出现之前切的作业，切片器默认是**开**法线
+            # （docs/reference/terrain/tiling-presets-measured.md 第三节），
+            # 回填 0 会让详情面板断言「未开启（无光照数据）」，正好说反。
+            # 存量行必须留在 NULL，面板据此显示「未知」。
+            # 已知局限：v0.2.13 装过的库已经把存量行回填成 0，与「用户真的关了」
+            # 在库里逐位相同 —— 不做数据修复迁移，猜错方向的批量改写更糟。
+            ("dem_terrain_jobs", "vertex_normals INTEGER DEFAULT NULL"),
             ("local_terrain_tasks", "quality TEXT DEFAULT 'balanced'"),
-            ("local_terrain_tasks", "vertex_normals INTEGER DEFAULT 0"),
+            ("local_terrain_tasks", "vertex_normals INTEGER DEFAULT NULL"),
             # 实际切到的最深层级（档位偏移 + 钳位之后的产物事实）。同样两张表
             # 都要。DEFAULT NULL 是有语义的、不是省事：0 是合法层级，不能拿它
             # 当「未知」用，存量行与未切完的作业必须与「真的切到了 z0」可区分。

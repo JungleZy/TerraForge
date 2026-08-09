@@ -116,7 +116,8 @@ class LocalTerrainTaskManager:
         # 配置值过 validate_zoom 而不是裸 int()：terrain_local_maxzoom 在
         # config_manager._UNCONSTRAINED_KEYS 里，写入侧没有取值规则，越界值原样
         # 返回后会被 create_task_with_files 的 validate_zoom 当场抛出 → 400，
-        # 而 DEM 那条读同一个配置键是软退回（dem_task_manager.py:312-330）。
+        # 而 DEM 那条读同一个配置键是软退回（dem_task_manager.start_tiling 里
+        # maxzoom is None 的分支）。
         # 同一个坏配置在两个入口一个 400 一个照跑，是最难查的一类不一致。
         # 校验失败不抛：配置是装机默认，一个坏值不该让所有任务都建不起来。
         # 但必须留痕，否则「我明明配了 25」在系统里一处都查不到。
@@ -131,13 +132,14 @@ class LocalTerrainTaskManager:
             return 14
 
     def _default_quality(self) -> str:
-        # 兜底值与 DEFAULT_CONFIGS 逐字一致（database.py:95）：兜底和出厂默认
-        # 不一致会造出「改了没反应」的假旋钮。
+        # 兜底值与 `database.DEFAULT_CONFIGS` 里的 terrain_quality_preset 逐字
+        # 一致：兜底和出厂默认不一致会造出「改了没反应」的假旋钮。
         return (self.config.get("terrain_quality_preset", DEFAULT_TILING_QUALITY)
                 or DEFAULT_TILING_QUALITY)
 
     def _default_vertex_normals(self) -> bool:
-        # 布尔配置在库里存的是字符串 'true'/'false'（database.py:99）。
+        # 布尔配置在库里存的是字符串 'true'/'false'
+        # （见 `database.DEFAULT_CONFIGS` 里的 terrain_vertex_normals）。
         return (self.config.get("terrain_vertex_normals", "false") or "false") == "true"
 
     def create_task_with_files(
@@ -177,7 +179,8 @@ class LocalTerrainTaskManager:
         # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
         # 「改了档位重切、产物却一模一样且零报错」是这条路径最难查的假象。
         if quality is None:
-            # 报错里点名配置键而不是请求字段（范本 dem_task_manager.py:337-343）：
+            # 报错里点名配置键而不是请求字段（范本 dem_task_manager.start_tiling
+            # 里 quality is None 的分支）：
             # 走到这条分支说明用户根本没提交过 quality，说 "quality (...) must be
             # one of" 会把他指到一个不存在的输入上，真正该改的是配置页那一项。
             quality = validate_tiling_quality(self._default_quality(),
@@ -223,6 +226,9 @@ class LocalTerrainTaskManager:
                       (name, status, output_path, source_dir, output_dir,
                        total_files, uploaded_files, failed_files, maxzoom,
                        quality, vertex_normals, parent_url)
+                       -- vertex_normals 必须显式给值：DEFAULT 是 NULL（= 未知，
+                       -- 见 database.py 建表处）。漏掉它，刚建的任务会以「法线
+                       -- 未知」示人，而这一刻我们恰恰是知道的。
                     VALUES (?, 'pending', '', '', '', ?, 0, 0, ?, ?, ?, ?)
                     """,
                     (name, len(valid), maxzoom, quality,
@@ -397,13 +403,26 @@ class LocalTerrainTaskManager:
                 if row["status"] == "running":
                     raise ValueError(f"Local terrain task {task_id} is already running")
 
+                # 法线必须在 UPDATE 之前定下来，因为要跟着写回去。
+                # NULL = 这一行没有记录过法线状态（本列出现之前建的任务）。
+                # 不能 bool(None) 当 False —— 那是把「未知」静默解释成「关」，
+                # 而落地前切片器的默认恰恰是**开**，等于按相反的设定重切。
+                # 未知就走配置默认，与 create_task_with_files 里「未传→配置默认」
+                # 同一条规矩。
+                vertex_normals = (self._default_vertex_normals()
+                                  if row["vertex_normals"] is None
+                                  else bool(row["vertex_normals"]))
                 cur.execute(
                     "UPDATE local_terrain_tasks SET status='running', started_at=?, "
                     # effective_maxzoom 一并清空：上一轮的实际层级是上一轮的产物
                     # 事实，本轮切完之前显示它就是撒谎（DEM 侧的 upsert 同理）。
-                    "completed_at=NULL, error_message=NULL, effective_maxzoom=NULL "
+                    "completed_at=NULL, error_message=NULL, effective_maxzoom=NULL, "
+                    # 法线一并写回：本轮真的按这个值烘焙瓦片，行里再留 NULL 就成了
+                    # 「产物是已知的、面板却说未知」—— 反方向的同一个谎。
+                    # 存量行的 NULL 到此为止，只有再没被切过的行才继续是未知。
+                    "vertex_normals=? "
                     "WHERE id=? AND status != 'running'",
-                    (utc_now_iso(), task_id),
+                    (utc_now_iso(), 1 if vertex_normals else 0, task_id),
                 )
                 if cur.rowcount != 1:
                     raise ValueError(
@@ -411,14 +430,13 @@ class LocalTerrainTaskManager:
                         "because its status changed"
                     )
                 maxzoom = int(row["maxzoom"])
-                # 档位/法线必须从库读回：本方法不带参，而「创建即切片」这条
+                # 档位（与上面的法线）必须从库读回：本方法不带参，而「创建即切片」这条
                 # 唯一路径正是走它 —— create_task_with_files 末尾直接调
                 # start_tiling，档位只在建任务时算过一次、落进了任务行。
                 # 不读回的话所有本地任务都用 balanced 切，界面上选的档位形同虚设：
                 # 状态照样 completed、全程零报错，只有产物不对。
                 # `or DEFAULT_TILING_QUALITY`：存量行的 quality 可能是 NULL。
                 quality = validate_tiling_quality(row["quality"] or DEFAULT_TILING_QUALITY)
-                vertex_normals = bool(row["vertex_normals"])
                 # ⚠️ conn.commit() 必须是这把锁里的**最后一行**。从这里到锁尾
                 # 的每一步都可能抛：读库值转换（脏库值）、_parent_layer_url()
                 # 另开连接读 config 表（database is locked / 磁盘错误）、
@@ -427,11 +445,13 @@ class LocalTerrainTaskManager:
                 # 的 conn.rollback() 就是 no-op —— status='running' 已经落地而切片
                 # 线程根本没起来，行永久卡在 running：再次 start 被状态检查拒、
                 # delete 也被拒，只能重启进程靠 _recover_orphan_running_tasks 解开。
-                # 下面 :450 的 L2 回补块只包 th.start()，够不到这段窗口。
+                # 下面那个 L2 回补块（`try: th.start()` 的 except）只包
+                # th.start()，够不到这段窗口。
                 #
                 # 推迟 commit 不会自锁：_parent_layer_url() 走的是另一条连接，而
-                # get_connection() 开的是 WAL（src/core/database.py:165），WAL 下
-                # 读者不被未提交的写者阻塞，那条 SELECT 立即返回。
+                # get_connection() 开的是 WAL（`database.get_connection` 里那句
+                # `PRAGMA journal_mode = WAL`），WAL 下读者不被未提交的写者
+                # 阻塞，那条 SELECT 立即返回。
 
                 parent_url = row["parent_url"] or _parent_layer_url()
                 # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
@@ -712,8 +732,9 @@ class LocalTerrainTaskManager:
             return
         except Exception as e:
             # 取行本身失败（database is locked 等）不该逃出去：唯一调用点
-            # start_tiling:389 在「已置 running、线程已登记进 active_tasks /
-            # stop_flags」之后、L2 回补块（:390-402）之前 —— 异常从这里逃出去
+            # start_tiling 里的 `self._emit_progress(task_id)` 在「已置 running、
+            # 线程已登记进 active_tasks / stop_flags」之后、
+            # L2 回补块（`try: th.start()` 的 except）之前 —— 异常从这里逃出去
             # 谁也接不住，留下的是一个行停在 running、登记里挂着永不启动的线程、
             # 路由却返 500 的任务。上面收窄成 ValueError 是为了把「行没了」和
             # 「取行失败」分开，不是为了把后者放出去。
