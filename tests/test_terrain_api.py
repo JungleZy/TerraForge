@@ -329,3 +329,48 @@ def test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range(
                if "terrain_local_maxzoom" in r.getMessage()]
     assert dropped, "越界配置被丢弃却没留下任何日志"
     assert "99" in dropped[0] and "14" in dropped[0]
+
+
+def test_terrain_start_rejects_unhashable_vertex_normals(monkeypatch, tmp_path):
+    """JSON 也能给法线送来 list：仍是 400，不能漏成 500。
+
+    白名单写成 `in {'true','false'}` 的话，不可哈希入参在集合查找上抛
+    TypeError —— 那是 except Exception 那条分支，用户拿到 500。改成 set
+    全量测试仍会全绿，所以这条专门钉住元组这个选择。
+    """
+    _app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    task_id = _insert_dem_task(db, tmp_path / "downloads")
+
+    resp = client.post(f"/api/terrain/dem/{task_id}/start",
+                       json={"vertex_normals": []})
+
+    assert resp.status_code == 400, resp.get_json()
+    assert "vertex_normals" in resp.get_json()["error"]
+    assert _job_row(db, task_id) is None
+
+
+def test_terrain_start_treats_empty_strings_as_omitted(monkeypatch, tmp_path):
+    """空串是「未传」，走配置默认，不是 400、也不是硬编码出厂值。
+
+    前端收参的既有写法是 `el?.value || ''`（map.js 起切那处的 maxzoom 就这么
+    发的），照抄到档位/法线上就会送来空串。当成非法值拒掉的话，用户什么都没
+    改就切不动了。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    task_id = _insert_dem_task(db, tmp_path / "downloads")
+
+    monkeypatch.setattr(app_mod.dem_task_manager.__class__, "_run_tiling_job",
+                        lambda self, *a, **k: None)
+    # 把配置拨到非出厂值：空串若被硬编码成 balanced/关，这条会红。
+    app_mod.dem_task_manager.config.set("terrain_quality_preset", "speed")
+    app_mod.dem_task_manager.config.set("terrain_vertex_normals", "true")
+
+    resp = client.post(f"/api/terrain/dem/{task_id}/start",
+                       json={"quality": "", "vertex_normals": ""})
+
+    assert resp.status_code == 200, resp.get_json()
+    job = _job_row(db, task_id)
+    assert job["quality"] == "speed"
+    assert job["vertex_normals"] == 1

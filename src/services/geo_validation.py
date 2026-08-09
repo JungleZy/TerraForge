@@ -95,6 +95,42 @@ def validate_tiling_quality(value, name='quality'):
     return value
 
 
+def coerce_vertex_normals(value, name='vertex_normals'):
+    """把请求里的法线开关收成三态：True / False / None。None = 未传，走配置默认。
+
+    两种形态都收：JSON body 给的是真布尔 `true`，multipart 表单给的是字符串
+    `'true'`/`'false'`（布尔在本仓一律以这两个字面量传递，见 database.py:99）。
+    `None` 与空串都算未传 —— 表单里没填的控件送上来就是空串。
+
+    **这是 vertex_normals 唯一的把关点。** 两个管理器拿到值以后只做
+    `bool()`（dem_task_manager.py:351、local_terrain_task_manager.py:184），
+    而 `bool('false')` 和 `bool('on')` 都是 True —— 校验没有第二道网。
+
+    为什么不像本仓另外五处布尔收参（api.py、contour_api.py、dem_api.py 等）
+    那样把 `'on'`/`'1'`/`'yes'` 也认成 True：那五处是两态开关，这里是**三态**。
+    原生 checkbox 没勾时**根本不发这个字段**，而本 API 把「不发」定义成「走
+    配置默认」。于是收下 `'on'` 就等于承认「勾了=on、没勾=不发字段」这套编码，
+    「用户取消勾选」和「用户没表态」被压成同一态：配置默认是开的话，用户明明
+    取消了勾选、瓦片照样烘法线，全程零报错。而法线烘进瓦片，事后想关只能重切
+    （database.py:98）。三态要表达「显式关闭」，前端就必须显式发 `'false'`。
+
+    ⚠️ 给前端：`static/js/map.js` 收参的既有写法是 `el?.value || '默认值'`，
+    照抄到 checkbox 上会每次都 400 —— checkbox 的 `.value` 恒为 `'on'`，与
+    checked 无关。必须写 `String(el.checked)`。
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    # 白名单用元组不用 set：JSON 送得进不可哈希的值（`{"vertex_normals": []}`），
+    # `in {...}` 会抛 TypeError -> 路由漏成 500；元组比较走 == ,照常 ValueError -> 400。
+    if value in ('true', 'false'):
+        return value == 'true'
+    raise ValueError(
+        f"{name} ({value!r}) must be one of: true, false "
+        f"(for a checkbox send String(el.checked), not its .value)")
+
+
 def resolve_output_dir(raw, base_dir=None):
     """把请求里的 output_path 解析成绝对路径，并强制落在 base_dir 之内。
 

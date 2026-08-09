@@ -942,3 +942,24 @@ def test_http_upload_rejects_unrecognized_vertex_normals(monkeypatch, tmp_path):
     assert resp.status_code == 400, resp.get_json()
     assert "vertex_normals" in resp.get_json()["error"]
     assert client.get("/api/terrain/local/tasks").get_json()["count"] == 0
+
+
+def test_http_upload_treats_empty_strings_as_omitted(monkeypatch, tmp_path):
+    """空串是「未传」，走配置默认，不是 400、也不是硬编码出厂值。
+
+    前端收表单字段的既有写法是 `el?.value || ''`（map.js 建本地地形任务那处的
+    maxzoom 就这么发的），照抄到档位/法线上送来的就是空串。当成非法值拒掉的
+    话，用户什么都没改就建不了任务了。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+    # 把配置拨到非出厂值：空串若被硬编码成 balanced/关，这条会红。
+    app_mod.local_terrain_task_manager.config.set("terrain_quality_preset", "precision")
+    app_mod.local_terrain_task_manager.config.set("terrain_vertex_normals", "true")
+
+    resp = _http_upload(client, maxzoom="10", quality="", vertex_normals="")
+
+    assert resp.status_code == 201, resp.get_json()
+    row = app_mod.local_terrain_task_manager.get_task(resp.get_json()["task_id"])
+    assert row["quality"] == "precision"
+    assert row["vertex_normals"] == 1

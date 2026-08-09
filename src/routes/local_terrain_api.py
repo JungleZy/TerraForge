@@ -11,11 +11,11 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from src.core.config import Config
-from src.services.geo_validation import validate_tiling_quality, validate_zoom
+from src.services.geo_validation import (coerce_vertex_normals,
+                                         validate_tiling_quality, validate_zoom)
 from src.services.task_cleanup import record_retained_output
 from src.routes.api import _delete_payload
 from src.routes import terrain_static
-from src.routes.terrain_api import coerce_vertex_normals
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +40,14 @@ def create_local_terrain_task():
         # 0–21 校验（validate_zoom 抛带字段名的 ValueError -> 400）
         maxzoom = validate_zoom(maxzoom_raw, "maxzoom") if maxzoom_raw not in (None, "") else None
         quality_raw = request.form.get("quality")
-        # 档位与法线跟 maxzoom 同形：路由先挡一道（管理器还会各自再校验一次），
-        # 非法值在任何文件落盘之前就 400。
+        # 档位跟 maxzoom 同形：路由先挡一道（管理器的 create_task_with_files
+        # 还会再校验一次，local_terrain_task_manager.py:181），非法值在任何
+        # 文件落盘之前就 400。
         quality = (validate_tiling_quality(quality_raw)
                    if quality_raw not in (None, "") else None)
-        # 表单里布尔是字符串 'true'/'false'；未传（None/空串）与显式 false 分开，
-        # 前者走配置默认，后者是用户明确关掉。
+        # 法线没有第二道网：管理器只做 bool()（同文件 :184），而
+        # bool('false') is True。这里的 coerce_vertex_normals 是唯一把关点，
+        # 它同时区分「未传（None/空串）走配置默认」与「显式 false 是用户关掉」。
         vertex_normals = coerce_vertex_normals(request.form.get("vertex_normals"))
 
         uploads = request.files.getlist("files")
