@@ -793,3 +793,93 @@ def test_invalid_quality_rejected(monkeypatch, tmp_path):
         mgr.create_task_with_files(
             name="bad-quality", files=[("a.tif", b"fake")], maxzoom=12,
             quality="turbo")
+
+
+# --------------------------------------------------------------------------
+# 路由层收参（Task 8）：档位/法线从 multipart 表单进来，一路落到任务行。
+# 上面那批直调 manager 的用例钉的是管理器契约；下面这批钉的是「表单字段真的
+# 被读了并转下去」—— 路由漏读一个字段，上面全绿、用户选的档位却永远不生效。
+
+def _http_upload(client, **form):
+    form.setdefault("name", "http-preset")
+    form["files"] = [(io.BytesIO(b"fake"), "a.tif")]
+    return client.post("/api/terrain/local/tasks", data=form,
+                       content_type="multipart/form-data")
+
+
+def _no_tiling(monkeypatch, app_mod):
+    monkeypatch.setattr(app_mod.local_terrain_task_manager.__class__,
+                        "start_tiling", lambda self, task_id: None)
+
+
+def test_http_upload_persists_preset(monkeypatch, tmp_path):
+    """表单里的 quality / vertex_normals 落到任务行。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+
+    resp = _http_upload(client, maxzoom="10", quality="speed",
+                        vertex_normals="true")
+
+    assert resp.status_code == 201, resp.get_json()
+    row = app_mod.local_terrain_task_manager.get_task(resp.get_json()["task_id"])
+    assert row["quality"] == "speed"
+    assert row["vertex_normals"] == 1
+
+
+def test_http_upload_preset_defaults_when_omitted(monkeypatch, tmp_path):
+    """两个字段都不传时落出厂默认：balanced + 法线关。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+
+    resp = _http_upload(client, maxzoom="10")
+
+    assert resp.status_code == 201, resp.get_json()
+    row = app_mod.local_terrain_task_manager.get_task(resp.get_json()["task_id"])
+    assert row["quality"] == "balanced"
+    assert row["vertex_normals"] == 0
+
+
+def test_http_upload_distinguishes_omitted_normals_from_explicit_false(
+        monkeypatch, tmp_path):
+    """「没传」走配置默认，「传了 false」是用户明确关掉。
+
+    把配置拨到开再各来一次：混淆两者的实现会让用户在设置里开的法线永远
+    生效不了 —— 而法线烘进瓦片，事后想开只能重切。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+    app_mod.local_terrain_task_manager.config.set("terrain_vertex_normals", "true")
+
+    omitted = _http_upload(client, maxzoom="10")
+    assert omitted.status_code == 201, omitted.get_json()
+    row = app_mod.local_terrain_task_manager.get_task(omitted.get_json()["task_id"])
+    assert row["vertex_normals"] == 1
+
+    explicit = _http_upload(client, maxzoom="10", vertex_normals="false")
+    assert explicit.status_code == 201, explicit.get_json()
+    row = app_mod.local_terrain_task_manager.get_task(explicit.get_json()["task_id"])
+    assert row["vertex_normals"] == 0
+
+
+def test_http_upload_rejects_unknown_quality(monkeypatch, tmp_path):
+    """拼错的档位是 400，不是 500，也不建任务、不落盘。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+
+    resp = _http_upload(client, maxzoom="10", quality="turbo")
+
+    assert resp.status_code == 400, resp.get_json()
+    assert "quality" in resp.get_json()["error"]
+    assert client.get("/api/terrain/local/tasks").get_json()["count"] == 0
+
+
+def test_http_upload_rejects_unrecognized_vertex_normals(monkeypatch, tmp_path):
+    """认不出来的法线开关当场 400，不静默折成 False。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+
+    resp = _http_upload(client, maxzoom="10", vertex_normals="on")
+
+    assert resp.status_code == 400, resp.get_json()
+    assert "vertex_normals" in resp.get_json()["error"]
+    assert client.get("/api/terrain/local/tasks").get_json()["count"] == 0

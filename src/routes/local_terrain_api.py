@@ -11,10 +11,11 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from src.core.config import Config
-from src.services.geo_validation import validate_zoom
+from src.services.geo_validation import validate_tiling_quality, validate_zoom
 from src.services.task_cleanup import record_retained_output
 from src.routes.api import _delete_payload
 from src.routes import terrain_static
+from src.routes.terrain_api import coerce_vertex_normals
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,14 @@ def create_local_terrain_task():
         maxzoom_raw = request.form.get("maxzoom")
         # 0–21 校验（validate_zoom 抛带字段名的 ValueError -> 400）
         maxzoom = validate_zoom(maxzoom_raw, "maxzoom") if maxzoom_raw not in (None, "") else None
+        quality_raw = request.form.get("quality")
+        # 档位与法线跟 maxzoom 同形：路由先挡一道（管理器还会各自再校验一次），
+        # 非法值在任何文件落盘之前就 400。
+        quality = (validate_tiling_quality(quality_raw)
+                   if quality_raw not in (None, "") else None)
+        # 表单里布尔是字符串 'true'/'false'；未传（None/空串）与显式 false 分开，
+        # 前者走配置默认，后者是用户明确关掉。
+        vertex_normals = coerce_vertex_normals(request.form.get("vertex_normals"))
 
         uploads = request.files.getlist("files")
 
@@ -60,7 +69,8 @@ def create_local_terrain_task():
         files = [(f.filename, f.stream) for f in uploads]
 
         task_id = local_terrain_task_manager.create_task_with_files(
-            name=name, files=files, maxzoom=maxzoom
+            name=name, files=files, maxzoom=maxzoom,
+            quality=quality, vertex_normals=vertex_normals
         )
         return jsonify({"success": True, "task_id": task_id}), 201
     except ValueError as e:
