@@ -272,6 +272,19 @@
                         </div>
                         <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
                         <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="14">
+                        <label for="localTerrainQuality" class="form-label mt-2">{{ t('tpl.index.process.terrain_quality') }}</label>
+                        <select class="form-select" id="localTerrainQuality">
+                            <option value="precision">{{ t('tpl.index.process.terrain_quality_precision') }}</option>
+                            <option value="balanced" selected>{{ t('tpl.index.process.terrain_quality_balanced') }}</option>
+                            <option value="speed">{{ t('tpl.index.process.terrain_quality_speed') }}</option>
+                        </select>
+                        <small class="form-text text-muted">{{ t('tpl.index.process.terrain_quality_hint') }}</small>
+
+                        <div class="form-check mt-2">
+                            <input type="checkbox" id="localTerrainNormals" class="form-check-input">
+                            <label class="form-check-label" for="localTerrainNormals">{{ t('tpl.index.process.terrain_normals') }}</label>
+                        </div>
+                        <small class="form-text text-muted">{{ t('tpl.index.process.terrain_normals_hint') }}</small>
                     </div>
 
                     <div class="mb-3" id="contourOptions" hidden>

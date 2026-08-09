@@ -244,6 +244,56 @@ MESSAGES = {
         'zh': '最大切片层级',
         'en': 'Max tiling zoom level',
     },
+
+    # 档位三档的措辞与任务详情面板（js_history.py:202-226）保持同一套词：
+    # 精细 / 均衡 / 快速，参照物一律写「基准层级」。参照物不能写「默认」——
+    # 偏移表（geo_validation.py:77-81）的 +1/0/-1 是相对基准层级算的，与
+    # terrain_quality_preset 当前配成哪一档无关；两处措辞不一致，用户会以为
+    # 表单里选的档位和详情里显示的档位是两回事。
+    'tpl.index.process.terrain_quality': {
+        'zh': '切片档位',
+        'en': 'Tiling preset',
+    },
+    'tpl.index.process.terrain_quality_precision': {
+        'zh': '精细（比基准层级多切一级，体积约 3.3 倍）',
+        'en': 'Precision (one level above the base level, ~3.3x size)',
+    },
+    'tpl.index.process.terrain_quality_balanced': {
+        'zh': '均衡（基准层级，推荐）',
+        'en': 'Balanced (the base level, recommended)',
+    },
+    'tpl.index.process.terrain_quality_speed': {
+        'zh': '快速（比基准层级少切一级，体积约 1/3.3）',
+        'en': 'Fast (one level below the base level, ~1/3.3 size)',
+    },
+    # 末句交代边界：build_terrain 把层级钳到 [0, 21]，maxzoom=21 选精细档切出来
+    # 还是 21（maxzoom=0 配快速档同理）。概率极低，但不写清楚的话，边界上「选了
+    # 档位、产物一模一样」看起来就是个 bug。
+    'tpl.index.process.terrain_quality_hint': {
+        'zh': '基准层级就是上面填的最大切片层级。每差一级约 3.3 倍体积换 2.8 倍'
+              '精度；层级已在 0 或 21 上限时不再偏移。',
+        'en': 'The base level is the max tiling zoom above. Each step is one zoom '
+              'level: ~3.3x size for ~2.8x accuracy. At the 0 / 21 limits the '
+              'offset is clamped and the preset changes nothing.',
+    },
+    'tpl.index.process.terrain_normals': {
+        'zh': '生成地形光照法线',
+        'en': 'Generate terrain lighting normals',
+    },
+    # 两条后果都必须写在界面上，缺一条用户就会在几小时的切片之后才发现：
+    # 1) Cesium 的 hasVertexNormals 是 provider 级单一标志 —— 这份地形没有法线，
+    #    地形光照按钮就对整幅场景失效，连随包底图自带的法线也一并作废；
+    # 2) 法线烘焙进瓦片，事后改配置不影响已切完的产物，只能重切。
+    'tpl.index.process.terrain_normals_hint': {
+        'zh': '不勾选：地图上的地形光照按钮会失效，打开只剩全球日夜渐变，'
+              '随包底图自带的法线也一并作废；法线烘焙进瓦片，切完想开只能'
+              '重新切片。勾选：体积多 35%~100%、切片慢约一倍，地形精度不变。',
+        'en': 'Unchecked: the terrain lighting button stops working — it then only '
+              'yields the global day/night gradient, and the bundled base terrain '
+              'loses its normals too; normals are baked into the tiles, so turning '
+              'them on later requires re-tiling. Checked: 35-100% more size and '
+              'about 2x tiling time, with no accuracy gain.',
+    },
     'tpl.index.process.contour_source_hint': {
         'zh': '等高线从上传的 DEM 渲染；远程高程下载在「下载数据」里做。',
         'en': 'Contours are rendered from the uploaded DEM; remote elevation '

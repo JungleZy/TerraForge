@@ -391,3 +391,84 @@ def test_index_page_renders_the_lighting_button(monkeypatch, tmp_path):
     assert re.search(r'<button\b[^>]*id\s*=\s*"' + re.escape(button_id) + r'"', html), (
         f'首页渲染结果里没有 id="{button_id}" 的按钮 —— 光照开关没有入口'
     )
+
+
+# ---------------------------------------------- 切片档位 / 法线开关的表单契约
+
+def _local_terrain_options_block(html):
+    """截出 #localTerrainOptions 这一段。
+
+    为什么不在整页上断言：`js.` 前缀的 catalog 会被整份下发到页面里
+    （client_catalog），而 js_history.py 的任务详情文案逐字讨论过同一批后果
+    （「全球日夜渐变」「烘焙进瓦片」）。在整页上 grep 这些词是恒真的 —— 把
+    表单里的提示整段删掉也照样绿。必须锁到控件自己那一段。
+    """
+    start = html.find('id="localTerrainOptions"')
+    assert start != -1, '页面里没有 #localTerrainOptions —— 本地高程选项块没了'
+    end = html.find('id="contourOptions"', start)
+    assert end != -1, '#localTerrainOptions 之后找不到 #contourOptions —— 本测试的截取边界已失效'
+    return html[start:end]
+
+
+def test_tiling_preset_controls_exist_in_the_process_form():
+    """档位下拉与法线复选框的 id 是接线契约 —— 改名会让提交静默丢参数。
+
+    map.js 用 getElementById 取值，id 对不上时 `?.value` 返回 undefined，
+    请求里就没有这个字段，后端取配置默认 —— 全程零报错，用户选的档位悄悄
+    不生效。本仓栽过同形态的坑（见本文件头部清单）。
+    """
+    html = _read(INDEX_HTML)
+    block = _local_terrain_options_block(html)
+    # 必须落在 #localTerrainOptions 里：放进 #contourOptions 或表单别处，控件
+    # 会跟着「等高线」显隐，选本地高程时根本看不见。
+    assert 'id="localTerrainQuality"' in block, (
+        '#localTerrainOptions 里没有 id=localTerrainQuality 的档位下拉')
+    for value in ('precision', 'balanced', 'speed'):
+        assert f'value="{value}"' in block, f'档位下拉缺 {value} 选项'
+    # 不能只断言 'type="checkbox"' 存在 —— index.html 本来就有别的复选框，
+    # 那样写恒真、什么都保不住。必须锁定这一个控件本身。
+    tag = re.search(r'<input[^>]*id="localTerrainNormals"[^>]*>', block)
+    assert tag, '#localTerrainOptions 里找不到 id=localTerrainNormals 的输入控件'
+    assert 'type="checkbox"' in tag.group(0), (
+        f'法线控件不是复选框：{tag.group(0)}')
+
+
+def test_normals_checkbox_spells_out_what_turning_it_off_costs(monkeypatch, tmp_path):
+    """渲染级：界面上必须写明关掉法线的两条后果，不能只写「省体积」。
+
+    这个勾选框是**不可逆**的：法线烘焙进瓦片，切完再想开只能重切
+    （database.py:98）。而且 Cesium 的 hasVertexNormals 是 provider 级单一
+    标志 —— 这份地形没有法线，地图上的光照按钮就对整幅场景失效，连随包底图
+    自带的法线也一并作废。用户在勾选那一刻看不到这两条，就会在几小时的切片
+    之后才发现按钮点不亮。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    html = client.get('/').get_data(as_text=True)
+    block = _local_terrain_options_block(html)
+    assert '地形光照' in block and '失效' in block, (
+        '法线开关旁没有写「不勾选则地形光照按钮失效」—— 用户会以为只是省体积')
+    assert '重新切片' in block, (
+        '法线开关旁没有写「事后想开只能重新切片」—— 这个选择是不可逆的')
+
+
+def test_preset_wording_anchors_to_the_base_level_like_the_detail_panel():
+    """档位文案的参照物必须是「基准层级」，且与任务详情面板用同一套词。
+
+    偏移表（geo_validation.py:77-81）的 +1/0/-1 是相对**基准层级**算的，与
+    terrain_quality_preset 当前配成哪一档无关。写成「比默认多一级」的话，运维把
+    默认改成 speed 之后这句话就是假的（js_history.py:206-210 已为详情面板定过
+    同一口径）。两处用不同说法，用户会以为是两回事。
+    """
+    from src.i18n.catalog import MESSAGES
+    for suffix in ('precision', 'balanced', 'speed'):
+        entry = MESSAGES[f'tpl.index.process.terrain_quality_{suffix}']
+        assert '基准层级' in entry['zh'], (
+            f'{suffix} 档的中文文案没写参照物「基准层级」：{entry["zh"]}')
+        assert 'base level' in entry['en'], (
+            f'{suffix} 档的英文文案没写参照物 base level：{entry["en"]}')
+    hint = MESSAGES['tpl.index.process.terrain_quality_hint']
+    # build_terrain 把结果钳到 [0, 21]：maxzoom=21 选精度档切出来还是 21。
+    # 概率极低，但文案不能把「一定多一级」说死。
+    assert '21' in hint['zh'] and '21' in hint['en'], (
+        '档位说明没有交代 0/21 边界会被钳住 —— 边界上选了档位却毫无变化，'
+        '用户只会当成 bug')
