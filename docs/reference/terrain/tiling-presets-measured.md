@@ -205,7 +205,7 @@ loess @est 实测（法线统一关，只比几何）：
 
 ## 六、顺带查出的现存缺陷：`maxzoom` 不看源分辨率
 
-应用侧**恒传** `maxzoom`（配置键 `terrain_local_maxzoom` 默认 14，`database.py:91`；`dem_task_manager.py:307-314`），`build_terrain` 里的 `estimate_max_level` 因此从不生效。后果双向：
+应用侧**恒传** `maxzoom`（配置键 `terrain_local_maxzoom` 默认 14，`database.py:91`；`dem_task_manager.py:308-330`），`build_terrain` 里的 `estimate_max_level` 因此从不生效。后果双向：
 
 - **源比 30 m 粗时超建。** 3″（93 m）DEM 建到 z14 = 77.4 MB / 12071 张；按 `est`(=12) 建 = 6.9 MB / 1445 张。**11 倍体积**换来的只是对同一批 93 m 数据更平滑的插值，不含任何新地形。
 - **源比 30 m 细时欠建。** 5 m DEM 的 `est` 约 17，被固定的 14 截断，源数据的细节根本没进瓦片。

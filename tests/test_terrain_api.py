@@ -1,4 +1,5 @@
 import importlib
+import logging
 import os
 import sys
 from datetime import datetime
@@ -129,7 +130,6 @@ def test_terrain_api_rejects_duplicate_running_start(monkeypatch, tmp_path):
     assert first.status_code == 200
     assert second.status_code == 400
     assert "already running" in second.get_json()["error"]
-
 
 
 def _job_row(db, task_id):
@@ -306,8 +306,13 @@ def test_terrain_restart_overwrites_previous_preset(monkeypatch, tmp_path):
     assert job["vertex_normals"] == 0
 
 
-def test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range(monkeypatch, tmp_path):
-    """配置里的越界 maxzoom 退回出厂默认 14，不靠 build_terrain 那边封顶兜。"""
+def test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range(
+        monkeypatch, tmp_path, caplog):
+    """配置里的越界 maxzoom 退回出厂默认 14，不靠 build_terrain 那边封顶兜。
+
+    退回必须留痕：静默吞掉用户写过的 99，会让「我明明配了 99」在整个系统里
+    一处都查不到。
+    """
     app_mod, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
@@ -316,5 +321,11 @@ def test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range(monkey
                         lambda self, *a, **k: None)
     app_mod.dem_task_manager.config.set("terrain_local_maxzoom", "99")
 
-    assert client.post(f"/api/terrain/dem/{task_id}/start").status_code == 200
+    with caplog.at_level(logging.WARNING, logger="src.services.dem_task_manager"):
+        assert client.post(f"/api/terrain/dem/{task_id}/start").status_code == 200
     assert _job_row(db, task_id)["maxzoom"] == 14
+
+    dropped = [r.getMessage() for r in caplog.records
+               if "terrain_local_maxzoom" in r.getMessage()]
+    assert dropped, "越界配置被丢弃却没留下任何日志"
+    assert "99" in dropped[0] and "14" in dropped[0]

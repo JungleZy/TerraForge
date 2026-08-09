@@ -1369,12 +1369,17 @@ def build_terrain(
         # 钳位到 [0, MAX_ZOOM]：负层级会让 _tile_ranges 的 range() 直接空转，
         # 越界层级会让瓦片数按 4^n 爆炸。
         # 注意这一行对 level_offset=0 **不是**恒等变换 —— max_level 自身越界时
-        # 它照样收紧，也就是说从不传偏移的既有调用方同样受影响。这是有意的：
-        # dem_task_manager.py:310 在 maxzoom=None 时用裸 int() 读配置
-        # terrain_local_maxzoom，绕过 validate_zoom（该键登记在
-        # config_manager.py:308 的 _UNCONSTRAINED_KEYS 里），配置写 25 就能一路
-        # 到这里切出 z25；而 local_terrain_task_manager.py:149 那条路径是有
-        # validate_zoom 的 —— 两条入口本就不对称。封顶 21 是堵这个缺口。
+        # 它照样收紧。别据此判断它可以删：
+        # 主要理由是**偏移叠加后越界**，而这条没有任何调用方挡得住。maxzoom 在
+        # 入口过 validate_zoom（上限 MAX_ZOOM=21），可 21 选 precision（+1）
+        # 叠出来就是 22 —— 校验发生在加偏移之前，拦不到；估算分支
+        # （max_level=None 走 estimate_max_level）更是压根没经过任何校验。
+        # 次要理由「配置路径绕过 validate_zoom」已经不成立了：
+        # dem_task_manager.py 的 maxzoom=None 分支此前用裸 int() 读配置
+        # terrain_local_maxzoom（该键登记在 config_manager.py 的
+        # _UNCONSTRAINED_KEYS 里，写入侧无校验），配置写 25 就能一路到这里切出
+        # z25；那条缺口已在 dem_task_manager 收口（改为过 validate_zoom，失败
+        # 退回出厂默认并留 warning）。
         max_level = max(0, min(MAX_ZOOM, int(max_level) + int(level_offset)))
         # 调用方钳不到偏移后的实际层级。dem_task_tiler 恒传 min_level=8（底图独占
         # z0-z7），它连**请求的** maxzoom 都不看 —— maxzoom < 8、或 maxzoom = 8

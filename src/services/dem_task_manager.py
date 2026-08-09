@@ -317,12 +317,17 @@ class DemTaskManager:
             # 读取太远，中间任何一个新调用方都会漏掉它。
             # 校验失败不抛：配置是装机默认，一个坏值不该让所有切片都启动不了。
             # 与原有 except 分支同一约定 —— 退回出厂默认 14。
+            # 但必须留痕：静默吞掉用户写过的值，会让「我明明配了 25」在系统里
+            # 一处都查不到。
             # （显式传参那条相反：调用方给了非法值必须当场报错，不能静默改写。）
+            maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")
             try:
-                maxzoom = validate_zoom(
-                    self.config.get("terrain_local_maxzoom", "14"), "maxzoom")
-            except Exception:
+                maxzoom = validate_zoom(maxzoom_raw, "terrain_local_maxzoom")
+            except Exception as e:
                 maxzoom = 14
+                logger.warning(
+                    f"配置 terrain_local_maxzoom={maxzoom_raw!r} 不可用({e})，"
+                    f"本次切片改用出厂默认 {maxzoom}")
 
         # 档位与法线：请求未给就取配置默认，与 maxzoom 完全同形。兜底值与
         # DEFAULT_CONFIGS 逐字一致（同 :299 注释的规矩：兜底和出厂默认不一致
@@ -330,11 +335,16 @@ class DemTaskManager:
         # 校验落在管理器而不是路由层：DEM 这条路径的 maxzoom 校验就在这里
         # （local 那条在路由层），两个新参数跟着各自路径的既有位置走。
         if quality is None:
-            quality = (self.config.get("terrain_quality_preset", DEFAULT_TILING_QUALITY)
-                       or DEFAULT_TILING_QUALITY)
-        # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
-        # 「改了档位重切、结果一模一样且零报错」是这条路径最难查的一类假象。
-        quality = validate_tiling_quality(quality)
+            # 报错里点名配置键而不是请求字段：这条分支上用户根本没传过 quality，
+            # 说 "quality (...) must be one of" 会把他指到一个不存在的输入上。
+            quality = validate_tiling_quality(
+                self.config.get("terrain_quality_preset", DEFAULT_TILING_QUALITY)
+                or DEFAULT_TILING_QUALITY,
+                "terrain_quality_preset")
+        else:
+            # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
+            # 「改了档位重切、结果一模一样且零报错」是这条路径最难查的一类假象。
+            quality = validate_tiling_quality(quality)
         if vertex_normals is None:
             vertex_normals = (
                 self.config.get("terrain_vertex_normals", "false") or "false") == "true"
