@@ -6,11 +6,12 @@ Handles rendering of HTML pages for the web interface.
 
 import logging
 from flask import Blueprint, render_template
+from src.core.tile_server import current_tile_port
 from src.services.basemap_source import client_descriptor, resolve_basemap
 from src.routes.basemap_static import active_basemap
 from src.services.config_manager import ConfigManager, redact_secret_value
-from src.services.geo_validation import (DEFAULT_TILING_QUALITY,
-                                         TILING_QUALITY_OFFSETS, validate_zoom)
+from src.services.geo_validation import (AUTO_MAXZOOM, DEFAULT_TILING_QUALITY,
+                                         TILING_QUALITY_OFFSETS, coerce_maxzoom)
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +44,18 @@ def _flat_config():
             for key, data in config_manager.get_all().items()}
 
 
-# 出厂默认，与 `database.DEFAULT_CONFIGS` 里的 terrain_local_maxzoom 逐字一致
-# —— 兜底值和出厂默认不一致就会造出「改了没反应」的假旋钮
-# （local_terrain_task_manager._default_quality 为另一个配置键定过同一条规矩）。
+# 自动挡下数字框仍要渲染的那个数。它**不是**「没配过时的行为」——
+# 缺配置/脏配置一律回落到自动挡（与 local_terrain_task_manager._default_maxzoom
+# 同一口径），这里只负责给数字框一个合法初值：它是用户取消勾选后的起点。
+# 空 value 本身**不会**让表单 :invalid —— min/max 只对有值的控件成立
+# （rangeUnderflow/rangeOverflow 对空值不适用），空值要 required 才触发
+# valueMissing，而这个控件没有 required（本仓的浏览器模拟器
+# tests/test_config_form_submittable.py:53-54 对空 value 也是直接跳过）。
+# 不渲染这个数的真实后果是静默的：用户取消勾选拿到一个空数字框，提交时送空串，
+# 后端 coerce_maxzoom 把空串当「未表态」→ 回落到配置默认（也就是他刚取消掉的
+# 自动挡），取消勾选看起来毫无效果。这个值同时是 test_config_form_submittable
+# 那七个越界用例的锚。真会让表单 :invalid 的是越界值（value="99"），见下面的
+# docstring。
 _FACTORY_LOCAL_MAXZOOM = 14
 
 
@@ -66,7 +76,18 @@ def _terrain_form_defaults(cfg):
     照直渲染成 value="99" 会违反控件自己的 min/max，让整张 #processForm 变
     :invalid —— 原生校验拦下 submit 事件，map.js 的监听根本不触发，「创建」点了
     没反应，而 #localTerrainOptions 只用 hidden 藏、字段不 disable，连与地形无关的
-    等高线任务也一起建不了。
+    等高线任务也一起建不了。'auto' 塞不进这个数字框，但坏法**不是**同理：
+    type="number" 的 value sanitization 会把非数字 value 直接置空，而这个控件没有
+    required，空值不触发任何 constraint violation —— value="auto" 在浏览器里等于
+    一个空数字框，表单照样提交得了。它的后果是静默的：用户看到空框，取消勾选后
+    提交送空串，后端 coerce_maxzoom 把空串当「未表态」→ 回落到配置默认（正是他
+    刚取消掉的自动挡），取消勾选毫无效果。所以 'auto' 由复选框那一态表达，
+    数字框仍渲染 _FACTORY_LOCAL_MAXZOOM。
+
+    脏值退回**自动挡**而不是某个写死的层级：与
+    local_terrain_task_manager._default_maxzoom 同一口径。同一份坏配置，从这张表单
+    和从两个管理器走，切出来的层级必须一样，否则「表单建的任务」和「详情面板起切」
+    又成了两套行为。
 
     空值与缺键都算「没配过」，不告警：config={} 的异常兜底渲染和被清空的字段都走
     这条路，每刷一次首页就刷一条 warning 只会把真正的脏值淹掉。
@@ -75,19 +96,28 @@ def _terrain_form_defaults(cfg):
         cfg: _flat_config() 的扁平配置（异常兜底路径传 {}）
 
     Returns:
-        (maxzoom, preset)：maxzoom 保证落在 [MIN_ZOOM, MAX_ZOOM] 内，
-        preset 保证是 TILING_QUALITY_OFFSETS 里的键。
+        (maxzoom, maxzoom_auto, preset)：maxzoom 保证落在 [MIN_ZOOM, MAX_ZOOM] 内
+        （自动挡下是数字框的起点值，不是要提交的值），maxzoom_auto 是「自动」
+        复选框的勾选态，preset 保证是 TILING_QUALITY_OFFSETS 里的键。
     """
     maxzoom = _FACTORY_LOCAL_MAXZOOM
+    maxzoom_auto = True
     raw_zoom = cfg.get('terrain_local_maxzoom') or ''
     if raw_zoom != '':
         try:
-            # 与两个管理器同一把尺（validate_zoom），不在这里另抄一份 0/21 的上下界。
-            maxzoom = validate_zoom(raw_zoom, 'terrain_local_maxzoom')
+            # 与两个管理器同一把尺（coerce_maxzoom），不在这里另抄一份 0/21 的
+            # 上下界，也不在这里另认一次 'auto' 字面量。
+            value = coerce_maxzoom(raw_zoom, 'terrain_local_maxzoom')
         except Exception as e:
             logger.warning(
                 f"配置 terrain_local_maxzoom={raw_zoom!r} 不可用({e})，"
-                f"处理表单初值改用出厂默认 {maxzoom}")
+                f"处理表单初值改用出厂默认 {AUTO_MAXZOOM!r}")
+        else:
+            # 数字框在自动挡下仍渲染 _FACTORY_LOCAL_MAXZOOM —— 出厂默认已经是
+            # 'auto'，这个 14 只是用户取消勾选后的起点。
+            maxzoom_auto = value == AUTO_MAXZOOM
+            if not maxzoom_auto:
+                maxzoom = value
 
     preset = DEFAULT_TILING_QUALITY
     raw_preset = cfg.get('terrain_quality_preset') or ''
@@ -102,7 +132,7 @@ def _terrain_form_defaults(cfg):
                 f"{sorted(TILING_QUALITY_OFFSETS)} 内，处理表单初值改用出厂默认 "
                 f"{preset}（同一个值从历史页详情面板起切会直接 400）")
 
-    return maxzoom, preset
+    return maxzoom, maxzoom_auto, preset
 
 
 @main_bp.route('/')
@@ -130,26 +160,34 @@ def index():
             template_config.get('basemap_source'),
             tile_servers=template_config.get('tile_servers'),
             default_style=template_config.get('default_style', 'm'),
-        )))
+        )), tile_port=current_tile_port())
 
         # 模板不再自己钳层级、自己兜档位：那两处静默修复在这里做完并留日志，
         # 详见 _terrain_form_defaults。
-        maxzoom, quality = _terrain_form_defaults(template_config)
+        maxzoom, maxzoom_auto, quality = _terrain_form_defaults(template_config)
 
+        # 偏移表原样下发给模板，渲染进 <option data-offset>：起切前的规模预告
+        # 要按「基准 + 偏移」算实际层级，而 map.js 里不许有第二份取值表。
         return render_template('index.html', config=template_config,
                                map_config=map_config, basemap=basemap,
                                terrain_local_maxzoom=maxzoom,
-                               terrain_quality_preset=quality)
+                               terrain_local_maxzoom_auto=maxzoom_auto,
+                               terrain_quality_preset=quality,
+                               terrain_quality_offsets=TILING_QUALITY_OFFSETS)
 
     except Exception as e:
         logger.error(f"Error rendering index page: {e}")
         # 空配置走同一个函数拿出厂默认：这条路径上什么都没被丢弃，
         # 不该再刷一条「配置不可用」的假警报（上面那条 error 已经说清了病因）。
-        maxzoom, quality = _terrain_form_defaults({})
+        maxzoom, maxzoom_auto, quality = _terrain_form_defaults({})
         return render_template('index.html', config={}, map_config={},
-                               basemap=client_descriptor(resolve_basemap(None)),
+                               basemap=client_descriptor(
+                                   resolve_basemap(None),
+                                   tile_port=current_tile_port()),
                                terrain_local_maxzoom=maxzoom,
-                               terrain_quality_preset=quality)
+                               terrain_local_maxzoom_auto=maxzoom_auto,
+                               terrain_quality_preset=quality,
+                               terrain_quality_offsets=TILING_QUALITY_OFFSETS)
 
 
 @main_bp.route('/history')

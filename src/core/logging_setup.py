@@ -25,6 +25,7 @@ import os
 import re
 
 from src.core.startup_banner import _enable_windows_ansi, use_color
+from src.core.tile_paths import TILE_PATH_PREFIXES
 
 _RESET = "\033[0m"
 _DIM = "\033[2m"
@@ -220,13 +221,11 @@ class WerkzeugAccessLogFilter(logging.Filter):
         return True
 
 
-# 地图瓦片路径前缀。这四条都是「浏览地图」直接产生的高频请求:
-#   /basemap  底图转发(routes/basemap_static.py)
-#   /tiles    地图下载任务的瓦片(routes/tiles_static.py)
-#   /terrain  地形瓦片与全球底座(routes/terrain_static.py)
-#   /contour  等高线瓦片(routes/contour_static.py)
+# 地图瓦片路径前缀 —— 与瓦片专用端口放行的是**同一份**名单(src/core/tile_paths.py:
+# 说明各条前缀的来历与漏改一处的后果)。这里不再手抄一份:两份名单迟早会漂移,
+# 而两边漂移的表现完全不同(那边是硬 404,这边是控制台被瓦片日志刷屏),对不上账。
 # 判定用前缀而不是路由名:过滤器只拿得到一行文本,拿不到 Flask 的路由对象。
-_TILE_PATH_PREFIXES = ('/basemap/', '/tiles/', '/terrain/', '/contour/')
+_TILE_PATH_PREFIXES = TILE_PATH_PREFIXES
 
 # 匹配访问日志里的 `"GET /path HTTP/1.1" 200`,取出路径与状态码。
 # 非访问日志(werkzeug 也会打 "code 400, message Bad request" 之类)匹配不上,

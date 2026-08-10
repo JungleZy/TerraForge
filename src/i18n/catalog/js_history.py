@@ -94,6 +94,10 @@ MESSAGES = {
         'zh': '在地图上预览',
         'en': 'Preview on map',
     },
+    'js.history.action.process': {
+        'zh': '转成切片任务',
+        'en': 'Convert to tiling task',
+    },
     'js.history.action.delete': {
         'zh': '删除任务',
         'en': 'Delete task',
@@ -181,29 +185,11 @@ MESSAGES = {
         'en': 'Failed to load task details',
     },
 
-    # 详情模态的地形切片区
-    'js.history.terrain.start_failed': {
-        'zh': '启动切片失败',
-        'en': 'Failed to start tiling',
-    },
-    'js.history.terrain.not_started': {
-        'zh': '未开始',
-        'en': 'Not started',
-    },
-    'js.history.terrain.status_unknown': {
-        'zh': '状态未知',
-        'en': 'Unknown status',
-    },
-    'js.history.terrain.load_failed': {
-        'zh': '加载失败',
-        'en': 'Failed to load',
-    },
-
-    # 详情面板里那个起切按钮不带任何参数，走的是配置默认档位 —— 用户在这里
-    # 没有选择权，那就至少得让他看见实际用的是哪一档。档位名不能直吐后端的
-    # precision/balanced/speed，那三个词说不清「和什么比、差在哪」。
+    # 详情模态的地形切片区（只给本地地形任务用；高程下载任务不再显示这一块，
+    # 切片是独立任务，由任务行「处理」按钮转出）。
     #
-    # 参照物写「基准层级」而不是「默认档位」：`geo_validation.TILING_QUALITY_OFFSETS`
+    # 档位名不能直吐后端的 precision/balanced/speed，那三个词说不清「和什么比、
+    # 差在哪」。参照物写「基准层级」而不是「默认档位」：`geo_validation.TILING_QUALITY_OFFSETS`
     # 的 +1/0/-1 是相对**基准层级**算的，
     # 与 terrain_quality_preset 当前配成哪一档无关。写成「比默认多切一级」的话，
     # 运维把默认改成 speed 之后，一个存成 balanced 的作业仍会被标成「默认」——
@@ -256,15 +242,12 @@ MESSAGES = {
         'en': 'Unknown (not recorded for this job)',
     },
 
-    # 「层级」那一格。两种标签不是措辞变体，是两种不同的事实：
+    # 「基准层级」标签与说明：本地地形详情的层级格与回退分支用。
+    # 两种标签不是措辞变体，是两种不同的事实：
     # 实际层级 = 作业切完后 build_terrain 回报的最深层级（= layer.json 的
     # maxzoom）；基准层级 = 用户填的那个数，精细/快速两档下它比实际值差一级。
     # 拿不到实际值时（存量行 / 还没切完）必须换标签 + 挂说明，不能让基准值
     # 顶着「实际」的名头显示 —— 那正是这次要修的错数字。
-    'js.history.terrain.maxzoom_actual_label': {
-        'zh': '实际层级',
-        'en': 'Actual max level',
-    },
     'js.history.terrain.maxzoom_base_label': {
         'zh': '基准层级',
         'en': 'Base level',
@@ -277,6 +260,29 @@ MESSAGES = {
               'level actually tiled: the precision preset goes one level deeper '
               'and the fast preset one level shallower. Once the job finishes '
               'this switches to the actual level (matching layer.json).',
+    },
+    # 基准层级的**第三态**：「自动」挡（出厂默认）下 maxzoom 那一列存的是哨兵
+    # （geo_validation.AUTO_MAXZOOM_SENTINEL），不是层级 —— 拿不到实际值时把它
+    # 原样显示就是界面上的 `0 - -1`。措辞与表单那侧的
+    # tpl.index.process.local_terrain_maxzoom_auto 同一套词：用户在表单上勾的
+    # 是哪一挡，详情里就得认出是哪一挡。
+    'js.history.terrain.maxzoom_auto': {
+        'zh': '自动（按源数据分辨率）',
+        'en': 'auto (from source resolution)',
+    },
+    # 自动挡不能共用 maxzoom_base_hint：那句的主语是「提交时填的那个数」，
+    # 而这一挡提交的是字面量 auto，基准层级要等切片时按源数据分辨率现算 ——
+    # 挂上去等于告诉用户他填过一个他没填过的数。末句两句一致：切完之后这一格
+    # 换成实际层级。
+    'js.history.terrain.maxzoom_auto_hint': {
+        'zh': '这个作业选的是「自动」层级：基准层级在切片时按源数据分辨率现算，'
+              '提交时还不存在一个具体的数（精细/快速两档再在这个基准上各偏移'
+              '一级）。作业切完后这里会换成实际层级（与 layer.json 一致）。',
+        'en': 'This job was submitted with the automatic level: the base level is '
+              'derived from the source resolution at tiling time, so there is no '
+              'number yet (the precision and fast presets then shift one level '
+              'from that base). Once the job finishes this switches to the actual '
+              'level (matching layer.json).',
     },
 
     # 删除任务的单一确认框与结果提示。

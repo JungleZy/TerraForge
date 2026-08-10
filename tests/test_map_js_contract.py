@@ -25,9 +25,27 @@ def _map_js():
 
 
 def _fn_body(src, name):
-    """按花括号配对提取 `function name(...)` 的整个函数体（含外层 {}）。"""
+    """按花括号配对提取 `function name(...)` 的整个函数体（含外层 {}）。
+
+    先按圆括号配对跳过参数表，再去找函数体那个 `{`：解构参数里的花括号排在函数
+    体之前（`function resetForm({ clearBounds = true, formId = 'downloadForm' }
+    = {})`），直接 `src.index('{', i)` 会把参数表当成函数体切出来 —— 切片里除了
+    参数名什么都没有，于是「函数体里必须有 X」永假、「函数体里不许有 X」永真。
+    """
     i = src.index(f'function {name}(')
-    j = src.index('{', i)
+    args_open = src.index('(', i)
+    depth = 0
+    args_close = None
+    for k in range(args_open, len(src)):
+        if src[k] == '(':
+            depth += 1
+        elif src[k] == ')':
+            depth -= 1
+            if depth == 0:
+                args_close = k
+                break
+    assert args_close is not None, f'{name} 参数表的圆括号不配对——本测试已失效'
+    j = src.index('{', args_close)
     depth = 0
     for k in range(j, len(src)):
         if src[k] == '{':
@@ -100,7 +118,7 @@ def test_submit_button_is_always_unlocked_in_finally():
     没有一条要求解锁调用**必须存在**——守「不能写 X」而不守「必须调用 Y」
     是不对称的。
 
-    四处提交处理器开头都会 btn.disabled = true 给按钮上锁,唯一的解锁路径
+    三处提交处理器开头都会 btn.disabled = true 给按钮上锁,唯一的解锁路径
     就是 finally 里那一行 refreshSubmitButtonState()。删掉它,提交失败后
     按钮会永久卡死,而其他断言全绿。这里补上存在性断言。
     """
@@ -108,9 +126,11 @@ def test_submit_button_is_always_unlocked_in_finally():
 
     # finally 块内目前没有嵌套花括号,所以 [^}]* 足够界定块体
     finally_blocks = re.findall(r'\}\s*finally\s*\{([^}]*)\}', src)
-    assert len(finally_blocks) == 4, (
-        "预期 4 处提交处理器各有一个 finally 块(map/dem、contour、local_terrain 上传、"
-        "local_terrain 复用已下载 DEM 任务);"
+    # 3 处 = map/dem 下载、contour、local_terrain（上传与「DEM 任务转切片」
+    # 已合并成 submitLocalTerrain 一条链路,原来的 startDemTaskTerrainTiling
+    # 随「处理按钮转出新任务」删除）。
+    assert len(finally_blocks) == 3, (
+        "预期 3 处提交处理器各有一个 finally 块(map/dem、contour、local_terrain);"
         f"实际找到 {len(finally_blocks)} 个。块结构变了就要同步更新本测试"
     )
     for block in finally_blocks:
@@ -120,7 +140,7 @@ def test_submit_button_is_always_unlocked_in_finally():
         )
 
     # 10 = 1 处定义 + apply() + CREATED + DELETED + syncBoundsFromDrawnItems()
-    #      + resetForm() + 4 处 finally
+    #      + resetForm() + openProcessForDemTask + 3 处 finally
     assert src.count('refreshSubmitButtonState(') >= 10, (
         "refreshSubmitButtonState 的定义/调用点少于 10 处,说明某个状态变更路径"
         "(绘制、编辑、类型切换、表单重置、提交收尾)漏了统一刷新"
@@ -551,33 +571,35 @@ def test_map_js_does_not_resolve_the_basemap_url_itself():
     )
 
 
-def _preset_submit_bodies():
-    """两个提交入口的函数体（已剥注释）。上传走 FormData，DEM 走 JSON body。"""
-    code = _strip_comments(_map_js())
-    return {
-        'submitLocalTerrain': _fn_body(code, 'submitLocalTerrain'),
-        'startDemTaskTerrainTiling': _fn_body(code, 'startDemTaskTerrainTiling'),
-    }
+def _local_terrain_submit_body():
+    """submitLocalTerrain 的函数体（已剥注释）。
+
+    「本地高程切片」的两种来源（上传 / 零拷贝复用 DEM 任务）都走这一个
+    函数、同一条 FormData 链路 —— 早前 dem_task 分支另有
+    startDemTaskTerrainTiling 打 JSON 到 /api/terrain/dem/<id>/start
+    （复用 DEM 任务自己的切片作业、不新建任务，进度只能在详情弹窗里看），
+    已随「任务行处理按钮把高程任务转出新切片任务」一并删除。
+    """
+    return _fn_body(_strip_comments(_map_js()), 'submitLocalTerrain')
 
 
 def test_terrain_submit_sends_the_preset_fields():
-    """两个提交入口都必须带上档位，否则用户选的档位静默丢失。
+    """上传与「DEM 任务转切片」两条来源都必须带上档位，否则用户选的档位静默丢失。
 
-    只接一个入口是这条链路最像「已完成」的半成品：上传 DEM 时档位生效、
+    只接一条来源是这条链路最像「已完成」的半成品：上传 DEM 时档位生效、
     对已下载的 DEM 任务起切时不生效（或反过来），两条路径的产物不一样大、
     不一样细，而界面上是同一个下拉框、同一个按钮，零报错。
     """
-    bodies = _preset_submit_bodies()
-    for name, body in bodies.items():
-        assert 'localTerrainQuality' in body, f'{name} 没读档位下拉'
-        assert 'localTerrainNormals' in body, f'{name} 没读法线复选框'
-    # 字段名要和后端对上：表单分支是 append('quality', ...)，JSON 分支是 quality:。
-    assert re.search(r"append\(\s*'quality'\s*,", bodies['submitLocalTerrain']), (
+    body = _local_terrain_submit_body()
+    assert 'localTerrainQuality' in body, 'submitLocalTerrain 没读档位下拉'
+    assert 'localTerrainNormals' in body, 'submitLocalTerrain 没读法线复选框'
+    # 字段名要和后端对上：FormData 的 append('quality', ...)。
+    assert re.search(r"append\(\s*'quality'\s*,", body), (
         "submitLocalTerrain 的 FormData 里没有 quality 字段 —— "
         "POST /api/terrain/local/tasks 会退回配置默认档")
-    assert re.search(r"\bquality\s*:", bodies['startDemTaskTerrainTiling']), (
-        "startDemTaskTerrainTiling 的 JSON body 里没有 quality 字段 —— "
-        "POST /api/terrain/dem/<id>/start 会退回配置默认档")
+    assert re.search(r"append\(\s*'dem_task_id'\s*,", body), (
+        "submitLocalTerrain 的 FormData 里没有 dem_task_id 分支 —— "
+        "任务行「处理」按钮/表单的 DEM 任务来源会无处可去")
 
 
 def test_normals_checkbox_is_submitted_as_its_checked_state():
@@ -590,45 +612,181 @@ def test_normals_checkbox_is_submitted_as_its_checked_state():
     - 把原生 checkbox 直接塞进 FormData 同样送 'on'、没勾时干脆不发字段。
     两种写法都是每次提交 400，而错误只在通知条上一闪。
     """
-    bodies = _preset_submit_bodies()
+    body = _local_terrain_submit_body()
 
-    form = re.search(r"append\(\s*'vertex_normals'\s*,([^\n]*)\)",
-                     bodies['submitLocalTerrain'])
+    form = re.search(r"append\(\s*'vertex_normals'\s*,([^\n]*)\)", body)
     assert form, "submitLocalTerrain 的 FormData 里没有 vertex_normals 字段"
-    json_field = re.search(r"\bvertex_normals\s*:([^\n]*)",
-                           bodies['startDemTaskTerrainTiling'])
-    assert json_field, "startDemTaskTerrainTiling 的 JSON body 里没有 vertex_normals 字段"
 
-    for label, expr in (('FormData 分支', form.group(1)),
-                        ('JSON 分支', json_field.group(1))):
-        assert '.checked' in expr, (
-            f'{label} 提交的不是 checkbox 的 checked 状态：{expr.strip()}')
-        assert '.value' not in expr, (
-            f'{label} 读了 checkbox 的 .value（恒为 on，后端 400）：{expr.strip()}')
-        assert "'on'" not in expr, (
-            f"{label} 出现了 'on' —— 后端白名单只认 true/false：{expr.strip()}")
+    expr = form.group(1)
+    assert '.checked' in expr, (
+        f'提交的不是 checkbox 的 checked 状态：{expr.strip()}')
+    assert '.value' not in expr, (
+        f'读了 checkbox 的 .value（恒为 on，后端 400）：{expr.strip()}')
+    assert "'on'" not in expr, (
+        f"出现了 'on' —— 后端白名单只认 true/false：{expr.strip()}")
 
 
 def test_terrain_submit_lets_the_backend_supply_the_defaults():
     """三个字段的兜底一律是空串，前端不许自己抄一份默认值。
 
     空串 = 未传 = 走配置默认，这是后端定的三态语义（local_terrain_api
-    的 create_local_terrain_task、terrain_api 的 start_dem_tiling
-    都把空串当未传）。前端写 `|| '14'` / `|| 'balanced'`
-    的后果不是「多一层保险」，是**同一份 DEM 从两个入口切出不同产物**：历史页
-    详情面板的起切按钮不带 body，走的是配置里的 terrain_local_maxzoom /
-    terrain_quality_preset；这张表单一旦控件缺席或被清空，就用前端抄的那份默认
-    盖过去。层级和法线都不可逆，发现时只能重切。
+    的 create_local_terrain_task 把空串当未传）。前端写 `|| '14'` /
+    `|| 'balanced'` 的后果不是「多一层保险」：控件缺席或被清空时，前端抄的
+    那份默认会**显式**盖掉运维在配置页配的 terrain_local_maxzoom /
+    terrain_quality_preset —— 配置那一项就成了「改了没反应的假旋钮」。
+    层级和法线都不可逆，发现时只能重切。
     """
-    bodies = _preset_submit_bodies()
+    body = _local_terrain_submit_body()
     for field in ('maxzoom', 'quality'):
-        m = re.search(r"append\(\s*'" + field + r"'\s*,([^\n]*)\)",
-                      bodies['submitLocalTerrain'])
+        m = re.search(r"append\(\s*'" + field + r"'\s*,([^\n]*)\)", body)
         assert m, f'submitLocalTerrain 的 FormData 里没有 {field} 字段'
         assert "|| ''" in m.group(1), (
             f"submitLocalTerrain 的 {field} 兜底不是空串 —— 前端在抄一份默认值，"
             f"会盖掉配置：{m.group(1).strip()}")
-        m = re.search(r'\b' + field + r'\s*:([^\n]*)', bodies['startDemTaskTerrainTiling'])
-        assert m, f'startDemTaskTerrainTiling 的 JSON body 里没有 {field} 字段'
-        assert "|| ''" in m.group(1), (
-            f"startDemTaskTerrainTiling 的 {field} 兜底不是空串：{m.group(1).strip()}")
+
+
+def test_terrain_submit_sends_the_auto_literal_when_the_box_is_checked():
+    """勾了「自动」就送字面量 'auto'，不能送数字框里那个陈旧的数。
+
+    数字框在自动挡下是 disabled 的，它的 value 只是用户取消勾选后的起点。
+    照发那个数，用户选的「按源数据分辨率决定」就静默变成一个写死的层级 ——
+    HTTP 200、作业照跑、前端零报错，只有切出来的层级不是他要的那个，
+    而层级不可逆，发现时只能重切。
+
+    字面量必须逐字是 'auto'：后端 geo_validation.coerce_maxzoom 刻意不做
+    大小写归一、不裁空白，'AUTO' 当场 400。
+    """
+    body = _local_terrain_submit_body()
+    assert 'localTerrainMaxzoomAuto' in body, (
+        'submitLocalTerrain 没读「自动层级」复选框 —— 勾了也送不出去，'
+        '用户选的自动挡在请求里根本不存在')
+    m = re.search(r"append\(\s*'maxzoom'\s*,([^\n]*)\)", body)
+    assert m, 'submitLocalTerrain 的 FormData 里没有 maxzoom 字段'
+    assert "'auto'" in m.group(1), (
+        f"maxzoom 那一行没有 'auto' 字面量 —— 勾上自动挡送出去的还是数字框里"
+        f"那个陈旧的数：{m.group(1).strip()}")
+    # 方向也得钉死。上面两条（读了复选框 + 有 'auto' 字面量）对三元的**极性**
+    # 一无所知：写反成 `checked ? (maxzoomEl?.value || '') : 'auto'` 同样全绿，
+    # 而行为恰好对调 —— 勾了自动挡送数字框里那个陈旧的数，没勾反倒送 'auto'
+    # 把用户填的层级整个作废。两种都不可逆，发现时只能重切。
+    assert re.search(r"\.checked\s*\?\s*'auto'\s*:", m.group(1)), (
+        f"「勾上」那一支送的不是 'auto' —— 三元写反了，自动/手动两挡的行为对调："
+        f"{m.group(1).strip()}")
+
+
+def test_maxzoom_auto_disabled_state_survives_a_form_reset():
+    """勾选态 -> 禁用态的同步必须收敛成一个函数，resetForm 也要调它。
+
+    form.reset() 把「自动」复选框拨回服务端渲染的那个默认值，但**不触发
+    change** —— 只挂 change 监听的话，用户取消过勾选、再建完一个任务之后，
+    界面就停在「自动挡勾着、数字框却能填」：填进去的数被 submitLocalTerrain
+    直接跳过（勾了就送 'auto'），没有任何提示。resetForm 里两张 tif 信息卡
+    跟着收起是同一条理由。
+    """
+    src = _strip_comments(_map_js())
+    assert 'function syncLocalTerrainMaxzoomDisabled(' in src, (
+        'map.js 应定义 syncLocalTerrainMaxzoomDisabled()')
+    # 1 处定义 + change 监听 + resetForm，共 3 次；少于 3 次说明有一侧没走同步。
+    assert src.count('syncLocalTerrainMaxzoomDisabled') >= 3, (
+        'change 监听与 resetForm 必须走同一个同步函数 —— 少一处就是勾选态与'
+        '禁用态脱节，而两者不一致时提交送的是勾选态')
+    # 计数守不住**位置**：把 resetForm 里那一句挪进任何别的函数，总数仍是 3，
+    # 而本用例整条标题（「survives a form reset」）说的正是 form.reset() 之后
+    # 那一次同步。按函数体钉，与本文件其它用例同一路数（_fn_body）。
+    assert 'syncLocalTerrainMaxzoomDisabled()' in _fn_body(src, 'resetForm'), (
+        'resetForm 里没有调 syncLocalTerrainMaxzoomDisabled() —— form.reset() '
+        '把复选框拨回默认值却不触发 change，界面会停在「自动挡勾着、数字框却能填」，'
+        '填进去的数被提交那侧直接跳过（勾了就送 auto），零提示')
+    # 计数与位置都对**极性**一无所知：`numEl.disabled = !autoEl.checked` 一字之差，
+    # 三次调用一次不少、resetForm 那句也还在，全套照绿 —— 而它产出的正是上面这
+    # 两条断言、syncLocalTerrainMaxzoomDisabled 自己的注释、以及模板里那句
+    # 「勾上时禁用数字框」共同警告的那个状态，只是这次是常态而非 reset 后的一瞬。
+    # 与本文件 test_terrain_submit_sends_the_auto_literal_when_the_box_is_checked
+    # 里那条三元极性断言同一路数：形状钉死，不靠计数。
+    assert re.search(r'\.disabled\s*=\s*[A-Za-z_$][\w$]*\.checked\b',
+                     _fn_body(src, 'syncLocalTerrainMaxzoomDisabled')), (
+        '禁用态的极性不是 `numEl.disabled = autoEl.checked` —— 写成 `= !autoEl.checked` '
+        '的话自动挡勾着数字框反倒能填，用户填的数在提交那侧被直接跳过（勾了就送 '
+        "'auto'），而这个状态本仓三处注释都点名警告过")
+
+
+def test_initial_and_runtime_basemaps_use_session_tile_url():
+    """首屏与换源重建的底图都只把内部绝对路径交给 tileUrl()。
+
+    端口是 initTileOrigin() 在页面启动时一次性定下的会话状态，URL 拼接点
+    不该再各自读 bm.tile_port —— 读了就意味着「探测还没落定也照拼」，
+    而探测失败时那个端口是死的，整屏底图会静默变白。
+    """
+    src = _strip_comments(_map_js())
+    init_body = _fn_body(src, 'initMap')
+    rebuild_body = _fn_body(src, '_rebuildBaseImagery')
+    assert 'url: tileUrl(bm.url)' in init_body
+    assert 'url: tileUrl(bm.url)' in rebuild_body
+    assert 'bm.tile_port' not in init_body
+    assert 'bm.tile_port' not in rebuild_body
+
+
+def test_preview_routes_every_application_tile_path_through_tile_url():
+    """预览的四类瓦片路径 + 晕渲回退那张 PNG 全部走同一个解析器。
+
+    最容易漏的是最后那张 hillshade PNG：前面 /hillshade 元数据请求改对了，
+    返回体里的 hs.url 直接塞进 SingleTileImageryProvider 的话，图片仍从主
+    端口取 —— 而它恰恰是「没有地形切片」时用户唯一看得见的东西，绕回主端
+    口既吃 6 连接上限、又让整条隔离链路只差最后一跳失效。
+    """
+    body = _fn_body(_strip_comments(_map_js()), 'previewTask')
+    for anchor in (
+        'tileUrl(`/tiles/${task.id}`)',
+        'tileUrl(`/contour/${task.id}`)',
+        'tileUrl(`/terrain/local/${task.id}`)',
+        'tileUrl(`/terrain/dem/${task.id}`)',
+        'fetch(`${base}/layer.json`)',
+        'Cesium.CesiumTerrainProvider.fromUrl(base',
+        'fetch(`${base}/hillshade`)',
+        'url: tileUrl(hs.url)',
+    ):
+        assert anchor in body, f'previewTask 里找不到锚点：{anchor}'
+
+
+# previewTask 里所有内部瓦片路径字面量：`/tiles/... `/contour/... `/terrain/...
+# 反引号模板串里不会再出现反引号，所以 [^`]* 切得干净。
+_TILE_PATH_LITERAL_RE = re.compile(r'`/(?:tiles|contour|terrain)/[^`]*`')
+
+
+def test_preview_never_builds_a_tile_path_outside_the_resolver():
+    """负向守卫：previewTask 里每一个瓦片路径字面量都必须紧跟在 tileUrl( 后面。
+
+    正向锚点只证明「现有这四条改对了」，证明不了「下一条也会走解析器」。
+    新增一类预览（比如 `/tiles/${id}/preview` 或又一种 terrain 变体）时，
+    照着旁边抄一行却漏掉 tileUrl 包裹是最自然的写法 —— 它不会报错、
+    不会少显示，只是那一类瓦片重新绕回主端口去吃 6 连接上限，
+    而正向锚点全绿。
+    """
+    body = _fn_body(_strip_comments(_map_js()), 'previewTask')
+    unwrapped = [
+        m.group(0) for m in _TILE_PATH_LITERAL_RE.finditer(body)
+        if not body[:m.start()].rstrip().endswith('tileUrl(')
+    ]
+    assert not unwrapped, (
+        f'previewTask 里有没经过 tileUrl() 的瓦片路径字面量：{unwrapped} —— '
+        '内部绝对路径一律交给页面级解析器，别再自己拼')
+
+
+def test_preview_never_feeds_a_raw_response_field_into_an_imagery_url():
+    """负向守卫：provider 的 url 只接受 tileUrl(...) 或基于已解析 base 的模板串。
+
+    这条钉的正是本任务修的那个缺陷的形状：接口返回体里的字段（hs.url 是
+    /hillshade 给的 /terrain/.../hillshade.png）直接塞进 provider。它长得跟
+    正常代码一模一样、跑起来图也出得来，只是那一跳退回主端口。白名单写死
+    两种合法形态后，任何新的 `url: <接口字段>` 都会立刻红。
+    """
+    body = _fn_body(_strip_comments(_map_js()), 'previewTask')
+    offenders = []
+    for m in re.finditer(r'url:\s*([^,\n]+)', body):
+        value = m.group(1).strip()
+        if value.startswith('tileUrl(') or value.startswith('`${base}'):
+            continue
+        offenders.append(value)
+    assert not offenders, (
+        f'previewTask 里有绕过解析器的 provider url：{offenders} —— '
+        '只允许 tileUrl(...) 或 `${base}/...`（base 本身已由 tileUrl 解析）')

@@ -140,22 +140,25 @@ jobs:
         test -f dist/terraforge/terraforge
         echo "Build successful!"
 
-    # 冒烟测试:真正启动 exe 并请求首页(构建成功 ≠ 能运行)。
+    # 冒烟测试:真正启动 exe 并请求首页 + 瓦片端口健康端点(构建成功 ≠ 能运行;
+    # 5001 起不来是静默降级,不单独探就永远报绿——见 build.yml 同名步骤)。
     - name: Smoke test executable
       run: |
         cd dist/terraforge
         ./terraforge > smoke.log 2>&1 &
         SMOKE_PID=$!
-        code=000
+        main_code=000
+        tile_code=000
         for i in $(seq 1 30); do
-          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/ || true)
-          [ "$code" = "200" ] && break
+          main_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/ || true)
+          tile_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/tile-health || true)
+          [ "$main_code" = "200" ] && [ "$tile_code" = "204" ] && break
           sleep 2
         done
         kill $SMOKE_PID 2>/dev/null || true
         tail -30 smoke.log
-        if [ "$code" != "200" ]; then
-          echo "Smoke test FAILED (HTTP $code)"
+        if [ "$main_code" != "200" ] || [ "$tile_code" != "204" ]; then
+          echo "Smoke test FAILED (main HTTP $main_code, tile health HTTP $tile_code)"
           exit 1
         fi
-        echo "Smoke test OK (HTTP 200)"
+        echo "Smoke test OK (main HTTP 200, tile health HTTP 204)"

@@ -11,15 +11,17 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
 from src.services.dem_download_engine import DemDownloadEngine
 from src.services.download_speed import SpeedMeter
-from src.services.geo_validation import (DEFAULT_TILING_QUALITY, TILING_QUALITY_OFFSETS,
+from src.services.geo_validation import (AUTO_MAXZOOM, DEFAULT_TILING_QUALITY,
+                                         TILING_QUALITY_OFFSETS, coerce_maxzoom,
+                                         maxzoom_from_db, maxzoom_to_db,
                                          require_absolute_output_dir, sanitize_filename,
-                                         validate_bbox, validate_tiling_quality, validate_zoom)
+                                         validate_bbox, validate_tiling_quality)
 from src.services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
@@ -263,7 +265,8 @@ class DemTaskManager:
     def resume_task(self, task_id: int) -> None:
         self.start_task(task_id)
 
-    def start_tiling(self, task_id: int, maxzoom: Optional[int] = None,
+    def start_tiling(self, task_id: int,
+                     maxzoom: Optional[Union[int, str]] = None,
                      quality: Optional[str] = None,
                      vertex_normals: Optional[bool] = None) -> None:
         task_id = int(task_id)
@@ -288,7 +291,9 @@ class DemTaskManager:
             conn.close()
 
         # M20: layer.json 的 parentUrl 指向全局 base，写死 localhost:5000 会在
-        # 非 5000 端口/反代部署下 404 —— 可配置，默认值保持现状兼容。
+        # 非 5000 端口/反代/远程访问下 404 —— 可配置，默认值是应用内相对路径
+        # `/terrain/base`（由浏览器继承提供 layer.json 的 origin，瓦片走 5001
+        # 专用 origin 时也对）。
         #
         # 两道闸门缺一不可（见 layer_json）：目录形式（带 /layer.json 会让 Cesium
         # 请求 .../layer.json/layer.json）+ base 真的存在。任一不满足都是 404，
@@ -300,34 +305,40 @@ class DemTaskManager:
             # 不可用，然后写一个 404 的 parentUrl —— 上面说的那条链）。
             self.config.get("terrain_global_base_path", "./assets/terrain/base_z8"))
         parent_url = parent_url_if_base_available(
-            self.config.get("terrain_base_parent_url", "")
-            or "http://localhost:5000/terrain/base",
+            self.config.get("terrain_base_parent_url", "") or "/terrain/base",
             base_dir,
         )
 
         # 处理弹窗「对已下载的高程任务做地形切片」允许调用方覆盖最大层级；
-        # 缺省（None）仍读配置，保持原有装机默认不变。
+        # 缺省（None / 空串）仍读配置，保持原有装机默认不变。
         if maxzoom is not None:
-            maxzoom = validate_zoom(maxzoom, "maxzoom")
-        else:
-            # 配置值也过 validate_zoom（范本 local_terrain_task_manager._default_maxzoom，
-            # 那边两条路径都校验）。此前这里是裸 int()：terrain_local_maxzoom
-            # 在 config_manager._UNCONSTRAINED_KEYS 里没有取值规则，写进去的 99
-            # 能一路传到 build_terrain，只靠那边的 MAX_ZOOM 封顶兜住 —— 兜底离
-            # 读取太远，中间任何一个新调用方都会漏掉它。
-            # 校验失败不抛：配置是装机默认，一个坏值不该让所有切片都启动不了。
-            # 与原有 except 分支同一约定 —— 退回出厂默认 14。
-            # 但必须留痕：静默吞掉用户写过的值，会让「我明明配了 25」在系统里
-            # 一处都查不到。
+            maxzoom = coerce_maxzoom(maxzoom, "maxzoom")
+        if maxzoom is None:
+            # 配置值同样过 coerce_maxzoom（范本 local_terrain_task_manager.
+            # _default_maxzoom，那边两条路径都校验）。此前这里是裸 int()：
+            # terrain_local_maxzoom 在 config_manager._UNCONSTRAINED_KEYS 里没有
+            # 取值规则，写进去的 99 能一路传到 build_terrain。
+            # 尤其不能把原始值直接交给 maxzoom_to_db —— 它对越界值静默放行
+            # （`int('-1')` = -1，而 -1 正是自动挡的哨兵），配置里一个 '-1' 就会
+            # 在库里变成一条与「用户真的选了自动」无从分辨的作业。
+            # 校验失败不抛：配置是装机默认，一个坏值不该让所有切片都启动不了；
+            # 但必须留痕。local 侧 _default_maxzoom 是同一条规矩。
             # （显式传参那条相反：调用方给了非法值必须当场报错，不能静默改写。）
-            maxzoom_raw = self.config.get("terrain_local_maxzoom", "14")
+            maxzoom_raw = self.config.get("terrain_local_maxzoom", AUTO_MAXZOOM)
             try:
-                maxzoom = validate_zoom(maxzoom_raw, "terrain_local_maxzoom")
+                maxzoom = coerce_maxzoom(maxzoom_raw, "terrain_local_maxzoom")
             except Exception as e:
-                maxzoom = 14
+                maxzoom = AUTO_MAXZOOM
                 logger.warning(
                     f"配置 terrain_local_maxzoom={maxzoom_raw!r} 不可用({e})，"
-                    f"本次切片改用出厂默认 {maxzoom}")
+                    f"本次切片改用出厂默认 {AUTO_MAXZOOM!r}")
+            if maxzoom is None:
+                # 配置被清空 = 没配过 → 出厂默认
+                maxzoom = AUTO_MAXZOOM
+        # 从这里往下 maxzoom 一律是**库形态的 int**（自动挡即哨兵）：下面的
+        # UPSERT 绑定与切片线程参数都直接用它，还原成 TileParams 要的形态是
+        # _run_tiling_job 里那次 maxzoom_from_db。
+        maxzoom = maxzoom_to_db(maxzoom)
 
         # 档位与法线：请求未给就取配置默认，与 maxzoom 完全同形。兜底值与
         # DEFAULT_CONFIGS 逐字一致（同上面 terrain_global_base_path 兜底那条注释
@@ -580,7 +591,12 @@ class DemTaskManager:
                 counts = tile_dem_task_dir(
                     task_dir=task_dir,
                     out_dir=output_dir,
-                    params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
+                    # maxzoom 一路传下来的是库形态：哨兵在这里还原成 None，
+                    # 也就是 build_terrain 按源数据像素尺寸现算基准层级那一态。
+                    # 传 -1 会被它当成显式层级钳成 0 —— 一张 z0 瓦片，作业照报
+                    # completed。
+                    params=TileParams(maxzoom=maxzoom_from_db(maxzoom),
+                                      parent_url=parent_url,
                                       normals=vertex_normals,
                                       level_offset=TILING_QUALITY_OFFSETS[quality],
                                       progress_cb=tiling_progress,

@@ -678,6 +678,35 @@ body {
     color: var(--color-text-primary);
 }
 
+/* 地形预览的进场薄雾（.index-map 内，map.js 的 _showMapVeil 动态挂载）。
+
+   Cesium 的地形是全球单一 viewer.terrainProvider，赋值即整块球面几何重建 ——
+   影像层那种 alpha 淡入在这里没有对应物，两份地形也无法共存做交叉淡化。
+   于是换 provider 前先罩一层雾，视野瓦片落地（globe.tilesLoaded）后散开，
+   把「几何原地跳变 + 当着用户面逐级细化」这一段盖过去。
+
+   z-index 900 < .map-toolbar(1000)：过渡是给地图的，工具条与选区浮层要
+   照常清晰。pointer-events: none：雾期间地图仍可拖、按钮仍可点。
+   淡出比淡入慢（0.35s vs 0.18s）：起雾要快到看不见，散雾才是被看的那一下。
+   reduced-motion 下两个时长都被文件尾部的 * 规则压到 0.01ms，雾变成瞬开瞬关，
+   JS 侧用的是定时器不是 transitionend，不受影响。 */
+.map-transition-veil {
+    position: absolute;
+    inset: 0;
+    z-index: 900;
+    pointer-events: none;
+    background: var(--color-backdrop);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    opacity: 0;
+    transition: opacity 0.35s ease;
+}
+
+.map-transition-veil--in {
+    opacity: 1;
+    transition-duration: 0.18s;
+}
+
 /* Cesium 时代的左列工具条：全自绘按钮组（视图 / 框选 / 功能面板三组），
    绝对定位在地图左上角。z-index 1000 < 面板 backdrop(1400)：
    面板开着时先关面板（点遮罩 / X / Esc）再切换。 */
@@ -1278,7 +1307,8 @@ html[lang="en"] .map-panel-btn {
    整体删除（2026-08 单一时间流定稿）：无分组头、无折叠，自然也没有
    .task-group-header 这组规则。 */
 
-/* 筛选行：搜索框（客户端过滤当前页）+ 状态 chips（时间流 ?status=）。 */
+/* 筛选行：搜索框（客户端过滤当前页）+ 状态 chips（时间流 ?status=）
+   + 右端的「处理」入口（首页任务面板才有，见 _history_content.html）。 */
 .task-filter-bar {
     display: flex;
     align-items: center;
@@ -1289,6 +1319,19 @@ html[lang="en"] .map-panel-btn {
 
 .task-filter-bar #searchInput {
     max-width: 220px;
+}
+
+/* 「处理」入口：靠右。margin-left:auto 吃掉搜索/chips 与它之间的所有余量；
+   窄面板下 flex-wrap 让它换到下一行，那时 auto 外边距把它顶到该行右端。
+   尺寸/字重不在这里定义 —— 模板给它 .btn-compact（配置页那套行内动作按钮，
+   高度锁 --ctl-h，与同行 #searchInput 同高），这里只补圆角：紧凑档没设
+   border-radius，落回 Bootstrap 的 6px，而同行输入框是 --radius-sm(8px)。
+   选择器写成 .btn.task-filter-bar__action (0,2,0) 而不是裸类名 (0,1,0)：
+   要压住 Bootstrap 的 .btn 圆角。与 .btn.btn-compact 同特异度但声明不重叠，
+   两条规则的先后顺序不影响结果。 */
+.btn.task-filter-bar__action {
+    margin-left: auto;
+    border-radius: var(--radius-sm);
 }
 
 .status-chips {
@@ -2653,13 +2696,10 @@ code {
 .detail-progress-row { margin-top: 1rem; }
 .detail-k--head { margin-bottom: 0.5rem; }
 .detail-grid--spaced { margin-top: 0.5rem; }
-.detail-terrain-row { gap: 1rem; }
 .detail-terrain-title { margin-bottom: 0.25rem; }
 /* 0.9rem 不在 --font-size-* 刻度上（sm 0.875 / base 0.9375 之间）。原样搬过来
    而不是就近吸附到某个令牌：这一步只做「内联搬进类」，改字号是另一件事。 */
 .detail-terrain-info { font-family: var(--font-mono); font-size: 0.9rem; }
-.detail-terrain-actions { flex: 0 0 auto; }
-.detail-terrain-error-row { margin-top: 0.75rem; }
 .detail-alert-flush { margin: 0; }
 
 /* ========================================================================

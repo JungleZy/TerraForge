@@ -263,7 +263,7 @@ def test_parent_url_link_local_metadata_is_rejected(cm):
 
 
 def test_parent_url_same_origin_relative_is_accepted(cm):
-    """同源相对路径是最稳的写法（换端口/反代都不用改）。"""
+    """同源相对路径是最稳的写法（换端口/反代都不用改），2026-08-10 起是出厂默认值。"""
     assert cm.validate_config('terrain_base_parent_url', '/terrain/base') is True
 
 
@@ -281,7 +281,8 @@ def test_parent_url_rejects_values_that_should_never_reach_a_browser(cm, value):
 
 
 @pytest.mark.parametrize('value', [
-    'http://localhost:5000/terrain/base',           # 出厂默认值
+    '/terrain/base',                                # 出厂默认值（应用内相对路径）
+    'http://localhost:5000/terrain/base',           # 2026-08-10 之前的出厂默认值，存量库里就是它
     'http://192.168.1.10:5000/terrain/base',        # 文档化的内网部署
     'https://tiles.example.com:8443/terrain/base',  # test_local_terrain_api 用的值
     'http://terrain.internal:9000/terrain/base/layer.json',
@@ -290,17 +291,20 @@ def test_parent_url_rejects_values_that_should_never_reach_a_browser(cm, value):
 def test_parent_url_keeps_the_documented_deployment_shapes(cm, value):
     """**有意偏离评审建议的一条**：不拦回环/私网。
 
-    出厂默认值就是 `http://localhost:5000/terrain/base`，而
-    `docs/reference/terrain/README.md` 的「改 `terrain_base_parent_url` 的典型场景」
-    一段明写那就是「换端口、部署到内网 IP 或域名」。按「非回环非私网」一刀切会把默认值
-    和文档化的部署方式一起判非法，而对真正的威胁（指到攻击者的**公网**站点）
-    毫无作用。拦的是链路本地段与非 http(s)/带 userinfo 的形态。
+    出厂默认值 2026-08-10 起是相对路径 `/terrain/base`，但存量库里存着旧的
+    `http://localhost:5000/terrain/base`，而 `docs/reference/terrain/README.md`
+    的「改 `terrain_base_parent_url` 的典型场景」一段写的是「指向另一台机器上的
+    地形服务」。按「非回环非私网」一刀切会把存量值和文档化的部署方式一起判非法，
+    而对真正的威胁（指到攻击者的**公网**站点）毫无作用。拦的是链路本地段与非
+    http(s)/带 userinfo 的形态。
     """
     assert cm.validate_config('terrain_base_parent_url', value) is True
 
 
 def test_parent_url_default_survives_validation(cm):
-    assert _defaults()['terrain_base_parent_url'] == 'http://localhost:5000/terrain/base'
+    assert _defaults()['terrain_base_parent_url'] == '/terrain/base'
+    assert cm.validate_config('terrain_base_parent_url',
+                              _defaults()['terrain_base_parent_url']) is True
 
 
 # --------------------------------------------------------------------------

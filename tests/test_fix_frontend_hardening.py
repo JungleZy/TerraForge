@@ -59,41 +59,50 @@ def _clean(name):
     return _strip_js_comments(_js(name))
 
 
-# --- 1. P1#14：initHistoryMap 必须被等到 ---------------------------------------
+# --- 1. P1#14：地图与时间流并行启动，在共同屏障后渲染 ---------------------------
 
-def test_init_history_awaits_the_map_before_loading_the_timeline():
-    """`initHistory` 必须 await `initHistoryMap()`，且 loadHistory 排在其后。
-
-    只断言「文件里有 await initHistoryMap」是不够的：它可以出现在任何别的
-    函数里。这里切出 initHistory 的函数体，并比较 await 与 loadHistory(1)
-    的先后位置 —— 旧代码两句都在，只是没有 await 且顺序相反。
-    """
+def test_init_history_starts_map_and_timeline_before_joint_barrier():
     body = _js_function_body(_clean('history.js'), 'initHistory')
-    assert re.search(r'await\s+initHistoryMap\s*\(\s*\)', body), (
-        'initHistory 没有 await initHistoryMap() —— 小地图与 loadHistory 又在竞速'
+    map_at = body.index('initHistoryMap()')
+    history_at = body.index('loadHistory(1, false)')
+    barrier_at = body.index('Promise.all')
+    assert map_at < barrier_at
+    assert history_at < barrier_at
+    assert not re.search(r'await\s+initHistoryMap\s*\(', body[:barrier_at]), (
+        'initHistoryMap 不能在共同屏障前被 await，否则时间流仍被地图串行阻塞'
     )
-    await_at = re.search(r'await\s+initHistoryMap\s*\(\s*\)', body).start()
-    load_at = body.index('loadHistory(1)', await_at) if 'loadHistory(1)' in body[await_at:] else -1
-    assert load_at > await_at, (
-        'loadHistory(1) 必须排在 await initHistoryMap() 之后，否则 await 白加'
-    )
+    assert 'renderHistoryMap()' in body[barrier_at:]
 
 
-def test_init_history_is_async_and_swallows_map_init_failure():
-    """initHistory 必须是 async，且地图初始化失败不能把表格一起吞掉。
+def test_init_history_map_awaits_tile_origin_before_viewer():
+    body = _js_function_body(_clean('history.js'), 'initHistoryMap')
+    descriptor_at = body.index('await _resolveHistoryBasemap()')
+    probe_at = body.index('await initTileOrigin(bm.tile_port)')
+    viewer_at = body.index("new Cesium.Viewer('historyMap'")
+    assert descriptor_at < probe_at < viewer_at
 
-    history.html 外层的 try/catch 接不住 async 函数的 rejection；Cesium 起不来
-    时若让异常穿出去，loadHistory 就再也不会跑，整页只剩一张空表。
-    """
-    src = _clean('history.js')
-    assert re.search(r'async\s+function\s+initHistory\s*\(', src), (
-        'initHistory 必须是 async function —— 否则没法 await initHistoryMap'
+
+def test_map_failure_does_not_block_initial_timeline_load():
+    body = _js_function_body(_clean('history.js'), 'initHistory')
+    isolated = re.search(
+        r'initHistoryMap\s*\(\s*\)\s*\.catch\s*\(\s*function\s*\([^)]*\)'
+        r'\s*\{[^}]*\}\s*\)\s*;', body, re.S)
+    assert isolated, '失败隔离必须直接挂在 initHistoryMap() 返回的 promise 上'
+    history_at = body.index('loadHistory(1, false)', isolated.end())
+    assert not re.search(r'\bawait\b', body[isolated.end():history_at]), (
+        '地图 catch 与 loadHistory 之间不能 await，否则时间流仍被串行阻塞'
     )
-    body = _js_function_body(src, 'initHistory')
-    tail = body[body.index('await initHistoryMap'):]
-    assert 'catch' in tail and 'loadHistory(1)' in tail, (
-        'await initHistoryMap() 必须裹 catch 且之后仍要 loadHistory(1)'
-    )
+    assert 'Promise.all' in body[history_at:]
+
+
+def test_post_barrier_map_render_failure_is_swallowed():
+    body = _js_function_body(_clean('history.js'), 'initHistory')
+    tail = body[body.index('await Promise.all'):]
+    protected = re.search(
+        r'try\s*\{\s*renderHistoryMap\s*\(\s*\)\s*;?\s*\}'
+        r'\s*catch\s*\(\s*\w+\s*\)\s*\{([^}]*)\}', tail, re.S)
+    assert protected, '共同屏障后的 renderHistoryMap() 必须由 try/catch 隔离'
+    assert 'console.error' in protected.group(1), '最终渲染失败必须记录后再吞掉'
 
 
 # --- 2. P1#17：无效 toast type ---------------------------------------------------

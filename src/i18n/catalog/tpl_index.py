@@ -244,6 +244,13 @@ MESSAGES = {
         'zh': '最大切片层级',
         'en': 'Max tiling zoom level',
     },
+    # 文案要说清「按什么算」，不能只写「自动」：用户看不见基准层级是怎么来的，
+    # 就无从判断这一挡和自己手填那个数差在哪里（估算口径见
+    # terrain_tiling 的 GeographicTilingScheme.estimate_max_level）。
+    'tpl.index.process.local_terrain_maxzoom_auto': {
+        'zh': '自动（按源数据分辨率决定）',
+        'en': 'Auto (from source resolution)',
+    },
 
     # 档位三档的措辞与任务详情面板（`js_history.py` 的 `js.history.terrain.quality_*`
     # 那组键）保持同一套词：
@@ -267,14 +274,19 @@ MESSAGES = {
         'zh': '快速（比基准层级少切一级，体积约 1/3.3）',
         'en': 'Fast (one level below the base level, ~1/3.3 size)',
     },
+    # 首句交代基准层级的**两个来源**：勾着「自动」（出厂默认）时上面那个数字框
+    # 是禁用的，基准层级要等切片时按源数据分辨率现算 —— 把基准说死成「上面填的
+    # 那个数」，在默认设置下逐字都是假的。
     # 末句交代边界：build_terrain 把层级钳到 [0, 21]，maxzoom=21 选精细档切出来
     # 还是 21（maxzoom=0 配快速档同理）。概率极低，但不写清楚的话，边界上「选了
     # 档位、产物一模一样」看起来就是个 bug。
     'tpl.index.process.terrain_quality_hint': {
-        'zh': '基准层级就是上面填的最大切片层级。每差一级约 3.3 倍体积换 2.8 倍'
-              '精度；层级已在 0 或 21 上限时不再偏移。',
-        'en': 'The base level is the max tiling zoom above. Each step is one zoom '
-              'level: ~3.3x size for ~2.8x accuracy. At the 0 / 21 limits the '
+        'zh': '基准层级：勾了「自动」就按源数据分辨率现算，否则就是上面填的最大'
+              '切片层级。每差一级约 3.3 倍体积换 2.8 倍精度；层级已在 0 或 21 '
+              '上限时不再偏移。',
+        'en': 'The base level is derived from the source resolution when "Auto" is '
+              'checked, otherwise it is the max tiling zoom above. Each step is one '
+              'zoom level: ~3.3x size for ~2.8x accuracy. At the 0 / 21 limits the '
               'offset is clamped and the preset changes nothing.',
     },
     'tpl.index.process.terrain_normals': {

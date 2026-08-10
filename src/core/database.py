@@ -88,7 +88,12 @@ DEFAULT_CONFIGS = [
     # （注意上面的 terrain_global_base_path 不是零消费：terrain_static、
     # dem_task_manager、local_terrain_task_manager 三处都读它。）
     ('terrain_global_base_maxzoom', '7'),
-    ('terrain_local_maxzoom', '14'),
+    # 'auto' = 按源数据像素尺寸现算基准层级（geo_validation.AUTO_MAXZOOM）。
+    # 固定 14 只对 30 m 源正确：3″ 源会超建（77.4 MB vs 6.9 MB，多出来的只是对
+    # 同一批数据更平滑的插值），5 m 源会欠建（est≈16 被截断在 14）。
+    # ⚠️ 改这个默认值的同时**必须**跑 migrate_local_maxzoom_to_auto ——
+    # INSERT OR IGNORE 只对新建的库生效，存量行还是 '14'。
+    ('terrain_local_maxzoom', 'auto'),
     # 切片档位：precision / balanced / speed，语义是相对 maxzoom 的层级偏移
     # （+1 / 0 / -1）。取值表在 src/services/geo_validation.TILING_QUALITY_OFFSETS，
     # 这里只放默认值。选型实测见 docs/reference/terrain/tiling-presets-measured.md。
@@ -97,12 +102,17 @@ DEFAULT_CONFIGS = [
     # 而法线吃 +35%~+100% 字节、约 2.1 倍切片时间，几何精度分毫不涨。
     # ⚠️ 关着切出来的瓦片，事后想开只能重切 —— 法线是烘焙进瓦片的。
     ('terrain_vertex_normals', 'false'),
+    # 应用内**相对路径**：浏览器按「提供这份 layer.json 的 origin」去解析，瓦片
+    # 走 5001 专用 origin、换端口、反代、远程访问都不用改配置。写死
+    # http://localhost:5000/... 会把父级请求绕回主连接池，远程访问时那个
+    # localhost 还指向客户端本机。存量的旧值由 layer_json.normalize_parent_url
+    # 归一。外部地形服务仍可配完整 http(s) 地址。
     # 必须是**目录**：Cesium 会 appendForwardSlash() 后再拼 layer.json。
     # 带 /layer.json 会让它请求 .../layer.json/layer.json 得 404，而它的 404
     # 处理是塞一个假 heightmap 图层并污染共享 builder => 本任务自己的
     # quantized-mesh 瓦片也按 heightmap 解析，高程全错且不报错
     # （实测 4154 m 山峰解成 -744 m）。详见 layer_json.normalize_parent_url。
-    ('terrain_base_parent_url', 'http://localhost:5000/terrain/base'),
+    ('terrain_base_parent_url', '/terrain/base'),
     # Contour (等高线) defaults
     ('contour_default_interval', '50'),
     ('contour_warp_tmpdir', ''),
@@ -393,6 +403,43 @@ def migrate_cancelled_tasks_to_failed(cursor) -> int:
     return moved
 
 
+def migrate_local_maxzoom_to_auto(cursor) -> bool:
+    """terrain_local_maxzoom 的出厂 '14' 迁成 'auto'（user_version 3 → 4）。
+
+    **只改 DEFAULT_CONFIGS 不够**：它走 INSERT OR IGNORE，只对新建的库生效。
+
+    **为什么敢改存量值**：本工具默认下载的是 30 m 源（Copernicus GLO-30 /
+    ASTER），estimate_max_level 对它算出来就是 14 —— 这条迁移对最常见的情形
+    是**产物零变化**（同一份 DEM、同一个档位、切出同样的层级），只对非 30 m
+    源生效，而那正是要修的缺陷。
+
+    `WHERE value='14'` 把「显式设过 12 / 16」的用户挡在外面。无法区分「出厂
+    没动」与「特意设成 14」是这条迁移唯一的模糊处，代价由上一段兜住。
+
+    整段包在 try 里且 `PRAGMA user_version = 4` 无条件执行（migrate_base_path_
+    to_assets 定的同一条规矩）：迁移出问题不能阻断启动，更不能每次启动重试。
+    这条闸门也是幂等性唯一的来源 —— 那句 SQL 自己并不幂等：迁完之后用户又手动
+    设回 14，跟「出厂没动过的 14」在库里长得一模一样，只有「已经跑过」这个事实
+    能把两者分开。
+    """
+    if cursor.execute('PRAGMA user_version').fetchone()[0] >= 4:
+        return False
+
+    changed = False
+    try:
+        cursor.execute(
+            "UPDATE config SET value = 'auto' "
+            "WHERE key = 'terrain_local_maxzoom' AND value = '14'")
+        changed = cursor.rowcount > 0
+    except Exception as e:
+        logger.warning(f'terrain_local_maxzoom 迁移跳过（{e!r}）')
+
+    cursor.execute('PRAGMA user_version = 4')
+    if changed:
+        logger.info("terrain_local_maxzoom '14' → 'auto' (user_version=4)")
+    return changed
+
+
 def init_database():
     """
     Initialize database schema and default configuration
@@ -678,6 +725,10 @@ def init_database():
                 vertex_normals INTEGER DEFAULT NULL,
                 -- 实际切到的最深层级，语义同 dem_terrain_jobs.effective_maxzoom。
                 effective_maxzoom INTEGER DEFAULT NULL,
+                -- 非空表示源 tif 零拷贝引用某个已完成 DEM 下载任务的目录
+                -- （语义同 contour_tasks.source_dem_task_id），此时 source_dir
+                -- 指向 DEM 任务目录而不是本任务的 source/。
+                source_dem_task_id INTEGER DEFAULT NULL,
                 parent_url TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
@@ -852,6 +903,11 @@ def init_database():
             # 当「未知」用，存量行与未切完的作业必须与「真的切到了 z0」可区分。
             ("dem_terrain_jobs", "effective_maxzoom INTEGER DEFAULT NULL"),
             ("local_terrain_tasks", "effective_maxzoom INTEGER DEFAULT NULL"),
+            # 本地地形任务的源可以零拷贝引用某个已完成 DEM 下载任务的目录
+            # （「处理」按钮把高程下载任务转成切片任务）。语义与
+            # contour_tasks.source_dem_task_id 相同；DEFAULT NULL 同理 ——
+            # 存量行都是上传来源，不是「未知的 dem 任务」。
+            ("local_terrain_tasks", "source_dem_task_id INTEGER DEFAULT NULL"),
         ):
             try:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")
@@ -870,8 +926,23 @@ def init_database():
 
         normalize_default_save_path(cursor)
         normalize_stored_output_paths(cursor)
+        # ⚠️ 这几行按 user_version 升序调用，顺序不是排版偏好：每条的闸门都是
+        # 「>= 自己那个目标版本就跳过」，而版本号无条件推进（上一行的
+        # normalize_stored_output_paths 推 2，migrate_base_path_to_assets 推 3，
+        # migrate_local_maxzoom_to_auto 推 4）。把靠后的那条排到前面，老库会被它
+        # 一步推到 4，前面几条的闸门当场全部满足 —— 迁移被静默跳过，且因为版本
+        # 已到永不重试。跳过底图搬迁的后果是「Cesium 塞假 heightmap 图层、高程
+        # 全错且零报错」（见 migrate_base_path_to_assets 的 docstring）。
+        # 这条顺序由 tests/test_terrain_auto_maxzoom.py::
+        # test_both_gated_migrations_run_on_the_same_legacy_db 守着 —— 它造一个
+        # 同时带两条迁移原料的老库，断言两条都生效。各测一条的用例（
+        # tests/test_fix_base_path_migration.py 那组）在任何排列下都是绿的：被
+        # 跳过的那条代码一个字没少，只是没被执行过。
+        # migrate_cancelled_tasks_to_failed 不在这条链上（无闸门，靠 WHERE 自然
+        # 幂等），插在哪都行。
         migrate_base_path_to_assets(cursor)
         migrate_cancelled_tasks_to_failed(cursor)
+        migrate_local_maxzoom_to_auto(cursor)
 
         conn.commit()
         logger.info('Database initialized successfully')

@@ -175,14 +175,18 @@ MESSAGES = {
     # 底图瓦片自 basemap_static 蓝图落地起就由服务端取，和下载共用
     # proxy_autodetect.resolve_from_config —— 这段文案曾经写着相反的话，
     # 而「底图打不开」的用户正是照着它跳过了唯一能修好它的那一步。
+    #
+    # 只说「服务端转发」，不说「同源」：自 0.3 起瓦片默认由**另一个端口**
+    # （5001，src/core/tile_server.py）出图，只有降级回主端口时才真是同源。
+    # 这句话要传达的是「这一跳在服务端、所以吃代理」，同源与否与它无关。
     'tpl.config.download.basemap_hint': {
-        'zh': '框选时看到的底图由服务端同源转发（/basemap/{z}/{x}/{y}），与下载走'
+        'zh': '框选时看到的底图由服务端转发（/basemap/{z}/{x}/{y}），与下载走'
               '同一条出网路径，一样吃代理服务器设置与代理自动检测 —— 底图加载不出来'
               '（只剩一个蓝色球体）时，先去检查上面的代理。Esri 卫星影像与 Google '
               '影像同为 WGS-84，框选位置对得上；不要填高德/腾讯的卫星地址，它们是 '
               'GCJ-02 偏移坐标，在国内会错位数百米。自定义需填完整 XYZ 模板'
               '（含 {z}/{x}/{y}）。',
-        'en': 'The imagery you see while drawing a box is served same-origin by the '
+        'en': 'The imagery you see while drawing a box is fetched by the '
               'backend (/basemap/{z}/{x}/{y}): it takes the same network path as '
               'downloads and obeys the proxy server setting and proxy '
               'auto-detection — if it will not load (you only get a blue globe), '

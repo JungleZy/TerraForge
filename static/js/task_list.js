@@ -97,6 +97,16 @@
                             <circle cx="12" cy="12" r="3"></circle>
                         </svg>
                     </button>
+                    <!-- 「处理」：把已完成的高程下载任务转成地形切片任务（新任务进
+                         时间流）。打开的是 map.js 的处理弹窗，所以与 canPreview
+                         同一条把关 —— 独立页 /history 不加载 map.js，不渲染。 -->
+                    <button v-if="canProcessDem && task.task_type === 'dem' && task.status === 'completed'"
+                            class="btn btn-icon btn-sm btn-primary" @click="processDem"
+                            :title="t('js.history.action.process')" :aria-label="t('js.history.action.process')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                        </svg>
+                    </button>
                     <button class="btn btn-icon btn-sm btn-danger" @click="remove"
                             :title="t('js.history.action.delete')" :aria-label="t('js.history.action.delete')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -158,6 +168,10 @@
             canPreview() {
                 return typeof previewTask === 'function';
             },
+            // 「处理」打开的是 map.js 的处理弹窗，独立页 /history 不加载 map.js。
+            canProcessDem() {
+                return typeof openProcessForDemTask === 'function';
+            },
             total() {
                 const t = this.task;
                 return t.total_items != null ? t.total_items : (t.total || 0);
@@ -175,7 +189,12 @@
                     || ((t.task_type === 'map' || t.task_type === 'contour')
                         ? this.t('js.history.unit.tile') : this.t('js.history.unit.file'));
             },
+            // 切片百分比优先于计数：本地地形任务在切片期间仍是 running，而它的
+            // 计数（上传的文件数）早就写满了 —— 不让位就是整段显示 100%。
+            // 判 != null 而不是真值：0% 是合法进度（切片刚开始），`||` 会把它
+            // 当成「没有值」再退回计数，于是那一发又跳回 100%。
             progress() {
+                if (this.task.tiling_progress != null) return this.task.tiling_progress;
                 return this.total > 0 ? Math.round((this.downloaded / this.total) * 100) : 0;
             },
             statusColor() {
@@ -222,6 +241,26 @@
                     unit: this.itemLabel,
                 });
             },
+            // 切片阶段的「预计剩余」。行自己的计数在这一段恒为满，按它外推出来的
+            // 剩余永远是 0（于是整段不显示），所以另算一份：拿**这一段自己的起点**
+            // 与起点处的百分比（tasks.js updateTerrainJobProgress 写的锚），外推到
+            // 100%。三个锚字段缺一不算 —— 只在逐瓦片那一段有，物化阶段刻意没有。
+            tilingEstimated() {
+                const task = this.task;
+                if (task.tiling_phase !== 'tiles') return '';
+                if (task.tiling_progress == null || task.tiling_started_at == null
+                    || task.tiling_anchor_pct == null) return '';
+                if (typeof calculateTimeInfo !== 'function') return '';
+                void store.state.tick;      // 每秒重算，勿删
+                const advanced = task.tiling_progress - task.tiling_anchor_pct;
+                if (advanced <= 0) return '';      // 还没前进，外推是除零
+                return calculateTimeInfo({
+                    started_at: new Date(task.tiling_started_at).toISOString(),
+                    status: 'running',
+                    downloaded_items: advanced,
+                    total_items: 100 - task.tiling_anchor_pct,
+                }).estimated || '';
+            },
             // 非终态显示耗时、终态显示创建时间短日期。
             // 依赖 store.state.tick：它每秒自增一次，是「耗时每秒刷新」的驱动源
             // （改造前是 updateTimeDisplay 每秒遍历 DOM 写 textContent）。
@@ -237,9 +276,11 @@
                     total_items: this.total,
                 });
                 if (!info.show) return '—';
+                // 已运行始终是整个任务的；预计剩余在切片期间换成切片那一段的。
+                const estimated = this.tilingEstimated || info.estimated;
                 return [
                     info.elapsed ? this.t('js.history.row.elapsed', { time: info.elapsed }) : '',
-                    info.estimated ? this.t('js.history.row.estimated', { time: info.estimated }) : '',
+                    estimated ? this.t('js.history.row.estimated', { time: estimated }) : '',
                 ].filter(Boolean).join(' · ') || '—';
             },
             // 下载速度。只在**下载阶段**出现，三种情况各自不同：
@@ -271,6 +312,9 @@
             },
             preview() {
                 if (typeof previewHistoryTask === 'function') previewHistoryTask(this.task.id, this.task.task_type);
+            },
+            processDem() {
+                if (typeof openProcessForDemTask === 'function') openProcessForDemTask(this.task.id);
             },
             remove() {
                 if (typeof deleteTask === 'function') deleteTask(this.task.id, this.task.task_type);

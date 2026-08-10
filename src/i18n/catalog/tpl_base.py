@@ -114,20 +114,4 @@ MESSAGES = {
         'zh': '地形切片:',
         'en': 'Terrain tiling:',
     },
-    'tpl.base.detail.terrain_start': {
-        'zh': '启动',
-        'en': 'Start',
-    },
-    'tpl.base.detail.terrain_start_title': {
-        'zh': '启动地形切片',
-        'en': 'Start terrain tiling',
-    },
-    'tpl.base.detail.terrain_refresh': {
-        'zh': '刷新',
-        'en': 'Refresh',
-    },
-    'tpl.base.detail.terrain_refresh_title': {
-        'zh': '刷新切片状态',
-        'en': 'Refresh tiling status',
-    },
 }

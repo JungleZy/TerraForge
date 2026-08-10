@@ -3,8 +3,8 @@
 > **测量时间**：2026-08-08 | 6 个真实 Copernicus GLO-30 granule（1°×1°，坡度中位 0.51~38.85，覆盖极平原到黄土塬）、**20 个配置 × 6 地形 = 102 组完整金字塔扫描**、多轮专项复测，外加**真实 CesiumJS 1.143.0 + WebGL 的客户端渲染实测**。精度全部从**落盘瓦片解码后**对源栅格量得。
 > 测量与选型阶段**没有改动任何生产代码**。测量台在 `~/.cache/mapdl-probe/preset_eval/`。
 >
-> **状态：三档已落地（2026-08-09）。** 实现位置与落地后的真实切片复测在**第九节**；落地口径与本文测量口径的那处差别，看**第一节**的对照表。
-> 除第九节外，本文各节都是**选型期的历史记录**：凡出现「现行默认」「现状」「今天」的地方，一律指**落地前**的那一套 —— `auto` + `max_error_k=0.15` + 法线开，而且**基准层级是 `est`（按源分辨率现算），不是落地后的用户填的 `maxzoom`**，这一条最容易读错。实测数据一律保持原样不改。
+> **状态：三档已落地（2026-08-09）；基准层级的「自动」挡已落地并成为出厂默认（2026-08-10）。** 三档的实现位置与落地后的真实切片复测在**第九节**；自动挡把基准锚回源分辨率，顺带修掉第六节那条缺陷，见**第六节**末尾与 `docs/superpowers/specs/2026-08-10-terrain-auto-maxzoom-design.md`。三套基准口径的对照看**第一节**的表。
+> 除第九节外，本文各节都是**选型期的历史记录**：凡出现「现行默认」「现状」「今天」的地方，一律指**落地前**的那一套 —— `auto` + `max_error_k=0.15` + 法线开。**基准层级这一条最容易读错**：本文测量一律锚在 `est`（按源分辨率现算），2026-08-09 落地时改锚在用户填的 `maxzoom`，2026-08-10 起出厂默认又回到 `est`（自动挡），手动填数字则仍是后者。实测数据一律保持原样不改。
 
 ---
 
@@ -18,14 +18,15 @@
 | **均衡**（默认） | `grid` | 基准 | **关** | ≈ 0.6× 源像素 |
 | **速度** | `grid` | 基准 − 1 | **关** | ≈ 1.2× 源像素 |
 
-**「基准」是哪个层级，选型期与落地后不是一回事** —— 这是本文与代码之间唯一的口径差，读下面任何一张表之前先看清：
+**「基准」是哪个层级，前后有三套口径** —— 读下面任何一张表之前先看清自己在哪一套上：
 
 | | 基准 = | 「顶点间距」那一列成立吗 |
 |---|---|---|
 | 本文测量（选型期） | `est`，即 `GeographicTilingScheme(tile_size=65).estimate_max_level(源像素度数)`，**按源 DEM 分辨率现算** | 成立 |
-| 实际落地（2026-08-09 起） | **用户在表单里填的 `maxzoom`**（留空则取配置 `terrain_local_maxzoom`，出厂 14）；偏移叠加之后钳到 `[0, 21]` | 只在 `maxzoom` 恰好等于 `est` 时成立 |
+| 2026-08-09 落地 | **用户在表单里填的 `maxzoom`**（留空则取配置 `terrain_local_maxzoom`，当时出厂 14）；偏移叠加之后钳到 `[0, 21]` | 只在 `maxzoom` 恰好等于 `est` 时成立 |
+| **2026-08-10 起（现状）** | **「自动」挡，且是出厂默认**：`terrain_local_maxzoom = 'auto'` 时应用侧传 `max_level=None`，由 `build_terrain` 现算 `est` —— **与本文测量口径同一个数**。取消勾选表单上的「自动」即回到上一行的手动挡 | 自动挡成立；手动挡同上一行 |
 
-对最常见的 1″ Copernicus GLO-30，`est` = 14 = 出厂 `maxzoom`，两套口径重合，所以下文的数据仍然照单适用。源分辨率偏离 30 m 时不重合 —— 第六节那条「`maxzoom` 不看源分辨率」的缺陷**没有**随三档一起修掉，改口径的理由与补救办法见那一节末尾。
+对最常见的 1″ Copernicus GLO-30，`est` = 14 = 当时的出厂 `maxzoom`，三套口径重合，所以下文的数据照单适用。源分辨率偏离 30 m 时手动挡不重合 —— 那正是第六节那条「`maxzoom` 不看源分辨率」的缺陷，**已随自动挡修掉（2026-08-10）**，经过见那一节末尾。
 
 四条支撑结论，每条都在下面有数据：
 
@@ -213,22 +214,24 @@ loess @est 实测（法线统一关，只比几何）：
 
 **这个项目栽过三次「作业 completed、HTTP 200、前端不报错、就是不对」的跟头。** 所以法线该做成独立勾选项并在 UI 上写明「关闭后地形光照不可用」，而不是藏在档位里静默生效。切完再想开只能重切 —— 法线是烘焙进瓦片的。
 
-> **已落地。** 表单里是独立复选框 `localTerrainNormals`（初值由服务端按配置 `terrain_vertex_normals` 渲染，出厂 `false`），下方提示文案写明「关闭后地形光照不可用」（`tpl.index.process.terrain_normals_hint`，zh/en 各一份）；历史页任务详情把作业**实际**用的法线状态显示出来（`js.history.terrain.normals_label`），因为那个面板的起切按钮不带 body、走配置默认，用户在那里没有选择权。落地后复测确认 `layer.json` 的 `extensions` 确实随开关在 `[]` 与 `["octvertexnormals"]` 之间切换 —— 见第九节 9.2。
+> **已落地。** 表单里是独立复选框 `localTerrainNormals`（初值由服务端按配置 `terrain_vertex_normals` 渲染，出厂 `false`），下方提示文案写明「关闭后地形光照不可用」（`tpl.index.process.terrain_normals_hint`，zh/en 各一份）；本地地形任务详情把任务**实际**用的法线状态回显出来（`js.history.terrain.normals_label`）。落地后复测确认 `layer.json` 的 `extensions` 确实随开关在 `[]` 与 `["octvertexnormals"]` 之间切换 —— 见第九节 9.2。
 
 ---
 
-## 六、顺带查出的现存缺陷：`maxzoom` 不看源分辨率
+## 六、顺带查出的缺陷：`maxzoom` 不看源分辨率（已于 2026-08-10 修掉）
 
-应用侧**恒传** `maxzoom`（配置键 `terrain_local_maxzoom` 默认 14，`database.DEFAULT_CONFIGS`；`DemTaskManager.start_tiling`），`build_terrain` 里的 `estimate_max_level` 因此从不生效。后果双向：
+**下面两段是发现这条缺陷时的原始记录，量到的两组数字没变，因此原样保留；「已修」的经过在本节末尾。**
+
+应用侧当时**恒传** `maxzoom`（配置键 `terrain_local_maxzoom` 当时出厂 14，`database.DEFAULT_CONFIGS`；`DemTaskManager.start_tiling`），`build_terrain` 里的 `estimate_max_level` 因此从不生效。后果双向：
 
 - **源比 30 m 粗时超建。** 3″（93 m）DEM 建到 z14 = 77.4 MB / 12071 张；按 `est`(=12) 建 = 6.9 MB / 1445 张。**11 倍体积**换来的只是对同一批 93 m 数据更平滑的插值，不含任何新地形。
-- **源比 30 m 细时欠建。** 5 m DEM 的 `est` 约 17，被固定的 14 截断，源数据的细节根本没进瓦片。
+- **源比 30 m 细时欠建。** 5 m DEM 的 `est` = 16，被固定的 14 截断，源数据的细节根本没进瓦片。（原文写「约 17」，是**算错了**：`estimate_max_level` 是 `ceil(log2(180 / (tile_size−1) / 像素度数))`，`tile_size=65` 下即 `ceil(log2(2.8125 / 像素度数))`；5 m ≈ 4.49e−5° 代进去得 15.93 → **16**。同一条式子对 1″ 给 14、对 3″ 给 12，与上一行和第一节的数字自洽。这不是实测值，是一个当场估算，故予订正。）
 
-**这条缺陷没有随三档一起修掉 —— 落地时口径变了。** 选型阶段设想的是「三档按 `est` 现算，顺手把它修了」，实际落地没有这么做：档位偏移叠加在**用户填的 `maxzoom`** 上（`cesiumlab_terrain.build_terrain` 的 `level_offset=`），而应用侧的 `dem_task_tiler` 依旧**恒传** `max_level=int(params.maxzoom)`（`tile_dem_task_dir`）。`estimate_max_level` 那条分支只在 `max_level is None` 时才走，也就是只有 CLI 省略 `--max-level` 时 —— 上面这两条超建 / 欠建照旧成立。
+**这条缺陷已经修掉（2026-08-10，基准层级的「自动」挡）。** 它在三档落地时留了一轮，因为那次口径变了：档位偏移叠加在**用户填的 `maxzoom`** 上（`cesiumlab_terrain.build_terrain` 的 `level_offset=`），而应用侧的 `dem_task_tiler` 依旧**恒传** `max_level=int(params.maxzoom)`（`tile_dem_task_dir`），`estimate_max_level` 那条分支只在 `max_level is None` 时才走 —— 也就是只有 CLI 省略 `--max-level` 时，于是上面两条超建 / 欠建照旧成立。**修法就是下面那段「改动很小」预判的写法**：`maxzoom` 多出「自动」一态（`geo_validation.coerce_maxzoom` 收成 `'auto'` / `int` / `None` 三态，两条路由都过它），`TileParams.maxzoom` 改成 `Optional[int]` 把 `None` 透传给 `build_terrain(max_level=None)`，切片核**一行没动**。自动挡是**出厂默认**（`DEFAULT_CONFIGS` 的 `terrain_local_maxzoom = 'auto'`；存量库里恰好等于 `'14'` 的那一行由 `migrate_local_maxzoom_to_auto` 一次性改写，显式设过别的数的不动 —— 对 30 m 源 `est` 就是 14，最常见情形下产物零变化）。设计与实现见 `docs/superpowers/specs/2026-08-10-terrain-auto-maxzoom-design.md`。
 
-**为什么改口径**：`maxzoom` 是表单上一个用户看得见、自己填出来的数字，档位相对它 ±1 才说得清「精细 = 比你填的多切一级」。锚在一个用户看不见的估算值上，档位就成了结果无法预期的旋钮 —— 同一份 DEM 换个源分辨率，「精细」切出来的层级能跳好几级，而界面上没有任何东西能提前告诉他。
+**当初为什么改口径**（原始论证，保留）：`maxzoom` 是表单上一个用户看得见、自己填出来的数字，档位相对它 ±1 才说得清「精细 = 比你填的多切一级」。锚在一个用户看不见的估算值上，档位就成了结果无法预期的旋钮 —— 同一份 DEM 换个源分辨率，「精细」切出来的层级能跳好几级，而界面上没有任何东西能提前告诉他。**这条顾虑没有被推翻，是被补掉了**：起切前的信息卡多一行「预计切片」，把基准层级、档位偏移后的实际层级、张数与体积估算摆在按钮旁边（张数来自 `/api/raster/inspect` 新增的 `tile_counts`），那个「用户看不见的估算值」现在看得见；产物事实照旧以 `effective_maxzoom` 为准。
 
-**代价**：用户得自己把 `maxzoom` 填对。**要修它得单独做**，改动很小：让 `maxzoom` 支持「自动」一档、把 `None` 透传到 `build_terrain` 即可 —— 那半边（估算 + 偏移 + 钳位）已经现成，缺的只是路由与表单允许「不填」这一态，以及把 `estimate_max_level` 算出的实际层级回显给用户。
+**代价**：用户得自己把 `maxzoom` 填对 —— 这一条如今只对手动挡成立。**要修它得单独做**，改动很小：让 `maxzoom` 支持「自动」一档、把 `None` 透传到 `build_terrain` 即可 —— 那半边（估算 + 偏移 + 钳位）已经现成，缺的只是路由与表单允许「不填」这一态，以及把 `estimate_max_level` 算出的实际层级回显给用户。**这段预判逐条兑现**：表单加复选框 `#localTerrainMaxzoomAuto`，两张地形表的 `maxzoom` 列存哨兵 `-1`（列是 `INTEGER NOT NULL`，改可空要重建表，违背本仓 ALTER-only 的迁移约定），详情面板把哨兵显示成「自动（按源数据分辨率）」，实际层级仍走既有的 `effective_maxzoom`。
 
 ---
 
@@ -297,7 +300,7 @@ loess @est 实测（法线统一关，只比几何）：
 
 ## 九、已落地：实现位置与落地后复测
 
-2026-08-09 落地。三档的**语义**最终定成「相对基准层级的偏移 +1 / 0 / −1，基准 = 用户填的 `maxzoom`」，与第一节测量口径的差别见那一节的口径对照表。
+2026-08-09 落地。三档的**语义**最终定成「相对基准层级的偏移 +1 / 0 / −1」；基准当时只有「用户填的 `maxzoom`」一态，2026-08-10 起多出「自动」一态并成为出厂默认（本节各行只描述 2026-08-09 那一轮，自动挡的实现位置见第六节末尾与它的 spec）。三套基准口径的对照见第一节的表。
 
 ### 9.1 实现位置
 
@@ -311,9 +314,9 @@ loess @est 实测（法线统一关，只比几何）：
 | **建表** | `src/core/database.py` | `dem_terrain_jobs` 与 `local_terrain_tasks` 两张表各加 `quality TEXT DEFAULT 'balanced'`、`vertex_normals INTEGER DEFAULT 0` 与 `effective_maxzoom INTEGER DEFAULT NULL`；**建表与 ALTER TABLE 迁移两条路径都加了**（新库走建表、存量库走迁移，漏一条就是一半用户没有这些列）。⚠️ `effective_maxzoom` 的 `DEFAULT NULL` 是有语义的、不是省事：0 是合法层级（`maxzoom ≤ 1` 配 speed 档真的只切到 z0），拿 0 当「未知」就分不出「还没切完 / 存量行」与「切到了 z0」 |
 | **管理器** | `src/services/dem_task_manager.py`、`src/services/local_terrain_task_manager.py` | 收参 → 校验 → 落库 → 构造 `TileParams(normals=…, level_offset=TILING_QUALITY_OFFSETS[quality])`。未传时读配置默认。切片收尾时把 `build_terrain` 回报的 `max_level` 写进 `effective_maxzoom`（`COALESCE(?, effective_maxzoom)`：切片器没回报就别把已有值抹掉），起切/重切时先置回 NULL。两侧不对称：**只有 local 侧从库里读回档位**（任务是先建后跑），所以只有它需要「存量行 `quality` 为 NULL 时退回 `balanced`」；DEM 侧起切时档位是当场算出来直接用的，全文没有从库读 `quality` 的路径 |
 | **路由** | `src/routes/terrain_api.py`、`src/routes/local_terrain_api.py` | DEM 侧收 JSON body（同时兼容表单字段），本地地形侧收 multipart 表单且**在文件落盘之前**就校验；非法值 → 400 |
-| **表单** | `templates/index.html`、`static/js/map.js`、`src/routes/main.py` | 下拉 `localTerrainQuality` + 复选框 `localTerrainNormals`。**初值由服务端按配置渲染**，不写死 —— 同一份 DEM 有两个起切入口（这张表单、历史页详情面板的起切按钮），写死初值就意味着两个入口切出的产物不一样。收敛在 `main._terrain_form_defaults()` 里做完再交给模板：越界的 `terrain_local_maxzoom`（该键在 `_UNCONSTRAINED_KEYS` 里，`PUT /api/config` 收得下 99）与认不出的档位都会**先 `logger.warning` 点名被丢的原值再替换**。放在路由而不是模板，是因为模板是这条链上唯一记不了日志的一环 —— 在那儿修好的值不会在任何地方留痕，运维填的 99 会静默变成 14。JS 侧三个字段的兜底一律送**空串**（= 未传 = 走配置默认），不在前端抄第二份默认值。⚠️ 法线两条分支的形态**故意不同**：本地地形走 multipart，必须 `String(el.checked)`（`submitLocalTerrain`）—— checkbox 的 `.value` 恒为 `'on'`，照 `el?.value \|\| '默认值'` 的既有写法抄过去每次都 400；DEM 走 JSON body，直接送**原始布尔** `el.checked`（`startDemTaskTerrainTiling`），`coerce_vertex_normals` 真布尔与 `'true'`/`'false'` 都收 |
+| **表单** | `templates/index.html`、`static/js/map.js`、`src/routes/main.py` | 下拉 `localTerrainQuality` + 复选框 `localTerrainNormals`。**初值由服务端按配置渲染**，不写死 —— 同一份 DEM 有两个起切入口（这张表单、历史页详情面板的起切按钮），写死初值就意味着两个入口切出的产物不一样。收敛在 `main._terrain_form_defaults()` 里做完再交给模板：越界的 `terrain_local_maxzoom`（该键在 `_UNCONSTRAINED_KEYS` 里，`PUT /api/config` 收得下 99）与认不出的档位都会**先 `logger.warning` 点名被丢的原值再替换**。放在路由而不是模板，是因为模板是这条链上唯一记不了日志的一环 —— 在那儿修好的值不会在任何地方留痕，运维填的 99 会静默变成别的东西（当时是 14；自动挡落地后是退回自动挡，退回目标变了、那条 warning 一个字没少）。JS 侧三个字段的兜底一律送**空串**（= 未传 = 走配置默认），不在前端抄第二份默认值。⚠️ 法线必须送 `String(el.checked)`（`submitLocalTerrain`）—— checkbox 的 `.value` 恒为 `'on'`，照 `el?.value \|\| '默认值'` 的既有写法抄过去每次都 400（`coerce_vertex_normals` 是严格白名单）。早前「DEM 任务来源」另有一条 JSON body 分支（`startDemTaskTerrainTiling` 打 `/api/terrain/dem/<id>/start`、复用 DEM 任务自己的切片作业、不新建任务），已随「任务行处理按钮把高程任务转成**新的**切片任务」删除：两种来源现在都走同一条 multipart 链路到 `/api/terrain/local/tasks`，零拷贝由后端的 `dem_task_id` 分支完成（`local_terrain_tasks.source_dem_task_id`） |
 | **i18n** | `src/i18n/catalog/tpl_index.py`、`src/i18n/catalog/js_history.py` | 表单标签、三档选项、两条提示（含「关闭法线后地形光照不可用」）、详情面板的档位与法线文案，zh / en 各一份。⚠️ **三档文案的参照物一律写「基准层级」，不许写「比默认」**（`tpl_index.py` 里 `tpl.index.process.terrain_quality` 上方那段注释有整段论证）：偏移表的 +1/0/−1 是相对基准层级算的，与 `terrain_quality_preset` 当前配成哪一档无关，写「比默认多切一级」在默认档不是均衡时就是错的。实际文案是「精细（比基准层级多切一级，体积约 3.3 倍）」这一套，表单与详情面板共用同一组词 |
-| **详情面板** | `static/js/history.js` | 显示作业**实际**用的档位、法线状态与**实际切到的层级**，DEM 作业与本地地形任务共用 `terrainPresetRowsHtml`（两张表的列同名同义）。DEM 面板的起切按钮 POST 不带 body、走配置默认，用户在那里没有选择权；本地地形恰恰相反 —— 上传表单是用户唯一能亲手选档位的入口，切完回来更该查得到。层级那一格优先显示 `effective_maxzoom`（= `layer.json` 的 `maxzoom`），为 NULL 时回落到 `maxzoom` 并**换成「基准层级」标签 + 悬停说明**，不拿基准值冒充产物事实。认不出的档位值（旧作业 / 手改过库）原样显示，不悄悄说成「均衡」 |
+| **详情面板** | `static/js/history.js` | 本地地形任务的详情显示任务**实际**用的档位与法线状态（`terrainPresetRowsHtml`）。上传/「处理」表单是用户唯一能亲手选档位的入口，切完回来更该查得到。层级那一格优先显示 `effective_maxzoom`（= `layer.json` 的 `maxzoom`），为 NULL 时回落到 `maxzoom` 并**换成「基准层级」标签 + 悬停说明**，不拿基准值冒充产物事实。认不出的档位值（旧作业 / 手改过库）原样显示，不悄悄说成「均衡」。⚠️ DEM 下载任务详情曾经有同款面板（含起切按钮，POST 不带 body、走配置默认），已随「切片收敛成独立任务」整块撤掉 |
 
 第十节「明确不要动的旋钮」**全部照办**：`tile_size` 仍是 65、`max_error_k` 没有暴露到任何接口、`workers` 没有放宽。
 

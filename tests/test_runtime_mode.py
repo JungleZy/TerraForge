@@ -125,3 +125,75 @@ def test_banner_and_server_share_one_address():
     defaults = server_runner.run_server.__kwdefaults__
     assert defaults['host'] == SERVER_HOST
     assert defaults['port'] == SERVER_PORT
+
+
+class _FakeSocketIO:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, app, **kwargs):
+        self.calls.append((app, kwargs))
+
+
+def _quiet_runner(monkeypatch):
+    from src.core import server_runner
+    monkeypatch.setattr(server_runner, '_silence_duplicate_startup_lines', lambda: None)
+    monkeypatch.setattr(server_runner, '_install_reloader_watchdog', lambda: None)
+    return server_runner
+
+
+def test_run_server_uses_main_port_plus_one_and_records_actual_port(monkeypatch):
+    from flask import Flask
+    from src.core import tile_server
+    runner = _quiet_runner(monkeypatch)
+    app = Flask(__name__)
+    socketio = _FakeSocketIO()
+    calls = []
+    fake_server = type('Server', (), {'server_port': 7001})()
+    monkeypatch.setattr(tile_server, 'start_tile_server',
+                        lambda app_arg, host, port: calls.append((app_arg, host, port)) or fake_server)
+
+    runner.run_server(app, socketio, debug=False, show_startup_output=False,
+                      host='127.0.0.1', port=7000)
+
+    assert calls == [(app, '127.0.0.1', 7001)]
+    assert app.extensions['tile_server_port'] == 7001
+    assert socketio.calls[0][1]['port'] == 7000
+
+
+def test_run_server_tile_failure_records_none_and_still_runs_main(monkeypatch):
+    from flask import Flask
+    from src.core import tile_server
+    runner = _quiet_runner(monkeypatch)
+    app = Flask(__name__)
+    socketio = _FakeSocketIO()
+    monkeypatch.setattr(tile_server, 'start_tile_server', lambda *a, **k: None)
+
+    runner.run_server(app, socketio, debug=False, show_startup_output=False)
+
+    assert app.extensions['tile_server_port'] is None
+    assert len(socketio.calls) == 1
+
+
+def test_reloader_placeholder_does_not_start_tile_listener(monkeypatch):
+    """watcher 父进程(app 为 None)只驱动文件监听,不许占瓦片端口。
+
+    这个身份下 app 和 socketio 一起为 None(app.py 的模块级全局只在
+    should_create_app 时赋值),run_server 自己新建占位的两个对象 —— 所以测试
+    是替掉 SocketIO 这个**名字**,而不是靠传一个 socketio 进去让生产代码「入参
+    不为 None 就沿用」:后者是把测试需求写进生产分支。
+    """
+    from flask import Flask
+
+    from src.core import tile_server
+    runner = _quiet_runner(monkeypatch)
+    socketio = _FakeSocketIO()
+    monkeypatch.setattr(runner, 'SocketIO', lambda app: socketio)
+    monkeypatch.setattr(tile_server, 'start_tile_server',
+                        lambda *a, **k: pytest.fail('placeholder must not start tile listener'))
+
+    runner.run_server(None, None, debug=True, show_startup_output=False)
+
+    assert len(socketio.calls) == 1
+    assert isinstance(socketio.calls[0][0], Flask), (
+        'watcher 父进程必须拿到自己新建的占位 app')

@@ -238,8 +238,10 @@
                         </div>
                         {# 底图与下载源是两个用途不同的地址（底图给页面看、
                            tile_servers 是下载源），不是两条不同的出网路径 ——
-                           底图瓦片由服务端转发（同源 /basemap/{z}/{x}/{y}），一样吃
-                           proxy_url。选「自定义」时下面的模板输入框显形，
+                           底图瓦片由服务端转发（/basemap/{z}/{x}/{y}），一样吃
+                           proxy_url。路径是应用内的，但**未必同源**：0.3 起默认由
+                           瓦片专用端口出图（src/core/tile_server.py），降级时才回到
+                           主端口。选「自定义」时下面的模板输入框显形，
                            显隐由 config.js 的 syncBasemapCustom 管。 #}
                         <select class="form-select" id="basemap_source_preset">
                             <option value="esri" {% if bm_preset == 'esri' %}selected{% endif %}>{{ t('tpl.config.download.basemap_esri') }}</option>

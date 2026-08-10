@@ -1018,78 +1018,6 @@ def test_status_labels_are_never_the_raw_backend_literal():
     )
 
 
-def test_terrain_job_status_is_translated_too():
-    """详情弹窗的地形切片状态也要走 getStatusText，不许把 job.status 原样插进徽章。
-
-    改前 history.js 的 refreshTerrainDetail 是
-        `statusEl.innerHTML = \\`<span class="badge bg-${color}">${status}</span>\\``
-    —— 与历史表格是同一个毛病的另一处实例：中文弹窗里显示 `running`。
-    地形作业的词表（running / completed / failed）是 TaskStatus 的子集，
-    所以直接复用两个函数即可，不需要第二份映射。
-
-    ⚠️ 强度自评（诚实）：这是一条**结构**断言 —— 它检查徽章的文本位置来自
-    getStatusText 调用而不是裸变量，守不住「getStatusText 返回了什么」
-    （那部分由上面两条守）。它拦得住的是「有人把这里改回内联三元阶梯」。
-
-    **已知绕过（评审实测，本条拦不住）**：保留 `getStatusText(...)` 模板不动，
-    在下一行补一句
-        `statusEl.querySelector('.badge').textContent = status;`
-    徽章会重新显示英文 `running`，而本条断言全绿。
-    根因是它只看**构建 markup 的那一行**，看不到之后对 DOM 的再次赋值。
-    要堵住这个口子需要一个 JS 运行时（本项目没有：无 package.json / vitest，
-    引入会破坏 PyInstaller 的离线打包形态），或者一次 CDP 实测。
-    下一个动这块的人：知道边界在这里，别把这条当成语义保障。
-    """
-    from src.i18n.catalog import MESSAGES
-
-    body = _js_function_body(_strip_js_comments(_js('history.js')), 'refreshTerrainDetail')
-    badges = re.findall(r'<span class="badge bg-([^"]*)">([^<]*)</span>', body)
-    assert len(badges) == 3, (
-        f'refreshTerrainDetail 里解析出 {len(badges)} 个徽章模板（期望 3：'
-        '未开始 / 作业状态 / 加载失败）—— 本测试已失效'
-    )
-    def resolve(expr, want):
-        """`${x}` 里要么直接是 want(...) 调用，要么是同一函数体内 `const x = ...`
-        的局部变量，再看它的右值。只解一层 —— 解不动就判不合格，不静默放行。"""
-        if want in expr:
-            return True
-        m = re.fullmatch(r'\$\{\s*([A-Za-z_$][\w$]*)\s*\}', expr.strip())
-        if not m:
-            return False
-        d = re.search(r'\b(?:const|let|var)\s+' + re.escape(m.group(1)) + r'\s*=([^;]*);', body)
-        return bool(d) and want in d.group(1)
-
-    # i18n 改造后「未开始」「加载失败」也变成了插值 —— `${t('js.history.terrain.*')}`。
-    # 它们是**定值文案**（查表即定），与作业状态那种「运行期算出来的值」性质不同，
-    # 所以按定值处理：跳过 getStatusText 检查，但要求 key 在文案目录里真的存在，
-    # 免得把 `${t('typo.key')}` 也放过去。
-    def is_static_text(expr):
-        m = re.fullmatch(r"\$\{\s*t\('([\w.]+)'\)\s*\}", expr.strip())
-        if not m:
-            return False
-        assert m.group(1) in MESSAGES, (
-            f'徽章文案引用了不存在的文案 key: {m.group(1)!r}')
-        return True
-
-    problems = []
-    dynamic = []
-    for color_expr, label_expr in badges:
-        if '${' not in label_expr or is_static_text(label_expr):
-            continue                      # 定值文案（「未开始」「加载失败」），合格
-        dynamic.append((color_expr, label_expr))
-        if not resolve(label_expr, 'getStatusText('):
-            problems.append(f'徽章文案 `{label_expr}` 追不到 getStatusText(...)')
-        if not resolve('${' + color_expr.strip('${}') + '}', 'getStatusColor('):
-            problems.append(f'徽章配色 `{color_expr}` 追不到 getStatusColor(...)')
-    # 自检：三个徽章里必须恰好有一个是运行期求值的，否则上面的循环什么都没查
-    assert len(dynamic) == 1, (
-        f'期望恰好 1 个运行期插值徽章（作业状态），实际 {len(dynamic)} 个 —— 本测试已失效'
-    )
-    assert not problems, (
-        '地形切片状态没走统一词表：\n' + '\n'.join('  ' + p for p in problems)
-    )
-
-
 # --------------------------------------------------------------------------
 # A7 / Task 12（评审第二轮）：补掉评审实测出来的 4 个逃逸
 #   R2/R3  statusIcons 的**值**没被检查（`'cancelled': ''` 能恢复缺陷症状）
@@ -1291,13 +1219,17 @@ def test_delete_last_item_on_page_steps_back_a_page():
     )
 
 
-def test_history_map_goes_through_same_origin_basemap_proxy():
-    """历史小地图必须走同源 /basemap 代理，前端不许自己拼上游地址。
+def test_history_map_goes_through_the_server_side_basemap_proxy():
+    """历史小地图必须走服务端 /basemap 代理，前端不许自己拼上游地址。
 
     改前 history.js 有一份 _historyBaseMapUrl 平行实现：拿不到配置回退外网
     OSM、拿到别名拼 `//host/vt?lyrs=m`。三条硬约束一次全破 —— 离线（断网即
-    白屏）、同源代理（浏览器直连撞 CORS 且不吃 proxy_url）、WGS-84
+    白屏）、服务端代理（浏览器直连撞 CORS 且不吃 proxy_url）、WGS-84
     （lyrs=m 在中国区是 GCJ-02 偏移，叠在上面的任务矩形必然错位）。
+
+    「服务端」而不是「同源」：这条应用内路径 0.3 起默认由瓦片专用端口出图
+    （src/core/tile_server.py，那个端口自己发 CORS 头），只有降级时才真是同源。
+    要守的是「这一跳在服务端」——CORS 与 proxy_url 两条理由都系在这上面。
     """
     src = _strip_js_comments(_js('history.js'))
     assert '_historyBaseMapUrl' not in src, (
@@ -1916,12 +1848,11 @@ def test_delete_confirm_texts_are_bilingual_and_distinct():
 
 
 def test_terrain_detail_shows_the_preset_actually_used():
-    """两个详情面板都必须显示实际用的档位与法线状态。
+    """本地地形任务详情必须显示实际用的档位与法线状态。
 
-    DEM 侧：起切按钮（history.js 的 initTerrainDetailActions）POST 时**不带
-    body**，面板里也没有任何档位控件 —— 从这里起切走的是配置默认值。
-    本地地形侧：上传表单是用户**唯一能亲手选档位**的入口，切完回来查不到自己
-    当时选了什么更说不过去。两边共用 terrainPresetRowsHtml 渲染这两行。
+    上传表单/「处理」弹窗是用户**唯一能亲手选档位**的入口，切完回来查不到自己
+    当时选了什么更说不过去。渲染收口在 terrainPresetRowsHtml。
+    （DEM 下载任务详情曾有同款面板，随「切片收敛成独立任务」整块撤掉。）
 
     只断言字符串 "quality" 太弱：history.js 里另有底图/样式相关的同名词。
     这里锁的是**字段读取形态** `row.quality` / `row.vertex_normals`，
@@ -1944,29 +1875,10 @@ def test_terrain_detail_shows_the_preset_actually_used():
     assert re.search(r"normals_label'\)\}: \$\{normals\}", body), (
         '法线那一行没有插值算出来的 normals —— 显示的是别的东西'
     )
-    # 两个面板都得真的调它。少一边就退回改动前的状态：本地地形任务详情里
-    # 一行档位、一行法线都没有，而数据一直躺在 local_terrain_tasks 行里。
-    assert 'terrainPresetRowsHtml(job)' in _fn('refreshTerrainDetail', 'history.js'), (
-        'DEM 详情面板没有渲染档位/法线两行'
-    )
+    # 详情面板得真的调它，且结果要落到容器上：`'detailTerrainInfo' in body`
+    # 只证明这个 id 被提过一次，容器与载荷必须钉在同一条断言里。
     assert 'terrainPresetRowsHtml(task)' in _fn('viewTaskDetails', 'history.js'), (
         '本地地形任务详情没有渲染档位/法线两行 —— 用户唯一能选档位的入口回显不了'
-    )
-    # 上一行的 `terrainPresetRowsHtml(job)` 只证明「算了」，不证明「写进了 DOM」：
-    # 把 refreshTerrainDetail 里的 `infoEl.innerHTML = \`…\`` 改成算完丢弃，
-    # 上面两条照样全绿而面板一片空白。这两条钉的是「结果真的落到那个容器上」。
-    #
-    # 光钉 `'infoEl.innerHTML' in body` 不够：refreshTerrainDetail 里有三处
-    # `infoEl.innerHTML =`（未起切分支 / 正常分支 / catch 分支），把**正常分支**
-    # 整段删掉——恰好是本条声称要守的那个赋值——另外两处还在，断言照样绿。
-    # 同理 `'detailTerrainInfo' in body` 只证明这个 id 在函数里被提过一次。
-    # 所以容器与载荷必须钉在同一条断言里：赋给该容器的那段模板里得有对应的调用。
-    assert re.search(
-        r'infoEl\.innerHTML\s*=\s*`[^`]*terrainPresetRowsHtml\(job\)',
-        _fn('refreshTerrainDetail', 'history.js'),
-    ), (
-        'refreshTerrainDetail 算出的档位/法线 HTML 没有赋给 infoEl —— '
-        'DEM 详情面板上这两行是空的'
     )
     assert re.search(
         r"getElementById\('detailTerrainInfo'\)\.innerHTML\s*=\s*"
@@ -1978,51 +1890,52 @@ def test_terrain_detail_shows_the_preset_actually_used():
     )
 
 
+def _inline_js_locals(expr, body):
+    """把 `${localFoo}` 展开成 localFoo 在函数体里的定义式（只展开一层）。
+
+    详情面板的两段值都先落到局部常量上（`localTerrainActualMaxzoom` /
+    `localTerrainBaseMaxzoom`，那样读起来才清楚），拿分支原文做断言只看得见
+    别名，看不见到底插的是哪一列 —— 把别名改指到 task.maxzoom 上，下面
+    「实际层级那一段不许出现 task.maxzoom」照样全绿。
+    """
+    out = expr
+    for name in re.findall(r'\$\{([A-Za-z_$][\w$]*)\}', expr):
+        init = re.search(
+            r'\b(?:const|let)\s+%s\s*=\s*(.*?);' % re.escape(name), body, re.S)
+        if init:
+            out = out.replace('${%s}' % name, '${%s}' % init.group(1))
+    return out
+
+
 def test_terrain_detail_shows_the_level_actually_tiled():
-    """两个面板显示的层级必须是产物事实（effective_maxzoom），不是请求的基准值。
+    """本地地形详情显示的层级必须是产物事实（effective_maxzoom），不是请求的基准值。
 
     `maxzoom` 那一列存的是用户填的基准层级，precision/speed 两档下它比实际切到
-    的层级差一级。改动前 DEM 面板写 `MaxZoom: 12` 而 layer.json 写 13，本地地形
-    模态更是把 `0 - ${task.maxzoom}` 当成一个精确范围显示 —— 两个都是具体的错
-    数字，不是「可以推导」。
+    的层级差一级。改动前面板把 `0 - ${task.maxzoom}` 当成一个精确范围显示 ——
+    那是具体的错数字，不是「可以推导」。
 
     落库那一半由 tests/test_terrain_api.py::
     test_speed_preset_persists_the_level_it_actually_tiled 钉（它还顺带核对
     layer.json）；这里钉前端真的读了那一列。
+
+    登记（自动层级）：退回分支自己又分了两态（手填的数 / 「自动」挡的哨兵），
+    两段值于是都走局部常量，下面先展开别名再断言。哨兵那一态由
+    test_terrain_detail_translates_the_auto_maxzoom_sentinel 单独钉。
     """
-    from src.i18n.catalog import MESSAGES
-
-    row_fn = _fn('terrainMaxzoomRowHtml', 'history.js')
-    assert re.search(r'\brow\.effective_maxzoom\b', row_fn), (
-        'terrainMaxzoomRowHtml 没读 effective_maxzoom —— 面板显示的还是基准值'
-    )
-    # 拿不到实际值时必须换标签 + 挂说明，不能让基准值顶着「实际」的名头。
-    for key in ('js.history.terrain.maxzoom_actual_label',
-                'js.history.terrain.maxzoom_base_label',
-                'js.history.terrain.maxzoom_base_hint'):
-        assert f"'{key}'" in row_fn, f'terrainMaxzoomRowHtml 没有引用 {key}'
-        entry = MESSAGES.get(key)
-        assert entry and entry['zh'] and entry['en'], f'{key} 在 catalog 里缺失或缺语种'
-    assert (MESSAGES['js.history.terrain.maxzoom_actual_label']['zh']
-            != MESSAGES['js.history.terrain.maxzoom_base_label']['zh']), (
-        '「实际层级」与「基准层级」用了同一个词 —— 那就分不出显示的是哪一个'
-    )
-
-    assert 'terrainMaxzoomRowHtml(job)' in _fn('refreshTerrainDetail', 'history.js'), (
-        'DEM 详情面板没有走 terrainMaxzoomRowHtml —— 显示的仍是请求的基准值'
-    )
-    # 本地地形的层级住在通用的 Zoom 那一格（`0 - N`），不走上面那个函数，
-    # 但同样必须优先取实际值 —— 而且拿不到实际值、退回基准值时，**文字本身**
-    # 必须说出这是基准值。那一格的标签写死在 templates/base.html 里换不掉
-    # （DEM 侧是自己拼 HTML，所以能像 terrainMaxzoomRowHtml 那样换标签），
-    # 只能把限定词缀在值后面。只挂一句 title 不算数：悬停在触摸设备上根本不
-    # 存在、键盘也够不着，而两种情况都渲染成 `0 - 14`，用户连「这里有话要说」
-    # 都看不出来 —— 那正是「看起来确定的错值」。
+    # 层级住在通用的 Zoom 那一格（`0 - N`）：必须优先取实际值，而且拿不到
+    # 实际值、退回基准值时，**文字本身**必须说出这是基准值。那一格的标签写死在
+    # templates/base.html 里换不掉，只能把限定词缀在值后面。只挂一句 title 不算数：
+    # 悬停在触摸设备上根本不存在、键盘也够不着，而两种情况都渲染成 `0 - 14`，
+    # 用户连「这里有话要说」都看不出来 —— 那正是「看起来确定的错值」。
     view = _fn('viewTaskDetails', 'history.js')
     zoom_exprs = [
         expr for expr in re.findall(
             r"getElementById\('detailZoom'\)\.textContent\s*=(.*?);", view, re.S)
-        if 'maxzoom' in expr
+        # 大小写不敏感：值走局部别名之后，这条表达式里出现的是
+        # `localTerrainActualMaxzoom` 这种驼峰名，按 'maxzoom' 原样筛一处都筛
+        # 不到。那不是静默空转 —— 下一行的 `len(zoom_exprs) == 1` 当场就红并
+        # 报「本测试已失效」；筛多了也撞在同一条断言上。
+        if 'maxzoom' in expr.lower()
     ]
     assert len(zoom_exprs) == 1, (
         f'viewTaskDetails 里涉及 maxzoom 的 detailZoom 赋值有 {len(zoom_exprs)} 处，'
@@ -2034,6 +1947,7 @@ def test_terrain_detail_shows_the_level_actually_tiled():
         '两段**不同的文字**；`0 - ${task.effective_maxzoom ?? task.maxzoom}` 这种'
         '写法两种情况长得一模一样，只有 title 能区分'
     )
+    branches = [_inline_js_locals(b, view) for b in branches]
     labelled = [b for b in branches if 'js.history.terrain.maxzoom_base_label' in b]
     assert len(labelled) == 1, (
         '恰好一段文字要带「基准层级」限定词：两段都带 = 把实际值也说成基准值，'
@@ -2042,6 +1956,15 @@ def test_terrain_detail_shows_the_level_actually_tiled():
     assert 'task.maxzoom' in labelled[0], (
         '带「基准层级」限定词的那一段显示的不是 task.maxzoom —— 标签与值对不上'
     )
+    # 上一条被别名展开放松了：labelled[0] 展开后连内层三元的**条件**
+    # （`task.maxzoom === TERRAIN_AUTO_MAXZOOM_SENTINEL`）一起进来了，于是把手动挡
+    # 那一支的显示值换成 `${task.effective_maxzoom} (${t(base_label)})` 照样全绿 ——
+    # 而那正是这条断言声称要防的「标签与值对不上」。判定限回模板串本身：
+    # `[^`]*` 不跨反引号，值与限定词必须落在同一个 template literal 里。
+    assert re.search(r'\$\{task\.maxzoom\}[^`]*maxzoom_base_label', labelled[0]), (
+        '「基准层级」限定词旁边插的不是 ${task.maxzoom} —— 那一格会顶着'
+        f'「基准层级」的名头显示别的列：{labelled[0]}'
+    )
     actual_branch = [b for b in branches if b is not labelled[0]][0]
     assert 'task.maxzoom' not in actual_branch, (
         '不带限定词的那一段插的仍是基准值 —— 它顶着「实际层级」的名头显示错数字'
@@ -2049,12 +1972,153 @@ def test_terrain_detail_shows_the_level_actually_tiled():
     ref = re.search(r'\$\{([\w.]+)\}', actual_branch)
     assert ref, '实际层级那一段不是插值 —— 本测试已失效'
     if ref.group(1) != 'task.effective_maxzoom':
-        # 允许先取个局部别名（读起来更清楚），但别名必须真的来自那一列。
+        # _inline_js_locals 只展开一层；再深一层的别名链在这里兜底 ——
+        # 允许取局部别名（读起来更清楚），但别名必须真的来自那一列。
         assert re.search(
             r'\b(?:const|let)\s+%s\s*=\s*task\.effective_maxzoom\b' % re.escape(ref.group(1)),
             view,
         ), (
             f'实际层级那一段插的是 {ref.group(1)}，而它不是从 task.effective_maxzoom 取的'
+        )
+
+
+def test_terrain_detail_translates_the_auto_maxzoom_sentinel():
+    """自动挡的哨兵 -1 不许原样渲染成 `0 - -1`。
+
+    「最大切片层级」多了「自动」一挡（按源数据分辨率现算基准层级），落库表示
+    是哨兵 -1（`geo_validation.AUTO_MAXZOOM_SENTINEL`），而且它已经是**出厂
+    默认** —— 配置里填了坏值软退回自动，落库的同样是这个数。上一条用例只钉了
+    「拿不到实际值就退回 task.maxzoom」，退回的那一格于是把哨兵直接印在界面上。
+
+    哨兵值必须是一个**具名常量**、且与后端那份逐字相等（ui.js 的
+    TILE_PATH_PREFIXES / TILE_HEALTH_PATH 是同一套写法：镜像常量 + 相等性断言
+    防漂移）。散在表达式里的裸 -1 改后端时没人搜得到，而漂移的后果就是界面上
+    冒出 `0 - -1`。
+    """
+    from src.i18n.catalog import MESSAGES
+    from src.services.geo_validation import AUTO_MAXZOOM_SENTINEL
+
+    src = _strip_js_comments(_js('history.js'))
+    m = re.search(r'\bconst\s+([A-Z][A-Z0-9_]*SENTINEL)\s*=\s*(-?\d+)\s*;', src)
+    assert m, (
+        'history.js 里没有具名的自动层级哨兵常量 —— 裸 -1 散在表达式里，'
+        '后端改哨兵时没人搜得到'
+    )
+    assert int(m.group(2)) == AUTO_MAXZOOM_SENTINEL, (
+        f'JS 侧哨兵是 {m.group(2)}，后端 AUTO_MAXZOOM_SENTINEL 是 '
+        f'{AUTO_MAXZOOM_SENTINEL} —— 两边一漂，自动挡的作业就把哨兵当层级显示'
+    )
+
+    view = _fn('viewTaskDetails', 'history.js')
+    assert re.search(r'task\.maxzoom\s*===\s*%s\b' % m.group(1), view), (
+        f'详情面板没有拿 {m.group(1)} 认过 task.maxzoom —— 自动挡的作业'
+        '（出厂默认）会把哨兵当成基准层级显示'
+    )
+    # 认出来之后显示的必须是文案。键写成完整字面量：拼接出来的键会被
+    # tests/test_i18n.py 的双向闭合当成无人引用判死。
+    assert "t('js.history.terrain.maxzoom_auto')" in view, (
+        '认出哨兵之后没换成文案 —— 那一格显示的还是那个数'
+    )
+    # 三元的**极性**同样要钉：哨兵比较在、两个显示值也都在，把两支对调照样
+    # 全绿 —— 而界面会在自动挡（出厂默认！）上显示 `0 - -1 (基准层级)`，
+    # 手填层级的作业反倒显示「按源数据自动」。两种都是看起来确定的错值。
+    assert re.search(
+        r"task\.maxzoom\s*===[^?]*\?\s*t\('js\.history\.terrain\.maxzoom_auto'\)\s*:\s*`",
+        view,
+    ), (
+        '哨兵那个三元的两支对调了：认出哨兵的那一支必须是 maxzoom_auto 文案、'
+        '另一支才是带层级数的模板串'
+    )
+    entry = MESSAGES['js.history.terrain.maxzoom_auto']
+    assert entry['zh'] and entry['en'], 'js.history.terrain.maxzoom_auto 中英缺一'
+    assert '-1' not in entry['zh'] and '-1' not in entry['en'], (
+        f'文案里直接写着哨兵本身，等于换了个地方漏出来：{entry}'
+    )
+
+
+def test_terrain_detail_hint_follows_which_base_is_shown():
+    """悬停说明必须跟着值走：自动挡下不存在「提交时填的那个数」。
+
+    maxzoom_base_hint 整句是围绕「这是你提交时填的基准值、不是产物事实」写的。
+    自动挡下基准根本不是一个数字（切片时按源数据分辨率现算），那句话逐字都不
+    成立 —— 把它挂在「自动」上，等于告诉用户他填过一个他没填过的数。
+    """
+    from src.i18n.catalog import MESSAGES
+
+    view = _fn('viewTaskDetails', 'history.js')
+    m = re.search(r"getElementById\('detailZoom'\)\.title\s*=(.*?);", view, re.S)
+    assert m, 'viewTaskDetails 里找不到 detailZoom 的 title 赋值 —— 本测试已失效'
+    title_expr = m.group(1)
+    for key in ('js.history.terrain.maxzoom_base_hint',
+                'js.history.terrain.maxzoom_auto_hint'):
+        assert f"'{key}'" in title_expr, (
+            f'title 表达式里没有 {key} —— 两种基准来源共用同一句说明，'
+            '必有一种是假的'
+        )
+        entry = MESSAGES[key]
+        assert entry['zh'] and entry['en'], f'{key} 中英缺一'
+    auto = MESSAGES['js.history.terrain.maxzoom_auto_hint']
+    base = MESSAGES['js.history.terrain.maxzoom_base_hint']
+    assert auto['zh'] != base['zh'], '两句说明逐字相同 —— 那就没必要分成两个键'
+    assert '填' not in auto['zh'], (
+        f'自动挡的说明里还在说用户「填」过基准层级：{auto["zh"]}'
+    )
+    # 「两个键都在」不管极性：把两支对调，两个键照样都在，而每一挡挂到的都是
+    # 另一挡的说明 —— 自动挡的作业被告知「这是你提交时填的那个数」，而他没填过。
+    assert re.search(
+        r"\?\s*t\('js\.history\.terrain\.maxzoom_auto_hint'\)\s*:\s*"
+        r"t\('js\.history\.terrain\.maxzoom_base_hint'\)",
+        title_expr,
+    ), (
+        f'哨兵三元的两支说明对调了：认出哨兵的那一支必须挂 maxzoom_auto_hint：'
+        f'{title_expr}'
+    )
+    # 外层 guard 也无人钉。删掉 `task.effective_maxzoom == null` 这半句，切完的
+    # 作业（有实际层级、值那一格显示的是产物事实）会挂上「作业切完后这里会换成
+    # 实际层级」这句已经不成立的话。既有的 test_zoom_tooltip_reset_is_unconditional
+    # 只钉这条赋值的花括号深度，对条件本身一无所知。
+    # `==` 不是笔误：null 与 undefined 都算「还不知道切到第几级」。
+    assert re.search(
+        r"taskType\s*===\s*'local_terrain'\s*&&\s*task\.effective_maxzoom\s*==\s*null",
+        title_expr,
+    ), (
+        f'title 的外层 guard 不再是「本地地形 且 还没有实际层级」—— 少了后半句，'
+        f'切完的作业也会挂上「切完后会换成实际层级」这句假话：{title_expr}'
+    )
+
+
+def test_the_auto_sentinel_is_recognised_in_the_value_and_the_tooltip_alike():
+    """哨兵比较在详情面板里有两处（值那一格、title 那一格），必须一起在。
+
+    上面两条用例各看各的一格：删掉另一格的哨兵比较，两条都还是绿的。而这两格
+    说的是同一件事，改一处漏一处就是自相矛盾 —— 值显示 `0 - 14 (基准层级)`、
+    悬停却说「这一挡的基准是切片时按源数据现算的，你没填过这个数」；反过来则是
+    值显示「按源数据自动」、悬停说「这是你提交时填的那个数」。两种都零报错。
+    """
+    view = _fn('viewTaskDetails', 'history.js')
+
+    value_exprs = [
+        expr for expr in re.findall(
+            r"getElementById\('detailZoom'\)\.textContent\s*=(.*?);", view, re.S)
+        # 与 test_terrain_detail_shows_the_level_actually_tiled 同一把筛子：
+        # 值走局部别名，按 'maxzoom' 原样筛一处都筛不到（下一行会当场报「已失效」）。
+        if 'maxzoom' in expr.lower()
+    ]
+    assert len(value_exprs) == 1, (
+        f'涉及 maxzoom 的 detailZoom 赋值有 {len(value_exprs)} 处，期望 1 处 —— '
+        '本测试已失效'
+    )
+    title = re.search(
+        r"getElementById\('detailZoom'\)\.title\s*=(.*?);", view, re.S)
+    assert title, 'viewTaskDetails 里找不到 detailZoom 的 title 赋值 —— 本测试已失效'
+
+    # 值那一格的哨兵比较藏在局部常量的定义式里，先展开一层别名再判。
+    places = (('值那一格', _inline_js_locals(value_exprs[0], view)),
+              ('title 那一格', title.group(1)))
+    for label, expr in places:
+        assert re.search(r'task\.maxzoom\s*===\s*[A-Z][A-Z0-9_]*SENTINEL\b', expr), (
+            f'{label}没有拿具名哨兵认过 task.maxzoom —— 两格必须同时认，'
+            f'只认一格的话自动挡的作业会一边说自动、一边把 -1 当层级：{expr}'
         )
 
 

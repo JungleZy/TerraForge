@@ -449,3 +449,29 @@ def test_no_untranslated_chinese_left_in_templates():
         '模板里还有没走 t() 的中文:\n'
         + '\n'.join(f'  {f}\n    ' + '\n    '.join(v) for f, v in leftovers.items())
     )
+
+
+def test_quality_hint_does_not_pin_the_base_to_the_typed_number():
+    """档位说明不能再说「基准层级就是上面填的最大切片层级」。
+
+    「最大切片层级」多了「自动」一挡，而且它是**出厂默认**：勾着自动时基准
+    层级由切片时的源数据分辨率现算，上面那个数字框根本是禁用的。旧文案在默认
+    设置下逐字都是假的 —— 而这一句正是用户判断「选精细档到底会多切到哪一级」
+    的全部依据。
+
+    末句的 0/21 钳位由 tests/test_terrain_lighting_frontend.py::
+    test_preset_wording_anchors_to_the_base_level_like_the_detail_panel 钉住，
+    这里不重复。
+    """
+    hint = MESSAGES['tpl.index.process.terrain_quality_hint']
+    assert '基准层级就是上面填的最大切片层级' not in hint['zh'], (
+        f'中文档位说明还把基准层级说死成上面填的那个数 —— 勾着「自动」'
+        f'（出厂默认）时这句是假的：{hint["zh"]}'
+    )
+    assert '自动' in hint['zh'], (
+        f'中文档位说明没提「自动」这一挡 —— 用户看不出基准层级还有第二个来源：'
+        f'{hint["zh"]}'
+    )
+    assert 'auto' in hint['en'].lower(), (
+        f'英文档位说明没提 auto 这一挡：{hint["en"]}'
+    )

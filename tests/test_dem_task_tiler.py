@@ -510,3 +510,48 @@ def test_graft_failure_fails_the_whole_task(tmp_path: Path, monkeypatch):
 
     layer = (out_dir / "layer.json").read_text(encoding="utf-8")
     assert "parentUrl" not in layer, "植入失败后偷偷退回了 parentUrl 兜底"
+
+
+# ---------------------------------------------------------------------------
+# 自动档 maxzoom：None 透传
+# ---------------------------------------------------------------------------
+
+
+def test_auto_maxzoom_reaches_build_terrain_as_none(tmp_path: Path, monkeypatch):
+    """maxzoom=None（自动档）必须原样透传成 max_level=None。
+
+    那是 build_terrain 里 estimate_max_level 分支的**唯一**触发条件
+    （cesiumlab_terrain 的 `if max_level is None:`）—— 换句话说，自动档能不能
+    按源数据像素尺寸现算基准层级，全押在这一个 kwarg 上。
+
+    断言写死 `is None`，不许松成「假值」：0 和 -1 都是数字，会被当成用户显式
+    要求的层级。传 0 的后果尤其阴 —— 切出一张 z0 瓦片、layer.json 照常写、
+    任务报 completed，正是本项目栽过好几次的那款静默产出错数据。
+    """
+    from src.services.terrain_tiling import dem_task_tiler as mod
+
+    task_dir = _make_task_dir(tmp_path)
+    out_dir = tmp_path / "out"
+
+    seen = {}
+
+    def fake_build_terrain(**kwargs):
+        seen.update(kwargs)
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "layer.json").write_text('{"maxzoom": 16, "available": []}', encoding="utf-8")
+        return {"total": 1, "rendered": 1, "failed": 0, "max_level": 16}
+
+    monkeypatch.setattr(mod, "ensure_base_unpacked", lambda **k: None)
+
+    counts = mod.tile_dem_task_dir(
+        task_dir, out_dir,
+        mod.TileParams(maxzoom=None, parent_url="https://example.com/p.json"),
+        build_terrain_fn=fake_build_terrain)
+
+    assert seen["max_level"] is None, (
+        f"自动档没透传成 None，到达 build_terrain 的是 {seen['max_level']!r} —— "
+        f"任何数字都会被当成显式层级，estimate_max_level 那条分支就永远走不到")
+    # 自动档下请求值是空的，估算出来的实际层级是 effective_maxzoom 的唯一来源，
+    # 回报通路不能跟着一起断。
+    assert counts["max_level"] == 16

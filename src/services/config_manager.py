@@ -140,10 +140,11 @@ def _is_link_local_host(host: str) -> bool:
     """169.254.0.0/16 与 fe80::/10 —— 云厂商的实例元数据端点就住在这里。
 
     有意**不**复用 tile_url_probe.should_bypass_proxy：它把回环与私网也算进去，
-    那是「该不该走代理」的路由判断，不是安全边界。而本项目的 parentUrl 出厂值
-    就是 http://localhost:5000/terrain/base，换端口/部署到内网 IP 更是
+    那是「该不该走代理」的路由判断，不是安全边界。而存量库里的 parentUrl 就是
+    旧出厂值 http://localhost:5000/terrain/base（新默认值是相对路径
+    /terrain/base），指到内网 IP 上的另一套地形服务更是
     docs/reference/terrain/global-base-build.md 明写的正常用法 —— 照搬那个谓词
-    会把默认值和文档化的部署方式一起判非法。
+    会把存量值和文档化的部署方式一起判非法。
     """
     try:
         ip = ipaddress.ip_address(host)
@@ -314,7 +315,13 @@ _VALUE_RULES = {
 #   - contour_* 里剩下的数值（线宽 / index_step / detail_zoom / hillshade_*）：
 #     取值表住在 contour_engine 的 ContourStyle 里，在这里再抄一份就是第二处
 #     事实来源；颜色与间距已按 P1#10 / P1#11 登记到 _VALUE_RULES。
-#   - terrain_*_maxzoom / terrain_local_maxzoom：纯数值上限，同上不在本条范围。
+#   - terrain_global_base_maxzoom：纯数值上限，同上不在本条范围。
+#     terrain_local_maxzoom 自 2026-08-10 起**不再是纯数值**：合法取值是三态
+#     （数字 / 字面量 'auto' / 空串=没配过），那张取值表住在
+#     geo_validation.coerce_maxzoom 里，在这里抄一份就是第二处事实来源 ——
+#     而且抄漏 'auto' 就等于把出厂默认判成非法。读取侧三处（两个管理器 +
+#     main._terrain_form_defaults）一律过 coerce_maxzoom，脏值退回自动挡并留
+#     warning，所以这里放行不构成静默失败。
 #   - terrain_vertex_normals：布尔开关，按本表第一条理由；
 #     terrain_quality_preset 反过来登记在 _VALUE_RULES —— 它的取值表只有三个
 #     值且住在 geo_validation 里，直接 import 白名单不构成第二处事实来源。

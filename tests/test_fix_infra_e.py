@@ -456,6 +456,10 @@ conn.close()
 import flask_socketio
 flask_socketio.SocketIO.run = lambda self, app, **kw: None
 
+# 子进程只验证启动身份，不应真实占用固定瓦片端口 5001。
+from src.core import tile_server
+tile_server.start_tile_server = lambda *args, **kwargs: None
+
 import runpy
 runpy.run_path(os.path.join(project_root, "app.py"), run_name="__main__")
 

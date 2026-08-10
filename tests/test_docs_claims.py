@@ -456,7 +456,7 @@ def test_no_i18n_string_tells_the_user_the_basemap_skips_the_proxy():
 def test_the_basemap_hint_states_the_same_origin_hop_and_the_proxy():
     """反向：上面那条只禁一种说法，空文案同样能满足它。
 
-    这条钉住配置页必须**正面**告诉用户这一跳存在（同源路径）以及代理管用 ——
+    这条钉住配置页必须**正面**告诉用户这一跳存在（应用内路径）以及代理管用 ——
     否则「底图打不开」的用户仍然不知道该去动哪个设置。同时保留另外两条仍然
     成立的事实：两个预设同为 WGS-84（框选位置对得上），以及被禁的 GCJ-02 源。
     """
@@ -551,10 +551,19 @@ def test_no_live_doc_misquotes_the_terrain_parent_url_default():
 
     只看「同一行里既提这个键又给了 URL」，不是全局禁 `/terrain/base/layer.json`
     —— 后者是 §1 里 base provider 自己的加载地址，完全合法。
+
+    2026-08-10 默认值改成**应用内相对路径** `/terrain/base` 之后，判据也跟着变：
+    这些行里允许出现绝对 URL（说明「指向另一套地形服务」时该怎么配，那是这个键
+    现在唯一的用途），但**不允许**再出现应用自己的旧地址 `http://localhost:5000/...`
+    —— 照那个值配，瓦片走 5001 专用 origin 时父级请求会绕回主连接池，远程访问
+    时 `localhost` 更是指向客户端本机。带 `/layer.json` 的形态一律仍然禁止。
     """
     expected = _default_configs()["terrain_base_parent_url"]
     assert not expected.endswith("/layer.json"), (
         "DEFAULT_CONFIGS 里的 terrain_base_parent_url 自己就带上了 /layer.json")
+    assert expected.startswith("/"), (
+        "默认值应该是应用内相对路径（继承提供 layer.json 的 origin），"
+        f"现在是 {expected!r}")
 
     offenders = []
     for rel in _live_docs():
@@ -562,11 +571,42 @@ def test_no_live_doc_misquotes_the_terrain_parent_url_default():
             if "terrain_base_parent_url" not in line:
                 continue
             for url in _ABSOLUTE_URL.findall(line):
-                if url != expected:
-                    offenders.append(f"{rel}:{lineno} 写的是 {url!r}，默认值是 {expected!r}")
+                if url.rstrip("/").lower().endswith("/layer.json"):
+                    offenders.append(
+                        f"{rel}:{lineno} 写的是 {url!r} —— 带 /layer.json 是 heightmap 陷阱")
+                elif "//localhost:5000" in url or "//127.0.0.1:5000" in url:
+                    offenders.append(
+                        f"{rel}:{lineno} 写的是 {url!r} —— 应用自己的地址应写成相对路径 "
+                        f"{expected!r}")
     assert not offenders, (
-        "文档给 terrain_base_parent_url 写错了默认值（带 /layer.json 就是 heightmap 陷阱）：\n  "
-        + "\n  ".join(offenders))
+        "文档给 terrain_base_parent_url 写错了值：\n  " + "\n  ".join(offenders))
+
+
+def test_distribution_security_section_documents_the_tile_port_cors():
+    """瓦片端口给所有响应发 `Access-Control-Allow-Origin: *`，安全一节必须写明。
+
+    这是 0.3 引入的**新能力**，且是安全一节里唯一一条与防火墙无关的：跨源读取
+    来自用户自己浏览器里打开的任意页面，走回环地址，入站规则拦不到。发行文档
+    的安全一节原本只讲「5000 面大、5001 面小」，读者据此判断放行 5001 的风险，
+    却看不到「5001 上的东西任何网页都能读」。
+
+    判据落在**代码事实**上而不是句子：只要 tile_server 仍然发这个头，文档就
+    必须提到头名与它带来的跨源可读性；哪天真把头去掉了（瓦片就废了，但那是
+    另一回事），这条断言自然让路。
+    """
+    tile_server_src = _read(os.path.join("src", "core", "tile_server.py"))
+    if "Access-Control-Allow-Origin" not in tile_server_src:
+        return                      # 头没了，这条文档要求也就不成立
+
+    doc = _read(os.path.join("docs", "guides", "DISTRIBUTION.md"))
+    security = doc[doc.index("### 防火墙警告"):doc.index("### macOS 安全警告")]
+    assert "Access-Control-Allow-Origin" in security, (
+        "DISTRIBUTION.md 的安全一节没提瓦片端口的 CORS 头 —— "
+        "读者无从知道 5001 上的内容可被任意网页跨源读取")
+    assert "跨源读取" in security or "跨源读" in security, (
+        "只写了头名不够：必须点明它的后果是「任意网页可以跨源读取」")
+    assert "GET" in security, (
+        "必须同时写明边界：只有 GET、没有写入面，否则读者会高估风险")
 
 
 def test_no_doc_pins_a_gdal_version_the_machine_must_choose():

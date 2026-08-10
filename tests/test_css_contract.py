@@ -4738,7 +4738,9 @@ def test_button_ink_is_readable_in_every_state():
 # 18 -> 17（面板头部抽宏）：index.html 两颗覆盖面板关闭钮（记录/配置，改前
 # 是逐字重复的两段头部）收进 _macros.html 的 panel_header 宏 —— 2 颗变 1 处
 # 宏定义。净 -1。
-ICON_ONLY_BUTTON_COUNT = 17
+# 17 -> 18（任务行加「处理」钮）：已完成的高程下载任务行在预览旁多一颗
+# 扳手钮，打开处理弹窗预选该任务（task_list.js TaskRow）。
+ICON_ONLY_BUTTON_COUNT = 18
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -6103,7 +6105,12 @@ def _motion_rule_index(css):
 #   border-color/color/box-shadow 过渡，随整个组件删除。任务行早已改用
 #   `.task-dot` + `.task-status-text`，全仓只剩 history.js / tasks.js 两处
 #   注释在提这个类名，没有任何 markup 会带上它。少掉的分支就是 `.status-badge`。
-_MOTION_BRANCH_COUNT = 37
+# 37 -> 39（地形预览的进场薄雾）：`.map-transition-veil`（opacity 0.35s，
+#   淡出档）与 `.map-transition-veil--in`（transition-duration 0.18s，淡入档）。
+#   换 viewer.terrainProvider 是一次没有中间态的整球几何重建，影像层那种
+#   alpha 淡入在地形上没有对应物，只能罩一层雾盖过去（map.js _showMapVeil）。
+#   两条都在 reduce 块 `*` 覆盖范围内，无需豁免登记。
+_MOTION_BRANCH_COUNT = 39
 
 
 def test_motion_rule_index_is_complete():
@@ -6372,8 +6379,11 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 反解出 2 个新元素上下文（button.hint 与它的 ::after）。
     # 35 -> 34（删死代码）：`.status-badge` 随整个零引用组件从 style.css 删除，
     # 它反解出的那一个元素上下文（span.status-badge）一并消失。
-    assert len(ctxs) == 34, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 34：\n'
+    # 34 -> 36（地形预览的进场薄雾）：`.map-transition-veil` 与它的亮起态
+    # `.map-transition-veil--in` 各反解出一个上下文，都是普通 opacity 过渡，
+    # 在 reduce 块 `*` 覆盖范围内，不进豁免清单。
+    assert len(ctxs) == 36, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 36：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )

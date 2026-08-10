@@ -65,7 +65,7 @@ def _node_runs_the_harness():
 
 from src.i18n import t  # noqa: E402
 from src.services.raster_probe import (  # noqa: E402
-    MAX_INSPECT_BODY, MAX_INSPECT_FILES, InspectError, describe_headers,
+    MAX_INSPECT_BODY, MAX_INSPECT_FILES, MAX_ZOOM, InspectError, describe_headers,
 )
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -692,3 +692,87 @@ def test_every_reported_bounds_is_a_sane_wgs84_box(case):
     for west, south, east, north in boxes:
         assert -180.0 <= west < east <= 360.0, f"经度不成立: {west}..{east}"
         assert -90.0 <= south < north <= 90.0, f"纬度不成立: {south}..{north}"
+
+# --------------------------------------------------- 规模预告：逐层瓦片数
+
+@requires_gdal
+def test_summary_reports_per_level_tile_counts():
+    """逐层、不累加 —— 累加区间留给消费方，因为随包底图可用与否会改变起点。"""
+    counts = describe_headers([_geographic()], mode="terrain")["summary"]["tile_counts"]
+
+    assert len(counts) == MAX_ZOOM + 1
+    # z0 的瓦片方案是 2x1 全球，任何 bbox 至少落在一张里
+    assert counts[0] >= 1
+    # 每加一级，x/y 各翻倍 → 张数趋近 4 倍
+    assert counts[14] > counts[13] > counts[12]
+
+
+@requires_gdal
+def test_tile_counts_match_the_tiler_geometry():
+    """与切片器用的是同一套 intersecting_tile_range，不许各算各的。
+
+    这条走的是完整链路（头部 -> 并集 bounds -> 表），因此能抓住「换了分块方案」
+    「乘积公式写错」「bounds 换了来源或轴序」这几类退化。
+
+    它**抓不住** floor/ceil-1 之争：`ceil(t)-1` 只在 t 恰为整数时才与 `floor(t)`
+    不同，而 _geographic() 的四至（110, 39.9997.., 111.0002.., 41）z0..z21 每一级
+    都不落在瓦片边界上，两种取整结果处处相同。那个 hazard 由下面那条用例看管。
+    """
+    from src.services.terrain_tiling.cesiumlab_terrain import (
+        GeographicTilingScheme, intersecting_tile_range)
+
+    summary = describe_headers([_geographic()], mode="terrain")["summary"]
+    west, south, east, north = summary["bounds_wgs84"]
+    # tile_count 只看 level，tile_size 不参与计数；给 65 是与切片管线同口径
+    scheme = GeographicTilingScheme(tile_size=65)
+
+    for z in (8, 12, 14):
+        nx, ny = scheme.tile_count(z)
+        ix0, ix1, iy0, iy1 = intersecting_tile_range(nx, ny, west, south, east, north)
+        assert summary["tile_counts"][z] == (ix1 - ix0 + 1) * (iy1 - iy0 + 1), \
+            f"z{z} 的预告与切片器的几何对不上"
+
+
+@requires_gdal
+def test_tile_counts_use_ceil_minus_one_on_a_tile_boundary():
+    """四至压在瓦片边界上时，上界必须是 ceil-1 而不是 floor。
+
+    这是「预告的数 == 实际切出来的数」的判别性证据。北界取 45.0：
+    (45+90)/180 * 2^z = 0.75 * 2^z 对 z>=2 恒为整数，正好落在瓦片行边界上，
+    floor 会把一整行零重叠的瓦片算进来（论证见 intersecting_tile_range 的
+    docstring）—— 两种取整在 z2..z21 每一级都分道扬镳。
+
+    **刻意不走 describe_headers**：那条链上 TransformBounds 会把 45.0 抖成
+    44.999999..，边界条件当场消失，这条用例就又变回没牙的了。
+
+    顺带钉住三个绝对值 —— 其余用例全是相对断言（长度、单调、>=1），bounds 口径
+    整体漂移时它们一致地跟着漂，不会叫。
+    """
+    from src.services.raster_probe import _tile_counts_per_level
+
+    counts = _tile_counts_per_level((110.0, 40.0, 111.0, 45.0))
+
+    assert len(counts) == MAX_ZOOM + 1
+    # 左边是 ceil-1（正确），右边是 floor 会给出的数：多出的正是贴着北界那一行
+    for z, correct, floor_would_give in ((8, 16, 18), (12, 2622, 2645), (14, 41952, 42044)):
+        assert counts[z] != floor_would_give, \
+            f"z{z} 报了 {counts[z]}，正是 floor 的结果 —— 北界那一整行与 DEM 零重叠"
+        assert counts[z] == correct, f"z{z} 期望 {correct}，实得 {counts[z]}"
+
+
+@requires_gdal
+def test_contour_mode_does_not_report_tile_counts():
+    """等高线走 Web Mercator，这张表对它没有意义，给了只会被误用。"""
+    entries = [_geographic()]
+    # 同一份输入在高程模式下是有这张表的 —— 差别只能来自 mode，不能来自环境
+    assert "tile_counts" in describe_headers(entries, mode="terrain")["summary"]
+    assert "tile_counts" not in describe_headers(entries, mode="contour")["summary"]
+
+
+def test_tile_counts_are_omitted_without_a_georeference():
+    """没有地理参考就没有并集范围 —— 不给这张表，也不能因此抛异常。"""
+    summary = describe_headers(
+        [_geographic(pixel_scale=None, tie_point=None)], mode="terrain")["summary"]
+
+    assert "bounds_wgs84" not in summary
+    assert "tile_counts" not in summary

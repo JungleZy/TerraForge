@@ -207,9 +207,12 @@ jobs:
       if: always()
       run: du -sh ~/.nuitka-cache 2>/dev/null || echo "no cache dir"
 
-    # 冒烟测试:真正启动 exe 并请求首页。构建成功 ≠ 能运行——GDAL DLL 搜索
-    # 路径、conda SWIG shim 的 pkg_resources 路径、multiprocessing spawn 等
-    # 运行时问题只有跑了才暴露(v0.1.1 三次踩坑)。
+    # 冒烟测试:真正启动 exe 并请求首页 + 瓦片端口健康端点。构建成功 ≠ 能运行
+    # ——GDAL DLL 搜索路径、conda SWIG shim 的 pkg_resources 路径、
+    # multiprocessing spawn 等运行时问题只有跑了才暴露(v0.1.1 三次踩坑)。
+    # 5001 单独要一条判据:瓦片端口起不来是**静默降级**(tile_server 绑定失败
+    # 返回 None,主服务照常 200),只探 5000 的话这类回归永远报绿,用户拿到的
+    # 是一个瓦片全走同源、首屏仍被浏览器连接池堵死的包。
     - name: Smoke test executable
       run: |
         cd dist/terraforge
@@ -217,19 +220,21 @@ jobs:
         [ "${{ runner.os }}" = "Windows" ] && EXE=./terraforge.exe
         "$EXE" > smoke.log 2>&1 &
         SMOKE_PID=$!
-        code=000
+        main_code=000
+        tile_code=000
         for i in $(seq 1 30); do
-          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/ || true)
-          [ "$code" = "200" ] && break
+          main_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/ || true)
+          tile_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/tile-health || true)
+          [ "$main_code" = "200" ] && [ "$tile_code" = "204" ] && break
           sleep 2
         done
         kill $SMOKE_PID 2>/dev/null || true
         tail -30 smoke.log
-        if [ "$code" != "200" ]; then
-          echo "Smoke test FAILED (HTTP $code)"
+        if [ "$main_code" != "200" ] || [ "$tile_code" != "204" ]; then
+          echo "Smoke test FAILED (main HTTP $main_code, tile health HTTP $tile_code)"
           exit 1
         fi
-        echo "Smoke test OK (HTTP 200)"
+        echo "Smoke test OK (main HTTP 200, tile health HTTP 204)"
 
     # M19: 冒烟测试那一次启动会在 dist/terraforge/ 里生成运行期数据 ——
     # frozen 模式下 Config.BASE_DIR = exe 所在目录。其中 data/map_downloader.db

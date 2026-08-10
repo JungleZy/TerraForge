@@ -238,9 +238,9 @@ MESSAGES = {
         'zh': '高程任务列表加载失败: {error}',
         'en': 'Failed to load DEM tasks: {error}',
     },
-    'js.map.process.dem_tiling_started': {
-        'zh': '已开始对高程任务 #{id} 做地形切片',
-        'en': 'Terrain tiling started for DEM task #{id}',
+    'js.map.process.terrain_started_dem_task': {
+        'zh': '切片任务已创建（零拷贝复用高程任务 #{id} 已下载的 DEM）',
+        'en': 'Tiling task created (zero-copy reusing the DEM downloaded by task #{id})',
     },
     'js.map.process.contour_default_name': {
         'zh': '等高线瓦片',
@@ -369,6 +369,22 @@ MESSAGES = {
     'js.map.tifinfo.recommended_maxzoom': {
         'zh': '建议最大层级',
         'en': 'Suggested max zoom',
+    },
+    # 起切前的规模预告（renderTerrainTileEstimate）。两个层级都要报：base 是按
+    # 源数据像素估的基准层级，level 是叠上档位偏移、再钳进 [0, 21] 之后真正会切
+    # 到的那一级 —— 只写一个数的话，用户在「自动」挡下无从判断档位改了什么。
+    # 张数措辞用「预计生成」：这是**打算生成**的瓦片数，不是 Cesium 认得的可用
+    # 瓦片数（后者还要过覆盖率闸门，只会更少）。
+    'js.map.terrain.estimate': {
+        'zh': '预计切片：基准 z{base} → 实际 z{level} · 约 {tiles} 张 · 约 {size}',
+        'en': 'Estimated: base z{base} → actual z{level} · ~{tiles} tiles · ~{size}',
+    },
+    # 挂在预告行的 title 上。必须说清这是估算：真实基准层级由 build_terrain 用
+    # 物化后的合并栅格现算，与这里按头部像素估的可能差一级。
+    'js.map.terrain.estimate_hint': {
+        'zh': '估算值。实际基准层级在切片时按合并后的源栅格现算，产物层级见任务详情。',
+        'en': 'An estimate. The real base level is computed from the merged source '
+              'raster at tiling time; see the task detail for what was produced.',
     },
     'js.map.tifinfo.summary': {
         'zh': '合计 {n} 个文件',

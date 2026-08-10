@@ -278,8 +278,15 @@ function updateStatusTasks() {
     let total = 0;
     let done = 0;
     live.forEach(t => {
-        total += t.total_items || 0;
-        done += t.downloaded_items || 0;
+        const itemTotal = t.total_items || 0;
+        total += itemTotal;
+        // 切片中的任务（本地地形）：它的条目计数是**上传的文件数**，上传秒级
+        // 结束就写满，照着算等于整个切片期间这条恒计 100%。改按切片百分比
+        // 折算，但仍用它自己的条目数当权重 —— 换成「0~100」的百分比单位会让
+        // 一个 3 文件的切片任务在汇总里盖过一个几万瓦片的下载任务。
+        done += t.tiling_progress != null
+            ? itemTotal * t.tiling_progress / 100
+            : (t.downloaded_items || 0);
     });
     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
     const text = t('js.tasks.status_bar.active', {n: live.length, running: running, pct: pct});
@@ -350,23 +357,61 @@ function updateTaskStageText(taskId, stageText, taskType) {
 function updateTerrainJobProgress(data) {
     const taskType = data.task_type === 'local_terrain' ? 'local_terrain' : 'dem';
     const key = `${taskType}:${data.task_id}`;
-    if (!window.TaskStore || !window.TaskStore.has(key)) return;
+    if (!window.TaskStore) return;
 
     let tilingText;
+    // 切片阶段的百分比口径（null = 无，行退回自己的计数）。行自己的
+    // total_items/downloaded_items 在这一段已经**恒为满**：本地地形任务的
+    // 计数是上传的文件数，上传（或 dem_task 来源的零拷贝）秒级结束就写满，
+    // 而切片要跑几十分钟 —— 不给这个字段，进度条与「NN%」整段显示 100%。
+    // 等高线管线是同一个问题，那边的解法是阶段切换（contourPhaseCounts）；
+    // 这里不切计数字段，因为切片的分母是**瓦片**而行上的单位是文件，混用会
+    // 让 countText 说谎（「已上传 120/2000 个文件」）。
+    let tilingProgress = null;
+    // 「预计剩余」用的锚：这一段（逐瓦片）自己的起点、以及起点处的百分比。
+    // 不能拿整任务的墙钟时长去除切片百分比 —— elapsed 里含上传与物化，切片
+    // 刚起步时外推出来的是天文数字。三个字段一起写，缺一不算数。
+    let tilingPhase = null;
+    let tilingStartedAt = null;
+    let tilingAnchorPct = null;
     if (data.status && data.status !== 'running') {
         tilingText = '';
     } else if (data.stage_label) {
-        // 物化 / 建金字塔：这一段跑在 total 算出来之前，没有分母，只能报比例
+        // 物化 / 建金字塔：这一段跑在 total 算出来之前，没有分母，只能报比例。
+        // 刻意不给锚 —— 这一段之后还压着整个切片，给 ETA 等于说「快好了」。
         const pct = Math.round((Number(data.stage_fraction) || 0) * 100);
         tilingText = t('js.tasks.terrain_stage', { stage: data.stage_label, pct: pct });
+        tilingProgress = pct;
+        tilingPhase = 'stage';
     } else if (Number(data.total_tiles) > 0) {
-        tilingText = t('js.tasks.terrain_tiling', {
-            done: Number(data.rendered_tiles) || 0,
-            total: Number(data.total_tiles)});
+        const done = Number(data.rendered_tiles) || 0;
+        const total = Number(data.total_tiles);
+        tilingText = t('js.tasks.terrain_tiling', { done: done, total: total });
+        // 钳到 100：切片器的 total 是估算值，实测末尾会出现 done > total。
+        tilingProgress = Math.min(100, Math.round((done / total) * 100));
+        tilingPhase = 'tiles';
+        const prev = window.TaskStore.get(key) || window.TaskStore.getActive(key) || {};
+        // 同一段继续跑：锚不动。倒退（并行 worker 崩溃会回退串行、计数从 0
+        // 重来，见 cesiumlab_terrain 的 BrokenProcessPool 分支）就重新锚定，
+        // 否则 ETA 要等进度爬回旧锚点才重新出现。
+        const sameRun = prev.tiling_phase === 'tiles'
+            && prev.tiling_started_at != null
+            && prev.tiling_anchor_pct != null
+            && tilingProgress >= prev.tiling_anchor_pct;
+        tilingStartedAt = sameRun ? prev.tiling_started_at : Date.now();
+        tilingAnchorPct = sameRun ? prev.tiling_anchor_pct : tilingProgress;
     } else {
         return;
     }
-    commitTaskUpdate(key, { tiling_text: tilingText });
+    // commit 而不是 commitTaskUpdate（= TaskStore.patch）：patch 只写时间流，
+    // 而底部状态栏的汇总读数读的是**活动集**，只写时间流的话行上对了、状态栏
+    // 仍恒显 100%。commit 两个集合都写，且切片任务落在第 2 页之后（时间流里
+    // 没有它）时这一发也不会整个丢掉。载荷不带 status，不会凭空建活动条目
+    // （见 task_store.js commit 的 isLive 分支）。
+    window.TaskStore.commit(key, {
+        tiling_text: tilingText, tiling_progress: tilingProgress,
+        tiling_phase: tilingPhase, tiling_started_at: tilingStartedAt,
+        tiling_anchor_pct: tilingAnchorPct });
 }
 
 // 新任务到达时插到时间流顶部。

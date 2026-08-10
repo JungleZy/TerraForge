@@ -134,6 +134,75 @@ def coerce_vertex_normals(value, name='vertex_normals'):
         f"(for a checkbox send String(el.checked), not its .value)")
 
 
+# 「自动」层级的对外字面量与落库哨兵。
+#
+# 为什么落库要用哨兵而不是 NULL：dem_terrain_jobs.maxzoom 与
+# local_terrain_tasks.maxzoom 都是 `INTEGER NOT NULL` 无默认，SQLite 去掉
+# NOT NULL 要走 12 步重建表，而本仓的迁移约定是「幂等 ALTER ADD COLUMN」
+# （见 CLAUDE.md「Database conventions」）。validate_zoom 的值域是 0..21，
+# 用户输入永远到不了 -1，哨兵不存在撞车。
+#
+# ⚠️ 别和 effective_maxzoom 的 DEFAULT NULL 记混：那里的 NULL 是「还不知道
+# 切到了第几级」，这里的 -1 是「基准不是一个数字」。两个列语义正交 ——
+# 自动挡下 maxzoom = -1，effective_maxzoom 照常记录实际切到的层级。
+AUTO_MAXZOOM = 'auto'
+AUTO_MAXZOOM_SENTINEL = -1
+
+
+def coerce_maxzoom(value, name='maxzoom'):
+    """把请求里的最大切片层级收成三态：int / 'auto' / None。
+
+    - `'auto'` = 按源数据像素尺寸现算基准层级（`build_terrain` 收到
+      `max_level=None` 时走 `GeographicTilingScheme.estimate_max_level`）；
+    - `int` = 用户指定的基准层级，值域仍由 `validate_zoom` 把关；
+    - `None`（`None` 与空串）= 未表态，调用方回落到配置 `terrain_local_maxzoom`。
+
+    **这是 maxzoom 唯一的把关点。** 两个管理器过了这里就直接落库/构造
+    TileParams，没有第二道网。
+
+    刻意不做大小写归一、不裁前后空白（`validate_tiling_quality` 定的同一条
+    规矩）：拼错的档位静默走 else 分支、作业照样 completed，是本仓栽过的坑。
+    `'AUTO'` 当场 ValueError → 400。
+
+    那条规矩之所以站得住，是因为 `validate_tiling_quality` 的报错枚举了白名单
+    （`must be one of: ...`）—— 用户拼错了也看得见合法取值。这里的数字分支委托
+    给 `validate_zoom`，它只会说「不是数字」，`'AUTO'` 拿到的暗示会变成「auto
+    根本不被支持」。所以把它的报错原样接住、补一句合法字面量，理由和兑现理由的
+    机制才对得上。取值表仍然只有 AUTO_MAXZOOM 一份。
+
+    `-1` 从外部传进来同样是 ValueError —— 它是内部落库表示，不是输入格式。
+    这条由 validate_zoom 的下界天然保证，不需要额外分支。
+    """
+    if value is None or value == "":
+        return None
+    # 与 coerce_vertex_normals 同款：用 == 比较而不是 `in {...}`，JSON 送得进
+    # 不可哈希的值（`{"maxzoom": []}`），集合成员判定会抛 TypeError → 500。
+    if value == AUTO_MAXZOOM:
+        return AUTO_MAXZOOM
+    try:
+        return validate_zoom(value, name)
+    except ValueError as e:
+        raise ValueError(f"{e} (or the literal {AUTO_MAXZOOM!r})") from None
+
+
+def maxzoom_to_db(maxzoom):
+    """归一后的 maxzoom → 落库整数。`'auto'` 存成哨兵，数字原样。
+
+    只接受 `coerce_maxzoom` 的非 None 返回值；调用方不许自己写 -1。
+    """
+    return AUTO_MAXZOOM_SENTINEL if maxzoom == AUTO_MAXZOOM else int(maxzoom)
+
+
+def maxzoom_from_db(value):
+    """落库整数 → `TileParams.maxzoom` 的形态。哨兵还原成 None，其余是 int。
+
+    `None` 正是 `build_terrain(max_level=None)` 触发按源分辨率估算的那一态，
+    所以这个函数的返回值可以直接进 TileParams，不需要调用方再判一次。
+    """
+    v = int(value)
+    return None if v == AUTO_MAXZOOM_SENTINEL else v
+
+
 def resolve_output_dir(raw, base_dir=None):
     """把请求里的 output_path 解析成绝对路径，并强制落在 base_dir 之内。
 

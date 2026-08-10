@@ -277,9 +277,12 @@ def test_config_is_not_read_from_sqlite_on_every_tile(app_ctx, monkeypatch):
     for x in range(8):
         assert client.get(f'/basemap/3/{x}/6').status_code == 200
 
-    assert len(calls) <= 3, (
+    assert len(calls) <= 4, (
         f'8 张瓦片读了 {len(calls)} 次配置（{calls}）—— TTL 缓存没生效，'
         '每张瓦片都在开 sqlite 连接')
+    # 上限从 3 调到 4：磁盘缓存开关（cache_enabled）也走同一个 TTL 缓存
+    # （_disk_cache_enabled），首轮多一次读库，之后同样零读。量纲不变：
+    # 读库次数必须恒定，绝不随瓦片数增长。
 
 
 def test_changing_the_source_still_takes_effect_after_the_ttl(app_ctx, monkeypatch):

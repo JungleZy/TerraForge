@@ -590,8 +590,8 @@ def test_list_tasks_limit_clamped(monkeypatch, tmp_path):
     assert len(mgr.list_tasks(limit=None)) == 100
 
 
-def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
-    """M20: 未配置时 parent_url 保持 localhost:5000 既有行为。"""
+def test_parent_url_defaults_to_the_app_relative_path(monkeypatch, tmp_path):
+    """M20: 未配置时 parent_url 是应用内相对路径 /terrain/base。"""
     db, mgr_mod = _reload(monkeypatch, tmp_path)
     _make_base_terrain(tmp_path)
     mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
@@ -599,8 +599,9 @@ def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
 
     task_id = mgr.create_task_with_files(name="p", files=[("a.tif", b"x")], maxzoom=12)
     # 目录形式（2026-08-05 改）—— 带 /layer.json 会让 Cesium 降级成 heightmap，
-    # 高程全错且不报错。见 layer_json.normalize_parent_url。
-    assert mgr.get_task(task_id)["parent_url"] == "http://localhost:5000/terrain/base"
+    # 高程全错且不报错。相对路径（2026-08-10 改）—— 继承提供 layer.json 的
+    # origin，瓦片走 5001 专用 origin 时也对。见 layer_json.normalize_parent_url。
+    assert mgr.get_task(task_id)["parent_url"] == "/terrain/base"
 
 
 def test_parent_url_from_config_key(monkeypatch, tmp_path):
@@ -640,7 +641,7 @@ def test_start_tiling_parent_url_fallback_uses_config(monkeypatch, tmp_path):
     if th:
         th.join(timeout=5)
     # 正常创建的行已写入配置值
-    assert captured["parent_url"] == "http://localhost:5000/terrain/base"
+    assert captured["parent_url"] == "/terrain/base"
 
     # 模拟存量脏行：parent_url 置 NULL，重新 start，回退值同样走配置
     conn = db.get_connection()
@@ -655,7 +656,7 @@ def test_start_tiling_parent_url_fallback_uses_config(monkeypatch, tmp_path):
     th = mgr.active_tasks.get(task_id)
     if th:
         th.join(timeout=5)
-    assert captured["parent_url"] == "http://localhost:5000/terrain/base"
+    assert captured["parent_url"] == "/terrain/base"
 
 
 def test_parent_url_is_none_when_base_terrain_was_never_built(monkeypatch, tmp_path):
@@ -833,15 +834,19 @@ def test_quality_default_comes_from_config(monkeypatch, tmp_path):
 
 
 def test_out_of_range_maxzoom_config_falls_back(monkeypatch, tmp_path):
-    """配置里的越界 maxzoom 软退回 14，不能把建任务整个打成 400。
+    """配置里的越界 maxzoom 软退回出厂默认，不能把建任务整个打成 400。
 
     terrain_local_maxzoom 在 config_manager._UNCONSTRAINED_KEYS 里，写入侧
     不校验。DEM 那条读同一个键是软退回（dem_task_manager.start_tiling 里
     maxzoom is None 的分支）；
-    这边裸 int() 会把 99 原样交给 validate_zoom 当场抛 —— 同一个坏配置在
+    这边裸 int() 会把 99 原样交给校验当场抛 —— 同一个坏配置在
     两个入口一个照跑一个 400。
+
+    出厂默认是自动挡，所以落库的是哨兵而不是某个具体层级（`maxzoom_from_db`
+    起切时把它还原成 None，由 build_terrain 按源分辨率现算）。
     """
     from src.services.config_manager import ConfigManager
+    from src.services.geo_validation import AUTO_MAXZOOM_SENTINEL
 
     db, mgr_mod = _reload(monkeypatch, tmp_path)
     ConfigManager().set("terrain_local_maxzoom", "99")
@@ -852,7 +857,7 @@ def test_out_of_range_maxzoom_config_falls_back(monkeypatch, tmp_path):
     task_id = mgr.create_task_with_files(
         name="local-badcfg", files=[("a.tif", b"fake")])
 
-    assert mgr.get_task(task_id)["maxzoom"] == 14
+    assert mgr.get_task(task_id)["maxzoom"] == AUTO_MAXZOOM_SENTINEL
 
 
 # --------------------------------------------------------------------------
@@ -1182,3 +1187,50 @@ def test_parent_url_lookup_failure_does_not_strand_the_task_in_running(
     # 残留会让后续 delete 走后台收尾路径空等一个永不启动的线程。
     assert task_id not in mgr.active_tasks
     assert task_id not in mgr.stop_flags
+
+# --------------------------------------------------------------------------
+# 路由层收参：maxzoom 的三态（'auto' / 0–21 / 未传）。
+# 上面那批钉的是档位/法线，这批钉的是「自动挡」这个新字面量能不能过路由这道门。
+
+
+def test_http_upload_accepts_the_auto_maxzoom(monkeypatch, tmp_path):
+    """表单勾了「自动」送上来的是字面量 'auto'，必须原样到达管理器。
+
+    路由层若还用 validate_zoom 收 maxzoom，'auto' 会被当成「不是数字」拒掉 ——
+    用户选了自动挡却建不了任务。断言点落在管理器收到的入参上：管理器认不认
+    'auto' 是它自己的事，这条只管路由有没有把它转下去（既不吞成 None、也不
+    折成数字）。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    seen = {}
+
+    def fake_create(self, **kwargs):
+        seen.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(app_mod.local_terrain_task_manager.__class__,
+                        "create_task_with_files", fake_create)
+
+    resp = _http_upload(client, maxzoom="auto")
+
+    assert resp.status_code == 201, resp.get_json()
+    assert seen["maxzoom"] == "auto", (
+        f"管理器收到的 maxzoom 是 {seen.get('maxzoom')!r}，'auto' 必须原样转下去")
+
+
+def test_http_upload_rejects_a_misspelled_auto(monkeypatch, tmp_path):
+    """'AUTO' 不做大小写归一：当场 400，且报错要说得出合法字面量。
+
+    报错里必须出现 'auto' —— 只说「不是数字」的话，拼错大小写的用户拿到的
+    暗示是「自动挡根本不存在」，他会去改一个不存在的数字问题。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    _no_tiling(monkeypatch, app_mod)
+
+    resp = _http_upload(client, maxzoom="AUTO")
+
+    assert resp.status_code == 400, resp.get_json()
+    error = resp.get_json()["error"]
+    assert "maxzoom" in error
+    assert "'auto'" in error, f"报错没点出合法字面量：{error!r}"
+    assert client.get("/api/terrain/local/tasks").get_json()["count"] == 0

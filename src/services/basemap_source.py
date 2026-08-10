@@ -191,7 +191,8 @@ def fallback_candidates(resolved: Dict[str, Any]) -> list:
     return chain
 
 
-def client_descriptor(resolved: Dict[str, Any]) -> Dict[str, Any]:
+def client_descriptor(resolved: Dict[str, Any],
+                      tile_port: Optional[int] = None) -> Dict[str, Any]:
     """resolve_basemap 的结果 -> 下发给浏览器的图层描述。
 
     **不含 upstream**：前端只知道同源路径，不知道真实上游是谁。这不是保密，
@@ -201,9 +202,14 @@ def client_descriptor(resolved: Dict[str, Any]) -> Dict[str, Any]:
     url 是同源路径 + `?v=<version>`。`{z}/{x}/{y}` 仍由 Cesium 自己代入，
     路由**忽略** v —— 它只用来把「换了源」变成「换了 URL 空间」，否则换源之后
     浏览器会拿着一天的旧缓存继续显示上一家的影像（见 source_version）。
+
+    tile_port 是瓦片专用端口（src/core/tile_server.py）：非 None 时前端把
+    瓦片请求改指到那个源，躲开浏览器对单源的 6 连接上限；None（瓦片服务
+    没启动/启动失败）时前端退回这里的同源路径，行为与没有瓦片端口一致。
     """
     return {
         'url': f"{BASEMAP_TILE_PATH}?v={resolved['version']}",
+        'tile_port': tile_port,
         'max_level': resolved['max_level'],
         'credit': resolved['credit'],
         'source': resolved['source'],

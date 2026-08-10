@@ -10,8 +10,8 @@ async function initHistory() {
     // 首屏那批数据写进 store 时还没有消费者。
     if (window.TaskList) window.TaskList.mount();
 
-    // 接线必须排在下面那句 await 之前：await 会把本函数挂起一次
-    // /api/basemap 往返，期间搜索框和状态 chip 不能是死的。
+    // 接线必须排在下面启动异步工作之前：底图描述符、健康探测或时间流任一请求
+    // 挂起期间，搜索框和状态 chip 都不能是死的。
     document.getElementById('searchInput').addEventListener('input', function(e) {
         filterTasks(e.target.value);
     });
@@ -37,21 +37,20 @@ async function initHistory() {
 
     loadStats();
 
-    // 必须 await：initHistoryMap 在 await _resolveHistoryBasemap() 处挂起，
-    // 之后才给 historyViewer 赋值。不 await 时 loadHistory 往往先跑完，
-    // renderHistoryMap 撞上 `if (!historyViewer) return` 空转 —— 独立
-    // /history 页没有任何重渲染入口（不加载 tasks.js、无面板重开钩子），
-    // 小地图会一直空白到用户点 chip / 翻页 / 删除为止。
-    // 用 await 而不是「在 initHistoryMap 末尾补一次 renderHistoryMap」：后者
-    // 在地图先就绪的那条时序上会白渲染一次空 store，await 则不可能重复渲染。
-    // 异常就地吞掉再继续：Cesium 起不来是小地图一个人的事，不能连表格一起
-    // 赔进去（history.html 外面那层 try/catch 也接不住 async 函数的 rejection）。
+    // 地图（含底图描述符与瓦片健康探测）和首批时间流同时启动，避免探测期间
+    // 统计卡与表格闲等。初次 loadHistory 禁止自行绘图；等 map + data 的共同
+    // 屏障通过后统一补一次最终渲染，哪一边先完成都不会画空 store 或重复绘制。
+    // 地图异常就地吞掉：Cesium 起不来是小地图一个人的事，不能连表格一起赔进去。
+    const mapReady = initHistoryMap().catch(function (error) {
+        console.error('Failed to init history map:', error);
+    });
+    const historyReady = loadHistory(1, false);
+    await Promise.all([mapReady, historyReady]);
     try {
-        await initHistoryMap();
-    } catch (e) {
-        console.error('Failed to init history map:', e);
+        renderHistoryMap();
+    } catch (error) {
+        console.error('Failed to render history map:', error);
     }
-    loadHistory(1);
 }
 
 // 历史小地图与主视图共用**服务端解析**的底图描述符
@@ -75,10 +74,9 @@ async function _resolveHistoryBasemap() {
     // 这里曾有一条 `typeof basemap !== 'undefined'` 的「首页免一次请求」快
     // 路径，它在**每个页面**都是死的：唯一的生产者 index.html 是把描述符当
     // 实参传进 initMap(config, basemap) 的，函数参数不是全局，那个 typeof
-    // 永远等于 'undefined'。而它注释里承诺省下的那次往返，正是 initHistory
-    // 里竞态的成因。删掉而不是让服务端补一个真全局：补全局等于给同一份数据
-    // 开第二个出口（模板内联 + 接口），而这一次同源请求现在已经被
-    // initHistory 的 await 挡在竞态之外，没什么可省的了。
+    // 永远等于 'undefined'。删掉而不是让服务端补一个真全局：补全局等于给同一
+    // 份数据开第二个出口（模板内联 + 接口）；现在这次请求与统计、时间流并行，
+    // 不再阻塞数据首屏。
     try {
         const r = await fetch('/api/basemap', { cache: 'no-store' });
         const j = await r.json();
@@ -92,11 +90,16 @@ async function _resolveHistoryBasemap() {
 }
 
 async function initHistoryMap() {
-    // 历史区域小地图：Cesium 只读视图（地图系统已从 Leaflet 切到 CesiumJS）
+    // 历史区域小地图：Cesium 只读视图（地图系统已从 Leaflet 切到 CesiumJS）。
+    // 描述符确定后先完成瓦片源健康探测，再创建会立即发瓦片请求的 Viewer。
     const bm = await _resolveHistoryBasemap();
+    await initTileOrigin(bm.tile_port);
     historyViewer = new Cesium.Viewer('historyMap', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-            url: bm.url,
+            // 与主视图同一口径：瓦片走页面级瓦片 origin（ui.js tileUrl /
+            // src/core/tile_server.py）。origin 由上面那次 initTileOrigin()
+            // 一次性定下，探测失败时它保留同源路径 —— 这里只交路径。
+            url: tileUrl(bm.url),
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
             // 超出这一层上游返回 404，Cesium 画成空白。与主视图同一口径。
             maximumLevel: bm.max_level == null ? undefined : bm.max_level,
@@ -154,7 +157,7 @@ async function loadStats() {
 // panels.js / tasks.js 读取的那个全局，先写会被过期响应污染。
 let _historyReqSeq = 0;
 
-async function loadHistory(page = 1) {
+async function loadHistory(page = 1, renderMap = true) {
     const seq = ++_historyReqSeq;
     try {
         const statusParam = currentStatusFilter
@@ -172,7 +175,7 @@ async function loadHistory(page = 1) {
         renderHistoryTable(data.tasks || []);
         const p = data.pagination || {};
         renderPagination(p.page || 1, p.total_pages || 1);
-        renderHistoryMap();
+        if (renderMap) renderHistoryMap();
     } catch (error) {
         if (seq !== _historyReqSeq) return;   // 过期请求的错误不该覆盖新结果
         console.error('Failed to load history:', error);
@@ -359,6 +362,13 @@ function formatShortDate(dateStr) {
     return `${date.getMonth() + 1}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+// 本地地形的 maxzoom 那一列存的是「自动挡」哨兵时的取值，与后端
+// src/services/geo_validation.py 的 AUTO_MAXZOOM_SENTINEL 逐字一致
+// （tests/test_tasks_js_contract.py 有相等性断言防漂移，与 ui.js 的
+// TILE_PATH_PREFIXES / TILE_HEALTH_PATH 同一套写法）。自动挡是出厂默认，
+// 认不出它就等于把 `-1` 当层级印在详情面板上。
+const TERRAIN_AUTO_MAXZOOM_SENTINEL = -1;
+
 async function viewTaskDetails(taskId, taskType = 'map') {
     try {
         const url = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
@@ -384,21 +394,26 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailStyle').textContent = t('js.history.meta.local_terrain');
             document.getElementById('detailFormat').textContent = '-';
             // 实际切到的最深层级优先。`0 - N` 是一个自称精确的范围，而 maxzoom
-            // 那一列存的是用户填的**基准**层级 —— 精细/快速两档下它与产物实际的
-            // 最深层级差一级，直接显示就是错数字（precision 档写 0 - 14、
-            // layer.json 里是 15）。切完之前 effective_maxzoom 为 NULL，只能回落
-            // 到基准值 —— 那就必须让**文字本身**说出这是基准值。
+            // 那一列存的是提交时的**基准**层级（自动挡下存的是哨兵，见下）——
+            // 精细/快速两档下它与产物实际的最深层级差一级，直接显示就是错数字
+            // （precision 档写 0 - 14、layer.json 里是 15）。切完之前
+            // effective_maxzoom 为 NULL，只能回落到基准值 —— 那就必须让**文字
+            // 本身**说出这是基准值。
             //
-            // 这一格的标签写死在 templates/base.html 里（DEM 侧是自己拼的 HTML，
-            // 可以像 terrainMaxzoomRowHtml 那样换标签，这里换不了），所以把限定词
+            // 这一格的标签写死在 templates/base.html 里换不了，所以把限定词
             // 缀在值后面。只靠下面那句 title 不够：悬停在触摸设备上根本不存在、
             // 键盘也够不着，而且 `0 - 14` 与 `0 - 14` 长得一模一样，用户连
             // 「这里有话要说」都看不出来。
             const localTerrainActualMaxzoom = task.effective_maxzoom;
+            // 回退分支自己还有两态：基准层级是「自动」挡时，库里那一列存的是
+            // 哨兵，直接显示就是 `0 - -1`；只有手填的作业才有一个数可显示。
+            const localTerrainBaseMaxzoom = task.maxzoom === TERRAIN_AUTO_MAXZOOM_SENTINEL
+                ? t('js.history.terrain.maxzoom_auto')
+                : `${task.maxzoom} (${t('js.history.terrain.maxzoom_base_label')})`;
             document.getElementById('detailZoom').textContent =
                 localTerrainActualMaxzoom != null
                     ? `0 - ${localTerrainActualMaxzoom}`
-                    : `0 - ${task.maxzoom} (${t('js.history.terrain.maxzoom_base_label')})`;
+                    : `0 - ${localTerrainBaseMaxzoom}`;
             document.getElementById('detailTotal').textContent = task.total_files;
             document.getElementById('detailDownloaded').textContent = task.uploaded_files;
             document.getElementById('detailFailed').textContent = task.failed_files;
@@ -420,9 +435,15 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         // 上一格只有本地地形会带「这是基准值、不是实际切到的层级」那句悬停说明。
         // 其余分支必须显式清空：模态复用同一个 DOM，不清的话上一个任务留下的
         // 提示会粘在下一个任务身上。
+        //
+        // 说明也得跟着基准值的**来源**走：base_hint 整句是围绕「这是你提交时
+        // 填的那个数」写的，自动挡下它逐字都不成立 —— 那一挡的基准是切片时按
+        // 源数据分辨率现算的，提交时根本没有这个数。
         document.getElementById('detailZoom').title =
             (taskType === 'local_terrain' && task.effective_maxzoom == null)
-                ? t('js.history.terrain.maxzoom_base_hint')
+                ? (task.maxzoom === TERRAIN_AUTO_MAXZOOM_SENTINEL
+                    ? t('js.history.terrain.maxzoom_auto_hint')
+                    : t('js.history.terrain.maxzoom_base_hint'))
                 : '';
 
         const total = taskType === 'dem' ? (task.total_files || 0)
@@ -467,22 +488,15 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailErrorRow').hidden = true;
         }
 
-        // 地形切片信息区。DEM 是一条独立的切片作业（要拉 /api/terrain/dem/<id>，
-        // 还带起切/刷新按钮）；本地地形没有独立作业行 —— 切片状态就是任务状态、
-        // 上面已经显示过，也没有起切端点，所以只借这块地方回显档位与法线，
-        // 数据直接取自 task（local_terrain_tasks 行本身就带这两列），不再发请求。
+        // 地形切片信息区只对本地地形任务开放：它的切片参数就是任务自己的属性，
+        // 借这块地方回显档位与法线，数据直接取自 task（local_terrain_tasks 行
+        // 本身就带这两列），不发请求。高程下载任务不再显示这一块 —— 切片已收敛
+        // 成独立任务（任务行「处理」按钮转出 local_terrain 任务），详情里再挂一份
+        // dem_terrain_jobs 的状态/起切按钮只会让人以为它是下载任务的一部分。
         const terrainRow = document.getElementById('detailTerrainRow');
-        const terrainActions = document.getElementById('detailTerrainActions');
-        if (taskType === 'dem') {
+        if (taskType === 'local_terrain') {
             terrainRow.hidden = false;
-            terrainActions.hidden = false;
-            initTerrainDetailActions(taskId);
-            await refreshTerrainDetail(taskId);
-        } else if (taskType === 'local_terrain') {
-            terrainRow.hidden = false;
-            terrainActions.hidden = true;
             document.getElementById('detailTerrainStatus').textContent = '';
-            document.getElementById('detailTerrainErrorRow').hidden = true;
             document.getElementById('detailTerrainInfo').innerHTML =
                 terrainPresetRowsHtml(task);
         } else {
@@ -497,36 +511,6 @@ async function viewTaskDetails(taskId, taskType = 'map') {
     }
 }
 
-function initTerrainDetailActions(taskId) {
-    const startBtn = document.getElementById('detailTerrainStartBtn');
-    const refreshBtn = document.getElementById('detailTerrainRefreshBtn');
-
-    startBtn.onclick = async () => {
-        startBtn.disabled = true;
-        try {
-            const r = await fetch(`/api/terrain/dem/${taskId}/start`, { method: 'POST' });
-            const j = await r.json().catch(() => ({}));
-            if (!r.ok) {
-                throw new Error(j.error || t('js.history.terrain.start_failed'));
-            }
-        } catch (e) {
-            showToast(String(e.message || e), 'danger');
-        } finally {
-            startBtn.disabled = false;
-            await refreshTerrainDetail(taskId);
-        }
-    };
-
-    refreshBtn.onclick = async () => {
-        refreshBtn.disabled = true;
-        try {
-            await refreshTerrainDetail(taskId);
-        } finally {
-            refreshBtn.disabled = false;
-        }
-    };
-}
-
 // 后端存的档位是枚举字面量（geo_validation.TILING_QUALITY_OFFSETS 的键）。
 // 这里逐档写成完整的键字面量、不做字符串拼接：tests/test_i18n.py 的双向闭合
 // 是按「key 形状的字面量」扫源码的，拼出来的键会被当成无人引用而判死。
@@ -536,28 +520,10 @@ const TERRAIN_QUALITY_KEYS = {
     speed: 'js.history.terrain.quality_speed',
 };
 
-// 「层级」那一行。显示的必须是**产物事实**：effective_maxzoom 是 build_terrain
-// 回报、切完才落库的实际最深层级，与 layer.json 的 maxzoom 同源；maxzoom 那一列
-// 存的是用户填的基准层级，精细/快速两档下两者差一级。此前面板只有后者，于是
-// precision 档的作业面板写 12、layer.json 里却是 13。
-// 为 NULL（存量行 / 还没切完）时回落到基准值，但**换一个标签并挂上说明**，
-// 不冒充实际值 —— 后端同理不能拿 0 当「未知」，0 是合法层级。
-function terrainMaxzoomRowHtml(row) {
-    const actual = row.effective_maxzoom;
-    if (actual != null) {
-        return `<div>${t('js.history.terrain.maxzoom_actual_label')}: `
-            + `${escapeHtml(String(actual))}</div>`;
-    }
-    return `<div title="${escapeHtml(t('js.history.terrain.maxzoom_base_hint'))}">`
-        + `${t('js.history.terrain.maxzoom_base_label')}: `
-        + `${escapeHtml(String(row.maxzoom ?? '-'))}</div>`;
-}
-
-// 档位与法线两行，DEM 切片作业（dem_terrain_jobs 行）与本地地形任务
-// （local_terrain_tasks 行）共用 —— 两张表的 quality / vertex_normals 同名同义。
-// 两边都必须回显，理由各不相同：DEM 面板的起切按钮 POST 不带 body、走配置默认，
-// 用户在那里没有选择权；本地地形则恰恰相反，上传表单是用户**唯一能亲手选档位**
-// 的入口，几十分钟切完回来查不到自己当时选了什么更说不过去。
+// 档位与法线两行，给本地地形任务的详情回显 —— 上传表单/「处理」弹窗是用户
+// 唯一能亲手选档位的入口，几十分钟切完回来查不到自己当时选了什么更说不过去。
+// 数据取自 local_terrain_tasks 行（quality / vertex_normals 与 dem_terrain_jobs
+// 同名同义）。
 function terrainPresetRowsHtml(row) {
     // 查表必须走 hasOwnProperty：对象字面量继承 Object.prototype，
     // `constructor` / `__proto__` / `toString` 这几个值会命中原型上的成员、
@@ -595,65 +561,6 @@ function terrainPresetRowsHtml(row) {
             <div${normalsTitle}>${t('js.history.terrain.normals_label')}: ${normals}</div>`;
 }
 
-async function refreshTerrainDetail(taskId) {
-    const statusEl = document.getElementById('detailTerrainStatus');
-    const infoEl = document.getElementById('detailTerrainInfo');
-    const errRow = document.getElementById('detailTerrainErrorRow');
-    const errEl = document.getElementById('detailTerrainError');
-
-    errRow.hidden = true;
-    errEl.textContent = '';
-
-    // 固定 URL 约定（后端 terrain_static_bp）
-    const baseUrl = `${location.origin}/terrain/base/layer.json`;
-    const localUrl = `${location.origin}/terrain/dem/${taskId}/layer.json`;
-
-    try {
-        const r = await fetch(`/api/terrain/dem/${taskId}`);
-        const j = await r.json();
-        const job = j.job;
-
-        if (!job) {
-            statusEl.innerHTML = `<span class="badge bg-secondary">${t('js.history.terrain.not_started')}</span>`;
-            infoEl.innerHTML = `
-                <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
-                <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
-            `;
-            return;
-        }
-
-        // A7 / Task 12：地形切片作业的状态词表（running / completed / failed）
-        // 是任务状态的子集，直接复用上面两个函数，不再写一份内联三元阶梯 ——
-        // 原来这里把 `job.status` **原样**插进徽章，中文界面里显示英文
-        // `running`，和历史表格的老毛病是同一个。
-        const status = job.status || 'unknown';
-        const label = escapeHtml(status === 'unknown' ? t('js.history.terrain.status_unknown') : getStatusText(status));
-        statusEl.innerHTML = `<span class="badge bg-${getStatusColor(status)}">${label}</span>`;
-
-        const outDir = job.output_dir || '-';
-        infoEl.innerHTML = `
-            ${terrainMaxzoomRowHtml(job)}
-            ${terrainPresetRowsHtml(job)}
-            <div>Out: ${escapeHtml(outDir)}</div>
-            <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
-            <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
-        `;
-
-        if (job.error_message) {
-            errEl.textContent = job.error_message;
-            errRow.hidden = false;
-        }
-    } catch (e) {
-        statusEl.innerHTML = `<span class="badge bg-danger">${t('js.history.terrain.load_failed')}</span>`;
-        errEl.textContent = String(e.message || e);
-        errRow.hidden = false;
-        infoEl.innerHTML = `
-            <div>Base: <a href="${baseUrl}" target="_blank" rel="noopener noreferrer">${baseUrl}</a></div>
-            <div>Local: <a href="${localUrl}" target="_blank" rel="noopener noreferrer">${localUrl}</a></div>
-        `;
-    }
-}
-
 // 「在地图上预览」：把任务的可视化输出叠加到主视图（map.js 的 previewTask），
 // 并关掉历史面板让用户直接看到。数据来自当前页已加载的行（含 bbox / zoom）。
 function previewHistoryTask(taskId, taskType) {
@@ -685,7 +592,7 @@ async function deleteTask(taskId, taskType = 'map') {
     // 警告，也不能对着一个不知道状态的任务瞎说「正在运行」。
     const store = window.TaskStore;
     const task = store && store.get(`${taskType}:${taskId}`);
-    // hasOwnProperty 同 refreshTerrainDetail 的档位查表：`task.status` 若是
+    // hasOwnProperty 同 terrainPresetRowsHtml 的档位查表：`task.status` 若是
     // `constructor` / `toString`，裸下标会取到原型上的成员并当成一个真键，
     // t() 拿到函数后原样回落，确认框上就是一坨 `function Object()...`。
     const confirmKey = (task

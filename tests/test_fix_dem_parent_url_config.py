@@ -1,10 +1,12 @@
 """M20: layer.json 的 parentUrl 不再写死 localhost:5000，走配置键。
 
-新增配置键 terrain_base_parent_url；未配置时用默认值
-"http://localhost:5000/terrain/base"（**目录形式**，2026-08-05 从
-".../base/layer.json" 改过来 —— 带 /layer.json 会让 Cesium 整个 provider
-降级成 heightmap、高程全错且不报错），
-配置后 start_tiling 入库的 parent_url 用配置值（非 5000 端口/反代部署可用）。
+新增配置键 terrain_base_parent_url；未配置时用默认值 "/terrain/base"
+（**目录形式**，2026-08-05 从 ".../base/layer.json" 改过来 —— 带 /layer.json 会让
+Cesium 整个 provider 降级成 heightmap、高程全错且不报错；2026-08-10 又从
+"http://localhost:5000/terrain/base" 改成应用内相对路径 —— 瓦片可能由 5001 专用
+origin 提供，写死主端口会把父级请求绕回主连接池，远程访问时 localhost 还指向
+客户端本机），
+配置后 start_tiling 入库的 parent_url 用配置值（外部地形服务仍可配完整 URL）。
 """
 
 import importlib
@@ -18,8 +20,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # .../layer.json/layer.json → 404，而它的 404 处理是塞一个假 heightmap
 # 图层并污染共享 builder ⇒ 本任务自己的 quantized-mesh 瓦片也按 heightmap
 # 解析，高程全错且全程不报错（实测 4154 m 山峰解成 -744 m）。
+# 2026-08-10：又从 http://localhost:5000/... 改成应用内相对路径 —— 浏览器按
+# 「提供这份 layer.json 的 origin」解析，瓦片走 5001 专用 origin、换端口、反代、
+# 远程访问都不用改配置。
 # 详见 src/services/terrain_tiling/layer_json.normalize_parent_url。
-DEFAULT_PARENT_URL = "http://localhost:5000/terrain/base"
+DEFAULT_PARENT_URL = "/terrain/base"
 
 
 def _setup(monkeypatch, tmp_path):
@@ -78,7 +83,7 @@ def _no_op_tiling(monkeypatch, dtm):
     )
 
 
-def test_parent_url_defaults_to_localhost(monkeypatch, tmp_path):
+def test_parent_url_defaults_to_the_app_relative_path(monkeypatch, tmp_path):
     db, dtm = _setup(monkeypatch, tmp_path)
     _make_base_terrain(tmp_path)
     mgr = dtm.DemTaskManager(socketio=None)

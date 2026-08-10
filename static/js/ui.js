@@ -8,6 +8,8 @@
  *       opts.checkbox = {label, checked} 时改 resolve {confirmed, checked}
  *   window.showNotification(message, type)     —— showToast 的别名（兼容旧调用）
  *   window.parseTaskDate(value) -> Date|null   —— 任务时间字段统一解析（裸格式按 UTC）
+ *   window.initTileOrigin(tilePort) -> Promise<boolean>  —— 页面级瓦片端口探测
+ *   window.tileUrl(path) -> string            —— 已探测成功时改写内部绝对路径
  */
 (function () {
     'use strict';
@@ -299,10 +301,69 @@
         return isNaN(d.getTime()) ? null : d;
     }
 
+    // ------------------------------------------------------------ tile origin
+    // 每个页面只探测一次瓦片专用端口；失败、超时或 HTTPS 页面都保留同源路径。
+    // 仅内部绝对路径会改写，外部 URL、协议相对 URL 和相对路径保持原值。
+    //
+    // 名单必须与后端 src/core/tile_paths.py 的 TILE_PATH_PREFIXES 逐字一致
+    // （tests/test_tile_server.py 有相等性断言防漂移）：瓦片端口只放行这四条
+    // 前缀，把名单外的路径改写过去换来的是瓦片端口自己应答的**硬 404** ——
+    // 主端口上那份能用的资源根本没被请求，而探测结果整页缓存，本次会话内不会
+    // 回退。所以名单外一律 fail-open 返回原路径，走主端口，最坏只是慢。
+    const TILE_PATH_PREFIXES = ['/basemap/', '/tiles/', '/terrain/', '/contour/'];
+    const TILE_HEALTH_TIMEOUT_MS = 1000;
+    let tileOrigin = '';
+    let tileOriginReady = null;
+
+    function initTileOrigin(tilePort) {
+        if (tileOriginReady) return tileOriginReady;
+        tileOriginReady = (async function () {
+            if (!tilePort || location.protocol !== 'http:') return false;
+            let timer = null;
+            try {
+                const health = new URL(location.href);
+                health.port = String(tilePort);
+                // 与后端 tile_server.TILE_HEALTH_PATH 逐字一致（精确匹配，
+                // tests/test_tile_server.py 有相等性断言）：差一个字符就是 404，
+                // 表现为每页白等 1 秒然后整页退回同源，两侧都不报错。
+                health.pathname = '/tile-health';
+                health.search = '';
+                health.hash = '';
+                const controller = new AbortController();
+                timer = setTimeout(function () {
+                    controller.abort();
+                }, TILE_HEALTH_TIMEOUT_MS);
+                const response = await fetch(health.href, {
+                    signal: controller.signal,
+                    cache: 'no-store',
+                });
+                if (!response.ok) return false;
+                tileOrigin = health.origin;
+                return true;
+            } catch (error) {
+                return false;
+            } finally {
+                if (timer !== null) clearTimeout(timer);
+            }
+        })();
+        return tileOriginReady;
+    }
+
+    function tileUrl(path) {
+        if (typeof path !== 'string' || !/^\/(?!\/)/.test(path)) return path;
+        if (!tileOrigin) return path;
+        const isTilePath = TILE_PATH_PREFIXES.some(function (prefix) {
+            return path.startsWith(prefix);
+        });
+        return isTilePath ? tileOrigin + path : path;
+    }
+
     window.showToast = showToast;
     window.showConfirm = showConfirm;
     window.showNotification = showToast; // 兼容旧的 showNotification(message, type) 调用
     window.initConnectionStatus = initConnectionStatus;
     window.parseTaskDate = parseTaskDate;
     window.escapeHtml = escapeHtml;
+    window.initTileOrigin = initTileOrigin;
+    window.tileUrl = tileUrl;
 })();

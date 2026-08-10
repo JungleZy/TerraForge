@@ -1441,8 +1441,8 @@ def build_terrain(
         # dem_task_manager.py 的 maxzoom=None 分支此前用裸 int() 读配置
         # terrain_local_maxzoom（该键登记在 config_manager.py 的
         # _UNCONSTRAINED_KEYS 里，写入侧无校验），配置写 25 就能一路到这里切出
-        # z25；那条缺口已在 dem_task_manager 收口（改为过 validate_zoom，失败
-        # 退回出厂默认并留 warning）。
+        # z25；那条缺口已在 dem_task_manager 收口（改为过 coerce_maxzoom，失败
+        # 退回 AUTO_MAXZOOM —— 自动挡，也就是现在的出厂默认 —— 并留 warning）。
         max_level = max(0, min(MAX_ZOOM, int(max_level) + int(level_offset)))
         # 调用方钳不到偏移后的实际层级。dem_task_tiler 恒传 min_level=8（底图独占
         # z0-z7），它连**请求的** maxzoom 都不看 —— maxzoom < 8、或 maxzoom = 8

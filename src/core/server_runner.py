@@ -76,10 +76,25 @@ def run_server(app, socketio, *, debug, show_startup_output,
     _silence_duplicate_startup_lines()
     _install_reloader_watchdog()
 
+    if app is not None:
+        # 瓦片专用端口（src/core/tile_server.py）：把瓦片风暴挪到另一个源，
+        # 躲开浏览器对单源的 6 连接上限。必须在 socketio.run 之前启动 ——
+        # 那一行是阻塞的。占位 app（reloader watcher 父进程）不起。
+        from src.core.tile_server import record_tile_port, start_tile_server
+
+        server = start_tile_server(app, host=host, port=port + 1)
+        record_tile_port(app, server.server_port if server is not None else None)
+
     if show_startup_output:
         _print_ready()
 
     if app is None:
+        # 占位 app 只驱动文件监听,它配的 socketio 也是占位的:app 为 None 的那
+        # 个身份(reloader watcher 父进程)不跑 create_app,传进来的 socketio 必然
+        # 也是 None(见 app.py 的模块级全局)。这里无条件新建,不看入参 ——
+        # 「入参不为 None 就沿用」是给测试开的口子,而生产上永远走不到,留着只是
+        # 把一条测试才需要的分支摆进生产行为面。测试要拦这一步就 monkeypatch
+        # 本模块的 SocketIO(见 tests/test_runtime_mode.py)。
         app = Flask(__name__)
         socketio = SocketIO(app)
 

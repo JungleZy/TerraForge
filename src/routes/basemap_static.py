@@ -22,14 +22,19 @@ Access-Control-Allow-Origin。上游一旦返回 4xx，错误页通常不带这�
 合法瓦片坐标，不让路径参数直接拼进上游地址。
 """
 
+import hashlib
 import logging
+import os
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from flask import Blueprint, Response, abort, current_app, request
 from werkzeug.exceptions import default_exceptions
 
+from src.core.config import Config
 from src.services.basemap_source import (
     fallback_candidates,
     resolve_basemap,
@@ -70,6 +75,73 @@ _MAX_ZOOM = 24
 # resolve_basemap。
 _CACHE_KEY_SOURCE = "basemap_static_resolved_source"
 _SOURCE_TTL_S = 5.0
+
+
+# --- 瓦片磁盘缓存（cache/basemap/） ------------------------------------------
+#
+# 为什么要有它：每张瓦片都经代理回源，上游 RTT 秒级（实测与连接复用无关，
+# keep-alive 无改善）。首屏几十张瓦片的风暴占满浏览器对单源的 6 条
+# HTTP/1.1 连接长达 15-30 秒，期间页面上一切 API 操作（配置保存等）都要
+# 在浏览器连接池里排队 —— 「配置页第一次点保存要等很久」的根因。这个
+# 阻塞的**结构性**修复在 src/core/tile_server.py（瓦片走独立端口、换连接池）；
+# 磁盘缓存管的是另一半：浏览器缓存只挡一天（回退期出的图更是只配 60s），
+# 风暴天天重演。瓦片按 URL 内容基本不变，服务端落盘一次，之后任何浏览器
+# 任何一天都是毫秒级命中。
+#
+# 口径与下载瓦片缓存（download_engine）一致：不做自动清理，配置页「缓存
+# 管理」按 cache 顶层子目录自动成类、手动清；受 cache_enabled 同一个开关
+# 管。键是完整上游 URL 的 sha1 —— 回退候选的图各存各的，互不挤占。
+_CT_TO_EXT = {'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp'}
+_EXT_TO_CT = {ext: ct for ct, ext in _CT_TO_EXT.items()}
+
+# 开关读取的短 TTL 缓存，与 _CACHE_KEY_SOURCE 同理由：瓦片热路径上不能
+# 每张都新开一条 sqlite 连接。TTL 内改开关最多晚 5 秒生效，与底图源一致。
+_CACHE_KEY_DISK_ENABLED = "basemap_static_disk_cache_enabled"
+
+
+def _disk_cache_enabled() -> bool:
+    now = time.monotonic()
+    entry = current_app.extensions.get(_CACHE_KEY_DISK_ENABLED)
+    if entry is not None and now - entry[0] < _SOURCE_TTL_S:
+        return entry[1]
+    enabled = (config_manager.get('cache_enabled', 'true') or 'true').lower() == 'true'
+    current_app.extensions[_CACHE_KEY_DISK_ENABLED] = (now, enabled)
+    return enabled
+
+
+def _tile_cache_path(upstream: str) -> Path:
+    return Path(Config.CACHE_DIR) / 'basemap' / hashlib.sha1(
+        upstream.encode('utf-8')).hexdigest()
+
+
+def _cache_lookup(upstream: str):
+    """命中返回 (body, content_type)，未命中返回 None。"""
+    base = _tile_cache_path(upstream)
+    for ext, ct in _EXT_TO_CT.items():
+        try:
+            return base.with_suffix(ext).read_bytes(), ct
+        except OSError:
+            continue
+    return None
+
+
+def _cache_store(upstream: str, body: bytes, content_type) -> None:
+    # 只缓存认识的图片类型：上游风控/运营商劫持回的错误页（text/html）
+    # 一旦落盘就把「瓦片坏了」钉成「永远是坏的」。
+    ext = _CT_TO_EXT.get(str(content_type or '').split(';')[0].strip().lower())
+    if ext is None:
+        return
+    directory = _tile_cache_path(upstream).parent
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        # tmp + replace：werkzeug 多线程下两个线程可以同时回源同一张瓦片，
+        # 直接写目标名会让读者看到半个文件。
+        fd, tmp = tempfile.mkstemp(dir=str(directory), prefix='.tmp_')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(body)
+        os.replace(tmp, str(_tile_cache_path(upstream)) + ext)
+    except OSError as e:
+        logger.warning(f'底图瓦片写缓存失败（不影响本次出图）：{e}')
 
 
 def _resolved_basemap_cached():
@@ -197,7 +269,12 @@ def basemap_tile(z: int, x: int, y: int):
     configured = _resolved_basemap_cached()
     cooldown = _cooldown_map()
     now = time.monotonic()
-    proxy = resolve_from_config(config_manager, wait_s=_PROXY_WAIT_S)
+    # 代理**惰性**解析：磁盘缓存命中的请求整条跳过网络路径，不能再为它们
+    # 支付 resolve_from_config 的 _PROXY_WAIT_S 阻塞（缓存的全部意义就是
+    # 毫秒级出图）。_proxy_unset 作哨兵：代理值本身可以是 ''（直连）。
+    _proxy_unset = object()
+    proxy = _proxy_unset
+    disk_cache_on = _disk_cache_enabled()
 
     # 配置值本身不合法是**配置错误，不是上游故障** —— 必须当场 502，绝不能
     # 让回退链把它盖掉。盖掉的后果：用户把底图指到 169.254.169.254（读云实例
@@ -235,38 +312,49 @@ def basemap_tile(z: int, x: int, y: int):
             logger.error(f"回退候选的上游地址不可用，跳过：{upstream!r}")
             continue
 
-        try:
-            body, content_type = _fetch_upstream(upstream, proxy)
-        except urllib.error.HTTPError as e:
-            # 404 不是故障信号，是每个 XYZ 瓦片服务说「这里没有图」的方式：Esri
-            # 的 World Imagery 在覆盖空洞和超出层级上限时就这么答。把它当上游挂
-            # 掉的话，一张缺图会让整个源冷却 60 秒、后续每张瓦片都换供应商、界面
-            # 弹一次根本没发生过的「底图已切换」。原样透传，不写冷却、不动回退
-            # 状态 —— 与回退特性引入之前的行为一致。
-            if e.code == 404:
-                logger.debug(f"底图上游 {z}/{x}/{y} 无此瓦片（源：{candidate['source']}）")
-                abort(404)
-            logger.warning(f"底图上游 {z}/{x}/{y} 返回 {e.code}（源：{candidate['source']}）")
-            if _marks_source_down(e.code):
+        # 磁盘缓存先于网络：命中即出图，不碰代理、不写冷却、不算上游故障。
+        # 404 不透缓存（_cache_store 只收 200 的图片），所以「覆盖空洞」永远
+        # 实时问上游，不会被钉死。
+        cached = _cache_lookup(upstream) if disk_cache_on else None
+        if cached is not None:
+            body, content_type = cached
+        else:
+            if proxy is _proxy_unset:
+                proxy = resolve_from_config(config_manager, wait_s=_PROXY_WAIT_S)
+            try:
+                body, content_type = _fetch_upstream(upstream, proxy)
+            except urllib.error.HTTPError as e:
+                # 404 不是故障信号，是每个 XYZ 瓦片服务说「这里没有图」的方式：Esri
+                # 的 World Imagery 在覆盖空洞和超出层级上限时就这么答。把它当上游挂
+                # 掉的话，一张缺图会让整个源冷却 60 秒、后续每张瓦片都换供应商、界面
+                # 弹一次根本没发生过的「底图已切换」。原样透传，不写冷却、不动回退
+                # 状态 —— 与回退特性引入之前的行为一致。
+                if e.code == 404:
+                    logger.debug(f"底图上游 {z}/{x}/{y} 无此瓦片（源：{candidate['source']}）")
+                    abort(404)
+                logger.warning(f"底图上游 {z}/{x}/{y} 返回 {e.code}（源：{candidate['source']}）")
+                if _marks_source_down(e.code):
+                    cooldown[candidate["source"]] = now + _COOLDOWN_S
+                # 原样透传的是**配置那个源**的状态码：整条链都失败时，用户想知道的
+                # 是他选的那张图怎么了，而不是链尾那张。取第一个报错是不够的 ——
+                # 配置的源一旦进了冷却就被排到链尾，"第一个"会变成某个替补，用户于是
+                # 收到 504 而不是 Esri 真正回的 403。配置的源在链里只出现一次，
+                # 所以让它无条件覆盖不会被后面的候选再改掉。
+                # werkzeug 的 Aborter 对没有异常类的状态码（499/520/521/522/525/530
+                # 这些 Cloudflare 自定义码）抛 LookupError，被 Flask 转成 500 ——
+                # 那正是本模块要防的「真实状态码被埋掉」。抬不动的一律记 502。
+                code = e.code if e.code in default_exceptions else 502
+                if candidate["source"] == configured["source"] or first_error is None:
+                    first_error = code
+                continue
+            except Exception as e:
+                logger.warning(f"底图上游 {z}/{x}/{y} 取瓦片失败（源：{candidate['source']}）：{e}")
                 cooldown[candidate["source"]] = now + _COOLDOWN_S
-            # 原样透传的是**配置那个源**的状态码：整条链都失败时，用户想知道的
-            # 是他选的那张图怎么了，而不是链尾那张。取第一个报错是不够的 ——
-            # 配置的源一旦进了冷却就被排到链尾，"第一个"会变成某个替补，用户于是
-            # 收到 504 而不是 Esri 真正回的 403。配置的源在链里只出现一次，
-            # 所以让它无条件覆盖不会被后面的候选再改掉。
-            # werkzeug 的 Aborter 对没有异常类的状态码（499/520/521/522/525/530
-            # 这些 Cloudflare 自定义码）抛 LookupError，被 Flask 转成 500 ——
-            # 那正是本模块要防的「真实状态码被埋掉」。抬不动的一律记 502。
-            code = e.code if e.code in default_exceptions else 502
-            if candidate["source"] == configured["source"] or first_error is None:
-                first_error = code
-            continue
-        except Exception as e:
-            logger.warning(f"底图上游 {z}/{x}/{y} 取瓦片失败（源：{candidate['source']}）：{e}")
-            cooldown[candidate["source"]] = now + _COOLDOWN_S
-            if candidate["source"] == configured["source"] or first_error is None:
-                first_error = 504
-            continue
+                if candidate["source"] == configured["source"] or first_error is None:
+                    first_error = 504
+                continue
+            if disk_cache_on:
+                _cache_store(upstream, body, content_type)
 
         cooldown.pop(candidate["source"], None)
         _remember_fallback(configured, candidate)

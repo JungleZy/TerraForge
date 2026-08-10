@@ -154,24 +154,16 @@
                         </div>
                     </div>
 
+                    {# 地形切片区只对本地地形任务显示（history.js viewTaskDetails 的
+                       local_terrain 分支）：它的档位/法线就是任务自己的属性。
+                       高程下载任务不再显示这一块 —— 切片已收敛成独立任务
+                       （任务行「处理」按钮转出 local_terrain 任务），在这里再挂
+                       一份 dem_terrain_jobs 的状态只会让人以为它是下载任务的一部分。 #}
                     <div class="row" id="detailTerrainRow" hidden>
                         <div class="col-12">
                             <hr class="detail-sep">
-                            <div class="d-flex justify-content-between align-items-start detail-terrain-row">
-                                <div>
-                                    <p class="detail-terrain-title"><strong>{{ t('tpl.base.detail.terrain_label') }}</strong> <span id="detailTerrainStatus"></span></p>
-                                    <div class="detail-terrain-info" id="detailTerrainInfo"></div>
-                                </div>
-                                <div class="btn-group btn-group-sm detail-terrain-actions" id="detailTerrainActions">
-                                    <button type="button" class="btn btn-primary" id="detailTerrainStartBtn" title="{{ t('tpl.base.detail.terrain_start_title') }}">{{ t('tpl.base.detail.terrain_start') }}</button>
-                                    <button type="button" class="btn btn-outline-secondary" id="detailTerrainRefreshBtn" title="{{ t('tpl.base.detail.terrain_refresh_title') }}">{{ t('tpl.base.detail.terrain_refresh') }}</button>
-                                </div>
-                            </div>
-                            <div class="row detail-terrain-error-row" id="detailTerrainErrorRow" hidden>
-                                <div class="col-12">
-                                    <div class="alert alert-danger detail-alert-flush" id="detailTerrainError"></div>
-                                </div>
-                            </div>
+                            <p class="detail-terrain-title"><strong>{{ t('tpl.base.detail.terrain_label') }}</strong> <span id="detailTerrainStatus"></span></p>
+                            <div class="detail-terrain-info" id="detailTerrainInfo"></div>
                         </div>
                     </div>
                 </div>

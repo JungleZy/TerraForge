@@ -10,6 +10,7 @@ from flask import Blueprint, request, jsonify
 from pathlib import Path
 from typing import Optional
 from src.core.database import get_connection, DEFAULT_CONFIGS
+from src.core.tile_server import current_tile_port
 from src.i18n import t
 from src.services.basemap_source import client_descriptor, resolve_basemap
 from src.services.config_manager import (ConfigManager, is_unchanged_secret,
@@ -769,7 +770,7 @@ def get_basemap():
                 _val('basemap_source'),
                 tile_servers=_val('tile_servers'),
                 default_style=_val('default_style', 'm') or 'm',
-            ))),
+            )), tile_port=current_tile_port()),
         })
 
     except Exception as e:

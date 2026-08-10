@@ -1,9 +1,16 @@
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
+
+# 「应用自己的旧地址」的两种写法。启动横幅印 localhost，浏览器地址栏和手改
+# config 的人写 127.0.0.1，指的是同一个进程 —— 只认一种就漏掉一半存量配置。
+# 局域网 IP 不在此列：那是另一台机器上的服务，改写它就是把能用的地形改成 404。
+_LEGACY_APP_HOSTS = ("localhost", "127.0.0.1")
 
 
 def normalize_parent_url(parent_url: str | None) -> str | None:
-    """把 parentUrl 规整成**目录**形式；空值返回 None（= 不写该字段）。
+    """把 parentUrl 规整成**目录**形式，并把旧的应用内绝对地址改成相对路径；
+    空值返回 None（= 不写该字段）。
 
     Cesium 对 parentUrl 做 appendForwardSlash() 之后再拼 layer.json，所以这里
     必须给目录。给 `.../base/layer.json` 会让它去请求
@@ -26,13 +33,46 @@ def normalize_parent_url(parent_url: str | None) -> str | None:
 
     规整放在这个唯一写入点、而不是只改 DEFAULT_CONFIGS：改默认值只对新建的库
     生效，**存量 config 表里那一行仍是坏的**，用户不会去改它。
+
+    第二件事是把**旧的应用内**绝对地址 `http://localhost:5000/terrain/...` 改写
+    成同名相对路径：瓦片自 0.3 起可能由 5001 专用 origin 提供，写死主端口会把
+    父级请求绕回主连接池；远程访问时 `localhost` 更是指向客户端本机。相对地址
+    由浏览器继承「提供这份 layer.json 的 origin」，两种情况都自动对。
+
+    改写口径**故意很窄** —— 只认 http + 本机主端口（`localhost` 或 `127.0.0.1`
+    + 5000）+ /terrain/ 前缀且不带 query/fragment。两个主机名一起收，是因为它们
+    是同一个「应用自己的旧地址」的两种写法：启动横幅印的是 `localhost:5000`，
+    而浏览器地址栏、手改 config 的人写 `127.0.0.1:5000` 同样常见，只修一种等于
+    漏掉一半存量。外部域名、HTTPS、`localhost:5001`（瓦片专用 origin，不是要
+    修的那个写死值）、局域网地址（那是别的机器上的服务）、带 query 的签名地址
+    都保留原本的 scheme/host/port：那些是部署者明确配置的值，猜错方向就是把一
+    个能用的地形服务改成 404。注意这只是
+    「不换地址」，上面那段目录规整（尾部斜杠 + `/layer.json` 后缀）对所有值一
+    视同仁 —— 那一条修的是 Cesium 的拼接行为，与地址指向哪里无关。
     """
     if not parent_url:
         return None
     url = parent_url.strip().rstrip("/")
     if url.lower().endswith("/layer.json"):
         url = url[: -len("/layer.json")].rstrip("/")
-    return url or None
+    if not url:
+        return None
+
+    try:
+        parsed = urlsplit(url)
+        is_legacy_app_url = (parsed.scheme.lower() == "http"
+                             and parsed.hostname in _LEGACY_APP_HOSTS
+                             and parsed.port == 5000
+                             and parsed.path.startswith("/terrain/")
+                             and not parsed.query
+                             and not parsed.fragment)
+    except ValueError:
+        # 端口越界之类的畸形值：`.port` 会抛。原样保留 —— 这个函数的职责是规整，
+        # 不是校验（写库那一侧有 config_manager._validate_browser_url）。
+        return url
+    if is_legacy_app_url:
+        return parsed.path.rstrip("/")
+    return url
 
 
 def parent_url_if_base_available(parent_url: str | None,
@@ -58,8 +98,9 @@ def parent_url_if_base_available(parent_url: str | None,
     去掉 parentUrl 后同一批瓦片：高程 2656.6 / 1092.3 / 4154.2、法线可用。
 
     判据用**本地目录里有没有 layer.json**，不去请求那个 URL：切片是服务端行为，
-    此刻 Flask 未必起着（默认 URL 就指向 localhost:5000），网络探测既慢又会
-    引入不确定性；而 base 是本机磁盘上的产物，存在性是可靠的本地事实。
+    而默认值是应用内相对路径（`/terrain/base`），根本没有可请求的绝对地址 ——
+    就算配的是完整 URL，网络探测也既慢又会引入不确定性；而 base 是本机磁盘上的
+    产物，存在性是可靠的本地事实。
     """
     if base_dir is None:
         return None
@@ -88,7 +129,8 @@ def merge_base_availability(task_layer_path: Path, base_layer_path: Path) -> Non
     """把底图的 available 并进任务的 layer.json，并删掉 parentUrl。
 
     植入之后任务目录是自包含的，parentUrl 就成了多余的一次请求 —— 更糟的是它
-    指向 localhost:5000，目录拷到别的机器上必然 404，而 Cesium 对这个 404 不
+    指向本应用的 /terrain/base，目录拷到别的机器（那边没有 base、甚至没有本
+    应用）上必然 404，而 Cesium 对这个 404 不
     报错，它塞一个假的 heightmap-1.0 图层并把 heightmapStructure 写在共享的
     builder 上，于是任务自己的 quantized-mesh 瓦片也按 heightmap 解析
     （v0.2.8 实测：4154 m 山峰解成 -744 m，控制台零报错）。

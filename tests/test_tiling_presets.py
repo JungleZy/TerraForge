@@ -150,6 +150,10 @@ def test_config_defaults_are_shipped(monkeypatch, tmp_path):
     assert defaults["terrain_quality_preset"] == "balanced"
     # 布尔配置在本仓一律存字符串 'true'/'false'（config_manager:294-295）
     assert defaults["terrain_vertex_normals"] == "false"
+    # 出厂默认是 'auto'（geo_validation.AUTO_MAXZOOM）：固定 14 只对 30 m 源
+    # 正确。改回一个数字的同时**必须**同步 database.migrate_local_maxzoom_to_auto，
+    # 否则新库与存量库两套默认值。
+    assert defaults["terrain_local_maxzoom"] == "auto"
 
 
 @pytest.mark.parametrize("table", ["dem_terrain_jobs", "local_terrain_tasks"])

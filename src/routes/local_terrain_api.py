@@ -11,8 +11,8 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from src.core.config import Config
-from src.services.geo_validation import (coerce_vertex_normals,
-                                         validate_tiling_quality, validate_zoom)
+from src.services.geo_validation import (coerce_maxzoom, coerce_vertex_normals,
+                                         validate_tiling_quality)
 from src.services.task_cleanup import record_retained_output
 from src.routes.api import _delete_payload
 from src.routes import terrain_static
@@ -36,9 +36,9 @@ def create_local_terrain_task():
         return jsonify({"error": "Local terrain task manager not initialized"}), 500
     try:
         name = request.form.get("name") or "Local Terrain Task"
-        maxzoom_raw = request.form.get("maxzoom")
-        # 0–21 校验（validate_zoom 抛带字段名的 ValueError -> 400）
-        maxzoom = validate_zoom(maxzoom_raw, "maxzoom") if maxzoom_raw not in (None, "") else None
+        # 三态：'auto'（按源分辨率现算）/ 0–21 / 未传（空串 → None → 配置默认）。
+        # coerce_maxzoom 抛带字段名的 ValueError -> 400。
+        maxzoom = coerce_maxzoom(request.form.get("maxzoom"), "maxzoom")
         quality_raw = request.form.get("quality")
         # 档位跟 maxzoom 同形：路由先挡一道（管理器的 create_task_with_files
         # 里那次 validate_tiling_quality 还会再校验一次），非法值在任何
@@ -52,6 +52,22 @@ def create_local_terrain_task():
         vertex_normals = coerce_vertex_normals(request.form.get("vertex_normals"))
 
         uploads = request.files.getlist("files")
+
+        # dem_task_id：零拷贝复用某个已完成 DEM 下载任务的目录当源（任务行上的
+        # 「处理」按钮），与 contour_api 同一约定 —— 与 files 互斥。
+        dem_task_id_raw = (request.form.get("dem_task_id") or "").strip()
+        if dem_task_id_raw and uploads:
+            return jsonify({"error": "Provide either files or dem_task_id, not both"}), 400
+        if dem_task_id_raw:
+            try:
+                dem_task_id = int(dem_task_id_raw)
+            except ValueError:
+                return jsonify({"error": "Invalid dem_task_id"}), 400
+            task_id = local_terrain_task_manager.create_task_from_dem_task(
+                name=name, dem_task_id=dem_task_id, maxzoom=maxzoom,
+                quality=quality, vertex_normals=vertex_normals,
+            )
+            return jsonify({"success": True, "task_id": task_id}), 201
 
         # Validate cheaply BEFORE touching the payload: cap the file count and
         # reject non-tif extensions up front. The total request size is already

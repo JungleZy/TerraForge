@@ -63,13 +63,30 @@ def test_patch_layer_json_parent(tmp_path):
 
 
 @pytest.mark.parametrize("given,expected", [
-    # 存量 config 表里就是这个坏值（2026-08-05 之前的 DEFAULT_CONFIGS）
-    ("http://localhost:5000/terrain/base/layer.json", "http://localhost:5000/terrain/base"),
-    ("http://localhost:5000/terrain/base/layer.json/", "http://localhost:5000/terrain/base"),
+    # 存量 config 表里的应用内绝对地址：归一成相对路径（继承提供 layer.json 的
+    # origin）—— 瓦片可能由 5001 专用 origin 提供，写死 5000 会绕回主连接池；
+    # 远程访问时 localhost 更是指向客户端本机。
+    ("http://localhost:5000/terrain/base/layer.json", "/terrain/base"),
+    ("http://localhost:5000/terrain/base/", "/terrain/base"),
+    ("http://localhost:5000/terrain/dem/7/layer.json", "/terrain/dem/7"),
+    # 127.0.0.1 和 localhost 是同一个「应用自己的旧地址」：启动横幅印过它，
+    # 老配置里两种写法都有，只收下其中一种等于漏修一半存量。
+    ("http://127.0.0.1:5000/terrain/base/layer.json", "/terrain/base"),
+    ("http://127.0.0.1:5000/terrain/base/", "/terrain/base"),
+    # 部署者配置的外部地形服务：scheme/host/port 不动，只做目录规整
+    ("https://x.example:8443/terrain/base/layer.json", "https://x.example:8443/terrain/base"),
+    # 后缀判定不分大小写（手改产物文件的人写什么的都有）
     ("https://x.example/t/base/LAYER.JSON", "https://x.example/t/base"),
-    # 已经是目录形式的原样保留（末尾斜杠也去掉，Cesium 自己会补）
-    ("http://localhost:5000/terrain/base", "http://localhost:5000/terrain/base"),
-    ("http://localhost:5000/terrain/base/", "http://localhost:5000/terrain/base"),
+    ("http://localhost:5000/terrain/base/Layer.Json", "/terrain/base"),
+    # 5001 是瓦片专用 origin，不是「旧的写死主端口」，原样保留
+    ("http://localhost:5001/terrain/base", "http://localhost:5001/terrain/base"),
+    ("http://127.0.0.1:5001/terrain/base", "http://127.0.0.1:5001/terrain/base"),
+    # 同机的**别的**服务（局域网地址、别的主机名）不在「应用自己的旧地址」之列
+    ("http://192.168.1.10:5000/terrain/base", "http://192.168.1.10:5000/terrain/base"),
+    # 已经是相对路径的只做目录规整
+    ("/terrain/base/layer.json", "/terrain/base"),
+    # 带 query/fragment 的地址语义未知，一律不改写
+    ("http://localhost:5000/terrain/base?token=x", "http://localhost:5000/terrain/base?token=x"),
     # 空值不写 parentUrl 字段（无 parent 是合法形态）
     ("", None),
     (None, None),
@@ -109,10 +126,15 @@ def test_patch_layer_json_parent_strips_the_layer_json_suffix(tmp_path, given, e
 
 
 def test_default_parent_url_is_a_directory_everywhere_it_is_written():
-    """三处默认值必须一致，且都不能以 layer.json 结尾。
+    """三处默认值必须逐字都是 `/terrain/base` —— 应用内相对路径。
 
     DEFAULT_CONFIGS 一份、两个 manager 各有一份兜底（config 表读不到时用）。
     改了一处漏掉另一处 = 部分部署仍然踩坑，而这类失败是静默的。
+
+    为什么是相对路径而不是 `http://localhost:5000/...`：瓦片可能由 5001 专用
+    origin 提供，写死主端口会把父级请求绕回主连接池；远程访问时 `localhost`
+    还指向客户端本机。相对地址由浏览器继承「提供这份 layer.json 的 origin」，
+    换端口、反代、远程访问全都不用改配置。
     """
     import re
 
@@ -122,15 +144,15 @@ def test_default_parent_url_is_a_directory_everywhere_it_is_written():
                 "src/services/dem_task_manager.py",
                 "src/services/local_terrain_task_manager.py"):
         text = (root / rel).read_text(encoding="utf-8")
-        urls = re.findall(r"['\"](https?://[^'\"]*?/terrain/base[^'\"]*)['\"]", text)
+        urls = re.findall(r"['\"]((?:https?://)?[^'\"\s]*?/terrain/base/?)['\"]", text)
         assert urls, f"{rel} 里找不到 parentUrl 默认值"
         found[rel] = set(urls)
         for u in urls:
-            assert not u.rstrip("/").lower().endswith("layer.json"), (
-                f"{rel} 的默认 parentUrl 仍带 /layer.json：{u}")
+            assert u == "/terrain/base", (
+                f"{rel} 的默认 parentUrl 不是应用内相对路径：{u}")
 
     all_urls = set().union(*found.values())
-    assert len(all_urls) == 1, f"三处默认值不一致：{found}"
+    assert all_urls == {"/terrain/base"}, f"三处默认值不一致：{found}"
 
 
 # ---------------------------------------------------------------------------
@@ -181,11 +203,15 @@ def test_parent_url_is_kept_and_normalized_when_the_base_exists(tmp_path):
     base.mkdir()
     (base / "layer.json").write_text('{"tilejson":"1.0"}', encoding="utf-8")
 
+    assert parent_url_if_base_available("/terrain/base", base) == "/terrain/base"
+    # 存量 config 表里的应用内绝对地址仍然要被归一（尾部 /layer.json 一并剥掉）
     assert parent_url_if_base_available(
-        "http://localhost:5000/terrain/base", base) == "http://localhost:5000/terrain/base"
-    # 存量 config 表里的坏值仍然要被剥掉
+        "http://localhost:5000/terrain/base", base) == "/terrain/base"
     assert parent_url_if_base_available(
-        "http://localhost:5000/terrain/base/layer.json", base) == "http://localhost:5000/terrain/base"
+        "http://localhost:5000/terrain/base/layer.json", base) == "/terrain/base"
+    # 部署者配置的外部地形服务原样保留
+    assert parent_url_if_base_available(
+        "https://tiles.example.com/base/layer.json", base) == "https://tiles.example.com/base"
     # 空 URL 仍然是不写
     assert parent_url_if_base_available("", base) is None
     assert parent_url_if_base_available(None, base) is None
@@ -232,8 +258,9 @@ def _write_layer(path, *, maxzoom, available, parent=None, minzoom=0):
 def test_merge_base_availability_unions_levels_and_drops_parent_url(tmp_path):
     """available 逐层并集，parentUrl 必须被删掉。
 
-    自包含之后 parentUrl 是一次多余请求，而且它指向 localhost —— 目录拷到别的
-    机器上必然 404，而 Cesium 的 404 处理会把整个 provider 降级成 heightmap。
+    自包含之后 parentUrl 是一次多余请求，而且它指向本应用的 /terrain/base ——
+    目录拷到别的机器（那边没有 base、甚至没有本应用）上必然 404，而 Cesium 的
+    404 处理会把整个 provider 降级成 heightmap。
     """
     import json
 

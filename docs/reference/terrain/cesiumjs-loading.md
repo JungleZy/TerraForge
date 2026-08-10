@@ -60,9 +60,9 @@ new Cesium.Viewer("cesiumContainer", { terrainProvider: demOverlay });
 
 ## 4) 配置键 `terrain_base_parent_url`：改了要重新切片
 
-`parentUrl` 写的是哪个地址，由配置键 `terrain_base_parent_url` 决定，默认 `http://localhost:5000/terrain/base`（`src/core/database.py` 的 `DEFAULT_CONFIGS`）。
+`parentUrl` 写的是哪个地址，由配置键 `terrain_base_parent_url` 决定，默认 `/terrain/base`（`src/core/database.py` 的 `DEFAULT_CONFIGS`）——**应用内相对路径**，浏览器按「提供这份 `layer.json` 的 origin」去解析。
 
-⚠️ **这个值必须是目录，绝不能带 `/layer.json`。** Cesium 会先 `appendForwardSlash()` 再拼 `layer.json`，写成 `.../base/layer.json` 就变成请求 `.../base/layer.json/layer.json` → 404；而 Cesium 对这个 404 **不报错**，它塞一个假的 heightmap-1.0 图层，并把 `heightmapStructure` 写在**共享的** builder 上 —— 于是任务自己的 quantized-mesh 瓦片也按 heightmap 解析。实测（天山 N42E086，同一批瓦片只改这一个值）：4154 m 的山峰解成 **−744 m**，而 `hasVertexNormals` 仍报 true、瓦片全 200、控制台一条错都没有。写入侧由 `layer_json.normalize_parent_url` 剥掉这个后缀，但**手工改任务 `layer.json` 绕不过这一关** —— 那是直接改产物文件，没有任何东西替你规整。
+⚠️ **这个值必须是目录，绝不能带 `/layer.json`。** Cesium 会先 `appendForwardSlash()` 再拼 `layer.json`，写成 `.../base/layer.json` 就变成请求 `.../base/layer.json/layer.json` → 404；而 Cesium 对这个 404 **不报错**，它塞一个假的 heightmap-1.0 图层，并把 `heightmapStructure` 写在**共享的** builder 上 —— 于是任务自己的 quantized-mesh 瓦片也按 heightmap 解析。实测（天山 N42E086，同一批瓦片只改这一个值）：4154 m 的山峰解成 **−744 m**，而 `hasVertexNormals` 仍报 true、瓦片全 200、控制台一条错都没有。写入侧由 `layer_json.normalize_parent_url` 剥掉这个后缀；2026-08-10 起本应用**服务**任务 `layer.json` 时会再规整一次（`src/routes/terrain_static.py`），所以手工把产物文件里的 `parentUrl` 改成 `.../base/layer.json` 之后，经本应用 `/terrain/...` 路由取到的那一份仍是目录形式。**但别把它当保险**：磁盘上留下的仍是你写的坏值，任务目录一旦被拷走、由 nginx / 别的静态服务器 / 直接开文件的方式提供，就没有任何东西替你规整了 —— 症状与本节开头描述的一模一样，且全程零报错。所以规矩不变：写目录，不写 `/layer.json`。
 
 **这个键在配置页上没有输入框**，只能通过 `PUT /api/config` 改，或者直接改数据库 `config` 表。
 
@@ -74,4 +74,6 @@ new Cesium.Viewer("cesiumContainer", { terrainProvider: demOverlay });
 2. 改配置，只对之后新建的任务生效；
 3. 改配置后重新切片旧任务。
 
-**什么时候必须改**：服务不跑在 `localhost:5000`（换端口、部署到内网 IP 或域名）。默认值在客户端解析不到时，级联会**静默失败** —— Cesium 只是拿不到父层数据，同样不报错。
+**什么时候必须改**：只有把父层指向**另一套地形服务**时（例如 `https://terrain.example.com/base`）。换端口、反代、部署到内网 IP 或域名、瓦片走瓦片专用端口 —— 这些**都不再需要改**：默认值是相对路径，浏览器继承的就是提供这份 `layer.json` 的 origin（`/terrain/` 在瓦片端口上同样放行，见 `src/core/tile_server.py`）。配置成完整 http(s) 地址仍然受支持，会被原样写进 `layer.json`。
+
+**存量的旧值会被自动归一**（2026-08-10）：`layer_json.normalize_parent_url` 把**应用内**的旧地址 `http://localhost:5000/terrain/...` 改写成同名相对路径 —— 新切片在写入侧改，已经切好的任务在 `GET .../layer.json` 的**响应**里改（`src/routes/terrain_static.py`，磁盘文件保持原样，服务端不在 GET 上改用户产物）。改写口径很窄：**只有** `http://localhost:5000/terrain/...`（且不带 query/fragment）这一种形态会被换成相对路径；外部域名、HTTPS、瓦片端口（`localhost:5001`）、带 query/fragment 的地址都保留原本的 scheme/host/port —— 那些是部署者明确配置的值。注意「保留」指的是**不改地址本身**，目录规整（去掉尾部斜杠、剥掉 `/layer.json` 后缀）对所有值一视同仁。

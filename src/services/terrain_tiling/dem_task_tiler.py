@@ -27,7 +27,11 @@ def terrain_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
 
 @dataclass(frozen=True)
 class TileParams:
-    maxzoom: int
+    # None = 自动：按源数据像素尺寸现算基准层级。build_terrain 收到
+    # max_level=None 时走 GeographicTilingScheme.estimate_max_level，档位偏移
+    # 再叠在估算值上（cesiumlab_terrain 里 max_level 唯一的解析点）。
+    # 落库表示是哨兵 -1，翻译住在 geo_validation.maxzoom_from_db / _to_db。
+    maxzoom: Optional[int]
     parent_url: str
     # 65x65 vertex grid: at z14 this samples ~19 m spacing, matching 30 m DEMs
     # (Copernicus GLO-30 / ASTER). estimate_max_level in cesiumlab_terrain.py
@@ -157,7 +161,7 @@ def tile_dem_task_dir(
         inputs=[str(p) for p in dem_tifs],
         output_dir=str(out_dir),
         min_level=min_level,
-        max_level=int(params.maxzoom),
+        max_level=None if params.maxzoom is None else int(params.maxzoom),
         tile_size=int(params.tile_size),
         workers=int(params.workers),
         progress_cb=params.progress_cb,

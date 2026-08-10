@@ -60,6 +60,8 @@ def test_terrain_api_wiring_does_not_return_500(monkeypatch, tmp_path):
 
 
 def test_terrain_api_start_creates_running_job(monkeypatch, tmp_path):
+    from src.services.geo_validation import AUTO_MAXZOOM_SENTINEL
+
     app_mod, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
@@ -84,7 +86,9 @@ def test_terrain_api_start_creates_running_job(monkeypatch, tmp_path):
 
     assert job is not None
     assert job["status"] == "running"
-    assert job["maxzoom"] == 14
+    # 不带 maxzoom 起切 = 走配置默认，而出厂默认已经是 'auto'
+    # （database.DEFAULT_CONFIGS），落库的是自动挡哨兵而不是固定 14。
+    assert job["maxzoom"] == AUTO_MAXZOOM_SENTINEL
     assert job["output_dir"].endswith(os.path.join(f"dem_task_{task_id}", "terrain_tiles"))
 
 
@@ -312,11 +316,17 @@ def test_terrain_restart_overwrites_previous_preset(monkeypatch, tmp_path):
 
 def test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range(
         monkeypatch, tmp_path, caplog):
-    """配置里的越界 maxzoom 退回出厂默认 14，不靠 build_terrain 那边封顶兜。
+    """配置里的越界 maxzoom 退回出厂默认，不靠 build_terrain 那边封顶兜。
+
+    出厂默认是自动挡，所以落库的是哨兵而不是某个具体层级（起切时
+    `maxzoom_from_db` 把它还原成 None，由 build_terrain 按源分辨率现算）。
 
     退回必须留痕：静默吞掉用户写过的 99，会让「我明明配了 99」在整个系统里
-    一处都查不到。
+    一处都查不到 —— 尤其是退回值就是哨兵的现在，库里那个 -1 与「用户真的
+    选了自动」在事后完全无从分辨。
     """
+    from src.services.geo_validation import AUTO_MAXZOOM, AUTO_MAXZOOM_SENTINEL
+
     app_mod, client = _load_app(monkeypatch, tmp_path)
     db = importlib.import_module("src.core.database")
     task_id = _insert_dem_task(db, tmp_path / "downloads")
@@ -327,12 +337,21 @@ def test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range(
 
     with caplog.at_level(logging.WARNING, logger="src.services.dem_task_manager"):
         assert client.post(f"/api/terrain/dem/{task_id}/start").status_code == 200
-    assert _job_row(db, task_id)["maxzoom"] == 14
+    assert _job_row(db, task_id)["maxzoom"] == AUTO_MAXZOOM_SENTINEL
 
     dropped = [r.getMessage() for r in caplog.records
                if "terrain_local_maxzoom" in r.getMessage()]
     assert dropped, "越界配置被丢弃却没留下任何日志"
-    assert "99" in dropped[0] and "14" in dropped[0]
+    assert "99" in dropped[0], f"日志里没有点名被丢弃的值：{dropped[0]}"
+    # 退回目标那一半必须钉在**尾部**，不能只问 "auto" 在不在整条消息里：这条日志
+    # 把 coerce_maxzoom 抛出的异常原文 `{e}` 原样嵌了进来，而那句原文自带
+    # `(or the literal 'auto')`（geo_validation.coerce_maxzoom 的 except 分支）——
+    # 于是消息里永远有一个 auto，退回目标就算被改写成 14 那半条断言也照样绿。
+    # 与 tests/test_terrain_lighting_frontend.py 的
+    # test_out_of_range_maxzoom_falls_back_out_loud 同一路数（那条守的是渲染入口）。
+    assert dropped[0].rstrip().endswith(repr(AUTO_MAXZOOM)), (
+        f"日志结尾必须点名退回的目标 {AUTO_MAXZOOM!r} —— 消息中段那个 auto 来自"
+        f"被嵌进来的异常原文，不能拿它当证据：{dropped[0]}")
 
 
 def test_terrain_start_rejects_unhashable_vertex_normals(monkeypatch, tmp_path):
@@ -367,15 +386,20 @@ def test_terrain_start_treats_empty_strings_as_omitted(monkeypatch, tmp_path):
 
     monkeypatch.setattr(app_mod.dem_task_manager.__class__, "_run_tiling_job",
                         lambda self, *a, **k: None)
-    # 把配置拨到非出厂值：空串若被硬编码成 balanced/关，这条会红。
+    # 把配置拨到非出厂值：空串若被硬编码成 balanced/关/某个固定层级，这条会红。
     app_mod.dem_task_manager.config.set("terrain_quality_preset", "speed")
     app_mod.dem_task_manager.config.set("terrain_vertex_normals", "true")
+    app_mod.dem_task_manager.config.set("terrain_local_maxzoom", "9")
 
+    # maxzoom 也送空串：空串这条路径最初就是为它加的（前端 `el?.value || ''`），
+    # 而三态收参之后「空串 → 未表态 → 配置默认」这一步经手的是 coerce_maxzoom
+    # 与 maxzoom_to_db 两道翻译，最该被钉住的恰恰是它。
     resp = client.post(f"/api/terrain/dem/{task_id}/start",
-                       json={"quality": "", "vertex_normals": ""})
+                       json={"maxzoom": "", "quality": "", "vertex_normals": ""})
 
     assert resp.status_code == 200, resp.get_json()
     job = _job_row(db, task_id)
+    assert job["maxzoom"] == 9
     assert job["quality"] == "speed"
     assert job["vertex_normals"] == 1
 
@@ -726,3 +750,62 @@ def test_dem_terminal_updates_never_overwrite_an_already_terminal_job(
 
     row = _job_row(db, task_id)
     assert row["status"] == "failed", "成功收尾盖掉了一条已经是 failed 的行"
+
+
+# ---------------------------------------------------------------------------
+# 路由层收参：maxzoom 的三态（'auto' / 0–21 / 未传）
+#
+# 这条路径的 maxzoom 此前**在路由层完全不校验**，原样交给 manager。下面两条都
+# 打桩 start_tiling：断言点是「管理器被调用时收到了什么」，而不是让请求真的跑
+# 完 —— 管理器认不认 'auto' 是它自己的事，这里只管路由这道门。
+# ---------------------------------------------------------------------------
+
+
+def _capture_start_tiling(monkeypatch, app_mod, seen):
+    """把 start_tiling 换成录参替身：记下路由转下来的 kwargs，不真的切片。"""
+
+    def fake_start_tiling(self, task_id, **kwargs):
+        seen["task_id"] = task_id
+        seen.update(kwargs)
+
+    monkeypatch.setattr(app_mod.dem_task_manager.__class__, "start_tiling",
+                        fake_start_tiling)
+
+
+def test_dem_start_accepts_the_auto_maxzoom(monkeypatch, tmp_path):
+    """JSON body 里的 'auto' 必须原样到达管理器 —— 不吞成 None、不折成数字。"""
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    task_id = _insert_dem_task(db, tmp_path / "downloads")
+
+    seen = {}
+    _capture_start_tiling(monkeypatch, app_mod, seen)
+
+    resp = client.post(f"/api/terrain/dem/{task_id}/start", json={"maxzoom": "auto"})
+
+    assert resp.status_code == 200, resp.get_json()
+    assert seen["maxzoom"] == "auto", (
+        f"管理器收到的 maxzoom 是 {seen.get('maxzoom')!r}，'auto' 必须原样转下去")
+
+
+def test_dem_start_rejects_a_misspelled_auto(monkeypatch, tmp_path):
+    """terrain_api 此前压根不校验 maxzoom，脏值一路走到 manager 才炸。
+
+    走到 manager 才炸的话，报错来自它的 validate_zoom：只说「不是数字」，把
+    拼错大小写的用户指向一个不存在的数字问题。入口就分清「自动」与「脏值」，
+    管理器也就一次都不会被调用。
+    """
+    app_mod, client = _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    task_id = _insert_dem_task(db, tmp_path / "downloads")
+
+    seen = {}
+    _capture_start_tiling(monkeypatch, app_mod, seen)
+
+    resp = client.post(f"/api/terrain/dem/{task_id}/start", json={"maxzoom": "AUTO"})
+
+    assert resp.status_code == 400, resp.get_json()
+    error = resp.get_json()["error"]
+    assert "maxzoom" in error
+    assert "'auto'" in error, f"报错没点出合法字面量：{error!r}"
+    assert seen == {}, f"脏值放行到了管理器：{seen!r}"

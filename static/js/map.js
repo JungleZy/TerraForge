@@ -123,9 +123,10 @@ function updateTileEstimate() {
 }
 
 // --- 首屏加载动画（Splash） ----------------------------------------------------
-// 进度 = 模拟缓动（封顶 90%）+ 真实就绪事件补完：Cesium Viewer 创建成功且
-// 首帧渲染后由 splashReady() 推满并淡出。JS 异常时 stage 原地显示错误，
-// 不让用户对着永远转圈的动画猜。
+// 进度 = 模拟缓动（封顶 90%）+ 真实就绪事件补完：当前视野的地形/影像瓦片
+// 全部落地（globe.tilesLoaded）即推满淡出；慢网络不等到底，initMap 里的
+// 3s 上限先到先放。JS 异常时 stage 原地显示错误，不让用户对着永远转圈的
+// 动画猜。
 let _splashTimer = null;
 let _splashDone = false;
 
@@ -261,7 +262,11 @@ function _rebuildBaseImagery(bm) {
         return;                                 // 没换源，别把整屏瓦片重拉一遍
     }
     const layer = new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-        url: bm.url,
+        // 瓦片走页面级瓦片 origin（ui.js tileUrl / src/core/tile_server.py），
+        // 躲开浏览器对单源的 6 连接上限。用哪个 origin 是页面启动时
+        // initTileOrigin() 探测一次定下的会话状态，这里不再看描述符里的端口 ——
+        // 探测失败或非 http 页面时它保留同源路径，行为不变。
+        url: tileUrl(bm.url),
         tilingScheme: new Cesium.WebMercatorTilingScheme(),
         maximumLevel: bm.max_level == null ? undefined : bm.max_level,
         credit: bm.credit || '',
@@ -305,7 +310,10 @@ function initMap(config, basemap) {
     const bm = basemap || {};
     viewer = new Cesium.Viewer('map', {
         baseLayer: new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
-            url: bm.url,
+            // 与 _rebuildBaseImagery 同一口径：origin 由 initTileOrigin() 在
+            // 创建 Viewer 之前探测一次定下（templates/index.html 的 tileOriginReady
+            // 门控），这里只把内部绝对路径交给 tileUrl。
+            url: tileUrl(bm.url),
             tilingScheme: new Cesium.WebMercatorTilingScheme(),
             // 超出这一层瓦片服务器返回 404，Cesium 画成空白 —— 不设上限的话
             // 放大过头是一片黑，看不出是缩放过头还是底图挂了。
@@ -348,12 +356,24 @@ function initMap(config, basemap) {
         destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, _zoomToHeight(initialZoom)),
     });
 
-    // 首帧渲染完成 = 地图真正可用，splash 推满淡出
-    const onFirstFrame = function () {
+    // 首帧渲染 ≠ 地图就绪：第一帧上屏时底图瓦片还在网络上（服务端代理转发，
+    // 秒级），画出的是没有影像的黑色球体 —— skyBox 关着、globe 底色纯黑。
+    // 在首帧淡出 splash 等于把这段黑屏原样露给用户。真正的就绪信号是
+    // globe.tilesLoaded（当前视野的地形/影像瓦片全部落地）；瓦片每落地一批
+    // 都会触发 requestRender，postRender 持续有帧，轮询不会卡死。放人的
+    // 上限在下面的 3s 计时器，initSplash 里另有 20s 兜底。
+    // 具名函数声明而不是 const 箭头/匿名：removeEventListener 要引用，
+    // tests/test_splash_ready_signal.py 也按函数名切这段体。
+    function onFirstFrame() {
+        if (!viewer.scene.globe.tilesLoaded) return;
         viewer.scene.postRender.removeEventListener(onFirstFrame);
         splashReady();
-    };
+    }
     viewer.scene.postRender.addEventListener(onFirstFrame);
+    // 上限放人：tilesLoaded 要等视野瓦片全部经代理落地（逐级细化、串行
+    // 往返），慢网络下会把用户关在开屏里好几秒 —— 比一闪而过的黑屏更难忍。
+    // 3 秒一到无论瓦片是否齐都淡出；splashReady 幂等，先到先放。
+    setTimeout(splashReady, 3000);
 
     // 默认缩放级别与「配置」页同步（默认最小/最大缩放）
     const zoomMinEl = document.getElementById('zoomMin');
@@ -747,8 +767,6 @@ function initProcessTypeToggle() {
     const localUploadRow = document.getElementById('localTerrainUploadRow');
     const contourUploadRow = document.getElementById('contourUploadRow');
     const demTaskRow = document.getElementById('processDemTaskRow');
-    const nameRow = document.getElementById('processNameRow');
-    const nameInput = document.getElementById('processTaskName');
 
     function apply() {
         const type = typeEl.value;
@@ -765,13 +783,6 @@ function initProcessTypeToggle() {
         if (contourUploadRow) contourUploadRow.hidden = !(isContour && !fromDemTask);
         if (demTaskRow) demTaskRow.hidden = !(fromDemTask);
 
-        // 「本地高程切片 + DEM 任务」这一格复用 DEM 任务自己的地形切片作业，
-        // 不新建任务、没有独立任务名，留着输入框是误导。required 必须跟着摘掉：
-        // 隐藏的 required 字段会让浏览器原生校验拦下 submit 事件，按钮点了没反应。
-        const nameless = isLocal && fromDemTask;
-        if (nameRow) nameRow.hidden = nameless;
-        if (nameInput) nameInput.required = !nameless;
-
         refreshSubmitButtonState();
     }
 
@@ -779,6 +790,10 @@ function initProcessTypeToggle() {
     if (sourceEl) {
         sourceEl.addEventListener('change', () => {
             apply();
+            // 预告行不在上传行里（模板里它挨着档位下拉），apply() 藏不掉它 ——
+            // 来源一变就得重画，否则切到 DEM 任务后它还挂着上一批上传文件的
+            // 层级/张数/体积。收起的判据写在 renderTerrainTileEstimate 自己那儿。
+            renderTerrainTileEstimate();
             // 每次切到 DEM 来源都重拉：任务列表随下载进度变化，陈旧列表会让
             // 用户选到一个当时还没完成的任务。
             if (sourceEl.value === 'dem_task') loadProcessDemTasks();
@@ -788,8 +803,38 @@ function initProcessTypeToggle() {
     if (localFilesEl) localFilesEl.addEventListener('change', updateLocalTerrainTifInfo);
     const contourFilesEl = document.getElementById('contourFiles');
     if (contourFilesEl) contourFilesEl.addEventListener('change', updateContourTifInfo);
+    // 「自动」勾选态与层级数字框的禁用态联动。初值由服务端渲染（模板那侧的
+    // {% if terrain_local_maxzoom_auto %}disabled），这里只管运行时的切换。
+    const maxzoomAutoToggle = document.getElementById('localTerrainMaxzoomAuto');
+    if (maxzoomAutoToggle) {
+        maxzoomAutoToggle.addEventListener('change', () => {
+            syncLocalTerrainMaxzoomDisabled();
+            // 自动/手动会换掉基准层级的来源（后端估的建议值 vs 数字框里的数），
+            // 预告必须跟着重算。
+            renderTerrainTileEstimate();
+        });
+    }
+    // 预告的另外三个输入。这三个都不需要再打一次 /api/raster/inspect：
+    // 层级、bounds、逐层张数都在上一次的汇总里。
+    ['localTerrainMaxzoom', 'localTerrainQuality', 'localTerrainNormals'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('change', renderTerrainTileEstimate);
+    });
     apply();
     initContourTintUI();
+}
+
+// 「自动层级」勾选态 -> 层级数字框的禁用态。change 监听与 resetForm 共用一份：
+// form.reset() 只把复选框拨回服务端渲染的那个默认，**不触发 change**，两边当场
+// 脱节 —— 界面上是「自动挡勾着、数字框却能填」，提交送的却是 auto，用户填的数
+// 静默不算数（resetForm 里两张 tif 信息卡跟着收起是同一个理由）。
+// 只碰 disabled、不碰 value：那个数是用户取消勾选后的起点。清掉它不会让表单
+// :invalid（min/max 对空值不适用，空值要 required 才拦），失败是静默的 ——
+// 取消勾选后是个空数字框，提交那侧送的就是空串（`maxzoomEl?.value || ''`），
+// 后端把空串当「未表态」回落到配置默认的自动挡，用户取消勾选等于没生效。
+function syncLocalTerrainMaxzoomDisabled() {
+    const autoEl = document.getElementById('localTerrainMaxzoomAuto');
+    const numEl = document.getElementById('localTerrainMaxzoom');
+    if (autoEl && numEl) numEl.disabled = autoEl.checked;
 }
 
 // --- 选完 tif 立刻显示的有效信息（本地高程切片 / 等高线共用）--------------------
@@ -943,6 +988,118 @@ function _tifInfoFileBlock(file, index) {
     return box;
 }
 
+// --- 起切前的规模预告 -----------------------------------------------------------
+//
+// 「自动」挡下用户不再控制层级：一份 5 m DEM 会自动算到 z16、精细档 z17，
+// 1°×1° 就是约 71 万张、约 6 GB。这一行只预告、不拦。
+//
+// 三个数都是估算：
+//   体积 —— 单张均值 8.4 KB，取自 docs/reference/terrain/tiling-presets-measured.md
+//           9.3 节的三档实测值（速度 10.4 / 均衡 8.8 / 精细 8.4 KB）里**最小**的
+//           那个。说清楚方向：对一条规模警告而言，最小值是**最不保守**的选择 ——
+//           它偏低报（速度档按 10.4 算才对得上）。之所以仍然站得住：那三个数是
+//           三档各自整座金字塔的均值，档越深均值越小，而任一档的累加张数里约
+//           3/4 都落在最深一层（每加一级 x/y 各翻倍），最深层的单张又比该档均值
+//           更小，量级上兜得住；
+//   法线 —— 开启后 +35%~+100% 字节（同文档第五节），取下沿 1.4；
+//   起点 —— 8，随包底图可用时 dem_task_tiler 恒传的 min_level。
+// ⚠️ 预告只算这个任务**自己**要切的瓦片，**不含**起切时 graft 进来的随包底图
+//    （z0-z7）：同盘是硬链接、几乎不占字节，跨盘则是 224 MB / 43,690 个文件的
+//    真实拷贝 —— 那一份磁盘占用在这行数字里一个字节都没有。
+// ⚠️ 档位偏移**不在这里抄第二份**：它由服务端渲染进 <option data-offset>，
+//    取值表只有 geo_validation.TILING_QUALITY_OFFSETS 一份。
+const TERRAIN_TILE_BYTES = 8.4 * 1024;
+const TERRAIN_NORMALS_FACTOR = 1.4;
+const TERRAIN_MIN_LEVEL = 8;
+
+// 最近一次 /api/raster/inspect 的汇总，只在高程管线下缓存（等高线走 Web
+// Mercator，后端压根不给它 tile_counts）。档位/层级/法线变了要重算预告，而那
+// 几个事件不该再打一次服务端 —— 层级与 bounds 都已经在手上。
+let _terrainInspectSummary = null;
+
+// 缓存 + 立刻重画。文件被清空、探测失败时传 null：预告要跟着收起，否则上一份
+// DEM 的张数会挂在一个空的选择框旁边（同 resetForm 收起两张信息卡的理由）。
+function cacheTerrainInspectSummary(summary) {
+    _terrainInspectSummary = summary;
+    renderTerrainTileEstimate();
+}
+
+function renderTerrainTileEstimate() {
+    const box = document.getElementById('localTerrainEstimate');
+    if (!box) return;
+
+    // 预告只对「上传 DEM」这条线成立：它算的全部是缓存里那批**上传文件**的层级
+    // 表。数据来源切到已下载的 DEM 任务时，initProcessTypeToggle 的 apply() 只藏
+    // 得掉上传行，而这一行在上传行之外（模板里它挨着档位下拉），留在原地就会拿
+    // 上一批上传文件的层级/张数/体积去讲一个毫不相干的任务 —— 在这里给一个自信
+    // 的错数比没有预告更糟。缓存不清：切回上传时那份汇总仍然对得上，不必再打一
+    // 次 /api/raster/inspect。
+    // ⚠️ 因此 dem_task 这条线**没有**预告，这不是漏了：/api/raster/inspect 的原料
+    //    是前端读本地文件头得来的，服务端够不着任务目录里的那些 DEM，无从起算。
+    if (document.getElementById('processSource')?.value !== 'upload') {
+        box.hidden = true;
+        box.textContent = '';
+        return;
+    }
+
+    const summary = _terrainInspectSummary;
+    const autoEl = document.getElementById('localTerrainMaxzoomAuto');
+    const numEl = document.getElementById('localTerrainMaxzoom');
+    const qualityEl = document.getElementById('localTerrainQuality');
+
+    // 基准层级的来源随「自动」开关换：勾着就用后端按源像素估的那个，没勾就用
+    // 数字框里的数（此时它不是 disabled）。
+    let base;
+    if (autoEl?.checked) {
+        base = summary?.recommended_maxzoom;
+    } else if (numEl && numEl.value !== '') {
+        // 空的数字框不是 z0 —— Number('') === 0，不挡的话会预告成「基准 z0」。
+        // 截断到整数：数字框收得下 14.5，而后端起切前自己就是 int(max_level)
+        // （cesiumlab_terrain.py）。不截的话标题写「实际 z13.5」，下面那个张数却
+        // 是 counts[13.5] 落空按 0 算之后 z8..z13 的和 —— 两个数出自不同的层级。
+        // Number('') 那道门仍在上面：空串照旧不显示，Math.trunc(NaN) 也还是 NaN。
+        base = Math.trunc(Number(numEl.value));
+    }
+    const counts = summary?.tile_counts;
+    // 跨 180° 的 DEM 一律不预告：raster_probe._tile_counts_per_level 的 docstring
+    // 写着这张表在跨界数据上会少算约六成（intersecting_tile_range 把超出 180 的
+    // 整段钳掉），那是刻意不补偿的已知边界。判据只能是东界本身 —— 它是并集做过
+    // +360 展开的证据；单文件跨界时那条 antimeridian 标记只落在该文件上，汇总里
+    // 是干净的，拿汇总的标记当判据会漏掉最常见的那一种。
+    const crossesAntimeridian = summary?.bounds_wgs84?.[2] > 180;
+    if (!Number.isFinite(base) || !Array.isArray(counts) || crossesAntimeridian) {
+        box.hidden = true;
+        box.textContent = '';
+        return;
+    }
+
+    // 偏移只从服务端渲染的 data-offset 读。取不到（没有下拉/属性缺失）按 0 算，
+    // 也就是基准档 —— 宁可少报一级，不要在这里塞一份猜的取值表。
+    const opt = qualityEl?.selectedOptions?.[0];
+    const offset = Number(opt?.dataset.offset) || 0;
+    // 与 build_terrain 同一道钳位：max(0, min(MAX_ZOOM, base + offset))。上界取
+    // counts.length - 1 而不是另写一个 21：那张表的长度就是 MAX_ZOOM + 1。
+    const level = Math.max(0, Math.min(counts.length - 1, base + offset));
+
+    // 起点也要跟着钳下来，与 build_terrain 的 min_level = min(min_level, max_level)
+    // 同一条：基准 8 配「比基准少一级」的档实际切到 z7，起点死守 8 的话循环一轮
+    // 都不进，预告会写成「约 0 张」。counts 是逐层数、不累加，区间在这里自己累。
+    let tiles = 0;
+    for (let z = Math.min(TERRAIN_MIN_LEVEL, level); z <= level; z++) tiles += counts[z] || 0;
+
+    const normalsEl = document.getElementById('localTerrainNormals');
+    const bytes = tiles * TERRAIN_TILE_BYTES * (normalsEl?.checked ? TERRAIN_NORMALS_FACTOR : 1);
+
+    box.hidden = false;
+    box.textContent = t('js.map.terrain.estimate', {
+        base: String(base),
+        level: String(level),
+        tiles: tiles.toLocaleString('zh-CN'),
+        size: _fmtBytes(bytes),
+    });
+    box.title = t('js.map.terrain.estimate_hint');
+}
+
 function _tifInfoSummaryBlock(summary) {
     const box = document.createElement('div');
     box.className = 'tif-info__summary';
@@ -1001,6 +1158,9 @@ async function updateTifInfo(inputId, cardId, mode) {
         el.hidden = true;
         el.textContent = '';
         el.classList.remove('tif-info--scroll');
+        // 文件被清空（含 resetForm 的重跑）时预告也要收起：留着的话，上一个任务
+        // 那份 DEM 的张数与体积会挂在一个空的选择框旁边。
+        if (mode === 'terrain') cacheTerrainInspectSummary(null);
         return;
     }
 
@@ -1038,6 +1198,8 @@ async function updateTifInfo(inputId, cardId, mode) {
         if (err && err.name === 'AbortError') return;
         if (stale()) return;
         _tifInfoMessage(el, t('js.map.tifinfo.failed', { error: err.message }), true);
+        // 这次探测没拿到任何东西，上一份汇总也不再对应现在选中的文件。
+        if (mode === 'terrain') cacheTerrainInspectSummary(null);
         return;
     }
     if (stale()) return;
@@ -1052,6 +1214,11 @@ async function updateTifInfo(inputId, cardId, mode) {
         el.appendChild(_tifInfoSummaryBlock(data.summary));
     }
     el.hidden = false;
+
+    // 汇总里有起切前预告要的全部原料（tile_counts / recommended_maxzoom /
+    // bounds_wgs84）。只在高程管线下缓存：等高线那次探测的汇总没有 tile_counts，
+    // 存进来只会把高程这份冲掉，预告静默消失。
+    if (mode === 'terrain') cacheTerrainInspectSummary(data.summary || null);
 }
 
 function updateLocalTerrainTifInfo() {
@@ -1117,6 +1284,34 @@ async function loadProcessDemTasks() {
         }), 'danger');
         setEmpty();
     }
+}
+
+// 任务行「处理」按钮的入口（task_list.js 的 processDem）：把已完成的高程
+// 下载任务转成地形切片任务。不另起提交链路 —— 打开处理弹窗并预选
+// 「本地高程切片 + 该任务」，档位/法线/层级都可调，「创建」走
+// submitLocalTerrain 生成新的 local_terrain 任务进时间流。
+async function openProcessForDemTask(demTaskId) {
+    const typeEl = document.getElementById('processType');
+    const sourceEl = document.getElementById('processSource');
+    const modalEl = document.getElementById('processModal');
+    if (!typeEl || !sourceEl || !modalEl || typeof bootstrap === 'undefined') return;
+    typeEl.value = 'local_terrain';
+    sourceEl.value = 'dem_task';
+    // 字段可见性由 initProcessTypeToggle 的 change 监听驱动，直接改 .value
+    // 不触发，必须补发事件。
+    typeEl.dispatchEvent(new Event('change'));
+    sourceEl.dispatchEvent(new Event('change'));
+    // source 的 change 监听里那次 loadProcessDemTasks() 不带 await；这里自己
+    // 再等一次（幂等重填），确保下拉开出选项后才能选中目标任务。
+    await loadProcessDemTasks();
+    const sel = document.getElementById('processDemTask');
+    if (sel && !sel.disabled) sel.value = String(demTaskId);
+    refreshSubmitButtonState();
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    setTimeout(function () {
+        const nameEl = document.getElementById('processTaskName');
+        if (nameEl) nameEl.focus();
+    }, 350);
 }
 
 // --- 等高线配色自定义 UI ------------------------------------------------------
@@ -1297,6 +1492,9 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
         // 否则下一次打开弹窗还挂着上一个任务那份 tif 的范围和层级。
         updateLocalTerrainTifInfo();
         updateContourTifInfo();
+        // 复选框被 form.reset() 拨回了默认值，但 reset 不触发 change：
+        // 层级数字框的禁用态得在这里跟上，否则自动挡勾着、数字框却能填。
+        syncLocalTerrainMaxzoomDisabled();
     }
 
     refreshSubmitButtonState();
@@ -1948,6 +2146,70 @@ let _previewState = null;   // { kind: 'imagery'|'terrain', taskId, taskType, na
 // 已切到另一个预览或关闭预览；await 返回后比对序号，过期结果直接丢弃不落地。
 let _previewSeq = 0;
 
+// --- 地形预览的进场薄雾 -------------------------------------------------------
+// 换 terrainProvider 是一次**没有中间态**的整球几何重建：赋值那一帧地面就从
+// 椭球（或上一份地形）跳成新地形，随后还要当着用户的面逐级细化。影像层有
+// alpha 可以淡入，地形没有——全球只有一个 provider，也没法让两份共存。
+// 所以拿一层雾把这一段盖过去：换之前起雾，视野瓦片落地之后散雾。
+// 等待信号与首屏 splash 同款（postRender 轮询 tilesLoaded + 上限兜底）。
+const _VEIL_MAX_WAIT_MS = 3000;
+// 淡出与元素移除之间的等待，必须 ≥ CSS 里 .map-transition-veil 的过渡时长
+// （0.35s），否则元素在淡出走完之前就被摘掉，看到的还是硬切。
+const _VEIL_FADE_OUT_MS = 400;
+let _veilRemoveTimer = null;
+
+function _showMapVeil() {
+    const host = document.querySelector('.index-map');
+    if (!host) return null;                 // 只有首页有地图容器
+    let veil = document.getElementById('mapTransitionVeil');
+    if (!veil) {
+        veil = document.createElement('div');
+        veil.id = 'mapTransitionVeil';
+        veil.className = 'map-transition-veil';
+        host.appendChild(veil);
+    }
+    if (_veilRemoveTimer) {                 // 上一次的移除计时器要作废
+        clearTimeout(_veilRemoveTimer);
+        _veilRemoveTimer = null;
+    }
+    // 下一帧才加类：同一帧里「插入 DOM + 加类」浏览器不会跑过渡，雾会瞬间出现。
+    requestAnimationFrame(function () { veil.classList.add('map-transition-veil--in'); });
+    return veil;
+}
+
+function _hideMapVeil() {
+    const veil = document.getElementById('mapTransitionVeil');
+    if (!veil) return;
+    veil.classList.remove('map-transition-veil--in');
+    if (_veilRemoveTimer) clearTimeout(_veilRemoveTimer);
+    _veilRemoveTimer = setTimeout(function () {
+        _veilRemoveTimer = null;
+        veil.remove();
+    }, _VEIL_FADE_OUT_MS);
+}
+
+// 视野瓦片落地即散雾；上限一到无论齐不齐都散。
+// 上限不是保险丝而是常态路径：flyTo 飞行期间相机一直在动，tilesLoaded 长时间
+// 为 false，只等它就等于把用户关在雾里。
+function _hideMapVeilWhenTilesSettle(maxWaitMs) {
+    if (!viewer) { _hideMapVeil(); return; }
+    let settled = false;
+    function finish() {
+        if (settled) return;
+        settled = true;
+        // 监听器必须显式摘：不摘的话每预览一次就多挂一个，永久累积在
+        // postRender 上（每帧都跑）。
+        viewer.scene.postRender.removeEventListener(onFrame);
+        _hideMapVeil();
+    }
+    function onFrame() {
+        if (!viewer.scene.globe.tilesLoaded) return;
+        finish();
+    }
+    viewer.scene.postRender.addEventListener(onFrame);
+    setTimeout(finish, maxWaitMs || _VEIL_MAX_WAIT_MS);
+}
+
 function stopTaskPreview() {
     _previewSeq += 1;   // 作废任何在途的 previewTask
     if (viewer && _previewState) {
@@ -1976,10 +2238,16 @@ async function previewTask(task) {
     if (!viewer) return;
     stopTaskPreview();
     const seq = _previewSeq;
+    // 只有换了地形 provider 的那条路会起雾（影像叠加没有几何跳变，罩一层雾
+    // 只是白闪一下）。散雾的责任跟着这个标记走。
+    let veiled = false;
     try {
         const taskType = task.task_type;
         if (taskType === 'map' || taskType === 'contour') {
-            const base = taskType === 'map' ? `/tiles/${task.id}` : `/contour/${task.id}`;
+            // 预览瓦片与底图共用页面级瓦片 origin（initTileOrigin() 已定）。
+            const base = taskType === 'map'
+                ? tileUrl(`/tiles/${task.id}`)
+                : tileUrl(`/contour/${task.id}`);
             const layer = viewer.imageryLayers.addImageryProvider(
                 new Cesium.UrlTemplateImageryProvider({
                     url: `${base}/{z}/{x}/{y}.png`,
@@ -1991,9 +2259,11 @@ async function previewTask(task) {
             _previewState = { kind: 'imagery', taskId: task.id, taskType: taskType, name: task.name, layer };
             if (taskType === 'contour') contourPreviewActiveId = task.id;
         } else if (taskType === 'local_terrain' || taskType === 'dem') {
+            // base 已经是解析过的绝对地址：下面的 layer.json / hillshade 元数据
+            // 请求和 CesiumTerrainProvider.fromUrl 都直接拿它拼，不再二次解析。
             const base = taskType === 'local_terrain'
-                ? `/terrain/local/${task.id}`
-                : `/terrain/dem/${task.id}`;
+                ? tileUrl(`/terrain/local/${task.id}`)
+                : tileUrl(`/terrain/dem/${task.id}`);
             // GET 而非 HEAD：layer.json 里的 valid_bounds 是数据真实范围，
             // 任务行没有 bbox（local_terrain）时靠它定位。
             const layerMeta = await fetch(`${base}/layer.json`)
@@ -2024,6 +2294,10 @@ async function previewTask(task) {
                     requestVertexNormals: true,
                 });
                 if (seq !== _previewSeq) return;
+                // 起雾必须在赋值之前：赋值那一帧几何就跳了，雾晚一步等于给
+                // 一次硬切加了个尾巴。散雾交给 tilesLoaded（下面 flyTo 之后）。
+                _showMapVeil();
+                veiled = true;
                 viewer.terrainProvider = provider;
                 _previewState = { kind: 'terrain', taskId: task.id, taskType: taskType, name: task.name, prevTerrainProvider: prev };
                 if (task.north == null && Array.isArray(layerMeta.valid_bounds) && layerMeta.valid_bounds.length === 4) {
@@ -2041,9 +2315,13 @@ async function previewTask(task) {
                     .catch(() => null);
                 if (seq !== _previewSeq) return;
                 if (hs && hs.url && Array.isArray(hs.bounds) && hs.bounds.length === 4) {
+                    // hs.url 是后端给的内部绝对路径（/terrain/{dem,local}/<id>/hillshade.png，
+                    // 见 routes/terrain_static.py），落在瓦片网关的 /terrain/ 前缀里。
+                    // 直接塞原值的话，前面的元数据请求都走了瓦片 origin、唯独这张
+                    // 用户真正看得见的图绕回主端口 —— 整条隔离链路只差最后一跳失效。
                     const layer = viewer.imageryLayers.addImageryProvider(
                         new Cesium.SingleTileImageryProvider({
-                            url: hs.url,
+                            url: tileUrl(hs.url),
                             rectangle: Cesium.Rectangle.fromDegrees(hs.bounds[0], hs.bounds[1], hs.bounds[2], hs.bounds[3]),
                         })
                     );
@@ -2069,9 +2347,14 @@ async function previewTask(task) {
                 duration: 1.2,
             });
         }
+        // 排在 flyTo 之后：雾要盖到「相机停稳 + 那一片瓦片落地」为止。
+        if (veiled) _hideMapVeilWhenTilesSettle();
         _renderPreviewChip();
         updateContourPreviewButtons();
     } catch (err) {
+        // 雾必须撤：起雾之后抛出的话（换完 provider 再出错），地图会一直蒙着，
+        // 而散雾的那条路已经不会走到了。这里立刻撤，不等瓦片。
+        if (veiled) _hideMapVeil();
         // fromUrl reject / 网络异常等：只有仍是当前预览时才打扰用户;
         // 过期调用的报错随结果一起丢弃。
         if (seq === _previewSeq) {
@@ -2257,15 +2540,21 @@ function syncContourPreviewFromLatest() {
 }
 
 async function submitLocalTerrain() {
-    // 来源是已下载的 DEM 任务时不走上传管线，见 startDemTaskTerrainTiling()。
-    if ((document.getElementById('processSource')?.value || 'upload') === 'dem_task') {
-        await startDemTaskTerrainTiling();
-        return;
-    }
-
+    // 两种来源：上传 GeoTIFF，或零拷贝复用某个已完成 DEM 任务已下载的 .tif
+    // （任务行「处理」按钮最终也落到这张表单）。两条路殊途同归 —— 都在
+    // /api/terrain/local/tasks 建一个新的 local_terrain 任务进时间流。
+    // 早前 dem_task 分支复用 DEM 任务自己的切片作业（不新建任务、进度只能在
+    // 详情弹窗里看），与「转出一个新任务」的预期相反，已改。
+    const fromDemTask = (document.getElementById('processSource')?.value || 'upload') === 'dem_task';
+    const demTaskId = _selectedProcessDemTaskId();
     const fileInput = document.getElementById('localTerrainFiles');
     const files = fileInput?.files;
-    if (!files || files.length === 0) {
+    if (fromDemTask) {
+        if (!demTaskId) {
+            showNotification(t('js.map.process.need_dem_task'), 'warning');
+            return;
+        }
+    } else if (!files || files.length === 0) {
         showNotification(t('js.map.process.need_files'), 'warning');
         return;
     }
@@ -2277,9 +2566,12 @@ async function submitLocalTerrain() {
     // 默认（后端 local_terrain_api 的 create_local_terrain_task 把空串当未传）。
     // 写死 '14' / 'balanced'
     // 会在控件缺席或被清空时用前端的默认盖掉运维配的 terrain_local_maxzoom /
-    // terrain_quality_preset —— 而 DEM 分支（startDemTaskTerrainTiling）本来就送空串，
-    // 两边不一致就是同一份 DEM 从两个入口切出不同产物。
-    fd.append('maxzoom', document.getElementById('localTerrainMaxzoom')?.value || '');
+    // terrain_quality_preset。
+    // 勾了「自动」就送字面量 'auto'，不是数字框里那个陈旧的数 —— 数字框在自动挡
+    // 下是 disabled 的，它的 value 只是用户取消勾选后的起点。
+    const maxzoomAutoEl = document.getElementById('localTerrainMaxzoomAuto');
+    const maxzoomEl = document.getElementById('localTerrainMaxzoom');
+    fd.append('maxzoom', maxzoomAutoEl?.checked ? 'auto' : (maxzoomEl?.value || ''));
     fd.append('quality', document.getElementById('localTerrainQuality')?.value || '');
     // ⚠️ 法线必须送 checked 状态。checkbox 的 .value 恒为 'on'（与勾没勾无关），
     // 把它或 checkbox 本身丢进 FormData 送出去的都是 'on'，而后端
@@ -2287,14 +2579,19 @@ async function submitLocalTerrain() {
     // 配置默认，不要送 'undefined'。
     const normalsEl = document.getElementById('localTerrainNormals');
     fd.append('vertex_normals', normalsEl ? String(normalsEl.checked) : '');
-    for (const f of files) {
-        fd.append('files', f);
+    if (fromDemTask) {
+        fd.append('dem_task_id', demTaskId);
+    } else {
+        for (const f of files) {
+            fd.append('files', f);
+        }
     }
 
     const btn = document.getElementById('createProcessBtn');
     btn.disabled = true;
     const original = btn.innerHTML;
-    btn.innerHTML = t('js.map.process.uploading');
+    // dem_task 分支一个字节都不上传，按钮文案不能写「上传中...」。
+    btn.innerHTML = t(fromDemTask ? 'js.map.process.submitting' : 'js.map.process.uploading');
     try {
         const resp = await fetch('/api/terrain/local/tasks', { method: 'POST', body: fd });
         if (!resp.ok) {
@@ -2308,7 +2605,9 @@ async function submitLocalTerrain() {
             return;
         }
         const result = await resp.json();
-        showNotification(t('js.map.process.upload_started', { id: result.task_id }), 'success');
+        showNotification(fromDemTask
+            ? t('js.map.process.terrain_started_dem_task', { id: demTaskId })
+            : t('js.map.process.upload_started', { id: result.task_id }), 'success');
         resetForm({ clearBounds: false, formId: 'processForm' });
         loadActiveTasks();
         _afterTaskCreated('processModal');
@@ -2316,55 +2615,6 @@ async function submitLocalTerrain() {
         showNotification(t('js.map.process.upload_failed', { error: err.message }), 'danger');
     } finally {
         btn.innerHTML = original;
-        refreshSubmitButtonState();
-    }
-}
-
-// 「本地高程切片 + 已下载的 DEM 任务」刻意不新建 local_terrain 任务，而是复用 DEM
-// 任务自己的地形切片管线（POST /api/terrain/dem/<id>/start）：它的产物落在
-// /terrain/dem/<id>/，主视图预览、任务详情面板、terrain_job_progress 进度推送全都
-// 已经接好。另建一条 local_terrain 任务只会把同一份 DEM 切出第二个副本，白占磁盘，
-// 还让历史记录里出现两条指向同一数据的任务。
-async function startDemTaskTerrainTiling() {
-    const demTaskId = _selectedProcessDemTaskId();
-    if (!demTaskId) {
-        showNotification(t('js.map.process.need_dem_task'), 'warning');
-        return;
-    }
-
-    // 这条分支不上传任何文件，所以不套「上传中...」的按钮文案，只在请求期间禁用。
-    const btn = document.getElementById('createProcessBtn');
-    btn.disabled = true;
-    try {
-        // 三个字段的空串一律表示「未传，走配置默认」（后端 terrain_api 的
-        // start_dem_tiling 把空串归一成 None）。
-        // 法线在这条分支送的是真布尔：JSON body 不做字符串化，后端
-        // coerce_vertex_normals 同时收真布尔与 'true'/'false' 两种形态。
-        // 同样不能读 checkbox 的 .value —— 它恒为 'on'，后端白名单不认，400。
-        const normalsEl = document.getElementById('localTerrainNormals');
-        const resp = await fetch(`/api/terrain/dem/${demTaskId}/start`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                maxzoom: document.getElementById('localTerrainMaxzoom')?.value || '',
-                quality: document.getElementById('localTerrainQuality')?.value || '',
-                vertex_normals: normalsEl ? normalsEl.checked : '',
-            }),
-        });
-        if (resp.ok) {
-            showNotification(t('js.map.process.dem_tiling_started', { id: demTaskId }), 'success');
-            resetForm({ clearBounds: false, formId: 'processForm' });
-            loadActiveTasks();
-            _afterTaskCreated('processModal');
-        } else {
-            const result = await resp.json().catch(() => ({}));
-            showNotification(t('js.map.process.start_failed', {
-                error: result.error || resp.status,
-            }), 'danger');
-        }
-    } catch (err) {
-        showNotification(t('js.map.process.start_failed', { error: err.message }), 'danger');
-    } finally {
         refreshSubmitButtonState();
     }
 }

@@ -128,7 +128,7 @@ base 自己的 `layer.json` **不带** `parentUrl`（`patch_layer_json_parent` �
 两者的生效方式**不一样**，别搞混：
 
 - `terrain_global_base_path` —— 服务端路由每次请求读（带 5 秒缓存），**改完即时生效**。
-- `terrain_base_parent_url` —— 在切片时被固化写进任务的 `layer.json`，**改完只影响之后新建的任务**；已有任务要么手改它的 `layer.json`，要么重新切片。详见 [`cesiumjs-loading.md`](cesiumjs-loading.md) 的 §4。
+- `terrain_base_parent_url` —— 在切片时被固化写进任务的 `layer.json`，**改完只影响之后新建的任务**；已有任务要么手改它的 `layer.json`，要么重新切片。默认值是应用内相对路径 `/terrain/base`，由浏览器继承提供 `layer.json` 的 origin，换端口/反代/远程访问都不用改它；只有指向另一套地形服务时才需要配完整 http(s) 地址。详见 [`cesiumjs-loading.md`](cesiumjs-loading.md) 的 §4。
 
 ## 关于 `scripts/build_global_base_terrain.ps1`
 

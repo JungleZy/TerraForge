@@ -130,3 +130,79 @@ def test_terrain_dem_deleted_task_stops_serving(monkeypatch, tmp_path):
     assert (tiles / "layer.json").exists(), "delete_files=false 不应动磁盘"
 
     assert client.get(f"/terrain/dem/{task_id}/layer.json").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 存量 layer.json 的 parentUrl 按【响应期】归一
+#
+# 磁盘上已经切好的任务里固化着 `http://localhost:5000/terrain/...`：瓦片现在可能
+# 由 5001 专用 origin 提供，那个地址会把父级请求绕回主连接池；远程访问时
+# `localhost` 更是指向客户端本机 —— 两种情况都是 404，而 Cesium 对这个 404 不
+# 报错，它塞一个假 heightmap-1.0 图层并把 heightmapStructure 写在共享 builder 上，
+# 于是任务自己的 quantized-mesh 瓦片也按 heightmap 解析（实测 4154 m 山峰解成
+# -744 m，控制台零报错）。
+#
+# 改在响应里而不是回写磁盘：切片产物是用户数据，服务端不该在 GET 上改它；而且
+# 目录可能只读、也可能被拷到别处，回写既不可靠也没必要。
+# ---------------------------------------------------------------------------
+
+
+def _seed_layer_json(tmp_path, parent_url: str) -> int:
+    import json
+
+    default = tmp_path / "downloads" / "dem"
+    task_id = _insert_dem_task(str(default))
+    tiles = default / f"dem_task_{task_id}" / "terrain_tiles"
+    tiles.mkdir(parents=True)
+    (tiles / "layer.json").write_text(json.dumps({
+        "tilejson": "2.1.0",
+        "format": "quantized-mesh-1.0",
+        "parentUrl": parent_url,
+    }), encoding="utf-8")
+    return task_id
+
+
+def test_legacy_localhost_parent_url_is_relative_in_the_response(monkeypatch, tmp_path):
+    """存量的 http://localhost:5000/terrain/base 在响应里变成 /terrain/base。"""
+    import json
+
+    client = _load_client(monkeypatch, tmp_path)
+    task_id = _seed_layer_json(tmp_path, "http://localhost:5000/terrain/base")
+
+    r = client.get(f"/terrain/dem/{task_id}/layer.json")
+    assert r.status_code == 200
+    assert json.loads(r.data)["parentUrl"] == "/terrain/base"
+    # 其余字段原样保留
+    assert json.loads(r.data)["format"] == "quantized-mesh-1.0"
+
+    # 磁盘文件不能被改动 —— 归一只发生在响应期
+    on_disk = json.loads(
+        (tmp_path / "downloads" / "dem" / f"dem_task_{task_id}" / "terrain_tiles"
+         / "layer.json").read_text(encoding="utf-8"))
+    assert on_disk["parentUrl"] == "http://localhost:5000/terrain/base"
+
+
+def test_external_parent_url_is_served_unchanged(monkeypatch, tmp_path):
+    """部署者配置的外部地形服务不能被改写。"""
+    import json
+
+    client = _load_client(monkeypatch, tmp_path)
+    task_id = _seed_layer_json(tmp_path, "https://terrain.example.com/base")
+
+    r = client.get(f"/terrain/dem/{task_id}/layer.json")
+    assert r.status_code == 200
+    assert json.loads(r.data)["parentUrl"] == "https://terrain.example.com/base"
+
+
+def test_malformed_layer_json_is_served_as_is(monkeypatch, tmp_path):
+    """非 JSON / 解不开的 layer.json 保持原行为（原样发出，不 500）。"""
+    client = _load_client(monkeypatch, tmp_path)
+    default = tmp_path / "downloads" / "dem"
+    task_id = _insert_dem_task(str(default))
+    tiles = default / f"dem_task_{task_id}" / "terrain_tiles"
+    tiles.mkdir(parents=True)
+    (tiles / "layer.json").write_text("{not json", encoding="utf-8")
+
+    r = client.get(f"/terrain/dem/{task_id}/layer.json")
+    assert r.status_code == 200
+    assert r.data == b"{not json"

@@ -4,6 +4,7 @@ Static terrain serving routes
 Serve CesiumJS terrain resources (layer.json + .terrain files) from local downloads.
 """
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from src.core.config import Config
 from src.core.database import get_connection
 from src.services.config_manager import ConfigManager
 from src.services.hillshade_preview import ensure_hillshade
+from src.services.terrain_tiling.layer_json import normalize_parent_url
 # 读存量 output_path 的【唯一一套口径】。曾经这里另有一份
 # _resolve_dem_task_output_dir 走 geo_validation.resolve_output_dir，与 M10 的存量
 # 归一（`database.normalize_stored_output_paths`）对相对值的解释不同 —— 见 P1#5。
@@ -26,13 +28,58 @@ terrain_static_bp = Blueprint("terrain_static", __name__, url_prefix="/terrain")
 _GZIP_MAGIC = b"\x1f\x8b"
 
 
+def _relative_parent_layer_json(target: Path):
+    """存量 layer.json 的 parentUrl 按【响应期】归一；不需要改写时返回 None。
+
+    磁盘上已经切好的任务里固化着切片当时的 `terrain_base_parent_url`，旧值是
+    `http://localhost:5000/terrain/base`。瓦片现在可能由 5001 专用 origin 提供，
+    那个地址会把父级请求绕回主连接池；远程访问时 `localhost` 更是指向客户端
+    本机 —— 两种情况都是 404，而 Cesium 对这个 404 不报错：塞一个假的
+    heightmap-1.0 图层，并把 heightmapStructure 写在**共享的** builder 上，于是
+    任务自己的 quantized-mesh 瓦片也按 heightmap 解析（实测 4154 m 山峰解成
+    -744 m，瓦片全 200，控制台干净）。
+
+    只改响应、**不回写磁盘**：切片产物是用户数据，GET 不该改它；目录可能只读，
+    也可能被拷到别处，回写既不可靠也没必要。改写口径同样窄：外部地形服务的
+    scheme/host/port 不动，只做与写入侧一致的目录规整（见
+    layer_json.normalize_parent_url）。
+
+    返回 None = 「这份文件不用改」，由调用方走原来的 send_file 路径 —— 那条路径
+    还负责 gzip 魔数探测与缓存头，在这里重复一遍只会漏掉其中一样。
+    """
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None                      # 非 JSON / 读不了：保持原行为
+    if not isinstance(data, dict):
+        return None
+
+    original = data.get("parentUrl")
+    if not isinstance(original, str):    # 缺失或类型不对，不碰
+        return None
+    normalized = normalize_parent_url(original)
+    if normalized == original:
+        return None
+    if normalized is None:
+        data.pop("parentUrl", None)
+    else:
+        data["parentUrl"] = normalized
+    return jsonify(data)
+
+
 def _send_terrain_file(target: Path):
     """send_file wrapper for terrain resources.
 
     .terrain tiles are stored gzip-compressed on disk (see cesiumlab_terrain.py).
     Detect the gzip magic bytes and advertise Content-Encoding: gzip so browsers
     decompress transparently; plain files (layer.json) are served untouched.
+
+    layer.json 例外：存量文件里的旧 parentUrl 在响应期归一（磁盘不动）。
     """
+    if target.name == "layer.json":
+        resp = _relative_parent_layer_json(target)
+        if resp is not None:
+            return resp
     # 单 open：自己读出魔数后把同一文件对象交给 send_file（此前 send_file
     # 内部开一次、探测魔数又开一次，瓦片热路径上每请求两次 open）。
     f = None

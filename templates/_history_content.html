@@ -61,6 +61,25 @@
                             <button type="button" class="status-chip" data-status="failed" aria-pressed="false">{{ t('tpl.history.filter.failed') }}</button>
                             <button type="button" class="status-chip" data-status="completed" aria-pressed="false">{{ t('tpl.history.filter.completed') }}</button>
                         </div>
+                        {# 「处理」入口（2026-08 从地图左列工具条移来）：处理类任务
+                           是上传驱动、与框选无关，归任务列表比归地图工具条合理，
+                           所以和搜索/筛选同行、靠右（.task-filter-bar__action
+                           的 margin-left:auto）。尺寸走配置页那套行内动作按钮
+                           （.btn-compact 锁 --ctl-h，与同行 #searchInput 同高、
+                           同字号），配色用实心 .btn-primary：它是这一行里唯一
+                           的动作（搜索框与 chips 都是筛选），品牌蓝把它和中性
+                           的筛选控件区分开。两个类都是现成档位，不另起一档。
+                           只在首页任务面板渲染 ——
+                           #processModal 是 index.html 的标记，独立页 /history
+                           没有它，渲染出来只会是一颗打不开任何东西的按钮。 #}
+                        {% if records_panel|default(false) %}
+                        <button type="button" class="btn btn-primary btn-compact task-filter-bar__action"
+                                id="processOpenBtn" data-bs-toggle="modal" data-bs-target="#processModal"
+                                title="{{ t('tpl.index.toolbar.process_title') }}">
+                            {{ m.icon_process(14, gap='sm') }}
+                            {{ t('tpl.index.toolbar.process') }}
+                        </button>
+                        {% endif %}
                     </div>
                     <div id="historyTableBody">
                         <div class="spinner-container">

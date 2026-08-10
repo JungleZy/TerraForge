@@ -34,9 +34,11 @@
     <div class="index-map">
         <div id="map"></div>
         <!-- 左列工具条（Cesium 时代全自绘，不再借 Leaflet 控件容器）：
-             三组 —— 视图（放大/缩小）、框选（画矩形选区）、
-             功能（数据处理弹窗/任务面板/配置面板）。图标在上文字在下。
-             「下载」「删除」不是常驻入口：框选后出现在选区浮层上。 -->
+             四组 —— 视图（放大/缩小）、框选（画矩形选区）、地形光照、
+             面板（任务面板/配置面板）。图标在上文字在下。
+             「下载」「删除」不是常驻入口：框选后出现在选区浮层上；
+             「处理」也不在这里：它是任务入口，落在任务面板的筛选行右端
+             （_history_content.html 的 #processOpenBtn）。 -->
         <div class="map-toolbar" id="mapToolbar">
             <div class="map-panel-triggers">
                 <button type="button" class="map-panel-btn" id="mapZoomIn" aria-label="{{ t('tpl.index.toolbar.zoom_in') }}" title="{{ t('tpl.index.toolbar.zoom_in') }}">
@@ -74,12 +76,6 @@
                 </button>
             </div>
             <div class="map-panel-triggers" id="mapPanelTriggers">
-                <button type="button" class="map-panel-btn" id="processOpenBtn"
-                        data-bs-toggle="modal" data-bs-target="#processModal"
-                        aria-label="{{ t('tpl.index.toolbar.process_title') }}" title="{{ t('tpl.index.toolbar.process_title') }}">
-                    {{ m.icon_process(18, gap='') }}
-                    <span>{{ t('tpl.index.toolbar.process') }}</span>
-                </button>
                 <button type="button" class="map-panel-btn" data-panel="records" aria-label="{{ t('tpl.index.toolbar.tasks') }}" title="{{ t('tpl.index.toolbar.tasks_title') }}">
                     {{ m.icon_tasks(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.tasks') }}</span>
@@ -223,8 +219,9 @@
     </div>
 </div>
 
-<!-- 数据处理弹窗：左列「处理」按钮直接打开（data-bs-toggle）。
-     处理类任务（本地高程切片 / 等高线）都是上传驱动，不需要框选。 -->
+<!-- 数据处理弹窗：任务面板筛选行右端的「处理」按钮直接打开（data-bs-toggle）。
+     处理类任务（本地高程切片 / 等高线）都是上传驱动，不需要框选。
+     弹窗标记留在 body 直下：任务面板恒带 transform，装在里面会被遮罩盖住。 -->
 <div class="modal fade" id="processModal" tabindex="-1" aria-labelledby="processModalLabel" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -278,8 +275,8 @@
                         <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
                         {# 初值由 main.index() 的 _terrain_form_defaults 交付，这里只
                            负责渲染。写死 14 会和配置里的 terrain_local_maxzoom 打架 ——
-                           详情面板的起切按钮走配置，这张表单走写死值，同一份 DEM 从两个
-                           入口切出来的层级不一样。 #}
+                           表单把写死值显式发出去，配置页那一项就成了「改了没反应的假
+                           旋钮」（local_terrain_task_manager._default_maxzoom 的命名）。 #}
                         {# 而配置值又必须先过一遍这个控件自己的 min/max（钳位现在在路由里
                            做）：这个键登记在 config_manager._UNCONSTRAINED_KEYS（:316），
                            写入侧不校验，PUT /api/config 收得下 99；照直渲染成 value="99"
@@ -290,12 +287,28 @@
                            形态）。钳位之所以搬去路由：模板记不了日志，而被丢掉的 99 必须
                            当场留一条 warning，否则运维要等作业真跑起来才知道
                            （local_terrain_task_manager.py:128-130）。 #}
-                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21" value="{{ terrain_local_maxzoom }}">
+                        {# 「自动」= 按源数据分辨率现算基准层级（提交时送字面量 'auto'，
+                           后端 geo_validation.coerce_maxzoom 只认这一个写法）。它塞不进
+                           上面那个 min/max 数字框，所以单开一个控件。
+                           勾上时禁用数字框：disabled 的输入不参与原生校验，也不会让用户
+                           以为旁边那个数还算数。但数字框仍渲染出厂 14 —— 它是用户取消
+                           勾选后的起点。空 value 并不会让表单 :invalid（min/max 只管
+                           有值的控件，空值要 required 才拦），后果是静默的：取消勾选
+                           拿到一个空数字框，提交送空串，后端当「未表态」回落到配置默认
+                           的自动挡 —— 取消勾选等于没生效。
+                           勾选态同样由服务端渲染，写死就又造出一个「改了没反应」的假旋钮。 #}
+                        <div class="form-check mt-1">
+                            <input class="form-check-input" type="checkbox" id="localTerrainMaxzoomAuto"
+                                   {% if terrain_local_maxzoom_auto %}checked{% endif %}>
+                            <label class="form-check-label" for="localTerrainMaxzoomAuto">{{ t('tpl.index.process.local_terrain_maxzoom_auto') }}</label>
+                        </div>
+                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21"
+                               value="{{ terrain_local_maxzoom }}"
+                               {% if terrain_local_maxzoom_auto %}disabled{% endif %}>
                         {# 档位与法线的初值必须由**服务端**按配置渲染，不能写死。
-                           同一个 DEM 任务能从两个入口起切：这里（map.js 显式发字段）
-                           与历史页的起切按钮（不带 body、走配置默认）。写死初值就意味着
-                           两个入口的产物不一样 —— local_terrain_task_manager.py:135-136
-                           管这叫「改了没反应的假旋钮」。法线那条还不可逆：运维配了 true，
+                           写死初值，表单就会把那份值显式发出去盖掉配置页的设置 ——
+                           local_terrain_task_manager.py 的 _default_quality 管这叫
+                           「改了没反应的假旋钮」。法线那条还不可逆：运维配了 true，
                            用户不动复选框就会显式发 false，几小时切完才发现光照点不亮。 #}
                         {# terrain_quality_preset 同样由 _terrain_form_defaults 交付，
                            保证是取值表（geo_validation.TILING_QUALITY_OFFSETS）里的字面量
@@ -305,14 +318,32 @@
                            三个 if 全假会让浏览器自动选中第一个 option（精细，体积 3.3 倍）
                            —— tests/test_terrain_lighting_frontend.py 里按取值表遍历
                            option 的那条断言钉的就是这个。 #}
+                        {# data-offset 是**服务端**渲染的偏移量（terrain_quality_offsets
+                           就是 geo_validation.TILING_QUALITY_OFFSETS）：起切前的规模预告
+                           要按「基准 + 偏移」算实际层级，而那张取值表只许有一份 ——
+                           在 map.js 里抄第二份，改了档位偏移之后预告与产物就静默对不上。 #}
                         <label for="localTerrainQuality" class="form-label mt-2">{{ t('tpl.index.process.terrain_quality') }}</label>
                         <select class="form-select" id="localTerrainQuality">
-                            <option value="precision" {% if terrain_quality_preset == 'precision' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_precision') }}</option>
+                            <option value="precision" data-offset="{{ terrain_quality_offsets['precision'] }}"
+                                    {% if terrain_quality_preset == 'precision' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_precision') }}</option>
                             {# 均衡这条不再是兜底档：值在路由里已经收干净了。 #}
-                            <option value="balanced" {% if terrain_quality_preset == 'balanced' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_balanced') }}</option>
-                            <option value="speed" {% if terrain_quality_preset == 'speed' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_speed') }}</option>
+                            <option value="balanced" data-offset="{{ terrain_quality_offsets['balanced'] }}"
+                                    {% if terrain_quality_preset == 'balanced' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_balanced') }}</option>
+                            <option value="speed" data-offset="{{ terrain_quality_offsets['speed'] }}"
+                                    {% if terrain_quality_preset == 'speed' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_speed') }}</option>
                         </select>
                         <small class="form-text text-muted">{{ t('tpl.index.process.terrain_quality_hint') }}</small>
+
+                        {# 起切前的规模预告：层级由「自动/手动」与档位共同决定。
+                           数字是估算 —— 真实基准层级由 build_terrain 用**物化后**的
+                           合并栅格现算，产物事实以任务详情的 effective_maxzoom 为准。
+                           内容全部由 map.js 的 renderTerrainTileEstimate() 填，
+                           没有汇总（还没选文件）时保持 hidden；数据来源不是「上传
+                           DEM」时同样收起 —— 它算的是上传文件那一份汇总。
+                           aria-live 同上面那张信息卡：这一行是动态注入的、又是唯一
+                           的规模警告，不播报读屏用户就拿不到（提示文案只挂在 title
+                           上，触屏同样够不着）。 #}
+                        <div class="tif-info" id="localTerrainEstimate" aria-live="polite" hidden></div>
 
                         <div class="form-check mt-2">
                             {# 布尔配置在库里存的是字符串（database.py:99），照 _config_content.html:271 的写法比 'true'。 #}
@@ -471,11 +502,12 @@
    DOMContentLoaded 之前 —— 所以本块必须等那个事件。
    ⚠️ 内联脚本的 defer 属性是**无效**的（规范只对有 src 的脚本生效），
    写了也会立刻执行，那时 initMap 等函数一个都还不存在。 #}
-{# 每个 init 单独 try/catch：改前它们是一串裸调用，initMap 抛异常
-   （WebGL 不可用、Cesium 资源缺失）会带走后面全部 —— 尤其是 initTasks，
-   它挂 socket 任务监听，丢了就整页收不到实时推送，而用户只看到一张打不开
-   的地图，不会想到「任务列表也一起哑了」。
-   失败原因照旧走 window.onerror -> splash 的错误位（见 map.js initSplash）。 #}
+{# 每个 init 都经 _boot 隔离：同步异常由 try/catch 记录后吞掉；fn() 返回
+   Promise 时，rejection 也由 .catch 记录后吞掉，不能形成无人处理的拒绝。
+   _boot 必须把普通返回值或接过 catch 的 Promise 交还调用方：tileOriginReady
+   要拿它做双 rAF 后的门控，包装时丢掉返回值会让整支地图初始化静默失效。
+   探测同步抛时 _boot 没有返回值，所以调用处用 `|| Promise.resolve(false)`
+   补一个已决 Promise；initTasks 仍照常启动，mapReady 也始终有可续延的门控。 #}
 {# JS 全局 `config` 只含 map.js 真正读的那几个键（服务端白名单
    routes/main.py:MAP_CONFIG_KEYS）。曾经是全量的 config|tojson（45 个键）——
    里面有 earthdata_password、proxy_url（含 user:pass@）和 tile_servers（上游
@@ -484,38 +516,52 @@
    的模板不许有裸中文（tests/test_i18n.py 钉住）。 #}
 <script>
     const config = {{ map_config|tojson }};
+    const basemapDescriptor = {{ basemap|tojson }};
 
     function _boot(label, fn) {
         try {
-            fn();
+            const result = fn();
+            if (result && typeof result.catch === 'function') {
+                return result.catch(function (e) {
+                    console.error('[boot] ' + label + ' failed:', e);
+                });
+            }
+            return result;
         } catch (e) {
             console.error('[boot] ' + label + ' failed:', e);
         }
     }
 
-    {# splash 先启动（只读 DOM，不碰 Cesium），再让出两帧才做同步阻塞的那段。
+    {# splash 启动后，瓦片健康探测与任务 API/Socket.IO 立即并行发出；探测只
+       阻挡 Cesium Viewer 及依赖 viewer 的初始化，不能把任务请求也关在后面。
 
        Cesium 的 Viewer 构造是**同步**的：5.7MB 引擎解析完之后还要建 WebGL
-       上下文、发首批瓦片请求，整段占住主线程。紧挨着 initSplash() 调用时
-       splash 的第一帧到不了屏幕 —— 进度条和「正在初始化地图引擎」的文案要等
-       构造结束才一起出现，用户看到的是一段黑屏而不是加载动画。
+       上下文、发首批瓦片请求，整段占住主线程。即使健康探测很快完成，也仍须
+       让出两帧，避免 splash 的第一帧到不了屏幕，用户先看到一段黑屏。
 
        两个 rAF 而不是一个：单个 rAF 的回调仍在**本帧**渲染前执行，浏览器还没
        把 splash 合成上屏；要等第二帧的回调才保证前一帧已经上屏。
 
-       顺序不能动：initMapWorkbench 等读 viewer（map.js 里有
+       Promise 续体里的顺序不能动：initMapWorkbench 等读 viewer（map.js 里有
        `if (!viewer) return` 守卫），排在 initMap 之前会静默失效。 #}
     document.addEventListener('DOMContentLoaded', function () {
         _boot('splash', initSplash);
+        const tileOriginReady = _boot('tileOrigin', function () {
+            return initTileOrigin(basemapDescriptor.tile_port);
+        }) || Promise.resolve(false);
+        _boot('tasks', initTasks);
         requestAnimationFrame(function () {
             requestAnimationFrame(function () {
-                _boot('map', function () { initMap(config, {{ basemap|tojson }}); });
-                _boot('workbench', initMapWorkbench);
-                _boot('downloadTypeToggle', initDownloadTypeToggle);
-                _boot('processTypeToggle', initProcessTypeToggle);
-                _boot('mapStylePreview', initMapStylePreview);
-                _boot('tasks', initTasks);
-                _boot('contourPreview', initContourPreview);
+                _boot('mapReady', function () {
+                    return tileOriginReady.then(function () {
+                        _boot('map', function () { initMap(config, basemapDescriptor); });
+                        _boot('workbench', initMapWorkbench);
+                        _boot('downloadTypeToggle', initDownloadTypeToggle);
+                        _boot('processTypeToggle', initProcessTypeToggle);
+                        _boot('mapStylePreview', initMapStylePreview);
+                        _boot('contourPreview', initContourPreview);
+                    });
+                });
             });
         });
     });

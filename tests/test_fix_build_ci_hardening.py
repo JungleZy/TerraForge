@@ -163,6 +163,174 @@ def test_cleanup_still_runs_between_smoke_test_and_packaging():
 
 
 # ---------------------------------------------------------------------------
+# 冒烟测试必须同时验证主端口首页与瓦片端口健康端点
+# ---------------------------------------------------------------------------
+#
+# 瓦片专用端口（主端口 + 1，见 src/core/tile_server.py）是打包产物里最容易
+# 「构建成功但运行不起来」的一块：它由 server_runner 在**真正提供服务**的进程
+# 里另起一个 werkzeug listener，冻结产物的线程/端口行为与源码跑法未必一致，
+# 而绑定失败被设计成静默降级（返回 None，主服务照常 200）。只探 5000 的冒烟
+# 测试对这类回归**永远报绿** —— 用户拿到的是一个瓦片全走同源、首屏照旧被
+# 连接池堵死的包。所以两个端口各要一条独立判据：首页 200 + /tile-health 204。
+
+SMOKE_STEP = "Smoke test executable"
+
+MAIN_PROBE_URL = "http://127.0.0.1:5000/"
+TILE_PROBE_URL = "http://127.0.0.1:5001/tile-health"
+
+
+def _smoke_script(wf_rel):
+    """冒烟脚本，替掉 GitHub 表达式后可以在本地 bash 里真跑。
+
+    `${{ runner.os }}` 对 bash 是 bad substitution，本地按 Linux runner 展开
+    —— 校验的是探测与判定逻辑，跑在哪个平台上不影响结论。
+    """
+    return _step_script(wf_rel, SMOKE_STEP).replace("${{ runner.os }}", "Linux")
+
+
+def _run_smoke(script, tmp_path, main_code, tile_code, ready_after=1):
+    """真跑冒烟脚本：假 exe 只负责活着，假 curl 按 URL 给定状态码。
+
+    `ready_after` 模拟慢启动：每个 URL 的前 `ready_after - 1` 次探测一律回
+    `000`（连不上），第 `ready_after` 次起才给上面指定的码。默认 1 = 一探即中。
+    计数按 URL 分开存在 $SMOKE_CALLS 目录里 —— 靠它才能分辨「探测写在重试
+    循环里」和「探测被提到循环外只跑一次」。
+
+    stub 目录里还放了一个立即返回的 `sleep` —— 否则失败路径要空转
+    30 × 2 秒。假 exe 用绝对路径的 /bin/sleep，绕开这个 stub。
+    """
+    dist = tmp_path / "dist" / "terraforge"
+    dist.mkdir(parents=True)
+    exe = dist / "terraforge"
+    exe.write_text("#!/bin/sh\nexec /bin/sleep 120\n", encoding="utf-8")
+    exe.chmod(0o755)
+
+    calls = tmp_path / "curl-calls"
+    calls.mkdir()
+
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir()
+    curl = stub_bin / "curl"
+    curl.write_text(
+        "#!/bin/sh\n"
+        'for arg in "$@"; do url=$arg; done\n'  # URL 是最后一个实参
+        'case "$url" in\n'
+        f"  *tile-health) kind=tile; code='{tile_code}' ;;\n"
+        f"  *) kind=main; code='{main_code}' ;;\n"
+        "esac\n"
+        'n=$(cat "$SMOKE_CALLS/$kind" 2>/dev/null || echo 0)\n'
+        "n=$((n + 1))\n"
+        'printf "%s" "$n" > "$SMOKE_CALLS/$kind"\n'
+        f'if [ "$n" -ge {ready_after} ]; then printf "%s" "$code";'
+        ' else printf "%s" 000; fi\n', encoding="utf-8")
+    curl.chmod(0o755)
+    fast_sleep = stub_bin / "sleep"
+    fast_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fast_sleep.chmod(0o755)
+
+    env = dict(os.environ,
+               PATH=str(stub_bin) + os.pathsep + os.environ["PATH"],
+               SMOKE_CALLS=str(calls))
+    return subprocess.run([REAL_BASH, "-eo", "pipefail", "-c", script],
+                          cwd=str(tmp_path), capture_output=True, text=True,
+                          timeout=120, env=env)
+
+
+@pytest.mark.parametrize("wf", [BUILD_WF, TEST_WF])
+def test_smoke_probes_both_the_main_page_and_the_tile_health_endpoint(wf):
+    """两个 URL 都要在脚本里，缺哪个都等于那一半没被冒烟覆盖。"""
+    script = _smoke_script(wf)
+    assert MAIN_PROBE_URL in script, f"{wf} 的冒烟测试没探主端口首页"
+    assert TILE_PROBE_URL in script, f"{wf} 的冒烟测试没探瓦片端口健康端点"
+
+
+def _verdict_line(proc, token):
+    """取出唯一一行判定输出（FAILED / OK），顺带钉住「只报一次」。"""
+    out = proc.stdout + proc.stderr
+    hits = [ln for ln in out.splitlines() if token in ln]
+    assert len(hits) == 1, f"期望恰好一行 {token}，实际 {hits!r}\n{out}"
+    return hits[0]
+
+
+@pytest.mark.parametrize("wf", [BUILD_WF, TEST_WF])
+@needs_bash
+def test_smoke_passes_only_when_both_endpoints_answer_as_specified(wf, tmp_path):
+    """首页 200 且健康端点 204 才放行 —— 204 不能被当成「非 200 即失败」。
+
+    成功那一行必须把两条判据都写出来：只打「Smoke test OK」的话，看构建日志
+    的人无从判断瓦片端口到底被探过没有（这正是这次要堵的洞的表现形式）。
+    """
+    proc = _run_smoke(_smoke_script(wf), tmp_path, main_code="200", tile_code="204")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    line = _verdict_line(proc, "OK")
+    assert re.search(r"main\D*200\b", line), f"{wf}: 成功信息没写主端口判据: {line!r}"
+    assert re.search(r"tile\D*204\b", line), f"{wf}: 成功信息没写瓦片端口判据: {line!r}"
+
+
+@pytest.mark.parametrize("wf", [BUILD_WF, TEST_WF])
+@pytest.mark.parametrize("main_code,tile_code", [
+    ("000", "204"),   # 主服务没起来
+    ("200", "000"),   # 瓦片端口没起来 —— 旧脚本在这里报绿
+    ("200", "404"),   # 端口在听，但 /tile-health 没挂上
+    ("503", "404"),   # 两边都不对，且两个码互不相同 —— 能验出张冠李戴
+])
+@needs_bash
+def test_smoke_failure_reports_both_actual_status_codes(wf, tmp_path,
+                                                        main_code, tile_code):
+    """失败必须红，且失败信息要能直接定位是哪一个端口、实际拿到什么码。
+
+    冒烟失败时 runner 上的进程已经被 kill、服务日志只剩 `tail -30`，这一行
+    往往是唯一能说明「主服务其实是好的，瓦片端口没起来」的证据。只打一句
+    「Smoke test FAILED」等于把人重新推回去复现一遍。
+
+    正则把**标签和码绑在一起**（`main\\D*<code>`），所以两个变量写反了也会红。
+    """
+    proc = _run_smoke(_smoke_script(wf), tmp_path, main_code=main_code,
+                      tile_code=tile_code)
+    assert proc.returncode != 0, (
+        f"{wf}: main={main_code} tile={tile_code} 却报绿\n" + proc.stdout)
+    line = _verdict_line(proc, "FAILED")
+    assert re.search(rf"main\D*{main_code}\b", line), \
+        f"{wf}: 失败信息里主端口的实际状态码不对/缺失: {line!r}"
+    assert re.search(rf"tile\D*{tile_code}\b", line), \
+        f"{wf}: 失败信息里瓦片端口的实际状态码不对/缺失: {line!r}"
+
+
+@pytest.mark.parametrize("wf", [BUILD_WF, TEST_WF])
+@needs_bash
+def test_both_probes_are_retried_inside_the_loop(wf, tmp_path):
+    """两个探测都必须在重试循环**内**，否则慢启动的那一个永远是 000。
+
+    冻结产物的两个 listener 不是同时就绪的：主服务先 bind，瓦片端口在
+    server_runner 里随后另起线程。谁被提到循环外只探一次，谁就会稳定拿到
+    连不上的 000 —— 而且在开发机上未必复现（本地起得快），只在 runner 上翻红。
+    这里让两个 URL 都到第 3 次探测才就绪，脚本仍须通过。
+    """
+    proc = _run_smoke(_smoke_script(wf), tmp_path, main_code="200",
+                      tile_code="204", ready_after=3)
+    assert proc.returncode == 0, (
+        f"{wf}: 有探测没写在重试循环里（慢启动就绪前只探了一次）\n"
+        + proc.stdout + proc.stderr)
+    for kind in ("main", "tile"):
+        n = int((tmp_path / "curl-calls" / kind).read_text(encoding="utf-8"))
+        assert n >= 3, f"{wf}: {kind} 只被探了 {n} 次 —— 它不在重试循环里"
+
+
+@pytest.mark.parametrize("wf", [BUILD_WF, TEST_WF])
+def test_smoke_kills_the_process_before_reporting_failure(wf):
+    """teardown 顺序：两个探测都做完 → kill → 才轮到判定与 exit 1。
+
+    把 exit 提到 kill 前面的话，冒烟失败会在 runner 上留下一个还监听着
+    5000/5001 的孤儿进程，同 job 后续步骤（清理、打包）跟着遭殃。
+    """
+    script = _smoke_script(wf)
+    assert script.index(TILE_PROBE_URL) < script.index("kill "), \
+        f"{wf}: 瓦片探测跑在 kill 之后了"
+    assert script.index("kill ") < script.index("exit 1"), \
+        f"{wf}: 失败退出排在 kill 之前，会留下孤儿进程"
+
+
+# ---------------------------------------------------------------------------
 # P1#13：最容易炸构建的两个依赖必须钉住
 # ---------------------------------------------------------------------------
 

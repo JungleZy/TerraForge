@@ -447,7 +447,8 @@ def test_preset_control_ids_match_on_both_sides():
     """
     js = _strip_js_comments(_map_js())
     html = _read(INDEX_HTML)
-    for el_id in ('localTerrainQuality', 'localTerrainNormals'):
+    for el_id in ('localTerrainQuality', 'localTerrainNormals',
+                  'localTerrainMaxzoomAuto'):
         assert f"getElementById('{el_id}')" in js, (
             f'map.js 没有取 {el_id} —— 提交时不会带上这个参数')
         assert f'id="{el_id}"' in html, (
@@ -525,11 +526,10 @@ def _option_tag(block, value):
 def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path, caplog):
     """渲染级：三个控件（层级 / 档位 / 法线）的初值都必须跟着配置走，不能写死。
 
-    同一个 DEM 任务有**两个**起切入口：这张表单（map.js 显式发 quality /
-    vertex_normals）和历史页详情面板的起切按钮（不带 body，走配置默认）。
-    初值写死就意味着同一份 DEM 从两个入口切出来的产物不一样 —— 层级不同、
-    带不带法线不同，而界面上零提示。本仓给这个形态命过名：
-    local_terrain_task_manager._default_quality 的「改了没反应的假旋钮」。
+    初值写死，表单就会把那份写死值**显式**发出去盖掉运维在配置页配的
+    terrain_local_maxzoom / terrain_quality_preset / terrain_vertex_normals ——
+    本仓给这个形态命过名：local_terrain_task_manager._default_quality 的
+    「改了没反应的假旋钮」。
 
     法线那半边还是**不可逆**的：运维把 terrain_vertex_normals 配成 true，
     用户不动这个复选框，表单就会显式发 false 把它关掉，几小时切完之后光照
@@ -552,14 +552,16 @@ def test_preset_controls_render_the_configured_defaults(monkeypatch, tmp_path, c
     assert not repaired, f'配置完全合法，却报告了「改用出厂默认」：{repaired}'
     assert 'selected' in _option_tag(block, 'speed'), (
         '配置是 speed，渲染出来的下拉却没选中它 —— 表单会把 balanced 显式发出去，'
-        '同一个任务从详情面板起切却是 speed')
+        '配置页那一项就成了假旋钮')
     assert 'selected' not in _option_tag(block, 'balanced'), (
         '两个 option 同时 selected，浏览器取最后一个 —— 初值就成了掷骰子')
-    maxzoom = re.search(r'<input[^>]*id="localTerrainMaxzoom"[^>]*>', block)
-    assert maxzoom and 'value="16"' in maxzoom.group(0), (
+    maxzoom, maxzoom_auto = _maxzoom_tags(block)
+    assert 'value="16"' in maxzoom, (
         f'配置 terrain_local_maxzoom=16，输入框却不是 16 —— 详情面板起切用 16、'
-        f'这张表单发 14，同一份 DEM 两个入口切出不同层级：'
-        f'{maxzoom.group(0) if maxzoom else "找不到控件"}')
+        f'这张表单发 14，同一份 DEM 两个入口切出不同层级：{maxzoom}')
+    assert 'checked' not in maxzoom_auto, (
+        f'配置是数字 16，自动挡却勾上了 —— 表单会送 auto 盖掉这个 16，'
+        f'层级不可逆，发现时只能重切：{maxzoom_auto}')
     normals = re.search(r'<input[^>]*id="localTerrainNormals"[^>]*>', block)
     assert normals and 'checked' in normals.group(0), (
         f'配置开了法线，复选框却没勾上 —— 用户不动它就会显式关掉法线：'
@@ -588,6 +590,18 @@ def test_preset_controls_fall_back_to_balanced_when_config_is_empty(monkeypatch,
     normals = re.search(r'<input[^>]*id="localTerrainNormals"[^>]*>', block)
     assert normals and 'checked' not in normals.group(0), (
         f'config={{}} 兜底渲染把法线勾上了 —— 出厂默认是关：{normals.group(0) if normals else "找不到控件"}')
+    # 层级那一格同样只有服务端给得出：兜底那处 render_template 少传一个
+    # terrain_local_maxzoom_auto，Jinja 的 Undefined 是**假值** —— 模板里两条
+    # `{% if terrain_local_maxzoom_auto %}` 全假，页面渲染成「没勾 + 数字框可编辑」，
+    # 出厂默认的自动挡就静默变成「按数字框里那个 14 切」。上面两条只看档位和法线，
+    # 对这个变量一无所知。
+    num, auto = _maxzoom_tags(block)
+    assert 'checked' in auto, (
+        f'config={{}} 兜底渲染没勾上自动挡 —— 出厂默认就是 auto，而漏传'
+        f'terrain_local_maxzoom_auto 时页面恰好也长这样：{auto}')
+    assert 'disabled' in num, (
+        f'config={{}} 兜底渲染的数字框可编辑 —— 自动挡下它必须 disabled，'
+        f'两处由同一个模板变量控制：{num}')
 
 
 def test_quality_select_repairs_an_unknown_config_value_out_loud(monkeypatch, tmp_path,
@@ -627,21 +641,43 @@ def test_quality_select_repairs_an_unknown_config_value_out_loud(monkeypatch, tm
     assert dropped, (
         "不认识的档位值被换成了均衡却没留下任何日志 —— 这正是本仓最不能容忍的"
         "「作业完成、HTTP 200、前端不报错、就是不对」")
-    assert "'ultra'" in dropped[0] and 'balanced' in dropped[0], (
-        f'日志里必须同时点名被丢弃的值和替换成的值，否则排查时还得靠猜：{dropped[0]}')
+    assert "'ultra'" in dropped[0], (
+        f'日志里没有点名被丢弃的值，排查时还得靠猜：{dropped[0]}')
+    # 替换值那一半必须避开消息**中段**：这条日志把整张取值表
+    # `sorted(TILING_QUALITY_OFFSETS)` 原样嵌了进来，展开就含 'balanced' ——
+    # `'balanced' in dropped[0]` 因此是永真的，退回目标被改写成 'precision'、
+    # 'ultra'、甚至整段删掉 {preset}，都照样绿。而这一条没有第二道保险：层级那边
+    # 至少还有 tests/test_terrain_api.py 的哨兵断言从行为侧钉着，档位这边只有这
+    # 一条。所以连它前面那句**引导语**一起断言：「改用出厂默认 」这几个字无论
+    # 取值表换成什么渲染形式都不会出现在表里，中段那个 balanced 因此够不着这条。
+    # 不先把取值表切掉再在尾部找，是因为切表这招会**静默失效**：日志哪天把表从
+    # 列表 repr 改成 ', '.join(...) 这类纯排版调整，rsplit 就切不到，尾部退化成
+    # 整条消息，断言原地退回永真且毫无信号。
+    # （末尾那个全角括号是文案里紧跟在值后面的那个，一并钉住，免得退回目标变成
+    # 以 'balanced' 开头的更长档位名时也能蒙混过去。）
+    from src.services.geo_validation import DEFAULT_TILING_QUALITY
+    assert f'改用出厂默认 {DEFAULT_TILING_QUALITY}（' in dropped[0], (
+        f'日志里没有点名替换成的值 {DEFAULT_TILING_QUALITY!r} —— 中段那个 '
+        f'balanced 来自被嵌进来的取值表，不能拿它当证据：{dropped[0]}')
 
 
-def test_out_of_range_maxzoom_is_clamped_out_loud(monkeypatch, tmp_path, caplog):
-    """渲染级：库里的越界层级仍钳回出厂默认 14，但必须留下一条点名 99 的 warning。
+def test_out_of_range_maxzoom_falls_back_out_loud(monkeypatch, tmp_path, caplog):
+    """渲染级：库里的越界层级软退回**自动挡**，但必须留下一条点名 99 的 warning。
 
-    钳位本身是对的、绝不能去掉：terrain_local_maxzoom 登记在
+    退回目标是自动挡而不是某个写死的数：与 local_terrain_task_manager._default_maxzoom
+    同一口径（那边脏配置也退 'auto'）。同一份坏配置从这张表单建任务、和从两个管理
+    器起切，切出来的层级必须一样，否则又是「两个入口两套行为」。
+
+    数字框那半边照旧不能渲染 99：terrain_local_maxzoom 登记在
     config_manager._UNCONSTRAINED_KEYS，PUT /api/config 收得下 99，照直渲染成
     value="99" 会违反控件自己的 min/max，让整张 #processForm 变 :invalid，
     「创建」点了没反应（tests/test_config_form_submittable.py 钉的就是这条）。
+    自动挡下它是 disabled 的，但用户随手一取消勾选，那个值就又要参与校验。
 
-    问题只在于它此前是**静默**的：运维 PUT 了 99，打开处理表单看到 14，中间没有
-    任何信号，一直要等到作业真跑起来才由 local_terrain_task_manager._default_maxzoom
-    的那条 warning 吭一声。与 tests/test_terrain_api.py 的
+    warning 那半边一个字都不能少：软退回的**目标**可以变，静默退回不行。此前它
+    正是静默的 —— 运维 PUT 了 99，打开处理表单看到一个正常的 14，中间没有任何信号，
+    一直要等到作业真跑起来才由 local_terrain_task_manager._default_maxzoom 的那条
+    warning 吭一声。与 tests/test_terrain_api.py 的
     test_terrain_start_falls_back_when_configured_maxzoom_is_out_of_range 那条同形，
     只是这里守的是渲染入口。
     """
@@ -653,15 +689,117 @@ def test_out_of_range_maxzoom_is_clamped_out_loud(monkeypatch, tmp_path, caplog)
     with caplog.at_level(logging.WARNING, logger=main_route.__name__):
         block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
 
-    maxzoom = re.search(r'<input[^>]*id="localTerrainMaxzoom"[^>]*>', block)
-    assert maxzoom and 'value="14"' in maxzoom.group(0), (
-        f'越界的 terrain_local_maxzoom=99 必须钳回 14，否则整张表单 :invalid：'
-        f'{maxzoom.group(0) if maxzoom else "找不到控件"}')
+    num, auto = _maxzoom_tags(block)
+    assert 'checked' in auto, (
+        f'越界的 terrain_local_maxzoom=99 必须退回自动挡（与两个管理器同口径），'
+        f'否则表单会把数字框里那个数当成用户的选择显式发出去：{auto}')
+    assert 'value="14"' in num, (
+        f'退回自动挡之后数字框仍要渲染一个合法初值：照直渲染 99 会违反控件自己的 '
+        f'min/max，用户一取消勾选整张表单就 :invalid；渲染空值则是另一种坏法 —— '
+        f'表单照样提交得了，但送出去的是空串，后端当「未表态」又回落到自动挡，'
+        f'取消勾选毫无效果：{num}')
     dropped = [r.getMessage() for r in caplog.records
                if r.levelno == logging.WARNING
                and 'terrain_local_maxzoom' in r.getMessage()]
     assert dropped, (
-        '越界层级被丢弃却没留下任何日志 —— 运维看到的只是一个正常的 14，'
+        '越界层级被丢弃却没留下任何日志 —— 运维看到的只是一个勾上的自动挡，'
         '要等作业跑起来才知道自己配的 99 没生效')
-    assert '99' in dropped[0] and '14' in dropped[0], (
-        f'日志里必须同时点名被丢弃的值和替换成的值：{dropped[0]}')
+    assert '99' in dropped[0], (
+        f'日志里没有点名被丢弃的值：{dropped[0]}')
+    # 替换值那一半必须钉在**尾部**，不能只问 'auto' 在不在整条消息里：这条日志把
+    # coerce_maxzoom 抛出的异常原文 `{e}` 原样嵌了进来，而那句原文自带
+    # `(or the literal 'auto')`（geo_validation.coerce_maxzoom 的 except 分支）——
+    # 于是退回目标就算被改写成 14，'auto' 照样在消息里，那半条断言是永真的。
+    from src.services.geo_validation import AUTO_MAXZOOM
+    assert dropped[0].rstrip().endswith(repr(AUTO_MAXZOOM)), (
+        f'日志结尾必须点名替换成的值 {AUTO_MAXZOOM!r} —— 消息中段那个 auto 来自'
+        f'被嵌进来的异常原文，不能拿它当证据：{dropped[0]}')
+
+
+# ------------------------------------------------ 「自动层级」这一态的表单契约
+
+def _maxzoom_tags(block):
+    """截出层级那两个控件的 tag：(数字框, 「自动」复选框)。
+
+    两个 id 是前缀关系（localTerrainMaxzoom / localTerrainMaxzoomAuto），
+    正则里那对引号不能省 —— 省了会拿复选框去断言数字框的属性，两条断言一起
+    变成永真。
+    """
+    num = re.search(r'<input[^>]*id="localTerrainMaxzoom"[^>]*>', block)
+    auto = re.search(r'<input[^>]*id="localTerrainMaxzoomAuto"[^>]*>', block)
+    assert num, '#localTerrainOptions 里找不到 id=localTerrainMaxzoom 的数字框'
+    assert auto, (
+        '#localTerrainOptions 里找不到 id=localTerrainMaxzoomAuto 的复选框 —— '
+        "用户没有任何办法表达「自动」，配置里的 'auto' 在表单上无从显示")
+    return num.group(0), auto.group(0)
+
+
+def test_auto_maxzoom_renders_checked_and_disables_the_number_input(monkeypatch,
+                                                                    tmp_path,
+                                                                    caplog):
+    """渲染级：配置是 'auto' 时勾上自动挡，并禁掉旁边的数字框。
+
+    'auto'（geo_validation.AUTO_MAXZOOM）是层级三态里的第三态：按源数据像素
+    尺寸现算基准层级。它塞不进 min="0" max="21" 的数字框，但坏法**不是**
+    :invalid —— type="number" 的 value sanitization 会把非数字 value 直接置空，
+    而这个控件没有 required，空值不触发任何 constraint violation，所以
+    value="auto" 在浏览器里等于一个空数字框（tests/test_config_form_submittable.py
+    的 _OUT_OF_RANGE_CASES 里并没有 'auto' 这一项，那七个用例钉的是越界数字）。
+    真正的后果是静默的：用户看到空框，取消勾选后提交送空串，后端 coerce_maxzoom
+    把空串当「未表态」回落到配置默认 —— 也就是他刚取消掉的自动挡，取消勾选毫无
+    效果。所以必须由一个独立控件来表达。
+
+    「一条 warning 都不许留」是这条测试的承重部分：出厂默认本身就是自动挡，
+    所以**修不修得对，勾选态都一样是勾上的**。只有那条日志能分辨「认出了
+    'auto'」和「没认出、当成脏值软退回自动」—— 后者意味着服务端这一侧没走
+    coerce_maxzoom，配置页把层级配成别的合法值时同样会被吃掉。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    from src.routes import main as main_route
+    monkeypatch.setattr(main_route.config_manager, 'get_all',
+                        lambda: {'terrain_local_maxzoom': {'value': 'auto'}})
+
+    with caplog.at_level(logging.WARNING, logger=main_route.__name__):
+        block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    num, auto = _maxzoom_tags(block)
+
+    repaired = [r.getMessage() for r in caplog.records
+                if 'terrain_local_maxzoom' in r.getMessage()]
+    assert not repaired, (
+        f"配置就是合法的 'auto'，却报告了「改用出厂默认」—— 服务端没认这个"
+        f"字面量，只是把它当脏值软退回了：{repaired}")
+    assert 'checked' in auto, (
+        f"配置 terrain_local_maxzoom='auto'，自动挡却没勾上 —— 表单会把数字框里"
+        f"那个数显式发出去，配置页那一项成了假旋钮：{auto}")
+    assert 'disabled' in num, (
+        f'自动挡下数字框必须 disabled：留着可编辑，用户会以为旁边那个数还算数，'
+        f'而提交时送出去的是 auto：{num}')
+    # 禁用的数字框仍要渲染一个合法值：它是用户取消勾选后的起点。空 value 并不会
+    # 让 #processForm :invalid（min/max 只管有值的控件，空值要 required 才拦），
+    # 坏在静默：取消勾选后提交送的是空串，后端 coerce_maxzoom 把它当「未表态」，
+    # 一路回落到配置默认 —— 也就是用户刚取消掉的那个自动挡。
+    assert 'value="14"' in num, (
+        f'自动挡下的数字框没有渲染出厂默认 14 —— 用户一取消勾选就是个空值控件，'
+        f'提交送空串又被当成「未表态」退回自动挡：{num}')
+
+
+def test_manual_maxzoom_leaves_the_checkbox_clear(monkeypatch, tmp_path):
+    """渲染级：配置是数字时自动挡必须是空的，数字框照常可编辑。
+
+    反向的假旋钮：勾选态写死成勾上（或忘了跟着配置走），表单就会把 'auto'
+    显式发出去盖掉运维配的 terrain_local_maxzoom，切出来的层级跟配置页显示的
+    完全是两回事，而且不可逆 —— 发现时只能重切。
+    """
+    client = _load_app(monkeypatch, tmp_path)
+    from src.routes import main as main_route
+    monkeypatch.setattr(main_route.config_manager, 'get_all',
+                        lambda: {'terrain_local_maxzoom': {'value': '16'}})
+
+    block = _local_terrain_options_block(client.get('/').get_data(as_text=True))
+    num, auto = _maxzoom_tags(block)
+    assert 'checked' not in auto, (
+        f'配置是数字 16，自动挡却勾上了 —— 表单会送 auto 盖掉配置：{auto}')
+    assert 'disabled' not in num, (
+        f'手动挡下的数字框被禁用了 —— 用户改不了层级，提交时也带不上：{num}')
+    assert 'value="16"' in num, (
+        f'配置 terrain_local_maxzoom=16，数字框却不是 16：{num}')

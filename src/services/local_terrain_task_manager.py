@@ -15,13 +15,15 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from src.core.config import Config
 from src.core.database import get_connection, utc_now_iso
 from src.services.config_manager import ConfigManager
-from src.services.geo_validation import (DEFAULT_TILING_QUALITY, TILING_QUALITY_OFFSETS,
-                                         validate_tiling_quality, validate_zoom)
+from src.services.geo_validation import (AUTO_MAXZOOM, DEFAULT_TILING_QUALITY,
+                                         TILING_QUALITY_OFFSETS, coerce_maxzoom,
+                                         maxzoom_from_db, maxzoom_to_db,
+                                         validate_tiling_quality)
 from src.services.task_cleanup import (fail_stranded_running_task, remove_task_dir_if_safe,
                                        resolve_stored_output_dir)
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
@@ -43,9 +45,11 @@ UploadFile = Tuple[str, Any]
 def _parent_layer_url() -> str | None:
     """layer.json 的 parentUrl（级联到全局 base terrain）；base 不可用时返回 None。
 
-    配置键与 DEM 管线共用：config 表的 terrain_base_parent_url（完整 URL，
-    见 src/core/database.py DEFAULT_CONFIGS），未配置时回退 localhost:5000 保持
-    既有行为。此前两处硬编码，非 5000 端口/反代部署下 parentUrl 必 404（M20）。
+    配置键与 DEM 管线共用：config 表的 terrain_base_parent_url（应用内相对路径
+    或完整 URL，见 src/core/database.py DEFAULT_CONFIGS），未配置时回退
+    `/terrain/base` —— 相对地址由浏览器继承提供 layer.json 的 origin，瓦片走
+    5001 专用 origin、换端口、反代、远程访问都不用改配置。此前两处硬编码
+    localhost:5000，非 5000 端口/反代部署下 parentUrl 必 404（M20）。
 
     两道闸门缺一不可（见 layer_json）：目录形式 + base 真的存在。任一不满足
     都是 404，而 Cesium 对 404 的处理是塞假 heightmap 图层并污染共享 builder
@@ -58,7 +62,7 @@ def _parent_layer_url() -> str | None:
         # 不可用，然后写一个 404 的 parentUrl —— v0.2.8 修过的 heightmap 陷阱）。
         cfg.get("terrain_global_base_path", "./assets/terrain/base_z8"))
     return parent_url_if_base_available(
-        cfg.get("terrain_base_parent_url", "") or "http://localhost:5000/terrain/base",
+        cfg.get("terrain_base_parent_url", "") or "/terrain/base",
         base_dir,
     )
 
@@ -113,24 +117,26 @@ class LocalTerrainTaskManager:
         finally:
             conn.close()
 
-    def _default_maxzoom(self) -> int:
-        # 配置值过 validate_zoom 而不是裸 int()：terrain_local_maxzoom 在
-        # config_manager._UNCONSTRAINED_KEYS 里，写入侧没有取值规则，越界值原样
-        # 返回后会被 create_task_with_files 的 validate_zoom 当场抛出 → 400，
-        # 而 DEM 那条读同一个配置键是软退回（dem_task_manager.start_tiling 里
-        # maxzoom is None 的分支）。
-        # 同一个坏配置在两个入口一个 400 一个照跑，是最难查的一类不一致。
+    def _default_maxzoom(self) -> Union[int, str]:
+        # 配置值过 coerce_maxzoom 而不是裸 int()：terrain_local_maxzoom 在
+        # config_manager._UNCONSTRAINED_KEYS 里，写入侧没有取值规则，
+        # PUT /api/config 收得下 99，也收得下任何拼错的字符串。
+        # 尤其不能把原始值直接交给 maxzoom_to_db —— 它对越界值静默放行
+        # （`int('-1')` = -1，而 -1 正是自动挡的哨兵），配置里一个 '-1'
+        # 就会在库里变成一条与「用户真的选了自动」无从分辨的记录。
         # 校验失败不抛：配置是装机默认，一个坏值不该让所有任务都建不起来。
         # 但必须留痕，否则「我明明配了 25」在系统里一处都查不到。
         # （显式传参那条相反：调用方给了非法值必须当场报错，不能静默改写。）
-        raw = self.config.get("terrain_local_maxzoom", "14")
+        raw = self.config.get("terrain_local_maxzoom", AUTO_MAXZOOM)
         try:
-            return validate_zoom(raw, "terrain_local_maxzoom")
+            value = coerce_maxzoom(raw, "terrain_local_maxzoom")
         except Exception as e:
             logger.warning(
                 f"配置 terrain_local_maxzoom={raw!r} 不可用({e})，"
-                f"本次改用出厂默认 14")
-            return 14
+                f"本次改用出厂默认 {AUTO_MAXZOOM!r}")
+            return AUTO_MAXZOOM
+        # 空值与缺键都算「没配过」→ 出厂默认（自动）。
+        return AUTO_MAXZOOM if value is None else value
 
     def _default_quality(self) -> str:
         # 兜底值与 `database.DEFAULT_CONFIGS` 里的 terrain_quality_preset 逐字
@@ -143,11 +149,50 @@ class LocalTerrainTaskManager:
         # （见 `database.DEFAULT_CONFIGS` 里的 terrain_vertex_normals）。
         return (self.config.get("terrain_vertex_normals", "false") or "false") == "true"
 
+    def _normalize_tiling_params(
+        self,
+        maxzoom: Optional[Union[int, str]],
+        quality: Optional[str],
+        vertex_normals: Optional[bool],
+    ) -> Tuple[Union[int, str], str, bool]:
+        """maxzoom/quality/vertex_normals 的「未传 → 配置默认 → 校验」归一。
+
+        两个创建入口（上传 / 零拷贝 DEM 任务来源）共用：同一份配置不管从哪个
+        入口走都必须切出一样的产物（「改了没反应的假旋钮」那条规矩）。
+        """
+        # 先归一再回落，顺序不能倒：coerce_maxzoom 把 None **与空串**一并收成
+        # 「未表态」，先判 None 的话空串会绕过归一直接进落库转换，而那一步拿到
+        # 的正是归一后的 None —— `int(None)` 当场 TypeError（500，不是 400）。
+        # 走到这里之后是三态里的两态：int 或 'auto'。落库形态的转换留到 INSERT
+        # 的绑定参数那一步（maxzoom_to_db）。DEM 侧 start_tiling 同序。
+        maxzoom = coerce_maxzoom(maxzoom, "maxzoom")
+        if maxzoom is None:
+            # _default_maxzoom 的返回值已是归一后的形态，不必再过一次。
+            maxzoom = self._default_maxzoom()
+
+        # 档位与法线跟 maxzoom 同形：请求未给就取配置默认。校验落在管理器而
+        # 不是路由层 —— maxzoom 的校验也在本函数里（上面那句 coerce_maxzoom，
+        # 排在配置回落之前），新参数跟着它放。
+        # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
+        # 「改了档位重切、产物却一模一样且零报错」是这条路径最难查的假象。
+        if quality is None:
+            # 报错里点名配置键而不是请求字段（范本 dem_task_manager.start_tiling
+            # 里 quality is None 的分支）：
+            # 走到这条分支说明用户根本没提交过 quality，说 "quality (...) must be
+            # one of" 会把他指到一个不存在的输入上，真正该改的是配置页那一项。
+            quality = validate_tiling_quality(self._default_quality(),
+                                              "terrain_quality_preset")
+        else:
+            quality = validate_tiling_quality(quality)
+        if vertex_normals is None:
+            vertex_normals = self._default_vertex_normals()
+        return maxzoom, quality, bool(vertex_normals)
+
     def create_task_with_files(
         self,
         name: str,
         files: Sequence[UploadFile],
-        maxzoom: Optional[int] = None,
+        maxzoom: Optional[Union[int, str]] = None,
         quality: Optional[str] = None,
         vertex_normals: Optional[bool] = None,
     ) -> int:
@@ -171,26 +216,8 @@ class LocalTerrainTaskManager:
         if not valid:
             raise ValueError("No valid .tif/.tiff files uploaded")
 
-        if maxzoom is None:
-            maxzoom = self._default_maxzoom()
-        maxzoom = validate_zoom(maxzoom, "maxzoom")
-
-        # 档位与法线跟 maxzoom 同形：请求未给就取配置默认。校验落在管理器而
-        # 不是路由层 —— 上一行的 maxzoom 校验就在这里，新参数跟着它放。
-        # 拼错的档位当场 ValueError（路由转 400），不静默退回 balanced：
-        # 「改了档位重切、产物却一模一样且零报错」是这条路径最难查的假象。
-        if quality is None:
-            # 报错里点名配置键而不是请求字段（范本 dem_task_manager.start_tiling
-            # 里 quality is None 的分支）：
-            # 走到这条分支说明用户根本没提交过 quality，说 "quality (...) must be
-            # one of" 会把他指到一个不存在的输入上，真正该改的是配置页那一项。
-            quality = validate_tiling_quality(self._default_quality(),
-                                              "terrain_quality_preset")
-        else:
-            quality = validate_tiling_quality(quality)
-        if vertex_normals is None:
-            vertex_normals = self._default_vertex_normals()
-        vertex_normals = bool(vertex_normals)
+        maxzoom, quality, vertex_normals = self._normalize_tiling_params(
+            maxzoom, quality, vertex_normals)
 
         base = Path(Config.DOWNLOADS_DIR) / "terrain"
         parent_url = _parent_layer_url()
@@ -232,7 +259,7 @@ class LocalTerrainTaskManager:
                        -- 未知」示人，而这一刻我们恰恰是知道的。
                     VALUES (?, 'pending', '', '', '', ?, 0, 0, ?, ?, ?, ?)
                     """,
-                    (name, len(valid), maxzoom, quality,
+                    (name, len(valid), maxzoom_to_db(maxzoom), quality,
                      1 if vertex_normals else 0, parent_url),
                 )
                 task_id = cur.lastrowid
@@ -303,6 +330,110 @@ class LocalTerrainTaskManager:
             remove_task_dir_if_safe(task_root)
             self._mark_failed(task_id, "All uploaded files failed to save")
             raise ValueError("All uploaded files failed to save")
+
+        self.start_tiling(task_id)
+        return task_id
+
+    def create_task_from_dem_task(
+        self,
+        name: str,
+        dem_task_id: Any,
+        maxzoom: Optional[Union[int, str]] = None,
+        quality: Optional[str] = None,
+        vertex_normals: Optional[bool] = None,
+    ) -> int:
+        """把已完成的高程下载任务转成一个独立的地形切片任务（零拷贝源）。
+
+        任务行「处理」按钮走的入口。与 contour_task_manager.create_task_from_dem_task
+        同一模式：local_terrain_files.local_path 直接指向 DEM 任务目录里的原 tif，
+        本任务目录只放产物（terrain_tiles）—— 删本任务只清自己的目录，源 DEM
+        任务的数据不受影响；反方向删 DEM 任务后本任务不可重切（start_tiling
+        重算源目录时当场报错），与等高线同款取舍。
+        """
+        from src.services.terrain_tiling.vrt_builder import list_dem_tifs
+
+        name = (name or "Local Terrain Task").strip() or "Local Terrain Task"
+        dem_task_id = int(dem_task_id)
+
+        conn = get_connection()
+        try:
+            dem_row = conn.execute(
+                "SELECT status, output_path FROM dem_tasks WHERE id=?",
+                (dem_task_id,)).fetchone()
+        finally:
+            conn.close()
+        if not dem_row:
+            raise ValueError(f"DEM task {dem_task_id} not found")
+        # 与 dem_task_manager.start_tiling 同一道闸门：没下完的任务数据残缺，
+        # 在它上面切片会"成功"产出带缺口的地形。
+        if dem_row["status"] != "completed":
+            raise ValueError(
+                f"Cannot use DEM task {dem_task_id} with status "
+                f"'{dem_row['status']}'; wait for the download to complete"
+            )
+
+        source_dir = (resolve_stored_output_dir(dem_row["output_path"])
+                      / f"dem_task_{dem_task_id}")
+        tifs = list_dem_tifs(source_dir)
+        if not tifs:
+            raise ValueError(f"No DEM tifs found under {source_dir}")
+
+        maxzoom, quality, vertex_normals = self._normalize_tiling_params(
+            maxzoom, quality, vertex_normals)
+
+        base = Path(Config.DOWNLOADS_DIR) / "terrain"
+        parent_url = _parent_layer_url()
+        base.mkdir(parents=True, exist_ok=True)
+
+        task_root: Optional[Path] = None
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO local_terrain_tasks
+                  (name, status, output_path, source_dir, output_dir,
+                   total_files, uploaded_files, failed_files, maxzoom,
+                   quality, vertex_normals, parent_url, source_dem_task_id)
+                   -- vertex_normals 显式给值的理由同 create_task_with_files：
+                   -- NULL = 未知，而这一刻我们是知道的。
+                VALUES (?, 'pending', '', ?, '', ?, ?, 0, ?, ?, ?, ?, ?)
+                """,
+                (name, str(source_dir), len(tifs), len(tifs),
+                 maxzoom_to_db(maxzoom), quality,
+                 1 if vertex_normals else 0, parent_url, dem_task_id),
+            )
+            task_id = cur.lastrowid
+
+            # 只建产物目录；源 tif 不拷进来（零拷贝），source/ 目录不存在，
+            # start_tiling 按 source_dem_task_id 重算真正的源目录。
+            task_root = base / f"local_task_{task_id}"
+            output_dir = task_root / "terrain_tiles"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            cur.execute(
+                "UPDATE local_terrain_tasks SET output_path=?, output_dir=? WHERE id=?",
+                (str(task_root), str(output_dir), task_id),
+            )
+
+            for tif in tifs:
+                cur.execute(
+                    """
+                    INSERT INTO local_terrain_files
+                      (task_id, original_filename, stored_filename, local_path, size_bytes, status)
+                    VALUES (?, ?, ?, ?, ?, 'uploaded')
+                    """,
+                    (task_id, tif.name, tif.name, str(tif), tif.stat().st_size),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            # 与 create_task_with_files 同一理由（M12 的 rowid 复用残留）：
+            # 建到一半失败要 best-effort 清掉任务目录。
+            if task_root is not None:
+                remove_task_dir_if_safe(task_root)
+            raise
+        finally:
+            conn.close()
 
         self.start_tiling(task_id)
         return task_id
@@ -394,7 +525,8 @@ class LocalTerrainTaskManager:
                     raise ValueError(f"Local terrain task {task_id} is already running")
 
                 cur.execute(
-                    "SELECT status, maxzoom, quality, vertex_normals, parent_url "
+                    "SELECT status, maxzoom, quality, vertex_normals, parent_url, "
+                    "source_dem_task_id "
                     "FROM local_terrain_tasks WHERE id=?",
                     (task_id,),
                 )
@@ -430,7 +562,9 @@ class LocalTerrainTaskManager:
                         f"Local terrain task {task_id} could not be started "
                         "because its status changed"
                     )
-                maxzoom = int(row["maxzoom"])
+                # 哨兵 -1 还原成 None = 自动，直接就是 TileParams.maxzoom 要的
+                # 形态（build_terrain 只认 max_level is None 触发按源分辨率估算）。
+                maxzoom = maxzoom_from_db(row["maxzoom"])
                 # 档位（与上面的法线）必须从库读回：本方法不带参，而「创建即切片」这条
                 # 唯一路径正是走它 —— create_task_with_files 末尾直接调
                 # start_tiling，档位只在建任务时算过一次、落进了任务行。
@@ -459,7 +593,22 @@ class LocalTerrainTaskManager:
                 # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
                 # 的约定）：冻结 exe 搬迁后旧绝对路径不会把切片写去错的地方。
                 task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
-                source_dir = task_root / "source"
+                # 零拷贝来源（create_task_from_dem_task 建的行）：源 tif 不在本
+                # 任务目录，按 contour 的同一口径从 DEM 任务的 output_path 重算
+                # （不信库存绝对路径，exe 搬迁后照旧能找对）。源任务已被删时
+                # 当场报错，不拿一个空目录去切出「成功」的空产物。
+                if row["source_dem_task_id"] is not None:
+                    dem_row = cur.execute(
+                        "SELECT output_path FROM dem_tasks WHERE id=?",
+                        (row["source_dem_task_id"],),
+                    ).fetchone()
+                    if not dem_row:
+                        raise ValueError(
+                            f"Source DEM task {row['source_dem_task_id']} not found")
+                    source_dir = (resolve_stored_output_dir(dem_row["output_path"])
+                                  / f"dem_task_{row['source_dem_task_id']}")
+                else:
+                    source_dir = task_root / "source"
                 output_dir = task_root / "terrain_tiles"
 
                 stop_flag = threading.Event()
@@ -524,7 +673,10 @@ class LocalTerrainTaskManager:
             conn.close()
 
     def _run_tiling_job(
-        self, task_id: int, source_dir: Path, output_dir: Path, maxzoom: int, parent_url: str,
+        # maxzoom=None 是自动挡（起切时由 maxzoom_from_db 从哨兵还原），原样
+        # 进 TileParams —— build_terrain 按源数据像素尺寸现算基准层级。
+        self, task_id: int, source_dir: Path, output_dir: Path,
+        maxzoom: Optional[int], parent_url: str,
         stop_flag: Optional[threading.Event] = None,
         quality: str = DEFAULT_TILING_QUALITY,
         vertex_normals: bool = False,

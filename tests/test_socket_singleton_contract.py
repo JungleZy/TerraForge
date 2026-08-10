@@ -406,3 +406,25 @@ def test_socket_js_is_the_only_place_that_creates_a_connection():
     assert not offenders, (
         f"这些文件自己调了 io()，会开出额外的 WebSocket 连接：{offenders} —— "
         "一律改用 window.TerraSocket.get()")
+
+
+def test_socket_io_stays_on_page_origin_and_ignores_tile_helpers():
+    """Socket.IO 连接必须留在页面 origin，一个字都不许沾瓦片端口。
+
+    瓦片端口那个 HTTP 服务只挂了瓦片路径与 /tile-health（src/core/tile_server.py
+    的 tile gate），没有 socket.io 端点、也不做 WebSocket 升级。把连接改指过去
+    的表现是长轮询一路 404 后彻底沉默：任务进度不再更新，而页面本身照常渲染。
+    """
+    socket_code = _strip_js_comments(_read("static", "js", "socket.js"))
+    assert re.search(r"instance\s*=\s*io\s*\(\s*\)", socket_code), (
+        "socket.js 的连接不再是无参 io() —— 无参才等于「跟着页面 origin 走」")
+    assert "tileUrl" not in socket_code
+    assert "initTileOrigin" not in socket_code
+    assert "tile_port" not in socket_code
+
+
+def test_task_api_requests_never_use_tile_origin():
+    """任务 REST 调用留在主端口：瓦片端口不认 /api/*，且没有会话。"""
+    tasks_code = _strip_js_comments(_read("static", "js", "tasks.js"))
+    assert "tileUrl(" not in tasks_code
+    assert "initTileOrigin(" not in tasks_code
