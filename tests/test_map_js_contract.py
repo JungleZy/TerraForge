@@ -356,8 +356,12 @@ def test_bounds_rules_accept_exactly_what_the_backend_accepts():
         'console.log(JSON.stringify(out));\n'
     )
     try:
+        # encoding 必须显式给：Windows 上 text=True 默认按 locale（cp1252）解码，
+        # node 输出里只要有一个中文字，读取线程就抛 UnicodeDecodeError，
+        # stdout 静默变成 None。
         out = subprocess.run(
-            ['node', '-e', script], capture_output=True, text=True, check=True,
+            ['node', '-e', script], capture_output=True, text=True,
+            encoding='utf-8', errors='replace', check=True,
             timeout=120,
         ).stdout.strip()
     except subprocess.TimeoutExpired:
@@ -419,8 +423,12 @@ def test_the_three_measured_defects_are_rejected():
         'console.log(JSON.stringify(cases.map(validateBoundsRules)));\n'
     )
     try:
+        # encoding 必须显式给：Windows 上 text=True 默认按 locale（cp1252）解码，
+        # node 输出里只要有一个中文字，读取线程就抛 UnicodeDecodeError，
+        # stdout 静默变成 None。
         out = subprocess.run(
-            ['node', '-e', script], capture_output=True, text=True, check=True,
+            ['node', '-e', script], capture_output=True, text=True,
+            encoding='utf-8', errors='replace', check=True,
             timeout=120,
         ).stdout.strip()
     except subprocess.TimeoutExpired:

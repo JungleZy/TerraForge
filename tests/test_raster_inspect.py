@@ -463,9 +463,13 @@ def test_browser_parser_output_feeds_the_backend(tmp_path):
     parser = os.path.join(PROJECT_ROOT, "static", "js", "geotiff_meta.js")
 
     try:
+        # encoding 必须显式给：Windows 上 text=True 默认按 locale（cp1252）解码，
+        # node 输出里只要有一个中文字，读取线程就抛 UnicodeDecodeError，
+        # stdout 静默变成 None。
         out = subprocess.run(
             ["node", str(harness), parser, str(tif)],
-            capture_output=True, text=True, check=True, timeout=120,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=True, timeout=120,
         ).stdout
     except subprocess.TimeoutExpired:
         pytest.skip("node 启动超过 120 秒（CI runner 冷启动）")

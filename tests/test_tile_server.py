@@ -165,7 +165,9 @@ class TestTilePrefixSingleSource:
             text = path.read_text(encoding='utf-8')
             for lineno, line in enumerate(text.splitlines(), 1):
                 if "'/basemap/'" in line and "'/tiles/'" in line:
-                    hits.append(f'{path.relative_to(ROOT)}:{lineno}')
+                    # as_posix()：Windows 上 relative_to 产出反斜杠，与下面用正
+                    # 斜杠字面量写的断言对不上，整条用例会在 CI 上假红。
+                    hits.append(f'{path.relative_to(ROOT).as_posix()}:{lineno}')
         assert len(hits) == 1 and hits[0].startswith('src/core/tile_paths.py:'), (
             '瓦片前缀名单只应在 src/core/tile_paths.py 里写一次，实际出现在：'
             + ', '.join(hits))

@@ -71,8 +71,12 @@ def _method_body(src, name):
 
 
 def _run_node(script):
+    # encoding 必须显式给：Windows 上 text=True 默认按 locale（cp1252）解码，
+    # 脚本输出里的中文（如 stage_label '合并 DEM'）会让 subprocess 的读取线程
+    # 抛 UnicodeDecodeError，stdout 静默变成 None，报错现场离真因十万八千里。
     return json.loads(subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, check=True,
+        ["node", "-e", script], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=True,
         timeout=60).stdout.strip())
 
 

@@ -26,8 +26,14 @@ def _run_ui_case(tmp_path, body, *, protocol='http:', href='http://example.test:
         + "\n})().catch(function (error) { console.error(error); process.exit(1); });\n",
         encoding='utf-8',
     )
+    # encoding 必须显式给：Windows 上 text=True 默认按 locale（cp1252）解码。
+    # 这里的杀伤在失败路径：断言炸了以后，node 的 assert 消息连同上面内联进来
+    # 的 ui.js（带中文）一起走 stderr，check=True 抛 CalledProcessError 的过程
+    # 中解码就炸 —— 真正的断言消息被一个 UnicodeDecodeError 顶掉，恰恰在你最
+    # 需要看清报错的时刻把报错吃了。
     return subprocess.run(['node', str(script)], cwd=ROOT, check=True,
-                          text=True, capture_output=True)
+                          text=True, encoding='utf-8', errors='replace',
+                          capture_output=True)
 
 
 def test_probe_success_selects_dedicated_origin_once(tmp_path):
