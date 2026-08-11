@@ -1,7 +1,7 @@
 # TerraForge
 
-[![Release](https://img.shields.io/github/v/release/JungleZy/map-download)](https://github.com/JungleZy/map-download/releases)
-[![Build](https://github.com/JungleZy/map-download/actions/workflows/test-build.yml/badge.svg)](https://github.com/JungleZy/map-download/actions/workflows/test-build.yml)
+[![Release](https://img.shields.io/github/v/release/JungleZy/TerraForge)](https://github.com/JungleZy/TerraForge/releases)
+[![Build](https://github.com/JungleZy/TerraForge/actions/workflows/test-build.yml/badge.svg)](https://github.com/JungleZy/TerraForge/actions/workflows/test-build.yml)
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](#许可证)
 
@@ -62,7 +62,7 @@
 
 ### 方式一：预编译可执行文件（推荐）
 
-1. 从 [Releases](https://github.com/JungleZy/map-download/releases) 下载对应平台的压缩包
+1. 从 [Releases](https://github.com/JungleZy/TerraForge/releases) 下载对应平台的压缩包
 2. 解压后运行：
    - **Windows**: 双击 `terraforge.exe`
    - **macOS / Linux**: `./terraforge`

@@ -134,7 +134,7 @@ chmod +x terraforge
 ## 技术支持
 
 如有问题，请访问：
-https://github.com/JungleZy/map-download/issues
+https://github.com/JungleZy/TerraForge/issues
 
 ## 免责声明
 

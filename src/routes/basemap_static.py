@@ -74,7 +74,7 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # usage policy"——不是错误码，是一张能正常渲染的假地图（下面 _fetch_upstream
 # 那道闸就是为它写的）。换成这条 UA，同一个 URL 立刻返回真瓦片。
 _OSM_UA = (f"TerraForge/{Config.APP_VERSION} "
-           "(+https://github.com/JungleZy/map-download)")
+           "(+https://github.com/JungleZy/TerraForge)")
 
 # 按**主机**判而不是按预设判：用户完全可以把自定义模板直接填成
 # https://tile.openstreetmap.org/{z}/{x}/{y}.png，那条路径同样要守政策。

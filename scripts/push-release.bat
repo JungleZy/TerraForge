@@ -62,11 +62,11 @@ echo 🎉 完成！
 echo ================================
 echo.
 echo 下一步：
-echo 1. 访问 https://github.com/JungleZy/map-download/actions
+echo 1. 访问 https://github.com/JungleZy/TerraForge/actions
 echo 2. 查看 'Build Executables' 工作流
 echo 3. 等待构建完成（约 15-30 分钟）
 echo 4. 从 Releases 页面下载可执行文件
 echo.
-echo GitHub 仓库: https://github.com/JungleZy/map-download
+echo GitHub 仓库: https://github.com/JungleZy/TerraForge
 echo ================================
 pause

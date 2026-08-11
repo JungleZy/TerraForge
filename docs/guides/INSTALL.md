@@ -1,6 +1,6 @@
 # 安装指南
 
-本文介绍从源码安装 TerraForge 的完整流程。如果只是使用，推荐直接从 [Releases](https://github.com/JungleZy/map-download/releases) 下载预编译可执行文件，无需安装任何依赖。
+本文介绍从源码安装 TerraForge 的完整流程。如果只是使用，推荐直接从 [Releases](https://github.com/JungleZy/TerraForge/releases) 下载预编译可执行文件，无需安装任何依赖。
 
 ## 前置条件
 
@@ -40,7 +40,7 @@ Apple Silicon（arm64）不要走 brew：brew 的 gdal 是 arm64-only，而 pip 
 ### 2. 克隆代码并安装 Python 依赖
 
 ```bash
-git clone https://github.com/JungleZy/map-download.git
+git clone https://github.com/JungleZy/TerraForge.git
 cd map-download
 ```
 
