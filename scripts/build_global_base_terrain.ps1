@@ -21,7 +21,7 @@ try {
 
   New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-  # Use cesiumlab_terrain.py as the source of truth.
+  # Use cesium_terrain.py as the source of truth.
   #
   # 模块路径必须带 src. 前缀 —— src-layout 迁移后代码在 src/services/ 下，
   # 此前这里还是 `services.terrain_tiling...`，跑起来直接 ModuleNotFoundError，
@@ -33,9 +33,9 @@ try {
   #
   # 用 uv run 而不是裸 python：项目统一用 uv 管理 venv（见 CLAUDE.md），
   # 裸 python 要求调用者自己先激活装好 numpy+GDAL 的环境。
-  & uv run python -m src.services.terrain_tiling.cesiumlab_terrain `
+  & uv run python -m src.services.terrain_tiling.cesium_terrain `
       -i $DemDir -o $OutDir --max-level $MaxZoom --tile-size $TileSize
-  if ($LASTEXITCODE -ne 0) { throw "cesiumlab_terrain build failed with exit code $LASTEXITCODE" }
+  if ($LASTEXITCODE -ne 0) { throw "cesium_terrain build failed with exit code $LASTEXITCODE" }
 }
 catch {
   throw

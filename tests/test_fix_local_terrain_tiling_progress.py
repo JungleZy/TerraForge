@@ -309,7 +309,7 @@ def test_tiling_phase_is_anchored_for_the_eta():
     - 首发：起点 = 此刻，锚 = 这一发的百分比（半途打开页面也不会算出天文数字）
     - 续发：起点与锚都不动，否则每发都重新计时，ETA 恒等于 0
     - 倒退：并行 worker 崩溃会回退串行、计数从 0 重来
-      （cesiumlab_terrain.py 的 BrokenProcessPool 分支），此时必须重新锚定
+      （cesium_terrain.py 的 BrokenProcessPool 分支），此时必须重新锚定
     """
     fn = "function updateTerrainJobProgress(data) " + _fn_body(
         _js("tasks.js"), "updateTerrainJobProgress")

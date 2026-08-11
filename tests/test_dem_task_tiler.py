@@ -460,7 +460,7 @@ def test_tiler_unlinks_grafted_base_before_tiling(tmp_path: Path, monkeypatch):
         out = Path(kwargs["output_dir"])
         d = out / "5" / "1"
         d.mkdir(parents=True, exist_ok=True)
-        # 与 cesiumlab_terrain._worker_tile 的落盘方式逐字一致
+        # 与 cesium_terrain._worker_tile 的落盘方式逐字一致
         (d / "2.terrain").write_bytes(b"TASK-Z5")
         (out / "layer.json").write_text('{"maxzoom": 5, "available": []}', encoding="utf-8")
 
@@ -521,7 +521,7 @@ def test_auto_maxzoom_reaches_build_terrain_as_none(tmp_path: Path, monkeypatch)
     """maxzoom=None（自动档）必须原样透传成 max_level=None。
 
     那是 build_terrain 里 estimate_max_level 分支的**唯一**触发条件
-    （cesiumlab_terrain 的 `if max_level is None:`）—— 换句话说，自动档能不能
+    （cesium_terrain 的 `if max_level is None:`）—— 换句话说，自动档能不能
     按源数据像素尺寸现算基准层级，全押在这一个 kwarg 上。
 
     断言写死 `is None`，不许松成「假值」：0 和 -1 都是数字，会被当成用户显式

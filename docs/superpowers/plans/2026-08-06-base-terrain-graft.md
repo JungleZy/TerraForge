@@ -314,7 +314,7 @@ def test_interrupted_extraction_leaves_nothing_that_looks_ready(tmp_path, monkey
 def test_stage_cb_is_reported_and_never_kills_the_unpack(tmp_path, monkeypatch):
     """进度回调要报，且回调自己抛异常不能把解压带崩。
 
-    对齐 cesiumlab_terrain._gdal_stage_callback 的既有约定：一次 emit 故障
+    对齐 cesium_terrain._gdal_stage_callback 的既有约定：一次 emit 故障
     （客户端断开等）不该让整个任务失败。
     """
     from src.services.terrain_tiling import base_terrain
@@ -401,7 +401,7 @@ def _emit(stage_cb, fraction: float) -> None:
     """进度上报，吞掉回调自己的异常。
 
     一次 emit 故障（客户端断开等）不该让解压失败 —— 与
-    cesiumlab_terrain._gdal_stage_callback 同一条约定。
+    cesium_terrain._gdal_stage_callback 同一条约定。
     """
     if stage_cb is None:
         return

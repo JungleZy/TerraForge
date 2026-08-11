@@ -22,7 +22,7 @@
 |---|---|---|
 | `2026-05-06-google-maps-downloader.md` | 2026-05-06 | **已实施**（day-0 首版），此后代码持续演进三个月。正文的单管线形态、根目录 `config.py`/`database.py` 均已不存在 |
 | `2026-05-08-agent-team-comprehensive-review.md` | 2026-05-08 | **从未执行**。计划产出 10 份审查报告，只落地 1 份（`../../reviews/2026-05-08-comprehensive-review/04-backend-architecture.md`），66 个执行步骤一个都没跑完 |
-| `2026-05-16-dem-terrain-tiling-ctb-cesium.md` | 2026-05-16 | **部分作废**。核心技术路线（外部 `ctb-tile` 子进程）当日即被 vendored 的 `services/terrain_tiling/cesiumlab_terrain.py` 取代，残留代码 2026-07-31 删净；其余产物（`dem_terrain_jobs` 表、terrain 路由与静态服务、vrt/layer_json 构建器）全部上线且仍在用 |
+| `2026-05-16-dem-terrain-tiling-ctb-cesium.md` | 2026-05-16 | **部分作废**。核心技术路线（外部 `ctb-tile` 子进程）当日即被 vendored 的 `services/terrain_tiling/cesium_terrain.py` 取代，残留代码 2026-07-31 删净；其余产物（`dem_terrain_jobs` 表、terrain 路由与静态服务、vrt/layer_json 构建器）全部上线且仍在用 |
 | `2026-06-13-local-terrain-upload-tiling.md` | 2026-06-13 | **已实施**，与现状吻合度最高的一份。两处失准：建表位置现为 `core/database.py`；前端已被 2026-07 工作台重构改成 workbench 面板结构 |
 | `2026-06-15-frontend-premium-redesign.md` | 2026-06-15 | **已实施后被取代**。青绿 `#2dd4bf` 是它的产物，现已整套换成 sky `#38bdf8` + dark/light/system 三态主题。**照本文改 CSS 会把界面改坏。** 仍有价值：Task 2 的「廉价特效清单」与 `#detail*` DOM 契约只在这里有完整记录 |
 | `2026-06-16-contour-map.md` | 2026-06-16 | **部分作废**。入口从「框选 bbox 自动下 DEM」改成上传 GeoTIFF；「不做晕渲」的产品定位被推翻（现默认分层设色 + 晕渲）；Leaflet 叠加代码失效；渲染层契约基本仍成立 |
@@ -48,6 +48,6 @@
 | `2026-07-28-gis-workbench-ui.md` | `2026-07-28-gis-workbench-ui-design.md` |
 | `2026-08-04-terrain-triangulation.md` | `2026-08-04-terrain-triangulation-design.md` |
 
-**唯一有计划没设计稿的是 `2026-05-16-dem-terrain-tiling-ctb-cesium.md`** —— 偏偏就是唯一发生技术路线改道的那条线。CTB → CesiumLab 为什么换、当天换的依据是什么，仓库里查不到任何记录。
+**唯一有计划没设计稿的是 `2026-05-16-dem-terrain-tiling-ctb-cesium.md`** —— 偏偏就是唯一发生技术路线改道的那条线。CTB → cesium 为什么换、当天换的依据是什么，仓库里查不到任何记录。
 
 反方向（有设计稿没计划）的清单见 `../specs/README.md`。

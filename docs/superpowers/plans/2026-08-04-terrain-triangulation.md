@@ -4,7 +4,7 @@
 
 **Goal:** 让地形切片用误差驱动的自适应三角化替代固定 65×65 规则网格（减面 73.7%~82.7%），并给每个顶点写入法线数据以支持光照。
 
-**Architecture:** 两个互不依赖的批次。批次 A（Task 1-5）把 Martini/RTIN 接进 `cesiumlab_terrain.py`——注意其中的顶点重排与索引编码向量化**与自适应绑定，不可单独做**（理由见 Global Constraints）。批次 B（Task 6-8）加法线，走满网格 + ghost cells 路径，与批次 A 正交。Task 9 是前端。两个批次可以任意顺序做，也可以只做一个。
+**Architecture:** 两个互不依赖的批次。批次 A（Task 1-5）把 Martini/RTIN 接进 `cesium_terrain.py`——注意其中的顶点重排与索引编码向量化**与自适应绑定，不可单独做**（理由见 Global Constraints）。批次 B（Task 6-8）加法线，走满网格 + ghost cells 路径，与批次 A 正交。Task 9 是前端。两个批次可以任意顺序做，也可以只做一个。
 
 **Tech Stack:** Python 3.12 · numpy 1.26 · GDAL 3.8（仅采样用）· CesiumJS 1.143 · 无新增第三方依赖
 
@@ -32,7 +32,7 @@
 | 文件 | 责任 | 本计划中的变化 |
 |---|---|---|
 | `src/services/terrain_tiling/rtin.py` | **新建**。纯算法：RTIN 误差表、误差计算、网格提取。只依赖 numpy，不碰 GDAL / IO | Task 1-2 创建 |
-| `src/services/terrain_tiling/cesiumlab_terrain.py` | 采样 + 编码 + 切片调度 | Task 3-7 修改 |
+| `src/services/terrain_tiling/cesium_terrain.py` | 采样 + 编码 + 切片调度 | Task 3-7 修改 |
 | `src/services/terrain_tiling/dem_task_tiler.py` | 任务目录 → 切片的适配层 | Task 5 加字段 |
 | `tests/test_rtin.py` | **新建**。RTIN 算法的单元测试 | Task 1-2 |
 | `tests/test_terrain_normals.py` | **新建**。法线与 ghost cells 的测试 | Task 6-7 |
@@ -40,7 +40,7 @@
 | `static/js/terrain_lighting.js` | **新建**。光照开关的 localStorage 持久化（仿 `theme.js`） | Task 8 |
 | `templates/index.html` | 地图工具栏 | Task 8 |
 
-把 RTIN 拆成独立文件的理由：`cesiumlab_terrain.py` 已有 657 行且混合了采样/编码/调度三种职责，再塞 150 行算法会更难读；RTIN 是纯函数、无 IO、无 GDAL 依赖，独立后测试不需要任何 mock。
+把 RTIN 拆成独立文件的理由：`cesium_terrain.py` 已有 657 行且混合了采样/编码/调度三种职责，再塞 150 行算法会更难读；RTIN 是纯函数、无 IO、无 GDAL 依赖，独立后测试不需要任何 mock。
 
 ---
 
@@ -407,7 +407,7 @@ def rtin_extract(errors: np.ndarray, grid: int, max_error: float):
     返回 (vertex_grid_indices, triangles)：
       - vertex_grid_indices: 保留顶点的格点线性索引，**按首次出现顺序**排列。
         这个顺序不是随意的 —— quantized-mesh 的 high-water-mark 索引编码要求
-        顶点按首次出现顺序编号才能向量化（见 cesiumlab_terrain._hwm_encode）。
+        顶点按首次出现顺序编号才能向量化（见 cesium_terrain._hwm_encode）。
       - triangles: (M,3) 的局部索引，值域 [0, len(vertex_grid_indices))。
 
     递归深度只有 2*log2(grid-1)（grid=65 时 12 层），不必改写成迭代。
@@ -470,7 +470,7 @@ git commit -m "feat(terrain): RTIN 网格提取，边界满密度保证跨瓦片
 ## Task 3: high-water-mark 编码向量化
 
 **Files:**
-- Modify: `src/services/terrain_tiling/cesiumlab_terrain.py`（`_high_water_mark_encode` 附近）
+- Modify: `src/services/terrain_tiling/cesium_terrain.py`（`_high_water_mark_encode` 附近）
 - Test: `tests/test_fix_terrain_mesh_indices.py`
 
 **Interfaces:**
@@ -482,7 +482,7 @@ git commit -m "feat(terrain): RTIN 网格提取，边界满密度保证跨瓦片
 追加到 `tests/test_fix_terrain_mesh_indices.py`：
 
 ```python
-from src.services.terrain_tiling.cesiumlab_terrain import (
+from src.services.terrain_tiling.cesium_terrain import (
     _high_water_mark_encode,
     _hwm_encode,
 )
@@ -527,7 +527,7 @@ Expected: FAIL —— `ImportError: cannot import name '_hwm_encode'`
 
 - [ ] **Step 3: 实现向量化编码**
 
-在 `src/services/terrain_tiling/cesiumlab_terrain.py` 的 `_high_water_mark_encode` 之后插入：
+在 `src/services/terrain_tiling/cesium_terrain.py` 的 `_high_water_mark_encode` 之后插入：
 
 ```python
 def _hwm_encode(indices: np.ndarray) -> np.ndarray:
@@ -562,7 +562,7 @@ Expected: 983 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/terrain_tiling/cesiumlab_terrain.py tests/test_fix_terrain_mesh_indices.py
+git add src/services/terrain_tiling/cesium_terrain.py tests/test_fix_terrain_mesh_indices.py
 git commit -m "feat(terrain): high-water-mark 索引编码的向量化版本
 
 规范形式下 highest[i] 等于前 i 个元素中的不同顶点数，可用 cumsum 一次算出。
@@ -577,7 +577,7 @@ Martini 的拓扑逐瓦片变化会让 _mesh_constants 的 lru_cache 失效，�
 ## Task 4: `encode_quantized_mesh` 接受任意三角网
 
 **Files:**
-- Modify: `src/services/terrain_tiling/cesiumlab_terrain.py:284-353`（`encode_quantized_mesh`）
+- Modify: `src/services/terrain_tiling/cesium_terrain.py:284-353`（`encode_quantized_mesh`）
 - Test: `tests/test_fix_terrain_mesh_indices.py`
 
 **Interfaces:**
@@ -635,7 +635,7 @@ Expected: FAIL —— `TypeError: encode_quantized_mesh() got an unexpected keyw
 
 - [ ] **Step 3: 改造 `encode_quantized_mesh`**
 
-把 `src/services/terrain_tiling/cesiumlab_terrain.py` 的函数签名与 body 段改为：
+把 `src/services/terrain_tiling/cesium_terrain.py` 的函数签名与 body 段改为：
 
 ```python
 def encode_quantized_mesh(west: float, south: float, east: float, north: float,
@@ -729,7 +729,7 @@ Expected: 986 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/services/terrain_tiling/cesiumlab_terrain.py tests/test_fix_terrain_mesh_indices.py
+git add src/services/terrain_tiling/cesium_terrain.py tests/test_fix_terrain_mesh_indices.py
 git commit -m "feat(terrain): encode_quantized_mesh 支持任意三角网
 
 新增可选 mesh=(vertex_grid_indices, triangles) 参数；mesh=None 时字节流与
@@ -744,7 +744,7 @@ git commit -m "feat(terrain): encode_quantized_mesh 支持任意三角网
 ## Task 5: 接入切片流程
 
 **Files:**
-- Modify: `src/services/terrain_tiling/cesiumlab_terrain.py`（`_worker_tile`、`build_terrain`）
+- Modify: `src/services/terrain_tiling/cesium_terrain.py`（`_worker_tile`、`build_terrain`）
 - Modify: `src/services/terrain_tiling/dem_task_tiler.py:18-32`（`TileParams`）
 - Test: `tests/test_rtin.py`
 
@@ -763,7 +763,7 @@ def test_max_error_for_level_scales_with_vertex_spacing():
     设计阶段实测：max_error=20m 时 z14 瓦片只剩 2 个三角形。
     规则是 K * 顶点间距，含义是坡度误差容限恒定。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import _max_error_for_level
+    from src.services.terrain_tiling.cesium_terrain import _max_error_for_level
 
     e14 = _max_error_for_level(14, 65, 0.15)
     e13 = _max_error_for_level(13, 65, 0.15)
@@ -776,7 +776,7 @@ def test_build_terrain_martini_produces_fewer_triangles_than_grid(tmp_path):
     import gzip
     import struct
 
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     n = 65
     rng = np.random.default_rng(1)
@@ -801,7 +801,7 @@ Expected: FAIL —— `ImportError: cannot import name '_max_error_for_level'`
 
 - [ ] **Step 3: 实现层级缩放并接入 worker**
 
-在 `cesiumlab_terrain.py` 顶部的常量区（`WGS84_E2` 之后）加：
+在 `cesium_terrain.py` 顶部的常量区（`WGS84_E2` 之后）加：
 
 ```python
 DEG_TO_M = 111320.0          # 赤道处 1° 的米数，仅用于 max_error 的量级换算
@@ -912,11 +912,11 @@ max_error 按层级缩放：K * 顶点间距，含义是坡度误差容限恒定
 ## Task 6: ghost cells 采样与 ECEF 法线
 
 **Files:**
-- Modify: `src/services/terrain_tiling/cesiumlab_terrain.py`（`_worker_tile`）
+- Modify: `src/services/terrain_tiling/cesium_terrain.py`（`_worker_tile`）
 - Test: `tests/test_terrain_normals.py`（新建）
 
 **Interfaces:**
-- Consumes: `lonlat_to_ecef(lon, lat, h)`（已存在，`cesiumlab_terrain.py:58`）
+- Consumes: `lonlat_to_ecef(lon, lat, h)`（已存在，`cesium_terrain.py:58`）
 - Produces: `_vertex_normals_ecef(lons: np.ndarray, lats: np.ndarray, heights: np.ndarray) -> np.ndarray` —— 输入三个 `(n,n)` 数组，输出 `(n,n,3)` 单位法线，一律朝外。
 
 - [ ] **Step 1: 写失败的测试**
@@ -937,7 +937,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.services.terrain_tiling.cesiumlab_terrain import (
+from src.services.terrain_tiling.cesium_terrain import (
     _vertex_normals_ecef,
     lonlat_to_ecef,
 )
@@ -1041,7 +1041,7 @@ Expected: FAIL —— `ImportError: cannot import name '_vertex_normals_ecef'`
 
 - [ ] **Step 3: 实现法线计算**
 
-在 `cesiumlab_terrain.py` 的 `lonlat_to_ecef` 之后插入：
+在 `cesium_terrain.py` 的 `lonlat_to_ecef` 之后插入：
 
 ```python
 def _vertex_normals_ecef(lons: np.ndarray, lats: np.ndarray,
@@ -1122,7 +1122,7 @@ Expected: 994 passed
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/terrain_tiling/cesiumlab_terrain.py tests/test_terrain_normals.py
+git add src/services/terrain_tiling/cesium_terrain.py tests/test_terrain_normals.py
 git commit -m "feat(terrain): ECEF 空间的逐顶点法线 + ghost cells 采样
 
 法线必须在 ECEF 空间算：经纬度下 1° 经距随纬度变化，直接叉积会让高纬地区
@@ -1138,7 +1138,7 @@ ghost 环（采样 65->67 后裁回）消除跨瓦片接缝 —— 不扩环时�
 ## Task 7: oct 编码与 extension 段
 
 **Files:**
-- Modify: `src/services/terrain_tiling/cesiumlab_terrain.py`（`encode_quantized_mesh`、`build_terrain` 的 layer.json）
+- Modify: `src/services/terrain_tiling/cesium_terrain.py`（`encode_quantized_mesh`、`build_terrain` 的 layer.json）
 - Test: `tests/test_terrain_normals.py`
 
 **Interfaces:**
@@ -1150,7 +1150,7 @@ ghost 环（采样 65->67 后裁回）消除跨瓦片接缝 —— 不扩环时�
 追加到 `tests/test_terrain_normals.py`：
 
 ```python
-from src.services.terrain_tiling.cesiumlab_terrain import (
+from src.services.terrain_tiling.cesium_terrain import (
     _oct_encode,
     encode_quantized_mesh,
 )
@@ -1302,7 +1302,7 @@ Expected: 998 passed
 ```bash
 # 1. 切一个真实 granule
 uv run python -c "
-from src.services.terrain_tiling.cesiumlab_terrain import build_terrain
+from src.services.terrain_tiling.cesium_terrain import build_terrain
 r = build_terrain(['downloads/dem/dem_task_1/ASTGTMV003_N41E086_dem.tif'],
                   'downloads/dem/dem_task_9100/terrain_tiles',
                   min_level=0, max_level=12, tile_size=65, workers=4)
@@ -1349,7 +1349,7 @@ c.execute('DELETE FROM dem_tasks WHERE id = 9100'); c.commit()"
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/services/terrain_tiling/cesiumlab_terrain.py tests/test_terrain_normals.py
+git add src/services/terrain_tiling/cesium_terrain.py tests/test_terrain_normals.py
 git commit -m "feat(terrain): oct-encoded 逐顶点法线扩展段
 
 extensionId=1，每顶点 2 字节，算法与 Cesium 的 AttributeCompression.octEncode

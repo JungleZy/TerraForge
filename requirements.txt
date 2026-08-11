@@ -23,7 +23,7 @@ certifi>=2024.2.2
 # 所有走 ReadAsArray/WriteArray 的测试全炸。范围约束则会让 pip 安静跳过。
 # 装法(本地与 CI 一致): pip install --no-build-isolation "GDAL==$(gdal-config --version)"
 # 上限 <4 有实测依据:GDAL 4.0 默认开异常,而异常模式下写失败不回填 CPL 错误栈
-# (实测 GetLastErrorType 3→0),cesiumlab_terrain 的 _raise_on_gdal_error 会退化
+# (实测 GetLastErrorType 3→0),cesium_terrain 的 _raise_on_gdal_error 会退化
 # 成空转,那道专防「返回成功但产物截断」的闸门就没了。升 4.0 前必须先改错误检查。
 GDAL>=3.8,<4
 numpy==1.26.4

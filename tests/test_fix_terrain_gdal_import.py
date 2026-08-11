@@ -1,5 +1,5 @@
 """
-I9 fix: cesiumlab_terrain.py's lazy GDAL import hook called sys.exit(), which
+I9 fix: cesium_terrain.py's lazy GDAL import hook called sys.exit(), which
 raises SystemExit — a BaseException that `except Exception` handlers do NOT
 catch. With GDAL missing, the DEM tiling job thread died with SystemExit and
 the dem_terrain_jobs row stayed 'running' forever.
@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-CESIUMLAB_MOD = "src.services.terrain_tiling.cesiumlab_terrain"
+CESIUM_MOD = "src.services.terrain_tiling.cesium_terrain"
 
 
 def _block_gdal(monkeypatch):
@@ -28,13 +28,13 @@ def _block_gdal(monkeypatch):
     for name in [m for m in sys.modules if m == "osgeo" or m.startswith("osgeo.")]:
         monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setitem(sys.modules, "osgeo", None)  # import blocker
-    monkeypatch.delitem(sys.modules, CESIUMLAB_MOD, raising=False)
+    monkeypatch.delitem(sys.modules, CESIUM_MOD, raising=False)
 
 
 def test_import_without_gdal_raises_importerror_not_systemexit(monkeypatch):
     _block_gdal(monkeypatch)
     try:
-        importlib.import_module(CESIUMLAB_MOD)
+        importlib.import_module(CESIUM_MOD)
     except SystemExit as e:  # noqa: BLE001 - explicitly asserting this never happens
         pytest.fail(f"SystemExit leaked from lazy GDAL import hook: {e!r}")
     except ImportError:

@@ -8,21 +8,21 @@
    实测(3.11.4, 68000x68000 Byte + COMPRESS=DEFLATE):产物停在 4294967275 字节、
    version=42，而 gdal.Translate 返回**非 None** 的 dataset、RasterXSize/YSize
    报 68000x68000 全对、左上角与源逐字节相等 —— 只有右下角全 0。
-   地形侧 cesiumlab_terrain 早就写了 IF_SAFER，这条路径此前一直敞着。
+   地形侧 cesium_terrain 早就写了 IF_SAFER，这条路径此前一直敞着。
 
 2. download_engine 只用 `output_ds is None` 判失败
    返回值挡不住 I/O 写失败。同一次 4 GiB 截断，写入期间 CPL 错误栈堆了 10073 条
    `TIFFAppendToStrip:Maximum TIFF file size exceeded`，而调用方一条都没捞，
    坏产物就这么 os.replace 成了正式文件。
 
-3. cesiumlab_terrain 的 BuildVRT 丢源不报错
+3. cesium_terrain 的 BuildVRT 丢源不报错
    BuildVRT 对打不开的源只打一行 `Warning 1: ... Skipping it`，返回有效 dataset。
    而下游 _verify_materialised 是拿产物跟**这个已经缺了源的 VRT** 比，处处自洽。
    ⚠️ 触发条件很具体，实测区分过(见 test_build_input_raster_* 的 docstring):
    垃圾内容/0 字节/文件不存在会被跳过;头部完好的**截断**文件不会被跳过，
    它坏在读取阶段，由既有的 Translate 失败 + _verify_materialised 抓住。
 
-外加一条:cesiumlab_terrain 的物化段必须自我隔离 gdal.UseExceptions() 的全局污染。
+外加一条:cesium_terrain 的物化段必须自我隔离 gdal.UseExceptions() 的全局污染。
 
 ⚠️ **没有测试守着 download_engine 里那句 gdal.ErrorReset()** —— 不是漏了，是写不出来。
 实测(3.11.4):gdal.Translate 内部自己会先重置错误状态，所以在它之前注入的脏错误
@@ -285,7 +285,7 @@ def test_stitch_error_gate_survives_global_use_exceptions(tmp_path, monkeypatch)
 
 
 # --------------------------------------------------------------------------
-# 3. cesiumlab_terrain 的 BuildVRT 丢源
+# 3. cesium_terrain 的 BuildVRT 丢源
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("corrupt,label", [
@@ -302,7 +302,7 @@ def test_build_input_raster_rejects_source_buildvrt_would_drop(
     一幅的宽度，build_input_raster 静默返回 —— **少切 50% 的地**，
     而任务报 completed、瓦片全 200。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import build_input_raster
+    from src.services.terrain_tiling.cesium_terrain import build_input_raster
 
     good = tmp_path / 'good.tif'
     bad = tmp_path / 'bad.tif'
@@ -324,7 +324,7 @@ def test_build_input_raster_still_rejects_truncated_source(tmp_path):
     这条与上一条区分开，是为了防止有人把 _assert_no_input_dropped 误当成
     「所有坏源的唯一防线」而删掉后面的校验。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import build_input_raster
+    from src.services.terrain_tiling.cesium_terrain import build_input_raster
 
     good = tmp_path / 'good.tif'
     bad = tmp_path / 'bad.tif'
@@ -354,7 +354,7 @@ def test_build_input_raster_catches_source_dropped_from_inside_the_bbox(
     实测后果:产物宽度 600 完全正确，**中间 200 列整块是 0**，任务报 completed。
     唯一抓得住的是拿 VRT 的 GetFileList() 与 inputs 对账。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import build_input_raster
+    from src.services.terrain_tiling.cesium_terrain import build_input_raster
 
     a, b, c = tmp_path / 'a.tif', tmp_path / 'b.tif', tmp_path / 'c.tif'
     _write_dem(a, 100.0)
@@ -383,7 +383,7 @@ def test_build_input_raster_accepts_healthy_multi_input(tmp_path):
 
     没有这条，把 _assert_no_input_dropped 写成 `raise` 也能让上面全绿。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import build_input_raster
+    from src.services.terrain_tiling.cesium_terrain import build_input_raster
 
     a, b = tmp_path / 'a.tif', tmp_path / 'b.tif'
     _write_dem(a, 100.0)
@@ -414,7 +414,7 @@ def test_build_input_raster_immune_to_global_use_exceptions(tmp_path):
     物化段用 `with gdal.ExceptionMgr(useExceptions=False)` 就地钉死所需模式。
     本测试同时守住两件事:污染下功能正确，且**退出后不改变调用方的全局状态**。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import build_input_raster
+    from src.services.terrain_tiling.cesium_terrain import build_input_raster
 
     a, b = tmp_path / 'a.tif', tmp_path / 'b.tif'
     _write_dem(a, 100.0)
@@ -452,9 +452,9 @@ def test_materialisation_is_wrapped_in_exception_manager():
     去掉 ExceptionMgr 它也照样绿。这条直接钉源码形态，两条合起来才守得住。
     """
     import inspect
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
-    src = inspect.getsource(cesiumlab_terrain.build_input_raster)
+    src = inspect.getsource(cesium_terrain.build_input_raster)
     assert 'ExceptionMgr(useExceptions=False)' in src, (
         "build_input_raster 的物化段必须显式声明非异常模式，"
         "否则 contour_engine 的全局 gdal.UseExceptions() 会让 "

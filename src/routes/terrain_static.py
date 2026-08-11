@@ -70,7 +70,7 @@ def _relative_parent_layer_json(target: Path):
 def _send_terrain_file(target: Path):
     """send_file wrapper for terrain resources.
 
-    .terrain tiles are stored gzip-compressed on disk (see cesiumlab_terrain.py).
+    .terrain tiles are stored gzip-compressed on disk (see cesium_terrain.py).
     Detect the gzip magic bytes and advertise Content-Encoding: gzip so browsers
     decompress transparently; plain files (layer.json) are served untouched.
 
@@ -344,4 +344,3 @@ def terrain_local_hillshade(task_id: int):
 def terrain_local_hillshade_png(task_id: int):
     task_dir = _local_task_dir_or_404(task_id)
     return _hillshade_png(task_dir, task_dir / "source")
-

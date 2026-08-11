@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from osgeo import gdal
 
-from src.services.terrain_tiling.cesiumlab_terrain import build_terrain
+from src.services.terrain_tiling.cesium_terrain import build_terrain
 
 
 def _write_tif(path, west, south, px=40, deg_per_px=0.05):
@@ -35,11 +35,11 @@ def _leftovers(work_dir):
     """work_dir 下残留的中间输入（含 .tif / .vrt / .ovr / .aux.xml 各种边车）。
 
     产物形态从临时 .vrt 换成物化的 .tif 之后，原来那个「只 glob 系统临时目录里
-    cesiumlab_terrain_*.vrt」的检查恒为空集 —— 三条断言全部恒真、无声变绿。
+    cesium_terrain_*.vrt」的检查恒为空集 —— 三条断言全部恒真、无声变绿。
     所以这里改成按**实际落盘位置**（build_terrain 传的 work_dir = 输出目录的
     父目录）去查，并且不限扩展名。
     """
-    return set(glob.glob(os.path.join(str(work_dir), "cesiumlab_terrain_*")))
+    return set(glob.glob(os.path.join(str(work_dir), "cesium_terrain_*")))
 
 
 def _system_temp_leftovers():
@@ -48,7 +48,7 @@ def _system_temp_leftovers():
     这里必须用 before/after **差集**而不是绝对集合：系统临时目录是共享的，
     别的进程（包括历史遗留）留下的同名文件会把绝对断言污染成假红。
     """
-    return set(glob.glob(os.path.join(tempfile.gettempdir(), "cesiumlab_terrain_*")))
+    return set(glob.glob(os.path.join(tempfile.gettempdir(), "cesium_terrain_*")))
 
 
 def test_materialisation_really_lands_in_work_dir(tmp_path):
@@ -56,7 +56,7 @@ def test_materialisation_really_lands_in_work_dir(tmp_path):
 
     这条是前车之鉴：清理测试一旦对着一个永远为空的位置检查，它就再也不会红。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import build_input_raster
+    from src.services.terrain_tiling.cesium_terrain import build_input_raster
 
     tif1 = tmp_path / "a.tif"
     tif2 = tmp_path / "b.tif"

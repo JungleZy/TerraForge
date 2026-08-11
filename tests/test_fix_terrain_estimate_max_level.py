@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.services.terrain_tiling.cesiumlab_terrain import GeographicTilingScheme
+from src.services.terrain_tiling.cesium_terrain import GeographicTilingScheme
 
 
 def test_estimate_max_level_uses_actual_tile_size():
@@ -55,7 +55,7 @@ def _run_build(monkeypatch, tmp_path, bounds=(116.0, 39.0, 116.1, 39.1), **kw):
     bounds 决定要枚举多少张瓦片任务（_worker_tile 是替身，纯 Python 循环）。
     高 max_level 的用例传小选区，否则光枚举就要秒级。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     monkeypatch.setattr(ct, "DemSampler",
                         _fake_sampler_cls(180.0 / (64 * 2 ** 10), bounds))

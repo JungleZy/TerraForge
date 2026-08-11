@@ -660,7 +660,7 @@ def test_claude_md_states_the_real_tileparams_defaults():
 
 
 def test_claude_md_quotes_the_layer_json_extensions_expression_verbatim():
-    """`extensions` 那一句必须**逐字**抄 `cesiumlab_terrain` 里的条件表达式。
+    """`extensions` 那一句必须**逐字**抄 `cesium_terrain` 里的条件表达式。
 
     旧版断言「瓦片带 oct 法线且 layer.json 声明 `extensions:
     ["octvertexnormals"]`」—— 漏掉了 `if normals else []` 这半句，而应用侧默认
@@ -668,7 +668,7 @@ def test_claude_md_quotes_the_layer_json_extensions_expression_verbatim():
     """
     expr = '["octvertexnormals"] if normals else []'
     tiler = _read(os.path.join("src", "services", "terrain_tiling",
-                               "cesiumlab_terrain.py"))
+                               "cesium_terrain.py"))
     assert expr in tiler, (
         f"源码里已经没有 {expr!r} 这条表达式了 —— 先确认代码改成了什么，再改文档")
     assert expr in _read(CLAUDE_MD), (

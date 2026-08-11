@@ -249,7 +249,7 @@ def test_progress_is_throttled_but_the_terminal_event_always_fires(monkeypatch, 
 def test_emit_failure_does_not_break_the_state_machine(monkeypatch, tmp_path):
     """emit 抛异常（客户端断开）不能影响解压与状态。
 
-    与 base_terrain._emit、cesiumlab_terrain._gdal_stage_callback 同一条既有约定：
+    与 base_terrain._emit、cesium_terrain._gdal_stage_callback 同一条既有约定：
     一次广播故障不该让整件事失败。
     """
     from src.services import base_terrain_warmup as w
@@ -378,7 +378,7 @@ def _emit(socketio, payload: dict) -> None:
     """广播状态，吞掉异常。
 
     一次广播故障（客户端断开等）不该影响解压 —— 与 base_terrain._emit、
-    cesiumlab_terrain._gdal_stage_callback 同一条既有约定。
+    cesium_terrain._gdal_stage_callback 同一条既有约定。
     """
     try:
         socketio.emit(EVENT_NAME, payload)

@@ -60,8 +60,16 @@ except ImportError as e:
         "Missing GDAL Python bindings: pip install gdal (or conda install -c conda-forge gdal)"
     ) from e
 
-# Avoid gdal.UseExceptions() here. It attempts to import osgeo.gdal_array, which may be absent
-# depending on how GDAL Python bindings were built. This tiler doesn't require gdal_array.
+from src.core.gdal_mode import pin_gdal_exception_mode
+
+# 进程级声明:本模块(以及 spawn 出来的每个切片 worker)按**非异常模式**判错 ——
+# `gdal.Open(...) is None`、`_raise_on_gdal_error` 读 CPL 错误栈,都以此为前提。
+# 不声明的话每个进程第一次碰 GDAL 都要吃一条 FutureWarning(一次切片作业 5 条:
+# 主进程 + 4 个 worker),而 GDAL 4.0 更会把默认翻成异常模式、把上面那些判错分支
+# 变成死代码。理由与迁移路径见 src/core/gdal_mode.py 的模块 docstring。
+# 注意它与 build_input_raster 里的 `ExceptionMgr(useExceptions=False)` 不重复:
+# 那个守临界区(免疫别人调 UseExceptions),这个定进程默认值。
+pin_gdal_exception_mode()
 
 logger = logging.getLogger(__name__)
 
@@ -600,7 +608,7 @@ def build_input_raster(inputs: list[str], work_dir: str | None = None,
     # —— mtime 判据在这里近乎无效:物化产物写完 mtime 就冻住,而切片可以再跑几
     # 小时,晚起的第二个实例会认为它「早于我启动」而放行删除。
     fd, out_path = tempfile.mkstemp(
-        suffix=".tif", prefix=f"cesiumlab_terrain_{os.getpid()}_", dir=work_dir)
+        suffix=".tif", prefix=f"cesium_terrain_{os.getpid()}_", dir=work_dir)
     os.close(fd)
     # mkstemp 建的空文件会让 Translate 报「已存在」,先让位
     try:
@@ -1762,7 +1770,7 @@ def main(argv: list[str] | None = None) -> int:
             # 等于把整片地形叠加两遍。DEM 任务侧躲过这一劫只是因为
             # list_dem_tifs 匹配的是 *_dem.tif / *_DEM.tif。
             inputs = [p for p in inputs
-                      if not os.path.basename(p).startswith("cesiumlab_terrain_")]
+                      if not os.path.basename(p).startswith("cesium_terrain_")]
         elif any(c in spec for c in "*?["):
             inputs.extend(sorted(glob.glob(spec)))
         else:

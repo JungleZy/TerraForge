@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from osgeo import gdal, osr
 
-from src.services.terrain_tiling.cesiumlab_terrain import DemSampler
+from src.services.terrain_tiling.cesium_terrain import DemSampler
 
 # 源像素 1/3600 度（1 弧秒，与 ASTER/GLO-30 同量级），覆盖 1°×1°
 _PX = 1.0 / 3600.0

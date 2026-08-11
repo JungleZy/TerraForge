@@ -109,7 +109,7 @@ def rtin_extract(errors: np.ndarray, grid: int, max_error: float):
     返回 (vertex_grid_indices, triangles)：
       - vertex_grid_indices: 保留顶点的格点线性索引，**按首次出现顺序**排列。
         这个顺序不是随意的 —— quantized-mesh 的 high-water-mark 索引编码要求
-        顶点按首次出现顺序编号才能向量化（见 cesiumlab_terrain._hwm_encode）。
+        顶点按首次出现顺序编号才能向量化（见 cesium_terrain._hwm_encode）。
       - triangles: (M,3) 的局部索引，值域 [0, len(vertex_grid_indices))。
 
     递归深度只有 2*log2(grid-1)（grid=65 时 12 层），不必改写成迭代。

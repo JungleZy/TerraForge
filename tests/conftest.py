@@ -28,6 +28,16 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# 测试进程自己也碰 GDAL(夹具直接建 tif/png),不表态照样吃一条 FutureWarning。
+# 按生产同一套策略声明,顺带保证 `pytest -q` 的 warnings summary 是干净的。
+# 缺 GDAL 的环境(纯前端/工具类用例)不该因此收集失败,所以吞掉 ImportError。
+try:
+    from src.core.gdal_mode import pin_gdal_exception_mode
+
+    pin_gdal_exception_mode()
+except ImportError:
+    pass
+
 
 def find_real_bash():
     """返回一个**真的** GNU bash 路径，找不到返回 None。

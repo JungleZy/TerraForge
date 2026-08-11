@@ -71,7 +71,7 @@ def test_lock_conflict_message_explains_why_deleting_does_not_help(monkeypatch):
 # T1: 瓦片索引上界 = 半开区间
 # --------------------------------------------------------------------------
 
-from src.services.terrain_tiling.cesiumlab_terrain import (  # noqa: E402
+from src.services.terrain_tiling.cesium_terrain import (  # noqa: E402
     GeographicTilingScheme, intersecting_tile_range,
 )
 

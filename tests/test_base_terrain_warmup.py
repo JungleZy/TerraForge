@@ -291,7 +291,7 @@ def test_event_name_is_pinned_to_the_wire_string():
 def test_emit_failure_does_not_break_the_state_machine(monkeypatch, tmp_path):
     """emit 抛异常（客户端断开）不能影响解压与状态。
 
-    与 base_terrain._emit、cesiumlab_terrain._gdal_stage_callback 同一条既有约定：
+    与 base_terrain._emit、cesium_terrain._gdal_stage_callback 同一条既有约定：
     一次广播故障不该让整件事失败。
     """
     from src.services import base_terrain_warmup as w

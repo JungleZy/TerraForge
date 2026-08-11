@@ -18,6 +18,7 @@ import os
 import threading
 from pathlib import Path
 
+from src.core.gdal_mode import pin_gdal_exception_mode
 from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,10 @@ def _read_cached(png_path: Path, meta_path: Path):
 def _render(raster_dir: Path, png_path: Path):
     """渲染 raster_dir 下的 *_dem.tif -> png_path，返回 [w, s, e, n]；无源文件返回 None。"""
     from osgeo import gdal  # 惰性 import：不走路径拼接的进程不背 osgeo 依赖
+
+    # 本函数按非异常模式判错（下面每一步都是 `is None -> raise` 带上下文的
+    # RuntimeError），进程级把它钉死；见 src/core/gdal_mode.py。
+    pin_gdal_exception_mode()
 
     tifs = list_dem_tifs(raster_dir)
     if not tifs:

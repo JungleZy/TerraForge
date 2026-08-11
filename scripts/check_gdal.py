@@ -18,7 +18,7 @@ CI 走 `python nuitka_build.py` 绕开了这两个脚本,所以发版一直是�
      编出来的绑定会静默缺掉这个扩展,而 `gdal.__version__` 照样读得出 ——
      旧的 major.minor 比对检不出来。后果是 exe 能构建、能启动、能服务首页,
      而所有走 ReadAsArray/WriteArray 的 DEM/地形/等高线作业全炸
-     (contour_engine / cesiumlab_terrain / download_engine 的拼接都在其中)。
+     (contour_engine / cesium_terrain / download_engine 的拼接都在其中)。
 
 解析放在 Python 而不是两个 shell 里,是因为「一份规则两处实现」正是上面那个
 缺陷的成因:requirements.txt 的政策改了,而两个脚本里的正则没跟上。

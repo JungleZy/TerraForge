@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **`tile_size` 恒为 65，一个字都不许动。** 随包底图是 65×65 且物理植入任务目录，改了会在 z7→z8 交界处密度跳变；`tests/test_build_scripts_contract.py:48-62` 与 `tests/test_dem_task_tiler.py:56` 钉着它。
-- **CLI（`cesiumlab_terrain.main`）与全球底图构建脚本继续用 `auto`。** 底图覆盖海洋与大片平原，是 martini 收益最大的场景，且只构建一次。应用侧与 CLI 侧的默认值**有意分叉**。
+- **CLI（`cesium_terrain.main`）与全球底图构建脚本继续用 `auto`。** 底图覆盖海洋与大片平原，是 martini 收益最大的场景，且只构建一次。应用侧与 CLI 侧的默认值**有意分叉**。
 - **`build_terrain` 的 kwarg 默认值一个都不改**（`triangulator='auto'`、`normals=True`、`max_error_k=DEFAULT_MAX_ERROR_K`）。改了会连锁掀翻 `tests/test_terrain_normals.py:358`、`tests/test_rtin.py:398-403`、`tests/test_fix_terrain_pool_robustness.py:81`。新增参数一律带「保持既有行为」的默认值。
 - **新字段必须加进 `TileParams`，不能加成 `tile_dem_task_dir` 的新形参。** 多个契约测试用三参/四参替身钉住调用形态（`tests/test_local_terrain_api.py:108` 是三参、`tests/test_fix_dem_tiling_stoppable.py:60` 是四参），加形参会 TypeError。
 - **新 DB 列必须带 `DEFAULT`。** `tests/test_terrain_api.py:97-99` 有不列新列的裸 INSERT。
@@ -28,7 +28,7 @@
 
 | 符号 | 出处 | 签名 / 事实 |
 |---|---|---|
-| `build_terrain` | `src/services/terrain_tiling/cesiumlab_terrain.py:1269-1284` | 关键字参数含 `min_level` / `max_level` / `tile_size=17` / `workers=0` / `progress_cb` / `stage_cb` / `stop_flag` / `triangulator='auto'` / `max_error_k=DEFAULT_MAX_ERROR_K` / `normals=True` |
+| `build_terrain` | `src/services/terrain_tiling/cesium_terrain.py:1269-1284` | 关键字参数含 `min_level` / `max_level` / `tile_size=17` / `workers=0` / `progress_cb` / `stage_cb` / `stop_flag` / `triangulator='auto'` / `max_error_k=DEFAULT_MAX_ERROR_K` / `normals=True` |
 | max_level 解析点 | 同上 `:1360-1361` | `if max_level is None: max_level = scheme.estimate_max_level(sampler.pixel_size_deg)`，**在 `build_input_raster` 物化之后**（`:1349`）、`DemSampler` 打开之后（`:1357`） |
 | `build_terrain` 返回值 | 同上 `:1577-1578` | `{"total","rendered","failed","chose_martini","chose_grid"}` 五个 key，**不含 max_level** |
 | `GeographicTilingScheme.estimate_max_level` | 同上 `:177-187` | 入参是像素度数；`<= 0` 时兜底返回 14（`tests/test_fix_terrain_estimate_max_level.py:35-36` 钉死） |
@@ -72,7 +72,7 @@
 ### Task 1：`build_terrain` 支持 `level_offset`，并回报实际 max_level
 
 **Files:**
-- Modify: `src/services/terrain_tiling/cesiumlab_terrain.py:1269-1284`（签名）、`:1360-1361`（解析点）、`:1577-1578`（返回值）
+- Modify: `src/services/terrain_tiling/cesium_terrain.py:1269-1284`（签名）、`:1360-1361`（解析点）、`:1577-1578`（返回值）
 - Test: `tests/test_fix_terrain_estimate_max_level.py`（追加，它已是层级估算的归属文件）
 
 **Interfaces:**
@@ -97,7 +97,7 @@ def _fake_sampler_cls(pixel_deg, bounds=(116.0, 39.0, 116.1, 39.1)):
 
 def _run_build(monkeypatch, tmp_path, **kw):
     """跑 build_terrain 但不真切瓦片：替掉 sampler 与 worker，只看层级决策。"""
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     monkeypatch.setattr(ct, "DemSampler", _fake_sampler_cls(180.0 / (64 * 2 ** 10)))
     monkeypatch.setattr(ct, "_worker_tile", lambda task: (0.0, 1.0, "grid"))
@@ -144,7 +144,7 @@ Expected: FAIL —— `TypeError: build_terrain() got an unexpected keyword argu
 
 - [ ] **Step 3: 改签名**
 
-在 `cesiumlab_terrain.py:1283`（`normals: bool = True`）之后加一行：
+在 `cesium_terrain.py:1283`（`normals: bool = True`）之后加一行：
 
 ```python
     normals: bool = True,
@@ -209,7 +209,7 @@ Expected: 全绿。**注意 `tests/test_fix_terrain_pool_robustness.py:84` 断�
 - [ ] **Step 8: 提交**
 
 ```bash
-git add src/services/terrain_tiling/cesiumlab_terrain.py tests/test_fix_terrain_estimate_max_level.py tests/test_fix_terrain_pool_robustness.py
+git add src/services/terrain_tiling/cesium_terrain.py tests/test_fix_terrain_estimate_max_level.py tests/test_fix_terrain_pool_robustness.py
 git commit -m "feat(terrain): build_terrain 支持 level_offset 并回报实际 max_level"
 ```
 
@@ -314,7 +314,7 @@ Expected: FAIL —— `TypeError: TileParams.__init__() got an unexpected keywor
     # 本来就选 grid，纯属把同一个产物用 6 倍 CPU 重算一遍。
     # 依据：docs/reference/terrain/tiling-presets-measured.md 第三、四节。
     #
-    # ⚠️ CLI（cesiumlab_terrain.main）与全球底图构建脚本仍用 'auto'，那是
+    # ⚠️ CLI（cesium_terrain.main）与全球底图构建脚本仍用 'auto'，那是
     # **有意分叉**：底图覆盖海洋与大片平原（martini 收益最大），且只构建一次，
     # CPU 代价无所谓。不要"顺手统一"这两处，见同文档第八节末尾。
     #
@@ -344,7 +344,7 @@ Expected: FAIL —— `TypeError: TileParams.__init__() got an unexpected keywor
     # 半张是采到 DEM 外的外推值」那种接缝。
     # 恒传 8，不再在这里 min(8, maxzoom)：档位偏移后的最终层级只有
     # build_terrain 知道（它可能还要走 estimate），钳位因此挪进了那边
-    # （见 cesiumlab_terrain 里 min_level = min(min_level, max_level) 那行）。
+    # （见 cesium_terrain 里 min_level = min(min_level, max_level) 那行）。
     min_level = 8 if base_dir is not None else 0
 ```
 
@@ -449,7 +449,7 @@ def test_global_base_build_keeps_the_adaptive_backend(tmp_path, monkeypatch):
     在全仓的家**（'grid' 的家在 tests/test_dem_task_tiler.py）。
     依据：docs/reference/terrain/tiling-presets-measured.md 第八节末尾。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     # 前提：脚本不传 --triangulator，所以它拿的是 CLI argparse 的默认值。
     assert "--triangulator" not in _ps1(), (

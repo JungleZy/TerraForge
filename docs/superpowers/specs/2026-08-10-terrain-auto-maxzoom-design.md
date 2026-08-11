@@ -38,7 +38,7 @@
 
 ### 缺陷：基准锚错了地方
 
-`build_terrain` 里 `max_level` 有两条来路（`cesiumlab_terrain.py:1426-1428`）：
+`build_terrain` 里 `max_level` 有两条来路（`cesium_terrain.py:1426-1428`）：
 
 ```python
 if max_level is None:
@@ -105,7 +105,7 @@ max_level = max(0, min(MAX_ZOOM, int(max_level) + int(level_offset)))
 |---|---|---|
 | **校验** | `src/services/geo_validation.py` 新增 `coerce_maxzoom`、`AUTO_MAXZOOM_SENTINEL = -1`，以及一对哨兵翻译 helper | 与 `validate_tiling_quality` / `coerce_vertex_normals` 并排，同一规格。**返回三态**：`'auto'`（严格字面量，**不做大小写归一、不裁空白**，`'AUTO'` / `' auto '` 一律 `ValueError`）、`int`（其余交给现有 `validate_zoom`）、`None`（`None` / `''` = 未表态）。**这是 maxzoom 唯一的把关点**。哨兵翻译也住这里：`maxzoom_to_db('auto') → -1`、`maxzoom_from_db(-1) → None`，两个方向各一处，调用方不许自己写 `-1` |
 | **切片器** | `src/services/terrain_tiling/dem_task_tiler.py` | `TileParams.maxzoom: Optional[int]`；`tile_dem_task_dir` 传 `max_level=params.maxzoom`（`None` 直接透传，不再 `int()`） |
-| **切片核** | `src/services/terrain_tiling/cesiumlab_terrain.py` | **不改**。估算 + 偏移 + 钳位三段已经现成 |
+| **切片核** | `src/services/terrain_tiling/cesium_terrain.py` | **不改**。估算 + 偏移 + 钳位三段已经现成 |
 | **管理器** | `src/services/local_terrain_task_manager.py`、`src/services/dem_task_manager.py` | 归一后 `'auto'` → `maxzoom_to_db` 落库 `-1`、构造 `TileParams(maxzoom=None)`；配置默认读到 `'auto'` 时同样走这条。起切读回处（`local_terrain_task_manager.py:551`）过 `maxzoom_from_db` |
 | **路由** | `src/routes/local_terrain_api.py`、`src/routes/terrain_api.py` | 两条都改成过 `coerce_maxzoom`。⚠️ `terrain_api.py` 目前**压根不校验** maxzoom（`:37-42` 原样交给 manager），顺带收口 |
 | **建表 / 迁移** | `src/core/database.py` | `DEFAULT_CONFIGS` 的 `terrain_local_maxzoom` 出厂值 `'14'` → `'auto'`；新增 `user_version` 3 → 4 的一次性迁移：`UPDATE config SET value='auto' WHERE key='terrain_local_maxzoom' AND value='14'`。**两张表的 `maxzoom` 列定义不动** |

@@ -22,7 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.services.terrain_tiling.cesiumlab_terrain import _gdal_stage_callback
+from src.services.terrain_tiling.cesium_terrain import _gdal_stage_callback
 
 
 # ---------------------------------------------------------------------------

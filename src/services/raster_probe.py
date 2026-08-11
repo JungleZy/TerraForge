@@ -15,6 +15,7 @@ import logging
 import math
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from src.core.gdal_mode import pin_gdal_exception_mode
 from src.services.geo_validation import MAX_ZOOM, MIN_ZOOM
 
 logger = logging.getLogger(__name__)
@@ -276,6 +277,10 @@ def _resolve_crs(epsg: Optional[int], citation: Optional[str]) -> _Crs:
     except Exception:
         # 唯一一条「真的没有 GDAL」的路径，下面几条都是「GDAL 在但解不开」
         return _Crs(epsg, citation, None, None, None, None, gdal_missing=True)
+    # 本模块只用 osr,但异常模式是 gdal/ogr/osr/gnm 共用的进程级开关:第一个碰
+    # GDAL 的进程不表态就会吃一条 FutureWarning(这里的 osr.SpatialReference()
+    # 完全可能就是那第一处)。见 src/core/gdal_mode.py。
+    pin_gdal_exception_mode()
 
     try:
         src = osr.SpatialReference()
@@ -310,7 +315,7 @@ def _estimate_maxzoom(mode: str, pixel_deg: Optional[float],
       zoom_min 传 0 是刻意的：这里报的是「数据本身撑得住第几级」，
       而不是把用户当前填的最小层级夹进来。
 
-    cesiumlab_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
+    cesium_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
     建议（此时本来也切不了片）。
     """
     if mode == "contour":
@@ -321,7 +326,7 @@ def _estimate_maxzoom(mode: str, pixel_deg: Optional[float],
     if not pixel_deg or pixel_deg <= 0:
         return None
     try:
-        from src.services.terrain_tiling.cesiumlab_terrain import GeographicTilingScheme
+        from src.services.terrain_tiling.cesium_terrain import GeographicTilingScheme
     except Exception:
         return None
     level = GeographicTilingScheme(tile_size=_TERRAIN_TILE_SIZE).estimate_max_level(pixel_deg)
@@ -352,7 +357,7 @@ def _tile_counts_per_level(bounds_wgs84: Sequence[float]) -> Optional[List[int]]
        并集需要 +360 时才落到 summary["warnings"]（见 describe_headers 里合并
        bounds 那段）。消费方据此自行决定是否隐藏预告。
     2. 承诺在跨界数据上失效还有**第二层原因**：切片器喂给 intersecting_tile_range
-       的是 DemSampler.bounds（cesiumlab_terrain 里由角点 min/max 得到的外接矩形，
+       的是 DemSampler.bounds（cesium_terrain 里由角点 min/max 得到的外接矩形，
        **不带 +360 展开**），与这里传入的 bounds 压根不是同一件东西。共用几何函数
        只保证「同样的输入得同样的数」，输入不同就推不出预告等于实际。
     3. **z <= 4 一定少算。** 切片器在 z <= 4 是整层全球出图（根瓦片缺失会让 Cesium
@@ -371,11 +376,11 @@ def _tile_counts_per_level(bounds_wgs84: Sequence[float]) -> Optional[List[int]]
        钳位不改：recommended_maxzoom 同时是信息卡上的「建议最大层级」，给用户一个
        切不出来的 22 更糟。
 
-    cesiumlab_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
+    cesium_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
     这张表（此时本来也切不了片），与 _estimate_maxzoom 同款降级。
     """
     try:
-        from src.services.terrain_tiling.cesiumlab_terrain import (
+        from src.services.terrain_tiling.cesium_terrain import (
             GeographicTilingScheme, intersecting_tile_range)
     except Exception:
         return None

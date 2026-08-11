@@ -67,7 +67,7 @@ def _emit(socketio, payload: dict) -> None:
     """广播状态，吞掉异常。
 
     一次广播故障（客户端断开等）不该影响解压 —— 与 base_terrain._emit、
-    cesiumlab_terrain._gdal_stage_callback 同一条既有约定。
+    cesium_terrain._gdal_stage_callback 同一条既有约定。
     """
     try:
         socketio.emit(EVENT_NAME, payload)

@@ -69,8 +69,8 @@ logger = logging.getLogger(__name__)
 #                    (task_manager._stream_copy_tile 会 unlink 后重抛)。
 #                    (同一个目录确实是【物化栅格】那一类的扫描根,但那是直下一层
 #                    scandir + GB 级收益,与这里的取舍不是一回事。)
-#   cesiumlab_terrain_<pid>_*  多幅 DEM 物化成单幅的中间栅格
-#                    (src/services/terrain_tiling/cesiumlab_terrain.py 的
+#   cesium_terrain_<pid>_*  多幅 DEM 物化成单幅的中间栅格
+#                    (src/services/terrain_tiling/cesium_terrain.py 的
 #                    build_input_raster),与源数据同量级(GB 级任务就是 GB)。
 #                    落在切片输出目录的父级 —— 对 DEM 任务那是用户自选的
 #                    **全盘路径**,不在 DOWNLOADS_DIR 内,所以扫描根要从 DB 取。
@@ -100,11 +100,11 @@ _PART_GLOB = "*.part.*"
 # Windows 的 get_ident() 与 pid 同量级,名字上根本分不出来 —— 所以真正的防线
 # 是生产者必须写 os.getpid(),这里只是最后一道。
 _MAX_PLAUSIBLE_PID = 2 ** 31
-# 物化中间栅格（cesiumlab_terrain.py:build_input_raster）。它是**文件**不是目录，
+# 物化中间栅格（cesium_terrain.py:build_input_raster）。它是**文件**不是目录，
 # _sweep_tmp_dirs 的 is_dir 过滤盖不住，所以另有 _sweep_orphan_files。
-# 前缀里带 pid（`cesiumlab_terrain_<pid>_xxxx.tif`），归属判定走 pid 而不是 mtime：
+# 前缀里带 pid（`cesium_terrain_<pid>_xxxx.tif`），归属判定走 pid 而不是 mtime：
 # 物化产物写完 mtime 就冻住，而切片可以再跑几小时，mtime 判据在这一类上近乎无效。
-_MATERIALISED_PREFIX = "cesiumlab_terrain_"
+_MATERIALISED_PREFIX = "cesium_terrain_"
 # cache 内 .part 的最深落点:瓦片 cache/{style}/{z}/{x}/{y}.png 的 x 目录
 # (根=0 往下 4 层);dem cache 是 cache/dem/<granule>,更浅,一并覆盖。
 # 限深是为了不随 cache 增长无界遍历 —— 瓦片文件本身在叶子层,扫目录名
@@ -428,7 +428,7 @@ def _part_owner_pid(name: str) -> Optional[int]:
 
 
 def _materialised_owner_pid(name: str) -> Optional[int]:
-    """从 `cesiumlab_terrain_<pid>_xxxx.tif` 里解析出写它的进程 pid。
+    """从 `cesium_terrain_<pid>_xxxx.tif` 里解析出写它的进程 pid。
 
     与 _part_owner_pid 同一个用途、不同的命名形态（那边是后缀 `.part.<pid>.<id>`，
     这边是前缀）。取不到返回 None —— 老版本（2026-08-06 之前）的产物名里没有
@@ -506,7 +506,7 @@ def record_retained_output(artifact_dir) -> bool:
     `<output_path>/<pipeline>_task_<id>/` 就成了零引用目录 —— 启动清扫只认
     pending_deletions 与几张任务表，从此谁都找不回它。半成品切片目录（用户点
     删除时任务多半还没跑完）就这么永久留在用户盘上，而目录直下还可能压着一个
-    与源数据同量级的物化中间栅格（cesiumlab_terrain_<pid>_*.tif）——
+    与源数据同量级的物化中间栅格（cesium_terrain_<pid>_*.tif）——
     _materialised_sweep_roots 把本表当扫描根，正是为了把那条回收路径接回来。
 
     **这张表不授权删任何东西**：用户说了留文件，就一个字节都不许动。它只保证
@@ -751,7 +751,7 @@ def sweep_startup_residue() -> None:
        DOWNLOADS_DIR 下 —— 它们的清理只有 except 分支和函数末尾各一条 rmtree、
        **没有 finally**，Ctrl-C / SystemExit 会整个绕过）；
     4. 共享瓦片/DEM cache 里的原子写临时件（*.part.*）；
-    5. 多幅 DEM 物化的中间栅格（cesiumlab_terrain_<pid>_*，与源数据同量级，
+    5. 多幅 DEM 物化的中间栅格（cesium_terrain_<pid>_*，与源数据同量级，
        GB 级任务就是 GB）—— 落在切片输出目录的父级，而 DEM 任务的 output_path
        是用户自选的全盘路径，所以扫描根要从 DB 取（见 _materialised_sweep_roots）；
     6. 随包底图的解压临时目录（.base_unpack_<pid>_*，位于 assets/terrain）——

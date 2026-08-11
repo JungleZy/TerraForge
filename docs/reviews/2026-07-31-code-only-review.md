@@ -54,7 +54,7 @@
 
 同仓库平行演进、修复未横向同步（`services/contour_engine.py:657-662` 的注释白纸黑字记载了这些坑）：
 
-- `services/terrain_tiling/cesiumlab_terrain.py:380-406` 全量物化瓦片任务 list，大区域直接 OOM（contour 用生成器规避了）；
+- `services/terrain_tiling/cesium_terrain.py:380-406` 全量物化瓦片任务 list，大区域直接 OOM（contour 用生成器规避了）；
 - `:414-416` worker 数默认 `os.cpu_count()` 无封顶（contour 封顶 4）；
 - `:426-430` BrokenProcessPool 无串行回退，一个 worker 被杀整个任务失败且 `services/local_terrain_task_manager.py:38-43` 自述无 resume，几小时切片全废；
 - `:179-183` 无逐瓦片容错，单个坏块 `ReadAsArray` 返回 None → AttributeError 炸全任务（contour 有逐瓦片 try/except）。
@@ -86,11 +86,11 @@
 15. **`cancel` 端点缺 `except ValueError` 返回 500**（`routes/contour_api.py:208-217`），同文件其它五个端点全映射 400，复制遗漏；错误码约定全项目不统一（ValueError → 400/404/500 三种，`contour_api.py:158-160` 甚至用 `"not found" in msg` 字符串匹配决定 404/400）。
 16. **`start_dem_tiling` 不校验下载状态**（`routes/terrain_api.py:24-32` → `dem_task_manager.py:242-308` 只查存在性），pending/running 的下载也能触发 tiling，在残缺数据上"成功"完成；路由 `except Exception → 400` 把服务器内部错误谎报成客户端错误。
 17. **`previewTask` 地形分支竞态 + 未捕获 Promise 拒绝**（`static/js/map.js:1122-1127`）：await 期间用户点另一个预览，后 resolve 的覆盖 `_previewState`；`CesiumTerrainProvider.fromUrl` 对损坏 layer.json reject 无人捕获 → unhandled rejection，用户零反馈。
-18. **临时文件泄漏**：`services/terrain_tiling/cesiumlab_terrain.py:92-103` 多输入时 `tempfile.mkstemp(suffix=".vrt")` 的文件从不删除；`services/dem_download_engine.py:223-227` interrupted 路径在 `.part` 清理代码之前 return，留残留（与自身注释 :229-230 矛盾）。
-19. **采样坐标系统性半源像素偏移**（`services/terrain_tiling/cesiumlab_terrain.py:193-194`）：无偏双线性坐标应为 `(px - x0c)/sx - 0.5`，代码为 `(px - x0c)/sx - 0.5*(1 - 1/sx)`，偏差恒 +0.5 源像素（30m DEM 约 15m 水平位移），逐瓦片一致所以无接缝但整体平移。
+18. **临时文件泄漏**：`services/terrain_tiling/cesium_terrain.py:92-103` 多输入时 `tempfile.mkstemp(suffix=".vrt")` 的文件从不删除；`services/dem_download_engine.py:223-227` interrupted 路径在 `.part` 清理代码之前 return，留残留（与自身注释 :229-230 矛盾）。
+19. **采样坐标系统性半源像素偏移**（`services/terrain_tiling/cesium_terrain.py:193-194`）：无偏双线性坐标应为 `(px - x0c)/sx - 0.5`，代码为 `(px - x0c)/sx - 0.5*(1 - 1/sx)`，偏差恒 +0.5 源像素（30m DEM 约 15m 水平位移），逐瓦片一致所以无接缝但整体平移。
 20. **两处硬编码 `http://localhost:5000`**（`services/dem_task_manager.py:257`、`services/local_terrain_task_manager.py:102,258`），非 5000 端口/反代部署下 layer.json 的 parentUrl 必 404，且存量 DB 记录无法通过配置修正。
 21. **测试隔离模式复制粘贴失控**：`tests/conftest.py:43-44` 只 pop `"app"`、`"core.database"`，而约 40 个文件各写一份 pop sys.modules 清单且互不相同（`test_fix_api_hardening.py:32-38` pop 10 个模块），已实测产生模块双实例——`tests/test_fix_contour_review.py:236-240` 被迫用 `view.__globals__` 绕过；测试结果依赖执行顺序。
-22. **`estimate_max_level` 硬编码 `180.0 / 64.0` 无视 `self.tile_size`**（`services/terrain_tiling/cesiumlab_terrain.py:82-86`）：默认 tile_size=17 时假设 65 顶点网格，自动层级少算约 2 级；生产链路显式传 max_level 绕开，只影响 CLI/直接调用。
+22. **`estimate_max_level` 硬编码 `180.0 / 64.0` 无视 `self.tile_size`**（`services/terrain_tiling/cesium_terrain.py:82-86`）：默认 tile_size=17 时假设 65 顶点网格，自动层级少算约 2 级；生产链路显式传 max_level 绕开，只影响 CLI/直接调用。
 
 ## LOW（小瑕疵/死代码，选要）
 

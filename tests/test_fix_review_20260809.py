@@ -3,7 +3,7 @@
 三条都属于本仓反复栽的同一类：**静默产出错数据** —— 产物看着正常、任务
 completed、日志零告警，用户只能自己拿 GIS 去量才发现不对。
 
-- **T1**（`cesiumlab_terrain`）：`available` 把「与 DEM 有交集」当成「有数据」。
+- **T1**（`cesium_terrain`）：`available` 把「与 DEM 有交集」当成「有数据」。
   交集可以只有一个像素，而 DEM 之外的采样点被 `DemSampler` 用最外圈源像素钳位
   外推成台地 —— 于是一张 99.5% 是假地形的瓦片被声明为可用，Cesium 取首个声明
   可用的层，底图（只到 z7）永远没机会出场。
@@ -52,7 +52,7 @@ def test_a_tiny_aoi_is_not_declared_available_on_shallow_levels(z):
     生产路径恒以 min_level=8 起切（底图独占 z0-7，见 dem_task_tiler），所以 z8
     就是这类任务最浅的一层；实测该层真实数据只占 0.51% 面积。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import (
+    from src.services.terrain_tiling.cesium_terrain import (
         intersecting_tile_range, well_covered_tile_range,
     )
 
@@ -70,14 +70,14 @@ def test_the_same_tiny_aoi_is_declared_once_the_tiles_get_small_enough(z):
     没有这一条，上一条用例可以被「永远返回 None」满足 —— 那等于把用户的地形
     整个丢掉。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import well_covered_tile_range
+    from src.services.terrain_tiling.cesium_terrain import well_covered_tile_range
 
     assert well_covered_tile_range(*_levels(z), *_TINY_AOI) is not None
 
 
 def test_a_full_granule_keeps_the_range_it_always_had():
     """正常规模的 DEM 不受影响 —— 闸门不能把真实数据的层一起砍掉。"""
-    from src.services.terrain_tiling.cesiumlab_terrain import (
+    from src.services.terrain_tiling.cesium_terrain import (
         intersecting_tile_range, well_covered_tile_range,
     )
 
@@ -92,7 +92,7 @@ def test_a_full_granule_keeps_the_range_it_always_had():
 
 def test_a_global_dem_is_declared_on_every_level():
     """全球栅格每一格都是满覆盖，闸门必须完全透明。"""
-    from src.services.terrain_tiling.cesiumlab_terrain import (
+    from src.services.terrain_tiling.cesium_terrain import (
         intersecting_tile_range, well_covered_tile_range,
     )
 
@@ -109,7 +109,7 @@ def test_a_barely_touching_column_is_trimmed_but_the_solid_ones_stay():
     z10 上 granule 的西端列只被覆盖 11%（0.0195° / 0.1758°），东侧与南北则是
     整格。闸门必须精确到这一列，而不是整层放弃或整层放行。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import (
+    from src.services.terrain_tiling.cesium_terrain import (
         intersecting_tile_range, well_covered_tile_range,
     )
 
@@ -130,7 +130,7 @@ def test_layer_json_of_a_tiny_aoi_declares_nothing_on_the_shallow_levels(tmp_pat
     import json
     from osgeo import gdal, osr
 
-    from src.services.terrain_tiling.cesiumlab_terrain import build_terrain
+    from src.services.terrain_tiling.cesium_terrain import build_terrain
 
     west, south, east, north = _TINY_AOI
     src = tmp_path / 'tiny.tif'

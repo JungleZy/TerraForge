@@ -184,7 +184,7 @@ def test_interrupted_extraction_leaves_nothing_that_looks_ready(tmp_path, monkey
 def test_stage_cb_is_reported_and_never_kills_the_unpack(tmp_path, monkeypatch):
     """进度回调要报，且回调自己抛异常不能把解压带崩。
 
-    对齐 cesiumlab_terrain._gdal_stage_callback 的既有约定：一次 emit 故障
+    对齐 cesium_terrain._gdal_stage_callback 的既有约定：一次 emit 故障
     （客户端断开等）不该让整个任务失败。
     """
     from src.services.terrain_tiling import base_terrain
@@ -353,7 +353,7 @@ def test_tmp_dir_is_named_and_placed_for_the_startup_sweep(tmp_path, monkeypatch
     （task_cleanup.sweep_startup_residue 第 6 类）。前缀不对或落点不对，残留就
     永久留在 assets/terrain —— 那是 Nuitka 的 --include-data-dir 源目录，会被打进
     三个平台的发布产物，且没有任何其他路径会回收它。pid 是唯一可靠的归属判据
-    （与 cesiumlab_terrain_<pid>_* 同一套约定）。
+    （与 cesium_terrain_<pid>_* 同一套约定）。
     """
     from src.services import task_cleanup
     from src.services.terrain_tiling import base_terrain
@@ -910,7 +910,7 @@ def test_ungraft_unlinks_shared_inodes_and_keeps_task_own_files(tmp_path):
 def test_ungraft_makes_tiling_writes_stop_hitting_the_shared_cache(tmp_path):
     """摘链之后再落盘，共享缓存里那份必须原样不动。
 
-    cesiumlab_terrain._worker_tile 落盘用 `(out/f"{y}.terrain").write_bytes(blob)`，
+    cesium_terrain._worker_tile 落盘用 `(out/f"{y}.terrain").write_bytes(blob)`，
     而 `Path.write_bytes` = `open(path,'wb')` + write —— **就地截断同一个 inode**，
     不是先删再建。硬链接下这一笔直接改写共享缓存 assets/terrain/base_z8 里的那份
     文件：全局底图被静默污染，影响之后所有任务，且没有任何信号。

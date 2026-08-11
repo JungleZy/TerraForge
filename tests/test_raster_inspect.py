@@ -722,7 +722,7 @@ def test_tile_counts_match_the_tiler_geometry():
     不同，而 _geographic() 的四至（110, 39.9997.., 111.0002.., 41）z0..z21 每一级
     都不落在瓦片边界上，两种取整结果处处相同。那个 hazard 由下面那条用例看管。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import (
+    from src.services.terrain_tiling.cesium_terrain import (
         GeographicTilingScheme, intersecting_tile_range)
 
     summary = describe_headers([_geographic()], mode="terrain")["summary"]

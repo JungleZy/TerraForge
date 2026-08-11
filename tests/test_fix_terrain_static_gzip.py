@@ -1,6 +1,6 @@
 """
 C3 fix: `.terrain` tiles are written gzip-compressed to disk
-(cesiumlab_terrain.py uses gzip.open), but the static terrain routes served
+(cesium_terrain.py uses gzip.open), but the static terrain routes served
 them with a bare send_file and no Content-Encoding, so browsers delivered the
 raw gzip bytes to Cesium instead of decompressing them.
 

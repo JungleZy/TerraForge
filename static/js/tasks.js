@@ -395,7 +395,7 @@ function updateTerrainJobProgress(data) {
         tilingPhase = 'tiles';
         const prev = window.TaskStore.get(key) || window.TaskStore.getActive(key) || {};
         // 同一段继续跑：锚不动。倒退（并行 worker 崩溃会回退串行、计数从 0
-        // 重来，见 cesiumlab_terrain 的 BrokenProcessPool 分支）就重新锚定，
+        // 重来，见 cesium_terrain 的 BrokenProcessPool 分支）就重新锚定，
         // 否则 ETA 要等进度爬回旧锚点才重新出现。
         const sameRun = prev.tiling_phase === 'tiles'
             && prev.tiling_started_at != null

@@ -415,7 +415,7 @@ def test_terrain_start_treats_empty_strings_as_omitted(monkeypatch, tmp_path):
 # 那行就在桩后面，用例退化成空跑。删掉那行 `level_offset=...`，全量测试仍会
 # 全绿，只有这三条会红。
 #
-# 桩打在最底层的 `cesiumlab_terrain.build_terrain` 上：`tile_dem_task_dir` 是
+# 桩打在最底层的 `cesium_terrain.build_terrain` 上：`tile_dem_task_dir` 是
 # 在调用点才 lazy import 它的，所以换模块属性拦得住，而中间的路由收参、管理器
 # 校验/落库、TileParams 构造全都跑真的。
 # ---------------------------------------------------------------------------
@@ -427,7 +427,7 @@ def _record_build_terrain(monkeypatch, captured):
     layer.json 是必须写的 —— tile_dem_task_dir 在 build_terrain 之后校验它存在，
     缺了会抛 FileNotFoundError，作业记成 failed。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
     def fake_build_terrain(**kwargs):
         captured.append(kwargs)
@@ -440,7 +440,7 @@ def _record_build_terrain(monkeypatch, captured):
                 "max_level": int(kwargs["max_level"]) + int(kwargs["level_offset"]),
                 "chose_martini": 1, "chose_grid": 0}
 
-    monkeypatch.setattr(cesiumlab_terrain, "build_terrain", fake_build_terrain)
+    monkeypatch.setattr(cesium_terrain, "build_terrain", fake_build_terrain)
 
 
 def _start_and_settle(monkeypatch, tmp_path, payload):
@@ -534,7 +534,7 @@ def _run_real_build_terrain(monkeypatch):
     证明的正是「落库的层级 == layer.json 里的层级」—— 拿替身自己回报的数字去
     对它自己写的 layer.json 是循环论证，证不了任何东西。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     class _FakeSampler:
         def __init__(self, path, nodata=None):

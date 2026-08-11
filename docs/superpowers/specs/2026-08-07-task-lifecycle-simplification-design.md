@@ -53,11 +53,11 @@
 |---|---|---|---|
 | map | `stitch_tiles_with_gdal` 整段（BuildVRT→Warp→Translate） | `download_engine.py:925-1258` | 单 zoom mosaic，可达 GB |
 | contour | BuildVRT + Warp + overviews，在**所有** stop_flag 检查点之前 | `contour_engine.py:686-715` | 注释自陈「大区域可能耗时数十秒」，产物可达数十 GB |
-| DEM / local_terrain | `build_input_raster` 的多幅 DEM 物化 + 建金字塔 | `cesiumlab_terrain.py:451` → `:523/541/562` | 「6 幅 ASTER 约 92 MB，大任务可到 GB」 |
+| DEM / local_terrain | `build_input_raster` 的多幅 DEM 物化 + 建金字塔 | `cesium_terrain.py:451` → `:523/541/562` | 「6 幅 ASTER 约 92 MB，大任务可到 GB」 |
 
 这三段都不能靠「让 GDAL 回调抛异常」打断——三处独立注释都实测记录过同一个坑：GDAL 把回调抛异常
 当成用户中止，`Translate` 返回 None、`Warp` 失败、**产物被删**（`contour_engine.py:674-675`、
-`cesiumlab_terrain.py:432-434`、`dem_task_manager.py:484-486`）。现有 GDAL 回调一律 `return 1`。
+`cesium_terrain.py:432-434`、`dem_task_manager.py:484-486`）。现有 GDAL 回调一律 `return 1`。
 
 **因此「HTTP DELETE 里同步 join 线程」直接出局**：请求要挂几十秒到几十分钟，Flask worker 被占死，
 用户重复点击还会 double-delete（第一个请求等线程时不能一直持 `_state_lock`，否则连列表查询都被阻塞）。
@@ -93,7 +93,7 @@ map 的这个能力**没有任何入口能用到**，`tasks.js:540-542` 那句�
 **这是方案成立的前提。** 现在 DEM 切片根本停不下来，而「删除自己会停任务」在切片中就是谎言。
 
 好消息是整条链只差调用方：`TileParams.stop_flag` 字段已存在（`dem_task_tiler.py:55`）、
-`tile_dem_task_dir` 已透传（`:136`）、`build_terrain` 已实现检查（`cesiumlab_terrain.py:1427` 串行每瓦片、
+`tile_dem_task_dir` 已透传（`:136`）、`build_terrain` 已实现检查（`cesium_terrain.py:1427` 串行每瓦片、
 `:1446` 并行每 512 张批间）。缺的是 `dem_task_manager` 这**六**处：
 
 1. `:376-381` 建线程时造 `stop_flag = threading.Event()`，锁内存进 `self.stop_flags[task_id]`，

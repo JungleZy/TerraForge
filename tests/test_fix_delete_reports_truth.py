@@ -267,7 +267,7 @@ def test_dem_delete_keeping_files_leaves_a_reference(monkeypatch, tmp_path):
     (art / "terrain_tiles").mkdir(parents=True)
     (art / "terrain_tiles" / "layer.json").write_text("{}")
     # 物化中间栅格：它就落在产物目录直下，是「引用断了」最贵的那部分代价
-    materialised = art / f"cesiumlab_terrain_{os.getpid()}_x.tif"
+    materialised = art / f"cesium_terrain_{os.getpid()}_x.tif"
     materialised.write_bytes(b"x")
 
     resp = client.delete(f"/api/dem/tasks/{task_id}")

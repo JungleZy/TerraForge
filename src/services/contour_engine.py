@@ -330,7 +330,7 @@ def absolute_hillshade_intensity(elev, azimuth, altitude, vert_exag=1.0, dx=1.0,
 # 单瓦片读窗口的像素上限(= 256 输出像素 + 2 余量,与输出瓦片对齐)。
 # 低 zoom 时一个瓦片的窗口可能覆盖整幅 DEM —— 按原始分辨率 ReadAsArray 会把
 # 整幅 float64 读进内存(大 DEM 直接 OOM),超过上限时改由 GDAL 端重采样到
-# 上限尺寸再返回(同 src/services/terrain_tiling/cesiumlab_terrain.py 的做法)。
+# 上限尺寸再返回(同 src/services/terrain_tiling/cesium_terrain.py 的做法)。
 _MAX_READ_DIM = 258
 
 

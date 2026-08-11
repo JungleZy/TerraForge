@@ -202,7 +202,7 @@ def _emit(stage_cb, fraction: float) -> None:
     """进度上报，吞掉回调自己的异常。
 
     一次 emit 故障（客户端断开等）不该让解压失败 —— 与
-    cesiumlab_terrain._gdal_stage_callback 同一条约定。
+    cesium_terrain._gdal_stage_callback 同一条约定。
     """
     if stage_cb is None:
         return
@@ -337,7 +337,7 @@ def ensure_base_unpacked(cache_dir: Path | None = None, stage_cb=None) -> Path |
             logger.info(f"Terrain: 解压随包底图 {total / 1048576:.0f} MB "
                         f"→ {cache_dir}（4.3 万个小文件，Windows 上可能要几分钟）")
             # 目录名里带 pid：启动清扫要靠它分清「上次进程的残留」和「另一个活着
-            # 的进程正在写的目录」（与 cesiumlab_terrain_<pid>_* 同一套约定）。
+            # 的进程正在写的目录」（与 cesium_terrain_<pid>_* 同一套约定）。
             tmp = Path(tempfile.mkdtemp(
                 prefix=f"{UNPACK_TMP_PREFIX}{os.getpid()}_", dir=str(cache_dir.parent)))
             _extract_stream(parts, tmp, total, stage_cb)
@@ -491,7 +491,7 @@ def ungraft_base_from(tiles_dir: Path, base_dir: Path) -> int:
     """摘掉 tiles_dir 里与底图**共享 inode** 的文件，返回摘掉的个数。
 
     **必须在每次切片之前调用**，与 graft_base_into 成对。理由是硬链接 + 落盘
-    方式的组合：cesiumlab_terrain._worker_tile 写瓦片用
+    方式的组合：cesium_terrain._worker_tile 写瓦片用
     `(out_path / f"{y}.terrain").write_bytes(blob)`，而 `Path.write_bytes` 是
     `open(path, 'wb')` + write —— **就地截断同一个 inode**，不是先删再建。上一轮
     植入留下的硬链接指向共享缓存 assets/terrain/base_z8，于是这一笔直接改写了

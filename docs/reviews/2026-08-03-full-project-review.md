@@ -260,7 +260,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 **位置**：`services/terrain_tiling/dem_task_tiler.py:56`（调用后丢弃返回值，签名 `-> None`）、消费方 `services/dem_task_manager.py:399-418` 与 `services/local_terrain_task_manager.py:366-393` 均无条件置 completed
 **对照组**：`services/contour_task_manager.py:757-795` 接了 `render_counts`、`rendered==0` 判 failed（`:778`）、`failed>0` 记 warning（`:790-795`）
 
-**问题**：`cesiumlab_terrain.py:586` 返回 `{"total","rendered","failed"}`，注释自己写着「调用方(dem_task_tiler/local_terrain_task_manager)此前忽略返回值,保持兼容」。上一轮给 terrain 补的逐瓦片容错（`:399-401` 异常只记 warning 返回 None）因此变成纯静默；进度 `done = rendered+failed`（`:494`）必然走到 100%。而 `available` 数组是按 `_tile_ranges` 的完整矩形算出来的（`:463`），与实际产出对不上，Cesium 按 availability 请求后拿到 404（parentUrl 也不兜底，因为子层声明了可用）。极端情况：所有瓦片都失败时 `terrain_tiles/` 一片没有，layer.json 照写、`dem_task_tiler.py:68` 的存在性检查照过、job 照标 completed。
+**问题**：`cesium_terrain.py:586` 返回 `{"total","rendered","failed"}`，注释自己写着「调用方(dem_task_tiler/local_terrain_task_manager)此前忽略返回值,保持兼容」。上一轮给 terrain 补的逐瓦片容错（`:399-401` 异常只记 warning 返回 None）因此变成纯静默；进度 `done = rendered+failed`（`:494`）必然走到 100%。而 `available` 数组是按 `_tile_ranges` 的完整矩形算出来的（`:463`），与实际产出对不上，Cesium 按 availability 请求后拿到 404（parentUrl 也不兜底，因为子层声明了可用）。极端情况：所有瓦片都失败时 `terrain_tiles/` 一片没有，layer.json 照写、`dem_task_tiler.py:68` 的存在性检查照过、job 照标 completed。
 
 数据库和前端完全无感知（job 行只有 `rendered_tiles`/`total_tiles`，且 `rendered_tiles` 实存的是 `rendered+failed`），只有散落的逐瓦片 `logger.warning`，没有任何聚合失败计数。
 
@@ -274,7 +274,7 @@ ys = ctx.originY + row0 * ctx.pxH + (np.arange(arr.shape[0]) + 0.5) * eff_px_h
 
 ## M12. 低 zoom 地形瓦片虚报 available，把 parentUrl 基础地形整个盖掉
 
-**位置**：`services/terrain_tiling/cesiumlab_terrain.py:449-450`（z≤4 无条件全球出图）、`:463`（整个索引矩形无差别写进 available）、`:206-211`（DemSampler 对 DEM 外采样点钳到边界像素）、`:163-164`（完全不相交时返回全 0）
+**位置**：`services/terrain_tiling/cesium_terrain.py:449-450`（z≤4 无条件全球出图）、`:463`（整个索引矩形无差别写进 available）、`:206-211`（DemSampler 对 DEM 外采样点钳到边界像素）、`:163-164`（完全不相交时返回全 0）
 
 **问题**（两条发现同一失效模式，合并）：
 1. `_tile_ranges` 在 z≤4 时把范围强制改成全球，与 DEM bbox 的交集完全不参与；`dem_task_tiler.py` 又固定 `min_level=0`，于是每个任务固定生成 2+8+32+128+512=682 片瓦片。DEM 外的采样窗口为空 → 返回全 0 → 由 `encode_quantized_mesh:289-290` 兜成 hmin=0/hmax=1 的平面。
@@ -625,11 +625,11 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
 | 11 | 「z≤4 全球瓦片遮蔽 base，每个 DEM 任务必然如此」 | 需要 `downloads/terrain/base_z8/` 真实存在（用户手工离线构建的可选产物）；parentUrl 为 null 时是单层 provider |
 | 12 | 「按住回车会把整个 cache/ 目录清空」 | `clearCacheCategory` 只清用户点的那个分类；只有点「全部缓存」时才是整个 cache/ |
 | 13 | 「`task_cleanup.py` 模块 docstring 引用 local-terrain 惯例是错的」 | 那半句没错，`local_terrain_task_manager.py:499-502` 至今保留 DOWNLOADS_DIR/terrain 边界；错的是把它当成 `remove_task_dir_if_safe` 自己的边界 |
-| 14 | 「terrain 切片失败没有任何服务端记录可查」 | `cesiumlab_terrain.py:400` 对每个失败瓦片都写了 logger.warning；真正缺的是聚合失败计数与 DB/前端感知 |
+| 14 | 「terrain 切片失败没有任何服务端记录可查」 | `cesium_terrain.py:400` 对每个失败瓦片都写了 logger.warning；真正缺的是聚合失败计数与 DB/前端感知 |
 | 15 | 「hillshade 会抛 Python MemoryError」 | MEM 驱动走 C 层 VSIMalloc，失败时 DEMProcessing 返回 None → RuntimeError → 500；Linux overcommit 下更常见的是被 OOM killer 杀进程 |
 | 16 | 「`_stream_copy_tile` 的 `made_dirs_lock` 跨线程争用是事件循环阻塞的主要放大器」 | 该锁只在目录未命中时包住 mkdir（每个唯一 `<z>/<x>` 一次），是二阶因素；主因始终是同步 copy2 链本身 |
 
-另有两条**并非缺陷、不要再报**：`services/terrain_tiling/cesiumlab_terrain.py:206` 的采样半像素偏移（上轮 M19 已实测否定，GDAL bilinear 降采样的精确逆映射即现行公式，且配了甄别测试）；`app.py` 对 Nuitka/multiprocessing 的三重进程守卫（读 Nuitka 4.1.3 的 `MainProgram.c` 与 `MultiprocessingPlugin.py` 确认成立，且比注释描述得更稳）。
+另有两条**并非缺陷、不要再报**：`services/terrain_tiling/cesium_terrain.py:206` 的采样半像素偏移（上轮 M19 已实测否定，GDAL bilinear 降采样的精确逆映射即现行公式，且配了甄别测试）；`app.py` 对 Nuitka/multiprocessing 的三重进程守卫（读 Nuitka 4.1.3 的 `MainProgram.c` 与 `MultiprocessingPlugin.py` 确认成立，且比注释描述得更稳）。
 
 ---
 
@@ -637,12 +637,12 @@ if (typeof updateStatusTasks === 'function') updateStatusTasks();
 
 | 维度 | 覆盖情况 |
 | --- | --- |
-| 并发与任务状态机 | 四个 manager 全文通读（task 1574 / dem 718 / contour 817 / local 514 行）+ socketio_events + dem_download_engine + 三个相关路由；download_engine 与 contour_engine 只读并发相关段。未覆盖：GDAL 拼接内部实现、cesiumlab_terrain 全文 |
+| 并发与任务状态机 | 四个 manager 全文通读（task 1574 / dem 718 / contour 817 / local 514 行）+ socketio_events + dem_download_engine + 三个相关路由；download_engine 与 contour_engine 只读并发相关段。未覆盖：GDAL 拼接内部实现、cesium_terrain 全文 |
 | 下载引擎与网络层 | download_engine(1431) / dem_download_engine(286) / tile_url_probe(380) / earthdata_client(123) / system_proxy(83) 全文通读 + task_manager 的复制与执行主干。实测排除 4 条假设（连接池死锁、重复复制竞态、回调击穿 gather、session 泄漏） |
 | 数据库与数据完整性 | core/database(568) / models/task(298) / config_manager(362) / task_cleanup(343) / geo_validation(140) / task_manager(1573) 全文；其余 manager 与路由的 DB 路径精读。2 条结论实机验证 |
 | REST API 路由层 | 7 个路由模块全文 + 支撑的 manager/cleanup/validation 段 + 前端调用点。第 1 条实跑复现 |
 | 静态服务与文件系统安全 | 3 个静态路由 + task_cleanup + geo_validation + hillshade_preview 全文；delete/cache/browse 路径逐条核对；实机验证 `resolve_stored_output_dir` 的分叉 |
-| 地理数据与渲染管线 | contour_engine(807) / cesiumlab_terrain(639) / 4 个 tiler 模块 / hillshade_preview / dem_granules 全文通读 + GDAL 合成数据实测两项 |
+| 地理数据与渲染管线 | contour_engine(807) / cesium_terrain(639) / 4 个 tiler 模块 / hillshade_preview / dem_granules 全文通读 + GDAL 合成数据实测两项 |
 | 前端 JavaScript | 8 个 js 文件全文通读（map 1603 / tasks 861 / history 801 / config 338 / ui 238 / panels 137 / theme 86 / path_browser 91）+ 后端契约交叉核对。上一轮 12 条前端项已逐条回验为已修 |
 | CSS 与 UI 契约 | style.css 全 3071 行（剥注释后再定位/计数，避免注释干扰）+ 全部模板 + vendor bootstrap 针对性核对。**未做真实浏览器实测**，对比度与几何均按层叠规则手算（算法与 test_css_contract.py 的 `_contrast_ratio`/`_flatten` 一致）；工具条焦点圈那条做了 Playwright 等价复现 |
 | 打包、启动与运行时环境 | app.py / core 五个模块 / nuitka_build(404) / 两个 build 脚本 / 两个 workflow / push-release 全文 + 读 .venv 里 Nuitka 源码验证进程守卫。**无法实际执行 Windows/macOS 构建与 CI**，相关结论由控制流推导 |

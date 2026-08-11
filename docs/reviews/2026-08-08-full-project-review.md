@@ -1,7 +1,7 @@
 # 全项目评审 · 2026-08-08
 
 > 状态：本文是**快照**，代码为准。基线 commit `5758b14`，工作区含一处未提交改动
-> （`cesiumlab_terrain.py` 的实验性 TVD 后端，按约定不评）。
+> （`cesium_terrain.py` 的实验性 TVD 后端，按约定不评）。
 > 测试基线：`python -m pytest tests -q` → **1504 passed, 3 skipped, 267.73s**。
 > 方法：10 个并行子代理分片评审 + 主评审逐条复核。带「实测」的条目是本次**跑出来**的，
 > 其余读码得出并已核对 file:line。
@@ -186,7 +186,7 @@ contour 的下载半程甚至已无用户可达路径却仍在被拷贝维护。
 
 ### T1 幽灵地形瓦片：DEM 边界外多出一行/列，并被声明为 `available`
 
-`src/services/terrain_tiling/cesiumlab_terrain.py:1401,1403` 用 `floor` 算瓦片索引**上界**：
+`src/services/terrain_tiling/cesium_terrain.py:1401,1403` 用 `floor` 算瓦片索引**上界**：
 
 ```python
 ix1 = min(nx - 1, int(math.floor((src_e + 180.0) / 360.0 * nx)))
@@ -361,7 +361,7 @@ GET /           -> value="S3cr3t-NASA-pw" ; value="http://alice:hunter2@10.0.0.9
 | 5 | `database.py:262` | M10 归一化用 `resolve_stored_output_dir`，而 DEM 侧读写用 `resolve_output_dir`——子代理实测**每种相对形式结果都不同** | 升级后旧 DEM 产物指针被改错：`/terrain/dem/<id>` 404、恢复即全量重下、`delete_files=true` 报成功而真产物滞留且不进 `pending_deletions` |
 | 6 | `task_deletion.py:272` | 快路径把「可删」当「已删」（`rmtree(ignore_errors=True)` 恒返回 True），另两个消费者都会复查（`:156`、`:471`），这一个不复查 | Windows 上文件被占时返回 `files_removed: true` 而整个瓦片金字塔留在盘上，且没写 `pending_deletions` → 启动清扫永远收不回 |
 | 7 | `dem_task_manager.py:426-430` | 逐瓦片进度回调里的 sqlite 写没兜底（同函数的 emit 有） | 一次 `database is locked` 作废跑了几小时、99% 已落盘的切片作业；切片无恢复模型，重跑从 z8 全量重算 |
-| 8 | `cesiumlab_terrain.py:1590-1595` | `_WORKER_SAMPLER` 的释放整段挂在 `if temp_input:` 下，而单输入 tif 时 `temp_input` 恒为 None（`:1385`）。**已复核代码** | 串行路径（`workers==1` / `total<=4` / `BrokenProcessPool` 回退）泄漏一个打开的 GDAL dataset；Windows 上源文件被占，删除任务报成功而文件留下 |
+| 8 | `cesium_terrain.py:1590-1595` | `_WORKER_SAMPLER` 的释放整段挂在 `if temp_input:` 下，而单输入 tif 时 `temp_input` 恒为 None（`:1385`）。**已复核代码** | 串行路径（`workers==1` / `total<=4` / `BrokenProcessPool` 回退）泄漏一个打开的 GDAL dataset；Windows 上源文件被占，删除任务报成功而文件留下 |
 | 9 | `earthdata_client.py:63` | `if "urs.earthdata.nasa.gov" in loc` 是**子串**匹配，随后把 BasicAuth 明文凭据发给该 URL。文件顶部 import 了 `urlparse` 却全文未用。**已复核代码** | `https://attacker.example/cb?next=https://urs.earthdata.nasa.gov/oauth` 通过判据。前置条件是上游存在开放重定向或 TLS 被攻破，不是无条件可触发 |
 | 10 | `contour_task_manager.py:185-188,317-319` | 颜色只查 `#` 前缀，`#zzzzzz` 一路通到渲染才在 per-tile `except` 里被吞 | 每张瓦片 failed → 报「No contour tiles rendered (check DEM coverage / interval / zoom range)」，指向三个都正确的参数；同样的值 `/api/contour/style_preview` 会 400 |
 | 11 | `contour_engine.py:444-449` | per-tile 等高线级数无上限（预览侧有 `2<=n<=200` 闸门），瓦片**内部**无停止检查 | `interval=0.1` + 1000m 起伏 ≈ 单瓦片 1 万条 trace，且暂停/删除都打不断 |
@@ -383,7 +383,7 @@ GET /           -> value="S3cr3t-NASA-pw" ; value="http://alice:hunter2@10.0.0.9
   在外层 `try` 内退出。同族的 `local_terrain_task_manager.py:249` 因为后面还有语句所以**会**执行。
   每个成功的上传任务泄漏一个空 `contour_upload_*` 目录。**已复核代码**
 - **`ProcessPoolExecutor` 在 Linux 上用默认 fork 启动多线程进程**（`contour_engine.py:814`、
-  `cesiumlab_terrain.py:1516`）。本次测试运行里出现
+  `cesium_terrain.py:1516`）。本次测试运行里出现
   `DeprecationWarning: This process (pid=81862) is multi-threaded, use of fork() may lead to
   deadlocks in the child`。Windows 走 spawn 不受影响；Python 3.14 将把 Linux 默认改为 forkserver。
   建议显式 `mp_context`。
@@ -412,7 +412,7 @@ GET /           -> value="S3cr3t-NASA-pw" ; value="http://alice:hunter2@10.0.0.9
   永久留在用户磁盘上。
 - **`dem_task_tiler.py:150-151`**：协作停止后仍执行底图植入（4.3 万硬链接）与 layer.json 合并；
   植入失败会把一个**用户主动停掉**的作业记成 `failed`，错误文案指向底图。
-- **`cesiumlab_terrain.py:1462,1577-1583`**：全部瓦片失败时 `meta.json` 写出
+- **`cesium_terrain.py:1462,1577-1583`**：全部瓦片失败时 `meta.json` 写出
   `"minHeight": Infinity`（`json.dumps` 默认允许），非法 JSON。今天无消费者，是给下一个消费者埋的雷。
 - **`hillshade_preview.py:114-121`**：渲染失败时 `.tmp.png` 不清理，五类启动清扫都不匹配这个名字。
 - **dead code / 失真注释**：`.btn-info` 等 6 个 Bootstrap 覆盖类零引用（`style.css:1682` 起约 40 行）；
@@ -420,7 +420,7 @@ GET /           -> value="S3cr3t-NASA-pw" ; value="http://alice:hunter2@10.0.0.9
   `history.js:54` 的 `typeof basemap !== 'undefined'` 快路径在每个页面都是死的
   （`basemap` 是 `initMap` 的**函数参数**不是全局），而它多打的那次 `/api/basemap` 正是 P1#14
   竞争的成因；`_config_content.html:233` 与 `database.py:60` 都写着「底图走浏览器直连」——
-  与 `/basemap` 转发路由的整个前提相反；`cesiumlab_terrain.py:1020,1031,1237` 两处死变量长得像 worker 状态。
+  与 `/basemap` 转发路由的整个前提相反；`cesium_terrain.py:1020,1031,1237` 两处死变量长得像 worker 状态。
 - **`index.html:86,96` 与 `_config_content.html:215` 把 `_macros.html` 已有的三个图标又内联了一遍**
   （31 处 SVG 收敛为 23 个几何体，6 个重复）；`base.html:126-173` 一个组件占掉全模板树
   18 个内联 `style=` 中的 17 个。
@@ -453,7 +453,7 @@ GET /           -> value="S3cr3t-NASA-pw" ; value="http://alice:hunter2@10.0.0.9
   盒模型，以及用 AST 解析 `src/models/task.py` 交叉核对四个 manager 实际写入的状态字面量。
   每个测试的 docstring 记录了「证明朴素断言无效」的变异实验。脆弱点集中在约 5 个断言
   （vendor 字节清单、`!important` 上限 68、Bootstrap 精确版本 pin、两处「恰好 1 条规则」前置条件）。
-- 覆盖缺口（按名无专属测试文件）：`task_manager.py`(82KB)、`cesiumlab_terrain.py`(88KB)、
+- 覆盖缺口（按名无专属测试文件）：`task_manager.py`(82KB)、`cesium_terrain.py`(88KB)、
   `routes/api.py`(43KB)、`local_terrain_task_manager.py`(30KB)；`dem_task_manager.py`(45KB)
   只有一个 2.5KB 单一关切的文件；`process_entry.py` 在 `tests/` 下零引用。
 - `test_fix_*.py` 家族 55 个文件（39.6%）：主题批次（infra_e / l1_entry_build_misc /
@@ -503,7 +503,7 @@ GET /           -> value="S3cr3t-NASA-pw" ; value="http://alice:hunter2@10.0.0.9
 
 ## 本次未评审
 
-- `cesiumlab_terrain.py` 未提交的 TVD 实验段（`_TVD_RATIO` / `_full_grid_tris` / `_border_mask` /
+- `cesium_terrain.py` 未提交的 TVD 实验段（`_TVD_RATIO` / `_full_grid_tris` / `_border_mask` /
   `_tvd_mesh`）：按约定跳过。已确认它无法从生产配置到达（`import tvdnb` 在函数内部，
   `triangulator='tvd'` 在 UI/DB/API 都无入口）。
 - `static/vendor/` 下的第三方库（Cesium / Vue / Bootstrap / socket.io）。

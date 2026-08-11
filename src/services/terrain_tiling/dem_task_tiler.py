@@ -29,12 +29,12 @@ def terrain_output_dir_for_task(task_output_path: str, task_id: int) -> Path:
 class TileParams:
     # None = 自动：按源数据像素尺寸现算基准层级。build_terrain 收到
     # max_level=None 时走 GeographicTilingScheme.estimate_max_level，档位偏移
-    # 再叠在估算值上（cesiumlab_terrain 里 max_level 唯一的解析点）。
+    # 再叠在估算值上（cesium_terrain 里 max_level 唯一的解析点）。
     # 落库表示是哨兵 -1，翻译住在 geo_validation.maxzoom_from_db / _to_db。
     maxzoom: Optional[int]
     parent_url: str
     # 65x65 vertex grid: at z14 this samples ~19 m spacing, matching 30 m DEMs
-    # (Copernicus GLO-30 / ASTER). estimate_max_level in cesiumlab_terrain.py
+    # (Copernicus GLO-30 / ASTER). estimate_max_level in cesium_terrain.py
     # derives the per-tile interval from tile_size (180/(tile_size-1) deg).
     tile_size: int = 65
     workers: int = 0
@@ -46,7 +46,7 @@ class TileParams:
     # 本来就选 grid，纯属把同一个产物用 6 倍 CPU 重算一遍。
     # 依据：docs/reference/terrain/tiling-presets-measured.md 第三、四节。
     #
-    # ⚠️ CLI（cesiumlab_terrain.main）与全球底图构建脚本仍用 'auto'，那是
+    # ⚠️ CLI（cesium_terrain.main）与全球底图构建脚本仍用 'auto'，那是
     # **有意分叉**：底图覆盖海洋与大片平原（martini 收益最大），且只构建一次，
     # CPU 代价无所谓。不要"顺手统一"这两处，见同文档第八节末尾。
     #
@@ -91,7 +91,7 @@ def tile_dem_task_dir(
 
         后两个是逐瓦片择优的落点统计（哪个三角化后端赢了）。⚠️ **应用侧读它没有
         排障价值**：TileParams.triangulator 恒为 'grid'（非 auto 分支里
-        cesiumlab_terrain._worker_tile 直接 backend = triangulator），于是
+        cesium_terrain._worker_tile 直接 backend = triangulator），于是
         (chose_martini, chose_grid) 无条件等于 (0, rendered)，与地形是山地还是
         平原毫无关系。只有直接调 build_terrain 并传 triangulator='auto' 时，
         「全 grid = 粗糙地形 / 全 martini = 平缓地形」那套读法才成立。
@@ -113,11 +113,11 @@ def tile_dem_task_dir(
     if not dem_tifs:
         raise ValueError(f"No DEM tifs found under {task_dir}")
 
-    # Use cesiumlab_terrain.py as the source of truth for tiling behavior.
+    # Use cesium_terrain.py as the source of truth for tiling behavior.
     # Import lazily so unit tests can inject a stub without requiring numpy/GDAL.
     if build_terrain_fn is None:
         try:
-            from src.services.terrain_tiling.cesiumlab_terrain import build_terrain as build_terrain_fn  # type: ignore[assignment]
+            from src.services.terrain_tiling.cesium_terrain import build_terrain as build_terrain_fn  # type: ignore[assignment]
         except Exception as e:  # pragma: no cover
             raise RuntimeError(
                 "Terrain tiling runtime deps missing (need numpy + GDAL bindings). "
@@ -154,7 +154,7 @@ def tile_dem_task_dir(
     # 半张是采到 DEM 外的外推值」那种接缝。
     # 恒传 8，不再在这里 min(8, maxzoom)：档位偏移后的最终层级只有
     # build_terrain 知道（它可能还要走 estimate），钳位因此挪进了那边
-    # （见 cesiumlab_terrain 里 min_level = min(min_level, max_level) 那行）。
+    # （见 cesium_terrain 里 min_level = min(min_level, max_level) 那行）。
     min_level = 8 if base_dir is not None else 0
 
     counts = build_terrain_fn(

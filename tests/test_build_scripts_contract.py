@@ -193,7 +193,7 @@ def test_global_base_build_keeps_the_adaptive_backend(tmp_path, monkeypatch):
     # 整个文件从全绿变 ImportError。
     pytest.importorskip("osgeo.gdal")
 
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     # 前提：脚本不传 --triangulator，所以它拿的是 CLI argparse 的默认值。
     assert "--triangulator" not in _ps1(), (

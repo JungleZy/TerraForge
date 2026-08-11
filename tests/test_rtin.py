@@ -2,7 +2,7 @@
 
 前半部分（rtin_tables / rtin_errors / rtin_extract）是纯 numpy，不需要
 GDAL / 采样，因此不做任何 monkey-patch。文件末尾的接线测试要跑
-cesiumlab_terrain 的编码与 build_terrain，那部分需要 GDAL。
+cesium_terrain 的编码与 build_terrain，那部分需要 GDAL。
 """
 
 import os
@@ -286,7 +286,7 @@ def test_extract_triangles_are_counter_clockwise(grid, max_error):
     法线就整体翻转，Cesium 开背面剔除后【地形直接不可见】—— 而失败形态是
     HTTP 全 200、任务标 completed、前端一声不吭，只是什么都不显示。
 
-    基准是 cesiumlab_terrain._mesh_constants 那条规则网格路径（切法为
+    基准是 cesium_terrain._mesh_constants 那条规则网格路径（切法为
     [a0,a1,a2] / [a1,a3,a2]），它已经在 Cesium 里验证过能正常渲染，实测
     512/512 有向面积全正。rtin_extract 起初发射顺序是 a->b->c，实测 25 组
     grid x max_error 共 43708 个三角形【全部为负】（CW），方向整体反了，
@@ -356,7 +356,7 @@ def test_max_error_for_level_scales_with_vertex_spacing():
     偏宽松，详见 _max_error_for_level 的 docstring）。这条测试钉的是**逐级翻倍**
     这一层，与纬度无关。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import _max_error_for_level
+    from src.services.terrain_tiling.cesium_terrain import _max_error_for_level
 
     e14 = _max_error_for_level(14, 65, 0.15)
     e13 = _max_error_for_level(13, 65, 0.15)
@@ -366,7 +366,7 @@ def test_max_error_for_level_scales_with_vertex_spacing():
 
 def test_build_terrain_martini_produces_fewer_triangles_than_grid():
     """同一份地形，martini 的瓦片必须比 grid 小。"""
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     n = 65
     rng = np.random.default_rng(1)
@@ -496,7 +496,7 @@ def test_martini_reduces_triangles_and_pins_the_border_grid_is_a_real_fallback(t
     这份 DEM 在 z0-2 上绝大多数瓦片是平的或越界的（min_level=0 强制出全球图，
     3.2°×3.2° 的 DEM 铺到 z0-z2），正好落在左端那一段。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     dem = tmp_path / "dem.tif"
     _write_smooth_dem(dem)
@@ -543,7 +543,7 @@ def test_build_terrain_rejects_unknown_triangulator(tmp_path):
     输入文件故意给不存在的路径：校验必须在任何 I/O 之前触发。谁把它挪到
     build_input_raster 之后，这里拿到的就是 GDAL 的错误而不是 ValueError，当场变红。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     out = tmp_path / "out"
     with pytest.raises(ValueError, match=r"triangulator.*'martni'"):
@@ -576,7 +576,7 @@ def test_build_terrain_rejects_tile_size_the_adaptive_path_cannot_handle(tmp_pat
     tile_size=64 在 grid 下是合法的，所以这条校验必须只在自适应路径生效 ——
     末尾那次调用就是钉这一点的（若把校验写成无条件，它会变红）。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     out = tmp_path / "out"
     kw = {} if triangulator is None else {"triangulator": triangulator}
@@ -606,7 +606,7 @@ def test_choose_tile_bytes_takes_the_smaller_and_breaks_ties_toward_martini():
     「每张瓦片都挑更差的那个」，而全局字节仍然只是变大不会崩 —— 没有断言的话
     这又是一款零信号失效。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import _choose_tile_bytes
+    from src.services.terrain_tiling.cesium_terrain import _choose_tile_bytes
 
     assert _choose_tile_bytes(b"a", b"bb") == (b"a", "martini")
     assert _choose_tile_bytes(b"aaa", b"bb") == (b"bb", "grid")
@@ -667,7 +667,7 @@ def test_auto_never_writes_more_bytes_than_either_backend(tmp_path):
     """
     import gzip as _gzip
 
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     dem = tmp_path / "mixed.tif"
     _write_mixed_dem(dem)
@@ -733,7 +733,7 @@ def test_tiles_are_written_with_a_fixed_gzip_timestamp(tmp_path):
     直接断言头部字段而不是「跑两次比字节」：后者只有在两次运行跨秒时才红，
     是随机红灯；这条是确定性的。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
 
     dem = tmp_path / "dem.tif"
     _write_smooth_dem(dem)
@@ -778,7 +778,7 @@ def test_triangulation_defaults_agree_across_every_copy(tmp_path, monkeypatch):
     """
     import inspect
 
-    from src.services.terrain_tiling import cesiumlab_terrain as ct
+    from src.services.terrain_tiling import cesium_terrain as ct
     from src.services.terrain_tiling.dem_task_tiler import TileParams
 
     sig = inspect.signature(ct.build_terrain)

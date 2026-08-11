@@ -84,7 +84,7 @@ class LocalTerrainTaskManager:
         self.config = ConfigManager()
         self.active_tasks: Dict[int, threading.Thread] = {}
         # 切片协作停止标记：随 start_tiling 登记、_run_tiling_job 结束清理。
-        # build_terrain 批间/逐瓦片检查（见 cesiumlab_terrain.py），所以运行中的
+        # build_terrain 批间/逐瓦片检查（见 cesium_terrain.py），所以运行中的
         # 切片能被叫停 —— 置位的唯一入口是 delete_task。
         self.stop_flags: Dict[int, threading.Event] = {}
         self._state_lock = threading.Lock()

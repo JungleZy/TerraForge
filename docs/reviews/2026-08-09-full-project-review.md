@@ -74,7 +74,7 @@
 
 ### T1 边界瓦片几乎全是外推假地形，却被声明 `available`
 
-`src/services/terrain_tiling/cesiumlab_terrain.py:1432（available 取交集）+ :754-755（np.clip 钳位外推）+ src/services/terrain_tiling/dem_task_tiler.py:154（min_level=8）`
+`src/services/terrain_tiling/cesium_terrain.py:1432（available 取交集）+ :754-755（np.clip 钳位外推）+ src/services/terrain_tiling/dem_task_tiler.py:154（min_level=8）`
 
 `intersecting_tile_range` 只保证瓦片与 DEM **有交集**，交集可以只有一个源像素。`DemSampler.sample` 对落在源栅格之外的采样点走 `ix = np.clip(np.floor(lpx), 0, arr.shape[1]-2)`（:754-755），即把最外一圈源像素向外无限延伸成台地——不是 nodata、不是 0。而 :1432 的 `a0,a1,b0,b1 = max(x0,ix0)...` 把这些瓦片原样写进 available（:1584）。生产 `min_level=8`，z8 一片跨 0.703°≈78 km，所以任何小于 78 km 的 AOI 在它最浅的那一层都会得到一张几乎全是假高原的瓦片，并被声明为可用。dem_task_tiler.py:149-150 的注释「底图独占 z0-z7，任务只出 z8+…也没有『半张瓦片是真数据、半张是采到 DEM 外的外推值』那种接缝」与实测相反。M12 收窄 z<=4 的 available 修的正是同一个机制（注释里就写着「被边缘像素钳位拉成台地」），但只修了零重叠与 z<=4，部分重叠这一半没修。
 
@@ -125,7 +125,7 @@
 
 > 验证：python 实跑（构造 header entry 直接调 describe_headers）：`_wrap_lons([-180.0,180.0]) = [180.0, 180.0]`；`_wrap_lons([-100.0,100.0]) = [260.0, 100.0]`；`_wrap_lons([-180,-90,0,90,180]) = None`。用 GDAL 造的真 GeoTIFF（720x360，EPSG:4326，gt=(-180,0.5,0,90,0,-0.5)）走完整链路：单文件卡片 `bounds_wgs84=[-180,-90,180,90]`（对），同一次调用的 summary `bounds_wgs84=[180.0,-90.0,180.0,90.0]` + `warnings=['antimeridian']`（零宽度）。多文件：`SUMMARY [100.0,-90.0,180.0,90.0] ['antimeridian']` 与 `SUMMARY [100.0,-50.0,101.0,50.0] ['antimeridian']`。
 
-**`available` 的下标原点与 CesiumJS 的解析约定不一致** — `src/services/terrain_tiling/cesiumlab_terrain.py:1582-1584（"minzoom": min_level + available 从 min_level 起 append，见 :1400）`
+**`available` 的下标原点与 CesiumJS 的解析约定不一致** — `src/services/terrain_tiling/cesium_terrain.py:1582-1584（"minzoom": min_level + available 从 min_level 起 append，见 :1400）`
 
 vendored CesiumJS 1.143.0（static/vendor/cesium/1.143.0/Cesium.js 偏移 ~5413400）里 CesiumTerrainProvider 的 layer.json 解析原文：`let p=t.available; b=new If(e.tilingScheme,p.length); for(let y=0;y<p.length;++y){let _=p[y], S=e.tilingScheme.getNumberOfYTilesAtLevel(y); ... b.addAvailableTileRange(y,Z.startX,S-Z.endY-1,Z.endX,S-Z.startY-1)}` —— 层号恒等于**数组下标 y**，`minzoom` 根本没被读；TileAvailability 的最大层级还被钉成 `p.length`。而 build_terrain 在 min_level=8 时写出 minzoom=8、available[0] = z8 的矩形。默认生产路径之所以正确，纯粹是因为 `merge_base_availability`（layer_json.py:130-144）把它重排成以 0 为原点并硬置 minzoom=0；跳过 merge 的路径（停止提前 return、graft 抛异常导致任务失败但目录保留、CLI `--min-level>0`）拿到的就是这份错文件。
 
@@ -217,7 +217,7 @@ interval= 100 n_levels=    67 lines_drawn=True  intermediate_color_px=31153
   task: status=completed downloaded=3 failed=0 total=3；task dir contents=[]
   start_tiling ACCEPTED → job status=failed err='No DEM tifs found under .../dem_task_1'
 
-**`available` 写的是计划而不是事实** — `src/services/terrain_tiling/cesiumlab_terrain.py:1584（写 available）与 :1592（无条件写 layer.json）`
+**`available` 写的是计划而不是事实** — `src/services/terrain_tiling/cesium_terrain.py:1584（写 available）与 :1592（无条件写 layer.json）`
 
 `available_per_level` 在 :1414-1438 的计数循环里算完，之后 `_worker_tile` 的逐瓦片容错（:1270-1272，异常只记 warning 返回 None）与 `stop_flag`（:1501-1502 / :1535-1536）都不会回头修正它。:1592 在两种情况下都照写。管理器侧 `failed>0` 只降级成 warning 文案（dem_task_manager.py:590 一带、local_terrain_task_manager.py:590），作业仍是 completed；停止时 `tile_dem_task_dir` 在 dem_task_tiler.py:195 提前 return，merge/patch 都不跑，那份 layer.json 原样留在盘上。`delete_files=false`（local_terrain_task_manager.delete_task:674，路由可传）时产物目录被保留交给用户。
 
@@ -265,7 +265,7 @@ interval= 100 n_levels=    67 lines_drawn=True  intermediate_color_px=31153
 
 **`finally` 里的 `gdal.Unlink` 反过来吃掉真正的错误** — `src/services/hillshade_preview.py:141（外层 `finally: gdal.Unlink(vrt_path)`）、139（内层 `gdal.Unlink(thumb_path)`）`
 
-`vrt_path` 是 `/vsimem/hillshade_<pid>_<tid>.vrt`。`gdal.BuildVRT` 失败时该 vsimem 文件根本没被创建，第 66 行抛出的信息完整的 `RuntimeError("gdal.BuildVRT failed for <dir>")` 在退栈时撞上 `finally` 里对不存在路径的 `gdal.Unlink`。本模块从不设置 GDAL 的异常模式，而 `gdal.UseExceptions()` 是**进程全局**的、`contour_engine.py:659` 和 `:367` 无条件调它 —— 这件事本仓已经知道并写在 `download_engine.py:1216` 与 `cesiumlab_terrain.py:542-545` 的注释里（那两处为此显式钉死非异常模式），只有 hillshade_preview 没做。同样的坑在第 139 行再来一次：缩略图 `gdal.Translate` 返回 None 时 `thumb_path` 已赋值但文件不存在。
+`vrt_path` 是 `/vsimem/hillshade_<pid>_<tid>.vrt`。`gdal.BuildVRT` 失败时该 vsimem 文件根本没被创建，第 66 行抛出的信息完整的 `RuntimeError("gdal.BuildVRT failed for <dir>")` 在退栈时撞上 `finally` 里对不存在路径的 `gdal.Unlink`。本模块从不设置 GDAL 的异常模式，而 `gdal.UseExceptions()` 是**进程全局**的、`contour_engine.py:659` 和 `:367` 无条件调它 —— 这件事本仓已经知道并写在 `download_engine.py:1216` 与 `cesium_terrain.py:542-545` 的注释里（那两处为此显式钉死非异常模式），只有 hillshade_preview 没做。同样的坑在第 139 行再来一次：缩略图 `gdal.Translate` 返回 None 时 `thumb_path` 已赋值但文件不存在。
 
 后果：只要本进程跑过任意一个等高线任务（或将来升到默认开异常的 GDAL 4），源目录里有一个坏 tif 就会让 `/terrain/{dem,local}/<id>/hillshade` 抛 `RuntimeError('unknown error occurred')` —— 500 到浏览器，日志里也是这句，真正的原因（BuildVRT 失败、哪个目录）被完全抹掉。前端 `map.js:2036-2038` 再把它降级成「没有源文件」的提示，排查时三层都看不到真相。
 
@@ -327,13 +327,13 @@ onKey 的第一句就是 Escape 分支：`if (e.key === 'Escape') { closePanel()
 
 **CLAUDE.md 的三角化/法线一节三条全反** — `CLAUDE.md:141, CLAUDE.md:143, CLAUDE.md:144`
 
-CLAUDE.md:141 写 `TileParams` defaults to `triangulator="auto"` / `build_terrain` defaults to `normals=True`；实际 src/services/terrain_tiling/dem_task_tiler.py:50 是 `triangulator: str = "grid"`，:59 是 `normals: bool = False`（build_terrain 签名默认仍是 True，但应用侧透传 False，dem_task_tiler.py:168 `normals=params.normals`）。CLAUDE.md:143 断言瓦片带 oct 法线且 layer.json 声明 `extensions: ["octvertexnormals"]`；cesiumlab_terrain.py:1590 是 `"extensions": ["octvertexnormals"] if normals else []`，应用侧默认走 `[]`。CLAUDE.md:144 断言 `triangulator`/`max_error_k`/`normals`「not exposed to UI / DB / API — nothing reads them from the config table, env, request body, or query string」；实际 src/core/database.py:95 `('terrain_quality_preset','balanced')`、:99 `('terrain_vertex_normals','false')` 是 config 表键，src/routes/terrain_api.py:43-51 从 JSON body/表单读 `quality` 与 `vertex_normals`，dem_task_manager.py:582-584 / local_terrain_task_manager.py:572-574 把它们构造进 `TileParams(normals=…, level_offset=TILING_QUALITY_OFFSETS[quality])`，两张地形表还各加了 `quality` / `vertex_normals` / `effective_maxzoom` 列。
+CLAUDE.md:141 写 `TileParams` defaults to `triangulator="auto"` / `build_terrain` defaults to `normals=True`；实际 src/services/terrain_tiling/dem_task_tiler.py:50 是 `triangulator: str = "grid"`，:59 是 `normals: bool = False`（build_terrain 签名默认仍是 True，但应用侧透传 False，dem_task_tiler.py:168 `normals=params.normals`）。CLAUDE.md:143 断言瓦片带 oct 法线且 layer.json 声明 `extensions: ["octvertexnormals"]`；cesium_terrain.py:1590 是 `"extensions": ["octvertexnormals"] if normals else []`，应用侧默认走 `[]`。CLAUDE.md:144 断言 `triangulator`/`max_error_k`/`normals`「not exposed to UI / DB / API — nothing reads them from the config table, env, request body, or query string」；实际 src/core/database.py:95 `('terrain_quality_preset','balanced')`、:99 `('terrain_vertex_normals','false')` 是 config 表键，src/routes/terrain_api.py:43-51 从 JSON body/表单读 `quality` 与 `vertex_normals`，dem_task_manager.py:582-584 / local_terrain_task_manager.py:572-574 把它们构造进 `TileParams(normals=…, level_offset=TILING_QUALITY_OFFSETS[quality])`，两张地形表还各加了 `quality` / `vertex_normals` / `effective_maxzoom` 列。
 
 后果：CLAUDE.md 是本仓架构不变量的唯一事实源。照 :144 写代码的人会认为改法线只能改代码/CLI，于是绕开 `validate_tiling_quality` / `coerce_vertex_normals` 这两个唯一把关点（geo_validation.py:92、:98 的 docstring 明确写着「这是 vertex_normals 唯一的把关点」，管理器只做 bool()）；照 :141/:143 排障的人会以为产物带法线而实际不带（v0.2.13 发版说明里那条「静默无效」正是这个失效形态）。
 
 修法：重写 CLAUDE.md 「Triangulation & per-vertex normals」小节：应用侧 grid + normals=False（CLI/全球底图仍 auto，是有意分叉）；`terrain_quality_preset` / `terrain_vertex_normals` 是 config 键，两条起切路由收 `quality` / `vertex_normals`，取值表唯一住在 `geo_validation.TILING_QUALITY_OFFSETS`；把关点是 `validate_tiling_quality` / `coerce_vertex_normals`。
 
-> 验证：read-only（read dem_task_tiler.py:28-72、cesiumlab_terrain.py:1580-1592、terrain_api.py:26-56、database.py:92-105；grep TileParams 全仓）
+> 验证：read-only（read dem_task_tiler.py:28-72、cesium_terrain.py:1580-1592、terrain_api.py:26-56、database.py:92-105；grep TileParams 全仓）
 
 **CLAUDE.md 的 WGS-84 枚举过期，且没提真正执行它的机制** — `CLAUDE.md:124`
 
@@ -571,8 +571,8 @@ grep `proxy_status` 在 tests/ 下零命中。该端点是 `proxy_autodetect.get
 
 | 区 | 问题 | 位置 |
 |---|---|---|
-| 地形切片 | 两个三角化后端的 u/v 量化口径不一致（截断 vs 四舍五入），auto 下相邻瓦片公共边顶点位置对不齐 | `src/services/terrain_tiling/cesiumlab_terrain.py:821-822` |
-| 地形切片 | _tile_normals 的 docstring 把一个已经修掉的缺陷写成「现存、本轮不修」，并给出与现实相反的实测数字 | `src/services/terrain_tiling/cesiumlab_terrain.py:1160-1172` |
+| 地形切片 | 两个三角化后端的 u/v 量化口径不一致（截断 vs 四舍五入），auto 下相邻瓦片公共边顶点位置对不齐 | `src/services/terrain_tiling/cesium_terrain.py:821-822` |
+| 地形切片 | _tile_normals 的 docstring 把一个已经修掉的缺陷写成「现存、本轮不修」，并给出与现实相反的实测数字 | `src/services/terrain_tiling/cesium_terrain.py:1160-1172` |
 | 地形切片 | ensure_base_unpacked 的「失败一律抛 RuntimeError」契约漏掉了分卷 glob + stat 这一段 | `src/services/terrain_tiling/base_terrain.py:327-328` |
 | 瓦片管线 | _write_progress_batch 异常路径没有 rollback：失败批次的语句留在未提交事务里，退回队列后下一次 flush 再执行一遍，计数被重复累加 | `src/services/task_manager.py:851` |
 | 瓦片管线 | pause_task 在 commit 之后才去查 stop_flags，会把停止标志设到**新一轮**执行的 flag 上；新 worker 立刻停、行留在 running、fail_stranded 把它判 failed | `src/services/task_manager.py:628` |
@@ -625,7 +625,7 @@ grep `proxy_status` 在 tests/ 下零命中。该端点是 `proxy_autodetect.get
 | 文档真值 | CLAUDE.md 完全没有记录两条产品硬约束里的「离线」这一条，也没有 CSS 与日志两节——而三者都有测试在强制 | `CLAUDE.md` |
 | 文档真值 | CLAUDE.md 没有记录三档预设这套新机制的单一事实源与 effective_maxzoom 语义 | `CLAUDE.md:140-147` |
 | 文档真值 | docs/reference/README.md 的 file:line 引用已失效（差 88 行） | `docs/reference/README.md:19` |
-| 文档真值 | global-base-build.md 两处 cesiumlab_terrain.py 行号引用完全错位（差 1000+ 行） | `docs/reference/terrain/global-base-build.md:57, :77` |
+| 文档真值 | global-base-build.md 两处 cesium_terrain.py 行号引用完全错位（差 1000+ 行） | `docs/reference/terrain/global-base-build.md:57, :77` |
 | 文档真值 | cesiumjs-loading.md 的 terrain_static 路由行号已过期 | `docs/reference/terrain/cesiumjs-loading.md:40` |
 | 文档真值 | tiling-presets-measured.md 三处行号偏移 9~14 行 | `docs/reference/terrain/tiling-presets-measured.md:209, :227, :370` |
 | 文档真值 | README 的 /api/terrain/dem/<id>/start 只写了 maxzoom，漏掉 quality 与 vertex_normals 两个入参 | `README.md:212` |
@@ -643,8 +643,8 @@ grep `proxy_status` 在 tests/ 下零命中。该端点是 `proxy_autodetect.get
 | 区 | 问题 | 位置 |
 |---|---|---|
 | 地形切片 | ungraft_base_from 的调用被 base_dir 是否可解析挡住，而它要防的「写穿共享底图」并不依赖这个条件 | `src/services/terrain_tiling/dem_task_tiler.py:146-147` |
-| 地形切片 | 同一个 progress_cb 在 build_terrain 内部有两套异常契约 | `src/services/terrain_tiling/cesiumlab_terrain.py:1443-1446` |
-| 地形切片 | 多幅输入的物化阶段完全不看 stop_flag | `src/services/terrain_tiling/cesiumlab_terrain.py:1356-1357` |
+| 地形切片 | 同一个 progress_cb 在 build_terrain 内部有两套异常契约 | `src/services/terrain_tiling/cesium_terrain.py:1443-1446` |
+| 地形切片 | 多幅输入的物化阶段完全不看 stop_flag | `src/services/terrain_tiling/cesium_terrain.py:1356-1357` |
 | 瓦片管线 | _run_task 在调用搁死补偿之前就把自己从 active_tasks 摘掉，留下一个新 worker 可以合法登记的窗口 | `src/services/task_manager.py:795` |
 | 瓦片管线 | 共享 DownloadEngine 实例上的 _collect_batch_results / _batch_retry_config 只写不还原，__init__ 里声明的默认契约在首个地图任务之后就再也回不去 | `src/services/download_engine.py:195` |
 | DEM 管线 | coverage_bbox 全项目无生产调用方，且在退化输入上与 tiles_for_bbox 不一致（docstring 声称「逐字一致」） | `src/services/dem_granules.py:64-87` |

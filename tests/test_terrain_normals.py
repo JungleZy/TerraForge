@@ -16,8 +16,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import src.services.terrain_tiling.cesiumlab_terrain as ct
-from src.services.terrain_tiling.cesiumlab_terrain import (
+import src.services.terrain_tiling.cesium_terrain as ct
+from src.services.terrain_tiling.cesium_terrain import (
     GeographicTilingScheme,
     _oct_encode,
     _tile_normals,

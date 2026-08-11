@@ -23,6 +23,7 @@ from src.services.config_manager import ConfigManager
 from src.services.proxy_autodetect import resolve_from_config
 from src.services.tile_url_probe import should_bypass_proxy
 from src.core.config import Config
+from src.core.gdal_mode import pin_gdal_exception_mode
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def __getattr__(name: str):
     """
     if name in ('gdal', 'osr'):
         from osgeo import gdal, osr
+        pin_gdal_exception_mode()  # 见 src/core/gdal_mode.py
         module = {'gdal': gdal, 'osr': osr}[name]
         globals()[name] = module
         return module
@@ -93,6 +95,7 @@ _TILE_GEOREF_WKT: Optional[str] = None
 def _tile_georef_wkt() -> str:
     """返回 EPSG:3857(TILE_GEOREF_EPSG)的 WKT,首次调用时构建并缓存。"""
     from osgeo import osr  # 惰性 import,见模块级 __getattr__
+    pin_gdal_exception_mode()  # 见 src/core/gdal_mode.py
     global _TILE_GEOREF_WKT
     if _TILE_GEOREF_WKT is None:
         srs = osr.SpatialReference()
@@ -985,6 +988,10 @@ class DownloadEngine:
 
         from osgeo import gdal  # 惰性 import,见模块级 __getattr__
 
+        # 进程级钉死非异常模式:本函数的判错(`is None` + 下面那道
+        # GetLastErrorType 闸门)以此为前提。见 src/core/gdal_mode.py。
+        pin_gdal_exception_mode()
+
         def _abort_if_stopped(stage: str) -> None:
             """协作停止检查点。见签名里 stop_flag 的说明。"""
             if stop_flag is not None and stop_flag.is_set():
@@ -1088,7 +1095,7 @@ class DownloadEngine:
             # 逐瓦片串行配准在大 mosaic 上是纯 CPU/IO 空转:每块瓦片的输出
             # 都写进本次 stitch 私有的 work_dir(原子 .part + rename),瓦片间
             # 无任何共享状态,可以安全并行。worker 数沿用项目封顶惯例
-            # (min(4, cpu_count),同 contour_engine / cesiumlab_terrain)。
+            # (min(4, cpu_count),同 contour_engine / cesium_terrain)。
             # map 保序,georef_paths 顺序与串行一致;任一瓦片失败时 with 退出
             # 会等所有 worker 收尾,再由 finally 清掉整个 work_dir。
             def _georef_one(tile: Tile) -> str:
@@ -1172,7 +1179,7 @@ class DownloadEngine:
                     # 返回**非 None** 的 dataset、RasterXSize/YSize 报 68000x68000 全对、
                     # 左上角与源逐字节相等 —— 只有右下角全 0。也就是任务 completed、
                     # 无 warning、文件打得开、尺寸看着对,下半张却是空白。
-                    # 地形侧 cesiumlab_terrain.build_input_raster 早就写了它,这里对齐。
+                    # 地形侧 cesium_terrain.build_input_raster 早就写了它,这里对齐。
                     creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES',
                                      'BIGTIFF=IF_SAFER'],
                     resampleAlg=gdal_resampling
@@ -1195,7 +1202,7 @@ class DownloadEngine:
                     # 返回**非 None** 的 dataset、RasterXSize/YSize 报 68000x68000 全对、
                     # 左上角与源逐字节相等 —— 只有右下角全 0。也就是任务 completed、
                     # 无 warning、文件打得开、尺寸看着对,下半张却是空白。
-                    # 地形侧 cesiumlab_terrain.build_input_raster 早就写了它,这里对齐。
+                    # 地形侧 cesium_terrain.build_input_raster 早就写了它,这里对齐。
                     creationOptions=[f'COMPRESS={gdal_compression}', 'TILED=YES',
                                      'BIGTIFF=IF_SAFER'],
                     resampleAlg=gdal_resampling
@@ -1212,7 +1219,7 @@ class DownloadEngine:
             part_path_obj = output_path_obj.with_name(
                 f"{output_path_obj.name}.part.{os.getpid()}")
             try:
-                # 显式钉死「非异常」模式,和 cesiumlab_terrain.build_input_raster 对齐。
+                # 显式钉死「非异常」模式,和 cesium_terrain.build_input_raster 对齐。
                 # gdal.UseExceptions() 是**进程全局**的,contour_engine 无条件调它,
                 # 四条流水线又共用一个 Flask 进程 —— 用户先跑一个等高线任务再跑地图
                 # 任务时,下面那道 GetLastErrorType 检查就会永远读到 0(异常模式下
@@ -1228,7 +1235,7 @@ class DownloadEngine:
                     # 读取侧再查 GetLastErrorType() 已经是 0 —— 实测那次 4 GiB 截断,写入
                     # 期间栈里堆了 10073 条 `TIFFAppendToStrip:Maximum TIFF file size
                     # exceeded`,而这里一条都没捞,产物就这么 os.replace 成了正式文件。
-                    # 与 cesiumlab_terrain._raise_on_gdal_error 同形态。
+                    # 与 cesium_terrain._raise_on_gdal_error 同形态。
                     # ⚠️ 已知未覆盖:写失败只发生在最后一次 flush 时,GDAL 连错误记录
                     # 都不留(GetLastErrorType()==0),这道闸门也拦不住。要堵死得校验
                     # 产物完整性(如回读右下角),尚未做。
@@ -1507,6 +1514,7 @@ class DownloadEngine:
         # 注意:测试替身 patch 的是 de.osr 解析到的同一个 osgeo.osr 模块
         # 对象,本地 import 拿到的就是它,替身语义不变。
         from osgeo import gdal, osr
+        pin_gdal_exception_mode()  # 下面靠 `is None` 判错,见 src/core/gdal_mode.py
 
         # Open source tile
         src_ds = gdal.Open(tile_path)

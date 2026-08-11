@@ -54,7 +54,7 @@ uv run python scripts/unpack_base_terrain.py --force    # 强制重解
 
 ⚠️ **后端选 `auto` 不选 `grid`**：直觉上 base 大半是海洋、平坦瓦片「grid 恒胜」，但那是**法线关闭时**的结论。加法线后每顶点多 2 字节，grid 恒 4225 顶点（8450 B）而 martini 平坦瓦片只有 589 顶点（1178 B），结论反转 —— 实测同一份数据 grid 2.1 GB、auto 942 MB，**省 55% 且零质量损失**。
 
-你需要准备的是一个目录，里面放全球 DEM 栅格文件。切片器接受的扩展名（`cesiumlab_terrain.main` 里展开目录用的那张后缀表）：`.tif` / `.tiff` / `.img` / `.hgt` / `.vrt`。
+你需要准备的是一个目录，里面放全球 DEM 栅格文件。切片器接受的扩展名（`cesium_terrain.main` 里展开目录用的那张后缀表）：`.tif` / `.tiff` / `.img` / `.hgt` / `.vrt`。
 
 ⚠️ **多文件输入会先被物化成一整份单文件副本**（`build_input_raster`，2026-08-05 起）。多源 VRT 上 GDAL 的 overview 选层会随读窗口漂移，实测开出 50.9 m 的瓦片接缝，所以多幅输入一律先合并成单个 GeoTIFF 再补一套 2 的幂 overview。
 
@@ -64,17 +64,17 @@ uv run python scripts/unpack_base_terrain.py --force    # 强制重解
 
 ## 构建命令
 
-切片器本身就是 CLI 入口（`src/services/terrain_tiling/cesiumlab_terrain.py` 的 `main()`）：
+切片器本身就是 CLI 入口（`src/services/terrain_tiling/cesium_terrain.py` 的 `main()`）：
 
 ```bash
-uv run python -m src.services.terrain_tiling.cesiumlab_terrain \
+uv run python -m src.services.terrain_tiling.cesium_terrain \
   -i /path/to/global_dem_dir \
   -o ./assets/terrain/base_z8 \
   --max-level 8 \
   --tile-size 65
 ```
 
-参数（全部来自 `cesiumlab_terrain.main` 的 argparse 定义）：
+参数（全部来自 `cesium_terrain.main` 的 argparse 定义）：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
@@ -137,7 +137,7 @@ base 自己的 `layer.json` **不带** `parentUrl`（`patch_layer_json_parent` �
 参数 `-DemDir`（必填）、`-MaxZoom`（默认 8）、`-OutDir`（默认 `.\downloads\terrain\base_z8`）、`-TileSize`（默认 65）。做的事就是建目录 + 调上面那条命令：
 
 ```powershell
-& uv run python -m src.services.terrain_tiling.cesiumlab_terrain `
+& uv run python -m src.services.terrain_tiling.cesium_terrain `
     -i $DemDir -o $OutDir --max-level $MaxZoom --tile-size $TileSize
 ```
 

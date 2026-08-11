@@ -16,7 +16,7 @@
 - **所有命令走 `uv run`**（`.venv/` 已在项目根目录，不要手动 `source`）。
 - **不改档位取值表**：`geo_validation.TILING_QUALITY_OFFSETS` 的 `{'precision': 1, 'balanced': 0, 'speed': -1}` 与 `DEFAULT_TILING_QUALITY = 'balanced'` 一个字都不动。
 - **不改这四个旋钮**：`tile_size`（恒 65）、`max_error_k`（0.15）、`workers`、`triangulator`（应用侧恒 `'grid'`）。
-- **不改 `src/services/terrain_tiling/cesiumlab_terrain.py`**。估算 / 偏移 / 钳位三段已经是对的。
+- **不改 `src/services/terrain_tiling/cesium_terrain.py`**。估算 / 偏移 / 钳位三段已经是对的。
 - **偏移表不许在 JS 里抄第二份**：前端要用偏移值时，由服务端渲染进 `<option data-offset>`（见 Task 8）。
 - **i18n 双向闭合**：每个新 key 必须 `zh` / `en` 双份，且必须被源码以**完整字面量**引用（不许字符串拼接）——`tests/test_i18n.py` 两个方向都会红。
 - **前端不许抄一份默认值**：提交时的兜底一律是空串（= 未传 = 走配置默认），由 `tests/test_map_js_contract.py::test_terrain_submit_lets_the_backend_supply_the_defaults` 钉住。
@@ -238,7 +238,7 @@ Expected: FAIL —— `TypeError: int() argument must be ... not 'NoneType'`（`
 ```python
     # None = 自动：按源数据像素尺寸现算基准层级。build_terrain 收到
     # max_level=None 时走 GeographicTilingScheme.estimate_max_level，档位偏移
-    # 再叠在估算值上（cesiumlab_terrain 里 max_level 唯一的解析点）。
+    # 再叠在估算值上（cesium_terrain 里 max_level 唯一的解析点）。
     # 落库表示是哨兵 -1，翻译住在 geo_validation.maxzoom_from_db / _to_db。
     maxzoom: Optional[int]
 ```
@@ -879,7 +879,7 @@ git commit -m "feat(terrain): 层级出厂默认改为 auto 并迁移存量的�
 - Test: `tests/test_raster_inspect.py`（追加）
 
 **Interfaces:**
-- Consumes: `cesiumlab_terrain.GeographicTilingScheme` / `intersecting_tile_range`（惰性 import，缺 GDAL 时降级）
+- Consumes: `cesium_terrain.GeographicTilingScheme` / `intersecting_tile_range`（惰性 import，缺 GDAL 时降级）
 - Produces: `summary["tile_counts"]: list[int]`，长度 `MAX_ZOOM + 1 = 22`，`tile_counts[z]` = **该层**与并集 bounds 相交的张数（逐层，不累加）
 
 - [ ] **Step 1: 写失败的测试**
@@ -901,7 +901,7 @@ def test_summary_reports_per_level_tile_counts():
 
 def test_tile_counts_match_the_tiler_geometry():
     """与切片器用的是同一套 intersecting_tile_range，不许各算各的。"""
-    from src.services.terrain_tiling.cesiumlab_terrain import (
+    from src.services.terrain_tiling.cesium_terrain import (
         GeographicTilingScheme, intersecting_tile_range)
 
     out = describe_headers([_geographic_entry()], mode='terrain')
@@ -942,11 +942,11 @@ def _tile_counts_per_level(bounds_wgs84):
     floor，DEM 四至恰好落在瓦片边界上时 floor 会多算一整行（该函数的 docstring
     有整段论证）。预告的数与实际切出来的数对不上，比没有预告更糟。
 
-    cesiumlab_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
+    cesium_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
     这张表（此时本来也切不了片），与 _estimate_maxzoom 同款降级。
     """
     try:
-        from src.services.terrain_tiling.cesiumlab_terrain import (
+        from src.services.terrain_tiling.cesium_terrain import (
             GeographicTilingScheme, intersecting_tile_range)
     except Exception:
         return None

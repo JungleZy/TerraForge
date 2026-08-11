@@ -691,7 +691,7 @@ def init_database():
         # <output_path>/<pipeline>_task_<id>/ 这个目录就再没有任何 DB 引用 ——
         # 启动清扫只认 pending_deletions 和几张任务表,从此永远扫不到它。
         # 代价不只是「用户自己知道文件在哪」:多幅 DEM 物化的中间栅格
-        # (cesiumlab_terrain_<pid>_*.tif,与源数据同量级)就落在这个目录直下,
+        # (cesium_terrain_<pid>_*.tif,与源数据同量级)就落在这个目录直下,
         # 而 task_cleanup._materialised_sweep_roots 的扫描根正是从
         # dem_terrain_jobs.output_dir 推出来的 —— 引用一断,GB 级残留同时失去
         # 唯一的回收入口。

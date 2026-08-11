@@ -208,7 +208,7 @@ _EMIT_MIN_INTERVAL = 0.5
 | `assets/` 不可写（Program Files、只读介质） | `phase=failed`，状态栏「底图不可用」+ 原因；切片走兜底，功能不受影响 |
 | 磁盘满 | 同上。临时目录由 `ensure_base_unpacked` 的 finally 清掉 |
 | 分卷缺失（有人删了 `assets/`） | `phase=failed`，error 写明找不到分卷 |
-| emit 自身抛异常（客户端断开） | 吞掉。与 `base_terrain._emit`、`cesiumlab_terrain._gdal_stage_callback` 同一条既有约定：一次广播故障不该影响解压 |
+| emit 自身抛异常（客户端断开） | 吞掉。与 `base_terrain._emit`、`cesium_terrain._gdal_stage_callback` 同一条既有约定：一次广播故障不该影响解压 |
 | 解压中途关窗 | 临时目录 `.base_unpack_<pid>_*` 由启动清扫的第 6 类回收（v0.2.9 已实现） |
 
 失败**不自动重试**：重试要么很快再失败一次（权限问题不会自己好），要么就是在无限循环里刷日志。下次启动、或下次切片会自然重试。

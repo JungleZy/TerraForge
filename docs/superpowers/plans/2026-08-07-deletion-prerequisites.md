@@ -60,7 +60,7 @@
 """DEM 地形切片必须能被中途停止。
 
 TileParams.stop_flag 字段（dem_task_tiler.py:55）、tile_dem_task_dir 的透传
-（:136）、build_terrain 的逐瓦片检查（cesiumlab_terrain.py:1427/1446）全都是
+（:136）、build_terrain 的逐瓦片检查（cesium_terrain.py:1427/1446）全都是
 现成的 —— 缺的一直是 dem_task_manager 这个调用方。后果不止「停不下来」：切片
 线程不进 active_tasks，delete_task 的 is_alive() 守卫对它完全无效。
 """

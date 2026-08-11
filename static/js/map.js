@@ -1055,7 +1055,7 @@ function renderTerrainTileEstimate() {
     } else if (numEl && numEl.value !== '') {
         // 空的数字框不是 z0 —— Number('') === 0，不挡的话会预告成「基准 z0」。
         // 截断到整数：数字框收得下 14.5，而后端起切前自己就是 int(max_level)
-        // （cesiumlab_terrain.py）。不截的话标题写「实际 z13.5」，下面那个张数却
+        // （cesium_terrain.py）。不截的话标题写「实际 z13.5」，下面那个张数却
         // 是 counts[13.5] 落空按 0 算之后 z8..z13 的和 —— 两个数出自不同的层级。
         // Number('') 那道门仍在上面：空串照旧不显示，Math.trunc(NaN) 也还是 NaN。
         base = Math.trunc(Number(numEl.value));

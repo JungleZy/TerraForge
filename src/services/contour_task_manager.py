@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 from src.core.config import Config
 from src.core.database import get_connection, utc_now_iso
+from src.core.gdal_mode import pin_gdal_exception_mode
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import MAX_ZOOM, coerce_number, validate_zoom
 from src.services.task_cleanup import (fail_stranded_running_task,
@@ -88,6 +89,7 @@ def _finest_pixel_size_3857(paths: Sequence[Path]) -> Optional[float]:
         from osgeo import gdal, osr
     except Exception:
         return None
+    pin_gdal_exception_mode()  # 下面靠 `Open(...) is None` 判错,见 src/core/gdal_mode.py
     best: Optional[float] = None
     for p in paths:
         try:
@@ -150,6 +152,7 @@ def _union_tif_extent_lonlat(
         from osgeo import gdal, osr
     except ImportError:
         return None
+    pin_gdal_exception_mode()  # 下面靠 `Open(...) is None` 判错,见 src/core/gdal_mode.py
     west = south = float("inf")
     east = north = float("-inf")
     found = False

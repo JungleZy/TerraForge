@@ -67,7 +67,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from osgeo import gdal, osr
 
-from src.services.terrain_tiling.cesiumlab_terrain import (
+from src.services.terrain_tiling.cesium_terrain import (
     DemSampler,
     GeographicTilingScheme,
     build_input_raster,
@@ -239,16 +239,16 @@ def test_bigtiff_is_requested(dem_pair, tmp_path, monkeypatch):
     行为测试要造 4 GB 才能复现，所以这里钉参数：`contour_engine` 的两处 Translate
     早就写了 `BIGTIFF=IF_SAFER`，是项目现成惯例。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
     captured = {}
-    real_translate = cesiumlab_terrain.gdal.Translate
+    real_translate = cesium_terrain.gdal.Translate
 
     def spy(dst, src, **kwargs):
         captured.update(kwargs)
         return real_translate(dst, src, **kwargs)
 
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "Translate", spy)
+    monkeypatch.setattr(cesium_terrain.gdal, "Translate", spy)
     build_input_raster(dem_pair, work_dir=str(tmp_path))
 
     opts = captured.get("creationOptions") or []
@@ -279,7 +279,7 @@ def test_missing_work_dir_is_loud(dem_pair):
 
 
 def _leftover_products(work_dir):
-    return glob.glob(os.path.join(str(work_dir), "cesiumlab_terrain_*"))
+    return glob.glob(os.path.join(str(work_dir), "cesium_terrain_*"))
 
 
 def test_translate_failure_is_loud(dem_pair, tmp_path, monkeypatch):
@@ -292,9 +292,9 @@ def test_translate_failure_is_loud(dem_pair, tmp_path, monkeypatch):
     根本走不到 Translate 这一步（变异测试里「Translate 返回 None 就 return
     vrt_path」正是靠这个漏网的）。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "Translate",
+    monkeypatch.setattr(cesium_terrain.gdal, "Translate",
                         lambda *a, **k: None)
 
     with pytest.raises(RuntimeError, match="Translate"):
@@ -320,15 +320,15 @@ def test_corrupt_product_is_caught_even_when_gdal_reports_success(
     这里用 `outputType=GDT_Byte` 模拟「产物与源不一致」这一类（整幅 DEM 塌成
     常数 255），它是同一个失败面上最容易构造的一点。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
-    real_translate = cesiumlab_terrain.gdal.Translate
+    real_translate = cesium_terrain.gdal.Translate
 
     def corrupting(dst, src, **kwargs):
         kwargs["outputType"] = gdal.GDT_Byte
         return real_translate(dst, src, **kwargs)
 
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "Translate", corrupting)
+    monkeypatch.setattr(cesium_terrain.gdal, "Translate", corrupting)
 
     with pytest.raises(RuntimeError):
         build_input_raster(dem_pair, work_dir=str(tmp_path))
@@ -356,10 +356,10 @@ def test_verification_failure_releases_gdal_handles(
     import gc
     import weakref
 
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
     opened = []
-    real_open = cesiumlab_terrain.gdal.Open
+    real_open = cesium_terrain.gdal.Open
 
     def tracking_open(*a, **k):
         ds = real_open(*a, **k)
@@ -367,14 +367,14 @@ def test_verification_failure_releases_gdal_handles(
             opened.append(weakref.ref(ds))
         return ds
 
-    real_translate = cesiumlab_terrain.gdal.Translate
+    real_translate = cesium_terrain.gdal.Translate
 
     def corrupting(dst, src, **kwargs):
         kwargs["outputType"] = gdal.GDT_Byte
         return real_translate(dst, src, **kwargs)
 
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "Translate", corrupting)
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "Open", tracking_open)
+    monkeypatch.setattr(cesium_terrain.gdal, "Translate", corrupting)
+    monkeypatch.setattr(cesium_terrain.gdal, "Open", tracking_open)
 
     with pytest.raises(RuntimeError) as excinfo:
         build_input_raster(dem_pair, work_dir=str(tmp_path))
@@ -400,10 +400,10 @@ def test_cpl_error_is_not_swallowed(dem_pair, tmp_path, monkeypatch):
     清空，所以晚一步就什么都看不到了。下面的桩精确复刻这个语义 —— Translate 期间
     置错、ErrorReset 清错 —— 于是漏掉 Translate 后那一处检查的实现会当场变红。
     """
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
-    real_translate = cesiumlab_terrain.gdal.Translate
-    real_reset = cesiumlab_terrain.gdal.ErrorReset
+    real_translate = cesium_terrain.gdal.Translate
+    real_reset = cesium_terrain.gdal.ErrorReset
     state = {"failed": False}
 
     def translate_that_fails_writing(dst, src, **kwargs):
@@ -415,14 +415,14 @@ def test_cpl_error_is_not_swallowed(dem_pair, tmp_path, monkeypatch):
         state["failed"] = False         # 真实 ErrorReset 的语义：清空错误栈
         real_reset()
 
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "Translate",
+    monkeypatch.setattr(cesium_terrain.gdal, "Translate",
                         translate_that_fails_writing)
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "ErrorReset", reset)
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "GetLastErrorType",
+    monkeypatch.setattr(cesium_terrain.gdal, "ErrorReset", reset)
+    monkeypatch.setattr(cesium_terrain.gdal, "GetLastErrorType",
                         lambda: gdal.CE_Failure if state["failed"] else gdal.CE_None)
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "GetLastErrorMsg",
+    monkeypatch.setattr(cesium_terrain.gdal, "GetLastErrorMsg",
                         lambda: "simulated disk-full write failure")
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "GetLastErrorNo", lambda: 3)
+    monkeypatch.setattr(cesium_terrain.gdal, "GetLastErrorNo", lambda: 3)
 
     with pytest.raises(RuntimeError, match="simulated disk-full"):
         build_input_raster(dem_pair, work_dir=str(tmp_path))
@@ -432,9 +432,9 @@ def test_cpl_error_is_not_swallowed(dem_pair, tmp_path, monkeypatch):
 
 def test_build_overviews_failure_is_loud(dem_pair, tmp_path, monkeypatch):
     """建 overview 失败同样要响：静默少一层 overview = 低层级切片慢 30 倍。"""
-    from src.services.terrain_tiling import cesiumlab_terrain
+    from src.services.terrain_tiling import cesium_terrain
 
-    real_open = cesiumlab_terrain.gdal.Open
+    real_open = cesium_terrain.gdal.Open
 
     class _NoOverviews:
         """转发一切，只让 BuildOverviews 报错。"""
@@ -452,7 +452,7 @@ def test_build_overviews_failure_is_loud(dem_pair, tmp_path, monkeypatch):
         ds = real_open(path, *a, **k)
         return _NoOverviews(ds) if ds is not None else None
 
-    monkeypatch.setattr(cesiumlab_terrain.gdal, "Open", fake_open)
+    monkeypatch.setattr(cesium_terrain.gdal, "Open", fake_open)
 
     with pytest.raises(RuntimeError, match="BuildOverviews"):
         build_input_raster(dem_pair, work_dir=str(tmp_path))

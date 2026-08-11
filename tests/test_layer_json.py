@@ -323,7 +323,7 @@ def test_merge_keeps_base_levels_deeper_than_the_task(tmp_path):
 def test_merge_aligns_by_absolute_level_not_by_index(tmp_path):
     """两侧 available 的原点不同时必须按**绝对层号**对齐，输出归一到 z0。
 
-    `available[i]` 的绝对层号是 `minzoom + i` —— 见 `cesiumlab_terrain.build_terrain`
+    `available[i]` 的绝对层号是 `minzoom + i` —— 见 `cesium_terrain.build_terrain`
     里 `for z in range(min_level, max_level + 1)` 逐层 append 出的
     `available_per_level`，以及它写进 layer.json 的 `"minzoom": min_level`。
     今天任务侧下标 0 恰好就是 z0，只是因为随包底图不可用时 `tile_dem_task_dir`

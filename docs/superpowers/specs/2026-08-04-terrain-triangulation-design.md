@@ -78,7 +78,7 @@
 
 ## 背景：当前实现
 
-`src/services/terrain_tiling/cesiumlab_terrain.py` 用的是**最朴素的规则网格三角化**：`_mesh_constants`（`:262-272`）双重循环，每个网格单元无条件切成两个三角形，拓扑只依赖网格尺寸 n，因此整张索引表可以 `lru_cache` 缓存。
+`src/services/terrain_tiling/cesium_terrain.py` 用的是**最朴素的规则网格三角化**：`_mesh_constants`（`:262-272`）双重循环，每个网格单元无条件切成两个三角形，拓扑只依赖网格尺寸 n，因此整张索引表可以 `lru_cache` 缓存。
 
 生产参数 `tile_size=65`（`src/services/terrain_tiling/dem_task_tiler.py:22`），即每张瓦片恒定 **4225 顶点 / 8192 三角形**，与地形起伏完全无关。全仓 grep `delaunay|triangul|simplif|refine|collapse|quadric` **零命中**——不存在任何误差驱动逻辑。
 
@@ -91,7 +91,7 @@
 
 准备做渲染性能验证时发现**瓦片根本无法被 Cesium 解码**——也就是说在此之前，地形功能从未真正工作过。两个 bug 叠加，且全程静默：HTTP 全 200、任务标 completed、前端不报错。
 
-**Bug 1（根因）**：`cesiumlab_terrain.py` 的 `IndexData.triangleCount` 写成了索引元素数。
+**Bug 1（根因）**：`cesium_terrain.py` 的 `IndexData.triangleCount` 写成了索引元素数。
 
 ```python
 body.write(struct.pack("<I", len(encoded_indices)))       # 24576，错
@@ -406,16 +406,16 @@ build_terrain(inputs, output_dir, *, min_level, max_level, tile_size,
               nodata, workers, progress_cb, stop_flag) -> {"total","rendered","failed"}
 ```
 
-消费者不受影响：`dem_task_tiler.tile_dem_task_dir`（唯一直接调用者）、`dem_task_manager._run_tiling`（依赖 counts + progress_cb 节流 + stop_flag）、`local_terrain_task_manager`、以及 **12 个引用 `build_terrain`/`tile_dem_task_dir`/`cesiumlab_terrain` 的测试文件**。
+消费者不受影响：`dem_task_tiler.tile_dem_task_dir`（唯一直接调用者）、`dem_task_manager._run_tiling`（依赖 counts + progress_cb 节流 + stop_flag）、`local_terrain_task_manager`、以及 **12 个引用 `build_terrain`/`tile_dem_task_dir`/`cesium_terrain` 的测试文件**。
 
 ### 改动清单
 
 | 位置 | 改动 |
 |---|---|
-| `cesiumlab_terrain.py` | 新增 RTIN 误差表（按层级向量化 + `lru_cache`）与提取函数；`_mesh_constants` 保留为 `triangulator='grid'` 分支 |
-| `cesiumlab_terrain.py:_worker_tile` | 采样 65→67（ghost），法线在 ECEF 空间算后裁回；DEM 边缘退化处理 |
-| `cesiumlab_terrain.py:encode_quantized_mesh` | 增加 oct-encoded normals 扩展段；索引改逐瓦片现算 |
-| `cesiumlab_terrain.py:_high_water_mark_encode` | 向量化（**绑定顶点重排**，见下） |
+| `cesium_terrain.py` | 新增 RTIN 误差表（按层级向量化 + `lru_cache`）与提取函数；`_mesh_constants` 保留为 `triangulator='grid'` 分支 |
+| `cesium_terrain.py:_worker_tile` | 采样 65→67（ghost），法线在 ECEF 空间算后裁回；DEM 边缘退化处理 |
+| `cesium_terrain.py:encode_quantized_mesh` | 增加 oct-encoded normals 扩展段；索引改逐瓦片现算 |
+| `cesium_terrain.py:_high_water_mark_encode` | 向量化（**绑定顶点重排**，见下） |
 | `layer.json` | `extensions` 声明 vertex-normals |
 | `dem_task_tiler.py:TileParams` | 加 `triangulator` / `max_error_k` / `normals` 字段，**默认值即最终值**（`'martini'` / `0.15` / `True`），不从上层传入 |
 | 前端 `map.js` | `fromUrl` 传 `{ requestVertexNormals: true }`；地形光照开关（见下） |

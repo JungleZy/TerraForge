@@ -154,7 +154,7 @@ def test_sweep_startup_residue_never_raises(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 第 5 类：多幅 DEM 物化的中间栅格（cesiumlab_terrain_<pid>_*）
+# 第 5 类：多幅 DEM 物化的中间栅格（cesium_terrain_<pid>_*）
 # ---------------------------------------------------------------------------
 
 
@@ -166,11 +166,11 @@ def test_materialised_owner_pid_parses_and_rejects():
     """
     from src.services.task_cleanup import _materialised_owner_pid
 
-    assert _materialised_owner_pid("cesiumlab_terrain_12345_ab12cd.tif") == 12345
+    assert _materialised_owner_pid("cesium_terrain_12345_ab12cd.tif") == 12345
     # 老产物（2026-08-06 之前）名里没有 pid，解析不出来 → 退回 mtime 判据
-    assert _materialised_owner_pid("cesiumlab_terrain_ab12cd.tif") is None
+    assert _materialised_owner_pid("cesium_terrain_ab12cd.tif") is None
     # 别的东西一律不认
-    assert _materialised_owner_pid("cesiumlab_terrain.py") is None
+    assert _materialised_owner_pid("cesium_terrain.py") is None
     assert _materialised_owner_pid("ASTGTMV003_N42E086_dem.tif") is None
 
 
@@ -182,8 +182,8 @@ def test_sweep_orphan_files_skips_live_writer(monkeypatch, tmp_path):
     """
     from src.services.task_cleanup import _MATERIALISED_PREFIX, _sweep_orphan_files
 
-    alive = tmp_path / "cesiumlab_terrain_4242_alive.tif"
-    dead = tmp_path / "cesiumlab_terrain_4243_dead.tif"
+    alive = tmp_path / "cesium_terrain_4242_alive.tif"
+    dead = tmp_path / "cesium_terrain_4243_dead.tif"
     for f in (alive, dead):
         f.write_bytes(b"x" * 16)
         _age(f)
@@ -204,19 +204,19 @@ def test_sweep_orphan_files_leaves_everything_else_alone(monkeypatch, tmp_path):
     """
     from src.services.task_cleanup import _MATERIALISED_PREFIX, _sweep_orphan_files
 
-    target = tmp_path / "cesiumlab_terrain_777_x.tif"
+    target = tmp_path / "cesium_terrain_777_x.tif"
     target.write_bytes(b"x")
     _age(target)
 
     keep_files = [
         tmp_path / "ASTGTMV003_N42E086_dem.tif",      # DEM 源
-        tmp_path / "cesiumlab_terrain.py",             # 源码同名前缀（无下划线段）
+        tmp_path / "cesium_terrain.py",             # 源码同名前缀（无下划线段）
         tmp_path / "layer.json",
     ]
     for f in keep_files:
         f.write_bytes(b"keep")
         _age(f)
-    keep_dir = tmp_path / "cesiumlab_terrain_dir"      # 同前缀但是目录
+    keep_dir = tmp_path / "cesium_terrain_dir"      # 同前缀但是目录
     keep_dir.mkdir()
     _age(keep_dir)
 
@@ -237,7 +237,7 @@ def test_sweep_orphan_files_does_not_recurse(monkeypatch, tmp_path):
 
     nested = tmp_path / "terrain_tiles" / "10" / "1511"
     nested.mkdir(parents=True)
-    deep = nested / "cesiumlab_terrain_777_deep.tif"
+    deep = nested / "cesium_terrain_777_deep.tif"
     deep.write_bytes(b"x")
     _age(deep)
 
@@ -301,7 +301,7 @@ def test_sweep_orphan_files_refuses_symlinks(monkeypatch, tmp_path):
 
     precious = tmp_path / "important_dem.tif"
     precious.write_bytes(b"user data")
-    link = tmp_path / "cesiumlab_terrain_999_link.tif"
+    link = tmp_path / "cesium_terrain_999_link.tif"
     try:
         link.symlink_to(precious)
     except (OSError, NotImplementedError):

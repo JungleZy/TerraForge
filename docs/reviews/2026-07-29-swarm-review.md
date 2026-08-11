@@ -23,12 +23,12 @@
 - 影响：同局域网任何人 `curl http://<ip>:5000/api/config` 即得用户真实 NASA Earthdata 账号密码。
 
 **C2. quantized-mesh 三角形索引位宽选错，全部 `.terrain` 在标准 Cesium 中损坏**
-- 位置：`services/terrain_tiling/cesiumlab_terrain.py:264-267`（按 `arr.max()<=65535` 选位宽，规范要求按**顶点数**>65536 判定；high-water-mark 回绕导致实际永远写 uint32，Cesium 按 uint16 读，后续字段全部错位）。
+- 位置：`services/terrain_tiling/cesium_terrain.py:264-267`（按 `arr.max()<=65535` 选位宽，规范要求按**顶点数**>65536 判定；high-water-mark 回绕导致实际永远写 uint32，Cesium 按 uint16 读，后续字段全部错位）。
 - 已用解释器实跑编码器逐字节验证，并对照 vendor Cesium 1.143 解码代码确认。
 - 修复：位宽按 vertex_count 判定；u16 分支对回绕差值 `astype(np.uint16)`。
 
 **C3. `.terrain` 以 gzip 落盘但 HTTP 响应无 `Content-Encoding: gzip`**（2 份报告）
-- 位置：`cesiumlab_terrain.py:311`（`gzip.open` 写盘）+ `routes/terrain_static.py:83,92,119`（裸 `send_file`）。
+- 位置：`cesium_terrain.py:311`（`gzip.open` 写盘）+ `routes/terrain_static.py:83,92,119`（裸 `send_file`）。
 - 与 C2 叠加 = 地形功能整体不可用。修复：落盘不压缩，或响应补 `Content-Encoding: gzip`；修后需浏览器实测。
 
 **C4. `downloading` 状态文件成孤儿，任务被静默标记完成（数据丢失）**
@@ -59,7 +59,7 @@
 6. ~~**cancel 可把 `completed`/`failed` 改写为 `cancelled`**~~（4 份报告）：`task_manager.py:553-557`、`dem_task_manager.py:206`。**【已修复 2026-07-29】**
 7. **dev 模式 reloader 父进程也跑完整 `create_app()`（含 orphan recovery 写库）**：`app.py:235-237` 只挡 multiprocessing worker。修复：守卫加 `WERKZEUG_RUN_MAIN`。
 8. **并发 stitch 互删共享中间文件**（代码注释已承认未修）：`download_engine.py:968-970` vs `:791-800`。
-9. **惰性导入钩子被 `sys.exit` 击穿，缺 GDAL 时 tiling job 卡死 running**：`cesiumlab_terrain.py:36-39` 抛 `SystemExit`。修复：改 `raise ImportError`。
+9. **惰性导入钩子被 `sys.exit` 击穿，缺 GDAL 时 tiling job 卡死 running**：`cesium_terrain.py:36-39` 抛 `SystemExit`。修复：改 `raise ImportError`。
 10. **等高线"每瓦片容错"被 try 块位置架空**：`contour_engine.py:361-404`——读窗口/`ReadAsArray`/level 计算全在 try 外。
 
 ### 数据正确性
@@ -70,7 +70,7 @@
 14. **COP-DEM 的 `dem_files.local_path` 写错**：`dem_task_manager.py:406` 存嵌套 granule_id 全路径，实际落盘是 basename。
 15. **资源上限校验缺失**（一组，4 份报告）：`download_engine.py:153-159,208-213`（10 万瓦片硬上限只是 warning）；`contour_api.py:70-71`（zoom 无 0–21 校验）；`local_terrain_api.py:32`（maxzoom 无上限）；`contour_task_manager.py:298`（裸 `float()`，NaN/inf interval 可入库）。
 16. **相对 `output_path` 依赖进程 CWD，与静态服务的冻结模式约定自相矛盾**（3 份报告）：`dem_task_manager.py:373,242,226-243`、`local_terrain_task_manager.py:243-244,356-369` vs `terrain_static.py:28-52,99-115`。
-17. **大 DEM 低层级切片 OOM 风险**（2 份报告）：`cesiumlab_terrain.py:152`、`contour_engine.py:361-372` 按原始分辨率整窗读入。修复：`ReadAsArray` 带 `buf_xsize/buf_ysize`。
+17. **大 DEM 低层级切片 OOM 风险**（2 份报告）：`cesium_terrain.py:152`、`contour_engine.py:361-372` 按原始分辨率整窗读入。修复：`ReadAsArray` 带 `buf_xsize/buf_ysize`。
 
 ### 功能/契约
 

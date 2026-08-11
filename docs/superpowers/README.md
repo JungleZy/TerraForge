@@ -14,7 +14,7 @@
 |---|---|---|
 | `2026-05-06-google-maps-downloader.md` | `2026-05-06-google-maps-downloader-design.md` | 已实施，其后被大幅重构（文件结构、依赖版本、配置键均已变） |
 | `2026-05-08-agent-team-comprehensive-review.md` | `2026-05-08-agent-team-comprehensive-review-design.md` | **从未执行**——计划产出 10 份报告，只落地 `docs/reviews/2026-05-08-comprehensive-review/04-backend-architecture.md` 一份 |
-| `2026-05-16-dem-terrain-tiling-ctb-cesium.md` | **无**（见下） | **部分作废**：切片引擎从外部 CTB（`ctb-tile`）改道 vendored CesiumLab（`services/terrain_tiling/cesiumlab_terrain.py`），残留代码已删；计划其余产物（`dem_terrain_jobs` 表、terrain 路由与静态服务）全部上线 |
+| `2026-05-16-dem-terrain-tiling-ctb-cesium.md` | **无**（见下） | **部分作废**：切片引擎从外部 CTB（`ctb-tile`）改道 vendored cesium（`services/terrain_tiling/cesium_terrain.py`），残留代码已删；计划其余产物（`dem_terrain_jobs` 表、terrain 路由与静态服务）全部上线 |
 | `2026-06-13-local-terrain-upload-tiling.md` | `2026-06-12-local-terrain-upload-tiling-design.md` | 已实施，与现状吻合度最高的一份（唯一显式写了「设计依据：」指针的一对） |
 | `2026-06-15-frontend-premium-redesign.md` | `2026-06-15-frontend-premium-redesign-design.md` | 已实施后**被取代**：青绿 `#2dd4bf` 已整套换成 sky `#38bdf8` + dark/light/system 三态主题。照它改 CSS 会把界面改坏 |
 | `2026-06-16-contour-map.md` | `2026-06-16-contour-map-design.md` | **部分作废**：入口从「框选 bbox 自动下 DEM」改为上传 GeoTIFF；「不做晕渲」的产品定位被推翻（现默认分层设色 + 晕渲）；渲染层契约基本仍成立 |
@@ -27,7 +27,7 @@
 
 **有计划没设计稿（1 份）**
 
-- `plans/2026-05-16-dem-terrain-tiling-ctb-cesium.md` —— 恰恰是唯一改道的那条线缺少设计记录。CTB → CesiumLab 的改道原因在仓库里查不到。
+- `plans/2026-05-16-dem-terrain-tiling-ctb-cesium.md` —— 恰恰是唯一改道的那条线缺少设计记录。CTB → cesium 的改道原因在仓库里查不到。
 
 **有设计稿没计划（5 份）**
 

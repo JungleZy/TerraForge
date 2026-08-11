@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.services.terrain_tiling.cesiumlab_terrain import encode_quantized_mesh
+from src.services.terrain_tiling.cesium_terrain import encode_quantized_mesh
 
 HEADER_SIZE = 88  # <ddd ff ddd d ddd
 
@@ -237,7 +237,7 @@ def test_index_data_starts_on_a_spec_boundary(n, index_dtype):
     )
 
 
-from src.services.terrain_tiling.cesiumlab_terrain import (
+from src.services.terrain_tiling.cesium_terrain import (
     _high_water_mark_encode,
     _hwm_encode,
 )
@@ -458,7 +458,7 @@ def _tile_prism_max_dist(bbox, n, center):
     于是 d(P) ≤ d(Q) + D/2 ≤ dmax + D/2。这里的 D 直接从采样出来的 ECEF 点
     量出来（两条对角线取大），不是估的。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import lonlat_to_ecef
+    from src.services.terrain_tiling.cesium_terrain import lonlat_to_ecef
 
     w, s, e, nn = bbox
     h_min, h_max = _expected_height_range(n)
@@ -501,7 +501,7 @@ def _quantisation_slack(bbox, hdr) -> float:
 
     全部输入取自 bbox 与 header 的 minH/maxH，不读实现的任何中间变量。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import WGS84_A
+    from src.services.terrain_tiling.cesium_terrain import WGS84_A
 
     w, s, e, nn = bbox
     return (
@@ -521,7 +521,7 @@ def _decoded_vertices_ecef(data: bytes, bbox) -> np.ndarray:
         height = minH + (maxH - minH) * h / 32767
     minH/maxH 取 header 里那两个 float32 —— 那正是 Cesium 拿去 lerp 的值。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import lonlat_to_ecef
+    from src.services.terrain_tiling.cesium_terrain import lonlat_to_ecef
 
     w, s, e, nn = bbox
     (vcount,) = struct.unpack_from("<I", data, HEADER_SIZE)
@@ -561,7 +561,7 @@ def test_header_center_is_the_tile_centre_in_ecef(bbox, n):
     逐分量断言，不是断言集合或范数 —— x/y 互换会保持范数不变，只有逐分量才杀得掉。
     center 错位 = 全部顶点解码基准点错位，地形整体平移。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import lonlat_to_ecef
+    from src.services.terrain_tiling.cesium_terrain import lonlat_to_ecef
 
     w, s, e, nn = bbox
     data = encode_quantized_mesh(*bbox, _heights(n))
@@ -693,7 +693,7 @@ def test_header_horizon_occlusion_point_is_beyond_the_tile_along_the_centre_ray(
     在椭球缩放空间（x/a, y/a, z/b）里，它的方向必须与 center 一致，模长必须 >=1
     （在单位球面之外）且 > center 的模长（在瓦片之外）。
     """
-    from src.services.terrain_tiling.cesiumlab_terrain import WGS84_A, WGS84_B
+    from src.services.terrain_tiling.cesium_terrain import WGS84_A, WGS84_B
 
     data = encode_quantized_mesh(*bbox, _heights(n))
     hdr = _parse_header(data)

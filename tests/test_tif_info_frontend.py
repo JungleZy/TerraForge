@@ -452,7 +452,7 @@ def test_the_estimate_level_is_the_base_plus_the_preset_offset():
 
     截断是同一类「一个数」的问题：数字框收得下 14.5，标题会写「实际 z13.5」，
     下面那个张数却是 counts[13.5] 落空按 0 算之后 z8..z13 的和 —— 两个数出自
-    不同的层级。后端起切前自己就是 int(max_level)（cesiumlab_terrain.py）。
+    不同的层级。后端起切前自己就是 int(max_level)（cesium_terrain.py）。
     """
     body = _estimate_body()
     assert re.search(

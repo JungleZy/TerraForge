@@ -31,7 +31,7 @@ from src.services.earthdata_client import (  # noqa: E402
     EarthdataAuthError,
     EarthdataClient,
 )
-from src.services.terrain_tiling import cesiumlab_terrain as ct  # noqa: E402
+from src.services.terrain_tiling import cesium_terrain as ct  # noqa: E402
 from src.services.terrain_tiling import dem_task_tiler as tiler  # noqa: E402
 
 
