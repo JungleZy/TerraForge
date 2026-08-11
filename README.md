@@ -360,7 +360,11 @@ build.bat
 
 ## 许可证
 
-MIT License
+本项目采用 **MIT**，全文见 [LICENSE](LICENSE)。
+
+随本项目分发的第三方组件（CesiumJS、Bootstrap、Vue、Socket.IO、Inter / JetBrains Mono 字体、随包的 GEBCO 2024 派生地形数据，以及二进制发行时的 Python 依赖与原生库）各有其许可证与署名义务，逐条列在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+⚠️ MIT 只覆盖本项目的**软件代码**，**不授予**任何数据与在线服务的使用权。Google、Esri、天地图、OSM、Cesium Ion 等图源的 attribution、批量下载政策、Token 与配额需各自独立处理，见上方免责声明。
 
 ## 贡献
 

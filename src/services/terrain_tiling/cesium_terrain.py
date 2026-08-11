@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import glob
 import gzip
 import io
 import itertools
@@ -82,6 +83,13 @@ DEFAULT_MAX_ERROR_K = 0.15   # 允许高程误差 = K * 顶点间距（见 _max_
 
 
 def lonlat_to_ecef(lon_deg: np.ndarray, lat_deg: np.ndarray, h: np.ndarray) -> np.ndarray:
+    """WGS84 大地坐标 (经,纬,椭球高) -> 地心直角坐标 (X,Y,Z)，单位米。
+
+    标准大地测量转换，任何测量学教材都是这个式子：卯酉圈曲率半径
+    N = a / sqrt(1 - e²sin²φ)，然后
+        X = (N+h)cosφcosλ,  Y = (N+h)cosφsinλ,  Z = (N(1-e²)+h)sinφ。
+    输入按 numpy 广播，输出末轴长 3。
+    """
     lon = np.radians(lon_deg)
     lat = np.radians(lat_deg)
     sin_lat = np.sin(lat)
@@ -184,18 +192,25 @@ def _oct_encode(normals: np.ndarray) -> np.ndarray:
 
 @dataclass
 class GeographicTilingScheme:
+    """Cesium 的全球地理切片方案（不是 Web Mercator）。
+
+    第 z 层是 2^(z+1) 列 × 2^z 行，每格经纬跨度相等，z0 就是东西两个半球。
+    列号自西向东、行号自南向北。
+    """
+
     tile_size: int = 17
 
     def tile_count(self, level: int) -> Tuple[int, int]:
         return 2 << level, 1 << level
 
     def tile_extent_deg(self, level: int, x: int, y: int) -> Tuple[float, float, float, float]:
+        """瓦片 (x, y) 的四至 (west, south, east, north)，单位度。"""
         nx, ny = self.tile_count(level)
-        west = -180.0 + 360.0 * x / nx
-        east = -180.0 + 360.0 * (x + 1) / nx
-        south = -90.0 + 180.0 * y / ny
-        north = -90.0 + 180.0 * (y + 1) / ny
-        return west, south, east, north
+        # 四个端点各自从 -180 / -90 现算一遍。不要改成「起点 + k×步长」的
+        # 累加式：那样相邻瓦片的公共边会算出差一两个 ulp 的两个值，边界顶点
+        # 对不齐，缝就回来了。
+        return (-180.0 + 360.0 * x / nx, -90.0 + 180.0 * y / ny,
+                -180.0 + 360.0 * (x + 1) / nx, -90.0 + 180.0 * (y + 1) / ny)
 
     def estimate_max_level(self, pixel_size_deg: float) -> int:
         if pixel_size_deg <= 0:
@@ -710,55 +725,82 @@ def build_input_raster(inputs: list[str], work_dir: str | None = None,
     return out_path
 
 
+def _open_as_wgs84(path: str):
+    """打开栅格，并保证交回来的数据集坐标系是 EPSG:4326。
+
+    非 4326 的源现挂一层 warped VRT——不落盘、按读取窗口惰性重投影，于是
+    调用方后续的 ReadAsArray 拿到的已经是重投影后的像素。
+    源没有投影声明时按 4326 处理：此时既无从推断，DEM 交换格式的事实默认
+    也是经纬度。
+    """
+    ds = gdal.Open(path, gdal.GA_ReadOnly)
+    if ds is None:
+        raise FileNotFoundError(path)
+    wkt = ds.GetProjection()
+    if not wkt:
+        return ds
+    declared = osr.SpatialReference()
+    declared.ImportFromWkt(wkt)
+    wgs84 = osr.SpatialReference()
+    wgs84.ImportFromEPSG(4326)
+    if declared.IsSame(wgs84):
+        return ds
+    return gdal.AutoCreateWarpedVRT(
+        ds, declared.ExportToWkt(), wgs84.ExportToWkt(), gdal.GRA_Bilinear)
+
+
+def _raster_bounds_deg(gt, cols: int, rows: int) -> Tuple[float, float, float, float]:
+    """栅格的经纬包围盒 (west, south, east, north)。
+
+    走全部四个角，不是左上 + 右下两点：仿射带旋转项（gt[2] / gt[4] 非零）时
+    一条对角线定不出包围盒。无旋转时两种算法逐位相同。
+    """
+    corners = [gdal.ApplyGeoTransform(gt, px, py)
+               for px, py in ((0, 0), (cols, 0), (0, rows), (cols, rows))]
+    xs = [x for x, _ in corners]
+    ys = [y for _, y in corners]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
 class DemSampler:
+    """把一幅 DEM 栅格包成「给一批经纬点、批量取高程」的采样器。
+
+    构造时一次性钉住后续采样要反复用的东西：重投影后的数据集、仿射、行列数、
+    第一波段与它的 nodata、像素边长、经纬包围盒。切片 worker 在 initializer
+    里各建一个，之后每张瓦片只调 sample()。
+    """
+
     def __init__(self, path: str, nodata: float | None = None):
-        src = gdal.Open(path, gdal.GA_ReadOnly)
-        if src is None:
-            raise FileNotFoundError(path)
+        self.ds = _open_as_wgs84(path)
+        self.band = self.ds.GetRasterBand(1)
+        self.gt = self.ds.GetGeoTransform()
+        self.cols = self.ds.RasterXSize
+        self.rows = self.ds.RasterYSize
+        self.nodata = self.band.GetNoDataValue() if nodata is None else nodata
+        self.pixel_size_deg = abs(self.gt[1])
+        self.bounds = _raster_bounds_deg(self.gt, self.cols, self.rows)
 
-        srs = osr.SpatialReference()
-        wkt = src.GetProjection()
-        if wkt:
-            srs.ImportFromWkt(wkt)
-        else:
-            srs.ImportFromEPSG(4326)
-        target = osr.SpatialReference()
-        target.ImportFromEPSG(4326)
+    def _to_pixel(self, lons: np.ndarray, lats: np.ndarray):
+        """经纬 -> 源栅格的像素**边**坐标（浮点，0 号像素中心落在 0.5）。
 
-        if not srs.IsSame(target):
-            src = gdal.AutoCreateWarpedVRT(src, srs.ExportToWkt(), target.ExportToWkt(), gdal.GRA_Bilinear)
-
-        self.ds = src
-        gt = src.GetGeoTransform()
-        self.gt = gt
-        self.cols = src.RasterXSize
-        self.rows = src.RasterYSize
-
-        band = src.GetRasterBand(1)
-        if nodata is None:
-            nodata = band.GetNoDataValue()
-        self.nodata = nodata
-        self.band = band
-        self.pixel_size_deg = abs(gt[1])
-        x0, y0 = gdal.ApplyGeoTransform(gt, 0, 0)
-        x1, y1 = gdal.ApplyGeoTransform(gt, self.cols, self.rows)
-        self.bounds = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
-
-    def sample(self, lons: np.ndarray, lats: np.ndarray) -> np.ndarray:
+        就是 GDAL 仿射的逆。手写 2×2 求逆而不是调 gdal.InvGeoTransform：
+        后者按标量算，这里一次要换算一整张瓦片的点阵，走 numpy 广播。
+        """
         gt = self.gt
         det = gt[1] * gt[5] - gt[2] * gt[4]
-        px = (gt[5] * (lons - gt[0]) - gt[2] * (lats - gt[3])) / det
-        py = (-gt[4] * (lons - gt[0]) + gt[1] * (lats - gt[3])) / det
+        dx, dy = lons - gt[0], lats - gt[3]
+        return (gt[5] * dx - gt[2] * dy) / det, (gt[1] * dy - gt[4] * dx) / det
 
-        x0 = int(math.floor(np.nanmin(px))) - 1
-        y0 = int(math.floor(np.nanmin(py))) - 1
-        x1 = int(math.ceil(np.nanmax(px))) + 1
-        y1 = int(math.ceil(np.nanmax(py))) + 1
-        x0c = max(0, x0)
-        y0c = max(0, y0)
-        x1c = min(self.cols, x1)
-        y1c = min(self.rows, y1)
-        if x1c <= x0c or y1c <= y0c:
+    def sample(self, lons: np.ndarray, lats: np.ndarray) -> np.ndarray:
+        px, py = self._to_pixel(lons, lats)
+
+        # 读窗口 = 采样点包围盒各向外扩一个像素（双线性要够到右邻与下邻），
+        # 再与栅格自身范围求交。
+        x0c = max(0, int(math.floor(np.nanmin(px))) - 1)
+        y0c = max(0, int(math.floor(np.nanmin(py))) - 1)
+        x1c = min(self.cols, int(math.ceil(np.nanmax(px))) + 1)
+        y1c = min(self.rows, int(math.ceil(np.nanmax(py))) + 1)
+        if x1c <= x0c or y1c <= y0c:        # 请求区与栅格完全不相交
             return np.zeros_like(lons, dtype=np.float32)
 
         # Let GDAL downsample oversized windows instead of reading them at
@@ -831,19 +873,21 @@ class DemSampler:
         sy = win_h / buf_h
         lpx = (px - x0c) / sx - 0.5
         lpy = (py - y0c) / sy - 0.5
-        ix = np.clip(np.floor(lpx).astype(int), 0, arr.shape[1] - 2)
-        iy = np.clip(np.floor(lpy).astype(int), 0, arr.shape[0] - 2)
-        fx = np.clip(lpx - ix, 0, 1)
-        fy = np.clip(lpy - iy, 0, 1)
-        v00 = arr[iy, ix]
-        v10 = arr[iy, ix + 1]
-        v01 = arr[iy + 1, ix]
-        v11 = arr[iy + 1, ix + 1]
-        v0 = v00 * (1 - fx) + v10 * fx
-        v1 = v01 * (1 - fx) + v11 * fx
-        v = v0 * (1 - fy) + v1 * fy
-        v = np.where(np.isnan(v), 0.0, v).astype(np.float32)
-        return v
+        # 双线性 = 先沿经度方向插一次，再拿两个结果沿纬度方向插一次。
+        # ⚠️ 运算顺序锁死：改写成等价的「四权重加权求和」会换掉一批浮点舍入，
+        # 已经产出的瓦片字节就对不上了（.terrain 是 gzip + mtime=0，同输入
+        # 必须同字节，见模块 docstring）。
+        col = np.clip(np.floor(lpx).astype(int), 0, arr.shape[1] - 2)
+        row = np.clip(np.floor(lpy).astype(int), 0, arr.shape[0] - 2)
+        tx = np.clip(lpx - col, 0, 1)
+        ty = np.clip(lpy - row, 0, 1)
+        south_w, south_e = arr[row, col], arr[row, col + 1]
+        north_w, north_e = arr[row + 1, col], arr[row + 1, col + 1]
+        south = south_w * (1 - tx) + south_e * tx
+        north = north_w * (1 - tx) + north_e * tx
+        out = south * (1 - ty) + north * ty
+        # nodata 已在上面变成 nan；此处把它压成 0 m，海面与洞都当零高程。
+        return np.where(np.isnan(out), 0.0, out).astype(np.float32)
 
 
 def _zigzag(v: np.ndarray) -> np.ndarray:
@@ -904,17 +948,13 @@ def _mesh_constants(n: int):
     uzz = _zz_delta(uu)
     vzz = _zz_delta(vv)
 
-    # indices: 2 triangles per cell
-    idx = []
-    for j in range(n - 1):
-        for i in range(n - 1):
-            a0 = j * n + i
-            a1 = j * n + (i + 1)
-            a2 = (j + 1) * n + i
-            a3 = (j + 1) * n + (i + 1)
-            idx.extend([a0, a1, a2])
-            idx.extend([a1, a3, a2])
-    indices = np.array(idx, dtype=np.uint32)
+    # 每个格子切两个三角形。绕序与顶点首次出现的先后都不能动 ——
+    # high-water-mark 编码吃的就是这个序列，换一个等价三角化就换一批字节。
+    cells = np.arange((n - 1) * (n - 1), dtype=np.int64)
+    j, i = np.divmod(cells, n - 1)
+    sw = j * n + i          # 西南角，其余三个角相对它定位
+    se, nw, ne = sw + 1, sw + n, sw + n + 1
+    indices = np.stack([sw, se, nw, se, ne, nw], axis=1).ravel().astype(np.uint32)
     encoded_indices = _high_water_mark_encode(indices)
 
     # edge indices
@@ -942,13 +982,11 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float,
     """
     n = heights_grid.shape[0]
     assert heights_grid.shape == (n, n)
-    h_min = float(np.min(heights_grid))
-    h_max = float(np.max(heights_grid))
+    h_min, h_max = float(np.min(heights_grid)), float(np.max(heights_grid))
     if h_max == h_min:
-        h_max = h_min + 1.0
+        h_max = h_min + 1.0      # 全平：给量化留一个非零区间，否则下面除零
 
-    lon_c = 0.5 * (west + east)
-    lat_c = 0.5 * (south + north)
+    lon_c, lat_c = 0.5 * (west + east), 0.5 * (south + north)
     h_c = 0.5 * (h_min + h_max)
     cx, cy, cz = lonlat_to_ecef(np.array([lon_c]), np.array([lat_c]), np.array([h_c]))[0]
 
@@ -1001,18 +1039,18 @@ def encode_quantized_mesh(west: float, south: float, east: float, north: float,
         abs(east - west) + abs(north - south)
     ) / 32767.0
 
-    a = WGS84_A
-    b = WGS84_B
-    if a > 0 and b > 0:
-        sx_e, sy_e, sz_e = cx / a, cy / a, cz / b
-        s_mag = math.sqrt(sx_e * sx_e + sy_e * sy_e + sz_e * sz_e) or 1.0
-        nx_e, ny_e, nz_e = sx_e / s_mag, sy_e / s_mag, sz_e / s_mag
-        scale = max(s_mag, 1.0) + (h_max + radius) / a
-        hox = nx_e * scale * a
-        hoy = ny_e * scale * a
-        hoz = nz_e * scale * b
-    else:
-        hox = hoy = hoz = 0.0
+    # header 的 horizon occlusion point：读端用它做地平线剔除（在地球背面、
+    # 被星球本身挡住的瓦片直接不请求）。
+    # 算法在「椭球缩放空间」里做——各轴除以 (a, a, b) 之后椭球变成单位球，
+    # 于是取方向、推到能罩住整个瓦片包围球的距离，再乘回 (a, a, b) 变回 ECEF。
+    # 逐项写乘除、不用 np.linalg.norm：这几个数进 struct.pack 直接落盘，
+    # 换求模实现就可能换最后一个 ulp。
+    sx, sy, sz = cx / WGS84_A, cy / WGS84_A, cz / WGS84_B
+    mag = math.sqrt(sx * sx + sy * sy + sz * sz) or 1.0
+    push = max(mag, 1.0) + (h_max + radius) / WGS84_A
+    hox = sx / mag * push * WGS84_A
+    hoy = sy / mag * push * WGS84_A
+    hoz = sz / mag * push * WGS84_B
 
     header = (
         struct.pack("<ddd", float(cx), float(cy), float(cz))
@@ -1735,6 +1773,34 @@ def build_terrain(
                     logger.warning(f"Failed to remove temp input {path}: {e}")
 
 
+_INPUT_SUFFIX_GLOBS = ("*.tif", "*.tiff", "*.img", "*.hgt", "*.vrt")
+
+
+def _collect_inputs(specs: list[str]) -> list[str]:
+    """把 CLI 的 `--input` 展开成实际存在的文件列表。
+
+    每个 spec 三选一：目录（按 _INPUT_SUFFIX_GLOBS 收集）、含通配符的模式、
+    单个路径。最后统一过一遍 isfile，目录里的子目录与失效模式自然出局。
+    """
+    found: list[str] = []
+    for spec in specs:
+        if os.path.isdir(spec):
+            for pattern in _INPUT_SUFFIX_GLOBS:
+                found.extend(sorted(glob.glob(os.path.join(spec, pattern))))
+            # 排掉自己的中间产物：物化件就落在 work_dir（= 输出目录的父级），
+            # 而 `-i <目录>` 常常指向同一片区域。SIGKILL 留下的残留会被当成
+            # 一幅 DEM 重新吃进去 —— 它是**上一次全部输入的合并结果**，再合
+            # 一次等于把整片地形叠加两遍。DEM 任务侧躲过这一劫只是因为
+            # list_dem_tifs 匹配的是 *_dem.tif / *_DEM.tif。
+            found = [p for p in found
+                     if not os.path.basename(p).startswith("cesium_terrain_")]
+        elif any(ch in spec for ch in "*?["):
+            found.extend(sorted(glob.glob(spec)))
+        else:
+            found.append(spec)
+    return [p for p in found if os.path.isfile(p)]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="DEM -> Cesium quantized-mesh-1.0 terrain tiles")
     ap.add_argument("--input", "-i", required=True, action="append")
@@ -1757,25 +1823,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-error-k", type=float, default=DEFAULT_MAX_ERROR_K)
     args = ap.parse_args(argv)
 
-    import glob
-
-    inputs: list[str] = []
-    for spec in args.input:
-        if os.path.isdir(spec):
-            for ext in ("*.tif", "*.tiff", "*.img", "*.hgt", "*.vrt"):
-                inputs.extend(sorted(glob.glob(os.path.join(spec, ext))))
-            # 排掉自己的中间产物：物化件就落在 work_dir（= 输出目录的父级）,
-            # 而 `-i <目录>` 常常指向同一片区域。SIGKILL 留下的残留会被当成
-            # 一幅 DEM 重新吃进去 —— 它是**上一次全部输入的合并结果**,再合一次
-            # 等于把整片地形叠加两遍。DEM 任务侧躲过这一劫只是因为
-            # list_dem_tifs 匹配的是 *_dem.tif / *_DEM.tif。
-            inputs = [p for p in inputs
-                      if not os.path.basename(p).startswith("cesium_terrain_")]
-        elif any(c in spec for c in "*?["):
-            inputs.extend(sorted(glob.glob(spec)))
-        else:
-            inputs.append(spec)
-    inputs = [p for p in inputs if os.path.isfile(p)]
+    inputs = _collect_inputs(args.input)
     if not inputs:
         sys.exit("no input files matched")
 

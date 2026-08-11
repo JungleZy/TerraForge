@@ -405,6 +405,10 @@ def _js_math_round(x: float) -> float:
 def _cesium_oct_encode_scalar(vec) -> tuple[int, int]:
     """逐字转写 vendored CesiumJS 1.143.0 的 `AttributeCompression.octEncodeInRange(v, 255)`。
 
+    上游 CesiumJS 为 Apache-2.0，Copyright 2011-2026 CesiumJS Contributors；
+    许可证全文见 `static/vendor/cesium/1.143.0/LICENSE.md`。此处照抄是为了拿它
+    当基准做逐字节等价断言，仅存在于测试代码，不进任何发行产物。
+
     源文件 `static/vendor/cesium/1.143.0/Cesium.js`（压缩产物，原文照抄）：
 
         octEncodeInRange=function(e,t,n){

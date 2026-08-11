@@ -6500,6 +6500,16 @@ VENDOR_MANIFEST = {
     'fonts/inter-latin-ext.woff2': 85068,
     'fonts/jetbrains-mono-latin.woff2': 31432,
     'fonts/jetbrains-mono-latin-ext.woff2': 11624,
+    # 各组件自带的上游许可证全文，从各自上游仓库取回（此前 static/vendor/ 下
+    # 一个许可证文件都没有）。Apache-2.0 与 OFL 1.1 都要求随附全文，漏一个就是
+    # 分发不合规；钉字节数同样是为了拦「下到一半」与「下成了别的版本」。
+    # 索引与说明见根目录 THIRD_PARTY_NOTICES.md。
+    'bootstrap/5.3.0/LICENSE': 1093,
+    'cesium/1.143.0/LICENSE.md': 55506,
+    'fonts/LICENSE-Inter.txt': 4380,
+    'fonts/LICENSE-JetBrainsMono.txt': 4399,
+    'socket.io/4.5.4/LICENSE': 1096,
+    'vue/3.5.13/LICENSE': 1112,
 }
 
 # CesiumJS 1.143.0（157 个文件，上游发行版是 390 个）：workers / assets /
@@ -7214,8 +7224,8 @@ def test_vendor_files_are_not_swallowed_by_gitignore():
     """
     repo_root = os.path.dirname(_STATIC_DIR)
     on_disk = _vendor_files_on_disk()
-    assert len(on_disk) == 166, (
-        f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 166 个 —— '
+    assert len(on_disk) == 172, (
+        f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 172 个 —— '
         '本条按目录遍历，数量本身会变，但请顺手确认 VENDOR_MANIFEST 也同步了'
     )
     try:

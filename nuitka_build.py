@@ -35,11 +35,20 @@ APP_ICON = os.path.join('static', 'img', 'favicon.ico')
 # 服务照常 200,只是所有任务的 z0-7 都没有底,用户只看到「地形不对」而无从判断
 # 少了什么(运行期按设计静默退回 parentUrl 级联,见 base_terrain.base_parts_dir)。
 # 分卷有两个,少一个解压就会中途失败,所以哨兵匹配 part* 整组。
+# LICENSE / THIRD_PARTY_NOTICES.md 同样是硬失败项,而且是这里唯一的**法律**义务:
+# 产物里内嵌了 CesiumJS(Apache-2.0,要求随附许可证与 NOTICE)、OFL 字体(要求随附
+# 许可证全文)、GEBCO 派生地形(要求署名)与一批 Python 依赖的原生库。漏收之后
+# 程序功能完全正常,只是每一份发出去的拷贝都缺了它必须携带的声明 —— 没有任何
+# 运行期信号,只能在构建期挡。
 APP_DATA_SENTINELS = (
     'templates/index.html',
     'static/vendor/cesium/*/Cesium.js',
+    'static/vendor/cesium/*/LICENSE.md',
     'static/vendor/fonts/fonts.css',
+    'static/vendor/fonts/LICENSE-Inter.txt',
     'assets/terrain/base_z8.tar.gz.part*',
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
 )
 
 
@@ -414,6 +423,10 @@ def main():
         # 应用资源
         '--include-data-dir=templates=templates',
         '--include-data-dir=static=static',
+        # 许可证与第三方声明。static/ 下各组件自带的许可证随上面那行整目录收进来,
+        # 这两个在仓库根目录,必须单独点名。见 APP_DATA_SENTINELS 的说明。
+        '--include-data-files=LICENSE=LICENSE',
+        '--include-data-files=THIRD_PARTY_NOTICES.md=THIRD_PARTY_NOTICES.md',
         # 全球 base 地形的分卷（2 个文件，约 167 MB）。打的是**分卷而非解压后的
         # 目录**：解压后是 44k 个小文件，让 Nuitka 逐个收集会把构建拖垮，装机体积
         # 也更大。首次切片时 base_terrain.ensure_base_unpacked() 会自动还原到
