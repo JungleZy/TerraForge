@@ -44,6 +44,34 @@ MESSAGES = {
         'zh': '跟随系统',
         'en': 'System',
     },
+    'tpl.config.appearance.accent': {
+        'zh': '强调色',
+        'en': 'Accent',
+    },
+    'tpl.config.appearance.accent_hint': {
+        'zh': '界面强调色预设，默认为品牌蓝;即时生效，偏好只保存在本机。',
+        'en': 'Accent color preset. Defaults to brand sky blue; applies instantly and is stored locally only.',
+    },
+    'tpl.config.appearance.accent_sky': {
+        'zh': '品牌蓝',
+        'en': 'Sky',
+    },
+    'tpl.config.appearance.accent_teal': {
+        'zh': '青',
+        'en': 'Teal',
+    },
+    'tpl.config.appearance.accent_violet': {
+        'zh': '紫',
+        'en': 'Violet',
+    },
+    'tpl.config.appearance.accent_rose': {
+        'zh': '玫红',
+        'en': 'Rose',
+    },
+    'tpl.config.appearance.accent_orange': {
+        'zh': '橙',
+        'en': 'Orange',
+    },
     'tpl.config.appearance.theme_hint': {
         'zh': '「跟随系统」按系统的明暗配色自动切换；选择立即生效，无需保存。',
         'en': '"System" follows the OS light/dark setting. The choice applies '

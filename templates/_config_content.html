@@ -53,6 +53,24 @@
                         </div>
                     </div>
 
+                    {# 强调色预设:与主题开关同一套 .status-chips 风格。sky 是缺省
+                       品牌色;偏好存 localStorage `tf-accent`,不进服务端配置表。
+                       aria-pressed 初值同主题组:一律 false,由 config.js 的
+                       initAccentSwitcher 挂载时摆正。 #}
+                    <div class="mb-3">
+                        <div class="label-row">
+                            <label class="form-label" id="accentModeLabel">{{ t('tpl.config.appearance.accent') }}</label>
+                            {{ hint(t('tpl.config.appearance.accent_hint')) }}
+                        </div>
+                        <div class="status-chips" id="accentModeGroup" role="group" aria-labelledby="accentModeLabel">
+                            <button type="button" class="status-chip" data-accent="sky" aria-pressed="false">{{ t('tpl.config.appearance.accent_sky') }}</button>
+                            <button type="button" class="status-chip" data-accent="teal" aria-pressed="false">{{ t('tpl.config.appearance.accent_teal') }}</button>
+                            <button type="button" class="status-chip" data-accent="violet" aria-pressed="false">{{ t('tpl.config.appearance.accent_violet') }}</button>
+                            <button type="button" class="status-chip" data-accent="rose" aria-pressed="false">{{ t('tpl.config.appearance.accent_rose') }}</button>
+                            <button type="button" class="status-chip" data-accent="orange" aria-pressed="false">{{ t('tpl.config.appearance.accent_orange') }}</button>
+                        </div>
+                    </div>
+
                     {# 语言分段开关：与上面的主题开关同一套 .status-chips 风格。
                        点击经 config.js 的 initLangSwitcher 写 cookie `tf-lang`
                        再 reload —— 模板是服务端渲染的，语种必须送到服务端。

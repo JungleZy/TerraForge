@@ -1,0 +1,25 @@
+{# 命令面板(Ctrl/Cmd+K)与快捷键速查(?):外壳静态渲染,列表由
+   command_palette.js 按注册表动态填充。放在 <body> 直下、.workbench 之外 ——
+   与任务详情模态框同一个理由(面板恒带 transform,会劫持 fixed 后代的
+   包含块与层叠上下文)。 #}
+<div class="cmdk" id="cmdk" hidden>
+    <div class="cmdk__backdrop" data-cmdk-close></div>
+    <div class="cmdk__dialog" role="dialog" aria-modal="true" aria-label="{{ t('tpl.base.cmdk.title') }}">
+        <input type="text" class="cmdk__input" id="cmdkInput"
+               role="combobox" aria-expanded="true" aria-controls="cmdkList" aria-autocomplete="list"
+               placeholder="{{ t('tpl.base.cmdk.placeholder') }}">
+        <ul class="cmdk__list" id="cmdkList" role="listbox" aria-label="{{ t('tpl.base.cmdk.title') }}"></ul>
+    </div>
+</div>
+
+<div class="cmdk" id="cmdkHelp" hidden>
+    <div class="cmdk__backdrop" data-cmdk-help-close></div>
+    <div class="cmdk__dialog cmdk__dialog--help" role="dialog" aria-modal="true" aria-label="{{ t('tpl.base.cmdk.help_title') }}">
+        <div class="cmdk__help-head">
+            <span>{{ t('tpl.base.cmdk.help_title') }}</span>
+            <button type="button" class="cmdk__help-close" data-cmdk-help-close
+                    aria-label="{{ t('tpl.base.cmdk.help_close') }}">&times;</button>
+        </div>
+        <ul class="cmdk__help-list" id="cmdkHelpList"></ul>
+    </div>
+</div>

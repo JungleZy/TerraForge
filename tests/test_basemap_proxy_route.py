@@ -85,6 +85,18 @@ def app_ctx(monkeypatch, tmp_path):
     # _stub 直接给定，所以起手就把它关掉。
     monkeypatch.setattr(proxy_autodetect, 'start_background_autodetect',
                         lambda *a, **k: False)
+    # 出网路径回退（_egress_paths）只在「默认路径本来就会用上代理」时才追加
+    # 一条强制直连，判据是 getproxies()。跑测试的机器上 export 了 HTTP_PROXY
+    # （或 Windows 上开着系统代理）就会凭空多出一次上游请求，断言 up.calls /
+    # up.requests 的用例全变成看环境脸色 —— 与上面关掉 autodetect 同一类处理。
+    # 起手清空环境变量，并把 getproxies 钉成「只读环境变量」的那个实现：
+    # 三个平台行为一致，而需要环境变量代理的用例自己 setenv 就能拿回来
+    # （test_no_configured_proxy_leaves_the_environment_to_urllib）。
+    for var in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(urllib.request, 'getproxies',
+                        urllib.request.getproxies_environment)
     # fresh_import 而不是裸 sys.modules.pop：裸 pop 不还原，会把绑在已删除
     # tmp_path 上的 app 实例留给后面的测试文件（conftest 开篇的 M23）。
     app_mod = fresh_import(monkeypatch, 'app', 'src.core.database')[0]
@@ -382,15 +394,23 @@ class _PerHostUpstream:
     所以一个实例就能覆盖「第一张源挂了、第二张通」这条链。
     """
 
-    def __init__(self, failures):
+    def __init__(self, failures, blocked=()):
         self.failures = failures        # {url 子串: 要抛的异常}
+        # url 子串：回 200 + image/png + x-blocked。这是 OSM 拒绝一个违反瓦片
+        # 使用政策的调用方时的答复形态 —— 不是错误码，是一张写着
+        # "Access blocked" 的、能正常渲染的图。
+        self.blocked = tuple(blocked)
         self.requests = []
+        self.sent = []                  # 完整的 Request 对象（要看请求头时用）
+        self._blocked_now = False
 
     def open(self, request, timeout=None):
         self.requests.append(request.full_url)
+        self.sent.append(request)
         for needle, error in self.failures.items():
             if needle in request.full_url:
                 raise error
+        self._blocked_now = any(n in request.full_url for n in self.blocked)
         return self
 
     def __enter__(self):
@@ -404,7 +424,11 @@ class _PerHostUpstream:
 
     @property
     def headers(self):
-        return {'Content-Type': 'image/jpeg'}
+        h = {'Content-Type': 'image/jpeg'}
+        if self._blocked_now:
+            h['x-blocked'] = ('Access denied. See '
+                              'https://operations.osmfoundation.org/policies/tiles/')
+        return h
 
 
 def _esri_403():
@@ -436,6 +460,190 @@ def test_blocked_source_falls_back_to_the_next_one(app_ctx, monkeypatch):
     assert r.status_code == 200 and r.data == _PNG
     assert 'arcgisonline.com' in up.requests[0], '配置的源必须先试'
     assert 'googleapis.com' in up.requests[1], '再退到链上的下一张卫星图'
+
+
+def test_openstreetmap_is_asked_with_an_identifying_user_agent(app_ctx, monkeypatch):
+    """OSM 只能用能识别应用的 UA 去要，其余上游仍要浏览器 UA。
+
+    真实故障（2026-08）：Esri 403 之后回退到链尾的 OSM，而 OSM 收到的是伪造的
+    Chrome UA —— 它的瓦片使用政策明写「伪造别的应用的 UA 会被封」，于是回了
+    HTTP 200 + image/png + x-blocked，图上印着 "Access blocked"。用户看到的是
+    一张能正常渲染的假地图。反过来把浏览器 UA 一起换掉也不行：Esri 与 Google
+    把 UA 当风控信号，非浏览器 UA 直接 403（正是 _UA 存在的理由）。
+    两条约束方向相反，所以这里按主机各钉一遍。
+    """
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403(),
+                           'googleapis.com': _esri_403()})
+    _stub(monkeypatch, route_mod, up)
+
+    assert client.get('/basemap/2/1/1').status_code == 200
+
+    osm = [r.get_header('User-agent') for r in up.sent
+           if 'openstreetmap.org' in r.full_url]
+    esri = [r.get_header('User-agent') for r in up.sent
+            if 'arcgisonline.com' in r.full_url]
+    assert osm and esri, '这条用例要求回退链真的走到了 OSM'
+    assert 'Mozilla' not in osm[0], 'OSM 上伪造浏览器 UA 会被封'
+    assert 'TerraForge' in osm[0], 'UA 必须能认出是哪个应用'
+    assert esri[0] == route_mod._UA, 'Esri/Google 那边非浏览器 UA 会吃 403'
+
+
+def test_a_200_that_carries_x_blocked_is_not_a_tile(app_ctx, monkeypatch):
+    """上游用 200 回一张「拒绝访问」的图，必须当失败，且绝不能落盘。
+
+    落盘是这个 bug 最恶的一半：blocked 图是合法的 image/png，写进
+    cache/basemap 之后每次都缓存命中、再也不回源 —— 就算 UA 已经改对，
+    那张 "Access blocked" 也会永远挂在地图上。
+    """
+    client, route_mod = app_ctx
+    up = _PerHostUpstream({'arcgisonline.com': _esri_403(),
+                           'googleapis.com': _esri_403()},
+                          blocked=('openstreetmap.org',))
+    _stub(monkeypatch, route_mod, up)
+
+    r = client.get('/basemap/2/1/1')
+
+    assert r.status_code == 403, '整条链都不可用时如实报配置源的状态码'
+    assert r.data != _PNG, '被拒的图不能当瓦片发给浏览器'
+    tile_dir = Config.CACHE_DIR / 'basemap'
+    assert not (tile_dir.exists() and list(tile_dir.iterdir())), (
+        '被拒的图落了盘就再也回不了源')
+
+
+# ------------------------------------------------------------ 出网路径回退
+#
+# 实测 2026-08-11，同一台机器同一分钟：
+#   Esri   走代理 403 AkamaiGHost（封出口 IP） / 直连 200
+#   Google 走代理 200                          / 直连 超时
+#   OSM    走代理 200                          / 直连 超时
+# 代理是全局一个值，所以无论配不配都有一家取不到 —— 挂掉的不是源，是那条路，
+# 换供应商永远解决不了它。回退是最后手段（它会静默改变用户看到的图），
+# 换路径不会，所以换路径必须排在换源前面。
+
+class _EgressUpstream:
+    """按「这次走没走代理」决定成败的替身 opener。
+
+    build_opener(*handlers) 收到的 ProxyHandler 就是本次的出网路径：
+    proxies 非空 = 走代理，空 dict = 强制直连，没有 handler = 默认路径。
+    """
+
+    def __init__(self, failures):
+        self.failures = failures        # {'proxy'|'direct'|'default': 要抛的异常}
+        self.calls = []                 # [(url, 路径名)]
+        self._path = 'default'
+
+    def build_opener(self, *handlers):
+        self._path = 'default'
+        for h in handlers:
+            if isinstance(h, urllib.request.ProxyHandler):
+                self._path = 'proxy' if h.proxies else 'direct'
+        return self
+
+    def open(self, request, timeout=None):
+        self.calls.append((request.full_url, self._path))
+        error = self.failures.get(self._path)
+        if error is not None:
+            raise error
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return _PNG
+
+    @property
+    def headers(self):
+        return {'Content-Type': 'image/jpeg'}
+
+
+def _stub_egress(monkeypatch, route_mod, upstream, proxy):
+    monkeypatch.setattr(route_mod.urllib.request, 'build_opener',
+                        upstream.build_opener)
+    # ''.join 是有意的：每次返回一个**新的**等值 str 对象，与真实环境一致
+    # （代理地址每次从 sqlite 读出来都是新对象）。直接返回字面量会走常量池，
+    # 让「路径去重写成 is 比较」这个 bug 在测试里隐身
+    # （见 test_the_remembered_path_is_not_tried_twice）。
+    monkeypatch.setattr(route_mod, 'resolve_from_config',
+                        lambda cm, wait_s=None: ''.join(proxy))
+
+
+def test_a_source_unreachable_through_the_proxy_is_retried_direct(app_ctx, monkeypatch):
+    """代理 403、直连 200：换路径就够了，不该换供应商。"""
+    client, route_mod = app_ctx
+    up = _EgressUpstream({'proxy': _esri_403()})
+    _stub_egress(monkeypatch, route_mod, up, 'http://127.0.0.1:7890')
+
+    r = client.get('/basemap/2/1/1')
+
+    assert r.status_code == 200 and r.data == _PNG
+    assert [p for _, p in up.calls] == ['proxy', 'direct']
+    assert all('arcgisonline.com' in u for u, _ in up.calls), (
+        '路径还没试完就换源，等于让用户看一张他没选的图')
+    bm = client.get('/api/basemap').get_json()['basemap']
+    assert bm['fallback'] is False and bm['source'] == 'esri'
+
+
+def test_the_working_egress_path_is_remembered(app_ctx, monkeypatch):
+    """否则每张瓦片都要先吃一次代理 403 —— 一次完整 TCP+TLS 往返，首屏几十张。"""
+    client, route_mod = app_ctx
+    up = _EgressUpstream({'proxy': _esri_403()})
+    _stub_egress(monkeypatch, route_mod, up, 'http://127.0.0.1:7890')
+
+    client.get('/basemap/2/1/1')
+    up.calls.clear()
+    client.get('/basemap/2/1/2')
+
+    assert [p for _, p in up.calls] == ['direct'], '成功过的那条路径要排第一'
+
+
+def test_the_remembered_path_is_not_tried_twice(app_ctx, monkeypatch):
+    """记住的那条路径要顶到队首，而不是在队列里多出一份。
+
+    代理这一支最容易踩：配置里的代理地址每次读出来都是新的 str 对象，去重
+    若按 identity 比就形同没做，那条路径被试两次 —— 每张瓦片白吃一次完整
+    往返，而且只在真实环境发作。
+    """
+    client, route_mod = app_ctx
+    up = _EgressUpstream({})
+    _stub_egress(monkeypatch, route_mod, up, 'http://127.0.0.1:7890')
+
+    client.get('/basemap/2/1/1')            # 代理这条路通，记下它
+    up.failures = {'proxy': _esri_403()}    # 随后代理挂了
+    up.calls.clear()
+    client.get('/basemap/2/1/2')
+
+    assert [p for u, p in up.calls if 'arcgisonline.com' in u] == ['proxy', 'direct']
+
+
+def test_no_second_path_is_tried_when_there_is_no_proxy(app_ctx, monkeypatch):
+    """没有代理时两条路径完全等价，重试只是白等一个 _TIMEOUT_S。"""
+    client, route_mod = app_ctx
+    up = _EgressUpstream({'default': _http_error(500)})
+    _stub_egress(monkeypatch, route_mod, up, '')
+
+    client.get('/basemap/2/1/1')
+
+    esri = [c for c in up.calls if 'arcgisonline.com' in c[0]]
+    assert len(esri) == 1 and esri[0][1] == 'default'
+
+
+def test_the_source_is_dropped_only_after_every_path_failed(app_ctx, monkeypatch):
+    client, route_mod = app_ctx
+    up = _EgressUpstream({'proxy': _esri_403(), 'direct': _http_error(500)})
+    _stub_egress(monkeypatch, route_mod, up, 'http://127.0.0.1:7890')
+
+    r = client.get('/basemap/2/1/1')
+
+    assert [p for _, p in up.calls[:2]] == ['proxy', 'direct'], '两条路都试过才算源挂'
+    assert 'googleapis.com' in up.calls[2][0], '之后才轮到换供应商'
+    assert r.status_code == 403, (
+        '整条链都不可用时，用户要知道的是他选的那张图在他当前的出网路径上'
+        '怎么了 —— 报第一条路径的状态码，不是最后一次失败的')
 
 
 def test_fallback_is_reported_to_the_client(app_ctx, monkeypatch):

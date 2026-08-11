@@ -1502,7 +1502,7 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
 
 /**
  * 渲染框选后的四至（#boundsInfo，地图右上角的 .bounds-overlay 浮层），
- * 并同步状态栏的选区摘要（#statusSelection）。
+ * 并同步状态栏的选区摘要（#statusSelection 胶囊里的 #statusSelectionText）。
  *
  * 浮层分两段：
  *   1. .bounds-grid —— 4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行。
@@ -1519,7 +1519,8 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
  */
 function updateBoundsInfo() {
     const boundsInfo = document.getElementById('boundsInfo');
-    const statusSel = document.getElementById('statusSelection');
+    // 同 #statusCoordsText：写文字 span，别写胶囊本身（会抹掉图标 SVG）。
+    const statusSel = document.getElementById('statusSelectionText');
     // M15：编辑态不重写整层。浮层内容每次都是 innerHTML 全量重建，而委托点击
     // 监听挂在 #boundsInfo 上 —— 编辑坐标时用鼠标点浮层里的任何东西（另一个
     // .bounds-v、下载按钮、删除按钮），mousedown 先触发 blur → 提交 → 整层
@@ -2627,7 +2628,10 @@ async function submitLocalTerrain() {
 function initMapWorkbench() {
     if (!viewer) return;
 
+    // 读数写在胶囊里的文字 span 上，不是胶囊本身 —— 胶囊第一个子节点是图标
+    // SVG，往胶囊写 textContent 会把图标一起抹掉（首帧还在，一刷新就没了）。
     const coordsEl = document.getElementById('statusCoords');
+    const coordsTextEl = document.getElementById('statusCoordsText');
     const zoomEl = document.getElementById('statusZoom');
 
     // 复制到剪贴板：navigator.clipboard 只在安全上下文可用（127.0.0.1 可以，
@@ -2687,7 +2691,7 @@ function initMapWorkbench() {
             lng: Cesium.Math.toDegrees(carto.longitude),
             lat: Cesium.Math.toDegrees(carto.latitude),
         };
-        coordsEl.textContent = t('js.map.status.coords', {
+        coordsTextEl.textContent = t('js.map.status.coords', {
             lng: lastCoords.lng.toFixed(4),
             lat: lastCoords.lat.toFixed(4),
         });
@@ -2727,7 +2731,7 @@ function initMapWorkbench() {
     }
 
     // 状态栏时钟：本地日期+时间 MM-DD HH:MM:SS，1s 刷新
-    const clockEl = document.getElementById('statusClock');
+    const clockEl = document.getElementById('statusClockText');
     const tickClock = function () {
         if (!clockEl) return;
         const d = new Date();

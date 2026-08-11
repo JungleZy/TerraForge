@@ -15,6 +15,10 @@ Access-Control-Allow-Origin。上游一旦返回 4xx，错误页通常不带这�
 
 同源之后 CORS 这件事从根上不存在了，不管底图源是谁、上游返回什么状态码。
 
+**3. 代理是全局一个值，可达性却是逐源不同的。** 转发之后这件事才有得治：
+Esri 走代理 403（CDN 封代理出口 IP）而直连通，Google/OSM 恰好相反 —— 取瓦片
+时按源逐条路径试（见 _egress_paths），换供应商是最后手段。
+
 ## 范围
 
 只转发瓦片字节。这是一个本机单用户的桌面工具，上游地址由用户自己在配置页
@@ -28,6 +32,7 @@ import os
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -61,6 +66,26 @@ _PROXY_WAIT_S = 3.0
 # "Python-urllib/3.x" 是最容易吃 403 的一种。
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+# OSM 是唯一的例外，而且方向相反：它的瓦片使用政策要求**能识别应用的** UA，
+# 并明写「伪造别的应用的 UA 会被封」。带上面那条 Chrome UA 去取
+# tile.openstreetmap.org，实测拿回来的是 HTTP 200 + image/png + 一个
+# `x-blocked` 响应头，图上印着 "Access blocked / App is not following the tile
+# usage policy"——不是错误码，是一张能正常渲染的假地图（下面 _fetch_upstream
+# 那道闸就是为它写的）。换成这条 UA，同一个 URL 立刻返回真瓦片。
+_OSM_UA = (f"TerraForge/{Config.APP_VERSION} "
+           "(+https://github.com/JungleZy/map-download)")
+
+# 按**主机**判而不是按预设判：用户完全可以把自定义模板直接填成
+# https://tile.openstreetmap.org/{z}/{x}/{y}.png，那条路径同样要守政策。
+_OSM_HOSTS = ('openstreetmap.org', 'osm.org')
+
+
+def _ua_for(url: str) -> str:
+    host = (urllib.parse.urlsplit(url).hostname or '').lower()
+    if any(host == h or host.endswith('.' + h) for h in _OSM_HOSTS):
+        return _OSM_UA
+    return _UA
 
 _MAX_ZOOM = 24
 
@@ -110,8 +135,17 @@ def _disk_cache_enabled() -> bool:
 
 
 def _tile_cache_path(upstream: str) -> Path:
+    # 键里带上**非默认**的 UA：缓存下来的字节是 (URL, 我们以什么身份去要) 的
+    # 函数，不只是 URL 的。旧版本拿浏览器 UA 去要 OSM，落盘的是一张 200 的
+    # "Access blocked" 图；只改 UA 的话缓存照旧命中、不回源，那张图会一直
+    # 挂在地图上。换 UA 即换键，那批被污染的条目自动失效（成为 cache/basemap
+    # 下的孤儿，走配置页「缓存管理」清）。
+    # 默认 UA 仍以裸 URL 为键：否则这次改动会把用户已有的几百张 Esri 瓦片
+    # 一次性作废，而 Esri 恰恰是最容易连不上的那家。
+    ua = _ua_for(upstream)
+    key = upstream if ua == _UA else f'{ua}\n{upstream}'
     return Path(Config.CACHE_DIR) / 'basemap' / hashlib.sha1(
-        upstream.encode('utf-8')).hexdigest()
+        key.encode('utf-8')).hexdigest()
 
 
 def _cache_lookup(upstream: str):
@@ -191,22 +225,128 @@ def _marks_source_down(code: int) -> bool:
     return code in (403, 429) or 500 <= code < 600
 
 
-def _fetch_upstream(url: str, proxy):
-    """取一块上游瓦片，返回 (body, content_type)。失败抛异常。"""
-    # 没有显式代理时**不装** ProxyHandler，让 urllib 照默认行为读
-    # HTTP(S)_PROXY。这条口径必须与下载路径一致：download_engine 的 aiohttp
-    # 开着 trust_env=True，proxy_url 为空时照样吃环境变量。这里曾经传
-    # ProxyHandler({})（关掉环境变量），于是「export 了 HTTP_PROXY 又关掉代理
-    # 自动发现」的 WSL 用户得到的是「下载正常、底图一颗蓝球」—— 正是本路由
-    # 要消灭的那种分叉。自动探测验不通某个环境变量代理，也不代表它对底图上游
-    # 不通，不该主动掐掉（同 download_engine 里 trust_env 那段理由）。
-    handlers = ([urllib.request.ProxyHandler({"http": proxy, "https": proxy})]
-                if proxy else [])
+# --- 出网路径（代理 / 直连） --------------------------------------------------
+#
+# 同一个源在两条路径上的可达性可以完全相反。实测 2026-08-11（同一台机器、
+# 同一分钟）：
+#
+#   源      走代理                        直连
+#   Esri    403 AkamaiGHost（封出口 IP）  200 image/jpeg
+#   Google  200 image/jpeg                超时
+#   OSM     200 image/png                 超时
+#
+# 而代理是**全局一个值**：配上它 Esri 必挂，不配它 Google/OSM 必挂 —— 无论
+# 怎么配都有一家取不到，回退链于是天天被触发，用户看到的永远不是他选的那张图
+# （这台机器上就是「选着 Esri、显示 OSM」）。换源换不掉这个问题，因为挂掉的
+# 不是源，是那条路。
+#
+# 所以失败之后先在**同一个源**上换另一条路径再试一次，两条都不行才算这个源挂、
+# 才轮到 AUTO_FALLBACK_ORDER 去换供应商。回退是最后手段：它会静默改变用户看到
+# 的图，而换路径不会。
+_DIRECT = object()
+
+# 每个源上一次真正取到图的那条路径。没有它的话，Esri 的每一张瓦片都要先吃一次
+# 代理 403（一次完整 TCP+TLS 往返）再走直连 —— 首屏几十张就是几十次白等。
+_CACHE_KEY_EGRESS = "basemap_static_egress"
+
+
+def _egress_paths(proxy, source):
+    """这个源本次可试的出网路径，按尝试顺序。"""
+    paths = [proxy]
+    # 只有默认路径真的会用上代理时，「直连」才是**另一条**路。proxy 为空且
+    # 环境里也没有代理时两者完全等价，多试一次只是白等一个超时。
+    if proxy or urllib.request.getproxies():
+        paths.append(_DIRECT)
+    prefer = current_app.extensions.get(_CACHE_KEY_EGRESS, {}).get(source)
+    if prefer in paths:
+        # 去重按**值**比（`!=` 对 _DIRECT 这个哨兵退化成 identity，两种取值
+        # 都对）。写成 `is not` 会漏掉代理这一支：配置里的代理地址每次从
+        # sqlite 读出来都是一个新的 str 对象，与记住的那个不同一，于是同一条
+        # 路径被排进去两次 —— 每张瓦片白吃一次完整往返，而且只在真实环境里
+        # 发作（测试里的字面量走常量池，同一对象）。
+        paths = [prefer] + [p for p in paths if p != prefer]
+    return paths
+
+
+def _path_name(path) -> str:
+    return "直连" if path is _DIRECT else ("代理" if path else "默认")
+
+
+def _fetch_over_paths(url: str, proxy, source):
+    """按出网路径依次取瓦片。
+
+    成功返回 (body, content_type, None)；每条路径都失败时返回
+    (None, None, (状态码, 是否判这个源整体挂掉))，由调用方决定冷却与回退。
+    404 直接向上抛：它不是故障，是「这里没有图」，换路径也不会变。
+    """
+    failure = None
+    for path in _egress_paths(proxy, source):
+        try:
+            body, content_type = _fetch_upstream(url, path)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise
+            logger.warning(f"底图上游 {url} 返回 {e.code}"
+                           f"（源：{source}，路径：{_path_name(path)}）")
+            # werkzeug 的 Aborter 对没有异常类的状态码（499/520/521/522/525/530
+            # 这些 Cloudflare 自定义码）抛 LookupError，被 Flask 转成 500 ——
+            # 那正是本模块要防的「真实状态码被埋掉」。抬不动的一律记 502。
+            code = e.code if e.code in default_exceptions else 502
+            # 报给用户的是**第一条**路径的状态码（那条路径才是当前配置的行为），
+            # 但只要任何一条路径给出源级信号就认为这个源挂了 —— 两条路都取不到，
+            # 它此刻确实整个不能用。
+            marks_down = _marks_source_down(e.code)
+            failure = (failure[0] if failure else code,
+                       (failure[1] if failure else False) or marks_down)
+            continue
+        except Exception as e:
+            logger.warning(f"底图上游 {url} 取瓦片失败"
+                           f"（源：{source}，路径：{_path_name(path)}）：{e}")
+            failure = (failure[0] if failure else 504, True)
+            continue
+        current_app.extensions.setdefault(_CACHE_KEY_EGRESS, {})[source] = path
+        return body, content_type, None
+    return None, None, failure
+
+
+def _fetch_upstream(url: str, path):
+    """取一块上游瓦片，返回 (body, content_type)。失败抛异常。
+
+    path 是出网路径，取值见 _egress_paths：代理地址字符串、''（默认路径）
+    或 _DIRECT（强制直连）。
+    """
+    if path is _DIRECT:
+        # 显式空表把环境变量的代理也关掉 —— 这正是「直连」这条路径与默认
+        # 路径的区别所在，也是它作为第二条路径的全部价值（见 _egress_paths）。
+        handlers = [urllib.request.ProxyHandler({})]
+    elif path:
+        handlers = [urllib.request.ProxyHandler({"http": path, "https": path})]
+    else:
+        # 没有显式代理时**不装** ProxyHandler，让 urllib 照默认行为读
+        # HTTP(S)_PROXY。这条口径必须与下载路径一致：download_engine 的 aiohttp
+        # 开着 trust_env=True，proxy_url 为空时照样吃环境变量。这里曾经无条件传
+        # ProxyHandler({})（关掉环境变量），于是「export 了 HTTP_PROXY 又关掉代理
+        # 自动发现」的 WSL 用户得到的是「下载正常、底图一颗蓝球」—— 正是本路由
+        # 要消灭的那种分叉。自动探测验不通某个环境变量代理，也不代表它对底图上游
+        # 不通，不该主动掐掉（同 download_engine 里 trust_env 那段理由）。
+        # 关代理只发生在**默认路径已经失败之后**的那次重试里。
+        handlers = []
     opener = urllib.request.build_opener(*handlers)
     # 局部名不叫 request：模块级的 request 是 flask 的请求对象（basemap_tile
     # 读它的查询参数），同名会让读到这里的人以为拿的是同一个东西。
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    req = urllib.request.Request(url, headers={"User-Agent": _ua_for(url)})
     with opener.open(req, timeout=_TIMEOUT_S) as response:
+        # 「200 + 一张写着拒绝访问的图」必须当失败处理。OSM 就是这么答的
+        # （违反瓦片使用政策时回 200 + image/png + x-blocked 头，见 _OSM_UA）。
+        # 当成功处理的后果是三重的：界面上是一张假地图；回退链就此打住，
+        # 不再去试下一个源；而且这张图会被 _cache_store 落盘，之后连回源的
+        # 机会都没有了。抬成 403 是为了复用既有的失败路径 —— 冷却这个源、
+        # 换下一个候选、不写缓存 —— 上游说的本来也就是「拒绝访问」。
+        blocked = response.headers.get("x-blocked")
+        if blocked:
+            raise urllib.error.HTTPError(
+                url, 403, f"upstream refused by policy: {blocked}",
+                response.headers, None)
         return response.read(), response.headers.get("Content-Type", "image/jpeg")
 
 
@@ -322,36 +462,33 @@ def basemap_tile(z: int, x: int, y: int):
             if proxy is _proxy_unset:
                 proxy = resolve_from_config(config_manager, wait_s=_PROXY_WAIT_S)
             try:
-                body, content_type = _fetch_upstream(upstream, proxy)
+                # 一个源在代理与直连两条路径上的可达性可以完全相反，所以换供应商
+                # 之前先换路径（见 _egress_paths）——回退会静默改变用户看到的图，
+                # 换路径不会。
+                body, content_type, failure = _fetch_over_paths(
+                    upstream, proxy, candidate["source"])
             except urllib.error.HTTPError as e:
                 # 404 不是故障信号，是每个 XYZ 瓦片服务说「这里没有图」的方式：Esri
                 # 的 World Imagery 在覆盖空洞和超出层级上限时就这么答。把它当上游挂
                 # 掉的话，一张缺图会让整个源冷却 60 秒、后续每张瓦片都换供应商、界面
                 # 弹一次根本没发生过的「底图已切换」。原样透传，不写冷却、不动回退
-                # 状态 —— 与回退特性引入之前的行为一致。
+                # 状态 —— 与回退特性引入之前的行为一致。（_fetch_over_paths 只把
+                # 404 抛上来，其余失败都在它内部换过路径了。）
                 if e.code == 404:
                     logger.debug(f"底图上游 {z}/{x}/{y} 无此瓦片（源：{candidate['source']}）")
                     abort(404)
-                logger.warning(f"底图上游 {z}/{x}/{y} 返回 {e.code}（源：{candidate['source']}）")
-                if _marks_source_down(e.code):
+                raise
+            if failure is not None:
+                code, marks_down = failure
+                if marks_down:
                     cooldown[candidate["source"]] = now + _COOLDOWN_S
                 # 原样透传的是**配置那个源**的状态码：整条链都失败时，用户想知道的
                 # 是他选的那张图怎么了，而不是链尾那张。取第一个报错是不够的 ——
                 # 配置的源一旦进了冷却就被排到链尾，"第一个"会变成某个替补，用户于是
                 # 收到 504 而不是 Esri 真正回的 403。配置的源在链里只出现一次，
                 # 所以让它无条件覆盖不会被后面的候选再改掉。
-                # werkzeug 的 Aborter 对没有异常类的状态码（499/520/521/522/525/530
-                # 这些 Cloudflare 自定义码）抛 LookupError，被 Flask 转成 500 ——
-                # 那正是本模块要防的「真实状态码被埋掉」。抬不动的一律记 502。
-                code = e.code if e.code in default_exceptions else 502
                 if candidate["source"] == configured["source"] or first_error is None:
                     first_error = code
-                continue
-            except Exception as e:
-                logger.warning(f"底图上游 {z}/{x}/{y} 取瓦片失败（源：{candidate['source']}）：{e}")
-                cooldown[candidate["source"]] = now + _COOLDOWN_S
-                if candidate["source"] == configured["source"] or first_error is None:
-                    first_error = 504
                 continue
             if disk_cache_on:
                 _cache_store(upstream, body, content_type)

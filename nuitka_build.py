@@ -21,6 +21,9 @@ import sys
 
 APP_NAME = 'terraforge'
 ENTRY = 'app.py'
+# 与网页标签页图标同一个文件（templates/base.html 的 <link rel="icon">）。
+# 生成脚本是 scripts/make_icon.py，别用图像编辑器直接改这个 .ico。
+APP_ICON = os.path.join('static', 'img', 'favicon.ico')
 
 # 产物里必须存在的「自有数据」哨兵。gdal-data / proj-data 各有构建期与运行期
 # 两道硬失败,而 --include-data-dir=templates / static / assets 一道都没有:静默
@@ -38,6 +41,27 @@ APP_DATA_SENTINELS = (
     'static/vendor/fonts/fonts.css',
     'assets/terrain/base_z8.tar.gz.part*',
 )
+
+
+def icon_options():
+    """可执行文件的图标参数（只有 Windows 有得可加）。
+
+    三个平台的现实不一样，别把这里「补齐」成三行对称的代码：
+      - Windows：图标是 PE 资源，--windows-icon-from-ico 直接嵌进 exe。
+      - Linux：ELF 没有图标资源段。Nuitka 的 --linux-icon 只对 **onefile**
+        产物有效（嵌进自解压头），而本脚本是 standalone 目录布局，给了也没用。
+        桌面图标由 .desktop 文件指向外部图片，不归打包管。
+      - macOS：图标属于 .app bundle 的 Info.plist / Resources，
+        --macos-app-icon 必须搭配 --macos-create-app-bundle;本脚本不建 bundle。
+    """
+    if sys.platform != 'win32':
+        return []
+    if not os.path.isfile(APP_ICON):
+        raise RuntimeError(
+            f'App icon missing: {APP_ICON}. Regenerate it with '
+            '`python scripts/make_icon.py`, then rebuild.'
+        )
+    return [f'--windows-icon-from-ico={APP_ICON}']
 
 
 def verify_app_data(dist_dir):
@@ -421,6 +445,7 @@ def main():
         '--include-package-data=certifi',
         '--nofollow-import-to=pytest',
         f'--jobs={os.cpu_count() or 4}',
+        *icon_options(),
         ENTRY,
     ]
     print('Running:', ' '.join(cmd), flush=True)

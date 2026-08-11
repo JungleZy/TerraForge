@@ -114,4 +114,22 @@ MESSAGES = {
         'zh': '地形切片:',
         'en': 'Terrain tiling:',
     },
+
+    # 命令面板(Ctrl/Cmd+K)与快捷键速查 —— 外壳
+    'tpl.base.cmdk.title': {
+        'zh': '命令面板',
+        'en': 'Command Palette',
+    },
+    'tpl.base.cmdk.placeholder': {
+        'zh': '输入命令…',
+        'en': 'Type a command…',
+    },
+    'tpl.base.cmdk.help_title': {
+        'zh': '快捷键',
+        'en': 'Keyboard Shortcuts',
+    },
+    'tpl.base.cmdk.help_close': {
+        'zh': '关闭',
+        'en': 'Close',
+    },
 }

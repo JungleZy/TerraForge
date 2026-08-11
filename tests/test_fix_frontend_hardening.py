@@ -367,18 +367,19 @@ def test_close_panel_returns_focus_to_the_opener():
     )
 
 
-def test_panel_traps_tab_but_yields_to_the_confirm_overlay():
-    """Tab 必须在面板内成环，但自定义确认框开着时让位。
+def test_panel_is_modeless_and_does_not_trap_tab():
+    """面板已非模态化(2026-08-11 取消遮罩层):onKey 不再给 Tab 设焦点环。
 
-    旧行为：onKey 只认 Escape，Tab 照样走到被遮罩盖住、看不见却仍可聚焦的
-    控件上。而焦点环不能做成「给面板之外的兄弟节点批量 inert」—— showToast /
-    showConfirm 的浮层是运行时 append 到 document.body 的，会一起被冻住。
+    遮罩在时,Tab 会走到被遮住、看不见却仍可聚焦的控件上,所以要有焦点环;
+    遮罩取消后,面板只是浮在地图右侧的一层,地图保持可见可交互,Tab 自由
+    进出面板正是非模态的本义 —— 再设焦点环,等于把键盘用户关进一个视觉上
+    根本没有被隔离的区域。Esc 关闭保留,对 confirm / Bootstrap 弹窗的让位
+    判据不动(见下一条)。
     """
     body = _js_function_body(_clean('panels.js'), 'onKey')
-    assert "'Tab'" in body, 'onKey 不处理 Tab —— 焦点环不存在'
-    assert 'preventDefault' in body, '焦点环必须拦下浏览器默认的 Tab 移动'
-    assert 'app-confirm-overlay' in body, (
-        '确认框开着时焦点环必须让位，否则从面板里弹出的 confirm 按不了'
+    assert "'Escape'" in body, 'onKey 不再处理 Esc —— 键盘关闭路径没了'
+    assert "'Tab'" not in body, (
+        '面板已非模态,onKey 不该再拦 Tab —— 焦点环属于有遮罩的模态时代'
     )
     assert 'inert' not in _clean('panels.js'), (
         'panels.js 不该给面板外的节点上 inert —— 会连带冻住 body 上的 toast/confirm'

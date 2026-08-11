@@ -435,18 +435,16 @@
     </div>
 </div>
 
-<!-- 覆盖面板 backdrop：点击关闭面板 -->
-<div class="panel-backdrop" id="panelBackdrop" hidden></div>
-
 <!-- 任务面板（右侧滑出，浮在地图上方）：统计 + 单一时间流任务列表
      （活动任务也在流里，socket 原地更新）+ 历史区域地图。
      独立页 /history 仍可用（布局顺序不同）。 -->
-{# role/aria-modal：这两个面板行为上就是模态 —— 有点击即关的 backdrop
-   （z-index 1400）和 Esc 关闭，打开后 backdrop 之下的控件在视觉上已经不可
-   用，却仍留在 Tab 序里。声明成 dialog 之后读屏才会把面板当成一层，
-   焦点收拢/归还由 panels.js 负责（关闭钮是 [data-panel-close]，
-   面板自身带 tabindex="-1" 供程序化聚焦）。ui.js 的自定义 confirm 是同一套。 #}
-<section class="workbench-panel workbench-panel--wide" id="historyPanel" role="dialog" aria-modal="true" tabindex="-1" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
+{# 2026-08-11 起面板**非模态化**：遮罩层取消，面板打开时地图保持可见可交互
+   （与 GeoLibre/QGIS 的停靠面板同模式）；关闭路径 = 关闭钮 / Esc / 工具条按钮。
+   role="dialog" 保留（一层自含功能区，非模态 dialog 是 APG 合法形态），
+   但**不写 aria-modal** —— 它宣称「页面其余部分已冻结」，非模态下是假话。
+   打开时焦点收进面板（落点是 [data-panel-close] 关闭钮，面板自身带
+   tabindex="-1" 供程序化聚焦），关闭时归还，由 panels.js 负责。 #}
+<section class="workbench-panel workbench-panel--wide" id="historyPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
     {{ m.panel_header(m.icon_tasks(16), t('tpl.index.panel.tasks'), t('tpl.index.panel.close')) }}
     {# --fill：任务列表卡吃满剩余高度、列表在卡内滚动（.history-layout）。 #}
     <div class="workbench-panel__body workbench-panel__body--fill">
@@ -455,16 +453,18 @@
         {% set records_panel = true %}
         {% include "_history_content.html" %}
     </div>
+    <div class="workbench-panel__resizer" data-panel-resizer aria-hidden="true"></div>
 </section>
 
 <!-- 配置面板 -->
-<section class="workbench-panel" id="configPanel" role="dialog" aria-modal="true" tabindex="-1" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
+<section class="workbench-panel" id="configPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
     {{ m.panel_header(m.icon_config(16), t('tpl.index.panel.config'), t('tpl.index.panel.close')) }}
     {# --fill：滚动交给 _config_content.html 内部的 .config-scroll，
        底部操作条常驻。body 自己不再滚，否则两层都滚出双滚动条。 #}
     <div class="workbench-panel__body workbench-panel__body--fill">
         {% include "_config_content.html" %}
     </div>
+    <div class="workbench-panel__resizer" data-panel-resizer aria-hidden="true"></div>
 </section>
 
 {% endblock %}
@@ -476,7 +476,7 @@
    只对鼠标用户兑现了「这里能点」这个承诺。UA 的按钮字体与墨色由
    `.statusbar-pill` 的 font/color: inherit 抹平，盒子与 span 时期一致。 #}
 <button type="button" class="statusbar-item statusbar-pill statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
     <span id="statusTasksText">{{ t('tpl.index.statusbar.no_active_task') }}</span>
@@ -484,11 +484,48 @@
         <span class="statusbar-progress__bar" id="statusTasksBar"></span>
     </span>
 </button>
-<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">{{ t('tpl.index.statusbar.coords_empty') }}</button>
-<span class="statusbar-item statusbar-pill" id="statusZoom"><span id="statusZoomZ">z—</span><span id="statusZoomAlt"></span></span>
-<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">{{ t('tpl.index.statusbar.no_selection') }}</button>
-<span class="statusbar-item statusbar-pill statusbar-event" id="statusEvent" aria-live="polite"></span>
-<span class="statusbar-item statusbar-pill statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">--:--:--</span>
+{# 图标与读数文字分成两个子节点：JS 侧刷新读数用的是 **文字 span 的**
+   textContent（map.js 的 #statusCoordsText / #statusSelectionText /
+   #statusClockText、tasks.js 的 #statusEventText）。写回胶囊本身会把图标
+   一起抹掉 —— 首帧还在，第一次刷新之后就永远没了。 #}
+<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">
+    <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="22" y1="12" x2="18" y2="12"></line>
+        <line x1="6" y1="12" x2="2" y2="12"></line>
+        <line x1="12" y1="6" x2="12" y2="2"></line>
+        <line x1="12" y1="22" x2="12" y2="18"></line>
+    </svg>
+    <span id="statusCoordsText">{{ t('tpl.index.statusbar.coords_empty') }}</span>
+</button>
+<span class="statusbar-item statusbar-pill" id="statusZoom">
+    <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+        <polyline points="2 17 12 22 22 17"></polyline>
+        <polyline points="2 12 12 17 22 12"></polyline>
+    </svg>
+    <span id="statusZoomZ">z—</span><span id="statusZoomAlt"></span>
+</span>
+<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">
+    <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"></path>
+        <path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"></path>
+    </svg>
+    <span id="statusSelectionText">{{ t('tpl.index.statusbar.no_selection') }}</span>
+</button>
+<span class="statusbar-item statusbar-pill statusbar-event" id="statusEvent" aria-live="polite">
+    <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+    </svg>
+    <span class="statusbar-event__text" id="statusEventText"></span>
+</span>
+<span class="statusbar-item statusbar-pill statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">
+    <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+    </svg>
+    <span id="statusClockText">--:--:--</span>
+</span>
 {% endblock %}
 
 {% block extra_js %}
@@ -498,7 +535,8 @@
 <script src="{{ url_for('static', filename='js/history.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/config.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/panels.js') }}" defer></script>
-{# 上面五个文件带 defer，解析期不再阻塞渲染，但它们的执行也随之推到
+<script src="{{ url_for('static', filename='js/drop_process.js') }}" defer></script>
+{# 上面七个文件带 defer，解析期不再阻塞渲染，但它们的执行也随之推到
    DOMContentLoaded 之前 —— 所以本块必须等那个事件。
    ⚠️ 内联脚本的 defer 属性是**无效**的（规范只对有 src 的脚本生效），
    写了也会立刻执行，那时 initMap 等函数一个都还不存在。 #}

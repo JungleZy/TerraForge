@@ -2,6 +2,10 @@
  * 工作台覆盖面板：历史记录 / 配置 以右侧滑出面板的形式浮在地图上方，
  * 不再整页跳转（单窗口 GIS 工作台形态，与 ArcGIS Online / Felt 同模式）。
  *
+ * 2026-08-11 起**非模态化**：遮罩层已取消 —— 面板打开时地图保持可见可交互，
+ * 面板不再自报 aria-modal，Tab 不再设焦点环；Esc 关闭保留（对 confirm /
+ * Bootstrap 弹窗的让位判据不变）。
+ *
  * 顶部工具栏已移除，入口是首页地图左上角的 .map-panel-btn 浮动按钮
  * （index.html）。任何带 data-panel="records|history|config" 的元素都会被拦截
  * 改为打开面板；独立页（/history、/config）没有面板元素，链接保持正常
@@ -23,13 +27,7 @@
     // 面板打开前那个焦点元素（通常是触发它的 .map-panel-btn），关闭时焦点还给它。
     var restoreFocus = null;
 
-    // 焦点环用的候选集。`[tabindex="-1"]` 排除在外：面板自身就带 -1，
-    // 它只供程序化聚焦，不该出现在 Tab 序里。
-    var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),'
-        + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
     function panelEl(name) { return document.getElementById(PANELS[name]); }
-    function backdrop() { return document.getElementById('panelBackdrop'); }
 
     function openPanel(name, syncUrl) {
         var el = panelEl(name);
@@ -42,15 +40,12 @@
         restoreFocus = (opener && opener !== document.body && typeof opener.focus === 'function')
             ? opener : null;
         current = name;
-        backdrop().hidden = false;
         el.hidden = false;
         requestAnimationFrame(function () {
-            backdrop().classList.add('panel-backdrop--in');
             el.classList.add('workbench-panel--in');
-            // 焦点收进面板：面板行为上是模态（遮罩 + Esc 关闭），焦点留在外面
-            // 等于读屏与键盘用户还站在被遮罩盖住的那半个界面上。落点选关闭钮
-            // 而不是第一个表单控件 —— 用户至少能立刻退出去（ui.js 的自定义
-            // confirm 是同一套：挂载后 focus 到默认按钮）。
+            // 焦点收进面板：落点选关闭钮而不是第一个表单控件 —— 用户至少能
+            // 立刻退出去（ui.js 的自定义 confirm 是同一套：挂载后 focus 到
+            // 默认按钮）。非模态化后这层依然成立:打开即给键盘用户一个明确落点。
             var closeBtn = el.querySelector('[data-panel-close]');
             try { (closeBtn || el).focus(); } catch (e) { /* 元素可能已被移除 */ }
         });
@@ -96,20 +91,14 @@
     function closePanel(silent) {
         if (!current) return;
         var el = panelEl(current);
-        backdrop().classList.remove('panel-backdrop--in');
         el.classList.remove('workbench-panel--in');
         // done 是延迟回调（transitionend 或 350ms 兜底），触发时面板可能已经被
-        // 重新打开或切换成另一个：closePanel(true) 之后 openPanel 会把共享
-        // backdrop 和（同一个）面板重新显示，没有守卫的话这里会把新面板的
-        // 遮罩甚至面板本体撤掉 —— 表现为「遮罩闪一下就消失」。
-        // 所以：backdrop 只在确实没有任何面板打开时才藏；面板元素只在它
-        // 没有重新成为当前面板时才藏。守卫按**元素引用**比较而不是名字：
-        // records/history 是同一个元素（PANELS 别名），按名字比较会在
-        // openPanel('records') → openPanel('history') 切换时把刚重开的
-        // 共享面板又藏起来。
+        // 重新打开或切换成另一个：没有守卫的话这里会把刚重开面板的本体撤掉。
+        // 守卫按**元素引用**比较而不是名字：records/history 是同一个元素
+        // （PANELS 别名），按名字比较会在 openPanel('records') → openPanel('history')
+        // 切换时把刚重开的共享面板又藏起来。
         var done = function () {
             if (panelEl(current) !== el) el.hidden = true;
-            if (!current) backdrop().hidden = true;
         };
         el.addEventListener('transitionend', done, { once: true });
         setTimeout(done, 350);              // transitionend 不触发的兜底
@@ -131,29 +120,15 @@
         }
     }
 
-    // 可聚焦且**当前可见**的后代。offsetParent 为空即被 hidden/display:none
-    // 收起（配置面板里有一大票这种控件），把它们算进环里会出现「Tab 一下焦点
-    // 消失」。
-    function focusables(el) {
-        return [].slice.call(el.querySelectorAll(FOCUSABLE)).filter(function (n) {
-            return n.offsetParent !== null;
-        });
-    }
-
-    // 面板之上还盖着一层浮层（自定义确认框 / Bootstrap 弹窗）时，这个处理器
-    // 必须整个让位 —— Esc 与 Tab 都是。
+    // 面板之上还盖着一层浮层（自定义确认框 / Bootstrap 弹窗）时，Esc 必须让位。
     //
-    // 让位判据以前排在 Escape 分支【下面】，于是它只管 Tab：从面板里开出来的
-    // 弹窗按一次 Esc，Bootstrap 在目标阶段先 hide 弹窗、事件继续冒泡到
-    // document，这里再把身后的面板一起关掉（实测：开配置面板 → 点「浏览」开
+    // 让位判据必须排在 Escape 分支【上面】：从面板里开出来的弹窗按一次 Esc，
+    // Bootstrap 在目标阶段先 hide 弹窗、事件继续冒泡到 document，判据若在
+    // 下面，这里会把身后的面板一起关掉（实测：开配置面板 → 点「浏览」开
     // #pathBrowserModal → 一次 Esc，modal 与 configPanel 同时消失、hash 被
     // replaceState 抹掉、焦点掉回 body）。自定义 confirm 之所以一直没出事，
     // 靠的是它自己那侧 —— ui.js 用 capture 阶段注册并 stopImmediatePropagation，
     // 这里根本收不到那个 Esc；不做这个动作的浮层（Bootstrap 就不做）全部暴露。
-    //
-    // Tab 侧同理：弹窗在 body 直下、不在面板子树里（base.html 写明它必须留在
-    // 面板外 —— 面板恒带 transform，会成为 fixed 后代的包含块），焦点环会把
-    // 焦点从弹窗第一个控件上反复抢回面板，键盘用户到不了目录列表。
     //
     // 判据用 body.modal-open 而不是 .modal.show：Bootstrap 的 hide() 是**同步**
     // 摘掉 .show 再排队做过渡收尾的（vendored 5.3.0：`this._element.classList
@@ -161,28 +136,74 @@
     // document 时 .modal.show 已经不匹配了 —— 实测用它当判据这里照样会把面板
     // 关掉。modal-open 相反：show() 第一步就 `document.body.classList.add(ki)`，
     // 直到过渡结束的 _hideModal() 才摘，正好覆盖「弹窗开着或正在关」整段。
+    //
+    // 2026-08-11 非模态化：Tab 焦点环随遮罩层一起移除 —— 面板打开时地图保持
+    // 可见可交互，再把 Tab 关进环里等于把键盘用户困在一个视觉上没有被隔离的
+    // 区域。
     function onKey(e) {
         if (document.querySelector('.app-confirm-overlay')) return;
         if (document.body.classList.contains('modal-open')) return;
-        if (e.key === 'Escape') { closePanel(); return; }
-        if (e.key !== 'Tab' || !current) return;
-        var el = panelEl(current);
-        if (!el) return;
-        var list = focusables(el);
-        if (!list.length) { e.preventDefault(); try { el.focus(); } catch (err) {} return; }
-        var first = list[0];
-        var last = list[list.length - 1];
-        if (!el.contains(document.activeElement)) {
-            // 焦点已经溜到面板外（点了遮罩、或上一次 Tab 漏出去）：拉回来
-            e.preventDefault();
-            (e.shiftKey ? last : first).focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-            e.preventDefault();
-            first.focus();
-        } else if (e.shiftKey && document.activeElement === first) {
-            e.preventDefault();
-            last.focus();
-        }
+        if (e.key === 'Escape') { closePanel(); }
+    }
+
+    // ---- 面板调宽(2026-08-11 设计 §3.4,借鉴 GeoLibre)--------------------
+    // 左缘 8px 热区;拖拽中只写 CSS 变量(rAF 节流),松手写 localStorage。
+    // 窄屏(<768px)面板是全屏覆盖,调宽无意义,整个不启用。
+    var RESIZE_CONFIGS = [
+        { id: 'historyPanel', varName: '--panel-tasks-w', key: 'tf-panel-w-tasks', min: 560, max: 1100 },
+        { id: 'configPanel', varName: '--panel-config-w', key: 'tf-panel-w-config', min: 320, max: 640 }
+    ];
+
+    function clampWidth(v, min, max) { return Math.min(max, Math.max(min, v)); }
+
+    function applyPanelWidth(cfg, px) {
+        var el = document.getElementById(cfg.id);
+        if (el) el.style.setProperty(cfg.varName, px + 'px');
+    }
+
+    function initResizers() {
+        if (!window.matchMedia('(min-width: 768px)').matches) return;
+        RESIZE_CONFIGS.forEach(function (cfg) {
+            var el = document.getElementById(cfg.id);
+            var handle = el && el.querySelector('[data-panel-resizer]');
+            if (!handle) return;
+            var stored = NaN;
+            try { stored = parseFloat(window.localStorage.getItem(cfg.key)); } catch (e) {}
+            if (!isNaN(stored)) applyPanelWidth(cfg, clampWidth(stored, cfg.min, cfg.max));
+
+            handle.addEventListener('pointerdown', function (e) {
+                e.preventDefault();
+                handle.setPointerCapture(e.pointerId);
+                handle.classList.add('workbench-panel__resizer--active');
+                var startX = e.clientX;
+                var startW = el.getBoundingClientRect().width;
+                var raf = 0;
+                function widthAt(clientX) {
+                    // 面板钉在视口右缘:指针往左 = 变宽。
+                    return clampWidth(startW + (startX - clientX), cfg.min, cfg.max);
+                }
+                function onMove(ev) {
+                    if (raf) return;
+                    raf = requestAnimationFrame(function () {
+                        raf = 0;
+                        applyPanelWidth(cfg, widthAt(ev.clientX));
+                    });
+                }
+                function onUp(ev) {
+                    handle.removeEventListener('pointermove', onMove);
+                    handle.removeEventListener('pointerup', onUp);
+                    handle.removeEventListener('pointercancel', onUp);
+                    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+                    handle.classList.remove('workbench-panel__resizer--active');
+                    var w = widthAt(ev.clientX);
+                    applyPanelWidth(cfg, w);
+                    try { window.localStorage.setItem(cfg.key, String(w)); } catch (e2) {}
+                }
+                handle.addEventListener('pointermove', onMove);
+                handle.addEventListener('pointerup', onUp);
+                handle.addEventListener('pointercancel', onUp);
+            });
+        });
     }
 
     document.addEventListener('DOMContentLoaded', function () {
@@ -197,14 +218,13 @@
                 }
             });
         });
-        var bd = backdrop();
-        if (bd) bd.addEventListener('click', function () { closePanel(); });
         document.querySelectorAll('[data-panel-close]').forEach(function (b) {
             b.addEventListener('click', function () { closePanel(); });
         });
         // hash 直达：URL 已经是目标 hash，不要再 push 一条重复条目
         var h = location.hash.replace('#', '');
         if (PANELS[h]) openPanel(h, false);
+        initResizers();
     });
 
     // 同文档 hash 变化（前进/后退、地址栏改 hash）：openPanel/closePanel 内部

@@ -179,12 +179,17 @@ def test_statusbar_pill_neutralises_the_ua_button_skin():
 
     底色/边框不在断言里：`.statusbar-pill` 本来就显式声明了它们，UA 的
     button 皮肤已经被压掉，再断言一遍是凑数。
+
+    判据是 `font: inherit` 而不是「命中 .statusbar-pill 的规则数」：2026-08-11
+    玻璃化改造新增的两个降级块（@supports not (backdrop-filter) /
+    prefers-reduced-transparency）用联合选择器命中 .statusbar-pill，但只覆盖
+    底色/边框/backdrop-filter，不碰字体与墨色 —— 皮肤规则仍应只有 1 条。
     """
     rules = [
         body for sel, body in _top_level_rules(_css_no_comments())
-        if '.statusbar-pill' in _selector_parts(sel)
+        if '.statusbar-pill' in _selector_parts(sel) and 'font: inherit' in body
     ]
-    assert len(rules) == 1, f'.statusbar-pill 有 {len(rules)} 条规则，期望 1 条 —— 本测试已失效'
+    assert len(rules) == 1, f'.statusbar-pill 的皮肤规则有 {len(rules)} 条，期望 1 条 —— 本测试已失效'
     decls = {
         k.strip().lower(): v.strip()
         for k, _, v in (c.partition(':') for c in rules[0].split(';')) if v.strip()
@@ -208,7 +213,7 @@ def _status_chips(html):
     return chips
 
 
-@pytest.mark.parametrize('path,expected', [('/', 9), ('/config', 5)])
+@pytest.mark.parametrize('path,expected', [('/', 14), ('/config', 10)])
 def test_every_status_chip_declares_its_selected_state(isolated_app, path, expected):
     """每一颗 .status-chip 都要有 aria-pressed，且与 .active 一致。
 
@@ -222,8 +227,9 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
     `.active` 与 `aria-pressed="true"` **配对**钉住：只查「属性存在」的话，
     全部写死 false 也能绿，而那正是「选中态读不出来」这个缺陷本身。
 
-    首页 9 颗 = 筛选 4 + 主题 3 + 语言 2（配置面板 include 进首页）；
-    /config 独立页 5 颗 = 主题 3 + 语言 2（没有任务筛选行）。先钉数量，
+    首页 14 颗 = 筛选 4 + 主题 3 + 语言 2 + 强调色 5（配置面板 include 进首页，
+    强调色组 2026-08-11 新增）；/config 独立页 10 颗 = 主题 3 + 语言 2 + 强调色 5
+    （没有任务筛选行）。先钉数量，
     正则/选择器失配时响亮失败而不是退化成空循环。
     """
     chips = _status_chips(_render(isolated_app, path))
@@ -231,7 +237,7 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
         f'{path} 扫到 {len(chips)} 颗 .status-chip，期望 {expected} —— 本测试已失效')
     problems = []
     for attrs in chips:
-        label = attrs.get('data-status', attrs.get('data-theme-mode', attrs.get('data-lang', '?')))
+        label = attrs.get('data-status', attrs.get('data-theme-mode', attrs.get('data-lang', attrs.get('data-accent', '?'))))
         pressed = attrs.get('aria-pressed')
         active = 'active' in _classes(attrs)
         if pressed not in ('true', 'false'):
@@ -243,44 +249,52 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
         f'{path} 的分段开关读不出选中态：\n' + '\n'.join('  ' + p for p in problems))
 
 
-# ------------------------------------------------- P1#16b 面板的模态语义
+# ------------------------------------------------- P1#16b 面板的非模态语义
 
 @pytest.mark.parametrize('panel_id', ['historyPanel', 'configPanel'])
-def test_slide_out_panels_declare_themselves_modal(isolated_app, panel_id):
-    """两个滑出面板必须自报 role="dialog" + aria-modal，并留好焦点落点。
+def test_slide_out_panels_declare_themselves_nonmodal(isolated_app, panel_id):
+    """两个滑出面板是非模态 dialog:role="dialog" 保留,**不许**再有 aria-modal。
 
-    旧行为：两个 <section> 只有 aria-label。它们**行为上**已经是模态 ——
-    渲染点击即关的 backdrop（z-index 1400）、监听 Escape —— 于是打开后焦点
-    还留在被遮住的触发按钮上，Tab 会一路走到 backdrop 之下、视觉上不可用
-    但仍可聚焦的控件里。ui.js 的自定义 confirm 早就把这套做对了。
+    2026-08-11 起面板取消遮罩层:面板打开时地图保持可见可交互(非模态工作台,
+    与 GeoLibre/QGIS 的停靠面板同模式)。aria-modal="true" 会向读屏宣称
+    「页面其余部分已冻结」—— 遮罩没了之后这是一句假话,必须摘掉。
+    role="dialog" 保留:它仍是一层自含功能区(非模态 dialog 是 APG 合法形态)。
 
-    朴素断言为什么是空的：`assert 'role="dialog"' in html` 恒真 ——
-    Bootstrap 弹窗与 ui.js 生成的 confirm 都带它。所以按 **id 定位到那个
-    section** 再逐属性看。
-
-    tabindex="-1" 与 [data-panel-close] 一并钉住：它们是焦点管理 JS 的**落点**
-    （panels.js 打开时把焦点收进面板、关闭时归还）。少了它们，
+    tabindex="-1" 与 [data-panel-close] 一并钉住:它们是焦点管理 JS 的**落点**
+    (panels.js 打开时把焦点收进面板、关闭时归还)。少了它们,
     role="dialog" 就只是一句读屏听得见、键盘兑现不了的声明。
     """
     html = _render(isolated_app, '/')
     tag, attrs = _by_id(_parse(html), panel_id)
     assert tag == 'section', f'#{panel_id} 是 <{tag}> —— 本测试已失效'
     assert attrs.get('role') == 'dialog', (
-        f'#{panel_id} 缺 role="dialog"（实际 {attrs.get("role")!r}）：'
-        '读屏不会把它当成一层，backdrop 之下的控件仍在阅读顺序里')
-    assert attrs.get('aria-modal') == 'true', (
-        f'#{panel_id} 缺 aria-modal="true"（实际 {attrs.get("aria-modal")!r}）')
+        f'#{panel_id} 缺 role="dialog"(实际 {attrs.get("role")!r})')
+    assert attrs.get('aria-modal') is None, (
+        f'#{panel_id} 还带 aria-modal={attrs.get("aria-modal")!r} —— '
+        '面板已非模态(遮罩层 2026-08-11 取消),aria-modal 宣称「页面其余部分'
+        '已冻结」,而地图现在保持可见可交互,这是假话')
     assert attrs.get('tabindex') == '-1', (
-        f'#{panel_id} 缺 tabindex="-1"：焦点管理没有可程序化聚焦的落点')
+        f'#{panel_id} 缺 tabindex="-1":焦点管理没有可程序化聚焦的落点')
     assert attrs.get('aria-label'), f'#{panel_id} 没有无障碍名称'
 
-    # 面板内必须有一颗 [data-panel-close]（panel_header 宏出的关闭钮）——
-    # 打开时的初始焦点就落在它上面。section 不嵌套，取到下一个 </section> 为止。
+    # 面板内必须有一颗 [data-panel-close](panel_header 宏出的关闭钮)——
+    # 打开时的初始焦点就落在它上面。section 不嵌套,取到下一个 </section> 为止。
     start = html.index(f'id="{panel_id}"')
     end = html.index('</section>', start)
     assert 'data-panel-close' in html[start:end], (
-        f'#{panel_id} 里没有 [data-panel-close] 按钮 —— 焦点管理没有初始落点，'
+        f'#{panel_id} 里没有 [data-panel-close] 按钮 —— 焦点管理没有初始落点,'
         'Esc 之外没有键盘关闭路径')
+
+
+def test_panels_have_no_backdrop_anymore(isolated_app):
+    """遮罩层已取消:首页不再渲染 #panelBackdrop(2026-08-11 非模态化)。
+
+    面板打开时地图保持可见可交互;关闭路径 = 关闭钮 / Esc / 工具条按钮。
+    """
+    html = _render(isolated_app, '/')
+    assert 'id="panelBackdrop"' not in html, (
+        '#panelBackdrop 还在渲染 —— 遮罩层已取消(面板非模态化)'
+    )
 
 
 # ----------------------------------------------------- P2 图标宏 / 内联 style

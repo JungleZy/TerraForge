@@ -8,6 +8,7 @@ function initConfig() {
     initTileServerEditor();
     initBasemapSource();
     initThemeSwitcher();
+    initAccentSwitcher();
     initLangSwitcher();
     initConcurrencyRecommend();
     initProxyAutodetect();
@@ -367,6 +368,36 @@ function initThemeSwitcher() {
         const chip = e.target.closest('[data-theme-mode]');
         if (!chip) return;
         TerraTheme.set(chip.dataset.themeMode);
+        refresh();
+    });
+
+    refresh();
+}
+
+// --- 外观:强调色分段开关 -----------------------------------------------------
+// 五枚 chip(sky / teal / violet / rose / orange),当前值高亮。只调
+// TerraTheme.setAccent —— 偏好存 localStorage `tf-accent`、立即全站生效,
+// 不随表单提交。机制与上面的主题开关完全同构。
+
+function initAccentSwitcher() {
+    const group = document.getElementById('accentModeGroup');
+    if (!group || !window.TerraTheme || !TerraTheme.getAccent) return;
+    const chips = [...group.querySelectorAll('[data-accent]')];
+
+    function refresh() {
+        const accent = TerraTheme.getAccent();
+        chips.forEach(chip => {
+            const on = chip.dataset.accent === accent;
+            chip.classList.toggle('active', on);
+            // aria-pressed 与 .active 必须同步翻(与主题组同一写法)。
+            chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+        });
+    }
+
+    group.addEventListener('click', function (e) {
+        const chip = e.target.closest('[data-accent]');
+        if (!chip) return;
+        TerraTheme.setAccent(chip.dataset.accent);
         refresh();
     });
 

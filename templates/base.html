@@ -8,6 +8,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{{ t('app.title') }}{% endblock %}</title>
 
+    {# 应用图标。全站唯一一份多尺寸 .ico（16/24/32/48/64/128/256），
+       打包 exe 的图标指向的也是同一个文件（nuitka_build.py 的
+       --windows-icon-from-ico），改图标只改 scripts/make_icon.py 重跑即可。
+       显式写 <link> 而不是靠浏览器去 GET /favicon.ico：那个根路径回退在本应用
+       上是 404（Flask 只挂了 /static），开发时每开一页控制台就多一条红。 #}
+    <link rel="icon" type="image/x-icon" sizes="any" href="{{ url_for('static', filename='img/favicon.ico') }}">
+
     {# 界面语言：语种由 cookie `tf-lang` 决定（服务端渲染模板时就要知道，
        localStorage 送不到服务端）。这里内联的是**浏览器侧**那部分文案
        （`js.` 前缀），模板文案已经在服务端渲染完，不重复下发。
@@ -21,6 +28,12 @@
        在 static/js/theme.js（window.TerraTheme），值口径必须与这里一致。
        html 标签上的 data-bs-theme="dark" 字面量是无 JS 时的 SSR 默认值，
        tests/test_css_contract.py 钉住了它，不要动。
+       同一段脚本还负责强调色预设（2026-08-11 设计 §3.5）：机制与主题同构 ——
+       localStorage `tf-accent` + 根元素的 data-accent 属性，首帧前同步。
+       sky 是缺省品牌色：不落 data-accent 属性，:root 现有令牌原样生效，
+       默认渲染零变化；只有非缺省预设才写属性，覆盖块见 style.css 亮色
+       令牌块之后。脚本体内不写中文注释：test_i18n.py 的裸中文扫描只剥
+       Jinja / HTML 注释，script 里的中文一律当漏翻。
        ⚠️ 这段注释里不能出现 html 的尖括号写法：tests 用 HTMLParser 直接
        扫模板源码（不剥 Jinja 注释），写成标签形态会被当成第二个
        html 开始标签，钉主题的断言立刻变红。 #}
@@ -32,6 +45,10 @@
             document.documentElement.dataset.bsTheme = (mode === 'system')
                 ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
                 : mode;
+            var accent = 'sky';
+            try { accent = localStorage.getItem('tf-accent') || 'sky'; } catch (e) {}
+            if (['sky', 'teal', 'violet', 'rose', 'orange'].indexOf(accent) === -1) accent = 'sky';
+            if (accent !== 'sky') document.documentElement.setAttribute('data-accent', accent);
         })();
     </script>
 
@@ -83,6 +100,11 @@
                  位置在页面 statusbar block 之后 = 最右；statusbar 是 flex 行，
                  位置完全由 DOM 顺序决定。 -->
             <span class="statusbar-basemap statusbar-pill" id="statusBaseUnpack" hidden>
+                <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                </svg>
                 <span id="statusBaseUnpackText"></span>
                 <span class="statusbar-progress" id="statusBaseUnpackProgress" hidden>
                     <span class="statusbar-progress__bar" id="statusBaseUnpackBar"></span>
@@ -174,6 +196,10 @@
         </div>
     </div>
 
+    <!-- 命令面板(Ctrl/Cmd+K)与快捷键速查:外壳在此,列表由 command_palette.js
+         按注册表填充。留在 <body> 直下 —— 与 #taskDetailModal 同一个理由。 -->
+    {% include "_command_palette.html" %}
+
     <!-- Bootstrap 5.3 JS Bundle（含 Popper） -->
     <script src="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.bundle.min.js') }}"></script>
 
@@ -219,6 +245,11 @@
          system 模式下对系统配色的实时跟随。init() 幂等。 -->
     <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
     <script>TerraTheme.init();</script>
+
+    <!-- 命令面板(Ctrl/Cmd+K):必须排在 i18n.js(解析期就调 t())与
+         theme.js(主题命令调 TerraTheme.set)之后。无地图的页面空载可用,
+         地图类命令由注册表 guard() 自动隐藏。 -->
+    <script src="{{ url_for('static', filename='js/command_palette.js') }}"></script>
 
     <!-- 地形光照开关（scene.globe.enableLighting）：偏好同样只存 localStorage。
          这里只定义模块，接线在 map.js 的 initMap 末尾（要拿到 viewer）；

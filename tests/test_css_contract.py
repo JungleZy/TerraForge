@@ -4740,7 +4740,9 @@ def test_button_ink_is_readable_in_every_state():
 # 宏定义。净 -1。
 # 17 -> 18（任务行加「处理」钮）：已完成的高程下载任务行在预览旁多一颗
 # 扳手钮，打开处理弹窗预选该任务（task_list.js TaskRow）。
-ICON_ONLY_BUTTON_COUNT = 18
+# 18 -> 19（命令面板）：base.html 新增 _command_palette.html 的速查表关闭钮
+# （.cmdk__help-close，× 字符 + aria-label，-labelled 合规）。
+ICON_ONLY_BUTTON_COUNT = 19
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -6110,6 +6112,10 @@ def _motion_rule_index(css):
 #   换 viewer.terrainProvider 是一次没有中间态的整球几何重建，影像层那种
 #   alpha 淡入在地形上没有对应物，只能罩一层雾盖过去（map.js _showMapVeil）。
 #   两条都在 reduce 块 `*` 覆盖范围内，无需豁免登记。
+# 39 -> 40（全窗口拖拽遮罩）：`.drop-veil`（opacity 0.15s,P2 拖拽提示）。
+#   纯展示无 pointer-events,在 reduce 块 `*` 覆盖范围内,无需豁免登记。
+# 40 -> 39（取消面板遮罩层）：`.panel-backdrop` 随遮罩删除,其 opacity 0.2s
+#   过渡一并移除(2026-08-11 面板非模态化)。
 _MOTION_BRANCH_COUNT = 39
 
 
@@ -6382,6 +6388,9 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 34 -> 36（地形预览的进场薄雾）：`.map-transition-veil` 与它的亮起态
     # `.map-transition-veil--in` 各反解出一个上下文，都是普通 opacity 过渡，
     # 在 reduce 块 `*` 覆盖范围内，不进豁免清单。
+    # 36 -> 37（全窗口拖拽遮罩）：`.drop-veil` 反解出一个上下文，
+    # 普通 opacity 过渡，在 reduce 块 `*` 覆盖范围内，不进豁免清单。
+    # 37 -> 36（取消面板遮罩层）：`.panel-backdrop` 上下文随遮罩删除。
     assert len(ctxs) == 36, (
         f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 36：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
@@ -6761,8 +6770,10 @@ def test_no_template_references_an_external_url():
     # partial，无外链。
     # 7 -> 8（组件化）：新增 _macros.html 共用小组件宏（图标 + 面板头部），
     # 只有本地 SVG 标记，无外链。
-    assert len(templates) == 8, (
-        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 8 个 —— '
+    # 8 -> 9（命令面板）：新增 _command_palette.html 命令面板/速查表外壳
+    # partial，纯静态 markup，无外链。
+    assert len(templates) == 9, (
+        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 9 个 —— '
         '新增页面不需要改本断言（它按目录遍历），但请确认新页面也没有外链，'
         '然后把这个数字更新掉'
     )
@@ -6842,8 +6853,14 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 26 -> 27（高程切片 TIF 信息卡）：index.html 新增 static/js/geotiff_meta.js
     # （浏览器侧 GeoTIFF 头部解析；只在首页的处理弹窗里用到，故挂在
     # index.html 的 extra_js 而不是 base.html）。
-    assert len(refs) == 27, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 27 处。"
+    # 27 -> 28（应用图标）：base.html 新增 <link rel="icon"> 指向
+    # static/img/favicon.ico（生成脚本 scripts/make_icon.py；打包 exe 的
+    # --windows-icon-from-ico 用的是同一个文件）。
+    # 28 -> 29（命令面板）：base.html 新增 static/js/command_palette.js。
+    # 29 -> 30（全窗口拖拽 .tif）：index.html 的 extra_js 新增
+    # static/js/drop_process.js（仅首页，defer 跟在 panels.js 之后）。
+    assert len(refs) == 30, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 30 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
@@ -7703,6 +7720,19 @@ _BgCand = collections.namedtuple(
     '_BgCand', 'sheet sheet_i rule_i sel branch value important spec targeted')
 
 
+# 在模型假设的渲染环境（现代 Chromium、无 reduce 偏好）下**必然不成立**的
+# 条件组 at-rule 白名单：其内部规则在默认环境里必然落选，跳过不算「读不懂」。
+# 唯一消费者是 2026-08-11 的玻璃降级块：
+#   @supports not (backdrop-filter: blur(1px))    —— Chromium 必然支持，not 为假
+#   @media (prefers-reduced-transparency: reduce) —— 默认偏好不是 reduce
+# 新增条目意味着「该条件组在建模环境里恒假」，登记前先确认这一点。
+# 字符串形态与 _rules_ctx 的规范化输出逐字一致（空白折叠后的 at-rule 头）。
+_KNOWN_INACTIVE_AT_RULES = (
+    '@supports not (backdrop-filter: blur(1px))',
+    '@media (prefers-reduced-transparency: reduce)',
+)
+
+
 def _bg_candidates(chain, sheets):
     """命中 chain 末尾那个元素的全部背景声明。返回 (候选列表, 不支持的规则列表)。"""
     cands, unsupported = [], []
@@ -7719,6 +7749,10 @@ def _bg_candidates(chain, sheets):
                 if not hit:
                     continue
                 if at_ctx:
+                    # 白名单内的条件组在建模环境里恒假（见上方常量注释），
+                    # 其内部规则必然落选 —— 跳过是正确语义，不是「读不懂」。
+                    if any(ctx in _KNOWN_INACTIVE_AT_RULES for ctx in at_ctx):
+                        continue
                     # 条件组 at-rule：默认渲染环境（1600x1000、无 reduce 偏好）
                     # 下是否成立没建模。命中了就必须响亮失败，不能当没看见。
                     unsupported.append((sheet, f'{branch} @ {at_ctx}'))
@@ -8088,8 +8122,8 @@ _DIV_BACKGROUNDS_THAT_MUST_RENDER = {
         ('config.html', {'config-section'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
     '.stat-card（历史页 4 张统计卡）':
         ('history.html', {'stat-card'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
-    '.modal-header（详情弹窗标题栏，2026-08 起标记在 base.html）':
-        ('base.html', {'modal-header'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
+    '.modal-header（详情弹窗标题栏，2026-08 起标记在 base.html；2026-08-11 改版随 .modal-content 升入 elevated 档）':
+        ('base.html', {'modal-header'}, '--color-bg-elevated', 'rgba(0, 0, 0, 0)'),
 }
 
 

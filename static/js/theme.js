@@ -23,6 +23,9 @@ window.TerraTheme = (function () {
     var MODES = ['dark', 'light', 'system'];
     var LIGHT_QUERY = '(prefers-color-scheme: light)';
 
+    var ACCENT_KEY = 'tf-accent';
+    var ACCENTS = ['sky', 'teal', 'violet', 'rose', 'orange'];
+
     var media = window.matchMedia(LIGHT_QUERY);
     var systemListener = null;
 
@@ -48,7 +51,7 @@ window.TerraTheme = (function () {
         document.documentElement.dataset.bsTheme = now;
         if (before === now) return;
         // U5：广播主题变更。有模块把 CSS 自定义属性的求值结果缓存了下来
-        // （history.js 的 _statusStrokeCache：小地图矩形描边色，Cesium 要真实
+        // （task_status.js 的 _statusStrokeCache：小地图矩形描边色，Cesium 要真实
         // 色值字符串、不认 var()），其前提是「调色板运行期不变」—— 主题切换
         // 落地后这个前提不再成立，没有失效钩子的话矩形会一直留着旧主题的颜色。
         try {
@@ -88,10 +91,50 @@ window.TerraTheme = (function () {
         apply();
     }
 
+    // ---- 强调色预设(2026-08-11 设计 §3.5)---------------------------------
+    // 与主题同一套机制:localStorage `tf-accent` + <html> data-accent。
+    // sky 是缺省 —— 删属性而不是写 "sky",保持「缺省 = 零覆盖」。
+
+    // 当前强调色偏好。非法值/读不到一律回退 sky。
+    function getAccent() {
+        var accent = 'sky';
+        try {
+            accent = window.localStorage.getItem(ACCENT_KEY) || 'sky';
+        } catch (e) { /* 隐私模式等 localStorage 不可用时按缺省 sky */ }
+        return ACCENTS.indexOf(accent) !== -1 ? accent : 'sky';
+    }
+
+    function applyAccentToDom() {
+        var accent = getAccent();
+        var el = document.documentElement;
+        var before = el.getAttribute('data-accent') || 'sky';
+        if (before === accent) return;
+        if (accent === 'sky') el.removeAttribute('data-accent');
+        else el.setAttribute('data-accent', accent);
+        // 与主题切换广播同一个事件:task_status.js 的 _statusStrokeCache 这类
+        // 「缓存了 CSS 变量求值结果」的模块无需区分是哪种换肤。
+        try {
+            document.dispatchEvent(new CustomEvent('terraforge:themechange', {
+                detail: { theme: resolved(), accent: accent }
+            }));
+        } catch (e) { /* 老浏览器没有 CustomEvent 构造器,忽略 */ }
+    }
+
+    // 写强调色偏好并立即应用。非法值直接忽略。
+    function setAccent(accent) {
+        if (ACCENTS.indexOf(accent) === -1) return;
+        try {
+            window.localStorage.setItem(ACCENT_KEY, accent);
+        } catch (e) { /* 写不进也先把本次会话的应用上 */ }
+        applyAccentToDom();
+    }
+
     // 幂等：重复调用只是重新应用一次，监听器有 systemListener 守卫不会叠挂。
     function init() {
         apply();
+        applyAccentToDom();
     }
 
-    return { get: get, set: set, resolved: resolved, init: init };
+    return { get: get, set: set, resolved: resolved, init: init,
+             getAccent: getAccent, setAccent: setAccent, ACCENTS: ACCENTS };
 })();

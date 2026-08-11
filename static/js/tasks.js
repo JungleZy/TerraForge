@@ -306,8 +306,11 @@ function updateStatusTasks() {
 
 // 最近事件单行读数：任务完成/失败/拼接/复制阶段的文字心跳。
 // 这些 socket 事件原本只 console.log，状态栏是唯一让消费者。
+// 写的是胶囊里的文字 span 而不是 #statusEvent 本身：胶囊第一个子节点是图标
+// SVG，往胶囊写 textContent 会连图标一起抹掉。空/非空的隐藏判定也跟着挪到了
+// 这个 span 上（style.css 的 `.statusbar-event:has(...:empty)`）。
 function pushStatusEvent(msg) {
-    const el = document.getElementById('statusEvent');
+    const el = document.getElementById('statusEventText');
     if (!el) return;
     el.textContent = msg;
 }
