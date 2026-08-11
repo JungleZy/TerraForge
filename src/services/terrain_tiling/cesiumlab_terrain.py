@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-cesiumlab_terrain.py
-====================
-Vendored from:
-  E:/EarthVisLabApps/cesiumlab/4.0.17/python_terrain/cesiumlab_terrain.py
+"""DEM（任意 GDAL 可读栅格）-> Cesium quantized-mesh-1.0 地形瓦片。
 
-Purpose:
-  DEM (any GDAL-readable raster) -> Cesium quantized-mesh-1.0 terrain tiles
-  compatible with cesiumlab 4.0.17 output layout:
+产物布局:
+
     out/
       layer.json
       meta.json
-      {z}/{x}/{y}.terrain
+      {z}/{x}/{y}.terrain     # gzip,mtime=0 保证同输入同字节
+
+本模块承担的事,按数据流顺序:
+
+1. **多幅输入先物化成单幅栅格**(`build_input_raster`)。直接对 VRT 采样会让相邻瓦片
+   落到不同 overview 档位,实测产生 50.9 m 的高程接缝;物化后统一档位并显式校验
+   (`_verify_materialised` / `_assert_no_input_dropped`)。
+2. **降采样格网锚定源像素**(`DemSampler`),避免采样相位随瓦片漂移。
+3. **逐瓦片择优三角化**(`triangulator="auto"`):RTIN 自适应网格(见 `rtin.py`)与规则
+   格网各编码一次,取压缩后更小的那份(`_choose_tile_bytes`),字节数不可能变差。
+   误差阈值 `K * 顶点间距`,`DEFAULT_MAX_ERROR_K = 0.15`。
+4. **oct-encoded 逐顶点法线**(`normals=True`,默认开):在 ECEF 空间求法线,瓦片外围
+   取 ghost 环采样,保证相邻瓦片边界法线一致。
+5. **quantized-mesh 编码**(`encode_quantized_mesh`):zigzag + high-water-mark 索引,
+   uint32 索引段补 4 字节对齐 padding,boundingSphere 半径按实际顶点网格求。
+
+`build_terrain` 另提供 `level_offset`、`tile_size`、`workers`、进度/阶段回调与
+`stop_flag`;GDAL 的静默失败(返回成功但产物截断)由 `_raise_on_gdal_error` 显式拦截。
+
 """
 
 from __future__ import annotations
@@ -1715,7 +1728,7 @@ def build_terrain(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="DEM -> Cesium quantized-mesh-1.0 terrain tiles (cesiumlab compatible)")
+    ap = argparse.ArgumentParser(description="DEM -> Cesium quantized-mesh-1.0 terrain tiles")
     ap.add_argument("--input", "-i", required=True, action="append")
     ap.add_argument("--output", "-o", required=True)
     ap.add_argument("--min-level", type=int, default=0)
