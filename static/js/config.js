@@ -106,11 +106,16 @@ function renderCacheStats(data) {
     if (!categories.length) {
         body.innerHTML = '<div class="text-muted">' + t('js.config.cache.empty') + '</div>';
     } else {
+        // 三段结构（分类名 / 尺寸读数 / 清理按钮）由 style.css 的 .cache-row 排版，
+        // 不再用 d-flex + justify-content-between 这几个工具类拼：读数必须整段
+        // 不换行（工具类没地方挂 white-space），而分类名是允许折行的那一段 ——
+        // `瓦片缓存（roadmap · 23e09a69）` 折两行时读数曾跟着断成
+        // 「581.6 KB · 39」+「files」（中英文都会，实测）。
         body.innerHTML = categories.map(function (c) {
-            return '<div class="d-flex justify-content-between align-items-center py-1">' +
-                '<span>' + window.escapeHtml(c.label) + '</span>' +
-                '<span class="d-flex align-items-center gap-2">' +
-                '<span class="text-muted">' +
+            return '<div class="cache-row">' +
+                '<span class="cache-row__label">' + window.escapeHtml(c.label) + '</span>' +
+                '<span class="cache-row__meta">' +
+                '<span class="cache-row__size text-muted">' +
                 t('js.config.cache.size_files',
                     { size: formatBytes(c.size_bytes), count: c.file_count }) +
                 '</span>' +

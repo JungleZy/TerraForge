@@ -27,7 +27,7 @@ MESSAGES = {
     },
     'tpl.history.stats.downloaded': {
         'zh': '累计下载量',
-        'en': 'Total downloaded',
+        'en': 'Total',
     },
     'tpl.history.map.title': {
         'zh': '历史区域地图',

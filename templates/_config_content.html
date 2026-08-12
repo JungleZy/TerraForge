@@ -308,9 +308,12 @@
                         <div id="cacheStatsBody" class="mb-2">
                             <div class="text-muted">{{ t('tpl.config.cache.loading') }}</div>
                         </div>
-                        <div class="d-flex justify-content-between align-items-center border-top pt-2 mb-2">
-                            <strong>{{ t('tpl.config.cache.total') }}</strong>
-                            <span><span id="cacheStatsTotal">—</span>{{ t('tpl.config.cache.total_files', files='<span id="cacheStatsTotalFiles">—</span>')|safe }}</span>
+                        {#- 合计行与上面每一行是同一种排版（名字 + 读数），所以用
+                            同一个 .cache-row：读数整段不换行，长名字才是折行的那一段。
+                            --total 只加顶边与上间距。 #}
+                        <div class="cache-row cache-row--total mb-2">
+                            <strong class="cache-row__label">{{ t('tpl.config.cache.total') }}</strong>
+                            <span class="cache-row__size"><span id="cacheStatsTotal">—</span>{{ t('tpl.config.cache.total_files', files='<span id="cacheStatsTotalFiles">—</span>')|safe }}</span>
                         </div>
                         <div class="d-flex gap-2">
                             <button type="button" class="btn btn-outline-secondary btn-compact" id="cacheStatsRefresh">{{ t('tpl.config.cache.refresh') }}</button>

@@ -918,15 +918,32 @@ body {
     color: inherit;
 }
 
-/* 英文标签比两字中文宽一倍不止（Settings / Zoom out ≈ 44~52px），32px 的按钮
+/* 英文标签比两字中文宽一倍不止（Settings / Zoom out ≈ 44~54px），32px 的按钮
    装不下，`white-space: nowrap` + 容器 `overflow: hidden` 会把它裁成
-   「etting」「roces」（实测）。只在英文界面下让按钮按内容伸展 —— 中文仍然是
-   规定的 34px 胶囊，一个像素不动。lang 属性由服务端按语种渲染（见
-   templates/base.html 的 html_lang）。 */
+   「etting」「roces」（实测）。只在英文界面下放宽 —— 中文仍然是规定的 34px
+   胶囊，一个像素不动。lang 属性由服务端按语种渲染（见
+   templates/base.html 的 html_lang）。
+
+   宽度交给 min-width 而不是 width：`width: max-content` 让每颗按钮各自量各自的
+   标签，同一组里 Zoom in(62px) 与 Zoom out(70px) 不一样宽，分隔线、hover 底色、
+   焦点圈跟着参差不齐，标签也不落在组的中线上（实测）。这里把 width 放回 auto
+   （基础规则钉的是 32px，非 auto 的定宽会让列向 flex 的 stretch 失效），再用
+   min-width: max-content 把最宽的那颗标签的诉求交给容器：组宽（也就是
+   .map-toolbar 的宽）按最宽标签撑出来，其余按钮被 stretch 拉齐到同一宽度。 */
 html[lang="en"] .map-panel-btn {
-    width: max-content;
-    min-width: 32px;
+    width: auto;
+    min-width: max-content;
     padding-inline: 8px;
+}
+
+/* 端头弧线要跟着宽度改。--radius-pill(999px) 在 34px 宽的中文工具条上是两段
+   17px 的弧；英文工具条 72px 宽，同一条声明变成 36px 的半圆端头，直接啃掉首尾
+   按钮的标签 ——「Zoom out」在离底 10px 处两端各需让出 11px，实际只有 8px 富余，
+   于是被 overflow: hidden 裁掉尾字母（实测）。钉死 17px：与中文端头同一段弧，
+   下面 first/last-child 那几条按 17px 算出来的让位余量继续成立，形状从胶囊变成
+   同弧度的圆角矩形，两种语言看着仍是一套语言。 */
+html[lang="en"] .map-panel-triggers {
+    border-radius: 17px;
 }
 
 /* 胶囊两端各有一段 17px 深的圆弧（半径 = 34px 组宽的一半）。首尾按钮的内容
@@ -1884,6 +1901,19 @@ html[lang="en"] .map-panel-btn {
     align-items: center;
 }
 
+/* 「分析」按钮不参与收缩，让位的是它左边那个 URL 输入框。配置面板宽 480px、
+   这一行是「输入框 + 按钮」：英文 Analyze 比中文两字宽，flex 的默认收缩会把
+   按钮压到比标签窄，字被裁掉（实测少 4px）。输入框补 min-width: 0 —— 表单
+   控件的 min-width: auto 是按 size 属性算的一段固有宽度，不清零它就轮不到
+   输入框收缩，行整体溢出。 */
+.tile-url-wizard__row .btn {
+    flex: none;
+}
+
+.tile-url-wizard__row .form-control {
+    min-width: 0;
+}
+
 /* 向导给出的模板与警告。警告**逐字**显示服务端原文（凭据外泄、x/y 顺序猜的、
    TMS 疑似 —— 每一条都可能让用户下出一整套错位的图），所以它不是弱化脚注：
    琥珀色、左边条，与缺口决策行同一形态语言。 */
@@ -2216,6 +2246,67 @@ html[lang="en"] .map-panel-btn {
     font-weight: 600;
     color: var(--color-text-primary);
     margin-bottom: 0.5rem;
+}
+
+/* 英文下让 .row 的分栏按**容器**实际宽度铺，而不是 Bootstrap 那个按视口断点
+   定死的 33.33%。同一份表单长在两个宽度差一倍多的宿主里：/config 整页（约
+   1200px）与右侧配置面板（--panel-config-w 默认 480px，还能拖窄）。面板里三栏
+   各 149px，英文标签「Default min zoom level」放不下就折成两行，同排的
+   「Default map style」只有一行 —— 两个输入框差 21px 高，整排看着是错位的
+   （实测；中文标签四个字一行装得下，不触发，所以中文不进这条）。
+   flex: 1 1 200px 把「摆几栏」交给行自己：面板宽度下落成两栏（每栏 224px，
+   所有英文标签回到一行，输入框还宽了 75px），面板拖到很窄则落成一栏；
+   /config 整页照旧三栏均分，与改前逐像素相同。width: auto 不能省 ——
+   Bootstrap 的 col-md-* 是 `flex: 0 0 auto` + 写死的百分比 width，
+   不把 width 清回 auto，flex-basis 不起作用。
+   用后代组合符而不是 `>`：tests/test_css_contract.py 的按钮层叠模型
+   （_btn_branch_applies）遇到子/兄弟组合符一律判「模型不支持」，会把十条
+   按钮断言一起顶成失效；后代写法在这份 markup 里选中的是同一批元素。 */
+html[lang="en"] .config-section .row [class*="col-md-"] {
+    flex: 1 1 200px;
+    width: auto;
+}
+
+/* ==========================================================================
+   .cache-row —— 配置页「缓存管理」的一行（分类名 + 尺寸读数 + 清理按钮）
+
+   改前是 config.js 用 `d-flex justify-content-between` 拼的匿名行：尺寸读数
+   没有 nowrap，长分类名（`瓦片缓存（roadmap · 23e09a69）`）折两行时，读数
+   「581.6 KB · 39 files」跟着断成两行（中英文都会，实测）。排版职责现在落在
+   类名上：名字是可以折行的那一段，读数与按钮整段钉死不换行。
+   ========================================================================== */
+.cache-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-block: 4px;             /* 与原来的 py-1 一致 */
+}
+
+/* 允许折行的那一段。min-width: 0：flex item 的 min-width: auto 会按最长
+   不可断串给下限，不清零名字会把整行顶溢出。 */
+.cache-row__label {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 尺寸读数 + 清理按钮：不收缩、不换行。名字折行时它们原地不动。 */
+.cache-row__meta {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 读数从不在中途断开 —— 断在「39」和「files」之间没有任何语义。 */
+.cache-row__size {
+    white-space: nowrap;
+}
+
+/* 合计行：与上面的条目行同一排版，只是加顶边和间距（原为 border-top pt-2）。 */
+.cache-row--total {
+    border-top: 1px solid var(--color-border);
+    padding-top: 8px;
 }
 
 /* 这里原本有两条 (0,2,0) 的规则，A5 / Task 10 一并删除：
@@ -3864,11 +3955,22 @@ code {
    ========================================================================== */
 .bounds-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     margin-top: 6px;
     padding-top: 6px;
     border-top: 1px solid var(--color-border);
+}
+
+/* 按钮不参与收缩。这一行是「按钮 + 按钮 + 提示」，浮层宽度封顶 420px：英文
+   「Download」「Delete」连图标比中文两字宽出三四十像素，一行装不下时 flex 的
+   默认收缩（flex-shrink: 1）先去压按钮，.btn 自己又是 overflow 裁剪的，结果
+   是把标签裁掉尾字母（实测 Download 少 14px、Delete 少 8px，中文下不触发）。
+   按钮钉死本尊宽度，装不下就让上面的 flex-wrap 把提示整条挪到第二行 ——
+   提示是可以换行的那一个，按钮不是。 */
+.bounds-actions .btn {
+    flex: none;
 }
 
 .bounds-hint {
@@ -4418,13 +4520,28 @@ code {
     padding: 10px 6px 0 0;
     margin-top: 4px;
     border-top: 1px solid var(--color-border);
-    background: var(--color-bg-primary);
 }
 
-/* 面板底色比页面底色浅一层，操作条要跟着所在容器走，否则贴着卡片会出现一条
-   突兀的深色带。 */
+/* 面板里它是一条贴边的横带：面板底色是 elevated，操作带回落一层用
+   bg-secondary，否则贴着卡片会出现一条突兀的深色带。 */
 .workbench-panel__body--fill .config-footer {
     background: var(--color-bg-secondary);
+}
+
+/* 独立页 /config 上它是浮在内容列底部的操作条 —— 不能沿用面板那种「贴边
+   横带」的写法。改前直接拿页面底色（bg-primary）加一条 7% 白的分隔线：
+   上面是滚到一半被裁掉底边的卡片，下面是给状态栏胶囊让位的 54px 空白，
+   两颗按钮像悬在半空、还像是从卡片里漏出来的（实测中英文同形，与语言无关）。
+   改成与卡片同级的浮层表面：elevated 底（背景四层里「浮在内容之上」那档，
+   滑出面板同款）、卡片同款描边与圆角、浮层级阴影。右外边距 6px 对齐上面
+   .config-scroll 的滚动条留白，让条与卡片的右缘在同一条线上。 */
+.page-content .config-footer {
+    padding: 8px 12px;
+    margin: 8px 6px 0 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-card);
+    background: var(--color-bg-elevated);
+    box-shadow: var(--shadow-md);
 }
 
 .page-content--fill {

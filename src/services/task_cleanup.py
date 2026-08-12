@@ -33,6 +33,9 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from src.core.config import Config
+# 缓存分类名要按界面语种给（没有请求上下文时 get_locale 回落 zh）。
+# src.i18n 只依赖自己的 catalog（一堆纯 dict 模块），顶层引进来不成环。
+from src.i18n import t
 # 缓存分类的人类可读命名要用它们。两个模块都只依赖 src.core.config /
 # src.contracts（不碰 numpy / osgeo / DB），顶层导入不成环、不拖慢启动。
 # cache_exclusive 与 task_logging 就**不能**这样引：前者在 cache_usage_by_namespace
@@ -1009,20 +1012,26 @@ def _category_label(dir_name: str) -> str:
     「加了新样式，缓存页仍显示单字符码」这类静默走样。认不出的码原样显示：
     用户自定义图源的码不在表里，显示 `瓦片缓存（q-1a2b3c4d）` 也比显示一个猜
     出来的名字诚实。
+
+    文案走 i18n（`api.cache.category.*`）：这几个字符串是直接印在配置页上的
+    界面文案，写死中文就是英文界面上突然冒出来的一句中文。括号也在译文里 ——
+    中文全角（）、英文半角 ()，不是同一个字符。没有请求上下文时（启动清扫、
+    CLI、测试）get_locale() 回落 zh，输出与改造前逐字一致。
     """
     if dir_name == 'dem':
-        return 'DEM 缓存'
+        return t('api.cache.category.dem')
     code = SourceSnapshot.style_of_namespace(dir_name)
     style = STYLE_NAMES.get(code, '')
     if not style:
-        return f'瓦片缓存（{dir_name}）'
+        return t('api.cache.category.tiles', name=dir_name)
     if SourceSnapshot.is_namespace(dir_name):
         # `s-1a2b3c4d` → `瓦片缓存（satellite · 1a2b3c4d）`
         fingerprint = dir_name[len(code) + 1:]
-        return f'瓦片缓存（{style} · {fingerprint}）'
+        return t('api.cache.category.tiles_fingerprint',
+                 style=style, fingerprint=fingerprint)
     # 迁移前的裸样式码目录（`cache/s`）。user_version 6 会把它们改名，但迁移
     # 失败（目录被占用）时它们还在，得有个说法而不是掉进上面那条兜底。
-    return f'瓦片缓存（{style}）'
+    return t('api.cache.category.tiles', name=style)
 
 
 def get_cache_stats(cache_root=None) -> dict:
@@ -1065,7 +1074,8 @@ def get_cache_stats(cache_root=None) -> dict:
         except OSError:
             continue
     if root_files:
-        categories.append({'key': '_root', 'label': '其他',
+        categories.append({'key': '_root',
+                           'label': t('api.cache.category.other'),
                            'size_bytes': root_bytes, 'file_count': root_files})
         total_bytes += root_bytes
     categories.sort(key=lambda c: c['size_bytes'], reverse=True)

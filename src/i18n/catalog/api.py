@@ -63,6 +63,32 @@ MESSAGES = {
         'en': 'Local terrain',
     },
 
+    # ---- /api/cache/stats（配置页「缓存管理」的分类名）----
+    # 这几条由 services/task_cleanup._category_label 拼装，直接印在缓存管理页上，
+    # 而那一页唯一的操作是「删掉哪一类」—— 认不出是哪个图源就等于让人凭运气删
+    # 几十 GB，所以它们必须是译文而不是原样回中文。
+    # 括号是**语种自己的**括号：中文用全角（），英文用半角 () 前加空格。
+    'api.cache.category.dem': {
+        'zh': 'DEM 缓存',
+        'en': 'DEM cache',
+    },
+    # {name} 是样式名（roadmap / satellite…）或认不出来时的目录名原文
+    'api.cache.category.tiles': {
+        'zh': '瓦片缓存（{name}）',
+        'en': 'Tile cache ({name})',
+    },
+    # 指纹留在括号里当消歧标识：换过源之后同一样式会有两个命名空间，
+    # 它们的区别**只有**指纹。
+    'api.cache.category.tiles_fingerprint': {
+        'zh': '瓦片缓存（{style} · {fingerprint}）',
+        'en': 'Tile cache ({style} · {fingerprint})',
+    },
+    # cache 顶层的散落文件（正常不会有）
+    'api.cache.category.other': {
+        'zh': '其他',
+        'en': 'Other',
+    },
+
     # ---- /api/fs/browse（目录选择弹窗）----
     'api.fs.invalid_path': {
         'zh': '路径无效：{error}',
