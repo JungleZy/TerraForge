@@ -381,7 +381,8 @@ def test_a_map_download_runs_normally_when_the_disk_is_fine(
 # 5. DEM 下载循环
 # ---------------------------------------------------------------------------
 
-def test_the_dem_engine_stops_before_touching_the_network(tmp_path, free_space):
+def test_the_dem_engine_stops_before_touching_the_network(isolated_config, tmp_path,
+                                                          free_space):
     """DEM 的批就是颗粒（一颗 30-50 MB）。判死时不抛、不发请求，颗粒回写 pending。"""
     from src.services.dem_download_engine import DemDownloadEngine
     from src.services.disk_budget import RunningRecheck

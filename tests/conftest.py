@@ -146,7 +146,8 @@ def isolate_task_logs(monkeypatch, tmp_path):
 
     ⚠️ 本 fixture **不**替代各用例自己 patch 那四个路径。BASE_DIR 只影响
     「没被单独 patch 过」的派生路径；DATABASE_PATH 等在 Config 上是独立的类
-    属性，不跟着 BASE_DIR 走（它们在 import 时就算好了）。
+    属性，不跟着 BASE_DIR 走（它们在 import 时就算好了）—— 下一个 fixture
+    `point_database_at_a_path_that_does_not_exist` 专门堵 DATABASE_PATH。
     """
     try:
         from src.core import config as _config
@@ -155,6 +156,36 @@ def isolate_task_logs(monkeypatch, tmp_path):
     sandbox = tmp_path / "_base"
     sandbox.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(_config.Config, "BASE_DIR", sandbox, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def point_database_at_a_path_that_does_not_exist(monkeypatch, tmp_path):
+    """没自己隔离数据库的用例，必须在开发机上以**和干净 clone 一样**的方式失败。
+
+    `Config.DATABASE_PATH` 是 import 期算好的类属性，指向 `<repo>/data/
+    map_downloader.db`。开发机上这个文件存在（跑过程序），CI 上是干净 clone、
+    连 `data/` 目录都没有 —— 于是「忘了隔离数据库」这一类用例在本地全绿、在
+    CI 上以 `sqlite3.OperationalError: unable to open database file` 变红。
+    v0.3.3 首次发版构建就是这么红的（`test_disk_recheck_inflight.py` 的一条
+    用例构造 `DemDownloadEngine()`，构造函数读配置）。
+
+    这里把它指向一个**父目录不存在**的沙箱路径，让两边行为一致：
+    - 干净 clone 的语义被搬到开发机上，这类用例本地就红，不必等 CI；
+    - 顺带堵死「测试写进用户真实任务库」这条更糟的路 —— 今天任何一条没隔离的
+      用例都能往开发者正在用的 `data/map_downloader.db` 里写。
+
+    父目录**故意不建**：建了的话 sqlite 会当场造一个空库，连接成功、查表失败，
+    用例拿着一个静默的空库继续跑，与 CI 又对不上了。要的就是连不上。
+
+    需要真数据库的用例照旧自己 patch `DATABASE_PATH`（各文件的 `isolated_config`
+    / `client` 等 helper 都这么做），在本 fixture 之后生效，互不冲突。
+    """
+    try:
+        from src.core import config as _config
+    except Exception:  # 环境缺依赖时不阻断收集
+        return
+    monkeypatch.setattr(_config.Config, "DATABASE_PATH",
+                        tmp_path / "_nodb" / "map_downloader.db", raising=False)
 
 
 @pytest.fixture(scope="session", autouse=True)

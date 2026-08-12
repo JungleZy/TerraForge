@@ -240,9 +240,29 @@ jobs:
     # 理由(为什么是「实测值下压几点」、为什么不能加 `--cov=app.py`、为什么参数
     # 只能加在 `tests/` 后面)写在 test-build.yml 的同名步骤上,那里是它先落地
     # 的地方。两处必须同值同参:发版这条流水线松一点,等于所有回归都能靠推 tag
-    # 绕过去。
+    # 绕过去。「跑完了没有」那道 junit 校验同理,理由也写在那边。
     - name: Run test suite
-      run: python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=78 -q
+      run: |
+        rm -f junit.xml
+        python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=78 -q --junitxml=junit.xml
+        python - <<'PY'
+        import os
+        import sys
+        import xml.etree.ElementTree as ET
+
+        if not os.path.exists('junit.xml'):
+            sys.exit('FAILED: pytest 退出码为 0 却没写出 junit.xml —— '
+                     '套件没有跑完,进程是被中途杀掉的。')
+        root = ET.parse('junit.xml').getroot()
+        suites = [root] if root.tag == 'testsuite' else list(root)
+        total = sum(int(s.get('tests', 0)) for s in suites)
+        bad = sum(int(s.get('failures', 0)) + int(s.get('errors', 0)) for s in suites)
+        print(f'junit: tests={total} failures+errors={bad}')
+        if bad:
+            sys.exit(f'FAILED: junit 报告里有 {bad} 条失败/错误')
+        if total < 2500:
+            sys.exit(f'FAILED: 只跑了 {total} 条用例,低于地板 2500')
+        PY
 
     - name: Build with Nuitka
       run: python nuitka_build.py
