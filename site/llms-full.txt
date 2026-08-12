@@ -1,0 +1,195 @@
+# TerraForge — full reference for language models
+
+Version: 0.3.3
+Homepage: https://terraforge-gis.pages.dev/ (Chinese) · https://terraforge-gis.pages.dev/en/ (English)
+Source: https://github.com/JungleZy/TerraForge
+License: MIT (software code only)
+Last updated: 2026-08-12
+
+This file is the plain-text version of everything the TerraForge website states. It is
+written to be quoted directly. Every number, format name and limitation below is taken
+from the shipping v0.3.3 build.
+
+## What TerraForge is
+
+TerraForge is an open-source, self-hosted GIS data acquisition and processing tool. You
+run it on your own machine; it opens a web interface in your browser, you draw a
+rectangle (or import a vector area) over a map, and it produces usable geodata for that
+area through four pipelines that share one selection, one task scheduler and one cache:
+
+1. Map tiles — downloaded and, optionally, mosaicked into a georeferenced GeoTIFF or
+   packed into a single-file MBTiles.
+2. DEM elevation data — 1°×1° tiles fetched automatically for the selected extent.
+3. 3D terrain — the DEM sliced into Cesium quantized-mesh 1.0 terrain tiles.
+4. Contour lines — rendered into a standard XYZ raster tile directory.
+
+It is a local tool, not a hosted service and not an API. There is no account, no cloud
+component and no usage metering.
+
+Disambiguation: this TerraForge is the GIS tool authored by JungleZy (GitHub:
+JungleZy/TerraForge). It is unrelated to other software that shares the name.
+
+## Pipeline 1 — Map tiles
+
+- Source: Google Maps tiles. Style codes: `m` standard, `s` satellite, `y` satellite
+  with labels, `h` roads, `t` terrain.
+- Outputs, independently selectable: a tile directory (`z/x/y`), a mosaicked GeoTIFF
+  (one file per zoom level, georeferenced via GDAL), and MBTiles (ticked when the task
+  is created, or exported afterwards; exporting does not delete the original tiles).
+- Tiles are mirrored into the output directory while the download runs, not only at
+  the end.
+- The cache is keyed by "style + coordinates" and shared across tasks: re-downloading
+  the same area in a different task never re-fetches tiles you already have.
+- The tile count for a selection is computed and shown before the task is created.
+
+## Pipeline 2 — DEM elevation data
+
+- Default source: Copernicus GLO-30 (30 m) from a public S3 bucket. No registration,
+  no credentials, works out of the box.
+- Optional source: ASTER GDEM v3, product `ASTGTM.003` (30 m). Requires a NASA
+  Earthdata account, entered on the settings page.
+- The area of interest can be drawn on the map or imported from GeoJSON, KML, KMZ or
+  Shapefile. Multi-part geometries and holes are supported.
+- The required 1°×1° tiles are derived from the selection automatically and fetched one
+  by one.
+- Areas crossing the antimeridian (180°) are split into two parts automatically.
+
+## Pipeline 3 — 3D terrain (Cesium quantized-mesh)
+
+- Output format: quantized-mesh 1.0, consumed directly by CesiumJS
+  (`CesiumTerrainProvider`), no conversion step.
+- Input: a completed DEM download task, or a GeoTIFF uploaded from your machine.
+- A 167 MB global base terrain ships inside every package. It is derived from the
+  GEBCO 2024 Grid, includes bathymetry, and is hole-free worldwide. It is extracted
+  automatically on first run.
+- Tiling results are implanted into the base terrain's output directory, so your
+  high-resolution area cascades onto the global base: zooming out falls back to the
+  global layer instead of dropping into a hole.
+- Without tiling, a hillshade preview of a DEM can still be rendered on demand.
+
+## Pipeline 4 — Contour lines
+
+- Output: an ordinary XYZ raster tile directory. Leaflet, OpenLayers and CesiumJS load
+  it directly; TerraForge does not need to be installed to view the result.
+- Configurable, with live preview: contour interval, intermediate and index contour
+  colors, hypsometric tint breaks, and terrain hillshading.
+- Default hypsometric palette and its elevation breaks: `#5e8c61` `#8fbf6f` `#b6cf7e`
+  `#dcd98e` `#d9b97e` `#c49a6c` `#ac7f58` `#8e6246` at 0 / 200 / 500 / 1000 / 2000 /
+  3000 / 4000 / 5000 m.
+- Data source: uploaded `.tif` files (multiple allowed) or a completed DEM task. Source
+  files are used in place, not copied; deleting a contour task leaves the original DEM
+  untouched.
+
+## Engineering guarantees
+
+These are the properties the project spends most of its effort on, and the honest answer
+to "why not just use a bulk tile downloader".
+
+- Real progress. Download speed, remaining time and the per-zoom mosaicking and copying
+  phases are pushed over WebSocket. The progress bar does not park at 100% while work
+  continues off-screen.
+- Missing tiles are never silent. Every tile lands in one of five accounting buckets:
+  success, no data at the source, retryable failure, permanent failure, cache write
+  failure. Only "no data at the source" completes a task automatically. A real failure
+  stops the task in a pending-decision state; if you accept the gaps, the result is
+  permanently marked as containing missing tiles.
+- Interrupted work resumes. Resumable downloads, cache shared across tasks, copying
+  while downloading, and atomic writes through `.part` temporary files plus rename.
+  Pausing, resuming and retrying never re-download tiles already on disk.
+- It does not phone home. No telemetry, no tracking, no usage statistics. Third-party
+  frontend libraries are vendored locally and no CDN is contacted at runtime. Apart
+  from the map sources, elevation sources and proxy you configure yourself, it
+  connects to no server.
+- Task history is visualised: past areas are drawn on the map, and finished tasks can
+  be previewed as tiles, terrain or hillshade.
+
+## Platforms, packaging and running
+
+- Prebuilt packages: Windows 10+ (x64) `terraforge-windows.zip`, macOS Apple Silicon
+  (arm64) `terraforge-macos.tar.gz`, Linux x64 `terraforge-linux.tar.gz` (built on
+  ubuntu-latest; equally new or newer distributions).
+- Unzip and run. The target machine needs neither Python nor a separate GDAL
+  installation — packages are built with Nuitka in standalone mode and carry the GDAL
+  and PROJ data directories with them.
+- Windows: double-click `terraforge.exe`. macOS / Linux: run `./terraforge`. Then open
+  `http://localhost:5000` in a browser.
+- A second port, `5001`, serves tiles. The application still works if a firewall does
+  not allow that port through.
+- Intel Macs are not supported; the macOS package is Apple Silicon only.
+- Move the whole `terraforge/` directory when relocating it. Moving only the executable
+  fails with `Corrupt bundle: missing GDAL/PROJ data directories`.
+- macOS: run `xattr -cr .` inside the extracted directory before the first launch to
+  clear the quarantine attribute.
+- There is no installer (no MSI, DMG or DEB) and no auto-update. Upgrading means
+  downloading a new package. Each release page carries a SHA-256 manifest.
+- Package size is large because the 167 MB global base terrain is bundled.
+
+## Security posture
+
+TerraForge listens on `0.0.0.0:5000` and has no login or authentication mechanism of
+any kind. Its API can read and write local disk paths and delete directories. Run it
+only on a trusted local machine or LAN. Do not expose it directly to the public
+internet.
+
+## Running from source
+
+- Python 3.12, managed with uv.
+- GDAL system library plus Python bindings: apt on Linux; conda-forge on Windows and
+  Apple Silicon macOS. The two routes cannot be mixed.
+- Stack: Flask, Flask-SocketIO, aiohttp, GDAL, SQLite on the backend; CesiumJS 1.143,
+  Bootstrap 5.3 and Socket.IO (all vendored locally) on the frontend; pytest for tests;
+  Nuitka for packaging.
+- Full instructions:
+  https://github.com/JungleZy/TerraForge/blob/master/docs/guides/INSTALL.md
+
+## Configuration highlights
+
+Theme (dark / light / system) and accent color; default save path with a directory
+browser and arbitrary absolute paths; download concurrency, with a recommendation
+measured from actual network speed; request timeout; proxy (leave empty to auto-detect
+a working proxy); cache inspection and manual clearing by category — the cache is never
+silently deleted; GDAL parameters; NASA Earthdata credentials; the tile server list.
+
+## Licensing and attribution
+
+- The software is MIT licensed, Copyright (c) 2026 JungleZy.
+- MIT covers the project's code only. It grants no right to use any data or online
+  service. Attribution requirements, bulk-download policies, tokens and quotas of map
+  sources such as Google, Esri, Tianditu, OSM and Cesium Ion must each be handled by
+  the user independently.
+- The bundled global base terrain is derived from the GEBCO 2024 Grid, which is in the
+  public domain but requires attribution. When redistributing terrain produced with
+  TerraForge, keep the citation: "GEBCO Compilation Group (2024) GEBCO 2024 Grid."
+- The tool is intended for study and research. Users must comply with the Google Maps
+  Terms of Service and applicable law; the author is not responsible for consequences
+  of use.
+
+## Common questions
+
+Does it need an API key or an account?
+No, not for the default configuration. Map tiles and Copernicus GLO-30 elevation both
+work with no credentials. Only ASTER GDEM v3 needs a NASA Earthdata account.
+
+Does it need GDAL or Python installed?
+Not for the prebuilt packages; both are bundled. Running from source needs Python 3.12
+and a GDAL installation.
+
+Can it produce terrain for CesiumJS?
+Yes. That is pipeline 3: quantized-mesh 1.0 tiles plus a bundled global base terrain so
+that low zoom levels are never empty.
+
+Can the contour output be used outside TerraForge?
+Yes. It is a standard XYZ tile directory usable by Leaflet, OpenLayers, CesiumJS or any
+XYZ-capable client.
+
+Is there a hosted version or an API?
+No. TerraForge runs locally and has no hosted service.
+
+What happens if a download fails halfway?
+The task stops in a pending-decision state instead of silently completing. You can
+resume it, retry the failures, or accept the gaps — accepted gaps are recorded
+permanently on the result.
+
+Which operating systems are supported?
+Windows 10+ (x64), macOS on Apple Silicon (arm64), and Linux (x64). Intel Macs are not
+supported.

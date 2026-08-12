@@ -411,18 +411,18 @@ footer { border-top: 1px solid var(--line); padding-block: clamp(3rem, 6vw, 4.5r
 
 /* ── 语言切换 ──────────────────────────────────────────────────────── */
 /* 排在 .masthead nav 里、GitHub 之前，与 a.ext 共用一套等宽小号排版，
-   免得导航条上出现第二种字号。选中态直接用 aria-pressed 选择器 ——
-   无障碍状态和视觉状态是同一个事实，不该维护两份。 */
+   免得导航条上出现第二种字号。两个标签是真链接（/ 与 /en/），选中态用
+   aria-current="page" —— 无障碍状态和视觉状态是同一个事实，不该维护两份。
+   （原来是 <button> + aria-pressed 的运行期切换，已改为两个静态页面：
+   aria-pressed 属于按钮，链接的当前项用 aria-current。） */
 .lang { display: flex; align-items: center; gap: .45rem; flex: none; }
 .lang-btn {
-  appearance: none; -webkit-appearance: none;
-  margin: 0; padding: 0; border: 0; background: none; cursor: pointer;
   font-family: var(--mono); font-size: .8rem; letter-spacing: .04em; line-height: 1;
   white-space: nowrap;
   color: var(--paper-3); transition: color .18s ease;
 }
 .lang-btn:hover { color: var(--paper); }
-.lang-btn[aria-pressed="true"] { color: var(--sky); }
+.lang-btn[aria-current="page"] { color: var(--sky); }
 .lang-sep { width: 1px; height: .8em; background: var(--line-hi); }
 /* 窄屏：切换器不参与 .hide-sm —— 手机上必须还能换语言。腾地方分两步：
    收紧导航间距，再允许导航换行。英文标签比中文长，360–400px 宽度下
@@ -432,10 +432,6 @@ footer { border-top: 1px solid var(--line); padding-block: clamp(3rem, 6vw, 4.5r
   .masthead nav { flex-wrap: wrap; justify-content: flex-end; gap: .55rem .8rem; }
   .lang { gap: .3rem; }
 }
-
-/* 防闪烁：<head> 里的内联脚本在非默认语言时给 <html> 挂 .i18n-pending，
-   assets/i18n.js 换完文案后摘掉。英文用户因此不会先看到一屏中文。 */
-html.i18n-pending body { visibility: hidden; }
 
 /* ══ 动效 ═══════════════════════════════════════════════════════════════
    全部入场动效关在 no-preference 里：开了「减少动态效果」的用户拿到的是
@@ -462,66 +458,66 @@ html.i18n-pending body { visibility: hidden; }
   .hero h1,
   .hero .lede,
   .hero .cta,
-  .hero .hero-meta { animation: tf-rise .7s cubic-bezier(.22, 1, .36, 1) backwards; }
-  /* 项目名先到位，画布的扫描线延迟 280ms 起跑（见 terrain-fx.js 的 revealStart），
+  .hero .hero-meta { animation: tf-rise 1.02s cubic-bezier(.22, 1, .36, 1) backwards; }
+  /* 项目名先到位，画布的扫描线延迟 410ms 起跑（见 terrain-fx.js 的 revealStart），
      正好落在这块字浮起来之后 —— 先有字，再被扫描线点亮。 */
-  .hero .brandmark { animation-delay: .04s; }
-  .hero .coords    { animation-delay: .16s; }
-  .hero h1         { animation-delay: .25s; }
-  .hero .lede      { animation-delay: .34s; }
-  .hero .cta       { animation-delay: .43s; }
-  .hero .hero-meta { animation-delay: .51s; }
+  .hero .brandmark { animation-delay: .06s; }
+  .hero .coords    { animation-delay: .23s; }
+  .hero h1         { animation-delay: .36s; }
+  .hero .lede      { animation-delay: .49s; }
+  .hero .cta       { animation-delay: .62s; }
+  .hero .hero-meta { animation-delay: .74s; }
 
   /* 地图从 1.03 沉降到 1，像镜头稳下来。比淡入更贴合「这是一张地图」。 */
-  .shot-hero img { animation: tf-settle .95s cubic-bezier(.22, 1, .36, 1) .30s backwards; }
+  .shot-hero img { animation: tf-settle 1.38s cubic-bezier(.22, 1, .36, 1) .44s backwards; }
 
   /* ── 签名动作：高程图例逐档展开 ───────────────────────────────────
-     八个色块各自从左边缘长出，40ms 一档，读起来是一条分层设色图例被
+     八个色块各自从左边缘长出，60ms 一档，读起来是一条分层设色图例被
      「绘制」出来 —— 全站唯一的大动作，其余一切保持克制。 */
   .legend .legend-ramp i { transform: scaleX(0); transform-origin: left; }
   .legend.in .legend-ramp i {
-    animation: tf-band .42s cubic-bezier(.22, 1, .36, 1) both;
+    animation: tf-band .61s cubic-bezier(.22, 1, .36, 1) both;
   }
   .legend.in .legend-ramp i:nth-child(1) { animation-delay: .00s; }
-  .legend.in .legend-ramp i:nth-child(2) { animation-delay: .04s; }
-  .legend.in .legend-ramp i:nth-child(3) { animation-delay: .08s; }
-  .legend.in .legend-ramp i:nth-child(4) { animation-delay: .12s; }
-  .legend.in .legend-ramp i:nth-child(5) { animation-delay: .16s; }
-  .legend.in .legend-ramp i:nth-child(6) { animation-delay: .20s; }
-  .legend.in .legend-ramp i:nth-child(7) { animation-delay: .24s; }
-  .legend.in .legend-ramp i:nth-child(8) { animation-delay: .28s; }
+  .legend.in .legend-ramp i:nth-child(2) { animation-delay: .06s; }
+  .legend.in .legend-ramp i:nth-child(3) { animation-delay: .12s; }
+  .legend.in .legend-ramp i:nth-child(4) { animation-delay: .17s; }
+  .legend.in .legend-ramp i:nth-child(5) { animation-delay: .23s; }
+  .legend.in .legend-ramp i:nth-child(6) { animation-delay: .29s; }
+  .legend.in .legend-ramp i:nth-child(7) { animation-delay: .35s; }
+  .legend.in .legend-ramp i:nth-child(8) { animation-delay: .41s; }
 
   /* 刻度与说明等色带铺完再出现，否则会和色带抢注意力 */
   .legend .legend-scale,
-  .legend .legend-cap { opacity: 0; transition: opacity .5s ease .42s; }
+  .legend .legend-cap { opacity: 0; transition: opacity .73s ease .61s; }
   .legend.in .legend-scale,
   .legend.in .legend-cap { opacity: 1; }
 
   /* ── 通用滚动揭示 ─────────────────────────────────────────────── */
   .rv {
     opacity: 0; transform: translateY(16px);
-    transition: opacity .6s cubic-bezier(.22, 1, .36, 1),
-                transform .6s cubic-bezier(.22, 1, .36, 1);
+    transition: opacity .87s cubic-bezier(.22, 1, .36, 1),
+                transform .87s cubic-bezier(.22, 1, .36, 1);
   }
   .rv.in { opacity: 1; transform: none; }
 
-  /* 管线段落：文字先落位，截图晚 90ms —— 视线自然从左读到右 */
+  /* 管线段落：文字先落位，截图晚 130ms —— 视线自然从左读到右 */
   .pipe.rv .pipe-text { transition-delay: 0s; }
   .pipe.rv > .shot { opacity: 0; transform: translateY(16px);
-    transition: opacity .6s cubic-bezier(.22, 1, .36, 1) .09s,
-                transform .6s cubic-bezier(.22, 1, .36, 1) .09s; }
+    transition: opacity .87s cubic-bezier(.22, 1, .36, 1) .13s,
+                transform .87s cubic-bezier(.22, 1, .36, 1) .13s; }
   .pipe.rv.in > .shot { opacity: 1; transform: none; }
 
   /* 参数行逐条点亮，像仪表盘上电。这里错峰是有理由的：它本来就是逐行读的。 */
   .rv .spec > div {
     opacity: 0; transform: translateY(8px);
-    transition: opacity .45s ease, transform .45s cubic-bezier(.22, 1, .36, 1);
+    transition: opacity .65s ease, transform .65s cubic-bezier(.22, 1, .36, 1);
   }
   .rv.in .spec > div { opacity: 1; transform: none; }
-  .rv.in .spec > div:nth-child(1) { transition-delay: .14s; }
-  .rv.in .spec > div:nth-child(2) { transition-delay: .20s; }
-  .rv.in .spec > div:nth-child(3) { transition-delay: .26s; }
-  .rv.in .spec > div:nth-child(4) { transition-delay: .32s; }
+  .rv.in .spec > div:nth-child(1) { transition-delay: .20s; }
+  .rv.in .spec > div:nth-child(2) { transition-delay: .29s; }
+  .rv.in .spec > div:nth-child(3) { transition-delay: .38s; }
+  .rv.in .spec > div:nth-child(4) { transition-delay: .46s; }
 
   /* 卡片网格错峰：四条主张 / 三个平台 / 四个文档入口 */
   .rv .claim,
@@ -529,7 +525,9 @@ html.i18n-pending body { visibility: hidden; }
   .rv .doc,
   .notes.rv li {
     opacity: 0; transform: translateY(12px);
-    transition: opacity .5s ease, transform .5s cubic-bezier(.22, 1, .36, 1),
+    /* background 那条是卡片的悬停反馈（.plat / .doc 基础规则里的同一条），
+       跟入场无关，保持 .2s —— 悬停慢了就是迟钝。 */
+    transition: opacity .73s ease, transform .73s cubic-bezier(.22, 1, .36, 1),
                 background .2s ease;
   }
   .rv.in .claim,
@@ -537,25 +535,25 @@ html.i18n-pending body { visibility: hidden; }
   .rv.in .doc,
   .notes.rv.in li { opacity: 1; transform: none; }
 
-  .rv.in .claim:nth-child(2) { transition-delay: .07s; }
-  .rv.in .claim:nth-child(3) { transition-delay: .14s; }
-  .rv.in .claim:nth-child(4) { transition-delay: .21s; }
+  .rv.in .claim:nth-child(2) { transition-delay: .10s; }
+  .rv.in .claim:nth-child(3) { transition-delay: .20s; }
+  .rv.in .claim:nth-child(4) { transition-delay: .30s; }
 
-  .rv.in .plat:nth-child(2) { transition-delay: .08s; }
-  .rv.in .plat:nth-child(3) { transition-delay: .16s; }
+  .rv.in .plat:nth-child(2) { transition-delay: .12s; }
+  .rv.in .plat:nth-child(3) { transition-delay: .23s; }
 
-  .rv.in .doc:nth-child(2) { transition-delay: .06s; }
-  .rv.in .doc:nth-child(3) { transition-delay: .12s; }
-  .rv.in .doc:nth-child(4) { transition-delay: .18s; }
+  .rv.in .doc:nth-child(2) { transition-delay: .09s; }
+  .rv.in .doc:nth-child(3) { transition-delay: .17s; }
+  .rv.in .doc:nth-child(4) { transition-delay: .26s; }
 
   /* .notes 自己就带 rv 类，所以是 .notes.rv li（同一元素）而不是
      .rv .notes li（两个元素）—— 后者永远匹配不上。 */
-  .notes.rv.in li:nth-child(2) { transition-delay: .04s; }
-  .notes.rv.in li:nth-child(3) { transition-delay: .08s; }
-  .notes.rv.in li:nth-child(4) { transition-delay: .12s; }
-  .notes.rv.in li:nth-child(5) { transition-delay: .16s; }
-  .notes.rv.in li:nth-child(6) { transition-delay: .20s; }
-  .notes.rv.in li:nth-child(7) { transition-delay: .24s; }
+  .notes.rv.in li:nth-child(2) { transition-delay: .06s; }
+  .notes.rv.in li:nth-child(3) { transition-delay: .12s; }
+  .notes.rv.in li:nth-child(4) { transition-delay: .17s; }
+  .notes.rv.in li:nth-child(5) { transition-delay: .23s; }
+  .notes.rv.in li:nth-child(6) { transition-delay: .29s; }
+  .notes.rv.in li:nth-child(7) { transition-delay: .35s; }
 }
 
 /* 兜底：即使上面漏了什么，reduce 用户也不会看到任何动效。 */

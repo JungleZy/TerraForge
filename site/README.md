@@ -1,8 +1,10 @@
 # site/ —— TerraForge 官网
 
-线上地址：<https://terraforge-gis.pages.dev/>
+线上地址：<https://terraforge-gis.pages.dev/>（中文） · <https://terraforge-gis.pages.dev/en/>（英文）
 
-一个静态单页站，**没有构建步骤**。`site/` 目录里是什么，线上就是什么。
+两个静态页，**没有构建步骤**。`site/` 目录里是什么，线上就是什么。英文页是生成物，
+由 `scripts/build_site_en.py` 从中文页 + 译文字典产出并提交进仓库 —— 部署侧仍然只是
+上传目录，不跑任何命令。
 
 ## 为什么不用框架
 
@@ -12,47 +14,105 @@
 
 ```
 site/
-├── index.html            # 整个页面（含滚动揭示脚本）
+├── index.html            # 中文页，唯一手写的那份
+├── en/index.html         # 英文页（生成物，头两行写着 DO NOT EDIT）
 ├── _headers              # Cloudflare Pages 响应头（缓存策略与安全头）
-├── robots.txt
-├── sitemap.xml
+├── robots.txt            # 全站可抓 + 生成式引擎 UA 明确允许
+├── sitemap.xml           # 两个页面 + 双向 hreflang
+├── llms.txt              # 给生成式引擎的索引页（llmstxt.org 格式）
+├── llms-full.txt         # 给生成式引擎的全文事实表
 └── assets/
     ├── style.css         # 全部样式；设计 token 在文件顶部，动效在文件末尾
-    ├── i18n.js           # 中英文案字典 + 语言判定/切换（133 key）
+    ├── reveal.js         # 滚动揭示（双向，rAF 位置扫描）
     ├── terrain-fx.js     # 地形场动效：全屏背景 + 首屏项目名
     ├── favicon.ico       # 取自 static/img/favicon.ico
     ├── fonts/            # Inter + JetBrains Mono，从 static/vendor/fonts/ 复制
     └── img/              # 界面截图（webp）与社交卡片（og.jpg）
 ```
 
-## 国际化（assets/i18n.js）
+译文字典不在 `site/` 里：它是构建输入，不该被部署出去，放在 `scripts/site_i18n.json`。
 
-运行时切换，不生成第二份 HTML、不引构建步骤。**代价要清楚**：搜索引擎只索引默认
-的中文内容（`?lang=en` 是同一个 URL 的运行时状态）。这个站主要靠 GitHub About 与
-README 徽章导流而不是自然搜索，所以换来的「两种语言并排放在同一张字典里、不会各自
-漂移」更值。
+## 中英文：两个真实页面
 
-加或改一条文案：
+原来是一份 HTML + `assets/i18n.js` 运行期换文案。那套对用户没问题，对机器是净损失，
+两个原因：
 
-1. 在 `index.html` 给元素挂属性 —— 纯文本用 `data-i18n="key"`，内部含
-   `<code>` / `<strong>` / `<br>` 时**必须**用 `data-i18n-html="key"`，属性用
-   `data-i18n-attr="alt:key"`（多个属性逗号分隔）。
-2. 在 `i18n.js` 的 `DICT.zh` 与 `DICT.en` 两边都加同名 key。`zh` 的值必须与
-   `index.html` 里的原文**逐字一致**，否则中→英→中切回来对不上。
-3. `<title>` 与各 `meta` 不挂 DOM 属性，走 `i18n.js` 顶部的 `META` 映射表。
+1. 英文内容没有自己的 URL。`?lang=en` 只是同一个 URL 的运行期状态，hreflang 指过去
+   拿回来的仍是中文 HTML —— 这组语言关系搜索引擎不会认。
+2. 语言判定看 `navigator.language`，而 **Googlebot 的 navigator.language 是 en-US**。
+   抓取时脚本把页面换成英文，源码、`<html lang>`、canonical 却都说中文：同一个 URL
+   两副面孔，这正是「内容不一致」类信号。
 
-两处刻意的重复，改判定规则时必须同时改：`index.html` 的 `<head>` 里有一段同步内联
-脚本做语言判定（非默认语言先给 `<html>` 挂 `.i18n-pending` 把 body 藏起来防闪烁），
-它和 `i18n.js` 里的 `pickLang()` 是同一套逻辑 —— head 里不能依赖外部文件，只能重复。
+现在是 `/` 中文、`/en/` 英文两个静态页，语言切换是两条 `<a>`（选中态用
+`aria-current="page"`，链接的正确写法；`aria-pressed` 属于按钮）。
 
-`TerraForge` 是专有名词，任何位置都不翻译；带 `data-noi18n` 的元素及其后代一律跳过。
+### 改文案的流程
 
-## 动效（assets/terrain-fx.js + style.css 末尾）
+1. 改 `index.html` 里那句中文。
+2. 改 `scripts/site_i18n.json` 的 **`zh` 与 `en` 两侧**。`zh` 的值必须与 `index.html`
+   里的原文一致（空白可以不同，其余逐字一致）。
+3. 跑 `uv run python scripts/build_site_en.py` 重新生成英文页。
 
-两类，分开的：
+漏掉任何一步，`tests/test_site_seo_contract.py` 都会红：它用 zh 字典把中文页翻译一遍，
+要求还原出页面本身（往返等式），并要求 `site/en/index.html` 与当前源逐字节一致。
+
+### 新增一句可翻译文案
+
+在 `index.html` 给元素挂标注 —— 纯文本用 `data-i18n="key"`，内部含 `<code>` /
+`<strong>` / `<br>` 时**必须**用 `data-i18n-html="key"`，属性用
+`data-i18n-attr="alt:key"`（多个属性逗号分隔，写法 `属性名:键名`）。`<title>` 与各
+`meta` 同样直接挂 `data-i18n-attr="content:key"`。
+
+这些属性在运行期不做任何事，页面上没有 i18n 脚本 —— 它们是「这句话是可翻译文案、
+键名是 X」的标注，只有 `scripts/build_site_en.py` 会读。字典里有页面不用的键、或者
+页面用了字典没有的键，测试都会红。
+
+`TerraForge` 是专有名词，任何位置都不翻译；带 `data-noi18n` 的元素跳过。
+
+### 生成器怎么工作
+
+`scripts/build_site_en.py` 分两步，都在文件头的 docstring 里写了：
+
+- `translate()`：只按标注替换文案，其余字节原样透传（起始标签直接回写
+  `get_starttag_text()`，属性顺序与引号写法都不变）。它对语言无感 —— 拿 zh 字典跑就
+  该还原出源文件。
+- `localize_en()`：页面级差异 —— `<html lang>`、canonical / og:url 换成 `/en/`、资源
+  路径转根绝对（`/en/` 深一层，相对路径会解析到 `/en/assets/`）、语言切换的选中态换边、
+  JSON-LD 里 `#app` 那个节点（url / @id / description / inLanguage / featureList）、
+  以及**丢掉全部 HTML 注释**（注释是中文的，不该混进英文页被抓走）。
+
+`--check` 只校验不写盘，测试走的就是这条路径。
+
+## SEO / GEO：机器读到的那一份
+
+改这块之前先想清楚它会不会和别处打架 —— 下面每一条都有测试钉着。
+
+| 事实 | 谁说了算 | 谁跟着它 |
+|---|---|---|
+| 版本号 | `src/core/config.py` 的 `Config.APP_VERSION` | 两个页面上的 `v0.3.3`、JSON-LD 的 `softwareVersion` / `downloadUrl`、`llms.txt`、`llms-full.txt` |
+| 站点描述 | `index.html` 的 `<meta name="description">` | JSON-LD 的 `description`（两处必须逐字一致） |
+| 四条管线标题 | 页面上的四个 `<h3>` | JSON-LD 的 `featureList` |
+| 语言关系 | 每页 `<head>` 里的三条 hreflang | `sitemap.xml` 里每条 `<url>` 的 `xhtml:link` |
+
+其余几件事：
+
+- **JSON-LD**（`SoftwareApplication` + `WebSite` + `Person`）。`WebSite` 与 `Person`
+  两页共用同一个 `@id`，只有 `#app` 跟着页面语言分叉 —— 站点与作者的身份不该有两份。
+- **`llms.txt` / `llms-full.txt`**：给生成式引擎的纯文本。前者是索引（llmstxt.org 的
+  H1 + 摘要 + 链接分组格式），后者是全文事实表，写的时候就是奔着「被原样引用」去的：
+  版本号、格式名、限制、许可与署名，一条不含糊。它们**不是**页面的复制品，页面改版不用
+  跟着改，但事实变了必须改。
+- **`robots.txt`** 把生成式引擎的 UA 单列一组明确 `Allow`。不是因为通配符不够，而是
+  `Google-Extended`、`Applebot-Extended` 这类令牌只认自己的名字，通配符对它们不表态。
+- **`_headers`** 给两个 `.txt` 写死 `text/plain; charset=utf-8`（正文里有 `°`、`×`）。
+
+## 动效（assets/terrain-fx.js + assets/reveal.js + style.css 末尾）
+
+三块，分开的：
 
 - **CSS 动效**（`style.css` 末尾那个 `@media (prefers-reduced-motion: no-preference)`
   块）：首屏逐级上浮、高程色带逐档展开、滚动揭示错峰、悬停微交互。
+- **滚动揭示**（`reveal.js`）：双向，rAF 节流的位置扫描。
 - **画布动效**（`terrain-fx.js`）：全屏背景的等值线场，与首屏项目名。
 
 画布这套是标量场 + marching squares：值噪声在 `(x, y, t)` 上取样，`t` 缓慢推进，
@@ -77,14 +137,18 @@ README 徽章导流而不是自然搜索，所以换来的「两种语言并排�
    的窗口 —— 后台标签页加载时那个窗口能长到几秒，首屏标题整块空白。
 3. 滚动揭示**不用 IntersectionObserver**。它只在阈值被跨越时回调，一帧内从视口下方
    跳到上方不产生跨越，被跳过的区块会永久停在 `opacity:0`（点锚点后往回滚、拖滚动条、
-   刷新时恢复滚动位置都会踩到）。现在是 rAF 节流的位置扫描，见 `index.html` 底部注释。
+   刷新时恢复滚动位置都会踩到）。现在是 rAF 节流的位置扫描，理由与滞回带的取值写在
+   `assets/reveal.js` 的文件头。
 
 ## 本地预览
 
 ```bash
 python3 -m http.server 8899 --directory site
-# 打开 http://127.0.0.1:8899/
+# 中文 http://127.0.0.1:8899/   英文 http://127.0.0.1:8899/en/
 ```
+
+语言链接写的是根绝对路径（`/` 与 `/en/`），所以必须以 `site/` 为根起服务，直接
+`file://` 打开会点不动。
 
 ## 部署（Cloudflare Pages）
 
@@ -162,10 +226,11 @@ Cloudflare Workers」之类的模板不行 —— 那套模板不含 Pages。
 
 | 改了什么 | 还要改哪里 |
 |---|---|
-| 发版（`Config.APP_VERSION` 变了） | `index.html` 里所有 `v0.3.3`（hero 按钮、下载区标题、三个 Release 下载链接、footer colophon）**以及 `i18n.js` 里含 `v0.3.3` 的那几条 key（zh 与 en 都要）** |
-| 站点域名 | `index.html` 的 `canonical` / 三条 `hreflang` / `og:url` / `og:image` / `twitter:image`、`robots.txt`、`sitemap.xml`、`wrangler.jsonc` 的 `name`、本文件顶部 |
-| 任何一句可见文案 | `i18n.js` 的 `DICT.zh` **和** `DICT.en` 两边同时改。只改 HTML 不改字典，切一次语言就被覆盖回去了 |
-| 界面改版 | `assets/img/` 下的截图，以及 `i18n.js` 里对应的 `*.alt` key（两种语言） |
+| 发版（`Config.APP_VERSION` 变了） | `index.html` 里所有 `v0.3.3`（hero 按钮、下载区标题、三个 Release 下载链接、JSON-LD 的 `softwareVersion` / `downloadUrl`、footer colophon）、`scripts/site_i18n.json` 里含 `v0.3.3` 的那几条 key（zh 与 en 都要）、`llms.txt` 与 `llms-full.txt`，然后重新生成英文页 |
+| 任何一句可见文案 | `scripts/site_i18n.json` 的 `zh` **和** `en` 两侧，然后 `uv run python scripts/build_site_en.py` |
+| 站点域名 | `index.html` 的 `canonical` / 三条 `hreflang` / `og:url` / `og:image` / `twitter:image` / JSON-LD 里全部 `@id` 与 URL、`robots.txt`、`sitemap.xml`、`llms.txt`、`llms-full.txt`、`wrangler.jsonc` 的 `name`、`tests/test_site_seo_contract.py` 的 `BASE`、本文件顶部 |
+| 产品事实（新增管线、换数据源、平台支持变化） | `llms-full.txt` —— 它是给模型读的那份事实表，页面改了它不会自己跟着变 |
+| 界面改版 | `assets/img/` 下的截图，以及字典里对应的 `*.alt` key（两种语言） |
 
 截图里出现的本机路径与代理地址已在截取时替换成占位值（`/data/terraforge/downloads`、空代理），重拍时记得照做。
 

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<!-- GENERATED FILE - DO NOT EDIT.
+     Source: site/index.html + scripts/site_i18n.json
+     Regenerate: uv run python scripts/build_site_en.py -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title data-i18n="meta.title">TerraForge — Tiles, elevation, 3D terrain and contours: four pipelines, one interface</title>
+<meta name="description" data-i18n-attr="content:meta.desc" content="TerraForge is an open-source GIS data acquisition and processing tool: draw a box over an area to download map tiles and Copernicus elevation data, slice it into Cesium quantized-mesh 3D terrain, and render standard XYZ contour tiles. Unzip and run on Windows / macOS / Linux, no Python environment required.">
+<meta name="keywords" data-i18n-attr="content:meta.keywords" content="TerraForge,GIS,map tile download,DEM,elevation data,Cesium,quantized-mesh,3D terrain tiling,contour lines,GeoTIFF,MBTiles,Copernicus GLO-30">
+<meta name="author" content="JungleZy">
+<meta name="theme-color" content="#0c0d10">
+
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<link rel="canonical" href="https://terraforge-gis.pages.dev/en/">
+
+<link rel="alternate" hreflang="zh-CN" href="https://terraforge-gis.pages.dev/">
+<link rel="alternate" hreflang="en" href="https://terraforge-gis.pages.dev/en/">
+<link rel="alternate" hreflang="x-default" href="https://terraforge-gis.pages.dev/">
+<link rel="icon" href="/assets/favicon.ico" sizes="any">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="TerraForge">
+<meta property="og:url" content="https://terraforge-gis.pages.dev/en/">
+<meta property="og:title" data-i18n-attr="content:meta.og.title" content="TerraForge — Tiles, elevation, 3D terrain and contours: four pipelines, one interface">
+<meta property="og:description" data-i18n-attr="content:meta.og.desc" content="Draw a box over an area, download map tiles and Copernicus elevation data, slice it into Cesium 3D terrain and contour tiles. Unzip and run on Windows / macOS / Linux, no Python environment required.">
+<meta property="og:image" content="https://terraforge-gis.pages.dev/assets/img/og.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" data-i18n-attr="content:meta.og.image.alt" content="TerraForge screenshot: a rectangular download selection laid over 3D terrain">
+<meta property="og:locale" data-i18n-attr="content:meta.og.locale" content="en_US">
+<meta property="og:locale:alternate" data-i18n-attr="content:meta.og.locale.alt" content="zh_CN">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" data-i18n-attr="content:meta.twitter.title" content="TerraForge — GIS data acquisition and processing">
+<meta name="twitter:description" data-i18n-attr="content:meta.twitter.desc" content="Tiles, elevation, 3D terrain and contours — four pipelines packed into a single interface.">
+<meta name="twitter:image" content="https://terraforge-gis.pages.dev/assets/img/og.jpg">
+<meta name="twitter:image:alt" data-i18n-attr="content:meta.og.image.alt" content="TerraForge screenshot: a rectangular download selection laid over 3D terrain">
+
+<link rel="preload" as="image" href="/assets/img/en/hero.webp" fetchpriority="high">
+
+<link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/assets/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/assets/fonts/fonts.css">
+<link rel="stylesheet" href="/assets/style.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://terraforge-gis.pages.dev/en/#app",
+      "name": "TerraForge",
+      "url": "https://terraforge-gis.pages.dev/en/",
+      "description": "TerraForge is an open-source GIS data acquisition and processing tool: draw a box over an area to download map tiles and Copernicus elevation data, slice it into Cesium quantized-mesh 3D terrain, and render standard XYZ contour tiles. Unzip and run on Windows / macOS / Linux, no Python environment required.",
+      "inLanguage": "en",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "GIS",
+      "operatingSystem": "Windows 10+ (x64), macOS (Apple Silicon), Linux (x64)",
+      "softwareVersion": "0.3.3",
+      "downloadUrl": "https://github.com/JungleZy/TerraForge/releases/tag/v0.3.3",
+      "codeRepository": "https://github.com/JungleZy/TerraForge",
+      "programmingLanguage": [
+        "Python",
+        "JavaScript"
+      ],
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "screenshot": "https://terraforge-gis.pages.dev/assets/img/en/hero.webp",
+      "featureList": [
+        "Draw a box, download, mosaic into a georeferenced GeoTIFF",
+        "1°×1° elevation tiles; the default source needs no account",
+        "Sliced into Cesium quantized-mesh, global base included",
+        "Rendered as standard XYZ tiles that anything can load"
+      ],
+      "author": {
+        "@id": "https://terraforge-gis.pages.dev/#author"
+      },
+      "publisher": {
+        "@id": "https://terraforge-gis.pages.dev/#author"
+      }
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://terraforge-gis.pages.dev/#website",
+      "url": "https://terraforge-gis.pages.dev/",
+      "name": "TerraForge",
+      "publisher": {
+        "@id": "https://terraforge-gis.pages.dev/#author"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://terraforge-gis.pages.dev/#author",
+      "name": "JungleZy",
+      "url": "https://github.com/JungleZy"
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="skip">Skip to content</a>
+
+<canvas id="tf-bg" aria-hidden="true"></canvas>
+
+<header class="masthead">
+  <div class="wrap">
+    <a class="wordmark" href="/en/">TERRA<span>FORGE</span></a>
+    <nav>
+      <a href="#pipelines" class="hide-xs" data-i18n="nav.features">Features</a>
+      <a href="#engineering" class="hide-sm" data-i18n="nav.engineering">Engineering</a>
+      <a href="#download" data-i18n="nav.download">Download</a>
+      <a href="#docs" class="hide-sm" data-i18n="nav.docs">Docs</a>
+
+      <span class="lang" role="group" aria-label="Language" data-i18n-attr="aria-label:lang.label">
+        <a class="lang-btn" data-lang="zh" href="/" hreflang="zh-CN" lang="zh-CN" data-noi18n>中文</a>
+        <span class="lang-sep" aria-hidden="true"></span>
+        <a class="lang-btn" data-lang="en" aria-current="page" href="/en/" hreflang="en" lang="en" data-noi18n>EN</a>
+      </span>
+      <a class="ext" href="https://github.com/JungleZy/TerraForge" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero">
+    <div class="wrap">
+
+      <p class="brandmark" data-noi18n>
+        <canvas class="brandmark-fx" role="img" aria-label="TerraForge"></canvas>
+        <span class="brandmark-fallback">TerraForge</span>
+      </p>
+      <p class="coords">
+        <span><b>N</b> <em>30.20000</em></span>
+        <span><b>S</b> <em>29.40000</em></span>
+        <span><b>E</b> <em>102.40000</em></span>
+        <span><b>W</b> <em>101.60000</em></span>
+        <span data-i18n="hero.coords.place">Mount Gongga · 0.800° × 0.800°</span>
+      </p>
+      <h1 data-i18n-html="hero.h1">Draw a box on the map,<br class="br-lg">turn it into data you can use.</h1>
+      <p class="lede" data-i18n="hero.lede">Tiles, elevation, 3D terrain, contours — four pipelines packed into a single interface. Draw an area, watch the progress live, resume after an interruption; the outputs go straight into your GIS workflow.</p>
+      <div class="cta">
+        <a class="btn btn-solid" href="#download" data-i18n-html="hero.cta.download">Download <span class="v">v0.3.3</span></a>
+        <a class="btn btn-ghost" href="https://github.com/JungleZy/TerraForge" rel="noopener" data-i18n="hero.cta.source">View the source on GitHub ↗</a>
+      </div>
+      <p class="hero-meta" data-i18n="hero.meta">MIT · Windows / macOS (Apple Silicon) / Linux · unzip and run, no Python</p>
+    </div>
+  </section>
+
+  <figure class="shot-hero">
+    <img src="/assets/img/en/hero.webp" width="2200" height="1375"
+         data-i18n-attr="alt:hero.alt"
+         alt="TerraForge interface: a rectangular download selection with corner handles laid over the 3D terrain around Mount Gongga, with a toolbar on the left for box selection, area, search, lighting, tasks and settings">
+  </figure>
+
+  <div class="legend">
+    <div class="legend-inner">
+      <div class="legend-ramp" aria-hidden="true">
+        <i style="background:#5e8c61"></i><i style="background:#8fbf6f"></i>
+        <i style="background:#b6cf7e"></i><i style="background:#dcd98e"></i>
+        <i style="background:#d9b97e"></i><i style="background:#c49a6c"></i>
+        <i style="background:#ac7f58"></i><i style="background:#8e6246"></i>
+      </div>
+      <div class="legend-scale" aria-hidden="true">
+        <i>0</i><i>200</i><i>500</i><i>1000</i><i>2000</i><i>3000</i><i>4000</i><i>5000 m</i>
+      </div>
+      <p class="legend-cap">
+        <span data-i18n="legend.cap.breaks">Default contour hypsometric tint breaks · every step editable</span>
+        <span data-i18n="legend.cap.shot">Mount Gongga selection · captured in v0.3.3</span>
+      </p>
+    </div>
+  </div>
+
+  <section class="band" id="pipelines">
+    <div class="wrap">
+      <div class="band-head rv">
+        <p class="eyebrow" data-i18n="pipes.eyebrow">Four data pipelines</p>
+        <h2 data-i18n="pipes.h2">One selection grows four kinds of output</h2>
+        <p data-i18n="pipes.p">The same area, the same task scheduling, the same cache. Once the extent is chosen, the only difference left is which format you want.</p>
+      </div>
+
+      <article class="pipe rv">
+        <div class="pipe-text">
+          <p class="eyebrow" data-i18n-html="pipe.tiles.eyebrow"><b>TILES</b> / Map tiles</p>
+          <h3 data-i18n="pipe.tiles.title">Draw a box, download, mosaic into a georeferenced GeoTIFF</h3>
+          <p data-i18n="pipe.tiles.body">Fetches tiles from Google Maps and mirrors them into the output directory as they download. A tile directory, a mosaicked GeoTIFF, a single-file MBTiles — combine them yourself with the checkboxes.</p>
+          <dl class="spec">
+            <div><dt data-i18n="pipe.tiles.spec.style.dt">Style</dt><dd data-i18n-html="pipe.tiles.spec.style.dd">Standard <code>m</code> · Satellite <code>s</code> · Satellite+labels <code>y</code> · Roads <code>h</code> · Terrain <code>t</code></dd></div>
+            <div><dt data-i18n="pipe.tiles.spec.output.dt">Output</dt><dd data-i18n-html="pipe.tiles.spec.output.dd">Tile directory · GeoTIFF (one file per zoom level) · MBTiles (ticked when the task is created, or exported afterwards; the original tiles are not deleted)</dd></div>
+            <div><dt data-i18n="pipe.tiles.spec.cache.dt">Cache</dt><dd data-i18n="pipe.tiles.spec.cache.dd">Keyed by "style + coordinates" and shared across tasks — re-download the same area in another task and the tiles you already have never hit the network again</dd></div>
+          </dl>
+        </div>
+        <figure class="shot">
+          <img src="/assets/img/en/create.webp" width="900" height="1054" loading="lazy"
+               data-i18n-attr="alt:pipe.tiles.alt"
+               alt="Download data dialog: shows the bounds of the selection and an estimate of 8,537 tiles, with options for tile / GeoTIFF / MBTiles output and zoom levels 10–15">
+          <figcaption data-i18n="pipe.tiles.caption">The tile count is worked out before the task is created</figcaption>
+        </figure>
+      </article>
+
+      <article class="pipe flip rv">
+        <div class="pipe-text">
+          <p class="eyebrow" data-i18n-html="pipe.dem.eyebrow"><b>DEM</b> / Elevation data</p>
+          <h3 data-i18n="pipe.dem.title">1°×1° elevation tiles; the default source needs no account</h3>
+          <p data-i18n="pipe.dem.body">Works out which tiles your selection needs and fetches them one by one. It goes to the public Copernicus S3 bucket by default, so downloads work out of the box; configure Earthdata only if you need ASTER.</p>
+          <dl class="spec">
+            <div><dt data-i18n="pipe.dem.spec.default.dt">Default source</dt><dd data-i18n-html="pipe.dem.spec.default.dd">Copernicus GLO-30 (30 m, public S3 bucket, <strong>no authentication</strong>)</dd></div>
+            <div><dt data-i18n="pipe.dem.spec.optional.dt">Optional source</dt><dd data-i18n-html="pipe.dem.spec.optional.dd">ASTER GDEM v3 <code>ASTGTM.003</code> (30 m, requires a NASA Earthdata account, entered on the settings page)</dd></div>
+            <div><dt data-i18n="pipe.dem.spec.aoi.dt">Selection</dt><dd data-i18n="pipe.dem.spec.aoi.dd">Draw a box on the map, or import GeoJSON / KML / KMZ / Shapefile; multi-part geometries and holes are supported</dd></div>
+            <div><dt data-i18n="pipe.dem.spec.antimeridian.dt">Antimeridian</dt><dd data-i18n="pipe.dem.spec.antimeridian.dd">Areas crossing 180° are automatically split into two parts</dd></div>
+          </dl>
+        </div>
+        <figure class="shot">
+          <img src="/assets/img/en/tasks.webp" width="1400" height="875" loading="lazy"
+               data-i18n-attr="alt:pipe.dem.alt"
+               alt="Task center: totals for tasks, completed, failures and cumulative download volume, with a task list below carrying type labels and area bounds, plus a map of past areas">
+          <figcaption data-i18n="pipe.dem.caption">Task center · past areas laid straight onto the map</figcaption>
+        </figure>
+      </article>
+
+      <article class="pipe rv">
+        <div class="pipe-text">
+          <p class="eyebrow" data-i18n-html="pipe.terrain.eyebrow"><b>TERRAIN</b> / 3D terrain</p>
+          <h3 data-i18n="pipe.terrain.title">Sliced into Cesium quantized-mesh, global base included</h3>
+          <p data-i18n="pipe.terrain.body">Slices a downloaded DEM or a locally uploaded GeoTIFF into terrain tiles. A global base terrain ships inside the package, and tiling results are implanted into its output directory — pull the camera back and you will not fall into a hole.</p>
+          <dl class="spec">
+            <div><dt data-i18n="pipe.terrain.spec.format.dt">Format</dt><dd data-i18n="pipe.terrain.spec.format.dd">quantized-mesh 1.0, consumed directly by CesiumJS</dd></div>
+            <div><dt data-i18n="pipe.terrain.spec.base.dt">Base layer</dt><dd data-i18n="pipe.terrain.spec.base.dd">A 167 MB global base terrain ships with the package (derived from the GEBCO 2024 Grid, includes bathymetry, hole-free worldwide) and is extracted automatically on first run</dd></div>
+            <div><dt data-i18n="pipe.terrain.spec.cascade.dt">Cascading</dt><dd data-i18n="pipe.terrain.spec.cascade.dd">Your high-resolution tiles sit on top of the base layer and fall back to the global one as you zoom out</dd></div>
+            <div><dt data-i18n="pipe.terrain.spec.input.dt">Input</dt><dd data-i18n="pipe.terrain.spec.input.dd">A downloaded DEM task, or a locally uploaded GeoTIFF; with no tiling it can still render a hillshade preview on demand</dd></div>
+          </dl>
+        </div>
+        <figure class="shot">
+          <img src="/assets/img/en/terrain.webp" width="1400" height="875" loading="lazy"
+               data-i18n-attr="alt:pipe.terrain.alt"
+               alt="3D terrain rendering of a Himalayan ridge: a low-angle view in which the relief above the snow line and the distant horizon are clearly visible">
+          <figcaption data-i18n="pipe.terrain.caption">Himalayan ridge · terrain lighting enabled</figcaption>
+        </figure>
+      </article>
+
+      <article class="pipe flip rv">
+        <div class="pipe-text">
+          <p class="eyebrow" data-i18n-html="pipe.contour.eyebrow"><b>CONTOUR</b> / Contours</p>
+          <h3 data-i18n="pipe.contour.title">Rendered as standard XYZ tiles that anything can load</h3>
+          <p data-i18n="pipe.contour.body">The output is an ordinary XYZ tile directory. Leaflet, OpenLayers and CesiumJS can use it directly — TerraForge does not have to be installed to view it.</p>
+          <dl class="spec">
+            <div><dt data-i18n="pipe.contour.spec.output.dt">Output</dt><dd data-i18n="pipe.contour.spec.output.dd">Standard XYZ tiles, loaded directly by Leaflet / OpenLayers / CesiumJS</dd></div>
+            <div><dt data-i18n="pipe.contour.spec.style.dt">Style</dt><dd data-i18n="pipe.contour.spec.style.dd">Contour interval, intermediate and index contour colors, hypsometric tint breaks and terrain hillshading are each adjustable, with preview</dd></div>
+            <div><dt data-i18n="pipe.contour.spec.source.dt">Data source</dt><dd data-i18n-html="pipe.contour.spec.source.dd">Upload <code>.tif</code> files (multiple allowed), or reuse a completed DEM task — the source files are not copied, and deleting the contour task leaves the original DEM alone</dd></div>
+          </dl>
+        </div>
+        <figure class="shot">
+          <img src="/assets/img/en/contour.webp" width="1400" height="875" loading="lazy"
+               data-i18n-attr="alt:pipe.contour.alt"
+               alt="Contour tiles rendered for the Tianshan area: a hypsometric elevation ramp together with brown contour lines, laid over a satellite imagery basemap">
+          <figcaption data-i18n="pipe.contour.caption">Tianshan selection · 50 m contour interval · hypsometric tint + hillshade</figcaption>
+        </figure>
+      </article>
+    </div>
+  </section>
+
+  <section class="band" id="engineering">
+    <div class="wrap">
+      <div class="band-head rv">
+        <p class="eyebrow" data-i18n="eng.eyebrow">Why this is not yet another bulk downloader</p>
+        <h2 data-i18n="eng.h2">With a big job the hard part is not the download — it is what happens after something breaks</h2>
+        <p data-i18n="eng.p">Tens of thousands of tiles run overnight; what you need to know the next day is whether it actually succeeded, what is missing, and whether it can carry on. These four things are where TerraForge spends the most effort.</p>
+      </div>
+
+      <div class="claims rv">
+        <div class="claim">
+          <h3 data-i18n="eng.claim.progress.h3">The progress is real</h3>
+          <p data-i18n="eng.claim.progress.p">WebSocket pushes the download speed, the time remaining, and the per-zoom mosaicking and copying stages. The progress bar does not stop at 100% and leave you guessing what is still going on.</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="eng.claim.missing.h3">Missing tiles are not silent</h3>
+          <p data-i18n="eng.claim.missing.p">Tile results are accounted for in five categories: success, no data at the source, retryable failure, permanent failure, and cache write failure. Only "no data at the source" completes automatically; a real failure stops in a pending-decision state and waits for your call, and a result whose gaps you accepted is permanently marked as having missing tiles.</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="eng.claim.resume.h3">It picks up where it stopped</h3>
+          <p data-i18n-html="eng.claim.resume.p">Resumable downloads, a cache shared across tasks, copying while downloading, and atomic writes via <code>.part</code> temporary files plus rename. Pausing, resuming and retrying never re-download tiles you already have.</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="eng.claim.offline.h3">It does not phone home</h3>
+          <p data-i18n="eng.claim.offline.p">No telemetry, tracking points or usage statistics of any kind. All third-party front-end libraries are vendored locally, and no CDN is touched at runtime. Apart from the map sources, elevation sources and proxies you configure yourself, it connects to no server.</p>
+        </div>
+      </div>
+
+      <figure class="shot solo rv">
+        <img src="/assets/img/en/config.webp" width="640" height="1190" loading="lazy"
+             data-i18n-attr="alt:eng.alt"
+             alt="Settings panel: grouped settings for theme and accent color, default save path, download concurrency, request timeout, proxy server and the tile server list">
+        <figcaption data-i18n="eng.caption">Settings · concurrency and timeout / proxy auto-detection / cache / GDAL parameters / Earthdata account</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="band" id="download">
+    <div class="wrap">
+      <div class="band-head rv">
+        <p class="eyebrow" data-i18n-html="dl.eyebrow">Current version <b>v0.3.3</b></p>
+        <h2 data-i18n="dl.h2">Download TerraForge</h2>
+        <p data-i18n="dl.p">Prebuilt packages for three platforms. Unzip and run — the target machine needs neither Python nor a separate GDAL installation.</p>
+      </div>
+
+      <div class="plats rv">
+        <a class="plat" href="https://github.com/JungleZy/TerraForge/releases/download/v0.3.3/terraforge-windows.zip" rel="noopener">
+          <span class="plat-os" data-i18n="dl.win.os">Windows</span>
+          <span class="plat-arch" data-i18n="dl.win.arch">Windows 10+ · x64</span>
+          <span class="plat-file" data-i18n="dl.win.file">terraforge-windows.zip ↓</span>
+        </a>
+        <a class="plat" href="https://github.com/JungleZy/TerraForge/releases/download/v0.3.3/terraforge-macos.tar.gz" rel="noopener">
+          <span class="plat-os" data-i18n="dl.mac.os">macOS</span>
+          <span class="plat-arch" data-i18n="dl.mac.arch">Apple Silicon · arm64</span>
+          <span class="plat-file" data-i18n="dl.mac.file">terraforge-macos.tar.gz ↓</span>
+        </a>
+        <a class="plat" href="https://github.com/JungleZy/TerraForge/releases/download/v0.3.3/terraforge-linux.tar.gz" rel="noopener">
+          <span class="plat-os" data-i18n="dl.linux.os">Linux</span>
+          <span class="plat-arch" data-i18n="dl.linux.arch">x64 · ubuntu-latest or newer</span>
+          <span class="plat-file" data-i18n="dl.linux.file">terraforge-linux.tar.gz ↓</span>
+        </a>
+      </div>
+
+      <ul class="notes rv">
+        <li data-i18n-html="notes.1">On Windows double-click <code>terraforge.exe</code>; on macOS / Linux run <code>./terraforge</code>, then open <code>http://localhost:5000</code> in a browser. The program also listens on <code>5001</code> to serve tiles; it still works if the firewall does not let that one through.</li>
+        <li data-i18n-html="notes.2"><strong>There is no installer, and no auto-update.</strong> No MSI / DMG / DEB is produced; switching version means downloading a new package.</li>
+        <li data-i18n="notes.3">Every package contains the 167 MB global base terrain volumes, so the size is on the large side. The release page carries a SHA-256 manifest, so you can verify that the copy you have is the original.</li>
+        <li class="warn" data-i18n-html="notes.4"><strong>Intel Macs are not supported</strong> — the macOS package comes in Apple Silicon (arm64) only.</li>
+        <li class="warn" data-i18n-html="notes.5">When moving it, <strong>move the whole <code>terraforge/</code> directory together</strong>. Moving only the executable reports <code>Corrupt bundle: missing GDAL/PROJ data directories</code>.</li>
+        <li class="warn" data-i18n-html="notes.6">On macOS, before the first run, execute <code>xattr -cr .</code> inside the extracted directory to clear the quarantine attribute.</li>
+        <li class="warn" data-i18n-html="notes.7">The program listens on <code>0.0.0.0:5000</code> and has <strong>no login or authentication mechanism at all</strong>; its API can read and write local disk paths and delete directories. Use it only on a trusted local machine or LAN, and do not expose it directly to the public internet.</li>
+      </ul>
+
+      <p class="tail">
+        <a href="https://github.com/JungleZy/TerraForge/releases" rel="noopener" data-i18n="tail.releases">All releases ↗</a>
+        <a href="https://github.com/JungleZy/TerraForge/blob/master/RELEASE_NOTES.md" rel="noopener" data-i18n="tail.relnotes">Release notes for this version ↗</a>
+        <a href="https://github.com/JungleZy/TerraForge/blob/master/CHANGELOG.md" rel="noopener" data-i18n="tail.changelog">Changelog ↗</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="band" id="docs">
+    <div class="wrap">
+      <div class="band-head rv">
+        <p class="eyebrow" data-i18n="docs.eyebrow">Documentation</p>
+        <h2 data-i18n="docs.h2">From unzipping to finishing your first task</h2>
+      </div>
+      <div class="docs rv">
+        <a class="doc" href="https://github.com/JungleZy/TerraForge/blob/master/docs/guides/DISTRIBUTION.md" rel="noopener">
+          <span class="doc-name" data-i18n="docs.dist.name">What to do after downloading ↗</span>
+          <span class="doc-desc" data-i18n="docs.dist.desc">How to run it after unzipping, why the directory cannot be broken apart when moved, whether to allow the firewall prompt, and how to clear the macOS quarantine attribute.</span>
+          <span class="doc-file" data-i18n="docs.dist.file">docs/guides/DISTRIBUTION.md</span>
+        </a>
+        <a class="doc" href="https://github.com/JungleZy/TerraForge/blob/master/docs/guides/QUICKSTART.md" rel="noopener">
+          <span class="doc-name" data-i18n="docs.quickstart.name">Quickstart ↗</span>
+          <span class="doc-desc" data-i18n="docs.quickstart.desc">Once the environment is already installed: starting up as fast as possible, drawing a small area and running your first download task to the end, and where the outputs land.</span>
+          <span class="doc-file" data-i18n="docs.quickstart.file">docs/guides/QUICKSTART.md</span>
+        </a>
+        <a class="doc" href="https://github.com/JungleZy/TerraForge/blob/master/docs/guides/INSTALL.md" rel="noopener">
+          <span class="doc-name" data-i18n="docs.install.name">Run from source ↗</span>
+          <span class="doc-desc" data-i18n="docs.install.desc">Python 3.12 + uv + the GDAL system library and bindings. Linux goes through apt; Windows and Apple Silicon Macs go through conda-forge. The two routes cannot be mixed.</span>
+          <span class="doc-file" data-i18n="docs.install.file">docs/guides/INSTALL.md</span>
+        </a>
+        <a class="doc" href="https://github.com/JungleZy/TerraForge/issues" rel="noopener">
+          <span class="doc-name" data-i18n="docs.issues.name">Report an issue / request a feature ↗</span>
+          <span class="doc-desc" data-i18n-html="docs.issues.desc">Bring the version number, your platform and the relevant excerpt from <code>logs/terraforge.log</code>; it saves a round trip.</span>
+          <span class="doc-file" data-i18n="docs.issues.file">github.com/JungleZy/TerraForge/issues</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="legal">
+      <div>
+        <h2 data-i18n="legal.license.h2">License</h2>
+        <p data-i18n-html="legal.license.body">MIT License · Copyright (c) 2026 JungleZy. MIT covers only this project's <strong>software code</strong>; it <strong>does not grant</strong> any right to use data or online services. The attribution, bulk-download policies, tokens and quotas of map sources such as Google, Esri, Tianditu, OSM and Cesium Ion have to be handled by you, each on its own.</p>
+      </div>
+      <div>
+        <h2 data-i18n="legal.data.h2">Data attribution</h2>
+        <p data-i18n="legal.data.body">The built-in global base terrain is derived from the GEBCO 2024 Grid. The GEBCO Grid is placed in the public domain and is free to use, but attribution is required — when using terrain produced by this project, please keep the following with it:</p>
+        <p class="cite" data-i18n="legal.data.cite">GEBCO Compilation Group (2024) GEBCO 2024 Grid.</p>
+      </div>
+      <div>
+        <h2 data-i18n="legal.disclaimer.h2">Disclaimer</h2>
+        <p data-i18n="legal.disclaimer.body">This tool is for study and research use only. Users must comply with the Google Maps Terms of Service and the relevant laws and regulations. The author is not responsible for any consequences arising from the use of this tool.</p>
+      </div>
+    </div>
+    <div class="colophon">
+      <span data-i18n="colophon.version">TERRAFORGE v0.3.3</span>
+      <a href="https://github.com/JungleZy/TerraForge" rel="noopener">GitHub</a>
+      <a href="https://github.com/JungleZy/TerraForge/blob/master/LICENSE" rel="noopener">LICENSE</a>
+      <a href="https://github.com/JungleZy/TerraForge/blob/master/THIRD_PARTY_NOTICES.md" rel="noopener" data-i18n="colophon.thirdparty">Third-party notices</a>
+      <span data-i18n="colophon.shots">Screenshots on this page are taken from the actual v0.3.3 interface</span>
+    </div>
+  </div>
+</footer>
+
+<script src="/assets/reveal.js"></script>
+
+<script src="/assets/terrain-fx.js"></script>
+</body>
+</html>

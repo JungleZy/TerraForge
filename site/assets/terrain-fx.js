@@ -290,14 +290,14 @@
     function loop(now) {
       requestAnimationFrame(loop);
       if (document.hidden) return;
-      if (!t0) { t0 = now; revealStart = now + 280; }   /* 让首屏文字先浮起来一点 */
+      if (!t0) { t0 = now; revealStart = now + 410; }   /* 让首屏文字先浮起来一点 */
       if (now - last < FRAME) return;
       last = now;
 
       var t = (now - t0) / 1000;
       if (bg) bg.draw(t);
       if (wm && wm.isReady()) {
-        var e = Math.max(0, (now - revealStart) / 1150);
+        var e = Math.max(0, (now - revealStart) / 1670);
         /* easeOutQuint，和 CSS 里那条 cubic-bezier(.22,1,.36,1) 同一个手感 */
         wm.draw(t, e >= 1 ? 1 : 1 - Math.pow(1 - e, 5));
         /* 只有真的画完一帧才隐藏回退文本。放在 resize 之后就交接，会留下一段

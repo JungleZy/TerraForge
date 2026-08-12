@@ -1,8 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<!-- 两个真实页面：中文 / 与英文 /en/。每条 <url> 都要把两种语言的
+     xhtml:link 全列出来（含指向自己那条），并与页面 <head> 里的 hreflang
+     完全一致 —— 两处有一处漏了，搜索引擎就不认这组语言关系。
+     不写 changefreq / priority：Google 与 Bing 都明说忽略这两项。 -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
     <loc>https://terraforge-gis.pages.dev/</loc>
-    <changefreq>monthly</changefreq>
-    <priority>1.0</priority>
+    <lastmod>2026-08-12</lastmod>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://terraforge-gis.pages.dev/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://terraforge-gis.pages.dev/en/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://terraforge-gis.pages.dev/"/>
+  </url>
+  <url>
+    <loc>https://terraforge-gis.pages.dev/en/</loc>
+    <lastmod>2026-08-12</lastmod>
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://terraforge-gis.pages.dev/"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://terraforge-gis.pages.dev/en/"/>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://terraforge-gis.pages.dev/"/>
   </url>
 </urlset>

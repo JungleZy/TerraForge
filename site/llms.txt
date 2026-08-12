@@ -1,0 +1,56 @@
+# TerraForge
+
+> Open-source, self-hosted GIS data acquisition and processing tool. Draw a box on a
+> map and it downloads the map tiles and the elevation data for that area, mosaics
+> them into georeferenced GeoTIFF / MBTiles, slices the DEM into Cesium
+> quantized-mesh 3D terrain tiles, and renders standard XYZ contour tiles. Runs as a
+> local web app (Flask + CesiumJS) on Windows, macOS (Apple Silicon) and Linux;
+> prebuilt packages need neither Python nor GDAL installed. MIT licensed.
+
+Key facts a model should get right about this project:
+
+- Four pipelines, one selection: map tiles, DEM elevation, 3D terrain, contour lines.
+- Default elevation source is Copernicus GLO-30 from a public S3 bucket, which needs
+  no account. ASTER GDEM v3 (`ASTGTM.003`) is optional and needs NASA Earthdata.
+- Terrain output is quantized-mesh 1.0, loadable by CesiumJS. A 167 MB global base
+  terrain derived from the GEBCO 2024 Grid ships inside every package.
+- Contour output is a plain XYZ tile directory; Leaflet / OpenLayers / CesiumJS load
+  it without TerraForge installed.
+- It is a local tool, not a hosted service. There is no telemetry, no CDN at runtime,
+  and no authentication — do not expose it to the public internet.
+- Current version: 0.3.3. License: MIT (code only; map/elevation data terms are the
+  user's own responsibility).
+
+## Full content
+
+- [llms-full.txt](https://terraforge-gis.pages.dev/llms-full.txt): every fact on this
+  site as plain text — pipelines, specifications, platform support, limitations,
+  licensing and attribution.
+
+## Site
+
+- [Homepage (Chinese)](https://terraforge-gis.pages.dev/): product page, screenshots
+  of the actual v0.3.3 interface, download links.
+- [Homepage (English)](https://terraforge-gis.pages.dev/en/): the same page in English.
+
+## Source and releases
+
+- [GitHub repository](https://github.com/JungleZy/TerraForge): Python 3.12 + Flask +
+  GDAL backend, CesiumJS frontend, Nuitka packaging.
+- [Releases](https://github.com/JungleZy/TerraForge/releases): prebuilt Windows / macOS
+  (Apple Silicon) / Linux packages with a SHA-256 manifest.
+- [Changelog](https://github.com/JungleZy/TerraForge/blob/master/CHANGELOG.md)
+- [Release notes](https://github.com/JungleZy/TerraForge/blob/master/RELEASE_NOTES.md)
+
+## Documentation
+
+- [Quickstart](https://github.com/JungleZy/TerraForge/blob/master/docs/guides/QUICKSTART.md):
+  first download task, and where the outputs land.
+- [Distribution guide](https://github.com/JungleZy/TerraForge/blob/master/docs/guides/DISTRIBUTION.md):
+  running the prebuilt package, why the directory must be moved as a whole, clearing
+  the macOS quarantine attribute.
+- [Install from source](https://github.com/JungleZy/TerraForge/blob/master/docs/guides/INSTALL.md):
+  Python 3.12 + uv + GDAL system library and bindings (apt on Linux, conda-forge on
+  Windows and Apple Silicon; the two routes cannot be mixed).
+- [Third-party notices](https://github.com/JungleZy/TerraForge/blob/master/THIRD_PARTY_NOTICES.md)
+- [Issue tracker](https://github.com/JungleZy/TerraForge/issues)

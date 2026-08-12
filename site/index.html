@@ -3,27 +3,45 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TerraForge —— 瓦片、高程、3D 地形与等高线，四条管线一个界面</title>
-<meta name="description" content="TerraForge 是一个开源的 GIS 数据获取与加工工具：框选区域下载地图瓦片与 Copernicus 高程数据，切成 Cesium quantized-mesh 3D 地形，渲染成标准 XYZ 等高线瓦片。Windows / macOS / Linux 解压即用，无需 Python 环境。">
-<meta name="keywords" content="TerraForge,GIS,地图瓦片下载,DEM,高程数据,Cesium,quantized-mesh,3D 地形切片,等高线,GeoTIFF,MBTiles,Copernicus GLO-30">
+<!-- ⚠ 带 data-i18n / data-i18n-attr 的元素由 scripts/build_site_en.py 读取，
+     用来生成英文静态页 site/en/index.html。属性本身在运行期不做任何事，
+     它是「这句话是可翻译文案、键名是 X」的标注 —— 改文案要同步改
+     scripts/site_i18n.json 的 zh 与 en 两侧，否则 pytest 会红。 -->
+<title data-i18n="meta.title">TerraForge —— 瓦片、高程、3D 地形与等高线，四条管线一个界面</title>
+<meta name="description" data-i18n-attr="content:meta.desc" content="TerraForge 是一个开源的 GIS 数据获取与加工工具：框选区域下载地图瓦片与 Copernicus 高程数据，切成 Cesium quantized-mesh 3D 地形，渲染成标准 XYZ 等高线瓦片。Windows / macOS / Linux 解压即用，无需 Python 环境。">
+<meta name="keywords" data-i18n-attr="content:meta.keywords" content="TerraForge,GIS,地图瓦片下载,DEM,高程数据,Cesium,quantized-mesh,3D 地形切片,等高线,GeoTIFF,MBTiles,Copernicus GLO-30">
 <meta name="author" content="JungleZy">
 <meta name="theme-color" content="#0c0d10">
+<!-- 这个站的说服力主要来自截图，而 Google 默认的 max-image-preview:standard
+     只给缩略图。max-snippet:-1 同理：默认摘要长度放不下「四条管线」那句。 -->
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
 <link rel="canonical" href="https://terraforge-gis.pages.dev/">
-<link rel="alternate" hreflang="zh-CN" href="https://terraforge-gis.pages.dev/?lang=zh">
-<link rel="alternate" hreflang="en" href="https://terraforge-gis.pages.dev/?lang=en">
+<!-- 中英是两个真实 URL（/ 与 /en/），不是同一个 URL 的运行期状态。
+     每一页都要把三条 alternate 全列出来（含指向自己那条），这是 hreflang
+     的双向要求；少一条搜索引擎就不认这组关系。改域名时四处一起改：
+     canonical / 三条 alternate / og:url / robots.txt / sitemap.xml。 -->
+<link rel="alternate" hreflang="zh-CN" href="https://terraforge-gis.pages.dev/">
+<link rel="alternate" hreflang="en" href="https://terraforge-gis.pages.dev/en/">
 <link rel="alternate" hreflang="x-default" href="https://terraforge-gis.pages.dev/">
 <link rel="icon" href="assets/favicon.ico" sizes="any">
 
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="TerraForge">
 <meta property="og:url" content="https://terraforge-gis.pages.dev/">
-<meta property="og:title" content="TerraForge —— 瓦片、高程、3D 地形与等高线，四条管线一个界面">
-<meta property="og:description" content="框选区域，下载地图瓦片与 Copernicus 高程数据，切成 Cesium 3D 地形与等高线瓦片。Windows / macOS / Linux 解压即用，无需 Python 环境。">
+<meta property="og:title" data-i18n-attr="content:meta.og.title" content="TerraForge —— 瓦片、高程、3D 地形与等高线，四条管线一个界面">
+<meta property="og:description" data-i18n-attr="content:meta.og.desc" content="框选区域，下载地图瓦片与 Copernicus 高程数据，切成 Cesium 3D 地形与等高线瓦片。Windows / macOS / Linux 解压即用，无需 Python 环境。">
 <meta property="og:image" content="https://terraforge-gis.pages.dev/assets/img/og.jpg">
-<meta property="og:locale" content="zh_CN">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" data-i18n-attr="content:meta.og.image.alt" content="TerraForge 界面截图：三维地形上覆盖着一个矩形下载选区">
+<meta property="og:locale" data-i18n-attr="content:meta.og.locale" content="zh_CN">
+<meta property="og:locale:alternate" data-i18n-attr="content:meta.og.locale.alt" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="TerraForge —— GIS 数据获取与加工">
-<meta name="twitter:description" content="瓦片、高程、3D 地形、等高线，四条管线装在同一个界面里。">
+<meta name="twitter:title" data-i18n-attr="content:meta.twitter.title" content="TerraForge —— GIS 数据获取与加工">
+<meta name="twitter:description" data-i18n-attr="content:meta.twitter.desc" content="瓦片、高程、3D 地形、等高线，四条管线装在同一个界面里。">
 <meta name="twitter:image" content="https://terraforge-gis.pages.dev/assets/img/og.jpg">
+<meta name="twitter:image:alt" data-i18n-attr="content:meta.og.image.alt" content="TerraForge 界面截图：三维地形上覆盖着一个矩形下载选区">
 
 <link rel="preload" as="image" href="assets/img/hero.webp" fetchpriority="high">
 <!-- 字体不走 @import：@import 写在 style.css 里会把加载串成三级
@@ -37,38 +55,68 @@
 <link rel="stylesheet" href="assets/fonts/fonts.css">
 <link rel="stylesheet" href="assets/style.css">
 
-<script>
-/* 防闪烁：判定语言，非默认语言（en）先把 body 藏起来，等 assets/i18n.js
- * 把文案换完再放出来（html.i18n-pending body { visibility: hidden }）。
- * 不这么做的话英文用户会先看到一屏中文再被整页替换掉。
- *
- * ⚠ 这里的判定逻辑与 assets/i18n.js 里的 pickLang() 是同一套，刻意重复：
- * head 里不能等外部文件加载完再决定藏不藏 body。改判定规则（查询参数名、
- * storage key、navigator 前缀、默认语言）时，两处都要改。
- */
-(function () {
-  var lang = null;
-  var m = /[?&]lang=(zh|en)(?:&|$)/.exec(window.location.search);
-  if (m) { lang = m[1]; }
-  if (!lang) {
-    try {
-      var v = window.localStorage.getItem('tf-lang');
-      if (v === 'zh' || v === 'en') { lang = v; }
-    } catch (e) {}
-  }
-  if (!lang) {
-    var n = (navigator.language || navigator.userLanguage || '').toLowerCase();
-    lang = n ? (n.indexOf('zh') === 0 ? 'zh' : 'en') : 'zh';
-  }
-  if (lang !== 'zh') {
-    document.documentElement.className += ' i18n-pending';
-    // 兜底：i18n.js 万一没加载成功，1.5s 后也要把页面放出来 —— 宁可闪一下
-    // 中文，也不能留一片永远看不见的白。
-    window.setTimeout(function () {
-      document.documentElement.classList.remove('i18n-pending');
-    }, 1500);
-  }
-})();
+<!-- 结构化数据。给搜索引擎的富结果，也给生成式引擎（ChatGPT / Perplexity /
+     Google AI Overviews）一份不用从版面里猜的事实表：这是什么软件、跑在哪、
+     多少钱、源码在哪、当前版本号。
+
+     三条约束，改的时候别破坏：
+     1. description 必须与上面 <meta name="description"> 逐字一致；两处打架
+        时爬虫按哪份走没有保证，而不一致本身就是可疑信号。
+     2. softwareVersion / downloadUrl 里的版本号跟着 Config.APP_VERSION 走，
+        与页面上那几处 v0.3.3 是同一个事实。
+     3. @id 用绝对 URL：英文页 site/en/index.html 由 build_site_en.py 生成，
+        它只改 #app 这个节点（url / @id / description / inLanguage /
+        featureList），WebSite 与 Person 两个节点两页共用同一份身份。 -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://terraforge-gis.pages.dev/#app",
+      "name": "TerraForge",
+      "url": "https://terraforge-gis.pages.dev/",
+      "description": "TerraForge 是一个开源的 GIS 数据获取与加工工具：框选区域下载地图瓦片与 Copernicus 高程数据，切成 Cesium quantized-mesh 3D 地形，渲染成标准 XYZ 等高线瓦片。Windows / macOS / Linux 解压即用，无需 Python 环境。",
+      "inLanguage": "zh-CN",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "GIS",
+      "operatingSystem": "Windows 10+ (x64), macOS (Apple Silicon), Linux (x64)",
+      "softwareVersion": "0.3.3",
+      "downloadUrl": "https://github.com/JungleZy/TerraForge/releases/tag/v0.3.3",
+      "codeRepository": "https://github.com/JungleZy/TerraForge",
+      "programmingLanguage": ["Python", "JavaScript"],
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "screenshot": "https://terraforge-gis.pages.dev/assets/img/hero.webp",
+      "featureList": [
+        "框选下载，拼成带地理配准的 GeoTIFF",
+        "1°×1° 分幅高程，默认源不用注册账号",
+        "切成 Cesium quantized-mesh，自带全球底座",
+        "渲染成标准 XYZ 瓦片，谁都能加载"
+      ],
+      "author": { "@id": "https://terraforge-gis.pages.dev/#author" },
+      "publisher": { "@id": "https://terraforge-gis.pages.dev/#author" }
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://terraforge-gis.pages.dev/#website",
+      "url": "https://terraforge-gis.pages.dev/",
+      "name": "TerraForge",
+      "publisher": { "@id": "https://terraforge-gis.pages.dev/#author" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://terraforge-gis.pages.dev/#author",
+      "name": "JungleZy",
+      "url": "https://github.com/JungleZy"
+    }
+  ]
+}
 </script>
 </head>
 <body>
@@ -86,10 +134,15 @@
       <a href="#engineering" class="hide-sm" data-i18n="nav.engineering">工程</a>
       <a href="#download" data-i18n="nav.download">下载</a>
       <a href="#docs" class="hide-sm" data-i18n="nav.docs">文档</a>
+      <!-- 语言切换是两条真链接，不是运行期开关：两种语言各有一个可被抓取、
+           可被分享、可被 hreflang 指向的 URL。用 <a> 而不是 <button> 也让
+           链接权重能从中文页流到英文页 —— 按钮不传递任何东西。
+           选中态用 aria-current="page"（链接的正确写法；aria-pressed 属于
+           按钮），CSS 选择器与它同源。 -->
       <span class="lang" role="group" aria-label="语言" data-i18n-attr="aria-label:lang.label">
-        <button type="button" class="lang-btn" data-lang="zh" lang="zh-CN" aria-pressed="true" data-noi18n>中文</button>
+        <a class="lang-btn" data-lang="zh" href="/" hreflang="zh-CN" lang="zh-CN" aria-current="page" data-noi18n>中文</a>
         <span class="lang-sep" aria-hidden="true"></span>
-        <button type="button" class="lang-btn" data-lang="en" lang="en" aria-pressed="false" data-noi18n>EN</button>
+        <a class="lang-btn" data-lang="en" href="/en/" hreflang="en" lang="en" data-noi18n>EN</a>
       </span>
       <a class="ext" href="https://github.com/JungleZy/TerraForge" rel="noopener">GitHub ↗</a>
     </nav>
@@ -128,7 +181,7 @@
   </section>
 
   <figure class="shot-hero">
-    <img src="assets/img/hero.webp" width="2400" height="1500"
+    <img src="assets/img/hero.webp" width="2200" height="1375"
          data-i18n-attr="alt:hero.alt"
          alt="TerraForge 界面：贡嘎山一带的三维地形上覆盖着一个带角点手柄的矩形下载选区，左侧是框选、区域、搜索、光照、任务、配置的工具栏">
   </figure>
@@ -173,7 +226,7 @@
           </dl>
         </div>
         <figure class="shot">
-          <img src="assets/img/create.webp" width="922" height="1080" loading="lazy"
+          <img src="assets/img/create.webp" width="900" height="1054" loading="lazy"
                data-i18n-attr="alt:pipe.tiles.alt"
                alt="下载数据对话框：显示选区四至、预计 8,537 块瓦片，可选瓦片 / GeoTIFF / MBTiles 输出与缩放级别 10–15">
           <figcaption data-i18n="pipe.tiles.caption">建任务时先算清要下多少块</figcaption>
@@ -193,7 +246,7 @@
           </dl>
         </div>
         <figure class="shot">
-          <img src="assets/img/tasks.webp" width="1920" height="1200" loading="lazy"
+          <img src="assets/img/tasks.webp" width="1400" height="875" loading="lazy"
                data-i18n-attr="alt:pipe.dem.alt"
                alt="任务中心：总任务、已完成、失败数与累计下载量统计，下方是带类型标签和区域四至的任务列表，以及历史区域地图">
           <figcaption data-i18n="pipe.dem.caption">任务中心 · 历史区域直接叠在地图上</figcaption>
@@ -213,7 +266,7 @@
           </dl>
         </div>
         <figure class="shot">
-          <img src="assets/img/terrain.webp" width="1920" height="1200" loading="lazy"
+          <img src="assets/img/terrain.webp" width="1400" height="875" loading="lazy"
                data-i18n-attr="alt:pipe.terrain.alt"
                alt="喜马拉雅山脊的三维地形渲染：低角度视图，雪线以上的山体起伏与远处地平线清晰可见">
           <figcaption data-i18n="pipe.terrain.caption">喜马拉雅山脊 · 开启地形光照</figcaption>
@@ -232,7 +285,7 @@
           </dl>
         </div>
         <figure class="shot">
-          <img src="assets/img/contour.webp" width="1920" height="1200" loading="lazy"
+          <img src="assets/img/contour.webp" width="1400" height="875" loading="lazy"
                data-i18n-attr="alt:pipe.contour.alt"
                alt="天山一带的等高线瓦片渲染成果：分层设色的高程色带配合褐色等高线，叠在卫星影像底图上">
           <figcaption data-i18n="pipe.contour.caption">天山选区 · 等高距 50 m · 分层设色 + 晕渲</figcaption>
@@ -270,7 +323,7 @@
       </div>
 
       <figure class="shot solo rv">
-        <img src="assets/img/config.webp" width="645" height="1200" loading="lazy"
+        <img src="assets/img/config.webp" width="640" height="1190" loading="lazy"
              data-i18n-attr="alt:eng.alt"
              alt="配置面板：主题与强调色、默认保存路径、并发下载数、请求超时、代理服务器与瓦片服务器列表等分组设置">
         <figcaption data-i18n="eng.caption">配置 · 并发与超时 / 代理自动检测 / 缓存 / GDAL 参数 / Earthdata 账号</figcaption>
@@ -384,55 +437,9 @@
   </div>
 </footer>
 
-<!-- i18n 必须跑在滚动揭示之前：翻译会改变文本长度，进而改变每个区块的
-     纵向位置，而揭示脚本靠 getBoundingClientRect() 判定是否入场 —— 先翻译
-     后测量，顺序反了会有区块被错判。同步加载，不加 defer/async。 -->
-<script src="assets/i18n.js"></script>
-
-<script>
-/* 滚动揭示。
- *
- * 这里刻意不用 IntersectionObserver：它只在阈值被跨越时回调，而「一帧之内
- * 从视口下方跳到视口上方」并不产生跨越，回调不会触发，被跳过的区块就永久
- * 停在 opacity:0。点导航锚点跳转后往回滚、拖滚动条、刷新时浏览器恢复滚动
- * 位置这三种常见操作都会踩到，表现是整屏空白。
- *
- * 换成 rAF 节流的位置扫描：只要元素顶部已经越过视口 92% 处就揭示（包括
- * 已经滚过头、top 为负的情况），对跳跃、恢复、缩放窗口一律成立。元素揭示
- * 后立即从队列里摘掉，队列空了就摘掉监听，稳态下零开销。
- */
-(function () {
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  // .legend 也要进队列：它的色带靠 .in 触发逐档展开，不是普通的 .rv 上浮。
-  var els = [].slice.call(document.querySelectorAll('.rv, .legend'));
-  var ticking = false;
-
-  function sweep() {
-    ticking = false;
-    var edge = window.innerHeight * 0.92;
-    for (var i = els.length - 1; i >= 0; i--) {
-      if (els[i].getBoundingClientRect().top < edge) {
-        els[i].classList.add('in');
-        els.splice(i, 1);
-      }
-    }
-    if (!els.length) {
-      window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', onScroll);
-    }
-  }
-
-  function onScroll() {
-    if (ticking) return;
-    ticking = true;
-    requestAnimationFrame(sweep);
-  }
-
-  window.addEventListener('scroll', onScroll, { passive: true });
-  window.addEventListener('resize', onScroll);
-  sweep();
-})();
-</script>
+<!-- 滚动揭示（双向，rAF 位置扫描而非 IntersectionObserver）。为什么不用
+     观察者、滞回带怎么定的，都写在文件里。 -->
+<script src="assets/reveal.js"></script>
 
 <!-- 地形场动效（全屏背景 + 首屏项目名）。排在揭示脚本之后：它不参与布局
      测量，而首屏项目名的字号要等 document.fonts.ready 才量得准，本来就是

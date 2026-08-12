@@ -9,6 +9,17 @@
 /assets/style.css
   Cache-Control: public, max-age=3600
 
+# llms.txt / llms-full.txt 是给生成式引擎抓的纯文本，正文里有 ° × 这类非
+# ASCII 字符 —— charset 写死，免得某些抓取端按 latin-1 解出乱码。缓存跟着
+# 样式表走：它们和页面文案同源，改一次就得同时失效。
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=3600
+
+/llms-full.txt
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=3600
+
 /*
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
