@@ -1,0 +1,63 @@
+# 官网自动部署 —— site/ 有改动时把它直传到 Cloudflare Pages。
+#
+# 需要一个仓库 Secret：CLOUDFLARE_API_TOKEN
+#   权限只需 Account · Cloudflare Pages · Edit，Account Resources 要 Include
+#   到 46833edb76ee78d13b59c6deff692ee4（账号 ID 不是密钥，直接写在这里）。
+#   没配 Secret 时部署那步会被跳过，不会在仓库首页留一排失败的红叉。
+#
+# 站点没有构建步骤：site/ 目录里是什么，线上就是什么。项目名与输出目录由
+# 仓库根的 wrangler.jsonc 提供，这里不重复。
+#
+# 为什么不用 cloudflare/wrangler-action：那只是对下面这条命令的一层包装，
+# 而多引一个第三方 action 就多一个要盯着钉版本的依赖。直接调 wrangler，
+# 版本钉死在与本地实测同一个（4.121.0）。
+name: Deploy Site
+
+on:
+  push:
+    branches: [master]
+    # 只有官网相关文件变了才发。改 src/ 或 tests/ 不该触发一次部署。
+    paths:
+      - 'site/**'
+      - 'wrangler.jsonc'
+      - '.github/workflows/deploy-site.yml'
+  # 手动补发：直传部署不像 Git 集成那样有「重试上一次构建」的按钮。
+  workflow_dispatch:
+
+# 并发发版没有意义，后一次必然覆盖前一次；取消排队中的旧任务省 Actions 额度。
+concurrency:
+  group: deploy-site
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    # fork 出去的仓库没有这个 Secret，也不该往我的 Pages 项目上发。
+    if: ${{ github.repository == 'JungleZy/TerraForge' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check secret is configured
+        id: gate
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 CLOUDFLARE_API_TOKEN，跳过部署。配置方法见 site/README.md。"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        if: steps.gate.outputs.ok == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 46833edb76ee78d13b59c6deff692ee4
+        run: npx --yes wrangler@4.121.0 pages deploy

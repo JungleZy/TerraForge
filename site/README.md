@@ -79,6 +79,21 @@ Cloudflare Workers」之类的模板不行 —— 那套模板不含 Pages。
 > export NODE_OPTIONS=--no-network-family-autoselection
 > ```
 
+### C. GitHub Actions 自动部署（当前采用；workflow 已就位，只差一个 Secret）
+
+`.github/workflows/deploy-site.yml` 已经写好：push 到 `master` 且改动落在
+`site/**` 或 `wrangler.jsonc` 时自动直传，也可以在 Actions 页手动 `Run workflow`
+补发。它跑的就是 B 那条命令，wrangler 版本钉死 `4.121.0`。
+
+**激活只需要加一个仓库 Secret：**
+
+1. <https://github.com/JungleZy/TerraForge/settings/secrets/actions> → **New repository secret**
+2. Name 填 `CLOUDFLARE_API_TOKEN`，Secret 填 B 里那个 token（权限要求同上）
+3. Save
+
+没配这个 Secret 时部署那步会被跳过并留一条 notice，**不会**在仓库首页留失败的红叉。
+账号 ID 直接写在 workflow 里 —— 它不是密钥。
+
 项目名决定域名，而 `*.pages.dev` 子域名是**全局唯一**的，不是每个账号一份。本项目
 叫 `terraforge-gis` 就是因为 `terraforge` 已被别的账号占了 —— 用它建项目 Cloudflare
 不会报错，而是默默给一个带随机后缀的 `terraforge-9pr.pages.dev`。想换名字先建了看
