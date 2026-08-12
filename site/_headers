@@ -1,0 +1,16 @@
+# Cloudflare Pages 响应头。字体文件名固定且内容不会变，可以长期强缓存；
+# 截图与样式表会随版本更新覆盖同名文件，所以只给短缓存，避免改了站看不到。
+/assets/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/img/*
+  Cache-Control: public, max-age=604800
+
+/assets/style.css
+  Cache-Control: public, max-age=3600
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), camera=(), microphone=()

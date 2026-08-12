@@ -121,8 +121,8 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# （原 GitHub Python 模板在这里忽略 /site —— 那是 mkdocs 的构建产物目录。
+#   本项目不用 mkdocs，而 site/ 现在是官网源码，必须入库，所以那条已删除。）
 
 # mypy
 .mypy_cache/

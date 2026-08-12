@@ -1,0 +1,329 @@
+@import url("fonts/fonts.css");
+
+/* ── tokens ────────────────────────────────────────────────────────────
+   取自 TerraForge 应用自身的暗色主题（static/css/style.css）：
+   ink 系是 --color-bg-*，paper 系是 --color-text-*，sky 是 --color-accent。
+   ramp 八档是等高线默认分层设色配色（contourTintPalette），页面上作为
+   真实高程图例使用，不当装饰色。
+   ------------------------------------------------------------------- */
+:root {
+  --ink:        #0c0d10;
+  --ink-1:      #101217;
+  --ink-2:      #161920;
+  --line:       rgba(232, 234, 237, .10);
+  --line-hi:    rgba(232, 234, 237, .20);
+
+  --paper:      #e8eaed;
+  --paper-2:    #9aa3ad;
+  --paper-3:    #6b7480;
+
+  --sky:        #38bdf8;
+  --sky-hi:     #7dd3fc;
+  --sky-dim:    rgba(56, 189, 248, .12);
+  --sky-ink:    #041e2b;
+
+  --amber:      #dcd98e;
+
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans SC",
+          "Microsoft YaHei", sans-serif;
+
+  --gut: clamp(1.25rem, 4vw, 3rem);
+  --max: 1180px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.8;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+img { display: block; max-width: 100%; height: auto; }
+
+a { color: var(--sky); text-decoration: none; }
+a:hover { color: var(--sky-hi); }
+
+:focus-visible {
+  outline: 2px solid var(--sky);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.wrap { width: 100%; max-width: var(--max); margin-inline: auto; padding-inline: var(--gut); }
+
+.mono {
+  font-family: var(--mono);
+  font-feature-settings: "tnum" 1;
+}
+
+/* eyebrow ─ 小写 latin 标签，全站唯一的「仪表盘」声音 */
+.eyebrow {
+  font-family: var(--mono);
+  font-size: .72rem;
+  font-weight: 600;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--paper-3);
+  margin: 0 0 1rem;
+}
+.eyebrow b { color: var(--sky); font-weight: 600; }
+
+.skip {
+  position: absolute; left: -9999px;
+  background: var(--sky); color: var(--sky-ink);
+  padding: .6rem 1rem; font-weight: 600; z-index: 99;
+}
+.skip:focus { left: var(--gut); top: .5rem; }
+
+/* 粘顶导航会盖住锚点目标，给所有带 id 的区块留出让位 */
+[id] { scroll-margin-top: 76px; }
+
+/* ── masthead ──────────────────────────────────────────────────────── */
+.masthead {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(12, 13, 16, .82);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
+.masthead .wrap {
+  display: flex; align-items: center; gap: 1.5rem;
+  height: 60px;
+}
+.wordmark {
+  font-family: var(--mono);
+  font-size: .92rem; font-weight: 700; letter-spacing: .14em;
+  color: var(--paper); white-space: nowrap;
+}
+.wordmark span { color: var(--sky); }
+.masthead nav { margin-left: auto; display: flex; align-items: center; gap: clamp(.9rem, 2.5vw, 1.9rem); }
+.masthead nav a {
+  font-size: .875rem; color: var(--paper-2);
+  border-bottom: 1px solid transparent; padding-bottom: 2px;
+}
+.masthead nav a:hover { color: var(--paper); border-bottom-color: var(--sky); }
+.masthead nav a.ext { font-family: var(--mono); font-size: .8rem; letter-spacing: .04em; }
+@media (max-width: 560px) { .masthead nav a.hide-sm { display: none; } }
+
+/* ── hero ──────────────────────────────────────────────────────────── */
+.hero { padding: clamp(3.5rem, 9vw, 7rem) 0 clamp(2.5rem, 5vw, 3.5rem); }
+
+/* 首屏 eyebrow 就是下方那张图里选区的真实四至 */
+.coords {
+  display: flex; flex-wrap: wrap; gap: .35rem 1.15rem;
+  font-family: var(--mono); font-size: .76rem; letter-spacing: .06em;
+  color: var(--paper-3); margin: 0 0 1.6rem;
+}
+.coords b { color: var(--paper-2); font-weight: 400; }
+.coords em { font-style: normal; color: var(--sky); }
+
+h1 {
+  margin: 0 0 1.4rem;
+  font-size: clamp(2.1rem, 5.4vw, 4.1rem);
+  font-weight: 700; line-height: 1.12; letter-spacing: -.02em;
+  text-wrap: balance;
+}
+/* 标题固定在逗号处断行。CJK 逐字回绕会把「把/它」这类词劈开，text-wrap: balance
+   管不到标点，只能显式给一个断点；窄到放不下时仍会自然回绕。 */
+.lede {
+  margin: 0 0 2.2rem; max-width: 58ch;
+  font-size: clamp(1rem, 1.35vw, 1.14rem);
+  line-height: 1.85; color: var(--paper-2);
+}
+
+.cta { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.5rem; }
+.btn {
+  display: inline-flex; align-items: center; gap: .5rem;
+  padding: .72rem 1.4rem; border-radius: 3px;
+  font-size: .93rem; font-weight: 600; line-height: 1.4;
+  border: 1px solid transparent; transition: background .15s, border-color .15s, color .15s;
+}
+.btn-solid { background: var(--sky); color: var(--sky-ink); }
+.btn-solid:hover { background: var(--sky-hi); color: var(--sky-ink); }
+.btn-ghost { border-color: var(--line-hi); color: var(--paper); }
+.btn-ghost:hover { border-color: var(--sky); color: var(--sky); background: var(--sky-dim); }
+.btn .v { font-family: var(--mono); font-size: .85rem; letter-spacing: .02em; }
+
+.hero-meta {
+  font-family: var(--mono); font-size: .76rem; letter-spacing: .04em;
+  color: var(--paper-3); margin: 0;
+}
+
+/* ── hero shot + 高程图例（签名元素）───────────────────────────────── */
+.shot-hero { margin: 0; padding-inline: var(--gut); }
+.shot-hero img {
+  width: 100%; max-width: 1520px; margin-inline: auto;
+  /* 首屏图铺满宽度时会高到吃掉整屏，压到 68vh 让下面的高程图例进入视野。
+     裁掉的是地图边缘，对内容没有损失。 */
+  max-height: 68vh; object-fit: cover; object-position: center 42%;
+  border: 1px solid var(--line); border-bottom: 0;
+  background: var(--ink-1);
+}
+
+/* 图例必须和上面那张图等宽：两者都是「先留 gut 内边距，再限 1520」 */
+.legend { margin: 0 0 clamp(4rem, 8vw, 6.5rem); padding-inline: var(--gut); }
+.legend-inner { max-width: 1520px; margin-inline: auto; }
+.legend-ramp { display: flex; height: 7px; }
+.legend-ramp i { flex: 1; display: block; }
+.legend-scale {
+  display: flex; margin-top: .45rem;
+  font-family: var(--mono); font-size: .64rem; letter-spacing: .05em; color: var(--paper-3);
+}
+.legend-scale i { flex: 1; font-style: normal; }
+.legend-cap {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1.5rem;
+  margin-top: .9rem;
+  font-family: var(--mono); font-size: .7rem; letter-spacing: .05em; color: var(--paper-3);
+}
+@media (max-width: 620px) { .legend-scale i:nth-child(even) { color: transparent; } }
+
+/* ── generic band ──────────────────────────────────────────────────── */
+.band { padding-block: clamp(3.5rem, 8vw, 6rem); border-top: 1px solid var(--line); }
+.band-head { max-width: 62ch; margin-bottom: clamp(2.5rem, 5vw, 3.75rem); }
+.band-head h2 {
+  margin: 0 0 .9rem;
+  font-size: clamp(1.55rem, 3vw, 2.3rem); font-weight: 700;
+  line-height: 1.25; letter-spacing: -.015em;
+}
+.band-head p { margin: 0; color: var(--paper-2); font-size: 1.02rem; }
+
+/* ── pipelines ─────────────────────────────────────────────────────── */
+.pipe { display: grid; gap: clamp(1.75rem, 4vw, 3.25rem); align-items: start; }
+.pipe + .pipe { margin-top: clamp(3.5rem, 7vw, 5.5rem); padding-top: clamp(3.5rem, 7vw, 5.5rem); border-top: 1px solid var(--line); }
+@media (min-width: 900px) {
+  .pipe { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); }
+  .pipe.flip .pipe-text { order: 2; }
+}
+.pipe h3 {
+  margin: 0 0 1rem;
+  font-size: clamp(1.3rem, 2.2vw, 1.72rem); font-weight: 650;
+  line-height: 1.4; letter-spacing: -.01em;
+}
+.pipe p { margin: 0 0 1.5rem; color: var(--paper-2); }
+
+/* spec = 真实参数键值对，用等宽标签排成仪表盘 */
+.spec { margin: 0; display: grid; gap: .7rem; }
+.spec > div {
+  display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: .9rem;
+  padding-top: .7rem; border-top: 1px solid var(--line);
+  font-size: .89rem; line-height: 1.65;
+}
+.spec dt {
+  font-family: var(--mono); font-size: .7rem; font-weight: 600;
+  letter-spacing: .12em; text-transform: uppercase;
+  color: var(--paper-3); padding-top: .28rem;
+}
+.spec dd { margin: 0; color: var(--paper-2); }
+.spec dd code {
+  font-family: var(--mono); font-size: .86em; color: var(--paper);
+  background: var(--ink-2); padding: .05em .38em; border-radius: 2px;
+}
+@media (max-width: 420px) { .spec > div { grid-template-columns: 1fr; gap: .2rem; } }
+
+.shot {
+  margin: 0; border: 1px solid var(--line); background: var(--ink-1);
+  overflow: hidden;
+}
+.shot img { width: 100%; }
+.shot figcaption {
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .05em;
+  color: var(--paper-3); padding: .6rem .85rem; border-top: 1px solid var(--line);
+}
+
+/* ── claims ────────────────────────────────────────────────────────── */
+.claims { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+@media (min-width: 760px) { .claims { grid-template-columns: 1fr 1fr; } }
+.claim { background: var(--ink); padding: clamp(1.5rem, 3vw, 2.1rem); }
+.claim h3 {
+  margin: 0 0 .7rem; font-size: 1.06rem; font-weight: 650; letter-spacing: -.005em;
+}
+.claim p { margin: 0; color: var(--paper-2); font-size: .93rem; line-height: 1.8; }
+.claim p code {
+  font-family: var(--mono); font-size: .86em; color: var(--paper);
+  background: var(--ink-2); padding: .05em .38em; border-radius: 2px;
+}
+
+/* 工程一节只挂一张配置面板图：纵向截图铺满宽度会失真，限宽居中 */
+.shot.solo { max-width: 480px; margin: clamp(2.5rem, 5vw, 3.5rem) auto 0; }
+
+/* ── download ──────────────────────────────────────────────────────── */
+.plats { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+@media (min-width: 820px) { .plats { grid-template-columns: repeat(3, 1fr); } }
+.plat {
+  background: var(--ink); padding: clamp(1.4rem, 3vw, 1.9rem);
+  display: flex; flex-direction: column; gap: .55rem;
+  transition: background .15s;
+}
+.plat:hover { background: var(--ink-1); }
+.plat-os { font-size: 1.12rem; font-weight: 650; color: var(--paper); }
+.plat-arch { font-family: var(--mono); font-size: .74rem; letter-spacing: .06em; color: var(--paper-3); }
+.plat-file {
+  font-family: var(--mono); font-size: .76rem; color: var(--sky);
+  word-break: break-all; margin-top: auto; padding-top: .8rem;
+}
+.plat:hover .plat-file { color: var(--sky-hi); }
+
+.notes { margin: clamp(2rem, 4vw, 2.75rem) 0 0; padding: 0; list-style: none; display: grid; gap: .95rem; }
+.notes li {
+  padding-left: 1.6rem; position: relative;
+  font-size: .92rem; line-height: 1.75; color: var(--paper-2);
+}
+.notes li::before {
+  content: "—"; position: absolute; left: 0; top: 0;
+  font-family: var(--mono); color: var(--paper-3);
+}
+.notes li code {
+  font-family: var(--mono); font-size: .86em; color: var(--paper);
+  background: var(--ink-2); padding: .05em .38em; border-radius: 2px;
+}
+.notes li.warn { color: var(--paper); }
+.notes li.warn::before { content: "!"; color: var(--amber); font-weight: 700; }
+.notes li.warn strong { color: var(--amber); font-weight: 600; }
+
+.tail { margin-top: 2rem; font-family: var(--mono); font-size: .8rem; display: flex; flex-wrap: wrap; gap: .5rem 1.4rem; }
+
+/* ── docs ──────────────────────────────────────────────────────────── */
+.docs { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+@media (min-width: 700px) { .docs { grid-template-columns: 1fr 1fr; } }
+.doc {
+  background: var(--ink); padding: 1.35rem clamp(1.25rem, 3vw, 1.75rem);
+  display: grid; gap: .3rem; transition: background .15s;
+}
+.doc:hover { background: var(--ink-1); }
+.doc-name { font-weight: 600; color: var(--paper); font-size: 1rem; }
+.doc:hover .doc-name { color: var(--sky); }
+.doc-desc { color: var(--paper-2); font-size: .88rem; line-height: 1.7; }
+.doc-file { font-family: var(--mono); font-size: .7rem; letter-spacing: .04em; color: var(--paper-3); }
+
+/* ── footer ────────────────────────────────────────────────────────── */
+footer { border-top: 1px solid var(--line); padding-block: clamp(3rem, 6vw, 4.5rem) 3rem; }
+.legal { display: grid; gap: 1.5rem; max-width: 76ch; }
+.legal h2 { margin: 0; font-size: .72rem; font-family: var(--mono); font-weight: 600; letter-spacing: .18em; text-transform: uppercase; color: var(--paper-3); }
+.legal p { margin: 0; font-size: .88rem; line-height: 1.8; color: var(--paper-2); }
+.legal .cite {
+  font-family: var(--mono); font-size: .8rem; color: var(--paper);
+  border-left: 2px solid var(--line-hi); padding: .2rem 0 .2rem .9rem;
+}
+.colophon {
+  margin-top: clamp(2.5rem, 5vw, 3.5rem); padding-top: 1.5rem; border-top: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; align-items: baseline;
+  font-family: var(--mono); font-size: .75rem; letter-spacing: .04em; color: var(--paper-3);
+}
+.colophon a { color: var(--paper-2); }
+.colophon a:hover { color: var(--sky); }
+
+/* ── reveal ────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: no-preference) {
+  .rv { opacity: 0; transform: translateY(14px); transition: opacity .55s ease, transform .55s ease; }
+  .rv.in { opacity: 1; transform: none; }
+}
