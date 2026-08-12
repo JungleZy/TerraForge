@@ -600,19 +600,18 @@ def _source_is_float(inputs: list[str]) -> bool:
 
 def _materialise_budget_verdict(inputs: list[str], work_dir: str | None,
                                 owner=None, materialise: bool = True):
-    """切片开工之前的磁盘复查判决；预算模块不可用时返回 None（= 不拦、不记）。
+    """切片开工之前的磁盘复查判决；预算模块不可用时返回 None（= 不查、不记）。
 
     `materialise=False` 是**单幅直通**那一档：那条路一个字节都不物化，剩余工作
-    量只有 mesh 产物一份。多算一整份中间栅格会把一个跑得下去的单幅任务判死，
-    所以这个参数不是精度问题（见 `disk_budget.estimate_terrain_tiling`）。
+    量只有 mesh 产物一份。多算一整份中间栅格会让日志里的「需要」虚高，所以
+    这个参数不是精度问题（见 `disk_budget.estimate_terrain_tiling`）。
 
     `owner` 是本任务在 scheduler 上的凭据 owner（`('dem', 12, 'tiling')` /
     `('local_terrain', 12, 'tiling')`），由管理器经 TileParams.owner 一路传下来。
     **不传就是一个真 bug，不是少一点精度**：管理器在起切时已经按本次估算预留了
-    一份 DISK_BYTES，这里不排除掉，它就被当成「别人占的」再扣一遍 —— 一台空
-    闲机器上的单个任务因此需要 2 倍于自身预算的空闲空间才跑得下去，而判决文案
-    还会把用户支去找一个并不存在的并发任务（实测数字见
-    `disk_budget._reserved_by_others` 的 docstring）。
+    一份 DISK_BYTES，这里不排除掉，它就被当成「别人占的」再扣一遍 —— 日志报出
+    的可用空间比真实值小一份自身预算，措辞还会把用户支去找一个并不存在的并发
+    任务（实测数字见 `disk_budget._reserved_by_others` 的 docstring）。
     None 只对没有预留过的调用方成立：CLI（`main`）与离线建底图脚本压根不经过
     scheduler，那时「别人占的」里本来就没有自己这一份。
 
@@ -677,33 +676,28 @@ def build_input_raster(inputs: list[str], work_dir: str | None = None,
     **Float32**,实测物化后约为源的 **1.9 倍** —— 按最坏情况给磁盘留量。
     产物由 build_terrain 的 finally 删除;本函数自身失败时在这里就地删除。
     """
-    # ---- 磁盘复查（§4.2）。在单幅直通与 mkstemp **两者之前** ----------------
+    # ---- 磁盘复查（§4.2，纯观测）。在单幅直通与 mkstemp **两者之前** --------
     # 为什么必须在直通之前：单幅任务同样要写 mesh 金字塔（源的若干倍），它只是
-    # 不写中间栅格。这条闸门原先站在 `if len(inputs) == 1: return` **之后**，
-    # 于是**单幅切片作业整个过程一次磁盘检查都没有** —— 实测：把空闲空间伪造成
-    # 1 MiB，2 幅输入的作业被正确判死（"the remaining work needs 25.9 MiB …
-    # only 1.0 MiB is free"），1 幅输入的作业什么都没查、一路跑到 completed。
-    # 而单幅恰恰是最常见的形态（一个 1°×1° 颗粒、一次上传）。
+    # 不写中间栅格。这条复查原先站在 `if len(inputs) == 1: return` **之后**，
+    # 于是**单幅切片作业整个过程一次磁盘检查都没有** —— 而单幅恰恰是最常见的
+    # 形态（一个 1°×1° 颗粒、一次上传）。
     #
-    # 不查的代价：最典型的失败形态是写到一半 ENOSPC。GTiff 边写边落盘，留下一份
-    # **非空**的半成品，而用户看到的是一句 GDAL 的 I/O error —— 与「盘满了，还差
-    # 12 GiB」相距甚远；多幅路径还要等 `_verify_materialised` 才揭穿它，那时已经
-    # 白等了十几分钟到几十分钟。
+    # 判决不通过也只是记 warning，不抛（拦截语义 2026-08 起移除，见 disk_budget
+    # 模块 docstring）。复查的全部价值是日志：最典型的失败形态是写到一半
+    # ENOSPC —— GTiff 边写边落盘，留下一份**非空**的半成品，而用户看到的是一句
+    # GDAL 的 I/O error；有这行数字在，事后一眼能看出是「盘满了，还差 12 GiB」。
     #
     # 用 recheck_remaining 而不是 check_budget：走到这里任务已经起来了（管理器
-    # 在 start 时做过一次 check_budget），措辞该是「剩下的活还要多少」。判决不
-    # 通过就当场抛 —— 抛在 mkstemp 之前，盘上一个字节都还没被碰过。
-    # 判决通过与否都记一行：估算错的时候第一件事就是回头看这行的数字。
+    # 在 start 时做过一次 check_budget），措辞该是「剩下的活还要多少」。
     #
-    # materialise 按幅数给：单幅直通一个字节都不物化，把中间栅格也算进去等于拿
-    # 一份并不存在的开销去判死一个本来跑得下去的任务。
+    # materialise 按幅数给：单幅直通一个字节都不物化，把中间栅格也算进去等于
+    # 虚报一份并不存在的开销。
     _multi = len(inputs) > 1
     _budget_verdict = _materialise_budget_verdict(
         inputs, work_dir, owner=owner, materialise=_multi)
     if _budget_verdict is not None:
-        logger.info(f"Terrain: 切片前磁盘复查 —— {_budget_verdict.reason}")
-        if not _budget_verdict.ok:
-            raise RuntimeError(_budget_verdict.reason)
+        (logger.info if _budget_verdict.ok else logger.warning)(
+            f"Terrain: 切片前磁盘复查 —— {_budget_verdict.reason}")
 
     if not _multi:
         # 单幅直通：多源 VRT 的接缝问题不存在，源文件本身就是切片输入。
@@ -1508,8 +1502,8 @@ def build_terrain(
     normals: bool = True,
     level_offset: int = 0,
     # 本任务在 scheduler 上的凭据 owner，例如 ('dem', 12, 'tiling')。只用于物化
-    # 前那次磁盘复查：不传的话本任务准入时预留的 DISK_BYTES 会被当成「别人占的」
-    # 再扣一遍，独占机器的单任务因此需要 2 倍自身预算才跑得下去
+    # 前那次磁盘复查：不传的话本任务启动时预留的 DISK_BYTES 会被当成「别人占的」
+    # 再扣一遍，报出的可用空间比真实值小一份自身预算（虚警）
     # （见 _materialise_budget_verdict 与 disk_budget._reserved_by_others）。
     # None 是 CLI / 离线建底图脚本那一档：它们压根不经过 scheduler，没有自己那份。
     owner=None,

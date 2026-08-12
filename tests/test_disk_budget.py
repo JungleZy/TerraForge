@@ -1,4 +1,4 @@
-"""disk_budget —— 估算的形制与**全局感知**的准入判决。
+"""disk_budget —— 估算的形制与**全局感知**的空间判决（只展示，不拦截）。
 
 两条被反复踩到的规则在这里立成回归：
 
@@ -6,10 +6,10 @@
    （23.91 GB 对 408.11 GB）就来自一个常数 20 KB —— 用低层级路网的经验值去乘
    高层级卫星影像的瓦片数。所以这里断言的是「随层级变、随图源变」这个形制，
    不是具体数字（数字是保守假设，会调）。
-2. **复查必须排除调用方自己的预留。** 不排除的话，一个独占整台机器的任务需要
-   2 倍于自身预算的空闲空间才跑得下去：物理 70 MiB 空闲、任务需要 40 MiB，
-   准入通过并预留了自己那 40 MiB，跑到中途复查看到「可用 30 MiB、还缺 10 MiB」
-   直接判死 —— 而 reason 还会把用户支去找一个并不存在的并发任务。
+2. **复查必须排除调用方自己的预留。** 不排除的话，一个独占整台机器的任务报出来
+   的数字会小一份自身预算：物理 70 MiB 空闲、任务需要 40 MiB，启动时预留了自己
+   那 40 MiB，跑到中途复查看到的就是「可用 30 MiB、还缺 10 MiB」—— 而 reason
+   还会把用户支去找一个并不存在的并发任务。
 """
 import os
 import sys
@@ -200,10 +200,10 @@ def test_check_budget_subtracts_what_other_tasks_reserved(monkeypatch, scheduler
 
 
 def test_recheck_does_not_count_the_callers_own_reservation(monkeypatch, scheduler):
-    """**回归**：不排除自己 = 单个任务需要 2 倍自身预算才跑得下去。
+    """**回归**：不排除自己 = 报出的可用空间比真实值小一份自身预算。
 
-    实测形态：物理 70 MiB 空闲、任务需要 40 MiB，准入通过并预留了自己那份，
-    跑到中途复查看到「可用 30 MiB、还缺 10 MiB」直接判死。
+    实测形态：物理 70 MiB 空闲、任务需要 40 MiB，启动时预留了自己那份，
+    跑到中途复查看到的就是「可用 30 MiB、还缺 10 MiB」的虚警。
     """
     from src.services import disk_budget
 
@@ -220,7 +220,7 @@ def test_recheck_does_not_count_the_callers_own_reservation(monkeypatch, schedul
     assert mine_excluded.free_bytes == 70 * MIB
     assert mine_excluded.ok is True
 
-    # 不传 owner 就退化成「把自己也算进别人」—— 正是被修掉的那个判死。
+    # 不传 owner 就退化成「把自己也算进别人」—— 正是被修掉的那类虚警。
     mine_counted = disk_budget.recheck_remaining('/anywhere', remaining, config)
     assert mine_counted.free_bytes == 30 * MIB
     assert mine_counted.ok is False
@@ -253,9 +253,9 @@ def test_a_refusal_always_carries_the_numbers(monkeypatch, scheduler):
     assert verdict.required_bytes == 100 * MIB
 
 
-def test_disabling_the_check_still_reports_that_it_would_have_blocked(monkeypatch,
-                                                                      scheduler):
-    """关掉只跳过拦截，不该让用户在**不知情**的情况下把盘写满。"""
+def test_disabling_the_check_still_reports_the_shortfall(monkeypatch, scheduler):
+    """关掉开关只是 verdict 恒 ok（UI 不弹警告、日志措辞变为「检查已关」），
+    缺口数字照样出 —— 关掉不该等于不知情。"""
     from src.services import disk_budget
 
     monkeypatch.setattr(disk_budget, 'free_bytes', lambda path: 10 * MIB)
@@ -263,7 +263,7 @@ def test_disabling_the_check_still_reports_that_it_would_have_blocked(monkeypatc
                         disk_safety_factor='1.0')
     verdict = disk_budget.check_budget('/anywhere', _estimate(100 * MIB), config)
     assert verdict.ok is True
-    assert verdict.shortfall_bytes == 90 * MIB     # 「本来会被拦下」照样出数
+    assert verdict.shortfall_bytes == 90 * MIB     # 缺口照样出数
 
 
 def test_safety_factor_and_reserve_both_enter_the_requirement(monkeypatch, scheduler):

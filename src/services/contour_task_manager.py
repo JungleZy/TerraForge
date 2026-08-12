@@ -744,8 +744,9 @@ class ContourTaskManager:
                 if row["status"] not in ("pending", "paused"):
                     raise ValueError(f"Cannot start contour task {task_id} with status '{row['status']}'")
 
-                # ---- 准入：磁盘预算 + 全局配额。夹在状态闸门与 UPDATE 之间 ----
-                # 拒在 UPDATE 之前不需要任何回补（行还停在 pending/paused）。
+                # ---- 磁盘估算(只记录) + 全局配额(真的会拒)。夹在状态闸门与
+                # UPDATE 之间 ----
+                # 配额拒在 UPDATE 之前不需要任何回补（行还停在 pending/paused）。
                 # 落库之后再拒就得走下面那个 L2 回退块，多一条分支就多一次机会
                 # 把任务留在「DB 是 running、线程从未启动」的状态里。
                 sums = cur.execute(
@@ -755,7 +756,7 @@ class ContourTaskManager:
                 # 瓦片数按区域 × 层级区间算。region_spec 为空的存量行由
                 # RegionSpec.from_row 退回四至列；四至是 (0,0,0,0) 的历史行返回
                 # None，此时按 0 张算 —— 估算退化成「只有 warp 工作区」那一半，
-                # 仍然比没有预检好（warp 产物才是这条管线真正的大头）。
+                # 仍然比没有估算好（warp 产物才是这条管线真正的大头）。
                 region = RegionSpec.from_row(row)
                 tile_count = 0
                 if region is not None:
@@ -771,12 +772,12 @@ class ContourTaskManager:
                 output_dir = (resolve_stored_output_dir(row["output_path"])
                               / f"contour_task_{task_id}")
                 verdict = disk_budget.check_budget(output_dir, estimate, self.config)
-                logger.info(
+                # 不拦（拦截语义 2026-08 起移除，见 disk_budget 模块 docstring）：
+                # 不通过也只记 warning 照常启动，数字留在日志里。
+                (logger.info if verdict.ok else logger.warning)(
                     f"Contour task {task_id} 磁盘预检（源 "
                     f"{source_bytes / (1024 * 1024):.0f} MiB，约 {tile_count} 瓦片）："
                     f"{verdict.reason}")
-                if not verdict.ok:
-                    raise ValueError(verdict.reason)
 
                 try:
                     requested_workers = int(self.config.get("contour_workers", "0") or 0)
@@ -1224,15 +1225,17 @@ class ContourTaskManager:
                         workers = int(self.config.get("contour_workers", "0") or 0)
                     except (TypeError, ValueError):
                         workers = 0
-                # ---- 运行中磁盘复查（§4.2）------------------------------------
-                # 准入时 start_task 做过一次 check_budget，但那是**任务排队之前**
+                # ---- 运行中磁盘复查（§4.2，纯观测）--------------------------------
+                # 启动时 start_task 做过一次 check_budget，但那是**任务排队之前**
                 # 的一张快照：warp 加渲染动辄几十分钟，这期间别的任务、别的进程、
-                # 用户自己拷东西都能把盘吃掉。不复查的话终点是写瓦片时 ENOSPC，
-                # 而用户看到的只是一句 I/O error。
+                # 用户自己拷东西都能把盘吃掉。复查不叫停任务（拦截语义已移除）；
+                # 它的全部价值是日志 —— 真写到 ENOSPC 时，最后一条 disk_recheck
+                # 事件就是「还差多少」的现场数字，而不是一句没头没尾的 I/O error。
                 #
                 # 剩余工作量只算**没渲的瓦片**：warp 产物与它的金字塔在渲染开始
-                # 前就已经落盘，再算一遍等于把已占用的空间又要求一次，跑到后半程
-                # 必然误判（recheck_remaining 的 docstring）。所以 source_bytes 传 0。
+                # 前就已经落盘，再算一遍等于把已占用的空间又报一遍，跑到后半程
+                # 数字必然虚高（recheck_remaining 的 docstring）。所以 source_bytes
+                # 传 0。
                 def _remaining_estimate():
                     pending = max(0, int(render_state["total"]) - int(render_state["done"]))
                     if pending == 0:
@@ -1307,36 +1310,6 @@ class ContourTaskManager:
                        failed=render_counts.get("failed", 0),
                        skipped=render_counts.get("skipped", 0),
                        total=render_counts.get("total", 0))
-            if recheck.blocked is not None:
-                # 盘在渲染途中不够了。引擎已经按停止标记那条路径干净收手（已渲的
-                # 瓦片都留着），这里补上状态与**原因** —— 只收手不写原因的话，
-                # 用户看到的是一个没有任何解释的 paused。
-                #
-                # 落 paused 而不是 failed：failed 不在 start_task 的准入白名单
-                # （'pending','paused'）里，判成 failed 等于「腾出空间也点不动
-                # 恢复」，把一个可恢复的处境变成死局。
-                reason = recheck.blocked.reason
-                tlog.event('terminal', status='paused', reason='disk_budget',
-                           shortfall=recheck.blocked.shortfall_bytes, detail=reason)
-                tlog.error('磁盘空间在渲染途中不够了，任务已暂停：%s', reason)
-                logger.warning(f"Contour task {task_id} paused by the disk recheck: {reason}")
-                cur.execute(
-                    "UPDATE contour_tasks SET status='paused', error_message=? "
-                    "WHERE id=? AND status='running'",
-                    (reason, task_id),
-                )
-                conn.commit()
-                if cur.rowcount and self.socketio:
-                    try:
-                        self.socketio.emit("task_paused", {
-                            "task_id": task_id, "task_type": "contour",
-                            "status": "paused", "error_message": reason})
-                    except Exception as emit_error:
-                        logger.warning(
-                            f"Contour task {task_id}: emit task_paused failed "
-                            f"(ignored): {emit_error}")
-                return
-
             if stop_flag and stop_flag.is_set():
                 tlog.event('terminal', status='stopped',
                            reason='stop flag set (pause or delete)')

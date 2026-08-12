@@ -948,12 +948,9 @@ class DownloadEngine:
                 唯一通道:改造前每个任务各自开满 concurrent_downloads 条连接,
                 四个任务并行就是四倍,没有任何全局上界。
             disk_recheck: `disk_budget.RunningRecheck` 或 None(**关键字参数**)。
-                运行中的磁盘复查,**每批**问一次(见下面 while 循环顶部)。判死之后
-                这一轮就地收手:排队中的瓦片与 stop_flag 走同一个出口报
-                'cancelled'(见 _stop_requested)。刻意不抛 —— 抛出去会被管理器的
-                兜底 except 变成一句 RuntimeError,而用户需要看到的是判决里那四个
-                数字(可用 / 需要 / 保留 / 缺口)。判决对象归调用方所有,收手之后
-                调用方从 `disk_recheck.blocked` 取判决写终态与原因。
+                运行中的磁盘复查,**每批** poll 一次(见下面 while 循环顶部)。
+                纯观测:判决只经 on_verdict 进任务日志,不通过也不叫停 ——
+                拦截语义 2026-08 起移除(见 disk_budget 模块 docstring)。
 
         Returns:
             List of download result dictionaries, in input order.
@@ -1006,23 +1003,9 @@ class DownloadEngine:
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(concurrent_downloads)
 
-        # 磁盘复查判死之后的内部停止状态。**放在闭包里而不是 self 上**:
-        # DownloadEngine 全进程只有一个实例(TaskManager.__init__ 里构造一次),
-        # 而 max_concurrent_tasks 出厂是 2 —— 两个地图任务并发是默认形态,不是
-        # 边角情况。挂在 self 上就是 B 的判决覆盖 A 的,然后 A 拿着 B 的剩余
-        # 估算与 B 的 owner 去判自己的死。这个标记的职能就是「决定要不要停掉
-        # 一个任务」,认错任务的代价太大。
-        budget_blocked: Dict[str, Any] = {'verdict': None}
-
         def _stop_requested() -> bool:
-            """要不要收手:用户的停止标记,或磁盘复查判死。
-
-            共用同一个出口是有意的:对下游而言两者是同一件事 —— 这一轮不再下,
-            已下好的瓦片留在缓存里,恢复时从断点接上。
-            """
-            if stop_flag is not None and stop_flag.is_set():
-                return True
-            return budget_blocked['verdict'] is not None
+            """要不要收手:只看用户的停止标记。"""
+            return stop_flag is not None and stop_flag.is_set()
 
         # Create aiohttp session with connection pooling。
         # limit_per_host 必须跟着并发走:旧版恒为 4(服务器数),4 台服务器
@@ -1073,15 +1056,9 @@ class DownloadEngine:
                 # 每批一次磁盘复查(复查自己还有时间节流,见 RunningRecheck)。
                 # **批**是这条管线唯一天然的节奏:逐瓦片查是纯浪费(一批 1000 张),
                 # 逐 zoom 查太粗(一个 zoom 可以是几十万张、几十 GB)。
-                # 放在 islice 之前,所以连第一批都在闸门之内 —— 任务是在准入判决
-                # 之后才排队起来的,排队期间盘上发生了什么谁也不知道。
-                if disk_recheck is not None and budget_blocked['verdict'] is None:
-                    blocked = disk_recheck.blocking_verdict()
-                    if blocked is not None:
-                        budget_blocked['verdict'] = blocked
-                        logger.error(
-                            f"Map download halted by the in-flight disk recheck: "
-                            f"{blocked.reason}")
+                # 纯观测:判决经 on_verdict 进任务日志,不通过也不叫停。
+                if disk_recheck is not None:
+                    disk_recheck.poll()
                 batch = list(itertools.islice(tile_iterator, DOWNLOAD_BATCH_SIZE))
                 if not batch:
                     break

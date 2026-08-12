@@ -11,7 +11,7 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Callable, Optional, Dict, Any, List
+from typing import Callable, Optional, Any, List
 
 import aiofiles
 import aiohttp
@@ -159,10 +159,9 @@ class DemDownloadEngine:
 
         disk_recheck 是 `disk_budget.RunningRecheck`（None = 不查，直调与测试的
         那一档）。**颗粒就是这条管线天然的批**：一颗 COG 是 30-50 MB，正好是
-        复查要防的量级，所以每颗开下之前查一次 —— 逐 chunk 查是纯浪费（复查
-        自己还有时间节流）。判死之后不抛：置内部标记，让在途与排队的颗粒各自
-        沿**用户按暂停那条**收手路径退出（见 _stop_requested）。判决对象归调用
-        方所有，收手之后调用方从 `disk_recheck.blocked` 取判决写终态。
+        复查要盯的量级，所以每颗开下之前 poll 一次 —— 逐 chunk 查是纯浪费
+        （复查自己还有时间节流）。纯观测：判决只经 on_verdict 进任务日志，
+        不通过也不叫停（拦截语义 2026-08 起移除，见 disk_budget 模块 docstring）。
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -202,24 +201,10 @@ class DemDownloadEngine:
 
         semaphore = asyncio.Semaphore(concurrent_downloads)
 
-        # 磁盘复查判死之后的内部停止状态。放在闭包里而不是 self 上：DemTaskManager
-        # 全进程只有一个 engine 实例，挂在 self 上就是两个并发 DEM 任务互相覆盖
-        # （A 的收手理由变成 B 的判决），而这个标记的职能是「决定要不要停掉一个
-        # 任务」—— 认错任务的代价太大。
-        budget_blocked: Dict[str, Any] = {'verdict': None}
-
         def _stop_requested() -> bool:
-            """要不要收手：用户的停止标记，或磁盘复查判死。
-
-            两者共用**完全同一条**收手路径（排队的直接退出、在途的中断后回写
-            pending），因为对下游而言它们是同一件事：这一轮不再继续，已下好的
-            颗粒留着，恢复时从断点接上。判死刻意不抛异常 —— 抛出去会被管理器
-            的兜底 except 变成一句 RuntimeError，而用户需要看到的是判决里那
-            四个数字（还差多少、腾多少）。
-            """
-            if stop_flag is not None and stop_flag.is_set():
-                return True
-            return budget_blocked['verdict'] is not None
+            """要不要收手：只看用户的停止标记。在途颗粒中断后回写 pending，
+            恢复时从断点接上。"""
+            return stop_flag is not None and stop_flag.is_set()
 
         async with aiohttp.ClientSession(timeout=timeout, connector=connector, cookie_jar=jar, trust_env=True) as session:
             async def one(granule: str):
@@ -228,21 +213,10 @@ class DemDownloadEngine:
                         return
 
                     # 开下这一颗之前复查一次磁盘。位置在 semaphore 之内、
-                    # dest.exists() 快速路径之前都无所谓（复查自带时间节流），
-                    # 但必须在**真的开始写**之前 —— 这条闸门的全部价值就是抢在
-                    # ENOSPC 之前：GTiff/COG 边写边落盘，写失败留下的是一份非空
-                    # 半成品，而下一轮的断点判定是「存在且非空就跳过」。
-                    if disk_recheck is not None and budget_blocked['verdict'] is None:
-                        blocked = disk_recheck.blocking_verdict()
-                        if blocked is not None:
-                            budget_blocked['verdict'] = blocked
-                            logger.error(
-                                f"DEM download halted by the in-flight disk recheck: "
-                                f"{blocked.reason}")
-                            # 回写 pending 而不是 failed：这一颗一次都没被尝试过，
-                            # 腾出空间后恢复任务就该重新排上（同暂停的口径）。
-                            await _report_progress(progress_callback, granule, "pending", None, None)
-                            return
+                    # dest.exists() 快速路径之前都无所谓（复查自带时间节流）。
+                    # 纯观测：判决经 on_verdict 进任务日志，不通过也不叫停。
+                    if disk_recheck is not None:
+                        disk_recheck.poll()
 
                     # Remote granule may be a nested path (Copernicus); the local
                     # file and cache key use the flat basename so list_dem_tifs finds it.

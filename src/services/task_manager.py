@@ -685,32 +685,31 @@ class TaskManager:
         finally:
             conn.close()
 
-    def _check_disk_admission(self, task_row) -> Any:
-        """启动前的磁盘硬闸门。通过返回 `BudgetVerdict`,不通过抛 `ValueError`。
-
-        为什么闸门在**启动**而不是**创建**:建任务时用户可能正打算腾空间,
-        服务端不替他做决定(见 create_task 里那段软阈值注释)。按下开始就不同了
-        —— 此刻拒绝是唯一能避免「跑了三小时之后把盘写满、连失败原因都记不下来」
-        的时机(盘写到 0 会让 SQLite 与日志一起失败)。
+    def _estimate_disk_verdict(self, task_row) -> Any:
+        """启动前的磁盘估算判决。**只记录,不拒绝**:不通过也返回 verdict 照常启动
+        (拦截语义 2026-08 起移除,见 disk_budget 模块 docstring),但 reason 里那
+        四个数字(可用 / 需要 / 保留 / 缺口)必须进日志 —— 真写满盘时那就是现场。
 
         估算按**剩余工作量**:总量减去已经在缓存里的部分(用 downloaded_tiles
         这个已对账过的计数当命中数,而不是在这里 stat 几十万个文件 —— 那会让
         「点开始」卡住整个 _state_lock)。续传一个 95% 完成的任务不该被按全量
-        拦下来。
+        报数。
 
-        估算本身失败(配置脏、区域还原不出来)时**放行**并记警告:一个算不出来
-        的数字没有资格否决用户的操作。真正的兜底是运行中的复查。
+        估算本身失败(配置脏、区域还原不出来)时返回 None 并记警告:一个算不出来
+        的数字连记录的价值都没有。
+
+        返回值随后被 `_reserve_download_quota` 兑换成一笔 DISK_BYTES 预留,让
+        并发任务的判决互相看得见(数字不失真)。
 
         `export_mbtiles` 必须原样传给估算器:勾了「同时导出 MBTiles」的任务会在
-        收尾时再写一个**与整份松散镜像同量级**的容器文件,而它落盘的时机是任务
-        的最后一刻 —— 不算进准入的话,一个刚好装得下的任务会在跑完几小时之后、
-        打包那一步把盘写爆,前面所有产物一起陪葬。
+        收尾时再写一个**与整份松散镜像同量级**的容器文件,不算进去的话日志里的
+        「需要」会比真实峰值小一倍。
         """
         task_id = task_row['id']
         try:
             spec = RegionSpec.from_row(task_row, source='drawn')
             if spec is None:
-                logger.warning(f"Task {task_id}: 区域还原不出来,跳过磁盘准入")
+                logger.warning(f"Task {task_id}: 区域还原不出来,跳过磁盘估算")
                 return None
             cached = max(0, int(task_row['downloaded_tiles'] or 0))
             estimate = disk_budget.estimate_map_task(
@@ -719,15 +718,16 @@ class TaskManager:
                 cached_tiles=cached,
                 export_mbtiles=bool(task_row['export_mbtiles']))
         except Exception as e:
-            logger.warning(f"Task {task_id}: 磁盘估算失败({e!r}),跳过磁盘准入")
+            logger.warning(f"Task {task_id}: 磁盘估算失败({e!r}),跳过磁盘估算")
             return None
 
         output_dir = resolve_stored_output_dir(task_row['output_path'])
         verdict = disk_budget.check_budget(output_dir, estimate, self.config_manager)
-        if not verdict.ok:
-            # reason 里自带四个数字(可用 / 需要 / 保留 / 缺口)—— 「空间不足」
-            # 四个字对用户毫无操作性,而「再腾出 3.2 GiB」有。
-            raise ValueError(verdict.reason)
+        if verdict.ok:
+            logger.info(f"Task {task_id} 磁盘估算:{verdict.reason}")
+        else:
+            # 不拦 —— 用户有权在快满的盘上硬跑,但不能是不知情地跑。
+            logger.warning(f"Task {task_id} 磁盘估算超出可用空间,照常启动:{verdict.reason}")
         return verdict
 
     def _reserve_download_quota(self, task_id: int, verdict) -> Any:
@@ -737,13 +737,11 @@ class TaskManager:
         四个任务并行就是四倍,机器被自己打死。凭据里的 NETWORK 份额随后经
         `download_tiles_batch(max_concurrency=...)` 落到信号量与 TCPConnector 上。
 
-        `verdict` 是 `_check_disk_admission` 刚给出的磁盘判决(估算失败时是
+        `verdict` 是 `_estimate_disk_verdict` 刚给出的磁盘判决(估算失败时是
         None)。它**必须**在这里被兑换成一笔 DISK_BYTES 预留 —— `check_budget`
-        的 docstring 把话说死了:「判决通过不等于空间被占住」。不预留的话两个
-        地图任务会对着同一份「剩余 20 GB」各自通过,然后一起把盘写满,而两边的
-        任务日志都会白纸黑字写着「磁盘检查通过」,事后谁也解释不了。DEM、等高线、
-        地形切片三条管线早就在同一位置这么做了,地图是唯一的漏网者 —— 偏偏它
-        又是最容易把盘写满的那一条(百万级瓦片 + 每层 GeoTIFF)。
+        的 docstring 把话说死了:判决之后不预留,这次判决对下一个任务就不可见。
+        不预留的话两个地图任务会对着同一份「剩余 20 GB」各报各的乐观数字,
+        真写满盘时两边的任务日志都写着「空间够」,事后谁也解释不了。
 
         DISK_BYTES 在调度器里是**只记账、不设限**的种类(见 resource_scheduler
         模块 docstring),所以它永远全额授予,不会成为拒绝的原因;它的全部作用
@@ -801,8 +799,7 @@ class TaskManager:
             TaskStillStoppingError: If the previous run's thread is still
                 winding down (row already flipped to paused/pending)
             ValueError: If the task is genuinely running, its status is neither
-                pending nor paused, the disk budget refuses it, or the global
-                scheduler has no quota left
+                pending nor paused, or the global scheduler has no quota left
             sqlite3.Error: If database operation fails
         """
         self._start_run(task_id, RESUMABLE_STATE_VALUES, TaskState.RUNNING.value)
@@ -830,8 +827,8 @@ class TaskManager:
         gap_accepted
             本轮是否关掉严格缺块闸门(「接受缺块」那条路)。同上,由本方法装。
 
-        准入顺序是刻意的:磁盘与配额都在 `_state_lock` 里、在
-        `UPDATE ... status=<run_status>` **之前**判。这样一次拒绝不需要任何
+        准入顺序是刻意的:磁盘估算与配额都在 `_state_lock` 里、在
+        `UPDATE ... status=<run_status>` **之前**做。配额拒绝时不需要任何
         补偿动作 —— 状态没改、时间记录没写、线程没建,库里干干净净。
         (下面那段 status_committed 的补偿路径因此在拒绝路径上永远走不到,
         它只服务「commit 之后、线程启动之前」那个窄窗口。)
@@ -893,8 +890,8 @@ class TaskManager:
                         f"Task must be one of {', '.join(allowed_statuses)}."
                     )
 
-                # ---- 准入:磁盘 → 配额。两道都在状态翻转之前 ----------------
-                verdict = self._check_disk_admission(row)
+                # ---- 磁盘估算(只记录) → 配额(真的会拒)。都在状态翻转之前 ----
+                verdict = self._estimate_disk_verdict(row)
                 reservation = self._reserve_download_quota(task_id, verdict)
                 self._admission[task_id] = {
                     'verdict': verdict,
@@ -1211,30 +1208,6 @@ class TaskManager:
         finally:
             conn.close()
 
-    def _write_error_message(self, task_id: int, message: str) -> None:
-        """把一句原因写进 `tasks.error_message`。绝不抛。
-
-        用于「状态本身不是 failed,但用户必须看到为什么停了」这种情形 ——
-        目前唯一的调用点是运行中磁盘复查判死后的暂停:`pause_task` 只翻状态,
-        而 paused 在界面上和用户自己按的暂停长得一模一样。没有这一句,用户看到
-        的是一个凭空自己暂停了的任务(判决里的四个数字只在任务日志里)。
-
-        `WHERE status='paused'` 守卫:走到这里状态刚被 pause_task 翻成 paused,
-        带上它是为了绝不把一条终态记录的 error_message 改写掉(同四条管线
-        「置 failed 的 UPDATE 一律不得改写终态」那条约定,见
-        tests/test_pipeline_parity.py)。
-        """
-        conn = get_connection()
-        try:
-            conn.execute(
-                "UPDATE tasks SET error_message = ? WHERE id = ? AND status = 'paused'",
-                (message, task_id))
-            conn.commit()
-        except Exception as e:
-            logger.warning(f"Task {task_id}: 写入暂停原因失败(忽略): {e!r}")
-        finally:
-            conn.close()
-
     def resume_task(self, task_id: int):
         """
         Resume a paused task
@@ -1539,8 +1512,8 @@ class TaskManager:
         另起一个的代价不是重复代码,而是两套完成判定:补漏那套迟早会漏掉
         某个分支,然后出现「补完漏了但任务还停在 pending_decision」。
 
-        它**是一次运行**,所以照样要过磁盘与配额准入(`_start_run` 里那两道):
-        补漏可以是几万块瓦片,凭「这是补漏」就免检等于给资源上界开后门。
+        它**是一次运行**,所以照样要过磁盘估算与配额(`_start_run` 里那一套):
+        补漏可以是几万块瓦片,凭「这是补漏」就免配额等于给资源上界开后门。
 
         幂等:任务已经在跑(含正在补漏)时,`_start_run` 的线程存活检查会拒绝
         第二次调用;没有可重试的洞时直接拒绝,不空跑一轮。
@@ -2536,21 +2509,21 @@ class TaskManager:
                         reservation = self._reservations.get(task_id)
                         if reservation is not None and reservation.network > 0:
                             extra_kw['max_concurrency'] = reservation.network
-                        # ---- 运行中磁盘复查(§4.2)--------------------------
-                        # 准入闸门(_check_disk_admission)只是**按下开始那一刻**
-                        # 的一张快照。地图是四条管线里最容易把盘写满的那条
+                        # ---- 运行中磁盘复查(§4.2,纯观测)-------------------
+                        # 启动时的估算(_estimate_disk_verdict)只是**按下开始那一
+                        # 刻**的一张快照。地图是四条管线里最容易把盘写满的那条
                         # (百万级瓦片 + 每层 GeoTIFF),也是跑得最久的 —— 几小时
                         # 里另一个任务、另一个进程、用户自己拷东西都能把盘吃掉。
-                        # 不复查的终点是写瓦片时 ENOSPC,而用户看到的只是一句
-                        # I/O error;更糟的是断点判定认「文件存在且非空」,截断的
-                        # 那一张会被下一轮当成下好的(disk_budget 模块 docstring)。
+                        # 复查不叫停任务(拦截语义已移除);它的全部价值是:真写到
+                        # ENOSPC 时,任务日志里最后一条 disk_recheck 事件就是
+                        # 「还差多少」的现场数字,而不是一句没头没尾的 I/O error。
                         #
                         # 整任务的估算只算一次,循环里按已下张数折成剩余量:
                         # count_region_tiles 对大多边形不便宜,而复查每十几秒一
                         # 次;折算口径见 remaining_map_estimate(为什么不能直接
                         # 用 cached_tiles 那条路,那里写了)。
-                        # 估算算不出来就不复查 —— 与 _check_disk_admission 同一
-                        # 立场:一个算不出来的数字没有资格否决用户的操作。
+                        # 估算算不出来就不复查 —— 与 _estimate_disk_verdict 同一
+                        # 立场:一个算不出来的数字连记录的价值都没有。
                         # 构造见下:估算失败时留 None(不复查)。
                         try:
                             full_estimate = disk_budget.estimate_map_task(
@@ -2614,39 +2587,6 @@ class TaskManager:
                                gaps=len(live_gaps))
             finally:
                 backfill_thread.join()
-
-            if disk_recheck is not None and disk_recheck.blocked is not None:
-                # 盘在下载途中不够了。引擎已经按停止标记那条路径干净收手(排队中
-                # 的瓦片报 'cancelled',已下好的都在缓存里),这里把任务落到一个
-                # **用户能操作**的状态上,并把原因写下来。
-                #
-                # 复用 pause_task 而不是在这里再写一遍 UPDATE:那个方法在同一个
-                # 事务里做了三件事 —— 翻状态、累计 total_running_seconds、写
-                # 'pause' 时间记录。少写时间记录的后果不是少一条审计,而是下次
-                # 恢复时 _update_total_running_time 会把「盘满到用户腾空间」这
-                # 整段墙上时间折进任务运行时长(见 pause_task 里那段事务注释)。
-                #
-                # 为什么是 paused 而不是 failed:'failed' 不在
-                # RESUMABLE_STATE_VALUES 里(见 _start_run 的白名单注释),判成
-                # failed 等于「腾出空间也点不动恢复」—— 把一个可恢复的处境变成
-                # 死局。缺块也还在 task_tiles 里原样留着。
-                reason = disk_recheck.blocked.reason
-                tlog.event('terminal', status='paused', reason='disk_budget',
-                           shortfall=disk_recheck.blocked.shortfall_bytes,
-                           detail=reason)
-                tlog.error('磁盘空间在下载途中不够了,任务已暂停:%s', reason)
-                logger.warning(f"Task {task_id} paused by the disk recheck: {reason}")
-                try:
-                    self.pause_task(task_id)
-                except Exception as pause_error:
-                    # 行已被删、或用户在同一瞬间自己按了暂停:两种情况下都没有
-                    # 「running」可翻,不该把它变成一次异常收尾(那会让兜底把行
-                    # 判 failed,而 failed 不可恢复)。原因已经记在上面了。
-                    logger.warning(
-                        f"Task {task_id}: 磁盘复查暂停时状态已变({pause_error!r}),"
-                        f"只记录原因")
-                self._write_error_message(task_id, reason)
-                return
 
             # Check stop flag before stitching
             if self._is_stop_requested(task_id, stop_flag):

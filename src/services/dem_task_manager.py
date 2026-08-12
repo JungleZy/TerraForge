@@ -349,15 +349,16 @@ class DemTaskManager:
                 if row["status"] not in ("pending", "paused"):
                     raise ValueError(f"Cannot start DEM task {task_id} with status '{row['status']}'")
 
-                # ---- 准入：磁盘预算 + 全局配额。夹在状态闸门与 UPDATE 之间 ----
-                # 位置是刻意的：这两道都可能拒，而在 UPDATE 之前被拒**不需要任何
-                # 回补** —— 行还停在 pending/paused，用户腾出空间或等一个任务跑完
-                # 再点一次就行。本文件下面那一串 L2 补偿块的存在，正是因为「先落库
-                # 再做可能失败的事」这个顺序。
+                # ---- 磁盘估算(只记录) + 全局配额(真的会拒)。夹在状态闸门与
+                # UPDATE 之间 ----
+                # 位置是刻意的：配额拒绝在 UPDATE 之前**不需要任何回补** —— 行还
+                # 停在 pending/paused，用户等一个任务跑完再点一次就行。本文件下面
+                # 那一串 L2 补偿块的存在，正是因为「先落库再做可能失败的事」这个
+                # 顺序。
                 output_dir = (resolve_stored_output_dir(row["output_path"])
                               / f"dem_task_{task_id}")
                 # 估算按**还没下的**颗粒算，不是 total_files：恢复一个下到 90% 的
-                # 任务时按总量算会凭空要求十倍空间，把本来能跑完的任务拦死。
+                # 任务时按总量算会凭空多报十倍空间。
                 cur.execute(
                     "SELECT COUNT(*) AS n FROM dem_files "
                     "WHERE task_id=? AND status IN ('pending','failed','downloading')",
@@ -365,10 +366,10 @@ class DemTaskManager:
                 pending_granules = int((cur.fetchone() or {"n": 0})["n"] or 0)
                 estimate = disk_budget.estimate_dem_task(pending_granules, row["dataset"])
                 verdict = disk_budget.check_budget(output_dir, estimate, self.config)
-                logger.info(
+                # 不拦（拦截语义 2026-08 起移除，见 disk_budget 模块 docstring）：
+                # 不通过也只记 warning 照常启动，数字留在日志里。
+                (logger.info if verdict.ok else logger.warning)(
                     f"DEM task {task_id} 磁盘预检（{pending_granules} 颗待下）：{verdict.reason}")
-                if not verdict.ok:
-                    raise ValueError(verdict.reason)
 
                 # concurrent_downloads 从这里起是**请求量**而不是生效值：真正开的
                 # 连接数是调度器授予的那个（最低 1 条，一条也能跑完）。脏值不该让
@@ -387,8 +388,8 @@ class DemTaskManager:
                 # 只可能是进程内另有 bug，那时 reserve 会当场 ValueError 把话说
                 # 清楚，而不是让我们悄悄吊销一份别人正在用的配额。
                 # 磁盘一并预留：check_budget 的判决对**别的**任务不可见，不预留的话
-                # 三个任务能一起通过同一份剩余空间（disk_budget 模块 docstring 的
-                # 「预算必须是全局的」）。DISK_BYTES 是只记账不设限的种类，
+                # 三个任务会对着同一份剩余空间各报各的乐观数字（disk_budget 模块
+                # docstring 的「全局性」一节）。DISK_BYTES 是只记账不设限的种类，
                 # 一定授予，不会成为拒绝的原因。
                 reservation = scheduler.reserve(owner, plan_download_reservation(
                     requested_conns) + [
@@ -569,10 +570,11 @@ class DemTaskManager:
         task_dir = resolve_stored_output_dir(output_path) / f"dem_task_{task_id}"
         output_dir = task_dir / "terrain_tiles"
 
-        # ---- 准入：磁盘预算 + 全局配额。在 job 行 UPSERT 成 running **之前** ----
-        # 顺序与 start_task 同一条理由：这两道都可能拒，拒在落库之前不需要回补。
-        # 落库之后再拒就得走下面那个 L2 回补块，而那条路每多一个分支就多一次
-        # 「job 行永久停在 running、只能重启进程解开」的机会。
+        # ---- 磁盘估算(只记录) + 全局配额(真的会拒)。在 job 行 UPSERT 成
+        # running **之前** ----
+        # 顺序与 start_task 同一条理由：配额拒在落库之前不需要回补。落库之后再拒
+        # 就得走下面那个 L2 回补块，而那条路每多一个分支就多一次「job 行永久停在
+        # running、只能重启进程解开」的机会。
         source_bytes = 0
         for tif in list_dem_tifs(task_dir):
             try:
@@ -584,10 +586,10 @@ class DemTaskManager:
         estimate = disk_budget.estimate_terrain_tiling(
             source_bytes, float_source=(dataset == "COP-DEM-GLO-30"))
         verdict = disk_budget.check_budget(output_dir, estimate, self.config)
-        logger.info(f"DEM task {task_id} 切片磁盘预检"
-                    f"（源 {source_bytes / (1024 * 1024):.0f} MiB）：{verdict.reason}")
-        if not verdict.ok:
-            raise ValueError(verdict.reason)
+        # 不拦：不通过也只记 warning 照常开工，数字留在日志里。
+        (logger.info if verdict.ok else logger.warning)(
+            f"DEM task {task_id} 切片磁盘预检"
+            f"（源 {source_bytes / (1024 * 1024):.0f} MiB）：{verdict.reason}")
 
         # ---- 切片作业的准入闸门必须跑在 reserve **之前** ----
         # 这里曾经是一句无条件的 `scheduler.release_owner(owner)`，注释声称
@@ -947,8 +949,8 @@ class DemTaskManager:
                                       # recheck_remaining）必须知道「本任务自己
                                       # 预留的那份 DISK_BYTES 不算别人占的」——
                                       # 不传 owner 的话它把本任务的预留读成他人
-                                      # 预留，于是一台空机器上单个任务需要两倍
-                                      # 空间，切到一半被自己的预留判死。
+                                      # 预留，报出的可用空间比真实值小一份自身
+                                      # 预算（虚警）。
                                       # 必须用 reservation.owner 而不是手写
                                       # ('dem', task_id, 'tiling')：那是第二份
                                       # 事实来源，对不上时 _reserved_by_others
@@ -1410,15 +1412,16 @@ class DemTaskManager:
                     settled["n"] += 1
                 await _maybe_emit()
 
-            # ---- 运行中磁盘复查（§4.2）--------------------------------------
-            # 准入时 start_task 已经做过一次 check_budget，但那是**任务排队之前**
+            # ---- 运行中磁盘复查（§4.2，纯观测）--------------------------------
+            # 启动时 start_task 已经做过一次 check_budget，但那是**任务排队之前**
             # 的一张快照：排队等名额、下载跑几十分钟，这期间另一个任务、另一个
-            # 进程、用户自己拷东西都能把盘吃掉。不复查的话终点是 ENOSPC —— 边写
-            # 边落盘的 COG 留下一份非空半成品，而断点判定是「存在且非空就跳过」，
-            # 于是下一轮把截断文件当成下好的（disk_budget 模块 docstring 的头一段）。
+            # 进程、用户自己拷东西都能把盘吃掉。复查不叫停任务（拦截语义已移除）；
+            # 它的全部价值是日志：真写到 ENOSPC 时，边写边落盘的 COG 会留下一份
+            # 非空半成品，而断点判定是「存在且非空就跳过」—— 最后一条
+            # disk_recheck 事件就是辨认这个现场的数字。
             #
             # 剩余工作量按**还没尘埃落定的颗粒数**现算：传死值等于跑到后半程还在
-            # 要求整个任务的空间，必然误判（recheck_remaining 的 docstring）。
+            # 按整个任务的空间报数（recheck_remaining 的 docstring）。
             settled = {"n": 0}
             owner = (_PIPELINE, task_id, 'download')
 
@@ -1475,35 +1478,6 @@ class DemTaskManager:
                 await self.engine.download_files(**download_kwargs)
             finally:
                 watcher.cancel()
-
-            if recheck.blocked is not None:
-                # 盘在跑到一半时不够了。引擎已经按「暂停」那条路径干净收手
-                # （在途颗粒回写 pending），这里补上状态与**原因** —— 只收手不
-                # 写原因的话，用户看到的是一个没有任何解释的 paused。
-                #
-                # 落 paused 而不是 failed：failed 不在 start_task 的准入白名单
-                # （'pending','paused'）里，判成 failed 等于「腾出空间也点不动
-                # 恢复」，把一个可恢复的处境变成死局。
-                reason = recheck.blocked.reason
-                tlog.event('terminal', status='paused', reason='disk_budget',
-                           shortfall=recheck.blocked.shortfall_bytes, detail=reason)
-                tlog.error('磁盘空间在下载途中不够了，任务已暂停：%s', reason)
-                logger.warning(f"DEM task {task_id} paused by the disk recheck: {reason}")
-                cur.execute(
-                    "UPDATE dem_tasks SET status='paused', error_message=? "
-                    "WHERE id=? AND status='running'",
-                    (reason, task_id),
-                )
-                conn.commit()
-                if cur.rowcount and self.socketio:
-                    try:
-                        self.socketio.emit("task_paused", {
-                            "task_id": task_id, "task_type": "dem",
-                            "status": "paused", "error_message": reason})
-                    except Exception as emit_error:
-                        logger.warning(
-                            f"DEM task {task_id}: emit task_paused failed (ignored): {emit_error}")
-                return
 
             if stop_ev.is_set():
                 tlog.event('terminal', status='stopped',

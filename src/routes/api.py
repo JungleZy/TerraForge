@@ -1609,9 +1609,10 @@ def estimate_region_route():
     把瓦片数学收进 contracts 的理由）。多边形区域按栅格化后的实际覆盖算，
     不是外接矩形，两者在细长区域上能差几倍。
 
-    预算判决只是**建议**，这条接口不写任何状态、不拦任何东西。真正的准入闸在
-    创建任务时（services/disk_budget.check_budget），这里是让用户在点「开始」
-    之前就看到 verdict.reason 里的具体数字。
+    预算判决只是**建议**，这条接口不写任何状态、不拦任何东西。启动时
+    （services/disk_budget.check_budget 的各 start_* 调用点）同样只记录不拦
+    —— 拦截语义 2026-08 起整体移除，这里是让用户在点「开始」之前就看到
+    verdict 里的具体数字。
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):

@@ -1,4 +1,12 @@
-"""磁盘预算 —— 五种独立估算 + **全局感知**的准入判决（§4.2）。
+"""磁盘预算 —— 五种独立估算 + **全局感知**的空间判决（§4.2）。
+
+## 定位：只估算与展示，不拦截
+
+2026-08 起本模块**不再拦截任何任务**：估算超过可用空间既不拒绝启动，也不
+中途叫停。判决的去处只剩两个 —— 前端选区时的「需要约 X、可用 Y」展示
+（routes/api.py 的估算接口），与任务日志里的一行数字。用户在一块快满的盘
+上硬跑是他的选择；模块的职责是让这个选择**知情**，并在 ENOSPC 真的发生时
+留下「还差多少」的事后诊断数字。
 
 ## 为什么必须有这个模块
 
@@ -28,37 +36,38 @@
   「这一层要 40 GB、只剩 3 GB」。对应 `recheck_remaining`：按**剩余工作量**重估，
   没有地板。
 
-## 两道闸门，各自的节奏
+## 两处判决，各自的节奏
 
-`check_budget` 是**按下开始**那一刻的准入（四条管线的 `start_*` 各调一次）。
-它只是一张快照：任务要排队等名额，跑起来又是几十分钟到几小时，这期间另一个
-任务、另一个进程、用户自己拷东西都能把盘吃掉。
+`check_budget` 在**按下开始**那一刻调用（四条管线的 `start_*` 各一次）与
+前端估算接口里调用。它只是一张快照：任务要排队等名额，跑起来又是几十分钟
+到几小时，这期间另一个任务、另一个进程、用户自己拷东西都能把盘吃掉。
+判决不通过也照常放行 —— 调用方把 `verdict.reason`（自带四个数字）记一笔
+warning 就继续。
 
 `recheck_remaining` 是**运行中**的复查，由 `RunningRecheck` 接到每条管线的循环
-上（它负责节流、判死 sticky、绝不抛）。四条管线的接线点与节奏：
+上（它负责节流与绝不抛）。四条管线的接线点与节奏：
 
 - 地图下载：`download_engine.download_tiles_batch` 的**批**边界（每批
   `DOWNLOAD_BATCH_SIZE` 张）。剩余量走 `remaining_map_estimate`。
 - DEM 下载：`dem_download_engine.download_files` 的**颗粒**边界（一颗 30-50 MB，
-  正好是复查要防的量级）。
+  正好是复查要盯的量级）。
 - 等高线渲染：`contour_engine.build_contour_tiles` 的批 / 逐瓦片检查点，与
   `stop_flag` 同一处。剩余量只算没渲的瓦片（warp 产物在渲染开始前就落盘了）。
 - 地形切片：`cesium_terrain.build_input_raster` 开工之前一次（单幅与多幅**都**
   查，只是单幅不算物化那一份）。这条管线是一次性的 `build_terrain` 调用，中间
   没有可插的批边界，所以就这一次。
 
-判死之后三条下载/渲染管线都按**停止标记**那条路径收手（干净收手、落 paused、
-把判决原因写进任务自己的日志），而不是抛异常 —— 抛出去会被管理器的兜底 except
-变成一句 RuntimeError，而用户需要看到的是判决里那四个数字。
+这些复查的全部产物是日志：真的 ENOSPC 时，任务日志里最后一行 `disk_recheck`
+事件就是「剩下的活要多少、盘上还剩多少」，而不是一句没头没尾的 I/O error。
 
-## 全局性：本模块存在的真正理由
+## 全局性：数字为什么仍然要扣掉别人的预留
 
 单机单任务时「查剩余空间」谁都会写。问题在并发：四个任务各自查一次同一块盘，
-**四个都通过**，然后四个一起写满它。所以 `check_budget` 会向
+各自看到同一份剩余空间 —— 拦截时代里这会一起写满盘；只展示的时代里这会让
+每个任务的日志与前端都报一个偏乐观的「可用」。所以 `check_budget` 仍向
 `resource_scheduler` 要「其他任务已经预留但尚未落盘的字节数」并从可用空间里
-扣掉（scheduler 对 `DISK_BYTES` 只记账不设限，真正的闸门在这里）。判决通过后，
-调用方**必须**去 scheduler 上真的 `reserve(DISK_BYTES)`，否则这次判决对下一个
-任务不可见 —— 那就退化回了「四个都通过」。
+扣掉（scheduler 对 `DISK_BYTES` 只记账不设限）。判决之后调用方仍应去
+scheduler 上真的 `reserve(DISK_BYTES)`，否则这次判决对下一个任务不可见。
 
 ## 估算值的诚实边界
 
@@ -249,7 +258,7 @@ class DiskEstimate:
         最终产物。
     peak_bytes
         同时存在的最大值。默认口径是 cache + output + temp —— 三者确实会共存
-        （缓存不会在拼接前删、产物边写边留、工作区最后才清）。准入判决只看它。
+        （缓存不会在拼接前删、产物边写边留、工作区最后才清）。判决只看它。
     tile_count
         估算依据的瓦片数，给 UI 展示与日志复核用（估算错时第一件事是看它）。
     detail
@@ -269,7 +278,8 @@ class DiskEstimate:
 
 @dataclass(frozen=True)
 class BudgetVerdict:
-    """准入判决。**永远带数字**，因为「空间不足」这四个字对用户毫无操作性。
+    """空间判决。**永远带数字**，因为「空间不足」这四个字对用户毫无操作性。
+    判决只用于展示与日志（ok=False 不拦任何东西，见模块 docstring 头部）。
 
     free_bytes
         **扣掉其他任务已预留字节之后**的可用空间，不是 `shutil.disk_usage` 的
@@ -538,10 +548,10 @@ def remaining_map_estimate(full: DiskEstimate, done_tiles: int) -> DiskEstimate:
     ## 为什么不是再调一次 `estimate_map_task(cached_tiles=已下数)`
 
     那个函数的 `cached_tiles` 只折 network / cache，产物一项**按整份算**（它的
-    docstring 说明了理由：缓存命中的瓦片照样要拷进输出目录）。那是**准入**的
-    正确口径，却是运行中复查的错口径 —— 跑到 90% 时它仍然要求整份松散镜像的
-    空间，于是一个马上就要跑完的任务会被判死。`recheck_remaining` 的 docstring
-    把这条列为「必然误判」，而误判的代价是把一个健康任务停掉。
+    docstring 说明了理由：缓存命中的瓦片照样要拷进输出目录）。那是**启动时**的
+    正确口径，却是运行中复查的错口径 —— 跑到 90% 时它仍然按整份松散镜像的
+    空间报数，于是一个马上就要跑完的任务报出来的「需要」会是整份。
+    `recheck_remaining` 的 docstring 把这条列为「数字必然虚高」。
 
     ## 折算口径
 
@@ -622,9 +632,9 @@ def estimate_terrain_tiling(source_bytes: int, *, float_source: bool = False,
     `build_terrain` 的 finally 删掉 —— 所以它进 peak。
 
     `materialise=False` 是**单幅输入**那一档：`build_input_raster` 对单幅直接
-    直通，一个字节都不物化，所以中间栅格那一项必须归零。默认 True（准入时不
-    知道用户后面会喂几幅，按最坏情况留量）；只有运行中复查知道确切幅数，而在
-    那里多算一整份中间栅格就是把一个跑得下去的单幅任务判死。
+    直通，一个字节都不物化，所以中间栅格那一项必须归零。默认 True（启动时不
+    知道用户后面会喂几幅，按最坏情况报数）；只有运行中复查知道确切幅数，而在
+    那里多算一整份中间栅格就是拿不存在的开销虚报。
     """
     src = max(0, int(source_bytes or 0))
     factor = _TERRAIN_MATERIALISE_FLOAT32 if float_source else _TERRAIN_MATERIALISE_INT16
@@ -758,21 +768,19 @@ def _reserved_by_others(exclude_owner=None) -> int:
     """其他任务已在 scheduler 上预留、但尚未落盘的字节数。
 
     **这一行是本模块与「每个任务各查一次 disk_usage」的全部区别。** 没有它，
-    四个并发任务会各自看到同一份剩余空间、各自通过预检，然后一起把盘写满
+    四个并发任务会各自看到同一份剩余空间、各报各的乐观数字
     （§4.2 的「预算必须是全局的」）。
 
     `exclude_owner` 是**运行中复查**必须传的：那时调用方自己已经持有一张
-    DISK_BYTES 凭据（准入时预留的），把它算进「别人占的」会让一个独占整台机器
-    的任务需要 2 倍于自身预算的空闲空间才能跑下去 —— 实测：物理 70 MiB 空闲、
-    任务需要 40 MiB，准入通过，任务按规矩预留了自己那 40 MiB，跑到中途复查
-    看到「可用 30 MiB、还缺 10 MiB」直接判死。而 reason 里还会写「40 MiB 已被
-    **其他任务**预留」，把用户支去找一个并不存在的并发任务。
-    这正是 `_verdict` 的 docstring 说共用算式是为了避免的那类「创建时通过、
-    跑到一半判死」。
+    DISK_BYTES 凭据（启动时预留的），把它算进「别人占的」会让报出的可用空间
+    比真实值小一份自身预算 —— 实测：物理 70 MiB 空闲、任务需要 40 MiB，任务
+    按规矩预留了自己那 40 MiB，跑到中途复查看到的就是「可用 30 MiB、还缺
+    10 MiB」的虚警。而 reason 里还会写「40 MiB 已被**其他任务**预留」，把用户
+    支去找一个并不存在的并发任务。
 
     惰性 import：本模块要能在不拉起 scheduler 的情况下单独导入（估算函数是纯
     计算，测试与 UI 预览都会只用它们）。scheduler 不可用时按 0 处理并留 warning
-    —— 退化成「只看物理剩余空间」，也就是改造前的行为，比让建任务直接失败好。
+    —— 退化成「只看物理剩余空间」，比让建任务直接失败好。
     """
     try:
         from src.services.resource_scheduler import get_scheduler
@@ -811,7 +819,7 @@ def _verdict(path, estimate: DiskEstimate, config_manager, *, what: str,
              exclude_owner=None) -> BudgetVerdict:
     """check_budget 与 recheck_remaining 的共同算式。差别只在 reason 的措辞
     （「这个任务要多少」vs「剩下的活还要多少」）与 `exclude_owner`—— 算式必须是
-    同一个，否则「创建时通过、跑到一半判死」会变成两套口径互相打架的 bug。"""
+    同一个，否则启动时日志与运行中日志会是两套口径互相打架的数字。"""
     enabled, reserve, factor = _budget_settings(config_manager)
     physical_free = free_bytes(path)
     reserved = _reserved_by_others(exclude_owner)
@@ -822,11 +830,10 @@ def _verdict(path, estimate: DiskEstimate, config_manager, *, what: str,
     held = (f' ({_human(reserved)} is already reserved by other tasks)'
             if reserved else '')
     if not enabled:
-        # 关掉只跳过拦截，估算与展示照常 —— 用户要在一块快满的盘上硬跑那是他的
-        # 选择，但不能是**不知情**的选择（DEFAULT_CONFIGS 里那条注释的原话）。
-        # 所以「本来会被拦下」这件事必须写进 reason：那正是关掉开关唯一有影响
-        # 的情形，而 ok=True 会让 UI 什么都不提示。
-        would_block = (f'; the check would have blocked it, {_human(shortfall)} short'
+        # 开关现在的全部影响就是这一支：verdict 恒 ok（UI 不弹「磁盘不足」、
+        # 日志措辞变成「检查已关」），估算数字照常给。拦截语义移除之后它不再
+        # 放行任何东西 —— 本来就没有东西可放了。
+        would_block = (f'; shortfall is {_human(shortfall)}'
                        if shortfall > 0 else '')
         return BudgetVerdict(
             ok=True, free_bytes=available, required_bytes=required,
@@ -852,32 +859,34 @@ def _verdict(path, estimate: DiskEstimate, config_manager, *, what: str,
 
 
 def check_budget(path, estimate: DiskEstimate, config_manager=None) -> BudgetVerdict:
-    """建任务时的准入判决：`peak × disk_safety_factor + disk_reserve_mb` 对上
-    「扣掉别人预留之后的剩余空间」。
+    """启动时与前端估算接口的判决：`peak × disk_safety_factor + disk_reserve_mb`
+    对上「扣掉别人预留之后的剩余空间」。
 
-    ⚠️ 判决通过**不等于**空间被占住。调用方必须紧接着去
+    判决**只用于展示与日志**，不通过也不拦任何东西（调用方记一笔 warning 继续）。
+
+    ⚠️ 判决之后调用方仍应紧接着去
     `resource_scheduler.reserve(ResourceKind.DISK_BYTES, required)` 真的预留，
-    否则这次判决对下一个任务不可见，四个并发任务照样能一起通过同一份剩余空间。
+    否则这次判决对下一个任务不可见，并发任务看到的「可用」会偏乐观。
     """
     return _verdict(path, estimate, config_manager, what='this task')
 
 
 def recheck_remaining(path, remaining: DiskEstimate, config_manager=None, *,
                       owner=None) -> BudgetVerdict:
-    """运行中的复查：按**剩余工作量**重估，不是固定地板。
+    """运行中的复查：按**剩余工作量**重估，不是固定地板。纯观测，判决只进日志。
 
     对照 GeoD：它的每 zoom / 每 50 瓦片复查是写死的 512 MiB 地板
-    （`fs_util.rs:57-67`、`downloader.rs:540-541`）。那个形状拦得住「盘只剩
-    200 MB」，但拦不住真正会出事的情况 ——「下一层要 40 GB，盘上还有 3 GB」：
-    地板检查每次都通过，直到某一张瓦片写失败为止，而那时已经下了几小时。
+    （`fs_util.rs:57-67`、`downloader.rs:540-541`）。那个形状报得出「盘只剩
+    200 MB」，但报不出真正会出事的情况 ——「下一层要 40 GB，盘上还有 3 GB」。
 
     调用方传的 `remaining` 必须是**还没干的活**的估算（已下载的瓦片、已写完的
-    产物都要扣掉），否则复查会把已经占用的空间又要求一遍，跑到后半程必然误判。
+    产物都要扣掉），否则复查会把已经占用的空间又报一遍，跑到后半程数字必然
+    虚高。
 
     `owner` 是本任务在 scheduler 上的凭据 owner（例如 `('dem', 12, 'tiling')`）。
-    **必须传**：准入时本任务已经预留了自己那份 DISK_BYTES，不排除掉就会把它
-    当成「别人占的」再扣一遍，于是一台空闲机器上的单个任务需要 2 倍自身预算
-    才跑得下去（详见 `_reserved_by_others` 的 docstring 与那里记的实测数字）。
+    **必须传**：启动时本任务已经预留了自己那份 DISK_BYTES，不排除掉就会把它
+    当成「别人占的」再扣一遍，于是报出的可用空间比真实值小一份自身预算
+    （详见 `_reserved_by_others` 的 docstring 与那里记的实测数字）。
     不传时退化成「把自己也算进别人」，只在没有凭据的调用点（纯预览）才正确。
     """
     return _verdict(path, remaining, config_manager, what='the remaining work',
@@ -891,45 +900,44 @@ def recheck_remaining(path, remaining: DiskEstimate, config_manager=None, *,
 # 都查纯属浪费 —— 复查要抓的是「盘在这几十秒里被别人（另一个任务、另一个
 # 进程、用户自己拷东西）吃掉了」这个尺度的变化，不是毫秒级抖动。
 #
-# 为什么是 10 秒而不是更长：这条闸门的价值全在「抢在写失败之前」。地图管线
-# 一批 1000 瓦片在快线路上就是几秒，10 秒意味着最坏情况下多写一两批瓦片就
-# 会被拦下 —— 而改造前的行为是一直写到 ENOSPC。
+# 为什么是 10 秒而不是更长：复查的全部价值是日志里的现场数字 —— ENOSPC 发生
+# 时，最后一条 disk_recheck 事件离写失败越近，数字越能说明问题。地图管线一批
+# 1000 瓦片在快线路上就是几秒，10 秒保证写死之前日志里一定有一行最近的判决。
 _RECHECK_MIN_INTERVAL_SECONDS = 10.0
 
 
 class RunningRecheck:
-    """运行中的周期性磁盘复查闸门：把 `recheck_remaining` 接到管线的循环上。
+    """运行中的周期性磁盘复查：把 `recheck_remaining` 接到管线的循环上。
+
+    **纯观测，不拦截。** 它曾是「判死就收手」的闸门；2026-08 起拦截语义整体
+    移除（见模块 docstring 头部），现在每次复查的全部产物是经 `on_verdict`
+    写进任务日志的一行数字 —— ENOSPC 真的发生时，那行数字就是事后诊断的
+    第一手现场。
 
     ## 为什么是一个对象，而不是在循环里直接调 `recheck_remaining`
 
     - **节奏要节流。** 见 `_RECHECK_MIN_INTERVAL_SECONDS`。
-    - **判死只能发生一次。** 三条管线都要「判死一次就收手」，这份 sticky 状态
-      放在调用点等于抄三遍，而抄漏一处的表现是同一个任务被反复判死、日志里
-      同一句话刷几十遍。
     - **绝不抛。** 调用点全在下载/渲染的热循环里。盘掉线、调度器读不出来、
       估算函数收到脏参数 —— 这些都不该有把任务打死的权力，否则「磁盘预算」
-      这个次要检查本身就成了任务失败的新来源。出错时退回改造前的行为
-      （不查、照写），只留一条去重后的 warning。
+      这个次要检查本身就成了任务失败的新来源。出错时退回不查、照写，只留
+      一条去重后的 warning。
 
     ## 用法
 
-    循环的**批边界**上每批调一次 `blocking_verdict()`：返回非 None 就当
-    stop_flag 被置位处理 —— 干净收手，并把 `verdict.reason`（自带四个数字）
-    写进**任务自己的**日志。绝不要把它变成一个异常扔进兜底 except：那样用户
-    看到的是一句 RuntimeError，而不是「剩下的活要 25.9 MiB、只剩 1.0 MiB」。
+    循环的**批边界**上每批调一次 `poll()`，返回值忽略即可。
 
     Args:
         path: 要查哪块盘。必须是**真正写产物的那个目录**（工作区与产物不同盘
-            时查错盘的预检比没有预检更糟 —— 它给出一个自信的「够用」）。
+            时查错盘的复查比没有复查更糟 —— 它给出一个自信的「够用」）。
         remaining: `DiskEstimate`，或一个返回它的可调用对象。可调用形态是主
             路径：剩余工作量随循环推进而缩小，每次复查都要现算（传死值等于
-            跑到后半程还在要求整个任务的空间，必然误判）。返回 None = 这一轮
+            跑到后半程还在按整个任务的空间报数）。返回 None = 这一轮
             算不出来，跳过。
         owner: 本任务在 scheduler 上的凭据 owner 元组。**必须传**，理由见
-            `recheck_remaining` 的 docstring（不传 = 单任务需要 2 倍预算）。
-        on_verdict: 每次真的复查之后都会收到判决（通过与否都给）。三条管线
-            用它把判决写进每任务日志 —— 估算错的时候第一件事就是回头看这行
-            的数字（同 `cesium_terrain` 物化前那次复查的做法）。
+            `recheck_remaining` 的 docstring（不传 = 自己那份预留被当成别人
+            占的再扣一遍，报出的可用空间偏小一倍）。
+        on_verdict: 每次真的复查之后都会收到判决（通过与否都给）。各管线
+            用它把判决写进每任务日志。
     """
 
     def __init__(self, path, remaining, *, owner=None, config_manager=None,
@@ -941,22 +949,20 @@ class RunningRecheck:
         self._config_manager = config_manager
         self._min_interval = max(0.0, float(min_interval))
         self._on_verdict = on_verdict
-        # -inf 而不是 monotonic()：第一个批边界就要查一次。任务是在准入判决
+        # -inf 而不是 monotonic()：第一个批边界就要查一次。任务是在启动判决
         # 之后才排队起来的，排队期间盘上发生了什么谁也不知道。
         self._checked_at = float('-inf')
         #: 最后一次判决（通过的也留着，日志/诊断要看数字）。
         self.verdict: Optional[BudgetVerdict] = None
-        #: 判死的那一次判决；非 None 之后这个闸门永久关闭。
-        self.blocked: Optional[BudgetVerdict] = None
 
-    def blocking_verdict(self, *, force: bool = False) -> Optional[BudgetVerdict]:
-        """到点就复查一次。返回**判死**的判决；通过 / 未到点 / 出错都返回 None。
+    def poll(self, *, force: bool = False) -> Optional[BudgetVerdict]:
+        """到点就复查一次。返回本次判决；未到点 / 算不出 / 出错都返回 None。
 
-        `force=True` 忽略节流间隔（给「这一层马上要写几十 GB」这种明确的大
-        动作前的复查，以及测试用）。
+        返回值是给日志与测试看的，**不该**用来叫停循环 —— 拦截语义已移除，
+        复查不通过也只是数字，不是命令。
+
+        `force=True` 忽略节流间隔（测试用）。
         """
-        if self.blocked is not None:
-            return self.blocked
         now = time.monotonic()
         if not force and now - self._checked_at < self._min_interval:
             return None
@@ -981,9 +987,6 @@ class RunningRecheck:
                 # 日志回调炸了不该影响判决本身 —— 判决是主路径，记录是次要 sink。
                 logger.debug('disk_budget: on_verdict callback failed (ignored)',
                              exc_info=True)
-        if verdict.ok:
-            return None
-        self.blocked = verdict
         return verdict
 
 

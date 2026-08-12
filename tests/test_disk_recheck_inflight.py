@@ -1,24 +1,20 @@
 """运行中磁盘复查（§4.2）—— 四条管线在**跑到一半**时也会重估剩余空间。
 
-改造前只有「按下开始」那一刻的准入判决（`check_budget`），跑起来之后再没有任何
-检查：`recheck_remaining` 只有地形物化一个调用点，而那个调用点还站在
-`if len(inputs) == 1: return inputs[0]` 之后 —— 单幅切片作业（最常见的形态）
-整个过程一次都没查过。三条下载/渲染管线压根没有调用点。
-
-于是失败形态永远是同一个：写到一半 ENOSPC。GTiff / COG 边写边落盘，留下一份
-**非空**的半成品，而断点判定是「存在且非空就跳过」，下一轮把截断文件当成写好的
-（见 `disk_budget` 模块 docstring 的第一段）。用户看到的是一句 GDAL I/O error，
-而他需要看到的是「剩下的活要 25.9 MiB，只剩 1.0 MiB，腾出 24.9 MiB」。
+2026-08 起复查是**纯观测**：估算超过可用空间既不拒绝启动也不中途叫停
+（见 `disk_budget` 模块 docstring 头部）。复查存在的理由：失败形态永远是
+同一个 —— 写到一半 ENOSPC，GTiff / COG 边写边落盘留下一份**非空**半成品，
+断点判定是「存在且非空就跳过」，下一轮把截断文件当成写好的。用户看到的是
+一句 GDAL I/O error，而任务日志里那条 disk_recheck 事件能告诉他「剩下的活
+要 25.9 MiB，只剩 1.0 MiB」。
 
 本文件钉住的契约：
-1. `RunningRecheck`：首次必查、判死 sticky、节流、**绝不抛**。
+1. `RunningRecheck`：首次必查、节流、**绝不抛**、判决无论通过与否都留下，
+   且永不叫停循环。
 2. `remaining_map_estimate`：已下好的瓦片必须从剩余量里扣掉 —— 不扣就会在
-   任务 90% 时把它判死。
-3. 单幅地形切片作业**也**复查（那条 return 之前）。
-4. 地图 / DEM 下载循环判死时按停止标记那条路径收手，落 **paused**（可恢复）
-   并把判决原因写进任务自己的日志与 error_message。
-5. 等高线渲染循环在批边界上认这个闸门。
-6. `ContourParams.disk_recheck` 真的能传到引擎。
+   任务 90% 时还按整份报数。
+3. 单幅地形切片作业**也**复查（那条 return 之前），且复查不通过照样直通。
+4. 地图 / DEM 下载与等高线渲染在磁盘不足时**照常跑完**，判决数字进任务日志。
+5. `ContourParams.disk_recheck` 真的能传到引擎。
 """
 
 import asyncio
@@ -75,40 +71,38 @@ def free_space(monkeypatch):
 # 1. RunningRecheck 自身
 # ---------------------------------------------------------------------------
 
-def test_first_call_checks_and_a_failing_verdict_is_sticky(free_space):
-    """首次调用必查（排队期间盘上发生了什么谁也不知道），判死之后闸门永久关闭。"""
+def test_first_call_checks_and_records_the_verdict(free_space):
+    """首次调用必查（排队期间盘上发生了什么谁也不知道），判负的判决也要留下来
+    —— 但只是数字，不再是命令。"""
     from src.services.disk_budget import RunningRecheck
 
     free_space(1)
     calls = []
-    gate = RunningRecheck('/anywhere', lambda: (calls.append(1), _estimate(100 * MIB))[1],
-                          owner=('map', 1, 'download'), config_manager=_FakeConfig(),
-                          min_interval=3600)
+    recheck = RunningRecheck('/anywhere',
+                             lambda: (calls.append(1), _estimate(100 * MIB))[1],
+                             owner=('map', 1, 'download'), config_manager=_FakeConfig(),
+                             min_interval=3600)
 
-    first = gate.blocking_verdict()
-    assert first is not None and first.ok is False
-    assert first.shortfall_bytes > 0
+    verdict = recheck.poll()
+    assert verdict is not None and verdict.ok is False
+    assert verdict.shortfall_bytes > 0
+    assert recheck.verdict is verdict
     assert len(calls) == 1
 
-    # sticky：即使节流窗口很长，后续调用照样返回同一个判决（调用方按它写终态）。
-    assert gate.blocking_verdict() is first
-    assert gate.blocked is first
-    assert len(calls) == 1, '判死之后不该再重估剩余工作量'
 
-
-def test_a_passing_verdict_returns_none_but_is_recorded(free_space):
-    """通过时返回 None（循环继续），但判决要留下来 —— 估算错时第一件事是看数字。"""
+def test_a_passing_verdict_is_returned_and_recorded(free_space):
+    """通过的判决同样返回并留下 —— 估算错的时候第一件事就是回头看这行的数字。"""
     from src.services.disk_budget import RunningRecheck
 
     free_space(1024)
     seen = []
-    gate = RunningRecheck('/anywhere', _estimate(10 * MIB), config_manager=_FakeConfig(),
-                          on_verdict=seen.append)
+    recheck = RunningRecheck('/anywhere', _estimate(10 * MIB),
+                             config_manager=_FakeConfig(), on_verdict=seen.append)
 
-    assert gate.blocking_verdict() is None
-    assert gate.blocked is None
-    assert gate.verdict is not None and gate.verdict.ok is True
-    assert seen and seen[0] is gate.verdict
+    verdict = recheck.poll()
+    assert verdict is not None and verdict.ok is True
+    assert recheck.verdict is verdict
+    assert seen and seen[0] is verdict
 
 
 def test_the_interval_throttles_real_checks(free_space):
@@ -117,15 +111,14 @@ def test_the_interval_throttles_real_checks(free_space):
 
     free_space(1024)
     calls = []
-    gate = RunningRecheck('/anywhere', lambda: (calls.append(1), _estimate(1))[1],
-                          config_manager=_FakeConfig(), min_interval=3600)
+    recheck = RunningRecheck('/anywhere', lambda: (calls.append(1), _estimate(1))[1],
+                             config_manager=_FakeConfig(), min_interval=3600)
 
     for _ in range(50):
-        gate.blocking_verdict()
+        assert recheck.poll() is None or len(calls) == 1
     assert len(calls) == 1, '节流窗口内只该真的查一次'
 
-    # force 是给「这一层马上要写几十 GB」那种明确的大动作用的。
-    gate.blocking_verdict(force=True)
+    assert recheck.poll(force=True) is not None
     assert len(calls) == 2
 
 
@@ -136,26 +129,26 @@ def test_it_never_raises_into_the_download_loop(free_space):
     def boom():
         raise OSError('the volume went away')
 
-    gate = RunningRecheck('/anywhere', boom, config_manager=_FakeConfig())
-    assert gate.blocking_verdict() is None
-    assert gate.blocked is None
+    recheck = RunningRecheck('/anywhere', boom, config_manager=_FakeConfig())
+    assert recheck.poll() is None
+    assert recheck.verdict is None
 
     # on_verdict 抛出同样不能传染 —— 判决是主路径，记录是次要 sink。
     free_space(1024)
     noisy = RunningRecheck('/anywhere', _estimate(1), config_manager=_FakeConfig(),
                            on_verdict=lambda v: (_ for _ in ()).throw(RuntimeError('log died')))
-    assert noisy.blocking_verdict() is None
+    assert noisy.poll() is not None
     assert noisy.verdict is not None
 
 
 def test_a_none_estimate_skips_the_check(free_space):
-    """算不出剩余量（分母还没上报）时跳过，而不是拿 0 去判死。"""
+    """算不出剩余量（分母还没上报）时跳过，而不是拿 0 去虚报。"""
     from src.services.disk_budget import RunningRecheck
 
     free_space(0)
-    gate = RunningRecheck('/anywhere', lambda: None, config_manager=_FakeConfig())
-    assert gate.blocking_verdict() is None
-    assert gate.blocked is None
+    recheck = RunningRecheck('/anywhere', lambda: None, config_manager=_FakeConfig())
+    assert recheck.poll() is None
+    assert recheck.verdict is None
 
 
 # ---------------------------------------------------------------------------
@@ -163,11 +156,11 @@ def test_a_none_estimate_skips_the_check(free_space):
 # ---------------------------------------------------------------------------
 
 def test_downloaded_tiles_are_deducted_from_the_remaining_estimate():
-    """**回归**：不扣已下好的瓦片 = 任务跑到 90% 反而被判死。
+    """**回归**：不扣已下好的瓦片 = 任务跑到 90% 还在按整份报数。
 
     `estimate_map_task(cached_tiles=...)` 只折 network/cache，产物按整份算（那是
-    准入的正确口径）。运行中复查拿它当剩余量，就会在几乎跑完时仍然要求整份松散
-    镜像的空间。
+    启动时估算的正确口径）。运行中复查拿它当剩余量，就会在几乎跑完时仍然按整份
+    松散镜像的空间报数。
     """
     from src.contracts.region import RegionSpec
     from src.services import disk_budget
@@ -212,23 +205,28 @@ def _fake_source(path, mib=8):
     return str(path)
 
 
-def test_a_single_input_tiling_job_rechecks_the_disk(tmp_path, free_space):
+def test_a_single_input_tiling_job_rechecks_but_never_blocks(tmp_path, free_space,
+                                                             caplog):
     """**回归**：复查曾站在 `if len(inputs) == 1: return` 之后 —— 单幅作业
-    （一个 1°×1° 颗粒、一次上传，最常见的形态）整个切片过程一次都没查过。"""
+    （一个 1°×1° 颗粒、一次上传，最常见的形态）整个切片过程一次都没查过。
+
+    拦截语义移除后它依然是纯观测：判负不抛、照常直通，数字进日志。"""
+    import logging
+
     from src.services.terrain_tiling import cesium_terrain
 
     only = _fake_source(tmp_path / 'a.tif')
     free_space(1)
 
-    with pytest.raises(RuntimeError) as excinfo:
-        cesium_terrain.build_input_raster([only], work_dir=str(tmp_path), owner=None)
-    reason = str(excinfo.value)
-    assert 'not enough disk space' in reason
-    assert 'the remaining work' in reason, '措辞必须是「剩下的活」而不是「这个任务」'
+    with caplog.at_level(logging.WARNING):
+        assert cesium_terrain.build_input_raster(
+            [only], work_dir=str(tmp_path), owner=None) == only, '判负也必须照常直通'
+    assert 'not enough disk space' in caplog.text
+    assert 'the remaining work' in caplog.text, '措辞必须是「剩下的活」而不是「这个任务」'
 
 
 def test_a_single_input_job_is_not_charged_for_materialisation(tmp_path, free_space):
-    """单幅直通一个字节都不物化：把中间栅格算进去就是拿不存在的开销判死任务。"""
+    """单幅直通一个字节都不物化：把中间栅格算进去就是拿不存在的开销虚报。"""
     from src.services.terrain_tiling import cesium_terrain
 
     a = _fake_source(tmp_path / 'a.tif')
@@ -243,7 +241,7 @@ def test_a_single_input_job_is_not_charged_for_materialisation(tmp_path, free_sp
 
 
 def test_a_single_input_job_still_runs_when_the_disk_is_fine(tmp_path, free_space):
-    """闸门不是「总是拦」：空间够时单幅照旧直通返回源路径本身。"""
+    """空间够时单幅照旧直通返回源路径本身。"""
     from src.services.terrain_tiling import cesium_terrain
 
     only = _fake_source(tmp_path / 'a.tif')
@@ -313,13 +311,9 @@ def _row(table, task_id):
         conn.close()
 
 
-def test_a_map_download_stops_with_a_terminal_reason_when_the_disk_fills(
+def test_a_map_download_keeps_running_when_the_disk_fills(
         isolated_config, monkeypatch, free_space):
-    """盘在下载途中不够了：按停止标记那条路径收手，落 paused + 原因。
-
-    落 paused 而不是 failed 是硬要求 —— failed 不在 RESUMABLE_STATE_VALUES 里，
-    判成 failed 等于「腾出空间也点不动恢复」。
-    """
+    """盘不够也不再叫停：任务照常跑完，「还差多少」留在任务日志里。"""
     from src.services.task_logging import read_task_log
     from src.services.task_manager import TaskManager
 
@@ -328,29 +322,34 @@ def test_a_map_download_stops_with_a_terminal_reason_when_the_disk_fills(
 
     downloaded = []
 
-    async def _never_gets_here(**kwargs):
-        downloaded.append(kwargs['tile'])
-        return {'tile': kwargs['tile'], 'status': 'success'}
+    async def _ok(**kwargs):
+        tile = kwargs['tile']
+        downloaded.append(tile)
+        path = tile.cache_path(kwargs.get('source') or 's')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'\x89PNG\r\n\x1a\n')
+        cb = kwargs.get('progress_callback')
+        if cb is not None:
+            await cb(tile, 'success', None, len(b'\x89PNG\r\n\x1a\n'))
+        return {'tile': tile, 'status': 'success'}
 
-    monkeypatch.setattr(tm.download_engine, '_download_single_tile', _never_gets_here)
+    monkeypatch.setattr(tm.download_engine, '_download_single_tile', _ok)
     free_space(1)
 
     asyncio.run(tm._execute_task(task_id))
 
     row = _row('tasks', task_id)
-    assert row['status'] == 'paused', '必须是可恢复的状态'
-    assert 'not enough disk space' in (row['error_message'] or '')
-    assert downloaded == [], '判死之后一块瓦片都不该再下'
+    assert row['status'] != 'paused', '磁盘不足不再暂停任务'
+    assert downloaded, '判负之后瓦片照样要下'
 
     messages = '\n'.join(e['message'] for e in read_task_log('map', task_id))
-    assert 'EVENT terminal status=paused' in messages
-    assert 'reason=disk_budget' in messages
+    assert 'EVENT disk_recheck ok=False' in messages
     assert 'not enough disk space' in messages
 
 
 def test_a_map_download_runs_normally_when_the_disk_is_fine(
         isolated_config, monkeypatch, free_space):
-    """闸门不是「总是拦」—— 空间够时任务照常跑完，且判决要记进任务日志。"""
+    """空间够时任务照常跑完，且判决要记进任务日志。"""
     from src.services.task_logging import read_task_log
     from src.services.task_manager import TaskManager
 
@@ -381,15 +380,20 @@ def test_a_map_download_runs_normally_when_the_disk_is_fine(
 # 5. DEM 下载循环
 # ---------------------------------------------------------------------------
 
-def test_the_dem_engine_stops_before_touching_the_network(isolated_config, tmp_path,
+def test_the_dem_engine_polls_the_recheck_but_never_stops(isolated_config, tmp_path,
                                                           free_space):
-    """DEM 的批就是颗粒（一颗 30-50 MB）。判死时不抛、不发请求，颗粒回写 pending。"""
+    """DEM 的批就是颗粒（一颗 30-50 MB）。颗粒边界仍复查（数字进日志），但判负
+    不再叫停：颗粒照常走既有路径。这里用「已下好」快速路径避开网络。"""
     from src.services.dem_download_engine import DemDownloadEngine
     from src.services.disk_budget import RunningRecheck
 
     free_space(1)
-    gate = RunningRecheck(tmp_path / 'out', _estimate(100 * MIB),
-                          owner=('dem', 7, 'download'), config_manager=_FakeConfig())
+    recheck = RunningRecheck(tmp_path / 'out', _estimate(100 * MIB),
+                             owner=('dem', 7, 'download'), config_manager=_FakeConfig())
+
+    out = tmp_path / 'out'
+    out.mkdir()
+    (out / 'G.tif').write_bytes(b'\x00' * 10)
 
     reports = []
 
@@ -398,17 +402,16 @@ def test_the_dem_engine_stops_before_touching_the_network(isolated_config, tmp_p
 
     asyncio.run(DemDownloadEngine().download_files(
         dataset='COP-DEM-GLO-30', granules=['tile/G.tif'],
-        output_dir=tmp_path / 'out', progress_callback=progress,
-        disk_recheck=gate))
+        output_dir=out, progress_callback=progress,
+        disk_recheck=recheck))
 
-    assert reports == [('tile/G.tif', 'pending')], '一次都没尝试过的颗粒回 pending'
-    assert gate.blocked is not None
+    assert reports == [('tile/G.tif', 'completed')], '判负后颗粒照常走既有路径'
+    assert recheck.verdict is not None and recheck.verdict.ok is False
 
 
-def test_the_dem_manager_pauses_the_task_with_the_verdict(
+def test_the_dem_manager_runs_to_completion_with_the_verdict_logged(
         isolated_config, monkeypatch, free_space):
-    """引擎收手之后，管理器必须补上状态与原因 —— 只收手不解释就是一个凭空
-    自己暂停了的任务。"""
+    """判负不再暂停：任务照跑到底，判决数字留在任务日志里。"""
     from src.core.config import Config
     from src.core.database import get_connection
     from src.services.dem_task_manager import DemTaskManager
@@ -442,11 +445,9 @@ def test_the_dem_manager_pauses_the_task_with_the_verdict(
     async def fake_download_files(dataset, granules, output_dir, progress_callback=None,
                                   bytes_callback=None, stop_flag=None,
                                   max_concurrent=None, disk_recheck=None):
-        # 复刻真引擎：颗粒边界上问一次闸门，判死就按暂停那条路径收手。
-        assert disk_recheck is not None, '管理器必须把闸门交给引擎'
-        if disk_recheck.blocking_verdict() is not None:
-            await progress_callback(granules[0], 'pending', None, None)
-            return
+        # 复刻真引擎的观测点：颗粒边界上 poll 一次，然后照跑。
+        assert disk_recheck is not None, '管理器必须把复查器交给引擎'
+        disk_recheck.poll(force=True)
         await progress_callback(granules[0], 'completed', None, 10)
 
     mgr.engine.download_files = fake_download_files
@@ -455,18 +456,17 @@ def test_the_dem_manager_pauses_the_task_with_the_verdict(
     asyncio.run(mgr._execute(task_id))
 
     row = _row('dem_tasks', task_id)
-    assert row['status'] == 'paused'
-    assert 'not enough disk space' in (row['error_message'] or '')
+    assert row['status'] == 'completed', '磁盘不足不再暂停任务'
     messages = '\n'.join(e['message'] for e in read_task_log('dem', task_id))
-    assert 'EVENT terminal status=paused' in messages
-    assert 'reason=disk_budget' in messages
+    assert 'EVENT disk_recheck ok=False' in messages
+    assert 'not enough disk space' in messages
 
 
 # ---------------------------------------------------------------------------
 # 6. 等高线渲染循环
 # ---------------------------------------------------------------------------
 
-def test_contour_params_carry_the_gate_to_the_engine(tmp_path):
+def test_contour_params_carry_the_recheck_to_the_engine(tmp_path):
     """ContourParams.disk_recheck 必须真的到达引擎；没有它时**不许**多传这个
     关键字（tests 里的 fake_build 替身是按老签名写死的）。"""
     from src.services.contour_engine import ContourStyle
@@ -487,7 +487,7 @@ def test_contour_params_carry_the_gate_to_the_engine(tmp_path):
     base = dict(interval=50, zoom_min=12, zoom_max=12, style=ContourStyle())
     tile_contour_task_dir(task_dir, tmp_path / 'out', ContourParams(**base),
                          build_contour_fn=fake_build)
-    assert seen['extra'] == {}, '没有闸门时不许多传关键字'
+    assert seen['extra'] == {}, '没有复查器时不许多传关键字'
 
     tile_contour_task_dir(task_dir, tmp_path / 'out',
                          ContourParams(disk_recheck=sentinel, **base),
@@ -495,8 +495,9 @@ def test_contour_params_carry_the_gate_to_the_engine(tmp_path):
     assert seen['extra'] == {'disk_recheck': sentinel}
 
 
-def test_the_contour_render_loop_honours_the_gate(tmp_path, free_space):
-    """渲染循环在与 stop_flag **同一批检查点**上认这个闸门（一张都不渲）。"""
+def test_the_contour_render_loop_polls_but_never_stops(tmp_path, free_space):
+    """渲染循环在与 stop_flag **同一批检查点**上复查（数字留下来），但判负不再
+    叫停：瓦片照常渲完。"""
     gdal = pytest.importorskip('osgeo.gdal')
     np = pytest.importorskip('numpy')
     pytest.importorskip('matplotlib')
@@ -517,15 +518,14 @@ def test_the_contour_render_loop_honours_the_gate(tmp_path, free_space):
     ds = None
 
     free_space(1)
-    gate = RunningRecheck(tmp_path / 'tiles', _estimate(100 * MIB),
-                          owner=('contour', 3, 'render'), config_manager=_FakeConfig())
+    recheck = RunningRecheck(tmp_path / 'tiles', _estimate(100 * MIB),
+                             owner=('contour', 3, 'render'), config_manager=_FakeConfig())
 
     counts = build_contour_tiles(
         dem_tifs=[dem], out_dir=tmp_path / 'tiles', interval=50,
         zoom_min=10, zoom_max=11, style=ContourStyle(), workers=1,
-        disk_recheck=gate)
+        disk_recheck=recheck)
 
-    assert counts['total'] >= 1, '分母照常算出来（判死不等于没活）'
-    assert counts['rendered'] == 0
-    assert gate.blocked is not None
-    assert not list((tmp_path / 'tiles').rglob('*.png'))
+    assert counts['total'] >= 1
+    assert counts['rendered'] == counts['total'], '判负之后瓦片照样要渲完'
+    assert recheck.verdict is not None and recheck.verdict.ok is False

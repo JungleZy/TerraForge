@@ -653,14 +653,12 @@ def build_contour_tiles(
     _render_contour_tile_core,产出完全一致。
 
     disk_recheck: `disk_budget.RunningRecheck`(None = 不查,直调与测试那一档)。
-    渲染循环里与 stop_flag 在**同一批检查点**上问它:判死就当停止标记被置位
-    处理 —— 干净收手,不抛。理由与 dem_download_engine 里那段一致:抛出去会被
-    管理器的兜底 except 变成一句 RuntimeError,而用户需要看到的是判决里那四个
-    数字。判决对象归调用方所有,收手之后调用方从 `disk_recheck.blocked` 取判决
-    写终态与原因。
+    渲染循环里与 stop_flag 在**同一批检查点**上 poll 一次。纯观测:判决只经
+    on_verdict 进任务日志,不通过也不叫停 —— 拦截语义 2026-08 起移除(见
+    disk_budget 模块 docstring)。
 
     等高线的剩余工作量只算**没渲的瓦片**:warp 产物与金字塔在渲染开始前就已经
-    落盘了,再算一遍等于把已占用的空间又要求一次,跑到后半程必然误判
+    落盘了,再算一遍等于把已占用的空间又报一遍,跑到后半程数字必然虚高
     (recheck_remaining 的 docstring)。这份估算由调用方给。
     """
     from osgeo import gdal
@@ -846,27 +844,14 @@ def build_contour_tiles(
             # 杀掉(BrokenProcessPool)。封顶 4。
             n_workers = min(4, os.cpu_count() or 1)
 
-        # 收手判据只此一份:用户的停止标记,或运行中磁盘复查判死。两条路的收手
-        # 动作完全相同 —— 已渲的瓦片留着、剩下的不渲,对下游是同一件事。判死刻意
-        # 不抛(见函数 docstring 里 disk_recheck 那段):这一段就在 GDAL 回调附近,
-        # 而 GDAL 把回调抛异常当成「用户请求中止」并删掉产物(同 _gdal_stage 上面
-        # 那条 ⚠️)。判决只作为返回值流回循环。
-        _budget_logged = []
-
+        # 收手判据只此一份:用户的停止标记。磁盘复查在同一检查点上 poll,
+        # 但只进日志、不叫停(拦截语义已移除,见 disk_budget 模块 docstring)。
+        # poll 绝不抛(它自己兜底),所以站在 GDAL 回调附近也是安全的 —— GDAL
+        # 把回调抛异常当成「用户请求中止」并删掉产物(同 _gdal_stage 上面那条 ⚠️)。
         def _should_stop() -> bool:
-            if stop_flag is not None and stop_flag.is_set():
-                return True
-            if disk_recheck is None:
-                return False
-            blocked = disk_recheck.blocking_verdict()
-            if blocked is None:
-                return False
-            # 闸门是 sticky 的(判死之后每次都返回同一个判决),所以这条 error 要
-            # 自己去重 —— 否则串行路径会按剩余瓦片数把同一句话刷几万遍。
-            if not _budget_logged:
-                _budget_logged.append(True)
-                logger.error(f"Contour: 渲染被运行中磁盘复查叫停 —— {blocked.reason}")
-            return True
+            if disk_recheck is not None:
+                disk_recheck.poll()
+            return stop_flag is not None and stop_flag.is_set()
 
         def _render_serial(skip_existing=False):
             nonlocal ctx

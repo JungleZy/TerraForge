@@ -636,11 +636,12 @@ class LocalTerrainTaskManager:
                     source_dir = task_root / "source"
                 output_dir = task_root / "terrain_tiles"
 
-                # ---- 准入：磁盘预算 + 全局配额。在 UPDATE 成 running 之前 ----
-                # 位置是刻意的：这两道都可能拒，而在 UPDATE 之前被拒时行还停在
-                # 原状态，不需要任何回补。（本方法的 except 确实有 rollback 兜着，
-                # 但那条路依赖「commit 是锁里最后一行」这个易碎的前提 —— 下面那
-                # 整段注释讲的就是它，别再往它身上加负担。）
+                # ---- 磁盘估算(只记录) + 全局配额(真的会拒)。在 UPDATE 成
+                # running 之前 ----
+                # 位置是刻意的：配额拒绝在 UPDATE 之前时行还停在原状态，不需要
+                # 任何回补。（本方法的 except 确实有 rollback 兜着，但那条路依赖
+                # 「commit 是锁里最后一行」这个易碎的前提 —— 下面那整段注释讲的
+                # 就是它，别再往它身上加负担。）
                 source_bytes = 0
                 for tif in list_dem_tifs(source_dir):
                     try:
@@ -649,17 +650,16 @@ class LocalTerrainTaskManager:
                         pass
                 # 本地上传的 DEM 什么数据类型都可能（无人机 DSM 常是 Float32），
                 # 而 Int16 与 Float32 的物化系数差一倍多（0.78 vs 1.9）。这里判不出
-                # 来就按贵的那档算：估多了只是拦得早一点，估少了是写到一半 ENOSPC，
-                # 留下一份非空半成品。真正按波段类型分档的判定在
+                # 来就按贵的那档报数。真正按波段类型分档的判定在
                 # cesium_terrain._source_is_float，那时文件已经要被打开了。
                 estimate = disk_budget.estimate_terrain_tiling(
                     source_bytes, float_source=True)
                 verdict = disk_budget.check_budget(output_dir, estimate, self.config)
-                logger.info(
+                # 不拦（拦截语义 2026-08 起移除，见 disk_budget 模块 docstring）：
+                # 不通过也只记 warning 照常启动，数字留在日志里。
+                (logger.info if verdict.ok else logger.warning)(
                     f"Local terrain task {task_id} 磁盘预检（源 "
                     f"{source_bytes / (1024 * 1024):.0f} MiB）：{verdict.reason}")
-                if not verdict.ok:
-                    raise ValueError(verdict.reason)
 
                 scheduler = get_scheduler()
                 # 这里**没有**「先按 owner 键回收一张同名凭据」那一步，是刻意的：
@@ -926,9 +926,9 @@ class LocalTerrainTaskManager:
                                   stage_cb=tiling_stage,
                                   stop_flag=stop_flag,
                                   # 同 dem_task_manager：运行中复查要认出「这份
-                                  # DISK_BYTES 预留是本任务自己的」，否则一台空
-                                  # 机器上单个任务也要两倍空间，切到一半被自己
-                                  # 的预留判死。用 reservation.owner 而不是手写
+                                  # DISK_BYTES 预留是本任务自己的」，否则报出的
+                                  # 可用空间比真实值小一份自身预算（虚警）。
+                                  # 用 reservation.owner 而不是手写
                                   # 元组 —— 手写的那份对不上时 _reserved_by_others
                                   # 只是静默地什么都匹配不到，退回旧的双重计数。
                                   owner=(reservation.owner
