@@ -20,6 +20,7 @@
   --sky:        #38bdf8;
   --sky-hi:     #7dd3fc;
   --sky-dim:    rgba(56, 189, 248, .12);
+  --sky-glow:   rgba(56, 189, 248, .55);
   --sky-ink:    #041e2b;
 
   --amber:      #dcd98e;
@@ -108,10 +109,21 @@ a:hover { color: var(--sky-hi); }
 .wordmark span { color: var(--sky); }
 .masthead nav { margin-left: auto; display: flex; align-items: center; gap: clamp(.9rem, 2.5vw, 1.9rem); }
 .masthead nav a {
+  position: relative;
   font-size: .875rem; color: var(--paper-2);
-  border-bottom: 1px solid transparent; padding-bottom: 2px;
+  padding-bottom: 3px;
+  transition: color .2s ease;
 }
-.masthead nav a:hover { color: var(--paper); border-bottom-color: var(--sky); }
+/* 下划线从左侧生长，而不是整条一起出现 —— 用伪元素才能 scaleX，
+   border-bottom 做不到（它只能整条切换颜色）。 */
+.masthead nav a::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: var(--sky); transform: scaleX(0); transform-origin: left;
+  transition: transform .28s cubic-bezier(.22, 1, .36, 1);
+}
+.masthead nav a:hover { color: var(--paper); }
+.masthead nav a:hover::after,
+.masthead nav a:focus-visible::after { transform: scaleX(1); }
 .masthead nav a.ext { font-family: var(--mono); font-size: .8rem; letter-spacing: .04em; }
 @media (max-width: 560px) { .masthead nav a.hide-sm { display: none; } }
 
@@ -146,10 +158,15 @@ h1 {
   display: inline-flex; align-items: center; gap: .5rem;
   padding: .72rem 1.4rem; border-radius: 3px;
   font-size: .93rem; font-weight: 600; line-height: 1.4;
-  border: 1px solid transparent; transition: background .15s, border-color .15s, color .15s;
+  border: 1px solid transparent;
+  transition: background .18s ease, border-color .18s ease, color .18s ease,
+              box-shadow .22s ease, transform .18s cubic-bezier(.22, 1, .36, 1);
 }
+.btn:hover { transform: translateY(-2px); }
+/* 按下时落回原位，且快得多 —— 抬起要缓、落下要脆，否则点击没有手感 */
+.btn:active { transform: translateY(0); transition-duration: .05s; }
 .btn-solid { background: var(--sky); color: var(--sky-ink); }
-.btn-solid:hover { background: var(--sky-hi); color: var(--sky-ink); }
+.btn-solid:hover { background: var(--sky-hi); box-shadow: 0 10px 26px -12px var(--sky-glow); }
 .btn-ghost { border-color: var(--line-hi); color: var(--paper); }
 .btn-ghost:hover { border-color: var(--sky); color: var(--sky); background: var(--sky-dim); }
 .btn .v { font-family: var(--mono); font-size: .85rem; letter-spacing: .02em; }
@@ -260,18 +277,28 @@ h1 {
 .plats { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
 @media (min-width: 820px) { .plats { grid-template-columns: repeat(3, 1fr); } }
 .plat {
+  position: relative; overflow: hidden;
   background: var(--ink); padding: clamp(1.4rem, 3vw, 1.9rem);
   display: flex; flex-direction: column; gap: .55rem;
-  transition: background .15s;
+  transition: background .2s ease;
 }
-.plat:hover { background: var(--ink-1); }
+/* 左侧色条从下往上长出来 —— 卡片是链接，需要一个比变底色更明确的「选中」信号 */
+.plat::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--sky); transform: scaleY(0); transform-origin: bottom;
+  transition: transform .3s cubic-bezier(.22, 1, .36, 1);
+}
+.plat:hover, .plat:focus-visible { background: var(--ink-1); }
+.plat:hover::before, .plat:focus-visible::before { transform: scaleY(1); }
 .plat-os { font-size: 1.12rem; font-weight: 650; color: var(--paper); }
 .plat-arch { font-family: var(--mono); font-size: .74rem; letter-spacing: .06em; color: var(--paper-3); }
 .plat-file {
   font-family: var(--mono); font-size: .76rem; color: var(--sky);
   word-break: break-all; margin-top: auto; padding-top: .8rem;
+  transition: color .2s ease, transform .3s cubic-bezier(.22, 1, .36, 1);
 }
-.plat:hover .plat-file { color: var(--sky-hi); }
+.plat:hover .plat-file,
+.plat:focus-visible .plat-file { color: var(--sky-hi); transform: translateX(4px); }
 
 .notes { margin: clamp(2rem, 4vw, 2.75rem) 0 0; padding: 0; list-style: none; display: grid; gap: .95rem; }
 .notes li {
@@ -296,12 +323,24 @@ h1 {
 .docs { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
 @media (min-width: 700px) { .docs { grid-template-columns: 1fr 1fr; } }
 .doc {
+  position: relative; overflow: hidden;
   background: var(--ink); padding: 1.35rem clamp(1.25rem, 3vw, 1.75rem);
-  display: grid; gap: .3rem; transition: background .15s;
+  display: grid; gap: .3rem; transition: background .2s ease;
 }
-.doc:hover { background: var(--ink-1); }
-.doc-name { font-weight: 600; color: var(--paper); font-size: 1rem; }
-.doc:hover .doc-name { color: var(--sky); }
+/* 与平台卡同一套语言：左侧色条 + 标题右移，保持整站交互词汇一致 */
+.doc::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--sky); transform: scaleY(0); transform-origin: bottom;
+  transition: transform .3s cubic-bezier(.22, 1, .36, 1);
+}
+.doc:hover, .doc:focus-visible { background: var(--ink-1); }
+.doc:hover::before, .doc:focus-visible::before { transform: scaleY(1); }
+.doc-name {
+  font-weight: 600; color: var(--paper); font-size: 1rem;
+  transition: color .2s ease, transform .3s cubic-bezier(.22, 1, .36, 1);
+}
+.doc:hover .doc-name,
+.doc:focus-visible .doc-name { color: var(--sky); transform: translateX(4px); }
 .doc-desc { color: var(--paper-2); font-size: .88rem; line-height: 1.7; }
 .doc-file { font-family: var(--mono); font-size: .7rem; letter-spacing: .04em; color: var(--paper-3); }
 
@@ -322,8 +361,130 @@ footer { border-top: 1px solid var(--line); padding-block: clamp(3rem, 6vw, 4.5r
 .colophon a { color: var(--paper-2); }
 .colophon a:hover { color: var(--sky); }
 
-/* ── reveal ────────────────────────────────────────────────────────── */
+/* ══ 动效 ═══════════════════════════════════════════════════════════════
+   全部入场动效关在 no-preference 里：开了「减少动态效果」的用户拿到的是
+   一个完全静止的页面，而不是「动得慢一点」的页面。初始隐藏状态也在这个
+   块里 —— 放外面的话，reduce 用户会看到一个永远 opacity:0 的空页面。
+
+   缓动统一用 cubic-bezier(.22,1,.36,1)（easeOutQuint）：起步快、收尾稳，
+   适合「东西落到位」而不是「东西弹一下」。
+   ═══════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: no-preference) {
-  .rv { opacity: 0; transform: translateY(14px); transition: opacity .55s ease, transform .55s ease; }
+
+  @keyframes tf-rise   { from { opacity: 0; transform: translateY(18px); } }
+  @keyframes tf-settle { from { opacity: 0; transform: scale(1.03); } }
+  /* to 必须写死。省略 to 时终值取元素的计算值，而色带的基础规则本身就是
+     scaleX(0) —— 那样它会从 0 动到 0，肉眼看到的是色带整条消失。 */
+  @keyframes tf-band   { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+  /* ── 首屏入场：逐级上浮，一次性编排 ───────────────────────────────
+     用 animation 而不是 IntersectionObserver：首屏本来就在视口里，等
+     观察器回调会晚一帧，肉眼能看出「先空一下再动」。
+     backwards 填充让元素在延迟期间保持起始态，避免闪一下再消失。 */
+  .hero .coords,
+  .hero h1,
+  .hero .lede,
+  .hero .cta,
+  .hero .hero-meta { animation: tf-rise .7s cubic-bezier(.22, 1, .36, 1) backwards; }
+  .hero .coords    { animation-delay: .05s; }
+  .hero h1         { animation-delay: .13s; }
+  .hero .lede      { animation-delay: .22s; }
+  .hero .cta       { animation-delay: .31s; }
+  .hero .hero-meta { animation-delay: .39s; }
+
+  /* 地图从 1.03 沉降到 1，像镜头稳下来。比淡入更贴合「这是一张地图」。 */
+  .shot-hero img { animation: tf-settle .95s cubic-bezier(.22, 1, .36, 1) .30s backwards; }
+
+  /* ── 签名动作：高程图例逐档展开 ───────────────────────────────────
+     八个色块各自从左边缘长出，40ms 一档，读起来是一条分层设色图例被
+     「绘制」出来 —— 全站唯一的大动作，其余一切保持克制。 */
+  .legend .legend-ramp i { transform: scaleX(0); transform-origin: left; }
+  .legend.in .legend-ramp i {
+    animation: tf-band .42s cubic-bezier(.22, 1, .36, 1) both;
+  }
+  .legend.in .legend-ramp i:nth-child(1) { animation-delay: .00s; }
+  .legend.in .legend-ramp i:nth-child(2) { animation-delay: .04s; }
+  .legend.in .legend-ramp i:nth-child(3) { animation-delay: .08s; }
+  .legend.in .legend-ramp i:nth-child(4) { animation-delay: .12s; }
+  .legend.in .legend-ramp i:nth-child(5) { animation-delay: .16s; }
+  .legend.in .legend-ramp i:nth-child(6) { animation-delay: .20s; }
+  .legend.in .legend-ramp i:nth-child(7) { animation-delay: .24s; }
+  .legend.in .legend-ramp i:nth-child(8) { animation-delay: .28s; }
+
+  /* 刻度与说明等色带铺完再出现，否则会和色带抢注意力 */
+  .legend .legend-scale,
+  .legend .legend-cap { opacity: 0; transition: opacity .5s ease .42s; }
+  .legend.in .legend-scale,
+  .legend.in .legend-cap { opacity: 1; }
+
+  /* ── 通用滚动揭示 ─────────────────────────────────────────────── */
+  .rv {
+    opacity: 0; transform: translateY(16px);
+    transition: opacity .6s cubic-bezier(.22, 1, .36, 1),
+                transform .6s cubic-bezier(.22, 1, .36, 1);
+  }
   .rv.in { opacity: 1; transform: none; }
+
+  /* 管线段落：文字先落位，截图晚 90ms —— 视线自然从左读到右 */
+  .pipe.rv .pipe-text { transition-delay: 0s; }
+  .pipe.rv > .shot { opacity: 0; transform: translateY(16px);
+    transition: opacity .6s cubic-bezier(.22, 1, .36, 1) .09s,
+                transform .6s cubic-bezier(.22, 1, .36, 1) .09s; }
+  .pipe.rv.in > .shot { opacity: 1; transform: none; }
+
+  /* 参数行逐条点亮，像仪表盘上电。这里错峰是有理由的：它本来就是逐行读的。 */
+  .rv .spec > div {
+    opacity: 0; transform: translateY(8px);
+    transition: opacity .45s ease, transform .45s cubic-bezier(.22, 1, .36, 1);
+  }
+  .rv.in .spec > div { opacity: 1; transform: none; }
+  .rv.in .spec > div:nth-child(1) { transition-delay: .14s; }
+  .rv.in .spec > div:nth-child(2) { transition-delay: .20s; }
+  .rv.in .spec > div:nth-child(3) { transition-delay: .26s; }
+  .rv.in .spec > div:nth-child(4) { transition-delay: .32s; }
+
+  /* 卡片网格错峰：四条主张 / 三个平台 / 四个文档入口 */
+  .rv .claim,
+  .rv .plat,
+  .rv .doc,
+  .notes.rv li {
+    opacity: 0; transform: translateY(12px);
+    transition: opacity .5s ease, transform .5s cubic-bezier(.22, 1, .36, 1),
+                background .2s ease;
+  }
+  .rv.in .claim,
+  .rv.in .plat,
+  .rv.in .doc,
+  .notes.rv.in li { opacity: 1; transform: none; }
+
+  .rv.in .claim:nth-child(2) { transition-delay: .07s; }
+  .rv.in .claim:nth-child(3) { transition-delay: .14s; }
+  .rv.in .claim:nth-child(4) { transition-delay: .21s; }
+
+  .rv.in .plat:nth-child(2) { transition-delay: .08s; }
+  .rv.in .plat:nth-child(3) { transition-delay: .16s; }
+
+  .rv.in .doc:nth-child(2) { transition-delay: .06s; }
+  .rv.in .doc:nth-child(3) { transition-delay: .12s; }
+  .rv.in .doc:nth-child(4) { transition-delay: .18s; }
+
+  /* .notes 自己就带 rv 类，所以是 .notes.rv li（同一元素）而不是
+     .rv .notes li（两个元素）—— 后者永远匹配不上。 */
+  .notes.rv.in li:nth-child(2) { transition-delay: .04s; }
+  .notes.rv.in li:nth-child(3) { transition-delay: .08s; }
+  .notes.rv.in li:nth-child(4) { transition-delay: .12s; }
+  .notes.rv.in li:nth-child(5) { transition-delay: .16s; }
+  .notes.rv.in li:nth-child(6) { transition-delay: .20s; }
+  .notes.rv.in li:nth-child(7) { transition-delay: .24s; }
+}
+
+/* 兜底：即使上面漏了什么，reduce 用户也不会看到任何动效。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    transition-delay: 0ms !important;
+  }
 }

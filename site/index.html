@@ -317,16 +317,47 @@
 </footer>
 
 <script>
+/* 滚动揭示。
+ *
+ * 这里刻意不用 IntersectionObserver：它只在阈值被跨越时回调，而「一帧之内
+ * 从视口下方跳到视口上方」并不产生跨越，回调不会触发，被跳过的区块就永久
+ * 停在 opacity:0。点导航锚点跳转后往回滚、拖滚动条、刷新时浏览器恢复滚动
+ * 位置这三种常见操作都会踩到，表现是整屏空白。
+ *
+ * 换成 rAF 节流的位置扫描：只要元素顶部已经越过视口 92% 处就揭示（包括
+ * 已经滚过头、top 为负的情况），对跳跃、恢复、缩放窗口一律成立。元素揭示
+ * 后立即从队列里摘掉，队列空了就摘掉监听，稳态下零开销。
+ */
 (function () {
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  var els = document.querySelectorAll('.rv');
-  if (!('IntersectionObserver' in window)) { els.forEach(function (e) { e.classList.add('in'); }); return; }
-  var io = new IntersectionObserver(function (entries) {
-    entries.forEach(function (en) {
-      if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); }
-    });
-  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.05 });
-  els.forEach(function (e) { io.observe(e); });
+  // .legend 也要进队列：它的色带靠 .in 触发逐档展开，不是普通的 .rv 上浮。
+  var els = [].slice.call(document.querySelectorAll('.rv, .legend'));
+  var ticking = false;
+
+  function sweep() {
+    ticking = false;
+    var edge = window.innerHeight * 0.92;
+    for (var i = els.length - 1; i >= 0; i--) {
+      if (els[i].getBoundingClientRect().top < edge) {
+        els[i].classList.add('in');
+        els.splice(i, 1);
+      }
+    }
+    if (!els.length) {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    }
+  }
+
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(sweep);
+  }
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('resize', onScroll);
+  sweep();
 })();
 </script>
 </body>
