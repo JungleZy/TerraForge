@@ -12,16 +12,72 @@
 
 ```
 site/
-├── index.html            # 整个页面
+├── index.html            # 整个页面（含滚动揭示脚本）
 ├── _headers              # Cloudflare Pages 响应头（缓存策略与安全头）
 ├── robots.txt
 ├── sitemap.xml
 └── assets/
-    ├── style.css         # 全部样式；设计 token 在文件顶部
+    ├── style.css         # 全部样式；设计 token 在文件顶部，动效在文件末尾
+    ├── i18n.js           # 中英文案字典 + 语言判定/切换（133 key）
+    ├── terrain-fx.js     # 地形场动效：全屏背景 + 首屏项目名
     ├── favicon.ico       # 取自 static/img/favicon.ico
     ├── fonts/            # Inter + JetBrains Mono，从 static/vendor/fonts/ 复制
     └── img/              # 界面截图（webp）与社交卡片（og.jpg）
 ```
+
+## 国际化（assets/i18n.js）
+
+运行时切换，不生成第二份 HTML、不引构建步骤。**代价要清楚**：搜索引擎只索引默认
+的中文内容（`?lang=en` 是同一个 URL 的运行时状态）。这个站主要靠 GitHub About 与
+README 徽章导流而不是自然搜索，所以换来的「两种语言并排放在同一张字典里、不会各自
+漂移」更值。
+
+加或改一条文案：
+
+1. 在 `index.html` 给元素挂属性 —— 纯文本用 `data-i18n="key"`，内部含
+   `<code>` / `<strong>` / `<br>` 时**必须**用 `data-i18n-html="key"`，属性用
+   `data-i18n-attr="alt:key"`（多个属性逗号分隔）。
+2. 在 `i18n.js` 的 `DICT.zh` 与 `DICT.en` 两边都加同名 key。`zh` 的值必须与
+   `index.html` 里的原文**逐字一致**，否则中→英→中切回来对不上。
+3. `<title>` 与各 `meta` 不挂 DOM 属性，走 `i18n.js` 顶部的 `META` 映射表。
+
+两处刻意的重复，改判定规则时必须同时改：`index.html` 的 `<head>` 里有一段同步内联
+脚本做语言判定（非默认语言先给 `<html>` 挂 `.i18n-pending` 把 body 藏起来防闪烁），
+它和 `i18n.js` 里的 `pickLang()` 是同一套逻辑 —— head 里不能依赖外部文件，只能重复。
+
+`TerraForge` 是专有名词，任何位置都不翻译；带 `data-noi18n` 的元素及其后代一律跳过。
+
+## 动效（assets/terrain-fx.js + style.css 末尾）
+
+两类，分开的：
+
+- **CSS 动效**（`style.css` 末尾那个 `@media (prefers-reduced-motion: no-preference)`
+  块）：首屏逐级上浮、高程色带逐档展开、滚动揭示错峰、悬停微交互。
+- **画布动效**（`terrain-fx.js`）：全屏背景的等值线场，与首屏项目名。
+
+画布这套是标量场 + marching squares：值噪声在 `(x, y, t)` 上取样，`t` 缓慢推进，
+等值线因此像地形被慢慢抬升而不是整体平移。项目名是把 `TerraForge` 字形当遮罩
+（`destination-in`），里面填分层设色渐变 + 同一片等值线，再用一道扫描线揭示。
+
+调参的位置：
+
+| 想改什么 | 改哪里 |
+|---|---|
+| 背景线的疏密 | `Background` 里 `field(..., 0.115, 0.115, ...)` 的频率，与 `CELL`（网格边长） |
+| 背景线的深浅 | `Background.draw` 里两条 `rgba(232,234,237,…)`；实测 alpha 上限约 26/255 是「看得出线形又不抢正文对比度」的档位 |
+| 演化快慢 | `t * 0.055`（背景）与 `t * 0.07`（字内）。0.055 是「10 秒能看出变了、扫一眼看不出在动」 |
+| 等值线条数 | 文件顶部的 `LEVELS`。每 5 条加粗一档是计曲线，制图学惯例 |
+| 项目名字号 | **改 `style.css` 的 `.brandmark-fallback`**，不要改 JS —— 画布读的是这个元素的计算样式，CSS 是字号唯一真源 |
+
+三条不变量，改的时候别破坏：
+
+1. `prefers-reduced-motion: reduce` 下 `terrain-fx.js` 直接 return，两块画布都不创建；
+   页面拿到的是 `.brandmark-fallback` 那个静态渐变标题，本身就是成品，不是降级残骸。
+2. `.fx-on` 只在**第一帧真的画完**之后才挂。挂早了会留下「回退文本已隐藏、画布还空着」
+   的窗口 —— 后台标签页加载时那个窗口能长到几秒，首屏标题整块空白。
+3. 滚动揭示**不用 IntersectionObserver**。它只在阈值被跨越时回调，一帧内从视口下方
+   跳到上方不产生跨越，被跳过的区块会永久停在 `opacity:0`（点锚点后往回滚、拖滚动条、
+   刷新时恢复滚动位置都会踩到）。现在是 rAF 节流的位置扫描，见 `index.html` 底部注释。
 
 ## 本地预览
 
@@ -106,10 +162,10 @@ Cloudflare Workers」之类的模板不行 —— 那套模板不含 Pages。
 
 | 改了什么 | 还要改哪里 |
 |---|---|
-| 发版（`Config.APP_VERSION` 变了） | `index.html` 里所有 `v0.3.3`：hero 按钮、下载区标题、三个 Release 下载链接、footer colophon |
-| 站点域名 | `index.html` 的 `canonical` 与 `og:url` / `og:image` / `twitter:image`、`robots.txt`、`sitemap.xml`、本文件顶部 |
-| 平台支持范围 | 下载区三张平台卡片与其下的注意事项列表（现状：macOS 仅 arm64） |
-| 界面改版 | `assets/img/` 下的截图。截图取自 v0.3.3 实际运行界面，视口 1600×1000 @2x，深色主题 |
+| 发版（`Config.APP_VERSION` 变了） | `index.html` 里所有 `v0.3.3`（hero 按钮、下载区标题、三个 Release 下载链接、footer colophon）**以及 `i18n.js` 里含 `v0.3.3` 的那几条 key（zh 与 en 都要）** |
+| 站点域名 | `index.html` 的 `canonical` / 三条 `hreflang` / `og:url` / `og:image` / `twitter:image`、`robots.txt`、`sitemap.xml`、`wrangler.jsonc` 的 `name`、本文件顶部 |
+| 任何一句可见文案 | `i18n.js` 的 `DICT.zh` **和** `DICT.en` 两边同时改。只改 HTML 不改字典，切一次语言就被覆盖回去了 |
+| 界面改版 | `assets/img/` 下的截图，以及 `i18n.js` 里对应的 `*.alt` key（两种语言） |
 
 截图里出现的本机路径与代理地址已在截取时替换成占位值（`/data/terraforge/downloads`、空代理），重拍时记得照做。
 

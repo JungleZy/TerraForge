@@ -9,6 +9,9 @@
 <meta name="author" content="JungleZy">
 <meta name="theme-color" content="#0c0d10">
 <link rel="canonical" href="https://terraforge-gis.pages.dev/">
+<link rel="alternate" hreflang="zh-CN" href="https://terraforge-gis.pages.dev/?lang=zh">
+<link rel="alternate" hreflang="en" href="https://terraforge-gis.pages.dev/?lang=en">
+<link rel="alternate" hreflang="x-default" href="https://terraforge-gis.pages.dev/">
 <link rel="icon" href="assets/favicon.ico" sizes="any">
 
 <meta property="og:type" content="website">
@@ -23,19 +26,71 @@
 <meta name="twitter:image" content="https://terraforge-gis.pages.dev/assets/img/og.jpg">
 
 <link rel="preload" as="image" href="assets/img/hero.webp" fetchpriority="high">
+<!-- 字体不走 @import：@import 写在 style.css 里会把加载串成三级
+     （HTML → style.css → fonts.css → woff2），fonts.css 得等 style.css 到货
+     才开始下，白等一个 RTT，document.fonts.ready 跟着推迟，首屏项目名的画布
+     要等它才能量字号 —— 首屏动效就被这一环拖住。改成 <link>：两条 preload
+     排最前，woff2 立刻开下、不等任何 CSS；fonts.css 与 style.css 并行拉取。
+     fonts.css 里的 url() 相对它自身解析，直接 <link> 引入路径依然正确。 -->
+<link rel="preload" href="assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/jetbrains-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/fonts/fonts.css">
 <link rel="stylesheet" href="assets/style.css">
+
+<script>
+/* 防闪烁：判定语言，非默认语言（en）先把 body 藏起来，等 assets/i18n.js
+ * 把文案换完再放出来（html.i18n-pending body { visibility: hidden }）。
+ * 不这么做的话英文用户会先看到一屏中文再被整页替换掉。
+ *
+ * ⚠ 这里的判定逻辑与 assets/i18n.js 里的 pickLang() 是同一套，刻意重复：
+ * head 里不能等外部文件加载完再决定藏不藏 body。改判定规则（查询参数名、
+ * storage key、navigator 前缀、默认语言）时，两处都要改。
+ */
+(function () {
+  var lang = null;
+  var m = /[?&]lang=(zh|en)(?:&|$)/.exec(window.location.search);
+  if (m) { lang = m[1]; }
+  if (!lang) {
+    try {
+      var v = window.localStorage.getItem('tf-lang');
+      if (v === 'zh' || v === 'en') { lang = v; }
+    } catch (e) {}
+  }
+  if (!lang) {
+    var n = (navigator.language || navigator.userLanguage || '').toLowerCase();
+    lang = n ? (n.indexOf('zh') === 0 ? 'zh' : 'en') : 'zh';
+  }
+  if (lang !== 'zh') {
+    document.documentElement.className += ' i18n-pending';
+    // 兜底：i18n.js 万一没加载成功，1.5s 后也要把页面放出来 —— 宁可闪一下
+    // 中文，也不能留一片永远看不见的白。
+    window.setTimeout(function () {
+      document.documentElement.classList.remove('i18n-pending');
+    }, 1500);
+  }
+})();
+</script>
 </head>
 <body>
-<a class="skip" href="#main">跳到正文</a>
+<a class="skip" href="#main" data-i18n="skip">跳到正文</a>
+
+<!-- 全屏地形场纹理（缓慢演化的等值线）。纯装饰，对辅助技术隐藏。
+     terrain-fx.js 在 prefers-reduced-motion 下不启动，这块就一直是空画布。 -->
+<canvas id="tf-bg" aria-hidden="true"></canvas>
 
 <header class="masthead">
   <div class="wrap">
     <a class="wordmark" href="/">TERRA<span>FORGE</span></a>
     <nav>
-      <a href="#pipelines">能力</a>
-      <a href="#engineering" class="hide-sm">工程</a>
-      <a href="#download">下载</a>
-      <a href="#docs" class="hide-sm">文档</a>
+      <a href="#pipelines" class="hide-xs" data-i18n="nav.features">能力</a>
+      <a href="#engineering" class="hide-sm" data-i18n="nav.engineering">工程</a>
+      <a href="#download" data-i18n="nav.download">下载</a>
+      <a href="#docs" class="hide-sm" data-i18n="nav.docs">文档</a>
+      <span class="lang" role="group" aria-label="语言" data-i18n-attr="aria-label:lang.label">
+        <button type="button" class="lang-btn" data-lang="zh" lang="zh-CN" aria-pressed="true" data-noi18n>中文</button>
+        <span class="lang-sep" aria-hidden="true"></span>
+        <button type="button" class="lang-btn" data-lang="en" lang="en" aria-pressed="false" data-noi18n>EN</button>
+      </span>
       <a class="ext" href="https://github.com/JungleZy/TerraForge" rel="noopener">GitHub ↗</a>
     </nav>
   </div>
@@ -45,28 +100,36 @@
 
   <section class="hero">
     <div class="wrap">
+      <!-- 项目名。TerraForge 是专有名词，两种语言都不翻译，故 data-noi18n。
+           .brandmark-fallback 是真实文本（分层设色渐变裁进字形），画布不可用
+           或用户要求减少动效时就直接用它；terrain-fx.js 接管后它被隐藏。 -->
+      <p class="brandmark" data-noi18n>
+        <canvas class="brandmark-fx" role="img" aria-label="TerraForge"></canvas>
+        <span class="brandmark-fallback">TerraForge</span>
+      </p>
       <p class="coords">
         <span><b>N</b> <em>30.20000</em></span>
         <span><b>S</b> <em>29.40000</em></span>
         <span><b>E</b> <em>102.40000</em></span>
         <span><b>W</b> <em>101.60000</em></span>
-        <span>贡嘎山 · 0.800° × 0.800°</span>
+        <span data-i18n="hero.coords.place">贡嘎山 · 0.800° × 0.800°</span>
       </p>
-      <h1>在地图上框一块，<br class="br-lg">把它变成能用的数据。</h1>
-      <p class="lede">
+      <h1 data-i18n-html="hero.h1">在地图上框一块，<br class="br-lg">把它变成能用的数据。</h1>
+      <p class="lede" data-i18n="hero.lede">
         瓦片、高程、3D 地形、等高线 —— 四条管线装在同一个界面里。
         框选区域、实时看进度、断了能接着下，产物直接进你的 GIS 工作流。
       </p>
       <div class="cta">
-        <a class="btn btn-solid" href="#download">下载 <span class="v">v0.3.3</span></a>
-        <a class="btn btn-ghost" href="https://github.com/JungleZy/TerraForge" rel="noopener">在 GitHub 查看源码 ↗</a>
+        <a class="btn btn-solid" href="#download" data-i18n-html="hero.cta.download">下载 <span class="v">v0.3.3</span></a>
+        <a class="btn btn-ghost" href="https://github.com/JungleZy/TerraForge" rel="noopener" data-i18n="hero.cta.source">在 GitHub 查看源码 ↗</a>
       </div>
-      <p class="hero-meta">MIT · Windows / macOS (Apple Silicon) / Linux · 解压即用，不装 Python</p>
+      <p class="hero-meta" data-i18n="hero.meta">MIT · Windows / macOS (Apple Silicon) / Linux · 解压即用，不装 Python</p>
     </div>
   </section>
 
   <figure class="shot-hero">
     <img src="assets/img/hero.webp" width="2400" height="1500"
+         data-i18n-attr="alt:hero.alt"
          alt="TerraForge 界面：贡嘎山一带的三维地形上覆盖着一个带角点手柄的矩形下载选区，左侧是框选、区域、搜索、光照、任务、配置的工具栏">
   </figure>
 
@@ -83,8 +146,8 @@
         <i>0</i><i>200</i><i>500</i><i>1000</i><i>2000</i><i>3000</i><i>4000</i><i>5000 m</i>
       </div>
       <p class="legend-cap">
-        <span>等高线默认分层设色断点 · 逐档可改</span>
-        <span>贡嘎山选区 · v0.3.3 实拍</span>
+        <span data-i18n="legend.cap.breaks">等高线默认分层设色断点 · 逐档可改</span>
+        <span data-i18n="legend.cap.shot">贡嘎山选区 · v0.3.3 实拍</span>
       </p>
     </div>
   </div>
@@ -93,82 +156,86 @@
   <section class="band" id="pipelines">
     <div class="wrap">
       <div class="band-head rv">
-        <p class="eyebrow">四条数据管线</p>
-        <h2>从一个选区，长出四种产物</h2>
-        <p>同一块区域、同一套任务调度、同一份缓存。选完范围之后，剩下的差别只是你要什么格式。</p>
+        <p class="eyebrow" data-i18n="pipes.eyebrow">四条数据管线</p>
+        <h2 data-i18n="pipes.h2">从一个选区，长出四种产物</h2>
+        <p data-i18n="pipes.p">同一块区域、同一套任务调度、同一份缓存。选完范围之后，剩下的差别只是你要什么格式。</p>
       </div>
 
       <article class="pipe rv">
         <div class="pipe-text">
-          <p class="eyebrow"><b>TILES</b> / 地图瓦片</p>
-          <h3>框选下载，拼成带地理配准的 GeoTIFF</h3>
-          <p>从 Google Maps 取瓦片，边下边镜像到产物目录。要瓦片目录、要拼接好的 GeoTIFF、要单文件 MBTiles，勾选框自己组合。</p>
+          <p class="eyebrow" data-i18n-html="pipe.tiles.eyebrow"><b>TILES</b> / 地图瓦片</p>
+          <h3 data-i18n="pipe.tiles.title">框选下载，拼成带地理配准的 GeoTIFF</h3>
+          <p data-i18n="pipe.tiles.body">从 Google Maps 取瓦片，边下边镜像到产物目录。要瓦片目录、要拼接好的 GeoTIFF、要单文件 MBTiles，勾选框自己组合。</p>
           <dl class="spec">
-            <div><dt>样式</dt><dd>标准 <code>m</code> · 卫星 <code>s</code> · 卫星+标注 <code>y</code> · 道路 <code>h</code> · 地形 <code>t</code></dd></div>
-            <div><dt>产物</dt><dd>瓦片目录 · GeoTIFF（按 zoom 一层一张）· MBTiles（建任务时勾选或事后导出，不删原瓦片）</dd></div>
-            <div><dt>缓存</dt><dd>按「样式 + 坐标」键控，跨任务共享 —— 换个任务重下同一片区，已有的瓦片不会再走一次网络</dd></div>
+            <div><dt data-i18n="pipe.tiles.spec.style.dt">样式</dt><dd data-i18n-html="pipe.tiles.spec.style.dd">标准 <code>m</code> · 卫星 <code>s</code> · 卫星+标注 <code>y</code> · 道路 <code>h</code> · 地形 <code>t</code></dd></div>
+            <div><dt data-i18n="pipe.tiles.spec.output.dt">产物</dt><dd data-i18n-html="pipe.tiles.spec.output.dd">瓦片目录 · GeoTIFF（按 zoom 一层一张）· MBTiles（建任务时勾选或事后导出，不删原瓦片）</dd></div>
+            <div><dt data-i18n="pipe.tiles.spec.cache.dt">缓存</dt><dd data-i18n="pipe.tiles.spec.cache.dd">按「样式 + 坐标」键控，跨任务共享 —— 换个任务重下同一片区，已有的瓦片不会再走一次网络</dd></div>
           </dl>
         </div>
         <figure class="shot">
           <img src="assets/img/create.webp" width="922" height="1080" loading="lazy"
+               data-i18n-attr="alt:pipe.tiles.alt"
                alt="下载数据对话框：显示选区四至、预计 8,537 块瓦片，可选瓦片 / GeoTIFF / MBTiles 输出与缩放级别 10–15">
-          <figcaption>建任务时先算清要下多少块</figcaption>
+          <figcaption data-i18n="pipe.tiles.caption">建任务时先算清要下多少块</figcaption>
         </figure>
       </article>
 
       <article class="pipe flip rv">
         <div class="pipe-text">
-          <p class="eyebrow"><b>DEM</b> / 高程数据</p>
-          <h3>1°×1° 分幅高程，默认源不用注册账号</h3>
-          <p>按你框的范围自动算出需要哪些分幅并逐个取回。默认走 Copernicus 的公开 S3 桶，开箱就能下；需要 ASTER 的话再去配 Earthdata。</p>
+          <p class="eyebrow" data-i18n-html="pipe.dem.eyebrow"><b>DEM</b> / 高程数据</p>
+          <h3 data-i18n="pipe.dem.title">1°×1° 分幅高程，默认源不用注册账号</h3>
+          <p data-i18n="pipe.dem.body">按你框的范围自动算出需要哪些分幅并逐个取回。默认走 Copernicus 的公开 S3 桶，开箱就能下；需要 ASTER 的话再去配 Earthdata。</p>
           <dl class="spec">
-            <div><dt>默认源</dt><dd>Copernicus GLO-30（30 m，公开 S3 桶，<strong>免认证</strong>）</dd></div>
-            <div><dt>可选源</dt><dd>ASTER GDEM v3 <code>ASTGTM.003</code>（30 m，需 NASA Earthdata 账号，在配置页填）</dd></div>
-            <div><dt>选区</dt><dd>地图框选，或导入 GeoJSON / KML / KMZ / Shapefile，支持多部件与孔洞</dd></div>
-            <div><dt>跨经线</dt><dd>越过 180° 的区域自动拆成两段处理</dd></div>
+            <div><dt data-i18n="pipe.dem.spec.default.dt">默认源</dt><dd data-i18n-html="pipe.dem.spec.default.dd">Copernicus GLO-30（30 m，公开 S3 桶，<strong>免认证</strong>）</dd></div>
+            <div><dt data-i18n="pipe.dem.spec.optional.dt">可选源</dt><dd data-i18n-html="pipe.dem.spec.optional.dd">ASTER GDEM v3 <code>ASTGTM.003</code>（30 m，需 NASA Earthdata 账号，在配置页填）</dd></div>
+            <div><dt data-i18n="pipe.dem.spec.aoi.dt">选区</dt><dd data-i18n="pipe.dem.spec.aoi.dd">地图框选，或导入 GeoJSON / KML / KMZ / Shapefile，支持多部件与孔洞</dd></div>
+            <div><dt data-i18n="pipe.dem.spec.antimeridian.dt">跨经线</dt><dd data-i18n="pipe.dem.spec.antimeridian.dd">越过 180° 的区域自动拆成两段处理</dd></div>
           </dl>
         </div>
         <figure class="shot">
           <img src="assets/img/tasks.webp" width="1920" height="1200" loading="lazy"
+               data-i18n-attr="alt:pipe.dem.alt"
                alt="任务中心：总任务、已完成、失败数与累计下载量统计，下方是带类型标签和区域四至的任务列表，以及历史区域地图">
-          <figcaption>任务中心 · 历史区域直接叠在地图上</figcaption>
+          <figcaption data-i18n="pipe.dem.caption">任务中心 · 历史区域直接叠在地图上</figcaption>
         </figure>
       </article>
 
       <article class="pipe rv">
         <div class="pipe-text">
-          <p class="eyebrow"><b>TERRAIN</b> / 3D 地形</p>
-          <h3>切成 Cesium quantized-mesh，自带全球底座</h3>
-          <p>把下载好的 DEM 或本地上传的 GeoTIFF 切成地形瓦片。包里随附一份全球基础地形，切片成果会植入它的输出目录 —— 相机拉远时不会掉进空洞。</p>
+          <p class="eyebrow" data-i18n-html="pipe.terrain.eyebrow"><b>TERRAIN</b> / 3D 地形</p>
+          <h3 data-i18n="pipe.terrain.title">切成 Cesium quantized-mesh，自带全球底座</h3>
+          <p data-i18n="pipe.terrain.body">把下载好的 DEM 或本地上传的 GeoTIFF 切成地形瓦片。包里随附一份全球基础地形，切片成果会植入它的输出目录 —— 相机拉远时不会掉进空洞。</p>
           <dl class="spec">
-            <div><dt>格式</dt><dd>quantized-mesh 1.0，CesiumJS 直接消费</dd></div>
-            <div><dt>底座</dt><dd>随包 167 MB 全球基础地形（GEBCO 2024 Grid 派生，含海底地形、全球无洞），首次运行自动解压</dd></div>
-            <div><dt>级联</dt><dd>你的高精度切片盖在底座上，缩小时自动接回全球</dd></div>
-            <div><dt>输入</dt><dd>已下载的 DEM 任务，或本地上传的 GeoTIFF；无切片时也能按需渲染晕渲图预览</dd></div>
+            <div><dt data-i18n="pipe.terrain.spec.format.dt">格式</dt><dd data-i18n="pipe.terrain.spec.format.dd">quantized-mesh 1.0，CesiumJS 直接消费</dd></div>
+            <div><dt data-i18n="pipe.terrain.spec.base.dt">底座</dt><dd data-i18n="pipe.terrain.spec.base.dd">随包 167 MB 全球基础地形（GEBCO 2024 Grid 派生，含海底地形、全球无洞），首次运行自动解压</dd></div>
+            <div><dt data-i18n="pipe.terrain.spec.cascade.dt">级联</dt><dd data-i18n="pipe.terrain.spec.cascade.dd">你的高精度切片盖在底座上，缩小时自动接回全球</dd></div>
+            <div><dt data-i18n="pipe.terrain.spec.input.dt">输入</dt><dd data-i18n="pipe.terrain.spec.input.dd">已下载的 DEM 任务，或本地上传的 GeoTIFF；无切片时也能按需渲染晕渲图预览</dd></div>
           </dl>
         </div>
         <figure class="shot">
           <img src="assets/img/terrain.webp" width="1920" height="1200" loading="lazy"
+               data-i18n-attr="alt:pipe.terrain.alt"
                alt="喜马拉雅山脊的三维地形渲染：低角度视图，雪线以上的山体起伏与远处地平线清晰可见">
-          <figcaption>喜马拉雅山脊 · 开启地形光照</figcaption>
+          <figcaption data-i18n="pipe.terrain.caption">喜马拉雅山脊 · 开启地形光照</figcaption>
         </figure>
       </article>
 
       <article class="pipe flip rv">
         <div class="pipe-text">
-          <p class="eyebrow"><b>CONTOUR</b> / 等高线</p>
-          <h3>渲染成标准 XYZ 瓦片，谁都能加载</h3>
-          <p>产物就是普通的 XYZ 瓦片目录，Leaflet、OpenLayers、CesiumJS 拿去直接用，不需要装 TerraForge 才能看。</p>
+          <p class="eyebrow" data-i18n-html="pipe.contour.eyebrow"><b>CONTOUR</b> / 等高线</p>
+          <h3 data-i18n="pipe.contour.title">渲染成标准 XYZ 瓦片，谁都能加载</h3>
+          <p data-i18n="pipe.contour.body">产物就是普通的 XYZ 瓦片目录，Leaflet、OpenLayers、CesiumJS 拿去直接用，不需要装 TerraForge 才能看。</p>
           <dl class="spec">
-            <div><dt>产物</dt><dd>标准 XYZ 瓦片，Leaflet / OpenLayers / CesiumJS 直接加载</dd></div>
-            <div><dt>样式</dt><dd>等高距、首曲线与计曲线配色、分层设色断点、地形晕渲，逐项可调并支持预览</dd></div>
-            <div><dt>数据源</dt><dd>上传 <code>.tif</code>（可多选），或复用已完成的 DEM 任务 —— 源文件零拷贝，删等高线任务不动原 DEM</dd></div>
+            <div><dt data-i18n="pipe.contour.spec.output.dt">产物</dt><dd data-i18n="pipe.contour.spec.output.dd">标准 XYZ 瓦片，Leaflet / OpenLayers / CesiumJS 直接加载</dd></div>
+            <div><dt data-i18n="pipe.contour.spec.style.dt">样式</dt><dd data-i18n="pipe.contour.spec.style.dd">等高距、首曲线与计曲线配色、分层设色断点、地形晕渲，逐项可调并支持预览</dd></div>
+            <div><dt data-i18n="pipe.contour.spec.source.dt">数据源</dt><dd data-i18n-html="pipe.contour.spec.source.dd">上传 <code>.tif</code>（可多选），或复用已完成的 DEM 任务 —— 源文件零拷贝，删等高线任务不动原 DEM</dd></div>
           </dl>
         </div>
         <figure class="shot">
           <img src="assets/img/contour.webp" width="1920" height="1200" loading="lazy"
+               data-i18n-attr="alt:pipe.contour.alt"
                alt="天山一带的等高线瓦片渲染成果：分层设色的高程色带配合褐色等高线，叠在卫星影像底图上">
-          <figcaption>天山选区 · 等高距 50 m · 分层设色 + 晕渲</figcaption>
+          <figcaption data-i18n="pipe.contour.caption">天山选区 · 等高距 50 m · 分层设色 + 晕渲</figcaption>
         </figure>
       </article>
     </div>
@@ -178,34 +245,35 @@
   <section class="band" id="engineering">
     <div class="wrap">
       <div class="band-head rv">
-        <p class="eyebrow">为什么不是又一个批量下载器</p>
-        <h2>大任务真正的难处不在下载，在出问题之后</h2>
-        <p>几万块瓦片跑一夜，第二天你需要知道的是：到底成了没有、缺了什么、能不能接着跑。这四件事是 TerraForge 花力气最多的地方。</p>
+        <p class="eyebrow" data-i18n="eng.eyebrow">为什么不是又一个批量下载器</p>
+        <h2 data-i18n="eng.h2">大任务真正的难处不在下载，在出问题之后</h2>
+        <p data-i18n="eng.p">几万块瓦片跑一夜，第二天你需要知道的是：到底成了没有、缺了什么、能不能接着跑。这四件事是 TerraForge 花力气最多的地方。</p>
       </div>
 
       <div class="claims rv">
         <div class="claim">
-          <h3>进度是真的</h3>
-          <p>WebSocket 推送下载速度、剩余时间，以及分 zoom 的拼接与复制阶段。进度条不会停在 100% 让你猜后面还在干什么。</p>
+          <h3 data-i18n="eng.claim.progress.h3">进度是真的</h3>
+          <p data-i18n="eng.claim.progress.p">WebSocket 推送下载速度、剩余时间，以及分 zoom 的拼接与复制阶段。进度条不会停在 100% 让你猜后面还在干什么。</p>
         </div>
         <div class="claim">
-          <h3>缺块不静默</h3>
-          <p>瓦片结果分五类记账：成功、本来无数据、可重试失败、永久失败、缓存写入失败。只有「本来就没数据」才自动完成；出现真失败会停在待决策等你拍板，而接受了缺口的成果永久带缺块标记。</p>
+          <h3 data-i18n="eng.claim.missing.h3">缺块不静默</h3>
+          <p data-i18n="eng.claim.missing.p">瓦片结果分五类记账：成功、本来无数据、可重试失败、永久失败、缓存写入失败。只有「本来就没数据」才自动完成；出现真失败会停在待决策等你拍板，而接受了缺口的成果永久带缺块标记。</p>
         </div>
         <div class="claim">
-          <h3>断了能接上</h3>
-          <p>断点续传、跨任务共享缓存、边下边复制、<code>.part</code> 临时文件加 rename 原子落盘。暂停、恢复、重试都不会重下已经拿到的瓦片。</p>
+          <h3 data-i18n="eng.claim.resume.h3">断了能接上</h3>
+          <p data-i18n-html="eng.claim.resume.p">断点续传、跨任务共享缓存、边下边复制、<code>.part</code> 临时文件加 rename 原子落盘。暂停、恢复、重试都不会重下已经拿到的瓦片。</p>
         </div>
         <div class="claim">
-          <h3>不联网汇报</h3>
-          <p>没有任何遥测、埋点或使用统计。前端第三方库全部本地 vendor，运行期不碰 CDN。除了你自己配置的图源、高程源与代理，它不连接任何服务器。</p>
+          <h3 data-i18n="eng.claim.offline.h3">不联网汇报</h3>
+          <p data-i18n="eng.claim.offline.p">没有任何遥测、埋点或使用统计。前端第三方库全部本地 vendor，运行期不碰 CDN。除了你自己配置的图源、高程源与代理，它不连接任何服务器。</p>
         </div>
       </div>
 
       <figure class="shot solo rv">
         <img src="assets/img/config.webp" width="645" height="1200" loading="lazy"
+             data-i18n-attr="alt:eng.alt"
              alt="配置面板：主题与强调色、默认保存路径、并发下载数、请求超时、代理服务器与瓦片服务器列表等分组设置">
-        <figcaption>配置 · 并发与超时 / 代理自动检测 / 缓存 / GDAL 参数 / Earthdata 账号</figcaption>
+        <figcaption data-i18n="eng.caption">配置 · 并发与超时 / 代理自动检测 / 缓存 / GDAL 参数 / Earthdata 账号</figcaption>
       </figure>
     </div>
   </section>
@@ -214,43 +282,43 @@
   <section class="band" id="download">
     <div class="wrap">
       <div class="band-head rv">
-        <p class="eyebrow">当前版本 <b>v0.3.3</b></p>
-        <h2>下载 TerraForge</h2>
-        <p>三个平台的预编译包，解压就能跑，目标机器不需要 Python，也不需要单独装 GDAL。</p>
+        <p class="eyebrow" data-i18n-html="dl.eyebrow">当前版本 <b>v0.3.3</b></p>
+        <h2 data-i18n="dl.h2">下载 TerraForge</h2>
+        <p data-i18n="dl.p">三个平台的预编译包，解压就能跑，目标机器不需要 Python，也不需要单独装 GDAL。</p>
       </div>
 
       <div class="plats rv">
         <a class="plat" href="https://github.com/JungleZy/TerraForge/releases/download/v0.3.3/terraforge-windows.zip" rel="noopener">
-          <span class="plat-os">Windows</span>
-          <span class="plat-arch">Windows 10+ · x64</span>
-          <span class="plat-file">terraforge-windows.zip ↓</span>
+          <span class="plat-os" data-i18n="dl.win.os">Windows</span>
+          <span class="plat-arch" data-i18n="dl.win.arch">Windows 10+ · x64</span>
+          <span class="plat-file" data-i18n="dl.win.file">terraforge-windows.zip ↓</span>
         </a>
         <a class="plat" href="https://github.com/JungleZy/TerraForge/releases/download/v0.3.3/terraforge-macos.tar.gz" rel="noopener">
-          <span class="plat-os">macOS</span>
-          <span class="plat-arch">Apple Silicon · arm64</span>
-          <span class="plat-file">terraforge-macos.tar.gz ↓</span>
+          <span class="plat-os" data-i18n="dl.mac.os">macOS</span>
+          <span class="plat-arch" data-i18n="dl.mac.arch">Apple Silicon · arm64</span>
+          <span class="plat-file" data-i18n="dl.mac.file">terraforge-macos.tar.gz ↓</span>
         </a>
         <a class="plat" href="https://github.com/JungleZy/TerraForge/releases/download/v0.3.3/terraforge-linux.tar.gz" rel="noopener">
-          <span class="plat-os">Linux</span>
-          <span class="plat-arch">x64 · ubuntu-latest 同等或更新</span>
-          <span class="plat-file">terraforge-linux.tar.gz ↓</span>
+          <span class="plat-os" data-i18n="dl.linux.os">Linux</span>
+          <span class="plat-arch" data-i18n="dl.linux.arch">x64 · ubuntu-latest 同等或更新</span>
+          <span class="plat-file" data-i18n="dl.linux.file">terraforge-linux.tar.gz ↓</span>
         </a>
       </div>
 
       <ul class="notes rv">
-        <li>Windows 双击 <code>terraforge.exe</code>，macOS / Linux 跑 <code>./terraforge</code>，然后浏览器打开 <code>http://localhost:5000</code>。程序另会监听 <code>5001</code> 出瓦片，防火墙不放行也能用。</li>
-        <li><strong>没有安装包，也没有自动更新。</strong>不做 MSI / DMG / DEB，换版本就是重新下一个包。</li>
-        <li>每个包都含 167 MB 的全球基础地形分卷，所以体积偏大。Release 页面附 SHA-256 清单，可校验你手上这份是不是原版。</li>
-        <li class="warn"><strong>Intel Mac 不支持</strong> —— macOS 包只有 Apple Silicon (arm64) 一种。</li>
-        <li class="warn">移动位置时<strong>整个 <code>terraforge/</code> 目录一起搬</strong>。只挪可执行文件会报 <code>Corrupt bundle: missing GDAL/PROJ data directories</code>。</li>
-        <li class="warn">macOS 首次运行前，在解压出来的目录里执行 <code>xattr -cr .</code> 清掉隔离属性。</li>
-        <li class="warn">程序监听 <code>0.0.0.0:5000</code> 且<strong>没有任何登录或鉴权机制</strong>，其 API 能读写本机磁盘路径并删除目录。只在可信的本机或局域网里用，别直接暴露到公网。</li>
+        <li data-i18n-html="notes.1">Windows 双击 <code>terraforge.exe</code>，macOS / Linux 跑 <code>./terraforge</code>，然后浏览器打开 <code>http://localhost:5000</code>。程序另会监听 <code>5001</code> 出瓦片，防火墙不放行也能用。</li>
+        <li data-i18n-html="notes.2"><strong>没有安装包，也没有自动更新。</strong>不做 MSI / DMG / DEB，换版本就是重新下一个包。</li>
+        <li data-i18n="notes.3">每个包都含 167 MB 的全球基础地形分卷，所以体积偏大。Release 页面附 SHA-256 清单，可校验你手上这份是不是原版。</li>
+        <li class="warn" data-i18n-html="notes.4"><strong>Intel Mac 不支持</strong> —— macOS 包只有 Apple Silicon (arm64) 一种。</li>
+        <li class="warn" data-i18n-html="notes.5">移动位置时<strong>整个 <code>terraforge/</code> 目录一起搬</strong>。只挪可执行文件会报 <code>Corrupt bundle: missing GDAL/PROJ data directories</code>。</li>
+        <li class="warn" data-i18n-html="notes.6">macOS 首次运行前，在解压出来的目录里执行 <code>xattr -cr .</code> 清掉隔离属性。</li>
+        <li class="warn" data-i18n-html="notes.7">程序监听 <code>0.0.0.0:5000</code> 且<strong>没有任何登录或鉴权机制</strong>，其 API 能读写本机磁盘路径并删除目录。只在可信的本机或局域网里用，别直接暴露到公网。</li>
       </ul>
 
       <p class="tail">
-        <a href="https://github.com/JungleZy/TerraForge/releases" rel="noopener">全部版本 ↗</a>
-        <a href="https://github.com/JungleZy/TerraForge/blob/master/RELEASE_NOTES.md" rel="noopener">本版发版说明 ↗</a>
-        <a href="https://github.com/JungleZy/TerraForge/blob/master/CHANGELOG.md" rel="noopener">更新日志 ↗</a>
+        <a href="https://github.com/JungleZy/TerraForge/releases" rel="noopener" data-i18n="tail.releases">全部版本 ↗</a>
+        <a href="https://github.com/JungleZy/TerraForge/blob/master/RELEASE_NOTES.md" rel="noopener" data-i18n="tail.relnotes">本版发版说明 ↗</a>
+        <a href="https://github.com/JungleZy/TerraForge/blob/master/CHANGELOG.md" rel="noopener" data-i18n="tail.changelog">更新日志 ↗</a>
       </p>
     </div>
   </section>
@@ -259,29 +327,29 @@
   <section class="band" id="docs">
     <div class="wrap">
       <div class="band-head rv">
-        <p class="eyebrow">文档</p>
-        <h2>从解压到跑通第一个任务</h2>
+        <p class="eyebrow" data-i18n="docs.eyebrow">文档</p>
+        <h2 data-i18n="docs.h2">从解压到跑通第一个任务</h2>
       </div>
       <div class="docs rv">
         <a class="doc" href="https://github.com/JungleZy/TerraForge/blob/master/docs/guides/DISTRIBUTION.md" rel="noopener">
-          <span class="doc-name">下载之后怎么用 ↗</span>
-          <span class="doc-desc">解压怎么运行、目录为什么不能拆开搬、防火墙提示该不该点允许、macOS 隔离属性怎么清。</span>
-          <span class="doc-file">docs/guides/DISTRIBUTION.md</span>
+          <span class="doc-name" data-i18n="docs.dist.name">下载之后怎么用 ↗</span>
+          <span class="doc-desc" data-i18n="docs.dist.desc">解压怎么运行、目录为什么不能拆开搬、防火墙提示该不该点允许、macOS 隔离属性怎么清。</span>
+          <span class="doc-file" data-i18n="docs.dist.file">docs/guides/DISTRIBUTION.md</span>
         </a>
         <a class="doc" href="https://github.com/JungleZy/TerraForge/blob/master/docs/guides/QUICKSTART.md" rel="noopener">
-          <span class="doc-name">快速上手 ↗</span>
-          <span class="doc-desc">环境已经装好之后：尽快启动、框一小块区域跑完第一个下载任务、产物落在哪。</span>
-          <span class="doc-file">docs/guides/QUICKSTART.md</span>
+          <span class="doc-name" data-i18n="docs.quickstart.name">快速上手 ↗</span>
+          <span class="doc-desc" data-i18n="docs.quickstart.desc">环境已经装好之后：尽快启动、框一小块区域跑完第一个下载任务、产物落在哪。</span>
+          <span class="doc-file" data-i18n="docs.quickstart.file">docs/guides/QUICKSTART.md</span>
         </a>
         <a class="doc" href="https://github.com/JungleZy/TerraForge/blob/master/docs/guides/INSTALL.md" rel="noopener">
-          <span class="doc-name">从源码运行 ↗</span>
-          <span class="doc-desc">Python 3.12 + uv + GDAL 系统库与绑定。Linux 走 apt，Windows 与 Apple Silicon Mac 走 conda-forge，两条路线不能混。</span>
-          <span class="doc-file">docs/guides/INSTALL.md</span>
+          <span class="doc-name" data-i18n="docs.install.name">从源码运行 ↗</span>
+          <span class="doc-desc" data-i18n="docs.install.desc">Python 3.12 + uv + GDAL 系统库与绑定。Linux 走 apt，Windows 与 Apple Silicon Mac 走 conda-forge，两条路线不能混。</span>
+          <span class="doc-file" data-i18n="docs.install.file">docs/guides/INSTALL.md</span>
         </a>
         <a class="doc" href="https://github.com/JungleZy/TerraForge/issues" rel="noopener">
-          <span class="doc-name">报问题 / 提需求 ↗</span>
-          <span class="doc-desc">带上版本号、平台和 <code>logs/terraforge.log</code> 里的相关片段，能省一轮来回。</span>
-          <span class="doc-file">github.com/JungleZy/TerraForge/issues</span>
+          <span class="doc-name" data-i18n="docs.issues.name">报问题 / 提需求 ↗</span>
+          <span class="doc-desc" data-i18n-html="docs.issues.desc">带上版本号、平台和 <code>logs/terraforge.log</code> 里的相关片段，能省一轮来回。</span>
+          <span class="doc-file" data-i18n="docs.issues.file">github.com/JungleZy/TerraForge/issues</span>
         </a>
       </div>
     </div>
@@ -293,28 +361,33 @@
   <div class="wrap">
     <div class="legal">
       <div>
-        <h2>许可证</h2>
-        <p>MIT License · Copyright (c) 2026 JungleZy。MIT 只覆盖本项目的<strong>软件代码</strong>，<strong>不授予</strong>任何数据与在线服务的使用权。Google、Esri、天地图、OSM、Cesium Ion 等图源的 attribution、批量下载政策、Token 与配额，需要你各自独立处理。</p>
+        <h2 data-i18n="legal.license.h2">许可证</h2>
+        <p data-i18n-html="legal.license.body">MIT License · Copyright (c) 2026 JungleZy。MIT 只覆盖本项目的<strong>软件代码</strong>，<strong>不授予</strong>任何数据与在线服务的使用权。Google、Esri、天地图、OSM、Cesium Ion 等图源的 attribution、批量下载政策、Token 与配额，需要你各自独立处理。</p>
       </div>
       <div>
-        <h2>数据署名</h2>
-        <p>内置的全球基础地形派生自 GEBCO 2024 Grid。GEBCO Grid 置于公共领域、可免费使用，但要求注明来源 —— 使用本项目产出的地形成果时，请一并保留：</p>
-        <p class="cite">GEBCO Compilation Group (2024) GEBCO 2024 Grid.</p>
+        <h2 data-i18n="legal.data.h2">数据署名</h2>
+        <p data-i18n="legal.data.body">内置的全球基础地形派生自 GEBCO 2024 Grid。GEBCO Grid 置于公共领域、可免费使用，但要求注明来源 —— 使用本项目产出的地形成果时，请一并保留：</p>
+        <p class="cite" data-i18n="legal.data.cite">GEBCO Compilation Group (2024) GEBCO 2024 Grid.</p>
       </div>
       <div>
-        <h2>免责声明</h2>
-        <p>本工具仅供学习和研究使用。使用者应遵守 Google Maps 服务条款和相关法律法规。作者不对使用本工具产生的任何后果负责。</p>
+        <h2 data-i18n="legal.disclaimer.h2">免责声明</h2>
+        <p data-i18n="legal.disclaimer.body">本工具仅供学习和研究使用。使用者应遵守 Google Maps 服务条款和相关法律法规。作者不对使用本工具产生的任何后果负责。</p>
       </div>
     </div>
     <div class="colophon">
-      <span>TERRAFORGE v0.3.3</span>
+      <span data-i18n="colophon.version">TERRAFORGE v0.3.3</span>
       <a href="https://github.com/JungleZy/TerraForge" rel="noopener">GitHub</a>
       <a href="https://github.com/JungleZy/TerraForge/blob/master/LICENSE" rel="noopener">LICENSE</a>
-      <a href="https://github.com/JungleZy/TerraForge/blob/master/THIRD_PARTY_NOTICES.md" rel="noopener">第三方组件声明</a>
-      <span>页面截图取自 v0.3.3 实际运行界面</span>
+      <a href="https://github.com/JungleZy/TerraForge/blob/master/THIRD_PARTY_NOTICES.md" rel="noopener" data-i18n="colophon.thirdparty">第三方组件声明</a>
+      <span data-i18n="colophon.shots">页面截图取自 v0.3.3 实际运行界面</span>
     </div>
   </div>
 </footer>
+
+<!-- i18n 必须跑在滚动揭示之前：翻译会改变文本长度，进而改变每个区块的
+     纵向位置，而揭示脚本靠 getBoundingClientRect() 判定是否入场 —— 先翻译
+     后测量，顺序反了会有区块被错判。同步加载，不加 defer/async。 -->
+<script src="assets/i18n.js"></script>
 
 <script>
 /* 滚动揭示。
@@ -360,5 +433,10 @@
   sweep();
 })();
 </script>
+
+<!-- 地形场动效（全屏背景 + 首屏项目名）。排在揭示脚本之后：它不参与布局
+     测量，而首屏项目名的字号要等 document.fonts.ready 才量得准，本来就是
+     异步启动，早引晚引没有区别。 -->
+<script src="assets/terrain-fx.js"></script>
 </body>
 </html>
