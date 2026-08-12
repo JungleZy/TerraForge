@@ -89,7 +89,7 @@ site/
 
 | 事实 | 谁说了算 | 谁跟着它 |
 |---|---|---|
-| 版本号 | `src/core/config.py` 的 `Config.APP_VERSION` | 两个页面上的 `v0.3.3`、JSON-LD 的 `softwareVersion` / `downloadUrl`、`llms.txt`、`llms-full.txt` |
+| 版本号 | `src/core/config.py` 的 `Config.APP_VERSION` | 两个页面上的 `v0.3.4`、JSON-LD 的 `softwareVersion` / `downloadUrl`、`llms.txt`、`llms-full.txt` |
 | 站点描述 | `index.html` 的 `<meta name="description">` | JSON-LD 的 `description`（两处必须逐字一致） |
 | 四条管线标题 | 页面上的四个 `<h3>` | JSON-LD 的 `featureList` |
 | 语言关系 | 每页 `<head>` 里的三条 hreflang | `sitemap.xml` 里每条 `<url>` 的 `xhtml:link` |
@@ -226,7 +226,7 @@ Cloudflare Workers」之类的模板不行 —— 那套模板不含 Pages。
 
 | 改了什么 | 还要改哪里 |
 |---|---|
-| 发版（`Config.APP_VERSION` 变了） | `index.html` 里所有 `v0.3.3`（hero 按钮、下载区标题、三个 Release 下载链接、JSON-LD 的 `softwareVersion` / `downloadUrl`、footer colophon）、`scripts/site_i18n.json` 里含 `v0.3.3` 的那几条 key（zh 与 en 都要）、`llms.txt` 与 `llms-full.txt`，然后重新生成英文页 |
+| 发版（`Config.APP_VERSION` 变了） | `index.html` 里所有 `v0.3.4`（hero 按钮、下载区标题、三个 Release 下载链接、JSON-LD 的 `softwareVersion` / `downloadUrl`、footer colophon）、`scripts/site_i18n.json` 里含 `v0.3.4` 的那几条 key（zh 与 en 都要）、`llms.txt` 与 `llms-full.txt`，然后重新生成英文页 |
 | 任何一句可见文案 | `scripts/site_i18n.json` 的 `zh` **和** `en` 两侧，然后 `uv run python scripts/build_site_en.py` |
 | 站点域名 | `index.html` 的 `canonical` / 三条 `hreflang` / `og:url` / `og:image` / `twitter:image` / JSON-LD 里全部 `@id` 与 URL、`robots.txt`、`sitemap.xml`、`llms.txt`、`llms-full.txt`、`wrangler.jsonc` 的 `name`、`tests/test_site_seo_contract.py` 的 `BASE`、本文件顶部 |
 | 产品事实（新增管线、换数据源、平台支持变化） | `llms-full.txt` —— 它是给模型读的那份事实表，页面改了它不会自己跟着变 |
