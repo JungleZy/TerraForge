@@ -1,0 +1,15 @@
+// Cloudflare Pages 部署配置 —— 只服务 site/ 那个静态官网，与本仓库的 Python
+// 应用无关（Nuitka 只打包 static/ 与 templates/，不会碰这里）。
+//
+// 用法：
+//   export CLOUDFLARE_API_TOKEN=...      # 权限只需 Account · Cloudflare Pages · Edit
+//   export CLOUDFLARE_ACCOUNT_ID=...     # 不是密钥，dash.cloudflare.com/<这一串>
+//   npx wrangler pages deploy
+//
+// 没有构建步骤：site/ 目录里是什么，线上就是什么。
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "terraforge",
+  "pages_build_output_dir": "site",
+  "compatibility_date": "2026-08-12"
+}

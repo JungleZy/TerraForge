@@ -32,10 +32,16 @@ python3 -m http.server 8899 --directory site
 
 ## 部署（Cloudflare Pages）
 
-首次接入在 Cloudflare 控制台点一次即可，之后 push 到 `master` 会自动重新部署。
+两条路，选一条。仓库根目录的 `wrangler.jsonc` 两条都用得上（项目名 `terraforge`、
+输出目录 `site`、无构建命令）。
 
-1. <https://dash.cloudflare.com/> → **Workers & Pages** → **Create** → **Pages** → **Connect to Git**
-2. 授权 GitHub、选 `JungleZy/TerraForge`
+### A. 控制台接 Git（推荐：push 即自动部署）
+
+首次点一次即可，之后 push 到 `master` 会自动重新部署。
+
+1. <https://dash.cloudflare.com/?to=/:account/workers-and-pages> —— 新版侧边栏把
+   这一页收进了 **Compute** 分组，直接用这个链接不用找
+2. **Create** → **Pages** → **Connect to Git**，授权 GitHub、选 `JungleZy/TerraForge`
 3. 构建设置按下表填，**不要留默认值**：
 
    | 字段 | 值 |
@@ -47,7 +53,34 @@ python3 -m http.server 8899 --directory site
 
 4. **Save and Deploy**，等约一分钟
 
-项目名决定域名：填 `terraforge` 就是 `terraforge.pages.dev`，被占用时换一个名字，然后同步改掉下面「改了域名要跟着改的地方」。
+### B. 命令行直传（Direct Upload：不碰 GitHub 授权，但不会自动部署）
+
+```bash
+export CLOUDFLARE_API_TOKEN=...      # 权限见下
+export CLOUDFLARE_ACCOUNT_ID=...     # 不是密钥，dash.cloudflare.com/<这一串>
+npx wrangler pages deploy
+```
+
+**Token 权限必须是这一条，少一样都会以 `code 10000 Authentication error` 失败：**
+
+| 类型 | 组 | 级别 |
+|---|---|---|
+| **Account** | **Cloudflare Pages** | **Edit** |
+
+另外 **Account Resources 要 Include 到这个账号**（或 All accounts）。用「Edit
+Cloudflare Workers」之类的模板不行 —— 那套模板不含 Pages。
+
+> **WSL2 下的坑**：wrangler 走 Node 的 `fetch`（undici），在 WSL2 里会因为
+> happy-eyeballs 直接 `ETIMEDOUT`，而同一台机器 `curl` 和 Node 的 `https` 模块
+> 都正常 —— 报错只说 "fetch failed / connectivity issue"，很容易误判成断网。
+> 加这个环境变量绕过：
+>
+> ```bash
+> export NODE_OPTIONS=--no-network-family-autoselection
+> ```
+
+项目名决定域名：填 `terraforge` 就是 `terraforge.pages.dev`，被占用时换一个名字，
+然后同步改掉下面「改了域名要跟着改的地方」，`wrangler.jsonc` 的 `name` 也要改。
 
 ## 改内容时要一起改的地方
 
