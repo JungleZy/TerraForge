@@ -9,7 +9,7 @@
 // 没有构建步骤：site/ 目录里是什么，线上就是什么。
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "terraforge",
+  "name": "terraforge-gis",
   "pages_build_output_dir": "site",
   "compatibility_date": "2026-08-12"
 }

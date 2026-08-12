@@ -1,6 +1,6 @@
 # site/ —— TerraForge 官网
 
-线上地址：<https://terraforge.pages.dev/>
+线上地址：<https://terraforge-gis.pages.dev/>
 
 一个静态单页站，**没有构建步骤**。`site/` 目录里是什么，线上就是什么。
 
@@ -79,8 +79,11 @@ Cloudflare Workers」之类的模板不行 —— 那套模板不含 Pages。
 > export NODE_OPTIONS=--no-network-family-autoselection
 > ```
 
-项目名决定域名：填 `terraforge` 就是 `terraforge.pages.dev`，被占用时换一个名字，
-然后同步改掉下面「改了域名要跟着改的地方」，`wrangler.jsonc` 的 `name` 也要改。
+项目名决定域名，而 `*.pages.dev` 子域名是**全局唯一**的，不是每个账号一份。本项目
+叫 `terraforge-gis` 就是因为 `terraforge` 已被别的账号占了 —— 用它建项目 Cloudflare
+不会报错，而是默默给一个带随机后缀的 `terraforge-9pr.pages.dev`。想换名字先建了看
+`result.subdomain` 是否干净，不干净就删掉重来；换定之后，`wrangler.jsonc` 的 `name`
+与下面「改了域名要跟着改的地方」都要同步。
 
 ## 改内容时要一起改的地方
 

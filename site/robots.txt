@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://terraforge.pages.dev/sitemap.xml
+Sitemap: https://terraforge-gis.pages.dev/sitemap.xml
