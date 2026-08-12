@@ -34,14 +34,21 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 四枚状态筛选 chip 的取值（顺序即模板里的顺序）：
-#   全部 / 进行中 / 失败 / 已完成。
-# 'active' 是特殊值，后端 /api/history_all 把它展开成
-# status IN ('pending','running','paused')——活动任务在时间流里，
-# 靠这枚 chip 单独滤出来（不再有独立的活动分区）。
+# 五枚状态筛选 chip 的取值（顺序即模板里的顺序）：
+#   全部 / 进行中 / 失败 / 已完成 / 有缺块。
+# 'active' 与 'completed' 是**服务端展开**的两个特殊值：
+#   active    -> status IN contracts.outcome.ACTIVE_STATE_VALUES（五态，
+#                含 retrying / pending_decision）——活动任务在时间流里，
+#                靠这枚 chip 单独滤出来（不再有独立的活动分区）；
+#   completed -> status IN ('completed','completed_with_gaps')——带洞的
+#                成品也是完成品，把它排除掉就等于让「已完成」名不副实。
+# 'completed_with_gaps' 走精确等值，是「已完成」的子集：两枚 chip 故意重叠
+# （chips 是视图不是划分），用户既要在「已完成」里找得到自己的成品，也要能
+# 一眼把「哪几份有洞」单独拎出来（§13-3）。
 # 「已取消」随「取消任务」下线：状态机里已经没有这个状态，留着的 chip
 # 永远筛不出任何一行。
-EXPECTED_CHIP_STATUSES = ('', 'active', 'failed', 'completed')
+EXPECTED_CHIP_STATUSES = ('', 'active', 'failed', 'completed',
+                          'completed_with_gaps')
 
 
 def _load_app(monkeypatch, tmp_path):
@@ -96,11 +103,13 @@ def test_index_records_panel_has_no_task_table(monkeypatch, tmp_path):
 
 
 def test_status_filter_chips_render_on_both_pages(monkeypatch, tmp_path):
-    """状态筛选 chips（全部/进行中/失败/已完成，四枚）两个页面都要有。
+    """状态筛选 chips（全部/进行中/失败/已完成/有缺块，五枚）两个页面都要有。
 
     chips 作用于整个时间流（history.js 把取值透传给 /api/history_all
-    的 ?status= 参数）。「进行中」是本轮新增：活动任务进了时间流之后，
-    原来「活动分区」的查看入口由这枚 chip 接替（data-status="active"）。
+    的 ?status= 参数）。「进行中」是活动分区下线后的接替入口
+    （data-status="active"）；「有缺块」（data-status="completed_with_gaps"）
+    是 §13-3 的收口 —— 在它之前，「哪几份成果带洞」只能靠逐页翻行上的缺块
+    角标来回答，而那正是用户拿数据去做后续处理前必须先回答的问题。
 
     这里断言的是**按模板顺序全等**而不只是「每枚都在」：presence-only 的写法拦不住
     多出来的 chip，而多出来的那枚恰恰是最危险的 —— 「已取消」下线后如果被谁
@@ -115,7 +124,7 @@ def test_status_filter_chips_render_on_both_pages(monkeypatch, tmp_path):
         rendered = re.findall(r'class="status-chip[^"]*" data-status="([^"]*)"', html)
         assert tuple(rendered) == EXPECTED_CHIP_STATUSES, (
             f'{page} 的 chips 是 {rendered}，期望 {list(EXPECTED_CHIP_STATUSES)}'
-            '（四枚：全部/进行中/失败/已完成，顺序即模板顺序）'
+            '（五枚：全部/进行中/失败/已完成/有缺块，顺序即模板顺序）'
         )
 
 

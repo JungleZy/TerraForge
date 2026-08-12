@@ -45,10 +45,15 @@
                        全部任务按创建时间倒序列在一个容器里，无分组头、无折叠、
                        无去重——每个任务天然只出现一次。活动任务也在流里，
                        行结构按状态变体（进度行/错误行/摘要行），由
-                       history.js createTaskRow 统一渲染。
+                       static/js/task_list.js 的 TaskRow 组件统一渲染。
                        筛选行 = 搜索框（客户端过滤当前页）+ 状态 chips
-                       （作用于整个时间流，走 /api/history_all ?status=；
-                       「进行中」对应特殊值 active = pending/running/paused）。 #}
+                       （作用于整个时间流，走 /api/history_all ?status=）。
+                       服务端对两个取值做展开，其余按精确等值：
+                         active    = contracts.outcome.ACTIVE_STATE_VALUES 五态
+                                     （含 retrying / pending_decision）
+                         completed = completed + completed_with_gaps
+                       —— 所以「已完成」名副其实（带洞的成品也是完成品），
+                       而「有缺块」用精确值把带洞的那些单独拎出来。 #}
                     <div class="task-filter-bar">
                         <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="{{ t('tpl.history.filter.search_placeholder') }}">
                         {# aria-pressed 必须与 .active 同步：两者只差一个 CSS
@@ -60,6 +65,19 @@
                             <button type="button" class="status-chip" data-status="active" aria-pressed="false">{{ t('tpl.history.filter.active') }}</button>
                             <button type="button" class="status-chip" data-status="failed" aria-pressed="false">{{ t('tpl.history.filter.failed') }}</button>
                             <button type="button" class="status-chip" data-status="completed" aria-pressed="false">{{ t('tpl.history.filter.completed') }}</button>
+                            {# 「有缺块」（§13-3）。data-status 是精确值 completed_with_gaps，
+                               不是服务端的展开档：'completed' 在服务端展开成
+                               completed + completed_with_gaps（所以上一枚 chip 的
+                               「已完成」名副其实，带洞的成品也在里面），这一枚要的
+                               恰恰是**只有带洞的那些**。
+                               它与「已完成」故意重叠：chips 是视图不是划分，用户从
+                               「已完成」里必须找得到自己的成品，同时又要能一眼把
+                               「哪几份有洞」单独拎出来 —— 后者是拿数据去做后续处理
+                               前必须回答的问题，在这枚 chip 之前只能逐页翻角标。
+                               待决（pending_decision）不在这里：它还没有成品，归
+                               「进行中」（服务端 active 展开含它）。title 里写明这一点。 #}
+                            <button type="button" class="status-chip" data-status="completed_with_gaps" aria-pressed="false"
+                                    title="{{ t('tpl.history.filter.gaps_title') }}">{{ t('tpl.history.filter.gaps') }}</button>
                         </div>
                         {# 「处理」入口（2026-08 从地图左列工具条移来）：处理类任务
                            是上传驱动、与框选无关，归任务列表比归地图工具条合理，

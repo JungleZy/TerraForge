@@ -8,16 +8,35 @@ from pathlib import Path
 from enum import Enum
 from src.core.config import Config
 from src.core.database import parse_db_timestamp
+from src.contracts.region import RegionSpec, RegionValidationError
 from src.services.geo_validation import validate_bbox, validate_zoom
 
 
 class TaskStatus(Enum):
-    """Task status enumeration"""
+    """任务状态的合法取值集合。
+
+    ⚠️ **权威状态机在 `src/contracts/outcome.py:TaskState`**，那里带转换规则
+    （哪些状态可以恢复、哪些算活动、哪些是终态）与每一条的存在理由。本枚举
+    只服务一个用途：`Task.__post_init__` 的成员检查。两处的取值必须一致，
+    由 `TaskState` 的定义为准 —— 这里之所以没有直接 import 它，是因为 models
+    层刻意不依赖 contracts 之外的运行时语义，而 `Task` 的构造校验只需要一张
+    字面量表。
+
+    `cancelled` 不在其中：它已由 `database.migrate_cancelled_tasks_to_failed`
+    迁成 `failed`，目标状态机里也没有它。
+    """
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
+    # 补漏重跑期间。没有它，补漏与首次下载在历史里长得一模一样。
+    RETRYING = "retrying"
+    # 有缺块、等用户决定（补漏 / 接受并导出）。§13-3 允许显式导出部分成果，
+    # 那就必须有一个状态承载「等你决定」，否则「默认严格不产出」等于静默卡住。
+    PENDING_DECISION = "pending_decision"
+    # 用户已显式接受缺块。**不是静默成功**：产物与历史永久带缺块标记。
+    COMPLETED_WITH_GAPS = "completed_with_gaps"
 
 
 class MapStyle(Enum):
@@ -144,6 +163,27 @@ def _row_get(row, key, default=None):
     except (IndexError, KeyError):
         return default
 
+
+def _unwrapped_east_of(region_spec):
+    """`region_spec` 列 → 跨反经线时 RegionSpec 归一后的 east,否则 None。
+
+    返回 None 有三种含义,对本函数的调用方是同一件事「这一行不许出现 east>180」:
+    没有 region_spec(裸四角任务)、region_spec 解不出来(旧版本/脏数据)、
+    region 存在但不跨界。
+
+    解不出来时**不抛**:读取路径上的坏行不该把列表接口打成 500(与
+    `Task.from_row` 绕过校验同一条理由),写入路径上则退回严格的 ±180 口径 ——
+    降级的方向永远是更严,不是更松。
+    """
+    if not region_spec:
+        return None
+    try:
+        spec = RegionSpec.from_json(region_spec)
+    except (RegionValidationError, ValueError, TypeError):
+        return None
+    return spec.bbox_east if spec.crosses_antimeridian else None
+
+
 @dataclass
 class Task:
     """Task data model for map download tasks"""
@@ -171,6 +211,25 @@ class Task:
     # dem/contour/local 三条管线兜底的）。不输出它会让 /api/tasks?status=active
     # 的 paused 行在页面刷新后一直显示错误耗时。
     total_running_seconds: float = 0.0
+    # --- 共享数据合同（§9.1）落到任务行上的四个字段 ---
+    # 三个 TEXT 列都用空串而不是 None 作缺省：它们的落库列是
+    # `TEXT DEFAULT ''`，而存量行读出来就是空串。让内存态和落库态形状一致，
+    # 消费方只需要判 falsy 一次。
+    #
+    # source_snapshot 是 SourceSnapshot.to_json() 的原文；不在这里反序列化，
+    # 因为 models 层不认识 services，而 SourceSnapshot 的构造要读配置才有
+    # 兜底路径（见 source_registry.snapshot_for_task_row）。
+    source_snapshot: str = ""
+    source_fingerprint: str = ""
+    # RegionSpec.to_json()。四至列仍然是权威的外接矩形（历史列表、统计、
+    # 足迹渲染都读它们，且存量行只有它们），这一列是多边形/洞环/反经线的载体。
+    region_spec: str = ""
+    # 成品上有几个洞（no_data + 各类失败，= task_tiles 的行数）。
+    # 与 failed_tiles 不是一回事：后者保留原义供进度条与存量 UI 使用，
+    # 在存在 no_data 的任务上两者不再相等。
+    gap_tiles: int = 0
+    # 用户对缺块的显式决定：'' 未决 / 'accept' 接受并导出 / 'refill' 要求补漏。
+    gap_decision: str = ""
 
     def __post_init__(self):
         """Validate task parameters after initialization"""
@@ -182,9 +241,30 @@ class Task:
 
         # 四至校验(共用规则:纬度 ±90、经度 ±180、north>south、east>west、
         # 拒绝 NaN/inf/非数字;详见 src/services/geo_validation.py 模块 docstring)
+        #
+        # 跨反经线的任务是唯一的例外,判据是**任务自己的 region_spec**:
+        # `RegionSpec` 把 170..-170 归一成 west=170 / east=190,tasks 表的四至列
+        # 于是存着一个 (180, 360] 内的未回绕 east(dem_tasks 早就这么存了,
+        # 例如 east=181.0)。下游不会被它绊住 —— `RegionSpec.antimeridian_parts`
+        # 把它拆成两段各自落在 ±180 内的矩形,`region_tiles.iter_region_tile_spans`
+        # 与 `dem_granules` 的枚举都按段走,最终瓦片号一律 `x % n` 回到合法域。
+        #
+        # 为什么判据必须是「region 真的跨界」而不是「有 region」:后者会放行
+        # east=250 配一个普通多边形这种自相矛盾的行,而 250 在下游会被当成
+        # 未回绕坐标展开成横跨大半个地球的下载区。
+        unwrapped_east = _unwrapped_east_of(self.region_spec)
         self.north, self.south, self.east, self.west = validate_bbox(
-            self.north, self.south, self.east, self.west
+            self.north, self.south, self.east, self.west,
+            allow_unwrapped_east=unwrapped_east is not None,
         )
+        # 放行之后再对账:四至列必须逐字派生自 RegionSpec.bbox。两者对不上说明
+        # 有人把「跨界的 region」和「另一个东界」拼在了同一行,而下游(枚举、
+        # 足迹渲染、磁盘估算)一半读列、一半读 region,会各算各的。
+        if self.east > 180.0 and abs(self.east - unwrapped_east) > 1e-9:
+            raise ValueError(
+                f"east ({self.east}) does not match the task's region_spec "
+                f"(RegionSpec.bbox east is {unwrapped_east}); the four bbox columns "
+                f"must be derived from RegionSpec.bbox verbatim")
 
         # Validate zoom levels
         self.zoom_min = validate_zoom(self.zoom_min, 'zoom_min')
@@ -240,6 +320,14 @@ class Task:
         task.completed_at = parse_db_timestamp(row['completed_at']) if row['completed_at'] else None
         task.error_message = row['error_message']
         task.total_running_seconds = _row_get(row, 'total_running_seconds', 0.0) or 0.0
+        # 五个新列一律走 _row_get：它们由本次改造的 ALTER 补上，而测试里手搓的
+        # 老表、用户的旧备份都可能没有。缺列必须回退，不能让一行旧数据把
+        # 历史列表打成 500 —— 这正是 from_row 绕过 __post_init__ 的同一条理由。
+        task.source_snapshot = _row_get(row, 'source_snapshot', '') or ''
+        task.source_fingerprint = _row_get(row, 'source_fingerprint', '') or ''
+        task.region_spec = _row_get(row, 'region_spec', '') or ''
+        task.gap_tiles = _row_get(row, 'gap_tiles', 0) or 0
+        task.gap_decision = _row_get(row, 'gap_decision', '') or ''
         return task
 
     def to_dict(self) -> Dict[str, Any]:
@@ -265,6 +353,12 @@ class Task:
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
             'error_message': self.error_message,
             'total_running_seconds': self.total_running_seconds,
+            # 新增键是纯追加：上面 20 个键的名字与取值一个字没动，前端与
+            # 存量测试对 to_dict 的断言全部不受影响。
+            'source_fingerprint': self.source_fingerprint,
+            'region_spec': self.region_spec,
+            'gap_tiles': self.gap_tiles,
+            'gap_decision': self.gap_decision,
         }
 
     @property
@@ -288,25 +382,36 @@ class Tile:
     zoom: int
     x: int
     y: int
-    status: str = "pending"  # pending, downloading, completed, failed
+    status: str = "pending"  # 见 src/contracts/outcome.py:TileOutcome
     retry_count: int = 0
     error_message: Optional[str] = None
 
-    def cache_path(self, style: str) -> Path:
-        """Get the cache file path for this tile
+    def cache_path(self, source) -> Path:
+        """这块瓦片在共享缓存里的路径。
 
         Args:
-            style: Map style code (roadmap, satellite, hybrid, terrain)
+            source: `SourceSnapshot`（新路径）**或**单字符 style 码（旧路径）。
+                两种都收：调用点分布在下载引擎、拼接、收尾复制与缓存清理里，
+                一次性全改会让这个改动的爆炸半径远大于必要。带快照调用的
+                路径落进指纹命名空间，带 style 码调用的落进旧的单级目录。
 
-        Returns:
-            Path object for cache file location
+        路径形态：
+            带快照   cache/{style}-{fingerprint}/{zoom}/{x}/{y}.png
+            带 style 码 cache/{style}/{zoom}/{x}/{y}.png   （存量形态）
 
-        Note: Always uses .png extension as tiles are downloaded as PNG
-        regardless of the final output format specified in the task.
-        Cache path format: cache/{style}/{zoom}/{x}/{y}.png
-        Cache is shared across all tasks for efficiency.
+        实现是一行 `getattr`，刻意不 import `source_registry`：models 层被
+        contracts、routes 和四条管线共同依赖，往里塞一条 services 的 import
+        就会在 `services/__init__` 已经 eager import ConfigManager 的前提下
+        绕出环。`cache_namespace` 是 SourceSnapshot 的公开属性，取它一个字段
+        不构成对那个模块的依赖，也不会产生第二处路径规则 —— 规则本身
+        （「命名空间 / z / x / y.png」）只此一份。
+
+        扩展名恒为 `.png`：缓存里放的是上游原始字节，后缀不参与任何判定
+        （真正的内容校验是 download_engine.looks_like_image 的魔数比对）。
+        缓存跨任务共享，不带 task_id。
         """
-        return Config.CACHE_DIR / style / str(self.zoom) / str(self.x) / f"{self.y}.png"
+        namespace = getattr(source, 'cache_namespace', source)
+        return Config.CACHE_DIR / str(namespace) / str(self.zoom) / str(self.x) / f"{self.y}.png"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert Tile to dictionary"""

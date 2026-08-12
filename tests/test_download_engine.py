@@ -18,6 +18,7 @@ from src.core import database
 from src.services.download_engine import DownloadEngine, WARN_TILES_THRESHOLD, MIN_ZOOM, MAX_ZOOM
 from src.models.task import Tile
 from src.core.config import Config
+from src.contracts.outcome import TileOutcome
 
 
 @pytest.fixture
@@ -442,7 +443,8 @@ def test_download_single_tile_does_not_use_cache_when_disabled(download_engine):
     result = asyncio.run(download_engine._download_single_tile(tile, 's', session=None, cache_enabled=False))
 
     assert downloaded['called'] is True
-    assert result['status'] == 'completed'
+    # 引擎结果字典的 status 现在是 `TileOutcome` 的值('success',旧 'completed')
+    assert result['status'] == TileOutcome.SUCCESS.value
     assert cache_path.read_bytes() == b'cached'
 
 
@@ -457,7 +459,7 @@ def test_download_single_tile_writes_cache_atomically(download_engine):
 
     result = asyncio.run(download_engine._download_single_tile(tile, 's', session=None, cache_enabled=True))
 
-    assert result['status'] == 'completed'
+    assert result['status'] == TileOutcome.SUCCESS.value
     assert cache_path.read_bytes() == b'fresh'
     assert list(cache_path.parent.glob('*.part.*')) == []
 

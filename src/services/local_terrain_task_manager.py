@@ -17,19 +17,28 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
+from src.contracts.artifact import PIPELINES
+from src.contracts.reservation import ResourceKind, ResourceRequest
 from src.core.config import Config
 from src.core.database import get_connection, utc_now_iso
+from src.services import disk_budget
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import (AUTO_MAXZOOM, DEFAULT_TILING_QUALITY,
                                          TILING_QUALITY_OFFSETS, coerce_maxzoom,
                                          maxzoom_from_db, maxzoom_to_db,
                                          validate_tiling_quality)
+from src.services.resource_scheduler import get_scheduler, plan_tiling_reservation
 from src.services.task_cleanup import (fail_stranded_running_task, remove_task_dir_if_safe,
                                        resolve_stored_output_dir)
+from src.services.task_logging import open_task_log
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
 from src.services.terrain_tiling.layer_json import parent_url_if_base_available
+from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 
 logger = logging.getLogger(__name__)
+
+# 管线名从合同表取，不手写字面量（同 dem_task_manager 里那条注释的理由）。
+_PIPELINE = PIPELINES[PIPELINES.index('local_terrain')]
 
 # 切片进度的 emit 节流下限（秒）。与 dem_task_manager._PROGRESS_EMIT_MIN_INTERVAL
 # 同一量级：瓦片回调每张一次、GDAL 的阶段回调频率更不受控，裸发就是每秒几十次。
@@ -95,6 +104,11 @@ class LocalTerrainTaskManager:
 
         Tiling is a one-shot build_terrain call with no resume model, so a
         leftover 'running' row from a dead process can only be restarted.
+
+        `failed` 是硬终态，所以解释**必须**落进任务自己的日志（§4.5）：用户点开
+        任务详情看到的原本是「失败」两个字加一片空白，而日志文件在崩溃那一瞬间
+        戛然而止，最后一行是某个瓦片的进度。进程崩溃 / 断电 / 关窗口是这条管线上
+        最常发生的真实终态转移，不是边角情况。
         """
         conn = get_connection()
         try:
@@ -111,11 +125,42 @@ class LocalTerrainTaskManager:
                 )
                 conn.commit()
                 logger.warning(f"Recovered orphan local terrain tasks (failed): {ids}")
+                # 上面那条 warning 只进**全局**日志。落库已提交，所以下面写日志
+                # 失败也不影响状态机 —— _log_recovery 自己兜住。
+                for tid in ids:
+                    self._log_recovery(
+                        tid, 'failed',
+                        '进程在切片期间退出（崩溃 / 断电 / 关窗口）：重启时发现库里'
+                        '还写着 running 而没有任何线程，已判为 failed。切片是一次性的'
+                        ' build_terrain 调用，没有断点续跑 —— 上传的源文件如果还在，'
+                        '重新起一个切片任务即可。')
         except Exception as e:
             logger.error(f"Failed to recover local terrain orphans: {e}")
             conn.rollback()
         finally:
             conn.close()
+
+    def _log_recovery(self, task_id: int, status: str, note: str) -> None:
+        """把一次「启动时孤儿恢复」写进**这个任务自己的**日志。绝不抛。
+
+        绝不抛是硬要求：调用点在 `__init__` 里，一个次要 sink 的环境问题没有
+        资格让整个 LocalTerrainTaskManager 构造不出来 —— 那等于一条日志写不动
+        就让服务起不来（同 `open_task_log` 类 docstring 的论证）。
+
+        句柄短命（开 → 写 → 关）：`open_task_log` 会摘掉同 (pipeline, task_id)
+        的遗留 handler，留着不关会让后续真正跑起来的那一轮写到已轮转走的
+        inode。恢复跑在 `__init__`，此刻没有任何任务线程持有句柄，不存在互抢。
+        """
+        try:
+            tlog = open_task_log(_PIPELINE, task_id)
+            try:
+                tlog.event('terminal', status=status, reason='process_restart')
+                tlog.warning('%s', note)
+            finally:
+                tlog.close()
+        except Exception as e:
+            logger.warning(
+                f"Local terrain task {task_id}: 孤儿恢复日志写入失败（忽略）: {e!r}")
 
     def _default_maxzoom(self) -> Union[int, str]:
         # 配置值过 coerce_maxzoom 而不是裸 int()：terrain_local_maxzoom 在
@@ -445,8 +490,13 @@ class LocalTerrainTaskManager:
         里、任务刚 INSERT 完还没跑起来，本就只可能是 pending。加上它是为了让
         「置 failed 的 UPDATE 一律不得改写终态记录」这条约定在四条管线里没有
         例外（见 tests/test_pipeline_parity.py）。
+
+        终态的原因同样要落进任务自己的日志（§4.5）。这条路径上没有现成的句柄：
+        任务在建的过程中就死了，切片线程压根没起来，而开每任务日志是
+        `_run_tiling_job` 的第一件事。
         """
         conn = get_connection()
+        changed = False
         try:
             cur = conn.cursor()
             cur.execute(
@@ -455,8 +505,33 @@ class LocalTerrainTaskManager:
                 (message, utc_now_iso(), task_id),
             )
             conn.commit()
+            changed = bool(cur.rowcount)
         finally:
             conn.close()
+        if changed:
+            self._log_terminal_failure(task_id, 'upload_failed', message)
+
+    def _log_terminal_failure(self, task_id: int, reason: str, message: str) -> None:
+        """把一次「没有 tlog 在场」的 failed 终态写进任务自己的日志。绝不抛。
+
+        两个调用点（`_mark_failed`、`_mark_running_task_failed`）的共同处境是
+        切片线程从未开始，所以没有句柄可用；而它们写的都是硬终态。只写全局
+        terraforge.log 的话，用户点开任务详情看到的是「失败」两个字加一片空白。
+
+        只在 UPDATE **真的改了行**之后才调：无条件写会让「已判 failed」出现在
+        一个其实跑完了的任务的日志里，比不写更糟（同 fail_stranded_running_task
+        那几处的口径）。
+        """
+        try:
+            tlog = open_task_log(_PIPELINE, task_id)
+            try:
+                tlog.event('terminal', status='failed', reason=reason, detail=message)
+                tlog.error('本地地形任务终态 failed：%s', message)
+            finally:
+                tlog.close()
+        except Exception as e:
+            logger.warning(
+                f"Local terrain task {task_id}: 终态日志写入失败（忽略）: {e!r}")
 
     def get_task(self, task_id: int) -> Dict[str, Any]:
         conn = get_connection()
@@ -511,9 +586,12 @@ class LocalTerrainTaskManager:
     def start_tiling(self, task_id: int) -> None:
         task_id = int(task_id)
         # 预置成 None：下面 except 里的登记回收要在「异常抛在线程对象构造之前」
-        # 的情况下也能安全跑，那时这两个名字还没绑定。
+        # 的情况下也能安全跑，那时这两个名字还没绑定。reservation 同理 ——
+        # 准入之前抛出时它还没有值，而 except 要能无条件把它还回去。
         th = None
         stop_flag = None
+        reservation = None
+        owner = (_PIPELINE, task_id, 'tiling')
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -535,6 +613,86 @@ class LocalTerrainTaskManager:
                     raise ValueError(f"Local terrain task {task_id} not found")
                 if row["status"] == "running":
                     raise ValueError(f"Local terrain task {task_id} is already running")
+
+                # 产物与源目录先算出来：下面的磁盘预检要知道写到哪块盘、源有多大。
+                # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
+                # 的约定）：冻结 exe 搬迁后旧绝对路径不会把切片写去错的地方。
+                task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
+                # 零拷贝来源（create_task_from_dem_task 建的行）：源 tif 不在本
+                # 任务目录，按 contour 的同一口径从 DEM 任务的 output_path 重算
+                # （不信库存绝对路径，exe 搬迁后照旧能找对）。源任务已被删时
+                # 当场报错，不拿一个空目录去切出「成功」的空产物。
+                if row["source_dem_task_id"] is not None:
+                    dem_row = cur.execute(
+                        "SELECT output_path FROM dem_tasks WHERE id=?",
+                        (row["source_dem_task_id"],),
+                    ).fetchone()
+                    if not dem_row:
+                        raise ValueError(
+                            f"Source DEM task {row['source_dem_task_id']} not found")
+                    source_dir = (resolve_stored_output_dir(dem_row["output_path"])
+                                  / f"dem_task_{row['source_dem_task_id']}")
+                else:
+                    source_dir = task_root / "source"
+                output_dir = task_root / "terrain_tiles"
+
+                # ---- 准入：磁盘预算 + 全局配额。在 UPDATE 成 running 之前 ----
+                # 位置是刻意的：这两道都可能拒，而在 UPDATE 之前被拒时行还停在
+                # 原状态，不需要任何回补。（本方法的 except 确实有 rollback 兜着，
+                # 但那条路依赖「commit 是锁里最后一行」这个易碎的前提 —— 下面那
+                # 整段注释讲的就是它，别再往它身上加负担。）
+                source_bytes = 0
+                for tif in list_dem_tifs(source_dir):
+                    try:
+                        source_bytes += tif.stat().st_size
+                    except OSError:
+                        pass
+                # 本地上传的 DEM 什么数据类型都可能（无人机 DSM 常是 Float32），
+                # 而 Int16 与 Float32 的物化系数差一倍多（0.78 vs 1.9）。这里判不出
+                # 来就按贵的那档算：估多了只是拦得早一点，估少了是写到一半 ENOSPC，
+                # 留下一份非空半成品。真正按波段类型分档的判定在
+                # cesium_terrain._source_is_float，那时文件已经要被打开了。
+                estimate = disk_budget.estimate_terrain_tiling(
+                    source_bytes, float_source=True)
+                verdict = disk_budget.check_budget(output_dir, estimate, self.config)
+                logger.info(
+                    f"Local terrain task {task_id} 磁盘预检（源 "
+                    f"{source_bytes / (1024 * 1024):.0f} MiB）：{verdict.reason}")
+                if not verdict.ok:
+                    raise ValueError(verdict.reason)
+
+                scheduler = get_scheduler()
+                # 这里**没有**「先按 owner 键回收一张同名凭据」那一步，是刻意的：
+                # 那种写法能把一张还在服役的凭据摘掉（缺陷形态见 release_owner 的
+                # docstring），而它声称要防的泄漏在这条路径上并不存在 —— 上面的
+                # is_alive() 闸门与 status=='running' 闸门证明没有活线程，而线程侧
+                # 的归还写在 _run_tiling_job 的 finally 里、**先于**它把自己从
+                # active_tasks 摘掉，所以「线程已不在册」蕴含「凭据已归还」。真出现
+                # 重复 owner 只可能是另有 bug，那时 reserve 会当场 ValueError 说
+                # 清楚，而不是让我们悄悄吊销一份别人正在用的配额。
+                # 本管线没有自己的 worker 配置键，直接按调度器的 CPU 上限要，让全局
+                # 配额去分（max_cpu_workers 出厂 0 时那个上限就是 min(4, cpu_count)，
+                # 与改造前 build_terrain 的自动挡同值）。
+                requested_workers = scheduler.limits().get(ResourceKind.CPU_WORKER, 1)
+                reservation = scheduler.reserve(
+                    owner,
+                    plan_tiling_reservation(requested_workers) + [
+                        # DISK_BYTES 全额或不给，minimum 必须等于 requested。预留是
+                        # 为了让**别的**任务看得见这一份：check_budget 的判决本身
+                        # 对并发任务不可见（disk_budget 模块 docstring）。
+                        ResourceRequest(kind=ResourceKind.DISK_BYTES,
+                                        requested=verdict.required_bytes,
+                                        minimum=verdict.required_bytes)],
+                )
+                if reservation is None:
+                    free = scheduler.snapshot()['available']
+                    raise ValueError(
+                        f"Local terrain task {task_id} cannot start now: the global "
+                        f"resource budget is saturated (free task_slot="
+                        f"{free.get('task_slot')}, cpu_worker={free.get('cpu_worker')}, "
+                        f"gdal_slot={free.get('gdal_slot')}). Wait for a running task "
+                        f"to finish, or raise max_concurrent_tasks / max_cpu_workers / "
+                        f"max_gdal_slots in Settings.")
 
                 # 法线必须在 UPDATE 之前定下来，因为要跟着写回去。
                 # NULL = 这一行没有记录过法线状态（本列出现之前建的任务）。
@@ -590,33 +748,13 @@ class LocalTerrainTaskManager:
                 # 阻塞，那条 SELECT 立即返回。
 
                 parent_url = row["parent_url"] or _parent_layer_url()
-                # 不信库存路径，从当前 Config.DOWNLOADS_DIR 重算（同 terrain_static
-                # 的约定）：冻结 exe 搬迁后旧绝对路径不会把切片写去错的地方。
-                task_root = Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}"
-                # 零拷贝来源（create_task_from_dem_task 建的行）：源 tif 不在本
-                # 任务目录，按 contour 的同一口径从 DEM 任务的 output_path 重算
-                # （不信库存绝对路径，exe 搬迁后照旧能找对）。源任务已被删时
-                # 当场报错，不拿一个空目录去切出「成功」的空产物。
-                if row["source_dem_task_id"] is not None:
-                    dem_row = cur.execute(
-                        "SELECT output_path FROM dem_tasks WHERE id=?",
-                        (row["source_dem_task_id"],),
-                    ).fetchone()
-                    if not dem_row:
-                        raise ValueError(
-                            f"Source DEM task {row['source_dem_task_id']} not found")
-                    source_dir = (resolve_stored_output_dir(dem_row["output_path"])
-                                  / f"dem_task_{row['source_dem_task_id']}")
-                else:
-                    source_dir = task_root / "source"
-                output_dir = task_root / "terrain_tiles"
 
                 stop_flag = threading.Event()
                 self.stop_flags[task_id] = stop_flag
                 th = threading.Thread(
-                    target=self._run_tiling_job,
+                    target=self._run_tiling_entry,
                     args=(task_id, source_dir, output_dir, maxzoom, parent_url,
-                          stop_flag, quality, vertex_normals),
+                          stop_flag, quality, vertex_normals, reservation),
                     daemon=True,
                     name=f"LocalTerrainTiling-{task_id}",
                 )
@@ -632,6 +770,15 @@ class LocalTerrainTaskManager:
                     self.active_tasks.pop(task_id, None)
                 if stop_flag is not None and self.stop_flags.get(task_id) is stop_flag:
                     self.stop_flags.pop(task_id, None)
+            # 线程没接手，配额就没人还 —— 但只还**本次调用自己申请到的**那一张。
+            # 这个 if 之后原本还有一句无条件的 `release_owner(owner)`，它在
+            # 「已在运行」那条拒绝路径上是致命的：那时本地的 reservation 还是 None
+            # （闸门在 reserve 之前就抛了），那一句却照样按键把**正在跑的那一轮**
+            # 的凭据吊销掉 —— 作业继续跑，调度器账上一格不占，全局上界失效。
+            # reservation.release() 内部走 _on_release，本来就按身份摘登记，
+            # 再补一刀既没必要也不安全。
+            if reservation is not None:
+                reservation.release()
             raise
         finally:
             conn.close()
@@ -649,6 +796,9 @@ class LocalTerrainTaskManager:
                     self.active_tasks.pop(task_id, None)
                 if self.stop_flags.get(task_id) is stop_flag:
                     self.stop_flags.pop(task_id, None)
+            # 同上：只还本次调用申请到的那一张，release() 自己会按身份摘登记。
+            if reservation is not None:
+                reservation.release()
             self._mark_running_task_failed(task_id, f"tiling thread failed to start: {e}")
             raise
 
@@ -657,8 +807,11 @@ class LocalTerrainTaskManager:
 
         与 `_mark_failed` 的区别是带 `AND status='running'` 守卫：这条路径只
         用于「已置 running 但线程没起来」，不能误改其它状态的行。
+
+        终态原因进任务自己的日志的理由见 `_log_terminal_failure`。
         """
         conn = get_connection()
+        changed = False
         try:
             cur = conn.cursor()
             cur.execute(
@@ -667,10 +820,40 @@ class LocalTerrainTaskManager:
                 (message, utc_now_iso(), task_id),
             )
             conn.commit()
+            changed = bool(cur.rowcount)
         except Exception as e:
             logger.error(f"Failed to mark local terrain task {task_id} as failed: {e}")
         finally:
             conn.close()
+        if changed:
+            self._log_terminal_failure(task_id, 'tiling_thread_start_failed', message)
+
+    def _run_tiling_entry(
+        self, task_id: int, source_dir: Path, output_dir: Path,
+        maxzoom: Optional[int], parent_url: str,
+        stop_flag: Optional[threading.Event] = None,
+        quality: str = DEFAULT_TILING_QUALITY,
+        vertex_normals: bool = False, reservation=None,
+    ) -> None:
+        """切片线程的**真正**入口：配额的归还挂在线程上，不挂在 _run_tiling_job 里。
+
+        TASK_SLOT 泄漏一份就永久少一个全局任务名额（进程重启才清），表现是
+        「所有管线突然都起不了任务，日志里一句话都没有」。_run_tiling_job 自己的
+        finally 已经归还一次，这一层兜的是它够不着的形态：被替身换掉，或者在
+        finally 之外炸出 BaseException。release 幂等，两处都跑不会还两次。
+        """
+        try:
+            self._run_tiling_job(task_id, source_dir, output_dir, maxzoom, parent_url,
+                                 stop_flag, quality, vertex_normals,
+                                 reservation=reservation)
+        finally:
+            # 只归还**交接给这个线程的那一张**。按 owner 键归还会在「本线程迟到
+            # 收尾、用户已经把下一轮起起来了」的窗口里吊销下一轮的凭据，而那个
+            # 窗口可以长达数十秒（fail_stranded_running_task 会新开一条
+            # busy_timeout=30s 的 sqlite 连接）。身份比较之下迟到的这次返回 0。
+            if reservation is not None:
+                get_scheduler().release_owner(
+                    (_PIPELINE, task_id, 'tiling'), reservation)
 
     def _run_tiling_job(
         # maxzoom=None 是自动挡（起切时由 maxzoom_from_db 从哨兵还原），原样
@@ -679,10 +862,20 @@ class LocalTerrainTaskManager:
         maxzoom: Optional[int], parent_url: str,
         stop_flag: Optional[threading.Event] = None,
         quality: str = DEFAULT_TILING_QUALITY,
-        vertex_normals: bool = False,
+        vertex_normals: bool = False, reservation=None,
     ) -> None:
         failure = None
+        # 每任务日志（§4.5）。open_task_log 永不返回 None、所有方法都不抛。
+        tlog = open_task_log(_PIPELINE, task_id)
+        # 授予的 CPU 名额必须真的传到进程池：不传的话 build_terrain 走它自己的
+        # min(4, cpu_count)，两个地形任务并行就是 8 个重型 worker，全局上限白设。
+        granted_workers = reservation.cpu_workers if reservation is not None else 0
         try:
+            tlog.event('stage', name='tiling', maxzoom=maxzoom
+                       if maxzoom is not None else 'auto', quality=quality,
+                       normals=bool(vertex_normals),
+                       workers=granted_workers or 'auto',
+                       source_dir=str(source_dir), output_dir=str(output_dir))
             # 切片期间的进度。此前这里**一个回调都没传** —— 而任务行的进度条是
             # 按 uploaded_files 算的，上传一结束就写满，于是整个切片过程（可以是
             # 几十分钟）界面上恒显 100%，看不出还在跑。
@@ -727,10 +920,19 @@ class LocalTerrainTaskManager:
                 out_dir=output_dir,
                 params=TileParams(maxzoom=maxzoom, parent_url=parent_url,
                                   normals=vertex_normals,
+                                  workers=granted_workers,
                                   level_offset=TILING_QUALITY_OFFSETS[quality],
                                   progress_cb=tiling_progress,
                                   stage_cb=tiling_stage,
-                                  stop_flag=stop_flag),
+                                  stop_flag=stop_flag,
+                                  # 同 dem_task_manager：运行中复查要认出「这份
+                                  # DISK_BYTES 预留是本任务自己的」，否则一台空
+                                  # 机器上单个任务也要两倍空间，切到一半被自己
+                                  # 的预留判死。用 reservation.owner 而不是手写
+                                  # 元组 —— 手写的那份对不上时 _reserved_by_others
+                                  # 只是静默地什么都匹配不到，退回旧的双重计数。
+                                  owner=(reservation.owner
+                                         if reservation is not None else None)),
             ) or {}
             # M11: 消费 build_terrain 的失败计数 —— 此前返回值被整个丢弃，
             # 逐瓦片容错变成纯静默（缺瓦片仍报 completed，layer.json 过度声明）。
@@ -746,6 +948,10 @@ class LocalTerrainTaskManager:
             warning = f"部分地形瓦片切片失败({failed}/{total})" if failed > 0 else None
             if warning:
                 logger.warning(f"Local terrain task {task_id}: {warning}")
+                tlog.warning('%s', warning)
+            tlog.event('tiles', rendered=rendered, failed=failed, total=total,
+                       effective_maxzoom=effective_maxzoom
+                       if effective_maxzoom is not None else 'unreported')
 
             if stop_flag is not None and stop_flag.is_set():
                 # 中途停止的唯一入口是删除任务（切片没有暂停/恢复语义）——
@@ -756,6 +962,9 @@ class LocalTerrainTaskManager:
                 # 标志已置、这里正常 return —— 没有异常给下面的兜底 except 接。
                 # 那种行由 finally 的搁死补偿判 failed。范本见
                 # dem_task_manager._run_tiling_job。
+                tlog.event('terminal', status='stopped',
+                           reason='stop flag set (task deleted)',
+                           rendered=rendered, total=total)
                 return
 
             conn = get_connection()
@@ -771,6 +980,8 @@ class LocalTerrainTaskManager:
                 conn.commit()
             finally:
                 conn.close()
+            tlog.event('terminal', status='completed', rendered=rendered,
+                       failed=failed, total=total, warning=warning or '')
             self._emit_tiling_finished(task_id, "completed")
             if self.socketio:
                 # emit 在 completed 落库之后才跑，抛异常会落到兜底 except 把这条
@@ -790,6 +1001,11 @@ class LocalTerrainTaskManager:
             # （库被锁/磁盘满），抛了就没人再写终态，只剩 finally 的搁死补偿，而它
             # 要拿这个原因写进 error_message。
             failure = e
+            # GDAL 的失败到这里已经是一个 Python 异常了 —— 回溯必须进任务日志，
+            # 「为什么切片失败」的答案九成在那段回溯里（BuildVRT 丢源、ENOSPC、
+            # BrokenProcessPool 各有各的形状）。
+            tlog.exception('本地地形切片终态 failed：%s', e)
+            tlog.event('terminal', status='failed', reason=str(e))
             conn = get_connection()
             try:
                 cur = conn.cursor()
@@ -810,6 +1026,9 @@ class LocalTerrainTaskManager:
                      "status": "failed", "error_message": str(e)},
                 )
         finally:
+            # 配额与线程登记同生共死，所以在同一个 finally 里还。
+            if reservation is not None:
+                reservation.release()
             with self._state_lock:
                 stranded_owner = (
                     self.active_tasks.get(task_id) is threading.current_thread())
@@ -820,9 +1039,23 @@ class LocalTerrainTaskManager:
                 # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的
                 # docstring）。盖住两条路：上面那个兜底 except 自己抛出去了，
                 # 以及 stop 分支正常 return 而行没被删掉。
-                fail_stranded_running_task(
-                    'local_terrain_tasks', task_id,
-                    f'切片线程异常: {failure}' if failure is not None else '')
+                stranded_reason = (f'切片线程异常: {failure}' if failure is not None
+                                   else '')
+                if fail_stranded_running_task('local_terrain_tasks', task_id,
+                                              stranded_reason):
+                    # 只在**真的改了行**（running → failed）时补这一笔。那个
+                    # helper 只写全局日志，而 §4.5 的门槛是「任何终态都能从
+                    # **任务自己的**日志解释原因」—— 没有下面两行，任务日志的
+                    # 最后一句是某个瓦片的进度，库里却写着 failed，两份记录当面
+                    # 打架。看返回值而不是猜：正常收尾时那条带
+                    # `WHERE status='running'` 的 UPDATE 是无害的 no-op，那种
+                    # 情况下多写一句「已判 failed」比不写更糟。
+                    tlog.event('terminal', status='failed', reason='thread_stranded',
+                               detail=stranded_reason or 'worker exited without settling the row')
+                    tlog.error(
+                        '切片线程退出时任务行仍停在 running，已由兜底判为 failed：%s',
+                        stranded_reason or 'worker 没有走到任何终态写入')
+            tlog.close()
 
     def _emit_tiling_finished(self, task_id: int, status: str) -> None:
         """切片收尾时补一发 terrain_job_progress（与 dem_task_manager 同款）。

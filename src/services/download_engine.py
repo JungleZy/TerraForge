@@ -6,7 +6,6 @@ Implements Web Mercator projection for converting geographic coordinates to tile
 """
 
 import logging
-import math
 import asyncio
 import itertools
 import shutil
@@ -18,6 +17,21 @@ import aiofiles
 import os
 from typing import List, Tuple, Optional, Dict, Any
 from pathlib import Path
+from src.contracts.outcome import TileOutcome
+from src.contracts.region import RegionSpec
+# 经纬度 → 瓦片的数学**全部**来自 region_tiles，本模块一行都不再自己算。
+# 以前这里有一份 Web Mercator 公式、dem_task_tiler 有一份、前端 map.js 又有
+# 一份,三处各自演化就是「预估 17 万块、实下 3 万块」那类偏差的温床。
+# MIN_ZOOM / MAX_ZOOM / WEB_MERCATOR_MAX_LAT 在这里**重新导出**(不是重新定义):
+# tests 与 dem 侧都 `from src.services.download_engine import MIN_ZOOM, MAX_ZOOM`,
+# 而值只此一份 —— 抄一份就等于允许两个上界。
+from src.contracts.region_tiles import (MAX_ZOOM, MIN_ZOOM,
+                                        WEB_MERCATOR_MAX_LAT,
+                                        bbox_tile_range, count_region_tiles,
+                                        iter_region_tile_spans,
+                                        lat_lon_to_tile as _lat_lon_to_tile,
+                                        validate_zoom_range)
+from src.contracts.source import SourceSnapshot
 from src.models.task import Tile
 from src.services.config_manager import ConfigManager
 from src.services.proxy_autodetect import resolve_from_config
@@ -50,10 +64,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Constants
-WEB_MERCATOR_MAX_LAT = 85.0511  # Maximum valid latitude for Web Mercator projection
 WARN_TILES_THRESHOLD = 100000  # 单任务瓦片数软阈值,超过只记警告(0.1.4 起放开硬上限)
-MIN_ZOOM = 0  # Minimum zoom level
-MAX_ZOOM = 21  # Maximum zoom level
 
 # download_tiles_batch 每批创建的协程数上限。旧实现对全部瓦片一次性
 # 预建协程再 gather —— 百万级瓦片就是百万个待调度协程同时挂在事件循环上;
@@ -161,6 +172,45 @@ def looks_like_image(data: bytes) -> bool:
     return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
 
 
+def classify_download_error(exc: BaseException) -> TileOutcome:
+    """下载异常 → TileOutcome。**分类必须与重试策略同口径。**
+
+    重试策略在 `download_tile` 的 except 里（本文件 :661 附近）：4xx 里除了
+    429 之外一律**不重试**直接抛出 —— 404 的瓦片重试多少次都不存在，指数退避
+    只会把必然的失败拖成分钟级。那道短路早就在那儿了；这个函数做的是给它
+    一个**名字**，而不是在旁边再立一套判据。两处一旦分叉就会出现最难解释的
+    组合：引擎重试了 5 次的错误被记成 `permanent_failure`（用户看到「永久失败」
+    却发现日志里试了 5 次），或者反过来 404 被记成 `retryable_failure`，让补漏
+    功能一遍遍去问一个上游明确说过没有的坐标。
+
+    分档理由：
+
+    - 404 / 410 → `no_data`。上游**明确回答**了「这里没有」。这是唯一
+      `is_explained` 为真的缺块：任务可以带着它判 `completed_with_gaps`，
+      产物可用且永久带标记（§13-3）。海面、境外未覆盖区的瓦片就长这样。
+    - 其余 4xx（429 除外）→ `permanent_failure`。403 鉴权、400 参数错、
+      451 法律封锁：重试不会变，但它也**不是**「那里没有数据」，产物有洞
+      的原因在我们这边，不能算解释清楚。
+    - `NotAnImageResponse` → `permanent_failure`。HTTP 200 但响应体不是图片
+      （劫持页 / 自建服务返回 JSON）。重试同一个 URL 只会拿到同一坨字节。
+    - 其余（含 429、5xx、超时、连接重置、`DownloadCancelled` 之外的一切）
+      → `retryable_failure`。这是**兜底方向**：宁可让用户多点一次补漏，也不要
+      把一个其实能救回来的瓦片钉成永久失败（同 `outcome_from_db` 对未知值的
+      取向）。
+
+    缓存写失败**不走这里**：那不是下载错误，调用点直接给 `CACHE_FAILURE`。
+    """
+    if isinstance(exc, NotAnImageResponse):
+        return TileOutcome.PERMANENT_FAILURE
+    if isinstance(exc, aiohttp.ClientResponseError):
+        status = exc.status
+        if status in (404, 410):
+            return TileOutcome.NO_DATA
+        if 400 <= status < 500 and status != 429:
+            return TileOutcome.PERMANENT_FAILURE
+    return TileOutcome.RETRYABLE_FAILURE
+
+
 class DownloadEngine:
     """
     Download engine for Google Maps tiles
@@ -208,70 +258,28 @@ class DownloadEngine:
         return self._servers_cache
 
     def lat_lon_to_tile(self, lat: float, lon: float, zoom: int) -> Tuple[int, int]:
-        """
-        Convert latitude/longitude to tile coordinates using Web Mercator projection
+        """经纬度 → 瓦片 (x, y)。**实现在 `src.contracts.region_tiles`。**
 
-        Args:
-            lat: Latitude in degrees (-85.0511 to 85.0511)
-            lon: Longitude in degrees (-180 to 180)
-            zoom: Zoom level (0-21)
-
-        Returns:
-            Tuple of (x, y) tile coordinates
+        方法保留是因为它是既有调用形态(`self.lat_lon_to_tile`,以及
+        tests/test_download_engine.py 直接调它);但公式、纬度钳位、层级校验
+        与 ValueError 文案全部只有合同里那一份。以前这里、dem 侧和前端
+        map.js 各有一份 Web Mercator,三处各自演化的结果就是「预估的块数」
+        与「实下的块数」对不上 —— 而那种偏差没有任何一处日志能解释。
 
         Raises:
-            ValueError: If zoom level is outside valid range (0-21)
-
-        Note:
-            Web Mercator projection has valid latitude range of approximately
-            -85.0511 to 85.0511 degrees. Values outside this range will be clamped.
+            ValueError: 层级越界。文案与合同一致(路由层把它当 400 body)。
         """
-        # Validate zoom level
-        if not MIN_ZOOM <= zoom <= MAX_ZOOM:
-            raise ValueError(f"Zoom level must be between {MIN_ZOOM} and {MAX_ZOOM}, got {zoom}")
+        return _lat_lon_to_tile(lat, lon, zoom)
 
-        # Clamp latitude to Web Mercator valid range
-        lat = max(-WEB_MERCATOR_MAX_LAT, min(WEB_MERCATOR_MAX_LAT, lat))
+    @staticmethod
+    def _validate_bbox(north: float, south: float, east: float, west: float) -> None:
+        """四至校验。**每一条 ValueError 的文案都是 API 契约**。
 
-        # Calculate number of tiles at this zoom level
-        n = 2 ** zoom
-
-        # Calculate x coordinate
-        x = int((lon + 180.0) / 360.0 * n)
-
-        # Calculate y coordinate using Mercator projection
-        lat_rad = math.radians(lat)
-        y = int((1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
-
-        # Clamp to valid tile range
-        x = max(0, min(n - 1, x))
-        y = max(0, min(n - 1, y))
-
-        return x, y
-
-    def _tile_ranges(
-        self,
-        north: float,
-        south: float,
-        east: float,
-        west: float,
-        zoom_min: int,
-        zoom_max: int
-    ):
+        路由层把 `str(e)` 原样当 400 的 body 返回,tests 按文本断言 ——
+        改一个字就是改 API。这些检查留在本模块(而不是搬进 RegionSpec)是因为
+        RegionSpec 的校验文案是另一套(它服务导入路径),两边不可能同时满足;
+        这里先按历史文案挡掉非法值,通过之后再交给合同构造。
         """
-        Validate inputs and yield per-zoom tile index ranges.
-
-        Yields:
-            Tuples of (zoom, x_min, x_max, y_min, y_max), zoom ascending.
-
-        Raises:
-            ValueError: If input parameters are invalid
-
-        Note:
-            count_tiles / iter_tiles / calculate_tiles 共用这一段,
-            保证三者的计数、顺序、覆盖范围口径完全一致。
-        """
-        # Coordinate range validation
         if not -90 <= north <= 90:
             raise ValueError(f"North latitude must be between -90 and 90, got {north}")
 
@@ -291,28 +299,69 @@ class DownloadEngine:
         if north <= south:
             raise ValueError(f"North latitude ({north}) must be greater than south latitude ({south})")
 
-        if not MIN_ZOOM <= zoom_min <= MAX_ZOOM:
-            raise ValueError(f"Minimum zoom level must be between {MIN_ZOOM} and {MAX_ZOOM}, got {zoom_min}")
+    def _bbox_region(self, north: float, south: float, east: float, west: float,
+                     zoom_min: int, zoom_max: int) -> RegionSpec:
+        """四至 + 层级 → 校验通过的 `RegionSpec`(矩形)。
 
-        if not MIN_ZOOM <= zoom_max <= MAX_ZOOM:
-            raise ValueError(f"Maximum zoom level must be between {MIN_ZOOM} and {MAX_ZOOM}, got {zoom_max}")
+        `count_tiles` / `iter_tiles` 都经过它,所以「按 bbox 下」与「按多边形下」
+        走的是**同一条枚举路径**,只是几何不同。矩形在 `iter_region_tile_spans`
+        里有快路径(直接用 `bbox_tile_range`),集合与改造前逐位一致。
+        """
+        self._validate_bbox(north, south, east, west)
+        validate_zoom_range(zoom_min, zoom_max)
+        return RegionSpec.from_bbox(north, south, east, west, source='manual')
 
-        if zoom_min > zoom_max:
-            raise ValueError(f"Minimum zoom ({zoom_min}) must be less than or equal to maximum zoom ({zoom_max})")
+    def _tile_ranges(
+        self,
+        north: float,
+        south: float,
+        east: float,
+        west: float,
+        zoom_min: int,
+        zoom_max: int
+    ):
+        """校验四至/层级,逐层产出瓦片下标区间 `(zoom, x_min, x_max, y_min, y_max)`。
 
-        # Iterate through each zoom level
+        单层区间来自 `region_tiles.bbox_tile_range`(含「角点算完再纠正次序」
+        那一步 —— 南半球的 y 会反过来)。本方法只剩「参数校验 + 逐层循环」,
+        瓦片数学一行都不在这里。
+
+        ⚠️ 它**不认跨反经线**:west>east 时 bbox_tile_range 会把区间纠正成
+        「除目标条带外的整个世界」。真正的枚举路径(iter_tiles → _bbox_region
+        → RegionSpec)把这种写法归一成 east>180 再按段枚举,所以那条路是对的;
+        本方法保留只为「按层级看下标范围」这类诊断/估算调用,不参与下载。
+
+        Raises:
+            ValueError: 参数非法(文案见 _validate_bbox / validate_zoom_range)。
+        """
+        self._validate_bbox(north, south, east, west)
+        zoom_min, zoom_max = validate_zoom_range(zoom_min, zoom_max)
+
         for zoom in range(zoom_min, zoom_max + 1):
-            # Get tile coordinates for corners
-            x_min, y_max = self.lat_lon_to_tile(south, west, zoom)
-            x_max, y_min = self.lat_lon_to_tile(north, east, zoom)
-
-            # Ensure proper ordering
-            if x_min > x_max:
-                x_min, x_max = x_max, x_min
-            if y_min > y_max:
-                y_min, y_max = y_max, y_min
-
+            x_min, x_max, y_min, y_max = bbox_tile_range(north, south, east, west, zoom)
             yield zoom, x_min, x_max, y_min, y_max
+
+    @staticmethod
+    def _warn_if_large(tile_count: int) -> None:
+        """大任务软告警。0.1.4 起硬上限改成软阈值,是否继续由用户在前端确认。"""
+        if tile_count > WARN_TILES_THRESHOLD:
+            logger.warning(
+                f"Large tile count detected: {tile_count} tiles. "
+                f"This may take a long time to download and process. "
+                f"Estimated time: {tile_count / 10 / 3600:.1f} hours at 10 tiles/sec."
+            )
+
+    def count_region_tiles_for(self, region, zoom_min: int, zoom_max: int) -> int:
+        """区域(任意 `RegionSpec`)在 [zoom_min, zoom_max] 上的瓦片总数。
+
+        与 `iter_region_tiles` 同源(都走 `iter_region_tile_spans`),所以
+        「建任务时算出来的数」与「跑起来真正下的数」永远相等。多边形任务
+        因此不再按外接矩形计费 —— 那正是 GeoD「按 bbox 计费、按多边形出图」
+        那道裂缝:用户看到的预估是实际的好几倍,而没有任何地方解释差在哪。
+        """
+        total = count_region_tiles(region, zoom_min, zoom_max)
+        self._warn_if_large(total)
+        return total
 
     def count_tiles(
         self,
@@ -323,45 +372,43 @@ class DownloadEngine:
         zoom_min: int,
         zoom_max: int
     ) -> int:
-        """
-        Count tiles needed for a geographic region without materialising them
+        """矩形区域的瓦片总数(不物化)。
 
-        Args:
-            north: Northern latitude boundary
-            south: Southern latitude boundary
-            east: Eastern longitude boundary
-            west: Western longitude boundary
-            zoom_min: Minimum zoom level
-            zoom_max: Maximum zoom level
-
-        Returns:
-            Number of tiles covering the region at all zoom levels
+        签名保持不变(既有调用方与 tests 钉死),内部构造一个矩形 RegionSpec
+        再走 `count_region_tiles_for` —— 全项目只有一条枚举路径。
 
         Raises:
-            ValueError: If input parameters are invalid
-
-        Note:
-            与 calculate_tiles 同口径(共用 _tile_ranges),但只做纯计数。
-            大任务(数十万块瓦片)的 create_task 只需要总数,物化 Tile 列表
-            既费内存又没必要。
+            ValueError: 参数非法。
         """
-        expected_tile_count = 0
-        for zoom, x_min, x_max, y_min, y_max in self._tile_ranges(
-            north, south, east, west, zoom_min, zoom_max
-        ):
-            expected_tile_count += (x_max - x_min + 1) * (y_max - y_min + 1)
+        region = self._bbox_region(north, south, east, west, zoom_min, zoom_max)
+        return self.count_region_tiles_for(region, zoom_min, zoom_max)
 
-        # Warn if tile count is very large. The *hard* limit used to be enforced
-        # at task creation; since 0.1.4 it is a soft threshold (the UI asks the
-        # user to confirm), so here we only warn.
-        if expected_tile_count > WARN_TILES_THRESHOLD:
-            logger.warning(
-                f"Large tile count detected: {expected_tile_count} tiles. "
-                f"This may take a long time to download and process. "
-                f"Estimated time: {expected_tile_count / 10 / 3600:.1f} hours at 10 tiles/sec."
-            )
+    def iter_region_tiles(self, region, zoom_min: int, zoom_max: int,
+                          task_id: int = 0):
+        """区域(任意 `RegionSpec`)→ 惰性产出 `Tile`,层级升序、行升序、列升序。
 
-        return expected_tile_count
+        **全项目唯一的瓦片枚举出口。** 洞会被真正挖掉(奇偶扫描线在
+        `iter_region_tile_spans` 里),跨反经线按段产出且不重复 —— 这两件事
+        是 GeoD 只取外环 / 外接矩形那两个 bug 的正面解。
+
+        顺序契约:`(zoom, y, x)` 升序。改造前是 `(zoom, x, y)` —— 换成行优先
+        是因为扫描线天然按行产出,为了维持列优先就得把一层全物化再转置,而
+        「一层」在高 zoom 上就是几十万个 Tile。顺序**仍然是确定性的**,这才是
+        恢复逻辑真正依赖的性质:`_iter_pending_tiles` 的归并只要求两趟枚举
+        产出同一序列,不要求是哪一种序。
+        """
+        zoom_min, zoom_max = validate_zoom_range(zoom_min, zoom_max)
+        for zoom in range(zoom_min, zoom_max + 1):
+            for y, x_start, x_end in iter_region_tile_spans(region, zoom):
+                for x in range(x_start, x_end + 1):
+                    yield Tile(
+                        task_id=task_id,
+                        zoom=zoom,
+                        x=x,
+                        y=y,
+                        status="pending",
+                        retry_count=0
+                    )
 
     def iter_tiles(
         self,
@@ -373,41 +420,19 @@ class DownloadEngine:
         zoom_max: int,
         task_id: int = 0
     ):
+        """矩形区域 → 惰性产出 `Tile`。签名不变,内部走 `iter_region_tiles`。
+
+        瓦片集合是 (区域, zoom) 的纯函数,可以随时按同一确定性顺序重建。
+        恢复任务靠它枚举待下载集合(配合磁盘 cache 判断完成态),这是
+        task_tiles 不再存全量行的前提。
+
+        Raises:
+            ValueError: 参数非法。**必须在第一次 next() 时抛** —— 这是生成器,
+                不消费就不校验,`calculate_tiles` 因此先过一遍 `count_tiles`
+                来保持历史上的急切校验语义。
         """
-        Lazily yield all tiles for a region in deterministic order
-
-        Args:
-            north: Northern latitude boundary
-            south: Southern latitude boundary
-            east: Eastern longitude boundary
-            west: Western longitude boundary
-            zoom_min: Minimum zoom level
-            zoom_max: Maximum zoom level
-            task_id: Task ID for the tiles (default: 0)
-
-        Yields:
-            Tile objects, ordered by zoom ascending, then x, then y — exactly
-            the order calculate_tiles() materialises.
-
-        Note:
-            瓦片集合是 bbox+zoom 的纯函数,可以随时按同一确定性顺序重建。
-            恢复任务靠它枚举待下载集合(配合磁盘 cache 判断完成态),
-            这是 task_tiles 不再存全量行的前提。
-        """
-        for zoom, x_min, x_max, y_min, y_max in self._tile_ranges(
-            north, south, east, west, zoom_min, zoom_max
-        ):
-            # Generate all tiles in the range
-            for x in range(x_min, x_max + 1):
-                for y in range(y_min, y_max + 1):
-                    yield Tile(
-                        task_id=task_id,
-                        zoom=zoom,
-                        x=x,
-                        y=y,
-                        status="pending",
-                        retry_count=0
-                    )
+        region = self._bbox_region(north, south, east, west, zoom_min, zoom_max)
+        yield from self.iter_region_tiles(region, zoom_min, zoom_max, task_id=task_id)
 
     def calculate_tiles(
         self,
@@ -447,8 +472,8 @@ class DownloadEngine:
             实现上就是 list(iter_tiles(...)),先过一遍 count_tiles 触发参数
             校验和大任务警告(iter_tiles 是惰性生成器,不消费就不会校验)。
         """
-        # count_tiles 先消费一遍 _tile_ranges:参数非法时在这里就抛
-        # ValueError(保持历史上的急切校验语义),并输出大任务警告。
+        # count_tiles 先完整消费一遍枚举:参数非法时在这里就抛 ValueError
+        # (保持历史上的急切校验语义),并输出大任务警告。
         self.count_tiles(north, south, east, west, zoom_min, zoom_max)
 
         tiles = list(self.iter_tiles(north, south, east, west, zoom_min, zoom_max, task_id=task_id))
@@ -467,51 +492,65 @@ class DownloadEngine:
         y: int,
         z: int,
         style: str,
-        server_index: int = 0
+        server_index: int = 0,
+        source=None
     ) -> str:
-        """
-        Generate tile URL from the configured tile server list
+        """瓦片 URL。**带快照与不带快照是两套截然不同的取数口径,这是重点。**
+
+        source 为 `SourceSnapshot` 时:服务器列表与 URL 模板全部取自快照,
+        一次配置都不读。这正是快照存在的理由 —— 任务跑到一半用户在设置页
+        换了 tile_servers,已经在跑的这个任务必须继续用建任务那一刻的源,
+        否则同一个成品里会混进两个来源的瓦片而**没有任何提示**(改造前就是
+        这样:URL 是请求时现展开的)。
+
+        source 为 None 时:退回历史行为 —— 读 `_tile_servers()`(60s TTL 缓存,
+        见 `__init__`),于是「改了配置,新任务生效」。这条路给还没接快照的
+        调用方(测速、探测、直接调 download_tile 的测试)留着,那些场景本来
+        就该看**当前**配置。TTL 缓存只服务这条路;带快照的路径连缓存都不碰。
 
         Args:
-            x: Tile X coordinate
-            y: Tile Y coordinate
-            z: Zoom level
-            style: Map style code (m=roadmap, s=satellite, y=hybrid, t=terrain)
-            server_index: Index into the configured tile_servers list
-                (rotates on retry; wraps around the list)
-
-        Returns:
-            Complete tile URL string
+            server_index: 轮换下标,对列表长度取模。
+            source: `SourceSnapshot` 或 None。
 
         条目形态见 src.services.tile_url_probe.expand_server_entry：
         别名/主机按 Google vt 格式拼 lyrs={style}；完整 XYZ 模板按占位符
         展开（模板含 {style} 时替换，不含则样式由地址自身决定）。
         """
         from src.services.tile_url_probe import expand_server_entry
-        servers = self._tile_servers()
-        entry = servers[server_index % len(servers)]
-        template = expand_server_entry(entry, style)
+        if isinstance(source, SourceSnapshot):
+            servers = list(source.server_list)
+            style_code = source.style
+            # server_list 为空的快照(自定义单地址源)直接用模板本身,
+            # 不回落到配置 —— 回落等于让快照失去意义。
+            template = (expand_server_entry(servers[server_index % len(servers)], style_code)
+                        if servers else source.url_template)
+            if source.subdomains:
+                subs = source.subdomains
+                template = template.replace('{s}', subs[server_index % len(subs)])
+        else:
+            servers = self._tile_servers()
+            entry = servers[server_index % len(servers)]
+            template = expand_server_entry(entry, style)
         return (template
                 .replace('{z}', str(z))
                 .replace('{x}', str(x))
                 .replace('{y}', str(y)))
 
-    def _get_cache_path(self, tile: Tile, style: str) -> Path:
-        """
-        Get cache file path for a tile
+    def _get_cache_path(self, tile: Tile, style_or_source) -> Path:
+        """瓦片的共享缓存路径。**规则只此一份**,在 `Tile.cache_path` 里。
 
         Args:
-            tile: Tile object containing coordinates
-            style: Map style code
+            style_or_source: `SourceSnapshot`(新路径)**或**单字符 style 码
+                (存量路径)。这里原样透传,不做分支 —— `Tile.cache_path` 已经
+                两种都收,在这里再判一次就是第二处路径规则。
 
-        Returns:
-            Path object for cache file location
+        路径形态：
+            带快照     cache/{style}-{fingerprint}/{zoom}/{x}/{y}.png
+            带 style 码 cache/{style}/{zoom}/{x}/{y}.png（存量形态）
 
-        Cache Path Format:
-            cache/{style}/{zoom}/{x}/{y}.png —— cache 跨任务共享,
-            不带 task_id(见 src/models/task.py Tile.cache_path)。
+        cache 跨任务共享,不带 task_id。
         """
-        return tile.cache_path(style)
+        return tile.cache_path(style_or_source)
 
     async def _interruptible_sleep(
         self,
@@ -542,7 +581,9 @@ class DownloadEngine:
         style: str,
         session: aiohttp.ClientSession,
         proxy_url: str = '',
-        stop_flag: Optional[threading.Event] = None
+        stop_flag: Optional[threading.Event] = None,
+        *,
+        source=None
     ) -> bytes:
         """
         Download a single tile with retry logic and server rotation
@@ -552,6 +593,11 @@ class DownloadEngine:
             style: Map style code
             session: aiohttp ClientSession for making requests
             proxy_url: Proxy URL ('' means no proxy); 由调用方从配置读出传入
+            source: `SourceSnapshot` 或 None。给了就用它定 URL 与轮换列表,
+                任务全程钉死在建任务那一刻的源(见 get_tile_url 的对比说明)。
+                **关键字参数且默认 None**:tests/ 里多处把本方法换成不带
+                source 的替身,调用方只在真的有快照时才传(见
+                _download_single_tile 里的 source_kw)。
 
         Returns:
             Tile image data as bytes
@@ -595,9 +641,15 @@ class DownloadEngine:
                 # 较小的 limit_per_host,所有瓦片的前几个并发把第一台服务器
                 # 打满、其余三台闲置 —— 首尝试按瓦片坐标天然分散到各台服务器,
                 # 重试仍按 attempt 轮换。
-                servers = self._tile_servers()
+                # 有快照时轮换的是**快照里的**列表(它是身份的一部分,已经
+                # 参与指纹);没有快照才读配置的 60s 缓存列表。
+                if isinstance(source, SourceSnapshot) and source.server_list:
+                    servers = list(source.server_list)
+                else:
+                    servers = self._tile_servers()
                 server_index = (tile.x + tile.y + attempt) % len(servers)
-                url = self.get_tile_url(tile.x, tile.y, tile.zoom, style, server_index)
+                url = self.get_tile_url(tile.x, tile.y, tile.zoom, style,
+                                        server_index, source=source)
 
                 logger.debug(
                     f"Downloading tile {tile.zoom}/{tile.x}/{tile.y} "
@@ -686,10 +738,11 @@ class DownloadEngine:
         cache_enabled: bool,
         progress_callback=None,
         proxy_url: str = '',
-        stop_flag: Optional[threading.Event] = None
+        stop_flag: Optional[threading.Event] = None,
+        *,
+        source=None
     ) -> Dict[str, Any]:
-        """
-        Download a single tile with cache check and progress reporting
+        """下载一块瓦片:先查缓存,再走网络,最后上报结局。
 
         Args:
             tile: Tile object to download
@@ -697,25 +750,42 @@ class DownloadEngine:
             session: aiohttp ClientSession
             cache_enabled: Whether to check/use cache
             progress_callback: Optional async callback
-                function(tile, status, error, size_bytes)。size_bytes 只在
+                function(tile, status, error, size_bytes)。**四个位置参数,
+                签名不变** —— tests/ 里的替身按位置接。size_bytes 只在
                 「这块瓦片真的走了网络」时是字节数，缓存命中与失败一律 None
                 —— 调用方拿它算下载速度，把读盘字节算进去会让网速虚高一个
                 数量级（见 src/services/download_speed.py）。
+            source: `SourceSnapshot` 或 None。给了就用它定缓存命名空间与
+                URL;None 时按 style 码走存量路径。
 
         Returns:
-            Dictionary with download result:
-                {
-                    'tile': Tile object,
-                    'status': 'completed' or 'failed',
-                    'size': bytes downloaded (if successful),
-                    'error': error message (if failed)
-                }
+            `{'tile', 'status', 'size'|'error'}`。
+
+            **`status` 现在是 `TileOutcome` 的值字符串**,不再是 completed/
+            failed 两档。理由:`failed` 一个词把「上游说这里没有数据」(海面、
+            境外未覆盖)和「我们的盘写不进去」压成了同一件事,于是任务只能
+            二选一 —— 要么把一片必然缺块的海域永远判失败、用户点一百次重试
+            也不会变,要么把真实故障洗成成功。分成五档之后,completion 判定
+            才有可能区分「已解释的缺块」与「没交代的缺块」(§13-3)。
+
+            取值映射:
+              缓存命中     → success
+              网络成功     → success
+              缓存写失败   → cache_failure
+              下载异常     → classify_download_error(exc)
+              用户取消     → 'cancelled'(**不是** TileOutcome,见下面的出口)
         """
+        # 缓存键:有快照就用快照(指纹命名空间),否则退回 style 码(存量单级目录)。
+        cache_key = source if source is not None else style
+        # tests/ 里多处把 download_tile 换成不带 source 参数的替身,无条件多传
+        # 一个 kwarg 会让它们全部 TypeError(同 __init__ 里 _collect_batch_results
+        # 的说明)。只在真的有快照时才传 —— 那些替身本来就不在带快照的路径上。
+        source_kw = {'source': source} if source is not None else {}
         try:
             # Check cache first if enabled
             if cache_enabled:
                 try:
-                    cache_path = self._get_cache_path(tile, style)
+                    cache_path = self._get_cache_path(tile, cache_key)
                     if cache_path.exists():
                         # Validate cached file (check size > 0)
                         file_size = await asyncio.to_thread(lambda: cache_path.stat().st_size)
@@ -729,11 +799,12 @@ class DownloadEngine:
                             # 并发时,枚举之后、下载之前会有瓦片被另一个任务写进
                             # 缓存。
                             if progress_callback:
-                                await progress_callback(tile, 'completed', None, None)
+                                await progress_callback(
+                                    tile, TileOutcome.SUCCESS.value, None, None)
 
                             return {
                                 'tile': tile,
-                                'status': 'completed',
+                                'status': TileOutcome.SUCCESS.value,
                                 'size': file_size
                             }
                         else:
@@ -747,11 +818,12 @@ class DownloadEngine:
                     )
 
             # Download tile
-            data = await self.download_tile(tile, style, session, proxy_url=proxy_url, stop_flag=stop_flag)
+            data = await self.download_tile(tile, style, session, proxy_url=proxy_url,
+                                            stop_flag=stop_flag, **source_kw)
 
             if cache_enabled:
                 try:
-                    cache_path = self._get_cache_path(tile, style)
+                    cache_path = self._get_cache_path(tile, cache_key)
                     await asyncio.to_thread(lambda: cache_path.parent.mkdir(parents=True, exist_ok=True))
                     part_path = cache_path.with_name(f"{cache_path.name}.part.{os.getpid()}.{id(tile)}")
 
@@ -767,42 +839,55 @@ class DownloadEngine:
                 except Exception as cache_write_error:
                     # H2: cache_enabled 下,cache 文件是「这块瓦片已完成」的唯一
                     # 真相 —— 枚举段按 cache 存在且非空重建待下集合,收尾复制也
-                    # 从 cache 取。写盘失败却仍上报 completed 的话,这块瓦片会:
-                    # 磁盘上不存在任何文件、task_tiles 里没有 failed 行、
-                    # tasks.downloaded_tiles 却 +1;而完成判定只数 failed 行,
+                    # 从 cache 取。写盘失败却仍上报成功的话,这块瓦片会:
+                    # 磁盘上不存在任何文件、task_tiles 里没有缺块行、
+                    # tasks.downloaded_tiles 却 +1;而完成判定只数缺块行,
                     # 任务照标 completed,completed 任务又不允许重启 —— 用户既
                     # 看不到异常、也无法原地续传自愈(tiles_only 全程无声)。
-                    # 改为登记失败:稀疏失败表记下它,任务判 failed,点重试即续传。
+                    #
+                    # 结局是 `cache_failure` 而**不是** `retryable_failure`:
+                    # 网络那一趟已经成功了,字节拿到了,失手的是本机磁盘。
+                    # 分开记的价值在补漏时兑现 —— 两者都在 RETRYABLE_OUTCOMES
+                    # 里(值得重试),但用户看到「缓存写失败 × 3200」会去查磁盘
+                    # 和权限,看到「网络失败 × 3200」会去查代理,那是两条完全
+                    # 不同的排查路径。压成一个词就等于把这条线索抹掉。
                     error_msg = (
                         f"cache write failed: "
                         f"{type(cache_write_error).__name__}: {cache_write_error}"
                     )
                     logger.error(
                         f"Failed to write tile {tile.zoom}/{tile.x}/{tile.y} to cache: "
-                        f"{cache_write_error}. Recording the tile as failed so the task "
-                        f"does not silently report success with a missing tile."
+                        f"{cache_write_error}. Recording the tile as cache_failure so the "
+                        f"task does not silently report success with a missing tile."
                     )
                     if progress_callback:
-                        await progress_callback(tile, 'failed', error_msg, None)
+                        await progress_callback(
+                            tile, TileOutcome.CACHE_FAILURE.value, error_msg, None)
                     return {
                         'tile': tile,
-                        'status': 'failed',
+                        'status': TileOutcome.CACHE_FAILURE.value,
                         'error': error_msg,
                     }
 
             # Report success —— 唯一真正产生网络字节的出口。
             if progress_callback:
-                await progress_callback(tile, 'completed', None, len(data))
+                await progress_callback(tile, TileOutcome.SUCCESS.value, None, len(data))
 
             return {
                 'tile': tile,
-                'status': 'completed',
+                'status': TileOutcome.SUCCESS.value,
                 'size': len(data)
             }
 
         except DownloadCancelled:
             # Task was cancelled mid-download: don't record this as a failure and
             # don't fire the progress callback — the task is being torn down.
+            #
+            # 'cancelled' **刻意不是一个 TileOutcome**:被取消的瓦片没有结局,
+            # 它根本没被尝试完 —— 上游没说过话,盘没写过,什么都没发生。把它塞
+            # 进 TileOutcome 就等于承认「取消」是一种缺块原因,于是暂停一次任务
+            # 就会在 task_tiles 里留下一堆需要用户决策的假缺块。它只是「本次
+            # 运行没轮到」,恢复时按普通待下瓦片重新枚举即可。
             logger.info(f"Tile {tile.zoom}/{tile.x}/{tile.y} download cancelled")
             return {
                 'tile': tile,
@@ -810,16 +895,25 @@ class DownloadEngine:
             }
 
         except Exception as e:
+            outcome = classify_download_error(e)
             error_msg = f"{type(e).__name__}: {e!r}"
-            logger.error(f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y}: {error_msg}")
+            # no_data 不是故障:上游明确回答了「这里没有」。按 error 记会让
+            # 一片正常的海域在日志里刷出几千条红色 —— 而真正的故障就淹在里面。
+            if outcome is TileOutcome.NO_DATA:
+                logger.debug(
+                    f"Tile {tile.zoom}/{tile.x}/{tile.y} has no data upstream: {error_msg}")
+            else:
+                logger.error(
+                    f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y} "
+                    f"({outcome.value}): {error_msg}")
 
             # Report failure
             if progress_callback:
-                await progress_callback(tile, 'failed', error_msg, None)
+                await progress_callback(tile, outcome.value, error_msg, None)
 
             return {
                 'tile': tile,
-                'status': 'failed',
+                'status': outcome.value,
                 'error': error_msg
             }
 
@@ -828,7 +922,11 @@ class DownloadEngine:
         tiles,
         style: str,
         progress_callback=None,
-        stop_flag: Optional[threading.Event] = None
+        stop_flag: Optional[threading.Event] = None,
+        *,
+        source=None,
+        max_concurrency: Optional[int] = None,
+        disk_recheck=None,
     ) -> List[Dict[str, Any]]:
         """
         Download multiple tiles concurrently with semaphore control
@@ -836,9 +934,26 @@ class DownloadEngine:
         Args:
             tiles: Tiles to download — any iterable (list or generator);
                 it is consumed lazily in batches of DOWNLOAD_BATCH_SIZE
-            style: Map style code
+            style: Map style code。source 为 None 时它同时决定缓存目录与 URL;
+                有 source 时它只作为 URL 展开的样式参数,缓存目录由快照定。
             progress_callback: Optional async callback
-                function(tile, status, error, size_bytes)
+                function(tile, status, error, size_bytes)。status 是
+                `TileOutcome` 的值字符串,或 `'cancelled'`。
+            source: `SourceSnapshot` 或 None(**关键字参数**)。给了就整批钉死
+                在这一个源上:缓存命名空间走指纹目录,URL 从快照的模板与服务器
+                列表展开,全程不读配置 —— 跑到一半有人改设置也不会换源。
+            max_concurrency: 全局调度器授予的连接数上界(**关键字参数**)。
+                给了就与配置的 concurrent_downloads 取小值。这是
+                `ResourceScheduler` 的配额真正落到信号量与 TCPConnector 的
+                唯一通道:改造前每个任务各自开满 concurrent_downloads 条连接,
+                四个任务并行就是四倍,没有任何全局上界。
+            disk_recheck: `disk_budget.RunningRecheck` 或 None(**关键字参数**)。
+                运行中的磁盘复查,**每批**问一次(见下面 while 循环顶部)。判死之后
+                这一轮就地收手:排队中的瓦片与 stop_flag 走同一个出口报
+                'cancelled'(见 _stop_requested)。刻意不抛 —— 抛出去会被管理器的
+                兜底 except 变成一句 RuntimeError,而用户需要看到的是判决里那四个
+                数字(可用 / 需要 / 保留 / 缺口)。判决对象归调用方所有,收手之后
+                调用方从 `disk_recheck.blocked` 取判决写终态与原因。
 
         Returns:
             List of download result dictionaries, in input order.
@@ -854,6 +969,15 @@ class DownloadEngine:
         """
         # Get configuration values
         concurrent_downloads = int(self.config_manager.get('concurrent_downloads', '10'))
+        if max_concurrency is not None:
+            # 取小值而不是直接覆盖:配额是**上界**,用户把 concurrent_downloads
+            # 调到 5 时不该因为调度器给了 12 就替他开 12 条。
+            granted = max(1, int(max_concurrency))
+            if granted < concurrent_downloads:
+                logger.info(
+                    f"Concurrency capped by the global scheduler: "
+                    f"{concurrent_downloads} -> {granted}")
+            concurrent_downloads = min(concurrent_downloads, granted)
         request_timeout = int(self.config_manager.get('request_timeout', '30'))
         cache_enabled = (self.config_manager.get('cache_enabled', 'true') or 'true').lower() == 'true'
         # 生效代理：手动 proxy_url > 自动探测到的可用代理 > 直连（见
@@ -867,6 +991,11 @@ class DownloadEngine:
             request_timeout,
         )
 
+        # 只在真的有快照时才把 source 传下去 —— tests/ 里多处把
+        # _download_single_tile 换成不带 source 的四/七参替身。
+        source_kw = {'source': source} if source is not None else {}
+        if source is not None:
+            logger.info(f"Batch download pinned to source: {source.summary()}")
         tile_iterator = iter(tiles)
 
         logger.info(
@@ -876,6 +1005,24 @@ class DownloadEngine:
 
         # Create semaphore for concurrency control
         semaphore = asyncio.Semaphore(concurrent_downloads)
+
+        # 磁盘复查判死之后的内部停止状态。**放在闭包里而不是 self 上**:
+        # DownloadEngine 全进程只有一个实例(TaskManager.__init__ 里构造一次),
+        # 而 max_concurrent_tasks 出厂是 2 —— 两个地图任务并发是默认形态,不是
+        # 边角情况。挂在 self 上就是 B 的判决覆盖 A 的,然后 A 拿着 B 的剩余
+        # 估算与 B 的 owner 去判自己的死。这个标记的职能就是「决定要不要停掉
+        # 一个任务」,认错任务的代价太大。
+        budget_blocked: Dict[str, Any] = {'verdict': None}
+
+        def _stop_requested() -> bool:
+            """要不要收手:用户的停止标记,或磁盘复查判死。
+
+            共用同一个出口是有意的:对下游而言两者是同一件事 —— 这一轮不再下,
+            已下好的瓦片留在缓存里,恢复时从断点接上。
+            """
+            if stop_flag is not None and stop_flag.is_set():
+                return True
+            return budget_blocked['verdict'] is not None
 
         # Create aiohttp session with connection pooling。
         # limit_per_host 必须跟着并发走:旧版恒为 4(服务器数),4 台服务器
@@ -899,7 +1046,10 @@ class DownloadEngine:
                     # Cooperative cancellation: a tile still queued behind the
                     # semaphore when the task is cancelled is skipped here instead
                     # of running its full timeout x retry budget to completion.
-                    if stop_flag is not None and stop_flag.is_set():
+                    if _stop_requested():
+                        # 'cancelled' 不是 TileOutcome —— 这块瓦片一次都没被
+                        # 尝试过,它没有结局(理由见 _download_single_tile 的
+                        # 同名出口)。
                         return {'tile': tile, 'status': 'cancelled'}
                     return await self._download_single_tile(
                         tile=tile,
@@ -908,7 +1058,8 @@ class DownloadEngine:
                         cache_enabled=cache_enabled,
                         progress_callback=progress_callback,
                         proxy_url=proxy_url,
-                        stop_flag=stop_flag
+                        stop_flag=stop_flag,
+                        **source_kw
                     )
 
             # 分批创建协程(见 DOWNLOAD_BATCH_SIZE):不在批次间因 stop_flag
@@ -919,6 +1070,18 @@ class DownloadEngine:
             # 全量 results;result_count 仅为日志计数。
             result_count = 0
             while True:
+                # 每批一次磁盘复查(复查自己还有时间节流,见 RunningRecheck)。
+                # **批**是这条管线唯一天然的节奏:逐瓦片查是纯浪费(一批 1000 张),
+                # 逐 zoom 查太粗(一个 zoom 可以是几十万张、几十 GB)。
+                # 放在 islice 之前,所以连第一批都在闸门之内 —— 任务是在准入判决
+                # 之后才排队起来的,排队期间盘上发生了什么谁也不知道。
+                if disk_recheck is not None and budget_blocked['verdict'] is None:
+                    blocked = disk_recheck.blocking_verdict()
+                    if blocked is not None:
+                        budget_blocked['verdict'] = blocked
+                        logger.error(
+                            f"Map download halted by the in-flight disk recheck: "
+                            f"{blocked.reason}")
                 batch = list(itertools.islice(tile_iterator, DOWNLOAD_BATCH_SIZE))
                 if not batch:
                     break
@@ -942,14 +1105,17 @@ class DownloadEngine:
         zoom_level: int,
         target_epsg: int = 4326,
         extra_allowed_dir: str = None,
-        stop_flag: Optional[threading.Event] = None
+        stop_flag: Optional[threading.Event] = None,
+        *,
+        work_dir_base=None
     ) -> str:
         """
         Stitch tiles into a single georeferenced image using GDAL
 
         Args:
             tiles: List of Tile objects to stitch
-            style: Map style code
+            style: Map style code **或** `SourceSnapshot`。只用于定位每块瓦片的
+                缓存文件(`_get_cache_path` 两种都收),不参与 URL。
             output_path: Path for output file (GeoTIFF or PNG)
             zoom_level: Zoom level of the tiles
             target_epsg: CRS of the output file. Defaults to 4326, which is what
@@ -966,6 +1132,12 @@ class DownloadEngine:
                 ⚠️ 仍然拦不住的:最后那次 gdal.Translate 是**单个不可中断的
                 调用**,大 zoom 一层可以跑十分钟级。检查点把「暂停到真正停下」
                 的窗口从「整段拼接」缩到「当前这一次 Translate」,不能缩到零。
+            work_dir_base: 中间产物工作目录的父目录（**关键字参数**）。给了就
+                用它,而不是 `stitch_tmpdir` 配置。这是 `disk_budget.work_dir_for`
+                的落点:它挑的是**与输出同卷**的目录。GeoD #32 就是这件事 ——
+                中间件缓冲进系统 TEMP、拼完再整体搬到输出盘,等于把每一个字节
+                在两块盘之间搬一遍;同卷时 os.replace 是元数据操作,零拷贝。
+                单层 mosaic 的中间件是 GB 级,这不是微优化。
 
         Returns:
             Path to the stitched output file
@@ -1046,17 +1218,26 @@ class DownloadEngine:
         vrt_path_obj = output_path_obj.with_suffix('.vrt')
         vrt_path = str(vrt_path_obj)
         warped_path_obj: Optional[Path] = None
-        # 中间产物默认落系统临时盘(可能是小容量系统盘,大 zoom 一层可达 GB 级);
-        # stitch_tmpdir 配置键(形制同 contour_warp_tmpdir,见 contour_engine)
-        # 可指到空间充足的盘,留空 = 系统默认;读取失败回退系统默认,不让配置库
-        # 故障拖垮拼接。
-        try:
-            stitch_tmp_base = (
-                self.config_manager.get('stitch_tmpdir', '') or ''
-            ).strip() or None
-        except Exception as e:
-            logger.warning(f"读取 stitch_tmpdir 失败({e!r}),回退系统临时目录")
-            stitch_tmp_base = None
+        # 中间产物默认落系统临时盘(可能是小容量系统盘,大 zoom 一层可达 GB 级)。
+        # 三级优先:
+        #   ① work_dir_base 参数 —— 调用方(task_manager)经 disk_budget.work_dir_for
+        #      挑好的「与输出同卷」目录。它比配置优先,因为它是**按本次任务的
+        #      实际输出路径**算出来的,而 stitch_tmpdir 是一个全局设置,不可能
+        #      对每个任务都同卷(GeoD #32 讲的正是跨卷搬运)。
+        #   ② stitch_tmpdir 配置键(形制同 contour_warp_tmpdir,见 contour_engine);
+        #   ③ 系统默认。
+        # 读取失败回退系统默认,不让配置库故障拖垮拼接。
+        stitch_tmp_base = None
+        if work_dir_base:
+            stitch_tmp_base = str(work_dir_base)
+        else:
+            try:
+                stitch_tmp_base = (
+                    self.config_manager.get('stitch_tmpdir', '') or ''
+                ).strip() or None
+            except Exception as e:
+                logger.warning(f"读取 stitch_tmpdir 失败({e!r}),回退系统临时目录")
+                stitch_tmp_base = None
         if stitch_tmp_base:
             os.makedirs(stitch_tmp_base, exist_ok=True)
             work_dir = tempfile.mkdtemp(prefix='map_dl_stitch_', dir=stitch_tmp_base)

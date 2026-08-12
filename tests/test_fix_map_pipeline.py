@@ -15,19 +15,45 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.contracts.outcome import TileOutcome  # noqa: E402
+
+
+def _task_source(task_id):
+    """任务行 → SourceSnapshot(= 这条任务的缓存命名空间)。
+
+    与 `_execute_task` 同一条推导。测试往 cache 预置瓦片必须走它,否则写进
+    的是 user_version 6 之前的裸样式码目录,运行时一块都命不中。
+    """
+    from src.core.database import get_connection
+    from src.services.source_registry import snapshot_for_task_row
+
+    conn = get_connection()
+    try:
+        row = conn.cursor().execute(
+            'SELECT * FROM tasks WHERE id = ?', (task_id,)).fetchone()
+    finally:
+        conn.close()
+    return snapshot_for_task_row(row)
+
 
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
     from src.core.config import Config
     from src.core import database
+    from src.services.resource_scheduler import reset_scheduler
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
     monkeypatch.setattr(Config, 'OUTPUT_DIR', tmp_path / 'downloads')
     monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
     database.init_database()
-    return tmp_path
+    # 调度器是进程单例:`start_task` 现在要先申请任务位 + 网络额度,上一条
+    # 用例(哪怕在别的文件)留下的 owner 键会撞「already holds a reservation」。
+    # 清单例而不是抬高上限 —— 测试不该依赖全局单例攒下来的状态。
+    reset_scheduler()
+    yield tmp_path
+    reset_scheduler()
 
 
 def _params(**overrides):
@@ -120,17 +146,21 @@ def test_stitch_output_filename_sanitizes_task_name(isolated_config):
     from src.services.download_engine import DownloadEngine
     from src.services.task_manager import TaskManager
 
-    # 完成态由磁盘 cache 推导(task_tiles 只存失败瓦片):把任务枚举出的
+    # 完成态由磁盘 cache 推导(task_tiles 只存缺块瓦片):把任务枚举出的
     # 全部瓦片写进 cache,拼接阶段才会认为它们已完成。
+    # **先建行再写 cache**:缓存目录名是 `<style_code>-<配置指纹8位>`,由任务
+    # 行推出的 SourceSnapshot 决定(见 source_registry)。按旧的裸 's' 写就
+    # 全部落空,任务会转头去打真实上游 —— 挂几分钟而不是干脆报错。
     engine = DownloadEngine()
     tiles = list(engine.iter_tiles(1, 0, 1, 0, 10, 10))
-    for tile in tiles:
-        _write_png_tile(tile.cache_path('s'))
 
     tm = TaskManager()  # 先建 manager,再插 running 行,免得被 orphan 回收降级
 
     task_id = _seed_task_row(name='../../evil', status='running',
                              output_format='image_only', total=len(tiles))
+    source = _task_source(task_id)
+    for tile in tiles:
+        _write_png_tile(tile.cache_path(source))
 
     asyncio.run(tm._execute_task(task_id))
 
@@ -300,18 +330,20 @@ def test_execute_task_legacy_relative_output_path_ignores_cwd(isolated_config, m
     from src.services.download_engine import DownloadEngine
     from src.services.task_manager import TaskManager
 
-    # 全部瓦片预先进 cache,执行只走「复制到 output_path」阶段
-    engine = DownloadEngine()
-    tiles = list(engine.iter_tiles(1, 0, 1, 0, 10, 10))
-    for tile in tiles:
-        cache_path = tile.cache_path('s')
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_bytes(b'cached-tile')
-
     tm = TaskManager()  # 先建 manager,再插 running 行,免得被 orphan 回收降级
     # 存量行:output_path 是旧版本入库的相对原始值
+    engine = DownloadEngine()
+    tiles = list(engine.iter_tiles(1, 0, 1, 0, 10, 10))
     task_id = _seed_task_row(status='running', output_format='tiles_only',
                              output_path='./downloads/legacy_out', total=len(tiles))
+
+    # 全部瓦片预先进 cache(按任务自己的指纹命名空间),执行只走「复制到
+    # output_path」阶段;写错命名空间会让它转头去打真实上游。
+    source = _task_source(task_id)
+    for tile in tiles:
+        cache_path = tile.cache_path(source)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(b'cached-tile')
 
     # CWD 换到别处:相对路径若按 CWD 解析,产物会写到 stray/legacy_out 下
     stray = isolated_config / 'elsewhere'
@@ -380,11 +412,26 @@ def test_read_paths_tolerate_legacy_invalid_rows(isolated_config):
 # ---------- M6: start_task commit 后、thread.start() 前异常不留假 running ----------
 
 def test_start_task_emit_failure_leaves_no_phantom_running(isolated_config):
-    """状态翻转 commit 之后 emit 抛异常:任务不能停在 'running' 空转。
+    """状态翻转 commit 之后 emit 抛异常:任务不能停在 'running' 空转,
+    **也不能被写成 'failed'**。
 
     旧实现 except 里的 conn.rollback() 对已 commit 的事务无效,留下
     status='running' 但线程从未启动的假运行任务(UI 永远显示在跑,
-    且 pause/resume 语义全错)。修复后显式回补为 failed 并清掉线程登记。
+    且 pause/resume 语义全错)。第一版修复把它回补成 'failed',这条用例
+    当初就钉的那个值。
+
+    **那个断言是错的,现已改成回补前状态(M2)。** 'failed' 是终态,
+    `RESUMABLE_STATE_VALUES` 里没有它 —— 于是一次 socketio 抽风就把一个
+    pending 任务永久钉死,用户只剩「删了重建」;更糟的是补漏 / 接受缺块
+    那两轮的行原本是 pending_decision,洗成 failed 会连带毁掉已落库的缺块
+    结算,而 accept_gaps 只认 pending_decision,那条路从此不可达
+    (task_manager.FAILABLE_STATE_VALUES 上方的注释论证的正是这件事)。
+    dem(dem_task_manager.py 的同一位置)与 contour 一直回落到可恢复状态,
+    地图现在与它们对齐:**回补成启动前的那个状态**。
+
+    error_message 也不再被改写:pending_decision 行的 error_message 装着
+    缺块摘要,那是决策界面唯一的说明文字。「为什么没起来」由抛出的异常
+    (调用方拿到、路由层直接回给用户)与日志负责,不占这一列。
     """
     from src.core.database import get_connection
     from src.services.task_manager import TaskManager
@@ -408,10 +455,23 @@ def test_start_task_emit_failure_leaves_no_phantom_running(isolated_config):
         conn.close()
 
     assert row['status'] != 'running', "线程从未启动,状态不得停在 running"
-    assert row['status'] == 'failed'
-    assert 'socketio boom' in row['error_message']
+    assert row['status'] == 'pending', "必须回补成启动前的状态,而不是任何新状态"
+    assert row['status'] != 'failed', "failed 是终态 —— 一次 emit 故障不该把任务钉死"
     assert task_id not in tm.active_tasks, "未启动的线程不得留在 active_tasks"
     assert task_id not in tm.stop_flags
+
+    # 真正的门槛:回补之后这个任务还能起来。
+    tm.socketio = None
+    tm._execute_task = _noop_execute
+    tm.start_task(task_id)
+    thread = tm.active_tasks.get(task_id)
+    if thread is not None:
+        thread.join(10)
+
+
+async def _noop_execute(task_id, stop_flag=None, *, tlog):
+    """空的执行体:上面那条用例只关心「还起得来」,不关心跑什么。"""
+    return
 
 
 def test_start_task_success_still_emits_and_runs(isolated_config):
@@ -434,9 +494,10 @@ def test_start_task_success_still_emits_and_runs(isolated_config):
     # 把下载挡在门内,保证断言时线程仍在执行(状态必须是 running)
     gate = threading.Event()
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         await asyncio.to_thread(gate.wait, 30)
-        return [{'tile': t, 'status': 'completed'} for t in tiles]
+        return [{'tile': t, 'status': TileOutcome.SUCCESS.value} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -545,7 +606,7 @@ def test_download_tiles_batch_creates_coroutines_in_batches(isolated_config, mon
         peak = max(peak, active)
         await asyncio.sleep(0.01)
         active -= 1
-        return {'tile': tile, 'status': 'completed'}
+        return {'tile': tile, 'status': TileOutcome.SUCCESS.value}
 
     engine._download_single_tile = fake_single
 
@@ -553,7 +614,7 @@ def test_download_tiles_batch_creates_coroutines_in_batches(isolated_config, mon
     results = asyncio.run(engine.download_tiles_batch(tiles, 's'))
 
     assert [r['tile'].x for r in results] == list(range(10)), "结果顺序必须与输入一致"
-    assert all(r['status'] == 'completed' for r in results)
+    assert all(r['status'] == TileOutcome.SUCCESS.value for r in results)
     assert 0 < peak <= 3, (
         f"任一时刻存活协程不得超过一个批次(3),实测峰值 {peak} —— 协程被一次性全建了"
     )
@@ -588,7 +649,7 @@ def test_execute_task_never_re_enumerates_the_grid_after_downloading(isolated_co
     # 预置部分 cache 命中(完成态由磁盘 cache 推导)
     cached = all_tiles[:2]
     for tile in cached:
-        cache_path = tile.cache_path('m')  # roadmap → 'm'
+        cache_path = tile.cache_path(_task_source(task_id))
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(b'cached-tile')
 
@@ -603,26 +664,31 @@ def test_execute_task_never_re_enumerates_the_grid_after_downloading(isolated_co
     # 待下载生成器那趟在下载消费第一块瓦片时才启动 → 'during-download'。
     phase = {'name': 'before-download'}
     enumeration_phases = []
-    real_iter_tiles = tm.download_engine.iter_tiles
+    # 挂 `iter_region_tiles`:任务侧的枚举入口按 `RegionSpec` 走(选区可以是
+    # 多边形带洞),`iter_tiles` 只剩纯四至的调用者。挂错函数计数器一次都不
+    # 触发,断言会拿到空列表。
+    real_iter_region_tiles = tm.download_engine.iter_region_tiles
 
-    def counting_iter_tiles(*args, **kwargs):
+    def counting_iter_region_tiles(*args, **kwargs):
         enumeration_phases.append(phase['name'])
-        return real_iter_tiles(*args, **kwargs)
+        return real_iter_region_tiles(*args, **kwargs)
 
-    tm.download_engine.iter_tiles = counting_iter_tiles
+    tm.download_engine.iter_region_tiles = counting_iter_region_tiles
 
     downloaded = []
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, *, source=None, **_):
         phase['name'] = 'during-download'
         results = []
         for tile in tiles:
-            # 模拟真实下载:落 cache(复制/完成判定的真实输入)再报完成
-            cache_path = tile.cache_path(style)
+            # 模拟真实下载:落 cache(复制/完成判定的真实输入)再报成功。
+            # 用引擎收到的那份 source 快照定位命名空间,与 _execute_task 同一个。
+            cache_path = tile.cache_path(source or style)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_bytes(b'fresh-tile')
-            await progress_callback(tile, 'completed', None)
-            results.append({'tile': tile, 'status': 'completed'})
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+            results.append({'tile': tile, 'status': TileOutcome.SUCCESS.value})
             downloaded.append(tile)
         phase['name'] = 'after-download'
         return results

@@ -139,13 +139,38 @@ class _FakeManager:
     `_execute*` 必须挂在**实例**上：`_run_task` 里是 `self._execute_task(...)`，
     而 self 是这个假管理器 —— patch 类属性根本不会被查到，而查不到抛的
     AttributeError 又恰好会让「异常路」用例假绿。
+
+    其余几样都是「每任务日志 + 准入」改造带进来的、`_run_task` 会无条件摸的字段，
+    一个都不能少 —— 缺一个就把真正的 assert 变成 AttributeError：
+
+    * `config_manager`：map 的 `open_task_log('map', task_id, self.config_manager)`
+      第三个参数（None 合法，句柄照样开得出来）；
+    * `_admission`：`start_task` 里算出的配额 / 磁盘判决，本用例没走准入所以是空的；
+    * `_run_status`：本轮的运行态，缺省即 running —— 正是搁死补偿要收拾的那一种；
+    * `_refill_targets` / `_gap_accepted`：map 的 finally 会清掉的两份本轮状态。
     """
 
     def __init__(self, exec_name, coro):
         self._state_lock = threading.Lock()
         self.active_tasks = {}
         self.stop_flags = {}
+        self.config_manager = None
+        self._admission = {}
+        self._run_status = {}
+        self._refill_targets = {}
+        self._gap_accepted = set()
+        self.released = []
         setattr(self, exec_name, coro)
+
+    def _release_reservation(self, task_id, reservation=None):
+        """真管理器在这里把配额还给调度器；这里没申请过，只记一笔给用例看。
+
+        第二个参数是 map 侧 B1 修复带进来的:归还必须携带**本轮自己拿到的那张**
+        凭据(身份比较),没有凭据对象就没有归还权。本用例走的是「线程搁死」那条
+        路,`_admission` 是空的,所以传进来的恒为 None —— 给它一个缺省值是为了
+        让 dem / contour 那两条仍按单参数调用的路径也能共用这个假管理器。
+        """
+        self.released.append(task_id)
 
 
 MANAGERS = [
@@ -160,12 +185,23 @@ def _run_task_of(module_name, class_name):
     return getattr(mod, class_name)._run_task
 
 
+# 假 `_execute*` 的签名是**契约的一部分**，不是随便写的：
+#
+# * `tlog` 写成 keyword-only 且**没有缺省值** —— 三条管线的 `_run_task` 都必须把
+#   自己开出来的每任务日志句柄传进协程（§4.5：任何终态都要能从任务日志解释）。
+#   哪天有人把这个传参删了，这里立刻 TypeError，而不是悄悄退化成「只写全局日志」。
+# * 各管线自己的那一个额外 kwarg（map 没有、dem 是 `max_connections`、contour 是
+#   `workers`）用 `**_granted` 兜住：这几个用例测的是搁死补偿网，不关心配额怎么
+#   传，为它们逐个开参数只会让签名跟着调度器一起漂。
+
+
 @pytest.mark.parametrize("module_name,class_name,table,attr", MANAGERS)
 def test_thread_exit_on_exception_fails_the_row(db, module_name, class_name, table, attr):
     """路 1：`_execute*` 在建连接之前就炸（它自己的兜底盖不住这一段）。"""
     _insert_running(db, table, 11)
 
-    async def _boom(task_id, stop_flag=None):
+    async def _boom(task_id, stop_flag=None, *, tlog, **_granted):
+        assert tlog is not None, '_run_task 必须把每任务日志句柄传下来'
         raise sqlite3.OperationalError("unable to open database file")
 
     mgr = _FakeManager(attr, _boom)
@@ -186,7 +222,7 @@ def test_thread_exit_after_a_silent_stop_return_fails_the_row(db, module_name, c
     """路 2：删除失败后 worker 看到停止标志【正常】return —— 没有异常可捕。"""
     _insert_running(db, table, 12)
 
-    async def _quiet_stop(task_id, stop_flag=None):
+    async def _quiet_stop(task_id, stop_flag=None, *, tlog, **_granted):
         return  # 正是 _execute* 里那几个裸 return
 
     mgr = _FakeManager(attr, _quiet_stop)
@@ -207,7 +243,7 @@ def test_normal_completion_is_not_rewritten(db, module_name, class_name, table, 
     """回归保护：`_execute*` 自己写好终态时，这道网必须闭嘴。"""
     _insert_running(db, table, 13)
 
-    async def _finish(task_id, stop_flag=None):
+    async def _finish(task_id, stop_flag=None, *, tlog, **_granted):
         conn = sqlite3.connect(str(db))
         conn.execute(f"UPDATE {table} SET status='completed' WHERE id=13")
         conn.commit()
@@ -230,7 +266,7 @@ def test_paused_row_survives_the_stop_return(db, module_name, class_name, table,
     conn.commit()
     conn.close()
 
-    async def _quiet_stop(task_id, stop_flag=None):
+    async def _quiet_stop(task_id, stop_flag=None, *, tlog, **_granted):
         return
 
     mgr = _FakeManager(attr, _quiet_stop)
@@ -251,7 +287,7 @@ def test_a_relaunched_task_is_not_stolen_by_a_late_exiting_thread(db):
     """
     _insert_running(db, "tasks", 14)
 
-    async def _boom(task_id, stop_flag=None):
+    async def _boom(task_id, stop_flag=None, *, tlog, **_granted):
         raise RuntimeError("old thread dying")
 
     mgr = _FakeManager("_execute_task", _boom)
@@ -263,3 +299,70 @@ def test_a_relaunched_task_is_not_stolen_by_a_late_exiting_thread(db):
     assert _status(db, "tasks", 14)[0] == "running", (
         '晚退的旧线程把新一轮运行的行判失败了')
     assert mgr.active_tasks[14] is newcomer, '不该摘掉别人的登记'
+
+
+
+# --------------------------------------------------------------------------
+# 补偿判 failed 时，**任务自己的日志**里必须留下原因（§4.5）
+#
+# `fail_stranded_running_task` 只写全局 terraforge.log。用户点开的是任务详情，
+# 那里读的是 logs/tasks/<pipeline>_<id>.log —— 没有这一笔，日志的最后一句是
+# 线程退出事件，库里却写着 failed，两份记录当面打架，排查无从下手。
+# 反过来，正常收尾时那条带 `WHERE status='running'` 的 UPDATE 是无害的 no-op，
+# 那种情况下多写一句「已判 failed」比不写更糟 —— 所以判据是 helper 的**返回值**。
+# --------------------------------------------------------------------------
+
+_LOGGED_MANAGERS = [
+    ("src.services.task_manager", "TaskManager", "tasks", "_execute_task", "map"),
+    ("src.services.dem_task_manager", "DemTaskManager", "dem_tasks", "_execute", "dem"),
+    ("src.services.contour_task_manager", "ContourTaskManager", "contour_tasks",
+     "_execute", "contour"),
+]
+
+
+@pytest.mark.parametrize("module_name,class_name,table,attr,pipeline", _LOGGED_MANAGERS)
+def test_the_stranded_verdict_is_explained_in_the_task_log(
+        db, module_name, class_name, table, attr, pipeline):
+    from src.services.task_logging import read_task_log
+
+    _insert_running(db, table, 21)
+
+    async def _boom(task_id, stop_flag=None, *, tlog, **_granted):
+        raise RuntimeError("worker died mid-flight")
+
+    mgr = _FakeManager(attr, _boom)
+    mgr.active_tasks[21] = threading.current_thread()
+
+    _run_task_of(module_name, class_name)(mgr, 21)
+
+    assert _status(db, table, 21)[0] == "failed"
+    messages = "\n".join(e["message"] for e in read_task_log(pipeline, 21))
+    assert "EVENT terminal status=failed" in messages, (
+        f"{pipeline}: 补偿判了 failed，任务自己的日志里却没有终态记录")
+    assert "reason=thread_stranded" in messages
+    assert "worker died mid-flight" in messages, "终态记录要带上真正的原因"
+
+
+@pytest.mark.parametrize("module_name,class_name,table,attr,pipeline", _LOGGED_MANAGERS)
+def test_a_normally_finished_task_is_not_told_it_failed(
+        db, module_name, class_name, table, attr, pipeline):
+    """no-op 的补偿不许写终态记录 —— 那会在一个跑完的任务里凭空多出一句失败。"""
+    from src.services.task_logging import read_task_log
+
+    _insert_running(db, table, 22)
+
+    async def _settles(task_id, stop_flag=None, *, tlog, **_granted):
+        conn = sqlite3.connect(str(db))
+        conn.execute(f"UPDATE {table} SET status='completed' WHERE id=22")
+        conn.commit()
+        conn.close()
+
+    mgr = _FakeManager(attr, _settles)
+    mgr.active_tasks[22] = threading.current_thread()
+
+    _run_task_of(module_name, class_name)(mgr, 22)
+
+    assert _status(db, table, 22)[0] == "completed"
+    messages = "\n".join(e["message"] for e in read_task_log(pipeline, 22))
+    assert "status=failed" not in messages, (
+        f"{pipeline}: 正常收尾的任务日志里被补了一句 failed")

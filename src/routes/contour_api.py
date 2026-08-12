@@ -16,9 +16,11 @@ from flask import Blueprint, current_app, jsonify, request
 from src.i18n import t
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import coerce_number, validate_zoom
-from src.services.task_cleanup import record_retained_output, resolve_stored_output_dir
+from src.services.task_cleanup import (purge_registered_artifacts,
+                                       record_retained_output,
+                                       resolve_stored_output_dir)
 from src.routes.api import _delete_payload
-from src.routes import contour_static
+from src.routes import contour_static, mbtiles_static
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +213,11 @@ def delete_contour_task(task_id: int):
             # 行删掉后同步清 /contour 静态路由的存在性缓存，否则 delete_files=false
             # （磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
             # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
-            on_row_gone=lambda: contour_static.invalidate_known_task(task_id),
+            # /mbtiles 那份产物缓存一并失效（导出过 MBTiles 的任务在那里也有条目）。
+            on_row_gone=lambda: (
+                contour_static.invalidate_known_task(task_id),
+                mbtiles_static.invalidate_known_task(task_id),
+            ),
         )
         if not outcome.row_deleted:
             return jsonify({"error": f"Contour task {task_id} not found"}), 404
@@ -219,6 +225,12 @@ def delete_contour_task(task_id: int):
         payload = _delete_payload(
             f"Contour task {task_id} deleted", outcome.files_removed,
             files_deferred=outcome.files_deferred)
+
+        # 文件也删了的那条路上，产物登记跟着走：它们唯一的用途是「文件还在哪」。
+        # 反过来 delete_files=false 时【绝不能】删 —— 用户选择保留文件，产物行
+        # 就是它们仅剩的记录（artifacts 表刻意没有外键，见 contracts/artifact）。
+        if delete_files:
+            purge_registered_artifacts("contour", task_id, task_dir)
 
         # delete_files=false 是删除对话框的默认。行一走，contour_files 随外键级联
         # 消失，<output_path>/contour_task_<id>/ 从此没有任何 DB 引用 —— 启动清扫

@@ -6,6 +6,9 @@ function initConfig() {
     const resetBtn = document.getElementById('configResetBtn');
     if (resetBtn) resetBtn.addEventListener('click', resetConfig);
     initTileServerEditor();
+    // 瓦片源向导（§6.2）。必须排在 initTileServerEditor 之后：没有空行时它要调
+    // addTileServerRow 新增一行，而那之前编辑器得先把「至少留一行」补出来。
+    initTileUrlWizard();
     initBasemapSource();
     initThemeSwitcher();
     initAccentSwitcher();
@@ -53,13 +56,10 @@ function initBasemapSource() {
 // 缓存不做任何自动清理：这里分类展示占用，手动清理走两次 showConfirm
 // （第一次说明将删什么，第二次 danger 样式确认不可恢复）。
 
-function formatCacheBytes(bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let value = Number(bytes) || 0;
-    let i = 0;
-    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
-    return (i === 0 ? value : value.toFixed(1)) + ' ' + units[i];
-}
+// 字节 → 人类可读的实现在 task_center.js 的 formatBytes（base.html 全局加载，
+// 全站唯一一份）。这里曾有一份逐字相同的 formatCacheBytes —— 两份四舍五入
+// 规则一旦漂移，缓存卡和任务详情的产物清单会对同一个数字给出不同读数，
+// 而没有任何机制会报错。调用点已全部改直接调 formatBytes。
 
 function initCacheManager() {
     const body = document.getElementById('cacheStatsBody');
@@ -112,16 +112,16 @@ function renderCacheStats(data) {
                 '<span class="d-flex align-items-center gap-2">' +
                 '<span class="text-muted">' +
                 t('js.config.cache.size_files',
-                    { size: formatCacheBytes(c.size_bytes), count: c.file_count }) +
+                    { size: formatBytes(c.size_bytes), count: c.file_count }) +
                 '</span>' +
                 '<button type="button" class="btn btn-outline-danger btn-compact cache-clear-btn" ' +
                 'data-key="' + window.escapeHtml(c.key) + '" data-label="' + window.escapeHtml(c.label) + '" ' +
-                'data-size="' + formatCacheBytes(c.size_bytes) + '">' +
+                'data-size="' + formatBytes(c.size_bytes) + '">' +
                 t('js.config.cache.clear') + '</button>' +
                 '</span></div>';
         }).join('');
     }
-    document.getElementById('cacheStatsTotal').textContent = formatCacheBytes(data.total_bytes || 0);
+    document.getElementById('cacheStatsTotal').textContent = formatBytes(data.total_bytes || 0);
     document.getElementById('cacheStatsTotalFiles').textContent =
         categories.reduce(function (sum, c) { return sum + (c.file_count || 0); }, 0);
 }
@@ -171,7 +171,7 @@ async function clearCacheCategory(category, label, sizeText) {
         if (result.ok && result.data.success) {
             showToast(t('js.config.cache.cleared', {
                 label: label,
-                size: formatCacheBytes(result.data.total_removed_bytes)
+                size: formatBytes(result.data.total_removed_bytes)
             }), 'success');
         } else {
             showToast(t('js.config.cache.clear_failed',
@@ -477,6 +477,171 @@ function initTileServerEditor() {
         const verifyBtn = e.target.closest('.tile-server-verify');
         if (verifyBtn) verifyTileServerRow(verifyBtn.closest('.tile-server-row'));
     });
+}
+
+// --- 瓦片源向导（§6.2）--------------------------------------------------------
+//
+// 用户手上有的是**一条真实瓦片 URL**（从别的软件的网络面板里抄来的、从文档里
+// 复制的），而这里要的是一个带 {z}/{x}/{y} 的模板。手工替换那三个数字是这条
+// 配置最常见的出错点：抄成 z/y/x（ArcGIS REST 就是这个顺序）不会报错，
+// 一样过校验、一样返回 200 的真瓦片，只是内容与位置对不上 —— 要等整张图拼完
+// 才看得出来。
+//
+// 所以把这一步交给服务端 POST /api/config/analyze_tile_url：它穷举整数槽位、
+// 用 Web 墨卡托格网约束筛选、按 XYZ 事实标准排序，并把**它猜了什么**说清楚。
+//
+// ⚠️ 警告逐字显示，且**不静默采纳**被标记的模板。
+// 服务端的警告里有三类会让用户下出一整套废图或泄露凭据：
+//   · 查询参数像凭据 —— 它会原样进 tasks 表、进缓存命名空间、进诊断包；
+//   · x/y 顺序是猜的 —— 数值上分不出来，判错不会报错；
+//   · 疑似 TMS 而按 xyz 给出 —— 判错只会让成品南北颠倒。
+// 有警告时模板**不自动**填进条目框，改为多一颗「仍然使用此模板」——
+// 让用户为这个决定按一下，是这三条警告存在的全部意义。
+
+function tileUrlWizardHtml() {
+    return `
+    <div class="tile-url-wizard__row">
+        <input type="url" class="form-control flex-grow-1" id="tileUrlWizardInput"
+               placeholder="${t('js.wizard.placeholder')}" aria-label="${t('js.wizard.label')}">
+        <button type="button" class="btn btn-outline-primary" id="tileUrlWizardRun">${t('js.wizard.analyze')}</button>
+    </div>
+    <div class="tile-url-wizard__out" id="tileUrlWizardOut" hidden></div>
+`;
+}
+
+// 最近一次分析的结果。「仍然使用此模板」要用它，而它不能从 DOM 里读回来
+// （模板里可能有 & 与引号，往返一趟 innerHTML 就不再逐字节相同了 —— 而
+// 「除三个槽位外逐字节一致」正是服务端给这个模板的全部保证）。
+let _wizardResult = null;
+
+function initTileUrlWizard() {
+    const host = document.getElementById('tileUrlWizard');
+    if (!host) return;
+    host.innerHTML = tileUrlWizardHtml();
+    const input = document.getElementById('tileUrlWizardInput');
+    const runBtn = document.getElementById('tileUrlWizardRun');
+    runBtn.addEventListener('click', function () { runTileUrlWizard(); });
+    // 回车即分析：这是一个「粘贴 → 回车」的动作，不该要求先去点按钮。
+    input.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        runTileUrlWizard();
+    });
+    // 「仍然使用此模板」是分析之后才出现的，走委托。
+    host.addEventListener('click', function (e) {
+        if (!e.target.closest('#tileUrlWizardApply')) return;
+        applyWizardTemplate();
+    });
+}
+
+async function runTileUrlWizard() {
+    const input = document.getElementById('tileUrlWizardInput');
+    const out = document.getElementById('tileUrlWizardOut');
+    const runBtn = document.getElementById('tileUrlWizardRun');
+    if (!input || !out) return;
+    const url = input.value.trim();
+    if (!url) {
+        _renderWizardMessage(out, t('js.wizard.need_url'));
+        return;
+    }
+    _wizardResult = null;
+    _renderWizardMessage(out, t('js.wizard.analyzing'));
+    runBtn.disabled = true;
+    try {
+        const response = await fetch('/api/config/analyze_tile_url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+        _wizardResult = data;
+        _renderWizardResult(out, data);
+        // 干净的检测结果（零警告）直接落进条目框：那时没有任何需要用户判断的
+        // 东西，多按一下只是仪式。有警告则等「仍然使用此模板」。
+        if (!(data.warnings || []).length) applyWizardTemplate();
+    } catch (error) {
+        _renderWizardMessage(out, t('js.wizard.failed', { error: error.message }));
+    } finally {
+        runBtn.disabled = false;
+    }
+}
+
+// 逐节点建 DOM 而不是拼 innerHTML：模板与警告都来自服务端对**用户粘贴的 URL**
+// 的加工结果，是最典型的外部可控字符串。
+function _renderWizardMessage(out, text) {
+    out.innerHTML = '';
+    const line = document.createElement('div');
+    line.className = 'tile-url-wizard__template';
+    line.textContent = text;
+    out.appendChild(line);
+    out.hidden = false;
+}
+
+function _renderWizardResult(out, data) {
+    out.innerHTML = '';
+
+    const template = document.createElement('div');
+    template.className = 'tile-url-wizard__template';
+    const detected = data.detected || {};
+    template.textContent = t('js.wizard.detected', {
+        template: data.template || '',
+        scheme: data.scheme || '',
+        z: detected.z,
+        x: detected.x,
+        y: detected.y,
+    });
+    out.appendChild(template);
+
+    const warnings = data.warnings || [];
+    if (warnings.length) {
+        const box = document.createElement('div');
+        box.className = 'tile-url-wizard__warnings';
+        warnings.forEach(function (text) {
+            const line = document.createElement('span');
+            line.className = 'tile-url-wizard__warning';
+            // 逐字：服务端的警告原文里带具体主机名、具体参数名、以及**转置后的
+            // 正确模板**。摘要化会把用户唯一能照着做的那一句删掉。
+            line.textContent = text;
+            box.appendChild(line);
+        });
+        out.appendChild(box);
+
+        const row = document.createElement('div');
+        row.className = 'tile-url-wizard__row';
+        const apply = document.createElement('button');
+        apply.type = 'button';
+        apply.id = 'tileUrlWizardApply';
+        apply.className = 'btn btn-outline-secondary btn-compact';
+        apply.textContent = t('js.wizard.apply_anyway');
+        row.appendChild(apply);
+        out.appendChild(row);
+    }
+    out.hidden = false;
+}
+
+/**
+ * 把模板填进条目列表。
+ *
+ * 填进**第一个空行**，没有空行就新增一行 —— 覆盖一个已填好的条目会让用户
+ * 悄悄丢掉一条已配好的下载源。填完聚焦到它，用户看得见东西落在哪儿了。
+ */
+function applyWizardTemplate() {
+    if (!_wizardResult || !_wizardResult.template) return;
+    const rows = document.getElementById('tileServerRows');
+    if (!rows) return;
+    let target = null;
+    rows.querySelectorAll('.tile-server-input').forEach(function (el) {
+        if (!target && !el.value.trim()) target = el;
+    });
+    if (!target) {
+        const row = addTileServerRow('');
+        target = row && row.querySelector('.tile-server-input');
+    }
+    if (!target) return;
+    target.value = _wizardResult.template;
+    target.focus();
+    showToast(t('js.wizard.applied', { template: _wizardResult.template }), 'success');
 }
 
 async function verifyTileServerRow(row) {

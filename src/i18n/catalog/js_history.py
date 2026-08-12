@@ -286,9 +286,15 @@ MESSAGES = {
     },
 
     # 删除任务的单一确认框与结果提示。
-    # 三个活动状态各有各的措辞：pending 还没开始跑，写「正在运行」就是撒谎；
+    # 每个活动状态各有各的措辞：pending 还没开始跑，写「正在运行」就是撒谎；
     # paused 停在半路，说「立即停止」也不准 —— 用户要判断「删了会失去什么」，
     # 靠的正是这句里对当前处境的描述，含糊一句话通用反而帮不上忙。
+    #
+    # 2026-08 §13-3 补两条：活动态从三个变成五个
+    # （contracts.outcome.ACTIVE_STATE_VALUES）。少这两条的后果不是显示错，
+    # 是**没有警告** —— 它们会掉进通用文案「记录不可恢复」，而这两种任务
+    # 恰恰是最不能不声不响删掉的：retrying 正在重跑缺块，pending_decision
+    # 攒着一份等用户决定的缺块清单，删了这份清单就没了。
     'js.history.confirm.delete_task_title': {
         'zh': '删除任务',
         'en': 'Delete task',
@@ -311,6 +317,18 @@ MESSAGES = {
         'zh': '该任务已暂停但还没结束，删除会直接终止它，已下载的进度不保留。确定删除吗？',
         'en': 'This task is paused but not finished. Deleting it terminates the task '
               'and the progress so far is lost. Delete it anyway?',
+    },
+    'js.history.confirm.delete_task_retrying': {
+        'zh': '该任务正在补漏（重跑缺失的瓦片），删除会立即停止它，已下载的进度不保留。确定删除吗？',
+        'en': 'This task is refilling gaps (re-running the missing tiles). Deleting '
+              'it stops the task immediately and the progress so far is lost. '
+              'Delete it anyway?',
+    },
+    'js.history.confirm.delete_task_pending_decision': {
+        'zh': '该任务有缺块、正在等你决定（补漏或接受并导出），删除会把缺块清单连同已下载的进度一起丢掉。确定删除吗？',
+        'en': 'This task has gaps and is waiting for your decision (refill, or '
+              'accept and export). Deleting it discards the gap list along with '
+              'the progress so far. Delete it anyway?',
     },
     'js.history.confirm.delete_files_checkbox': {
         'zh': '同时删除磁盘上的下载产物',

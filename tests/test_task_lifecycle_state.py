@@ -6,6 +6,26 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.contracts.outcome import TileOutcome
+
+
+def _task_source(db, task_id):
+    """任务行 → SourceSnapshot,即这条任务的缓存命名空间。
+
+    `_execute_task` 用 `snapshot_for_task_row(task_row)` 解析 cache 路径,
+    测试里任何往 cache 写字节的替身都必须用同一份,否则写进去的是旧的
+    `cache/<style>/` 单级目录、运行时一块都命不中,任务转头去打真实上游。
+    """
+    from src.services.source_registry import snapshot_for_task_row
+
+    conn = db.get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+        return snapshot_for_task_row(cur.fetchone())
+    finally:
+        conn.close()
+
 
 class FakeSocketIO:
     def __init__(self):
@@ -51,14 +71,24 @@ def _seed_map_task(
 
     task_tiles 已是稀疏失败表,播种按新语义造「完成态/失败态」:
     - 'completed' → 写磁盘 cache 文件(完成态由 cache 推导,不再有表里的行)
-    - 'failed'    → 插一行 task_tiles 失败行
+    - 'failed'    → 插一行 task_tiles 缺块行,outcome = retryable_failure
+      (稀疏表的 status 列现在存 `TileOutcome` 值;裸 'failed' 只存在于
+       user_version<5 的存量行里,新写入一律用枚举值)
     - 'pending'   → 什么都不做(未下载 = 既无 cache 也无失败行)
 
     状态按 zoom 整层铺(拼接按 zoom 逐个跑,「部分 zoom 失败」需要多 zoom)。
     bbox 固定 (1,0,1,0),瓦片集合由 iter_tiles 枚举,与运行时同口径;
     zoom_min/zoom_max 决定枚举范围(默认 0-0,整个 bbox 只有 1 块瓦片)。
+
+    **cache 文件必须写进这条任务自己的命名空间**:缓存已从
+    `cache/<style_code>/z/x/y.png` 改成 `cache/<style_code>-<fingerprint8>/`,
+    命名空间由任务行推出的 `SourceSnapshot` 决定。播种时按老路径写 = 运行时
+    全部落空 → 任务真的去 mts0.googleapis.com 拉瓦片(带重试),用例从「红」
+    变成「挂几分钟」。所以先把任务行落库,再用 `snapshot_for_task_row` 反推
+    命名空间写文件。
     """
     from src.services.download_engine import DownloadEngine
+    from src.services.source_registry import snapshot_for_task_row
 
     zooms = list(tile_zooms) if tile_zooms is not None else [zoom_min] * len(tile_statuses)
     assert len(zooms) == len(tile_statuses)
@@ -82,20 +112,26 @@ def _seed_map_task(
             (status, zoom_min, zoom_max, output_format, output_path, len(tiles), failed_tiles),
         )
         task_id = cur.lastrowid
+        conn.commit()
+
+        # 与 _execute_task 同一条推导:任务行 → 快照 → 缓存命名空间。
+        cur.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+        source = snapshot_for_task_row(cur.fetchone())
+
         for tile in tiles:
             tile_status = status_by_zoom.get(tile.zoom, "pending")
             if tile_status == "completed":
-                # satellite → style code 's'(与 TaskManager.STYLE_MAP 一致)
-                cache_path = tile.cache_path("s")
+                cache_path = tile.cache_path(source)
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_bytes(b"not-really-a-png")
             elif tile_status == "failed":
                 cur.execute(
                     """
                     INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count)
-                    VALUES (?, ?, ?, ?, 'failed', 0)
+                    VALUES (?, ?, ?, ?, ?, 0)
                     """,
-                    (task_id, tile.zoom, tile.x, tile.y),
+                    (task_id, tile.zoom, tile.x, tile.y,
+                     TileOutcome.RETRYABLE_FAILURE.value),
                 )
         conn.commit()
         return task_id
@@ -196,24 +232,45 @@ def _dem_task_row(db, task_id):
 
 
 def test_map_tile_failure_marks_parent_failed_not_completed(monkeypatch, tmp_path):
+    """有瓦片没拿到的任务绝不能自称 completed。
+
+    不变量没变,落地的状态变了。完成判定现在是三分的:
+      · 零缺块                        → completed
+      · 缺块全是 no_data(上游说没有)  → completed_with_gaps,产物照出
+      · 有没交代的缺块(retryable /
+        permanent / cache_failure)     → pending_decision,产物**不出**
+    这里注入的是 retryable_failure(超时那一类),所以落 pending_decision:
+    任务没崩,只是差瓦片,用户可以选「补漏」或「接受缺块」。判 failed 是旧
+    行为 —— failed 是终态、start_task 拒绝重启,用户没有自愈路径,而
+    「差 12 块超时」和「GDAL 炸了」被写成同一个词。
+    真正的 failed 留给引擎/拼接异常与进度落库失败(见同文件的拼接三连)。
+
+    替身签名带 `**_`:引擎现在还会收到 `source=` / `max_concurrency=`
+    两个关键字参数,四参替身会直接 TypeError,任务反而走通用 except 判 failed
+    —— 那会让本用例「凑巧」通过而什么也没测到。
+    """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    outcome = TileOutcome.RETRYABLE_FAILURE.value
+
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         # tiles 是生成器(任务侧不再物化全网格待下载清单),只能取一次。
         tile = next(iter(tiles))
-        await progress_callback(tile, "failed", "boom")
-        return [{"tile": tile, "status": "failed", "error": "boom"}]
+        await progress_callback(tile, outcome, "boom")
+        return [{"tile": tile, "status": outcome, "error": "boom"}]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
     asyncio.run(tm._execute_task(task_id))
 
     row = _map_task_row(db, task_id)
-    assert row["status"] == "failed"
+    assert row["status"] == "pending_decision"
     assert row["failed_tiles"] == 1
+    assert row["gap_tiles"] == 1
     assert not any(event == "task_completed" for event, _ in tm.socketio.events)
 
 
@@ -244,13 +301,18 @@ def test_map_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
 
     「暂停」是用户「等会儿接着下」的明确意图，被改写成 failed 就再也 resume
     不回来了 —— 这是失败兜底排除列表里 'paused' 那一项的唯一守卫。
+
+    替身收 `**_`:引擎签名多了 `source=` / `max_concurrency=` 两个关键字参数,
+    不收的话 TypeError 在**进函数体之前**就抛了,pause_task 根本没跑到,
+    用例会因为「没暂停过的任务被判 failed」而红 —— 那不是它要测的东西。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
     tm_mod = importlib.import_module("src.services.task_manager")
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
     task_id = _seed_map_task(db)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         tm.pause_task(task_id)
         raise RuntimeError("network died after pause")
 
@@ -320,11 +382,16 @@ def test_dem_paused_task_is_not_overwritten_by_failure(monkeypatch, tmp_path):
 
 
 def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
-    """稀疏表里留着历史 failed 行的瓦片这次成功 → downloaded +1 **且** failed -1。
+    """稀疏表里留着历史缺块行的瓦片这次成功 → downloaded +1 **且** failed -1。
 
-    钉的是 _status_count_deltas 的 old_status 口径:它必须从稀疏失败表的
-    内存镜像 failed_keys 推出来,而不是默认 None(默认 None 会得到
-    downloaded=1/failed=1,任务带着一条不存在的失败被判 failed)。
+    钉的是 _status_count_deltas 的 old_status 口径:它必须从稀疏缺块表的
+    内存镜像 live_gaps 推出来,而不是默认 None(默认 None 会得到
+    downloaded=1/failed=1,任务带着一条其实已经补上的缺块停在 pending_decision,
+    用户被要求为一个不存在的洞做决策)。
+
+    两个参数现在都是 `TileOutcome` 的值字符串:旧行是 `retryable_failure`
+    (裸 'failed' 只存在于 user_version<5 的存量行),这一发上报 `success`
+    (旧的 'completed')。抵消这件事本身没变 —— 变的只是词。
 
     这条测试原先是**连报两发 completed**、断言 downloaded_tiles==1,钉的其实是
     「同一次运行里重复上报不重复计数」。支撑那条语义的是一份
@@ -337,14 +404,18 @@ def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
     直接钉在引擎上。
     """
     db = _reload_with_isolated_db(monkeypatch, tmp_path)
-    task_id = _seed_map_task(db, tile_statuses=("failed",), failed_tiles=1)
     tm_mod = importlib.import_module("src.services.task_manager")
+    # 先建 manager 再播种:TaskManager.__init__ 会把库里遗留的 'running' 行
+    # 当孤儿收成 'paused'(进程崩溃恢复),播种在前就会被它抢走状态,
+    # 收尾判定读到 paused 直接 return,终态断言测不到东西。
     tm = tm_mod.TaskManager(socketio=FakeSocketIO())
+    task_id = _seed_map_task(db, tile_statuses=("failed",), failed_tiles=1)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         tile = next(iter(tiles))
-        await progress_callback(tile, "completed", None)
-        return [{"tile": tile, "status": "completed"}]
+        await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+        return [{"tile": tile, "status": TileOutcome.SUCCESS.value}]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -353,7 +424,11 @@ def test_map_progress_counts_status_transitions(monkeypatch, tmp_path):
     row = _map_task_row(db, task_id)
     assert row["downloaded_tiles"] == 1
     assert row["failed_tiles"] == 0, (
-        "历史 failed 行在同一块瓦片成功后必须被抵消,否则任务被误判 failed"
+        "历史缺块行在同一块瓦片成功后必须被抵消,否则任务被误判成还有洞"
+    )
+    assert row["gap_tiles"] == 0
+    assert row["status"] == "completed", (
+        "洞补上了就是干净完成 —— 抵消没做对的话这里会是 pending_decision"
     )
 
 
@@ -578,12 +653,16 @@ def test_stream_copy_writes_output_before_stitch(monkeypatch, tmp_path):
         output_path=str(tmp_path / "out"),
     )
 
-    async def fake_batch(tiles, style, progress_callback, stop_flag):
+    source = _task_source(db, task_id)
+
+    async def fake_batch(tiles, style, progress_callback, stop_flag=None, **_):
         for tile in tiles:
-            p = tile.cache_path("s")
+            # 必须写进任务自己的指纹命名空间(_task_source),不是旧的
+            # cache/s/ 单级目录 —— 否则回调即时复制读不到源文件。
+            p = tile.cache_path(source)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(b"png-bytes")
-            await progress_callback(tile, "completed", None)
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
 
     tm.download_engine.download_tiles_batch = fake_batch
 

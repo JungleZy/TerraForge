@@ -17,19 +17,32 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.contracts.outcome import TileOutcome  # noqa: E402
+
 
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
-    """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
+    """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。
+
+    顺带把资源调度器单例清零。`start_task` 现在会先向
+    `resource_scheduler` 申请任务位 + 网络并发额度,拿不到就 ValueError 拒绝
+    启动。调度器是**进程单例**,上一条用例(哪怕在别的文件里)留下的 owner
+    键会一路带过来 —— 同一个 (pipeline, task_id, stage) 再申请就撞
+    「already holds a reservation」。清单例而不是抬高上限:测试不该依赖一个
+    全局单例攒下来的状态,抬上限只是把撞车推迟到更靠后的用例。
+    """
     from src.core.config import Config
     from src.core import database
+    from src.services.resource_scheduler import reset_scheduler
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
     monkeypatch.setattr(Config, 'OUTPUT_DIR', tmp_path / 'downloads')
     monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
     database.init_database()
-    return tmp_path
+    reset_scheduler()
+    yield tmp_path
+    reset_scheduler()
 
 
 def _seed_task_row(status='pending', output_format='tiles_only',
@@ -79,16 +92,23 @@ class _FakeSocketIO:
 
 
 def _fake_batch_writing_cache(tm):
-    """fake 下载:落 cache(完成判定/复制阶段的真实输入)再逐块报完成。"""
+    """fake 下载:落 cache(完成判定/复制阶段的真实输入)再逐块报成功。
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    缓存必须写进引擎收到的那份 `source` 快照的命名空间
+    (`cache/<style>-<指纹>/`),不是裸 style 码 —— 后者是 user_version 6
+    之前的形态,_execute_task 读不到,任务会转头去打真实上游。
+    `**_` 吃掉 `max_concurrency=` 之类的后续新增关键字参数。
+    """
+
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, *, source=None, **_):
         results = []
         for tile in tiles:
-            cache_path = tile.cache_path(style)
+            cache_path = tile.cache_path(source or style)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_bytes(b'fresh-tile')
-            await progress_callback(tile, 'completed', None)
-            results.append({'tile': tile, 'status': 'completed'})
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+            results.append({'tile': tile, 'status': TileOutcome.SUCCESS.value})
         return results
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
@@ -142,7 +162,8 @@ def test_execute_task_rejects_cache_disabled(isolated_config):
     tm = TaskManager(socketio=_FakeSocketIO())
     downloaded = []
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         downloaded.extend(tiles)
         return []
 
@@ -186,11 +207,12 @@ def test_flush_failure_does_not_mask_download_error(isolated_config, monkeypatch
 
     monkeypatch.setattr(tm_mod, 'get_connection', tracking_get_connection)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         progress_conn = opened[-1]
         # 先报一块完成,让 unflushed 非零(finally 的 flush 才会真的执行 SQL),
         # 再关掉 progress_conn 让 flush 必炸,最后抛原始下载错误。
-        await progress_callback(next(iter(tiles)), 'completed', None)
+        await progress_callback(next(iter(tiles)), TileOutcome.SUCCESS.value, None)
         progress_conn.close()
         raise RuntimeError('download boom')
 

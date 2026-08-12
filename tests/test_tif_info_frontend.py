@@ -384,35 +384,71 @@ def test_the_estimate_accumulates_from_a_clamped_start_level():
         '累加起点没有跟着 level 钳下来 —— 基准 8 配快速档会预告成 0 张')
 
 
-def test_the_estimate_hides_itself_on_an_antimeridian_crossing_dem():
-    """跨 180° 的 DEM 不预告：判据取 summary.bounds_wgs84 的**东界**，且真接进守卫。
+def test_a_wrapped_dem_is_not_advertised_sixty_percent_short():
+    """跨 180° 的 DEM 拿到的张数必须是**完整**的两段之和。
 
-    raster_probe._tile_counts_per_level 在跨界数据上会少算约六成
-    （intersecting_tile_range 把超出 180 的整段钳掉），那是刻意不补偿的已知
-    边界。拿 warnings 当判据是借位：单文件跨界时 'antimeridian' 只落在
-    files[i].warnings 上，summary.warnings 是干净的；而 summary 上的那条说的
-    是「并集做过 wrap」，不是「这张表少算了」。
+    ⚠️ 登记（2026-08 §5.x 跨界修复）：本条原名
+    `test_the_estimate_hides_itself_on_an_antimeridian_crossing_dem`，钉的是
+    「前端按 summary.bounds_wgs84 的东界（下标 [2]）判跨界，命中就整段隐藏
+    预告」。那条断言**不再成立，而且不该被恢复** —— 它守的从来不是「隐藏」
+    这个动作，是「不要给用户一个少算约六成的张数」。少算的根因已经在后端修掉：
 
-    只查 "bounds_wgs84" 与 "> 180" 两个子串是守不住的：它们都住在**声明行**上，
-    而真正起作用的是早退守卫里那句 `|| crossesAntimeridian` —— 把它删掉，两个
-    子串原地不动，用例照样全绿，跨界 DEM 于是拿到一个少算约六成的张数。下标同
-    理：东界是 [2]，写成 [0] 判的是西界（跨界与否跟它无关），子串断言一样看不
-    出来。所以这里钉两件事：声明取的是 [2]，且那个标识符出现在守卫的条件里。
+      · 改前：summary["bounds_wgs84"] 的东界是刻意 +360 展开的（_wrap_lons），
+        而 intersecting_tile_range 的 `ix1 = min(nx - 1, ...)` 把超出 180 的
+        整段钳掉，绕回 -180 那侧一列不计；
+      · 改后：`_tile_counts_per_level` 按 `RegionSpec.antimeridian_parts` 把
+        跨界矩形拆成两段各自落在 ±180 内的 bbox，逐段调**同一个**几何函数再
+        相加（不跨界时就是一段，与改动前逐字等价）。
+
+    于是前端整段隐藏的理由消失了，而隐藏本身是有代价的：跨界 DEM 动辄几十万
+    张、几个小时，起切前拿不到任何规模提示。所以现在**照常预告**。
+
+    残留偏差换了来源（raster_probe 那段 docstring 的第 2 条，没修）：切片器喂给
+    几何的是 DemSampler.bounds，不做 +360 展开，所以「预告」与「实切」在跨界
+    数据上仍可能不一致 —— 方向是我们**偏高报**，而这一行的用途是规模警告，
+    高报是保守方向。
+
+    因此这条改成钉住不变量本身的两个端点：
+      1. 后端真的把两侧都数进去了（数值断言，不是子串）；
+      2. 前端没有把这份已经正确的数又藏起来。
     """
+    from src.services.raster_probe import _tile_counts_per_level
+    from src.services.terrain_tiling.cesium_terrain import (
+        GeographicTilingScheme, intersecting_tile_range)
+
+    # 一块 2° 宽、骑在 180° 上的 DEM（东界按 _wrap_lons 的口径展开成 181）。
+    crossing = _tile_counts_per_level((179.0, 60.0, 181.0, 61.0))
+    # 同纬度、同宽度、不跨界的对照组。两者的张数应当在同一量级
+    # （跨界那侧会多一列边界瓦片，所以只要求 >= 对照组）。
+    plain = _tile_counts_per_level((177.0, 60.0, 179.0, 61.0))
+    assert crossing and plain, 'GDAL 缺席时这张表是 None —— 本测试已失效'
+    assert crossing[14] >= plain[14], (
+        f'跨界 DEM z14 数出 {crossing[14]} 张，同宽度不跨界的对照组是 '
+        f'{plain[14]} 张 —— 跨 180° 的那一侧又被钳掉了')
+
+    # 与「钳掉一侧」的旧口径对比，证明上面那条不是碰巧相等：单段调用会把
+    # 绕回 -180 那侧整个丢掉，实测在这个例子里正好少一半。
+    scheme = GeographicTilingScheme(tile_size=65)
+    nx, ny = scheme.tile_count(14)
+    ix0, ix1, iy0, iy1 = intersecting_tile_range(nx, ny, 179.0, 60.0, 181.0, 61.0)
+    legacy = (ix1 - ix0 + 1) * (iy1 - iy0 + 1)
+    assert crossing[14] > legacy, (
+        f'跨界 z14 数出 {crossing[14]} 张，与单段钳位口径 {legacy} 张一样或更少 —— '
+        'antimeridian_parts 分段没有生效，跨界 DEM 又在少算')
+
+    # 前端：早退守卫里不许再出现「按东界/警告码判跨界然后整段隐藏」。
     body = _estimate_body()
-    decl = re.search(r"(\w+)\s*=[^;\n]*bounds_wgs84[^;\n]*\[2\][^;\n]*>\s*180", body)
-    assert decl, (
-        '预告没有按 summary.bounds_wgs84 的**东界**（下标 [2]）判跨界 —— 跨 180° '
-        ' 的 DEM 会拿到一个少算约六成的张数；写成 [0] 判的是西界，与跨界无关')
     guards = [c for c in _if_conditions(body) if 'Array.isArray(counts)' in c]
     assert guards, (
         '找不到那条早退守卫（条件里应有 Array.isArray(counts)）—— 本测试已失效')
-    assert any(decl.group(1) in c for c in guards), (
-        f'{decl.group(1)} 算出来了却没接进早退守卫 —— 跨界判据成了一个没人读的'
-        f'局部变量，预告照旧按少算约六成的张数出：{guards}')
+    for cond in guards:
+        assert 'bounds_wgs84' not in cond and 'ntimeridian' not in cond, (
+            f'早退守卫又开始按跨界隐藏预告：{cond} —— 少算的根因已经在 '
+            'raster_probe._tile_counts_per_level 修掉（见本条 docstring），'
+            '再隐藏一次只会让跨界 DEM 白白失去起切前的规模提示')
     assert "warnings" not in body, (
-        '跨界判据不能读 warnings：单文件跨界时 summary.warnings 是干净的，'
-        '而它上面的 antimeridian 讲的是并集 wrap，不是这张表少算了')
+        '预告不能读 warnings：单文件跨界时 summary.warnings 是干净的，'
+        '而 summary 上的 antimeridian 讲的是并集做过 wrap，与张数对不对无关')
 
 
 def test_the_estimate_is_redrawn_when_any_of_its_inputs_change():

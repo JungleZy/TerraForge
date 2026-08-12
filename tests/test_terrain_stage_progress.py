@@ -293,15 +293,22 @@ def test_terrain_job_progress_has_a_frontend_listener():
     广播了整套逐瓦片进度，前端却只能靠详情弹窗手动点「刷新」才看得到，
     任务列表在整个切片期间毫无动静。emit 与 listener 分处前后端，脱节了
     不会有任何报错。
+
+    ⚠️ 登记（2026-08 phase-3 §6.1 任务中心抽取）：监听者从 tasks.js 搬到
+    static/js/task_center.js（函数名与函数体逐字未改，只是换了文件；
+    base.html 全局加载它，于是 /history 也拿得到实时进度）。这里**钉死**
+    task_center.js 而不是「两个文件里有一个就行」：写成后者的话，把整段
+    socket 接线搬回首页专属的 tasks.js 也是绿的，而那正是这次抽取要修的
+    缺陷本体（独立页收不到切片进度）。
     """
     backend = open(
         os.path.join(os.path.dirname(__file__), "..",
                      "src", "services", "dem_task_manager.py"), encoding="utf-8").read()
     assert 'emit("terrain_job_progress"' in backend, "后端不再广播该事件？"
 
-    js = _js("tasks.js")
+    js = _js("task_center.js")
     assert "socket.on('terrain_job_progress'" in js, \
-        "terrain_job_progress 没有前端监听者 —— 切片进度在界面上不存在"
+        "terrain_job_progress 在 task_center.js 里没有监听者 —— 切片进度在界面上不存在"
 
 
 def test_stage_text_helper_is_not_hardcoded_to_map():
@@ -309,8 +316,11 @@ def test_stage_text_helper_is_not_hardcoded_to_map():
 
     原先写死 `map:${taskId}`，地形/等高线管线复用不了 —— 它们的行 key 分别是
     `dem:` / `local_terrain:` / `contour:`。
+
+    钉的是**行为**（多了一个 taskType 形参）不是文件位置；文件位置由上一条
+    的登记说明（实现现在在 task_center.js）。
     """
-    code = _js_code("tasks.js")
+    code = _js_code("task_center.js")
     assert "`map:${taskId}`" not in code, \
         "updateTaskStageText 仍写死 map: 前缀，别的管线复用不了"
     assert re.search(r"function updateTaskStageText\([^)]*taskType[^)]*\)", code), \
@@ -328,8 +338,11 @@ def test_stage_text_has_a_clear_path():
     Vue 化后清除的形态从 `delete task.stage_text` 变成写空串：store 里的行是
     响应式对象，`delete` 属性在 Vue 3 的 reactive 下虽然能触发更新，但组件里
     这两个字段都参与 `||` 取值，写 '' 语义更直白也更难写错。
+
+    两个清除点都在 task_center.js（updateTaskStageText / updateTerrainJobProgress，
+    随实时链一并搬家，见本节第一条的登记）。
     """
-    code = _js_code("tasks.js")
+    code = _js_code("task_center.js")
     assert re.search(r"stage_text:\s*stageText\s*\|\|\s*''", code), \
         "stage_text 只写不清 —— 过期的阶段文字会复活并顶掉计数"
     assert re.search(r"tilingText\s*=\s*''", code), \

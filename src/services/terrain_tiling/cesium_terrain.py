@@ -572,8 +572,80 @@ def _gdal_stage_callback(stage_cb, phase: str):
     return _cb
 
 
+def _source_is_float(inputs: list[str]) -> bool:
+    """物化产物的膨胀系数取哪一档：Float32 源约 1.9 倍，Int16 源约 0.78 倍
+    （disk_budget 里那两个数是本文件 :600-606 的实测）。
+
+    只开第一幅读一次波段数据类型 —— 一次切片作业的输入是同一批产品，混着
+    Int16 与 Float32 的情况在这条管线上不存在（DEM 任务目录里全是同一 dataset
+    的颗粒，本地上传也是同一批文件）。
+
+    读不出来时按 **Float32** 算（更贵的那一档）：这里读不出来意味着 GDAL 打不开
+    这个文件，而下一步的 BuildVRT / _assert_no_input_dropped 马上就会因此失败，
+    所以「多要一点空间」这件事在现实里没有代价；反过来按便宜的那档算，则是在
+    真正会写满盘的那一类源上把预检放水。
+    """
+    if not inputs:
+        return True
+    try:
+        ds = gdal.Open(str(inputs[0]))
+        if ds is None:
+            return True
+        dtype = ds.GetRasterBand(1).DataType
+        ds = None
+    except Exception:
+        return True
+    return dtype in (gdal.GDT_Float32, gdal.GDT_Float64)
+
+
+def _materialise_budget_verdict(inputs: list[str], work_dir: str | None,
+                                owner=None, materialise: bool = True):
+    """切片开工之前的磁盘复查判决；预算模块不可用时返回 None（= 不拦、不记）。
+
+    `materialise=False` 是**单幅直通**那一档：那条路一个字节都不物化，剩余工作
+    量只有 mesh 产物一份。多算一整份中间栅格会把一个跑得下去的单幅任务判死，
+    所以这个参数不是精度问题（见 `disk_budget.estimate_terrain_tiling`）。
+
+    `owner` 是本任务在 scheduler 上的凭据 owner（`('dem', 12, 'tiling')` /
+    `('local_terrain', 12, 'tiling')`），由管理器经 TileParams.owner 一路传下来。
+    **不传就是一个真 bug，不是少一点精度**：管理器在起切时已经按本次估算预留了
+    一份 DISK_BYTES，这里不排除掉，它就被当成「别人占的」再扣一遍 —— 一台空
+    闲机器上的单个任务因此需要 2 倍于自身预算的空闲空间才跑得下去，而判决文案
+    还会把用户支去找一个并不存在的并发任务（实测数字见
+    `disk_budget._reserved_by_others` 的 docstring）。
+    None 只对没有预留过的调用方成立：CLI（`main`）与离线建底图脚本压根不经过
+    scheduler，那时「别人占的」里本来就没有自己这一份。
+
+    惰性 import disk_budget：本模块也被 CLI 与离线脚本直接调，那些进程里
+    config 表 / data 目录可能压根不存在。disk_budget 自己对读不到配置是兜底的，
+    但 import 链上多一个 ConfigManager 不值得在这里冒险 —— 拿不到判决就退回
+    改造前的行为（直接写，写满了报 GDAL 的 I/O error）。
+    """
+    try:
+        from src.services import disk_budget
+    except Exception as e:
+        logger.debug(f"Terrain: 磁盘预算模块不可用({e!r})，跳过物化前复查")
+        return None
+
+    source_bytes = 0
+    for path in inputs:
+        try:
+            source_bytes += os.path.getsize(path)
+        except OSError:
+            # 打不开的源由 _assert_no_input_dropped 负责报错，这里只是少算一点。
+            pass
+    estimate = disk_budget.estimate_terrain_tiling(
+        source_bytes, float_source=_source_is_float(inputs),
+        materialise=materialise)
+    # work_dir 为 None 时 mkstemp 落系统临时目录 —— 复查也必须查那块盘，
+    # 查错盘的预检比没有预检更糟（它会给出一个自信的「够用」）。
+    import tempfile as _tempfile
+    return disk_budget.recheck_remaining(
+        work_dir or _tempfile.gettempdir(), estimate, owner=owner)
+
+
 def build_input_raster(inputs: list[str], work_dir: str | None = None,
-                       stage_cb=None) -> str:
+                       stage_cb=None, owner=None) -> str:
     """把切片输入归一成**单幅**栅格路径。单幅直通,多幅物化。
 
     ## 为什么多幅必须物化,而不是交一个 VRT 出去
@@ -605,7 +677,36 @@ def build_input_raster(inputs: list[str], work_dir: str | None = None,
     **Float32**,实测物化后约为源的 **1.9 倍** —— 按最坏情况给磁盘留量。
     产物由 build_terrain 的 finally 删除;本函数自身失败时在这里就地删除。
     """
-    if len(inputs) == 1:
+    # ---- 磁盘复查（§4.2）。在单幅直通与 mkstemp **两者之前** ----------------
+    # 为什么必须在直通之前：单幅任务同样要写 mesh 金字塔（源的若干倍），它只是
+    # 不写中间栅格。这条闸门原先站在 `if len(inputs) == 1: return` **之后**，
+    # 于是**单幅切片作业整个过程一次磁盘检查都没有** —— 实测：把空闲空间伪造成
+    # 1 MiB，2 幅输入的作业被正确判死（"the remaining work needs 25.9 MiB …
+    # only 1.0 MiB is free"），1 幅输入的作业什么都没查、一路跑到 completed。
+    # 而单幅恰恰是最常见的形态（一个 1°×1° 颗粒、一次上传）。
+    #
+    # 不查的代价：最典型的失败形态是写到一半 ENOSPC。GTiff 边写边落盘，留下一份
+    # **非空**的半成品，而用户看到的是一句 GDAL 的 I/O error —— 与「盘满了，还差
+    # 12 GiB」相距甚远；多幅路径还要等 `_verify_materialised` 才揭穿它，那时已经
+    # 白等了十几分钟到几十分钟。
+    #
+    # 用 recheck_remaining 而不是 check_budget：走到这里任务已经起来了（管理器
+    # 在 start 时做过一次 check_budget），措辞该是「剩下的活还要多少」。判决不
+    # 通过就当场抛 —— 抛在 mkstemp 之前，盘上一个字节都还没被碰过。
+    # 判决通过与否都记一行：估算错的时候第一件事就是回头看这行的数字。
+    #
+    # materialise 按幅数给：单幅直通一个字节都不物化，把中间栅格也算进去等于拿
+    # 一份并不存在的开销去判死一个本来跑得下去的任务。
+    _multi = len(inputs) > 1
+    _budget_verdict = _materialise_budget_verdict(
+        inputs, work_dir, owner=owner, materialise=_multi)
+    if _budget_verdict is not None:
+        logger.info(f"Terrain: 切片前磁盘复查 —— {_budget_verdict.reason}")
+        if not _budget_verdict.ok:
+            raise RuntimeError(_budget_verdict.reason)
+
+    if not _multi:
+        # 单幅直通：多源 VRT 的接缝问题不存在，源文件本身就是切片输入。
         return inputs[0]
 
     import tempfile
@@ -1406,6 +1507,12 @@ def build_terrain(
     max_error_k: float = DEFAULT_MAX_ERROR_K,
     normals: bool = True,
     level_offset: int = 0,
+    # 本任务在 scheduler 上的凭据 owner，例如 ('dem', 12, 'tiling')。只用于物化
+    # 前那次磁盘复查：不传的话本任务准入时预留的 DISK_BYTES 会被当成「别人占的」
+    # 再扣一遍，独占机器的单任务因此需要 2 倍自身预算才跑得下去
+    # （见 _materialise_budget_verdict 与 disk_budget._reserved_by_others）。
+    # None 是 CLI / 离线建底图脚本那一档：它们压根不经过 scheduler，没有自己那份。
+    owner=None,
 ) -> dict:
     # progress_cb(done, total): 逐瓦片进度回调（done = rendered+failed，terrain
     # 没有 contour 的 skipped 态），串行/并行每 tally 一次调一次；调用方自行
@@ -1472,7 +1579,7 @@ def build_terrain(
     # 物化产物落在输出目录旁边而不是系统临时目录：它和源数据同量级（6 幅 ASTER
     # 约 92 MB，大任务可到 GB），/tmp 在部分部署里是内存盘，塞不下。
     input_path = build_input_raster(inputs, work_dir=str(out.parent),
-                                    stage_cb=stage_cb)
+                                    stage_cb=stage_cb, owner=owner)
     # 多输入时 build_input_raster 落在 tempfile.mkstemp 的临时文件，此前从不删除，
     # 每次多输入切片泄漏一个临时文件（M18）。删除时机必须在进程池消费完之后
     # （worker 在 initializer 里各自打开这个文件），所以挂在整个切片过程的
@@ -1598,9 +1705,19 @@ def build_terrain(
         chose = {"martini": 0, "grid": 0}
         workers = int(workers or 0)
         if workers <= 0:
-            # 保守默认:每个 worker 都要打开 GDAL dataset 并逐瓦片读 DEM 窗口,worker
-            # 太多内存吃紧;无脑 cpu_count 在多核机器上可能把内存打爆、worker 被 OS
-            # 杀掉(BrokenProcessPool)。封顶 4,与 contour 一致;显式传 workers 可覆盖。
+            # 0 = 自动挡，**只剩 CLI / 建底图脚本 / 直调实验走到这里**。四条管线
+            # 的应用侧从 wave B 起一律把 ResourceScheduler 授予的 CPU_WORKER 名额
+            # 显式传进来（dem_task_manager / local_terrain_task_manager 起切时
+            # reserve，把 reservation.cpu_workers 塞进 TileParams.workers）——
+            # 否则每个任务各自 min(4, cpu_count)，两个地形任务并行就是 8 个重型
+            # worker，全局上限形同虚设（这正是 resource_scheduler 模块 docstring
+            # 里点名的那条：「四个任务并行 = 四套全部叠加，无上界」）。
+            # 自动挡的 4 与 resource_scheduler._AUTO_CPU_CAP 是同一个数，但那边
+            # 是**全局**封顶、这边是**单作业**封顶，语义不同，不是重复的常量。
+            #
+            # 保守默认本身的理由不变:每个 worker 都要打开 GDAL dataset 并逐瓦片读
+            # DEM 窗口,worker 太多内存吃紧;无脑 cpu_count 在多核机器上可能把内存
+            # 打爆、worker 被 OS 杀掉(BrokenProcessPool)。封顶 4,与 contour 一致。
             workers = min(4, os.cpu_count() or 1)
 
         def _emit() -> None:

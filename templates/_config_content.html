@@ -224,6 +224,11 @@
                             <label class="form-label">{{ t('tpl.config.download.tile_servers') }}</label>
                             {{ hint(t('tpl.config.download.tile_servers_hint')) }}
                         </div>
+                        <!-- 瓦片源向导（§6.2）的容器。整块由 config.js 渲染：
+                             输入框、按钮、检测结果、以及**服务端逐字返回的警告**
+                             都是运行期内容，服务端渲染一个空壳再由 JS 填等于把
+                             同一份结构写两遍。 -->
+                        <div class="tile-url-wizard" id="tileUrlWizard"></div>
                         <!-- 每行一个条目：Google 别名（mts0–mts3）、主机
                              （mts0.google.cn）或完整 XYZ 模板。行结构由
                              config.js 的 addTileServerRow 生成/增删。 -->

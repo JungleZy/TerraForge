@@ -8,8 +8,10 @@ east < west(反经线式输入被静默交换,下载的是完全错误的区域)
 规则(与 Leaflet 页面选区、Web Mercator 的输入语义一致):
   - 纬度 [-90, 90] 且 north > south(85.0511 的投影截断由瓦片计算层负责);
   - 经度 [-180, 180] 且 east > west;
-  - 不支持跨反经线选区(east < west,如 170..-170)—— 静默交换会下载完全错误
-    的区域,直接拒绝,让用户修正输入;
+  - 裸四角输入不支持跨反经线(east < west,如 170..-170)—— 静默交换会下载完全
+    错误的区域,直接拒绝,让用户修正输入。跨界的规范写法是 east > 180,由
+    `validate_bbox(..., allow_unwrapped_east=True)` 接受,前提是调用方能证明
+    这四个数来自一个真的跨界的 RegionSpec(详见 validate_bbox 上方那段注释);
   - NaN / inf / 非数字一律拒绝。API 传入的是 JSON 值,None、列表会让 float()
     抛 TypeError(在 Flask 层变成 500),这里统一转成带字段名的 ValueError(400)。
 """
@@ -35,9 +37,40 @@ def coerce_number(value, name):
         raise ValueError(f"{name} ({value!r}) must be a finite number")
     return f
 
+# ---------------------------------------------------------------------------
+# ⚠️ 反经线：**不要**把下面 validate_bbox 的 `east <= west` 改成「静默交换」。
+#
+# 这四个数是 tasks / dem_tasks / contour_tasks / local_terrain_tasks 四张表的
+# north/south/east/west 四列的合同。裸四角输入（用户在地图上拖了个框、没有
+# 任何 region）的语义仍然是「两个经度都落在 ±180 内、east 严格大于 west 的
+# 矩形」：这种输入里 `east < west` 唯一可能的来源是用户填反了，静默交换会下载
+# 一块完全错误的区域 —— 那正是本文件当初存在的理由（见上面的规则第三条）。
+#
+# 跨反经线的**规范写法不是 east < west，而是 east > 180**：
+# `src/contracts/region.py` 的 `RegionSpec` 把 `west=170, east=-170` 归一成
+# `west=170, east=190`，`RegionSpec.antimeridian_parts` 再把它拆成 1~2 段各自
+# 落在 ±180 内的 (n, s, e, w)，每一段都能原样喂给本函数与下游。
+#
+# `allow_unwrapped_east=True` 就是为这条规范写法开的口子，**只有**在调用方能
+# 证明这四个数派生自一个真的跨界的 RegionSpec 时才可以传（今天唯一的调用点是
+# `src/models/task.py` 的 `Task.__post_init__`，它拿任务自己的 `region_spec`
+# 列当判据）。dem_tasks 早就在库里存着 `east=181.0` 这种未回绕值，四列合同
+# 本来就容得下这个形状；地图管线是最后一个还在拒的，这个开关是来抹平它的。
+#
+# 判据必须是「region 真的跨界」而不是「有 region」：后者会让一个 east=250 的
+# 垃圾值搭着一个普通多边形混进库里，而 250 在下游会被当成未回绕坐标 —— 那是
+# 一块横跨大半个地球的错误下载区，正是本函数要挡的东西。
+# ---------------------------------------------------------------------------
 
-def validate_bbox(north, south, east, west):
-    """校验四至,返回 (north, south, east, west) 四个 float。"""
+
+def validate_bbox(north, south, east, west, *, allow_unwrapped_east=False):
+    """校验四至,返回 (north, south, east, west) 四个 float。
+
+    `allow_unwrapped_east=True` 时 east 的上界放宽到 360，用来接受
+    `RegionSpec` 归一后的跨反经线写法（west 仍在 ±180 内，east 落在
+    (180, 360]）。开关的使用前提见上面那段注释：调用方必须已经证明这四个数
+    来自一个 `crosses_antimeridian` 为真的 RegionSpec。
+    """
     n = coerce_number(north, 'north')
     s = coerce_number(south, 'south')
     e = coerce_number(east, 'east')
@@ -51,10 +84,17 @@ def validate_bbox(north, south, east, west):
         raise ValueError(f"north ({n}) must be between -90 and 90")
     if not (-180 <= w <= 180):
         raise ValueError(f"west ({w}) must be between -180 and 180")
-    if not (-180 <= e <= 180):
-        raise ValueError(f"east ({e}) must be between -180 and 180")
+    # 上界跟着开关走，报错文案照旧带出实际上界 —— 裸四角路径拿到的仍然逐字是
+    # "east (181.0) must be between -180 and 180"（API 合同，测试盯着它）。
+    east_upper = 360.0 if allow_unwrapped_east else 180.0
+    if not (-180 <= e <= east_upper):
+        raise ValueError(f"east ({e}) must be between -180 and {east_upper:g}")
     if e <= w:
         raise ValueError(f"east ({e}) must be greater than west ({w})")
+    # 只在放开上界之后才够得着：west 最低 -180、east 最高 360，跨度能到 540°。
+    # 超过 360° 意味着同一条经线被绕了两遍,枚举出来的瓦片会重复。
+    if e - w > 360.0:
+        raise ValueError(f"east ({e}) minus west ({w}) must not exceed 360 degrees")
     return n, s, e, w
 
 

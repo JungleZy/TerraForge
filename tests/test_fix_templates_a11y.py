@@ -213,11 +213,11 @@ def _status_chips(html):
     return chips
 
 
-@pytest.mark.parametrize('path,expected', [('/', 14), ('/config', 10)])
+@pytest.mark.parametrize('path,expected', [('/', 15), ('/config', 10)])
 def test_every_status_chip_declares_its_selected_state(isolated_app, path, expected):
     """每一颗 .status-chip 都要有 aria-pressed，且与 .active 一致。
 
-    旧行为：三组 chips（任务状态筛选 4 颗、主题 3 颗、语言 2 颗）的选中态
+    旧行为：三组 chips（任务状态筛选、主题 3 颗、语言 2 颗）的选中态
     **只有** CSS 类。`.status-chip.active` 与基态只差 color / border-color，
     读屏用户完全读不出当前筛的是哪一档、界面是什么主题、什么语种。
 
@@ -227,9 +227,10 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
     `.active` 与 `aria-pressed="true"` **配对**钉住：只查「属性存在」的话，
     全部写死 false 也能绿，而那正是「选中态读不出来」这个缺陷本身。
 
-    首页 14 颗 = 筛选 4 + 主题 3 + 语言 2 + 强调色 5（配置面板 include 进首页，
-    强调色组 2026-08-11 新增）；/config 独立页 10 颗 = 主题 3 + 语言 2 + 强调色 5
-    （没有任务筛选行）。先钉数量，
+    首页 15 颗 = 筛选 5 + 主题 3 + 语言 2 + 强调色 5（配置面板 include 进首页，
+    强调色组 2026-08-11 新增；筛选组 2026-08-12 随 §13-3 加了「有缺块」一枚）；
+    /config 独立页 10 颗 = 主题 3 + 语言 2 + 强调色 5（没有任务筛选行）。
+    先钉数量，
     正则/选择器失配时响亮失败而不是退化成空循环。
     """
     chips = _status_chips(_render(isolated_app, path))

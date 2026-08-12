@@ -40,6 +40,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.contracts.outcome import TileOutcome  # noqa: E402
+
 
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
@@ -101,16 +103,20 @@ def _run_two_progress_pushes(tm, sio, task_id, stop, *, set_stop_between):
     """
     counts = {}
 
-    async def fake_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_batch(tiles, style, progress_callback, stop_flag=None,
+                         source=None, **_):
         # tiles 是生成器(引擎按 DOWNLOAD_BATCH_SIZE 惰性 islice,任务侧不再
         # 物化全网格清单),不能下标取。
+        # source= / max_concurrency= 是引擎新增的关键字参数;不收下 source
+        # 就只能按旧 style 码写缓存,而 _execute_task 读的是指纹命名空间。
         tile = next(iter(tiles))
-        cache_path = tile.cache_path(style)
+        cache_path = tile.cache_path(source or style)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(b'fresh-tile')
 
-        # 第 1 发:任务确实在跑,必须广播。
-        await progress_callback(tile, 'completed', None)
+        # 第 1 发:任务确实在跑,必须广播。status 是 `TileOutcome` 的值
+        # ('success',旧 'completed')。
+        await progress_callback(tile, TileOutcome.SUCCESS.value, None)
         counts['first'] = sum(1 for e, _ in sio.events if e == 'task_progress')
 
         if set_stop_between:
@@ -119,10 +125,10 @@ def _run_two_progress_pushes(tm, sio, task_id, stop, *, set_stop_between):
             stop.set()
 
         # 第 2 发:同样满足 done >= total,不会被节流拦掉。
-        await progress_callback(tile, 'completed', None)
+        await progress_callback(tile, TileOutcome.SUCCESS.value, None)
         counts['second'] = sum(1 for e, _ in sio.events if e == 'task_progress')
 
-        return [{'tile': tile, 'status': 'completed'}]
+        return [{'tile': tile, 'status': TileOutcome.SUCCESS.value}]
 
     tm.download_engine.download_tiles_batch = fake_batch
     asyncio.run(tm._execute_task(task_id, stop_flag=stop))

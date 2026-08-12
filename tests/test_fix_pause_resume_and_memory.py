@@ -21,6 +21,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.contracts.outcome import TileOutcome  # noqa: E402
+
 
 @pytest.fixture()
 def isolated_config(tmp_path, monkeypatch):
@@ -257,9 +259,26 @@ def test_resume_route_maps_stopping_error_to_4xx_with_honest_message(
 # ---------------------------------------------------------------------------
 
 
-def _prime_cache_tiles(engine, tiles, style='m'):
+def _task_source(task_id):
+    """任务行 → SourceSnapshot(= 这条任务的缓存命名空间)。
+
+    缓存一级目录已是 `<style_code>-<指纹8位>`,由建任务时冻结的快照决定。
+    往 cache 预置瓦片必须走这条同一推导,否则 _execute_task 一块都命不中,
+    任务转头去打真实上游 —— 那是几分钟的挂起,不是一条干脆的红。
+    """
+    from src.services.source_registry import snapshot_for_task_row
+
+    return snapshot_for_task_row(_task_row(task_id))
+
+
+def _prime_cache_tiles(engine, tiles, source='m'):
+    """把这些瓦片写进 `source` 对应的缓存命名空间。
+
+    `source` 收 SourceSnapshot(任务链路)或裸 style 码(纯引擎链路,那条
+    路径本来就按 style 码算目录)。
+    """
     for tile in tiles:
-        path = engine._get_cache_path(tile, style)
+        path = engine._get_cache_path(tile, source)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b'not-a-real-png')
 
@@ -348,7 +367,7 @@ def test_execute_task_threads_stop_flag_into_stitch_and_treats_cancel_as_stop(
     # 让拼接阶段有活可干:预置该 zoom 的 cache 命中。
     tiles = list(tm.download_engine.iter_tiles(
         40.0, 39.0, 117.0, 116.0, 10, 10, task_id=task_id))
-    _prime_cache_tiles(tm.download_engine, tiles)
+    _prime_cache_tiles(tm.download_engine, tiles, _task_source(task_id))
 
     stop = threading.Event()
     seen = {}
@@ -417,27 +436,32 @@ def test_download_receives_a_lazy_generator_not_a_materialised_grid(
 
     # 每一趟枚举各自计数:第 0 趟是 cache 分类(必然走完全网格),
     # 第 1 趟是喂给下载的待下载生成器 —— 它必须跟着消费走。
+    #
+    # 挂的是 `iter_region_tiles` 而不是 `iter_tiles`:任务侧的枚举入口已经
+    # 改成按 `RegionSpec` 走(选区可以是多边形带洞,不再只是四至矩形),
+    # `iter_tiles` 只剩纯四至的调用者。挂错函数的话计数器一次都不触发,
+    # 断言会因为 `produced` 是空列表而 IndexError —— 假红,不是假绿。
     produced = []
-    real_iter_tiles = tm.download_engine.iter_tiles
+    real_iter_region_tiles = tm.download_engine.iter_region_tiles
 
-    def instrumented_iter_tiles(*args, **kwargs):
+    def instrumented_iter_region_tiles(*args, **kwargs):
         index = len(produced)
         produced.append(0)
 
         def counting():
-            for tile in real_iter_tiles(*args, **kwargs):
+            for tile in real_iter_region_tiles(*args, **kwargs):
                 produced[index] += 1
                 yield tile
 
         return counting()
 
-    tm.download_engine.iter_tiles = instrumented_iter_tiles
+    tm.download_engine.iter_region_tiles = instrumented_iter_region_tiles
 
     seen = {}
     downloaded = []
 
     async def fake_download_tiles_batch(tiles, style, progress_callback,
-                                        stop_flag=None):
+                                        stop_flag=None, *, source=None, **_):
         seen['is_generator'] = inspect.isgenerator(tiles)
         tile_iterator = iter(tiles)
         peak = 0
@@ -448,10 +472,10 @@ def test_download_receives_a_lazy_generator_not_a_materialised_grid(
                 break
             peak = max(peak, produced[1] - len(downloaded))
             for tile in batch:
-                cache_path = tile.cache_path(style)
+                cache_path = tile.cache_path(source or style)
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_bytes(b'fresh-tile')
-                await progress_callback(tile, 'completed', None)
+                await progress_callback(tile, TileOutcome.SUCCESS.value, None)
                 downloaded.append(tile)
         seen['peak_outstanding'] = peak
 
@@ -489,19 +513,19 @@ def test_pending_generator_skips_exactly_the_cache_hits(isolated_config):
         40.0, 39.0, 117.0, 116.0, 10, 11, task_id=task_id))
     # 挑一批**不连续**的瓦片做命中:连续前缀的归并即便写错也可能碰巧对。
     cached = [t for i, t in enumerate(all_tiles) if i % 3 == 0]
-    _prime_cache_tiles(tm.download_engine, cached)
+    _prime_cache_tiles(tm.download_engine, cached, _task_source(task_id))
     expected = [(t.zoom, t.x, t.y) for i, t in enumerate(all_tiles) if i % 3]
 
     got = []
 
     async def fake_download_tiles_batch(tiles, style, progress_callback,
-                                        stop_flag=None):
+                                        stop_flag=None, *, source=None, **_):
         for tile in tiles:
             got.append((tile.zoom, tile.x, tile.y))
-            cache_path = tile.cache_path(style)
+            cache_path = tile.cache_path(source or style)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_bytes(b'fresh-tile')
-            await progress_callback(tile, 'completed', None)
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -535,7 +559,7 @@ def test_backfill_copies_only_the_cache_hit_prefix(isolated_config):
         40.0, 39.0, 117.0, 116.0, 10, 10, task_id=task_id))
     cached = all_tiles[:2]
     assert len(all_tiles) > len(cached) + 2
-    _prime_cache_tiles(tm.download_engine, cached)
+    _prime_cache_tiles(tm.download_engine, cached, _task_source(task_id))
 
     download_finished = threading.Event()
     backfill_gated = threading.Event()
@@ -543,7 +567,7 @@ def test_backfill_copies_only_the_cache_hit_prefix(isolated_config):
     copies_lock = threading.Lock()
     real_copy = TaskManager._stream_copy_tile
 
-    def counting_copy(self, tile, style_code, output_base, made_dirs, lock):
+    def counting_copy(self, tile, source, output_base, made_dirs, lock):
         in_backfill = threading.current_thread().name.endswith('-backfill')
         with copies_lock:
             copies.append((in_backfill, (tile.zoom, tile.x, tile.y)))
@@ -552,17 +576,17 @@ def test_backfill_copies_only_the_cache_hit_prefix(isolated_config):
             # 追加完毕 —— 否则「补拷是否跟着尾巴跑」取决于线程调度,断言会飘。
             backfill_gated.set()
             download_finished.wait(30)
-        return real_copy(self, tile, style_code, output_base, made_dirs, lock)
+        return real_copy(self, tile, source, output_base, made_dirs, lock)
 
     tm._stream_copy_tile = counting_copy.__get__(tm, TaskManager)
 
     async def fake_download_tiles_batch(tiles, style, progress_callback,
-                                        stop_flag=None):
+                                        stop_flag=None, *, source=None, **_):
         for tile in tiles:
-            cache_path = tile.cache_path(style)
+            cache_path = tile.cache_path(source or style)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_bytes(b'fresh-tile')
-            await progress_callback(tile, 'completed', None)
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
         download_finished.set()
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
@@ -748,10 +772,13 @@ def test_engine_reports_each_tile_exactly_once(isolated_config):
 
     asyncio.run(run_all())
 
-    assert results['cache_hit'] == ['completed']
-    assert results['network_ok'] == ['completed']
-    assert results['cache_write_fail'] == ['failed']
-    assert results['network_fail'] == ['failed']
+    # 引擎回调的 status 是 `TileOutcome` 的值,不再是 'completed'/'failed'。
+    # 分类本身是这次改造的要点:写盘失败(本机盘满/只读)与网络失败必须分开,
+    # 补漏才知道该重试还是该先腾磁盘。
+    assert results['cache_hit'] == [TileOutcome.SUCCESS.value]
+    assert results['network_ok'] == [TileOutcome.SUCCESS.value]
+    assert results['cache_write_fail'] == [TileOutcome.CACHE_FAILURE.value]
+    assert results['network_fail'] == [TileOutcome.RETRYABLE_FAILURE.value]
     assert results['cancelled'] == [], (
         '取消的瓦片不上报 —— 上报了就会被计成一次真实结果'
     )

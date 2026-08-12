@@ -25,7 +25,17 @@ class ContourParams:
     style: ContourStyle
     shade: bool = False
     water: bool = False
-    workers: int = 0  # 0 = auto (min(4, os.cpu_count())，见 contour_engine); 1 = serial
+    # 0 = auto (min(4, os.cpu_count())，见 contour_engine); 1 = serial。
+    # 应用侧从 wave B 起恒传 ResourceScheduler 授予的 CPU_WORKER 名额
+    # （contour_task_manager.start_task 起任务时 reserve），0 只留给直调与测试：
+    # 每个任务各自算 min(4, cpu_count) 等于没有全局上限。
+    workers: int = 0
+    # 运行中磁盘复查（`disk_budget.RunningRecheck`）。None = 不查：直调、CLI、
+    # 测试那一档压根没经过 scheduler，也就没有自己那份 DISK_BYTES 预留可排除。
+    # 放在 params 而不是 tile_contour_task_dir 的独立参数：十来个契约测试用
+    # (task_dir, out_dir, params, build_contour_fn=None, progress_cb=None,
+    # stage_cb=None, stop_flag=None) 的替身钉住了本函数的调用形态。
+    disk_recheck: object = None
 
 
 # 曾有一个 contour_output_dir_for_task(task_output_path, task_id) 住在这里，
@@ -58,6 +68,12 @@ def tile_contour_task_dir(
     if build_contour_fn is None:
         from src.services.contour_engine import build_contour_tiles as build_contour_fn
 
+    # disk_recheck **只在真的有值时才传**：tests 里的 fake_build 替身是按
+    # 老签名（... water=False, att_tifs=None, workers=0）写死的位置/关键字
+    # 参数，无条件多塞一个 kwarg 会让它们全部 TypeError。别把它「清理」成
+    # 无条件传参（同 task_manager 对 source= / max_concurrency= 的做法）。
+    extra = {} if params.disk_recheck is None else {'disk_recheck': params.disk_recheck}
+
     return build_contour_fn(
         dem_tifs=dem_tifs,
         out_dir=out_dir,
@@ -72,4 +88,5 @@ def tile_contour_task_dir(
         water=params.water,
         att_tifs=att_tifs,
         workers=params.workers,
+        **extra,
     )

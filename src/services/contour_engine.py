@@ -635,6 +635,7 @@ def build_contour_tiles(
     water: bool = False,
     att_tifs=None,
     workers: int = 0,
+    disk_recheck=None,
 ) -> dict:
     """
     Warp DEM(s) to EPSG:3857, then per slippy tile read the window and render a
@@ -645,9 +646,22 @@ def build_contour_tiles(
     up across tiles. Heavy deps imported lazily so the module stays import-safe.
 
     workers: 0 = auto (min(4, os.cpu_count())); 1 = serial; N>1 = N worker processes.
+    应用侧（contour_task_manager）恒传 ResourceScheduler 授予的 CPU_WORKER 名额，
+    0 只留给直调与测试 —— 理由见下面 n_workers 那段注释。
     并行时每个 worker 各自打开 warp 后的 GTiff;瓦片按 batch 从生成器取(不物化
     整张列表,高 zoom 大区域会 OOM),批间检查 stop_flag。串行与并行共用
     _render_contour_tile_core,产出完全一致。
+
+    disk_recheck: `disk_budget.RunningRecheck`(None = 不查,直调与测试那一档)。
+    渲染循环里与 stop_flag 在**同一批检查点**上问它:判死就当停止标记被置位
+    处理 —— 干净收手,不抛。理由与 dem_download_engine 里那段一致:抛出去会被
+    管理器的兜底 except 变成一句 RuntimeError,而用户需要看到的是判决里那四个
+    数字。判决对象归调用方所有,收手之后调用方从 `disk_recheck.blocked` 取判决
+    写终态与原因。
+
+    等高线的剩余工作量只算**没渲的瓦片**:warp 产物与金字塔在渲染开始前就已经
+    落盘了,再算一遍等于把已占用的空间又要求一次,跑到后半程必然误判
+    (recheck_remaining 的 docstring)。这份估算由调用方给。
     """
     from osgeo import gdal
     import os
@@ -666,8 +680,21 @@ def build_contour_tiles(
     # Warp to on-disk GTiffs (NOT MEM): a whole-coverage in-RAM warp OOMs on large
     # multi-degree areas. On-disk warp streams to disk, and per-tile windowed reads
     # keep RAM bounded regardless of coverage size. tmpdir is removed at the end.
-    # 大区域 warp 产物可达数十 GB,默认落系统临时目录;contour_warp_tmpdir 配置键
-    # 可指到空间充足的盘(留空 = 系统默认)。
+    #
+    # 落点的三级优先级，从高到低：
+    #   1. contour_warp_tmpdir 配置键 —— **操作员的显式覆盖，永远最高**。他知道
+    #      哪块盘空，我们不该拿启发式去推翻它。
+    #   2. 配置为空时，跟着**输出盘**走（disk_budget.work_dir_for）。warp 产物可
+    #      达数十 GB，而系统临时目录在不少部署里是内存盘（tmpfs）或一块只有几 GB
+    #      的系统盘 —— 输出明明落在数据盘上，中间件却把系统盘写爆，这是
+    #      GeoDownloader #32 的同一个坑。work_dir_for 只在两者**不同盘**时才改到
+    #      输出旁边；同盘时它返回的就是系统临时目录，行为与改造前逐字一致。
+    #   3. work_dir_for 自己算不出来（输出路径异常）时退回系统默认。
+    #
+    # ⚠️ 前缀恒为 'contour_warp_'，不许改也不许新增：task_cleanup 维护着一张
+    # 「可清扫前缀」注册表，不在表里的前缀就是启动清扫的盲区（残留几十 GB 无人
+    # 回收）。这里用 work_dir_for(...).parent 只是借它挑**盘**，目录名仍由下面
+    # 这句 mkdtemp 按老前缀生成。
     from src.services.config_manager import ConfigManager
     try:
         warp_tmp_base = (ConfigManager().get("contour_warp_tmpdir", "") or "").strip() or None
@@ -676,6 +703,16 @@ def build_contour_tiles(
         # ConfigManager.get 对 sqlite 错误是有意重抛的,这里自行兜底。
         logger.warning(f"读取 contour_warp_tmpdir 失败({e!r}),回退系统临时目录")
         warp_tmp_base = None
+    if warp_tmp_base is None:
+        try:
+            from src.services.disk_budget import work_dir_for
+
+            warp_tmp_base = str(work_dir_for(out_dir, "contour_warp_").parent)
+            os.makedirs(warp_tmp_base, exist_ok=True)
+        except Exception as e:
+            # 只是选盘失败，不该让渲染失败：退回系统默认，也就是改造前的行为。
+            logger.warning(f"warp 工作目录选盘失败({e!r}),回退系统临时目录")
+            warp_tmp_base = None
     tmpdir = tempfile.mkdtemp(prefix="contour_warp_", dir=warp_tmp_base)
     dem_path = os.path.join(tmpdir, "dem_3857.tif")
     att_path = None
@@ -795,18 +832,48 @@ def build_contour_tiles(
 
         n_workers = int(workers or 0)
         if n_workers <= 0:
-            # 保守默认:每个 worker 都要加载 GDAL+matplotlib+numpy 并 mmap warp 后的
-            # DEM,worker 太多会内存吃紧。无脑用 cpu_count 在多核 Windows 打包环境下
-            # 曾 spawn ~20 个重型 worker 把内存打爆、worker 被 OS 杀掉(BrokenProcessPool)。
-            # 封顶 4;用户可用 contour_workers 配置显式提高。
+            # 0 = 自动挡，**只剩直调实验与测试走到这里**。等高线任务从 wave B 起
+            # 由 contour_task_manager 把 ResourceScheduler 授予的 CPU_WORKER 名额
+            # 显式传进 ContourParams.workers —— 否则每个任务各自 min(4, cpu_count)，
+            # 两个渲染任务并行就是 8 个重型 worker，全局上限形同虚设。
+            # contour_workers 配置键仍是用户的**请求量**（管理器拿它去 reserve），
+            # 真正生效的是授予量；4 与 resource_scheduler._AUTO_CPU_CAP 数值相同
+            # 但语义不同（那边是全局封顶，这边是单作业封顶）。
+            #
+            # 保守默认本身的理由不变:每个 worker 都要加载 GDAL+matplotlib+numpy 并
+            # mmap warp 后的 DEM,worker 太多会内存吃紧。无脑用 cpu_count 在多核
+            # Windows 打包环境下曾 spawn ~20 个重型 worker 把内存打爆、worker 被 OS
+            # 杀掉(BrokenProcessPool)。封顶 4。
             n_workers = min(4, os.cpu_count() or 1)
+
+        # 收手判据只此一份:用户的停止标记,或运行中磁盘复查判死。两条路的收手
+        # 动作完全相同 —— 已渲的瓦片留着、剩下的不渲,对下游是同一件事。判死刻意
+        # 不抛(见函数 docstring 里 disk_recheck 那段):这一段就在 GDAL 回调附近,
+        # 而 GDAL 把回调抛异常当成「用户请求中止」并删掉产物(同 _gdal_stage 上面
+        # 那条 ⚠️)。判决只作为返回值流回循环。
+        _budget_logged = []
+
+        def _should_stop() -> bool:
+            if stop_flag is not None and stop_flag.is_set():
+                return True
+            if disk_recheck is None:
+                return False
+            blocked = disk_recheck.blocking_verdict()
+            if blocked is None:
+                return False
+            # 闸门是 sticky 的(判死之后每次都返回同一个判决),所以这条 error 要
+            # 自己去重 —— 否则串行路径会按剩余瓦片数把同一句话刷几万遍。
+            if not _budget_logged:
+                _budget_logged.append(True)
+                logger.error(f"Contour: 渲染被运行中磁盘复查叫停 —— {blocked.reason}")
+            return True
 
         def _render_serial(skip_existing=False):
             nonlocal ctx
             if ctx is None:
                 ctx = _build_render_ctx(dem_path, att_path, style, interval, shade, water, str(out_dir))
             for (z, tx, ty) in _iter_tiles():
-                if stop_flag is not None and stop_flag.is_set():
+                if _should_stop():
                     break
                 if skip_existing:
                     # BrokenProcessPool 回退重跑:已落盘的 PNG(含崩溃批次里已写但
@@ -850,7 +917,7 @@ def build_contour_tiles(
                     logger.info(f"Contour: {n_workers} 个渲染 worker 已就绪, 开始分批渲染(每批 {BATCH})")
                     tiles = _iter_tiles()
                     while True:
-                        if stop_flag is not None and stop_flag.is_set():
+                        if _should_stop():
                             break
                         batch = list(itertools.islice(tiles, BATCH))
                         if not batch:

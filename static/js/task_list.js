@@ -65,6 +65,14 @@
                 <span class="task-id">#{{ rowKey }}</span>
                 <span class="task-meta">{{ metaText }}</span>
                 <span class="task-status-text">{{ statusText }}</span>
+                <!-- 缺口徽章：**常驻**，不是决策期间的临时提示。
+                     completed_with_gaps 的产物可用，用户会拿去做后续处理；
+                     几个月后回到列表时「已完成」与「已完成（有缺口）」在扫视中
+                     必须能一眼分开，而两者的差别是「缺了 N 块瓦片」。
+                     它同时是 WCAG 1.4.1「不只靠颜色」的文字侧：这两态的状态点
+                     与 paused 同色（都是琥珀），区分靠状态小字与这个数字。 -->
+                <span class="task-gap-chip" v-if="gapCount > 0"
+                      :title="t('js.gaps.chip_title', { n: gapCount })">{{ t('js.gaps.chip', { n: gapCount }) }}</span>
                 <span class="task-time progress-detail">{{ timeText }}</span>
                 <div class="btn-group btn-group-sm">
                     <button v-if="hasTaskActions && isLive && supportsPauseResume && task.status === 'pending'"
@@ -89,7 +97,13 @@
                             <polygon points="5 3 19 12 5 21 5 3"></polygon>
                         </svg>
                     </button>
-                    <button v-if="canPreview && task.status === 'completed'"
+                    <!-- 预览：带洞的成品照样能预览 —— 它的瓦片目录是真的出了的
+                         （accept_gaps 会把严格模式当初拒绝的拼接/复制补跑完）。
+                         判据走 store 那份「产出可用」集合，不在模板里写
+                         「status === 'completed'」这种字面量：写死过一次，实测一条
+                         completed_with_gaps 的行上「导出 MBTiles」在、「在地图上
+                         预览」不在 —— 同一份产物，两颗按钮给出互相矛盾的答案。 -->
+                    <button v-if="canPreview && isSuccessful"
                             class="btn btn-icon btn-sm btn-success" @click="preview"
                             :title="t('js.history.action.preview')" :aria-label="t('js.history.action.preview')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -99,12 +113,31 @@
                     </button>
                     <!-- 「处理」：把已完成的高程下载任务转成地形切片任务（新任务进
                          时间流）。打开的是 map.js 的处理弹窗，所以与 canPreview
-                         同一条把关 —— 独立页 /history 不加载 map.js，不渲染。 -->
-                    <button v-if="canProcessDem && task.task_type === 'dem' && task.status === 'completed'"
+                         同一条把关 —— 独立页 /history 不加载 map.js，不渲染。
+                         同样走 isSuccessful 而不是状态字面量：DEM 管线今天到不了
+                         completed_with_gaps（全仓只有 task_manager.py 写那个状态），
+                         但「状态字面量散在模板里」正是上一颗按钮出问题的机制本身，
+                         留一个在这里就是留一颗同型的雷。 -->
+                    <button v-if="canProcessDem && task.task_type === 'dem' && isSuccessful"
                             class="btn btn-icon btn-sm btn-primary" @click="processDem"
                             :title="t('js.history.action.process')" :aria-label="t('js.history.action.process')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                        </svg>
+                    </button>
+                    <!-- 导出 MBTiles。§5.3：MBTiles 是**通用产物容器**，不是
+                         第四种 output_format —— 同一个任务可以同时持有 XYZ 目录、
+                         逐层 GeoTIFF 和一个 MBTiles，所以它是完成后的一个动作。
+                         带缺口的成品同样可导出（后端 is_successful 含
+                         completed_with_gaps）：排除它就等于让「接受缺口」这个
+                         决定毫无意义。 -->
+                    <button v-if="canExport && isExportable"
+                            class="btn btn-icon btn-sm btn-secondary" @click="exportMbtiles"
+                            :title="t('js.gaps.action.export')" :aria-label="t('js.gaps.action.export')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                            <line x1="12" y1="22.08" x2="12" y2="12"></line>
                         </svg>
                     </button>
                     <button class="btn btn-icon btn-sm btn-danger" @click="remove"
@@ -134,10 +167,45 @@
                 <span class="task-count progress-detail" v-else>{{ countText }}<span v-if="failedItems > 0" style="color: var(--color-danger);"> | {{ failedText }}</span></span>
                 <span class="task-speed progress-detail" v-if="speedText">{{ speedText }}</span>
             </div>
-            <template v-else>
+            <!-- pending_decision 刻意不渲染「已完成 · N/M」摘要：它**没有**完成。
+                 那一行的第一个词是状态文案，写着「已完成」就是在说谎；缺口决策行
+                 会说出真话（缺了多少、哪一档、下一步点什么）。 -->
+            <template v-else-if="!isPendingDecision">
                 <div class="task-line2">{{ summaryText }}{{ bboxText }}</div>
                 <div class="task-line2 task-tiling-line" v-if="task.tiling_text">{{ task.tiling_text }}</div>
             </template>
+            <!-- 缺口决策行（§13-3）。两态都渲染：pending_decision 给出两条出路，
+                 completed_with_gaps 给出「补漏」（缺口不是终点，上游恢复后还能补）。
+                 这一行**不是**进度行，所以没有进度条 —— 一根静止的条只会让人以为
+                 「还在跑，再等等」。分档明细来自 GET /api/tasks/<id>/gaps，由
+                 task_center.js 的 ensureGapSummary 拉一次挂到任务对象上；
+                 task_gap_decision 推送里已经带全部数字，那条路不再多打一次请求。 -->
+            <div class="task-gap-line" v-if="showGapLine">
+                <!-- 三态：明细已到 / 还在读 / 读失败。第三态**必须**存在 ——
+                     GET /gaps 超时一次，这一行从前就永久停在「正在读取缺块明细…」：
+                     ensureGapSummary 不重试，而重新拉取的三个触发点（mounted 与
+                     task.status / task.gap_tiles 两条 watch）在「同一个 keyed 行
+                     原地不动、状态与缺块数都没变」时一个都不响。把失败摆出来、
+                     把重试交给用户按一下，是不引入无条件轮询的唯一出路。 -->
+                <span class="task-gap-breakdown" :title="gapLineText">{{ gapLineText }}</span>
+                <!-- 强调**跟着数据走**，不是固定的。
+                     全部缺块都是「上游无数据」时（explained），补漏一张也补不回来
+                     （no_data 不在后端 RETRYABLE_OUTCOMES 里），该点的是「接受并
+                     导出」—— 那时它是填充按钮、补漏退成描边。反之补漏有机会补回
+                     一部分，它才是填充的那一颗。
+                     把不可撤销的那一颗永久做成最醒目的按钮是错的：用户会顺着视觉
+                     重量点下去，而「接受缺口」之后产物与历史永久带缺块标记。 -->
+                <div class="task-gap-actions">
+                    <button v-if="gapLoadError" type="button" class="btn btn-sm btn-outline-secondary"
+                            @click="retryGaps" :title="t('js.gaps.action.retry_title')">{{ t('js.gaps.action.retry') }}</button>
+                    <button v-if="canRefill" type="button" class="btn btn-sm"
+                            :class="gapsExplained ? 'btn-outline-secondary' : 'btn-primary'"
+                            @click="refill" :title="t('js.gaps.action.refill_title')">{{ t('js.gaps.action.refill') }}</button>
+                    <button v-if="canAcceptGaps" type="button" class="btn btn-sm"
+                            :class="gapsExplained ? 'btn-warning' : 'btn-outline-secondary'"
+                            @click="acceptGaps" :title="t('js.gaps.action.accept_title')">{{ t('js.gaps.action.accept') }}</button>
+                </div>
+            </div>
         </div>`;
 
     const TaskRow = {
@@ -153,6 +221,83 @@
             },
             isFailed() {
                 return this.task.status === 'failed';
+            },
+            isPendingDecision() {
+                return this.task.status === 'pending_decision';
+            },
+            // 缺口总数。socket 推送与 /api/tasks 都给 gap_tiles（Task.to_dict），
+            // gap_summary.total 是 GET /gaps 的同一个数 —— 取两者中先有的那个。
+            // 老行（迁移前建的任务）两者皆无，取 0：徽章不出现，与「没有缺口」
+            // 同形，这正确 —— 迁移前的任务确实没有缺口记录。
+            gapCount() {
+                const t = this.task;
+                if (t.gap_tiles != null) return t.gap_tiles;
+                return (t.gap_summary && t.gap_summary.total) || 0;
+            },
+            // 缺口是瓦片级的概念，`/api/tasks/<id>/gaps` 与补漏/接受只有地图管线
+            // 有。动作函数来自 task_center.js（base.html 全局加载，/config 例外）。
+            canDecideGaps() {
+                return this.task.task_type === 'map' && typeof refillTask === 'function';
+            },
+            canRefill() {
+                return this.canDecideGaps
+                    && store.REFILLABLE_STATUSES.includes(this.task.status);
+            },
+            canAcceptGaps() {
+                return this.canDecideGaps && this.isPendingDecision;
+            },
+            // 决策行：待决必显（它是这一行存在的理由），已接受的带洞成品在有
+            // 缺口时也显示 —— 缺口不是终点，上游恢复后还能补。
+            showGapLine() {
+                return this.canDecideGaps
+                    && store.GAP_STATUSES.includes(this.task.status)
+                    && (this.isPendingDecision || this.gapCount > 0);
+            },
+            // 「补漏补不回任何东西」—— 决定两颗按钮谁是填充色。摘要还没拉回来时
+            // 为 false，也就是先按「补漏有机会」呈现：那是可撤销的一侧，摘要到
+            // 位后会自己翻过来。反过来默认（先把不可撤销的那颗做成填充按钮）会
+            // 在最坏时机误导用户。
+            gapsExplained() {
+                return !!(this.task.gap_summary && this.task.gap_summary.explained);
+            },
+            // 空串**只**表示「摘要还没拉回来」—— 模板用它切到「正在读取…」。
+            // 摘要到位但四档全为 0 是另一回事（历史行的 gap_tiles 与 task_tiles
+            // 里的记录不一致时会出现），那时必须说「没有缺块记录」：继续显示
+            // 「正在读取…」等于让那一行永远转圈，而它其实早就读完了。
+            gapBreakdown() {
+                const summary = this.task.gap_summary;
+                if (!summary || typeof gapBreakdownText !== 'function') return '';
+                return gapBreakdownText(summary.by_outcome) || this.t('js.gaps.none');
+            },
+            // 明细读取失败时服务端/网络给的原文（''=没失败）。由
+            // task_center.js 的 ensureGapSummary 写进 store —— 只 console.error
+            // 一句的那一版等于把失败藏起来，行上看不出与「还在读」有任何区别。
+            gapLoadError() {
+                return this.task.gap_summary_error || '';
+            },
+            // 这一行到底该说什么。顺序即优先级：拿到明细就说明细；没拿到但
+            // 记着失败就说失败（旁边同时出「重试」）；两者都没有才是「正在读取」。
+            gapLineText() {
+                if (this.gapBreakdown) return this.gapBreakdown;
+                if (this.gapLoadError) {
+                    return this.t('js.gaps.load_failed', { error: this.gapLoadError });
+                }
+                return this.t('js.gaps.loading');
+            },
+            // 「产出可用（可能带洞）」：全站唯一一份在 task_store。预览、
+            // 「处理」与导出三颗按钮共用它 —— 三处各写一遍 === 'completed'
+            // 正是本次修掉的缺陷，加一个成功态就要满模板 grep。
+            isSuccessful() {
+                return store.SUCCESSFUL_STATUSES.includes(this.task.status);
+            },
+            // 导出 MBTiles 的两个前提：管线支持（影像 / 等高线，与后端
+            // artifact_export 的查表一致）+ 产出可用（含带洞成品）。
+            canExport() {
+                return typeof exportTaskMbtiles === 'function';
+            },
+            isExportable() {
+                return (this.task.task_type === 'map' || this.task.task_type === 'contour')
+                    && this.isSuccessful;
             },
             // 独立页 /history 不加载 tasks.js：那里只剩详情（点任务名）和删除。
             // 预览也没有 —— 它由 canPreview 单独把关，而 previewTask 来自 map.js，
@@ -289,7 +434,10 @@
             //   - speed_at 过期 = 推送停了但任务还在 running（网断了却没判失败），
             //     显示 0 B/s。不这么做界面会永远冻在最后那个 2.3 MB/s，看着像还在跑。
             speedText() {
-                if (this.task.status !== 'running') return '';
+                // 补漏（retrying）与首次下载一样在拉瓦片、一样有速度可报。
+                // 判据走 store 的「此刻真在占资源」清单，不在这里写状态字面量 ——
+                // 写死 `=== 'running'` 正是补漏上线后这一行漏掉速度的原因。
+                if (!store.isRunning(this.task)) return '';
                 if (this.stageText) return '';
                 const at = this.task.speed_at;
                 if (!at || typeof formatSpeed !== 'function') return '';
@@ -300,8 +448,8 @@
             },
         },
         methods: {
-            // 动作函数是全局的（tasks.js 定义，被 map.js/panels.js 也引用），
-            // 这里按名字转发而不是直接绑定：独立页上它们不存在，v-if 已经挡住
+            // 动作函数是全局的（task_center.js 定义，被 map.js/panels.js 也引用），
+            // 这里按名字转发而不是直接绑定：/config 上它们不存在，v-if 已经挡住
             // 渲染，这层 typeof 是第二道防线。
             act(fnName) {
                 const fn = window[fnName];
@@ -318,6 +466,56 @@
             },
             remove() {
                 if (typeof deleteTask === 'function') deleteTask(this.task.id, this.task.task_type);
+            },
+            refill() {
+                if (typeof refillTask === 'function') refillTask(this.task.id, this.task.task_type);
+            },
+            acceptGaps() {
+                if (typeof acceptTaskGaps === 'function') acceptTaskGaps(this.task.id, this.task.task_type);
+            },
+            // 传按钮进去让它自己上锁：打包几万张瓦片要几十秒，不锁就会被连点，
+            // 后端每一发都真的重打一遍同一个文件。$event.currentTarget 而不是
+            // target —— 点在按钮里的 <svg> 上时 target 是那个 svg。
+            exportMbtiles(event) {
+                if (typeof exportTaskMbtiles !== 'function') return;
+                exportTaskMbtiles(this.task.id, this.task.task_type,
+                                  event && event.currentTarget);
+            },
+            // 待决任务的分档明细要多一次 GET /gaps（socket 推送带 by_outcome，
+            // 但页面刷新后重新拉列表时那份数据不在响应里）。ensureGapSummary
+            // 自己按 key 去重并且幂等，所以这里可以无脑调。
+            syncGaps() {
+                // 判据是 showGapLine 而不是 isPendingDecision。曾经只拉待决那一态，
+                // 于是整页刷新之后的 completed_with_gaps 行永久停在「正在读取缺块
+                // 明细…」：那种行的 gap_tiles 来自 /api/history_all，而分档明细只在
+                // task_gap_decision 推送或 GET /gaps 里，而刷新之后两者都不会发生。
+                // 顺带把「补漏值不值得跑」的强调也修对了 —— gapsExplained 要读
+                // gap_summary.explained，拉不到它就永远按「补漏有机会」呈现。
+                if (!this.showGapLine) return;
+                if (this.task.gap_summary || typeof ensureGapSummary !== 'function') return;
+                ensureGapSummary(this.rowKey, this.task.id, this.task.task_type);
+            },
+            // 「重试」按钮。不清标记、不加计数：ensureGapSummary 自己在请求
+            // 起手就把 gap_summary_error 清掉（行立刻回到「正在读取…」，用户
+            // 看得见按下去有反应），并且带在飞去重，所以连点是安全的。
+            retryGaps() {
+                if (typeof ensureGapSummary !== 'function') return;
+                ensureGapSummary(this.rowKey, this.task.id, this.task.task_type);
+            },
+        },
+        // 三个时机都要拉：mounted 兜首屏与翻页（行是新建的），两条 watch 兜「同一个
+        // keyed 行原地变了」（不会重新 mount）—— 状态翻成待决是一条，缺块数从 0
+        // 变成非 0 是另一条（终态行的 gap_tiles 可以由推送单独补上，那一发不带
+        // status，只 watch status 会漏掉它，行上就永久停在「正在读取缺块明细…」）。
+        mounted() {
+            this.syncGaps();
+        },
+        watch: {
+            'task.status': function () {
+                this.syncGaps();
+            },
+            'task.gap_tiles': function () {
+                this.syncGaps();
             },
         },
     };

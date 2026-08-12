@@ -140,16 +140,38 @@ class DemDownloadEngine:
         progress_callback: Optional[Callable[[str, str, Optional[str], Optional[int]], Any]] = None,
         bytes_callback: Optional[Callable[[str, int], Any]] = None,
         stop_flag: Optional[asyncio.Event] = None,
+        max_concurrent: Optional[int] = None,
+        disk_recheck=None,
     ) -> None:
         """
         Download a list of granule filenames to output_dir.
 
         progress_callback 报颗粒级状态迁移；bytes_callback 报在途网络字节
         （每 _BYTES_REPORT_MIN_INTERVAL 聚合一次），上层据此算下载速度。
+
+        max_concurrent 是 ResourceScheduler **授予**的并发连接数。None = 直接读
+        `concurrent_downloads` 配置，也就是改造前的行为（只留给直调与测试）。
+        为什么不能让本方法自己读配置就算数：`concurrent_downloads` 出厂是 50，
+        四条管线各起一个任务就是 200 条连接，没有任何全局上界 —— 那正是
+        resource_scheduler 存在的理由。配置值现在的语义是「**请求**多少条」，
+        管理器拿它去 reserve，真正开出来的连接数是这里收到的授予量
+        （可能小于请求量，最低 1 条：一条也能跑完，只是慢）。
+
+        disk_recheck 是 `disk_budget.RunningRecheck`（None = 不查，直调与测试的
+        那一档）。**颗粒就是这条管线天然的批**：一颗 COG 是 30-50 MB，正好是
+        复查要防的量级，所以每颗开下之前查一次 —— 逐 chunk 查是纯浪费（复查
+        自己还有时间节流）。判死之后不抛：置内部标记，让在途与排队的颗粒各自
+        沿**用户按暂停那条**收手路径退出（见 _stop_requested）。判决对象归调用
+        方所有，收手之后调用方从 `disk_recheck.blocked` 取判决写终态。
         """
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        concurrent_downloads = int(self.config.get("concurrent_downloads", "5"))
+        if max_concurrent is None:
+            concurrent_downloads = int(self.config.get("concurrent_downloads", "5"))
+        else:
+            # 授予量已由调度器保证 >= 1，这里的 max(1, ...) 只防调用方传 0/负数
+            # —— Semaphore(0) 会让所有颗粒永久挂起，表现是任务卡在 0% 不动。
+            concurrent_downloads = max(1, int(max_concurrent))
         request_timeout = int(self.config.get("request_timeout", "60"))
         max_retries = int(self.config.get("max_retries", "3"))
         # 生效代理：手动 proxy_url > 自动探测（见 services/proxy_autodetect）。
@@ -180,11 +202,47 @@ class DemDownloadEngine:
 
         semaphore = asyncio.Semaphore(concurrent_downloads)
 
+        # 磁盘复查判死之后的内部停止状态。放在闭包里而不是 self 上：DemTaskManager
+        # 全进程只有一个 engine 实例，挂在 self 上就是两个并发 DEM 任务互相覆盖
+        # （A 的收手理由变成 B 的判决），而这个标记的职能是「决定要不要停掉一个
+        # 任务」—— 认错任务的代价太大。
+        budget_blocked: Dict[str, Any] = {'verdict': None}
+
+        def _stop_requested() -> bool:
+            """要不要收手：用户的停止标记，或磁盘复查判死。
+
+            两者共用**完全同一条**收手路径（排队的直接退出、在途的中断后回写
+            pending），因为对下游而言它们是同一件事：这一轮不再继续，已下好的
+            颗粒留着，恢复时从断点接上。判死刻意不抛异常 —— 抛出去会被管理器
+            的兜底 except 变成一句 RuntimeError，而用户需要看到的是判决里那
+            四个数字（还差多少、腾多少）。
+            """
+            if stop_flag is not None and stop_flag.is_set():
+                return True
+            return budget_blocked['verdict'] is not None
+
         async with aiohttp.ClientSession(timeout=timeout, connector=connector, cookie_jar=jar, trust_env=True) as session:
             async def one(granule: str):
                 async with semaphore:
-                    if stop_flag and stop_flag.is_set():
+                    if _stop_requested():
                         return
+
+                    # 开下这一颗之前复查一次磁盘。位置在 semaphore 之内、
+                    # dest.exists() 快速路径之前都无所谓（复查自带时间节流），
+                    # 但必须在**真的开始写**之前 —— 这条闸门的全部价值就是抢在
+                    # ENOSPC 之前：GTiff/COG 边写边落盘，写失败留下的是一份非空
+                    # 半成品，而下一轮的断点判定是「存在且非空就跳过」。
+                    if disk_recheck is not None and budget_blocked['verdict'] is None:
+                        blocked = disk_recheck.blocking_verdict()
+                        if blocked is not None:
+                            budget_blocked['verdict'] = blocked
+                            logger.error(
+                                f"DEM download halted by the in-flight disk recheck: "
+                                f"{blocked.reason}")
+                            # 回写 pending 而不是 failed：这一颗一次都没被尝试过，
+                            # 腾出空间后恢复任务就该重新排上（同暂停的口径）。
+                            await _report_progress(progress_callback, granule, "pending", None, None)
+                            return
 
                     # Remote granule may be a nested path (Copernicus); the local
                     # file and cache key use the flat basename so list_dem_tifs finds it.
@@ -214,7 +272,7 @@ class DemDownloadEngine:
                     signed_url: Optional[str] = None
                     last_err: Optional[str] = None
                     for attempt in range(max_retries + 1):
-                        if stop_flag and stop_flag.is_set():
+                        if _stop_requested():
                             # C4: 暂停不是失败 —— 回写 pending，恢复时重新下载，
                             # 不能留下 downloading 孤儿。
                             await _report_progress(progress_callback, granule, "pending", None, None)
@@ -260,7 +318,7 @@ class DemDownloadEngine:
                                 last_report = time.monotonic()
                                 async with aiofiles.open(tmp, "wb") as f:
                                     async for chunk in resp.content.iter_chunked(1024 * 256):
-                                        if stop_flag and stop_flag.is_set():
+                                        if _stop_requested():
                                             raise RuntimeError("stopped")
                                         await f.write(chunk)
                                         size += len(chunk)
@@ -313,7 +371,7 @@ class DemDownloadEngine:
                                 tmp.unlink(missing_ok=True)
                             except OSError:
                                 pass
-                            if stop_flag and stop_flag.is_set():
+                            if _stop_requested():
                                 # C4: 下载途中暂停 —— 回写 pending，恢复时重新下载。
                                 await _report_progress(progress_callback, granule, "pending", None, None)
                                 return
@@ -324,7 +382,7 @@ class DemDownloadEngine:
                             delay = min(2 ** attempt, 10)
                             elapsed = 0.0
                             while elapsed < delay:
-                                if stop_flag and stop_flag.is_set():
+                                if _stop_requested():
                                     break
                                 step = min(0.5, delay - elapsed)
                                 await asyncio.sleep(step)

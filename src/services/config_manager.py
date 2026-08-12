@@ -272,6 +272,27 @@ def _is_valid_contour_interval(value) -> bool:
     return float(value) >= _MIN_CONTOUR_INTERVAL
 
 
+def _validate_float_range(value, low: float, high: float) -> bool:
+    return low <= float(value) <= high
+
+
+def _validate_geocoder_url(value) -> bool:
+    """地名搜索服务地址：空 = 关闭；非空必须是 http(s) 且带 {q} 占位符。
+
+    要求 `{q}` 是硬约束而不是善意提示：没有它的地址永远只会返回同一个结果，
+    而用户会以为是「搜不到」。缺占位符在配置页就拒绝，比在搜索框里静默失败好。
+    SSRF / allowlist 的检查不在这里做 —— 那是取用时刻的事（服务地址可以指向
+    局域网内的自建服务，配置期一刀切拒绝私网是错的）。
+    """
+    raw = str(value or '').strip()
+    if not raw:
+        return True
+    if '{q}' not in raw:
+        return False
+    parts = urlsplit(raw)
+    return parts.scheme in ('http', 'https') and bool(parts.hostname)
+
+
 _VALUE_RULES = {
     # --- 数值 / 坐标 / 枚举（判据与改造前逐字相同）---
     'concurrent_downloads': lambda v: _validate_int_range(v, 1, 100),
@@ -304,6 +325,25 @@ _VALUE_RULES = {
     # 档位是小而稳定的枚举，白名单直接从 geo_validation 的取值表取 ——
     # 不在这里抄第二份（那正是 _UNCONSTRAINED_KEYS 注释里说的第二处事实来源）。
     'terrain_quality_preset': lambda v: v in TILING_QUALITY_OFFSETS,
+    # --- 全局资源调度上界（§4.1）。这些数字是**天花板**，任务内的限流由
+    # ResourceScheduler 在天花板下分配，所以上限可以放宽 —— 拧到 512 条连接
+    # 是用户的选择，而改造前那种「四个任务各自 50 条、无人知道总数」不是。---
+    'max_concurrent_tasks': lambda v: _validate_int_range(v, 1, 16),
+    'max_network_connections': lambda v: _validate_int_range(v, 1, 512),
+    # 0 = 自动（min(4, cpu_count)）。0 必须是合法值，否则出厂默认非法。
+    'max_cpu_workers': lambda v: _validate_int_range(v, 0, 64),
+    'max_gdal_slots': lambda v: _validate_int_range(v, 1, 16),
+    # --- 磁盘预算（§4.2）---
+    'disk_reserve_mb': lambda v: _validate_int_range(v, 0, 1024 * 1024),
+    # 下界 1.0 = 不加安全余量；上界 3.0 已经离谱到该改估算器而不是拧系数。
+    'disk_safety_factor': lambda v: _validate_float_range(v, 1.0, 3.0),
+    # --- 缓存容量（§4.6）。0 = 不限，与 GeoD settings.rs:141 的 0 语义一致。---
+    'cache_max_mb': lambda v: _validate_int_range(v, 0, 64 * 1024 * 1024),
+    # --- 每任务日志（§4.5）---
+    'task_log_max_kb': lambda v: _validate_int_range(v, 64, 1024 * 1024),
+    'task_log_retain_days': lambda v: _validate_int_range(v, 1, 3650),
+    # --- 地名搜索（§5.1）---
+    'geocoder_url': _validate_geocoder_url,
 }
 
 # 有意不加约束的键。留在这里不是「忘了」，每一条都有理由：
@@ -325,11 +365,15 @@ _VALUE_RULES = {
 #   - terrain_vertex_normals：布尔开关，按本表第一条理由；
 #     terrain_quality_preset 反过来登记在 _VALUE_RULES —— 它的取值表只有三个
 #     值且住在 geo_validation 里，直接 import 白名单不构成第二处事实来源。
+#   - disk_budget_enabled / task_log_enabled：布尔开关，按第一条理由。
+#     同批新增的数值键（max_* / disk_* / cache_max_mb / task_log_*）全部
+#     登记在 _VALUE_RULES —— 它们的合法区间只此一份，不住在别的模块里。
 _UNCONSTRAINED_KEYS = frozenset({
     'default_style', 'default_output_format',
     'proxy_auto_detect', 'cache_enabled', 'dem_cache_enabled',
     'terrain_vertex_normals',
     'gdal_compression', 'gdal_resampling',
+    'disk_budget_enabled', 'task_log_enabled',
     'earthdata_username', 'earthdata_password',
     'terrain_global_base_maxzoom', 'terrain_local_maxzoom',
     'contour_width_intermediate', 'contour_width_index',

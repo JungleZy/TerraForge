@@ -8,9 +8,11 @@ import logging
 from pathlib import Path
 from flask import Blueprint, jsonify, request
 
-from src.services.task_cleanup import record_retained_output, resolve_stored_output_dir
+from src.services.task_cleanup import (purge_registered_artifacts,
+                                       record_retained_output,
+                                       resolve_stored_output_dir)
 from src.routes.api import _delete_payload
-from src.routes import terrain_static
+from src.routes import mbtiles_static, terrain_static
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,14 @@ def create_dem_task():
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
             return jsonify({"error": "Request body must be a JSON object"}), 400
-        required = ["name", "north", "south", "east", "west", "output_path"]
+        # region 在场时四至变成可选：DemTaskManager.create_task 以 region 为准
+        # 并自己派生四至。仍然硬性要求 north/south/east/west 的话，跨反经线的
+        # DEM 任务在 HTTP 上根本建不出来 —— 它**只能**用 region 表达（裸四至
+        # 那条路对 east<=west 一律 400，那道校验是有意的，见
+        # tests/test_bbox_validation_api.py），于是这条路由会先回一句
+        # 「缺少字段 east」把它挡死在真正的构造器之前。
+        required = ["name", "output_path"] if data.get("region") else [
+            "name", "north", "south", "east", "west", "output_path"]
         missing = [k for k in required if k not in data]
         if missing:
             return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
@@ -114,7 +123,11 @@ def delete_dem_task(task_id: int):
             # 行删掉后同步清 /terrain/dem 静态路由的 output_path 缓存，否则
             # delete_files=false（磁盘切片保留）时已删任务的瓦片仍能被访问到。
             # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
-            on_row_gone=lambda: terrain_static.invalidate_dem_task(task_id),
+            # /mbtiles 那份产物缓存一并失效（导出过 MBTiles 的任务在那里也有条目）。
+            on_row_gone=lambda: (
+                terrain_static.invalidate_dem_task(task_id),
+                mbtiles_static.invalidate_known_task(task_id),
+            ),
         )
         if not outcome.row_deleted:
             return jsonify({"error": f"DEM task {task_id} not found"}), 404
@@ -122,6 +135,12 @@ def delete_dem_task(task_id: int):
         payload = _delete_payload(
             f"DEM task {task_id} deleted", outcome.files_removed,
             files_deferred=outcome.files_deferred)
+
+        # 文件也删了的那条路上，产物登记跟着走：它们唯一的用途是「文件还在哪」。
+        # 反过来 delete_files=false 时【绝不能】删 —— 用户选择保留文件，产物行
+        # 就是它们仅剩的记录（artifacts 表刻意没有外键，见 contracts/artifact）。
+        if delete_files:
+            purge_registered_artifacts("dem", task_id, task_dir)
 
         # delete_files=false 是删除对话框的默认。行一走，dem_terrain_jobs 也随
         # 外键级联消失，<output_path>/dem_task_<id>/ 从此没有任何 DB 引用 ——

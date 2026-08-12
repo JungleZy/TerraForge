@@ -15,8 +15,10 @@ import logging
 import math
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+from src.contracts.region import RegionSpec, RegionValidationError
 from src.core.gdal_mode import pin_gdal_exception_mode
-from src.services.geo_validation import MAX_ZOOM, MIN_ZOOM
+from src.services.geo_validation import (MAX_ZOOM, MIN_ZOOM,
+                                         TILING_QUALITY_OFFSETS)
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +306,8 @@ def _resolve_crs(epsg: Optional[int], citation: Optional[str]) -> _Crs:
 
 
 def _estimate_maxzoom(mode: str, pixel_deg: Optional[float],
-                      pixel_3857_m: Optional[float]) -> Optional[int]:
+                      pixel_3857_m: Optional[float],
+                      level_offset: int = 0) -> Optional[int]:
     """按源像素尺寸估算「不填层级时会切到第几级」。
 
     两条管线的算法不同，必须分开算，否则给出的建议与实际跑出来的对不上：
@@ -314,6 +317,18 @@ def _estimate_maxzoom(mode: str, pixel_deg: Optional[float],
       比的是 3857 下的米/像素，还多给一级过采样保证线条平滑）。
       zoom_min 传 0 是刻意的：这里报的是「数据本身撑得住第几级」，
       而不是把用户当前填的最小层级夹进来。
+
+    level_offset 是切片档位偏移（精度 +1 / 均衡 0 / 速度 -1，取值表只有一份，
+    在 geo_validation.TILING_QUALITY_OFFSETS）。**必须先叠偏移再钳位**，逐字
+    对齐 build_terrain 的 `max(0, min(MAX_ZOOM, max_level + level_offset))`
+    （cesium_terrain.py:1505）。先钳后叠会在钳位边界上少报一级：px=9e-07 度
+    （约 10 cm）估出 22，先钳成 21 再叠速度档的 -1 得 20，而切片器实际切的是
+    min(21, 22-1) = 21 —— 差一级就是约 4 倍瓦片数与体积。offset=0 时两种顺序
+    完全等价，所以 `recommended_maxzoom`（信息卡上那个「建议最大层级」）报的
+    数一个都没变，变的只是带偏移那三档。
+
+    等高线不吃档位偏移（那是地形切片的旋钮，见 TileParams.level_offset），
+    mode='contour' 时 level_offset 被忽略。
 
     cesium_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
     建议（此时本来也切不了片）。
@@ -330,7 +345,29 @@ def _estimate_maxzoom(mode: str, pixel_deg: Optional[float],
     except Exception:
         return None
     level = GeographicTilingScheme(tile_size=_TERRAIN_TILE_SIZE).estimate_max_level(pixel_deg)
-    return max(MIN_ZOOM, min(MAX_ZOOM, level))
+    return max(MIN_ZOOM, min(MAX_ZOOM, level + int(level_offset)))
+
+
+def _maxzoom_by_quality(pixel_deg: Optional[float]) -> Optional[Dict[str, int]]:
+    """三个切片档位**各自**的最终层级 —— 预告与产物逐档对齐的那张表。
+
+    为什么必须由服务端给这张表，而不是让界面拿 `recommended_maxzoom + offset`
+    自己加：那个加法在钳位边界上是错的（见 _estimate_maxzoom 的 docstring），
+    而钳位只有服务端这一侧知道 MAX_ZOOM 与 build_terrain 的确切算式。让前端
+    自己加等于把同一个算式抄成两份，两份还得在边界上都对。
+
+    只对高程切片有意义（档位是地形切片的旋钮）。估不出层级时返回 None，
+    调用方据此整个跳过这一项，而不是给一张全是 null 的表。
+    """
+    levels: Dict[str, int] = {}
+    for quality, offset in TILING_QUALITY_OFFSETS.items():
+        # 每一档都走 _estimate_maxzoom 自己那条「先叠偏移再钳位」，而不是在这里
+        # 拿基准值加减 —— 那正是要修掉的那个算法（基准值已经被钳过一次）。
+        level = _estimate_maxzoom("terrain", pixel_deg, None, offset)
+        if level is None:
+            return None
+        levels[quality] = level
+    return levels
 
 
 def _tile_counts_per_level(bounds_wgs84: Sequence[float]) -> Optional[List[int]]:
@@ -344,22 +381,26 @@ def _tile_counts_per_level(bounds_wgs84: Sequence[float]) -> Optional[List[int]]
     floor，DEM 四至恰好落在瓦片边界上时 floor 会多算一整行（该函数的 docstring
     有整段论证）。预告的数与实际切出来的数对不上，比没有预告更糟。
 
-    「预告 == 实际」这个承诺有四处已知边界，都**刻意不在这里补偿** —— 前三处补偿
-    就等于另算一套几何，而共用同一个函数正是这张表可信的全部理由；第四处不在几何
-    上，在**层级**上（见第 4 条）：
+    「预告 == 实际」这个承诺原有四处已知边界。**第 1 与第 4 条已修**，剩下两条
+    仍然刻意不补偿 —— 补偿它们就等于另算一套几何，而共用同一个函数正是这张表
+    可信的全部理由：
 
-    1. **跨 180° 会少算**，幅度可达六成。summary["bounds_wgs84"] 的东界是刻意
-       +360 展开的（见 _wrap_lons），而 intersecting_tile_range 的
-       `ix1 = min(nx - 1, ...)` 把超出 180 的整段钳掉，绕回 -180 那侧的列一列不计。
-       实测一块骑在 180° 上的 UTM 60N DEM：z14 报 567 张，按经度跨度手算约 1459。
-       判据在 warnings 里的 "antimeridian"，但**两侧都要看**：单文件跨界时该标记
-       只出现在该文件的 warnings 上，summary["warnings"] 是干净的；只有多文件的
-       并集需要 +360 时才落到 summary["warnings"]（见 describe_headers 里合并
-       bounds 那段）。消费方据此自行决定是否隐藏预告。
-    2. 承诺在跨界数据上失效还有**第二层原因**：切片器喂给 intersecting_tile_range
-       的是 DemSampler.bounds（cesium_terrain 里由角点 min/max 得到的外接矩形，
-       **不带 +360 展开**），与这里传入的 bounds 压根不是同一件东西。共用几何函数
-       只保证「同样的输入得同样的数」，输入不同就推不出预告等于实际。
+    1. ~~跨 180° 会少算~~ **已修**。summary["bounds_wgs84"] 的东界是刻意 +360
+       展开的（见 _wrap_lons），而 intersecting_tile_range 的
+       `ix1 = min(nx - 1, ...)` 把超出 180 的整段钳掉，绕回 -180 那侧的列一列
+       不计：实测一块骑在 180° 上的 UTM 60N DEM，z14 报 567 张、按经度跨度手算
+       约 1459，少约六成。修法是**不改几何函数**，改喂给它的东西 ——
+       `RegionSpec.from_bbox(...).antimeridian_parts` 把跨界矩形拆成 1~2 段各自
+       落在 ±180 内的 bbox（不跨界时就是一段，与改动前逐字等价），逐段调用同一
+       个 intersecting_tile_range 再相加。两段一段贴着 +180、一段贴着 -180，
+       列区间不相交，行区间相同，相加不会重复计数。
+       `antimeridian` 警告照旧发 —— 它现在的含义是「这份范围跨界」，不再是
+       「这张表不可信」。
+    2. 承诺在跨界数据上失效还有**第二层原因**，这一条没修：切片器喂给
+       intersecting_tile_range 的是 DemSampler.bounds（cesium_terrain 里由角点
+       min/max 得到的外接矩形，**不带 +360 展开**），与这里传入的 bounds 压根
+       不是同一件东西。共用几何函数只保证「同样的输入得同样的数」，输入不同就
+       推不出预告等于实际。要补它得改切片器的 bounds 口径，那是另一件事。
     3. **z <= 4 一定少算。** 切片器在 z <= 4 是整层全球出图（根瓦片缺失会让 Cesium
        的单层 provider 路径直接 404），z0..z4 合计恒为 682 张；而这张表按定义只给
        相交数。底图缺失、从 z0 起累加的消费方会比实际少 682 张。随包底图可用时
@@ -367,14 +408,15 @@ def _tile_counts_per_level(bounds_wgs84: Sequence[float]) -> Optional[List[int]]
        最终层级 <= 4 时 build_terrain 的 `min_level = min(min_level, max_level)`
        会把起点一并压下来（maxzoom <= 4，或 maxzoom 5 叠上快速档的 -1），那一轮
        切出来的每一层都是整层全球图，这条边界照样成立。
-    4. **亚分米源 + 快速档会少报一级**（张数约 4 倍）。这一条不在张数上，在层级上：
-       _estimate_maxzoom 在**加偏移之前**就把估算值钳到 MAX_ZOOM，而 build_terrain
-       是在**加偏移之后**才钳（`max(0, min(MAX_ZOOM, max_level + level_offset))`）。
-       于是 px=9e-07 度（约 10 cm）估算出 22、在这里被钳成 21，快速档（-1）预告
-       z20，实际切的是 min(21, 22-1) = z21；px=6e-07（约 7 cm）估算 23，同样如此。
-       无人机 DSM 才到得了这个量级，精细/均衡两档不受影响（两侧都落在 21）。
-       钳位不改：recommended_maxzoom 同时是信息卡上的「建议最大层级」，给用户一个
-       切不出来的 22 更糟。
+    4. ~~亚分米源 + 快速档会少报一级~~ **已修**，修在层级侧而不是张数侧：
+       _estimate_maxzoom 此前在**加偏移之前**就把估算值钳到 MAX_ZOOM，而
+       build_terrain 是在**加偏移之后**才钳（`max(0, min(MAX_ZOOM,
+       max_level + level_offset))`）。于是 px=9e-07 度（约 10 cm）估算出 22、
+       被钳成 21，快速档（-1）预告 z20，实际切的是 min(21, 22-1) = z21，张数
+       差约 4 倍。现在 _estimate_maxzoom 收 level_offset 并按 build_terrain 的
+       顺序算，`summary["recommended_maxzoom_by_quality"]` 逐档给出**实际**层级；
+       `recommended_maxzoom` 仍是不带偏移的基准值（offset=0 下两种顺序等价，
+       它一个数都没变），信息卡上的「建议最大层级」照旧。
 
     cesium_terrain 模块级 import osgeo，缺 GDAL 时导入即失败 —— 那就不给
     这张表（此时本来也切不了片），与 _estimate_maxzoom 同款降级。
@@ -386,12 +428,24 @@ def _tile_counts_per_level(bounds_wgs84: Sequence[float]) -> Optional[List[int]]
         return None
 
     west, south, east, north = bounds_wgs84
+    try:
+        parts = RegionSpec.from_bbox(north, south, east, west).antimeridian_parts
+    except RegionValidationError:
+        # 退化范围（零宽/零高，例如全球栅格被 _wrap_lons 折成 [180, 180]）构造
+        # 不出 RegionSpec。这张表是预告不是闸门：退回单段口径给出改动前的那个数，
+        # 比让信息卡上凭空少一块好 —— 而那种范围本来就已经带着 antimeridian 警告。
+        parts = ((north, south, east, west),)
+
     scheme = GeographicTilingScheme(tile_size=_TERRAIN_TILE_SIZE)
     counts: List[int] = []
     for z in range(MAX_ZOOM + 1):
         nx, ny = scheme.tile_count(z)
-        ix0, ix1, iy0, iy1 = intersecting_tile_range(nx, ny, west, south, east, north)
-        counts.append((ix1 - ix0 + 1) * (iy1 - iy0 + 1))
+        tiles = 0
+        for part_n, part_s, part_e, part_w in parts:
+            ix0, ix1, iy0, iy1 = intersecting_tile_range(
+                nx, ny, part_w, part_s, part_e, part_n)
+            tiles += (ix1 - ix0 + 1) * (iy1 - iy0 + 1)
+        counts.append(tiles)
     return counts
 
 
@@ -510,6 +564,12 @@ def _describe_one(entry: Mapping[str, Any], mode: str) -> Dict[str, Any]:
     result["pixel_deg"] = pixel_deg
     result["pixel_3857"] = pixel_3857
     result["recommended_maxzoom"] = _estimate_maxzoom(mode, pixel_deg, pixel_3857)
+    if mode == "terrain":
+        # 逐档的**实际**层级。`recommended_maxzoom` 是不带偏移的基准值，界面拿
+        # 它 + 档位偏移自己加会在钳位边界上少报一级（见 _maxzoom_by_quality）。
+        by_quality = _maxzoom_by_quality(pixel_deg)
+        if by_quality is not None:
+            result["recommended_maxzoom_by_quality"] = by_quality
     return result
 
 
@@ -520,7 +580,8 @@ def describe_headers(entries: Sequence[Mapping[str, Any]],
     entries 的每一项是 static/js/geotiff_meta.js 的 read() 返回值。
     mode 决定「建议最大层级」按哪条管线算："terrain"（高程切片，Cesium
     经纬度分块）或 "contour"（等高线，Web Mercator 瓦片）—— 见 _estimate_maxzoom。
-    "terrain" 的总览还多带一张逐层瓦片数表（见 _tile_counts_per_level），供界面
+    "terrain" 的总览还多带一张逐层瓦片数表（见 _tile_counts_per_level）与一张
+    逐档最终层级表 recommended_maxzoom_by_quality（见 _maxzoom_by_quality），供界面
     在起切前预告规模。
     单个文件读坏了就带着 header_unreadable 警告出现在结果里，不影响其他文件；
     输入本身不合法时抛 InspectError（带 i18n 键，由路由翻译后回给浏览器）。
@@ -575,6 +636,10 @@ def describe_headers(entries: Sequence[Mapping[str, Any]],
         summary["pixel_deg"] = min(pixels)
         summary["recommended_maxzoom"] = _estimate_maxzoom(
             mode, min(pixels), min(pixels_3857) if pixels_3857 else None)
+        if mode == "terrain":
+            by_quality = _maxzoom_by_quality(min(pixels))
+            if by_quality is not None:
+                summary["recommended_maxzoom_by_quality"] = by_quality
         meters = [f["pixel_meters"] for f in files if f.get("pixel_meters")]
         if meters:
             summary["pixel_meters"] = min(meters)

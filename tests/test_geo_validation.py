@@ -67,6 +67,35 @@ def test_validate_bbox_rejects_antimeridian_style_input():
         validate_bbox(north=40, south=39, east=-170, west=170)
 
 
+def test_validate_bbox_accepts_the_normalised_antimeridian_form_when_asked():
+    """跨界的规范写法是 east > 180（不是 east < west），显式开关才放行。
+
+    这条口子是给「四至列派生自一个真的跨界的 RegionSpec」那条路开的：
+    RegionSpec 把 west=170/east=-170 归一成 west=170/east=190，任务表存的就是
+    190 —— dem_tasks 早就在这么存了，地图管线本次跟上。
+    """
+    assert validate_bbox(40, 39, 190, 170, allow_unwrapped_east=True) == (
+        40.0, 39.0, 190.0, 170.0)
+
+
+def test_validate_bbox_default_still_rejects_the_unwrapped_form():
+    """开关是 keyword-only 且默认关：裸四角路径的合同一个字没动。"""
+    with pytest.raises(ValueError, match='must be between -180 and 180'):
+        validate_bbox(40, 39, 190, 170)
+
+
+def test_validate_bbox_unwrapped_still_rejects_east_below_west():
+    """放开上界不等于放开顺序 —— 170..-170 这种回绕写法照旧拒。"""
+    with pytest.raises(ValueError, match='must be greater than west'):
+        validate_bbox(40, 39, -170, 170, allow_unwrapped_east=True)
+
+
+def test_validate_bbox_unwrapped_rejects_more_than_a_full_turn():
+    """west=-180 + east=360 是 540°，同一条经线被绕两遍，枚举会重复出瓦片。"""
+    with pytest.raises(ValueError, match='must not exceed 360'):
+        validate_bbox(40, 39, 360, -180, allow_unwrapped_east=True)
+
+
 # ---------- validate_zoom ----------
 
 def test_validate_zoom_ok():

@@ -38,7 +38,7 @@ class Config:
     # 单一事实源：app.py 的启动横幅、scripts/push-release.{sh,bat} 的 tag、
     # CI Release 都从这里取。改它时 RELEASE_NOTES.md 顶部标题必须同步 ——
     # tests/test_fix_build_scripts.py 有契约用例钉住两者相等。
-    APP_VERSION = '0.3.2'
+    APP_VERSION = '0.3.3'
 
     # Secret key for Flask session management
     SECRET_KEY = os.environ.get('SECRET_KEY')

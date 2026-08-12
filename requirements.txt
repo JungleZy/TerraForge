@@ -33,6 +33,12 @@ numpy==1.26.4
 matplotlib==3.11.1
 Pillow==10.1.0
 pytest==7.4.3
+# 覆盖率插件,只有 CI 的「Run test suite」步骤用它跑 --cov-fail-under 这道地板。
+# 钉死而不是裸 `pip install pytest-cov`:它是【判定构建成败】的一环,上游哪天
+# 发新版、恰好改了阈值判定或退出码,红的会是一条与本次改动毫无关系的构建 ——
+# 与旁边 nuitka 那个钉是同一个理由。4.1.0 声明的下界是 pytest>=4.6,
+# 与上面钉死的 pytest==7.4.3 相容。地板值与理由见 .github/workflows/*.yml。
+pytest-cov==4.1.0
 # 构建期依赖(只有 nuitka_build.py 用),钉死是因为它是本项目最容易在发版当天
 # 炸掉的一环:nuitka_build.py 调的是【私有】API
 # nuitka.freezer.DllDependenciesWin32.detectBinaryPathDLLsWin32(八个关键字参数),

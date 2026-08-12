@@ -13,9 +13,10 @@ from flask import Blueprint, jsonify, request
 from src.core.config import Config
 from src.services.geo_validation import (coerce_maxzoom, coerce_vertex_normals,
                                          validate_tiling_quality)
-from src.services.task_cleanup import record_retained_output
+from src.services.task_cleanup import (purge_registered_artifacts,
+                                       record_retained_output)
 from src.routes.api import _delete_payload
-from src.routes import terrain_static
+from src.routes import mbtiles_static, terrain_static
 
 logger = logging.getLogger(__name__)
 
@@ -142,22 +143,43 @@ def delete_local_terrain_task(task_id: int):
     if not local_terrain_task_manager:
         return jsonify({"error": "Local terrain task manager not initialized"}), 500
     try:
-        # Local terrain historically always cleaned up on delete; keep that as
-        # the default, but honor an explicit delete_files=false from the UI.
-        delete_files = request.args.get("delete_files", "true").lower() in ("1", "true", "yes")
+        # 四条管线的 delete_files 默认**统一为 false**。这里曾经默认 true ——
+        # 「本地地形历史上一直连文件一起删」。按管线各有各的破坏性默认是个陷阱：
+        # 同一个 UI、同一个「删除」动作、同一份文档，四条管线里有一条会在你没说
+        # 话时把几十 GB 切片一并抹掉，而这条恰恰是产物最大的那条。
+        # 对 UI 没有任何影响：删除对话框永远显式带上这个参数（勾选与否都发）。
+        # 变的只有直接调 API 的人 —— 他们现在会拿到「行删了、文件留着」，那与
+        # 另外三条一致，且是两者中可逆的那一个（文件留着还能再删，删了回不来）。
+        delete_files = request.args.get("delete_files", "").lower() in ("1", "true", "yes")
         outcome = local_terrain_task_manager.delete_task(
             task_id,
             delete_files=delete_files,
             # 行删掉后同步清 /terrain/local 静态路由的存在性缓存，否则
             # delete_files=false（磁盘瓦片保留）时已删任务的瓦片仍能被访问到。
             # hook 留在路由层：它走 current_app.extensions，只在请求上下文里有效。
-            on_row_gone=lambda: terrain_static.invalidate_known_task(task_id),
+            # /mbtiles 那份产物缓存一并失效（导出过 MBTiles 的任务在那里也有条目）。
+            on_row_gone=lambda: (
+                terrain_static.invalidate_known_task(task_id),
+                mbtiles_static.invalidate_known_task(task_id),
+            ),
         )
         if not outcome.row_deleted:
             return jsonify({"error": f"Local terrain task {task_id} not found"}), 404
         payload = _delete_payload(
             f"Local terrain task {task_id} deleted", outcome.files_removed,
             files_deferred=outcome.files_deferred)
+
+        # 文件也删了的那条路上，登记产物跟着走：那些行唯一的用途是「文件还在
+        # 哪」。落在任务目录之外的产物（导出的 MBTiles 与任务目录同级）由
+        # purge_registered_artifacts 单独删掉 —— 只销行不删文件会把它变成一份
+        # 谁都不知道的孤儿。反过来 delete_files=false 时【绝不能】动：用户选择
+        # 保留文件，产物行就是它们仅剩的记录（artifacts 表刻意没有外键）。
+        # 产物目录按固定布局重算，与 manager.delete_task / terrain_static 同一
+        # 套口径（库存 output_path 在 exe 搬迁后指向旧位置）。
+        if delete_files:
+            purge_registered_artifacts(
+                "local_terrain", task_id,
+                Path(Config.DOWNLOADS_DIR) / "terrain" / f"local_task_{task_id}")
 
         # delete_files=false 时行一走，产物目录就没有任何 DB 引用了 —— 启动清扫
         # 只认 pending_deletions 和任务表，从此谁都找不回它。登记一行把引用接

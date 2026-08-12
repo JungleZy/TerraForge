@@ -1,7 +1,11 @@
 let historyViewer;
 let currentPage = 1;
-// 状态筛选 chips 的当前取值（'' = 全部，'active' = 进行中三态）。
-// 作用于整个时间流：透传给 /api/history_all 的 ?status= 参数（后端已支持）。
+// 状态筛选 chips 的当前取值（'' = 全部）。作用于整个时间流：原样透传给
+// /api/history_all 的 ?status= 参数。服务端只对两个取值做展开 ——
+// 'active' = ACTIVE_STATE_VALUES 五态，'completed' = completed +
+// completed_with_gaps；其余（'failed' / 'completed_with_gaps'）按精确等值。
+// 前端**不复制**那两张展开表：复制出来的第二份迟早与后端漂移，而漂移的表现
+// 是「点了 chip 少几行」，没有任何报错。
 let currentStatusFilter = '';
 
 async function initHistory() {
@@ -16,9 +20,9 @@ async function initHistory() {
         filterTasks(e.target.value);
     });
 
-    // 状态筛选 chips（2026-08 单一时间流定稿）：全部/进行中/失败/已完成。
-    // 作用于整个时间流（活动任务也在流里）：取值透传给 /api/history_all
-    // 的 ?status= 参数，「进行中」对应特殊值 active（pending/running/paused）。
+    // 状态筛选 chips：全部 / 进行中 / 失败 / 已完成 / 有缺块。取值原样透传给
+    // /api/history_all 的 ?status=（展开规则在服务端，见文件头的说明）。
+    // 「有缺块」与「已完成」故意重叠 —— 带洞的成品两边都能找到（§13-3）。
     document.querySelectorAll('#statusChips .status-chip').forEach(function(chip) {
         chip.addEventListener('click', function() {
             document.querySelectorAll('#statusChips .status-chip').forEach(function(c) {
@@ -503,6 +507,16 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             terrainRow.hidden = true;
         }
 
+        // 缺口明细（§13-3）：只有地图管线有瓦片级缺块记录。
+        renderDetailGaps(task, taskType);
+
+        // 产物清单（§13-3 / §5.3）：四条管线都有，pipeline 名与 task_type 同名。
+        renderDetailArtifacts(taskId, taskType);
+
+        // 任务日志（REST 轮询）。四条管线都有，pipeline 名与 task_type 同名
+        // （contracts/artifact.PIPELINES）。
+        openTaskLogPanel(taskType, taskId, task.status);
+
         // 显示模态框。getOrCreateInstance 与全站一致：重复 new bootstrap.Modal
         // 同一元素会叠出多个实例（每次打开多一层遮罩，关一层还剩一层）。
         bootstrap.Modal.getOrCreateInstance(document.getElementById('taskDetailModal')).show();
@@ -510,6 +524,463 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         showToast(t('js.history.detail.load_failed'), 'danger');
     }
 }
+
+// ---------------------------------------------------------------------------
+// 详情弹窗里的缺口明细（§13-3）
+// ---------------------------------------------------------------------------
+//
+// 行上那条决策行只放得下「总数 + 分档 + 两颗按钮」。用户真要判断「补漏值不值得
+// 跑」时需要的是**样本**：缺的是哪几块、报的是什么错。GET /api/tasks/<id>/gaps
+// 最多回 20 条样本，够看出「是整片没数据」还是「散着几十个超时」——
+// 这两件事对应的决定完全相反。
+
+function renderDetailGaps(task, taskType) {
+    const row = document.getElementById('detailGapRow');
+    const box = document.getElementById('detailGaps');
+    if (!row || !box) return;
+    // 缺块是瓦片级概念，只有地图管线有这条接口。没有缺口记录的任务也不显示
+    // 这一块 —— 一个写着「缺口 0」的区块只会让人怀疑自己是不是漏看了什么。
+    const gapTiles = task.gap_tiles || 0;
+    const hasGaps = gapTiles > 0
+        || (window.TaskStore && window.TaskStore.GAP_STATUSES.includes(task.status));
+    if (taskType !== 'map' || !hasGaps) {
+        row.hidden = true;
+        box.innerHTML = '';
+        return;
+    }
+    row.hidden = false;
+    _renderDetailGapsBody(box, task, null);
+    if (typeof fetchGapSummary !== 'function') return;
+    // 样本必须现拉：/api/tasks/<id> 的任务行只有总数（gap_tiles），分档与样本
+    // 都在 /gaps 里。失败时上面那一版（只有总数）留在界面上，并把理由说出来。
+    fetchGapSummary(task.id)
+        .then(function (summary) { _renderDetailGapsBody(box, task, summary); })
+        .catch(function (error) {
+            const note = document.createElement('div');
+            note.className = 'detail-gap-note';
+            note.textContent = t('js.gaps.load_failed', { error: error.message });
+            box.appendChild(note);
+        });
+}
+
+// 逐节点建 DOM：样本行里的 error 是后端异常的字符串化结果（URL、路径、
+// 第三方库报错原文都可能在里面），与 .task-error 同一条约定 —— 不进 innerHTML。
+function _renderDetailGapsBody(box, task, summary) {
+    box.innerHTML = '';
+    const total = summary && summary.total != null ? summary.total : (task.gap_tiles || 0);
+
+    const head = document.createElement('div');
+    head.className = 'detail-gap-head';
+    const badge = document.createElement('span');
+    badge.className = 'task-gap-chip';
+    badge.textContent = t('js.gaps.chip', { n: total });
+    head.appendChild(badge);
+    if (summary && typeof gapBreakdownText === 'function') {
+        const breakdown = document.createElement('span');
+        breakdown.className = 'detail-gap-note';
+        breakdown.textContent = gapBreakdownText(summary.by_outcome) || t('js.gaps.none');
+        head.appendChild(breakdown);
+    }
+    box.appendChild(head);
+
+    if (summary) {
+        // 「全部缺口都是上游无数据」是**决定性**的一句话：那时补漏一张也补不回来
+        // （no_data 不在 RETRYABLE_OUTCOMES 里），用户该点的是「接受并导出」。
+        const note = document.createElement('div');
+        note.className = summary.explained
+            ? 'detail-gap-note detail-gap-note--explained'
+            : 'detail-gap-note';
+        note.textContent = summary.explained
+            ? t('js.gaps.explained')
+            : t('js.gaps.unexplained');
+        box.appendChild(note);
+
+        if (summary.decision) {
+            const decided = document.createElement('div');
+            decided.className = 'detail-gap-note';
+            decided.textContent = t('js.gaps.decided', { decision: summary.decision });
+            box.appendChild(decided);
+        }
+
+        const samples = summary.samples || [];
+        if (samples.length) {
+            const list = document.createElement('div');
+            list.className = 'detail-gap-samples';
+            samples.forEach(function (s) {
+                const line = document.createElement('span');
+                line.className = 'detail-gap-sample';
+                line.textContent = t('js.gaps.sample', {
+                    zoom: s.zoom, x: s.x, y: s.y,
+                    outcome: typeof gapOutcomeLabel === 'function'
+                        ? gapOutcomeLabel(s.outcome) : s.outcome,
+                    error: s.error || '',
+                });
+                list.appendChild(line);
+            });
+            box.appendChild(list);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 详情弹窗里的产物清单（§13-3 / §5.3）
+// ---------------------------------------------------------------------------
+//
+// GET /api/tasks/<id>/artifacts。这一块在 2026-08 之前**不存在**，那条接口
+// 全站零调用方 —— 后果不是「少一个功能」：`artifacts.has_gaps` 才是「这份
+// 成果有洞」的权威落点（artifacts 表刻意没有外键，就是为了让产物行比任务行
+// 活得久），而它在界面上一个字都不显示。§13-3 要的「成果与历史永久带缺块
+// 标记」于是只写在库里给自己看。MBTiles 的体检判决（meta.validation）同理：
+// 它不阻断导出，所以不透出来就等于没做。
+//
+// 形态名逐个写成完整键字面量、不做前缀拼接：tests/test_i18n.py 的双向闭合
+// 按字面量扫源码（同 GAP_OUTCOME_LABELS / TERRAIN_QUALITY_KEYS）。认不出的
+// 形态原样显示后端的值，不静默吞掉 —— 后端加一档时界面会露出机器码，
+// 那比少一行好。
+const ARTIFACT_KIND_LABELS = {
+    xyz_dir: 'js.artifacts.kind.xyz_dir',
+    geotiff: 'js.artifacts.kind.geotiff',
+    mbtiles: 'js.artifacts.kind.mbtiles',
+    terrain_dir: 'js.artifacts.kind.terrain_dir',
+    contour_dir: 'js.artifacts.kind.contour_dir',
+    dem_dir: 'js.artifacts.kind.dem_dir',
+};
+
+function artifactKindLabel(kind) {
+    const key = Object.prototype.hasOwnProperty.call(ARTIFACT_KIND_LABELS, kind)
+        && ARTIFACT_KIND_LABELS[kind];
+    return key ? t(key) : String(kind || '');
+}
+
+/**
+ * 拉产物清单并渲染。整块在拿到响应之前就先显出来（占位文案），拉失败时
+ * 把理由说出来 —— 静默隐藏会让「这个任务没产物」和「清单没读到」长得一样。
+ *
+ * **不检查文件是否还在**：用户删任务时可以选「保留文件」，也可以在文件管理器
+ * 里自己删掉产物而留着这行记录。产物行比文件活得久是设计如此，把「文件不在了」
+ * 渲染成错误是在报告一个正常状态；真去 stat 一遍更糟（几十万文件的目录）。
+ */
+function renderDetailArtifacts(taskId, taskType) {
+    const row = document.getElementById('detailArtifactRow');
+    const box = document.getElementById('detailArtifacts');
+    if (!row || !box) return;
+    row.hidden = false;
+    box.textContent = t('js.artifacts.loading');
+    fetch(`/api/tasks/${taskId}/artifacts?pipeline=${encodeURIComponent(taskType)}`)
+        .then(function (response) {
+            return response.json().then(function (data) {
+                if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+                return data;
+            });
+        })
+        .then(function (data) { _renderDetailArtifactsBody(box, data.artifacts || []); })
+        .catch(function (error) {
+            box.textContent = t('js.artifacts.load_failed', { error: error.message });
+        });
+}
+
+// 逐节点建 DOM：path 是绝对路径、validation.problems 是校验器的英文原文
+// （URL、键名、路径都可能在里面），与 .task-error / .detail-gap-sample 同一条
+// 约定 —— 不进 innerHTML。
+function _renderDetailArtifactsBody(box, artifacts) {
+    box.textContent = '';
+    if (!artifacts.length) {
+        const empty = document.createElement('div');
+        empty.className = 'detail-artifact-note';
+        empty.textContent = t('js.artifacts.none');
+        box.appendChild(empty);
+        return;
+    }
+    artifacts.forEach(function (a, i) {
+        const item = document.createElement('div');
+        // 第 2 件起画分隔线。用修饰类而不是 CSS 的 `+` 兄弟组合符：
+        // tests/test_css_contract.py 的层叠模型只认后代组合符（先例是
+        // map.js 给 .tif-info__file 加 --sep 的同一条约定）。
+        item.className = i === 0 ? 'detail-artifact' : 'detail-artifact detail-artifact--sep';
+
+        const head = document.createElement('div');
+        head.className = 'detail-artifact-head';
+        const kind = document.createElement('span');
+        kind.className = 'detail-artifact-kind';
+        kind.textContent = artifactKindLabel(a.kind);
+        head.appendChild(kind);
+
+        // 规模三段各自可缺（非瓦片产物没有层级，老行没统计过大小），
+        // 过滤掉空段再连 —— 不过滤会连出「 ·  · z10-13」这种断头串。
+        const facts = [
+            a.format || '',
+            a.bytes_total > 0 && typeof formatBytes === 'function'
+                ? formatBytes(a.bytes_total) : '',
+            a.tile_count > 0
+                ? t('js.artifacts.tiles', { n: Number(a.tile_count).toLocaleString() }) : '',
+            a.minzoom != null && a.maxzoom != null
+                ? t('js.artifacts.zooms', { min: a.minzoom, max: a.maxzoom }) : '',
+        ].filter(Boolean);
+        if (facts.length) {
+            const factsEl = document.createElement('span');
+            factsEl.className = 'detail-artifact-facts';
+            factsEl.textContent = facts.join(' · ');
+            head.appendChild(factsEl);
+        }
+
+        // 缺块标记复用行上那颗徽章的长相（.task-gap-chip）：同一件事在界面上
+        // 只该有一个符号。文案不同是因为数据不同 —— 行上有具体块数，
+        // 产物上只有一个布尔。
+        if (a.has_gaps) {
+            const chip = document.createElement('span');
+            chip.className = 'task-gap-chip';
+            chip.textContent = t('js.artifacts.gapped');
+            chip.title = t('js.artifacts.gapped_title');
+            head.appendChild(chip);
+        }
+        item.appendChild(head);
+
+        const path = document.createElement('div');
+        path.className = 'detail-artifact-path';
+        path.textContent = a.path || '';
+        item.appendChild(path);
+
+        _appendArtifactValidation(item, a.meta && a.meta.validation);
+        box.appendChild(item);
+    });
+}
+
+// MBTiles 的体检判决。**没有这个键就什么都不渲染** —— 本次改造之前导出的行
+// 没跑过校验，把「没查过」画成任何一种结论都是撒谎，而画成「有问题」尤其糟：
+// 那些库绝大多数是好的。
+function _appendArtifactValidation(item, validation) {
+    if (!validation || typeof validation !== 'object') return;
+    const problems = validation.problems || [];
+    const note = document.createElement('div');
+    note.className = validation.ok
+        ? 'detail-artifact-note'
+        : 'detail-artifact-note detail-artifact-note--problem';
+    note.textContent = validation.ok
+        ? t('js.artifacts.validation.ok')
+        : t('js.artifacts.validation.problems', { n: problems.length });
+    item.appendChild(note);
+    if (validation.ok || !problems.length) return;
+    // 问题原文是校验器给开发者/报障用的英文诊断句（src/services/mbtiles.py），
+    // **刻意不翻译**：它们是技术细节，不是界面文案。中文那一层由上面那句
+    // 「发现 N 个问题」承担，这里原样照抄，方便直接贴进 issue。
+    const list = document.createElement('div');
+    list.className = 'detail-artifact-problems';
+    problems.forEach(function (p) {
+        const line = document.createElement('span');
+        line.className = 'detail-artifact-problem';
+        line.textContent = String(p);
+        list.appendChild(line);
+    });
+    item.appendChild(list);
+}
+
+// ---------------------------------------------------------------------------
+// 详情弹窗里的任务日志（§4.5）
+// ---------------------------------------------------------------------------
+//
+// GET /api/logs/<pipeline>/<id> 轮询，**不是** socket 流。
+// 理由（后端 docstring 里写的同一条）：这个应用没有 room 也没有 namespace，
+// 每一发 emit 都广播给所有连着的浏览器 —— 逐行推送日志等于把一个任务的日志
+// 发给所有开着页面的人，其中绝大多数没在看这个任务。
+//
+// 轮询只在**弹窗开着且任务还活着**时进行：终态任务的日志不会再长，一直轮它
+// 是白烧一次请求；弹窗关了更不用说。停轮的两个出口都接上了（模态的
+// hidden.bs.modal，以及下一次 openTaskLogPanel 的重入）。
+
+let _taskLogTimer = null;
+// 当前面板绑的是哪个任务。轮询回调回来时要对一下：用户可能已经关掉弹窗又开了
+// 另一个任务，晚到的响应会把别人的日志画进来。
+let _taskLogTarget = null;
+let _taskLogErrorsOnly = false;
+// 轮询间隔。2s 是「看得出在动」与「不白烧请求」之间的取值：日志行由后端按事件
+// 写，跑得最快的下载任务也就每秒几十行，2s 一批读起来正好是一屏。
+const TASK_LOG_POLL_MS = 2000;
+const TASK_LOG_LIMIT = 500;
+
+function stopTaskLogPolling() {
+    clearInterval(_taskLogTimer);
+    _taskLogTimer = null;
+    _taskLogTarget = null;
+}
+
+/** 打开（或重开）日志面板。status 决定要不要轮询。 */
+function openTaskLogPanel(pipeline, taskId, status) {
+    const row = document.getElementById('detailLogRow');
+    const host = document.getElementById('detailLog');
+    if (!row || !host) return;
+    stopTaskLogPolling();
+    row.hidden = false;
+    _taskLogTarget = `${pipeline}:${taskId}`;
+    _taskLogErrorsOnly = false;
+    _renderTaskLogShell(host, pipeline, taskId);
+    refreshTaskLog(pipeline, taskId);
+    // 活动态才轮。判据走 store 的活动集清单（后端 ACTIVE_TASK_STATES 的镜像），
+    // 不在这里抄一份状态字面量。
+    const active = window.TaskStore
+        && window.TaskStore.ACTIVE_STATUSES.includes(status);
+    if (active) {
+        _taskLogTimer = setInterval(function () {
+            refreshTaskLog(pipeline, taskId);
+        }, TASK_LOG_POLL_MS);
+    }
+}
+
+// 工具条（仅错误开关 + 复制诊断 + 下载诊断）与正文容器。工具条只建一次，
+// 正文由 refreshTaskLog 反复重写 —— 不这么分的话每次轮询都会把「仅错误」
+// 那个复选框重建一遍，用户刚勾上就被抹掉。
+function _renderTaskLogShell(host, pipeline, taskId) {
+    host.innerHTML = '';
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'task-log__toolbar';
+
+    const toggleWrap = document.createElement('div');
+    toggleWrap.className = 'form-check';
+    const toggle = document.createElement('input');
+    toggle.className = 'form-check-input';
+    toggle.type = 'checkbox';
+    toggle.id = 'taskLogErrorsOnly';
+    const toggleLabel = document.createElement('label');
+    toggleLabel.className = 'form-check-label';
+    toggleLabel.setAttribute('for', 'taskLogErrorsOnly');
+    // 「仅错误」包含 WARNING（后端 task_logging._ERROR_LEVELS）：重试、429、
+    // 无覆盖恰好都是 WARNING，而它们正是「为什么只下到一半」的答案。
+    toggleLabel.textContent = t('js.tasklog.errors_only');
+    toggle.addEventListener('change', function () {
+        _taskLogErrorsOnly = toggle.checked;
+        refreshTaskLog(pipeline, taskId);
+    });
+    toggleWrap.appendChild(toggle);
+    toggleWrap.appendChild(toggleLabel);
+    toolbar.appendChild(toggleWrap);
+
+    const tools = document.createElement('div');
+    tools.className = 'task-log__tools';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn btn-sm btn-outline-secondary';
+    copyBtn.textContent = t('js.tasklog.copy');
+    copyBtn.addEventListener('click', function () {
+        copyTaskDiagnostics(pipeline, taskId, copyBtn);
+    });
+    tools.appendChild(copyBtn);
+
+    // 下载走 <a download> 而不是 fetch + Blob：端点已经带
+    // Content-Disposition: attachment，浏览器自己就会存盘，中间过一手 Blob
+    // 只是把一份可能几百 KB 的文本白读进内存。
+    const dl = document.createElement('a');
+    dl.className = 'btn btn-sm btn-outline-secondary';
+    dl.href = `/api/logs/${pipeline}/${taskId}/diagnostics`;
+    dl.setAttribute('download', '');
+    dl.textContent = t('js.tasklog.download');
+    tools.appendChild(dl);
+
+    toolbar.appendChild(tools);
+    host.appendChild(toolbar);
+
+    const body = document.createElement('div');
+    body.className = 'task-log__body';
+    body.id = 'taskLogBody';
+    host.appendChild(body);
+}
+
+async function refreshTaskLog(pipeline, taskId) {
+    const body = document.getElementById('taskLogBody');
+    if (!body) return;
+    const target = `${pipeline}:${taskId}`;
+    try {
+        const params = new URLSearchParams({ limit: String(TASK_LOG_LIMIT) });
+        if (_taskLogErrorsOnly) params.set('errors_only', '1');
+        const response = await fetch(
+            `/api/logs/${pipeline}/${taskId}?${params.toString()}`);
+        const data = await response.json().catch(() => ({}));
+        // 弹窗已经换了任务（或关了）：这一发是别人的日志，丢掉。
+        if (_taskLogTarget !== target) return;
+        if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+        _renderTaskLogEntries(body, data);
+    } catch (error) {
+        if (_taskLogTarget !== target) return;
+        _renderTaskLogNote(body, t('js.tasklog.load_failed', { error: error.message }));
+    }
+}
+
+function _renderTaskLogNote(body, text) {
+    body.innerHTML = '';
+    const note = document.createElement('span');
+    note.className = 'task-log__empty';
+    note.textContent = text;
+    body.appendChild(note);
+}
+
+// 后端把「空」的三种来源分成了三个字段，因为要说的话完全不同 ——
+// 「日志已关闭」（去配置页开 task_log_enabled）、「这个任务还没跑过」、
+// 「这一段确实没有错误行」。合成一句「暂无日志」会让第一种情况下的用户
+// 永远等不到日志，也永远不知道去哪儿开它。
+function _renderTaskLogEntries(body, data) {
+    const entries = data.entries || [];
+    if (!data.enabled) {
+        _renderTaskLogNote(body, t('js.tasklog.disabled'));
+        return;
+    }
+    if (!data.has_log) {
+        _renderTaskLogNote(body, t('js.tasklog.no_file'));
+        return;
+    }
+    if (!entries.length) {
+        _renderTaskLogNote(body, data.errors_only
+            ? t('js.tasklog.no_errors')
+            : t('js.tasklog.empty'));
+        return;
+    }
+    body.innerHTML = '';
+    entries.forEach(function (entry) {
+        const line = document.createElement('span');
+        const level = String(entry.level || '').toUpperCase();
+        line.className = 'task-log__line'
+            + (level === 'ERROR' || level === 'CRITICAL' ? ' task-log__line--error' : '')
+            + (level === 'WARNING' ? ' task-log__line--warning' : '');
+        // textContent 一次写整行：message 是任务日志原文（路径、URL、traceback
+        // 片段），任何时候都不进 innerHTML。
+        line.textContent = t('js.tasklog.line', {
+            ts: entry.ts || '',
+            level: level,
+            message: entry.message || '',
+        });
+        body.appendChild(line);
+    });
+}
+
+/**
+ * 复制脱敏诊断包到剪贴板。
+ *
+ * 拿的是 /diagnostics 那份纯文本（含环境头 + 日志尾部，脱敏在服务端做），
+ * 不是把界面上这几百行拼起来 —— 界面上是**过滤后**的尾部，而用户复制它的
+ * 用途是贴进 issue，缺了环境信息那份贴上去也没人能看。
+ */
+async function copyTaskDiagnostics(pipeline, taskId, button) {
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch(`/api/logs/${pipeline}/${taskId}/diagnostics`);
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const text = await response.text();
+        await navigator.clipboard.writeText(text);
+        showToast(t('js.tasklog.copied'), 'success');
+    } catch (error) {
+        // 剪贴板 API 在非安全上下文里会直接抛（http:// 且非 localhost）。
+        // 那时「复制失败」不够 —— 用户还有「下载」那颗按钮可用，说清楚。
+        showToast(t('js.tasklog.copy_failed', { error: error.message }), 'danger');
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+// 关弹窗即停轮。挂在 document 上做委托而不是给 #taskDetailModal 直接挂：
+// 本文件在 /history 与首页都加载，而这一段在解析期跑（模态元素来自
+// base.html，那时已经在 DOM 里，但委托对「元素被替换」也免疫）。
+document.addEventListener('hidden.bs.modal', function (e) {
+    if (e.target && e.target.id === 'taskDetailModal') stopTaskLogPolling();
+});
 
 // 后端存的档位是枚举字面量（geo_validation.TILING_QUALITY_OFFSETS 的键）。
 // 这里逐档写成完整的键字面量、不做字符串拼接：tests/test_i18n.py 的双向闭合
@@ -576,14 +1047,23 @@ function previewHistoryTask(taskId, taskType) {
     if (typeof closePanel === 'function') closePanel();
 }
 
-// 活动状态 -> 确认文案的键。终态（completed / failed）不在表里，走通用文案。
-// 三态各说各的，不合并成一句「该任务尚未结束」：用户按下删除前要判断的是
-// 「我会失去什么」，pending 什么都还没跑（只是排队），running / paused 有
-// 已下载的进度会丢 —— 这三件事对决策的分量不一样。
+// 活动状态 -> 确认文案的键。终态（completed / completed_with_gaps / failed）
+// 不在表里，走通用文案。
+// 每个活动态各说各的，不合并成一句「该任务尚未结束」：用户按下删除前要判断的
+// 是「我会失去什么」，pending 什么都还没跑（只是排队），running / retrying /
+// paused 有已下载的进度会丢，pending_decision 还攒着一份等他决定的缺块清单
+// —— 这几件事对决策的分量不一样。
+//
+// ⚠️ 键集合必须等于后端 contracts.outcome.ACTIVE_STATE_VALUES（五态）。
+// 少一个的表现不是文案错，是**没有警告**：那个状态掉进通用文案「记录不可
+// 恢复」，用户看不出自己正在杀掉一个还在跑的任务。缺块改造新增 retrying /
+// pending_decision 时这里就漏过一次。
 const DELETE_CONFIRM_KEYS = {
     running: 'js.history.confirm.delete_task_running',
+    retrying: 'js.history.confirm.delete_task_retrying',
     pending: 'js.history.confirm.delete_task_pending',
     paused: 'js.history.confirm.delete_task_paused',
+    pending_decision: 'js.history.confirm.delete_task_pending_decision',
 };
 
 async function deleteTask(taskId, taskType = 'map') {

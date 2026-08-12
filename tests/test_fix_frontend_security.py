@@ -56,12 +56,32 @@ def test_escape_html_helper_defined_and_exported():
 
 
 def test_task_name_never_enters_innerhtml_raw():
-    """task.name 是用户提交的任务名——三个文件里不许再出现裸 `${task.name}`。"""
-    for name in ('tasks.js', 'history.js', 'map.js'):
+    """task.name 是用户提交的任务名——四个文件里不许再出现裸 `${task.name}`。
+
+    ⚠️ 登记（2026-08 phase-3 §6.1）：task_center.js 入列。实时链（含 §13-3
+    新增的缺口决策 UI：gapOutcomeLabel / gapBreakdownText / ensureGapSummary）
+    整段搬到了那个文件，扫描名单不跟着走就等于把新增的渲染代码放在检查之外。
+    """
+    for name in ('tasks.js', 'task_center.js', 'history.js', 'map.js'):
         src = _strip_js_comments(_js(name))
         assert '${task.name}' not in src, (
             f'{name} 仍把 task.name 裸拼进 HTML 模板（存储型 XSS）'
         )
+    # 实时链那两个文件更严：**一处**把插值拼进 innerHTML/outerHTML 都不许有。
+    # 它们不负责渲染（渲染在 task_list.js 的组件里，Vue 插值默认转义），所以
+    # 这里可以下等号级的禁令，而不是逐个字段追「这处转义了没有」。
+    # history.js / map.js 不适用：详情模态框与预览 chip 仍是手拼 HTML，
+    # 它们的转义由 test_history_secondary_fields_escaped / test_map_preview_names_escaped
+    # 按字段守。实测 2026-08 时 tasks.js 与 task_center.js 各 0 处 —— 这条是
+    # 看守而不是修复。
+    for name in ('tasks.js', 'task_center.js'):
+        src = _strip_js_comments(_js(name))
+        for m in re.finditer(r'\.(?:inner|outer)HTML\s*=([^;]*);', src, re.S):
+            assert '${' not in m.group(1), (
+                f'{name} 把插值拼进了 innerHTML/outerHTML：{m.group(1).strip()[:80]!r}'
+                ' —— 任务名/错误原文/结局文案都是不可信输入，渲染归 task_list.js '
+                '的组件（Vue 插值默认转义）'
+            )
     # 2026-08 Vue 化：行渲染收口到 task_list.js 的 TaskRow 组件，转义由
     # `{{ }}` 插值自动完成，不再需要（也不应该）手写 escapeHtml —— 手写的
     # 那套是「漏一处就是一个注入面」，插值是默认安全。
@@ -136,20 +156,24 @@ def test_terrain_preset_fields_escaped():
 
 
 def test_active_row_meta_text_escaped():
-    """tasks.js 不再持有行模板——行渲染收口在 history.js（2026-08 单一时间流定稿）。
+    """tasks.js / task_center.js 都不许长回第二份行模板。
 
     本检查的前身守「tasks.js createTaskRow 里 escapeHtml(taskMetaText(task))」，
     与上面 history.js 那条是对称检查——当时两个文件各自渲染行，最容易漏的
-    就是只转义了一边。单一时间流定稿后全站只剩 history.js createTaskRow
-    一处行实现（转义由上面那条守），这里改守「tasks.js 没有长回第二份
-    行模板」——两份实现必然漂移，包括转义。
+    就是只转义了一边。单一时间流定稿后行渲染收口（现在在 task_list.js 的
+    TaskRow 组件，转义由 `{{ }}` 插值负责），这里改守「实时链那一侧没有长回
+    第二份行模板」——两份实现必然漂移，包括转义。
+
+    ⚠️ 登记（2026-08 phase-3 §6.1）：task_center.js 入列，理由同上一条 ——
+    行渲染真要复辟，最可能复辟在现在持有 socket 推送处理器的那个文件里。
     """
-    src = _strip_js_comments(_js('tasks.js'))
-    for fn in ('createTaskRow', 'taskMetaText'):
-        assert f'function {fn}(' not in src, (
-            f'tasks.js 又长出了 {fn}()——行渲染已收口 history.js，'
-            '第二份实现（含转义义务）必然漂移'
-        )
+    for name in ('tasks.js', 'task_center.js'):
+        src = _strip_js_comments(_js(name))
+        for fn in ('createTaskRow', 'taskMetaText'):
+            assert f'function {fn}(' not in src, (
+                f'{name} 又长出了 {fn}()——行渲染已收口 task_list.js 的组件，'
+                '第二份实现（含转义义务）必然漂移'
+            )
 
 
 # ---------------------------------------------------------------- I11: _swb
@@ -169,12 +193,17 @@ def test_astgtm_swb_checkbox_is_disabled():
 # ---------------------------------------------------------------- I18: warning
 
 def test_task_completed_warning_reaches_a_toast():
-    """task_completed 的 warning 字段必须变成用户可见的 warning toast。"""
-    src = _strip_js_comments(_js('tasks.js'))
+    """task_completed 的 warning 字段必须变成用户可见的 warning toast。
+
+    socket 处理器与 handleTaskCompleted 都在 task_center.js（2026-08 phase-3
+    §6.1 抽取，函数体逐字未改）。钉死那个文件：这条守的是**实时层**把后端
+    的部分失败告知用户，允许它出现在任意文件等于不再守链路。
+    """
+    src = _strip_js_comments(_js('task_center.js'))
     assert re.search(
         r'handleTaskCompleted\(\s*data\.task_id,[^)]*data\.warning', src
     ), 'socket 处理器没有把 data.warning 传给 handleTaskCompleted'
-    body = _body('tasks.js', 'handleTaskCompleted')
+    body = _body('task_center.js', 'handleTaskCompleted')
     assert 'warning' in body, 'handleTaskCompleted 函数体里没有消费 warning'
     m = re.search(r'showToast\s*\((.*?)\)\s*;', body, re.S)
     assert m, 'handleTaskCompleted 没有调 showToast——warning 被静默丢弃'
@@ -197,8 +226,11 @@ def test_contour_start_response_is_checked():
 
 
 def test_load_active_tasks_checks_response_ok():
-    """四路任务列表 fetch 任何一路非 2xx 都不能当空列表渲染（卡片会被整页清空）。"""
-    body = _body('tasks.js', 'loadActiveTasks')
+    """四路任务列表 fetch 任何一路非 2xx 都不能当空列表渲染（卡片会被整页清空）。
+
+    loadActiveTasks 在 task_center.js（2026-08 phase-3 §6.1 抽取）。
+    """
+    body = _body('task_center.js', 'loadActiveTasks')
     assert re.search(r'!\s*\w+\.ok', body), (
         'loadActiveTasks 没查 response.ok——接口 500 会被当成「没有活动任务」渲染'
     )

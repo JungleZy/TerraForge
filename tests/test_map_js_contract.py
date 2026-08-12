@@ -268,23 +268,32 @@ def test_bounds_rules_live_in_exactly_one_function():
 
 
 def test_all_three_selection_entries_go_through_the_gate():
-    """框选落定 / 点读数编辑 / 手动输入面板，三个入口都必须调同一个闸门。"""
+    """每一个「把外来四至落成选区」的入口都必须调同一个闸门。
+
+    ⚠️ 登记（2026-08 §5.2 地名搜索）：入口从三个变成**四个** ——
+    applyPlaceResult（点搜索结果落成选区）是新的一个。它比前三个更需要这道
+    闸：地理编码服务给的 bbox 完全不受本应用控制，跨反经线的国家、退化成一
+    个点的地名都真实存在，放行一个就是一次必然 400 的提交。名字里的
+    「three」是历史遗留，钉点以下面这张表为准。
+    """
     src = _map_js()
     code = _strip_comments(src)
     entries = {
         'LEFT_UP 框选落定': _left_up_handler(code),
         '_applyBoundsEdit（点四至读数编辑）': _fn_body(code, '_applyBoundsEdit'),
         '_readManualBounds（手动输入范围面板）': _fn_body(code, '_readManualBounds'),
+        'applyPlaceResult（地名搜索结果）': _fn_body(code, 'applyPlaceResult'),
     }
     for label, body in entries.items():
         assert 'validateBoundsRules(' in body, (
             f'{label} 没走 validateBoundsRules —— 又是一个自带口径的入口'
         )
-    # 1 处定义 + 3 处调用。多出来的调用点不一定是错，但必须有人看过：
-    # 第四个入口（例如拖角点手柄）走的是几何钳位而不是闸门，见 map.js 里的说明。
-    assert code.count('validateBoundsRules(') == 4, (
+    # 1 处定义 + 4 处调用。多出来的调用点不一定是错，但必须有人看过：
+    # 第五个入口（例如拖角点手柄）走的是几何钳位而不是闸门，见 map.js 里的说明。
+    expected = 1 + len(entries)
+    assert code.count('validateBoundsRules(') == expected, (
         f'validateBoundsRules 的定义/调用点共 {code.count("validateBoundsRules(")} 处，'
-        '期望 4 处（1 定义 + 3 入口）'
+        f'期望 {expected} 处（1 定义 + {len(entries)} 入口）'
     )
 
 
@@ -798,3 +807,67 @@ def test_preview_never_feeds_a_raw_response_field_into_an_imagery_url():
     assert not offenders, (
         f'previewTask 里有绕过解析器的 provider url：{offenders} —— '
         '只允许 tileUrl(...) 或 `${base}/...`（base 本身已由 tileUrl 解析）')
+
+
+
+# ---------------------------------------------------------------------------
+# 闸门 9：导入的多边形几何必须两条下载分支都送出去
+# ---------------------------------------------------------------------------
+
+def _download_submit_handler(src):
+    """#downloadForm 的 submit 处理器函数体（含外层 {}）。
+
+    它是匿名 async function，_fn_body 只认 `function name(`，够不着 ——
+    按「addEventListener('submit' 之后的第一个 {」花括号配对切。
+    """
+    i = src.index("getElementById('downloadForm')")
+    j = src.index('{', src.index("addEventListener('submit'", i))
+    depth = 0
+    for k in range(j, len(src)):
+        if src[k] == '{':
+            depth += 1
+        elif src[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return src[j:k + 1]
+    raise AssertionError('downloadForm submit 处理器花括号不配对 —— 本测试已失效')
+
+
+def test_imported_region_is_attached_on_both_download_branches():
+    """导入的多边形几何必须同时挂到地图任务与 DEM 任务的载荷上。
+
+    实测缺陷：`taskData.region = _regionSpec` 那一行写在 else（地图）分支
+    **里面**，DEM 分支只送 north/south/east/west。于是导入一条 L 形省界建
+    DEM 任务时后端只看得见外接矩形 —— DemTaskManager.create_task 里那段
+    `if not region.is_rectangle` 的按真实几何过滤（src/services/
+    dem_task_manager.py）从界面上根本走不到，颗粒数与外接矩形一个不差。
+    浏览器实测：同一条 L 形边界（100..102E / 30..32N，缺右上角那格），
+    带 region 建出 3 个颗粒，不带 region 是 4 个。
+
+    钉的是**位置**而不是「文件里有没有这行」：写在任一分支内部都能让字面量
+    搜索变绿，而那正是缺陷本身。判据 = 赋值落在 if/else 链闭合之后的处理器
+    顶层（深度与 `if (downloadType === 'dem')` 那一行相同）。
+    """
+    body = _strip_comments(_download_submit_handler(_map_js()))
+
+    def depth_at(needle):
+        assert needle in body, f'提交处理器里找不到 {needle} —— 本测试已失效'
+        i = body.index(needle)
+        return body.count('{', 0, i) - body.count('}', 0, i)
+
+    assert body.count('taskData.region = _regionSpec') == 1, (
+        'taskData.region 的赋值不止一处 —— 两条分支各写一份就是第二份口径，'
+        '下一个分支（等高线？）照样会漏'
+    )
+    chain = depth_at("if (downloadType === 'dem')")
+    # 自检：分支体确实比链头深一层，否则下面的比较量的不是「在不在分支里」。
+    inside = depth_at("apiUrl = '/api/dem/tasks';")
+    assert inside == chain + 1, (
+        f'分支体深度 {inside} 不等于链头深度 {chain} + 1 —— 花括号计数已失效'
+    )
+    attach = depth_at('taskData.region = _regionSpec')
+    assert attach == chain, (
+        f'region 的挂载在深度 {attach}（if/else 链在 {chain}）—— 它被关进某一条'
+        '下载分支里了。落在 DEM 分支外面就等于「导入多边形建 DEM 任务时几何'
+        '静默丢失」，后端按真实几何裁颗粒的那套代码从界面上永远走不到'
+    )

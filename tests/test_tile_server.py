@@ -156,7 +156,7 @@ class TestTilePrefixSingleSource:
         assert tile_server.TILE_PATH_PREFIXES is TILE_PATH_PREFIXES
         assert logging_setup._TILE_PATH_PREFIXES is TILE_PATH_PREFIXES
         assert TILE_PATH_PREFIXES == ('/basemap/', '/tiles/', '/terrain/',
-                                      '/contour/')
+                                      '/contour/', '/mbtiles/')
 
     def test_prefix_literal_is_typed_only_in_tile_paths(self):
         """`is` 断言挡得住漂移，挡不住有人再抄一份**新的**常量出来。"""

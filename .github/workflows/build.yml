@@ -94,6 +94,46 @@ jobs:
         channels: conda-forge
         channel-priority: strict
 
+    # tag ↔ Config.APP_VERSION 一致性闸门(§8.2「TerraForge 当前应做的」第一项,
+    # 见 docs/notes/external-projects-takeaways.md)。
+    #
+    # 防的是发版当天最丢人也最难撤的那一类事故:推了 `v0.3.3`,但
+    # `src/core/config.py` 里的 APP_VERSION 还停在 `0.3.2` —— 构建全绿、Release
+    # 挂出去了,用户下载运行,界面标题、`/api/config` 与日志横幅全都自称 0.3.2。
+    # Release 页面与程序自报版本对不上之后,任何 issue 都无法判断复现的是哪个包。
+    # Release 一旦 published 就已经被镜像/爬取,删掉重发也收不回来。
+    #
+    # 排在最前面(装 GDAL 与依赖之前):它只需要 Python 标准库,几秒钟就能出结果,
+    # 没有理由让它排在四十分钟的编译后面才红。
+    # 非 tag 触发(workflow_dispatch 预热缓存)时跳过 —— 那时没有版本可比。
+    #
+    # 用 AST 读字面量而不是 `import src.core.config`:后者会把 Flask、GDAL、
+    # SQLite 整条依赖链拉起来,而这一步刻意排在装依赖之前。
+    - name: Verify tag matches Config.APP_VERSION
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        TAG="${GITHUB_REF#refs/tags/}"
+        APP_VERSION=$(python - <<'PY'
+        import ast
+        tree = ast.parse(open('src/core/config.py', encoding='utf-8').read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == 'APP_VERSION':
+                        print(node.value.value)
+                        raise SystemExit(0)
+        raise SystemExit('APP_VERSION not found in src/core/config.py')
+        PY
+        )
+        echo "tag=$TAG  Config.APP_VERSION=$APP_VERSION"
+        # tag 一律带 `v` 前缀(见文件顶部的 on.push.tags: 'v*'),APP_VERSION 不带。
+        if [ "$TAG" != "v$APP_VERSION" ]; then
+          echo "FAILED: tag $TAG 与 Config.APP_VERSION $APP_VERSION 不一致"
+          echo "改 src/core/config.py 的 APP_VERSION 后重打 tag,不要只改 tag。"
+          exit 1
+        fi
+        echo "Version check OK ($TAG == v$APP_VERSION)"
+
     - name: Install GDAL (Ubuntu)
       if: runner.os == 'Linux'
       run: |
@@ -195,8 +235,14 @@ jobs:
     # C7: 先跑完整测试套件再打包——测试失败则构建失败。
     # 三个平台均已装好 GDAL（Linux=apt、Windows/macOS=conda-forge），
     # 测试为离线单元测试，无显示/无网络环境下全部可运行。
+    #
+    # --cov-fail-under=78 与 test-build.yml 那一步是同一个**棘轮地板**,完整
+    # 理由(为什么是「实测值下压几点」、为什么不能加 `--cov=app.py`、为什么参数
+    # 只能加在 `tests/` 后面)写在 test-build.yml 的同名步骤上,那里是它先落地
+    # 的地方。两处必须同值同参:发版这条流水线松一点,等于所有回归都能靠推 tag
+    # 绕过去。
     - name: Run test suite
-      run: python -m pytest tests/ -q
+      run: python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=78 -q
 
     - name: Build with Nuitka
       run: python nuitka_build.py
@@ -250,7 +296,16 @@ jobs:
         # logs/terraforge.log:frozen 单进程的 show_startup_output 为真,
         # configure_logging(log_to_file=True) 会建出它 —— 光是那条
         # 「SECRET_KEY 未配置」的 warning 就足以落盘,内容里带 CI runner 路径。
+        #
+        # 每任务日志(阶段 3 新增)不需要在这里加第二条:`task_logging.task_log_dir()`
+        # = `logging_setup.log_dir() / TASK_LOG_DIR_NAME` = `<BASE_DIR>/logs/tasks`,
+        # 整个树都在下面这一行的 `logs` 里 —— 已核对过这两处常量,不是假设。
+        # 而且冒烟那一次启动根本不建任务,连目录都不会出现;这里删的是「万一」。
         rm -rf dist/terraforge/logs
+        # MBTiles 导出(阶段 2 新增)同样不需要在这里加一条:导出落在**任务自己的
+        # 输出目录**下(用户在表单里选的 output_path),不在 exe 旁边;而任务输出
+        # 目录本身也不会出现在冒烟测试里 —— 那一次启动只请求了 `/` 与
+        # `/tile-health`,没有创建任何任务。
         # base_z8 与 .base_unpack_* :Nuitka 排掉了解压后的 base_z8 却照样打进
         # 分卷,所以 is_base_ready 恒假,冒烟那一次启动会有后台线程开始解 4.3 万
         # 个文件,进程被 kill 时留下一棵解到一半的树 + 一个 pid 命名的临时目录。
@@ -288,6 +343,36 @@ jobs:
         # PowerShell quoting headaches.
         7z a -tzip ${{ matrix.asset_name }} terraforge/
 
+    # SHA-256 清单(§8.2「TerraForge 当前应做的」第二项,
+    # 见 docs/notes/external-projects-takeaways.md)。
+    #
+    # 为什么这一项值得单列:§13-6 已决暂不做代码签名与自动更新,于是 Release 页面
+    # 上那个包**没有任何来源自证**。用户从镜像站、网盘转载、公司内网仓库拿到一份
+    # terraforge-windows.zip 时,除了「文件名一样」之外没有第二个判据。一份与包
+    # 同时生成、挂在同一个 Release 上的哈希清单是这里最便宜的一道:它挡不住能改
+    # Release 的攻击者(那需要签名),但挡得住转载途中的截断、错版本与替换 ——
+    # 而那三种才是本项目实际会遇到的。同时它也让「用户报的问题出自哪一份包」
+    # 从猜变成可对账。
+    #
+    # 两套命令:macOS runner 没有 coreutils 的 sha256sum,只有 shasum;
+    # Linux 与 windows-latest 的 git-bash 都有 sha256sum。两者的输出格式
+    # (`<hash>  <name>`)相同,所以清单文件在三平台上可以互相校验。
+    # 写完立刻 -c 校验一次:清单本身写错(空文件、路径带 dist/ 前缀)时,
+    # 用户拿到的是一份永远对不上的哈希,比没有清单更糟。
+    - name: Generate SHA-256 manifest
+      run: |
+        cd dist
+        ASSET="${{ matrix.asset_name }}"
+        MANIFEST="$ASSET.sha256"
+        if command -v sha256sum > /dev/null 2>&1; then
+          sha256sum "$ASSET" > "$MANIFEST"
+          sha256sum -c "$MANIFEST"
+        else
+          shasum -a 256 "$ASSET" > "$MANIFEST"
+          shasum -a 256 -c "$MANIFEST"
+        fi
+        cat "$MANIFEST"
+
     - name: Upload artifact
       # Skip artifact upload on tag pushes — the Release step below already
       # attaches the same file, and artifacts double-count against the account-
@@ -299,7 +384,10 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.artifact_name }}
-        path: dist/${{ matrix.asset_name }}
+        # 清单与包一起走:分开就会有人只拿到其中一个,而单独一份哈希文件没有用。
+        path: |
+          dist/${{ matrix.asset_name }}
+          dist/${{ matrix.asset_name }}.sha256
         # Short retention so manual-dispatch / branch builds don't accumulate.
         retention-days: 7
 
@@ -316,7 +404,9 @@ jobs:
       # 而这一步拿着 GITHUB_TOKEN 的 contents:write。
       uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
       with:
-        files: dist/${{ matrix.asset_name }}
+        files: |
+          dist/${{ matrix.asset_name }}
+          dist/${{ matrix.asset_name }}.sha256
         body_path: RELEASE_NOTES.md
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -27,6 +27,19 @@ worker 被占死，用户重复点击还会 double-delete。
 rowcount —— 行本来就不存在时一片磁盘都不能碰，否则删一个不存在的 task_id 会
 「返回 404 的同时把同名残留目录 rmtree 掉」（见 delete_task_row 里那道闸）。
 把 DELETE 挪回记清单之后就会把那个静默真删放回来。
+
+## 为什么独占缓存的快照与清理被拆到 DELETE 两侧
+
+`clear_cache=True` 时还要删掉「只被这个任务引用」的共享缓存瓦片。这件事有一个
+和上面同样刚性的顺序（`docs/notes/cache-exclusive-cleanup-plan.md:39-47` 的安全
+表）：**枚举快照在删行之前，文件清理在删行之后**。
+
+- 快照在后：独占集 = 本任务枚举集 − 其余存活任务枚举集，行没了就算不出本任务
+  那一半，独占集恒为空，一块都删不掉（静默无效，不报错）。
+- 清理在前：删行失败回滚，任务还在而它的缓存已经空了。
+
+快照还必须在 `_state_lock` 里拍，理由与「判在跑」同源：不在锁里，`start_task`
+能在快照与 DELETE 之间登记一个新任务，我们于是删掉它正要用的瓦片。
 """
 
 from __future__ import annotations
@@ -75,10 +88,17 @@ class DeleteOutcome(NamedTuple):
 
     False 那一档【不是】「护栏拦下」的同义词：判据统一走
     task_cleanup.remove_task_dir_and_confirm 的 removed 字段，理由见 P1#6。
+
+    cache_removed_* 是 `clear_cache=True` 时顺手清掉的**共享缓存**（不是产物）。
+    两个字段带默认值 0，所以既有的三参数位置构造原样可用；没要求清缓存、或者
+    清理延后到后台线程时它们就是 0 —— 与 files_deferred 那一档同理，还没做完
+    的事给不出真数，宁可回 0 也不回一个猜的。
     """
     row_deleted: bool
     files_removed: Optional[bool]
     files_deferred: bool
+    cache_removed_bytes: int = 0
+    cache_removed_files: int = 0
 
 
 def _queue_pending_deletion(conn, artifact_dir: Path) -> None:
@@ -143,14 +163,120 @@ def _remove_artifacts_and_settle(artifact_dir: Path) -> bool:
     return outcome.removed
 
 
+# 只有地图管线的瓦片进共享缓存（`cache/<namespace>/z/x/y.png`）。DEM 走
+# `cache/dem`，等高线与本地地形压根不写缓存。所以 clear_cache 只对 tasks 表
+# 有意义 —— 传给别的表是调用方写错了，直接抛，不静默变成一次无效清理。
+_CACHE_OWNING_TABLE = 'tasks'
+
+
+def _snapshot_cache_scope(conn, task_id: int):
+    """删行**之前**把「谁引用了哪些缓存瓦片」快照下来。取不到返回 None。
+
+    为什么必须在删行之前、在同一把 `_state_lock` 里：独占集的定义是
+    「本任务枚举集 − 其余存活任务枚举集的并集」，两边都来自任务表。行删掉之后
+    再查，本任务那一半就没了，一块都算不出来；而不在锁里查，`start_task` 能在
+    快照与 DELETE 之间把一个新任务登记进来（它的参数矩形不在快照里），于是我们
+    会删掉一个**刚刚开始跑**的任务正要用的瓦片。
+
+    文件清理反过来必须在删行**之后**（见 docs/notes/cache-exclusive-cleanup-plan.md
+    的安全表 :39-47）：先删文件再删行时，删行失败回滚，任务还在但缓存已经空了。
+
+    快照里**包含**本任务自己那一行 —— `exclusive_tile_rects` 按 id 自己把它排除
+    掉，这里不重复过滤：多一层过滤就多一处「两边 id 口径不一致」的机会。
+    """
+    from src.services.cache_exclusive import surviving_task_rows
+
+    rows = surviving_task_rows(conn)
+    task_row = next((r for r in rows if r['id'] == task_id), None)
+    if task_row is None:
+        return None
+    return (task_row, rows)
+
+
+def _row_id(row):
+    """任务行取 id，取不到返回 None。行的具体类型（sqlite3.Row / dict）不固定。"""
+    try:
+        return row['id']
+    except (IndexError, KeyError, TypeError):
+        return None
+
+
+def _refresh_cache_scope(scope):
+    """把删行时拍的快照与**现在**的存活任务行取并集，返回新的 scope。
+
+    为什么必须重查：后台收尾要等工作线程退出，`join` 的上限是
+    `_JOIN_TIMEOUT_SECONDS`（600 秒）。快照是在 DELETE 之前拍的，这段窗口里
+    用户完全可以新建并启动一个覆盖同一片区域的任务 —— 那一行不在快照里，于是
+    它正在写的瓦片被算进「被删任务的独占集」而删掉，受害任务的拼接阶段随后
+    抛 FileNotFoundError，整层失败。
+
+    原先的注释说「任务参数创建后不可变，所以快照与现在等价」。那句话只覆盖
+    了「已有的行会不会被改」，没覆盖「会不会冒出新的行」—— 而独占集是
+    `本任务 − 其余所有存活任务`，减数里少一行就会多删。
+
+    **取并集而不是直接替换**：新查的这批里没有的行未必真的不存在过，用户可能
+    在这段窗口里删掉了另一个任务，那一行只在旧快照里。多保护几块瓦片的代价是
+    「下次同区域下载命中缓存」，多删的代价是删掉别人正在用的文件 —— 模块自己
+    定的边界就是「宁可少删，不可多删」。
+
+    本任务自己那一行必须继续留在结果里（`exclusive_tile_rects` 靠 id 排除它，
+    见 `_snapshot_cache_scope`），而它此刻已经从表里删掉了，所以以旧快照的行
+    为基准做并集，只把新出现的 id 补进去。
+    """
+    if scope is None:
+        return None
+    task_row, other_rows = scope
+    try:
+        from src.services.cache_exclusive import surviving_task_rows
+
+        fresh = surviving_task_rows()
+    except Exception as e:
+        # 查不到就用旧快照：旧快照只会让我们少删，不会多删。
+        logger.warning(f"Cache scope refresh failed, using pre-delete snapshot: {e}")
+        return scope
+    known = {_row_id(r) for r in other_rows}
+    merged = list(other_rows)
+    merged.extend(r for r in fresh if _row_id(r) not in known)
+    return (task_row, merged)
+
+
+def _clear_exclusive_cache(task_id: int, scope) -> dict:
+    """按快照删掉只被本任务引用的缓存瓦片。**绝不抛**。
+
+    失败一律降级成 0 + 一条 warning：缓存清理是删除操作的**附带**收益，
+    误差的最坏后果是「盘上多留了几个 GB，下次同区域下载全命中」。让它把一次
+    已经成功的删除翻成 500，用户会以为任务没删掉而再点一次。
+    """
+    if scope is None:
+        return {'removed_bytes': 0, 'removed_files': 0}
+    from src.services.cache_exclusive import clear_task_exclusive_cache
+
+    task_row, other_rows = scope
+    try:
+        return clear_task_exclusive_cache(task_row, other_rows)
+    except Exception as e:
+        logger.warning(f"Task {task_id}: exclusive cache cleanup failed: {e}")
+        return {'removed_bytes': 0, 'removed_files': 0}
+
+
 def _background_cleanup(task_id: int, thread: threading.Thread,
                         artifact_dir: Optional[Path],
-                        tombstone: Optional[set]) -> None:
-    """等线程收工，然后删产物、销账、摘墓碑。全程 best-effort。
+                        tombstone: Optional[set],
+                        cache_scope=None) -> None:
+    """等线程收工，然后删产物、清独占缓存、销账、摘墓碑。全程 best-effort。
 
     「收工」有两种：线程跑完死了，或者线程压根没 start()（分流判据故意把那段
     窗口算作在跑，见 delete_task_row）。两种都要走完整收尾 —— 唯一不收尾的是
     join 超时那一支，因为那时线程还活着、还在写盘。
+
+    独占缓存也必须等线程收工才能清：那个线程还在往 cache 里写瓦片，边写边删
+    只会留下一半的目录树，而且它写的正是我们判定为「独占」的那些坐标。
+
+    代价是 cache_scope 会**放旧**最多 `_JOIN_TIMEOUT_SECONDS`（600 秒）。旧的
+    注释说「任务参数创建后不可变，所以隔多久都不影响正确性」—— 那句话只成立
+    在「已有的行不会被改」这一半上，漏掉了「窗口里会冒出新行」：独占集是
+    `本任务 − 其余存活任务`，减数少一行就多删一片。所以真正动手之前先经
+    `_refresh_cache_scope` 与当下的存活任务行取并集。
 
     摘墓碑的唯一前提是「线程不会再写进度」—— 见 worker_done。
     """
@@ -183,6 +309,7 @@ def _background_cleanup(task_id: int, thread: threading.Thread,
         worker_done = True
         if artifact_dir is not None:
             _remove_artifacts_and_settle(artifact_dir)
+        _clear_exclusive_cache(task_id, _refresh_cache_scope(cache_scope))
     except Exception as e:
         # join 本身抛出时 worker_done 还是 False —— 线程状态未知就按「还活着」
         # 保守处理，同样不摘墓碑。
@@ -200,6 +327,7 @@ def delete_task_row(
     artifact_dir: Optional[Path],
     tombstone: Optional[set] = None,
     on_row_gone: Optional[Callable[[], None]] = None,
+    clear_cache: bool = False,
 ) -> DeleteOutcome:
     """删掉任务行，并按「线程还活着吗」分流产物清理。
 
@@ -214,9 +342,18 @@ def delete_task_row(
             用来让进度批次在父行消失后短路，避开外键 IntegrityError。
         on_row_gone: 行删掉后**同步**执行的回调，用于清静态路由的存在性缓存。
             不能丢给后台 —— 否则已删任务的瓦片在缓存失效前仍能被访问到。
+        clear_cache: 顺带删掉**只被这个任务引用**的共享缓存瓦片。产物目录
+            （artifact_dir）与共享缓存是两回事：前者是这个任务的成果，后者是
+            所有同源任务共用的下载中间层，所以删除对话框里是两个独立的勾。
+            只有 map 管线有共享缓存（见 _CACHE_OWNING_TABLE），别的表传 True
+            直接抛 —— 静默忽略会让调用方以为清过了。
     """
     if table not in _DELETABLE_TASK_TABLES:
         raise ValueError(f'delete_task_row: 未知任务表 {table!r}')
+    if clear_cache and table != _CACHE_OWNING_TABLE:
+        raise ValueError(
+            f'delete_task_row: 只有 {_CACHE_OWNING_TABLE} 有共享瓦片缓存，'
+            f'{table!r} 不支持 clear_cache')
 
     if artifact_dir is not None:
         # expanduser 在这里做一次，并且【同一个 target】既喂护栏又拿去
@@ -236,6 +373,7 @@ def delete_task_row(
             artifact_dir = None
 
     tombstoned = False
+    cache_scope = None
     conn = get_connection()
     try:
         try:
@@ -267,6 +405,15 @@ def delete_task_row(
                 # 正好只补上这段窗口，不会把跑完的线程重新算成在跑。
                 running = bool(thread) and (thread.is_alive() or thread.ident is None)
 
+                # 独占缓存快照必须在 DELETE 【之前】、且在这把锁【之内】拍。
+                # 之后再拍就少了本任务那一半（独占集恒为空）；不在锁里拍则
+                # start_task 能在快照与 DELETE 之间登记一个新任务，我们会删掉
+                # 它刚要用的瓦片。理由与上面「判在跑与删行必须同一临界区」同源。
+                # 快照本身只是一次 `SELECT * FROM tasks`（行数 = 历史任务数，
+                # 几百行量级），不会显著加长锁的持有时间。
+                if clear_cache:
+                    cache_scope = _snapshot_cache_scope(conn, task_id)
+
                 if running:
                     # 墓碑必须在删行【之前】写入：删行之后、线程发现之前的这段
                     # 窗口里，map 的进度批次会拿已经不存在的 task_id 去 INSERT
@@ -296,6 +443,10 @@ def delete_task_row(
                     # 这道闸对本地地形是必需的：只有它的 artifact_dir 在 manager
                     # 内部按 task_id 硬算，另外三条在路由层算、算之前先查过行。
                     artifact_dir = None
+                    # 同一道闸也管缓存：行本来就不存在时，那份快照要么是 None
+                    # （查不到本任务），要么属于另一个生命周期的同名 id。两种
+                    # 情况都不能拿去删共享缓存 —— 那是**别的任务**在用的瓦片。
+                    cache_scope = None
                 if artifact_dir is not None:
                     # 记清单与删行同一事务 —— 中间崩掉就丢了产物线索。放在 DELETE
                     # 之后只是为了先拿到 rowcount 喂上面那道闸；一次 commit，语句
@@ -324,11 +475,21 @@ def delete_task_row(
                 # 与后台收尾同一个助手：护栏返回的是「可删」，报给用户的必须是
                 # 「真删了」，而清单行只有在真删了（或永远删不掉）时才销账。
                 files_removed = _remove_artifacts_and_settle(artifact_dir)
-            return DeleteOutcome(row_deleted, files_removed, False)
+            # 缓存清理排在产物之后、且只在行确实删掉之后（cache_scope 在那道闸
+            # 上已经被置 None）。快路径没有工作线程在写 cache，可以当场删完并把
+            # 真实数字回给用户。
+            #
+            # 这里也要 `_refresh_cache_scope`：快照是在 `_state_lock` 里拍的，
+            # 到这一行之间隔着 commit、on_row_gone 回调和一次可能是 GB 级金字塔
+            # 的 rmtree —— 那段时间足够用户新建并启动一个覆盖同一片区域的任务。
+            # 代价只是一次 `SELECT * FROM tasks`。
+            cache = _clear_exclusive_cache(task_id, _refresh_cache_scope(cache_scope))
+            return DeleteOutcome(row_deleted, files_removed, False,
+                                 cache['removed_bytes'], cache['removed_files'])
 
         threading.Thread(
             target=_background_cleanup,
-            args=(task_id, thread, artifact_dir, tombstone),
+            args=(task_id, thread, artifact_dir, tombstone, cache_scope),
             daemon=True,
             name=f"DeleteCleanup-{task_id}",
         ).start()

@@ -8,11 +8,16 @@ let currentBounds = null;
 //（单击就能造出 0°×0° 的「选区」，预估框还报「约 6 张瓦片」），
 // _applyBoundsEdit 与 _readManualBounds 只校纬度、不校经度量级（east=400 照收，
 // 状态栏读出「300.000° × 20.000°」），三处又都刻意放行 west=170/east=-170
-// 这类跨反经线矩形。后端对这些一律 400，于是用户拿到的是一条**负宽度**读数、
-// 一颗点下去必然失败的按钮，和一句直接漏进中文界面的英文报错。
+// 这类跨反经线矩形。裸四至那条路后端一律 400，于是用户拿到的是一条**负宽度**
+// 读数、一颗点下去必然失败的按钮，和一句直接漏进中文界面的英文报错。
 //
-// 跨反经线没有「前端宽容一点」的余地：后端无条件拒绝它，放行只能换来 400。
-// 要支持得先改后端的 validate_bbox，不在这里开口子。
+// 跨反经线**不是**做不了，只是这四个数表达不了它：2026-08 起 POST /api/tasks
+// 与 /api/dem/tasks 在载荷带 region 时接受它（east 规范化成 >180，见
+// src/contracts/region.py 与 DemTaskManager.create_task；库里真的躺着 east=181
+// 的行）。裸四至那条路仍然 400，而那是**有意**的 —— east > west 是它的定义域，
+// 少了这条就没法把「跨界」和「用户把东西写反了」区分开。所以这道闸对**画出来
+// 的矩形**照旧正确：要在地图上跨界，得先给它一条 region 的表达（导入多边形那
+// 条路），而不是在这里放开 east > west。
 //
 // 每条判据都写成双边、且顺序照抄后端 —— 不是冗余，是**报错理由**的对拍口径。
 // 只写单边会把越界漏给下一条：east=-400 时缺了「east >= -180」，
@@ -107,19 +112,60 @@ function updateTileEstimate() {
         el.hidden = true;
         return null;
     }
+    // 导入的区域走服务端（POST /api/region/estimate）。
+    //
+    // 这条分支不是优化，是这个功能**存在的理由**：多边形的意义就是它比自己的
+    // 外接矩形小。一个 L 形省份、一条流域、一个带洞的行政区，bbox 里可能有
+    // 一半以上的瓦片压根不需要下载。继续拿下面那个 bbox 估算器报数，读数就会
+    // 与真正会下载的量差出一倍，用户看到的是「导入了多边形但张数没变」——
+    // 那等于宣布这个功能没生效。
+    //
+    // 多边形栅格化不能搬到前端：那需要与后端 iter_region_tile_spans 逐像素
+    // 一致的实现（含孔洞的奇偶规则与跨反经线拆分），两份实现必然漂移，而漂移
+    // 的表现是「预估说 8 万、实际下了 12 万」。
+    //
+    // 矩形路仍走客户端 estimateTileCount：读数要跟着拖角点即时变（MOUSE_MOVE
+    // 级别），一次往返在那条路上不可接受。
+    if (_regionSpec) {
+        return _renderRegionTileEstimate(el, zMin, zMax);
+    }
     const count = estimateTileCount(currentBounds, zMin, zMax);
+    _paintTileEstimate(el, count, null);
+    return { count, over: count > TASK_TILE_LIMIT };
+}
+
+// 把张数（可选：磁盘预算判决）写进 #tileEstimate。
+// 走 textContent 而不是 innerHTML：这里唯一的变量是数字，但 verdict 的数字
+// 来自服务端响应，没有理由让它经过 HTML 解析。
+function _paintTileEstimate(el, count, verdict) {
     const formatted = count.toLocaleString('zh-CN');
     const over = count > TASK_TILE_LIMIT;
+    const parts = [];
     if (over) {
         const hours = (count / 10 / 3600).toFixed(1);
-        el.textContent = t('js.map.tile_estimate.over', { count: formatted, hours: hours });
-        el.classList.add('tile-estimate--over');
+        parts.push(t('js.map.tile_estimate.over', { count: formatted, hours: hours }));
     } else {
-        el.textContent = t('js.map.tile_estimate.count', { count: formatted });
-        el.classList.remove('tile-estimate--over');
+        parts.push(t('js.map.tile_estimate.count', { count: formatted }));
     }
+    // 磁盘预算：**永远带数字**（后端 BudgetVerdict 的同一条约定）——「空间不足」
+    // 这四个字对用户没有任何操作性，他要知道的是还差多少。
+    // 刻意不显示 verdict.reason：那是一句英文散文（disk_budget.py 就是这么拼的），
+    // 原样贴进中文界面就是 A7 修过的中英混杂问题。数字自己说话。
+    if (verdict) {
+        parts.push(verdict.ok
+            ? t('js.region.budget.ok', {
+                required: _fmtBytes(verdict.required_bytes),
+                free: _fmtBytes(verdict.free_bytes),
+            })
+            : t('js.region.budget.short', {
+                required: _fmtBytes(verdict.required_bytes),
+                free: _fmtBytes(verdict.free_bytes),
+                shortfall: _fmtBytes(verdict.shortfall_bytes),
+            }));
+    }
+    el.textContent = parts.join(' · ');
+    el.classList.toggle('tile-estimate--over', over || !!(verdict && !verdict.ok));
     el.hidden = false;
-    return { count, over };
 }
 
 // --- 首屏加载动画（Splash） ----------------------------------------------------
@@ -402,6 +448,12 @@ const _HANDLE_CORNERS = ['nw', 'ne', 'sw', 'se'];
 let _handleEntities = {};           // corner -> entity
 let _draggingHandle = null;         // 正在拖拽的角点（'nw' 等）或 null
 
+// 选区（矩形与导入的多边形共用）在地图上的强调色。字面量原本在本文件里出现
+// 三次（矩形填充、矩形描边、角点手柄），导入区域又要用同一个色 —— 第四份
+// 复制就该收口了。取值与 --color-accent 一致；Cesium 不认 var()，主题切换
+// 也不会重画已有实体，所以这里保持字面量而不是去求 CSS 自定义属性。
+const SELECTION_ACCENT_CSS = '#38bdf8';
+
 function _pickCartographic(position) {
     // 优先纯数学的椭球拾取（不依赖 GPU/地形渲染状态），失败再退回 globe.pick
     let cartesian = viewer.camera.pickEllipsoid(position, Cesium.Ellipsoid.WGS84);
@@ -420,9 +472,9 @@ function _ensureSelectionEntity() {
                 return Cesium.Rectangle.fromDegrees(
                     _rectDegrees.west, _rectDegrees.south, _rectDegrees.east, _rectDegrees.north);
             }, false),
-            material: Cesium.Color.fromCssColorString('#38bdf8').withAlpha(0.15),
+            material: Cesium.Color.fromCssColorString(SELECTION_ACCENT_CSS).withAlpha(0.15),
             outline: true,
-            outlineColor: Cesium.Color.fromCssColorString('#38bdf8'),
+            outlineColor: Cesium.Color.fromCssColorString(SELECTION_ACCENT_CSS),
             outlineWidth: 3,
         },
     });
@@ -448,7 +500,7 @@ function _ensureHandles() {
             }, false),
             point: {
                 pixelSize: 11,
-                color: Cesium.Color.fromCssColorString('#38bdf8'),
+                color: Cesium.Color.fromCssColorString(SELECTION_ACCENT_CSS),
                 outlineColor: Cesium.Color.WHITE,
                 outlineWidth: 2,
                 // 手柄必须始终压在矩形与地形之上，否则 3D 视角下会被盖住拖不到
@@ -530,6 +582,8 @@ function _exitDrawMode() {
     }
 }
 
+// 清空选区。矩形与导入区域**一起**清：用户点的是范围浮层上那颗「删除」，
+// 他的意思是「当前选区没了」，而不是「只删掉其中的矩形部分」。
 function clearSelection() {
     if (_selectionEntity && viewer) {
         viewer.entities.remove(_selectionEntity);
@@ -538,9 +592,553 @@ function clearSelection() {
     _removeHandles();
     _rectDegrees = null;
     currentBounds = null;
+    _clearRegionState();
     _exitDrawMode();
     updateBoundsInfo();
     refreshSubmitButtonState();
+}
+
+// --- 导入区域（§5.1）----------------------------------------------------------
+//
+// 选区的第二种来源：用户拖进来或选进来一个
+// GeoJSON / KML / KMZ / Shapefile(zip) 文件，服务端 POST /api/region/import
+// 解析成 RegionSpec 回给前端（geometry 是 MultiPolygon，每个多边形的第一个环
+// 是外环、其余是**孔洞**）。
+//
+// 与矩形是**互斥**的两种选区：导入即替换。刻意不做「矩形 ∩ 多边形」那种组合 ——
+// 没人能预期结果，而下载范围是这个应用里最不能含糊的一个数。
+//
+// 为什么必须留住整份几何而不是只留 bbox：多边形的意义就是它比自己的外接矩形小
+// （见 updateTileEstimate 里那段）。只留 bbox 等于把这个功能的收益全扔掉。
+
+// 服务端 RegionSpec.to_dict() 原样：{type, coordinates, bbox, crs, source, display_name}。
+// null = 当前没有导入区域（选区是矩形或空）。
+let _regionSpec = null;
+// 画在地图上的实体（每个多边形一个填充 + 每个环一条贴地描边线）。
+let _regionEntities = [];
+// 服务端估算的缓存 + 在飞请求。key 把「会改变张数的输入」编码进去，
+// 输入没变就不重复往返（弹窗每次打开、每次改层级都会调 updateTileEstimate）。
+let _regionEstimate = null;
+let _regionEstimatePending = null;
+// 请求序号：用户可以连着改层级，晚发的请求可能先回来。
+let _regionEstimateSeq = 0;
+
+/** 撤掉区域实体并清空状态。**不**碰矩形选区那一套。 */
+function _clearRegionState() {
+    if (viewer) {
+        _regionEntities.forEach(function (entity) {
+            try { viewer.entities.remove(entity); } catch (e) { /* 实体已被移除 */ }
+        });
+    }
+    _regionEntities = [];
+    _regionSpec = null;
+    _regionEstimate = null;
+    _regionEstimatePending = null;
+}
+
+/** `[[lon, lat], ...]` -> Cesium 位置数组。 */
+function _regionRingPositions(ring) {
+    const flat = [];
+    ring.forEach(function (point) { flat.push(point[0], point[1]); });
+    return Cesium.Cartesian3.fromDegreesArray(flat);
+}
+
+/**
+ * 把 RegionSpec 的几何画到地图上，**含孔洞**。
+ *
+ * 填充用 PolygonHierarchy（第二个参数就是洞的层级），描边**另开贴地折线**而不是
+ * `polygon.outline: true`：贴地多边形（不带 perPositionHeight）的 outline 在
+ * Cesium 里不可靠 —— 它是 geometry 级的线框，在地形上会被埋进地表看不见，
+ * 而洞的边界根本不会被描出来。逐环画 clampToGround 的 polyline 是唯一能让
+ * 「洞在哪」看得见的办法，而洞看不见就等于用户无法确认导入是否正确。
+ */
+function _drawRegionEntities(region) {
+    const fill = Cesium.Color.fromCssColorString(SELECTION_ACCENT_CSS).withAlpha(0.15);
+    const stroke = Cesium.Color.fromCssColorString(SELECTION_ACCENT_CSS);
+    (region.coordinates || []).forEach(function (poly) {
+        const rings = (poly || []).filter(function (ring) { return ring && ring.length >= 3; });
+        if (!rings.length) return;
+        const holes = rings.slice(1).map(function (ring) {
+            return new Cesium.PolygonHierarchy(_regionRingPositions(ring));
+        });
+        _regionEntities.push(viewer.entities.add({
+            polygon: {
+                hierarchy: new Cesium.PolygonHierarchy(_regionRingPositions(rings[0]), holes),
+                material: fill,
+                // 贴地：导入的区域可能横跨几十度，不贴地会在地形上穿进穿出。
+                classificationType: Cesium.ClassificationType.TERRAIN,
+                arcType: Cesium.ArcType.GEODESIC,
+            },
+        }));
+        rings.forEach(function (ring) {
+            // 闭合：GeoJSON 的环首尾点相同，但 KML/Shapefile 经服务端归一后
+            // 也保证闭合，所以直接照原样画，不再补点。
+            _regionEntities.push(viewer.entities.add({
+                polyline: {
+                    positions: _regionRingPositions(ring),
+                    width: 2,
+                    material: stroke,
+                    clampToGround: true,
+                    arcType: Cesium.ArcType.GEODESIC,
+                },
+            }));
+        });
+    });
+}
+
+/**
+ * 几何事实一行文本：多边形数、孔洞数、跨反经线。
+ *
+ * 这三件事**必须**出现在范围读数里：它们是「这不是一个矩形」的全部内容，
+ * 而它们各自都会让下载量与用户的直觉差出一大截（孔洞少下、跨反经线要拆两段）。
+ * 数字在前端现算而不是让服务端给：RegionSpec.to_dict() 只给几何本身，
+ * 而这三个数就是几何的直接读数 —— 让服务端多回三个派生字段才是重复。
+ */
+function _regionFactsText(region) {
+    const polys = region.coordinates || [];
+    const holes = polys.reduce(function (n, poly) {
+        return n + Math.max(0, (poly || []).length - 1);
+    }, 0);
+    const facts = [];
+    if (polys.length > 1) facts.push(t('js.region.facts.polygons', { n: polys.length }));
+    if (holes > 0) facts.push(t('js.region.facts.holes', { n: holes }));
+    // bbox 是 [west, south, east, north]；east > 180 是服务端表达「跨反经线」
+    // 的方式（RegionSpec.crosses_antimeridian 同一判据），不是脏数据。
+    const bbox = region.bbox || [];
+    if (bbox.length === 4 && bbox[2] > 180) facts.push(t('js.region.facts.antimeridian'));
+    if (!facts.length) facts.push(t('js.region.facts.polygon'));
+    return facts.join(' · ');
+}
+
+/**
+ * 落地一个导入的区域：替换选区、画几何、飞过去、刷新读数。
+ *
+ * payload 是 POST /api/region/import 的响应：{region, summary, warnings}。
+ * warnings 是**机器码**（服务端约定，目前只有 'crosses_antimeridian'），
+ * 按码查文案；认不出的码原样显示，绝不静默丢掉 —— 一条没显示出来的警告
+ * 与没有警告是两件完全不同的事。
+ */
+function applyImportedRegion(payload) {
+    const region = payload && payload.region;
+    if (!region || !region.bbox || region.bbox.length !== 4) {
+        showToast(t('js.region.import.bad_payload'), 'danger');
+        return;
+    }
+    // 先整体清（含上一个导入区域与矩形），再落新的 —— clearSelection 内部会
+    // 调 _clearRegionState，顺序反了会把刚设好的区域清掉。
+    clearSelection();
+    _regionSpec = region;
+    const [west, south, east, north] = region.bbox;
+    currentBounds = { north: north, south: south, east: east, west: west };
+    if (viewer) {
+        _drawRegionEntities(region);
+        // 不夹 east：Cesium 收 east > 180。实测（vendor 的 1.143.0 发行版，
+        // 本页控制台）Rectangle.fromDegrees(179,39,181,40) 回的就是
+        // west=179 / east=181 / width=2.0000°，center 在 180°；
+        // getRectangleCameraCoordinates 把相机放在 lon 180（区域正中）。
+        // 夹成 180 反而把相机挪到 lon 179.5 —— 一个跨界区域只框住西边那一半。
+        // try/catch 留着，但理由不是「fromDegrees 会拒绝」（它不会，flyTo 也
+        // 不抛）：相机是这个函数里唯一可能炸的一步，让它吃掉后面的四至刷新与
+        // 警告 toast，用户就会拿到一个没有任何提示的半截状态。
+        try {
+            viewer.camera.flyTo({
+                destination: Cesium.Rectangle.fromDegrees(west, south, east, north),
+                duration: 1.0,
+            });
+        } catch (e) {
+            console.error('Failed to fly to imported region:', e);
+        }
+    }
+    updateBoundsInfo();
+    announceBounds();
+    updateTileEstimate();
+    refreshSubmitButtonState();
+
+    (payload.warnings || []).forEach(function (code) {
+        showToast(regionWarningText(code), 'warning');
+    });
+    showToast(t('js.region.import.applied', {
+        name: region.display_name || t('js.region.unnamed'),
+        facts: _regionFactsText(region),
+    }), 'success');
+}
+
+// 服务端只回机器码，不回散文（它没有语种上下文）。逐码写成完整键字面量：
+// tests/test_i18n.py 的双向闭合按字面量扫源码，把前缀和 code 拼起来取键那种
+// 写法会让文案被判成无人引用而删掉（本注释里也刻意不写出那个拼接式，
+// 引号里的键形状字面量同样会被扫到）。同一形态的先例是 history.js 的
+// TERRAIN_QUALITY_KEYS。
+const REGION_WARNING_TEXTS = {
+    'crosses_antimeridian': t('js.region.warning.crosses_antimeridian'),
+    // 坐标系不明的两条（TF-SEC-011）。它们以前只写服务端日志，用户完全看不到
+    // —— 而后果是区域静默落在错误的位置，一整轮下载全白跑。
+    'missing_crs': t('js.region.warning.missing_crs'),
+    'unreadable_crs': t('js.region.warning.unreadable_crs'),
+    'skipped_non_polygon_features': t('js.region.warning.skipped_non_polygon_features'),
+    'encoding_fallback_gb18030': t('js.region.warning.encoding_fallback_gb18030'),
+    'extension_content_mismatch': t('js.region.warning.extension_content_mismatch'),
+};
+
+function regionWarningText(code) {
+    // hasOwnProperty 同 getStatusColor 的理由：裸下标下 code === 'constructor'
+    // 会取到构造函数，`||` 兜不到，一坨函数源码进 toast。
+    return (Object.prototype.hasOwnProperty.call(REGION_WARNING_TEXTS, code)
+        && REGION_WARNING_TEXTS[code]) || code;
+}
+
+/**
+ * 上传一个区域文件。成功即应用；失败把服务端的理由说全。
+ *
+ * 后缀被拒时 400 的 body 带 `supported_extensions` 数组（服务端刻意不把这份
+ * 清单塞进文案里，避免文案与实际支持的格式漂移）—— 在这里拼进提示，
+ * 用户才知道该拿什么格式再来一次。
+ */
+async function importRegionFile(file) {
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    try {
+        const response = await fetch('/api/region/import', { method: 'POST', body: form });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const exts = (result.supported_extensions || []).join(' ');
+            throw new Error(exts
+                ? `${result.error || 'HTTP ' + response.status}（${exts}）`
+                : (result.error || 'HTTP ' + response.status));
+        }
+        applyImportedRegion(result);
+    } catch (error) {
+        showToast(t('js.region.import.failed', { error: error.message }), 'danger');
+    }
+}
+
+// 会改变张数**或磁盘占用**的输入。style / output_format 也算：服务端的估算里
+// 含单张均值与磁盘预算，两者都与样式和产物形态有关。
+// export_mbtiles 同理且更狠 —— 容器差不多是松散镜像的**又一整份**（实测
+// 116.0-116.2/39.0-39.2 z10-13：output_bytes 5,711,460 → 6,795,261）。
+// 不把它编进 key 的后果不是「少算一点」，是勾选框翻转后界面继续画上一次的
+// 判决：缓存命中，请求根本不发。
+function _regionEstimateKey(zMin, zMax) {
+    return [
+        zMin, zMax,
+        document.getElementById('mapStyle')?.value || '',
+        _outputFormatValue() || '',
+        document.getElementById('outputPath')?.value || '',
+        document.getElementById('exportMbtiles')?.checked ? 1 : 0,
+    ].join('|');
+}
+
+/** 缓存命中就直接画；否则先写「计算中」再发请求，回来后重画。 */
+function _renderRegionTileEstimate(el, zMin, zMax) {
+    const key = _regionEstimateKey(zMin, zMax);
+    if (_regionEstimate && _regionEstimate.key === key) {
+        _paintTileEstimate(el, _regionEstimate.tile_count, _regionEstimate.verdict);
+        return {
+            count: _regionEstimate.tile_count,
+            over: _regionEstimate.tile_count > TASK_TILE_LIMIT,
+        };
+    }
+    el.textContent = t('js.region.estimate.pending');
+    el.classList.remove('tile-estimate--over');
+    el.hidden = false;
+    _requestRegionEstimate(key, zMin, zMax);
+    return null;
+}
+
+function _requestRegionEstimate(key, zMin, zMax) {
+    const seq = ++_regionEstimateSeq;
+    const spec = _regionSpec;
+    _regionEstimatePending = (async function () {
+        try {
+            const response = await fetch('/api/region/estimate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    region: spec,
+                    zoom_min: zMin,
+                    zoom_max: zMax,
+                    style: document.getElementById('mapStyle')?.value || '',
+                    output_format: _outputFormatValue() || '',
+                    output_path: document.getElementById('outputPath')?.value || '',
+                    // 与创建任务的提交体同名同义（见 submit 那处的 export_mbtiles）。
+                    // 漏掉它，勾了「同时导出 MBTiles」的用户拿到的判决短一整个容器
+                    // 的量 —— 而磁盘预算判决存在的意义就是「下之前先知道够不够」。
+                    export_mbtiles: document.getElementById('exportMbtiles')?.checked ? 1 : 0,
+                }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.error || ('HTTP ' + response.status));
+            // 过期响应直接丢：用户已经改过层级、或者已经换/清了区域。
+            if (seq !== _regionEstimateSeq || spec !== _regionSpec) return;
+            _regionEstimate = {
+                key: key,
+                tile_count: Number(result.tile_count) || 0,
+                estimate: result.estimate || null,
+                verdict: result.verdict || null,
+            };
+            updateTileEstimate();
+        } catch (error) {
+            if (seq !== _regionEstimateSeq || spec !== _regionSpec) return;
+            const el = document.getElementById('tileEstimate');
+            if (el) {
+                el.textContent = t('js.region.estimate.failed', { error: error.message });
+                el.classList.add('tile-estimate--over');
+                el.hidden = false;
+            }
+        }
+    })();
+}
+
+/**
+ * 提交前拿到一个**确定**的张数。
+ *
+ * 矩形路是同步的，直接返回。多边形路第一次调用时估算可能还在飞 —— 那时
+ * updateTileEstimate 返回 null，超限二次确认就会被静默跳过，用户在毫无预告的
+ * 情况下建出一个几小时的任务。所以这里等那一次往返。
+ */
+async function currentTileEstimate() {
+    const sync = updateTileEstimate();
+    if (sync || !_regionSpec) return sync;
+    if (_regionEstimatePending) {
+        try { await _regionEstimatePending; } catch (e) { /* 失败已在界面上说明 */ }
+    }
+    return updateTileEstimate();
+}
+
+// --- 地点搜索（§5.1）----------------------------------------------------------
+//
+// GET /api/places/search?q=&limit= -> {enabled, results: [{name, bbox, kind, region}]}。
+// bbox 是 [west, south, east, north]，落地成一个**矩形**选区（它本来就是矩形），
+// 所以之后拖角点、点读数编辑的行为与手画的框完全一致。
+//
+// 地理编码器未配置时服务端回 200 + enabled:false。那时控件**渲染成禁用**并给出
+// 指向 geocoder_url 设置的提示 —— 不静默隐藏（用户会以为这个功能不存在，而它
+// 只是没配地址），也不内置任何默认服务商（那等于替用户决定把他的地名查询发给
+// 一个第三方，而这是个可离线部署的工具）。
+
+let _placeSearchTimer = null;
+// 请求序号：连续敲字时晚发的请求可能先回来，把旧结果盖在新关键词上。
+let _placeSearchSeq = 0;
+// null = 还没探测过；true/false = 服务端说的。探测只在面板首次展开时做一次。
+let _geocoderEnabled = null;
+
+function _closePlaceSearch() {
+    const panel = document.getElementById('placeSearchPanel');
+    const toggle = document.getElementById('mapPlaceSearch');
+    if (panel) panel.hidden = true;
+    if (toggle) {
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.classList.remove('map-panel-btn--active');
+        toggle.focus();          // 焦点不能掉回 <body>：键盘用户会丢失位置
+    }
+}
+
+/** 把结果区换成一句提示（无结果 / 未配置 / 出错都走这里）。 */
+function _renderPlaceSearchHint(text) {
+    const results = document.getElementById('placeSearchResults');
+    if (!results) return;
+    // textContent：提示里可能含服务端的错误原文。
+    results.innerHTML = '';
+    const hint = document.createElement('div');
+    hint.className = 'place-search__hint';
+    hint.textContent = text;
+    results.appendChild(hint);
+}
+
+/** enabled:false -> 输入框禁用 + 指向 geocoder_url 的提示。 */
+function _applyGeocoderDisabled() {
+    const input = document.getElementById('placeSearchInput');
+    if (input) {
+        input.disabled = true;
+        input.value = '';
+    }
+    _renderPlaceSearchHint(t('js.search.disabled_hint'));
+}
+
+/**
+ * 探测地理编码器是否配置好。空 q 的请求不查上游，只回 enabled。
+ *
+ * 为什么在面板展开时探测而不是等用户敲第一个字：验收标准是「未配置时控件
+ * **看得出**是禁用的」。让用户先敲完一个地名再告诉他这个功能没开，是把
+ * 「配置缺失」伪装成「搜不到」。
+ * 探测本身失败（网络/500）时**不**禁用控件：那是未知，不是「没配」——
+ * 禁用一个其实可用的控件比多一次无结果更糟。
+ */
+async function _probeGeocoder() {
+    if (_geocoderEnabled !== null) return _geocoderEnabled;
+    try {
+        const response = await fetch('/api/places/search?q=&limit=1');
+        if (!response.ok) return null;
+        const data = await response.json();
+        _geocoderEnabled = !!data.enabled;
+        if (!_geocoderEnabled) _applyGeocoderDisabled();
+        return _geocoderEnabled;
+    } catch (error) {
+        console.error('Failed to probe geocoder:', error);
+        return null;
+    }
+}
+
+async function _runPlaceSearch(query) {
+    const term = (query || '').trim();
+    const results = document.getElementById('placeSearchResults');
+    if (!results) return;
+    if (!term) {
+        results.innerHTML = '';
+        return;
+    }
+    const seq = ++_placeSearchSeq;
+    try {
+        const response = await fetch(
+            `/api/places/search?q=${encodeURIComponent(term)}&limit=8`);
+        const data = await response.json().catch(() => ({}));
+        if (seq !== _placeSearchSeq) return;      // 过期响应
+        if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+        // 未配置：这条路径也要兜住 —— 用户可能在面板开着的时候才把 geocoder_url
+        // 配上/去掉，探测那一次的结论会过期。
+        _geocoderEnabled = !!data.enabled;
+        if (!_geocoderEnabled) {
+            _applyGeocoderDisabled();
+            return;
+        }
+        _renderPlaceResults(data.results || []);
+    } catch (error) {
+        if (seq !== _placeSearchSeq) return;
+        _renderPlaceSearchHint(t('js.search.failed', { error: error.message }));
+    }
+}
+
+/**
+ * 渲染结果列表。
+ *
+ * 逐节点建 DOM 而不是拼 innerHTML：name / kind / region 全部来自第三方地理
+ * 编码服务的响应，是本应用里最典型的「外部可控字符串」。bbox 走 data 属性存
+ * JSON，点击时解析 —— 比在闭包里挂一堆监听更好清理（列表每次搜索整体重建）。
+ */
+function _renderPlaceResults(list) {
+    const results = document.getElementById('placeSearchResults');
+    if (!results) return;
+    results.innerHTML = '';
+    if (!list.length) {
+        _renderPlaceSearchHint(t('js.search.no_results'));
+        return;
+    }
+    list.forEach(function (place) {
+        if (!place || !place.bbox || place.bbox.length !== 4) return;
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'place-search__item';
+        item.dataset.bbox = JSON.stringify(place.bbox);
+        item.textContent = place.name || '';
+        const meta = document.createElement('span');
+        meta.className = 'place-search__meta';
+        meta.textContent = [place.kind, place.region].filter(Boolean).join(' · ');
+        item.appendChild(meta);
+        results.appendChild(item);
+    });
+}
+
+/**
+ * 选中一个地点：落成矩形选区并飞过去。
+ *
+ * 走的是与手动输入范围（_applyManualBounds）**同一套**写入，包括同一道
+ * validateBoundsRules 闸门 —— 地理编码服务给的 bbox 未必满足本应用的四条规则
+ * （跨反经线的国家、退化成一个点的地名都真实存在）。同一个选区被两个入口用
+ * 两种标准放行，正是这套代码此前修掉的缺陷。
+ */
+function applyPlaceResult(bbox, name) {
+    const west = Number(bbox[0]);
+    const south = Number(bbox[1]);
+    const east = Number(bbox[2]);
+    const north = Number(bbox[3]);
+    const reason = validateBoundsRules({ north: north, south: south, east: east, west: west });
+    if (reason) {
+        showNotification(t('js.search.unusable_bbox', { name: name, reason: t(reason) }), 'warning');
+        return;
+    }
+    clearSelection();
+    _rectDegrees = { west: west, south: south, east: east, north: north };
+    _ensureSelectionEntity();
+    _ensureHandles();
+    _syncBoundsFromRect();
+    if (viewer) {
+        viewer.scene.requestRender();
+        viewer.camera.flyTo({
+            destination: Cesium.Rectangle.fromDegrees(west, south, east, north),
+            duration: 1.0,
+        });
+    }
+    updateBoundsInfo();
+    announceBounds();
+    updateTileEstimate();
+    refreshSubmitButtonState();
+    _closePlaceSearch();
+}
+
+/**
+ * 区域导入按钮 + 地点搜索面板的接线。由 index.html 的 boot 块在 initMap 之后
+ * 调用（applyPlaceResult / applyImportedRegion 都要 viewer）。
+ */
+function initRegionTools() {
+    const importBtn = document.getElementById('mapRegionImport');
+    const fileInput = document.getElementById('regionImportFile');
+    if (importBtn && fileInput) {
+        importBtn.addEventListener('click', function () { fileInput.click(); });
+        fileInput.addEventListener('change', function () {
+            const file = fileInput.files && fileInput.files[0];
+            // 先清 value 再处理：不清的话再选**同一个文件**不会触发 change，
+            // 用户点了没反应（清过一次选区之后重新导入同一份文件就是这条路）。
+            fileInput.value = '';
+            importRegionFile(file);
+        });
+    }
+
+    const toggle = document.getElementById('mapPlaceSearch');
+    const panel = document.getElementById('placeSearchPanel');
+    const input = document.getElementById('placeSearchInput');
+    const results = document.getElementById('placeSearchResults');
+    if (!toggle || !panel || !input || !results) return;
+
+    toggle.addEventListener('click', function () {
+        if (!panel.hidden) {
+            _closePlaceSearch();
+            return;
+        }
+        panel.hidden = false;
+        toggle.setAttribute('aria-expanded', 'true');
+        toggle.classList.add('map-panel-btn--active');
+        input.focus();
+        _probeGeocoder();
+    });
+
+    // 300ms 去抖：每个按键都打一次上游地理编码是在替用户浪费他的配额。
+    input.addEventListener('input', function () {
+        clearTimeout(_placeSearchTimer);
+        _placeSearchTimer = setTimeout(function () { _runPlaceSearch(input.value); }, 300);
+    });
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+            e.stopPropagation();
+            _closePlaceSearch();
+        } else if (e.key === 'Enter') {
+            // 回车立刻搜，不等去抖 —— 用户已经明确表示「就是它」。
+            e.preventDefault();
+            clearTimeout(_placeSearchTimer);
+            _runPlaceSearch(input.value);
+        }
+    });
+    // 委托：结果列表每次搜索整体重建，逐项挂监听会漏清理。
+    results.addEventListener('click', function (e) {
+        const item = e.target.closest('.place-search__item');
+        if (!item) return;
+        let bbox;
+        try {
+            bbox = JSON.parse(item.dataset.bbox);
+        } catch (err) {
+            return;
+        }
+        applyPlaceResult(bbox, item.textContent);
+    });
 }
 
 function _initMapTools() {
@@ -747,6 +1345,17 @@ function initDownloadTypeToggle() {
     if (outputPath) {
         outputPath.addEventListener('input', () => {
             outputPath.dataset.userEdited = '1';
+        });
+    }
+
+    // 「同时导出 MBTiles」勾选态变化要重算判决：容器差不多是松散镜像的又一整份，
+    // 磁盘够不够的结论会因为这一个勾选框翻面。updateTileEstimate 走的是
+    // _regionEstimateKey 的缓存，勾选态已经编进 key，所以这一发必然打穿缓存。
+    const exportMbtilesToggle = document.getElementById('exportMbtiles');
+    if (exportMbtilesToggle) {
+        exportMbtilesToggle.addEventListener('change', function () {
+            updateTileEstimate();
+            refreshSubmitButtonState();
         });
     }
 
@@ -1061,13 +1670,19 @@ function renderTerrainTileEstimate() {
         base = Math.trunc(Number(numEl.value));
     }
     const counts = summary?.tile_counts;
-    // 跨 180° 的 DEM 一律不预告：raster_probe._tile_counts_per_level 的 docstring
-    // 写着这张表在跨界数据上会少算约六成（intersecting_tile_range 把超出 180 的
-    // 整段钳掉），那是刻意不补偿的已知边界。判据只能是东界本身 —— 它是并集做过
-    // +360 展开的证据；单文件跨界时那条 antimeridian 标记只落在该文件上，汇总里
-    // 是干净的，拿汇总的标记当判据会漏掉最常见的那一种。
-    const crossesAntimeridian = summary?.bounds_wgs84?.[2] > 180;
-    if (!Number.isFinite(base) || !Array.isArray(counts) || crossesAntimeridian) {
+    // 跨 180° 的 DEM **现在也预告**。
+    //
+    // 这里曾经整段隐藏，理由是 raster_probe._tile_counts_per_level 那张表在跨界
+    // 数据上少算约六成（intersecting_tile_range 把超出 180 的整段钳掉）。那个
+    // 理由已经不成立：该函数改为按 RegionSpec.antimeridian_parts 分东西两段各数
+    // 一遍再求和，跨界数据的张数是对的（见它 docstring 的第 1 条）。
+    //
+    // 残留的偏差换了来源（同 docstring 第 2 条）：切片器喂给几何的是
+    // DemSampler.bounds，没有做 +360 展开，所以「预告」与「实切」在跨界数据上
+    // 仍可能不一致。方向是**我们偏高报**（我们数了完整的两段，它可能只切被钳过
+    // 的那一侧）——而这一行的用途是规模警告，高报是保守方向。继续整段隐藏的代价
+    // 是跨界 DEM 在起切前拿不到任何规模提示，而那种作业动辄几十万张、几个小时。
+    if (!Number.isFinite(base) || !Array.isArray(counts)) {
         box.hidden = true;
         box.textContent = '';
         return;
@@ -1077,9 +1692,36 @@ function renderTerrainTileEstimate() {
     // 也就是基准档 —— 宁可少报一级，不要在这里塞一份猜的取值表。
     const opt = qualityEl?.selectedOptions?.[0];
     const offset = Number(opt?.dataset.offset) || 0;
-    // 与 build_terrain 同一道钳位：max(0, min(MAX_ZOOM, base + offset))。上界取
-    // counts.length - 1 而不是另写一个 21：那张表的长度就是 MAX_ZOOM + 1。
-    const level = Math.max(0, Math.min(counts.length - 1, base + offset));
+    // 「自动」挡下的实际层级**必须**直接取服务端给的
+    // recommended_maxzoom_by_quality[档位]，不能自己 base + offset：
+    // 那个 base 已经被后端钳到 MAX_ZOOM 了（亚分米源的原始估算 22 会被钳成 21），
+    // 再叠一次「精细 +1 / 速度 -1」就会在钳位边界上错一级 —— 预告写 z20 而切片器
+    // 真的切 z21，张数差约 4 倍。服务端那张表里的每个值都是 build_terrain
+    // **实际会切到**的层级，钳位已经算在里面。
+    //
+    // 手填挡仍走 base + offset：那个 base 是用户自己填在数字框里的数，我们从不
+    // 钳它，所以在这一侧做加法是对的。钳位上界取 counts.length - 1 而不是另写
+    // 一个 21：那张表的长度就是 MAX_ZOOM + 1。
+    let level;
+    if (autoEl?.checked) {
+        const byQuality = summary?.recommended_maxzoom_by_quality;
+        const quality = qualityEl?.value;
+        // hasOwnProperty 同 getStatusColor 的理由：裸下标下 quality ===
+        // 'constructor' 会取到构造函数，Number.isFinite 才兜得住。
+        // 表缺失时（后端估不出层级就不给这个字段）**不回退**到 base + offset ——
+        // 那正是上面说的错一级。宁可不预告，也不给一个自信的错数。
+        level = (byQuality && quality
+            && Object.prototype.hasOwnProperty.call(byQuality, quality))
+            ? byQuality[quality]
+            : undefined;
+    } else {
+        level = Math.max(0, Math.min(counts.length - 1, base + offset));
+    }
+    if (!Number.isFinite(level)) {
+        box.hidden = true;
+        box.textContent = '';
+        return;
+    }
 
     // 起点也要跟着钳下来，与 build_terrain 的 min_level = min(min_level, max_level)
     // 同一条：基准 8 配「比基准少一级」的档实际切到 z7，起点死守 8 的话循环一轮
@@ -1533,7 +2175,18 @@ function updateBoundsInfo() {
     }
     if (currentBounds) {
         const f = (v) => v.toFixed(5);
+        // 导入区域先说「这不是一个矩形」：多边形数 / 孔洞数 / 跨反经线。
+        // 放在四至之前而不是之后 —— 下面那四个数是**外接矩形**的四至，用户在
+        // 不知道有洞、有多段的前提下读它们，会以为选中的就是那个矩形。
+        // display_name 来自文件内容（用户可控），必须过 escapeHtml：整层是
+        // innerHTML 拼的（模板被契约测试钉住，不能改成逐节点 textContent）。
+        const regionRow = _regionSpec ? `
+            <div class="bounds-region">
+                <span class="bounds-region__name">${escapeHtml(_regionSpec.display_name || t('js.region.unnamed'))}</span>
+                <span class="bounds-region__facts">${escapeHtml(_regionFactsText(_regionSpec))}</span>
+            </div>` : '';
         boundsInfo.innerHTML = `
+            ${regionRow}
             <div class="bounds-grid">
                 <span class="bounds-k" aria-hidden="true">N</span><span class="bounds-v" data-field="north" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_north')} </span>${f(currentBounds.north)}</span>
                 <span class="bounds-k" aria-hidden="true">S</span><span class="bounds-v" data-field="south" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_south')} </span>${f(currentBounds.south)}</span>
@@ -1631,6 +2284,15 @@ function announceBounds() {
 
 function _beginBoundsEdit(vEl) {
     if (!currentBounds || vEl.querySelector('input')) return;
+    // 导入区域的四至是几何的**派生读数**（外接矩形），不是可编辑的真相。
+    // 让它可编辑就会造出一个 bbox 与多边形不一致的选区：画在地图上的还是原来
+    // 那个多边形，服务端按几何算张数，而用户以为自己刚刚缩小了下载范围。
+    // 说一句而不是静默无反应 —— 读数上挂着「点击可编辑」的 title，
+    // 点了什么都不发生只会让人以为界面坏了。
+    if (_regionSpec) {
+        showToast(t('js.region.bbox_readonly'), 'info');
+        return;
+    }
     const field = vEl.dataset.field;
     if (!field) return;
     const input = document.createElement('input');
@@ -1914,7 +2576,10 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
 
     // 大任务二次确认：瓦片数超软阈值（100k，小时级作业）时把预计耗时
     // 摆给用户，确认后才提交。0.1.4 起服务端不再硬性拒绝。
-    const est = updateTileEstimate();
+    // await 而不是直接调 updateTileEstimate()：多边形区域的张数来自服务端，
+    // 第一次点提交时那次往返可能还在飞，同步读会拿到 null 而把整条确认静默
+    // 跳过 —— 用户会在毫无预告的情况下建出一个几小时的任务。
+    const est = await currentTileEstimate();
     if (est && est.over) {
         const hours = (est.count / 10 / 3600).toFixed(1);
         const ok = await showConfirm(
@@ -1957,10 +2622,25 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
             zoom_max: parseInt(document.getElementById('zoomMax').value),
             style: document.getElementById('mapStyle').value,
             output_format: outputFormat,
-            output_path: document.getElementById('outputPath').value
+            output_path: document.getElementById('outputPath').value,
+            // MBTiles 是**正交**的一项，不是第四个 output_format 值（§5.3：它是
+            // 通用产物容器）。勾上时后端在任务成功收尾后额外打一个 .mbtiles，
+            // 松散瓦片目录照常保留 —— 预览与之后的手动导出都从它出。
+            export_mbtiles: document.getElementById('exportMbtiles')?.checked ? 1 : 0
         };
         apiUrl = '/api/tasks';
     }
+
+    // 导入的多边形区域：bbox 四至照常送（后端老路径与历史列表都要它），
+    // 再附上完整几何。服务端按几何裁瓦片 / 裁 DEM 颗粒 —— 只送 bbox 就会把
+    // L 形省份外面那一半也下下来，而那正是导入多边形要避免的事。
+    //
+    // **两条分支都要挂**。曾经这一行写在地图分支里面，于是导入同一条 L 形
+    // 省界建 DEM 任务时后端只看得见四至，颗粒数与它的外接矩形一个不差 ——
+    // DemTaskManager.create_task 里那段 `if not region.is_rectangle` 的按真实
+    // 几何过滤（src/services/dem_task_manager.py）从界面上根本走不到。
+    // 矩形选区不带这个字段，两条路都走原路径，行为一个字节都不变。
+    if (_regionSpec) taskData.region = _regionSpec;
 
     const btn = document.getElementById('createTaskBtn');
     const originalText = btn.innerHTML;
@@ -2385,11 +3065,26 @@ function _renderPreviewChip() {
         chip.className = 'map-overlay-chip task-preview-chip';
         host.appendChild(chip);
     }
+    // 缺口徽章：带洞的成品在**每一处**露面都要带上这个数字（行、详情、这里）。
+    // 预览是最需要它的一处 —— 用户正盯着屏幕上的图判断「这份数据能不能用」，
+    // 而屏幕上看不出缺的是哪几块（缺块渲染出来就是空白，与海面、与未加载
+    // 的瓦片长得一样）。
+    // 数字从 store 现取而不是在 _previewState 里存一份：socket 推送只写 store，
+    // 存一份快照会在补漏跑完后继续显示旧的缺口数。
+    const previewKey = `${_previewState.taskType}:${_previewState.taskId}`;
+    const previewTaskRow = window.TaskStore
+        ? (window.TaskStore.get(previewKey) || window.TaskStore.getActive(previewKey))
+        : null;
+    const previewGaps = (previewTaskRow && previewTaskRow.gap_tiles) || 0;
+    const gapBadge = previewGaps > 0
+        ? `<span class="task-gap-chip" title="${escapeHtml(t('js.gaps.chip_title', { n: previewGaps }))}">${escapeHtml(t('js.gaps.chip', { n: previewGaps }))}</span>`
+        : '';
     chip.innerHTML = `
         <span>${t('js.map.preview.chip', {
             name: '<strong>' + escapeHtml(_previewState.name) + '</strong>',
             id: _previewState.taskId,
         })}</span>
+        ${gapBadge}
         <button type="button" class="btn btn-sm btn-secondary" onclick="stopTaskPreview()">${t('js.map.preview.stop')}</button>
     `;
 }

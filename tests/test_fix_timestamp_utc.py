@@ -26,13 +26,19 @@ def isolated_config(tmp_path, monkeypatch):
     """把 Config 落盘路径 + 数据库全部指向 tmp_path 并建库(项目测试规约)。"""
     from src.core.config import Config
     from src.core import database
+    from src.services.resource_scheduler import reset_scheduler
 
     monkeypatch.setattr(Config, 'DATABASE_PATH', tmp_path / 'config.db')
     monkeypatch.setattr(Config, 'DOWNLOADS_DIR', tmp_path / 'downloads')
     monkeypatch.setattr(Config, 'OUTPUT_DIR', tmp_path / 'downloads')
     monkeypatch.setattr(Config, 'CACHE_DIR', tmp_path / 'cache')
     database.init_database()
-    return tmp_path
+    # 调度器是进程单例:`start_task` 现在先要申请任务位 + 网络额度,上一条
+    # 用例(哪怕在别的文件)留下的 owner 键会撞「already holds a reservation」,
+    # 或把全局 max_concurrent_tasks(默认 2)吃满。清单例而不是抬高上限。
+    reset_scheduler()
+    yield tmp_path
+    reset_scheduler()
 
 
 def _seed_task_row(status='pending', total=0):
@@ -69,6 +75,13 @@ def _fetch_task_row(task_id):
         ).fetchone()
     finally:
         conn.close()
+
+
+def _task_source(task_id):
+    """任务行 → SourceSnapshot(= 这条任务的缓存命名空间)。与 _execute_task 同源。"""
+    from src.services.source_registry import snapshot_for_task_row
+
+    return snapshot_for_task_row(_fetch_task_row(task_id))
 
 
 # ---------- utc_now_iso / parse_db_timestamp 单元行为 ----------
@@ -114,15 +127,19 @@ def test_task_lifecycle_writes_utc_iso_timestamps(isolated_config):
     from src.services.download_engine import DownloadEngine
     from src.services.task_manager import TaskManager
 
-    # 全部瓦片预先命中 cache:任务不起网络直接跑完,走完 completed_at 写入路径
-    engine = DownloadEngine()
-    for tile in engine.iter_tiles(1, 0, 1, 0, 10, 10):
-        cache_path = tile.cache_path('s')
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_bytes(b'cached-tile')
-
     tm = TaskManager(socketio=None)
     task_id = _seed_task_row(status='pending')
+
+    # 全部瓦片预先命中 cache:任务不起网络直接跑完,走完 completed_at 写入路径。
+    # cache 必须写进这条任务自己的命名空间(`<style_code>-<配置指纹8位>`,由任务
+    # 行推出的 SourceSnapshot 决定)—— 按旧的裸 's' 写就全部落空,任务会真的去
+    # mts0.googleapis.com 拉瓦片并带重试,用例从秒级变成分钟级挂起。
+    engine = DownloadEngine()
+    source = _task_source(task_id)
+    for tile in engine.iter_tiles(1, 0, 1, 0, 10, 10):
+        cache_path = tile.cache_path(source)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(b'cached-tile')
 
     tm.start_task(task_id)
     thread = tm.active_tasks.get(task_id)

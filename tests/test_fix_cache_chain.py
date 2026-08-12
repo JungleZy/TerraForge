@@ -25,6 +25,7 @@ from src.services.download_engine import (  # noqa: E402
     NotAnImageResponse,
     looks_like_image,
 )
+from src.contracts.outcome import TileOutcome  # noqa: E402
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 _HTML = b"<!DOCTYPE html><html><head><title>Portal</title></head></html>"
@@ -114,7 +115,18 @@ def test_html_error_page_is_not_written_to_cache(engine, monkeypatch):
 
 
 def test_non_image_response_is_retried_then_reported_failed(engine):
-    """非图片当作【可重试】的失败:换服务器/重试仍不行才判 failed。"""
+    """非图片:重试(换服务器)照做,但最终结局记 `permanent_failure`。
+
+    两件事分开看 ——
+      · **重试**仍然发生:NotAnImageResponse 继承 ClientError,走的是
+        download_tile 里既有的服务器轮换/重试循环,所以 session.calls==2。
+        劫持页往往只出现在某一台出口上,换一台就好了。
+      · **结局**是 permanent_failure,不是 retryable_failure:重试预算已经
+        在这一轮用完了,同一个 URL 再问一遍还是同一坨字节。记成可重试会让
+        「补漏」反复去打一个注定失败的地址,白烧配额。
+    (旧断言是裸字符串 'failed';稀疏表的 status 现在存 `TileOutcome` 值,
+     'failed' 只存在于 user_version<5 的存量行。)
+    """
     session = _FakeSession(_HTML, content_type="text/html")
     tile = Tile(task_id=1, zoom=3, x=2, y=1)
 
@@ -122,7 +134,7 @@ def test_non_image_response_is_retried_then_reported_failed(engine):
         tile, "s", session, cache_enabled=True, progress_callback=None,
     ))
 
-    assert result["status"] == "failed"
+    assert result["status"] == TileOutcome.PERMANENT_FAILURE.value
     assert session.calls == 2, "应按 max_retries 重试后才放弃"
 
 
@@ -131,12 +143,17 @@ def test_non_image_response_is_retried_then_reported_failed(engine):
 # ---------------------------------------------------------------------------
 
 def test_cache_write_failure_reports_tile_as_failed(engine, monkeypatch):
-    """写 cache 抛异常时,这块瓦片必须记 failed 并上报 failed。
+    """写 cache 抛异常时,这块瓦片必须记 `cache_failure` 并如实上报。
 
     旧行为:只打一条 warning 然后无条件 progress_callback(tile,'completed')
     并 return status='completed' —— 磁盘上没有任何文件、task_tiles 里没有
-    failed 行、downloaded_tiles 却 +1;完成判定只数 failed 行,任务照标
+    缺块行、downloaded_tiles 却 +1;完成判定只数缺块行,任务照标
     completed,而 completed 任务不允许重启,用户无法原地续传自愈。
+
+    结局用 `cache_failure` 而不是笼统的失败:故障在**本机**(盘满 / 只读 /
+    Windows 上文件被占用),不在网络。它进 RETRYABLE_OUTCOMES(腾出空间后
+    补漏就能成),但分类必须留着 —— 否则用户拿着一条「下载失败」把排查方向
+    全指到代理和上游去。
     """
     session = _FakeSession(_PNG)
     tile = Tile(task_id=1, zoom=3, x=2, y=1)
@@ -156,10 +173,11 @@ def test_cache_write_failure_reports_tile_as_failed(engine, monkeypatch):
         tile, "s", session, cache_enabled=True, progress_callback=_cb,
     ))
 
-    assert result["status"] == "failed", "写缓存失败绝不能上报 completed"
+    assert result["status"] == TileOutcome.CACHE_FAILURE.value, \
+        "写缓存失败绝不能上报 success"
     assert "cache write failed" in result["error"]
     assert len(reported) == 1
-    assert reported[0][3] == "failed"
+    assert reported[0][3] == TileOutcome.CACHE_FAILURE.value
     # 失败的瓦片没有网络产出可言，字节数必须是 None —— 上层拿它算下载速度
     # （SpeedMeter），漏报成 0 以外的值会把速度算高。
     assert reported[0][5] is None
@@ -167,7 +185,7 @@ def test_cache_write_failure_reports_tile_as_failed(engine, monkeypatch):
 
 
 def test_successful_download_reports_byte_count(engine):
-    """对照：正常路径不受影响 —— 写盘成功仍报 completed 且缓存落盘。
+    """对照：正常路径不受影响 —— 写盘成功仍报 success 且缓存落盘。
 
     并且必须带上真实字节数：这是任务行「下载速度」的唯一数据来源
     （src/services/download_speed.py）。
@@ -184,14 +202,14 @@ def test_successful_download_reports_byte_count(engine):
         tile, "s", session, cache_enabled=True, progress_callback=_cb,
     ))
 
-    assert result["status"] == "completed"
-    assert reported == [("completed", len(_PNG))]
+    assert result["status"] == TileOutcome.SUCCESS.value
+    assert reported == [(TileOutcome.SUCCESS.value, len(_PNG))]
     cache_path = engine._get_cache_path(tile, "s")
     assert cache_path.exists() and cache_path.read_bytes() == _PNG
 
 
 def test_cache_hit_reports_no_bytes(engine):
-    """缓存命中上报 completed 但字节数为 None —— 读盘不是下载。
+    """缓存命中上报 success 但字节数为 None —— 读盘不是下载。
 
     这条是任务行速度显示的核心不变量：把缓存命中的字节算进吞吐，
     显示出来的「网速」会虚高一个数量级（本地盘 vs 网络差着几百倍），
@@ -216,9 +234,9 @@ def test_cache_hit_reports_no_bytes(engine):
         tile, "s", session, cache_enabled=True, progress_callback=_cb,
     ))
 
-    assert result["status"] == "completed"
+    assert result["status"] == TileOutcome.SUCCESS.value
     assert session.calls == 0, "缓存命中不该发起网络请求"
-    assert reported == [("completed", None)]
+    assert reported == [(TileOutcome.SUCCESS.value, None)]
 
 
 # ---------------------------------------------------------------------------

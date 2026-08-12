@@ -129,6 +129,34 @@ def isolate_startup_sweep(monkeypatch, _startup_sweep_sandbox):
     monkeypatch.setattr(tc, "tempfile", _SandboxTempfile(str(_startup_sweep_sandbox)))
 
 
+@pytest.fixture(autouse=True)
+def isolate_task_logs(monkeypatch, tmp_path):
+    """每任务日志（logs/tasks/<pipeline>_<id>.log）不得写进工作树。
+
+    `task_logging.task_log_dir()` 解析成 `Config.BASE_DIR / 'logs' / 'tasks'`，
+    而各测试的隔离 helper 只 patch 了 DATABASE_PATH / DOWNLOADS_DIR / CACHE_DIR，
+    **没有 BASE_DIR** —— 于是任何跑到管线线程入口的用例都会往仓库里写日志。
+    `tests/test_no_repo_pollution.py` 明令 `<repo>/logs` 在测试期间不得出现，
+    它在开发机上之所以是绿的，只是因为 `logs/` 在会话开始前就已存在（那条用例
+    拿会话基线做跳过判断）；CI 上是干净 clone，基线为假，直接红。
+
+    为什么 patch `Config.BASE_DIR` 而不是 patch `task_logging.task_log_dir`：
+    BASE_DIR 是所有派生路径的根，挡住它同时挡住了下一个从它推路径的新模块。
+    只挡一个函数是在跟具体实现赛跑。
+
+    ⚠️ 本 fixture **不**替代各用例自己 patch 那四个路径。BASE_DIR 只影响
+    「没被单独 patch 过」的派生路径；DATABASE_PATH 等在 Config 上是独立的类
+    属性，不跟着 BASE_DIR 走（它们在 import 时就算好了）。
+    """
+    try:
+        from src.core import config as _config
+    except Exception:  # 环境缺依赖时不阻断收集
+        return
+    sandbox = tmp_path / "_base"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_config.Config, "BASE_DIR", sandbox, raising=False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def repo_unpacked_base_at_session_start():
     """会话开始时仓库里有没有解压后的底图 —— test_no_repo_pollution 的基线。

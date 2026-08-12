@@ -115,6 +115,24 @@ MESSAGES = {
         'en': 'Terrain tiling:',
     },
 
+    # 任务详情弹窗 —— 缺口与任务日志（阶段 3）
+    # 「缺口」不叫「失败」:no_data（该处本来就没有影像）与真失败在这里是同一栏
+    # 里的两类,标签只能中性 —— 叫「失败」会让一个正常完成的近海任务看起来像出错。
+    'tpl.base.detail.gaps_label': {
+        'zh': '缺口',
+        'en': 'Gaps',
+    },
+    # 「产物」而不是「输出文件」：一件产物可以是目录（XYZ 金字塔、地形目录），
+    # 也可以是单文件（MBTiles、逐层 GeoTIFF），「文件」只说对了一半。
+    'tpl.base.detail.artifacts_label': {
+        'zh': '产物',
+        'en': 'Artifacts',
+    },
+    'tpl.base.detail.log_label': {
+        'zh': '任务日志',
+        'en': 'Task log',
+    },
+
     # 命令面板(Ctrl/Cmd+K)与快捷键速查 —— 外壳
     'tpl.base.cmdk.title': {
         'zh': '命令面板',

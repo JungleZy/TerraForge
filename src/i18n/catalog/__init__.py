@@ -12,8 +12,9 @@ pkgutil 自动发现：Nuitka 是静态分析，扫不到动态 import 的模块
 
 from src.i18n.catalog import (api, app, js_base_terrain, js_commands,
                               js_config, js_drop_process, js_history, js_map,
-                              js_tasks, js_ui, tpl_base, tpl_config, tpl_history,
-                              tpl_index, tpl_path_browser, validation)
+                              js_region, js_tasks, js_ui, tpl_base, tpl_config,
+                              tpl_history, tpl_index, tpl_path_browser,
+                              validation)
 
 _DOMAINS = (
     app,
@@ -29,6 +30,10 @@ _DOMAINS = (
     js_base_terrain,
     js_commands,
     js_drop_process,
+    # 阶段 2/3 的界面文案，一个模块装五组前缀（js.region / js.search / js.wizard /
+    # js.gaps / js.tasklog）：它们服务的是同一条链路 —— 导入或搜出一个区域、
+    # 建任务、盯缺口、翻任务日志。拆成五个文件只会让改一处文案要开五个。
+    js_region,
     js_ui,
     api,
     validation,

@@ -19,7 +19,10 @@ import sys
 
 import pytest
 
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.contracts.outcome import TileOutcome  # noqa: E402
 
 
 class FakeSocketIO:
@@ -210,25 +213,36 @@ def _mark_running(task_id):
 def _install_fakes(tm, fail_keys=()):
     """替身下载 + 替身拼接。返回记录了每次拼接调用的列表。
 
-    fail_keys 里的 (zoom,x,y) 上报 failed，其余上报 completed 并写出 cache 文件
-    （产物复制阶段与恢复枚举都以 cache 为准）。
+    fail_keys 里的 (zoom,x,y) 上报 `retryable_failure`,其余上报 `success`
+    并写出 cache 文件（产物复制阶段与恢复枚举都以 cache 为准）。
+
+    两个替身都必须吃下引擎新增的关键字参数,否则 TypeError 会在**进函数体
+    之前**抛出,任务落到通用 except 判 failed —— 用例看着「红得合理」,其实
+    什么也没测到:
+      · download_tiles_batch 多了 `source=` / `max_concurrency=`;
+      · stitch_tiles_with_gdal 多了 `work_dir_base=`（与产物同卷的工作目录）。
+    缓存路径直接用引擎收到的那份 `source` 快照 —— 与 _execute_task 同一个
+    对象,不另算一遍指纹命名空间(各算各的就可能算出两个目录,那正是
+    「下载完了却说缺块」的成因)。
     """
     stitch_calls = []
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, *, source=None, **_):
         for tile in list(tiles):
             key = (tile.zoom, tile.x, tile.y)
             if key in fail_keys:
-                await progress_callback(tile, 'failed', 'boom')
+                await progress_callback(tile, TileOutcome.RETRYABLE_FAILURE.value,
+                                        'boom')
             else:
-                cache_path = tile.cache_path('m')
+                cache_path = tile.cache_path(source or style)
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_bytes(b'tile-bytes')
-                await progress_callback(tile, 'completed', None)
+                await progress_callback(tile, TileOutcome.SUCCESS.value, None)
         return []
 
     def fake_stitch(tiles, style, output_path, zoom_level, extra_allowed_dir=None,
-                    stop_flag=None):
+                    stop_flag=None, **_):
         stitch_calls.append((zoom_level, len(list(tiles)), output_path))
         from pathlib import Path
         p = Path(output_path)
@@ -247,6 +261,12 @@ def test_a_zoom_with_failed_tiles_is_not_stitched(isolated_config):
     旧行为拼出来的是一张地理范围比选区小的 GeoTIFF —— 而引擎侧的
     `_assert_vrt_covers_tile_grid` 结构上抓不到它（期望值由它收到的那批瓦片
     推出，边缘瓦片缺失时期望跟着缩小）。
+
+    闸门现在按缺块的**类别**收窄:只有「没交代的」缺块(retryable /
+    permanent / cache_failure)才跳过整层,`no_data` 是上游明确的答复,那一层
+    照拼并把产物永久标记 has_gaps。本用例注入的是 retryable_failure,所以
+    仍然一层都不拼,任务落 `pending_decision` —— 不再是 failed:任务本身
+    没崩,用户还可以补漏或显式接受缺块,而 failed 是终态、把这两条路都堵死。
     """
     from src.services.task_manager import TaskManager
 
@@ -262,7 +282,7 @@ def test_a_zoom_with_failed_tiles_is_not_stitched(isolated_config):
 
     assert stitch_calls == [], "本层还有失败瓦片时一次拼接都不该发生"
     row = _task_row(task_id)
-    assert row['status'] == 'failed'
+    assert row['status'] == 'pending_decision'
     assert '未拼接' in (row['error_message'] or ''), (
         "错误信息必须说明这一层没有拼接产物，否则用户以为只是少了几块瓦片"
     )
@@ -281,7 +301,7 @@ def test_resume_restitches_the_zoom_that_gained_tiles(isolated_config):
     _install_fakes(tm, fail_keys={doomed})
     _mark_running(task_id)
     asyncio.run(tm._execute_task(task_id))
-    assert _task_row(task_id)['status'] == 'failed'
+    assert _task_row(task_id)['status'] == 'pending_decision'
 
     # 第二轮：上游恢复正常。
     stitch_calls = _install_fakes(tm, fail_keys=set())

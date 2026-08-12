@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from conftest import fresh_import
+from src.services.resource_scheduler import reset_scheduler
 
 
 def test_quality_offsets_are_a_one_step_ladder():
@@ -365,14 +366,27 @@ def test_retiling_an_unknown_row_resolves_normals_instead_of_assuming_off(
     切完之后行里必须留下明确的 0/1：本轮的产物事实是知道的，继续显示「未知」
     是同一个谎的反面。
     """
+    # 配额调度器是**进程单例**、跨整个测试会话共享，而 start_tiling 现在要先从
+    # 它手里拿一个 task_slot（出厂上限 2）才会翻状态。前面任何一个用例漏还一份
+    # 凭据，这里就会被准入拒掉（ValueError），而拒掉的表现恰好和「法线读成了
+    # 关」一样是 seen 里没有 True —— 一个环境问题伪装成契约失败。先重置成干净的
+    # 单例，把这条用例锁在「只测法线」上。
+    reset_scheduler()
     db = _init_db(monkeypatch, tmp_path)
     mgr_mod = fresh_import(monkeypatch, "src.services.local_terrain_task_manager")
 
     seen = []
+
+    # 替身的签名跟着 `_run_tiling_entry` 的真实调用走：位置参数六个 + quality /
+    # vertex_normals / reservation。`reservation` 写成显式形参而不是 **kwargs ——
+    # 本用例检查的就是「起切时到底把什么参数交给了切片器」，签名再变一次必须在
+    # 这里炸出来，而不是被 **kwargs 悄悄吞掉、只留一句 `seen == []` 让人猜。
+    def _capture(self, task_id, source_dir, output_dir, maxzoom, parent_url,
+                 stop_flag, quality=None, vertex_normals=None, reservation=None):
+        seen.append(vertex_normals)
+
     monkeypatch.setattr(
-        mgr_mod.LocalTerrainTaskManager, "_run_tiling_job",
-        lambda self, task_id, source_dir, output_dir, maxzoom, parent_url,
-        stop_flag, quality=None, vertex_normals=None: seen.append(vertex_normals))
+        mgr_mod.LocalTerrainTaskManager, "_run_tiling_job", _capture)
 
     mgr = mgr_mod.LocalTerrainTaskManager(socketio=None)
     # 配置拨到「开」：实现要是 bool(None) 折成 False，下面两条都会红。

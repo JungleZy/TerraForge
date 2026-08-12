@@ -33,6 +33,12 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from src.core.config import Config
+# 缓存分类的人类可读命名要用它们。两个模块都只依赖 src.core.config /
+# src.contracts（不碰 numpy / osgeo / DB），顶层导入不成环、不拖慢启动。
+# cache_exclusive 与 task_logging 就**不能**这样引：前者在 cache_usage_by_namespace
+# 里反过来 import 本模块的 _sum_dir_bytes，顶层引进来就是一个环。
+from src.contracts.source import SourceSnapshot
+from src.services.source_registry import STYLE_NAMES
 # base_terrain 只依赖 src.core.bundle / src.core.config（刻意不碰 numpy / osgeo），
 # 顶层导入不会成环，也不会把 GDAL 拖进启动路径。
 from src.services.terrain_tiling import base_terrain
@@ -105,10 +111,15 @@ _MAX_PLAUSIBLE_PID = 2 ** 31
 # 前缀里带 pid（`cesium_terrain_<pid>_xxxx.tif`），归属判定走 pid 而不是 mtime：
 # 物化产物写完 mtime 就冻住，而切片可以再跑几小时，mtime 判据在这一类上近乎无效。
 _MATERIALISED_PREFIX = "cesium_terrain_"
-# cache 内 .part 的最深落点:瓦片 cache/{style}/{z}/{x}/{y}.png 的 x 目录
+# cache 内 .part 的最深落点:瓦片 cache/{namespace}/{z}/{x}/{y}.png 的 x 目录
 # (根=0 往下 4 层);dem cache 是 cache/dem/<granule>,更浅,一并覆盖。
 # 限深是为了不随 cache 增长无界遍历 —— 瓦片文件本身在叶子层,扫目录名
 # 不需要再往下走。
+# ✅ 源命名空间落地（`cache/<style>` → `cache/<style>-<fingerprint>`,见
+#    services/source_registry）时**复核过这个 4**:改的只是那一层目录的**名字**,
+#    层数没变(仍是 namespace/z/x/y),所以 4 依然正好够到 x 目录。
+#    真正会让它失效的是「再插一层」——比如按源 host 再分一级 —— 那时这个常量
+#    必须一起加,否则 .part 清扫会在最深一层前停下,残片永远留在盘上而且不报错。
 _CACHE_PART_MAX_DEPTH = 4
 
 # 本进程的启动时刻（近似为本模块导入时刻）。启动清扫只处理【早于】它的临时
@@ -324,6 +335,77 @@ def remove_task_dir_if_safe(task_dir) -> bool:
     except Exception as e:
         logger.warning(f"Failed to remove task artifact dir {task_dir}: {e}")
         return False
+
+
+def purge_registered_artifacts(pipeline: str, task_id: int,
+                               removed_dir=None) -> dict:
+    """删产物文件时的收尾：清掉**落在任务目录之外**的登记产物，再销掉登记行。
+
+    为什么需要它：MBTiles 不在任务目录里。`artifact_export` 把库写在
+    `<output_path>/<任务名>.mbtiles` —— 与 `task_<id>/` **同级**，因为它是那个
+    目录的打包结果，装进去会在下一次导出时被自己打进自己。于是
+    「删任务并删文件」只 rmtree 了 `task_<id>/`，几百 MB 的库留在盘上，而登记
+    行刚被销掉 —— 从此没有任何东西知道它存在。这正是 artifacts 表要防的事，
+    却由删除路径亲手制造出来。
+
+    顺序：先删文件、后销行。反过来的话中途失败就把线索也丢了（与
+    `pending_deletions` 那条「先入队再删」是同一个道理）。
+
+    Args:
+        removed_dir: 调用方已经整个删掉的任务目录。落在它**里面**的产物跳过
+            —— 已经没了，再 stat 一次只是浪费；而且那条路径此刻必然不存在，
+            走下面的 unlink 分支只会白记一条 debug。
+
+    Returns:
+        {'files_removed': N, 'rows_removed': M}
+
+    **绝不抛**：它跑在一次已经成功的删除之后，让它把 200 翻成 500 只会让用户
+    以为任务没删掉而再点一次。
+    """
+    from src.services.artifact_store import delete_artifacts_for, list_artifacts
+
+    files_removed = 0
+    try:
+        inside = None
+        if removed_dir is not None:
+            try:
+                inside = Path(removed_dir).expanduser().absolute().resolve()
+            except OSError:
+                inside = None
+
+        for artifact in list_artifacts(pipeline, task_id):
+            try:
+                raw = Path(artifact.path).expanduser().absolute()
+                target = raw.resolve()
+            except OSError:
+                continue
+            if inside is not None and (target == inside or inside in target.parents):
+                continue  # 已随任务目录一起没了
+            if _has_symlink_component(raw):
+                # 与 remove_task_dir_if_safe 同一条判据：跟着链接删会删到别处。
+                logger.warning(f"Refusing to delete artifact via symlink: {raw}")
+                continue
+            if target.is_dir():
+                # 登记在任务目录之外的**目录**型产物。这里不 rmtree ——
+                # remove_task_dir_if_safe 那套边界是按「任务目录」设计的，套在一个
+                # 任意登记路径上是在赌。留下文件、留一条日志，比赌一次 rmtree 好。
+                logger.warning(
+                    f"Artifact directory outside the task dir kept: {target}")
+                continue
+            try:
+                target.unlink()
+                files_removed += 1
+                logger.info(f"Removed registered artifact file: {target}")
+            except FileNotFoundError:
+                pass  # 已经不在了，等同删掉
+            except OSError as e:
+                logger.warning(f"Cannot remove artifact file {target}: {e}")
+    except Exception as e:
+        logger.warning(
+            f"Artifact purge failed for {pipeline}/{task_id} (ignored): {e}")
+
+    rows_removed = delete_artifacts_for(pipeline, task_id)
+    return {'files_removed': files_removed, 'rows_removed': rows_removed}
 
 
 class DirRemoval(NamedTuple):
@@ -742,7 +824,8 @@ def _sweep_pending_deletions() -> int:
 
 
 def sweep_startup_residue() -> None:
-    """启动一次性清扫七类 finally 盖不住（SIGKILL/关窗）的临时残留：
+    """启动一次性清扫九类残留 —— 前七类是 finally 盖不住（SIGKILL/关窗）的临时件，
+    后两类是**有保留期/容量上限**的长期资产，到期治理没有别的触发点：
 
     1. stitch work_dir（map_dl_stitch_*，系统临时目录 + 配置的 stitch_tmpdir）；
     2. contour warp tmpdir（contour_warp_*，系统临时目录 + 配置的
@@ -759,6 +842,15 @@ def sweep_startup_residue() -> None:
        残留会被打进发布产物；前五类的扫描根一条都覆盖不到那里。
     7. 上次进程没删完的任务产物目录（pending_deletions 表）—— 唯一一类线索来自
        DB 而不是文件名模式的残留，见 _sweep_pending_deletions。
+    8. 过期的每任务日志（`logs/tasks/<pipeline>_<id>.log`，超过
+       task_log_retain_days）—— 见 services/task_logging.prune_task_logs。
+    9. 超出 `cache_max_mb` 的瓦片缓存 —— 见
+       services/cache_exclusive.enforce_cache_capacity。
+
+    第 8、9 类为什么落在启动而不是定时器：这个进程里没有调度器，而缓存与日志
+    的增长是**跨会话**的（一次几百 GB 的下载跑完就退出了）。启动是唯一一个
+    「一定会到、且此刻没有任务在跑」的时刻 —— 后者尤其重要，第 9 类会真的删
+    瓦片，放在运行期做就要和 clear_cache_category 一样考虑活动任务。
 
     只处理 mtime 早于本进程启动时刻的目录（见 _sweep_tmp_dirs 的 older_than）；
     .part 文件与物化栅格按名字里的 pid 跳过仍存活的写者。
@@ -767,7 +859,7 @@ def sweep_startup_residue() -> None:
     匹配规则按前缀/通配精确限定（见模块顶部常量），同步执行、毫秒级。
     """
     removed = {"stitch": 0, "warp": 0, "upload": 0, "part": 0, "materialised": 0,
-               "base_unpack": 0, "pending": 0}
+               "base_unpack": 0, "pending": 0, "task_log": 0, "cache_bytes": 0}
     started_at = _PROCESS_START_TIME
     try:
         sys_tmp = Path(tempfile.gettempdir())
@@ -837,15 +929,43 @@ def sweep_startup_residue() -> None:
     # 这里不必再套一层 try。
     removed["pending"] += _sweep_pending_deletions()
 
+    # 第 8 类：过期的每任务日志。每一层都必须挡住异常 —— prune_task_logs 自己
+    # 承诺不抛（它的 docstring 写着），但「承诺」不是护栏：它要读配置库、要
+    # 列目录、要 unlink，任何一处冒出 OSError 都会把启动打断在一个用户完全
+    # 无从下手的地方（表现是双击 exe 什么都没发生）。日志清不掉的代价只是
+    # 磁盘上多几个文件；启动起不来的代价是整个程序不能用。
+    try:
+        from src.services.task_logging import prune_task_logs
+        removed["task_log"] += prune_task_logs()
+    except Exception as e:
+        logger.warning(f"Task-log pruning failed (ignored): {e}")
+
+    # 第 9 类：把缓存总量压回 cache_max_mb 以内（0 = 不限）。同样单独套 try,
+    # 理由同上,而且它比日志清理重得多:要遍历全部命名空间 + 查任务表 + rmtree。
+    # 只在这里调,不在运行期调 —— 它会真的删瓦片,运行期删就要处理活动任务
+    # （clear_cache_category 的那道护栏）,而启动时没有任务在跑。
+    # cache_exclusive 在函数体里 import：它反过来要用本模块的 _sum_dir_bytes。
+    try:
+        from src.services import cache_exclusive
+        capacity = cache_exclusive.enforce_cache_capacity()
+        removed["cache_bytes"] += int(capacity.get('removed_bytes') or 0)
+    except Exception as e:
+        logger.warning(f"Cache capacity enforcement failed (ignored): {e}")
+
+    # cache_bytes 是**字节数**不是件数,混进 total 会让「清理了 3 件残留」变成
+    # 「清理了 5033164 件」。单独摘出来。
+    freed_bytes = removed.pop("cache_bytes")
     total = sum(removed.values())
-    if total:
+    if total or freed_bytes:
         logger.info(
             f"Startup residue sweep removed {total} leftover(s): "
             f"stitch tmp={removed['stitch']}, contour warp tmp={removed['warp']}, "
             f"upload tmp={removed['upload']}, cache .part={removed['part']}, "
             f"materialised raster={removed['materialised']}, "
             f"base unpack tmp={removed['base_unpack']}, "
-            f"pending deletions={removed['pending']}"
+            f"pending deletions={removed['pending']}, "
+            f"expired task logs={removed['task_log']}; "
+            f"cache trimmed by {freed_bytes / 1024 / 1024:.1f}MB"
         )
 
 
@@ -874,11 +994,43 @@ def _sum_dir_bytes(root: Path) -> tuple:
     return total_bytes, file_count
 
 
+def _category_label(dir_name: str) -> str:
+    """缓存顶层目录名 → 给人看的分类名。
+
+    源命名空间落地之后目录名变成了 `s-1a2b3c4d`（样式码 + 配置指纹，见
+    contracts/source.SourceSnapshot.cache_namespace）。直接把它印在缓存管理页上，
+    用户看到的是一串没有任何意义的十六进制 —— 而这一页唯一的操作是「删掉哪一类」，
+    认不出是哪个图源就等于让人凭运气删几十 GB。
+
+    所以这里把它翻回人话：`s` → satellite，指纹保留在括号里当消歧标识（换过源
+    之后同一个样式会有两个命名空间，它们的区别**只有**指纹）。
+
+    映射表从 source_registry.STYLE_NAMES 取,不在这里抄第二份 —— 抄一份就等于
+    「加了新样式，缓存页仍显示单字符码」这类静默走样。认不出的码原样显示：
+    用户自定义图源的码不在表里，显示 `瓦片缓存（q-1a2b3c4d）` 也比显示一个猜
+    出来的名字诚实。
+    """
+    if dir_name == 'dem':
+        return 'DEM 缓存'
+    code = SourceSnapshot.style_of_namespace(dir_name)
+    style = STYLE_NAMES.get(code, '')
+    if not style:
+        return f'瓦片缓存（{dir_name}）'
+    if SourceSnapshot.is_namespace(dir_name):
+        # `s-1a2b3c4d` → `瓦片缓存（satellite · 1a2b3c4d）`
+        fingerprint = dir_name[len(code) + 1:]
+        return f'瓦片缓存（{style} · {fingerprint}）'
+    # 迁移前的裸样式码目录（`cache/s`）。user_version 6 会把它们改名，但迁移
+    # 失败（目录被占用）时它们还在，得有个说法而不是掉进上面那条兜底。
+    return f'瓦片缓存（{style}）'
+
+
 def get_cache_stats(cache_root=None) -> dict:
     """分类统计下载缓存占用:cache 顶层每个子目录一个分类。
 
-    分类规则:dem → DEM 缓存(重下需 Earthdata 登录);其余子目录是各
-    style 的瓦片缓存;顶层散落文件(正常不会有)归入 _root/其他。
+    分类规则:dem → DEM 缓存(重下需 Earthdata 登录);其余子目录是各源命名空间
+    (`<样式码>-<配置指纹>`)的瓦片缓存,标签由 _category_label 翻成人话;顶层
+    散落文件(正常不会有)归入 _root/其他。
     只统计不删除 —— 缓存不做任何自动清理,清理由用户在前端手动触发
     (clear_cache_category)。
 
@@ -900,7 +1052,7 @@ def get_cache_stats(cache_root=None) -> dict:
         try:
             if entry.is_dir(follow_symlinks=False):
                 size, count = _sum_dir_bytes(Path(entry.path))
-                label = 'DEM 缓存' if entry.name == 'dem' else f'瓦片缓存（{entry.name}）'
+                label = _category_label(entry.name)
                 categories.append({
                     'key': entry.name, 'label': label,
                     'size_bytes': size, 'file_count': count,
@@ -920,7 +1072,37 @@ def get_cache_stats(cache_root=None) -> dict:
     return {'categories': categories, 'total_bytes': total_bytes}
 
 
-def clear_cache_category(category: str, cache_root=None) -> dict:
+def _namespace_in_use(namespace: str) -> bool:
+    """这个缓存命名空间**此刻**被某个活动任务引用着吗。
+
+    「活动」的判据是 contracts/outcome.ACTIVE_STATE_VALUES（pending / running /
+    paused / retrying / pending_decision …），口径与调度、历史列表完全一致 ——
+    这里绝不手写状态字面量，正列表少写一个状态就是少拦一类正在跑的任务。
+
+    判定结果直接复用 `cache_exclusive.cache_usage_by_namespace()` 里的 `active`
+    标志，不在这里重新查一遍任务表：路由层已经有一道「整库清理时列出全部未完成
+    任务」的 409 闸（api.clear_cache_api 的 _unfinished_task_labels），这道闸是它
+    的**每分类**版本，两处判据一旦分头实现就会漂移成「整库拦、单类不拦」。
+
+    cache_exclusive 只能在函数体里 import：它在 cache_usage_by_namespace 内部反过来
+    import 本模块的 _sum_dir_bytes，顶层引进来就是一个 import 环。
+
+    读不出来时返回 False（放行）。这是有意的：库坏了/表不存在时把清理**永久**锁死，
+    等于把用户唯一的磁盘回收入口也一起毁掉，而误删的最坏后果只是 cache miss 后重下。
+    """
+    from src.services import cache_exclusive
+
+    try:
+        usage = cache_exclusive.cache_usage_by_namespace()
+    except Exception as e:
+        logger.warning(
+            f"Cannot check cache namespace liveness for {namespace!r}: {e}")
+        return False
+    info = usage.get(namespace)
+    return bool(info and info.get('active'))
+
+
+def clear_cache_category(category: str, cache_root=None, *, force: bool = False) -> dict:
     """手动清理一个缓存分类(删除 cache 顶层对应子目录的全部内容)。
 
     安全护栏(与 remove_task_dir_if_safe 同一思路,宁可拒绝不可误删):
@@ -929,15 +1111,40 @@ def clear_cache_category(category: str, cache_root=None) -> dict:
     目录不存在时抛 ValueError(前端分类清单来自 get_cache_stats,
     不存在即视为非法输入)。
 
+    **活动任务护栏**（force=False 时生效）:这个命名空间正被某个活动任务引用
+    就直接拒绝。此前这里是**零**存活性检查的一次 rmtree —— 用户在下载途中点
+    「清理 satellite 缓存」,正在跑的任务立刻踩空:
+
+      - 枚举阶段命中 cache 的瓦片已经被移出待下载列表并计进 downloaded_tiles,
+        它们**不会**重下;
+      - 产物目录靠补拷线程从 cache 复制,源没了只吞成一条 warning;
+      - 完成判定只看 task_tiles 的失败行,而 cache 命中瓦片从不在那张表里。
+
+    合起来就是:任务照样 completed、计数满值、产物目录静默缺瓦片。tiles_only
+    任务全程无声。这与 api.clear_cache_api 里那道「整库清理」的 409 闸是同一个
+    危险的两种粒度,判据也复用同一个(见 _namespace_in_use),不各写一份。
+
+    Args:
+        force: 跳过活动任务护栏。给「用户看到警告后仍坚持」的那条路留的,
+            与路由层 force 参数同一语义。
+
     Returns:
         {'removed_bytes': N, 'removed_files': M}
 
     Raises:
-        ValueError: category 非法、越界或不存在。
+        ValueError: category 非法、越界、不存在,或被活动任务引用且未传 force。
     """
     root = Path(cache_root) if cache_root is not None else Path(Config.CACHE_DIR)
     if not _CATEGORY_NAME_RE.match(category or ''):
         raise ValueError(f"非法的缓存分类名: {category!r}")
+
+    # 护栏只对源命名空间有意义:`dem` 与 `_root` 不在 cache_usage_by_namespace 的
+    # 视野里(它只枚举 SourceSnapshot.is_namespace 认的目录),对它们查也是白查。
+    # DEM 缓存的活动引用留给路由层那道整库 409 闸 —— 它按四张任务表判,覆盖 DEM。
+    if not force and _namespace_in_use(category):
+        raise ValueError(
+            f"缓存分类 {category!r} 正被运行中的任务使用,清理会让它静默缺瓦片;"
+            f"请先暂停或删除相关任务,或确认后强制清理")
 
     # _root 是 get_cache_stats 里「顶层散落文件」的分类,只删文件不碰子目录。
     if category == '_root':

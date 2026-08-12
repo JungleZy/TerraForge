@@ -135,6 +135,48 @@ DEFAULT_CONFIGS = [
     ('contour_hillshade_blend', 'soft'),
     ('contour_water_color_ocean', '#6BAED6'),
     ('contour_water_color_inland', '#9ECAE1'),
+    # --- 全局资源调度（§4.1）。改造前四条管线各自限流、跨任务无上界：
+    # 默认 concurrent_downloads=50，四个任务并行就是 200 条连接叠加。
+    # 这四个键是 ResourceScheduler 的全局天花板，任务内的限流由它分配。---
+    # 同时在跑的任务数上限（四条管线合计）。2 是保守起点：再多也只是把同一
+    # 条带宽切得更碎，而磁盘预算与 GDAL 内存的竞争会指数级变难解释。
+    ('max_concurrent_tasks', '2'),
+    # 全进程并发 HTTP 连接数上限。分配策略是**先到先得的部分授予**：任务拿到
+    # min(自己请求的 concurrent_downloads, 当前剩余)，拿不满也照跑（12 条连接
+    # 比不启动强）。刻意不做「按在跑任务均分」——那要在新任务进来时回收已授出
+    # 的配额，而配额已经变成了别人 aiohttp 连接池的尺寸，改不动。
+    ('max_network_connections', '64'),
+    # 全进程 CPU 工作进程上限（等高线渲染 + 地形切片共用）。
+    # 0 = 自动，取 min(4, cpu_count)——与改造前每个任务各自的取法一致，
+    # 区别是现在这个数是**全局**的，不再按任务叠加。
+    ('max_cpu_workers', '0'),
+    # 全进程并发 GDAL 重活槽位（Warp / Translate / BuildVRT）。GDAL 的内存
+    # 峰值与线程数无关、与单次操作的栅格尺寸有关，所以限的是并发操作数。
+    ('max_gdal_slots', '2'),
+    # --- 磁盘预算（§4.2）。改造前**零预检**：shutil.disk_usage / statvfs 在
+    # 全仓零命中，代码里的「磁盘满」全是事后处理。---
+    # 总是给系统留下的余量（MB）。GeoD 用固定 512 MiB 地板且不随剩余工作量
+    # 重估（fs_util.rs:57-67），拦不住「这一层还要 40 GB、只剩 3 GB」——
+    # 这里的地板只负责「别把盘写死」，够不够跑完由估算器按剩余工作量回答。
+    ('disk_reserve_mb', '2048'),
+    # 估算值的安全系数（GeoD 用 1.15，同一量级）。估算永远会错，问题只是
+    # 错多少；系数把「错一点」吸收掉，「错 17 倍」由分档估算解决而不是靠它。
+    ('disk_safety_factor', '1.15'),
+    # 磁盘预算总开关。关掉只跳过准入拦截，估算与展示照常 —— 用户要在一块
+    # 快满的盘上硬跑，那是他的选择，但不能是不知情的选择。
+    ('disk_budget_enabled', 'true'),
+    # --- 缓存容量治理（§4.6）。0 = 不限（与 GeoD 的 0 语义一致）。---
+    ('cache_max_mb', '0'),
+    # --- 每任务日志（§4.5）。改造前只有全局单文件 logs/terraforge.log。---
+    ('task_log_enabled', 'true'),
+    ('task_log_max_kb', '4096'),
+    ('task_log_retain_days', '14'),
+    # --- 地名搜索（§5.1 的行政区与搜索）---
+    # 留空 = 关闭。本项目**不内置**任何未经政策审核的公共或商业地理编码服务
+    # （§11 明确不采纳），所以这里没有出厂地址：要用就自己填一个。
+    # 形制：含 {q} 占位符的 http(s) 地址，返回 GeoJSON FeatureCollection 或
+    # Nominatim 风格的 JSON 数组。取用前过 url_guard 的 SSRF 检查。
+    ('geocoder_url', ''),
 ]
 
 
@@ -438,6 +480,82 @@ def migrate_local_maxzoom_to_auto(cursor) -> bool:
     if changed:
         logger.info("terrain_local_maxzoom '14' → 'auto' (user_version=4)")
     return changed
+
+
+# task_tiles.status 的存量取值。改造前只有这一个：'failed' 是
+# task_manager._write_progress_batch 里的硬编码字面量，而「404 没覆盖」
+# 「网络挂了」「缓存写不进去」三种完全不同的原因在库里逐位相同。
+_LEGACY_TILE_STATUS = 'failed'
+
+
+def migrate_tile_status_to_outcome(cursor) -> int:
+    """task_tiles.status 'failed' → 'retryable_failure'（user_version 4 → 5）。
+
+    为什么迁成**可重试**而不是别的：存量行没有任何信息能区分它当初是 404
+    还是超时。两个方向的错法不对称 —— 猜成 permanent_failure 会让一批本来
+    重试就能救回来的瓦片永远不再被尝试，用户只看到「永久失败」四个字；
+    猜成 retryable_failure 最坏是多发一次请求。选可恢复的那一边。
+
+    这也是为什么不能沿用 'failed' 字面量：新代码的 TileOutcome 里没有它，
+    留着就等于让 `outcome_from_db` 对每一条存量行走一次未知值回退分支 ——
+    能跑，但历史统计里「可重试 / 永久 / 缓存失败」三栏永远对不上账。
+    """
+    if cursor.execute('PRAGMA user_version').fetchone()[0] >= 5:
+        return 0
+
+    moved = 0
+    try:
+        cursor.execute(
+            "UPDATE task_tiles SET status = 'retryable_failure' WHERE status = ?",
+            (_LEGACY_TILE_STATUS,))
+        moved = cursor.rowcount or 0
+        # gap_tiles 是本次新增列，存量任务行全是 0。用 task_tiles 的行数回填 ——
+        # 那张表就是缺块的事实来源（稀疏表，有行即有洞）。
+        cursor.execute('''
+            UPDATE tasks SET gap_tiles = (
+                SELECT COUNT(*) FROM task_tiles WHERE task_tiles.task_id = tasks.id
+            )
+        ''')
+    except Exception as e:
+        logger.warning(f'task_tiles 结局迁移跳过（{e!r}）')
+
+    cursor.execute('PRAGMA user_version = 5')
+    if moved:
+        logger.info(f"task_tiles: {moved} 行 'failed' → 'retryable_failure' (user_version=5)")
+    return moved
+
+
+def migrate_cache_to_source_namespace(cursor) -> int:
+    """cache/<style> → cache/<style>-<fingerprint>（user_version 5 → 6）。
+
+    缓存命名空间从「只有一个 style 码」变成「style 码 + 源指纹」之后，存量
+    的 `cache/s/`、`cache/m/` 这些目录再也不会被命中。直接放着 = 用户下次
+    打开发现几十 GB 缓存全部失效、所有任务重下；直接删掉 = 更糟。
+
+    正确处置是搬迁：把它们归到**当前配置**对应的指纹下。这个归属是一个假设
+    （「现有缓存是当前这套 tile_servers 下出来的」），但它是唯一可得的假设，
+    而且假设错了的代价有界 —— 混入的瓦片本来就已经在同一个目录里混着了，
+    搬迁不会让情况更糟，之后换源才开始真正隔离。
+
+    目标目录已存在（用户手工建过 / 迁移跑一半崩过）时跳过该 style，不合并、
+    不覆盖：合并两个都可能含错误瓦片的目录是在制造更难查的问题。
+    """
+    if cursor.execute('PRAGMA user_version').fetchone()[0] >= 6:
+        return 0
+
+    moved = 0
+    try:
+        # 延迟 import：core 不能在模块级依赖 services（normalize_stored_output_paths
+        # 用的是同一个规避手法，见其函数体内的 import）。
+        from src.services.source_registry import migrate_legacy_cache_namespaces
+        moved = migrate_legacy_cache_namespaces(cursor)
+    except Exception as e:
+        logger.warning(f'缓存命名空间迁移跳过（{e!r}）')
+
+    cursor.execute('PRAGMA user_version = 6')
+    if moved:
+        logger.info(f'缓存命名空间迁移：{moved} 个目录已归入源指纹 (user_version=6)')
+    return moved
 
 
 def init_database():
@@ -908,6 +1026,37 @@ def init_database():
             # contour_tasks.source_dem_task_id 相同；DEFAULT NULL 同理 ——
             # 存量行都是上传来源，不是「未知的 dem 任务」。
             ("local_terrain_tasks", "source_dem_task_id INTEGER DEFAULT NULL"),
+            # --- 共享数据合同（§9.1）落库 ---
+            # 下载源身份快照（SourceSnapshot.to_json）。改造前 tasks 表关于源
+            # 只有一列 style，真实 URL 是请求时现展开的 —— 改了服务器列表再恢复
+            # 旧任务会静默混用两个来源。空串 = 存量行，消费方按 style 现推。
+            ("tasks", "source_snapshot TEXT DEFAULT ''"),
+            # 快照指纹，同时是缓存命名空间的后缀。单独一列是为了让
+            # 「这个任务命中哪个 namespace」不需要反序列化整个快照 ——
+            # 独占缓存清理要对全表做这个判断。
+            ("tasks", "source_fingerprint TEXT DEFAULT ''"),
+            # RegionSpec.to_json。四至列**保留**且继续是权威的外接矩形：
+            # 历史列表、统计、足迹渲染全靠它们，而且存量行只有它们。
+            # region_spec 为空时由 RegionSpec.from_row 从四至现推。
+            ("tasks", "region_spec TEXT DEFAULT ''"),
+            ("dem_tasks", "region_spec TEXT DEFAULT ''"),
+            ("contour_tasks", "region_spec TEXT DEFAULT ''"),
+            # 建任务时勾选的「同时导出 MBTiles」。**与 output_format 正交**，
+            # 不是它的第四个取值：§5.3 把 MBTiles 定为「同一任务的第 N 种产物」，
+            # 一个任务可以同时有 XYZ 目录、每层 GeoTIFF 与 MBTiles。做成 output_format
+            # 的一个值会让 XYZ 目录不再产出，而 MBTiles 正是**从那个目录打包**来的，
+            # /tiles/<id>/ 预览也从那里取 —— 等于为了拿容器把原料和预览一起砍掉。
+            # 落一列而不是靠前端在 task_completed 事件里补发导出请求：那要求
+            # 浏览器一直开着，关掉页面这次勾选就静默失效。
+            ("tasks", "export_mbtiles INTEGER DEFAULT 0"),
+            # 缺块计数：no_data + 各类失败的总数（= task_tiles 的行数）。
+            # failed_tiles 保留原义（进度条与存量 UI 都读它），gap_tiles 是
+            # 「成品上有几个洞」——两者在 no_data 存在时不再相等。
+            ("tasks", "gap_tiles INTEGER DEFAULT 0"),
+            # 用户对缺块的显式决定（§13-3）。'' = 还没决定；'accept' = 接受
+            # 缺块并导出；'refill' = 要求补漏。落在任务行而不是一张新表：
+            # 它是任务的一个属性，不是一串事件。
+            ("tasks", "gap_decision TEXT DEFAULT ''"),
         ):
             try:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {coldef}")
@@ -917,6 +1066,41 @@ def init_database():
                     pass
                 else:
                     raise
+
+        # 产物登记表（§9.1 的 Artifact）。一个任务可以同时有 XYZ 目录、
+        # 每层 GeoTIFF 与 MBTiles 三种产物，改造前没有任何地方能回答
+        # 「这个任务到底产出了什么」——目录命名规则在 DELETE 路由、静态服务
+        # 蓝图和管理器里各写了一遍。
+        #
+        # 刻意没有外键，与 pending_deletions / retained_outputs 同一个理由：
+        # 产物行必须能比任务行活得久。用户「删任务、留文件」时这一行是文件
+        # 还在的唯一线索；「删任务、删文件」时它是后台清理线程的工作清单。
+        # 挂 CASCADE 就等于在最需要它的那一刻把它删掉。
+        #
+        # UNIQUE(pipeline, task_id, kind, path)：同一任务同一形态同一路径重复
+        # 登记没有意义，用 INSERT OR REPLACE 幂等（重跑会更新字节数与瓦片数）。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pipeline TEXT NOT NULL,
+                task_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                path TEXT NOT NULL,
+                format TEXT DEFAULT '',
+                bytes_total INTEGER DEFAULT 0,
+                tile_count INTEGER DEFAULT 0,
+                minzoom INTEGER,
+                maxzoom INTEGER,
+                has_gaps INTEGER DEFAULT 0,
+                meta TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(pipeline, task_id, kind, path)
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_artifacts_task
+            ON artifacts(pipeline, task_id)
+        ''')
 
         # Insert default configuration values using executemany for efficiency
         cursor.executemany(
@@ -943,6 +1127,8 @@ def init_database():
         migrate_base_path_to_assets(cursor)
         migrate_cancelled_tasks_to_failed(cursor)
         migrate_local_maxzoom_to_auto(cursor)
+        migrate_tile_status_to_outcome(cursor)
+        migrate_cache_to_source_namespace(cursor)
 
         conn.commit()
         logger.info('Database initialized successfully')

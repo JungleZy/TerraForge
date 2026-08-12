@@ -456,6 +456,29 @@ def main():
         # 包内数据文件(matplotlib mpl-data、certifi CA 证书)
         '--include-package-data=matplotlib',
         '--include-package-data=certifi',
+        # 0.3.3 的 `src/contracts/` 与新增服务(resource_scheduler / disk_budget /
+        # task_logging / cache_exclusive / source_registry / mbtiles /
+        # artifact_export / artifact_store / region_import / url_guard /
+        # source_wizard / geocoding)【不需要】在这里登记 —— 已实际核对过整条链,
+        # 不是「大概能跟到」:从 ENTRY 出发对 src/ + app.py 做了一次 AST 导入图
+        # 可达性遍历,每一个新模块都从 `app.py` 可达。链路是
+        # app.py → src.app_factory → src.routes.* / src.services.*_task_manager
+        # → 上面这些服务 → src.contracts.*。
+        #
+        # 判据是「静态可达」而不是「顶层 import」:上面这些模块里有几处是
+        # **函数体内**的 import(database.init_database 里的
+        # `from src.services.source_registry import migrate_legacy_cache_namespaces`、
+        # cache_exclusive 与 disk_budget 里几处为断环而下沉的 import)。函数级
+        # import 的模块名仍然是编译期常量,Nuitka 照样跟得住;跟不住的只有
+        # `importlib.import_module(运行时算出来的名字)` 这一类,而本仓没有。
+        #
+        # `src/contracts/__init__.py` 没有任何模块 import 它(大家都直接 import
+        # 子模块),但它照样会进产物:导入 `src.contracts.region` 在 Python 语义上
+        # 必须先导入父包。这一条是语言保证,不是 Nuitka 的额外行为。
+        #
+        # 唯一的反例仍然是 i18n 目录:`src/i18n/catalog/__init__.py` 显式列出每个
+        # domain 模块而不用 pkgutil 自动发现,正是因为动态发现在这里会整块丢失
+        # (见该文件顶部注释)。新增 catalog 模块要改的是那份名单,不是这里。
         '--nofollow-import-to=pytest',
         f'--jobs={os.cpu_count() or 4}',
         *icon_options(),

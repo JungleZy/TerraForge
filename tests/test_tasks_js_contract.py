@@ -109,7 +109,9 @@ def test_get_progress_color_is_gone():
     让进度条回落到 Bootstrap 默认色也能通过。配套的存在性契约见
     test_progress_bar_color_comes_from_status。
     """
-    for name in ('tasks.js', 'history.js'):
+    # task_center.js 一并扫：实时链搬过去之后，只扫 tasks.js 等于放过了
+    # 现在真正持有那批代码的文件（详见 _fn 的登记）。
+    for name in ('tasks.js', 'task_center.js', 'history.js'):
         src = _strip_js_comments(_js(name))
         assert 'function getProgressColor(' not in src, (
             f'{name} 仍定义 getProgressColor()，应改用 getStatusColor(status)'
@@ -175,8 +177,13 @@ def test_socketio_incremental_path_is_wired():
     `socket → updateTaskProgress → TaskStore.commit → 响应式 → 组件重渲染`。
     钉这条链的两个端点：推送处理器必须把结果写进 store（而不是又去摸 DOM），
     模板里的进度条必须绑在响应式数据上。
+
+    ⚠️ 登记（2026-08 phase-3 §6.1）：实时链搬进 task_center.js（见 _fn 的
+    登记），所以「不许写 HTML」这条禁令要同时压住两个文件 —— 只扫 tasks.js
+    的话，把整行 `row.innerHTML = ...` 写回 task_center.js 依然全绿。
     """
-    src = _strip_js_comments(_js('tasks.js'))
+    src = ''.join(_strip_js_comments(_js(n))
+                  for n in ('tasks.js', 'task_center.js'))
     body = _fn('updateTaskProgress')
     assert 'TaskStore.commit(' in body, (
         'updateTaskProgress 没有把推送写进 TaskStore —— Socket.IO 增量刷新断链'
@@ -186,8 +193,8 @@ def test_socketio_incremental_path_is_wired():
         '双写正是 Vue 化要消灭的东西'
     )
     assert '.innerHTML' not in src and '.outerHTML' not in src, (
-        'tasks.js 又出现了 innerHTML/outerHTML —— 任务行的渲染必须留在 '
-        'task_list.js 的组件里'
+        'tasks.js / task_center.js 又出现了 innerHTML/outerHTML —— 任务行的'
+        '渲染必须留在 task_list.js 的组件里'
     )
     tpl = _tpl('TaskRow')
     assert ':style="{ width: progress + \'%\' }"' in tpl, (
@@ -213,7 +220,7 @@ def test_status_map_lives_in_exactly_one_file():
         assert f'function {fn}(' in canonical, (
             f'task_status.js 没有定义 {fn}() —— 调用点会抛 ReferenceError'
         )
-    for name in ('tasks.js', 'history.js'):
+    for name in ('tasks.js', 'task_center.js', 'history.js'):
         src = _strip_js_comments(_js(name))
         for fn in ('getStatusColor', 'getStatusText', 'getStatusStroke'):
             assert f'function {fn}(' not in src, (
@@ -277,13 +284,27 @@ def test_no_percentage_to_color_ladder_anywhere_in_frontend_js():
 # A1b / Task 6：任务失败后保留卡片并显示原因
 # --------------------------------------------------------------------------
 
-def _fn(name, js_name='tasks.js'):
+def _fn(name, js_name='task_center.js'):
     """先剥注释、再按花括号配对切出函数体。
 
     顺序不能反：注释里出现的 `{` / `}` 会把花括号配对带偏（本任务的
     handleTaskFailed 注释里就写了「不 card.remove()」这类字样，不剥注释
     的话负向断言还会被自己的解释性注释误伤——test_css_contract.py 里
     的同类断言已经踩过两次这个坑）。
+
+    ⚠️ 登记（2026-08 phase-3 §6.1 任务中心抽取）：默认文件从 tasks.js 改成
+    task_center.js。tasks.js 曾经是 749 行、装着整条实时链，但它挂在
+    index.html 的 extra_js 里 —— **首页专属**，于是 /history 上同一批任务
+    没有按钮、没有实时更新。修法是把与首页那张地图无关的一切搬进
+    static/js/task_center.js（base.html 全局加载），函数名与函数体一个字
+    没改。tasks.js 现在只剩 initTasks / updateStatusTasks / pushStatusEvent
+    三个**只有首页 DOM 才有意义**的函数。
+
+    默认值钉的是 task_center.js 而不是「两个文件里随便哪个」：本文件用默认
+    值切的每一个函数（handleTaskFailed / updateTaskProgress / prependStreamRow
+    / startTask …）守的都是**实时层**的行为契约。允许它在 tasks.js 里也算数
+    的话，这些断言就退化成「代码在前端某处」—— 那种断言无论把实现搬到哪个
+    文件都是绿的，等于不再守任何东西。
     """
     body = _js_function_body(_strip_js_comments(_js(js_name)), name)
     assert body.strip(), f'{js_name} 的 {name} 函数体切出来是空的 —— 本测试已失效'
@@ -419,8 +440,11 @@ def test_error_message_never_reaches_innerhtml():
         '失败行不再用 {{ errorText }} 插值渲染错误原文 —— 换成别的写法前'
         '先确认它同样会转义'
     )
-    # 反向：整个 static/js 下不许再有人把 error_message 拼进 innerHTML
-    for name in ('tasks.js', 'history.js', 'task_list.js', 'task_store.js'):
+    # 反向：整个 static/js 下不许再有人把 error_message 拼进 innerHTML。
+    # task_center.js 在列：handleTaskFailed（error_message 的唯一消费者）
+    # 就住在那里，漏掉它这条反向断言等于零轮空转。
+    for name in ('tasks.js', 'task_center.js', 'history.js',
+                 'task_list.js', 'task_store.js'):
         body = _strip_js_comments(_js(name))
         for m in re.finditer(r'\.innerHTML\s*=([^;]*);', body, re.S):
             assert 'error_message' not in m.group(1), (
@@ -551,7 +575,9 @@ _PROGRESS_LABEL_ATTR_RE = re.compile(r'class="progress__label"')
 # 那一处的结构契约由下面三条里的「条内必须是空的」+ 
 # test_socketio_incremental_path_updates_the_label_not_the_bar（.task-pct 同步）守住。
 # 覆盖层体系（.progress + .progress__label）只剩 history.js 详情模态框一处。
-PROGRESS_TRACK_MARKUP_SITES = {'tasks.js': 0, 'history.js': 1}
+# task_center.js 同为 **0**：实时链搬过去之后它一行 DOM 都不写（渲染归
+# task_list.js 的组件），漏掉它这条「0 处轨道」的期望就少压了一个文件。
+PROGRESS_TRACK_MARKUP_SITES = {'tasks.js': 0, 'task_center.js': 0, 'history.js': 1}
 
 
 def test_percentage_is_an_overlay_not_a_child_of_the_bar():
@@ -663,7 +689,7 @@ def test_progress_bar_keeps_a_programmatic_value_after_losing_its_text():
     """
     problems = []
     # history.js 详情模态框里还有一处手写的 progress-bar
-    for name in ('tasks.js', 'history.js'):
+    for name in ('tasks.js', 'task_center.js', 'history.js'):
         src = _strip_js_comments(_js(name))
         for m in _PROGRESS_BAR_ELEMENT_RE.finditer(src):
             tag = src[m.start():m.start() + m.group(0).index('>') + 1]
@@ -825,34 +851,74 @@ _STATUS_WRITERS = (
 # 任务徽章的状态。
 _FILE_LEVEL_STATUSES = frozenset({'downloading', 'skipped'})
 # 仅作查询过滤的伪状态（永远不会写进任务行）：?status=active 是路由/列表
-# 接口的特殊筛选值（pending/running/paused 三态的并集），管理器里只出现在
-# `status == 'active'` 比较与 `WHERE status IN (...)` 过滤分支，不是任务状态。
-# 与 _FILE_LEVEL_STATUSES 同理：加进这里而不是 TaskStatus。
+# 接口的特殊筛选值（contracts.outcome.ACTIVE_STATE_VALUES 五态的并集），
+# 管理器里只出现在 `status == 'active'` 比较与 `WHERE status IN (...)` 过滤
+# 分支，不是任务状态。与 _FILE_LEVEL_STATUSES 同理：加进这里而不是 TaskStatus。
 _FILTER_ONLY_STATUSES = frozenset({'active'})
-_NON_TASK_STATUSES = _FILE_LEVEL_STATUSES | _FILTER_ONLY_STATUSES
+# 瓦片级的结局词表（task_tiles.status 列，src/contracts/outcome.py:TileOutcome）。
+# 与文件级同理：这些值不进任务徽章。
+#
+# 只列 'cancelled'：TileOutcome 的五个值（success / no_data / retryable_failure /
+# permanent_failure / cache_failure）在管理器里一律走 `TileOutcome.X.value`，
+# 不写字面量，正则扫不到；'cancelled' 是**唯一**的例外，因为它压根不是一个
+# 结局 —— 引擎在取消出口对那块瓦片什么都不知道，回调里的
+# `if status == 'cancelled': continue` 就是把它当作「这一轮不存在」。
+# 不要把它加进 TaskStatus：任务级的 cancelled 已由
+# database.migrate_cancelled_tasks_to_failed 迁成 failed，状态机里没有它。
+_TILE_LEVEL_STATUSES = frozenset({'cancelled'})
+# 每任务日志（src/services/task_logging）的事件字段值。`tlog.event('terminal',
+# status='stopped', ...)` 写的是**日志行**里的一个 kv，不是任何一张表的 status
+# 列 —— 'stopped' 的意思是「因为 stop_flag 提前退出，任务行的状态保持不变」，
+# 正因为不动状态才需要在日志里记一笔。四个管理器都有这一句，所以只能按词表剔除。
+_LOG_EVENT_STATUSES = frozenset({'stopped'})
+_NON_TASK_STATUSES = (_FILE_LEVEL_STATUSES | _FILTER_ONLY_STATUSES
+                      | _TILE_LEVEL_STATUSES | _LOG_EVENT_STATUSES)
 
 _STATUS_LITERAL_RE = re.compile(
     r"""(?:SET\s+status\s*=\s*|(?<![-\w])status\s*(?:=|==|!=)\s*|['"]status['"]\s*:\s*)['"]([a-z_]+)['"]""",
     re.I,
 )
 _STATUS_IN_RE = re.compile(r"(?<![-\w])status\s+(?:NOT\s+)?IN\s*\(([^)]*)\)", re.I)
+# 枚举成员引用：`TaskState.PENDING_DECISION.value`。
+# 2026-08 §13-3 之后，管理器写状态的**主要**形态就是这个而不是字面量 ——
+# `contracts.outcome.TaskState` 成了状态机的权威定义，四条管线一律引它。
+# 只扫字面量的话，新加的三态（retrying / pending_decision /
+# completed_with_gaps）一个都扫不到，下面的自检会当成「正则失效」。
+_STATUS_MEMBER_RE = re.compile(r'(?<![-\w])TaskState\.([A-Z_]+)\.value')
 
 
 def test_task_status_enum_covers_what_the_managers_actually_write():
-    """四个管理器里出现的每一个状态字面量都必须在 TaskStatus 枚举里。
+    """四个管理器里出现的每一个状态取值都必须在 TaskStatus 枚举里。
 
-    为什么需要这条：下面那条断言拿 TaskStatus 当真值，去要求两个 JS 覆盖全部状态。
-    可四个管理器里有三个**根本不用这个枚举**，它们直接写字符串字面量
-    （`UPDATE dem_tasks SET status='paused' ...`）。也就是说枚举本身可能是过期的
-    —— 那样上面那条断言就是在拿一份不完整的清单验收「全覆盖」，全绿而漏。
-    这正是 Task 10 补链时点名的那类缺口：配对断言守住了「标签 <-> 变量」，
-    守不住「变量 <-> 数据源」。这条把数据源那一端接上。
+    为什么需要这条：下面那条断言拿 TaskStatus 当真值，去要求 JS 的状态词表
+    覆盖全部状态。可管理器不一定用这个枚举 —— 改造前它们直接写字符串字面量
+    （`UPDATE dem_tasks SET status='paused' ...`），也就是说枚举本身可能是
+    过期的，那样上面那条断言就是在拿一份不完整的清单验收「全覆盖」，全绿而漏。
+    这条把数据源那一端接上。
 
-    做法：扫四个管理器里所有 `SET status='x'` / `status = 'x'` / `'status': 'x'` /
-    `status IN ('a','b')` 的字面量，剔除 _FILE_LEVEL_STATUSES（dem_files 等
-    文件级状态，见上方注释）后，要求剩下的是枚举的子集。
+    ⚠️ 登记（2026-08 §13-3 缺块状态机）：管理器写状态的主要形态从字面量变成
+    `TaskState.X.value`（`src/contracts/outcome.py` 成了权威状态机，带转换
+    规则）。两种形态都要扫：
+      · 只扫字面量 —— 新增的 retrying / pending_decision / completed_with_gaps
+        一个都扫不到，自检 `len(found) >= len(enum)` 反而会把「管理器已经全部
+        改用枚举」这件好事误判成「正则失效」；
+      · 只扫枚举成员 —— 三个老管理器里剩下的裸字面量（`status='paused'`）
+        重新逃出检查。
+
+    并且直接钉住两张表的一致：`TaskStatus`（models 层，只服务
+    `Task.__post_init__` 的成员检查）必须与 `TaskState`（contracts 层，权威）
+    取值相同。models/task.py 的 docstring 写的就是「两处的取值必须一致，由
+    TaskState 的定义为准」—— 那句话此前没有任何机器检查。
     """
+    from src.contracts.outcome import TaskState
+
     enum_values = _task_status_values()
+    assert enum_values == {s.value for s in TaskState}, (
+        f'TaskStatus（models）= {sorted(enum_values)} 与 TaskState（contracts）'
+        f'= {sorted(s.value for s in TaskState)} 不一致。权威在 contracts，'
+        '照它改 src/models/task.py —— 两张表一漂移，Task.__post_init__ 会拒绝'
+        '一个状态机认可的状态，或者放行一个它不认的。'
+    )
     found = {}
     for fn in _STATUS_WRITERS:
         path = os.path.join(ROOT, 'src', 'services', fn)
@@ -869,19 +935,29 @@ def test_task_status_enum_covers_what_the_managers_actually_write():
                 if lit in _NON_TASK_STATUSES:
                     continue
                 found.setdefault(lit, set()).add(fn)
-    # 自检：扫空的话下面的子集断言永真
-    assert len(found) >= len(enum_values), (
-        f'只从四个管理器里扫到 {sorted(found)}，比枚举 {sorted(enum_values)} 还少 —— '
-        '正则失效了，本测试已无效'
+        for m in _STATUS_MEMBER_RE.finditer(src):
+            member = m.group(1)
+            assert hasattr(TaskState, member), (
+                f'{fn} 引用了 TaskState.{member}，而 contracts 里没有这个成员'
+            )
+            found.setdefault(getattr(TaskState, member).value, set()).add(fn)
+    # 自检：扫空/漏扫的话下面的子集断言永真
+    missing = enum_values - set(found)
+    assert not missing, (
+        f'枚举里的 {sorted(missing)} 在四个管理器里一次都没被写过（扫到的是 '
+        f'{sorted(found)}）—— 要么正则失效、本测试已无效，要么那几个状态是'
+        '前端凭空多出来的分支。'
     )
     extra = set(found) - enum_values
     assert not extra, (
         '管理器写了 TaskStatus 里没有的状态：\n'
         + '\n'.join(f'  {k!r} <- {sorted(found[k])}' for k in sorted(extra))
         + '\n枚举是前端词表断言的真值来源，漏一个状态 = 界面上冒出一个英文字面量。'
-        '任务级状态：把它补进 src/models/task.py 的 TaskStatus，再补进两个 JS 的三张表；'
+        '任务级状态：先补进 src/contracts/outcome.py 的 TaskState、再补进 '
+        'src/models/task.py 的 TaskStatus，最后补进 task_status.js 的三张表；'
         '文件级状态（dem_files / contour_files / tiles 的 status 列，不进任务徽章）：'
-        '补进本文件上方的 _FILE_LEVEL_STATUSES。'
+        '补进本文件上方的 _FILE_LEVEL_STATUSES；'
+        '瓦片级结局 / 日志事件字段：_TILE_LEVEL_STATUSES / _LOG_EVENT_STATUSES。'
     )
 
 
@@ -930,7 +1006,7 @@ _STATUS_MAPS = (
 
 
 def test_status_map_covers_every_backend_status():
-    """两张状态表都必须覆盖 TaskStatus 的全部五态。
+    """两张状态表都必须覆盖 TaskStatus 的全部**八**态。
 
     强度说明 —— 为什么不写成 `assert "'paused'" in src`：
     那种断言查的是「文件里有没有出现过这个词」，而 getStatusColor 与
@@ -939,16 +1015,22 @@ def test_status_map_covers_every_backend_status():
     存在的状态同样报错，因为那说明有人在前端凭空造了一个界面上永远到不了
     的分支。
 
-    覆盖数的边界：2 张表 = 2 组，每组 5 个键。两处收缩各有来由：组数从 4 降到 2
-    是因为两个业务文件各有一份实现、已收口到 task_status.js；键数从 6 降到 5 是
-    因为 cancelled 随「取消任务」退出状态机。（第三张 statusIcons 更早随徽章 pill
-    删除，见 _STATUS_MAPS 的登记。）断言先钉住组数，再逐组比对 —— 只比对不钉组数
-    的话，解析逻辑挂掉返回空列表时是永真。
+    覆盖数的边界：2 张表 = 2 组，每组 8 个键。三次翻面各有来由：
+      · 组数 4 -> 2：两个业务文件各有一份实现，已收口到 task_status.js；
+      · 键数 6 -> 5：cancelled 随「取消任务」退出状态机；
+      · 键数 5 -> 8（2026-08 §13-3 缺块状态机）：新增 retrying（补漏重跑）、
+        pending_decision（有缺块、等用户决定）、completed_with_gaps（用户已
+        显式接受缺块，产物出但永久带标记）。**真值来源是
+        `src/contracts/outcome.py:TaskState`** —— models 层的 TaskStatus 只是
+        它的镜像（一致性由 test_task_status_enum_covers_what_the_managers_actually_write
+        钉住），本条仍从 TaskStatus 解析，因为它是那条链上离 JS 最近的一环。
+    断言先钉住组数，再逐组比对 —— 只比对不钉组数的话，解析逻辑挂掉返回空列表
+    时是永真。
     """
     enum_values = _task_status_values()
-    assert len(enum_values) == 5, (
+    assert len(enum_values) == 8, (
         f'TaskStatus 现在有 {len(enum_values)} 个成员：{sorted(enum_values)}。'
-        '不是 5 个不一定是错，但下面每张表的期望值要跟着改，先确认是有意的'
+        '不是 8 个不一定是错，但下面每张表的期望值要跟着改，先确认是有意的'
     )
     checked = []
     problems = []
@@ -1024,31 +1106,57 @@ def test_status_labels_are_never_the_raw_backend_literal():
 #   R10    状态 -> 文案的映射可以整体互换（键集合齐全就绿）
 #   新     getStatusStroke 是第四处状态映射点，改前只覆盖 2/6
 # --------------------------------------------------------------------------
+#
+# ⚠️ 下面两张表的键集合都是**八**态，真值来源是
+# `src/contracts/outcome.py:TaskState`（权威状态机，带转换规则与每一条的
+# 存在理由）。2026-08 §13-3 新增的三态一并入表：
+#   retrying            补漏重跑；没有它，补漏与首次下载在历史里长得一样。
+#   pending_decision    有缺块、等用户决定（补漏 / 接受并导出）。
+#   completed_with_gaps 用户已显式接受缺块：产物出了、可用，但永久带标记。
 
 # 每个状态的文案里必须出现的关键词。钉关键词而不是整句：
 # 「已完成」改成「完成了」不该误红，「failed -> 已完成」必须红。
+#
+# 三个新态的关键词刻意避开与老态重合的那半句：completed_with_gaps 的文案是
+# 「已完成（有缺块）」，钉「完成」的话它与 completed 可以整体互换而不被发现，
+# 所以钉「缺块」；pending_decision 是「等待决定」，同理钉「决定」而不是
+# 「等待」（那是 pending 的）。
 _STATUS_LABEL_KEYWORD = {
     'pending': '等待',
     'running': '运行',
+    'retrying': '补漏',
     'paused': '暂停',
+    'pending_decision': '决定',
     'completed': '完成',
+    'completed_with_gaps': '缺块',
     'failed': '失败',
 }
 
 # 每个状态在历史地图上的描边色应该走哪个调色板令牌。
 # pending 是唯一的中性档，与徽章的中性档一致（见
 # test_status_badge_color_matches_the_semantic_token 的说明）。
+#
+# 三个新态**复用已有的四档语义色**，一个新颜色名都不加（理由见
+# task_status.js 的注释：每个新颜色名都要在 style.css 里配一条压 Bootstrap
+# 的 `!important`，而 !important 总量有上界）：
+#   retrying            -> info    与 running 同族：它就是在下载，只是第二遍。
+#   pending_decision    -> warning 与 paused 同族：都是「停下来等你」。
+#   completed_with_gaps -> warning **不是** success：产物带洞是必须被看见的
+#                          事实，画成绿色等于把它伪装成干净的成功。
 _STATUS_STROKE_TOKEN = {
     'pending': '--color-text-secondary',
     'running': '--color-info',
+    'retrying': '--color-info',
     'paused': '--color-warning',
+    'pending_decision': '--color-warning',
     'completed': '--color-success',
+    'completed_with_gaps': '--color-warning',
     'failed': '--color-danger',
 }
 
 
 def test_status_labels_are_paired_with_the_right_status():
-    """状态与文案的**配对**，不只是「六个键都在」。
+    """状态与文案的**配对**，不只是「八个键都在」。
 
     评审实测的逃逸（R10）：把 getStatusText 的六个值整体轮换一位 ——
     键集合齐全、每个值都是中文，上一版两条断言全绿，
@@ -1072,7 +1180,7 @@ def test_status_labels_are_paired_with_the_right_status():
         if keyword not in label:
             problems.append(
                 f'{status!r} -> {pairs[status]} = {label!r}，应含 {keyword!r}')
-    assert checked == 5, f'只检查了 {checked} 组（期望 5）—— 本测试已失效'
+    assert checked == 8, f'只检查了 {checked} 组（期望 8）—— 本测试已失效'
     assert not problems, (
         '状态与文案的配对错了（界面会把失败写成已完成这种）：\n'
         + '\n'.join('  ' + p for p in problems)
@@ -1094,7 +1202,13 @@ def test_status_labels_are_paired_with_the_right_status():
 # 行2 都带 getStatusText 的状态文字，颜色不再是唯一通道。
 
 def test_map_rectangle_stroke_covers_every_status():
-    """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖五态、走调色板令牌。
+    """历史地图矩形的描边色是**第四处**状态映射点，同样要覆盖八态、走调色板令牌。
+
+    ⚠️ 登记（2026-08 §13-3）：期望从五态改成八态。真值来源是
+    `src/contracts/outcome.py:TaskState`（models 的 TaskStatus 是它的镜像），
+    对表用的 `_STATUS_STROKE_TOKEN` 见上方注释 —— 三个新态复用已有语义色，
+    其中 completed_with_gaps 走 warning 而不是 success：地图上一块带洞的成品
+    画成绿色，等于在最一眼的那个通道上把它伪装成干净的成功。
 
     评审找到的漏网：改前 `renderHistoryMap` 里是一条内联三元阶梯，
     只认 completed / failed，其余三态（pending / running / paused）
@@ -1288,7 +1402,7 @@ def test_row_rendering_is_unified_in_history_js():
     createHistoryRow 的按钮组、时间语义就各不相同），所以任何一个业务文件
     都不许再长出行模板。
     """
-    for name in ('tasks.js', 'history.js'):
+    for name in ('tasks.js', 'task_center.js', 'history.js'):
         src = _strip_js_comments(_js(name))
         for fn in ('createTaskRow', 'createTaskErrorRow', 'taskMetaText',
                    'renderActiveTasks', 'toggleFailedTaskGroup'):
@@ -1317,6 +1431,63 @@ def test_row_rendering_is_unified_in_history_js():
     )
     assert 'innerHTML' not in render_body, (
         'renderHistoryTable 又开始直接写 innerHTML 了 —— 渲染归组件'
+    )
+
+
+def test_page_refresh_preserves_the_fetched_gap_breakdown():
+    """整页替换（replaceAll）必须把已经拉回来的 gap_summary 搬到新行上。
+
+    实测缺陷（缺块面 §13-3 的第二个洞）：GET /api/tasks/<id>/gaps 明明 200
+    回来了，行上却永久停在「正在读取缺块明细…」。链路是这样断的 ——
+    loadHistory 每次都 replaceAll，新行是从接口响应重建的，里面没有
+    gap_summary（那是客户端 ensureGapSummary 挂上去的）；而组件重新拉取的
+    三个触发点在「同一个 key 原地换了个对象、status 与 gap_tiles 都没变」时
+    **一个都不响**：keyed diff 复用实例所以不 mount，两条 watch 求值结果不变
+    所以不触发。task_list.js 那三个触发点的注释写着它们的存在正是为了防住这
+    个结局 —— 它们防不住，因为它们看不见「摘要消失了」。
+
+    另一半同样要守：缺块数**变了**的时候必须让旧明细消失。补漏跑完后数变了，
+    搬过去的旧分档就是错的；而且不让它消失的话，task.gap_tiles 那条 watch
+    即便触发也白搭 —— syncGaps 见到 gap_summary 还在就早退了。
+    """
+    src = _strip_js_comments(_js('task_store.js'))
+    replace_body = _js_function_body(src, 'replaceAll')
+    assert 'carryClientState(' in replace_body, (
+        'replaceAll 直接整行替换，把客户端拉回来的 gap_summary 抹掉了 —— '
+        '缺块明细会永久停在「正在读取…」，而接口早就 200 回过了'
+    )
+    carry = _js_function_body(src, 'carryClientState')
+    assert 'gap_summary' in carry, (
+        'carryClientState 没有搬 gap_summary —— 它是唯一一个「接口不回、'
+        '客户端拉回来」的字段，不搬就等于没修'
+    )
+    assert 'gap_tiles' in carry, (
+        'carryClientState 没有拿缺块数当判据 —— 补漏改变缺块数之后，'
+        '过期的分档明细会被一路搬下去，而且再也不会重拉'
+    )
+
+    # 组件侧的重拉触发点：缺块数变化那一条是本修复的配套，删了它「数变了要
+    # 重拉」就断了（store 让摘要消失，但没有任何人去拉新的）。
+    comp = _strip_js_comments(_js('task_list.js'))
+    assert re.search(r"['\"]task\.gap_tiles['\"]\s*:", comp), (
+        'TaskRow 没有 watch task.gap_tiles —— 缺块数变化后不会重新拉分档明细'
+    )
+    # syncGaps 是对象字面量里的简写方法，_js_function_body 只认
+    # `function <name>(`，这里自己按花括号配对切。
+    sm = re.search(r'\bsyncGaps\s*\(\s*\)\s*\{', comp)
+    assert sm, 'task_list.js 里找不到 syncGaps() —— 本测试已失效'
+    depth, sync = 0, ''
+    for j in range(sm.end() - 1, len(comp)):
+        if comp[j] == '{':
+            depth += 1
+        elif comp[j] == '}':
+            depth -= 1
+            if depth == 0:
+                sync = comp[sm.end():j]
+                break
+    assert sync, 'syncGaps 花括号不配对 —— 本测试已失效'
+    assert 'gap_summary' in sync and 'ensureGapSummary(' in sync, (
+        'syncGaps 不再按「摘要还没到」拉取 —— 要么永远不拉，要么每次轮询都拉'
     )
 
 
@@ -1364,13 +1535,14 @@ def test_stream_has_no_grouping_or_collapsing_machinery():
     「单一时间流 + 状态筛选」根治——失败任务按创建时间散在流里，
     要看失败点「失败」chip——折叠机制本身成了要删的东西。锚点翻面。）
     """
-    src = _strip_js_comments(_js('tasks.js'))
-    for gone in ('FAILED_GROUP_COLLAPSE_THRESHOLD', 'FAILED_GROUP_PREVIEW_COUNT',
-                 'failedGroupCollapsed', 'taskFailedGroupCollapsed',
-                 'task-group-header', 'sessionStorage'):
-        assert gone not in src, (
-            f'tasks.js 里还有 {gone} —— 失败组折叠机制应随三分区整体删除'
-        )
+    for name in ('tasks.js', 'task_center.js'):
+        src = _strip_js_comments(_js(name))
+        for gone in ('FAILED_GROUP_COLLAPSE_THRESHOLD', 'FAILED_GROUP_PREVIEW_COUNT',
+                     'failedGroupCollapsed', 'taskFailedGroupCollapsed',
+                     'task-group-header', 'sessionStorage'):
+            assert gone not in src, (
+                f'{name} 里还有 {gone} —— 失败组折叠机制应随三分区整体删除'
+            )
     hist_src = _strip_js_comments(_js('history.js'))
     assert 'task-group-header' not in hist_src, (
         'history.js 里还有分组头——单一时间流没有「活动/失败/历史」分区'
@@ -1478,7 +1650,7 @@ def test_pagination_bar_is_hidden_when_only_one_page():
 
 
 def test_completed_task_is_rebuilt_in_place_not_removed():
-    """task_completed：行原地重建为 completed 态 + loadStats()，**不删行、不重拉**。
+    """task_completed：行原地重建为**载荷给的那个终态** + loadStats()，不删行、不重拉。
 
     （前身 test_completed_task_refreshes_initialized_history_panel：守
     「删实时行 + loadHistory(1) + loadStats()」。那是活动/历史分区时代的
@@ -1494,9 +1666,28 @@ def test_completed_task_is_rebuilt_in_place_not_removed():
         'handleTaskCompleted 还在 loadHistory 重拉——改数据已经够了，'
         '重拉会把用户正在看的页码/滚动位置冲掉'
     )
-    assert re.search(r"TaskStore\.commit\([^)]*\{\s*status:\s*'completed'", body), (
-        'handleTaskCompleted 没有把状态改成 completed —— 行不会换形态'
+    # 终态**不许写死**。后端 _complete_task 发的是 final_status，带缺块时它是
+    # completed_with_gaps；写死 'completed' 的那一版实测把行降级过 ——
+    # task_gap_decision 与 task_completed 是同一毫秒里前后脚发的两发，后到的
+    # 这一发赢，缺块标记要到整页刷新才回来（§13-3 要求它永久跟着任务走）。
+    # 断言形状而不是断言字面量：允许任何「从参数取值 + 兜底 'completed'」的写法，
+    # 只禁掉「常量 'completed'」这一种。
+    m = re.search(r"TaskStore\.commit\(\s*key\s*,\s*\{\s*status:\s*([^,}]+)", body)
+    assert m, 'handleTaskCompleted 没有把状态写进 store —— 行不会换形态'
+    status_expr = m.group(1).strip()
+    assert status_expr != "'completed'", (
+        "handleTaskCompleted 把终态写死成 'completed' —— 后端发的 "
+        'completed_with_gaps 会被静默降级成干净成品'
     )
+    assert 'status' in status_expr and "'completed'" in status_expr, (
+        f'终态表达式是 {status_expr!r}，应当「取载荷里的 status，缺失时兜底 '
+        "'completed'」"
+    )
+    # 载荷里的 status 必须真的送进来，否则上面那个参数永远是 undefined。
+    handler = _strip_js_comments(_js('task_center.js'))
+    assert re.search(
+        r"handleTaskCompleted\(\s*data\.task_id,[^)]*data\.status", handler
+    ), 'socket 处理器没有把 data.status 传给 handleTaskCompleted'
     assert re.search(r'loadStats\(\s*\)', body), (
         'handleTaskCompleted 没有调 loadStats()——统计卡还是旧数字'
     )
@@ -1611,19 +1802,31 @@ def test_panel_reopen_refreshes_timeline():
 
 
 def _active_statuses():
-    """`?status=active` 的三态，取自 src/routes/api.py 里那条 SQL 谓词。
+    """`?status=active` 的未终结状态集合。
 
-    不在测试里硬写 {'pending','running','paused'}：那样后端哪天多一个未终结
-    状态（比如 'queued'），前端漏了它的警告文案，这里照样全绿。
+    ⚠️ 登记（2026-08 §13-3）：来源从「api.py 里那条 SQL 谓词的字面量」改成
+    `src.contracts.outcome.ACTIVE_STATE_VALUES`。api.py 现在**自己就是**从那
+    个常量拼谓词的（`'status IN (%s)' % ', '.join('?' * len(...))`），谓词里
+    只剩占位符，一个字面量都没有 —— 继续正则切那条 SQL 只能切出空集合。
+
+    仍然不在测试里硬写 {'pending','running','paused'}：那样后端哪天多一个
+    未终结状态（缺块改造就一次加了 retrying / pending_decision 两个），前端
+    漏了它的警告文案，这里照样全绿。真值搬到 contracts 之后这条更结实：
+    路由与本测试读的是同一份常量，路由改口径也不会与它脱节。
     """
+    from src.contracts.outcome import ACTIVE_STATE_VALUES
+
+    # api.py 必须真的在用它 —— 否则本函数守的是一份没人消费的清单。
     with open(os.path.join(ROOT, 'src', 'routes', 'api.py'), encoding='utf-8') as f:
         src = f.read()
-    m = re.search(r'active_clause\s*=\s*"status IN \(([^)]*)\)"', src)
-    assert m, 'src/routes/api.py 里找不到 active_clause 的 SQL 谓词 —— 本测试已失效'
-    vals = set(re.findall(r"'([a-z_]+)'", m.group(1)))
-    assert vals, 'active_clause 里解析不出任何状态字面量 —— 本测试已失效'
+    assert 'ACTIVE_STATE_VALUES' in src, (
+        'src/routes/api.py 不再引用 ACTIVE_STATE_VALUES —— ?status=active 的'
+        '口径又长回了本地字面量，本测试已失效'
+    )
+    vals = set(ACTIVE_STATE_VALUES)
+    assert vals, 'ACTIVE_STATE_VALUES 是空的 —— 本测试已失效'
     assert vals <= _task_status_values(), (
-        f'active_clause 里的 {sorted(vals - _task_status_values())} 不在 TaskStatus 里'
+        f'ACTIVE_STATE_VALUES 里的 {sorted(vals - _task_status_values())} 不在 TaskStatus 里'
     )
     return vals
 
@@ -1739,9 +1942,17 @@ def test_deleting_an_unfinished_task_says_what_will_be_lost():
     v0.2.11 里删一个正在跑的任务会被后端 400 挡下（用户看到「删除失败」），
     那层拒绝事实上在替用户兜底。这一版放开了 —— 拒绝没了，文案就得补上。
 
-    三个活动状态各说各的，不合并成一句「该任务尚未结束」：pending 什么都还
-    没跑（只是排队），对它说「正在运行」是撒谎；running / paused 有已下载的
-    进度会丢。用户按下删除前要判断的正是「我会失去什么」。
+    活动态各说各的，不合并成一句「该任务尚未结束」：pending 什么都还没跑
+    （只是排队），对它说「正在运行」是撒谎；running / retrying / paused 有
+    已下载的进度会丢；pending_decision 还攒着一份等用户决定的缺块清单。
+    用户按下删除前要判断的正是「我会失去什么」。
+
+    ⚠️ 登记（2026-08 §13-3）：活动态从三个变成五个
+    （contracts.outcome.ACTIVE_STATE_VALUES 加了 retrying / pending_decision）。
+    这不是期望值换个数字：本条当时**抓到了一个真缺陷** —— history.js 的
+    DELETE_CONFIRM_KEYS 没跟着补，那两个状态掉进通用文案「记录不可恢复」，
+    删一个正在补漏的任务不会有任何警告。补文案的同时把这段登记留下：这张表
+    的键集合与后端活动态是**等号**，不是「包含」。
     """
     from src.i18n.catalog import MESSAGES
 
@@ -1756,7 +1967,8 @@ def test_deleting_an_unfinished_task_says_what_will_be_lost():
     )
 
     # 每个活动态都得说到自己那件事，且三句彼此不同（共用一句 = 状态感知白做）
-    keyword = {'running': '正在运行', 'pending': '排队', 'paused': '已暂停'}
+    keyword = {'running': '正在运行', 'retrying': '补漏', 'pending': '排队',
+               'paused': '已暂停', 'pending_decision': '等你决定'}
     assert set(keyword) == active, (
         f'关键词表 {sorted(keyword)} 与后端活动态 {sorted(active)} 脱节 —— 本测试已失效'
     )
@@ -2304,4 +2516,105 @@ def test_zoom_tooltip_reset_is_unconditional():
         f'detailZoom 的 title 赋值在深度 {reset}（if/else 链在 {chain}）—— '
         '它被关进某一个任务类型分支里了。其余类型不再清空，上一个本地地形任务'
         '留下的「这是基准层级」会粘在 DEM/等高线/瓦片任务的层级上'
+    )
+
+
+# ---------------------------------------------------------------------------
+# 缺块面收尾：带洞成品的按钮组 + 明细读取失败的出路
+# ---------------------------------------------------------------------------
+
+def _row_template():
+    """TaskRow 的 ROW_TEMPLATE（反引号模板串），**已剥掉 HTML 注释**。
+
+    与本文件 _strip_js_comments 同一理由，只是注释语法换成了 `<!-- -->`：
+    模板里的注释逐字讨论被改掉的那些判据（「不许再写 status === 'completed'」
+    本身就要把那个字面量打出来），不剥的话「模板里不许出现 X」类断言会把
+    解释 X 的那句话当成违规。
+    """
+    src = _js('task_list.js')
+    i = src.index('const ROW_TEMPLATE = `')
+    j = src.index('`', i + len('const ROW_TEMPLATE = `'))
+    return re.sub(r'<!--.*?-->', '', src[i:j], flags=re.S)
+
+
+def test_row_buttons_never_hardcode_the_completed_status():
+    """行上的按钮不许再拿 `status === 'completed'` 当判据。
+
+    实测缺陷：预览按钮写死 `task.status === 'completed'`，而同一行的导出按钮
+    走 isExportable（白名单含 completed_with_gaps）。一条 completed_with_gaps
+    的行因此「导出 MBTiles」在、「在地图上预览」不在 —— 同一份产物，两颗
+    按钮给出互相矛盾的答案。而带洞成品的瓦片目录是真的出了的
+    （accept_gaps 会把严格模式当初拒绝的拼接/复制补跑完），
+    task_store.js 自己的注释就写着排除它等于让「接受缺块」毫无意义。
+
+    钉两件事：模板里一个 'completed' 字面量都不许有（下一颗按钮不会重蹈），
+    且判据必须是 store 那份唯一的成功态集合。
+    """
+    tmpl = _row_template()
+    assert "'completed'" not in tmpl, (
+        'ROW_TEMPLATE 里还有 `completed` 状态字面量 —— 状态集合散进模板，'
+        '加一个成功态就要满模板 grep，而漏掉一处的表现是「按钮不出现」，'
+        '没有任何报错'
+    )
+    comp = _strip_js_comments(_js('task_list.js'))
+    assert re.search(r'isSuccessful\s*\(\s*\)\s*\{[^}]*SUCCESSFUL_STATUSES', comp), (
+        'TaskRow 没有一个读 store.SUCCESSFUL_STATUSES 的 isSuccessful —— '
+        '「产出可用（可能带洞）」的口径必须只有一份，在 task_store.js'
+    )
+    for label, marker in (
+        ('预览', 'canPreview'),
+        ('处理（DEM 转切片）', 'canProcessDem'),
+    ):
+        m = re.search(r'v-if="' + marker + r'[^"]*"', tmpl)
+        assert m, f'{label}按钮的 v-if 找不到 —— 本测试已失效'
+        assert 'isSuccessful' in m.group(0), (
+            f'{label}按钮的判据是 {m.group(0)} —— 没走 isSuccessful，'
+            '它迟早与导出那颗给出互相矛盾的答案'
+        )
+
+
+def test_a_failed_gap_fetch_leaves_the_row_an_exit():
+    """GET /gaps 失败必须落进 store，并在行上换出错误态 + 「重试」。
+
+    实测缺陷：ensureGapSummary 的 catch 只 console.error 一句就 return null。
+    它的调用方只有行组件那三个触发点（mounted 与 task.status /
+    task.gap_tiles 两条 watch），一次超时之后它们谁都不会再响 —— keyed diff
+    复用组件实例所以不 mount，两条 watch 的值也没变。于是那一行永久停在
+    「正在读取缺块明细…」，只有整页刷新救得回来。
+
+    修法是「记下失败 + 用户手动重试」，**不是**退避轮询：缺块明细是读一次
+    就够的静态数据，为一次超时给每条带缺块的行挂一个后台定时请求不成比例。
+    这条同时守住「不许改成无条件轮询」——  syncGaps 仍必须按「摘要还没到」
+    才拉（由 test_page_refresh_preserves_the_fetched_gap_breakdown 钉）。
+
+    第三件事：整页替换要把失败标记一起搬过去。不搬的话 replaceAll 会把行打回
+    「正在读取…」，而上面那三个触发点在这种替换下同样一个都不响 —— 等于换条
+    路径把永久转圈放回来。
+    """
+    center = _strip_js_comments(_js('task_center.js'))
+    ensure = _js_function_body(center, 'ensureGapSummary')
+    catch = ensure[ensure.index('} catch'):]
+    assert 'gap_summary_error' in catch and 'commit(' in catch, (
+        'ensureGapSummary 的 catch 没把失败写进 store —— 行上看不出「读失败」'
+        '与「还在读」有任何区别，而没有任何人会再拉一次'
+    )
+    assert 'setTimeout' not in ensure and 'setInterval' not in ensure, (
+        'ensureGapSummary 里出现了定时器 —— 明细是读一次就够的静态数据，'
+        '退避轮询等于给每条带缺块的行挂一个常驻后台请求'
+    )
+
+    tmpl = _row_template()
+    assert 'gapLoadError' in tmpl and 'retryGaps' in tmpl, (
+        '行上没有错误态与「重试」入口 —— 一次超时之后用户除了整页刷新无路可走'
+    )
+    assert "t('js.gaps.action.retry')" in tmpl, '「重试」按钮没有文案 key'
+    comp = _strip_js_comments(_js('task_list.js'))
+    assert re.search(r'retryGaps\s*\(\s*\)\s*\{[^}]*ensureGapSummary\(', comp), (
+        'retryGaps 没有真的再打一次 GET /gaps'
+    )
+
+    carry = _js_function_body(_strip_js_comments(_js('task_store.js')), 'carryClientState')
+    assert 'gap_summary_error' in carry, (
+        'carryClientState 没搬 gap_summary_error —— loadHistory 一整页替换就把'
+        '错误态与「重试」按钮抹掉，行打回「正在读取缺块明细…」并永久卡在那里'
     )

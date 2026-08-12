@@ -430,3 +430,139 @@ def test_output_path_normalization_is_idempotent(monkeypatch, tmp_path):
         conn.close()
 
     assert row["output_path"] == absolute
+
+
+# ---------- M6：后台收尾用的快照可能放旧 600 秒 ----------
+#
+# `_background_cleanup` 先 join 工作线程(上限 _JOIN_TIMEOUT_SECONDS = 600 秒)
+# 再清独占缓存,而快照是 DELETE 之前拍的。这段窗口里新建并启动的任务不在快照
+# 里,于是它正在写的瓦片被算成「被删任务的独占集」而删掉,受害任务随后在拼接
+# 阶段抛 FileNotFoundError。修复:动手之前重查存活任务行,与旧快照取**并集**。
+
+def _probe_snapshot():
+    from src.contracts.source import SourceSnapshot
+    return SourceSnapshot(source_id="probe", url_template="https://x/{z}/{x}/{y}.png",
+                          style="m", server_list=("https://x",))
+
+
+def _region_task_row(task_id, north, south, east, west, zoom):
+    return {"id": task_id, "north": north, "south": south, "east": east,
+            "west": west, "zoom_min": zoom, "zoom_max": zoom, "style": "m",
+            "region_spec": "", "source_snapshot": _probe_snapshot().to_json(),
+            "status": "running"}
+
+
+def _insert_region_task(db, row):
+    conn = db.get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO tasks
+              (id, name, status, north, south, east, west, zoom_min, zoom_max,
+               style, output_format, output_path, total_tiles, downloaded_tiles,
+               failed_tiles, source_snapshot)
+            VALUES (?, 'probe', ?, ?, ?, ?, ?, ?, ?, 'm', 'tiles_only', '', 0, 0, 0, ?)
+            """,
+            (row["id"], row["status"], row["north"], row["south"], row["east"],
+             row["west"], row["zoom_min"], row["zoom_max"], row["source_snapshot"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_shared_tile(cache_root, victim_row, zoom):
+    """在受害任务确实覆盖的坐标上放一块瓦片,返回它的路径。"""
+    from src.contracts.region import RegionSpec
+    from src.contracts.region_tiles import iter_region_tile_spans
+    y, x, _x1 = next(iter(iter_region_tile_spans(RegionSpec.from_row(victim_row), zoom)))
+    d = (Path(cache_root) / _probe_snapshot().cache_namespace / str(zoom) / str(x))
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{y}.png"
+    p.write_bytes(b"live" * 8)
+    return p
+
+
+def _finished_thread():
+    import threading
+    th = threading.Thread(target=lambda: None)
+    th.start()
+    th.join()
+    return th
+
+
+def test_background_cleanup_spares_task_created_after_snapshot(monkeypatch, tmp_path):
+    """快照拍完之后才出现的任务,它的瓦片必须活下来。
+
+    这是 M6 的回归:旧代码把 600 秒前的 other_rows 原样拿去算独占集,新任务
+    不在减数里 —— 它正在下载的瓦片被当成「只有被删任务在用」而 unlink,
+    受害任务的 stitch 随后 FileNotFoundError,整层失败。
+    """
+    _load_app(monkeypatch, tmp_path)
+    from src.core import config
+    db = importlib.import_module("src.core.database")
+    from src.services import task_deletion
+
+    deleted = _region_task_row(1, 30.5, 30.0, 114.5, 114.0, 12)
+    newcomer = _region_task_row(2, 30.4, 30.1, 114.4, 114.1, 12)
+
+    # 删行时刻的快照:表里只有被删任务自己(它自己那一行也在快照里,
+    # exclusive_tile_rects 按 id 排除)。
+    stale_scope = (deleted, [deleted])
+    # 窗口里冒出来的新任务:它已经在往 cache 里写了。
+    _insert_region_task(db, newcomer)
+    tile = _seed_shared_tile(config.Config.CACHE_DIR, newcomer, 12)
+
+    task_deletion._background_cleanup(1, _finished_thread(), None, None, stale_scope)
+
+    assert tile.exists(), "新任务正在用的瓦片被当成被删任务的独占集清掉了"
+
+
+def test_background_cleanup_still_deletes_when_nobody_else_claims_the_tile(
+        monkeypatch, tmp_path):
+    """对照组:没有新任务时,同一块瓦片照删 —— 上一条用例不是靠「什么都不删」通过的。"""
+    _load_app(monkeypatch, tmp_path)
+    from src.core import config
+    from src.services import task_deletion
+
+    deleted = _region_task_row(1, 30.5, 30.0, 114.5, 114.0, 12)
+    stale_scope = (deleted, [deleted])
+    tile = _seed_shared_tile(config.Config.CACHE_DIR, deleted, 12)
+
+    task_deletion._background_cleanup(1, _finished_thread(), None, None, stale_scope)
+
+    assert not tile.exists()
+
+
+def test_refresh_cache_scope_keeps_rows_that_vanished_from_the_table(monkeypatch, tmp_path):
+    """取并集而不是替换:窗口里被删掉的那个任务仍留在保护集里。
+
+    多保护几块瓦片的代价是「下次同区域下载命中缓存」;多删的代价是删掉别人
+    正在用的文件。模块自己定的边界就是「宁可少删,不可多删」。
+    """
+    _load_app(monkeypatch, tmp_path)
+    db = importlib.import_module("src.core.database")
+    from src.services import task_deletion
+
+    deleted = _region_task_row(1, 30.5, 30.0, 114.5, 114.0, 12)
+    gone = _region_task_row(9, 30.4, 30.2, 114.4, 114.2, 12)  # 只存在于旧快照
+    newcomer = _region_task_row(2, 30.3, 30.1, 114.3, 114.1, 12)
+    _insert_region_task(db, newcomer)
+
+    _row, merged = task_deletion._refresh_cache_scope((deleted, [deleted, gone]))
+
+    assert sorted(task_deletion._row_id(r) for r in merged) == [1, 2, 9]
+
+
+def test_refresh_cache_scope_falls_back_to_snapshot_when_query_fails(monkeypatch, tmp_path):
+    """重查失败不能把清理整个搞砸:退回旧快照(只会少删,不会多删)。"""
+    _load_app(monkeypatch, tmp_path)
+    from src.services import cache_exclusive, task_deletion
+
+    def boom(*_a, **_k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(cache_exclusive, "surviving_task_rows", boom)
+    scope = (_region_task_row(1, 1, 0, 1, 0, 5), [])
+    assert task_deletion._refresh_cache_scope(scope) is scope
+    assert task_deletion._refresh_cache_scope(None) is None

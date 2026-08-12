@@ -33,6 +33,15 @@ def _body(js_name, fn_name):
     return body
 
 
+# ⚠️ 登记（2026-08 phase-3 §6.1 任务中心抽取）：本文件钉的整条实时链
+# （socket 接线、四路活动列表拉取、进度合并、终态处理）从 tasks.js 搬到了
+# static/js/task_center.js —— 函数名与函数体逐字未改，只是换了文件，
+# 由 base.html 全局加载，于是独立页 /history 也拿得到同一套能力。
+# 下面每条都**钉死** task_center.js 而不是「两个文件里有一个就行」：
+# 后者无论实现搬回首页专属的 tasks.js 都是绿的，而「首页专属」正是这次
+# 抽取要修的缺陷本体。tasks.js 现在只剩状态栏读数三个函数。
+
+
 def test_prepend_stream_row_dedups_against_existing_row():
     """prependStreamRow 必须查重：行已存在就合并，不插第二行。
 
@@ -45,7 +54,7 @@ def test_prepend_stream_row_dedups_against_existing_row():
     改造前只有一层，而且是手写的（getElementById 查重 + 改走整行重建），
     查重写在插入之后就会失效。
     """
-    body = _body('tasks.js', 'prependStreamRow')
+    body = _body('task_center.js', 'prependStreamRow')
     assert 'TaskStore.has(' in body, (
         'prependStreamRow 没有查 store 里是否已有该 key——'
         '被 100 条窗口挤掉的活动任务会在时间流里出现两行'
@@ -73,7 +82,7 @@ def test_load_active_tasks_passes_status_active_except_contour():
     completed 任务，带 active 过滤等于把预览面板的数据源掐掉、首屏还得
     再拉一遍全量——那正是「首屏拉两次」要修的问题。
     """
-    body = _body('tasks.js', 'loadActiveTasks')
+    body = _body('task_center.js', 'loadActiveTasks')
     for url in ("/api/tasks?status=active",
                 "/api/dem/tasks?status=active",
                 "/api/terrain/local/tasks?status=active"):
@@ -94,9 +103,14 @@ def test_load_active_tasks_passes_status_active_except_contour():
 def test_reconnect_refreshes_stream_and_stats():
     """断线重连（hasConnectedOnce 分支）除 loadActiveTasks 外，还要补拉
     时间流（loadHistory）与统计卡（loadStats）——断线窗口内的终态变化
-    不会补发 socket 事件，不补拉就永久 stale。跨文件全局必须 typeof 守卫。"""
-    body = _body('tasks.js', 'initTasks')
-    assert 'hasConnectedOnce' in body, 'initTasks 没有 hasConnectedOnce 分支——本测试已失效'
+    不会补发 socket 事件，不补拉就永久 stale。跨文件全局必须 typeof 守卫。
+
+    钉点从 tasks.js 的 initTasks 挪到 task_center.js 的 initTaskCenter：
+    connect 回调随整条实时链搬家（见本文件顶部的登记），initTasks 现在只剩
+    「调一次 initTaskCenter + 刷一次状态栏」两行。
+    """
+    body = _body('task_center.js', 'initTaskCenter')
+    assert 'hasConnectedOnce' in body, 'initTaskCenter 没有 hasConnectedOnce 分支——本测试已失效'
     assert re.search(r"typeof loadHistory === 'function'", body), (
         '重连补拉 loadHistory 没有 typeof 守卫'
     )
@@ -117,7 +131,7 @@ def test_terminal_event_loadstats_is_debounced():
     既有断言按正则点名它。
     """
     for fn in ('handleTaskCompleted', 'handleTaskFailed'):
-        body = _body('tasks.js', fn)
+        body = _body('task_center.js', fn)
         assert re.search(r'loadStats\(\s*\)', body), (
             f'{fn} 里的 loadStats() 字面量没了——先把既有契约测试修回来'
         )
@@ -183,7 +197,7 @@ def test_reconnect_backfills_contour_preview_registry():
     task_completed，只靠事件注册的话那些任务要到整页刷新才会出现预览按钮。
     补录挂在 loadActiveTasks（它本来就是 connect 重连分支补拉的一环）。
     """
-    body = _body('tasks.js', 'loadActiveTasks')
+    body = _body('task_center.js', 'loadActiveTasks')
     assert 'syncContourPreviewFromLatest' in body, (
         'loadActiveTasks 没有补录等高线预览注册表——断线期间完成的任务不会出现预览按钮'
     )

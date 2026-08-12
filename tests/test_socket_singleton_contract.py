@@ -299,27 +299,49 @@ def test_socket_js_does_not_connect_at_parse_time():
 
 
 def test_tasks_js_reuses_the_singleton():
-    """tasks.js 必须复用单例，不能自己 io()。
+    """任务中心必须复用单例，不能自己 io()。
 
     自己建一个的话首页会开出两个 WebSocket 连接：服务端 connected_clients 计数
     翻倍，每条广播被处理两遍，而现象只是「偶尔重复刷新」，极难归因。
+
+    ⚠️ 登记（2026-08 phase-3 §6.1）：消费者从 tasks.js 搬到
+    static/js/task_center.js（socket 接线整段搬家，函数体逐字未改）。钉死
+    task_center.js 而不是「两个文件里有一个」：`get()` 与 `socket.on` 必须落在
+    **同一个同步块**里（socket.io 不重放错过的事件），而那个同步块现在只可能
+    在 task_center.js 的 initTaskCenter 里 —— 允许它在别处也算数，等于放弃
+    检查这条时序契约。tasks.js 只剩状态栏读数，它连 socket 都不该碰。
     """
-    code = _strip_js_comments(_read("static", "js", "tasks.js"))
-    assert "window.TerraSocket.get()" in code, "tasks.js 没有复用全局单例"
-    assert not _IO_CALL_RE.search(code), "tasks.js 仍在直接 io() —— 会开出第二个连接"
+    code = _strip_js_comments(_read("static", "js", "task_center.js"))
+    assert "window.TerraSocket.get()" in code, "task_center.js 没有复用全局单例"
+    assert not _IO_CALL_RE.search(code), "task_center.js 仍在直接 io() —— 会开出第二个连接"
+    # 同步块：get() 与第一处 socket.on 之间不许有 await / 定时器 / DOMContentLoaded。
+    got = code.index("window.TerraSocket.get()")
+    listened = code.index("socket.on(", got)
+    between = code[got:listened]
+    for gap in ("await ", "setTimeout(", "requestAnimationFrame(",
+                "DOMContentLoaded", ".then("):
+        assert gap not in between, (
+            f"get() 与第一处 socket.on 之间出现了 {gap!r} —— 让出了事件循环，"
+            "socket.io 不重放错过的事件，connect 会被漏掉")
+    # tasks.js（首页专属的状态栏胶水）不许再自己碰 socket。
+    tasks_code = _strip_js_comments(_read("static", "js", "tasks.js"))
+    assert "TerraSocket" not in tasks_code and not _IO_CALL_RE.search(tasks_code), (
+        "tasks.js 又开始自己拿 socket —— 实时链只许有 task_center.js 一个入口，"
+        "两处注册会让每条推送被处理两遍")
 
 
 def test_tasks_js_seeds_has_connected_once_from_current_state():
     """连接不是本页建的时候，hasConnectedOnce 要靠 socket.connected 兜住。
 
-    若别的消费者先 get() 过、连接已经建好，tasks.js 的 connect 回调就永远不触发，
-    hasConnectedOnce 卡在 false —— 断线重连后不补拉 loadActiveTasks/loadHistory/
-    loadStats，数据永久停在断线前的值（非确定性，极难归因）。
+    若别的消费者先 get() 过、连接已经建好，task_center.js 的 connect 回调就永远
+    不触发，hasConnectedOnce 卡在 false —— 断线重连后不补拉 loadActiveTasks/
+    loadHistory/loadStats，数据永久停在断线前的值（非确定性，极难归因）。
+    （文件位置的登记见上一条。）
     """
-    code = _strip_js_comments(_read("static", "js", "tasks.js"))
+    code = _strip_js_comments(_read("static", "js", "task_center.js"))
     assert re.search(r"if\s*\(\s*socket\.connected\s*\)\s*hasConnectedOnce\s*=\s*true",
                      code), (
-        "tasks.js 缺少 `if (socket.connected) hasConnectedOnce = true;` —— "
+        "task_center.js 缺少 `if (socket.connected) hasConnectedOnce = true;` —— "
         "连接由别人先建时，断线重连不会补拉数据")
 
 
@@ -424,7 +446,13 @@ def test_socket_io_stays_on_page_origin_and_ignores_tile_helpers():
 
 
 def test_task_api_requests_never_use_tile_origin():
-    """任务 REST 调用留在主端口：瓦片端口不认 /api/*，且没有会话。"""
-    tasks_code = _strip_js_comments(_read("static", "js", "tasks.js"))
-    assert "tileUrl(" not in tasks_code
-    assert "initTileOrigin(" not in tasks_code
+    """任务 REST 调用留在主端口：瓦片端口不认 /api/*，且没有会话。
+
+    四路活动列表拉取与 start/pause/resume 都在 task_center.js（2026-08
+    phase-3 §6.1 抽取），tasks.js 只剩状态栏读数、一个 fetch 都没有 ——
+    两个文件一起扫，钉点才不会随搬家落空。
+    """
+    for name in ("tasks.js", "task_center.js"):
+        code = _strip_js_comments(_read("static", "js", name))
+        assert "tileUrl(" not in code, f"{name} 把任务 REST 调用指到了瓦片端口"
+        assert "initTileOrigin(" not in code, f"{name} 不该碰瓦片 origin"

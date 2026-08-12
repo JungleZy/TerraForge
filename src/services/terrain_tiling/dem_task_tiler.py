@@ -37,6 +37,9 @@ class TileParams:
     # (Copernicus GLO-30 / ASTER). estimate_max_level in cesium_terrain.py
     # derives the per-tile interval from tile_size (180/(tile_size-1) deg).
     tile_size: int = 65
+    # 0 = 自动挡（build_terrain 里 min(4, os.cpu_count())）。应用侧从 wave B 起
+    # 恒传 ResourceScheduler 授予的 CPU_WORKER 名额（两个地形管理器起切时
+    # reserve），0 只留给 CLI 与测试 —— 每个任务各自封顶 4 等于没有全局上限。
     workers: int = 0
     # 三角化后端与误差系数。
     #
@@ -74,6 +77,16 @@ class TileParams:
     # 之前，没有分母（详见 build_terrain 的注释）。
     stage_cb: Optional[Callable[[str, float], None]] = None
     stop_flag: Optional[threading.Event] = None
+    # 本任务在 ResourceScheduler 上的凭据 owner，例如 ('dem', 12, 'tiling') /
+    # ('local_terrain', 12, 'tiling')。只被 build_terrain 的物化前磁盘复查消费。
+    # **管理器必须给**：起切时它已经按估算预留了一份 DISK_BYTES，复查不排除掉
+    # 自己那份，就会把它当成「别人占的」再扣一遍 —— 独占机器的单个任务因此需要
+    # 2 倍自身预算的空闲空间才跑得下去，而判决文案还会把用户支去找一个并不存在
+    # 的并发任务（实测见 disk_budget._reserved_by_others）。
+    # 放在 params 而不是 tile_dem_task_dir 的独立参数，理由同上面的 progress_cb：
+    # 多个契约测试用 (task_dir, out_dir, params) 三参替身钉住调用形态。
+    # None 只对不经过 scheduler 的调用方成立（CLI、离线建底图脚本、测试）。
+    owner: Optional[tuple] = None
 
 
 def tile_dem_task_dir(
@@ -171,6 +184,7 @@ def tile_dem_task_dir(
         max_error_k=params.max_error_k,
         normals=params.normals,
         level_offset=params.level_offset,
+        owner=params.owner,
     )
 
     # 注入的 build_terrain_fn 返回 None（老测试替身）时归一成全 0 计数；提前到

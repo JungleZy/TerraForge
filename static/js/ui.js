@@ -8,6 +8,7 @@
  *       opts.checkbox = {label, checked} 时改 resolve {confirmed, checked}
  *   window.showNotification(message, type)     —— showToast 的别名（兼容旧调用）
  *   window.parseTaskDate(value) -> Date|null   —— 任务时间字段统一解析（裸格式按 UTC）
+ *   window.formatBytes(bytes) -> string        —— 字节 → 人类可读（1024 进制，全站唯一一份）
  *   window.initTileOrigin(tilePort) -> Promise<boolean>  —— 页面级瓦片端口探测
  *   window.tileUrl(path) -> string            —— 已探测成功时改写内部绝对路径
  */
@@ -285,6 +286,31 @@
             .replace(/'/g, '&#39;');
     }
 
+    // ---------------------------------------------------------------- bytes
+    // 字节 → 人类可读。全站唯一一份：配置页的缓存卡、任务详情的产物清单都用它。
+    //
+    // 住在 ui.js 而不是 task_center.js，是因为 /config 独立页把 base.html 的
+    // vendor_task_list_js 块覆盖成空（省掉 Vue + 三个任务脚本约 160 KB），
+    // 那一页没有 task_center.js —— 放那边就是缓存卡一片 ReferenceError。
+    // 本文件是无条件全局加载的那一档。
+    //
+    // 与 task_center.js 的 formatSpeed 刻意分成两个函数：速度是每秒重画的活
+    // 读数，≥100 取整是为了不让字宽在 99.9 ↔ 100.0 之间来回跳；文件大小是
+    // 静态读数，没有这个问题，一律留一位小数反而更准（「1.4 GB」比「1 GB」
+    // 有用）。合成一个函数再传标志位等于把这条理由藏进一个布尔参数里。
+    //
+    // 单位不翻译（B/KB/MB 中英通用），与 formatSpeed 同一条约定。
+    function formatBytes(bytes) {
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let value = Number(bytes) || 0;
+        let i = 0;
+        while (value >= 1024 && i < units.length - 1) {
+            value /= 1024;
+            i += 1;
+        }
+        return `${i === 0 ? value : value.toFixed(1)} ${units[i]}`;
+    }
+
     // ------------------------------------------------------ task timestamps
     // 后端任务时间字段（created_at/started_at/completed_at）有两种格式：
     // 新的 UTC ISO 8601（带 +00:00 时区标记）和历史遗留的 SQLite 裸格式
@@ -306,11 +332,17 @@
     // 仅内部绝对路径会改写，外部 URL、协议相对 URL 和相对路径保持原值。
     //
     // 名单必须与后端 src/core/tile_paths.py 的 TILE_PATH_PREFIXES 逐字一致
-    // （tests/test_tile_server.py 有相等性断言防漂移）：瓦片端口只放行这四条
-    // 前缀，把名单外的路径改写过去换来的是瓦片端口自己应答的**硬 404** ——
-    // 主端口上那份能用的资源根本没被请求，而探测结果整页缓存，本次会话内不会
-    // 回退。所以名单外一律 fail-open 返回原路径，走主端口，最坏只是慢。
-    const TILE_PATH_PREFIXES = ['/basemap/', '/tiles/', '/terrain/', '/contour/'];
+    // （tests/test_tile_server.py 有相等性断言防漂移，**顺序也算**）：瓦片端口
+    // 只放行这五条前缀，把名单外的路径改写过去换来的是瓦片端口自己应答的
+    // **硬 404** —— 主端口上那份能用的资源根本没被请求，而探测结果整页缓存，
+    // 本次会话内不会回退。所以名单外一律 fail-open 返回原路径，走主端口，
+    // 最坏只是慢。
+    //
+    // '/mbtiles/' 是 §5.3 的单一读路由（/mbtiles/<pipeline>/<task_id>/z/x/y.ext，
+    // 影像 / 等高线 / 将来的 MVT 全走它一条，§5.3 明确禁止按数据类型各开一条）。
+    // 它与其它四条一样是逐瓦片的高频路径，必须能落到瓦片专用端口 —— 漏了它
+    // 只会「慢」，但那个慢是每一块瓦片都多绕一次主端口。
+    const TILE_PATH_PREFIXES = ['/basemap/', '/tiles/', '/terrain/', '/contour/', '/mbtiles/'];
     const TILE_HEALTH_TIMEOUT_MS = 1000;
     let tileOrigin = '';
     let tileOriginReady = null;
@@ -364,6 +396,7 @@
     window.initConnectionStatus = initConnectionStatus;
     window.parseTaskDate = parseTaskDate;
     window.escapeHtml = escapeHtml;
+    window.formatBytes = formatBytes;
     window.initTileOrigin = initTileOrigin;
     window.tileUrl = tileUrl;
 })();

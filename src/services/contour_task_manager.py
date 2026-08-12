@@ -32,15 +32,25 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
+from src.contracts.artifact import PIPELINES
+from src.contracts.region import RegionSpec, RegionValidationError
+from src.contracts.region_tiles import count_region_tiles
+from src.contracts.reservation import ResourceKind, ResourceRequest
 from src.core.config import Config
 from src.core.database import get_connection, utc_now_iso
 from src.core.gdal_mode import pin_gdal_exception_mode
+from src.services import disk_budget
 from src.services.config_manager import ConfigManager
 from src.services.geo_validation import MAX_ZOOM, coerce_number, validate_zoom
+from src.services.resource_scheduler import get_scheduler, plan_tiling_reservation
 from src.services.task_cleanup import (fail_stranded_running_task,
                                        resolve_stored_output_dir)
+from src.services.task_logging import open_task_log
 
 logger = logging.getLogger(__name__)
+
+# 管线名从合同表取，不手写字面量（同 dem_task_manager 里那条注释的理由）。
+_PIPELINE = PIPELINES[PIPELINES.index('contour')]
 
 _ALLOWED_EXT = (".tif", ".tiff")
 
@@ -187,6 +197,36 @@ def _union_tif_extent_lonlat(
     return (north, south, east, west) if found else None
 
 
+def _derived_region_json(extent) -> str:
+    """源栅格角点反推出来的范围 → `region_spec` 列的值（§D）。
+
+    `source='derived'` 是合同里专门给这种「从源数据反推、不是用户画出来的」区域
+    留的取值。
+
+    extent 为 None（GDAL 装不上）时四至列保持历史兜底的 (0,0,0,0)，而这一列写
+    **空串**。绝不拿 (0,0,0,0) 去构造 RegionSpec：它连 __post_init__ 都过不去
+    （north <= south 与 east <= west 各撞一条），更要紧的是「零面积区域」根本
+    不是区域，写进去等于给下游一个自信的假事实。空串是合同里「这一行没有
+    RegionSpec」的正式写法 —— RegionSpec.from_row 会退回四至列，四至全 0 时返回
+    None，消费方按「没有区域信息」处理，这正是这类行应有的形态。
+
+    真实但退化的范围（单点栅格、跨界折叠成零宽）同样只警告不抛：等高线任务的
+    bbox 从来只用于历史记录的地图展示 —— 渲染范围是 warp 之后按实际覆盖算的
+    （见模块 docstring）—— 不该因为一个展示字段构造不出来就拒绝建任务。
+    """
+    if not extent:
+        return ''
+    north, south, east, west = extent
+    try:
+        return RegionSpec.from_bbox(north, south, east, west,
+                                    source='derived').to_json()
+    except RegionValidationError as e:
+        logger.warning(
+            f"源栅格反推出的范围不合法（{e}）：region_spec 留空，四至列仍按原值"
+            f"写入（只供历史记录地图展示）")
+        return ''
+
+
 def _parse_csv_floats(raw: str) -> tuple:
     parts = [x.strip() for x in str(raw).split(",") if x.strip() != ""]
     return tuple(float(x) for x in parts)
@@ -315,6 +355,13 @@ class ContourTaskManager:
         self._recover_orphan_running_tasks()
 
     def _recover_orphan_running_tasks(self) -> None:
+        """启动时把孤儿 'running' 降级成 'paused'（支持 resume_task 续跑）。
+
+        降级必须在**任务自己的**日志里留下解释（§4.5）。进程崩溃 / 断电 / 关
+        窗口是这条管线上最常发生的真实终态转移，而任务日志在崩溃那一瞬间戛然
+        而止：最后一行是某个瓦片的进度，既没有终态也没有任何解释，任务看起来
+        是凭空消失的。
+        """
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -327,11 +374,41 @@ class ContourTaskManager:
                 )
                 conn.commit()
                 logger.warning(f"Recovered orphan contour tasks (paused): {task_ids}")
+                # 上面那条 warning 只进**全局**日志。落库已提交，所以下面写日志
+                # 失败也不影响状态机 —— _log_recovery 自己兜住。
+                for tid in task_ids:
+                    self._log_recovery(
+                        tid, 'paused',
+                        '进程在本任务渲染期间退出（崩溃 / 断电 / 关窗口）：重启时'
+                        '发现库里还写着 running 而没有任何线程，已降级为 paused。'
+                        '已渲好的瓦片都在，点「恢复」重新起渲染（warp 中间产物由'
+                        '启动清扫回收，会重做一次预处理）。')
         except Exception as e:
             logger.error(f"Failed to recover contour orphan tasks: {e}")
             conn.rollback()
         finally:
             conn.close()
+
+    def _log_recovery(self, task_id: int, status: str, note: str) -> None:
+        """把一次「启动时孤儿恢复」写进**这个任务自己的**日志。绝不抛。
+
+        绝不抛是硬要求：调用点在 `__init__` 里，一个次要 sink 的环境问题没有
+        资格让整个 ContourTaskManager 构造不出来 —— 那等于一条日志写不动就让
+        服务起不来（同 `open_task_log` 类 docstring 的论证）。
+
+        句柄短命（开 → 写 → 关）：`open_task_log` 会摘掉同 (pipeline, task_id)
+        的遗留 handler，留着不关会让后续真正跑起来的那一轮写到已轮转走的
+        inode。恢复跑在 `__init__`，此刻没有任何任务线程持有句柄，不存在互抢。
+        """
+        try:
+            tlog = open_task_log(_PIPELINE, task_id)
+            try:
+                tlog.event('terminal', status=status, reason='process_restart')
+                tlog.warning('%s', note)
+            finally:
+                tlog.close()
+        except Exception as e:
+            logger.warning(f"Contour task {task_id}: 孤儿恢复日志写入失败（忽略）: {e!r}")
 
     def _normalize_render_params(
         self,
@@ -472,6 +549,7 @@ class ContourTaskManager:
             extent = _union_tif_extent_lonlat(
                 saved, display_names=[f.filename for f in valid])
             north, south, east, west = extent if extent else (0.0, 0.0, 0.0, 0.0)
+            region_spec = _derived_region_json(extent)
             if auto_zoom_max:
                 # 最高层级按 DEM 原始分辨率自动计算；读不出分辨率时用兜底默认值
                 px = _finest_pixel_size_3857(saved)
@@ -489,13 +567,14 @@ class ContourTaskManager:
                         zoom_min, zoom_max, output_path,
                         line_color_intermediate, line_color_index, tint_breaks, tint_colors,
                         total_files, downloaded_files, failed_files,
-                        total_tiles, rendered_tiles, failed_tiles
+                        total_tiles, rendered_tiles, failed_tiles,
+                        region_spec
                     )
-                    VALUES (?, 'pending', ?, ?, ?, ?, 'upload', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
+                    VALUES (?, 'pending', ?, ?, ?, ?, 'upload', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?)
                     """,
                     (name, north, south, east, west, interval, background, shade, zoom_min,
                      zoom_max, output_path, line_mid, line_idx, tint_breaks, tint_colors,
-                     len(valid), len(staged)),
+                     len(valid), len(staged), region_spec),
                 )
                 task_id = cur.lastrowid
 
@@ -589,6 +668,7 @@ class ContourTaskManager:
         # bbox 只用于历史记录地图展示，读不出保持 0（同上传路径）。
         extent = _union_tif_extent_lonlat(tifs)
         north, south, east, west = extent if extent else (0.0, 0.0, 0.0, 0.0)
+        region_spec = _derived_region_json(extent)
         if render["auto_zoom_max"]:
             # 最高层级按 DEM 原始分辨率自动计算；读不出分辨率时用兜底默认值
             px = _finest_pixel_size_3857(tifs)
@@ -610,14 +690,15 @@ class ContourTaskManager:
                     line_color_intermediate, line_color_index, tint_breaks, tint_colors,
                     source_dem_task_id,
                     total_files, downloaded_files, failed_files,
-                    total_tiles, rendered_tiles, failed_tiles
+                    total_tiles, rendered_tiles, failed_tiles,
+                    region_spec
                 )
-                VALUES (?, 'pending', ?, ?, ?, ?, 'dem_task', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
+                VALUES (?, 'pending', ?, ?, ?, ?, 'dem_task', ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?)
                 """,
                 (name, north, south, east, west, render["interval"], render["background"],
                  render["shade"], zoom_min, zoom_max, output_path, render["line_mid"],
                  render["line_idx"], render["tint_breaks"], render["tint_colors"],
-                 dem_task_id, len(tifs), len(tifs)),
+                 dem_task_id, len(tifs), len(tifs), region_spec),
             )
             task_id = cur.lastrowid
 
@@ -646,18 +727,96 @@ class ContourTaskManager:
 
     def start_task(self, task_id: int) -> None:
         conn = get_connection()
+        reservation = None
+        owner = (_PIPELINE, task_id, 'render')
         try:
             cur = conn.cursor()
             with self._state_lock:
                 active = self.active_tasks.get(task_id)
                 if active and active.is_alive():
                     raise ValueError(f"Contour task {task_id} is already running")
-                cur.execute("SELECT status FROM contour_tasks WHERE id=?", (task_id,))
+                cur.execute(
+                    "SELECT status, zoom_min, zoom_max, north, south, east, west, "
+                    "region_spec, output_path FROM contour_tasks WHERE id=?", (task_id,))
                 row = cur.fetchone()
                 if not row:
                     raise ValueError(f"Contour task {task_id} not found")
                 if row["status"] not in ("pending", "paused"):
                     raise ValueError(f"Cannot start contour task {task_id} with status '{row['status']}'")
+
+                # ---- 准入：磁盘预算 + 全局配额。夹在状态闸门与 UPDATE 之间 ----
+                # 拒在 UPDATE 之前不需要任何回补（行还停在 pending/paused）。
+                # 落库之后再拒就得走下面那个 L2 回退块，多一条分支就多一次机会
+                # 把任务留在「DB 是 running、线程从未启动」的状态里。
+                sums = cur.execute(
+                    "SELECT COALESCE(SUM(size_bytes), 0) AS n FROM contour_files "
+                    "WHERE task_id=? AND kind='dem'", (task_id,)).fetchone()
+                source_bytes = int(sums["n"] or 0)
+                # 瓦片数按区域 × 层级区间算。region_spec 为空的存量行由
+                # RegionSpec.from_row 退回四至列；四至是 (0,0,0,0) 的历史行返回
+                # None，此时按 0 张算 —— 估算退化成「只有 warp 工作区」那一半，
+                # 仍然比没有预检好（warp 产物才是这条管线真正的大头）。
+                region = RegionSpec.from_row(row)
+                tile_count = 0
+                if region is not None:
+                    try:
+                        tile_count = count_region_tiles(
+                            region, int(row["zoom_min"]), int(row["zoom_max"]))
+                    except ValueError as e:
+                        # 层级区间脏（存量行 zoom_max < zoom_min）不该拦住起任务：
+                        # 真正的区间校验在渲染引擎里，这里只是估算。
+                        logger.warning(
+                            f"Contour task {task_id}: 瓦片数估算跳过（{e}）")
+                estimate = disk_budget.estimate_contour_task(source_bytes, tile_count)
+                output_dir = (resolve_stored_output_dir(row["output_path"])
+                              / f"contour_task_{task_id}")
+                verdict = disk_budget.check_budget(output_dir, estimate, self.config)
+                logger.info(
+                    f"Contour task {task_id} 磁盘预检（源 "
+                    f"{source_bytes / (1024 * 1024):.0f} MiB，约 {tile_count} 瓦片）："
+                    f"{verdict.reason}")
+                if not verdict.ok:
+                    raise ValueError(verdict.reason)
+
+                try:
+                    requested_workers = int(self.config.get("contour_workers", "0") or 0)
+                except (TypeError, ValueError):
+                    requested_workers = 0
+                scheduler = get_scheduler()
+                if requested_workers <= 0:
+                    # contour_workers = 0 是「自动挡」。照字面要 1 会把渲染压成
+                    # 串行 —— 那是行为回退，不是限流。自动挡按调度器的 CPU 上限
+                    # 要，让全局配额去分；max_cpu_workers 出厂为 0 时那个上限就是
+                    # min(4, cpu_count)，与改造前 contour_engine 的自动挡同值。
+                    requested_workers = scheduler.limits().get(ResourceKind.CPU_WORKER, 1)
+                # 这里**没有**「先按 owner 键回收一张同名凭据」那一步，是刻意的：
+                # 那种写法能把一张还在服役的凭据摘掉（缺陷形态见 release_owner 的
+                # docstring），而它声称要防的泄漏在这条路径上并不存在 —— 上面的
+                # is_alive() 闸门证明没有活线程，而线程侧的归还写在 _run_task 的
+                # finally 里、**先于**它把自己从 active_tasks 摘掉，所以「线程已
+                # 不在册」蕴含「凭据已归还」。真出现重复 owner 只可能是另有 bug，
+                # 那时 reserve 会当场 ValueError 说清楚，而不是让我们悄悄吊销一份
+                # 别人正在用的配额。
+                reservation = scheduler.reserve(
+                    owner,
+                    plan_tiling_reservation(requested_workers) + [
+                        # DISK_BYTES 全额或不给，minimum 必须等于 requested。
+                        # 预留是为了让**别的**任务看得见这一份：check_budget 的
+                        # 判决本身对并发任务不可见（disk_budget 模块 docstring）。
+                        ResourceRequest(kind=ResourceKind.DISK_BYTES,
+                                        requested=verdict.required_bytes,
+                                        minimum=verdict.required_bytes)],
+                )
+                if reservation is None:
+                    free = scheduler.snapshot()['available']
+                    raise ValueError(
+                        f"Contour task {task_id} cannot start now: the global resource "
+                        f"budget is saturated (free task_slot={free.get('task_slot')}, "
+                        f"cpu_worker={free.get('cpu_worker')}, "
+                        f"gdal_slot={free.get('gdal_slot')}). Wait for a running task "
+                        f"to finish, or raise max_concurrent_tasks / max_cpu_workers / "
+                        f"max_gdal_slots in Settings.")
+
                 cur.execute(
                     "UPDATE contour_tasks SET status='running', started_at=? WHERE id=? AND status IN ('pending','paused')",
                     (utc_now_iso(), task_id),
@@ -667,7 +826,8 @@ class ContourTaskManager:
                 conn.commit()
                 stop_flag = threading.Event()
                 self.stop_flags[task_id] = stop_flag
-                th = threading.Thread(target=self._run_task, args=(task_id, stop_flag),
+                th = threading.Thread(target=self._run_task_entry,
+                                      args=(task_id, stop_flag, reservation),
                                       daemon=True, name=f"ContourTask-{task_id}")
                 self.active_tasks[task_id] = th
             try:
@@ -687,7 +847,13 @@ class ContourTaskManager:
                 )
                 conn.commit()
                 raise
+            # 交接完成：配额已经在线程手里，本方法的 finally 不该再碰它。
+            reservation = None
         finally:
+            # 线程没接手（任何一条抛出路径）就在这里还回去。release 幂等，与线程
+            # 侧那次归还不会互相踩。
+            if reservation is not None:
+                reservation.release()
             conn.close()
 
     def pause_task(self, task_id: int) -> None:
@@ -782,14 +948,47 @@ class ContourTaskManager:
         finally:
             conn.close()
 
-    def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
-        failure = None
+    def _run_task_entry(self, task_id: int, stop_flag: Optional[threading.Event] = None,
+                        reservation=None) -> None:
+        """渲染线程的**真正**入口：配额的归还挂在线程上，不挂在 _run_task 里面。
+
+        TASK_SLOT 泄漏一份就永久少一个全局任务名额（进程重启才清），表现是
+        「所有管线突然都起不了任务，日志里一句话都没有」。_run_task 自己的
+        finally 已经归还一次，这一层兜的是它够不着的形态 —— 被子类/替身换掉，
+        或者在 finally 之外炸出 BaseException。release 幂等，两处都跑不会还两次。
+        """
         try:
-            asyncio.run(self._execute(task_id, stop_flag))
+            self._run_task(task_id, stop_flag, reservation=reservation)
+        finally:
+            # 只归还**交接给这个线程的那一张**。按 owner 键归还会在「暂停后立刻
+            # 恢复」这种最普通的操作里吊销新一轮的凭据：本线程收尾与新一轮 reserve
+            # 之间的窗口可长达数十秒（fail_stranded_running_task 会新开一条
+            # busy_timeout=30s 的 sqlite 连接）。身份比较之下，迟到的这一次返回 0。
+            if reservation is not None:
+                get_scheduler().release_owner(
+                    (_PIPELINE, task_id, 'render'), reservation)
+
+    def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None,
+                  reservation=None) -> None:
+        failure = None
+        # 每任务日志（§4.5）。open_task_log 永不返回 None、所有方法都不抛。
+        tlog = open_task_log(_PIPELINE, task_id)
+        try:
+            granted = reservation.granted if reservation is not None else {}
+            tlog.event('task_start', pipeline=_PIPELINE, task_id=task_id,
+                       **{kind.value: n for kind, n in granted.items()})
+            asyncio.run(self._execute(
+                task_id, stop_flag, tlog=tlog,
+                workers=(reservation.cpu_workers if reservation is not None else None)))
         except Exception as e:
             logger.error(f"Contour task {task_id} thread failed: {e}")
+            # 终态原因必须落在这个任务自己的日志里 —— 用户点开的是任务详情。
+            tlog.exception(f"等高线渲染线程异常退出: {e}")
             failure = e
         finally:
+            # 配额与线程登记同生共死，所以在同一个 finally 里还。
+            if reservation is not None:
+                reservation.release()
             with self._state_lock:
                 deregistered = (
                     self.active_tasks.get(task_id) is threading.current_thread())
@@ -799,11 +998,34 @@ class ContourTaskManager:
                     self.stop_flags.pop(task_id, None)
             if deregistered:
                 # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的 docstring）。
-                fail_stranded_running_task(
-                    'contour_tasks', task_id,
-                    f'线程异常: {failure}' if failure is not None else '')
+                stranded_reason = f'线程异常: {failure}' if failure is not None else ''
+                if fail_stranded_running_task('contour_tasks', task_id, stranded_reason):
+                    # 只在**真的改了行**（running → failed）时补这一笔。那个
+                    # helper 只写全局日志，而 §4.5 的门槛是「任何终态都能从
+                    # **任务自己的**日志解释原因」—— 没有下面两行，任务日志的
+                    # 最后一句是 `EVENT task_thread_exit`，库里却写着 failed，
+                    # 两份记录当面打架，排查无从下手。看返回值而不是猜：正常收尾
+                    # 时那条带 `WHERE status='running'` 的 UPDATE 是无害的 no-op，
+                    # 那种情况下多写一句「已判 failed」比不写更糟。
+                    tlog.event('terminal', status='failed', reason='thread_stranded',
+                               detail=stranded_reason or 'worker exited without settling the row')
+                    tlog.error(
+                        '线程退出时任务行仍停在 running，已由兜底判为 failed：%s',
+                        stranded_reason or 'worker 没有走到任何终态写入')
+            tlog.event('task_thread_exit', failure=str(failure) if failure else '')
+            tlog.close()
 
-    async def _execute(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
+    async def _execute(self, task_id: int, stop_flag: Optional[threading.Event] = None,
+                       *, tlog=None, workers: Optional[int] = None) -> None:
+        """执行一个等高线任务。
+
+        tlog / workers 是 keyword-only 且可缺省：十几个契约测试直接
+        `asyncio.run(mgr._execute(task_id, None))` 调它，测的是状态机与进度
+        节流，不该被这两个新参数逼着改签名。缺省时 tlog 退化成只写全局日志的
+        句柄，workers 退回读 contour_workers 配置（也就是改造前的行为）。
+        """
+        if tlog is None:
+            tlog = open_task_log(_PIPELINE, task_id)
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -873,6 +1095,15 @@ class ContourTaskManager:
             pending_count = counts["pending_count"] or 0
             if failed_count > 0 or pending_count > 0:
                 msg = f"{failed_count} DEM file(s) failed, {pending_count} pending"
+                # 终态的原因必须落在**这个任务自己的**日志里：用户点开的是任务
+                # 详情，不是全局 terraforge.log。「源 DEM 没下全」正是这条管线最
+                # 常见的真实失败，而这里原本一行 tlog 都没有 —— 任务日志的最后
+                # 一句会是 `EVENT thread_finished failed=False`，与行上的 failed
+                # 正面打架，用户拿不到任何解释。本文件其余终态（无瓦片、执行异常、
+                # completed）与 DEM 侧的同一分支都有这两行，这里是唯一的缺口。
+                tlog.error('等高线任务终态 failed：%s', msg)
+                tlog.event('terminal', status='failed', failed=failed_count,
+                           pending=pending_count)
                 cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status='running'",
                             (msg, utc_now_iso(), task_id))
                 conn.commit()
@@ -983,13 +1214,48 @@ class ContourTaskManager:
                 logger.info(f"Contour task {task_id}: 进入渲染阶段, 预计 {total_tiles} 瓦片")
                 render_progress(0, total_tiles)
 
-                try:
-                    workers = int(self.config.get("contour_workers", "0") or 0)
-                except (TypeError, ValueError):
-                    workers = 0
+                # worker 数：调度器授予多少就开多少。此前这里把 contour_workers
+                # 配置直接交给引擎，于是**每个任务各自** min(4, cpu_count)，两个
+                # 等高线任务并行就是 8 个重型 worker（每个都要加载
+                # GDAL+matplotlib+numpy 并 mmap warp 后的 DEM），全局上限形同虚设。
+                # workers is None = 直调 _execute 的契约测试，退回配置读法。
+                if workers is None:
+                    try:
+                        workers = int(self.config.get("contour_workers", "0") or 0)
+                    except (TypeError, ValueError):
+                        workers = 0
+                # ---- 运行中磁盘复查（§4.2）------------------------------------
+                # 准入时 start_task 做过一次 check_budget，但那是**任务排队之前**
+                # 的一张快照：warp 加渲染动辄几十分钟，这期间别的任务、别的进程、
+                # 用户自己拷东西都能把盘吃掉。不复查的话终点是写瓦片时 ENOSPC，
+                # 而用户看到的只是一句 I/O error。
+                #
+                # 剩余工作量只算**没渲的瓦片**：warp 产物与它的金字塔在渲染开始
+                # 前就已经落盘，再算一遍等于把已占用的空间又要求一次，跑到后半程
+                # 必然误判（recheck_remaining 的 docstring）。所以 source_bytes 传 0。
+                def _remaining_estimate():
+                    pending = max(0, int(render_state["total"]) - int(render_state["done"]))
+                    if pending == 0:
+                        # total 还没被引擎报上来（上传任务建任务时写死 0），
+                        # 或者已经渲完了：这一轮没有可估的剩余工作量。
+                        return None
+                    return disk_budget.estimate_contour_task(0, pending)
+
+                recheck = disk_budget.RunningRecheck(
+                    output_dir / "contour_tiles", _remaining_estimate,
+                    owner=(_PIPELINE, task_id, 'render'), config_manager=self.config,
+                    # 通过与否都记一行：估算错的时候第一件事就是回头看这行的数字。
+                    on_verdict=lambda v: tlog.event(
+                        'disk_recheck', ok=v.ok, free=v.free_bytes,
+                        required=v.required_bytes, shortfall=v.shortfall_bytes,
+                        reason=v.reason))
                 params = ContourParams(interval=interval, zoom_min=zoom_min, zoom_max=zoom_max,
                                        style=style, shade=bool(task["terrain_shade"]), water=want_water,
-                                       workers=workers)
+                                       workers=workers, disk_recheck=recheck)
+                tlog.event('stage', name='render', zoom_min=zoom_min, zoom_max=zoom_max,
+                           interval=interval, shade=bool(task["terrain_shade"]),
+                           water=want_water, workers=workers or 'auto',
+                           out_dir=str(output_dir / "contour_tiles"))
                 # 渲染开始之前的准备阶段（warp 到 3857、建金字塔）。它跑在 total
                 # 算出来之前 —— 上传任务的 total_tiles 建任务时写死为 0，于是界面
                 # 在整个 warp 期间显示「0 / 0 瓦片 · 0%」不动，看起来像卡死。
@@ -1037,7 +1303,43 @@ class ContourTaskManager:
             finally:
                 progress_conn.close()
 
+            tlog.event('tiles', rendered=render_counts.get("rendered", 0),
+                       failed=render_counts.get("failed", 0),
+                       skipped=render_counts.get("skipped", 0),
+                       total=render_counts.get("total", 0))
+            if recheck.blocked is not None:
+                # 盘在渲染途中不够了。引擎已经按停止标记那条路径干净收手（已渲的
+                # 瓦片都留着），这里补上状态与**原因** —— 只收手不写原因的话，
+                # 用户看到的是一个没有任何解释的 paused。
+                #
+                # 落 paused 而不是 failed：failed 不在 start_task 的准入白名单
+                # （'pending','paused'）里，判成 failed 等于「腾出空间也点不动
+                # 恢复」，把一个可恢复的处境变成死局。
+                reason = recheck.blocked.reason
+                tlog.event('terminal', status='paused', reason='disk_budget',
+                           shortfall=recheck.blocked.shortfall_bytes, detail=reason)
+                tlog.error('磁盘空间在渲染途中不够了，任务已暂停：%s', reason)
+                logger.warning(f"Contour task {task_id} paused by the disk recheck: {reason}")
+                cur.execute(
+                    "UPDATE contour_tasks SET status='paused', error_message=? "
+                    "WHERE id=? AND status='running'",
+                    (reason, task_id),
+                )
+                conn.commit()
+                if cur.rowcount and self.socketio:
+                    try:
+                        self.socketio.emit("task_paused", {
+                            "task_id": task_id, "task_type": "contour",
+                            "status": "paused", "error_message": reason})
+                    except Exception as emit_error:
+                        logger.warning(
+                            f"Contour task {task_id}: emit task_paused failed "
+                            f"(ignored): {emit_error}")
+                return
+
             if stop_flag and stop_flag.is_set():
+                tlog.event('terminal', status='stopped',
+                           reason='stop flag set (pause or delete)')
                 return
             # 列语义收尾:rendered_tiles/failed_tiles 落回真实渲染/失败数
             # (渲染期间 rendered_tiles 暂存的是 processed 进度,见 render_progress)。
@@ -1050,6 +1352,8 @@ class ContourTaskManager:
             )
             if render_counts.get("rendered", 0) == 0:
                 msg = "No contour tiles rendered (check DEM coverage / interval / zoom range)"
+                tlog.error('等高线任务终态 failed：%s', msg)
+                tlog.event('terminal', status='failed', reason=msg)
                 cur.execute("UPDATE contour_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status='running'",
                             (msg, utc_now_iso(), task_id))
                 conn.commit()
@@ -1066,14 +1370,20 @@ class ContourTaskManager:
                     f"Contour task {task_id}: {failed_tiles} 个瓦片渲染失败 "
                     f"(rendered={render_counts.get('rendered', 0)}, total={render_counts.get('total', 0)}),切片可能不完整"
                 )
+                tlog.warning('%d 个瓦片渲染失败，切片可能不完整', failed_tiles)
 
             cur.execute("UPDATE contour_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'",
                         (utc_now_iso(), task_id))
             conn.commit()
+            tlog.event('terminal', status='completed',
+                       rendered=render_counts.get("rendered", 0),
+                       failed=failed_tiles)
             if cur.rowcount and self.socketio:
                 self.socketio.emit("task_completed", {"task_id": task_id, "task_type": "contour", "status": "completed"})
 
         except Exception as e:
+            tlog.exception('等高线任务终态 failed（执行异常）：%s', e)
+            tlog.event('terminal', status='failed', reason=str(e))
             try:
                 cur = conn.cursor()
                 # 'completed' 也要排除:上面的 emit("task_completed") 抛异常时会

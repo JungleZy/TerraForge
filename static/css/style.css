@@ -1304,9 +1304,9 @@ html[lang="en"] .map-panel-btn {
    1px 发丝线（落在分组头/分页条之前）是可接受的代价。 */
 
 /* 状态点：8px 圆点承担状态识别（与小字状态文本一起，替代原徽章 pill）。
-   五态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
+   八态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
    「任务还活着」的唯一动效信号（动画降噪时刻意保留的那一类）。
-   兜底色是品牌色 var(--color-accent)：五态各有专属规则，落到兜底 = 有态
+   兜底色是品牌色 var(--color-accent)：八态各有专属规则，落到兜底 = 有态
    没写规则（测试会红）；不能用中性灰当兜底——那会让缺规则的态冒充 pending。 */
 .task-dot {
     width: 8px;
@@ -1337,6 +1337,33 @@ html[lang="en"] .map-panel-btn {
    只有 3.09:1，紧贴 3:1 下限。 */
 .task-row.status-pending .task-dot {
     background: var(--color-text-secondary);
+}
+
+/* §13-3 新增三态。颜色刻意与既有档位共用（retrying=info、其余两态=warning），
+   理由与 !important 预算见 static/js/task_status.js 的说明。
+
+   retrying 刻意**不带 pulse**：脉冲是「这一行还在动」的信号，而
+   `.task-row.status-running .task-dot` 是 style.css 里唯一一条无限循环动画，
+   prefers-reduced-motion 那一块（选择器 `*`，特异度 0,0,0）靠 !important
+   才压得住它。再加一个循环动画就是再加一个必须被压住的上下文，而 retrying
+   与 running 在界面上永远不会同屏对比（同一个任务先后两态），少一个脉冲
+   不损失任何信息 —— 状态小字已经写着「补漏中」。 */
+.task-row.status-retrying .task-dot {
+    background: var(--color-info);
+}
+
+/* pending_decision 与 paused 同色是刻意的：两者都是「停下来等你操作」。
+   区分它们的不是颜色而是行2 —— paused 是一根静止的进度条，
+   pending_decision 是缺口分档读数加两颗决策按钮。 */
+.task-row.status-pending_decision .task-dot {
+    background: var(--color-warning);
+}
+
+/* completed_with_gaps 用 warning 而**不是** success：产物带洞是必须被看见的
+   事实。行1 另有常驻的 .task-gap-chip 写着具体缺了多少块 —— 这一态的信息
+   不靠颜色单独承担（WCAG 1.4.1）。 */
+.task-row.status-completed_with_gaps .task-dot {
+    background: var(--color-warning);
 }
 
 /* 失败行**不铺底色**（沿用 2026-08 扁平化结论）：整行红洗 + 红框错误框
@@ -1500,6 +1527,385 @@ html[lang="en"] .map-panel-btn {
 /* 错误文本直接作失败行的行2（.task-row.status-failed > .task-error），
    不再有独立的 .task-error-row 兄弟节点——单一时间流里每种状态变体
    都是同一颗 .task-row 内部的两行。 */
+
+/* ==========================================================================
+   缺口（§13-3）：行内徽章 + pending_decision 的决策行 + 详情弹窗的明细
+
+   为什么缺口一定要有**常驻**的数字徽章：completed_with_gaps 的产物是可用的，
+   用户会拿它去做后续处理、去发布。如果这一态只靠状态点的颜色和一句状态小字
+   区分，几个月后回到历史列表时，「已完成」和「已完成（有缺口）」在扫视中
+   完全一样 —— 而两者的差别是「这张图缺了 1.2 万块瓦片」。
+   所以徽章带**数字**，出现在它能出现的每一处：任务行、详情弹窗、预览提示条。
+   ========================================================================== */
+.task-gap-chip {
+    flex: 0 0 auto;
+    padding: 0 0.4rem;
+    border-radius: var(--radius-pill);
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--font-size-xs);
+    white-space: nowrap;
+}
+
+/* pending_decision 的行2：它**不是**进度行 —— 任务没在推进，等的是一个决定。
+   所以这里没有进度条：一根静止的条只会让人以为「还在跑，再等等」。
+   左侧一条 2px 琥珀边条与失败行的红边条同形态语言（引文式，不铺底色），
+   把「这一行需要你」从一屏常规行里挑出来。 */
+.task-gap-line {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.375rem;
+    padding: 0.125rem 0 0.125rem 0.625rem;
+    border-left: 2px solid var(--color-warning);
+}
+
+/* 分档读数（「无数据 1,200 · 可重试 30」）。等宽 + 超宽省略：分档最多四段，
+   窄面板下必须让位给右侧两颗按钮，而按钮是这一行存在的理由。 */
+.task-gap-breakdown {
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 两颗决策按钮贴右。margin-left:auto 吃掉分档读数与它们之间的余量。 */
+.task-gap-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 0.25rem;
+    flex: 0 0 auto;
+}
+
+/* 详情弹窗的缺口明细：总数 + 分档 + 决策按钮 + 样本行。
+   样本刻意限高滚动：后端最多给 20 条，全铺开会把弹窗其余内容顶到折叠线以下。 */
+.detail-gaps {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: var(--font-size-sm);
+}
+
+.detail-gap-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.detail-gap-note {
+    color: var(--color-text-secondary);
+}
+
+/* 「全部缺口都是上游无数据」= 补漏不会有任何收获，这句话决定用户点哪颗按钮，
+   所以它用琥珀色而不是弱化灰 —— 它是结论，不是脚注。 */
+.detail-gap-note--explained {
+    color: var(--color-warning);
+}
+
+.detail-gap-samples {
+    max-height: 168px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 0.375rem 0.5rem;
+}
+
+.detail-gap-sample {
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ==========================================================================
+   详情弹窗的产物清单（§13-3 / §5.3）
+
+   长相刻意与上面的缺口明细同源（同字号、同 gap、同 note 三档配色、同等宽
+   诊断框）—— 弹窗里「一组运行期事实」只该有一种长相。缺块标记直接复用
+   .task-gap-chip：同一件事在界面上只有一个符号，用户不用学第二个。
+   一条新颜色都没有引入：note 用 --color-text-secondary，问题行用
+   --color-warning，与 .detail-gap-note / --explained 是同一对。
+   ========================================================================== */
+.detail-artifacts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-size: var(--font-size-sm);
+}
+
+/* 条目之间用分隔线而不是卡片：一个任务最多几件产物，套卡片是在弹窗里
+   再嵌一层框（卡中卡），信息密度反而更低。第一条不画线。
+   分隔线由 history.js 给第 2 件起的条目加 --sep 决定，**不用** `+` 兄弟组合符
+   —— tests/test_css_contract.py 的几套层叠模型只认后代组合符，其余组合符会让
+   整节断言判「模型已失效」。同一条约定的先例是 .tif-info__file--sep。 */
+.detail-artifact--sep {
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--color-border);
+}
+
+.detail-artifact-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.detail-artifact-kind {
+    color: var(--color-text-primary);
+}
+
+/* 格式 · 大小 · 块数 · 层级。等宽 + tabular-nums：几件产物竖着排时数字要对齐，
+   否则「818 块」和「1,204 块」的位数差会让整列看着是歪的。 */
+.detail-artifact-facts {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+/* 绝对路径。允许折行而不是省略号：用户看这一行就是为了照着去找文件，
+   截断成 /home/…/tiles 等于没写。 */
+.detail-artifact-path {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    word-break: break-all;
+}
+
+.detail-artifact-note {
+    color: var(--color-text-secondary);
+}
+
+/* 「体检发现 N 个问题」用琥珀而不是红：判决**不阻断导出**，文件通常照样能用
+   （见 artifact_export 收尾处的说明）。用 --color-danger 会把一份可用的成品
+   说成坏的，用弱化灰又会让它沉进背景 —— 与 .detail-gap-note--explained 同一档。 */
+.detail-artifact-note--problem {
+    color: var(--color-warning);
+}
+
+/* 校验器的英文诊断原文。与 .detail-gap-samples 同一个框：都是「照抄后端、
+   可能很长、用户会整段复制走」的技术文本。限高滚动同理。 */
+.detail-artifact-problems {
+    max-height: 120px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 0.375rem 0.5rem;
+}
+
+.detail-artifact-problem {
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ==========================================================================
+   任务日志查看器（REST 轮询，见 base.html 里那段注释解释为什么不是 socket）
+   ========================================================================== */
+.task-log {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.task-log__toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+/* 「仅错误」开关贴左、复制/下载贴右：读日志时先决定看什么，再决定拿走什么。 */
+.task-log__tools {
+    margin-left: auto;
+    display: flex;
+    gap: 0.25rem;
+}
+
+/* 日志正文。等宽 + pre-wrap：里面全是路径、URL、状态码与 traceback 片段，
+   比例字体会让对齐彻底消失，而 nowrap + 横向滚动会让长路径永远看不到尾。
+   限高 240px 并**不**自动滚到底：用户打开这一块通常是为了看**开头**那条
+   「为什么开始出错」，自动跳到尾等于每次都要手动滚回去。 */
+.task-log__body {
+    max-height: 240px;
+    overflow-y: auto;
+    margin: 0;
+    padding: 0.5rem 0.625rem;
+    background: var(--color-bg-tertiary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    line-height: 1.55;
+    color: var(--color-text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.task-log__line {
+    display: block;
+}
+
+/* 级别只改**文字色**，不铺底色：一屏日志里错误行常常连着十几条，整段红底
+   会把正文压得读不出来，而红字已经足够在扫视中跳出来。 */
+.task-log__line--error {
+    color: var(--color-danger);
+}
+
+.task-log__line--warning {
+    color: var(--color-warning);
+}
+
+.task-log__empty {
+    color: var(--color-text-secondary);
+}
+
+/* ==========================================================================
+   地点搜索浮层（§5.1）
+
+   为什么不做成工具条里的输入框：工具条是 34px 宽的竖排图标胶囊（英文界面下
+   按内容伸展），塞不进一个能看清地名的文本框。这里把面板挂在工具条**右侧**，
+   `left: 100%` 相对分组外层的包裹元素定位 —— 中英文下工具条宽度不同，
+   写死像素偏移必然在其中一种语言下压住或离开工具条。
+   包裹元素是 .map-panel-triggers 的**兄弟**而不是子元素：那个类带
+   `overflow: hidden`（用来裁圆角），装在里面会被整块裁掉。
+   ========================================================================== */
+.map-toolbar-region {
+    position: relative;
+}
+
+.place-search {
+    position: absolute;
+    left: 100%;
+    top: 0;
+    margin-left: 8px;
+    width: 260px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+.place-search__results {
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+}
+
+/* 结果行是 <button>：天生可 Tab 可 Enter。左对齐、两行信息（地名 + 类型/所属
+   行政区），不做居中 —— 地名长度差异很大，居中会让整列看起来在抖。 */
+.place-search__item {
+    display: block;
+    width: 100%;
+    padding: 0.375rem 0.5rem;
+    border: none;
+    border-bottom: 1px solid var(--color-border);
+    background: none;
+    text-align: left;
+    color: var(--color-text-primary);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+}
+
+.place-search__item:hover {
+    background: var(--color-accent-muted);
+}
+
+.place-search__meta {
+    display: block;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+/* 地理编码器未配置时的提示。**不隐藏控件**：静默消失会让用户以为这个功能
+   不存在，而它只是没配地址。这条提示点名 geocoder_url，用户照着去配置页就能开。 */
+.place-search__hint {
+    padding: 0.25rem 0.125rem;
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+/* ==========================================================================
+   区域（导入的多边形）在范围浮层里的读数（§5.1）
+   ========================================================================== */
+
+/* 「多边形 ×2 · 孔洞 3 · 跨反经线」—— 导入区域与矩形选区的**关键差别**，
+   而这些差别决定下载多少瓦片。放在四至读数上方一行：用户看四至之前就该知道
+   这不是一个矩形。 */
+.bounds-region {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.375rem;
+}
+
+.bounds-region__name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-text-primary);
+}
+
+.bounds-region__facts {
+    font-family: var(--font-mono);
+    color: var(--color-accent);
+}
+
+/* ==========================================================================
+   瓦片源向导（§6.2）：一条真实瓦片 URL -> {z}/{x}/{y} 模板
+   ========================================================================== */
+.tile-url-wizard {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    margin-bottom: 0.5rem;
+}
+
+.tile-url-wizard__row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+/* 向导给出的模板与警告。警告**逐字**显示服务端原文（凭据外泄、x/y 顺序猜的、
+   TMS 疑似 —— 每一条都可能让用户下出一整套错位的图），所以它不是弱化脚注：
+   琥珀色、左边条，与缺口决策行同一形态语言。 */
+.tile-url-wizard__warnings {
+    padding: 0.25rem 0 0.25rem 0.625rem;
+    border-left: 2px solid var(--color-warning);
+    color: var(--color-warning);
+    font-size: var(--font-size-sm);
+    line-height: 1.55;
+}
+
+.tile-url-wizard__warning {
+    display: block;
+    word-break: break-word;
+}
+
+.tile-url-wizard__template {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-primary);
+    word-break: break-all;
+}
 
 /* 分组头（活动 (N) / 失败 (N) / 历史）已随「活动/失败/历史」三分区
    整体删除（2026-08 单一时间流定稿）：无分组头、无折叠，自然也没有

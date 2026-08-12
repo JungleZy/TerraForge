@@ -1,11 +1,13 @@
 """瓦片路径前缀白名单 —— **唯一一份**，三个消费者都从这里取。
 
-这四条是「浏览地图」直接产生的高频请求：
+这五条是「浏览地图」直接产生的高频请求：
 
   /basemap  底图转发(routes/basemap_static.py)
   /tiles    地图下载任务的瓦片(routes/tiles_static.py)
   /terrain  地形瓦片与全球底座(routes/terrain_static.py)
   /contour  等高线瓦片(routes/contour_static.py)
+  /mbtiles  MBTiles 容器里的瓦片(routes/mbtiles_static.py)——影像/等高线/未来的
+            MVT **共用这一条**路由，按 pipeline 分路而不是按数据类型各开一条。
 
 消费者与漏改一处的后果：
 
@@ -28,4 +30,6 @@ logging_setup 在 app.py 里被刻意排在重量级 import(flask/GDAL)**之前*
 
 # 判定一律用前缀而不是路由名：日志过滤器只拿得到一行文本、WSGI 包装层只拿得到
 # PATH_INFO，两处都没有 Flask 的路由对象。
-TILE_PATH_PREFIXES = ('/basemap/', '/tiles/', '/terrain/', '/contour/')
+# 顺序即 static/js/ui.js 里那份镜像的顺序 —— 相等性断言逐字比较，新增一律追加
+# 在末尾，不要为了「看起来整齐」重排（重排会让两侧在同一次提交里必须同步改）。
+TILE_PATH_PREFIXES = ('/basemap/', '/tiles/', '/terrain/', '/contour/', '/mbtiles/')

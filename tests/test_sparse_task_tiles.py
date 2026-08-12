@@ -21,6 +21,22 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
+from src.contracts.outcome import TileOutcome  # noqa: E402
+
+
+def _task_source(task_id):
+    """任务行 → SourceSnapshot(= 这条任务的缓存命名空间)。
+
+    缓存目录已从 `cache/<style_code>/` 改成 `cache/<style_code>-<指纹8位>/`,
+    命名空间由建任务时冻结进 `tasks.source_snapshot` 的那份快照决定。
+    测试往 cache 里预置瓦片时必须走这条同一推导 —— 按旧的裸样式码写,
+    _execute_task 一块都命不中,任务转头去打真实上游(几分钟的挂起,不是红)。
+    """
+    from src.services.source_registry import snapshot_for_task_row
+
+    return snapshot_for_task_row(_task_row(task_id))
+
+
 class FakeSocketIO:
     def __init__(self):
         self.events = []
@@ -147,7 +163,7 @@ def test_resume_downloads_only_missing_tiles(isolated_config):
     all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 10, 10, task_id=task_id))
     cached, missing = all_tiles[:5], all_tiles[5:]
     for tile in cached:
-        cache_path = tile.cache_path('m')  # roadmap → style code 'm'
+        cache_path = tile.cache_path(_task_source(task_id))
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(b'cached-tile')
 
@@ -155,14 +171,16 @@ def test_resume_downloads_only_missing_tiles(isolated_config):
 
     downloaded = []
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         # tiles 是生成器(任务侧不再物化全网格待下载清单),只能遍历一次 ——
         # 本替身要遍历三遍,先自己收下来。
+        # `**_` 吃掉引擎新增的 source= / max_concurrency= 关键字参数。
         tiles = list(tiles)
         downloaded.extend(tiles)
         for tile in tiles:
-            await progress_callback(tile, 'completed', None)
-        return [{'tile': t, 'status': 'completed'} for t in tiles]
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+        return [{'tile': t, 'status': TileOutcome.SUCCESS.value} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -198,8 +216,9 @@ def test_progress_counts_flushed_in_batches(isolated_config, monkeypatch):
     try:
         conn.execute(
             "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count, error_message)"
-            " VALUES (?, ?, ?, ?, 'failed', 3, 'boom')",
-            (task_id, victim.zoom, victim.x, victim.y),
+            " VALUES (?, ?, ?, ?, ?, 3, 'boom')",
+            (task_id, victim.zoom, victim.x, victim.y,
+             TileOutcome.RETRYABLE_FAILURE.value),
         )
         conn.commit()
     finally:
@@ -227,10 +246,11 @@ def test_progress_counts_flushed_in_batches(isolated_config, monkeypatch):
         tm_mod, 'get_connection',
         lambda *a, **kw: SpyingConnection(real_get_connection(*a, **kw)))
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         for tile in tiles:
-            await progress_callback(tile, 'completed', None)
-        return [{'tile': t, 'status': 'completed'} for t in tiles]
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+        return [{'tile': t, 'status': TileOutcome.SUCCESS.value} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -272,10 +292,11 @@ def test_progress_emit_throttled_but_first_and_last_always_sent(isolated_config,
 
     _mark_running(task_id)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         for tile in tiles:
-            await progress_callback(tile, 'completed', None)
-        return [{'tile': t, 'status': 'completed'} for t in tiles]
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+        return [{'tile': t, 'status': TileOutcome.SUCCESS.value} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 
@@ -303,16 +324,19 @@ def test_failed_tile_upsert_marks_task_failed(isolated_config):
 
     _mark_running(task_id)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
+        failure = TileOutcome.RETRYABLE_FAILURE.value
+        success = TileOutcome.SUCCESS.value
         for idx, tile in enumerate(tiles):
             if idx == 0:
-                await progress_callback(tile, 'failed', 'boom-1')
+                await progress_callback(tile, failure, 'boom-1')
                 # 同一块瓦片重复失败:retry_count 在旧行基础上累加,计数不重复
-                await progress_callback(tile, 'failed', 'boom-2')
+                await progress_callback(tile, failure, 'boom-2')
             else:
-                await progress_callback(tile, 'completed', None)
+                await progress_callback(tile, success, None)
         return [
-            {'tile': t, 'status': 'failed' if i == 0 else 'completed'}
+            {'tile': t, 'status': failure if i == 0 else success}
             for i, t in enumerate(tiles)
         ]
 
@@ -321,16 +345,28 @@ def test_failed_tile_upsert_marks_task_failed(isolated_config):
     asyncio.run(tm._execute_task(task_id))
 
     rows = _tile_rows(task_id)
-    assert len(rows) == 1, "task_tiles 只存失败瓦片"
-    assert rows[0]['status'] == 'failed'
+    assert len(rows) == 1, "task_tiles 只存缺块瓦片"
+    assert rows[0]['status'] == TileOutcome.RETRYABLE_FAILURE.value, (
+        "落库的是 TileOutcome 值,不是笼统的 'failed' —— 补漏要靠它区分"
+        "「值得重试」与「重试也白搭」"
+    )
     assert rows[0]['retry_count'] == 2, "同一块瓦片重复失败 retry_count 应累加"
     assert rows[0]['error_message'] == 'boom-2'
 
     row = _task_row(task_id)
-    assert row['status'] == 'failed'
+    # 「有瓦片没拿到的任务不许自称完成」这条没变,落地的状态变了:没交代的
+    # 缺块(retryable/permanent/cache_failure)→ pending_decision,产物不出,
+    # 用户在「补漏」与「接受缺块」之间选。failed 现在只留给引擎/拼接异常与
+    # 进度落库失败 —— 它是终态、start_task 拒收,拿它盖「差一块超时」等于
+    # 把用户的自愈路径一起删掉。
+    assert row['status'] == 'pending_decision'
     assert row['failed_tiles'] == 1
+    assert row['gap_tiles'] == 1
     assert row['downloaded_tiles'] == row['total_tiles'] - 1
-    assert '1 tile(s) failed' in row['error_message']
+    assert '1 块瓦片缺失' in row['error_message']
+    assert 'retryable_failure×1' in row['error_message'], (
+        "错误信息必须按 outcome 分类点名,否则用户不知道该补漏还是该接受"
+    )
     assert not any(name == 'task_completed' for name, _ in socketio.events)
 
 
@@ -370,8 +406,10 @@ def test_init_database_migration_keeps_only_failed_rows(isolated_config):
     database.init_database()  # 再次初始化触发迁移
 
     rows = _tile_rows(task_id)
-    assert [r['status'] for r in rows] == ['failed'], (
-        "迁移后 task_tiles 只保留失败行,pending/completed 全量行必须清掉"
+    assert [r['status'] for r in rows] == [TileOutcome.RETRYABLE_FAILURE.value], (
+        "两条迁移叠加后的结果:user_version=1 只保留失败行(pending/completed/"
+        "downloading 全量行清掉),user_version=5 再把留下来那行的裸 'failed' "
+        "改写成 'retryable_failure'"
     )
 
     conn = get_connection()
@@ -447,17 +485,19 @@ def test_stale_failed_rows_cleared_when_all_tiles_cached(isolated_config):
 
     # 全部瓦片已在 cache,且每块都留一枚残留 failed 行
     all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 10, 10, task_id=task_id))
+    source = _task_source(task_id)
     from src.core.database import get_connection
     conn = get_connection()
     try:
         for tile in all_tiles:
-            cache_path = tile.cache_path('m')  # roadmap → style code 'm'
+            cache_path = tile.cache_path(source)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_bytes(b'cached-tile')
             conn.execute(
                 "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count, error_message)"
-                " VALUES (?, ?, ?, ?, 'failed', 2, 'boom')",
-                (task_id, tile.zoom, tile.x, tile.y),
+                " VALUES (?, ?, ?, ?, ?, 2, 'boom')",
+                (task_id, tile.zoom, tile.x, tile.y,
+                 TileOutcome.RETRYABLE_FAILURE.value),
             )
         conn.commit()
     finally:
@@ -465,7 +505,8 @@ def test_stale_failed_rows_cleared_when_all_tiles_cached(isolated_config):
 
     _mark_running(task_id)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         raise AssertionError("全部瓦片命中 cache,不应触发任何下载")
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
@@ -491,22 +532,25 @@ def test_stale_failed_rows_cleared_mixed_with_real_download(isolated_config):
     all_tiles = list(tm.download_engine.iter_tiles(1.0, 0.0, 1.0, 0.0, 10, 10, task_id=task_id))
     cached_with_stale_row = all_tiles[:3]   # cache 已写 + 残留 failed 行
     missing_with_row = all_tiles[3]         # 无 cache + failed 行(本次应重下成功)
+    source = _task_source(task_id)
     from src.core.database import get_connection
     conn = get_connection()
     try:
         for tile in cached_with_stale_row:
-            cache_path = tile.cache_path('m')
+            cache_path = tile.cache_path(source)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_bytes(b'cached-tile')
             conn.execute(
                 "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count, error_message)"
-                " VALUES (?, ?, ?, ?, 'failed', 2, 'boom')",
-                (task_id, tile.zoom, tile.x, tile.y),
+                " VALUES (?, ?, ?, ?, ?, 2, 'boom')",
+                (task_id, tile.zoom, tile.x, tile.y,
+                 TileOutcome.RETRYABLE_FAILURE.value),
             )
         conn.execute(
             "INSERT INTO task_tiles (task_id, zoom, x, y, status, retry_count, error_message)"
-            " VALUES (?, ?, ?, ?, 'failed', 1, 'boom')",
-            (task_id, missing_with_row.zoom, missing_with_row.x, missing_with_row.y),
+            " VALUES (?, ?, ?, ?, ?, 1, 'boom')",
+            (task_id, missing_with_row.zoom, missing_with_row.x, missing_with_row.y,
+             TileOutcome.RETRYABLE_FAILURE.value),
         )
         conn.commit()
     finally:
@@ -516,13 +560,14 @@ def test_stale_failed_rows_cleared_mixed_with_real_download(isolated_config):
 
     downloaded = []
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         # 同上:生成器只能遍历一次。
         tiles = list(tiles)
         downloaded.extend(tiles)
         for tile in tiles:
-            await progress_callback(tile, 'completed', None)
-        return [{'tile': t, 'status': 'completed'} for t in tiles]
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+        return [{'tile': t, 'status': TileOutcome.SUCCESS.value} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
 

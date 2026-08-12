@@ -83,6 +83,14 @@ def _run_node(script):
 # ---------------------------------------------------------------------------
 # 事件 -> 百分比
 # ---------------------------------------------------------------------------
+#
+# ⚠️ 登记（2026-08 phase-3 §6.1 任务中心抽取）：updateTerrainJobProgress /
+# calculateTimeInfo 等整条实时链从 tasks.js 搬到 static/js/task_center.js
+# （函数体逐字未改，base.html 全局加载，独立页 /history 也拿得到）。
+# 下面切函数体一律从 task_center.js 切，**不**改成「两个文件里找一找」：
+# 那样写的话把实现搬回首页专属的 tasks.js 也是绿的，而「首页专属」正是这次
+# 抽取要修的缺陷。tasks.js 只剩 updateStatusTasks 等三个状态栏函数，
+# 底部状态栏那三条用例仍从它切。
 
 
 @requires_node
@@ -92,7 +100,7 @@ def test_tiling_events_carry_a_percentage_for_the_row():
     只发 `tiling_text` 是不够的：那串字在行上是**阶段提示**的位置，
     进度条和右侧的「NN%」读的是另一条路。
     """
-    src = _js("tasks.js")
+    src = _js("task_center.js")
     fn = "function updateTerrainJobProgress(data) " + _fn_body(
         src, "updateTerrainJobProgress")
     script = (
@@ -136,7 +144,7 @@ def test_tiling_progress_reaches_the_active_set():
     对了，状态栏仍然恒显 100%。而且切片任务完全可能落在第 2 页之后，那时时间流
     里根本没有它，只写时间流等于这一发全丢。
     """
-    src = _js("tasks.js")
+    src = _js("task_center.js")
     fn = "function updateTerrainJobProgress(data) " + _fn_body(
         src, "updateTerrainJobProgress")
     # 真实语义的替身：patch 只写时间流，commit 两边都写（见 task_store.js）。
@@ -202,11 +210,32 @@ def test_row_percentage_prefers_the_tiling_progress():
     assert empty == 0, f"分母为 0 时应该是 0，得到 {empty}"
 
 
+def _running_statuses():
+    """task_store.js 里 RUNNING_STATUSES 的真值。
+
+    替身不许手抄这份清单：updateStatusTasks 的「M 运行中」是拿
+    `TaskStore.isRunning(t)` 数的，抄一份的话补漏上线时（RUNNING_STATUSES
+    从 ['running'] 变成 ['running', 'retrying']）替身与实现会静默脱节，
+    而脱节的方向恰好是让用例继续绿。
+    """
+    src = _js("task_store.js")
+    m = re.search(r"const RUNNING_STATUSES\s*=\s*\[([^\]]*)\]", src)
+    assert m, "task_store.js 里找不到 RUNNING_STATUSES —— 本测试已失效"
+    vals = re.findall(r"'([a-z_]+)'", m.group(1))
+    assert vals, "RUNNING_STATUSES 解析不出任何状态 —— 本测试已失效"
+    return vals
+
+
 def _statusbar_script(live_tasks):
     """跑真实的 updateStatusTasks，返回它写进状态栏的百分比。
 
     t() 直接回吐参数：状态栏文案是 `{n} 个任务进行中 · {pct}%` 这种模板，
     把变量原样吐成 JSON 就能读出 pct，不必跟着文案走。
+
+    ⚠️ 登记（2026-08 §13-3）：替身补上 `isRunning`。updateStatusTasks 不再
+    自己写状态字面量数「M 运行中」，改问 store —— 判据收口到 task_store.js
+    的 RUNNING_STATUSES（running + 补漏中的 retrying，两者一样在占网络与
+    CPU）。替身缺这个方法时 node 抛 TypeError，整条用例连断言都跑不到。
     """
     body = _fn_body(_js("tasks.js"), "updateStatusTasks")
     return (
@@ -218,7 +247,9 @@ def _statusbar_script(live_tasks):
         "};\n"
         "const document = { getElementById: (id) => els[id] || null };\n"
         "const live = " + json.dumps(live_tasks) + ";\n"
-        "const window = { TaskStore: { liveTasks: () => live } };\n"
+        "const RUNNING = " + json.dumps(_running_statuses()) + ";\n"
+        "const window = { TaskStore: { liveTasks: () => live,\n"
+        "  isRunning: (t) => RUNNING.includes(t && t.status) } };\n"
         "function updateStatusTasks() " + body + "\n"
         "updateStatusTasks();\n"
         "console.log(JSON.stringify([els.statusTasksText.textContent,"
@@ -312,7 +343,7 @@ def test_tiling_phase_is_anchored_for_the_eta():
       （cesium_terrain.py 的 BrokenProcessPool 分支），此时必须重新锚定
     """
     fn = "function updateTerrainJobProgress(data) " + _fn_body(
-        _js("tasks.js"), "updateTerrainJobProgress")
+        _js("task_center.js"), "updateTerrainJobProgress")
     ev = ("{task_type: 'local_terrain', task_id: 1, status: 'running',"
           " total_tiles: 100, rendered_tiles: %d}")
     script = _fake_store_script({}, fn) + (
@@ -350,7 +381,7 @@ def test_stage_and_finish_events_drop_the_anchor():
     下一次切片的第一发会拿上一次的起点算出一个假的剩余时间。
     """
     fn = "function updateTerrainJobProgress(data) " + _fn_body(
-        _js("tasks.js"), "updateTerrainJobProgress")
+        _js("task_center.js"), "updateTerrainJobProgress")
     seed = {"tiling_phase": "tiles", "tiling_started_at": 1000,
             "tiling_anchor_pct": 20}
     script = _fake_store_script(seed, fn) + (

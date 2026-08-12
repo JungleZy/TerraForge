@@ -26,17 +26,32 @@
  * globalProperties 上）。i18n.js 必须更早：本文件的 getStatusText 调 t()。
  */
 
-// 与 src/models/task.py 的 TaskStatus 五态对齐。
+// 与 src/models/task.py 的 TaskStatus 八态对齐。
 //
 // running 用 'info' 而不是 'primary'：徽章侧 .status-badge.running /
 // .badge.bg-primary / .badge.bg-info 是同一条声明块，渲染完全一致；
 // 而进度条侧 .progress-bar.bg-info 已经存在，不必再写 .bg-primary 覆盖。
+//
+// 2026-08 §13-3 新增三态，**刻意复用已有的四档语义色**，一个新颜色名都不加：
+//   retrying            -> info    与 running 同族：它就是在下载，只是第二遍。
+//   pending_decision    -> warning 与 paused 同族：都是「停下来等你」。
+//   completed_with_gaps -> warning **不是** success：产物带洞是一个必须被看见
+//                          的事实，画成绿色等于把它伪装成干净的成功。
+// 为什么不给它们各自一个新颜色名：每个新颜色名都要在 style.css 里配一条
+// `.progress-bar.bg-X { ... !important }`（压 Bootstrap 自带 !important 的
+// 工具类，理由见 test_important_count_under_control），而 !important 的
+// 总量上界是 37、当前实测 34 —— 三个新颜色名会把余量一次吃光。
+// 颜色不是唯一的区分手段：行1 有 .task-status-text 文字，缺口两态另有常驻的
+// .task-gap-chip 数字徽章（WCAG 1.4.1 的「不只靠颜色」由它们承担）。
 function getStatusColor(status) {
     const colors = {
         'pending': 'secondary',
         'running': 'info',
+        'retrying': 'info',
         'paused': 'warning',
+        'pending_decision': 'warning',
         'completed': 'success',
+        'completed_with_gaps': 'warning',
         'failed': 'danger'
     };
     // 查表走 hasOwnProperty，与 history.js 的档位表 / 删除确认表同一条约定：
@@ -52,8 +67,11 @@ function getStatusText(status) {
     const texts = {
         'pending': t('js.tasks.status.pending'),
         'running': t('js.tasks.status.running'),
+        'retrying': t('js.tasks.status.retrying'),
         'paused': t('js.tasks.status.paused'),
+        'pending_decision': t('js.tasks.status.pending_decision'),
         'completed': t('js.tasks.status.completed'),
+        'completed_with_gaps': t('js.tasks.status.completed_with_gaps'),
         'failed': t('js.tasks.status.failed')
     };
     // 未知状态不把英文字面量原样渲染进中文界面（A7 修过的中英混杂问题）。
@@ -77,14 +95,17 @@ function getStatusText(status) {
 // Cesium 要的是真实色值字符串，不认 var()，所以必须在这里求值。
 //
 // 惰性缓存：getComputedStyle 每次调用都强制样式计算，renderHistoryMap 逐
-// 任务调用时成本放大；首次调用把 5 个令牌求值后查表。
+// 任务调用时成本放大；首次调用把令牌求值后查表。
 let _statusStrokeCache = null;
 
 const _STATUS_STROKE_TOKENS = {
     'pending': '--color-text-secondary',
     'running': '--color-info',
+    'retrying': '--color-info',
     'paused': '--color-warning',
+    'pending_decision': '--color-warning',
     'completed': '--color-success',
+    'completed_with_gaps': '--color-warning',
     'failed': '--color-danger'
 };
 

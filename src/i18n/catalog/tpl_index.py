@@ -32,6 +32,39 @@ MESSAGES = {
         'zh': '框选下载区域',
         'en': 'Select download area',
     },
+    # 区域导入与地点搜索（阶段 2）。两条都放在「框选」旁边:它们是同一件事的
+    # 另外两个入口 —— 手画一个矩形 / 导入一份别人给的边界 / 按地名跳过去,
+    # 最终都落到同一个 RegionSpec 上。分散到菜单里会让人以为是三套东西。
+    #
+    # ⚠️ 可见标签**必须是两个汉字**,和旁边五个按钮一样。`.map-panel-btn` 是
+    # 固定 32px 宽(连边框 34px)的竖胶囊,`white-space: nowrap` + 容器
+    # `overflow: hidden`,而 style.css 的圆角注释就是按「12px 两字标签 = 24px 宽」
+    # 算的余量。四个字 48px 装不下,会被**静默裁掉**后半截 —— 实测「导入区域」
+    # 显示成「入区」、「地点搜索」显示成「点搜」,没有任何报错。英文那侧有
+    # `html[lang="en"] .map-panel-btn { width: max-content }` 兜着不会裁,但这里
+    # 仍然给短词,好让两种语种的按钮是同一个形状。
+    # 完整说明放在下面的 *_title(即 <button title=...>)里,那才是解释该待的地方;
+    # 这两条同时还当 aria-label 用 —— 短名 + 详述 title 正是另外五个按钮的现成体例。
+    'tpl.index.toolbar.region_import': {
+        'zh': '区域',
+        'en': 'Region',
+    },
+    'tpl.index.toolbar.region_import_title': {
+        'zh': '导入 GeoJSON / KML / KMZ / Shapefile / ZIP 作为下载区域（支持多边形与孔洞）',
+        'en': 'Import GeoJSON / KML / KMZ / Shapefile / ZIP as the download region (polygons and holes supported)',
+    },
+    'tpl.index.toolbar.place_search': {
+        'zh': '搜索',
+        'en': 'Search',
+    },
+    'tpl.index.toolbar.place_search_title': {
+        'zh': '按名称搜索地点并跳到它的范围',
+        'en': 'Search a place by name and jump to its extent',
+    },
+    'tpl.index.toolbar.place_search_placeholder': {
+        'zh': '地名 / 行政区…',
+        'en': 'Place or region name…',
+    },
     'tpl.index.toolbar.lighting': {
         'zh': '光照',
         'en': 'Lighting',
@@ -119,6 +152,20 @@ MESSAGES = {
     'tpl.index.download.format_tiles': {
         'zh': '瓦片',
         'en': 'Tiles',
+    },
+    # MBTiles 打包勾选框。**刻意不是「输出格式」的第四个单选值** —— 它与
+    # output_format 正交：打包的原料就是那棵松散瓦片树，而同一棵树又是
+    # /tiles/<id>/ 预览的数据源，做成单选值就等于选它即删掉原料。
+    # hint 那句必须把「目录照常保留」说出来，否则用户会以为勾了就只剩一个文件。
+    'tpl.index.download.export_mbtiles': {
+        'zh': '同时导出 MBTiles',
+        'en': 'Also export MBTiles',
+    },
+    'tpl.index.download.export_mbtiles_hint': {
+        'zh': '任务完成后额外把瓦片打成单文件 .mbtiles 容器。松散瓦片目录照常保留 —— 预览和之后的手动导出都从它出。',
+        'en': 'Also pack the tiles into a single .mbtiles container when the task '
+              'finishes. The loose tile directory is kept as usual — preview and '
+              'later manual exports both read from it.',
     },
     'tpl.index.download.map_style': {
         'zh': '地图样式',

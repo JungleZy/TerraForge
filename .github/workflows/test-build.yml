@@ -62,8 +62,41 @@ jobs:
 
     # 测试均为离线单元测试（monkeypatch 隔离 DB/网络/显示），
     # ubuntu-latest 无显示环境可直接运行，无需排除。
+    #
+    # --cov-fail-under=78 是**棘轮地板**,不是覆盖率目标。取值口径照搬 GeoL
+    # (`CLAUDE.md:37-42`,见 docs/notes/external-projects-takeaways.md §8.1):
+    # 地板永远设在【当前实测值下方几个点】,只用来挡回归 —— 一次性冲一个漂亮的
+    # 高数字,结果要么是逼着人写不防任何 bug 的凑数测试,要么是地板高到没人敢碰
+    # 于是被整条注释掉。
+    #
+    # 78 = 2026-08-12 实测 82.88%(2550 passed,`--cov=src`,13974 语句缺 2393)
+    # 下压 5 点。棘轮接进来那天实测是 75%、地板 70;补完九个新服务的用例之后
+    # 涨到 82.88%,于是地板跟着抬到 78 —— 这就是「涨上去就把地板调高锁死」。
+    # 只准往上调,不准往下调;下调等于把已经守住的东西又还回去。
+    #
+    # ⚠️ 只测 `src`,**不要**加 `--cov=app.py`。coverage 拿到 `app.py` 这个
+    # source 会去 import 它,而 `app.py` 在模块级就调用 `create_app()` ——
+    # 于是在 pytest **解析命令行的阶段**(任何 fixture 之前)就:抢单实例锁、
+    # 用真实 Config 建库、在工作树里创建 data/ logs/ cache/ downloads/、
+    # 跑一遍启动清扫。本机实测直接 SystemExit(1) 收场(锁被占),CI 上则是
+    # 在干净 clone 里静默产出这些目录,把 tests/test_no_repo_pollution.py 的
+    # 会话基线污染成「本来就存在」,那条防线从此永远跳过。
+    # app.py 只有 4 KB 且全是启动装配,测它的收益远小于这个代价。
+    #
+    # 也不要 `--cov=.`:那会把 tests/ 自己和 nuitka_build.py 算进分母,
+    # 数字随测试代码量涨落,棘轮就失去意义。
+    #
+    # `python -m pytest tests/` 这个**字面子串**被 tests/test_fix_ci_workflows.py
+    # 钉着(它还断言这一步排在打包步骤之前),所以覆盖率参数只能加在 `tests/`
+    # **后面**,不能改写成 `-m pytest --cov=src tests/`。
+    #
+    # ⚠️ 这段注释里不能出现打包命令的**字面写法**:
+    # tests/test_fix_build_scripts.py::test_every_job_that_builds_runs_the_gdal_gate_first
+    # 是按「job 的源码文本里含不含那个字面子串」来判定一个 job 是不是打包 job 的,
+    # 注释同样算数 —— 写进去就会把这个只跑测试的 job 误判成打包 job,
+    # 然后因为它没跑 scripts/check_gdal.py 而报红。
     - name: Run test suite
-      run: python -m pytest tests/ -q
+      run: python -m pytest tests/ --cov=src --cov-report=term-missing --cov-fail-under=78 -q
 
   build:
     needs: test

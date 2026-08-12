@@ -65,4 +65,21 @@ MESSAGES = {
         'zh': '已完成',
         'en': 'Completed',
     },
+    # 「有缺块」筛选 chip（§13-3）。它是「已完成」的**子集**而不是并列的第五
+    # 个生命周期档：completed_with_gaps 的任务确实完成了，只是成品带洞，所以
+    # 「已完成」也筛得到它（服务端把 completed 展开成两态）。单独给它一枚 chip
+    # 的理由是「哪几份成果有洞」是用户拿数据去做后续处理前必须回答的问题，
+    # 而在这枚 chip 之前那个问题只能靠逐页翻行上的缺块角标来回答。
+    #
+    # 单词本身不自明（「有缺块」既可能指待决、也可能指已接受），所以这一枚
+    # 破例带 title —— 其余四枚的词面已经说尽了它们的含义，不需要。
+    'tpl.history.filter.gaps': {
+        'zh': '有缺块',
+        'en': 'With gaps',
+    },
+    'tpl.history.filter.gaps_title': {
+        'zh': '已完成，但成品带缺块（缺块决策仍待处理的任务在「进行中」里）',
+        'en': 'Finished, but the output has gaps (tasks still awaiting a gap '
+              'decision are under "In progress")',
+    },
 }

@@ -34,6 +34,7 @@ import src.services.contour_task_manager  # noqa: F401
 import src.services.dem_task_manager  # noqa: F401
 import src.services.local_terrain_task_manager  # noqa: F401
 import src.services.proxy_autodetect  # noqa: F401
+import src.services.resource_scheduler  # noqa: F401
 import src.services.system_proxy  # noqa: F401
 import src.services.task_cleanup  # noqa: F401
 import src.services.task_manager  # noqa: F401
@@ -231,13 +232,13 @@ def _register_blueprints(app):
     """注册全部蓝图。必须在 manager 注入之后。"""
     from src.routes import (api_bp, basemap_static_bp, contour_api_bp,
                             contour_static_bp, dem_api_bp,
-                            local_terrain_api_bp, main_bp, terrain_api_bp,
-                            terrain_static_bp, tiles_static_bp)
+                            local_terrain_api_bp, main_bp, mbtiles_static_bp,
+                            terrain_api_bp, terrain_static_bp, tiles_static_bp)
 
     for blueprint in (main_bp, api_bp, dem_api_bp, terrain_api_bp,
                       terrain_static_bp, local_terrain_api_bp,
                       contour_api_bp, contour_static_bp, tiles_static_bp,
-                      basemap_static_bp):
+                      basemap_static_bp, mbtiles_static_bp):
         app.register_blueprint(blueprint)
 
     logger.debug("Blueprints registered")
@@ -257,6 +258,7 @@ def create_app():
     from src.core.database import init_database
     from src.routes.socketio_events import register_socketio_events
     from src.services.base_terrain_warmup import start_warmup
+    from src.services.resource_scheduler import get_scheduler
     from src.services.system_proxy import apply_system_proxy
     from src.services.task_cleanup import sweep_startup_residue
 
@@ -273,11 +275,27 @@ def create_app():
     init_database()
     logger.debug("Database initialized")
 
-    # 启动一次性清扫:上次进程被 SIGKILL/关窗打断时,finally 盖不住的三类
-    # 临时残留(stitch work_dir / contour warp tmpdir / cache .part)在这里
-    # best-effort 清掉。必须在 init_database 之后(要读 contour_warp_tmpdir
-    # 配置键);同步毫秒级,失败只记日志不拖慢/阻断启动。
+    # 启动一次性清扫:上次进程被 SIGKILL/关窗打断时,finally 盖不住的七类
+    # 临时残留(stitch work_dir / contour warp tmpdir / cache .part / 过期任务
+    # 日志 / 超额缓存 ...)在这里 best-effort 清掉。必须在 init_database 之后
+    # (要读 contour_warp_tmpdir 等配置键);同步毫秒级,失败只记日志不拖慢/阻断启动。
     sweep_startup_residue()
+
+    # 全局资源上界打一条日志。这几个数(并发任务数 / 网络连接数 / CPU 工作进程 /
+    # GDAL 槽)决定了「为什么第三个任务点了开始却在排队」，而它们来自配置库、
+    # 用户改得动、脏值还会静默退回出厂默认(_coerce_limit 只 warn 一次)。不打
+    # 这一行的话，排查一次「任务卡在 pending」就得先让用户去翻配置页 —— 而
+    # 配置页显示的是**用户写进去的值**，不是调度器实际采信的值。
+    # get_scheduler() 每次调用都重读配置，所以这里拿到的就是运行时口径。
+    # 单独套 try：调度器初始化失败绝不该挡住启动，日志缺一行而已。
+    try:
+        limits = get_scheduler().limits()
+        logger.info("Resource scheduler limits: %s",
+                    ', '.join(f'{kind.value}={value}'
+                              for kind, value in sorted(
+                                  limits.items(), key=lambda kv: kv[0].value)))
+    except Exception as e:
+        logger.warning(f"Cannot read resource scheduler limits (ignored): {e}")
 
     managers = _build_task_managers(socketio)
     _register_blueprints(app)

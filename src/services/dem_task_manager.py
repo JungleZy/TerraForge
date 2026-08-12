@@ -7,13 +7,18 @@ Creates and runs DEM download tasks backed by dem_tasks/dem_files tables.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from src.contracts.artifact import PIPELINES
+from src.contracts.region import RegionSpec
+from src.contracts.reservation import ResourceKind, ResourceRequest
 from src.core.database import get_connection, utc_now_iso
+from src.services import disk_budget
 from src.services.config_manager import ConfigManager
 from src.services.dem_download_engine import DemDownloadEngine
 from src.services.download_speed import SpeedMeter
@@ -22,6 +27,10 @@ from src.services.geo_validation import (AUTO_MAXZOOM, DEFAULT_TILING_QUALITY,
                                          maxzoom_from_db, maxzoom_to_db,
                                          require_absolute_output_dir, sanitize_filename,
                                          validate_bbox, validate_tiling_quality)
+from src.services.resource_scheduler import (get_scheduler,
+                                             plan_download_reservation,
+                                             plan_tiling_reservation)
+from src.services.task_logging import open_task_log
 from src.services.dem_granules import (
     tiles_for_bbox, astgtm_v3_granules_for_tile, copernicus_glo30_granules_for_tile,
 )
@@ -35,6 +44,7 @@ from src.services.dem_granules import (
 from src.services.task_cleanup import (fail_stranded_running_task,
                                        resolve_stored_output_dir)
 from src.services.terrain_tiling.dem_task_tiler import TileParams, tile_dem_task_dir
+from src.services.terrain_tiling.vrt_builder import list_dem_tifs
 from src.services.terrain_tiling.layer_json import parent_url_if_base_available
 
 logger = logging.getLogger(__name__)
@@ -43,6 +53,11 @@ logger = logging.getLogger(__name__)
 # 打爆；严格时间窗节流，无「计数变化必发」豁免 —— 颗粒集中完成时每个完成
 # 回调都改计数，豁免会让窗口形同虚设（范本：task_manager.PROGRESS_EMIT_MIN_INTERVAL）。
 _PROGRESS_EMIT_MIN_INTERVAL = 1.0
+
+# 管线名从合同表取，不手写字面量：task_logging 的文件名正则、artifacts 表的
+# 取值域与这里必须是同一个词。`.index()` 不是绕弯 —— 它让「合同里把 'dem' 改名
+# 了」在 import 期就炸，而不是等到某天发现任务日志目录里一个 dem_*.log 都没有。
+_PIPELINE = PIPELINES[PIPELINES.index('dem')]
 
 
 # M7: 'skipped' 也算「已终结的下载项」。404 的颗粒（海洋 / 覆盖范围外 ——
@@ -80,6 +95,12 @@ class DemTaskManager:
         - dem_tasks: flipped to 'paused' (supports resume_task)
         - dem_terrain_jobs: flipped to 'failed' (no pause/resume model — terrain
           tiling is a one-shot build_terrain call, must restart from scratch)
+
+        两类降级都必须在**任务自己的**日志里留下解释（§4.5）。切片作业那一条
+        尤其不能省：它写的是 `failed` —— 一个硬终态，而用户点开任务详情看到的
+        是「失败」两个字加一片空白，日志文件在崩溃那一瞬间戛然而止，最后一行
+        是某个瓦片的进度。进程崩溃 / 断电 / 关窗口是这条管线上**最常发生的**
+        真实终态转移，不是边角情况。
         """
         conn = get_connection()
         try:
@@ -93,8 +114,13 @@ class DemTaskManager:
                 )
 
             now = utc_now_iso()
-            cur.execute("SELECT id FROM dem_terrain_jobs WHERE status = 'running'")
-            job_ids = [row['id'] for row in cur.fetchall()]
+            # 连 task_id 一起取：每任务日志按**任务** id 命名（下载与切片是同一
+            # 个任务的两个阶段，共用一份日志文件，见 _run_tiling_job 的注释），
+            # 而这张表的主键是**作业** id —— 只拿 id 就会把解释写进一个 id 恰好
+            # 相同的、毫不相干的任务的日志里。
+            cur.execute("SELECT id, task_id FROM dem_terrain_jobs WHERE status = 'running'")
+            jobs = [(row['id'], row['task_id']) for row in cur.fetchall()]
+            job_ids = [jid for jid, _ in jobs]
             if job_ids:
                 cur.executemany(
                     "UPDATE dem_terrain_jobs SET status = 'failed', completed_at = ?, "
@@ -108,20 +134,69 @@ class DemTaskManager:
                 logger.warning(
                     f"Recovered orphans — dem_tasks paused: {task_ids}, dem_terrain_jobs failed: {job_ids}"
                 )
+            # 上面那条 warning 只进**全局**日志。落库已经提交，所以下面这些写
+            # 日志的动作即使全部失败也不影响状态机 —— _log_recovery 自己兜住。
+            for tid in task_ids:
+                self._log_recovery(
+                    tid, 'paused',
+                    '进程在本任务下载期间退出（崩溃 / 断电 / 关窗口）：重启时'
+                    '发现库里还写着 running 而没有任何线程，已降级为 paused。'
+                    '已下载的颗粒都在，点「恢复」从断点继续。')
+            for jid, tid in jobs:
+                self._log_recovery(
+                    tid, 'failed',
+                    f'进程在地形切片期间退出（崩溃 / 断电 / 关窗口）：重启时发现'
+                    f'切片作业 #{jid} 在库里还写着 running 而没有任何线程，已判为'
+                    f' failed。切片是一次性的 build_terrain 调用，没有断点续跑，'
+                    f'需要重新起切片（下载好的颗粒还在，不用重下）。')
         except Exception as e:
             logger.error(f"Failed to recover DEM orphan tasks: {e}")
             conn.rollback()
         finally:
             conn.close()
 
+    def _log_recovery(self, task_id: int, status: str, note: str) -> None:
+        """把一次「启动时孤儿恢复」写进**这个任务自己的**日志。绝不抛。
+
+        绝不抛是硬要求：调用点在 `__init__` 里，一个次要 sink 的环境问题没有
+        资格让整个 DemTaskManager 构造不出来 —— 那等于一条日志写不动就让服务
+        起不来（同 `open_task_log` 类 docstring 的论证）。
+
+        句柄短命（开 → 写 → 关）：`open_task_log` 会摘掉同 (pipeline, task_id)
+        的遗留 handler，留着不关会让后续真正跑起来的那一轮写到已轮转走的
+        inode。恢复跑在 `__init__`，此刻没有任何任务线程持有句柄，不存在互抢。
+        """
+        try:
+            tlog = open_task_log(_PIPELINE, task_id)
+            try:
+                tlog.event('terminal', status=status, reason='process_restart')
+                tlog.warning('%s', note)
+            finally:
+                tlog.close()
+        except Exception as e:
+            logger.warning(f"DEM task {task_id}: 孤儿恢复日志写入失败（忽略）: {e!r}")
+
     def create_task(self, params: dict) -> int:
         # NOTE: Keep signature compatible-ish with existing API patterns (dict in, id out).
         name = sanitize_filename(params.get("name") or "DEM Task")
-        # 四至共用校验(范围/顺序/NaN/类型),见 src/services/geo_validation.py
-        north, south, east, west = validate_bbox(
-            params.get("north"), params.get("south"),
-            params.get("east"), params.get("west"),
-        )
+        # 区域合同（§D）。请求带 region 就以它为准 —— 多边形、洞环、跨反经线都
+        # 只在这条路上表达得出来；没带就从四至现造一个矩形。两条路产出同一个
+        # RegionSpec，从这里往下不再有第二套坐标口径：颗粒枚举、落库的四至列、
+        # region_spec 列全部出自它。
+        # 落库的四至列取 spec.bbox（序就是 (n, s, e, w)，与表列同序）。跨界时
+        # east 会是 >180 的规范化写法 —— 那是 RegionSpec 的写法，**不经过**
+        # validate_bbox（那个函数守的是「旧的四列输入」，见它上面那段注释）。
+        raw_region = params.get("region")
+        if raw_region:
+            # RegionValidationError 是 ValueError 的子类，路由照旧转 400。
+            region = RegionSpec.from_json(raw_region)
+        else:
+            # 四至共用校验(范围/顺序/NaN/类型),见 src/services/geo_validation.py
+            region = RegionSpec.from_bbox(
+                *validate_bbox(params.get("north"), params.get("south"),
+                               params.get("east"), params.get("west")),
+                source='manual')
+        north, south, east, west = region.bbox
         dataset = params.get("dataset") or "COP-DEM-GLO-30"
         # C5: 创建任务时校验 output_path —— 必须是绝对路径且至少两级深度,
         # 非法抛 ValueError(路由层转 400)。0.2.4 起不再强制落在
@@ -147,10 +222,57 @@ class DemTaskManager:
                 "separate ASTWBD.001 product"
             )
 
-        # Compute granule list
-        tiles = tiles_for_bbox(north=north, south=south, east=east, west=west)
+        # 颗粒枚举逐段来（§D）。dem_granules.tiles_for_bbox 的 docstring 写着
+        # 「跨界要由调用方拆」，而在此之前**没有任何调用方拆过**：east < west 被
+        # validate_bbox 直接拒了，east > 180 这种规范化写法则会算出 N45E181 这类
+        # 根本不存在的颗粒名，整批 404、任务全失败。现在这个调用方就是拆的那个。
+        # 不跨界时 antimeridian_parts 只有一段，与改造前逐字等价。
+        #
+        # 按 tile_id 归并：两段一段贴 +180、一段贴 -180，1°×1° 网格上不相交，
+        # 正常情况下不会重复。归并是为了让「拆分口径以后变了」不会静默变成重复的
+        # dem_files 行 —— 那张表的插入是无冲突约束的 executemany，重复的
+        # granule_id 会让 total_files 虚高，进度条永远到不了 100%（M7 修过的
+        # 同一类不变量：downloaded + failed 必须能追平 total）。
+        tiles_by_id = {}
+        for part_n, part_s, part_e, part_w in region.antimeridian_parts:
+            for t in tiles_for_bbox(north=part_n, south=part_s,
+                                    east=part_e, west=part_w):
+                tiles_by_id.setdefault(t.tile_id, t)
+
+        # 再按**几何**筛一遍（§9 门槛「RegionSpec 被地图与 DEM 两条管线共同消费」）。
+        # tiles_for_bbox 只认外接矩形，所以在这一行之前，一个 L 形或带洞的区域
+        # 拿到的颗粒清单与它的外接矩形**逐个相同** —— 实测 4 颗对 4 颗，用户画的
+        # 多边形对 DEM 完全没有意义。那正是 GeoDownloader「按 bbox 计费、按
+        # polygon 出图」的同一个错位，而且在 DEM 侧更贵：一颗 COP-DEM 颗粒
+        # 45 MiB，多下一圈是实打实的流量与磁盘。
+        #
+        # 矩形区域一颗都筛不掉（intersects_bbox 对外接矩形恒真），所以这一步对
+        # 改造前的行为逐字无损；只有多边形任务会变少。
+        #
+        # 逐段问：跨反经线时区域顶点经度被归一到 >180，而颗粒的经度是回绕过的
+        # （E179 / W180），两边坐标系不一致。用 part 的偏移把颗粒挪回同一套未回绕
+        # 坐标再比。
+        if not region.is_rectangle:
+            kept = {}
+            for part_n, part_s, part_e, part_w in region.antimeridian_parts:
+                # 这一段在未回绕坐标里的起点：第二段（-180 打头）要 +360。
+                shift = 360.0 if part_w < region.bbox_west else 0.0
+                for t in tiles_by_id.values():
+                    lon_w = t.lon + shift
+                    if not (part_w - 1.0 <= t.lon < part_e):
+                        continue
+                    if region.intersects_bbox(north=t.lat + 1, south=t.lat,
+                                              east=lon_w + 1, west=lon_w):
+                        kept[t.tile_id] = t
+            dropped = len(tiles_by_id) - len(kept)
+            if dropped:
+                logger.info(f"DEM 颗粒按区域几何筛除 {dropped} 颗"
+                            f"（外接矩形 {len(tiles_by_id)} → 实际 {len(kept)}）")
+            tiles_by_id = kept
         granules: List[str] = []
-        for t in tiles:
+        # 排序按 (lat, lon) 而不是 tile_id 字符串：'N05...' 与 'S05...' 混排时
+        # 字符串序会把南北半球交错开，下载顺序与用户在地图上看到的从南到北对不上。
+        for t in sorted(tiles_by_id.values(), key=lambda x: (x.lat, x.lon)):
             if dataset == "COP-DEM-GLO-30":
                 granules.extend(copernicus_glo30_granules_for_tile(t))
             else:
@@ -165,6 +287,15 @@ class DemTaskManager:
                 "nothing to download"
             )
 
+        # 建任务时的体积估算。这里**只报不拦** —— 拦在 start_task（那时才知道
+        # 还剩几颗要下、输出目录在哪块盘上）。报是必须的：#30 那次 17 倍偏差
+        # 之所以能定位，靠的就是「颗粒数 × 单价」这个算式被写了下来。
+        estimate = disk_budget.estimate_dem_task(total_files, dataset)
+        logger.info(
+            f"DEM 任务预估：{total_files} 颗 {dataset} 颗粒，峰值约 "
+            f"{estimate.peak_bytes / (1024 * 1024):.0f} MiB"
+            f"（缓存 + 任务目录各一份）；区域 {region.summary()}")
+
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -173,11 +304,13 @@ class DemTaskManager:
                 INSERT INTO dem_tasks (
                     name, status, north, south, east, west,
                     dataset, output_path, download_num, download_swb,
-                    total_files, downloaded_files, failed_files
+                    total_files, downloaded_files, failed_files,
+                    region_spec
                 )
-                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+                VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
                 """,
-                (name, north, south, east, west, dataset, output_path, download_num, download_swb, total_files),
+                (name, north, south, east, west, dataset, output_path, download_num,
+                 download_swb, total_files, region.to_json()),
             )
             task_id = cur.lastrowid
 
@@ -198,6 +331,8 @@ class DemTaskManager:
 
     def start_task(self, task_id: int) -> None:
         conn = get_connection()
+        reservation = None
+        owner = (_PIPELINE, task_id, 'download')
         try:
             cur = conn.cursor()
             with self._state_lock:
@@ -205,12 +340,72 @@ class DemTaskManager:
                 if active_thread and active_thread.is_alive():
                     raise ValueError(f"DEM task {task_id} is already running")
 
-                cur.execute("SELECT status FROM dem_tasks WHERE id = ?", (task_id,))
+                cur.execute(
+                    "SELECT status, dataset, output_path FROM dem_tasks WHERE id = ?",
+                    (task_id,))
                 row = cur.fetchone()
                 if not row:
                     raise ValueError(f"DEM task {task_id} not found")
                 if row["status"] not in ("pending", "paused"):
                     raise ValueError(f"Cannot start DEM task {task_id} with status '{row['status']}'")
+
+                # ---- 准入：磁盘预算 + 全局配额。夹在状态闸门与 UPDATE 之间 ----
+                # 位置是刻意的：这两道都可能拒，而在 UPDATE 之前被拒**不需要任何
+                # 回补** —— 行还停在 pending/paused，用户腾出空间或等一个任务跑完
+                # 再点一次就行。本文件下面那一串 L2 补偿块的存在，正是因为「先落库
+                # 再做可能失败的事」这个顺序。
+                output_dir = (resolve_stored_output_dir(row["output_path"])
+                              / f"dem_task_{task_id}")
+                # 估算按**还没下的**颗粒算，不是 total_files：恢复一个下到 90% 的
+                # 任务时按总量算会凭空要求十倍空间，把本来能跑完的任务拦死。
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM dem_files "
+                    "WHERE task_id=? AND status IN ('pending','failed','downloading')",
+                    (task_id,))
+                pending_granules = int((cur.fetchone() or {"n": 0})["n"] or 0)
+                estimate = disk_budget.estimate_dem_task(pending_granules, row["dataset"])
+                verdict = disk_budget.check_budget(output_dir, estimate, self.config)
+                logger.info(
+                    f"DEM task {task_id} 磁盘预检（{pending_granules} 颗待下）：{verdict.reason}")
+                if not verdict.ok:
+                    raise ValueError(verdict.reason)
+
+                # concurrent_downloads 从这里起是**请求量**而不是生效值：真正开的
+                # 连接数是调度器授予的那个（最低 1 条，一条也能跑完）。脏值不该让
+                # 任务起不来，退回出厂默认。
+                try:
+                    requested_conns = int(self.config.get("concurrent_downloads", "5"))
+                except (TypeError, ValueError):
+                    requested_conns = 5
+                scheduler = get_scheduler()
+                # 这里**没有**「先按 owner 键回收一张同名凭据」那一步，是刻意的：
+                # 那种写法能把一张还在服役的凭据摘掉（完整的缺陷形态记在
+                # release_owner 的 docstring 里），而它声称要防的泄漏在这条路径
+                # 上并不存在 —— 上面的 is_alive() 闸门证明没有活线程，而线程侧的
+                # 归还写在 _run_task 的 finally 里、**先于**它把自己从 active_tasks
+                # 摘掉，所以「线程已不在册」蕴含「凭据已归还」。真出现重复 owner
+                # 只可能是进程内另有 bug，那时 reserve 会当场 ValueError 把话说
+                # 清楚，而不是让我们悄悄吊销一份别人正在用的配额。
+                # 磁盘一并预留：check_budget 的判决对**别的**任务不可见，不预留的话
+                # 三个任务能一起通过同一份剩余空间（disk_budget 模块 docstring 的
+                # 「预算必须是全局的」）。DISK_BYTES 是只记账不设限的种类，
+                # 一定授予，不会成为拒绝的原因。
+                reservation = scheduler.reserve(owner, plan_download_reservation(
+                    requested_conns) + [
+                        # DISK_BYTES 是全额或不给的种类（半个磁盘预算没有意义），
+                        # 所以 minimum 必须等于 requested，否则 ResourceRequest
+                        # 的 __post_init__ 直接拒收。
+                        ResourceRequest(kind=ResourceKind.DISK_BYTES,
+                                        requested=verdict.required_bytes,
+                                        minimum=verdict.required_bytes)])
+                if reservation is None:
+                    free = scheduler.snapshot()['available']
+                    raise ValueError(
+                        f"DEM task {task_id} cannot start now: the global resource "
+                        f"budget is saturated (free task_slot="
+                        f"{free.get('task_slot')}, network={free.get('network')}). "
+                        f"Wait for a running task to finish, or raise "
+                        f"max_concurrent_tasks / max_network_connections in Settings.")
 
                 cur.execute(
                     "UPDATE dem_tasks SET status='running', started_at=? WHERE id=? AND status IN ('pending','paused')",
@@ -222,7 +417,9 @@ class DemTaskManager:
 
                 stop_flag = threading.Event()
                 self.stop_flags[task_id] = stop_flag
-                th = threading.Thread(target=self._run_task, args=(task_id, stop_flag), daemon=True, name=f"DemTask-{task_id}")
+                th = threading.Thread(target=self._run_task_entry,
+                                      args=(task_id, stop_flag, reservation),
+                                      daemon=True, name=f"DemTask-{task_id}")
                 self.active_tasks[task_id] = th
             try:
                 th.start()
@@ -241,7 +438,13 @@ class DemTaskManager:
                 )
                 conn.commit()
                 raise
+            # 交接完成：配额的所有权已经在线程手里，本方法的 finally 不该再碰它。
+            reservation = None
         finally:
+            # 线程没接手（任何一条抛出路径）就在这里还回去。凭据的 release 是
+            # 幂等的，所以这一句与线程侧的归还不会互相踩。
+            if reservation is not None:
+                reservation.release()
             conn.close()
 
     def pause_task(self, task_id: int) -> None:
@@ -275,7 +478,8 @@ class DemTaskManager:
         conn = get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT status, output_path FROM dem_tasks WHERE id = ?", (task_id,))
+            cur.execute("SELECT status, output_path, dataset FROM dem_tasks WHERE id = ?",
+                        (task_id,))
             row = cur.fetchone()
             if not row:
                 raise ValueError(f"DEM task {task_id} not found")
@@ -287,6 +491,7 @@ class DemTaskManager:
                     f"'{row['status']}'; wait for the download to complete"
                 )
             output_path = row["output_path"]
+            dataset = row["dataset"]
         finally:
             conn.close()
 
@@ -364,6 +569,77 @@ class DemTaskManager:
         task_dir = resolve_stored_output_dir(output_path) / f"dem_task_{task_id}"
         output_dir = task_dir / "terrain_tiles"
 
+        # ---- 准入：磁盘预算 + 全局配额。在 job 行 UPSERT 成 running **之前** ----
+        # 顺序与 start_task 同一条理由：这两道都可能拒，拒在落库之前不需要回补。
+        # 落库之后再拒就得走下面那个 L2 回补块，而那条路每多一个分支就多一次
+        # 「job 行永久停在 running、只能重启进程解开」的机会。
+        source_bytes = 0
+        for tif in list_dem_tifs(task_dir):
+            try:
+                source_bytes += tif.stat().st_size
+            except OSError:
+                pass
+        # Copernicus GLO-30 是 Float32（物化实测约源的 1.9 倍），ASTER 是 Int16
+        # （0.78 倍）—— 差一倍多，不能用同一个系数。
+        estimate = disk_budget.estimate_terrain_tiling(
+            source_bytes, float_source=(dataset == "COP-DEM-GLO-30"))
+        verdict = disk_budget.check_budget(output_dir, estimate, self.config)
+        logger.info(f"DEM task {task_id} 切片磁盘预检"
+                    f"（源 {source_bytes / (1024 * 1024):.0f} MiB）：{verdict.reason}")
+        if not verdict.ok:
+            raise ValueError(verdict.reason)
+
+        # ---- 切片作业的准入闸门必须跑在 reserve **之前** ----
+        # 这里曾经是一句无条件的 `scheduler.release_owner(owner)`，注释声称
+        # 「状态闸门已证明这个 owner 没有活着的线程」。那句话在 start_task 成立，
+        # 在这里是假的：本方法在它之前跑过的唯一闸门是 dem_tasks.status ==
+        # 'completed'（上面那处 SELECT），而整个切片期间 dem_tasks.status 一直
+        # 就是 completed —— 真正判定「已经在切片了」的是下面那条 dem_terrain_jobs
+        # 的 UPSERT，隔着二十多行。于是重复点一次「开始切片」的后果是：先把正在
+        # 跑的那份凭据（若干 CPU worker + 一个 GDAL 槽 + 一个任务槽）吊销，再让
+        # UPSERT 拒绝本次请求 —— 活着的作业继续跑，调度器账上却一格不占。
+        #
+        # active_tasks 不能拿来当这里的闸门：切片线程与下载线程共用那张表，
+        # 下载刚收尾的那一小段里它挂的还是下载线程（下面登记线程处的长注释讲的
+        # 就是这个窗口），拿它当闸门会把「下完立刻切片」这条正常路径拒掉。
+        # 所以按 job 行自己的状态预检。
+        conn = get_connection()
+        try:
+            job_row = conn.execute(
+                "SELECT status FROM dem_terrain_jobs WHERE task_id=?",
+                (task_id,)).fetchone()
+        finally:
+            conn.close()
+        if job_row and job_row["status"] == "running":
+            raise ValueError(f"DEM tiling job for task {task_id} is already running")
+        # 这道预检只负责「被拒时一分钱都不动」，它**不是**权威闸门：它与下面的
+        # UPSERT 之间仍有窗口，两个请求可以同时读到非 running。权威的仍然是
+        # UPSERT 的 `WHERE status != 'running'` + rowcount ——读与写在同一条
+        # 语句里原子完成，并发请求里只有一个能把行改成 running，竞态是它关掉的。
+
+        # 请求的 worker 数：这条管线没有自己的配置键，直接按调度器的 CPU 上限要，
+        # 让全局配额去分（要 0 会被 plan_tiling_reservation 顶成 1）。
+        scheduler = get_scheduler()
+        owner = (_PIPELINE, task_id, 'tiling')
+        requested_workers = scheduler.limits().get(ResourceKind.CPU_WORKER, 1)
+        reservation = scheduler.reserve(
+            owner,
+            plan_tiling_reservation(requested_workers) + [
+                # 全额或不给，minimum 必须等于 requested（见 ResourceRequest）。
+                ResourceRequest(kind=ResourceKind.DISK_BYTES,
+                                requested=verdict.required_bytes,
+                                minimum=verdict.required_bytes)],
+        )
+        if reservation is None:
+            free = scheduler.snapshot()['available']
+            raise ValueError(
+                f"DEM tiling for task {task_id} cannot start now: the global resource "
+                f"budget is saturated (free task_slot={free.get('task_slot')}, "
+                f"cpu_worker={free.get('cpu_worker')}, "
+                f"gdal_slot={free.get('gdal_slot')}). Wait for a running task to "
+                f"finish, or raise max_concurrent_tasks / max_cpu_workers / "
+                f"max_gdal_slots in Settings.")
+
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -409,6 +685,12 @@ class DemTaskManager:
                 conn.commit()
         except Exception:
             conn.rollback()
+            # UPSERT 这一段失败（并发已在跑、库锁死）时线程还没接手凭据 ——
+            # 不还的话一个任务槽就此蒸发，而调用方只看到一句 ValueError。
+            # 只还**本次调用自己申请到的**那一张：release() 内部走 _on_release，
+            # 它按身份把登记摘掉，所以不需要、也不该再按 owner 键补一刀 ——
+            # 那一刀在并发下摘掉的可能正是别人刚拿到的凭据。
+            reservation.release()
             raise
         finally:
             conn.close()
@@ -436,9 +718,9 @@ class DemTaskManager:
             with self._state_lock:
                 self.stop_flags[task_id] = stop_flag
                 th = threading.Thread(
-                    target=self._run_tiling_job,
+                    target=self._run_tiling_entry,
                     args=(task_id, task_dir, output_dir, maxzoom, parent_url, stop_flag,
-                          quality, vertex_normals),
+                          quality, vertex_normals, reservation),
                     daemon=True,
                     name=f"DemTiling-{task_id}",
                 )
@@ -457,13 +739,24 @@ class DemTaskManager:
                     self.active_tasks.pop(task_id, None)
                 if self.stop_flags.get(task_id) is stop_flag:
                     self.stop_flags.pop(task_id, None)
+            # 与 job 行的回补同一组：线程没起来，凭据也就没人还。
+            # 同上：release() 自己就按身份摘登记，不再按 owner 键补第二刀。
+            reservation.release()
             self._mark_tiling_job_failed(
                 task_id, f"tiling thread failed to start: {e}")
             raise
 
     def _mark_tiling_job_failed(self, task_id: int, message: str) -> None:
-        """把切片 job 行从 running 回补成 failed（L2 的线程启动失败路径）。"""
+        """把切片 job 行从 running 回补成 failed（L2 的线程启动失败路径）。
+
+        终态的原因必须落进**任务自己的**日志（§4.5）。这条路径上没有现成的
+        句柄：唯一调用点在 `start_tiling` 的「线程创建失败」分支，而开每任务
+        日志是 `_run_tiling_job` 的第一件事 —— 线程压根没起来，那一行从来没
+        被执行。只写全局 terraforge.log 的话，用户点开任务详情看到的是「失败」
+        两个字加一片空白。
+        """
         conn = get_connection()
+        changed = False
         try:
             cur = conn.cursor()
             cur.execute(
@@ -472,18 +765,65 @@ class DemTaskManager:
                 (message, utc_now_iso(), task_id),
             )
             conn.commit()
+            changed = bool(cur.rowcount)
         except Exception as e:
             logger.error(f"Failed to mark tiling job {task_id} as failed: {e}")
         finally:
             conn.close()
+        if not changed:
+            # 一行都没改（作业已经是终态，或行已被删）就没有终态需要解释。
+            # 无条件写会让「已判 failed」这句话出现在一个其实跑完了的任务的
+            # 日志里 —— 比不写更糟（同 fail_stranded_running_task 那几处的口径）。
+            return
+        try:
+            tlog = open_task_log(_PIPELINE, task_id)
+            try:
+                tlog.event('terminal', status='failed',
+                           reason='tiling_thread_start_failed', detail=message)
+                tlog.error('切片线程未能启动，切片作业行已回补为 failed：%s', message)
+            finally:
+                tlog.close()
+        except Exception as e:
+            logger.warning(f"DEM task {task_id}: 切片启动失败日志写入失败（忽略）: {e!r}")
+
+    def _run_tiling_entry(self, task_id: int, task_dir: Path, output_dir: Path,
+                          maxzoom: int, parent_url: str,
+                          stop_flag: Optional[threading.Event] = None,
+                          quality: str = DEFAULT_TILING_QUALITY,
+                          vertex_normals: bool = False, reservation=None) -> None:
+        """切片线程的真正入口。多这一层的理由与 _run_task_entry 逐字相同：
+        配额挂在线程上，_run_tiling_job 被替换或炸出 BaseException 时也还得回来。
+        """
+        try:
+            self._run_tiling_job(task_id, task_dir, output_dir, maxzoom, parent_url,
+                                 stop_flag, quality, vertex_normals,
+                                 reservation=reservation)
+        finally:
+            # 只归还**交接给这个线程的那一张**。按 owner 键归还会在「本线程迟到
+            # 收尾、用户已经把下一轮起起来了」的窗口里吊销下一轮的凭据，而那个
+            # 窗口可以长达数十秒（fail_stranded_running_task 会新开一条
+            # busy_timeout=30s 的 sqlite 连接）。身份比较之下，迟到的这一次
+            # 直接返回 0，什么都不动。
+            if reservation is not None:
+                get_scheduler().release_owner(
+                    (_PIPELINE, task_id, 'tiling'), reservation)
 
     def _run_tiling_job(self, task_id: int, task_dir: Path, output_dir: Path,
                         maxzoom: int, parent_url: str,
                         stop_flag: Optional[threading.Event] = None,
                         quality: str = DEFAULT_TILING_QUALITY,
-                        vertex_normals: bool = False) -> None:
+                        vertex_normals: bool = False, reservation=None) -> None:
         failure = None
+        # 每任务日志与下载线程共用同一个 pipeline/task_id —— 下载与切片是同一个
+        # 任务的两个阶段，日志本来就该在一份文件里按时间顺序接上。
+        tlog = open_task_log(_PIPELINE, task_id)
+        # 授予的 CPU 名额必须真的传到进程池：不传的话 build_terrain 走它自己的
+        # min(4, cpu_count)，两个地形任务并行就是 8 个重型 worker，全局上限白设。
+        granted_workers = reservation.cpu_workers if reservation is not None else 0
         try:
+            tlog.event('stage', name='tiling', maxzoom=maxzoom, quality=quality,
+                       normals=bool(vertex_normals), workers=granted_workers or 'auto',
+                       output_dir=str(output_dir))
             # 切片进度节流落库/emit（范本：contour_task_manager 渲染阶段的
             # render_progress）：build_terrain 逐瓦片回调，不节流时每次回调
             # 都是 UPDATE + commit + 广播，百万级瓦片会把切片拖垮、把前端打爆。
@@ -598,10 +938,25 @@ class DemTaskManager:
                     params=TileParams(maxzoom=maxzoom_from_db(maxzoom),
                                       parent_url=parent_url,
                                       normals=vertex_normals,
+                                      workers=granted_workers,
                                       level_offset=TILING_QUALITY_OFFSETS[quality],
                                       progress_cb=tiling_progress,
                                       stage_cb=tiling_stage,
-                                      stop_flag=stop_flag),
+                                      stop_flag=stop_flag,
+                                      # 运行中复查（cesium_terrain 里那次
+                                      # recheck_remaining）必须知道「本任务自己
+                                      # 预留的那份 DISK_BYTES 不算别人占的」——
+                                      # 不传 owner 的话它把本任务的预留读成他人
+                                      # 预留，于是一台空机器上单个任务需要两倍
+                                      # 空间，切到一半被自己的预留判死。
+                                      # 必须用 reservation.owner 而不是手写
+                                      # ('dem', task_id, 'tiling')：那是第二份
+                                      # 事实来源，对不上时 _reserved_by_others
+                                      # 按元组相等匹配，找不到就静默退回旧的
+                                      # 双重计数，一声不吭。
+                                      owner=(reservation.owner
+                                             if reservation is not None
+                                             else None)),
                 ) or {}
                 _flush_tiling_progress()
             finally:
@@ -629,6 +984,10 @@ class DemTaskManager:
             if failed > 0:
                 warning = f"部分地形瓦片切片失败({failed}/{total})"
                 logger.warning(f"DEM tiling job {task_id}: {warning}")
+                tlog.warning('%s', warning)
+            tlog.event('tiles', rendered=rendered, failed=failed, total=total,
+                       effective_maxzoom=effective_maxzoom
+                       if effective_maxzoom is not None else 'unreported')
 
             if stopped:
                 # 中途停止的唯一入口是删除任务（DEM 切片没有暂停/恢复语义）——
@@ -638,6 +997,9 @@ class DemTaskManager:
                 # 的 commit 失败分支回滚 DELETE 却【不】回滚停止标志（有意的），
                 # 于是行还在、标志已置、这里正常 return —— 没有异常给下面的兜底
                 # except 接。那种行由 finally 的搁死补偿判 failed，不是靠这里。
+                tlog.event('terminal', status='stopped',
+                           reason='stop flag set (task deleted)',
+                           rendered=rendered, total=total)
                 return
 
             conn = get_connection()
@@ -656,6 +1018,8 @@ class DemTaskManager:
                 conn.commit()
             finally:
                 conn.close()
+            tlog.event('terminal', status='completed', rendered=rendered,
+                       failed=failed, total=total, warning=warning or '')
             self._emit_tiling_finished(task_id, "completed")
 
         except Exception as e:
@@ -663,6 +1027,11 @@ class DemTaskManager:
             # （库被锁/磁盘满），抛了就没人再写终态，只剩 finally 的搁死补偿，而它
             # 要拿这个原因写进 error_message。
             failure = e
+            # GDAL 的失败在这里已经是一个 Python 异常了 —— 回溯必须进任务日志，
+            # 「为什么切片失败」这句话的答案九成在那段回溯里（BuildVRT 丢源、
+            # ENOSPC、BrokenProcessPool 各有各的形状）。
+            tlog.exception('DEM 切片终态 failed：%s', e)
+            tlog.event('terminal', status='failed', reason=str(e))
             conn = get_connection()
             try:
                 cur = conn.cursor()
@@ -678,6 +1047,9 @@ class DemTaskManager:
             self._emit_tiling_finished(task_id, "failed")
             logger.error(f"DEM tiling job failed for task {task_id}: {e}")
         finally:
+            # 配额与线程登记同生共死，所以两者在同一个 finally 里还。
+            if reservation is not None:
+                reservation.release()
             # 与 _run_task 同一约定：只在自己就是登记的那个线程/flag 时才摘。
             # 首先防的是并发重叠 —— start_tiling 里登记线程前那段注释说明了
             # 下载收尾与 start_tiling 有真实的窗口，谁被谁盖掉取决于抢锁顺序，被盖掉的
@@ -703,9 +1075,23 @@ class DemTaskManager:
                 # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的
                 # docstring）。盖住两条路：上面那个兜底 except 自己抛出去了，
                 # 以及 stopped 分支正常 return 而行没被删掉。
-                fail_stranded_running_task(
-                    'dem_terrain_jobs', task_id,
-                    f'切片线程异常: {failure}' if failure is not None else '')
+                stranded_reason = (f'切片线程异常: {failure}' if failure is not None
+                                   else '')
+                if fail_stranded_running_task('dem_terrain_jobs', task_id,
+                                              stranded_reason):
+                    # 只在**真的改了行**（running → failed）时补这一笔。那个
+                    # helper 只写全局日志，而 §4.5 的门槛是「任何终态都能从
+                    # **任务自己的**日志解释原因」—— 没有下面两行，任务日志的
+                    # 最后一句是某个瓦片的进度，库里却写着 failed，两份记录当面
+                    # 打架。看返回值而不是猜：正常收尾时那条带
+                    # `WHERE status='running'` 的 UPDATE 是无害的 no-op，那种
+                    # 情况下多写一句「已判 failed」比不写更糟。
+                    tlog.event('terminal', status='failed', reason='thread_stranded',
+                               detail=stranded_reason or 'worker exited without settling the row')
+                    tlog.error(
+                        '切片线程退出时作业行仍停在 running，已由兜底判为 failed：%s',
+                        stranded_reason or 'worker 没有走到任何终态写入')
+            tlog.close()
 
     def _emit_tiling_finished(self, task_id: int, status: str) -> None:
         """切片作业收尾时补一发 terrain_job_progress。
@@ -801,14 +1187,48 @@ class DemTaskManager:
             on_row_gone=on_row_gone,
         )
 
-    def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
-        failure = None
+    def _run_task_entry(self, task_id: int, stop_flag: Optional[threading.Event] = None,
+                        reservation=None) -> None:
+        """下载线程的**真正**入口：配额的归还挂在线程上，而不是挂在 _run_task 里面。
+
+        为什么多这一层：TASK_SLOT 泄漏一份就少一个全局任务名额，而且是永久的
+        （进程重启才清），表现是「所有管线突然都起不了任务，日志里一句话都没有」。
+        _run_task 自己的 finally 已经归还一次；这一层兜的是它够不着的形态 ——
+        它被子类/替身换掉、或者在 finally 之外炸出 BaseException。release 幂等，
+        两处都跑不会把配额还两次。
+        """
         try:
-            asyncio.run(self._execute(task_id, stop_flag))
+            self._run_task(task_id, stop_flag, reservation=reservation)
+        finally:
+            # 同 _run_tiling_entry：只还交接给本线程的那一张。按 owner 键还会在
+            # 「暂停后立刻恢复」这种再普通不过的操作里吊销新一轮的凭据。
+            if reservation is not None:
+                get_scheduler().release_owner(
+                    (_PIPELINE, task_id, 'download'), reservation)
+
+    def _run_task(self, task_id: int, stop_flag: Optional[threading.Event] = None,
+                  reservation=None) -> None:
+        failure = None
+        # 每任务日志（§4.5）。open_task_log 永不返回 None、所有方法都不抛，
+        # 所以下面不需要任何 if tlog。
+        tlog = open_task_log(_PIPELINE, task_id)
+        try:
+            granted = reservation.granted if reservation is not None else {}
+            tlog.event('task_start', pipeline=_PIPELINE, task_id=task_id,
+                       **{kind.value: n for kind, n in granted.items()})
+            asyncio.run(self._execute(
+                task_id, stop_flag, tlog=tlog,
+                max_connections=(reservation.network if reservation is not None else None)))
         except Exception as e:
             logger.error(f"DEM task {task_id} thread failed: {e}")
+            # 终态的原因必须落在**这个任务自己的**日志里：用户点开的是任务详情，
+            # 不是全局 terraforge.log。
+            tlog.exception(f"DEM 下载线程异常退出: {e}")
             failure = e
         finally:
+            # 配额与线程登记一起还：两者的生命周期完全相同（这个线程活着的时段）。
+            if reservation is not None:
+                reservation.release()
             with self._state_lock:
                 deregistered = (
                     self.active_tasks.get(task_id) is threading.current_thread())
@@ -818,11 +1238,29 @@ class DemTaskManager:
                     self.stop_flags.pop(task_id, None)
             if deregistered:
                 # 行还停在 running 就是搁死了（理由与竞态分析见 helper 的 docstring）。
-                fail_stranded_running_task(
-                    'dem_tasks', task_id,
-                    f'线程异常: {failure}' if failure is not None else '')
+                stranded_reason = f'线程异常: {failure}' if failure is not None else ''
+                if fail_stranded_running_task('dem_tasks', task_id, stranded_reason):
+                    # 只在真的改了行时补终态记录，理由同 _run_tiling_job 里那处。
+                    tlog.event('terminal', status='failed', reason='thread_stranded',
+                               detail=stranded_reason or 'worker exited without settling the row')
+                    tlog.error(
+                        '线程退出时任务行仍停在 running，已由兜底判为 failed：%s',
+                        stranded_reason or 'worker 没有走到任何终态写入')
+            tlog.event('task_thread_exit', failure=str(failure) if failure else '')
+            tlog.close()
 
-    async def _execute(self, task_id: int, stop_flag: Optional[threading.Event] = None) -> None:
+    async def _execute(self, task_id: int, stop_flag: Optional[threading.Event] = None,
+                       *, tlog=None, max_connections: Optional[int] = None) -> None:
+        """执行一个 DEM 下载任务。
+
+        tlog / max_connections 都是 keyword-only 且可缺省：大量契约测试直接
+        `asyncio.run(mgr._execute(task_id))` 或 `(task_id, None)` 调这个方法，
+        它们测的是记账与状态机，不该被这两个新参数逼着改签名。
+        tlog 缺省时退化成一个只写全局日志的句柄（open_task_log 自己就是这么
+        降级的），max_connections 缺省时引擎回落到读 concurrent_downloads 配置。
+        """
+        if tlog is None:
+            tlog = open_task_log(_PIPELINE, task_id)
         conn = get_connection()
         try:
             cur = conn.cursor()
@@ -833,6 +1271,8 @@ class DemTaskManager:
 
             dataset = task["dataset"]
             output_dir = resolve_stored_output_dir(task["output_path"]) / f"dem_task_{task_id}"
+            tlog.event('stage', name='download', dataset=dataset,
+                       output_dir=str(output_dir), connections=max_connections or 'config')
 
             # C4: 暂停/崩溃时下载中的文件停留在 downloading —— 恢复时重新入队，
             # 否则下面的查询会跳过它们、终态统计也漏掉（任务被误报 completed）。
@@ -851,6 +1291,8 @@ class DemTaskManager:
                 (task_id,),
             )
             granules = [r["granule_id"] for r in cur.fetchall()]
+            tlog.event('granules', pending=len(granules),
+                       total=int(task["total_files"] or 0))
 
             stop_ev = asyncio.Event()
             if stop_flag and stop_flag.is_set():
@@ -962,7 +1404,38 @@ class DemTaskManager:
                     _record_progress, granule_id, status, error, size_bytes)
                 progress_counts["downloaded"] += downloaded_delta
                 progress_counts["failed"] += failed_delta
+                # 只数**终态**：'downloading' 会在同一颗上先来一发，'pending'
+                # （暂停回写）压根不是尘埃落定。数错的后果是剩余量偏小、复查偏松。
+                if status in ("completed", "skipped", "failed"):
+                    settled["n"] += 1
                 await _maybe_emit()
+
+            # ---- 运行中磁盘复查（§4.2）--------------------------------------
+            # 准入时 start_task 已经做过一次 check_budget，但那是**任务排队之前**
+            # 的一张快照：排队等名额、下载跑几十分钟，这期间另一个任务、另一个
+            # 进程、用户自己拷东西都能把盘吃掉。不复查的话终点是 ENOSPC —— 边写
+            # 边落盘的 COG 留下一份非空半成品，而断点判定是「存在且非空就跳过」，
+            # 于是下一轮把截断文件当成下好的（disk_budget 模块 docstring 的头一段）。
+            #
+            # 剩余工作量按**还没尘埃落定的颗粒数**现算：传死值等于跑到后半程还在
+            # 要求整个任务的空间，必然误判（recheck_remaining 的 docstring）。
+            settled = {"n": 0}
+            owner = (_PIPELINE, task_id, 'download')
+
+            def _remaining_estimate():
+                pending = max(0, len(granules) - settled["n"])
+                if pending == 0:
+                    return None
+                return disk_budget.estimate_dem_task(pending, dataset)
+
+            recheck = disk_budget.RunningRecheck(
+                output_dir, _remaining_estimate,
+                owner=owner, config_manager=self.config,
+                # 通过与否都记一行：估算错的时候第一件事就是回头看这行的数字。
+                on_verdict=lambda v: tlog.event(
+                    'disk_recheck', ok=v.ok, free=v.free_bytes,
+                    required=v.required_bytes, shortfall=v.shortfall_bytes,
+                    reason=v.reason))
 
             # Wire stop flag polling: map threading.Event -> asyncio.Event
             async def stop_watcher():
@@ -974,7 +1447,7 @@ class DemTaskManager:
 
             watcher = asyncio.create_task(stop_watcher())
             try:
-                await self.engine.download_files(
+                download_kwargs = dict(
                     dataset=dataset,
                     granules=granules,
                     output_dir=output_dir,
@@ -982,10 +1455,59 @@ class DemTaskManager:
                     bytes_callback=on_bytes,
                     stop_flag=stop_ev,
                 )
+                # 授予的连接数与磁盘复查只在引擎**认得**这两个参数时才传。
+                # self.engine 是注入点，十来个契约测试塞的是位置签名的替身
+                # （dataset, granules, output_dir, progress_callback, stop_flag,
+                # bytes_callback=None）—— 它们测的是记账与状态机，无条件多塞
+                # 关键字会让它们全部 TypeError。真引擎恒有这两个参数，所以生产
+                # 路径一定按授予量开连接、一定复查磁盘。
+                try:
+                    engine_params = inspect.signature(
+                        self.engine.download_files).parameters
+                except (TypeError, ValueError):
+                    # 取不出签名的可调用对象（内建 / C 实现的替身）：按「都不认得」
+                    # 处理，退回改造前的调用形态，而不是让任务在这里炸。
+                    engine_params = {}
+                if max_connections and 'max_concurrent' in engine_params:
+                    download_kwargs['max_concurrent'] = max_connections
+                if 'disk_recheck' in engine_params:
+                    download_kwargs['disk_recheck'] = recheck
+                await self.engine.download_files(**download_kwargs)
             finally:
                 watcher.cancel()
 
+            if recheck.blocked is not None:
+                # 盘在跑到一半时不够了。引擎已经按「暂停」那条路径干净收手
+                # （在途颗粒回写 pending），这里补上状态与**原因** —— 只收手不
+                # 写原因的话，用户看到的是一个没有任何解释的 paused。
+                #
+                # 落 paused 而不是 failed：failed 不在 start_task 的准入白名单
+                # （'pending','paused'）里，判成 failed 等于「腾出空间也点不动
+                # 恢复」，把一个可恢复的处境变成死局。
+                reason = recheck.blocked.reason
+                tlog.event('terminal', status='paused', reason='disk_budget',
+                           shortfall=recheck.blocked.shortfall_bytes, detail=reason)
+                tlog.error('磁盘空间在下载途中不够了，任务已暂停：%s', reason)
+                logger.warning(f"DEM task {task_id} paused by the disk recheck: {reason}")
+                cur.execute(
+                    "UPDATE dem_tasks SET status='paused', error_message=? "
+                    "WHERE id=? AND status='running'",
+                    (reason, task_id),
+                )
+                conn.commit()
+                if cur.rowcount and self.socketio:
+                    try:
+                        self.socketio.emit("task_paused", {
+                            "task_id": task_id, "task_type": "dem",
+                            "status": "paused", "error_message": reason})
+                    except Exception as emit_error:
+                        logger.warning(
+                            f"DEM task {task_id}: emit task_paused failed (ignored): {emit_error}")
+                return
+
             if stop_ev.is_set():
+                tlog.event('terminal', status='stopped',
+                           reason='stop flag set (pause or delete)')
                 return
 
             cur.execute("SELECT status FROM dem_tasks WHERE id=?", (task_id,))
@@ -993,6 +1515,8 @@ class DemTaskManager:
             # 只剩 "paused" 要挡：用户明确按了暂停，收尾不得改写它。行不在了
             # （被删）同样直接退出。
             if not current or current["status"] == "paused":
+                tlog.event('terminal', status=(current["status"] if current else 'deleted'),
+                           reason='row is paused or gone; finaliser stood down')
                 return
 
             cur.execute(
@@ -1011,6 +1535,9 @@ class DemTaskManager:
 
             if failed_count > 0 or pending_count > 0:
                 error_message = f"{failed_count} DEM file(s) failed, {pending_count} DEM file(s) pending"
+                tlog.error('DEM 任务终态 failed：%s', error_message)
+                tlog.event('terminal', status='failed', failed=failed_count,
+                           pending=pending_count)
                 cur.execute(
                     "UPDATE dem_tasks SET status='failed', error_message=?, completed_at=? WHERE id=? AND status='running'",
                     (error_message, utc_now_iso(), task_id),
@@ -1022,6 +1549,8 @@ class DemTaskManager:
 
             cur.execute("UPDATE dem_tasks SET status='completed', completed_at=? WHERE id=? AND status='running'", (utc_now_iso(), task_id))
             conn.commit()
+            tlog.event('terminal', status='completed',
+                       total=int(task["total_files"] or 0))
             if cur.rowcount and self.socketio:
                 # M1: emit 在 completed 落库之后才跑,抛异常会落到兜底 except 把
                 # 这条终态记录改写成 failed —— 必须自带 try 只记日志。
@@ -1031,6 +1560,8 @@ class DemTaskManager:
                     logger.warning(f"DEM task {task_id}: emit task_completed failed (ignored): {emit_error}")
 
         except Exception as e:
+            tlog.exception('DEM 任务终态 failed（执行异常）：%s', e)
+            tlog.event('terminal', status='failed', reason=str(e))
             try:
                 cur = conn.cursor()
                 # M1: 'completed' 必须在排除列表里 —— 终态记录绝不可被改写；

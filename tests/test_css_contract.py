@@ -3681,7 +3681,17 @@ def _bbox_object_literals(src):
 # 12 -> 13（B4 手动输入范围）：空态浮层新增的键盘可达入口，落定时
 #   `_applyManualBounds()` 用校验后的四至重建 `_rectDegrees` —— 与鼠标框选
 #   同一套写入路径，所以也是一个受本条方位配对检查保护的构造点。
-MAP_JS_BBOX_LITERAL_COUNT = 13
+# 13 -> 16（§5.1 区域导入与地名搜索）：三个新构造点，每一个都受本条方位配对
+#   检查保护 —— 这正是它们该被数进来的理由，不是漏检：
+#     · `applyImportedRegion()`：把服务端 RegionSpec 的 bbox 落成 currentBounds
+#       （`{ north: north, south: south, ... }`，四个同名局部变量来自
+#       `const [west, south, east, north] = region.bbox`，解构顺序错一位就是
+#       整个选区错位，而这条断言正好钉住键与值同名）；
+#     · `applyPlaceResult()` 传给 validateBoundsRules 的四至对象 —— 地名搜索
+#       给的 bbox 要过与框选、点读数编辑、手动输入同一道闸门；
+#     · `applyPlaceResult()` 重建的 `_rectDegrees` —— 与 _applyManualBounds
+#       同一套写入路径。
+MAP_JS_BBOX_LITERAL_COUNT = 16
 
 
 def test_bbox_literals_never_swap_directions():
@@ -4742,7 +4752,12 @@ def test_button_ink_is_readable_in_every_state():
 # 扳手钮，打开处理弹窗预选该任务（task_list.js TaskRow）。
 # 18 -> 19（命令面板）：base.html 新增 _command_palette.html 的速查表关闭钮
 # （.cmdk__help-close，× 字符 + aria-label，-labelled 合规）。
-ICON_ONLY_BUTTON_COUNT = 19
+# 19 -> 20（§5.3 导出 MBTiles）：task_list.js 的 TaskRow 在预览/处理旁多一颗
+# 「导出 MBTiles」立方体钮（已完成的地图/等高线任务，带 title + aria-label）。
+# MBTiles 是**通用产物容器**而不是第四种 output_format，所以它是完成后的一个
+# 动作而不是创建表单里的一个值 —— 那一勾在 templates/index.html 里是带
+# <label> 的复选框，不是按钮，不进本计数。
+ICON_ONLY_BUTTON_COUNT = 20
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -5615,13 +5630,30 @@ def test_inline_style_colors_meet_wcag_aa_everywhere():
 # `None` = 中性档：pending **故意**没有语义色（等待中还没开始）。对它的要求
 # 反过来：最终色**不许**等于四个语义色中的任何一个 —— 中性态被画成青绿品牌色
 # 正是本轮补掉的缺陷之一。
+#
+# 2026-08 §13-3 新增三态，**复用**已有的四档语义色，一个新颜色名都不加：
+#   retrying            -> --color-info    与 running 同族：它就是在下载，只是第二遍。
+#   pending_decision    -> --color-warning 与 paused 同族：都是「停下来等你」。
+#   completed_with_gaps -> --color-warning **不是** success —— 产物带洞是一个必须
+#                          被看见的事实，画成绿色等于把它伪装成干净的成功。
+# 复用不是省事：每个新颜色名都要在 style.css 里配一条
+# `.progress-bar.bg-X { ... !important }`（压 Bootstrap 自带 !important 的工具类，
+# 见 test_important_count_under_control），而 !important 的上界是 37、实测 34 ——
+# 三个新颜色名会把余量一次吃光。
+# 一色多态因此是**允许**的：本表只要求「每个状态解析出它自己那一档」，不要求
+# 八个状态互不同色。区分 paused / pending_decision / completed_with_gaps 的不是
+# 颜色，而是 .task-status-text 的文字与带数字的 .task-gap-chip
+#（WCAG 1.4.1「不只靠颜色」由它们承担，见 test_task_row_status_dot_covers_every_status）。
 # --------------------------------------------------------------------------
 
 _STATUS_SEMANTIC_TOKEN = {
     'pending': None,
     'running': '--color-info',
+    'retrying': '--color-info',
     'paused': '--color-warning',
+    'pending_decision': '--color-warning',
     'completed': '--color-success',
+    'completed_with_gaps': '--color-warning',
     'failed': '--color-danger',
 }
 
@@ -5652,10 +5684,12 @@ def test_status_badge_color_matches_the_semantic_token():
     钉的是语义令牌不是色号：调色板改值时本条不动。
     中性档（pending）反向断言 —— 不许等于四个语义色中的任何一个。
 
-    覆盖边界：5 个状态 = 5 组，先钉组数再逐组比对。
+    覆盖边界：8 个状态 = 8 组，先钉组数再逐组比对。
     （改前是 2 个文件 × 6 = 12 组：getStatusColor 在 tasks.js / history.js
     各有一份、且各含 cancelled；实现已收口到 static/js/task_status.js，
-    状态也随「取消任务」下线减为五态。）
+    状态随「取消任务」下线减为五态，2026-08 §13-3 又加回三态
+    —— retrying / pending_decision / completed_with_gaps，见 _STATUS_SEMANTIC_TOKEN
+    上方那段「为什么复用已有颜色名」。）
     """
     css = _css()
     semantic = _semantic_palette_values(css)
@@ -5684,7 +5718,7 @@ def test_status_badge_color_matches_the_semantic_token():
                 problems.append(
                     f'{status!r} -> bg-{name} -> {got}，'
                     f'期望 {token}({want})')
-    assert len(checked) == 5, f'只检查了 {len(checked)} 组（期望 5）—— 本测试已失效'
+    assert len(checked) == 8, f'只检查了 {len(checked)} 组（期望 8）—— 本测试已失效'
     assert not problems, (
         '状态与语义色的配对错了：\n' + '\n'.join('  ' + p for p in problems)
         + '\n\n全部映射：\n' + '\n'.join('  ' + c for c in checked)
@@ -5692,20 +5726,26 @@ def test_status_badge_color_matches_the_semantic_token():
 
 
 def test_task_row_status_dot_covers_every_status():
-    """行1 的 8px 状态点：五态**每一态**都要有自己的规则，且色对、够看得见。
+    """行1 的 8px 状态点：八态**每一态**都要有自己的规则，且色对、够看得见。
 
     （前身 test_task_row_status_bar_covers_every_status。2026-08 统一流式
     列表重设计：4px 状态左条随 9 列表格一起废除，状态识别改由行1 的
     .task-dot 圆点 + 小字状态文本承担。接替的这条同时是 WCAG 1.4.1
-    「不只靠颜色」链条的图形侧——文字侧由两个 JS 的 getStatusText
-    五态词表断言守，原徽章 SVG 图标表断言 test_status_icons_are_real_
+    「不只靠颜色」链条的图形侧——文字侧由 getStatusText 的八态词表断言守，
+    原徽章 SVG 图标表断言 test_status_icons_are_real_
     distinct_glyphs 随徽章 pill 删除，登记在 tests/test_tasks_js_contract.py。）
 
     三件事一起断言：
-      1. 五态各有一条顶层规则（缺一条就会落到 .task-dot 的兜底色——
-         兜底是中性灰，「失败」掉到灰色 = 状态信号丢失）；
+      1. 八态各有一条顶层规则（缺一条就会落到 .task-dot 的兜底色——
+         兜底是品牌色，「失败」掉到品牌蓝 = 状态信号丢失）；
       2. 语义档的色值等于对应令牌，中性档不许等于任何语义色；
       3. 对面板底 >= 3:1 —— 它是图形元素不是文字，走 WCAG 1.4.11 的下限。
+
+    ⚠️ 本条**不**要求八种颜色互不相同：§13-3 的三个新态刻意复用已有语义色
+    （retrying=info，pending_decision / completed_with_gaps=warning），理由见
+    _STATUS_SEMANTIC_TOKEN 上方。同色两态的区分由 .task-status-text 的文字与带
+    数字的 .task-gap-chip 承担 —— 那才是 1.4.1 要的「不只靠颜色」，多凑三个
+    互不相同的色号并不能替代它。
     """
     css = _css()
     panel = _effective_task_card_backdrop(css)
@@ -5742,8 +5782,8 @@ def test_task_row_status_dot_covers_every_status():
             problems.append(
                 f'`{branch}` 的 {got} 对面板底 {panel} 只有 {ratio:.2f}:1，'
                 '低于 WCAG 1.4.11 给图形元素的 3:1')
-    assert len(report) + len([p for p in problems if '条声明了背景色' in p]) == 5, (
-        '没有恰好检查 5 个状态 —— 本测试已失效'
+    assert len(report) + len([p for p in problems if '条声明了背景色' in p]) == 8, (
+        '没有恰好检查 8 个状态 —— 本测试已失效'
     )
     assert not problems, (
         '状态点配色有问题：\n' + '\n'.join('  ' + p for p in problems)
@@ -6869,8 +6909,14 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 28 -> 29（命令面板）：base.html 新增 static/js/command_palette.js。
     # 29 -> 30（全窗口拖拽 .tif）：index.html 的 extra_js 新增
     # static/js/drop_process.js（仅首页，defer 跟在 panels.js 之后）。
-    assert len(refs) == 30, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 30 处。"
+    # 30 -> 31（§6.1 统一任务中心）：base.html 的 vendor_task_list_js block 新增
+    # static/js/task_center.js —— tasks.js 里与首页地图无关的那一半（socket 接线、
+    # 四路活动列表、进度合并、终态处理、耗时/速度、启动/暂停/恢复、缺口决策）
+    # 全部搬进去。它必须在**公共**脚本区加载：那些能力过去只在首页有，因为实现
+    # 整块躺在 index.html 才加载的 tasks.js 里，于是 /history 上没有按钮、没有
+    # 实时更新、没有耗时也没有速度。/config 仍不付这份代价（它把整个 block 覆盖成空）。
+    assert len(refs) == 31, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 31 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )

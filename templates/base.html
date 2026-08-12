@@ -188,6 +188,58 @@
                             <div class="detail-terrain-info" id="detailTerrainInfo"></div>
                         </div>
                     </div>
+
+                    {# 缺口明细（§13-3）。只对有缺块记录的地图任务显示
+                       （history.js viewTaskDetails 的 map 分支按 gap_tiles /
+                       状态决定显隐）。内容整块由 JS 渲染：数字、分档、样本行
+                       都是运行期数据，且 pending_decision 还要在这里放
+                       「补漏」「接受并导出」两颗按钮 —— 服务端渲染一个空壳再
+                       由 JS 填，等于把同一份结构写两遍。 #}
+                    <div class="row" id="detailGapRow" hidden>
+                        <div class="col-12">
+                            <hr class="detail-sep">
+                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.gaps_label') }}</p>
+                            <div class="detail-gaps" id="detailGaps"></div>
+                        </div>
+                    </div>
+
+                    {# 产物清单（§13-3 / §5.3）。数据来自 GET /api/tasks/<id>/artifacts。
+
+                       为什么这一块非有不可：`artifacts.has_gaps` 才是「这份成果
+                       有洞」的**权威落点** —— artifacts 表刻意没有外键，就是为了
+                       让产物行比任务行活得久（用户可以删任务、留文件）。在这一块
+                       出现之前，那个标记在界面上一个字都不显示，那条接口全站零
+                       调用方：§13-3 要求的「成果与历史永久带缺块标记」等于只写在
+                       库里给自己看。
+
+                       同理，MBTiles 的体检判决（meta.validation，写在
+                       artifact_export.export_task_mbtiles 的收尾处）也只有这里
+                       透得出来。判决**不阻断导出**，所以它必须是一条能被读到的
+                       事实，而不是一次静默的 logger.warning。
+
+                       内容整块由 JS 渲染：条目数、形态、体检问题都是运行期数据，
+                       服务端渲染空壳再由 JS 填等于把同一份结构写两遍（与上面
+                       缺口那一块同一条理由）。 #}
+                    <div class="row" id="detailArtifactRow" hidden>
+                        <div class="col-12">
+                            <hr class="detail-sep">
+                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.artifacts_label') }}</p>
+                            <div class="detail-artifacts" id="detailArtifacts"></div>
+                        </div>
+                    </div>
+
+                    {# 任务日志（REST 轮询，不是 socket 流）。四条管线都有。
+                       为什么不做 socket 尾随：本应用没有 room 也没有 namespace，
+                       每一发 emit 都广播给**所有**客户端 —— 一个跑着的任务每秒
+                       几十行日志会推给每一个开着页面的人，而其中 99% 的人没有
+                       打开这个弹窗。轮询只在弹窗开着且任务还活着时进行。 #}
+                    <div class="row" id="detailLogRow" hidden>
+                        <div class="col-12">
+                            <hr class="detail-sep">
+                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.log_label') }}</p>
+                            <div class="task-log" id="detailLog"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ t('tpl.base.detail.close') }}</button>
@@ -268,15 +320,24 @@
     <script src="{{ url_for('static', filename='js/task_status.js') }}"></script>
 
     <!-- 任务时间流的渲染层：Vue 3 global build（自带 runtime compiler，
-         组件用 template 字符串写，**无构建步骤**）+ 响应式 store + 行组件。
+         组件用 template 字符串写，**无构建步骤**）+ 响应式 store + 行组件，
+         外加任务中心（实时链本体）。
          必须排在 tasks.js / history.js 之前 —— 那两个文件只写 TaskStore，
          渲染由这里接管。
          单独开 block 的理由同 vendor_map_js：/config 页没有 #historyTableBody，
-         不该白下 154KB（config.html 把这个 block 覆盖成空）。 -->
+         不该白下 154KB（config.html 把这个 block 覆盖成空）。
+
+         ⚠️ task_center.js 必须紧跟 task_list.js：它在**解析期**就自举
+         （socket.io 不重放错过的事件，get() 与 socket.on 之间不许让出事件
+         循环，见 socket.js 的文件头），自举时要用 window.TaskList.mount()
+         与 window.TaskStore。它也是 /history 拿到「启动/暂停/恢复 + 实时进度
+         + 已运行 + 速度」的**唯一**来源 —— 那些能力过去只在首页有，因为实现
+         整块躺在 index.html 才加载的 tasks.js 里（§6.1）。 -->
     {% block vendor_task_list_js %}
     <script src="{{ url_for('static', filename='vendor/vue/3.5.13/vue.global.prod.js') }}"></script>
     <script src="{{ url_for('static', filename='js/task_store.js') }}"></script>
     <script src="{{ url_for('static', filename='js/task_list.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/task_center.js') }}"></script>
     {% endblock %}
 
     {% block extra_js %}{% endblock %}

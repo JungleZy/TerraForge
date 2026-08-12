@@ -26,6 +26,9 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
+from src.contracts.outcome import TileOutcome  # noqa: E402
+
+
 class FakeSocketIO:
     def __init__(self):
         self.events = []
@@ -170,11 +173,12 @@ def test_batch_flush_runs_off_the_event_loop_thread(isolated_config, monkeypatch
 
     loop_thread = {}
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         loop_thread['ident'] = threading.get_ident()
         for tile in tiles:
-            await progress_callback(tile, 'completed', None)
-        return [{'tile': t, 'status': 'completed'} for t in tiles]
+            await progress_callback(tile, TileOutcome.SUCCESS.value, None)
+        return [{'tile': t, 'status': TileOutcome.SUCCESS.value} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
     asyncio.run(tm._execute_task(task_id))
@@ -230,12 +234,14 @@ def test_concurrent_callbacks_lose_no_failed_rows_while_flushing(
         # 碰巧无害。真实生产里每次回调前有网络 IO,上报天然分散,新登记会落进
         # executemany 正在执行的那几毫秒。这里用递增延迟复现同一分布。
         await asyncio.sleep(i * 0.0002)
-        await progress_callback(tile, 'failed', 'boom')
+        await progress_callback(tile, TileOutcome.RETRYABLE_FAILURE.value, 'boom')
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         await asyncio.gather(
             *(report(i, t, progress_callback) for i, t in enumerate(tiles)))
-        return [{'tile': t, 'status': 'failed', 'error': 'boom'} for t in tiles]
+        return [{'tile': t, 'status': TileOutcome.RETRYABLE_FAILURE.value,
+                 'error': 'boom'} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
     asyncio.run(tm._execute_task(task_id))
@@ -275,10 +281,12 @@ def test_failed_flush_returns_batch_to_queue(isolated_config, monkeypatch):
 
     _install_recording_connection(monkeypatch, tm_mod, before_write=maybe_boom)
 
-    async def fake_download_tiles_batch(tiles, style, progress_callback, stop_flag=None):
+    async def fake_download_tiles_batch(tiles, style, progress_callback,
+                                        stop_flag=None, **_):
         for tile in tiles:
-            await progress_callback(tile, 'failed', 'boom')
-        return [{'tile': t, 'status': 'failed', 'error': 'boom'} for t in tiles]
+            await progress_callback(tile, TileOutcome.RETRYABLE_FAILURE.value, 'boom')
+        return [{'tile': t, 'status': TileOutcome.RETRYABLE_FAILURE.value,
+                 'error': 'boom'} for t in tiles]
 
     tm.download_engine.download_tiles_batch = fake_download_tiles_batch
     asyncio.run(tm._execute_task(task_id))

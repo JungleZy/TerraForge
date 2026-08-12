@@ -105,13 +105,31 @@ MESSAGES = {
         'zh': '运行中',
         'en': 'Running',
     },
+    # 「补漏中」而不是「重试中」：用户在别处（补漏按钮、缺口决策行）看到的词
+    # 就是「补漏」，同一件事在状态里换个说法只会让人以为是两回事。
+    'js.tasks.status.retrying': {
+        'zh': '补漏中',
+        'en': 'Refilling',
+    },
     'js.tasks.status.paused': {
         'zh': '已暂停',
         'en': 'Paused',
     },
+    # 「等待决定」而不是「已暂停」：任务没有被谁按停，是它自己跑完之后发现
+    # 有缺块、按「默认严格不产出」停在这里等用户选补漏还是接受。
+    'js.tasks.status.pending_decision': {
+        'zh': '等待决定',
+        'en': 'Awaiting decision',
+    },
     'js.tasks.status.completed': {
         'zh': '已完成',
         'en': 'Completed',
+    },
+    # 括号里那半句不能省：它与「已完成」在列表里只差三个字，而差别是
+    # 「这份产物缺了一部分」。行上另有带数字的缺口徽章。
+    'js.tasks.status.completed_with_gaps': {
+        'zh': '已完成（有缺块）',
+        'en': 'Completed with gaps',
     },
     'js.tasks.status.failed': {
         'zh': '失败',
