@@ -1975,8 +1975,18 @@ def _export_via_plugin(pipeline: str, task_id: int, fmt: str):
         # 走到这里说明插件在「列格式」与「取导出器」之间被禁用了。
         return {'error': t('api.export.unsupported_format'),
                 'supported_formats': list(_export_formats())}, 400
+    # `accepts()` 也是第三方代码（与 `format_id()` 同一条隔离铁律）：抛了
+    # 只当这件产物不被接受，不让它变成一个 500。
+    def _accepts(artifact) -> bool:
+        try:
+            return bool(exporter.accepts(artifact.kind))
+        except Exception as e:
+            logger.warning('插件导出器 %s 的 accepts() 抛异常，跳过产物 %s：%r',
+                           fmt, artifact.path, e)
+            return False
+
     candidates = [a for a in artifact_store.list_artifacts(pipeline, task_id)
-                  if exporter.accepts(a.kind)]
+                  if _accepts(a)]
     if not candidates:
         return {'error': t('api.export.no_tiles')}, 400
     source = candidates[0]

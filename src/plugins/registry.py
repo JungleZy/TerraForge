@@ -342,19 +342,36 @@ def _prune_stale_rows() -> None:
 
     这一趟同时把存量机器上已有的垃圾行（本仓 0.4.0 那四行回落 id）清掉，
     所以不需要额外的一次性迁移：它每次启动都跑，比一次性迁移覆盖得更全。
+
+    **调用条件很硬**（见 `load_all`）：本轮必须**一个加载失败都没有**。理由
+    就是上面第 1 条自己描述的那个回落：manifest 解析不出来时 `_RECORDS` 的
+    key 是**目录名/模块名**（`tianditu_source`），真 id（`tianditu`）不在
+    keep 集合里 —— 照删不误的话，一次写坏的 `plugin.toml`、一次缺依赖的
+    import、插件里一句 `sys.exit()`，就会把用户那行**真**记录连同
+    `config_json` 里的 token 一起 DELETE 掉，而且修好之后也拿不回来。
+    垃圾行留到下一次干净启动再清，代价只是多留一会儿。
     """
     keep = set(_RECORDS)
     conn = get_connection()
     try:
-        rows = [r['id'] for r in conn.execute('SELECT id FROM plugins')]
-        stale = [pid for pid in rows if pid not in keep]
+        rows = [(r['id'], r['config_json']) for r in
+                conn.execute('SELECT id, config_json FROM plugins')]
+        stale = [pid for pid, _cfg in rows if pid not in keep]
         if not stale:
             return
+        # 带配置的行被删要**说出来**：那里面可能是用户的 token。静默删凭据
+        # 不该发生，哪怕这一趟在语义上是对的（插件确实不在了）。
+        with_config = sorted(pid for pid, cfg in rows
+                             if pid in set(stale) and (cfg or '{}') not in ('', '{}'))
         conn.executemany('DELETE FROM plugins WHERE id = ?',
                          [(pid,) for pid in stale])
         conn.commit()
         logger.info('清理了 %d 行已不存在的插件登记：%s', len(stale),
                     ', '.join(sorted(stale)))
+        if with_config:
+            logger.warning('上述清理连带删除了这些插件保存过的配置（含可能的'
+                           '凭据）：%s —— 插件已不在，重新安装后需要重填',
+                           ', '.join(with_config))
     except Exception as e:
         # 清理是收尾动作，失败只是留着垃圾行，不该打穿启动。
         logger.warning('插件登记行清理失败：%r', e)
@@ -376,7 +393,10 @@ def load_all() -> None:
         externals, scan_ok = _external_dirs()
         for child in externals:
             _load_one(str(child / 'plugin.toml'), 'external', child)
-        if scan_ok:
+        # 清理的前提是「本轮看到的 id 集合是权威的」。有任何一个插件加载失败
+        # 就不成立：失败时登记的 id 可能是回落的目录名/模块名，真 id 会被判成
+        # 陈旧行删掉（详见 `_prune_stale_rows` 的 docstring）。
+        if scan_ok and not any(r.load_error for r in _RECORDS.values()):
             _prune_stale_rows()
         failed = sum(1 for r in _RECORDS.values() if r.load_error)
         ok = len(_RECORDS) - failed
@@ -636,15 +656,34 @@ def iter_exporters() -> Iterator[Tuple[str, Exporter]]:
                 yield rec.manifest.plugin_id, exporter
 
 
+def _safe_format_id(plugin_id: str, exporter) -> str:
+    """`exporter.format_id()` 是第三方代码，抛了只当这个导出器不存在。
+
+    隔离铁律在这里必须生效：格式表是**核心导出路由**的第一段
+    （`api.export_task` 对任何格式都要先算它），一个 `format_id()` 抛异常的
+    插件会让 map/contour 的 **mbtiles 主路径**一起 500 —— 那条路径一行插件
+    代码都不该碰。口径与 `_load_one` 一致：任何失败落成一条 warning，绝不
+    向上抛。
+    """
+    try:
+        fmt = exporter.format_id()
+    except Exception as e:
+        logger.warning('插件 %s 的导出器 format_id() 抛异常，本轮跳过：%r',
+                       plugin_id, e)
+        return ''
+    return fmt if isinstance(fmt, str) else ''
+
+
 def exporter_for(fmt: str) -> Optional[Exporter]:
-    for _pid, exporter in iter_exporters():
-        if exporter.format_id() == fmt:
+    for pid, exporter in iter_exporters():
+        if _safe_format_id(pid, exporter) == fmt:
             return exporter
     return None
 
 
 def list_export_formats() -> Tuple[str, ...]:
-    return tuple(sorted({e.format_id() for _p, e in iter_exporters()}))
+    return tuple(sorted({f for f in (_safe_format_id(p, e)
+                                     for p, e in iter_exporters()) if f}))
 
 
 def iter_hooks() -> Iterator[Tuple[str, TaskHook]]:

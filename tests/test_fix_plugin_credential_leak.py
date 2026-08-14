@@ -244,3 +244,107 @@ def test_client_supplied_source_snapshot_is_rejected(isolated_app, tmp_path):
         conn.close()
     stored = (row['source_snapshot'] or '') if row is not None else ''
     assert 'attacker.example' not in stored, stored
+
+
+# ------------------------------------------- 定向复审：写入端 / 逗号截断
+
+_THROWING_PLUGIN = """
+from src.plugins.protocols import ParamSchema, PluginDefinition
+
+
+class P:
+    def params_schema(self): return ParamSchema(())
+    def estimate(self, params, region): return None
+
+    def run(self, ctx):
+        raise RuntimeError('TileJSON fail: %s')
+
+
+def register(): return PluginDefinition(pipeline=P())
+""" % TOKEN_URL
+
+
+def test_token_never_reaches_plugin_tasks_error_message(db, tmp_path, monkeypatch):
+    """**写入端**：插件抛的异常经 `_finish` 落 `plugin_tasks.error_message`
+    时就该已经掩过。
+
+    只在 `_emit`（广播端）掩是不够的：这一列被
+    `plugins_api._TASK_PUBLIC_COLUMNS` 与统一任务列表的 UNION 原样吐给浏览器，
+    也会进诊断包与备份 —— 存进去那一刻就已经泄漏了。首日就会撞上：
+    `mvt_pipeline` 把用户填的 `tilejson_url` 逐字嵌进 RuntimeError，而
+    Mapbox 的 TileJSON 地址长这样 `…?access_token=pk…`。
+    """
+    from src.core.database import get_connection
+    from src.plugins.task_manager import PluginTaskManager
+
+    _write_plugin(tmp_path, monkeypatch, 'thrower', _THROWING_PLUGIN)
+    mgr = PluginTaskManager(socketio=None)
+    tid = mgr.create_task('thrower', {'name': 'x',
+                                      'bbox': [40.0, 30.0, 117.0, 116.0],
+                                      'output_path': str(tmp_path / 'out')})
+    mgr.start_task(tid)
+    row = _wait_status(mgr, tid, ('failed',))
+    assert row['status'] == 'failed'
+
+    conn = get_connection()
+    try:
+        stored = conn.execute(
+            'SELECT error_message FROM plugin_tasks WHERE id = ?',
+            (tid,)).fetchone()['error_message']
+    finally:
+        conn.close()
+    assert TOKEN not in stored, stored
+    assert 'TileJSON fail' in stored, '真原因仍要看得见'
+    registry.reset_for_tests()
+
+
+def test_mask_survives_a_comma_inside_the_query_string():
+    """带 bbox 的 WMS/ArcGIS URL：逗号在查询串中段，不许把匹配截断。
+
+    这条正则从 `task_logging` 搬过来时职责变了：旧口径只掩 netloc 里的
+    `user:pass@`（永远排在查询串之前，逗号截断无害），新口径要掩查询串**尾部**
+    的参数值，在第一个逗号处截断就等于完全不脱敏。
+    """
+    from src.services.system_proxy import mask_text_secrets
+
+    text = f'err: https://h/wms?bbox=1,2,3,4&tk={TOKEN} -> 403'
+    masked = mask_text_secrets(text)
+    assert TOKEN not in masked, masked
+    assert 'bbox=1,2,3,4' in masked, '中段的逗号不许动'
+    assert '-> 403' in masked
+
+
+def test_mask_gives_back_trailing_sentence_punctuation():
+    """散文里的句读不该被吃掉：URL 末尾的逗号/句号剥回去再拼上。"""
+    from src.services.system_proxy import mask_text_secrets
+
+    masked = mask_text_secrets(f'see https://h/a?tk={TOKEN}, then stop')
+    assert masked == 'see https://h/a?tk=***, then stop'
+
+
+def test_uncaught_plugin_exception_does_not_dump_a_raw_traceback_to_app_log(
+        db, tmp_path, monkeypatch, caplog):
+    """app 日志没挂脱敏 filter，所以这条路径不许写 `logger.exception`。"""
+    import logging
+
+    from src.plugins.task_manager import PluginTaskManager
+
+    _write_plugin(tmp_path, monkeypatch, 'thrower2', _THROWING_PLUGIN)
+    mgr = PluginTaskManager(socketio=None)
+    tid = mgr.create_task('thrower2', {'name': 'x',
+                                       'bbox': [40.0, 30.0, 117.0, 116.0],
+                                       'output_path': str(tmp_path / 'out')})
+    with caplog.at_level(logging.DEBUG, logger='src.plugins.task_manager'):
+        mgr.start_task(tid)
+        _wait_status(mgr, tid, ('failed',))
+
+    # 只看 app 日志那条 logger。tlog（`task.plugin.<id>`）是另一回事：它的
+    # 读取端（详情页、诊断包导出）过 `task_logging.redact`，那条既有口径不在
+    # 本轮范围内。
+    app_records = [r for r in caplog.records
+                   if r.name == 'src.plugins.task_manager']
+    assert app_records, '这条路径本来就该在 app 日志里留一句摘要'
+    for rec in app_records:
+        assert TOKEN not in rec.getMessage(), rec.getMessage()
+        assert rec.exc_info is None, '完整 traceback 不该进未脱敏的 app 日志'
+    registry.reset_for_tests()

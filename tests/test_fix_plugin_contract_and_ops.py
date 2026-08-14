@@ -527,3 +527,88 @@ def test_export_route_refuses_an_out_of_tree_registration(
     assert str(tmp_path / 'out' / 'victim.txt') not in {
         a.path for a in artifact_store.list_artifacts('map', 77)}
     registry.reset_for_tests()
+
+
+# ------------------------------ 定向复审：误杀真行 / 坏导出器打穿核心路由
+
+_BROKEN_TOML_BODY = ('from src.plugins.protocols import ParamSchema, PluginDefinition\n'
+                     'class P:\n'
+                     '    def params_schema(self): return ParamSchema(())\n'
+                     '    def estimate(self, params, region): return None\n'
+                     '    def run(self, ctx): return None\n'
+                     'def register(): return PluginDefinition(pipeline=P())\n')
+
+
+def test_a_load_failure_never_prunes_the_real_row(db, tmp_path, monkeypatch):
+    """加载失败的那一轮**整轮不清行**——否则回落 id 会害死真行。
+
+    `_load_one` 在 manifest 解析不出来时退化用目录名当 id 登记错误行，于是
+    `_RECORDS` 的 key 是目录名而真 id 不在 keep 集合里。照删不误的话，一次
+    写坏的 `plugin.toml`（目录一直在！）就会把用户那行真记录连同
+    `config_json` 里的 token 一起 DELETE 掉，修好 TOML 也拿不回来。
+    """
+    d = _write_plugin(tmp_path, monkeypatch, 'realid', _BROKEN_TOML_BODY)
+    registry.set_config('realid', {'token': TOKEN})
+    registry.set_enabled('realid', True)
+
+    # 目录名与真 id 不同，正是回落 id 会踩空的那种形状。
+    (d / 'plugin.toml').write_text(
+        'id="realid"\nname="r"\nversion="0.1"\napi_version="1"\n'
+        'capabilities=["pipeline"]\n', encoding='utf-8')
+    renamed = d.parent / 'realid_dir'
+    d.rename(renamed)
+    # TOML 写坏：manifest 解析不出来 → 登记 id 回落成目录名 realid_dir。
+    (renamed / 'plugin.toml').write_text('id = "unterminated\n', encoding='utf-8')
+    registry.reset_for_tests()
+    registry.load_all()
+    assert registry.get_record('realid_dir') is not None
+    assert registry.get_record('realid_dir').load_error != ''
+
+    conn = sqlite3.connect(db)
+    try:
+        rows = dict(conn.execute('SELECT id, config_json FROM plugins'))
+    finally:
+        conn.close()
+    assert 'realid' in rows, '真行被回落 id 误判成陈旧行删掉了'
+    assert TOKEN in rows['realid'], '用户的 token 没了'
+    registry.reset_for_tests()
+
+
+_BAD_EXPORTER = """
+from src.plugins.protocols import PluginDefinition
+
+
+class E:
+    def format_id(self):
+        raise RuntimeError('boom')
+
+    def accepts(self, kind): return True
+    def export(self, artifact, dest, ctx): raise RuntimeError('never')
+
+
+def register(): return PluginDefinition(exporters=(E(),))
+"""
+
+
+def test_a_broken_exporter_cannot_break_the_mbtiles_export_path(
+        isolated_app, tmp_path, monkeypatch):
+    """`format_id()` 抛异常的插件不许让核心 mbtiles 导出 500。
+
+    格式表是核心导出路由的**第一段**（任何格式都要先算它），一行插件代码都
+    不该让 map/contour 的主路径塌掉——隔离铁律。
+    """
+    _write_plugin(tmp_path, monkeypatch, 'badexp', _BAD_EXPORTER,
+                  caps='["exporter"]', perms='["filesystem"]')
+    # 格式表照常可用，只是把坏导出器跳过。
+    assert registry.list_export_formats() == ()
+    assert registry.exporter_for('gpkg') is None
+
+    client = isolated_app.app.test_client()
+    resp = client.post('/api/export/map/999999', json={'format': 'mbtiles'})
+    # 404 = 任务不存在（格式闸与管线闸都过了）。500 才是回归。
+    assert resp.status_code == 404, resp.get_data(as_text=True)
+
+    bad = client.post('/api/export/map/999999', json={'format': 'nope'})
+    assert bad.status_code == 400
+    assert bad.get_json()['supported_formats'] == ['mbtiles']
+    registry.reset_for_tests()

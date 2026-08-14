@@ -278,7 +278,13 @@ class PluginTaskManager:
         try:
             self._run_task(task_id, tlog, started)
         except Exception as e:
-            logger.exception('插件任务 %s 运行期异常', task_id)
+            # **不用 `logger.exception`**：`logging_setup` 没给 app 日志挂任何
+            # 脱敏 filter（挂了的是 tlog 那条），完整 traceback 里的局部变量
+            # 与消息文本会把插件请求过的 URL（含 token）逐字写进
+            # `logs/terraforge.log`。栈要留，但留在**有脱敏的**任务日志里；
+            # app 日志只留一句掩过的摘要，够指路到那份任务日志。
+            logger.error('插件任务 %s 运行期异常：%s', task_id,
+                         mask_text_secrets(repr(e)))
             tlog.exception('运行期未捕获异常：%r', e)
             self._finish(task_id, TaskState.FAILED.value,
                          f'{type(e).__name__}: {e}',
@@ -556,6 +562,14 @@ class PluginTaskManager:
 
         `failed_items` 在这里现算——缺块表是稀疏的，「没被上游解释过的洞」
         只有终态这一刻需要一个数字（历史卡片上的「失败 N」）。
+
+        `error` **落库前过脱敏**。这是唯一的写入端：`_run_task_entry` 用
+        `f'{type(e).__name__}: {e}'` 造它，而插件抛的异常里常常整条 URL 都在
+        （`mvt_pipeline` 就把 `tilejson_url` 逐字嵌进 RuntimeError，而那是
+        用户填的地址——Mapbox 的 TileJSON 长这样 `…?access_token=pk…`）。
+        在这里掩而不是在 `_emit` 掩：这一列会被 `plugins_api._TASK_PUBLIC_COLUMNS`
+        与统一任务列表的 UNION 原样吐给浏览器，也会进诊断包与备份——存进去
+        那一刻就已经泄漏了。
         """
         with self._state_lock:
             conn = get_connection()
@@ -568,7 +582,7 @@ class PluginTaskManager:
                     '  WHERE task_id = ? AND status IN ('
                     + ', '.join('?' for _ in _UNEXPLAINED_VALUES) + '))'
                     ' WHERE id = ?',
-                    (status, utc_now_iso(), error,
+                    (status, utc_now_iso(), mask_text_secrets(error or ''),
                      int(max(0.0, elapsed or 0.0)),
                      int(task_id), *_UNEXPLAINED_VALUES, int(task_id)))
                 conn.commit()
@@ -599,10 +613,9 @@ class PluginTaskManager:
                    # 拿到 undefined，常驻失败 toast 与任务行都写「未知错误」，
                    # 而真原因就躺在 `plugin_tasks.error_message` 里。四条核心
                    # 管线的 `task_failed` 都带这一个字段，插件这条不带就是唯一
-                   # 的例外。过一道脱敏：错误文本可能是插件塞回来的异常
-                   # repr，里面可能整条带 token 的 URL 都在（S1 同一条口径）。
-                   'error_message': mask_text_secrets(
-                       row.get('error_message') or ''),
+                   # 的例外。这里**不再重复脱敏**：`_finish` 是这一列唯一的
+                   # 写入端，落库前就掩过了（一件事一处实现）。
+                   'error_message': row.get('error_message') or '',
                    'started_at': row.get('started_at'),
                    'created_at': row.get('created_at'),
                    **extra}

@@ -40,7 +40,15 @@ _SENSITIVE_QUERY_SUBSTRINGS = (
 #: 匹配文本里嵌着的 URL。脱敏不能假设入参**整体**是一个 URL：真正的入口是
 #: 一整行日志或一条异常消息（`aiohttp.ClientResponseError` 的 str() 就是
 #: `403, message='Forbidden', url=URL('https://…?tk=真token')`）。
-URL_IN_TEXT = re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s\'"<>)\]},]+')
+#:
+#: **逗号不在排除集里**，这一条与它的出处（`task_logging` 那份旧正则）不同，
+#: 是有意的：旧口径只掩 `user:pass@`，userinfo 在 netloc 里，永远排在查询串
+#: 之前，逗号截断无害；新口径要掩的是**查询串尾部**的参数值，而带 bbox 的
+#: WMS/ArcGIS URL 长这样 `…?bbox=1,2,3,4&tk=<真 token>` —— 在第一个逗号处
+#: 截断就等于这条 URL 完全不脱敏。引号与括号仍然排除，所以 dict repr 与
+#: `url=URL('…')` 这类包裹照样收得住边界；代价只是散文里 `见 https://h/a, 然后`
+#: 会把那个逗号算进 URL —— 它原样出现在替换结果里，文本不变。
+URL_IN_TEXT = re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s\'"<>)\]}]+')
 
 
 def _is_sensitive_query_key(name: str) -> bool:
@@ -87,6 +95,13 @@ def mask_url_secrets(url) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 
 
+#: 匹配到的 URL 末尾要还回去的标点。`URL_IN_TEXT` 有意把逗号算进 URL（见那边
+#: 的注释），于是散文里的 `见 https://h/a?tk=x, 然后` 会把句读吃掉；在这里剥
+#: 回来，脱敏不改动它不该改的字符。**只剥尾部**，URL 中段的逗号（bbox）一个
+#: 不动。
+_TRAILING_PUNCT = ',.;:!?'
+
+
 def mask_text_secrets(text) -> str:
     """把一段**任意文本**里每一条 URL 过一遍 `mask_url_secrets`。
 
@@ -94,8 +109,13 @@ def mask_text_secrets(text) -> str:
     掩不动就整段丢掉——那一段里可能就是 token。
     """
     def _one(m):
+        raw = m.group(0)
+        cut = len(raw)
+        while cut and raw[cut - 1] in _TRAILING_PUNCT:
+            cut -= 1
+        url, tail = raw[:cut], raw[cut:]
         try:
-            return mask_url_secrets(m.group(0))
+            return mask_url_secrets(url) + tail
         except Exception:
             return MASKED
     return URL_IN_TEXT.sub(_one, str(text))
