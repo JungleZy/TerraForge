@@ -135,3 +135,12 @@ class PluginDefinition:
     pipeline: Optional[PipelinePlugin] = None
     exporters: Tuple[Exporter, ...] = ()
     hooks: Tuple[TaskHook, ...] = ()
+    #: 插件**配置**（`plugins.config_json`）的 schema，`set_config` 用它校验。
+    #: 住在这里而不是 `pipeline.config_schema()` 上：配置是插件级的东西，与
+    #: 「有没有管线能力」无关。挂在 pipeline 上时，纯数据源插件（天地图就是
+    #: `PluginDefinition(sources=...)`，没有 pipeline）的配置**完全不过校验**
+    #: ——`{"tokn": "..."}` 拼错键名照单全收，然后 `resolve_reference` 返回
+    #: `''`、URL 里那段变空、每块瓦片 401，一屏红块而没有任何地方告诉用户
+    #: 键名拼错了。规格 §9 要的是「用插件自己的 schema 校验」，不是「有管线的
+    #: 插件才校验」。
+    config_schema: Optional[ParamSchema] = None

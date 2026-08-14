@@ -44,6 +44,8 @@ from src.plugins import registry
 from src.plugins.params import validate_params
 from src.plugins.protocols import PluginOutcome, TaskEvent
 from src.plugins.task_context import TaskContext
+from src.services.config_manager import ConfigManager
+from src.services.system_proxy import mask_text_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +324,9 @@ class PluginTaskManager:
                                     requested=1, minimum=1)]
         if estimate is not None:
             requests.append(self._disk_request(task_id, row, estimate, tlog))
+        network = self._network_request(plugin_id)
+        if network is not None:
+            requests.append(network)
 
         from src.services.resource_scheduler import get_scheduler
         owner = (_PIPELINE, task_id, 'run')
@@ -447,6 +452,30 @@ class PluginTaskManager:
                                requested=verdict.required_bytes,
                                minimum=verdict.required_bytes)
 
+    def _network_request(self, plugin_id: str):
+        """声明了 `network` 权限的插件 → 一条 NETWORK 预留请求；否则 None。
+
+        **manifest 的 `permissions` 在这里第一次承担真实职责。** 在这之前它只被
+        清单层校验拼写，宿主没有任何地方读它，于是 `_run_task` 只请求
+        TASK_SLOT（+DISK_BYTES），`ctx.granted(NETWORK)` 在生产里恒为 0，
+        `mvt_pipeline._concurrency` 恒等于它的兜底常量——契约第 2 条
+        「不许自带并发」实质失守：插件的连接不进 `max_network_connections`
+        这本全局账本，`ResourceScheduler` 在第五条管线上形同虚设。
+
+        口径与 `plan_download_reservation` 逐字一致（同一份 `concurrent_downloads`
+        配置、同样的 `minimum=1`）：一条连接也能把任务跑完，只是慢——宁可慢，
+        不可不起。不能用 `plan_download_reservation` 本身：它连 TASK_SLOT 一起
+        造，而这里 TASK_SLOT 已经在请求列表里了，重复请求会被调度器求和成 2。
+        """
+        rec = registry.get_record(plugin_id)
+        perms = (rec.manifest.permissions or ()) if rec is not None else ()
+        if 'network' not in perms:
+            return None
+        conns = int((self.config_manager or ConfigManager())
+                    .get('concurrent_downloads', 8))
+        return ResourceRequest(kind=ResourceKind.NETWORK,
+                               requested=max(1, conns), minimum=1)
+
     def _make_progress_callback(self, task_id: int):
         """`ctx.progress()` 的落地：计数落库 + 节流广播。
 
@@ -566,6 +595,14 @@ class PluginTaskManager:
                    'total_running_seconds': row.get('total_running_seconds') or 0,
                    'phase': '',
                    'output_path': row.get('output_path', ''),
+                   # 少了这个键，前端 `handleTaskFailed(..., data.error_message)`
+                   # 拿到 undefined，常驻失败 toast 与任务行都写「未知错误」，
+                   # 而真原因就躺在 `plugin_tasks.error_message` 里。四条核心
+                   # 管线的 `task_failed` 都带这一个字段，插件这条不带就是唯一
+                   # 的例外。过一道脱敏：错误文本可能是插件塞回来的异常
+                   # repr，里面可能整条带 token 的 URL 都在（S1 同一条口径）。
+                   'error_message': mask_text_secrets(
+                       row.get('error_message') or ''),
                    'started_at': row.get('started_at'),
                    'created_at': row.get('created_at'),
                    **extra}
@@ -688,8 +725,29 @@ class PluginTaskManager:
                 flag.set()
         artifact_dir = (self._task_output_dir(row)
                         if delete_files and row is not None else None)
-        return delete_task_row(manager=self, task_id=task_id, table=_TABLE,
-                               artifact_dir=artifact_dir)
+        outcome = delete_task_row(manager=self, task_id=task_id, table=_TABLE,
+                                  artifact_dir=artifact_dir)
+        if outcome.row_deleted:
+            # 缺块行跟着任务行走。这张表刻意没有外键（删除路径是「先停线程再
+            # 删行」，工作线程还可能在 flush），不在这里删的话它们要等到**下次
+            # 启动**的孤儿扫描才消失 —— 用户删了任务，磁盘上的行还在。
+            self._purge_tile_rows(task_id)
+        return outcome
+
+    @staticmethod
+    def _purge_tile_rows(task_id: int) -> None:
+        """删掉某任务的缺块行。**不抛**：任务行已经删了，这只是收尾。"""
+        try:
+            conn = get_connection()
+            try:
+                conn.execute('DELETE FROM plugin_task_tiles WHERE task_id = ?',
+                             (int(task_id),))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning('插件任务 %s 的缺块行清理失败（留给启动扫描）：%r',
+                           task_id, e)
 
     def _recover_orphan_running_tasks(self) -> None:
         """启动时：running → failed，再清缺块表里的孤儿行。
@@ -725,9 +783,11 @@ class PluginTaskManager:
         for task_id in ids:
             self._log_recovery(task_id)
 
-        # 第二层：任务行已经不存在的 plugin_task_tiles 残留。T1 刻意不给这张
-        # 表加外键（删除路径是「先停线程再删行」，工作线程还可能在 flush），
-        # 兜底就在这里——不清的话这些行会被将来复用同一个 id 的任务算成自己的洞。
+        # 第二层：任务行已经不存在的 plugin_task_tiles 残留。删除路径现在会
+        # 就地清（见 `delete_task`），这里是兜底：commit 失败、或者进程在
+        # 「删任务行」与「删缺块行」之间死掉时留下的行。代价只是行堆积——
+        # `plugin_tasks.id` 是 AUTOINCREMENT，id 不复用，这些行不会被将来的
+        # 任务算成自己的洞。
         try:
             conn = get_connection()
             try:

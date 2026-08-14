@@ -246,7 +246,7 @@ map-download/
 - `GET /api/plugins` - 插件列表。**加载失败的插件也在列表里**，带 `load_error` —— 坏插件不许打穿宿主，但必须在界面上看得见
 - `POST /api/plugins/<id>/enable` - 启用插件
 - `POST /api/plugins/<id>/disable` - 禁用插件
-- `GET|PUT /api/plugins/<id>/config` - 读 / 写插件配置。写入先过插件自己声明的 `config_schema()`，不合法回 400 与逐键的 `errors`
+- `GET|PUT /api/plugins/<id>/config` - 读 / 写插件配置。GET 一并回该插件的 `config_schema`（`key`/`type`/`label`/`default`/`required`/`min`/`max`/`choices`），前端据此渲染配置表单；**`type=credential` 的键不回显真值**，下发的是 `__TF_UNCHANGED__` 哨兵（与 `GET /api/config` 对 `earthdata_password` 同一口径），PUT 收到哨兵就跳过该键不覆盖，清空提交才是真的清除。写入先过插件声明的 `config_schema`，不合法回 400 与逐键的 `errors`
 - `GET /api/plugins/sources` - 全部**已启用**插件提供的数据源。凭据只出键名不出值
 - `GET /api/plugins/<id>/schema` - 声明式任务表单的参数 schema（`key`/`type`/`label`/`default`/`required`/`min`/`max`/`choices`），是前端渲染表单的唯一数据源。没有管线能力或插件被禁用时回空数组，不是 404
 - `POST /api/plugins/<id>/tasks` - 创建插件任务。Body 含 `bbox`（`[north, south, east, west]`）/ `output_path` / `name` / `auto_start`，其余键交给插件 schema 校验。插件不可用回 404，参数非法回 400。`auto_start` 为真时响应多两个字段：`started`，以及启动失败时的 `start_error` —— 任务**已经建好了**，只是没起来（插件正好在这两步之间被禁用就是这条路），所以不判整个请求失败
@@ -256,7 +256,7 @@ map-download/
 - `GET /api/plugins/tasks/<id>/gaps` - 缺块摘要，载荷与瓦片管线的 `/gaps` 逐键同形：`total`、按 `TileOutcome` 分类计数的 `by_outcome`（四个键恒存，没有的给 0）、`explained`（是否**只有** `no_data`——为真时不该再问用户补漏还是接受）、`decision`、`status` 与最多 20 个样例格子
 - `POST /api/plugins/tasks/<id>/accept-gaps` - 接受缺块并重跑收尾。成果与历史**永久带缺块标记**
 - `DELETE /api/plugins/tasks/<id>` - 删除插件任务（`?delete_files=1` 同时清理磁盘产物）。不带该参数时产物目录会被登记进 `retained_outputs`，响应里多一个 `files_retained_path` —— 用户选择保留文件，一个字节都不动，但那个目录必须留下一条 DB 引用
-- `POST /api/plugins/export/<id>` - 按格式导出插件任务产物，Body `{"format": "gpkg"}`。格式来自已启用插件注册的 Exporter；未知格式回 400 并给出 `supported_formats`
+- 插件导出**没有专属路由**：走下面的 `POST /api/export/<pipeline>/<id>`，插件注册的 Exporter 只是往它的 `format` 表里加行
 - `GET /api/plugins/<id>/assets/<path>` - 插件 UI 资产。两道门：路径 `resolve()` 后必须仍在插件目录内，且必须在 `plugin.toml` 的 `ui.assets` 白名单里声明（目录里的 `plugin.py`、`vendor/` 一律出不去）
 
 ### 静态瓦片服务
@@ -275,6 +275,7 @@ map-download/
 ### 成果导出
 
 - `POST /api/export/<pipeline>/<id>` - 把任务的瓦片金字塔打包成单个 `.mbtiles`，Body `{"format": "mbtiles"}`。**这是「多一份产物」，不是换一种输出格式**：`output_format` 一个取值都没加，原来的瓦片目录一张不动（它正是打包的原料，也是 `/tiles/<id>/` 预览的数据源）。幂等。`<pipeline>` 对着 `PIPELINES` 校验，打包器不支持的管线（`dem` / `local_terrain` 没有瓦片金字塔）回 400 并在 body 里给出 `supported_pipelines`。建任务时勾选 `export_mbtiles` 可以让它在跑完后自动执行一次
+- 同一条路由也是**插件导出器的唯一入口**：`format` 表 = 宿主自带的 `mbtiles` + 已启用插件注册的 Exporter 的 `format_id()`（例如首发插件 GeoPackage 的 `gpkg`）。插件格式吃的是 `artifacts` 登记行而不是瓦片目录，所以**不受**「有没有瓦片金字塔」那道管线闸限制 —— `POST /api/export/dem/7` + `{"format":"gpkg"}` 是合法的（`dem` 产 GeoTIFF，`GpkgExporter.accepts()` 正好收它）。导出器写出来的产物由宿主登记：`pipeline`/`task_id` 强制取 URL 里的值，路径必须落在宿主算出的目标目录内，插件说了不算
 
 ### 底图
 

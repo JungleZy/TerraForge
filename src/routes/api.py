@@ -1904,34 +1904,121 @@ def accept_task_gaps(task_id: int):
 # ---------------------------------------------------------------------------
 
 
-# 目前只支持一种容器。写成元组而不是 `!= 'mbtiles'`：加 GeoPackage 时只需要动
-# 这一行和 artifact_export 的分派表，不必回头找散在各处的字面量比较。
-_EXPORT_FORMATS = ('mbtiles',)
+# MBTiles 是宿主自带的唯一容器；其余格式由插件导出器提供（`Exporter` 协议）。
+# 写成函数而不是模块级元组：插件可以在运行期被启停/重扫，冻一份常量就等于让
+# 400 的 `supported_formats` 显示上一轮的世界。
+_HOST_EXPORT_FORMAT = 'mbtiles'
 
-# 能打包的管线。**有意**引用 artifact_export 的私有表：那张表是「哪条管线有
-# 松散瓦片金字塔」的唯一事实来源，在路由层照抄一份 ('map', 'contour') 的代价
-# 很具体 —— 那边加一条管线时这里不会报错，只会静默地把新管线拒在 400 上。
-# 本仓库对这种耦合有先例并写明了同样的理由（task_logging 引
-# logging_setup._ANSI_ESCAPE）。
+
+def _export_formats() -> tuple:
+    """这一刻能用的导出格式。插件导出器**并进这条路由**而不是自开一条：
+
+    §5.3 禁止按数据类型各开一条导出路由，而插件导出器的真实消费者恰恰是核心
+    管线的产物 —— in-tree 的 `GpkgExporter.accepts()` 只收 `GEOTIFF`，产出
+    GeoTIFF 的是 map/dem 两条核心管线，插件任务一件都不产。原先那条
+    `POST /api/plugins/export/<tid>` 只认插件任务，等于把导出器接在一个永远
+    没有货的入口上。
+    """
+    from src.plugins import registry as plugin_registry
+    return (_HOST_EXPORT_FORMAT,) + tuple(
+        f for f in plugin_registry.list_export_formats()
+        if f != _HOST_EXPORT_FORMAT)
+
+
+# 能打成 MBTiles 的管线。**有意**引用 artifact_export 的私有表：那张表是
+# 「哪条管线有松散瓦片金字塔」的唯一事实来源，在路由层照抄一份
+# ('map', 'contour') 的代价很具体 —— 那边加一条管线时这里不会报错，只会静默
+# 地把新管线拒在 400 上。本仓库对这种耦合有先例并写明了同样的理由
+# （task_logging 引 logging_setup._ANSI_ESCAPE）。
+# 插件格式**不看这张表**：它们吃的是 `artifacts` 登记行，不是瓦片目录。
 _EXPORTABLE_PIPELINES = tuple(artifact_export._PIPELINE_TILE_LAYOUT)
+
+
+def _export_dest(source, fmt: str):
+    """导出目标路径：源产物的同级，加上目标格式的后缀。
+
+    **不能直接 `with_suffix`**，它替换的是「最后一个点之后的东西」，而产物名里
+    的点未必是扩展名：
+    - `城区 2024.06`（按月份命名的成果目录）→ `城区 2024.gpkg`，月份没了，
+      同一年的两个月份导出**互相覆盖**；
+    - `dem_v1.5` → `dem_v1.gpkg`，版本号没了，同上；
+    - 源本身就是 `.gpkg` 而目标也是 gpkg → 目标**等于源**，导出器写在自己的
+      输入上。
+
+    所以只在「现有后缀正是生产者自己声明的那个格式」时才替换 —— 那种情况下它
+    确实是扩展名（`a.tif` + `fmt='tif'` → `a.gpkg`）—— 其余一律追加，宁可
+    `城区 2024.06.gpkg` 有点长，也不许丢名字或撞源文件。声明格式与目标格式相同
+    时也追加，否则又回到「目标等于源」。
+    """
+    src = Path(source.path)
+    declared = f'.{source.fmt.lower()}' if source.fmt else ''
+    if declared and declared != f'.{fmt}' and src.suffix.lower() == declared:
+        return src.with_suffix(f'.{fmt}')
+    return src.with_name(f'{src.name}.{fmt}')
+
+
+def _export_via_plugin(pipeline: str, task_id: int, fmt: str):
+    """插件导出器分支。返回 `(payload, status)`。
+
+    产物登记走 `artifact_store.record_plugin_artifact` —— 与
+    `TaskContext.register_artifact` 同一道归属校验，并强制
+    `pipeline`/`task_id` 用宿主这边的取值（理由见那个函数的 docstring）。
+    归属根取宿主自己算出来的 `dest.parent`：目标路径是宿主定的，导出器把文件
+    写到别处（`~/.ssh/id_rsa`）再登记，就是一条「用户删任务时宿主替它删」的
+    路径。
+    """
+    from src.plugins import registry as plugin_registry
+    from src.plugins.protocols import ExportContext
+
+    exporter = plugin_registry.exporter_for(fmt)
+    if exporter is None:
+        # 走到这里说明插件在「列格式」与「取导出器」之间被禁用了。
+        return {'error': t('api.export.unsupported_format'),
+                'supported_formats': list(_export_formats())}, 400
+    candidates = [a for a in artifact_store.list_artifacts(pipeline, task_id)
+                  if exporter.accepts(a.kind)]
+    if not candidates:
+        return {'error': t('api.export.no_tiles')}, 400
+    source = candidates[0]
+    dest = _export_dest(source, fmt)
+    ctx = ExportContext(
+        task_id=task_id,
+        log=lambda msg, level='info': logger.info('[export:%s] %s', fmt, msg),
+        progress=lambda done, total: None)
+    try:
+        result = exporter.export(source, dest, ctx)
+    except Exception as e:
+        logger.exception('插件导出失败（%s/%s → %s）', pipeline, task_id, fmt)
+        return {'error': str(e)}, 500
+    try:
+        artifact_store.record_plugin_artifact(
+            result, pipeline=pipeline, task_id=task_id,
+            output_root=dest.parent)
+    except ValueError as e:
+        logger.error('插件导出器登记了越界产物（%s）：%s', fmt, e)
+        return {'error': str(e)}, 500
+    return {'success': True, 'path': str(dest), 'format': fmt,
+            'pipeline': pipeline, 'task_id': task_id}, 200
 
 
 @api_bp.route('/export/<pipeline>/<int:task_id>', methods=['POST'])
 def export_task(pipeline: str, task_id: int):
-    """把一个任务的松散瓦片金字塔打包成单文件容器。Body: {"format": "mbtiles"}。
+    """把一个任务的产物导出成单文件容器。Body: `{"format": "mbtiles"}`。
 
     Returns: 200 {path, tile_count, minzoom, maxzoom, bytes, bounds, has_gaps,
-                  validation, pipeline, task_id}
+                  validation, pipeline, task_id}（mbtiles）
+             200 {path, format, pipeline, task_id}（插件导出器）
 
-    **一条路由服务影像与等高线**，与 `/mbtiles/<pipeline>/...` 那条读取路由同一个
-    原则（§5.3 明确禁止按数据类型各开一条）。管线之间的差异全部收在
-    `artifact_export._PIPELINE_TILE_LAYOUT` 那一张表里，这里只做校验和翻译。
+    **一条路由服务全部管线与全部格式**，与 `/mbtiles/<pipeline>/...` 那条读取
+    路由同一个原则（§5.3 明确禁止按数据类型各开一条）。管线之间的差异全部收在
+    `artifact_export._PIPELINE_TILE_LAYOUT` 那一张表里，格式之间的差异收在
+    插件注册表里，这里只做校验和分派。
 
     导出是**追加**不是替代：XYZ 目录原样留着。它同时是 `/mbtiles/` 读取路由的
     数据源 —— 一个几十万文件的目录在 Windows 上光是拷贝就要几小时，单文件则可以
     直接拖给别人，这才是导出的用途。
     """
-    # 三道闸的顺序是有讲究的：都是**URL 与 body 自身**的性质，一次 DB 都不用查，
+    # 闸的顺序是有讲究的：都是**URL 与 body 自身**的性质，一次 DB 都不用查，
     # 所以全部排在存在性检查之前。反过来（先查行）会让 POST /api/export/dem/7
     # 在没有 7 号 DEM 任务时回 404，用户于是去找一个并不存在的记录，而真正的
     # 问题是 DEM 管线**根本没有**可打包的瓦片金字塔。
@@ -1940,7 +2027,20 @@ def export_task(pipeline: str, task_id: int):
         # contracts.artifact.PIPELINES，塞进 zh+en 就成了三份）。
         return jsonify({'error': t('api.export.unsupported_pipeline'),
                         'supported_pipelines': list(PIPELINES)}), 400
-    if pipeline not in _EXPORTABLE_PIPELINES:
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        # 数组/字符串体是合法 JSON 且为真，但没有 .get —— 口径与同文件的
+        # verify_tile_url / inspect_raster_headers 一致。
+        payload = {}
+    formats = _export_formats()
+    fmt = str(payload.get('format') or _HOST_EXPORT_FORMAT).strip().lower()
+    if fmt not in formats:
+        return jsonify({'error': t('api.export.unsupported_format'),
+                        'supported_formats': list(formats)}), 400
+    # 管线闸只对 MBTiles 生效，且必须排在格式闸**之后**：dem 没有松散瓦片目录
+    # 但有 GeoTIFF 产物，`format=gpkg` 在那条管线上完全合法。
+    if fmt == _HOST_EXPORT_FORMAT and pipeline not in _EXPORTABLE_PIPELINES:
         # 管线名对，但这条管线没有松散瓦片目录（dem 下的是颗粒 GeoTIFF，
         # local_terrain 下的是 quantized-mesh，都不是 MBTiles 能装的东西）。
         return jsonify({
@@ -1948,22 +2048,16 @@ def export_task(pipeline: str, task_id: int):
             'supported_pipelines': list(_EXPORTABLE_PIPELINES),
         }), 400
 
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict):
-        # 数组/字符串体是合法 JSON 且为真，但没有 .get —— 口径与同文件的
-        # verify_tile_url / inspect_raster_headers 一致。
-        payload = {}
-    fmt = str(payload.get('format') or 'mbtiles').strip().lower()
-    if fmt not in _EXPORT_FORMATS:
-        return jsonify({'error': t('api.export.unsupported_format'),
-                        'supported_formats': list(_EXPORT_FORMATS)}), 400
-
     try:
         if not _task_exists(pipeline, task_id):
             return jsonify({'error': t('api.gaps.not_found')}), 404
     except Exception as e:
         logger.error(f"Error checking {pipeline} task {task_id} before export: {e}")
         return jsonify({'error': 'Failed to export task'}), 500
+
+    if fmt != _HOST_EXPORT_FORMAT:
+        body, status = _export_via_plugin(pipeline, task_id, fmt)
+        return jsonify(body), status
 
     # **不传 has_gaps**：那件事的判据是任务行（gap_tiles / 状态），住在
     # artifact_export._infer_has_gaps 里，两个导出入口共用一份。这里曾经什么都

@@ -142,11 +142,9 @@ _MEMBER_CONTRACTS: Tuple[Tuple[str, Any,
     )),
 )
 
-#: 协议之外、但宿主确实会调的可选方法（set_config 调 config_schema()）：
-#: 有就必须能按宿主的调法调通，没有则跳过。
-_OPTIONAL_METHODS: Dict[str, Tuple[Tuple[str, Tuple[str, ...]], ...]] = {
-    'pipeline': (('config_schema', ()),),
-}
+#: `config_schema` 曾经登记在这里（作为 pipeline 的可选方法）。它现在是
+#: `PluginDefinition.config_schema` 这个**字段**，由 dataclass 保证形制，
+#: 不再需要签名闸——一件事一处实现。
 
 
 def _positional_window(fn) -> Optional[Tuple[int, Optional[int]]]:
@@ -222,9 +220,6 @@ def _check_definition(plugin_id: str, definition: PluginDefinition) -> None:
                     f'{protocol.__name__} 协议：缺 {", ".join(missing)}')
             for method, params in specs:
                 _check_method(plugin_id, member, obj, method, params)
-            for method, params in _OPTIONAL_METHODS.get(member, ()):
-                if getattr(obj, method, None) is not None:
-                    _check_method(plugin_id, member, obj, method, params)
 
 
 def _resolve_entry(root: Path, m: PluginManifest) -> Path:
@@ -312,31 +307,86 @@ def _load_builtin_definition(module_name: str) -> Tuple[PluginManifest,
     return m, definition
 
 
-def _external_dirs() -> List[Path]:
-    """plugins/ 下带 plugin.toml 的子目录。扫描本身出错（权限、坏挂载）只记
-    日志：宿主启动不该被一个不可读的插件目录打穿。"""
+def _external_dirs():
+    """`(plugins/ 下带 plugin.toml 的子目录, 扫描是否成功)`。
+
+    扫描本身出错（权限、坏挂载）只记日志：宿主启动不该被一个不可读的插件目录
+    打穿。但**必须把失败告诉调用方** —— `_prune_stale_rows` 会按「本轮没出现
+    过」删行，扫不动时那等于把用户所有外部插件的启停与配置一次清空。
+    """
     root = _plugins_root()
     try:
         if not root.is_dir():
-            return []
+            return [], True
         return [c for c in sorted(root.iterdir())
-                if c.is_dir() and (c / 'plugin.toml').is_file()]
+                if c.is_dir() and (c / 'plugin.toml').is_file()], True
     except OSError as e:
         logger.warning('插件目录扫描失败（%s）：%r', root, e)
-        return []
+        return [], False
 
 
-def load_all(socketio=None) -> None:
-    """启动时调用一次。可重复调用（重扫）；测试先 reset_for_tests。"""
+def _prune_stale_rows() -> None:
+    """删掉 `plugins` 表里本轮没出现过的行。**只在完整扫描之后调。**
+
+    没有它，这张表只增不减，两个后果：
+
+    1. 任何一次瞬时加载失败都永久留下一行垃圾。`_load_one` 连 manifest 都没
+       解析出来时会**退化用模块名/目录名当 id**（builtin 的
+       `src.plugins.builtin.tianditu_source` → `tianditu_source`），而真 id 是
+       `tianditu`。这种行永远不会被覆盖，也永远不会被清掉，而
+       `GET /api/plugins` 只读内存 `_RECORDS`，面板上看不见它们。
+    2. **同名 id 继承。** 用户删掉插件 A、再装一个恰好同 id 的插件 B，B 直接
+       继承 A 的 `enabled=1` 与 `config_json`（含 token）—— `_upsert_row` 对
+       已存在的行只更新版本与错误，启停与配置是「用户的决定」不覆盖。
+       `_reject_id_conflict` 只管同一轮扫描内的撞车，管不了前任留下的行。
+
+    这一趟同时把存量机器上已有的垃圾行（本仓 0.4.0 那四行回落 id）清掉，
+    所以不需要额外的一次性迁移：它每次启动都跑，比一次性迁移覆盖得更全。
+    """
+    keep = set(_RECORDS)
+    conn = get_connection()
+    try:
+        rows = [r['id'] for r in conn.execute('SELECT id FROM plugins')]
+        stale = [pid for pid in rows if pid not in keep]
+        if not stale:
+            return
+        conn.executemany('DELETE FROM plugins WHERE id = ?',
+                         [(pid,) for pid in stale])
+        conn.commit()
+        logger.info('清理了 %d 行已不存在的插件登记：%s', len(stale),
+                    ', '.join(sorted(stale)))
+    except Exception as e:
+        # 清理是收尾动作，失败只是留着垃圾行，不该打穿启动。
+        logger.warning('插件登记行清理失败：%r', e)
+    finally:
+        conn.close()
+
+
+def load_all() -> None:
+    """启动时调用一次。可重复调用（重扫）；测试先 reset_for_tests。
+
+    **不收 socketio。** 曾经有一个 `socketio=None` 形参，体内一行都没引用过，
+    而 app_factory 一直在传 —— 留着它就是在暗示插件能拿到 socketio，而 §5 的
+    设计恰恰是拿不到（插件只能碰 `TaskContext`）。
+    """
     with _LOCK:
         _RECORDS.clear()
         for module_name in _BUILTIN:
             _load_one(module_name, 'builtin', None)
-        for child in _external_dirs():
+        externals, scan_ok = _external_dirs()
+        for child in externals:
             _load_one(str(child / 'plugin.toml'), 'external', child)
-        logger.info('插件注册表就绪：%d 个插件（启用 %d 个）',
-                    len(_RECORDS),
-                    sum(1 for r in _RECORDS.values() if r.enabled))
+        if scan_ok:
+            _prune_stale_rows()
+        failed = sum(1 for r in _RECORDS.values() if r.load_error)
+        ok = len(_RECORDS) - failed
+        # 加载失败的插件**不算就绪**。原来这行无条件 INFO「插件注册表就绪：
+        # 4 个插件（启用 0 个）」，四个 builtin 全 ModuleNotFoundError 时长
+        # 得一模一样 —— 运维扫 INFO 会判成成功，而实际可用数是 0。
+        log = logger.warning if failed else logger.info
+        log('插件注册表就绪：%d 个（可用 %d / 失败 %d，启用 %d）',
+            len(_RECORDS), ok, failed,
+            sum(1 for r in _RECORDS.values() if r.enabled))
 
 
 def _reject_id_conflict(m: PluginManifest, root: Optional[Path]) -> None:
@@ -370,6 +420,11 @@ def _reject_id_conflict(m: PluginManifest, root: Optional[Path]) -> None:
 
 def _load_one(source: str, origin: str, root: Optional[Path]) -> None:
     """加载一个插件；任何失败落成 load_error 记录，绝不向上抛。"""
+    # 逐个报名字。第三方插件可以在模块级做无超时网络请求，那会让整个应用永远
+    # 起不来，而在这之前日志停在「Database initialized successfully」之后一片
+    # 空白，没有一行说明卡在谁身上。**不做超时**：那要另起线程执行第三方
+    # import，代价大于收益。5 个插件不构成噪音。
+    logger.info('加载插件：%s', source)
     record = None
     manifest: Optional[PluginManifest] = None   # 解析到了就用真的那份登记错误
     try:
@@ -485,7 +540,11 @@ def get_config(plugin_id: str) -> dict:
 
 
 def set_config(plugin_id: str, values: Mapping[str, Any]) -> Dict[str, str]:
-    """插件若定义了 pipeline.config_schema() 则先过校验。返回错误表，空 = 已存。
+    """插件若声明了 `definition.config_schema` 则先过校验。返回错误表，空 = 已存。
+
+    schema 只认 `PluginDefinition.config_schema` 这**一个**位置（理由见
+    protocols.py 那个字段的注释：挂在 pipeline 上时纯数据源插件的配置完全不
+    过校验）。
 
     有 schema 时落盘的是校验器洗出来的 clean 而不是 raw：schema 声明 int 就
     该存 int（消费者是 provider.snapshot(cfg) 与凭据解析），default 该回填，
@@ -495,14 +554,13 @@ def set_config(plugin_id: str, values: Mapping[str, Any]) -> Dict[str, str]:
     if rec is None:
         return {'_': '未知插件'}
     stored: Mapping[str, Any] = values
-    if rec.definition is not None and rec.definition.pipeline is not None:
-        schema_fn = getattr(rec.definition.pipeline, 'config_schema', None)
-        if callable(schema_fn):
-            from src.plugins.params import validate_params
-            clean, errors = validate_params(schema_fn(), values)
-            if errors:
-                return errors
-            stored = clean
+    schema = getattr(rec.definition, 'config_schema', None)
+    if schema is not None:
+        from src.plugins.params import validate_params
+        clean, errors = validate_params(schema, values)
+        if errors:
+            return errors
+        stored = clean
     conn = get_connection()
     try:
         conn.execute('UPDATE plugins SET config_json = ? WHERE id = ?',

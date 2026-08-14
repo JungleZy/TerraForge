@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     'record_artifact',
     'record_artifacts',
+    'record_plugin_artifact',
+    'ensure_owned_artifact_path',
     'list_artifacts',
     'delete_artifacts_for',
     'measure_dir',
@@ -101,6 +104,48 @@ def record_artifact(artifact: Artifact) -> Optional[int]:
 
 def record_artifacts(artifacts: Iterable[Artifact]) -> int:
     return sum(1 for a in artifacts if record_artifact(a) is not None)
+
+
+def ensure_owned_artifact_path(path, output_root) -> Path:
+    """产物路径必须落在任务产物目录内；通过则返回 resolve 后的绝对路径。
+
+    为什么这道校验必须存在：`task_cleanup.purge_registered_artifacts`（四条
+    删除路由都在调）对每一条登记行做 `target.unlink()` —— 它拒符号链接、拒
+    rmtree 目录，但**任务目录之外的普通文件无条件删**。对宿主四条管线安全
+    （路径都是自己产的），而插件那两扇门（`TaskContext.register_artifact`
+    与导出端点）把 `path` 的选择权交给了第三方代码：插件登记 `~/.ssh/id_rsa`，
+    用户删任务时宿主替它删掉。
+
+    比 resolve **之后**的路径而不是字面路径：`output_dir/link.gpkg` 指向
+    `/etc/passwd` 时字面检查会放行。**抛** ValueError 而不是静默忽略：这是
+    插件的编程错误或恶意行为，静默会让它以为登记成功了。
+    """
+    target = Path(path).expanduser().resolve()
+    root = Path(output_root).expanduser().resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(f'产物必须落在任务产物目录（{root}）内：{target}')
+    return target
+
+
+def record_plugin_artifact(artifact: Artifact, *, pipeline: str, task_id: int,
+                           output_root) -> Optional[int]:
+    """**插件产出的产物登记的唯一入口**：归属校验 + 强制归属字段。
+
+    两扇门（`TaskContext.register_artifact` 与导出端点的插件格式分支）必须过
+    同一道校验，否则这道校验等于不存在 —— 导出端点曾经就是那扇不校验的门，
+    它把 `exporter.export()` 返回的 Artifact 原样登记，而 `path` / `pipeline`
+    / `task_id` 三个字段全由插件决定。
+
+    这三个字段因此不接受插件的取值，一律由宿主填：
+    - `pipeline` —— 插件产物挂错管线就会跟着**别人**那条任务的删除路径被删、
+      在别人的产物列表里露面。调用方给的是它自己所在的那条管线（登记来自
+      `TaskContext` 时是 `'plugin'`，来自导出路由时是 URL 里那条）；
+    - `task_id` —— 同理，由调用方从 URL 或任务行给出；
+    - `path` —— 用 `ensure_owned_artifact_path` 归一后的绝对路径。
+    """
+    target = ensure_owned_artifact_path(artifact.path, output_root)
+    return record_artifact(replace(artifact, pipeline=str(pipeline),
+                                   task_id=int(task_id), path=str(target)))
 
 
 def list_artifacts(pipeline: str, task_id: int) -> List[Artifact]:

@@ -388,6 +388,9 @@ def test_set_config_stores_cleaned_values(db, tmp_path, monkeypatch):
     schema 声明 int 就该存 int（消费者是 provider.snapshot(cfg) 与凭据解析）、
     default 该回填、JSON null 不该进库 —— 否则校验器只做了判定没做落库值，
     库里躺着 '3' 而 schema 写着 int。
+
+    schema 声明在 `PluginDefinition.config_schema` 上，**不是** pipeline 的方法：
+    见 test_config_schema_works_without_a_pipeline。
     """
     _fresh(tmp_path, monkeypatch)
     _write_external(tmp_path, 'cfg', caps='["pipeline"]', body=(
@@ -395,17 +398,15 @@ def test_set_config_stores_cleaned_values(db, tmp_path, monkeypatch):
         '                                   PluginDefinition)\n'
         'class P:\n'
         '    def params_schema(self): return ParamSchema(())\n'
-        '    def config_schema(self):\n'
-        '        return ParamSchema((\n'
-        '            ParamSpec(key="n", type="int", label="N", min=1, max=9),\n'
-        '            ParamSpec(key="mode", type="str", label="M",\n'
-        '                      default="fast"),\n'
-        '            ParamSpec(key="token", type="credential", label="T",\n'
-        '                      required=False),\n'
-        '        ))\n'
         '    def estimate(self, params, region): return None\n'
         '    def run(self, ctx): return None\n'
-        'def register():\n    return PluginDefinition(pipeline=P())\n'))
+        'def register():\n'
+        '    return PluginDefinition(pipeline=P(), config_schema=ParamSchema((\n'
+        '        ParamSpec(key="n", type="int", label="N", min=1, max=9),\n'
+        '        ParamSpec(key="mode", type="str", label="M", default="fast"),\n'
+        '        ParamSpec(key="token", type="credential", label="T",\n'
+        '                  required=False),\n'
+        '    )))\n'))
     registry.load_all()
     assert registry.get_record('cfg').load_error == ''
     assert registry.set_config('cfg', {'n': 99}) != {}       # 越界 → 错误表
@@ -413,6 +414,38 @@ def test_set_config_stores_cleaned_values(db, tmp_path, monkeypatch):
     assert registry.set_config('cfg', {'n': '3', 'token': None}) == {}
     assert registry.get_config('cfg') == {'n': 3, 'mode': 'fast'}
     assert registry.set_config('nope', {}) == {'_': '未知插件'}
+
+
+def test_config_schema_works_without_a_pipeline(db, tmp_path, monkeypatch):
+    """只有 `sources` 能力的插件，配置一样要过 schema 校验。
+
+    schema 曾经只从 `pipeline.config_schema()` 上找，于是天地图这类
+    `PluginDefinition(sources=...)` 的纯数据源插件配置**完全不过校验**：
+    `{"tokn": ...}` 拼错键名照单全收 → `resolve_reference` 返回 ''
+    → URL 里那段变空 → 每块瓦片 401，而没有任何地方告诉用户键名拼错了。
+    """
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'srconly', caps='["sources"]', body=(
+        'from src.plugins.protocols import (ParamSchema, ParamSpec,\n'
+        '                                   PluginDefinition, SourceDescriptor)\n'
+        'def register():\n'
+        '    return PluginDefinition(\n'
+        '        sources=(SourceDescriptor(source_id="a", name="A",\n'
+        '                                  url_template="https://h/{z}/{x}/{y}",\n'
+        '                                  max_zoom=18,\n'
+        '                                  credential_key="token"),),\n'
+        '        config_schema=ParamSchema((\n'
+        '            ParamSpec(key="token", type="credential", label="T",\n'
+        '                      required=True),\n'
+        '        )))\n'))
+    registry.load_all()
+    assert registry.get_record('srconly').load_error == ''
+    # 拼错的键名必须被拦下并**指名道姓**，而不是静默落库。
+    errors = registry.set_config('srconly', {'tokn': 'x'})
+    assert 'tokn' in errors and errors['tokn'] == 'unknown param'
+    assert registry.get_config('srconly') == {}
+    assert registry.set_config('srconly', {'token': 'real'}) == {}
+    assert registry.get_config('srconly') == {'token': 'real'}
 
 
 def test_get_config_ignores_non_object_json(db, tmp_path, monkeypatch):

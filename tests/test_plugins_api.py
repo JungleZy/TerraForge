@@ -333,12 +333,17 @@ def test_params_schema_endpoint(fake_client):
 
 
 def test_sources_and_export_formats(fake_client):
+    """没有任何插件导出器时，格式表里只剩宿主自带的 mbtiles。
+
+    导出**没有**插件专属路由：`POST /api/export/<pipeline>/<id>` 是唯一入口，
+    插件导出器只是往它的格式表里加行。
+    """
     client, _registry = fake_client
     client.post('/api/plugins/fake/enable')
     assert client.get('/api/plugins/sources').get_json()['sources'] == []
-    resp = client.post('/api/plugins/export/1', json={'format': 'nope'})
+    resp = client.post('/api/export/plugin/1', json={'format': 'nope'})
     assert resp.status_code == 400
-    assert resp.get_json()['supported_formats'] == []
+    assert resp.get_json()['supported_formats'] == ['mbtiles']
 
 
 def test_task_json_never_carries_credential_params(rich_client, tmp_path):
@@ -487,7 +492,7 @@ def test_export_keeps_dotted_artifact_name(rich_client, tmp_path):
         pipeline='plugin', task_id=tid, kind=ArtifactKind.XYZ_DIR,
         path=str(source)))
 
-    body = client.post(f'/api/plugins/export/{tid}',
+    body = client.post(f'/api/export/plugin/{tid}',
                        json={'format': 'gpkg'}).get_json()
     assert body['success'], body
     assert body['path'] == str(src_dir / '城区 2024.06.gpkg')
@@ -513,7 +518,7 @@ def test_export_does_not_overwrite_a_same_format_source(rich_client, tmp_path):
         pipeline='plugin', task_id=tid, kind=ArtifactKind.MBTILES,
         path=str(source), fmt='gpkg'))
 
-    body = client.post(f'/api/plugins/export/{tid}',
+    body = client.post(f'/api/export/plugin/{tid}',
                        json={'format': 'gpkg'}).get_json()
     assert body['success'], body
     assert body['path'] != str(source)
@@ -535,6 +540,6 @@ def test_export_replaces_a_real_extension(rich_client, tmp_path):
         pipeline='plugin', task_id=tid, kind=ArtifactKind.GEOTIFF,
         path=str(source), fmt='tif'))
 
-    body = client.post(f'/api/plugins/export/{tid}',
+    body = client.post(f'/api/export/plugin/{tid}',
                        json={'format': 'gpkg'}).get_json()
     assert body['path'] == str(src_dir / 'dem.gpkg'), body

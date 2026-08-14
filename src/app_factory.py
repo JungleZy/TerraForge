@@ -244,7 +244,7 @@ def _build_task_managers(socketio):
     from src.plugins.task_manager import init_plugin_task_manager
 
     init_plugin_task_manager(socketio)
-    plugin_registry.load_all(socketio)
+    plugin_registry.load_all()
 
     logger.debug("Task managers created and injected into routes")
     return (task_manager, dem_task_manager,

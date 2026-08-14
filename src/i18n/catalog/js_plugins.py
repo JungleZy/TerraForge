@@ -38,6 +38,40 @@ MESSAGES = {
         'en': 'External',
     },
 
+    # ---- 插件配置 ----
+    'js.plugins.config': {
+        'zh': '配置',
+        'en': 'Configure',
+    },
+    'js.plugins.config_save': {
+        'zh': '保存配置',
+        'en': 'Save configuration',
+    },
+    # 没声明 config_schema 的插件走 JSON 回落分支，这是那个框的标签。
+    'js.plugins.config_json_label': {
+        'zh': '配置（JSON 对象）',
+        'en': 'Configuration (JSON object)',
+    },
+    # 凭据键的密码框下面那一行说明：服务端下发的是哨兵不是真值，
+    # 原样提交 = 不改，清空提交 = 清除。不说清楚用户会以为框里是真 token。
+    'js.plugins.config_secret_hint': {
+        'zh': '已保存的凭据不回显；不改就直接保存，清空后保存即清除。',
+        'en': 'A saved credential is never shown; save as-is to keep it, '
+              'or clear the box and save to remove it.',
+    },
+    'js.plugins.config_load_failed': {
+        'zh': '插件配置加载失败',
+        'en': 'Failed to load the plugin configuration',
+    },
+    'js.plugins.config_saved': {
+        'zh': '插件配置已保存',
+        'en': 'Plugin configuration saved',
+    },
+    'js.plugins.config_failed': {
+        'zh': '插件配置保存失败：{reason}',
+        'en': 'Failed to save the plugin configuration: {reason}',
+    },
+
     # ---- 声明式新建任务表单 ----
     'js.plugins.new_task': {
         'zh': '新建任务',

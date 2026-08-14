@@ -233,31 +233,28 @@ class TaskContext:
                           fmt: str = '', meta: Optional[dict] = None) -> None:
         """登记一件产物。路径必须落在 `output_dir` 内。
 
-        为什么校验归属：`task_cleanup.purge_registered_artifacts:472-498`（四条
-        删除路由都在调）对登记行做 `target.unlink()`——它拒符号链接、拒 rmtree
-        目录，但**任务目录之外的普通文件无条件删**。对宿主四条管线安全（路径
-        都是自己产的），而这个方法把路径的选择权交给了第三方代码：插件登记
-        `~/.ssh/id_rsa`，用户删任务时宿主替它删掉。本类的 docstring 自己写的是
-        「插件只能拿到这个对象」，那这里就是信任边界，校验只能落在这里。
-
-        比 resolve 后的路径而不是字面路径：`output_dir/link.mbtiles` 指向
-        `/etc/passwd` 时字面检查会放行。**抛** ValueError 而不是静默忽略：这是
-        插件的编程错误或恶意行为，静默会让它以为登记成功了。
+        归属校验与 `pipeline`/`task_id` 的强制取值都在
+        `artifact_store.record_plugin_artifact` 里（理由见那边的 docstring）：
+        插件导出端点是同一件事的第二扇门，两扇门必须过同一道校验，否则这道
+        校验等于不存在。本类的 docstring 自己写的是「插件只能拿到这个对象」，
+        那这里就是信任边界之一。
         """
         from src.services import artifact_store
-        target = Path(path).expanduser().resolve()
-        root = self.output_dir.resolve()
-        if target != root and root not in target.parents:
-            raise ValueError(f'产物必须落在 output_dir（{root}）内：{target}')
+        # 先校验再量：`_measure` 会 stat 插件给的路径，越界路径不该被碰。
+        target = artifact_store.ensure_owned_artifact_path(path,
+                                                           self.output_dir)
         bytes_total, tile_count, minzoom, maxzoom = _measure(target)
-        artifact_store.record_artifact(Artifact(
-            pipeline='plugin', task_id=self.task_id, kind=kind,
-            path=str(target), fmt=fmt, has_gaps=bool(has_gaps),
-            bytes_total=bytes_total, tile_count=tile_count,
-            minzoom=minzoom, maxzoom=maxzoom,
-            meta={**(meta or {}), 'plugin_id': self.plugin_id},
-            created_at=utc_now_iso(),
-        ))
+        artifact_store.record_plugin_artifact(
+            Artifact(
+                pipeline='plugin', task_id=self.task_id, kind=kind,
+                path=str(target), fmt=fmt, has_gaps=bool(has_gaps),
+                bytes_total=bytes_total, tile_count=tile_count,
+                minzoom=minzoom, maxzoom=maxzoom,
+                meta={**(meta or {}), 'plugin_id': self.plugin_id},
+                created_at=utc_now_iso(),
+            ),
+            pipeline='plugin', task_id=self.task_id,
+            output_root=self.output_dir)
 
 
 def _measure(target: Path):

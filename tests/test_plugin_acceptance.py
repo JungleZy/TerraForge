@@ -178,10 +178,10 @@ def test_all_plugins_disabled_keeps_core_intact(isolated_app, tmp_path,
     payload = resp.get_json()
     assert [t for t in payload['tasks'] if t['task_type'] == 'plugin'] == []
 
-    # 导出：没有任何插件导出器，格式表为空且 400 时把空表说清楚
-    bad = client.post('/api/plugins/export/1', json={'format': 'gpkg'})
+    # 导出：插件导出器一个都不在，格式表退回宿主自带的那一种
+    bad = client.post('/api/export/plugin/1', json={'format': 'gpkg'})
     assert bad.status_code == 400
-    assert bad.get_json()['supported_formats'] == []
+    assert bad.get_json()['supported_formats'] == ['mbtiles']
 
 
 # ---------------------------------------------------------------- 验收 3

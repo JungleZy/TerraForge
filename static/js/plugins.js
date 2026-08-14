@@ -70,6 +70,15 @@
               + ' data-newtask="' + esc(p.id) + '">'
               + esc(t('js.plugins.new_task')) + '</button>'
             : '';
+        // 配置区对**加载成功**的插件一律开（不看 enabled）：先填 token 再开启
+        // 是最自然的顺序，而且天地图这类纯数据源插件没有「新建任务」入口，
+        // 配置是它在界面上唯一的可操作项。加载失败的插件没有 definition，
+        // 配置 schema 取不到，开了也只是个填不进去的空框。
+        var config = p.load_error
+            ? ''
+            : '<button type="button" class="btn btn-sm btn-outline-secondary"'
+              + ' data-config="' + esc(p.id) + '">'
+              + esc(t('js.plugins.config')) + '</button>';
 
         return '<div class="card mb-2 plugin-card" data-plugin="' + esc(p.id) + '">'
             + '<div class="card-body p-3">'
@@ -78,7 +87,9 @@
             + (p.description
                 ? '<p class="small mb-2">' + esc(p.description) + '</p>' : '')
             + err
-            + '<div class="d-flex gap-2 flex-wrap">' + toggle + newTask + '</div>'
+            + '<div class="d-flex gap-2 flex-wrap">'
+            + toggle + config + newTask + '</div>'
+            + '<div class="plugin-config-slot"></div>'
             + '<div class="plugin-task-form-slot"></div>'
             + '</div></div>';
     }
@@ -98,6 +109,123 @@
             .catch(function (e) {
                 console.error('[plugins] 列表加载失败:', e);
                 toast(t('js.plugins.load_failed'), 'danger');
+            });
+    }
+
+    // ------------------------------------------------------------ 插件配置
+
+    /**
+     * 配置区：`GET /api/plugins/<pid>/config` 给的 `schema` + `config` 现渲染。
+     *
+     * 凭据键（`type === 'credential'`）用 `type=password`，且**永远不回显真值**
+     * —— 服务端下发的是 `__TF_UNCHANGED__` 哨兵（与 GET /api/config 对
+     * earthdata_password 的做法一致），原样提交就是「不改」，清空提交就是清除。
+     *
+     * 没声明 schema 的插件（第三方插件可以不声明）回落到一个 JSON textarea：
+     * `PUT /config` 收的本来就是一个 JSON 对象，没有 schema 时后端也不校验，
+     * 界面上就该如实呈现这一点，而不是显示一个填不进去的空框。
+     */
+    function configFieldHtml(spec, value) {
+        var name = esc(spec.key);
+        var secret = spec.type === 'credential';
+        var numeric = spec.type === 'int' || spec.type === 'float';
+        var input;
+        if (spec.type === 'bool') {
+            return '<div class="form-check mb-2">'
+                + '<input type="checkbox" class="form-check-input"'
+                + ' id="pluginCfg-' + name + '" name="' + name + '"'
+                + (value ? ' checked' : '') + '>'
+                + '<label class="form-check-label small"'
+                + ' for="pluginCfg-' + name + '">'
+                + esc(spec.label || spec.key) + '</label></div>';
+        }
+        if (spec.type === 'enum') {
+            input = '<select class="form-select" name="' + name + '">'
+                + (spec.choices || []).map(function (c) {
+                    return '<option value="' + esc(c) + '"'
+                        + (c === value ? ' selected' : '') + '>'
+                        + esc(c) + '</option>';
+                }).join('')
+                + '</select>';
+        } else {
+            input = '<input class="form-control" name="' + name + '"'
+                + ' type="' + (secret ? 'password' : numeric ? 'number' : 'text') + '"'
+                + (spec.type === 'float' ? ' step="any"' : '')
+                + (spec.min != null ? ' min="' + esc(spec.min) + '"' : '')
+                + (spec.max != null ? ' max="' + esc(spec.max) + '"' : '')
+                + (secret ? ' autocomplete="new-password"' : '')
+                + (value != null ? ' value="' + esc(value) + '"' : '')
+                + '>';
+        }
+        return '<div class="mb-2" data-cfg-field="' + name + '">'
+            + '<label class="form-label small mb-1">'
+            + esc(spec.label || spec.key) + '</label>' + input
+            + (secret
+                ? '<div class="form-text small">'
+                  + esc(t('js.plugins.config_secret_hint')) + '</div>'
+                : '')
+            + '<div class="invalid-feedback d-block small plugin-cfg-error"></div>'
+            + '</div>';
+    }
+
+    function configFormHtml(pid, specs, config) {
+        var body = specs.length
+            ? specs.map(function (s) {
+                return configFieldHtml(s, config[s.key]);
+            }).join('')
+            : '<div class="mb-2"><label class="form-label small mb-1">'
+              + esc(t('js.plugins.config_json_label')) + '</label>'
+              + '<textarea class="form-control font-monospace" rows="4"'
+              + ' data-cfg-json>' + esc(JSON.stringify(config, null, 2))
+              + '</textarea>'
+              + '<div class="invalid-feedback d-block small plugin-cfg-error">'
+              + '</div></div>';
+        return '<form class="plugin-config-form mt-3" data-plugin="' + esc(pid) + '">'
+            + body
+            + '<button type="submit" class="btn btn-sm btn-primary">'
+            + esc(t('js.plugins.config_save')) + '</button>'
+            + '</form>';
+    }
+
+    /** 配置表单 -> PUT body。空串照发：清空一个凭据就是要把它删掉。 */
+    function configPayloadOf(form) {
+        var raw = form.querySelector('[data-cfg-json]');
+        if (raw) {
+            // 无 schema 的回落分支：解析失败让调用方按「本地校验失败」处理。
+            return JSON.parse(raw.value || '{}');
+        }
+        var payload = {};
+        form.querySelectorAll('[name]').forEach(function (el) {
+            payload[el.getAttribute('name')] = el.type === 'checkbox'
+                ? el.checked
+                : el.type === 'number' ? Number(el.value) : el.value;
+        });
+        return payload;
+    }
+
+    /** 400 回来的 `errors` 是逐键的，按键回显到对应字段下面。 */
+    function showConfigErrors(form, errors) {
+        form.querySelectorAll('.plugin-cfg-error').forEach(function (el) {
+            el.textContent = '';
+        });
+        Object.keys(errors || {}).forEach(function (key) {
+            var field = form.querySelector('[data-cfg-field="'
+                + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+            var slot = (field || form).querySelector('.plugin-cfg-error');
+            if (slot) slot.textContent = key + '：' + errors[key];
+        });
+    }
+
+    function openConfig(pid, slot) {
+        return fetch('/api/plugins/' + encodeURIComponent(pid) + '/config')
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                slot.innerHTML = configFormHtml(pid, data.schema || [],
+                                                data.config || {});
+            })
+            .catch(function (err) {
+                console.error('[plugins] 配置加载失败:', err);
+                toast(t('js.plugins.config_load_failed'), 'danger');
             });
     }
 
@@ -216,6 +344,17 @@
             return;
         }
 
+        var cfgBtn = target.closest('#pluginsList [data-config]');
+        if (cfgBtn) {
+            var cfgPid = cfgBtn.getAttribute('data-config');
+            var cfgSlot = cfgBtn.closest('.plugin-card')
+                .querySelector('.plugin-config-slot');
+            // 再点一次收起 —— 与新建任务表单同一个开合口径。
+            if (cfgSlot.innerHTML) { cfgSlot.innerHTML = ''; return; }
+            openConfig(cfgPid, cfgSlot);
+            return;
+        }
+
         var newBtn = target.closest('#pluginsList [data-newtask]');
         if (!newBtn) return;
         var pid = newBtn.getAttribute('data-newtask');
@@ -227,6 +366,53 @@
             .catch(function (err) {
                 console.error('[plugins] schema 加载失败:', err);
                 toast(t('js.plugins.schema_failed'), 'danger');
+            });
+    });
+
+    document.addEventListener('submit', function (e) {
+        var form = e.target && typeof e.target.closest === 'function'
+            ? e.target.closest('.plugin-config-form') : null;
+        if (!form) return;
+        e.preventDefault();
+        var pid = form.getAttribute('data-plugin');
+        var body;
+        try {
+            body = configPayloadOf(form);
+        } catch (err) {
+            // 无 schema 的 JSON 回落分支里用户打错了括号。本地就能判，不必
+            // 让服务端回一句更含糊的 400。
+            showConfigErrors(form, { _: String(err) });
+            return;
+        }
+        fetch('/api/plugins/' + encodeURIComponent(pid) + '/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+            .then(function (r) {
+                return r.json().then(function (data) {
+                    return { ok: r.ok, data: data };
+                });
+            })
+            .then(function (res) {
+                if (!res.ok || !res.data.success) {
+                    // 400 的 `errors` 是逐键的，回显到对应字段；其余错误
+                    // （404、500）只有一句 `error`，走 toast。
+                    if (res.data.errors) {
+                        showConfigErrors(form, res.data.errors);
+                    } else {
+                        toast(t('js.plugins.config_failed',
+                                { reason: res.data.error || '' }), 'danger');
+                    }
+                    return;
+                }
+                showConfigErrors(form, {});
+                toast(t('js.plugins.config_saved'), 'success');
+            })
+            .catch(function (err) {
+                console.error('[plugins] 配置保存失败:', err);
+                toast(t('js.plugins.config_failed',
+                        { reason: String(err) }), 'danger');
             });
     });
 

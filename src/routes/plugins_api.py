@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file
 
 from src.plugins import registry
 from src.plugins.task_manager import get_plugin_task_manager
+from src.services.config_manager import SECRET_UNCHANGED
 from src.services.task_cleanup import (purge_registered_artifacts,
                                        record_retained_output)
 
@@ -137,11 +137,44 @@ def disable_plugin(pid):
     return jsonify({'success': True})
 
 
+def _config_specs(pid: str):
+    """插件配置 schema 的 specs；没声明则空 tuple。
+
+    只认 `PluginDefinition.config_schema`——与 `registry.set_config` 同一个位置，
+    否则「界面按 A 渲染、后端按 B 校验」。
+    """
+    rec = registry.get_record(pid)
+    schema = getattr(rec.definition, 'config_schema', None) if rec else None
+    return tuple(schema.specs) if schema is not None else ()
+
+
+def _secret_keys(specs) -> set:
+    return {s.key for s in specs if s.type == 'credential'}
+
+
 @plugins_bp.route('/<pid>/config', methods=['GET'])
 def get_plugin_config(pid):
+    """插件配置 + 它的 schema。**凭据类键不回显真值。**
+
+    回的是 `config_manager.SECRET_UNCHANGED` 哨兵，与 `GET /api/config` 对
+    `earthdata_password` 的做法逐字一致：真值回填到密码框等于把它交给页面 DOM
+    与这条接口的任何读者（局域网上的任意主机、任何浏览器扩展）。PUT 收到哨兵
+    就跳过该键不覆盖；用户清空再保存仍然能真的清掉。
+
+    schema 一起回：前端要靠 `type` 决定用密码框还是文本框，没有第二条接口能
+    给它（`/<pid>/schema` 给的是**任务参数**，与配置是两件事）。
+    """
     if registry.get_record(pid) is None:
         return jsonify({'error': '未知插件'}), 404
-    return jsonify({'success': True, 'config': registry.get_config(pid)})
+    specs = _config_specs(pid)
+    secrets = _secret_keys(specs)
+    cfg = {k: (SECRET_UNCHANGED if (k in secrets and v) else v)
+           for k, v in registry.get_config(pid).items()}
+    return jsonify({'success': True, 'config': cfg, 'schema': [
+        {'key': s.key, 'type': s.type, 'label': s.label,
+         'default': s.default, 'required': s.required,
+         'min': s.min, 'max': s.max, 'choices': list(s.choices)}
+        for s in specs]})
 
 
 @plugins_bp.route('/<pid>/config', methods=['PUT'])
@@ -151,6 +184,15 @@ def put_plugin_config(pid):
         return jsonify({'error': 'body must be a JSON object'}), 400
     if registry.get_record(pid) is None:
         return jsonify({'error': '未知插件'}), 404
+    # 哨兵 → 库里的现值。必须在 set_config **之前**换回来：schema 声明
+    # `required=True` 的凭据键收到哨兵会被当成一个新的（错误的）真值存进去，
+    # 用户只是改了别的字段就把 token 换成了 `__TF_UNCHANGED__`。
+    secrets = _secret_keys(_config_specs(pid))
+    if secrets:
+        stored = registry.get_config(pid)
+        payload = {k: (stored.get(k, '')
+                       if (k in secrets and v == SECRET_UNCHANGED) else v)
+                   for k, v in payload.items()}
     errors = registry.set_config(pid, payload)
     if errors:
         return jsonify({'success': False, 'errors': errors}), 400
@@ -305,61 +347,11 @@ def delete_plugin_task(tid):
     return jsonify(payload)
 
 
-def _export_dest(source, fmt: str) -> Path:
-    """导出目标路径：源产物的同级，加上目标格式的后缀。
-
-    **不能直接 `with_suffix`**，它替换的是「最后一个点之后的东西」，而产物名里
-    的点未必是扩展名：
-    - `城区 2024.06`（按月份命名的成果目录）→ `城区 2024.gpkg`，月份没了，
-      同一年的两个月份导出**互相覆盖**；
-    - `dem_v1.5` → `dem_v1.gpkg`，版本号没了，同上；
-    - 源本身就是 `.gpkg` 而目标也是 gpkg → 目标**等于源**，导出器写在自己的
-      输入上。
-
-    所以只在「现有后缀正是生产者自己声明的那个格式」时才替换 —— 那种情况下它
-    确实是扩展名（`a.tif` + `fmt='tif'` → `a.gpkg`）—— 其余一律追加，宁可
-    `城区 2024.06.gpkg` 有点长，也不许丢名字或撞源文件。声明格式与目标格式相同
-    时也追加，否则又回到「目标等于源」。
-    """
-    src = Path(source.path)
-    declared = f'.{source.fmt.lower()}' if source.fmt else ''
-    if declared and declared != f'.{fmt}' and src.suffix.lower() == declared:
-        return src.with_suffix(f'.{fmt}')
-    return src.with_name(f'{src.name}.{fmt}')
-
-
-@plugins_bp.route('/export/<int:tid>', methods=['POST'])
-def export_plugin_task(tid):
-    payload = request.get_json(silent=True) or {}
-    fmt = str(payload.get('format') or '').strip().lower()
-    exporter = registry.exporter_for(fmt)
-    if exporter is None:
-        return jsonify({'error': f'未知导出格式：{fmt!r}',
-                        'supported_formats':
-                            list(registry.list_export_formats())}), 400
-    if get_plugin_task_manager().get_task(tid) is None:
-        return jsonify({'error': '任务不存在'}), 404
-
-    from src.plugins.protocols import ExportContext
-    from src.services import artifact_store
-
-    artifacts = [a for a in artifact_store.list_artifacts('plugin', tid)
-                 if exporter.accepts(a.kind)]
-    if not artifacts:
-        return jsonify({'error': '该任务没有可由此格式导出的产物'}), 400
-    source = artifacts[0]
-    dest = _export_dest(source, fmt)
-    ctx = ExportContext(
-        task_id=tid,
-        log=lambda msg, level='info': logger.info('[export:%s] %s', fmt, msg),
-        progress=lambda done, total: None)
-    try:
-        result = exporter.export(source, dest, ctx)
-    except Exception as e:
-        logger.exception('插件导出失败')
-        return jsonify({'error': str(e)}), 500
-    artifact_store.record_artifact(result)
-    return jsonify({'success': True, 'path': str(dest)})
+# 插件导出**没有**自己的路由：`POST /api/export/<pipeline>/<id>` 是唯一入口
+# （见 `src/routes/api.py` 的 `_export_formats`）。原先这里有一条
+# `POST /api/plugins/export/<tid>`，它只认插件任务，而 in-tree 的
+# `GpkgExporter.accepts()` 只收 GEOTIFF —— 产 GeoTIFF 的是 map/dem 两条核心
+# 管线，插件任务一件都不产，那条路由因此永远没有货。
 
 
 @plugins_bp.route('/<pid>/assets/<path:filename>', methods=['GET'])

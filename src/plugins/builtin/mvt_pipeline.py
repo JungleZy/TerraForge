@@ -85,7 +85,11 @@ _TILE_TIMEOUT_S = 30.0
 #: 在十几秒内就报出来，而不是让用户对着转圈等半分钟。
 _TILEJSON_TIMEOUT_S = 15.0
 
-#: 拿不到 NETWORK 配额时的并发兜底（`granted()` 缺键返回 0）。
+#: 拿不到 NETWORK 配额时的并发兜底。**正常路径上不该被用到**：宿主
+#: （`plugins/task_manager._network_request`）对声明了 `network` 权限的插件
+#: 一定会请求 NETWORK，本插件的 manifest 就声明了它。走到兜底只有两种可能：
+#: 有人手搓了一个不带该配额的 TaskContext（测试），或者宿主那条请求被改坏了
+#: ——后者意味着连接不进全局账本，必须在日志里喊出来，见 `_concurrency`。
 _DEFAULT_CONCURRENCY = 4
 
 #: 暂存区目录名。前缀点号：它落在用户的产物目录里，不该混在成品旁边。
@@ -116,7 +120,15 @@ def _open_session(ctx) -> aiohttp.ClientSession:
 
 def _concurrency(ctx) -> int:
     """并发上限**只**来自调度器配额，不自己拍数（§13-4 契约第 2 条）。"""
-    return max(1, ctx.granted(ResourceKind.NETWORK) or _DEFAULT_CONCURRENCY)
+    granted = ctx.granted(ResourceKind.NETWORK)
+    if granted:
+        return max(1, granted)
+    logger.warning(
+        'MVT 未拿到 NETWORK 配额，回退到兜底并发 %d：本次下载的连接**不在**'
+        '全局 max_network_connections 账本内（契约第 2 条）。宿主侧应由'
+        ' plugins/task_manager._network_request 按 manifest 的 network 权限'
+        '预留。', _DEFAULT_CONCURRENCY)
+    return _DEFAULT_CONCURRENCY
 
 
 def _proxy_for(url: str, proxy):

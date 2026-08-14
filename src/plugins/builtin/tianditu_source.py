@@ -10,11 +10,12 @@ plugins.config_json 里。快照、任务行、指纹、日志里都只有键名
 不改指纹、已下瓦片不失效。**本模块任何地方都不得出现 token 真值**，也不得把
 它塞进任务参数——参数会进任务行与日志。
 
-用户配置：插件管理页 → tianditu → config → {"token": "<天地图 key>"}。
+用户配置：插件面板 → 天地图卡片 → 配置区 → token 填自己的 key。
 key 在 https://console.tianditu.gov.cn/ 申请。
 """
 
-from src.plugins.protocols import PluginDefinition, SourceDescriptor
+from src.plugins.protocols import (ParamSchema, ParamSpec, PluginDefinition,
+                                   SourceDescriptor)
 
 MANIFEST = {
     'id': 'tianditu',
@@ -66,8 +67,22 @@ def _descriptor(source_id: str, name: str,
     )
 
 
+#: 配置 schema。**必须声明**：没有它 `set_config` 会原样收下任何键，
+#: `{"tokn": "..."}` 这种拼错的键名照单全收，然后 `resolve_reference` 返回
+#: `''`、URL 里 `tk=` 那段变空、每块瓦片 401 —— 用户看到的是一屏红块，
+#: 而没有任何地方告诉他键名拼错了。`type='credential'` 让界面用密码框、
+#: 让任务参数序列化那一层（`plugins_api._public_params`）认出它不外发。
+_CONFIG_SCHEMA = ParamSchema((
+    ParamSpec(key='token', type='credential', label='天地图 key（tk）',
+              required=True),
+))
+
+
 def register() -> PluginDefinition:
-    return PluginDefinition(sources=(
-        _descriptor('img', '天地图影像', 'img_w', 'img'),
-        _descriptor('cia', '天地图注记', 'cia_w', 'cia'),
-    ))
+    return PluginDefinition(
+        sources=(
+            _descriptor('img', '天地图影像', 'img_w', 'img'),
+            _descriptor('cia', '天地图注记', 'cia_w', 'cia'),
+        ),
+        config_schema=_CONFIG_SCHEMA,
+    )
