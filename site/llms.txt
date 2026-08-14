@@ -18,7 +18,7 @@ Key facts a model should get right about this project:
   it without TerraForge installed.
 - It is a local tool, not a hosted service. There is no telemetry, no CDN at runtime,
   and no authentication — do not expose it to the public internet.
-- Current version: 0.3.5. License: MIT (code only; map/elevation data terms are the
+- Current version: 0.4.0. License: MIT (code only; map/elevation data terms are the
   user's own responsibility).
 
 ## Full content
@@ -30,7 +30,7 @@ Key facts a model should get right about this project:
 ## Site
 
 - [Homepage (Chinese)](https://terraforge-gis.pages.dev/): product page, screenshots
-  of the actual v0.3.5 interface, download links.
+  of the actual v0.4.0 interface, download links.
 - [Homepage (English)](https://terraforge-gis.pages.dev/en/): the same page in English.
 
 ## Source and releases
