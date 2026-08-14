@@ -6822,8 +6822,10 @@ def test_no_template_references_an_external_url():
     # 只有本地 SVG 标记，无外链。
     # 8 -> 9（命令面板）：新增 _command_palette.html 命令面板/速查表外壳
     # partial，纯静态 markup，无外链。
-    assert len(templates) == 9, (
-        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 9 个 —— '
+    # 9 -> 10（插件管理面板）：新增 _plugins_content.html 插件面板骨架 partial
+    # （列表由 static/js/plugins.js 拉 /api/plugins 渲染），无外链。
+    assert len(templates) == 10, (
+        f'templates/ 下有 {len(templates)} 个 .html，本断言写下时是 10 个 —— '
         '新增页面不需要改本断言（它按目录遍历），但请确认新页面也没有外链，'
         '然后把这个数字更新掉'
     )
@@ -6915,8 +6917,11 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 全部搬进去。它必须在**公共**脚本区加载：那些能力过去只在首页有，因为实现
     # 整块躺在 index.html 才加载的 tasks.js 里，于是 /history 上没有按钮、没有
     # 实时更新、没有耗时也没有速度。/config 仍不付这份代价（它把整个 block 覆盖成空）。
-    assert len(refs) == 31, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 31 处。"
+    # 31 -> 32（插件管理面板）：index.html 的 extra_js 新增 static/js/plugins.js
+    # （插件列表/启停/声明式新建任务表单；只有首页有插件面板，故挂在 index.html
+    # 的 extra_js 而不是 base.html）。
+    assert len(refs) == 32, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 32 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )

@@ -7,21 +7,24 @@
  * Bootstrap 弹窗的让位判据不变）。
  *
  * 顶部工具栏已移除，入口是首页地图左上角的 .map-panel-btn 浮动按钮
- * （index.html）。任何带 data-panel="records|history|config" 的元素都会被拦截
- * 改为打开面板；独立页（/history、/config）没有面板元素，链接保持正常
+ * （index.html）。任何带 data-panel="records|history|config|plugins" 的元素都会被
+ * 拦截改为打开面板；独立页（/history、/config）没有面板元素，链接保持正常
  * 跳转，行为与之前完全一致。
  *
  * 全局暴露：window.openPanel(name) / window.closePanel()，
- * name ∈ {records, history, config}。「记录」面板合并了活动任务与历史：
+ * name ∈ {records, history, config, plugins}。「记录」面板合并了活动任务与历史：
  * records 是新名字，history 作为别名保留（#history hash 与旧入口兼容）。
- * 支持 #records / #history / #config hash 直达（resetConfig 刷新后重开配置面板）。
+ * 支持 #records / #history / #config / #plugins hash 直达（resetConfig 刷新后重开配置面板）。
  */
 (function () {
     'use strict';
 
     // records/history 指向同一个面板元素；懒初始化标记按**元素 id** 记，
     // 免得 openPanel('records') 之后 openPanel('history') 又初始化一遍。
-    var PANELS = { history: 'historyPanel', records: 'historyPanel', config: 'configPanel' };
+    var PANELS = {
+        history: 'historyPanel', records: 'historyPanel',
+        config: 'configPanel', plugins: 'pluginsPanel'
+    };
     var inited = {};
     var current = null;
     // 面板打开前那个焦点元素（通常是触发它的 .map-panel-btn），关闭时焦点还给它。
@@ -63,6 +66,7 @@
             inited[key] = true;
             if (key === 'historyPanel' && typeof initHistory === 'function') initHistory();
             if (key === 'configPanel' && typeof initConfig === 'function') initConfig();
+            if (key === 'pluginsPanel' && typeof initPlugins === 'function') initPlugins();
         } else if (key === 'historyPanel' && typeof historyViewer !== 'undefined' && historyViewer) {
             setTimeout(function () {
                 historyViewer.resize();

@@ -125,6 +125,10 @@
                     {{ m.icon_config(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.config') }}</span>
                 </button>
+                <button type="button" class="map-panel-btn" data-panel="plugins" aria-label="{{ t('tpl.plugins.title') }}" title="{{ t('tpl.plugins.title') }}">
+                    {{ m.icon_plugin(18, gap='') }}
+                    <span>{{ t('tpl.plugins.title') }}</span>
+                </button>
             </div>
         </div>
         <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「下载」「删除」入口 -->
@@ -519,6 +523,17 @@
     <div class="workbench-panel__resizer" data-panel-resizer aria-hidden="true"></div>
 </section>
 
+<!-- 插件面板：插件列表 / 启停 / 新建插件任务（列表由 static/js/plugins.js 拉
+     /api/plugins 渲染，插件集是运行期数据）。
+     没有调宽热区：拖拽调宽只对两个既有面板启用（panels.js 的 RESIZE_CONFIGS），
+     插件面板用缺省宽度。 -->
+<section class="workbench-panel" id="pluginsPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.plugins.title') }}" hidden>
+    {{ m.panel_header(m.icon_plugin(16), t('tpl.plugins.title'), t('tpl.index.panel.close')) }}
+    <div class="workbench-panel__body">
+        {% include "_plugins_content.html" %}
+    </div>
+</section>
+
 {% endblock %}
 
 {% block statusbar %}
@@ -586,9 +601,10 @@
 <script src="{{ url_for('static', filename='js/tasks.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/history.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/config.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/plugins.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/panels.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/drop_process.js') }}" defer></script>
-{# 上面七个文件带 defer，解析期不再阻塞渲染，但它们的执行也随之推到
+{# 上面八个文件带 defer，解析期不再阻塞渲染，但它们的执行也随之推到
    DOMContentLoaded 之前 —— 所以本块必须等那个事件。
    ⚠️ 内联脚本的 defer 属性是**无效**的（规范只对有 src 的脚本生效），
    写了也会立刻执行，那时 initMap 等函数一个都还不存在。 #}

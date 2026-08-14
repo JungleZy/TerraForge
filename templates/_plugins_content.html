@@ -1,0 +1,13 @@
+{# 插件管理面板的骨架。
+
+   列表**不走 Jinja**：插件集是运行期数据（注册表随 plugins/ 目录与启停状态
+   变化，加载失败的插件也要在册），服务端渲染一次就会立刻过期。static/js/
+   plugins.js 拉 GET /api/plugins 往 #pluginsList 里渲染。
+
+   宿主在这里只提供两件事：特权提示（插件跑在宿主进程里，没有沙箱），以及那个
+   挂载点。 #}
+<div class="plugins-content">
+    <p class="alert alert-warning py-2 px-3 mb-3" role="note">{{ t('tpl.plugins.full_privilege') }}</p>
+    {# aria-live：启停后整块由 JS 重渲染，读屏用户需要知道列表变了。 #}
+    <div id="pluginsList" class="plugins-list" aria-live="polite"></div>
+</div>

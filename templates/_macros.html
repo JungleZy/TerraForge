@@ -75,3 +75,9 @@
         <button type="button" class="dock-collapse-btn" data-panel-close title="{{ close_label }}" aria-label="{{ close_label }}">{{ icon_close(14) }}</button>
     </header>
 {% endmacro %}
+
+{# 拼图块（插件）。两处：左列工具条的「插件」入口、插件面板头。
+   必须是宏而不是两处内联：几何体重复即被
+   tests/test_fix_templates_a11y.py::test_no_icon_geometry_is_duplicated_across_templates
+   判红。gap 同 icon_tasks（工具条按钮传 '' 关掉右外边距）。 #}
+{% macro icon_plugin(size=16, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 11H19V7a2 2 0 0 0-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4a2 2 0 0 0-2 2v4h1.5a2.5 2.5 0 0 1 0 5H2v4a2 2 0 0 0 2 2h4v-1.5a2.5 2.5 0 0 1 5 0V22h4a2 2 0 0 0 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z"></path></svg>{% endmacro %}

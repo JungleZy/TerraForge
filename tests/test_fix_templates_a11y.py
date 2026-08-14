@@ -252,9 +252,9 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
 
 # ------------------------------------------------- P1#16b 面板的非模态语义
 
-@pytest.mark.parametrize('panel_id', ['historyPanel', 'configPanel'])
+@pytest.mark.parametrize('panel_id', ['historyPanel', 'configPanel', 'pluginsPanel'])
 def test_slide_out_panels_declare_themselves_nonmodal(isolated_app, panel_id):
-    """两个滑出面板是非模态 dialog:role="dialog" 保留,**不许**再有 aria-modal。
+    """三个滑出面板都是非模态 dialog:role="dialog" 保留,**不许**再有 aria-modal。
 
     2026-08-11 起面板取消遮罩层:面板打开时地图保持可见可交互(非模态工作台,
     与 GeoLibre/QGIS 的停靠面板同模式)。aria-modal="true" 会向读屏宣称
