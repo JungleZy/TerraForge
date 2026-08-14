@@ -45,3 +45,55 @@ def test_param_types_locked():
     assert set(PARAM_TYPES) == {
         'region', 'zoom_range', 'path', 'int', 'float', 'str', 'bool',
         'enum', 'credential'}
+
+
+def test_json_null_is_treated_as_missing():
+    """前端把没填的可选字段序列化成 null 是常态，不能变成字面量 'None'。"""
+    clean, errors = validate_params(SCHEMA, {'zoom': 12, 'mode': 'a', 'name': None})
+    assert errors == {} and clean['name'] == '未命名'   # 有缺省 → 回填
+    _, errors = validate_params(SCHEMA, {'zoom': None, 'mode': 'a'})
+    assert errors['zoom'] == 'required'                 # 必填无缺省 → required
+
+
+def test_null_credential_does_not_become_the_string_none():
+    """凭据/路径这类 str 系类型收到 null 时必须报 required，而不是拿到 'None'。"""
+    schema = ParamSchema(specs=(
+        ParamSpec(key='token', type='credential', label='令牌'),
+        ParamSpec(key='out', type='path', label='输出目录'),
+    ))
+    clean, errors = validate_params(schema, {'token': None, 'out': None})
+    assert clean == {}
+    assert errors == {'token': 'required', 'out': 'required'}
+
+
+def test_json_bool_is_not_a_number():
+    """JSON 布尔是 int 子类；层级/比例不含义布尔，与 coerce_number 同口径显式拒绝。"""
+    _, errors = validate_params(SCHEMA, {'zoom': True, 'mode': 'a'})
+    assert errors['zoom'] == 'invalid int'
+    _, errors = validate_params(SCHEMA, {'zoom': 3, 'mode': 'a', 'ratio': False})
+    assert errors['ratio'] == 'invalid float'
+
+
+def test_non_finite_numbers_are_rejected():
+    """NaN 与任何比较都是 False，会整条穿透 min/max；inf 送进 int() 还会抛。"""
+    for bad in (float('nan'), 'nan', float('inf'), '-inf'):
+        _, errors = validate_params(SCHEMA, {'zoom': 3, 'mode': 'a', 'ratio': bad})
+        assert errors == {'ratio': 'invalid float'}, bad
+        # int 分支不许把 OverflowError 抛给路由层 —— 只能进错误表。
+        _, errors = validate_params(SCHEMA, {'zoom': bad, 'mode': 'a'})
+        assert errors == {'zoom': 'invalid int'}, bad
+
+
+def test_nan_cannot_slip_past_bounds():
+    bounded = ParamSchema(specs=(
+        ParamSpec(key='ratio', type='float', label='比例', min=0.0, max=1.0),
+    ))
+    clean, errors = validate_params(bounded, {'ratio': float('nan')})
+    assert clean == {} and errors == {'ratio': 'invalid float'}
+
+
+def test_non_mapping_payload_is_rejected():
+    """Task 5 路由层直接依赖这个契约：非对象入参不抛异常，只返回错误表。"""
+    assert validate_params(SCHEMA, 'not a dict') == ({}, {'_': 'params must be an object'})
+    assert validate_params(SCHEMA, None) == ({}, {'_': 'params must be an object'})
+    assert validate_params(SCHEMA, [('zoom', 3)]) == ({}, {'_': 'params must be an object'})
