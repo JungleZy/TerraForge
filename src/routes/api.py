@@ -138,8 +138,17 @@ def create_task():
         # 冻结一张快照随任务落库,create_task 的通用覆盖缝会认它。核心不认
         # 具体数据源,只认这份快照合同 —— 插件只是第一批调用方。
         # 快照里的 credential_reference 是键名不是值,凭据不进任务行。
+        #
+        # **合同不能由客户端签**:`source_snapshot` 无条件从 body 里摘掉,
+        # 只有 `build_source_snapshot` 的产出能落库。少了这一句,一个不带
+        # `source_plugin_id` 的建任务请求就能自带一张 url_template 指向攻击者
+        # 主机、credential_reference 指向 `plugin:tianditu:token` 的快照 ——
+        # 宿主会拿着用户的真 token 逐块瓦片请求那台服务器(`{credential}`
+        # 的替换发生在 download_engine.get_tile_url,它只看快照怎么写)。
+        # pop 排在读 source_plugin_id 之后、写回之前:两条路径共用一个键。
         source_plugin_id = str(data.get('source_plugin_id') or '')
         source_id = str(data.get('source_id') or '')
+        data.pop('source_snapshot', None)
         if source_plugin_id and source_id:
             from src.plugins import registry as plugin_registry
             try:
@@ -1417,7 +1426,7 @@ def proxy_status():
     让配置页能直说「现在实际用的是哪个、为什么」,而不是让用户对着一个开关猜。
     """
     from src.services.proxy_autodetect import (
-        auto_detect_enabled, autodetect, get_state, mask_url_userinfo,
+        auto_detect_enabled, autodetect, get_state, mask_url_secrets,
         reset_state, resolve_from_config,
     )
     from src.app_factory import probe_url_from_config
@@ -1440,9 +1449,9 @@ def proxy_status():
     # 配置页只是展示当前事实,不该为了一个状态查询挂住请求。
     effective = resolve_from_config(config_manager, wait_s=0)
     state.update({
-        'manual': mask_url_userinfo(manual) if manual else '',
+        'manual': mask_url_secrets(manual) if manual else '',
         'auto_enabled': auto_enabled,
-        'effective': mask_url_userinfo(effective) if effective else '',
+        'effective': mask_url_secrets(effective) if effective else '',
         'effective_source': ('manual' if manual
                              else (state['source'] if effective else '')),
     })

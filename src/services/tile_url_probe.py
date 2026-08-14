@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from src.i18n import t
-from src.services.system_proxy import mask_url_userinfo
+from src.services.system_proxy import mask_url_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,7 @@ def probe_server_entry(entry, proxy_url='', center_lng=106.55, center_lat=29.56,
     result['tile'] = f'{z}/{x}/{y}'
     result['url'] = url
     logger.info(
-        f'Tile server probe {mask_url_userinfo(url)} (proxy={"direct" if not proxy_url else "on"}) -> '
+        f'Tile server probe {mask_url_secrets(url)} (proxy={"direct" if not proxy_url else "on"}) -> '
         f'success={result["success"]} status={result["status_code"]} '
         f'elapsed={result["elapsed_ms"]}ms'
     )

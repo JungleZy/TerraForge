@@ -63,7 +63,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from src.core.config import Config
 from src.services.proxy_autodetect import resolve_from_config
-from src.services.system_proxy import mask_url_userinfo
+from src.services.system_proxy import mask_url_secrets
 from src.services.tile_url_probe import should_bypass_proxy
 
 logger = logging.getLogger(__name__)
@@ -294,7 +294,7 @@ def ensure_fetchable_url(url: str, *, allow_private: bool = False) -> str:
         if reason:
             # 日志里带上掩码后的 URL：userinfo 形态（http://u:p@host/）常被用来
             # 伪装主机，排查时要看得见它，但不能把凭据写进日志。
-            logger.warning(f'拒绝服务端代取 {mask_url_userinfo(raw)}：{reason}')
+            logger.warning(f'拒绝服务端代取 {mask_url_secrets(raw)}：{reason}')
             raise UrlNotAllowed(f'不允许访问该地址：{reason}')
     return urlunsplit((scheme, parts.netloc, parts.path, parts.query, ''))
 
@@ -465,7 +465,7 @@ def guarded_request(url, *, timeout=10, max_bytes=2_000_000,
         left = deadline - time.monotonic()
         if left <= 0:
             raise TimeoutError(
-                f'取回 {mask_url_userinfo(current)} 超过 {timeout} 秒总时限'
+                f'取回 {mask_url_secrets(current)} 超过 {timeout} 秒总时限'
                 f'（第 {hop + 1} 跳开始前）')
         opener = urllib.request.build_opener(
             _NoRedirect(), *_proxy_handler(current, config_manager))
@@ -494,12 +494,12 @@ def guarded_request(url, *, timeout=10, max_bytes=2_000_000,
             if hop >= MAX_REDIRECTS:
                 raise UrlNotAllowed(
                     f'重定向超过 {MAX_REDIRECTS} 跳，最后一跳指向 '
-                    f'{mask_url_userinfo(location)}')
+                    f'{mask_url_secrets(location)}')
             # 关键的一步：新目标要从头再过一次闸。首跳合法 + 302 到
             # 169.254.169.254 是最省事的绕过手法，只校验首跳等于没校验。
             nxt = urljoin(current, location)
-            logger.debug(f'重定向 {mask_url_userinfo(current)} -> '
-                         f'{mask_url_userinfo(nxt)}（第 {hop + 1} 跳）')
+            logger.debug(f'重定向 {mask_url_secrets(current)} -> '
+                         f'{mask_url_secrets(nxt)}（第 {hop + 1} 跳）')
             current = ensure_fetchable_url(nxt, allow_private=allow_private)
     # for 循环必然从 return 或 raise 出去（hop >= MAX_REDIRECTS 那条分支兜底），
     # 走到这里说明上面的跳数计算被改坏了 —— 宁可明确炸掉也不要返回 None。

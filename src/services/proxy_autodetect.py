@@ -55,7 +55,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
-from src.services.system_proxy import mask_url_userinfo
+from src.services.system_proxy import mask_url_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class ProxyCandidate:
         return hash(self.url)
 
     def __repr__(self):
-        return f'ProxyCandidate({mask_url_userinfo(self.url)!r}, {self.source!r})'
+        return f'ProxyCandidate({mask_url_secrets(self.url)!r}, {self.source!r})'
 
 
 def _normalize_proxy_url(value: str) -> str:
@@ -352,7 +352,7 @@ def verify_proxy(proxy_url: str, probe_url: str = DEFAULT_PROBE_URL,
             return bool(resp.read(1024))
     except (OSError, urllib.error.URLError, ValueError) as e:
         logger.debug(f'Proxy verification failed for '
-                     f'{mask_url_userinfo(proxy_url)}: {e}')
+                     f'{mask_url_secrets(proxy_url)}: {e}')
         return False
 
 
@@ -376,7 +376,7 @@ def get_state() -> dict:
     with _lock:
         return {
             'status': _state['status'],
-            'url': mask_url_userinfo(_state['url']) if _state['url'] else '',
+            'url': mask_url_secrets(_state['url']) if _state['url'] else '',
             'source': _state['source'],
             'candidates': list(_state['candidates']),
             'checked_at': _state['checked_at'],
@@ -410,7 +410,7 @@ def autodetect(probe_url: str = DEFAULT_PROBE_URL) -> dict:
         candidates = detect_candidates()
         for cand in candidates:
             ok = verify_proxy(cand.url, probe_url=probe_url)
-            tried.append({'url': mask_url_userinfo(cand.url),
+            tried.append({'url': mask_url_secrets(cand.url),
                           'source': cand.source, 'verified': ok})
             if ok:
                 winner = cand
@@ -433,7 +433,7 @@ def autodetect(probe_url: str = DEFAULT_PROBE_URL) -> dict:
 
     elapsed = round((time.monotonic() - started) * 1000)
     if winner:
-        logger.info(f'Proxy autodetect: using {mask_url_userinfo(winner.url)} '
+        logger.info(f'Proxy autodetect: using {mask_url_secrets(winner.url)} '
                     f'(source={winner.source}, {len(tried)} candidate(s) tried, '
                     f'{elapsed}ms)')
     else:

@@ -77,7 +77,7 @@ from src.contracts.artifact import PIPELINES
 # 而两份 ANSI 正则迟早漂移 —— 那时表现是全局日志干净、诊断包里一堆
 # `^[[33m`，没人会想到是两份正则的差异。宁可耦合一个私有名。
 from src.core.logging_setup import _ANSI_ESCAPE, log_dir
-from src.services.system_proxy import mask_url_userinfo
+from src.services.system_proxy import URL_IN_TEXT, mask_text_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +133,9 @@ REDACTED = '***'
 # 脱敏
 # ---------------------------------------------------------------------------
 
-# 匹配文本里嵌着的 URL。redact 不能假设入参**整体**是一个 URL：它拿到的是
-# 一整行日志（`fetch failed: https://u:p@h/x?token=... -> 500`）。
-_URL_IN_TEXT = re.compile(r'\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s\'"<>)\]},]+')
+# 匹配文本里嵌着的 URL 与「URL → 掩码」这两件事都**不在本模块实现**：
+# `system_proxy` 是它们的唯一实现处（见那边的模块 docstring），下载引擎与插件
+# 事件广播也要用同一份口径把 URL 写进 DB 与响应。抄第二遍必然抄漏。
 
 #: 敏感键名。前缀故意开放（`[\w\-]*`）：`access_key` / `api_key` /
 #: `earthdata_password` / `X-Auth-Token` 都要盖住，而 `\bkey` 这种写法会因为
@@ -154,12 +154,13 @@ _SENSITIVE_KEY = (
 
 #: 脱敏规则清单。测试可见：`(名字, 正则, 替换)`。名字用于断言「这条规则还在」，
 #: 而不是去 assert 一整段实现 —— 规则会增加，删掉一条才是回归。
-#: 顺序有意义：URL userinfo 先做（它整段重写 URL），再做 `k=v` 与头部，
+#: 顺序有意义：URL 脱敏先做（它整段重写 URL），再做 `k=v` 与头部，
 #: 最后才替换 home 路径（提前做会把 URL 里的路径也换掉）。
 REDACTION_PATTERNS = (
-    # scheme://user:pass@host —— 由 _redact_urls 走 mask_url_userinfo 处理，
-    # 这里登记的是它的匹配范围，规则实现不在正则里（见下方 _redact_urls）。
-    ('url_userinfo', _URL_IN_TEXT, None),
+    # scheme://user:pass@host 与 `?tk=<真 token>` —— 由 _redact_urls 走
+    # system_proxy.mask_text_secrets 处理，这里登记的是它的匹配范围，
+    # 规则实现不在正则里（见下方 _redact_urls）。
+    ('url_secrets', URL_IN_TEXT, None),
     # Bearer / Basic 后面那一整段。头名字可能被截断（日志里常只剩
     # `Bearer eyJ...`），所以认的是**方案词**而不是头名字。
     ('auth_scheme_value', re.compile(
@@ -193,19 +194,14 @@ REDACTION_PATTERNS = (
 
 
 def _redact_urls(text: str) -> str:
-    """把文本里每个 URL 的 `user:pass@` 掩码掉。
+    """把文本里每条 URL 的 `user:pass@` 与敏感查询参数值掩掉。
 
-    复用 `system_proxy.mask_url_userinfo`（掩成 `***:***@host`，host 保留便于
-    排查）而不是再写一条正则：userinfo 的边界判定（IPv6 字面量里的冒号、
-    路径里的 `@`）已经在那边靠 urlsplit 解决过一次，抄第二遍必然抄漏。
+    整件事在 `system_proxy.mask_text_secrets` 里做，本模块只是它的调用方之一：
+    URL 的边界判定（IPv6 字面量里的冒号、路径里的 `@`）与「哪些查询参数是凭据」
+    的口径必须与下载引擎、插件事件广播**逐字一致**——它们把同样的文本写进
+    数据库与 HTTP 响应，抄第二遍必然抄漏。
     """
-    def _one(m):
-        try:
-            return mask_url_userinfo(m.group(0))
-        except Exception:
-            # mask 失败宁可整段丢掉也不能原样吐出 —— 这段里可能就是密码。
-            return REDACTED
-    return _URL_IN_TEXT.sub(_one, text)
+    return mask_text_secrets(text)
 
 
 def _home_path_variants():

@@ -35,6 +35,7 @@ from src.contracts.source import SourceSnapshot
 from src.models.task import Tile
 from src.services.config_manager import ConfigManager
 from src.services.proxy_autodetect import resolve_from_config
+from src.services.system_proxy import mask_text_secrets, mask_url_secrets
 from src.services.tile_url_probe import should_bypass_proxy
 from src.core.config import Config
 from src.core.gdal_mode import pin_gdal_exception_mode
@@ -684,7 +685,8 @@ class DownloadEngine:
                 # bypass 列表),连 NO_PROXY 都救不了,所以只能自己判。
                 effective_proxy = proxy_url or None
                 if effective_proxy and should_bypass_proxy(url):
-                    logger.debug(f"Bypassing proxy for intranet/loopback tile URL: {url}")
+                    logger.debug('Bypassing proxy for intranet/loopback tile '
+                                 'URL: %s', mask_url_secrets(url))
                     effective_proxy = None
 
                 async with session.get(
@@ -724,10 +726,12 @@ class DownloadEngine:
                     )
                     raise
                 last_error = e
+                # `{e!r}` 里可能整条 URL 都在（`aiohttp.ClientResponseError`
+                # 的 str()/repr() 都带 `url=URL('…?tk=<真 token>')`），过脱敏。
                 logger.warning(
                     f"Failed to download tile {tile.zoom}/{tile.x}/{tile.y} "
                     f"(attempt {attempt + 1}/{max_retries + 1}): "
-                    f"{type(e).__name__}: {e!r}"
+                    f"{type(e).__name__}: {mask_text_secrets(repr(e))}"
                 )
 
                 # If not the last attempt, wait with exponential backoff
@@ -742,7 +746,8 @@ class DownloadEngine:
             raise DownloadCancelled()
 
         # All retries failed
-        error_msg = f"Failed to download tile after {max_retries + 1} attempts: {last_error}"
+        error_msg = (f"Failed to download tile after {max_retries + 1} "
+                     f"attempts: {mask_text_secrets(last_error)}")
         logger.error(error_msg)
         raise last_error
 
@@ -912,7 +917,13 @@ class DownloadEngine:
 
         except Exception as e:
             outcome = classify_download_error(e)
-            error_msg = f"{type(e).__name__}: {e!r}"
+            # **这一行是凭据泄漏的主路径**：`error_msg` 一路落进
+            # `task_tiles.error_message`，再由 `GET /api/tasks/<id>/gaps` 的
+            # samples 原样吐给浏览器。而 `aiohttp.ClientResponseError` 的
+            # str() 与 repr() **都**带完整请求 URL（`url=URL('…?tk=<真 token>')`），
+            # token 过期返回 403 就够触发，不需要攻击者。脱敏在这里做而不是在
+            # 读取端：DB 里存下来那一刻就已经泄漏了（诊断包、备份、SQL 直读）。
+            error_msg = f"{type(e).__name__}: {mask_text_secrets(repr(e))}"
             # no_data 不是故障:上游明确回答了「这里没有」。按 error 记会让
             # 一片正常的海域在日志里刷出几千条红色 —— 而真正的故障就淹在里面。
             if outcome is TileOutcome.NO_DATA:

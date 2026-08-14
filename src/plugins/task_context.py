@@ -15,6 +15,7 @@ from typing import Optional
 from src.contracts.artifact import Artifact
 from src.contracts.outcome import TileOutcome
 from src.core.database import get_connection, utc_now_iso
+from src.services.system_proxy import mask_text_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,13 @@ class TaskContext:
             if outcome is TileOutcome.SUCCESS:
                 self._success_buffer.append((z, x, y))
             else:
-                self._outcome_buffer.append((z, x, y, outcome.value, error))
+                # `error` 是插件给的文本，多半就是它自己的异常 repr——里面可能
+                # 整条带 token 的 URL 都在。脱敏在**落库之前**做：这一列会被
+                # `gap_summary` 的 samples 原样吐给浏览器，也会进诊断包与备份，
+                # 存下来那一刻就已经泄漏了（与 download_engine 同一口径）。
+                self._outcome_buffer.append(
+                    (z, x, y, outcome.value,
+                     mask_text_secrets(error) if error else error))
             if (len(self._outcome_buffer) + len(self._success_buffer)
                     >= _FLUSH_BATCH_SIZE):
                 self._flush_locked()

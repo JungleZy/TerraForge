@@ -16,7 +16,7 @@ from src.core.database import (
     get_connection_context, DEFAULT_CONFIGS, normalize_default_save_path, utc_now_iso,
 )
 from src.services.geo_validation import TILING_QUALITY_OFFSETS
-from src.services.system_proxy import mask_url_userinfo
+from src.services.system_proxy import mask_url_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def _mask_log_value(key: str, value: str) -> str:
         return '***'
     if key == 'proxy_url':
         # user:pass@ 形式的代理凭据不进日志（host 保留便于排查）
-        return mask_url_userinfo(value)
+        return mask_url_secrets(value)
     return value
 
 
