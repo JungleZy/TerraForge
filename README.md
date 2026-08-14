@@ -253,7 +253,7 @@ map-download/
 - `GET /api/plugins/tasks?active=1` - 插件任务列表，`active=1` 只要进行中的
 - `GET /api/plugins/tasks/<id>` - 插件任务详情
 - `POST /api/plugins/tasks/<id>/start` - 启动插件任务。幂等；插件任务没有断点续跑，一次 start 就是完整重跑一遍
-- `GET /api/plugins/tasks/<id>/gaps` - 缺块摘要：总数（`gap_tiles`）、按 `TileOutcome` 分类计数（`by_outcome`）与当前决策（`gap_decision`）。比瓦片管线的 `/gaps` 少 `explained` 与样例格子两项
+- `GET /api/plugins/tasks/<id>/gaps` - 缺块摘要，载荷与瓦片管线的 `/gaps` 逐键同形：`total`、按 `TileOutcome` 分类计数的 `by_outcome`（四个键恒存，没有的给 0）、`explained`（是否**只有** `no_data`——为真时不该再问用户补漏还是接受）、`decision`、`status` 与最多 20 个样例格子
 - `POST /api/plugins/tasks/<id>/accept-gaps` - 接受缺块并重跑收尾。成果与历史**永久带缺块标记**
 - `DELETE /api/plugins/tasks/<id>` - 删除插件任务（`?delete_files=1` 同时清理磁盘产物）。不带该参数时产物目录会被登记进 `retained_outputs`，响应里多一个 `files_retained_path` —— 用户选择保留文件，一个字节都不动，但那个目录必须留下一条 DB 引用
 - `POST /api/plugins/export/<id>` - 按格式导出插件任务产物，Body `{"format": "gpkg"}`。格式来自已启用插件注册的 Exporter；未知格式回 400 并给出 `supported_formats`

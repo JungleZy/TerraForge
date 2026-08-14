@@ -49,6 +49,21 @@ def register():
     return PluginDefinition(pipeline=P())
 '''
 
+#: 只留「上游说这里没数据」的洞（海面、境外未覆盖）。用来钉 `explained` 那一档。
+FAKE_NO_DATA_PLUGIN = '''
+from src.plugins.protocols import ParamSchema, PluginDefinition, PluginOutcome
+from src.contracts.outcome import TileOutcome
+class P:
+    def params_schema(self): return ParamSchema(())
+    def estimate(self, params, region): return None
+    def run(self, ctx):
+        ctx.record_tile_outcome(4, 1, 1, TileOutcome.NO_DATA)
+        ctx.record_tile_outcome(4, 1, 2, TileOutcome.NO_DATA)
+        return PluginOutcome.COMPLETED_WITH_GAPS
+def register():
+    return PluginDefinition(pipeline=P())
+'''
+
 #: 第二趟（`_gap_accepted` 那趟）停在原地等测试放行，用来把「上一轮还在收尾」
 #: 与「下一轮已经登记」两件事重叠起来。
 FAKE_GAP_PARKED_PLUGIN = '''
@@ -191,14 +206,50 @@ def test_pending_decision_then_accept_gaps_finishes(db, tmp_path, monkeypatch):
     # （no_data 是上游明确说过没有，不是失败）。
     assert row['gap_tiles'] == 2
     assert row['failed_items'] == 1
-    assert mgr.gap_summary(tid)['by_outcome'] == {'retryable_failure': 1,
-                                                  'no_data': 1}
+    # `by_outcome` 四键恒存、且带 total/explained/samples —— 契约按 §13-3 扩了
+    # 口径（与瓦片管线的 `TaskManager.gap_summary` 逐键同形），断言跟着扩，
+    # 不是把挂掉的用例随手改绿。`explained` 为假：两个洞里有一个是我们自己
+    # 失败的（retryable_failure），所以这个任务确实**该问**用户。
+    summary = mgr.gap_summary(tid)
+    assert summary['by_outcome'] == {'no_data': 1, 'retryable_failure': 1,
+                                     'permanent_failure': 0,
+                                     'cache_failure': 0}
+    assert summary['total'] == 2 and summary['explained'] is False
+    assert summary['status'] == 'pending_decision' and summary['decision'] == ''
+    assert {(s['zoom'], s['x'], s['y']) for s in summary['samples']} == {
+        (5, 2, 2), (5, 2, 3)}
 
     mgr.accept_gaps(tid)
     row = _wait_status(mgr, tid, ('completed_with_gaps', 'failed'))
     assert row['status'] == 'completed_with_gaps', row.get('error_message')
     assert row['gap_decision'] == 'accept'
     assert json.loads(row['params_json'])['_gap_accepted'] is True
+
+
+def test_gap_summary_explained_when_only_no_data(db, tmp_path, monkeypatch):
+    """全是 `no_data` 时 `explained` 为真 —— 这是「该不该问用户」的开关。
+
+    §13-3：`no_data` 是上游权威地说「那里没有数据」（海面、境外未覆盖），
+    不是我们失败了；这种任务不该停在「等你决定」上。判据必须复用
+    `TileOutcome.is_explained`（`contracts/outcome.py` 是它唯一的定义），
+    在摘要里手写 `status == 'no_data'` 迟早与核心管线漂移。
+    """
+    mgr = _setup(db, tmp_path, monkeypatch, source=FAKE_NO_DATA_PLUGIN)
+    tid = mgr.create_task('fake', {'name': 'sea',
+                                   'bbox': [40.0, 30.0, 117.0, 116.0],
+                                   'output_path': str(tmp_path / 'sea')})
+    mgr.start_task(tid)
+    _wait_status(mgr, tid, ('completed_with_gaps', 'failed'))
+
+    summary = mgr.gap_summary(tid)
+    assert summary['explained'] is True
+    assert summary['total'] == 2
+    assert summary['by_outcome'] == {'no_data': 2, 'retryable_failure': 0,
+                                     'permanent_failure': 0,
+                                     'cache_failure': 0}
+    assert summary['status'] == 'completed_with_gaps'
+    # 上游解释过的洞不算失败，failed_items 必须是 0（与 _UNEXPLAINED_VALUES 同源）。
+    assert mgr.get_task(tid)['failed_items'] == 0
 
 
 def test_previous_run_exit_keeps_next_run_stop_flag(db, tmp_path, monkeypatch):

@@ -415,10 +415,19 @@ def test_auto_start_failure_keeps_the_created_task(rich_client, tmp_path,
 
 
 def test_auto_start_success_reports_started(rich_client, tmp_path):
+    """`auto_start=true` 真的把任务起起来了。
+
+    README 一直承诺这个键，而它在修之前压根用不了（被插件 schema 的未知键闸门
+    判成 `400 参数非法：auto_start=unknown param`）—— 也就是说这条路径此前零
+    覆盖。这里不只看 `started` 字段，还等到插件的 `run()` 真的跑完（状态从
+    pending 变成 pending_decision，缺块也记进去了）。
+    """
     client, _registry = rich_client
     body = _create(client, tmp_path, auto_start=True)
     assert body['started'] is True
-    _wait_status(client, body['task_id'], ('pending_decision',))
+    task = _wait_status(client, body['task_id'], ('pending_decision',))
+    assert task['gap_tiles'] == 2, 'run() 没真的跑，只是状态被翻了'
+    assert task['started_at']
 
 
 def test_start_gaps_accept_gaps_over_http(rich_client, tmp_path):
@@ -433,11 +442,18 @@ def test_start_gaps_accept_gaps_over_http(rich_client, tmp_path):
     _wait_status(client, tid, ('pending_decision', 'failed'))
     gaps = client.get(f'/api/plugins/tasks/{tid}/gaps').get_json()
     assert gaps['success'] and gaps['task_id'] == tid
-    # 总数从任务行来、分类计数从稀疏表来，两处必须对得上。
-    assert gaps['gap_tiles'] == 2
-    # no_data 是上游明确说过没有，不算失败——两者必须分得开。
-    assert gaps['by_outcome'] == {'retryable_failure': 1, 'no_data': 1}
-    assert gaps['gap_decision'] == ''
+    assert gaps['total'] == 2
+    # 载荷与瓦片管线的 /gaps 逐键同形：四键恒存（缺的补 0），前端不必写 `|| 0`。
+    assert gaps['by_outcome'] == {'no_data': 1, 'retryable_failure': 1,
+                                  'permanent_failure': 0, 'cache_failure': 0}
+    # explained=false 才是「该问用户」的那种任务：两个洞里有一个是我们自己
+    # 失败的。只有 no_data 时这个问题压根不该问（§13-3）。
+    assert gaps['explained'] is False
+    assert gaps['status'] == 'pending_decision' and gaps['decision'] == ''
+    assert len(gaps['samples']) == 2
+    assert {(s['zoom'], s['x'], s['y'], s['outcome'])
+            for s in gaps['samples']} == {
+        (5, 2, 2, 'retryable_failure'), (5, 2, 3, 'no_data')}
 
     assert client.post(
         f'/api/plugins/tasks/{tid}/accept-gaps').get_json()['success']

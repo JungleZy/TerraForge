@@ -33,9 +33,9 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from src.contracts.outcome import (ACTIVE_STATE_VALUES,
+from src.contracts.outcome import (ACTIVE_STATE_VALUES, GAP_OUTCOMES,
                                    SUCCESSFUL_STATE_VALUES, TaskState,
-                                   TileOutcome)
+                                   TileOutcome, outcome_from_db)
 from src.contracts.region import RegionSpec
 from src.contracts.reservation import ResourceKind, ResourceRequest
 from src.core.config import Config
@@ -74,6 +74,15 @@ _HOST_PARAM_KEYS = frozenset({'name', 'bbox', 'output_path', 'zoom_min',
 #: `task_manager._is_unexplained` 同一份（no_data 不算失败）。
 _UNEXPLAINED_VALUES = tuple(sorted(o.value for o in TileOutcome
                                    if not o.is_explained))
+
+#: 会在稀疏表里留行的结局（= 除 SUCCESS 之外全部）。`gap_summary` 的
+#: `by_outcome` 按它**恒定给出四个键**：前端拿不到键和拿到 0 是两回事。
+#: 排序固定，好让响应的键序稳定（便于人读与 diff）。
+_GAP_VALUES = tuple(sorted(o.value for o in GAP_OUTCOMES))
+
+#: `gap_summary().samples` 的上限，与瓦片管线的 20 条同值。一个大区域任务可以
+#: 有几万个洞，全序列化进一个 JSON 只会把浏览器卡死。
+_GAP_SAMPLE_LIMIT = 20
 
 
 class PluginTaskManager:
@@ -568,16 +577,64 @@ class PluginTaskManager:
     # ------------------------------------------------------------ 缺块决策
 
     def gap_summary(self, task_id: int) -> dict:
+        """缺块摘要。与瓦片管线的 `TaskManager.gap_summary` **逐键同形**
+        （`src/services/task_manager.py:1420-1482`）：
+        `task_id / total / by_outcome / explained / decision / status / samples`。
+
+        为什么必须同形（§13-3）：整个决策流建立在「已解释的缺块 vs 没交代的
+        缺块」这个区分上——`no_data` 是上游权威地说「那里没有数据」（海面、
+        境外未覆盖），其余三种是我们自己失败了。`explained` 为真的任务**不该
+        问用户**「补漏还是接受」，核心管线正是据此自动判 completed_with_gaps
+        而不是 pending_decision。不给这个字段就等于让前端面板自己再推一遍判据，
+        那就是同一条规则的第二套实现。
+
+        三条口径细节：
+        - `by_outcome` **四个键恒存**（没有的补 0）。前端拿不到键和拿到 0 是两
+          回事，恒存才免得每个消费者写 `|| 0`。
+        - `explained` 复用 `TileOutcome.is_explained`，**不**手写
+          `status == 'no_data'`：那个判据的唯一定义在 `contracts/outcome.py`，
+          抄一遍就是等着两处漂移。
+        - `samples` 最多 20 条。一个大区域任务可以有几万个洞，全序列化进响应只
+          会把浏览器卡死，而用户要的是「大概在哪一片、什么原因」。
+
+        Raises:
+            KeyError: 任务行不存在（与 `start_task` / `accept_gaps` 同一档）。
+        """
+        task_id = int(task_id)
         conn = get_connection()
         try:
-            rows = conn.execute(
+            row = conn.execute(
+                f'SELECT status, gap_decision FROM {_TABLE} WHERE id = ?',
+                (task_id,)).fetchone()
+            if row is None:
+                raise KeyError(f'插件任务不存在：{task_id}')
+            placeholders = ', '.join('?' for _ in _GAP_VALUES)
+            counts = {r['status']: r['n'] for r in conn.execute(
                 'SELECT status, COUNT(*) AS n FROM plugin_task_tiles'
-                ' WHERE task_id = ? GROUP BY status',
-                (int(task_id),)).fetchall()
+                f' WHERE task_id = ? AND status IN ({placeholders})'
+                ' GROUP BY status', (task_id, *_GAP_VALUES)).fetchall()}
+            samples = [{'zoom': r['zoom'], 'x': r['x'], 'y': r['y'],
+                        'outcome': r['status'],
+                        'error': r['error_message'] or ''}
+                       for r in conn.execute(
+                           'SELECT zoom, x, y, status, error_message'
+                           ' FROM plugin_task_tiles'
+                           f' WHERE task_id = ? AND status IN ({placeholders})'
+                           ' ORDER BY zoom, y, x LIMIT ?',
+                           (task_id, *_GAP_VALUES, _GAP_SAMPLE_LIMIT)).fetchall()]
         finally:
             conn.close()
-        return {'task_id': int(task_id),
-                'by_outcome': {r['status']: r['n'] for r in rows}}
+        by_outcome = {value: int(counts.get(value, 0)) for value in _GAP_VALUES}
+        return {
+            'task_id': task_id,
+            'total': sum(by_outcome.values()),
+            'by_outcome': by_outcome,
+            'explained': all(outcome_from_db(value).is_explained
+                             for value, n in by_outcome.items() if n),
+            'decision': row['gap_decision'] or '',
+            'status': row['status'],
+            'samples': samples,
+        }
 
     def accept_gaps(self, task_id: int) -> None:
         """§13-3 的「接受缺块」：`params['_gap_accepted'] = True` 回写

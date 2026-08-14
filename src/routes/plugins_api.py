@@ -245,21 +245,16 @@ def start_plugin_task(tid):
 
 @plugins_bp.route('/tasks/<int:tid>/gaps', methods=['GET'])
 def plugin_task_gaps(tid):
-    """缺块摘要：总数、按结局分类计数、当前决策。
-
-    总数与决策从任务行取（`gap_tiles` 由 `TaskContext` 的记账维护，
-    `gap_decision` 是 accept 之后的那一笔）——`gap_summary()` 只回分类计数，
-    而一个只有分类没有总数的摘要要前端自己求和，两处口径迟早对不上。
-    比瓦片管线的 `/gaps` 少 `explained` / `samples` 两项，README 已照实写。
+    """缺块摘要。载荷与瓦片管线的 `GET /api/tasks/<id>/gaps` 逐键同形
+    （`task_id / total / by_outcome / explained / decision / status / samples`）——
+    §13-3 的决策界面对两条管线只该有一套判据，尤其 `explained`（是否只有
+    `no_data`）：那是「该不该问用户」的开关，前端自己再推一遍就是第二套实现。
     """
-    manager = get_plugin_task_manager()
-    row = manager.get_task(tid)
-    if row is None:
+    try:
+        summary = get_plugin_task_manager().gap_summary(tid)
+    except KeyError:
         return jsonify({'error': '任务不存在'}), 404
-    return jsonify({'success': True,
-                    'gap_tiles': row['gap_tiles'] or 0,
-                    'gap_decision': row['gap_decision'] or '',
-                    **manager.gap_summary(tid)})
+    return jsonify({'success': True, **summary})
 
 
 @plugins_bp.route('/tasks/<int:tid>/accept-gaps', methods=['POST'])
