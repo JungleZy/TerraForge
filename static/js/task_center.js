@@ -170,6 +170,33 @@ function initTaskCenter() {
         );
     });
 
+    // 插件任务（第五条管线）。事件名带 plugin_ 前缀而不是复用 task_progress：
+    // 插件宿主是可选组件，它的推送必须能被单独识别。载荷里 task_type 恒为
+    // 'plugin'（PluginTaskManager._emit），所以三个处理器都能直接复用四条
+    // 核心管线那三个函数 —— 归一化按 task_type 查表，本来就不认识「管线」
+    // 这个概念，多一条分支就是多一份会漂的抄写。
+    socket.on('plugin_task_progress', function(data) {
+        updateTaskProgress(data);
+        refreshStatusBar();
+    });
+
+    // 非 failed 的每个终态都走这一发（PluginTaskManager 只有 failed / 非
+    // failed 两个出口），**含 pending_decision** —— 所以状态一定要从载荷里
+    // 取，且 handleTaskCompleted 不能无条件把任务摘出活动集（见那里）。
+    socket.on('plugin_task_completed', function(data) {
+        handleTaskCompleted(data.task_id, data.task_type || 'plugin',
+                            data.warning, data.status);
+        emitStatusEvent(t('js.tasks.event.completed', {id: data.task_id}));
+        refreshStatusBar();
+    });
+
+    socket.on('plugin_task_failed', function(data) {
+        handleTaskFailed(data.task_id, data.task_type || 'plugin',
+                         data.error_message);
+        emitStatusEvent(t('js.tasks.event.failed', {id: data.task_id}));
+        refreshStatusBar();
+    });
+
     // 首屏这次拉取的 Promise 挂到模块级：map.js 的 initContourPreview 等它
     // resolve 后共享 contour 数据，首屏 /api/contour/tasks 只拉一遍。
     firstActiveTasksLoad = loadActiveTasks();
@@ -200,11 +227,18 @@ async function loadActiveTasks() {
         // 不再随每次补拉往返。contour 路刻意不带：这份响应同时是地图预览
         // 面板的数据源（initContourPreview 要从里面筛 completed 任务，
         // 见 map.js），带上的话首屏还得再拉一遍全量。
-        const [mapResp, demResp, localResp, contourResp] = await Promise.all([
+        const [mapResp, demResp, localResp, contourResp, pluginResp] = await Promise.all([
             fetch('/api/tasks?status=active'),
             fetch('/api/dem/tasks?status=active'),
             fetch('/api/terrain/local/tasks?status=active'),
-            fetch('/api/contour/tasks')
+            fetch('/api/contour/tasks'),
+            // 插件路刻意**留在同一个 Promise.all 里**而不是另起一条独立
+            // fetch：下面的 setActive 是整体替换，一条晚到的独立请求会被它
+            // 当场抹掉（或反过来抹掉别人）。而它同时**不进**下面那道
+            // badResp 快速失败、自带 catch —— 插件宿主是可选组件（可以没装
+            // 载、可以全被禁用），它一次 500 不该把另外四条管线的任务从界面
+            // 上一起清空。
+            fetch('/api/plugins/tasks?active=1').catch(function () { return null; })
         ]);
         // 四路任何一路非 2xx 都不能接着解析渲染——失败响应的 body 不是任务
         // 列表，会被当成「没有活动任务」把整页卡片清空，看起来就像任务全没了。
@@ -216,6 +250,10 @@ async function loadActiveTasks() {
         const demData = await demResp.json();
         const localData = await localResp.json();
         const contourData = await contourResp.json();
+        // 非 2xx / 请求本身失败都退化成「没有插件任务」，理由同上。
+        const pluginData = pluginResp && pluginResp.ok
+            ? await pluginResp.json().catch(function () { return {}; })
+            : {};
         // 全量（含 completed）共享给 map.js 的等高线预览面板，首屏只拉这一遍
         latestContourTasks = contourData.tasks || [];
         // 每次拉取都顺带对齐预览注册表（幂等）。断线重连必须走这一步：
@@ -230,7 +268,9 @@ async function loadActiveTasks() {
         const demTasks = (demData.tasks || []).map(t => normalizeTask(t, 'dem'));
         const localTasks = (localData.tasks || []).map(t => normalizeTask(t, 'local_terrain'));
         const contourTasks = (contourData.tasks || []).map(t => normalizeTask(t, 'contour'));
-        const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks].filter(t =>
+        const pluginTasks = (pluginData.tasks || []).map(t => normalizeTask(t, 'plugin'));
+        const all = [...mapTasks, ...demTasks, ...localTasks, ...contourTasks,
+                     ...pluginTasks].filter(t =>
             // completed 由服务端 ?status=active 挡掉（contour 路拉的是
             // 全量，终态在这里被白名单丢弃——它只需要活动态进这个 Map）。
             // failed 仍保留：失败行的「删除」（deleteTask）与 socket 失败事件
@@ -310,6 +350,24 @@ function normalizeTask(task, type) {
             downloaded_items: done,
             failed_items: task.failed_files || 0,
             items_label: t('js.tasks.unit.file')
+        };
+    }
+    if (type === 'plugin') {
+        // 计数字段两个来源、两套名字：socket 推送与 /api/plugins/tasks 给的是
+        // plugin_tasks 的原始列名（total_items / downloaded_items），而
+        // /api/history_all 的 UNION 把它们别名成了 total / downloaded（五段
+        // 要列序对齐，见 api.py 的第五个 SELECT）。两者都要吃得下 —— 少一半
+        // 的表现是历史流里的插件行进度恒为 0%，而 JS 读不到的字段是静默
+        // undefined，没有任何报错。
+        return {
+            ...task,
+            task_type: 'plugin',
+            id: task.id,
+            _key: `plugin:${task.id}`,
+            total_items: task.total_items || task.total || 0,
+            downloaded_items: task.downloaded_items || task.downloaded || 0,
+            failed_items: task.failed_items || 0,
+            items_label: t('js.tasks.unit.tile')
         };
     }
     if (type === 'contour') {
@@ -548,8 +606,15 @@ function handleTaskCompleted(taskId, taskType, warning, status) {
         // completed，而这种降级没有任何报错，只有用户某天发现产物少了标记。
         // 回落只兜**不带 status 的老载荷**（早期的 map 收官 emit 没有这个字段）。
         window.TaskStore.commit(key, { status: status || 'completed' });
-        // 终态出活动集：状态栏聚合与耗时刷新只看活动任务
-        window.TaskStore.dropActive(key);
+        // 出活动集的判据是**新状态**，不是「收到了终态事件」：插件管线的
+        // pending_decision 正是走 plugin_task_completed 这一发送来的
+        // （PluginTaskManager 只有 failed / 非 failed 两个出口），无条件摘掉
+        // 会让状态栏少算一个还占着产物目录、还在等用户决定的任务。判据走
+        // store 那份活动态清单（后端 ACTIVE_TASK_STATES 的镜像），不在这里
+        // 抄第二份状态字面量。
+        if (!window.TaskStore.ACTIVE_STATUSES.includes(status || 'completed')) {
+            window.TaskStore.dropActive(key);
+        }
     }
 
     // 统计卡（总任务/已完成/失败/累计下载量）跟着终态走。loadStats 是
@@ -741,6 +806,7 @@ function apiPrefixForType(taskType) {
     if (taskType === 'dem') return '/api/dem/tasks';
     if (taskType === 'local_terrain') return '/api/terrain/local/tasks';
     if (taskType === 'contour') return '/api/contour/tasks';
+    if (taskType === 'plugin') return '/api/plugins/tasks';
     return '/api/tasks';
 }
 
@@ -837,9 +903,17 @@ function gapBreakdownText(byOutcome) {
 // ensureGapSummary，不去重的话一次翻页能对同一个任务打出十几个请求。
 const _gapSummaryInFlight = new Set();
 
-/** GET /api/tasks/<id>/gaps。失败返回 null（调用方自己决定要不要 toast）。 */
-async function fetchGapSummary(taskId) {
-    const response = await fetch(`/api/tasks/${taskId}/gaps`);
+/**
+ * GET <前缀>/<id>/gaps。失败抛出（调用方自己决定要不要 toast）。
+ *
+ * 两条管线各有一份：地图的在 /api/tasks/<id>/gaps，插件的在
+ * /api/plugins/tasks/<id>/gaps。**回的形状不一样** —— 插件那份少
+ * `explained` 与 `samples`（宿主不知道插件的哪种洞算「已交代」，也不存样本），
+ * 总数叫 `gap_tiles`、决策叫 `gap_decision`。消费者按字段在不在决定渲染
+ * 什么，不在这里补假字段。
+ */
+async function fetchGapSummary(taskId, taskType = 'map') {
+    const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/gaps`);
     if (!response.ok) {
         const result = await response.json().catch(() => ({}));
         throw new Error(result.error || ('HTTP ' + response.status));
@@ -850,8 +924,8 @@ async function fetchGapSummary(taskId) {
 /**
  * 把缺口摘要拉回来挂到 store 上的任务对象（字段 `gap_summary`）。
  *
- * 只对地图管线有意义：缺口是瓦片级的概念，`/api/tasks/<id>/gaps` 也只有
- * 地图管线有。**幂等**且带在飞去重。
+ * 只对有瓦片级缺块记录的管线有意义（地图与插件各有一份 `/gaps`）。
+ * **幂等**且带在飞去重。
  *
  * 失败必须**落进 store**（`gap_summary_error`），不能像从前那样 console 一句
  * 就返回 null：本函数的调用方只有行组件那三个触发点（mounted 与
@@ -864,14 +938,16 @@ async function fetchGapSummary(taskId) {
  * 明细是读一次就够的静态数据，为一次超时付上永久的定时请求不成比例。
  */
 async function ensureGapSummary(key, taskId, taskType) {
-    if (taskType !== 'map' || !window.TaskStore) return null;
+    if ((taskType !== 'map' && taskType !== 'plugin') || !window.TaskStore) {
+        return null;
+    }
     if (_gapSummaryInFlight.has(key)) return null;
     _gapSummaryInFlight.add(key);
     // 起手就清掉上一次的失败标记：行立刻回到「正在读取…」，用户按「重试」
     // 看得见反应。不清的话失败文案会一直挂着，按下去与没按毫无区别。
     window.TaskStore.commit(key, { gap_summary_error: '' });
     try {
-        const summary = await fetchGapSummary(taskId);
+        const summary = await fetchGapSummary(taskId, taskType);
         window.TaskStore.commit(key, { gap_summary: summary });
         return summary;
     } catch (error) {
@@ -924,13 +1000,32 @@ async function acceptTaskGaps(taskId, taskType = 'map') {
     });
     if (!ok) return;
     try {
-        const response = await fetch(`/api/tasks/${taskId}/accept_gaps`, { method: 'POST' });
+        // 两条管线的端点名不同（地图 accept_gaps，插件 accept-gaps），回的
+        // 东西也不同 —— 分开写，不硬凑成一条 URL 模板。
+        const isPlugin = taskType === 'plugin';
+        const url = isPlugin
+            ? `/api/plugins/tasks/${taskId}/accept-gaps`
+            : `/api/tasks/${taskId}/accept_gaps`;
+        const response = await fetch(url, { method: 'POST' });
         if (!response.ok) {
             const result = await response.json().catch(() => ({}));
             throw new Error(result.error || ('HTTP ' + response.status));
         }
-        // 端点回的就是新的 gap_summary（含 status / decision）——直接落地，
-        // 不再多打一次 GET /gaps。
+        // 插件管线的「接受缺块」是**回写参数 + 重跑**（PluginTaskManager
+        // .accept_gaps 末尾直接 start_task），端点只回 {success:true}。在这里
+        // 本地写一个终态就是撒谎：行会翻成「已完成（有缺口）」并被摘出活动
+        // 集，而后端下一刻就开始发 plugin_task_progress —— 那些推送又会把一个
+        // 刚被摘掉的任务塞回来，两边打架。权威状态交给推送，这里只补一次活动
+        // 列表（补拉是幂等的，重跑那一发进度比本次响应更早到也不影响）。
+        if (isPlugin) {
+            showToast(t('js.gaps.toast.accepted', {
+                n: Number(total).toLocaleString(),
+            }), 'warning');
+            loadActiveTasks();
+            return;
+        }
+        // 地图管线的端点回的就是新的 gap_summary（含 status / decision）——
+        // 直接落地，不再多打一次 GET /gaps。
         const summary = await response.json();
         if (window.TaskStore) {
             window.TaskStore.commit(key, {

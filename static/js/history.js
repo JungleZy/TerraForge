@@ -215,6 +215,14 @@ function historyMetaText(task) {
             : '';
         return [styleText, zoom].filter(Boolean).join(' ');
     }
+    if (task.task_type === 'plugin') {
+        // 插件 id。两个来源字段名不同：/api/history_all 的 UNION 把
+        // plugin_tasks.plugin_id 别名进 style 列（第五段要与前四段列序对齐），
+        // socket 推送与 /api/plugins/tasks 带的是 plugin_id 原文。
+        // 不经 getStyleText —— 那张表是地图底图样式，插件 id 不在里面，
+        // 查不到会原样回落，等于白绕一圈。
+        return task.style || task.plugin_id || '';
+    }
     if (task.task_type === 'dem') {
         // 两个来源字段名不同：/api/history_all 的 UNION 把 dem_tasks.dataset
         // 映射进 style 列；tasks.js 实时任务对象带的是 dataset 原文。
@@ -378,6 +386,7 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         const url = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
                   : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
                   : taskType === 'contour' ? `/api/contour/tasks/${taskId}`
+                  : taskType === 'plugin' ? `/api/plugins/tasks/${taskId}`
                   : `/api/tasks/${taskId}`;
         const response = await fetch(url);
         const data = await response.json();
@@ -428,6 +437,20 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             document.getElementById('detailTotal').textContent = task.total_tiles;
             document.getElementById('detailDownloaded').textContent = task.rendered_tiles;
             document.getElementById('detailFailed').textContent = task.failed_tiles;
+        } else if (taskType === 'plugin') {
+            // 计数列名是 plugin_tasks 自己的（total_items / downloaded_items /
+            // failed_items），**不是** tasks 表那套 *_tiles —— 走 else 分支的
+            // 后果是这三格全显示 undefined。
+            document.getElementById('detailStyle').textContent = task.plugin_id || '-';
+            document.getElementById('detailFormat').textContent = '-';
+            // 层级是可选的：插件不一定是瓦片管线，zoom_min/zoom_max 允许 NULL。
+            document.getElementById('detailZoom').textContent =
+                (task.zoom_min != null && task.zoom_max != null)
+                    ? `${task.zoom_min} - ${task.zoom_max}`
+                    : '-';
+            document.getElementById('detailTotal').textContent = task.total_items;
+            document.getElementById('detailDownloaded').textContent = task.downloaded_items;
+            document.getElementById('detailFailed').textContent = task.failed_items;
         } else {
             document.getElementById('detailStyle').textContent = getStyleText(task.style);
             document.getElementById('detailFormat').textContent = task.output_format;
@@ -452,10 +475,12 @@ async function viewTaskDetails(taskId, taskType = 'map') {
 
         const total = taskType === 'dem' ? (task.total_files || 0)
                     : taskType === 'local_terrain' ? (task.total_files || 0)
+                    : taskType === 'plugin' ? (task.total_items || 0)
                     : (task.total_tiles || 0);
         const done = taskType === 'dem' ? (task.downloaded_files || 0)
                    : taskType === 'local_terrain' ? (task.uploaded_files || 0)
                    : taskType === 'contour' ? (task.rendered_tiles || 0)
+                   : taskType === 'plugin' ? (task.downloaded_items || 0)
                    : (task.downloaded_tiles || 0);
         const progress = total > 0
             ? Math.round((done / total) * 100)
@@ -507,14 +532,21 @@ async function viewTaskDetails(taskId, taskType = 'map') {
             terrainRow.hidden = true;
         }
 
-        // 缺口明细（§13-3）：只有地图管线有瓦片级缺块记录。
+        // 缺口明细（§13-3）：这一块只对地图管线开放。它的三段文案里有两段
+        // （「全部缺块都是上游无数据」/「含可重试的缺块 —— 补漏有机会补回
+        // 一部分」，以及样本清单）全靠 `explained` 与 `samples`，而插件的
+        // `/gaps` 两个都不给 —— 拿 undefined 渲染就会对着一个连补漏端点都
+        // 没有的插件任务说「补漏有机会补回一部分」。插件任务的缺块决策面在
+        // **行上**（task_list.js 的 .task-gap-line：分档计数 + 「接受并
+        // 导出」），那里说的每一句都成立。
         renderDetailGaps(task, taskType);
 
-        // 产物清单（§13-3 / §5.3）：四条管线都有，pipeline 名与 task_type 同名。
+        // 产物清单（§13-3 / §5.3）：五条管线都有，pipeline 名与 task_type 同名
+        // （'plugin' 自 T1 起就在 contracts/artifact.PIPELINES 里）。
         renderDetailArtifacts(taskId, taskType);
 
-        // 任务日志（REST 轮询）。四条管线都有，pipeline 名与 task_type 同名
-        // （contracts/artifact.PIPELINES）。
+        // 任务日志（REST 轮询）。五条管线都有，pipeline 名与 task_type 同名
+        // （contracts/artifact.PIPELINES）—— 插件任务走 /api/logs/plugin/<id>。
         openTaskLogPanel(taskType, taskId, task.status);
 
         // 显示模态框。getOrCreateInstance 与全站一致：重复 new bootstrap.Modal
@@ -1101,6 +1133,7 @@ async function deleteTask(taskId, taskType = 'map') {
         const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
                         : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
                         : taskType === 'contour' ? `/api/contour/tasks/${taskId}`
+                        : taskType === 'plugin' ? `/api/plugins/tasks/${taskId}`
                         : `/api/tasks/${taskId}`;
         const response = await fetch(`${deleteUrl}?delete_files=${deleteFiles ? 'true' : 'false'}`, { method: 'DELETE' });
 

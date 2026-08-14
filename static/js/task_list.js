@@ -75,7 +75,7 @@
                       :title="t('js.gaps.chip_title', { n: gapCount })">{{ t('js.gaps.chip', { n: gapCount }) }}</span>
                 <span class="task-time progress-detail">{{ timeText }}</span>
                 <div class="btn-group btn-group-sm">
-                    <button v-if="hasTaskActions && isLive && supportsPauseResume && task.status === 'pending'"
+                    <button v-if="hasTaskActions && isLive && supportsStart && task.status === 'pending'"
                             class="btn btn-icon btn-success" @click="act('startTask')"
                             :title="t('js.history.action.start')" :aria-label="t('js.history.action.start')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -234,13 +234,24 @@
                 if (t.gap_tiles != null) return t.gap_tiles;
                 return (t.gap_summary && t.gap_summary.total) || 0;
             },
-            // 缺口是瓦片级的概念，`/api/tasks/<id>/gaps` 与补漏/接受只有地图管线
-            // 有。动作函数来自 task_center.js（base.html 全局加载，/config 例外）。
+            // 缺口是瓦片级的概念。两条管线各有一份 `/gaps` 与「接受缺块」：
+            // 地图的在 /api/tasks/<id>/…，插件的在 /api/plugins/tasks/<id>/…
+            // （plugin_task_tiles 与 task_tiles 同构，status 都是 TileOutcome 值）。
+            // 探测的是 acceptTaskGaps 而不是 refillTask：那才是两条管线都有的
+            // 那个动作，而这个 typeof 只是在问「task_center.js 加载了吗」
+            // （/config 上它整个不加载）。
             canDecideGaps() {
-                return this.task.task_type === 'map' && typeof refillTask === 'function';
+                return (this.task.task_type === 'map'
+                        || this.task.task_type === 'plugin')
+                    && typeof acceptTaskGaps === 'function';
             },
             canRefill() {
+                // 插件管线**没有**补漏：宿主不知道插件的某一块洞该怎么重跑
+                // （§13-4 产出与重试语义归插件），PluginTaskManager 只有
+                // accept_gaps，也没有 /refill 端点。渲染出来就是一颗点下去
+                // 必然 404 的按钮。
                 return this.canDecideGaps
+                    && this.task.task_type !== 'plugin'
                     && store.REFILLABLE_STATUSES.includes(this.task.status);
             },
             canAcceptGaps() {
@@ -305,13 +316,26 @@
             hasTaskActions() {
                 return typeof startTask === 'function';
             },
-            // 本地地形任务没有暂停/恢复语义（后端状态机不支持）。
-            supportsPauseResume() {
+            // 启动与暂停/恢复是**两个**开关，不是一个。本地地形与插件任务都没有
+            // 暂停/恢复语义（前者后端状态机不支持，后者 PluginTaskManager 根本
+            // 没有这两个方法），但插件任务**有**启动
+            // （POST /api/plugins/tasks/<id>/start）—— 合成一个开关就会把它的
+            // 启动按钮一起摘掉，pending 的插件任务从此没有任何入口能跑起来。
+            supportsStart() {
                 return this.task.task_type !== 'local_terrain';
             },
+            supportsPauseResume() {
+                return this.task.task_type !== 'local_terrain'
+                    && this.task.task_type !== 'plugin';
+            },
             // 预览只在首页覆盖面板里有意义（主视图在旁边），独立页没有主视图。
+            // 插件任务不预览：map.js 的 previewTask 只认四条核心管线的瓦片/
+            // 地形地址，插件的产出格式归插件自己（§13-4），宿主不知道它长什么
+            // 样。不挡的话那是一颗点下去静默无反应的按钮 —— previewTask 的
+            // task_type 分支链没有 else。
             canPreview() {
-                return typeof previewTask === 'function';
+                return this.task.task_type !== 'plugin'
+                    && typeof previewTask === 'function';
             },
             // 「处理」打开的是 map.js 的处理弹窗，独立页 /history 不加载 map.js。
             canProcessDem() {
@@ -330,8 +354,13 @@
             },
             itemLabel() {
                 const t = this.task;
+                // 插件任务归「瓦片」一侧：它的缺块记在 plugin_task_tiles，
+                // 与 task_tiles 同构。normalizeTask 已经写好 items_label，
+                // 这条回落兜的是 /api/history_all 直接进 store 的历史行
+                // （replaceAll 不过 normalizeTask，那些行没有这个字段）。
                 return t.items_label
-                    || ((t.task_type === 'map' || t.task_type === 'contour')
+                    || ((t.task_type === 'map' || t.task_type === 'contour'
+                         || t.task_type === 'plugin')
                         ? this.t('js.history.unit.tile') : this.t('js.history.unit.file'));
             },
             // 切片百分比优先于计数：本地地形任务在切片期间仍是 running，而它的
