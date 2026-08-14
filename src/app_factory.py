@@ -34,6 +34,7 @@ import src.plugins.registry  # noqa: F401
 import src.plugins.task_context  # noqa: F401
 import src.plugins.task_manager  # noqa: F401
 import src.routes  # noqa: F401
+import src.routes.plugins_api  # noqa: F401
 import src.i18n  # noqa: F401
 import src.routes.socketio_events  # noqa: F401
 import src.services.base_terrain_warmup  # noqa: F401
@@ -200,11 +201,13 @@ def _start_proxy_autodetect():
 
 
 def _build_task_managers(socketio):
-    """构造四条管线的 manager 并注入到对应蓝图模块的全局里。
+    """构造四条核心管线的 manager 并注入到对应蓝图模块的全局里，顺带把插件面
+    （插件任务管理器 + 注册表）立起来。
 
     蓝图的视图函数依赖这些模块级全局在第一个请求到达前被设置好,所以注入必须在
     注册蓝图之前完成。返回 (task_manager, dem_task_manager,
-    local_terrain_task_manager, contour_task_manager)。
+    local_terrain_task_manager, contour_task_manager) —— 插件管理器不在返回值
+    里：它是 `src.plugins.task_manager` 的模块级单例，路由现取现用。
     """
     from src.routes.api import init_task_manager
     from src.routes.contour_api import init_contour_task_manager
@@ -230,6 +233,15 @@ def _build_task_managers(socketio):
     contour_task_manager = ContourTaskManager(socketio=socketio)
     init_contour_task_manager(contour_task_manager)
 
+    # 插件面：管理器全进程一份（模块级单例，不往蓝图注入），注册表随后装载
+    # 一次。顺序要紧 —— `plugins_api` 的视图函数第一个请求就会 `registry`
+    # 查表 + `get_plugin_task_manager()`，两者都必须在注册蓝图之前就位。
+    from src.plugins import registry as plugin_registry
+    from src.plugins.task_manager import init_plugin_task_manager
+
+    init_plugin_task_manager(socketio)
+    plugin_registry.load_all(socketio)
+
     logger.debug("Task managers created and injected into routes")
     return (task_manager, dem_task_manager,
             local_terrain_task_manager, contour_task_manager)
@@ -240,12 +252,13 @@ def _register_blueprints(app):
     from src.routes import (api_bp, basemap_static_bp, contour_api_bp,
                             contour_static_bp, dem_api_bp,
                             local_terrain_api_bp, main_bp, mbtiles_static_bp,
-                            terrain_api_bp, terrain_static_bp, tiles_static_bp)
+                            plugins_bp, terrain_api_bp, terrain_static_bp,
+                            tiles_static_bp)
 
     for blueprint in (main_bp, api_bp, dem_api_bp, terrain_api_bp,
                       terrain_static_bp, local_terrain_api_bp,
                       contour_api_bp, contour_static_bp, tiles_static_bp,
-                      basemap_static_bp, mbtiles_static_bp):
+                      basemap_static_bp, mbtiles_static_bp, plugins_bp):
         app.register_blueprint(blueprint)
 
     logger.debug("Blueprints registered")

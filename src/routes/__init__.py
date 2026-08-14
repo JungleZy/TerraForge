@@ -15,5 +15,6 @@ from src.routes.contour_static import contour_static_bp
 from src.routes.tiles_static import tiles_static_bp
 from src.routes.basemap_static import basemap_static_bp
 from src.routes.mbtiles_static import mbtiles_static_bp
+from src.routes.plugins_api import plugins_bp
 
-__all__ = ['main_bp', 'api_bp', 'dem_api_bp', 'terrain_api_bp', 'terrain_static_bp', 'local_terrain_api_bp', 'contour_api_bp', 'contour_static_bp', 'tiles_static_bp', 'basemap_static_bp', 'mbtiles_static_bp']
+__all__ = ['main_bp', 'api_bp', 'dem_api_bp', 'terrain_api_bp', 'terrain_static_bp', 'local_terrain_api_bp', 'contour_api_bp', 'contour_static_bp', 'tiles_static_bp', 'basemap_static_bp', 'mbtiles_static_bp', 'plugins_bp']

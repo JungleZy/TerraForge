@@ -546,10 +546,10 @@ def get_history():
 @api_bp.route('/history_all', methods=['GET'])
 def get_history_all():
     """
-    Get combined history for all four task tables with pagination.
+    Get combined history for all five task tables with pagination.
 
     Returns a normalized task list with task_type in
-    {'map','dem','local_terrain','contour'}, ordered strictly by
+    {'map','dem','local_terrain','contour','plugin'}, ordered strictly by
     created_at DESC (single time stream). ?status= filters by a single
     status value; the special values 'active' and 'completed' each expand to a
     set of statuses (see _HISTORY_STATUS_GROUPS).
@@ -584,36 +584,44 @@ def get_history_all():
         try:
             cursor = conn.cursor()
 
-            # 4 个相互独立的 COUNT 合并成一条标量子查询 SQL:同连接下每次
+            # 5 个相互独立的 COUNT 合并成一条标量子查询 SQL:同连接下每次
             # execute 仍是一次完整的解析+执行往返,合一后只跑一趟。
-            # where_sql/count_params 四表相同,参数按出现顺序重复 4 份。
+            # where_sql/count_params 五表相同,参数按出现顺序重复 5 份。
             cursor.execute(
                 f'SELECT '
                 f'(SELECT COUNT(*) FROM tasks {where_sql}) AS map_c, '
                 f'(SELECT COUNT(*) FROM dem_tasks {where_sql}) AS dem_c, '
                 f'(SELECT COUNT(*) FROM local_terrain_tasks {where_sql}) AS local_c, '
-                f'(SELECT COUNT(*) FROM contour_tasks {where_sql}) AS contour_c',
-                count_params * 4,
+                f'(SELECT COUNT(*) FROM contour_tasks {where_sql}) AS contour_c, '
+                f'(SELECT COUNT(*) FROM plugin_tasks {where_sql}) AS plugin_c',
+                count_params * 5,
             )
             row = cursor.fetchone()
             map_count = row['map_c']
             dem_count = row['dem_c']
             local_count = row['local_c']
             contour_count = row['contour_c']
+            plugin_count = row['plugin_c']
 
-            total_count = int(map_count or 0) + int(dem_count or 0) + int(local_count or 0) + int(contour_count or 0)
+            total_count = (int(map_count or 0) + int(dem_count or 0)
+                           + int(local_count or 0) + int(contour_count or 0)
+                           + int(plugin_count or 0))
 
             params = []
             where_map = where_sql
             where_dem = where_sql
             where_local = where_sql
             where_contour = where_sql
+            # 插件段吃**同一个** status 筛选。plugin_tasks 的 status 取值与四条
+            # 核心管线同一套（TaskState），漏掉这一份的后果是 ?status=active
+            # 把全部插件任务原样带出来，而分页总数是按筛选算的 —— 列表和计数
+            # 当场对不上。
+            where_plugin = where_sql
             if group:
-                # 四张表按出现顺序各要一份占位参数，与上面 count_params * 4 同理。
-                params.extend(count_params * 4)
+                # 五张表按出现顺序各要一份占位参数，与上面 count_params * 5 同理。
+                params.extend(count_params * 5)
             elif status_filter:
-                params.extend([status_filter, status_filter, status_filter,
-                               status_filter])
+                params.extend([status_filter] * 5)
 
             query = f'''
                 SELECT
@@ -705,6 +713,25 @@ def get_history_all():
                     0 AS gap_tiles, '' AS gap_decision
                 FROM contour_tasks
                 {where_contour}
+                UNION ALL
+                SELECT
+                    'plugin' AS task_type,
+                    id,
+                    name,
+                    status,
+                    north, south, east, west,
+                    zoom_min, zoom_max,
+                    plugin_id AS style,
+                    downloaded_items AS downloaded,
+                    total_items AS total,
+                    NULL AS output_format,
+                    output_path,
+                    created_at, started_at, completed_at,
+                    error_message,
+                    total_running_seconds,
+                    gap_tiles, gap_decision
+                FROM plugin_tasks
+                {where_plugin}
                 ORDER BY created_at DESC, id DESC
                 LIMIT ? OFFSET ?
             '''
@@ -742,16 +769,16 @@ def get_history_all():
 
 @api_bp.route('/history_stats', methods=['GET'])
 def get_history_stats():
-    """Aggregate task counts and download totals across all four task tables."""
+    """Aggregate task counts and download totals across all five task tables."""
     try:
         conn = get_connection()
         try:
             cursor = conn.cursor()
 
             # 原来 4 条 COUNT + 4 条 SUM 串行执行，每次 execute 都是一次完整的
-            # 解析+执行往返。合并成 1 条：4 个聚合子查询交叉连接（无 GROUP BY 的
+            # 解析+执行往返。合并成 1 条：5 个聚合子查询交叉连接（无 GROUP BY 的
             # 聚合在空表上也恒返回一行），每表仍只扫一遍，总共只有一次往返
-            # （思路同 history_all 已合并的 4 路 COUNT）。
+            # （思路同 history_all 已合并的 5 路 COUNT）。
             # 「完成」这一格必须把 completed_with_gaps 也数进来。§13-3 允许用户
             # 「接受缺块、导出部分成果」，那种成品的状态就叫 completed_with_gaps；
             # 只数 status='completed' 的实测后果是它在统计里凭空消失 —— 而同一个
@@ -765,7 +792,8 @@ def get_history_stats():
                     m.t AS m_total, m.c AS m_done, m.f AS m_fail, m.s AS m_sum,
                     d.t AS d_total, d.c AS d_done, d.f AS d_fail, d.s AS d_sum,
                     l.t AS l_total, l.c AS l_done, l.f AS l_fail, l.s AS l_sum,
-                    c.t AS c_total, c.c AS c_done, c.f AS c_fail, c.s AS c_sum
+                    c.t AS c_total, c.c AS c_done, c.f AS c_fail, c.s AS c_sum,
+                    p.t AS p_total, p.c AS p_done, p.f AS p_fail, p.s AS p_sum
                 FROM
                     (SELECT COUNT(*) AS t,
                             SUM(CASE WHEN {done_clause} THEN 1 ELSE 0 END) AS c,
@@ -786,21 +814,33 @@ def get_history_stats():
                             SUM(CASE WHEN {done_clause} THEN 1 ELSE 0 END) AS c,
                             SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS f,
                             COALESCE(SUM(rendered_tiles), 0) AS s
-                     FROM contour_tasks) c
-            ''', tuple(SUCCESSFUL_STATE_VALUES) * 4)
+                     FROM contour_tasks) c,
+                    -- 插件任务同样进统计：它们就在 history_all 的时间流里，
+                    -- 漏掉这一段等于「完成」那一格与列表给出互相矛盾的答案
+                    -- （completed_with_gaps 当年就是这么消失的）。
+                    (SELECT COUNT(*) AS t,
+                            SUM(CASE WHEN {done_clause} THEN 1 ELSE 0 END) AS c,
+                            SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS f,
+                            COALESCE(SUM(downloaded_items), 0) AS s
+                     FROM plugin_tasks) p
+            ''', tuple(SUCCESSFUL_STATE_VALUES) * 5)
             row = cursor.fetchone()
 
             resp = jsonify({
                 'success': True,
                 'stats': {
                     'total_tasks': int(row['m_total'] or 0) + int(row['d_total'] or 0)
-                                   + int(row['l_total'] or 0) + int(row['c_total'] or 0),
+                                   + int(row['l_total'] or 0) + int(row['c_total'] or 0)
+                                   + int(row['p_total'] or 0),
                     'completed': int(row['m_done'] or 0) + int(row['d_done'] or 0)
-                                 + int(row['l_done'] or 0) + int(row['c_done'] or 0),
+                                 + int(row['l_done'] or 0) + int(row['c_done'] or 0)
+                                 + int(row['p_done'] or 0),
                     'failed': int(row['m_fail'] or 0) + int(row['d_fail'] or 0)
-                              + int(row['l_fail'] or 0) + int(row['c_fail'] or 0),
+                              + int(row['l_fail'] or 0) + int(row['c_fail'] or 0)
+                              + int(row['p_fail'] or 0),
                     'total_downloaded': int(row['m_sum'] or 0) + int(row['d_sum'] or 0)
-                                        + int(row['l_sum'] or 0) + int(row['c_sum'] or 0),
+                                        + int(row['l_sum'] or 0) + int(row['c_sum'] or 0)
+                                        + int(row['p_sum'] or 0),
                 }
             })
             resp.headers['Cache-Control'] = 'no-store'
