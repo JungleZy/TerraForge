@@ -92,6 +92,37 @@ def test_import_error_isolated(db, tmp_path, monkeypatch):
     assert 'boom' in rec.load_error and rec.definition is None
 
 
+def test_plugin_sys_exit_is_isolated(db, tmp_path, monkeypatch):
+    """SystemExit 不是 Exception 的子类：插件 import 期一句 sys.exit() 不许
+    打穿 load_all 把宿主启动带走。"""
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'exiter', body='import sys\nsys.exit(3)\n')
+    _write_external(tmp_path, 'survivor')
+    registry.load_all()                                # 不抛
+    assert 'SystemExit' in registry.get_record('exiter').load_error
+    assert registry.get_record('survivor').load_error == ''
+
+
+def test_unreadable_plugins_dir_does_not_break_startup(db, tmp_path,
+                                                       monkeypatch):
+    """插件目录扫描本身出错（权限）只记日志，不打穿启动。"""
+    _fresh(tmp_path, monkeypatch)
+    root = tmp_path / 'plugins'
+    root.mkdir()
+    root.chmod(0o000)
+    try:
+        try:
+            list(root.iterdir())
+        except OSError:
+            pass
+        else:
+            pytest.skip('本环境读得动 0o000 目录（root？），构造不出该错误')
+        registry.load_all()                            # 不抛
+    finally:
+        root.chmod(0o700)
+    assert registry.get_record('demo') is None         # 只是扫不到，不崩
+
+
 def test_api_major_mismatch_rejected(db, tmp_path, monkeypatch):
     _fresh(tmp_path, monkeypatch)
     _write_external(tmp_path, 'future', api='99')
@@ -221,21 +252,26 @@ def test_flexible_signatures_accepted(db, tmp_path, monkeypatch):
 
 # --------------------------------------------------- 裁决 2：entry 路径闸
 
-@pytest.mark.parametrize('entry', [
-    '../../etc/passwd.py',
-    '/etc/passwd',
-    'sub/../../escape.py',
-])
-def test_entry_escaping_plugin_dir_rejected(db, tmp_path, monkeypatch, entry):
-    """清单层不拦 entry，加载器必须 resolve() + 包含判断后拒载（写错，不抛）。"""
+def test_entry_symlink_escaping_plugin_dir_rejected(db, tmp_path, monkeypatch):
+    """清单层拦不住的那一半：entry 是插件目录内的符号链接，指向目录外。
+
+    字符串写法（`../`、绝对路径、盘符、URL）由 manifest 层的允许清单拦下
+    （覆盖在 tests/test_plugin_manifest.py:126-133），加载期这道闸负责文件
+    系统层面的逃逸 —— 清单层看不见符号链接。
+    """
     _fresh(tmp_path, monkeypatch)
-    (tmp_path / 'escape.py').write_text(
-        'raise AssertionError("越界 entry 被执行了")\n', encoding='utf-8')
-    _write_external(tmp_path, 'escaper', entry=entry)
+    outside = tmp_path / 'escape.py'
+    outside.write_text('raise AssertionError("越界 entry 被执行了")\n',
+                       encoding='utf-8')
+    d = _write_external(tmp_path, 'escaper', entry='link.py')
+    try:
+        (d / 'link.py').symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip('本平台不允许创建符号链接')
     registry.load_all()                          # 不抛
     rec = registry.get_record('escaper')
-    assert rec.definition is None
-    assert 'entry' in rec.load_error
+    assert rec.definition is None                # 越界文件没被执行
+    assert 'entry' in rec.load_error and '越出插件目录' in rec.load_error
 
 
 def test_entry_in_subdir_accepted(db, tmp_path, monkeypatch):
@@ -262,16 +298,43 @@ def test_vendor_path_inserted_once(db, tmp_path, monkeypatch):
     assert sys.path.count(target) == 1
 
 
-def test_reset_for_tests_removes_vendor_paths(db, tmp_path, monkeypatch):
-    """tmp_path 下的 vendor 目录不许在测试之间留在 sys.path 上遮蔽 import。"""
+def test_vendor_path_goes_behind_host(db, tmp_path, monkeypatch):
+    """插件 vendor 不许抢在宿主与 stdlib 前面：宿主大量依赖是函数内懒 import，
+    抢前面等于让插件随手 vendor 的同名包静默顶替宿主的模块。"""
+    _fresh(tmp_path, monkeypatch)
+    d = _write_external(tmp_path, 'vend4')
+    (d / 'vendor').mkdir()
+    target = str((d / 'vendor').resolve())
+    before = list(sys.path)
+    registry.load_all()
+    assert sys.path[-1] == target
+    assert sys.path[:len(before)] == before      # 宿主原有条目一个都没被挤后
+
+
+def test_reset_for_tests_removes_vendor_paths_and_modules(db, tmp_path,
+                                                          monkeypatch):
+    """tmp_path 下的 vendor 目录不许在测试之间留在 sys.path 上遮蔽 import，
+    插件模块也不许留在 sys.modules 里被下一轮当成已加载。"""
     _fresh(tmp_path, monkeypatch)
     d = _write_external(tmp_path, 'vend3')
     (d / 'vendor').mkdir()
     target = str((d / 'vendor').resolve())
     registry.load_all()
     assert target in sys.path
+    assert 'tf_plugin_vend3' in sys.modules
     registry.reset_for_tests()
     assert target not in sys.path
+    assert 'tf_plugin_vend3' not in sys.modules
+
+
+def test_failed_import_leaves_no_half_module(db, tmp_path, monkeypatch):
+    """exec_module 炸掉后 sys.modules 里不许留半初始化的插件模块。"""
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'halfboom', body=(
+        'VALUE = 1\nraise RuntimeError("boom")\n'))
+    registry.load_all()
+    assert registry.get_record('halfboom').definition is None
+    assert 'tf_plugin_halfboom' not in sys.modules
 
 
 # --------------------------------------------------------- 其它公开 API
@@ -319,7 +382,13 @@ def test_set_enabled_unknown_raises_keyerror(db, tmp_path, monkeypatch):
         registry.set_enabled('nope', True)
 
 
-def test_set_config_validates_against_pipeline_schema(db, tmp_path, monkeypatch):
+def test_set_config_stores_cleaned_values(db, tmp_path, monkeypatch):
+    """有 config_schema 时落盘的是校验器洗出来的 clean，不是 raw。
+
+    schema 声明 int 就该存 int（消费者是 provider.snapshot(cfg) 与凭据解析）、
+    default 该回填、JSON null 不该进库 —— 否则校验器只做了判定没做落库值，
+    库里躺着 '3' 而 schema 写着 int。
+    """
     _fresh(tmp_path, monkeypatch)
     _write_external(tmp_path, 'cfg', caps='["pipeline"]', body=(
         'from src.plugins.protocols import (ParamSchema, ParamSpec,\n'
@@ -327,18 +396,187 @@ def test_set_config_validates_against_pipeline_schema(db, tmp_path, monkeypatch)
         'class P:\n'
         '    def params_schema(self): return ParamSchema(())\n'
         '    def config_schema(self):\n'
-        '        return ParamSchema((ParamSpec(key="n", type="int",\n'
-        '                                     label="N", min=1, max=9),))\n'
+        '        return ParamSchema((\n'
+        '            ParamSpec(key="n", type="int", label="N", min=1, max=9),\n'
+        '            ParamSpec(key="mode", type="str", label="M",\n'
+        '                      default="fast"),\n'
+        '            ParamSpec(key="token", type="credential", label="T",\n'
+        '                      required=False),\n'
+        '        ))\n'
         '    def estimate(self, params, region): return None\n'
         '    def run(self, ctx): return None\n'
         'def register():\n    return PluginDefinition(pipeline=P())\n'))
     registry.load_all()
     assert registry.get_record('cfg').load_error == ''
-    assert registry.set_config('cfg', {'n': 99}) != {}      # 越界 → 错误表
-    assert registry.get_config('cfg') == {}                  # 没落盘
-    assert registry.set_config('cfg', {'n': 3}) == {}
-    assert registry.get_config('cfg') == {'n': 3}
+    assert registry.set_config('cfg', {'n': 99}) != {}       # 越界 → 错误表
+    assert registry.get_config('cfg') == {}                   # 没落盘
+    assert registry.set_config('cfg', {'n': '3', 'token': None}) == {}
+    assert registry.get_config('cfg') == {'n': 3, 'mode': 'fast'}
     assert registry.set_config('nope', {}) == {'_': '未知插件'}
+
+
+def test_get_config_ignores_non_object_json(db, tmp_path, monkeypatch):
+    """config_json 是合法 JSON 但不是对象时返回 {}，别让下游 cfg.get 炸。"""
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'weird')
+    registry.load_all()
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("UPDATE plugins SET config_json = '[1,2]' WHERE id = 'weird'")
+        conn.commit()
+    finally:
+        conn.close()
+    assert registry.get_config('weird') == {}
+
+
+# --------------------------------------------- C1：凭据取值类型必须归一
+
+def test_credential_value_is_text_on_hit_and_miss(db, tmp_path, monkeypatch):
+    """命中缓存与未命中必须返回同一个值、同一个类型（都是 str）。
+
+    两条 return 各写一份归一化的后果是「第一张瓦片成功、TTL 内之后全部
+    TypeError」：下游是 url.replace('{credential}', v)。
+    """
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'typed')
+    registry.load_all()
+    registry.set_config('typed', {'num': 12345, 'tok': 'abc',
+                                  'flag': False, 'zero': 0, 'nil': None,
+                                  'obj': {'a': 1}})
+    keys = ('num', 'tok', 'flag', 'zero', 'nil', 'obj', 'absent')
+    miss = {}
+    for k in keys:
+        credentials.invalidate()                 # 每次都强制走未命中路径
+        miss[k] = credentials.resolve_reference(f'plugin:typed:{k}')
+    hit = {k: credentials.resolve_reference(f'plugin:typed:{k}') for k in keys}
+    assert miss == hit
+    assert all(isinstance(v, str) for v in hit.values())
+    assert hit['num'] == '12345' and hit['tok'] == 'abc'
+    assert hit['zero'] == '0'                  # 数值照实 str 化，不吞
+    # 布尔/结构化值不可能是凭据：给空串，别把 'False'/"{'a': 1}" 拼进 URL
+    assert hit['flag'] == '' and hit['obj'] == ''
+    assert hit['nil'] == '' and hit['absent'] == ''
+    tpl = 'https://h/{z}/{x}/{y}?k={credential}'
+    assert tpl.replace('{credential}', hit['num']).endswith('k=12345')
+
+
+def test_invalidate_during_read_does_not_refill_stale(db, tmp_path, monkeypatch):
+    """读 DB 是在锁外做的：期间用户改了配置，这次的读法不许回填缓存。
+
+    否则旧 token 会再活满一个 TTL —— 用户刚换过凭据，下载线程继续 401 一分钟。
+    """
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'race')
+    registry.load_all()
+    registry.set_config('race', {'token': 'old'})
+    credentials.invalidate()
+
+    from src.core import database as database_mod
+    real_get_connection = database_mod.get_connection
+
+    def racing_get_connection(*a, **kw):
+        conn = real_get_connection(*a, **kw)
+        credentials.invalidate('race')       # 模拟：读 DB 期间配置被改
+        return conn
+
+    monkeypatch.setattr(database_mod, 'get_connection', racing_get_connection)
+    assert credentials.resolve_reference('plugin:race:token') == 'old'
+    assert 'race' not in credentials._CACHE   # 过期的读法没被写进缓存
+
+
+# --------------------------- C2：外部插件不许顶替已在册的 id
+
+def test_external_cannot_hijack_builtin_id(db, tmp_path, monkeypatch):
+    """撞 builtin id 的外部插件必须被跳过，builtin 记录原样保留。"""
+    _fresh(tmp_path, monkeypatch)
+    victim_id = registry._BUILTIN[-1].rsplit('.', 1)[-1]
+    d = tmp_path / 'plugins' / 'evil'
+    d.mkdir(parents=True)
+    (d / 'plugin.toml').write_text(
+        f'id = "{victim_id}"\nname = "evil"\nversion = "9"\n'
+        'api_version = "1"\ncapabilities = ["hook"]\n', encoding='utf-8')
+    (d / 'plugin.py').write_text(
+        'from pathlib import Path\n'
+        'Path(__file__).with_name("ran.txt").write_text("x")\n'
+        'from src.plugins.protocols import PluginDefinition\n'
+        'def register():\n    return PluginDefinition()\n', encoding='utf-8')
+    registry.load_all()
+    held = registry.get_record(victim_id)
+    assert held.origin == 'builtin' and held.manifest.name != 'evil'
+    assert not (d / 'ran.txt').exists()          # 冒名者的代码根本没跑
+    rec = registry.get_record('evil')            # 错误落在目录名这把 key 上
+    assert rec is not None and rec.definition is None and '占用' in rec.load_error
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute('SELECT origin FROM plugins WHERE id = ?',
+                           (victim_id,)).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 'builtin'                   # DB 行没被就地改写
+
+
+def test_hijacker_inherits_neither_switch_nor_credentials(db, tmp_path,
+                                                          monkeypatch):
+    """顶替的真正代价：enabled 与 config_json 按 id 取，冒名者会继承凭据。"""
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'victim')
+    registry.load_all()
+    registry.set_enabled('victim', True)
+    registry.set_config('victim', {'token': 'sekret'})
+    # 目录名排在 victim 之后，保证 victim 先在册（先到者赢）
+    d = tmp_path / 'plugins' / 'zzimpostor'
+    d.mkdir(parents=True)
+    (d / 'plugin.toml').write_text(
+        'id = "victim"\nname = "impostor"\nversion = "9"\n'
+        'api_version = "1"\ncapabilities = ["hook"]\n', encoding='utf-8')
+    (d / 'plugin.py').write_text(_PLAIN_BODY, encoding='utf-8')
+    registry.reset_for_tests()
+    registry.load_all()
+    rec = registry.get_record('victim')
+    assert rec.manifest.name == 'victim' and rec.root.name == 'victim'
+    assert rec.enabled is True and rec.load_error == ''
+    assert registry.get_config('victim') == {'token': 'sekret'}
+    assert credentials.resolve_reference('plugin:victim:token') == 'sekret'
+    impostor = registry.get_record('zzimpostor')
+    assert impostor.definition is None and '占用' in impostor.load_error
+    assert impostor.enabled is False             # 没继承 victim 的开关
+
+
+# ------------------- I1：两条源腿都要能取到快照
+
+def test_snapshot_covers_static_and_provider_sources(db, tmp_path, monkeypatch):
+    """list_sources 合并列出静态描述符与 provider，取快照必须两条腿都走。"""
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'both', caps='["sources"]', body=(
+        'from src.contracts.source import SourceSnapshot\n'
+        'from src.plugins.protocols import PluginDefinition, SourceDescriptor\n'
+        'class Prov:\n'
+        '    def list_sources(self):\n'
+        '        return (SourceDescriptor(source_id="dyn", name="D",\n'
+        '                                 url_template="https://d/{z}/{x}/{y}",\n'
+        '                                 max_zoom=10),)\n'
+        '    def snapshot(self, source_id, cfg):\n'
+        '        if source_id != "dyn":\n'
+        '            raise KeyError(source_id)\n'
+        '        return SourceSnapshot(source_id="plugin:both:dyn",\n'
+        '                              url_template="https://d/{z}/{x}/{y}")\n'
+        '    def authorize(self, headers, cfg): return None\n'
+        'def register():\n'
+        '    return PluginDefinition(\n'
+        '        sources=(SourceDescriptor(source_id="static", name="S",\n'
+        '                                  url_template="https://s/{z}/{x}/{y}",\n'
+        '                                  max_zoom=12),),\n'
+        '        source_provider=Prov())\n'))
+    registry.load_all()
+    registry.set_enabled('both', True)
+    assert [s['source_id'] for s in registry.list_sources()] == ['static', 'dyn']
+    assert registry.build_source_snapshot('both', 'static').source_id \
+        == 'plugin:both:static'
+    assert registry.build_source_snapshot('both', 'dyn').source_id \
+        == 'plugin:both:dyn'
+    with pytest.raises(KeyError):
+        registry.build_source_snapshot('both', 'nope')
+    registry.set_enabled('both', False)
 
 
 def test_dispatch_event_survives_hook_exception(db, tmp_path, monkeypatch):

@@ -19,7 +19,29 @@ logger = logging.getLogger(__name__)
 _CACHE: dict = {}
 _CACHE_AT: dict = {}
 _TTL_SECONDS = 60.0
+#: invalidate 的世代号。锁外读 DB 期间发生的失效要能被察觉，见 resolve_reference。
+_GENERATION = 0
 _LOCK = threading.Lock()
+
+
+def _as_text(value) -> str:
+    """配置值 → 凭据文本。归一化只在这一处做（写缓存之前）。
+
+    两条 return 各写一份归一化是这个模块最贵的坑：命中缓存返回 JSON 原始
+    类型、未命中返回 str，下游 `url.replace('{credential}', v)` 会「第一张
+    瓦片成功、TTL 内之后全部 TypeError」。所以缓存里存的就是最终形态，
+    命中与未命中共用同一句 `cfg.get(key, '')`。
+
+    bool 与结构化值（dict/list）一律 ''：它们不可能是凭据，把 'False' 或
+    "{'a': 1}" 拼进 URL 比空串更难查。
+    """
+    if value is None or isinstance(value, bool):
+        return ''
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return str(value)
+    return ''
 
 
 def resolve_reference(reference: str) -> str:
@@ -36,6 +58,7 @@ def resolve_reference(reference: str) -> str:
     with _LOCK:
         if plugin_id in _CACHE and now - _CACHE_AT.get(plugin_id, 0) < _TTL_SECONDS:
             return _CACHE[plugin_id].get(key, '')
+        generation = _GENERATION
     try:
         from src.core.database import get_connection
         conn = get_connection()
@@ -44,22 +67,32 @@ def resolve_reference(reference: str) -> str:
                                (plugin_id,)).fetchone()
         finally:
             conn.close()
-        cfg = json.loads(row['config_json']) if row and row['config_json'] else {}
-        if not isinstance(cfg, dict):
-            cfg = {}
+        raw = json.loads(row['config_json']) if row and row['config_json'] else {}
+        if not isinstance(raw, dict):
+            raw = {}
     except Exception as e:
         # 日志只写插件 id 与异常类型/信息，绝不写 config 内容——凭据不进日志。
         logger.warning('插件凭据解析失败（%s）：%r', plugin_id, e)
-        cfg = {}
+        raw = {}
+    cfg = {str(k): _as_text(v) for k, v in raw.items()}
     with _LOCK:
-        _CACHE[plugin_id] = cfg
-        _CACHE_AT[plugin_id] = now
-    return str(cfg.get(key, '') or '')
+        # 读 DB 是在锁外做的：期间若有 invalidate（用户刚换了 token），这份
+        # 已经过期的读法不许回填缓存，否则旧凭据会再活满一个 TTL。
+        if generation == _GENERATION:
+            _CACHE[plugin_id] = cfg
+            _CACHE_AT[plugin_id] = now
+    return cfg.get(key, '')
 
 
 def invalidate(plugin_id=None) -> None:
-    """配置保存后调用。plugin_id=None 全清。"""
+    """配置保存后调用。plugin_id=None 全清。
+
+    只对本进程有效：缓存是模块级的，跨进程（若瓦片服务独立起进程）唯一的
+    保证是 _TTL_SECONDS。
+    """
+    global _GENERATION
     with _LOCK:
+        _GENERATION += 1
         if plugin_id is None:
             _CACHE.clear()
             _CACHE_AT.clear()

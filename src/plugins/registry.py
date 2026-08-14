@@ -13,8 +13,8 @@ load_error，宿主与其他插件不受影响。
 1. 签名闸 —— runtime_checkable 的 isinstance 只查方法**存在性**，
    `def run(self)` 照样过；不在加载期比对参数个数，用户看到的是任务跑起来
    那一刻的一句裸 TypeError。见 _check_definition。
-2. entry 路径闸 —— manifest 层不校验 entry，`entry = "../../x.py"` 会让
-   加载器执行插件目录外的任意文件。见 _resolve_entry。
+2. entry 路径闸 —— 清单层只拦「作者写下的字符串」，看不见文件系统；指向
+   目录外的符号链接只能在加载期 resolve() 后拦。见 _resolve_entry。
 3. api_version / requires_abi —— manifest 层只存不比，闸门在这里。
 """
 
@@ -196,7 +196,7 @@ def _check_method(plugin_id: str, member: str, obj: Any,
     raise ManifestError(
         f'插件 {plugin_id!r} 的 {member}.{method} 签名不符：宿主按 '
         f'{_expected_text(method, params)} 调用，实际是 '
-        f'{method}{inspect.signature(fn)}（缺 self 是因为它是绑定方法）')
+        f'{method}{inspect.signature(fn)}')
 
 
 def _check_definition(plugin_id: str, definition: PluginDefinition) -> None:
@@ -230,13 +230,15 @@ def _check_definition(plugin_id: str, definition: PluginDefinition) -> None:
 def _resolve_entry(root: Path, m: PluginManifest) -> Path:
     """裁决 2：entry 必须落在插件目录内。
 
-    manifest 层只把 entry 当字符串存着，所以 `entry = "../../etc/passwd.py"`
-    这类越界写法的闸门只能在这里 —— resolve() 之后做包含判断（顺带挡掉
-    绝对路径与符号链接逃逸），不符拒载。
+    双层：清单层（manifest.py 的 entry 允许清单）在声明期拦字符串写法
+    （`../`、绝对路径、盘符、URL、空格）；这一层在加载期拦字符串挡不住的
+    东西 —— 符号链接指向目录外、大小写不敏感文件系统上的等价路径 ——
+    resolve() 之后做包含判断，不符拒载。两层缺一都不行：清单层看不见文件
+    系统，加载层看不见「作者写了什么」。
     """
     base = root.resolve()
     entry = (base / m.entry).resolve()
-    if entry == base or not entry.is_relative_to(base):
+    if not entry.is_relative_to(base) or entry == base:
         raise ManifestError(
             f'entry {m.entry!r} 越出插件目录（{base}），拒绝加载')
     if not entry.is_file():
@@ -245,18 +247,23 @@ def _resolve_entry(root: Path, m: PluginManifest) -> Path:
 
 
 def _add_vendor_path(vendor: Path) -> None:
-    """裁决 3：vendor 目录进 sys.path，同一目录只插一次。
+    """裁决 3：vendor 目录进 sys.path 末尾，同一目录只插一次。
 
-    重扫（load_all 可重复调用）不能让 sys.path 无限膨胀；记下插过的路径，
-    reset_for_tests 撤回 —— 否则测试用的 tmp_path/vendor 会永久留在 sys.path
-    上，成为后续 import 的遮蔽源。生产期不撤：插件模块可能懒加载 vendor 里的
-    子模块，运行中抽掉路径等于埋一个 ImportError。
+    **append 而不是 insert(0)**：宿主必须赢。本仓大量依赖是函数内懒 import
+    （src.contracts.source、GDAL、terrain builder），而 load_all 跑在这些
+    懒 import 之前；vendor 抢在最前面意味着插件随手 vendor 的一个同名包能
+    静默顶替宿主甚至 stdlib 的模块。vendor 的用途是补插件自己缺的库。
+
+    幂等：重扫（load_all 可重复调用）不能让 sys.path 线性膨胀。记下**确实由
+    本模块插入**的路径，reset_for_tests 撤回 —— 否则测试用的 tmp_path/vendor
+    会永久留在 sys.path 上成为后续 import 的遮蔽源。生产期不撤：插件模块可能
+    懒加载 vendor 里的子模块，运行中抽掉路径等于埋一个 ImportError。
     """
     path = str(vendor.resolve())
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    if path not in _VENDOR_PATHS:
-        _VENDOR_PATHS.append(path)
+    if path in sys.path:
+        return          # 已在（可能本来就在）——不插也不登记，撤回时才不会误删
+    sys.path.append(path)
+    _VENDOR_PATHS.append(path)
 
 
 # ---------------------------------------------------------------- 加载
@@ -274,14 +281,22 @@ def _load_external_definition(root: Path, m: PluginManifest) -> PluginDefinition
     sys.modules[module_name] = module      # 插件内相对 import 需要
     if module_name not in _PLUGIN_MODULES:
         _PLUGIN_MODULES.append(module_name)
-    spec.loader.exec_module(module)
-    register = getattr(module, 'register', None)
-    if not callable(register):
-        raise ManifestError(f'{m.entry} 缺少 register() 函数')
-    definition = register()
-    if not isinstance(definition, PluginDefinition):
-        raise ManifestError('register() 必须返回 PluginDefinition')
-    _check_definition(m.plugin_id, definition)
+    try:
+        spec.loader.exec_module(module)
+        register = getattr(module, 'register', None)
+        if not callable(register):
+            raise ManifestError(f'{m.entry} 缺少 register() 函数')
+        definition = register()
+        if not isinstance(definition, PluginDefinition):
+            raise ManifestError('register() 必须返回 PluginDefinition')
+        _check_definition(m.plugin_id, definition)
+    except BaseException:
+        # 失败即撤：半初始化的模块留在 sys.modules 里，下次重扫或别的插件
+        # `import tf_plugin_x` 会拿到一个执行到一半的模块对象。
+        sys.modules.pop(module_name, None)
+        if module_name in _PLUGIN_MODULES:
+            _PLUGIN_MODULES.remove(module_name)
+        raise
     return definition
 
 
@@ -297,50 +312,106 @@ def _load_builtin_definition(module_name: str) -> Tuple[PluginManifest,
     return m, definition
 
 
+def _external_dirs() -> List[Path]:
+    """plugins/ 下带 plugin.toml 的子目录。扫描本身出错（权限、坏挂载）只记
+    日志：宿主启动不该被一个不可读的插件目录打穿。"""
+    root = _plugins_root()
+    try:
+        if not root.is_dir():
+            return []
+        return [c for c in sorted(root.iterdir())
+                if c.is_dir() and (c / 'plugin.toml').is_file()]
+    except OSError as e:
+        logger.warning('插件目录扫描失败（%s）：%r', root, e)
+        return []
+
+
 def load_all(socketio=None) -> None:
     """启动时调用一次。可重复调用（重扫）；测试先 reset_for_tests。"""
     with _LOCK:
         _RECORDS.clear()
         for module_name in _BUILTIN:
             _load_one(module_name, 'builtin', None)
-        root = _plugins_root()
-        if root.is_dir():
-            for child in sorted(root.iterdir()):
-                if child.is_dir() and (child / 'plugin.toml').is_file():
-                    _load_one(str(child / 'plugin.toml'), 'external', child)
+        for child in _external_dirs():
+            _load_one(str(child / 'plugin.toml'), 'external', child)
         logger.info('插件注册表就绪：%d 个插件（启用 %d 个）',
                     len(_RECORDS),
                     sum(1 for r in _RECORDS.values() if r.enabled))
 
 
+def _reject_id_conflict(m: PluginManifest, root: Optional[Path]) -> None:
+    """id 撞车：先到者赢，来晚的一律不加载。
+
+    没有这道守卫，一个外部插件只要声明别人的 id 就能顶替它：内存记录被覆盖，
+    DB 行被就地改成自己的 origin，而 enabled 是从旧行读回来的 —— 用户当年为
+    内置插件打开的开关，连同那一行里存的凭据（config_json 按 id 取），原样交
+    给了这个新插件。触发不必是恶意，两个插件撞名就够。
+
+    错误记录只登记在「目录名」这把空闲的 key 上，绝不写回被撞的那把 —— 否则
+    守卫本身就把在册记录换成了错误记录。目录名也被占则只记日志。
+    """
+    held = _RECORDS[m.plugin_id]
+    logger.warning('插件 id 冲突：%s 声明的 id %r 已被 %s 插件占用，跳过加载',
+                   root, m.plugin_id, held.origin)
+    key = root.name if root is not None else ''
+    if not key or key in _RECORDS:
+        return
+    err = (f'ManifestError: 插件 id {m.plugin_id!r} 已被 {held.origin} '
+           f'插件占用（先到者赢），本插件未加载')
+    stub = PluginManifest(plugin_id=key, name=key, version=m.version,
+                          api_version=API_MAJOR)
+    try:
+        enabled = _upsert_row(stub, 'external', err)
+    except Exception:
+        logger.exception('插件 id 冲突的错误登记失败：%s', root)
+        return
+    _RECORDS[key] = PluginRecord(stub, 'external', root, enabled, err, None)
+
+
 def _load_one(source: str, origin: str, root: Optional[Path]) -> None:
     """加载一个插件；任何失败落成 load_error 记录，绝不向上抛。"""
     record = None
+    manifest: Optional[PluginManifest] = None   # 解析到了就用真的那份登记错误
     try:
         if origin == 'builtin':
-            m, definition = _load_builtin_definition(source)
-            _check_api_version(m)
+            manifest, definition = _load_builtin_definition(source)
+            _check_api_version(manifest)
         else:
-            m = load_manifest_toml(Path(source))
-            _check_api_version(m)
-            _check_abi(m)
-            definition = _load_external_definition(root, m)
-        enabled = _upsert_row(m, origin, '')
-        record = PluginRecord(m, origin, root, enabled, '', definition)
-    except Exception as e:
+            manifest = load_manifest_toml(Path(source))
+            if manifest.plugin_id in _RECORDS:
+                _reject_id_conflict(manifest, root)
+                return
+            _check_api_version(manifest)
+            _check_abi(manifest)
+            definition = _load_external_definition(root, manifest)
+        enabled = _upsert_row(manifest, origin, '')
+        record = PluginRecord(manifest, origin, root, enabled, '', definition)
+    except (Exception, SystemExit) as e:
+        # SystemExit 不是 Exception 的子类：插件 import 期一句 sys.exit() 会
+        # 打穿 load_all 把宿主启动带走，那正是隔离铁律要防的事。
         logger.warning('插件加载失败：%s', source, exc_info=True)
-        pid = (source.rsplit('.', 1)[-1] if origin == 'builtin'
-               else Path(source).parent.name)
         err = f'{type(e).__name__}: {e}'
         try:
-            m = PluginManifest(plugin_id=pid, name=pid, version='',
-                               api_version=API_MAJOR)
-            enabled = _upsert_row(m, origin, err)
-            record = PluginRecord(m, origin, root, enabled, err, None)
+            if manifest is None:
+                # 连 manifest 都没解析出来（坏 TOML）才退化用目录名/模块名。
+                pid = (source.rsplit('.', 1)[-1] if origin == 'builtin'
+                       else Path(source).parent.name)
+                manifest = PluginManifest(plugin_id=pid, name=pid, version='',
+                                          api_version=API_MAJOR)
+            enabled = _upsert_row(manifest, origin, err)
+            record = PluginRecord(manifest, origin, root, enabled, err, None)
         except Exception:
             logger.exception('插件连错误登记都失败：%s', source)
-    if record is not None:
-        _RECORDS[record.manifest.plugin_id] = record
+    if record is None:
+        return
+    held = _RECORDS.get(record.manifest.plugin_id)
+    if held is not None and held is not record:
+        # 兜底不变量：任何路径都不许覆盖在册记录（例如坏 TOML 的目录名恰好
+        # 撞上一个已加载插件的 id）。
+        logger.warning('插件 id 冲突：%s 想登记 %r，该 id 已被 %s 插件占用，跳过',
+                       source, record.manifest.plugin_id, held.origin)
+        return
+    _RECORDS[record.manifest.plugin_id] = record
 
 
 def reset_for_tests() -> None:
@@ -405,27 +476,37 @@ def get_config(plugin_id: str) -> dict:
     if not row:
         return {}
     try:
-        return json.loads(row['config_json'] or '{}')
+        cfg = json.loads(row['config_json'] or '{}')
     except json.JSONDecodeError:
         return {}
+    # 合法 JSON 但不是对象（'[1,2]'）时下游 cfg.get 会 AttributeError；
+    # credentials._as_text 那边同口径。
+    return cfg if isinstance(cfg, dict) else {}
 
 
 def set_config(plugin_id: str, values: Mapping[str, Any]) -> Dict[str, str]:
-    """插件若定义了 pipeline.config_schema() 则先过校验。返回错误表，空 = 已存。"""
+    """插件若定义了 pipeline.config_schema() 则先过校验。返回错误表，空 = 已存。
+
+    有 schema 时落盘的是校验器洗出来的 clean 而不是 raw：schema 声明 int 就
+    该存 int（消费者是 provider.snapshot(cfg) 与凭据解析），default 该回填，
+    JSON null 不该进库。unknown 键已经被 errors 拦在前面，clean 不会丢东西。
+    """
     rec = get_record(plugin_id)
     if rec is None:
         return {'_': '未知插件'}
+    stored: Mapping[str, Any] = values
     if rec.definition is not None and rec.definition.pipeline is not None:
         schema_fn = getattr(rec.definition.pipeline, 'config_schema', None)
         if callable(schema_fn):
             from src.plugins.params import validate_params
-            _, errors = validate_params(schema_fn(), values)
+            clean, errors = validate_params(schema_fn(), values)
             if errors:
                 return errors
+            stored = clean
     conn = get_connection()
     try:
         conn.execute('UPDATE plugins SET config_json = ? WHERE id = ?',
-                     (json.dumps(values, ensure_ascii=False), plugin_id))
+                     (json.dumps(stored, ensure_ascii=False), plugin_id))
         conn.commit()
     finally:
         conn.close()
@@ -456,14 +537,15 @@ def list_sources() -> List[dict]:
 
 def build_source_snapshot(plugin_id: str, source_id: str):
     """描述符 → SourceSnapshot。credential_reference 是键名不是值——
-    凭据永不进指纹、日志与任务行（规格 §6）。"""
+    凭据永不进指纹、日志与任务行（规格 §6）。
+
+    两条腿都走，顺序与 list_sources 一致（静态描述符先、provider 后）：只问
+    provider 会让静态描述符声明的源「列得出来、取不到快照」。
+    """
     from src.contracts.source import SourceSnapshot
     definition = _enabled_definition(plugin_id)
     if definition is None:
         raise KeyError(f'插件不可用：{plugin_id!r}')
-    if definition.source_provider is not None:
-        return definition.source_provider.snapshot(source_id,
-                                                   get_config(plugin_id))
     for d in definition.sources:
         if d.source_id == source_id:
             return SourceSnapshot(
@@ -477,6 +559,9 @@ def build_source_snapshot(plugin_id: str, source_id: str):
                 attribution=d.attribution,
                 usage_policy=d.usage_policy,
             )
+    if definition.source_provider is not None:
+        return definition.source_provider.snapshot(source_id,
+                                                   get_config(plugin_id))
     raise KeyError(f'插件 {plugin_id!r} 没有数据源 {source_id!r}')
 
 
