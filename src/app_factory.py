@@ -27,6 +27,7 @@ from flask_socketio import SocketIO
 import src.core.database  # noqa: F401
 import src.core.single_instance  # noqa: F401
 import src.plugins.builtin.artifact_meta  # noqa: F401
+import src.plugins.builtin.gpkg_exporter  # noqa: F401
 import src.plugins.builtin.mvt_pipeline  # noqa: F401
 import src.plugins.builtin.tianditu_source  # noqa: F401
 import src.plugins.credentials  # noqa: F401
