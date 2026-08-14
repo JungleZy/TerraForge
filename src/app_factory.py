@@ -26,6 +26,7 @@ from flask_socketio import SocketIO
 # 让 Nuitka 的静态分析一眼看见,不至于漏进 dist。
 import src.core.database  # noqa: F401
 import src.core.single_instance  # noqa: F401
+import src.plugins.protocols  # noqa: F401
 import src.routes  # noqa: F401
 import src.i18n  # noqa: F401
 import src.routes.socketio_events  # noqa: F401
