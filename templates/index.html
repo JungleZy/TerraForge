@@ -219,6 +219,15 @@
                             </select>
                             <img id="mapStylePreview" class="map-style-preview" alt="{{ t('tpl.index.download.style_preview_alt') }}" title="{{ t('tpl.index.download.style_preview_title') }}">
                         </div>
+                        {# 插件源:选「内置源」时走上面的样式选择(存量路径,
+                           一字不变);选插件提供的源时随任务提交
+                           source_plugin_id / source_id 两个字段,由后端在
+                           建任务那一刻冻结成快照。选项由 map.js 从
+                           /api/plugins/sources 填充。 #}
+                        <label for="downloadPluginSource" class="form-label mt-2">{{ t('tpl.index.download.plugin_source') }}</label>
+                        <select class="form-select" id="downloadPluginSource">
+                            <option value="">{{ t('tpl.index.download.source_builtin') }}</option>
+                        </select>
                     </div>
 
                     <div class="row">
@@ -663,6 +672,7 @@
                         _boot('map', function () { initMap(config, basemapDescriptor); });
                         _boot('workbench', initMapWorkbench);
                         _boot('downloadTypeToggle', initDownloadTypeToggle);
+                        _boot('pluginSources', initPluginSourceOptions);
                         _boot('processTypeToggle', initProcessTypeToggle);
                         _boot('mapStylePreview', initMapStylePreview);
                         {# 区域导入 + 地点搜索（§5.1）。必须排在 initMap 之后：

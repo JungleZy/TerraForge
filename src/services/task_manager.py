@@ -20,6 +20,7 @@ from src.contracts.outcome import (ACTIVE_STATE_VALUES, GAP_OUTCOMES,
 from src.contracts.region import RegionSpec, RegionValidationError
 from src.contracts.region_tiles import count_region_tiles
 from src.contracts.reservation import ResourceKind, ResourceRequest
+from src.contracts.source import SourceSnapshot
 from src.core.database import get_connection, parse_db_timestamp, utc_now, utc_now_iso
 from src.models.task import Task, Tile
 from src.services import artifact_store, disk_budget, source_registry
@@ -595,8 +596,15 @@ class TaskManager:
         # 用户跑到一半在设置页换了 tile_servers,同一个成品里就混进了两个来源
         # 的瓦片,事后无法回答「这块瓦片是谁给的」。指纹还决定缓存命名空间,
         # 所以换源自动换目录,两个源不会互相投毒。
+        # 通用缝:调用方可以把**已经冻结好的**快照直接传进来(params 的
+        # source_snapshot,JSON 文本),核心只认这份合同、不认它出自哪个数据源;
+        # 没传就按 style 从 tile_servers 配置现算,与改造前逐字一致。
+        # SourceSnapshot.from_json 对空串/坏 JSON 返回 None,回落是天然的。
         style_code = STYLE_MAP.get(task.style, 'm')
-        snapshot = source_registry.snapshot_for_style(style_code, self.config_manager)
+        snapshot = (
+            SourceSnapshot.from_json(params.get('source_snapshot') or '')
+            or source_registry.snapshot_for_style(style_code, self.config_manager)
+        )
 
         # 瓦片总数只计数、不物化,也不向 task_tiles 写任何行。
         # 为什么不再每块瓦片存一行:瓦片集合是 (区域, zoom) 的纯函数,可由

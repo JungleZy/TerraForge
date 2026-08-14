@@ -134,6 +134,21 @@ def create_task():
         if not isinstance(data['name'], str):
             return jsonify({'error': 'name must be a string'}), 400
 
+        # 插件源:下载弹窗选了插件提供的数据源时,由注册表在**建任务这一刻**
+        # 冻结一张快照随任务落库,create_task 的通用覆盖缝会认它。核心不认
+        # 具体数据源,只认这份快照合同 —— 插件只是第一批调用方。
+        # 快照里的 credential_reference 是键名不是值,凭据不进任务行。
+        source_plugin_id = str(data.get('source_plugin_id') or '')
+        source_id = str(data.get('source_id') or '')
+        if source_plugin_id and source_id:
+            from src.plugins import registry as plugin_registry
+            try:
+                snapshot = plugin_registry.build_source_snapshot(
+                    source_plugin_id, source_id)
+            except KeyError as e:
+                return jsonify({'error': str(e)}), 400
+            data['source_snapshot'] = snapshot.to_json()
+
         # Create task
         task_id = task_manager.create_task(data)
 

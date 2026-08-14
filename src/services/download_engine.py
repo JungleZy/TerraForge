@@ -531,10 +531,26 @@ class DownloadEngine:
             servers = self._tile_servers()
             entry = servers[server_index % len(servers)]
             template = expand_server_entry(entry, style)
-        return (template
-                .replace('{z}', str(z))
-                .replace('{x}', str(x))
-                .replace('{y}', str(y)))
+        url = (template
+               .replace('{z}', str(z))
+               .replace('{x}', str(x))
+               .replace('{y}', str(y)))
+        # `{credential}` 是**通用**占位符,不是给某个具体源开的口子:任何带
+        # credential_reference 的快照都走这一条。真值只在这一瞬(发请求前)
+        # 被替换出来 —— 模板里存的是字面量 `{credential}`,快照/任务行/日志
+        # 里都只有键名。凭据轮换因此**不改指纹**:指纹算的是含占位符的模板,
+        # 换 token 不会换缓存命名空间、已下的瓦片不会整批失效。
+        #
+        # resolve_reference 解析不到时返回空串(不抛,见 plugins/credentials.py):
+        # URL 里那段变空 → 上游 401/403 → 这块瓦片落成 permanent_failure。
+        # 这是刻意的 —— 缺凭据在瓦片层如实记账,不把整条管线打死。
+        if '{credential}' in url and isinstance(source, SourceSnapshot):
+            # 延迟 import:core 的下载路径不在模块级依赖 plugins(与本文件
+            # 其余延迟 import 同一惯例)。
+            from src.plugins.credentials import resolve_reference
+            url = url.replace('{credential}',
+                              resolve_reference(source.credential_reference))
+        return url
 
     def _get_cache_path(self, tile: Tile, style_or_source) -> Path:
         """瓦片的共享缓存路径。**规则只此一份**,在 `Tile.cache_path` 里。

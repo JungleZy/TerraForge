@@ -1362,6 +1362,28 @@ function initDownloadTypeToggle() {
     apply();
 }
 
+// 下载弹窗的「数据源」下拉：默认「内置源」（模板里那个 value="" 的选项），
+// 其余选项由 /api/plugins/sources 填充，value 是 "<plugin_id>:<source_id>"。
+// 拉不到就保持只有内置源那一项 —— 插件是旁路，装没装都不该影响存量下载，
+// 所以这里不 toast、只记 console。
+async function initPluginSourceOptions() {
+    const select = document.getElementById('downloadPluginSource');
+    if (!select) return;
+    try {
+        const resp = await fetch('/api/plugins/sources');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        (data.sources || []).forEach(function (s) {
+            const opt = document.createElement('option');
+            opt.value = `${s.plugin_id}:${s.source_id}`;
+            opt.textContent = s.name || opt.value;
+            select.appendChild(opt);
+        });
+    } catch (e) {
+        console.warn('[plugins] 数据源列表拉取失败（忽略）:', e);
+    }
+}
+
 function initProcessTypeToggle() {
     // 数据处理表单（#processForm）：本地高程切片 / 等高线瓦片。
     // 字段可见性是「处理类型 × 数据来源」二维的：来源为已下载的 DEM 任务时
@@ -2628,6 +2650,15 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
             // 松散瓦片目录照常保留 —— 预览与之后的手动导出都从它出。
             export_mbtiles: document.getElementById('exportMbtiles')?.checked ? 1 : 0
         };
+        // 插件源：选了非「内置源」时多送两个字段，后端据此冻结快照随任务落库
+        // （style 照送不误——快照缺席时它仍是唯一的取源依据）。没选就一个字段
+        // 都不加，请求体与改造前逐字一致。
+        const pluginSource = document.getElementById('downloadPluginSource')?.value || '';
+        if (pluginSource) {
+            const sep = pluginSource.indexOf(':');
+            taskData.source_plugin_id = pluginSource.slice(0, sep);
+            taskData.source_id = pluginSource.slice(sep + 1);
+        }
         apiUrl = '/api/tasks';
     }
 

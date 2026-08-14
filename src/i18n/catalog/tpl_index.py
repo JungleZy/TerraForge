@@ -199,6 +199,15 @@ MESSAGES = {
         'zh': '当前样式瓦片预览',
         'en': 'Tile preview of the current style',
     },
+    # 插件源下拉:默认「内置源」= 走上面那五个样式的存量路径。
+    'tpl.index.download.plugin_source': {
+        'zh': '数据源',
+        'en': 'Data source',
+    },
+    'tpl.index.download.source_builtin': {
+        'zh': '内置源',
+        'en': 'Built-in sources',
+    },
     'tpl.index.download.dem_dataset': {
         'zh': '数据源',
         'en': 'Data source',
