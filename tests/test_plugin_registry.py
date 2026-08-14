@@ -601,29 +601,24 @@ def test_dispatch_event_survives_hook_exception(db, tmp_path, monkeypatch):
 
 
 def test_builtin_failures_are_isolated_not_fatal(db, tmp_path, monkeypatch):
-    """_BUILTIN 里列了尚未落地的模块（T12-T15）：只能落 load_error，不许抛穿。
+    """一个 builtin 模块缺失只能落 load_error，不许抛穿 load_all。
 
-    刻意不断言「全部失败」——T12-T15 落地后这些模块会真的加载成功；这里断言
-    的是不变量：缺模块的那些必须有 builtin 行 + 非空 load_error。
+    四个首发插件（T12-T15）现在都真的在树上，拿真名字已经构造不出这个失败，
+    所以往 _BUILTIN 末尾塞一个不存在的模块名把不变量钉住：缺的那个有 builtin
+    行 + 非空 load_error，邻居插件不受影响。
     """
-    import importlib.util
-
     _fresh(tmp_path, monkeypatch)
+    monkeypatch.setattr(registry, '_BUILTIN',
+                        registry._BUILTIN + ('src.plugins.builtin.nope',))
     registry.load_all()                                  # 不抛
     conn = sqlite3.connect(db)
     try:
         rows = dict(conn.execute('SELECT id, origin FROM plugins').fetchall())
     finally:
         conn.close()
-    missing = []
-    for module_name in registry._BUILTIN:
-        try:
-            found = importlib.util.find_spec(module_name) is not None
-        except (ImportError, AttributeError, ValueError):
-            found = False
-        if not found:
-            missing.append(module_name.rsplit('.', 1)[-1])
-    assert missing, '_BUILTIN 全部存在时本用例失去意义，请改断言'
-    for pid in missing:
-        assert rows.get(pid) == 'builtin'
-        assert registry.get_record(pid).load_error != ''
+    assert rows.get('nope') == 'builtin'                 # 退化用模块名登记
+    assert registry.get_record('nope').load_error != ''
+    # 隔离：缺的那个不许带倒邻居。挑 tianditu 而不是数「干净加载的有几个」——
+    # 后者会跟着 _BUILTIN 的落地进度飘，而这条不变量与进度无关。
+    neighbor = registry.get_record('tianditu')
+    assert neighbor is not None and neighbor.load_error == ''
