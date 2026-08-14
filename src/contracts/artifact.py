@@ -29,14 +29,16 @@ from typing import Any, Dict, Optional
 
 __all__ = ['Artifact', 'ArtifactKind', 'PIPELINES']
 
-#: 四条管线的标识。与任务表的对应关系写在 `task_table` 里，只此一份。
-PIPELINES = ('map', 'dem', 'contour', 'local_terrain')
+#: 五条管线的标识（含插件共用的 'plugin'）。与任务表的对应关系写在
+#: `task_table` 里，只此一份。
+PIPELINES = ('map', 'dem', 'contour', 'local_terrain', 'plugin')
 
 _PIPELINE_TABLES = {
     'map': 'tasks',
     'dem': 'dem_tasks',
     'contour': 'contour_tasks',
     'local_terrain': 'local_terrain_tasks',
+    'plugin': 'plugin_tasks',
 }
 
 

@@ -191,9 +191,11 @@ def test_unknown_table_name_is_rejected(monkeypatch, tmp_path):
     with pytest.raises(ValueError):
         td.delete_task_row(manager=_IdleManager(), task_id=1,
                            table="tasks; DROP TABLE tasks", artifact_dir=None)
-    # 四条管线用的表名必须都在白名单里，少一张就是整条管线删不掉
+    # 五条管线（四条内建 + 插件共用的 plugin_tasks）用的表名必须都在白名单里，
+    # 少一张就是整条管线删不掉
     assert td._DELETABLE_TASK_TABLES == {
-        "tasks", "dem_tasks", "contour_tasks", "local_terrain_tasks"}
+        "tasks", "dem_tasks", "contour_tasks", "local_terrain_tasks",
+        "plugin_tasks"}
 
 
 # ---------------------------------------------------------------------------

@@ -70,13 +70,14 @@ _JOIN_TIMEOUT_SECONDS = 600
 _START_WAIT_SECONDS = 0.1
 _START_POLL_SECONDS = 0.005
 
-# 表名直接拼进 SQL,只接受这四张任务表的字面量。四条管线全都传字面量,今天注不
+# 表名直接拼进 SQL,只接受这五张任务表的字面量。五条管线全都传字面量,今天注不
 # 进来 —— 但「调用方传字面量」此前只是一句 docstring,而 docstring 不会在有人
 # 把某个 ?table= 透传下来的那天报错。与 task_cleanup._STRANDED_TASK_TABLES 同
-# 一套做法;这里多一张 local_terrain_tasks:本函数服务四条管线,那个助手只服务
-# 有 `_run_task` 的三条。
+# 一套做法;这里多两张:local_terrain_tasks 与 plugin_tasks —— 本函数服务全部管线,
+# 那个助手只服务有 `_run_task` 的三条。
 _DELETABLE_TASK_TABLES = frozenset(
-    {'tasks', 'dem_tasks', 'contour_tasks', 'local_terrain_tasks'})
+    {'tasks', 'dem_tasks', 'contour_tasks', 'local_terrain_tasks',
+     'plugin_tasks'})
 
 
 class DeleteOutcome(NamedTuple):

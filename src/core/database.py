@@ -559,6 +559,19 @@ def migrate_cache_to_source_namespace(cursor) -> int:
     return moved
 
 
+def migrate_plugin_schema(cursor) -> int:
+    """插件系统三表（user_version 6 → 7）。
+
+    建表本身是 CREATE TABLE IF NOT EXISTS，新库老库同一条路径；这个函数
+    只做一件事：把 user_version 推到 7，让「跑没跑过」可判。
+    """
+    if cursor.execute('PRAGMA user_version').fetchone()[0] >= 7:
+        return 0
+    cursor.execute('PRAGMA user_version = 7')
+    logger.info('插件系统表就绪 (user_version=7)')
+    return 1
+
+
 def init_database():
     """
     Initialize database schema and default configuration
@@ -1103,6 +1116,66 @@ def init_database():
             ON artifacts(pipeline, task_id)
         ''')
 
+        # ---- 插件系统（§13-4，规格 docs/superpowers/specs/2026-08-12-plugin-system-design.md）
+        # plugin_tasks：全部插件管线共用的一张任务表——契约第 2 条「不允许自带
+        # 任务表」的落法，宿主给一张通用的，plugin_id 区分来源。缺块/耗时/进度
+        # 列与 tasks 表对齐，是为了 history_all 的 UNION 列序逐位对上。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS plugin_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plugin_id TEXT NOT NULL,
+                name TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                north REAL, south REAL, east REAL, west REAL,
+                zoom_min INTEGER, zoom_max INTEGER,
+                region_json TEXT DEFAULT '',
+                params_json TEXT DEFAULT '{}',
+                output_path TEXT DEFAULT '',
+                total_items INTEGER DEFAULT 0,
+                downloaded_items INTEGER DEFAULT 0,
+                failed_items INTEGER DEFAULT 0,
+                gap_tiles INTEGER DEFAULT 0,
+                gap_decision TEXT DEFAULT '',
+                total_running_seconds INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                error_message TEXT DEFAULT ''
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_plugin_tasks_status
+            ON plugin_tasks(status)
+        ''')
+        # 稀疏缺块表，语义同 task_tiles（有行即有洞，status 是 TileOutcome 值）。
+        # 刻意不加外键：删除路径是「先停线程再删行」，孤儿行由启动清理兜底，
+        # 不引入 map 管线的 tombstone 机制。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS plugin_task_tiles (
+                task_id INTEGER NOT NULL,
+                zoom INTEGER NOT NULL,
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                retry_count INTEGER DEFAULT 0,
+                error_message TEXT,
+                PRIMARY KEY (task_id, zoom, x, y)
+            )
+        ''')
+        # 插件注册表：enabled 缺省 0（§13-4 契约第 1 条「缺省关闭」）。
+        # config_json 存插件自己的配置——不进 DEFAULT_CONFIGS，理由见规格 §9。
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS plugins (
+                id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                version TEXT DEFAULT '',
+                origin TEXT DEFAULT 'external',
+                config_json TEXT DEFAULT '{}',
+                load_error TEXT DEFAULT '',
+                installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # Insert default configuration values using executemany for efficiency
         cursor.executemany(
             'INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)',
@@ -1130,6 +1203,7 @@ def init_database():
         migrate_local_maxzoom_to_auto(cursor)
         migrate_tile_status_to_outcome(cursor)
         migrate_cache_to_source_namespace(cursor)
+        migrate_plugin_schema(cursor)
 
         conn.commit()
         logger.info('Database initialized successfully')
