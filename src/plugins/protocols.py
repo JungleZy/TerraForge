@@ -38,7 +38,12 @@ class SourceDescriptor:
 
 @dataclass(frozen=True)
 class ParamSpec:
-    """声明式任务参数。type ∈ region|zoom_range|path|int|float|str|bool|enum|credential。"""
+    """声明式任务参数。type ∈ region|zoom_range|path|int|float|str|bool|enum|credential。
+
+    **不可哈希**：depends_on 是 dict，frozen 自动生成的 __hash__ 一调即
+    TypeError。别 set(specs) / 别拿它当 dict key，去重用 .key。同理 frozen
+    只冻结属性绑定，depends_on 的内容仍可被改——要缓存 schema 自己复制。
+    """
 
     key: str
     type: str
