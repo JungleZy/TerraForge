@@ -32,6 +32,7 @@ import src.plugins.params  # noqa: F401
 import src.plugins.protocols  # noqa: F401
 import src.plugins.registry  # noqa: F401
 import src.plugins.task_context  # noqa: F401
+import src.plugins.task_manager  # noqa: F401
 import src.routes  # noqa: F401
 import src.i18n  # noqa: F401
 import src.routes.socketio_events  # noqa: F401
