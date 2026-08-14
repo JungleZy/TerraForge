@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 import time
 
 import pytest
@@ -48,6 +49,49 @@ def register():
     return PluginDefinition(pipeline=P())
 '''
 
+#: 第二趟（`_gap_accepted` 那趟）停在原地等测试放行，用来把「上一轮还在收尾」
+#: 与「下一轮已经登记」两件事重叠起来。
+FAKE_GAP_PARKED_PLUGIN = '''
+import time
+from src.plugins.protocols import ParamSchema, PluginDefinition, PluginOutcome
+from src.contracts.outcome import TileOutcome
+class P:
+    def params_schema(self): return ParamSchema(())
+    def estimate(self, params, region): return None
+    def run(self, ctx):
+        if ctx.params.get('_gap_accepted'):
+            (ctx.output_dir / 'second_run_started').write_text('1')
+            go = ctx.output_dir / 'go'
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if ctx.stop_requested() or go.exists():
+                    break
+                time.sleep(0.01)
+            return PluginOutcome.COMPLETED_WITH_GAPS
+        ctx.record_tile_outcome(5, 2, 2, TileOutcome.RETRYABLE_FAILURE, 'boom')
+        return PluginOutcome.PENDING_DECISION
+def register():
+    return PluginDefinition(pipeline=P())
+'''
+
+
+class _GateSocketIO:
+    """把「终态已落库、工作线程还没走完 finally」那个窗口钉死。
+
+    完成事件的 `emit` 挂在门上：放行之前那个线程一直停在 `_run_task` 返回之后的
+    收尾段里（真实系统里这段隔着 `_emit` 与第三方钩子分发，可以任意慢）。
+    不用 sleep 赌时序。
+    """
+
+    def __init__(self):
+        self.hit = threading.Event()
+        self.gate = threading.Event()
+
+    def emit(self, event, payload=None):
+        if event == 'plugin_task_completed' and not self.gate.is_set():
+            self.hit.set()
+            self.gate.wait(10)
+
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
@@ -71,7 +115,7 @@ def db(tmp_path, monkeypatch):
     return path
 
 
-def _setup(db, tmp_path, monkeypatch, source=FAKE_PLUGIN):
+def _setup(db, tmp_path, monkeypatch, source=FAKE_PLUGIN, socketio=None):
     monkeypatch.setattr(registry, '_plugins_root',
                         lambda: tmp_path / 'plugins')
     d = tmp_path / 'plugins' / 'fake'
@@ -83,7 +127,7 @@ def _setup(db, tmp_path, monkeypatch, source=FAKE_PLUGIN):
     registry.reset_for_tests()
     registry.load_all()
     registry.set_enabled('fake', True)
-    return PluginTaskManager(socketio=None)
+    return PluginTaskManager(socketio=socketio)
 
 
 def _wait_status(mgr, tid, want, timeout=10.0):
@@ -155,3 +199,75 @@ def test_pending_decision_then_accept_gaps_finishes(db, tmp_path, monkeypatch):
     assert row['status'] == 'completed_with_gaps', row.get('error_message')
     assert row['gap_decision'] == 'accept'
     assert json.loads(row['params_json'])['_gap_accepted'] is True
+
+
+def test_previous_run_exit_keeps_next_run_stop_flag(db, tmp_path, monkeypatch):
+    """上一轮退出**不许**摘掉下一轮的停止标志。
+
+    真实路径：UI 收到 `plugin_task_completed`（发在收尾段**里面**）之后用户立刻
+    点「接受缺块」，于是「上一轮还在走 finally」与「下一轮已经登记」重叠。
+    无判据地 `stop_flags.pop` 会偷走新一轮的 Event：新线程读到 None 判成
+    「删除请求先到」直接 return，行永久停在 running 谁也起不动；读在偷之后则
+    这一轮再也停不下来（`delete_task` 置不了标志 → 后台 join 600 秒超时 →
+    产物清理整支跳过）。
+    """
+    gate = _GateSocketIO()
+    mgr = _setup(db, tmp_path, monkeypatch, source=FAKE_GAP_PARKED_PLUGIN,
+                 socketio=gate)
+    tid = mgr.create_task('fake', {'name': 't5',
+                                   'bbox': [40.0, 30.0, 117.0, 116.0],
+                                   'output_path': str(tmp_path / 'race')})
+    task_dir = tmp_path / 'race' / f'plugin_task_{tid}'
+    mgr.start_task(tid)
+    # 门被撞上 = 终态已落库、第一轮的线程正停在收尾段里
+    assert gate.hit.wait(10), '第一轮没走到完成事件'
+    assert mgr.get_task(tid)['status'] == 'pending_decision'
+    first = next(t for t in threading.enumerate()
+                 if t.name == f'plugin-task-{tid}')
+
+    mgr.accept_gaps(tid)                       # 第二轮登记进来
+    flag = mgr.stop_flags[tid]
+    deadline = time.monotonic() + 10
+    while not (task_dir / 'second_run_started').exists():
+        assert time.monotonic() < deadline, '第二轮没跑起来'
+        time.sleep(0.01)
+
+    gate.gate.set()                            # 放行第一轮，让它走完 finally
+    first.join(10)
+    assert not first.is_alive()
+
+    # 回归点：第二轮的 Event 还在，而且真的还能叫停第二轮
+    assert mgr.stop_flags.get(tid) is flag
+    (task_dir / 'go').write_text('1')          # 正常收尾，别留悬着的线程
+    row = _wait_status(mgr, tid, ('completed_with_gaps', 'failed'))
+    assert row['status'] == 'completed_with_gaps', row.get('error_message')
+
+
+def test_output_dir_failure_releases_reservation(db, tmp_path, monkeypatch):
+    """准入之后、`run()` 之前抛异常也必须归还凭据。
+
+    `output_path` 是用户填的：路径上有一段是**文件**时 `TaskContext.__init__` 的
+    mkdir 抛 NotADirectoryError。凭据漏一张的后果不是「这次失败」而是这条任务
+    永久锁死——owner `('plugin', id, 'run')` 是确定性的，留在调度器 `_owners`
+    里之后每次 start 都撞 `owner ... already holds a reservation`。
+    """
+    mgr = _setup(db, tmp_path, monkeypatch)
+    blocker = tmp_path / 'blocker'
+    blocker.write_text('我是文件，不是目录', encoding='utf-8')
+    tid = mgr.create_task('fake', {'name': 't6',
+                                   'bbox': [40.0, 30.0, 117.0, 116.0],
+                                   'output_path': str(blocker / 'sub')})
+    mgr.start_task(tid)
+    row = _wait_status(mgr, tid, ('failed',))
+    assert row['status'] == 'failed'
+    assert 'NotADirectoryError' in row['error_message']
+
+    from src.services.resource_scheduler import get_scheduler
+    scheduler = get_scheduler(None)
+    assert ('plugin', tid, 'run') not in scheduler._owners
+
+    # 凭据真的回收了 → 同一条任务能再起一次，而不是撞 owner 冲突
+    mgr.start_task(tid)
+    row = _wait_status(mgr, tid, ('failed',))
+    assert 'already holds' not in (row['error_message'] or '')
+    assert 'NotADirectoryError' in row['error_message']

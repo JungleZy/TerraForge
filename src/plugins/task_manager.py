@@ -33,7 +33,9 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from src.contracts.outcome import (ACTIVE_STATE_VALUES, TaskState, TileOutcome)
+from src.contracts.outcome import (ACTIVE_STATE_VALUES,
+                                   SUCCESSFUL_STATE_VALUES, TaskState,
+                                   TileOutcome)
 from src.contracts.region import RegionSpec
 from src.contracts.reservation import ResourceKind, ResourceRequest
 from src.core.config import Config
@@ -136,6 +138,16 @@ class PluginTaskManager:
             raise ValueError(f'params.bbox 不是四个数字：{e}') from e
         region = RegionSpec.from_bbox(north, south, east, west)
 
+        # ⚠️ `params_json` 原样落库整份参数。`ParamSpec.type` 允许
+        # `'credential'`，而 `credentials.py` 的口径是「凭据不进哈希、不进日志、
+        # **不进任务行**」——今天没有插件声明这类参数，所以还不是已发生的缺陷，
+        # 但也**没有**机制拦住第一个声明它的插件。这里刻意不自作聪明地把这类键
+        # 剥掉：剥了插件在 run() 里就拿不到值（参数来自任务行，重跑/重启都得从
+        # 那儿读），等于换一个静默坏掉的方向。真正的解法是让凭据走 T5 的
+        # `plugins.config_json` + `credentials.resolve_reference`（键名进任务行、
+        # 值留在配置里），第一个需要它的插件落地时一并设计。
+        # 在那之前：T8 序列化 get_task/list_tasks 的返回值给前端时不许原样吐
+        # `params_json`。
         stored = dict(params)
         stored.update(self._validate_plugin_params(pipeline, plugin_id, params))
         output_path = str(params.get('output_path')
@@ -244,9 +256,10 @@ class PluginTaskManager:
     def _run_task_entry(self, task_id: int) -> None:
         """线程外壳：任何异常 → failed + error_message；收尾必清 active/stop。
 
-        任务日志的句柄归这里（开在最外层、关在最外层）：`TaskContext.close()`
-        会顺手关掉传进去的 tlog，如果让它在 `run()` 的 finally 里关，终态那几
-        行日志就都写进一个已经关掉的句柄。所以 ctx 那边只 `flush_outcomes()`。
+        任务日志的句柄归这里（开在最外层、关在最外层）：`tlog` 的生命周期是
+        **整个任务**，终态那几行（`terminal` 事件）在 `run()` 返回之后才写。
+        `TaskContext.close()`（T6 f5f78b3 之后）明确不碰 tlog，所以 ctx 那边
+        照常 close——它只负责「插件这一次运行」的缓冲。
         """
         from src.services.task_logging import open_task_log
         tlog = open_task_log(_PIPELINE, task_id, self.config_manager)
@@ -263,9 +276,18 @@ class PluginTaskManager:
         finally:
             tlog.close()
             with self._state_lock:
+                # 两个摘除都必须带身份判据。`_finish` 已经把本线程的登记摘干净
+                # 了，所以走到这里还能命中的**只有**「新一轮已经登记进来」那种
+                # 情形——无判据地 pop 就是把下一轮的 Event 偷走：新线程读到 None
+                # 会判成「删除请求先到」直接 return，行永久停在 running 谁也起
+                # 不动；读在偷之前则这一轮再也停不下来，delete_task 置不了标志、
+                # delete_task_row 判它在跑、后台 join 600 秒超时后产物清理整支
+                # 跳过。窗口不是理论值：`_finish` 到这里之间隔着 `_emit` 与钩子
+                # 分发（第三方代码，可以任意慢），而 `accept_gaps()` 正是收到
+                # `plugin_task_completed` 之后用户点下来的那一步。
                 if self.active_tasks.get(task_id) is threading.current_thread():
                     self.active_tasks.pop(task_id, None)
-                self.stop_flags.pop(task_id, None)
+                    self.stop_flags.pop(task_id, None)
 
     def _run_task(self, task_id: int, tlog, started: float) -> None:
         row = self.get_task(task_id)
@@ -306,24 +328,44 @@ class PluginTaskManager:
             self._emit('plugin_task_failed', task_id, self.get_task(task_id), {})
             return
 
-        ctx = TaskContext(
-            task_id=task_id, plugin_id=plugin_id, region=region,
-            params=params, output_dir=self._task_output_dir(row),
-            snapshot=self._snapshot_for(row, params),
-            stop_flag=stop_flag, tlog=tlog,
-            emit_progress=self._make_progress_callback(task_id),
-            # 防御性拷贝：TaskContext 不拷 granted，而 reservation.granted
-            # 就是调度器账本里的那个 dict —— 插件改一个数字就是一次永久配额
-            # 泄漏。拷一份 5 个键的 dict 比那个后果便宜得多。
-            granted=dict(reservation.granted),
-            config_manager=self.config_manager)
-        tlog.event('start', plugin=plugin_id, region=region.summary())
+        # 凭据一旦拿到手，**从这里到 release() 之间不许有一行裸代码**：
+        # `_task_output_dir` / `_snapshot_for` / `TaskContext.__init__`
+        # （它会 mkdir 用户填的 output_path，路径上有一段是文件就 NotADirectoryError、
+        # 只读目录就 PermissionError）/ `region.summary()` 都能抛。抛在 try 外面的
+        # 后果不是「这次失败」而是「这条任务永久锁死」：TASK_SLOT 不回收，而
+        # owner ('plugin', id, 'run') 是确定性的，它留在 _owners 里之后每一次
+        # start 都撞 `owner ... already holds a reservation`，进程重启前救不回来
+        # （模块 docstring 那句「凭据漏一张这个任务就永远起不来了」说的就是这里）。
+        ctx = None
         try:
+            ctx = TaskContext(
+                task_id=task_id, plugin_id=plugin_id, region=region,
+                params=params, output_dir=self._task_output_dir(row),
+                snapshot=self._snapshot_for(row, params),
+                stop_flag=stop_flag, tlog=tlog,
+                emit_progress=self._make_progress_callback(task_id),
+                # 防御性拷贝：reservation.granted 就是调度器账本里的那个 dict，
+                # `release()` 遍历它回退 _in_use —— 插件改一个数字就是一次永久
+                # 配额泄漏。T6 那边也拷了一份（纵深防御），这一层离账本最近。
+                granted=dict(reservation.granted),
+                config_manager=self.config_manager)
+            tlog.event('start', plugin=plugin_id, region=region.summary())
             outcome = pipeline.run(ctx)
         finally:
-            # 只 flush 不 close：tlog 的生命周期归 `_run_task_entry`（见那里）。
-            ctx.flush_outcomes()
-            reservation.release()
+            # 归还必须**独立于** close()：`ctx.close()` 今天吞掉自己的一切异常
+            # （task_context._flush_locked 兜底 except），但它排在 release()
+            # 前面，一旦哪天它会抛，漏的就不是一批记账而是这条任务永久锁死
+            # （owner 确定性地留在 _owners 里）。嵌一层 finally 让「谁先谁后」
+            # 与「归还是否发生」彻底解耦。
+            try:
+                if ctx is not None:
+                    # close 而不是只 flush：T6 f5f78b3 之后 close() 不碰 tlog，只
+                    # flush + 置 _closed。置位是有意义的——插件残留的后台线程在这之后
+                    # 的记账会被丢弃并记 warning，而不是静默插进一个已经算完
+                    # failed_items（甚至已经被删）的任务。
+                    ctx.close()
+            finally:
+                reservation.release()
 
         if self.get_task(task_id) is None:
             # 运行期被删掉了：删除即取消，插件是被 stop_flag 叫停的。终态无处可写。
@@ -339,9 +381,15 @@ class PluginTaskManager:
         tlog.event('terminal', status=status)
         self._emit('plugin_task_failed' if status == TaskState.FAILED.value
                    else 'plugin_task_completed', task_id, final_row, {})
-        registry.dispatch_event(TaskEvent(
-            kind='task_completed', pipeline=_PIPELINE, task_id=task_id,
-            plugin_id=plugin_id))
+        # 钩子只在**产出可用**的终态发。v1 只有 `task_completed` 这一个 kind
+        # （protocols.py），钩子收到它就等于「任务成功了，去写 sidecar / 触发
+        # 后续导出」——发给 failed 是在骗它，发给 pending_decision 是提前
+        # （产物还没出，用户还没决定）。两条 failed 路径（返回值不合法、run()
+        # 抛异常）因此行为一致：都不发。
+        if status in SUCCESSFUL_STATE_VALUES:
+            registry.dispatch_event(TaskEvent(
+                kind='task_completed', pipeline=_PIPELINE, task_id=task_id,
+                plugin_id=plugin_id))
 
     @staticmethod
     def _status_for(outcome) -> str:
@@ -393,14 +441,19 @@ class PluginTaskManager:
     def _make_progress_callback(self, task_id: int):
         """`ctx.progress()` 的落地：计数落库 + 节流广播。
 
-        完成那一发（done >= total）必发，其余按 2Hz 上限节流——与核心管线
+        完成那一发必发，其余按 2Hz 上限节流——与核心管线
         `PROGRESS_EMIT_MIN_INTERVAL` 同一口径。
+
+        「完成」的判据必须带 `total > 0`：调用方是第三方代码，`progress(0, 0)`
+        （总量还没算出来时的自然写法）在 `done >= total` 下恒为真，节流会整个
+        失效，每一次调用换来一次写库加一次广播。
         """
         state = {'last': float('-inf')}
 
         def emit_progress(done, total, phase=''):
             now = time.monotonic()
-            if (done < total
+            final = total > 0 and done >= total
+            if (not final
                     and now - state['last'] < _PROGRESS_EMIT_MIN_INTERVAL):
                 return
             state['last'] = now
@@ -552,22 +605,32 @@ class PluginTaskManager:
             conn.commit()
         finally:
             conn.close()
+        # 先落 gap_decision 再 start：不是原子的，`start_task` 若因并发改状态
+        # 抛 ValueError，库里会留下一条「已接受缺块但没跑」的行。**有意不回滚**
+        # ——回滚会把用户刚做的决定丢掉，而留着的这一行是幂等的：状态仍是
+        # pending_decision，用户再按一次就接着跑，`_gap_accepted` 已经在里面了。
         self.start_task(task_id)
 
     # ------------------------------------------------------------ 删除与恢复
 
     def delete_task(self, task_id: int, delete_files: bool = False):
-        """删除即取消：先置停止标志，再走四条管线共用的删除实现。"""
+        """删除即取消：先置停止标志，再走四条管线共用的删除实现。
+
+        行不存在**不抛**，返回 `row_deleted=False` 的 DeleteOutcome——四条核心
+        管线的删除路由都是靠这个字段翻 404 的（`dem_api.py:132-133`），这里改抛
+        KeyError 等于让 T8 单独为插件写一套 try/except。`delete_task_row` 自己
+        有一道「行本来就不存在时一片磁盘都不能碰」的闸，产物目录算不出来时传
+        None 正合它的语义。
+        """
         from src.services.task_deletion import delete_task_row
         task_id = int(task_id)
         row = self.get_task(task_id)
-        if row is None:
-            raise KeyError(f'插件任务不存在：{task_id}')
         with self._state_lock:
             flag = self.stop_flags.get(task_id)
             if flag is not None:
                 flag.set()
-        artifact_dir = self._task_output_dir(row) if delete_files else None
+        artifact_dir = (self._task_output_dir(row)
+                        if delete_files and row is not None else None)
         return delete_task_row(manager=self, task_id=task_id, table=_TABLE,
                                artifact_dir=artifact_dir)
 
