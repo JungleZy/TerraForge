@@ -9,11 +9,13 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Tuple
+from typing import Any, Mapping, Sequence, Tuple
 
 _ID_RE = re.compile(r'^[a-z][a-z0-9_\-]{0,63}$')
 _CAPABILITIES = frozenset({'sources', 'pipeline', 'exporter', 'hook'})
 _PERMISSIONS = frozenset({'network', 'filesystem', 'subprocess'})
+_WIN_DRIVE_RE = re.compile(r'^[A-Za-z]:')
+_PATH_SEP_RE = re.compile(r'[/\\]')
 
 
 class ManifestError(ValueError):
@@ -41,6 +43,31 @@ def current_abi_tag() -> str:
             f'-{sys.platform}-{platform.machine() or "unknown"}')
 
 
+def _str_tuple(value: Any, field: str) -> Tuple[str, ...]:
+    """把清单里的字符串数组字段收成 tuple。类型不对一律 ManifestError:
+    字符串自己就可迭代,放过去会被逐字符拆开(assets = "panel.js" 会变成 8 个
+    单字符资产,静悄悄污染白名单),所以 str/bytes 必须当错误拦掉。"""
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ManifestError(
+            f'{field} 必须是字符串数组，实际是 {type(value).__name__}')
+    return tuple(str(v) for v in value)
+
+
+def _reject_escaping_asset(a: str) -> None:
+    """资产服务路由拿 ui.assets 当白名单,这是第一道门:绝对路径与 .. 一律拒。
+
+    不能用 pathlib 判 —— Linux 上的 Path 不认 Windows 语义,`..\\evil.js` 和
+    `C:/evil.js` 都会被当成一个普通文件名放过去。所以按两种分隔符自己切,
+    并显式认盘符与 UNC 前缀。
+    """
+    if a.startswith('/') or a.startswith('\\') or _WIN_DRIVE_RE.match(a):
+        raise ManifestError(f'ui.assets 不许用绝对路径：{a!r}')
+    if '..' in _PATH_SEP_RE.split(a):
+        raise ManifestError(f'ui.assets 不许越出插件目录：{a!r}')
+
+
 def manifest_from_dict(d: Mapping) -> PluginManifest:
     if not isinstance(d, Mapping):
         raise ManifestError('manifest must be a table/dict')
@@ -53,19 +80,22 @@ def manifest_from_dict(d: Mapping) -> PluginManifest:
     api_version = str(d.get('api_version') or '').strip()
     if not name or not version or not api_version:
         raise ManifestError('name / version / api_version 均必填')
-    caps = tuple(str(c) for c in (d.get('capabilities') or ()))
+    caps = _str_tuple(d.get('capabilities'), 'capabilities')
     unknown = set(caps) - _CAPABILITIES
     if unknown:
         raise ManifestError(f'未知 capabilities：{sorted(unknown)}')
-    perms = tuple(str(p) for p in (d.get('permissions') or ()))
+    perms = _str_tuple(d.get('permissions'), 'permissions')
     bad_perms = set(perms) - _PERMISSIONS
     if bad_perms:
         raise ManifestError(f'未知 permissions：{sorted(bad_perms)}')
-    ui = d.get('ui') or {}
-    assets = tuple(str(a) for a in (ui.get('assets') or ()))
+    ui = d.get('ui')
+    if ui is None:
+        ui = {}
+    if not isinstance(ui, Mapping):
+        raise ManifestError(f'ui 必须是 table，实际是 {type(ui).__name__}')
+    assets = _str_tuple(ui.get('assets'), 'ui.assets')
     for a in assets:
-        if a.startswith('/') or '..' in Path(a).parts:
-            raise ManifestError(f'ui.assets 不许越出插件目录：{a!r}')
+        _reject_escaping_asset(a)
     return PluginManifest(
         plugin_id=pid, name=name, version=version, api_version=api_version,
         capabilities=caps, entry=str(d.get('entry') or 'plugin.py'),
