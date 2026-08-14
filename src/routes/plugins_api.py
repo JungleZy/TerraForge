@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -31,6 +32,74 @@ _TRUTHY = ('1', 'true', 'yes')
 
 def _flag(name: str) -> bool:
     return (request.args.get(name) or '').lower() in _TRUTHY
+
+
+#: 允许出到浏览器的任务列。**白名单而不是黑名单**：plugin_tasks 将来加列时，
+#: 默认是「不外发」而不是「自动泄漏」。少的两列各有理由：
+#: - `params_json` —— 见 `_public_params`，凭据就藏在里面。
+#: - `region_json` —— 四至已经在 north/south/east/west 里，前端画历史区域用的
+#:   是那四个数；整份 RegionSpec（多部件 + 孔洞）没有消费者，给了就是白传。
+#:   T10 面板真要回显原始区域时再加，那时它是一次有理由的白名单变更。
+_TASK_PUBLIC_COLUMNS = (
+    'id', 'plugin_id', 'name', 'status',
+    'north', 'south', 'east', 'west', 'zoom_min', 'zoom_max',
+    'output_path',
+    'total_items', 'downloaded_items', 'failed_items',
+    'gap_tiles', 'gap_decision', 'total_running_seconds',
+    'created_at', 'started_at', 'completed_at', 'error_message',
+)
+
+
+def _public_params(plugin_id: str, params_json: str):
+    """任务参数里可以给前端看的那部分；拿不到 schema 时返回 None（整个不给）。
+
+    为什么必须过滤：`ParamSpec.type` 允许 `'credential'`，而 `create_task` 把
+    整份参数原样落进 `params_json`（`task_manager.py:141-150` 的注释说明了为什么
+    它不能在落库时剥——剥了插件重跑时就读不到值）。约束因此落在**序列化这一层**：
+    凭据的口径是「不进哈希、不进日志、不进任务行」（credentials.py），一路吐到
+    浏览器是这条口径最直接的破法。T12（天地图源插件，`credential_key='token'`）
+    落地那一刻就会真的踩到。
+
+    白名单口径是「插件自己声明、且不是凭据的键」：
+    - 声明过 → 是插件的表单字段，前端本来就是照 `/<pid>/schema` 渲染它们的；
+    - `type == 'credential'` → 一律剔除；
+    - 宿主键（name/bbox/output_path/zoom_*）不在这里给 —— 它们已经是任务列了，
+      同一个值出两份只会让前端有两个真相来源。
+
+    schema 拿不到（插件卸载了、加载失败、`params_schema()` 自己抛了）就返回
+    None：宁可前端少一块回显，也不能在「不知道哪个键是凭据」的情况下猜着给。
+    用 `get_record().definition` 而不是 `registry.get_pipeline()`：插件被**禁用**
+    时定义仍在，任务详情不该因为顺手禁了个插件就少半个页面。
+    """
+    record = registry.get_record(plugin_id)
+    definition = record.definition if record is not None else None
+    pipeline = getattr(definition, 'pipeline', None)
+    if pipeline is None:
+        return None
+    try:
+        specs = pipeline.params_schema().specs
+    except Exception as e:
+        logger.warning('插件 %s 的参数 schema 不可用，任务参数整份不外发：%r',
+                       plugin_id, e)
+        return None
+    visible = {s.key for s in specs if s.type != 'credential'}
+    try:
+        stored = json.loads(params_json or '{}')
+    except ValueError:
+        return None
+    if not isinstance(stored, dict):
+        return None
+    return {k: v for k, v in stored.items() if k in visible}
+
+
+def _public_task(row: dict) -> dict:
+    """任务行 → 给浏览器的 dict。唯一的出口，两个读端点都走它。"""
+    out = {k: row.get(k) for k in _TASK_PUBLIC_COLUMNS}
+    params = _public_params(row.get('plugin_id') or '',
+                            row.get('params_json') or '{}')
+    if params is not None:
+        out['params'] = params
+    return out
 
 
 @plugins_bp.route('', methods=['GET'])
@@ -118,6 +187,11 @@ def create_plugin_task(pid):
     if not isinstance(payload, dict):
         return jsonify({'error': 'body must be a JSON object'}), 400
     manager = get_plugin_task_manager()
+    # `auto_start` 是**请求**上的动作开关，不是任务参数：留在 body 里喂给
+    # `create_task` 会被插件 schema 的未知键闸门判成「参数非法」（实测
+    # `400 参数非法：auto_start=unknown param`——这个键在修之前压根用不了），
+    # 而且它还会跟着 params_json 落库，重跑时变成一个没人解释的残留键。
+    auto_start = bool(payload.pop('auto_start', False))
     try:
         tid = manager.create_task(pid, payload)
     except KeyError as e:
@@ -125,16 +199,28 @@ def create_plugin_task(pid):
         return jsonify({'error': str(e)}), 404
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
-    if payload.get('auto_start'):
-        manager.start_task(tid)
-    return jsonify({'success': True, 'task_id': tid})
+    payload_out = {'success': True, 'task_id': tid}
+    if auto_start:
+        # 起不起来与建没建成是两件事。任务行**已经建好了**，把整个请求判成失败
+        # 会让用户以为什么都没发生，而盘上／库里多了一条 pending 任务；插件正好
+        # 在这两步之间被禁用（另一个标签页点了 /disable）就是这条路。
+        # 所以：200 + task_id 照给，另附 started/start_error 让前端提示
+        # 「已创建，但启动失败：<原因>」。
+        try:
+            manager.start_task(tid)
+            payload_out['started'] = True
+        except (KeyError, ValueError) as e:
+            logger.warning('插件任务 %s 创建成功但自动启动失败：%r', tid, e)
+            payload_out['started'] = False
+            payload_out['start_error'] = str(e)
+    return jsonify(payload_out)
 
 
 @plugins_bp.route('/tasks', methods=['GET'])
 def list_plugin_tasks():
+    tasks = get_plugin_task_manager().list_tasks(_flag('active'))
     return jsonify({'success': True,
-                    'tasks': get_plugin_task_manager().list_tasks(
-                        _flag('active'))})
+                    'tasks': [_public_task(t) for t in tasks]})
 
 
 @plugins_bp.route('/tasks/<int:tid>', methods=['GET'])
@@ -142,7 +228,7 @@ def get_plugin_task(tid):
     task = get_plugin_task_manager().get_task(tid)
     if task is None:
         return jsonify({'error': '任务不存在'}), 404
-    return jsonify({'success': True, 'task': task})
+    return jsonify({'success': True, 'task': _public_task(task)})
 
 
 @plugins_bp.route('/tasks/<int:tid>/start', methods=['POST'])
@@ -159,10 +245,21 @@ def start_plugin_task(tid):
 
 @plugins_bp.route('/tasks/<int:tid>/gaps', methods=['GET'])
 def plugin_task_gaps(tid):
+    """缺块摘要：总数、按结局分类计数、当前决策。
+
+    总数与决策从任务行取（`gap_tiles` 由 `TaskContext` 的记账维护，
+    `gap_decision` 是 accept 之后的那一笔）——`gap_summary()` 只回分类计数，
+    而一个只有分类没有总数的摘要要前端自己求和，两处口径迟早对不上。
+    比瓦片管线的 `/gaps` 少 `explained` / `samples` 两项，README 已照实写。
+    """
     manager = get_plugin_task_manager()
-    if manager.get_task(tid) is None:
+    row = manager.get_task(tid)
+    if row is None:
         return jsonify({'error': '任务不存在'}), 404
-    return jsonify({'success': True, **manager.gap_summary(tid)})
+    return jsonify({'success': True,
+                    'gap_tiles': row['gap_tiles'] or 0,
+                    'gap_decision': row['gap_decision'] or '',
+                    **manager.gap_summary(tid)})
 
 
 @plugins_bp.route('/tasks/<int:tid>/accept-gaps', methods=['POST'])
@@ -213,6 +310,29 @@ def delete_plugin_task(tid):
     return jsonify(payload)
 
 
+def _export_dest(source, fmt: str) -> Path:
+    """导出目标路径：源产物的同级，加上目标格式的后缀。
+
+    **不能直接 `with_suffix`**，它替换的是「最后一个点之后的东西」，而产物名里
+    的点未必是扩展名：
+    - `城区 2024.06`（按月份命名的成果目录）→ `城区 2024.gpkg`，月份没了，
+      同一年的两个月份导出**互相覆盖**；
+    - `dem_v1.5` → `dem_v1.gpkg`，版本号没了，同上；
+    - 源本身就是 `.gpkg` 而目标也是 gpkg → 目标**等于源**，导出器写在自己的
+      输入上。
+
+    所以只在「现有后缀正是生产者自己声明的那个格式」时才替换 —— 那种情况下它
+    确实是扩展名（`a.tif` + `fmt='tif'` → `a.gpkg`）—— 其余一律追加，宁可
+    `城区 2024.06.gpkg` 有点长，也不许丢名字或撞源文件。声明格式与目标格式相同
+    时也追加，否则又回到「目标等于源」。
+    """
+    src = Path(source.path)
+    declared = f'.{source.fmt.lower()}' if source.fmt else ''
+    if declared and declared != f'.{fmt}' and src.suffix.lower() == declared:
+        return src.with_suffix(f'.{fmt}')
+    return src.with_name(f'{src.name}.{fmt}')
+
+
 @plugins_bp.route('/export/<int:tid>', methods=['POST'])
 def export_plugin_task(tid):
     payload = request.get_json(silent=True) or {}
@@ -233,7 +353,7 @@ def export_plugin_task(tid):
     if not artifacts:
         return jsonify({'error': '该任务没有可由此格式导出的产物'}), 400
     source = artifacts[0]
-    dest = Path(source.path).with_suffix(f'.{fmt}')
+    dest = _export_dest(source, fmt)
     ctx = ExportContext(
         task_id=tid,
         log=lambda msg, level='info': logger.info('[export:%s] %s', fmt, msg),

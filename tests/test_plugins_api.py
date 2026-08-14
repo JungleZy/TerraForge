@@ -9,7 +9,58 @@
 查注册表，不需要重造 app。
 """
 
+import json
+import time
+
 import pytest
+
+#: 带 schema（含一个 credential 参数）、缺块决策与导出器的假插件。
+#: 刻意与 `fake` 分居两个插件根：`fake` 的用例断言 `sources == []` /
+#: `supported_formats == []` / schema 为空，装在同一个根里会把它们全部弄红。
+RICH_PLUGIN = '''
+from pathlib import Path
+from src.contracts.artifact import Artifact, ArtifactKind
+from src.contracts.outcome import TileOutcome
+from src.plugins.protocols import (ParamSchema, ParamSpec, PluginDefinition,
+                                   PluginOutcome)
+
+
+class P:
+    def params_schema(self):
+        return ParamSchema((
+            ParamSpec(key='token', type='credential', label='密钥',
+                      required=False),
+            ParamSpec(key='depth', type='int', label='深度', default=3,
+                      required=False, min=1, max=9),
+        ))
+
+    def estimate(self, params, region):
+        return None
+
+    def run(self, ctx):
+        if ctx.params.get('_gap_accepted'):
+            return PluginOutcome.COMPLETED_WITH_GAPS
+        ctx.record_tile_outcome(5, 2, 2, TileOutcome.RETRYABLE_FAILURE, 'boom')
+        ctx.record_tile_outcome(5, 2, 3, TileOutcome.NO_DATA)
+        return PluginOutcome.PENDING_DECISION
+
+
+class E:
+    def format_id(self):
+        return 'gpkg'
+
+    def accepts(self, kind):
+        return True
+
+    def export(self, artifact, dest, ctx):
+        Path(dest).write_bytes(b'gpkg')
+        return Artifact(pipeline='plugin', task_id=artifact.task_id,
+                        kind=ArtifactKind.MBTILES, path=str(dest), fmt='gpkg')
+
+
+def register():
+    return PluginDefinition(pipeline=P(), exporters=(E(),))
+'''
 
 
 def _install_fake(tmp_path, monkeypatch):
@@ -48,6 +99,50 @@ def fake_client(isolated_app, tmp_path, monkeypatch):
     registry = _install_fake(tmp_path, monkeypatch)
     yield isolated_app.app.test_client(), registry
     registry.reset_for_tests()
+
+
+def _install_rich(tmp_path, monkeypatch):
+    """RICH_PLUGIN 单独占一个插件根，返回 registry。"""
+    from src.plugins import registry
+
+    root = tmp_path / 'plugins_rich'
+    monkeypatch.setattr(registry, '_plugins_root', lambda: root)
+    d = root / 'rich'
+    d.mkdir(parents=True)
+    (d / 'plugin.toml').write_text(
+        'id="rich"\nname="富插件"\nversion="0.1"\napi_version="1"\n'
+        'capabilities=["pipeline","exporter"]\n', encoding='utf-8')
+    (d / 'plugin.py').write_text(RICH_PLUGIN, encoding='utf-8')
+    registry.reset_for_tests()
+    registry.load_all()
+    return registry
+
+
+@pytest.fixture
+def rich_client(isolated_app, tmp_path, monkeypatch):
+    registry = _install_rich(tmp_path, monkeypatch)
+    client = isolated_app.app.test_client()
+    client.post('/api/plugins/rich/enable')
+    yield client, registry
+    registry.reset_for_tests()
+
+
+def _create(client, tmp_path, **extra):
+    body = {'name': 'r', 'bbox': [40.0, 30.0, 117.0, 116.0],
+            'output_path': str(tmp_path / 'out'), **extra}
+    resp = client.post('/api/plugins/rich/tasks', json=body)
+    assert resp.status_code == 200, resp.get_json()
+    return resp.get_json()
+
+
+def _wait_status(client, tid, wanted, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        task = client.get(f'/api/plugins/tasks/{tid}').get_json()['task']
+        if task['status'] in wanted:
+            return task
+        time.sleep(0.02)
+    raise AssertionError(f'任务 {tid} 没有到达 {wanted}，停在 {task["status"]}')
 
 
 def test_plugins_list_and_enable(fake_client):
@@ -244,3 +339,186 @@ def test_sources_and_export_formats(fake_client):
     resp = client.post('/api/plugins/export/1', json={'format': 'nope'})
     assert resp.status_code == 400
     assert resp.get_json()['supported_formats'] == []
+
+
+def test_task_json_never_carries_credential_params(rich_client, tmp_path):
+    """凭据参数不许出到浏览器，两个读端点都不许。
+
+    `create_task` 把整份 params 原样落进 `params_json`（task_manager.py:141-150
+    解释了为什么它不能在落库时剥——剥了插件重跑就读不到值），约束因此落在序列化
+    这一层。`ParamSpec.type == 'credential'` 的键一律剔除，其余照给：前端本来就
+    照 `/<pid>/schema` 渲染这些字段，回显是它的正当需求。
+
+    T12（天地图源插件，`credential_key='token'`）落地那一刻这条就是真泄漏。
+    """
+    client, _registry = rich_client
+    tid = _create(client, tmp_path, token='SECRET-TOKEN', depth=5)['task_id']
+
+    task = client.get(f'/api/plugins/tasks/{tid}').get_json()['task']
+    assert 'params_json' not in task
+    assert task['params'] == {'depth': 5}, task['params']
+    assert task['plugin_id'] == 'rich' and task['status'] == 'pending'
+    # 整份响应体里都不许出现那个值（换个字段名藏着也不行）。
+    raw = client.get(f'/api/plugins/tasks/{tid}').get_data(as_text=True)
+    assert 'SECRET-TOKEN' not in raw
+
+    listed = client.get('/api/plugins/tasks').get_data(as_text=True)
+    assert 'SECRET-TOKEN' not in listed and 'params_json' not in listed
+    assert json.loads(listed)['tasks'][0]['params'] == {'depth': 5}
+
+    # 前端确实要的那些字段照给（不能因为剥字段把详情页剥空）。
+    for key in ('id', 'name', 'north', 'south', 'east', 'west', 'output_path',
+                'downloaded_items', 'total_items', 'gap_tiles', 'gap_decision',
+                'created_at', 'error_message'):
+        assert key in task, key
+
+
+def test_task_params_withheld_when_schema_unavailable(rich_client, tmp_path):
+    """schema 拿不到就整份 params 不给：不知道哪个键是凭据时不许猜着给。"""
+    client, registry = rich_client
+    tid = _create(client, tmp_path, token='SECRET-TOKEN', depth=5)['task_id']
+    registry.reset_for_tests()          # 插件卸载了，任务行还在
+
+    task = client.get(f'/api/plugins/tasks/{tid}').get_json()['task']
+    assert 'params' not in task
+    assert task['plugin_id'] == 'rich' and task['status'] == 'pending'
+
+
+def test_auto_start_failure_keeps_the_created_task(rich_client, tmp_path,
+                                                   monkeypatch):
+    """auto_start 起不起来 ≠ 创建失败。
+
+    真实路径：另一个标签页在 create 与 start 之间点了 /disable，`start_task`
+    抛 ValueError。原来没包 try → 500，而任务行**已经建好了**：用户以为什么都
+    没发生，库里多一条 pending 任务。这里用「第二次 get_pipeline 返回 None」
+    把那个交错稳定复现（HTTP 层没法插进两步之间）。
+    """
+    from src.plugins import registry as registry_mod
+
+    client, _registry = rich_client
+    real = registry_mod.get_pipeline
+    calls = {'n': 0}
+
+    def flaky(plugin_id):
+        calls['n'] += 1
+        return real(plugin_id) if calls['n'] == 1 else None
+
+    monkeypatch.setattr(registry_mod, 'get_pipeline', flaky)
+
+    body = _create(client, tmp_path, auto_start=True)
+    assert body['started'] is False
+    assert '未启用' in body['start_error'] or '加载失败' in body['start_error']
+
+    monkeypatch.setattr(registry_mod, 'get_pipeline', real)
+    task = client.get(f"/api/plugins/tasks/{body['task_id']}").get_json()['task']
+    assert task['status'] == 'pending', '行必须还在，且没被翻成 running'
+
+
+def test_auto_start_success_reports_started(rich_client, tmp_path):
+    client, _registry = rich_client
+    body = _create(client, tmp_path, auto_start=True)
+    assert body['started'] is True
+    _wait_status(client, body['task_id'], ('pending_decision',))
+
+
+def test_start_gaps_accept_gaps_over_http(rich_client, tmp_path):
+    """§13-3 的决策流全程走 HTTP：start → gaps → accept-gaps。
+
+    管理器层已有用例，这里盯的是路由：三条端点原来一条 HTTP 层覆盖都没有。
+    """
+    client, _registry = rich_client
+    tid = _create(client, tmp_path)['task_id']
+
+    assert client.post(f'/api/plugins/tasks/{tid}/start').get_json()['success']
+    _wait_status(client, tid, ('pending_decision', 'failed'))
+    gaps = client.get(f'/api/plugins/tasks/{tid}/gaps').get_json()
+    assert gaps['success'] and gaps['task_id'] == tid
+    # 总数从任务行来、分类计数从稀疏表来，两处必须对得上。
+    assert gaps['gap_tiles'] == 2
+    # no_data 是上游明确说过没有，不算失败——两者必须分得开。
+    assert gaps['by_outcome'] == {'retryable_failure': 1, 'no_data': 1}
+    assert gaps['gap_decision'] == ''
+
+    assert client.post(
+        f'/api/plugins/tasks/{tid}/accept-gaps').get_json()['success']
+    task = _wait_status(client, tid, ('completed_with_gaps', 'failed'))
+    assert task['status'] == 'completed_with_gaps', task['error_message']
+    assert task['gap_decision'] == 'accept'
+
+    # 不存在的任务：三条统一 404（与 GET /tasks/<tid> 同一档，不混进 400）。
+    assert client.get('/api/plugins/tasks/999999/gaps').status_code == 404
+    assert client.post('/api/plugins/tasks/999999/start').status_code == 404
+    assert client.post(
+        '/api/plugins/tasks/999999/accept-gaps').status_code == 404
+
+
+def test_export_keeps_dotted_artifact_name(rich_client, tmp_path):
+    """导出目标不许把产物名里的点当扩展名切掉。
+
+    `Path('城区 2024.06').with_suffix('.gpkg')` → `城区 2024.gpkg`：月份没了，
+    同一年两个月份的导出互相覆盖。产物名里的点未必是扩展名。
+    """
+    from src.contracts.artifact import Artifact, ArtifactKind
+    from src.services import artifact_store
+
+    client, _registry = rich_client
+    tid = _create(client, tmp_path)['task_id']
+    src_dir = tmp_path / 'out' / f'plugin_task_{tid}'
+    src_dir.mkdir(parents=True)
+    source = src_dir / '城区 2024.06'
+    source.mkdir()
+    artifact_store.record_artifact(Artifact(
+        pipeline='plugin', task_id=tid, kind=ArtifactKind.XYZ_DIR,
+        path=str(source)))
+
+    body = client.post(f'/api/plugins/export/{tid}',
+                       json={'format': 'gpkg'}).get_json()
+    assert body['success'], body
+    assert body['path'] == str(src_dir / '城区 2024.06.gpkg')
+    assert (src_dir / '城区 2024.06.gpkg').is_file()
+    assert source.is_dir(), '源产物一个字节都不该被动'
+    # 导出的成品也进登记，否则删任务时它是孤儿文件。
+    assert str(src_dir / '城区 2024.06.gpkg') in {
+        a.path for a in artifact_store.list_artifacts('plugin', tid)}
+
+
+def test_export_does_not_overwrite_a_same_format_source(rich_client, tmp_path):
+    """源已经是目标格式时，目标不许等于源——那是让导出器写在自己的输入上。"""
+    from src.contracts.artifact import Artifact, ArtifactKind
+    from src.services import artifact_store
+
+    client, _registry = rich_client
+    tid = _create(client, tmp_path)['task_id']
+    src_dir = tmp_path / 'out' / f'plugin_task_{tid}'
+    src_dir.mkdir(parents=True)
+    source = src_dir / 'result.gpkg'
+    source.write_bytes(b'original')
+    artifact_store.record_artifact(Artifact(
+        pipeline='plugin', task_id=tid, kind=ArtifactKind.MBTILES,
+        path=str(source), fmt='gpkg'))
+
+    body = client.post(f'/api/plugins/export/{tid}',
+                       json={'format': 'gpkg'}).get_json()
+    assert body['success'], body
+    assert body['path'] != str(source)
+    assert source.read_bytes() == b'original'
+
+
+def test_export_replaces_a_real_extension(rich_client, tmp_path):
+    """后缀确实是生产者声明的那个格式时才替换：`a.tif` + tif → `a.gpkg`。"""
+    from src.contracts.artifact import Artifact, ArtifactKind
+    from src.services import artifact_store
+
+    client, _registry = rich_client
+    tid = _create(client, tmp_path)['task_id']
+    src_dir = tmp_path / 'out' / f'plugin_task_{tid}'
+    src_dir.mkdir(parents=True)
+    source = src_dir / 'dem.tif'
+    source.write_bytes(b'tif')
+    artifact_store.record_artifact(Artifact(
+        pipeline='plugin', task_id=tid, kind=ArtifactKind.GEOTIFF,
+        path=str(source), fmt='tif'))
+
+    body = client.post(f'/api/plugins/export/{tid}',
+                       json={'format': 'gpkg'}).get_json()
+    assert body['path'] == str(src_dir / 'dem.gpkg'), body

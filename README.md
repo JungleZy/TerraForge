@@ -249,11 +249,11 @@ map-download/
 - `GET|PUT /api/plugins/<id>/config` - 读 / 写插件配置。写入先过插件自己声明的 `config_schema()`，不合法回 400 与逐键的 `errors`
 - `GET /api/plugins/sources` - 全部**已启用**插件提供的数据源。凭据只出键名不出值
 - `GET /api/plugins/<id>/schema` - 声明式任务表单的参数 schema（`key`/`type`/`label`/`default`/`required`/`min`/`max`/`choices`），是前端渲染表单的唯一数据源。没有管线能力或插件被禁用时回空数组，不是 404
-- `POST /api/plugins/<id>/tasks` - 创建插件任务。Body 含 `bbox`（`[north, south, east, west]`）/ `output_path` / `name` / `auto_start`，其余键交给插件 schema 校验。插件不可用回 404，参数非法回 400
+- `POST /api/plugins/<id>/tasks` - 创建插件任务。Body 含 `bbox`（`[north, south, east, west]`）/ `output_path` / `name` / `auto_start`，其余键交给插件 schema 校验。插件不可用回 404，参数非法回 400。`auto_start` 为真时响应多两个字段：`started`，以及启动失败时的 `start_error` —— 任务**已经建好了**，只是没起来（插件正好在这两步之间被禁用就是这条路），所以不判整个请求失败
 - `GET /api/plugins/tasks?active=1` - 插件任务列表，`active=1` 只要进行中的
 - `GET /api/plugins/tasks/<id>` - 插件任务详情
 - `POST /api/plugins/tasks/<id>/start` - 启动插件任务。幂等；插件任务没有断点续跑，一次 start 就是完整重跑一遍
-- `GET /api/plugins/tasks/<id>/gaps` - 缺块摘要（总数、分类计数、决策与样例格子），口径与瓦片管线的 `/gaps` 一致
+- `GET /api/plugins/tasks/<id>/gaps` - 缺块摘要：总数（`gap_tiles`）、按 `TileOutcome` 分类计数（`by_outcome`）与当前决策（`gap_decision`）。比瓦片管线的 `/gaps` 少 `explained` 与样例格子两项
 - `POST /api/plugins/tasks/<id>/accept-gaps` - 接受缺块并重跑收尾。成果与历史**永久带缺块标记**
 - `DELETE /api/plugins/tasks/<id>` - 删除插件任务（`?delete_files=1` 同时清理磁盘产物）。不带该参数时产物目录会被登记进 `retained_outputs`，响应里多一个 `files_retained_path` —— 用户选择保留文件，一个字节都不动，但那个目录必须留下一条 DB 引用
 - `POST /api/plugins/export/<id>` - 按格式导出插件任务产物，Body `{"format": "gpkg"}`。格式来自已启用插件注册的 Exporter；未知格式回 400 并给出 `supported_formats`
