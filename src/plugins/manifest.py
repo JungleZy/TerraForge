@@ -14,7 +14,7 @@ from typing import Any, Mapping, Sequence, Tuple
 _ID_RE = re.compile(r'^[a-z][a-z0-9_\-]{0,63}$')
 _CAPABILITIES = frozenset({'sources', 'pipeline', 'exporter', 'hook'})
 _PERMISSIONS = frozenset({'network', 'filesystem', 'subprocess'})
-_WIN_DRIVE_RE = re.compile(r'^[A-Za-z]:')
+_SAFE_SEG_RE = re.compile(r'^[A-Za-z0-9._\-]+$')
 _PATH_SEP_RE = re.compile(r'[/\\]')
 
 
@@ -55,17 +55,26 @@ def _str_tuple(value: Any, field: str) -> Tuple[str, ...]:
     return tuple(str(v) for v in value)
 
 
-def _reject_escaping_asset(a: str) -> None:
-    """资产服务路由拿 ui.assets 当白名单,这是第一道门:绝对路径与 .. 一律拒。
+def _reject_escaping_path(value: str, field: str) -> None:
+    """路径字段只许「插件目录内的相对路径」——写成允许清单,不是拒绝清单。
 
-    不能用 pathlib 判 —— Linux 上的 Path 不认 Windows 语义,`..\\evil.js` 和
-    `C:/evil.js` 都会被当成一个普通文件名放过去。所以按两种分隔符自己切,
-    并显式认盘符与 UNC 前缀。
+    资产路由拿 ui.assets 当白名单,加载器拿 entry 当要 import 的文件,两个都是
+    第一道门。拒绝清单补不完:绝对路径、盘符、UNC、`..\\`、`~`、`http://`、
+    尾随空格的 `.. /`、`....//`、空串 —— 每一类都得单独一条分支,漏一条就是一个
+    洞(前两轮就是这么漏的)。所以反过来写:按两种分隔符切段,每段必须是安全字符
+    组成的非空段且不是纯点号段,其余一律拒。
+
+    这只是声明期检查。真正的落地检查(resolve() + 目录包含判断)必须由资产路由和
+    加载器在请求期/加载期再做一次 —— 符号链接、大小写不敏感文件系统、URL 编码的
+    %2e%2e 都不在清单层的视野里。
     """
-    if a.startswith('/') or a.startswith('\\') or _WIN_DRIVE_RE.match(a):
-        raise ManifestError(f'ui.assets 不许用绝对路径：{a!r}')
-    if '..' in _PATH_SEP_RE.split(a):
-        raise ManifestError(f'ui.assets 不许越出插件目录：{a!r}')
+    if not value:
+        raise ManifestError(f'{field} 不许为空')
+    for seg in _PATH_SEP_RE.split(value):
+        if not _SAFE_SEG_RE.match(seg) or seg.strip('.') == '':
+            raise ManifestError(
+                f'{field} 只许插件目录内的相对路径（每段限字母/数字/点/下划线/'
+                f'中划线，不许空段、纯点号段、空白、盘符或协议前缀）：{value!r}')
 
 
 def manifest_from_dict(d: Mapping) -> PluginManifest:
@@ -75,11 +84,13 @@ def manifest_from_dict(d: Mapping) -> PluginManifest:
     if not _ID_RE.match(pid):
         raise ManifestError(
             f'非法插件 id：{pid!r}（小写字母/数字/中划线/下划线，字母开头）')
-    name = str(d.get('name') or '').strip()
-    version = str(d.get('version') or '').strip()
-    api_version = str(d.get('api_version') or '').strip()
-    if not name or not version or not api_version:
-        raise ManifestError('name / version / api_version 均必填')
+    fields = {k: str(d.get(k) or '').strip()
+              for k in ('name', 'version', 'api_version')}
+    missing = [k for k, v in fields.items() if not v]
+    if missing:
+        raise ManifestError(f'必填字段为空：{missing}')
+    name, version, api_version = (fields['name'], fields['version'],
+                                  fields['api_version'])
     caps = _str_tuple(d.get('capabilities'), 'capabilities')
     unknown = set(caps) - _CAPABILITIES
     if unknown:
@@ -95,10 +106,12 @@ def manifest_from_dict(d: Mapping) -> PluginManifest:
         raise ManifestError(f'ui 必须是 table，实际是 {type(ui).__name__}')
     assets = _str_tuple(ui.get('assets'), 'ui.assets')
     for a in assets:
-        _reject_escaping_asset(a)
+        _reject_escaping_path(a, 'ui.assets')
+    entry = str(d.get('entry') or 'plugin.py')
+    _reject_escaping_path(entry, 'entry')
     return PluginManifest(
         plugin_id=pid, name=name, version=version, api_version=api_version,
-        capabilities=caps, entry=str(d.get('entry') or 'plugin.py'),
+        capabilities=caps, entry=entry,
         requires_abi=str(d.get('requires_abi') or ''),
         permissions=perms, ui_assets=assets,
         description=str(d.get('description') or ''))
@@ -108,6 +121,9 @@ def load_manifest_toml(path: Path) -> PluginManifest:
     try:
         with open(path, 'rb') as f:
             data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as e:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        # UnicodeDecodeError 不被前两者覆盖,必须显式列:tomllib.load() 是先
+        # b.decode() 再 parse,中文 Windows 上记事本存的 GBK plugin.toml 炸在
+        # decode 阶段。漏了它,用户看到的是一段 codec 报错而不是本模块的错误。
         raise ManifestError(f'plugin.toml 读取/解析失败：{e}') from e
     return manifest_from_dict(data)
