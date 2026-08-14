@@ -40,6 +40,11 @@ class SourceDescriptor:
 class ParamSpec:
     """声明式任务参数。type ∈ region|zoom_range|path|int|float|str|bool|enum|credential。
 
+    **有 default 时 required 永不触发**：validate_params 的判定是
+    `if spec.required and spec.default is None`（src/plugins/params.py:85-88），
+    键缺失时有 default 就直接回填。required=True + default=x 是死组合，别当
+    「必填且有预设」读。
+
     **不可哈希**：depends_on 是 dict，frozen 自动生成的 __hash__ 一调即
     TypeError。别 set(specs) / 别拿它当 dict key，去重用 .key。同理 frozen
     只冻结属性绑定，depends_on 的内容仍可被改——要缓存 schema 自己复制。
