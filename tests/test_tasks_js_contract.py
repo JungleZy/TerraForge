@@ -569,7 +569,12 @@ _PROGRESS_BAR_ELEMENT_RE = re.compile(
 
 # `class="progress"`（带结束引号）——不会误伤 progress-bar / progress-detail /
 # progress__label / progress-container。
-_PROGRESS_TRACK_ATTR_RE = re.compile(r'class="progress"')
+# 轨道按**类名 token**认，不按整个属性值认：`class="progress detail-progress"`
+# （2026-08-15：详情弹窗那条轨道的上外边距从内联 style 搬进 .detail-progress）
+# 同样是一条轨道。后视断言 `(?=[ "])` 保证不会误吃 `progress-bar` /
+# `progress__label` / `progress-container` —— 它们在 `progress` 之后跟的是
+# `-` 或 `_`，不是空格或引号。
+_PROGRESS_TRACK_ATTR_RE = re.compile(r'class="progress(?=[ "])[^"]*"')
 _PROGRESS_LABEL_ATTR_RE = re.compile(r'class="progress__label"')
 
 # 两个文件里各有几处 `.progress` 轨道模板。等号不是下限：多出来的一处大概率是

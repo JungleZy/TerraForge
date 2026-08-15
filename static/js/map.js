@@ -3948,9 +3948,12 @@ function contourPreviewPanel() {
         // overflow:hidden），而 #map 高 100% 已经吃满容器 —— 作为普通流内块
         // append 进去的话，起始位置就在容器高度之下，被完整裁掉：面板永远
         // 不可见，却照样会去拉 /api/contour/tasks。定位到左下角（避开右上角
-        // 的 .bounds-overlay 与左侧工具条）。
-        panel.className = 'contour-preview-panel';
-        // Place the panel over the map, anchored to its bottom-left corner.
+        // 的 .bounds-overlay 与左侧工具条）。定位在 .map-overlay-chip 基类上。
+        //
+        // 与右上的 .bounds-overlay、右下的 .task-preview-chip 共用
+        // .map-overlay-chip 底座（定位/玻璃底色/描边/圆角/阴影/文字色/内边距），
+        // 本类只留左下锚点、尺寸上界与滚动 —— 它是这个基类的第三个变体。
+        panel.className = 'map-overlay-chip contour-preview-panel';
         mapEl.parentNode.appendChild(panel);
     }
     return panel;
@@ -3966,23 +3969,38 @@ function updateContourPreviewButtons() {
     const rows = [];
     contourPreviewTasks.forEach((info, id) => {
         const active = contourPreviewActiveId === id;
-        const label = escapeHtml(info.name || t('js.map.contour.default_name', { id: id }));
+        // 可见文字用 `${escapeHtml(...)}` 直接铺在按钮里，不走一个中间变量：
+        // tests/test_css_contract.py 的 `_MARKUP_NOISE_RE` 把 `${…}` 一律当噪声
+        // 剥掉（只认 `${escapeHtml(` 与 `${t(` 两种「一定产出可见文字」的形态），
+        // 写成 `${label}` 会让这颗按钮被误判成**纯图标按钮**，混进那份计数。
+        const name = info.name || t('js.map.contour.default_name', { id: id });
+        // 可见文字只放任务名，动作由**按下态**表达（.active + aria-pressed，与
+        // #createPipeline 段控同一套）。整句「在地图上预览：{name}」搬进
+        // aria-label：它含可见文字本身，满足 WCAG 2.5.3 Label in Name，而读屏
+        // 用户仍然听得到这颗 chip 会做什么。两个 i18n 键一个没动。
+        const action = active
+            ? t('js.map.contour.hide_preview', { name: name })
+            : t('js.map.contour.show_preview', { name: name });
         rows.push(`
             <button type="button"
-                    class="btn btn-sm ${active ? 'btn-primary' : 'btn-outline-primary'}"
-                    style="margin: 0 6px 6px 0;"
+                    class="status-chip${active ? ' active' : ''}"
+                    aria-pressed="${active ? 'true' : 'false'}"
+                    aria-label="${escapeHtml(action)}"
                     onclick="toggleContourPreview(${id}, ${info.zoom_max || 'null'})">
-                ${active
-                    ? t('js.map.contour.hide_preview', { name: label })
-                    : t('js.map.contour.show_preview', { name: label })}
+                ${escapeHtml(name)}
             </button>
         `);
     });
+    // 底座是 .map-overlay-chip（玻璃面），行按钮是全站通用的 .status-chips /
+    // .status-chip（主题开关、强调色、语种、四条管线段控、任务状态筛选同一套）。
+    // 改前这里吐的是一个 Bootstrap `.alert.alert-info` 套 `.btn-primary` /
+    // `.btn-outline-primary`，外加内联 `margin: 0 6px 6px 0`：地图左下角浮着
+    // 一块 Bootstrap 蓝的信息框，而同一屏另外两个浮层是玻璃面 —— 上一轮系统层
+    // 收敛整个漏掉了这里。6px 也不在间距刻度上，而内联样式绕过 style.css 的
+    // 刻度扫描器，test_spacing_scale.py 从来看不到它。
     panel.innerHTML = `
-        <div class="alert alert-info" style="margin-bottom:0;">
-            <small><strong>${t('js.map.contour.panel_title')}</strong></small><br>
-            ${rows.join('')}
-        </div>
+        <div class="contour-preview-panel__title" id="contourPreviewTitle">${t('js.map.contour.panel_title')}</div>
+        <div class="status-chips" role="group" aria-labelledby="contourPreviewTitle">${rows.join('')}</div>
     `;
 }
 

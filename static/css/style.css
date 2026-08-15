@@ -1347,6 +1347,56 @@ html[lang="en"] .map-panel-triggers {
     font-size: var(--font-size-xs);
 }
 
+/* 等高线预览面板（U6，地图左下角）：`.map-overlay-chip` 的**第三个**变体。
+   底座（定位/玻璃底色/描边/圆角/阴影/文字色/内边距）全部来自基类，本类只留
+   左下锚点、尺寸上界与滚动。
+
+   ⚠️ 2026-08-15：它到今天才进这个基类。改前 map.js 直接吐一个 Bootstrap
+   `.alert.alert-info` 当底座、里面套 `.btn-primary` / `.btn-outline-primary`，
+   还带内联 `margin: 0 6px 6px 0` —— 地图左下浮着一块 Bootstrap 蓝的信息框，
+   而同一屏的另外两个浮层（右上范围、右下预览提示）是玻璃面。上一轮系统层收敛
+   （59459b1）整个漏掉了这里，因为它的样式**不在 style.css 里**：内联样式与
+   Bootstrap 类都绕过了刻度扫描器与按钮几何模型，一条断言都不会红。
+
+   父容器 .index-map 是 position:relative + overflow:hidden，而 #map 高 100%
+   已经吃满容器 —— 面板此前只设 marginTop，作为普通流内块起始位置就在容器高度
+   之下、被完整裁掉（永远不可见，却照样会去拉 /api/contour/tasks）。
+   锚到左下角：右上角是 .bounds-overlay，左侧中部是 .map-panel-triggers，
+   右下角是 .task-preview-chip。 */
+.contour-preview-panel {
+    left: 12px;
+    bottom: var(--statusbar-clearance);
+    max-width: min(320px, calc(100% - 60px));
+    max-height: 40%;
+    overflow-y: auto;
+    /* 与右上范围浮层、左上工具条标签同为 12px：都是浮在地图上的同层提示，
+       字号不一致会显得是两套东西（同 .bounds-overlay 那条理由）。 */
+    font-size: var(--font-size-xs);
+}
+
+.contour-preview-panel:empty {
+    display: none;   /* 无可预览任务时不占位、不挡地图 */
+}
+
+/* 面板标题。与表单里的 .form-group-label 同一个配方（xs + 600 + secondary），
+   但不复用它：那条带 16px 上外边距、下边框与 :first-child 复位，是为「表单里
+   一段一段的分组」调的，浮层里只有一个标题，用不上也不该继承那套间距。 */
+.contour-preview-panel__title {
+    margin-bottom: var(--space-2);
+    font-weight: var(--weight-strong);
+    color: var(--color-text-secondary);
+}
+
+/* 玻璃面上的 chip 描边要比面板里的强一档。`.status-chip` 的 --color-border
+   （暗色 7% 白）是照「坐在 bg-secondary 面板上」调的，压在模糊过的地图上几乎
+   看不见 —— 未选中的几颗会读成一片没有边界的文字。全站另一处「chip 坐在玻璃
+   面上」是 .map-search__chip（地图搜索的筛选片），它用的就是
+   --color-border-strong，这里跟它同档。只改描边：字号、内边距、圆角、选中态
+   一律继续走通用 chip，避免在浮层里再长出第二套 chip。 */
+.contour-preview-panel .status-chip {
+    border-color: var(--color-border-strong);
+}
+
 /* 非地图页（历史记录 / 配置）的内容容器：居中限宽。
    底部留出状态栏胶囊的高度 —— 这里是会滚动的页面，不留就会有内容永远压在
    胶囊底下读不到。 */
@@ -1880,6 +1930,15 @@ html[lang="en"] .map-panel-triggers {
     display: flex;
     gap: var(--space-1);
     flex: 0 0 auto;
+}
+
+/* 详情弹窗里的进度条与上面那行状态文字之间的间距。改前写成 history.js 模板里
+   的内联 `style="margin-top: 0.5rem;"` —— 0.5rem 正好是刻度上的 --space-2，
+   但内联样式不进样式表，刻度闸门看不到它（同 .task-empty / .task-load-error
+   那两处，2026-08-15 一起搬进来）。同一个 <div> 上的 `style="width: N%"`
+   留在 JS 里：那是数据，不是刻度。 */
+.detail-progress {
+    margin-top: var(--space-2);
 }
 
 /* 详情弹窗的缺口明细：总数 + 分档 + 决策按钮 + 样本行。
@@ -2556,6 +2615,30 @@ html[lang="en"] .map-panel-triggers {
     padding: var(--space-6) var(--space-4);   /* 3rem(48px) -> --space-6（32px）：间距刻度归一 2026-08-14 */
     text-align: center;
     color: var(--color-text-secondary);
+}
+
+/* 空态里那枚灰圈图标与它下面那行字。改前这三个数（透明度、图标下间距、
+   段落零外边距）写在 task_list.js 的模板字符串里 —— `style="opacity: 0.3;
+   margin-bottom: 1rem;"`。内联样式不进 style.css，本仓所有刻度闸门（本文件
+   与 tests/test_spacing_scale.py 的 blanket 断言）都只读样式表，所以那个
+   1rem 从来没被扫到过。 */
+.task-empty svg {
+    opacity: 0.3;
+    margin-bottom: var(--space-4);   /* 1rem -> --space-4（16px）：与刻度同值，只是搬进样式表 */
+}
+
+.task-empty p {
+    margin: 0;
+}
+
+/* 列表加载失败提示（.task-load-error）。改前只有 `text-center text-danger`
+   两个 Bootstrap 类 + 内联 `style="padding: 1.5rem 1rem"`，同上：那两个数
+   （24/16px，正好是刻度上的 --space-5 / --space-4）绕过了全部刻度闸门。
+   ⚠️ 结构不要动：tests/test_css_contract.py 的 `_history_error_div` 按
+   「恰好一个 <div>」从那段模板里认路去算对比度，多套一层内层 div 会把那条
+   WCAG 断言变成「本测试已失效」。 */
+.task-load-error {
+    padding: var(--space-5) var(--space-4);
 }
 
 /* 发光改用品牌色柔和版：原先硬编码 rgba(59,130,246,.x)（#3b82f6 蓝，不在
@@ -5060,25 +5143,6 @@ code {
 /* 「这个文件切不了片」与「只是提醒」必须一眼分得开 */
 .tif-info__warn--fatal {
     color: var(--color-danger);
-}
-
-/* 等高线预览面板（U6）：由 map.js contourPreviewPanel() 动态创建并 append 到
-   .index-map 里。父容器是 position:relative + overflow:hidden，而 #map 高
-   100% 已经吃满容器 —— 面板此前只设了 marginTop，作为普通流内块起始位置就在
-   容器高度之下，被完整裁掉（永远不可见，却照样会去拉 /api/contour/tasks）。
-   锚到左下角：右上角是 .bounds-overlay，左侧中部是 .map-panel-triggers。 */
-.contour-preview-panel {
-    position: absolute;
-    left: 12px;
-    bottom: var(--statusbar-clearance);
-    z-index: var(--z-map-overlay);
-    max-width: min(320px, calc(100% - 60px));
-    max-height: 40%;
-    overflow-y: auto;
-}
-
-.contour-preview-panel:empty {
-    display: none;   /* 无可预览任务时不占位、不挡地图 */
 }
 
 /* ==========================================================================

@@ -101,12 +101,30 @@ def test_task_name_never_enters_innerhtml_raw():
 
 
 def test_map_preview_names_escaped():
-    """map.js 预览 chip 与等高线预览按钮里的任务名同样来自服务端。"""
+    """map.js 预览 chip 与等高线预览按钮里的任务名同样来自服务端。
+
+    2026-08-15 换了锚点，守的东西一个字没变。等高线预览面板重写成
+    `.map-overlay-chip` + `.status-chip` 之后，`info.name` 先落进一个局部变量
+    （`const name = info.name || t(...)`），再在**两个**插值点上用：可见文字与
+    aria-label。所以判据从「出现 `escapeHtml(info.name`」改成「那个函数体里
+    没有任何裸的名字插值，且每个插值点都过 escapeHtml」—— 两个插值点里漏一个
+    就是一个洞（aria-label 里的引号同样能闭合属性）。
+    """
     src = _strip_js_comments(_js('map.js'))
     assert '${_previewState.name}' not in src, '_renderPreviewChip 裸拼任务名'
-    assert '${info.name' not in src, 'updateContourPreviewButtons 裸拼任务名'
     assert 'escapeHtml(_previewState.name)' in src
-    assert 'escapeHtml(info.name' in src
+
+    body = _body('map.js', 'updateContourPreviewButtons')
+    assert '${info.name' not in body, 'updateContourPreviewButtons 裸拼任务名'
+    assert '${name}' not in body, (
+        '等高线预览按钮里出现了裸的 `${name}` —— 那个变量的来源是 info.name'
+        '（服务端任务名），可见文字与 aria-label 两处都必须 escapeHtml'
+    )
+    assert '${escapeHtml(name)}' in body, '预览按钮的可见文字没有转义任务名'
+    assert '${escapeHtml(action)}' in body, (
+        '预览按钮的 aria-label 没有转义 —— 那句话里含任务名，一个引号就能'
+        '闭合属性并注入新属性'
+    )
 
 
 def test_history_secondary_fields_escaped():

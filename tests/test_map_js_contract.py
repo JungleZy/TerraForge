@@ -914,3 +914,59 @@ def test_imported_region_is_attached_on_both_download_branches():
         '下载分支里了。落在 DEM 分支外面就等于「导入多边形建 DEM 任务时几何'
         '静默丢失」，后端按真实几何裁颗粒的那套代码从界面上永远走不到'
     )
+
+
+def test_the_js_created_map_overlays_all_build_on_the_glass_base_class():
+    """由 JS 创建的地图浮层都必须建在 `.map-overlay-chip` 上。
+
+    基类持有「浮在地图上」那一整套：玻璃底色 + 描边 + --radius-card + 阴影 +
+    backdrop-filter + 文字色 + 内边距。而三道闸门都是**按选择器点名它**的 ——
+    tests/test_elevation_glass.py 的两个降级块名单、tests/test_geometry_scales.py
+    的 RAISED_SURFACES 圆角、tests/test_css_contract.py 的文字对比度上下文。
+    一个浮层不进这个基类，就同时逃掉这三道，而且**没有任何断言会红**。
+
+    等高线预览面板（地图左下「已完成的等高线瓦片」）改前就是这么逃掉的：它自己
+    吐了个 Bootstrap `.alert.alert-info` 当底座，于是左下角是一块 Bootstrap 蓝，
+    右上范围浮层与右下预览提示条是玻璃面 —— 整轮系统层收敛（59459b1）一条断言
+    都没红，最后靠人眼发现「和系统不协调」。
+    """
+    src = _strip_comments(_map_js())
+    for fn_name, what in (('_renderPreviewChip', '右下预览提示条'),
+                          ('contourPreviewPanel', '左下等高线预览面板')):
+        body = _fn_body(src, fn_name)
+        m = re.search(r"\.className\s*=\s*'([^']*)'", body)
+        assert m, (
+            f'{fn_name}（{what}）不再给浮层设 className —— 本断言已失效，'
+            '去看它现在怎么建这个节点'
+        )
+        assert 'map-overlay-chip' in m.group(1).split(), (
+            f'{what}的 className 是 {m.group(1)!r}，不含 map-overlay-chip —— '
+            '它会同时逃掉玻璃降级、圆角与对比度三道闸门（改前那块 Bootstrap '
+            '蓝的 alert 就是这么来的）'
+        )
+
+
+def test_the_contour_preview_rows_are_the_shared_chip_not_bootstrap_buttons():
+    """预览面板的行按钮用全站通用的 `.status-chip`，不用 Bootstrap 按钮变体。
+
+    `.status-chip` 是本仓的通用 chip（主题开关、强调色、语种、四条管线段控、
+    任务状态筛选五处同一套），它的选中态是**安静的**：accent 描边 + accent
+    文字，没有饱和填充。改前这里是 `.btn-primary` / `.btn-outline-primary`
+    —— 一块蓝底色块压在地图上，与同屏两个玻璃浮层不是一套东西。
+
+    `.active` 与 `aria-pressed` 必须同时翻：只给 CSS 类时读屏用户听不出哪一个
+    正在预览（与 #createPipeline 段控同一条纪律，templates/index.html 那里
+    有同样的注释）。
+    """
+    body = _fn_body(_strip_comments(_map_js()), 'updateContourPreviewButtons')
+    for banned in ('alert', 'btn-primary', 'btn-outline-primary', "btn btn-sm"):
+        assert banned not in body, (
+            f'updateContourPreviewButtons 又吐出了 {banned!r} —— 浮在地图上的'
+            '面板不许用 Bootstrap 的组件类当底座/按钮，底座走 .map-overlay-chip、'
+            '行按钮走 .status-chip'
+        )
+    assert 'status-chip' in body, '行按钮不再是通用 .status-chip'
+    assert 'aria-pressed' in body and 'active' in body, (
+        '选中态必须同时写 .active 与 aria-pressed —— 只写类名时读屏用户听不出'
+        '哪一个任务正在地图上预览'
+    )

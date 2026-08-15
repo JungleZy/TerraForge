@@ -25,6 +25,7 @@ sys.path 首位，所以这里 `import test_css_contract` 直接可用（那份�
 没有 sys.path.insert：tests/conftest.py 已经把仓库根放进 sys.path。
 """
 
+import os
 import re
 
 from test_css_contract import (
@@ -793,4 +794,79 @@ def test_transition_durations_only_come_from_the_motion_scale():
                         offenders.append(f'{sel} {{ {prop}: {val} }} -> {tok}')
     assert not offenders, (
         '这些过渡时长不在三级刻度上：\n' + '\n'.join('  ' + o for o in offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. 刻度闸门的后门：写在 JS 里的内联样式
+#
+# 本文件与 tests/test_spacing_scale.py 的全部 blanket 断言都只读
+# static/css/style.css。一句 `style="margin: 0 6px 6px 0;"` 写在 JS 的模板
+# 字符串里，那几个 px 一个都不会被扫到 —— 等高线预览面板（地图左下角那块
+# 「已完成的等高线瓦片」）就是这样带着 6px 和一个 Bootstrap `.alert.alert-info`
+# 底座活过了整轮刻度归一（59459b1）：它的样式**不在样式表里**，所以刻度、
+# 圆角、按钮几何、玻璃降级四道闸门一条都没红，而它在屏幕上与另外两个玻璃浮层
+# 明显不是一套东西。2026-08-15 定向复审时由人眼发现，本条是它的机器闸门。
+#
+# 门槛是 0，不设白名单：实测把那三处（预览面板 + 任务列表的两处）搬进样式表
+# 之后，static/js 下带长度的内联样式命中数就是 0。
+# ---------------------------------------------------------------------------
+
+_JS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       'static', 'js')
+
+#: 长度：`px` / `rem` / `em`。前置断言排掉 `12.5rem` 里的小数点与
+#: `--space-1rem` 这类标识符尾巴（本仓没有，但判据不能靠「碰巧没有」成立）。
+_INLINE_LENGTH = re.compile(r'(?<![\w.-])\d+(?:\.\d+)?(?:px|rem|em)\b')
+
+#: `style="…"` / `style='…'`
+_INLINE_STYLE_ATTR = re.compile(r"""style\s*=\s*(?P<q>["'])(?P<val>[^"']*)(?P=q)""")
+
+#: `el.style.marginTop = '12px'` 与 `el.style.setProperty('gap', '12px')`
+_STYLE_PROP = re.compile(r'\.style\.[A-Za-z]\w*\s*=\s*(?P<val>[^;\n]+)')
+_STYLE_SET_PROPERTY = re.compile(
+    r"""\.style\.setProperty\(\s*['"][^'"]+['"]\s*,\s*(?P<val>[^)]+)\)""")
+
+
+def _cesium_description_spans(src):
+    """Cesium 实体 `description:` 那段 HTML 的字符区间。
+
+    **刻意排除**，不是豁免：那段 HTML 由 Cesium 写进 InfoBox 的 **iframe**
+    （`allow-same-origin` 的独立 document），本站样式表与 `:root` 上的令牌
+    一个都不跨进去 —— 内联样式是那里唯一能生效的手段，拿本仓的刻度去要求它
+    是拿错了尺子。history.js 那处 `description` 里眼下还有两处 `var(--…)`
+    引用在 iframe 内根本解析不出来（等于没上色），那是另一件事，与刻度无关。
+    """
+    spans = []
+    for m in re.finditer(r'description\s*:\s*`', src):
+        end = src.find('`', m.end())
+        if end != -1:
+            spans.append((m.start(), end))
+    return spans
+
+
+def test_no_inline_style_in_js_carries_a_length():
+    """`static/js` 里不许再出现带长度的内联样式 —— 刻度闸门的唯一后门。"""
+    offenders = []
+    for name in sorted(os.listdir(_JS_DIR)):
+        if not name.endswith('.js'):
+            continue
+        with open(os.path.join(_JS_DIR, name), encoding='utf-8') as f:
+            src = f.read()
+        skip = _cesium_description_spans(src)
+        for rx in (_INLINE_STYLE_ATTR, _STYLE_PROP, _STYLE_SET_PROPERTY):
+            for m in rx.finditer(src):
+                if any(start <= m.start() <= stop for start, stop in skip):
+                    continue
+                hit = _INLINE_LENGTH.search(m.group('val'))
+                if not hit:
+                    continue
+                line = src[:m.start()].count('\n') + 1
+                offenders.append(
+                    f'{name}:{line} {m.group(0).strip()[:80]} -> {hit.group(0)}')
+    assert not offenders, (
+        '这些内联样式带着长度字面量，而它们在 static/css/style.css 之外 —— '
+        '本文件与 test_spacing_scale.py 的刻度闸门看不到它们：\n'
+        + '\n'.join('  ' + o for o in offenders)
+        + '\n搬进样式表并改用 --space-* / --ctl-h / --radius-* 令牌。'
     )

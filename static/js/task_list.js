@@ -67,7 +67,7 @@
     // 算对比度，它按「恰好一个 <div>」认路 —— 多一层就把那条 WCAG 断言变成
     // 「本测试已失效」，而那正是当初实测逃逸出 Critical 的那一条。
     const ERROR_TEMPLATE = `
-        <div class="text-center text-danger task-load-error" style="padding: 1.5rem 1rem" v-if="loadError">
+        <div class="text-center text-danger task-load-error" v-if="loadError">
             {{ loadError }}
             <button type="button" class="btn btn-sm btn-outline-secondary d-block mx-auto mt-2"
                     @click="reloadList($event)"
@@ -77,12 +77,12 @@
     // 空态图标与「暂无任务」提示。与改造前 renderHistoryTable 的空态等价。
     const EMPTY_TEMPLATE = `
         <div class="task-empty" v-if="!loadError && !tasks.length">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.3; margin-bottom: 1rem;">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <circle cx="12" cy="12" r="10"></circle>
                 <line x1="12" y1="8" x2="12" y2="12"></line>
                 <line x1="12" y1="16" x2="12.01" y2="16"></line>
             </svg>
-            <p style="margin: 0;">{{ t('js.history.empty') }}</p>
+            <p>{{ t('js.history.empty') }}</p>
         </div>`;
 
     // 单行。v-for 的 :key 用 `${task_type}:${id}`——它在四条管线的 UNION 里
