@@ -6135,7 +6135,25 @@ class _TextEl:
 
 
 def _parse_compound(part):
-    """一个复合选择器（不含组合符）-> dict；读不懂返回 None（= 模型不支持）。"""
+    """一个复合选择器（不含组合符）-> dict；读不懂返回 None（= 模型不支持）。
+
+    2026-08-15 修复 —— **属性选择器不再当噪声抹掉**。改前 `leftover` 那条正则
+    把 `\\[[^\\]]*\\]` 一起吃了、且不记在任何字段里，于是 `[data-bogus]` 解析成
+    tag/ids/classes 全空的 dict，`_compound_structurally_matches` 对它一律为真 ——
+    **等价于 `*`**。实测：`_text_branch_applies('[data-bogus]', [span.detail-v])`
+    返回 True（应为 None），`'[data-x] .detail-v'` 返回 False（祖先链同样不记属性，
+    那个 False 也是猜的）。这不是拒答而是**静默多/少匹配**：一条属性选择器规则
+    会参与 `_winning_color_decl` 的胜负比较，赢家算错 -> 对比度数字算错 -> 全绿。
+    style.css 现有 19 条带属性选择器的规则。
+
+    这里只**记下来**（`attrs`），不在解析期判 None —— 口径与 `_btn_branch_applies`
+    里那段同样理由的注释一致：解析期还不知道这个 compound 会不会真的命中，
+    一律判 None 会把 `.workbench-panel[hidden]` 这种和正文八竿子打不着的规则
+    顶成「模型已失效」，那是误报不是保护。真正的拒答排在「确定不命中」之后，
+    见 `_text_node_verdict` 与 `_text_branch_applies` 第二步的 `attrs` 检查。
+    `test_text_color_model_assumptions_still_hold` 的第五条前提再从另一头把
+    「声明 color 的规则里有属性选择器」这件事本身钉住。
+    """
     for arg in re.findall(r':not\(([^)]*)\)', part):
         if not re.fullmatch(r'\s*[.:][-\w]+\s*', arg):
             return None
@@ -6150,16 +6168,18 @@ def _parse_compound(part):
     classes = set(re.findall(r'\.([-\w]+)', rest))
     # 函数式伪类连参数一起吃掉，否则 `(1)` 会变成读不懂的残余
     pseudos = set(re.findall(r':([-\w]+)(?:\([^)]*\))?', rest))
+    attrs = re.findall(r'\[[^\]]*\]', rest)
     leftover = re.sub(r'([#.][-\w]+|:[-\w]+(?:\([^)]*\))?|\[[^\]]*\]|\*)', '', rest).strip()
     if leftover and not re.fullmatch(r'[a-zA-Z][-\w]*', leftover):
         return None
     return dict(tag=(leftover.lower() or None), ids=ids, classes=classes, pseudos=pseudos,
-                neg_pseudos=neg_pseudos, neg_classes=neg_classes,
+                attrs=attrs, neg_pseudos=neg_pseudos, neg_classes=neg_classes,
                 pseudo_element=(pseudo_elements[0] if pseudo_elements else None))
 
 
 def _compound_structurally_matches(comp, node):
-    """只看标签/类/id/伪元素这些**确定**的部分。伪类支持性另判。"""
+    """只看标签/类/id/伪元素这些**确定**的部分。伪类与属性选择器的支持性另判
+    （`comp['attrs']` 在这里**故意不看** —— 它说不清，看了就变成猜）。"""
     if comp['pseudo_element'] != node.pseudo_element:
         return False
     if comp['tag'] is not None and comp['tag'] != node.tag:
@@ -6226,12 +6246,19 @@ def _color_media_verdict(at_rule, reduced=False):
 
 
 def _text_node_verdict(comp, node):
-    """祖先链上的一个位置：这个复合项命中这个节点吗？True / False / None(伪类不支持)。
+    """祖先链上的一个位置：这个复合项命中这个节点吗？
+    True / False / None(伪类或属性选择器不支持)。
 
     伪类必须**和结构一起**判，不能等祖先链走完再补判：`.card:hover .detail-v`
     对 [div.card, div.card(hover), span.detail-v] 这种链，只按结构挑位置会挑到
     最近那个没 hover 的 `.card`、然后判不命中 —— 和下面那个贪心漏判是同一类错。
     返回 None = 「这个位置说不清」，由调用方汇总成「模型不支持」。
+
+    `attrs` 那条排在**全部确定性判决之后**（2026-08-15 加）：`_TextEl` 不记属性，
+    所以属性选择器一律说不清；但说不清只在「其它部分都对得上」时才要紧。
+    排前面的话 `html[lang="en"] .map-panel-btn` 这类祖先项会把和正文无关的
+    规则顶成「模型已失效」。改前这里根本没有这一条 —— `_parse_compound` 把
+    `[...]` 当噪声抹了，属性选择器等价于 `*`，静默多匹配。
     """
     if not _compound_structurally_matches(comp, node):
         return False
@@ -6241,6 +6268,8 @@ def _text_node_verdict(comp, node):
         return False
     if comp['neg_pseudos'] & node.pseudos:
         return False
+    if comp['attrs']:
+        return None
     return True
 
 
@@ -6338,6 +6367,10 @@ def _text_branch_applies(branch, chain):
         return False
     if subject['neg_pseudos'] & chain[-1].pseudos:
         return False
+    if subject['attrs']:
+        # `[aria-pressed="true"]` 这类：结构、伪类全对上了，只剩属性说不清 ——
+        # 此时才拒答（与 `_text_node_verdict` 里那条同理同序）。
+        return None
     return True
 
 
@@ -6480,9 +6513,27 @@ def _branch_background(css, branch):
     return decls.get('background') or decls.get('background-color')
 
 
+# 声明 color 的规则里，允许出现属性选择器的那几条分支 -> 为什么模型可以不判它。
+#
+# 这**不是**放行证。`_TextEl` 不记属性，所以任何属性选择器对模型都是「说不清」，
+# `_text_node_verdict` / `_text_branch_applies` 在确定不命中之外一律返回 None，
+# `_winning_color_decl` 拿到 None 就判「模型已失效」。登记在这里只是要求作者
+# 显式回答一个问题：为什么模型走不到那一步？下面第五条前提会**重新证明**这个
+# 回答 —— 逐条已登记文字上下文跑一遍，必须条条确定判 False，证不出来就红。
+_ATTR_COLOR_WHITELIST = {
+    '.map-search__chip[aria-pressed="true"]':
+        '地图搜索胶囊的按下态。`.map-search__chip` 不出现在任何一条已登记文字'
+        '上下文的链上（它是地图浮层里的筛选钮，不是正文），主体复合项在类这一'
+        '步就确定不命中，模型永远走不到「判不了属性」那一步。要把胶囊文字纳入'
+        '对比度覆盖，得先给 `_TextEl` 补属性字段、给 `_text_node_verdict` 补真'
+        '判决，再往 `_text_contexts` 加链 —— 不是把它从这张表里删掉了事。',
+}
+
+
 def test_text_color_model_assumptions_still_hold():
-    """层叠模型的四条前提：无兄弟组合符、无判不了的 at-rule 声明 color、
-    没有**只在某种用户偏好下才成立**的 color、style.css 排在最后。
+    """层叠模型的五条前提：无兄弟组合符、无判不了的 at-rule 声明 color、
+    没有**只在某种用户偏好下才成立**的 color、属性选择器不落在模型算得着的
+    地方、style.css 排在最后。
 
     2026-08-14 登记 —— `>` 与 `prefers-*` at-rule 已支持。三样东西的复用程度
     刻意不同，别当成一回事：
@@ -6496,7 +6547,14 @@ def test_text_color_model_assumptions_still_hold():
         拷贝**（同一个 `_PREFERS_REDUCED_MOTION_RE`、同一套判决），不是共用。
     `+` / `~` 与宽度断点仍不支持，原因见各自失败消息。
 
-    这条不是产品契约，是**模型的自检**。四条前提任何一条被打破，
+    第五条（2026-08-15 新增）单独说一句：`_parse_compound` 改前把属性选择器
+    当噪声抹掉且不记录，`[data-bogus]` 于是解析成一个全空 compound = **等价于
+    `*`**，实测 `_text_branch_applies('[data-bogus]', [span.detail-v])` 返回
+    True。那是静默多匹配，会让一条根本管不到的规则参与 `_winning_color_decl`
+    的胜负比较、赢下来、把对比度算错，而所有颜色断言照样绿。现在改成拒答，
+    这条前提负责保证「拒答」不会天天发生在正经规则上。
+
+    这条不是产品契约，是**模型的自检**。五条前提任何一条被打破，
     下面那些「算最终颜色」的断言就是在给一个错数字背书 ——
     「静默给出错误的信心」比没有断言更糟（这是 Task 10/11 反复付过学费的地方）。
     """
@@ -6504,6 +6562,8 @@ def test_text_color_model_assumptions_still_hold():
     combinator_offenders = []
     media_offenders = []
     env_offenders = []
+    attr_offenders = []
+    attr_seen = set()
     color_branches = 0
     for sel, body, at_ctx in _rules_ctx(css):
         if 'color' not in _decl_map(body):
@@ -6512,6 +6572,11 @@ def test_text_color_model_assumptions_still_hold():
             color_branches += 1
             if re.search(r'[+~]', branch):
                 combinator_offenders.append(branch)
+            if '[' in branch:
+                if branch in _ATTR_COLOR_WHITELIST:
+                    attr_seen.add(branch)
+                else:
+                    attr_offenders.append(branch)
             for at_rule in at_ctx:
                 if _color_media_verdict(at_rule) is None:
                     media_offenders.append(f'{at_rule} {{ {branch} }}')
@@ -6550,12 +6615,44 @@ def test_text_color_model_assumptions_still_hold():
         '开了「减少动画」偏好的用户会拿到一个谁都没检查过的墨色。'
         '要么把 color 挪出 prefers 块。'
     )
+    # --- 第五条前提：属性选择器 ---
+    assert not attr_offenders, (
+        '发现**未登记**的、带属性选择器的 color 规则。`_TextEl` 不记属性，所以'
+        '模型对属性选择器只有两种答案：确定不命中（靠标签/类/id 判掉）或者拒答。'
+        '一旦某条已登记文字上下文能走到「拒答」，`_winning_color_decl` 会判'
+        '「模型已失效」，整批颜色断言集体变红：\n'
+        + '\n'.join('  ' + o for o in attr_offenders)
+        + '\n要么把 color 挪到不带属性选择器的规则上，要么给 `_TextEl` 补属性字段'
+        '和真判决，要么登记进 `_ATTR_COLOR_WHITELIST` 并写明「模型为什么走不到'
+        '那一步」—— 登记之后下面那条会去验这个理由，不是签个字就完。'
+    )
+    stale_attr = sorted(set(_ATTR_COLOR_WHITELIST) - attr_seen)
+    assert not stale_attr, (
+        f'`_ATTR_COLOR_WHITELIST` 里这几条已经不在 style.css 的 color 规则里了：'
+        f'{stale_attr} —— 发霉的豁免会替下一条同名规则挡下本前提，删掉它们。'
+    )
+    # 白名单里的理由必须**当场证明**，不是签字放行：逐条已登记文字上下文跑一遍，
+    # 必须条条确定判 False（= 模型压根走不到「判不了属性」那一步）。哪天有人给
+    # 某条上下文的链加上 `.map-search__chip`，或者新登记一条胶囊上下文，这里立刻
+    # 变红，而不是等 `_winning_color_decl` 在 20 条上下文上一起炸。
+    reachable = []
+    for branch in sorted(_ATTR_COLOR_WHITELIST):
+        for label, chain, _bg, _want in _text_contexts(css):
+            if _text_branch_applies(branch, chain) is not False:
+                reachable.append(f'{branch}  @  {label}')
+    assert not reachable, (
+        '`_ATTR_COLOR_WHITELIST` 的豁免理由不成立了 —— 下面这些组合里，模型不再'
+        '「确定不命中」，也就是它真的要去判那个属性了：\n'
+        + '\n'.join('  ' + o for o in reachable)
+        + '\n豁免的前提就是这一步走不到。给 `_TextEl` 补属性字段、给'
+        ' `_text_node_verdict` 补真判决，别把这条断言放宽。'
+    )
     # style.css 必须是最后加载的样式表——`.table td` 去掉 !important 之后
     # 靠的就是「同特异度、后来者赢」压住 Bootstrap 的 `.table > :not(caption) > * > *`。
     # 顺序契约由 test_no_stylesheet_can_load_after_style_css 独立守住，这里只做交叉引用。
     assert 'def test_no_stylesheet_can_load_after_style_css' in open(
         os.path.abspath(__file__), encoding='utf-8').read(), (
-        '样式表顺序的断言不见了 —— 本模型的第三条前提没人守了'
+        '样式表顺序的断言不见了 —— 本模型「style.css 排在最后」这条前提没人守了'
     )
 
 

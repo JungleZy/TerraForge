@@ -703,13 +703,22 @@ def test_unsplittable_padding_shorthand_fails_loudly_instead_of_losing_silently(
                 f'`{name}: {value}` 没留下简写本身 —— 报错时引用不到出问题的那一句')
 
     # ② 纵向：高度模型必须响亮，且报错里念得出那个值。
+    #
+    # ⚠️ 兜底走 `pytest.fail` 而不是 `raise AssertionError` —— 这是条通用陷阱，
+    # 值得记一行：**兜底断言的消息绝不能落进它自己的 match**。这里的兜底消息里
+    # 含 `decl`，而 `decl` 逐字含 `calc(1px`，正好命中外层 `match=r'calc\(1px'`，
+    # 于是「模型退化了」这个坏消息被 `pytest.raises` 当成期望结果吞掉。
+    # 2026-08-15 实测：把 `_split_padding` 猴补丁回旧行为（切不开就一条长写都不
+    # 发），这 4 条 decl **全部通过**，看守是假的。`pytest.fail` 抛的是
+    # `Failed`（`OutcomeException` 下的 `BaseException`，不是 `AssertionError`），
+    # 穿得过 `pytest.raises(AssertionError, ...)`，同一个猴补丁下 4 条全红。
     for decl in (f'padding: {_UNSPLITTABLE}',                     # 对照：本来就对的形态
                  f'padding: 2px 4px 30px {_UNSPLITTABLE}',
                  f'padding-block: {_UNSPLITTABLE}',
                  f'padding-block: 2px {_UNSPLITTABLE}'):
         with pytest.raises(AssertionError, match=r'calc\(1px'):
             got = _effective_button_height(_mutated(css, decl), _MODEL_CTX)
-            raise AssertionError(                # pragma: no cover - 只在回归时走到
+            pytest.fail(                     # pragma: no cover - 只在回归时走到
                 f'`{decl}` 没有让高度模型失败，它安静地算出了 {got} —— '
                 '静默通道 P 又回来了')
 

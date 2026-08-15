@@ -184,6 +184,51 @@ def test_subject_miss_is_decided_before_shape_support():
     assert _text_branch_applies('.card + .something-else', chain) is False
 
 
+# ------------------------------------------------------------ 属性选择器
+#
+# 2026-08-15 补：改前 `_parse_compound` 的 `leftover` 正则把 `\[[^\]]*\]` 当噪声
+# 抹掉、且**不记在任何字段里**，于是 `[data-bogus]` 解析成 tag/ids/classes 全空的
+# compound —— `_compound_structurally_matches` 对它一律为真，**等价于 `*`**。
+# 实测 `_text_branch_applies('[data-bogus]', [span.detail-v])` 返回 True。
+# 那不是拒答，是静默多匹配：一条其实管不到这个元素的规则会参与
+# `_winning_color_decl` 的胜负比较、可能赢下来，对比度数字算错而断言全绿 ——
+# 与上面兄弟组合符那条锁的是同一个决定（不猜），只是维度换成了属性。
+
+def test_attribute_selector_on_the_subject_stays_unsupported():
+    """主体带属性选择器、其余部分都对得上时，必须返回 None（响亮失败）。
+
+    `_TextEl` 不记属性，模型判不了 `[data-x]` 的真假。改前这里返回 True。
+    """
+    chain = _chain('div.card', 'span.detail-v')
+    assert _text_branch_applies('.detail-v[data-x]', chain) is None
+    # 光杆属性选择器：改前解析成全空 compound，对任何元素都判命中。
+    bare = [_TextEl(tag='span', classes=['detail-v'])]
+    assert _text_branch_applies('[data-bogus]', bare) is None
+
+
+def test_attribute_selector_on_an_ancestor_stays_unsupported():
+    """祖先侧的属性选择器同样判不了 —— 改前它被当成 `*`，那个 False 是猜的。"""
+    chain = _chain('div.card', 'span.detail-v')
+    assert _text_branch_applies('[data-x] .detail-v', chain) is None
+
+
+def test_attribute_selector_miss_is_still_decided():
+    """属性选择器不许把「确定不命中」也升级成「模型已失效」。
+
+    与 `test_unparseable_ancestor_does_not_outrank_a_subject_miss` 同一条原则，
+    而且这条是承重的：style.css 有 19 条带属性选择器的规则，其中
+    `.map-search__chip[aria-pressed="true"]` 声明了 color。它对每一条已登记文字
+    上下文都要在**类**这一步就判掉；一律拒答的话，`_winning_color_decl` 会在
+    全部 20 条上下文上判「模型已失效」，那是误报不是保护。
+    （另一头由 test_css_contract.py 的 `_ATTR_COLOR_WHITELIST` +
+    test_text_color_model_assumptions_still_hold 第五条前提钉住。）
+    """
+    chain = _chain('div.card', 'span.detail-v')
+    assert _text_branch_applies('.map-search__chip[aria-pressed="true"]', chain) is False
+    # 伪类维度也一样：结构对得上但静止态没有 hover -> 确定不命中，轮不到属性拒答。
+    assert _text_branch_applies('.detail-v:hover[data-x]', chain) is False
+
+
 # ---------------------------------------------------------------- at-rule 判决
 
 @pytest.mark.parametrize('at_rule, reduced, expected', (

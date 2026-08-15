@@ -1347,40 +1347,6 @@ html[lang="en"] .map-panel-triggers {
     font-size: var(--font-size-xs);
 }
 
-/* 玻璃降级:不支持 backdrop-filter,或用户系统开了「降低透明度」时,
-   三处玻璃面各自退回改造前的实底 —— 工具条/状态栏胶囊回不透明的
-   bg-secondary,地图浮层 chip 回 0.92 的 overlay-surface(它改造前就是这个值)。
-   选择器名单与上面玻璃化三对象逐字一致 —— 同特异度、源码靠后者胜。 */
-@supports not (backdrop-filter: blur(1px)) {
-    .map-panel-triggers,
-    .statusbar-pill {
-        background-color: var(--color-bg-secondary);
-        border-color: var(--color-border);
-        backdrop-filter: none;
-    }
-
-    .map-overlay-chip {
-        background-color: var(--color-overlay-surface);
-        border-color: var(--color-border-strong);
-        backdrop-filter: none;
-    }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-    .map-panel-triggers,
-    .statusbar-pill {
-        background-color: var(--color-bg-secondary);
-        border-color: var(--color-border);
-        backdrop-filter: none;
-    }
-
-    .map-overlay-chip {
-        background-color: var(--color-overlay-surface);
-        border-color: var(--color-border-strong);
-        backdrop-filter: none;
-    }
-}
-
 /* 非地图页（历史记录 / 配置）的内容容器：居中限宽。
    底部留出状态栏胶囊的高度 —— 这里是会滚动的页面，不留就会有内容永远压在
    胶囊底下读不到。 */
@@ -2194,12 +2160,77 @@ html[lang="en"] .map-panel-triggers {
     font-size: var(--font-size-sm);
 }
 
+/* 裸 input 关掉焦点环，环画在宿主上（见下面的 :focus-within）——
+   视觉上的「控件」是整颗胶囊 .map-search__field，input 只是胶囊里的文字层，
+   环画在 input 上会变成胶囊里再套一个小框。
+   写在 :focus 而不是 :focus-visible 上是故意的：宿主的环由 :focus-within 给，
+   鼠标点击时也会出现（与 .form-control:focus 的 3px 环同语义），所以 input
+   自己的环在任何触发方式下都不该出现。 */
 .map-search__input:focus {
     outline: none;
 }
 
+/* 焦点指示画在宿主胶囊上。
+   改前这条只有 border-color 换色（1px 玻璃描边换成 accent），而上面那条
+   `outline: none`（0,2,0）压过全站 `*:focus-visible` 的 2px 环 —— 键盘用户
+   在这个控件上拿到的唯一指示就是 1px 边框变色。1px 边框换色不是 2px 环的
+   等价替代：全站其它可聚焦元素都是 2px outline，连同样写 outline:none 的
+   .form-control:focus 都补了 3px box-shadow 顶上。
+   正 outline-offset 可用：宿主没有 overflow:hidden（对比 .map-panel-triggers
+   那处 —— 它为了圆角裁 hover 底色开了 overflow:hidden，环只能画成 -2px），
+   所以整圈落在胶囊外侧仍完整可见。 */
 .map-search__field:focus-within {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
     border-color: var(--color-accent);
+}
+
+/* 玻璃降级：不支持 backdrop-filter，或用户系统开了「降低透明度」时，四处玻璃面
+   各自退回改造前的实底 —— 工具条/状态栏胶囊/地图搜索框回不透明的 bg-secondary，
+   地图浮层 chip 回 0.92 的 overlay-surface（它改造前就是这个值）。
+   选择器名单与各自的玻璃化规则逐字一致 —— 同特异度、源码靠后者胜。
+
+   2026-08-15 补 .map-search__field：它是第 4 个玻璃面（上方那条规则），改前漏在
+   名单外，后果是不支持 backdrop-filter 时搜索框以 alpha 0.72 半透明、不模糊地
+   压在影像瓦片上。玻璃 alpha 0.72 的对比度前提（见文件头 --color-glass-surface
+   处的注释）是合成到 --color-bg-primary，不是任意亮瓦片；没有模糊兜底，文字
+   对比度就没有下界。
+
+   2026-08-15 位置：本节改前紧跟 .map-overlay-chip（在 .bounds-overlay 之后）。
+   @supports / @media 不加特异度，降级支与玻璃化规则同为 (0,1,0)，纯靠源码顺序
+   决胜 —— 留在原位时 .map-search__field 那一支会被源码更靠后的玻璃化规则
+   （background + backdrop-filter）整条压掉，一行都不生效。所以本节必须排在
+   **最后一个**玻璃面之后。以后新增玻璃面若写在本节下方，要把本节一起往下挪。 */
+@supports not (backdrop-filter: blur(1px)) {
+    .map-panel-triggers,
+    .statusbar-pill,
+    .map-search__field {
+        background-color: var(--color-bg-secondary);
+        border-color: var(--color-border);
+        backdrop-filter: none;
+    }
+
+    .map-overlay-chip {
+        background-color: var(--color-overlay-surface);
+        border-color: var(--color-border-strong);
+        backdrop-filter: none;
+    }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    .map-panel-triggers,
+    .statusbar-pill,
+    .map-search__field {
+        background-color: var(--color-bg-secondary);
+        border-color: var(--color-border);
+        backdrop-filter: none;
+    }
+
+    .map-overlay-chip {
+        background-color: var(--color-overlay-surface);
+        border-color: var(--color-border-strong);
+        backdrop-filter: none;
+    }
 }
 
 /* 原生 `type="search"` 的清除叉在各浏览器上样式不一、暗色下几乎看不见，

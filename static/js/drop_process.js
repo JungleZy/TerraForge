@@ -91,8 +91,41 @@
         return true;
     }
 
+    // 拖拽遮罩**正当地**盖住的那些层：拖拽进行中的自己，以及右侧那几个
+    // .workbench-panel 抽屉（名字取自 panels.js 的 PANELS 表，records/history
+    // 是同一个面板的两个名字）。抽屉的 --z-panel 1401 远在 --z-drop-veil 13000
+    // 之下，而它们在解析期又注册在 dropVeil **之前** —— 视觉顺序与栈序一致：
+    // 雾盖住抽屉，Esc 关掉的也是雾。「把 .tif 拖到开着的新建面板上」是好用的
+    // 路径，不拦。
+    // 白名单而不是「对话框黑名单」：新加的浮层默认落在「不接管」那一侧。加错
+    // 方向的代价不对称 —— 漏进白名单只是「这个抽屉开着时拖拽不生效」，漏进
+    // 黑名单就是本次修的这个 bug 原地复发（雾盖住对话框、Esc 关的是身后那层）。
+    var VEIL_MAY_COVER = ['dropVeil', 'create', 'records', 'history', 'config', 'plugins'];
+
     window.addEventListener('dragenter', function (e) {
         if (!hasFiles(e)) return;
+        // 对话框/浮层在场时**不接管**拖拽（改前是零守卫、一律 show()）。
+        //
+        // 为什么是「不接管」而不是「把遮罩的 z 抬到对话框之上」：抬 z 只改「谁被
+        // 盖住」，改不了「Esc 关谁」。栈顶按**注册序**算（panels.js 的 topLayer
+        // 从后往前找第一个 isOpen），confirm / progress 是打开时现注册，永远压在
+        // dropVeil 上面。抬完 z 的结果是满屏的雾盖住确认卡片，而按 Esc 关掉的仍
+        // 是身后那张卡片 —— 两个语义还是不一致，只是换了个方向错。
+        // 不接管则两边都对：屏幕上不出雾，Esc 关的还是对话框。
+        //
+        // 不接管 = 既不 show() 也不 preventDefault()。少了 dragenter/dragover 的
+        // preventDefault，浏览器就不允许投放，语义正好是「对话框开着时拖文件不
+        // 生效」。depth 也不加，dragover(`depth > 0`) 与 drop(`depth === 0 &&
+        // !hasFiles`) 跟着一起短路，不留半开状态 —— drop 那条的 `&&` 看着像个
+        // 口子（depth 0 + 有文件仍会接管），实测走不通：没人 preventDefault
+        // dragover 时 drop 事件根本不派发，而唯一能自己接住投放的原生控件
+        // #sourceFiles 装在抽屉里（白名单内），#regionImportFile 是 hidden 的。
+        //
+        // Bootstrap 弹窗不进层栈（#pathBrowserModal / 历史详情），所以要单独判
+        // body.modal-open —— 与 panels.js 的 onKey 让位用的是同一个判据。
+        if (document.body.classList.contains('modal-open')) return;
+        var top = window.TerraLayers.topName();
+        if (top && VEIL_MAY_COVER.indexOf(top) === -1) return;
         e.preventDefault();
         depth += 1;
         show();

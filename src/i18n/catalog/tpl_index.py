@@ -390,11 +390,18 @@ MESSAGES = {
               'them on later requires re-tiling. Checked: 35-100% more size and '
               'about 2x tiling time, with no accuracy gain.',
     },
+    # 改前这句把用户指到「下载数据」/ `Download data` —— 那是旧下载弹窗的标题
+    # tpl.index.download.title，59459b1 把两个弹窗并成 #createPanel 时连键一起
+    # 删了。全仓 grep 过：界面上现在没有任何东西叫这个名字，照它找一辈子也找
+    # 不到。真正的入口是同一张面板上方那排段控（tpl.index.create.pipeline =
+    # 「任务类型」）里的「高程」chip（tpl.index.download.type_dem）。
+    # 引号里的两个词与那两个键的值逐字相同，改任一处会被
+    # tests/test_terminology.py::test_quoted_ui_terms_name_a_real_label 拦下。
     'tpl.index.process.contour_source_hint': {
-        'zh': '等高线从上传的高程文件渲染；远程高程下载在「下载数据」里做。',
-        'en': 'Contours are rendered from the uploaded elevation files; remote '
-              'elevation '
-              'downloads are done in Download data.',
+        'zh': '等高线从上传的高程文件渲染；要下载远程高程，请在上方「任务类型」里选「高程」。',
+        'en': 'Contours are rendered from the uploaded elevation files; to '
+              'download remote elevation, pick "Elevation" under "Task type" '
+              'above.',
     },
     'tpl.index.process.contour_interval': {
         'zh': '基准等高距（米）',

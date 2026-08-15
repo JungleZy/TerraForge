@@ -1009,7 +1009,12 @@ async function acceptTaskGaps(taskId, taskType = 'map', trigger = null) {
         const ok = await showConfirm(t('js.gaps.confirm_accept', { n: total.toLocaleString() }), {
             title: t('js.gaps.action.accept'),
             confirmText: t('js.gaps.action.accept'),
-            type: 'warning',
+            // 改前写的是 `type: 'warning'` —— showConfirm（ui.js）只认 title /
+            // confirmText / cancelText / danger / checkbox / select，没有 type 这个
+            // 选项，写了等于没写。后果是这条不可撤销的动作走了非 danger 分支：静息
+            // 焦点落在确认键上（ui.js 的 `danger ? cancelBtn : okBtn`），一发回车
+            // 就 accept；确认键也不带 is-danger 配色。
+            danger: true,
         });
         if (!ok) return;
         try {

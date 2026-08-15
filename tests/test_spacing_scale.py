@@ -182,6 +182,17 @@ def _spacing_declarations(css):
             stack.append(' '.join(token.split()))
             token = ''
         elif ch == '}':
+            # 先 `_collect` 再清 token：CSS 允许块里最后一条声明不写分号，
+            # `.probe { padding: 13px }` 是完全合法的写法。改前这里直接
+            # `token = ''`，那条声明从没进过 `_collect` —— 实测
+            # `_spacing_declarations('.probe { padding: 13px }')` 返回 `[]`，
+            # 带分号的同一条返回 `[(1, '.probe', 'padding', '13px')]`。
+            # 后果是主闸门 test_no_spacing_declaration_carries_a_bare_length
+            # 和 test_whitelist_has_no_stale_entries 都**静默**看不见它（两条用
+            # 的是同一个解析器），谁写了个不带分号的裸长度就白拿一张通行证。
+            # pop 必须排在 _collect 之后：选择器是从 stack 顶上取的。
+            # 看守：test_spacing_parser_reads_every_shape。
+            _collect(out, line, stack, token)
             if stack:
                 stack.pop()
             token = ''
@@ -206,6 +217,68 @@ def _collect(out, line, stack, chunk):
     if not _SPACING_PROP.match(name):
         return
     out.append((line, selector, name, ' '.join(value.split())))
+
+
+# 解析器自检的输入。行号是**断言的一部分**（下面那条用例逐字写死），改动这段
+# 就得同步改期望表 —— 这正是要的：解析器的输入不许无声漂移。
+#   1  无尾分号（改前静默丢弃的那一种）
+#   2  !important 原样留在值里
+#   3-5 @media 嵌套 + 块内也无尾分号
+#   6  逗号选择器（选择器原文整条留着，不拆）
+#   7  大写属性名
+#   8-11 跨行的值
+#   12-15 注释里的伪声明
+#   16 非间距属性 + 长得像但不是间距的属性名
+_PARSER_PROBE_CSS = """\
+.no-semi { padding: 13px }
+.bang { margin: 4px !important; }
+@media (min-width: 900px) {
+    .nested-no-semi { gap: 8px }
+}
+.one, .two { padding-inline: 2px }
+.upper { PADDING-TOP: 5px; }
+.multi {
+    margin: 1px
+        2px;
+}
+.commented {
+    /* padding: 999px; */
+    row-gap: 3px;
+}
+.not-spacing { border-radius: 4px; padding-x: 9px }
+"""
+
+
+def test_spacing_parser_reads_every_shape():
+    """`_spacing_declarations` 对合法 CSS 的各种写法都不许漏抓、也不许误抓。
+
+    为什么单独立这一条：本文件三条主断言
+    （test_no_spacing_declaration_carries_a_bare_length /
+    test_whitelist_has_no_stale_entries / test_negative_margins_are_declared）
+    **共用**这一个解析器，解析器漏一种写法 = 三条一起静默失明，而且症状是
+    「全绿」。2026-08-15 实测过一次真的：`}` 分支不 `_collect` 就清 token，
+    `.probe { padding: 13px }`（无尾分号，合法）返回 `[]`，主闸门抓不到；
+    同一条加个分号就抓得到。那次漏检没有任何断言揭发得了它。
+
+    期望表整表写死（含行号），不是「抓到几条」这种弱判据：只断言条数的话，
+    把 `.upper` 的属性名忘了小写、或者把逗号选择器拆成两条，条数一个都不差。
+
+    ⚠️ 行号语义是「声明**结束**的那一行」，不是 `属性:` 所在的那一行 ——
+    `.multi` 那条跨两行，分号落在第 10 行，报的就是 10。31 处散落全文的清单
+    要能跳过去，跳到结束行同样跳得到，所以这个语义是接受的，不是 bug；
+    写在这里是免得下一个人以为它坏了顺手"修"成起始行。
+    """
+    got = _spacing_declarations(_PARSER_PROBE_CSS)
+    assert got == [
+        (1, '.no-semi', 'padding', '13px'),          # 无尾分号：改前这条整个丢失
+        (2, '.bang', 'margin', '4px !important'),    # !important 留在值里，不剥
+        (4, '.nested-no-semi', 'gap', '8px'),        # @media 记进栈但不当选择器
+        (6, '.one, .two', 'padding-inline', '2px'),  # 逗号选择器不拆
+        (7, '.upper', 'padding-top', '5px'),         # 属性名小写归一
+        (10, '.multi', 'margin', '1px 2px'),         # 跨行值压成单空格
+        (14, '.commented', 'row-gap', '3px'),        # 注释里的 padding 不算数
+    ], f'解析器读出来的是 {got}'
+
 
 
 def _px(number, unit):

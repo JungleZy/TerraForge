@@ -45,16 +45,48 @@
     // 处理，各家实现并不一致（尤其节点是先 setAttribute 再 appendChild 的），
     // 而容器本身根本不是 live 区，漏播时前端这边完全无从察觉。
     // aria-atomic="false"：只播新插进来的那一条，不把右上角堆着的十条重念一遍。
-    function ensureToastContainer() {
-        let c = document.getElementById('app-toast-container');
-        if (!c) {
-            c = document.createElement('div');
-            c.id = 'app-toast-container';
-            c.setAttribute('aria-live', 'polite');
-            c.setAttribute('aria-atomic', 'false');
-            document.body.appendChild(c);
-        }
+    //
+    // 「常驻」是播报的前提而不是修辞：live 区要先在无障碍树里落定，之后插进去
+    // 的子节点才算「变化」被念出来。这一版之前容器是在**第一次** showToast 里
+    // createElement + appendChild 的，和 toast 内容同一个同步块出现——读屏普遍
+    // 不播，于是每次页面加载后的第一条提示（包括失败提示）对读屏用户是静默的：
+    // 注释写着「常驻」，代码不是。现在创建/挂载移到模块初始化。
+    const TOAST_CONTAINER_ID = 'app-toast-container';
+
+    function createToastContainer() {
+        const c = document.createElement('div');
+        c.id = TOAST_CONTAINER_ID;
+        c.setAttribute('aria-live', 'polite');
+        c.setAttribute('aria-atomic', 'false');
+        document.body.appendChild(c);
         return c;
+    }
+
+    // 取现成节点；建一次是**兜底不是常态**——正常路径下容器在下面的初始化里
+    // 就挂好了。兜底分支保留，因为 showToast 可能被更早的内联脚本调用（那时
+    // 本模块的初始化还没跑到），或者容器被别的代码摘掉。这两种情况下退回
+    // 「容器与内容同 tick、可能不播」也强过让提示整个消失。
+    function ensureToastContainer() {
+        return document.getElementById(TOAST_CONTAINER_ID) || createToastContainer();
+    }
+
+    // 立即挂载，不等 DOMContentLoaded：base.html 把 ui.js 的 <script> 放在
+    // <body> 内（#taskDetailModal、命令面板之后、panels.js 之前），执行到这里
+    // document.body 必然已存在；改等 DOMContentLoaded 只会让这之前的 showToast
+    // 全部落回「同 tick」老路。
+    //
+    // 三个分支而不是两个，且**一律不许抛**：本模块的初始化一旦抛，整个 IIFE
+    // 中断，window.showToast / guard / formatBytes 全都不存在 —— 比漏播严重
+    // 得多。第二支防脚本被挪进 <head>（body 还没有）；第三支防 document 根本
+    // 不是真 DOM：tests/test_tile_origin_runtime.py 把 ui.js 整份内联进 node、
+    // 只给 `global.document = {}`（它测的是 initTileOrigin/tileUrl，与 DOM 无关），
+    // 那里既没有 body 也没有 addEventListener。裸调会 TypeError，11 个用例连
+    // 断言都跑不到就退出 1 —— 这条路实际发生过。落到第三支时容器由
+    // ensureToastContainer() 懒建（常驻性丢掉，但那已经不是浏览器环境）。
+    if (document.body) {
+        createToastContainer();
+    } else if (typeof document.addEventListener === 'function') {
+        document.addEventListener('DOMContentLoaded', createToastContainer, { once: true });
     }
 
     function showToast(message, type, opts) {
@@ -406,6 +438,10 @@
         // 而**属性变化不进 live 区** —— 对读屏用户，这个框从头到尾一声不响。
         // live 区放在 dialog 上而不是某一行上：阶段文案（msgEl）与百分比
         // （label）是两处，一处一个 live 区会各念各的。
+        // 这里**不需要**像 toast 容器那样把 live 区提前挂进文档：要播的是
+        // update() 里后续的阶段文案与百分比，它们发生在后面的 tick（socket
+        // 推送），那时 dialog 早已在无障碍树里。首屏的标题/文案不靠 live 区
+        // 播，靠下面 dialog.focus() 把焦点送进 role=dialog。
         dialog.setAttribute('aria-live', 'polite');
         // 供程序化聚焦：这个框里一个可聚焦控件都没有（它没有取消键，见上），
         // 而 aria-modal 承诺了模态封闭 —— 焦点必须先落进来，Tab 才有东西可拦，
@@ -507,17 +543,28 @@
     //   guard(triggerEl, asyncFn) -> Promise（透传 asyncFn 的返回值）
     //
     // 形态照抄 map.js 下载提交处那一份（存原文案 → disabled → 换 spinner →
-    // finally 复原）：那是全仓唯一写对的一处，另外 11 处 POST/DELETE 零守卫
-    // ——「开始」连点三次就是三发 start，删除连点三次就是三发 DELETE，后两发
-    // 撞 404 再弹两条红字。提成公共函数而不是各处再抄一遍那 20 行。
+    // finally 复原），另外 11 处 POST/DELETE 零守卫 ——「开始」连点三次就是三发
+    // start，删除连点三次就是三发 DELETE，后两发撞 404 再弹两条红字。提成公共
+    // 函数而不是各处再抄一遍那 20 行。
+    //
+    // ⚠️ 2026-08-15 订正两句话。改前这里写「被抄的那一份是全仓唯一写对的一处」，
+    // 以及「map.js 那份写的是 `animation: spin`，而全仓**没有** @keyframes spin
+    // —— 它其实一动不动」。两句都是错的：
+    //   · 那份的锁点排在 `await currentTileEstimate()` **之后**，多边形选区的
+    //     张数往返飞着的时候按钮完全可点，连点两次建两个任务 —— 它恰恰是唯一
+    //     有真实竞态的一处。现在 #taskForm 的整条 submit 改走本函数，锁点在任何
+    //     await 之前，那三份手写锁连同它们的「创建中/上传中」文案一起删了。
+    //   · @keyframes spin 确实存在，由 map.js 在解析期注入 document.head（它同时
+    //     注入一条零消费者的 fadeOut）。那个 spinner 一直在转。注入的关键帧还绕过
+    //     tests/test_css_contract.py 的动画计数（那边只读 style.css），所以两条
+    //     关键帧随手写锁一并删除。
     //
     // 与被抄的那一份的两点差异：
     //   1. spinner 用 .hint-spin（style.css 里已登记的那条无限旋转，config.js
-    //      的代理检测在用）。map.js 那份写的是 `animation: spin ...`，而全仓
-    //      **没有** @keyframes spin —— 它其实一动不动。
+    //      的代理检测在用）—— 全站一份实现，不再有第二条 spin。
     //   2. 文案不参数化：按钮自己的可见文字原样留在 spinner 后面（图标钮
-    //      textContent 为空，就只剩 spinner）。11 处各配一条「正在…」等于新增
-    //      11 条要维护的文案，而按钮已经写着它在做什么。
+    //      textContent 为空，就只剩 spinner）。每处各配一条「正在…」等于新增
+    //      一批要维护的文案，而按钮已经写着它在做什么。
     //
     // triggerEl 允许为空（键盘触发、事件代理拿不到按钮）：那时退化成直接
     // await，动作语义一个字不变，只是没有视觉锁。
@@ -547,6 +594,24 @@
             triggerEl.disabled = originalDisabled;
             triggerEl.removeAttribute('aria-busy');
             triggerEl.innerHTML = originalHtml;
+            // 焦点收尾。改前这里只解禁不还焦点，键盘用户删一条任务、确认完之后
+            // Tab 序要从整页开头重来 —— 上面那句 `disabled = true` 会触发 UA 的
+            // unfocusing steps：被聚焦元素变 disabled 的当场，焦点就掉回 <body>。
+            //
+            // 兜不住的是 showConfirm 自己那份 prevFocus：它在弹框挂载时才抓
+            // document.activeElement，而 guard 内套 showConfirm 的四处动作
+            // （history.deleteTask、config.clearCacheCategory、config.resetConfig、
+            // task_center.acceptTaskGaps）此刻抓到的已经是 body，归还给 body 等于
+            // 没归还。所以由制造这次焦点丢失的 guard 自己收尾。
+            //
+            // 顺序不可换：focus() 对 disabled 元素是 no-op，必须先恢复 disabled
+            // 再抢焦点。只在焦点确实掉到 body（或落焦元素已离开文档）时才抢 ——
+            // 请求飞行期间用户可能主动点进别处，那种焦点不许动。
+            const active = document.activeElement;
+            if ((!active || active === document.body || !active.isConnected)
+                && triggerEl.isConnected && typeof triggerEl.focus === 'function') {
+                try { triggerEl.focus(); } catch (e) { /* 明确忽略：按钮可能刚被移出文档 */ }
+            }
         }
     }
 

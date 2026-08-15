@@ -24,6 +24,13 @@ def _map_js():
         return f.read()
 
 
+def _ui_js():
+    """guard() 住在 ui.js：提交锁的唯一实现从 2026-08-15 起在那里。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'js', 'ui.js'), encoding='utf-8') as f:
+        return f.read()
+
+
 def _fn_body(src, name):
     """按花括号配对提取 `function name(...)` 的整个函数体（含外层 {}）。
 
@@ -122,38 +129,51 @@ def test_submit_button_state_is_centralised():
     )
 
 
-def test_submit_button_is_always_unlocked_in_finally():
+def test_submit_button_is_always_unlocked_by_the_single_lock_owner():
     """
     上面几条断言全是禁止性的("不能写回 btn.disabled = false"),
     没有一条要求解锁调用**必须存在**——守「不能写 X」而不守「必须调用 Y」
-    是不对称的。
+    是不对称的。守的东西一个字没变：**提交钮不许在提交失败后永久卡死**。
 
-    三处提交处理器开头都会 btn.disabled = true 给按钮上锁,唯一的解锁路径
-    就是 finally 里那一行 refreshSubmitButtonState()。删掉它,提交失败后
-    按钮会永久卡死,而其他断言全绿。这里补上存在性断言。
+    2026-08-15 换了证据的位置。改前三处提交处理器各自 `btn.disabled = true`
+    上锁、各自在 `finally` 里 `refreshSubmitButtonState()` 解锁,本条数的就是
+    那三个 finally 块。现在整条 #taskForm 的 submit 走 ui.js 的 `guard()`
+    (锁点必须在任何 await 之前:改前 submitDownload 的锁排在
+    `await currentTileEstimate()` 之后,那段往返里连点两次就建两个任务),
+    三份手写锁连同它们的 finally 一起删了。
+
+    于是不变量的守法反过来:**装配里一处锁都不许有**(有就是第二个锁主,
+    两个锁会互相还原对方的状态),而唯一的锁主 guard 必须在 finally 里还原
+    `disabled`——那是异常路径也走得到的唯一位置。
     """
-    src = _map_js()
+    src = _strip_comments(_map_js())
 
-    # finally 块内目前没有嵌套花括号,所以 [^}]* 足够界定块体
-    finally_blocks = re.findall(r'\}\s*finally\s*\{([^}]*)\}', src)
-    # 3 处 = map/dem 下载、contour、local_terrain（上传与「DEM 任务转切片」
-    # 已合并成 submitLocalTerrain 一条链路,原来的 startDemTaskTerrainTiling
-    # 随「处理按钮转出新任务」删除）。
-    assert len(finally_blocks) == 3, (
-        "预期 3 处提交处理器各有一个 finally 块(map/dem、contour、local_terrain);"
-        f"实际找到 {len(finally_blocks)} 个。块结构变了就要同步更新本测试"
-    )
-    for block in finally_blocks:
-        assert 'refreshSubmitButtonState()' in block, (
-            "每个 finally 块都必须调 refreshSubmitButtonState() 解锁按钮,"
-            "否则提交失败后按钮永久禁用"
+    for fn_name in ('submitDownload', 'submitContour', 'submitLocalTerrain'):
+        body = _fn_body(src, fn_name)
+        assert 'btn.disabled' not in body, (
+            f'{fn_name} 里出现了手写的 btn.disabled —— 提交在飞期间的上锁只能有'
+            '一处(ui.js 的 guard),两处会互相还原对方的状态,而装配自己那把锁'
+            '没有 finally 兜异常路径'
         )
 
+    guard_body = _fn_body(_strip_comments(_ui_js()), 'guard')
+    assert 'finally' in guard_body, (
+        'ui.js 的 guard() 没有 finally —— 它是全站唯一的提交锁主,不在 finally 里'
+        '还原就等于「动作抛异常之后按钮永久禁用」'
+    )
+    tail = guard_body[guard_body.index('finally'):]
+    assert 'disabled = originalDisabled' in tail, (
+        f'guard() 的 finally 没有把 disabled 还原成进入时的值,实际块体：{tail!r}'
+    )
+
     # 10 = 1 处定义 + applyPipeline() + CREATED + DELETED
-    #      + syncBoundsFromDrawnItems() + resetForm() + openCreatePanel + 3 处 finally
-    # 2026-08-15：apply() 是那两个 init 函数各自的闭包，已并成模块级
+    #      + syncBoundsFromDrawnItems() + resetForm() + openCreatePanel + 选区各出口
+    # 2026-08-15（其一）：apply() 是那两个 init 函数各自的闭包，已并成模块级
     # applyPipeline()；openProcessForDemTask 收成一行转调 openCreatePanel()，
-    # 那处刷新随之落在 openCreatePanel 里。枚举换名，下界仍是 10（实测 17 处）。
+    # 那处刷新随之落在 openCreatePanel 里。
+    # 2026-08-15（其二）：三处 finally 里的那三个调用随手写锁一起删了（解锁归
+    # guard），枚举里去掉它们。下界仍是 10（实测 14 处）—— 下界守的是「选区/
+    # 编辑/切管线/重置这些状态变更路径没漏刷新」，与提交收尾那三处无关。
     assert src.count('refreshSubmitButtonState(') >= 10, (
         "refreshSubmitButtonState 的定义/调用点少于 10 处,说明某个状态变更路径"
         "(绘制、编辑、管线切换、表单重置、提交收尾)漏了统一刷新"

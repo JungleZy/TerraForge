@@ -25,9 +25,14 @@ pending/paused；失败任务的设计是删掉重建）。列表加载失败那
 不含 retry / 重试，test_the_reload_key_cannot_be_mistaken_for_a_task_retry
 钉住它。
 """
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -116,8 +121,169 @@ def test_guard_degrades_instead_of_dropping_the_action_without_a_button():
     )
 
 
+def _guard_script(tail):
+    """把 ui.js 里真实的 `guard` 抠出来，配上最小依赖，拼成一段可跑的 node 脚本。
+
+    只桩掉 guard 体内真正用到的三样外部名：GUARD_SPINNER（一段常量 HTML）、
+    escapeHtml（转义，与去重/焦点无关）、document（node 里没有）。函数体一个
+    字不抄 —— 抄一遍就成了「测试自己那份实现」，源码改坏也不会红。
+    """
+    src = _strip_js_comments(_js('ui.js'))
+    return (
+        "const GUARD_SPINNER = '<svg></svg>';\n"
+        "function escapeHtml(s) { return String(s); }\n"
+        'async function guard(triggerEl, asyncFn) {' + _fn_body(src, 'guard') + '}\n'
+        + tail
+    )
+
+
+def _run_node(script, fallback):
+    # encoding 显式给：Windows 上 text=True 按 locale 解码，node 输出里一个中文字
+    # 就能让 stdout 静默变 None（照抄 test_map_js_contract.py 的那条注释）。
+    try:
+        out = subprocess.run(
+            ['node', '-e', script], capture_output=True, text=True,
+            encoding='utf-8', errors='replace', check=True, timeout=60,
+        ).stdout.strip()
+    except subprocess.TimeoutExpired:
+        pytest.skip(f'node 启动超过 60 秒（CI runner 冷启动），结构契约由 {fallback} 守着')
+    return json.loads(out)
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node 不可用，跳过 JS 行为断言')
+def test_guard_refuses_a_second_entry_while_in_flight():
+    """连点三次只发一次 —— 拿真实现跑一遍，不是看源码里有没有那个词。
+
+    去重靠的是 `dataset.guardBusy` 的早退，**不是** disabled：disabled 只挡鼠标，
+    回车重复触发、事件代理里同一颗按钮被两条路径分派、程序化调用全都进得来
+    （guard 自己在注释里写着这一条）。而这条行为此前零断言 —— 把那句早退删掉，
+    原有 5 条 guard 断言全绿。
+
+    同时钉住「锁必须解开」：飞行结束后第四次点得动，dataset 上不留残留标志。
+    """
+    tail = """
+const document = { body: {}, activeElement: null };
+const el = { dataset: {}, setAttribute() {}, removeAttribute() {}, focus() {},
+             innerHTML: '', textContent: 'x', disabled: false, isConnected: true };
+let calls = 0;
+let release;
+const pending = new Promise(function (r) { release = r; });
+async function asyncFn() { calls++; await pending; return 'ok'; }
+(async function () {
+  const flights = [guard(el, asyncFn), guard(el, asyncFn), guard(el, asyncFn)];
+  const afterSameTick = calls;
+  release();
+  const results = await Promise.all(flights);
+  const afterSettled = calls;
+  await guard(el, asyncFn);
+  console.log(JSON.stringify({
+    afterSameTick: afterSameTick,
+    afterSettled: afterSettled,
+    afterFourth: calls,
+    results: results,
+    busyFlagLeft: Object.prototype.hasOwnProperty.call(el.dataset, 'guardBusy'),
+    disabled: el.disabled,
+    html: el.innerHTML
+  }));
+})();
+"""
+    got = _run_node(_guard_script(tail),
+                    'test_guard_refuses_a_second_entry_while_in_flight_structurally')
+    assert got['afterSameTick'] == 1, (
+        f"同一 tick 连调三次，asyncFn 跑了 {got['afterSameTick']} 次 —— "
+        '在飞标志没拦住第二、三发'
+    )
+    assert got['afterSettled'] == 1, '第一发飞行期间又有请求溜出去了'
+    assert got['results'] == ['ok', None, None], (
+        f"被拒的两发应当返回 undefined（JSON 里是 null），实得 {got['results']!r} —— "
+        '早退不许抛错，调用方 await 得到的必须是「这次没做」'
+    )
+    assert got['afterFourth'] == 2, (
+        '飞行结束后第四次点不动了 —— finally 没有把在飞标志删掉，按钮永久哑火'
+    )
+    assert got['busyFlagLeft'] is False, 'dataset 上残留了 guardBusy'
+    assert got['disabled'] is False and got['html'] == '', (
+        'finally 没有把 disabled / 原文案复原'
+    )
+
+
+def test_guard_refuses_a_second_entry_while_in_flight_structurally():
+    """上一条的结构兜底（node 不可用时它是唯一看守）：
+
+    读 `dataset.guardBusy` 的早退必须排在赋值**之前**（赋值在前 = 自己把自己挡住，
+    一次都发不出去），finally 里必须 delete 掉它。
+    """
+    body = _fn_body(_strip_js_comments(_js('ui.js')), 'guard')
+    early = re.search(r'if\s*\([^)]*\.dataset\.guardBusy[^)]*\)\s*return\b', body)
+    assert early, 'guard 里没有「读 dataset.guardBusy 就早退」这一步 —— 只剩 disabled，挡不住回车与程序化调用'
+    assign = re.search(r'\.dataset\.guardBusy\s*=', body)
+    assert assign, 'guard 没有立起在飞标志'
+    assert early.start() < assign.start(), (
+        '早退写在了赋值之后 —— 第一发就被自己挡住'
+    )
+    restore = body[body.index('finally'):]
+    assert re.search(r'delete\s+\w+\.dataset\.guardBusy', restore), (
+        'finally 里没有 delete dataset.guardBusy —— 一次动作之后按钮永久哑火'
+    )
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='node 不可用，跳过 JS 行为断言')
+def test_guard_hands_focus_back_to_the_trigger_button():
+    """guard 结束时必须把焦点还给触发钮，且只在焦点掉到 body 时才还。
+
+    `disabled = true` 会触发 UA 的 unfocusing steps，焦点当场掉到 <body>。guard 内
+    套 showConfirm 的四处动作（deleteTask / clearCacheCategory / resetConfig /
+    acceptTaskGaps）因此连 showConfirm 的 prevFocus 都救不回来 —— 它抓到的已经是
+    body。键盘用户删完一条任务，Tab 序从整页开头重来。
+
+    两条一起钉：
+      - 归还发生在解禁**之后**（focus() 对 disabled 元素是 no-op，顺序写反 = 白写）；
+      - 飞行期间用户主动点进别处时不许抢焦点。
+    """
+    tail = """
+const body = { isConnected: true };
+const document = { body: body, activeElement: body };
+const other = { isConnected: true };
+let focusCount = 0;
+let focusedWhileDisabled = null;
+const el = {
+  dataset: {}, setAttribute() {}, removeAttribute() {},
+  focus() { focusCount++; focusedWhileDisabled = this.disabled; document.activeElement = this; },
+  innerHTML: 'x', textContent: 'x', disabled: false, isConnected: true
+};
+(async function () {
+  // 1) disabled 把焦点踢到 body 的真实形态
+  await guard(el, async function () { document.activeElement = body; });
+  const returned = {
+    focusCount: focusCount,
+    whileDisabled: focusedWhileDisabled,
+    active: document.activeElement === el
+  };
+  // 2) 飞行期间用户自己点进别处
+  document.activeElement = other;
+  await guard(el, async function () { document.activeElement = other; });
+  console.log(JSON.stringify({
+    returned: returned,
+    keptUserFocus: document.activeElement === other,
+    focusCount: focusCount
+  }));
+})();
+"""
+    got = _run_node(_guard_script(tail), 'test_guard_locks_swaps_and_always_restores')
+    assert got['returned']['focusCount'] == 1, (
+        '焦点掉到 body 之后 guard 没有把它还给触发钮 —— 键盘用户的 Tab 序从头重来'
+    )
+    assert got['returned']['whileDisabled'] is False, (
+        'focus() 是在按钮还 disabled 的时候调的 —— 那是个 no-op，等于没还'
+    )
+    assert got['returned']['active'] is True, '归还之后 activeElement 不是触发钮'
+    assert got['keptUserFocus'] is True and got['focusCount'] == 1, (
+        '用户飞行期间已经把焦点挪到别处，guard 还是把它抢了回来'
+    )
+
+
 # ---------------------------------------------------------------------------
-# 2. 11 处动作
+# 2. 11 个具名动作 + #taskForm 的 submit 监听（第 12 个写入口，见本节最后一条）
 # ---------------------------------------------------------------------------
 
 #: 动作函数 -> 它所在的文件。**11 条，逐个按名字钉**。
@@ -125,6 +291,10 @@ def test_guard_degrades_instead_of_dropping_the_action_without_a_button():
 #: 这张表就是「哪些动作必须防连点」的清单。名字对不上（被重命名/删掉）时下面
 #: 的断言会报「找不到定义」，而不是静默变绿；新写一个 POST/DELETE 动作的人
 #: 要顺手加一行 —— 表长在下一条断言里锁着，加行时会被迫看见那个数字。
+#:
+#: 表里只收**具名函数**。map.js 里 #taskForm 的 submit 监听器是匿名的，进不了这
+#: 张表，但它同样是一个写入口（POST /api/tasks），由
+#: test_the_task_form_submit_locks_before_it_awaits_anything 单独钉。
 _GUARDED_ACTIONS = {
     'startTask': 'task_center.js',
     'pauseTask': 'task_center.js',
@@ -149,14 +319,65 @@ def test_the_action_registry_still_has_eleven_entries():
 
 
 def test_every_guarded_action_routes_through_guard():
-    """11 个动作函数体里都必须出现 `guard(`。"""
+    """11 个动作函数体里，`guard(` 必须出现在第一处 `fetch(` 之前。
+
+    改前的判据是 `'guard(' not in body` —— 纯子串，
+    `async function f() { await fetch(POST); guard(btn, () => {}); }` 也能过：
+    请求已经发出去了锁才落下，连点该发几发还是几发。现在按偏移比较，
+    晚到的锁与没有锁一样红。
+
+    clearCacheCategory 与 act 体内没有 `fetch(`：前者把 POST 交给 postCacheClear，
+    后者只做分派 —— 那两处退回「必须出现 guard(」这一条。
+    """
     problems = []
     for name, js_name in sorted(_GUARDED_ACTIONS.items()):
         body = _fn_body(_strip_js_comments(_js(js_name)), name)
-        if 'guard(' not in body:
+        at_guard = body.find('guard(')
+        at_fetch = body.find('fetch(')
+        if at_guard < 0:
             problems.append(f'{js_name}:{name} 的函数体里没有 guard( —— 可以被连点')
-    assert not problems, '以下动作没有 in-flight 守卫：\n' + '\n'.join(
+        elif 0 <= at_fetch < at_guard:
+            problems.append(
+                f'{js_name}:{name} 的 guard( 在函数体偏移 {at_guard}，而第一处 fetch( '
+                f'在偏移 {at_fetch} —— 请求先发出去了，锁落在它后面等于没锁')
+    assert not problems, '以下动作没有（有效的）in-flight 守卫：\n' + '\n'.join(
         '  ' + p for p in problems)
+
+
+def test_the_task_form_submit_locks_before_it_awaits_anything():
+    """map.js 的 #taskForm submit：`guard(` 必须排在处理器里**任何 await 之前**。
+
+    这是第 12 个写入口，也是唯一一处「锁点晚了」真出过 bug 的地方：改前三条装配
+    各自手写 disabled，而 submitDownload 把锁点排在 `await currentTileEstimate()`
+    之后（多边形选区的张数要问服务端），那段往返里连点两次就是两发
+    POST /api/tasks、两个一模一样的任务。所以这里钉的不是「有没有 guard」，
+    而是「guard 有没有赶在第一次让出控制权之前落下」。
+
+    上面那条按 `fetch(` 比较；这条按 `await` 比较 —— 让出控制权的是 await，
+    fetch 只是 await 的一种去处，这里真正咬人的那次往返是估算而不是提交本身。
+    """
+    src = _strip_js_comments(_js('map.js'))
+    hits = [m for m in re.finditer(
+        r"getElementById\(\s*'taskForm'\s*\)\s*\??\.\s*addEventListener\(\s*'submit'\s*,"
+        r"[^{]*\{", src)]
+    assert len(hits) == 1, (
+        f'#taskForm 的 submit 监听器匹配到 {len(hits)} 处 —— 提交入口被改形或被复制，本测试已失效'
+    )
+    body = _brace_body(src, hits[0].end() - 1)
+    # 自检：切歪了（注释剥离把源码啃坏、监听器被重写）下面两条偏移比较就是永真。
+    assert 'submitDownload(' in body, (
+        '切出来的 submit 处理器里没有 submitDownload( —— 切错位置了，本测试已失效'
+    )
+    at_guard = body.find('guard(')
+    at_await = body.find('await ')
+    assert at_guard >= 0, (
+        '#taskForm 的 submit 处理器没有走 guard( —— 建任务这条路可以被连点，'
+        '而它恰恰是原生回车提交的那条路'
+    )
+    assert at_await < 0 or at_guard < at_await, (
+        f'guard( 在偏移 {at_guard}，而第一处 await 在偏移 {at_await} —— '
+        '锁排在了让出控制权之后，那段往返里连点两次就是两个任务（改前的原样复发）'
+    )
 
 
 def test_export_no_longer_hand_rolls_its_own_lock():

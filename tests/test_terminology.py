@@ -840,3 +840,106 @@ def test_english_values_stay_free_of_chinese():
     bad = [key for key in sorted(MESSAGES)
            if key not in allowed and _HAN.search(MESSAGES[key]['en'])]
     assert not bad, f'这些键的英文里有汉字: {bad}'
+
+
+# ---------------------------------------------------------------------------
+# 引号里的界面名词必须真的存在
+#
+# 触发这条的缺陷：`tpl.index.process.contour_source_hint` 让用户「在「下载数据」
+# 里做」远程高程下载 —— 「下载数据」是旧下载弹窗的标题 tpl.index.download.title，
+# 59459b1 把两个弹窗并成 #createPanel 时把键一起删了。文案里指向一个界面上根本
+# 不存在的名字，用户只能挨个点过去找。上面那批术语断言全抓不到它：它不是「同
+# 一个东西两个名字」，是「一个名字零个东西」。
+#
+# 判据：值里被引号包住的词，必须**逐字**等于某个现存键的同语种值。逐字是关键
+# —— 用户是拿这几个字去界面上对着找的，差一个字就找不到。
+#
+# 扫 「」“”（zh）与 ""“”（en）。**不扫《》**：书名号在中文里指作品/文档名，
+# 而文档名本来就不该是 catalog 里的键，纳进来等于给一个正当用法预埋一条必红的
+# 规则。实测当前目录里 《》 零处，纳不纳都不改变现在的结果。
+# ---------------------------------------------------------------------------
+
+_QUOTED_PATTERNS = {
+    'zh': (re.compile(r'「([^「」]+)」'), re.compile(r'“([^“”]+)”'),
+           re.compile(r'"([^"]+)"')),
+    'en': (re.compile(r'"([^"]+)"'), re.compile(r'“([^“”]+)”')),
+}
+
+# 整段就是一个插值占位符的引号不是界面名词，是运行时才知道的名字（数据集名、
+# 缓存分类名）。这些走规则排除而不是白名单：白名单是逐条例外，占位符是一整类。
+_PLACEHOLDER_ONLY = re.compile(r'^\{[A-Za-z_][A-Za-z0-9_]*\}$')
+
+# 逐条带理由的例外。键是 (catalog 键, 语种, 引号里的词)，不是整条值 —— 同一条
+# 值里的其它引用照样受管。
+_QUOTED_TERM_WHITELIST = {
+    ('js.config.proxy.none', 'zh', '允许局域网连接'):
+        'Clash/v2rayN 自己的选项名，不是本项目的界面标签；本目录永远不会有这个键',
+    ('js.config.proxy.none', 'en', 'Allow LAN'):
+        '同上，第三方客户端的选项名',
+    ('tpl.index.process.terrain_quality_hint', 'zh', '自动'):
+        '复选框标签是 tpl.index.process.local_terrain_maxzoom_auto ='
+        '「自动（按源数据分辨率决定）」，括号里是解释不是名字，正文引的是词头',
+    ('tpl.index.process.terrain_quality_hint', 'en', 'Auto'):
+        '同上，标签是 `Auto (from source resolution)`',
+    ('js.history.terrain.maxzoom_auto_hint', 'zh', '自动'):
+        '同上；这里引的是 js.history.terrain.maxzoom_auto ='
+        '「自动（按源数据分辨率）」的词头',
+}
+
+
+def _quoted_terms():
+    """产出整本目录里 (键, 语种, 引号里的词)，纯占位符已排除。"""
+    for key in sorted(MESSAGES):
+        for locale in ('zh', 'en'):
+            value = MESSAGES[key][locale]
+            for pattern in _QUOTED_PATTERNS[locale]:
+                for term in pattern.findall(value):
+                    if _PLACEHOLDER_ONLY.match(term):
+                        continue
+                    yield key, locale, term
+
+
+def _unmatched_quoted_terms():
+    """引号里的词在同语种的所有键值里找不到逐字相同的那一份 —— 违规集合。"""
+    labels = {locale: {MESSAGES[key][locale] for key in MESSAGES}
+              for locale in ('zh', 'en')}
+    return {(key, locale, term) for key, locale, term in _quoted_terms()
+            if term not in labels[locale]}
+
+
+def test_quoted_ui_terms_name_a_real_label():
+    """文案里引号引的界面名词，必须逐字等于某个现存键的值。
+
+    抓的是「指向一个不存在的界面」这类缺陷：contour_source_hint 曾把用户指到
+    「下载数据」，而那个标签随旧弹窗一起被删了。把那句改回去，这里立刻红。
+
+    实测面：整本目录 35 处引用，30 处当场逐字命中；剩下 5 处进白名单，理由写在
+    `_QUOTED_TERM_WHITELIST` 里（两处第三方客户端的选项名、三处引「自动（…）」
+    这类带括号解释的标签词头）。误报面小到能收成一条干净契约，所以钉的是全量
+    引用，不是「不许出现某几个死标签词」那种黑名单。
+    """
+    bad = sorted(entry for entry in _unmatched_quoted_terms()
+                 if entry not in _QUOTED_TERM_WHITELIST)
+    assert not bad, (
+        '这些文案引用了界面上不存在的名字（用户拿这几个字去界面上找不到东西）：\n'
+        + '\n'.join(
+            f'  {key} [{locale}] 引用了 {term!r}，但没有任何键的 {locale} 值'
+            f'逐字等于它\n      整句：{MESSAGES[key][locale]!r}'
+            for key, locale, term in bad)
+        + '\n\n修法：改成真实标签的逐字文案；确属例外（第三方界面、词头引用）'
+        '就进 _QUOTED_TERM_WHITELIST 并写明理由。')
+
+
+def test_quoted_term_whitelist_has_no_stale_entries():
+    """白名单里每一条都必须仍然是一处「引号里的词找不到对应标签」。
+
+    白名单会腐烂：文案改掉了、或者那个标签后来真的建了键，豁免还留着，下一个
+    人照抄它就把一处真缺陷放行了。这条让腐烂的豁免自己响。
+    """
+    live = _unmatched_quoted_terms()
+    stale = sorted(entry for entry in _QUOTED_TERM_WHITELIST if entry not in live)
+    assert not stale, (
+        '白名单里这些条目已经不再是违规了，删掉它们：\n'
+        + '\n'.join(f'  {key} [{locale}] {term!r} —— '
+                    f'{_QUOTED_TERM_WHITELIST[(key, locale, term)]}'
+                    for key, locale, term in stale))

@@ -19,8 +19,11 @@
 清单（`_PAYLOAD_KEYS`）—— 它们是**外部事实**，抄进来才能双向核对。
 """
 
+import json
 import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -1144,3 +1147,269 @@ def test_red_probe_renaming_a_payload_key_is_caught():
     assert got != expected, '改了键名却没被解析出来 —— 探针已失效'
     assert sorted(expected - got) == ['vertex_normals']
     assert sorted(got - expected) == ['vertexNormals']
+
+
+# ---------------------------------------------------------------------------
+# 合并带来的三个后果，每个一条契约（2026-08-15 定向复审）。
+#
+# 三条都不是「像素对不对」，是「四条管线并进一张表单之后，原本各表单私有的
+# 前提失效了」——review 里三条都实测复现过，所以断言写在行为层而不是文本层。
+# ---------------------------------------------------------------------------
+
+_NODE = shutil.which('node')
+
+# 带原生约束的控件：它们是 `hidden` 与 `disabled` 之差能不能咬人的**全部**入口。
+# `#taskName` 是刻意的例外：全表单只留这一个 required，而它对四条管线都可见
+# （理由写在 templates/index.html 那条注释里）。
+_CONSTRAINT_ATTRS = ('required', 'min=', 'max=', 'minlength', 'maxlength',
+                     'pattern=', 'step=')
+_ALWAYS_VISIBLE_CONSTRAINED = {'taskName'}
+
+
+def _constrained_controls(html):
+    """[(id, 行号, 命中的约束属性)]，只挑真带约束的表单控件。"""
+    out = []
+    for m in re.finditer(r'<(?:input|select|textarea)\b([^>]*)>', html):
+        attrs = m.group(1)
+        hits = [c for c in _CONSTRAINT_ATTRS if c in attrs]
+        if not hits:
+            continue
+        el_id = re.search(r'id="([^"]+)"', attrs)
+        out.append((el_id.group(1) if el_id else None,
+                    html[:m.start()].count('\n') + 1, hits))
+    return out
+
+
+def _div_span(html, el_id):
+    """`<div ... id="el_id">` 到它配对 `</div>` 的 [start, end)。
+
+    按 div 深度数，不用 HTML 解析器：本仓没有解析器依赖，而字段组一律是
+    `<div id=...>`。找不到返回 None（调用方据此响亮失败，不静默跳过）。
+    """
+    m = re.search(r'<div\b[^>]*\bid="' + re.escape(el_id) + r'"[^>]*>', html)
+    if not m:
+        return None
+    depth = 0
+    for tag in re.finditer(r'<div\b[^>]*>|</div>', html[m.start():]):
+        depth += 1 if tag.group(0).startswith('<div') else -1
+        if depth == 0:
+            return m.start(), m.start() + tag.end()
+    return None
+
+
+def test_every_constrained_control_sits_where_the_table_can_disable_it():
+    """带 min/max/required 的控件必须落在显隐表管得着的字段组里。
+
+    `hidden` 不等于 `disabled`：藏起来的受约束控件照样参与原生表单校验，
+    浏览器会拦下 submit 事件，而气泡挂不到不渲染的元素上 —— 「创建任务」点了
+    完全没反应，且**四条管线一起废**。实测（Chromium 2026-08-15）：`#zoomMax`
+    填 25 再切到高程管线（`zoomField` 被藏），`form.checkValidity()` 为 false、
+    submit 监听器一次都不触发；值改回 15 立刻恢复。
+
+    弹窗时代这条不会咬人：两张表单各有一对缩放框，跨表单污染不了。合并成一张
+    之后，用户在等高线字段里敲的一个数能把瓦片任务的提交废掉。
+
+    所以判据是**位置**：每个受约束控件要么在显隐表的某个组里（`applyPipeline`
+    藏它时会连带 disable，那才真的退出校验），要么就是那个对四条管线都可见的
+    `#taskName`。加一个受约束控件到别处（比如一个只靠 JS 翻 `hidden` 的容器）
+    会在这里响亮失败，而不是等用户点到一颗死按钮。
+    """
+    html = _template('index.html')
+    table = parse_pipeline_table(_js('map.js'))
+    spans = {}
+    for group_id in table:
+        span = _div_span(html, group_id)
+        if span:
+            spans[group_id] = span
+
+    controls = _constrained_controls(html)
+    assert len(controls) >= 5, (
+        f'只扒到 {len(controls)} 个受约束控件 —— 本断言已失效（表单里至少有 '
+        '#taskName + 两个缩放框 + 层级 + 等高距）'
+    )
+
+    orphans = []
+    for el_id, line, hits in controls:
+        if el_id in _ALWAYS_VISIBLE_CONSTRAINED:
+            continue
+        at = html.index(f'id="{el_id}"') if el_id else None
+        if at is None:
+            orphans.append(f'index.html:{line} 无 id 的受约束控件 {hits}')
+            continue
+        if not any(start <= at < end for start, end in spans.values()):
+            orphans.append(f'index.html:{line} #{el_id} {hits}')
+    assert not orphans, (
+        '这些受约束控件不在显隐表的任何字段组里 —— 它们被藏起来时不会被 '
+        'disable，一个越界值就能让「创建任务」静默失效（submit 事件根本不派发）：\n'
+        + '\n'.join('  ' + o for o in orphans)
+        + f'\n（表里的组：{sorted(spans)}；刻意的例外只有 '
+          f'{sorted(_ALWAYS_VISIBLE_CONSTRAINED)}，它对四条管线都可见）'
+    )
+
+
+def test_apply_pipeline_disables_what_it_hides():
+    """`applyPipeline` 藏一个组的同一句里必须 disable 它 —— 两件事不许脱钩。
+
+    只断言「文件里出现过 `_setGroupControlsDisabled`」是不够的：它必须收到与
+    `el.hidden` **同一个** 判定结果，否则显隐和禁用会各算一遍、迟早分叉。
+    """
+    apply_body = _js_block(_js('map.js'), 'function applyPipeline(')
+    m = re.search(r'el\.hidden\s*=\s*(\w+);\s*\n\s*_setGroupControlsDisabled\('
+                  r'el,\s*(\w+)\)', apply_body)
+    assert m, (
+        'applyPipeline 里没有「藏它 + 用同一个判定结果 disable 它」这对相邻语句 —— '
+        'hidden 不等于 disabled，被藏的 min/max 控件会继续参与原生校验并拦下 submit'
+    )
+    assert m.group(1) == m.group(2), (
+        f'el.hidden 用的是 {m.group(1)}、disable 用的是 {m.group(2)} —— '
+        '两个判定结果必须是同一个变量，否则显隐与禁用会分叉'
+    )
+
+
+@pytest.mark.skipif(_NODE is None, reason='node 不可用，跳过 JS 行为断言')
+def test_group_disable_helper_restores_the_prior_disabled_state():
+    """抠出 `_setGroupControlsDisabled` 用 node 跑真行为。
+
+    三件事：藏 -> 全禁用；出来 -> 还原成**进入隐藏态之前**的那个值（不是无条件
+    解禁）；重复藏不覆盖已记下的值。第二条是承重的：`#localTerrainMaxzoom` 的
+    disabled 归自动挡那套逻辑管，无条件解禁会把它拨反 —— 用户勾着「自动」，
+    切一圈管线回来数字框却能填了。
+    """
+    src = _js('map.js')
+    fn = ('function _setGroupControlsDisabled(group, disabled) '
+          + _js_block(src, 'function _setGroupControlsDisabled('))
+    script = fn + """
+function el(disabled) {
+    return { disabled: disabled, dataset: {} };
+}
+const free = el(false);       // 本来可用
+const locked = el(true);      // 本来就被别的逻辑禁着（自动挡）
+const group = { querySelectorAll: () => [free, locked] };
+
+_setGroupControlsDisabled(group, true);
+const hidden = [free.disabled, locked.disabled];
+_setGroupControlsDisabled(group, true);   // 再藏一次，不许覆盖记录
+_setGroupControlsDisabled(group, false);
+const shown = [free.disabled, locked.disabled];
+const leftover = [free.dataset.hiddenDisabled, locked.dataset.hiddenDisabled];
+console.log(JSON.stringify({ hidden, shown, leftover }));
+"""
+    out = subprocess.run([_NODE, '-e', script], capture_output=True,
+                         text=True, encoding='utf-8', timeout=120)
+    assert out.returncode == 0, f'node 跑不起来：{out.stderr}'
+    got = json.loads(out.stdout)
+    assert got['hidden'] == [True, True], (
+        f'进入隐藏态后 disabled 是 {got["hidden"]} —— 组里每个受约束控件都必须被 '
+        'disable，否则它继续参与校验'
+    )
+    assert got['shown'] == [False, True], (
+        f'出来之后 disabled 是 {got["shown"]}，期望 [False, True] —— 第二个本来'
+        '就被禁着（自动挡），无条件解禁会把它拨反'
+    )
+    assert got['leftover'] == [None, None], (
+        f'dataset 残留 {got["leftover"]} —— 记录必须随还原一起删掉，否则下一轮'
+        '读到的是上一轮的旧值'
+    )
+
+
+@pytest.mark.skipif(_NODE is None, reason='node 不可用，跳过 JS 行为断言')
+def test_contour_gets_the_auto_max_zoom_back_and_tiles_keep_a_number():
+    """等高线的「最大层级」默认留空 = 自动；其它管线必须有数。
+
+    这一对字段是四条管线共用的，但两条腿对空值的解释相反：
+    等高线留空 = 按 DEM 分辨率自动算（`contour_api.py` 把空值当未表态），
+    瓦片留空会 `parseInt` 出 NaN。
+
+    弹窗时代等高线有自己的 `#processZoomMax`（无 value + placeholder=自动），
+    归一成同一个 `#zoomMax`（出厂 `value="15"`）之后自动挡从界面上再也走不到：
+    不碰缩放框建等高线任务，从「按分辨率算」变成写死 15 —— 30m 一类的粗源
+    多出成十倍瓦片、全是上采样出来的假细节，而 `#zoomAutoHint` 就在旁边写着
+    「留空自动」。
+
+    第三条 case 是另一半：用户亲手改过的层级不许被代管覆盖。
+    """
+    src = _js('map.js')
+    fn = ('function _syncZoomMaxDefault(pipeline) '
+          + _js_block(src, 'function _syncZoomMaxDefault('))
+    script = """
+let _zoomMaxFactory = '15';
+let box = null;
+const document = { getElementById: (id) => (id === 'zoomMax' ? box : null) };
+""" + fn + """
+function run(pipeline, value, userEdited) {
+    box = { value: value, dataset: userEdited ? { userEdited: '1' } : {} };
+    _syncZoomMaxDefault(pipeline);
+    return box.value;
+}
+console.log(JSON.stringify({
+    contour: run('contour', '15', false),
+    map: run('map', '', false),
+    dem: run('dem', '', false),
+    local_terrain: run('local_terrain', '', false),
+    contour_user_edited: run('contour', '9', true),
+    map_user_edited: run('map', '21', true),
+}));
+"""
+    out = subprocess.run([_NODE, '-e', script], capture_output=True,
+                         text=True, encoding='utf-8', timeout=120)
+    assert out.returncode == 0, f'node 跑不起来：{out.stderr}'
+    got = json.loads(out.stdout)
+    assert got['contour'] == '', (
+        f'等高线管线下 #zoomMax 是 {got["contour"]!r} —— 必须留空，那是「按 DEM '
+        '分辨率自动算」的唯一表达方式（contour_api 把空值当未表态）'
+    )
+    for pipeline in ('map', 'dem', 'local_terrain'):
+        assert got[pipeline] == '15', (
+            f'{pipeline} 管线下 #zoomMax 是 {got[pipeline]!r} —— 非等高线管线'
+            '留空会 parseInt 出 NaN，必须写回出厂默认值'
+        )
+    assert got['contour_user_edited'] == '9' and got['map_user_edited'] == '21', (
+        f'亲手改过的层级被代管覆盖了：{got["contour_user_edited"]!r} / '
+        f'{got["map_user_edited"]!r} —— 切一次管线就抹掉用户填的数'
+    )
+
+
+def test_contour_submits_the_raw_max_zoom_so_empty_still_means_auto():
+    """等高线提交的是 `#zoomMax` 的**原值**，不是 parseInt。
+
+    上面那条保证「默认留空」，这条保证留空能一路传到后端：`parseInt('')` 是
+    NaN、`String(NaN)` 是 `'NaN'`，`contour_api.py` 的 `zoom_max_raw not in
+    (None, "")` 就不再成立，自动挡照样丢掉，而界面上一切正常。
+    """
+    src = _js('map.js')
+    body = _js_block(src, 'async function submitContour(')
+    m = re.search(r"fd\.append\('zoom_max',\s*([^)]+)\)", body)
+    assert m, 'submitContour 里找不到 zoom_max 的装配 —— 本断言已失效'
+    expr = m.group(1)
+    assert 'parseInt' not in expr and 'Number(' not in expr, (
+        f'submitContour 把 zoom_max 装成 {expr.strip()} —— 空值经数值转换会变成 '
+        'NaN 字面量，后端就不再把它当「未表态」，自动挡静默丢失'
+    )
+
+
+def test_the_form_submit_takes_the_lock_before_any_await():
+    """提交在飞守卫必须在**任何 await 之前**上锁，且三条装配不再各写一份。
+
+    改前 `submitDownload` 的锁点排在 `await currentTileEstimate()` 之后（多边形
+    选区的张数来自服务端），那段往返里按钮完全可点 —— 连点两次就是两发
+    `POST /api/tasks`、两个一模一样的下载任务。现在整条 submit 走 `ui.js` 的
+    `guard()`：它先挂 in-flight 标志再执行，标志挡的正是 `disabled` 挡不住的
+    那几条路（回车重复提交、程序化调用）。
+    """
+    src = _code_lines(_js('map.js'))
+    handler = _js_block(src, "getElementById('taskForm')?.addEventListener('submit'")
+    assert 'guard(' in handler, (
+        '#taskForm 的 submit 处理器没有走 guard() —— 提交去重回到了各条装配'
+        '自己手写 disabled 的老路'
+    )
+    assert handler.index('guard(') < handler.index('await'), (
+        'guard() 排在第一个 await 之后 —— 锁点必须在任何往返之前，否则那段'
+        '往返里连点两次就建两个任务'
+    )
+    for fn_name in ('async function submitDownload(', 'async function submitContour(',
+                    'async function submitLocalTerrain('):
+        body = _js_block(src, fn_name)
+        assert 'btn.disabled' not in body, (
+            f'{fn_name.split()[-1]} 里还留着手写的 btn.disabled —— 上锁只能有一处'
+            '（guard），两处会互相还原对方的状态'
+        )

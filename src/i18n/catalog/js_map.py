@@ -233,10 +233,9 @@ MESSAGES = {
         'zh': '{name}（未配置）',
         'en': '{name} (not configured)',
     },
-    'js.map.download.creating': {
-        'zh': '创建中...',
-        'en': 'Creating...',
-    },
+    # `js.map.download.creating`（「创建中...」）已退役：提交钮的在飞态改由
+    # ui.js 的 guard() 统一渲染（spinner + 按钮自己的可见文字），三条装配不再
+    # 各换一次文案。同批退役的还有 process.uploading / process.submitting。
     'js.map.download.created': {
         'zh': '任务创建成功！ID: {id}',
         'en': 'Task created. ID: {id}',
@@ -276,10 +275,6 @@ MESSAGES = {
         'zh': '本地地形切片',
         'en': 'Local terrain tiling',
     },
-    'js.map.process.uploading': {
-        'zh': '上传中...',
-        'en': 'Uploading...',
-    },
     'js.map.process.create_failed': {
         'zh': '创建失败: {error}',
         'en': 'Create failed: {error}',
@@ -298,11 +293,9 @@ MESSAGES = {
               'downloaded by task '
               '#{id} → render tiles)',
     },
-    # 来源是已下载的高程任务时按钮不能写「上传中」——这条分支一个字节都不上传。
-    'js.map.process.submitting': {
-        'zh': '提交中...',
-        'en': 'Submitting...',
-    },
+    # `js.map.process.uploading` / `js.map.process.submitting`（「上传中...」/
+    # 「提交中...」）随上面 download.creating 一同退役，理由同上：一条动作配一条
+    # 「正在…」等于多一条要维护的文案，而按钮上已经写着它在做什么。
     'js.map.process.upload_started': {
         'zh': '上传成功，已开始切片！ID: {id}',
         'en': 'Upload complete, tiling started. ID: {id}',

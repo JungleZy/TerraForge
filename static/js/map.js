@@ -1869,15 +1869,82 @@ const PIPELINE_FIELDS = [
     { id: 'zoomAutoHint', pipelines: ['contour'] },
 ];
 
+// 出厂的「最大层级」。在 initPipelineToggle 里取一次 —— 那时 initMap 已经按
+// default_zoom_max 覆盖过模板渲染的 value（templates/index.html 的 15），
+// 排序见 templates/index.html 的 _boot 序列（map -> workbench -> pipelineToggle）。
+let _zoomMaxFactory = '';
+
+// hidden 不等于 disabled：藏起来的 min/max 数字框照样参与原生表单校验，浏览器
+// 拦下 submit 事件而气泡又挂不到不渲染的元素上 —— 「创建任务」点了没反应，
+// 且四条管线一起废。实测（Chromium 2026-08-15）：#zoomMax 填 25 再切到高程
+// 管线，form.checkValidity() 为 false、submit 监听器一次都不触发；值改回 15
+// 立刻恢复。templates/index.html 的 #taskName 那条注释只论证了 required 这一
+// 路（所以全表单只留一个对四条管线都可见的必填控件），range 这一路是本次补上
+// 的：#zoomMin/#zoomMax(0-21)、#localTerrainMaxzoom(0-21)、#contourInterval(min 1)
+// 四个受约束控件此前都只靠 hidden 收起。
+//
+// 只挑 input/select/textarea：按钮不参与约束校验，而 [hidden] 已是 display:none、
+// 组内任何东西本来就不在 tab 序里，多禁一层只会和 updateCreatePanelBounds()
+// 自己对那两颗入口按钮的启停抢方向盘。
+//
+// 进入隐藏态之前的 disabled 记在 dataset 上、出来时原样还回去：
+// #localTerrainMaxzoom 的 disabled 归自动挡那套逻辑（syncLocalTerrainMaxzoomDisabled）
+// 管，无条件解禁会把它拨反；#demDownloadSwb 是永久禁用（见 initPipelineToggle）。
+function _setGroupControlsDisabled(group, disabled) {
+    group.querySelectorAll('input, select, textarea').forEach(function (el) {
+        if (disabled) {
+            if (el.dataset.hiddenDisabled === undefined) {
+                el.dataset.hiddenDisabled = el.disabled ? '1' : '0';
+                el.disabled = true;
+            }
+            return;
+        }
+        if (el.dataset.hiddenDisabled === undefined) return;
+        el.disabled = el.dataset.hiddenDisabled === '1';
+        delete el.dataset.hiddenDisabled;
+    });
+}
+
+// 「最大层级」的默认值必须跟着管线走。这一对字段是四条管线共用的，但两条腿对
+// 空值的解释相反：
+//   等高线 —— 留空 = 按 DEM 分辨率自动算（contour_api.py 把空值当未表态，
+//              contour_task_manager 再按源 tif 的像元现算 estimate_max_zoom）。
+//   瓦片   —— 留空会 parseInt 出 NaN，必须有值。
+// 弹窗时代等高线有自己的 #processZoomMax（无 value + placeholder=自动），归一成
+// 同一个 #zoomMax（出厂 value="15"）之后这条自动挡从界面上再也走不到：不碰缩放
+// 框建等高线任务，从「按分辨率算」变成写死 15 —— 30m 一类的粗源多出成十倍瓦片、
+// 全是上采样出来的假细节，而 #zoomAutoHint 就在旁边写着「留空自动」。
+// 所以由这里代管默认值，`留空 = 自动` 重新成为等高线的**默认**而不是一条需要
+// 用户先读提示再动手的隐藏用法。
+//
+// 只在用户没亲手改过这个框时代管（同 #outputPath 的 dataset.userEdited 口径），
+// 否则切一次管线就把用户填的层级抹掉。form.reset() 会把值拨回模板的 15、把
+// userEdited 清掉（resetForm），下一次 applyPipeline() 再按管线写回来 —— 顺带
+// 修掉「建完一个任务后 default_zoom_max 失效」这个假旋钮。
+function _syncZoomMaxDefault(pipeline) {
+    const el = document.getElementById('zoomMax');
+    if (!el || el.dataset.userEdited) return;
+    if (pipeline === 'contour') {
+        el.value = '';
+        return;
+    }
+    if (_zoomMaxFactory !== '') el.value = _zoomMaxFactory;
+}
+
 function applyPipeline() {
     const pipeline = _currentPipeline();
     const source = document.getElementById('processSource')?.value || 'upload';
     PIPELINE_FIELDS.forEach(function (row) {
         const el = document.getElementById(row.id);
         if (!el) return;
-        el.hidden = !(row.pipelines.includes(pipeline)
+        const hidden = !(row.pipelines.includes(pipeline)
             && (!row.source || row.source === source));
+        el.hidden = hidden;
+        _setGroupControlsDisabled(el, hidden);
     });
+
+    // 排在 updateTileEstimate() 之前：那边要 parseInt 这个框。
+    _syncZoomMaxDefault(pipeline);
 
     // 默认保存路径只有两条下载管线有（表里 outputPathField 那一行），目录按管线分。
     // 路径一律绝对:default_save_path 已在 init_database 归一成绝对值
@@ -1907,6 +1974,12 @@ function initPipelineToggle() {
     const group = document.getElementById('createPipeline');
     if (!group) return;                 // 非首页：没有新建面板
 
+    // 出厂的最大层级取一次，给 _syncZoomMaxDefault 当「非等高线管线要写回哪个
+    // 数」的答案。此刻读到的是 initMap 用 default_zoom_max 覆盖之后的值，
+    // 不是模板里那个 15（除非配置没给）。
+    const zoomMaxAtBoot = document.getElementById('zoomMax');
+    if (zoomMaxAtBoot) _zoomMaxFactory = zoomMaxAtBoot.value;
+
     // I11：ASTGTM.003 只发布 _dem/_num 颗粒，_swb 水体掩膜不存在（真正的
     // 水体在 ASTWBD.001），勾选必然全部 404；后端同样拒绝该组合。
     // 前端直接禁用并隐藏这个选项，提交时永远带 'false'。
@@ -1935,10 +2008,17 @@ function initPipelineToggle() {
         });
     }
 
-    // 缩放级别变化实时刷新瓦片预估（顺带经 refreshSubmitButtonState 更新按钮态）
+    // 缩放级别变化实时刷新瓦片预估（顺带经 refreshSubmitButtonState 更新按钮态）。
+    // 同时记 userEdited：亲手改过的层级不许被切管线时的默认值代管覆盖
+    // （同 #outputPath 的口径，见 _syncZoomMaxDefault）。
     ['zoomMin', 'zoomMax'].forEach(function (id) {
         const el = document.getElementById(id);
-        if (el) el.addEventListener('input', function () { updateTileEstimate(); refreshSubmitButtonState(); });
+        if (!el) return;
+        el.addEventListener('input', function () {
+            el.dataset.userEdited = '1';
+            updateTileEstimate();
+            refreshSubmitButtonState();
+        });
     });
 
     const outputPath = document.getElementById('outputPath');
@@ -2717,8 +2797,9 @@ function initContourTintUI() {
 
 // 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
 // 四条管线合并后底条只剩**一颗**提交钮（改前 #createTaskBtn 与 #createProcessBtn
-// 各管一张表单，这里要两边各解一次锁）。它**不按业务前置条件禁用**，只在提交
-// 进行中由各条装配逻辑临时 disabled 上锁（finally 里回到这里解锁）。
+// 各管一张表单，这里要两边各解一次锁）。它**不按业务前置条件禁用**；提交在飞
+// 期间的上锁与解锁归 ui.js 的 guard()（挂在 #taskForm 的 submit 上，见文件下方），
+// 它自己的 finally 会把 disabled 还原成进入时的值，所以这里只管「常态可用」。
 //
 // 为什么不按 currentBounds 禁用（B4）：disabled 的元素不可聚焦、不在 tab 序里，
 // 键盘用户 Tab 过整张表单根本碰不到它，也就无从知道「为什么不能提交」——
@@ -2743,6 +2824,13 @@ function resetForm({ clearBounds = true } = {}) {
 
     const outputPath = document.getElementById('outputPath');
     if (outputPath) delete outputPath.dataset.userEdited;
+    // 缩放两个框同理：form.reset() 已经把值拨回模板出厂值，用户那次编辑连同
+    // 它的记录一起结束，下一次 applyPipeline() 才能按管线重新代管默认值
+    // （不清的话「建完一个等高线任务」之后 #zoomMax 永远停在 15）。
+    ['zoomMin', 'zoomMax'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) delete el.dataset.userEdited;
+    });
 
     if (clearBounds) {
         if (_selectionEntity && viewer) {
@@ -2972,6 +3060,10 @@ function _beginBoundsEdit(vEl) {
             e.preventDefault();
             commit(true);
         } else if (e.key === 'Escape') {
+            // 改前只有 commit(false)：取消完这个输入框，事件继续冒到 document，
+            // panels.js 的层栈 Esc（bubble 相位）再把栈顶的整张面板一起关掉 ——
+            // 一次 Esc 关两层。写法与 map.js 地名搜索那处 Escape 分支一致。
+            e.stopPropagation();
             commit(false);
         }
     });
@@ -3153,6 +3245,11 @@ function _handleManualBoundsKeydown(e) {
         _applyManualBounds();
     } else if (e.key === 'Escape') {
         e.preventDefault();
+        // 改前没有 stopPropagation：键盘用户 Tab 到未被 inert 的 #boundsManualBtn
+        // 展开手动四至后按 Esc，取消四至的同时事件冒到 document，panels.js 的层栈
+        // 会把外层 #createPanel 也关掉。鼠标用户碰不到只是因为面板入口先调了
+        // window.closePanel()，那是位置依赖不是保证。
+        e.stopPropagation();
         _cancelManualBounds();
     }
 }
@@ -3361,15 +3458,10 @@ async function submitDownload(downloadType) {
     // 矩形选区不带这个字段，两条路都走原路径，行为一个字节都不变。
     if (_regionSpec) taskData.region = _regionSpec;
 
-    const btn = document.getElementById('createTaskBtn');
-    const originalText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = `
-        <svg class="icon-inline icon-inline--md" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation: spin 1s linear infinite;">
-            <circle cx="12" cy="12" r="10"></circle>
-        </svg>
-        ${t('js.map.download.creating')}
-    `;
+    // 按钮上锁不在这里：整条 submit 走 ui.js 的 guard()（见文件下方那条
+    // addEventListener('submit')）。改前这里手写 disabled + 换文案，而锁点在
+    // `await currentTileEstimate()` **之后** —— 多边形选区那次张数往返飞着的
+    // 时候按钮完全可点，连点两次就建两个一模一样的下载任务。
 
     try {
         const response = await fetch(apiUrl, {
@@ -3392,9 +3484,6 @@ async function submitDownload(downloadType) {
         }
     } catch (error) {
         showNotification(t('js.map.download.create_failed', { error: error.message }), 'danger');
-    } finally {
-        btn.innerHTML = originalText;
-        refreshSubmitButtonState();
     }
 }
 
@@ -3403,20 +3492,34 @@ async function submitDownload(downloadType) {
 // 都判了空，这里是例外。
 // 提交钮在 #taskForm **之外**（面板底条里，靠 form="taskForm" 关联），所以
 // 这条 submit 监听仍然是唯一的提交入口：原生提交会照常派发 submit 事件。
-document.getElementById('taskForm')?.addEventListener('submit', async function (e) {
+//
+// 三条装配的按钮上锁收在这里、走 ui.js 的 guard()：
+//   · 锁点必须在**任何 await 之前**。改前三条各自手写 disabled，而 submitDownload
+//     把锁点排在 `await currentTileEstimate()` 之后（多边形选区的张数来自服务端），
+//     那段往返里连点两次就是两发 POST /api/tasks、两个一模一样的任务。
+//   · guard 的 in-flight 标志（dataset.guardBusy）挡的是 disabled 挡不住的那几条
+//     路：回车重复触发、程序化调用。原生提交正是回车那条。
+//   · spinner 与文案复原由 guard 统一做，所以三条装配里的
+//     `btn.innerHTML = t('...creating'/'...uploading'/'...submitting')` 全部删掉
+//     —— 按钮自己写着它在做什么，这是 ui.js:518-520 立的规矩。
+// e.submitter 兜一层：键盘提交（回车）在旧浏览器上可能不带它，回落到那颗钮本身。
+document.getElementById('taskForm')?.addEventListener('submit', function (e) {
     e.preventDefault();
-    const pipeline = _currentPipeline();
-    // 两条处理管线都是上传驱动、没有 bbox，各自校验来源后直接走自己的装配。
-    if (pipeline === 'local_terrain') {
-        await submitLocalTerrain();
-        return;
-    }
-    // 等高线是一站式：创建后立即开始。
-    if (pipeline === 'contour') {
-        await submitContour();
-        return;
-    }
-    await submitDownload(pipeline);
+    const trigger = e.submitter || document.getElementById('createTaskBtn');
+    return guard(trigger, async function () {
+        const pipeline = _currentPipeline();
+        // 两条处理管线都是上传驱动、没有 bbox，各自校验来源后直接走自己的装配。
+        if (pipeline === 'local_terrain') {
+            await submitLocalTerrain();
+            return;
+        }
+        // 等高线是一站式：创建后立即开始。
+        if (pipeline === 'contour') {
+            await submitContour();
+            return;
+        }
+        await submitDownload(pipeline);
+    });
 });
 
 function showNotification(message, type = 'info') {
@@ -3427,18 +3530,15 @@ function showNotification(message, type = 'info') {
     alert(message); // 兜底：ui.js 未加载时退回原生
 }
 
-const style = document.createElement('style');
-style.textContent = `
-    @keyframes spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-    }
-    @keyframes fadeOut {
-        from { opacity: 1; transform: translateY(0); }
-        to { opacity: 0; transform: translateY(-20px); }
-    }
-`;
-document.head.appendChild(style);
+// 这里原先运行期往 document.head 注入 `@keyframes spin` 与 `@keyframes fadeOut`
+// 两条关键帧。两条一起删：
+//   · spin 的唯一消费者是上面那颗提交钮的内联 SVG，提交改走 guard() 之后
+//     spinner 是 style.css 里登记过的 .hint-spin，不再需要它；
+//   · fadeOut 从来没有消费者（全仓零 `animation: fadeOut`）。
+// 顺带修掉一条错记载：ui.js 里曾写「全仓没有 @keyframes spin，那个 spinner 一动
+// 不动」—— 它其实由这里注入、一直在转。运行期注入的关键帧还绕过
+// tests/test_css_contract.py 的动画计数（那边只读 style.css），所以删掉之后
+// 「入场动画一段」这个账才真的对得上。
 
 // ---------------------------------------------------------------------------
 // Contour: one-stop create -> start, plus a map preview overlay for finished
@@ -3492,10 +3592,7 @@ async function submitContour() {
         }
     }
 
-    const btn = document.getElementById('createTaskBtn');
-    const original = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = t(fromDemTask ? 'js.map.process.submitting' : 'js.map.process.uploading');
+    // 上锁与 spinner 归 guard()（taskForm 的 submit 监听里），这里不再手写。
     try {
         const createResp = await fetch('/api/contour/tasks', { method: 'POST', body: fd });
         if (!createResp.ok) {
@@ -3527,9 +3624,6 @@ async function submitContour() {
         _afterTaskCreated();
     } catch (err) {
         showNotification(t('js.map.process.create_failed', { error: err.message }), 'danger');
-    } finally {
-        btn.innerHTML = original;
-        refreshSubmitButtonState();
     }
 }
 
@@ -4007,11 +4101,9 @@ async function submitLocalTerrain() {
         }
     }
 
-    const btn = document.getElementById('createTaskBtn');
-    btn.disabled = true;
-    const original = btn.innerHTML;
-    // dem_task 分支一个字节都不上传，按钮文案不能写「上传中...」。
-    btn.innerHTML = t(fromDemTask ? 'js.map.process.submitting' : 'js.map.process.uploading');
+    // 上锁与 spinner 归 guard()（taskForm 的 submit 监听里）。改前这里按
+    // dem_task 分支换「提交中/上传中」两种文案 —— 按钮自己写着它在做什么，
+    // 一条动作配一条「正在…」等于多一条要维护的文案（ui.js 的 guard 注释）。
     try {
         const resp = await fetch('/api/terrain/local/tasks', { method: 'POST', body: fd });
         if (!resp.ok) {
@@ -4033,9 +4125,6 @@ async function submitLocalTerrain() {
         _afterTaskCreated();
     } catch (err) {
         showNotification(t('js.map.process.upload_failed', { error: err.message }), 'danger');
-    } finally {
-        btn.innerHTML = original;
-        refreshSubmitButtonState();
     }
 }
 
