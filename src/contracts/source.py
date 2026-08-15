@@ -38,7 +38,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
-__all__ = ['SourceSnapshot', 'FINGERPRINT_LENGTH']
+__all__ = ['SourceSnapshot', 'FINGERPRINT_LENGTH', 'source_id_of']
 
 # 摘要取多少位十六进制。8 位（32 bit）在几十个源的量级上碰撞概率可忽略，
 # 而目录名越短越好读；basemap_source.source_version 也是 8 位，保持一致。
@@ -240,3 +240,19 @@ class SourceSnapshot:
         servers = ','.join(self.server_list) if self.server_list else '-'
         return (f'{self.source_id} fp={self.fingerprint} style={self.style} '
                 f'scheme={self.tile_scheme} servers={servers} tpl={self.url_template}')
+
+
+def source_id_of(raw) -> str:
+    """`tasks.source_snapshot` 列原文 → 快照里的 `source_id`；空 / 坏行回落空串。
+
+    存在的理由是**展示侧读的是它、不是 `style` 列**。插件源任务的 `style` 列
+    是谎话：`registry.build_source_snapshot` 把快照的 style 冻成 `'p'`（它只
+    决定缓存命名空间的可读前缀），而任务行里落的仍是提交那一刻样式下拉的值 ——
+    于是一个天地图任务在历史里显示成「路线图」。快照的 `source_id` 是行上唯一
+    的真身份：内置源是 style 名（`satellite`），插件源是 `plugin:<pid>:<sid>`。
+
+    只取一个字段却仍走 `from_json`：坏行的口径（空串而不是抛）必须与读取侧的
+    其余部分完全一致，多写一份 `json.loads` 就是第二份口径。
+    """
+    snapshot = SourceSnapshot.from_json(raw)
+    return snapshot.source_id if snapshot else ''

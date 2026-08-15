@@ -9,6 +9,7 @@ from enum import Enum
 from src.core.config import Config
 from src.core.database import parse_db_timestamp
 from src.contracts.region import RegionSpec, RegionValidationError
+from src.contracts.source import source_id_of
 from src.services.geo_validation import validate_bbox, validate_zoom
 
 
@@ -356,6 +357,11 @@ class Task:
             # 新增键是纯追加：上面 20 个键的名字与取值一个字没动，前端与
             # 存量测试对 to_dict 的断言全部不受影响。
             'source_fingerprint': self.source_fingerprint,
+            # 展示侧要的是「这一行到底是谁给的瓦片」。不能拿 style 回答：
+            # 插件源任务的 style 列存的是提交那一刻下拉的值，而真实来源被冻在
+            # 快照里（详见 contracts.source.source_id_of）。/api/history_all
+            # 的 map 段发同名同义的一列，两条路给前端的键名必须一致。
+            'source_id': source_id_of(self.source_snapshot),
             'region_spec': self.region_spec,
             'gap_tiles': self.gap_tiles,
             'gap_decision': self.gap_decision,

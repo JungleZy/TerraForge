@@ -13,6 +13,7 @@ from src.contracts.artifact import PIPELINES, Artifact, ArtifactKind
 from src.contracts.outcome import ACTIVE_STATE_VALUES, SUCCESSFUL_STATE_VALUES
 from src.contracts.region import RegionSpec, RegionValidationError
 from src.contracts.region_tiles import bbox_tile_range, validate_zoom_range
+from src.contracts.source import source_id_of
 from src.core.config import Config
 from src.core.database import get_connection, DEFAULT_CONFIGS
 from src.core.tile_server import current_tile_port
@@ -677,7 +678,16 @@ def get_history_all():
                     -- 用 0 而不是 NULL：前端按真值判断是否渲染角标，
                     -- NULL 与 0 在 JS 里都是假值，但 0 明确表达「查过，没有缺块」。
                     gap_tiles,
-                    gap_decision
+                    gap_decision,
+                    -- 「这一行的瓦片是谁给的」。**不能问 style 列**：插件源
+                    -- 任务的 style 存的是提交那一刻样式下拉的值，而真实来源被
+                    -- 冻在快照里（registry.build_source_snapshot 把快照 style
+                    -- 定成 'p'），于是一个天地图任务在历史里显示成「路线图」。
+                    -- 原文在下面的行循环里换成快照里那一个 source_id 字段：
+                    -- 整份快照还含 url_template 与 credential_reference 键名，
+                    -- 展示一行元信息用不着，发出去只是让每条历史行都胖一圈。
+                    -- 其余四张表没有这一列，补 NULL 对齐 UNION。
+                    source_snapshot
                 FROM tasks
                 {where_map}
                 UNION ALL
@@ -696,7 +706,8 @@ def get_history_all():
                     created_at, started_at, completed_at,
                     error_message,
                     NULL AS total_running_seconds,
-                    0 AS gap_tiles, '' AS gap_decision
+                    0 AS gap_tiles, '' AS gap_decision,
+                    NULL AS source_snapshot
                 FROM dem_tasks
                 {where_dem}
                 UNION ALL
@@ -715,7 +726,8 @@ def get_history_all():
                     created_at, started_at, completed_at,
                     error_message,
                     NULL AS total_running_seconds,
-                    0 AS gap_tiles, '' AS gap_decision
+                    0 AS gap_tiles, '' AS gap_decision,
+                    NULL AS source_snapshot
                 FROM local_terrain_tasks
                 {where_local}
                 UNION ALL
@@ -734,7 +746,8 @@ def get_history_all():
                     created_at, started_at, completed_at,
                     error_message,
                     NULL AS total_running_seconds,
-                    0 AS gap_tiles, '' AS gap_decision
+                    0 AS gap_tiles, '' AS gap_decision,
+                    NULL AS source_snapshot
                 FROM contour_tasks
                 {where_contour}
                 UNION ALL
@@ -753,7 +766,8 @@ def get_history_all():
                     created_at, started_at, completed_at,
                     error_message,
                     total_running_seconds,
-                    gap_tiles, gap_decision
+                    gap_tiles, gap_decision,
+                    NULL AS source_snapshot
                 FROM plugin_tasks
                 {where_plugin}
                 ORDER BY created_at DESC, id DESC
@@ -766,6 +780,11 @@ def get_history_all():
             tasks = []
             for r in rows:
                 d = dict(r)
+                # 快照原文换成它唯一的展示用字段（口径见 source_id_of：
+                # 空 / 坏行一律空串）。键名与 Task.to_dict() 逐字相同 ——
+                # 同一条 map 任务经 /api/tasks 与经这里进前端时端点不同，
+                # historyMetaText 只认一个键名。
+                d['source_id'] = source_id_of(d.pop('source_snapshot', None))
                 tasks.append(d)
 
             total_pages = (total_count + per_page - 1) // per_page

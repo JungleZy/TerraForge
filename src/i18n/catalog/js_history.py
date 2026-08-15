@@ -170,6 +170,12 @@ MESSAGES = {
         'zh': '地形',
         'en': 'Terrain',
     },
+    # 插件源任务的来源文案。内置那五个样式有固定词表，插件源没有 ——
+    # 这一格只做「不是内置样式」的中性前缀，后面跟原样的 plugin_id:source_id。
+    'js.history.style.plugin_source': {
+        'zh': '插件源',
+        'en': 'Plugin source',
+    },
     'js.history.style.contour': {
         'zh': '等高线',
         'en': 'Contour',

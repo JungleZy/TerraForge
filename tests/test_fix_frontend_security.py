@@ -119,9 +119,21 @@ def test_history_secondary_fields_escaped():
     # getStyleText 的 `|| style` 兜底会把 DB 里的 style 原文带出来，
     # 进模板前必须过 escapeHtml。改为断言「组装函数里有兜底来源 +
     # 插值点确实转义」两个环节，只查一个都会留洞。
+    #
+    # 地图行的来源文案又下沉了一层（mapSourceText）：插件源任务的 style 列
+    # 是谎话，那一格改读 source_id。**不可信输入因此多了一个**——
+    # source_id 的尾巴同样是 DB 原文（source_snapshot 里的字段），
+    # 与 getStyleText 的兜底走同一个插值点，所以这里连着两层一起钉。
     meta_body = _body('history.js', 'historyMetaText')
-    assert 'getStyleText(task.style)' in meta_body, (
-        'historyMetaText 没有调 getStyleText——样式元信息的来源变了？本测试已失效'
+    assert 'mapSourceText(task)' in meta_body, (
+        'historyMetaText 不再经 mapSourceText 取地图行来源——本测试已失效'
+    )
+    source_body = _body('history.js', 'mapSourceText')
+    assert 'getStyleText(task.style)' in source_body, (
+        'mapSourceText 没有调 getStyleText——样式元信息的来源变了？本测试已失效'
+    )
+    assert 'task.source_id' in source_body, (
+        'mapSourceText 不再读 source_id——插件源任务又会显示成「路线图」'
     )
     assert '{{ metaText }}' in _js('task_list.js'), (
         'TaskRow 模板没有用 {{ metaText }} 插值渲染元信息——'

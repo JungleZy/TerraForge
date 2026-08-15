@@ -219,6 +219,34 @@
                             </select>
                             <img id="mapStylePreview" class="map-style-preview" alt="{{ t('tpl.index.download.style_preview_alt') }}" title="{{ t('tpl.index.download.style_preview_title') }}">
                         </div>
+                        {# 样式下拉被插件源锁住时的说明。放在被禁用的那个控件
+                           **正下方**（而不是引发禁用的插件源下拉旁）:置灰的
+                           控件要自己解释得清,用户的目光落在灰掉的东西上时
+                           答案就在原地。可见性由 map.js 的
+                           initPluginSourceStyleLock 一处切换。
+
+                           ⚠️ **是 div 不是 small,且不许加 d-block。** 这一句是
+                           条件显示的,而同目录其它 form-text 提示都常显,所以
+                           照抄它们那套「small.form-text.text-muted.d-block」在
+                           这里两头都错:
+                             1. `.d-block{display:block!important}` 压过 `[hidden]`
+                                的 UA 规则。实测 hidden 属性照样设、computed
+                                display 仍是 block、高度 18px —— 提示变常显。
+                             2. 去掉 d-block 之后 small 元素是 inline,而紧跟的
+                                label.form-label 在 Bootstrap 里同样没有 display、
+                                也是 inline —— 实测这句提示与「数据源」标签挤在
+                                同一行(两者 top 都是 623)。
+                           div 天生块级,`hidden` 靠 UA 的 display:none 就够,
+                           两个坑都不踩。
+
+                           ⚠️ 本段(以及本文件任何 Jinja 注释)里**不许写出带
+                           尖括号的标签字面量,开标签和闭标签都算**。
+                           tests/test_css_contract.py 的 `_FormStructureParser`
+                           用 HTMLParser 扒 #downloadForm 的直接子元素,而
+                           HTMLParser 不认识 Jinja 注释 —— 注释里的标签字面量会
+                           被当成真标签,把深度计数顶歪,form 的闭标签再也匹配
+                           不上。写类名路径(如 label.form-label)代替。 #}
+                        <div class="form-text text-muted" id="mapStyleLockHint" hidden>{{ t('tpl.index.download.style_locked_hint') }}</div>
                         {# 插件源:选「内置源」时走上面的样式选择(存量路径,
                            一字不变);选插件提供的源时随任务提交
                            source_plugin_id / source_id 两个字段,由后端在
@@ -675,6 +703,11 @@
                         _boot('pluginSources', initPluginSourceOptions);
                         _boot('processTypeToggle', initProcessTypeToggle);
                         _boot('mapStylePreview', initMapStylePreview);
+                        {# 样式下拉的插件源联动。排在 pluginSources 之后只是
+                           读起来顺:它只挂 change 监听、读 select.value,
+                           与「选项填充完了没有」无关(initPluginSourceOptions
+                           是 async,谁也不能假定它已经跑完)。 #}
+                        _boot('pluginSourceStyleLock', initPluginSourceStyleLock);
                         {# 区域导入 + 地点搜索（§5.1）。必须排在 initMap 之后：
                            两条路都要 viewer（画多边形 / 飞到 bbox）。 #}
                         _boot('regionTools', initRegionTools);

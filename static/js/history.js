@@ -209,7 +209,7 @@ function historyMetaText(task) {
     if (task.task_type === 'map' || task.task_type === 'contour') {
         const styleText = task.task_type === 'contour'
             ? t('js.history.style.contour')
-            : (task.style ? getStyleText(task.style) : '');
+            : mapSourceText(task);
         const zoom = (task.zoom_min != null && task.zoom_max != null)
             ? `${task.zoom_min}~${task.zoom_max}`
             : '';
@@ -336,6 +336,28 @@ function filterTasks(searchTerm) {
 // 加载。这里曾有一份与 tasks.js 并行的实现：两者在首页共享全局作用域，后
 // 加载的本文件静默遮蔽 tasks.js 那份，而两份 getStatusText 查的是不同的
 // i18n key 前缀 —— 详见那个文件开头的说明。
+
+// 地图任务行1 的来源文案。**不能无条件走 getStyleText(task.style)**：选了
+// 插件源的任务，style 列存的仍是提交那一刻样式下拉的值（后端只用它算了个
+// 缓存前缀就丢开，取哪张瓦片全看快照里的 url_template），于是一个天地图任务
+// 会显示成「路线图」——下拉没动时的默认值，与真实来源毫无关系。
+//
+// source_id 是行上唯一的真身份，两条路都发它（/api/history_all 的 map 段从
+// source_snapshot 里取，/api/tasks 由 Task.to_dict 输出）：内置源是 style 名
+// （'satellite'），插件源是 'plugin:<plugin_id>:<source_id>'。
+//
+// 尾巴原样显示插件 id + 源 id，与插件任务行的口径一致（那里直接显示
+// plugin_id）—— 插件源没有内置那五个样式那样的固定词表可查。
+function mapSourceText(task) {
+    const sourceId = task.source_id || '';
+    if (sourceId.indexOf('plugin:') === 0) {
+        const tail = sourceId.slice('plugin:'.length);
+        const label = t('js.history.style.plugin_source');
+        return tail ? `${label} ${tail}` : label;
+    }
+    // 存量行（source_id 为空串或缺列）与内置源一字不变地走原路。
+    return task.style ? getStyleText(task.style) : '';
+}
 
 function getStyleText(style) {
     const styles = {

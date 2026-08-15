@@ -1407,6 +1407,41 @@ async function initPluginSourceOptions() {
     }
 }
 
+// 选了插件源之后，「地图样式」下拉对结果**毫无影响**：带快照的任务里
+// download_engine.get_tile_url 走的是 source.url_template，style 形参根本不
+// 参与取瓦片；registry.build_source_snapshot 还把快照的 style 冻成 'p'
+// （它只决定缓存目录的可读前缀）。让一个无效的下拉保持可拨、界面上一个字
+// 都不说，是在骗用户 —— 置灰它，并把原因写在它正下方。
+//
+// 顺带把样式缩略图也收起来：那五张是内置源的样例瓦片，插件源下它展示的是
+// 一张与将要下载的东西无关的图，和可拨的下拉是同一种谎话。
+//
+// **禁用不会把 style 变成 undefined。** disabled 只挡两件事：原生表单提交与
+// 用户交互；`select.value` 照样读得到最后一次选中的码。而这个表单的提交体
+// 是 submit 处理器手拼的（`document.getElementById('mapStyle').value`），从来
+// 没走过原生提交，所以后端拿到的仍是一个合法的单字符码 —— MapStyle
+// .from_shorthand 对非字符串会抛 ValueError（路由层映射 400），这条不变量
+// 必须成立。tests/test_plugin_frontend_contract.py 钉住了它。
+function initPluginSourceStyleLock() {
+    const source = document.getElementById('downloadPluginSource');
+    const style = document.getElementById('mapStyle');
+    if (!source || !style) return;
+
+    const hint = document.getElementById('mapStyleLockHint');
+    const preview = document.getElementById('mapStylePreview');
+
+    function apply() {
+        // 内置源那一项的 value 是空串，插件源是 "<plugin_id>:<source_id>"。
+        const locked = !!source.value;
+        style.disabled = locked;
+        if (hint) hint.hidden = !locked;
+        if (preview) preview.hidden = locked;
+    }
+
+    source.addEventListener('change', apply);
+    apply();
+}
+
 function initProcessTypeToggle() {
     // 数据处理表单（#processForm）：本地高程切片 / 等高线瓦片。
     // 字段可见性是「处理类型 × 数据来源」二维的：来源为已下载的 DEM 任务时

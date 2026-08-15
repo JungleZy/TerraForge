@@ -208,6 +208,14 @@ MESSAGES = {
         'zh': '内置源',
         'en': 'Built-in sources',
     },
+    # 选了插件源之后「地图样式」下拉被置灰，这一句解释为什么。
+    # 不是措辞谨慎的「可能不适用」：带快照的任务取哪张瓦片完全由快照里的
+    # url_template 决定（download_engine.get_tile_url），样式码是死参数。
+    'tpl.index.download.style_locked_hint': {
+        'zh': '插件源自带图层，上面的地图样式选择对它不起作用。',
+        'en': 'A plugin source ships its own layer — the map style above has no '
+              'effect on it.',
+    },
     'tpl.index.download.dem_dataset': {
         'zh': '数据源',
         'en': 'Data source',
