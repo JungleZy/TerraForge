@@ -22,9 +22,11 @@ MESSAGES = {
         'zh': '清除选区',
         'en': 'Clear selection',
     },
+    # 「新建下载任务」→「新建任务」（2026-08-15）：这一条打开的是四条管线共用的
+    # 新建面板（预选瓦片），标签不该只提其中一条管线；也与面板标题同词。
     'js.cmdk.new_download': {
-        'zh': '新建下载任务',
-        'en': 'New download task',
+        'zh': '新建任务',
+        'en': 'New task',
     },
     'js.cmdk.open_tasks': {
         'zh': '打开任务面板',
@@ -32,24 +34,22 @@ MESSAGES = {
     },
     'js.cmdk.open_config': {
         'zh': '打开配置面板',
-        'en': 'Open config panel',
+        'en': 'Open settings panel',
     },
+    # 「打开本地处理」→「新建地形切片任务」：改前它打开的是「数据处理」弹窗，
+    # 标签描述的是那个容器；现在它打开新建面板并预选本地地形切片，标签描述的是
+    # 用户要建的那个东西。
     'js.cmdk.open_process': {
-        'zh': '打开本地处理',
-        'en': 'Open local processing',
+        'zh': '新建地形切片任务',
+        'en': 'New terrain tiling task',
     },
     'js.cmdk.copy_coords': {
         'zh': '复制当前坐标',
         'en': 'Copy current coordinates',
     },
-    'js.cmdk.goto_history': {
-        'zh': '前往历史记录页',
-        'en': 'Go to history page',
-    },
-    'js.cmdk.goto_config': {
-        'zh': '前往配置页',
-        'en': 'Go to config page',
-    },
+    # goto_history / goto_config 两条已删（2026-08-15 入口收敛）：命令面板同时列
+    # 「打开任务面板」+「前往历史记录页」是同一件事的两种形态。/history 与
+    # /config 两条路由本身保留（深链与打包可达性），只是不再从命令面板露出。
     'js.cmdk.theme_dark': {
         'zh': '切换到暗黑主题',
         'en': 'Switch to dark theme',

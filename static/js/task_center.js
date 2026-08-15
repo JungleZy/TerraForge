@@ -705,31 +705,29 @@ function formatDuration(seconds) {
     }
 }
 
-// 字节/秒 → 人类可读。1024 进制，与全站文件大小口径一致。
-// 单位不翻译（B/s、MB/s 中英通用），只有「速度: 」前缀走 i18n。
-// ≥100 时取整、否则保留一位小数：避免 99.9 → 100.0 之间字宽来回跳。
+// 字节/秒 → 人类可读。**显式包装** window.formatBytes（1024 进位循环全站只有
+// 那一份，在 static/js/ui.js）：这里只加两件与「速度」有关的事 —— `/s` 后缀，
+// 以及 ≥100 取整。
+//
+// ≥100 取整的理由：速度是每秒重画的活读数，取整才不让字宽在 99.9 ↔ 100.0
+// 之间来回跳。文件大小是静态读数，没有这个问题，一律留一位小数反而更准。
+// 差别是真的，但它是共享实现的一个参数，不是第二份进位循环。
+// 单位词不翻译（B/s、MiB/s 中英通用），只有「速度: 」前缀走 i18n。
 function formatSpeed(bps) {
     if (!(bps > 0)) return '0 B/s';
-    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-    let value = bps;
-    let i = 0;
-    while (value >= 1024 && i < units.length - 1) {
-        value /= 1024;
-        i += 1;
-    }
-    const shown = (i === 0 || value >= 100) ? Math.round(value) : value.toFixed(1);
-    return `${shown} ${units[i]}`;
+    return window.formatBytes(bps, { suffix: '/s', roundAtHundred: true });
 }
 
-// 字节 → 人类可读的 formatBytes 在 static/js/ui.js（window.formatBytes）。
-// **不能**放在本文件：/config 独立页把 base.html 的 vendor_task_list_js 块
-// 覆盖成空（省掉 Vue + 三个任务脚本约 160 KB），本文件在那一页根本不加载，
-// 而配置页的缓存卡要用它 —— 放这儿就是一页 ReferenceError。ui.js 是无条件
-// 全局加载的那一档。
+// formatBytes 住在 static/js/ui.js（window.formatBytes），**不能**搬到本文件：
+// /config 独立页把 base.html 的 vendor_task_list_js 块覆盖成空（省掉 Vue + 三个
+// 任务脚本约 160 KB），本文件在那一页根本不加载，而配置页的缓存卡要用它 ——
+// 放这儿就是一页 ReferenceError。ui.js 是无条件全局加载的那一档。
 //
-// 它与上面的 formatSpeed 刻意是**两个**函数：取整规则不一样，而那个差别有
-// 理由。速度是每秒重画的活读数，≥100 取整是为了不让字宽在 99.9 ↔ 100.0
-// 之间来回跳；文件大小是静态读数，没有这个问题，一律留一位小数反而更准。
+// 上面的 formatSpeed 是它的包装，不是第二份实现。曾经有三份：ui.js、这里的
+// formatSpeed、map.js 的 _fmtBytes（第三份、无文档，舍入 `v < 10 ? 1 : 0` 位），
+// 于是同一个 102400 B 分别读作 100.0 KB / 100 KB / 100 KB，缓存卡、产物清单、
+// 磁盘预算判决各说各话，而没有任何机制会报错。_fmtBytes 已删，调用点全部改
+// window.formatBytes；再要一套舍入规则就加参数，不要加函数。
 
 function calculateTimeInfo(task) {
     const result = {
@@ -810,47 +808,55 @@ function apiPrefixForType(taskType) {
     return '/api/tasks';
 }
 
-async function startTask(taskId, taskType = 'map') {
-    try {
-        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/start`, {
-            method: 'POST'
-        });
-        if (!response.ok) {
-            // 与 pause/resume 同口径：透出服务端给的具体原因，不只报"失败"
-            const result = await response.json().catch(() => ({}));
-            throw new Error(result.error || ('HTTP ' + response.status));
+// trigger 是触发这次动作的那颗按钮（行上的图标钮由 task_list.js 的 act 自己
+// 上锁，所以那条路不传）。省略时退化成无视觉锁的直接调用，动作语义不变。
+async function startTask(taskId, taskType = 'map', trigger = null) {
+    return guard(trigger, async function () {
+        try {
+            const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/start`, {
+                method: 'POST'
+            });
+            if (!response.ok) {
+                // 与 pause/resume 同口径：透出服务端给的具体原因，不只报"失败"
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || ('HTTP ' + response.status));
+            }
+        } catch (error) {
+            showToast(t('js.tasks.toast.start_failed', {error: error.message}), 'danger');
         }
-    } catch (error) {
-        showToast(t('js.tasks.toast.start_failed', {error: error.message}), 'danger');
-    }
+    });
 }
 
-async function pauseTask(taskId, taskType = 'map') {
-    try {
-        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/pause`, {
-            method: 'POST'
-        });
-        if (!response.ok) {
-            const result = await response.json().catch(() => ({}));
-            throw new Error(result.error || ('HTTP ' + response.status));
+async function pauseTask(taskId, taskType = 'map', trigger = null) {
+    return guard(trigger, async function () {
+        try {
+            const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/pause`, {
+                method: 'POST'
+            });
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || ('HTTP ' + response.status));
+            }
+        } catch (error) {
+            showToast(t('js.tasks.toast.pause_failed', {error: error.message}), 'danger');
         }
-    } catch (error) {
-        showToast(t('js.tasks.toast.pause_failed', {error: error.message}), 'danger');
-    }
+    });
 }
 
-async function resumeTask(taskId, taskType = 'map') {
-    try {
-        const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/resume`, {
-            method: 'POST'
-        });
-        if (!response.ok) {
-            const result = await response.json().catch(() => ({}));
-            throw new Error(result.error || ('HTTP ' + response.status));
+async function resumeTask(taskId, taskType = 'map', trigger = null) {
+    return guard(trigger, async function () {
+        try {
+            const response = await fetch(`${apiPrefixForType(taskType)}/${taskId}/resume`, {
+                method: 'POST'
+            });
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || ('HTTP ' + response.status));
+            }
+        } catch (error) {
+            showToast(t('js.tasks.toast.resume_failed', {error: error.message}), 'danger');
         }
-    } catch (error) {
-        showToast(t('js.tasks.toast.resume_failed', {error: error.message}), 'danger');
-    }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -951,6 +957,8 @@ async function ensureGapSummary(key, taskId, taskType) {
         window.TaskStore.commit(key, { gap_summary: summary });
         return summary;
     } catch (error) {
+        // 用户可见：错误写进 gap_summary_error，行上渲染成一句提示 + 重载按钮
+        // （task_list.js 的 gapLoadError / retryGaps）。console 那条只是原因。
         console.error(`Failed to load gap summary for task ${taskId}:`, error);
         window.TaskStore.commit(key, { gap_summary_error: error.message || String(error) });
         return null;
@@ -966,20 +974,22 @@ async function ensureGapSummary(key, taskId, taskType) {
  * 400），前端不复制那张状态表 —— 复制出来的第二份迟早与后端漂移，而漂移的
  * 表现是「按钮点了没反应」。这里只负责把服务端的拒绝原因原文透出。
  */
-async function refillTask(taskId, taskType = 'map') {
-    try {
-        const response = await fetch(`/api/tasks/${taskId}/refill`, { method: 'POST' });
-        if (!response.ok) {
-            const result = await response.json().catch(() => ({}));
-            throw new Error(result.error || ('HTTP ' + response.status));
+async function refillTask(taskId, taskType = 'map', trigger = null) {
+    return guard(trigger, async function () {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}/refill`, { method: 'POST' });
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || ('HTTP ' + response.status));
+            }
+            // 状态改由后端广播（task_progress / task_gap_decision）落地，这里
+            // 不本地改 —— 本地先改会与随后到达的权威推送打架，且补漏被拒时
+            // 界面已经翻成 retrying 了。
+            showToast(t('js.gaps.toast.refill_started', { id: taskId }), 'info');
+        } catch (error) {
+            showToast(t('js.gaps.toast.refill_failed', { error: error.message }), 'danger');
         }
-        // 状态改由后端广播（task_progress / task_gap_decision）落地，这里
-        // 不本地改 —— 本地先改会与随后到达的权威推送打架，且补漏被拒时
-        // 界面已经翻成 retrying 了。
-        showToast(t('js.gaps.toast.refill_started', { id: taskId }), 'info');
-    } catch (error) {
-        showToast(t('js.gaps.toast.refill_failed', { error: error.message }), 'danger');
-    }
+    });
 }
 
 /**
@@ -988,60 +998,64 @@ async function refillTask(taskId, taskType = 'map') {
  *
  * 必须二次确认：这是一条**不可撤销**的决定，产物与历史都会永久带缺块标记。
  */
-async function acceptTaskGaps(taskId, taskType = 'map') {
-    const key = `${taskType}:${taskId}`;
-    const row = window.TaskStore
-        ? (window.TaskStore.get(key) || window.TaskStore.getActive(key)) : null;
-    const total = (row && row.gap_tiles) || 0;
-    const ok = await showConfirm(t('js.gaps.confirm_accept', { n: total.toLocaleString() }), {
-        title: t('js.gaps.action.accept'),
-        confirmText: t('js.gaps.action.accept'),
-        type: 'warning',
-    });
-    if (!ok) return;
-    try {
-        // 两条管线的端点名不同（地图 accept_gaps，插件 accept-gaps），回的
-        // 东西也不同 —— 分开写，不硬凑成一条 URL 模板。
-        const isPlugin = taskType === 'plugin';
-        const url = isPlugin
-            ? `/api/plugins/tasks/${taskId}/accept-gaps`
-            : `/api/tasks/${taskId}/accept_gaps`;
-        const response = await fetch(url, { method: 'POST' });
-        if (!response.ok) {
-            const result = await response.json().catch(() => ({}));
-            throw new Error(result.error || ('HTTP ' + response.status));
-        }
-        // 插件管线的「接受缺块」是**回写参数 + 重跑**（PluginTaskManager
-        // .accept_gaps 末尾直接 start_task），端点只回 {success:true}。在这里
-        // 本地写一个终态就是撒谎：行会翻成「已完成（有缺口）」并被摘出活动
-        // 集，而后端下一刻就开始发 plugin_task_progress —— 那些推送又会把一个
-        // 刚被摘掉的任务塞回来，两边打架。权威状态交给推送，这里只补一次活动
-        // 列表（补拉是幂等的，重跑那一发进度比本次响应更早到也不影响）。
-        if (isPlugin) {
+async function acceptTaskGaps(taskId, taskType = 'map', trigger = null) {
+    // 确认框**也在**守卫里面：不然连点会叠出两个一模一样的确认框，用户按两次
+    // 回车就发两发不可撤销的 accept。
+    return guard(trigger, async function () {
+        const key = `${taskType}:${taskId}`;
+        const row = window.TaskStore
+            ? (window.TaskStore.get(key) || window.TaskStore.getActive(key)) : null;
+        const total = (row && row.gap_tiles) || 0;
+        const ok = await showConfirm(t('js.gaps.confirm_accept', { n: total.toLocaleString() }), {
+            title: t('js.gaps.action.accept'),
+            confirmText: t('js.gaps.action.accept'),
+            type: 'warning',
+        });
+        if (!ok) return;
+        try {
+            // 两条管线的端点名不同（地图 accept_gaps，插件 accept-gaps），回的
+            // 东西也不同 —— 分开写，不硬凑成一条 URL 模板。
+            const isPlugin = taskType === 'plugin';
+            const url = isPlugin
+                ? `/api/plugins/tasks/${taskId}/accept-gaps`
+                : `/api/tasks/${taskId}/accept_gaps`;
+            const response = await fetch(url, { method: 'POST' });
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || ('HTTP ' + response.status));
+            }
+            // 插件管线的「接受缺块」是**回写参数 + 重跑**（PluginTaskManager
+            // .accept_gaps 末尾直接 start_task），端点只回 {success:true}。在这里
+            // 本地写一个终态就是撒谎：行会翻成「已完成（有缺口）」并被摘出活动
+            // 集，而后端下一刻就开始发 plugin_task_progress —— 那些推送又会把一个
+            // 刚被摘掉的任务塞回来，两边打架。权威状态交给推送，这里只补一次活动
+            // 列表（补拉是幂等的，重跑那一发进度比本次响应更早到也不影响）。
+            if (isPlugin) {
+                showToast(t('js.gaps.toast.accepted', {
+                    n: Number(total).toLocaleString(),
+                }), 'warning');
+                loadActiveTasks();
+                return;
+            }
+            // 地图管线的端点回的就是新的 gap_summary（含 status / decision）——
+            // 直接落地，不再多打一次 GET /gaps。
+            const summary = await response.json();
+            if (window.TaskStore) {
+                window.TaskStore.commit(key, {
+                    status: summary.status || 'completed_with_gaps',
+                    gap_decision: summary.decision || 'accept',
+                    gap_tiles: summary.total != null ? summary.total : total,
+                    gap_summary: summary,
+                });
+                window.TaskStore.dropActive(key);
+            }
             showToast(t('js.gaps.toast.accepted', {
-                n: Number(total).toLocaleString(),
+                n: Number(summary.total || total).toLocaleString(),
             }), 'warning');
-            loadActiveTasks();
-            return;
+        } catch (error) {
+            showToast(t('js.gaps.toast.accept_failed', { error: error.message }), 'danger');
         }
-        // 地图管线的端点回的就是新的 gap_summary（含 status / decision）——
-        // 直接落地，不再多打一次 GET /gaps。
-        const summary = await response.json();
-        if (window.TaskStore) {
-            window.TaskStore.commit(key, {
-                status: summary.status || 'completed_with_gaps',
-                gap_decision: summary.decision || 'accept',
-                gap_tiles: summary.total != null ? summary.total : total,
-                gap_summary: summary,
-            });
-            window.TaskStore.dropActive(key);
-        }
-        showToast(t('js.gaps.toast.accepted', {
-            n: Number(summary.total || total).toLocaleString(),
-        }), 'warning');
-    } catch (error) {
-        showToast(t('js.gaps.toast.accept_failed', { error: error.message }), 'danger');
-    }
+    });
 }
 
 /**
@@ -1082,69 +1096,70 @@ async function fetchExportFormats(taskType, taskId) {
  *
  * 耗时与瓦片数成正比（几万张要几十秒），所以按钮当场上锁 —— 不锁的话用户会
  * 连点，后端每一发都真的重打一遍同一个文件。锁一直持续到选择框关掉之后
- * （finally 在 await 链的末尾）：框开着时按钮还能点就能开出第二个框。
+ * （guard 的 finally 在 await 链的末尾）：框开着时按钮还能点就能开出第二个框。
+ * 上锁那一段原来是这里手写的 disabled 一对，现在与另外 10 处共用 ui.js 的
+ * guard —— 那份还会换 spinner，「点了没反应」不再靠用户自己猜。
  */
 async function exportTask(taskId, taskType = 'map', button = null) {
-    if (button) button.disabled = true;
-    try {
-        const formats = await fetchExportFormats(taskType, taskId);
-        if (!formats.length) {
-            showToast(t('js.export.toast.nothing_to_export'), 'warning');
+    return guard(button, async function () {
+        try {
+            const formats = await fetchExportFormats(taskType, taskId);
+            if (!formats.length) {
+                showToast(t('js.export.toast.nothing_to_export'), 'warning');
+                return null;
+            }
+            let format = formats[0];
+            if (formats.length > 1) {
+                const answer = await showConfirm(t('js.export.confirm.message'), {
+                    title: t('js.export.confirm.title'),
+                    confirmText: t('js.export.confirm.ok'),
+                    select: {
+                        label: t('js.export.confirm.format_label'),
+                        // 选项文案就是格式 id 本身，不做美化查表：这些 id 一半来自
+                        // 插件的 format_id()，宿主给 'gpkg' 配一个显示名就等于把插件
+                        // 的清单抄进宿主，下一个插件注册的格式又会变成一串没查到表的
+                        // 回落。id 同时是 POST 上去的那个值，看到什么就是导什么。
+                        options: formats.map(f => ({ value: f, label: f })),
+                        value: format,
+                    },
+                });
+                // 带 select 时 showConfirm resolve 的是**对象**（恒为真），必须判
+                // .confirmed —— 直接 `if (!answer)` 会让取消也照导（ui.js 里那段
+                // 说明讲的就是这个静默失效）。
+                if (!answer.confirmed) return null;
+                format = answer.selected;
+            }
+            const response = await fetch(`/api/export/${taskType}/${taskId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ format }),
+            });
+            if (!response.ok) {
+                const result = await response.json().catch(() => ({}));
+                throw new Error(result.error || ('HTTP ' + response.status));
+            }
+            const result = await response.json();
+            // 两条成功文案不是重复：mbtiles 的响应带 tile_count 与 has_gaps（打包器
+            // 数过每一块瓦片），插件导出器的响应只有 {path, format} —— 协议里没有
+            // 让第三方报块数的地方。拿一份带 {count} 的文案去套插件分支，界面上就是
+            // 「已导出 MBTiles（0 块瓦片）」，两处都在撒谎。
+            if (result.tile_count != null) {
+                showToast(t('js.gaps.toast.exported', {
+                    path: result.path,
+                    count: Number(result.tile_count).toLocaleString(),
+                }), result.has_gaps ? 'warning' : 'success');
+            } else {
+                showToast(t('js.export.toast.exported', {
+                    format: result.format || format,
+                    path: result.path,
+                }), 'success');
+            }
+            return result;
+        } catch (error) {
+            showToast(t('js.gaps.toast.export_failed', { error: error.message }), 'danger');
             return null;
         }
-        let format = formats[0];
-        if (formats.length > 1) {
-            const answer = await showConfirm(t('js.export.confirm.message'), {
-                title: t('js.export.confirm.title'),
-                confirmText: t('js.export.confirm.ok'),
-                select: {
-                    label: t('js.export.confirm.format_label'),
-                    // 选项文案就是格式 id 本身，不做美化查表：这些 id 一半来自
-                    // 插件的 format_id()，宿主给 'gpkg' 配一个显示名就等于把插件
-                    // 的清单抄进宿主，下一个插件注册的格式又会变成一串没查到表的
-                    // 回落。id 同时是 POST 上去的那个值，看到什么就是导什么。
-                    options: formats.map(f => ({ value: f, label: f })),
-                    value: format,
-                },
-            });
-            // 带 select 时 showConfirm resolve 的是**对象**（恒为真），必须判
-            // .confirmed —— 直接 `if (!answer)` 会让取消也照导（ui.js 里那段
-            // 说明讲的就是这个静默失效）。
-            if (!answer.confirmed) return null;
-            format = answer.selected;
-        }
-        const response = await fetch(`/api/export/${taskType}/${taskId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ format }),
-        });
-        if (!response.ok) {
-            const result = await response.json().catch(() => ({}));
-            throw new Error(result.error || ('HTTP ' + response.status));
-        }
-        const result = await response.json();
-        // 两条成功文案不是重复：mbtiles 的响应带 tile_count 与 has_gaps（打包器
-        // 数过每一块瓦片），插件导出器的响应只有 {path, format} —— 协议里没有
-        // 让第三方报块数的地方。拿一份带 {count} 的文案去套插件分支，界面上就是
-        // 「已导出 MBTiles（0 块瓦片）」，两处都在撒谎。
-        if (result.tile_count != null) {
-            showToast(t('js.gaps.toast.exported', {
-                path: result.path,
-                count: Number(result.tile_count).toLocaleString(),
-            }), result.has_gaps ? 'warning' : 'success');
-        } else {
-            showToast(t('js.export.toast.exported', {
-                format: result.format || format,
-                path: result.path,
-            }), 'success');
-        }
-        return result;
-    } catch (error) {
-        showToast(t('js.gaps.toast.export_failed', { error: error.message }), 'danger');
-        return null;
-    } finally {
-        if (button) button.disabled = false;
-    }
+    });
 }
 
 /**

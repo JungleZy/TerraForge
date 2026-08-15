@@ -201,12 +201,16 @@ def test_history_detail_reads_plugin_count_columns():
 
 # ------------------------------------------------- 缺凭据的源：界面必须说清楚
 
-#: `#downloadForm` 的 submit 监听体。它是匿名监听，没有函数名可以 index。
-def _download_submit_body():
-    src = _js('map.js')
-    body = src[src.index(
-        "document.getElementById('downloadForm')?.addEventListener('submit'"):]
-    return body[:body.index('\n});\n')]
+#: 两条下载管线的装配体 —— `async function submitDownload(downloadType)` 的函数体。
+#:
+#: 2026-08-15：这段装配原来整体写在 `#downloadForm` 的**匿名** submit 监听里，
+#: 所以旧锚点按「getElementById('downloadForm') 之后 addEventListener('submit'」
+#: 切。两张表单合并成一张 #taskForm 之后，唯一的 submit 监听收成一个按
+#: _currentPipeline() 分派的三行调度器，装配整体搬进了具名的 submitDownload。
+#: 下面几条断言守的是插件源的凭据闸门与样式取值 —— 那两段都在 submitDownload
+#: 里，一字未动，所以锚点跟着装配搬。
+def _task_submit_body():
+    return _fn_body(_js('map.js'), 'async function submitDownload(downloadType)')
 
 
 def _init_source_options_body():
@@ -238,18 +242,23 @@ def test_source_options_refill_is_reentrant():
     """重填必须先清掉旧的插件选项，且不能连内置源那一项一起清。
 
     只在启动时填一次的话，「填完 token 再回来」这条最正常的路径会被提交前的
-    校验拦住（dataset 停在 false）。所以 openDownloadModal 每次都重填 ——
-    重填不清旧项就是每开一次弹窗多一份重复选项。
+    校验拦住（dataset 停在 false）。所以 openCreatePanel 每次都重填 ——
+    重填不清旧项就是每开一次面板多一份重复选项。
+
+    2026-08-15：入口从 openDownloadModal 换成
+    `async function openCreatePanel(pipeline, prefill)`（两个弹窗合成一个非模态
+    面板）。重填仍是开面板那一刻同步发起的第一件事，所以「每次开都刷新」这条
+    契约一字未变。
     """
     body = _init_source_options_body()
     assert 'opt.remove()' in body and 'if (opt.value)' in body, (
         '重填没有先清旧选项（或清得不带 value 判断，会把模板里的内置源清掉）'
     )
-    modal = _js('map.js')
-    modal = modal[modal.index('function openDownloadModal('):]
-    modal = modal[:modal.index('\n}\n')]
-    assert 'initPluginSourceOptions()' in modal, (
-        'openDownloadModal 没有重填数据源下拉 —— 刚在插件面板填好的 token '
+    panel = _js('map.js')
+    panel = panel[panel.index('function openCreatePanel('):]
+    panel = panel[:panel.index('\n}\n')]
+    assert 'initPluginSourceOptions()' in panel, (
+        'openCreatePanel 没有重填数据源下拉 —— 刚在插件面板填好的 token '
         '要刷新整页才认'
     )
 
@@ -260,7 +269,7 @@ def test_submit_blocks_a_source_whose_credential_is_missing():
     放行下去的后果不是报错而是**静默的一屏 401**：URL 模板里 `tk={credential}`
     被替换成空串，每块瓦片都失败，而没有任何地方说「你没填 key」。
     """
-    body = _download_submit_body()
+    body = _task_submit_body()
     guard = body.find('dataset.credentialReady')
     assign = body.find('taskData.source_plugin_id')
     assert guard != -1, 'submit 处理器没有读 dataset.credentialReady —— 校验不存在'
@@ -279,7 +288,7 @@ def test_submit_blocks_a_source_whose_credential_is_missing():
 
 def test_credential_warning_uses_a_toast_type_ui_js_knows():
     """`'error'` 不在 ui.js 的 VALID_TYPES 里，会被静默降级成蓝色 ⓘ。"""
-    body = _download_submit_body()
+    body = _task_submit_body()
     guard = body.find('dataset.credentialReady')
     blocked = body[guard:body.find('taskData.source_plugin_id')]
     assert "'warning'" in blocked, '缺凭据的提示没用 warning'
@@ -352,10 +361,11 @@ def test_history_all_plugin_row_has_every_field_the_frontend_reads(
         registry.reset_for_tests()
 
 
-#: 顶层函数体。`_download_submit_body` / `_init_source_options_body` 是同一手法
-#: 的两个特例（那两处一个是匿名监听、一个是 async）；这里参数化，因为下面
-#: 要按名字取三个不同的函数。切到第一个行首的 `}` 为止 —— 本仓 JS 全是 4 空格
-#: 缩进，顶层函数的闭合花括号是唯一顶格的那一行。
+#: 顶层函数体。`_init_source_options_body` 是同一手法的手写特例（它要跳 async
+#: 关键字），`_task_submit_body` 2026-08-15 起直接转调本函数（旧的
+#: `_download_submit_body` 切的是匿名 submit 监听，那个监听已经不装装配了）；
+#: 这里参数化，因为下面要按名字取三个不同的函数。切到第一个行首的 `}` 为止 ——
+#: 本仓 JS 全是 4 空格缩进，顶层函数的闭合花括号是唯一顶格的那一行。
 def _fn_body(src, header):
     assert header in src, f'源码里没有 {header}'
     body = src[src.index(header):]
@@ -426,10 +436,10 @@ def test_submit_reads_the_style_value_off_the_element_not_the_form():
     `MapStyle.from_shorthand` 抛 ValueError 打成 400，而界面上只显示一句
     「创建失败」，没有任何线索指回这个下拉。
 
-    只看 #downloadForm 的 submit 体：区域导入那条路确实用 FormData 传文件，
-    它与这个下拉无关。
+    只看 submitDownload 的函数体（改前是 #downloadForm 的 submit 体）：区域导入
+    那条路确实用 FormData 传文件，它与这个下拉无关。
     """
-    body = _download_submit_body()
+    body = _task_submit_body()
     assert "style: document.getElementById('mapStyle').value" in body
     assert 'FormData' not in body, (
         '下载表单开始用 FormData 了 —— 禁用的样式下拉会静默缺席'

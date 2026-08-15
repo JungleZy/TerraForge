@@ -33,6 +33,12 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+# 2026-08-15 Task 3：层栈令牌化之后薄雾与工具条的 z-index 是
+# `var(--z-map-veil)` / `var(--z-map-overlay)`。复用 test_css_contract 的
+# 解析器而不是再写一个「跟 var()」的小函数 —— 三份测试文件都要跟这一层，
+# 各写一份必然分叉。
+from test_css_contract import _resolve_z_index
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 requires_node = pytest.mark.skipif(
@@ -93,11 +99,17 @@ def test_veil_is_a_real_fade_and_never_eats_clicks():
 def test_veil_stays_below_the_map_toolbar():
     """薄雾压在工具条之下：过渡是给地图的，不是给控件的。"""
     css = _read("static", "css", "style.css")
-    veil_z = re.search(r'z-index:\s*(\d+)', _rule(css, ".map-transition-veil"))
-    tool_z = re.search(r'z-index:\s*(\d+)', _rule(css, ".map-toolbar"))
+    veil_z = re.search(r'z-index:\s*([^;]+);', _rule(css, ".map-transition-veil"))
+    tool_z = re.search(r'z-index:\s*([^;]+);', _rule(css, ".map-toolbar"))
     assert veil_z and tool_z, '两条规则都要显式 z-index，否则层序靠源码顺序碰运气'
-    assert int(veil_z.group(1)) < int(tool_z.group(1)), \
-        f'薄雾 z-index {veil_z.group(1)} 盖住了工具条 {tool_z.group(1)}'
+    veil, tool = _resolve_z_index(css, veil_z.group(1)), _resolve_z_index(css, tool_z.group(1))
+    # 令牌化之后这两个值来自 :root 的层栈（--z-map-veil 900 / --z-map-overlay 1000）。
+    # 解析不出整数就响亮失败 —— 那是「本断言已失效」，不是通过。
+    assert veil is not None and tool is not None, (
+        f'z-index 解析不出整数（薄雾 {veil_z.group(1).strip()!r} / '
+        f'工具条 {tool_z.group(1).strip()!r}）—— 本断言已失效'
+    )
+    assert veil < tool, f'薄雾 z-index {veil} 盖住了工具条 {tool}'
 
 
 # ---------------------------------------------------------------------------

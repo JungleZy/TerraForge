@@ -28,9 +28,14 @@ def _fn_body(src, name):
     """按花括号配对提取 `function name(...)` 的整个函数体（含外层 {}）。
 
     先按圆括号配对跳过参数表，再去找函数体那个 `{`：解构参数里的花括号排在函数
-    体之前（`function resetForm({ clearBounds = true, formId = 'downloadForm' }
-    = {})`），直接 `src.index('{', i)` 会把参数表当成函数体切出来 —— 切片里除了
-    参数名什么都没有，于是「函数体里必须有 X」永假、「函数体里不许有 X」永真。
+    体之前（`function resetForm({ clearBounds = true } = {})`），直接
+    `src.index('{', i)` 会把参数表当成函数体切出来 —— 切片里除了参数名什么都
+    没有，于是「函数体里必须有 X」永假、「函数体里不许有 X」永真。
+
+    2026-08-15 登记：引文里原来还有 `formId = 'downloadForm'`。两张表单
+    （#downloadForm / #processForm）合并成一张 #taskForm 之后那个参数没了，
+    但解构参数本身还在（`{ clearBounds = true } = {}`），所以这段跳参数表的
+    逻辑一个字都不能省 —— 去掉它切出来的仍旧是参数表。
     """
     i = src.index(f'function {name}(')
     args_open = src.index('(', i)
@@ -81,11 +86,13 @@ def test_reset_form_is_used_at_every_call_site():
     assert src.count('resetForm(') >= 4, (
         "resetForm() 应有 1 处定义 + 3 处调用;少于 4 次说明某个提交分支没走统一重置"
     )
-    # 数据下载/数据处理拆成两张独立表单后,resetForm 用 formId 指明复位哪一张;
-    # 两条处理类分支（等高线、本地高程）都是上传驱动、没有 bbox,都必须
-    # clearBounds:false 复位 #processForm——清框会删掉用户为下一个任务画好的选区。
-    assert src.count("resetForm({ clearBounds: false, formId: 'processForm' })") >= 2, (
-        "等高线与本地高程两条分支都必须 resetForm({ clearBounds: false, formId: 'processForm' });"
+    # 2026-08-15：两张表单合并成一张 #taskForm，resetForm 的 formId 参数随之
+    # 删除，锚点从 `resetForm({ clearBounds: false, formId: 'processForm' })`
+    # 换成 `resetForm({ clearBounds: false })`。守的是同一件事 —— 两条处理类
+    # 分支（等高线、本地高程）都是上传驱动、没有 bbox，都必须 clearBounds:false，
+    # 清框会删掉用户为下一个任务画好的选区。实测 map.js 里正是 2 处。
+    assert src.count("resetForm({ clearBounds: false })") >= 2, (
+        "等高线与本地高程两条分支都必须 resetForm({ clearBounds: false });"
         "等高线分支漏了 clearBounds:false 会在任务创建成功后清掉用户选区"
     )
 
@@ -96,8 +103,11 @@ def test_submit_button_state_is_centralised():
     assert 'function refreshSubmitButtonState(' in src, (
         "map.js 应定义 refreshSubmitButtonState()"
     )
+    # 文案里原来写的是 apply()：那是 initDownloadTypeToggle / initProcessTypeToggle
+    # 各自的同名闭包，2026-08-15 合并成模块级 applyPipeline()。被禁的字面量本身
+    # 一字未改，钉的仍是「按钮解禁不许绕开统一函数」。
     assert 'if (btn && isLocal) btn.disabled = false;' not in src, (
-        "apply() 里只加不减的按钮解禁应改为走 refreshSubmitButtonState()"
+        "applyPipeline() 里只加不减的按钮解禁应改为走 refreshSubmitButtonState()"
     )
     # finally 里若写回 btn.disabled = false,会覆盖 resetForm() 刚摆好的状态
     # (例如非 local_terrain 模式重置后本该禁用,却被解禁)。
@@ -139,11 +149,14 @@ def test_submit_button_is_always_unlocked_in_finally():
             "否则提交失败后按钮永久禁用"
         )
 
-    # 10 = 1 处定义 + apply() + CREATED + DELETED + syncBoundsFromDrawnItems()
-    #      + resetForm() + openProcessForDemTask + 3 处 finally
+    # 10 = 1 处定义 + applyPipeline() + CREATED + DELETED
+    #      + syncBoundsFromDrawnItems() + resetForm() + openCreatePanel + 3 处 finally
+    # 2026-08-15：apply() 是那两个 init 函数各自的闭包，已并成模块级
+    # applyPipeline()；openProcessForDemTask 收成一行转调 openCreatePanel()，
+    # 那处刷新随之落在 openCreatePanel 里。枚举换名，下界仍是 10（实测 17 处）。
     assert src.count('refreshSubmitButtonState(') >= 10, (
         "refreshSubmitButtonState 的定义/调用点少于 10 处,说明某个状态变更路径"
-        "(绘制、编辑、类型切换、表单重置、提交收尾)漏了统一刷新"
+        "(绘制、编辑、管线切换、表单重置、提交收尾)漏了统一刷新"
     )
 
 
@@ -498,18 +511,29 @@ def test_preview_task_catches_rejections_with_user_feedback():
 # LOW 批次（2026-07-31 code-only review，前端杂项）
 # ---------------------------------------------------------------------------
 
-def test_download_type_toggle_refreshes_tile_estimate():
-    """切换下载类型（地图/DEM）必须刷新瓦片预估读数。
+def test_pipeline_toggle_refreshes_tile_estimate():
+    """切换管线（瓦片/高程/地形切片/等高线）必须刷新瓦片预估读数。
 
     改前 apply() 只摆字段可见性不调 updateTileEstimate()：切到 DEM 时
     #tileEstimate 残留上一次地图模式的旧读数（DEM 按颗粒计、不用瓦片数）。
+
+    2026-08-15 锚点搬家：旧锚是 `_fn_body(src, 'initDownloadTypeToggle')` 里的
+    闭包 `function apply(`，切到 `typeRadios.forEach(` 为止。单选按钮组已换成
+    段控（[data-pipeline] chips），字段显隐收敛成**模块级** applyPipeline() +
+    PIPELINE_FIELDS 一张表 —— apply() 不再是任何函数的闭包，在 init 函数体里
+    切必然找不到。所以直接取 applyPipeline 的函数体。
+
+    多钉一条「它确实在跑那张表」：否则「刷新预估」这句话可以挂在一个与字段显隐
+    毫无关系的函数上，断言就不再证明「切管线 → 重算预估」这条链。
     """
     src = _map_js()
-    body = _fn_body(src, 'initDownloadTypeToggle')
-    apply_start = body.index('function apply(')
-    apply_body = body[apply_start:body.index('typeRadios.forEach(', apply_start)]
-    assert 'updateTileEstimate()' in apply_body, (
-        'initDownloadTypeToggle 的 apply() 没有调 updateTileEstimate()——'
+    body = _fn_body(src, 'applyPipeline')
+    assert 'PIPELINE_FIELDS' in body, (
+        'applyPipeline() 没有消费 PIPELINE_FIELDS —— 字段显隐不在它手上，'
+        '下面那条断言就证明不了「切管线会重算预估」'
+    )
+    assert 'updateTileEstimate()' in body, (
+        'applyPipeline() 没有调 updateTileEstimate()——'
         '切到高程模式会残留旧的瓦片预估读数'
     )
 
@@ -814,23 +838,22 @@ def test_preview_never_feeds_a_raw_response_field_into_an_imagery_url():
 # 闸门 9：导入的多边形几何必须两条下载分支都送出去
 # ---------------------------------------------------------------------------
 
-def _download_submit_handler(src):
-    """#downloadForm 的 submit 处理器函数体（含外层 {}）。
+def _task_submit_handler(src):
+    """两条下载管线的装配体 —— `async function submitDownload(downloadType)`
+    的函数体（含外层 {}）。
 
-    它是匿名 async function，_fn_body 只认 `function name(`，够不着 ——
-    按「addEventListener('submit' 之后的第一个 {」花括号配对切。
+    2026-08-15 之前这段装配整体写在 `#downloadForm` 的**匿名** submit 监听里，
+    所以这个辅助函数当初按「getElementById('downloadForm') 之后
+    addEventListener('submit' 之后的第一个 {」花括号配对切。两张表单合并成
+    #taskForm 之后，唯一的 submit 监听收成一个按 _currentPipeline() 分派的三行
+    调度器，装配搬进了具名函数 submitDownload —— 匿名切法既找不到旧锚点，切到
+    调度器也只会拿到三行 await。
+
+    锚点跟着装配搬：下面那些深度断言量的是「taskData.region 挂在 if/else 链
+    外面还是关进某一条分支里」，而那条链（`if (downloadType === 'dem')`）连形参
+    名都一字未动，就在 submitDownload 里。
     """
-    i = src.index("getElementById('downloadForm')")
-    j = src.index('{', src.index("addEventListener('submit'", i))
-    depth = 0
-    for k in range(j, len(src)):
-        if src[k] == '{':
-            depth += 1
-        elif src[k] == '}':
-            depth -= 1
-            if depth == 0:
-                return src[j:k + 1]
-    raise AssertionError('downloadForm submit 处理器花括号不配对 —— 本测试已失效')
+    return _fn_body(src, 'submitDownload')
 
 
 def test_imported_region_is_attached_on_both_download_branches():
@@ -845,10 +868,10 @@ def test_imported_region_is_attached_on_both_download_branches():
     带 region 建出 3 个颗粒，不带 region 是 4 个。
 
     钉的是**位置**而不是「文件里有没有这行」：写在任一分支内部都能让字面量
-    搜索变绿，而那正是缺陷本身。判据 = 赋值落在 if/else 链闭合之后的处理器
-    顶层（深度与 `if (downloadType === 'dem')` 那一行相同）。
+    搜索变绿，而那正是缺陷本身。判据 = 赋值落在 if/else 链闭合之后的
+    submitDownload 函数顶层（深度与 `if (downloadType === 'dem')` 那一行相同）。
     """
-    body = _strip_comments(_download_submit_handler(_map_js()))
+    body = _strip_comments(_task_submit_handler(_map_js()))
 
     def depth_at(needle):
         assert needle in body, f'提交处理器里找不到 {needle} —— 本测试已失效'

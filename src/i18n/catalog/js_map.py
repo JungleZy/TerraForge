@@ -33,13 +33,13 @@ MESSAGES = {
 
     # --- 瓦片数量预估（下载弹窗读数）------------------------------------------
     'js.map.tile_estimate.count': {
-        'zh': '预计 {count} 块瓦片',
+        'zh': '预计 {count} 张瓦片',
         'en': 'About {count} tiles',
     },
     'js.map.tile_estimate.over': {
-        'zh': '预计 {count} 块瓦片 · 按 10 张/秒约 {hours} 小时（大任务，创建时将要求确认）',
-        'en': 'About {count} tiles · roughly {hours} h at 10 tiles/s '
-              '(large job, confirmation required on create)',
+        'zh': '预计 {count} 张瓦片 · 按 10 张/秒约需 {duration}（大任务，创建时将要求确认）',
+        'en': 'About {count} tiles · roughly {duration} at 10 tiles/s '
+              '(large task, confirmation required on create)',
     },
 
     # --- 选区浮层（#boundsInfo）-----------------------------------------------
@@ -65,15 +65,22 @@ MESSAGES = {
         'zh': '点击编辑',
         'en': 'Click to edit',
     },
-    'js.map.bounds.download': {
-        'zh': '下载',
-        'en': 'Download',
+    # 主按钮：**打开新建任务面板**，不是开始下载。改前它写「下载」（en
+    # "Download"），而点下去出现的是一张表单 —— 标签承诺了一个它不做的动作。
+    # 面板标题、rail 入口、这颗按钮现在是同一个词。
+    'js.map.bounds.create_task': {
+        'zh': '新建任务',
+        'en': 'New task',
     },
-    'js.map.bounds.delete': {
-        'zh': '删除',
-        'en': 'Delete',
+    # title 里保留「下载」是对的：它说的是**将要建的那种任务**（瓦片下载），
+    # 而按钮标签说的是**这一次点击会发生什么**（开一张表）。两者都准确。
+    'js.map.bounds.create_task_title': {
+        'zh': '用当前选区新建下载任务',
+        'en': 'Create a download task from the current selection',
     },
-    'js.map.bounds.clear_title': {
+    # 清除钮：可见文案与 title **同一个键**。改前是「删除」+ title「清除选区」——
+    # 两个动词说同一件事，而「删除」还暗示删掉的是数据（它只清掉那个框）。
+    'js.map.bounds.clear': {
         'zh': '清除选区',
         'en': 'Clear selection',
     },
@@ -197,12 +204,12 @@ MESSAGES = {
               '({width}° × {height}°)',
     },
     'js.map.download.confirm_large': {
-        'zh': '预计 {count} 块瓦片，按 10 张/秒估算耗时约 {hours} 小时。确定创建吗？',
-        'en': 'About {count} tiles, roughly {hours} h at 10 tiles/s. Create it?',
+        'zh': '预计 {count} 张瓦片，按 10 张/秒估算耗时约需 {duration}。确定创建吗？',
+        'en': 'About {count} tiles, roughly {duration} at 10 tiles/s. Create it?',
     },
     'js.map.download.confirm_large_title': {
         'zh': '大任务确认',
-        'en': 'Confirm large job',
+        'en': 'Confirm large task',
     },
     'js.map.download.need_output_format': {
         'zh': '请至少勾选一种输出格式（瓦片 / GeoTIFF）',
@@ -246,26 +253,27 @@ MESSAGES = {
     },
     'js.map.process.need_dem_task': {
         'zh': '请先选择一个已完成的高程任务',
-        'en': 'Select a completed DEM task first',
+        'en': 'Select a completed elevation task first',
     },
     'js.map.process.no_completed_dem_task': {
         'zh': '暂无已完成的高程任务',
-        'en': 'No completed DEM tasks yet',
+        'en': 'No completed elevation tasks yet',
     },
     'js.map.process.dem_task_load_failed': {
         'zh': '高程任务列表加载失败: {error}',
-        'en': 'Failed to load DEM tasks: {error}',
+        'en': 'Failed to load elevation tasks: {error}',
     },
     'js.map.process.terrain_started_dem_task': {
-        'zh': '切片任务已创建（零拷贝复用高程任务 #{id} 已下载的 DEM）',
-        'en': 'Tiling task created (zero-copy reusing the DEM downloaded by task #{id})',
+        'zh': '切片任务已创建（零拷贝复用高程任务 #{id} 已下载的高程文件）',
+        'en': 'Tiling task created (zero-copy reusing the elevation files '
+              'downloaded by task #{id})',
     },
     'js.map.process.contour_default_name': {
         'zh': '等高线瓦片',
         'en': 'Contour tiles',
     },
     'js.map.process.local_terrain_default_name': {
-        'zh': '本地高程切片',
+        'zh': '本地地形切片',
         'en': 'Local terrain tiling',
     },
     'js.map.process.uploading': {
@@ -281,12 +289,13 @@ MESSAGES = {
         'en': 'Task created but failed to start: {error}',
     },
     'js.map.process.contour_started': {
-        'zh': '等高线任务已开始（上传 DEM → 渲染瓦片）',
-        'en': 'Contour task started (upload DEM → render tiles)',
+        'zh': '等高线任务已开始（上传高程文件 → 渲染瓦片）',
+        'en': 'Contour task started (upload elevation files → render tiles)',
     },
     'js.map.process.contour_started_dem_task': {
-        'zh': '等高线任务已开始（复用高程任务 #{id} 已下载的 DEM → 渲染瓦片）',
-        'en': 'Contour task started (reusing DEM already downloaded by task '
+        'zh': '等高线任务已开始（复用高程任务 #{id} 已下载的高程文件 → 渲染瓦片）',
+        'en': 'Contour task started (reusing the elevation files already '
+              'downloaded by task '
               '#{id} → render tiles)',
     },
     # 来源是已下载的高程任务时按钮不能写「上传中」——这条分支一个字节都不上传。
@@ -325,12 +334,12 @@ MESSAGES = {
         'en': 'Google satellite imagery',
     },
     'js.map.basemap.src_google_roadmap': {
-        'zh': 'Google 路网图',
+        'zh': 'Google 路网',
         'en': 'Google roadmap',
     },
     'js.map.basemap.src_osm': {
-        'zh': 'OpenStreetMap 路网图',
-        'en': 'OpenStreetMap road map',
+        'zh': 'OpenStreetMap 路网',
+        'en': 'OpenStreetMap roadmap',
     },
     'js.map.basemap.src_download_source': {
         'zh': '下载源的底图',
@@ -386,7 +395,7 @@ MESSAGES = {
     },
     'js.map.tifinfo.recommended_maxzoom': {
         'zh': '建议最大层级',
-        'en': 'Suggested max zoom',
+        'en': 'Suggested max zoom level',
     },
     # 起切前的规模预告（renderTerrainTileEstimate）。两个层级都要报：base 是按
     # 源数据像素估的基准层级，level 是叠上档位偏移、再钳进 [0, 21] 之后真正会切
@@ -402,7 +411,8 @@ MESSAGES = {
     'js.map.terrain.estimate_hint': {
         'zh': '估算值。实际基准层级在切片时按合并后的源栅格现算，产物层级见任务详情。',
         'en': 'An estimate. The real base level is computed from the merged source '
-              'raster at tiling time; see the task detail for what was produced.',
+              'raster at tiling time; see the task detail for the level the '
+              'artifact actually got.',
     },
     'js.map.tifinfo.summary': {
         'zh': '合计 {n} 个文件',
@@ -474,13 +484,14 @@ MESSAGES = {
 
     # --- 任务预览（主视图叠加）-----------------------------------------------
     'js.map.preview.hillshade_fallback': {
-        'zh': '该任务还没有地形切片，显示源 DEM 的晕渲预览',
+        'zh': '该任务还没有地形切片，显示源高程数据的晕渲预览',
         'en': 'This task has no terrain tiles yet; showing a hillshade preview '
-              'of the source DEM',
+              'of the source elevation data',
     },
     'js.map.preview.dem_no_tiles': {
-        'zh': '该任务没有地形切片、也没有可渲染的 DEM 源文件，仅定位到区域',
-        'en': 'This task has neither terrain tiles nor a renderable source DEM; '
+        'zh': '该任务没有地形切片、也没有可渲染的高程源文件，仅定位到区域',
+        'en': 'This task has neither terrain tiles nor renderable source '
+              'elevation data; '
               'flying to the area only',
     },
     'js.map.preview.no_tiles_no_source': {

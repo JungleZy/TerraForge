@@ -56,10 +56,17 @@ function initBasemapSource() {
 // 缓存不做任何自动清理：这里分类展示占用，手动清理走两次 showConfirm
 // （第一次说明将删什么，第二次 danger 样式确认不可恢复）。
 
-// 字节 → 人类可读的实现在 task_center.js 的 formatBytes（base.html 全局加载，
-// 全站唯一一份）。这里曾有一份逐字相同的 formatCacheBytes —— 两份四舍五入
-// 规则一旦漂移，缓存卡和任务详情的产物清单会对同一个数字给出不同读数，
-// 而没有任何机制会报错。调用点已全部改直接调 formatBytes。
+// 字节 → 人类可读走 static/js/ui.js 的 formatBytes（window.formatBytes，
+// base.html 无条件全局加载，全站唯一一份 1024 进位换算）。
+//
+// 这段注释原来说它在 task_center.js —— **错文件**，而且错得刚好会害人：
+// /config 正是把 base.html 的 vendor_task_list_js 块覆盖成空的那一页，
+// task_center.js 在这里根本不加载。谁照注释把函数搬过去，缓存卡就是一片
+// ReferenceError。
+//
+// 这里曾有一份逐字相同的 formatCacheBytes —— 两份四舍五入规则一旦漂移，
+// 缓存卡和任务详情的产物清单会对同一个数字给出不同读数，而没有任何机制
+// 会报错。调用点已全部改直接调 formatBytes。
 
 function initCacheManager() {
     const body = document.getElementById('cacheStatsBody');
@@ -68,7 +75,7 @@ function initCacheManager() {
     // 事件代理：行是 loadCacheStats 动态渲染的
     body.addEventListener('click', function (e) {
         const btn = e.target.closest('.cache-clear-btn');
-        if (btn) clearCacheCategory(btn.dataset.key, btn.dataset.label, btn.dataset.size);
+        if (btn) clearCacheCategory(btn.dataset.key, btn.dataset.label, btn.dataset.size, btn);
     });
 
     const refreshBtn = document.getElementById('cacheStatsRefresh');
@@ -78,7 +85,7 @@ function initCacheManager() {
     if (clearAllBtn) {
         clearAllBtn.addEventListener('click', function () {
             const total = document.getElementById('cacheStatsTotal').textContent || '—';
-            clearCacheCategory('__all__', t('js.config.cache.all_label'), total);
+            clearCacheCategory('__all__', t('js.config.cache.all_label'), total, clearAllBtn);
         });
     }
 
@@ -131,61 +138,66 @@ function renderCacheStats(data) {
         categories.reduce(function (sum, c) { return sum + (c.file_count || 0); }, 0);
 }
 
-async function clearCacheCategory(category, label, sizeText) {
-    const demWarning = category === 'dem' || category === '__all__'
-        ? ' ' + t('js.config.cache.dem_warning') : '';
-    const first = await showConfirm(
-        t('js.config.cache.clear_confirm', { label: label, size: sizeText, warning: demWarning }),
-        {
-            title: t('js.config.cache.clear_title'),
-            confirmText: t('js.config.cache.continue'),
-            danger: true
-        });
-    if (!first) return;
+// trigger：行上那颗「清理」钮，或顶上的「全部清理」。两道确认框也在守卫里
+// 面 —— 清理是不可撤销的，连点叠出两个确认框、两次回车就是两发 POST，第二
+// 发在第一发还在 rmtree 时进来。
+async function clearCacheCategory(category, label, sizeText, trigger = null) {
+    return guard(trigger, async function () {
+        const demWarning = category === 'dem' || category === '__all__'
+            ? ' ' + t('js.config.cache.dem_warning') : '';
+        const first = await showConfirm(
+            t('js.config.cache.clear_confirm', { label: label, size: sizeText, warning: demWarning }),
+            {
+                title: t('js.config.cache.clear_title'),
+                confirmText: t('js.config.cache.continue'),
+                danger: true
+            });
+        if (!first) return;
 
-    const second = await showConfirm(
-        t('js.config.cache.clear_confirm_again', { label: label }),
-        {
-            title: t('js.config.cache.confirm_again_title'),
-            confirmText: t('js.config.cache.confirm_delete'),
-            danger: true
-        });
-    if (!second) return;
+        const second = await showConfirm(
+            t('js.config.cache.clear_confirm_again', { label: label }),
+            {
+                title: t('js.config.cache.confirm_again_title'),
+                confirmText: t('js.config.cache.confirm_delete'),
+                danger: true
+            });
+        if (!second) return;
 
-    try {
-        let result = await postCacheClear(category, false);
-        // 409：有任务尚未结束。后端拦下而不是直接清，是因为运行中的地图任务
-        // 已经把 cache 命中的瓦片算成「已完成」，清掉后它们既不重下、复制失败
-        // 也只记 warning，任务照报 completed —— 产物目录静默缺瓦片（M8）。
-        if (result.status === 409) {
-            const forceOk = await showConfirm(
-                t('js.config.cache.force_confirm',
-                    { error: result.data.error || t('js.config.cache.tasks_running') }),
-                {
-                    title: t('js.config.cache.tasks_running_title'),
-                    confirmText: t('js.config.cache.force_clear'),
-                    danger: true
-                });
-            if (!forceOk) {
-                showToast(t('js.config.cache.clear_cancelled'), 'info');
-                loadCacheStats();
-                return;
+        try {
+            let result = await postCacheClear(category, false);
+            // 409：有任务尚未结束。后端拦下而不是直接清，是因为运行中的地图任务
+            // 已经把 cache 命中的瓦片算成「已完成」，清掉后它们既不重下、复制失败
+            // 也只记 warning，任务照报 completed —— 产物目录静默缺瓦片（M8）。
+            if (result.status === 409) {
+                const forceOk = await showConfirm(
+                    t('js.config.cache.force_confirm',
+                        { error: result.data.error || t('js.config.cache.tasks_running') }),
+                    {
+                        title: t('js.config.cache.tasks_running_title'),
+                        confirmText: t('js.config.cache.force_clear'),
+                        danger: true
+                    });
+                if (!forceOk) {
+                    showToast(t('js.config.cache.clear_cancelled'), 'info');
+                    loadCacheStats();
+                    return;
+                }
+                result = await postCacheClear(category, true);
             }
-            result = await postCacheClear(category, true);
+            if (result.ok && result.data.success) {
+                showToast(t('js.config.cache.cleared', {
+                    label: label,
+                    size: formatBytes(result.data.total_removed_bytes)
+                }), 'success');
+            } else {
+                showToast(t('js.config.cache.clear_failed',
+                    { error: result.data.error || ('HTTP ' + result.status) }), 'danger');
+            }
+        } catch (error) {
+            showToast(t('js.config.cache.clear_failed', { error: error.message }), 'danger');
         }
-        if (result.ok && result.data.success) {
-            showToast(t('js.config.cache.cleared', {
-                label: label,
-                size: formatBytes(result.data.total_removed_bytes)
-            }), 'success');
-        } else {
-            showToast(t('js.config.cache.clear_failed',
-                { error: result.data.error || ('HTTP ' + result.status) }), 'danger');
-        }
-    } catch (error) {
-        showToast(t('js.config.cache.clear_failed', { error: error.message }), 'danger');
-    }
-    loadCacheStats();
+        loadCacheStats();
+    });
 }
 
 async function postCacheClear(category, force) {
@@ -198,6 +210,7 @@ async function postCacheClear(category, force) {
     try {
         data = await response.json();
     } catch (e) {
+        // 明确忽略：非 JSON 响应按空对象处理，调用方只看 ok / status。
         data = {};
     }
     return { ok: response.ok, status: response.status, data: data };
@@ -273,7 +286,11 @@ function setProxyIcon(icon, shape, text) {
     if (svg) {
         svg.innerHTML = PROXY_ICONS[shape] || PROXY_ICONS.none;
         // 转圈挂在 svg 上（转 button 会把 hover 气泡一起转），且必须是单类
-        // 选择器 —— 理由见 style.css 的 .hint-spin 注释。
+        // 选择器：写成 `.hint.is-busy > svg` 会让契约测试构造动画上下文的
+        // `_motion_contexts_from_stylesheet`（tests/test_css_contract.py，用
+        // `branch.split()` + `_parse_compound(...) is not None`）解不出 `>`，
+        // test_reduced_motion_actually_stops_every_animated_element 失败。
+        // 层叠判定本身（`_text_branch_applies`）自 2026-08-14 起已支持子组合符。
         svg.classList.toggle('hint-spin', shape === 'busy');
     }
     icon.classList.remove('is-ok', 'is-warn', 'is-danger', 'is-busy');
@@ -719,52 +736,67 @@ async function saveConfig(e) {
         map_center_lng: document.getElementById('map_center_lng').value,
         map_initial_zoom: document.getElementById('map_initial_zoom').value,
         earthdata_username: document.getElementById('earthdata_username').value,
-        earthdata_password: document.getElementById('earthdata_password').value
+        earthdata_password: document.getElementById('earthdata_password').value,
+        // 地名搜索的服务地址。留空 = 关闭（出厂状态）。这一栏 0.3.3 就有配置键、
+        // 校验和 API，唯独没进过这份 payload 和模板 —— 搜索面板的提示叫用户
+        // 「去配置页填 geocoder_url」，而配置页里既没有输入框、这里也不会提交。
+        geocoder_url: document.getElementById('geocoder_url').value
     };
 
-    try {
-        const response = await fetch('/api/config', {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(configData)
-        });
+    // e.submitter 是这次提交的那颗按钮（保存钮在 <form> 之外，靠
+    // form="configForm" 关联，所以拿不到「表单里的第一个 submit」）。
+    // 老引擎没有 submitter 时按关联关系找回来 —— 锁不住按钮时回车照样能
+    // 二次提交，那正是本守卫要防的。
+    const trigger = e.submitter
+        || document.querySelector('button[type="submit"][form="configForm"]');
+    return guard(trigger, async function () {
+        try {
+            const response = await fetch('/api/config', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(configData)
+            });
 
-        const result = await response.json();
+            const result = await response.json();
 
-        if (response.ok) {
-            showToast(t('js.config.save.ok'), 'success');
-        } else {
-            const detail = (result.errors && result.errors.length)
-                ? result.errors.join(t('js.config.save.error_sep')) : result.error;
-            showToast(t('js.config.save.failed', { error: detail }), 'danger');
+            if (response.ok) {
+                showToast(t('js.config.save.ok'), 'success');
+            } else {
+                const detail = (result.errors && result.errors.length)
+                    ? result.errors.join(t('js.config.save.error_sep')) : result.error;
+                showToast(t('js.config.save.failed', { error: detail }), 'danger');
+            }
+        } catch (error) {
+            showToast(t('js.config.save.failed', { error: error.message }), 'danger');
         }
-    } catch (error) {
-        showToast(t('js.config.save.failed', { error: error.message }), 'danger');
-    }
+    });
 }
 
-async function resetConfig() {
-    if (!await showConfirm(t('js.config.reset.confirm'),
-            { title: t('js.config.reset.title'), danger: true })) {
-        return;
-    }
-
-    try {
-        const response = await fetch('/api/config/reset', { method: 'POST' });
-        const result = await response.json().catch(() => ({}));
-        if (response.ok) {
-            showToast(t('js.config.reset.ok'), 'success');
-            // 略等一下让用户看到提示，再刷新（服务端会用默认值重渲染表单）。
-            // 首页的配置是覆盖面板：挂上 hash，刷新后 panels.js 自动重开面板。
-            location.hash = '#config';
-            setTimeout(() => location.reload(), 600);
-        } else {
-            showToast(t('js.config.reset.failed',
-                { error: result.error || response.status }), 'danger');
+async function resetConfig(e) {
+    const trigger = (e && e.currentTarget) || document.getElementById('configResetBtn');
+    return guard(trigger, async function () {
+        if (!await showConfirm(t('js.config.reset.confirm'),
+                { title: t('js.config.reset.title'), danger: true })) {
+            return;
         }
-    } catch (error) {
-        showToast(t('js.config.reset.failed', { error: error.message }), 'danger');
-    }
+
+        try {
+            const response = await fetch('/api/config/reset', { method: 'POST' });
+            const result = await response.json().catch(() => ({}));
+            if (response.ok) {
+                showToast(t('js.config.reset.ok'), 'success');
+                // 略等一下让用户看到提示，再刷新（服务端会用默认值重渲染表单）。
+                // 首页的配置是覆盖面板：挂上 hash，刷新后 panels.js 自动重开面板。
+                location.hash = '#config';
+                setTimeout(() => location.reload(), 600);
+            } else {
+                showToast(t('js.config.reset.failed',
+                    { error: result.error || response.status }), 'danger');
+            }
+        } catch (error) {
+            showToast(t('js.config.reset.failed', { error: error.message }), 'danger');
+        }
+    });
 }

@@ -34,7 +34,7 @@ window.TerraTheme = (function () {
         var mode = 'dark';
         try {
             mode = window.localStorage.getItem(STORAGE_KEY) || 'dark';
-        } catch (e) { /* 隐私模式等 localStorage 不可用时按缺省 dark */ }
+        } catch (e) { /* 明确忽略：隐私模式等 localStorage 不可用时按缺省 dark */ }
         return MODES.indexOf(mode) !== -1 ? mode : 'dark';
     }
 
@@ -58,7 +58,7 @@ window.TerraTheme = (function () {
             document.dispatchEvent(new CustomEvent('terraforge:themechange', {
                 detail: { theme: now }
             }));
-        } catch (e) { /* 老浏览器没有 CustomEvent 构造器，忽略 */ }
+        } catch (e) { /* 明确忽略：老浏览器没有 CustomEvent 构造器 */ }
     }
 
     function onSystemChange() {
@@ -87,7 +87,7 @@ window.TerraTheme = (function () {
         if (MODES.indexOf(mode) === -1) return;
         try {
             window.localStorage.setItem(STORAGE_KEY, mode);
-        } catch (e) { /* 写不进也先把本次会话的主题应用上 */ }
+        } catch (e) { /* 明确忽略：写不进也先把本次会话的主题应用上 */ }
         apply();
     }
 
@@ -100,7 +100,7 @@ window.TerraTheme = (function () {
         var accent = 'sky';
         try {
             accent = window.localStorage.getItem(ACCENT_KEY) || 'sky';
-        } catch (e) { /* 隐私模式等 localStorage 不可用时按缺省 sky */ }
+        } catch (e) { /* 明确忽略：隐私模式等 localStorage 不可用时按缺省 sky */ }
         return ACCENTS.indexOf(accent) !== -1 ? accent : 'sky';
     }
 
@@ -117,7 +117,7 @@ window.TerraTheme = (function () {
             document.dispatchEvent(new CustomEvent('terraforge:themechange', {
                 detail: { theme: resolved(), accent: accent }
             }));
-        } catch (e) { /* 老浏览器没有 CustomEvent 构造器,忽略 */ }
+        } catch (e) { /* 明确忽略：老浏览器没有 CustomEvent 构造器 */ }
     }
 
     // 写强调色偏好并立即应用。非法值直接忽略。
@@ -125,7 +125,7 @@ window.TerraTheme = (function () {
         if (ACCENTS.indexOf(accent) === -1) return;
         try {
             window.localStorage.setItem(ACCENT_KEY, accent);
-        } catch (e) { /* 写不进也先把本次会话的应用上 */ }
+        } catch (e) { /* 明确忽略：写不进也先把本次会话的强调色应用上 */ }
         applyAccentToDom();
     }
 

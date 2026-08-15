@@ -34,12 +34,22 @@
     <div class="index-map">
         <div id="map"></div>
         <!-- 左列工具条（Cesium 时代全自绘，不再借 Leaflet 控件容器）：
-             四组 —— 视图（放大/缩小）、框选（画矩形选区）、地形光照、
-             面板（任务面板/配置面板）。图标在上文字在下。
-             「下载」「删除」不是常驻入口：框选后出现在选区浮层上；
-             「处理」也不在这里：它是任务入口，落在任务面板的筛选行右端
-             （_history_content.html 的 #processOpenBtn）。 -->
+             五组 —— 新建（打开 #createPanel）、视图（放大/缩小）、框选（画矩形
+             选区）、区域导入、地形光照、面板（任务/配置/插件）。图标在上文字在下。
+             「新建」排在第一组：四条管线（瓦片/高程/地形切片/等高线）现在只有这
+             一个入口，它是首屏唯一的「开始做事」按钮，所以在最上面。
+             「新建任务」「清除选区」不是常驻入口：框选后出现在选区浮层上。
+             三个 data-panel 按钮是真 toggle（同名再点关闭），aria-expanded 由
+             panels.js 与 .map-panel-btn--active 同步翻。 -->
         <div class="map-toolbar" id="mapToolbar">
+            <div class="map-panel-triggers">
+                <button type="button" class="map-panel-btn" data-panel="create"
+                        aria-label="{{ t('tpl.index.toolbar.create_title') }}"
+                        title="{{ t('tpl.index.toolbar.create_title') }}" aria-expanded="false">
+                    {{ m.icon_create(18, gap='') }}
+                    <span>{{ t('tpl.index.toolbar.create') }}</span>
+                </button>
+            </div>
             <div class="map-panel-triggers">
                 <button type="button" class="map-panel-btn" id="mapZoomIn" aria-label="{{ t('tpl.index.toolbar.zoom_in') }}" title="{{ t('tpl.index.toolbar.zoom_in') }}">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -62,47 +72,26 @@
                     <span>{{ t('tpl.index.toolbar.draw_rect') }}</span>
                 </button>
             </div>
-            <!-- 区域导入 + 地点搜索（§5.1）。
-                 这一组的外层是 .map-toolbar-region（position: relative），因为
-                 地点搜索面板要靠 `left: 100%` 挂在工具条右侧 —— 中英文下工具条
-                 宽度不同（中文固定 34px，英文按内容伸展），写死像素偏移必然在
-                 其中一种语言下压住或离开工具条。面板与文件输入是
-                 .map-panel-triggers 的**兄弟**而不是子元素：那个类带
-                 overflow: hidden 用来裁圆角，装在里面会被整块裁掉。
+            <!-- 区域导入（§5.1）。地点搜索原本也在这一组，2026-08 挪到了顶部
+                 居中的 .map-search —— 工具条是 34px 宽的竖排图标胶囊，搜索框
+                 只能靠 `left: 100%` 挂在它右侧，位置偏、发现性差；随之删掉的还有
+                 那个只为「给面板当定位上下文」而存在的 .map-toolbar-region 包裹层。
                  文件输入用 hidden 属性而不是视觉隐藏：它只是管道，可见的控件是
                  上面那颗按钮，programmatic .click() 对 hidden 的 file input
                  照样弹出选择器。 -->
-            <div class="map-toolbar-region">
-                <div class="map-panel-triggers">
-                    <button type="button" class="map-panel-btn" id="mapRegionImport"
-                            aria-label="{{ t('tpl.index.toolbar.region_import') }}"
-                            title="{{ t('tpl.index.toolbar.region_import_title') }}">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                            <polyline points="17 8 12 3 7 8"></polyline>
-                            <line x1="12" y1="3" x2="12" y2="15"></line>
-                        </svg>
-                        <span>{{ t('tpl.index.toolbar.region_import') }}</span>
-                    </button>
-                    <button type="button" class="map-panel-btn" id="mapPlaceSearch"
-                            aria-label="{{ t('tpl.index.toolbar.place_search') }}"
-                            title="{{ t('tpl.index.toolbar.place_search_title') }}"
-                            aria-expanded="false" aria-controls="placeSearchPanel">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                            <circle cx="11" cy="11" r="8"></circle>
-                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                        </svg>
-                        <span>{{ t('tpl.index.toolbar.place_search') }}</span>
-                    </button>
-                </div>
-                <input type="file" id="regionImportFile" accept=".geojson,.json,.kml,.kmz,.zip,.shp" hidden>
-                <div class="place-search" id="placeSearchPanel" hidden>
-                    <input type="search" class="form-control form-control-sm" id="placeSearchInput"
-                           placeholder="{{ t('tpl.index.toolbar.place_search_placeholder') }}"
-                           aria-label="{{ t('tpl.index.toolbar.place_search') }}">
-                    <div class="place-search__results" id="placeSearchResults"></div>
-                </div>
+            <div class="map-panel-triggers">
+                <button type="button" class="map-panel-btn" id="mapRegionImport"
+                        aria-label="{{ t('tpl.index.toolbar.region_import') }}"
+                        title="{{ t('tpl.index.toolbar.region_import_title') }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <span>{{ t('tpl.index.toolbar.region_import') }}</span>
+                </button>
             </div>
+            <input type="file" id="regionImportFile" accept=".geojson,.json,.kml,.kmz,.zip,.shp" hidden>
             <div class="map-panel-triggers">
                 <!-- 地形光照：Cesium scene.globe.enableLighting 的开关。
                      偏好存 localStorage（terrain_lighting.js），不进 config 表。 -->
@@ -117,21 +106,53 @@
                 </button>
             </div>
             <div class="map-panel-triggers" id="mapPanelTriggers">
-                <button type="button" class="map-panel-btn" data-panel="records" aria-label="{{ t('tpl.index.toolbar.tasks') }}" title="{{ t('tpl.index.toolbar.tasks_title') }}">
+                <button type="button" class="map-panel-btn" data-panel="records" aria-label="{{ t('tpl.index.toolbar.tasks') }}" title="{{ t('tpl.index.toolbar.tasks_title') }}" aria-expanded="false">
                     {{ m.icon_tasks(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.tasks') }}</span>
                 </button>
-                <button type="button" class="map-panel-btn" data-panel="config" aria-label="{{ t('tpl.index.toolbar.config') }}" title="{{ t('tpl.index.toolbar.config') }}">
+                <button type="button" class="map-panel-btn" data-panel="config" aria-label="{{ t('tpl.index.toolbar.config') }}" title="{{ t('tpl.index.toolbar.config') }}" aria-expanded="false">
                     {{ m.icon_config(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.config') }}</span>
                 </button>
-                <button type="button" class="map-panel-btn" data-panel="plugins" aria-label="{{ t('tpl.plugins.title') }}" title="{{ t('tpl.plugins.title') }}">
+                <button type="button" class="map-panel-btn" data-panel="plugins" aria-label="{{ t('tpl.plugins.title') }}" title="{{ t('tpl.plugins.title') }}" aria-expanded="false">
                     {{ m.icon_plugin(18, gap='') }}
                     <span>{{ t('tpl.plugins.title') }}</span>
                 </button>
             </div>
         </div>
-        <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「下载」「删除」入口 -->
+
+        <!-- 地点搜索（§5.1）。2026-08 从左上工具条挪到顶部居中：工具条是 34px
+             宽的竖排图标胶囊，搜索框塞不进去，原来只能靠 `left: 100%` 挂在它
+             右侧 —— 位置偏、发现性差。顶部居中是地图应用放搜索框的常规位置，
+             与右上角的 .bounds-overlay（top: 12px right: 12px）错开，窄视口下
+             由 .map-search 自己的 max-width 让位。
+
+             输入框常驻可见（不再是一颗需要先点开的按钮），下拉面板才是可开合的
+             那一层，动画也做在它身上。role="combobox" + aria-expanded 描述的
+             正是「一个输入框 + 一个随它开合的候选列表」这个结构。 -->
+        <div class="map-search" id="mapSearch">
+            <div class="map-search__field">
+                {{ m.icon_search(16, cls='map-search__icon') }}
+                <input type="search" class="map-search__input" id="placeSearchInput"
+                       placeholder="{{ t('tpl.index.search.placeholder') }}"
+                       aria-label="{{ t('tpl.index.search.label') }}"
+                       autocomplete="off" role="combobox"
+                       aria-expanded="false" aria-controls="placeSearchPanel">
+                {# 清空按钮：`type="search"` 原生的那颗叉在各浏览器上样式不一、
+                   暗色主题下几乎看不见，这里自绘一颗。有可见文本（×），不算
+                   纯图标按钮，但仍给 aria-label —— 「×」念出来没有意义。 #}
+                <button type="button" class="map-search__clear" id="placeSearchClear"
+                        aria-label="{{ t('tpl.index.search.clear_input') }}" hidden>&times;</button>
+            </div>
+            <div class="map-search__panel" id="placeSearchPanel" hidden>
+                {# 类型筛选片：按**本次结果实际出现过的** kind 动态生成，不写死
+                   清单 —— Photon 给 state/city/house/other，Nominatim 给
+                   administrative/boundary，写死必然在另一家上失灵。 #}
+                <div class="map-search__filters" id="placeSearchFilters" hidden></div>
+                <div class="place-search__results" id="placeSearchResults"></div>
+            </div>
+        </div>
+        <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「新建任务」「清除选区」入口 -->
         <!-- 这里**不能**是 live region：浮层整层由 map.js 的 updateBoundsInfo()
              innerHTML 全量重建，拖角点时经 rAF 最高 60 次/秒，polite 队列会积压到
              松手之后还在念；而且里面装着按钮，交互控件本就不该塞进 live region。
@@ -142,122 +163,197 @@
     </div>
 </div>
 
-<!-- 下载参数弹窗：框选后由选区浮层的「下载」按钮打开（map.js 里
-     openDownloadModal()，会先刷新顶部的选区四至摘要）。关闭弹窗即可
-     回地图继续拖拽角点 / 点击数值调整选区，表单内容保留。 -->
-<div class="modal fade" id="downloadModal" tabindex="-1" aria-labelledby="downloadModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="downloadModalLabel">
-                    {{ m.icon_download(18) }}
-                    {{ t('tpl.index.download.title') }}
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.index.modal.close') }}"></button>
-            </div>
-            <div class="modal-body">
-                <div class="modal-bounds-summary" id="downloadModalBounds"></div>
-                <div class="tile-estimate" id="tileEstimate" hidden></div>
-                <form id="downloadForm">
-                    <div class="form-group-label">{{ t('tpl.index.form.section_basic') }}</div>
-                    <div class="mb-3">
-                        <label for="taskName" class="form-label">{{ t('tpl.index.form.task_name') }}</label>
-                        <input type="text" class="form-control" id="taskName" placeholder="{{ t('tpl.index.form.task_name_placeholder') }}" required>
+<!-- 新建任务面板（#createPanel，IA 核心）：两个 Bootstrap 参数弹窗双双退场，
+     四条管线（地图瓦片 / 高程 / 本地地形切片 / 等高线）并入这一张按管线切换的
+     表单，入口是左列工具条第一组的「新建」。
+
+     为什么是面板而不是第三个弹窗（设计稿 §2.3，四条理由都是实测）：
+       1. 折叠线：弹窗 dialog 高 742px，1366×768 余量仅 23px，1366×720 时提交
+          按钮落在折叠线下 91px。面板满高 + .config-footer 常驻底条，提交按钮
+          结构上不可能落到折叠线下 —— 它在滚动区之外。
+       2. 改选区：弹窗是模态的，拖角点必须先关掉它（2026-07-30 设计稿就是这么
+          设计的）。面板非模态，地图始终可交互，四至摘要与瓦片预估随选区刷新。
+       3. 惯例：「任务」「配置」两个 rail 按钮打开的都是同构面板，弹窗与它们不同形。
+       4. 宽度：面板复用 panels.js 的拖拽调宽 + localStorage，弹窗固定 500px。
+
+     不加顶栏、不加常驻侧边栏、不加挤占式 dock —— 三条都在设计稿 §6 的已否决
+     清单里（2026-07 试过并删掉），所以新入口只能落在既有工具条里。 -->
+<section class="workbench-panel" id="createPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.create') }}" hidden>
+    {{ m.panel_header(m.icon_create(16), t('tpl.index.panel.create'), t('tpl.index.panel.close')) }}
+    {# --fill + 内层 .config-layout：三层 flex（外层吃满高度 / 中间滚动 /
+       底条常驻），照抄 #configPanel 与 _config_content.html。 #}
+    <div class="workbench-panel__body workbench-panel__body--fill">
+        <div class="config-layout">
+            <form id="taskForm" class="config-scroll">
+                {# 四条管线段控。复用全站既有的 .status-chips / .status-chip
+                   （配置页主题开关、任务面板状态筛选同一套），不新增 CSS。
+                   data-pipeline 的四个值就是**后端管线名**，一个字都不能改：
+                   map 走 POST /api/tasks，dem 走 POST /api/dem/tasks，
+                   local_terrain 走 POST /api/terrain/local/tasks，
+                   contour 走 POST /api/contour/tasks（再 .../start）。
+                   .active 与 aria-pressed 必须同步翻（同 #statusChips：只有 CSS
+                   类时读屏用户听不出当前停在哪条管线）。
+                   type="button" 不能省：表单里不写 type 的按钮默认是提交钮，
+                   点一下管线就等于点了「创建任务」。 #}
+                <div class="mb-3">
+                    <div class="form-group-label" id="createPipelineLabel">{{ t('tpl.index.create.pipeline') }}</div>
+                    <div class="status-chips" id="createPipeline" role="group" aria-labelledby="createPipelineLabel">
+                        <button type="button" class="status-chip active" data-pipeline="map" aria-pressed="true">{{ t('tpl.index.download.type_map') }}</button>
+                        <button type="button" class="status-chip" data-pipeline="dem" aria-pressed="false">{{ t('tpl.index.download.type_dem') }}</button>
+                        <button type="button" class="status-chip" data-pipeline="local_terrain" aria-pressed="false">{{ t('tpl.index.process.type_local_terrain') }}</button>
+                        <button type="button" class="status-chip" data-pipeline="contour" aria-pressed="false">{{ t('tpl.index.process.type_contour') }}</button>
                     </div>
+                </div>
 
-                    <div class="mb-3">
-                        <label class="form-label">{{ t('tpl.index.download.type') }}</label>
-                        <div>
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="radio" name="downloadType" id="downloadTypeMap" value="map" checked>
-                                <label class="form-check-label" for="downloadTypeMap">{{ t('tpl.index.download.type_map') }}</label>
-                            </div>
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="radio" name="downloadType" id="downloadTypeDem" value="dem">
-                                <label class="form-check-label" for="downloadTypeDem">{{ t('tpl.index.download.type_dem') }}</label>
-                            </div>
-                        </div>
+                <div class="form-group-label">{{ t('tpl.index.form.section_basic') }}</div>
+                {# 四条管线合并后**只剩这一个 required 控件**，而它对四条管线都可见。
+                   这一点是必须的：hidden 不等于 disabled，藏在 [hidden] 分组里的
+                   required 控件照样参与原生校验，浏览器会拦下 submit 事件而气泡
+                   又弹不出来 —— 「创建」点了没反应，且四条管线一起废。 #}
+                <div class="mb-3">
+                    <label for="taskName" class="form-label">{{ t('tpl.index.form.task_name') }}</label>
+                    <input type="text" class="form-control" id="taskName" placeholder="{{ t('tpl.index.form.task_name_placeholder') }}" required>
+                </div>
+
+                <div class="form-group-label">{{ t('tpl.index.create.section_source') }}</div>
+                <!-- 选区组（瓦片 / 高程）：四至摘要 + 瓦片数预估 + 无选区时的两个
+                     入口。三者由 map.js 的 updateCreatePanelBounds() 在选区每次
+                     变化时刷新 —— 面板非模态，用户拖角点时它们同步跟着走，不必
+                     像弹窗时代那样「关掉再打开」才看到新四至。 -->
+                <div id="selectionField">
+                    <div class="modal-bounds-summary" id="createPanelBounds"></div>
+                    <div class="tile-estimate" id="tileEstimate" hidden></div>
+                    {# 无选区时的两个入口（设计稿 §2.2 的「去框选 / 手动输入」）。
+                       **不许给这个容器加 .d-flex**：`.d-flex{display:flex!important}`
+                       压过 [hidden] 的 UA 规则，实测 hidden 属性照样设、computed
+                       display 仍是 flex —— 入口变常显（同 #mapStyleLockHint 那段
+                       注释记下的坑）。.btn 本身是 inline-block，两颗自然并排。 #}
+                    <div class="mb-3" id="createBoundsEntries" hidden>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="createDrawBtn">{{ t('tpl.index.create.draw_rect') }}</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="createManualBoundsBtn">{{ t('tpl.index.create.manual_bounds') }}</button>
                     </div>
+                </div>
 
+                <!-- 来源组（本地地形切片 / 等高线）：上传 .tif，或零拷贝复用某个
+                     已完成高程任务已经下载好的 .tif。两条路殊途同归 —— 都在各自的
+                     /tasks 建一个新任务进时间流。 -->
+                <div id="sourceField" hidden>
                     <div class="mb-3">
-                        <label class="form-label">{{ t('tpl.index.download.output_format') }}</label>
-                        <div>
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatTiles" checked>
-                                <label class="form-check-label" for="outputFormatTiles">{{ t('tpl.index.download.format_tiles') }}</label>
-                            </div>
-                            <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatGeoTiff" checked>
-                                <label class="form-check-label" for="outputFormatGeoTiff">GeoTIFF</label>
-                            </div>
-                            <!-- 多选映射回后端枚举（map.js _outputFormatValue）:
-                                 都勾 → both,只勾瓦片 → tiles_only,只勾 GeoTIFF → image_only。 -->
-                        </div>
-                        <!-- MBTiles 是**正交**的一项，不是第四个枚举值（§5.3：它是
-                             通用产物容器，一个任务可以同时持有 XYZ 目录、逐层
-                             GeoTIFF 和一个 MBTiles）。做成第四个值会删掉容器本身
-                             要打包的那个松散瓦片目录，而 /tiles/<id>/ 预览也是从
-                             那个目录出图 —— 后端 OutputFormat 因此原样不动，
-                             这一勾单独作为 export_mbtiles 字段提交。 -->
-                        <div class="form-check mt-2">
-                            <input class="form-check-input" type="checkbox" id="exportMbtiles">
-                            <label class="form-check-label" for="exportMbtiles">{{ t('tpl.index.download.export_mbtiles') }}</label>
-                        </div>
-                        <small class="form-text text-muted d-block">{{ t('tpl.index.download.export_mbtiles_hint') }}</small>
-                    </div>
-
-                    <div class="form-group-label">{{ t('tpl.index.form.section_range') }}</div>
-                    <div class="mb-3" id="mapStyleField">
-                        <label for="mapStyle" class="form-label">{{ t('tpl.index.download.map_style') }}</label>
-                        <div class="map-style-row">
-                            <select class="form-select" id="mapStyle">
-                                <option value="m">{{ t('tpl.index.download.style_standard') }}</option>
-                                <option value="s">{{ t('tpl.index.download.style_satellite') }}</option>
-                                <option value="y">{{ t('tpl.index.download.style_satellite_labels') }}</option>
-                                <option value="h">{{ t('tpl.index.download.style_roads') }}</option>
-                                <option value="t">{{ t('tpl.index.download.style_terrain') }}</option>
-                            </select>
-                            <img id="mapStylePreview" class="map-style-preview" alt="{{ t('tpl.index.download.style_preview_alt') }}" title="{{ t('tpl.index.download.style_preview_title') }}">
-                        </div>
-                        {# 样式下拉被插件源锁住时的说明。放在被禁用的那个控件
-                           **正下方**（而不是引发禁用的插件源下拉旁）:置灰的
-                           控件要自己解释得清,用户的目光落在灰掉的东西上时
-                           答案就在原地。可见性由 map.js 的
-                           initPluginSourceStyleLock 一处切换。
-
-                           ⚠️ **是 div 不是 small,且不许加 d-block。** 这一句是
-                           条件显示的,而同目录其它 form-text 提示都常显,所以
-                           照抄它们那套「small.form-text.text-muted.d-block」在
-                           这里两头都错:
-                             1. `.d-block{display:block!important}` 压过 `[hidden]`
-                                的 UA 规则。实测 hidden 属性照样设、computed
-                                display 仍是 block、高度 18px —— 提示变常显。
-                             2. 去掉 d-block 之后 small 元素是 inline,而紧跟的
-                                label.form-label 在 Bootstrap 里同样没有 display、
-                                也是 inline —— 实测这句提示与「数据源」标签挤在
-                                同一行(两者 top 都是 623)。
-                           div 天生块级,`hidden` 靠 UA 的 display:none 就够,
-                           两个坑都不踩。
-
-                           ⚠️ 本段(以及本文件任何 Jinja 注释)里**不许写出带
-                           尖括号的标签字面量,开标签和闭标签都算**。
-                           tests/test_css_contract.py 的 `_FormStructureParser`
-                           用 HTMLParser 扒 #downloadForm 的直接子元素,而
-                           HTMLParser 不认识 Jinja 注释 —— 注释里的标签字面量会
-                           被当成真标签,把深度计数顶歪,form 的闭标签再也匹配
-                           不上。写类名路径(如 label.form-label)代替。 #}
-                        <div class="form-text text-muted" id="mapStyleLockHint" hidden>{{ t('tpl.index.download.style_locked_hint') }}</div>
-                        {# 插件源:选「内置源」时走上面的样式选择(存量路径,
-                           一字不变);选插件提供的源时随任务提交
-                           source_plugin_id / source_id 两个字段,由后端在
-                           建任务那一刻冻结成快照。选项由 map.js 从
-                           /api/plugins/sources 填充。 #}
-                        <label for="downloadPluginSource" class="form-label mt-2">{{ t('tpl.index.download.plugin_source') }}</label>
-                        <select class="form-select" id="downloadPluginSource">
-                            <option value="">{{ t('tpl.index.download.source_builtin') }}</option>
+                        <label for="processSource" class="form-label">{{ t('tpl.index.process.source') }}</label>
+                        <select class="form-select" id="processSource">
+                            <option value="upload">{{ t('tpl.index.process.source_upload') }}</option>
+                            <option value="dem_task">{{ t('tpl.index.process.source_dem_task') }}</option>
                         </select>
                     </div>
+                    <div class="mb-3" id="sourceUploadRow">
+                        <label for="sourceFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
+                        <input type="file" class="form-control" id="sourceFiles" accept=".tif,.tiff" multiple>
+                        {# 选完 tif 立刻填的有效信息卡：坐标系 / 范围 / 分辨率 /
+                           数据类型 / 建议层级。内容由 map.js updateTifInfo() 写入
+                           （前端读 GeoTIFF 头部 -> POST /api/raster/inspect 做地理
+                           解释）。
+                           改前这是**两张逐字同款的卡**（地形切片与等高线各一张），
+                           唯一差别是 updateTifInfo 的 mode。
+                           合成一张之后 mode 由当前管线决定：地形切片按 Cesium
+                           经纬度分块估层级、等高线按 Web Mercator 瓦片估，同一份
+                           DEM 两者给出的数不一样（raster_probe._estimate_maxzoom），
+                           传错比不显示更糟。 #}
+                        <div class="tif-info" id="sourceTifInfo" aria-live="polite" hidden></div>
+                    </div>
+                    <div class="mb-3" id="contourSourceHint" hidden>
+                        <small class="form-text text-muted d-block">{{ t('tpl.index.process.contour_source_hint') }}</small>
+                    </div>
+                    <div class="mb-3" id="processDemTaskRow" hidden>
+                        <label for="processDemTask" class="form-label">{{ t('tpl.index.process.dem_task') }}</label>
+                        <select class="form-select" id="processDemTask"></select>
+                        <small class="form-text text-muted">{{ t('tpl.index.process.dem_task_hint') }}</small>
+                    </div>
+                </div>
 
+                <div class="form-group-label">{{ t('tpl.index.create.section_params') }}</div>
+                <div class="mb-3" id="outputFormatField">
+                    <label class="form-label">{{ t('tpl.index.download.output_format') }}</label>
+                    <div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatTiles" checked>
+                            <label class="form-check-label" for="outputFormatTiles">{{ t('tpl.index.download.format_tiles') }}</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="checkbox" name="outputFormat" id="outputFormatGeoTiff" checked>
+                            <label class="form-check-label" for="outputFormatGeoTiff">GeoTIFF</label>
+                        </div>
+                        <!-- 多选映射回后端枚举（map.js _outputFormatValue）:
+                             都勾 → both,只勾瓦片 → tiles_only,只勾 GeoTIFF → image_only。 -->
+                    </div>
+                    <!-- MBTiles 是**正交**的一项，不是第四个枚举值（§5.3：它是
+                         通用产物容器，一个任务可以同时持有 XYZ 目录、逐层
+                         GeoTIFF 和一个 MBTiles）。做成第四个值会删掉容器本身
+                         要打包的那个松散瓦片目录，而 /tiles/<id>/ 预览也是从
+                         那个目录出图 —— 后端 OutputFormat 因此原样不动，
+                         这一勾单独作为 export_mbtiles 字段提交。 -->
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" id="exportMbtiles">
+                        <label class="form-check-label" for="exportMbtiles">{{ t('tpl.index.download.export_mbtiles') }}</label>
+                    </div>
+                    <small class="form-text text-muted d-block">{{ t('tpl.index.download.export_mbtiles_hint') }}</small>
+                </div>
+
+                <div class="mb-3" id="mapStyleField">
+                    <label for="mapStyle" class="form-label">{{ t('tpl.index.download.map_style') }}</label>
+                    <div class="map-style-row">
+                        <select class="form-select" id="mapStyle">
+                            <option value="m">{{ t('tpl.index.download.style_standard') }}</option>
+                            <option value="s">{{ t('tpl.index.download.style_satellite') }}</option>
+                            <option value="y">{{ t('tpl.index.download.style_satellite_labels') }}</option>
+                            <option value="h">{{ t('tpl.index.download.style_roads') }}</option>
+                            <option value="t">{{ t('tpl.index.download.style_terrain') }}</option>
+                        </select>
+                        <img id="mapStylePreview" class="map-style-preview" alt="{{ t('tpl.index.download.style_preview_alt') }}" title="{{ t('tpl.index.download.style_preview_title') }}">
+                    </div>
+                    {# 样式下拉被插件源锁住时的说明。放在被禁用的那个控件
+                       **正下方**（而不是引发禁用的插件源下拉旁）:置灰的
+                       控件要自己解释得清,用户的目光落在灰掉的东西上时
+                       答案就在原地。可见性由 map.js 的
+                       initPluginSourceStyleLock 一处切换。
+
+                       ⚠️ **是 div 不是 small,且不许加 d-block。** 这一句是
+                       条件显示的,而同目录其它 form-text 提示都常显,所以
+                       照抄它们那套「small.form-text.text-muted.d-block」在
+                       这里两头都错:
+                         1. `.d-block{display:block!important}` 压过 `[hidden]`
+                            的 UA 规则。实测 hidden 属性照样设、computed
+                            display 仍是 block、高度 18px —— 提示变常显。
+                         2. 去掉 d-block 之后 small 元素是 inline,而紧跟的
+                            label.form-label 在 Bootstrap 里同样没有 display、
+                            也是 inline —— 实测这句提示与「数据源」标签挤在
+                            同一行(两者 top 都是 623)。
+                       div 天生块级,`hidden` 靠 UA 的 display:none 就够,
+                       两个坑都不踩。
+
+                       ⚠️ 本段(以及本文件任何 Jinja 注释)里**不许写出带
+                       尖括号的标签字面量,开标签和闭标签都算**。
+                       tests/test_css_contract.py 的 `_FormStructureParser`
+                       用 HTMLParser 扒 #taskForm 的直接子元素,而
+                       HTMLParser 不认识 Jinja 注释 —— 注释里的标签字面量会
+                       被当成真标签,把深度计数顶歪,form 的闭标签再也匹配
+                       不上。写类名路径(如 label.form-label)代替。 #}
+                    <div class="form-text text-muted" id="mapStyleLockHint" hidden>{{ t('tpl.index.download.style_locked_hint') }}</div>
+                    {# 插件源:选「内置源」时走上面的样式选择(存量路径,
+                       一字不变);选插件提供的源时随任务提交
+                       source_plugin_id / source_id 两个字段,由后端在
+                       建任务那一刻冻结成快照。选项由 map.js 从
+                       /api/plugins/sources 填充。 #}
+                    <label for="downloadPluginSource" class="form-label mt-2">{{ t('tpl.index.download.plugin_source') }}</label>
+                    <select class="form-select" id="downloadPluginSource">
+                        <option value="">{{ t('tpl.index.download.source_builtin') }}</option>
+                    </select>
+                </div>
+
+                <!-- 缩放范围：瓦片与等高线共用**同一对**字段。改前下载表单与处理
+                     表单各有一对同 min/max 同语义的控件，归一顺带修掉一个假旋钮：
+                     配置里的 default_zoom_min/max 此前只覆盖下载那一对（map.js 的
+                     initMap），等高线那一腿改了没反应。 -->
+                <div id="zoomField">
                     <div class="row">
                         <div class="col-6 mb-3">
                             <label for="zoomMin" class="form-label">{{ t('tpl.index.form.zoom_min') }}</label>
@@ -268,24 +364,176 @@
                             <input type="number" class="form-control" id="zoomMax" min="0" max="21" value="15">
                         </div>
                     </div>
+                    {# 「留空 = 按 DEM 分辨率自动算」只对等高线成立（contour_api
+                       把空 zoom_max 当未表态）；瓦片那条腿空值会 parseInt 出 NaN，
+                       所以这句提示只在等高线管线下出现。 #}
+                    <div class="mb-3" id="zoomAutoHint" hidden>
+                        <small class="form-text text-muted d-block">{{ t('tpl.index.process.zoom_hint') }}</small>
+                    </div>
+                </div>
 
-                    <div class="mb-3" id="demOptions" hidden>
-                        <label for="demDataset" class="form-label">{{ t('tpl.index.download.dem_dataset') }}</label>
-                        <select class="form-select mb-2" id="demDataset">
-                            <option value="COP-DEM-GLO-30">{{ t('tpl.index.download.dem_glo30') }}</option>
-                            <option value="ASTGTM.003">{{ t('tpl.index.download.dem_aster') }}</option>
-                        </select>
-                        <small class="form-text text-muted d-block mb-2">{{ t('tpl.index.download.dem_hint') }}</small>
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="demDownloadNum">
-                            <label class="form-check-label" for="demDownloadNum">{{ t('tpl.index.download.dem_num') }}</label>
-                        </div>
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="demDownloadSwb">
-                            <label class="form-check-label" for="demDownloadSwb">{{ t('tpl.index.download.dem_swb') }}</label>
+                <div class="mb-3" id="demOptions" hidden>
+                    <label for="demDataset" class="form-label">{{ t('tpl.index.download.dem_dataset') }}</label>
+                    <select class="form-select mb-2" id="demDataset">
+                        <option value="COP-DEM-GLO-30">{{ t('tpl.index.download.dem_glo30') }}</option>
+                        <option value="ASTGTM.003">{{ t('tpl.index.download.dem_aster') }}</option>
+                    </select>
+                    <small class="form-text text-muted d-block mb-2">{{ t('tpl.index.download.dem_hint') }}</small>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="demDownloadNum">
+                        <label class="form-check-label" for="demDownloadNum">{{ t('tpl.index.download.dem_num') }}</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="demDownloadSwb">
+                        <label class="form-check-label" for="demDownloadSwb">{{ t('tpl.index.download.dem_swb') }}</label>
+                    </div>
+                </div>
+
+                <div class="mb-3" id="localTerrainOptions" hidden>
+                    <label for="localTerrainMaxzoom" class="form-label">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
+                    {# 初值由 main.index() 的 _terrain_form_defaults 交付，这里只
+                       负责渲染。写死 14 会和配置里的 terrain_local_maxzoom 打架 ——
+                       表单把写死值显式发出去，配置页那一项就成了「改了没反应的假
+                       旋钮」（local_terrain_task_manager._default_maxzoom 的命名）。 #}
+                    {# 而配置值又必须先过一遍这个控件自己的 min/max（钳位现在在路由里
+                       做）：这个键登记在 config_manager._UNCONSTRAINED_KEYS，写入侧
+                       不校验，PUT /api/config 收得下 99；照直渲染成 value="99"
+                       就会让整张 #taskForm 变 :invalid —— 原生校验拦下 submit
+                       事件，map.js 的监听根本不触发，「创建」点了没反应；而
+                       #localTerrainOptions 只用 hidden 藏、字段不 disable，所以
+                       **四条管线一起废**（合并之前只废处理那两条）。钳位之所以搬去
+                       路由：模板记不了日志，而被丢掉的 99 必须当场留一条 warning，
+                       否则运维要等作业真跑起来才知道
+                       （local_terrain_task_manager.py:128-130）。 #}
+                    {# 「自动」= 按源数据分辨率现算基准层级（提交时送字面量 'auto'，
+                       后端 geo_validation.coerce_maxzoom 只认这一个写法）。它塞不进
+                       上面那个 min/max 数字框，所以单开一个控件。
+                       勾上时禁用数字框：disabled 的输入不参与原生校验，也不会让用户
+                       以为旁边那个数还算数。但数字框仍渲染出厂 14 —— 它是用户取消
+                       勾选后的起点。空 value 并不会让表单 :invalid（min/max 只管
+                       有值的控件，空值要 required 才拦），后果是静默的：取消勾选
+                       拿到一个空数字框，提交送空串，后端当「未表态」回落到配置默认
+                       的自动挡 —— 取消勾选等于没生效。
+                       勾选态同样由服务端渲染，写死就又造出一个「改了没反应」的假旋钮。 #}
+                    <div class="form-check mt-1">
+                        <input class="form-check-input" type="checkbox" id="localTerrainMaxzoomAuto"
+                               {% if terrain_local_maxzoom_auto %}checked{% endif %}>
+                        <label class="form-check-label" for="localTerrainMaxzoomAuto">{{ t('tpl.index.process.local_terrain_maxzoom_auto') }}</label>
+                    </div>
+                    <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21"
+                           value="{{ terrain_local_maxzoom }}"
+                           {% if terrain_local_maxzoom_auto %}disabled{% endif %}>
+                    {# 档位与法线的初值必须由**服务端**按配置渲染，不能写死。
+                       写死初值，表单就会把那份值显式发出去盖掉配置页的设置 ——
+                       local_terrain_task_manager.py 的 _default_quality 管这叫
+                       「改了没反应的假旋钮」。法线那条还不可逆：运维配了 true，
+                       用户不动复选框就会显式发 false，几小时切完才发现光照点不亮。 #}
+                    {# terrain_quality_preset 同样由 _terrain_form_defaults 交付，
+                       保证是取值表（geo_validation.TILING_QUALITY_OFFSETS）里的字面量
+                       之一：库里被 sqlite3 直接改成没见过的值时，在那里换成均衡并留
+                       一条 warning，不再由模板悄悄兜。 #}
+                    {# 所以下面三条都是等值判断、没有兜底档。将来新增第四档却漏改这里，
+                       三个 if 全假会让浏览器自动选中第一个 option（精细，体积 3.3 倍）
+                       —— tests/test_terrain_lighting_frontend.py 里按取值表遍历
+                       option 的那条断言钉的就是这个。 #}
+                    {# data-offset 是**服务端**渲染的偏移量（terrain_quality_offsets
+                       就是 geo_validation.TILING_QUALITY_OFFSETS）：起切前的规模预告
+                       要按「基准 + 偏移」算实际层级，而那张取值表只许有一份 ——
+                       在 map.js 里抄第二份，改了档位偏移之后预告与产物就静默对不上。 #}
+                    <label for="localTerrainQuality" class="form-label mt-2">{{ t('tpl.index.process.terrain_quality') }}</label>
+                    <select class="form-select" id="localTerrainQuality">
+                        <option value="precision" data-offset="{{ terrain_quality_offsets['precision'] }}"
+                                {% if terrain_quality_preset == 'precision' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_precision') }}</option>
+                        {# 均衡这条不再是兜底档：值在路由里已经收干净了。 #}
+                        <option value="balanced" data-offset="{{ terrain_quality_offsets['balanced'] }}"
+                                {% if terrain_quality_preset == 'balanced' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_balanced') }}</option>
+                        <option value="speed" data-offset="{{ terrain_quality_offsets['speed'] }}"
+                                {% if terrain_quality_preset == 'speed' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_speed') }}</option>
+                    </select>
+                    <small class="form-text text-muted">{{ t('tpl.index.process.terrain_quality_hint') }}</small>
+
+                    {# 起切前的规模预告：层级由「自动/手动」与档位共同决定。
+                       数字是估算 —— 真实基准层级由 build_terrain 用**物化后**的
+                       合并栅格现算，产物事实以任务详情的 effective_maxzoom 为准。
+                       内容全部由 map.js 的 renderTerrainTileEstimate() 填，
+                       没有汇总（还没选文件）时保持 hidden；数据来源不是「上传
+                       DEM」时同样收起 —— 它算的是上传文件那一份汇总。
+                       aria-live 同上面那张信息卡：这一行是动态注入的、又是唯一
+                       的规模警告，不播报读屏用户就拿不到（提示文案只挂在 title
+                       上，触屏同样够不着）。 #}
+                    <div class="tif-info" id="localTerrainEstimate" aria-live="polite" hidden></div>
+
+                    <div class="form-check mt-2">
+                        {# 布尔配置在库里存的是字符串（database.py:99），照 _config_content.html:271 的写法比 'true'。 #}
+                        <input type="checkbox" id="localTerrainNormals" class="form-check-input" {% if config.terrain_vertex_normals == 'true' %}checked{% endif %}>
+                        <label class="form-check-label" for="localTerrainNormals">{{ t('tpl.index.process.terrain_normals') }}</label>
+                    </div>
+                    <small class="form-text text-muted">{{ t('tpl.index.process.terrain_normals_hint') }}</small>
+                </div>
+
+                <div class="mb-3" id="contourOptions" hidden>
+                    <label for="contourInterval" class="form-label">{{ t('tpl.index.process.contour_interval') }}</label>
+                    {# 初值由服务端按配置渲染（main.index() 的 contour_default_interval）。
+                       写死 value="50" 加上提交端的 `|| 50` 会让表单永远显式发一个非空
+                       等高距，配置页的 contour_default_interval 因此是个「改了没反应
+                       的假旋钮」—— 与上面 terrain_local_maxzoom 同一种病。 #}
+                    <input type="number" class="form-control" id="contourInterval" min="1" step="1"
+                           value="{{ contour_default_interval }}">
+                    {# d-block 不能省：small 元素是 inline，而紧跟的
+                       label.form-label 在 Bootstrap 里同样没有 display、也是
+                       inline —— 实测这句提示与「背景」标签挤在同一行（渲染成
+                       「…大范围 100m。 背景」）。这两句是**常显**的，所以加
+                       d-block 安全；条件显示的提示不能这么写（见 #mapStyleLockHint
+                       那段注释：`.d-block{display:block!important}` 会压过
+                       [hidden] 的 UA 规则，让提示变常显）。 #}
+                    <small class="form-text text-muted d-block">{{ t('tpl.index.process.contour_interval_hint') }}</small>
+
+                    <label class="form-label mt-2">{{ t('tpl.index.process.background') }}</label>
+                    <div class="d-flex align-items-center gap-2">
+                        <input type="color" id="contourBackground" value="#faf6ec" class="form-control form-control-color" style="max-width:60px;">
+                        <div class="form-check mb-0">
+                            <input type="checkbox" id="contourBackgroundTransparent" class="form-check-input">
+                            <label class="form-check-label" for="contourBackgroundTransparent">{{ t('tpl.index.process.background_transparent') }}</label>
                         </div>
                     </div>
+                    {# d-block 同上：不加就与下面的「地形着色」标签挤在同一行。 #}
+                    <small class="form-text text-muted d-block">{{ t('tpl.index.process.background_hint') }}</small>
 
+                    <label class="form-label mt-2">{{ t('tpl.index.process.terrain_shade') }}</label>
+                    <div class="form-check mb-0">
+                        <input type="checkbox" id="contourTerrainShade" class="form-check-input" checked>
+                        <label class="form-check-label" for="contourTerrainShade">{{ t('tpl.index.process.terrain_shade_option') }}</label>
+                    </div>
+
+                    <details class="contour-style-custom" id="contourStyleCustom">
+                        <summary>{{ t('tpl.index.process.style_custom') }}</summary>
+                        <div class="row mt-2">
+                            <div class="col-6 mb-2">
+                                <label for="lineColorIntermediate" class="form-label">{{ t('tpl.index.process.line_color_intermediate') }}</label>
+                                <input type="color" id="lineColorIntermediate" value="#9C6B3F" class="form-control form-control-color w-100">
+                            </div>
+                            <div class="col-6 mb-2">
+                                <label for="lineColorIndex" class="form-label">{{ t('tpl.index.process.line_color_index') }}</label>
+                                <input type="color" id="lineColorIndex" value="#7A4F2A" class="form-control form-control-color w-100">
+                            </div>
+                        </div>
+                        <div class="mb-2">
+                            <label for="tintBreaks" class="form-label">{{ t('tpl.index.process.tint_breaks') }}</label>
+                            <input type="text" class="form-control" id="tintBreaks" value="0,200,500,1000,2000,3000,4000,5000">
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">{{ t('tpl.index.process.tint_colors') }}</label>
+                            <div id="tintColorStops" class="tint-stops"></div>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="tintResetBtn">{{ t('tpl.index.process.tint_reset') }}</button>
+                        <!-- 样式预览：合成 DEM 按当前配色渲染，改任何配色项都会刷新 -->
+                        <img id="contourStylePreview" class="contour-style-preview" alt="{{ t('tpl.index.process.style_preview_alt') }}">
+                    </details>
+                </div>
+
+                <!-- 保存路径只有瓦片/高程有：两条处理管线的产物落在任务目录里，
+                     由后端决定位置。分组标题装在同一个容器里，收起时一起收。 -->
+                <div id="outputPathField">
                     <div class="form-group-label">{{ t('tpl.index.download.section_output') }}</div>
                     <div class="mb-3">
                         <label for="outputPath" class="form-label">{{ t('tpl.index.download.output_path') }}</label>
@@ -297,236 +545,25 @@
                                     data-path-target="outputPath">{{ t('tpl.index.download.browse') }}</button>
                         </div>
                     </div>
-
-                    <!-- 不带 disabled：disabled 的按钮不可聚焦、不在 tab 序里，
-                         键盘用户 Tab 过整张表单碰不到它，也读不到「为什么不能提交」。
-                         缺选区由 map.js 的 submit 处理器 toast
-                         js.map.download.need_selection 当场说明。 -->
-                    <button type="submit" class="btn btn-primary w-100" id="createTaskBtn">
-                        {{ m.icon_download(16) }}
-                        {{ t('tpl.index.download.submit') }}
-                    </button>
-                </form>
+                </div>
+            </form>
+            <!-- 常驻底条。提交钮在 form 之外、靠 form="taskForm" 关联（照抄
+                 _config_content.html 的 .config-footer 写法）：它因此在
+                 .config-scroll **之外**，无论表单多长都不进滚动区 ——
+                 「提交按钮永远可达」是结构性的，不是某个视口高度下的巧合。
+                 不带 disabled：disabled 的按钮不可聚焦、不在 tab 序里，键盘
+                 用户 Tab 过整张表单碰不到它，也读不到「为什么不能提交」。
+                 缺选区 / 缺文件由 map.js 的 submit 处理器当场 toast 说明。 -->
+            <div class="config-footer">
+                <button type="submit" form="taskForm" class="btn btn-primary w-100" id="createTaskBtn">
+                    {{ m.icon_create(16) }}
+                    {{ t('tpl.index.download.submit') }}
+                </button>
             </div>
         </div>
     </div>
-</div>
-
-<!-- 数据处理弹窗：任务面板筛选行右端的「处理」按钮直接打开（data-bs-toggle）。
-     处理类任务（本地高程切片 / 等高线）都是上传驱动，不需要框选。
-     弹窗标记留在 body 直下：任务面板恒带 transform，装在里面会被遮罩盖住。 -->
-<div class="modal fade" id="processModal" tabindex="-1" aria-labelledby="processModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="processModalLabel">
-                    {{ m.icon_process(18) }}
-                    {{ t('tpl.index.process.title') }}
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.index.modal.close') }}"></button>
-            </div>
-            <div class="modal-body">
-                <form id="processForm">
-                    <div class="form-group-label">{{ t('tpl.index.form.section_basic') }}</div>
-                    <div class="mb-3" id="processNameRow">
-                        <label for="processTaskName" class="form-label">{{ t('tpl.index.form.task_name') }}</label>
-                        <input type="text" class="form-control" id="processTaskName" placeholder="{{ t('tpl.index.form.task_name_placeholder') }}" required>
-                    </div>
-
-                    <div class="mb-3">
-                        <label for="processType" class="form-label">{{ t('tpl.index.process.type') }}</label>
-                        <select class="form-select" id="processType">
-                            <option value="local_terrain">{{ t('tpl.index.process.type_local_terrain') }}</option>
-                            <option value="contour">{{ t('tpl.index.process.type_contour') }}</option>
-                        </select>
-                    </div>
-
-                    <div class="mb-3">
-                        <label for="processSource" class="form-label">{{ t('tpl.index.process.source') }}</label>
-                        <select class="form-select" id="processSource">
-                            <option value="upload">{{ t('tpl.index.process.source_upload') }}</option>
-                            <option value="dem_task">{{ t('tpl.index.process.source_dem_task') }}</option>
-                        </select>
-                    </div>
-
-                    <div class="mb-3" id="processDemTaskRow" hidden>
-                        <label for="processDemTask" class="form-label">{{ t('tpl.index.process.dem_task') }}</label>
-                        <select class="form-select" id="processDemTask"></select>
-                        <small class="form-text text-muted">{{ t('tpl.index.process.dem_task_hint') }}</small>
-                    </div>
-
-                    <div class="mb-3" id="localTerrainOptions" hidden>
-                        <div id="localTerrainUploadRow">
-                            <label for="localTerrainFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
-                            <input type="file" class="form-control" id="localTerrainFiles" accept=".tif,.tiff" multiple>
-                            {# 选完 tif 立刻填的有效信息卡：坐标系 / 范围 / 分辨率 /
-                               数据类型 / 建议层级。内容由 map.js updateTifInfo()
-                               写入（前端读 GeoTIFF 头部 -> POST /api/raster/inspect
-                               做地理解释）。等高线下面还有一张同款。 #}
-                            <div class="tif-info" id="localTerrainTifInfo" aria-live="polite" hidden></div>
-                        </div>
-                        <label for="localTerrainMaxzoom" class="form-label mt-2">{{ t('tpl.index.process.local_terrain_maxzoom') }}</label>
-                        {# 初值由 main.index() 的 _terrain_form_defaults 交付，这里只
-                           负责渲染。写死 14 会和配置里的 terrain_local_maxzoom 打架 ——
-                           表单把写死值显式发出去，配置页那一项就成了「改了没反应的假
-                           旋钮」（local_terrain_task_manager._default_maxzoom 的命名）。 #}
-                        {# 而配置值又必须先过一遍这个控件自己的 min/max（钳位现在在路由里
-                           做）：这个键登记在 config_manager._UNCONSTRAINED_KEYS（:316），
-                           写入侧不校验，PUT /api/config 收得下 99；照直渲染成 value="99"
-                           就会让整张 #processForm 变 :invalid —— 原生校验拦下 submit
-                           事件，map.js:1420 的监听根本不触发，「创建」点了没反应；而
-                           #localTerrainOptions 只用 hidden 藏、字段不 disable，所以连
-                           等高线任务也一起建不了，气泡还弹不出来（map.js:646-650 记过同一
-                           形态）。钳位之所以搬去路由：模板记不了日志，而被丢掉的 99 必须
-                           当场留一条 warning，否则运维要等作业真跑起来才知道
-                           （local_terrain_task_manager.py:128-130）。 #}
-                        {# 「自动」= 按源数据分辨率现算基准层级（提交时送字面量 'auto'，
-                           后端 geo_validation.coerce_maxzoom 只认这一个写法）。它塞不进
-                           上面那个 min/max 数字框，所以单开一个控件。
-                           勾上时禁用数字框：disabled 的输入不参与原生校验，也不会让用户
-                           以为旁边那个数还算数。但数字框仍渲染出厂 14 —— 它是用户取消
-                           勾选后的起点。空 value 并不会让表单 :invalid（min/max 只管
-                           有值的控件，空值要 required 才拦），后果是静默的：取消勾选
-                           拿到一个空数字框，提交送空串，后端当「未表态」回落到配置默认
-                           的自动挡 —— 取消勾选等于没生效。
-                           勾选态同样由服务端渲染，写死就又造出一个「改了没反应」的假旋钮。 #}
-                        <div class="form-check mt-1">
-                            <input class="form-check-input" type="checkbox" id="localTerrainMaxzoomAuto"
-                                   {% if terrain_local_maxzoom_auto %}checked{% endif %}>
-                            <label class="form-check-label" for="localTerrainMaxzoomAuto">{{ t('tpl.index.process.local_terrain_maxzoom_auto') }}</label>
-                        </div>
-                        <input type="number" class="form-control" id="localTerrainMaxzoom" min="0" max="21"
-                               value="{{ terrain_local_maxzoom }}"
-                               {% if terrain_local_maxzoom_auto %}disabled{% endif %}>
-                        {# 档位与法线的初值必须由**服务端**按配置渲染，不能写死。
-                           写死初值，表单就会把那份值显式发出去盖掉配置页的设置 ——
-                           local_terrain_task_manager.py 的 _default_quality 管这叫
-                           「改了没反应的假旋钮」。法线那条还不可逆：运维配了 true，
-                           用户不动复选框就会显式发 false，几小时切完才发现光照点不亮。 #}
-                        {# terrain_quality_preset 同样由 _terrain_form_defaults 交付，
-                           保证是取值表（geo_validation.TILING_QUALITY_OFFSETS）里的字面量
-                           之一：库里被 sqlite3 直接改成没见过的值时，在那里换成均衡并留
-                           一条 warning，不再由模板悄悄兜。 #}
-                        {# 所以下面三条都是等值判断、没有兜底档。将来新增第四档却漏改这里，
-                           三个 if 全假会让浏览器自动选中第一个 option（精细，体积 3.3 倍）
-                           —— tests/test_terrain_lighting_frontend.py 里按取值表遍历
-                           option 的那条断言钉的就是这个。 #}
-                        {# data-offset 是**服务端**渲染的偏移量（terrain_quality_offsets
-                           就是 geo_validation.TILING_QUALITY_OFFSETS）：起切前的规模预告
-                           要按「基准 + 偏移」算实际层级，而那张取值表只许有一份 ——
-                           在 map.js 里抄第二份，改了档位偏移之后预告与产物就静默对不上。 #}
-                        <label for="localTerrainQuality" class="form-label mt-2">{{ t('tpl.index.process.terrain_quality') }}</label>
-                        <select class="form-select" id="localTerrainQuality">
-                            <option value="precision" data-offset="{{ terrain_quality_offsets['precision'] }}"
-                                    {% if terrain_quality_preset == 'precision' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_precision') }}</option>
-                            {# 均衡这条不再是兜底档：值在路由里已经收干净了。 #}
-                            <option value="balanced" data-offset="{{ terrain_quality_offsets['balanced'] }}"
-                                    {% if terrain_quality_preset == 'balanced' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_balanced') }}</option>
-                            <option value="speed" data-offset="{{ terrain_quality_offsets['speed'] }}"
-                                    {% if terrain_quality_preset == 'speed' %}selected{% endif %}>{{ t('tpl.index.process.terrain_quality_speed') }}</option>
-                        </select>
-                        <small class="form-text text-muted">{{ t('tpl.index.process.terrain_quality_hint') }}</small>
-
-                        {# 起切前的规模预告：层级由「自动/手动」与档位共同决定。
-                           数字是估算 —— 真实基准层级由 build_terrain 用**物化后**的
-                           合并栅格现算，产物事实以任务详情的 effective_maxzoom 为准。
-                           内容全部由 map.js 的 renderTerrainTileEstimate() 填，
-                           没有汇总（还没选文件）时保持 hidden；数据来源不是「上传
-                           DEM」时同样收起 —— 它算的是上传文件那一份汇总。
-                           aria-live 同上面那张信息卡：这一行是动态注入的、又是唯一
-                           的规模警告，不播报读屏用户就拿不到（提示文案只挂在 title
-                           上，触屏同样够不着）。 #}
-                        <div class="tif-info" id="localTerrainEstimate" aria-live="polite" hidden></div>
-
-                        <div class="form-check mt-2">
-                            {# 布尔配置在库里存的是字符串（database.py:99），照 _config_content.html:271 的写法比 'true'。 #}
-                            <input type="checkbox" id="localTerrainNormals" class="form-check-input" {% if config.terrain_vertex_normals == 'true' %}checked{% endif %}>
-                            <label class="form-check-label" for="localTerrainNormals">{{ t('tpl.index.process.terrain_normals') }}</label>
-                        </div>
-                        <small class="form-text text-muted">{{ t('tpl.index.process.terrain_normals_hint') }}</small>
-                    </div>
-
-                    <div class="mb-3" id="contourOptions" hidden>
-                        <div id="contourUploadRow">
-                            <label for="contourFiles" class="form-label">{{ t('tpl.index.process.upload_dem') }}</label>
-                            <input type="file" class="form-control" id="contourFiles" accept=".tif,.tiff" multiple>
-                            <small class="form-text text-muted">{{ t('tpl.index.process.contour_source_hint') }}</small>
-                            {# 与高程切片同一张卡（map.js updateTifInfo），区别只在
-                               「建议最大层级」按等高线的 Web Mercator 口径算。 #}
-                            <div class="tif-info" id="contourTifInfo" aria-live="polite" hidden></div>
-                        </div>
-
-                        <label for="contourInterval" class="form-label mt-2">{{ t('tpl.index.process.contour_interval') }}</label>
-                        <input type="number" class="form-control" id="contourInterval" min="1" step="1" value="50">
-                        <small class="form-text text-muted">{{ t('tpl.index.process.contour_interval_hint') }}</small>
-
-                        <label class="form-label mt-2">{{ t('tpl.index.process.background') }}</label>
-                        <div class="d-flex align-items-center gap-2">
-                            <input type="color" id="contourBackground" value="#faf6ec" class="form-control form-control-color" style="max-width:60px;">
-                            <div class="form-check mb-0">
-                                <input type="checkbox" id="contourBackgroundTransparent" class="form-check-input">
-                                <label class="form-check-label" for="contourBackgroundTransparent">{{ t('tpl.index.process.background_transparent') }}</label>
-                            </div>
-                        </div>
-                        <small class="form-text text-muted">{{ t('tpl.index.process.background_hint') }}</small>
-
-                        <label class="form-label mt-2">{{ t('tpl.index.process.terrain_shade') }}</label>
-                        <div class="form-check mb-0">
-                            <input type="checkbox" id="contourTerrainShade" class="form-check-input" checked>
-                            <label class="form-check-label" for="contourTerrainShade">{{ t('tpl.index.process.terrain_shade_option') }}</label>
-                        </div>
-
-                        <details class="contour-style-custom" id="contourStyleCustom">
-                            <summary>{{ t('tpl.index.process.style_custom') }}</summary>
-                            <div class="row mt-2">
-                                <div class="col-6 mb-2">
-                                    <label for="lineColorIntermediate" class="form-label">{{ t('tpl.index.process.line_color_intermediate') }}</label>
-                                    <input type="color" id="lineColorIntermediate" value="#9C6B3F" class="form-control form-control-color w-100">
-                                </div>
-                                <div class="col-6 mb-2">
-                                    <label for="lineColorIndex" class="form-label">{{ t('tpl.index.process.line_color_index') }}</label>
-                                    <input type="color" id="lineColorIndex" value="#7A4F2A" class="form-control form-control-color w-100">
-                                </div>
-                            </div>
-                            <div class="mb-2">
-                                <label for="tintBreaks" class="form-label">{{ t('tpl.index.process.tint_breaks') }}</label>
-                                <input type="text" class="form-control" id="tintBreaks" value="0,200,500,1000,2000,3000,4000,5000">
-                            </div>
-                            <div class="mb-2">
-                                <label class="form-label">{{ t('tpl.index.process.tint_colors') }}</label>
-                                <div id="tintColorStops" class="tint-stops"></div>
-                            </div>
-                            <button type="button" class="btn btn-sm btn-outline-secondary" id="tintResetBtn">{{ t('tpl.index.process.tint_reset') }}</button>
-                            <!-- 样式预览：合成 DEM 按当前配色渲染，改任何配色项都会刷新 -->
-                            <img id="contourStylePreview" class="contour-style-preview" alt="{{ t('tpl.index.process.style_preview_alt') }}">
-                        </details>
-                    </div>
-
-                    <!-- 仅等高线需要缩放范围；本地高程切片的层级在上方自己的字段里 -->
-                    <div id="processZoomSection" hidden>
-                        <div class="form-group-label">{{ t('tpl.index.form.section_range') }}</div>
-                        <div class="row">
-                            <div class="col-6 mb-3">
-                                <label for="processZoomMin" class="form-label">{{ t('tpl.index.form.zoom_min') }}</label>
-                                <input type="number" class="form-control" id="processZoomMin" min="0" max="21" value="10">
-                            </div>
-                            <div class="col-6 mb-3">
-                                <label for="processZoomMax" class="form-label">{{ t('tpl.index.form.zoom_max') }}</label>
-                                <input type="number" class="form-control" id="processZoomMax" min="0" max="21" placeholder="{{ t('tpl.index.process.zoom_max_placeholder') }}">
-                            </div>
-                        </div>
-                        <small class="form-text text-muted d-block mb-2">{{ t('tpl.index.process.zoom_hint') }}</small>
-                    </div>
-
-                    <button type="submit" class="btn btn-primary w-100" id="createProcessBtn">
-                        {{ m.icon_process(16) }}
-                        {{ t('tpl.index.process.submit') }}
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-</div>
+    <div class="workbench-panel__resizer" data-panel-resizer aria-hidden="true"></div>
+</section>
 
 <!-- 任务面板（右侧滑出，浮在地图上方）：统计 + 单一时间流任务列表
      （活动任务也在流里，socket 原地更新）+ 历史区域地图。
@@ -579,7 +616,7 @@
    既不在 Tab 序里也没有 Enter/Space 路径，`.statusbar-copy { cursor: pointer }`
    只对鼠标用户兑现了「这里能点」这个承诺。UA 的按钮字体与墨色由
    `.statusbar-pill` 的 font/color: inherit 抹平，盒子与 span 时期一致。 #}
-<button type="button" class="statusbar-item statusbar-pill statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records">
+<button type="button" class="statusbar-item statusbar-pill statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records" aria-expanded="false">
     <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
@@ -639,9 +676,10 @@
 <script src="{{ url_for('static', filename='js/history.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/config.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/plugins.js') }}" defer></script>
-<script src="{{ url_for('static', filename='js/panels.js') }}" defer></script>
 <script src="{{ url_for('static', filename='js/drop_process.js') }}" defer></script>
-{# 上面八个文件带 defer，解析期不再阻塞渲染，但它们的执行也随之推到
+{# panels.js 不在这里 —— 它带着全站层栈搬到了 base.html（2026-08-15 Task 6），
+   必须排在 command_palette.js 之前，而本 block 整个在它之后。 #}
+{# 上面七个文件带 defer，解析期不再阻塞渲染，但它们的执行也随之推到
    DOMContentLoaded 之前 —— 所以本块必须等那个事件。
    ⚠️ 内联脚本的 defer 属性是**无效**的（规范只对有 src 的脚本生效），
    写了也会立刻执行，那时 initMap 等函数一个都还不存在。 #}
@@ -699,9 +737,8 @@
                     return tileOriginReady.then(function () {
                         _boot('map', function () { initMap(config, basemapDescriptor); });
                         _boot('workbench', initMapWorkbench);
-                        _boot('downloadTypeToggle', initDownloadTypeToggle);
+                        _boot('pipelineToggle', initPipelineToggle);
                         _boot('pluginSources', initPluginSourceOptions);
-                        _boot('processTypeToggle', initProcessTypeToggle);
                         _boot('mapStylePreview', initMapStylePreview);
                         {# 样式下拉的插件源联动。排在 pluginSources 之后只是
                            读起来顺:它只挂 change 监听、读 select.value,

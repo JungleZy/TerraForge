@@ -282,6 +282,15 @@
     <!-- 全局 UI 组件：自定义 Toast / Confirm（替代原生 alert/confirm） -->
     <script src="{{ url_for('static', filename='js/ui.js') }}"></script>
 
+    {# 工作台覆盖面板 + **全站层栈**（window.TerraLayers）。层栈是整站唯一那个
+       「按 Esc 关最上层」的 keydown 监听，confirm / progress / cmdk / cmdk help
+       四层在每一页都可能出现，所以它必须全站加载 —— 只挂 index.html 的话
+       /config、/history 上按 Esc 关不掉确认框。面板部分在没有面板元素的页面
+       完全空载（链接照常跳转）。
+       ⚠️ 顺序：必须排在 command_palette.js **之前**（cmdk 在解析期就 register），
+       且在 ui.js 之后（层栈的拒绝提示走 showToast）。 #}
+    <script src="{{ url_for('static', filename='js/panels.js') }}"></script>
+
     <!-- 全局 Socket.IO 单例（window.TerraSocket）。必须排在 ui.js 之后 ——
          它建立连接后立刻调 initConnectionStatus 点亮底部状态栏的连接指示。 -->
     <script src="{{ url_for('static', filename='js/socket.js') }}"></script>

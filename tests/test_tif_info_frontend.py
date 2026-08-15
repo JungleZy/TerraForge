@@ -62,20 +62,26 @@ def _reset_form_body():
 
 # ------------------------------------------------------------------ 模板接线
 
-def test_index_renders_the_tif_info_card_next_to_each_file_input():
+def test_index_renders_the_tif_info_card_before_every_control_it_informs():
     html = _read("templates", "index.html")
     # 信息卡必须紧跟在文件选择框之后、紧邻的层级/间距输入之前：它就是给
     # 「这些数填多少」提供依据的，排到后面等于用户已经填完才看到建议。
-    assert (html.index('id="localTerrainFiles"')
-            < html.index('id="localTerrainTifInfo"')
+    #
+    # 2026-08-15：两个文件框（#localTerrainFiles / #contourFiles）合成一个
+    # #sourceFiles，两张信息卡（#localTerrainTifInfo / #contourTifInfo）合成一张
+    # #sourceTifInfo —— 两条处理管线共用这一对，mode 由当前管线决定。原来两条
+    # 独立的链因此收成一条，但**两个下游锚点都得留着**：同一张卡现在同时在为
+    # 地形切片的 #localTerrainMaxzoom 与等高线的 #contourInterval 提供依据，
+    # 只钉一个就等于放行「它排到另一个控件后面去」。
+    assert (html.index('id="sourceFiles"')
+            < html.index('id="sourceTifInfo"')
             < html.index('id="localTerrainMaxzoom"'))
-    assert (html.index('id="contourFiles"')
-            < html.index('id="contourTifInfo"')
-            < html.index('id="contourInterval"'))
-    # 3 处：两张信息卡 + 起切前的规模预告行（#localTerrainEstimate 复用同一张卡
-    # 的盒子样式）。数字写死是有意的 —— 多出来的第四处多半是有人把 tif-info
-    # 当通用盒子在用，那会让这三处的样式改动牵连到不相干的地方。
-    assert html.count('class="tif-info"') == 3
+    assert html.index('id="sourceTifInfo"') < html.index('id="contourInterval"')
+    # 2 处：唯一那张信息卡 + 起切前的规模预告行（#localTerrainEstimate 复用同一张
+    # 卡的盒子样式）。改前是 3，少掉的那一处正是被合并掉的第二张卡。数字写死仍
+    # 是有意的 —— 多出来的第三处多半是有人把 tif-info 当通用盒子在用，那会让这
+    # 两处的样式改动牵连到不相干的地方。
+    assert html.count('class="tif-info"') == 2
 
 
 def test_index_loads_the_geotiff_parser():
@@ -85,31 +91,52 @@ def test_index_loads_the_geotiff_parser():
 
 # ------------------------------------------------------------------ map.js 接线
 
-def test_both_file_inputs_trigger_the_probe():
+def test_the_file_input_triggers_the_probe():
+    """2026-08-15：两个文件框合成一个 #sourceFiles，两个探测函数
+    （updateLocalTerrainTifInfo / updateContourTifInfo）合成一个
+    updateSourceTifInfo。一个 input 只需要一条接线，钉的还是同一件事 ——
+    选完文件必须自动探测，不能等用户去点什么。"""
     src = _map_js()
-    assert "addEventListener('change', updateLocalTerrainTifInfo)" in src
-    assert "addEventListener('change', updateContourTifInfo)" in src
+    assert "addEventListener('change', updateSourceTifInfo)" in src
 
 
-def test_each_form_asks_for_its_own_pipelines_zoom_estimate():
+def test_each_pipeline_asks_for_its_own_zoom_estimate():
     """两条切片管线的分块方式不同，mode 传错的卡片会写一个与实际切片对不上的
-    层级 —— 比不显示更糟。见 raster_probe._estimate_maxzoom。"""
-    src = _map_js()
-    assert "updateTifInfo('localTerrainFiles', 'localTerrainTifInfo', 'terrain')" in src
-    assert "updateTifInfo('contourFiles', 'contourTifInfo', 'contour')" in src
+    层级 —— 比不显示更糟。见 raster_probe._estimate_maxzoom。
+
+    2026-08-15 锚点搬家：改前是两条写死 mode 的调用
+    （`updateTifInfo('localTerrainFiles', 'localTerrainTifInfo', 'terrain')` 与
+    `updateTifInfo('contourFiles', 'contourTifInfo', 'contour')`），一条管线一条。
+    现在只有一条调用，mode 不再由调用点写死而是当场按 _currentPipeline() 二选一。
+    所以断言拆成三段，逐字覆盖原来两条各自守的那一格：mode 确实传下去了、
+    它确实由当前管线算、两个口径字面量都还在。**不许**退化成只钉一个 mode ——
+    那正好是这条用例要拦的缺陷。
+    """
+    body = _js_function_body(_map_js(), "updateSourceTifInfo")
+    assert "updateTifInfo('sourceFiles', 'sourceTifInfo', mode)" in body, (
+        'updateSourceTifInfo 没把 mode 传给 updateTifInfo —— 两条管线会用同一个'
+        '口径估层级')
+    assert "_currentPipeline()" in body, (
+        'mode 不是按当前管线算的 —— 它要么被写死，要么读了别的东西')
+    assert "'contour'" in body and "'terrain'" in body, (
+        '两个 mode 字面量必须都在 updateSourceTifInfo 里可达：少一个就说明有一条'
+        '管线被并进了另一条的口径')
 
 
-def test_reset_form_clears_both_cards():
+def test_reset_form_clears_the_card():
     """form.reset() 只清空文件选择框：卡片是普通 div，而且程序清空 input 不会
-    触发 change，updateTifInfo 不会自己重跑。不显式重跑这两个更新函数，提交
-    成功后卡片还挂着上一个任务那份 tif 的范围和层级，旁边是空的选择框。"""
+    触发 change，updateTifInfo 不会自己重跑。不显式重跑更新函数，提交
+    成功后卡片还挂着上一个任务那份 tif 的范围和层级，旁边是空的选择框。
+
+    2026-08-15：resetForm 的 formId 参数随两张表单合并成一张 #taskForm 一起删除，
+    原来那道 `if (formId === 'processForm')` 分支已经没有对应的代码，所以不再切片。
+    唯一那张卡在任何一条管线复位时都要收起 —— 直接在整个函数体里查比切片更强。
+    """
     body = _reset_form_body()
     assert "form.reset()" in body
-    branch = body[body.index("if (formId === 'processForm')"):]
-    assert "updateLocalTerrainTifInfo()" in branch
-    assert "updateContourTifInfo()" in branch
+    assert "updateSourceTifInfo()" in body
     # 顺序反了等于没改：reset() 会把刚重跑出来的状态再清一遍
-    assert body.index("form.reset()") < body.index("updateLocalTerrainTifInfo()")
+    assert body.index("form.reset()") < body.index("updateSourceTifInfo()")
 
 
 def test_stale_responses_cannot_overwrite_a_newer_selection():
@@ -468,9 +495,11 @@ def test_the_estimate_is_redrawn_when_any_of_its_inputs_change():
     assert wiring, '找不到把三个控件接到 renderTerrainTileEstimate 的那条语句'
     for id_ in ('localTerrainMaxzoom', 'localTerrainQuality', 'localTerrainNormals'):
         assert f"'{id_}'" in wiring.group(0), f'{id_} 没有参与预告的重画'
-    auto = _js_function_body(src, "initProcessTypeToggle")
-    # 定位到「自动层级」复选框自己的回调再查：数据来源的 change 回调里现在也有
-    # 一次重画（来源切走时要收起预告），拿整个 initProcessTypeToggle 查的话这条
+    # 2026-08-15：函数名从 initProcessTypeToggle 换成 initPipelineToggle（两个
+    # init 函数合并成一个），这个复选框的接线一行没动。
+    auto = _js_function_body(src, "initPipelineToggle")
+    # 定位到「自动层级」复选框自己的回调再查：上面那条三控件 forEach 也把
+    # renderTerrainTileEstimate 挂了一遍，拿整个 initPipelineToggle 查的话这条
     # 断言会被那一次顶住 —— 复选框漏挂监听也照样全绿。
     auto_cb = re.search(r"maxzoomAutoToggle\.addEventListener\('change'.*?\}\);", auto, re.S)
     assert auto_cb, '找不到「自动层级」复选框的 change 回调 —— 本测试已失效'
@@ -502,11 +531,11 @@ def test_the_estimate_level_is_the_base_plus_the_preset_offset():
 def test_the_estimate_is_hidden_unless_the_source_is_an_upload():
     """来源切到「已下载的 DEM 任务」时预告必须收起，且得有人触发这次收起。
 
-    预告行在 #localTerrainUploadRow **之外**（模板里它挨着档位下拉），
-    initProcessTypeToggle 的 apply() 藏得掉上传行连同那张信息卡，却藏不掉它：
+    预告行在 #sourceUploadRow **之外**（模板里它挨着档位下拉），
+    applyPipeline() 的显隐表藏得掉上传行连同那张信息卡，却藏不掉它：
     切过去之后它原地留着上一批上传文件的层级/张数/体积，而那批文件与要切的 DEM
-    任务毫无关系。两条可达路径：弹窗里先选文件再改来源；以及任务行「处理」进来的
-    openProcessForDemTask —— 它只补发 change 事件，不复位表单也不清缓存。
+    任务毫无关系。两条可达路径：面板里先选文件再改来源；以及任务行「用它切地形」
+    进来的 openProcessForDemTask —— 它只补发 change 事件，不复位表单也不清缓存。
 
     dem_task 这条线因此没有预告，那是特性的边界而不是漏了：inspect 的原料由前端
     读本地文件头得来，服务端够不着任务目录里的那些 DEM。
@@ -519,12 +548,21 @@ def test_the_estimate_is_hidden_unless_the_source_is_an_upload():
     assert 'hidden = true' in body[guard.end():guard.end() + 120], (
         '判了数据来源却没有收起预告行')
     # 判据摆在那儿还得有人来跑：来源的 change 回调必须重画一次。
-    toggle = _js_function_body(_map_js(), "initProcessTypeToggle")
+    #
+    # 2026-08-15 锚点搬家：改前 renderTerrainTileEstimate() 就写在这个 change
+    # 回调里。两个 init 合并成 initPipelineToggle 之后，回调第一件事是调模块级
+    # applyPipeline()，而那次重画搬进了 applyPipeline 的尾巴。同步调用、中间没有
+    # 分支挡着，所以链一样必然执行；断言拆成两段钉住这条链的两截。少任何一截，
+    # 来源切走时预告都会停在上一批上传文件的数上 —— 与改前漏挂监听的后果逐字相同。
+    toggle = _js_function_body(_map_js(), "initPipelineToggle")
     listener = re.search(
         r"sourceEl\.addEventListener\('change'.*?loadProcessDemTasks\(\)", toggle, re.S)
-    assert listener and 'renderTerrainTileEstimate()' in listener.group(0), (
-        '数据来源的 change 回调里没有重画预告 —— 判据写了也没人触发，预告会停在'
-        '上一批上传文件的数上')
+    assert listener, '找不到数据来源的 change 回调 —— 本测试已失效'
+    assert 'applyPipeline()' in listener.group(0), (
+        '数据来源的 change 回调没有调 applyPipeline() —— 判据写了也没人触发')
+    assert 'renderTerrainTileEstimate()' in _js_function_body(_map_js(), 'applyPipeline'), (
+        'applyPipeline() 没有重画预告 —— 来源切到「已下载的 DEM 任务」之后预告会'
+        '停在上一批上传文件的数上')
 
 
 def test_the_estimate_only_caches_the_terrain_pipelines_summary():

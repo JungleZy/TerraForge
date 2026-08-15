@@ -44,9 +44,12 @@ async function initHistory() {
     // 地图（含底图描述符与瓦片健康探测）和首批时间流同时启动，避免探测期间
     // 统计卡与表格闲等。初次 loadHistory 禁止自行绘图；等 map + data 的共同
     // 屏障通过后统一补一次最终渲染，哪一边先完成都不会画空 store 或重复绘制。
-    // 地图异常就地吞掉：Cesium 起不来是小地图一个人的事，不能连表格一起赔进去。
+    // 小地图起不来是它一个人的事，不能连表格一起赔进去 —— 但也**不能只写
+    // console**：审查点名的正是这里，Cesium 起不来时页面上只有一块空白，
+    // 用户看不出是坏了还是本来就没有区域。原因留给控制台，结论给用户一句。
     const mapReady = initHistoryMap().catch(function (error) {
         console.error('Failed to init history map:', error);
+        showToast(t('js.history.map_failed'), 'warning');
     });
     const historyReady = loadHistory(1, false);
     await Promise.all([mapReady, historyReady]);
@@ -54,6 +57,7 @@ async function initHistory() {
         renderHistoryMap();
     } catch (error) {
         console.error('Failed to render history map:', error);
+        showToast(t('js.history.map_failed'), 'warning');
     }
 }
 
@@ -87,6 +91,9 @@ async function _resolveHistoryBasemap() {
         if (j && j.success && j.basemap && j.basemap.url) return j.basemap;
     } catch (e) {
         console.error('Failed to load basemap descriptor:', e);
+        // 回退能用，但**不能不说**：下面那份内置描述符的层级上限与署名都可能
+        // 与配置里的源不同，小地图于是「看着正常、其实不是你配的那个源」。
+        showToast(t('js.history.basemap_fallback'), 'warning');
     }
     // 接口失败也只回退到同源路径：瓦片能不能取到是服务端的事，前端不该
     // 因为一次接口失败就绕过代理去直连外网。
@@ -133,11 +140,18 @@ async function initHistoryMap() {
     });
 }
 
+// 统计卡失败只提示一次，成功后复位。loadStats 的调用者不止首屏：每个终态
+// 事件都会（去抖后）再拉一次，服务端一直不通的话「每次失败弹一条」就是右上角
+// 一串同样的黄条。静默不是选项（审查点名的四处之一），刷屏也不是。
+let _statsFailureNotified = false;
+
 async function loadStats() {
     try {
         const r = await fetch('/api/history_stats', { cache: 'no-store' });
         const j = await r.json();
-        if (!j.success) return;
+        // success=false 与抛异常是同一件事的两种形状：卡片上的四个数字都停在
+        // 上一次的值，而它已经不对了。两条路都得说。
+        if (!j.success) throw new Error(j.error || 'history_stats: success=false');
         const s = j.stats;
         // 逐个判空：统计卡是否在页面上取决于 _history_content.html 有没有被
         // include。缺元素时裸解引用会抛 TypeError，被下面的 catch 吞成一条
@@ -150,8 +164,13 @@ async function loadStats() {
         set('statCompleted', s.completed);
         set('statFailed', s.failed);
         set('statDownloaded', s.total_downloaded.toLocaleString());
+        _statsFailureNotified = false;
     } catch (e) {
         console.error('Failed to load stats:', e);
+        if (!_statsFailureNotified) {
+            _statsFailureNotified = true;
+            showToast(t('js.history.stats_failed'), 'warning');
+        }
     }
 }
 
@@ -521,10 +540,13 @@ async function viewTaskDetails(taskId, taskType = 'map') {
 
         // Local-terrain tasks have no bounding box.
         const hasBbox = task.north != null && task.south != null && task.east != null && task.west != null;
-        document.getElementById('detailNorth').textContent = hasBbox ? task.north.toFixed(6) : '-';
-        document.getElementById('detailSouth').textContent = hasBbox ? task.south.toFixed(6) : '-';
-        document.getElementById('detailEast').textContent = hasBbox ? task.east.toFixed(6) : '-';
-        document.getElementById('detailWest').textContent = hasBbox ? task.west.toFixed(6) : '-';
+        // 详情档（ui.js 的 formatCoordExact，6 位）：任务详情是**记录**，
+        // 这四个数要能原样贴回去复现选区，与「复制选区」按钮同一档。
+        const f = window.formatCoordExact;
+        document.getElementById('detailNorth').textContent = hasBbox ? f(task.north) : '-';
+        document.getElementById('detailSouth').textContent = hasBbox ? f(task.south) : '-';
+        document.getElementById('detailEast').textContent = hasBbox ? f(task.east) : '-';
+        document.getElementById('detailWest').textContent = hasBbox ? f(task.west) : '-';
 
         document.getElementById('detailPath').textContent = task.output_path;
         document.getElementById('detailCreated').textContent = formatDate(task.created_at);
@@ -1120,101 +1142,151 @@ const DELETE_CONFIRM_KEYS = {
     pending_decision: 'js.history.confirm.delete_task_pending_decision',
 };
 
-async function deleteTask(taskId, taskType = 'map') {
-    // 状态取自 store 而不是 allTasks：socket 增量插进来的行只进了 store
-    // （同 previewHistoryTask 的说明）。查不到就退回通用文案 —— 宁可少一句
-    // 警告，也不能对着一个不知道状态的任务瞎说「正在运行」。
-    const store = window.TaskStore;
-    const task = store && store.get(`${taskType}:${taskId}`);
-    // hasOwnProperty 同 terrainPresetRowsHtml 的档位查表：`task.status` 若是
-    // `constructor` / `toString`，裸下标会取到原型上的成员并当成一个真键，
-    // t() 拿到函数后原样回落，确认框上就是一坨 `function Object()...`。
-    const confirmKey = (task
-        && Object.prototype.hasOwnProperty.call(DELETE_CONFIRM_KEYS, task.status)
-        && DELETE_CONFIRM_KEYS[task.status])
-        || 'js.history.confirm.delete_task';
+// trigger：触发这次删除的那颗按钮（行上的 🗑 由 task_list.js 的 act 自己上锁，
+// 所以那条路不传）。整段都在守卫里，确认框也算：连点会叠出两个确认框，两次
+// 回车就是两发 DELETE，第二发撞 404 再弹一条红字 —— 用户以为自己删错了东西。
+async function deleteTask(taskId, taskType = 'map', trigger = null) {
+    return guard(trigger, async function () {
+        // 状态取自 store 而不是 allTasks：socket 增量插进来的行只进了 store
+        // （同 previewHistoryTask 的说明）。查不到就退回通用文案 —— 宁可少一句
+        // 警告，也不能对着一个不知道状态的任务瞎说「正在运行」。
+        const store = window.TaskStore;
+        const task = store && store.get(`${taskType}:${taskId}`);
+        // hasOwnProperty 同 terrainPresetRowsHtml 的档位查表：`task.status` 若是
+        // `constructor` / `toString`，裸下标会取到原型上的成员并当成一个真键，
+        // t() 拿到函数后原样回落，确认框上就是一坨 `function Object()...`。
+        const confirmKey = (task
+            && Object.prototype.hasOwnProperty.call(DELETE_CONFIRM_KEYS, task.status)
+            && DELETE_CONFIRM_KEYS[task.status])
+            || 'js.history.confirm.delete_task';
 
-    // 单一确认框：任务删不删走确定/取消，产物删不删走勾选框（默认不勾）。
-    // 原来是串起来的两个框，第二个框问的是产物 —— 它的取消位（ESC / 点遮罩 /
-    // 「保留产物」）看起来像在撤销整个删除，实际上照样发 DELETE。现在取消就是
-    // 取消：不发请求，什么都不做。
-    const answer = await showConfirm(t(confirmKey), {
-        title: t('js.history.confirm.delete_task_title'),
-        danger: true,
-        checkbox: {
-            label: t('js.history.confirm.delete_files_checkbox'),
-            checked: false,
-        },
-    });
-    if (!answer.confirmed) {
-        return;
-    }
-    const deleteFiles = answer.checked;
-
-    try {
-        const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
-                        : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
-                        : taskType === 'contour' ? `/api/contour/tasks/${taskId}`
-                        : taskType === 'plugin' ? `/api/plugins/tasks/${taskId}`
-                        : `/api/tasks/${taskId}`;
-        const response = await fetch(`${deleteUrl}?delete_files=${deleteFiles ? 'true' : 'false'}`, { method: 'DELETE' });
-
-        if (response.ok) {
-            // files_deferred 的语义是「有产物要延后删」，不是「任务在跑」
-            // （后端判据是 artifact_dir is not None）。没要求删产物时这个字段
-            // 根本不下发，所以只认「键为真」，不能写成 === false。
-            // 不告诉用户的后果：删掉一个跑了两小时的任务并勾了删产物，看到
-            // 「任务已删除」，转头去文件管理器发现几十 GB 还在 —— 他分不清
-            // 该等还是该手删。
-            let payload = null;
-            try {
-                payload = await response.json();
-            } catch (e) {
-                // 四条 DELETE 端点都回 JSON；解析不了也只是少一句提示，
-                // 不能因此把后面的摘行/刷新整串跳过。
-            }
-            showToast(payload && payload.files_deferred
-                ? t('js.history.toast.deleted_files_deferred')
-                : t('js.history.toast.deleted'), 'success');
-            // 预览中的正是被删任务时联动关闭（map.js 的预览管理器）；
-            // 独立页 /history 不加载 map.js，typeof 守卫兜底。
-            if (typeof stopTaskPreviewForTask === 'function') {
-                stopTaskPreviewForTask(taskType, taskId);
-            }
-            // 删掉的是失败任务时，它那条常驻失败 toast（tasks.js 按 key 合并的）
-            // 一并关掉——记录都没了，提示不该留在右上角。
-            // 独立页 /history 不加载 tasks.js，typeof 守卫兜底。
-            if (typeof closeFailureToast === 'function') {
-                closeFailureToast(`${taskType}:${taskId}`);
-            }
-            // L6：删掉任意活动任务后（四条 DELETE 端点现在连 running 也收 ——
-            // 置停止标志后当场删行，见 routes/api.py 的 delete_task），
-            // 底部状态栏「N 个活动任务（M 运行中）X%」会继续把它算进去 ——
-            // loadHistory 不调 updateStatusTasks，文本就原地冻结，唯一纠正点是
-            // loadActiveTasks 里的 setActive（只在新建任务、socket 断线重连
-            // 或整页刷新时发生）。独立页 /history 不加载 tasks.js，用 typeof
-            // 守卫兜底（与上面两处同一写法）。
-            if (window.TaskStore) {
-                window.TaskStore.remove(`${taskType}:${taskId}`);
-            }
-            if (typeof updateStatusTasks === 'function') {
-                updateStatusTasks();
-            }
-            // 删掉的是当前页最后一条时本页已空，停在原页会看到空白页——回退一页。
-            // 判据是「删完就空了」而不是旧代码的 `<= 1`：上面的 store.remove 已经
-            // 把这一行摘掉，这里读的是删除**后**的长度；旧代码读的 allTasks 是
-            // loadHistory 的响应快照，删除不改它，所以那边才要留 1 条余量。
-            const remaining = store ? store.state.tasks.length : 1;
-            if (remaining === 0 && currentPage > 1) {
-                loadHistory(currentPage - 1);
-            } else {
-                loadHistory(currentPage);
-            }
-            loadStats();
-        } else {
-            showToast(t('js.history.toast.delete_failed'), 'danger');
+        // 单一确认框：任务删不删走确定/取消，产物删不删走勾选框（默认不勾）。
+        // 原来是串起来的两个框，第二个框问的是产物 —— 它的取消位（ESC / 点遮罩 /
+        // 「保留产物」）看起来像在撤销整个删除，实际上照样发 DELETE。现在取消就是
+        // 取消：不发请求，什么都不做。
+        const answer = await showConfirm(t(confirmKey), {
+            title: t('js.history.confirm.delete_task_title'),
+            danger: true,
+            checkbox: {
+                label: t('js.history.confirm.delete_files_checkbox'),
+                checked: false,
+            },
+        });
+        if (!answer.confirmed) {
+            return;
         }
-    } catch (error) {
-        showToast(t('js.history.toast.delete_failed_reason', {error: error.message}), 'danger');
-    }
+        const deleteFiles = answer.checked;
+
+        // 删除进度框：只在勾了「同时删除磁盘产物」时开。没勾的话请求只是一条
+        // DELETE + 一次 stat，毫秒级返回，弹个框反而是闪一下的噪声。
+        //
+        // 勾了的那条路是**同步**的：后端在请求线程里 rmtree 整个瓦片金字塔，
+        // 大任务几万到上百万个文件，Windows 上几十秒到几分钟 fetch 才返回。
+        // 改造前这段时间里界面完全没有反馈（确认框一关就没动静），用户以为没点上。
+        //
+        // 进度经 socket 的 task_delete_progress 推来（services/task_deletion 的
+        // _make_progress_emitter，5 次/秒）。socket 拿不到时（库没加载）照样开框，
+        // 只是停在「正在删除…」——退化成一个忙碌指示，仍然好过一片死寂。
+        //
+        // ⚠️ get() 之后必须在同一个同步块里 socket.on（socket.io 不重放错过的事件，
+        // 见 socket.js 文件头）。这里中间没有 await，注册紧跟 get()。
+        const socket = deleteFiles && window.TerraSocket ? window.TerraSocket.get() : null;
+        const progressBox = deleteFiles
+            ? showProgressDialog({
+                title: t('js.history.progress.delete_title'),
+                message: t('js.history.progress.delete_row'),
+            })
+            : null;
+        function onDeleteProgress(data) {
+            // 广播是全局的（本项目的 socket 没有房间），必须自己按任务过滤 ——
+            // 否则另一个客户端删别的任务时，这个框会跟着跳。
+            if (!data || data.task_id !== taskId || data.task_type !== taskType) return;
+            if (data.phase === 'scan') {
+                progressBox.update({
+                    text: t('js.history.progress.delete_scanning', {count: data.removed}),
+                    percent: null,
+                });
+                return;
+            }
+            progressBox.update({
+                text: t('js.history.progress.delete_removing',
+                        {done: data.removed, total: data.total}),
+                percent: data.total ? (data.removed / data.total) * 100 : null,
+            });
+        }
+        if (socket && progressBox) socket.on('task_delete_progress', onDeleteProgress);
+
+        try {
+            const deleteUrl = taskType === 'dem' ? `/api/dem/tasks/${taskId}`
+                            : taskType === 'local_terrain' ? `/api/terrain/local/tasks/${taskId}`
+                            : taskType === 'contour' ? `/api/contour/tasks/${taskId}`
+                            : taskType === 'plugin' ? `/api/plugins/tasks/${taskId}`
+                            : `/api/tasks/${taskId}`;
+            const response = await fetch(`${deleteUrl}?delete_files=${deleteFiles ? 'true' : 'false'}`, { method: 'DELETE' });
+
+            if (response.ok) {
+                // files_deferred 的语义是「有产物要延后删」，不是「任务在跑」
+                // （后端判据是 artifact_dir is not None）。没要求删产物时这个字段
+                // 根本不下发，所以只认「键为真」，不能写成 === false。
+                // 不告诉用户的后果：删掉一个跑了两小时的任务并勾了删产物，看到
+                // 「任务已删除」，转头去文件管理器发现几十 GB 还在 —— 他分不清
+                // 该等还是该手删。
+                let payload = null;
+                try {
+                    payload = await response.json();
+                } catch (e) {
+                    // 明确忽略：四条 DELETE 端点都回 JSON；解析不了也只是少一句
+                    // 提示，不能因此把后面的摘行/刷新整串跳过。
+                }
+                showToast(payload && payload.files_deferred
+                    ? t('js.history.toast.deleted_files_deferred')
+                    : t('js.history.toast.deleted'), 'success');
+                // 预览中的正是被删任务时联动关闭（map.js 的预览管理器）；
+                // 独立页 /history 不加载 map.js，typeof 守卫兜底。
+                if (typeof stopTaskPreviewForTask === 'function') {
+                    stopTaskPreviewForTask(taskType, taskId);
+                }
+                // 删掉的是失败任务时，它那条常驻失败 toast（tasks.js 按 key 合并的）
+                // 一并关掉——记录都没了，提示不该留在右上角。
+                // 独立页 /history 不加载 tasks.js，typeof 守卫兜底。
+                if (typeof closeFailureToast === 'function') {
+                    closeFailureToast(`${taskType}:${taskId}`);
+                }
+                // L6：删掉任意活动任务后（四条 DELETE 端点现在连 running 也收 ——
+                // 置停止标志后当场删行，见 routes/api.py 的 delete_task），
+                // 底部状态栏「N 个活动任务（M 运行中）X%」会继续把它算进去 ——
+                // loadHistory 不调 updateStatusTasks，文本就原地冻结，唯一纠正点是
+                // loadActiveTasks 里的 setActive（只在新建任务、socket 断线重连
+                // 或整页刷新时发生）。独立页 /history 不加载 tasks.js，用 typeof
+                // 守卫兜底（与上面两处同一写法）。
+                if (window.TaskStore) {
+                    window.TaskStore.remove(`${taskType}:${taskId}`);
+                }
+                if (typeof updateStatusTasks === 'function') {
+                    updateStatusTasks();
+                }
+                // 删掉的是当前页最后一条时本页已空，停在原页会看到空白页——回退一页。
+                // 判据是「删完就空了」而不是旧代码的 `<= 1`：上面的 store.remove 已经
+                // 把这一行摘掉，这里读的是删除**后**的长度；旧代码读的 allTasks 是
+                // loadHistory 的响应快照，删除不改它，所以那边才要留 1 条余量。
+                const remaining = store ? store.state.tasks.length : 1;
+                if (remaining === 0 && currentPage > 1) {
+                    loadHistory(currentPage - 1);
+                } else {
+                    loadHistory(currentPage);
+                }
+                loadStats();
+            } else {
+                showToast(t('js.history.toast.delete_failed'), 'danger');
+            }
+        } catch (error) {
+            showToast(t('js.history.toast.delete_failed_reason', {error: error.message}), 'danger');
+        } finally {
+            // 无条件收框 —— 包括后端 500、断网、页面被切走导致 fetch 直接 reject 的
+            // 那几条路。这个框不响应 ESC，也没有取消按钮：这里漏一次就是一个再也
+            // 关不掉的全屏遮罩，整页从此点不动。
+            if (socket && progressBox) socket.off('task_delete_progress', onDeleteProgress);
+            if (progressBox) progressBox.close();
+        }
+    });
 }

@@ -25,9 +25,15 @@ MESSAGES = {
         'zh': '失败',
         'en': 'Failed',
     },
+    # 这一格是**件数**不是字节：`/api/history/stats` 的 total_downloaded 把五条管线的
+    # downloaded_tiles / downloaded_files / uploaded_files / rendered_tiles /
+    # downloaded_items 直接相加（src/routes/api.py:884-886），前端只做
+    # toLocaleString（static/js/history.js:166）。中文「下载量」在中文里就是件数，
+    # 但英文 'Total downloaded' 会被读成数据量 —— 所以英文必须把单位说出来。
+    # 改前它是裸 'Total'，与 tpl.base.detail.total、tpl.config.cache.total 三处撞名。
     'tpl.history.stats.downloaded': {
         'zh': '累计下载量',
-        'en': 'Total',
+        'en': 'Items downloaded',
     },
     'tpl.history.map.title': {
         'zh': '历史区域地图',
@@ -78,8 +84,8 @@ MESSAGES = {
         'en': 'With gaps',
     },
     'tpl.history.filter.gaps_title': {
-        'zh': '已完成，但成品带缺块（缺块决策仍待处理的任务在「进行中」里）',
-        'en': 'Finished, but the output has gaps (tasks still awaiting a gap '
+        'zh': '已完成，但产物带缺块（缺块决策仍待处理的任务在「进行中」里）',
+        'en': 'Finished, but the artifact has gaps (tasks still awaiting a gap '
               'decision are under "In progress")',
     },
 }

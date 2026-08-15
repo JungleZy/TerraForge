@@ -47,6 +47,7 @@ window.TerrainLighting = (function () {
         try {
             return window.localStorage.getItem(STORAGE_KEY) === '1';
         } catch (e) {
+            // 明确忽略：读不出偏好按「关」（隐私模式等 localStorage 不可用）。
             return false;
         }
     }
@@ -70,7 +71,7 @@ window.TerrainLighting = (function () {
         on = !!on;
         try {
             window.localStorage.setItem(STORAGE_KEY, on ? '1' : '0');
-        } catch (e) { /* 忽略 */ }
+        } catch (e) { /* 明确忽略：写不进也先把本次会话的开关状态应用上 */ }
         apply(on);
     }
 

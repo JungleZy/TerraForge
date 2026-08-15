@@ -2,12 +2,13 @@
  * 全窗口拖拽打开「本地处理」或导入下载区域
  * （2026-08-11 设计 §3.6 借鉴 GeoLibre 的窗口级 drag-drop；区域导入是 §5.1）。
  *
- * - 只在首页生效:没有 #processModal 的页面(/config、/history)整个空载。
+ * - 只在首页生效:没有 #createPanel 的页面(/config、/history)整个空载。
  * - 遮罩纯展示(pointer-events:none),拖放事件始终落 window;
- *   卡死自救:窗口失焦(blur)或 Esc(capture)强制复位。
+ *   卡死自救:窗口失焦(blur)或 Esc(向 panels.js 的层栈注册 'dropVeil')强制复位。
  * - **两类文件，一次判定**：
- *     .tif/.tiff        -> 经 DataTransfer 喂给 #localTerrainFiles 并打开处理弹窗，
- *                          dispatch change 让 map.js 的 updateTifInfo 等既有接线照常跑；
+ *     .tif/.tiff        -> 经 DataTransfer 喂给 #sourceFiles，并打开新建任务面板
+ *                          预选「本地地形切片」；dispatch change 让 map.js 的
+ *                          updateSourceTifInfo 等既有接线照常跑；
  *     区域矢量文件       -> POST /api/region/import，落地成当前下载区域（map.js
  *                          的 importRegionFile）。
  *   为什么放在同一个投放处理器里：用户拖进来的时候脑子里想的是「用这个文件」，
@@ -19,8 +20,10 @@
 (function () {
     'use strict';
 
-    var modalEl = document.getElementById('processModal');
-    if (!modalEl) return;
+    // 首页守卫：判据从退场的处理弹窗换成 #createPanel（2026-08-15 两个弹窗合一）。
+    // 投放这条快捷路径**保留** —— 它不是唯一路径（rail 的「新建」是），但它是
+    // 最短的一条：把 .tif 拖进窗口就等于「用这个文件切地形」。
+    if (!document.getElementById('createPanel')) return;
 
     var depth = 0;    // dragenter/dragleave 深度计数(进出子元素会成对触发)
     var veil = null;
@@ -56,10 +59,26 @@
         return !!(types && [].indexOf.call(types, 'Files') !== -1);
     }
 
-    // .tif 投放的既有路径，一个字节都没动：过滤 -> 喂 input -> 摆正两个下拉 ->
-    // 开弹窗。返回 false 表示喂文件失败（DataTransfer 不可用），已经 toast 过。
+    // .tif 投放的既有路径：过滤 -> 预选管线 -> 喂 input -> 开面板。
+    // 返回 false 表示喂文件失败（DataTransfer 不可用），已经 toast 过。
+    //
+    // **顺序不能反**：必须先把管线切到 local_terrain 再喂文件。#sourceFiles 装在
+    // #sourceUploadRow 里，而那一行的可见性由 map.js 的显隐表按「管线 × 来源」
+    // 决定 —— 默认管线是瓦片，那时整个 #sourceField 是 hidden 的，先喂文件就是
+    // 把它塞进一个用户看不见的控件里；updateSourceTifInfo 读的 mode 也会按瓦片
+    // 管线算成 'terrain' 之外的东西。openCreatePanel('local_terrain') 一次把
+    // 管线、面板、显隐三件事办齐。
     function openLocalProcess(files) {
-        var input = document.getElementById('localTerrainFiles');
+        var input = document.getElementById('sourceFiles');
+        if (!input || typeof window.openCreatePanel !== 'function') return false;
+        window.openCreatePanel('local_terrain');
+        // 来源必须是「上传文件」：用户上一次可能停在「已完成的高程任务」上，
+        // 那时上传行是收起的。摆正后补发 change 让显隐表重算。
+        var srcSel = document.getElementById('processSource');
+        if (srcSel) {
+            srcSel.value = 'upload';
+            srcSel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
         try {
             var dt = new DataTransfer();
             files.forEach(function (f) { dt.items.add(f); });
@@ -68,15 +87,7 @@
             window.showToast(t('js.drop.failed'), 'danger');
             return false;
         }
-        // 先摆正两个下拉(触发既有 change 接线刷新行显隐),再喂文件、开弹窗。
-        var typeSel = document.getElementById('processType');
-        var srcSel = document.getElementById('processSource');
-        typeSel.value = 'local_terrain';
-        typeSel.dispatchEvent(new Event('change', { bubbles: true }));
-        srcSel.value = 'upload';
-        srcSel.dispatchEvent(new Event('change', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
-        bootstrap.Modal.getOrCreateInstance(modalEl).show();
         return true;
     }
 
@@ -124,10 +135,11 @@
 
     // 卡死自救:拖出窗口松手时 dragleave/drop 可能整个丢,blur 兜底。
     window.addEventListener('blur', reset);
-    document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && veil && veil.classList.contains('drop-veil--in')) {
-            e.stopPropagation();
-            reset();
-        }
-    }, true);
+    // Esc 也是自救路径，但不再自己监听：整站唯一那个「关最上层」的 keydown 在
+    // panels.js 的层栈里，这里只报到。改前是 document capture + stopPropagation
+    // ——「谁的相位早谁先关」那套的第三份。
+    window.TerraLayers.register('dropVeil', {
+        isOpen: function () { return !!veil && veil.classList.contains('drop-veil--in'); },
+        close: reset,
+    });
 })();

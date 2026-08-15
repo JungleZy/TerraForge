@@ -413,6 +413,35 @@
                     </div>
                 </div>
 
+                {# 地名搜索。这一栏在 0.3.3 加了配置键、校验、API 与前端提示，
+                   唯独漏了这个输入框 —— 搜索面板的提示写着「请在配置页填写
+                   geocoder_url」，而配置页里根本没有它，用户被指到一个死胡同
+                   （用户实测反馈）。出厂为空是产品决定（不内置任何地名服务，
+                   见 services/geocoding 的模块 docstring），「为空」和「填不了」
+                   是两回事。 #}
+                <div class="config-section">
+                    <h3>
+                        {{ m.icon_search(20, gap='lg') }}
+                        {{ t('tpl.config.geocoder.title') }}
+                    </h3>
+
+                    <div class="mb-3">
+                        <label for="geocoder_url" class="form-label">
+                            {{ t('tpl.config.geocoder.url') }}
+                            {{ hint(t('tpl.config.geocoder.url_hint')) }}
+                        </label>
+                        {# placeholder 里的 {q} 是**字面量**,不是 Jinja 占位（Jinja 认的是
+                           双花括号）。它是这个配置项的硬性格式要求,见
+                           config_manager._validate_geocoder_url:少了它,地址永远只会
+                           返回同一批结果,而用户会以为是「搜不到」。
+                           示例用实测可用的 Photon（免注册免 key）—— 出厂值仍是空,
+                           这里只是提示文本,理由见 tpl.config.geocoder.url_hint 的注释。 #}
+                        <input type="text" class="form-control" id="geocoder_url"
+                               value="{{ config.geocoder_url }}"
+                               placeholder="https://photon.komoot.io/api/?q={q}">
+                    </div>
+                </div>
+
             </form>
 
             <!-- 常驻底部操作条：此前这两个按钮跟着 2200px 的表单一起滚，

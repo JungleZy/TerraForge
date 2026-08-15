@@ -18,14 +18,32 @@ MESSAGES = {
         'zh': '暂无任务',
         'en': 'No tasks yet',
     },
+    # 小地图 / 统计卡的失败提示。三条都是「悄悄坏掉」的补救：原来只有
+    # console.error，页面上一块空白、四个停在旧值的数字，与「本来就没有数据」
+    # 长得一模一样。不带 {error}：占位符会让这三条文案落到
+    # `catch { ... }` 里去，而 tests/test_fix_frontend_hardening.py 的两条形状
+    # 断言（`\{[^}]*\}`）要求那两个 catch 体里不出现花括号；原因本来就该留在
+    # 控制台，界面上要的是结论。
+    'js.history.map_failed': {
+        'zh': '区域小地图没能加载，列表与统计不受影响',
+        'en': 'The region mini-map failed to load; the list and stats are unaffected',
+    },
+    'js.history.basemap_fallback': {
+        'zh': '底图源读取失败，小地图暂时用内置同源底图',
+        'en': 'Failed to read the basemap source; the mini-map is using the built-in same-origin basemap',
+    },
+    'js.history.stats_failed': {
+        'zh': '统计读取失败，上方四个数字可能不是最新的',
+        'en': 'Failed to load the stats; the four numbers above may be stale',
+    },
 
     # 行1 元信息（#类型:id 之后的那段）
     'js.history.meta.dem': {
         'zh': '高程',
-        'en': 'DEM',
+        'en': 'Elevation',
     },
     'js.history.meta.local_terrain': {
-        'zh': '本地高程切片',
+        'zh': '本地地形切片',
         'en': 'Local terrain tiling',
     },
 
@@ -94,13 +112,26 @@ MESSAGES = {
         'zh': '在地图上预览',
         'en': 'Preview on map',
     },
+    # 「转成切片任务」→「用它切地形」（2026-08-15）：原文案说的是内部形态
+    # （「切片任务」是任务表里的 task_type），用户看到的却是「我这份高程数据能
+    # 拿来做什么」。新文案是动作 + 对象，和它真正做的事一致：打开新建任务面板、
+    # 预选本地地形切片、把这个任务填进来源。
     'js.history.action.process': {
-        'zh': '转成切片任务',
-        'en': 'Convert to tiling task',
+        'zh': '用它切地形',
+        'en': 'Tile terrain from this',
     },
     'js.history.action.delete': {
         'zh': '删除任务',
         'en': 'Delete task',
+    },
+
+    # ⚠️ 列表**加载**失败时的重发入口，与任务状态机无关：重发的是
+    # /api/history_all 那一次 GET。键名刻意不含 retry，文案刻意不含「重试」——
+    # 任务级重试被否过两次（三个 manager 的 start_task 只收 pending/paused；
+    # 失败任务的设计是删掉重建），一个叫 retry 的现成键早晚会被搬到任务行上。
+    'js.history.action.reload_list': {
+        'zh': '重新加载列表',
+        'en': 'Reload list',
     },
 
     # 分页
@@ -135,32 +166,32 @@ MESSAGES = {
 
     # 地图样式词表
     'js.history.style.roadmap': {
-        'zh': '路线图',
+        'zh': '路网',
         'en': 'Roadmap',
     },
     'js.history.style.satellite': {
-        'zh': '卫星图',
-        'en': 'Satellite',
+        'zh': '卫星影像',
+        'en': 'Satellite imagery',
     },
     'js.history.style.hybrid': {
-        'zh': '混合图',
-        'en': 'Hybrid',
+        'zh': '卫星影像+标注',
+        'en': 'Satellite imagery + labels',
     },
     'js.history.style.terrain': {
-        'zh': '地形图',
+        'zh': '地形',
         'en': 'Terrain',
     },
     'js.history.style.m': {
-        'zh': '标准',
-        'en': 'Standard',
+        'zh': '路网',
+        'en': 'Roadmap',
     },
     'js.history.style.s': {
-        'zh': '卫星',
-        'en': 'Satellite',
+        'zh': '卫星影像',
+        'en': 'Satellite imagery',
     },
     'js.history.style.y': {
-        'zh': '卫星+标注',
-        'en': 'Satellite + labels',
+        'zh': '卫星影像+标注',
+        'en': 'Satellite imagery + labels',
     },
     'js.history.style.h': {
         'zh': '道路',
@@ -198,7 +229,7 @@ MESSAGES = {
     # 差在哪」。参照物写「基准层级」而不是「默认档位」：`geo_validation.TILING_QUALITY_OFFSETS`
     # 的 +1/0/-1 是相对**基准层级**算的，
     # 与 terrain_quality_preset 当前配成哪一档无关。写成「比默认多切一级」的话，
-    # 运维把默认改成 speed 之后，一个存成 balanced 的作业仍会被标成「默认」——
+    # 运维把默认改成 speed 之后，一个存成 balanced 的任务仍会被标成「默认」——
     # 那时它其实比默认多切了一级。用偏移表自己的词汇才无条件为真。
     'js.history.terrain.quality_label': {
         'zh': '切片档位',
@@ -237,20 +268,21 @@ MESSAGES = {
         'en': 'This terrain carries no normals: enabling lighting only yields the '
               'global day/night gradient, and the bundled base terrain loses its '
               'normals too. Normals are baked into the tiles, so changing the '
-              'setting later does not affect output that has already been tiled.',
+              'setting later does not affect artifacts that have already been '
+              'tiled.',
     },
-    # 第三态：vertex_normals 那一列是后加的，加列之前切的作业整列为 NULL。
+    # 第三态：vertex_normals 那一列是后加的，加列之前切的任务整列为 NULL。
     # 拿不到记录时只能说「没记录」—— 说成「未开启」是在给一个看起来确定的
-    # 错值（那批作业的法线其实是开着的），说成「已开启」同样是编。
+    # 错值（那批任务的法线其实是开着的），说成「已开启」同样是编。
     # 措辞只描述**这一行的记录状态**，不对产物本身下任何结论。
     'js.history.terrain.normals_unknown': {
         'zh': '未知（这一行没有记录）',
-        'en': 'Unknown (not recorded for this job)',
+        'en': 'Unknown (not recorded for this task)',
     },
 
     # 「基准层级」标签与说明：本地地形详情的层级格与回退分支用。
     # 两种标签不是措辞变体，是两种不同的事实：
-    # 实际层级 = 作业切完后 build_terrain 回报的最深层级（= layer.json 的
+    # 实际层级 = 任务切完后 build_terrain 回报的最深层级（= layer.json 的
     # maxzoom）；基准层级 = 用户填的那个数，精细/快速两档下它比实际值差一级。
     # 拿不到实际值时（存量行 / 还没切完）必须换标签 + 挂说明，不能让基准值
     # 顶着「实际」的名头显示 —— 那正是这次要修的错数字。
@@ -260,12 +292,13 @@ MESSAGES = {
     },
     'js.history.terrain.maxzoom_base_hint': {
         'zh': '这是提交时填的基准层级，不是产物实际切到的最深层级：精细档会多切'
-              '一级、快速档少切一级。作业切完后这里会换成实际层级（与 layer.json '
+              '一级、快速档少切一级。任务切完后这里会换成实际层级（与 layer.json '
               '一致）。',
-        'en': 'This is the base level submitted with the job, not the deepest '
-              'level actually tiled: the precision preset goes one level deeper '
-              'and the fast preset one level shallower. Once the job finishes '
-              'this switches to the actual level (matching layer.json).',
+        'en': 'This is the base level submitted with the task, not the deepest '
+              'level the artifact was actually tiled to: the precision preset '
+              'goes one level deeper and the fast preset one level shallower. '
+              'Once the task finishes this switches to the actual level '
+              '(matching layer.json).',
     },
     # 基准层级的**第三态**：「自动」挡（出厂默认）下 maxzoom 那一列存的是哨兵
     # （geo_validation.AUTO_MAXZOOM_SENTINEL），不是层级 —— 拿不到实际值时把它
@@ -281,13 +314,13 @@ MESSAGES = {
     # 挂上去等于告诉用户他填过一个他没填过的数。末句两句一致：切完之后这一格
     # 换成实际层级。
     'js.history.terrain.maxzoom_auto_hint': {
-        'zh': '这个作业选的是「自动」层级：基准层级在切片时按源数据分辨率现算，'
+        'zh': '这个任务选的是「自动」层级：基准层级在切片时按源数据分辨率现算，'
               '提交时还不存在一个具体的数（精细/快速两档再在这个基准上各偏移'
-              '一级）。作业切完后这里会换成实际层级（与 layer.json 一致）。',
-        'en': 'This job was submitted with the automatic level: the base level is '
+              '一级）。任务切完后这里会换成实际层级（与 layer.json 一致）。',
+        'en': 'This task was submitted with the automatic level: the base level is '
               'derived from the source resolution at tiling time, so there is no '
               'number yet (the precision and fast presets then shift one level '
-              'from that base). Once the job finishes this switches to the actual '
+              'from that base). Once the task finishes this switches to the actual '
               'level (matching layer.json).',
     },
 
@@ -331,14 +364,35 @@ MESSAGES = {
               'Delete it anyway?',
     },
     'js.history.confirm.delete_task_pending_decision': {
-        'zh': '该任务有缺块、正在等你决定（补漏或接受并导出），删除会把缺块清单连同已下载的进度一起丢掉。确定删除吗？',
+        'zh': '该任务有缺块、正在等你决定（补漏，或接受并生成产物），删除会把缺块清单连同已下载的进度一起丢掉。确定删除吗？',
         'en': 'This task has gaps and is waiting for your decision (refill, or '
-              'accept and export). Deleting it discards the gap list along with '
+              'accept and produce the artifact). Deleting it discards the gap '
+              'list along with '
               'the progress so far. Delete it anyway?',
     },
     'js.history.confirm.delete_files_checkbox': {
         'zh': '同时删除磁盘上的下载产物',
-        'en': 'Also delete the downloaded output on disk',
+        'en': 'Also delete the downloaded artifacts on disk',
+    },
+
+    # 删除进度框（勾了「同时删除磁盘产物」才出现）。后端在请求线程里 rmtree
+    # 整个瓦片金字塔，大任务要几十秒到几分钟；这几条文案是那段时间里界面上
+    # 唯一的动静。scan/removing 与 services/task_deletion 的 phase 一一对应。
+    'js.history.progress.delete_title': {
+        'zh': '正在删除任务',
+        'en': 'Deleting task',
+    },
+    'js.history.progress.delete_row': {
+        'zh': '正在删除任务记录…',
+        'en': 'Removing the task record…',
+    },
+    'js.history.progress.delete_scanning': {
+        'zh': '正在统计磁盘产物…已扫描 {count} 项',
+        'en': 'Scanning the disk artifacts… {count} entries found',
+    },
+    'js.history.progress.delete_removing': {
+        'zh': '正在删除磁盘产物 {done} / {total}',
+        'en': 'Deleting the disk artifacts {done} / {total}',
     },
     'js.history.toast.deleted': {
         'zh': '任务已删除',
@@ -346,7 +400,8 @@ MESSAGES = {
     },
     'js.history.toast.deleted_files_deferred': {
         'zh': '任务已删除，磁盘产物正在后台清理',
-        'en': 'Task deleted; the disk output is being cleaned up in the background',
+        'en': 'Task deleted; the disk artifacts are being cleaned up in the '
+              'background',
     },
     'js.history.toast.delete_failed': {
         'zh': '删除失败',

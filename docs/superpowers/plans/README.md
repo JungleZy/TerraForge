@@ -1,4 +1,4 @@
-# docs/superpowers/plans —— 实施计划归档（11 份，无待执行）
+# docs/superpowers/plans —— 实施计划归档（目录内实有 21 份，下表登记 12 份）
 
 > **没有一份代表当前实现。** 这里是 planning 阶段的历史产物，当前架构以仓库根 `CLAUDE.md` 和代码为准。
 >
@@ -18,8 +18,11 @@
 
 结果一栏取自每份文件开头的状态头（状态头是 2026-08-03 归档时加的，正文未回改）。
 
+> ⚠️ **本表已停更过一段**：目录里实有 21 份计划，下表只登记 12 份 —— `2026-08-06` 到 `2026-08-12` 之间的 9 份（base-terrain-graft / base-unpack-background / deletion-prerequisites / simplify-task-actions / terrain-tiling-presets / terrain-auto-maxzoom / tile-origin-connection-isolation / geolibre-inspired-ui / plugin-system）没有行。它们的「结果」栏需要逐份回代码核实，未经核实不代填。本目录不在 `tests/test_docs_claims.py` 的活文档扫描范围，所以没有测试会因此变红。
+
 | 文件 | 日期 | 结果 |
 |---|---|---|
+| `2026-08-14-frontend-system-ia-redesign.md` | 2026-08-14 | **已实施**（Task 1-10 全部执行，2026-08-14 至 08-15）。依据 `../../reviews/2026-08-14-frontend-design-audit.md`（Rams 9/30，裁定 REDESIGN 系统层 + 信息架构）与配对设计稿 `../specs/2026-08-14-frontend-system-ia-redesign-design.md`。落地实测：七级间距刻度（**37** 个离散字面量迁入，计划写 31）· 圆角 7→4 级（浮起面 12px / 控件 6px）· 控件两级高度（`--ctl-h` 28 / `--ctl-h-lg` 36）· 字号·字重·层级·动效令牌化 · 按钮 4 个高度数字 / 5 套配方收成两档几何 + 一套焦点环 + 一张 transition 表，`.btn-info` 两头一起删 · **两个 Bootstrap 弹窗并成一个非模态 `#createPanel`，四条管线在首屏同一层级可达；1366×768 折叠线 `xfail(strict=True)` 因转绿而被删除，提交钮 bottom 现在是常量「视口 − 12」（浏览器实测 756@768 / 888@900，四管线 × 双主题 × 双语言 16 组全同值）** · 浮层收进 `panels.js` 一套层栈（Escape 三份合一，10 层注册，入场动效统一后分支数 42→**45**，是加不是减）· 11 处 POST/DELETE 走一个 `guard()`，**70** 个 `catch` 全部定策（A 36 / B 5 / C 29，计划写 46）· 12 组术语归一（135 键 / 111 处改值 / 零改键）· 三个字节格式化器合成一个、单位改 KiB、坐标两档精度。新增 9 个测试文件共 **175** 节点（`test_css_cascade_model` 21 / `test_spacing_scale` 6 / `test_geometry_scales` 19 / `test_button_geometry` 12 / `test_create_panel` 28 / `test_layer_stack` 10 / `test_inflight_guards` 15 / `test_terminology` 33 / `test_formatters` 31）。**全量 3184 passed / 3 skipped / 0 failed / 0 xfailed**；CI 那条（`--cov=src --cov-fail-under=78`）覆盖率 **84.98%**，棘轮地板守住。正文里被执行证伪的地方已逐条就地更正并标注实测值，执行台账在 `../../../.superpowers/sdd/2026-08-14-frontend-system-ia-redesign/progress.md`（复选框一个没勾）。**两项目测未通过、不在本计划范围**：快捷键徽章仍是灰压灰（实测暗 1.27:1 / 亮 2.05:1），任务行动作按钮仍是饱和填充（色彩层本计划声明不动） |
 | `2026-05-06-google-maps-downloader.md` | 2026-05-06 | **已实施**（day-0 首版），此后代码持续演进三个月。正文的单管线形态、根目录 `config.py`/`database.py` 均已不存在 |
 | `2026-05-08-agent-team-comprehensive-review.md` | 2026-05-08 | **从未执行**。计划产出 10 份审查报告，只落地 1 份（`../../reviews/2026-05-08-comprehensive-review/04-backend-architecture.md`），66 个执行步骤一个都没跑完 |
 | `2026-05-16-dem-terrain-tiling-ctb-cesium.md` | 2026-05-16 | **部分作废**。核心技术路线（外部 `ctb-tile` 子进程）当日即被 vendored 的 `services/terrain_tiling/cesium_terrain.py` 取代，残留代码 2026-07-31 删净；其余产物（`dem_terrain_jobs` 表、terrain 路由与静态服务、vrt/layer_json 构建器）全部上线且仍在用 |

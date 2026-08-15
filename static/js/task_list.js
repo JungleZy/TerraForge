@@ -50,10 +50,29 @@
     // 但行上不会有按钮 —— 要修得在页面引导数据里带上后端那份管线表。
     const EXPORTABLE_PIPELINES = ['map', 'contour'];
 
-    // 拉取失败提示。改造前是 loadHistory 的 catch 直接往 #historyTableBody
-    // 写 innerHTML，Vue 接管容器后那样写会被下次 patch 抹掉。
+    // 拉取失败提示 + 重载入口。改造前是 loadHistory 的 catch 直接往
+    // #historyTableBody 写 innerHTML，Vue 接管容器后那样写会被下次 patch 抹掉。
+    //
+    // 改造前这条分支只有一句红字：列表拉失败之后**页面上没有任何出路**，
+    // 用户唯一能做的是按 F5（连带丢掉筛选、页码与已展开的面板）。
+    //
+    // ⚠️ 这颗按钮重发的是**列表那一次 GET**，与任务状态机没有一点关系。键叫
+    // `reload_list`、文案是「重新加载列表」，刻意不带「重试」二字：任务级重试
+    // 被否过两次（三个 manager 的 start_task 只收 pending/paused；失败任务的
+    // 设计是删掉重建），键里出现 retry 早晚会有人把它当成「重试这个任务」的
+    // 现成入口往行上搬。
+    // 消息文本直接放在这个 div 里、按钮跟在后面（`d-block mx-auto` 让它自己
+    // 占一行并居中）：**不套内层 <div>**。tests/test_css_contract.py 的
+    // `_history_error_div` 从这段模板里解析出「加载失败提示」那个文本节点去
+    // 算对比度，它按「恰好一个 <div>」认路 —— 多一层就把那条 WCAG 断言变成
+    // 「本测试已失效」，而那正是当初实测逃逸出 Critical 的那一条。
     const ERROR_TEMPLATE = `
-        <div class="text-center text-danger task-load-error" style="padding: 1.5rem 1rem" v-if="loadError">{{ loadError }}</div>`;
+        <div class="text-center text-danger task-load-error" style="padding: 1.5rem 1rem" v-if="loadError">
+            {{ loadError }}
+            <button type="button" class="btn btn-sm btn-outline-secondary d-block mx-auto mt-2"
+                    @click="reloadList($event)"
+                    :title="t('js.history.action.reload_list')">{{ t('js.history.action.reload_list') }}</button>
+        </div>`;
 
     // 空态图标与「暂无任务」提示。与改造前 renderHistoryTable 的空态等价。
     const EMPTY_TEMPLATE = `
@@ -85,80 +104,88 @@
                      与 paused 同色（都是琥珀），区分靠状态小字与这个数字。 -->
                 <span class="task-gap-chip" v-if="gapCount > 0"
                       :title="t('js.gaps.chip_title', { n: gapCount })">{{ t('js.gaps.chip', { n: gapCount }) }}</span>
-                <span class="task-time progress-detail">{{ timeText }}</span>
-                <div class="btn-group btn-group-sm">
-                    <button v-if="hasTaskActions && isLive && supportsStart && task.status === 'pending'"
-                            class="btn btn-icon btn-success" @click="act('startTask')"
-                            :title="t('js.history.action.start')" :aria-label="t('js.history.action.start')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                        </svg>
-                    </button>
-                    <button v-if="hasTaskActions && isLive && supportsPauseResume && task.status === 'running'"
-                            class="btn btn-icon btn-warning" @click="act('pauseTask')"
-                            :title="t('js.history.action.pause')" :aria-label="t('js.history.action.pause')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="6" y="4" width="4" height="16"></rect>
-                            <rect x="14" y="4" width="4" height="16"></rect>
-                        </svg>
-                    </button>
-                    <button v-if="hasTaskActions && isLive && supportsPauseResume && task.status === 'paused'"
-                            class="btn btn-icon btn-success" @click="act('resumeTask')"
-                            :title="t('js.history.action.resume')" :aria-label="t('js.history.action.resume')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                        </svg>
-                    </button>
-                    <!-- 预览：带洞的成品照样能预览 —— 它的瓦片目录是真的出了的
-                         （accept_gaps 会把严格模式当初拒绝的拼接/复制补跑完）。
-                         判据走 store 那份「产出可用」集合，不在模板里写
-                         「status === 'completed'」这种字面量：写死过一次，实测一条
-                         completed_with_gaps 的行上「导出 MBTiles」在、「在地图上
-                         预览」不在 —— 同一份产物，两颗按钮给出互相矛盾的答案。 -->
-                    <button v-if="canPreview && isSuccessful"
-                            class="btn btn-icon btn-sm btn-success" @click="preview"
-                            :title="t('js.history.action.preview')" :aria-label="t('js.history.action.preview')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                            <circle cx="12" cy="12" r="3"></circle>
-                        </svg>
-                    </button>
-                    <!-- 「处理」：把已完成的高程下载任务转成地形切片任务（新任务进
-                         时间流）。打开的是 map.js 的处理弹窗，所以与 canPreview
-                         同一条把关 —— 独立页 /history 不加载 map.js，不渲染。
-                         同样走 isSuccessful 而不是状态字面量：DEM 管线今天到不了
-                         completed_with_gaps（全仓只有 task_manager.py 写那个状态），
-                         但「状态字面量散在模板里」正是上一颗按钮出问题的机制本身，
-                         留一个在这里就是留一颗同型的雷。 -->
-                    <button v-if="canProcessDem && task.task_type === 'dem' && isSuccessful"
-                            class="btn btn-icon btn-sm btn-primary" @click="processDem"
-                            :title="t('js.history.action.process')" :aria-label="t('js.history.action.process')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-                        </svg>
-                    </button>
-                    <!-- 导出 MBTiles。§5.3：MBTiles 是**通用产物容器**，不是
-                         第四种 output_format —— 同一个任务可以同时持有 XYZ 目录、
-                         逐层 GeoTIFF 和一个 MBTiles，所以它是完成后的一个动作。
-                         带缺口的成品同样可导出（后端 is_successful 含
-                         completed_with_gaps）：排除它就等于让「接受缺口」这个
-                         决定毫无意义。 -->
-                    <button v-if="canExport && isExportable"
-                            class="btn btn-icon btn-sm btn-secondary" @click="exportOutput"
-                            :title="t('js.gaps.action.export')" :aria-label="t('js.gaps.action.export')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-                            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-                            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-                        </svg>
-                    </button>
-                    <button class="btn btn-icon btn-sm btn-danger" @click="remove"
-                            :title="t('js.history.action.delete')" :aria-label="t('js.history.action.delete')">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="3 6 5 6 21 6"></polyline>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                        </svg>
-                    </button>
+                <!-- 行尾（耗时 + 动作组）包成一个元素：窄面板下行1 会换行
+                     （.task-line1 的 flex-wrap），不包起来时只有动作组被甩到
+                     下一行、左对齐挂在状态点底下，看着像另一条任务的按钮。
+                     贴右的 margin-left:auto 也从耗时挪到了这里 —— 两个兄弟
+                     各挂一个 auto 会平分剩余空间，把耗时推到行中间。 -->
+                <div class="task-line1__tail">
+                    <span class="task-time progress-detail">{{ timeText }}</span>
+                    <div class="btn-group btn-group-sm">
+                        <button v-if="hasTaskActions && isLive && supportsStart && task.status === 'pending'"
+                                class="btn btn-icon btn-success" @click="act('startTask', $event)"
+                                :title="t('js.history.action.start')" :aria-label="t('js.history.action.start')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                            </svg>
+                        </button>
+                        <button v-if="hasTaskActions && isLive && supportsPauseResume && task.status === 'running'"
+                                class="btn btn-icon btn-warning" @click="act('pauseTask', $event)"
+                                :title="t('js.history.action.pause')" :aria-label="t('js.history.action.pause')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="6" y="4" width="4" height="16"></rect>
+                                <rect x="14" y="4" width="4" height="16"></rect>
+                            </svg>
+                        </button>
+                        <button v-if="hasTaskActions && isLive && supportsPauseResume && task.status === 'paused'"
+                                class="btn btn-icon btn-success" @click="act('resumeTask', $event)"
+                                :title="t('js.history.action.resume')" :aria-label="t('js.history.action.resume')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                            </svg>
+                        </button>
+                        <!-- 预览：带洞的成品照样能预览 —— 它的瓦片目录是真的出了的
+                             （accept_gaps 会把严格模式当初拒绝的拼接/复制补跑完）。
+                             判据走 store 那份「产出可用」集合，不在模板里写
+                             「status === 'completed'」这种字面量：写死过一次，实测一条
+                             completed_with_gaps 的行上「导出 MBTiles」在、「在地图上
+                             预览」不在 —— 同一份产物，两颗按钮给出互相矛盾的答案。 -->
+                        <button v-if="canPreview && isSuccessful"
+                                class="btn btn-icon btn-sm btn-success" @click="preview"
+                                :title="t('js.history.action.preview')" :aria-label="t('js.history.action.preview')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        </button>
+                        <!-- 「用它切地形」：把已完成的高程下载任务转成地形切片任务
+                             （新任务进时间流）。打开的是 map.js 的新建任务面板并预选
+                             「本地地形切片 + 这个任务」，所以与 canPreview 同一条把关
+                             —— 独立页 /history 不加载 map.js，不渲染。
+                             同样走 isSuccessful 而不是状态字面量：DEM 管线今天到不了
+                             completed_with_gaps（全仓只有 task_manager.py 写那个状态），
+                             但「状态字面量散在模板里」正是上一颗按钮出问题的机制本身，
+                             留一个在这里就是留一颗同型的雷。 -->
+                        <button v-if="canProcessDem && task.task_type === 'dem' && isSuccessful"
+                                class="btn btn-icon btn-sm btn-primary" @click="processDem"
+                                :title="t('js.history.action.process')" :aria-label="t('js.history.action.process')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+                            </svg>
+                        </button>
+                        <!-- 导出 MBTiles。§5.3：MBTiles 是**通用产物容器**，不是
+                             第四种 output_format —— 同一个任务可以同时持有 XYZ 目录、
+                             逐层 GeoTIFF 和一个 MBTiles，所以它是完成后的一个动作。
+                             带缺口的成品同样可导出（后端 is_successful 含
+                             completed_with_gaps）：排除它就等于让「接受缺口」这个
+                             决定毫无意义。 -->
+                        <button v-if="canExport && isExportable"
+                                class="btn btn-icon btn-sm btn-secondary" @click="exportOutput"
+                                :title="t('js.gaps.action.export')" :aria-label="t('js.gaps.action.export')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                                <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                                <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                            </svg>
+                        </button>
+                        <button class="btn btn-icon btn-sm btn-danger" @click="remove($event)"
+                                :title="t('js.history.action.delete')" :aria-label="t('js.history.action.delete')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             </div>
             <!-- 不挂 role="alert"/"status"：这是**历史失败记录**的既存状态，不是刚发生的
@@ -212,10 +239,10 @@
                             @click="retryGaps" :title="t('js.gaps.action.retry_title')">{{ t('js.gaps.action.retry') }}</button>
                     <button v-if="canRefill" type="button" class="btn btn-sm"
                             :class="gapsExplained ? 'btn-outline-secondary' : 'btn-primary'"
-                            @click="refill" :title="t('js.gaps.action.refill_title')">{{ t('js.gaps.action.refill') }}</button>
+                            @click="refill($event)" :title="t('js.gaps.action.refill_title')">{{ t('js.gaps.action.refill') }}</button>
                     <button v-if="canAcceptGaps" type="button" class="btn btn-sm"
                             :class="gapsExplained ? 'btn-warning' : 'btn-outline-secondary'"
-                            @click="acceptGaps" :title="t('js.gaps.action.accept_title')">{{ t('js.gaps.action.accept') }}</button>
+                            @click="acceptGaps($event)" :title="t('js.gaps.action.accept_title')">{{ t('js.gaps.action.accept') }}</button>
                 </div>
             </div>
         </div>`;
@@ -354,7 +381,7 @@
                 return this.task.task_type !== 'plugin'
                     && typeof previewTask === 'function';
             },
-            // 「处理」打开的是 map.js 的处理弹窗，独立页 /history 不加载 map.js。
+            // 「用它切地形」打开的是 map.js 的新建任务面板，独立页 /history 不加载 map.js。
             canProcessDem() {
                 return typeof openProcessForDemTask === 'function';
             },
@@ -419,9 +446,13 @@
             bboxText() {
                 const t = this.task;
                 if (t.north == null || t.south == null || t.east == null || t.west == null) return '';
+                // 读数档（ui.js 的 formatCoord，5 位）。这里原来是 toFixed(2)
+                // —— ≈1.1 km，同一个选区在任务行和状态栏读出两个不同的框，
+                // 用户拿它对不上自己刚框的范围。
+                const f = window.formatCoord;
                 return ' · ' + this.t('js.history.row.bbox', {
-                    north: t.north.toFixed(2), south: t.south.toFixed(2),
-                    east: t.east.toFixed(2), west: t.west.toFixed(2),
+                    north: f(t.north), south: f(t.south),
+                    east: f(t.east), west: f(t.west),
                 });
             },
             summaryText() {
@@ -494,12 +525,22 @@
             },
         },
         methods: {
-            // 动作函数是全局的（task_center.js 定义，被 map.js/panels.js 也引用），
-            // 这里按名字转发而不是直接绑定：/config 上它们不存在，v-if 已经挡住
-            // 渲染，这层 typeof 是第二道防线。
-            act(fnName) {
+            // 动作函数是全局的（task_center.js / history.js 定义，被 map.js/
+            // panels.js 也引用），这里按名字转发而不是直接绑定：/config 上它们
+            // 不存在，v-if 已经挡住渲染，这层 typeof 是第二道防线。
+            //
+            // in-flight 上锁在**这一层**：触发元素只有这里拿得到
+            // （$event.currentTarget 而不是 target —— 点在按钮里的 <svg> 上时
+            // target 是那个 svg）。所以转发下去时**不再**把按钮带上：那些动作
+            // 函数收到 trigger 时自己也会 guard，同一颗按钮套两层守卫的话里层
+            // 会看见「已在飞」而直接返回，动作一次都发不出去。
+            act(fnName, event) {
                 const fn = window[fnName];
-                if (typeof fn === 'function') fn(this.task.id, this.task.task_type);
+                if (typeof fn !== 'function') return undefined;
+                const task = this.task;
+                return guard(event && event.currentTarget, function () {
+                    return fn(task.id, task.task_type);
+                });
             },
             viewDetails() {
                 if (typeof viewTaskDetails === 'function') viewTaskDetails(this.task.id, this.task.task_type);
@@ -510,14 +551,17 @@
             processDem() {
                 if (typeof openProcessForDemTask === 'function') openProcessForDemTask(this.task.id);
             },
-            remove() {
-                if (typeof deleteTask === 'function') deleteTask(this.task.id, this.task.task_type);
+            // 删除 / 补漏 / 接受缺块与上面三个动作同形（同样的两个实参、同样的
+            // typeof 探测、同样要上锁），所以走同一个 act：三处各写一遍
+            // `if (typeof X === 'function') X(...)` 就是三份会各自漂移的守卫。
+            remove(event) {
+                return this.act('deleteTask', event);
             },
-            refill() {
-                if (typeof refillTask === 'function') refillTask(this.task.id, this.task.task_type);
+            refill(event) {
+                return this.act('refillTask', event);
             },
-            acceptGaps() {
-                if (typeof acceptTaskGaps === 'function') acceptTaskGaps(this.task.id, this.task.task_type);
+            acceptGaps(event) {
+                return this.act('acceptTaskGaps', event);
             },
             // 传按钮进去让它自己上锁：打包几万张瓦片要几十秒，不锁就会被连点，
             // 后端每一发都真的重打一遍同一个文件。$event.currentTarget 而不是
@@ -580,6 +624,20 @@
             },
             loadError() {
                 return store.state.loadError;
+            },
+        },
+        methods: {
+            // 重发列表那一次 GET。页码取 currentPage（history.js 的全局，只在
+            // 拉取**成功**后才写），失败时它还是上一次看得见的那一页 —— 拿它重
+            // 试，用户不会因为一次网络抖动被弹回第 1 页。成功后 store.replaceAll
+            // 自己会把 loadError 清掉，这条分支连带这颗按钮一起消失。
+            reloadList(event) {
+                if (typeof loadHistory !== 'function') return undefined;
+                const page = typeof currentPage === 'number' && currentPage > 0
+                    ? currentPage : 1;
+                return guard(event && event.currentTarget, function () {
+                    return loadHistory(page);
+                });
             },
         },
     };

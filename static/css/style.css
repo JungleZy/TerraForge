@@ -76,18 +76,23 @@
     /* 状态色的 hover 档（A6 / Task 11）。取的是同一色系的上一档
        （Tailwind -400 -> -300），与已有的
        `--color-accent(#38bdf8, sky-400) -> --color-accent-hover(#7dd3fc, sky-300)`
-       是同一条规则，不是随手挑的四个亮色：
+       是同一条规则，不是随手挑的三个亮色：
            #34d399 emerald-400 -> #6ee7b7 emerald-300
            #f87171 red-400     -> #fca5a5 red-300
            #fbbf24 amber-400   -> #fcd34d amber-300
-           #60a5fa blue-400    -> #93c5fd blue-300
-       改前这四个变体的 `:hover` 规则与基态**逐字相同**，是空操作。
+       改前这三个变体的 `:hover` 规则与基态**逐字相同**，是空操作。
        抬亮幅度由 test_button_hover_is_a_real_change 钉住（相对亮度至少 +0.06，
-       实测最小的一档是 warning 的 +0.099）。 */
+       实测最小的一档是 warning 的 +0.099）。
+       ⚠️ 2026-08-15 Task 4 删除登记：这里原先还有第四条
+       `--color-info-hover: #93c5fd`（亮色档 #1e40af）。它唯一的引用方是
+       `.btn-info:not(:disabled):hover`，那四条零引用规则已随按钮几何合并删除，
+       令牌于是也零引用 —— 「铸了不用」的令牌比字面量更坏（它看着像家规，
+       实际没有任何东西按它渲染），所以两个档一起删。
+       `--color-info` / `--color-info-bg` / `--color-info-border` **继续保留**：
+       running/retrying 两个任务状态、`.alert-info`、toast 的信息条都在用。 */
     --color-success-hover: #6ee7b7;
     --color-danger-hover:  #fca5a5;
     --color-warning-hover: #fcd34d;
-    --color-info-hover:    #93c5fd;
     /* 中性状态填充色。原为「已取消」这类无语义色的终态准备，该状态已随
        「取消任务」下线，现只剩连接状态圆点的未知态在用。
        不能直接复用 --color-text-muted(#5f6670)：它对 --color-bg-tertiary
@@ -101,28 +106,56 @@
     --color-warning-bg: rgba(245,158,11,0.12);
     --color-info-bg:    rgba(96,165,250,0.12);
 
-    /* 字体 */
-    --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', sans-serif;
-    --font-mono: 'JetBrains Mono', 'Space Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* 字体
+     *
+     * ⚠️ 中文一律走 --font-cjk，两条上层栈都要带上它。vendor 的 Inter 与
+     * JetBrains Mono **都不含汉字**（static/vendor/fonts/fonts.css 只保留了
+     * latin / latin-ext 两个子集），所以每个汉字都要靠逐字回退往后找 ——
+     * 栈里不点名一个中文字体，选谁就由浏览器的最后兜底决定，各平台各不相同。
+     *
+     * 改造前实测到的两个后果：
+     *   1. --font-mono 里**一个中文字体都没有**，而它盖着失败原因（.task-error）、
+     *      任务行行2、任务详情面板、TIF 信息、命令面板 —— 那些中文在 Windows 上
+     *      掉进兜底选中宋体，和周围的黑体系 UI 拼在一起，一眼就看得出不对。
+     *   2. --font-display 点了 macOS（PingFang）和 Windows（雅黑）却漏了 Linux，
+     *      在 Linux 上直接掉到 sans-serif。
+     *
+     * generic（sans-serif / monospace）必须排在**最后**：它一定命中，排在中文
+     * 字体前面就等于把后面那些名字全废掉。
+     */
+    --font-cjk: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', 'Noto Sans SC', 'WenQuanYi Micro Hei';
+    --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', var(--font-cjk), sans-serif;
+    --font-mono: 'JetBrains Mono', 'Space Mono', ui-monospace, SFMono-Regular, Menlo, var(--font-cjk), monospace;
 
     /* 阴影（去发光，柔和深度）。按 elevation 语义分档,与背景四层一一对应。 */
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.30);   /* 控件级:表单控件/小按钮 */
     --shadow-md: 0 4px 12px rgba(0,0,0,0.35);  /* 浮层级:下拉/地图浮层/胶囊 */
     --shadow-lg: 0 12px 32px rgba(0,0,0,0.45); /* 模态级:模态框/滑出面板 */
 
-    /* 圆角刻度。字面量绕过这套刻度是「样式一致性」类缺陷的高发点：
-       改前 8px / 10px 明明有 token 却写字面量（.form-control 2120、
-       .page-link 2299、.alert 1909），而卡片系一律 12px —— 那一档
-       刻度里根本没有，于是「卡片圆角」游离在体系外。--radius-xs(6px)
-       同理：.btn-sm 独一份，没名字就没人知道它是刻度的一部分。 */
-    /* 4px 是「贴在文字上的小块」那一档：内联 <code>、滚动条滑块、
-       数值点击编辑的高亮底。5 处，同样值得有名字。 */
+    /* 圆角刻度（4 级，2026-08-15 设计稿 §3.2）。改前是 7 级，「浮起表面」这一
+       类实际用出 5 种圆角，同一张卡外框 12px 表头 10px（.card vs .card-header）。
+       7 级的真实成本不是「数字多」，是**没有判据** —— 8 与 10 之间没有任何
+       语义差别，于是每个新组件都要重新猜一次自己该用哪一级，猜出来的分布就是
+       改前那 5 种。
+
+       4 级各有一句能直接照着判的定义：
+         4px   贴在文字上的小块：内联 <code>、kbd 键帽、滚动条滑块、
+               数值点击编辑的高亮底。
+         6px   **一切控件**：按钮、输入、选择、可点列表行，以及与控件同行同高
+               的缩略图（.map-style-preview）。
+         12px  **一切浮起表面**：带阴影或浮在内容之上的东西 —— 卡片、弹窗、
+               toast、confirm、命令面板、tooltip 气泡、浮在地图上的信息条。
+         999px 胶囊。
+
+       退役：--radius-sm(8) / --radius(10) / --radius-lg(14)，连定义一起删。
+       留着不用的令牌比字面量更坏：它看着像家规，实际没有任何东西按它渲染
+       （tests/test_spacing_scale.py 的 test_every_scale_step_is_actually_used
+       为间距刻度立的规矩，圆角同样适用）。
+       零引用由 tests/test_geometry_scales.py::
+       test_retired_radius_tokens_have_zero_references 钉住。 */
     --radius-xxs: 4px;
     --radius-xs: 6px;
-    --radius-sm: 8px;
-    --radius:    10px;
     --radius-card: 12px;
-    --radius-lg: 14px;
     /* 全圆胶囊。999px 的字面量在全站出现 10 次，语义都是「两端全圆」，
        与上面那套「几 px」的刻度不是同一类东西，所以单独命名。 */
     --radius-pill: 999px;
@@ -172,9 +205,143 @@
     --ctl-pad-y:  3px;
     --ctl-pad-x:  8px;
 
-    /* 卡片内边距与表单字段纵向间距。改前 .card-body 16px、.mb-3 12px。 */
-    --pad-card:  10px;
-    --gap-field: 8px;
+    /* 主操作档（2026-08-15 设计稿 §3.3）。控件高度只许有**两级**：
+
+         --ctl-h    28px  密集档 —— 表单控件、行内动作按钮、地图搜索框、
+                          四至输入框。一屏里绝大多数控件都在这一档。
+         --ctl-h-lg 36px  主操作档 —— sticky 底条里那一对「提交 / 取消」。
+                          36 = 28 + 一级间距刻度（--space-2 8px），不是随手挑的。
+
+       两级的判据只有一条：**同一行上的控件必须同高**。改前一屏能量出 6 种
+       控件高度（23 / 20 / 28 / 34 / 36 / 43.7），其中三处是「同一行里高的挨着
+       矮的」—— 那不是层级，是没有档。
+
+       ⚠️ 只有这两级。第三个高度出现时先问「它跟谁同行」，答不上来就说明它
+       不是控件（例如工具条按钮的 --map-panel-btn-h，见下）。
+       两级由 tests/test_geometry_scales.py::
+       test_control_height_scale_has_exactly_two_steps 钉住。
+
+       ⚠️ 两档能不能**落地**，条件都在消费者那边，不在这里：两档的消费者用的都是
+       `min-height`（`.btn` 带 overflow:hidden，锁死 height 会在标签折行时把第二行
+       整行裁掉），所以**自然高度必须低于档位值**，地板才有东西可托。
+       2026-08-15 Task 4 把按钮几何收成两档之后的算术（`.btn` 行高收到 1）：
+           密档 --ctl-h    ：4+4 内边距 + 15 行高（--font-size-base）+ 1x2 边框 = 25 < 28
+           主档 --ctl-h-lg ：4+4 内边距 + 14 行高（底条按钮带 .btn-sm）+ 1x2 边框 = 24 < 36
+       改前主档的自然高是 31px（行高还是 Bootstrap 的 1.5，21px 内容），也托得起；
+       Task 3 报告里那个「用 --space-2(8px) 就是 39px、令牌一个像素也渲染不出来」
+       的反例仍然成立，只是余量从 5px 变成了 12px。 */
+    --ctl-h-lg:   36px;
+
+    /* 组件专有尺寸，**既不在间距刻度上、也不在控件两级上**。
+       .map-panel-btn 是「图标 + 标签两层信息」的竖排按钮：
+           20px 图标 + 8px 间距 + 14px 标签 = 42px 内容
+           上下各 8px 让位给胶囊端头那段 17px 深的圆弧
+       改前这个高度是四条规则四个数（54 / 58 / 60 / 64，按 :first-child /
+       :last-child 分别加让位余量）—— 用高度做让位的后果是同一排按钮高低不齐，
+       而且每多一种分组形态就要再算一个数。现在一个高度 + flex 居中，让位由
+       居中自动给到上下两端。
+       单独命名而不是塞进刻度：它就是这一个组件的尺寸，假装是刻度的一部分会
+       诱导下一个人拿它去量别的东西。 */
+    --map-panel-btn-h: 58px;
+
+    /* 间距刻度（7 级，2026-08-14 设计稿 §3.1）。全文 padding / margin / gap
+       只许从这里取值 —— 改前同一种「组间距」在不同组件里写成 6/8/10/12/14px
+       五个数，加上 21 种 rem 写法，调密度要逐处试、漏一处就在同一屏里出现
+       两种间距。
+
+       ⚠️ **必须是扁平 px 字面量，不许写 `calc(var(--space-unit) * 3)`**：
+       tests/test_css_contract.py 的 `_resolve_length_px` 只认 px/rem 字面量与
+       单层 `var(--x)`，遇到 `calc()` 或 `var(--x, 回退值)` 返回 None，
+       它的十来个调用方（控件高度、按钮高度、#createTaskBtn 折叠线、
+       .bounds-grid 列间距上界……）拿到 None 报的是「本测试已失效」——
+       那不是通过，是静默失去覆盖。由 tests/test_spacing_scale.py 钉住。
+
+       控件**内部**的密度不归这套刻度管，仍走上面那组 --ctl-*。 */
+    --space-hair:  2px;   /* 紧凑内衬：色块内边距、分隔线让位 */
+    --space-1:     4px;
+    --space-2:     8px;
+    --space-3:    12px;
+    --space-4:    16px;
+    --space-5:    24px;
+    --space-6:    32px;
+
+    /* 字重（3 级，2026-08-15 设计稿 §3.5）。改前全文用出 400/500/600/700 四档
+       裸整数，而且**同一个东西三个字重** —— `.btn` 500、`.btn-primary` 600、
+       `.btn-compact` 400，三条规则打在同一排按钮上，谁重谁轻取决于它带的是
+       哪个变体类。
+
+       只三级，判据是「它在信息层级里是第几层」而不是「它有多重要」：
+         --weight-normal 400  正文、说明、气泡文字
+         --weight-medium 500  **一切按钮**、可点条目的名称、读数里被强调的数字
+         --weight-strong 600  标题：卡片表头、分组标题、字段标签、弹窗标题
+
+       700 整档退役（四处：.progress__label / .modal-title /
+       .page-item.active .page-link / .bounds-k）。没有一处需要比 600 更重 ——
+       在 12~18px 的界面文字上 700 只是更黑，不带来新的层级信息，而它的存在
+       让「最重」这个位置有两个候选。fonts.css 仍然自建 400/500/600/700 四个
+       字面（test_css_contract 那条断言不动），只是 style.css 不再点用 700。
+
+       ⚠️ 这四处**各自也带一行就地登记**（2026-08-15 补）：中央登记回答「700 为什么
+       整档退役」，就地那行回答「这一处原来是什么、现在是什么」。改前本次只写了
+       中央这一份，与同批另外 18 处改动的形态不一致 —— 在这份文件里，看代码的人
+       是先看到声明、再顺着找过来的，就地那行是他唯一会读到的东西。
+       由 tests/test_geometry_scales.py 的两条字重断言钉住。 */
+    --weight-normal: 400;
+    --weight-medium: 500;
+    --weight-strong: 600;
+
+    /* 层栈（2026-08-15 设计稿 §3.6）。⚠️ **值全部照抄改前实测，本次不重排层序。**
+       改前是 18 处裸整数、14 个不同的值散在 5000 行里，判断「我这个新覆盖物该
+       用多少」的唯一办法是全文 grep 然后挑个更大的数 —— 层栈就是这么一路涨到
+       13100 的。给每一级一个名字之后，问题从「多少」变成「我属于哪一层」。
+
+       ⚠️ --z-modal 与 --z-map-preview-zoom **同值 1500，刻意不合并**：合并等于
+       宣布「缩略图 hover 放大」和「弹窗」是同一层，那是层序决策，Task 3 不做。
+       两者同值是改前的现状，照抄。
+
+       ⚠️ --z-map-veil 必须 < --z-map-overlay：换地形时罩的那层雾不能盖住工具条
+       （tests/test_fix_terrain_preview_transition.py 钉住）。 */
+    --z-inline:            1;      /* 组件内叠层：.progress__label 盖在轨道上 */
+    --z-inline-handle:     2;      /* 组件内叠层：面板宽度拖拽把手 */
+    --z-tooltip:          20;      /* .hint::after 气泡（宿主自己不建层） */
+    --z-map-search:      500;
+    --z-map-veil:        900;
+    --z-map-overlay:    1000;      /* 状态栏 / 工具条 / 浮层信息条 / 等高线预览面板 */
+    --z-panel:          1401;
+    --z-modal-backdrop: 1450;
+    --z-modal:          1500;
+    --z-map-preview-zoom: 1500;
+    --z-splash:         3000;
+    --z-toast:         11000;
+    --z-confirm:       12000;
+    --z-drop-veil:     13000;
+    --z-cmdk:          13100;
+
+    /* 动效（2026-08-15 设计稿 §3.7）。三级时长 + 一条曲线。
+       改前除了 0.15s / 0.2s 两个主档，还散着六个孤儿时长
+       （0.12 / 0.14 / 0.18 / 0.22 / 0.25 / 0.35s），另有三条「条子在长」的过渡
+       各写一个数（0.12 / 0.2 / 0.3s）—— 同一个动作三种速度。孤儿时长的成本
+       不是不好看：调整全站节奏时要逐处去找，必然漏。
+
+         --dur-fast 0.15s  hover / 焦点 / 颜色一类的即时反馈（最常用的一档）
+         --dur-base 0.2s   显隐、位移、进度推进
+         --dur-slow 0.45s  整屏级的淡出（splash 退场）
+
+       ⚠️ `animation` 的关键帧时长**不走这套刻度**（splashGridDrift 12s、
+       hint-spin 0.9s、pulse 2s）：那是动画自己的节奏，与「状态切换要多久」
+       不是同一个量。tests/test_geometry_scales.py 那条断言只管 transition。 */
+    --dur-fast: 0.15s;
+    --dur-base: 0.2s;
+    --dur-slow: 0.45s;
+    --ease: ease;
+
+    /* 卡片内边距与表单字段纵向间距：保留语义别名，值指向刻度。
+       改前 .card-body 16px、.mb-3 12px，随后收到 10px / 8px；2026-08-14
+       --pad-card 10px -> var(--space-3)（12px，+2）并入刻度。
+       别名只能改指向、不能改名：FIELD_GAP_MAX_PX 的 8px 上界与「.mb-3 的
+       margin-bottom 必须字面包含 var(--gap-field)」两条断言认这两个名字。 */
+    --pad-card:  var(--space-3);
+    --gap-field: var(--space-2);
 
     /* ---- 组件级颜色令牌（亮/暗双主题，2026-08 明亮模式新增） --------------
        下列令牌来自组件规则里原先的硬编码字面量（白色 hover 叠层、面板遮罩、
@@ -303,7 +470,6 @@
     --color-success-hover: #065f46;   /* 白墨 7.68 */
     --color-danger-hover:  #991b1b;   /* 白墨 8.56 */
     --color-warning-hover: #92400e;   /* 白墨 7.09 */
-    --color-info-hover:    #1e40af;   /* 白墨 8.72 */
 
     /* 中性状态填充：对 --color-bg-tertiary 实测 4.35:1 ≥ 3:1 图形下限 */
     --color-neutral: #6b7280;
@@ -546,7 +712,7 @@ body {
     background: var(--color-bg-primary) !important;
     color: var(--color-text-primary) !important;
     font-family: var(--font-display);
-    font-weight: 400;
+    font-weight: var(--weight-normal);
     font-size: var(--font-size-base);
 }
 
@@ -642,23 +808,35 @@ body {
     left: var(--statusbar-inset);
     right: var(--statusbar-inset);
     bottom: var(--statusbar-inset);
-    z-index: 1000;                  /* 与地图浮动控件同层，仍在面板 backdrop(1400) 之下 */
+    z-index: var(--z-map-overlay);                  /* 与地图浮动控件同层，仍在面板 backdrop(1400) 之下 */
     height: var(--statusbar-h);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     font-family: var(--font-mono);
-    /* 13px 而不是 --font-size-xs(12px)：等宽的 JetBrains Mono x-height 比左上
-       工具条用的 Inter 矮一截，同样 12px 在这里视觉上会小一号。字号只在这里
-       抬，不动全站的 xs 令牌。 */
-    font-size: 13px;
+    /* 13px -> --font-size-xs（12px），2026-08-15 字号刻度归一。
+
+       ⚠️ 原注释为 13px 辩护过，那条理由本身没有被推翻，只是被判了次要 ——
+       原文：「等宽的 JetBrains Mono x-height 比左上工具条用的 Inter 矮一截，
+       同样 12px 在这里视觉上会小一号。字号只在这里抬，不动全站的 xs 令牌。」
+       成立，但代价是全站多出第 7 档字号，且这一档只有一个消费者 ——
+       「一个位置一个专属字号」正是本次要收掉的形态。2026-08-14 的判定是
+       **统一优先**：13 归到 12，x-height 的差异接受。
+       ⚠️ 这一处需要目测确认（状态栏读数是全站最小的功能性文字，12px 等宽
+       在低 DPI 屏上是否还读得清）。真读不清的正解是给等宽体单独一级刻度、
+       或者把 --font-size-xs 整体抬到 13 —— 不是在这里再写一个字面量。 */
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
     white-space: nowrap;
 }
 
 /* 每个读数元素一颗胶囊（.statusbar-pill）：等高填满外壳，自带底色/边框/阴影。
    胶囊类而不是 `.workbench-statusbar > *` 子选择器 —— test_css_contract 的
-   按钮/动画层叠模型读不懂 `>` 组合符，会把整片模型判失效。
+   按钮层叠模型（`_btn_branch_applies`）对 `>` 仍返回「模型不支持」；
+   文字/动画那套自 2026-08-14 起认得 `>` 了，但动画侧的
+   `_motion_contexts_from_stylesheet` 还在用 `branch.split()` 反解上下文链、
+   对每段断言 `_parse_compound(...) is not None`，而 `_parse_compound('>')`
+   返回 None —— 子组合符会在构造上下文时就炸。
 
    font / color / text-align 这三条 inherit 是给 <button> 用的：可点的三个
    读数项（#statusTasks / #statusCoords / #statusSelection）是真按钮，
@@ -670,8 +848,8 @@ body {
     height: 100%;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 0 12px;
+    gap: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
+    padding: 0 var(--space-3);
     font: inherit;
     color: inherit;
     text-align: inherit;
@@ -692,13 +870,13 @@ body {
 
 .statusbar-item b {
     color: var(--color-text-primary);
-    font-weight: 500;
+    font-weight: var(--weight-medium);
 }
 
 /* 点击可复制的读数项（坐标 / 选区四至）：hover 换底色提示可点。 */
 .statusbar-copy {
     cursor: pointer;
-    transition: background-color 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease);
 }
 
 .statusbar-copy:hover {
@@ -710,17 +888,21 @@ body {
    排不下的会被推出视口（裁掉，读不到）。 */
 @media (max-width: 576px) {
     .workbench-statusbar {
-        gap: 6px;
+        /* 6px 在刻度上没有对应级，且向上取到 --space-2 会与桌面档同值 ——
+           这条窄屏收紧就成了空声明。取下一级 --space-1(4px)：430px 下英文
+           文案原本只富余 10px，「窄屏比桌面紧」这条关系是实测承重的。 */
+        gap: var(--space-1);
         font-size: var(--font-size-xs);
     }
 
     .workbench-statusbar .statusbar-item {
-        padding: 0 8px;
+        padding: 0 var(--space-2);
     }
 
-    /* 窄屏藏掉所有胶囊图标（14px 图标 + 6px 间距 = 每颗 20px 纯装饰）。
+    /* 窄屏藏掉所有胶囊图标（14px 图标 + 8px 间距 = 每颗 22px 纯装饰；
+       间距 2026-08-14 随刻度归一从 6px 抬到 --space-2）。
        下面那套「解压进度出现时让路」的名单是按**实测宽度**定的（英文文案
-       只富余 10px），每颗胶囊多 20px 会让始终在场的 .conn-status 与
+       只富余 10px），每颗胶囊多 22px 会让始终在场的 .conn-status 与
        .statusbar-basemap 直接把英文文案顶出可视区。430px 的屏上先保读数。 */
     .workbench-statusbar .statusbar-icon {
         display: none;
@@ -827,11 +1009,17 @@ body {
     height: var(--ctl-h);
     padding: 0;
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
     background: transparent;
     color: var(--color-text-secondary);
     cursor: pointer;
-    transition: background-color 0.15s ease, color 0.15s ease;
+    /* 属性表与 `.btn` 逐字相同（2026-08-15 Task 4）：全站按钮态只有一份清单。
+       改前是 2 个属性，而 `.btn` 是 5 个、确认弹窗按钮是 3 个 —— 三份清单，
+       没有任何一处解释过为什么这颗按钮不需要过渡 border-color。
+       由 tests/test_button_geometry.py::
+       test_every_button_transition_has_the_same_property_list 钉住。 */
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
 }
 
 .dock-collapse-btn:hover {
@@ -854,18 +1042,18 @@ body {
 .map-transition-veil {
     position: absolute;
     inset: 0;
-    z-index: 900;
+    z-index: var(--z-map-veil);
     pointer-events: none;
     background: var(--color-backdrop);
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
     opacity: 0;
-    transition: opacity 0.35s ease;
+    transition: opacity var(--dur-slow) var(--ease);
 }
 
 .map-transition-veil--in {
     opacity: 1;
-    transition-duration: 0.18s;
+    transition-duration: var(--dur-base);
 }
 
 /* Cesium 时代的左列工具条：全自绘按钮组（视图 / 框选 / 功能面板三组），
@@ -875,10 +1063,10 @@ body {
     position: absolute;
     top: 10px;
     left: 10px;
-    z-index: 1000;
+    z-index: var(--z-map-overlay);
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--space-2);
 }
 
 /* 工具条分组条（下载 / 处理 / 历史 / 配置等功能入口）。
@@ -898,21 +1086,24 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;         /* 端头弧线的让位余量由居中给，见下面那段 */
     width: 32px;                     /* 胶囊连边框 34px 宽 */
-    height: 54px;                    /* 8 上距 + 18~20 图标 + 8 间距 + 14 文字 + 余量 */
-    padding: 8px 0 0;
+    height: var(--map-panel-btn-h);
+    padding: 0;
     border: none;
     border-bottom: 1px solid var(--color-border);
     background: transparent;
     color: var(--color-text-secondary);
     white-space: nowrap;
     cursor: pointer;
-    transition: background-color 0.15s ease, color 0.15s ease;
+    /* 属性表与 `.btn` 逐字相同，见 `.dock-collapse-btn` 那条的登记。 */
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
 }
 
 .map-panel-btn span {
     display: block;
-    margin-top: 8px;                 /* 图标与标签之间要看得出是两层信息 */
+    margin-top: var(--space-2);                 /* 图标与标签之间要看得出是两层信息 */
     line-height: 14px;
     font-size: var(--font-size-xs);  /* 12px，与右上范围浮层同一档 */
     color: inherit;
@@ -933,7 +1124,7 @@ body {
 html[lang="en"] .map-panel-btn {
     width: auto;
     min-width: max-content;
-    padding-inline: 8px;
+    padding-inline: var(--space-2);
 }
 
 /* 端头弧线要跟着宽度改。--radius-pill(999px) 在 34px 宽的中文工具条上是两段
@@ -948,22 +1139,25 @@ html[lang="en"] .map-panel-triggers {
 
 /* 胶囊两端各有一段 17px 深的圆弧（半径 = 34px 组宽的一半）。首尾按钮的内容
    贴着端头排的话会被弧线蹭到：12px 两字标签 24px 宽，要在离端 7.4px 处才有
-   28px 可用宽（左右各 2px 留白）；20px 图标要 3.3px。下面按这个给余量。
-   把余量加在**按钮自己**身上而不是容器 padding 上：hover 底色照旧铺满到端头、
-   由容器圆角裁齐，不会在端头留出一截直角。 */
-.map-panel-btn:first-child {
-    height: 58px;
-    padding-top: 12px;
-}
+   28px 可用宽（左右各 2px 留白）；20px 图标要 3.3px。
 
+   2026-08-15：让位改由**居中**给，不再由高度给。
+   改前是三条覆盖，每条各写一个高度：
+       :first-child            height 58px + padding-top 12px
+       :last-child             height 60px
+       :first-child:last-child height 64px（单按钮分组两端都是弧）
+   基规则 54px 加上这三个数 = 同一排按钮 54/58/60/64 四种高度，而分隔线、
+   hover 底色、焦点圈都按按钮盒子画 —— 高低不齐是直接可见的。再加一种分组
+   形态（比如两按钮分组）就要再算第五个数。
+
+   现在基规则一个 `height: var(--map-panel-btn-h)`(58px) +
+   `justify-content: center`：42px 内容居中后上下各 8px，8 > 7.4 —— 首、尾、
+   单按钮三种位置**同时**满足上面那条余量要求，一个数管全部。
+   `:last-child` 只剩它本来的职责（收掉最后一条分隔线）。
+   由 tests/test_geometry_scales.py::
+   test_map_toolbar_buttons_have_one_fixed_height 钉住「只有一个高度来源」。 */
 .map-panel-btn:last-child {
-    height: 60px;
     border-bottom: none;
-}
-
-/* 单按钮分组（框选 / 光照）两端都是弧线，两头都要让 */
-.map-panel-btn:first-child:last-child {
-    height: 64px;
 }
 
 .map-panel-btn:hover {
@@ -999,11 +1193,11 @@ html[lang="en"] .map-panel-triggers {
 /* 独立页（/history、/config）的返回链接：顶部工具栏移除后唯一的回程 */
 .back-home-link {
     display: inline-block;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
     color: var(--color-text-secondary);
     font-size: var(--font-size-sm);
     text-decoration: none;
-    transition: color 0.15s ease;
+    transition: color var(--dur-fast) var(--ease);
 }
 
 .back-home-link:hover {
@@ -1025,13 +1219,13 @@ html[lang="en"] .map-panel-triggers {
     vertical-align: middle;
 }
 
-.icon-inline--sm { margin-right: 4px; }
-.icon-inline--md { margin-right: 6px; }
-.icon-inline--lg { margin-right: 8px; }
+.icon-inline--sm { margin-right: var(--space-1); }
+.icon-inline--md { margin-right: var(--space-2); }   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
+.icon-inline--lg { margin-right: var(--space-2); }
 
 /* 等高线配色自定义（数据处理表单内）：海拔带色块 + 范围小字 */
 .contour-style-custom {
-    margin-top: 8px;
+    margin-top: var(--space-2);
 }
 
 .contour-style-custom summary {
@@ -1043,14 +1237,14 @@ html[lang="en"] .map-panel-triggers {
 .tint-stops {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
 .tint-stop {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
+    gap: var(--space-hair);
 }
 
 .tint-stop input[type="color"] {
@@ -1060,7 +1254,10 @@ html[lang="en"] .map-panel-triggers {
 }
 
 .tint-stop-label {
-    font-size: 10px;
+    /* 10px -> --font-size-xs（12px），2026-08-15 字号刻度归一。10px 是全站
+       最小的字面量，比刻度地板还低两档 —— 色标下面那行「0%/50%/100%」在
+       10px 下已经接近可读下限。归到 12px 顺带解决它。 */
+    font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
 }
 
@@ -1068,9 +1265,9 @@ html[lang="en"] .map-panel-triggers {
 .contour-style-preview {
     display: block;
     width: 100%;
-    margin-top: 8px;
+    margin-top: var(--space-2);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
     background: repeating-conic-gradient(var(--color-checker-a) 0% 25%, var(--color-checker-b) 0% 50%) 0 0 / 12px 12px;
 }
 
@@ -1087,11 +1284,11 @@ html[lang="en"] .map-panel-triggers {
    ========================================================================== */
 .map-overlay-chip {
     position: absolute;
-    z-index: 1000;
-    padding: 6px 10px;
+    z-index: var(--z-map-overlay);
+    padding: var(--space-2) var(--space-3);   /* 6px 10px -> --space-2 --space-3（8px/12px）：间距刻度归一 2026-08-14 */
     background: var(--color-glass-surface);
     border: 1px solid var(--color-glass-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-card);
     box-shadow: var(--shadow-md);
     backdrop-filter: blur(12px) saturate(140%);
     color: var(--color-text-primary);
@@ -1103,7 +1300,7 @@ html[lang="en"] .map-panel-triggers {
     bottom: var(--statusbar-clearance);
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--space-3);   /* 10px -> --space-3（12px）：间距刻度归一 2026-08-14 */
     font-size: var(--font-size-sm);
 }
 
@@ -1111,7 +1308,7 @@ html[lang="en"] .map-panel-triggers {
    悬停放大看细节（绝对定位不撑布局） */
 .map-style-row {
     display: flex;
-    gap: 8px;
+    gap: var(--space-2);
     align-items: center;
 }
 
@@ -1125,17 +1322,17 @@ html[lang="en"] .map-panel-triggers {
     height: 28px;
     flex: 0 0 auto;
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
     background: var(--color-bg-tertiary);
     object-fit: cover;
     cursor: zoom-in;
-    transition: transform 0.15s ease;
+    transition: transform var(--dur-fast) var(--ease);
     transform-origin: top right;
 }
 
 .map-style-preview:hover {
     position: relative;
-    z-index: 1500;
+    z-index: var(--z-map-preview-zoom);
     transform: scale(6);
     box-shadow: var(--shadow-lg);
 }
@@ -1190,7 +1387,7 @@ html[lang="en"] .map-panel-triggers {
 .page-content {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 16px 16px var(--statusbar-clearance);
+    padding: var(--space-4) var(--space-4) var(--statusbar-clearance);
 }
 
 /* ---- 覆盖面板（历史记录 / 配置）：右侧滑出，浮在地图上方 --------------
@@ -1206,7 +1403,7 @@ html[lang="en"] .map-panel-triggers {
     top: 0;
     bottom: 0;
     right: 0;
-    z-index: 1401;
+    z-index: var(--z-panel);
     width: var(--panel-config-w);
     max-width: 94vw;
     display: flex;
@@ -1214,8 +1411,14 @@ html[lang="en"] .map-panel-triggers {
     background: var(--color-bg-elevated);
     border-left: 1px solid var(--color-border-strong);
     box-shadow: var(--shadow-lg);
+    /* 入场：opacity + transform，--dur-base / --ease（2026-08-15 Task 6 起，
+       层栈里每一个浮层都是这一套）。面板是四个浮层里唯一「遮罩与卡片是同一个
+       元素」的，所以两条属性都写在它身上；confirm / cmdk / 拖拽遮罩是
+       「遮罩担 opacity、卡片担 transform」的一对。 */
+    opacity: 0;
     transform: translateX(100%);
-    transition: transform 0.22s ease;
+    transition: opacity var(--dur-base) var(--ease),
+                transform var(--dur-base) var(--ease);
 }
 
 .workbench-panel--wide {
@@ -1223,11 +1426,19 @@ html[lang="en"] .map-panel-triggers {
 }
 
 .workbench-panel--in {
+    opacity: 1;
     transform: translateX(0);
 }
 
-/* [hidden] 的 UA 样式 (0,1,1) 压不过 .workbench-panel 的 display:flex (0,1,0)，
-   需要 (0,2,0) 的显式规则让隐藏真正生效。 */
+/* `[hidden]` 的 UA 规则实测在 Chromium 148 上带 `!important`：作者侧
+   `.probe{display:flex}` 压不过它（实测 computed display 仍是 none），
+   `display:flex!important` 才压得过。所以在 Chromium 上本条其实是冗余的。
+   ⚠️ 2026-08-15 Task 3 顺手更正一处算术：原注释把 `[hidden]` 写成 (0,1,1)。
+   属性选择器计在**类那一列**，`[hidden]` 是 (0,1,0)，与 `.workbench-panel`
+   同级 —— 谁赢由「起源 + !important」决定，跟特异度无关，原推理用错了档位。
+   交叉验过：`_btn_specificity('[hidden]')` == (0, 1, 0)。
+   规则本身**不动**：删它是行为变更（别的引擎 UA 表未必带 !important），
+   要删得单独验一轮，不搭本次的车。 */
 .workbench-panel[hidden] {
     display: none;
 }
@@ -1241,7 +1452,7 @@ html[lang="en"] .map-panel-triggers {
     bottom: 0;
     width: 8px;
     cursor: col-resize;
-    z-index: 2;
+    z-index: var(--z-inline-handle);
 }
 
 .workbench-panel__resizer:hover,
@@ -1255,10 +1466,10 @@ html[lang="en"] .map-panel-triggers {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 12px;
+    padding: var(--space-2) var(--space-3);
     border-bottom: 1px solid var(--color-border);
     font-size: var(--font-size-base);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     color: var(--color-text-primary);
 }
 
@@ -1273,11 +1484,11 @@ html[lang="en"] .map-panel-triggers {
    工作台面板(1401)比它们高 —— 历史面板里开任务详情会弹到面板**下面**。
    抬到面板之上、toast(11000) 之下。 */
 .modal-backdrop {
-    z-index: 1450;
+    z-index: var(--z-modal-backdrop);
 }
 
 .modal {
-    z-index: 1500;
+    z-index: var(--z-modal);
 }
 
 /* Map Styles */
@@ -1311,14 +1522,72 @@ html[lang="en"] .map-panel-triggers {
    行2 进度（pending/running/paused）或引文式错误（failed）或单行摘要（终态行）。
    不再有徽章 pill、不再有整行底色、不再有 4px 左条；行间只有发丝分隔线。 */
 .task-row {
-    padding: 0.5rem 0.25rem;
+    padding: var(--space-2) var(--space-1);
     border-bottom: 1px solid var(--color-border);
 }
 
-/* 行间只有发丝分隔线。刻意不写 `:last-child { border-bottom: none }`：
-   测试层的三个层叠模型（按钮外观/文字颜色/动画）都不支持子/兄弟组合符
-   与结构性伪类——安全网会把整份测试顶成「已失效」。最后一行下面多一条
-   1px 发丝线（落在分组头/分页条之前）是可接受的代价。 */
+/* ✅ 2026-08-15 翻案：最后一行不再多一条发丝线。
+
+   这里原先刻意**不**写 `:last-child { border-bottom: none }`，理由写的是
+   「测试层的三个层叠模型（按钮外观/文字颜色/动画）都不支持子/兄弟组合符
+   与结构性伪类 —— 安全网会把整份测试顶成『已失效』。最后一行下面多一条
+   1px 发丝线是可接受的代价。」
+
+   **那句话是错的**，实测（Task 3 逐条验）：把下面这条规则加进来跑
+   test_css_contract + test_css_cascade_model + test_geometry_scales +
+   test_spacing_scale = **132 passed / 1 xfailed / 0 failed**。一条都没红。
+
+   ⚠️ 2026-08-15 二次更正：本段原先把「为什么不红」讲成了「`_parse_compound`
+   认得 `:last-child`，所以**上下文构造**毫发无伤」。上下文构造这一步**不存在** ——
+   按钮模型的上下文是手写常量 `BUTTON_CONTEXTS`（外加折叠线那条从
+   templates/index.html 解析出来的），仓库里没有任何函数叫
+   `_btn_contexts_from_stylesheet`（实测 `hasattr` 为 False）。会遍历选择器
+   反向造上下文的是 `_motion_contexts_from_stylesheet`，那是**动画**模型的。
+
+   为什么它真的不红 —— 四套模型各有各的理由，逐个实测过：
+     · **按钮外观模型**（`_btn_computed`）是唯一一套**不按属性过滤**就遍历全文
+       选择器的：`unsupported` 安全网排在 `if not decls: continue` **之前**
+       （比过两处源码位置）。所以它确实会拿 `.task-row:last-child` 去问
+       `_btn_branch_applies` —— 答案是 `False` 而不是 `None`，`BUTTON_CONTEXTS`
+       里每一个上下文都是 `False`：`.task-row` 不在任何被建模按钮的类集合里，
+       「先判肯定不命中、再判形态不支持」这个顺序在第一步就返回了。
+       那道形态闸门是真的在、也真的会拦人：同一支探针里
+       `_btn_branch_applies('.btn:last-child', …)` 返回 **None**。
+       所以这一档的护身符是**判定顺序**，不是属性。
+     · **文字颜色模型**（`_winning_color_decl`）与**背景模型**（`_bg_candidates`）
+       都先按属性过滤（读不到 `color` / 背景声明就 `continue`）。本条只声明
+       `border-bottom`，两套模型从来没看见过这个选择器，它们的伪类闸门
+       （`_TEXT_SUPPORTED_PSEUDOS` / `_RESTING_PSEUDOS`，后者只有 `root`）
+       因此一次都没被问到。
+     · **动画模型**：`_motion_rule_index` 只收「有 animation / transition 声明」
+       的规则（实测 42 条），本条一条都没有，不在其中。
+   一句话：**没有任何模型跟踪 `border-bottom`**（这保住了后三套），而唯一
+   不看属性就读选择器的那一套，被判定顺序挡在形态闸门之前（这保住了第一套）。
+   两条理由都承重，缺一条推理就不闭合。
+
+   顺带纠正一条流传中的说法：`_parse_compound` **是**认得 `:last-child` 的 ——
+   实测 `_parse_compound('.task-row:last-child')` 返回
+   `{'classes': ['task-row'], 'pseudos': ['last-child'], …}`，不是 None。
+   plan 写的那个前置条件本来就成立。`_RESTING_PSEUDOS == {'root'}` 说的是
+   **背景模型认哪些伪类能匹配**，与 `_parse_compound` 能不能解析是两件事。
+
+   而 `>` / `+` / `~` 确实会红，坏在完全不同的地方 —— 组合符是**形态**问题，
+   `.task-row` 是**命中**问题，原注释把两者混成了一类：`_parse_compound('>')`
+   实测返回 None，于是 `_btn_branch_applies` 返回 None、落进 `_btn_computed` 的
+   `unsupported`，末尾 `assert not unsupported` 让 9 条按钮断言集体判「模型已
+   失效」。`>` 与 `+` 各实测过一次，都是 9 failed / 123 passed / 1 xfailed；
+   `~` 同理（`_split_branch` 把它当组合符拆出来，`_parse_compound('~')` 同样
+   读不懂），未单独跑。
+
+   同一段代码里本来就有现成的反证：`.map-panel-btn:last-child
+   { border-bottom: none }` 一直在这份样式表里，名字里还带 btn —— 实测
+   `_btn_branch_applies('.map-panel-btn:last-child', …)` 同样是 `False`
+   （`.map-panel-btn` 不是被建模的按钮变体）。
+
+   所以那句「可接受的代价」是为一个不存在的约束付的钱，随本条一并作废。 */
+.task-row:last-child {
+    border-bottom: none;
+}
 
 /* 状态点：8px 圆点承担状态识别（与小字状态文本一起，替代原徽章 pill）。
    八态配色与调色板语义令牌一一对应；running 带 pulse 脉冲环——
@@ -1396,7 +1665,7 @@ html[lang="en"] .map-panel-triggers {
     border: none;
     padding: 0;
     font-family: var(--font-display);
-    font-weight: 500;
+    font-weight: var(--weight-medium);
     font-size: var(--font-size-base);
     color: var(--color-text-primary);
     cursor: pointer;
@@ -1430,23 +1699,44 @@ html[lang="en"] .map-panel-triggers {
     display: flex;
 }
 
-/* 行2 整行：进度条吃满剩余宽度（flex:1），百分比与计数贴右不折行。 */
+/* 行2 整行：进度条吃剩余宽度，百分比 / 计数 / 速度三段读数各自不折行。
+   窄面板（面板宽度可拖，实测 602px 时列表可视宽只有 555）里三段读数加起来
+   就超过行宽，而它们都是 flex:0 0 auto —— 多出来的部分把 #historyTableBody
+   顶出一条横向滚动条（实测内容宽 600 / 可视 555）。允许换行后行宽恒等于
+   容器宽，读数整段落到下一行。 */
 .task-progress-line {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem;
-    margin-top: 0.375rem;
+    gap: var(--space-3);
+    /* 换行后的行距不需要 0.75rem 那么松 —— 两行属于同一条任务。 */
+    row-gap: var(--space-1);
+    margin-top: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
+/* 基准 4rem 而不是 0（`flex: 1` = `1 1 0%`）：换行位置是按**基准尺寸**算的，
+   基准 0 的轨道永远不参与断行判断，读数把整行占满后条被挤成 0 宽 ——
+   实测面板 ≤520px 时轨道宽度就是 0，进度条整根消失。基准与 min-width 同值：
+   条不再收缩，放不下的是读数，读数换行。 */
 .task-progress-line .task-progress {
-    flex: 1;
+    flex: 1 1 4rem;
+    min-width: 4rem;
 }
 
+/* 百分比与速度是短读数（"98%"、"795 KB/s"），永远不折行、不收缩。
+   计数是这一行最长的一段（"已下载：765763 / 778516 瓦片 | 失败：191" 实测
+   311px），手机档（面板 = 94vw）它一个人就比整行还宽 —— 那时它必须能按
+   CJK 断行折行。桌面最窄（面板拖拽下限 560px）用不到这条：整段读数换到
+   下一行就够了，折行不会发生。 */
 .task-progress-line .task-pct,
-.task-progress-line .task-count,
 .task-progress-line .task-speed {
     white-space: nowrap;
     flex: 0 0 auto;
+}
+
+.task-progress-line .task-count {
+    flex: 0 1 auto;
+    min-width: 0;
 }
 
 .task-pct {
@@ -1465,13 +1755,18 @@ html[lang="en"] .map-panel-triggers {
     color: var(--color-text-secondary);
 }
 
-/* 行1：状态点 + 名称 + #类型:id + 元信息 + 状态小字 …… 时间 + 动作组。
-   名称是唯一允许收缩的元素（超全省略号），其余成员不折行；
-   时间 margin-left:auto 把它和动作组一起顶到右端。 */
+/* 行1：状态点 + 名称 + #类型:id + 元信息 + 状态小字 …… 行尾（时间 + 动作组）。
+   名称是唯一允许收缩的元素（超宽省略号），其余成员不折行。
+   flex-wrap 是这一行「不出横向滚动条」的唯一保证：成员大多是 flex:0 0 auto，
+   单行 flex 下它们的宽度之和超过面板宽时既不收缩也不换行，直接溢出 ——
+   实测 602px 面板上一条带缺块徽章的运行中任务，行1 内容宽 596 / 可视 547，
+   动作按钮被切掉一半。 */
 .task-line1 {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-3);
+    row-gap: var(--space-1);
 }
 
 .task-line1 .task-name {
@@ -1498,18 +1793,38 @@ html[lang="en"] .map-panel-triggers {
     flex: 0 0 auto;
 }
 
+/* 行尾：耗时 + 动作组作为**一个**整体贴右。
+   必须包成一个元素，不能给两个兄弟各挂 margin-left:auto —— 两个 auto 会平分
+   剩余空间，耗时会飘到行中间；而完全不包（改前的写法）在换行时只把动作组
+   甩到下一行、左对齐挂在状态点底下，看着像是另一条任务的按钮。 */
+.task-line1__tail {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    row-gap: var(--space-1);
+    /* 0 1 auto + min-width:0 而不是 0 0 auto：行1 允许换行后，只有「一个成员
+       自己就比整行宽」时才会溢出，而那正是行尾在手机档（面板 = 94vw，375px
+       视口只剩 352px）的处境 —— 耗时 + 两颗按钮实测 311px，比行宽多 26px。
+       能收缩，下面的 flex-wrap 才有机会生效：按钮落到耗时下方，继续贴右。 */
+    flex: 0 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .task-line1 .btn-group {
     flex: 0 0 auto;
 }
 
-.task-line1 .task-time {
-    margin-left: auto;
-    white-space: nowrap;
-}
+/* 耗时刻意**不写** white-space:nowrap：手机档下它自己就有 250px 出头，
+   连按钮一起换行都还不够。允许它按 CJK 断行（「已运行：11分34秒 ·」/
+   「预计剩余：12秒」）是这一行最后一道防线；桌面上行尾整体换行就够了，
+   这里永远轮不到折行。 */
 
 /* 终态历史行的行2：`已完成 · 54 / 60 瓦片 · 区域 …` 单行弱化，超宽省略。 */
 .task-line2 {
-    margin-top: 0.25rem;
+    margin-top: var(--space-1);
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
@@ -1527,8 +1842,8 @@ html[lang="en"] .map-panel-triggers {
      （WCAG 正文 4.5:1；左边条与文字同色，图形下限 3:1 同值满足）
    等宽字体是跟 .progress-detail 一致的选择：错误原文里多是路径、URL、状态码。 */
 .task-error {
-    margin-top: 0.25rem;
-    padding: 0.125rem 0 0.125rem 0.625rem;
+    margin-top: var(--space-1);
+    padding: var(--space-hair) 0 var(--space-hair) var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
     border-left: 2px solid var(--color-danger);
     color: var(--color-danger);
     font-family: var(--font-mono);
@@ -1556,7 +1871,7 @@ html[lang="en"] .map-panel-triggers {
    ========================================================================== */
 .task-gap-chip {
     flex: 0 0 auto;
-    padding: 0 0.4rem;
+    padding: 0 var(--space-2);   /* 0.4rem(6.4px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
     border-radius: var(--radius-pill);
     background: var(--color-warning-bg);
     color: var(--color-warning);
@@ -1572,10 +1887,12 @@ html[lang="en"] .map-panel-triggers {
    把「这一行需要你」从一屏常规行里挑出来。 */
 .task-gap-line {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.375rem;
-    padding: 0.125rem 0 0.125rem 0.625rem;
+    gap: var(--space-2);
+    row-gap: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
+    margin-top: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
+    padding: var(--space-hair) 0 var(--space-hair) var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
     border-left: 2px solid var(--color-warning);
 }
 
@@ -1595,7 +1912,7 @@ html[lang="en"] .map-panel-triggers {
 .task-gap-actions {
     margin-left: auto;
     display: flex;
-    gap: 0.25rem;
+    gap: var(--space-1);
     flex: 0 0 auto;
 }
 
@@ -1604,14 +1921,14 @@ html[lang="en"] .map-panel-triggers {
 .detail-gaps {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-2);
     font-size: var(--font-size-sm);
 }
 
 .detail-gap-head {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-2);
     flex-wrap: wrap;
 }
 
@@ -1633,8 +1950,8 @@ html[lang="en"] .map-panel-triggers {
     color: var(--color-text-secondary);
     background: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    padding: 0.375rem 0.5rem;
+    border-radius: var(--radius-xs);
+    padding: var(--space-2) var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
 .detail-gap-sample {
@@ -1655,24 +1972,49 @@ html[lang="en"] .map-panel-triggers {
 .detail-artifacts {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-2);
     font-size: var(--font-size-sm);
 }
 
 /* 条目之间用分隔线而不是卡片：一个任务最多几件产物，套卡片是在弹窗里
    再嵌一层框（卡中卡），信息密度反而更低。第一条不画线。
-   分隔线由 history.js 给第 2 件起的条目加 --sep 决定，**不用** `+` 兄弟组合符
-   —— tests/test_css_contract.py 的几套层叠模型只认后代组合符，其余组合符会让
-   整节断言判「模型已失效」。同一条约定的先例是 .tif-info__file--sep。 */
+   分隔线由 history.js 给第 2 件起的条目加 --sep 决定，**不用** `+` 兄弟组合符。
+
+   ⚠️ 2026-08-15 收窄理由（原文写的是「几套层叠模型只认后代组合符，其余组合符
+   会让整节断言判『模型已失效』」—— 范围说大了）。实测：把本条改成
+   `.detail-artifact + .detail-artifact` 跑 test_css_contract +
+   test_css_cascade_model + test_geometry_scales + test_spacing_scale =
+   **9 failed / 123 passed / 1 xfailed**，9 条红全部同一个来源。
+
+   ⚠️ 2026-08-15 二次更正：那个来源**不是**「上下文构造期就炸」，而且那次写下的
+   函数名不存在 —— 仓库里没有 `_btn_contexts_from_stylesheet`（实测 `hasattr`
+   为 False；那一跑的 traceback 里这个名字出现 0 次，`_btn_computed` 出现 18 次）。
+   按钮模型的上下文是手写常量 `BUTTON_CONTEXTS`，压根没有「从样式表构造」这一步。
+   真实机制在按钮**层叠模拟期**，方向也是反的：`_btn_computed` 遍历
+   `_rules_ctx(css)` 的每一条规则，把每个分支交给 `_btn_branch_applies`；
+   `_parse_compound('+')` 返回 None，分支判决因此是 None，落进 `unsupported`，
+   函数末尾那条 `assert not unsupported` 让 9 条按钮断言集体判「模型已失效」。
+
+   另外两套模型不是拦路者，但理由也得说对：**不是**因为它们「认」`+`。
+   `_split_branch` 只是能把 `+` / `~` 拆出来当组合符，
+   `_text_branch_applies('.a + .b', …)` 实测返回 **None**
+   （tests/test_css_cascade_model.py::test_sibling_combinators_stay_unsupported
+   就钉着这一点）。它们不拦路是因为**先按属性过滤**：本规则只声明
+   padding-top / border-top，`_winning_color_decl` 读不到 `color`、
+   `_bg_candidates` 读不到背景声明，两边都在碰选择器之前就 `continue` 掉了。
+   动画模型同理（`_motion_rule_index` 只收有 transition / animation 的规则）。
+   同一条约定的先例是 .tif-info__file--sep；措辞的正确样板是
+   .history-layout__fixed 那条（它写的 `_motion_contexts_from_stylesheet`
+   是真名，本段上一版把它和 `_btn_branch_applies` 拼成了一个不存在的名字）。 */
 .detail-artifact--sep {
-    padding-top: 0.5rem;
+    padding-top: var(--space-2);
     border-top: 1px solid var(--color-border);
 }
 
 .detail-artifact-head {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-2);
     flex-wrap: wrap;
 }
 
@@ -1719,8 +2061,8 @@ html[lang="en"] .map-panel-triggers {
     color: var(--color-text-secondary);
     background: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
-    padding: 0.375rem 0.5rem;
+    border-radius: var(--radius-xs);
+    padding: var(--space-2) var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
 .detail-artifact-problem {
@@ -1735,13 +2077,13 @@ html[lang="en"] .map-panel-triggers {
 .task-log {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-2);
 }
 
 .task-log__toolbar {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-3);
     flex-wrap: wrap;
 }
 
@@ -1749,7 +2091,7 @@ html[lang="en"] .map-panel-triggers {
 .task-log__tools {
     margin-left: auto;
     display: flex;
-    gap: 0.25rem;
+    gap: var(--space-1);
 }
 
 /* 日志正文。等宽 + pre-wrap：里面全是路径、URL、状态码与 traceback 片段，
@@ -1760,10 +2102,10 @@ html[lang="en"] .map-panel-triggers {
     max-height: 240px;
     overflow-y: auto;
     margin: 0;
-    padding: 0.5rem 0.625rem;
+    padding: var(--space-2) var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
     background: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
     line-height: 1.55;
@@ -1791,37 +2133,213 @@ html[lang="en"] .map-panel-triggers {
 }
 
 /* ==========================================================================
-   地点搜索浮层（§5.1）
+   地点搜索浮层（§5.1）—— 顶部居中
 
-   为什么不做成工具条里的输入框：工具条是 34px 宽的竖排图标胶囊（英文界面下
-   按内容伸展），塞不进一个能看清地名的文本框。这里把面板挂在工具条**右侧**，
-   `left: 100%` 相对分组外层的包裹元素定位 —— 中英文下工具条宽度不同，
-   写死像素偏移必然在其中一种语言下压住或离开工具条。
-   包裹元素是 .map-panel-triggers 的**兄弟**而不是子元素：那个类带
-   `overflow: hidden`（用来裁圆角），装在里面会被整块裁掉。
+   2026-08 从工具条右侧挪到这里。原来的形态是「工具条上一颗按钮 + 靠
+   `left: 100%` 挂在它右侧的面板」：工具条是 34px 宽的竖排图标胶囊，
+   容不下一个能看清地名的文本框，面板只能贴在外面，位置偏、发现性差。
+   现在输入框常驻顶部居中（地图应用放搜索的常规位置），下拉面板挂在它下方。
+
+   与右上角 .bounds-overlay（top/right 各 12px、max-width 420px）错开靠
+   两件事：本体 max-width 封顶，加上 translateX(-50%) 的居中锚点 ——
+   窄视口下先挤的是本体宽度，不会去压那一层。
    ========================================================================== */
-.map-toolbar-region {
-    position: relative;
-}
-
-.place-search {
+.map-search {
     position: absolute;
-    left: 100%;
-    top: 0;
-    margin-left: 8px;
-    width: 260px;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: var(--z-map-search);
+    width: min(420px, calc(100% - 480px));
+    min-width: 220px;
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
+    gap: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
-.place-search__results {
-    max-height: 220px;
-    overflow-y: auto;
+/* 输入框本体。与工具条/状态栏胶囊同属「浮在地图上」那一档，所以走玻璃令牌
+   （见上文 map-glass 的约定），不是 bg-secondary。 */
+.map-search__field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0 var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
+    height: var(--ctl-h);
+    background: var(--color-glass-surface);
+    backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid var(--color-glass-border);
+    border-radius: var(--radius-pill);
+    box-shadow: var(--shadow-md);
+}
+
+.map-search__icon {
+    flex: none;
+    color: var(--color-text-secondary);
+}
+
+/* 裸 input：外观由 .map-search__field 提供，这里只负责文字。
+   不复用 .form-control —— 那套自带边框/底色/高度，套进胶囊里是两层框。 */
+.map-search__input {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* 23px -> --ctl-h（28px），2026-08-15：宿主 .map-search__field 是
+       --ctl-h(28px) 的胶囊、上下无内边距，而裸 input 只按自己的内容撑到 23px
+       —— 中间那 5px 是「看着是输入框、点上去不聚焦」的死区（上下各 2.5px，
+       正好是用户瞄准胶囊边缘时最容易点到的地方）。撑满宿主即可。 */
+    height: var(--ctl-h);
+    border: none;
+    background: none;
+    color: var(--color-text-primary);
+    font-family: var(--font-display);
+    font-size: var(--font-size-sm);
+}
+
+.map-search__input:focus {
+    outline: none;
+}
+
+.map-search__field:focus-within {
+    border-color: var(--color-accent);
+}
+
+/* 原生 `type="search"` 的清除叉在各浏览器上样式不一、暗色下几乎看不见，
+   统一关掉，改用自绘的 .map-search__clear。 */
+.map-search__input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+}
+
+.map-search__clear {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    /* text-secondary 而不是 muted：这颗叉是控件上唯一的可见标识，
+       muted 对玻璃底达不到 WCAG 1.4.11 给图形元素的 3:1（同 toast 的关闭钮）。 */
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-md);
+    line-height: 1;
+    cursor: pointer;
+}
+
+.map-search__clear:hover {
+    color: var(--color-text-primary);
+}
+
+.map-search__clear:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+}
+
+/* 下拉面板。开合动画做在这里：`hidden` 属性不能过渡，所以 JS 先摘 hidden、
+   下一帧再加 --in（与 ui.js 的 showConfirm 同一套做法），关闭时反过来等
+   transitionend 再挂回 hidden。
+
+   0.16s/6px -> 0.2s/10px：改造前这段过渡是「看不见」的，但根因不在时长
+   （见 map.js 的 _renderPlaceSearching：它被推到 2.3 秒空白之后才播）。
+   时机修好之后再把幅度调到刚好能被注意到 —— 面板压在卫星影像上，6px 的位移
+   在高频纹理背景上确实读不出来。 */
+.map-search__panel {
     background: var(--color-bg-elevated);
     border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-card);
     box-shadow: var(--shadow-md);
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(-10px);
+    transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease);
+}
+
+.map-search__panel--in {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* 类型筛选片。横向可滚：结果里出现七八种 kind 时不该把面板撑宽。 */
+.map-search__filters {
+    display: flex;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
+    border-bottom: 1px solid var(--color-border);
+    overflow-x: auto;
+}
+
+.map-search__chip {
+    flex: none;
+    padding: var(--space-hair) var(--space-2);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-pill);
+    background: none;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.map-search__chip:hover {
+    color: var(--color-text-primary);
+}
+
+.map-search__chip[aria-pressed="true"] {
+    border-color: var(--color-accent);
+    background: var(--color-accent-muted);
+    color: var(--color-text-primary);
+}
+
+.map-search__chip:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+}
+
+/* 历史记录的表头行：「最近搜索」+「清除」。 */
+.map-search__history-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-2) var(--space-1);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
+    font-size: var(--font-size-xs);
+    color: var(--color-text-secondary);
+}
+
+.map-search__history-clear {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-text-secondary);
+    font-size: var(--font-size-xs);
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.map-search__history-clear:hover {
+    color: var(--color-danger);
+}
+
+.map-search__history-clear:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+}
+
+/* 结果区。换内容时闪一下淡入（JS 加 --fresh 置 0，下一帧摘掉走回 1）——
+   面板已经开着时它的开合过渡不会再触发，连着搜第二个词就是硬切，实测
+   opacity 全程恒为 1，一帧动画都没有。 */
+.place-search__results {
+    max-height: 260px;
+    overflow-y: auto;
+    transition: opacity var(--dur-fast) var(--ease);
+}
+
+/* ⚠️ `transition: none` 是承重的，不是优化：`.place-search__results` 的过渡是
+   **双向**的，加上这个类时 opacity 也会用 140ms 慢慢往 0 走，而 JS 下一步就把
+   类摘了 —— 于是从 0.99 折回 1，净位移几乎为零（实测加类两帧后才 0.87，
+   摘类后立刻回 0.999）。归零必须是瞬时的，只有「回到 1」这一程才走过渡。 */
+.place-search__results--fresh {
+    opacity: 0;
+    transition: none;
 }
 
 /* 结果行是 <button>：天生可 Tab 可 Enter。左对齐、两行信息（地名 + 类型/所属
@@ -1829,7 +2347,7 @@ html[lang="en"] .map-panel-triggers {
 .place-search__item {
     display: block;
     width: 100%;
-    padding: 0.375rem 0.5rem;
+    padding: var(--space-2) var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
     border: none;
     border-bottom: 1px solid var(--color-border);
     background: none;
@@ -1843,6 +2361,11 @@ html[lang="en"] .map-panel-triggers {
     background: var(--color-accent-muted);
 }
 
+.place-search__item:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+}
+
 .place-search__meta {
     display: block;
     font-size: var(--font-size-xs);
@@ -1852,9 +2375,15 @@ html[lang="en"] .map-panel-triggers {
 /* 地理编码器未配置时的提示。**不隐藏控件**：静默消失会让用户以为这个功能
    不存在，而它只是没配地址。这条提示点名 geocoder_url，用户照着去配置页就能开。 */
 .place-search__hint {
-    padding: 0.25rem 0.125rem;
+    padding: var(--space-1) var(--space-hair);
     font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
+}
+
+/* 「搜索中…」。上游往返实测约 2 秒，这一句是那段等待里屏幕上唯一的东西，
+   所以要比普通提示更显眼一档（正文色而不是次要色）。 */
+.place-search__hint--busy {
+    color: var(--color-text-primary);
 }
 
 /* ==========================================================================
@@ -1867,9 +2396,9 @@ html[lang="en"] .map-panel-triggers {
 .bounds-region {
     display: flex;
     align-items: center;
-    gap: 0.375rem;
+    gap: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
     flex-wrap: wrap;
-    margin-bottom: 0.375rem;
+    margin-bottom: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
 .bounds-region__name {
@@ -1891,13 +2420,13 @@ html[lang="en"] .map-panel-triggers {
 .tile-url-wizard {
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
-    margin-bottom: 0.5rem;
+    gap: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
+    margin-bottom: var(--space-2);
 }
 
 .tile-url-wizard__row {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
     align-items: center;
 }
 
@@ -1918,7 +2447,7 @@ html[lang="en"] .map-panel-triggers {
    TMS 疑似 —— 每一条都可能让用户下出一整套错位的图），所以它不是弱化脚注：
    琥珀色、左边条，与缺口决策行同一形态语言。 */
 .tile-url-wizard__warnings {
-    padding: 0.25rem 0 0.25rem 0.625rem;
+    padding: var(--space-1) 0 var(--space-1) var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
     border-left: 2px solid var(--color-warning);
     color: var(--color-warning);
     font-size: var(--font-size-sm);
@@ -1946,8 +2475,8 @@ html[lang="en"] .map-panel-triggers {
 .task-filter-bar {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 0.5rem;
+    gap: var(--space-3);
+    margin-bottom: var(--space-2);
     flex-wrap: wrap;
 }
 
@@ -1955,27 +2484,23 @@ html[lang="en"] .map-panel-triggers {
     max-width: 220px;
 }
 
-/* 「处理」入口：靠右。margin-left:auto 吃掉搜索/chips 与它之间的所有余量；
-   窄面板下 flex-wrap 让它换到下一行，那时 auto 外边距把它顶到该行右端。
-   尺寸/字重不在这里定义 —— 模板给它 .btn-compact（配置页那套行内动作按钮，
-   高度锁 --ctl-h，与同行 #searchInput 同高），这里只补圆角：紧凑档没设
-   border-radius，落回 Bootstrap 的 6px，而同行输入框是 --radius-sm(8px)。
-   选择器写成 .btn.task-filter-bar__action (0,2,0) 而不是裸类名 (0,1,0)：
-   要压住 Bootstrap 的 .btn 圆角。与 .btn.btn-compact 同特异度但声明不重叠，
-   两条规则的先后顺序不影响结果。 */
-.btn.task-filter-bar__action {
-    margin-left: auto;
-    border-radius: var(--radius-sm);
-}
+/* 2026-08-15 删除登记（Task 5）：这里原有 `.btn.task-filter-bar__action
+   { margin-left: auto }` —— 任务筛选行右端那颗「处理」按钮的靠右补丁。
+   四条管线的入口收敛成左列工具条的一颗「新建」之后，那颗按钮
+   （_history_content.html 的 #processOpenBtn）整个退场，规则随之没有消费者。
+   连它更早那条 `border-radius: var(--radius-sm)` 的删除登记也一并撤掉：
+   两段登记都在讲一个不再存在的按钮，留着只会让下一个人去找它。
+   .task-filter-bar 与 .task-filter-bar #searchInput 两条**仍在用**（搜索框
+   与状态 chips 还在那一行），不要顺手删。 */
 
 .status-chips {
     display: flex;
-    gap: 0.375rem;
+    gap: var(--space-2);   /* 0.375rem(6px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
     flex-wrap: wrap;
 }
 
 .status-chip {
-    padding: 0.125rem 0.625rem;
+    padding: var(--space-hair) var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
     border: 1px solid var(--color-border);
     border-radius: var(--radius-pill);
     background: none;
@@ -1997,7 +2522,7 @@ html[lang="en"] .map-panel-triggers {
 
 /* 历史流空态（暂无历史记录）：颜色走 CSS 类，不写内联 style。 */
 .task-empty {
-    padding: 3rem 1rem;
+    padding: var(--space-6) var(--space-4);   /* 3rem(48px) -> --space-6（32px）：间距刻度归一 2026-08-14 */
     text-align: center;
     color: var(--color-text-secondary);
 }
@@ -2090,7 +2615,7 @@ html[lang="en"] .map-panel-triggers {
    `height: 28px` 压掉，从来没生效过；现在基础规则就是 28px，重复声明一遍
    只会变成第二个「随时可能与 chip 高度打架」的来源。 */
 .modal .progress {
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
 }
 
 /* 百分比数字已搬到 .progress__label（见下），条里不再有文字，
@@ -2119,7 +2644,7 @@ html[lang="en"] .map-panel-triggers {
  * 一个并不存在的加减速。
  * 上界由 test_progress_bar_transition_keeps_up_with_the_push_rate 钉住。 */
 .progress-bar {
-    transition: width 0.2s linear;
+    transition: width var(--dur-base) linear;
 }
 
 /* 进度条百分比覆盖层。
@@ -2142,23 +2667,31 @@ html[lang="en"] .map-panel-triggers {
  * 保留 <span> 只是因为它本来就是行内语义，不是被迫的。）
  * 不用 mix-blend-mode:difference——实测负优化（over bg-primary 4.50 -> 1.48）。
  * tabular-nums = 等宽数字，3% -> 13% 时数字不左右抖。 */
+/* 2026-08-15 就地登记：`font-weight: 700` -> `var(--weight-strong)`(600)。
+   理由与另外三处同批（见 :root 字重刻度那段的中央登记）：18px 以下的界面文字上
+   700 只是更黑，不带来新层级，而它让「最重」这个位置有两个候选。 */
 .progress__label {
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 1;
+    z-index: var(--z-inline);
     pointer-events: none;
     display: inline-flex;
     align-items: center;
-    padding: 0.125rem 0.5rem;
+    /* 2px 8px = --space-hair / --space-2 的值，但**必须写字面量**：chip 高度模型
+       `_progress_label_chip_height_px`（test_every_progress_height_fits_the_label
+       的输入）用只认字面量的 `_length_to_px` 直读纵向分量，换成 var() 那条断言
+       会报「本测试已失效」而不是变红。原写法 0.125rem 0.5rem，2026-08-14 换成 px
+       与刻度同单位，便于比对。 */
+    padding: 2px 8px;
     border-radius: var(--radius-pill);
     background: var(--color-bg-tertiary);
     color: var(--color-text-primary);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     font-size: var(--font-size-sm);
-    font-weight: 700;
+    font-weight: var(--weight-strong);
     line-height: 1;
 }
 
@@ -2215,12 +2748,12 @@ html[lang="en"] .map-panel-triggers {
 .config-section {
     background: var(--color-bg-secondary);
     border-radius: var(--radius-card);
-    padding: 12px;
-    margin-bottom: 12px;
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
     box-shadow: var(--shadow-sm);
     border: 1px solid var(--color-border);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 
 .config-section:hover {
@@ -2230,9 +2763,9 @@ html[lang="en"] .map-panel-triggers {
 .config-section h3 {
     color: var(--color-text-primary);
     font-size: var(--font-size-md);
-    font-weight: 600;
-    margin-bottom: 1.25rem;
-    padding-bottom: 0.75rem;
+    font-weight: var(--weight-strong);
+    margin-bottom: var(--space-5);   /* 1.25rem(20px) -> --space-5（24px）：间距刻度归一 2026-08-14 */
+    padding-bottom: var(--space-3);
     border-bottom: 1px solid var(--color-border);
     display: flex;
     align-items: center;
@@ -2243,9 +2776,9 @@ html[lang="en"] .map-panel-triggers {
 }
 
 .config-section .form-label {
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     color: var(--color-text-primary);
-    margin-bottom: 0.5rem;
+    margin-bottom: var(--space-2);
 }
 
 /* 英文下让 .row 的分栏按**容器**实际宽度铺，而不是 Bootstrap 那个按视口断点
@@ -2279,8 +2812,8 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding-block: 4px;             /* 与原来的 py-1 一致 */
+    gap: var(--space-2);
+    padding-block: var(--space-1);             /* 与原来的 py-1 一致 */
 }
 
 /* 允许折行的那一段。min-width: 0：flex item 的 min-width: auto 会按最长
@@ -2295,7 +2828,7 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
     flex: none;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
 }
 
 /* 读数从不在中途断开 —— 断在「39」和「files」之间没有任何语义。 */
@@ -2306,7 +2839,7 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
 /* 合计行：与上面的条目行同一排版，只是加顶边和间距（原为 border-top pt-2）。 */
 .cache-row--total {
     border-top: 1px solid var(--color-border);
-    padding-top: 8px;
+    padding-top: var(--space-2);
 }
 
 /* 这里原本有两条 (0,2,0) 的规则，A5 / Task 10 一并删除：
@@ -2388,11 +2921,38 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
    ========================================================================== */
 .btn {
     border: 1px solid transparent;
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+    /* 2026-08-15：改前 `.btn` 一条 border-radius 都没有，全站按钮的 6px 来自
+       Bootstrap 的 `--bs-btn-border-radius: var(--bs-border-radius)`(.375rem)
+       恰好等于本站的 --radius-xs。「恰好等于」不是契约 —— 换个 Bootstrap 小
+       版本、或者有人给 :root 加一条 --bs-border-radius，全站按钮圆角就静默漂
+       走，而且没有任何断言会红。本站自己声明一次，圆角来源只此一处。 */
+    border-radius: var(--radius-xs);
+    /* 密档几何（2026-08-15 Task 4）。全站按钮只有两档，`.btn` 基规则就是密档：
+       与同行的 .form-control / .form-select 同高（--ctl-h 28px）、同圆角。
+       改前这里一条几何都没有：高度靠 Bootstrap 的 `padding: .375rem .75rem`
+       撑出 36.5px，而同一颗按钮换上 .btn-sm 是 39px、换上 .btn-compact 是 28px
+       —— 「一颗按钮」在一屏之内量出 5 个数（36.5 / 39 / 28 / 36 / 39）。
+
+       ⚠️ min-height 而不是 height：本规则下面就是 `overflow: hidden`，锁死高度
+       会在标签折行时把第二行整行裁掉（`.config-footer .btn` 那条记着 CSSOM
+       实测复现：34px 硬锁 + 45px scrollHeight = 「settings」只剩上半截）。
+       地板要**托得起**才算落地：行高收到 1 之后自然高 4+4+15+1x2 = 25px < 28px。
+
+       行高收回 1 的理由与紧凑档逐字相同：Bootstrap 的 1.5 让 CJK 文字在盒子里
+       视觉偏上（CJK 没有西文降部），由下面那三条 flex 居中才是真正的居中。
+
+       主档（--ctl-h-lg 36px）只给 sticky 底条的主操作：`.config-footer .btn`
+       与确认弹窗的 `.app-confirm__btn`，两处各自声明，见那两条规则。
+       两档由 tests/test_button_geometry.py::
+       test_every_button_state_resolves_to_one_of_two_height_tiers 钉住。 */
+    min-height: var(--ctl-h);
+    padding: var(--space-1) var(--space-3);
+    line-height: 1;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
     position: relative;
     overflow: hidden;
-    font-weight: 500;
+    font-weight: var(--weight-medium);
     font-size: var(--font-size-base);
     /* 全站按钮内容统一居中：图标（内联 SVG）与文字不再靠每个按钮手写
        vertical-align 对齐——Bootstrap 的行盒模型下 CJK 文字会视觉偏上、
@@ -2405,10 +2965,19 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
 }
 
 /* ---- 基态 ------------------------------------------------------------ */
+/* ⚠️ 2026-08-15 删除登记：这里原先有一条 `font-weight: 600`。
+   全站按钮现在**只有一个字重**（`.btn` 的 --weight-medium），三处收敛到一处：
+       .btn          500   保留，成为唯一来源
+       .btn-primary  600   删（本条）
+       .btn-compact  400   删（见文件末尾紧凑档那一块）
+   判据：按钮的**重要性由填充色和位置表达，不由字重表达**。改前主按钮比同一排
+   的次按钮字更黑，等于把同一件事说两遍；而紧凑档反过来比正文还轻，看着不像
+   可点的东西。三个值并存的直接后果是「同一颗按钮换个变体类字就变粗细」。
+   实测确认这条删得掉：`.btn-primary` 的其余三条声明（背景/墨色/无阴影）已经
+   足够把它与 `.btn-secondary` 分开，对比度断言走的也是这三条。 */
 .btn-primary {
     background: var(--color-accent-strong);
     color: var(--color-on-accent);
-    font-weight: 600;
     box-shadow: none;
 }
 
@@ -2430,20 +2999,24 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
     box-shadow: none;
 }
 
-/* ⚠️ `.btn-info` 的四条规则**没有任何 markup 引用**（全仓 grep templates/
-   static/js/ src/ app.py 零命中，唯一的用例「历史表查看详情」在 2026-08
-   随任务名按钮化下线）。它们**故意留着**：变体登记在
-   tests/test_css_contract.py 的 FILLED_BTN_VARIANTS 里，四个状态
-   （base / hover / focus-visible / active）都被按钮层叠模型逐格算过，
-   删掉不是「清死代码」而是拆掉一组现役断言的被测对象。
-   要删请先从 FILLED_BTN_VARIANTS 里摘掉它并把 BUTTON_CONTEXTS 的期望数
-   从 11 改成 10。同批被判零引用的 .alert-success / .alert-warning /
-   .text-success / .text-warning / .text-info 没有这层保护，已删除。 */
-.btn-info {
-    background: var(--color-info);
-    color: var(--color-on-accent);
-    box-shadow: none;
-}
+/* ⚠️ 2026-08-15 Task 4 删除登记：这里原先有 `.btn-info` 的四条规则
+   （base / hover / focus-visible / active）。全仓零引用（templates/ static/js/
+   src/ app.py 一处不命中；唯一的用例「历史表查看详情」在 2026-08 随任务名
+   按钮化下线），它们此前**故意留着**，理由是「变体登记在
+   tests/test_css_contract.py 的 FILLED_BTN_VARIANTS 里，删 CSS 等于拆掉一组
+   现役断言的被测对象」，而 tests/test_fix_templates_a11y.py 用一条**双向**
+   跨文件锁把这个理由钉在原地（CSS 少一条分支会红、模型里摘掉登记也会红）。
+
+   本次两头一起删：模型侧还有 4 个**真实**填充变体（primary / success /
+   warning / danger）在被逐格计算，够用了；一个类唯一的存在理由是「给测试当
+   被测对象」，那它就是测试的成本而不是产品的一部分。同一轮改动：
+     · FILLED_BTN_VARIANTS 去掉 'btn-info'（BUTTON_CONTEXTS 11 -> 10、
+       上下文 x 状态矩阵 55 -> 50 格）；
+     · tests/test_fix_templates_a11y.py 的双向锁整条删除，`.btn-info` 改记进
+       同文件的 `_DELETED_DEAD_CLASSES`（与 .text-info 等五个同列）；
+     · `--color-info-hover` 两个档一并删除（删后零引用，见调色板那一段）。
+   零引用不许长回来由 test_zero_reference_bootstrap_overrides_are_deleted
+   与 tests/test_button_geometry.py::test_btn_info_has_no_rule_branches 钉住。 */
 
 /* `.btn-secondary` 和 `.btn-outline-secondary` 在深色主题里是同一个东西
    （透明底 + 一圈弱边框 + 主文字色），合成一条而不是各写一份。 */
@@ -2480,11 +3053,6 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
 
 .btn-danger:not(:disabled):hover {
     background: var(--color-danger-hover);
-    color: var(--color-on-accent);
-}
-
-.btn-info:not(:disabled):hover {
-    background: var(--color-info-hover);
     color: var(--color-on-accent);
 }
 
@@ -2527,11 +3095,6 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
     color: var(--color-on-accent);
 }
 
-.btn-info:not(:disabled):focus-visible {
-    background: var(--color-info);
-    color: var(--color-on-accent);
-}
-
 .btn-secondary:not(:disabled):focus-visible,
 .btn-outline-secondary:not(:disabled):focus-visible {
     background: transparent;
@@ -2555,8 +3118,27 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
    与之打平、靠 style.css 排在后面取胜。
    由 test_focus_visible_has_a_visible_outline 的
    BOOTSTRAP_BTN_FOCUS_RING_SPECIFICITY 钉住 —— 删掉它测试会红。 */
+/* 2026-08-15 Task 4：颜色令牌从 --color-accent-hover 换成 --color-accent。
+   改前全站有**两种**焦点环颜色：全局 `*:focus-visible`、`.map-panel-btn`、
+   确认弹窗的两颗按钮与它的勾选框、`.hint` 都用 --color-accent，唯独 `.btn`
+   用 --color-accent-hover —— 同一个键盘焦点，落在 `.btn` 上是一种蓝、落在它
+   紧邻的邻居上是另一种。真会同屏的三处（2026-08-15 CDP 实测）：任务面板里
+   12 颗 `.btn` 与面板头的关闭钮 `.dock-collapse-btn`（吃全局环，实测环色
+   rgb(56,189,248)、offset 2px，与最近的 `.btn` 相距 146px）；确认弹窗里
+   「确定/取消」与它的勾选框；地图上工具条按钮与浮层里的 `.btn`。
+   ⚠️ **不含输入框**：`.form-control:focus` 自己写了 `outline: none`，改用
+   边框 + box-shadow 表达焦点（实测聚焦 #outputPath 的 outline-style 是 none）。
+   本条初稿把输入框举成例子，是错的 —— 那一处根本没有环可比。
+   判据：焦点环表达的是「焦点在这里」，不是「这里被 hover 了」，所以取
+   焦点色本身那一档。对比度不变档：--color-accent 对卡片底仍远高于 3:1
+   （由 test_focus_visible_has_a_visible_outline 的 BTN_RING_MIN_CONTRAST 逐格算）。
+   offset 保持 2px，全站按钮态只有这一个值；唯一的例外是 `.map-panel-btn`
+   的 -2px（容器 overflow:hidden 会剪掉正 offset，理由见那条规则）。
+   一份配方由 tests/test_button_geometry.py::
+   test_button_focus_ring_uses_one_colour_token 与
+   test_button_focus_ring_offset_has_exactly_one_value 钉住。 */
 .btn:not(:disabled):not(.disabled):focus-visible {
-    outline: 2px solid var(--color-accent-hover);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
     box-shadow: none;
 }
@@ -2586,12 +3168,6 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
 
 .btn-danger:not(:disabled):active {
     background: var(--color-danger);
-    color: var(--color-on-accent);
-    filter: brightness(0.85);
-}
-
-.btn-info:not(:disabled):active {
-    background: var(--color-info);
     color: var(--color-on-accent);
     filter: brightness(0.85);
 }
@@ -2648,25 +3224,50 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
     color: var(--color-accent-disabled-ink);
 }
 
-/* ---- 尺寸 -------------------------------------------------------------- */
-.btn-group-sm .btn {
-    padding: 0.4rem 0.9rem;
-}
-
+/* ---- 尺寸 --------------------------------------------------------------
+   ⚠️ 2026-08-15 Task 4 删除登记：这里原先有两条**只差 0.1rem** 的重复几何 ——
+       .btn-group-sm .btn { padding: var(--space-2) var(--space-4) }   (0,2,0)
+       .btn-sm           { padding: var(--space-2) var(--space-3) }    (0,1,0)
+   两条都只管内边距，谁生效取决于按钮外面有没有套 .btn-group-sm，实测高度
+   都是 39px —— 比密档高 11px、比主档还高 3px，是「同一颗按钮五种几何」里
+   最没有理由的两种。内边距现在只有一个来源（`.btn` 基规则的密档），
+   `.btn-sm` 只保留它真正独有的那件事：**字号**（14px）。
+   `.btn-sm` 的 border-radius 保留：tests/test_geometry_scales.py 的控件圆角
+   清单按选择器逐条算过它（那是 Task 3 的决定，本 Task 不动）。 */
 .btn-sm {
     font-size: var(--font-size-sm);
-    padding: 0.4rem 0.8rem;
     border-radius: var(--radius-xs);
 }
 
 /* 纯图标按钮：正方形，边长 = 控件密度令牌 --ctl-h。
-   选择器必须是 `.btn.btn-icon`(0,2,0)：任务卡上的容器是
-   `.btn-group.btn-group-sm`，上面那条 `.btn-group-sm .btn` 也是 (0,2,0)，
-   裸 `.btn-icon`(0,1,0) 的 padding 会输给它，按钮被撑成胶囊。
-   同特异度靠源码顺序取胜，所以这条必须留在 `.btn-group-sm .btn` 之后。 */
+   选择器必须是 `.btn.btn-icon`(0,2,0) 而不是裸 `.btn-icon`(0,1,0)：Bootstrap
+   自己的 `.btn-sm { padding: .25rem .5rem }` 也是 (0,1,0) 且排在 style.css
+   之前，同特异度靠源序能赢，但历史表的图标按钮同时带 .btn-sm、任务行的容器
+   是 .btn-group.btn-group-sm —— 站内 (0,2,0) 的按钮规则不止一条（紧凑档那五个
+   选择器全是 (0,2,0)），写成 (0,2,0) 才不用逐条去数源序。
+   （2026-08-15 Task 4 更正：原注释说这条必须排在本站的 `.btn-group-sm .btn`
+   之后 —— 那条规则已随两档几何合并删除，那个理由随之作废。）
+
+   圆角也写在这里（2026-08-15 补）：改前 `.btn.btn-icon` 一条 border-radius
+   都没有，独立摆放的图标按钮（任务筛选行、toast、地图浮层里那些）拿到的是
+   Bootstrap 的 6px —— 数值恰好等于 --radius-xs，但来源不是本站的刻度。
+
+   ⚠️ 实测确认过一个边界，别照着上面那句推广：**按钮组内部的圆角这条管不着**。
+   Bootstrap 的 `.btn-group>.btn:not(:last-child):not(.dropdown-toggle)` 算下来
+   是 (0,4,0)，仍远高于这条 (0,2,0)，把组内非首尾按钮的相邻两角清零。
+   数法（写出来是为了可核对，不是断言）：类那一列数四个 —— `.btn-group`、
+   `.btn`，加上两个 `:not()` **各按其参数**记一级（`:last-child` 是伪类、
+   `.dropdown-toggle` 是类，都落在类那一列）；`:not()` 本身不计，`>` 不计。
+   ⚠️ 2026-08-15 更正：原注释写的是 (0,5,0)，多数了一级 —— 大概是把 `:not()`
+   本身和它的参数各记了一次。结论不变（4 > 2），但那是个会被下一个人照抄的
+   错算法。交叉验过：`_btn_specificity('.btn-group>.btn:not(:last-child):not(.dropdown-toggle)')`
+   == (0, 4, 0)，`_btn_specificity('.btn.btn-icon')` == (0, 2, 0)。
+   那是分段控件本来就该有的样子，Task 3 不动它 ——
+   这条声明管的是「单独一颗图标按钮」。 */
 .btn.btn-icon {
     width: var(--ctl-h);
     height: var(--ctl-h);
+    border-radius: var(--radius-xs);
     padding: 0;
     display: inline-flex;
     align-items: center;
@@ -2675,12 +3276,12 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
 
 /* Alert Styles */
 .alert {
-    border-radius: var(--radius);
+    border-radius: var(--radius-card);
     border: 1px solid;
     /* A5 / Task 10：1rem 1.25rem(16/20px) -> 8px/--pad-card。
        站内的 .alert 全是**信息条**（#boundsInfo 的四至、history 的错误提示），
        不是需要撑场面的横幅；16px 上下内边距在 1366x768 上是纯浪费。 */
-    padding: 8px var(--pad-card);
+    padding: var(--space-2) var(--pad-card);
     font-family: var(--font-display);
     font-size: var(--font-size-base);
     box-shadow: var(--shadow-sm);
@@ -2704,9 +3305,9 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-sm);
     background: var(--color-bg-secondary);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
-    margin-bottom: 0.75rem;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+    margin-bottom: var(--space-3);
 }
 
 .card:hover {
@@ -2714,22 +3315,40 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
     box-shadow: var(--shadow-md);
 }
 
+/* ⚠️ 表头圆角那条 !important 是**必须留的**（2026-08-15 Task 3 逐条判过，
+   顺手删它是这次最容易犯的错）。它压的不是本文件自己，是 Bootstrap 5.3.0 的
+
+       .card-header:first-child { border-radius:
+           var(--bs-card-inner-border-radius) var(--bs-card-inner-border-radius) 0 0 }
+
+   那条是 (0,2,0)，本条 `.card-header` 是 (0,1,0) —— 特异度更高，源码顺序帮不上。
+   数法：`.card-header` 一个类，`:first-child` 是**伪类，也计在类那一列**，
+   合起来 (0,2,0)。⚠️ 2026-08-15 更正：原注释写的是 (0,1,1)，把伪类记到了
+   元素那一列 —— 结论不变（两者都赢 (0,1,0)），但那个数法是错的，而且本仓库
+   自己的实现就不这么算。交叉验过：
+   `_btn_specificity('.card-header:first-child')` == (0, 2, 0)。
+   而 `--bs-card-inner-border-radius` = `calc(var(--bs-card-border-radius) -
+   var(--bs-card-border-width))` = `calc(.375rem - 1px)` = **5px**，且本站
+   一处 `--bs-card-*` 都没覆盖（grep 可证）。所以去掉 !important 的后果不是
+   「回退到 12px」，是表头变 5px、外框 12px —— 正是本次要修的那个缺陷本身，
+   只是从 10/12 变成 5/12。
+   !important 上界因此**不动**（棘轮：实测 34 / 上界 37，余量 3）。 */
 .card-header {
     background: transparent;
     color: var(--color-text-primary);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     font-size: var(--font-size-base);
     border-bottom: 1px solid var(--color-border);
-    border-radius: var(--radius) var(--radius) 0 0 !important;
+    border-radius: var(--radius-card) var(--radius-card) 0 0 !important;
     /* A5 / Task 10：0.85rem 1rem(13.6/16px) -> 6px/--pad-card。
        左右与 .card-body 同为 --pad-card，标题和正文才对得齐。 */
-    padding: 6px var(--pad-card);
+    padding: var(--space-2) var(--pad-card);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
 .card-header h5 {
     margin: 0;
     font-size: var(--font-size-base);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     color: var(--color-text-primary);
 }
 
@@ -2788,8 +3407,8 @@ h1, h2, h3, h4, h5, h6 {
     /* 必须是 minmax(0, 1fr) 而不是 1fr：1fr 的下限是 min-content，
        累计下载量那种长数字会把轨道顶宽，横向溢出原样复活。 */
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1.5rem;
-    margin-bottom: 1rem;
+    gap: var(--space-5);
+    margin-bottom: var(--space-4);
 }
 
 /* 断点与被替换掉的 `col-6 col-md-3` 一致：md 以下两列。 */
@@ -2801,8 +3420,8 @@ h1, h2, h3, h4, h5, h6 {
 
 .stat-card {
     text-align: left;
-    padding: 1.25rem 1.5rem;
-    border-radius: var(--radius);
+    padding: var(--space-5) var(--space-5);   /* 1.25rem(20px) -> --space-5（24px）：间距刻度归一 2026-08-14 */
+    border-radius: var(--radius-card);
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
     box-shadow: var(--shadow-sm);
@@ -2819,10 +3438,10 @@ h1, h2, h3, h4, h5, h6 {
    数字从来没按设计的 32px 显示过。C1 按「零视觉变化」原则删掉了这条死声明（保持 18px
    现状），是否恢复到 2rem 属于视觉决策，交 A1-A7 阶段裁定。 */
 .stat-card h3 {
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     font-family: var(--font-mono);
     color: var(--color-text-primary);
-    margin: 0 0 0.25rem 0;
+    margin: 0 0 var(--space-1) 0;
     text-shadow: none;
 }
 
@@ -2830,7 +3449,7 @@ h1, h2, h3, h4, h5, h6 {
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     margin: 0;
-    font-weight: 500;
+    font-weight: var(--weight-medium);
 }
 
 .stat-card.accent h3 {
@@ -2869,7 +3488,7 @@ h1, h2, h3, h4, h5, h6 {
     background-color: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
     padding-top: var(--ctl-pad-y);
     padding-bottom: var(--ctl-pad-y);
     padding-left: var(--ctl-pad-x);
@@ -2877,8 +3496,8 @@ h1, h2, h3, h4, h5, h6 {
     line-height: var(--ctl-line-h);
     min-height: var(--ctl-h);
     font-family: var(--font-display);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
     font-size: var(--font-size-sm);
 }
 
@@ -2925,7 +3544,10 @@ h1, h2, h3, h4, h5, h6 {
    --bs-form-select-bg-img 一条声明，不碰 position / size / padding，
    所以删掉站内覆盖不影响上面这 28px 的几何下限。） */
 .form-select {
-    padding-right: 2.25rem;
+    /* 36px（原 2.25rem，2026-08-14 换成 px 与刻度同单位）。不在刻度上、也不能
+       写 var()：test_form_select_reserves_room_for_the_arrow 用只认字面量的
+       `_length_to_px` 读最终生效值，下限 28px。 */
+    padding-right: 36px;
 }
 
 /* 取色器色块。
@@ -2947,7 +3569,10 @@ h1, h2, h3, h4, h5, h6 {
    下限由 tests/test_css_contract.py::test_color_picker_swatch_is_big_enough_to_see 守住。 */
 .form-control-color {
     width: 3rem;
-    padding: 0.25rem;
+    /* 4px = --space-1 的值，但必须写字面量：色块宽度模型
+       test_color_picker_swatch_is_big_enough_to_see 用 `_length_to_px` 直读
+       胜出的 padding-left/right（原 0.25rem，2026-08-14 换成 px）。 */
+    padding: 4px;
 }
 
 .form-control:focus,
@@ -2969,8 +3594,8 @@ h1, h2, h3, h4, h5, h6 {
 
 .form-label {
     color: var(--color-text-primary);
-    font-weight: 600;
-    margin-bottom: 0.4rem;
+    font-weight: var(--weight-strong);
+    margin-bottom: var(--space-2);   /* 0.4rem(6.4px) -> --space-2（8px）：间距刻度归一 2026-08-14 */
     font-family: var(--font-display);
     font-size: var(--font-size-sm);
 }
@@ -3000,12 +3625,15 @@ h1, h2, h3, h4, h5, h6 {
     background: var(--color-bg-elevated);
     border-bottom: 1px solid var(--color-border);
     color: var(--color-text-primary);
-    padding: 1.25rem;
+    padding: var(--space-5);   /* 1.25rem(20px) -> --space-5（24px）：间距刻度归一 2026-08-14 */
 }
 
+/* 2026-08-15 就地登记：`font-weight: 700` -> `var(--weight-strong)`(600)，
+   同批四处之一（中央登记见 :root 字重刻度那段）。弹窗标题是 --font-size-lg
+   (18px)，600 与正文 400 的层级差已经足够，700 只是更黑。 */
 .modal-title {
     font-family: var(--font-display);
-    font-weight: 700;
+    font-weight: var(--weight-strong);
     font-size: var(--font-size-lg);
     color: var(--color-text-primary);
 }
@@ -3013,21 +3641,28 @@ h1, h2, h3, h4, h5, h6 {
 .modal-body {
     color: var(--color-text-primary);
     font-size: var(--font-size-base);
-    padding: 1.5rem;
+    /* 1.5rem == 24px == --space-5，等值迁移（无视觉变化）。
+       ⚠️ 这一行**压过** Bootstrap 的 `--bs-modal-padding: 1rem`(16px)：同为
+       (0,1,0) 而 style.css 后加载。tests/test_css_contract.py 的折叠线模型
+       必须从这里读、不能从 vendor 读 —— D3 缺陷（模型读 16、浏览器 24）就是
+       这么来的，现在由 `_style_modal_metrics()` 优先解析本文件。 */
+    padding: var(--space-5);
 }
 
 .modal-body p {
-    margin-bottom: 0.75rem;
+    margin-bottom: var(--space-3);
 }
 
 .modal-body strong {
     color: var(--color-accent-hover);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
 }
 
 .modal-footer {
     border-top: 1px solid var(--color-border);
-    padding: 1rem 1.5rem;
+    /* 1rem 1.5rem == 16px 24px == --space-4 --space-5，等值迁移（无视觉变化）。
+       同样压过 `--bs-modal-padding`，见 .modal-body 上面那段。 */
+    padding: var(--space-4) var(--space-5);
 }
 
 .btn-close {
@@ -3041,19 +3676,19 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Pagination */
 .pagination {
-    gap: 0.5rem;
+    gap: var(--space-2);
 }
 
 .page-link {
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
-    border-radius: var(--radius-sm);
-    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-xs);
+    padding: var(--space-2) var(--space-3);
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 
 .page-link:hover {
@@ -3062,11 +3697,14 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--color-accent-hover);
 }
 
+/* 2026-08-15 就地登记：`font-weight: 700` -> `var(--weight-strong)`(600)，
+   同批四处之一（中央登记见 :root 字重刻度那段）。当前页码的「被选中」信号
+   由 accent 填充色 + 反色墨给，不靠字重再说一遍。 */
 .page-item.active .page-link {
     background: var(--color-accent-strong);
     border-color: var(--color-accent-strong);
     color: var(--color-on-accent);
-    font-weight: 700;
+    font-weight: var(--weight-strong);
 }
 
 .page-item.disabled .page-link {
@@ -3090,7 +3728,7 @@ h1, h2, h3, h4, h5, h6 {
 code {
     background: var(--color-bg-tertiary);
     color: var(--color-accent-hover);
-    padding: 0.25rem 0.5rem;
+    padding: var(--space-1) var(--space-2);
     border-radius: var(--radius-xxs);
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);
@@ -3098,30 +3736,35 @@ code {
 
 /* Form Check Styles */
 .form-check {
-    padding-left: 1.75rem;
+    padding-left: var(--space-6);   /* 1.75rem(28px) -> --space-6（32px）：间距刻度归一 2026-08-14 */
 }
 
 .form-check-input {
     width: 1.25rem;
     height: 1.25rem;
-    margin-top: 0.125rem;
+    margin-top: var(--space-hair);
     background-color: var(--color-bg-tertiary);
     border: 2px solid var(--color-control-border);
     cursor: pointer;
-    transition: background-color 0.15s ease, border-color 0.15s ease,
-                color 0.15s ease, box-shadow 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
 
 /* 拉齐容器 padding：Bootstrap 默认 margin-left:-1.5em 是按 1em 见方的原生
-   控件定的；这里控件放大到 1.25rem、容器 padding-left 1.75rem，沿用 -1.5em
-   会让图标右缘离文字只剩 ~4px。改成 -1.75rem 后图标左缘贴容器边，图标与文字
-   间恒为 1.75-1.25=0.5rem。
+   控件定的；这里控件放大到 1.25rem(20px)、容器 padding-left 是 --space-6(32px)，
+   沿用 -1.5em 会让图标右缘离文字只剩 ~4px。改成 -32px（与容器内边距同一个
+   令牌）之后图标左缘贴容器边，图标与文字之间恒为 32-20 = 12px。
+   ⚠️ 这 12px 以前是 8px。2026-08-14 间距刻度归一把容器 padding-left 与这里的
+   负外边距一起从 1.75rem(28px) 抬到 --space-6(32px)，而控件宽度 1.25rem(20px)
+   没跟着动 —— 差值就从 28-20=8 变成 32-20=12，勾选框与标签之间实打实宽了 4px。
+   这是刻度归一的已知视觉代价，不是笔误；写在这里，免得下一个人照着旧注释里的
+   「0.5rem」去把它「修」回去。
    ⚠️ 选择器必须带 `.form-check` 祖先（U7）：Bootstrap 的
    `.form-check .form-check-input { margin-left: -1.5em }` 是 (0,2,0)，写成裸
    `.form-check-input`(0,1,0) 会被它压掉 —— 上面那段注释描述的对齐修正
    **从未生效过**。模板里控件一律包在 .form-check 内，所以后代选择器必然命中。 */
 .form-check .form-check-input {
-    margin-left: -1.75rem;
+    margin-left: calc(-1 * var(--space-6));   /* -1.75rem(28px) -> --space-6（32px）：间距刻度归一 2026-08-14 */
 }
 
 .form-check-input:checked {
@@ -3163,7 +3806,7 @@ code {
        只在那个容器里被调用），窄屏也一次都没生效过。 */
 
     .config-section {
-        padding: 1rem;
+        padding: var(--space-4);
     }
 
 }
@@ -3205,7 +3848,7 @@ code {
        整条失效**（组里有一个不认识的选择器 = 全组作废），等于把减少动画
        支持在 Firefox 上悄悄弄没。详见
        test_reduced_motion_actually_stops_every_animated_element 的豁免清单。 */
-    transition: background-color 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease);
 }
 
 *::-webkit-scrollbar-thumb:hover {
@@ -3270,12 +3913,14 @@ code {
    font-weight 600 + 下边框维持，不靠「把字调暗到看不见」。 */
 .form-group-label {
     font-size: var(--font-size-xs);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     color: var(--color-text-secondary);
-    /* A5 / Task 10：1.25rem 0 0.5rem(20/8px) -> 14px 0 6px。
-       组间留白仍明显大于组内的 --gap-field(8px)，分组关系不受影响。 */
-    margin: 14px 0 6px;
-    padding-bottom: 0.35rem;
+    /* A5 / Task 10：1.25rem 0 0.5rem(20/8px) -> 14px 0 6px；
+       2026-08-14 随刻度归一 -> --space-4 0 --space-2（16/8px）。
+       分组关系现在靠**上**外边距（16px，是组内 --gap-field 的两倍）与下边框
+       承担：下外边距归一后与 --gap-field 同为 8px，不再自己表达层级。 */
+    margin: var(--space-4) 0 var(--space-2);   /* 14px 6px -> --space-4 --space-2（16px/8px）：间距刻度归一 2026-08-14 */
+    padding-bottom: var(--space-1);   /* 0.35rem(5.6px) -> --space-1（4px）：间距刻度归一 2026-08-14 */
     border-bottom: 1px solid var(--color-border);
 }
 .form-group-label:first-child { margin-top: 0; }
@@ -3285,7 +3930,7 @@ code {
 .form-text {
     color: var(--color-text-secondary) !important;
     font-size: var(--font-size-xs);
-    margin-top: 0.35rem;
+    margin-top: var(--space-1);   /* 0.35rem(5.6px) -> --space-1（4px）：间距刻度归一 2026-08-14 */
 }
 
 /* 框选后的四至显示（#boundsInfo 内部，由 static/js/map.js 的 updateBoundsInfo 渲染）。
@@ -3314,7 +3959,7 @@ code {
 .bounds-grid {
     display: grid;
     grid-template-columns: auto 1fr auto 1fr;
-    gap: 2px 4px;
+    gap: var(--space-hair) var(--space-1);
     align-items: baseline;
     font-family: var(--font-mono);
     /* 12px，与浮层其余文字（以及左上工具条标签）一致。上面那段 769px 的实测
@@ -3322,9 +3967,12 @@ code {
     font-size: var(--font-size-xs);
 }
 
+/* 2026-08-15 就地登记：`font-weight: 700` -> `var(--weight-strong)`(600)，
+   同批四处之一（中央登记见 :root 字重刻度那段）。四至读数的字段名是标题层，
+   600 就是标题层的字重；它旁边的数值走 --weight-medium。 */
 .bounds-k {
     color: var(--color-accent-hover);
-    font-weight: 700;
+    font-weight: var(--weight-strong);
 }
 
 /* 值：等宽 + 可点击编辑。改前这条被拆成两块、隔着 451 行
@@ -3340,9 +3988,9 @@ code {
        padding，让底色提示不撑开网格列宽。 */
     cursor: text;
     border-radius: var(--radius-xxs);
-    padding: 0 2px;
-    margin: 0 -2px;
-    transition: background-color 0.15s ease;
+    padding: 0 var(--space-hair);
+    margin: 0 calc(-1 * var(--space-hair));
+    transition: background-color var(--dur-fast) var(--ease);
 }
 
 /* 只给读屏软件的方位词。
@@ -3372,8 +4020,8 @@ code {
 /* minmax(0, 1fr) 而不是 1fr：1fr 是 minmax(auto, 1fr)，某一格的 min-content
    （长坐标串、长文件名）超过轨道宽时整张网格会被撑宽，套在 overflow-y:auto
    的容器里（.tif-info--scroll）就换来一条幽灵横向滚动条。 */
-.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1.5rem; }
-.detail-item { display: flex; flex-direction: column; gap: 0.15rem; padding: 0.4rem 0; border-bottom: 1px solid var(--color-border); }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2) var(--space-5); }
+.detail-item { display: flex; flex-direction: column; gap: var(--space-hair); padding: var(--space-2) 0; border-bottom: 1px solid var(--color-border); }   /* 0.15rem(2.4px) 0.4rem(6.4px) -> --space-hair --space-2（2px/8px）：间距刻度归一 2026-08-14 */
 /* A7 / Task 12：详情弹窗的**全部** 19 个字段名走这条规则。
    改前 --color-text-muted 对 .modal-content 底 #15171c 实测 3.09:1（不达 AA），
    改后 --color-text-secondary 6.81:1。与 .detail-v(14px/#e8eaed) 的层级差
@@ -3388,13 +4036,17 @@ code {
    「颜色走 CSS 类，不写内联 style」，这里把那批声明接过来。 */
 .detail-v--num { font-family: var(--font-mono); }
 .detail-sep { border-color: var(--color-border); }
-.detail-progress-row { margin-top: 1rem; }
-.detail-k--head { margin-bottom: 0.5rem; }
-.detail-grid--spaced { margin-top: 0.5rem; }
-.detail-terrain-title { margin-bottom: 0.25rem; }
-/* 0.9rem 不在 --font-size-* 刻度上（sm 0.875 / base 0.9375 之间）。原样搬过来
-   而不是就近吸附到某个令牌：这一步只做「内联搬进类」，改字号是另一件事。 */
-.detail-terrain-info { font-family: var(--font-mono); font-size: 0.9rem; }
+.detail-progress-row { margin-top: var(--space-4); }
+.detail-k--head { margin-bottom: var(--space-2); }
+.detail-grid--spaced { margin-top: var(--space-2); }
+.detail-terrain-title { margin-bottom: var(--space-1); }
+/* 0.9rem(14.4px) -> --font-size-sm（0.875rem/14px），2026-08-15 字号刻度归一：
+   0.4px 的差别没有任何人能看出来，它唯一的作用是让刻度多一档。
+   ⚠️ 这里原先叠着上一版的理由（「原样搬过来而不是就近吸附到某个令牌：这一步
+   只做内联搬进类，改字号是另一件事」）。那句话在本次改动之后已经**为假** ——
+   字号就是在这一步吸附的 —— 所以按同批另外四处字号点的做法**原地改写**，
+   不再往上摞：留着它等于让下一个人读到两条互相打架的说明。 */
+.detail-terrain-info { font-family: var(--font-mono); font-size: var(--font-size-sm); }
 .detail-alert-flush { margin: 0; }
 
 /* ========================================================================
@@ -3420,10 +4072,10 @@ code {
        参照物没了之后，toast 无故从距顶 76px 处才开始堆叠。 */
     top: 20px;
     right: 20px;
-    z-index: 11000;
+    z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
-    gap: 0.625rem;
+    gap: var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
     max-width: min(380px, calc(100vw - 40px));
     max-height: calc(100vh - 40px);   /* top:20px + 底部留 20px */
     overflow-y: auto;
@@ -3437,12 +4089,12 @@ code {
     pointer-events: auto;
     display: flex;
     align-items: flex-start;
-    gap: 0.625rem;
-    padding: 0.75rem 0.875rem;
+    gap: var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
+    padding: var(--space-3) var(--space-4);   /* 0.875rem(14px) -> --space-4（16px）：间距刻度归一 2026-08-14 */
     background: var(--color-bg-tertiary);
     border: 1px solid var(--color-border-strong);
     border-left: 3px solid var(--color-info);
-    border-radius: var(--radius);
+    border-radius: var(--radius-card);
     box-shadow: var(--shadow-lg);
     color: var(--color-text-primary);
     font-family: var(--font-display);
@@ -3450,7 +4102,7 @@ code {
     line-height: 1.45;
     opacity: 0;
     transform: translateX(16px);
-    transition: opacity 0.25s ease, transform 0.25s ease;
+    transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease);
 }
 .app-toast--in { opacity: 1; transform: translateX(0); }
 .app-toast--out { opacity: 0; transform: translateX(16px); }
@@ -3468,11 +4120,13 @@ code {
     border: none;
     cursor: pointer;
     color: var(--color-text-secondary);
-    font-size: 1.15rem;
+    /* 1.15rem(18.4px) -> --font-size-lg（1.125rem/18px），2026-08-15 字号刻度
+       归一。这颗 × 要比正文（--font-size-sm）明显大才点得准，lg 就是那一档。 */
+    font-size: var(--font-size-lg);
     line-height: 1;
-    padding: 0 0.15rem;
-    margin: -2px -2px 0 0;
-    transition: color 0.15s ease;
+    padding: 0 var(--space-hair);   /* 0.15rem(2.4px) -> --space-hair（2px）：间距刻度归一 2026-08-14 */
+    margin: calc(-1 * var(--space-hair)) calc(-1 * var(--space-hair)) 0 0;
+    transition: color var(--dur-fast) var(--ease);
 }
 .app-toast__close:hover { color: var(--color-text-primary); }
 
@@ -3490,16 +4144,16 @@ code {
 .app-confirm-overlay {
     position: fixed;
     inset: 0;
-    z-index: 12000;
+    z-index: var(--z-confirm);
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 1rem;
+    padding: var(--space-4);
     background: var(--color-backdrop-strong);
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
     opacity: 0;
-    transition: opacity 0.2s ease;
+    transition: opacity var(--dur-base) var(--ease);
 }
 .app-confirm-overlay--in { opacity: 1; }
 .app-confirm-overlay--out { opacity: 0; }
@@ -3510,26 +4164,26 @@ code {
     max-width: 400px;
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-card);
     box-shadow: var(--shadow-lg);
-    padding: 1.5rem;
+    padding: var(--space-5);
     font-family: var(--font-display);
     transform: scale(0.96);
-    transition: transform 0.2s ease;
+    transition: transform var(--dur-base) var(--ease);
 }
 .app-confirm-overlay--in .app-confirm { transform: scale(1); }
 
 .app-confirm__title {
     font-size: var(--font-size-lg);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     color: var(--color-text-primary);
-    margin-bottom: 0.5rem;
+    margin-bottom: var(--space-2);
 }
 .app-confirm__msg {
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     line-height: 1.55;
-    margin-bottom: 1.5rem;
+    margin-bottom: var(--space-5);
     word-break: break-word;
 }
 /* ---- Confirm 里的勾选框 ---- */
@@ -3540,8 +4194,8 @@ code {
 .app-confirm__check {
     display: flex;
     align-items: flex-start;
-    gap: 0.5rem;
-    margin: -0.9rem 0 1.4rem;
+    gap: var(--space-2);
+    margin: calc(-1 * var(--space-4)) 0 var(--space-5);   /* -0.9rem(14.4px) 1.4rem(22.4px) -> --space-4 --space-5（16px/24px）：间距刻度归一 2026-08-14 */
     font-size: var(--font-size-sm);
     color: var(--color-text-secondary);
     line-height: 1.45;
@@ -3552,7 +4206,7 @@ code {
     flex: none;
     width: 0.95rem;
     height: 0.95rem;
-    margin-top: 0.18rem;
+    margin-top: var(--space-hair);   /* 0.18rem(2.88px) -> --space-hair（2px）：间距刻度归一 2026-08-14 */
     accent-color: var(--color-accent);
     cursor: pointer;
 }
@@ -3563,17 +4217,34 @@ code {
 .app-confirm__actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.625rem;
+    gap: var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
 }
+/* 确认弹窗（ui.js 的 showConfirm）的两颗按钮。它们**不带 `.btn` 类**（由 JS
+   createElement 生成），但那是 markup 事实，不是「可以自己写一套几何」的许可证
+   —— 2026-08-15 Task 4 之前这里就是一套独立几何：自然高 39px（两档都不是）、
+   transition 动 `background` 简写、内边距 --space-2/--space-4。同一个「白墨压
+   高亮填充对比度不足」的 bug 在 `.btn-*` 上修完之后还在它身上留了三个月，
+   根因就是「它不走 .btn 体系」这句话被当成了豁免。
+
+   现在它消费与 `.config-footer .btn` **逐字相同**的主档令牌：弹窗底部的
+   「确定 / 取消」与配置页底条的「保存 / 重置」是同一个角色（弹层底条主操作），
+   同一个角色只许有一份几何。
+   ⚠️ `background` -> `background-color`：简写会把 background-image/-position/
+   -size 一起纳入过渡，而这里要动的只有底色（`--ok:hover` 换的就是底色）。
+   由 tests/test_button_geometry.py::
+   test_app_confirm_button_consumes_the_shared_button_tokens 逐属性比对令牌
+   表达式（不是比 px：数值相等而令牌不同的话，下次调档位就会漂开）。 */
 .app-confirm__btn {
-    padding: 0.5rem 1.1rem;
-    border-radius: var(--radius-sm);
+    min-height: var(--ctl-h-lg);
+    padding: var(--space-1) var(--space-4);
+    border-radius: var(--radius-xs);
     font-family: var(--font-display);
     font-size: var(--font-size-sm);
-    font-weight: 500;
+    font-weight: var(--weight-medium);
     cursor: pointer;
     border: 1px solid transparent;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
 }
 .app-confirm__btn--cancel {
     background: transparent;
@@ -3615,13 +4286,24 @@ code {
 
 /* ---- 命令面板(Ctrl/Cmd+K)与快捷键速查 ----------------------------------
    停靠层规则:不透明、elevated 底、模态级阴影 —— 它盖住的是整个工作台,
-   不是直接浮在地图上,所以**不做玻璃**。即开即关,不加 transition
-   (动画索引不动)。z-index 13100:高于 confirm(12000) —— 但 confirm 在场时
-   全局键让位(command_palette.js),两者不会同框;13000 预留给拖拽遮罩。 */
+   不是直接浮在地图上,所以**不做玻璃**。z-index 13100:高于 confirm(12000)
+   —— 但 confirm 在场时全局键让位(command_palette.js),两者不会同框;
+   13000 预留给拖拽遮罩。
+   2026-08-15 Task 6:入场并进层栈那一套(遮罩 opacity + 卡片 transform,
+   --dur-base / --ease)。改前这里刻意「即开即关不加 transition」,于是七个
+   浮层里它是唯一没有入场的那个 —— 统一的代价就是这两条分支。退场仍然立刻
+   (command_palette.js 的 closePalette 同帧翻 hidden):命令面板是打了就走的
+   东西,退场再等 200ms 只会挡住它刚触发的那条命令。 */
 .cmdk {
     position: fixed;
     inset: 0;
-    z-index: 13100;
+    z-index: var(--z-cmdk);
+    opacity: 0;
+    transition: opacity var(--dur-base) var(--ease);
+}
+
+.cmdk--in {
+    opacity: 1;
 }
 
 .cmdk[hidden] {
@@ -3643,12 +4325,18 @@ code {
     border-radius: var(--radius-card);
     box-shadow: var(--shadow-lg);
     overflow: hidden;
+    transform: translateY(-8px);
+    transition: transform var(--dur-base) var(--ease);
+}
+
+.cmdk--in .cmdk__dialog {
+    transform: translateY(0);
 }
 
 .cmdk__input {
     width: 100%;
     min-height: 44px;
-    padding: 0 14px;
+    padding: 0 var(--space-4);   /* 14px -> --space-4（16px）：间距刻度归一 2026-08-14 */
     font-size: var(--font-size-md);
     color: var(--color-text-primary);
     background: transparent;
@@ -3666,7 +4354,7 @@ code {
     max-height: 50vh;
     overflow-y: auto;
     margin: 0;
-    padding: 6px;
+    padding: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
     list-style: none;
 }
 
@@ -3674,9 +4362,9 @@ code {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 7px 10px;
-    border-radius: var(--radius-sm);
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);   /* 7px 10px -> --space-2 --space-3（8px/12px）：间距刻度归一 2026-08-14 */
+    border-radius: var(--radius-xs);
     color: var(--color-text-secondary);
     cursor: pointer;
 }
@@ -3693,12 +4381,12 @@ code {
     color: var(--color-text-secondary);
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-xxs);
-    padding: 1px 6px;
+    padding: 1px var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14；上下 1px 是键帽发丝内衬，刻度地板 2px 会把 kbd 顶出行 */
     white-space: nowrap;
 }
 
 .cmdk__empty {
-    padding: 12px;
+    padding: var(--space-3);
     text-align: center;
     color: var(--color-text-secondary);
 }
@@ -3707,9 +4395,9 @@ code {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 14px;
+    padding: var(--space-3) var(--space-4);   /* 10px 14px -> --space-3 --space-4（12px/16px）：间距刻度归一 2026-08-14 */
     border-bottom: 1px solid var(--color-border);
-    font-weight: 600;
+    font-weight: var(--weight-strong);
     color: var(--color-text-primary);
 }
 
@@ -3719,7 +4407,7 @@ code {
     color: var(--color-text-secondary);
     font-size: var(--font-size-lg);
     line-height: 1;
-    padding: 2px 6px;
+    padding: var(--space-hair) var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
     cursor: pointer;
     border-radius: var(--radius-xxs);
 }
@@ -3731,7 +4419,7 @@ code {
 
 .cmdk__help-list {
     margin: 0;
-    padding: 8px 14px 12px;
+    padding: var(--space-2) var(--space-4) var(--space-3);   /* 14px -> --space-4（16px）：间距刻度归一 2026-08-14 */
     list-style: none;
 }
 
@@ -3739,18 +4427,23 @@ code {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 5px 0;
+    gap: var(--space-3);
+    padding: var(--space-1) 0;   /* 5px -> --space-1（4px）：间距刻度归一 2026-08-14 */
     color: var(--color-text-secondary);
 }
 
 /* ---- 全窗口拖拽提示遮罩(P2)----------------------------------------------
    纯展示(pointer-events:none),事件始终落 window;直接浮在地图上,
-   用玻璃令牌 + accent 虚线框。opacity 过渡一条(动画索引已登记)。 */
+   用玻璃令牌 + accent 虚线框。
+   2026-08-15 Task 6:入场并进层栈那一套(遮罩 opacity + 卡片 transform,
+   --dur-base / --ease)。改前遮罩走的是 --dur-fast —— 七个浮层里唯一一个不同
+   时长档,而它跟别的浮层做的是同一件事(整层显隐,不是 hover 反馈)。
+   transform 落在提示胶囊上而不是遮罩本身:遮罩是 inset:0 的满屏层,缩放它会
+   在四边露出底。 */
 .drop-veil {
     position: fixed;
     inset: 0;
-    z-index: 13000;
+    z-index: var(--z-drop-veil);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3758,7 +4451,7 @@ code {
     border: 2px dashed var(--color-accent);
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.15s ease;
+    transition: opacity var(--dur-base) var(--ease);
 }
 
 .drop-veil--in {
@@ -3766,12 +4459,18 @@ code {
 }
 
 .drop-veil__tip {
-    padding: 10px 18px;
+    padding: var(--space-3) var(--space-4);   /* 10px 18px -> --space-3 --space-4（12px/16px）：间距刻度归一 2026-08-14 */
     border-radius: var(--radius-pill);
     background: var(--color-glass-surface);
     border: 1px solid var(--color-glass-border);
     color: var(--color-text-primary);
     font-size: var(--font-size-md);
+    transform: scale(0.96);
+    transition: transform var(--dur-base) var(--ease);
+}
+
+.drop-veil--in .drop-veil__tip {
+    transform: scale(1);
 }
 
 /* ==========================================================================
@@ -3835,14 +4534,14 @@ code {
 .splash-screen {
     position: fixed;
     inset: 0;
-    z-index: 3000;
+    z-index: var(--z-splash);
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--color-bg-primary);
     overflow: hidden;
     opacity: 1;
-    transition: opacity 0.45s ease;
+    transition: opacity var(--dur-slow) var(--ease);
 }
 
 .splash-screen--done {
@@ -3887,7 +4586,7 @@ code {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 14px;
+    gap: var(--space-4);   /* 14px -> --space-4（16px）：间距刻度归一 2026-08-14 */
     color: var(--color-accent);
 }
 
@@ -3911,8 +4610,12 @@ code {
 
 .splash-wordmark {
     font-family: var(--font-display);
-    font-size: 1.35rem;
-    font-weight: 600;
+    /* 1.35rem(21.6px) -> --font-size-xl（1.25rem/20px），2026-08-15 字号刻度
+       归一。--font-size-xl 改前是全站**唯一零引用**的字号令牌 —— 铸了一级
+       最大号字却没有任何东西按它渲染；splash 的品牌字是它的自然消费者，
+       这一处同时消掉「零引用令牌」与「1.35rem 孤儿字面量」两个问题。 */
+    font-size: var(--font-size-xl);
+    font-weight: var(--weight-strong);
     letter-spacing: 0.35em;
     /* letter-spacing 会在末尾留一块空白，左补同样宽度让视觉居中 */
     padding-left: 0.35em;
@@ -3934,7 +4637,15 @@ code {
     background: linear-gradient(90deg, var(--color-accent-strong), var(--color-accent));
     border-radius: var(--radius-pill);
     box-shadow: 0 0 8px var(--color-splash-bar-glow);
-    transition: width 0.12s linear;
+    /* 0.12s -> --dur-base（0.2s），2026-08-15：全站三条「条子在长」的过渡
+       统一到同一档。改前是 .progress-bar 0.2s / .splash-bar 0.12s /
+       .statusbar-progress__bar 0.3s —— 同一个动作三种速度，而三条条子在同一
+       个会话里会先后出现（启动 splash -> 任务进度 -> 状态栏解压进度），
+       速度不一致直接读得出来。
+       为什么统一到 0.2 而不是别的：那是 .progress-bar 已经实测定下的值，
+       上界由 test_progress_bar_transition_keeps_up_with_the_push_rate 钉住
+       （瓦片下载每块推一次进度，过渡比推送间隔慢就显示错误的数字）。 */
+    transition: width var(--dur-base) linear;
 }
 
 .splash-stage {
@@ -3957,9 +4668,9 @@ code {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
-    margin-top: 6px;
-    padding-top: 6px;
+    gap: var(--space-3);   /* 10px -> --space-3（12px）：间距刻度归一 2026-08-14 */
+    margin-top: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
+    padding-top: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
     border-top: 1px solid var(--color-border);
 }
 
@@ -3988,14 +4699,27 @@ code {
 
 .bounds-edit-input {
     width: 10ch;
+    /* 20px -> --ctl-h（28px），2026-08-15：改前这个输入框只有 20px 高 ——
+       它有两个宿主，两处都是「高的挨着矮的」：点四至读数改数时它就地替换一行
+       15px 文字（勉强），手动四至面板里它是 .bounds-grid 的轨道成员、下面紧跟
+       一排 36px 的确定/取消按钮（那两颗已一并收到 --ctl-h）。
+       同行同高之后这个面板里只有一种控件高度。 */
+    height: var(--ctl-h);
     font: inherit;
     font-variant-numeric: tabular-nums;
     background: var(--color-bg-tertiary);
     color: var(--color-text-primary);
     border: 1px solid var(--color-accent);
-    border-radius: var(--radius-xxs);
-    padding: 0 2px;
-    outline: none;
+    border-radius: var(--radius-xs);
+    padding: 0 var(--space-hair);
+    /* 2026-08-15 删除登记：这里原先有一条**基态** `outline: none`，无替代。
+       它是全仓唯一压掉全局焦点环的地方，而且压得赢：`.bounds-edit-input`
+       是 (0,1,0)，全局 `*:focus-visible` 是 (0,0,0) —— 键盘用户 Tab 进四至
+       输入框之后屏幕上一条焦点线都没有，而这个面板（手动输入四至）本来就是
+       为键盘用户加的入口（见 map.js _openManualBounds 的 B4 注释）。
+       删掉即可：焦点态回落到全局那圈 accent 轮廓，与其它输入框一致。
+       由 tests/test_geometry_scales.py::
+       test_bounds_edit_input_does_not_kill_the_focus_ring 钉住不许长回来。 */
 }
 
 /* ==========================================================================
@@ -4003,7 +4727,7 @@ code {
    ========================================================================== */
 .statusbar-tasks {
     cursor: pointer;
-    transition: background-color 0.15s ease;
+    transition: background-color var(--dur-fast) var(--ease);
 }
 
 .statusbar-tasks:hover {
@@ -4024,7 +4748,7 @@ code {
     height: 100%;
     width: 0%;
     background: var(--color-accent);
-    transition: width 0.3s ease;
+    transition: width var(--dur-base) var(--ease);
 }
 
 /* 随包底图的解压进度（底部状态栏最右，全局元素）。
@@ -4032,7 +4756,7 @@ code {
    两个子元素，读数项不需要这个。胶囊外壳由 `.statusbar-pill`
    共享规则统一给，这里只留自己的间距。 */
 .statusbar-basemap {
-    gap: 8px;              /* 文字与进度条的间距，比胶囊默认的 6px 松一点 */
+    gap: var(--space-2);              /* 文字与进度条的间距。2026-08-14 刻度归一后与胶囊默认（也是 --space-2）同值 */
 }
 
 .statusbar-basemap--failed {
@@ -4078,9 +4802,9 @@ code {
     color: var(--color-accent-hover);
     background: var(--color-accent-muted);
     border: 1px solid var(--color-accent-border);
-    border-radius: var(--radius-sm);
-    padding: 6px 10px;
-    margin-bottom: 12px;
+    border-radius: var(--radius-xs);
+    padding: var(--space-2) var(--space-3);   /* 6px 10px -> --space-2 --space-3（8px/12px）：间距刻度归一 2026-08-14 */
+    margin-bottom: var(--space-3);
 }
 
 
@@ -4088,7 +4812,7 @@ code {
    配置页：底图瓦片地址「验证通联」结果行
    ========================================================================== */
 .tile-url-verify-result {
-    margin-top: 6px;
+    margin-top: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
@@ -4107,35 +4831,50 @@ code {
    配置页：瓦片服务器行编辑器
    ========================================================================== */
 .tile-server-row {
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
 }
 
 .tile-server-row .tile-url-verify-result {
-    margin-top: 4px;
+    margin-top: var(--space-1);
 }
 
-/* 配置页的行内动作按钮统一紧凑档：高度锁 --ctl-h（28px），与相邻 input
-   / select 同高。
+/* 行内动作按钮统一紧凑档：高度锁 --ctl-h（28px）、圆角 --radius-xs（6px），
+   与相邻 input / select 同高同圆角。
 
    `.btn-compact` 是这一档的语义类名，新按钮加它即可；后面三个具名类是历史
    入口，保留是因为模板与测试都在按名字找它们（如
    test_recommend_button_compact_css_recipe 钉 `.btn.concurrency-recommend`
-   必须含 var(--ctl-h)）。四个选择器共用同一份声明，避免此前那种「两条几乎
+   必须含 var(--ctl-h)）。五个选择器共用同一份声明，避免此前那种「两条几乎
    一样、只差 font-weight」的双胞胎规则再长出第三条。
 
    选择器写成 `.btn.xxx`(0,2,0) 而不是裸 `.btn-compact`(0,1,0)：要压住
-   Bootstrap 的 `.btn`/`.btn-sm` padding（同 .btn.btn-icon，见纯图标按钮注释）。 */
+   Bootstrap 的 `.btn`/`.btn-sm` padding（同 .btn.btn-icon，见纯图标按钮注释）。
+
+   `.bounds-actions .btn`（2026-08-15 并入，同为 (0,2,0)）：框选浮层里的两组
+   按钮 —— 选区落定后的「下载」，以及手动四至面板的「确定 / 取消」。改前它们
+   吃 `.btn-sm` 的自然高度，实测 36px，而同一个面板里的四至输入框是 20px；
+   一颗 36px 的按钮压在一排 20px 输入框下面，是「一屏 6 种控件高度」这个缺陷
+   最刺眼的一处。这里不为它们新写一份几何，直接并进本档 —— 高度不齐的根因
+   正是「同一种东西各写一份几何」。
+   ⚠️ 用后代组合符而不是加类名：这两颗按钮由 map.js 的 _renderManualBounds /
+   updateBoundsInfo 拼字符串生成，Task 3 不动 static/js/。 */
 .btn.btn-compact,
 .btn.tile-server-verify,
 .btn.concurrency-recommend,
-.btn.path-browse {
+.btn.path-browse,
+.bounds-actions .btn {
     height: var(--ctl-h);
-    padding: 0 10px;
+    border-radius: var(--radius-xs);
+    padding: 0 var(--space-3);   /* 10px -> --space-3（12px）：间距刻度归一 2026-08-14 */
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font-size: var(--font-size-sm);
-    font-weight: 400;
+    /* ⚠️ 2026-08-15 删除登记：这里原先有一条 `font-weight: 400`。
+       它是「同一个东西三个字重」里最轻的那一支 —— 一颗 400 的按钮在 14px 下
+       和旁边的说明小字一样细，看着不像可点的东西。字重统一交给 `.btn`
+       基规则的 --weight-medium，紧凑档只管几何（高度 / 内边距 / 字号），
+       不再插手字重。 */
     /* Bootstrap 的 .btn 行高 1.5，CJK 文字没有西文降部，
        在 28px 盒子里视觉偏上；行高收回 1 后由 flex 居中才是真正的居中 */
     line-height: 1;
@@ -4199,7 +4938,7 @@ code {
    下载弹窗：瓦片数量预估（超上限变红）
    ========================================================================== */
 .tile-estimate {
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
     font-family: var(--font-mono);
     font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
@@ -4219,10 +4958,10 @@ code {
    这里只补外框、文件名行、长值占满两列、以及警告行三档配色。
    ========================================================================== */
 .tif-info {
-    margin-top: 8px;
-    padding: 8px 10px;
+    margin-top: var(--space-2);
+    padding: var(--space-2) var(--space-3);   /* 10px -> --space-3（12px）：间距刻度归一 2026-08-14 */
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-card);
     background: var(--color-bg-tertiary);
 }
 
@@ -4239,15 +4978,15 @@ code {
    tests/test_css_contract.py 的按钮层叠模型不支持组合符，见那里的 _btn_branch_applies。 */
 .tif-info__file--sep,
 .tif-info__summary {
-    margin-top: 8px;
-    padding-top: 8px;
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
     border-top: 1px solid var(--color-border);
 }
 
 .tif-info__name {
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    gap: var(--space-2);
     font-size: var(--font-size-sm);
     color: var(--color-text-primary);
 }
@@ -4278,7 +5017,7 @@ code {
 
 .tif-info__msg,
 .tif-info__warn {
-    margin-top: 6px;
+    margin-top: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
     font-size: var(--font-size-xs);
     color: var(--color-text-secondary);
 }
@@ -4301,7 +5040,7 @@ code {
     position: absolute;
     left: 12px;
     bottom: var(--statusbar-clearance);
-    z-index: 1000;
+    z-index: var(--z-map-overlay);
     max-width: min(320px, calc(100% - 60px));
     max-height: 40%;
     overflow-y: auto;
@@ -4333,7 +5072,7 @@ code {
     border: none;
     background: none;
     padding: 0;
-    margin: 0 0 0 5px;
+    margin: 0 0 0 var(--space-1);   /* 5px -> --space-1（4px）：间距刻度归一 2026-08-14 */
     width: 16px;
     height: 16px;
     flex: 0 0 auto;
@@ -4345,7 +5084,7 @@ code {
     border-radius: 50%;
     color: var(--color-text-secondary);
     cursor: help;
-    transition: color 0.15s ease;
+    transition: color var(--dur-fast) var(--ease);
 }
 
 .hint:hover,
@@ -4358,8 +5097,28 @@ code {
     outline-offset: 2px;
 }
 
-/* 后代而非子组合符：test_css_contract 的按钮/动画层叠模型只支持后代组合符，
-   子组合符会让 20 条断言集体判「模型已失效」。.hint 里只有这一个 svg，等价。 */
+/* 后代而非子组合符。`.hint` 里只有这一个 svg，两种写法选中同一批元素。
+
+   ⚠️ 2026-08-15 更正（原文写的是「按钮/**动画**层叠模型只支持后代组合符，
+   子组合符会让 **20 条**断言集体判『模型已失效』」—— 两处都不对）：
+     · 拦路者只剩**按钮**外观模型。本规则块只有 width / height / display，
+       一条 transition / animation 都没有，动画模型根本扫不到它
+       （`_motion_rule_index` 只收「有动画/过渡声明」的规则，实测 42 条）。
+     · 「20 条」查无出处。实测把本条改成 `.hint > svg` 跑 test_css_contract +
+       test_css_cascade_model + test_geometry_scales + test_spacing_scale =
+       **9 failed / 123 passed / 1 xfailed**。
+
+   ⚠️ 2026-08-15 二次更正：上一版把那 9 条的来源写成「`_btn_contexts_from_stylesheet`
+   对 `_parse_compound('>')` 的 None 断言，上下文构造期就炸」—— 函数名和机制
+   都不对。仓库里没有 `_btn_contexts_from_stylesheet`（实测 `hasattr` 为
+   False，那一跑的 traceback 里出现 0 次，`_btn_computed` 出现 18 次），
+   按钮模型的上下文是手写常量 `BUTTON_CONTEXTS`，没有「从样式表构造」这一步。
+   真实机制在按钮**层叠模拟期**：`_btn_computed` 遍历全文规则 ->
+   `_parse_compound('>')` 返回 None -> `_btn_branch_applies` 返回 None ->
+   落进 `unsupported` -> 末尾 `assert not unsupported` 让 9 条集体失效。
+   措辞的正确样板是 .history-layout__fixed 那条：它写的
+   `_motion_contexts_from_stylesheet` 是真名，本段上一版把它和
+   `_btn_branch_applies` 拼成了一个不存在的名字。 */
 .hint svg {
     width: 100%;
     height: 100%;
@@ -4371,24 +5130,24 @@ code {
     position: absolute;
     top: calc(100% + 6px);
     left: -8px;
-    z-index: 20;
+    z-index: var(--z-tooltip);
     width: max-content;
     max-width: min(280px, 60vw);
-    padding: 8px 10px;
-    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);   /* 10px -> --space-3（12px）：间距刻度归一 2026-08-14 */
+    border-radius: var(--radius-card);
     background: var(--color-bg-tertiary);
     border: 1px solid var(--color-border-strong);
     box-shadow: var(--shadow-md);
     color: var(--color-text-primary);
     font-family: var(--font-display);
     font-size: var(--font-size-xs);
-    font-weight: 400;
+    font-weight: var(--weight-normal);
     line-height: 1.55;
     text-align: left;
     white-space: pre-line;   /* 文案里的 \n 用来分段，不靠两个气泡 */
     opacity: 0;
     visibility: hidden;
-    transition: opacity 0.12s ease, visibility 0.12s;
+    transition: opacity var(--dur-fast) var(--ease), visibility var(--dur-fast);
     pointer-events: none;    /* 气泡自己不吃鼠标，划过它不会闪烁 */
 }
 
@@ -4420,7 +5179,7 @@ code {
 .hint--status {
     width: 18px;
     height: 18px;
-    margin-left: 8px;
+    margin-left: var(--space-2);
 }
 
 /* `.hint--up`（气泡向上翻转）已删除：全仓零调用，是给「图标贴近视口底部时
@@ -4452,9 +5211,14 @@ code {
    1. 动画挂在 <svg> 上而不是外层 <button> —— 转 button 会把 hover 时的
       ::after 气泡一起转起来。
    2. 选择器是单类 .hint-spin 而不是 `.hint.is-busy > svg` ——
-      test_css_contract 的动画层叠模型解析不了子组合符（实测 16 条断言集体
-      判「模型已失效」，那不是通过而是失效）。config.js 的 setProxyIcon
-      按状态给 svg 加/摘这个类。
+      动画上下文的构造方 `_motion_contexts_from_stylesheet`
+      （tests/test_css_contract.py）用 `branch.split()` 拆选择器、再对每段断言
+      `_parse_compound(...) is not None`，而 `_parse_compound('>')` 返回 None。
+      2026-08-14 起层叠判定本身（`_text_branch_applies`）已支持子组合符，
+      所以后果不再是「16 条断言集体判模型已失效」，而是
+      test_reduced_motion_actually_stops_every_animated_element 这一条失败。
+      要在动画规则里写 `>`，先把那个函数改成用 `_split_branch`。
+      config.js 的 setProxyIcon 按状态给 svg 加/摘这个类。
    reduced-motion 由本文件上方那条全局 `*, *::before, *::after` 的 reduce
    规则统一停掉，这里**不能**再写自己的 @media：契约把 reduce 块钉死为
    正好 3 个选择器分支。 */
@@ -4471,7 +5235,7 @@ code {
 .label-row {
     display: flex;
     align-items: center;
-    margin-bottom: 0.5rem;
+    margin-bottom: var(--space-2);
     /* .hint--end 的气泡以本行为参照展开 —— 见 .hint--end 的注释。
        只影响把 position 让给本行的 .hint--end;普通 .hint 自带 relative,
        它的气泡包含块仍是图标本身,不受这条影响。 */
@@ -4508,24 +5272,43 @@ code {
     min-height: 0;
     overflow-y: auto;
     /* 滚动条与内容之间留一点，卡片圆角不被压在条上 */
-    padding-right: 6px;
+    padding-right: var(--space-2);   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
 }
 
 .config-footer {
     flex: 0 0 auto;
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 6px 0 0;
-    margin-top: 4px;
+    /* stretch 而不是 center：两颗按钮的等高由它保证（见下面 .config-footer .btn
+       的 min-height），一颗折行时两颗一起长高。 */
+    align-items: stretch;
+    gap: var(--space-2);
+    /* 上下对称。改前是 `10px 6px 0 0` —— 下内边距 0，两颗按钮的下沿正好压在
+       操作条的下边缘上（面板宿主里那条深色带因此像被裁掉了一半）。 */
+    /* 10px -> 刻度 --space-3(12px)，与宿主 .workbench-panel__body 的 12px 对齐；
+       但这里**只能写字面量**：test_config_footer_is_a_real_bottom_bar_inside_the_panel
+       用只认字面量的 `_px()` 读它，还要求是「上下 左右」两值简写 —— 所以写成
+       `12px 12px` 而不是 `12px`。间距刻度归一 2026-08-14 */
+    padding: 12px 12px;
+    margin-top: var(--space-1);
     border-top: 1px solid var(--color-border);
 }
 
 /* 面板里它是一条贴边的横带：面板底色是 elevated，操作带回落一层用
-   bg-secondary，否则贴着卡片会出现一条突兀的深色带。 */
+   bg-secondary，否则贴着卡片会出现一条突兀的深色带。
+   负外边距是「贴边」的实现 —— 改前它只是**声称**贴边：宿主
+   .workbench-panel__body 有 12px 内边距，深色带被框在中间，左右各露 12px、
+   下面再露 12px 的面板底色，看着是一块悬空的深色矩形而不是面板的底栏
+   （480px 面板实测：面板 x 920~1400，带 933~1388，带底 888 vs 面板底 900）。
+   右内边距 12+8：12 是抵消掉的那层宿主内边距，8 是 .config-scroll 给滚动条
+   留的白（--space-2）—— 加起来两颗按钮的左右缘才与上面卡片的左右缘在同一条
+   线上。所以它写成 calc(--space-3 + --space-2) 而不是某一级刻度：这个数是
+   **推导出来的**，两个被加数各自改了它要自动跟上。改前是 --space-4(16px)，
+   比 20px 少 4px，按钮右缘越过卡片右缘 4px。 */
 .workbench-panel__body--fill .config-footer {
     background: var(--color-bg-secondary);
+    margin: 4px -12px -12px;
+    padding-right: calc(var(--space-3) + var(--space-2));
 }
 
 /* 独立页 /config 上它是浮在内容列底部的操作条 —— 不能沿用面板那种「贴边
@@ -4533,11 +5316,11 @@ code {
    上面是滚到一半被裁掉底边的卡片，下面是给状态栏胶囊让位的 54px 空白，
    两颗按钮像悬在半空、还像是从卡片里漏出来的（实测中英文同形，与语言无关）。
    改成与卡片同级的浮层表面：elevated 底（背景四层里「浮在内容之上」那档，
-   滑出面板同款）、卡片同款描边与圆角、浮层级阴影。右外边距 6px 对齐上面
-   .config-scroll 的滚动条留白，让条与卡片的右缘在同一条线上。 */
+   滑出面板同款）、卡片同款描边与圆角、浮层级阴影。右外边距 8px（--space-2）
+   对齐上面 .config-scroll 的滚动条留白，让条与卡片的右缘在同一条线上。 */
 .page-content .config-footer {
-    padding: 8px 12px;
-    margin: 8px 6px 0 0;
+    padding: var(--space-2) var(--space-3);
+    margin: var(--space-2) var(--space-2) 0 0;   /* 6px -> --space-2（8px）：间距刻度归一 2026-08-14 */
     border: 1px solid var(--color-border);
     border-radius: var(--radius-card);
     background: var(--color-bg-elevated);
@@ -4558,10 +5341,57 @@ code {
     overflow: hidden;   /* 滚动交给内部的 .config-scroll，两层都滚会出双滚动条 */
 }
 
-/* 底部两个主操作等高：.btn { border:none } 之后 .btn-secondary 又单独补回了
-   1px 边框，两个按钮因此差 2px，并排看得出来。锁死高度比逐个对齐边框省事。 */
+/* 底部两个主操作等高：`.btn { border: none }` 之后 `.btn-secondary` 又单独补回
+   1px 边框——**这句是旧的，2026-08-15 实测已不成立**：`.btn` 基规则现在写的是
+   `border: 1px solid transparent`，两颗按钮都是 1px 边框、外框同高，并排看不出
+   差别（CSSOM 实测 39/39）。等高由 `.config-footer` 的 align-items:stretch 保证。
+
+   min-height 而不是锁死 height：面板拖到下限 320px 时英文标签会折成两行
+   （"Reset to defaults" / "Save settings"），死高度会把第二行整行裁掉
+   —— `.btn` 带 overflow:hidden。这条**是真修了一个 bug**，实测复现过：
+   改前那条 `height: 34px` 下，折行后 scrollHeight 45px > 34px 的盒子，
+   「settings」只剩上半截；换成 min-height 之后同一情形量到 52px、
+   scrollHeight 50px，一个像素都没裁。
+
+   34px -> --ctl-h-lg（36px），2026-08-15。三个「实测」数字的更正账
+   （第一版三条都是错的，2026-08-15 用 CSSOM 逐条重量）：
+     · 「34 是这两颗按钮的自然高度」——**错**。34px 是改前那条 `height: 34px`
+       的**硬锁**，不是自然高度。带 `.btn-sm` 的自然高度是 **39px**
+       （8+8 内边距 + 21 行高〔14px x 1.5〕+ 1x2 边框）。
+     · 「代价实测：两颗按钮各高 2px」——**错**。第一版把 `min-height: 36px`
+       加在自然高 39px 的按钮上，地板托不起任何东西：实测 39/39，
+       `min-height` 报 36px，**把那行 min-height 整条删掉仍然是 39/39**。
+       所以第一版的真实代价是 34 -> 39 = 各 **+5px**，令牌一个像素也没渲染出来。
+     · 「`.btn-secondary` 多 1px 边框、两颗差 2px」——**错**，见本段开头。
+
+   现在这条真的让 --ctl-h-lg 落地（路线：给它一个**托得起**的自然高度）：
+   纵向内边距从 --space-2(8px) 收到 --space-1(4px)，自然高 4+4+21+2 = **31px**，
+   36px 的地板于是真的生效，两颗按钮实测 **36/36**（CSSOM，1366x768，
+   fonts.css + bootstrap 5.3.0 + style.css 按 base.html 的真实顺序加载）。
+   相对改前的硬锁 34px 是各 +2px；字号仍是 `.btn-sm` 的 14px，**没有**拿字号
+   去换高度。折行仍然长高（min-height 是地板不是锁），上面那个裁字 bug 不回来。
+     ⚠️ 试过 plan 建议的另一条路——**摘掉 `.btn-sm`**：自然高只降到 36.5px
+       （15px 字 x 1.5 = 22.5 + 6x2 内边距 + 1x2 边框），仍然 > 36，地板照样
+       托不起来，而且字号被顶成 15px。那是拿错字号换错高度，实测否决。
+   代价范围：两颗都在配置面板底条内，不参与 #createTaskBtn 的折叠线路径
+   （该路径的按钮在 #downloadModal 里，走 .btn 基几何）。
+
+   ⚠️ 2026-08-15 Task 4：纵向内边距的两条长写已删除 —— `.btn` 基规则的密档
+   现在写的是 `padding: var(--space-1) var(--space-3)`，与这里原先那两条
+   长写**同值**，留着就是第二个来源。横向那一档在这里改成 --space-4（16px）：
+   底条主操作比行内密档按钮宽一档，是主档与密档的第二个区别（第一个是高度）。
+
+   ⚠️ 原先这段记着「写长写 padding-top/-bottom 而不是 padding-block，因为
+   `_effective_button_height` 看不见 padding-block」。**那个盲区已于 Task 4 修好**：
+   `_btn_decls` 现在把 `padding` / `padding-block` / `padding-inline` 三个简写
+   都按位展开成长写（见 tests/test_css_contract.py 里 `_PADDING_SHORTHANDS`
+   上方的登记，正面防线是 tests/test_button_geometry.py::
+   test_button_height_model_sees_logical_padding）。所以这里可以放心用简写 ——
+   但用的是 `padding` 而不是 `padding-block`：两档的内边距要能一眼比对，
+   密档写简写、主档写逻辑属性的话，比对要先在脑内做一次等价转换。 */
 .config-footer .btn {
-    height: 34px;
+    padding: var(--space-1) var(--space-4);
+    min-height: var(--ctl-h-lg);
 }
 
 /* 独立页 /history 与首页任务面板：任务列表卡吃掉剩余高度，列表在卡内滚动。
@@ -4579,7 +5409,9 @@ code {
 }
 
 /* 统计卡与地图卡按内容高，不参与收缩；只有任务列表卡（.card--grow）长个子。
-   用显式类而不是 `> *`：层叠模型不支持子组合符（见 .hint svg 处的说明）。 */
+   用显式类而不是 `> *`：这里没有动画/过渡声明，所以拦路者只剩按钮层叠模型
+   （`_btn_branch_applies` 对 `>` 返回「模型不支持」）；动画侧的同款限制在
+   `_motion_contexts_from_stylesheet`，见 .hint-spin 处的说明。 */
 .history-layout__fixed {
     flex: 0 0 auto;
 }
@@ -4606,8 +5438,15 @@ code {
     flex-direction: column;
 }
 
+/* overflow-y:auto 会把 overflow-x 一并算成 auto —— 任务行任何一处溢出都会
+   在列表底下横一条滚动条（本项目的老熟人，见 .tif-info--scroll、
+   #app-toast-container）。真正的修复是行内换行（.task-line1 /
+   .task-progress-line / .task-gap-line 的 flex-wrap），这条 hidden 是兜底：
+   行内每个可能变长的文本（名称 / 摘要 / 错误 / 缺块分档）都自带省略或截断，
+   所以它在正常内容下不裁掉任何东西。 */
 .card--grow #historyTableBody {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
 }

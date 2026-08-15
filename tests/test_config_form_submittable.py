@@ -94,14 +94,29 @@ def test_config_number_inputs_pass_their_own_constraints(client, path):
 # test_out_of_range_maxzoom_config_falls_back
 # 把「越界配置软退回 14 继续跑」当成受支持状态。这类值照直渲染进 value=""，
 # 就把上面那条出厂配置扫不到的路径炸开了：受害的不是那个字段，而是它所在的
-# **整张表单** —— #processForm 变 :invalid，原生校验拦下 submit 事件，
-# static/js/map.js 上挂在 #processForm 的 submit 监听根本不触发。
-# 而 #localTerrainOptions 只用 hidden
-# 属性隐藏、字段不 disable，非法控件仍参与校验且不可聚焦：气泡弹不出来，
-# 连与地形无关的等高线任务也一起建不了（map.js 的 initProcessTypeToggle 里
-# 「nameInput.required 跟着 hidden 一起摘」那段记过同一形态）。
-# 钳位本身住在 main._terrain_form_defaults（模板记不了日志，被丢掉的值必须在
-# 服务端留一条 warning；那条日志由 test_terrain_lighting_frontend.py 钉）。
+# **整张表单** —— #taskForm 变 :invalid，原生校验拦下 submit 事件，
+# static/js/map.js 上挂在 #taskForm 的 submit 监听根本不触发。
+#
+# ⚠️ 2026-08-15 Task 5：爆炸半径**变大了**，不是只换了个 id。
+# 改前首页是两张表单（#downloadForm 瓦片/高程、#processForm 地形切片/等高线），
+# 越界的 terrain_local_maxzoom 只污染 #processForm，卡住的是那**两条**加工管线；
+# 现在四条管线合并成**一张** #taskForm，同一个非法控件卡住的是**全部四条**
+# （瓦片 / 高程 / 本地地形切片 / 等高线），首页整个建不了任何任务。
+# 而 #localTerrainOptions 只用 hidden 属性隐藏、字段不 disable，非法控件仍参与
+# 校验且不可聚焦：气泡弹不出来，连与地形无关的等高线任务也一起建不了
+# （显隐现在只有一个消费者：map.js 的 applyPipeline()，即
+# initDownloadTypeToggle + initProcessTypeToggle 合并后的那一个 —— 它只翻
+# `hidden`，一个 required 都不摘。合并版把 required 那条腿改成了结构性的：
+# 整张 #taskForm 只剩 #taskName 一个 required，而它对四条管线都可见，
+# 所以「藏起来的 required 拦下 submit」这一形态不会再发生；本文件守的是
+# 另一条腿 —— **可见**控件的 min/max/step 与渲染值自相矛盾）。
+# 服务端因此有**两道**钳位站在配置与表单之间，模板记不了日志、被丢掉的值必须
+# 在服务端留一条 warning：
+#   · main._terrain_form_defaults()  —— terrain_local_maxzoom，那条日志由
+#     tests/test_terrain_lighting_frontend.py 钉住；
+#   · main._contour_form_default()   —— 2026-08-15 新增。#contourInterval 改成
+#     由服务端按 contour_default_interval 渲染（改前模板写死 value="50" +
+#     提交端 `|| 50` 兜底，配置页那个旋钮是假的），闸门与 warning 一并补上。
 # 本表只管一件事：不管库里存的是什么，渲染出来的 value 都得过控件自己的约束。
 _OUT_OF_RANGE_CASES = [
     ('99', '14'),     # 越上界：min/max 是 0-21
@@ -138,6 +153,63 @@ def test_unvalidated_config_cannot_make_the_page_unsubmittable(client, monkeypat
     assert not bad, (
         f'terrain_local_maxzoom={raw!r} 时页面上出现了自相矛盾的数字输入框 —— '
         f'整张表单 :invalid，创建按钮点了没反应：\n'
+        + '\n'.join(f'  #{i}: value="{v}" 违反 {why}' for i, v, why in bad))
+
+
+# #contourInterval 的初值（2026-08-15 Task 5 新增的第二道钳位）。
+# 与上面那条同一类缺陷、不同一个字段：控件自己写着 `min="1" step="1"`，而初值
+# 改成了由服务端按 contour_default_interval 渲染（改前是模板里写死的
+# `value="50"` —— 写死值天然合法，所以这条路径以前压根不存在，它是本轮
+# 「把假旋钮改成真旋钮」顺带开出来的）。渲染出一个控件自己收不下的数，
+# 卡死的是**整张 #taskForm**，四条管线一起废。
+#
+# 闸门与控件约束逐字对齐：min="1" 同时是 step 的基点，合法集就是 1, 2, 3, …
+# 所以 0.5 / 50.5 这种「正数但控件收不下」的值也必须退回出厂默认。
+# 这两格是实测出来的：本轮初版闸门写的是 `value > 0`，两个值都漏了过去。
+_CONTOUR_INTERVAL_CASES = [
+    ('', '50'),        # 键存在但值被清空
+    ('abc', '50'),     # 非数字
+    ('-3', '50'),      # 负数
+    ('0', '50'),       # 0：控件 min="1" 收不下
+    ('0.5', '50'),     # 正数但小于 min
+    ('50.5', '50'),    # 正数且够大，但不是 step="1" 的整数倍
+    ('inf', '50'),     # 无穷：float() 认，控件不认
+    ('nan', '50'),     # NaN：同上
+    ('1e400', '50'),   # 溢出成 inf 的字面量
+    ('1', '1'),        # 合法边界值必须原样透出，别被兜底吃掉
+    ('25', '25'),      # 合法值必须跟着配置走，否则这个控件又成了假旋钮
+    ('  25 ', '25'),   # 两侧空白要去掉：value=" 25 " 浏览器判非法数字
+]
+
+
+@pytest.mark.parametrize('raw,expected', _CONTOUR_INTERVAL_CASES)
+def test_contour_interval_renders_a_value_its_own_min_accepts(client, monkeypatch,
+                                                              raw, expected):
+    """库里存什么，#contourInterval 渲染出来都得过它自己的 min="1"/step="1"。
+
+    正常写入路径到不了这里（config_manager._is_valid_contour_interval 要求
+    >= contour_task_manager._MIN_CONTOUR_INTERVAL = 1.0）；兜的是有人用
+    sqlite3 直接改库 —— main._contour_form_default() 的 docstring 自己点名的
+    那条路。模板是这条链路上唯一记不了日志的一环，所以钳位必须在服务端，
+    被丢掉的脏值当场留一条 warning。
+    """
+    from src.routes import main as main_route
+    # 同上：stub 叠在真实 get_all() 之上，否则整页复扫会退化成「全是空 value」，
+    # 下面那句「将来新增的配置驱动数字框也会在这里红」就成了假话。
+    real = main_route.config_manager.get_all()
+    monkeypatch.setattr(main_route.config_manager, 'get_all',
+                        lambda: {**real, 'contour_default_interval': {'value': raw}})
+
+    html = client.get('/').get_data(as_text=True)
+    tag = next(t for t in _INPUT_RE.findall(html)
+               if _attr(t, 'id') == 'contourInterval')
+    assert _attr(tag, 'value') == expected, (
+        f'contour_default_interval={raw!r} 渲染成 {_attr(tag, "value")!r}，'
+        f'应为 {expected!r}')
+    bad = _violations(html)
+    assert not bad, (
+        f'contour_default_interval={raw!r} 时页面上出现了自相矛盾的数字输入框 —— '
+        f'整张 #taskForm :invalid，四条管线的创建按钮全都点了没反应：\n'
         + '\n'.join(f'  #{i}: value="{v}" 违反 {why}' for i, v, why in bad))
 
 

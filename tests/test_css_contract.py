@@ -250,6 +250,85 @@ def test_font_size_scale_variables_unchanged():
 
 
 # --------------------------------------------------------------------------
+# 中文回退链：vendor 的 Inter / JetBrains Mono 都不含汉字
+# --------------------------------------------------------------------------
+
+# 每个平台至少要点名一个中文 UI 字体。分组而不是拉平成一个集合，是因为漏的
+# 恰恰是**某一个平台** —— 改造前 --font-display 点了 macOS 与 Windows、漏了
+# Linux，拉平的断言（「至少有一个中文字体」）对那种形态完全失明。
+_CJK_FAMILIES_BY_PLATFORM = {
+    'macOS':   ('PingFang SC', 'Hiragino Sans GB'),
+    'Windows': ('Microsoft YaHei UI', 'Microsoft YaHei'),
+    'Linux':   ('Noto Sans CJK SC', 'Source Han Sans SC', 'Noto Sans SC',
+                'WenQuanYi Micro Hei'),
+}
+
+# 通用族。它一定命中，所以必须排在全部具体字体之后。
+_GENERIC_FAMILIES = ('sans-serif', 'serif', 'monospace', 'cursive', 'fantasy',
+                     'system-ui', 'ui-monospace', 'ui-sans-serif', 'ui-serif')
+
+
+def _resolved_font_stack(css: str, name: str) -> str:
+    """把 `--font-display` / `--font-mono` 里的 var(--font-cjk) 展开成一条链。"""
+    m = re.search(re.escape(name) + r'\s*:\s*([^;]+);', css)
+    assert m, f'{name} 未定义'
+    stack = m.group(1).strip()
+    for _ in range(4):  # 允许嵌套，但不允许成环
+        refs = re.findall(r'var\(\s*(--[\w-]+)\s*\)', stack)
+        if not refs:
+            return stack
+        for ref in refs:
+            sub = re.search(re.escape(ref) + r'\s*:\s*([^;]+);', css)
+            assert sub, f'{name} 引用了未定义的 {ref}'
+            stack = stack.replace(f'var({ref})', sub.group(1).strip())
+    raise AssertionError(f'{name} 的 var() 展开没有收敛，疑似成环')
+
+
+@pytest.mark.parametrize('token', ['--font-display', '--font-mono'])
+def test_font_stack_names_a_cjk_family_for_every_platform(token):
+    """两条字体栈都必须给三大平台各点名一个中文 UI 字体。
+
+    ⚠️ 这条守的是一个**只有中文界面才看得见**的缺陷，而且英文界面全绿。
+    vendor 的 Inter 与 JetBrains Mono 只带 latin / latin-ext 两个子集
+    （static/vendor/fonts/fonts.css 的文件头写明了），一个汉字都没有 ——
+    每个汉字都要靠逐字回退往后找。栈里没有中文字体时选谁**由浏览器的最后
+    兜底决定**，Windows 上是宋体，Linux 上看 fontconfig 心情。
+
+    改造前实测：--font-mono 里一个中文字体都没有，而它盖着失败原因
+    （.task-error）、任务行行2、任务详情面板、TIF 信息、命令面板 —— 那些中文
+    在 Windows 上是宋体，混在周围的黑体系 UI 里一眼就看得出不对。
+    """
+    stack = _resolved_font_stack(_css(), token)
+    for platform, families in _CJK_FAMILIES_BY_PLATFORM.items():
+        assert any(f"'{f}'" in stack or f'"{f}"' in stack for f in families), (
+            f'{token} 没有为 {platform} 点名任何中文字体，'
+            f'该平台的汉字会掉进浏览器兜底。候选：{list(families)}\n实际：{stack}'
+        )
+
+
+@pytest.mark.parametrize('token', ['--font-display', '--font-mono'])
+def test_generic_family_comes_last_in_every_font_stack(token):
+    """通用族必须排在最后 —— 它一定命中，排在中文字体前面等于把它们全废掉。
+
+    单看上一条断言挡不住这个形态：`'JetBrains Mono', monospace, 'Microsoft YaHei'`
+    照样「点名了 Windows 的中文字体」，而那个名字永远轮不到。
+    """
+    families = [f.strip().strip('\'"')
+                for f in _resolved_font_stack(_css(), token).split(',')]
+    generics = [i for i, f in enumerate(families) if f in _GENERIC_FAMILIES]
+    assert generics, f'{token} 没有通用族兜底'
+    # ui-monospace 等 `ui-*` 是通用族，但它们**不保证**命中（不支持的浏览器直接
+    # 跳过），所以只要求最后一项是通用族，不要求它们连续。
+    assert families[-1] in _GENERIC_FAMILIES, (
+        f'{token} 的最后一项是 {families[-1]!r}，不是通用族')
+    last_concrete = max(i for i, f in enumerate(families)
+                        if f not in _GENERIC_FAMILIES)
+    hard_generics = [i for i, f in enumerate(families)
+                     if f in _GENERIC_FAMILIES and not f.startswith('ui-')]
+    assert all(i > last_concrete for i in hard_generics), (
+        f'{token} 里有通用族排在具体字体前面，后面那些名字永远轮不到：{families}')
+
+# --------------------------------------------------------------------------
 # 核心断言 3：!important 总量不许回潮
 # --------------------------------------------------------------------------
 
@@ -1579,6 +1658,157 @@ def test_toast_container_cannot_grow_past_the_viewport():
     )
 
 
+# 时间流里会横向排布的四个 flex 容器。每一个都必须允许换行 —— 只要有一个漏掉，
+# 它就是那条横向滚动条的来源（成员大多 flex:0 0 auto，不换行就只能溢出）。
+WRAPPING_STREAM_ROWS = (
+    '.task-line1',            # 行1：状态点 / 名称 / 元信息 / 状态小字 …… 行尾
+    '.task-line1__tail',      # 行尾：耗时 + 动作组（手机档下它自己也要能拆）
+    '.task-progress-line',    # 行2 活动态：进度条 + 百分比 / 计数 / 速度
+    '.task-gap-line',         # 行2 缺口态：分档读数 + 两颗决策按钮
+)
+
+
+def test_task_stream_rows_cannot_grow_a_horizontal_scrollbar():
+    """任务时间流在任何面板宽度下都不许出现横向滚动条。
+
+    机制有两层，缺一条就回到原样（实测：面板 602px 时列表内容宽 600 / 可视
+    555，一条横向滚动条压在列表底部，右侧动作按钮被切掉一半）：
+
+      1. 四个横向 flex 容器都 `flex-wrap: wrap`。行内成员大多是
+         `flex: 0 0 auto` 的不折行小字（#类型:id、元信息、状态小字、缺块徽章、
+         耗时、按钮组、三段读数），单行 flex 下它们既不收缩也不换行，宽度之和
+         一超过行宽就直接溢出；
+      2. `.card--grow #historyTableBody` 显式 `overflow-x: hidden` 兜底 ——
+         它的 `overflow-y: auto` 会把 overflow-x 一并算成 auto，任何一处没料到
+         的溢出都会长出滚动条（本项目的老熟人，见 .tif-info--scroll 与
+         #app-toast-container）。
+
+    另外钉住贴右的 `margin-left: auto` 在**行尾包裹元素**上而不是 `.task-time`
+    上：两个兄弟各挂一个 auto 会平分剩余空间，把耗时推到行中间。
+    markup 侧的对应断言：
+    tests/test_tasks_js_contract.py::test_row_tail_keeps_time_and_actions_together。
+    """
+    css = _css()
+    top = [(sel, body) for sel, body, at_ctx in _rules_ctx(css) if not at_ctx]
+    problems = []
+    for part in WRAPPING_STREAM_ROWS:
+        decls = {}
+        for sel, body in top:
+            if part in _selector_parts(sel):
+                decls.update(_decl_map(body))
+        if not decls:
+            problems.append(f'{part} 没有顶层规则 —— 本断言已失效（类名改了？）')
+        elif decls.get('flex-wrap', '').strip().lower() != 'wrap':
+            problems.append(
+                f'{part} 的 flex-wrap 是 {decls.get("flex-wrap")!r}，必须是 wrap'
+            )
+    stream = {}
+    for sel, body in top:
+        if '.card--grow #historyTableBody' in _selector_parts(sel):
+            stream.update(_decl_map(body))
+    assert stream, '.card--grow #historyTableBody 没有顶层规则 —— 本断言已失效'
+    if stream.get('overflow-x', '').strip().lower() != 'hidden':
+        problems.append(
+            f'.card--grow #historyTableBody 的 overflow-x 是 '
+            f'{stream.get("overflow-x")!r}，必须显式 hidden（overflow-y:auto '
+            '会把它算成 auto）'
+        )
+    tail, time_el = {}, {}
+    for sel, body in top:
+        parts = _selector_parts(sel)
+        if '.task-line1__tail' in parts:
+            tail.update(_decl_map(body))
+        if '.task-line1 .task-time' in parts:
+            time_el.update(_decl_map(body))
+    if tail.get('margin-left', '').strip() != 'auto':
+        problems.append('.task-line1__tail 不再 margin-left:auto —— 行尾不贴右了')
+    if time_el.get('margin-left', '').strip() == 'auto':
+        problems.append(
+            '.task-line1 .task-time 又挂上了 margin-left:auto —— 与行尾包裹元素'
+            '的 auto 平分剩余空间，耗时会飘到行中间'
+        )
+    assert not problems, '任务时间流的行布局会溢出：\n' + '\n'.join('  ' + p for p in problems)
+
+
+def _px(value):
+    """`-12px` / `12px` / `0` -> float。看不懂的返回 None（响亮失败优于放行）。"""
+    m = re.match(r'^(-?[\d.]+)(px|rem)?$', value.strip().lower())
+    if not m:
+        return None
+    if m.group(2) is None:
+        return 0.0 if float(m.group(1)) == 0 else None
+    return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+
+
+def test_config_footer_is_a_real_bottom_bar_inside_the_panel():
+    """配置面板的底部操作条必须真的贴在面板的左/右/下三条边上，
+    且两颗按钮不许锁死高度。
+
+    改前它只是**声称**自己是「一条贴边的横带」（CSS 注释原文）：宿主
+    `.workbench-panel__body` 有 12px 内边距，深色带被框在里面 —— 480px 面板
+    实测带 933~1388、底 888，而面板是 920~1400、底 900，左右各露 12px、
+    下面再露 12px 的面板底色，看着是一块悬空的深色矩形；基础规则的
+    `padding: 10px 6px 0 0` 又让两颗按钮的下沿正好压在带的下边缘上。
+
+    三条：
+      1. 面板变体的负外边距 = 宿主内边距的相反数（右、下两侧）。宿主的
+         12px 改了而这里忘了跟，横带会重新缩回去，或者反过来溢出面板；
+      2. 基础规则的上下内边距相等 —— 按钮不再贴着带的下边缘；
+      3. 按钮只给 min-height。面板拖到下限 320px 时英文标签折成两行
+         （"Reset to defaults" / "Save settings"），锁死的 34px 会把第二行
+         整行裁掉（`.btn` 带 overflow: hidden，实测「settings」只剩上半截）。
+    """
+    css = _css()
+    top = [(sel, body) for sel, body, at_ctx in _rules_ctx(css) if not at_ctx]
+
+    def decls_for(part):
+        out = {}
+        for sel, body in top:
+            if part in _selector_parts(sel):
+                out.update(_decl_map(body))
+        return out
+
+    host = decls_for('.workbench-panel__body')
+    host_pad = _px((host.get('padding') or '').split()[0] if host.get('padding') else '')
+    assert host_pad, (
+        f'.workbench-panel__body 的 padding 读不出来（{host.get("padding")!r}）—— 本断言已失效'
+    )
+    footer_in_panel = decls_for('.workbench-panel__body--fill .config-footer')
+    margin = (footer_in_panel.get('margin') or '').split()
+    assert len(margin) == 3, (
+        f'面板变体的 margin 期望三值简写（上 / 左右 / 下），实际 {margin!r} —— 本断言已失效'
+    )
+    problems = []
+    for side, raw in (('左右', margin[1]), ('下', margin[2])):
+        got = _px(raw)
+        if got is None or got != -host_pad:
+            problems.append(
+                f'操作条{side}外边距是 {raw!r}，应为 {-host_pad:g}px（抵消宿主'
+                f' .workbench-panel__body 的 {host_pad:g}px 内边距，否则横带不贴边）'
+            )
+    base_pad = (decls_for('.config-footer').get('padding') or '').split()
+    if len(base_pad) != 2 or _px(base_pad[0]) is None:
+        problems.append(
+            f'.config-footer 的 padding 期望「上下 左右」两值简写，实际 {base_pad!r}'
+        )
+    btn = decls_for('.config-footer .btn')
+    if 'height' in btn:
+        problems.append(
+            f'.config-footer .btn 又锁死了 height: {btn["height"]} —— 标签折行时'
+            '第二行会被 .btn 的 overflow:hidden 裁掉'
+        )
+    # `_resolve_length_px` 而不是 `_px`（2026-08-15 Task 3）：这个下限从字面量
+    # 34px 换成了 `var(--ctl-h-lg)`（控件高度两级刻度的主操作档），而 `_px` 只
+    # 认字面量、遇到 var() 返回 None —— 它当场响亮地红了，正是这个设计想要的
+    # 结果。契约本身没变：仍然是「min-height 必须读得出一个 px 下限」。
+    if _resolve_length_px(css, btn.get('min-height', '')) is None:
+        problems.append(
+            f'.config-footer .btn 的 min-height 读不出来（{btn.get("min-height")!r}）'
+            '—— 两颗按钮的等高下限没了'
+        )
+    assert not problems, '配置面板底部操作条的布局不合契约：\n' + '\n'.join('  ' + p for p in problems)
+
+
 # --------------------------------------------------------------------------
 # A2 / Task 7：进度条百分比覆盖层
 # --------------------------------------------------------------------------
@@ -2512,6 +2742,17 @@ def _custom_property_raw(css, name):
     （实测扫出来的选择器是 `@import url('...'); :root`，按 `== ':root'` 找是 0 条）。
     这与 `_palette_var` 同一个理由、同一个写法。先剥注释，避免注释里提到
     `--ctl-h` 的说明文字被当成定义。
+
+    ⚠️ 覆盖边界（2026-08-15 Task 3 记）：`re.search` 取的是**全文第一处**定义，
+    不区分 `:root` 与主题覆盖块（`:root[data-bs-theme="light"]`）。今天无害 ——
+    本轮新加的令牌（`--ctl-h-lg` / `--weight-*` / `--z-*` / `--dur-*` / `--ease`）
+    每个都只在 `:root` 定义一次，而主题块里只有颜色。但形态是脆的：往亮色块里
+    补一条 `--z-modal` 或 `--dur-base`，**所有**顺着本函数取值的解析器
+    （`_resolve_length_px` / `_resolve_z_index` / `_token_px` / `_time_to_seconds`）
+    都会读到「先出现的那一份」，而全套断言仍然全绿 —— 它们比的是同一个错值。
+    要按主题取值必须走 `_theme_var()`（它显式在 `:root[data-bs-theme="light"]`
+    的前/后切分文本）。本轮没有顺手改成 `:root` 限定，因为那要同时决定
+    「主题块允许定义哪些类别的令牌」，是一条独立决策；已记进 Task 3 的账本。
     """
     stripped = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
     m = re.search(re.escape(name) + r'\s*:\s*([^;]+);', stripped)
@@ -2535,6 +2776,32 @@ def _resolve_length_px(css, value, _depth=0):
             return None                      # 自引用/环，别死循环
         return _resolve_length_px(css, _custom_property_raw(css, m.group(1)), _depth + 1)
     return _length_to_px(value)
+
+
+def _resolve_z_index(css, value, _depth=0):
+    """`1000` / `var(--z-modal)` -> int。解析不了返回 None。
+
+    为什么不复用上面的 `_resolve_length_px`（2026-08-15 Task 3 令牌化层栈时
+    实测过）：那是**长度**解析器，`z-index` 的值是无单位整数，不是长度 ——
+    `_length_to_px('1000')` 返回 None（只有 `'0'` 因为「无单位 0 是合法长度」
+    那条特例侥幸返回 0.0）。所以这里是尽可能小的一个专用解析器：同一套
+    「只跟 var() 链、不支持回退值和 calc()、解析不了就返回 None 让调用方响亮
+    失败」的口径，只是终点换成 int。
+
+    三处消费者（都是 Task 3 之前直接对字面量做字符串比对的断言）：
+      tests/test_command_palette.py      —— .cmdk 必须是 13100
+      tests/test_drop_process.py         —— .drop-veil 必须是 13000
+      tests/test_fix_terrain_preview_transition.py —— 薄雾必须低于工具条
+    """
+    if value is None:
+        return None
+    value = _IMPORTANT_RE.sub('', value).strip()
+    m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', value)
+    if m:
+        if _depth > 4:
+            return None                      # 自引用/环，别死循环
+        return _resolve_z_index(css, _custom_property_raw(css, m.group(1)), _depth + 1)
+    return int(value) if re.fullmatch(r'[+-]?\d+', value) else None
 
 
 def _token_px(css, name):
@@ -2976,22 +3243,57 @@ def test_bounds_readout_is_announced_to_screen_readers():
 # 专用断言接住（它们是结构 / 语义问题，高度模型看不见）。
 #
 # 模型思路与 A4 / Task 9 的渲染链断言同源：把源码里的量算成一个可对拍的数字。
-# dock 时代拿 CDP 实测的按钮 bottom 校准；2026-07 弹窗化之后改从 vendor
-# bootstrap.min.css 解析弹窗框架度量（见下面 2026-07 那段说明）。
+# dock 时代拿 CDP 实测的按钮 bottom 校准；2026-07 弹窗化之后从 vendor
+# bootstrap.min.css 与 style.css 解析弹窗框架度量；2026-08-15 Task 5 两个弹窗
+# 合成一个 #createPanel 之后，「提交钮在折叠线以上吗」不再是一道算术题（见下）。
 # --------------------------------------------------------------------------
 
 VIEWPORT_1366_HEIGHT_PX = 768
 
 # --------------------------------------------------------------------------
-# 2026-07 UX 改版：下载表单从常驻 dock 搬进了 Bootstrap 弹窗（#downloadModal）。
+# 2026-08-15 Task 5：两个弹窗 -> 一个 #createPanel，**折叠线从算术题变成结构题**。
 #
-# 旧模型回答的问题是「dock 里的提交按钮在 1366x768 折叠线以上吗」；dock 移除后
-# 这个问题不成立了，新问题是「弹窗在默认态下是否需要内部滚动才能看到提交按钮」。
-# 弹窗的纵向起点不再由本站 CSS 决定，而是 Bootstrap 的 .modal-dialog margin
-# （--bs-modal-margin，≥576px 断点下 1.75rem）——所以锚点常量从「CDP 实测的
-# CDP_SUBMIT_BTN_BOTTOM」换成「从 vendor bootstrap.min.css 解析出来的弹窗度量」
-# （_bootstrap_modal_metrics，读不到就响亮失败）。表单部分的高度模型不变，
-# 仍然从 style.css 解析，「加字段 / 加 height:44px 会被抓住」的性质也不变。
+# 沿革（三代模型，问的是三个不同的问题）：
+#   1. dock 时代 —— 「常驻面板里提交钮的 bottom <= 768 吗」。CDP 实测 949.34，
+#      溢出 181.3px。
+#   2. 2026-07 弹窗时代 —— 「弹窗在默认态下要不要内部滚动才看得到提交钮」。
+#      纵向起点由 Bootstrap 的 .modal-dialog margin 决定，所以锚点从「CDP 实测
+#      的常量」换成「解析出来的弹窗度量」（_modal_metrics：style.css 优先、
+#      vendor 兜底 —— 只读 vendor 会漏掉 style.css 把 .modal-header /
+#      .modal-body 内边距从 16 覆盖到 24 那一手，模型比浏览器矮 24px）。
+#      这一代的结论是**红的**：headless 实测 #createTaskBtn 的 bottom = 901.50，
+#      视口 768，提交钮在折叠线下 133.5px；模型算 865.50（下界，差 36 = 两处
+#      文案折行）。1366x720 一档更差，实测溢出 91px。
+#   3. 现在 —— 提交钮**不在滚动区里**。#createPanel 是 position: fixed 且
+#      top/bottom 都为 0（满视口高），内部三层 flex：.config-layout 列容器 /
+#      .config-scroll 吃满剩余高度并 overflow-y: auto / .config-footer
+#      flex: 0 0 auto 贴在底部。#createTaskBtn 在 .config-footer 里、在
+#      #taskForm **之外**（靠 form="taskForm" 关联）。
+#
+# 于是它的 bottom **与表单内容完全无关**：
+#       bottom = 视口高 - .config-footer 的下内边距
+# 而 .workbench-panel__body 的 12px 下内边距被 .workbench-panel__body--fill
+# .config-footer 的 -12px 下外边距**恰好抵掉**（底条贴边），所以中间不再有任何
+# 会随内容变化的项。浏览器实测（headless Chromium，四条管线各量一次）：
+#       1366x768 -> bottom = 756.00（视口 768，余 12）
+#       1600x900 -> bottom = 888.00（视口 900，余 12）
+#   四条管线、明暗两主题、两个视口共 16 组，bottom 全部相同，
+#   elementFromPoint 命中提交钮本体，.config-scroll 的 scrollTop 全为 0。
+#   其中 map / local_terrain / contour 三条在 768 下**表单确实在滚**
+#   （scrollHeight > clientHeight）—— 表单滚而提交钮不动，正是这次要的形态。
+#
+# 所以这一节现在分成两条互补的断言，各自问一个能被破坏的问题：
+#   - test_submit_button_fits_at_1366x768 —— 结构前提是否还成立
+#     （满高面板 + 底条在滚动区外 + 底条不随内容流动）。它算的是同一个公式，
+#     但公式里没有内容项，所以它是**恒等式**而不是拟合。
+#   - test_create_panel_form_content_does_not_grow_further —— 表单内容栈高的
+#     **棘轮**。折叠线不再受它影响，但「有人往表单里塞 200px 字段」仍然是
+#     真实的退化（滚动条越长、首屏能看到的字段越少），而它是唯一还会变的量。
+#     结构模型对它是完全失明的，所以棘轮必须留着，只是换了被测的量。
+#
+# _FormStructureParser 的整棵子树解析原样保留（锚点 #downloadForm -> #taskForm）：
+# 「加字段 / 加 height:44px / 往既有字段组里嵌一组 label+select 都会被算进来」
+# 这条能力现在服务于内容棘轮。
 # --------------------------------------------------------------------------
 
 _BOOTSTRAP_MIN_CSS = os.path.join(
@@ -3005,37 +3307,199 @@ def _bootstrap_modal_metrics():
     解析 vendor 文件而不是手写常量的理由与本文件其它 vendor 探针一致：
     Bootstrap 升级改了这些值时，这里要么跟着算出新的（正确的）结果，
     要么因为模式匹配不上而报「测试已失效」——两种情况都不会静默放行。
+
+    ⚠️ 本函数返回的是**兜底值**，调用方一律走 `_modal_metrics(css)`。理由与
+       BS_BTN_PADDING_Y_PX 那段注释完全同构（`.btn` 的纵向内边距已经为此翻过
+       一次车）：style.css 排在 bootstrap.min.css 之后、同名属性上特异度相同，
+       **浏览器里 style.css 赢**。拿 vendor 当真值 = 拿一个和模型同样过期的
+       常量当真值。
+
+    ⚠️ --bs-modal-margin 在 vendor 里出现**两次**：
+           .modal{--bs-modal-margin:0.5rem}                        基础
+           @media (min-width:576px){.modal{--bs-modal-margin:1.75rem}}
+       1366px 视口命中后者（28px）。第一版用 `re.search` 取了第一条（8px），
+       弹窗的纵向起点因此低算 20px（实测 .modal-dialog 的 margin-top = 28px）。
+       现在取最后一条，并要求这两条递增 —— 条数或顺序变了就响亮失败。
     """
     with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
         src = f.read()
 
-    def grab(pattern, label):
-        m = re.search(pattern, src)
-        assert m, f'vendor bootstrap.min.css 里找不到 {label} —— 构建变了，本测试已失效'
-        return m.group(1)
+    def grab_all(pattern, label):
+        vals = re.findall(pattern, src)
+        assert vals, f'vendor bootstrap.min.css 里找不到 {label} —— 构建变了，本测试已失效'
+        return vals
 
-    def to_px(rem_str):
-        m = re.match(r'^([\d.]+)(px|rem)$', rem_str)
-        assert m, f'{rem_str!r} 不是 px/rem 字面量 —— 本测试已失效'
+    def grab(pattern, label):
+        return grab_all(pattern, label)[0]
+
+    def to_px(raw):
+        m = re.match(r'^([\d.]+)(px|rem)$', raw)
+        assert m, f'{raw!r} 不是 px/rem 字面量 —— 本测试已失效'
         return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+
+    margins = [to_px(v) for v in grab_all(
+        r'--bs-modal-margin:([\d.]+rem)', '弹窗 margin')]
+    assert len(margins) == 2 and margins[1] > margins[0], (
+        f'--bs-modal-margin 不再是「基础 + ≥576px 断点」两条递增的声明（解析到 '
+        f'{margins}）—— 1366px 视口该用哪一条说不清了，本测试已失效'
+    )
+
+    # .modal-header .btn-close 的纵向内边距与负外边距在 vendor 里是同一个变量的
+    # +.5 / -.5，**精确抵消**，所以它只按 1em 的图标盒参与标题行高度。
+    # 实测（1366x768 headless Chromium）：btn-close 外框 31px（15 + 2×8），标题
+    # 行盒 27px，btn-close 上下各溢出 2px，而 .modal-header 高度 = 24+24+27+1 = 76
+    # —— 那 31px 从来没进过高度。旧常量 BS_MODAL_BTN_CLOSE_PX = 22.5 把 1.5em
+    # 当成布局高度，是个恰好不吃紧（27 > 22.5）所以一直没被发现的虚构值。
+    close_rule = grab(r'\.modal-header \.btn-close\{([^}]*)\}', '.modal-header .btn-close')
+    assert ('padding:calc(var(--bs-modal-header-padding-y) * .5)' in close_rule
+            and 'margin:calc(-.5 * var(--bs-modal-header-padding-y))' in close_rule), (
+        '.modal-header .btn-close 的「内边距 = 负外边距」抵消关系变了'
+        f'（{close_rule[:120]!r}）—— btn-close 会开始参与标题行高度，本测试已失效'
+    )
 
     return {
         # ≥576px 的 .modal-dialog 上外边距（1366px 视口命中这条）
-        'margin_top': to_px(grab(r'--bs-modal-margin:([\d.]+rem)', '弹窗 margin')),
+        'margin_top': margins[-1],
         'padding': to_px(grab(r'--bs-modal-padding:([\d.]+rem)', '弹窗 body padding')),
         'header_padding': to_px(grab(
             r'--bs-modal-header-padding:([\d.]+rem)', '弹窗 header padding')),
         'border_width': to_px(grab(r'--bs-border-width:([\d.]+px)', '边框宽度')),
         'title_line_height': float(grab(
             r'--bs-modal-title-line-height:([\d.]+)', '标题行高')),
-        # .btn-close：box-sizing:content-box，1em + 2×0.25em = 1.5em 高
-        'btn_close_em': 1.5,
+        # btn-close 参与布局的高度 = 图标盒 1em（内边距被负外边距抵掉，见上）
+        'btn_close_em': 1.0,
     }
 
 
-# Bootstrap reboot 让 button 继承字体；.modal-header 本站没声明字号，
-# 继承 body 的 --font-size-base（0.9375rem = 15px）。btn-close = 1.5em × 15。
-BS_MODAL_BTN_CLOSE_PX = 22.5
+def _modal_metrics(css):
+    """弹窗框架度量：**style.css 优先，vendor 兜底**。
+
+    形状照抄同文件里 `.btn` 那条已经修好的路 —— `_effective_button_height`
+    从 style.css 解析纵向内边距，只在 style.css 沉默时回落到 BS_BTN_PADDING_Y_PX。
+    那段注释里记着这个盲区第一次发作的样子：`.btn{padding:1rem 2rem}` 时
+    「真实 bottom 735.53 而模型仍算 715.53 …… 那条断言比的是『模型 vs 一个和
+    模型同样过期的常量』，两边一起错，差值当然是 0」。弹窗这一环犯的是同一个
+    错（D3），所以修法也一样。
+
+    实测确认的三处覆盖（各自与 vendor 同特异度、style.css 在后所以赢）：
+        .modal-header  { padding: var(--space-5) }  -> 24px（vendor 16）
+        .modal-body    { padding: var(--space-5) }  -> 24px（vendor 16）
+        .modal-content { border: 1px solid … }      -> 1px（与 vendor 同值）
+    `.modal-dialog` 的外边距 style.css 目前没有覆盖，仍走 vendor 的 28px ——
+    但下面照样查，将来有人覆盖了模型要自动跟上。
+
+    这个盲区的指纹：修好之前把 `--space-5` 扰动 1px，模型输出变化恰好 0.00。
+    """
+    metrics = dict(_bootstrap_modal_metrics())
+
+    def own_body(selector):
+        bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
+        assert len(bodies) <= 1, (
+            f'期望至多 1 条 `{selector}` 规则，实际 {len(bodies)} 条 —— '
+            '哪一条赢说不清了，本模型已失效'
+        )
+        return bodies[0] if bodies else None
+
+    def own_pad_top(selector):
+        body = own_body(selector)
+        if body is None:
+            return None
+        decls = dict((n, v) for n, v, _i in _expanded_box_decls(body))
+        raw = decls.get('padding-top')
+        if raw is None:
+            return None
+        v = _resolve_length_px(css, raw)
+        assert v is not None, (
+            f'`{selector}` 的 padding-top = {raw!r}，解析不了 —— 本模型已失效（不是通过）'
+        )
+        return v
+
+    for key, selector in (('header_padding', '.modal-header'), ('padding', '.modal-body')):
+        got = own_pad_top(selector)
+        if got is not None:
+            metrics[key] = got
+
+    content = own_body('.modal-content')
+    if content is not None:
+        raw = _decl_map(content).get('border')
+        if raw:
+            m = re.match(r'^([\d.]+)(px|rem)\b', _IMPORTANT_RE.sub('', raw).strip())
+            assert m, (
+                f'`.modal-content` 的 border = {raw!r} 里读不出宽度 —— 本模型已失效'
+            )
+            metrics['border_width'] = float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
+
+    dialog = own_body('.modal-dialog')
+    if dialog is not None:
+        decls = _decl_map(dialog)
+        raw = decls.get('margin-top') or decls.get('margin')
+        if raw:
+            top = _IMPORTANT_RE.sub('', raw).strip().split()[0]
+            v = _resolve_length_px(css, top)
+            assert v is not None, (
+                f'`.modal-dialog` 的上外边距 {top!r} 解析不了 —— 本模型已失效'
+            )
+            metrics['margin_top'] = v
+
+    return metrics
+
+
+def _bootstrap_utility_margins():
+    """vendor 的 `.mt-N` / `.mb-N` 间距工具类 -> px。
+
+    从 vendor 解析而不是写死「.mt-2 == 8」：Bootstrap 的 $spacer 一改这里跟着
+    变，解析不到就响亮失败。style.css 覆盖了同名工具类（`.mb-3` 就是）时由
+    调用方优先取 style.css。
+    """
+    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
+        src = f.read()
+    out = {}
+    for cls, raw in re.findall(
+            r'\.(m[tb]-\d+)\{margin-(?:top|bottom):(-?[\d.]+rem|0)!important\}', src):
+        out[cls] = 0.0 if raw == '0' else float(raw[:-3]) * 16
+    assert {'mt-2', 'mb-2', 'mb-3'} <= set(out), (
+        'vendor bootstrap.min.css 里解析不到 .mt-2 / .mb-2 / .mb-3 间距工具类 '
+        '—— 本模型已失效'
+    )
+    return out
+
+
+def _bootstrap_horizontal_classes():
+    """vendor 里带 `display: flex / inline-flex` 的类名集合。
+
+    高度模型要靠它区分「横排容器」（子元素挤在一行，高度取最高的那个）和
+    「竖排容器」（子元素各占一行，高度累加）。`.row` / `.d-flex` 写死在模型里
+    也能跑，但 Bootstrap 哪天把 `.row` 改成 grid，写死的版本会静默算错。
+    """
+    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
+        src = f.read()
+    out = {cls for cls, body in re.findall(r'\.([-\w]+)\{([^}]*)\}', src)
+           if re.search(r'display:\s*(?:inline-)?flex', body)}
+    assert {'d-flex', 'row'} <= out, (
+        'vendor bootstrap.min.css 里 .d-flex / .row 不再是 display:flex —— 本模型已失效'
+    )
+    return frozenset(out)
+
+
+def _bootstrap_form_check_metrics():
+    """vendor `.form-check` 的 (min-height, margin-bottom)（px）。
+
+    勾选行的高度由 Bootstrap 的 `min-height:1.5rem`(24px) 决定，**不是**由本站
+    放大到 1.25rem(20px) 的 .form-check-input 决定（20 < 24 顶不动）。实测：
+    一行勾选 24px、行下 2px；两个 .form-check-inline 并排那层 div 实测 26 = 24+2。
+    """
+    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
+        src = f.read()
+    m = re.search(r'\.form-check\{([^}]*)\}', src)
+    assert m, 'vendor bootstrap.min.css 里找不到 .form-check —— 本模型已失效'
+    out = []
+    for prop, label in (('min-height', '勾选行最小高度'), ('margin-bottom', '勾选行下外边距')):
+        mm = re.search(re.escape(prop) + r':([\d.]+rem|[\d.]+px)', m.group(1))
+        assert mm, f'vendor .form-check 里读不出 {label} —— 本模型已失效'
+        raw = mm.group(1)
+        out.append(float(raw[:-3]) * 16 if raw.endswith('rem') else float(raw[:-2]))
+    return tuple(out)
+
 
 # ---- 来自 Bootstrap、本文件不控制的几个数 --------------------------------
 # 每一条都标了 CDP 实测值。它们是模型里唯一「不是从 style.css 解析出来」的输入，
@@ -3060,8 +3524,8 @@ BS_BTN_PADDING_Y_PX = 6.0
 BS_ALERT_MARGIN_BOTTOM_PX = 16.0
 
 
-def _effective_button_height(css):
-    """模拟层叠，算出 `#createTaskBtn`（`.btn.btn-primary.w-100`）的**最终**外框高度。
+def _effective_button_height(css, ctx=None):
+    """模拟层叠，算出一颗按钮的**最终**外框高度（默认 `#createTaskBtn`）。
 
     与 `_effective_form_control_height` 是同一套模型、同一个理由：决定高度的是
     「层叠之后谁赢」，不是源码里有没有那串字符。区别只在于按钮的几个盒模型属性
@@ -3078,11 +3542,39 @@ def _effective_button_height(css):
         padding: 2.5rem 2rem       -> 40+40+22.5+0    = 102.5  （CDP 实测 102.5）
         min-height: 90px           -> max(34.5, 90)   = 90
         padding: 1rem 2rem         -> 16+16+22.5+0    = 54.5   （比现状高 20px）
+
+    `ctx` 给别的按钮上下文用：首页表单里除了提交按钮还有 `#outputPathBrowse`
+    （`.btn.btn-outline-primary.path-browse`），它被 `.btn.path-browse
+    { height: var(--ctl-h) }` 钉在 28px，与提交按钮的高度不是一个数。
+    高度模型必须按各自的类去层叠，不能拿提交按钮的高度当所有按钮的高度。
+
+    2026-08-15（Task 4）**盲区已补**：纵向内边距现在由 `_btn_decls` 把
+    `padding` / `padding-block` / `padding-inline` 三个简写按位展开成长写、
+    并把 `padding-block-start` 那四条逻辑长写映到物理长写之后，统一走
+    `(important, 特异度, 规则序号, 声明序号)` 那把键决出胜负 —— 改前
+    `padding-block` 在模型里完全不存在（静默回落 Bootstrap 的 6px），
+    四值 `padding` 的下内边距也取错位。详见 `_PADDING_SHORTHANDS` /
+    `_PADDING_LOGICAL_LONGHANDS` 上方的登记与
+    tests/test_button_geometry.py::test_button_height_model_sees_logical_padding。
+
+    同轮（收尾）**只读长写**：本函数不再向 `_btn_computed` 要 `padding` 简写，
+    也不再对它取 `raw.split()[0]`。那段取第 0 位当**纵向**内边距的代码是
+    Task 4 首版宣称已修的错位本身，展开之后它变成死代码，而且只是**碰巧**
+    安全 —— 靠 Python「默认实参急求值」这个语言细节：
+    `px('padding-top', default=px('padding', ...))` 里内层那句无条件先跑，
+    切不开时当场炸。谁把它「整理」成惰性的 `px('padding-top') or px('padding')`，
+    静默就回来了（实测：`.btn { padding: calc(1px + 2px) 4px }` 的计算表里
+    `padding-top` 是**过期**的 `var(--space-1)`(4px)，浏览器是 3px）。
+    删掉它是安全的，因为另外两处同轮改动保证了「简写在场则长写必在场」：
+    `_split_padding` 切不开时毒化每一条边（不再返回 None），
+    `_btn_decls` 末尾的安全网拦住任何模型不认得的 `padding-*` 名字。
+    三处是一个设计，不是三个补丁。
     """
-    ctx = _BtnCtx({'btn', 'btn-primary', 'w-100'}, element_id='createTaskBtn',
-                  label='#createTaskBtn（高度模型）')
+    if ctx is None:
+        ctx = _BtnCtx({'btn', 'btn-primary', 'w-100'}, element_id='createTaskBtn',
+                      label='#createTaskBtn（高度模型）')
     got = _btn_computed(css, ctx, 'base', {
-        'padding', 'padding-top', 'padding-bottom', 'height', 'min-height',
+        'padding-top', 'padding-bottom', 'height', 'min-height',
         'max-height', 'line-height', 'font-size', 'border', 'border-width',
         'border-top-width', 'border-bottom-width', 'border-style',
     })
@@ -3092,9 +3584,8 @@ def _effective_button_height(css):
             assert not required, f'`.btn` 没有任何规则声明 {name} —— 高度模型算不出来，测试已失效'
             return default
         raw = got[name][0]
-        # padding 简写取纵向那一位
-        if name == 'padding':
-            raw = raw.split()[0]
+        # 这里**没有** padding 简写的分支：简写由 `_btn_decls` 展开（切不开就
+        # 毒化），所以简写在场时长写必在场，取分量这件事不该在本函数里再做一遍。
         v = _resolve_length_px(css, raw)
         assert v is not None, (
             f'{name} 的胜出值来自 `{got[name][1]}` 的 {raw!r}，不是 px/rem/var(px) —— '
@@ -3103,13 +3594,24 @@ def _effective_button_height(css):
         return v
 
     font_size = px('font-size', required=True)
-    line_h = px('line-height')
+    # line-height 可以是无单位倍数（CSS 规范里那才是推荐写法）。
+    # `.btn.path-browse { line-height: 1 }` 就是 —— 第一版只认 px/rem，
+    # 碰到它直接报「测试已失效」，等于把 #outputPathBrowse 这颗按钮排除在
+    # 高度模型之外。倍数按 font-size 折算，与浏览器一致。
+    line_h = None
+    if 'line-height' in got:
+        raw_lh = got['line-height'][0].strip()
+        if re.fullmatch(r'[\d.]+', raw_lh):
+            line_h = font_size * float(raw_lh)
+        else:
+            line_h = px('line-height')
     if line_h is None:
         line_h = font_size * BS_BODY_LINE_HEIGHT
 
-    # 纵向内边距：长写优先，其次简写，都没有才回落到 Bootstrap 默认
-    pad_t = px('padding-top', default=px('padding', default=BS_BTN_PADDING_Y_PX))
-    pad_b = px('padding-bottom', default=px('padding', default=BS_BTN_PADDING_Y_PX))
+    # 纵向内边距：只读长写（简写已由 `_btn_decls` 展开成长写），
+    # 一条都没有才回落到 Bootstrap 默认。
+    pad_t = px('padding-top', default=BS_BTN_PADDING_Y_PX)
+    pad_b = px('padding-bottom', default=BS_BTN_PADDING_Y_PX)
 
     # 边框：`.btn { border: none }` -> 0；有人写回 1px 也要算进去
     style_raw = got.get('border-style', ('none',))[0].strip().lower()
@@ -3246,78 +3748,192 @@ def test_form_control_height_has_an_upper_bound():
 
 # ---- 首页表单的纵向结构（从模板解析，不写死条数）--------------------------
 
+class _FormNode:
+    """`#taskForm` 子树里的一个元素：标签、class 集合、id、可见性、子元素。"""
+
+    __slots__ = ('tag', 'classes', 'el_id', 'invisible', 'kids')
+
+    def __init__(self, tag, classes, el_id, invisible):
+        self.tag = tag
+        self.classes = classes
+        self.el_id = el_id
+        self.invisible = invisible
+        self.kids = []
+
+    def desc(self):
+        bits = f'<{self.tag}'
+        if self.el_id:
+            bits += f' id="{self.el_id}"'
+        if self.classes:
+            bits += f' class="{" ".join(sorted(self.classes))}"'
+        return bits + '>'
+
+
 class _FormStructureParser(HTMLParser):
-    """扒出 `#downloadForm` 的直接子元素序列。
+    """扒出 `#taskForm` 的**整棵**子树（直接子元素 + 它们各自的后代）。
 
     为什么从模板解析而不是把「6 个字段组 + 3 个分组标题」写死：写死的话，
     有人往 index.html 里加一个字段，模型算出来的高度不变，测试全绿而页面
     已经溢出了。
 
-    默认（地图瓦片）模式下不可见的块（`style="display:none"`，即
-    #demOptions / #localTerrainOptions / #contourOptions）跳过 —— 它们由
-    initDownloadTypeToggle() 按下载类型切换，不占默认视图的高度。
+    ⚠️ 为什么记整棵树、而不是只记 `depth == 0` 的那一层（D1）：
+       第一版只 append `depth == 0` 的子元素，后代**在解析时就丢了**，于是
+       消费方只能把每个 `.mb-3` 一律当成「一个 label + 一个控件」= 57px。
+       实测（1366x768 headless Chromium）那是假的：
+           #mapStyleField        真实 122px（里面是**两组** label + select）
+           输出格式那个 .mb-3    真实 127px（还嵌着一个 .form-check 和一个
+                                 .form-text 说明）
+       两处合计少算约 135px。这不是算错，是**看不见** —— 信息根本没进过旧
+       解析器的输入通道，所以任何变异测试都测不出来。
+
+    ⚠️「不可见」有两种写法，两种都要认（D2）：
+           内联 style="display:none"
+           裸 hidden 属性             —— #sourceField / #demOptions /
+                                        #localTerrainOptions / #contourOptions
+       第一版只认前者，于是 #demOptions 这一整组（实测 65px）被算进了默认视图
+       的高度；而它的 docstring 还写着「按 display:none 跳过 #demOptions」——
+       注释与代码同时错、方向相反。这个 +65 的悲观误差正好抵掉了 D1 的一截
+       少算，两个缺陷互相遮掩，模型于是「以 4.5px 余量通过」。本文件
+       BS_BTN_PADDING_Y_PX 那段注释里的「两边一起错，差值当然是 0」就是这个形态。
+
+    ⚠️ 2026-08-15 Task 5：锚点从 #downloadForm 换成 #taskForm，被测对象换了但
+       解析器一个字没改 —— 四条管线合并后全站只剩这一张表单，而模板里那些
+       `hidden` 的字段组现在由 map.js 的 applyPipeline() 按 [data-pipeline] 切换
+       （改前是 initDownloadTypeToggle / initProcessTypeToggle 两个函数各切一半）。
+       「按管线切换」与「按下载类型切换」对本解析器是同一件事：模板里带 hidden
+       的就不占默认视图的高度。
     """
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.depth = None          # None = 还没进 / 已经出了那个 <form>
-        self.rows = []             # [(标签, class 集合, 是否 display:none)]
+        self.root = None
+        self.stack = []
+
+    # 模板里带 hidden、但**建模状态下由 JS 放出来**的元素。
+    #
+    # 只有一个：#tileEstimate。map.js 的 _paintTileEstimate() 在「瓦片管线 +
+    # 已框选」下 `el.hidden = false`，而那正是本模型建的状态（见
+    # _create_panel_form_content_height 的 docstring）。改前它住在 .modal-body 里、
+    # 由模型末尾单独加一项，所以模板上的 hidden 与解析器无关；Task 5 之后它是
+    # #taskForm 的子树成员，不在这里开个口子就会被当成不占高度，模型少算一整行。
+    #
+    # 这张表刻意只有一项、也刻意不写成「凡是 aria-live 的都算可见」之类的规则：
+    # 同在 #selectionField 里的 #createBoundsEntries 也带 hidden，而它在**已框选**
+    # 状态下确实是收起的（updateCreatePanelBounds 只在无选区时放它出来），
+    # 算进来就是凭空多两颗按钮。每加一项都必须能说出「是哪一行 JS 在什么状态下
+    # 把它放出来」。
+    _VISIBLE_DESPITE_HIDDEN = frozenset({'tileEstimate'})
+
+    @staticmethod
+    def _invisible(attrs):
+        if attrs.get('id') in _FormStructureParser._VISIBLE_DESPITE_HIDDEN:
+            return False
+        if 'hidden' in attrs:
+            return True
+        return 'display:none' in (attrs.get('style') or '').replace(' ', '')
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
-        if a.get('id') == 'downloadForm':
-            assert self.depth is None, 'index.html 里出现了两个 #downloadForm —— 本测试已失效'
-            self.depth = 0
+        if a.get('id') == 'taskForm':
+            assert self.root is None, 'index.html 里出现了两个 #taskForm —— 本测试已失效'
+            self.root = _FormNode(tag, set(), 'taskForm', False)
+            self.stack = [self.root]
             return
-        if self.depth is None:
+        if not self.stack:
             return
-        if self.depth == 0:
-            self.rows.append((
-                tag,
-                set((a.get('class') or '').split()),
-                'display:none' in (a.get('style') or '').replace(' ', ''),
-            ))
+        node = _FormNode(tag, set((a.get('class') or '').split()),
+                         a.get('id'), self._invisible(a))
+        self.stack[-1].kids.append(node)
         if tag not in _VOID_TAGS:
-            self.depth += 1
+            self.stack.append(node)
 
     def handle_endtag(self, tag):
-        if self.depth is None or tag in _VOID_TAGS:
+        if not self.stack or tag in _VOID_TAGS:
             return
-        if self.depth == 0:
-            self.depth = None      # 这是 </form>，出去了
-            return
-        self.depth -= 1
+        self.stack.pop()
 
 
-def _index_form_rows():
-    """`#downloadForm` 在默认（地图瓦片）模式下可见的直接子元素。"""
+def _index_form_children():
+    """`#taskForm` 在「地图瓦片 + 已框选」下可见的直接子元素（含各自子树）。
+
+    不可见的块（#sourceField / #demOptions / #localTerrainOptions /
+    #contourOptions）在这里就剔掉：它们由 applyPipeline() 按 [data-pipeline]
+    切换，默认（瓦片）视图里不占高度。
+    """
     parser = _FormStructureParser()
     parser.feed(_template('index.html'))
-    assert parser.depth is None, (
-        'index.html 的 #downloadForm 没有正常闭合（解析结束时深度 '
-        f'{parser.depth}）—— 本测试已失效'
+    assert parser.root is not None, '解析不到 index.html 的 #taskForm —— 本测试已失效'
+    assert not parser.stack, (
+        'index.html 的 #taskForm 没有正常闭合（解析结束时栈里还剩 '
+        f'{[n.desc() for n in parser.stack]}）—— 本测试已失效'
     )
-    rows = [(tag, cls) for tag, cls, hidden in parser.rows if not hidden]
-    assert rows, '解析不出 #downloadForm 的子元素 —— 本测试已失效'
-    # 模型只在「有提交按钮」的前提下成立。
-    # （GIS 工作台改版前还要求有四至 alert；它已搬到地图上的 .bounds-overlay
-    #   浮层，不再是表单子元素，也不再占表单高度。）
-    assert any(t == 'button' for t, _c in rows), (
-        '#downloadForm 的直接子元素里没有 <button> —— 解析漏了，本测试已失效'
+    rows = [k for k in parser.root.kids if not k.invisible]
+    assert rows, '解析不出 #taskForm 的子元素 —— 本测试已失效'
+    # 模型只在「解析到的确实是那张四管线表单」的前提下成立。
+    #
+    # 2026-08-15 Task 5：这里**不能再**断言「直接子元素里有 <button>」。
+    # 提交钮已经搬出表单、住进 .config-footer（靠 form="taskForm" 关联）——
+    # 那正是折叠线缺陷被结构性消掉的原因，见本节顶部那段说明。用它当解析
+    # 自检就成了「断言缺陷还在」。
+    # 换成断言四条管线的段控在场：它是这张表单里独一无二的标记，解析器
+    # 抓错了元素（或哪天有人把段控挪出表单）都会当场响亮失败。
+    def _has_pipeline_chip(node):
+        if node.tag == 'div' and 'status-chips' in node.classes \
+                and node.el_id == 'createPipeline':
+            return True
+        return any(_has_pipeline_chip(k) for k in node.kids)
+
+    assert any(_has_pipeline_chip(k) for k in rows), (
+        '#taskForm 的可见子树里找不到 #createPipeline 段控 —— 解析漏了，'
+        '或者四条管线的段控被挪出了表单，本测试已失效'
     )
     return rows
 
 
-def _index_form_vertical_model(css):
-    """算出 1366x768 下 `#createTaskBtn` 的 bottom（px）。
+def _create_panel_form_content_height(css):
+    """算出 #taskForm 在「地图瓦片 + 已框选」下的**内容栈高**（px）。
 
-    结构从 templates/index.html 解析，尺寸从 style.css 解析，
-    只有上面那 4 个 BS_* 常量来自 Bootstrap（各自标了 CDP 实测值）。
+    2026-08-15 Task 5 之前这个函数叫 `_index_form_vertical_model`，返回的是
+    「1366x768 下 #createTaskBtn 的 bottom」。被测对象变了，不是阈值变了：
+    提交钮搬进了 .config-footer（在 .config-scroll 之外），它的 bottom 已经
+    与表单内容无关（结构公式见本节顶部）。剩下的这个量 —— 表单内容有多高 ——
+    仍然会变、仍然会退化（滚动条越长、首屏能看到的字段越少），所以模型留着，
+    只是不再冒充折叠线判据。
+
+    结构从 templates/index.html 解析（**整棵子树**，见 `_FormStructureParser`），
+    尺寸从 style.css 解析。只有 BS_BODY_LINE_HEIGHT / BS_BTN_PADDING_Y_PX /
+    BS_ALERT_MARGIN_BOTTOM_PX 三个数来自 Bootstrap。**不再读 _modal_metrics**：
+    弹窗框架整个不存在了，而 .modal-header / .modal-title / .modal-content 三条
+    规则**仍在** style.css 里（#taskDetailModal 与 #pathBrowserModal 还在用，
+    tests/test_elevation_glass.py 钉着不许删）—— 也就是说继续读它们不会响亮
+    失败，只会安静地给面板凭空加一个它没有的标题栏。这是本文件反复踩过的
+    「模型遇到看不懂的东西时回落到一个恰好还在的旧值」，所以必须显式删掉。
+
+    **建模的状态：地图瓦片 + 已框选。** 这个状态的可达性理由变了、结论没变：
+    改前 `openDownloadModal()` 在 `!currentBounds` 时直接 return，未框选的弹窗
+    根本打不开，所以「已框选」是唯一可达状态；现在 `openCreatePanel()` 没有
+    选区也照样打开（缺选区拦在提交那一刻），但瓦片管线是段控的默认选中项、
+    也是唯一会放出 #tileEstimate 的那条，所以它仍然是首屏那一屏。
+    在这个状态下 map.js 的 `_paintTileEstimate()` 会 `el.hidden = false` 放出
+    #tileEstimate，而 #sourceField / #demOptions / #localTerrainOptions /
+    #contourOptions 仍被 `applyPipeline()` 按住 —— 所以模板里的 hidden 属性
+    对前者不算「不可见」、对后四者算。
+
+    **模型是实际值的下界，不是等值。** 所有文本块按**一行**计：一段 i18n 文案
+    在给定宽度下折几行需要字体度量，CSS + 模板算不出来。方向是安全的：模型
+    永远 <= 实际。
 
     相邻块级元素的**外边距合并**是模型里最容易漏的一环：
-    `.mb-3`(8px) 后面跟 `.form-group-label`(margin-top 14px) 时，两者合并成
-    max(8,14)=14 而不是 22。漏掉合并会让模型比实际高出 16px（实测差值）。
+    `.mb-3`(8px) 后面跟 `.form-group-label`(margin-top 16px) 时，两者合并成
+    max(8,16)=16 而不是 24。
     """
+    def rule_body(selector):
+        bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
+        assert len(bodies) <= 1, (
+            f'期望至多 1 条 `{selector}` 规则，实际 {len(bodies)} 条 —— 本模型已失效'
+        )
+        return bodies[0] if bodies else None
+
     def rule_px(selector, prop, required=True):
         bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
         assert len(bodies) == 1, (
@@ -3363,8 +3979,23 @@ def _index_form_vertical_model(css):
         assert m, f'`{selector}` 的 {prop} = {raw!r} 里读不出宽度 —— 本测试已失效'
         return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
 
+    def own_len(classes, prop):
+        """这些 class 里在 style.css 顶层声明的 prop（px）；取最后命中的一条。"""
+        got = None
+        for c in sorted(classes):
+            body = rule_body('.' + c)
+            if body is None:
+                continue
+            raw = _decl_map(body).get(prop)
+            if raw is None:
+                continue
+            v = _resolve_length_px(css, raw)
+            assert v is not None, f'`.{c}` 的 {prop} = {raw!r}，解析不了 —— 本模型已失效'
+            got = v
+        return got
+
+    # ---- 尺寸来源，全部解析出来 -------------------------------------------
     ctl_h = _effective_form_control_height(css)
-    field_gap = rule_px('.mb-3', 'margin-bottom')
 
     label_font = rule_px('.form-label', 'font-size')
     label_line = label_font * BS_BODY_LINE_HEIGHT
@@ -3377,6 +4008,10 @@ def _index_form_vertical_model(css):
     gl_mt, gl_mb = margin_parts('.form-group-label')
     gl_h = gl_line + gl_pad_b + gl_border
 
+    text_font = rule_px('.form-text', 'font-size')
+    text_line = text_font * BS_BODY_LINE_HEIGHT
+    text_mt = rule_px('.form-text', 'margin-top')
+
     alert_pad = rule_px('.alert', 'padding-top')
     alert_border = border_px('.alert', 'border')
     grid_font = rule_px('.bounds-grid', 'font-size')
@@ -3385,61 +4020,168 @@ def _index_form_vertical_model(css):
     grid_h = 2 * grid_line + grid_row_gap          # 恰好 2 行，见下一节的断言
     alert_h = 2 * alert_pad + 2 * alert_border + grid_h
 
-    btn_h = _effective_button_height(css)
-
-    field_h = label_line + label_mb + ctl_h        # 一个 .mb-3 字段组的高度
-
-    # 逐个子元素累加，并按 CSS 规则合并相邻外边距
-    items = []                                     # [(高度, 下外边距, 上外边距)]
-    for tag, classes in _index_form_rows():
-        if 'form-group-label' in classes:
-            items.append((gl_h, gl_mb, gl_mt))
-        elif 'row' in classes:
-            # display:flex 的容器，子元素外边距不合并出去：
-            # 高度 = 列内容 + 列自己的 .mb-3
-            items.append((field_h + field_gap, 0.0, 0.0))
-        elif 'alert' in classes:
-            items.append((alert_h, BS_ALERT_MARGIN_BOTTOM_PX, 0.0))
-        elif tag == 'button':
-            items.append((btn_h, 0.0, 0.0))
-        elif 'mb-3' in classes:
-            items.append((field_h, field_gap, 0.0))
-        else:
-            raise AssertionError(
-                f'#downloadForm 里出现了模型不认识的直接子元素 <{tag} class="'
-                f'{" ".join(sorted(classes))}"> —— 本测试已失效（不是通过）。'
-                '请把它的高度加进 _index_form_vertical_model'
+    utils = _bootstrap_utility_margins()
+    horizontal_classes = _bootstrap_horizontal_classes()
+    check_h, check_mb = _bootstrap_form_check_metrics()
+    check_own = rule_body('.form-check')
+    if check_own is not None:
+        decls = _decl_map(check_own)
+        for prop in ('min-height', 'margin-bottom'):
+            if prop not in decls:
+                continue
+            v = _resolve_length_px(css, decls[prop])
+            assert v is not None, (
+                f'style.css 的 `.form-check` 把 {prop} 写成 {decls[prop]!r}，'
+                '解析不了 —— 本模型已失效'
             )
+            if prop == 'min-height':
+                check_h = v
+            else:
+                check_mb = v
 
-    total = sum(h for h, _mb, _mt in items)
-    for prev, nxt in zip(items, items[1:]):
-        total += max(prev[1], nxt[2])              # 相邻外边距合并取较大者
+    def util_margin(classes, side):
+        """`mt-N` / `mb-N` 工具类给出的外边距；没有这类 class 返回 None。
 
-    # 2026-07 UX 改版：按钮在下载弹窗（#downloadModal）里。纵向位置 =
-    #   .modal-dialog 上外边距 + modal-content 上边框 + modal-header
-    #   + modal-body 上内边距 + 选区四至摘要 + 表单。
-    # 弹窗度量全部来自 vendor bootstrap.min.css（_bootstrap_modal_metrics，
-    # 读不到会响亮失败）；标题行盒按 .modal-title 的字号（style.css 解析）
-    # × --bs-modal-title-line-height，与 btn-close 的 1.5em 取较大者。
-    metrics = _bootstrap_modal_metrics()
-    title_font = rule_px('.modal-title', 'font-size')
-    title_line = title_font * metrics['title_line_height']
-    hdr_content = max(title_line, BS_MODAL_BTN_CLOSE_PX)
-    hdr_h = 2 * metrics['header_padding'] + hdr_content + metrics['border_width']
+        style.css 覆盖了同名工具类时以 style.css 为准 —— `.mb-3` 正是这种：
+        vendor 是 `1rem!important`、style.css 是 `var(--gap-field)!important`，
+        同特异度同 !important、style.css 在后所以赢（8px 而不是 16px）。
+        """
+        prefix = 'mt-' if side == 'top' else 'mb-'
+        got = None
+        for cls in sorted(classes):
+            if not cls.startswith(prefix):
+                continue
+            own = rule_body('.' + cls)
+            raw = _decl_map(own).get('margin-' + side) if own is not None else None
+            if raw is not None:
+                v = _resolve_length_px(css, raw)
+                assert v is not None, (
+                    f'style.css 的 `.{cls}` 把 margin-{side} 写成 {raw!r}，'
+                    '解析不了 —— 本模型已失效'
+                )
+                got = v
+                continue
+            assert cls in utils, (
+                f'模型不认识间距工具类 `.{cls}`（vendor 与 style.css 都没有）'
+                ' —— 本模型已失效（不是通过）'
+            )
+            got = utils[cls]
+        return got
 
-    sum_font = rule_px('.modal-bounds-summary', 'font-size')
-    sum_line = sum_font * BS_BODY_LINE_HEIGHT
-    sum_pad = rule_px('.modal-bounds-summary', 'padding-top')
-    sum_border = border_px('.modal-bounds-summary', 'border')
-    sum_mb = rule_px('.modal-bounds-summary', 'margin-bottom')
-    summary_h = sum_line + 2 * sum_pad + 2 * sum_border + sum_mb
+    def is_horizontal(node, kids, where):
+        """这个容器把子元素横排（各自不独占一行）吗？
 
-    # 瓦片预估行（#tileEstimate，2026-07 加入）：一行 xs 文字 + 12px 下外边距
+        三种来源：
+          1. style.css 给它某个 class 声明了 display:flex/inline-flex（.map-style-row）；
+          2. Bootstrap 的 flex 类（.d-flex / .row —— 从 vendor 解析，见
+             `_bootstrap_horizontal_classes`，不写死）；
+          3. 子元素全是 .form-check-inline —— inline-block 流，也挤在一行里。
+        混排（既有 inline-block 子元素又有块级子元素）响亮失败：那种形态折几行
+        取决于容器宽度，模型算不准，宁可报失效也不猜。
+        """
+        for c in sorted(node.classes):
+            body = rule_body('.' + c)
+            if body is not None and _decl_map(body).get('display') in ('flex', 'inline-flex'):
+                return True
+        if node.classes & horizontal_classes:
+            return True
+        inline = [k for k in kids if 'form-check-inline' in k.classes]
+        if inline and len(inline) != len(kids):
+            raise AssertionError(
+                f'{where}：inline-block 的 .form-check-inline 与块级子元素混排 —— '
+                '折几行取决于容器宽度，本模型已失效（不是通过）'
+            )
+        return bool(inline)
+
+    def measure(node, path):
+        """(高度, 上外边距, 下外边距)。认不出来的形态一律抛「本模型已失效」。"""
+        cls = node.classes
+        where = ' > '.join(path + [node.desc()])
+        mt = util_margin(cls, 'top')
+        mb = util_margin(cls, 'bottom')
+
+        def out(h, def_mt=0.0, def_mb=0.0):
+            return h, def_mt if mt is None else mt, def_mb if mb is None else mb
+
+        if 'form-group-label' in cls:
+            return out(gl_h, gl_mt, gl_mb)
+        if 'form-label' in cls:
+            return out(label_line, 0.0, label_mb)
+        if 'form-text' in cls:
+            return out(text_line, text_mt, 0.0)
+        if 'form-check' in cls:
+            # 叶子：勾选行的高度是 .form-check 的 min-height（24px），不看里面的
+            # input / label —— 实测 1.25rem(20px) 的 .form-check-input 顶不动它。
+            return out(check_h, 0.0, check_mb)
+        if 'form-control' in cls or 'form-select' in cls:
+            return out(ctl_h)
+        if 'alert' in cls:
+            return out(alert_h, 0.0, BS_ALERT_MARGIN_BOTTOM_PX)
+        if 'modal-bounds-summary' in cls:
+            # 选区四至摘要（#createPanelBounds）。改前它在 .modal-body 里、
+            # 由本函数末尾单独加一项；Task 5 之后它是 #taskForm 的子树成员
+            # （装在 #selectionField 里），所以必须进叶子表 —— 否则走到下面
+            # 那句 `assert kids` 会因为「空 div 没有子元素」报「本模型已失效」。
+            # class 名故意没跟着 id 改（仍是 .modal-bounds-summary）：改它要动
+            # style.css 与 tests/test_geometry_scales.py 的圆角分组，而这次
+            # 一行 CSS 都不需要动。
+            return out(summary_h, 0.0, summary_mb)
+        if 'tile-estimate' in cls:
+            # 瓦片数预估（#tileEstimate）。同上，改前是末尾单独一项。
+            return out(est_line, 0.0, est_mb)
+        if node.tag == 'button':
+            return out(_effective_button_height(
+                css, _BtnCtx(set(cls), element_id=node.el_id, label=where)))
+        if node.tag == 'img':
+            h = own_len(cls, 'height')
+            assert h is not None, (
+                f'{where}：图片没有从 style.css 拿到 height，所在行的高度算不出来 '
+                '—— 本模型已失效（不是通过）'
+            )
+            return out(h)
+
+        kids = [k for k in node.kids if not k.invisible]
+        assert kids, (
+            f'{where}：既不是模型认识的叶子，又没有可见子元素 —— '
+            '本模型已失效（不是通过）。请把它的高度加进 _create_panel_form_content_height'
+        )
+        measured = [measure(k, path + [node.desc()]) for k in kids]
+        if is_horizontal(node, kids, where):
+            # 横排：行高 = 最高那个子元素的**外边距盒**。实测三处都对得上：
+            #   .row            65 = 57 + 8（.col-6.mb-3 的下外边距算在行里）
+            #   .map-style-row  28 = max(select 28, 预览图 28)
+            #   两个 .form-check-inline 那层 div  26 = 24 + 2
+            return out(max(kh + kmt + kmb for kh, kmt, kmb in measured))
+        h = sum(kh for kh, _t, _b in measured)
+        for prev, nxt in zip(measured, measured[1:]):
+            h += max(prev[2], nxt[1])          # 相邻外边距合并取较大者
+        return out(h)
+
+    # 两个新叶子的尺寸。都按**一行**计（见 docstring 里的下界说明）。
+    # 放在这里而不是函数开头：measure() 是闭包，名字在**调用时**才解析，而
+    # 调用发生在下一行 —— 与 gl_h / label_line 那批放在前面纯粹是读起来顺。
+    summary_font = rule_px('.modal-bounds-summary', 'font-size')
+    summary_pad = rule_px('.modal-bounds-summary', 'padding-top')
+    summary_border = border_px('.modal-bounds-summary', 'border')
+    summary_mb = rule_px('.modal-bounds-summary', 'margin-bottom')
+    summary_h = (summary_font * BS_BODY_LINE_HEIGHT
+                 + 2 * summary_pad + 2 * summary_border)
+
     est_font = rule_px('.tile-estimate', 'font-size')
-    est_h = est_font * BS_BODY_LINE_HEIGHT + rule_px('.tile-estimate', 'margin-bottom')
+    est_line = est_font * BS_BODY_LINE_HEIGHT
+    est_mb = rule_px('.tile-estimate', 'margin-bottom')
 
-    return (metrics['margin_top'] + metrics['border_width'] + hdr_h
-            + metrics['padding'] + summary_h + est_h + total)
+    items = [measure(node, []) for node in _index_form_children()]
+    total = sum(h for h, _mt, _mb in items)
+    for prev, nxt in zip(items, items[1:]):
+        total += max(prev[2], nxt[1])
+
+    # 就这样。**没有框架项可加了**：改前这里要叠 .modal-dialog 上外边距 +
+    # modal-content 上边框 + modal-header + modal-body 上内边距，才能得到按钮
+    # 的绝对 bottom。面板时代那些量一个都不参与 —— 提交钮的位置由视口高与
+    # .config-footer 的下内边距决定（见本节顶部的结构公式），而表单内容的高度
+    # 只影响 .config-scroll 里滚不滚。
+    return total
 
 
 class _IdAncestorParser(HTMLParser):
@@ -3454,11 +4196,20 @@ class _IdAncestorParser(HTMLParser):
         el_id = dict(attrs).get('id')
         if el_id:
             self.parents.setdefault(el_id, list(self.stack))
-            self.stack.append(el_id)
+        # ⚠️ 2026-08-15 Task 5 修：**带 id 的自闭合标签以前会永久留在栈上**。
+        # 改前的写法是「有 id 就 push、是 void 就 return」—— 于是
+        # `<input id="taskName">` 之后 'taskName' 再也不出栈，后面每个元素的
+        # 祖先链里都多出一串假祖先，而且外层真祖先的 </tag> 会被这些多余的
+        # 栈项吃掉。实测 #createTaskBtn 的祖先链被算成
+        # [.., 'createPanel', .., 'taskForm', .., 'localTerrainMaxzoom',
+        #  'contourInterval', 'contourBackground', ..] —— 里面既有已经闭合的
+        # 表单、也有几个纯 input。
+        # 旧断言全是 `X in ancestors` 形态，多出来的假祖先不影响结论，所以这个
+        # 缺陷一直是绿的；Task 5 需要断言的是 `'taskForm' not in ancestors`
+        # （提交钮必须在表单**之外**），假祖先当场把它判红。
         if tag in _VOID_TAGS:
             return
-        if not el_id:
-            self.stack.append(None)
+        self.stack.append(el_id)
 
     def handle_endtag(self, tag):
         if tag in _VOID_TAGS or not self.stack:
@@ -3466,75 +4217,296 @@ class _IdAncestorParser(HTMLParser):
         self.stack.pop()
 
 
-def test_submit_button_lives_inside_download_modal():
-    """「创建下载任务」按钮必须在 #downloadModal 弹窗内（2026-07 UX 改版）。
+def test_submit_button_lives_in_the_create_panel_footer():
+    """提交按钮必须在 #createPanel 的常驻底条里，且**在 #taskForm 之外**。
 
-    这条替代了 dock 时代的「高度模型复现 CDP 实测」自检：旧自检校准的是
-    「dock 布局下按钮的折叠线位置」，dock 移除后那个问题不存在了——
-    弹窗由 Bootstrap 定位，真正要钉住的是结构本身：
-      1. #downloadForm 与 #createTaskBtn 都是 #downloadModal 的后代
-         （表单要是被搬回常驻容器，用户又得为它让出整块屏幕）；
-      2. #downloadModal 带 modal 类（Bootstrap 的居中/滚动行为才有附着点）；
-      3. 选区浮层里有 #boundsDownloadBtn（「框选 -> 框上点下载」的入口），
-         且 map.js 的 openDownloadModal() 会刷新四至摘要后打开这个弹窗。
+    这条替代 `test_submit_button_lives_inside_download_modal`（2026-07 弹窗时代），
+    而那条替代的是 dock 时代的「高度模型复现 CDP 实测」自检。三代的共同点是
+    「真正要钉住的是结构，不是某个像素数」；换的是结构长什么样。
+
+    弹窗时代钉的是「表单与提交钮都在 #downloadModal 里、而 #downloadModal 带
+    modal 类」。那个结构本身就是缺陷：提交钮跟着表单流动，1366x768 实测 bottom
+    = 901.50（视口 768，折叠线下 133.5px），1366x720 时溢出 91px。
+
+    现在钉四件事，每一件都是「提交钮恒在视口内」这个结论的必要前提：
+      1. #taskForm 与 #createTaskBtn 都是 #createPanel 的后代 —— 表单要是被搬回
+         常驻容器，用户又得为它让出整块屏幕；
+      2. #createTaskBtn **不是** #taskForm 的后代，而是靠 form="taskForm" 关联
+         —— 这是它不进滚动区的唯一原因。照抄 _config_content.html 那颗
+         `form="configForm"` 的写法（tests/test_config_form_submittable.py 钉着
+         同一个形态）；
+      3. #createPanel 带 workbench-panel 类 —— 满高定位与滑出过渡的附着点，
+         与「任务」「配置」两个面板同构；
+      4. 选区浮层里有 #boundsCreateBtn（「框选 -> 框上点新建任务」的入口），
+         且 map.js 的 openCreatePanel() 会刷新四至摘要并打开这个面板。
+         **不再要求 getOrCreateInstance**：非模态面板没有 Bootstrap 实例，
+         它走 panels.js 的 openPanel('create')。
     """
+    html = _template('index.html')
     parser = _IdAncestorParser()
-    parser.feed(_template('index.html'))
-    for el in ('downloadForm', 'createTaskBtn'):
-        assert 'downloadModal' in parser.parents.get(el, []), (
-            f'#{el} 不在 #downloadModal 里（祖先：{parser.parents.get(el)}）—— '
-            '下载表单必须住在弹窗里，不能回到常驻面板'
+    parser.feed(html)
+    for el in ('taskForm', 'createTaskBtn'):
+        assert 'createPanel' in parser.parents.get(el, []), (
+            f'#{el} 不在 #createPanel 里（祖先：{parser.parents.get(el)}）—— '
+            '四条管线的表单必须住在这个面板里，不能回到弹窗或常驻面板'
         )
-    assert 'processForm' in parser.parents and \
-           'processModal' in parser.parents['processForm'], (
-        '#processForm 不在 #processModal 里 —— 处理表单同样改为弹窗'
+    assert 'taskForm' not in parser.parents.get('createTaskBtn', []), (
+        '#createTaskBtn 又变成 #taskForm 的后代了（祖先：'
+        f'{parser.parents.get("createTaskBtn")}）—— 它必须留在 .config-footer 里、'
+        '靠 form="taskForm" 关联提交。进了表单就等于进了 .config-scroll，'
+        '提交按钮重新跟着内容流动，1366x768 下会回到折叠线以下（弹窗时代实测 '
+        'bottom 901.50 / 视口 768）'
     )
+    assert re.search(r'<button[^>]*\bform="taskForm"[^>]*id="createTaskBtn"', html) \
+        or re.search(r'<button[^>]*id="createTaskBtn"[^>]*\bform="taskForm"', html), (
+            '#createTaskBtn 没有 form="taskForm" —— 它在表单之外，缺了这个属性'
+            '点下去根本不会派发 submit 事件，四条管线全都提交不了'
+        )
 
-    m = re.search(r'<div class="([^"]*)" id="downloadModal"', _template('index.html'))
-    assert m and 'modal' in m.group(1).split(), (
-        '#downloadModal 没有 modal 类 —— Bootstrap 的弹窗行为不会生效'
+    m = re.search(r'<section class="([^"]*)" id="createPanel"', html)
+    assert m and 'workbench-panel' in m.group(1).split(), (
+        '#createPanel 没有 workbench-panel 类 —— 满高定位、滑出过渡与 panels.js '
+        '的开关都挂在这个类上'
     )
 
     body = _js_function_body(_js('map.js'), 'updateBoundsInfo')
-    assert 'boundsDownloadBtn' in body, (
-        'updateBoundsInfo 的「已框选」分支里没有 #boundsDownloadBtn —— '
-        '框选后选区上没有下载入口，下载功能就无家可归了'
+    assert 'boundsCreateBtn' in body, (
+        'updateBoundsInfo 的「已框选」分支里没有 #boundsCreateBtn —— '
+        '框选后选区上没有新建任务入口，这条主流程就无家可归了'
     )
     src = _js('map.js')
-    assert 'function openDownloadModal(' in src, 'map.js 应定义 openDownloadModal()'
-    modal_body = _js_function_body(src, 'openDownloadModal')
-    assert 'downloadModalBounds' in modal_body and 'getOrCreateInstance' in modal_body, (
-        'openDownloadModal() 必须先刷新 #downloadModalBounds 四至摘要，'
-        '再用 bootstrap.Modal.getOrCreateInstance 打开 #downloadModal'
+    assert 'async function openCreatePanel(' in src, \
+        'map.js 应定义 async openCreatePanel(pipeline, prefill)'
+    open_body = _js_function_body(src, 'openCreatePanel')
+    assert 'updateCreatePanelBounds()' in open_body, (
+        'openCreatePanel() 必须刷新面板里的四至摘要 —— 面板非模态，'
+        '上一次打开之后选区可能已经被拖角点/改数值改过了'
     )
+    assert "openPanel('create')" in open_body, (
+        "openCreatePanel() 必须经 panels.js 的 openPanel('create') 开面板 —— "
+        '非模态面板没有 Bootstrap 实例，另起一套显隐就又是一份显隐机制'
+    )
+    summary_body = _js_function_body(src, 'updateCreatePanelBounds')
+    assert 'createPanelBounds' in summary_body, (
+        'updateCreatePanelBounds() 没有写 #createPanelBounds —— 四至摘要没人填'
+    )
+
+
+def _create_panel_submit_bottom(css, viewport_h):
+    """算出提交钮的 bottom（px）。**公式里没有内容项**，这是本节的整个论点。
+
+    #createPanel 是 `position: fixed; top: 0; bottom: 0`（满视口高），里面三层
+    flex：.config-layout 是列容器、.config-scroll 吃满剩余高度并 overflow-y:auto、
+    .config-footer 是 `flex: 0 0 auto` 贴在底部。#createTaskBtn 在底条里、在
+    #taskForm 之外。于是：
+
+        bottom = 视口高 - .config-footer 的下内边距
+
+    中间为什么没有别的项：宿主 .workbench-panel__body 有 12px 内边距，而
+    `.workbench-panel__body--fill .config-footer` 的下外边距是 -12px，两者恰好
+    抵掉（底条贴边）。这一对是**必须一起验的不变量** —— 只改一头，底条就不再
+    贴底，公式随之作废。所以下面五个前提逐条断言，任何一条被破坏都响亮失败，
+    而不是让公式安静地算错。
+
+    浏览器实测（headless Chromium，四条管线 × 明暗两主题 × 两个视口 = 16 组）：
+        1366x768 -> 756.00 (= 768 - 12)
+        1600x900 -> 888.00 (= 900 - 12)
+    16 组全部相同，elementFromPoint 命中提交钮本体，.config-scroll 的 scrollTop
+    全为 0；其中 map / local_terrain / contour 三条在 768 下表单确实在滚
+    （scrollHeight > clientHeight）—— 表单滚而提交钮不动。
+    """
+    def one_rule(selector):
+        bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
+        assert len(bodies) == 1, (
+            f'期望恰好 1 条 `{selector}` 规则，实际 {len(bodies)} 条 —— 本模型已失效'
+        )
+        return _decl_map(bodies[0])
+
+    def parts(raw, selector, prop):
+        """把 `margin` / `padding` 简写切成有符号的 px 列表。
+
+        为什么不能直接把每一段交给 `_resolve_length_px`：那个函数**不认负号**
+        （它服务的是长度与令牌解析，`-12px` 一律返回 None）。而底条「贴边」正是
+        靠负外边距实现的，所以这里必须自己剥一次符号 —— 剥完再交给它，令牌与
+        rem 换算仍然走同一份实现，不在这里另抄一套。
+        """
+        vals = []
+        for token in _IMPORTANT_RE.sub('', raw).strip().split():
+            sign = -1.0 if token.startswith('-') else 1.0
+            v = _resolve_length_px(css, token.lstrip('+-'))
+            vals.append(None if v is None else sign * v)
+        assert all(v is not None for v in vals), (
+            f'`{selector}` 的 {prop} = {raw!r}，解析不了 —— 本模型已失效。'
+            'tests/test_spacing_scale.py 把这几条登记成「只许字面量」，'
+            '写成 calc() 或 var() 会让本模型整个失明'
+        )
+        return vals
+
+    # 前提 1：面板满视口高。
+    panel = one_rule('.workbench-panel')
+    assert panel.get('position') == 'fixed', (
+        '.workbench-panel 不再是 position: fixed —— 面板不再钉在视口上，'
+        '提交钮的 bottom 就不能由视口高推出来了'
+    )
+    for side in ('top', 'bottom'):
+        raw = panel.get(side)
+        assert raw is not None and _resolve_length_px(css, raw) == 0, (
+            f'.workbench-panel 的 {side} 不是 0（实际 {raw!r}）—— 面板不再满高，'
+            '底条也就不再贴在视口底边'
+        )
+
+    # 前提 2：滚动发生在 .config-scroll，而不是底条所在的那一层。
+    scroll = one_rule('.config-scroll')
+    assert scroll.get('overflow-y') == 'auto', (
+        '.config-scroll 不再 overflow-y: auto —— 表单要么整层撑高把底条顶出视口，'
+        '要么滚动跑到外层去，两种都会把提交钮带走'
+    )
+    fill = one_rule('.workbench-panel__body--fill')
+    assert fill.get('overflow') == 'hidden', (
+        '.workbench-panel__body--fill 不再 overflow: hidden —— 两层都能滚，'
+        '会出双滚动条，且外层滚动会把底条滚出视口'
+    )
+
+    # 前提 3：底条不参与滚动、不被内容压缩。
+    footer = one_rule('.config-footer')
+    flex = (footer.get('flex') or '').split()
+    assert flex[:2] == ['0', '0'], (
+        f'.config-footer 的 flex 是 {footer.get("flex")!r}，不是 `0 0 auto` —— '
+        'flex-grow/shrink 一旦不为 0，表单一长底条就会被压扁或被推走'
+    )
+
+    # 前提 4：底条的负下外边距恰好抵掉宿主的下内边距（贴边）。
+    host_pad = parts(one_rule('.workbench-panel__body')['padding'],
+                     '.workbench-panel__body', 'padding')
+    host_pad_bottom = host_pad[0] if len(host_pad) < 3 else host_pad[2]
+    footer_margin = parts(one_rule('.workbench-panel__body--fill .config-footer')['margin'],
+                          '.workbench-panel__body--fill .config-footer', 'margin')
+    assert len(footer_margin) == 3, (
+        '`.workbench-panel__body--fill .config-footer` 的 margin 不是三值简写 —— '
+        '本模型按「上 左右 下」读它，写法一变就读错。'
+        'tests/test_css_contract.py::test_config_footer_is_a_real_bottom_bar_inside_the_panel '
+        '对同一条规则有同样的形状要求'
+    )
+    assert footer_margin[2] == -host_pad_bottom, (
+        f'底条的下外边距 {footer_margin[2]}px 不再等于宿主下内边距 '
+        f'{host_pad_bottom}px 的相反数 —— 底条不贴视口底边了，'
+        f'提交钮的 bottom 会比视口低 {host_pad_bottom + footer_margin[2]}px'
+    )
+
+    # 前提 5：底条自己的下内边距，就是提交钮到视口底边的全部距离。
+    footer_pad = parts(footer['padding'], '.config-footer', 'padding')
+    footer_pad_bottom = footer_pad[0] if len(footer_pad) < 3 else footer_pad[2]
+    return viewport_h - footer_pad_bottom
 
 
 def test_submit_button_fits_at_1366x768():
-    """1366x768 下下载弹窗必须完整装下表单，提交按钮无需滚动即可见。
+    """1366x768 下提交按钮必须无需滚动即可见。**Task 5 起这是恒等式，不是拟合。**
 
-    **这是 A5 / Task 10 的验收标准在弹窗时代的等价物。**
+    **这是 A5 / Task 10 的验收标准。** 三代被测对象：
+      - dock 时代：常驻面板里按钮的 bottom <= 768。实测 949.34，溢出 181.3px。
+      - 弹窗时代：#downloadModal 在 1366x768 下会不会超视口。实测 bottom 901.50，
+        折叠线下 133.5px（模型算 865.50，下界，差 36 = 两处文案折行）；
+        1366x720 一档实测溢出 91px。这条断言当时是 `xfail(strict=True)`，
+        reason 里写着「归属 Task 5」。
+      - 现在：提交钮在 .config-footer 里、在滚动区之外，bottom = 视口高 - 底条
+        下内边距，**与表单内容无关**。
 
-    dock 时代这条断言算的是「常驻面板里按钮的 bottom <= 768」（改前实测
-    949.34，溢出 181.3px，用户必须滚动才能提交）。2026-07 UX 改版把表单
-    搬进了 #downloadModal，问题变成「弹窗在 1366x768 默认态下是否超出
-    视口」——超出的话 Bootstrap 会让弹窗自身滚动，提交按钮又躲回折叠线下。
+    所以本条不再是「算一算够不够」，而是「那套结构前提还在不在」：
+    `_create_panel_submit_bottom` 逐条断言五个前提（面板满高 / 滚动在
+    .config-scroll / 底条 flex:0 0 auto / 负外边距抵掉宿主内边距 / 底条下内边距），
+    任何一条被破坏都响亮失败。断言本身对 1366x768 与 1600x900 各跑一遍 ——
+    两个视口给出同一个余量，正是「与视口无关」的证据。
 
-    模型的输入：
-      - 结构：从 templates/index.html 解析 `#downloadForm` 的可见直接子元素
-        （加一个字段会被算进来）
-      - 表单尺寸：从 style.css 解析，控件高度走**模拟层叠**（加 `height: 44px`
-        会被算进来）
-      - 弹窗框架尺寸：从 vendor bootstrap.min.css 解析
-        （_bootstrap_modal_metrics，读不到会响亮失败）
-    结构契约（表单确实在弹窗里）由 test_submit_button_lives_inside_download_modal
-    钉住。
+    ⚠️ **xfail(strict=True) 已按它自己的要求删除。** 那个标记的 reason 明写
+       「Task 5 落地后本条一旦转绿，strict xfail 会失败，强制把这个标记连同这段
+       理由一起删掉」。Task 5 落地了，本条转绿了，标记删了，理由搬进了这段
+       docstring 与本节顶部那段沿革 —— 数字一个没丢。
+
+    ⚠️ 结构契约（表单与提交钮确实在面板里、且提交钮**不在**表单里）由
+       test_submit_button_lives_in_the_create_panel_footer 钉住；表单内容不许
+       悄悄长高由 test_create_panel_form_content_does_not_grow_further 钉住。
+       三条各管一段，缺一段就会重新出现「模型说装得下、浏览器里装不下」。
     """
-    got = _index_form_vertical_model(_css())
-    assert got <= VIEWPORT_1366_HEIGHT_PX, (
-        f'1366x768 下 #createTaskBtn 的 bottom 模型值 {got:.2f}px > '
-        f'{VIEWPORT_1366_HEIGHT_PX}px —— 提交按钮在折叠线以下 '
-        f'{got - VIEWPORT_1366_HEIGHT_PX:.2f}px，用户必须滚动才能提交。'
-        '这正是 A5 / Task 10 要修的缺陷（改前 949.34）'
+    for viewport in (VIEWPORT_1366_HEIGHT_PX, 900):
+        got = _create_panel_submit_bottom(_css(), viewport)
+        assert got <= viewport, (
+            f'视口 {viewport}px 下 #createTaskBtn 的 bottom 模型值 {got:.2f}px > '
+            f'{viewport}px —— 提交按钮在折叠线以下 {got - viewport:.2f}px。'
+            '这在面板结构下不该可能发生：要么某个前提断言漏了，要么底条的'
+            '下内边距变成了负数'
+        )
+        assert got == viewport - 12, (
+            f'视口 {viewport}px 下模型算出 bottom = {got:.2f}px，'
+            f'期望 {viewport - 12}px（= 视口 - 底条 12px 下内边距）。'
+            '浏览器实测 1366x768 -> 756.00、1600x900 -> 888.00，四条管线'
+            '× 明暗两主题共 16 组全部一致。这个等式变了说明底条的几何被改过，'
+            '请重新量一遍真实浏览器再改这里的 12'
+        )
+
+
+# 表单内容栈高的棘轮上界。**实测值，不是设计目标。**
+#
+# 2026-08-15 Task 5 把被测对象换掉了。改前这条棘轮盯的是
+# `_index_form_vertical_model(_css())` —— 「#createTaskBtn 的模型 bottom」——
+# 上界 866.0（= 动 Task 3 令牌前实测 865.50 + 0.50 余量）。那个量现在**恒等于**
+# 「视口高 - 12」，与源码里任何尺寸都无关，继续棘轮它就是棘轮一个常数。
+#
+# 换成 `_create_panel_form_content_height(_css())`：#taskForm 在瓦片管线下的
+# 内容栈高。折叠线不再受它影响（提交钮在滚动区外），但它仍然会退化 ——
+# 内容越高，.config-scroll 的滚动条越长、首屏能看到的字段越少，而这是
+# 结构模型完全失明的那一半。
+#
+# 上界 = 2026-08-15 Task 5 落地时实测 719.0 + 0.50 余量。
+# 两个数为什么相差那么多（866.0 -> 719.5）：866 里有约 147px 是**弹窗框架**
+# （.modal-dialog 上外边距 28 + modal-content 边框 + .modal-header 整条 +
+# .modal-body 上内边距 24），面板里那些一个都不存在；表单内容本身没有变小。
+# 这不是「腾出了 147px 竖向空间」，是「这 147px 从此不由这条棘轮管」。
+#
+# 余量为什么只给 0.50：模型的竖向算术全部落在 0.5px 的格子上
+# （行高 = 1.5 × 偶数字号），0.50 正好是一个格子 —— 能吸收浮点尾差，
+# 又能让任何 >= 1px 的真实增高当场变红。参考灵敏度（每 +1px 令牌值，
+# Task 3 时在弹窗模型上量的，同一批消费者）：
+# `--space-2` +17.0 / `--font-size-sm` +10.5 / `--font-size-xs` +9.0 /
+# `--ctl-h` +5.0 —— 所以这条棘轮不是形式主义。
+_FORM_CONTENT_HEIGHT_RATCHET_PX = 719.5
+
+
+def test_create_panel_form_content_does_not_grow_further():
+    """内容**棘轮**：`#taskForm` 在瓦片管线下的内容栈高不许超过 719.0px。
+
+    ⚠️ 这是棘轮，**不是目标**。它不问「装不装得下」——
+    test_submit_button_fits_at_1366x768 已经从结构上保证提交钮永远够得着，
+    而表单本身**允许**滚动（1366x768 实测 map / local_terrain / contour 三条
+    管线的 .config-scroll 都在滚，提交钮的 bottom 仍然是 756）。
+
+    这条为什么必须存在：结构断言对「内容长高」是完全失明的 —— 往表单里塞
+    200px 字段，那五个前提一条不破，全套测试一条不红，而用户首屏能看到的
+    字段少了一半、每次建任务都要多滚一屏。改前那条棘轮盯的是按钮 bottom，
+    按钮 bottom 现在是常数，所以棘轮必须跟着搬到唯一还会变的那个量上。
+
+    棘轮规则（与 test_important_count_under_control 的账法同一套）：
+
+      **改小了**（内容变矮）：把 `_FORM_CONTENT_HEIGHT_RATCHET_PX` 降到
+      「新实测值 + 0.50」，并在这里登记降了多少、靠什么降的。不降的话，
+      腾出来的竖向空间会被后面的任务悄悄吃回去。
+
+      **确实需要更多字段**：允许抬高上界，但必须在本 docstring 里写清
+      「加了什么、新实测多少、为什么这些字段是必要的」。模型是下界（所有文本块
+      按一行计），所以真实高度只会更高。抬升本身不是失败，**不留痕地抬升**才是。
+
+    历史：
+      866.0 —— 2026-08-15 Task 3 前，被测对象是「弹窗时代按钮的模型 bottom」。
+      719.5 —— 2026-08-15 Task 5，被测对象换成「表单内容栈高」（实测 719.0）。
+               差额约 147px 全是退场的弹窗框架，不是表单变矮了。
+    """
+    got = _create_panel_form_content_height(_css())
+    assert got <= _FORM_CONTENT_HEIGHT_RATCHET_PX, (
+        f'#taskForm 的内容栈高从 719.0px 涨到 {got:.2f}px'
+        f'（超上界 {got - _FORM_CONTENT_HEIGHT_RATCHET_PX:.2f}px）——'
+        '这是**棘轮，不是目标**：提交钮够不够得着由 '
+        'test_submit_button_fits_at_1366x768 从结构上保证，本条只管「表单不许'
+        '悄悄长高」。若你确实需要更多字段，请在本条 docstring 里写明加了什么、'
+        '重新量一遍、再把上界改成新实测值 + 0.50，不要不留痕地把数字往上顶。'
     )
 
 
@@ -3691,7 +4663,7 @@ def _bbox_object_literals(src):
 #       给的 bbox 要过与框选、点读数编辑、手动输入同一道闸门；
 #     · `applyPlaceResult()` 重建的 `_rectDegrees` —— 与 _applyManualBounds
 #       同一套写入路径。
-MAP_JS_BBOX_LITERAL_COUNT = 16
+MAP_JS_BBOX_LITERAL_COUNT = 18
 
 
 def test_bbox_literals_never_swap_directions():
@@ -4068,6 +5040,165 @@ def _split_outline_like(value):
     return out
 
 
+# padding 的三个简写 -> 长写。**这是 2026-08-15 台账 4 号缺口的修复**（Task 4）。
+#
+# 修之前：`_btn_decls` 只展开 outline / border，`_effective_button_height` 只向
+# `_btn_computed` 要 `padding` / `padding-top` / `padding-bottom`，且对 `padding`
+# 简写取 `value.split()[0]` 当纵向内边距。三个后果，全部实测：
+#   1. 一条 `.btn { padding-block: 20px }` 在模型眼里**不存在** —— 模型静默回落
+#      到 Bootstrap 的 6px，算出 34.5px 而浏览器渲染 62.5px，每条断言都是绿的。
+#      Task 3 因此被迫在 `.config-footer .btn` 上写两条 `padding-top/-bottom` 长写，
+#      并在 style.css 里留注释解释「为什么不能用 padding-block」——那段注释描述的
+#      是模型的缺陷，不是 CSS 的偏好。
+#   2. 四值 `padding: 1px 2px 3px 4px` 的下内边距被当成 1px（取了第 0 位）。
+#   3. 「先简写、后长写」跨规则的层叠算不对：`.btn { padding-top: 4px }` 之后
+#      `.btn-sm { padding: 8px 12px }`（同特异度、源序在后）在浏览器里是 8px，
+#      而旧模型无条件优先用长写，答 4px。
+# 展开之后这三条都由 `(important, 特异度, 规则序号, 声明序号)` 这把统一的键决出，
+# 与 outline / border 同一条路。正面防线：
+# tests/test_button_geometry.py::test_button_height_model_sees_logical_padding。
+#
+# --------------------------------------------------------------------------
+# 2026-08-15（收尾轮）**上面那次修复自己留了三条静默通道，一并记账**
+# --------------------------------------------------------------------------
+# 三条是同一个失效模式：模型遇到看不懂的东西时没有响亮失败，而是回落到一个
+# 恰好还在的旧值。数字全部是模型侧实测，探针是 `.btn.btn-primary.w-100#createTaskBtn`
+# **不带任何祖先**的那个上下文（量 `.btn` 的基几何），基线 28.0 =
+# clamp(4+4+17, min-height 28)，17 = 行高 + 2x边框。这个 28.0 不是页面上那颗按钮的
+# 高度 —— 它真实住在 `#createPanel` 的 `.config-footer` 里，`.config-footer .btn`
+# 的 `min-height: var(--ctl-h-lg)` 胜出，模型与浏览器都是 36.0。探针不带祖先是有意的，
+# 理由记在 tests/test_button_geometry.py 第 5 节的注释里。
+#
+#   P. `_split_padding` 切不开时返回 None，`_btn_decls` 于是只发简写、不发长写。
+#      那时 `_PADDING_ONE_VALUE_RE` 上方的注释宣称「只留简写本身 —— 调用方拿它去
+#      `_resolve_length_px` 会响亮失败」。**那句保证是假的**：它只在「没有更早的
+#      长写可以回落」这一种形态下成立，而 `.btn` 自己写的就是
+#      `padding: var(--space-1) var(--space-3)`，模型把它展成了四条长写 ——
+#      「更早的长写」不需要有人手写，天然就在那里。实测：
+#        padding: calc(1px + 2px)              -> 响亮（保证唯一成立的形态）
+#        padding: 2px 4px 30px calc(1px + 2px) -> **静默 28.0**，正确 49.0
+#        padding-block: calc(1px + 2px)        -> **静默 28.0**，正确 23.0
+#        padding-inline: calc(1px + 2px)       -> **静默**（纵向不动，左右读旧值）
+#      修法：切不开就把原值毒化到每一条边上，见 `_split_padding`。
+#   H. 四条逻辑长写 `padding-{block,inline}-{start,end}` 不在任何表和任何 `props`
+#      集合里，被 `_btn_computed` 的 `d[0] in props` 无声丢掉。实测
+#      `padding-block-start: 20px` -> **静默 28.0**，正确 41.0；
+#      `padding-inline-start: 20px` -> **静默 28.0**。
+#      修法：`_PADDING_LOGICAL_LONGHANDS` 别名表 + `_btn_decls` 末尾的安全网
+#      （关的是整条属性名轴，不是补今天这四个名字）。
+#   M. 上面第 2 条宣称修掉的错位回落**代码还在**：`_effective_button_height` 仍
+#      向模型要 `padding` 简写并取 `raw.split()[0]`。它不产生错数只是因为展开总会
+#      同时给出上下两条长写，属于碰巧安全 —— 实测
+#      `.btn { padding: calc(1px + 2px) 4px }` 的计算表里 `padding-top` 是**过期**的
+#      `var(--space-1)`(4px)，浏览器 3px，唯一把它变成失败的是 Python 默认实参的
+#      急求值。修法：只读长写，删掉简写分支。
+#
+# 三处必须同轮落地：删掉 M 的前提是「简写在场则长写必在场」，而那正是 P（毒化）
+# 与 H（安全网）给出的保证。正面防线（三条，与上面 P/H/M 一一对应）：
+# tests/test_button_geometry.py::
+#   test_unsplittable_padding_shorthand_fails_loudly_instead_of_losing_silently
+#   test_btn_decls_understands_every_padding_property_name
+#   test_button_height_model_uses_the_bottom_value_of_a_four_value_padding
+_PADDING_SHORTHANDS = {
+    'padding': ('padding-top', 'padding-right', 'padding-bottom', 'padding-left'),
+    'padding-block': ('padding-top', 'padding-bottom'),
+    'padding-inline': ('padding-left', 'padding-right'),
+}
+# 四条**逻辑长写** -> 物理长写。按 `horizontal-tb` + `ltr` 展开（inline-start =
+# 左），与上面 `_PADDING_SHORTHANDS` 把 `padding-inline` 映到左右两边是同一个
+# 前提，不是本轮新引进的假设；站点只有 zh-CN / en 两种横排 LTR 文案。
+#
+# 2026-08-15 收尾轮补的（Task 4 首版的漏网之鱼）：这四个名字既不在
+# `_PADDING_SHORTHANDS`，也不在任何调用方的 `props` 集合里，于是被
+# `_btn_computed` 的 `d[0] in props` **无声丢掉**。实测（`#createTaskBtn`，
+# 内存变异样式表）：`.btn { padding-block-start: 20px }` 模型答 28.0
+# （= 基线，等于这条声明在模型眼里不存在），正确值 41.0 = 20(上) + 4(下)
+# + 17(行高 + 2x边框)；`padding-inline-start: 20px` 同样 28.0。
+# 这条属性名轴是本文件里最后一个「不响亮」的轴：`_btn_branch_applies` 看不懂
+# 选择器会响亮失败，`_btn_media_applies` 算不了条件 at-rule 会响亮失败，
+# 只有属性名这一轴在静默丢弃 —— 与 `_btn_computed` docstring 自己那句
+# 「任何排在安全网前面的 continue 都是一个静默漏检口」直接矛盾。
+# 正面防线：tests/test_button_geometry.py::
+# test_btn_decls_understands_every_padding_property_name。
+_PADDING_LOGICAL_LONGHANDS = {
+    'padding-block-start': 'padding-top',
+    'padding-block-end': 'padding-bottom',
+    'padding-inline-start': 'padding-left',
+    'padding-inline-end': 'padding-right',
+}
+
+# `_btn_decls` 认得的全部 `padding-*` 属性名。这就是 CSS 里 padding 属性的**全集**
+# （4 物理长写 + 3 简写 + 4 逻辑长写），所以末尾那张安全网不是「今天这几个名字」
+# 的白名单，而是整条轴的闸门：拼错的 `padding-botom`、将来新出的 padding 属性，
+# 都会在 `_btn_decls` 里当场响亮，而不是安静地不生效。
+_PADDING_KNOWN_NAMES = (set(_PADDING_SIDES) | set(_PADDING_SHORTHANDS)
+                        | set(_PADDING_LOGICAL_LONGHANDS))
+
+# 一个能当**整体**认下来的 padding 分量。只认两种形态：`var(--x)`（不带回退）
+# 与「数字 + 可选单位」（含裸 `0`、`.5rem`、负值、大写单位）。
+#
+# ⚠️ 这条正则比它上一版注释宣称的严得多，写清楚免得下一个人误判：它拒的**不是**
+# 「自身含空格的值」，而是「不是上面那两种形态」的一切 ——
+#   · `calc(1px + 2px)` 与不含空格的 `calc(1px+2px)` 都拒（拒的是 calc 本身）
+#   · `var(--x, 4px)`（带回退）、`env()`、`min()/max()/clamp()` 都拒
+#   · CSS 全局关键字 `inherit / initial / unset / revert` 都拒
+#   · `1e2px` 这类科学计数法也拒
+# 拒掉之后**必须毒化**，见 `_split_padding` 的 docstring。
+_PADDING_ONE_VALUE_RE = re.compile(r'^(?:var\(\s*--[-\w]+\s*\)|-?[\d.]+[a-z%]*)$', re.I)
+
+
+def _split_padding(name, value):
+    """`4px 8px` -> {'padding-top': '4px', 'padding-bottom': '8px'}（按 CSS 补位规则）。
+
+    **切不开时不返回 None，而是把原值原样写到它本该设的每一条边上（毒化）。**
+    调用方于是拿着一个解析不了的值去 `_resolve_length_px`，当场响亮失败。
+
+    2026-08-15 收尾轮：这里原本返回 `None`，`_btn_decls` 拿到 None 就只发简写、
+    一条长写都不发，注释宣称「调用方拿它去 `_resolve_length_px` 会响亮失败」。
+    **那个保证是假的**，只在「全站没有任何更早的长写」这一种形态下成立 ——
+    而 style.css 的 `.btn` 自己写的就是 `padding: var(--space-1) var(--space-3)`，
+    模型把它展成了四条长写，所以「更早的长写」根本不需要有人手写，天然就在那里。
+    实测（探针 = `.btn.btn-primary.w-100#createTaskBtn` **不带祖先**，基线 28.0；
+    页面上那颗真实按钮在 `.config-footer` 里是 36.0，不是这个数）：
+        padding: calc(1px + 2px)              -> 响亮（唯一保证成立的形态：
+                                                 简写取分量时 `calc(1px` 解析不了）
+        padding: 2px 4px 30px calc(1px + 2px) -> **静默 28.0**，正确值 49.0
+                                                 = 2(上) + 30(下) + 17(行高+边框)
+        padding-block: calc(1px + 2px)        -> **静默 28.0**，正确值 23.0
+        padding-inline: calc(1px + 2px)       -> **静默**（纵向不动，
+                                                 左右两边读到更早的旧值）
+    也就是说：Task 4 一边补掉三个旧盲区，一边在同一个 helper 里开了一个新的。
+    返回 None 这个形态本身就是那个缺陷 —— 现在它不存在了，调用方无从「忘记处理」。
+
+    毒化会不会误伤合法写法：不会。全站 78 条 padding 声明里，三个简写
+    （73 条 `padding` + 1 条 `padding-block` + 1 条 `padding-inline`）**全部**切得开；
+    唯一过不了上面那条正则的是一条**长写** `padding-right:
+    calc(var(--space-3) + var(--space-2))`，长写不走本函数。裸 `0` 是正则认的。
+    至于 `inherit` / `var(--x, 4px)` 这些「合法但算不出数」的形态：毒化正是想要的
+    结果 —— 本文件的口径是模型宁可响亮拒绝也不猜（见 `_resolve_length_px`）。
+    """
+    raw = _IMPORTANT_RE.sub('', value or '').strip()
+    parts = raw.split()
+    sides = _PADDING_SHORTHANDS[name]
+    if (not parts or len(parts) > len(sides)
+            or not all(_PADDING_ONE_VALUE_RE.match(p) for p in parts)):
+        return {side: raw for side in sides}          # 毒化
+    if name == 'padding':
+        if len(parts) == 1:
+            t = r = b = l = parts[0]
+        elif len(parts) == 2:
+            t, b = parts[0], parts[0]
+            r = l = parts[1]
+        elif len(parts) == 3:
+            t, r, b, l = parts[0], parts[1], parts[2], parts[1]
+        else:
+            t, r, b, l = parts
+        return {'padding-top': t, 'padding-right': r,
+                'padding-bottom': b, 'padding-left': l}
+    start, end = (parts[0], parts[0]) if len(parts) == 1 else (parts[0], parts[1])
+    return {sides[0]: start, sides[1]: end}
+
+
 def _btn_decls(body):
     """规则体 -> [(属性, 值, 是否!important, 声明序号), ...]，简写已展开成长写。
 
@@ -4077,9 +5208,13 @@ def _btn_decls(body):
     `key > best[key]` 为假 —— **先出现的赢**，正好和 CSS 反过来。
     评审实测：补一行 `outline-width: 0` 焦点环消失、补 `border-style: none`
     边框消失，两者都 263 passed。
+
+    末尾那张 `padding-*` 安全网是 2026-08-15 收尾轮补的，见
+    `_PADDING_KNOWN_NAMES`：属性名这一轴此前是静默丢弃的。
     """
     out = []
     idx = 0
+    unknown_padding = set()
     for chunk in body.split(';'):
         if ':' not in chunk:
             continue
@@ -4095,12 +5230,30 @@ def _btn_decls(body):
             for longhand in _BTN_SHORTHAND_EXPANSIONS[name]:
                 out.append((longhand, parts[longhand.rsplit('-', 1)[1]], important, idx))
             out.append((name, val, important, idx))   # 简写本身也留着，便于报错时引用
+        elif name in _PADDING_SHORTHANDS:
+            # `_split_padding` 现在**永远**给出每一条边（切不开就毒化），
+            # 所以这里没有「拿到 None 怎么办」这个分支可以写错。
+            for longhand, side_val in _split_padding(name, val).items():
+                out.append((longhand, side_val, important, idx))
+            out.append((name, val, important, idx))   # 简写本身也留着，便于报错时引用
+        elif name in _PADDING_LOGICAL_LONGHANDS:
+            out.append((_PADDING_LOGICAL_LONGHANDS[name], val, important, idx))
+            out.append((name, val, important, idx))   # 原属性名也留着，便于报错时引用
         elif name == 'background':
             out.append(('background-color', val, important, idx))
             out.append((name, val, important, idx))
         else:
+            if name.startswith('padding') and name not in _PADDING_KNOWN_NAMES:
+                unknown_padding.add(name)
             out.append((name, val, important, idx))
         idx += 1
+    assert not unknown_padding, (
+        f'规则体里出现了模型不认得的 padding 属性 {sorted(unknown_padding)} —— '
+        '它会被 `_btn_computed` 的 `d[0] in props` 无声丢掉，于是模型算一个数、'
+        '浏览器渲染另一个数而断言全绿。要么是拼错了，要么是 CSS 又出了个新的 '
+        'padding 属性，后者请补进 `_PADDING_LOGICAL_LONGHANDS` / '
+        f'`_PADDING_SHORTHANDS`。出问题的规则体：{body.strip()!r}'
+    )
     return out
 
 
@@ -4249,12 +5402,18 @@ def _btn_surface(css, ctx, state, backdrop):
 
 # 站内真实存在的按钮变体（`grep -rn "btn-" templates/ static/js/` 核对过）。
 # 值是「基态底色应当引用的调色板变量」。
+#
+# ⚠️ 2026-08-15（Task 4）`'btn-info': '--color-info'` **已删除**，与 style.css 的
+# 四条 `.btn-info` 规则、tests/test_fix_templates_a11y.py 那条双向跨文件锁
+# 同一轮落地。它零引用（唯一的用例「历史表查看详情」2026-08 随任务名按钮化
+# 下线），唯一的存在理由是给本模型当被测对象 —— 而模型里还有 4 个真实变体
+# 逐格计算，够用了。连带的三个数：`len(ALL_BTN_VARIANTS)` 8 -> 7、
+# `len(BUTTON_CONTEXTS)` 11 -> 10、上下文 x 状态矩阵 55 -> 50 格。
 FILLED_BTN_VARIANTS = {
     'btn-primary': '--color-accent-strong',
     'btn-success': '--color-success',
     'btn-warning': '--color-warning',
     'btn-danger':  '--color-danger',
-    'btn-info':    '--color-info',
 }
 # ⚠️ `.btn-outline-danger` **刻意不在册**（U8）。它的五态已在 style.css 里补全
 # （base / hover / focus-visible / active），但入册会撞上一个无解的约束：
@@ -4316,8 +5475,9 @@ def test_button_cascade_model_covers_every_real_context():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(BUTTON_CONTEXTS) == 11, (
-        f'真实上下文有 {len(BUTTON_CONTEXTS)} 个，期望 11 —— 本测试已失效'
+    assert len(BUTTON_CONTEXTS) == 10, (
+        f'真实上下文有 {len(BUTTON_CONTEXTS)} 个，期望 10 —— 本测试已失效'
+        '（2026-08-15 Task 4：btn-info 变体删除，11 -> 10）'
     )
     for ctx in BUTTON_CONTEXTS:
         for state in _BTN_STATES:
@@ -4354,7 +5514,7 @@ def test_disabled_button_cannot_be_mistaken_for_clickable():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(BUTTON_CONTEXTS) == 11, '上下文表变了 —— 本测试已失效'
+    assert len(BUTTON_CONTEXTS) == 10, '上下文表变了 —— 本测试已失效'
     problems = []
     for ctx in BUTTON_CONTEXTS:
         off_bg, off_fg, off_got = _btn_surface(css, ctx, 'disabled', backdrop)
@@ -4427,7 +5587,8 @@ def test_button_hover_is_a_real_change():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(FILLED_BTN_VARIANTS) == 5, '变体表变了 —— 本测试已失效'
+    assert len(FILLED_BTN_VARIANTS) == 4, (
+        '变体表变了 —— 本测试已失效（2026-08-15 Task 4：btn-info 删除，5 -> 4）')
     problems = []
     for variant in FILLED_BTN_VARIANTS:
         ctx = _BtnCtx({'btn', variant})
@@ -4469,7 +5630,8 @@ def test_button_active_is_darker_than_base():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(FILLED_BTN_VARIANTS) == 5, '变体表变了 —— 本测试已失效'
+    assert len(FILLED_BTN_VARIANTS) == 4, (
+        '变体表变了 —— 本测试已失效（2026-08-15 Task 4：btn-info 删除，5 -> 4）')
     problems = []
     for variant in FILLED_BTN_VARIANTS:
         ctx = _BtnCtx({'btn', variant})
@@ -4522,7 +5684,7 @@ def test_focus_visible_has_a_visible_outline():
     """
     css = _css()
     backdrop = _btn_backdrop(css)
-    assert len(BUTTON_CONTEXTS) == 11, '上下文表变了 —— 本测试已失效'
+    assert len(BUTTON_CONTEXTS) == 10, '上下文表变了 —— 本测试已失效'
     problems = []
     for ctx in BUTTON_CONTEXTS:
         got = _btn_computed(css, ctx, 'focus-visible',
@@ -4657,14 +5819,15 @@ def test_button_ink_is_readable_in_every_state():
 
     其中 `.btn-success` / `.btn-danger` 在任务行里至今仍是**纯图标**按钮，
     SVG 用 `stroke="currentColor"` 描边 —— 1.92:1 意味着图标近乎看不见。
-    （`.btn-info` 的唯一用例是历史表「查看详情」图标按钮，2026-08 随任务名
-    按钮化移除；变体本身保留在 FILLED_BTN_VARIANTS，仍走裸变体上下文。）
+    （第三行那个 `#fff on #60a5fa` 是 `.btn-info` 的实测。该变体已于 2026-08-15
+    Task 4 随按钮几何合并删除 —— 零引用，且唯一的存在理由是给本模型当被测
+    对象；数字留在这里是**历史记账**，不是现役被测项。）
     """
     css = _css()
     backdrop = _btn_backdrop(css)
     cells = [(c, s) for c in BUTTON_CONTEXTS for s in _BTN_STATES]
-    assert len(cells) == 55, (
-        f'上下文 x 状态 = {len(cells)} 格，期望 11 x 5 = 55 —— 本测试已失效'
+    assert len(cells) == 50, (
+        f'上下文 x 状态 = {len(cells)} 格，期望 10 x 5 = 50 —— 本测试已失效'
     )
     problems = []
     for ctx, state in cells:
@@ -4701,8 +5864,11 @@ def test_button_ink_is_readable_in_every_state():
 #     标记收口到 base.html <body> 直下——曾经嵌在记录面板里被遮罩盖住，
 #     也曾在 index/history 两页各放一份拷贝；单出处见
 #     test_task_detail_modal_is_not_trapped_inside_workbench_panel）
-#   templates/index.html 下载/处理两个弹窗的 .btn-close      2（2026-07 弹窗化新增；
-#     替代的 dock-collapse-btn / dock-reopen-handle 两颗已随 dock 移除）
+#   templates/index.html 下载/处理两个弹窗的 .btn-close      0（2026-07 弹窗化时
+#     +2，2026-08-15 Task 5 两个弹窗退场时 -2。#createPanel 的关闭钮来自
+#     _macros.html 的 panel_header 宏，宏体只计一次，所以合并没有新增
+#     纯图标按钮；新增的那颗 rail「新建」带可见 <span> 文字，不算纯图标。
+#     替代 dock 的 dock-collapse-btn / dock-reopen-handle 两颗更早已随 dock 移除）
 #   templates/_macros.html panel_header 宏里的关闭钮              1（2026-08 抽宏：
 #     记录/配置两个面板的头部改前是逐字重复的两段、各带一颗关闭钮，
 #     现在收进 {% macro panel_header %}。宏定义算一次，宏调用不产生
@@ -4757,7 +5923,10 @@ def test_button_ink_is_readable_in_every_state():
 # MBTiles 是**通用产物容器**而不是第四种 output_format，所以它是完成后的一个
 # 动作而不是创建表单里的一个值 —— 那一勾在 templates/index.html 里是带
 # <label> 的复选框，不是按钮，不进本计数。
-ICON_ONLY_BUTTON_COUNT = 20
+# 2026-08-15 Task 5：21 -> 19。两个参数弹窗各带一颗 .btn-close，随弹窗一起退场；
+# 面板的关闭钮走 panel_header 宏（已计在宏体那一行里），rail 的「新建」有可见
+# 文字。所以净 -2，见上面账本里 index.html 那一行。
+ICON_ONLY_BUTTON_COUNT = 19
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 
@@ -5004,6 +6173,77 @@ def _compound_structurally_matches(comp, node):
     return True
 
 
+def _split_branch(branch):
+    """`.a > .b .c` -> [('.a', None), ('.b', '>'), ('.c', ' ')]，组合符跟在**右**边那项上。
+
+    返回 None 表示写法看不懂。
+    """
+    toks = re.findall(r'[>+~]|[^\s>+~]+', branch)
+    if not toks or toks[0] in '>+~':
+        return None
+    out = [(toks[0], None)]
+    i = 1
+    while i < len(toks):
+        if toks[i] in '>+~':
+            if i + 1 >= len(toks) or toks[i + 1] in '>+~':
+                return None
+            out.append((toks[i + 1], toks[i]))
+            i += 2
+        else:
+            out.append((toks[i], ' '))
+            i += 1
+    return out
+
+
+def _color_media_verdict(at_rule, reduced=False):
+    """条件组 at-rule 在颜色模型的建模环境下成立吗？True / False / None(模型不支持)。
+
+    **与 `_motion_media_verdict` 同形，但是另一份拷贝**（同文件，动画模型的同名
+    判决）：同一个 `_PREFERS_REDUCED_MOTION_RE`，命中就把 `reduce`/`no-preference`
+    与 `reduced` 比对，不命中一律返回 None。
+
+    ⚠️ 颜色模型**只算 `reduced=False` 这一种环境** —— 唯一的生产调用方
+    `_winning_color_decl` 走的是默认参数，从不传 True。`reduced` 这个参数存在
+    只为两件事：与供体保持同形（改一边时另一边的差异看得见），以及能被
+    tests/test_css_cascade_model.py 单独喂两种环境做单测。
+    后果是 reduce 块里的 color 在本模型眼里判 False = 在建模环境下是死代码，
+    整条规则被**静默跳过**。这不是漏洞而是有人看着的：
+    `test_text_color_model_assumptions_still_hold` 的 `env_offenders` 那条断言
+    专门禁止 prefers 块里出现 color，并说明了真要在里面改颜色得先让颜色模型
+    像 `_motion_computed` 那样把两种环境各算一遍。
+
+    宽度类断点（`min-width` / `max-width`）与 `@supports` 都落在「不命中」这条路上，
+    也就是**仍然不支持**。理由不是懒：模型只建「一个视口宽度、一份用户偏好」这
+    一种环境，它不知道断点两侧该把哪一边当事实，`@supports` 更要求知道浏览器
+    支持什么。往这两类 at-rule 里塞 color，`_winning_color_decl` 会响亮失败 ——
+    宁可报「算不了」，也不给一个只在某个视口宽度下才对的对比度数字。
+    """
+    m = _PREFERS_REDUCED_MOTION_RE.match(re.sub(r'\s+', ' ', at_rule).strip())
+    if not m:
+        return None
+    want_reduce = m.group(1).lower() == 'reduce'
+    return want_reduce == bool(reduced)
+
+
+def _text_node_verdict(comp, node):
+    """祖先链上的一个位置：这个复合项命中这个节点吗？True / False / None(伪类不支持)。
+
+    伪类必须**和结构一起**判，不能等祖先链走完再补判：`.card:hover .detail-v`
+    对 [div.card, div.card(hover), span.detail-v] 这种链，只按结构挑位置会挑到
+    最近那个没 hover 的 `.card`、然后判不命中 —— 和下面那个贪心漏判是同一类错。
+    返回 None = 「这个位置说不清」，由调用方汇总成「模型不支持」。
+    """
+    if not _compound_structurally_matches(comp, node):
+        return False
+    if not (comp['pseudos'] | comp['neg_pseudos']) <= _TEXT_SUPPORTED_PSEUDOS:
+        return None
+    if not comp['pseudos'] <= node.pseudos:
+        return False
+    if comp['neg_pseudos'] & node.pseudos:
+        return False
+    return True
+
+
 def _text_branch_applies(branch, chain):
     """这个选择器分支命中链尾那个节点吗？True / False / None(模型不支持)。
 
@@ -5011,48 +6251,93 @@ def _text_branch_applies(branch, chain):
     再判「形态不支持」**。反过来写的话，`div:not(.card):not(...)...` 这种
     与目标元素八竿子打不着的规则会把整个模型顶成「已失效」。
 
-    style.css 里没有任何 `>` / `+` / `~` 组合符，也没有任何 @media 规则声明
-    color —— 这两条前提由 `test_text_color_model_assumptions_still_hold` 钉住，
-    前提被打破时是那条测试变红，而不是本函数悄悄按后代关系算错。
+    组合符：后代（空格）与子（`>`）都能从祖先链**精确**判定，拆分复用 div 背景
+    模型的 `_split_branch`（同一个拆分器，不是抄一份 —— 抄两份就会分叉）。
+    兄弟组合符（`+` `~`）返回 None：祖先链里不记兄弟节点，当成后代会**多**匹配
+    （可能把一条其实管不到的规则算成赢家），当成不命中又会漏。
+
+    ⚠️ 共用的是拆分器 `_split_branch`，不是匹配器 `_branch_matches` —— 后者的节点是
+    `(tag, classes, id, attrs)` 四元组、且按**静止态**建模（`:hover` 一律判不成立、
+    带 `::` 的一律判不命中）。本模型的节点是 `_TextEl`，hover/focus 态是要算的
+    （`_TEXT_SUPPORTED_PSEUDOS`），伪元素还要跟 `node.pseudo_element` 比。
+    拿 `_branch_matches` 来算文字颜色会同时废掉这两件事。从它那里搬过来的只有
+    **判定顺序**，不是代码。
+
+    at-rule 里的 color 由 `_color_media_verdict` 判环境，本函数只管选择器形态。
+    color 规则里不许出现 `+` `~` 这条前提由
+    `test_text_color_model_assumptions_still_hold` 钉住，前提被打破时是那条测试
+    变红，而不是本函数悄悄按后代关系算错。
+
+    2026-08-14 修复：祖先链的后代那一步改成**带回溯**。第一版是右往左贪心，
+    `.a > .b .c` 对 [div.a, div.b, div.b, span.c] 会判 False（先抓最近的 `.b`，
+    `>` 那一步再看 chain[1] 发现不是 `.a` 就收工），而 CSS 的答案是命中。
+    这种漏判会把一条**真命中**的规则踢出候选集 -> 赢家算错 -> 对比度数字算错
+    -> 全绿，正是本模型最怕的失效形态。看守：tests/test_css_cascade_model.py。
     """
-    parts = branch.split()
+    parts = _split_branch(branch)
+    if parts is None:
+        return None
+    subject = _parse_compound(parts[-1][0])
+    if subject is None:
+        return None
+
+    # ---- 第一步：能否**确定地**判为不命中 ----
+    # 顺序照抄 `_branch_matches`：主体复合项先判，`+`/`~` 的「形态不支持」排在它
+    # 之后。反过来的话 `.btn-check:checked+.btn` 这类根本打不到本元素的规则会把
+    # 整个模型顶成「已失效」。祖先的复合项也**在这道判决之后**才解析（供体是在
+    # 走链时逐个懒解析）—— 主体已经明确不命中时，一个读不懂的祖先不该把这条
+    # 规则升级成「模型已失效」。
+    if not _compound_structurally_matches(subject, chain[-1]):
+        return False
+    if any(comb in ('+', '~') for _sel, comb in parts):
+        return None
     compounds = []
-    for p in parts:
-        c = _parse_compound(p)
+    for sel, _comb in parts[:-1]:
+        c = _parse_compound(sel)
         if c is None:
             return None
         compounds.append(c)
-    if not compounds:
-        return None
-    subject, ancestors = compounds[-1], compounds[:-1]
+    compounds.append(subject)
 
-    # ---- 第一步：能否**确定地**判为不命中 ----
-    if not _compound_structurally_matches(subject, chain[-1]):
-        return False
-    # 祖先侧从右向左做子序列匹配（纯后代组合符下贪心是正确的）
-    matched_ancestors = []
-    i = len(chain) - 2
-    for comp in reversed(ancestors):
-        while i >= 0 and not _compound_structurally_matches(comp, chain[i]):
+    def walk(k, i):
+        """compounds[k] 及其左边全部落在 chain[i] 及其之上吗？True/False/None。
+
+        parts[k+1] 上挂的组合符描述的是 compounds[k] 与 compounds[k+1] 的关系。
+        后代那一步要**回溯**：最近的候选走不通就退回来试更上面的。`>` 那一步
+        位置定死，不许回溯 —— 它说的就是「上一代」，换个位置就不是它了。
+        """
+        if k < 0:
+            return True
+        if parts[k + 1][1] == '>':
+            if i < 0:                     # 链首之上没有节点了（Python 负下标会静默回绕）
+                return False
+            v = _text_node_verdict(compounds[k], chain[i])
+            return walk(k - 1, i - 1) if v is True else v
+        unknown = False
+        while i >= 0:                     # 同上：i 见底就停，不许回绕
+            v = _text_node_verdict(compounds[k], chain[i])
+            if v is None:
+                unknown = True            # 这个位置说不清 -> 整体不敢判 False
+            elif v:
+                r = walk(k - 1, i - 1)
+                if r is True:
+                    return True
+                if r is None:
+                    unknown = True
             i -= 1
-        if i < 0:
-            return False
-        matched_ancestors.append((comp, chain[i]))
-        i -= 1
+        return None if unknown else False
 
-    # ---- 第二步：确实可能命中，此时才允许报「形态不支持」----
-    for comp in [subject] + [c for c, _ in matched_ancestors]:
-        if not (comp['pseudos'] | comp['neg_pseudos']) <= _TEXT_SUPPORTED_PSEUDOS:
-            return None
+    verdict = walk(len(parts) - 2, len(chain) - 2)
+    if verdict is not True:
+        return verdict
+
+    # ---- 第二步：祖先链确实能对上，此时才允许报主体的「形态不支持」----
+    if not (subject['pseudos'] | subject['neg_pseudos']) <= _TEXT_SUPPORTED_PSEUDOS:
+        return None
     if not subject['pseudos'] <= chain[-1].pseudos:
         return False
     if subject['neg_pseudos'] & chain[-1].pseudos:
         return False
-    for comp, node in matched_ancestors:
-        if not comp['pseudos'] <= node.pseudos:
-            return False
-        if comp['neg_pseudos'] & node.pseudos:
-            return False
     return True
 
 
@@ -5126,11 +6411,24 @@ def _winning_color_decl(css, chain, label):
                 '（不是通过：模型算不清的规则可能正是胜出的那条）'
             )
             if hit:
-                if at_ctx:
-                    raise AssertionError(
-                        f'[{label}] 命中的规则 `{branch}` 在 at-rule {at_ctx} 里，'
-                        '本模型只算顶层规则 —— 已失效'
-                    )
+                # at_ctx 是这条规则外面套的**每一层** at-rule（可能嵌套多层），
+                # 所以逐条判而不是整体判：全部成立才算候选，任一条不成立就整条
+                # 规则跳过（环境不成立 = 这条规则在建模环境下是死的，不是放行），
+                # 出现判不了的才响亮失败。
+                verdicts = [_color_media_verdict(a) for a in at_ctx]
+                for at_rule, verdict in zip(at_ctx, verdicts):
+                    if verdict is None:
+                        raise AssertionError(
+                            f'[{label}] 命中的规则 `{branch}` 外面套着 at-rule '
+                            f'`{at_rule}`，本模型判不了这种环境（只判 '
+                            'prefers-reduced-motion，宽度断点与 @supports 不建模）'
+                            ' —— 已失效。要么把 color 挪到这个 at-rule 外面，'
+                            '要么给 `_color_media_verdict` 补上这类环境的判决'
+                            '（同时得决定断点两侧把哪一边当事实）—— 别让它给一个'
+                            '只在某个视口宽度下才对的对比度数字。'
+                        )
+                if not all(verdicts):
+                    break               # 环境不成立：整条规则在建模环境下是死的
                 cands.append((
                     (bool(_IMPORTANT_RE.search(raw)), _btn_specificity(branch), idx),
                     branch, raw,
@@ -5183,36 +6481,74 @@ def _branch_background(css, branch):
 
 
 def test_text_color_model_assumptions_still_hold():
-    """层叠模型的三条前提：无组合符、无 @media 声明 color、style.css 排在最后。
+    """层叠模型的四条前提：无兄弟组合符、无判不了的 at-rule 声明 color、
+    没有**只在某种用户偏好下才成立**的 color、style.css 排在最后。
 
-    这条不是产品契约，是**模型的自检**。三条前提任何一条被打破，
+    2026-08-14 登记 —— `>` 与 `prefers-*` at-rule 已支持。三样东西的复用程度
+    刻意不同，别当成一回事：
+      · `_split_branch`：**真共用**（全文件一个定义，div 背景模型与本模型两个
+        消费者），改它会同时改到两边，这正是要的。
+      · `_branch_matches`：只搬了**判定顺序**（主体先判、形态不支持后判），
+        代码刻意没复用 —— 它的节点是四元组、按静止态建模（`:hover` 一律判不
+        成立、带 `::` 的一律判不命中），拿来算文字颜色会同时废掉 hover/focus
+        和 `::placeholder`。
+      · `_color_media_verdict`：与 `_motion_media_verdict` **同形但是另一份
+        拷贝**（同一个 `_PREFERS_REDUCED_MOTION_RE`、同一套判决），不是共用。
+    `+` / `~` 与宽度断点仍不支持，原因见各自失败消息。
+
+    这条不是产品契约，是**模型的自检**。四条前提任何一条被打破，
     下面那些「算最终颜色」的断言就是在给一个错数字背书 ——
     「静默给出错误的信心」比没有断言更糟（这是 Task 10/11 反复付过学费的地方）。
     """
     css = _css()
     combinator_offenders = []
     media_offenders = []
+    env_offenders = []
     color_branches = 0
     for sel, body, at_ctx in _rules_ctx(css):
         if 'color' not in _decl_map(body):
             continue
         for branch in _selector_parts(sel):
             color_branches += 1
-            if re.search(r'[>+~]', branch):
+            if re.search(r'[+~]', branch):
                 combinator_offenders.append(branch)
-            if at_ctx:
-                media_offenders.append(f'{at_ctx} {branch}')
+            for at_rule in at_ctx:
+                if _color_media_verdict(at_rule) is None:
+                    media_offenders.append(f'{at_rule} {{ {branch} }}')
+                else:
+                    env_offenders.append(f'{at_rule} {{ {branch} }}')
     assert color_branches > 100, (
         f'只扫到 {color_branches} 个声明 color 的选择器分支 —— 扫描逻辑已失效'
     )
     assert not combinator_offenders, (
-        '发现带子/兄弟组合符的 color 规则，`_text_branch_applies` 只按后代关系拆分，'
-        '会把它们算错：\n' + '\n'.join('  ' + o for o in combinator_offenders)
-        + '\n要么改掉选择器，要么给模型补上组合符支持——别让它继续静默算错。'
+        '发现带兄弟组合符（`+` / `~`）的 color 规则。子组合符 `>` 现在已支持，'
+        '兄弟组合符仍不支持：`_text_branch_applies` 拿到的 chain 只有祖先链、'
+        '不记兄弟节点，当成后代会**多**匹配（把一条其实管不到的规则算成赢家），'
+        '当成不命中又会漏。所以它一律返回 None，调用方会报「模型已失效」：\n'
+        + '\n'.join('  ' + o for o in combinator_offenders)
+        + '\n要么改掉选择器（用后代或子组合符表达），要么给模型补上兄弟链信息——'
+        '别让它继续拒答。'
     )
     assert not media_offenders, (
-        '发现 @media 里声明 color 的规则，本模型只算顶层规则：\n'
+        '发现在**本模型判不了的 at-rule** 里声明 color 的规则。`prefers-reduced-motion` '
+        '现在能判（`_color_media_verdict`），宽度断点与 `@supports` 仍不能：模型只建'
+        '「一个视口宽度、一份用户偏好」这一种环境，不知道断点两侧该把哪边当事实：\n'
         + '\n'.join('  ' + o for o in media_offenders)
+        + '\n要么把 color 挪出断点，要么给模型补上视口环境——别让它给一个只在某个'
+        '宽度下才对的对比度数字。'
+    )
+    assert not env_offenders, (
+        '发现**判得了但依赖用户偏好**的 color 规则（`prefers-reduced-motion` 块里的 '
+        'color）。这一条和上一条说的不是一回事：上面那批是「模型判不了、会响亮'
+        '失败」，这批是「模型判得了，然后**静默跳过**」—— `_winning_color_decl` '
+        '只算 `reduced=False` 这一种环境（它调 `_color_media_verdict` 用的是默认'
+        '参数），reduce 块里的规则在它眼里判 False = 这条规则在建模环境下是死的，'
+        '整条被跳过，没有任何断言看过它：\n'
+        + '\n'.join('  ' + o for o in env_offenders)
+        + '\n要在 prefers 块里改颜色，得先让颜色模型像 `_motion_computed` 那样把'
+        '**两种**环境都算一遍（`reduced=True` / `False` 各跑一次对比度），否则'
+        '开了「减少动画」偏好的用户会拿到一个谁都没检查过的墨色。'
+        '要么把 color 挪出 prefers 块。'
     )
     # style.css 必须是最后加载的样式表——`.table td` 去掉 !important 之后
     # 靠的就是「同特异度、后来者赢」压住 Bootstrap 的 `.table > :not(caption) > * > *`。
@@ -5340,13 +6676,18 @@ def _text_contexts(css):
                  _TextEl('div', {'modal-content'}), _TextEl('div', {'modal-body'}),
                  _TextEl('div', {'detail-grid'}), _TextEl('div', {'detail-item'})]
 
-    # --- 首页表单（2026-07：在 #downloadModal 弹窗内） ---
+    # --- 首页表单（2026-08-15 Task 5：在 #createPanel 里，不再是弹窗） ---
+    # 背衬换了一层：弹窗时代文字压在 .modal-content 上（走 modal 背衬），
+    # 现在压在 .workbench-panel 自己的表面上 —— 面板里**没有 .card**，
+    # 所以不能沿用 panel_top 那条链用的 `.card` 底色。
+    create_surface = _flatten(
+        _resolve_color(css, _branch_background(css, '.workbench-panel')),
+        _palette_var(css, '--color-bg-primary'))
     form_top = [body, main,
-                _TextEl('div', {'modal', 'fade'}, element_id='downloadModal'),
-                _TextEl('div', {'modal-dialog'}),
-                _TextEl('div', {'modal-content'}),
-                _TextEl('div', {'modal-body'}),
-                _TextEl('form', element_id='downloadForm')]
+                _TextEl('section', {'workbench-panel'}, element_id='createPanel'),
+                _TextEl('div', {'workbench-panel__body', 'workbench-panel__body--fill'}),
+                _TextEl('div', {'config-layout'}),
+                _TextEl('form', {'config-scroll'}, element_id='taskForm')]
 
     return [
         # (标签, 链, 背衬, 期望的调色板变量或 None)
@@ -5416,11 +6757,15 @@ def _text_contexts(css):
          [body, main, _TextEl('div', {'index-map'}),
           _TextEl('div', {'map-overlay-chip', 'bounds-overlay'}, element_id='boundsInfo'),
           _TextEl('span', {'bounds-hint'})], overlay, None),
-        ('下载弹窗的瓦片预估',
-         [body, _TextEl('div', {'modal'}, element_id='downloadModal'),
-          _TextEl('div', {'modal-dialog'}), _TextEl('div', {'modal-content'}),
-          _TextEl('div', {'modal-body'}),
-          _TextEl('div', {'tile-estimate'}, element_id='tileEstimate')], modal, None),
+        ('新建任务面板里的瓦片预估',
+         [body, main,
+          _TextEl('section', {'workbench-panel'}, element_id='createPanel'),
+          _TextEl('div', {'workbench-panel__body', 'workbench-panel__body--fill'}),
+          _TextEl('div', {'config-layout'}),
+          _TextEl('form', {'config-scroll'}, element_id='taskForm'),
+          _TextEl('div', element_id='selectionField'),
+          _TextEl('div', {'tile-estimate'}, element_id='tileEstimate')],
+         create_surface, None),
     ]
 
 
@@ -5883,12 +7228,41 @@ _TRANSITION_NON_PROPERTY = frozenset({
 })
 
 
-def _time_to_seconds(tok):
-    """`0.2s` / `150ms` / `0.01ms` -> 秒（float）。不是时间返回 None。"""
-    m = _TIME_RE.match(tok.strip())
+def _time_to_seconds(tok, css=None, _depth=0):
+    """`0.2s` / `150ms` / `0.01ms` / `var(--dur-base)` -> 秒（float）。不是时间返回 None。
+
+    2026-08-15 Task 3：动效令牌化之后 `transition` 里的时长不再是字面量，而是
+    `var(--dur-fast|-base|-slow)`。这不是「放宽」，是**补上模型看不懂的写法** ——
+    改前这个函数遇到 `var()` 返回 None，而 `_motion_computed` 对 None 是响亮
+    assert，所以令牌化的第一次运行就红在
+    test_reduced_motion_actually_stops_every_animated_element 上（实测，不是推算）。
+    这正是本文件想要的形态：模型宁可拒绝也不猜。这里把「跟一层层 var()」这个
+    能力补进去，口径与 `_resolve_length_px` 完全一致 —— 不支持 `var(--x, 回退)`
+    与 `calc()`，跟不下去仍然返回 None。
+
+    不给 `css` 时行为与改前逐字相同（返回 None），所以老调用方不受影响。
+    """
+    tok = tok.strip()
+    m = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', tok)
+    if m:
+        if css is None or _depth > 4:
+            return None                      # 自引用/环，别死循环
+        return _time_to_seconds(_custom_property_raw(css, m.group(1)) or '', css, _depth + 1)
+    m = _TIME_RE.match(tok)
     if not m:
         return None
-    return float(tok.strip()[:-len(m.group(1))]) / (1000.0 if m.group(1).lower() == 'ms' else 1.0)
+    return float(tok[:-len(m.group(1))]) / (1000.0 if m.group(1).lower() == 'ms' else 1.0)
+
+
+def _is_time_token(tok, css=None):
+    """这个 token 是不是一个 <time>（含解析得开的 `var(--dur-*)`）。
+
+    单独一个函数而不是各处写 `_TIME_RE.match(...)`：简写展开时「哪个 token 是
+    时长」这个判断出现在 4 处（animation 的 duration / name，transition 的
+    duration / property），漏改一处的表现是「某条过渡在模型里凭空消失」——
+    不报错，只是断言少覆盖一条规则。
+    """
+    return _time_to_seconds(tok, css) is not None
 
 
 def _split_commas_outside_parens(value):
@@ -5927,7 +7301,7 @@ def _tokens_outside_parens(part):
     return out
 
 
-def _expand_motion_decls(body):
+def _expand_motion_decls(body, css=None):
     """规则体 -> [(长写属性名, 值, important, 声明序号)]，简写已展开。
 
     简写**必须**展开，理由与 _BTN_SHORTHAND_EXPANSIONS 完全相同：
@@ -5937,6 +7311,11 @@ def _expand_motion_decls(body):
     简写里 <time> 的顺序按规范：**第一个是 duration，第二个是 delay**。
     只要认「有个 s 结尾的 token」而不管顺序，`animation: pulse 0s 2s` 这种
     会被读成 2s，正好把「时长压到 0」的检查骗过去。
+
+    `css`（2026-08-15 Task 3）：只用来让 `_is_time_token` 跟得开
+    `var(--dur-*)`。不传时行为与改前逐字相同 —— 时长令牌会被当成「不是时长」，
+    于是 `durs` 拿到 `'0s'`，那条过渡在模型里凭空消失。所以**每个调用方都要传**，
+    两处调用方（`_motion_computed` / `_motion_rule_index`）都已经手里有 css。
     """
     out = []
     for idx, chunk in enumerate(body.split(';')):
@@ -5952,11 +7331,11 @@ def _expand_motion_decls(body):
             # 只处理单条动画（站内没有逗号分隔的多动画写法）；有了再扩。
             for part in _split_commas_outside_parens(value):
                 toks = _tokens_outside_parens(part)
-                times = [t for t in toks if _TIME_RE.match(t)]
+                times = [t for t in toks if _is_time_token(t, css)]
                 iters = [t for t in toks
                          if t.lower() == 'infinite' or re.fullmatch(r'\d+\.?\d*', t)]
                 names = [t for t in toks
-                         if not _TIME_RE.match(t)
+                         if not _is_time_token(t, css)
                          and t.lower() not in _ANIMATION_NON_NAME
                          and '(' not in t
                          and not re.fullmatch(r'\d+\.?\d*', t)]
@@ -5968,9 +7347,9 @@ def _expand_motion_decls(body):
             props, durs = [], []
             for part in _split_commas_outside_parens(value):
                 toks = _tokens_outside_parens(part)
-                times = [t for t in toks if _TIME_RE.match(t)]
+                times = [t for t in toks if _is_time_token(t, css)]
                 names = [t for t in toks
-                         if not _TIME_RE.match(t)
+                         if not _is_time_token(t, css)
                          and t.lower() not in _TRANSITION_NON_PROPERTY
                          and '(' not in t]
                 props.append(names[0] if names else 'all')
@@ -6006,7 +7385,7 @@ def _motion_computed(css, chain, reduced=False):
     for order, (sel, body, at_ctx) in enumerate(_rules_ctx(css)):
         if any(a.split()[0] in _BTN_NON_SELECTOR_AT_RULES for a in at_ctx):
             continue                       # @keyframes 里的 `0%` 不是选择器
-        decls = _expand_motion_decls(body)
+        decls = _expand_motion_decls(body, css)
         for branch in _selector_parts(sel):
             applies = _text_branch_applies(branch, chain)
             if applies is None:
@@ -6038,7 +7417,7 @@ def _motion_computed(css, chain, reduced=False):
         return best[name][1] if name in best else default
 
     dur_raw = val_of('animation-duration', '0s')
-    anim_dur = _time_to_seconds(_split_commas_outside_parens(dur_raw)[0])
+    anim_dur = _time_to_seconds(_split_commas_outside_parens(dur_raw)[0], css)
     assert anim_dur is not None, f'读不懂的 animation-duration: {dur_raw!r}'
 
     tprops = [p.strip().lower() for p in
@@ -6046,7 +7425,7 @@ def _motion_computed(css, chain, reduced=False):
     tdurs_raw = _split_commas_outside_parens(val_of('transition-duration', '0s'))
     tdurs = []
     for d in tdurs_raw:
-        s = _time_to_seconds(d)
+        s = _time_to_seconds(d, css)
         assert s is not None, f'读不懂的 transition-duration: {d!r}'
         tdurs.append(s)
     transitions = {}
@@ -6077,7 +7456,7 @@ def _motion_rule_index(css):
     for sel, body, at_ctx in _rules_ctx(css):
         if any(a.split()[0] in _BTN_NON_SELECTOR_AT_RULES for a in at_ctx):
             continue
-        if not _expand_motion_decls(body):
+        if not _expand_motion_decls(body, css):
             continue
         in_reduce = any(
             _PREFERS_REDUCED_MOTION_RE.match(re.sub(r'\s+', ' ', a).strip())
@@ -6141,8 +7520,16 @@ def _motion_rule_index(css):
 #     visibility 0.12s）、`.hint-spin`（检测中的 rotate 无限循环）。
 #     前两个在 reduce 块通用选择器 `*` / `*::after` 覆盖范围内；`.hint-spin`
 #     被 `*` 覆盖。都无需豁免登记。
-#     ⚠️ `.hint-spin` 刻意写成单类而不是 `.hint.is-busy > svg`：本文件的
-#     层叠模型只支持后代组合符，子组合符会让本节 20 条断言集体判「模型已失效」。
+#     ⚠️ `.hint-spin` 刻意写成单类而不是 `.hint.is-busy > svg`。
+#     （2026-08-14 更新理由：层叠模型 `_text_branch_applies` 现在支持子组合符了，
+#     动画模型也在消费它，所以原来写的「子组合符会让本节 20 条断言集体判模型已
+#     失效」这个机制**已经不存在**。结论不变，但卡点换了人：
+#     `_motion_contexts_from_stylesheet` 仍然用 `branch.split()` 拆选择器、再对
+#     每段断言 `_parse_compound(...) is not None`，而 `_parse_compound('>')` 返回
+#     None —— 所以 `>` 会在**构造上下文**的时候就炸，表现为
+#     test_reduced_motion_actually_stops_every_animated_element 这一条失败，
+#     不再是 20 条集体失效。要在动画规则里写子组合符，先把那个函数改成用
+#     `_split_branch`。）
 # 38 -> 37（删死代码）：`.status-badge` 基规则带一条 background-color/
 #   border-color/color/box-shadow 过渡，随整个组件删除。任务行早已改用
 #   `.task-dot` + `.task-status-text`，全仓只剩 history.js / tasks.js 两处
@@ -6156,7 +7543,30 @@ def _motion_rule_index(css):
 #   纯展示无 pointer-events,在 reduce 块 `*` 覆盖范围内,无需豁免登记。
 # 40 -> 39（取消面板遮罩层）：`.panel-backdrop` 随遮罩删除,其 opacity 0.2s
 #   过渡一并移除(2026-08-11 面板非模态化)。
-_MOTION_BRANCH_COUNT = 39
+# 42 -> 42（2026-08-15 Task 3 动效令牌化）：**一个分支都没增删**，本次只把时长
+#   字面量换成 `var(--dur-fast|-base|-slow)`、把 `ease` 换成 `var(--ease)`，
+#   并把三条「条子在长」的过渡（.progress-bar / .splash-bar /
+#   .statusbar-progress__bar）统一到 --dur-base。锚点因此不动，这行只为下一个
+#   读者留个交待：**时长现在是 var()，不是字面量**。
+#   连带的模型改动（不改这个数，但会影响下面每一条断言的读数）：
+#   `_time_to_seconds` / `_expand_motion_decls` 现在跟一层 var()。不补这个能力
+#   的话，`_is_time_token` 认不出 `var(--dur-base)`，`durs` 拿到 '0s'，那条过渡
+#   会在模型里**凭空消失** —— 实测就是响亮的红
+#   （test_reduced_motion_actually_stops_every_animated_element：
+#    「读不懂的 transition-duration: 'var(--dur-base)'」），不是静默失覆盖。
+# 42 -> 45（2026-08-15 Task 6 浮层入场统一成一套）：层栈里的浮层此前有四种入场
+#   写法（面板 transform/--dur-base、confirm 遮罩 opacity/--dur-base + 卡片
+#   transform/--dur-base、拖拽遮罩 opacity/**--dur-fast**、命令面板与速查表
+#   **完全没有**入场），现在统一为「遮罩担 opacity、卡片担 transform，两条都是
+#   --dur-base + --ease」。
+#   加 3 个分支：`.cmdk`（opacity，改前刻意不加 transition）、`.cmdk__dialog`
+#     （translateY(-8px) -> 0）、`.drop-veil__tip`（scale(0.96) -> 1，transform
+#     落在提示胶囊上而不是 inset:0 的满屏遮罩上——缩放满屏层会在四边露底）。
+#   零删除。另有两处**不增删分支**的就地修改：`.workbench-panel` 补上 opacity
+#     （它是唯一「遮罩与卡片同体」的浮层，两条属性都在自己身上），`.drop-veil`
+#     的 --dur-fast 改 --dur-base（它做的是整层显隐，不是 hover 反馈）。
+#   三个新分支都是纯类选择器，落在 reduce 块 `*` 的覆盖范围内，无需豁免登记。
+_MOTION_BRANCH_COUNT = 45
 
 
 def test_motion_rule_index_is_complete():
@@ -6431,8 +7841,23 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 36 -> 37（全窗口拖拽遮罩）：`.drop-veil` 反解出一个上下文，
     # 普通 opacity 过渡，在 reduce 块 `*` 覆盖范围内，不进豁免清单。
     # 37 -> 36（取消面板遮罩层）：`.panel-backdrop` 上下文随遮罩删除。
-    assert len(ctxs) == 36, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 36：\n'
+    # 36 -> 37（地点搜索挪到顶部居中）：`.map-search__panel` 反解出一个上下文
+    # （下拉面板的开合过渡，opacity + transform），在 reduce 块 `*` 覆盖范围内，
+    # 不进豁免清单。亮起态 `--in` 只改终值、不声明 transition，不额外反解。
+    # 37 -> 38（搜索结果区的换内容淡入）：`.place-search__results` 反解出一个
+    # 上下文。面板已开时它的开合过渡不再触发，换内容是硬切 —— 这一条补的就是
+    # 那一半（用户反馈「搜索还是没有动画」）。同样是普通 opacity 过渡。
+    # 38 -> 39（同上的归零态）：`.place-search__results--fresh` 声明的是
+    # `transition: none`，扫描器按「出现了 transition 声明」计数，所以它也算
+    # 一个上下文。它本来就没有动效，reduce 块对它是恒真的。
+    # 39 -> 42（2026-08-15 Task 6 浮层入场统一成一套）：`.cmdk`、`.cmdk__dialog`、
+    # `.drop-veil__tip` 三个新分支各反解出一个上下文（opacity / transform 的
+    # 普通过渡），都在 reduce 块 `*` 覆盖范围内，不进豁免清单。`.workbench-panel`
+    # 补 opacity、`.drop-veil` 换时长档都是就地改，不新增上下文；亮起态
+    # `.cmdk--in` / `.drop-veil--in .drop-veil__tip` 只改终值、不声明 transition，
+    # 同样不额外反解。
+    assert len(ctxs) == 42, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 42：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -7574,28 +8999,6 @@ def _compound_matches(compound, node):
         if sub:
             return False                   # :not() 的参数命中了 = 整体不命中
     return True
-
-
-def _split_branch(branch):
-    """`.a > .b .c` -> [('.a', None), ('.b', '>'), ('.c', ' ')]，组合符跟在**右**边那项上。
-
-    返回 None 表示写法看不懂。
-    """
-    toks = re.findall(r'[>+~]|[^\s>+~]+', branch)
-    if not toks or toks[0] in '>+~':
-        return None
-    out = [(toks[0], None)]
-    i = 1
-    while i < len(toks):
-        if toks[i] in '>+~':
-            if i + 1 >= len(toks) or toks[i + 1] in '>+~':
-                return None
-            out.append((toks[i + 1], toks[i]))
-            i += 2
-        else:
-            out.append((toks[i], ' '))
-            i += 1
-    return out
 
 
 def _branch_matches(branch, chain):

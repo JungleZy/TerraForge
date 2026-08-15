@@ -7,8 +7,8 @@ key 命名：`api.<区域>.<短名>`；zh 必须与改造前的原文逐字一�
 MESSAGES = {
     # ---- /api/config ----
     'api.config.invalid_values_not_saved': {
-        'zh': '存在非法值，本次未保存任何设置',
-        'en': 'Invalid values found — nothing was saved',
+        'zh': '存在非法值，本次未保存任何配置',
+        'en': 'Invalid values found — no settings were saved',
     },
     'api.config.speedtest_fallback_note': {
         'zh': '测速流程异常，给出保守值',
@@ -29,7 +29,8 @@ MESSAGES = {
     'api.tasks.files_kept_unsafe_dir': {
         'zh': '任务记录已删除；产物目录未能删除（未通过安全校验，或文件正被占用），'
               '磁盘文件已保留。占用导致的失败会在下次启动时自动重试',
-        'en': 'Task record deleted, but the output directory could not be removed '
+        'en': 'Task record deleted, but the artifact directory could not be '
+              'removed '
               '(it failed the safety check, or its files are in use), so files on '
               'disk were kept. In-use failures are retried on the next startup',
     },
@@ -37,7 +38,7 @@ MESSAGES = {
         'zh': '有任务尚未结束，清空缓存会让它们的产物静默缺瓦片。'
               '请先暂停或删除：{tasks}',
         'en': 'Some tasks are still unfinished; clearing the cache would '
-              'silently leave their output missing tiles. Pause or delete '
+              'silently leave their artifacts missing tiles. Pause or delete '
               'them first: {tasks}',
     },
     # 上面那条消息里任务标签之间的分隔符（英文用逗号，中文用顿号）
@@ -51,16 +52,16 @@ MESSAGES = {
         'en': 'Map tiles',
     },
     'api.tasks.pipeline.dem': {
-        'zh': 'DEM',
-        'en': 'DEM',
+        'zh': '高程',
+        'en': 'Elevation',
     },
     'api.tasks.pipeline.contour': {
         'zh': '等高线',
         'en': 'Contour',
     },
     'api.tasks.pipeline.local_terrain': {
-        'zh': '本地地形',
-        'en': 'Local terrain',
+        'zh': '本地地形切片',
+        'en': 'Local terrain tiling',
     },
 
     # ---- /api/cache/stats（配置页「缓存管理」的分类名）----
@@ -69,8 +70,8 @@ MESSAGES = {
     # 几十 GB，所以它们必须是译文而不是原样回中文。
     # 括号是**语种自己的**括号：中文用全角（），英文用半角 () 前加空格。
     'api.cache.category.dem': {
-        'zh': 'DEM 缓存',
-        'en': 'DEM cache',
+        'zh': '高程缓存',
+        'en': 'Elevation cache',
     },
     # {name} 是样式名（roadmap / satellite…）或认不出来时的目录名原文
     'api.cache.category.tiles': {

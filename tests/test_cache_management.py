@@ -71,7 +71,10 @@ def test_get_cache_stats_categorizes(cache):
     )
     assert by_key[_NS_SATELLITE]["size_bytes"] == 200
     assert by_key[_NS_SATELLITE]["label"] == "瓦片缓存（satellite · 89abcdef）"
-    assert by_key["dem"]["label"] == "DEM 缓存"
+    # 「高程缓存」而不是「DEM 缓存」：DEM 只保留在数据集全称里（ASTER GDEM v3），
+    # 其余一律「高程」—— 由 tests/test_terminology.py 的
+    # test_dem_survives_only_in_dataset_names 全局钉住。
+    assert by_key["dem"]["label"] == "高程缓存"
     assert by_key["dem"]["size_bytes"] == 1000
     assert by_key["_root"]["file_count"] == 1
     assert by_key["_root"]["label"] == "其他"

@@ -32,8 +32,9 @@ MESSAGES = {
         'en': 'This will delete the "{label}" cache ({size}).{warning}',
     },
     'js.config.cache.dem_warning': {
-        'zh': '注意：DEM 缓存重新下载需要 Earthdata 账号登录。',
-        'en': 'Note: re-downloading the DEM cache requires an Earthdata login.',
+        'zh': '注意：高程缓存重新下载需要 Earthdata 账号登录。',
+        'en': 'Note: re-downloading the elevation cache requires an Earthdata '
+              'login.',
     },
     'js.config.cache.clear_title': {
         'zh': '清理缓存',
@@ -190,7 +191,7 @@ MESSAGES = {
     # --- 保存 / 重置 ---
     'js.config.save.ok': {
         'zh': '配置保存成功！',
-        'en': 'Configuration saved!',
+        'en': 'Settings saved!',
     },
     # 多条校验错误的连接符
     'js.config.save.error_sep': {
@@ -202,16 +203,17 @@ MESSAGES = {
         'en': 'Save failed: {error}',
     },
     'js.config.reset.confirm': {
-        'zh': '确定要重置所有配置为默认值吗？',
-        'en': 'Reset all settings to their defaults?',
+        'zh': '确定把所有配置立即重置为默认值吗？这一步立即落库、不可恢复，页面随后会刷新。',
+        'en': 'Reset every setting to its default right now? The change is '
+              'written immediately, cannot be undone, and the page will reload.',
     },
     'js.config.reset.title': {
         'zh': '重置配置',
-        'en': 'Reset configuration',
+        'en': 'Reset settings',
     },
     'js.config.reset.ok': {
         'zh': '已重置为默认配置',
-        'en': 'Reset to default configuration',
+        'en': 'Reset to default settings',
     },
     'js.config.reset.failed': {
         'zh': '重置失败: {error}',

@@ -7,9 +7,15 @@
  *   window.showConfirm(message, opts) -> Promise<boolean>  —— 居中确认框
  *       opts.checkbox = {label, checked} 时改 resolve {confirmed, checked}
  *       opts.select = {label, options:[{value,label}], value} 时改 resolve {confirmed, selected}
+ *   window.showProgressDialog(opts) -> {update, close}  —— 不可取消的模态进度框
+ *   window.guard(triggerEl, asyncFn) -> Promise  —— 动作在飞时锁住触发钮（in-flight 守卫）
+ *   window.trapTab(e, container)               —— Tab 焦点环：自报 aria-modal 的浮层共用
  *   window.showNotification(message, type)     —— showToast 的别名（兼容旧调用）
  *   window.parseTaskDate(value) -> Date|null   —— 任务时间字段统一解析（裸格式按 UTC）
- *   window.formatBytes(bytes) -> string        —— 字节 → 人类可读（1024 进制，全站唯一一份）
+ *   window.formatBytes(bytes, opts) -> string  —— 字节 → 人类可读（1024 进制 KiB/MiB，全站唯一一份）
+ *       opts.suffix 追加单位后缀（速度用 '/s'），opts.roundAtHundred 让 ≥100 取整
+ *   window.formatCoord(deg) -> string          —— 经纬度读数档（5 位，≈1.1 m）
+ *   window.formatCoordExact(deg) -> string     —— 经纬度详情档（6 位，≈0.11 m）
  *   window.initTileOrigin(tilePort) -> Promise<boolean>  —— 页面级瓦片端口探测
  *   window.tileUrl(path) -> string            —— 已探测成功时改写内部绝对路径
  */
@@ -33,11 +39,19 @@
     const openToasts = [];
 
     // ---------------------------------------------------------------- Toast
+    // 容器是一个**常驻的 live region**：aria-live 挂在容器上、toast 作为它的子
+    // 节点插进来，读屏才会稳定播报。改前容器上什么都没有，靠每个 toast 节点
+    // 自带 role="alert" —— 那条路径要求读屏把「刚插入的这个节点」当成警报来
+    // 处理，各家实现并不一致（尤其节点是先 setAttribute 再 appendChild 的），
+    // 而容器本身根本不是 live 区，漏播时前端这边完全无从察觉。
+    // aria-atomic="false"：只播新插进来的那一条，不把右上角堆着的十条重念一遍。
     function ensureToastContainer() {
         let c = document.getElementById('app-toast-container');
         if (!c) {
             c = document.createElement('div');
             c.id = 'app-toast-container';
+            c.setAttribute('aria-live', 'polite');
+            c.setAttribute('aria-atomic', 'false');
             document.body.appendChild(c);
         }
         return c;
@@ -59,7 +73,8 @@
 
         const toast = document.createElement('div');
         toast.className = 'app-toast app-toast--' + type;
-        toast.setAttribute('role', 'alert');
+        // 不再逐条设 role="alert"：容器已是 aria-live 区，两者叠在一起会让
+        // 同一条提示被念两遍（alert 是 assertive，还会打断用户正在听的内容）。
 
         const icon = document.createElement('span');
         icon.className = 'app-toast__icon';
@@ -111,6 +126,39 @@
         }
 
         return handle;
+    }
+
+    // ------------------------------------------------------------ Tab 焦点环
+    // 自报 `aria-modal="true"` 就是向读屏承诺「遮罩之外的一切已经冻结」。承诺了
+    // 却不拦 Tab，键盘/读屏用户会一路 Tab 到身后那半个看不见的界面上去 —— 那比
+    // 不声明 aria-modal 更糟：读屏按承诺把外面的内容从虚拟缓冲里摘掉了，用户
+    // 却把焦点送了进去，落点在读屏眼里根本不存在。
+    //
+    // 这份实现原本只长在 command_palette.js 里（cmdk 与速查表两个 dialog 共用），
+    // 而 ui.js 这两个自绘对话框是「声明了 aria-modal、零拦截」。提到这里共用，
+    // 四个浮层同一套语义。
+    const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),'
+        + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    function trapTab(e, container) {
+        const list = [].slice.call(container.querySelectorAll(FOCUSABLE)).filter(function (n) {
+            return n.offsetParent !== null;
+        });
+        // 一个可聚焦控件都没有（进度框就是这样）：Tab 原地不动。承诺了封闭，
+        // 就不许把焦点交到外面去。
+        if (!list.length) { e.preventDefault(); return; }
+        const first = list[0];
+        const last = list[list.length - 1];
+        if (!container.contains(document.activeElement)) {
+            e.preventDefault();
+            (e.shiftKey ? last : first).focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+        } else if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+        }
     }
 
     // -------------------------------------------------------------- Confirm
@@ -232,25 +280,26 @@
 
             const prevFocus = document.activeElement;
             let closed = false;
-            // M14：确认框挂载时刻。回车连击/自动重复会穿透两级确认 ——
-            // cleanup 摘掉 A 的监听后 resolve(true)，续体是微任务，在同一轮
-            // 事件循环末尾就同步挂上 B 的监听，必然早于下一个 keydown 宏任务。
-            // 受害最重的是 history.js 的删除流程：第二个框问的是【另一个维度】
-            // 的问题（默认答案 = 取消 = 保留产物），自动确认会替用户选中破坏性
-            // 的那一边，直接发 ?delete_files=true 删掉瓦片/GeoTIFF/DEM。
+            // M14：确认框挂载时刻。两级确认之间的回车穿透就靠它与层栈的 repeat
+            // 守卫拦住，完整推理写在下面的 accept()。
             const openedAt = (typeof performance !== 'undefined' && performance.now)
                 ? performance.now() : Date.now();
 
             function cleanup(result) {
                 if (closed) return;
                 closed = true;
-                document.removeEventListener('keydown', onKey, true);
                 overlay.classList.remove('app-confirm-overlay--in');
                 overlay.classList.add('app-confirm-overlay--out');
-                overlay.addEventListener('transitionend', function () { overlay.remove(); }, { once: true });
-                setTimeout(function () { overlay.remove(); }, 300); // 兜底
+                // 出场动画跑完（或 300ms 兜底）才真正下线：**注销必须与节点一起
+                // 消失，不能提前到这里**。淡出的那 300ms 里框还看得见，层栈里也
+                // 还留着它 —— 于是紧跟的第二发 Esc 落在这一层上、被 close() 的
+                // `closed` 守卫吃掉，而不是穿到身后的面板去。这正是改前
+                // 「capture + stopImmediatePropagation」那套 hack 在防的事，现在
+                // 由「层什么时候算关掉」这条规则本身承担。
+                overlay.addEventListener('transitionend', finish, { once: true });
+                setTimeout(finish, 300);            // transitionend 不触发的兜底
                 if (prevFocus && typeof prevFocus.focus === 'function') {
-                    try { prevFocus.focus(); } catch (e) { /* ignore */ }
+                    try { prevFocus.focus(); } catch (e) { /* 明确忽略：打开前的焦点元素可能已不在文档里 */ }
                 }
                 // 取消（ESC / 点遮罩 / 取消键）一律把附带输入压成「没给」——
                 // 「什么都不做」不该顺带漏出一个用户已经放弃的勾选值或选项值。
@@ -267,46 +316,238 @@
                     selectOpt ? { selected: result ? selectEl.value : null } : null));
             }
 
-            function onKey(e) {
-                if (e.key !== 'Escape' && e.key !== 'Enter') return;
-                // 确认框开着时 ESC/Enter 归它独占。为什么必须是
-                // stopImmediatePropagation + 捕获阶段：panels.js 的关面板监听
-                // 也挂在 document 上，同一节点上的监听按注册顺序跑，
-                // stopPropagation 对它无效；而面板先开、监听先注册，所以只有
-                // 排在捕获阶段才能抢在它前面。否则一次 ESC 既关确认框又把整个
-                // 任务面板收掉（任务没被删，纯打断感）。
+            function finish() {
+                overlay.remove();
+                unregister();
+            }
+
+            // 层栈按下的 Enter：确认。
+            function accept() {
+                // 时间窗挡的是**真人快速双击**：与淡入动画（--dur-base 200ms）
+                // 对齐，挂载后 300ms 内的回车一律忽略，让用户看清这一框问的是
+                // 什么。它与层栈里那道 `e.repeat` 守卫各挡一半，缺一不可 ——
+                // 自动重复的间隔约 30ms，时间窗根本挡不住（第一次重复被挡在
+                // ~280ms，紧接着 ~310ms 那次照样穿透）；而 repeat 守卫认不出
+                // 「手指还没离开鼠标就又敲了回车」这种真人连击。
                 //
-                // 挡在 repeat 判断【之前】：面板监听没有 repeat 判断，长按 ESC
-                // 时第一发被我们吞掉、后面每一次重复都会漏过去关掉面板。
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                // e.repeat 是承重的那一半：按键自动重复的间隔约 30ms，而下面
-                // 那道时间窗最长也就几百毫秒 —— 只加时间窗挡不住连续重复（第一
-                // 次重复被挡在 ~280ms，紧接着 ~310ms 那次照样穿透，于是两级
-                // 确认被一路自动按穿）。preventDefault 拦不住 repeat，必须显式忽略。
-                if (e.repeat) return;
-                if (e.key === 'Escape') { cleanup(false); return; }
-                // 时间窗挡的是真人快速双击：与淡入动画（200ms）对齐，
-                // 挂载后 300ms 内的回车一律忽略，让用户看清这一框问的是什么。
+                // 防的是同一件事：回车穿透两级确认。cleanup 里 resolve(true) 的
+                // 续体是微任务，在同一轮事件循环末尾就同步挂上第二个框，必然
+                // 早于下一个 keydown 宏任务。第二个框问的是【另一个维度】的问题
+                // （默认答案 = 取消 = 保留产物），自动确认会替用户选中破坏性的
+                // 那一边，直接发 ?delete_files=true 删掉瓦片/GeoTIFF/DEM。
                 const now = (typeof performance !== 'undefined' && performance.now)
                     ? performance.now() : Date.now();
                 if (now - openedAt < 300) return;
                 cleanup(true);
             }
 
+            // Esc / Enter 不再自己监听：全站唯一那个 keydown 在 panels.js 的
+            // 层栈里，这里只声明「我是一层、我怎么关、怎么算确认」。
+            const unregister = window.TerraLayers.register('confirm', {
+                isOpen: function () { return !!overlay.parentNode; },
+                close: function () { cleanup(false); },
+                accept: accept,
+            });
+
             cancelBtn.addEventListener('click', function () { cleanup(false); });
             okBtn.addEventListener('click', function () { cleanup(true); });
             overlay.addEventListener('click', function (e) { if (e.target === overlay) cleanup(false); });
-            document.addEventListener('keydown', onKey, true);
+            // Tab 焦点环挂在遮罩上而不是 document 上：焦点开局就在框里（下面那句
+            // focus()），trapTab 保证它出不去，所以事件必然冒得到这里。
+            overlay.addEventListener('keydown', function (e) {
+                if (e.key === 'Tab') trapTab(e, dialog);
+            });
 
             requestAnimationFrame(function () {
                 overlay.classList.add('app-confirm-overlay--in');
-                // 带选择器时焦点给下拉：用户要做的第一件事是选，不是确认。
-                // ESC/Enter 仍由 onKey 在捕获阶段独占，所以焦点在哪都不改变
-                // 「Enter = 按当前选中值确认」这条语义。
-                (selectEl || okBtn).focus();
+                // 落点三档，按「按错了代价多大」排：
+                //   带选择器 —— 给下拉，用户要做的第一件事是选，不是确认；
+                //   danger    —— 给取消键。破坏性操作的静息焦点不许停在确认键上，
+                //                 否则一发回车就把东西删了（审查记为暗模式）。
+                //                 Enter 仍然是确认（层栈的 accept），只是要用户
+                //                 主动按，而不是「焦点已经在那儿了」顺手按到；
+                //   其余      —— 给确认键。
+                (selectEl || (danger ? cancelBtn : okBtn)).focus();
             });
         });
+    }
+
+    // ------------------------------------------------------- Progress dialog
+    // 一个不可取消的模态进度框。唯一调用方是 history.js 的 deleteTask ——
+    // 勾了「同时删除磁盘产物」的删除是**同步**请求：后端在请求线程里 rmtree
+    // 整个瓦片金字塔（几万到上百万个文件），几十秒到几分钟内 fetch 不返回。
+    // 在此之前界面上什么都不发生：确认框一关就是一片死寂，用户会以为没点上。
+    //
+    // 为什么没有取消按钮、也不响应 ESC/点遮罩：删除到一半没有回滚 —— 目录已经
+    // 空了一半，任务行也早就没了。给一颗只能骗人的取消按钮比不给更糟。但改前它
+    // 是在捕获阶段把 ESC **吞掉**、界面上什么都不发生 —— 与「这个键坏了」完全
+    // 无法区分。现在改成在层栈里显式声明 `dismissible: false` 并给出理由，
+    // 由层栈说明为什么关不掉。
+    //
+    // 复用 .app-confirm-overlay / .app-confirm 两个类不是偷懒：tests/
+    // test_css_contract.py 的 _RUNTIME_INJECTED_DIVS 逐条登记了运行时注入的
+    // div 背景层叠链，这两个已在册；换一对新类名就得同步改那张表和它的计数断言。
+    // 进度条同理复用 .progress / .progress-bar / .progress__label（history.js
+    // 的任务详情就是这套 markup），不新增任何带过渡的选择器分支 —— 那会动到
+    // test_motion_rule_index_is_complete 的锚点。
+    //
+    // 返回 { update({text, percent}), close() }：percent 为 null 表示还没有分母
+    // （后端的 scan 阶段），此时条留在 0 只显示文案。
+    function showProgressDialog(opts) {
+        opts = opts || {};
+        const overlay = document.createElement('div');
+        overlay.className = 'app-confirm-overlay';
+
+        const dialog = document.createElement('div');
+        dialog.className = 'app-confirm';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        // 进度只在数字里变化。改前框上只有 role=progressbar + aria-valuenow，
+        // 而**属性变化不进 live 区** —— 对读屏用户，这个框从头到尾一声不响。
+        // live 区放在 dialog 上而不是某一行上：阶段文案（msgEl）与百分比
+        // （label）是两处，一处一个 live 区会各念各的。
+        dialog.setAttribute('aria-live', 'polite');
+        // 供程序化聚焦：这个框里一个可聚焦控件都没有（它没有取消键，见上），
+        // 而 aria-modal 承诺了模态封闭 —— 焦点必须先落进来，Tab 才有东西可拦，
+        // 否则读屏用户的焦点还留在身后那半个「已被宣告冻结」的界面上。
+        dialog.tabIndex = -1;
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'app-confirm__title';
+        titleEl.textContent = opts.title == null ? '' : String(opts.title);
+
+        const msgEl = document.createElement('div');
+        msgEl.className = 'app-confirm__msg';
+        msgEl.textContent = opts.message == null ? '' : String(opts.message);
+
+        const track = document.createElement('div');
+        track.className = 'progress';
+        const fill = document.createElement('div');
+        // bg-danger：删除是破坏性动作，与确认框的 is-danger 主按钮同一语义色。
+        fill.className = 'progress-bar bg-danger';
+        fill.setAttribute('role', 'progressbar');
+        fill.setAttribute('aria-valuemin', '0');
+        fill.setAttribute('aria-valuemax', '100');
+        fill.style.width = '0%';
+        const label = document.createElement('span');
+        label.className = 'progress__label';
+        // 不再 aria-hidden：它是这个 live 区里唯一会变的数字。视觉上它与
+        // progressbar 的 aria-valuenow 重复，但那条是属性、播不出来。
+        track.appendChild(fill);
+        track.appendChild(label);
+
+        dialog.appendChild(titleEl);
+        dialog.appendChild(msgEl);
+        dialog.appendChild(track);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+
+        const prevFocus = document.activeElement;
+        // Esc / Enter 不再自己监听：全站唯一那个 keydown 在 panels.js 的层栈里。
+        const unregister = window.TerraLayers.register('progress', {
+            isOpen: function () { return !!overlay.parentNode; },
+            // 不给 close：这一层压根关不掉，给一个只能骗人的 close 比不给更糟。
+            dismissible: false,
+            reason: t('js.ui.progress.locked'),
+        });
+        // 框里没有可聚焦控件，trapTab 的候选表是空的 —— 它会 preventDefault，
+        // Tab 原地不动。这正是要的：aria-modal 说了外面冻结，就不许 Tab 出去。
+        overlay.addEventListener('keydown', function (e) {
+            if (e.key === 'Tab') trapTab(e, dialog);
+        });
+
+        requestAnimationFrame(function () {
+            overlay.classList.add('app-confirm-overlay--in');
+            try { dialog.focus(); } catch (e) { /* 明确忽略：框可能已被 close() 摘掉 */ }
+        });
+
+        let closed = false;
+
+        function finish() {
+            overlay.remove();
+            unregister();
+        }
+
+        return {
+            update: function (state) {
+                if (closed || !state) return;
+                if (state.text != null) msgEl.textContent = String(state.text);
+                if (state.percent == null) return;
+                // 钳到 0..100：后端的分母是扫描阶段数出来的，删除阶段若因为
+                // 目录被并发写入而多出条目，百分比会冲过 100，条会顶出圆角轨道。
+                const pct = Math.max(0, Math.min(100, Math.round(state.percent)));
+                fill.style.width = pct + '%';
+                fill.setAttribute('aria-valuenow', String(pct));
+                // 只在整数档真的变了才写：label 现在在 live 区里，每次
+                // update() 都赋一遍同样的字符串等于让读屏把「37%」念上十遍
+                // （后端的进度事件比 1% 密得多）。
+                const text = pct + '%';
+                if (label.textContent !== text) label.textContent = text;
+            },
+            close: function () {
+                if (closed) return;
+                closed = true;
+                overlay.classList.remove('app-confirm-overlay--in');
+                overlay.classList.add('app-confirm-overlay--out');
+                overlay.addEventListener('transitionend', finish, { once: true });
+                setTimeout(finish, 300);            // transitionend 不触发的兜底
+                // 焦点归还：框马上要从文档里消失，焦点还在它身上的话浏览器会把
+                // 焦点甩回 <body>，键盘用户得从头 Tab 一遍。
+                if (dialog.contains(document.activeElement)
+                    && prevFocus && typeof prevFocus.focus === 'function') {
+                    try { prevFocus.focus(); } catch (e) { /* 明确忽略：打开前的焦点元素可能已不在文档里 */ }
+                }
+            },
+        };
+    }
+
+    // -------------------------------------------------------------- 提交守卫
+    // 一个动作在飞的时候，触发它的那颗按钮必须点不动。
+    //
+    //   guard(triggerEl, asyncFn) -> Promise（透传 asyncFn 的返回值）
+    //
+    // 形态照抄 map.js 下载提交处那一份（存原文案 → disabled → 换 spinner →
+    // finally 复原）：那是全仓唯一写对的一处，另外 11 处 POST/DELETE 零守卫
+    // ——「开始」连点三次就是三发 start，删除连点三次就是三发 DELETE，后两发
+    // 撞 404 再弹两条红字。提成公共函数而不是各处再抄一遍那 20 行。
+    //
+    // 与被抄的那一份的两点差异：
+    //   1. spinner 用 .hint-spin（style.css 里已登记的那条无限旋转，config.js
+    //      的代理检测在用）。map.js 那份写的是 `animation: spin ...`，而全仓
+    //      **没有** @keyframes spin —— 它其实一动不动。
+    //   2. 文案不参数化：按钮自己的可见文字原样留在 spinner 后面（图标钮
+    //      textContent 为空，就只剩 spinner）。11 处各配一条「正在…」等于新增
+    //      11 条要维护的文案，而按钮已经写着它在做什么。
+    //
+    // triggerEl 允许为空（键盘触发、事件代理拿不到按钮）：那时退化成直接
+    // await，动作语义一个字不变，只是没有视觉锁。
+    const GUARD_SPINNER = '<svg class="icon-inline icon-inline--md hint-spin"'
+        + ' width="14" height="14" viewBox="0 0 24 24" fill="none"'
+        + ' stroke="currentColor" stroke-width="2" aria-hidden="true">'
+        + '<path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>';
+
+    async function guard(triggerEl, asyncFn) {
+        if (!triggerEl) return asyncFn();
+        // disabled 只挡鼠标。回车重复触发、事件代理里同一颗按钮被两条路径
+        // 分派、程序化调用都进得来，所以另立一个在飞标志。
+        if (triggerEl.dataset.guardBusy === '1') return undefined;
+        triggerEl.dataset.guardBusy = '1';
+        const originalHtml = triggerEl.innerHTML;
+        const originalDisabled = !!triggerEl.disabled;
+        const label = (triggerEl.textContent || '').trim();
+        triggerEl.disabled = true;
+        triggerEl.setAttribute('aria-busy', 'true');
+        // label 来自按钮自己的 textContent，先转义再拼：任务名不会出现在按钮
+        // 文案里，但「按钮文字永远是安全的」不是一条能长期成立的假设。
+        triggerEl.innerHTML = GUARD_SPINNER + (label ? ' ' + escapeHtml(label) : '');
+        try {
+            return await asyncFn();
+        } finally {
+            delete triggerEl.dataset.guardBusy;
+            triggerEl.disabled = originalDisabled;
+            triggerEl.removeAttribute('aria-busy');
+            triggerEl.innerHTML = originalHtml;
+        }
     }
 
     // ------------------------------------------------------ Connection status
@@ -343,28 +584,69 @@
     }
 
     // ---------------------------------------------------------------- bytes
-    // 字节 → 人类可读。全站唯一一份：配置页的缓存卡、任务详情的产物清单都用它。
+    // 字节 → 人类可读。**全站唯一一份 1024 进位换算**：配置页的缓存卡、任务
+    // 详情的产物清单、地图的磁盘预算判决与 TIF 信息卡、任务行的速度读数，
+    // 全部落到这一个函数上。
     //
     // 住在 ui.js 而不是 task_center.js，是因为 /config 独立页把 base.html 的
     // vendor_task_list_js 块覆盖成空（省掉 Vue + 三个任务脚本约 160 KB），
     // 那一页没有 task_center.js —— 放那边就是缓存卡一片 ReferenceError。
     // 本文件是无条件全局加载的那一档。
     //
-    // 与 task_center.js 的 formatSpeed 刻意分成两个函数：速度是每秒重画的活
-    // 读数，≥100 取整是为了不让字宽在 99.9 ↔ 100.0 之间来回跳；文件大小是
-    // 静态读数，没有这个问题，一律留一位小数反而更准（「1.4 GB」比「1 GB」
-    // 有用）。合成一个函数再传标志位等于把这条理由藏进一个布尔参数里。
+    // 单位是 KiB/MiB/GiB —— 1024 进制的前缀就是这几个。写 KB/MB 是 1000 进制
+    // 的前缀，标在除以 1024 得来的数字上每级偏 2.4%，到 TiB 偏 10%；而产品里
+    // 唯一会拒绝用户文件的字节阈值（api.region.too_large）标的就是 MiB，两处
+    // 对不上时用户没法拿界面读数验算「我这个文件到底超没超」。
+    // 单位词不翻译（B/KiB/MiB 中英通用），只有句子模板走 i18n。
     //
-    // 单位不翻译（B/KB/MB 中英通用），与 formatSpeed 同一条约定。
-    function formatBytes(bytes) {
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    // 舍入规则是**参数**，不是第二份实现。曾经有三份：这里、task_center.js 的
+    // formatSpeed（≥100 取整）、map.js 的 _fmtBytes（`v < 10 ? 1 : 0` 位），
+    // 于是同一个 102400 B 分别读作 100.0 KB / 100 KB / 100 KB，而没有任何机制
+    // 会报错。差别本身是真的 —— 速度是每秒重画的活读数，≥100 取整是为了不让
+    // 字宽在 99.9 ↔ 100.0 之间来回跳；文件大小是静态读数，没有这个问题，
+    // 一律留一位小数反而更准（「1.4 GiB」比「1 GiB」有用）—— 但那是一行 if，
+    // 不值三份进位循环。
+    const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+
+    function formatBytes(bytes, opts) {
+        const o = opts || {};
         let value = Number(bytes) || 0;
         let i = 0;
-        while (value >= 1024 && i < units.length - 1) {
+        while (value >= 1024 && i < BYTE_UNITS.length - 1) {
             value /= 1024;
             i += 1;
         }
-        return `${i === 0 ? value : value.toFixed(1)} ${units[i]}`;
+        // 整字节不留小数（「1023 B」而不是「1023.0 B」）；半个字节没有意义，
+        // 所以 B 档取整而不是原样打印。
+        const shown = (i === 0 || (o.roundAtHundred && value >= 100))
+            ? Math.round(value)
+            : value.toFixed(1);
+        return `${shown} ${BYTE_UNITS[i]}${o.suffix || ''}`;
+    }
+
+    // ------------------------------------------------------------ coordinates
+    // 经纬度 → 字符串。精度只有**两档**，而且位数只由这两个函数持有：
+    //   formatCoord      读数档 5 位（≈1.1 m）：状态栏、选区四至、任务行区域
+    //   formatCoordExact 详情档 6 位（≈0.11 m）：复制到剪贴板、任务详情四至
+    //
+    // 改造前是四档，位数散在十几个调用点上，没有一处写着「为什么是这个位数」：
+    // task_list.js 的 toFixed(2)（≈1.1 km —— 同一个选区在任务行和状态栏读出
+    // 两个不同的框）、map.js 状态栏与四至浮层的 toFixed(4)、五处 toFixed(5)、
+    // 复制路径的 toFixed(6)。
+    //
+    // 分两档的理由：屏幕读数要窄，5 位已经比一个屏幕像素更细，再多只是噪声；
+    // 而**离开界面**的值（剪贴板、任务详情记录）要能原样贴回去复现选区，
+    // 多一位不占地方。所以「复制」走详情档，哪怕它旁边显示的是读数档。
+    //
+    // 角度**跨度**（`east - west` 那种差值）不走这里：它回答「这个框多大」而
+    // 不是「它在哪」，是另一个概念，3 位（≈100 m）就够 —— 见 map.js 的选区
+    // 尺寸读数与下载面板四至摘要。
+    function formatCoord(deg) {
+        return Number(deg).toFixed(5);
+    }
+
+    function formatCoordExact(deg) {
+        return Number(deg).toFixed(6);
     }
 
     // ------------------------------------------------------ task timestamps
@@ -429,6 +711,8 @@
                 tileOrigin = health.origin;
                 return true;
             } catch (error) {
+                // 明确忽略：探不通就是没有可用的瓦片端口，全站回落同源路径
+                // （tileUrl 在 tileOrigin 为空时原样返回，是正常降级）。
                 return false;
             } finally {
                 if (timer !== null) clearTimeout(timer);
@@ -448,11 +732,16 @@
 
     window.showToast = showToast;
     window.showConfirm = showConfirm;
+    window.showProgressDialog = showProgressDialog;
+    window.guard = guard;
+    window.trapTab = trapTab;
     window.showNotification = showToast; // 兼容旧的 showNotification(message, type) 调用
     window.initConnectionStatus = initConnectionStatus;
     window.parseTaskDate = parseTaskDate;
     window.escapeHtml = escapeHtml;
     window.formatBytes = formatBytes;
+    window.formatCoord = formatCoord;
+    window.formatCoordExact = formatCoordExact;
     window.initTileOrigin = initTileOrigin;
     window.tileUrl = tileUrl;
 })();

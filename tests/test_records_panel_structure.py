@@ -154,8 +154,26 @@ def test_card_order_differs_between_pages_via_records_panel(monkeypatch, tmp_pat
     )
 
 
+def _tags_with_class(html, cls):
+    """[(id, 开标签起始偏移)]：class 属性里含 `cls` 这个**词**的 section/div 开标签。
+
+    按词切而不是前缀匹配:`class="modal-bounds-summary"`（#createPanelBounds 那条
+    选区四至摘要,2026-08-15 Task 5 起住在 #createPanel 里）以 `modal` 开头,
+    前缀匹配会把它当成一个弹窗根。
+    """
+    out = []
+    for m in re.finditer(r'<(?:section|div)\b([^>]*)>', html):
+        attrs = m.group(1)
+        cm = re.search(r'class="([^"]*)"', attrs)
+        if not cm or cls not in cm.group(1).split():
+            continue
+        im = re.search(r'id="([^"]*)"', attrs)
+        out.append((im.group(1) if im else '', m.start()))
+    return out
+
+
 def test_task_detail_modal_is_not_trapped_inside_workbench_panel(monkeypatch, tmp_path):
-    """#taskDetailModal 不能是 .workbench-panel 的后代（2026-08 遮罩事故）。
+    """任何 .modal 都不能是**任何** .workbench-panel 的后代（2026-08 遮罩事故）。
 
     .workbench-panel 永远带非 none 的 transform（滑入 translateX(0)，
     滑出 translateX(100%)），transform 让它成为 fixed 后代的包含块
@@ -167,22 +185,53 @@ def test_task_detail_modal_is_not_trapped_inside_workbench_panel(monkeypatch, tm
 
     修法：弹窗标记放 base.html 的 <body> 直下（Bootstrap 官方推荐位），
     两个页面（首页记录面板 / 独立页 /history）共享一份。
+
+    2026-08-15 Task 5:旧断言只查 #taskDetailModal 有没有掉进 #historyPanel
+    ——「一个弹窗 × 一个面板」。同一轮改动把 #downloadModal / #processModal
+    收敛成了第二个带 transform 的 .workbench-panel(#createPanel,同样 z-index
+    1401),而 #createPanel 里恰好有 #outputPathBrowse 这类要唤起
+    #pathBrowserModal 的按钮 —— 谁顺手把弹窗标记搬进面板,就是同一个事故复现,
+    而旧断言查不到。所以改成「每个面板 × 每个弹窗」全组合:守的还是同一条
+    不变式(弹窗不得落在任何 transform 面板的层叠上下文里),覆盖面从 1×1
+    扩到 4×2。
+
+    函数名故意不改:templates/base.html、templates/_history_content.html 与
+    tests/test_css_contract.py 三处注释按名字引用这条测试,重命名会把三条
+    交叉引用一起指空。
     """
     client = _load_app(monkeypatch, tmp_path)
     for page in ('/', '/history'):
         html = client.get(page).get_data(as_text=True)
-        assert html.count('id="taskDetailModal"') == 1, (
-            f'{page} 应恰好有一个 #taskDetailModal'
-        )
-        # section 不嵌套，id="historyPanel" 之后第一个 </section> 即其收尾
-        panel_start = html.index('id="historyPanel"') if page == '/' else None
-        if panel_start is not None:
+        modals = _tags_with_class(html, 'modal')
+        modal_ids = {mid for mid, _ in modals}
+        assert modal_ids == {'taskDetailModal', 'pathBrowserModal'}, (
+            f'{page} 扫到的弹窗根是 {sorted(modal_ids)}，'
+            '期望 taskDetailModal / pathBrowserModal —— 正则失配或弹窗集变了，'
+            '本测试已失效')
+        for mid in modal_ids:
+            assert html.count(f'id="{mid}"') == 1, (
+                f'{page} 应恰好有一个 #{mid}')
+
+        panels = _tags_with_class(html, 'workbench-panel')
+        if page == '/':
+            assert {pid for pid, _ in panels} == {
+                'createPanel', 'historyPanel', 'configPanel', 'pluginsPanel'}, (
+                f'首页扫到的 .workbench-panel 是 {sorted(p for p, _ in panels)}，'
+                '期望 createPanel / historyPanel / configPanel / pluginsPanel '
+                '四个 —— 少一个就是这条测试对它失去了保护')
+        for pid, panel_start in panels:
+            # section 不嵌套，面板开标签之后第一个 </section> 即其收尾。
             panel_end = html.index('</section>', panel_start)
-            modal_pos = html.index('id="taskDetailModal"')
-            assert not (panel_start < modal_pos < panel_end), (
-                '#taskDetailModal 又嵌回 .workbench-panel 里了——transform '
-                '包含块 + 层叠上下文会让 body 级遮罩盖住弹窗（见本测试 docstring）'
-            )
+            body = html[panel_start:panel_end]
+            assert '<section' not in body[1:], (
+                f'#{pid} 里出现了嵌套 <section>，「下一个 </section> 就是收尾」'
+                '这个切片前提不再成立 —— 本测试已失效')
+            for mid, modal_pos in modals:
+                assert not (panel_start < modal_pos < panel_end), (
+                    f'#{mid} 又嵌回 .workbench-panel(#{pid})里了——transform '
+                    '包含块 + 层叠上下文会让 body 级遮罩盖住弹窗（见本测试 '
+                    'docstring）'
+                )
 
 
 def test_records_panel_flag_only_controls_card_order():

@@ -43,12 +43,17 @@ MESSAGES = {
         'en': 'Output format',
     },
     'tpl.base.detail.zoom': {
-        'zh': '缩放级别',
+        'zh': '缩放层级',
         'en': 'Zoom level',
     },
+    # 英文不能写 'Total tiles'：这一格（`#detailTotal`）在五条管线上装的是**不同**
+    # 的计数 —— 地图/等高线是 total_tiles，高程是 total_files（颗粒文件），本地地形
+    # 是 total_files（上传的文件），插件是 total_items
+    # （static/js/history.js:444,471,478,492,499）。中文「总数量」本来就是单位中立的，
+    # 英文照抄 'Total' 会与另外两处撞名，所以用同样中立的 'Total items'。
     'tpl.base.detail.total': {
         'zh': '总数量',
-        'en': 'Total',
+        'en': 'Total items',
     },
     'tpl.base.detail.downloaded': {
         'zh': '已下载',
@@ -87,8 +92,8 @@ MESSAGES = {
 
     # 任务详情弹窗 —— 输出与时间
     'tpl.base.detail.output_path': {
-        'zh': '输出路径',
-        'en': 'Output path',
+        'zh': '保存路径',
+        'en': 'Save path',
     },
     'tpl.base.detail.created_at': {
         'zh': '创建时间',
@@ -119,7 +124,7 @@ MESSAGES = {
     # 「缺口」不叫「失败」:no_data（该处本来就没有影像）与真失败在这里是同一栏
     # 里的两类,标签只能中性 —— 叫「失败」会让一个正常完成的近海任务看起来像出错。
     'tpl.base.detail.gaps_label': {
-        'zh': '缺口',
+        'zh': '缺块',
         'en': 'Gaps',
     },
     # 「产物」而不是「输出文件」：一件产物可以是目录（XYZ 金字塔、地形目录），

@@ -44,13 +44,13 @@
 {# 配置齿轮（首页配置面板头 + 左列工具条的「配置」入口）。gap 同 icon_tasks。 #}
 {% macro icon_config(size=16, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m5.2-13.2l-4.2 4.2m0 6l4.2 4.2M23 12h-6m-6 0H1m18.2 5.2l-4.2-4.2m-6 0l-4.2 4.2"></path></svg>{% endmacro %}
 
-{# 下载（托盘 + 下箭头）。改前在 index.html 的下载弹窗标题、提交按钮和
-   _config_content.html 的「下载设置」组头各内联一遍，三份尺寸 18/16/20、
-   右间距 md/md/lg 各不相同 —— 差异全部落在参数上，几何体只有一个。 #}
+{# 下载（托盘 + 下箭头）。现在只剩一处调用：_config_content.html 的
+   「下载设置」组头。原先另外两处（index.html 的下载弹窗标题与提交按钮）随
+   两个弹窗一起退场（2026-08-15 Task 5，#createPanel）。宏保留而不内联回去：
+   收进来的理由是三份尺寸 18/16/20、右间距 md/md/lg 各不相同而几何体只有一个，
+   而 test_no_icon_geometry_is_duplicated_across_templates 禁止它在模板里
+   出现第二份 —— 宏是这个几何体唯一的存放处，调用点多少无关。 #}
 {% macro icon_download(size=18, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>{% endmacro %}
-
-{# 数据处理（扳手）。三处：左列工具条入口、处理弹窗标题、处理表单提交钮。 #}
-{% macro icon_process(size=18, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>{% endmacro %}
 
 {# 说明 ⓘ。两处：任务详情弹窗标题、_config_content.html 的 hint 宏体。
    hint 那处传 gap=''：`.hint svg` 自己写死 width/height/display，
@@ -63,6 +63,12 @@
 
 {# 列表（任务列表卡片头）。 #}
 {% macro icon_list(size=18) %}<svg class="icon-inline icon-inline--md" width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>{% endmacro %}
+
+{# 放大镜。两处：地图顶部的搜索框（index.html）、配置页「地名搜索」组标题
+   （_config_content.html）。改前两处逐字相同，只有尺寸/间距不同 ——
+   tests/test_fix_templates_a11y.py::test_no_icon_geometry_is_duplicated_across_templates
+   就是冲这种「改一处漏另一处」来的。 #}
+{% macro icon_search(size=16, gap='', cls='') %}<svg{% if cls or gap %} class="{{ cls }}{% if cls and gap %} {% endif %}{% if gap %}icon-inline icon-inline--{{ gap }}{% endif %}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>{% endmacro %}
 
 {# 覆盖面板的头部：图标 + 标题 + 关闭钮。
 
@@ -81,3 +87,10 @@
    tests/test_fix_templates_a11y.py::test_no_icon_geometry_is_duplicated_across_templates
    判红。gap 同 icon_tasks（工具条按钮传 '' 关掉右外边距）。 #}
 {% macro icon_plugin(size=16, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 11H19V7a2 2 0 0 0-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4a2 2 0 0 0-2 2v4h1.5a2.5 2.5 0 0 1 0 5H2v4a2 2 0 0 0 2 2h4v-1.5a2.5 2.5 0 0 1 5 0V22h4a2 2 0 0 0 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z"></path></svg>{% endmacro %}
+
+{# 新建（加号方框）。一处：左列工具条第一组的「新建」入口，打开 #createPanel。
+   为什么不复用 #mapZoomIn 那个裸加号：那两条线是「放大」的图标，同一个几何体
+   在两颗相邻按钮上出现会让「新建」读成第三颗缩放钮。方框把它读成「建一个东西」。
+   仍然走宏而不是内联：test_no_icon_geometry_is_duplicated_across_templates
+   禁模板树里出现两处同几何体，宏是唯一的存放处。 #}
+{% macro icon_create(size=16, gap='md') %}<svg{% if gap %} class="icon-inline icon-inline--{{ gap }}"{% endif %} width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>{% endmacro %}

@@ -67,8 +67,8 @@ MESSAGES = {
         'en': 'Rendering contour tiles',
     },
     'js.tasks.verb.download_dem': {
-        'zh': '下载 DEM',
-        'en': 'Downloading DEM',
+        'zh': '下载高程',
+        'en': 'Downloading elevation',
     },
 
     # --- 底部状态栏「活动任务」聚合读数 ---

@@ -9,8 +9,9 @@
  * - 全局键走 window bubble:尊重 e.defaultPrevented;input/textarea/select/
  *   contenteditable 豁免;confirm(.app-confirm-overlay)或 Bootstrap 弹窗
  *   (body.modal-open)在场时不抢。
- * - Esc 走 document **capture**:面板开着时只关面板并 stopPropagation(),
- *   背后的工作台面板 / 弹窗(bubble 监听)收不到 —— 永远「先关最上层」。
+ * - Esc 不自己监听：向 panels.js 的层栈 register('cmdk'/'cmdkHelp')，全站唯一
+ *   那个「关最上层」的 keydown 在那里。所以 base.html 里 panels.js 必须排在
+ *   本文件之前（解析期就 register）。
  * - 命令的 guard() 决定它在当前页面是否出现(独立页没有地图/面板元素)。
  * 加载顺序(base.html 依赖图):i18n.js、ui.js、theme.js 之后。
  */
@@ -33,27 +34,37 @@ window.TerraCommands = (function () {
         { id: 'clear_bounds', titleKey: 'js.cmdk.clear_bounds',
           guard: function () { return !!el('boundsClearBtn'); },
           run: function () { el('boundsClearBtn').click(); } },
+        // 「新建任务」：打开 #createPanel 并预选瓦片管线。改前它 guard 在
+        // #boundsDownloadBtn 上（选区浮层里那颗按钮），于是**没框选就没有这条
+        // 命令** —— 而新建面板本来就该在没有选区时也能开（缺选区拦在提交那一刻）。
+        // 判据换成面板本体在不在这一页。
         { id: 'new_download', titleKey: 'js.cmdk.new_download',
           guard: function () {
-              return !!el('boundsDownloadBtn') && typeof window.openDownloadModal === 'function';
+              return !!el('createPanel') && typeof window.openCreatePanel === 'function';
           },
-          run: function () { window.openDownloadModal(); } },
+          run: function () { window.openCreatePanel('map'); } },
         { id: 'open_tasks', titleKey: 'js.cmdk.open_tasks',
           guard: function () { return !!el('historyPanel') && typeof window.openPanel === 'function'; },
           run: function () { window.openPanel('records'); } },
         { id: 'open_config', titleKey: 'js.cmdk.open_config',
           guard: function () { return !!el('configPanel') && typeof window.openPanel === 'function'; },
           run: function () { window.openPanel('config'); } },
+        // 「新建地形切片任务」：同一个面板，预选本地地形切片。改前它 guard 在任务
+        // 面板筛选行右端那颗「处理」按钮上并 .click() 转点 —— 那颗按钮 2026-08-15
+        // 随入口收敛删掉了，转点式的 run 会连命令一起变成死代码（guard 返回
+        // false，命令从列表里静默消失）。现在直接调函数。
         { id: 'open_process', titleKey: 'js.cmdk.open_process',
-          guard: function () { return !!el('processOpenBtn'); },
-          run: function () { el('processOpenBtn').click(); } },
+          guard: function () {
+              return !!el('createPanel') && typeof window.openCreatePanel === 'function';
+          },
+          run: function () { window.openCreatePanel('local_terrain'); } },
         { id: 'copy_coords', titleKey: 'js.cmdk.copy_coords',
           guard: function () { return !!el('statusCoords'); },
           run: function () { el('statusCoords').click(); } },
-        { id: 'goto_history', titleKey: 'js.cmdk.goto_history',
-          run: function () { window.location.href = '/history'; } },
-        { id: 'goto_config', titleKey: 'js.cmdk.goto_config',
-          run: function () { window.location.href = '/config'; } },
+        // goto_history / goto_config 两条已删（2026-08-15 入口收敛）：命令面板同时
+        // 列「打开任务面板」+「前往历史记录页」是同一件事的两种形态，而 /history、
+        // /config 两条路由本身**保留**（深链与打包可达性需要），只是不再从命令
+        // 面板露出第二条路。
         { id: 'theme_dark', titleKey: 'js.cmdk.theme_dark',
           guard: function () { return !!(window.TerraTheme && window.TerraTheme.set); },
           run: function () { window.TerraTheme.set('dark'); } },
@@ -94,30 +105,10 @@ window.TerraCommands = (function () {
             || target.tagName === 'SELECT' || target.isContentEditable);
     }
 
-    // aria-modal 承诺了模态封闭,Tab 焦点不许逃出遮罩 —— 与 panels.js 的
-    // focusables 同一范式。palette 里只有 input、help 里只有关闭钮,
-    // 环实际就是「钉在唯一控件上」,但结构按通用写,将来加控件不用改。
-    var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),'
-        + ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-    function trapTab(e, container) {
-        var list = [].slice.call(container.querySelectorAll(FOCUSABLE)).filter(function (n) {
-            return n.offsetParent !== null;
-        });
-        if (!list.length) { e.preventDefault(); return; }
-        var first = list[0];
-        var last = list[list.length - 1];
-        if (!container.contains(document.activeElement)) {
-            e.preventDefault();
-            (e.shiftKey ? last : first).focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-            e.preventDefault();
-            first.focus();
-        } else if (e.shiftKey && document.activeElement === first) {
-            e.preventDefault();
-            last.focus();
-        }
-    }
+    // Tab 焦点环由 ui.js 的 window.trapTab 提供（cmdk / 速查 / confirm /
+    // progress 四个自报 aria-modal 的浮层共用一份，2026-08-15 Task 6 从这里
+    // 提出去的）。palette 里只有 input、help 里只有关闭钮，环实际就是「钉在
+    // 唯一控件上」，但通用实现将来加控件不用改。
 
     function overlayBusy() {
         return !!document.querySelector('.app-confirm-overlay')
@@ -185,20 +176,28 @@ window.TerraCommands = (function () {
         input.setAttribute('aria-activedescendant', 'cmdk-item-' + items[active].id);
     }
 
+    // `hidden` 翻掉之后隔一帧再加 --in：`.cmdk[hidden]` 是 display:none，
+    // display 从 none 变过来的那一帧不会跑 transition，不隔帧等于没有动画。
+    // 与 .workbench-panel / .app-confirm-overlay 同一套两步（2026-08-15 Task 6
+    // 把浮层入场统一成 opacity + transform / --dur-base / --ease 一套）。
+    // 关闭仍是**立刻**：命令面板是打了就走的东西，退场再等 200ms 只会挡住
+    // 它刚触发的那条命令。
     function openPalette() {
         if (overlayBusy()) return;
         restoreFocus = document.activeElement;
         palette.hidden = false;
         input.value = '';
         render('');
-        try { input.focus(); } catch (e) { /* 元素可能已不在文档里 */ }
+        requestAnimationFrame(function () { palette.classList.add('cmdk--in'); });
+        try { input.focus(); } catch (e) { /* 明确忽略：元素可能已不在文档里 */ }
     }
 
     function closePalette() {
         if (palette.hidden) return;
         palette.hidden = true;
+        palette.classList.remove('cmdk--in');
         if (restoreFocus && typeof restoreFocus.focus === 'function') {
-            try { restoreFocus.focus(); } catch (e) { /* 同上 */ }
+            try { restoreFocus.focus(); } catch (e) { /* 明确忽略：同上，来源元素可能已被重建 */ }
         }
         restoreFocus = null;
     }
@@ -233,15 +232,17 @@ window.TerraCommands = (function () {
         restoreHelpFocus = document.activeElement;
         renderHelp();
         help.hidden = false;
+        requestAnimationFrame(function () { help.classList.add('cmdk--in'); });
         var btn = help.querySelector('.cmdk__help-close');
-        try { (btn || help).focus(); } catch (e) { /* 忽略 */ }
+        try { (btn || help).focus(); } catch (e) { /* 明确忽略：帮助层刚重建，元素可能已不在文档里 */ }
     }
 
     function closeHelp() {
         if (help.hidden) return;
         help.hidden = true;
+        help.classList.remove('cmdk--in');
         if (restoreHelpFocus && typeof restoreHelpFocus.focus === 'function') {
-            try { restoreHelpFocus.focus(); } catch (e) { /* 元素可能已不在文档里 */ }
+            try { restoreHelpFocus.focus(); } catch (e) { /* 明确忽略：元素可能已不在文档里 */ }
         }
         restoreHelpFocus = null;
     }
@@ -276,8 +277,8 @@ window.TerraCommands = (function () {
             return;
         }
         if (e.key === 'Tab') {
-            if (isPaletteOpen()) { trapTab(e, palette.querySelector('.cmdk__dialog')); return; }
-            if (isHelpOpen()) { trapTab(e, help.querySelector('.cmdk__dialog')); return; }
+            if (isPaletteOpen()) { window.trapTab(e, palette.querySelector('.cmdk__dialog')); return; }
+            if (isHelpOpen()) { window.trapTab(e, help.querySelector('.cmdk__dialog')); return; }
         }
         if (isOpen() || overlayBusy() || isEditable(e.target)) return;
         if (e.key === '?') {
@@ -286,13 +287,23 @@ window.TerraCommands = (function () {
         }
     });
 
-    // Esc(capture):只关最上层,拦截穿透 —— 工作台面板 / Bootstrap 弹窗
-    // 都在 bubble 段监听,stopPropagation 后它们收不到这次 Esc。
-    document.addEventListener('keydown', function (e) {
-        if (e.key !== 'Escape') return;
-        if (isHelpOpen()) { e.stopPropagation(); closeHelp(); }
-        else if (isPaletteOpen()) { e.stopPropagation(); closePalette(); }
-    }, true);
+    // Esc 不在这里处理：整站唯一那个「关最上层」的 keydown 在 panels.js 的层栈
+    // 里，本文件只报到。改前这里是 document capture + stopPropagation，靠「相位
+    // 比别人早」抢在工作台面板前面 —— 那是三份 Esc 实现互相让位的一环，加一层
+    // 就要回头改另外两份。
+    //
+    // 两条各注册一层而不是合成一条 'cmdk'：速查表是从命令面板里开出去的
+    // （show_help 先 closePalette 再 openHelp），两者各有各的 restoreFocus
+    // 接力，topName() 也应当报得出到底哪一层在上面。速查后注册 = 在上面，与
+    // toggle() 里「先关速查再关面板」的既有顺序一致。
+    window.TerraLayers.register('cmdk', {
+        isOpen: isPaletteOpen,
+        close: closePalette,
+    });
+    window.TerraLayers.register('cmdkHelp', {
+        isOpen: isHelpOpen,
+        close: closeHelp,
+    });
 
     return { open: openPalette, close: closePalette, openHelp: openHelp,
              closeHelp: closeHelp, isOpen: isOpen };

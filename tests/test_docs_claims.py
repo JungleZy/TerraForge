@@ -117,16 +117,26 @@ def _collect_code_routes():
     return found
 
 
+def _readme_h2_section(title):
+    """按标题取 README 的一个 H2 小节正文（不含标题行本身）。
+
+    标题允许带 emoji 前缀（`## 🔌 API 端点`）—— 这些断言盯的是小节**内容**，
+    不是标题的字面写法；写死 `"\n## API 端点\n"` 会让 README 加一个图标就全红。
+    """
+    text = _read(README)
+    m = re.search(rf"^##[^\n]*?{re.escape(title)}\s*$", text, re.M)
+    assert m, f"README 找不到「{title}」一节"
+    rest = text[m.end():]
+    end = rest.find("\n## ")
+    return rest[:end] if end != -1 else rest
+
+
 _DOC_ENDPOINT = re.compile(r"^-\s+`([A-Z|]+)\s+(/\S*?)`")
 
 
 def _collect_readme_routes():
     """README「## API 端点」一节里的端点条目，返回 {(method, 归一化路径)}。"""
-    text = _read(README)
-    start = text.index("\n## API 端点\n")
-    rest = text[start + 1:]
-    end = rest.index("\n## ", 1)
-    section = rest[:end]
+    section = _readme_h2_section("API 端点")
 
     found = set()
     for line in section.splitlines():
@@ -296,10 +306,7 @@ def test_claude_md_testing_rules_match_the_real_conftest():
 
 
 def _readme_structure_tree():
-    text = _read(README)
-    start = text.index("\n## 项目结构\n")
-    section = text[start:text.index("\n## ", start + 1)]
-    return section.split("```")[1]
+    return _readme_h2_section("项目结构").split("```")[1]
 
 
 # 运行时才创建、且被 .gitignore 排除的目录。它们**应该**出现在结构树里（用户第一次

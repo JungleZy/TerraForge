@@ -53,17 +53,20 @@ MESSAGES = {
         'zh': '导入 GeoJSON / KML / KMZ / Shapefile / ZIP 作为下载区域（支持多边形与孔洞）',
         'en': 'Import GeoJSON / KML / KMZ / Shapefile / ZIP as the download region (polygons and holes supported)',
     },
-    'tpl.index.toolbar.place_search': {
-        'zh': '搜索',
-        'en': 'Search',
+    # 地点搜索。2026-08 从工具条挪到顶部居中之后，工具条那三条
+    # （place_search / _title / _placeholder）随按钮一起删掉 —— i18n 的
+    # 双向检查会把「定义了但没人引用」的键判红，留着就是死重量。
+    'tpl.index.search.label': {
+        'zh': '搜索地点',
+        'en': 'Search places',
     },
-    'tpl.index.toolbar.place_search_title': {
-        'zh': '按名称搜索地点并跳到它的范围',
-        'en': 'Search a place by name and jump to its extent',
+    'tpl.index.search.placeholder': {
+        'zh': '地名 / 经纬度 / 四至…',
+        'en': 'Place, coordinates or bounds…',
     },
-    'tpl.index.toolbar.place_search_placeholder': {
-        'zh': '地名 / 行政区…',
-        'en': 'Place or region name…',
+    'tpl.index.search.clear_input': {
+        'zh': '清空搜索框',
+        'en': 'Clear the search box',
     },
     'tpl.index.toolbar.lighting': {
         'zh': '光照',
@@ -77,13 +80,18 @@ MESSAGES = {
         'zh': '地形光照（需已加载地形预览）',
         'en': 'Terrain lighting (requires a loaded terrain preview)',
     },
-    'tpl.index.toolbar.process': {
-        'zh': '处理',
-        'en': 'Process',
+    # 「新建」：左列工具条第一组，打开 #createPanel。四条管线（瓦片 / 高程 /
+    # 本地地形切片 / 等高线）唯一的创建入口 —— 2026-08-15 起 tpl.index.toolbar
+    # .process（任务筛选行右端那颗「处理」）随 #processOpenBtn 一起退役。
+    # 工具条按钮图标在上文字在下，所以短文案与 title 分成两个键：
+    # create 是按钮上那两个字，create_title 是 aria-label 与 title 的完整说法。
+    'tpl.index.toolbar.create': {
+        'zh': '新建',
+        'en': 'New',
     },
-    'tpl.index.toolbar.process_title': {
-        'zh': '数据处理',
-        'en': 'Data processing',
+    'tpl.index.toolbar.create_title': {
+        'zh': '新建任务',
+        'en': 'New task',
     },
     'tpl.index.toolbar.tasks': {
         'zh': '任务',
@@ -98,18 +106,38 @@ MESSAGES = {
         'en': 'Settings',
     },
 
-    # 两个弹窗共用的表单结构文案
-    'tpl.index.modal.close': {
-        'zh': '关闭',
-        'en': 'Close',
-    },
+    # 表单结构文案。「关闭」原先是两个弹窗的 .btn-close 用的
+    # （tpl.index.modal.close），弹窗退场后面板头部走 tpl.index.panel.close。
     'tpl.index.form.section_basic': {
         'zh': '基础',
         'en': 'Basics',
     },
-    'tpl.index.form.section_range': {
-        'zh': '范围与层级',
-        'en': 'Extent & zoom levels',
+    # 「范围与层级」原先是下载弹窗里盖着「地图样式 + 缩放范围」的组头。四条管线
+    # 合并后这一段被拆成两组：tpl.index.create.section_source（数据范围 / 来源）
+    # 与 tpl.index.create.section_params（按管线切换的参数），所以它退役。
+
+    # 新建任务面板（#createPanel）自己的结构文案。
+    'tpl.index.create.pipeline': {
+        'zh': '任务类型',
+        'en': 'Task type',
+    },
+    'tpl.index.create.section_source': {
+        'zh': '数据范围',
+        'en': 'Data extent',
+    },
+    'tpl.index.create.section_params': {
+        'zh': '参数',
+        'en': 'Parameters',
+    },
+    # 无选区时面板里给出的两个入口。两颗按钮都不新起路径：前者点的是工具条那颗
+    # 「框选」，后者开的是选区浮层空态里那个手动四至面板。
+    'tpl.index.create.draw_rect': {
+        'zh': '去框选',
+        'en': 'Draw a selection',
+    },
+    'tpl.index.create.manual_bounds': {
+        'zh': '手动输入范围',
+        'en': 'Enter bounds manually',
     },
     'tpl.index.form.task_name': {
         'zh': '任务名称',
@@ -120,26 +148,22 @@ MESSAGES = {
         'en': 'Enter a task name...',
     },
     'tpl.index.form.zoom_min': {
-        'zh': '最小缩放级别',
+        'zh': '最小缩放层级',
         'en': 'Min zoom level',
     },
     'tpl.index.form.zoom_max': {
-        'zh': '最大缩放级别',
+        'zh': '最大缩放层级',
         'en': 'Max zoom level',
     },
 
-    # 下载参数弹窗
-    'tpl.index.download.title': {
-        'zh': '下载数据',
-        'en': 'Download data',
-    },
-    'tpl.index.download.type': {
-        'zh': '下载类型',
-        'en': 'Download type',
-    },
+    # 瓦片 / 高程两条下载管线的字段。tpl.index.download.title（弹窗标题「下载
+    # 数据」）与 tpl.index.download.type（radio 组标签「下载类型」）已退役：
+    # 标题现在是面板标题 tpl.index.panel.create，而两选一的「下载类型」被四选一
+    # 的段控取代，标签是 tpl.index.create.pipeline（「任务类型」）。
+    # 下面 type_map / type_dem 两个值仍在用 —— 它们是段控前两枚 chip 的文案。
     'tpl.index.download.type_map': {
-        'zh': '瓦片',
-        'en': 'Tiles',
+        'zh': '地图瓦片',
+        'en': 'Map tiles',
     },
     'tpl.index.download.type_dem': {
         'zh': '高程',
@@ -172,23 +196,23 @@ MESSAGES = {
         'en': 'Map style',
     },
     'tpl.index.download.style_standard': {
-        'zh': '标准地图',
-        'en': 'Standard map',
+        'zh': '路网',
+        'en': 'Roadmap',
     },
     'tpl.index.download.style_satellite': {
-        'zh': '卫星图',
-        'en': 'Satellite',
+        'zh': '卫星影像',
+        'en': 'Satellite imagery',
     },
     'tpl.index.download.style_satellite_labels': {
-        'zh': '卫星图+标注',
-        'en': 'Satellite + labels',
+        'zh': '卫星影像+标注',
+        'en': 'Satellite imagery + labels',
     },
     'tpl.index.download.style_roads': {
-        'zh': '道路图',
+        'zh': '道路',
         'en': 'Roads',
     },
     'tpl.index.download.style_terrain': {
-        'zh': '地形图',
+        'zh': '地形',
         'en': 'Terrain',
     },
     'tpl.index.download.style_preview_alt': {
@@ -258,22 +282,16 @@ MESSAGES = {
         'en': 'Browse',
     },
     'tpl.index.download.submit': {
-        'zh': '创建下载任务',
-        'en': 'Create download task',
+        'zh': '创建任务',
+        'en': 'Create task',
     },
 
-    # 数据处理弹窗
-    'tpl.index.process.title': {
-        'zh': '数据处理',
-        'en': 'Data processing',
-    },
-    'tpl.index.process.type': {
-        'zh': '处理类型',
-        'en': 'Processing type',
-    },
+    # 本地地形切片 / 等高线两条处理管线的字段。tpl.index.process.title（弹窗标题）
+    # 与 tpl.index.process.type（「处理类型」下拉标签）已退役，理由同上：四条管线
+    # 现在是同一个段控的四枚 chip。type_local_terrain / type_contour 仍在用。
     'tpl.index.process.type_local_terrain': {
-        'zh': '本地高程切片',
-        'en': 'Local DEM tiling',
+        'zh': '本地地形切片',
+        'en': 'Local terrain tiling',
     },
     'tpl.index.process.type_contour': {
         'zh': '等高线瓦片',
@@ -289,20 +307,21 @@ MESSAGES = {
     },
     'tpl.index.process.source_dem_task': {
         'zh': '已下载的高程任务',
-        'en': 'Downloaded DEM task',
+        'en': 'Downloaded elevation task',
     },
     'tpl.index.process.dem_task': {
         'zh': '选择高程任务',
-        'en': 'Select DEM task',
+        'en': 'Select elevation task',
     },
     'tpl.index.process.dem_task_hint': {
-        'zh': '直接使用该任务已下载的 DEM 文件，无需上传。',
-        'en': 'Uses the DEM files already downloaded by that task; no upload '
+        'zh': '直接使用该任务已下载的高程文件，无需上传。',
+        'en': 'Uses the elevation files already downloaded by that task; no '
+              'upload '
               'needed.',
     },
     'tpl.index.process.upload_dem': {
         'zh': '上传高程文件（可多选 .tif/.tiff）',
-        'en': 'Upload DEM files (multiple .tif/.tiff allowed)',
+        'en': 'Upload elevation files (multiple .tif/.tiff allowed)',
     },
     'tpl.index.process.local_terrain_maxzoom': {
         'zh': '最大切片层级',
@@ -372,8 +391,9 @@ MESSAGES = {
               'about 2x tiling time, with no accuracy gain.',
     },
     'tpl.index.process.contour_source_hint': {
-        'zh': '等高线从上传的 DEM 渲染；远程高程下载在「下载数据」里做。',
-        'en': 'Contours are rendered from the uploaded DEM; remote elevation '
+        'zh': '等高线从上传的高程文件渲染；远程高程下载在「下载数据」里做。',
+        'en': 'Contours are rendered from the uploaded elevation files; remote '
+              'elevation '
               'downloads are done in Download data.',
     },
     'tpl.index.process.contour_interval': {
@@ -404,7 +424,7 @@ MESSAGES = {
         'en': 'Terrain shading',
     },
     'tpl.index.process.terrain_shade_option': {
-        'zh': '分层设色 + 晕渲（按海拔上色 + 阳光阴影）',
+        'zh': '分层设色 + 晕渲（按高程上色 + 阳光阴影）',
         'en': 'Hypsometric tint + hillshade (color by elevation + sun shading)',
     },
     'tpl.index.process.style_custom': {
@@ -424,7 +444,7 @@ MESSAGES = {
         'en': 'Tint breaks (m, comma-separated, ascending)',
     },
     'tpl.index.process.tint_colors': {
-        'zh': '分层颜色（按海拔带，断点数+1 个）',
+        'zh': '分层颜色（按高程带，断点数+1 个）',
         'en': 'Tint colors (one per elevation band, breaks + 1)',
     },
     'tpl.index.process.tint_reset': {
@@ -435,21 +455,25 @@ MESSAGES = {
         'zh': '配色预览（分层设色 + 晕渲 + 等高线）',
         'en': 'Color preview (hypsometric tint + hillshade + contours)',
     },
-    'tpl.index.process.zoom_max_placeholder': {
-        'zh': '自动',
-        'en': 'Auto',
-    },
+    # zoom_max_placeholder（「自动」）已退役：#processZoomMin/Max 与
+    # #zoomMin/#zoomMax 归一成同一对字段，而那对字段服务端渲染出厂 10/15
+    # （再由 initMap 按 default_zoom_min/max 覆盖），placeholder 永远不会显示。
+    # 「留空 = 自动」这层语义由下面的 zoom_hint 承担，它挂在 #zoomAutoHint 上、
+    # 只在等高线管线下出现。
     'tpl.index.process.zoom_hint': {
-        'zh': '最大级别留空按高程文件分辨率自动计算；也可手动填更高层级（最高 21）。',
-        'en': 'Leave the max level empty to derive it from the DEM resolution; '
+        'zh': '最大层级留空按高程文件分辨率自动计算；也可手动填更高层级（最高 21）。',
+        'en': 'Leave the max zoom level empty to derive it from the elevation '
+              'file resolution; '
               'you can also enter a higher level manually (up to 21).',
     },
-    'tpl.index.process.submit': {
-        'zh': '创建处理任务',
-        'en': 'Create processing task',
-    },
+    # tpl.index.process.submit（「创建处理任务」）已退役：底条只剩一颗提交钮，
+    # 四条管线共用 tpl.index.download.submit（「创建任务」）。
 
     # 滑出面板
+    'tpl.index.panel.create': {
+        'zh': '新建任务',
+        'en': 'New task',
+    },
     'tpl.index.panel.tasks': {
         'zh': '任务',
         'en': 'Tasks',

@@ -136,5 +136,5 @@ function getStatusStroke(status) {
 document.addEventListener('terraforge:themechange', function () {
     _statusStrokeCache = null;
     if (typeof renderHistoryMap !== 'function') return;
-    try { renderHistoryMap(); } catch (e) { /* 地图未就绪时忽略 */ }
+    try { renderHistoryMap(); } catch (e) { /* 明确忽略：地图未就绪，下次重绘自会补上 */ }
 });

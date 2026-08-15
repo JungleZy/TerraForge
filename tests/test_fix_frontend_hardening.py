@@ -387,32 +387,41 @@ def test_panel_is_modeless_and_does_not_trap_tab():
 
 
 def test_panel_key_handler_yields_to_a_bootstrap_modal_before_it_acts():
-    """面板之上开着 Bootstrap 弹窗时，onKey 必须整个让位 —— Esc 与 Tab 都是。
+    """面板之上开着 Bootstrap 弹窗时，onKey 必须整个让位。
 
-    让位判据以前排在 Escape 分支【下面】，于是它只管 Tab：从配置面板里点
-    「浏览」开出 #pathBrowserModal，按一次 Esc，Bootstrap 在目标阶段 hide 掉
-    弹窗，事件继续冒泡到 document，这里再把身后的面板一起关掉。实测（无头
-    Chromium 驱动真实服务端）：modalOpen ["pathBrowserModal"]→[]、panelOpen
-    ["configPanel"]→[] —— 一次 Esc 两层全没，hash 被 replaceState 抹掉、焦点
-    掉回 body。
+    让位判据以前排在 Escape 分支【下面】：从配置面板里点「浏览」开出
+    #pathBrowserModal，按一次 Esc，Bootstrap 在目标阶段 hide 掉弹窗，事件继续
+    冒泡到 document，这里再把身后的面板一起关掉。实测（无头 Chromium 驱动真实
+    服务端）：modalOpen ["pathBrowserModal"]→[]、panelOpen ["configPanel"]→[]
+    —— 一次 Esc 两层全没，hash 被 replaceState 抹掉、焦点掉回 body。
 
     判据必须是 body.modal-open：Bootstrap 5.3.0 的 hide() **同步**摘掉
     .show（`this._element.classList.remove(Li)`）再排队做过渡收尾，事件冒泡到
     document 时 `.modal.show` 已经不匹配 —— 实测拿它当判据面板照样被关掉。
+
+    2026-08-15 Task 6 改了这条的形态，没改它守的东西：`.app-confirm-overlay`
+    那道让位判据**没了**，因为 confirm 现在就是层栈里的一层，谁在上面由层栈
+    说了算，不再需要 onKey 自己去查 DOM 让位。Bootstrap 弹窗仍在层栈之外
+    （它自带 Esc 关闭），所以那道判据留着，而「让位必须先于动作」这条不变 ——
+    位置判据从「先于 'Escape' 字面量」改成「先于 closeTop()」，后者才是动作
+    本身。
     """
     src = _clean('panels.js')
     body = _js_function_body(src, 'onKey')
     assert 'modal-open' in body, (
         'onKey 没有为 Bootstrap 弹窗让位 —— 一次 Esc 会把身后的面板一起关掉'
     )
-    escape_at = body.index("'Escape'")
-    yield_at = body.index('modal-open')
-    confirm_at = body.index('app-confirm-overlay')
-    assert yield_at < escape_at and confirm_at < escape_at, (
-        '让位判据必须排在 Escape 分支之前，否则它只管 Tab —— 这正是原缺陷'
+    assert 'closeTop()' in body, 'onKey 不再经层栈关最上层 —— 本测试已失效'
+    assert body.index('modal-open') < body.index('closeTop()'), (
+        '让位判据必须排在动作之前，否则弹窗关掉的同时身后的层也被关掉 —— 这正是原缺陷'
     )
     assert '.modal.show' not in body, (
         'hide() 同步摘掉 .show，冒泡到 document 时它已经不匹配；判据要用 body.modal-open'
+    )
+    assert 'app-confirm-overlay' not in body, (
+        'onKey 又去查 .app-confirm-overlay 让位了 —— confirm 是层栈里的一层，'
+        '让位由层栈的栈顶判定负责；再加一道 DOM 查询就是把三份实现互相让位那套'
+        '重新长回来'
     )
 
 

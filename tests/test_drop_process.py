@@ -1,9 +1,13 @@
 """全窗口拖拽打开本地处理 / 导入下载区域的契约测试(2026-08-11 设计 §3.6 + §5.1)。
 
 借鉴 GeoLibre 的窗口级 drag-drop:拖入时全屏遮罩提示,松手按后缀分流 ——
-.tif/.tiff 喂给 #processForm 的 #localTerrainFiles 并打开 #processModal,
-区域矢量文件(.geojson/.json/.kml/.kmz/.zip/.shp)交给 map.js 的
-importRegionFile 落成当前下载区域。
+.tif/.tiff 喂给 #taskForm 的 #sourceFiles 并打开 #createPanel(预选
+local_terrain 管线),区域矢量文件(.geojson/.json/.kml/.kmz/.zip/.shp)交给
+map.js 的 importRegionFile 落成当前下载区域。
+
+2026-08-15(设计 §2.5 入口收敛):两个弹窗 #downloadModal/#processModal 合并成
+非模态的 #createPanel,两张表单合并成 #taskForm,两个文件框合并成 #sourceFiles。
+本文件的锚点跟着换名,守的还是同一条链。
 """
 
 import os
@@ -12,6 +16,11 @@ import shutil
 import subprocess
 
 import pytest
+
+# 2026-08-15 Task 3：层栈令牌化之后 `.drop-veil` 的 z-index 是
+# `var(--z-drop-veil)`。复用 test_css_contract 的解析器而不是再写一个
+# 「跟 var()」的小函数 —— 三份测试文件都要跟这一层，各写一份必然分叉。
+from test_css_contract import _resolve_z_index
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DROP_JS = os.path.join(ROOT, 'static', 'js', 'drop_process.js')
@@ -46,13 +55,16 @@ def test_drop_process_behavior_contract():
     删掉只会让用户回到「拖边界文件没反应」,而遮罩、tif 分支、i18n 键全绿。
     """
     src = _read(DROP_JS)
-    assert "getElementById('processModal')" in src, '缺首页守卫(无弹窗页空载)'
+    # 首页守卫的判据从退场的 #processModal 换成 #createPanel:两者都是「这一页
+    # 有没有新建任务的那张表」的唯一标志物,/config、/history 上都不存在,所以
+    # 「无弹窗页空载」这条契约一字未变。
+    assert "getElementById('createPanel')" in src, '缺首页守卫(无新建面板的页空载)'
     assert "'dragenter'" in src and "'dragleave'" in src and "'drop'" in src, (
         'dragenter/dragleave/drop 三个事件都要接'
     )
     assert 'DataTransfer' in src, '应用 DataTransfer 过滤构造 FileList(只留 .tif)'
     assert re.search(r'tiff?', src), '文件过滤必须认 .tif / .tiff'
-    assert "getElementById('localTerrainFiles')" in src, '文件要喂给 #localTerrainFiles'
+    assert "getElementById('sourceFiles')" in src, '文件要喂给 #sourceFiles'
     assert 'showToast' in src, '失败/不支持的文件要走 showToast 提示'
     for key in ("'js.drop.hint'", "'js.drop.unsupported'", "'js.drop.failed'",
                 "'js.region.drop.only_first'"):
@@ -75,6 +87,52 @@ def test_drop_process_behavior_contract():
     assert 'blur' in src, '窗口失焦(blur)是遮罩卡死的自救路径'
 
 
+def _open_local_process_body():
+    """openLocalProcess() 的函数体(含外层 {})。按花括号配对切,不按行缩进 ——
+    这个 IIFE 里所有顶层函数都缩进 4 空格,「顶格的 }」那一招在这里不成立。"""
+    src = _read(DROP_JS)
+    start = src.index('function openLocalProcess(')
+    open_at = src.index('{', src.index(')', start))
+    depth = 0
+    for i in range(open_at, len(src)):
+        if src[i] == '{':
+            depth += 1
+        elif src[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return src[open_at:i + 1]
+    raise AssertionError('openLocalProcess 花括号不配对 —— 本测试已失效')
+
+
+def test_the_dropped_tif_lands_in_a_visible_control():
+    """投放必须**先**把管线切到 local_terrain,再喂文件输入。
+
+    这是 2026-08-15 入口收敛引入的新不变量,不是换名:弹窗时代 #localTerrainFiles
+    装在 #processModal 里,打开弹窗与预选处理类型是同一个动作的两半,喂文件的
+    先后无所谓。现在 #sourceFiles 装在 #sourceUploadRow 里,而那一行的可见性由
+    map.js 的 PIPELINE_FIELDS 显隐表按「管线 × 来源」算 —— 段控默认停在「瓦片」,
+    那时整个 #sourceField 是 hidden 的。
+
+    顺序反了的后果是静默的:DataTransfer 照样能把 FileList 塞进一个 hidden 的
+    input,change 也照样派发,但用户看不见自己拖进来的文件名;而
+    updateSourceTifInfo 读的 mode 来自 _currentPipeline(),瓦片管线下它算出的不是
+    'terrain',信息卡讲的是另一条管线的层级。openCreatePanel('local_terrain')
+    一次把管线、面板、显隐三件事办齐,所以它必须排在喂文件之前。
+    """
+    body = _open_local_process_body()
+    switch = body.find("openCreatePanel('local_terrain')")
+    feed = body.find('input.files =')
+    assert switch != -1, (
+        "openLocalProcess 没有 openCreatePanel('local_terrain') —— 拖进来的 .tif "
+        '会落在默认的瓦片管线下,那条管线根本没有文件输入'
+    )
+    assert feed != -1, '本测试失效:openLocalProcess 不再往 input.files 写 FileList'
+    assert switch < feed, (
+        '先喂文件后切管线 —— 文件被塞进一个 hidden 的 #sourceFiles,用户看不见'
+        '自己拖进来的文件名,信息卡也会按错的 mode 算层级'
+    )
+
+
 @pytest.mark.skipif(shutil.which('node') is None, reason='node 不可用')
 def test_drop_process_js_passes_node_syntax_check():
     subprocess.run(['node', '--check', DROP_JS],
@@ -87,6 +145,14 @@ def test_drop_veil_css():
     assert m, '缺 .drop-veil 规则'
     body = m.group(1)
     assert 'pointer-events: none' in body, '遮罩必须纯展示(事件始终落 window)'
-    assert 'z-index: 13000' in body, '遮罩 z-index 应为 13000(命令面板 13100 之下)'
+    # 13000 从字面量变成 var(--z-drop-veil)：跟一层 var() 再比，
+    # 契约本身没有放宽（仍然必须**恰好**是 13000，且在命令面板 13100 之下）。
+    z = re.search(r'z-index:\s*([^;]+);', body)
+    assert z, '遮罩必须显式声明 z-index，否则层序靠源码顺序碰运气'
+    got = _resolve_z_index(css, z.group(1))
+    assert got == 13000, (
+        f'遮罩 z-index 应为 13000(命令面板 13100 之下)，'
+        f'实际 {z.group(1).strip()!r} -> {got}'
+    )
     m = re.search(r'\.drop-veil--in\s*\{([^}]*)\}', css)
     assert m and 'opacity: 1' in m.group(1), '缺 .drop-veil--in 的显示态'

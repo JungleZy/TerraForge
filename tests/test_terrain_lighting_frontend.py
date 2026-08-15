@@ -403,6 +403,13 @@ def _local_terrain_options_block(html):
     （client_catalog），而 js_history.py 的任务详情文案逐字讨论过同一批后果
     （「全球日夜渐变」「烘焙进瓦片」）。在整页上 grep 这些词是恒真的 —— 把
     表单里的提示整段删掉也照样绿。必须锁到控件自己那一段。
+
+    ⚠️ 2026-08-15 Task 5：这一段**变窄了**，边界本身没变。四条管线合并成一张
+    #taskForm 之后，上传控件与 tif 信息卡从这个块里挪到了上游的共享 #sourceField
+    （#sourceFiles / #sourceTifInfo，两条处理管线共用一份），块里只剩本地地形
+    切片**专属**的那几个控件：档位、法线、最大层级、自动挡。本文件的断言正好
+    只查这几个，所以一条都不用改锚点。截取边界仍然成立：两个 id 都还在，
+    #localTerrainOptions 在模板里仍排在 #contourOptions 之前。
     """
     start = html.find('id="localTerrainOptions"')
     assert start != -1, '页面里没有 #localTerrainOptions —— 本地高程选项块没了'
@@ -670,7 +677,7 @@ def test_out_of_range_maxzoom_falls_back_out_loud(monkeypatch, tmp_path, caplog)
 
     数字框那半边照旧不能渲染 99：terrain_local_maxzoom 登记在
     config_manager._UNCONSTRAINED_KEYS，PUT /api/config 收得下 99，照直渲染成
-    value="99" 会违反控件自己的 min/max，让整张 #processForm 变 :invalid，
+    value="99" 会违反控件自己的 min/max，让整张 #taskForm 变 :invalid，
     「创建」点了没反应（tests/test_config_form_submittable.py 钉的就是这条）。
     自动挡下它是 disabled 的，但用户随手一取消勾选，那个值就又要参与校验。
 
@@ -775,7 +782,7 @@ def test_auto_maxzoom_renders_checked_and_disables_the_number_input(monkeypatch,
         f'自动挡下数字框必须 disabled：留着可编辑，用户会以为旁边那个数还算数，'
         f'而提交时送出去的是 auto：{num}')
     # 禁用的数字框仍要渲染一个合法值：它是用户取消勾选后的起点。空 value 并不会
-    # 让 #processForm :invalid（min/max 只管有值的控件，空值要 required 才拦），
+    # 让 #taskForm :invalid（min/max 只管有值的控件，空值要 required 才拦），
     # 坏在静默：取消勾选后提交送的是空串，后端 coerce_maxzoom 把它当「未表态」，
     # 一路回落到配置默认 —— 也就是用户刚取消掉的那个自动挡。
     assert 'value="14"' in num, (

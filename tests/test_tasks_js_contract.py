@@ -493,10 +493,15 @@ _STATUS_GUARD_RE = re.compile(r"task\.status\s*(===|!==)\s*'(\w+)'")
 def test_card_actions_are_gated_by_the_right_status():
     """行上每个动作按钮都必须挂在正确的状态分支下。
 
-    实现方式：对 TaskRow 模板里每一处 `@click="act('xxxTask')"`，在**同一个
+    实现方式：对 TaskRow 模板里每一处 `@click="act('xxxTask', ...)"`，在**同一个
     <button> 标签内**找它的 v-if，与 _ACTION_GUARDS 对表。改造前钉的是
     `onclick="xxxTask(`「往前找最近的 task.status 判断」那套启发式；Vue 的
     v-if 与按钮同在一个标签里，比「最近的前置判断」精确得多。
+
+    ⚠️ 匹配到 `act('xxxTask'` 的**左引号为止**，刻意不含右括号：2026-08-15 起
+    行上的动作要把触发钮交给 in-flight 守卫（`act('startTask', $event)`），
+    实参表还会变。钉的东西一个字没变 —— 还是「这颗按钮的 v-if 是哪一档状态」，
+    还是同一个 <button> 标签内 —— 只是不再顺带钉死实参表的形状。
 
     这条同时守两件事：
       1. 失败行**没有**重试按钮（后端会抛 ValueError，见上面表里的注释）。
@@ -509,7 +514,7 @@ def test_card_actions_are_gated_by_the_right_status():
     assert buttons, 'TaskRow 模板里一个 <button> 都没有 —— 本测试已失效'
     problems = []
     for action, expected in _ACTION_GUARDS.items():
-        owners = [b for b in buttons if f"act('{action}')" in b]
+        owners = [b for b in buttons if f"act('{action}'" in b]
         if not owners:
             problems.append(f'{action}: TaskRow 模板里一处调用都没有')
             continue
@@ -1527,6 +1532,37 @@ def test_task_row_is_the_unified_two_line_structure():
         )
 
 
+def test_row_tail_keeps_time_and_actions_together():
+    """耗时与动作组必须包在同一个 `.task-line1__tail` 里，且贴右的
+    `margin-left: auto` 只挂在这个包裹元素上。
+
+    行1 是单行 flex，成员大多 `flex: 0 0 auto`：面板拖窄（下限 560px）或手机档
+    （面板宽 = 94vw）时它们的宽度之和超过行宽，既不收缩也不换行，直接把
+    #historyTableBody 顶出一条横向滚动条 —— 实测 602px 面板上一条带缺块徽章的
+    运行中任务，行1 内容宽 596 / 可视 547，动作按钮被切掉一半。修法是让行1
+    换行（style.css 的 `.task-line1 { flex-wrap: wrap }`），而这个包裹元素决定
+    换行后的样子：
+      - 不包：只有动作组被甩到下一行、左对齐挂在状态点底下，像另一条任务的按钮；
+      - 包了但 margin-left:auto 留在 .task-time 上：两个 auto 平分剩余空间，
+        耗时会飘到行中间。
+    CSS 侧的对应断言：
+    tests/test_css_contract.py::test_task_stream_rows_cannot_grow_a_horizontal_scrollbar。
+    """
+    body = _tpl('TaskRow')
+    start = body.find('class="task-line1__tail"')
+    assert start != -1, (
+        'TaskRow 模板没有 .task-line1__tail —— 耗时与动作组又变回行1 的两个'
+        '裸兄弟，窄面板下动作组会独自换行并左对齐'
+    )
+    tail = _element_inner_html(body, body.rindex('<div', 0, start))
+    assert tail is not None, '.task-line1__tail 的 <div> 没有配对的 </div>'
+    for cls in ('task-time', 'btn-group'):
+        assert f'class="{cls}' in tail, (
+            f'{cls} 不在 .task-line1__tail 内部 —— 行尾不再是一个整体，'
+            '换行时两者会分家'
+        )
+
+
 def test_stream_has_no_grouping_or_collapsing_machinery():
     """三分区治理机制整体消失：无分组头、无失败组折叠、无 sessionStorage 记忆。
 
@@ -1772,9 +1808,18 @@ def test_panel_reopen_refreshes_timeline():
     """记录面板重开必须重新拉取时间流 + 统计,不能只吃懒初始化那一遍。
 
     回归场景:面板打开过(inited 标记已置位)→ 关闭 → 新建任务 →
-    _afterTaskCreated 重开面板。旧实现重开只 resize 小地图,时间流停在
+    _afterTaskCreated() 打开记录面板。旧实现重开只 resize 小地图,时间流停在
     上一次 loadHistory 的内容 —— 新建的 pending 任务没有 socket 进度事件
     可触发 prependStreamRow,列表里看不到,要刷新页面才出现。
+
+    ⚠️ 2026-08-15 Task 5:`_afterTaskCreated` 的 `modalId` 形参没了,函数体
+    只剩 `window.openPanel('records')` 一句。为什么这不改变本条守的东西:
+    参数原来的用处是「hide 掉刚提交的那个 Bootstrap 弹窗」,而两个参数弹窗
+    已经合成非模态的 #createPanel,没有 Modal 实例可 hide;新建面板的关闭
+    由 panels.js 自己完成 —— `current` 是单值的,`openPanel('records')`
+    进门先关掉当前开着的那个。所以「建完任务 → 记录面板被打开 → 时间流必须
+    是新的」这条链一个环都没少,下面两句断言仍然正对着它:openPanel 是
+    _afterTaskCreated() 唯一做的事,它不刷新就等于建完看不见。
     """
     src = _strip_js_comments(_js('panels.js'))
     body = _js_function_body(src, 'openPanel')

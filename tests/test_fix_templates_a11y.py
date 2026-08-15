@@ -213,7 +213,7 @@ def _status_chips(html):
     return chips
 
 
-@pytest.mark.parametrize('path,expected', [('/', 15), ('/config', 10)])
+@pytest.mark.parametrize('path,expected', [('/', 19), ('/config', 10)])
 def test_every_status_chip_declares_its_selected_state(isolated_app, path, expected):
     """每一颗 .status-chip 都要有 aria-pressed，且与 .active 一致。
 
@@ -227,10 +227,15 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
     `.active` 与 `aria-pressed="true"` **配对**钉住：只查「属性存在」的话，
     全部写死 false 也能绿，而那正是「选中态读不出来」这个缺陷本身。
 
-    首页 15 颗 = 筛选 5 + 主题 3 + 语言 2 + 强调色 5（配置面板 include 进首页，
-    强调色组 2026-08-11 新增；筛选组 2026-08-12 随 §13-3 加了「有缺块」一枚）；
-    /config 独立页 10 颗 = 主题 3 + 语言 2 + 强调色 5（没有任务筛选行）。
-    先钉数量，
+    首页 19 颗 = 管线 4 + 筛选 5 + 主题 3 + 语言 2 + 强调色 5(配置面板 include
+    进首页,强调色组 2026-08-11 新增;筛选组 2026-08-12 随 §13-3 加了「有缺块」
+    一枚;管线组 2026-08-15 Task 5 新增 —— #createPanel 里的
+    [data-pipeline] map/dem/local_terrain/contour 四枚分段开关,取代了原先
+    下载弹窗的 input[name="downloadType"] 单选与处理弹窗的 #processType 下拉,
+    单选/下拉自带原生选中态,换成 .status-chip 之后选中态必须自己声明);
+    /config 独立页 10 颗 = 主题 3 + 语言 2 + 强调色 5(没有任务筛选行,
+    也没有新建面板)。
+    先钉数量,
     正则/选择器失配时响亮失败而不是退化成空循环。
     """
     chips = _status_chips(_render(isolated_app, path))
@@ -238,7 +243,14 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
         f'{path} 扫到 {len(chips)} 颗 .status-chip，期望 {expected} —— 本测试已失效')
     problems = []
     for attrs in chips:
-        label = attrs.get('data-status', attrs.get('data-theme-mode', attrs.get('data-lang', attrs.get('data-accent', '?'))))
+        # 2026-08-15 Task 5:末位 fallback 前插一层 data-pipeline,否则四枚新的
+        # 管线 chip 在失败信息里全叫 '?',读不出是哪一枚少了 aria-pressed。
+        label = attrs.get(
+            'data-status',
+            attrs.get('data-theme-mode',
+                      attrs.get('data-lang',
+                                attrs.get('data-accent',
+                                          attrs.get('data-pipeline', '?')))))
         pressed = attrs.get('aria-pressed')
         active = 'active' in _classes(attrs)
         if pressed not in ('true', 'false'):
@@ -252,9 +264,14 @@ def test_every_status_chip_declares_its_selected_state(isolated_app, path, expec
 
 # ------------------------------------------------- P1#16b 面板的非模态语义
 
-@pytest.mark.parametrize('panel_id', ['historyPanel', 'configPanel', 'pluginsPanel'])
+# 2026-08-15 Task 5:第四个面板 #createPanel(新建任务)。它替掉了
+# #downloadModal / #processModal 两个 .modal.fade —— 那两个是**真模态**
+# (Bootstrap 自带遮罩 + aria-modal),收敛成一个 .workbench-panel 之后必须
+# 兑现与另外三个面板一样的非模态契约,否则就是把模态语义偷偷带进了工作台。
+@pytest.mark.parametrize(
+    'panel_id', ['createPanel', 'historyPanel', 'configPanel', 'pluginsPanel'])
 def test_slide_out_panels_declare_themselves_nonmodal(isolated_app, panel_id):
-    """三个滑出面板都是非模态 dialog:role="dialog" 保留,**不许**再有 aria-modal。
+    """四个滑出面板都是非模态 dialog:role="dialog" 保留,**不许**再有 aria-modal。
 
     2026-08-11 起面板取消遮罩层:面板打开时地图保持可见可交互(非模态工作台,
     与 GeoLibre/QGIS 的停靠面板同模式)。aria-modal="true" 会向读屏宣称
@@ -320,12 +337,23 @@ def test_no_icon_geometry_is_duplicated_across_templates():
 
 
 # 宏名 -> 该几何体唯一允许出现的文件。
+#
+# 2026-08-15 Task 5:`icon_process`(扳手,几何体特征标签 'path')换成
+# `icon_create`(圆角方框里一个加号,特征标签 'rect')。icon_process 宏本身已从
+# _macros.html 删掉:它在模板树里唯一的调用点是 _history_content.html 的
+# #processOpenBtn,那颗按钮随入口收敛退役了(处理任务现在从新建面板的
+# local_terrain 管线进)。扳手几何体在 static/js/task_list.js 里还有一份,
+# 但那是 JS 字符串,不在本扫描器(只扫 templates/*.html)的射程内。
+# icon_create 有三处调用点(左列工具条按钮 / 面板头 / 提交按钮),正是这条
+# 「有宏就不许手写第二份」要守的形状。
+# 表仍然是 6 条 —— 下面 `len(macro_geos) >= len(_MACRO_OWNED_ICONS)` 的下限
+# 没有被放宽。
 _MACRO_OWNED_ICONS = {
     'icon_close': 'line',
     'icon_tasks': 'polyline',
     'icon_config': 'circle',
     'icon_download': 'polyline',
-    'icon_process': 'path',
+    'icon_create': 'rect',
     'icon_info': 'circle',
 }
 
@@ -395,13 +423,24 @@ def test_task_detail_modal_no_longer_carries_an_inline_style_block():
 
 # ------------------------------------------------------------- P2 死 CSS
 
-# 六个「零引用的 Bootstrap 覆盖类」里，**必须删掉**的五个。
+# 零引用的「Bootstrap 覆盖类」里，**必须删掉**的六个。
+#
+# `.btn-info` 是 2026-08-15（Task 4）加进来的第六个。它此前不在这张表里，
+# 而是被下面那条**双向跨文件锁**（`test_btn_info_is_kept_only_because_a_test_
+# still_models_it`，已随本次改动整条删除）钉在原地：CSS 里少一条 `.btn-info`
+# 规则分支会红，tests/test_css_contract.py 的 FILLED_BTN_VARIANTS 里摘掉它
+# 也会红。那条锁记的理由是「它零引用，但按钮层叠模型拿它当被测对象」——
+# 本次两头一起删（模型里还有 4 个真实填充变体在被逐格计算，够用了），
+# 于是它降级成一个普通的「删掉就不许长回来」的零引用类，与另外五个同列。
+# 删除的完整记账在 static/css/style.css 里 `.btn-danger` 之后那段登记注释，
+# 以及 tests/test_button_geometry.py::test_btn_info_has_no_rule_branches。
 _DELETED_DEAD_CLASSES = ('.alert-success', '.alert-warning',
-                         '.text-success', '.text-warning', '.text-info')
+                         '.text-success', '.text-warning', '.text-info',
+                         '.btn-info')
 
 
 def test_zero_reference_bootstrap_overrides_are_deleted():
-    """五个零引用的覆盖类不许回来。
+    """六个零引用的覆盖类不许回来。
 
     旧行为：`.btn-info`(4 条) / `.alert-success` / `.alert-warning` /
     `.text-success` / `.text-warning` / `.text-info` 在 templates/、static/js/、
@@ -413,7 +452,10 @@ def test_zero_reference_bootstrap_overrides_are_deleted():
     删掉它**的注释打回来（本仓 test_dead_rules_removed 踩过两次）。所以先剥
     注释，再按规则扫描器逐条选择器比对。
 
-    `.btn-info` **不在这张表里**，理由见下一条。
+    `.btn-info` 2026-08-15（Task 4）加入本表：它此前靠一条双向跨文件锁留在
+    style.css 里（「模型还拿它当被测对象」），那条锁与它的 CSS 规则、
+    FILLED_BTN_VARIANTS 里的登记同一轮一起删除。记账见 `_DELETED_DEAD_CLASSES`
+    上方那段。
     """
     css = _css_no_comments()
     alive = {
@@ -435,41 +477,6 @@ def test_zero_reference_bootstrap_overrides_are_deleted():
     for keeper in ('.alert-info', '.alert-danger', '.text-danger', '.text-muted'):
         assert any(re.fullmatch(re.escape(keeper), s) for s in survivors), (
             f'{keeper} 有真实引用，不该被一起删掉 —— 本测试已失效')
-
-
-def test_btn_info_is_kept_only_because_a_test_still_models_it():
-    """`.btn-info` 同样零引用，**故意留着**，而这条把「为什么留」钉在原地。
-
-    它与上面五个的区别：test_css_contract.py 的 FILLED_BTN_VARIANTS 把它登记
-    成一个被建模的按钮变体，按钮层叠模型逐格算过它的 base / hover /
-    focus-visible / active 四态。删 CSS 而不动模型 = 拆掉一组现役断言的被测
-    对象（模型会算不出颜色而报「已失效」）。
-
-    这条是**双向**的：
-      · CSS 里四条规则少一条 -> 红（有人当死代码顺手删了）；
-      · FILLED_BTN_VARIANTS 里没有 btn-info 了 -> 红（模型不再需要它，
-        那 CSS 就该真的删掉，别再留着当「调色板齐全」的错觉）。
-    只写其中一个方向的话，另一头一动，这条豁免就变成没人看守的死代码。
-    """
-    css = _css_no_comments()
-    branches = [
-        part
-        for sel, _ in _top_level_rules(css)
-        for part in _selector_parts(sel)
-        if re.search(r'\.btn-info(?![-\w])', part)
-    ]
-    assert len(branches) == 4, (
-        f'.btn-info 有 {len(branches)} 条规则分支，期望 4（base / hover / '
-        f'focus-visible / active）：{branches}')
-
-    with open(os.path.join(PROJECT_ROOT, 'tests', 'test_css_contract.py'),
-              encoding='utf-8') as f:
-        contract = f.read()
-    model = re.search(r'FILLED_BTN_VARIANTS\s*=\s*\{(.*?)\}', contract, re.S)
-    assert model, 'test_css_contract.py 里找不到 FILLED_BTN_VARIANTS —— 本测试已失效'
-    assert "'btn-info'" in model.group(1), (
-        "FILLED_BTN_VARIANTS 已经不再建模 btn-info —— 那 style.css 里那四条零引用"
-        '规则就该一并删掉（它们唯一的存在理由就是给那个模型当被测对象）')
 
 
 def test_bounds_v_is_declared_exactly_once():

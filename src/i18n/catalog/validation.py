@@ -89,12 +89,12 @@ MESSAGES = {
               'missing), falling back to conservative value {fallback}',
     },
     'val.tile_url.recommend.note_rising': {
-        'zh': '实测最高 {best} 块/秒；推荐并发 {recommended}，且顶格仍在上升，可再手动调高试试',
+        'zh': '实测最高 {best} 张/秒；推荐并发 {recommended}，且顶格仍在上升，可再手动调高试试',
         'en': 'Measured peak {best} tiles/s; recommended concurrency {recommended}, '
               'still rising at the top level, you can raise it further by hand',
     },
     'val.tile_url.recommend.note_knee': {
-        'zh': '实测最高 {best} 块/秒；推荐并发 {recommended}（膝点：再加并发收益不足 10%）',
+        'zh': '实测最高 {best} 张/秒；推荐并发 {recommended}（膝点：再加并发收益不足 10%）',
         'en': 'Measured peak {best} tiles/s; recommended concurrency {recommended} '
               '(knee point: more concurrency gains under 10%)',
     },

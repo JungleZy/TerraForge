@@ -126,11 +126,14 @@ MESSAGES = {
     # ---- 地名搜索（§5.1）-------------------------------------------------
     # 未配置时控件渲染成禁用 + 这句提示。**不静默隐藏**（用户会以为功能不存在，
     # 而它只是没配地址），也不内置默认服务商（那等于替用户决定把地名查询发给
-    # 一个第三方，而这是个可离线部署的工具）。提示必须点名配置项。
+    # 一个第三方，而这是个可离线部署的工具）。提示必须点名配置项**和它在哪一栏**：
+    # 只写「请在配置页填写 geocoder_url」时配置页里压根没有这个输入框，用户被指
+    # 到一个死胡同（用户实测反馈）。输入框已补上，落点由
+    # tests/test_geocoder_config.py 钉住。
     'js.search.disabled_hint': {
-        'zh': '地名搜索未启用：请在配置页填写 geocoder_url（地理编码服务地址）',
-        'en': 'Place search is off: set geocoder_url (geocoding service address) on the '
-              'settings page',
+        'zh': '地名搜索未启用：请到配置页的「地名搜索」一栏填写 geocoder_url（地理编码服务地址）',
+        'en': 'Place search is off: set geocoder_url (geocoding service address) '
+              'under "Place search" on the settings page',
     },
     'js.search.no_results': {
         'zh': '没有匹配的地点',
@@ -140,11 +143,69 @@ MESSAGES = {
         'zh': '地名搜索失败：{error}',
         'en': 'Place search failed: {error}',
     },
+    # 「搜索中…」。上游往返实测约 2 秒，改造前这段时间面板压根不显示，用户
+    # 看到的是「敲完字什么都不发生」。现在敲第一个字面板就开、先摆这一句。
+    'js.search.searching': {
+        'zh': '搜索中…',
+        'en': 'Searching…',
+    },
     # 地理编码服务给的 bbox 未必满足本应用的四条选区规则（跨反经线的国家、
     # 退化成一个点的地名都真实存在）。说清是哪个地点、哪一条规则不过。
     'js.search.unusable_bbox': {
         'zh': '「{name}」的范围不能直接作为选区：{reason}',
         'en': 'The extent of "{name}" cannot be used as a selection: {reason}',
+    },
+
+    # ---- 坐标直达（2026-08）----------------------------------------------
+    # 关键词先本地过一遍坐标识别，命中就不打上游。meta 那两条**必须**把「谁是
+    # 纬度谁是经度」写出来：不带半球字母的两个数只能靠约定判序（默认纬度在前，
+    # 与地图应用复制出来的一致），判反就是跑到地球另一边 —— 明写出来用户一眼
+    # 能看见，静默猜测才是危险的那一种。
+    'js.search.coord.point_title': {
+        'zh': '跳到此坐标',
+        'en': 'Jump to these coordinates',
+    },
+    'js.search.coord.point_meta': {
+        'zh': '纬度 {lat} · 经度 {lon}（只移动视角，不改选区）',
+        'en': 'Lat {lat} · Lon {lon} (moves the camera only, selection unchanged)',
+    },
+    'js.search.coord.bbox_title': {
+        'zh': '用这组四至作为选区',
+        'en': 'Use these bounds as the selection',
+    },
+    'js.search.coord.bbox_meta': {
+        'zh': '西 {west} · 南 {south} · 东 {east} · 北 {north}',
+        'en': 'W {west} · S {south} · E {east} · N {north}',
+    },
+
+    # ---- 结果类型筛选（2026-08）------------------------------------------
+    # 片子按本次结果实际出现过的 kind 动态生成，所以这里只是**可能**用到的
+    # 译名表；认不得的 kind 原样显示，不编一个「其它」把两种类型糊成一类。
+    'js.search.filter.all': {
+        'zh': '全部',
+        'en': 'All',
+    },
+    'js.search.kind.country': {'zh': '国家', 'en': 'Country'},
+    'js.search.kind.state': {'zh': '省 / 州', 'en': 'State'},
+    'js.search.kind.county': {'zh': '地区 / 县', 'en': 'County'},
+    'js.search.kind.city': {'zh': '城市', 'en': 'City'},
+    'js.search.kind.district': {'zh': '城区', 'en': 'District'},
+    'js.search.kind.locality': {'zh': '聚落', 'en': 'Locality'},
+    'js.search.kind.street': {'zh': '道路', 'en': 'Street'},
+    'js.search.kind.house': {'zh': '地点', 'en': 'Place'},
+    'js.search.kind.administrative': {'zh': '行政区', 'en': 'Administrative'},
+    'js.search.kind.place': {'zh': '地名', 'en': 'Place name'},
+    'js.search.kind.other': {'zh': '其它', 'en': 'Other'},
+
+    # ---- 最近搜索（2026-08）----------------------------------------------
+    # 存 localStorage（tf-place-history，最多 10 条），与主题/强调色同一档。
+    'js.search.history.title': {
+        'zh': '最近搜索',
+        'en': 'Recent searches',
+    },
+    'js.search.history.clear': {
+        'zh': '清除',
+        'en': 'Clear',
     },
 
     # ---- 瓦片源向导（§6.2）-----------------------------------------------
@@ -198,8 +259,9 @@ MESSAGES = {
         'en': '{n} missing',
     },
     'js.gaps.chip_title': {
-        'zh': '这份产物缺 {n} 块瓦片。可以补漏重跑，也可以接受缺口继续用',
-        'en': 'This output is missing {n} tiles. You can refill them or accept the gaps',
+        'zh': '这份产物缺 {n} 张瓦片。可以补漏重跑，也可以接受缺块继续用',
+        'en': 'This artifact is missing {n} tiles. You can refill them or accept '
+              'the gaps',
     },
     'js.gaps.loading': {
         'zh': '正在读取缺块明细…',
@@ -216,25 +278,26 @@ MESSAGES = {
     # 四个结局名对应后端 TileOutcome 的四个非成功值。
     'js.gaps.outcome.no_data': {
         'zh': '上游无数据',
-        'en': 'no data upstream',
+        'en': 'No data upstream',
     },
     'js.gaps.outcome.retryable_failure': {
         'zh': '可重试失败',
-        'en': 'retryable failure',
+        'en': 'Retryable failure',
     },
     'js.gaps.outcome.permanent_failure': {
         'zh': '永久失败',
-        'en': 'permanent failure',
+        'en': 'Permanent failure',
     },
     'js.gaps.outcome.cache_failure': {
         'zh': '缓存写入失败',
-        'en': 'cache write failure',
+        'en': 'Cache write failure',
     },
     # 这两句是**决定性**的：全是 no_data 时补漏一张也补不回来（no_data 不在
     # RETRYABLE_OUTCOMES 里），该点的是「接受并导出」。
     'js.gaps.explained': {
         'zh': '全部缺块都是上游无数据 —— 补漏不会有收获，再跑一遍还是没有',
-        'en': 'Every gap is "no data upstream" — refilling cannot recover any of them',
+        'en': 'Every gap is "No data upstream" — refilling cannot recover any of '
+              'them',
     },
     'js.gaps.unexplained': {
         'zh': '含可重试或失败的缺块 —— 补漏有机会补回一部分',
@@ -257,24 +320,25 @@ MESSAGES = {
         'en': 'Refill',
     },
     'js.gaps.action.refill_title': {
-        'zh': '只重跑记录在案、且值得重试的那些块（上游无数据的不会重跑）',
-        'en': 'Re-run only the recorded gaps worth retrying (skips "no data upstream")',
+        'zh': '只重跑记录在案、且值得重试的那些缺块（上游无数据的不会重跑）',
+        'en': 'Re-run only the recorded gaps worth retrying (skips "No data '
+              'upstream")',
     },
     'js.gaps.action.accept': {
-        'zh': '接受缺口并导出',
-        'en': 'Accept gaps and export',
+        'zh': '接受缺块并生成产物',
+        'en': 'Accept gaps and produce the artifact',
     },
     'js.gaps.action.accept_title': {
-        'zh': '按现状产出成品。产物与历史会永久带缺块标记',
-        'en': 'Produce the output as-is. The output and its history keep a permanent '
-              'gap marker',
+        'zh': '按现状生成产物。产物与历史会永久带缺块标记',
+        'en': 'Produce the artifact as-is. The artifact and its history keep a '
+              'permanent gap marker',
     },
     # 「成品」而不是「MBTiles」：格式不再由这颗按钮决定 —— 点下去先问服务端这个
     # 任务导得出哪些格式，多于一种时弹选择框。写死格式名的那一版把插件注册的
     # 导出器挡在了界面之外（后端早就把 gpkg 接进同一条路由了）。
     'js.gaps.action.export': {
-        'zh': '导出成品',
-        'en': 'Export output',
+        'zh': '导出产物',
+        'en': 'Export artifact',
     },
     # 缺块明细读取失败后的手动重试。存在的理由：GET /gaps 超时一次，行组件的
     # 三个自动触发点（mounted + status/gap_tiles 两条 watch）之后一个都不会
@@ -290,9 +354,9 @@ MESSAGES = {
     },
     # 不可撤销，所以要二次确认，且把数字摆出来。
     'js.gaps.confirm_accept': {
-        'zh': '接受 {n} 块缺失瓦片并按现状产出？产物与历史会永久带缺块标记，这个决定不可撤销。',
-        'en': 'Accept {n} missing tiles and produce the output as-is? The output and its '
-              'history keep a permanent gap marker, and this cannot be undone.',
+        'zh': '接受 {n} 张缺失瓦片并按现状生成产物？产物与历史会永久带缺块标记，这个决定不可撤销。',
+        'en': 'Accept {n} missing tiles and produce the artifact as-is? The artifact '
+              'and its history keep a permanent gap marker, and this cannot be undone.',
     },
     'js.gaps.toast.refill_started': {
         'zh': '任务 #{id} 开始补漏',
@@ -303,15 +367,15 @@ MESSAGES = {
         'en': 'Refill failed: {error}',
     },
     'js.gaps.toast.accepted': {
-        'zh': '已接受 {n} 块缺失瓦片，正在产出成品',
-        'en': 'Accepted {n} missing tiles; producing the output',
+        'zh': '已接受 {n} 张缺失瓦片，正在生成产物',
+        'en': 'Accepted {n} missing tiles; producing the artifact',
     },
     'js.gaps.toast.accept_failed': {
-        'zh': '接受缺口失败：{error}',
+        'zh': '接受缺块失败：{error}',
         'en': 'Accepting the gaps failed: {error}',
     },
     'js.gaps.toast.exported': {
-        'zh': '已导出 MBTiles（{count} 块瓦片）：{path}',
+        'zh': '已导出 MBTiles（{count} 张瓦片）：{path}',
         'en': 'MBTiles exported ({count} tiles): {path}',
     },
     # 通用文案：这颗按钮现在可能在导 mbtiles，也可能在导插件注册的任何格式，
@@ -357,7 +421,7 @@ MESSAGES = {
     # 没有任何导出器吃得下的东西（dem / local_terrain 一件产物都不登记）。
     'js.export.toast.nothing_to_export': {
         'zh': '这个任务没有可导出的产物',
-        'en': 'This task has no exportable output',
+        'en': 'This task has no exportable artifacts',
     },
     # 插件导出器分支的成功文案。与 js.gaps.toast.exported 分成两条是因为信息量
     # 不同：mbtiles 的响应带 tile_count（打包器数过每一块瓦片），插件导出协议里
@@ -407,13 +471,13 @@ MESSAGES = {
         'en': 'Contour tile directory',
     },
     'js.artifacts.kind.dem_dir': {
-        'zh': 'DEM 颗粒目录',
-        'en': 'DEM granule directory',
+        'zh': '高程颗粒目录',
+        'en': 'Elevation granule directory',
     },
     # 规模行。三段各自可缺（非瓦片产物没有层级，老行没统计过大小），
     # 由 JS 过滤掉空段再用 · 连起来，所以这里每段都是独立的键。
     'js.artifacts.tiles': {
-        'zh': '{n} 块',
+        'zh': '{n} 张',
         'en': '{n} tiles',
     },
     'js.artifacts.zooms': {

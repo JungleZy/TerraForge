@@ -78,9 +78,47 @@ function estimateTileCount(bounds, zoomMin, zoomMax) {
     return total;
 }
 
-// 单选组取值：下载类型从下拉改成 radio 后，统一从 :checked 取。
-function _radioValue(name, fallback) {
-    return document.querySelector(`input[name="${name}"]:checked`)?.value || fallback;
+// --- 当前管线 -----------------------------------------------------------------
+//
+// 四条管线（地图瓦片 / 高程 / 本地地形切片 / 等高线）改前是两张表单里的两个控件
+// （#downloadForm 的 downloadType radio 组 + #processForm 的 #processType 下拉）。
+// 现在是 #createPipeline 里的一组 .status-chip，选中态记在 **aria-pressed** 上
+// —— .active 只是它的视觉投影，两者由 _setPipeline 一处同步翻（同 #statusChips：
+// 只有 CSS 类时读屏用户听不出当前停在哪条管线）。
+//
+// 四个值就是后端管线名，一个字都不能改（模板的 data-pipeline 与这里同源）。
+const PIPELINES = ['map', 'dem', 'local_terrain', 'contour'];
+
+// 两条「处理」管线：都吃上传的 .tif / 已完成高程任务，共用 #sourceFiles 与
+// #sourceTifInfo，区别只在 updateTifInfo 的 mode。
+const PROCESS_PIPELINES = ['local_terrain', 'contour'];
+
+// 取不到（非首页、或标记被改坏）时回落 'map'：它是段控的默认选中项，也是唯一
+// 在「选区上下文」里说得通的那条。
+function _currentPipeline() {
+    const chip = document.querySelector('#createPipeline [data-pipeline][aria-pressed="true"]');
+    const value = chip?.dataset.pipeline;
+    return PIPELINES.includes(value) ? value : 'map';
+}
+
+// 非法值忽略而不是回落到 'map'：静默换掉用户选的管线比什么都不做更糟。
+function _setPipeline(name) {
+    if (!PIPELINES.includes(name)) return;
+    const before = _currentPipeline();
+    document.querySelectorAll('#createPipeline [data-pipeline]').forEach(function (chip) {
+        const on = chip.dataset.pipeline === name;
+        chip.classList.toggle('active', on);
+        chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    applyPipeline();
+    // 两条处理管线互切时那张信息卡必须重探：建议最大层级按 mode 算（地形按
+    // Cesium 经纬度分块、等高线按 Web Mercator 瓦片），同一份 DEM 两者给出的
+    // 数不一样（raster_probe._estimate_maxzoom）。文件没变也躲不掉这一次往返
+    // —— 地理解释在服务端，前端手上只有 TIFF 头部。
+    if (before !== name
+        && PROCESS_PIPELINES.includes(before) && PROCESS_PIPELINES.includes(name)) {
+        updateSourceTifInfo();
+    }
 }
 
 // 输出格式多选（瓦片 / GeoTIFF 两个 checkbox）映射回后端 OutputFormat 枚举：
@@ -95,14 +133,13 @@ function _outputFormatValue() {
     return null;
 }
 
-// 刷新 #tileEstimate 读数，返回 {count, over}（无选区/DEM 模式返回 null）。
+// 刷新 #tileEstimate 读数，返回 {count, over}（无选区/非瓦片管线返回 null）。
 // 0.1.4 起瓦片数是软阈值：不再禁用提交，只提示并在提交时要求二次确认。
-// DEM 下载按颗粒计、不用瓦片数，高程模式下隐藏读数。
+// 只有瓦片管线按张数计：高程按颗粒、两条处理管线根本没有 bbox，都隐藏读数。
 function updateTileEstimate() {
     const el = document.getElementById('tileEstimate');
     if (!el) return null;
-    const type = _radioValue('downloadType', 'map');
-    if (type === 'dem' || !currentBounds) {
+    if (_currentPipeline() !== 'map' || !currentBounds) {
         el.hidden = true;
         return null;
     }
@@ -142,8 +179,15 @@ function _paintTileEstimate(el, count, verdict) {
     const over = count > TASK_TILE_LIMIT;
     const parts = [];
     if (over) {
-        const hours = (count / 10 / 3600).toFixed(1);
-        parts.push(t('js.map.tile_estimate.over', { count: formatted, hours: hours }));
+        // 10 张/秒是经验吞吐。时长走 task_center.js 的 formatDuration（全站唯一
+        // 一份读法）：这里曾经内联 `(count / 10 / 3600).toFixed(1)`，于是同一个
+        // 90 分钟在这一行读「1.5 小时」、在任务行读「1小时30分钟」。
+        // formatDuration 是全局函数，来自 base.html 无条件加载的 task_center.js；
+        // map.js 只在首页加载，而 vendor_task_list_js 块只有 /config 才覆盖成空。
+        parts.push(t('js.map.tile_estimate.over', {
+            count: formatted,
+            duration: formatDuration(count / 10),
+        }));
     } else {
         parts.push(t('js.map.tile_estimate.count', { count: formatted }));
     }
@@ -154,13 +198,13 @@ function _paintTileEstimate(el, count, verdict) {
     if (verdict) {
         parts.push(verdict.ok
             ? t('js.region.budget.ok', {
-                required: _fmtBytes(verdict.required_bytes),
-                free: _fmtBytes(verdict.free_bytes),
+                required: window.formatBytes(verdict.required_bytes),
+                free: window.formatBytes(verdict.free_bytes),
             })
             : t('js.region.budget.short', {
-                required: _fmtBytes(verdict.required_bytes),
-                free: _fmtBytes(verdict.free_bytes),
-                shortfall: _fmtBytes(verdict.shortfall_bytes),
+                required: window.formatBytes(verdict.required_bytes),
+                free: window.formatBytes(verdict.free_bytes),
+                shortfall: window.formatBytes(verdict.shortfall_bytes),
             }));
     }
     el.textContent = parts.join(' · ');
@@ -291,6 +335,7 @@ async function _checkBasemapFallback() {
             _announceBasemapRestored(bm);
         }
     } catch (err) {
+        // 仅日志：回退巡检是后台轮询，这一轮问不到下一轮（30s）再问。
         console.warn('[basemap] fallback check failed:', err);
     }
 }
@@ -627,7 +672,7 @@ let _regionEstimateSeq = 0;
 function _clearRegionState() {
     if (viewer) {
         _regionEntities.forEach(function (entity) {
-            try { viewer.entities.remove(entity); } catch (e) { /* 实体已被移除 */ }
+            try { viewer.entities.remove(entity); } catch (e) { /* 明确忽略：实体已被移除 */ }
         });
     }
     _regionEntities = [];
@@ -746,6 +791,7 @@ function applyImportedRegion(payload) {
                 duration: 1.0,
             });
         } catch (e) {
+            // 仅日志：飞不过去不影响「区域已导入」这件事，四至读数已经更新。
             console.error('Failed to fly to imported region:', e);
         }
     }
@@ -900,7 +946,7 @@ async function currentTileEstimate() {
     const sync = updateTileEstimate();
     if (sync || !_regionSpec) return sync;
     if (_regionEstimatePending) {
-        try { await _regionEstimatePending; } catch (e) { /* 失败已在界面上说明 */ }
+        try { await _regionEstimatePending; } catch (e) { /* 明确忽略：失败已在界面上说明 */ }
     }
     return updateTileEstimate();
 }
@@ -915,34 +961,263 @@ async function currentTileEstimate() {
 // 指向 geocoder_url 设置的提示 —— 不静默隐藏（用户会以为这个功能不存在，而它
 // 只是没配地址），也不内置任何默认服务商（那等于替用户决定把他的地名查询发给
 // 一个第三方，而这是个可离线部署的工具）。
+//
+// 2026-08 四处改造（用户实测反馈）：
+//   1. 输入框从左上工具条挪到顶部居中，下拉面板带开合过渡；
+//   2. 关键词先过一遍**坐标识别**（十进制 / 度分秒 / 四至），命中就本地直接
+//      定位，一个请求都不发 —— 这条路不依赖任何外部服务，离线也能用；
+//   3. 结果按 kind 生成筛选片，纯前端筛，不多打一次上游；
+//   4. 最近 10 条搜索存 localStorage，输入框为空时展示，可一键清除。
 
 let _placeSearchTimer = null;
 // 请求序号：连续敲字时晚发的请求可能先回来，把旧结果盖在新关键词上。
 let _placeSearchSeq = 0;
-// null = 还没探测过；true/false = 服务端说的。探测只在面板首次展开时做一次。
+// null = 还没探测过；true/false = 服务端说的。探测只在输入框首次获得焦点时做一次。
 let _geocoderEnabled = null;
+// 本次搜索的原始结果与当前选中的类型筛选。筛选是纯前端的，所以要留一份原始副本。
+let _placeResults = [];
+let _placeKindFilter = '';
+
+// ---- 最近搜索 ----------------------------------------------------------------
+// 存 localStorage 而不是 config 表：它是**这台机器上这个人**的浏览痕迹，
+// 和主题/强调色同一档（见 theme.js 的 tf-theme）。跟着配置走会把一个人的
+// 搜索历史同步给同一台服务的其他访问者。
+const PLACE_HISTORY_KEY = 'tf-place-history';
+const PLACE_HISTORY_MAX = 10;
+
+function _loadPlaceHistory() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(PLACE_HISTORY_KEY) || '[]');
+        // 逐项校验而不是整体信任：localStorage 是用户/扩展可写的，一个对象混
+        // 进来就会在渲染时变成 "[object Object]" 那种行。
+        return Array.isArray(raw)
+            ? raw.filter(function (v) { return typeof v === 'string' && v.trim(); })
+                 .slice(0, PLACE_HISTORY_MAX)
+            : [];
+    } catch (e) {
+        // 明确忽略：隐私模式下 localStorage 直接抛，历史退化成空表。
+        return [];
+    }
+}
+
+function _savePlaceHistory(list) {
+    try {
+        localStorage.setItem(PLACE_HISTORY_KEY, JSON.stringify(list));
+    } catch (e) {
+        /* 明确忽略：配额满 / 隐私模式 —— 历史是锦上添花，存不下不影响搜索 */
+    }
+}
+
+/**
+ * 记一条历史。**只在用户明确提交时调用**（回车、或点中一条结果），不在去抖
+ * 搜索里调 —— 那样敲「重庆」会依次记下「重」「重庆」两条前缀。
+ */
+function _rememberPlaceQuery(query) {
+    const term = (query || '').trim();
+    if (!term) return;
+    const list = _loadPlaceHistory().filter(function (v) { return v !== term; });
+    list.unshift(term);
+    _savePlaceHistory(list.slice(0, PLACE_HISTORY_MAX));
+}
+
+function _clearPlaceHistory() {
+    _savePlaceHistory([]);
+    _renderPlaceHistory();
+}
+
+// ---- 坐标识别 ----------------------------------------------------------------
+// 支持三种写法，全部本地解析：
+//   点：`30.55, 114.31`（默认纬度在前，Google/百度/高德复制出来都是这个序）
+//       `114.31E, 30.55N` / `30°33'N 114°18'36"E`（带半球字母则序无关紧要）
+//   四至：`west, south, east, north` 四个数
+// 为什么默认「纬度在前」而不是「经度在前」：本应用状态栏是经度在前，但用户
+// 手里那串坐标绝大多数是从地图应用复制来的，那些一律是 lat,lon。判反的后果
+// 很重（跑到地球另一边），所以除了这条约定，还有两道自证：带半球字母时按字母
+// 走；第一个数绝对值 > 90 时它只可能是经度，自动按 lon,lat 读。
+// 界面上也会把解释结果写出来（「纬度 30.55 · 经度 114.31」），让用户一眼看出
+// 有没有读反 —— 静默猜测才是真正危险的那一种。
+const _DMS_RE = new RegExp(
+    '^\\s*(-?\\d+(?:\\.\\d+)?)\\s*(?:°|d|º)?' +      // 度
+    '(?:\\s*(\\d+(?:\\.\\d+)?)\\s*[\'′m])?' +          // 分
+    '(?:\\s*(\\d+(?:\\.\\d+)?)\\s*(?:"|″|s))?' +      // 秒
+    '\\s*([NSEWnsew])?\\s*$');
+
+/** 一个坐标分量 → `{value, axis}`；axis 是 'lat' / 'lon' / ''（没写半球字母）。 */
+function _parseCoordPart(raw) {
+    const m = _DMS_RE.exec(String(raw || ''));
+    if (!m) return null;
+    const deg = parseFloat(m[1]);
+    if (!isFinite(deg)) return null;
+    const minutes = m[2] ? parseFloat(m[2]) : 0;
+    const seconds = m[3] ? parseFloat(m[3]) : 0;
+    if (minutes >= 60 || seconds >= 60) return null;
+    // 符号跟着度走：`-30°33'` 是南纬 30.55，不是 -30 + 0.55。
+    const magnitude = Math.abs(deg) + minutes / 60 + seconds / 3600;
+    let value = deg < 0 ? -magnitude : magnitude;
+    const hemi = (m[4] || '').toUpperCase();
+    let axis = '';
+    if (hemi === 'N' || hemi === 'S') axis = 'lat';
+    if (hemi === 'E' || hemi === 'W') axis = 'lon';
+    if (hemi === 'S' || hemi === 'W') value = -Math.abs(value);
+    return { value: value, axis: axis };
+}
+
+/**
+ * 两个坐标分量 → `{lat, lon}`；判不出来返回 null。
+ *
+ * 单独成函数是为了让「判序」这一条能被单独钉住：它与紧随其后的取值域校验
+ * 长得很像（都在拿 `Math.abs(...) > 90` 说事），混在一个函数里时，针对判序
+ * 的断言会误命中校验那一行 —— 判序被删掉照样全绿（实测过的变异存活）。
+ *
+ * 三档判据，从强到弱：
+ *   1. 两个都带半球字母：按字母；同轴（NN / EE）判不是坐标；
+ *   2. 只有一个带字母：另一个就是另一根轴；
+ *   3. 都不带：默认**纬度在前**（地图应用复制出来的一律是 lat,lon），
+ *      但第一个数绝对值 > 90 时它只可能是经度，自动对调。
+ * 第 3 档是唯一靠约定的一档，所以界面上会把解释结果原样写出来
+ * （「纬度 30.55 · 经度 114.31」），读反了用户一眼能看见。
+ */
+function orderLatLonParts(first, second) {
+    let a = first;
+    let b = second;
+    if (a.axis && b.axis) {
+        if (a.axis === b.axis) return null;
+        if (a.axis === 'lon') { const t = a; a = b; b = t; }
+    } else if (a.axis === 'lon' || b.axis === 'lat') {
+        const t = a; a = b; b = t;
+    } else if (!a.axis && !b.axis && Math.abs(a.value) > 90) {
+        const t = a; a = b; b = t;
+    }
+    return { lat: a.value, lon: b.value };
+}
+
+/**
+ * 关键词 → `{kind:'point', lat, lon}` / `{kind:'bbox', bbox:[w,s,e,n]}` / null。
+ *
+ * 返回 null 表示「这不是坐标」，调用方照常去问地理编码服务。判据故意保守：
+ * 只有整串都能解析成 2 个或 4 个数值分量才算命中，任何多余字符都判不是 ——
+ * 「1 号线」「G318」这类地名里带数字的输入不该被劫持成坐标。
+ */
+function parsePlaceQueryAsCoords(query) {
+    const text = String(query || '').trim();
+    if (!text) return null;
+    // 逗号 / 空白 / 分号都当分隔符；连续分隔符不产生空片段。
+    const parts = text.split(/[,;，、\s]+/).filter(Boolean);
+    if (parts.length !== 2 && parts.length !== 4) return null;
+    const parsed = parts.map(_parseCoordPart);
+    if (parsed.some(function (p) { return p === null; })) return null;
+
+    if (parsed.length === 4) {
+        // 四至：w, s, e, n。这个序与本应用其余地方（RegionSpec.bounds、
+        // /api/places/search 的 bbox）逐字一致，不另立一套。
+        //
+        // 位置序在这里**一次性**换成名字，后面全程按名字走：
+        // tests/test_css_contract.py::test_bbox_literals_never_swap_directions
+        // 要求每个方位键的值引用同名方位，而 `b[3]` 这种下标写法正是它防的
+        // 那一类 —— 接反了看不出来，界面对、下载的区域错。
+        const values = parsed.map(function (p) { return p.value; });
+        const west = values[0];
+        const south = values[1];
+        const east = values[2];
+        const north = values[3];
+        if (Math.abs(west) > 180 || Math.abs(east) > 180) return null;
+        if (Math.abs(south) > 90 || Math.abs(north) > 90) return null;
+        return { kind: 'bbox', west: west, south: south, east: east, north: north };
+    }
+
+    const ordered = orderLatLonParts(parsed[0], parsed[1]);
+    if (!ordered) return null;
+    if (Math.abs(ordered.lat) > 90 || Math.abs(ordered.lon) > 180) return null;
+    return { kind: 'point', lat: ordered.lat, lon: ordered.lon };
+}
 
 function _closePlaceSearch() {
     const panel = document.getElementById('placeSearchPanel');
-    const toggle = document.getElementById('mapPlaceSearch');
-    if (panel) panel.hidden = true;
-    if (toggle) {
-        toggle.setAttribute('aria-expanded', 'false');
-        toggle.classList.remove('map-panel-btn--active');
-        toggle.focus();          // 焦点不能掉回 <body>：键盘用户会丢失位置
-    }
+    const input = document.getElementById('placeSearchInput');
+    if (input) input.setAttribute('aria-expanded', 'false');
+    if (!panel || panel.hidden) return;
+    // 先摘 --in 触发退场过渡，等过渡结束再挂 hidden —— 直接置 hidden 会让
+    // 元素当帧消失，动画一帧都看不到（进场那一侧同理，见 _openPlaceSearch）。
+    panel.classList.remove('map-search__panel--in');
+    const finish = function () { panel.hidden = true; };
+    panel.addEventListener('transitionend', finish, { once: true });
+    // 兜底：元素若因 prefers-reduced-motion 被压成 0.01ms，或过渡被打断，
+    // transitionend 可能不来。300ms 后无条件收，幂等。
+    setTimeout(finish, 300);
+}
+
+function _openPlaceSearch() {
+    const panel = document.getElementById('placeSearchPanel');
+    const input = document.getElementById('placeSearchInput');
+    if (input) input.setAttribute('aria-expanded', 'true');
+    if (!panel) return;
+    // 每次要展示新内容都闪一下结果区：面板已经开着时，它的开合过渡不会再触发
+    // （类还在身上），换内容就是硬切。函数声明会提升，定义在下面不影响。
+    _flashPlaceResults();
+    panel.hidden = false;
+    // 下一帧再加类：同一帧内「摘 hidden + 加类」浏览器会合并成一次样式计算，
+    // 没有起始状态可插值，过渡不会发生（与 ui.js 的 showToast 同一道理）。
+    requestAnimationFrame(function () {
+        panel.classList.add('map-search__panel--in');
+    });
+}
+
+/**
+ * 结果区换内容时闪一下淡入。
+ *
+ * 为什么单独要这一层：面板的开合过渡只在「关 → 开」那一次发生。用户连着搜
+ * 第二个词时面板一直开着，换内容是硬切 —— 实测 opacity 全程恒为 1，一帧动画
+ * 都没有，这正是「搜索还是没有动画」那条反馈的另一半。
+ *
+ * ⚠️ 这里**不能**照抄面板那套「加类 / rAF 摘类」：面板能成立是因为它同时从
+ * `hidden` 变可见，起始态随「元素首次参与渲染」被提交了；结果区一直在渲染树
+ * 里，加类与摘类落在同一帧，浏览器把两次样式变更合并成一次，起点终点都是 1，
+ * 过渡不会发生（实测 distinctResultOpacities == 1，与改造前一模一样）。
+ * 读一次 offsetWidth 强制同步样式与布局，让 opacity:0 真正落地，再摘类。
+ * 代价是一次强制重排，作用域是这一个小元素、且只在用户主动搜索时发生。
+ */
+function _flashPlaceResults() {
+    const results = document.getElementById('placeSearchResults');
+    if (!results) return;
+    results.classList.add('place-search__results--fresh');
+    void results.offsetWidth;
+    results.classList.remove('place-search__results--fresh');
+}
+
+/**
+ * 「搜索中…」。**在去抖与网络之前**就渲染，这是本次改造的重点。
+ *
+ * 改造前：敲字之后面板一直 hidden，直到结果回来才带着内容一起出现 —— 实测
+ * 从按键到面板可见有 2.3 秒（300ms 去抖 + 约 2s 上游往返），这段时间屏幕上
+ * 一点变化都没有。用户报的「有一点延迟」是这 2.3 秒，「没有动画」是那 160ms
+ * 淡入发生在 2.3 秒空白之后、还与六行结果同时出现，根本注意不到。
+ *
+ * 现在敲第一个字面板就开：动画发生在**交互当下**，等待也有了去处。
+ */
+function _renderPlaceSearching() {
+    const results = document.getElementById('placeSearchResults');
+    if (!results) return;
+    _renderPlaceFilters([]);
+    results.innerHTML = '';
+    const hint = document.createElement('div');
+    hint.className = 'place-search__hint place-search__hint--busy';
+    hint.textContent = t('js.search.searching');
+    results.appendChild(hint);
+    _openPlaceSearch();
 }
 
 /** 把结果区换成一句提示（无结果 / 未配置 / 出错都走这里）。 */
 function _renderPlaceSearchHint(text) {
     const results = document.getElementById('placeSearchResults');
     if (!results) return;
+    _renderPlaceFilters([]);
     // textContent：提示里可能含服务端的错误原文。
     results.innerHTML = '';
     const hint = document.createElement('div');
     hint.className = 'place-search__hint';
     hint.textContent = text;
     results.appendChild(hint);
+    _openPlaceSearch();
 }
 
 /** enabled:false -> 输入框禁用 + 指向 geocoder_url 的提示。 */
@@ -958,8 +1233,8 @@ function _applyGeocoderDisabled() {
 /**
  * 探测地理编码器是否配置好。空 q 的请求不查上游，只回 enabled。
  *
- * 为什么在面板展开时探测而不是等用户敲第一个字：验收标准是「未配置时控件
- * **看得出**是禁用的」。让用户先敲完一个地名再告诉他这个功能没开，是把
+ * 为什么在输入框获得焦点时探测而不是等用户敲第一个字：验收标准是「未配置时
+ * 控件**看得出**是禁用的」。让用户先敲完一个地名再告诉他这个功能没开，是把
  * 「配置缺失」伪装成「搜不到」。
  * 探测本身失败（网络/500）时**不**禁用控件：那是未知，不是「没配」——
  * 禁用一个其实可用的控件比多一次无结果更糟。
@@ -974,6 +1249,7 @@ async function _probeGeocoder() {
         if (!_geocoderEnabled) _applyGeocoderDisabled();
         return _geocoderEnabled;
     } catch (error) {
+        // 仅日志：探测不到就按「没有地名服务」处理，提示由调用方按 null 给。
         console.error('Failed to probe geocoder:', error);
         return null;
     }
@@ -984,9 +1260,19 @@ async function _runPlaceSearch(query) {
     const results = document.getElementById('placeSearchResults');
     if (!results) return;
     if (!term) {
-        results.innerHTML = '';
+        _renderPlaceHistory();
         return;
     }
+
+    // 坐标优先：命中就地出结果，一个请求都不发。地理编码没配也照样能用 ——
+    // 这条路完全不依赖外部服务。
+    const coords = parsePlaceQueryAsCoords(term);
+    if (coords) {
+        _placeSearchSeq++;      // 作废在途的上一次网络搜索，免得它回来覆盖
+        _renderCoordResult(coords);
+        return;
+    }
+
     const seq = ++_placeSearchSeq;
     try {
         const response = await fetch(
@@ -1008,6 +1294,103 @@ async function _runPlaceSearch(query) {
     }
 }
 
+/** 坐标命中：出一条「跳到此处」的结果，并把解释出来的经纬度写清楚。 */
+function _renderCoordResult(coords) {
+    const results = document.getElementById('placeSearchResults');
+    if (!results) return;
+    _renderPlaceFilters([]);
+    results.innerHTML = '';
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'place-search__item';
+    if (coords.kind === 'bbox') {
+        // applyPlaceResult 收的是 [w, s, e, n] 数组（与 /api/places/search 的
+        // bbox 同一形态），名字在这里拼回位置序，仅此一处。
+        item.dataset.bbox = JSON.stringify(
+            [coords.west, coords.south, coords.east, coords.north]);
+        item.textContent = t('js.search.coord.bbox_title');
+        const meta = document.createElement('span');
+        meta.className = 'place-search__meta';
+        meta.textContent = t('js.search.coord.bbox_meta', {
+            west: coords.west, south: coords.south,
+            east: coords.east, north: coords.north,
+        });
+        item.appendChild(meta);
+    } else {
+        item.dataset.lat = String(coords.lat);
+        item.dataset.lon = String(coords.lon);
+        item.textContent = t('js.search.coord.point_title');
+        const meta = document.createElement('span');
+        meta.className = 'place-search__meta';
+        // 把「谁是纬度谁是经度」明写出来：读反了用户一眼能看见。
+        meta.textContent = t('js.search.coord.point_meta',
+                             { lat: coords.lat, lon: coords.lon });
+        item.appendChild(meta);
+    }
+    results.appendChild(item);
+    _openPlaceSearch();
+}
+
+// kind 是上游给的原始英文串（Photon: state/city/house/other…，
+// Nominatim: administrative/boundary…）。这里只翻译认得的，认不得的**原样显示**
+// —— 编一个「其它」出来会把两种不同的类型糊成一类。
+const _PLACE_KIND_KEYS = {
+    country: 'js.search.kind.country', state: 'js.search.kind.state',
+    region: 'js.search.kind.state', province: 'js.search.kind.state',
+    county: 'js.search.kind.county', city: 'js.search.kind.city',
+    district: 'js.search.kind.district', locality: 'js.search.kind.locality',
+    street: 'js.search.kind.street', house: 'js.search.kind.house',
+    administrative: 'js.search.kind.administrative',
+    boundary: 'js.search.kind.administrative',
+    place: 'js.search.kind.place', other: 'js.search.kind.other',
+};
+
+function _placeKindLabel(kind) {
+    const key = Object.prototype.hasOwnProperty.call(_PLACE_KIND_KEYS, kind)
+        ? _PLACE_KIND_KEYS[kind] : '';
+    return key ? t(key) : (kind || t('js.search.kind.other'));
+}
+
+/**
+ * 类型筛选片。**按本次结果实际出现过的 kind 生成**，不写死一份清单：
+ * Photon 与 Nominatim 的 kind 取值集合不同，写死必然在另一家上失灵（不是显示
+ * 一堆空片，就是漏掉真实存在的类型）。片上带计数，用户点之前就知道有几条。
+ */
+function _renderPlaceFilters(list) {
+    const box = document.getElementById('placeSearchFilters');
+    if (!box) return;
+    box.innerHTML = '';
+    const kinds = [];
+    const counts = {};
+    list.forEach(function (p) {
+        const k = (p && p.kind) || '';
+        if (!Object.prototype.hasOwnProperty.call(counts, k)) {
+            counts[k] = 0;
+            kinds.push(k);
+        }
+        counts[k] += 1;
+    });
+    // 只有一种类型时筛选片没有意义（点哪个都一样），整行藏起来。
+    if (kinds.length < 2) {
+        box.hidden = true;
+        return;
+    }
+    box.hidden = false;
+    const make = function (value, label, count) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'map-search__chip';
+        chip.dataset.kind = value;
+        chip.setAttribute('aria-pressed', String(_placeKindFilter === value));
+        chip.textContent = `${label} ${count}`;
+        return chip;
+    };
+    box.appendChild(make('', t('js.search.filter.all'), list.length));
+    kinds.forEach(function (k) {
+        box.appendChild(make(k, _placeKindLabel(k), counts[k]));
+    });
+}
+
 /**
  * 渲染结果列表。
  *
@@ -1015,15 +1398,30 @@ async function _runPlaceSearch(query) {
  * 编码服务的响应，是本应用里最典型的「外部可控字符串」。bbox 走 data 属性存
  * JSON，点击时解析 —— 比在闭包里挂一堆监听更好清理（列表每次搜索整体重建）。
  */
-function _renderPlaceResults(list) {
+function _renderPlaceResults(list, keepFilter) {
     const results = document.getElementById('placeSearchResults');
     if (!results) return;
+    if (!keepFilter) {
+        _placeResults = Array.isArray(list) ? list : [];
+        // 新一轮搜索重置筛选：上一次选的「city」在新结果里可能一条都没有，
+        // 留着它用户会看到一个空列表，而筛选片就在上面亮着，很难反应过来。
+        _placeKindFilter = '';
+    }
+    _renderPlaceFilters(_placeResults);
+    const shown = _placeKindFilter
+        ? _placeResults.filter(function (p) { return (p && p.kind) === _placeKindFilter; })
+        : _placeResults;
+
     results.innerHTML = '';
-    if (!list.length) {
-        _renderPlaceSearchHint(t('js.search.no_results'));
+    if (!shown.length) {
+        const hint = document.createElement('div');
+        hint.className = 'place-search__hint';
+        hint.textContent = t('js.search.no_results');
+        results.appendChild(hint);
+        _openPlaceSearch();
         return;
     }
-    list.forEach(function (place) {
+    shown.forEach(function (place) {
         if (!place || !place.bbox || place.bbox.length !== 4) return;
         const item = document.createElement('button');
         item.type = 'button';
@@ -1032,10 +1430,49 @@ function _renderPlaceResults(list) {
         item.textContent = place.name || '';
         const meta = document.createElement('span');
         meta.className = 'place-search__meta';
-        meta.textContent = [place.kind, place.region].filter(Boolean).join(' · ');
+        meta.textContent = [place.kind ? _placeKindLabel(place.kind) : '', place.region]
+            .filter(Boolean).join(' · ');
         item.appendChild(meta);
         results.appendChild(item);
     });
+    _openPlaceSearch();
+}
+
+/** 输入框为空时展示最近搜索；一条都没有就把面板收起来。 */
+function _renderPlaceHistory() {
+    const results = document.getElementById('placeSearchResults');
+    if (!results) return;
+    _placeResults = [];
+    _placeKindFilter = '';
+    _renderPlaceFilters([]);
+    const list = _loadPlaceHistory();
+    results.innerHTML = '';
+    if (!list.length) {
+        _closePlaceSearch();
+        return;
+    }
+    const head = document.createElement('div');
+    head.className = 'map-search__history-head';
+    const title = document.createElement('span');
+    title.textContent = t('js.search.history.title');
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'map-search__history-clear';
+    clear.id = 'placeSearchHistoryClear';
+    clear.textContent = t('js.search.history.clear');
+    head.appendChild(title);
+    head.appendChild(clear);
+    results.appendChild(head);
+
+    list.forEach(function (term) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'place-search__item';
+        item.dataset.history = term;
+        item.textContent = term;
+        results.appendChild(item);
+    });
+    _openPlaceSearch();
 }
 
 /**
@@ -1076,6 +1513,22 @@ function applyPlaceResult(bbox, name) {
 }
 
 /**
+ * 坐标命中「跳到此处」：只飞相机，**不动选区**。
+ *
+ * 为什么不顺手围一个小框：一个点没有范围，围多大都是我们替用户编的。用户要
+ * 下载就自己框，那时四至是他定的；这里只负责把视角送过去。
+ */
+function flyToCoordinate(lat, lon) {
+    if (!viewer) return;
+    viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(lon, lat, 20000),
+        duration: 1.0,
+    });
+    viewer.scene.requestRender();
+    _closePlaceSearch();
+}
+
+/**
  * 区域导入按钮 + 地点搜索面板的接线。由 index.html 的 boot 块在 initMap 之后
  * 调用（applyPlaceResult / applyImportedRegion 都要 viewer）。
  */
@@ -1093,27 +1546,42 @@ function initRegionTools() {
         });
     }
 
-    const toggle = document.getElementById('mapPlaceSearch');
+    const root = document.getElementById('mapSearch');
     const panel = document.getElementById('placeSearchPanel');
     const input = document.getElementById('placeSearchInput');
     const results = document.getElementById('placeSearchResults');
-    if (!toggle || !panel || !input || !results) return;
+    const filters = document.getElementById('placeSearchFilters');
+    const clearBtn = document.getElementById('placeSearchClear');
+    if (!root || !panel || !input || !results || !filters || !clearBtn) return;
 
-    toggle.addEventListener('click', function () {
-        if (!panel.hidden) {
-            _closePlaceSearch();
-            return;
-        }
-        panel.hidden = false;
-        toggle.setAttribute('aria-expanded', 'true');
-        toggle.classList.add('map-panel-btn--active');
-        input.focus();
+    const syncClearBtn = function () { clearBtn.hidden = !input.value; };
+
+    // 聚焦即展开：空串时展示最近搜索，有内容时把上一轮结果放回来。
+    input.addEventListener('focus', function () {
         _probeGeocoder();
+        if (input.value.trim()) {
+            _runPlaceSearch(input.value);
+        } else {
+            _renderPlaceHistory();
+        }
     });
 
     // 300ms 去抖：每个按键都打一次上游地理编码是在替用户浪费他的配额。
+    //
+    // 但「开面板」不等去抖，也不等网络：敲第一个字就把面板拉开、先摆一句
+    // 「搜索中…」。改造前这两件事绑在一起，实测从按键到面板可见有 2.3 秒的
+    // 完全空白（300ms 去抖 + 约 2s 上游往返）—— 用户报的「延迟」是这一段，
+    // 「没有动画」是那 160ms 淡入被推到了这一段之后、还和六行结果同时出现。
+    // 坐标输入本来就不打网络，走到 _runPlaceSearch 会被就地覆盖成结果，
+    // 「搜索中…」不会闪一下，因为它压根来不及渲染完就被替换（同一次事件循环）。
     input.addEventListener('input', function () {
+        syncClearBtn();
         clearTimeout(_placeSearchTimer);
+        if (input.value.trim()) {
+            _renderPlaceSearching();
+        } else {
+            _renderPlaceHistory();
+        }
         _placeSearchTimer = setTimeout(function () { _runPlaceSearch(input.value); }, 300);
     });
     input.addEventListener('keydown', function (e) {
@@ -1124,20 +1592,101 @@ function initRegionTools() {
             // 回车立刻搜，不等去抖 —— 用户已经明确表示「就是它」。
             e.preventDefault();
             clearTimeout(_placeSearchTimer);
+            // 只有明确提交才记历史：写在去抖里的话，敲「重庆」会依次记下
+            // 「重」「重庆」两条前缀，10 条容量三次搜索就满了。
+            _rememberPlaceQuery(input.value);
             _runPlaceSearch(input.value);
         }
     });
-    // 委托：结果列表每次搜索整体重建，逐项挂监听会漏清理。
+
+    clearBtn.addEventListener('click', function () {
+        input.value = '';
+        syncClearBtn();
+        clearTimeout(_placeSearchTimer);
+        _placeSearchSeq++;              // 作废在途请求，免得它回来盖住历史列表
+        input.focus();
+        _renderPlaceHistory();
+    });
+
+    // 委托：筛选片每次搜索整体重建，逐项挂监听会漏清理。
+    filters.addEventListener('click', function (e) {
+        const chip = e.target.closest('.map-search__chip');
+        if (!chip) return;
+        _placeKindFilter = chip.dataset.kind || '';
+        _renderPlaceResults(null, true);
+    });
+
+    // 同上。结果行有三种：地名（data-bbox）、坐标点（data-lat/lon）、
+    // 历史条目（data-history）。用 data 属性分派而不是再加三个类名 ——
+    // 类名是给样式的，这三者长得一模一样。
     results.addEventListener('click', function (e) {
+        const clear = e.target.closest('.map-search__history-clear');
+        if (clear) {
+            _clearPlaceHistory();
+            input.focus();
+            return;
+        }
         const item = e.target.closest('.place-search__item');
         if (!item) return;
+        if (item.dataset.history) {
+            input.value = item.dataset.history;
+            syncClearBtn();
+            _rememberPlaceQuery(item.dataset.history);   // 重排到最前
+            _runPlaceSearch(item.dataset.history);
+            return;
+        }
+        if (item.dataset.lat && item.dataset.lon) {
+            flyToCoordinate(Number(item.dataset.lat), Number(item.dataset.lon));
+            return;
+        }
         let bbox;
         try {
             bbox = JSON.parse(item.dataset.bbox);
         } catch (err) {
+            // 明确忽略：dataset.bbox 是本文件自己写进去的，解析不了说明这条
+            // 结果没有范围可飞 —— 与「点了一条没有范围的结果」同一个结局。
             return;
         }
+        // 点中一条结果同样算「明确提交」—— 用户可能是在去抖搜索的结果里直接
+        // 点的，一次回车都没按过，而这恰恰是最值得记住的那一次搜索。
+        _rememberPlaceQuery(input.value);
         applyPlaceResult(bbox, item.textContent);
+    });
+
+    // 点面板外面收起来。搜索框常驻可见之后没有「再点一次按钮收起」那条路了，
+    // 没有这一条，面板会一直挂在地图上挡着。mousedown 而不是 click：click 要
+    // 等抬起，中间用户已经在拖地图了，面板跟着晃一路。
+    //
+    // 这一条只覆盖鼠标。焦点用键盘移出去（Tab）时不产生任何 mousedown ——
+    // 实测 Tab 五次焦点已经跑到 #manualBounds_north 上，面板还开着，键盘用户
+    // 被一个盖住地图的下拉框困住。那一半由下面的 focusout 兜。
+    document.addEventListener('mousedown', function (e) {
+        if (panel.hidden) return;
+        if (root.contains(e.target)) return;
+        _closePlaceSearch();
+    });
+
+    // 焦点离开**整个部件**才收 —— 判据是 relatedTarget 在不在 root 里，不是
+    // 「输入框失焦」。Tab 到结果行、到「清除」按钮时焦点确实离开了输入框，
+    // 但人还在这个部件里操作，那时收起来等于键盘根本没法选结果。
+    // relatedTarget 为 null（点了非可聚焦区域、或整个窗口失焦）也收：这时
+    // 用户的注意力已经不在这里，鼠标那一路虽然也会收，但两条互为兜底。
+    root.addEventListener('focusout', function (e) {
+        if (panel.hidden) return;
+        if (e.relatedTarget && root.contains(e.relatedTarget)) return;
+        _closePlaceSearch();
+    });
+
+    // 点回一个**已经聚焦**的输入框不会再触发 focus 事件 —— 用户点地图收起面板
+    // 之后再点回搜索框，屏幕上毫无反应，得删一个字再补回去才出得来。
+    // 用 mousedown 补这一跳：面板开着时不动（避免点一下就重绘闪一下）。
+    input.addEventListener('mousedown', function () {
+        if (!panel.hidden) return;
+        if (input.value.trim()) {
+            _runPlaceSearch(input.value);
+        } else {
+            _renderPlaceHistory();
+        }
     });
 }
 
@@ -1238,11 +1787,11 @@ function _initMapTools() {
             announceBounds();
             refreshSubmitButtonState();
 
-            // 选区落定后 pulse 浮层上的「下载」按钮，引导下一步
-            const dlBtn = document.getElementById('boundsDownloadBtn');
-            if (dlBtn) {
-                dlBtn.style.animation = 'pulse 0.5s ease-in-out';
-                setTimeout(() => { dlBtn.style.animation = ''; }, 500);
+            // 选区落定后 pulse 浮层上的「新建任务」按钮，引导下一步
+            const createBtn = document.getElementById('boundsCreateBtn');
+            if (createBtn) {
+                createBtn.style.animation = 'pulse 0.5s ease-in-out';
+                setTimeout(() => { createBtn.style.animation = ''; }, 500);
             }
             return;
         }
@@ -1285,17 +1834,79 @@ function initMapStylePreview() {
     refresh();
 }
 
-function initDownloadTypeToggle() {
-    // 数据下载表单（#downloadForm）：地图瓦片 / DEM（radio 组，按 name 取）。
-    const typeRadios = document.querySelectorAll('input[name="downloadType"]');
-    if (!typeRadios.length) return;
+// --- 字段显隐：一张表 + 一个 apply() ------------------------------------------
+//
+// 改前这些谓词分散在两个函数的两个同名 apply() 里：initDownloadTypeToggle 的一维
+// （下载类型）与 initProcessTypeToggle 的二维（处理类型 × 数据来源）。加一条管线
+// 要在两处各改一遍，而两处的写法还不一样（`!(isMap)` vs `hidden = isDem`）。
+//
+// 每行一个字段组：
+//   pipelines —— 它出现在哪几条管线上。这一列**就是**设计稿 §2.4 的字段矩阵，
+//                逐格对应；tests/test_create_panel.py 把那张矩阵抄成常量与这张表
+//                逐格核对，漏一格是红的。
+//   source    —— 非空时再叠一层「数据来源必须是这个」。那正是原来第二个函数里的
+//                第二个维度：来源选「已完成的高程任务」时用不上上传控件。
+// 两个条件都满足才可见。
+//
+// ⚠️ 表里的 id 必须与 templates/index.html 逐字对齐。
+const PIPELINE_FIELDS = [
+    //                                瓦片   高程   地形切片   等高线
+    { id: 'selectionField', pipelines: ['map', 'dem'] },
+    { id: 'sourceField', pipelines: ['local_terrain', 'contour'] },
+    { id: 'outputFormatField', pipelines: ['map'] },
+    { id: 'mapStyleField', pipelines: ['map'] },
+    { id: 'zoomField', pipelines: ['map', 'contour'] },
+    { id: 'demOptions', pipelines: ['dem'] },
+    { id: 'localTerrainOptions', pipelines: ['local_terrain'] },
+    { id: 'contourOptions', pipelines: ['contour'] },
+    { id: 'outputPathField', pipelines: ['map', 'dem'] },
+    // 二维那一层：来源二选一只对两条处理管线成立。
+    { id: 'sourceUploadRow', pipelines: ['local_terrain', 'contour'], source: 'upload' },
+    { id: 'contourSourceHint', pipelines: ['contour'], source: 'upload' },
+    { id: 'processDemTaskRow', pipelines: ['local_terrain', 'contour'], source: 'dem_task' },
+    // 「zoom_max 留空 = 按 DEM 分辨率自动算」只对等高线成立（contour_api 把空值
+    // 当未表态）；瓦片那条腿空值会 parseInt 出 NaN，那句提示在它身上是错的。
+    { id: 'zoomAutoHint', pipelines: ['contour'] },
+];
 
-    const zoomRow = document.getElementById('zoomMin')?.closest('.row');
-    const outputFormatField = document.querySelector('input[name="outputFormat"]')?.closest('.mb-3');
+function applyPipeline() {
+    const pipeline = _currentPipeline();
+    const source = document.getElementById('processSource')?.value || 'upload';
+    PIPELINE_FIELDS.forEach(function (row) {
+        const el = document.getElementById(row.id);
+        if (!el) return;
+        el.hidden = !(row.pipelines.includes(pipeline)
+            && (!row.source || row.source === source));
+    });
 
-    const mapStyleField = document.getElementById('mapStyleField');
+    // 默认保存路径只有两条下载管线有（表里 outputPathField 那一行），目录按管线分。
+    // 路径一律绝对:default_save_path 已在 init_database 归一成绝对值
+    //（0.2.3 起建任务拒相对路径）;拿不到配置仅是模板未注入的兜底。
+    const outputPath = document.getElementById('outputPath');
+    if (outputPath && !outputPath.dataset.userEdited
+        && (pipeline === 'map' || pipeline === 'dem')) {
+        const base = ((typeof config !== 'undefined' && config && config.default_save_path) || './downloads')
+            .trim().replace(/[\\/]+$/, '');
+        outputPath.value = base + (pipeline === 'dem' ? '/dem' : '/map');
+    }
 
-    const demOptions = document.getElementById('demOptions');
+    // 切走时隐藏读数、切回瓦片时按当前选区/缩放重算 —— 不刷的话高程管线下会
+    // 残留上一次瓦片管线的旧读数。
+    updateTileEstimate();
+    // 选区摘要与「去框选 / 手动输入范围」两个入口跟着管线走：它们只在
+    // 瓦片/高程下有意义，而 hidden 掉的容器里那两颗按钮不该留在 tab 序里。
+    updateCreatePanelBounds();
+    // 预告行不在上传行里（模板里它挨着档位下拉），上面那张表藏不掉它 ——
+    // 管线或来源一变就得重画，否则切到 DEM 任务后它还挂着上一批上传文件的
+    // 层级/张数/体积。收起的判据写在 renderTerrainTileEstimate 自己那儿。
+    renderTerrainTileEstimate();
+    refreshSubmitButtonState();
+}
+
+function initPipelineToggle() {
+    const group = document.getElementById('createPipeline');
+    if (!group) return;                 // 非首页：没有新建面板
+
     // I11：ASTGTM.003 只发布 _dem/_num 颗粒，_swb 水体掩膜不存在（真正的
     // 水体在 ASTWBD.001），勾选必然全部 404；后端同样拒绝该组合。
     // 前端直接禁用并隐藏这个选项，提交时永远带 'false'。
@@ -1307,33 +1918,22 @@ function initDownloadTypeToggle() {
         if (swbWrap) swbWrap.hidden = true;
     }
 
-    function apply() {
-        const t = _radioValue('downloadType', 'map');
-        const isMap = t === 'map';
-        const isDem = t === 'dem';
-        // Zoom range is map-only; DEM zoom is fixed by the dataset.
-        if (zoomRow) zoomRow.hidden = isDem;
-        // Output format (tiles/stitch) is map-only.
-        if (outputFormatField) outputFormatField.hidden = !(isMap);
-        if (mapStyleField) mapStyleField.hidden = !(isMap);
-        if (demOptions) demOptions.hidden = !(isDem);
+    // 段控用事件代理而不是逐 chip 挂：四枚 chip 是服务端渲染的静态标记，代理
+    // 只是省掉一圈循环；真正的理由是把「选中态怎么翻」收在 _setPipeline 一处。
+    group.addEventListener('click', function (e) {
+        const chip = e.target.closest('[data-pipeline]');
+        if (chip && group.contains(chip)) _setPipeline(chip.dataset.pipeline);
+    });
 
-        const outputPath = document.getElementById('outputPath');
-        if (outputPath && !outputPath.dataset.userEdited) {
-            // 默认保存路径一律绝对:default_save_path 已在 init_database 归一成
-            // 绝对值(0.2.3 起建任务拒相对路径);拿不到配置仅是模板未注入的兜底。
-            const base = ((typeof config !== 'undefined' && config && config.default_save_path) || './downloads')
-                .trim().replace(/[\\/]+$/, '');
-            outputPath.value = base + (isDem ? '/dem' : '/map');
-        }
-
-        // 切到 DEM 时隐藏读数、切回瓦片时按当前选区/缩放重算——不刷的话
-        // 高程模式下会残留上一次地图模式的旧读数。
-        updateTileEstimate();
-        refreshSubmitButtonState();
+    const sourceEl = document.getElementById('processSource');
+    if (sourceEl) {
+        sourceEl.addEventListener('change', function () {
+            applyPipeline();
+            // 每次切到 DEM 来源都重拉：任务列表随下载进度变化，陈旧列表会让
+            // 用户选到一个当时还没完成的任务。
+            if (sourceEl.value === 'dem_task') loadProcessDemTasks();
+        });
     }
-
-    typeRadios.forEach(function (r) { r.addEventListener('change', apply); });
 
     // 缩放级别变化实时刷新瓦片预估（顺带经 refreshSubmitButtonState 更新按钮态）
     ['zoomMin', 'zoomMax'].forEach(function (id) {
@@ -1359,13 +1959,68 @@ function initDownloadTypeToggle() {
         });
     }
 
-    apply();
+    // 上传控件：两个文件框合成一个 #sourceFiles，mode 由当前管线决定
+    //（见 updateSourceTifInfo）。
+    const sourceFilesEl = document.getElementById('sourceFiles');
+    if (sourceFilesEl) sourceFilesEl.addEventListener('change', updateSourceTifInfo);
+
+    // 「自动」勾选态与层级数字框的禁用态联动。初值由服务端渲染（模板那侧的
+    // {% if terrain_local_maxzoom_auto %}disabled），这里只管运行时的切换。
+    const maxzoomAutoToggle = document.getElementById('localTerrainMaxzoomAuto');
+    if (maxzoomAutoToggle) {
+        maxzoomAutoToggle.addEventListener('change', () => {
+            syncLocalTerrainMaxzoomDisabled();
+            // 自动/手动会换掉基准层级的来源（后端估的建议值 vs 数字框里的数），
+            // 预告必须跟着重算。
+            renderTerrainTileEstimate();
+        });
+    }
+    // 预告的另外三个输入。这三个都不需要再打一次 /api/raster/inspect：
+    // 层级、bounds、逐层张数都在上一次的汇总里。
+    ['localTerrainMaxzoom', 'localTerrainQuality', 'localTerrainNormals'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('change', renderTerrainTileEstimate);
+    });
+
+    // 无选区时的两个入口（面板里选区那一格）。两条都不新起路径 —— 面板只是把
+    // 既有入口摆到用户正在看的地方。
+    //
+    // 「去框选」= 工具条那颗「框选」。面板开着也能用：面板只占右侧 480px，
+    // 地图左侧照常可拖，四至与预估随拖拽同步刷新（非模态的全部意义在此）。
+    const drawBtn = document.getElementById('createDrawBtn');
+    if (drawBtn) drawBtn.addEventListener('click', function () {
+        document.getElementById('mapDrawRect')?.click();
+    });
+
+    // 「手动输入范围」= 选区浮层空态里那颗（同一个 _openManualBounds，不另写
+    // 一份四至输入）。**但必须先把面板收起来**：手动四至面板长在 #boundsInfo 里，
+    // 而那层浮层钉在地图右上角（.bounds-overlay，top/right 12px、z-index 1000），
+    // 完全落在面板（480px 宽、z-index 1401）底下 —— 实测面板开着时它的「确定」
+    // 位于 x≈973 y≈96，那一点的 elementFromPoint 命中的是管线段控的 chip，
+    // 用户点不到、也看不到。不收起面板就是给一颗「打开一个隐形表单」的按钮。
+    //
+    // 回程已经接好、不必再写：_applyManualBounds 落定后把焦点交给浮层上新出现的
+    // 「新建任务」按钮，而那颗按钮就是 openCreatePanel('map') —— 一次 Enter 就带
+    // 着刚填好的四至回到这张表。
+    const manualBtn = document.getElementById('createManualBoundsBtn');
+    if (manualBtn) manualBtn.addEventListener('click', function () {
+        if (window.closePanel) window.closePanel();
+        _openManualBounds();
+    });
+
+    applyPipeline();
+    initContourTintUI();
 }
 
-// 下载弹窗的「数据源」下拉：默认「内置源」（模板里那个 value="" 的选项），
+// 新建任务面板里的「数据源」下拉：默认「内置源」（模板里那个 value="" 的选项），
 // 其余选项由 /api/plugins/sources 填充，value 是 "<plugin_id>:<source_id>"。
 // 拉不到就保持只有内置源那一项 —— 插件是旁路，装没装都不该影响存量下载，
 // 所以这里不 toast、只记 console。
+//
+// **可重入**：openCreatePanel 每次开面板都再跑一遍。用户完全可以先瞄一眼
+// 下拉（写着「未配置」）、转去插件面板填 token、再回来开面板 —— 只在启动时
+// 填一次的话 dataset.credentialReady 会一直停在 false，提交前那道校验就会拦住
+// 一个其实已经配好的源。重入靠「先清掉 value 非空的选项」实现：内置源那一项
+// 是模板渲染的，不能连它一起清。
 async function initPluginSourceOptions() {
     const select = document.getElementById('downloadPluginSource');
     if (!select) return;
@@ -1403,6 +2058,7 @@ async function initPluginSourceOptions() {
             select.dispatchEvent(new Event('change'));
         }
     } catch (e) {
+        // 仅日志：插件宿主是可选组件，拉不到列表就只是下拉少几项。
         console.warn('[plugins] 数据源列表拉取失败（忽略）:', e);
     }
 }
@@ -1442,75 +2098,6 @@ function initPluginSourceStyleLock() {
     apply();
 }
 
-function initProcessTypeToggle() {
-    // 数据处理表单（#processForm）：本地高程切片 / 等高线瓦片。
-    // 字段可见性是「处理类型 × 数据来源」二维的：来源为已下载的 DEM 任务时
-    // 用不上上传控件，改成从 #processDemTask 里挑任务。
-    const typeEl = document.getElementById('processType');
-    if (!typeEl) return;
-
-    const sourceEl = document.getElementById('processSource');
-    const localOptions = document.getElementById('localTerrainOptions');
-    const contourOptions = document.getElementById('contourOptions');
-    const zoomSection = document.getElementById('processZoomSection');
-    const localUploadRow = document.getElementById('localTerrainUploadRow');
-    const contourUploadRow = document.getElementById('contourUploadRow');
-    const demTaskRow = document.getElementById('processDemTaskRow');
-
-    function apply() {
-        const type = typeEl.value;
-        const source = sourceEl?.value || 'upload';
-        const isLocal = type === 'local_terrain';
-        const isContour = type === 'contour';
-        const fromDemTask = source === 'dem_task';
-        if (localOptions) localOptions.hidden = !(isLocal);
-        if (contourOptions) contourOptions.hidden = !(isContour);
-        // 缩放范围只有等高线用；本地高程的层级在它自己的字段里
-        if (zoomSection) zoomSection.hidden = !(isContour);
-
-        if (localUploadRow) localUploadRow.hidden = !(isLocal && !fromDemTask);
-        if (contourUploadRow) contourUploadRow.hidden = !(isContour && !fromDemTask);
-        if (demTaskRow) demTaskRow.hidden = !(fromDemTask);
-
-        refreshSubmitButtonState();
-    }
-
-    typeEl.addEventListener('change', apply);
-    if (sourceEl) {
-        sourceEl.addEventListener('change', () => {
-            apply();
-            // 预告行不在上传行里（模板里它挨着档位下拉），apply() 藏不掉它 ——
-            // 来源一变就得重画，否则切到 DEM 任务后它还挂着上一批上传文件的
-            // 层级/张数/体积。收起的判据写在 renderTerrainTileEstimate 自己那儿。
-            renderTerrainTileEstimate();
-            // 每次切到 DEM 来源都重拉：任务列表随下载进度变化，陈旧列表会让
-            // 用户选到一个当时还没完成的任务。
-            if (sourceEl.value === 'dem_task') loadProcessDemTasks();
-        });
-    }
-    const localFilesEl = document.getElementById('localTerrainFiles');
-    if (localFilesEl) localFilesEl.addEventListener('change', updateLocalTerrainTifInfo);
-    const contourFilesEl = document.getElementById('contourFiles');
-    if (contourFilesEl) contourFilesEl.addEventListener('change', updateContourTifInfo);
-    // 「自动」勾选态与层级数字框的禁用态联动。初值由服务端渲染（模板那侧的
-    // {% if terrain_local_maxzoom_auto %}disabled），这里只管运行时的切换。
-    const maxzoomAutoToggle = document.getElementById('localTerrainMaxzoomAuto');
-    if (maxzoomAutoToggle) {
-        maxzoomAutoToggle.addEventListener('change', () => {
-            syncLocalTerrainMaxzoomDisabled();
-            // 自动/手动会换掉基准层级的来源（后端估的建议值 vs 数字框里的数），
-            // 预告必须跟着重算。
-            renderTerrainTileEstimate();
-        });
-    }
-    // 预告的另外三个输入。这三个都不需要再打一次 /api/raster/inspect：
-    // 层级、bounds、逐层张数都在上一次的汇总里。
-    ['localTerrainMaxzoom', 'localTerrainQuality', 'localTerrainNormals'].forEach((id) => {
-        document.getElementById(id)?.addEventListener('change', renderTerrainTileEstimate);
-    });
-    apply();
-    initContourTintUI();
-}
 
 // 「自动层级」勾选态 -> 层级数字框的禁用态。change 监听与 resetForm 共用一份：
 // form.reset() 只把复选框拨回服务端渲染的那个默认，**不触发 change**，两边当场
@@ -1553,16 +2140,6 @@ const _TIF_FATAL_WARNINGS = new Set([
     'header_unreadable', 'no_georeference', 'unknown_crs', 'some_unusable',
 ]);
 
-function _fmtBytes(bytes) {
-    const n = Number(bytes) || 0;
-    if (n < 1024) return `${n} B`;
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    let v = n / 1024;
-    let i = 0;
-    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-    return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
-}
-
 // 有效数字截断 + 去掉尾随零：0.000277777778 -> 0.000277778，30.0 -> 30
 function _sig(value, digits) {
     const n = Number(value);
@@ -1571,8 +2148,8 @@ function _sig(value, digits) {
 }
 
 function _fmtLonLat(bounds) {
-    const lon = (v) => `${Math.abs(v).toFixed(4)}°${v < 0 ? 'W' : 'E'}`;
-    const lat = (v) => `${Math.abs(v).toFixed(4)}°${v < 0 ? 'S' : 'N'}`;
+    const lon = (v) => `${window.formatCoord(Math.abs(v))}°${v < 0 ? 'W' : 'E'}`;
+    const lat = (v) => `${window.formatCoord(Math.abs(v))}°${v < 0 ? 'S' : 'N'}`;
     return `${lon(bounds[0])} ${lat(bounds[1])} → ${lon(bounds[2])} ${lat(bounds[3])}`;
 }
 
@@ -1633,7 +2210,7 @@ function _tifInfoFileBlock(file, index) {
     name.textContent = file.name;
     const size = document.createElement('span');
     size.className = 'tif-info__size';
-    size.textContent = _fmtBytes(file.size);
+    size.textContent = window.formatBytes(file.size);
     head.append(name, size);
     box.appendChild(head);
 
@@ -1718,7 +2295,7 @@ function renderTerrainTileEstimate() {
     if (!box) return;
 
     // 预告只对「上传 DEM」这条线成立：它算的全部是缓存里那批**上传文件**的层级
-    // 表。数据来源切到已下载的 DEM 任务时，initProcessTypeToggle 的 apply() 只藏
+    // 表。数据来源切到已下载的 DEM 任务时，applyPipeline() 的那张表只藏
     // 得掉上传行，而这一行在上传行之外（模板里它挨着档位下拉），留在原地就会拿
     // 上一批上传文件的层级/张数/体积去讲一个毫不相干的任务 —— 在这里给一个自信
     // 的错数比没有预告更糟。缓存不清：切回上传时那份汇总仍然对得上，不必再打一
@@ -1817,7 +2394,7 @@ function renderTerrainTileEstimate() {
         base: String(base),
         level: String(level),
         tiles: tiles.toLocaleString('zh-CN'),
-        size: _fmtBytes(bytes),
+        size: window.formatBytes(bytes),
     });
     box.title = t('js.map.terrain.estimate_hint');
 }
@@ -1831,7 +2408,7 @@ function _tifInfoSummaryBlock(summary) {
     head.textContent = t('js.map.tifinfo.summary', { n: summary.count });
     const size = document.createElement('span');
     size.className = 'tif-info__size';
-    size.textContent = _fmtBytes(summary.total_size);
+    size.textContent = window.formatBytes(summary.total_size);
     head.appendChild(size);
     box.appendChild(head);
 
@@ -1893,7 +2470,7 @@ async function updateTifInfo(inputId, cardId, mode) {
         try {
             entries.push(await window.GeoTiffMeta.read(file));
         } catch (err) {
-            // 读不出头部不是致命错：其余文件照常解释，这一个带
+            // 仅日志：读不出头部不是致命错 —— 其余文件照常解释，这一个带
             // header_unreadable 出现在结果里（后端按缺字段判定）。
             console.warn('[tif-info] header read failed:', file.name, err);
             entries.push({ name: file.name, size: file.size });
@@ -1943,12 +2520,14 @@ async function updateTifInfo(inputId, cardId, mode) {
     if (mode === 'terrain') cacheTerrainInspectSummary(data.summary || null);
 }
 
-function updateLocalTerrainTifInfo() {
-    return updateTifInfo('localTerrainFiles', 'localTerrainTifInfo', 'terrain');
-}
-
-function updateContourTifInfo() {
-    return updateTifInfo('contourFiles', 'contourTifInfo', 'contour');
+// 一张卡、一个入口。mode 由当前管线决定（见 updateTifInfo 的头注释：地形按
+// Cesium 经纬度分块估层级、等高线按 Web Mercator 瓦片估，同一份 DEM 两者给出
+// 的数不一样，传错比不显示更糟）。
+// 非处理管线下整个 #sourceField 是 hidden 的，这里不会被用户触发；被程序化调到
+// 时按地形口径算 —— 那是这个控件唯一的既有语义。
+function updateSourceTifInfo() {
+    const mode = _currentPipeline() === 'contour' ? 'contour' : 'terrain';
+    return updateTifInfo('sourceFiles', 'sourceTifInfo', mode);
 }
 
 // 处理表单当前选中的 DEM 任务 id；下拉处在空态（disabled 占位）时返回 null。
@@ -2008,32 +2587,13 @@ async function loadProcessDemTasks() {
     }
 }
 
-// 任务行「处理」按钮的入口（task_list.js 的 processDem）：把已完成的高程
-// 下载任务转成地形切片任务。不另起提交链路 —— 打开处理弹窗并预选
-// 「本地高程切片 + 该任务」，档位/法线/层级都可调，「创建」走
-// submitLocalTerrain 生成新的 local_terrain 任务进时间流。
+// 任务行「用它切地形」按钮的入口（task_list.js 的 processDem）：把已完成的高程
+// 下载任务转成地形切片任务。不另起提交链路，也不另起一份预填逻辑 —— 转给
+// openCreatePanel，它会预选「本地地形切片 + 已有高程任务 + 那个任务」，
+// 档位/法线/层级都可调，「创建任务」走 submitLocalTerrain 生成新的
+// local_terrain 任务进时间流。
 async function openProcessForDemTask(demTaskId) {
-    const typeEl = document.getElementById('processType');
-    const sourceEl = document.getElementById('processSource');
-    const modalEl = document.getElementById('processModal');
-    if (!typeEl || !sourceEl || !modalEl || typeof bootstrap === 'undefined') return;
-    typeEl.value = 'local_terrain';
-    sourceEl.value = 'dem_task';
-    // 字段可见性由 initProcessTypeToggle 的 change 监听驱动，直接改 .value
-    // 不触发，必须补发事件。
-    typeEl.dispatchEvent(new Event('change'));
-    sourceEl.dispatchEvent(new Event('change'));
-    // source 的 change 监听里那次 loadProcessDemTasks() 不带 await；这里自己
-    // 再等一次（幂等重填），确保下拉开出选项后才能选中目标任务。
-    await loadProcessDemTasks();
-    const sel = document.getElementById('processDemTask');
-    if (sel && !sel.disabled) sel.value = String(demTaskId);
-    refreshSubmitButtonState();
-    bootstrap.Modal.getOrCreateInstance(modalEl).show();
-    setTimeout(function () {
-        const nameEl = document.getElementById('processTaskName');
-        if (nameEl) nameEl.focus();
-    }, 350);
+    await openCreatePanel('local_terrain', { demTaskId: demTaskId });
 }
 
 // --- 等高线配色自定义 UI ------------------------------------------------------
@@ -2156,36 +2716,33 @@ function initContourTintUI() {
 }
 
 // 提交按钮的启用条件集中在这里，避免各处只加不减导致状态残留。
-// 两张表单各自一颗按钮，**都不按业务前置条件禁用**，只在提交进行中由各自的
-// 提交处理器临时 disabled 上锁（finally 里回到这里解锁）。
+// 四条管线合并后底条只剩**一颗**提交钮（改前 #createTaskBtn 与 #createProcessBtn
+// 各管一张表单，这里要两边各解一次锁）。它**不按业务前置条件禁用**，只在提交
+// 进行中由各条装配逻辑临时 disabled 上锁（finally 里回到这里解锁）。
 //
-// 下载按钮为什么不再按 currentBounds 禁用（B4）：disabled 的元素不可聚焦、
-// 不在 tab 序里，键盘用户 Tab 过整张表单根本碰不到它，也就无从知道「为什么
-// 不能提交」——把解释挂成 aria-describedby 也没用，读屏不会去念一个焦点永远
-// 落不上去的元素。改成常态可用后，缺选区由 #downloadForm 的 submit 处理器
-// toast js.map.download.need_selection 当场说明原因，与 openDownloadModal()
-// 同一条文案、同一个口径。
-// 处理类（本地高程切片 / 等高线）都是上传驱动，没有 bbox，同样无条件启用
-//（不检查文件）—— 文件是否已选在提交时由 submitLocalTerrain() /
+// 为什么不按 currentBounds 禁用（B4）：disabled 的元素不可聚焦、不在 tab 序里，
+// 键盘用户 Tab 过整张表单根本碰不到它，也就无从知道「为什么不能提交」——
+// 把解释挂成 aria-describedby 也没用，读屏不会去念一个焦点永远落不上去的元素。
+// 改成常态可用后，缺选区由 #taskForm 的 submit 处理器 toast
+// js.map.download.need_selection 当场说明原因，与 openCreatePanel() 同一条文案、
+// 同一个口径。两条处理管线（本地地形切片 / 等高线）都是上传驱动、没有 bbox，
+// 同样无条件启用（也不检查文件）—— 文件是否已选在提交时由 submitLocalTerrain() /
 // submitContour() 各自校验。
 function refreshSubmitButtonState() {
-    const dlBtn = document.getElementById('createTaskBtn');
-    if (dlBtn) dlBtn.disabled = false;
-    const prBtn = document.getElementById('createProcessBtn');
-    if (prBtn) prBtn.disabled = false;
+    const btn = document.getElementById('createTaskBtn');
+    if (btn) btn.disabled = false;
 }
 
-// 任务创建成功后复位表单。formId 指明复位哪一张（下载/处理各自独立）。
-// clearBounds=false 用于两条上传驱动的处理类分支（本地高程切片/等高线）：
+// 任务创建成功后复位表单。四条管线共用 #taskForm，所以不再有 formId ——
+// 改前两张表单各自独立，那个参数指明复位哪一张。
+// clearBounds=false 用于两条上传驱动的处理管线（本地地形切片 / 等高线）：
 // 它们本来就没有 bbox，清空选区会把用户为下一个任务画好的框也一起删掉。
-function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
-    const form = document.getElementById(formId);
+function resetForm({ clearBounds = true } = {}) {
+    const form = document.getElementById('taskForm');
     if (form) form.reset();
 
-    if (formId === 'downloadForm') {
-        const outputPath = document.getElementById('outputPath');
-        if (outputPath) delete outputPath.dataset.userEdited;
-    }
+    const outputPath = document.getElementById('outputPath');
+    if (outputPath) delete outputPath.dataset.userEdited;
 
     if (clearBounds) {
         if (_selectionEntity && viewer) {
@@ -2198,26 +2755,19 @@ function resetForm({ clearBounds = true, formId = 'downloadForm' } = {}) {
         updateBoundsInfo();
     }
 
-    // 让 apply() 重新按当前类型摆好字段可见性和默认路径。
-    // 下载类型是 radio 组（按 name 取选中项），处理类型仍是 <select>（按 id 取）。
-    const fieldName = formId === 'downloadForm' ? 'downloadType' : 'processType';
-    const typeEl = document.getElementById(fieldName)
-        || document.querySelector(`input[name="${fieldName}"]:checked`);
-    if (typeEl) typeEl.dispatchEvent(new Event('change'));
-    // form.reset() 会把 #processSource 拨回默认的「上传文件」，来源相关字段
-    // （上传控件 / DEM 任务下拉）必须跟着复位，否则下次打开弹窗看到的是上一次
-    // 来源的字段组合。
-    if (formId === 'processForm') {
-        const sourceEl = document.getElementById('processSource');
-        if (sourceEl) sourceEl.dispatchEvent(new Event('change'));
-        // form.reset() 已经清空两个文件选择框，两张信息卡必须跟着收起，
-        // 否则下一次打开弹窗还挂着上一个任务那份 tif 的范围和层级。
-        updateLocalTerrainTifInfo();
-        updateContourTifInfo();
-        // 复选框被 form.reset() 拨回了默认值，但 reset 不触发 change：
-        // 层级数字框的禁用态得在这里跟上，否则自动挡勾着、数字框却能填。
-        syncLocalTerrainMaxzoomDisabled();
-    }
+    // 管线**不**被 form.reset() 复位：它记在 chip 的 aria-pressed 上，不是表单
+    // 控件。这是刻意的 —— 连着建两个同类任务是常态，把段控拨回「瓦片」等于每次
+    // 都要用户再点一次。
+    // form.reset() 会把 #processSource 拨回默认的「上传文件」，所以来源相关字段
+    // （上传控件 / DEM 任务下拉）必须跟着复位，否则看到的是上一次来源的字段组合。
+    // 一次 applyPipeline() 同时把这两件事办了：它读的就是当前管线 + 当前来源。
+    applyPipeline();
+    // form.reset() 已经清空文件选择框，信息卡必须跟着收起，否则还挂着上一个
+    // 任务那份 tif 的范围和层级。
+    updateSourceTifInfo();
+    // 复选框被 form.reset() 拨回了默认值，但 reset 不触发 change：
+    // 层级数字框的禁用态得在这里跟上，否则自动挡勾着、数字框却能填。
+    syncLocalTerrainMaxzoomDisabled();
 
     refreshSubmitButtonState();
 }
@@ -2245,7 +2795,7 @@ function updateBoundsInfo() {
     const statusSel = document.getElementById('statusSelectionText');
     // M15：编辑态不重写整层。浮层内容每次都是 innerHTML 全量重建，而委托点击
     // 监听挂在 #boundsInfo 上 —— 编辑坐标时用鼠标点浮层里的任何东西（另一个
-    // .bounds-v、下载按钮、删除按钮），mousedown 先触发 blur → 提交 → 整层
+    // .bounds-v、「新建任务」钮、「清除选区」钮），mousedown 先触发 blur → 提交 → 整层
     // 重建，等到 click 派发时旧节点的传播路径已不含 #boundsInfo，处理器根本
     // 不会被调用（浏览器通常也干脆不派发这次 click）：**这一次点击完全没反应**，
     // 必须再点一次。反过来若重建发生在 click 之后（校验通过且点击极快），
@@ -2254,7 +2804,7 @@ function updateBoundsInfo() {
         return;
     }
     if (currentBounds) {
-        const f = (v) => v.toFixed(5);
+        const f = window.formatCoord;      // 读数档 5 位，唯一实现在 ui.js
         // 导入区域先说「这不是一个矩形」：多边形数 / 孔洞数 / 跨反经线。
         // 放在四至之前而不是之后 —— 下面那四个数是**外接矩形**的四至，用户在
         // 不知道有洞、有多段的前提下读它们，会以为选中的就是那个矩形。
@@ -2274,20 +2824,20 @@ function updateBoundsInfo() {
                 <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v" data-field="west" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_west')} </span>${f(currentBounds.west)}</span>
             </div>
             <div class="bounds-actions">
-                <button type="button" class="btn btn-primary btn-sm" id="boundsDownloadBtn">
+                <button type="button" class="btn btn-primary btn-sm" id="boundsCreateBtn" title="${t('js.map.bounds.create_task_title')}">
                     <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                        <polyline points="7 10 12 15 17 10"></polyline>
-                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                        <rect x="3" y="3" width="18" height="18" rx="3"></rect>
+                        <line x1="12" y1="8" x2="12" y2="16"></line>
+                        <line x1="8" y1="12" x2="16" y2="12"></line>
                     </svg>
-                    ${t('js.map.bounds.download')}
+                    ${t('js.map.bounds.create_task')}
                 </button>
-                <button type="button" class="btn btn-danger btn-sm" id="boundsClearBtn" title="${t('js.map.bounds.clear_title')}">
+                <button type="button" class="btn btn-danger btn-sm" id="boundsClearBtn" title="${t('js.map.bounds.clear')}">
                     <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="3 6 5 6 21 6"></polyline>
                         <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
                     </svg>
-                    ${t('js.map.bounds.delete')}
+                    ${t('js.map.bounds.clear')}
                 </button>
                 <span class="bounds-hint">${t('js.map.bounds.hint')}</span>
             </div>
@@ -2327,6 +2877,15 @@ function updateBoundsInfo() {
         `;
         if (statusSel) statusSel.textContent = t('js.map.status.no_selection');
     }
+
+    // 面板里的选区摘要与「去框选 / 手动输入范围」两个入口跟着选区走。
+    // 这里是**选区每次变化的唯一出口**（框选落定、拖角点的 rAF、点读数改数、
+    // 手动四至确定、clearSelection、resetForm 全部经过它），所以这一行放在这里
+    // 而不是各个调用点 —— 弹窗时代摘要只在开弹窗那一刻算一次就够了，因为弹窗
+    // 盖着地图、开着它选区不可能变；非模态面板不成立。
+    // 拖角点时这一路每秒最多 60 次，但 updateCreatePanelBounds 只写两个
+    // textContent + 一个 hidden，与浮层自己那次 innerHTML 全量重建同量级。
+    updateCreatePanelBounds();
 }
 
 /**
@@ -2343,12 +2902,12 @@ function updateBoundsInfo() {
  *   2. _applyBoundsEdit 校验通过 —— 点四至读数改数生效;
  *   3. _applyManualBounds —— 手动输入面板确定(键盘用户的选区入口,见 B4)。
  *
- * 小数 5 位与浮层读数一致（≈1.1m）。
+ * 小数位数走 ui.js 的 formatCoord（读数档 5 位，≈1.1m），与浮层读数同一档。
  */
 function announceBounds() {
     const el = document.getElementById('boundsAnnounce');
     if (!el || !currentBounds) return;
-    const f = (v) => v.toFixed(5);
+    const f = window.formatCoord;
     el.textContent = t('js.map.bounds.announce', {
         north: f(currentBounds.north),
         south: f(currentBounds.south),
@@ -2378,7 +2937,7 @@ function _beginBoundsEdit(vEl) {
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'bounds-edit-input';
-    input.value = currentBounds[field].toFixed(5);
+    input.value = window.formatCoord(currentBounds[field]);
     input.setAttribute('aria-label', t('js.map.bounds.edit_aria', { field: field }));
     vEl.innerHTML = '';
     vEl.appendChild(input);
@@ -2554,9 +3113,9 @@ function _applyManualBounds() {
     announceBounds();
     refreshSubmitButtonState();
     // 焦点不能留在刚被删掉的「确定」上（会掉回 <body>，键盘用户丢失位置）。
-    // 交给新出现的「下载」按钮 —— 正好是这条流程的下一步。
-    const dlBtn = document.getElementById('boundsDownloadBtn');
-    if (dlBtn) dlBtn.focus();
+    // 交给新出现的「新建任务」按钮 —— 正好是这条流程的下一步。
+    const createBtn = document.getElementById('boundsCreateBtn');
+    if (createBtn) createBtn.focus();
 }
 
 function _cancelManualBounds() {
@@ -2598,18 +3157,25 @@ function _handleManualBoundsKeydown(e) {
     }
 }
 
-// --- 下载 / 处理弹窗 -----------------------------------------------------------
+// --- 新建任务面板 --------------------------------------------------------------
 
-// 打开下载弹窗前刷新顶部的选区四至摘要——弹窗可能关过又开，
-// 期间用户拖过角点或改过数值，摘要必须反映当前选区。
-function openDownloadModal() {
-    if (!currentBounds) {
-        showNotification(t('js.map.download.need_selection'), 'warning');
-        return;
-    }
-    const summary = document.getElementById('downloadModalBounds');
-    if (summary) {
-        const f = (v) => v.toFixed(5);
+/**
+ * 面板里的选区摘要 + 无选区时的两个入口（#createPanelBounds / #createBoundsEntries）。
+ *
+ * 弹窗时代这段逻辑住在 openDownloadModal 里、只在开弹窗那一刻跑一次 —— 因为弹窗
+ * 盖着地图，开着它选区不可能变。面板非模态，选区随时会被拖角点、点读数改数、
+ * 手动输入面板改掉，所以摘要必须**跟着选区走**：updateBoundsInfo()（选区每次
+ * 变化的唯一出口）在末尾调它，applyPipeline() 换管线时也调一次。
+ *
+ * 坐标走 ui.js 的 formatCoord（读数档 5 位，全站唯一实现）；宽高那两个数是
+ * **度数跨度**不是位置，另算一档 3 位（同状态栏的选区读数）。
+ */
+function updateCreatePanelBounds() {
+    const summary = document.getElementById('createPanelBounds');
+    if (!summary) return;
+    const entries = document.getElementById('createBoundsEntries');
+    if (currentBounds) {
+        const f = window.formatCoord;
         const w = (currentBounds.east - currentBounds.west).toFixed(3);
         const h = (currentBounds.north - currentBounds.south).toFixed(3);
         summary.textContent = t('js.map.download.bounds_summary', {
@@ -2620,39 +3186,87 @@ function openDownloadModal() {
             width: w,
             height: h,
         });
+        if (entries) entries.hidden = true;
+        return;
     }
+    summary.textContent = t('js.map.bounds.empty');
+    // 两个入口只在「这条管线要选区、而现在没有」时出现。管线不要选区时整个
+    // #selectionField 已经 hidden，这里再显式收一次是为了不把两颗按钮留在
+    // tab 序里 —— [hidden] 的祖先已经够了，但这一行让判据留在读得到的地方。
+    if (entries) {
+        entries.hidden = !['map', 'dem'].includes(_currentPipeline());
+    }
+}
+
+/**
+ * 打开「新建任务」面板，可选预选管线与预填。
+ *
+ * 旧入口在这里汇合（设计稿 §2.5）：左列工具条的「新建」（data-panel="create"，
+ * 走 panels.js，不经这里）、选区浮层的「新建任务」（'map'）、命令面板两条、
+ * 任务行「用它切地形」（'local_terrain' + demTaskId）、窗口拖放
+ * （'local_terrain' + 已喂好的文件）。
+ *
+ * 与旧的 openDownloadModal 的关键差别：**没有选区也照样打开**。弹窗时代那句
+ * need_selection 的拦门 toast 是必须的 —— 弹窗盖住地图，开着它没法框选，只能
+ * 拦在门口。面板非模态、地图始终可拖，正确的形态是让它开，并在选区那一格给出
+ * 「去框选 / 手动输入范围」两个入口。缺选区仍然拦，但拦在提交那一刻
+ * （#taskForm 的 submit 处理器，同一条文案）。
+ */
+async function openCreatePanel(pipeline, prefill) {
+    if (pipeline) _setPipeline(pipeline);
     // 数据源下拉重填一遍：用户可能刚在插件面板里装好/停用插件、或者刚把
     // token 填上。不刷的话「（未配置）」标记与提交前那道凭据校验都会停在
-    // 开机那一刻的旧状态上，把一个已经配好的源拦住。异步的，不挡弹窗弹出。
+    // 开机那一刻的旧状态上，把一个已经配好的源拦住。异步的，不挡面板滑出。
     initPluginSourceOptions();
-    const modalEl = document.getElementById('downloadModal');
-    if (!modalEl || typeof bootstrap === 'undefined') return;
+    if (window.openPanel) window.openPanel('create');
+    updateCreatePanelBounds();
     updateTileEstimate();
     refreshSubmitButtonState();
-    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+
+    // 预填一个已完成的高程任务（任务行深链）：先摆来源下拉、补发 change 让上面
+    // 那张表把 DEM 任务行摆出来，再等下拉真的填完选项才选得中目标。
+    if (prefill && prefill.demTaskId) {
+        const sourceEl = document.getElementById('processSource');
+        if (sourceEl) {
+            sourceEl.value = 'dem_task';
+            // 字段可见性由 change 监听驱动，直接改 .value 不触发，必须补发事件。
+            sourceEl.dispatchEvent(new Event('change'));
+        }
+        // change 监听里那次 loadProcessDemTasks() 不带 await；这里自己再等一次
+        //（幂等重填），确保下拉开出选项后才能选中目标任务。
+        await loadProcessDemTasks();
+        const sel = document.getElementById('processDemTask');
+        if (sel && !sel.disabled) sel.value = String(prefill.demTaskId);
+        refreshSubmitButtonState();
+    }
+
+    // 焦点：panels.js 打开面板时先把焦点收进关闭钮（键盘用户的退出落点）。
+    // 这里再挪到任务名 —— 用户点「新建」的意图是填这张表，第一个要填的就是它。
+    // 350ms 与面板滑出过渡同步（panels.js 的 transitionend 兜底也是 350ms）：
+    // 过渡途中聚焦会被浏览器的滚动锚定拽偏。
     setTimeout(function () {
         const nameEl = document.getElementById('taskName');
         if (nameEl) nameEl.focus();
     }, 350);
 }
 
-// 任务创建成功后：关掉对应弹窗，滑出记录面板让用户看到新任务。
-function _afterTaskCreated(modalId) {
-    const modalEl = document.getElementById(modalId);
-    if (modalEl && typeof bootstrap !== 'undefined') {
-        bootstrap.Modal.getOrCreateInstance(modalEl).hide();
-    }
+// 任务创建成功后：滑出任务面板让用户看到新任务进时间流。
+// 不必先关新建面板 —— panels.js 的 current 是单值，openPanel('records') 自己会
+// 先关掉当前那一个；显式再关一次只会多跑一遍过渡。改前这里要传 modalId 去
+// hide 对应的 Bootstrap 弹窗，非模态面板没有那个实例。
+function _afterTaskCreated() {
     if (window.openPanel) window.openPanel('records');
 }
 
-// ?. 而不是包一层 if：处理器有近百行，缩进进去只会让 diff 噪声盖住逻辑。
-// 缺元素时整个文件后面的部分（等高线预览、预览管理器初始化）会全部不执行
-// —— 本文件其它入口（initDownloadTypeToggle 等）都判了空，这里是例外。
-document.getElementById('downloadForm')?.addEventListener('submit', async function(e) {
-    e.preventDefault();
-
-    const downloadType = _radioValue('downloadType', 'map');
-
+// 两条下载管线的装配（瓦片 / 高程）。**载荷契约一个字段名都没动**，后端在消费：
+//   map -> POST /api/tasks（api.py 的 required_fields 十项 + export_mbtiles
+//          + 可选 source_plugin_id/source_id + 可选 region）
+//   dem -> POST /api/dem/tasks（dem_api.py 的 required 六项 + dataset
+//          + download_num/download_swb + 可选 region）
+// 形参叫 downloadType 而不是 pipeline：这个函数只可能收到 'map' / 'dem'，在它
+// 的作用域里那个值**就是**下载类型。两条处理管线的装配在 submitContour() /
+// submitLocalTerrain() 里，同样一字未改。
+async function submitDownload(downloadType) {
     if (!currentBounds) {
         showNotification(t('js.map.download.need_selection'), 'warning');
         return;
@@ -2665,11 +3279,11 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
     // 跳过 —— 用户会在毫无预告的情况下建出一个几小时的任务。
     const est = await currentTileEstimate();
     if (est && est.over) {
-        const hours = (est.count / 10 / 3600).toFixed(1);
+        // 时长与瓦片预估读数同一份实现（formatDuration），不在这里再算一次小时。
         const ok = await showConfirm(
             t('js.map.download.confirm_large', {
                 count: est.count.toLocaleString('zh-CN'),
-                hours: hours,
+                duration: formatDuration(est.count / 10),
             }),
             { title: t('js.map.download.confirm_large_title'), danger: true });
         if (!ok) return;
@@ -2772,7 +3386,7 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
             showNotification(t('js.map.download.created', { id: result.task_id }), 'success');
             resetForm();
             loadActiveTasks();
-            _afterTaskCreated('downloadModal');
+            _afterTaskCreated();
         } else {
             showNotification(t('js.map.download.create_failed', { error: result.error }), 'danger');
         }
@@ -2782,23 +3396,27 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
         btn.innerHTML = originalText;
         refreshSubmitButtonState();
     }
-});
+}
 
-document.getElementById('processForm')?.addEventListener('submit', async function(e) {
+// ?. 而不是包一层 if：分派器很短，但缺元素时整个文件后面的部分（等高线预览、
+// 预览管理器初始化）会全部不执行 —— 本文件其它入口（initPipelineToggle 等）
+// 都判了空，这里是例外。
+// 提交钮在 #taskForm **之外**（面板底条里，靠 form="taskForm" 关联），所以
+// 这条 submit 监听仍然是唯一的提交入口：原生提交会照常派发 submit 事件。
+document.getElementById('taskForm')?.addEventListener('submit', async function (e) {
     e.preventDefault();
-
-    const processType = document.getElementById('processType')?.value || 'local_terrain';
-
-    // Local terrain uploads have no bbox; handle separately and return early.
-    if (processType === 'local_terrain') {
+    const pipeline = _currentPipeline();
+    // 两条处理管线都是上传驱动、没有 bbox，各自校验来源后直接走自己的装配。
+    if (pipeline === 'local_terrain') {
         await submitLocalTerrain();
         return;
     }
-
-    // 处理类都是上传驱动，不需要框选；等高线是一站式：创建后立即开始。
-    if (processType === 'contour') {
+    // 等高线是一站式：创建后立即开始。
+    if (pipeline === 'contour') {
         await submitContour();
+        return;
     }
+    await submitDownload(pipeline);
 });
 
 function showNotification(message, type = 'info') {
@@ -2836,7 +3454,7 @@ async function submitContour() {
     // 实际覆盖决定；来源是否已选齐在这里校验。
     const fromDemTask = (document.getElementById('processSource')?.value || 'upload') === 'dem_task';
     const demTaskId = _selectedProcessDemTaskId();
-    const fileInput = document.getElementById('contourFiles');
+    const fileInput = document.getElementById('sourceFiles');
     const files = fileInput?.files;
     if (fromDemTask) {
         if (!demTaskId) {
@@ -2853,11 +3471,11 @@ async function submitContour() {
     const background = bgTransparent ? 'transparent' : (document.getElementById('contourBackground').value || '#faf6ec');
 
     const fd = new FormData();
-    fd.append('name', document.getElementById('processTaskName').value
+    fd.append('name', document.getElementById('taskName').value
         || t('js.map.process.contour_default_name'));
     fd.append('contour_interval', String(interval));
-    fd.append('zoom_min', document.getElementById('processZoomMin').value);
-    fd.append('zoom_max', document.getElementById('processZoomMax').value);
+    fd.append('zoom_min', document.getElementById('zoomMin').value);
+    fd.append('zoom_max', document.getElementById('zoomMax').value);
     fd.append('background', background);
     fd.append('terrain_shade', document.getElementById('contourTerrainShade')?.checked ? '1' : '0');
     // 配色自定义：总是发送当前 UI 值 —— 用户看到什么就渲染什么；
@@ -2874,7 +3492,7 @@ async function submitContour() {
         }
     }
 
-    const btn = document.getElementById('createProcessBtn');
+    const btn = document.getElementById('createTaskBtn');
     const original = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = t(fromDemTask ? 'js.map.process.submitting' : 'js.map.process.uploading');
@@ -2903,10 +3521,10 @@ async function submitContour() {
         showNotification(fromDemTask
             ? t('js.map.process.contour_started_dem_task', { id: demTaskId })
             : t('js.map.process.contour_started'), 'success');
-        resetForm({ clearBounds: false, formId: 'processForm' });
+        resetForm({ clearBounds: false });
         resetContourTintUI();
         loadActiveTasks();
-        _afterTaskCreated('processModal');
+        _afterTaskCreated();
     } catch (err) {
         showNotification(t('js.map.process.create_failed', { error: err.message }), 'danger');
     } finally {
@@ -3291,6 +3909,7 @@ async function registerCompletedContourTask(taskId) {
             });
         }
     } catch (e) {
+        // 明确忽略：拉不到任务详情就用「等高线任务 #id」占位，预览照常打得开。
         contourPreviewTasks.set(taskId, {
             name: t('js.map.contour.default_name', { id: taskId }), zoom_max: null,
         });
@@ -3348,7 +3967,7 @@ async function submitLocalTerrain() {
     // 详情弹窗里看），与「转出一个新任务」的预期相反，已改。
     const fromDemTask = (document.getElementById('processSource')?.value || 'upload') === 'dem_task';
     const demTaskId = _selectedProcessDemTaskId();
-    const fileInput = document.getElementById('localTerrainFiles');
+    const fileInput = document.getElementById('sourceFiles');
     const files = fileInput?.files;
     if (fromDemTask) {
         if (!demTaskId) {
@@ -3361,7 +3980,7 @@ async function submitLocalTerrain() {
     }
 
     const fd = new FormData();
-    fd.append('name', document.getElementById('processTaskName').value
+    fd.append('name', document.getElementById('taskName').value
         || t('js.map.process.local_terrain_default_name'));
     // 三个字段的兜底一律是空串，不是前端自己抄一份默认值：空串 = 未传 = 走配置
     // 默认（后端 local_terrain_api 的 create_local_terrain_task 把空串当未传）。
@@ -3388,7 +4007,7 @@ async function submitLocalTerrain() {
         }
     }
 
-    const btn = document.getElementById('createProcessBtn');
+    const btn = document.getElementById('createTaskBtn');
     btn.disabled = true;
     const original = btn.innerHTML;
     // dem_task 分支一个字节都不上传，按钮文案不能写「上传中...」。
@@ -3409,9 +4028,9 @@ async function submitLocalTerrain() {
         showNotification(fromDemTask
             ? t('js.map.process.terrain_started_dem_task', { id: demTaskId })
             : t('js.map.process.upload_started', { id: result.task_id }), 'success');
-        resetForm({ clearBounds: false, formId: 'processForm' });
+        resetForm({ clearBounds: false });
         loadActiveTasks();
-        _afterTaskCreated('processModal');
+        _afterTaskCreated();
     } catch (err) {
         showNotification(t('js.map.process.upload_failed', { error: err.message }), 'danger');
     } finally {
@@ -3422,7 +4041,7 @@ async function submitLocalTerrain() {
 
 /**
  * 工作台行为：状态栏读数（鼠标经纬度 / 缩放级别 / 选区摘要 / 日期时钟；
- * 坐标与选区四至支持点击复制）、bounds 浮层交互（下载按钮、数值点击
+ * 坐标与选区四至支持点击复制）、bounds 浮层交互（「新建任务」按钮、数值点击
  * 编辑）。在 initMap 之后由页面 init 块调用（index.html）。
  */
 function initMapWorkbench() {
@@ -3445,7 +4064,12 @@ function initMapWorkbench() {
             document.body.appendChild(ta);
             ta.select();
             let ok = false;
-            try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+            try {
+                ok = document.execCommand('copy');
+            } catch (e) {
+                // 明确忽略：抛了就是没复制成，下面按 ok 走用户可见的失败分支。
+                ok = false;
+            }
             ta.remove();
             if (ok) showToast(toastMsg, 'success');
             // 'danger' 而不是 'error'：ui.js 的 VALID_TYPES 里没有 'error'，
@@ -3492,8 +4116,8 @@ function initMapWorkbench() {
             lat: Cesium.Math.toDegrees(carto.latitude),
         };
         coordsTextEl.textContent = t('js.map.status.coords', {
-            lng: lastCoords.lng.toFixed(4),
-            lat: lastCoords.lat.toFixed(4),
+            lng: window.formatCoord(lastCoords.lng),
+            lat: window.formatCoord(lastCoords.lat),
         });
     }
     if (coordsEl) {
@@ -3510,7 +4134,8 @@ function initMapWorkbench() {
         coordsEl.addEventListener('click', function () {
             if (!lastCoords) return;
             _copyText(
-                lastCoords.lng.toFixed(6) + ', ' + lastCoords.lat.toFixed(6),
+                window.formatCoordExact(lastCoords.lng) + ', '
+                + window.formatCoordExact(lastCoords.lat),
                 t('js.map.copy.coords_done')
             );
         });
@@ -3521,7 +4146,8 @@ function initMapWorkbench() {
     if (statusSelEl) {
         statusSelEl.addEventListener('click', function () {
             if (!currentBounds) return;
-            const f = (v) => v.toFixed(5);
+            // 剪贴板是**离开界面**的值，走详情档 6 位：贴回去要能复现选区。
+            const f = window.formatCoordExact;
             _copyText(
                 f(currentBounds.west) + ',' + f(currentBounds.south) + ',' +
                 f(currentBounds.east) + ',' + f(currentBounds.north),
@@ -3567,9 +4193,9 @@ function initMapWorkbench() {
     if (boundsInfo) {
         boundsInfo.addEventListener('click', function (e) {
             if (_handleManualBoundsClick(e)) return;
-            const dl = e.target.closest('#boundsDownloadBtn');
-            if (dl) {
-                openDownloadModal();
+            const create = e.target.closest('#boundsCreateBtn');
+            if (create) {
+                openCreatePanel('map');
                 return;
             }
             const clr = e.target.closest('#boundsClearBtn');
