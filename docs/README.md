@@ -6,13 +6,14 @@
 
 | 目录 | 放什么 | 什么时候看它 |
 |---|---|---|
-| [`guides/`](guides/) | 照着做的操作指南：快速上手、安装、构建打包、成品分发 | 要装环境、要跑起来、要打包发版、拿到 zip 包不知道怎么用 |
+| [`guides/`](guides/) | 照着做的操作指南：快速上手、安装、构建打包、成品分发、插件开发 | 要装环境、要跑起来、要打包发版、拿到 zip 包不知道怎么用、要给系统写插件 |
 | [`reference/`](reference/) | 当前实现说明：计时系统、DOM 局部更新、`terrain/` 地形加载与全球底图构建 | 想知道某个已上线机制现在是怎么跑的 |
 | [`notes/`](notes/) | 外部调研笔记与设计稿：同类项目调研合并结论、共享缓存清理方案。**混着已实施与未实施两种**，逐份看 [`notes/README.md`](notes/README.md) 那张表的「状态」列 | 找 backlog、评估要不要做某件事、查某条已落地的能力当初的决策依据与落点 |
 | [`reviews/`](reviews/) | 带日期的时点审查快照，外加一个流产的审查目录 | 想知道某个决策/取舍的来龙去脉，或某轮审查发现了什么 |
 | [`archive/`](archive/) | 历史文档归档（全部 2026-05 ~ 07） | 考古：某个旧做法为什么被推翻 |
 | [`superpowers/`](superpowers/) | 历史实施计划 `plans/` 与配对设计稿 `specs/` | 考古：某个功能当初是怎么设计和排期的 |
 | [`assets/`](assets/) | 图片资源：`images/` 供文档内引用（已入库）；`ui-baseline/` 是 UI 回归基线截图（**未入库**，被 `.gitignore` 排除，只在本地存在） | 一般不用直接翻，由各文档引用 |
+| [`examples/`](examples/) | 可直接运行的示例代码。目前只有 [`plugin-hello/`](examples/plugin-hello/)——拷进 `plugins/` 就能跑通的最小插件，`tests/test_docs_plugin_example.py` 钉住它不腐烂 | 照着 `guides/PLUGINS.md` 写插件时，想先跑通一个再改 |
 
 这张表**不再写份数**。原先写着 `plans` 10 份、`specs` 11 份、`reviews` 6 份，2026-08-08 实数是 15 / 17 / 7 —— 三处全错，而这个索引每周都在动。要数量自己 `ls` 一下，比读一个注定会烂的数字快。
 
@@ -48,6 +49,7 @@
 | 从零搭开发环境（含 GDAL 这个最大的坑） | [`guides/INSTALL.md`](guides/INSTALL.md) |
 | 打包成可执行文件 / 走 CI 构建 / 发版 | [`guides/BUILD.md`](guides/BUILD.md) |
 | 我拿到的是 zip 成品包，只想把它跑起来 | [`guides/DISTRIBUTION.md`](guides/DISTRIBUTION.md) |
+| 给系统写一个插件（新数据源 / 新管线 / 新导出格式 / 任务钩子） | [`guides/PLUGINS.md`](guides/PLUGINS.md)，可运行示例在 [`examples/plugin-hello/`](examples/plugin-hello/) |
 | 搞清楚某个机制现在怎么实现的（计时、局部刷新、地形加载） | [`reference/`](reference/) |
 | 搞清楚某个决策为什么这么定、某个旧做法为什么被推翻 | [`reviews/`](reviews/) 找近期的，[`archive/`](archive/) 与 [`superpowers/`](superpowers/) 找更早的 |
 | 找还没做的事 / 评估外部项目有什么可借鉴 | [`notes/`](notes/) |

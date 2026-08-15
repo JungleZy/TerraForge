@@ -58,7 +58,7 @@
 
 **验证**
 
-- 全量测试 **2957 项通过 / 3 项跳过**（开发机 Linux，2 分 59 秒；跳过的只在特定平台上有意义）。插件系统自带 17 个测试文件（`tests/test_plugin_*.py`、`tests/test_plugins_*.py`），其中 `tests/test_plugin_acceptance.py` 是规格 §15 六条验收标准里能测试化的那四条。
+- 全量测试 **3014 项通过 / 3 项跳过 / 1 项 xfail**（开发机 Linux，4 分 07 秒；跳过的只在特定平台上有意义）。插件系统自带 18 个测试文件（`tests/test_plugin_*.py`、`tests/test_plugins_*.py`、`tests/test_docs_plugin_example.py`），其中 `tests/test_plugin_acceptance.py` 是规格 §15 六条验收标准里能测试化的那四条；`tests/test_docs_plugin_example.py` 钉住 `docs/examples/plugin-hello/` 这个「拷进去就能跑」的承诺不腐烂（走宿主真实装载路径，变异验证过六种腐烂形态都抓得到）。
 - 未做真实服务验证的部分已在上面「发版前手工验证」逐条列明。天地图源的参数正确性、frozen 产物的插件可达性两项**尚未**在本机取得证据。
 
 ---
