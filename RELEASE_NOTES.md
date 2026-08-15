@@ -12,7 +12,7 @@
 **四个首发插件**
 - **天地图数据源**：影像（`img_w`）与注记（`cia_w`）两个 WMTS 源，开启后出现在下载弹窗的数据源下拉里。需要在插件卡片的「配置」里填自己的 key（`https://console.tianditu.gov.cn/` 申请）。key **只存在插件配置里**，不进任务行、不进指纹、不进日志——换 key 不会让已下载的瓦片失效。填错键名不会静默吞掉：配置过插件自己的 schema 校验，错在哪个键就报哪个键。
 - **MVT 矢量瓦片下载**：给一个 TileJSON 地址和层级范围，把矢量瓦片下成单个 `.mbtiles`（`metadata.format=pbf`，带描述图层的 `json` 键，tileserver-gl / QGIS / MapLibre 直接能读）。只下瓦片：style、字体、sprite 都不抓，也不把 pbf 解码成 GeoJSON。
-- **GeoPackage 导出**：把已完成任务的栅格产物（GeoTIFF）导出成 `.gpkg`，落在源产物的同级目录。走的是**核心那条导出路由**——`POST /api/export/<pipeline>/<id>`，body `{"format": "gpkg"}`；插件导出器只是往这条路由的格式表里加一行。**界面上还没有格式选择器**：任务中心的导出按钮目前只发 `mbtiles`，要用 gpkg 得走 REST。这条记在下面的已知欠账里。
+- **GeoPackage 导出**：把已完成任务的栅格产物（GeoTIFF）导出成 `.gpkg`，落在源产物的同级目录。走的是**核心那条导出路由**——`POST /api/export/<pipeline>/<id>`，插件导出器只是往这条路由的格式表里加一行。任务中心的导出按钮会先问 `GET /api/export/<pipeline>/<id>/formats`：**这个任务**真正导得出什么就列什么（拿它的产物登记行对照导出器的 `accepts()` 算出来，不是全局格式表），只有一种就直接导、多于一种才弹选择框。注意 in-tree 只有地图管线登记 GeoTIFF 产物，所以今天能导 `gpkg` 的实际只有地图任务。
 - **产物元数据 sidecar**：插件任务成功收尾后，在每个产物旁写一份 `<产物名>.tfmeta.json`（形态、格式、字节数、瓦片数、层级范围、有没有缺块、生成时间），下游工具不用开 SQLite 就能读到产物的关键属性。
 
 **不启用插件时会发生什么：什么都不会**
@@ -30,19 +30,22 @@
 - **外部插件 = 在本进程里执行任意代码，没有沙箱。** 信任边界是本机 / 局域网，面板顶部就这么写着。只启用你自己看过的插件。
 - **打包零改动**：四个 in-tree 插件都是纯 Python（清单是模块级 dict），不带任何随包数据文件，所以 `nuitka_build.py` 的 `APP_DATA_SENTINELS` 与包数据参数一个字没动。可达性靠 `src/app_factory.py` 的预热清单，`tests/test_plugin_nuitka_reachability.py` 在**全新子进程**里断言 `src/plugins/` 下每个模块都真的进了 `sys.modules`（同进程里永远是绿的——每个插件的测试文件都在模块级 import 它）。新增 in-tree 插件要改两处：`registry._BUILTIN` 与那份预热清单。
 
-**这一版有意留下的欠账（十一条，按影响排序）**
+**这一版有意留下的欠账（八条，按影响排序）**
 
 1. **天地图插件未经真实服务验证。** 手上没有真 key、构建机不打外网，`LAYER` / `TILEMATRIXSET` / `FORMAT` / `max_zoom=18` 全部按天地图公开文档写。**发版前必须用真 key 手工验一张瓦片**（步骤见下）。
-2. **选了插件数据源之后，下载弹窗的「地图样式」下拉实际失效。** 快照把 `style` 固定成 `'p'`（它同时决定缓存命名空间），样式下拉的值不再影响取哪张瓦片，而界面上没有任何提示。
-3. **缺 key 时的表现是「全挂」而不是「缺凭据」。** token 没填，天地图返回 401，界面上只看到瓦片下载失败（错误文本里的 URL 已脱敏，看不到也不会泄漏 token）。`GET /api/plugins/sources` 已经返回 `needs_credential` 字段，但前端还没用它做提示。
-4. **插件任务没有「只重跑缺块」。** 瓦片管线可以只重跑可重试的格子，插件任务只能整趟重跑。要补这一条得让 `PipelinePlugin.run()` 接受「只跑这些格子」的入参，属于协议变更，不进 1.0。
-5. **区域只能手填四至，接不上地图框选。** 插件任务表单里的 north/south/east/west 是四个文本框；计划里的「在地图上框选后切给插件」没做。
-6. **插件的 `i18n.toml` 运行时合并推迟了。** 四个首发插件都没有自定义 UI 文案，参数 `label` 直接用纯字符串。第三方插件想让自己的表单跟界面语言走，得等这条落地。
-7. **面板样式全部借 Bootstrap 通用类，`static/css/style.css` 一行没加。** 这是有意的：那份文件正在被前端信息架构改造动着，此时插进一段插件专属样式必然打架。代价是面板的几何与配置页不完全同款。
-8. **产物 sidecar 不进 `artifacts` 表。** 删任务会留下孤儿 `*.tfmeta.json`。要不要把 sidecar 登记成产物（登记了就得考虑「元数据的元数据」）是产品决定，待定。
-9. **MVT 落进 MBTiles 的是解压后的 pbf 字节。** 服务器带 `Content-Encoding: gzip` 时 aiohttp 会透明解压，落库的是未压缩 pbf。MBTiles 1.3 允许两者，读得动，代价只是库更大——不在这里重新 gzip 是为了不给每块瓦片付一次压缩。
-10. **插件凭据缓存是 60 秒的进程内缓存。** 今天瓦片端口与主服务同进程同一个 Flask app（`src/core/tile_server.py` 起的是线程），改配置会立即 `invalidate`，所以换 token 是即时生效的。这条 TTL 只在将来把瓦片服务拆成独立进程时才会变成「最坏延迟 60 秒」。
-11. **导出格式选择器没做。** GeoPackage 导出后端已经并进 `POST /api/export/<pipeline>/<id>`（`format=gpkg`），但任务中心那颗导出按钮写死发 `mbtiles`，界面上选不到 gpkg。前端要加的是一个「按 `supported_formats` 渲染的格式选择」，属于任务中心的交互改动，不塞进这一版。
+2. **插件任务没有「只重跑缺块」。** 瓦片管线可以只重跑可重试的格子，插件任务只能整趟重跑。要补这一条得让 `PipelinePlugin.run()` 接受「只跑这些格子」的入参，属于协议变更，不进 1.0。
+3. **区域只能手填四至，接不上地图框选。** 插件任务表单里的 north/south/east/west 是四个文本框；计划里的「在地图上框选后切给插件」没做。
+4. **插件的 `i18n.toml` 运行时合并推迟了。** 四个首发插件都没有自定义 UI 文案，参数 `label` 直接用纯字符串。第三方插件想让自己的表单跟界面语言走，得等这条落地。
+5. **面板样式全部借 Bootstrap 通用类，`static/css/style.css` 一行没加。** 这是有意的：那份文件正在被前端信息架构改造动着，此时插进一段插件专属样式必然打架。代价是面板的几何与配置页不完全同款。
+6. **产物 sidecar 不进 `artifacts` 表。** 删任务会留下孤儿 `*.tfmeta.json`。要不要把 sidecar 登记成产物（登记了就得考虑「元数据的元数据」）是产品决定，待定。
+7. **MVT 落进 MBTiles 的是解压后的 pbf 字节。** 服务器带 `Content-Encoding: gzip` 时 aiohttp 会透明解压，落库的是未压缩 pbf。MBTiles 1.3 允许两者，读得动，代价只是库更大——不在这里重新 gzip 是为了不给每块瓦片付一次压缩。
+8. **插件凭据缓存是 60 秒的进程内缓存。** 今天瓦片端口与主服务同进程同一个 Flask app（`src/core/tile_server.py` 起的是线程），改配置会立即 `invalidate`，所以换 token 是即时生效的。这条 TTL 只在将来把瓦片服务拆成独立进程时才会变成「最坏延迟 60 秒」。
+
+**发版前补掉的三条（原清单十一条中的第 2、3、11 条）**
+
+- **缺 key 现在说人话，不再是一屏 401。** `GET /api/plugins/sources` 每个源多一个 `credential_ready`——它读的是配置真值而不是「声明过凭据键」这个静态事实（无需凭据的源恒为 `true`，前端一个判据到底，真值不下发）。下拉里未配置的源直接标「（未配置）」，提交时拦下并点名去插件面板的哪个插件填。
+- **选插件源后样式下拉不再装作有效。** 选中非内置源时 `#mapStyle` 置灰并给出说明、样式缩略图收起，切回内置源全部还原。历史列表也不再把天地图任务叫「路线图」：`history_all` 的地图段下发快照里的 `source_id`（其余四段补 NULL 对齐），插件源任务显示成「插件源 tianditu:img」。注意置灰的 `<select>` 不进表单提交，`style` 字段仍按内置默认值送出，不是 `undefined`。
+- **导出格式选择器做了。** 新增 `GET /api/export/<pipeline>/<int:task_id>/formats`，回的是**这个任务**的事实（`mbtiles` 看管线是否有松散瓦片金字塔，插件格式拿它的产物登记行对照 `accepts()`），不是全局格式表。只有一种格式就直接导、多于一种才弹选择框。全局函数 `exportTaskMbtiles` 随之改名 `exportTask`（干净切换，不留别名）。
 
 **一条行为变更，装卸插件前请知悉**
 
@@ -58,7 +61,7 @@
 
 **验证**
 
-- 全量测试 **3014 项通过 / 3 项跳过 / 1 项 xfail**（开发机 Linux，4 分 07 秒；跳过的只在特定平台上有意义）。插件系统自带 18 个测试文件（`tests/test_plugin_*.py`、`tests/test_plugins_*.py`、`tests/test_docs_plugin_example.py`），其中 `tests/test_plugin_acceptance.py` 是规格 §15 六条验收标准里能测试化的那四条；`tests/test_docs_plugin_example.py` 钉住 `docs/examples/plugin-hello/` 这个「拷进去就能跑」的承诺不腐烂（走宿主真实装载路径，变异验证过六种腐烂形态都抓得到）。
+- 全量测试 **2921 项通过 / 1 项跳过**（干净树，开发机 Linux 3 分 25 秒；工作树上另有一批与本版无关的在途改动，不计入）。插件系统自带 18 个测试文件（`tests/test_plugin_*.py`、`tests/test_plugins_*.py`、`tests/test_docs_plugin_example.py`），其中 `tests/test_plugin_acceptance.py` 是规格 §15 六条验收标准里能测试化的那四条；`tests/test_docs_plugin_example.py` 钉住 `docs/examples/plugin-hello/` 这个「拷进去就能跑」的承诺不腐烂（走宿主真实装载路径，变异验证过六种腐烂形态都抓得到）。
 - 未做真实服务验证的部分已在上面「发版前手工验证」逐条列明。天地图源的参数正确性、frozen 产物的插件可达性两项**尚未**在本机取得证据。
 
 ---
