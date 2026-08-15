@@ -1373,12 +1373,35 @@ async function initPluginSourceOptions() {
         const resp = await fetch('/api/plugins/sources');
         if (!resp.ok) return;
         const data = await resp.json();
+        const previous = select.value;
+        Array.from(select.options).forEach(function (opt) {
+            if (opt.value) opt.remove();
+        });
         (data.sources || []).forEach(function (s) {
             const opt = document.createElement('option');
             opt.value = `${s.plugin_id}:${s.source_id}`;
-            opt.textContent = s.name || opt.value;
+            // credential_ready 的语义是「这个源现在能不能用」：无需凭据的源
+            // 后端也回 true，所以这里一个判据到底，不必再看 needs_credential。
+            // 字段缺席（老后端）当作 true —— 插件是旁路，宁可放行也不误拦。
+            const ready = s.credential_ready !== false;
+            const name = s.name || opt.value;
+            opt.dataset.credentialReady = ready ? '1' : '';
+            // 干净的源名单独存一份：选项文字带着「（未配置）」后缀，拦截提示里
+            // 再套一层就成了「「天地图影像（未配置）」还没配置凭据」。
+            opt.dataset.sourceName = name;
+            opt.textContent = ready
+                ? name
+                : t('js.map.download.source_unconfigured_option', { name: name });
             select.appendChild(opt);
         });
+        select.value = previous;
+        if (select.selectedIndex < 0) select.selectedIndex = 0;   // 内置源那一项
+        // 选中项在这次重建里消失了（插件被停用/卸载）→ 值被归零到内置源。
+        // 这是一次程序化的值变更，change 不会自己发；不补发的话挂在这个下拉上
+        // 的联动（样式锁等）会停在上一个源的状态里。
+        if (select.value !== previous) {
+            select.dispatchEvent(new Event('change'));
+        }
     } catch (e) {
         console.warn('[plugins] 数据源列表拉取失败（忽略）:', e);
     }
@@ -2563,6 +2586,10 @@ function openDownloadModal() {
             height: h,
         });
     }
+    // 数据源下拉重填一遍：用户可能刚在插件面板里装好/停用插件、或者刚把
+    // token 填上。不刷的话「（未配置）」标记与提交前那道凭据校验都会停在
+    // 开机那一刻的旧状态上，把一个已经配好的源拦住。异步的，不挡弹窗弹出。
+    initPluginSourceOptions();
     const modalEl = document.getElementById('downloadModal');
     if (!modalEl || typeof bootstrap === 'undefined') return;
     updateTileEstimate();
@@ -2653,8 +2680,20 @@ document.getElementById('downloadForm')?.addEventListener('submit', async functi
         // 插件源：选了非「内置源」时多送两个字段，后端据此冻结快照随任务落库
         // （style 照送不误——快照缺席时它仍是唯一的取源依据）。没选就一个字段
         // 都不加，请求体与改造前逐字一致。
-        const pluginSource = document.getElementById('downloadPluginSource')?.value || '';
+        const sourceSelect = document.getElementById('downloadPluginSource');
+        const pluginSource = sourceSelect?.value || '';
         if (pluginSource) {
+            // 缺凭据就提交下去 = URL 里 tk= 那段是空的 = 每块瓦片 401，用户
+            // 得到的是一屏红块而没有任何地方告诉他「你没填 key」。所以在这里
+            // 拦下来，并且把「去哪填」说清楚。判据是 initPluginSourceOptions
+            // 写在选项上的 dataset（每次开弹窗都刷新，见那边的重入说明）。
+            const opt = sourceSelect.options[sourceSelect.selectedIndex];
+            if (opt && !opt.dataset.credentialReady) {
+                showNotification(t('js.map.download.credential_missing', {
+                    name: opt.dataset.sourceName || pluginSource,
+                }), 'warning');
+                return;
+            }
             const sep = pluginSource.indexOf(':');
             taskData.source_plugin_id = pluginSource.slice(0, sep);
             taskData.source_id = pluginSource.slice(sep + 1);

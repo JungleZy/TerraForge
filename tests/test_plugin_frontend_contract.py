@@ -199,6 +199,95 @@ def test_history_detail_reads_plugin_count_columns():
         assert field in branch, f'插件详情分支没读 {field}'
 
 
+# ------------------------------------------------- 缺凭据的源：界面必须说清楚
+
+#: `#downloadForm` 的 submit 监听体。它是匿名监听，没有函数名可以 index。
+def _download_submit_body():
+    src = _js('map.js')
+    body = src[src.index(
+        "document.getElementById('downloadForm')?.addEventListener('submit'"):]
+    return body[:body.index('\n});\n')]
+
+
+def _init_source_options_body():
+    src = _js('map.js')
+    body = src[src.index('async function initPluginSourceOptions'):]
+    return body[:body.index('\n}\n')]
+
+
+def test_source_options_carry_the_credential_state():
+    """选项上必须挂 credential_ready，否则提交前那道校验没有判据可读。
+
+    后端把「填没填」算成了布尔（registry.list_sources 的 credential_ready），
+    前端不接就等于白算：用户选了没填 token 的源，一路放行到 401 一屏红块。
+    """
+    body = _init_source_options_body()
+    assert 'credential_ready' in body, (
+        'initPluginSourceOptions 没读 credential_ready —— 缺凭据的源在界面上'
+        '与配好的源一模一样'
+    )
+    assert 'dataset.credentialReady' in body, (
+        '判据没落到选项的 dataset 上 —— submit 处理器读不到它'
+    )
+    assert 'source_unconfigured_option' in body, (
+        '未配置的源没在下拉里打标记 —— 用户要等到提交才知道'
+    )
+
+
+def test_source_options_refill_is_reentrant():
+    """重填必须先清掉旧的插件选项，且不能连内置源那一项一起清。
+
+    只在启动时填一次的话，「填完 token 再回来」这条最正常的路径会被提交前的
+    校验拦住（dataset 停在 false）。所以 openDownloadModal 每次都重填 ——
+    重填不清旧项就是每开一次弹窗多一份重复选项。
+    """
+    body = _init_source_options_body()
+    assert 'opt.remove()' in body and 'if (opt.value)' in body, (
+        '重填没有先清旧选项（或清得不带 value 判断，会把模板里的内置源清掉）'
+    )
+    modal = _js('map.js')
+    modal = modal[modal.index('function openDownloadModal('):]
+    modal = modal[:modal.index('\n}\n')]
+    assert 'initPluginSourceOptions()' in modal, (
+        'openDownloadModal 没有重填数据源下拉 —— 刚在插件面板填好的 token '
+        '要刷新整页才认'
+    )
+
+
+def test_submit_blocks_a_source_whose_credential_is_missing():
+    """校验必须排在 source_plugin_id 之前，并且是 return 而不是只 toast。
+
+    放行下去的后果不是报错而是**静默的一屏 401**：URL 模板里 `tk={credential}`
+    被替换成空串，每块瓦片都失败，而没有任何地方说「你没填 key」。
+    """
+    body = _download_submit_body()
+    guard = body.find('dataset.credentialReady')
+    assign = body.find('taskData.source_plugin_id')
+    assert guard != -1, 'submit 处理器没有读 dataset.credentialReady —— 校验不存在'
+    assert assign != -1, '本测试失效：submit 处理器不再写 source_plugin_id'
+    assert guard < assign, (
+        '凭据校验排在 source_plugin_id 之后 —— 拦不住，任务照样建出来'
+    )
+    blocked = body[guard:assign]
+    assert 'js.map.download.credential_missing' in blocked, (
+        '拦下来了但没告诉用户为什么（也没说去哪填）'
+    )
+    assert re.search(r'return;', blocked), (
+        '只 toast 没 return —— 提示弹出来了，任务也建出来了'
+    )
+
+
+def test_credential_warning_uses_a_toast_type_ui_js_knows():
+    """`'error'` 不在 ui.js 的 VALID_TYPES 里，会被静默降级成蓝色 ⓘ。"""
+    body = _download_submit_body()
+    guard = body.find('dataset.credentialReady')
+    blocked = body[guard:body.find('taskData.source_plugin_id')]
+    assert "'warning'" in blocked, '缺凭据的提示没用 warning'
+    assert "'error'" not in blocked, (
+        "用了 'error' —— ui.js 不认这个类型，一条该发黄的警告会变成蓝色提示"
+    )
+
+
 # ------------------------------------------------------------- 真实链路核对
 
 #: `normalizeTask(task, 'plugin')` 从任务对象上读的字段，按来源分两组。

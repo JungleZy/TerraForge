@@ -595,6 +595,14 @@ def set_config(plugin_id: str, values: Mapping[str, Any]) -> Dict[str, str]:
 # ---------------------------------------------------------------- 能力查询
 
 def list_sources() -> List[dict]:
+    """已启用插件的全部数据源。凭据只以布尔形态出现，真值绝不进返回值。
+
+    `needs_credential` 与 `credential_ready` 是**两件事**：
+    前者是描述符的静态声明（这个源要不要凭据），后者读真值判非空（用户填没填）。
+    无需凭据的源 `credential_ready` 恒为 True —— 语义定成「这个源现在能不能用」，
+    前端一个判据走到底（`!credential_ready` 就是不能下载），不必再和
+    `needs_credential` 组合判断。
+    """
     out: List[dict] = []
     for rec in list_records():
         definition = _enabled_definition(rec.manifest.plugin_id)
@@ -609,6 +617,10 @@ def list_sources() -> List[dict]:
                 'source_id': d.source_id, 'name': d.name,
                 'max_zoom': d.max_zoom, 'attribution': d.attribution,
                 'needs_credential': bool(d.credential_key),
+                'credential_ready': (
+                    credentials.is_configured(
+                        f'plugin:{rec.manifest.plugin_id}:{d.credential_key}')
+                    if d.credential_key else True),
             })
     return out
 

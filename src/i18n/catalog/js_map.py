@@ -208,6 +208,24 @@ MESSAGES = {
         'zh': '请至少勾选一种输出格式（瓦片 / GeoTIFF）',
         'en': 'Select at least one output format (tiles / GeoTIFF)',
     },
+    # 选了「需要凭据但还没配置」的插件源时的拦截文案。**必须说清去哪填**：
+    # 干巴巴一句「缺凭据」等于把用户丢回那一屏 401 瓦片里自己猜。
+    # 面板名与按钮名逐字对齐界面上的 tpl.plugins.title 与 js.plugins.config。
+    'js.map.download.credential_missing': {
+        'zh': '「{name}」还没配置访问凭据（key / token），现在下载只会得到一屏'
+              '失败的瓦片。请打开「插件」面板，找到该插件，点「配置」填入 key '
+              '并保存，然后重新提交。',
+        'en': '“{name}” has no access credential (key / token) yet — '
+              'downloading now would only produce failed tiles. Open the '
+              'Plugins panel, find the plugin, click Configure, save your key, '
+              'then submit again.',
+    },
+    # 下拉里给未配置的源打的标记，让用户在选之前就看得见。括号与空格属于语种，
+    # 所以整条文案（含源名）都由这一条模板出，JS 不许自己拼。
+    'js.map.download.source_unconfigured_option': {
+        'zh': '{name}（未配置）',
+        'en': '{name} (not configured)',
+    },
     'js.map.download.creating': {
         'zh': '创建中...',
         'en': 'Creating...',

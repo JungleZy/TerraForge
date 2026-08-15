@@ -84,6 +84,18 @@ def resolve_reference(reference: str) -> str:
     return cfg.get(key, '')
 
 
+def is_configured(reference: str) -> bool:
+    """引用指向的凭据「用户到底填了没」。**只回布尔，真值不出这个模块。**
+
+    走的就是 resolve_reference 那条路（同一份缓存、同一套 _as_text 归一化），
+    所以答案与下载时真正拼进 URL 的东西同源：回 True 就一定拼得出非空凭据，
+    回 False 就一定拼出空的 `tk=`（也就是一屏 401）。另写一份「读 config 判
+    非空」的判据会在归一化口径上和这里分叉（bool/dict 值那两条尤其），
+    于是界面说「已配置」而下载照样全红。
+    """
+    return bool(resolve_reference(reference))
+
+
 def invalidate(plugin_id=None) -> None:
     """配置保存后调用。plugin_id=None 全清。
 

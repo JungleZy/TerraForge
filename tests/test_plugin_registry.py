@@ -361,7 +361,9 @@ def test_sources_and_snapshot_and_export_surface(db, tmp_path, monkeypatch):
     registry.set_enabled('multi', True)
     assert registry.list_sources() == [{
         'plugin_id': 'multi', 'source_id': 's1', 'name': 'S1',
-        'max_zoom': 18, 'attribution': 'A', 'needs_credential': True}]
+        'max_zoom': 18, 'attribution': 'A', 'needs_credential': True,
+        # 声明了 credential_key 但 config 里没这个键 —— 未配置。
+        'credential_ready': False}]
     assert registry.list_export_formats() == ('zip',)
     assert registry.exporter_for('zip') is not None
     assert registry.exporter_for('nope') is None
@@ -373,6 +375,55 @@ def test_sources_and_snapshot_and_export_surface(db, tmp_path, monkeypatch):
     registry.set_enabled('multi', False)
     with pytest.raises(KeyError):
         registry.build_source_snapshot('multi', 's1')          # 停用即不可用
+
+
+def test_list_sources_reports_whether_the_credential_is_configured(
+        db, tmp_path, monkeypatch):
+    """`credential_ready` 钉三种情形：需凭据已填 / 需凭据未填 / 无需凭据。
+
+    这是「缺 key 时界面一屏红块、没有任何地方说你没填 key」那条欠账的判据：
+    `needs_credential` 是静态声明（这个源要不要凭据），它答不了「填没填」。
+    无需凭据的源恒为 True —— 语义是「这个源现在能不能用」，前端一个判据到底。
+
+    真值绝不下发：断言里连带钉住 payload 的键集合，多一个 token 字段就红。
+    """
+    _fresh(tmp_path, monkeypatch)
+    _write_external(tmp_path, 'mixed', caps='["sources"]', body=(
+        'from src.plugins.protocols import PluginDefinition, SourceDescriptor\n'
+        'def register():\n'
+        '    return PluginDefinition(sources=(\n'
+        '        SourceDescriptor(source_id="needs", name="Needs",\n'
+        '                         url_template="https://h/{z}/{x}/{y}?k={credential}",\n'
+        '                         max_zoom=18, credential_key="token"),\n'
+        '        SourceDescriptor(source_id="free", name="Free",\n'
+        '                         url_template="https://h/{z}/{x}/{y}",\n'
+        '                         max_zoom=18),\n'
+        '    ))\n'))
+    registry.load_all()
+    registry.set_enabled('mixed', True)
+    credentials.invalidate()
+
+    def ready():
+        return {s['source_id']: s['credential_ready']
+                for s in registry.list_sources()}
+
+    assert ready() == {'needs': False, 'free': True}      # 键都还没有
+    registry.set_config('mixed', {'token': ''})
+    assert ready() == {'needs': False, 'free': True}      # 空串就是没填
+    registry.set_config('mixed', {'token': True})
+    # 归一化口径与 credentials._as_text 同源：bool 解析成 ''，所以不算填了。
+    # 分叉的后果是界面说「已配置」而下载照样 401。
+    assert ready() == {'needs': False, 'free': True}
+    registry.set_config('mixed', {'token': 'sekret'})
+    assert ready() == {'needs': True, 'free': True}
+
+    needs = [s for s in registry.list_sources()
+             if s['source_id'] == 'needs'][0]
+    assert needs['needs_credential'] is True
+    assert 'sekret' not in repr(needs)                    # 真值不下发
+    assert set(needs) == {'plugin_id', 'source_id', 'name', 'max_zoom',
+                          'attribution', 'needs_credential',
+                          'credential_ready'}
 
 
 def test_set_enabled_unknown_raises_keyerror(db, tmp_path, monkeypatch):
