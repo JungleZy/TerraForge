@@ -410,3 +410,164 @@ def test_history_stats_counts_both_successful_terminal_states(isolated_app, tmp_
     assert stats['completed'] == 2
     assert stats['failed'] == 1
     assert stats['total_tasks'] == 3
+
+
+# ----------------------------------- 导出格式清单：这个任务**真能**导出哪些
+#
+# 改造前全仓没有任何 GET 能回答这个问题：格式表只在 400 的响应体里出现
+# （`supported_formats`），而 `accepts(kind)` 的匹配又只在 POST 到达之后才做。
+# 界面于是把 body 写死成 `{"format": "mbtiles"}` —— 后端把插件导出器并进了
+# 同一条路由，用户却点不到任何别的格式。
+#
+# 这一组钉的是「清单是**这个任务**的事实，不是全局格式表的复制」：
+#   · 只有瓦片目录 -> 只有 mbtiles（没有 GEOTIFF，GpkgExporter 收不下）；
+#   · 登记了 GEOTIFF -> 多出 gpkg；
+#   · 插件被禁 -> gpkg 消失（清单必须是运行期的，不能冻一份常量）；
+#   · dem 任务 -> 空清单（既没有瓦片金字塔，也没有任何产物登记行）。
+
+
+# in-tree 插件**默认关**（`registry._upsert_row` 插新行时写 enabled=0：启停是
+# 用户的决定，不是发现的副产物）。所以格式选择器出厂状态下只有 mbtiles 一种，
+# 界面手感与改造前一字不差 —— 想测到 gpkg 就得像用户那样先把它打开。
+@pytest.fixture
+def gpkg_on(isolated_app):
+    from src.plugins import registry
+
+    assert registry.get_record('gpkg') is not None, (
+        'gpkg 导出器插件没被载入 —— 本组用例已失效')
+    registry.set_enabled('gpkg', True)
+    yield
+    registry.set_enabled('gpkg', False)
+
+
+def _export_formats(client, pipeline, task_id):
+    resp = client.get(f'/api/export/{pipeline}/{task_id}/formats')
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    return resp.get_json()['formats']
+
+
+def _register(pipeline, task_id, kind, path, fmt):
+    from src.contracts.artifact import Artifact
+    from src.services import artifact_store
+
+    artifact_store.record_artifact(Artifact(
+        pipeline=pipeline, task_id=task_id, kind=kind, path=str(path), fmt=fmt))
+
+
+def test_gpkg_is_listed_only_once_a_geotiff_is_registered(gpkg_on, isolated_app,
+                                                          tmp_path):
+    """`accepts()` 必须真的被问过，不能把全局格式表原样回给前端。
+
+    in-tree 的 `GpkgExporter.accepts()` 只收 `GEOTIFF`。一个刚跑完、只有 XYZ
+    目录的地图任务上 gpkg 是**没有货**的：列出来的后果不是「多一个选项」，是
+    用户选了它之后撞一个 400（`_export_via_plugin` 找不到候选产物）。
+    """
+    from src.contracts.artifact import ArtifactKind
+
+    out = tmp_path / 'downloads' / 'map'
+    task_id = _insert_map_task(out, status='completed', gap_tiles=0)
+    task_dir = out / f'task_{task_id}'
+    _write_one_tile(task_dir)
+    _register('map', task_id, ArtifactKind.XYZ_DIR, task_dir, 'png')
+
+    client = isolated_app.app.test_client()
+    assert _export_formats(client, 'map', task_id) == ['mbtiles'], (
+        '只有瓦片目录的任务列出了 gpkg —— GpkgExporter.accepts() 没被问过')
+
+    tif = task_dir / 'city_zoom_10.tif'
+    tif.write_bytes(b'stand-in for a stitched GeoTIFF')
+    _register('map', task_id, ArtifactKind.GEOTIFF, tif, 'tif')
+
+    assert _export_formats(client, 'map', task_id) == ['mbtiles', 'gpkg'], (
+        '登记了 GEOTIFF 之后 gpkg 仍然不在清单里 —— 那条读端点在照抄管线闸，'
+        '没有看产物')
+
+
+def test_disabling_the_exporter_plugin_drops_its_format(gpkg_on, isolated_app,
+                                                       tmp_path):
+    """清单必须是**运行期**的。插件可以在两次点击之间被禁用，冻一份常量就等于
+    让下拉菜单显示上一轮的世界，而 POST 上去是 400。"""
+    from src.contracts.artifact import ArtifactKind
+    from src.plugins import registry
+
+    out = tmp_path / 'downloads' / 'map'
+    task_id = _insert_map_task(out, status='completed', gap_tiles=0)
+    task_dir = out / f'task_{task_id}'
+    _write_one_tile(task_dir)
+    tif = task_dir / 'city_zoom_10.tif'
+    tif.write_bytes(b'stand-in for a stitched GeoTIFF')
+    _register('map', task_id, ArtifactKind.GEOTIFF, tif, 'tif')
+
+    client = isolated_app.app.test_client()
+    assert 'gpkg' in _export_formats(client, 'map', task_id)
+
+    registry.set_enabled('gpkg', False)
+    assert _export_formats(client, 'map', task_id) == ['mbtiles']
+
+
+def test_a_dem_task_has_nothing_to_export(gpkg_on, isolated_app, tmp_path):
+    """空清单是一个正确答案，不是错误。
+
+    dem 既没有松散瓦片金字塔（不在 `_PIPELINE_TILE_LAYOUT` 里），也没有任何
+    `artifacts` 登记行 —— `task_manager._register_artifacts` 里 pipeline 写死
+    `'map'`，dem 落在盘上的颗粒 GeoTIFF 一件都没被登记过。所以「dem 可以导
+    gpkg」这句话在当前代码里没有落地，清单必须照实说没有。
+    """
+    from src.core.database import get_connection
+
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO dem_tasks (name, status, north, south, east, west, "
+            "dataset, output_path, total_files, downloaded_files, failed_files) "
+            "VALUES ('dem', 'completed', 1, 0, 1, 0, 'ASTGTM.003', ?, 1, 1, 0)",
+            (str(tmp_path / 'downloads' / 'dem'),))
+        conn.commit()
+        dem_id = cur.lastrowid
+    finally:
+        conn.close()
+
+    client = isolated_app.app.test_client()
+    assert _export_formats(client, 'dem', dem_id) == []
+
+
+def test_the_format_list_shares_the_pipeline_and_existence_gates_with_the_post(
+        isolated_app, tmp_path):
+    """两道闸与 POST 逐条一致。回一份看着能用的格式表给一个 404 的任务，
+    等于让用户对着一条不存在的记录挑格式。"""
+    client = isolated_app.app.test_client()
+
+    bad = client.get('/api/export/nope/1/formats')
+    assert bad.status_code == 400
+    assert 'map' in bad.get_json()['supported_pipelines']
+
+    assert client.get('/api/export/map/999999/formats').status_code == 404
+
+
+def test_every_listed_format_really_exports(gpkg_on, isolated_app, tmp_path):
+    """闭环：清单里的每一种格式 POST 上去都必须成功。
+
+    这条是前面几条的反面 —— 只钉「不该出现的别出现」的话，一份**永远空**的
+    清单也能全绿，而那时导出按钮在界面上等于消失了。
+    """
+    from src.contracts.artifact import ArtifactKind
+
+    out = tmp_path / 'downloads' / 'map'
+    task_id = _insert_map_task(out, status='completed', gap_tiles=0)
+    task_dir = out / f'task_{task_id}'
+    _write_one_tile(task_dir)
+    # 真 GeoTIFF：gpkg 那条路要经过 GDAL 的 Translate，占位字节走不通。
+    from osgeo import gdal
+    tif = task_dir / 'city_zoom_10.tif'
+    ds = gdal.GetDriverByName('GTiff').Create(str(tif), 4, 4, 1)
+    ds.SetGeoTransform([116.0, 0.05, 0, 39.2, 0, -0.05])
+    ds.GetRasterBand(1).Fill(7)
+    ds = None
+    _register('map', task_id, ArtifactKind.GEOTIFF, tif, 'tif')
+
+    client = isolated_app.app.test_client()
+    formats = _export_formats(client, 'map', task_id)
+    assert formats == ['mbtiles', 'gpkg'], formats
+    for fmt in formats:
+        resp = client.post(f'/api/export/map/{task_id}', json={'format': fmt})
+        assert resp.status_code == 200, (fmt, resp.get_data(as_text=True))

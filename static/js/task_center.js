@@ -1045,35 +1045,99 @@ async function acceptTaskGaps(taskId, taskType = 'map') {
 }
 
 /**
- * 导出 MBTiles：把任务的 XYZ 金字塔打成单文件容器并登记成 Artifact。
+ * 这个任务能导出成哪些格式。抛异常给调用方，**不在这里吞**：拉不到格式表
+ * 就没有正确的下一步（写死 mbtiles 是在猜，静默不做是让按钮看着没反应）。
  *
- * §5.3 的决定是「MBTiles 是**通用产物容器**，不是第四种 output_format」：
- * 同一个任务可以同时持有 XYZ 目录、逐层 GeoTIFF 与一个 MBTiles。所以端点是
- * `POST /api/export/<pipeline>/<id>` —— 影像与等高线走**同一条**路由
- * （与只读侧的 /mbtiles/<pipeline>/... 单路由同一条原则：§5.3 明确禁止
- * 按数据类型各开一条）。pipeline 由调用方给，服务端按
+ * 为什么必须问服务端：格式表 = 宿主自带的 mbtiles + 已启用插件注册的
+ * Exporter，而「这个任务有没有那种格式吃得下的产物」还要拿产物登记行对照
+ * 每个导出器的 accepts()。两半都在后端，前端一半都推不出来。
+ */
+async function fetchExportFormats(taskType, taskId) {
+    const response = await fetch(`/api/export/${taskType}/${taskId}/formats`);
+    if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || ('HTTP ' + response.status));
+    }
+    const body = await response.json();
+    return Array.isArray(body.formats) ? body.formats : [];
+}
+
+/**
+ * 导出成品：把任务的产物打成单文件容器并登记成 Artifact。
+ *
+ * §5.3 的决定是「容器是**通用产物**，不是第四种 output_format」：同一个任务
+ * 可以同时持有 XYZ 目录、逐层 GeoTIFF、一个 MBTiles 和一个 GeoPackage。所以
+ * 端点是 `POST /api/export/<pipeline>/<id>` —— 影像、等高线与插件注册的导出器
+ * 走**同一条**路由（与只读侧的 /mbtiles/<pipeline>/... 单路由同一条原则：
+ * §5.3 明确禁止按数据类型各开一条）。pipeline 由调用方给，服务端按
  * src.contracts.artifact.PIPELINES 校验，不支持的管线回 400。
  *
- * 耗时与瓦片数成正比（几万张要几十秒），所以按钮当场上锁 —— 不锁的话用户
- * 会连点，后端每一发都真的重打一遍同一个文件。
+ * 格式**先问再导**（GET .../formats），按可用种数分三条路：
+ *   0 种 —— 说一句就走，不发 POST。dem / local_terrain 一件产物都不登记，
+ *           它们的按钮压根不该出现，真出现了也不能让用户去撞一个 400。
+ *   1 种 —— 直接导，不弹框。改造前的手感一字不差（当时唯一那种就是 mbtiles）。
+ *   多种 —— 弹选择框。改造前 body 写死 `{format:'mbtiles'}`，后果不是「默认值
+ *           选得不好」，是插件注册的导出器**在界面上没有任何入口** ——
+ *           后端把 gpkg 接进这条路由了，用户点不到。
+ *
+ * 耗时与瓦片数成正比（几万张要几十秒），所以按钮当场上锁 —— 不锁的话用户会
+ * 连点，后端每一发都真的重打一遍同一个文件。锁一直持续到选择框关掉之后
+ * （finally 在 await 链的末尾）：框开着时按钮还能点就能开出第二个框。
  */
-async function exportTaskMbtiles(taskId, taskType = 'map', button = null) {
+async function exportTask(taskId, taskType = 'map', button = null) {
     if (button) button.disabled = true;
     try {
+        const formats = await fetchExportFormats(taskType, taskId);
+        if (!formats.length) {
+            showToast(t('js.export.toast.nothing_to_export'), 'warning');
+            return null;
+        }
+        let format = formats[0];
+        if (formats.length > 1) {
+            const answer = await showConfirm(t('js.export.confirm.message'), {
+                title: t('js.export.confirm.title'),
+                confirmText: t('js.export.confirm.ok'),
+                select: {
+                    label: t('js.export.confirm.format_label'),
+                    // 选项文案就是格式 id 本身，不做美化查表：这些 id 一半来自
+                    // 插件的 format_id()，宿主给 'gpkg' 配一个显示名就等于把插件
+                    // 的清单抄进宿主，下一个插件注册的格式又会变成一串没查到表的
+                    // 回落。id 同时是 POST 上去的那个值，看到什么就是导什么。
+                    options: formats.map(f => ({ value: f, label: f })),
+                    value: format,
+                },
+            });
+            // 带 select 时 showConfirm resolve 的是**对象**（恒为真），必须判
+            // .confirmed —— 直接 `if (!answer)` 会让取消也照导（ui.js 里那段
+            // 说明讲的就是这个静默失效）。
+            if (!answer.confirmed) return null;
+            format = answer.selected;
+        }
         const response = await fetch(`/api/export/${taskType}/${taskId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ format: 'mbtiles' }),
+            body: JSON.stringify({ format }),
         });
         if (!response.ok) {
             const result = await response.json().catch(() => ({}));
             throw new Error(result.error || ('HTTP ' + response.status));
         }
         const result = await response.json();
-        showToast(t('js.gaps.toast.exported', {
-            path: result.path,
-            count: Number(result.tile_count || 0).toLocaleString(),
-        }), result.has_gaps ? 'warning' : 'success');
+        // 两条成功文案不是重复：mbtiles 的响应带 tile_count 与 has_gaps（打包器
+        // 数过每一块瓦片），插件导出器的响应只有 {path, format} —— 协议里没有
+        // 让第三方报块数的地方。拿一份带 {count} 的文案去套插件分支，界面上就是
+        // 「已导出 MBTiles（0 块瓦片）」，两处都在撒谎。
+        if (result.tile_count != null) {
+            showToast(t('js.gaps.toast.exported', {
+                path: result.path,
+                count: Number(result.tile_count).toLocaleString(),
+            }), result.has_gaps ? 'warning' : 'success');
+        } else {
+            showToast(t('js.export.toast.exported', {
+                format: result.format || format,
+                path: result.path,
+            }), 'success');
+        }
         return result;
     } catch (error) {
         showToast(t('js.gaps.toast.export_failed', { error: error.message }), 'danger');

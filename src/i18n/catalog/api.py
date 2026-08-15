@@ -220,7 +220,14 @@ MESSAGES = {
         'en': 'This action is not allowed in the task\'s current state',
     },
 
-    # ---- POST /api/export/<pipeline>/<id>（成果打包导出）----
+    # ---- /api/export/<pipeline>/<id>（成果打包导出，POST 导 + GET 列格式）----
+    # 导出那两条**不**共用 api.gaps.not_found：那句话的后半截「或它没有缺块记录」
+    # 是给三条缺块端点写的，对着一次导出说出来是答非所问 —— 而这句现在会经
+    # 「GET .../formats 失败」直接进用户眼前的 toast。
+    'api.export.not_found': {
+        'zh': '任务不存在',
+        'en': 'No such task',
+    },
     'api.export.unsupported_format': {
         'zh': '不支持这种导出格式',
         'en': 'Unsupported export format',

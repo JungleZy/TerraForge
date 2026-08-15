@@ -38,6 +38,18 @@
     // 正常下载不会误判。上界：再长用户就会盯着一个假速度发呆。
     const SPEED_STALE_MS = 5000;
 
+    // 值得给一颗导出按钮的管线。真值来源是后端
+    // `artifact_export._PIPELINE_TILE_LAYOUT`（哪条管线有松散瓦片金字塔），
+    // tests/test_tasks_js_contract.py 逐字对表 —— 那边加一条管线而这里不加，
+    // 表现是「按钮不出现」，没有任何报错。
+    //
+    // 为什么不是「所有成功的任务都给按钮」：dem / local_terrain 一件产物都不
+    // 登记（task_manager._register_artifacts 里 pipeline 写死 'map'），它们的
+    // 格式清单恒为空，按钮点下去只能弹一句「没有可导出的产物」。
+    // 代价记在这里：第三方插件管线若登记了 GEOTIFF 产物，它确实导得出 gpkg，
+    // 但行上不会有按钮 —— 要修得在页面引导数据里带上后端那份管线表。
+    const EXPORTABLE_PIPELINES = ['map', 'contour'];
+
     // 拉取失败提示。改造前是 loadHistory 的 catch 直接往 #historyTableBody
     // 写 innerHTML，Vue 接管容器后那样写会被下次 patch 抹掉。
     const ERROR_TEMPLATE = `
@@ -132,7 +144,7 @@
                          completed_with_gaps）：排除它就等于让「接受缺口」这个
                          决定毫无意义。 -->
                     <button v-if="canExport && isExportable"
-                            class="btn btn-icon btn-sm btn-secondary" @click="exportMbtiles"
+                            class="btn btn-icon btn-sm btn-secondary" @click="exportOutput"
                             :title="t('js.gaps.action.export')" :aria-label="t('js.gaps.action.export')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
@@ -301,13 +313,18 @@
             isSuccessful() {
                 return store.SUCCESSFUL_STATUSES.includes(this.task.status);
             },
-            // 导出 MBTiles 的两个前提：管线支持（影像 / 等高线，与后端
-            // artifact_export 的查表一致）+ 产出可用（含带洞成品）。
+            // 导出按钮出不出现的两个前提：管线值得给按钮 + 产出可用（含带洞成品）。
+            //
+            // ⚠️ 这里是**粗筛**，不是最终答案。「这个任务导得出哪些格式」的真值
+            // 在后端（mbtiles 看管线，插件格式要拿产物登记行对照每个导出器的
+            // accepts()），行上问不起 —— 一行一个 GET 就是列表一屏几十发请求。
+            // 所以真实答案由点击时的 GET /api/export/<pipeline>/<id>/formats 给出：
+            // 一种直接导、多种弹选择、零种弹一句提示。
             canExport() {
-                return typeof exportTaskMbtiles === 'function';
+                return typeof exportTask === 'function';
             },
             isExportable() {
-                return (this.task.task_type === 'map' || this.task.task_type === 'contour')
+                return EXPORTABLE_PIPELINES.includes(this.task.task_type)
                     && this.isSuccessful;
             },
             // 独立页 /history 不加载 tasks.js：那里只剩详情（点任务名）和删除。
@@ -505,10 +522,10 @@
             // 传按钮进去让它自己上锁：打包几万张瓦片要几十秒，不锁就会被连点，
             // 后端每一发都真的重打一遍同一个文件。$event.currentTarget 而不是
             // target —— 点在按钮里的 <svg> 上时 target 是那个 svg。
-            exportMbtiles(event) {
-                if (typeof exportTaskMbtiles !== 'function') return;
-                exportTaskMbtiles(this.task.id, this.task.task_type,
-                                  event && event.currentTarget);
+            exportOutput(event) {
+                if (typeof exportTask !== 'function') return;
+                exportTask(this.task.id, this.task.task_type,
+                           event && event.currentTarget);
             },
             // 待决任务的分档明细要多一次 GET /gaps（socket 推送带 by_outcome，
             // 但页面刷新后重新拉列表时那份数据不在响应里）。ensureGapSummary

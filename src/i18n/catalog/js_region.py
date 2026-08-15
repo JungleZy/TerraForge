@@ -269,9 +269,12 @@ MESSAGES = {
         'en': 'Produce the output as-is. The output and its history keep a permanent '
               'gap marker',
     },
+    # 「成品」而不是「MBTiles」：格式不再由这颗按钮决定 —— 点下去先问服务端这个
+    # 任务导得出哪些格式，多于一种时弹选择框。写死格式名的那一版把插件注册的
+    # 导出器挡在了界面之外（后端早就把 gpkg 接进同一条路由了）。
     'js.gaps.action.export': {
-        'zh': '导出 MBTiles',
-        'en': 'Export MBTiles',
+        'zh': '导出成品',
+        'en': 'Export output',
     },
     # 缺块明细读取失败后的手动重试。存在的理由：GET /gaps 超时一次，行组件的
     # 三个自动触发点（mounted + status/gap_tiles 两条 watch）之后一个都不会
@@ -311,13 +314,57 @@ MESSAGES = {
         'zh': '已导出 MBTiles（{count} 块瓦片）：{path}',
         'en': 'MBTiles exported ({count} tiles): {path}',
     },
+    # 通用文案：这颗按钮现在可能在导 mbtiles，也可能在导插件注册的任何格式，
+    # 而拉格式表本身失败时连格式都还不知道。原文是「导出 MBTiles 失败」。
     'js.gaps.toast.export_failed': {
-        'zh': '导出 MBTiles 失败：{error}',
-        'en': 'MBTiles export failed: {error}',
+        'zh': '导出失败：{error}',
+        'en': 'Export failed: {error}',
     },
     'js.gaps.event.pending_decision': {
         'zh': '任务 #{id} 有缺块，等待你决定',
         'en': 'Task #{id} has gaps and is waiting for your decision',
+    },
+
+    # ---- 导出格式选择器（§5.3）--------------------------------------------
+    # 后端把插件导出器并进了 `POST /api/export/<pipeline>/<id>`，但格式表原先
+    # 只在 400 的响应体里出现，前端于是写死 `{format:'mbtiles'}` —— gpkg 有货
+    # 也点不到。`GET /api/export/<pipeline>/<id>/formats` 补上读端点之后，
+    # 一种格式直接导（手感不变），多种才弹这个框。
+    'js.export.confirm.title': {
+        'zh': '选择导出格式',
+        'en': 'Choose an export format',
+    },
+    # 说清「导出是追加」是有理由的：用户看到「格式」两个字容易以为是在换输出
+    # 格式（那会牵连瓦片目录与 /tiles 预览），而 §5.3 的决定恰恰相反 ——
+    # 容器是多出来的一份产物，原料一个字节都不动。
+    # 不带 markdown 记号：确认框的正文进的是 textContent，`**追加**` 会原样
+    # 显示成一对星号。
+    'js.export.confirm.message': {
+        'zh': '这个任务有多种可用的导出格式。导出是追加一份产物：原有的瓦片目录与 GeoTIFF 一个字节都不会动。',
+        'en': 'This task can be exported to more than one format. Exporting adds an '
+              'artifact: the existing tile directory and GeoTIFFs are left byte-for-byte '
+              'untouched.',
+    },
+    'js.export.confirm.format_label': {
+        'zh': '导出格式',
+        'en': 'Export format',
+    },
+    'js.export.confirm.ok': {
+        'zh': '导出',
+        'en': 'Export',
+    },
+    # 「没有可导出的产物」而不是「导出失败」：这不是一次失败，是这个任务压根
+    # 没有任何导出器吃得下的东西（dem / local_terrain 一件产物都不登记）。
+    'js.export.toast.nothing_to_export': {
+        'zh': '这个任务没有可导出的产物',
+        'en': 'This task has no exportable output',
+    },
+    # 插件导出器分支的成功文案。与 js.gaps.toast.exported 分成两条是因为信息量
+    # 不同：mbtiles 的响应带 tile_count（打包器数过每一块瓦片），插件导出协议里
+    # 没有让第三方报块数的地方，套那条带 {count} 的文案只会显示「0 块瓦片」。
+    'js.export.toast.exported': {
+        'zh': '已导出 {format}：{path}',
+        'en': 'Exported {format}: {path}',
     },
 
     # ---- 产物清单（§13-3 / §5.3）------------------------------------------

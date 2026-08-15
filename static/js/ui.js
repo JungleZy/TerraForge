@@ -6,6 +6,7 @@
  *   window.showToast(message, type, opts)      —— 右上角通知，type: success|danger|warning|info
  *   window.showConfirm(message, opts) -> Promise<boolean>  —— 居中确认框
  *       opts.checkbox = {label, checked} 时改 resolve {confirmed, checked}
+ *       opts.select = {label, options:[{value,label}], value} 时改 resolve {confirmed, selected}
  *   window.showNotification(message, type)     —— showToast 的别名（兼容旧调用）
  *   window.parseTaskDate(value) -> Date|null   —— 任务时间字段统一解析（裸格式按 UTC）
  *   window.formatBytes(bytes) -> string        —— 字节 → 人类可读（1024 进制，全站唯一一份）
@@ -128,6 +129,12 @@
         // 带 checkbox 时 resolve 的是 {confirmed, checked}，不带时仍是 boolean，
         // 既有调用点（config.js×3 / map.js×1）一个字都不用改。
         const checkboxOpt = opts.checkbox || null;
+        // opts.select = { label, options: [{value, label}], value } —— 「确定之前先
+        // 选一个」的那类问题（导出格式选择器是第一个调用点：一个任务能导出的格式
+        // 不止一种时，写死一种等于让另外几种永远点不到）。不串第二个框的理由同
+        // checkbox；resolve 的是 {confirmed, selected}，两者都带时是
+        // {confirmed, checked, selected}。
+        const selectOpt = opts.select || null;
 
         return new Promise(function (resolve) {
             const overlay = document.createElement('div');
@@ -176,10 +183,48 @@
                 checkWrap.appendChild(checkText);
             }
 
+            // 同上一段用 <label> 的两条理由（点文字也落到控件上、不给
+            // test_css_contract.py 那张运行时注入 <div> 表添行）。
+            //
+            // 复用 .app-confirm__check 的类名不是偷懒：那条规则就是「附带输入行
+            // 贴回问题的下边距里」这个布局槽本身（负上边距 + 24px 下边距 + 小字
+            // 弱色），与下拉要的完全一样。新起一个 .app-confirm__select 就是往
+            // style.css 里塞第二份同样的间距值，而那张表正在做间距刻度归一。
+            let selectEl = null;
+            let selectWrap = null;
+            if (selectOpt) {
+                selectWrap = document.createElement('label');
+                selectWrap.className = 'app-confirm__check';
+                const selectText = document.createElement('span');
+                // .text-nowrap（Bootstrap 工具类）：.app-confirm__check 是
+                // flex row，标签文字不设 nowrap 时会被下拉挤成两行（实测
+                // 「导出格式」在 400px 的框里断成「导出格」/「式」）。
+                selectText.className = 'text-nowrap';
+                selectText.textContent = selectOpt.label == null
+                    ? '' : String(selectOpt.label);
+                selectEl = document.createElement('select');
+                // .form-select 走全站那份控件样式（含给下拉箭头让位的 36px 右
+                // 内边距，见 style.css 里那条规则的说明）。不加 .form-select-sm：
+                // 它的 padding 会被后加载的站内规则压掉，只剩一个不一致的字号。
+                selectEl.className = 'form-select';
+                (selectOpt.options || []).forEach(function (o) {
+                    const optEl = document.createElement('option');
+                    optEl.value = String(o.value);
+                    // textContent 而不是 innerHTML：选项文案可能来自插件注册的
+                    // 格式 id（第三方字符串）。
+                    optEl.textContent = o.label == null ? String(o.value) : String(o.label);
+                    selectEl.appendChild(optEl);
+                });
+                if (selectOpt.value != null) selectEl.value = String(selectOpt.value);
+                selectWrap.appendChild(selectText);
+                selectWrap.appendChild(selectEl);
+            }
+
             actions.appendChild(cancelBtn);
             actions.appendChild(okBtn);
             dialog.appendChild(titleEl);
             dialog.appendChild(msgEl);
+            if (selectWrap) dialog.appendChild(selectWrap);
             if (checkWrap) dialog.appendChild(checkWrap);
             dialog.appendChild(actions);
             overlay.appendChild(dialog);
@@ -207,11 +252,19 @@
                 if (prevFocus && typeof prevFocus.focus === 'function') {
                     try { prevFocus.focus(); } catch (e) { /* ignore */ }
                 }
-                // 取消（ESC / 点遮罩 / 取消键）一律把 checked 压成 false ——
-                // 「什么都不做」不该顺带漏出一个用户已经放弃的勾选值。
-                resolve(checkboxOpt
-                    ? { confirmed: result, checked: result && !!checkEl.checked }
-                    : result);
+                // 取消（ESC / 点遮罩 / 取消键）一律把附带输入压成「没给」——
+                // 「什么都不做」不该顺带漏出一个用户已经放弃的勾选值或选项值。
+                if (!checkboxOpt && !selectOpt) {
+                    resolve(result);
+                    return;
+                }
+                // 写成对象字面量而不是逐个赋属性：tests/test_tasks_js_contract.py
+                // 的两条断言按 `checked: result &&` / `selected: result ?` 逐字
+                // 匹配这里 —— 它们钉的就是「取消不许漏出附带输入」这条。
+                resolve(Object.assign(
+                    { confirmed: result },
+                    checkboxOpt ? { checked: result && !!checkEl.checked } : null,
+                    selectOpt ? { selected: result ? selectEl.value : null } : null));
             }
 
             function onKey(e) {
@@ -248,7 +301,10 @@
 
             requestAnimationFrame(function () {
                 overlay.classList.add('app-confirm-overlay--in');
-                okBtn.focus();
+                // 带选择器时焦点给下拉：用户要做的第一件事是选，不是确认。
+                // ESC/Enter 仍由 onKey 在捕获阶段独占，所以焦点在哪都不改变
+                // 「Enter = 按当前选中值确认」这条语义。
+                (selectEl || okBtn).focus();
             });
         });
     }

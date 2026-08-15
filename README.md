@@ -276,6 +276,7 @@ map-download/
 
 - `POST /api/export/<pipeline>/<id>` - 把任务的瓦片金字塔打包成单个 `.mbtiles`，Body `{"format": "mbtiles"}`。**这是「多一份产物」，不是换一种输出格式**：`output_format` 一个取值都没加，原来的瓦片目录一张不动（它正是打包的原料，也是 `/tiles/<id>/` 预览的数据源）。幂等。`<pipeline>` 对着 `PIPELINES` 校验，打包器不支持的管线（`dem` / `local_terrain` 没有瓦片金字塔）回 400 并在 body 里给出 `supported_pipelines`。建任务时勾选 `export_mbtiles` 可以让它在跑完后自动执行一次
 - 同一条路由也是**插件导出器的唯一入口**：`format` 表 = 宿主自带的 `mbtiles` + 已启用插件注册的 Exporter 的 `format_id()`（例如首发插件 GeoPackage 的 `gpkg`）。插件格式吃的是 `artifacts` 登记行而不是瓦片目录，所以**不受**「有没有瓦片金字塔」那道管线闸限制 —— `POST /api/export/dem/7` + `{"format":"gpkg"}` 是合法的（`dem` 产 GeoTIFF，`GpkgExporter.accepts()` 正好收它）。导出器写出来的产物由宿主登记：`pipeline`/`task_id` 强制取 URL 里的值，路径必须落在宿主算出的目标目录内，插件说了不算
+- `GET /api/export/<pipeline>/<id>/formats` - 这个任务**真能导出**的格式清单（`{formats: ["mbtiles", "gpkg"]}`）。与上面 POST 回的 `supported_formats` 不是同一份：那一份是全局格式表（「这个部署认得哪些格式」），这一份已经拿这个任务的 `artifacts` 登记行对照过每个导出器的 `accepts()`（「这个任务导得出哪些」）。界面的格式选择器读它 —— 没有这条端点，格式表只在 400 的响应体里出现，前端只能写死一种格式或者让用户先撞个 400。`mbtiles` 那一半只看管线、**不去 stat 瓦片目录**（几万到上百万个文件，为一个下拉菜单扫一遍不成比例），所以「管线对但目录是空的」仍由 POST 的 400 兜住。清单可以是空的：`dem` / `local_terrain` 既没有瓦片金字塔，也没有任何产物登记行
 
 ### 底图
 

@@ -2618,3 +2618,159 @@ def test_a_failed_gap_fetch_leaves_the_row_an_exit():
         'carryClientState 没搬 gap_summary_error —— loadHistory 一整页替换就把'
         '错误态与「重试」按钮抹掉，行打回「正在读取缺块明细…」并永久卡在那里'
     )
+
+
+# ---------------------------------------------------------------------------
+# 导出格式选择器
+#
+# 改造前的事实：`POST /api/export/<pipeline>/<id>` 的 body 写死
+# `{format:'mbtiles'}`，而后端早已把插件注册的导出器并进了同一条路由 ——
+# gpkg 有货也没有任何入口点得到。全仓也没有任何 GET 能列出可用格式（格式表
+# 只在 400 的响应体里出现），所以「让用户选」在补上读端点之前做不出来。
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_tile_layout_keys():
+    """`artifact_export._PIPELINE_TILE_LAYOUT` 的键，用 ast 解析不 import。
+
+    与 _task_status_values 同一理由：import src.services 会拖 config 的副作用。
+    """
+    path = os.path.join(ROOT, 'src', 'services', 'artifact_export.py')
+    with open(path, encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(getattr(t, 'id', None) == '_PIPELINE_TILE_LAYOUT'
+                   for t in node.targets):
+            continue
+        assert isinstance(node.value, ast.Dict), (
+            '_PIPELINE_TILE_LAYOUT 不再是字面量 dict —— 本测试已失效')
+        return {k.value for k in node.value.keys}
+    raise AssertionError(
+        'src/services/artifact_export.py 里找不到 _PIPELINE_TILE_LAYOUT')
+
+
+def test_export_button_pipelines_match_the_backend_table():
+    """行上「哪些管线给导出按钮」必须与后端那张瓦片布局表逐字一致。
+
+    改前是 `task.task_type === 'map' || task.task_type === 'contour'` 两个字面量
+    写在 computed 里。后端 `_PIPELINE_TILE_LAYOUT` 加一条管线时这里不会报错，
+    表现是**按钮不出现** —— 用户产出了成品但没有导出入口，而且没有任何日志。
+    """
+    comp = _strip_js_comments(_js('task_list.js'))
+    m = re.search(r'const\s+EXPORTABLE_PIPELINES\s*=\s*\[([^\]]*)\]', comp)
+    assert m, (
+        'task_list.js 里没有 EXPORTABLE_PIPELINES 常量 —— 管线清单又散回 '
+        'computed 里的状态字面量了'
+    )
+    listed = set(re.findall(r"'([a-z_]+)'", m.group(1)))
+    assert listed == _pipeline_tile_layout_keys(), (
+        f'导出按钮的管线白名单是 {sorted(listed)}，'
+        f'后端 _PIPELINE_TILE_LAYOUT 是 {sorted(_pipeline_tile_layout_keys())}'
+    )
+    assert re.search(
+        r'isExportable\s*\(\s*\)\s*\{[^}]*EXPORTABLE_PIPELINES', comp), (
+        'isExportable 没读那个常量 —— 常量在、判据还是字面量，等于白建'
+    )
+
+
+def test_export_asks_the_server_which_formats_before_posting():
+    """导出前必须先问 `GET .../formats`，且 body 里不许再出现写死的格式名。
+
+    写死的后果不是「默认值选得不好」：插件注册的导出器在界面上**没有入口**，
+    后端接了、用户点不到。而格式表只有服务端知道（宿主自带的一种 + 已启用插件
+    的 format_id()，还要拿这个任务的产物登记行对照每个导出器的 accepts()），
+    前端一半都推不出来。
+    """
+    body = _fn('exportTask', 'task_center.js')
+    assert body.strip(), 'task_center.js 里切不出 exportTask —— 本测试已失效'
+    assert '/formats' in _fn('fetchExportFormats', 'task_center.js'), (
+        'fetchExportFormats 没打那条格式端点'
+    )
+    assert 'fetchExportFormats(' in body, (
+        'exportTask 没有先问格式就 POST 了'
+    )
+    assert "'mbtiles'" not in body and '"mbtiles"' not in body, (
+        'exportTask 里还有写死的 mbtiles —— 格式必须来自服务端那份清单'
+    )
+    assert re.search(r'body:\s*JSON\.stringify\(\{\s*format\s*\}\)', body), (
+        'POST 的 body 不是把选中的 format 原样发出去'
+    )
+
+
+def test_a_single_format_exports_without_a_dialog():
+    """只有一种格式时不许弹框 —— 改造前点一下就导出，那个手感不能因为「以后
+    可能有第二种格式」而退化成每次都要确认一遍。"""
+    body = _fn('exportTask', 'task_center.js')
+    assert re.search(r'formats\.length\s*>\s*1', body), (
+        '弹框没有挂在「多于一种」上 —— 一种格式也弹框，或者多种格式也不弹'
+    )
+    assert re.search(r'if\s*\(\s*!formats\.length\s*\)', body), (
+        '零种格式没有单独出口 —— 会拿 undefined 当 format POST 上去，'
+        '换来一个 400'
+    )
+    assert "t('js.export.toast.nothing_to_export')" in body, (
+        '零种格式时没有任何提示，按钮看着像没反应'
+    )
+
+
+def test_confirm_select_only_serves_the_export_flow():
+    """`opts.select` 只许 task_center.js 的导出流程用。
+
+    与 checkbox 那条同一个失效机制：带 select 时 showConfirm 改 resolve
+    `{confirmed, selected}`，而对象**恒为真**。`if (!await showConfirm(...))`
+    那种既有写法会静默失效 —— 确认框再也拦不住人，且没有任何报错。
+    """
+    js_dir = os.path.join(ROOT, 'static', 'js')
+    users = set()
+    for name in sorted(n for n in os.listdir(js_dir) if n.endswith('.js')):
+        if name == 'ui.js':      # 定义端
+            continue
+        # `select:\s*{` 而不是裸 `select:` —— command_palette.js 的
+        # FOCUSABLE 常量里有 `'select:not([disabled])'`，那是 CSS 选择器串。
+        if re.search(r'\bselect:\s*\{', _strip_js_comments(_js(name))):
+            users.add(name)
+    assert users == {'task_center.js'}, (
+        f'showConfirm 的 select 选项被 {sorted(users)} 使用 —— 期望只有 '
+        'task_center.js。带 select 时 resolve 的是对象（恒为真），'
+        '`if (!await showConfirm(...))` 那种写法会静默失效'
+    )
+    body = _fn('exportTask', 'task_center.js')
+    assert 'answer.confirmed' in body, (
+        'exportTask 没判 .confirmed —— 取消 / ESC / 点遮罩之后照样会发 POST'
+    )
+
+
+def test_cancelling_the_confirm_never_reports_a_selection():
+    """取消时 selected 必须是 null，与 checked 压成 false 同一条规矩。
+
+    调用方只判 confirmed 的话这条无关紧要；可一旦有人写成
+    `if (answer.selected) exportIt(answer.selected)`，一个「用户拉了下拉再按
+    ESC」的操作就会真的导出。让 ui.js 在源头保证，比要求每个调用方记得判断可靠。
+    """
+    body = _js_function_body(_strip_js_comments(_js('ui.js')), 'showConfirm')
+    assert body.strip(), 'ui.js 的 showConfirm 函数体切出来是空的 —— 本测试已失效'
+    assert re.search(r'selected:\s*result\s*\?', body), (
+        'showConfirm 的 resolve 没有把 selected 挂在 result 上 —— '
+        '用户拉了下拉再按 ESC，取消的结果里仍带着一个选中值'
+    )
+
+
+def test_the_plugin_export_toast_never_claims_a_tile_count():
+    """插件导出器的响应里**没有** tile_count，不许套那条带 {count} 的文案。
+
+    套上去的表现是「已导出 MBTiles（0 块瓦片）：/path/x.gpkg」—— 格式名和块数
+    两处都在撒谎。分档判据必须是响应里到底有没有那个字段。
+    """
+    body = _fn('exportTask', 'task_center.js')
+    assert re.search(r'result\.tile_count\s*!=\s*null', body), (
+        '没有按 tile_count 在不在分档 —— 两条成功文案要么共用一条（插件分支'
+        '显示 0 块瓦片），要么按格式名硬编码（下一个插件格式又漏一条）'
+    )
+    assert "t('js.export.toast.exported')" not in body, (
+        '插件分支的文案没带参数 —— 那条模板要 {format} 与 {path}'
+    )
+    assert "js.export.toast.exported" in body and "js.gaps.toast.exported" in body, (
+        '两条成功文案不是都在 —— 少一条就说明有一个分支在用错的模板'
+    )

@@ -1911,13 +1911,20 @@ _HOST_EXPORT_FORMAT = 'mbtiles'
 
 
 def _export_formats() -> tuple:
-    """这一刻能用的导出格式。插件导出器**并进这条路由**而不是自开一条：
+    """这一刻**存在**的导出格式（宿主自带 + 已启用插件注册的）。与某个具体任务
+    上有没有货无关 —— 那件事问 `_available_export_formats()`。
 
-    §5.3 禁止按数据类型各开一条导出路由，而插件导出器的真实消费者恰恰是核心
-    管线的产物 —— in-tree 的 `GpkgExporter.accepts()` 只收 `GEOTIFF`，产出
-    GeoTIFF 的是 map/dem 两条核心管线，插件任务一件都不产。原先那条
+    插件导出器**并进这条路由**而不是自开一条：§5.3 禁止按数据类型各开一条导出
+    路由，而插件导出器的真实消费者恰恰是核心管线的产物。原先那条
     `POST /api/plugins/export/<tid>` 只认插件任务，等于把导出器接在一个永远
     没有货的入口上。
+
+    ⚠️ in-tree 的 `GpkgExporter.accepts()` 只收 `GEOTIFF`，而**只有 map 管线
+    登记 GEOTIFF 产物** —— `task_manager._register_artifacts` 里 pipeline 写死
+    `'map'`，dem / contour / local_terrain 一件产物都不登记（dem 落在盘上的
+    颗粒 GeoTIFF 没有任何 `artifacts` 行）。所以 `gpkg` 今天真正有货的只有
+    map 任务。这段原先写的是「产出 GeoTIFF 的是 map/dem 两条核心管线」——
+    那是照着 dem 盘上的文件说的，不是照着登记表说的，而导出器吃的是登记表。
     """
     from src.plugins import registry as plugin_registry
     return (_HOST_EXPORT_FORMAT,) + tuple(
@@ -1957,6 +1964,67 @@ def _export_dest(source, fmt: str):
     return src.with_name(f'{src.name}.{fmt}')
 
 
+def _accepted_artifacts(fmt: str, exporter, artifacts) -> list:
+    """`artifacts` 里这个导出器收得下的那些，登记顺序。
+
+    `accepts()` 是第三方代码（与 `format_id()` 同一条隔离铁律）：抛了只当这件
+    产物不被接受，不让它变成一个 500。
+
+    两个调用方共用这一份：真正的导出（`_export_via_plugin` 挑源产物）与「这个
+    任务有哪些格式可用」（`_available_export_formats`）。各写一份的代价很具体
+    —— 下拉菜单里会出现一个 POST 上去必然 400 的格式，或者反过来，用户明明
+    导得出却看不到那个选项。
+    """
+    accepted = []
+    for artifact in artifacts:
+        try:
+            if exporter.accepts(artifact.kind):
+                accepted.append(artifact)
+        except Exception as e:
+            logger.warning('插件导出器 %s 的 accepts() 抛异常，跳过产物 %s：%r',
+                           fmt, artifact.path, e)
+    return accepted
+
+
+def _available_export_formats(pipeline: str, task_id: int) -> list:
+    """这个任务**真能导出**的格式，顺序同 `_export_formats()`（宿主那个在最前）。
+
+    与 `_export_formats()` 的差别就是「有没有货」：后者是全局格式表，这一份
+    已经拿这个任务的产物登记行对照过每个导出器的 `accepts()`。
+
+    两道闸与 `export_task` 逐条同源，不是另抄一遍：
+    - `mbtiles` 只看**管线**（`_EXPORTABLE_PIPELINES`），故意不去 stat 瓦片
+      目录 —— 那是几万到上百万个文件，为一个下拉菜单扫一遍不成比例。「管线对
+      但目录里一块瓦片都没有」这一种仍由 POST 的 400 兜住，代价是用户点了才
+      知道，而那种任务本来就不该出现在成功态的行上。
+    - 插件格式只看**产物登记行**，与 `_export_via_plugin` 挑候选用的是同一个
+      `_accepted_artifacts()`。
+
+    结果可以是空列表：dem / local_terrain 既没有瓦片金字塔，也没有任何
+    `artifacts` 行（见 `_export_formats` 的 ⚠️）。
+    """
+    from src.plugins import registry as plugin_registry
+
+    formats = []
+    # 只有真的存在插件格式时才查一次登记表 —— 没装导出器的部署（默认之外的
+    # 常态）一次 DB 都不用打。
+    artifacts = None
+    for fmt in _export_formats():
+        if fmt == _HOST_EXPORT_FORMAT:
+            if pipeline in _EXPORTABLE_PIPELINES:
+                formats.append(fmt)
+            continue
+        exporter = plugin_registry.exporter_for(fmt)
+        if exporter is None:
+            # 列格式与取导出器之间插件被禁用了，同 _export_via_plugin 的那道闸。
+            continue
+        if artifacts is None:
+            artifacts = artifact_store.list_artifacts(pipeline, task_id)
+        if _accepted_artifacts(fmt, exporter, artifacts):
+            formats.append(fmt)
+    return formats
+
+
 def _export_via_plugin(pipeline: str, task_id: int, fmt: str):
     """插件导出器分支。返回 `(payload, status)`。
 
@@ -1975,18 +2043,8 @@ def _export_via_plugin(pipeline: str, task_id: int, fmt: str):
         # 走到这里说明插件在「列格式」与「取导出器」之间被禁用了。
         return {'error': t('api.export.unsupported_format'),
                 'supported_formats': list(_export_formats())}, 400
-    # `accepts()` 也是第三方代码（与 `format_id()` 同一条隔离铁律）：抛了
-    # 只当这件产物不被接受，不让它变成一个 500。
-    def _accepts(artifact) -> bool:
-        try:
-            return bool(exporter.accepts(artifact.kind))
-        except Exception as e:
-            logger.warning('插件导出器 %s 的 accepts() 抛异常，跳过产物 %s：%r',
-                           fmt, artifact.path, e)
-            return False
-
-    candidates = [a for a in artifact_store.list_artifacts(pipeline, task_id)
-                  if _accepts(a)]
+    candidates = _accepted_artifacts(
+        fmt, exporter, artifact_store.list_artifacts(pipeline, task_id))
     if not candidates:
         return {'error': t('api.export.no_tiles')}, 400
     source = candidates[0]
@@ -2009,6 +2067,41 @@ def _export_via_plugin(pipeline: str, task_id: int, fmt: str):
         return {'error': str(e)}, 500
     return {'success': True, 'path': str(dest), 'format': fmt,
             'pipeline': pipeline, 'task_id': task_id}, 200
+
+
+@api_bp.route('/export/<pipeline>/<int:task_id>/formats', methods=['GET'])
+def get_task_export_formats(pipeline: str, task_id: int):
+    """这个任务能导出成哪些格式。
+
+    Returns: 200 {success, pipeline, task_id, formats: ["mbtiles", ...]}
+
+    存在的理由：格式表原先**只在 400 的响应体里**出现（`supported_formats`），
+    而 `accepts()` 的匹配又只在 POST 到达之后才做。前端于是只有两条路 ——
+    写死 `{"format": "mbtiles"}`（改造前就是这样，插件导出器接了也没人点得到），
+    或者让用户先撞一个 400 才知道有哪些选择。
+
+    与 POST 回的 `supported_formats` **不是**同一份清单，两者都要：那一份是全局
+    格式表（「这个部署认得哪些格式」），这一份已经对照过这个任务的产物
+    （「这个任务导得出哪些」）。前端要的是后者。
+
+    `<pipeline>` 与任务存在性两道闸与 POST 逐条一致（同样的 400 / 404）。这里
+    **不**照 `GET /tasks/<id>/artifacts` 那条「不查任务存在性」的规矩：那条接口
+    答的是「那些文件在哪」，产物行可以比任务行活得久；这条答的是「这个任务导得
+    出什么」，任务不在了就没有这个问题，回一份看着能用的格式表是撒谎。
+    """
+    if pipeline not in PIPELINES:
+        return jsonify({'error': t('api.export.unsupported_pipeline'),
+                        'supported_pipelines': list(PIPELINES)}), 400
+    try:
+        if not _task_exists(pipeline, task_id):
+            return jsonify({'error': t('api.export.not_found')}), 404
+        formats = _available_export_formats(pipeline, task_id)
+    except Exception as e:
+        logger.error(
+            f"Error listing export formats for {pipeline} task {task_id}: {e}")
+        return jsonify({'error': 'Failed to list export formats'}), 500
+    return jsonify({'success': True, 'pipeline': pipeline, 'task_id': task_id,
+                    'formats': formats})
 
 
 @api_bp.route('/export/<pipeline>/<int:task_id>', methods=['POST'])
@@ -2060,7 +2153,7 @@ def export_task(pipeline: str, task_id: int):
 
     try:
         if not _task_exists(pipeline, task_id):
-            return jsonify({'error': t('api.gaps.not_found')}), 404
+            return jsonify({'error': t('api.export.not_found')}), 404
     except Exception as e:
         logger.error(f"Error checking {pipeline} task {task_id} before export: {e}")
         return jsonify({'error': 'Failed to export task'}), 500
