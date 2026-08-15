@@ -1,0 +1,21 @@
+# TerraForge 示例插件清单。字段含义见 docs/guides/PLUGINS.md 的「plugin.toml 全字段表」。
+id = "hello"
+name = "Hello 示例插件"
+version = "1.0.0"
+
+# 宿主的 PLUGIN_API_VERSION 是 "1.0"，这里只比 major：写 "1" 或 "1.x" 都能载入，
+# 写 "2" 会被拒载并在插件面板上显示原因。
+api_version = "1"
+
+# 白名单：sources / pipeline / exporter / hook。写别的直接 ManifestError。
+capabilities = ["pipeline"]
+
+# 白名单：network / filesystem / subprocess。
+# 本插件全程离线，只写自己的产物目录，所以只声明 filesystem。
+# 注意：不声明 network 时宿主不会给 NETWORK 配额，ctx.granted(ResourceKind.NETWORK) 恒为 0。
+permissions = ["filesystem"]
+
+# 入口文件，缺省就是 plugin.py。只许插件目录内的相对路径。
+entry = "plugin.py"
+
+description = "最简管线示例：离线生成一小片占位 XYZ 瓦片，演示参数、进度、缺块记账与产物登记。"
