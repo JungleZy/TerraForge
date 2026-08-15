@@ -103,7 +103,8 @@ def test_row_survives_when_directory_could_not_be_removed(monkeypatch, tmp_path)
     # （没计数、行还在）在「补删压根没跑」时同样成立，不钉住调用就是假绿。
     probed = []
     monkeypatch.setattr(
-        cleanup, "remove_task_dir_if_safe", lambda p: probed.append(p) or True)
+        cleanup, "remove_task_dir_if_safe",
+        lambda p, **kw: probed.append(p) or True)
 
     removed = cleanup._sweep_pending_deletions()
 
@@ -132,7 +133,7 @@ def test_non_absolute_path_never_reaches_the_guard(monkeypatch, tmp_path):
     # （默认部署下 cwd 等于 BASE_DIR，会被「downloads 的祖先」那条顺手挡掉）。
     monkeypatch.setattr(
         cleanup, "remove_task_dir_if_safe",
-        lambda p: pytest.fail(f"非绝对路径进了护栏: {str(p)!r}"))
+        lambda p, **kw: pytest.fail(f"非绝对路径进了护栏: {str(p)!r}"))
 
     removed = cleanup._sweep_pending_deletions()
 
@@ -161,7 +162,8 @@ def test_tilde_path_row_survives_when_directory_could_not_be_removed(
     # **展开后**的路径 —— 它就是接下来拿去 exists() 的那一个。
     probed = []
     monkeypatch.setattr(
-        cleanup, "remove_task_dir_if_safe", lambda p: probed.append(p) or True)
+        cleanup, "remove_task_dir_if_safe",
+        lambda p, **kw: probed.append(p) or True)
 
     removed = cleanup._sweep_pending_deletions()
 

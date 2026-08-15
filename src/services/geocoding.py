@@ -183,6 +183,30 @@ def _geojson_bbox(raw) -> Optional[Tuple[float, float, float, float]]:
     return None
 
 
+def _photon_extent(raw) -> Optional[Tuple[float, float, float, float]]:
+    """Photon 的 `properties.extent` → (west, south, east, north)。
+
+    ⚠️ 轴序是 `[minLon, maxLat, maxLon, minLat]` —— **西、北、东、南**，与
+    RFC 7946 的 `[w, s, e, n]` 中间两位正好对调。照 GeoJSON 的顺序读会把南北
+    互换，`RegionSpec.from_bbox` 拿到 north < south 直接判非法 —— 现象是「搜到了
+    但一条结果都不显示」，而日志里只有一句 bbox 非法，很难指回轴序。
+    两处独立取证：官方 api-v1.md 的柏林奥林匹克体育场示例
+    `[13.23727, 52.5157151, 13.241757, 52.5135972]`（第 2、4 位是纬度，且
+    第 2 位更大），以及实测「重庆」的 `[105.29, 32.20, 110.19, 28.16]`。
+
+    为什么要单独认这个非标准字段：Photon 是少数免注册、免 key 的公共地名服务，
+    而它**从不给** GeoJSON 的标准 `bbox` 成员，几何又恒为 Point。不认 extent
+    的话它每次都返回「搜不到」——响应 200、features 非空，结果全被丢弃。
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        return None
+    try:
+        west, north, east, south = (float(v) for v in raw)
+    except (TypeError, ValueError):
+        return None
+    return (west, south, east, north)
+
+
 def _validated_bbox(bounds: Tuple[float, float, float, float],
                     label: str) -> Optional[List[float]]:
     """用 RegionSpec.from_bbox 过一遍，返回 [west, south, east, north]。
@@ -260,13 +284,16 @@ def _parse_feature_collection(features, limit: int) -> List[Dict[str, Any]]:
         region = _make_region(
             {'type': 'FeatureCollection', 'features': [feature]}, name)
 
-        # bbox 取值顺序：要素自带的 bbox 优先（服务端算的才是它对这条要素的
-        # 权威范围），没有才从几何反推。
+        # bbox 取值顺序：要素自带的标准 bbox 优先（服务端算的才是它对这条要素的
+        # 权威范围），其次 Photon 的非标准 properties.extent（同样是服务端算的），
+        # 最后才从几何反推。
         bounds = _geojson_bbox(feature.get('bbox'))
+        if bounds is None:
+            bounds = _photon_extent(props.get('extent'))
         if bounds is None and region is not None:
             bounds = region.bounds
         if bounds is None:
-            logger.debug('丢弃地名结果 %r：既无 bbox 也无面几何', name)
+            logger.debug('丢弃地名结果 %r：既无 bbox / extent 也无面几何', name)
             continue
 
         bbox = _validated_bbox(bounds, name)

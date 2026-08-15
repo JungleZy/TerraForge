@@ -6,69 +6,116 @@
 [![Release](https://img.shields.io/github/v/release/JungleZy/TerraForge)](https://github.com/JungleZy/TerraForge/releases)
 [![Build](https://github.com/JungleZy/TerraForge/actions/workflows/test-build.yml/badge.svg)](https://github.com/JungleZy/TerraForge/actions/workflows/test-build.yml)
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](#license)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](#-license)
 
 A web-based GIS data acquisition and processing system. Four kinds of geospatial work in a single interface: **Google Maps tile download**, **DEM elevation data acquisition**, **Cesium 3D terrain tiling** and **contour map generation**, with interactive selection on the map, live progress monitoring, visualized history and thorough configuration management.
 
-Prebuilt executables are provided for Windows / macOS / Linux — unzip and run, with no Python environment to install.
+🖥 Prebuilt executables are provided for Windows / macOS / Linux — unzip and run, with no Python environment to install.
+
+![TerraForge main interface: a rectangular download selection with corner handles laid over the 3D terrain around Mount Gongga](site/assets/img/en/hero.webp)
+
+<sub>📸 Every screenshot here is taken from the running v0.3.5 interface.</sub>
 
 ## Contents
 
-- [Features](#features)
-- [Tech stack](#tech-stack)
-- [Quick start](#quick-start)
-- [User guide](#user-guide)
-- [Project structure](#project-structure)
-- [API endpoints](#api-endpoints)
-- [Development](#development)
-- [Performance design](#performance-design)
-- [Building an executable](#building-an-executable)
-- [Troubleshooting](#troubleshooting)
-- [Notes](#notes)
-- [License](#license)
+- [✨ Features](#-features)
+- [🖼 Screenshots](#-screenshots)
+- [🧰 Tech stack](#-tech-stack)
+- [🚀 Quick start](#-quick-start)
+- [📖 User guide](#-user-guide)
+- [🧱 Project structure](#-project-structure)
+- [🔌 API endpoints](#-api-endpoints)
+- [🛠 Development](#-development)
+- [⚡ Performance design](#-performance-design)
+- [📦 Building an executable](#-building-an-executable)
+- [🩺 Troubleshooting](#-troubleshooting)
+- [❗ Notes](#-notes)
+- [📄 License](#-license)
 
-## Features
+## ✨ Features
 
 ### Four data pipelines
 
-- **Map tile download** — draw a box over an area interactively, download the tiles from Google Maps, and optionally mosaic them into a georeferenced GeoTIFF (GDAL)
-- **DEM elevation download** — work out and download the 1°×1° elevation tiles an area needs, automatically: Copernicus GLO-30 by default (public S3 bucket, no authentication), with ASTER GDEM v3 (ASTGTM.003, requires an Earthdata account) as an option
-- **3D terrain tiling** — slice a downloaded DEM or a locally uploaded GeoTIFF into Cesium quantized-mesh terrain; a global low-zoom base terrain is built in and CesiumJS cascades to it automatically
-- **Contour generation** — render contour XYZ tiles from an uploaded DEM: contour interval, colors, hypsometric tint and hillshading are all configurable, with style preview
+- 🗺 **Map tile download** — draw a box over an area interactively, download the tiles from Google Maps, and optionally mosaic them into a georeferenced GeoTIFF (GDAL) or package them into a single-file MBTiles
+- ⛰ **DEM elevation download** — work out and download the 1°×1° elevation tiles an area needs, automatically: Copernicus GLO-30 by default (public S3 bucket, no authentication), with ASTER GDEM v3 (ASTGTM.003, requires an Earthdata account) as an option
+- 🏔 **3D terrain tiling** — slice a downloaded DEM or a locally uploaded GeoTIFF into Cesium quantized-mesh terrain; a global low-zoom base terrain is built in (derived from GEBCO 2024, bathymetry included, hole-free worldwide) and CesiumJS cascades to it automatically
+- 〰️ **Contour generation** — render contour XYZ tiles from an uploaded DEM: contour interval, colors, hypsometric tint and hillshading are all configurable, with style preview
+
+### Selection and outputs
+
+- 🖱 **Three ways to define an area** — drag a box on the map, type the bounds by hand, or import a region file (GeoJSON / KML / KMZ / a Shapefile .zip); polygons, multi-part geometries and **holes** are supported (the punched-out parts are not downloaded)
+- 🌏 **Across the 180° meridian** — such an area is split into two parts automatically, instead of being rejected or computed as a trip around the globe
+- 📐 **Counted before the task is created** — as soon as you draw a box you get the tile count and a disk usage estimate ("about X needed, Y available"); the estimate uses the tiles actually on your disk, not a fixed average
+- 📦 **MBTiles export** — pack the whole tile pyramid into a single `.mbtiles`, either by ticking it when creating the task or by exporting afterwards. This is **one more artifact**; not a single tile of the original directory is removed
 
 ### Tasks and progress
 
-- 📊 Live WebSocket progress: download speed, time remaining, and the per-zoom mosaic and copy stages are visible from beginning to end, so a big task no longer "hangs at 100%"
-- ⏸️ Task scheduling: pause / resume, resumable download, and tiles already downloaded are never fetched twice
-- 🗂 Visualized download history: past areas are overlaid on the map, and a completed task can preview its tiles / terrain / hillshade directly
-- 💾 Any save path on any disk: an arbitrary absolute path plus a directory-browsing dialog; deleting a task lets you choose whether to clean up the on-disk outputs (with safety guardrails), and a running task can be deleted directly too
+- 📊 **Live WebSocket progress** — download speed, time remaining, and the per-zoom mosaic and copy stages are visible from beginning to end, so a big task no longer "hangs at 100%"
+- ⏸️ **Task scheduling** — pause / resume, resumable download, and tiles already downloaded are never fetched twice
+- 🚦 **Global resource budget** — the four pipelines share one concurrency budget: simultaneous task count, global network connection cap, CPU worker threads, GDAL concurrency slots. One task can no longer drag the others down
+- 🗂 **Visualized download history** — past areas are overlaid on the map, and a completed task can preview its tiles / terrain / hillshade directly
+- 💾 **Any save path on any disk** — an arbitrary absolute path plus a directory-browsing dialog; deleting a task lets you choose whether to clean up the on-disk outputs (with safety guardrails), and a running task can be deleted directly too
+
+### When something goes wrong
+
+- 🧾 **Missing tiles are not silent** — tile results are accounted for in five categories: success, no data at the source, retryable failure, permanent failure, cache write failure. Only "no data at the source" completes automatically; a real failure stops in a **pending-decision** state and waits for your call, and a result whose gaps you accepted is **permanently marked as having missing tiles**
+- 🩹 **Refill re-runs only what needs re-running** — only the cells that are on record and fall into a retryable category; idempotent, so clicking it again downloads nothing twice
+- 📝 **One log per task** — `logs/tasks/<pipeline>_<task-id>.log`, readable in the UI and exportable as a diagnostic text you can paste straight into an issue; **passwords and tokens are stripped before anything hits the disk**
+- 🔍 **Scheduler snapshot** — `/api/scheduler/status` answers "why has the third task not started"
 
 ### Platform capabilities
 
 - 🎨 Dark / light / follow-system theme
+- 🌐 Bilingual interface, Chinese and English (the language lives in the `tf-lang` cookie and is server-rendered, so a refresh never flashes the other language)
 - ⚙️ A thorough settings page: concurrency (with a measured-bandwidth recommendation), proxy (leave it blank and a usable proxy is auto-detected), cache management, GDAL parameters, Earthdata account and more
-- 🧹 Cache management: view usage by category and clear it by hand; the cache is never silently deleted
-- 🌐 LAN access support, suitable for intranet deployment
+- 🧹 Cache management: view usage by category or by source namespace, clear it by hand, sweep orphan namespaces in one click; the cache is never silently deleted
+- 🔒 It does not phone home: no telemetry, tracking points or usage statistics; all third-party front-end libraries are vendored locally and no CDN is touched at runtime
+- 🏠 LAN access support, suitable for intranet deployment
 - 📦 Packaged into a standalone executable by Nuitka, with zero dependencies on the target machine
 
-## Tech stack
+## 🖼 Screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="site/assets/img/en/create.webp" alt="Download data dialog: shows the bounds of the selection and the estimated tile count, with options for tile / GeoTIFF / MBTiles output and zoom levels">
+      <sub>The tile count is worked out before the task is created</sub>
+    </td>
+    <td width="50%">
+      <img src="site/assets/img/en/tasks.webp" alt="Task center: totals for tasks, completed, failures and cumulative download volume, with a task list below carrying type labels and area bounds, plus a map of past areas">
+      <sub>Task center · past areas laid straight onto the map</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="site/assets/img/en/terrain.webp" alt="3D terrain rendering of a Himalayan ridge: a low-angle view in which the relief above the snow line and the distant horizon are clearly visible">
+      <sub>Himalayan ridge · terrain lighting enabled</sub>
+    </td>
+    <td width="50%">
+      <img src="site/assets/img/en/contour.webp" alt="Contour tiles rendered for the Tianshan area: a hypsometric elevation ramp together with brown contour lines, laid over a satellite imagery basemap">
+      <sub>Tianshan selection · 50 m contour interval · hypsometric tint + hillshade</sub>
+    </td>
+  </tr>
+</table>
+
+## 🧰 Tech stack
 
 | Layer | Technology |
 | --- | --- |
-| Backend | Flask · Flask-SocketIO · aiohttp · GDAL · SQLite |
-| Frontend | CesiumJS 1.143 · Bootstrap 5.3 · Socket.IO (all third-party libraries are vendored locally under `static/vendor/`, no CDN) |
-| Packaging | Nuitka (standalone, collecting the GDAL/PROJ data and the system library closure automatically) |
-| Testing | pytest (API contracts, task lifecycle, path safety, plus source-contract tests over the JS/CSS/templates) |
-| Environment management | uv |
+| 🐍 Backend | Flask · Flask-SocketIO · aiohttp · GDAL · SQLite |
+| 🌍 Frontend | CesiumJS 1.143 · Bootstrap 5.3 · Socket.IO (all third-party libraries are vendored locally under `static/vendor/`, no CDN) |
+| 📦 Packaging | Nuitka (standalone, collecting the GDAL/PROJ data and the system library closure automatically) |
+| 🧪 Testing | pytest (API contracts, task lifecycle, path safety, plus source-contract tests over the JS/CSS/templates) |
+| 🧰 Environment management | uv |
 
-## Quick start
+## 🚀 Quick start
 
 ### Option 1: prebuilt executable (recommended)
 
 1. Download the archive for your platform from [Releases](https://github.com/JungleZy/TerraForge/releases)
 2. Unzip it and run:
-   - **Windows**: double-click `terraforge.exe`
-   - **macOS / Linux**: `./terraforge`
+   - 🪟 **Windows**: double-click `terraforge.exe`
+   - 🍎 **macOS** / 🐧 **Linux**: `./terraforge`
 3. Open `http://localhost:5000` in a browser
 
 See [docs/guides/DISTRIBUTION.md](docs/guides/DISTRIBUTION.md) (Chinese) for details.
@@ -92,13 +139,19 @@ uv pip install -r requirements.txt
 uv run python app.py
 ```
 
-The app listens on `http://0.0.0.0:5000`. **Windows and Apple Silicon Macs take the conda-forge route, not the one above**; why the order cannot be changed, and how to rebuild an installation that has gone wrong, are all in [docs/guides/INSTALL.md](docs/guides/INSTALL.md) (Chinese).
+The app listens on `http://0.0.0.0:5000` (tiles are also served on 5001; it works without opening that port). ⚠️ **Windows and Apple Silicon Macs take the conda-forge route, not the one above**; why the order cannot be changed, and how to rebuild an installation that has gone wrong, are all in [docs/guides/INSTALL.md](docs/guides/INSTALL.md) (Chinese).
 
-## User guide
+To confirm the bindings are healthy afterwards, this is the only check that actually matters:
 
-### Downloading map tiles
+```bash
+uv run python -c "from osgeo import gdal_array; print(gdal_array.__file__)"
+```
 
-1. Draw the download area with the rectangle tool on the home page map
+## 📖 User guide
+
+### 🗺 Downloading map tiles
+
+1. Draw the download area with the rectangle tool on the home page map (you can also type the bounds under "Manual bounds", or use "Region" to import GeoJSON / KML / KMZ / Shapefile)
 2. Set the task name, map style, zoom level range and output format
 3. The save path must be absolute; click "Browse" to pick it in a dialog (any disk, since 0.2.4)
 4. Create the task, click "Start", and watch the progress live
@@ -107,13 +160,13 @@ The app listens on `http://0.0.0.0:5000`. **Windows and Apple Silicon Macs take 
 
 | Style | Code | Description |
 | --- | --- | --- |
-| Standard map | `m` | Standard road map |
-| Satellite | `s` | Satellite imagery only |
-| Satellite + labels | `y` | Satellite imagery with road labels |
-| Road map | `h` | Road network only |
-| Terrain map | `t` | Terrain contour lines |
+| 🗺 Standard map | `m` | Standard road map |
+| 🛰 Satellite | `s` | Satellite imagery only |
+| 🏷 Satellite + labels | `y` | Satellite imagery with road labels |
+| 🛣 Road map | `h` | Road network only |
+| ⛰ Terrain map | `t` | Terrain contour lines |
 
-**Output format**: a combination of the "Tiles" and "GeoTIFF" checkboxes — both ticked (the default) = tiles + a mosaicked GeoTIFF; only one ticked = that output alone. Tiles are mirrored into the output directory live during the download (copying while downloading), and once the download finishes the mosaic stage reports its progress just as visibly.
+**Output format**: a combination of the "Tiles" and "GeoTIFF" checkboxes — both ticked (the default) = tiles + a mosaicked GeoTIFF; only one ticked = that output alone. Tiles are mirrored into the output directory live during the download (copying while downloading), and once the download finishes the mosaic stage reports its progress just as visibly. Next to them sits an independent "Also export MBTiles" — orthogonal to the output format, and ticking it never removes the tile directory.
 
 **Output structure**:
 
@@ -123,14 +176,22 @@ The app listens on `http://0.0.0.0:5000`. **Windows and Apple Silicon Macs take 
 └── <task-name>_zoom_<zoom>.tif    # mosaicked GeoTIFF (one file per zoom level)
 ```
 
-### DEM elevation and 3D terrain
+**Missing tiles**: if some cells could not be fetched, the UI shows the counts by the five categories plus up to 20 sample cells. Only "no data at the source" completes on its own; a real failure stops in "pending decision", where you can click "Refill" to re-run those cells or "Accept gaps" to produce the output as it stands (the result and its history entry are permanently marked as having missing tiles).
+
+### ⛰ DEM elevation and 3D terrain
 
 1. Switch the download type to DEM, pick a data source, then draw a box and create the task (Copernicus GLO-30 is the default and needs no authentication; choosing ASTER GDEM v3 requires an Earthdata account filled in on the settings page first)
 2. Once a DEM task has finished downloading you can start "Terrain tiling" on it to produce Cesium quantized-mesh terrain — there are two entry points: "Terrain tiling" in the task detail dialog, or the "Data processing" dialog with **processing type** set to "Local elevation tiling" and **data source** set to "A downloaded elevation task" (the latter lets you change the maximum tiling zoom level on the way)
 3. An existing GeoTIFF can be uploaded directly as a **local terrain task**, skipping the download and going straight to tiling
 4. The history page can preview the terrain (rendering a hillshade on demand when no tiling exists)
 
-### Contour maps
+💡 Each step of the tiling quality setting (precision / balanced / speed) trades about 3.3× the size for 2.8× the accuracy. **Terrain lighting normals** are baked into the tiles, so enabling them after the fact means tiling again; ticking them costs 35%–100% more size and roughly twice the tiling time.
+
+### 〰️ Contour maps
+
+<table>
+  <tr>
+    <td width="58%">
 
 1. In the "Data processing" dialog switch **processing type** to "Contour tiles" and set the contour interval, colors, hillshading and the other style options (style preview supported)
 2. Pick one of two **data sources**:
@@ -138,25 +199,54 @@ The app listens on `http://0.0.0.0:5000`. **Windows and Apple Silicon Macs take 
    - "A downloaded elevation task" — reuse the DEM that a completed DEM task has already downloaded, with no second upload; the source files are not copied, and deleting the contour task leaves the source DEM alone
 3. The output is organized as standard XYZ tiles, ready to serve Leaflet / OpenLayers / CesiumJS directly
 
-### History
+💡 The base contour interval is the **finest** one; lower zoom levels coarsen automatically to keep the lines readable — 50 m for small areas, 100 m for large ones. Tick "Transparent" to lay the contours straight over the satellite or standard basemap.
+
+</td>
+    <td width="42%">
+      <img src="docs/assets/images/readme/en/process-contour.webp" alt="Data processing dialog: processing type set to contour tiles, with base contour interval, background, terrain shading and zoom level settings">
+    </td>
+  </tr>
+</table>
+
+### 🗂 History
 
 Visit `/history` to see every task: a statistics overview, area overlays on the map, task search and preview. When deleting a task, the `delete_files` option controls whether the on-disk outputs are cleaned up at the same time.
 
-### Settings
+### ⚙️ Settings
+
+<table>
+  <tr>
+    <td width="58%">
 
 Visit the `/config` page:
 
 - **Appearance** — dark / light / follow system
 - **Basic settings** — default save path (absolute, with "Browse"), default style and zoom levels
 - **Download settings** — concurrency (the "Speed-test recommendation" button suggests a value from a live measurement of your current network), timeout, retries, proxy, tile server list (each entry's connectivity is verified individually)
-  - **Proxy auto-detection (on by default)**: when the proxy server field is left blank, the program looks for a usable proxy itself — environment variables and system proxy settings, the Windows PAC auto-configuration script, and the common proxy ports of Clash / v2rayN and the like on this machine (including the Windows host under WSL). Every candidate is measured against a real tile and only adopted once it passes; if none work, it goes direct. A manually entered proxy address always wins, and auto-detection stays out of it. The settings page has a "Detect now" button and shows the current status.
-  - To use a proxy running on the host machine from WSL, you also need to enable "Allow LAN connections" in the proxy client and let it through the Windows firewall; otherwise WSL cannot reach the host's proxy port (and auto-detection cannot find it either).
+- **Resources and disk** — simultaneous task count, global network connection cap, CPU worker threads, GDAL concurrency slots, total cache size cap; the disk estimate only informs and never blocks (since 0.3.5)
 - **Cache settings** — enable/disable the tile cache; cache management shows usage by category and clears it by hand (with a confirmation), and the cache is never deleted automatically
 - **GDAL settings** — compression method, resampling algorithm
 - **Other settings** — how many days of history to keep, initial map position
 - **Earthdata settings** — a NASA Earthdata Login account (needed only for ASTER GDEM v3 and the water-body mask data; the default Copernicus GLO-30 needs no authentication)
 
-## Project structure
+</td>
+    <td width="42%">
+      <img src="site/assets/img/en/config.webp" alt="Settings panel: grouped settings for theme and accent color, default save path, download concurrency, request timeout, proxy server and the tile server list">
+    </td>
+  </tr>
+</table>
+
+**🕵️ Proxy auto-detection (on by default)**: when the proxy server field is left blank, the program looks for a usable proxy itself — environment variables and system proxy settings, the Windows PAC auto-configuration script, and the common proxy ports of Clash / v2rayN and the like on this machine (including the Windows host under WSL). Every candidate is measured against a real tile and only adopted once it passes; if none work, it goes direct. A manually entered proxy address always wins, and auto-detection stays out of it. The settings page has a "Detect now" button and shows the current status.
+
+> ⚠️ To use a proxy running on the host machine from WSL, you also need to enable "Allow LAN connections" in the proxy client and let it through the Windows firewall; otherwise WSL cannot reach the host's proxy port (and auto-detection cannot find it either).
+
+### 🎨 Appearance and interface language
+
+The theme is switched under "Appearance" on the settings page: **dark / light / follow system**, with the choice stored in `localStorage` under `tf-theme`. The interface is bilingual (Chinese and English); the language lives in the `tf-lang` cookie and is applied server-side, so a refresh never flashes a frame of the other language.
+
+![The main interface in the light theme: a rectangular download selection over the 3D terrain around Mount Gongga](docs/assets/images/readme/en/home-light.webp)
+
+## 🧱 Project structure
 
 Listed by **directory**, not by file: the previous version was a file-by-file snapshot taken on 2026-08-04, and four days were enough for it to miss the whole of `src/i18n/`, `src/app_factory.py` and half the files in `src/core/` — a file-by-file tree only ever keeps rotting. The one exception is `src/contracts/`: it is a **small closed set of contracts** (six files, and that is all of them), and listing them one by one is the only way to make clear "where the source of truth for which rule lives", which is exactly the point of including it. For the module-level division of labor and call relationships everywhere else, see [CLAUDE.md](CLAUDE.md) (Chinese).
 
@@ -182,6 +272,7 @@ map-download/
 ├── tests/                  # The pytest suite (conftest.py provides the isolation facilities and the sandbox)
 ├── scripts/                # Helper scripts: the check_gdal.py GDAL build gate, release pushing, global base terrain building
 ├── assets/terrain/         # The bundled global base terrain volumes (base_z8.tar.gz.part{aa,ab}, 167 MB)
+├── site/                   # The static marketing site (Cloudflare Pages); the screenshots used here live in site/assets/img/
 ├── docs/                   # Project documentation; for the layering and trustworthiness see docs/README.md
 ├── nuitka_build.py         # Nuitka packaging configuration (the GDAL/PROJ environment is set in src/core/bundle.py)
 ├── build.sh / build.bat    # Local build scripts (run scripts/check_gdal.py before calling them)
@@ -189,7 +280,7 @@ map-download/
 └── data/ downloads/ cache/ logs/   # Generated at runtime: the SQLite database, download outputs, the tile cache, and daily-rotated logs
 ```
 
-## API endpoints
+## 🔌 API endpoints
 
 ### Pages
 
@@ -290,7 +381,7 @@ map-download/
 
 ### Directory browsing
 
-- `GET /api/fs/browse?path=<absolute-path>` - list the non-hidden subdirectories of a directory (the data source behind the save path "Browse" dialog; every disk is browsable since 0.2.4, and on Windows the root level returns the drive letter list)
+- `GET /api/fs/browse?path=<absolute-path>` - list the non-hidden subdirectories of a directory (the data source behind the save path "Browse" dialog; every disk is browsable since 0.2.4, and on Windows the root level returns the drive letter list). The response's `parent` has three possible values: an absolute path = the parent directory; `""` = the drive-list level (above a Windows drive root; the client requests it by omitting `path`); `null` = genuinely the top (POSIX `/`)
 
 ### Raster header inspection
 
@@ -300,7 +391,7 @@ map-download/
 
 - `POST /api/region/import` - multipart-upload one region file (the `file` field; GeoJSON / KML / KMZ / a Shapefile .zip) and parse it into a `RegionSpec`. Returns `{region, summary, warnings}`. Polygons, multi-part geometries and holes are supported; the coordinate system must be WGS-84 longitude/latitude
 - `POST /api/region/estimate` - estimate the tile count and disk usage for a region + zoom level range, and give the disk budget verdict. The body takes either `region` or `bbox`, plus `zoom_min` / `zoom_max` / `style` / `output_format` / `output_path`. Returns `{tile_count, estimate, verdict}`
-- `GET /api/places/search?q=<keyword>&limit=<count>` - place name search. **With no `geocoder_url` configured it returns HTTP 200 and `{"enabled": false, "results": []}`, which is not an error** — the program bundles no place name service at all (the reasons are in `docs/notes/external-projects-takeaways.md` §11 and the pending-decision list at the end of §13), and the UI hides this field accordingly instead of showing it as a broken feature
+- `GET /api/places/search?q=<keyword>&limit=<count>` - place name search. **With no `geocoder_url` configured it returns HTTP 200 and `{"enabled": false, "results": []}`, which is not an error** — the program bundles no place name service at all (the reasons are in `docs/notes/external-projects-takeaways.md` §11 and the pending-decision list at the end of §13), and the UI hides this field accordingly instead of showing it as a broken feature. The URL is set under "Place search" on the config page and must contain the `{q}` placeholder. Two response shapes are accepted: a GeoJSON FeatureCollection (including Photon's non-standard `properties.extent`) and a Nominatim-style array
 
 ### Task logs and diagnostics
 
@@ -319,8 +410,9 @@ map-download/
 - `task_completed` / `task_failed` - task completion / failure notifications
 - `task_stitch_progress` / `task_stitch_failed` / `task_copy_progress` - tile mosaicking and file copying progress
 - `task_gap_decision` - emitted once when a task enters "pending-decision", and once when the decision is applied. Payload `{task_id, task_type, status, gap_tiles, by_outcome}`
+- `task_delete_progress` - progress of the on-disk cleanup while a task is being deleted (only emitted with `delete_files=true`). Payload `{task_id, task_type, phase, removed, total, done}`: `phase` is `scan` (counting entries, `total` is `null` here) or `delete` (removing them one by one); `removed`/`total` count **files plus directories**; `done=true` marks the final frame. Throttled to 5 per second
 
-## Development
+## 🛠 Development
 
 ### Running tests
 
@@ -337,7 +429,7 @@ uv run pytest tests/test_config_manager.py      # a single test file
 
 ### More documentation
 
-**[docs/README.md](docs/README.md) — the master documentation index** (Chinese): what each directory is responsible for, which content can be taken as evidence of the current state, and quick navigation by need. Start here when you are not sure which document to read.
+📚 **[docs/README.md](docs/README.md) — the master documentation index** (Chinese): what each directory is responsible for, which content can be taken as evidence of the current state, and quick navigation by need. Start here when you are not sure which document to read.
 
 - [docs/guides/BUILD.md](docs/guides/BUILD.md) (Chinese) — detailed build instructions
 - [docs/guides/QUICKSTART.md](docs/guides/QUICKSTART.md) / [docs/guides/INSTALL.md](docs/guides/INSTALL.md) (Chinese) — quickstart and installation guides
@@ -345,16 +437,16 @@ uv run pytest tests/test_config_manager.py      # a single test file
 - [RELEASE_NOTES.md](RELEASE_NOTES.md) (Chinese) — the release notes for the current version (published as the body of the GitHub Release); [CHANGELOG.md](CHANGELOG.md) (Chinese) — the full version history
 - [CLAUDE.md](CLAUDE.md) (Chinese) — architecture and development conventions (aimed at AI collaborators, but just as useful for human developers)
 
-## Performance design
+## ⚡ Performance design
 
-- **Asynchronous concurrent downloads** — asyncio + aiohttp, with configurable concurrency that can be recommended from a live speed measurement
-- **Multi-server rotation** — requests are spread across several tile servers automatically
-- **Shared tile cache** — the cache is keyed by style + coordinates and shared across tasks, so a repeated selection or a resumed run downloads nothing
-- **Copying while downloading** — a tile is mirrored into the output directory the moment it lands in the cache, so the end of the download ≈ the outputs being ready
-- **Resumable download** — pausing / resuming / retrying never re-downloads tiles that are already there; the mosaic and copy stages can both skip what is done and carry on
-- **Atomic writes** — tiles land through a `.part` temporary file plus a rename, so an interruption never produces a corrupt cache
+- 🔀 **Asynchronous concurrent downloads** — asyncio + aiohttp, with configurable concurrency that can be recommended from a live speed measurement
+- 🔁 **Multi-server rotation** — requests are spread across several tile servers automatically
+- 🗃 **Shared tile cache** — the cache is keyed by style + coordinates and shared across tasks, so a repeated selection or a resumed run downloads nothing
+- 📤 **Copying while downloading** — a tile is mirrored into the output directory the moment it lands in the cache, so the end of the download ≈ the outputs being ready
+- ⏭ **Resumable download** — pausing / resuming / retrying never re-downloads tiles that are already there; the mosaic and copy stages can both skip what is done and carry on
+- 🧷 **Atomic writes** — tiles land through a `.part` temporary file plus a rename, so an interruption never produces a corrupt cache
 
-## Building an executable
+## 📦 Building an executable
 
 ```bash
 # Linux/macOS
@@ -366,11 +458,11 @@ build.bat
 
 The output goes to `dist/terraforge/`. For the details (CI builds, distribution packaging, Nuitka configuration) see [docs/guides/BUILD.md](docs/guides/BUILD.md) (Chinese).
 
-## Troubleshooting
+## 🩺 Troubleshooting
 
-### Viewing logs
+### 📋 Viewing logs
 
-Runtime logs land in `logs/terraforge.log` under the program directory (next to the executable in the packaged version). They rotate once a day at midnight, the old file is named `terraforge.log.2026-08-07`, and 7 days are kept.
+Runtime logs land in `logs/terraforge.log` under the program directory (next to the executable in the packaged version). They rotate once a day at midnight, the old file is named `terraforge.log.2026-08-07`, and 7 days are kept. Each task additionally writes its own `logs/tasks/<pipeline>_<task-id>.log`, readable in the task details and exportable as a diagnostic text.
 
 **The console and the log file deliberately do not carry the same thing**: the console does not print **successful** tile requests (one pass over the map is dozens or hundreds of `GET /basemap/3/4/4 200` lines, which would push the useful information out), while the log file keeps all of them. Failed tile requests (403 / 404 / 504) are printed on both sides — when the basemap turns into a blue ball or the terrain does not show up, that line is often the only clue.
 
@@ -378,39 +470,43 @@ Runtime logs land in `logs/terraforge.log` under the program directory (next to 
 - `LOG_LEVEL` accepts `CRITICAL/ERROR/WARNING/INFO/DEBUG` and defaults to `INFO`; a wrong value warns and falls back to the default rather than failing to start.
 - When the log directory is not writable (installed into a read-only directory) it prints a warning and carries on running, just without anything hitting the disk.
 
-### GDAL import errors
+### 🧩 GDAL import errors
 
 `ImportError: No module named 'osgeo'` (the bindings are not installed) and `ImportError: cannot import name '_gdal_array' from 'osgeo'` (the bindings are installed but numpy was not visible at compile time, so mosaicking / tiling / contours all blow up) are both handled in [docs/guides/INSTALL.md](docs/guides/INSTALL.md) (Chinese): the former under "2. 克隆代码并安装 Python 依赖" ("2. Clone the code and install the Python dependencies"), the latter under "故障排除" ("Troubleshooting"). **Do not type out a `uv pip install gdal==...` here from memory** — installing without `--no-build-isolation` produces exactly the second kind of broken binding.
 
-### Database locked errors
+### 🔒 Database locked errors
 
 `database is locked` — make sure several instances of the app are not running and reaching the same `data/map_downloader.db` at once.
 
-### Slow downloads
+### 🐌 Slow downloads
 
 - Use "Speed-test recommendation" on the settings page, or raise the concurrency by hand
 - Check the network connection. The proxy is auto-detected by default ("Detect now" on the settings page shows the result); only fill in a proxy address by hand when nothing is detected
 - Confirm that the entries in the tile server list are reachable ("Verify" each one on the settings page)
 
-## Notes
+### 🧯 The third task never seems to start
 
-- The Google Maps Terms of Service may prohibit bulk downloading; **this tool is for personal study and research only**
-- Downloading a large area at high zoom levels can take hours or even days and produce several GB of data, so make sure there is enough disk space
-- Set the concurrency sensibly to avoid putting too much pressure on the tile servers
-- Using the ASTER GDEM v3 data source requires a valid NASA Earthdata Login account; the default Copernicus GLO-30 goes to a public S3 bucket and needs no account
+It is queued, not stuck. `GET /api/scheduler/status` reports the limit and the current usage of each resource class (network connections / CPU / GDAL slots / disk bytes) along with the tasks waiting at the door; raise "simultaneous task count" and "global network connection cap" on the settings page.
 
-## License
+## ❗ Notes
+
+- 📜 The Google Maps Terms of Service may prohibit bulk downloading; **this tool is for personal study and research only**
+- ⏳ Downloading a large area at high zoom levels can take hours or even days and produce several GB of data, so make sure there is enough disk space
+- 🤝 Set the concurrency sensibly to avoid putting too much pressure on the tile servers
+- 🔑 Using the ASTER GDEM v3 data source requires a valid NASA Earthdata Login account; the default Copernicus GLO-30 goes to a public S3 bucket and needs no account
+
+## 📄 License
 
 This project uses the **MIT** license; the full text is in [LICENSE](LICENSE).
 
 The third-party components distributed with this project (CesiumJS, Bootstrap, Vue, Socket.IO, the Inter / JetBrains Mono fonts, the bundled terrain data derived from GEBCO 2024, and the Python dependencies and native libraries in the binary distributions) each carry their own license and attribution obligations, listed one by one in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) (Chinese).
 
-⚠️ MIT covers only this project's **software code**; it **does not grant** any right to use data or online services. The attribution, bulk-download policies, tokens and quotas of map sources such as Google, Esri, Tianditu, OSM and Cesium Ion have to be handled by you, each on its own — see the disclaimer above.
+⚠️ MIT covers only this project's **software code**; it **does not grant** any right to use data or online services. The attribution, bulk-download policies, tokens and quotas of map sources such as Google, Esri, Tianditu, OSM and Cesium Ion have to be handled by you, each on its own — see the disclaimer below.
 
-## Contributing
+## 🤝 Contributing
 
 Issues and pull requests are welcome.
 
-## Disclaimer
+## 🚫 Disclaimer
 
 This tool is for study and research use only. Users must comply with the Google Maps Terms of Service and the relevant laws and regulations. The author is not responsible for any consequences arising from the use of this tool.

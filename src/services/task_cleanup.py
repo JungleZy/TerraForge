@@ -281,7 +281,93 @@ def _has_symlink_component(path: Path) -> bool:
     return False
 
 
-def remove_task_dir_if_safe(task_dir) -> bool:
+# 删除进度回调的口径 —— 只有 remove_task_dir_if_safe / remove_task_dir_and_confirm
+# 的 progress_cb 用它，消费者是 services/task_deletion 的 socket 广播。
+#
+#   progress_cb(phase, done, total)
+#     phase='scan'    统计阶段：done = 已扫到的条目数，total = None
+#     phase='delete'  删除阶段：done = 已删条目数，total = 扫描阶段数出来的总数
+#
+# 「条目」= 文件 + 目录，两个阶段同一套口径。用文件数当分母、却把 rmdir 也算进
+# 分子的话，百分比会在末尾冲过 100%（瓦片金字塔的目录数是文件数的百分之几）。
+#
+# 为什么要先扫一遍才删：没有分母就只有一个不断变大的数字，用户看不出还要等多久
+# ——「删除进度」这个需求要的正是那个百分比。扫描一遍只做 scandir、不改元数据，
+# 比删除那一遍便宜得多（删除要写目录项、Windows 上还要过一遍杀软）。
+_PROGRESS_REPORT_EVERY = 256
+
+
+def _scandir_entries(path: str) -> list:
+    """列出目录直下的条目。任何 OSError 当作空目录 —— 与 rmtree(ignore_errors=True)
+    同一条约定：删不动的东西留在盘上，但绝不让删除流程因此抛出。"""
+    try:
+        with os.scandir(path) as it:
+            return list(it)
+    except OSError:
+        return []
+
+
+def _iter_tree_bottom_up(root: str):
+    """产出 `(路径, 是否目录)`，子项恒排在父目录之前。
+
+    符号链接一律按「文件」产出、**不跟进**（`is_dir(follow_symlinks=False)`）——
+    与 shutil.rmtree 的判据逐字相同。跟进的后果是顺着链接把别处的目录删空，
+    而 remove_task_dir_if_safe 的护栏只查 task_dir 自身的各层，管不到树内部。
+
+    迭代而非递归：瓦片金字塔是 {z}/{x}/{y}.png 三层，递归本来也够，但物化中间
+    件与用户自定义目录深度不可控，递归深度不该由磁盘内容决定。
+    """
+    # (路径, 是否目录, 子项是否已入栈)
+    stack = [(root, True, False)]
+    while stack:
+        path, is_dir, expanded = stack.pop()
+        if is_dir and not expanded:
+            stack.append((path, True, True))
+            for entry in _scandir_entries(path):
+                try:
+                    child_is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    child_is_dir = False
+                stack.append((entry.path, child_is_dir, False))
+        else:
+            yield path, is_dir
+
+
+def _rmtree_reporting(target: Path, progress_cb) -> None:
+    """删整棵树并逐段回报进度。语义等价 `shutil.rmtree(target, ignore_errors=True)`。
+
+    只在调用方真的要进度时才走这条路：它比 rmtree 多遍历一遍（数分母）。
+    没有 progress_cb 的调用方（启动补删、手动清理）继续走 rmtree，不付这份钱。
+
+    单个条目删不掉（Windows 文件占用、权限）只是跳过，不中断也不抛 —— 与
+    ignore_errors=True 一致。「到底删干净没有」由 remove_task_dir_and_confirm
+    事后 exists() 复查，不由这里的返回值表达。
+    """
+    total = 0
+    for _ in _iter_tree_bottom_up(str(target)):
+        total += 1
+        if total % _PROGRESS_REPORT_EVERY == 0:
+            progress_cb('scan', total, None)
+    progress_cb('scan', total, total)
+
+    done = 0
+    for path, is_dir in _iter_tree_bottom_up(str(target)):
+        try:
+            if is_dir:
+                os.rmdir(path)
+            else:
+                os.unlink(path)
+        except OSError:
+            pass
+        done += 1
+        if done % _PROGRESS_REPORT_EVERY == 0:
+            progress_cb('delete', done, total)
+    # 终态必发：条目数不是 _PROGRESS_REPORT_EVERY 的整数倍时，上面那发漏掉的
+    # 尾巴正是进度条停在 97% 不动的那一段。
+    progress_cb('delete', done, total)
+
+
+def remove_task_dir_if_safe(task_dir, *, progress_cb=None) -> bool:
     """
     Best-effort removal of a task's on-disk artifact directory.
 
@@ -291,6 +377,10 @@ def remove_task_dir_if_safe(task_dir) -> bool:
     Returns:
         True if the directory was eligible for removal (whether or not it
         existed), False if it fell outside the safety boundary.
+
+        progress_cb: 可选的删除进度回调，口径见 _PROGRESS_REPORT_EVERY 上方。
+            给了它就改走 _rmtree_reporting（多遍历一遍数分母），不给则仍是
+            shutil.rmtree —— 没人看进度的调用方不该为此多扫一遍盘。
 
     ⚠️ 返回值是「护栏放行了」,**不是**「目录真的没了」:下面用的是
     `rmtree(..., ignore_errors=True)`,Windows 上任意一个文件被占(资源管理器
@@ -332,7 +422,10 @@ def remove_task_dir_if_safe(task_dir) -> bool:
             return False
 
         if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
+            if progress_cb is None:
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                _rmtree_reporting(target, progress_cb)
             logger.info(f"Removed task artifact directory: {target}")
         return True
     except Exception as e:
@@ -423,7 +516,7 @@ class DirRemoval(NamedTuple):
     removed: bool
 
 
-def remove_task_dir_and_confirm(task_dir) -> DirRemoval:
+def remove_task_dir_and_confirm(task_dir, *, progress_cb=None) -> DirRemoval:
     """删产物目录,并复查它是不是真的没了。
 
     为什么单独有这个函数:remove_task_dir_if_safe 内部是
@@ -437,7 +530,7 @@ def remove_task_dir_and_confirm(task_dir) -> DirRemoval:
     exists() 用与护栏同一套展开(expanduser):拿没展开的 `~/...` 去 exists()
     恒为 False,会把整类 ~ 路径误报成「删掉了」。
     """
-    eligible = remove_task_dir_if_safe(task_dir)
+    eligible = remove_task_dir_if_safe(task_dir, progress_cb=progress_cb)
     if not eligible:
         return DirRemoval(False, False)
     try:

@@ -518,9 +518,11 @@ def test_non_absolute_artifact_dir_is_refused(monkeypatch, tmp_path):
     removed = []
     # 快路径现在走 remove_task_dir_and_confirm（「可删」与「真删了」分开报，
     # 见 P1#6）；护栏的入口换了名字，这里跟着换，钉的仍是「相对路径不许进护栏」。
+    # 替身要吃下 progress_cb 关键字：remove_task_dir_and_confirm 现在恒带着它
+    # 调下去（删除进度回报，见 tests/test_delete_progress.py）。
     monkeypatch.setattr(
         td, "remove_task_dir_and_confirm",
-        lambda p: removed.append(p) or DirRemoval(True, True))
+        lambda p, **kw: removed.append(p) or DirRemoval(True, True))
 
     out = td.delete_task_row(manager=_FakeManager(), task_id=1, table="tasks",
                              artifact_dir=".")
@@ -542,7 +544,7 @@ def test_tilde_artifact_dir_is_expanded_at_the_entry(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr(
         td, "remove_task_dir_and_confirm",
-        lambda p: seen.append(p) or DirRemoval(True, True))
+        lambda p, **kw: seen.append(p) or DirRemoval(True, True))
 
     td.delete_task_row(manager=_FakeManager(), task_id=1, table="tasks",
                        artifact_dir="~/map-download-probe/task_1")

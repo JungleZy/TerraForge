@@ -31,7 +31,13 @@
         _el('pathBrowserCurrent').textContent = data.path || t('js.path_browser.pick_drive');
         const list = _el('pathBrowserDirs');
         list.innerHTML = '';
-        if (data.parent) {
+        // ⚠️ 判据是「有没有这个字段」，不是它真不真。后端的 parent 有三种
+        // 取值：绝对路径 = 上一级目录；**`''` = 盘符列表**（Windows 的盘符根
+        // 之上还有一层）；null = 真的到顶。写成 `if (data.parent)` 会把 `''`
+        // 一起吞掉 —— Windows 上退到 C:\ 就没有「上一级」可点，再也回不到盘符
+        // 列表，换不了盘。load('') 正好请求那一层（下面 load 里 path 为空就
+        // 不带 query），不需要额外分支。
+        if (data.parent !== null && data.parent !== undefined) {
             list.appendChild(_item(t('js.path_browser.parent_dir'), function () { load(data.parent); }));
         }
         (data.dirs || []).forEach(function (d) {
@@ -52,6 +58,16 @@
         const errBox = _el('pathBrowserError');
         const url = '/api/fs/browse' + (path ? '?path=' + encodeURIComponent(path) : '');
         const seq = ++_reqSeq;
+        // 读目录期间列表里必须有话说。慢盘（网络驱动器、休眠的机械盘）上
+        // /api/fs/browse 要好几秒，在此之前列表停在**上一个目录**的内容上：
+        // 用户看到的是一个「点了没反应」的弹窗，然后再点一个别的目录 ——
+        // 于是两发请求竞速，而胜者由网络决定（_reqSeq 只保证不错乱，不保证
+        // 是他最后点的那个）。占位项与「(没有子目录)」同一形态，不新增样式。
+        const list = _el('pathBrowserDirs');
+        if (list) {
+            list.innerHTML = '';
+            list.appendChild(_item(t('js.path_browser.loading'), function () {}, true));
+        }
         try {
             const resp = await fetch(url);
             const data = await resp.json();
@@ -80,6 +96,9 @@
             }
             errBox.textContent = t('js.path_browser.load_failed', { error: e.message });
             errBox.hidden = false;
+            // 根级也读不出来时 _render 一次都不跑：占位项必须自己撤掉，否则
+            // 弹窗上会同时挂着一条「加载失败」和一条「正在读取目录…」。
+            if (list) list.innerHTML = '';
         }
     }
 
@@ -101,16 +120,39 @@
         load(targetInput.value.trim());
     };
 
+    // 「选择此目录」的落地动作。提出来是因为现在有两个触发点：按钮和回车。
+    function _confirmSelection() {
+        if (targetInput && currentPath) {
+            targetInput.value = currentPath;
+            // 触发 input:map.js 的 userEdited 标记靠它,类型切换不再覆盖选择
+            targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        if (modalInst) modalInst.hide();
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         const selectBtn = _el('pathBrowserSelect');
         if (selectBtn) {
-            selectBtn.addEventListener('click', function () {
-                if (targetInput && currentPath) {
-                    targetInput.value = currentPath;
-                    // 触发 input:map.js 的 userEdited 标记靠它,类型切换不再覆盖选择
-                    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
-                }
-                if (modalInst) modalInst.hide();
+            selectBtn.addEventListener('click', _confirmSelection);
+        }
+
+        const modalEl = _el('pathBrowserModal');
+        if (modalEl) {
+            // 焦点落在主按钮上，与 ui.js 的确认框同一条约定（挂载后 focus 到
+            // 默认按钮）：不给落点的话 Bootstrap 把焦点留在 .modal 容器上，
+            // 键盘用户要先 Tab 过关闭钮、当前目录、整张目录列表才够得到
+            // 「选择此目录」，而那正是他打开这个弹窗要按的那一颗。
+            modalEl.addEventListener('shown.bs.modal', function () {
+                if (selectBtn) selectBtn.focus();
+            });
+            // 回车 = 选中当前目录。目录项自己是 <button>，焦点在它上面时回车
+            // 归它（进那个目录），不抢 —— 抢了的话键盘用户永远下钻不进去。
+            modalEl.addEventListener('keydown', function (e) {
+                if (e.key !== 'Enter') return;
+                const el = e.target;
+                if (el && el.classList && el.classList.contains('list-group-item')) return;
+                e.preventDefault();
+                _confirmSelection();
             });
         }
 

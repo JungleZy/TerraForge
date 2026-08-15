@@ -5,6 +5,7 @@ Handles rendering of HTML pages for the web interface.
 """
 
 import logging
+import math
 from flask import Blueprint, render_template
 from src.core.tile_server import current_tile_port
 from src.services.basemap_source import client_descriptor, resolve_basemap
@@ -135,6 +136,53 @@ def _terrain_form_defaults(cfg):
     return maxzoom, maxzoom_auto, preset
 
 
+# 等高距的出厂默认，与 database.DEFAULT_CONFIGS 的 contour_default_interval 同值。
+_FACTORY_CONTOUR_INTERVAL = '50'
+
+
+def _contour_form_default(cfg):
+    """等高距初值也在**服务端**收干净（2026-08-15 假旋钮之一）。
+
+    改前模板写死 `value="50"`，而提交端还有一层 `|| 50` 兜底 —— 于是表单永远
+    显式发一个非空等高距，配置页的 contour_default_interval 成了「改了没反应的
+    假旋钮」（同 local_terrain_task_manager._default_maxzoom 那一类）。
+
+    为什么不照直渲染配置值：这个控件带 `min="1" step="1"`，不满足这两条的值会让
+    **整张 #taskForm** 变 :invalid —— 原生校验拦下 submit 事件，map.js 的监听
+    根本不触发，「创建任务」点了没反应，气泡还弹不出来。四条管线合并成一张
+    表单之后这个坑的爆炸半径从两条管线变成四条，所以必须在这里挡住。
+
+    **闸门必须与控件的约束逐字对齐，不能只挡「正数」。** `min="1"` 同时把步进
+    基准定在 1，配上 `step="1"` 合法取值就是 1, 2, 3, … —— 也就是**整数且 >= 1**。
+    只挡 `> 0` 会放过 `'0.5'`（< min）与 `'50.5'`（不在步进格子上）：两者
+    render 出去照样让表单 :invalid，等于这道闸门白设。
+
+    正常路径到不了这里：写入侧 config_manager 的 _is_valid_contour_interval
+    要求 >= 1.0。兜的是有人用 sqlite3 直接改库 —— 而模板是这条链路上唯一记不了
+    日志的一环，被丢掉的脏值必须当场留一条 warning，否则运维要等作业跑起来
+    才知道。
+
+    返回的是**字符串**：合法时原样返回配置里那份写法（`'50'` 不变成 `'50.0'`），
+    模板直接塞进 value=。
+    """
+    raw = str(cfg.get('contour_default_interval') or '').strip()
+    if raw == '':
+        return _FACTORY_CONTOUR_INTERVAL
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = float('nan')
+    # isfinite 一起挡住 nan 与 inf：两者都会渲染成控件收不下的字面量。
+    # is_integer 挡步进：float('50.5').is_integer() 是 False。
+    if not (math.isfinite(value) and value >= 1 and float(value).is_integer()):
+        logger.warning(
+            f"配置 contour_default_interval={raw!r} 不可用"
+            f"（控件是 min=1 step=1，必须是 >= 1 的整数），"
+            f"等高线表单初值改用出厂默认 {_FACTORY_CONTOUR_INTERVAL}")
+        return _FACTORY_CONTOUR_INTERVAL
+    return raw
+
+
 @main_bp.route('/')
 def index():
     """
@@ -173,7 +221,9 @@ def index():
                                terrain_local_maxzoom=maxzoom,
                                terrain_local_maxzoom_auto=maxzoom_auto,
                                terrain_quality_preset=quality,
-                               terrain_quality_offsets=TILING_QUALITY_OFFSETS)
+                               terrain_quality_offsets=TILING_QUALITY_OFFSETS,
+                               contour_default_interval=_contour_form_default(
+                                   template_config))
 
     except Exception as e:
         logger.error(f"Error rendering index page: {e}")
@@ -187,7 +237,8 @@ def index():
                                terrain_local_maxzoom=maxzoom,
                                terrain_local_maxzoom_auto=maxzoom_auto,
                                terrain_quality_preset=quality,
-                               terrain_quality_offsets=TILING_QUALITY_OFFSETS)
+                               terrain_quality_offsets=TILING_QUALITY_OFFSETS,
+                               contour_default_interval=_contour_form_default({}))
 
 
 @main_bp.route('/history')

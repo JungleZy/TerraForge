@@ -11,11 +11,14 @@
 """
 import importlib
 import os
+import re
 import sys
 
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from test_tasks_js_contract import _strip_js_comments  # noqa: E402
 
 
 def _load_app(monkeypatch, tmp_path):
@@ -189,6 +192,66 @@ def test_browse_rejects_nonexistent_and_file(monkeypatch, tmp_path):
                       query_string={'path': str(root / 'nope')}).status_code == 400
     assert client.get('/api/fs/browse',
                       query_string={'path': str(root / 'f.txt')}).status_code == 400
+
+
+# --- 换盘符：Windows 的盘符根之上还有一层 -----------------------------------------
+
+@pytest.mark.parametrize('raw,expected', [
+    # Windows：盘符根的 parent 是它自己，照 POSIX 那套判「到顶」就把用户锁死在
+    # 当前盘 —— 弹窗里再也回不到盘符列表（用户实测：「只能到本盘符的根目录，
+    # 不能换盘符」）。'' 表示上一级是盘符列表那一层视图。
+    ('C:/', ''),
+    ('D:/', ''),
+    ('//server/share', ''),
+    ('C:/data/maps', 'C:\\data'),
+    ('C:/data', 'C:\\'),
+], ids=['C盘根', 'D盘根', 'UNC根', '两级深', '一级深'])
+def test_browse_parent_on_windows_paths(raw, expected):
+    """Windows 路径的「上一级」。**这条是本次缺陷的正面防线。**
+
+    在 POSIX 开发机上用 PureWindowsPath 跑 —— 判据是 `target.drive` 而不是
+    `os.name`，正是为了让这一支不必等真机才测得到。写成 os.name 分支的话，
+    这个缺陷在 Linux/CI 上永远是绿的，只有 Windows 用户看得见。
+    """
+    from pathlib import PureWindowsPath
+    from src.routes.api import _browse_parent
+    assert _browse_parent(PureWindowsPath(raw)) == expected
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('/', None),
+    ('/home', '/'),
+    ('/home/zhang/maps', '/home/zhang'),
+], ids=['根', '一级深', '两级深'])
+def test_browse_parent_on_posix_paths(raw, expected):
+    """POSIX 的 `/` 才是真的到顶，必须仍然回 None（上面没有盘符列表那一层）。
+
+    与上一条配对：只钉 Windows 那半边的话，把实现写成「一律回 ''」照样全绿，
+    而 POSIX 用户会在 `/` 看到一个点了没反应的「上一级」。
+    """
+    from pathlib import PurePosixPath
+    from src.routes.api import _browse_parent
+    assert _browse_parent(PurePosixPath(raw)) == expected
+
+
+def test_path_browser_does_not_treat_empty_parent_as_absent():
+    """前端不许用真值判断筛 `data.parent` —— `''` 是「盘符列表」，不是「没有」。
+
+    后端把盘符根的 parent 改成 `''` 之后，前端若还是 `if (data.parent)`，
+    那一项照样不渲染，换盘符依然做不到：**两处必须同时改，各自单独改都无效**，
+    所以这条断言和上面两条是一套。
+
+    ⚠️ 必须先剥注释再扫：源码里解释这条修复的注释本身就复述了
+    `if (data.parent)`，拿原文扫会把说明当成回潮，断言恒红。这是本仓
+    前端源码契约测试的通用约定（见 test_fix_frontend_hardening._clean）。
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, 'static', 'js', 'path_browser.js'), encoding='utf-8') as f:
+        src = _strip_js_comments(f.read())
+    assert re.search(r'if\s*\(\s*data\.parent\s*!==\s*null', src), (
+        '「上一级」的渲染条件必须是严格的 null/undefined 判断')
+    assert not re.search(r'if\s*\(\s*data\.parent\s*\)', src), (
+        "`if (data.parent)` 会把 '' 一起吞掉 —— Windows 上退到盘符根就再也换不了盘")
 
 
 # --- 前端接线 -------------------------------------------------------------------

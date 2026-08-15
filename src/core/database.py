@@ -47,7 +47,12 @@ DEFAULT_CONFIGS = [
     ('default_style', 'm'),
     ('default_zoom_min', '10'),
     ('default_zoom_max', '15'),
-    ('default_output_format', 'both'),
+    # default_output_format 已删（2026-08-15，设计稿 §2.4 的四个「假旋钮」之一）：
+    # 全项目零消费者 —— 没有配置页控件、没有路由读它、下载表单的输出格式来自
+    # #outputFormatTiles / #outputFormatGeoTiff 两个勾选框（map.js 的
+    # _outputFormatValue 现算），提交体里的 output_format 从来不看配置。
+    # 它此前唯一的两处露面就是这张表和 config_manager._UNCONSTRAINED_KEYS，
+    # 也就是「一个只为了通过自身校验而存在的键」。
     ('concurrent_downloads', '50'),
     ('request_timeout', '30'),
     ('max_retries', '3'),

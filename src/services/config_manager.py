@@ -369,7 +369,9 @@ _VALUE_RULES = {
 #     同批新增的数值键（max_* / disk_* / cache_max_mb / task_log_*）全部
 #     登记在 _VALUE_RULES —— 它们的合法区间只此一份，不住在别的模块里。
 _UNCONSTRAINED_KEYS = frozenset({
-    'default_style', 'default_output_format',
+    # default_output_format 随 DEFAULT_CONFIGS 里那一行一起删（2026-08-15）：
+    # 零消费者的键不需要「已知无校验」这条豁免。
+    'default_style',
     'proxy_auto_detect', 'cache_enabled', 'dem_cache_enabled',
     'terrain_vertex_normals',
     'gdal_compression', 'gdal_resampling',

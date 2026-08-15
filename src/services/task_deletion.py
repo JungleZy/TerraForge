@@ -143,7 +143,7 @@ def _wait_until_started(thread: threading.Thread) -> bool:
     return True
 
 
-def _remove_artifacts_and_settle(artifact_dir: Path) -> bool:
+def _remove_artifacts_and_settle(artifact_dir: Path, progress_cb=None) -> bool:
     """删产物目录，按结果销 pending_deletions 的账，返回「目录确实不在了」。
 
     两条删除路径（快路径、后台收尾）共用这一份判据。以前只有后台那条在调用点
@@ -158,10 +158,81 @@ def _remove_artifacts_and_settle(artifact_dir: Path) -> bool:
     剩下那一种（可删但没删掉）**保留清单行**，下次启动补删 —— 那正是这张表
     存在的理由。
     """
-    outcome = remove_task_dir_and_confirm(artifact_dir)
+    outcome = remove_task_dir_and_confirm(artifact_dir, progress_cb=progress_cb)
     if outcome.removed or not outcome.eligible:
         _clear_pending_deletion(artifact_dir)
     return outcome.removed
+
+
+# 删除进度广播 —— 唯一的消费者是 static/js/history.js 的删除进度框。
+#
+# 为什么事件在这一层发、而不是四个路由各发一份：产物删除本来就只发生在本模块
+# （快路径在请求线程里同步删，后台路径在 DeleteCleanup 线程里删），路由层拿不到
+# 中途状态。本模块已经按名字取用 manager 的 `_state_lock` / `active_tasks` /
+# `stop_flags`，多取一个 `socketio` 不新增耦合方向。
+#
+# 事件载荷（与 history.js 的 onDeleteProgress 逐字对应）：
+#   task_id / task_type  定位是哪一条任务（task_type 见 _PIPELINE_BY_TABLE）
+#   phase                'scan' 统计中 | 'delete' 删除中
+#   removed              已处理条目数（文件 + 目录）
+#   total                总条目数；scan 阶段结束前是 null
+#   done                 终态标记，收到它就可以把进度框收掉
+DELETE_PROGRESS_EVENT = 'task_delete_progress'
+
+# 广播节流。0.2 秒 = 5 次/秒，与 dem_task_manager 的切片阶段推送同一档：再密
+# 用户也看不出差别，而每一发都是对全部客户端的广播（本项目的 socket 没有房间）。
+# 首帧与终帧强制发（`force=True`），否则「删一个只有几百个文件的任务」会因为
+# 全程不足 0.2 秒而一帧都不发，进度框空着停在初始文案上。
+_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
+
+_PIPELINE_BY_TABLE = {
+    'tasks': 'map',
+    'dem_tasks': 'dem',
+    'contour_tasks': 'contour',
+    'local_terrain_tasks': 'local_terrain',
+    # plugin_tasks 进了 _DELETABLE_TASK_TABLES，这里就必须有对应项：
+    # `delete_task_row` 在 artifact_dir 非空时无条件 `_PIPELINE_BY_TABLE[table]`，
+    # 缺一项就是删除路径上的 KeyError，而不是「进度少发几帧」。
+    'plugin_tasks': 'plugin',
+}
+
+
+def _make_progress_emitter(manager, task_id: int, task_type: str):
+    """→ `progress_cb(phase, done, total)`；manager 没有 socketio 时返回 None。
+
+    返回 None 而不是一个空回调是有意的：task_cleanup 拿 None 当「不要进度」的
+    信号，会走原来的 shutil.rmtree，省掉数分母那一遍遍历。给个空回调等于让
+    每一次无人收听的删除都白扫一遍盘。
+
+    emit 自己吞掉全部异常：进度是删除的**附带**产物，一次广播失败不能让已经
+    删了一半的产物清理中断（中断的后果是清单行还在、目录半空，用户下次启动
+    才被补删）。
+    """
+    socketio = getattr(manager, 'socketio', None)
+    if socketio is None:
+        return None
+
+    state = {'last': 0.0}
+
+    def emit(phase: str, done: int, total: Optional[int]) -> None:
+        final = phase == 'delete' and total is not None and done >= total
+        now = time.monotonic()
+        if not final and state['last'] and now - state['last'] < _PROGRESS_MIN_INTERVAL_SECONDS:
+            return
+        state['last'] = now
+        try:
+            socketio.emit(DELETE_PROGRESS_EVENT, {
+                'task_id': task_id,
+                'task_type': task_type,
+                'phase': phase,
+                'removed': done,
+                'total': total,
+                'done': final,
+            })
+        except Exception as e:
+            logger.debug(f"Task {task_id}: delete progress emit failed: {e}")
+
+    return emit
 
 
 # 只有地图管线的瓦片进共享缓存（`cache/<namespace>/z/x/y.png`）。DEM 走
@@ -263,7 +334,8 @@ def _clear_exclusive_cache(task_id: int, scope) -> dict:
 def _background_cleanup(task_id: int, thread: threading.Thread,
                         artifact_dir: Optional[Path],
                         tombstone: Optional[set],
-                        cache_scope=None) -> None:
+                        cache_scope=None,
+                        progress_cb=None) -> None:
     """等线程收工，然后删产物、清独占缓存、销账、摘墓碑。全程 best-effort。
 
     「收工」有两种：线程跑完死了，或者线程压根没 start()（分流判据故意把那段
@@ -309,7 +381,7 @@ def _background_cleanup(task_id: int, thread: threading.Thread,
                 return
         worker_done = True
         if artifact_dir is not None:
-            _remove_artifacts_and_settle(artifact_dir)
+            _remove_artifacts_and_settle(artifact_dir, progress_cb)
         _clear_exclusive_cache(task_id, _refresh_cache_scope(cache_scope))
     except Exception as e:
         # join 本身抛出时 worker_done 还是 False —— 线程状态未知就按「还活着」
@@ -470,12 +542,19 @@ def delete_task_row(
             except Exception as e:
                 logger.warning(f"Task {task_id}: on_row_gone hook failed: {e}")
 
+        # 进度回调只在真的要删产物时才建：artifact_dir 为 None（用户没勾「同时
+        # 删除磁盘产物」，或行本来就不存在被上面那道闸置空）时没有耗时的一步，
+        # 请求本来就是毫秒级的，不需要进度，也不该白扫一遍盘。
+        progress_cb = (
+            _make_progress_emitter(manager, task_id, _PIPELINE_BY_TABLE[table])
+            if artifact_dir is not None else None)
+
         if not running:
             files_removed = None
             if artifact_dir is not None:
                 # 与后台收尾同一个助手：护栏返回的是「可删」，报给用户的必须是
                 # 「真删了」，而清单行只有在真删了（或永远删不掉）时才销账。
-                files_removed = _remove_artifacts_and_settle(artifact_dir)
+                files_removed = _remove_artifacts_and_settle(artifact_dir, progress_cb)
             # 缓存清理排在产物之后、且只在行确实删掉之后（cache_scope 在那道闸
             # 上已经被置 None）。快路径没有工作线程在写 cache，可以当场删完并把
             # 真实数字回给用户。
@@ -490,7 +569,7 @@ def delete_task_row(
 
         threading.Thread(
             target=_background_cleanup,
-            args=(task_id, thread, artifact_dir, tombstone, cache_scope),
+            args=(task_id, thread, artifact_dir, tombstone, cache_scope, progress_cb),
             daemon=True,
             name=f"DeleteCleanup-{task_id}",
         ).start()

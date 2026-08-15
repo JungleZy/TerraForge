@@ -1261,13 +1261,33 @@ def clear_cache_api():
         return jsonify({'error': 'Failed to clear cache'}), 500
 
 
+def _browse_parent(target):
+    """目录浏览弹窗的「上一级」目标。`None` = 真的到顶，`''` = 盘符列表。
+
+    ⚠️ Windows 没有单一根。`Path('C:/').parent` 就是 `C:/` 自己，照 POSIX
+    那套判成「到顶」就把用户锁死在当前盘 —— 弹窗里再也回不到盘符列表，
+    换不了盘（用户实测反馈：「只能到本盘符的根目录，不能换盘符」）。盘符根
+    之上还有一层视图：`?path=` 缺省的那个分支列的就是盘符。
+
+    判据用 `target.drive` 而不是 `os.name`，有两个理由：一是它对 UNC 根
+    （`\\\\server\\share`，drive 非空、parent 也等于自身）同样成立；二是这样
+    在 POSIX 开发机上就能拿 PureWindowsPath 把 Windows 的分支测到，不必等
+    真机才发现锁死。PurePosixPath 的 drive 恒为 ''，`/` 仍然回 None。
+    """
+    parent = target.parent
+    if parent != target:
+        return str(parent)
+    return '' if target.drive else None
+
+
 @api_bp.route('/fs/browse', methods=['GET'])
 def browse_dir():
     """目录选择弹窗的数据源：列出某目录的子目录（0.2.4 起全盘可浏览）。
 
     Query: ?path=<绝对路径>。缺省时：Windows 返回盘符列表，POSIX 返回
     根目录 /。不存在/不是目录一律 400。只列非隐藏子目录（文件不列，
-    弹窗只选目录）。parent 为 null 表示已到根（没有「上一级」可去）。
+    弹窗只选目录）。`parent` 有三种取值，见 _browse_parent：绝对路径 = 上一级
+    目录；`''` = 盘符列表（Windows 的盘符根之上）；`null` = 真的到顶。
     """
     raw = (request.args.get('path') or '').strip()
 
@@ -1313,11 +1333,10 @@ def browse_dir():
         return jsonify({'success': False,
                         'error': t('api.fs.read_dir_failed', error=e)}), 400
 
-    parent = target.parent
     return jsonify({
         'success': True,
         'path': str(target),
-        'parent': None if parent == target else str(parent),
+        'parent': _browse_parent(target),
         'dirs': dirs,
     })
 
