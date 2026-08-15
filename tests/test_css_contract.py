@@ -7025,6 +7025,16 @@ def test_inline_style_colors_meet_wcag_aa_everywhere():
                 for cm in pat_color.finditer(sm.group(1)):
                     raw = cm.group(1).strip()
                     where = f'{sub}/{fn}:{line}'
+                    # `${…}` 是 JS 模板插值：值在运行期从令牌解析（history.js 的
+                    # InfoBox description 就是这样，因为令牌不跨 iframe 的
+                    # document）。静态算不了它，也不该按「写不出对比度」判违规 ——
+                    # 那条路由 test_infobox_description_token_pair_meets_wcag_aa
+                    # （令牌对本身的对比度）与
+                    # tests/test_tasks_js_contract.py 的
+                    # test_cesium_infobox_description_carries_resolved_tokens
+                    # （值必须是插值、不许写死）两条一起守。
+                    if '${' in raw:
+                        continue
                     var = re.fullmatch(r'var\(\s*(--[-\w]+)\s*\)', raw)
                     if var:
                         literal = _palette_var(css, var.group(1))
@@ -7045,12 +7055,25 @@ def test_inline_style_colors_meet_wcag_aa_everywhere():
     assert {'static/js/tasks.js', 'static/js/history.js', 'templates'} <= set(scanned), (
         f'扫描范围不完整（实际 {scanned}）—— 本测试已失效'
     )
-    # >= 2（原 3）：Vue 化前「失败: N」的红字在 history.js createTaskRow 与
-    # tasks.js updateTaskProgressPartial 里各写一遍（同一段 markup 的两份实现）；
-    # 收口到 TaskRow 组件后只剩一处，加上模板里那处共 2 处。
-    assert len(hits) >= 2, (
-        f'只扫到 {len(hits)} 处内联 color（期望 >= 2）—— '
+    # >= 1：这个自检防的是「正则失效 -> 下面的负向遍历永真」。
+    # 数字沿革：Vue 化前「失败: N」的红字在 history.js createTaskRow 与
+    # tasks.js updateTaskProgressPartial 里各写一遍（同一段 markup 的两份实现），
+    # 收口到 TaskRow 组件后只剩一处 -> 3 处降到 2 处。
+    # 2026-08-15 再降到 1 处：history.js 那处 InfoBox 标题色从内联
+    # `var(--color-accent-hover)` 改成运行期解析的 `${infoTitleColor}`（令牌不跨
+    # iframe），被上面那句 `${` 跳过了。它没有失去守卫，换成了
+    # test_infobox_description_token_pair_meets_wcag_aa 按**它真正所在的面**
+    # （--color-bg-elevated）算 —— 而本条以前拿它跟任务卡面板底比，那个数字
+    # 从来就没有对应任何真实渲染。
+    # 除了数字，再钉一条「那处已知命中必须还在」：光看总数的话，正则坏掉后
+    # 只要还剩一处能匹配上就照样过。
+    assert len(hits) >= 1, (
+        f'只扫到 {len(hits)} 处内联 color（期望 >= 1）—— '
         '正则失效的话下面的负向断言就是永真\n' + '\n'.join('  ' + h for h in hits)
+    )
+    assert any('task_list.js' in h for h in hits), (
+        '扫不到 task_list.js 里「失败: N」那处内联 danger 色 —— 它是本条现在'
+        f'唯一的活样本，扫不到就说明正则坏了（实际命中：{hits}）'
     )
     assert not problems, (
         '内联文字颜色不达标：\n' + '\n'.join('  ' + p for p in problems)
@@ -9798,14 +9821,55 @@ CONTROL_BORDER_MIN_CONTRAST = 3.0   # WCAG 1.4.11 非文本对比，与本文件
 
 
 def _theme_var(css, name, theme):
-    """取某个主题块里的令牌值。theme='dark' 读 :root，'light' 读 light 覆盖块。"""
-    if theme == 'dark':
-        block = css[:css.index(':root[data-bs-theme="light"]')]
-    else:
-        block = css[css.index(':root[data-bs-theme="light"]'):]
+    """取某个主题块里的令牌值。theme='dark' 读 :root，'light' 读 light 覆盖块。
+
+    ⚠️ 2026-08-15 修：切点必须落在**去注释之后**的文本上。style.css:349 那段
+    注释里原样引用了 `:root[data-bs-theme="light"]` 这个选择器，拿原文
+    `css.index(...)` 找到的是注释里那一处 —— 于是 dark 分支被截断在 349 行，
+    凡是定义在那之后的令牌（--color-control-hover、--color-backdrop*、
+    --color-overlay-surface、棋盘格那几个）一律报「dark 主题里找不到」。
+    现有消费者读的令牌都定义在 349 之前，所以这个 bug 一直没露头；
+    tests/test_elevation_glass.py 的 `_regions()` 同一个坑同日一起修的。
+    """
+    stripped = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
+    marker = ':root[data-bs-theme="light"]'
+    assert marker in stripped, f'{marker} 不在样式表里 —— 本测试已失效'
+    block = stripped[:stripped.index(marker)] if theme == 'dark' \
+        else stripped[stripped.index(marker):]
     m = re.search(re.escape(name) + r'\s*:\s*([^;]+);', block)
     assert m, f'{theme} 主题里找不到 {name} —— 本测试已失效'
     return m.group(1).strip().lower()
+
+
+def test_infobox_description_token_pair_meets_wcag_aa():
+    """Cesium InfoBox 描述区的「面 + 字」令牌对，明暗两套都要过 4.5:1。
+
+    这条是 history.js 那段 description 的**对比度守卫**，它替代了旧口径：
+    改前 InfoBox 标题色是内联的 `var(--color-accent-hover)`，由
+    test_inline_style_colors_meet_wcag_aa_everywhere 扫到，但那条把它拿去和
+    **任务卡面板底色**比 —— InfoBox 根本不长在那个面上，比出来的数字没有意义。
+
+    2026-08-15 起那段 HTML 自己带一段 <style>，把面设成 --color-bg-elevated、
+    字设成 --color-text-primary（值在 JS 里从令牌解析后拼进去，因为令牌不跨
+    iframe 的 document）。所以要守的就是这两对令牌本身：
+      · 正文：--color-text-primary on --color-bg-elevated
+      · 标题：--color-accent-hover on --color-bg-elevated
+    实测（真浏览器，2026-08-15）暗色 #e8eaed / #7dd3fc on #242a33、
+    亮色 rgb(28,33,40) / #0c4a6e on #ffffff，三行全部可读；改前 Cesium 的近白
+    文字压在 iframe 的白画布上，状态与张数那两行**肉眼看不见**。
+    """
+    css = _css()
+    for theme in ('dark', 'light'):
+        surface = _theme_var(css, '--color-bg-elevated', theme)
+        base = _flatten(surface, surface)
+        for token in ('--color-text-primary', '--color-accent-hover'):
+            fg = _flatten(_theme_var(css, token, theme), surface)
+            ratio = _contrast_ratio(fg, base)
+            assert ratio >= WCAG_AA_TEXT_CONTRAST, (
+                f'{theme} 主题：{token}({fg}) 压在 --color-bg-elevated({base}) 上'
+                f'只有 {ratio:.2f}:1，低于 {WCAG_AA_TEXT_CONTRAST} —— '
+                'Cesium InfoBox 的描述区就是这个面，改令牌前先看这条'
+            )
 
 
 def test_unchecked_form_check_border_meets_graphic_contrast():

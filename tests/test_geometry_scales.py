@@ -41,32 +41,23 @@ from test_css_contract import (
 )
 
 # --------------------------------------------------------------------------
-# ⚠️ 清单里**故意不含** `.map-search*`（2026-08-15 移除登记）
+# 2026-08-15：`.map-search*` 三条摘出 -> 同日放回
 # --------------------------------------------------------------------------
 #
-# 地图搜索胶囊（`.map-search` 一族）是**另一位开发者尚未提交**的组件：
-# `git show HEAD:static/css/style.css | grep -c map-search` == 0。Task 3 给它做了
-# 刻度归一（补 height、border-radius，z-index 换成令牌），那些**样式改动留着** ——
-# 它们是正确的刻度应用，撤掉等于把那个组件单独留在刻度之外。但**本测试文件不许
-# 依赖只存在于工作区的选择器**：在干净 checkout 上（模拟法：把样式表副本里的
-# `map-search` 改名成 `zzz-absent-search`，再把 `_css()` 指过去）原先有 4 条断言
-# 会红，而那 4 条红与被测的刻度契约毫无关系，纯粹是「测试引用了不存在的东西」。
+# 那天早些时候，`.map-search__panel` / `.map-search__input` / `--z-map-search`
+# 三条被从下面三份清单里摘掉，理由是地图搜索胶囊当时是**另一位开发者尚未提交**
+# 的组件（`git show HEAD:static/css/style.css | grep -c map-search` == 0）。
+# 同日该组件随 commit 59459b1 进了 master（同一条命令现在数到 32 处），放回条件
+# 达成，三条已各自回到原清单（原地都留了一行说明）。
 #
-# 逐条登记（放回条件三条都一样：**那个组件进了 commit**）：
-#   · `.map-search__panel`   原在 RAISED_SURFACES（浮起表面 12px）—— 它确实带
-#     box-shadow、确实是 12px，判据没问题，只是选择器不在 HEAD 里。
-#   · `.map-search__input`   原在 DENSE_CONTROL_HEIGHT_SITES（密集档 28px）——
-#     它是「同行同高」那三处实测违例之一（裸 input 在 28px 胶囊里只占 23px），
-#     修复留在 CSS 里，登记留在这里。
-#   · `--z-map-search: '500'` 原在 Z_LADDER（地图层 500）—— 令牌定义与引用都还在
-#     style.css 里（引用方就是那个未提交的组件），只是不在本文件的层栈清单里。
-#     副作用要说清：Z_LADDER 之外的 `--z-*` 令牌没有任何断言看着，所以那个组件
-#     万一被撤掉，`--z-map-search` 会变成一个无人引用的孤儿定义而全绿。
-#     这是「不依赖未提交代码」换来的，明账。
-#
-# ⚠️ 报告里曾把它写成 `.place-search__input` —— 那个选择器不存在，正确的是
-#    `.map-search__input`（`tests/test_place_search_ui.py` 那个文件名里的
-#    place-search 是**功能**名，与 CSS 的 BEM 块名 `map-search` 不是一回事）。
+# ⚠️ 留下来的是方法论，下一个人遇到同类情况照着做：
+#   **本目录的测试不许依赖只存在于工作区的选择器。** 判定办法不是靠读 git 状态，
+#   而是模拟一次干净 checkout —— 把样式表副本里的块名改掉（当时是把
+#   `map-search` 全文替换成 `zzz-absent-search`），用 monkeypatch 把 `_css()`
+#   指到那份副本再跑。若有断言变红，且红的原因是「测试引用了不存在的东西」而
+#   不是刻度契约被破，那条断言就依赖了未提交代码，必须摘出并在原地登记放回条件。
+#   反过来同样有用：放回之后拿同一招把副本里的声明改坏（例如把面板圆角换成
+#   `--radius-xs`），确认**会红** —— 否则放回的是一条恒真断言。
 
 # --------------------------------------------------------------------------
 # 1. 圆角：7 级 -> 4 级
@@ -116,6 +107,9 @@ RAISED_SURFACES = (
     '.tif-info',
     '.hint::after',
     '.page-content .config-footer',
+    # 2026-08-15 曾因组件未提交摘出、同日随组件进 commit 后放回：它带
+    # box-shadow: var(--shadow-md)，按同一判据（带阴影 / 浮在内容之上）必须在内。
+    '.map-search__panel',
 )
 
 # 「控件」= 6px。
@@ -267,9 +261,12 @@ def test_every_control_resolves_to_the_control_radius():
 #    Task 4 不碰圆角，留着等于让 Task 3 声称收敛完成的那套刻度继续开着口子。
 #
 # 值级豁免（**不按选择器**，按值的语义 —— 这两种写法压根不是刻度上的长度）：
-#   · `50%`      圆形。半径由盒子尺寸决定，不是刻度上的一档（状态点、清除叉、
-#                .hint 的问号圆底）。按选择器豁免会把一个未提交组件的类名写进
-#                本文件，正是上面那段移除登记要避免的事。
+#   · `50%`      圆形。半径由盒子尺寸决定，不是刻度上的一档（状态点、清除叉
+#                `.map-search__clear`、.hint 的问号圆底）。按值豁免而不是按选择器：
+#                圆形是值的语义，按选择器就得给每个新画圆的组件补一条白名单
+#                （2026-08-15 摘出那三条时还有一层理由 —— 按选择器会把当时尚未
+#                提交的 `.map-search*` 类名写进本文件；组件已进 commit，这层不再
+#                适用，但「圆形不是刻度」这层本身就够了）。
 #   · `0` / `0px` 清零。把继承/vendor 给的圆角抹掉，同样不是取值。
 _RADIUS_SHAPE_KEYWORDS = frozenset({'50%', '0', '0px'})
 
@@ -333,17 +330,22 @@ CTL_H_LG_PX = 36.0
 # 组件专有尺寸单独命名，正是为了不让它假装是刻度的一部分。
 MAP_PANEL_BTN_H_PX = 58.0
 
-# 「同一行上的控件必须同高」的实测违例（2026-08-14 量的）：
+# 「同一行上的控件必须同高」的实测违例（2026-08-14 量的，第三处是 2026-08-15）：
 #   .bounds-edit-input      20px  点击编辑 / 手动四至面板的输入框
 #   .bounds-actions .btn    36px  手动四至面板的确定/取消，坐在 20px 输入框旁边
+#   .map-search__input      23px  地图搜索胶囊里的裸 input —— 宿主
+#                                 `.map-search__field` 是 --ctl-h(28px) 的胶囊、
+#                                 上下无内边距，裸 input 只按内容撑到 23px，
+#                                 差出来的 5px 是「看着是输入框、点上去不聚焦」
+#                                 的死区（上下各 2.5px）。这一条 2026-08-15 曾因
+#                                 组件未提交摘出、同日随组件进 commit 后放回。
 # 统一到 --ctl-h。属性名不限 height / min-height：两种都是「高度从哪来」，
 # 只认一种的话换个属性就能绕过去。
-# （第三处 `.map-search__input` 23px 的修复留在 CSS 里，登记不在这里 ——
-#  见文件开头那段「清单里故意不含 .map-search*」。）
 DENSE_CONTROL_HEIGHT_SITES = (
     '.bounds-edit-input',
     ('.btn.btn-compact, .btn.tile-server-verify, .btn.concurrency-recommend, '
      '.btn.path-browse, .bounds-actions .btn'),
+    '.map-search__input',
 )
 
 # `--ctl-h-lg` 的消费者：常驻底条上的主操作按钮。
@@ -613,17 +615,18 @@ def test_no_font_weight_declaration_carries_a_bare_integer():
 # 14 个不同的值。
 #
 # ⚠️ plan 写的是「九个 --z-* 令牌」，**这个数字是错的**（它是 2026-08-14 量的）。
-# 按角色命名后 style.css 里是 15 个令牌；本清单登记 **14** 个 —— 少的那个是
-# `--z-map-search`，见文件开头「清单里故意不含 .map-search*」那段移除登记。
+# 按角色命名后 style.css 里是 15 个令牌，本清单登记全部 15 个 —— `--z-map-search`
+# 2026-08-15 曾因组件未提交摘出、同日随组件进 commit 后放回（见文件开头那段）。
 # 清单内 `--z-modal` 与 `--z-map-preview-zoom` 同值 1500 —— 这是现状，照抄不
 # 合并：合并等于宣布「缩略图 hover 放大」与「弹窗」是同一层，那是层序决策，
-# Task 3 不做。13 个不同的值全部有引用，没有孤儿层。
+# Task 3 不做。14 个不同的值全部有引用，没有孤儿层。
 Z_LADDER = {
     # 组件内叠层（宿主自己不建层，这几个数只在局部有意义）
     '--z-inline': '1',                 # .progress__label 盖在轨道上
     '--z-inline-handle': '2',          # .workbench-panel__resizer 拖拽把手
     '--z-tooltip': '20',               # .hint::after 气泡
     # 地图层
+    '--z-map-search': '500',           # .map-search 搜索胶囊（在瓦片之上、薄雾之下）
     '--z-map-veil': '900',             # 必须 < --z-map-overlay，见下
     '--z-map-overlay': '1000',         # 状态栏 / 工具条 / 浮层信息条 / 等高线预览
     '--z-map-preview-zoom': '1500',    # 缩略图 hover 放大
@@ -641,7 +644,7 @@ Z_LADDER = {
 
 
 def test_z_ladder_tokens_copy_the_measured_values():
-    """14 个 `--z-*` 令牌的值与改前实测逐一相等（第 15 个见开头的移除登记）。
+    """15 个 `--z-*` 令牌的值与改前实测逐一相等。
 
     本条的作用是「令牌化不等于重排」：把 18 处裸整数换成 `var()` 时，最容易
     发生的事故是顺手把两个相邻的数合并、或者把某一层挪到别人上面 —— 而层序
@@ -690,7 +693,7 @@ def test_no_z_index_declaration_carries_a_bare_integer():
 
 
 def test_every_z_ladder_token_is_actually_referenced():
-    """清单里那 14 个层栈令牌每个都真的被一条规则引用。
+    """清单里那 15 个层栈令牌每个都真的被一条规则引用。
 
     反向堵「铸了不用」：层栈里一个没人引用的层号，下一个人会以为那一层被占了，
     于是给自己的新覆盖物挑一个更大的数 —— 层栈就是这么一路涨到 13100 的。
@@ -828,36 +831,27 @@ _STYLE_SET_PROPERTY = re.compile(
     r"""\.style\.setProperty\(\s*['"][^'"]+['"]\s*,\s*(?P<val>[^)]+)\)""")
 
 
-def _cesium_description_spans(src):
-    """Cesium 实体 `description:` 那段 HTML 的字符区间。
-
-    **刻意排除**，不是豁免：那段 HTML 由 Cesium 写进 InfoBox 的 **iframe**
-    （`allow-same-origin` 的独立 document），本站样式表与 `:root` 上的令牌
-    一个都不跨进去 —— 内联样式是那里唯一能生效的手段，拿本仓的刻度去要求它
-    是拿错了尺子。history.js 那处 `description` 里眼下还有两处 `var(--…)`
-    引用在 iframe 内根本解析不出来（等于没上色），那是另一件事，与刻度无关。
-    """
-    spans = []
-    for m in re.finditer(r'description\s*:\s*`', src):
-        end = src.find('`', m.end())
-        if end != -1:
-            spans.append((m.start(), end))
-    return spans
-
-
 def test_no_inline_style_in_js_carries_a_length():
-    """`static/js` 里不许再出现带长度的内联样式 —— 刻度闸门的唯一后门。"""
+    """`static/js` 里不许再出现带长度的内联样式 —— 刻度闸门的唯一后门。
+
+    ⚠️ 2026-08-15 同日收紧：本条落地时曾**刻意排除** Cesium 实体
+    `description:` 那段模板，理由是那段 HTML 活在 InfoBox 的 iframe 里（本站
+    样式表与令牌都不跨 document，内联样式是那里唯一能生效的手段，拿刻度去要求
+    它是拿错尺子）。当天 history.js 的那段 description 改成「在 JS 里把令牌解析
+    成值再拼」之后，它里面已经一个字面量都没有（值全是 `${…}` 插值），排除就
+    只剩下「给未来的写死值留个口子」这一个作用 —— 删掉。那段 HTML 现在由两道
+    闸门一起罩：本条管长度字面量，
+    tests/test_tasks_js_contract.py::test_cesium_infobox_description_carries_resolved_tokens
+    管「值必须是运行期解析出来的令牌」（连写死颜色一起拦）。
+    """
     offenders = []
     for name in sorted(os.listdir(_JS_DIR)):
         if not name.endswith('.js'):
             continue
         with open(os.path.join(_JS_DIR, name), encoding='utf-8') as f:
             src = f.read()
-        skip = _cesium_description_spans(src)
         for rx in (_INLINE_STYLE_ATTR, _STYLE_PROP, _STYLE_SET_PROPERTY):
             for m in rx.finditer(src):
-                if any(start <= m.start() <= stop for start, stop in skip):
-                    continue
                 hit = _INLINE_LENGTH.search(m.group('val'))
                 if not hit:
                     continue

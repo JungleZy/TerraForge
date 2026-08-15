@@ -291,6 +291,27 @@ function renderPagination(currentPage, totalPages) {
     pagination.innerHTML = html;
 }
 
+// Cesium 的 InfoBox 把 description 那段 HTML 写进一个 **iframe**（Cesium 自己
+// 建的独立 document，只挂它的 InfoBoxDescription.css）。本站样式表与 :root 上的
+// --color-* / --font-* 令牌一个都不跨 document 进去 —— 所以那段 HTML 里写
+// `var(--color-accent-hover)` 是**静默失效**的：属性值解析不出来，声明被整条
+// 丢弃，标题不上色、数字不换等宽字体，而控制台一声不响。改前就是这样（两处
+// var() 从落地起就没生效过），2026-08-15 定向复审时才发现。
+//
+// 修法是在**这一侧**把令牌解析成值再拼，而不是往 iframe 里注一份样式表：
+// 注样式表要依赖 Cesium 内部的 frame/contentDocument 与它的 load 时序，
+// 而这里本来就有一条现成的重绘链 —— task_status.js 监听
+// `terraforge:themechange` 并重跑 renderHistoryMap()，所以主题/强调色一变，
+// 这些值跟着重新解析，不需要第二套同步机制。
+//
+// ⚠️ 代价写明：description 里从此**不许出现 var()**，也不许写长度字面量
+// （改前那个 `font-size: 1.05rem` 既不在字号刻度上、又因为在 iframe 里而躲过
+// 了全部刻度闸门）。这条由 tests/test_tasks_js_contract.py 的
+// test_cesium_infobox_description_carries_resolved_tokens 钉住。
+function _token(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 // 数据源是 store，不是 loadHistory 的响应快照：socket 增量（tasks.js）只
 // 写 store，读快照会让运行中任务的矩形停在上一次拉取时的颜色，socket 新插
 // 进来的行则连矩形都没有。previewHistoryTask / deleteTask 早就改读 store 了
@@ -304,6 +325,25 @@ function renderHistoryMap() {
     // Local-terrain tasks have no bbox; only map/dem tasks appear on the map.
     const geoTasks = tasks.filter(t => t.north != null && t.south != null && t.east != null && t.west != null);
     let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity;
+
+    // 每次重绘解析一次，不是每个任务解析一次：getComputedStyle 会强制样式重算，
+    // 而这几个值在一次重绘里对所有实体都一样。
+    //
+    // 标题字号取 --font-size-md（1rem）：改前是 1.05rem(16.8px)，一个既不在字号
+    // 刻度上、又因为活在 iframe 里而躲过全部刻度闸门的孤儿值；刻度上离它最近的
+    // 一级就是 md。**保留 rem 单位是量过的**：自定义属性的计算值是替换后的记号流
+    // 而不是绝对长度（`getPropertyValue('--font-size-md')` 读出来就是 '1rem'），
+    // 所以 rem 到了 iframe 里量的是那份 document 的根字号 —— 实测宿主与 InfoBox
+    // iframe 的根字号同为 16px（iframe 里只挂 Cesium 的 InfoBoxDescription.css，
+    // 它不改根字号），两侧同尺，不必在这里换算成 px。
+    // 同一次实测还确认了这条修复的前提：iframe 的 :root 上
+    // `--color-accent-hover` 读出来是**空字符串** —— 令牌确实不跨 document。
+    const infoTitleColor = _token('--color-accent-hover');
+    const infoTitleSize = _token('--font-size-md');
+    const infoMonoFamily = _token('--font-mono');
+    // 面与字色：见下面 description 里那段 <style> 的理由。
+    const infoSurface = _token('--color-bg-elevated');
+    const infoText = _token('--color-text-primary');
 
     geoTasks.forEach(task => {
         const color = Cesium.Color.fromCssColorString(getStatusStroke(task.status));
@@ -321,11 +361,34 @@ function renderHistoryMap() {
                 outlineWidth: 3,
             },
             name: task.name,
+            // 那段 <style> 是这个 iframe 里唯一能设**面**的手段，而它是必须的：
+            // Cesium 的 InfoBoxDescription.css 只给描述区设了近白文字
+            // （rgb(237,255,255)）、不设背景，指望 iframe 透出外层
+            // `.cesium-infoBox` 的深底 rgba(38,38,38,0.95)。实测（Chrome，
+            // 2026-08-15）iframe 的 html/body 背景都是 transparent，而画布**画出来
+            // 是白的** —— 于是近白文字压在白底上：状态与张数那两行今天肉眼看不见
+            // （标题因为本次给它上了色才勉强可见，1.7:1）。这不是本次改坏的，是
+            // 一直如此、而且没有任何断言看得到。
+            //
+            // 所以这里显式给面与字色，取值仍然来自令牌（--color-bg-elevated 是
+            // 「浮在内容之上」那一档，与 toast / confirm / 命令面板同面）：
+            //   · 写 html,body 而不是包一层 div —— Cesium 的
+            //     `.cesium-infoBox-description` 自带 4px 10px 内边距与 4px 右外
+            //     边距，包 div 会在深底卡片外面留一圈白边。
+            //   · 字色必须写在 `.cesium-infoBox-description` 上：写 body 会被
+            //     Cesium 那条同名声明按特异度压掉。本 <style> 在 body 里、比它的
+            //     <link> 靠后，同特异度后来者胜。亮色主题下这一条是承重的
+            //     （Cesium 的近白文字压在亮色面上就是白纸白字）。
+            //   · margin:0 去掉 body 默认的 8px，免得深底卡片内缩一圈。
             description: `
-                <strong style="color: var(--color-accent-hover); font-size: 1.05rem;">${escapeHtml(task.name)}</strong><br>
+                <style>
+                    html, body { background: ${infoSurface}; margin: 0; }
+                    .cesium-infoBox-description { color: ${infoText}; }
+                </style>
+                <strong style="color: ${infoTitleColor}; font-size: ${infoTitleSize};">${escapeHtml(task.name)}</strong><br>
                 <strong>${t('js.history.map.status_label')}</strong> ${escapeHtml(getStatusText(task.status))}<br>
                 <strong>${task.task_type === 'dem' ? t('js.history.map.files_label') : t('js.history.map.tiles_label')}:</strong>
-                <span style="font-family: var(--font-mono);">${task.downloaded}/${task.total}</span>
+                <span style="font-family: ${infoMonoFamily};">${task.downloaded}/${task.total}</span>
             `,
         });
     });

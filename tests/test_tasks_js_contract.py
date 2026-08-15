@@ -2824,3 +2824,125 @@ def test_the_plugin_export_toast_never_claims_a_tile_count():
     assert "js.export.toast.exported" in body and "js.gaps.toast.exported" in body, (
         '两条成功文案不是都在 —— 少一条就说明有一个分支在用错的模板'
     )
+
+
+# ---------------------------------------------------------------------------
+# Cesium InfoBox 的 description：活在另一个 document 里的那段 HTML
+# ---------------------------------------------------------------------------
+
+#: `description: \`…\`` 里那段模板。只认反引号模板 —— 本仓两处（history.js）
+#: 都是这个形态，换成拼接会命中下面的自检断言而不是静默漏检。
+_CESIUM_DESCRIPTION_RE = re.compile(r'description\s*:\s*`([^`]*)`', re.S)
+
+#: 内联样式的一条声明：`prop: value;`
+_INLINE_DECL_RE = re.compile(r'([-\w]+)\s*:\s*([^;"]+)')
+
+_COLOUR_LITERAL_RE = re.compile(r'#[0-9a-fA-F]{3,8}\b|\brgba?\(|\bhsla?\(')
+_LENGTH_LITERAL_RE = re.compile(r'(?<![\w.-])\d+(?:\.\d+)?(?:px|rem|em)\b')
+
+
+def test_cesium_infobox_description_carries_resolved_tokens():
+    """InfoBox description 里的样式值必须是**运行期解析出来的令牌值**。
+
+    Cesium 把 description 写进它自己建的 iframe（只挂 InfoBoxDescription.css）。
+    实测（2026-08-15，真浏览器）：那份 document 的 `:root` 上
+    `--color-accent-hover` 读出来是**空字符串** —— 本站样式表与全部 `--*` 令牌
+    都不跨 document。所以：
+
+      · 写 `var(--color-accent-hover)` 是**静默失效**：属性值解析不出来，整条
+        声明被丢弃，标题不上色、数字不换等宽字体，控制台一声不响。改前那两处
+        var() 从落地起就没生效过，一直没人发现。
+      · 写死 `#7dd3fc` / `1.05rem` 能生效，但绕开了令牌系统与刻度闸门
+        —— 主题一切就不对，而 style.css 那边的断言看不到它。
+
+    所以判据是「每条声明的值都必须是 `${…}` 插值」：值从 JS 里读令牌（见
+    history.js 的 `_token()`），主题变化由 task_status.js 的
+    `terraforge:themechange` 重绘链带着一起刷（下一条断言钉那条链）。
+    """
+    descriptions = []
+    for name in sorted(os.listdir(os.path.join(ROOT, 'static', 'js'))):
+        if not name.endswith('.js'):
+            continue
+        src = _strip_js_comments(_js(name))
+        for m in _CESIUM_DESCRIPTION_RE.finditer(src):
+            descriptions.append((name, src[:m.start()].count('\n') + 1, m.group(1)))
+
+    assert descriptions, (
+        '一处 Cesium `description:` 模板都没扫到 —— 本断言已失效（history.js '
+        '的历史地图实体一直带 description；换成字符串拼接的话本条要跟着改）'
+    )
+
+    problems = []
+    for name, line, body in descriptions:
+        if 'var(' in body:
+            problems.append(
+                f'{name}:{line} description 里有 var() —— 令牌不跨 iframe 的 '
+                'document，那条声明会被整条丢弃（静默失效）'
+            )
+        # 两条上样式的通道都要扫：元素上的 style="…"，以及 description 自带的
+        # 那段 <style>（iframe 里唯一能设「面」的手段，见 history.js 的说明）。
+        channels = [m.group(1) for m in re.finditer(r'style="([^"]*)"', body)]
+        channels += [m.group(1) for m in re.finditer(r'<style>(.*?)</style>', body, re.S)]
+        for chunk in channels:
+            for prop, value in _INLINE_DECL_RE.findall(chunk):
+                if '${' in value:
+                    continue
+                if _COLOUR_LITERAL_RE.search(value):
+                    problems.append(
+                        f'{name}:{line} `{prop}: {value.strip()}` 是写死的颜色 —— '
+                        '必须从 :root 的 --color-* 令牌解析（否则主题一切就不对）'
+                    )
+                elif _LENGTH_LITERAL_RE.search(value):
+                    problems.append(
+                        f'{name}:{line} `{prop}: {value.strip()}` 是写死的长度 —— '
+                        '必须从字号/间距刻度的令牌解析'
+                    )
+
+        # 面与字色是**必须有**的，不是可选装饰：Cesium 只给描述区设近白文字、
+        # 不设背景，而实测 iframe 画布画出来是白的 —— 少了这两条，状态与张数
+        # 那两行就是白纸白字（改前一直如此）。
+        if 'html, body {' not in body or 'background:' not in body:
+            problems.append(
+                f'{name}:{line} description 里没有给 html/body 设背景 —— '
+                'Cesium 不设背景、iframe 画布是白的，近白文字会看不见'
+            )
+        if '.cesium-infoBox-description { color:' not in body:
+            problems.append(
+                f'{name}:{line} 没有覆盖 .cesium-infoBox-description 的字色 —— '
+                '写在 body 上会被 Cesium 那条同名声明按特异度压掉，亮色主题下'
+                '就是白纸白字'
+            )
+    assert not problems, (
+        'InfoBox description 的样式值不合契约：\n'
+        + '\n'.join('  ' + p for p in problems)
+    )
+
+
+def test_theme_change_rerenders_the_history_map_entities():
+    """主题一变必须重绘历史地图实体 —— 上一条修复的**依赖**。
+
+    description 里的颜色是在构建实体那一刻解析的，所以「切主题后颜色跟着变」
+    完全依赖这条链：theme.js 派发 `terraforge:themechange` →
+    task_status.js 收到后调 renderHistoryMap() → 实体重建、description 用新
+    令牌值重拼。链子断掉的表现是**静默的**：InfoBox 里的标题停在页面加载时
+    那个主题的颜色，暗色主题下变成一个几乎看不见的深蓝。
+
+    实测（2026-08-15，真浏览器）：`TerraTheme.set('dark')` 之后 iframe 里的
+    标题从 `#0c4a6e`（亮）变成 `#7dd3fc`（暗），这条链是通的。
+    """
+    theme = _strip_js_comments(_js('theme.js'))
+    assert theme.count("'terraforge:themechange'") >= 2, (
+        'theme.js 不再派发 terraforge:themechange（主题与强调色两条路径各一处）'
+        ' —— 历史地图的实体颜色与 InfoBox 里的标题色都会停在加载时那一套'
+    )
+
+    status = _strip_js_comments(_js('task_status.js'))
+    listener = re.search(
+        r"addEventListener\(\s*'terraforge:themechange'\s*,\s*function\s*\([^)]*\)\s*\{",
+        status)
+    assert listener, 'task_status.js 不再监听 terraforge:themechange'
+    body = status[listener.end():]
+    assert 'renderHistoryMap()' in body[:body.index('\n}')], (
+        'terraforge:themechange 的处理器里不再调 renderHistoryMap() —— 切主题后'
+        '历史地图的矩形描边与 InfoBox 标题都停在旧主题的颜色上'
+    )
