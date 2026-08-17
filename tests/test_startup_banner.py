@@ -391,6 +391,14 @@ def _wide_tty(monkeypatch, columns=100):
                         lambda *a, **k: os.terminal_size((columns, 30)))
     monkeypatch.delenv('NO_COLOR', raising=False)
     monkeypatch.delenv('TERRAFORGE_BANNER_ANIM', raising=False)
+    # Windows 的 ANSI 闸门得单独按平:_enable_windows_ansi() 拿真 stdout 句柄去调
+    # SetConsoleMode,而 CI 里输出被重定向、根本没有控制台,于是它恒返回 False,
+    # should_animate_banner() 跟着判否 —— 三条动画用例在 windows-latest 上全红
+    # (run 31999611489)。产品判否是对的:ANSI 开不起来时动画会吐上百屏转义码,
+    # 必须退回静态横幅。所以这里假的是**平台能力**,不是被测逻辑;能力本身另有
+    # test_enable_windows_ansi_reports_capability 守着,那条不走这个 helper。
+    from src.core import startup_banner as sb
+    monkeypatch.setattr(sb, '_enable_windows_ansi', lambda: True)
     return _FakeTty()
 
 

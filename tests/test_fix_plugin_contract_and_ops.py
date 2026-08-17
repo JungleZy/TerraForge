@@ -233,6 +233,16 @@ def test_task_failed_event_carries_the_error_message(db, tmp_path, monkeypatch):
     row = _wait_status(mgr, tid, ('failed',))
     assert row['status'] == 'failed'
 
+    # 等**事件**,不等状态:`_finish()` 写库,`_emit()` 在它下一行,两者之间还夹着
+    # 钩子分发(第三方代码,可以任意慢)。轮询状态会先看到 failed,这时事件可能
+    # 还没发出去 —— Windows 上实测踩到过这个窗口(run 31999611489:状态已 failed
+    # 而 events 为空)。产品那个顺序是刻意的(见 task_manager._run_task_entry 的
+    # 注释),所以该改的是这里。
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if any(e == 'plugin_task_failed' for e, _ in events):
+            break
+        time.sleep(0.01)
     failed = [p for e, p in events if e == 'plugin_task_failed']
     assert failed, events
     payload = failed[-1]

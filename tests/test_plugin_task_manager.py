@@ -298,20 +298,34 @@ def test_output_dir_failure_releases_reservation(db, tmp_path, monkeypatch):
     """准入之后、`run()` 之前抛异常也必须归还凭据。
 
     `output_path` 是用户填的：路径上有一段是**文件**时 `TaskContext.__init__` 的
-    mkdir 抛 NotADirectoryError。凭据漏一张的后果不是「这次失败」而是这条任务
+    mkdir 抛 OSError（POSIX 是 NotADirectoryError，Windows 实测是 FileExistsError
+    [WinError 183]，run 31999611489 的 windows-latest）。凭据漏一张的后果不是
+    「这次失败」而是这条任务
     永久锁死——owner `('plugin', id, 'run')` 是确定性的，留在调度器 `_owners`
     里之后每次 start 都撞 `owner ... already holds a reservation`。
     """
     mgr = _setup(db, tmp_path, monkeypatch)
     blocker = tmp_path / 'blocker'
     blocker.write_text('我是文件，不是目录', encoding='utf-8')
+    # 「路径上有一段是文件」在各平台抛的不是同一个 OSError 子类,而本用例要守的是
+    # 「原因写进了 error_message」,不是某个平台的错误名。所以现场探一次,拿这台
+    # 机器真会抛的那个名字当判据 —— 写死 NotADirectoryError 会在 Windows 上误报
+    # (run 31999611489),写成「非空即可」又会把「原因没写进去」放过去。
+    try:
+        (blocker / 'sub' / 'probe').mkdir(parents=True)
+    except OSError as exc:
+        blocked_by = type(exc).__name__
+    else:
+        blocked_by = None
+    assert blocked_by, ('这个平台上「路径里有一段是文件」竟然 mkdir 成功了 —— '
+                        '本用例的前提不成立,判据已失效')
     tid = mgr.create_task('fake', {'name': 't6',
                                    'bbox': [40.0, 30.0, 117.0, 116.0],
                                    'output_path': str(blocker / 'sub')})
     mgr.start_task(tid)
     row = _wait_status(mgr, tid, ('failed',))
     assert row['status'] == 'failed'
-    assert 'NotADirectoryError' in row['error_message']
+    assert blocked_by in row['error_message']
 
     from src.services.resource_scheduler import get_scheduler
     scheduler = get_scheduler(None)
@@ -321,4 +335,4 @@ def test_output_dir_failure_releases_reservation(db, tmp_path, monkeypatch):
     mgr.start_task(tid)
     row = _wait_status(mgr, tid, ('failed',))
     assert 'already holds' not in (row['error_message'] or '')
-    assert 'NotADirectoryError' in row['error_message']
+    assert blocked_by in row['error_message']
