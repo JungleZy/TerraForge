@@ -38,6 +38,29 @@
     --color-glass-surface: rgba(21,23,28,0.72);
     --color-glass-border:  rgba(255,255,255,0.14);
 
+    /* 液态玻璃令牌(2026-08-17 设计 §1)。独立于 --color-glass-surface 体系:
+       旧令牌 alpha 0.72 是停靠浮层的不透明下限(test_elevation_glass.py 钉死),
+       液态玻璃是「厚玻璃」质感,低 alpha + 边缘高光 + 流光,文字可读性靠
+       --liquid-scrim 叠层兜住。亮色翻转集中在下方亮色令牌块。 */
+    --liquid-1-bg:   rgba(255,255,255,0.06);
+    --liquid-1-blur: 12px;
+    --liquid-2-bg:   rgba(255,255,255,0.10);
+    --liquid-2-blur: 20px;
+    --liquid-3-bg:   rgba(255,255,255,0.14);
+    --liquid-3-blur: 28px;
+    --liquid-saturate: 160%;
+    --liquid-rim-strong: rgba(255,255,255,0.55);
+    --liquid-rim-soft:   rgba(255,255,255,0.22);
+    --liquid-stroke:     rgba(255,255,255,0.16);
+    --liquid-shadow: 0 8px 32px rgba(0,0,0,0.35);
+    --liquid-sheen: linear-gradient(135deg,
+        rgba(255,255,255,0.28), rgba(255,255,255,0.06) 30%, transparent 60%);
+    /* 文字可读性叠层:玻璃 alpha 太低,白字压不住亮色地图,叠一层暗化 */
+    --liquid-scrim: linear-gradient(rgba(10,12,16,0.42), rgba(10,12,16,0.42));
+    --liquid-radius-panel:   16px;
+    --liquid-radius-control: 12px;
+    --liquid-motion: 240ms cubic-bezier(0.32, 0.72, 0, 1);
+
     /* 边框 */
     --color-border:        rgba(255,255,255,0.07);
     --color-border-strong: rgba(255,255,255,0.12);
@@ -526,6 +549,17 @@
     /* 亮色下瓦片不再压暗；btn-close 用 Bootstrap 原生的黑图标（不反色） */
     --map-filter: none;
     --btn-close-filter: none;
+
+    --liquid-1-bg:   rgba(255,255,255,0.42);
+    --liquid-2-bg:   rgba(255,255,255,0.55);
+    --liquid-3-bg:   rgba(255,255,255,0.66);
+    --liquid-rim-strong: rgba(255,255,255,0.90);
+    --liquid-rim-soft:   rgba(255,255,255,0.50);
+    --liquid-stroke:     rgba(15,23,42,0.12);
+    --liquid-shadow: 0 8px 24px rgba(15,23,42,0.18);
+    --liquid-sheen: linear-gradient(135deg,
+        rgba(255,255,255,0.55), rgba(255,255,255,0.12) 30%, transparent 60%);
+    --liquid-scrim: linear-gradient(rgba(255,255,255,0.30), rgba(255,255,255,0.30));
 }
 
 /* ==========================================================================
@@ -5545,3 +5579,65 @@ code {
     overflow-y: auto;
     overflow-x: hidden;
 }
+
+/* ══ 液态玻璃(2026-08-17 设计) ══════════════════════════════════════
+   .tf-glass 基类 + --1/--2/--3 档位。结构:底色与 scrim 在 ::before(最底),
+   流光在 ::after(内容之上),边缘高光走 inset box-shadow。isolation:isolate
+   保证负 z-index 伪元素不外泄。 */
+.tf-glass {
+    --liquid-blur: var(--liquid-2-blur);
+    --liquid-bg:   var(--liquid-2-bg);
+    position: relative;
+    isolation: isolate;
+    border: 1px solid var(--liquid-stroke);
+    border-radius: var(--liquid-radius-panel);
+    box-shadow: var(--liquid-shadow),
+        inset 0 1px 1px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft),
+        inset 1px 0 1px var(--liquid-rim-soft),
+        inset -1px 0 1px var(--liquid-rim-soft);
+    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
+    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
+    transition: box-shadow var(--liquid-motion), border-color var(--liquid-motion);
+}
+.tf-glass::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    border-radius: inherit;
+    background: var(--liquid-scrim), var(--liquid-bg);
+}
+.tf-glass::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--liquid-sheen);
+    mix-blend-mode: screen;
+    pointer-events: none;
+}
+.tf-glass--1 { --liquid-blur: var(--liquid-1-blur); --liquid-bg: var(--liquid-1-bg); }
+.tf-glass--3 { --liquid-blur: var(--liquid-3-blur); --liquid-bg: var(--liquid-3-bg); }
+
+/* 降级:不支持 backdrop-filter 的浏览器给不透明底 */
+@supports not (backdrop-filter: blur(1px)) {
+    .tf-glass { background: var(--color-bg-elevated); }
+    .tf-glass::before, .tf-glass::after { content: none; }
+}
+
+/* 减少动态:本组件**刻意不写** `@media (prefers-reduced-motion: reduce)` 块。
+   简报原稿在这里放了两条覆盖,两条都不能留:
+     1. `.tf-glass { transition: none !important }` —— 死声明。文件中部那个统一的
+        reduce 块(选择器 `*, *::before, *::after`)已经把全站 transition-duration
+        压到 0.01ms;再写一条只是把「减少动态集中在一处」摊成「各组件各写各的」,
+        test_css_contract 的「reduce 块里正好 3 个动效分支」正是守这件事。
+     2. `.tf-glass::after { content: none !important }` —— **改的是外观,不是动效**。
+        本档的流光是一条静态 linear-gradient,它不动;reduced-motion 管的是动效
+        (WCAG 2.1 SC 2.3.3 Animation from Interactions),不是静态装饰。更要命的是
+        按钮外观 / 文字颜色 / 高度三个层叠模型都以「reduce 块不碰外观」为前提直接
+        跳过该块(见 _btn_media_applies),在里面改外观会让那三个模型对这一整个
+        用户群静默失准 —— test_reduced_motion_block_only_touches_motion 会红。
+   将来真给流光加了动画,压制写法是 `animation: none !important`(动效属性,合规),
+   不是 `content: none`。 */

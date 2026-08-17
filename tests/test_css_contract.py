@@ -7839,7 +7839,16 @@ def _motion_rule_index(css):
 #     （它是唯一「遮罩与卡片同体」的浮层，两条属性都在自己身上），`.drop-veil`
 #     的 --dur-fast 改 --dur-base（它做的是整层显隐，不是 hover 反馈）。
 #   三个新分支都是纯类选择器，落在 reduce 块 `*` 的覆盖范围内，无需豁免登记。
-_MOTION_BRANCH_COUNT = 45
+# 45 -> 46（2026-08-17 液态玻璃 Task 1）：加 1 个分支 `.tf-glass`
+#   （box-shadow + border-color 两条过渡，时长走 `var(--liquid-motion)`——
+#   该令牌是「时长 + 缓动」的整体，不是单独的 --dur-* 档位）。
+#   它是纯类选择器，落在 reduce 块 `*` 的覆盖范围内，无需豁免登记。
+#   ⚠️ 液态玻璃自带的 `@media (prefers-reduced-motion: reduce)` 块**刻意只写**
+#   `.tf-glass::after { content: none }`（关流光），**不写** transition 覆盖：
+#   统一的 `*, *::before, *::after` 块已经把 transition-duration 压到 0.01ms，
+#   再写一条既是死声明，又会让下面那条「reduce 块里正好 3 个分支」变红 ——
+#   那条断言正是用来守「减少动态集中在一处、不许各组件各写各的」。
+_MOTION_BRANCH_COUNT = 46
 
 
 def test_motion_rule_index_is_complete():
@@ -8129,8 +8138,12 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 补 opacity、`.drop-veil` 换时长档都是就地改，不新增上下文；亮起态
     # `.cmdk--in` / `.drop-veil--in .drop-veil__tip` 只改终值、不声明 transition，
     # 同样不额外反解。
-    assert len(ctxs) == 42, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 42：\n'
+    # 42 -> 43（2026-08-17 液态玻璃 Task 1）：`.tf-glass` 反解出一个上下文
+    # （box-shadow + border-color 的普通过渡），纯类选择器，在 reduce 块 `*`
+    # 覆盖范围内，不进豁免清单。档位类 `.tf-glass--1/--3` 只翻转自定义属性、
+    # 不声明 transition，不额外反解。
+    assert len(ctxs) == 43, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 43：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
