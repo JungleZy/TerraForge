@@ -390,11 +390,23 @@ def _animate_art(stream, duration=None, stop_event=None, truecolor=True,
                 # 三段编排等于白做;抽样把追加的等待钉死在上限内。
                 rest = frames[i::max(1, (len(frames) - i) // _ANIM_FASTFORWARD_FRAMES)]
                 gap = _ANIM_FASTFORWARD / len(rest)
-                for tail in rest:
+                ff_started = time.monotonic()
+                for n, tail in enumerate(rest, 1):
                     safe_write(stream, tail)
                     safe_write(stream, up)
                     stream.flush()
-                    time.sleep(gap)
+                    # 按绝对进度表等,不是每帧 time.sleep(gap) 累加。累加的写法每帧
+                    # 都要一个调度量子,机器一忙单次就是几十毫秒,18 帧的总额能翻到
+                    # 三倍以上并越过 Spinner.stop() 的 join(timeout=1) —— 于是 stop()
+                    # 带着还在写帧的线程返回,剩下的动画帧与随后的启动日志互相插行,
+                    # 而收尾那句定帧(finally 里的静态 art)也还没写。macOS CI 实测过
+                    # 这一幕:run 31997345537 里 stop() 耗时 1.109s,正是 1s join 超时
+                    # 加收尾,当时屏上只落了 6 帧。落后就不再等、但帧照写完:每帧都是
+                    # 一张完整画面,少等不等于少画,总时长因此真的钉在
+                    # _ANIM_FASTFORWARD 上 —— 与下面主循环「落后就丢帧」同一个思路。
+                    left = (ff_started + n * gap) - time.monotonic()
+                    if left > 0:
+                        time.sleep(left)
                 break
             # 按截止时间走,落后就丢帧:主线程那几秒 import 是 CPU 密集的,本线程
             # 抢不到 GIL 时固定 sleep 会把整段编排拖长一倍。每帧都是一张完整画面、

@@ -327,7 +327,6 @@ def test_startup_console_plays_banner_then_spins_on_one_thread(monkeypatch):
 
 
 def test_startup_console_stop_fast_forwards_instead_of_hard_cutting(monkeypatch):
-    import time
     from src.core import startup_banner as sb
     buf = _wide_tty(monkeypatch)
     monkeypatch.setattr(sb, '_ANIM_DURATION', 30)   # 慢到不可能自己放完
@@ -336,14 +335,32 @@ def test_startup_console_stop_fast_forwards_instead_of_hard_cutting(monkeypatch)
                              interval=0.01).start()
     assert _wait_until(lambda: buf.getvalue().count(up) >= 2)
     drawn = buf.getvalue().count(up)
-    t0 = time.time()
     show.stop()
-    elapsed = time.time() - t0
     out = buf.getvalue()
-    # 真活儿干完了,追加的等待必须有硬上限(_ANIM_FASTFORWARD + 一帧)
-    assert elapsed < 0.5, elapsed
-    # 但不是硬切:剩下的帧抽样快放完,三段编排看得完整
+    # stop() 必须等到那条线程真的收工才返回。这里刻意**不**拿墙钟量它:
+    # Spinner.stop() 是 set + join(timeout=1),耗时被那 1s 硬顶住,于是任何
+    # 「elapsed < 1s 以上的数」都不可能失败 —— 是条永真断言。原判据
+    # `elapsed < 0.5` 是唯一还 falsify 得了的写法,而它在 macOS CI 上实测 1.109s
+    # 变红(run 31997345537)。它红得对:那正是 join 超时、stop() 带着还在写帧的
+    # 线程回来了,当时屏上只落了 6 帧、连收尾的定帧都还没写。判据因此换成线程
+    # 状态本身 —— 确定,且与机器快慢无关。
+    assert not show._thread.is_alive(), (
+        'stop() 返回时动画线程还活着 —— join(timeout=1) 超时了,剩下的帧与收尾'
+        '定帧会插到随后的启动日志中间。快进的总时长必须留在 _ANIM_FASTFORWARD '
+        '预算内(它按绝对进度表收口,不是每帧 sleep 累加)')
+    # 不是硬切:剩下的帧抽样快放完,三段编排看得完整
     assert out.count(up) >= drawn + sb._ANIM_FASTFORWARD_FRAMES
+    # 但也确实是**抽样**,不是把剩余帧一股脑倒完 —— 倒完等于没有编排,屏上只是
+    # 一闪。抽样档位 _ANIM_FASTFORWARD_FRAMES 取 ceil 后最多翻一倍(步长是整除),
+    # 留 +2 给端点,再钉住这条上界确实远低于全量帧数,否则这个判据本身就没意义。
+    total = len(list(sb._frames(truecolor=sb.use_truecolor(),
+                                indent=sb.layout_indent(buf))))
+    sampled_cap = drawn + 2 * sb._ANIM_FASTFORWARD_FRAMES + 2
+    assert sampled_cap < total, (
+        f'本判据已失效:抽样上界 {sampled_cap} 不再低于全量 {total} 帧')
+    assert out.count(up) <= sampled_cap, (
+        f'快进放了 {out.count(up) - drawn} 帧,抽样档位是 '
+        f'{sb._ANIM_FASTFORWARD_FRAMES} 帧(全量 {total})—— 剩余帧被一股脑倒完了')
     # 横幅照样完整落地:定帧 + 信息区一个都不能少
     assert out.count('\033[?25h') == 1
     for line in sb._art_block(True, indent=sb.layout_indent(buf),
