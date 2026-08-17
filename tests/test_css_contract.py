@@ -7843,11 +7843,18 @@ def _motion_rule_index(css):
 #   （box-shadow + border-color 两条过渡，时长走 `var(--liquid-motion)`——
 #   该令牌是「时长 + 缓动」的整体，不是单独的 --dur-* 档位）。
 #   它是纯类选择器，落在 reduce 块 `*` 的覆盖范围内，无需豁免登记。
-#   ⚠️ 液态玻璃自带的 `@media (prefers-reduced-motion: reduce)` 块**刻意只写**
-#   `.tf-glass::after { content: none }`（关流光），**不写** transition 覆盖：
-#   统一的 `*, *::before, *::after` 块已经把 transition-duration 压到 0.01ms，
-#   再写一条既是死声明，又会让下面那条「reduce 块里正好 3 个分支」变红 ——
-#   那条断言正是用来守「减少动态集中在一处、不许各组件各写各的」。
+#   ⚠️ 液态玻璃**整个没有**自己的 `@media (prefers-reduced-motion: reduce)` 块
+#   （style.css 里原位留了注释说明为什么）。简报原稿写过两条，都不能要：
+#     `.tf-glass { transition: none !important }` —— 死声明。统一的
+#       `*, *::before, *::after` 块已经把 transition-duration 压到 0.01ms；
+#       多写一条只会让下面那条「reduce 块里正好 3 个分支」变红，而那条断言
+#       正是用来守「减少动态集中在一处、不许各组件各写各的」。
+#     `.tf-glass::after { content: none !important }` —— content 是外观属性，
+#       撞 test_reduced_motion_block_only_touches_motion 的白名单（本文件下方，
+#       只放行 animation-* / transition-* / scroll-behavior）。本档流光是一条
+#       静态 linear-gradient，它不动，本来也不归 reduced-motion 管。
+#   所以别照着简报把这个块「补回来」：补一条红一条。将来真给流光加了动画，
+#   压制写法是 `animation: none !important`（动效属性，在白名单内）。
 _MOTION_BRANCH_COUNT = 46
 
 
