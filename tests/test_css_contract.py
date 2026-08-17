@@ -7863,7 +7863,11 @@ def _motion_rule_index(css):
 #   面板的 position:fixed 与 opacity/transform 滑入过渡、以及可复制胶囊的
 #   hover 底色渐变，两个修复块以 (0,2,0) 把这些功能属性补回（皮肤属性仍由
 #   .tf-glass 承担）。复合类选择器同样在 reduce 块 `*` 覆盖范围内，无需豁免登记。
-_MOTION_BRANCH_COUNT = 49
+# 49 -> 50（2026-08-17 液态玻璃 Task 4）：加 1 个分支 `.tf-field`
+#   （border-color + box-shadow 的聚焦过渡，时长走 var(--liquid-motion)）。
+#   纯类选择器，落在 reduce 块 `*` 覆盖范围内，无需豁免登记。同批的
+#   `.tf-card` / `.tf-card::before` 不声明任何 transition/animation，不计数。
+_MOTION_BRANCH_COUNT = 50
 
 
 def test_motion_rule_index_is_complete():
@@ -8161,8 +8165,12 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # `.workbench-panel.tf-glass` 与 `.statusbar-copy.tf-glass`（叠加修复块，
     # 补回被 .tf-glass 顶掉的 position:fixed / 滑入过渡 / hover 底色渐变）
     # 各反解出一个上下文，都在 reduce 块 `*` 覆盖范围内，不进豁免清单。
-    assert len(ctxs) == 46, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 46：\n'
+    # 46 -> 47（2026-08-17 液态玻璃 Task 4）：`.tf-field`（聚焦时 border-color
+    # + box-shadow 的普通过渡）反解出一个上下文，纯类选择器，在 reduce 块 `*`
+    # 覆盖范围内，不进豁免清单。`:focus` 态只改终值、不声明 transition，
+    # 不额外反解；`.tf-card` 无动效，不产生上下文。
+    assert len(ctxs) == 47, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 47：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
