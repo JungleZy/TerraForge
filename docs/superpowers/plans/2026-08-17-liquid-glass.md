@@ -18,7 +18,7 @@
 - 文字对比度 WCAG AA：正文 ≥ 4.5:1、图形元素 ≥ 3:1，由 `test_css_contract.py` / `test_elevation_glass.py` 兜底。液态玻璃低 alpha 底上放文字必须叠 scrim。
 - vendor 版本号字面量、主题首帧脚本、`data-bs-theme="dark"` SSR 默认值一律不动。
 - 模板 `<script>` 内禁止出现中文（`test_i18n.py` 裸中文扫描）；新增用户可见文案必须走 `t()` i18n，禁止新增裸文案。
-- `prefers-reduced-motion: reduce` 时：禁用流光动画与折射。循环动画沿用既有 `!important` 压制块的写法。
+- `prefers-reduced-motion: reduce` 时：禁用流光**动画**（折射是静态滤镜，不归其管，2026-08-17 用户裁决）。循环动画沿用既有 `!important` 压制块的写法。
 - 提交信息：中文 + conventional 前缀，`git commit -F - <<'EOF'` 方式。
 - 每 Task 验证基线：`uv run pytest tests/test_css_contract.py tests/test_elevation_glass.py tests/test_i18n.py -x -q`。
 
@@ -477,17 +477,14 @@ style.css 末尾追加：
 
 ```css
 /* 折射增强(仅 Chromium):glass-3 的背景扭曲。@supports 探测失败时
-   保持 Task 1 的普通模糊,天然降级。 */
+   保持 Task 1 的普通模糊,天然降级。
+   2026-08-17 裁决(用户确认):feTurbulence 不带 <animate> 是静态滤镜,
+   不归 prefers-reduced-motion 管;契约测试白名单只放行
+   animation-*/transition-*/scroll-behavior,故刻意不写 reduce 禁用块。 */
 @supports (backdrop-filter: url("#tf-liquid-refraction")) {
     .tf-glass--3 {
         backdrop-filter: blur(2px) url("#tf-liquid-refraction") saturate(var(--liquid-saturate));
         -webkit-backdrop-filter: blur(2px) url("#tf-liquid-refraction") saturate(var(--liquid-saturate));
-    }
-}
-@media (prefers-reduced-motion: reduce) {
-    .tf-glass--3 {
-        backdrop-filter: blur(var(--liquid-3-blur)) saturate(var(--liquid-saturate)) !important;
-        -webkit-backdrop-filter: blur(var(--liquid-3-blur)) saturate(var(--liquid-saturate)) !important;
     }
 }
 ```

@@ -57,7 +57,7 @@
 
 ### 2. 折射增强（Chromium only）
 
-SVG `feTurbulence + feDisplacementMap` 滤镜，`@supports (backdrop-filter: url(#…))` 门控，只加在 `glass-3`（模态/命令面板）——数量少、面积小，性能可控。`prefers-reduced-motion` 时全局禁用折射与流光动画。
+SVG `feTurbulence + feDisplacementMap` 滤镜，`@supports (backdrop-filter: url(#…))` 门控，只加在 `glass-3`（模态/命令面板）——数量少、面积小，性能可控。`prefers-reduced-motion` 时全局禁用流光动画（折射为静态滤镜，不归 reduced-motion 管——2026-08-17 用户裁决，契约测试白名单亦禁止在 reduce 块写 backdrop-filter）。
 
 ### 3. 页面处理
 
