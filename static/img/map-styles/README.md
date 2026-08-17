@@ -39,7 +39,7 @@ uv run python scripts/fetch_map_style_samples.py             # 五张一起覆�
 
 所以：界面选「地形图」时预览是个黑格子**不是 bug**，下载出来的瓦片也确实是这样。要拿它当图看，得自己叠到别的底图上。`fetch_map_style_samples.py` 的亮度闸因此把 `t` 列进 `DARK_BY_DESIGN` 直接放行，其余四个样式仍然一低于阈值就整套拒收。
 
-> **待用户决定的产品问题**：`STYLE_CODES` 把「地形」映射到 `t`（阴影层），而用户期待的「地形图」几乎肯定是 `p`（地形 + 底图 + 标注）。换码会动缓存命名空间（`cache/<style_code>-<fingerprint>/`）与存量任务行，属于产品决定，没有擅自改。
+> **已决定不换码（2026-08-17）**：`STYLE_CODES` 继续把「地形」映射到 `t`。换成 `p`（地形 + 底图 + 标注）要动缓存命名空间 `cache/<style_code>-<fingerprint>/` 与存量任务行，代价大于收益；`t` 到底是什么改由文档讲清 —— 本节加上两份 README 的样式表。
 
 ## 扩展名与实际格式不符，别去「修」
 
