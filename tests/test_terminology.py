@@ -50,17 +50,28 @@
 
 ## 与并行任务的边界
 
-选区浮层那两颗按钮（打开表单的主按钮、清选区的按钮）的文案由 Task 5 写，本文件
-只**验收**它们：主按钮的可见文案不许含「下载」，清除钮的可见文案与 `title`
-必须同一个动词。`js.plugins.*` / `tpl.plugins.*` 属插件面，不在本文件的任何键表
-里（另一条工作线在改）。
+选区那一格与工具条上那些按钮的文案，本文件只**验收**它们：可见文案不许承诺它
+不做的动作（下面那条「不许说下载」按区域扫 markup，不是抄一份键名清单），清除钮
+的可见文案与 `title` 必须同一个动词。`js.plugins.*` / `tpl.plugins.*` 属插件面，
+不在本文件的任何键表里（另一条工作线在改）。
 """
 
+import os
 import re
+import sys
 
 import pytest
 
-from src.i18n.catalog import MESSAGES
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from src.i18n.catalog import MESSAGES  # noqa: E402
+
+# 复用既有的「按 div 深度切一段 markup」与「按花括号切函数体 / 剥 JS 注释」，
+# **不另写一份**（同 test_formatters.py 顶部那条理由）。本文件绝大多数断言只读
+# catalog 的值，唯一要读源码的是下面那条「哪些键真的是按钮的可见文案」——
+# 那个问题只有 markup 能回答，抄一份键名清单就退化成白名单，新按钮扫不到。
+from test_create_panel import _div_span, _js, _template  # noqa: E402
+from test_css_contract import _js_function_body, _strip_js_comments  # noqa: E402
 
 _HAN = re.compile(r'[\u4e00-\u9fff]')
 
@@ -567,33 +578,123 @@ def test_the_save_path_is_called_the_same_thing_everywhere():
 # 落在**行为的证据**上（路由、是否落库、是否只写输入框），而不是主观措辞。
 # ---------------------------------------------------------------------------
 
-def test_the_selection_overlay_primary_button_does_not_promise_a_download():
-    """选区浮层的主按钮打开的是表单，文案不许说「下载」。
+# 选区那一格与工具条：可见文案的扫查范围。
+#
+# 2026-08-17 迁移登记。**改前钉什么**：单键 `js.map.bounds.create_task` —— 地图
+# 右上角选区浮层上那颗主按钮的可见文案。它改前逐字写着「下载」，而点下去走的是
+# `openCreatePanel`（更早叫 `openDownloadModal`）：只是把新建面板打开并预选管线，
+# 一个瓦片都不下。同时钉反向一侧：`_title` 那个键必须仍说「下载任务」（后果要
+# 交代），可见文案与 title 分两个键正是为了这个区别。
+#
+# **为什么换**：工具条瘦身把 `#boundsInfo` 整块搬进「新建任务」面板的选区段，
+# 那颗主按钮（`#boundsCreateBtn`）连同 `js.map.bounds.create_task` /
+# `create_task_title` 两个键一起退役 —— 搬进面板之后它是一颗「在新建任务面板里
+# 打开新建任务面板」的钮，唯一入口收回工具条那颗「新建」。判据的宿主没了：
+# `MESSAGES.get(...)` 拿到 None，用例只会一直红。
+#
+# **现在钉什么**：同一个不变量 —— **标签不许承诺它不做的动作** —— 宿主从「一个
+# 键」换成「两块区域里所有按钮的可见文案」：
+#   · `#mapToolbar`（工具条六颗）
+#   · `#selectionField`（选区那一格；读数那几颗由 JS 全量重建，见下面的取法）
+# 这两块里没有一颗钮会下载任何东西：打开面板 / 导入区域 / 光照 / 三个面板 toggle /
+# 去框选 / 手动输入四至（确定·取消只写输入框）/ 清除选区。真正会去拉瓦片的是
+# 提交那一步，而提交钮在面板**页脚**，不在这两块里。
+#
+# 为什么不是删掉用例：删了就等于把「浮层主按钮写下载却只开表单」这个踩出来的坑
+# 从测试里抹掉，下一颗新按钮照样可以写「下载」。换成区域扫查比原来的单键还严 ——
+# 原来只管一颗钮，现在管这两块里的每一颗，包括以后新加的。
+_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
+_T_CALL_RE = re.compile(r"t\(\s*'([^']+)'")
 
-    实测：这颗钮走 `openCreatePanel`（Task 5 之前叫 `openDownloadModal`），只是
-    把新建面板打开并预选管线，一个瓦片都不下。`title` 是例外并且**刻意**保留
-    「下载」——它说的是「用当前选区新建下载任务」，那是这颗钮的后果，而这句
-    是设计稿 §2.5 定的原文。可见文案与 title 分成两个键正是为了这个区别。
+# 反向的防空网：这三颗是实测（2026-08-17）扫到的、确定在范围内的按钮。扫查范围
+# 一旦和产品对不上（换了容器 id、读数换了渲染函数），本条会退化成「因为空所以
+# 过」——那种断言比没有断言更坏，它占着一条测试名让人以为这块还有人看着。
+#
+# 实测（2026-08-17）四块区域各扫到几个可见文案键：
+#   #mapToolbar               6（新建 / 区域导入 / 光照 / 任务 / 配置 / 插件
+#                                —— 正好是瘦身后剩下的六颗）
+#   #selectionField           2（去框选 / 手动输入范围）
+#   updateBoundsInfo()        1（清除选区）
+#   _renderManualBounds()     2（确定 / 取消）
+# 去重后 11 个。`js.map.bounds.sr_` 那个拼接前缀不在其中（不是一条文案）。
+_MUST_BE_SWEPT = (
+    'tpl.index.toolbar.create',      # 工具条「新建」
+    'tpl.index.create.draw_rect',    # 选区段「去框选」
+    'js.map.bounds.clear',           # 读数里「清除选区」（JS 重建出来的那颗）
+)
 
-    文案由 Task 5 写（`js.map.bounds.create_task` / `_title`），本条只验收。
+
+def _visible_label_keys(markup):
+    """`markup` 里每颗 `<button>` 的**可见文案**用到的 i18n 键。
+
+    只取开标签那个 `>` 之后的内容：`title` / `aria-label` 落在属性区里，**刻意**
+    排除 —— 可见文案与 title 分成两个键就是为了各说一件事（文案说动作，title 说
+    后果），把属性一起扫进来会把「后果里提下载」误判成「文案承诺下载」。
     """
-    label = MESSAGES.get('js.map.bounds.create_task')
-    assert label, (
-        'js.map.bounds.create_task 不在 catalog 里 —— 选区浮层主按钮的新文案还'
-        '没落地（Task 5 负责写它，同时删掉 js.map.bounds.download）'
-    )
-    assert '下载' not in label['zh'], (
-        f'主按钮的可见文案还在说「下载」，而它只是打开表单：{label["zh"]!r}')
-    assert 'download' not in label['en'].lower(), (
-        f'主按钮的英文文案还在说 download：{label["en"]!r}')
+    keys = []
+    for m in _BUTTON_RE.finditer(markup):
+        keys += _T_CALL_RE.findall(m.group(2))
+    return keys
+
+
+def _selection_and_toolbar_markup():
+    """{区域名: markup}，覆盖选区那一格与工具条里全部按钮。
+
+    模板里 `#createBoundsReadout` 只是个空壳 `<div>` —— 四至读数、手动输入面板、
+    「清除选区」都是 `updateBoundsInfo()` / `_renderManualBounds()` 用模板字面量
+    全量重建的，所以那几颗钮的 markup 只能从这两个函数体里取。
+    """
+    html = _template('index.html')
+    out = {}
+    for el_id in ('mapToolbar', 'selectionField'):
+        span = _div_span(html, el_id)
+        assert span, (
+            f'templates/index.html 里找不到 #{el_id} 的 <div> —— 本测试已失效，'
+            '扫查范围必须跟着宿主改，不许静默跳过')
+        out[f'#{el_id}'] = html[span[0]:span[1]]
+    map_js = _strip_js_comments(_js('map.js'))
+    for fn in ('updateBoundsInfo', '_renderManualBounds'):
+        out[f'map.js::{fn}()'] = _js_function_body(map_js, fn)
+    return out
+
+
+def test_no_button_in_the_selection_field_or_toolbar_promises_a_download():
+    """选区那一格与工具条里，没有一颗按钮的可见文案说「下载」。
+
+    这两块里一颗下载的钮都没有（逐颗行为见上面那段登记）：全是画框 / 改四至 /
+    清选区 / 开关面板。谁在这里写「下载」，就是在承诺一个点下去不会发生的动作 ——
+    这正是改前 `#boundsCreateBtn` 干的事（文案「下载」，行为 `openCreatePanel`）。
+
+    本条是那条单键断言的迁移版（原名
+    `test_the_selection_overlay_primary_button_does_not_promise_a_download`，
+    宿主浮层与那个键都已退役，沿革与判据变更写在上面那段登记里）。
+    """
+    problems = []
+    swept = set()
+    for region, markup in _selection_and_toolbar_markup().items():
+        for key in _visible_label_keys(markup):
+            entry = MESSAGES.get(key)
+            if entry is None:
+                # `t('js.map.bounds.sr_' + field)` 这种拼接出来的键，命中的是前缀
+                # 片段而不是一条文案。方位词自己另有断言（sr_north/... 四条）。
+                continue
+            swept.add(key)
+            if '下载' in entry['zh'] or 'download' in entry['en'].lower():
+                problems.append(
+                    f'{region}: {key} = {entry["zh"]!r} / {entry["en"]!r}')
+    assert not problems, (
+        '选区那一格 / 工具条里有按钮的可见文案在说「下载」，而这两块里没有一颗钮'
+        '会下载任何东西（真正拉瓦片的是面板页脚的提交钮）：\n  '
+        + '\n  '.join(problems))
+    missing = [k for k in _MUST_BE_SWEPT if k not in swept]
+    assert not missing, (
+        f'这些按钮没被扫到：{missing} —— 扫查范围已经和产品对不上，本条正在变成'
+        f'「因为空所以过」（实测 2026-08-17 共扫到 11 个可见文案键，'
+        f'这次只扫到 {len(swept)} 个）')
     assert 'js.map.bounds.download' not in MESSAGES, (
         '旧键 js.map.bounds.download（「下载」/"Download"）还在 —— 它就是那句'
-        '与行为矛盾的文案本身，换了新键就该删掉它'
+        '与行为矛盾的文案本身，退役了就不许回来'
     )
-    # 反向：title 那一侧必须还在说「下载任务」，否则用户不知道这颗钮的后果。
-    title = MESSAGES.get('js.map.bounds.create_task_title')
-    assert title and '下载' in title['zh'], (
-        f'title 不再交代这颗钮会建一个下载任务：{title!r}')
 
 
 def test_the_clear_selection_control_uses_one_verb_in_label_and_title():

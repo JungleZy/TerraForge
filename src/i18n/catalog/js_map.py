@@ -65,19 +65,9 @@ MESSAGES = {
         'zh': '点击编辑',
         'en': 'Click to edit',
     },
-    # 主按钮：**打开新建任务面板**，不是开始下载。改前它写「下载」（en
-    # "Download"），而点下去出现的是一张表单 —— 标签承诺了一个它不做的动作。
-    # 面板标题、rail 入口、这颗按钮现在是同一个词。
-    'js.map.bounds.create_task': {
-        'zh': '新建任务',
-        'en': 'New task',
-    },
-    # title 里保留「下载」是对的：它说的是**将要建的那种任务**（瓦片下载），
-    # 而按钮标签说的是**这一次点击会发生什么**（开一张表）。两者都准确。
-    'js.map.bounds.create_task_title': {
-        'zh': '用当前选区新建下载任务',
-        'en': 'Create a download task from the current selection',
-    },
+    # 2026-08-15 退役 create_task / create_task_title（原「新建任务」主按钮）：
+    # 四至读数从地图浮层搬进「新建任务」面板之后，那颗按钮成了面板里指向面板
+    # 自己的入口，与按钮一起删。面板标题与 rail 入口那两个键仍在。
     # 清除钮：可见文案与 title **同一个键**。改前是「删除」+ title「清除选区」——
     # 两个动词说同一件事，而「删除」还暗示删掉的是数据（它只清掉那个框）。
     'js.map.bounds.clear': {
@@ -92,12 +82,10 @@ MESSAGES = {
         'zh': '请在地图上框选下载区域',
         'en': 'Draw a selection on the map to download',
     },
-    # 手动输入范围：空态里那颗入口按钮 + 面板的确定/取消。这是键盘用户唯一的
-    # 选区入口，文案要说清「输入的是范围」，不能只写「手动输入」。
-    'js.map.bounds.manual': {
-        'zh': '手动输入范围',
-        'en': 'Enter bounds manually',
-    },
+    # 2026-08-15 退役 bounds.manual（原空态里那颗「手动输入范围」）：地图浮层
+    # 退场，面板选区段的 tpl.index.create.manual_bounds 是现在唯一那颗入口，
+    # 它**有没有选区都显示**，所以键盘用户的唯一选区入口没有变少。
+    # 下面 manual_apply / manual_cancel 是手动输入面板自己的确定/取消，仍在用。
     'js.map.bounds.manual_apply': {
         'zh': '确定',
         'en': 'Apply',
@@ -193,16 +181,16 @@ MESSAGES = {
     # 下载提交按钮不再按选区禁用（disabled 元素键盘够不着，也读不到原因），
     # 缺选区时改由这条文案当场解释。所以它必须把**两条**入口都说出来：
     # 只写「框选」等于把键盘用户指回他们唯一做不到的那件事。
+    # 2026-08-15：文案里的位置跟着搬。四至读数与「手动输入范围」都在「新建任务」
+    # 面板的选区那一格里，不再有「范围浮层」这个东西 —— 指向一个已经不存在的
+    # 界面位置，比不给位置更糟。
     'js.map.download.need_selection': {
-        'zh': '请先在地图上框选下载区域，或用范围浮层的「手动输入范围」填写四至',
+        'zh': '请先在地图上框选下载区域，或用选区那一格的「手动输入范围」填写四至',
         'en': 'Draw a selection on the map first, or use "Enter bounds manually" '
-              'in the bounds overlay',
+              'in the selection section',
     },
-    'js.map.download.bounds_summary': {
-        'zh': '选区 N {north} · S {south} · E {east} · W {west}（{width}° × {height}°）',
-        'en': 'Selection N {north} · S {south} · E {east} · W {west} '
-              '({width}° × {height}°)',
-    },
+    # 2026-08-15 退役 download.bounds_summary：那是面板里那句只读四至摘要，而
+    # 可编辑的四至读数（.bounds-grid）已经搬进同一格 —— 同一个数字两处渲染。
     'js.map.download.confirm_large': {
         'zh': '预计 {count} 张瓦片，按 10 张/秒估算耗时约需 {duration}。确定创建吗？',
         'en': 'About {count} tiles, roughly {duration} at 10 tiles/s. Create it?',

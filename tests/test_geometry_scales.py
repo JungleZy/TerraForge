@@ -136,7 +136,18 @@ CONTROLS = (
     '.detail-gap-samples',
     '.detail-artifact-problems',
     '.task-log__body',
-    '.modal-bounds-summary',
+    # 2026-08-17 删除登记（**真删，不是暂摘**，与文件开头那三条「摘出 -> 同日
+    # 放回」不同类）：这里原有 `.modal-bounds-summary` —— 弹窗/面板里那句只读四至
+    # 摘要。工具条瘦身把可编辑的 `.bounds-grid` 搬进同一格之后，那句话是同一个
+    # 数字的第二处渲染，节点 `#createPanelBounds`、CSS 规则、i18n 键
+    # `js.map.download.bounds_summary` 一并退役（style.css 里那一节留了删除登记）。
+    # 选择器整条不在，`_radius_px` 只会返回 'missing'：留着它这条用例就永远红，
+    # 而把它改成「断言 missing」等于守空气（同上面那条被删的
+    # test_no_local_radius_patch_for_a_single_button_instance 的理由）。
+    # 顶上来的新宿主 `.bounds-readout` **不进本清单**：它整条规则只有
+    # `margin-bottom: var(--space-3)`，是个排版容器不是控件 —— 没有边框、没有底色、
+    # 不可聚焦，给它安个 6px 圆角是无中生有的契约。读数自己的几何仍在
+    # `.bounds-grid` / `.bounds-actions .btn` 上（后者就在本清单第 4 项里）。
 )
 
 

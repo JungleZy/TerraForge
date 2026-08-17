@@ -970,3 +970,324 @@ def test_the_contour_preview_rows_are_the_shared_chip_not_bootstrap_buttons():
         '选中态必须同时写 .active 与 aria-pressed —— 只写类名时读屏用户听不出'
         '哪一个任务正在地图上预览'
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-15 工具条瘦身（9 颗 → 6 颗）+ 四至读数收编进 #createPanel 的新增契约。
+# 三条都自带「扫不到东西时响亮失败」的自检：这一类文本断言最常见的死法不是
+# 判错，而是锚点没了以后扫出空集合、于是「集合里每一项都满足 X」永真。
+# ---------------------------------------------------------------------------
+
+
+def _js_dir():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, 'static', 'js')
+
+
+def _all_js_code():
+    """{文件名: 已剥注释的源码} —— static/js 下每个 .js。
+
+    「某个 id 全仓零命中」必须扫全目录：退役的节点 id 会残留在别的文件里
+    （command_palette.js 就曾 guard 在 #mapDrawRect 上），只扫 map.js 会漏。
+    """
+    out = {}
+    for name in sorted(os.listdir(_js_dir())):
+        if not name.endswith('.js'):
+            continue
+        with open(os.path.join(_js_dir(), name), encoding='utf-8') as f:
+            out[name] = _strip_comments(f.read())
+    assert out, 'static/js 下一个 .js 都没扫到 —— 本测试已失效'
+    return out
+
+
+def _strip_template_comments(src):
+    """剥掉 HTML 注释与 Jinja 注释。
+
+    与 _strip_comments 同一路数、同一个理由：本仓的「删除登记」注释**逐字写着
+    被删掉的那些 id**（templates/index.html:53-61 就写着 #mapZoomIn /
+    #mapZoomOut / #mapDrawRect，_macros.html:92 还解释了为什么新建图标不复用
+    #mapZoomIn 那个裸加号）。不剥注释，「这些 id 不许再出现」就永远红，而修法
+    会变成「把登记注释删掉」—— 正好把这次改动的理由抹掉。
+    """
+    src = re.sub(r'<!--.*?-->', '', src, flags=re.S)
+    return re.sub(r'\{#.*?#\}', '', src, flags=re.S)
+
+
+def _all_template_code():
+    """{文件名: 已剥注释的模板源码} —— templates 下每个 .html。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tdir = os.path.join(root, 'templates')
+    out = {}
+    for name in sorted(os.listdir(tdir)):
+        if not name.endswith('.html'):
+            continue
+        with open(os.path.join(tdir, name), encoding='utf-8') as f:
+            out[name] = _strip_template_comments(f.read())
+    assert out, 'templates 下一个 .html 都没扫到 —— 本测试已失效'
+    return out
+
+
+def _match_brace(src, j):
+    """src[j] 那个 `{` 配对结束位置的下标。"""
+    depth = 0
+    for k in range(j, len(src)):
+        if src[k] == '{':
+            depth += 1
+        elif src[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return k
+    raise AssertionError('花括号不配对 —— 本测试已失效')
+
+
+def _named_function_spans(src):
+    """[(名字, 体起下标, 体止下标)] —— 所有 `function NAME(...) {...}` 声明。
+
+    用来回答「这段源码住在哪个函数里」。跳参数表的理由与 _fn_body 一样：解构
+    参数里的花括号排在函数体之前，直接 index('{') 会把参数表当函数体。
+    """
+    spans = []
+    for m in re.finditer(r'function\s+([A-Za-z_$][\w$]*)\s*\(', src):
+        depth = 0
+        args_close = None
+        for k in range(src.index('(', m.end() - 1), len(src)):
+            if src[k] == '(':
+                depth += 1
+            elif src[k] == ')':
+                depth -= 1
+                if depth == 0:
+                    args_close = k
+                    break
+        assert args_close is not None, f'{m.group(1)} 参数表不配对 —— 本测试已失效'
+        j = src.index('{', args_close)
+        spans.append((m.group(1), j, _match_brace(src, j)))
+    assert spans, '一个具名函数都没扫到 —— 本测试已失效'
+    return spans
+
+
+def _owner_function(spans, at):
+    """src[at] 所在的最内层具名函数名（不在任何函数里则 None）。"""
+    holding = sorted((b - a, n) for n, a, b in spans if a <= at <= b)
+    return holding[0][1] if holding else None
+
+
+_KEYDOWN_INLINE = re.compile(
+    r"addEventListener\(\s*'keydown'\s*,\s*(?:async\s*)?(?:function\s*)?"
+    r"\([^)]*\)\s*(?:=>\s*)?\{")
+_KEYDOWN_BY_NAME = re.compile(
+    r"addEventListener\(\s*'keydown'\s*,\s*([A-Za-z_$][\w$]*)\s*[,)]")
+
+
+def _keydown_handlers(src):
+    """[(注册它的函数名, 处理器体)] —— 每一个 keydown 处理器。
+
+    两种注册形态都要认：内联函数（`addEventListener('keydown', function (e) {…})`）
+    与具名引用（`addEventListener('keydown', _handleManualBoundsKeydown)`，
+    手动四至面板走的就是这一路）。只认内联的话，缩放消费者哪天改成具名函数就
+    会扫成空集合 —— 于是「有且只有一个消费者」静默变成「一个都没有也算过」。
+    """
+    spans = _named_function_spans(src)
+    found = []
+    for m in _KEYDOWN_INLINE.finditer(src):
+        j = src.index('{', m.end() - 1)
+        found.append((_owner_function(spans, j), src[j:_match_brace(src, j) + 1]))
+    for m in _KEYDOWN_BY_NAME.finditer(src):
+        for name, a, b in spans:
+            if name == m.group(1):
+                found.append((name, src[a:b + 1]))
+    return found
+
+
+def test_the_keyboard_zoom_path_survives_the_deleted_toolbar_buttons():
+    """`+` / `-` 快捷键是键盘用户**唯一**的地图缩放路径，必须存在且不吃输入。
+
+    根因（这条断言存在的全部理由）：**Cesium 自带的相机控制器
+    （ScreenSpaceEventHandler / ScreenSpaceCameraController）只处理鼠标与触摸，
+    没有任何键盘相机控制**。2026-08-15 工具条瘦身把 #mapZoomIn / #mapZoomOut
+    两颗按钮删了 —— 在那之前它们是键盘可达的缩放入口，删掉之后如果 map.js 里
+    没有键盘消费者，地图缩放就只剩鼠标滚轮：这不是「界面简化」，是把一项能力
+    从无障碍路径上删掉。删按钮不许删能力。
+
+    三件事一起守，缺一件这条快捷键就是坏的：
+      1. 有一个 keydown 处理器同时出现 `'+'`、`'-'` 与 zoomMapBy( —— 能力在。
+      2. 处理器里有可编辑元素的排除判据（closest('input, textarea, select,
+         [contenteditable]')），**而且排在两个按键分支之前**。排在后面等于没有：
+         分支先跑完、preventDefault 也发了，用户在「最大层级」数字框里打一个
+         负号，地图当场缩小、负号还打不进去。
+      3. 带 Ctrl/Meta/Alt 时早退。Ctrl+`+` / Ctrl+`-` 是浏览器自己的页面缩放，
+         抢过来就是改掉用户的系统习惯。
+    """
+    src = _strip_comments(_map_js())
+    assert 'function zoomMapBy(' in src, (
+        'map.js 没有 zoomMapBy() —— 相机缩放的唯一实现不在了，本测试已失效')
+
+    handlers = _keydown_handlers(src)
+    assert handlers, (
+        'map.js 里一个 keydown 处理器都没扫到 —— 注册写法变了，本测试已失效'
+        '（扫不到就没得可判，下面几条会全部永真）')
+    consumers = [(owner, body) for owner, body in handlers if 'zoomMapBy(' in body]
+    assert len(consumers) == 1, (
+        f'zoomMapBy( 的 keydown 消费者有 {len(consumers)} 个'
+        f'（{[o for o, _ in consumers]}）—— 恰好要一个：0 个意味着工具条那两颗'
+        '按钮删了之后键盘用户彻底没有缩放路径（Cesium 不带键盘相机控制），'
+        '多个意味着同一次按键会缩放两档')
+    owner, body = consumers[0]
+
+    for key, what in (r"'\+'", '放大'), ("'-'", '缩小'):
+        assert re.search(r'===\s*' + key, body), (
+            f'{owner} 里没有 `=== {key}` 分支 —— {what}这一半没有键盘路径')
+    # 极性也要钉：两个分支的实参写反（`+` 传 -1）时，上面几条一条都不会红，
+    # 而按键行为整个对调。与本文件 test_terrain_submit_sends_the_auto_literal…
+    # 那条三元极性断言同一路数。
+    plus_at = re.search(r"===\s*'\+'", body).start()
+    minus_at = re.search(r"===\s*'-'", body).start()
+    assert re.search(r'zoomMapBy\(\s*1\s*\)', body[plus_at:minus_at]), (
+        f"{owner} 的 `+` 分支没有 zoomMapBy(1) —— 极性写反了，按 `+` 会缩小")
+    assert re.search(r'zoomMapBy\(\s*-1\s*\)', body[minus_at:]), (
+        f"{owner} 的 `-` 分支没有 zoomMapBy(-1) —— 极性写反了，按 `-` 会放大")
+
+    editable = re.search(
+        r"closest\(\s*'([^']*\[contenteditable\][^']*)'\s*\)", body)
+    assert editable, (
+        f'{owner} 里没有 closest(\'…[contenteditable]…\') 排除判据 —— 用户在'
+        '「最大层级」数字框里打负号、在搜索框里打字都会缩放地图')
+    selector = editable.group(1)
+    for part in ('input', 'textarea', 'select', '[contenteditable]'):
+        assert part in selector, (
+            f'排除判据的选择器是 {selector!r}，漏了 {part} —— 漏掉的那类控件'
+            '里打字仍会缩放地图')
+    assert editable.start() < min(plus_at, minus_at), (
+        f'{owner} 里可编辑元素的排除判据排在按键分支**之后**（判据 '
+        f'@{editable.start()}，最早的分支 @{min(plus_at, minus_at)}）—— '
+        '排在后面等于没有：分支已经 preventDefault 并缩放完了才轮到它')
+
+    modifier = re.search(r'if\s*\(([^)]*)\)\s*return', body)
+    assert modifier and all(k in modifier.group(1)
+                            for k in ('ctrlKey', 'metaKey', 'altKey')), (
+        f'{owner} 里没有 `if (e.ctrlKey || e.metaKey || e.altKey) return;` —— '
+        'Ctrl+`+` / Ctrl+`-` 是浏览器自己的页面缩放，抢过来等于改掉用户的系统习惯')
+    assert modifier.start() < min(plus_at, minus_at), (
+        f'{owner} 里修饰键早退排在按键分支之后 —— 同样等于没有')
+
+
+# 工具条按钮的实测数：2026-08-15 瘦身 9 → 6（删 #mapZoomIn / #mapZoomOut /
+# #mapDrawRect）。剩四组六颗：新建 / 导入区域 / 光照 / (任务·配置·插件)。
+# 这个数是 `grep -c 'class="map-panel-btn"' templates/index.html` 的实测值，
+# 不是从设计稿抄的。它是**棘轮**：再加一颗就要在这里改数并解释为什么，
+# 「东西太多了」是用户实测反馈的原话。
+_TOOLBAR_BUTTON_COUNT = 6
+
+
+def test_the_slimmed_toolbar_stays_at_six_buttons_and_the_deleted_ids_are_gone():
+    """工具条恰好 6 颗 .map-panel-btn，且退役的三个 id 全仓零命中。
+
+    两半各守一件事：
+      · 计数守「瘦下来了、而且不会一颗一颗涨回去」。9 → 6 是这次改动的可见
+        成果，没有棘轮的话下一个功能顺手加一颗，三次之后就回到 9 颗。
+      · 零命中守「删干净了」。#mapDrawRect 是最容易留活口的一个：
+        command_palette.js 的 start_bounds 曾 guard 在这颗按钮上，节点删了、
+        guard 返回 false，命令会**静默从命令面板里消失**（本仓 new_download
+        已经栽过一次，command_palette.js:37-45 记着）。所以判据不是「模板里没
+        这颗按钮」，是「模板与 static/js 里都不再有人提这个 id」。
+
+    注释里的删除登记要排除（_strip_template_comments / _strip_comments）：
+    本仓的登记注释逐字写着被删的 id，不剥注释这条断言永远红，而唯一的「修法」
+    是把登记删掉 —— 正好把改动理由抹掉。
+    """
+    # 剥注释的自检：剥错方向（把正文也剥了）时，下面的零命中断言会静默全过。
+    assert 'KEEP' in _strip_template_comments('<b>KEEP</b>{# G #}<i>KEEP</i>')
+    assert 'G' not in _strip_template_comments('<!-- G -->{# G #}')
+    assert 'KEEP' in _strip_comments('KEEP // G\n/* G */')
+    assert 'G' not in _strip_comments('// G\n/* G */')
+
+    templates = _all_template_code()
+    index = templates['index.html']
+    assert 'id="mapToolbar"' in index, (
+        '#mapToolbar 不在 templates/index.html 里了 —— 本测试已失效')
+    buttons = re.findall(r'class="map-panel-btn[^"]*"', index)
+    assert buttons, (
+        '一颗 .map-panel-btn 都没扫到 —— class 写法变了，本测试已失效'
+        '（扫成空集合时下面的计数断言会变成「0 == 6」而不是永真，但错因不同，'
+        '这里先把它说清楚）')
+    assert len(buttons) == _TOOLBAR_BUTTON_COUNT, (
+        f'工具条现在有 {len(buttons)} 颗 .map-panel-btn，实测基线是 '
+        f'{_TOOLBAR_BUTTON_COUNT} 颗（2026-08-15 从 9 颗瘦到 6 颗）—— '
+        '多出来的那颗要么是缩放/框选按钮回来了，要么是新入口没走「先问一句'
+        '这颗是不是第二个入口」。真要加，请在 _TOOLBAR_BUTTON_COUNT 那里改数'
+        '并写下理由')
+
+    js = _all_js_code()
+    for retired, why in (
+        ('mapZoomIn', '放大按钮 —— 缩放改由 `+` 快捷键与命令面板 zoom_in 承担'),
+        ('mapZoomOut', '缩小按钮 —— 改由 `-` 快捷键与命令面板 zoom_out 承担'),
+        ('mapDrawRect', '框选按钮 —— 改由面板选区段的 #createDrawBtn 承担'),
+    ):
+        stale = sorted(n for n, s in list(templates.items()) + list(js.items())
+                       if retired in s)
+        assert not stale, (
+            f'{stale} 里还在引用 #{retired}（{why}）—— 节点已经不存在，'
+            'getElementById 会拿到 null：命令面板的 guard 会让命令静默消失，'
+            '直接 .click() 的地方会当场抛 TypeError')
+
+
+def test_the_bounds_readout_is_rendered_in_exactly_one_place():
+    """四至读数只有一处渲染，宿主是面板里的 #createBoundsReadout。
+
+    这条守的是 2026-08-15 那次信息架构改动的核心成果。改前同一个四至在两处
+    各渲染一遍：地图右上浮层 #boundsInfo 里的 .bounds-grid（可编辑）与
+    #createPanel 里的 #createPanelBounds（只读句子）。两处渲染意味着两处都要
+    跟着选区刷新，漏一处就是屏幕上两个数字不一致 —— 而用户没有办法知道哪个是
+    真的。改后浮层整块退场、只读句子删除，读数进 #createBoundsReadout。
+
+    判据分三层：
+      1. 生成 `class="bounds-v"`（四至数值格）的函数恰好一个，就是
+         updateBoundsInfo。数值格是「渲染四至」的唯一标志物。
+      2. 生成 `class="bounds-grid"` 的函数恰好两个，实测是 updateBoundsInfo 与
+         _renderManualBounds。为什么 2 不是 1：后者是**手动输入态**那张表单
+         （4 个 input 复用同一套网格外观），它不渲染 currentBounds 的值，
+         所以不构成第二处读数 —— 这里额外钉住它体内没有 .bounds-v，防止哪天
+         有人往手动输入面板里塞一份读数副本。
+      3. 宿主是 #createBoundsReadout，且 #boundsInfo 这个 id 在 static/js 里
+         零命中（局部变量名 boundsInfo 还在，不判它 —— 判的是 id 字面量与
+         选择器）。宿主换回地图浮层就是把这次收敛整个回退。
+    """
+    js = _all_js_code()
+    spans = {name: _named_function_spans(src) for name, src in js.items()}
+
+    def producers(literal):
+        out = []
+        for name, src in js.items():
+            for m in re.finditer(re.escape(literal), src):
+                out.append((name, _owner_function(spans[name], m.start())))
+        return out
+
+    value_cells = producers('class="bounds-v"')
+    assert value_cells, (
+        'static/js 里一处 class="bounds-v" 都没扫到 —— 四至数值格的 markup '
+        '变了，本测试已失效（去看 updateBoundsInfo 现在怎么渲读数）')
+    assert set(value_cells) == {('map.js', 'updateBoundsInfo')}, (
+        f'四至数值格（.bounds-v）现在由 {sorted(set(value_cells))} 生成 —— '
+        '恰好要 map.js::updateBoundsInfo 一处。第二处渲染就是改前那个缺陷本体：'
+        '同一个四至两个地方各画一遍，刷新漏一处屏幕上就出现两个不一样的数字')
+
+    grids = producers('class="bounds-grid"')
+    assert set(grids) == {('map.js', 'updateBoundsInfo'),
+                          ('map.js', '_renderManualBounds')}, (
+        f'.bounds-grid 现在由 {sorted(set(grids))} 生成 —— 实测基线是'
+        ' updateBoundsInfo（读数）与 _renderManualBounds（手动输入表单）两处，'
+        '多出来的那处要么是又冒出一份读数副本，要么是本测试已失效')
+    manual = _fn_body(js['map.js'], '_renderManualBounds')
+    assert 'class="bounds-v"' not in manual, (
+        '_renderManualBounds 里出现了 .bounds-v —— 手动输入表单只该有 input，'
+        '塞进读数就是第二处渲染')
+
+    readout = _fn_body(js['map.js'], 'updateBoundsInfo')
+    assert "getElementById('createBoundsReadout')" in readout, (
+        'updateBoundsInfo 的宿主不是 #createBoundsReadout —— 读数 2026-08-15 '
+        '从地图右上的浮层搬进了 #createPanel 的选区段，宿主搬回去等于把这次'
+        '收敛整个回退（浮层里那份可编辑读数与面板里的数字会再次并存）')
+    for name, src in js.items():
+        hit = re.search(r"""['"]boundsInfo['"]|#boundsInfo""", src)
+        assert not hit, (
+            f'{name} 里还在按 id 找 #boundsInfo（{src[hit.start():hit.start() + 40]!r}）'
+            '—— 那层地图浮层整块删了，这里拿到的永远是 null')

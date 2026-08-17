@@ -607,12 +607,21 @@ function _setRectFromCartographics(a, b) {
     };
 }
 
+// 画框态的按下态翻在**面板选区段**那颗 #createDrawBtn 上（2026-08-15）。改前
+// 翻的是工具条的 #mapDrawRect，那颗按钮已随工具条瘦身删除 —— 它与这颗是同一个
+// _enterDrawMode() 的两个入口。
+// 用 `.active` + aria-pressed（Bootstrap 的按钮按下态）而不是
+// `.map-panel-btn--active`：那个类是工具条那套 34px 竖排图标胶囊专用的。
+function _drawToggleBtn() {
+    return document.getElementById('createDrawBtn');
+}
+
 function _enterDrawMode() {
     _drawing = true;
     viewer.scene.canvas.style.cursor = 'crosshair';
-    const btn = document.getElementById('mapDrawRect');
+    const btn = _drawToggleBtn();
     if (btn) {
-        btn.classList.add('map-panel-btn--active');
+        btn.classList.add('active');
         btn.setAttribute('aria-pressed', 'true');
     }
 }
@@ -620,14 +629,21 @@ function _enterDrawMode() {
 function _exitDrawMode() {
     _drawing = false;
     if (viewer) viewer.scene.canvas.style.cursor = '';
-    const btn = document.getElementById('mapDrawRect');
+    const btn = _drawToggleBtn();
     if (btn) {
-        btn.classList.remove('map-panel-btn--active');
+        btn.classList.remove('active');
         btn.setAttribute('aria-pressed', 'false');
     }
 }
 
-// 清空选区。矩形与导入区域**一起**清：用户点的是范围浮层上那颗「删除」，
+// 命令面板的 start_bounds 直接调这个函数，不再点某个 DOM 节点（节点一搬家，
+// 那条命令的 guard 就返回 false、命令静默从面板里消失 —— command_palette.js
+// 里记过这个坑）。切换语义与那颗按钮一致。
+function startRectDraw() {
+    if (_drawing) _exitDrawMode(); else _enterDrawMode();
+}
+
+// 清空选区。矩形与导入区域**一起**清：用户点的是选区段里那颗「清除选区」，
 // 他的意思是「当前选区没了」，而不是「只删掉其中的矩形部分」。
 function clearSelection() {
     if (_selectionEntity && viewer) {
@@ -1787,11 +1803,17 @@ function _initMapTools() {
             announceBounds();
             refreshSubmitButtonState();
 
-            // 选区落定后 pulse 浮层上的「新建任务」按钮，引导下一步
-            const createBtn = document.getElementById('boundsCreateBtn');
-            if (createBtn) {
-                createBtn.style.animation = 'pulse 0.5s ease-in-out';
-                setTimeout(() => { createBtn.style.animation = ''; }, 500);
+            // 选区落定后 pulse「下一步」那颗按钮，引导用户往下走。改前 pulse 的是
+            // 浮层上的「新建任务」（#boundsCreateBtn，已随浮层删除）：现在面板开着
+            // 就 pulse 提交钮（选区齐了，下一步就是创建），面板关着就 pulse 工具条
+            // 那颗「新建」（下一步是打开面板）。
+            const panel = document.getElementById('createPanel');
+            const nextBtn = (panel && !panel.hidden)
+                ? document.getElementById('createTaskBtn')
+                : document.querySelector('.map-panel-btn[data-panel="create"]');
+            if (nextBtn) {
+                nextBtn.style.animation = 'pulse 0.5s ease-in-out';
+                setTimeout(() => { nextBtn.style.animation = ''; }, 500);
             }
             return;
         }
@@ -1804,18 +1826,46 @@ function _initMapTools() {
         }
     }, Cesium.ScreenSpaceEventType.LEFT_UP);
 
-    // 左列工具条按钮
-    const drawBtn = document.getElementById('mapDrawRect');
-    if (drawBtn) drawBtn.addEventListener('click', function () {
-        if (_drawing) _exitDrawMode(); else _enterDrawMode();
-    });
-    const zoomInBtn = document.getElementById('mapZoomIn');
-    if (zoomInBtn) zoomInBtn.addEventListener('click', function () {
-        viewer.camera.zoomIn(viewer.camera.positionCartographic.height * 0.5);
-    });
-    const zoomOutBtn = document.getElementById('mapZoomOut');
-    if (zoomOutBtn) zoomOutBtn.addEventListener('click', function () {
-        viewer.camera.zoomOut(viewer.camera.positionCartographic.height);
+    // 工具条上原先的三颗（框选 / 放大 / 缩小）2026-08-15 全部退场：
+    // 框选归面板选区段的 #createDrawBtn（见 initPipelineToggle 里那处接线），
+    // 缩放归下面 _initZoomKeys() 的 `+` / `-` 与命令面板两条命令。
+    _initZoomKeys();
+}
+
+// 相机缩放的唯一实现。三个消费者：`+` / `-` 快捷键、命令面板的 zoom_in /
+// zoom_out 两条命令，以及未来任何需要它的地方 —— 改前它是工具条那两颗按钮的
+// 两段行内 handler，函数体原样搬进来（放大取当前高度的一半、缩小取一倍，
+// 这两个系数是原值，本次不调）。
+function zoomMapBy(dir) {
+    if (!viewer) return;
+    const h = viewer.camera.positionCartographic.height;
+    if (dir > 0) viewer.camera.zoomIn(h * 0.5);
+    else viewer.camera.zoomOut(h);
+}
+
+// `+` / `=` 放大，`-` 缩小。**Cesium 自带的相机控制器只处理鼠标与触摸，没有
+// 任何键盘相机控制**，所以在工具条那两颗按钮删掉之后，这里是键盘用户唯一的
+// 缩放路径 —— 删按钮不许删能力。
+//
+// 两条守卫，都是必须的：
+//   1. 可编辑元素内一律不响应。不然用户在「最大层级」数字框里打 `-`（负号）
+//      或在搜索框里打字就会缩放地图。
+//   2. 带修饰键的组合放过（Ctrl/Meta/Alt）：Ctrl+`+` / Ctrl+`-` 是浏览器自己
+//      的页面缩放，抢了就是把用户的系统习惯改掉。
+// 监听挂 document 的冒泡相位、只认这两个键，与 panels.js 那个「全站唯一的
+// Escape 关闭器」互不相干（它只管 Escape）。
+function _initZoomKeys() {
+    document.addEventListener('keydown', function (e) {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.target && e.target.closest
+            && e.target.closest('input, textarea, select, [contenteditable]')) return;
+        if (e.key === '+' || e.key === '=') {
+            e.preventDefault();
+            zoomMapBy(1);
+        } else if (e.key === '-') {
+            e.preventDefault();
+            zoomMapBy(-1);
+        }
     });
 }
 
@@ -2061,31 +2111,23 @@ function initPipelineToggle() {
         document.getElementById(id)?.addEventListener('change', renderTerrainTileEstimate);
     });
 
-    // 无选区时的两个入口（面板里选区那一格）。两条都不新起路径 —— 面板只是把
-    // 既有入口摆到用户正在看的地方。
+    // 选区那一格的两个入口。2026-08-15 起它们是**唯一**的入口：工具条那颗
+    // 「框选」与地图浮层空态里那颗「手动输入范围」都随浮层退场删掉了。
     //
-    // 「去框选」= 工具条那颗「框选」。面板开着也能用：面板只占右侧 480px，
-    // 地图左侧照常可拖，四至与预估随拖拽同步刷新（非模态的全部意义在此）。
+    // 「去框选」直接调 startRectDraw()，不再 `document.getElementById('mapDrawRect').click()`
+    // ——那颗节点已经不存在。面板开着也能框：面板只占右侧 480px，地图左侧照常
+    // 可拖，四至读数与瓦片预估随拖拽同步刷新（非模态的全部意义在此）。
     const drawBtn = document.getElementById('createDrawBtn');
-    if (drawBtn) drawBtn.addEventListener('click', function () {
-        document.getElementById('mapDrawRect')?.click();
-    });
+    if (drawBtn) drawBtn.addEventListener('click', startRectDraw);
 
-    // 「手动输入范围」= 选区浮层空态里那颗（同一个 _openManualBounds，不另写
-    // 一份四至输入）。**但必须先把面板收起来**：手动四至面板长在 #boundsInfo 里，
-    // 而那层浮层钉在地图右上角（.bounds-overlay，top/right 12px、z-index 1000），
-    // 完全落在面板（480px 宽、z-index 1401）底下 —— 实测面板开着时它的「确定」
-    // 位于 x≈973 y≈96，那一点的 elementFromPoint 命中的是管线段控的 chip，
-    // 用户点不到、也看不到。不收起面板就是给一颗「打开一个隐形表单」的按钮。
-    //
-    // 回程已经接好、不必再写：_applyManualBounds 落定后把焦点交给浮层上新出现的
-    // 「新建任务」按钮，而那颗按钮就是 openCreatePanel('map') —— 一次 Enter 就带
-    // 着刚填好的四至回到这张表。
+    // 「手动输入范围」：**不再先收起面板**。改前这里有一句 window.closePanel()，
+    // 理由是手动四至面板长在地图右上角的 #boundsInfo 里（top/right 12px、
+    // z-index 1000），完全落在面板（480px 宽、z-index 1401）底下 —— 实测那颗
+    // 「确定」位于 x≈973 y≈96，elementFromPoint 命中的是管线段控的 chip，
+    // 用户点不到也看不到。现在四至读数与手动输入面板都在 #createBoundsReadout
+    // 里、就在这颗按钮上方几行，收起面板反而会把它一起藏掉。
     const manualBtn = document.getElementById('createManualBoundsBtn');
-    if (manualBtn) manualBtn.addEventListener('click', function () {
-        if (window.closePanel) window.closePanel();
-        _openManualBounds();
-    });
+    if (manualBtn) manualBtn.addEventListener('click', _openManualBounds);
 
     applyPipeline();
     initContourTintUI();
@@ -2861,10 +2903,15 @@ function resetForm({ clearBounds = true } = {}) {
 }
 
 /**
- * 渲染框选后的四至（#boundsInfo，地图右上角的 .bounds-overlay 浮层），
+ * 渲染四至读数（`#createBoundsReadout`，「新建任务」面板选区段里那一块），
  * 并同步状态栏的选区摘要（#statusSelection 胶囊里的 #statusSelectionText）。
  *
- * 浮层分两段：
+ * 2026-08-15 换宿主：这块内容原先渲染在地图右上角的浮层 `#boundsInfo`
+ * （.map-overlay-chip.bounds-overlay）里，而面板里另有一句只读摘要 ——
+ * 同一个四至两处渲染。浮层整块退场，读数、点击编辑、手动输入、清除选区
+ * 全部收进面板；函数名与 markup 结构一个字没改（下面两条契约钉着它们）。
+ *
+ * 三段：
  *   1. .bounds-grid —— 4 列网格装 8 个格子（4 键 + 4 值），恰好 2 行。
  *      每个值带 data-field，**点击可编辑**（_beginBoundsEdit 换成输入框，
  *      Enter/失焦提交，Esc 取消）。`N/S/E/W` 键与 currentBounds 字段的
@@ -2872,24 +2919,40 @@ function resetForm({ clearBounds = true } = {}) {
  *      test_bounds_labels_bind_to_the_right_coordinate 逐对钉住；
  *      `.bounds-sr` 读屏方位词由 test_bounds_readout_is_announced_to_screen_readers
  *      钉住。这两段 markup 不要动结构。
- *   2. .bounds-actions —— 「下载」按钮（打开下载弹窗）+ 「删除」按钮
- *      （清空选区）+ 调整提示。
+ *   2. .bounds-actions —— 「清除选区」+ 调整提示。改前这里还有一颗「新建任务」
+ *      （#boundsCreateBtn）：读数搬进面板之后，它成了面板里指向面板自己的
+ *      入口，随浮层一起删除。
+ *   3. 空态 —— 一句「还没有选区」。改前空态里那颗「手动输入范围」
+ *      （#boundsManualBtn）也删了：面板选区段的 #createManualBoundsBtn 是同一个
+ *      _openManualBounds，而它现在**有没有选区都显示**，键盘可达性没有变化。
  *
  * 小数 5 位（≈1.1m），框选下载范围够用，两个数字并排也放得下。
  */
 function updateBoundsInfo() {
-    const boundsInfo = document.getElementById('boundsInfo');
+    const boundsInfo = document.getElementById('createBoundsReadout');
     // 同 #statusCoordsText：写文字 span，别写胶囊本身（会抹掉图标 SVG）。
     const statusSel = document.getElementById('statusSelectionText');
-    // M15：编辑态不重写整层。浮层内容每次都是 innerHTML 全量重建，而委托点击
-    // 监听挂在 #boundsInfo 上 —— 编辑坐标时用鼠标点浮层里的任何东西（另一个
-    // .bounds-v、「新建任务」钮、「清除选区」钮），mousedown 先触发 blur → 提交 → 整层
-    // 重建，等到 click 派发时旧节点的传播路径已不含 #boundsInfo，处理器根本
-    // 不会被调用（浏览器通常也干脆不派发这次 click）：**这一次点击完全没反应**，
-    // 必须再点一次。反过来若重建发生在 click 之后（校验通过且点击极快），
-    // 刚建好的第二个输入框会被立刻抹掉、焦点丢失、之后敲的字全丢。
-    if (boundsInfo && boundsInfo.querySelector('.bounds-edit-input')) {
+    // M15：编辑态不重写整块。内容每次都是 innerHTML 全量重建，而委托点击监听挂
+    // 在 #createBoundsReadout 上 —— 编辑坐标时用鼠标点这块里的任何东西（另一个
+    // .bounds-v、「清除选区」钮），mousedown 先触发 blur → 提交 → 整块重建，
+    // 等到 click 派发时旧节点的传播路径已不含宿主，处理器根本不会被调用
+    //（浏览器通常也干脆不派发这次 click）：**这一次点击完全没反应**，必须再点
+    // 一次。反过来若重建发生在 click 之后（校验通过且点击极快），刚建好的第二个
+    // 输入框会被立刻抹掉、焦点丢失、之后敲的字全丢。
+    if (!boundsInfo) return;
+    if (boundsInfo.querySelector('.bounds-edit-input')) {
         return;
+    }
+    // 本次已经同步渲染了，取消排着的那一帧 —— 否则它稍后会把刚建好的节点整块
+    // 换掉，而**焦点就落在里面**：手动四至确定后焦点交给「清除选区」、点读数
+    // 编辑校验失败回退到读数，两条路都经 _syncBoundsFromRect() 排过一帧
+    // （它是拖角点那条高频路径的合并器），那一帧一到焦点就掉回 <body>，键盘
+    // 用户丢失位置。实测（真浏览器）：修前 _applyManualBounds 之后
+    // document.activeElement 是 body 而不是那颗按钮。
+    // 这是改前就有的（那时焦点交给的是浮层上的「新建任务」），换宿主时暴露出来。
+    if (_boundsInfoRaf) {
+        cancelAnimationFrame(_boundsInfoRaf);
+        _boundsInfoRaf = 0;
     }
     if (currentBounds) {
         const f = window.formatCoord;      // 读数档 5 位，唯一实现在 ui.js
@@ -2912,14 +2975,6 @@ function updateBoundsInfo() {
                 <span class="bounds-k" aria-hidden="true">W</span><span class="bounds-v" data-field="west" title="${t('js.map.bounds.edit_title')}"><span class="bounds-sr">${t('js.map.bounds.sr_west')} </span>${f(currentBounds.west)}</span>
             </div>
             <div class="bounds-actions">
-                <button type="button" class="btn btn-primary btn-sm" id="boundsCreateBtn" title="${t('js.map.bounds.create_task_title')}">
-                    <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="3" width="18" height="18" rx="3"></rect>
-                        <line x1="12" y1="8" x2="12" y2="16"></line>
-                        <line x1="8" y1="12" x2="16" y2="12"></line>
-                    </svg>
-                    ${t('js.map.bounds.create_task')}
-                </button>
                 <button type="button" class="btn btn-danger btn-sm" id="boundsClearBtn" title="${t('js.map.bounds.clear')}">
                     <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="3 6 5 6 21 6"></polyline>
@@ -2945,13 +3000,14 @@ function updateBoundsInfo() {
         if (!boundsInfo.querySelector('.bounds-manual')) _renderManualBounds(boundsInfo);
         if (statusSel) statusSel.textContent = t('js.map.status.no_selection');
     } else {
-        // 不用 <small>：style.css 的全局 `small` 是 --font-size-sm(14px)，比浮层
-        // 自己的字号还大，套上去等于把提示放大一号。字号由 .bounds-overlay 统一给。
+        // 不用 <small>：style.css 的全局 `small` 是 --font-size-sm(14px)，比这块
+        // 自己的字号还大，套上去等于把提示放大一号。字号由选区段统一给。
         //
-        // 「手动输入范围」是键盘用户**唯一**的选区入口（B4）：矩形只能由 canvas 的
-        // LEFT_DOWN→MOUSE_MOVE→LEFT_UP 鼠标手势产生，没有它 currentBounds 恒为
-        // null，整条下载链路对键盘 100% 不可达。放在空态里而不是工具条上，是因为
-        // 这层浮层本来就是「当前选区」的归属地，用户找选区自然会看这里。
+        // 空态只说「还没有选区」：两个入口（去框选 / 手动输入范围）就在下面
+        // #createBoundsEntries 里，有没有选区都显示，不必在这里再放一颗。
+        // 「手动输入范围」仍然是键盘用户**唯一**的选区入口（B4）：矩形只能由
+        // canvas 的 LEFT_DOWN→MOUSE_MOVE→LEFT_UP 鼠标手势产生，没有它
+        // currentBounds 恒为 null，整条下载链路对键盘 100% 不可达。
         boundsInfo.innerHTML = `
             <svg class="icon-inline icon-inline--sm" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="12" cy="12" r="10"></circle>
@@ -2959,9 +3015,6 @@ function updateBoundsInfo() {
                 <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
             ${t('js.map.bounds.empty')}
-            <div class="bounds-actions">
-                <button type="button" class="btn btn-secondary btn-sm" id="boundsManualBtn">${t('js.map.bounds.manual')}</button>
-            </div>
         `;
         if (statusSel) statusSel.textContent = t('js.map.status.no_selection');
     }
@@ -3155,12 +3208,12 @@ function _openManualBounds() {
     if (first) first.focus();
 }
 
-// 关闭面板。必须先把面板从 DOM 里拿掉再让调用方重渲染：面板里的 input 带
+// 关闭手动输入面板。必须先把它从 DOM 里拿掉再让调用方重渲染：面板里的 input 带
 // .bounds-edit-input，而 updateBoundsInfo() 开头正是靠这个类判断「编辑态，
-// 不要重写整层」—— 留着它，之后那次重渲染会被自己拦掉，浮层永远停在面板上。
+// 不要重写整块」—— 留着它，之后那次重渲染会被自己拦掉，读数永远停在面板上。
 function _closeManualBounds() {
     _manualBoundsOpen = false;
-    const boundsInfo = document.getElementById('boundsInfo');
+    const boundsInfo = document.getElementById('createBoundsReadout');
     if (boundsInfo) boundsInfo.innerHTML = '';
 }
 
@@ -3205,25 +3258,26 @@ function _applyManualBounds() {
     announceBounds();
     refreshSubmitButtonState();
     // 焦点不能留在刚被删掉的「确定」上（会掉回 <body>，键盘用户丢失位置）。
-    // 交给新出现的「新建任务」按钮 —— 正好是这条流程的下一步。
-    const createBtn = document.getElementById('boundsCreateBtn');
-    if (createBtn) createBtn.focus();
+    // 交给「清除选区」—— 四至已经落定，这块里现在只有它是可聚焦的，而且它就在
+    // 刚才那四个输入框的位置上。改前交给浮层上的「新建任务」，那颗已经不存在。
+    const clearBtn = document.getElementById('boundsClearBtn');
+    if (clearBtn) clearBtn.focus();
 }
 
 function _cancelManualBounds() {
     _closeManualBounds();
     updateBoundsInfo();
-    const btn = document.getElementById('boundsManualBtn');
-    if (btn) btn.focus();           // 焦点回到打开面板的那颗按钮
+    // 焦点回到打开面板的那颗按钮。改前是地图浮层空态里的 #boundsManualBtn，
+    // 现在唯一的入口是面板选区段里的 #createManualBoundsBtn。
+    const btn = document.getElementById('createManualBoundsBtn');
+    if (btn) btn.focus();
 }
 
-// #boundsInfo 上的委托点击里调用（浮层每次都是 innerHTML 全量重建，
-// 不能给面板里的按钮直接挂监听）。命中返回 true，让调用方短路。
+// #createBoundsReadout 上的委托点击里调用（这块每次都是 innerHTML 全量重建，
+// 不能给里面的按钮直接挂监听）。命中返回 true，让调用方短路。
+// 「手动输入范围」的入口不在这块里（它在 #createBoundsEntries，是模板渲染的
+// 静态节点，直接挂监听），所以这里不再判它。
 function _handleManualBoundsClick(e) {
-    if (e.target.closest('#boundsManualBtn')) {
-        _openManualBounds();
-        return true;
-    }
     if (e.target.closest('#manualBoundsApply')) {
         _applyManualBounds();
         return true;
@@ -3237,7 +3291,7 @@ function _handleManualBoundsClick(e) {
 
 // 面板内 Enter 直接落定、Esc 取消 —— 不用让键盘用户从第四个输入框再 Tab 两下
 // 才够得着「确定」。限定在 .bounds-manual 内，避免和点击编辑那套输入框
-//（它们自己处理 Enter/Esc，同挂在 #boundsInfo 上）互相抢事件。
+//（它们自己处理 Enter/Esc，同挂在 #createBoundsReadout 上）互相抢事件。
 function _handleManualBoundsKeydown(e) {
     if (!e.target.closest('.bounds-manual')) return;
     if (e.key === 'Enter') {
@@ -3257,42 +3311,22 @@ function _handleManualBoundsKeydown(e) {
 // --- 新建任务面板 --------------------------------------------------------------
 
 /**
- * 面板里的选区摘要 + 无选区时的两个入口（#createPanelBounds / #createBoundsEntries）。
+ * 选区那一格里两个入口（#createBoundsEntries）的显隐。
  *
- * 弹窗时代这段逻辑住在 openDownloadModal 里、只在开弹窗那一刻跑一次 —— 因为弹窗
- * 盖着地图，开着它选区不可能变。面板非模态，选区随时会被拖角点、点读数改数、
- * 手动输入面板改掉，所以摘要必须**跟着选区走**：updateBoundsInfo()（选区每次
- * 变化的唯一出口）在末尾调它，applyPipeline() 换管线时也调一次。
+ * 2026-08-15 只剩这一件事：改前它还负责一句只读四至摘要（#createPanelBounds），
+ * 而四至读数搬进面板之后那句话是同一个数字的第二处渲染，连键
+ * `js.map.download.bounds_summary` 一起退役。读数归 updateBoundsInfo()。
  *
- * 坐标走 ui.js 的 formatCoord（读数档 5 位，全站唯一实现）；宽高那两个数是
- * **度数跨度**不是位置，另算一档 3 位（同状态栏的选区读数）。
+ * 入口**有没有选区都显示**（改前有选区时 hidden 掉）：工具条那颗「框选」删掉
+ * 之后，`#createDrawBtn` 是重新框选的唯一入口，选完一次就把它藏起来等于「选错
+ * 了只能先清空再重选」。显隐只跟管线走 —— 管线不要选区时整个 #selectionField
+ * 已经 hidden，这里再显式收一次是为了不把两颗按钮留在 tab 序里（[hidden] 的
+ * 祖先已经够了，但这一行让判据留在读得到的地方）。
  */
 function updateCreatePanelBounds() {
-    const summary = document.getElementById('createPanelBounds');
-    if (!summary) return;
     const entries = document.getElementById('createBoundsEntries');
-    if (currentBounds) {
-        const f = window.formatCoord;
-        const w = (currentBounds.east - currentBounds.west).toFixed(3);
-        const h = (currentBounds.north - currentBounds.south).toFixed(3);
-        summary.textContent = t('js.map.download.bounds_summary', {
-            north: f(currentBounds.north),
-            south: f(currentBounds.south),
-            east: f(currentBounds.east),
-            west: f(currentBounds.west),
-            width: w,
-            height: h,
-        });
-        if (entries) entries.hidden = true;
-        return;
-    }
-    summary.textContent = t('js.map.bounds.empty');
-    // 两个入口只在「这条管线要选区、而现在没有」时出现。管线不要选区时整个
-    // #selectionField 已经 hidden，这里再显式收一次是为了不把两颗按钮留在
-    // tab 序里 —— [hidden] 的祖先已经够了，但这一行让判据留在读得到的地方。
-    if (entries) {
-        entries.hidden = !['map', 'dem'].includes(_currentPipeline());
-    }
+    if (!entries) return;
+    entries.hidden = !['map', 'dem'].includes(_currentPipeline());
 }
 
 /**
@@ -4293,18 +4327,14 @@ function initMapWorkbench() {
         }
     }, 50);
 
-    // bounds 浮层交互（事件代理，浮层内容每次 updateBoundsInfo 都重渲染）：
-    // 「下载」按钮 -> 下载弹窗；「删除」按钮 -> 清空选区；.bounds-v 数值 -> 点击编辑；
-    // 空态的「手动输入范围」及其面板 -> _handleManualBoundsClick。
-    const boundsInfo = document.getElementById('boundsInfo');
-    if (boundsInfo) {
-        boundsInfo.addEventListener('click', function (e) {
+    // 选区读数里的交互（事件代理，这块每次 updateBoundsInfo 都整块重渲染）：
+    // 「清除选区」-> 清空；.bounds-v 数值 -> 点击编辑；手动输入面板的确定/取消
+    // -> _handleManualBoundsClick。改前这里还代理浮层上的「新建任务」，那颗
+    // 已随浮层删除（面板里指向面板自己的入口）。
+    const boundsReadout = document.getElementById('createBoundsReadout');
+    if (boundsReadout) {
+        boundsReadout.addEventListener('click', function (e) {
             if (_handleManualBoundsClick(e)) return;
-            const create = e.target.closest('#boundsCreateBtn');
-            if (create) {
-                openCreatePanel('map');
-                return;
-            }
             const clr = e.target.closest('#boundsClearBtn');
             if (clr) {
                 clearSelection();
@@ -4314,7 +4344,7 @@ function initMapWorkbench() {
             if (v && currentBounds) _beginBoundsEdit(v);
         });
         // 手动输入面板里 Enter 落定 / Esc 取消（同样代理，面板是重建出来的）
-        boundsInfo.addEventListener('keydown', _handleManualBoundsKeydown);
+        boundsReadout.addEventListener('keydown', _handleManualBoundsKeydown);
     }
 
     // 首屏填充「请在地图上框选下载区域」提示与状态栏选区摘要

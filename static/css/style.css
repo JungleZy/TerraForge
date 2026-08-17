@@ -1337,15 +1337,12 @@ html[lang="en"] .map-panel-triggers {
     box-shadow: var(--shadow-lg);
 }
 
-/* 地图上的范围信息浮层（替代原表单底部的 #boundsInfo alert）。
-   字号与左上工具条标签同为 --font-size-xs(12px)：两者都是浮在地图上的
-   同层提示，字号不一致会显得是两套东西。 */
-.bounds-overlay {
-    top: 12px;
-    right: 12px;
-    max-width: min(420px, calc(100% - 60px));
-    font-size: var(--font-size-xs);
-}
+/* 2026-08-15 删除登记：这里原先是 `.bounds-overlay` —— 地图右上角那层范围信息
+   浮层的锚点与字号（top/right 12px、max-width min(420px, 100%-60px)、
+   --font-size-xs）。整块内容搬进「新建任务」面板的选区段（`.bounds-readout`
+   一节在下面），浮层节点 #boundsInfo 一并删除，所以这条定位规则没有消费者了。
+   ⚠️ `.bounds-grid` / `.bounds-k` / `.bounds-v` / `.bounds-sr` / `.bounds-actions`
+   那几条**全部保留**：它们是读数自己的几何，换宿主不换配方。 */
 
 /* 等高线预览面板（U6，地图左下角）：`.map-overlay-chip` 的**第三个**变体。
    底座（定位/玻璃底色/描边/圆角/阴影/文字色/内边距）全部来自基类，本类只留
@@ -4908,16 +4905,19 @@ code {
 }
 
 /* ==========================================================================
-   下载弹窗：顶部选区四至摘要（打开弹窗时由 openDownloadModal 刷新）
+   选区四至读数（`#createBoundsReadout`，「新建任务」面板选区段）
+
+   2026-08-15 删除登记：这一节原先是 `.modal-bounds-summary` —— 弹窗/面板里那句
+   只读四至摘要（等宽 + accent 底的一行）。可编辑的四至读数（.bounds-grid）搬进
+   同一格之后，那句话是同一个数字的第二处渲染，连键
+   `js.map.download.bounds_summary` 一起退役。
+
+   本类只留一条外边距：字号与等宽字体在 `.bounds-grid` 自己身上（那套「恰好
+   2 行 + 列间距 ≤ 4px」的模型读的就是它自己的 font-size，不依赖宿主），空态那
+   句提示则沿用面板正文字号。宿主从 420px 上限的浮层换成 480px 的面板 = 更宽，
+   那条 769px 实测出来的列间距上界只会更宽松。
    ========================================================================== */
-.modal-bounds-summary {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xs);
-    color: var(--color-accent-hover);
-    background: var(--color-accent-muted);
-    border: 1px solid var(--color-accent-border);
-    border-radius: var(--radius-xs);
-    padding: var(--space-2) var(--space-3);   /* 6px 10px -> --space-2 --space-3（8px/12px）：间距刻度归一 2026-08-14 */
+.bounds-readout {
     margin-bottom: var(--space-3);
 }
 

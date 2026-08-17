@@ -865,16 +865,39 @@ def test_six_preflight_surfaces_survive():
     就是这类只在某一条管线下出现的东西：
       1. #tileEstimate           瓦片数预估
       2. 服务端多边形估算         含 _regionEstimateSeq 竞态闸门
-      3. #createPanelBounds      选区四至摘要
+      3. #createBoundsReadout    选区四至读数（见下）
       4. #sourceTifInfo          TIF 信息卡（两张合成一张）
       5. #localTerrainEstimate   起切规模预告
       6. 大任务二次确认           超软阈值时把预计耗时摆给用户
+
+    2026-08-15 工具条瘦身，第 3 面换锚点：
+    · 改前钉 `#createPanelBounds` —— 面板选区段里那句**只读**四至摘要。
+    · 为什么换：地图右上角的 `#boundsInfo` 浮层整块退场，可编辑的四至读数
+      搬进了同一格。同一个四至原本在两处各渲染一遍（浮层可编辑 / 面板只读），
+      读数进来之后那句只读摘要就是第二处渲染，连同 `.modal-bounds-summary`
+      与 `js.map.download.bounds_summary` 一起删了。
+    · 现在钉 `#createBoundsReadout`（`.bounds-readout`），并且额外要求它真的
+      被 `updateBoundsInfo()` 填、填进去的是**可点编辑**的 `data-field` 单元格
+      —— 模板里它是个空 div，只钉 id 存在等于钉一个空壳。
+    预检面从「一句只读摘要」升级成「可编辑读数」，守的东西
+    （提交前看得到选区四至）一个字没变。
     """
     html = _template('index.html')
     src = _js('map.js')
-    for el_id in ('tileEstimate', 'createPanelBounds', 'sourceTifInfo',
+    for el_id in ('tileEstimate', 'createBoundsReadout', 'sourceTifInfo',
                   'localTerrainEstimate'):
         assert f'id="{el_id}"' in html, f'预检面 #{el_id} 从模板里消失了'
+
+    readout = _js_block(src, 'function updateBoundsInfo(')
+    assert "getElementById('createBoundsReadout')" in readout, (
+        'updateBoundsInfo() 不再往 #createBoundsReadout 里渲染 —— 模板里那个 div'
+        '是空的，宿主对不上就等于提交前看不到选区四至'
+    )
+    for field in ('north', 'south', 'east', 'west'):
+        assert f'data-field="{field}"' in readout, (
+            f'四至读数里缺 data-field="{field}" 的单元格 —— 这一面是**可编辑**读数，'
+            '缺一格就既读不到也改不了那一边'
+        )
 
     assert '_regionEstimateSeq' in src, (
         '服务端多边形估算的竞态闸门 _regionEstimateSeq 没了 —— 用户连着改层级时'
@@ -999,29 +1022,39 @@ def test_one_submit_handler_dispatches_all_four_pipelines():
 # ---------------------------------------------------------------------------
 
 def test_selection_overlay_labels_match_what_the_buttons_do():
-    """选区浮层两颗按钮的文案与行为一致。
+    """选区那一格的按钮，文案与行为一致 —— 而且只剩一颗。
 
-    改前：「下载」其实是打开一张表单（标签承诺了一个它不做的动作）；
-    「删除」清的是选区而 title 写「清除选区」（两个动词说同一件事，而「删除」
-    还暗示删掉的是数据）。
+    改前钉两颗：地图右上角选区浮层上的「下载」其实只是打开一张表单（标签承诺
+    了一个它不做的动作）、「删除」清的是选区而 title 写「清除选区」（两个动词
+    说同一件事，而「删除」还暗示删掉的是数据）。上一轮把它们改成
+    「新建任务」（js.map.bounds.create_task）+「清除选区」（js.map.bounds.clear）。
+
+    2026-08-15 工具条瘦身后为什么要换判据：浮层整块退场、读数搬进 #createPanel
+    的选区段之后，「新建任务」成了**面板里指向面板自己**的入口，连同
+    js.map.bounds.create_task / create_task_title 两个键一起删了。原判据
+    `js_map['js.map.bounds.create_task']` 直接 KeyError —— 它守的那半（主按钮
+    别拿动词撒谎）失去了对象。
+
+    现在钉两件事，合起来还是同一个不变量「这一格里的每颗钮都名副其实」：
+    1. 剩下那颗「清除选区」：可见文案与 title 同一个键 js.map.bounds.clear，
+       而委托点击真的调 clearSelection() —— 说清除就只清除。
+    2. 接住原来那半的语义：这一格里**不许再出现指向面板自己的入口**
+       （updateBoundsInfo 生成的 markup 里不许有 openCreatePanel( 或
+       #boundsCreateBtn）。文案与行为最彻底的不一致就是这一种：一颗写着
+       「新建任务」的钮，点下去用户已经在的那张表单原地不动。这正是这次删它
+       的理由，也是唯一能让它悄悄长回来的地方（markup 是 JS 拼的字符串，
+       模板扫不到）。
     """
     from src.i18n.catalog.js_map import MESSAGES as js_map
 
     for gone in ('js.map.bounds.download', 'js.map.bounds.delete',
-                 'js.map.bounds.clear_title'):
+                 'js.map.bounds.clear_title',
+                 # 2026-08-15 退役:「新建任务」那颗钮本身没了
+                 'js.map.bounds.create_task', 'js.map.bounds.create_task_title',
+                 # 同批退役:空态里的「手动输入范围」入口(面板里
+                 # #createManualBoundsBtn 是同一个动作的另一处渲染)
+                 'js.map.bounds.manual'):
         assert gone not in js_map, f'退役的键 {gone} 还在 js_map.py 里'
-
-    label = js_map['js.map.bounds.create_task']
-    assert '下载' not in label['zh'], (
-        f'选区浮层主按钮的中文文案是 {label["zh"]!r}，还带「下载」——'
-        '它打开的是一张表单，不是开始下载'
-    )
-    assert 'ownload' not in label['en'], (
-        f'选区浮层主按钮的英文文案是 {label["en"]!r}，还带 Download'
-    )
-    # title 里保留「下载」是对的：它说的是**将要建的那种任务**。
-    assert js_map['js.map.bounds.create_task_title']['zh'], 'create_task_title 中文为空'
-    assert js_map['js.map.bounds.create_task_title']['en'], 'create_task_title 英文为空'
 
     clear = js_map['js.map.bounds.clear']
     assert clear['zh'] and clear['en'], 'js.map.bounds.clear 有一侧为空'
@@ -1036,6 +1069,24 @@ def test_selection_overlay_labels_match_what_the_buttons_do():
         f'{clear_btn.count(chr(39).join(["t(", "js.map.bounds.clear", ")"]))} 次）'
         ' —— 两个键早晚会漂开，那正是改前「删除」/「清除选区」的成因'
     )
+    # 文案说「清除选区」，行为就得是清除选区：这块每次整块重渲染，按钮上挂不了
+    # 直接监听，接线在 #createBoundsReadout 的委托点击里。
+    delegated = _js_block(src, "boundsReadout.addEventListener('click'")
+    assert re.search(r"closest\('#boundsClearBtn'\)[\s\S]{0,200}?clearSelection\(\)",
+                     delegated), (
+        '#boundsClearBtn 的委托点击没有落到 clearSelection() —— 文案承诺清除选区，'
+        f'实际接线是别的东西（委托处理器：{delegated!r}）'
+    )
+
+    # 只看 markup，不看注释：这条钉的是「生成出来的按钮」，而不是禁止在注释里
+    # 复述这段沿革（上面那段 docstring 本身就在复述）。
+    markup = re.sub(r'/\*.*?\*/', '', re.sub(r'//[^\n]*', '', overlay), flags=re.S)
+    for reentry in ('openCreatePanel(', 'boundsCreateBtn'):
+        assert reentry not in markup, (
+            f'updateBoundsInfo 生成的 markup 里又出现了 {reentry} —— 读数已经在'
+            '#createPanel 里了，这一格里再放一颗「新建任务」就是一颗指向面板'
+            '自己的钮：文案承诺打开表单，点下去什么都不动'
+        )
     assert 'boundsDownloadBtn' not in src, (
         'map.js 里还有 #boundsDownloadBtn —— 主按钮的 id 也要跟着行为改名'
     )

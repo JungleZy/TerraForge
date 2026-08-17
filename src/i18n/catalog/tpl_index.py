@@ -16,22 +16,13 @@ MESSAGES = {
     },
 
     # 左上工具条
-    'tpl.index.toolbar.zoom_in': {
-        'zh': '放大',
-        'en': 'Zoom in',
-    },
-    'tpl.index.toolbar.zoom_out': {
-        'zh': '缩小',
-        'en': 'Zoom out',
-    },
-    'tpl.index.toolbar.draw_rect': {
-        'zh': '框选',
-        'en': 'Select',
-    },
-    'tpl.index.toolbar.draw_rect_title': {
-        'zh': '框选下载区域',
-        'en': 'Select download area',
-    },
+    #
+    # 2026-08-15 退役四个键（工具条瘦身，9 颗 -> 6 颗）：
+    #   · toolbar.zoom_in / zoom_out（「放大」「缩小」）—— 两颗按钮删了，缩放改由
+    #     `+` / `-` 快捷键与命令面板的 js.cmdk.zoom_in / zoom_out 承担，那两条
+    #     命令自带文案，所以这两个键没有新的引用点。
+    #   · toolbar.draw_rect / draw_rect_title（「框选」）—— 工具条那颗是第二个
+    #     入口，面板选区段里的 tpl.index.create.draw_rect 才是现在唯一那颗。
     # 区域导入与地点搜索（阶段 2）。两条都放在「框选」旁边:它们是同一件事的
     # 另外两个入口 —— 手画一个矩形 / 导入一份别人给的边界 / 按地名跳过去,
     # 最终都落到同一个 RegionSpec 上。分散到菜单里会让人以为是三套东西。

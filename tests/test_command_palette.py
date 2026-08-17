@@ -39,9 +39,14 @@ JS_DIR = os.path.join(ROOT, 'static', 'js')
 # 里同时列「打开任务面板」与「前往历史记录页」是同一件事的两种形态,入口收敛
 # 之后只留面板那条。/history、/config 两条**路由本身保留**(深链与打包可达性
 # 需要),删掉的只是命令面板里那第二条路。
+#
+# 2026-08-15 工具条瘦身：补 'zoom_in' / 'zoom_out'。#mapZoomIn / #mapZoomOut 两颗
+# 按钮删了，缩放改由 `+` / `-` 快捷键承担；命令面板这两条是键盘用户**发现**该
+# 快捷键的地方（keys 列 '+' / '-' 会进 `?` 速查表）。登记在这里之后，
+# test_every_command_id_has_literal_i18n_key 才会去查 js.cmdk.zoom_in / zoom_out。
 COMMAND_IDS = (
     'open_palette', 'show_help', 'esc_close',
-    'start_bounds', 'clear_bounds', 'new_download',
+    'start_bounds', 'clear_bounds', 'zoom_in', 'zoom_out', 'new_download',
     'open_tasks', 'open_config', 'open_process', 'copy_coords',
     'theme_dark', 'theme_light', 'lang_switch',
 )

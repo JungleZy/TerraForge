@@ -28,12 +28,25 @@ window.TerraCommands = (function () {
         { id: 'show_help', titleKey: 'js.cmdk.show_help', keys: '?',
           run: function () { closePalette(); openHelp(); } },
         { id: 'esc_close', titleKey: 'js.cmdk.esc_close', keys: 'Esc', listed: false, info: true },
+        // 两条选区命令直接调函数，不再 .click() 某个节点。改前它们点的是工具条的
+        // #mapDrawRect 与选区浮层里的 #boundsClearBtn —— 那两个节点 2026-08-15
+        // 随工具条瘦身/浮层退场删掉或搬家了，而转点式的 run 会让 guard 返回 false、
+        // 命令**静默从列表里消失**（下面 open_process 那段注释记的是同一个坑）。
         { id: 'start_bounds', titleKey: 'js.cmdk.start_bounds',
-          guard: function () { return !!el('mapDrawRect'); },
-          run: function () { el('mapDrawRect').click(); } },
+          guard: function () { return typeof window.startRectDraw === 'function'; },
+          run: function () { window.startRectDraw(); } },
         { id: 'clear_bounds', titleKey: 'js.cmdk.clear_bounds',
-          guard: function () { return !!el('boundsClearBtn'); },
-          run: function () { el('boundsClearBtn').click(); } },
+          guard: function () { return typeof window.clearSelection === 'function'; },
+          run: function () { window.clearSelection(); } },
+        // 缩放：工具条那两颗按钮 2026-08-15 删了，这两条命令与 map.js 的 `+`/`-`
+        // 快捷键是同一个 zoomMapBy。keys 写上去，于是它们同时出现在 `?` 速查表里
+        // —— 键盘用户得从某个地方知道快捷键存在，那个地方就是速查表。
+        { id: 'zoom_in', titleKey: 'js.cmdk.zoom_in', keys: '+',
+          guard: function () { return typeof window.zoomMapBy === 'function'; },
+          run: function () { window.zoomMapBy(1); } },
+        { id: 'zoom_out', titleKey: 'js.cmdk.zoom_out', keys: '-',
+          guard: function () { return typeof window.zoomMapBy === 'function'; },
+          run: function () { window.zoomMapBy(-1); } },
         // 「新建任务」：打开 #createPanel 并预选瓦片管线。改前它 guard 在
         // #boundsDownloadBtn 上（选区浮层里那颗按钮），于是**没框选就没有这条
         // 命令** —— 而新建面板本来就该在没有选区时也能开（缺选区拦在提交那一刻）。

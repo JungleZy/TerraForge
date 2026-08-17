@@ -34,11 +34,12 @@
     <div class="index-map">
         <div id="map"></div>
         <!-- 左列工具条（Cesium 时代全自绘，不再借 Leaflet 控件容器）：
-             五组 —— 新建（打开 #createPanel）、视图（放大/缩小）、框选（画矩形
-             选区）、区域导入、地形光照、面板（任务/配置/插件）。图标在上文字在下。
+             2026-08-15 瘦身后**四组六颗** —— 新建（打开 #createPanel）、区域导入、
+             地形光照、面板（任务/配置/插件）。图标在上文字在下。
              「新建」排在第一组：四条管线（瓦片/高程/地形切片/等高线）现在只有这
              一个入口，它是首屏唯一的「开始做事」按钮，所以在最上面。
-             「新建任务」「清除选区」不是常驻入口：框选后出现在选区浮层上。
+             删掉的两组见下面那段删除登记；缩放改走 `+` / `-` 快捷键与命令面板，
+             框选与「清除选区」都在 #createPanel 的选区段里（地图上不再有浮层）。
              三个 data-panel 按钮是真 toggle（同名再点关闭），aria-expanded 由
              panels.js 与 .map-panel-btn--active 同步翻。 -->
         <div class="map-toolbar" id="mapToolbar">
@@ -50,28 +51,15 @@
                     <span>{{ t('tpl.index.toolbar.create') }}</span>
                 </button>
             </div>
-            <div class="map-panel-triggers">
-                <button type="button" class="map-panel-btn" id="mapZoomIn" aria-label="{{ t('tpl.index.toolbar.zoom_in') }}" title="{{ t('tpl.index.toolbar.zoom_in') }}">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                        <line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>
-                    </svg>
-                    <span>{{ t('tpl.index.toolbar.zoom_in') }}</span>
-                </button>
-                <button type="button" class="map-panel-btn" id="mapZoomOut" aria-label="{{ t('tpl.index.toolbar.zoom_out') }}" title="{{ t('tpl.index.toolbar.zoom_out') }}">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                        <line x1="5" y1="12" x2="19" y2="12"></line>
-                    </svg>
-                    <span>{{ t('tpl.index.toolbar.zoom_out') }}</span>
-                </button>
-            </div>
-            <div class="map-panel-triggers">
-                <button type="button" class="map-panel-btn" id="mapDrawRect" aria-label="{{ t('tpl.index.toolbar.draw_rect_title') }}" title="{{ t('tpl.index.toolbar.draw_rect_title') }}" aria-pressed="false">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="4" y="4" width="16" height="16" rx="1"></rect>
-                    </svg>
-                    <span>{{ t('tpl.index.toolbar.draw_rect') }}</span>
-                </button>
-            </div>
+            <!-- 2026-08-15 删除登记（两组）：
+                 · 放大 / 缩小（#mapZoomIn / #mapZoomOut）—— 换成 `+` / `-` 快捷键
+                   与命令面板两条命令（map.js 的 zoomMapBy，command_palette.js 的
+                   zoom_in / zoom_out）。Cesium 自带的相机控制器只管鼠标与触摸，
+                   **没有键盘相机控制**，所以这两颗曾是键盘用户唯一的缩放路径 ——
+                   删按钮的同时必须补键盘路径，不然是把能力删了而不是把界面简化了。
+                 · 框选（#mapDrawRect）—— 面板选区段里的 #createDrawBtn 是同一个
+                   _enterDrawMode()，工具条这颗是第二个入口。删掉之后画框态的
+                   active/aria-pressed 翻在面板那颗上。 -->
             <!-- 区域导入（§5.1）。地点搜索原本也在这一组，2026-08 挪到了顶部
                  居中的 .map-search —— 工具条是 34px 宽的竖排图标胶囊，搜索框
                  只能靠 `left: 100%` 挂在它右侧，位置偏、发现性差；随之删掉的还有
@@ -152,13 +140,14 @@
                 <div class="place-search__results" id="placeSearchResults"></div>
             </div>
         </div>
-        <!-- 框选后的范围信息浮层：四至读数（点击可编辑）+ 「新建任务」「清除选区」入口 -->
-        <!-- 这里**不能**是 live region：浮层整层由 map.js 的 updateBoundsInfo()
-             innerHTML 全量重建，拖角点时经 rAF 最高 60 次/秒，polite 队列会积压到
-             松手之后还在念；而且里面装着按钮，交互控件本就不该塞进 live region。
-             播报改由下面的 #boundsAnnounce 承担，只在选区**落定**时写一次 ——
-             鼠标框选结束、点读数改数生效、手动输入面板确定，共三处。 -->
-        <div class="map-overlay-chip bounds-overlay" id="boundsInfo"></div>
+        <!-- 2026-08-15 删除登记：这里原先是 #boundsInfo（.map-overlay-chip
+             .bounds-overlay），装四至读数（点击可编辑）+「新建任务」「清除选区」
+             两颗动作键 + 手动输入四至面板。整块搬进 #createPanel 的选区段
+             （#createBoundsReadout）—— 同一个四至改前在两处各渲染一遍：浮层里
+             可编辑、面板里一句只读摘要。面板关着时选区仍有两条反馈：地图上的
+             矩形与四个角手柄、状态栏 #statusSelectionText 的摘要。
+             #boundsAnnounce 留在原位不动：它是视觉隐藏的播报通道，与浮层无关。
+             （原注释里「浮层不能是 live region」那条理由跟着搬到了新宿主上。） -->
         <span id="boundsAnnounce" class="bounds-sr" role="status" aria-live="polite"></span>
     </div>
 </div>
@@ -216,20 +205,34 @@
                 </div>
 
                 <div class="form-group-label">{{ t('tpl.index.create.section_source') }}</div>
-                <!-- 选区组（瓦片 / 高程）：四至摘要 + 瓦片数预估 + 无选区时的两个
-                     入口。三者由 map.js 的 updateCreatePanelBounds() 在选区每次
-                     变化时刷新 —— 面板非模态，用户拖角点时它们同步跟着走，不必
-                     像弹窗时代那样「关掉再打开」才看到新四至。 -->
+                <!-- 选区组（瓦片 / 高程）：四至读数 + 瓦片数预估 + 两个入口。
+                     由 map.js 的 updateBoundsInfo()（读数）与
+                     updateCreatePanelBounds()（入口显隐）在选区每次变化时刷新 ——
+                     面板非模态，用户拖角点时它们同步跟着走，不必像弹窗时代那样
+                     「关掉再打开」才看到新四至。 -->
                 <div id="selectionField">
-                    <div class="modal-bounds-summary" id="createPanelBounds"></div>
+                    {# 四至读数（2026-08-15 从地图右上的 #boundsInfo 整块搬进来）：
+                       内容由 updateBoundsInfo() 全量重建 —— 4 列 N/S/E/W 网格、
+                       每个数值点击可编辑、手动输入四至面板、「清除选区」。
+                       **不能给这个容器加 aria-live**：拖角点时它经 rAF 最高
+                       60 次/秒整层重建，polite 队列会积压到松手之后还在念；而且
+                       里面装着按钮，交互控件本就不该塞进 live region。播报由
+                       地图那边的 #boundsAnnounce 承担，只在选区**落定**时写一次
+                       （鼠标框选结束、点读数改数生效、手动输入确定，共三处）。 #}
+                    <div class="bounds-readout" id="createBoundsReadout"></div>
                     <div class="tile-estimate" id="tileEstimate" hidden></div>
-                    {# 无选区时的两个入口（设计稿 §2.2 的「去框选 / 手动输入」）。
+                    {# 两个入口（设计稿 §2.2 的「去框选 / 手动输入」）。2026-08-15
+                       起**有没有选区都显示**：工具条那颗框选按钮删掉之后，这里是
+                       重新框选的唯一入口，改前它在有选区时被 hidden 掉，等于选完
+                       一次就再也找不到「重新框选」。显隐只跟管线走。
+                       aria-pressed 在 #createDrawBtn 上：画框态由 _enterDrawMode /
+                       _exitDrawMode 翻它（改前翻的是工具条那颗）。
                        **不许给这个容器加 .d-flex**：`.d-flex{display:flex!important}`
                        压过 [hidden] 的 UA 规则，实测 hidden 属性照样设、computed
                        display 仍是 flex —— 入口变常显（同 #mapStyleLockHint 那段
                        注释记下的坑）。.btn 本身是 inline-block，两颗自然并排。 #}
                     <div class="mb-3" id="createBoundsEntries" hidden>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" id="createDrawBtn">{{ t('tpl.index.create.draw_rect') }}</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="createDrawBtn" aria-pressed="false">{{ t('tpl.index.create.draw_rect') }}</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="createManualBoundsBtn">{{ t('tpl.index.create.manual_bounds') }}</button>
                     </div>
                 </div>

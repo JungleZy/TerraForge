@@ -3481,6 +3481,23 @@ def _bootstrap_horizontal_classes():
     return frozenset(out)
 
 
+def _assert_bootstrap_btn_is_inline_block():
+    """vendor 的 `.btn` 必须是 inline-block —— 高度模型「两颗按钮并排」的依据。
+
+    只在 vendor 里验，不写死：Bootstrap 哪天把 `.btn` 改成 `display:block`，
+    #createBoundsEntries 里那两颗入口就各占一行，模型按一行算会**低估**一整行。
+    那时这里响亮失败，而不是静默算错。style.css 侧没有覆盖 `.btn` 的 display
+    （只有 `.btn.btn-icon` / `.btn.path-browse` 那组把它换成 inline-flex，
+    仍是行内级），所以 vendor 这一条就是终值。
+    """
+    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
+        src = f.read()
+    assert re.search(r'\.btn\{[^}]*display:\s*inline-block', src), (
+        'vendor bootstrap.min.css 里 `.btn` 不再是 display:inline-block —— '
+        '两颗按钮还并不并排说不准了，本模型已失效（不是通过）'
+    )
+
+
 def _bootstrap_form_check_metrics():
     """vendor `.form-check` 的 (min-height, margin-bottom)（px）。
 
@@ -3811,18 +3828,24 @@ class _FormStructureParser(HTMLParser):
 
     # 模板里带 hidden、但**建模状态下由 JS 放出来**的元素。
     #
-    # 只有一个：#tileEstimate。map.js 的 _paintTileEstimate() 在「瓦片管线 +
-    # 已框选」下 `el.hidden = false`，而那正是本模型建的状态（见
-    # _create_panel_form_content_height 的 docstring）。改前它住在 .modal-body 里、
-    # 由模型末尾单独加一项，所以模板上的 hidden 与解析器无关；Task 5 之后它是
-    # #taskForm 的子树成员，不在这里开个口子就会被当成不占高度，模型少算一整行。
+    # 1. #tileEstimate —— map.js 的 _paintTileEstimate() 在「瓦片管线 + 已框选」下
+    #    `el.hidden = false`，而那正是本模型建的状态（见
+    #    _create_panel_form_content_height 的 docstring）。改前它住在 .modal-body 里、
+    #    由模型末尾单独加一项，所以模板上的 hidden 与解析器无关；Task 5 之后它是
+    #    #taskForm 的子树成员，不在这里开个口子就会被当成不占高度，模型少算一整行。
     #
-    # 这张表刻意只有一项、也刻意不写成「凡是 aria-live 的都算可见」之类的规则：
-    # 同在 #selectionField 里的 #createBoundsEntries 也带 hidden，而它在**已框选**
-    # 状态下确实是收起的（updateCreatePanelBounds 只在无选区时放它出来），
-    # 算进来就是凭空多两颗按钮。每加一项都必须能说出「是哪一行 JS 在什么状态下
-    # 把它放出来」。
-    _VISIBLE_DESPITE_HIDDEN = frozenset({'tileEstimate'})
+    # 2. #createBoundsEntries（2026-08-15 工具条瘦身后加入）—— 「去框选 / 手动输入
+    #    范围」两颗入口。**这一项以前刻意不在表里**，当时的理由（原注释）是
+    #    「updateCreatePanelBounds 只在无选区时放它出来，已框选状态下确实是收起的」。
+    #    那条理由随本次改动作废：工具条那颗 #mapDrawRect 删掉之后这里成了重新框选
+    #    的唯一入口，map.js 的 updateCreatePanelBounds() 现在写的是
+    #    `entries.hidden = !['map', 'dem'].includes(_currentPipeline())`
+    #    （static/js/map.js:3315-3319）—— 只跟管线走，有没有选区都显示。建模状态是
+    #    瓦片管线，所以它可见。继续把它当不可见就是模型少算两颗按钮那一行。
+    #
+    # 每加一项都必须能说出「是哪一行 JS 在什么状态下把它放出来」——上面两项各自
+    # 指到了具体函数。这张表刻意不写成「凡是 aria-live 的都算可见」之类的规则。
+    _VISIBLE_DESPITE_HIDDEN = frozenset({'tileEstimate', 'createBoundsEntries'})
 
     @staticmethod
     def _invisible(attrs):
@@ -3915,9 +3938,18 @@ def _create_panel_form_content_height(css):
     选区也照样打开（缺选区拦在提交那一刻），但瓦片管线是段控的默认选中项、
     也是唯一会放出 #tileEstimate 的那条，所以它仍然是首屏那一屏。
     在这个状态下 map.js 的 `_paintTileEstimate()` 会 `el.hidden = false` 放出
-    #tileEstimate，而 #sourceField / #demOptions / #localTerrainOptions /
+    #tileEstimate、`updateCreatePanelBounds()` 会按管线放出 #createBoundsEntries，
+    而 #sourceField / #demOptions / #localTerrainOptions /
     #contourOptions 仍被 `applyPipeline()` 按住 —— 所以模板里的 hidden 属性
-    对前者不算「不可见」、对后四者算。
+    对前两者不算「不可见」、对后四者算。
+
+    2026-08-15（工具条瘦身）：选区那一格的内容整块换了宿主 —— 地图右上的
+    `#boundsInfo` 浮层删除，四至读数改由 `updateBoundsInfo()` 渲进面板里的
+    `.bounds-readout#createBoundsReadout`，而面板里那句只读摘要
+    （`.modal-bounds-summary#createPanelBounds`）连同 CSS 规则一起退役。
+    模型里对应的一项跟着换：叶子从 `.modal-bounds-summary`（一行等宽文字 +
+    内边距 + 边框）变成 `.bounds-readout`（`.bounds-grid` 那 2 行网格 +
+    `.bounds-actions` 那一行）。**判据没变**：仍是「这一格在已框选状态下占多高」。
 
     **模型是实际值的下界，不是等值。** 所有文本块按**一行**计：一段 i18n 文案
     在给定宽度下折几行需要字体度量，CSS + 模板算不出来。方向是安全的：模型
@@ -4022,6 +4054,7 @@ def _create_panel_form_content_height(css):
 
     utils = _bootstrap_utility_margins()
     horizontal_classes = _bootstrap_horizontal_classes()
+    _assert_bootstrap_btn_is_inline_block()
     check_h, check_mb = _bootstrap_form_check_metrics()
     check_own = rule_body('.form-check')
     if check_own is not None:
@@ -4071,11 +4104,17 @@ def _create_panel_form_content_height(css):
     def is_horizontal(node, kids, where):
         """这个容器把子元素横排（各自不独占一行）吗？
 
-        三种来源：
+        四种来源：
           1. style.css 给它某个 class 声明了 display:flex/inline-flex（.map-style-row）；
           2. Bootstrap 的 flex 类（.d-flex / .row —— 从 vendor 解析，见
              `_bootstrap_horizontal_classes`，不写死）；
-          3. 子元素全是 .form-check-inline —— inline-block 流，也挤在一行里。
+          3. 子元素全是 .form-check-inline —— inline-block 流，也挤在一行里；
+          4. 子元素全是 `.btn` —— 同样是 inline-block 流（vendor 的
+             `.btn{…display:inline-block…}`，由 `_bootstrap_btn_is_inline_block`
+             从 vendor 现读现验，不写死）。2026-08-15 加：#createBoundsEntries
+             里「去框选」「手动输入范围」两颗按钮就是这个形态，模板注释也写着
+             「.btn 本身是 inline-block，两颗自然并排」。按竖排累加会**高估**，
+             而本模型的方向必须是下界（见函数 docstring）。
         混排（既有 inline-block 子元素又有块级子元素）响亮失败：那种形态折几行
         取决于容器宽度，模型算不准，宁可报失效也不猜。
         """
@@ -4085,10 +4124,12 @@ def _create_panel_form_content_height(css):
                 return True
         if node.classes & horizontal_classes:
             return True
-        inline = [k for k in kids if 'form-check-inline' in k.classes]
+        inline = [k for k in kids
+                  if 'form-check-inline' in k.classes or 'btn' in k.classes]
         if inline and len(inline) != len(kids):
             raise AssertionError(
-                f'{where}：inline-block 的 .form-check-inline 与块级子元素混排 —— '
+                f'{where}：inline-block 的子元素（.form-check-inline / .btn）'
+                '与块级子元素混排 —— '
                 '折几行取决于容器宽度，本模型已失效（不是通过）'
             )
         return bool(inline)
@@ -4117,15 +4158,18 @@ def _create_panel_form_content_height(css):
             return out(ctl_h)
         if 'alert' in cls:
             return out(alert_h, 0.0, BS_ALERT_MARGIN_BOTTOM_PX)
-        if 'modal-bounds-summary' in cls:
-            # 选区四至摘要（#createPanelBounds）。改前它在 .modal-body 里、
-            # 由本函数末尾单独加一项；Task 5 之后它是 #taskForm 的子树成员
-            # （装在 #selectionField 里），所以必须进叶子表 —— 否则走到下面
-            # 那句 `assert kids` 会因为「空 div 没有子元素」报「本模型已失效」。
-            # class 名故意没跟着 id 改（仍是 .modal-bounds-summary）：改它要动
-            # style.css 与 tests/test_geometry_scales.py 的圆角分组，而这次
-            # 一行 CSS 都不需要动。
-            return out(summary_h, 0.0, summary_mb)
+        if 'bounds-readout' in cls:
+            # 选区四至读数（#createBoundsReadout）。模板里是个**空 div**，内容由
+            # map.js 的 updateBoundsInfo() 在已框选状态下全量重建，所以必须进
+            # 叶子表 —— 否则走到下面那句 `assert kids` 会因为「空 div 没有子元素」
+            # 报「本模型已失效」。
+            #
+            # 2026-08-15 换的就是这一项：改前这里是 `.modal-bounds-summary`
+            # （#createPanelBounds，那句只读四至摘要 —— 一行等宽文字 + 内边距 +
+            # 边框）。那句话连同 CSS 规则与 i18n 键一起退役，因为可编辑的读数
+            # 搬进同一格之后它是同一个数字的第二处渲染。守的东西没变：
+            # 「选区那一格在已框选状态下占多高」。
+            return out(readout_h, 0.0, readout_mb)
         if 'tile-estimate' in cls:
             # 瓦片数预估（#tileEstimate）。同上，改前是末尾单独一项。
             return out(est_line, 0.0, est_mb)
@@ -4157,15 +4201,29 @@ def _create_panel_form_content_height(css):
             h += max(prev[2], nxt[1])          # 相邻外边距合并取较大者
         return out(h)
 
-    # 两个新叶子的尺寸。都按**一行**计（见 docstring 里的下界说明）。
+    # 两个叶子的尺寸。文本块按**一行**计（见 docstring 里的下界说明）。
     # 放在这里而不是函数开头：measure() 是闭包，名字在**调用时**才解析，而
     # 调用发生在下一行 —— 与 gl_h / label_line 那批放在前面纯粹是读起来顺。
-    summary_font = rule_px('.modal-bounds-summary', 'font-size')
-    summary_pad = rule_px('.modal-bounds-summary', 'padding-top')
-    summary_border = border_px('.modal-bounds-summary', 'border')
-    summary_mb = rule_px('.modal-bounds-summary', 'margin-bottom')
-    summary_h = (summary_font * BS_BODY_LINE_HEIGHT
-                 + 2 * summary_pad + 2 * summary_border)
+    #
+    # `.bounds-readout` 的高度 = updateBoundsInfo() 在已框选分支里渲出来的两块：
+    #   `.bounds-grid`    恰好 2 行的四至网格（grid_h，与下一节那条 2 行断言同源）
+    #   `.bounds-actions` 网格下方独立一行：上外边距 + 上内边距 + 上边框 +
+    #                     max(「清除选区」钮, .bounds-hint 一行文字)
+    # 「清除选区」钮按它的真实上下文层叠：`.bounds-actions .btn` 那条把它钉在
+    # var(--ctl-h)，不带祖先量出来的是 `.btn` 基几何，两者不是一个数。
+    # `.bounds-region`（导入区域时多出的那一行）不计：建模状态是鼠标框选，
+    # 那时 _regionSpec 为 null，模型是下界，少算的方向是安全的。
+    readout_mb = rule_px('.bounds-readout', 'margin-bottom')
+    actions_mt = rule_px('.bounds-actions', 'margin-top')
+    actions_pad_t = rule_px('.bounds-actions', 'padding-top')
+    actions_border = border_px('.bounds-actions', 'border-top')
+    hint_line = rule_px('.bounds-hint', 'font-size') * BS_BODY_LINE_HEIGHT
+    clear_btn_h = _effective_button_height(css, _BtnCtx(
+        {'btn', 'btn-danger', 'btn-sm'}, ancestors={'bounds-actions'},
+        element_id='boundsClearBtn',
+        label='#boundsClearBtn（.bounds-actions 里的「清除选区」）'))
+    readout_h = (grid_h + actions_mt + actions_pad_t + actions_border
+                 + max(clear_btn_h, hint_line))
 
     est_font = rule_px('.tile-estimate', 'font-size')
     est_line = est_font * BS_BODY_LINE_HEIGHT
@@ -4237,8 +4295,21 @@ def test_submit_button_lives_in_the_create_panel_footer():
          同一个形态）；
       3. #createPanel 带 workbench-panel 类 —— 满高定位与滑出过渡的附着点，
          与「任务」「配置」两个面板同构；
-      4. 选区浮层里有 #boundsCreateBtn（「框选 -> 框上点新建任务」的入口），
-         且 map.js 的 openCreatePanel() 会刷新四至摘要并打开这个面板。
+      4. **框选完之后有路可走到创建任务**。判据不变，走法本次换了：
+         改前钉的是「updateBoundsInfo 的已框选分支里有 #boundsCreateBtn」——
+         地图右上那块浮层上的「新建任务」钮。2026-08-15 浮层整块删除，四至读数
+         搬进 #createPanel 的选区格，那颗钮成了「面板里指向面板自己的入口」，
+         跟着退役。同一条主流程现在是三段，缺一段就断：
+           a. 读数确实在面板的选区格里（#createBoundsReadout 在 #selectionField
+              -> #taskForm -> #createPanel 里），且 updateBoundsInfo() 渲的就是
+              这个宿主 —— 宿主要是被换回地图浮层，读数与提交钮就又分了家；
+           b. 面板开着时下一步是底条那颗常驻提交钮（上面第 1、2 条已钉住它
+              在面板里、在表单外）；面板关着时下一步是工具条那颗「新建」
+              （`.map-panel-btn[data-panel="create"]`）——工具条的框选钮
+              #mapDrawRect 删掉之后，它是打开面板的唯一入口；
+           c. 选区落定（LEFT_UP）之后 map.js 按面板开没开 pulse 上面两者之一，
+              把「下一步点哪」指出来。这段引导改前 pulse 的正是 #boundsCreateBtn。
+         另外 map.js 的 openCreatePanel() 会刷新选区那一格并打开面板。
          **不再要求 getOrCreateInstance**：非模态面板没有 Bootstrap 实例，
          它走 panels.js 的 openPanel('create')。
     """
@@ -4269,12 +4340,45 @@ def test_submit_button_lives_in_the_create_panel_footer():
         '的开关都挂在这个类上'
     )
 
-    body = _js_function_body(_js('map.js'), 'updateBoundsInfo')
-    assert 'boundsCreateBtn' in body, (
-        'updateBoundsInfo 的「已框选」分支里没有 #boundsCreateBtn —— '
-        '框选后选区上没有新建任务入口，这条主流程就无家可归了'
-    )
+    # ---- 第 4 条：框选之后走得到创建任务 ---------------------------------
     src = _js('map.js')
+    readout_parents = parser.parents.get('createBoundsReadout')
+    assert readout_parents is not None, (
+        'index.html 里找不到 #createBoundsReadout —— 四至读数没有宿主，'
+        '框选完之后用户在面板里看不到自己选了哪儿'
+    )
+    for anc in ('createPanel', 'taskForm', 'selectionField'):
+        assert anc in readout_parents, (
+            f'#createBoundsReadout 不在 #{anc} 里（祖先：{readout_parents}）—— '
+            '四至读数必须与提交钮同住「新建任务」面板的选区段：它是框选与创建'
+            '之间那一段路。搬回地图浮层就又回到「读数在地图上、按钮在面板里」'
+        )
+    body = _js_function_body(src, 'updateBoundsInfo')
+    assert "getElementById('createBoundsReadout')" in body, (
+        'updateBoundsInfo() 渲染的宿主不是 #createBoundsReadout —— '
+        '模板里那个空 div 就永远是空的，框选完面板里看不到四至'
+    )
+    assert re.search(
+        r'<button[^>]*class="map-panel-btn"[^>]*data-panel="create"', html
+    ), (
+        '工具条里没有 `.map-panel-btn[data-panel="create"]` —— 面板关着的时候'
+        '框选完就没有入口能打开「新建任务」了（工具条那颗框选钮 #mapDrawRect '
+        '2026-08-15 已删，这颗是仅剩的入口）'
+    )
+    # 下面三条查的是**代码**，所以先剥注释：这一段的沿革就写在 map.js 的注释里
+    #（「改前 pulse 的是 #boundsCreateBtn，已随浮层删除」），不剥的话两条否定
+    # 断言会被那段注释自己判红，而肯定断言会被一句注释满足。
+    code = _strip_js_comments(src)
+    assert "document.getElementById('createTaskBtn')" in code \
+        and '.map-panel-btn[data-panel="create"]' in code, (
+        'map.js 里找不到「选区落定后 pulse 下一步按钮」那段 —— 面板开着 pulse '
+        '#createTaskBtn、关着 pulse 工具条那颗「新建」。改前 pulse 的是浮层上的 '
+        '#boundsCreateBtn，浮层删了这段引导不能跟着一起没'
+    )
+    assert 'boundsCreateBtn' not in code, (
+        'map.js 里又出现了 #boundsCreateBtn —— 那是面板里指向面板自己的入口，'
+        '2026-08-15 随浮层退役。要加回「框选后的下一步」请沿用 pulse 那条路'
+    )
     assert 'async function openCreatePanel(' in src, \
         'map.js 应定义 async openCreatePanel(pipeline, prefill)'
     open_body = _js_function_body(src, 'openCreatePanel')
@@ -4287,8 +4391,15 @@ def test_submit_button_lives_in_the_create_panel_footer():
         '非模态面板没有 Bootstrap 实例，另起一套显隐就又是一份显隐机制'
     )
     summary_body = _js_function_body(src, 'updateCreatePanelBounds')
-    assert 'createPanelBounds' in summary_body, (
-        'updateCreatePanelBounds() 没有写 #createPanelBounds —— 四至摘要没人填'
+    assert 'createBoundsEntries' in summary_body, (
+        'updateCreatePanelBounds() 没有管 #createBoundsEntries 的显隐 —— '
+        '「去框选 / 手动输入范围」两颗入口没人放出来。2026-08-15 起这个函数'
+        '只剩这一件事：那句只读四至摘要（#createPanelBounds）与键 '
+        '`js.map.download.bounds_summary` 一起退役了，读数归 updateBoundsInfo()'
+    )
+    assert 'createPanelBounds' not in code, (
+        'map.js 里又出现了 #createPanelBounds —— 那是同一个四至的第二处渲染'
+        '（可编辑的读数已经在同一格里了），2026-08-15 已退役'
     )
 
 
@@ -4468,11 +4579,36 @@ def test_submit_button_fits_at_1366x768():
 # Task 3 时在弹窗模型上量的，同一批消费者）：
 # `--space-2` +17.0 / `--font-size-sm` +10.5 / `--font-size-xs` +9.0 /
 # `--ctl-h` +5.0 —— 所以这条棘轮不是形式主义。
-_FORM_CONTENT_HEIGHT_RATCHET_PX = 719.5
+#
+# 2026-08-15（工具条瘦身）719.5 -> 806.5。上界 = 实测 806.0 + 0.50 余量。
+# 涨的 87.0px 分两笔，都是**内容真的进了表单**，不是模型放水：
+#
+#   +47.0 选区那一格换宿主。地图右上的 `#boundsInfo` 浮层整块删除，四至读数
+#         搬进面板的 `.bounds-readout#createBoundsReadout`。模型里这一项从
+#         `.modal-bounds-summary`（那句只读摘要，一行 12px 等宽 + 上下 8px
+#         内边距 + 1px 边框 = 36.0）换成 `.bounds-readout`：
+#             .bounds-grid    2 x 18 + 行间距 2      = 38.0
+#             .bounds-actions 8(上外边距) + 8(上内边距) + 1(上边框)
+#                             + max(清除选区钮 28, .bounds-hint 18) = 45.0
+#         合计 83.0，两者外边距都是 12。83 - 36 = 47。
+#         这 47px 不是新增的界面元素，是从地图浮层挪进表单的 —— 换句话说
+#         **地图上少了 62px 的浮层**（那块的实测值见 style.css `.bounds-grid`
+#         那段注释），代价是表单的滚动区长了 47px。这是用户明确选的取舍
+#         （设计稿 §3「面板关着的时候怎么办」），不是悄悄长高。
+#
+#   +40.0 `#createBoundsEntries`（「去框选 / 手动输入范围」两颗按钮 28.0
+#         + `.mb-3` 8.0 + 与上一项 #tileEstimate 之间合并后的 12.0 外边距）
+#         **从模型的盲区里被捞出来**。它一直在表单里，只是改前
+#         updateCreatePanelBounds() 在有选区时把它 hidden 掉、而本模型建的正是
+#         已框选状态，所以不占高度；工具条那颗 #mapDrawRect 删掉之后它成了重新
+#         框选的唯一入口，现在只跟管线走（map.js:3315-3319）。
+#         这一笔严格说是**修了一处少算**，不是新内容 —— 但棘轮记的是模型值，
+#         所以照实记在这里，免得下一个人以为是哪次改动把表单撑高了 40px。
+_FORM_CONTENT_HEIGHT_RATCHET_PX = 806.5
 
 
 def test_create_panel_form_content_does_not_grow_further():
-    """内容**棘轮**：`#taskForm` 在瓦片管线下的内容栈高不许超过 719.0px。
+    """内容**棘轮**：`#taskForm` 在瓦片管线下的内容栈高不许超过 806.0px。
 
     ⚠️ 这是棘轮，**不是目标**。它不问「装不装得下」——
     test_submit_button_fits_at_1366x768 已经从结构上保证提交钮永远够得着，
@@ -4498,10 +4634,18 @@ def test_create_panel_form_content_does_not_grow_further():
       866.0 —— 2026-08-15 Task 3 前，被测对象是「弹窗时代按钮的模型 bottom」。
       719.5 —— 2026-08-15 Task 5，被测对象换成「表单内容栈高」（实测 719.0）。
                差额约 147px 全是退场的弹窗框架，不是表单变矮了。
+      806.5 —— 2026-08-15 工具条瘦身（实测 806.0）。+87.0 = 选区那一格换宿主
+               +47.0（地图右上的 #boundsInfo 浮层整块搬进面板：一行只读摘要
+               36.0 换成「2 行四至网格 + 操作行」83.0）与
+               #createBoundsEntries +40.0（那两颗入口改成只跟管线走、
+               已框选状态下也显示，从模型的盲区里被捞出来）。
+               逐项账在 `_FORM_CONTENT_HEIGHT_RATCHET_PX` 上方。
+               **这一笔不是「加了新字段」**：47 是从地图浮层挪进来的同一块内容
+               （地图那边同时少了一块 62px 的浮层），40 是修了一处少算。
     """
     got = _create_panel_form_content_height(_css())
     assert got <= _FORM_CONTENT_HEIGHT_RATCHET_PX, (
-        f'#taskForm 的内容栈高从 719.0px 涨到 {got:.2f}px'
+        f'#taskForm 的内容栈高从 806.0px 涨到 {got:.2f}px'
         f'（超上界 {got - _FORM_CONTENT_HEIGHT_RATCHET_PX:.2f}px）——'
         '这是**棘轮，不是目标**：提交钮够不够得着由 '
         'test_submit_button_fits_at_1366x768 从结构上保证，本条只管「表单不许'
@@ -4663,7 +4807,16 @@ def _bbox_object_literals(src):
 #       给的 bbox 要过与框选、点读数编辑、手动输入同一道闸门；
 #     · `applyPlaceResult()` 重建的 `_rectDegrees` —— 与 _applyManualBounds
 #       同一套写入路径。
-MAP_JS_BBOX_LITERAL_COUNT = 18
+# 18 -> 17（2026-08-15 工具条瘦身）：**少了一个，而且必须先确认少的是哪一个**。
+#   退役的是 `updateCreatePanelBounds()` 里那句只读四至摘要的参数对象
+#   （`t('js.map.download.bounds_summary', {north: f(currentBounds.north), …,
+#   width: w, height: h})`）。四至读数搬进同一格之后那句话是同一个数字的第二处
+#   渲染，连键 `js.map.download.bounds_summary` 一起退役。
+#   核对方法（不是拍脑袋）：拿 `git show HEAD:static/js/map.js` 与工作树版本各跑
+#   一遍 `_bbox_object_literals`，把两份命中清单做差 —— 只在旧版出现的恰好一条，
+#   就是剥注释后第 3125 行那个字面量；只在新版出现的零条。**其余 17 个构造点
+#   一个没少**，所以这是「一处渲染退役」，不是扫描失效。
+MAP_JS_BBOX_LITERAL_COUNT = 17
 
 
 def test_bbox_literals_never_swap_directions():

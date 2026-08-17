@@ -377,7 +377,16 @@ _COORD_TOFIXED_RE = re.compile(
 COORD_READOUT_DIGITS = 5
 COORD_DETAIL_DIGITS = 6
 SPAN_DIGITS = 3
-SPAN_SITE_COUNT = 4        # 状态栏选区尺寸 2 + 下载面板四至摘要 2
+# 沿革：2026-08-15 之前锚点是 4 —— 状态栏选区摘要 2（w/h）+ 面板里那句只读摘要
+# `#createPanelBounds` 的 2（`updateCreatePanelBounds()` 里同名的 w/h）。工具条
+# 瘦身把那句只读摘要连同 `js.map.download.bounds_summary` 一起退役（同一个四至
+# 原本在面板里渲染两遍，一份可编辑一份只读），跨度读数跟着少两处。
+# 实测（2026-08-17，拿 _SPAN_RE 普查 static/js/）：map.js:2981 / 2982，两处都在
+# `updateBoundsInfo()` 里喂 `js.map.status.selection`，就是状态栏那一行的宽高。
+SPAN_SITE_COUNT = 2        # 状态栏选区尺寸 w + h
+# 跨度读数的唯一宿主：选区每次变化的出口。数量从 4 掉到 2 之后，光数个数已经
+# 不够（见下面那条用例的 docstring），要连宿主一起钉。
+SPAN_HOST_FN = 'updateBoundsInfo'
 
 
 def test_coordinate_precision_lives_in_exactly_two_functions():
@@ -450,10 +459,17 @@ def test_the_two_tiers_are_both_actually_used():
 
 
 def test_degree_span_is_a_separate_named_class():
-    """角度跨度仍是 3 位，且数量钉住。
+    """角度跨度仍是 3 位，数量钉住，且只住在状态栏那一行。
 
     它与坐标是**两个概念**：跨度回答「这个框多大」，坐标回答「它在哪」。
     不把它并进两档里，但也不放任 —— 数量一变就要有人来解释。
+
+    2026-08-17 迁移：锚点数 4 -> 2（沿革写在 SPAN_SITE_COUNT 上方）。只把 4 改成
+    2 会让这条断言松掉一半 —— 「有 2 处」不再等于「就是状态栏那 2 处」，跨度改天
+    悄悄搬去别的读数、状态栏那行改走 formatCoord，个数照样是 2，本条照样绿。所以
+    补一条宿主判据：两处必须都在 `updateBoundsInfo()` 里、喂的必须还是状态栏那个
+    键。要守的不变量（度数跨度是与坐标不同的一档读数、3 位、不许被当坐标走
+    formatCoord）一个字没放宽。
     """
     sites = []
     for name, src in _js_sources().items():
@@ -464,6 +480,13 @@ def test_degree_span_is_a_separate_named_class():
         '新增的跨度读数要么用 3 位，要么说明为什么不是')
     assert {s[1] for s in sites} == {SPAN_DIGITS}, (
         f'角度跨度出现了 {SPAN_DIGITS} 位之外的精度：{sites}')
+    host = _js_function_body(_strip_js_comments(_js('map.js')), SPAN_HOST_FN)
+    assert len(_SPAN_RE.findall(host)) == SPAN_SITE_COUNT, (
+        f'{SPAN_SITE_COUNT} 处跨度读数不再都住在 {SPAN_HOST_FN}() 里 —— '
+        '个数对不代表钉的还是原来那两处，搬家要么改这里的宿主要么说明为什么')
+    assert 'js.map.status.selection' in host, (
+        f'{SPAN_HOST_FN}() 里的跨度不再喂 js.map.status.selection —— '
+        '状态栏那一行是选区尺寸唯一的常驻读数（浮层退场后更是唯一的）')
 
 
 # ---------------------------------------------------------------------------
