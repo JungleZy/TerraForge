@@ -282,7 +282,16 @@ def test_animated_banner_redraws_in_place_and_restores_cursor(monkeypatch):
     buf = _FakeTty()
     sb.print_banner('0.1.0', stream=buf, animate=True)
     out = buf.getvalue()
-    assert out.count(f'\033[{len(sb._BANNER_LINES)}A') >= 10  # 每帧回块首重画
+    # 「原地重画」= 光标上移序列出现不止一次。**不钉具体帧数**:这条路径上主循环
+    # 刻意「落后就丢帧」(见 _animate_art:按截止时间走,超了就 continue),而这里
+    # 把 _ANIM_DURATION 压到 0.01s、一百多帧均分下来一帧只有 0.09ms —— 比写一帧的
+    # 开销还小,于是几乎所有帧都会被丢掉,真正写出几帧完全取决于机器快慢。原判据
+    # 是 `>= 10`,Linux 上恰好过、windows-latest 上实测只写了 5 帧变红
+    # (run 32002065589)。那不是回归,是判据在量机器速度而不是量行为。
+    # 「动画真的动了」由三段帧生成器各自的单测守(boot/sweep/breath),
+    # 「收敛到静态横幅」由 test_animated_banner_settles_to_static_banner 守,
+    # 「被叫停后抽样快放」由 stop_fast_forwards 那条的上下界守。
+    assert out.count(f'\033[{len(sb._BANNER_LINES)}A') >= 2
     assert out.count('\033[?25l') == 1                        # 藏光标
     assert out.count('\033[?25h') == 1                        # 且必须还回来
     assert out.index('\033[?25l') < out.index('\033[?25h')
