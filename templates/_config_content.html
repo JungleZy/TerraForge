@@ -104,13 +104,13 @@
                             {{ hint(t('tpl.config.basic.save_path_hint')) }}
                         </div>
                         <div class="d-flex gap-2 align-items-center">
-                            <input type="text" class="form-control" id="default_save_path"
+                            <input type="text" class="form-control tf-field" id="default_save_path"
                                    value="{{ config.default_save_path }}" placeholder="{{ t('tpl.config.basic.save_path_placeholder') }}">
                             {# data-path-target 是给 path_browser.js 的接线钩子：
                                目标输入框的 id 从这里读，不必在 JS 里再抄一遍。
                                内联 onclick 已删，接线在 path_browser.js 的委托监听里
                                —— 两边都留着会点一次弹两次。 #}
-                            <button type="button" class="btn btn-outline-primary path-browse" id="defaultSavePathBrowse"
+                            <button type="button" class="btn btn-outline-primary path-browse tf-btn" id="defaultSavePathBrowse"
                                     data-path-target="default_save_path">{{ t('tpl.config.basic.browse') }}</button>
                         </div>
                     </div>
@@ -118,7 +118,7 @@
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="default_style" class="form-label">{{ t('tpl.config.basic.default_style') }}</label>
-                            <select class="form-select" id="default_style">
+                            <select class="form-select tf-field" id="default_style">
                                 <option value="m" {% if config.default_style == 'm' %}selected{% endif %}>{{ t('tpl.config.basic.style_standard') }}</option>
                                 <option value="s" {% if config.default_style == 's' %}selected{% endif %}>{{ t('tpl.config.basic.style_satellite') }}</option>
                                 <option value="y" {% if config.default_style == 'y' %}selected{% endif %}>{{ t('tpl.config.basic.style_satellite_labels') }}</option>
@@ -129,13 +129,13 @@
 
                         <div class="col-md-4 mb-3">
                             <label for="default_zoom_min" class="form-label">{{ t('tpl.config.basic.zoom_min') }}</label>
-                            <input type="number" class="form-control" id="default_zoom_min"
+                            <input type="number" class="form-control tf-field" id="default_zoom_min"
                                    value="{{ config.default_zoom_min }}" min="0" max="21">
                         </div>
 
                         <div class="col-md-4 mb-3">
                             <label for="default_zoom_max" class="form-label">{{ t('tpl.config.basic.zoom_max') }}</label>
-                            <input type="number" class="form-control" id="default_zoom_max"
+                            <input type="number" class="form-control tf-field" id="default_zoom_max"
                                    value="{{ config.default_zoom_max }}" min="0" max="21">
                         </div>
                     </div>
@@ -150,10 +150,10 @@
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="concurrent_downloads" class="form-label">{{ t('tpl.config.download.concurrency') }}</label>
-                            <input type="number" class="form-control" id="concurrent_downloads"
+                            <input type="number" class="form-control tf-field" id="concurrent_downloads"
                                    value="{{ config.concurrent_downloads }}" min="1" max="100">
                             <div class="d-flex align-items-center mt-1">
-                                <button type="button" class="btn btn-outline-primary concurrency-recommend"
+                                <button type="button" class="btn btn-outline-primary concurrency-recommend tf-btn"
                                         id="concurrencyRecommend">{{ t('tpl.config.download.concurrency_recommend') }}</button>
                                 {{ hint(t('tpl.config.download.concurrency_hint')) }}
                             </div>
@@ -165,13 +165,13 @@
 
                         <div class="col-md-4 mb-3">
                             <label for="request_timeout" class="form-label">{{ t('tpl.config.download.request_timeout') }}</label>
-                            <input type="number" class="form-control" id="request_timeout"
+                            <input type="number" class="form-control tf-field" id="request_timeout"
                                    value="{{ config.request_timeout }}" min="1" max="300">
                         </div>
 
                         <div class="col-md-4 mb-3">
                             <label for="max_retries" class="form-label">{{ t('tpl.config.download.max_retries') }}</label>
-                            <input type="number" class="form-control" id="max_retries"
+                            <input type="number" class="form-control tf-field" id="max_retries"
                                    value="{{ config.max_retries }}" min="0" max="10">
                         </div>
                     </div>
@@ -181,7 +181,7 @@
                             <label for="proxy_url" class="form-label">{{ t('tpl.config.download.proxy') }}</label>
                             {{ hint(t('tpl.config.download.proxy_hint')) }}
                         </div>
-                        <input type="text" class="form-control" id="proxy_url"
+                        <input type="text" class="form-control tf-field" id="proxy_url"
                                value="{{ config.proxy_url }}" placeholder="http://proxy.example.com:8080">
                     </div>
 
@@ -200,7 +200,7 @@
                                 </label>
                             </div>
                             {{ hint(t('tpl.config.download.proxy_auto_hint')) }}
-                            <button type="button" class="btn btn-outline-primary btn-compact ms-2"
+                            <button type="button" class="btn btn-outline-primary btn-compact ms-2 tf-btn"
                                     id="proxyDetectNow">{{ t('tpl.config.download.proxy_detect') }}</button>
                             {# 状态图标排在动作按钮**之后**：它是这个按钮的结果指示。
                                排在说明 ⓘ 旁边时两个 16px 灰圆圈紧挨着，分不清谁是谁。
@@ -236,10 +236,10 @@
                             {% for srv in (config.tile_servers or '').split(',') if srv.strip() %}
                             <div class="tile-server-row">
                                 <div class="d-flex gap-2 align-items-center">
-                                    <input type="text" class="form-control flex-grow-1 tile-server-input"
+                                    <input type="text" class="form-control flex-grow-1 tile-server-input tf-field"
                                            value="{{ srv.strip() }}">
-                                    <button type="button" class="btn btn-outline-primary tile-server-verify">{{ t('tpl.config.download.tile_verify') }}</button>
-                                    <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove"
+                                    <button type="button" class="btn btn-outline-primary tile-server-verify tf-btn">{{ t('tpl.config.download.tile_verify') }}</button>
+                                    <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove tf-btn"
                                             aria-label="{{ t('tpl.config.download.tile_remove') }}" title="{{ t('tpl.config.download.tile_remove') }}">
                                         {{ m.icon_close(14) }}
                                     </button>
@@ -248,7 +248,7 @@
                             </div>
                             {% endfor %}
                         </div>
-                        <button type="button" class="btn btn-outline-secondary btn-compact" id="tileServerAdd">{{ t('tpl.config.download.tile_add') }}</button>
+                        <button type="button" class="btn btn-outline-secondary btn-compact tf-btn" id="tileServerAdd">{{ t('tpl.config.download.tile_add') }}</button>
                     </div>
 
                     {% set bm_raw = config.basemap_source or 'esri' %}
@@ -266,14 +266,14 @@
                            瓦片专用端口出图（src/core/tile_server.py），降级时才回到
                            主端口。选「自定义」时下面的模板输入框显形，
                            显隐由 config.js 的 syncBasemapCustom 管。 #}
-                        <select class="form-select" id="basemap_source_preset">
+                        <select class="form-select tf-field" id="basemap_source_preset">
                             <option value="esri" {% if bm_preset == 'esri' %}selected{% endif %}>{{ t('tpl.config.download.basemap_esri') }}</option>
                             <option value="google_satellite" {% if bm_preset == 'google_satellite' %}selected{% endif %}>{{ t('tpl.config.download.basemap_google_sat') }}</option>
                             <option value="google_roadmap" {% if bm_preset == 'google_roadmap' %}selected{% endif %}>{{ t('tpl.config.download.basemap_google_map') }}</option>
                             <option value="download_source" {% if bm_preset == 'download_source' %}selected{% endif %}>{{ t('tpl.config.download.basemap_follow') }}</option>
                             <option value="custom" {% if bm_custom %}selected{% endif %}>{{ t('tpl.config.download.basemap_custom') }}</option>
                         </select>
-                        <input type="text" class="form-control mt-2" id="basemap_source_custom"
+                        <input type="text" class="form-control mt-2 tf-field" id="basemap_source_custom"
                                placeholder="https://example.com/tiles/{z}/{x}/{y}.png"
                                value="{{ bm_raw if bm_custom else '' }}"
                                {% if not bm_custom %}hidden{% endif %}>
@@ -316,8 +316,8 @@
                             <span class="cache-row__size"><span id="cacheStatsTotal">—</span>{{ t('tpl.config.cache.total_files', files='<span id="cacheStatsTotalFiles">—</span>')|safe }}</span>
                         </div>
                         <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-outline-secondary btn-compact" id="cacheStatsRefresh">{{ t('tpl.config.cache.refresh') }}</button>
-                            <button type="button" class="btn btn-outline-danger btn-compact" id="cacheClearAll">{{ t('tpl.config.cache.clear_all') }}</button>
+                            <button type="button" class="btn btn-outline-secondary btn-compact tf-btn" id="cacheStatsRefresh">{{ t('tpl.config.cache.refresh') }}</button>
+                            <button type="button" class="btn btn-outline-danger btn-compact tf-btn" id="cacheClearAll">{{ t('tpl.config.cache.clear_all') }}</button>
                         </div>
                     </div>
                 </div>
@@ -335,7 +335,7 @@
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label for="gdal_compression" class="form-label">{{ t('tpl.config.gdal.compression') }}</label>
-                            <select class="form-select" id="gdal_compression">
+                            <select class="form-select tf-field" id="gdal_compression">
                                 <option value="LZW" {% if config.gdal_compression == 'LZW' %}selected{% endif %}>LZW</option>
                                 <option value="DEFLATE" {% if config.gdal_compression == 'DEFLATE' %}selected{% endif %}>DEFLATE</option>
                                 <option value="JPEG" {% if config.gdal_compression == 'JPEG' %}selected{% endif %}>JPEG</option>
@@ -345,7 +345,7 @@
 
                         <div class="col-md-6 mb-3">
                             <label for="gdal_resampling" class="form-label">{{ t('tpl.config.gdal.resampling') }}</label>
-                            <select class="form-select" id="gdal_resampling">
+                            <select class="form-select tf-field" id="gdal_resampling">
                                 <option value="nearest" {% if config.gdal_resampling == 'nearest' %}selected{% endif %}>{{ t('tpl.config.gdal.resampling_nearest') }}</option>
                                 <option value="bilinear" {% if config.gdal_resampling == 'bilinear' %}selected{% endif %}>{{ t('tpl.config.gdal.resampling_bilinear') }}</option>
                                 <option value="cubic" {% if config.gdal_resampling == 'cubic' %}selected{% endif %}>{{ t('tpl.config.gdal.resampling_cubic') }}</option>
@@ -369,19 +369,19 @@
                     <div class="row">
                         <div class="col-md-4 mb-3">
                             <label for="map_center_lat" class="form-label">{{ t('tpl.config.misc.map_center_lat') }}</label>
-                            <input type="number" class="form-control" id="map_center_lat"
+                            <input type="number" class="form-control tf-field" id="map_center_lat"
                                    value="{{ config.map_center_lat }}" step="any" min="-90" max="90">
                         </div>
 
                         <div class="col-md-4 mb-3">
                             <label for="map_center_lng" class="form-label">{{ t('tpl.config.misc.map_center_lng') }}</label>
-                            <input type="number" class="form-control" id="map_center_lng"
+                            <input type="number" class="form-control tf-field" id="map_center_lng"
                                    value="{{ config.map_center_lng }}" step="any" min="-180" max="180">
                         </div>
 
                         <div class="col-md-4 mb-3">
                             <label for="map_initial_zoom" class="form-label">{{ t('tpl.config.misc.map_initial_zoom') }}</label>
-                            <input type="number" class="form-control" id="map_initial_zoom"
+                            <input type="number" class="form-control tf-field" id="map_initial_zoom"
                                    value="{{ config.map_initial_zoom }}" min="0" max="21">
                         </div>
                     </div>
@@ -401,13 +401,13 @@
                     <div class="row">
                         <div class="col-md-6 mb-3">
                             <label for="earthdata_username" class="form-label">{{ t('tpl.config.earthdata.username') }}</label>
-                            <input type="text" class="form-control" id="earthdata_username"
+                            <input type="text" class="form-control tf-field" id="earthdata_username"
                                    value="{{ config.earthdata_username }}" placeholder="Earthdata username">
                         </div>
 
                         <div class="col-md-6 mb-3">
                             <label for="earthdata_password" class="form-label">{{ t('tpl.config.earthdata.password') }}</label>
-                            <input type="password" class="form-control" id="earthdata_password"
+                            <input type="password" class="form-control tf-field" id="earthdata_password"
                                    value="{{ config.earthdata_password }}" placeholder="Earthdata password">
                         </div>
                     </div>
@@ -436,7 +436,7 @@
                            返回同一批结果,而用户会以为是「搜不到」。
                            示例用实测可用的 Photon（免注册免 key）—— 出厂值仍是空,
                            这里只是提示文本,理由见 tpl.config.geocoder.url_hint 的注释。 #}
-                        <input type="text" class="form-control" id="geocoder_url"
+                        <input type="text" class="form-control tf-field" id="geocoder_url"
                                value="{{ config.geocoder_url }}"
                                placeholder="https://photon.komoot.io/api/?q={q}">
                     </div>
@@ -450,14 +450,14 @@
             <div class="config-footer">
                 {# id 是给 config.js 的接线钩子：内联 onclick="resetConfig()" 已删，
                    接线在 initConfig 里 —— 两边都留着会点一次跑两次。 #}
-                <button type="button" class="btn btn-secondary btn-sm" id="configResetBtn">
+                <button type="button" class="btn btn-secondary btn-sm tf-btn" id="configResetBtn">
                     <svg class="icon-inline icon-inline--md" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="1 4 1 10 7 10"></polyline>
                         <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
                     </svg>
                     {{ t('tpl.config.actions.reset') }}
                 </button>
-                <button type="submit" form="configForm" class="btn btn-primary btn-sm">
+                <button type="submit" form="configForm" class="btn btn-primary btn-sm tf-btn tf-btn--accent">
                     <svg class="icon-inline icon-inline--md" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="20 6 9 17 4 12"></polyline>
                     </svg>
