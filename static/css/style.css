@@ -5641,3 +5641,15 @@ code {
         用户群静默失准 —— test_reduced_motion_block_only_touches_motion 会红。
    将来真给流光加了动画,压制写法是 `animation: none !important`(动效属性,合规),
    不是 `content: none`。 */
+
+/* 非地图页环境背景:玻璃需要丰富背景可采样(设计 §3)。
+   渐变取页面底与强调色的极淡混合,等高线纹理描边用边框令牌,亮暗自动跟随。 */
+.page-ambient {
+    background:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%237dd3fc' stroke-opacity='0.05'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E"),
+        radial-gradient(1200px 600px at 80% -10%, var(--color-accent-muted), transparent 60%),
+        radial-gradient(900px 500px at 10% 110%, var(--color-accent-muted), transparent 55%),
+        var(--color-bg-primary);
+    background-attachment: fixed;
+    min-height: 100vh;
+}

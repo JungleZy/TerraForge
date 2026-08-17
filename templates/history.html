@@ -6,7 +6,7 @@
 
 {% block content %}
 {# --fill：任务列表吃满剩余高度、在卡内滚动（见 _history_content.html）。 #}
-<div class="page-content page-content--fill">
+<div class="page-ambient page-content page-content--fill">
 <a class="back-home-link" href="/">{{ m.icon_back() }}{{ t('tpl.history.back_home') }}</a>
 {% include "_history_content.html" %}
 </div>

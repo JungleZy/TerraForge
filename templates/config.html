@@ -17,7 +17,7 @@
 {% block content %}
 {# --fill：让 .page-content 撑满 .main-content 的高度，配置页内部才能分成
    「滚动区 + 常驻底部操作条」两层（见 style.css 的 .config-layout 段）。 #}
-<div class="page-content page-content--fill">
+<div class="page-ambient page-content page-content--fill">
 <a class="back-home-link" href="/">{{ m.icon_back() }}{{ t('tpl.config.back_home') }}</a>
 {% include "_config_content.html" %}
 </div>
