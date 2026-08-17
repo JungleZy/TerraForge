@@ -484,6 +484,24 @@ def main():
         *icon_options(),
         ENTRY,
     ]
+    # conda 版 osgeo 的 SWIG shim 在 osgeo/_gdal.py 的 __bootstrap__ 里
+    # `import pkg_resources`(同一段 shim 的另一半由 alias_conda_tagged_extensions
+    # 处理)。收不到这个模块的后果不是「少个功能」,而是 exe 一启动就
+    # ModuleNotFoundError: No module named '_gdal' —— 打包产物里 GDAL 整个不可用
+    # (run 32004512921 的 windows-latest 实测:冒烟 main/tile 双 000)。
+    # 显式登记而不是指望静态分析跟到:pkg_resources 内部大量动态导入。
+    # 之所以带条件:新版 setuptools 已经把 pkg_resources 删了(实测 84.0.0 没有、
+    # 80.9.0 有),而 Linux 那条 pip 现编的绑定根本不碰它 —— 无条件写死会让没装
+    # 它的环境在参数解析阶段就构建失败。Windows/macOS 的版本钉在 CI 的
+    # 「Install GDAL (Windows/macOS, conda-forge)」一步。
+    try:
+        import pkg_resources  # noqa: F401
+    except ImportError:
+        print('pkg_resources 不在构建环境里,跳过登记'
+              '(Linux 的 pip 版 osgeo 绑定不需要它)', flush=True)
+    else:
+        cmd.insert(-1, '--include-package=pkg_resources')
+
     print('Running:', ' '.join(cmd), flush=True)
     subprocess.check_call(cmd)
 

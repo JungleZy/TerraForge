@@ -160,7 +160,32 @@ jobs:
         # 值一旦漂出范围就是 CI 红。规则本身仍然只有那一个脚本一处实现;
         # 在 YAML 里把范围反过来喂给 conda 则会让发版产物随 conda-forge 当日最新的
         # 3.x 漂移,与「同一 commit 打出同样的包」冲突。
-        conda install -y -c conda-forge gdal=3.8 numpy
+        # `setuptools<81` 同样是【钉死的构建输入】,理由与 gdal 那条并列:
+        # conda 版 osgeo 的 SWIG shim(osgeo/_gdal.py 的 __bootstrap__)用
+        # `import pkg_resources` + resource_filename 定位带 ABI 标签的扩展
+        # (nuitka_build.py 的 alias_conda_tagged_extensions 正是为它补别名),
+        # 而**新版 setuptools 已经把 pkg_resources 删掉了** —— 实测
+        # setuptools 84.0.0 没有 pkg_resources、80.9.0 有。不钉的话 conda 会装
+        # 当日最新版,打包时 Nuitka 收不到这个模块,exe 一启动就是:
+        #   osgeo/_gdal.py __bootstrap__ → ModuleNotFoundError: pkg_resources
+        #   → ModuleNotFoundError: No module named '_gdal'
+        # 即**打包产物里 GDAL 整个不可用**。run 32004512921 的 windows-latest 就
+        # 死在这里(冒烟 main/tile 都是 000)。
+        #
+        # 为什么只钉 Windows/macOS 这一步、不动 Linux:Linux 的绑定是 pip 按系统
+        # libgdal 现编的,`osgeo/_gdal.py` 是朴素 SWIG 加载器,根本不碰
+        # pkg_resources(同一轮 Linux 冒烟是绿的);而那边的 setuptools 是给 GDAL
+        # sdist 提供 build_meta 后端用的,钉低版本只会增加没必要的耦合。
+        #
+        # 为什么这条以前没暴露:插件系统之前,启动路径不 import osgeo —— 冒烟只探
+        # `/` 与 `/tile-health` 就绿了,GDAL 要等用户真跑 DEM/地形/等高线任务才炸。
+        # 0.4.0 起 src/app_factory.py 在模块级 import gpkg_exporter,它又
+        # pin_gdal_exception_mode() → from osgeo import …,于是启动即触发,
+        # 冒烟测试当场抓住。这是可观测性变好,不是新引入的缺陷。
+        conda install -y -c conda-forge gdal=3.8 numpy "setuptools<81"
+        # 装完立刻验一次:pkg_resources 缺了就是「打包成功、exe 启动即死」那类故障,
+        # 而冒烟测试排在四十分钟的编译之后才红。这一步几秒钟,红在这里省一整轮。
+        python -c "import pkg_resources; print('pkg_resources OK:', pkg_resources.__file__)"
         GDAL_VERSION=$(python -c "from osgeo import gdal; print(gdal.__version__)")
         echo "GDAL_VERSION=$GDAL_VERSION" >> $GITHUB_ENV
         # conda's gdal sets GDAL_DATA via activate scripts; surface it here so
