@@ -5771,3 +5771,36 @@ code {
     .tf-field, .tf-card { background: var(--color-bg-elevated); }
     .tf-card::before { content: none; }
 }
+
+/* ══ Task 6 history 迁移补丁(2026-08-17,设计 §3 性能预算) ══════════════
+   玻璃只上列表容器壳;滚动区与长列表行保持实色。三条规则各司其职: */
+/* 1. .card 自带的实底(--color-bg-secondary)画在元素背景层 —— 它在
+   backdrop-filter 的模糊结果之上,会把模糊整个盖死,挂 .tf-card 的卡
+   必须让位成透明。描边与阴影顺带钉成玻璃值:.card:hover 同为 (0,2,0),
+   本条源码更靠后,hover 时也不会退回 --shadow-md 平面阴影。 */
+.card.tf-card {
+    background: transparent;
+    border-color: var(--liquid-stroke);
+    box-shadow: var(--liquid-shadow),
+        inset 0 1px 1px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft);
+}
+/* 2. 滚动容器铺实底(卡片原来的 --color-bg-secondary):.task-row 行
+   自身无背景,不铺这条的话行会透出卡片玻璃的模糊底,滚动时糊底与
+   文字错位发花;行也不许各自挂玻璃(同屏 backdrop-filter ≤ 8)。
+   实底上在滚动容器一处,行照旧只有发丝分隔线,视觉与迁移前一致。 */
+.card--grow.tf-card #historyTableBody {
+    background: var(--color-bg-secondary);
+    border-radius: var(--liquid-radius-control);
+}
+/* 3. 任务详情 modal 挂 glass-3 同理让位。.modal-header 保持实底不动:
+   test_css_contract 的受害者清单(_DIV_BACKGROUNDS_THAT_MUST_RENDER)
+   钉死它必须渲染 --color-bg-elevated,视觉上是玻璃体上的实色标题栏。 */
+.modal-content.tf-glass {
+    background: transparent;
+}
+/* 降级块特异度要提到 (0,2,0) 才压得过上面两条让位规则;
+   与组件自带降级同值。at-rule 头逐字同 _KNOWN_INACTIVE_AT_RULES 白名单。 */
+@supports not (backdrop-filter: blur(1px)) {
+    .card.tf-card, .modal-content.tf-glass { background: var(--color-bg-elevated); }
+}

@@ -124,7 +124,10 @@
          test_task_detail_modal_is_not_trapped_inside_workbench_panel 钉住。 -->
     <div class="modal fade" id="taskDetailModal" tabindex="-1" aria-labelledby="taskDetailModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
-            <div class="modal-content">
+            <!-- tf-glass--3：模态框档位（设计 §1 档位表）。modal 标记在 base.html，
+                 不在 _history_content.html —— 理由见下方注释与
+                 test_task_detail_modal_is_not_trapped_inside_workbench_panel。 -->
+            <div class="modal-content tf-glass tf-glass--3">
                 <div class="modal-header">
                     <h5 class="modal-title" id="taskDetailModalLabel">
                         {{ m.icon_info(20) }}

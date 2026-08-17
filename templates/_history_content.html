@@ -33,7 +33,9 @@
 {% endmacro %}
 
 {% macro task_list_card() %}
-            <div class="card card--grow">
+            {# tf-card：容器壳上玻璃（glass-2）；滚动区与 .task-row 行保持实色，
+               玻璃不进滚动区域（设计 §3 性能预算，补丁在 style.css 末尾）。 #}
+            <div class="card card--grow tf-card">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h5>
                         {{ m.icon_list(18) }}
@@ -55,7 +57,7 @@
                        —— 所以「已完成」名副其实（带洞的成品也是完成品），
                        而「有缺块」用精确值把带洞的那些单独拎出来。 #}
                     <div class="task-filter-bar">
-                        <input type="text" class="form-control form-control-sm" id="searchInput" placeholder="{{ t('tpl.history.filter.search_placeholder') }}">
+                        <input type="text" class="form-control form-control-sm tf-field" id="searchInput" placeholder="{{ t('tpl.history.filter.search_placeholder') }}">
                         {# aria-pressed 必须与 .active 同步：两者只差一个 CSS
                            类时读屏用户听不出当前筛的是哪一档（.status-chip.active
                            与基态只差 color/border-color）。初值在这里给全，
