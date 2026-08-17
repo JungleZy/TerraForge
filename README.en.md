@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>TerraForge</h1>
+<h1><img src="docs/assets/images/readme/brandmark.webp" alt="TerraForge" width="480"></h1>
 
 <p><b>Map tiles · DEM elevation · Cesium 3D terrain · contours — four pipelines, one interface</b></p>
 

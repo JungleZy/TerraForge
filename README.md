@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>TerraForge</h1>
+<h1><img src="docs/assets/images/readme/brandmark.webp" alt="TerraForge" width="480"></h1>
 
 <p><b>地图瓦片 · DEM 高程 · Cesium 3D 地形 · 等高线 —— 四条管线，一个界面</b></p>
 
