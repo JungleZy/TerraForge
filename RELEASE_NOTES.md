@@ -67,18 +67,32 @@
 
 **卸载插件会连同它保存的配置一起清掉。** 从 `plugins/` 目录移走一个插件、下次启动时，它在数据库里那一行（启停开关 + 配置，**含你填的 token**）会被一并删除；重新装回来是干净的初始状态，需要重填。这样做是有必要的：不清的话，删掉插件 A 再装一个恰好同 id 的插件 B，B 会**直接继承 A 的开关与配置**——包括那个 token。两道保险：`plugins/` 目录整个读不动时（权限、盘没挂上）不清；本轮有任何插件加载失败时也整轮不清（加载失败时程序认不出它的真实 id，照清会误伤）。清理会在日志里逐条报出被删的 id，删到带配置的行时另有一条 warning。
 
-**发版前手工验证（两条，本机跑不了，必须在出包与真 key 到手之后做）**
+**发版后手工验证：一条已做完、一条仍缺**
 
-1. **frozen 插件冒烟**（规格 §15 第 5 条）：`./build.sh` 出包后，
-   - 启动 `dist/terraforge/terraforge`，`GET http://localhost:5000/api/plugins` 应列出 4 个 in-tree 插件、`load_error` 全为空 —— 证明 Nuitka 把 `src/plugins/**` 收全了；
-   - 把 `tests/` 里那种最小假插件目录（一份 `plugin.toml` + 一份 `plugin.py`，`register()` 返回空 `PluginDefinition()`）拷进 `dist/terraforge/plugins/<id>/`，重启 exe，`GET /api/plugins` 应多出这一条且 `origin` 为 `external` —— 证明 exe 旁的外部插件目录真的被扫到；
-   - 再把该目录的 `api_version` 改成 `"2"` 重启，这一条应仍在列表里但带非空 `load_error` —— 证明拒载理由在界面上看得见（§15 第 6 条的 frozen 版）。
+1. **frozen 插件冒烟（规格 §15 第 5、6 条）—— 已完成，用的是本 Release 挂着的
+   `terraforge-linux.tar.gz` 真包**（`sha256sum -c` 与同 Release 的 `.sha256` 清单
+   对上）。三步实测：
+   - 启动 `terraforge`，`GET /api/plugins` → 4 个 in-tree 插件（`artifact_meta` /
+     `gpkg` / `mvt` / `tianditu`），全部 `origin=builtin`、`enabled=false`、
+     `load_error` 为空 —— Nuitka 把 `src/plugins/**` 收全了。顺带 `/` → 200、
+     `:5001/tile-health` → 204。**exe 能起来本身就是 GDAL 可用的证据**：
+     `app_factory` 在模块级 import `gpkg_exporter`，它会
+     `pin_gdal_exception_mode()` → `from osgeo import …`，坏了就是启动即死。
+   - 把 `docs/examples/plugin-hello/` 整个拷进 exe 旁的 `plugins/hello/` 重启 →
+     多出一条 `hello`，`origin=external`、`load_error` 为空 —— exe 旁的外部插件
+     目录真的被扫到。
+   - 再把它的 `api_version` 改成 `"2"` 重启 → 这一条**仍在列表里**，带
+     `load_error=ManifestError: api_version '2' 与宿主 1.x 不兼容` —— 拒载理由在
+     界面上看得见。
 2. **天地图真 key 验一张瓦片**：插件面板找到 `tianditu` 卡片 → 点「配置」→ 在 token 框里填真 key → 保存 → 点「启用」，然后框一小块区域按天地图影像源下一个 z10 任务。要确认的是：瓦片真的下下来（不是 401、不是配额错误）、图面对得上位置（`TILEROW`/`TILECOL` 没写反）、日志里**没有** token 明文，且重新打开配置时 token 框里显示的不是真值。
 
 **验证**
 
 - 全量测试 **3236 项通过 / 3 项跳过**（开发机 Linux，5 分 37 秒，`src/` 覆盖率 85.11%）—— 这个数含插件系统与这一版界面改造两侧的用例。插件系统自带 18 个测试文件（`tests/test_plugin_*.py`、`tests/test_plugins_*.py`、`tests/test_docs_plugin_example.py`），其中 `tests/test_plugin_acceptance.py` 是规格 §15 六条验收标准里能测试化的那四条；`tests/test_docs_plugin_example.py` 钉住 `docs/examples/plugin-hello/` 这个「拷进去就能跑」的承诺不腐烂（走宿主真实装载路径，变异验证过六种腐烂形态都抓得到）。
-- 未做真实服务验证的部分已在上面「发版前手工验证」逐条列明。天地图源的参数正确性、frozen 产物的插件可达性两项**尚未**在本机取得证据。
+- 未做真实服务验证的部分见上。**frozen 产物的插件可达性已在真包上取得证据**（三步
+  逐条列在上面）；**天地图源的参数正确性仍然没有证据** —— 需要一把真 key，
+  `LAYER` / `TILEMATRIXSET` / `FORMAT` / `max_zoom=18` 全部按公开文档写，未经真实
+  服务验证。这条是本版**唯一**仍悬着的验证项，也是欠账清单第 1 条。
 
 ---
 
