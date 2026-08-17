@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TerraForge 四条数据管线 · TerraForge</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+:root{
+  --paper:#0c0d10; --ink:#e8eaed; --muted:#9aa0aa; --accent:#38bdf8;
+  --fs:'Inter','Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --fm:'JetBrains Mono','Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
+  --ft:'Noto Serif CJK SC','Songti SC','Georgia',serif;
+}
+body{font-family:var(--fs);background:var(--paper);color:var(--ink);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+.frame{max-width:1280px;width:100%}
+.eyebrow{font-family:var(--fm);font-size:.66rem;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:var(--ft);font-size:1.75rem;font-weight:400;line-height:1.2;margin-bottom:.4rem}
+.sub{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
+svg{width:100%;display:block}
+footer{margin-top:1.5rem;padding-top:.75rem;border-top:1px solid rgba(232,234,237,0.12);
+       font-family:var(--fm);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">SWIMLANE · TERRAFORGE</p>
+<h1>TerraForge 四条数据管线</h1>
+<p class="sub">四条管线各有自己的管理器、数据库表与产物目录，只共享调度器与配置；唯一的跨管线交接是「DEM 任务的高程文件被地形 / 等高线管线零拷贝复用」。</p>
+<svg viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="pipelines-dark-title pipelines-dark-desc">
+<title id="pipelines-dark-title">TerraForge 四条数据管线</title>
+<desc id="pipelines-dark-desc">泳道图：地图瓦片、DEM 高程、3D 地形与等高线四条管线，各自的输入、处理与产物服务端点，其中 DEM 产物被地形管线复用。</desc>
+<defs>
+<style>@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+    .nm{font-family:var(--fs);font-size:12px;font-weight:600;fill:#e8eaed}
+    .sb{font-family:var(--fm);font-size:9px;fill:#9aa0aa}
+    .eb{font-family:var(--fm);font-size:8px;font-weight:500;letter-spacing:.14em;fill:#9aa0aa}
+    .tg{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#9aa0aa}
+    .tgA{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#38bdf8}
+    .al{font-family:var(--fm);font-size:8px;letter-spacing:.06em;fill:#767d88}
+    .alA{font-family:var(--fm);font-size:8px;font-weight:600;letter-spacing:.06em;fill:#38bdf8}
+    .zl{font-family:var(--fm);font-size:8px;letter-spacing:.14em;fill:rgba(232,234,237,0.45)}
+    .lg{font-family:var(--fs);font-size:10px;fill:#9aa0aa}
+    .cjk{font-family:var(--fs);font-size:12px;font-weight:600;fill:#e8eaed}</style>
+<marker id="pipelines-dark-arw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#9aa0aa"/></marker>
+<marker id="pipelines-dark-arwA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38bdf8"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#0c0d10"/>
+<text class="eb" x="352" y="86" text-anchor="middle">01 INPUT</text>
+<text class="cjk" x="352" y="106" text-anchor="middle">输入</text>
+<text class="eb" x="704" y="86" text-anchor="middle">02 PROCESS</text>
+<text class="cjk" x="704" y="106" text-anchor="middle">处理</text>
+<text class="eb" x="1056" y="86" text-anchor="middle">03 OUTPUT · SERVE</text>
+<text class="cjk" x="1056" y="106" text-anchor="middle">产物与服务</text>
+<line x1="40" y1="120" x2="1240" y2="120" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<line x1="40" y1="224" x2="1240" y2="224" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<line x1="40" y1="328" x2="1240" y2="328" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<line x1="40" y1="432" x2="1240" y2="432" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<line x1="40" y1="536" x2="1240" y2="536" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<line x1="176" y1="120" x2="176" y2="536" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<text class="cjk" x="108" y="170" text-anchor="middle">地图瓦片</text>
+<text class="eb" x="108" y="188" text-anchor="middle">MAP</text>
+<text class="cjk" x="108" y="274" text-anchor="middle">DEM 高程</text>
+<text class="eb" x="108" y="292" text-anchor="middle">DEM</text>
+<text class="cjk" x="108" y="378" text-anchor="middle">3D 地形</text>
+<text class="eb" x="108" y="396" text-anchor="middle">TERRAIN</text>
+<text class="cjk" x="108" y="482" text-anchor="middle">等高线</text>
+<text class="eb" x="108" y="500" text-anchor="middle">CONTOUR</text>
+<path d="M 484,172 H 572" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 836,172 H 924" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 484,276 H 572" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 836,276 H 924" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 484,380 H 572" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 836,380 H 924" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 484,484 H 572" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 836,484 H 924" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#pipelines-dark-arw)"/>
+<path d="M 1000,312 V 328 Q 1000,336 992,336 H 360 Q 352,336 352,344" fill="none" stroke="#38bdf8" stroke-width="1.6" marker-end="url(#pipelines-dark-arwA)"/>
+<rect x="499" y="312" width="59" height="12" rx="2" fill="#0c0d10"/><text class="alA" x="528" y="321" text-anchor="middle">REUSE DEM</text>
+<rect x="220" y="136" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="220" y="136" width="264" height="72" rx="6" fill="rgba(154,160,170,0.12)" stroke="#767d88" stroke-width="1"/>
+<rect x="232" y="148" width="32" height="12" rx="2" fill="none" stroke="#767d88" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="248" y="157" text-anchor="middle">IN</text>
+<text class="nm" x="352" y="180" text-anchor="middle">地图选区</text>
+<text class="sb" x="352" y="196" text-anchor="middle">bbox · polygon · GeoJSON/KML/SHP</text>
+<rect x="572" y="136" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="572" y="136" width="264" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="584" y="148" width="32" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="600" y="157" text-anchor="middle">RUN</text>
+<text class="nm" x="704" y="180" text-anchor="middle">并发下载 + 缓存</text>
+<text class="sb" x="704" y="196" text-anchor="middle">aiohttp · cache/&lt;style&gt;-&lt;fp&gt;</text>
+<rect x="924" y="136" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="924" y="136" width="264" height="72" rx="6" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<rect x="936" y="148" width="32" height="12" rx="2" fill="none" stroke="#9aa0aa" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="952" y="157" text-anchor="middle">OUT</text>
+<text class="nm" x="1056" y="180" text-anchor="middle">瓦片 · GeoTIFF · MBTiles</text>
+<text class="sb" x="1056" y="196" text-anchor="middle">GET /tiles/&lt;id&gt;/{z}/{x}/{y}.png</text>
+<rect x="220" y="240" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="220" y="240" width="264" height="72" rx="6" fill="rgba(154,160,170,0.12)" stroke="#767d88" stroke-width="1"/>
+<rect x="232" y="252" width="32" height="12" rx="2" fill="none" stroke="#767d88" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="248" y="261" text-anchor="middle">IN</text>
+<text class="nm" x="352" y="284" text-anchor="middle">区域 + 数据源</text>
+<text class="sb" x="352" y="300" text-anchor="middle">COP-DEM-GLO-30 · ASTGTM.003</text>
+<rect x="572" y="240" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="572" y="240" width="264" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="584" y="252" width="32" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="600" y="261" text-anchor="middle">RUN</text>
+<text class="nm" x="704" y="284" text-anchor="middle">分幅下载</text>
+<text class="sb" x="704" y="300" text-anchor="middle">public S3 · Earthdata Login</text>
+<rect x="924" y="240" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="924" y="240" width="264" height="72" rx="6" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<rect x="936" y="252" width="32" height="12" rx="2" fill="none" stroke="#9aa0aa" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="952" y="261" text-anchor="middle">OUT</text>
+<text class="nm" x="1056" y="284" text-anchor="middle">1°×1° 高程 GeoTIFF</text>
+<text class="sb" x="1056" y="300" text-anchor="middle">downloads/dem/dem_task_&lt;id&gt;</text>
+<rect x="220" y="344" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="220" y="344" width="264" height="72" rx="6" fill="rgba(154,160,170,0.12)" stroke="#767d88" stroke-width="1"/>
+<rect x="232" y="356" width="32" height="12" rx="2" fill="none" stroke="#767d88" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="248" y="365" text-anchor="middle">IN</text>
+<text class="nm" x="352" y="388" text-anchor="middle">已下 DEM 或上传</text>
+<text class="sb" x="352" y="404" text-anchor="middle">dem_task_&lt;id&gt; · upload .tif</text>
+<rect x="572" y="344" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="572" y="344" width="264" height="72" rx="6" fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1"/>
+<rect x="584" y="356" width="32" height="12" rx="2" fill="none" stroke="#38bdf8" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tgA" x="600" y="365" text-anchor="middle">RUN</text>
+<text class="nm" x="704" y="388" text-anchor="middle">quantized-mesh 切片</text>
+<text class="sb" x="704" y="404" text-anchor="middle">grid · base_z8 graft · z8+</text>
+<rect x="924" y="344" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="924" y="344" width="264" height="72" rx="6" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<rect x="936" y="356" width="32" height="12" rx="2" fill="none" stroke="#9aa0aa" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="952" y="365" text-anchor="middle">OUT</text>
+<text class="nm" x="1056" y="388" text-anchor="middle">地形瓦片 + layer.json</text>
+<text class="sb" x="1056" y="404" text-anchor="middle">GET /terrain/dem|local/&lt;id&gt;</text>
+<rect x="220" y="448" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="220" y="448" width="264" height="72" rx="6" fill="rgba(154,160,170,0.12)" stroke="#767d88" stroke-width="1"/>
+<rect x="232" y="460" width="32" height="12" rx="2" fill="none" stroke="#767d88" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="248" y="469" text-anchor="middle">IN</text>
+<text class="nm" x="352" y="492" text-anchor="middle">上传或复用 DEM</text>
+<text class="sb" x="352" y="508" text-anchor="middle">.tif · dem_task_&lt;id&gt;</text>
+<rect x="572" y="448" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="572" y="448" width="264" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="584" y="460" width="32" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="600" y="469" text-anchor="middle">RUN</text>
+<text class="nm" x="704" y="492" text-anchor="middle">等高线渲染</text>
+<text class="sb" x="704" y="508" text-anchor="middle">GDAL contour · tint · hillshade</text>
+<rect x="924" y="448" width="264" height="72" rx="6" fill="#0c0d10"/>
+<rect x="924" y="448" width="264" height="72" rx="6" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<rect x="936" y="460" width="32" height="12" rx="2" fill="none" stroke="#9aa0aa" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="952" y="469" text-anchor="middle">OUT</text>
+<text class="nm" x="1056" y="492" text-anchor="middle">等高线 XYZ 瓦片</text>
+<text class="sb" x="1056" y="508" text-anchor="middle">GET /contour/&lt;id&gt;/{z}/{x}/{y}.png</text>
+<line x1="40" y1="560" x2="1240" y2="560" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<text class="eb" x="40" y="584">LEGEND</text>
+<rect x="140" y="574" width="16" height="12" rx="2" fill="rgba(154,160,170,0.12)" stroke="#767d88" stroke-width="1"/>
+<text class="lg" x="164" y="584">输入</text>
+<rect x="320" y="574" width="16" height="12" rx="2" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<text class="lg" x="344" y="584">处理</text>
+<rect x="500" y="574" width="16" height="12" rx="2" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<text class="lg" x="524" y="584">产物与服务</text>
+<rect x="680" y="574" width="16" height="12" rx="2" fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1"/>
+<text class="lg" x="704" y="584">焦点 · 地形切片</text>
+<line x1="860" y1="580" x2="878" y2="580" stroke="#9aa0aa" stroke-width="1.4"/>
+<text class="lg" x="884" y="584">管线内交接</text>
+<line x1="1040" y1="580" x2="1058" y2="580" stroke="#38bdf8" stroke-width="1.4"/>
+<text class="lg" x="1064" y="584">跨管线复用</text>
+</svg>
+<footer>TERRAFORGE · pipelines-dark</footer>
+</div>
+</body>
+</html>

@@ -20,6 +20,7 @@
 
 - [✨ 功能特性](#-功能特性)
 - [🖼 界面一览](#-界面一览)
+- [🗺 架构图解](#-架构图解)
 - [🧰 技术栈](#-技术栈)
 - [🚀 快速开始](#-快速开始)
 - [📖 使用指南](#-使用指南)
@@ -97,6 +98,80 @@
     </td>
   </tr>
 </table>
+
+## 🗺 架构图解
+
+七张图，分四组看：**系统怎么连**（组件与端口、四条管线）、**一条路走到底**（一张瓦片、地形切片）、**出问题怎么收场**（任务状态机、缺块决策），以及**怎么扩展**（插件的四个扩展点）。图与图源（自带样式的单文件 HTML，深浅两版）都在 [`docs/assets/diagrams/`](docs/assets/diagrams/)，改完用同目录的 `render.py` 重渲。
+
+### 组件与端口
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/architecture-dark.png">
+  <img src="docs/assets/diagrams/architecture.png" alt="系统架构图：浏览器经 Flask 主端口、瓦片端口与底图转发访问系统；四条管线管理器与插件宿主向全局资源调度器申请配额后驱动下载与切片引擎，并读写 SQLite、磁盘产物与外部上游">
+</picture>
+
+三处值得看的地方：
+
+- **浏览器分三路进来**。页面与 REST 走主端口 `:5000`；瓦片走 `:5001`（一屏几百个瓦片请求不去挤主端口那 6 条连接，放行名单是 `src/core/tile_paths.py` 的唯一一份，瓦片端口、控制台日志过滤、前端改写三处共用）；底图走 `/basemap` 同源转发，真实上游地址不出服务端。
+- **管理器不自己开池子**。四条管线加插件宿主先向全局调度器要配额（任务槽 / 网络连接 / CPU / GDAL 槽 / 磁盘字节），`reserve()` 立刻返回，给的可能比要的少 —— 少了就把池子开小一点继续跑，所以一个大任务不会把其他任务饿死。
+- **进度往下推、日志往上拉**。进度是 WebSocket 事件（`task_progress` 等），日志走 REST：本应用没有 room / namespace，一次 emit 就是发给所有连着的客户端，逐行日志广播等于把你的任务日志念给每个开着页面的人听。
+
+### 四条管线
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/pipelines-dark.png">
+  <img src="docs/assets/diagrams/pipelines.png" alt="泳道图：地图瓦片、DEM 高程、3D 地形与等高线四条管线各自的输入、处理与产物服务端点，其中 DEM 产物被地形管线复用">
+</picture>
+
+四条管线**各有自己的管理器、数据库表、REST 蓝图与产物目录**，只共享 SocketIO 实例与配置管理器。图里唯一的跨泳道箭头就是唯一的跨管线交接：DEM 任务下载好的高程文件被地形 / 等高线管线**零拷贝复用**，删等高线或地形任务不会动源 DEM。也因此 3D 地形那条泳道的输入是二选一 —— 复用已下 DEM，或直接上传 GeoTIFF，两条路进同一个切片器。
+
+### 一张瓦片的两条路
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/tile-request-dark.png">
+  <img src="docs/assets/diagrams/tile-request.png" alt="时序图：下载引擎先查瓦片缓存，命中则由 backfill 线程拷进产物目录，未命中则请求上游、校验图片魔数、写缓存并镜像；浏览器随后经瓦片端口读取产物目录里的瓦片">
+</picture>
+
+缓存是**跨任务共享**的（`cache/<样式码>-<源指纹>/{z}/{x}/{y}.png`），产物目录是每个任务自己的一份镜像。所以同一片区域下第二遍不会重新联网，而删掉任务的产物目录也不会伤到别人的缓存。两个细节：`200` 不等于成功 —— 响应体要过图片魔数校验，`200` + HTML 会被判成永久失败；缓存命中的那批由 `task-<id>-backfill` 线程补拷，下载成功的那批由回调直接镜像，两段清单天然不相交。
+
+### 地形切片流水线
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/terrain-tiling-dark.png">
+  <img src="docs/assets/diagrams/terrain-tiling.png" alt="流程图：地形切片从配额与输入清点开始，解压底座并摘掉上轮硬链接，把多幅 DEM 物化为单幅 GeoTIFF，定层级后并行切瓦片，写 layer.json，最后按底座是否就位决定植入底座还是改写 parentUrl">
+</picture>
+
+两处反直觉，图里都标出来了：
+
+- **多幅 DEM 必须先物化成单幅 GeoTIFF**，不能把多源 VRT 直接交给采样器。VRT 会按读窗口逐段挑中不同的内嵌 overview，而 ASTER 的 overview 倍率是 7.98× / 8.98× 这种非 2 的幂 —— 南北相邻两块瓦片于是采到不同高程，实测公共边最大差 **50.9 m**。
+- **全球底座是切片之后才植入的**，切片之前反而要先按 inode 摘掉上一轮的硬链接。顺序颠倒会就地写坏 `assets/terrain/` 里那份随包底座。植入用硬链接、跨盘回退整批复制，所以任务目录是自包含的，可以整个拷到另一台机器。
+
+### 任务状态机
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/task-state-dark.png">
+  <img src="docs/assets/diagrams/task-state.png" alt="状态机图：任务在待启动、运行中、已暂停之间流转；未解释的缺块把任务停在待决策等用户补漏或接受；只有 no_data 缺块时自动落到带缺块完成；补漏可从三个状态发起">
+</picture>
+
+八个状态四条管线共用，值即落库文本（`src/contracts/outcome.py` 的 `TaskState`）。`pending_decision` 看着像终态但不是：它占着产物目录与缓存引用，清缓存会被它拦住，退出前会提示。补漏（`POST .../refill`）能从 `pending_decision`、`completed_with_gaps`、`failed` 三处发起，跑完重新做一次完成判定。
+
+### 缺块五分类与决策
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/tile-gaps-dark.png">
+  <img src="docs/assets/diagrams/tile-gaps.png" alt="流程图：瓦片结局分成成功、本来无数据、可重试失败、永久失败与缓存写入失败五类；除 no_data 之外还有缺块时任务停在待决策，用户可补漏或接受缺口，否则自动完成">
+</picture>
+
+整套缺块处理就靠一处不对称：**只有 `no_data` 算「已解释」** —— 上游明确回答了「这里没有数据」（z18 的开阔洋面、DEM 覆盖范围之外），这种任务自动落 `completed_with_gaps`，不去烦你。只要出现一块可重试 / 永久 / 缓存写入失败，拼接与复制就**拒绝执行**，任务停在 `pending_decision` —— 此时磁盘上没有半成品，你选「补漏」还是「接受缺口」都还来得及。接受之后成果与历史**永久带缺块标记**，不会被当成完整成品。
+
+### 插件系统的四个扩展点
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plugins-dark.png">
+  <img src="docs/assets/diagrams/plugins.png" alt="架构图：插件清单经三道准入闸进入注册表，注册表通过能力查询点亮数据源、管线、导出器与任务钩子四个扩展点；管线运行时只拿到 TaskContext，由它落库到插件任务表">
+</picture>
+
+插件在 `plugin.toml` 里声明自己是什么，过三道闸才进注册表：API 主版本、ABI 标签（`cp312-linux-x86_64` 这种，只查外部插件）、方法签名（`runtime_checkable` 的 `isinstance` 只证明方法名存在，参数个数得自己查）。运行期插件只拿到一个 `TaskContext` —— 进度、日志、配额、URL 闸、缺块记账、产物登记都从它走，**拿不到 manager、socketio 与数据库连接**。插件默认全关（`plugins.enabled DEFAULT 0`），禁用一个插件，它的四个扩展点同时熄灭。详见 [docs/guides/PLUGINS.md](docs/guides/PLUGINS.md)。
 
 ## 🧰 技术栈
 

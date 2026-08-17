@@ -46,35 +46,38 @@ if _role.reloader_parent:
     quiet_reloader_parent()
 configure_logging(log_to_file=_role.show_startup_output)
 
-# 横幅必须赶在下面 app_factory 那几秒重量级 import 之前打印,否则这段时间控制台
-# 一片空白,看起来像卡死。config 和 startup_banner 都是轻量模块,先加载它们即可。
+# 启动画面必须赶在下面 app_factory 那几秒重量级 import 之前【开始】,否则这段时间
+# 控制台一片空白,看起来像卡死。config 和 startup_banner 都是轻量模块,先加载它们
+# 即可。
+#
+# 开场动画、横幅、加载转圈都在 StartupConsole 的后台线程里放,与主线程的 import
+# 并行 —— 那 0.9 秒因此几乎不占启动时间,import 先结束时 stop() 把剩余帧快放完
+# (上限 0.15 秒)。画不了动画的环境(非 TTY / NO_COLOR / 终端太窄)当场同步打完静态横幅。
+_show = None
 if _role.print_banner:
     from src.core.config import Config
-    from src.core.startup_banner import print_banner
+    from src.core.startup_banner import start_startup_console
 
-    print_banner(
+    _show = start_startup_console(
         Config.APP_VERSION,
+        '  正在加载组件,请稍候…',
         host=SERVER_HOST,
         port=SERVER_PORT,
         debug=_role.debug,
         downloads_dir=Config.DOWNLOADS_DIR,
     )
-
-# 加载动画:重量级 import 阻塞主线程数秒,动画只能在后台线程里跑(Spinner 内部
-# 处理;非 TTY 退化为一次性静态提示)。父进程(横幅后)和 reloader 子进程(不打
-# 横幅,但也要等同样久的 import)各起一个。
-_spinner = None
-if _role.print_banner or _role.show_startup_output:
+elif _role.show_startup_output:
+    # reloader 子进程不打横幅(父进程已经打过),但要等同样久的 import,给个转圈。
     from src.core.startup_banner import start_spinner
 
-    _spinner = start_spinner('  正在加载组件,请稍候…')
+    _show = start_spinner('  正在加载组件,请稍候…')
 
 # 重量级 import 集中在这一行(flask / routes / services → GDAL,数秒),由上面的
-# 加载动画覆盖;停掉动画之后再 create_app,让数据库日志落在干净的行上。
+# 启动画面盖住;停掉画面之后再 create_app,让数据库日志落在干净的行上。
 from src.app_factory import create_app
 
-if _spinner is not None:
-    _spinner.stop()
+if _show is not None:
+    _show.stop()
 
 # 模块级全局:WSGI(gunicorn app:app)和测试都直接取这几个名字。非主进程身份下
 # 保持为 None —— 判定规则与理由见 src/core/runtime_mode.py。

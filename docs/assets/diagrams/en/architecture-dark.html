@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TerraForge system architecture · TerraForge</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+:root{
+  --paper:#0c0d10; --ink:#e8eaed; --muted:#9aa0aa; --accent:#38bdf8;
+  --fs:'Inter','Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --fm:'JetBrains Mono','Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
+  --ft:'Liberation Serif','DejaVu Serif','Georgia',serif;
+}
+body{font-family:var(--fs);background:var(--paper);color:var(--ink);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+.frame{max-width:1280px;width:100%}
+.eyebrow{font-family:var(--fm);font-size:.66rem;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:var(--ft);font-size:1.75rem;font-weight:400;line-height:1.2;margin-bottom:.4rem}
+.sub{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
+svg{width:100%;display:block}
+footer{margin-top:1.5rem;padding-top:.75rem;border-top:1px solid rgba(232,234,237,0.12);
+       font-family:var(--fm);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">ARCHITECTURE · TERRAFORGE</p>
+<h1>TerraForge system architecture</h1>
+<p class="sub">The browser comes in through three doors: pages and REST on the main port, tiles on :5001, the basemap through a same-origin proxy. Every pipeline manager and the plugin host asks the global scheduler for a quota first, and sizes its pools to whatever it is granted.</p>
+<svg viewBox="0 0 1280 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-en-dark-title architecture-en-dark-desc">
+<title id="architecture-en-dark-title">TerraForge system architecture</title>
+<desc id="architecture-en-dark-desc">System architecture: the browser reaches the app through the Flask main port, the tile port and the basemap proxy; four pipeline managers and the plugin host request quota from the global resource scheduler before driving the download and tiling engines, and read or write SQLite, disk artifacts and upstream sources.</desc>
+<defs>
+<style>@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+    .nm{font-family:var(--fs);font-size:12px;font-weight:600;fill:#e8eaed}
+    .sb{font-family:var(--fm);font-size:9px;fill:#9aa0aa}
+    .eb{font-family:var(--fm);font-size:8px;font-weight:500;letter-spacing:.14em;fill:#9aa0aa}
+    .tg{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#9aa0aa}
+    .tgA{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#38bdf8}
+    .al{font-family:var(--fm);font-size:8px;letter-spacing:.06em;fill:#767d88}
+    .alA{font-family:var(--fm);font-size:8px;font-weight:600;letter-spacing:.06em;fill:#38bdf8}
+    .zl{font-family:var(--fm);font-size:8px;letter-spacing:.14em;fill:rgba(232,234,237,0.45)}
+    .lg{font-family:var(--fs);font-size:10px;fill:#9aa0aa}
+    .cjk{font-family:var(--fs);font-size:12px;font-weight:600;fill:#e8eaed}
+    .alc{font-family:var(--fs);font-size:10px;fill:#767d88}
+    .co{font-family:var(--ft);font-size:14px;font-style:italic;fill:#e8eaed}
+    .coA{font-family:var(--ft);font-size:14px;font-style:italic;fill:#38bdf8}</style>
+<marker id="architecture-en-dark-arw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#9aa0aa"/></marker>
+<marker id="architecture-en-dark-arwA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#38bdf8"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#0c0d10"/>
+<rect x="328" y="144" width="568" height="560" rx="8" fill="rgba(232,234,237,0.025)" stroke="rgba(232,234,237,0.10)" stroke-width="0.8"/>
+<rect x="344" y="148" width="132" height="12" rx="2" fill="#0c0d10"/>
+<text class="zl" x="348" y="157">APPLICATION PROCESS</text>
+<rect x="936" y="144" width="264" height="416" rx="8" fill="rgba(232,234,237,0.025)" stroke="rgba(232,234,237,0.10)" stroke-width="0.8"/>
+<rect x="952" y="148" width="124" height="12" rx="2" fill="#0c0d10"/>
+<text class="zl" x="956" y="157">STORAGE · UPSTREAM</text>
+<path d="M 272,212 H 344" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="279" y="188" width="59" height="12" rx="2" fill="#0c0d10"/><text class="al" x="308" y="197" text-anchor="middle">REST · WS</text>
+<path d="M 576,212 H 648" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="590" y="188" width="44" height="12" rx="2" fill="#0c0d10"/><text class="al" x="612" y="197" text-anchor="middle">CREATE</text>
+<path d="M 880,212 H 952" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="897" y="188" width="39" height="12" rx="2" fill="#0c0d10"/><text class="al" x="916" y="197" text-anchor="middle">STATE</text>
+<path d="M 460,248 V 320" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="468" y="278" width="64" height="12" rx="2" fill="#0c0d10"/><text class="al" x="472" y="287" text-anchor="start">PLUGIN API</text>
+<path d="M 764,248 V 320" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="772" y="278" width="49" height="12" rx="2" fill="#0c0d10"/><text class="al" x="776" y="287" text-anchor="start">RESERVE</text>
+<path d="M 576,356 H 648" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="588" y="332" width="49" height="12" rx="2" fill="#0c0d10"/><text class="al" x="612" y="341" text-anchor="middle">CONTEXT</text>
+<path d="M 764,392 V 464" fill="none" stroke="#38bdf8" stroke-width="1.6" marker-end="url(#architecture-en-dark-arwA)"/>
+<rect x="717" y="422" width="39" height="12" rx="2" fill="#0c0d10"/><text class="alA" x="752" y="431" text-anchor="end">QUOTA</text>
+<path d="M 800,464 V 432 Q 800,424 808,424 H 992 Q 1000,424 1000,416 V 392" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="881" y="400" width="39" height="12" rx="2" fill="#0c0d10"/><text class="al" x="900" y="409" text-anchor="middle">HTTPS</text>
+<path d="M 880,500 H 952" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="897" y="476" width="39" height="12" rx="2" fill="#0c0d10"/><text class="al" x="916" y="485" text-anchor="middle">WRITE</text>
+<path d="M 400,536 V 564 Q 400,572 408,572 H 1052 Q 1060,572 1060,564 V 536" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="683" y="548" width="34" height="12" rx="2" fill="#0c0d10"/><text class="al" x="700" y="557" text-anchor="middle">READ</text>
+<path d="M 172,248 V 492 Q 172,500 180,500 H 344" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="180" y="374" width="39" height="12" rx="2" fill="#0c0d10"/><text class="al" x="184" y="383" text-anchor="start">TILES</text>
+<path d="M 204,248 V 636 Q 204,644 212,644 H 344" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="212" y="554" width="49" height="12" rx="2" fill="#0c0d10"/><text class="al" x="216" y="563" text-anchor="start">BASEMAP</text>
+<path d="M 576,644 H 1208 Q 1216,644 1216,636 V 364 Q 1216,356 1208,356 H 1184" fill="none" stroke="#9aa0aa" stroke-width="1.2" marker-end="url(#architecture-en-dark-arw)"/>
+<rect x="1154" y="566" width="54" height="12" rx="2" fill="#0c0d10"/><text class="al" x="1204" y="575" text-anchor="end">UPSTREAM</text>
+<path d="M 828,176 V 120 Q 828,112 820,112 H 148 Q 140,112 140,120 V 176" fill="none" stroke="#9aa0aa" stroke-width="1" marker-end="url(#architecture-en-dark-arw)" stroke-dasharray="5,4"/>
+<rect x="465" y="88" width="54" height="12" rx="2" fill="#0c0d10"/><text class="al" x="492" y="97" text-anchor="middle">PROGRESS</text>
+<rect x="40" y="176" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="40" y="176" width="232" height="72" rx="6" fill="rgba(154,160,170,0.12)" stroke="#767d88" stroke-width="1"/>
+<rect x="52" y="188" width="44" height="12" rx="2" fill="none" stroke="#767d88" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="74" y="197" text-anchor="middle">UI</text>
+<text class="nm" x="156" y="220" text-anchor="middle">Browser · CesiumJS</text>
+<text class="sb" x="156" y="236" text-anchor="middle">Cesium 1.143 · Socket.IO</text>
+<rect x="344" y="176" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="344" y="176" width="232" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="356" y="188" width="44" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="197" text-anchor="middle">WEB</text>
+<text class="nm" x="460" y="220" text-anchor="middle">Flask main port</text>
+<text class="sb" x="460" y="236" text-anchor="middle">:5000 · SSR · REST · WS</text>
+<rect x="648" y="176" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="648" y="176" width="232" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="660" y="188" width="44" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="682" y="197" text-anchor="middle">TASK</text>
+<text class="nm" x="764" y="220" text-anchor="middle">Four pipeline managers</text>
+<text class="sb" x="764" y="236" text-anchor="middle">map · dem · terrain · contour</text>
+<rect x="952" y="176" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="952" y="176" width="232" height="72" rx="6" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<rect x="964" y="188" width="44" height="12" rx="2" fill="none" stroke="#9aa0aa" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="986" y="197" text-anchor="middle">DB</text>
+<text class="nm" x="1068" y="220" text-anchor="middle">SQLite</text>
+<text class="sb" x="1068" y="236" text-anchor="middle">data/map_downloader.db</text>
+<rect x="344" y="320" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="344" y="320" width="232" height="72" rx="6" fill="rgba(232,234,237,0.02)" stroke="rgba(232,234,237,0.22)" stroke-width="1" stroke-dasharray="4,3"/>
+<rect x="356" y="332" width="44" height="12" rx="2" fill="none" stroke="rgba(232,234,237,0.22)" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="341" text-anchor="middle">PLUG</text>
+<text class="nm" x="460" y="364" text-anchor="middle">Plugin host</text>
+<text class="sb" x="460" y="380" text-anchor="middle">registry · 4 hooks · off</text>
+<rect x="648" y="320" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="648" y="320" width="232" height="72" rx="6" fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1"/>
+<rect x="660" y="332" width="44" height="12" rx="2" fill="none" stroke="#38bdf8" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tgA" x="682" y="341" text-anchor="middle">QUOTA</text>
+<text class="nm" x="764" y="364" text-anchor="middle">Global scheduler &amp; budget</text>
+<text class="sb" x="764" y="380" text-anchor="middle">task · net · cpu · gdal · disk</text>
+<rect x="952" y="320" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="952" y="320" width="232" height="72" rx="6" fill="rgba(232,234,237,0.03)" stroke="rgba(232,234,237,0.26)" stroke-width="1"/>
+<rect x="964" y="332" width="44" height="12" rx="2" fill="none" stroke="rgba(232,234,237,0.26)" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="986" y="341" text-anchor="middle">NET</text>
+<text class="nm" x="1068" y="364" text-anchor="middle">Upstream sources</text>
+<text class="sb" x="1068" y="380" text-anchor="middle">Google · S3 · Earthdata · Esri</text>
+<rect x="344" y="464" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="344" y="464" width="232" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="356" y="476" width="44" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="485" text-anchor="middle">HTTP</text>
+<text class="nm" x="460" y="508" text-anchor="middle">Tile port</text>
+<text class="sb" x="460" y="524" text-anchor="middle">:5001 · 5 prefix allow-list</text>
+<rect x="648" y="464" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="648" y="464" width="232" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="660" y="476" width="44" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="682" y="485" text-anchor="middle">WORK</text>
+<text class="nm" x="764" y="508" text-anchor="middle">Download &amp; tiling engine</text>
+<text class="sb" x="764" y="524" text-anchor="middle">aiohttp · GDAL · quantized-mesh</text>
+<rect x="952" y="464" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="952" y="464" width="232" height="72" rx="6" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<rect x="964" y="476" width="44" height="12" rx="2" fill="none" stroke="#9aa0aa" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="986" y="485" text-anchor="middle">FS</text>
+<text class="nm" x="1068" y="508" text-anchor="middle">Disk artifacts</text>
+<text class="sb" x="1068" y="524" text-anchor="middle">downloads/&lt;pipeline&gt;/task_&lt;id&gt;</text>
+<rect x="344" y="608" width="232" height="72" rx="6" fill="#0c0d10"/>
+<rect x="344" y="608" width="232" height="72" rx="6" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<rect x="356" y="620" width="44" height="12" rx="2" fill="none" stroke="#e8eaed" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="629" text-anchor="middle">MAP</text>
+<text class="nm" x="460" y="652" text-anchor="middle">Basemap proxy</text>
+<text class="sb" x="460" y="668" text-anchor="middle">/basemap · UA · fallback · proxy</text>
+<line x1="40" y1="712" x2="1240" y2="712" stroke="rgba(232,234,237,0.12)" stroke-width="0.8"/>
+<text class="eb" x="40" y="736">LEGEND</text>
+<rect x="140" y="726" width="16" height="12" rx="2" fill="rgba(154,160,170,0.12)" stroke="#767d88" stroke-width="1"/>
+<text class="lg" x="164" y="736">Client</text>
+<rect x="308" y="726" width="16" height="12" rx="2" fill="rgba(232,234,237,0.05)" stroke="#e8eaed" stroke-width="1"/>
+<text class="lg" x="332" y="736">Service &amp; engine</text>
+<rect x="476" y="726" width="16" height="12" rx="2" fill="rgba(232,234,237,0.02)" stroke="rgba(232,234,237,0.22)" stroke-width="1" stroke-dasharray="3,2"/>
+<text class="lg" x="500" y="736">Off by default</text>
+<rect x="644" y="726" width="16" height="12" rx="2" fill="rgba(232,234,237,0.09)" stroke="#9aa0aa" stroke-width="1"/>
+<text class="lg" x="668" y="736">Local storage</text>
+<rect x="812" y="726" width="16" height="12" rx="2" fill="rgba(232,234,237,0.03)" stroke="rgba(232,234,237,0.26)" stroke-width="1"/>
+<text class="lg" x="836" y="736">Upstream sources</text>
+<rect x="980" y="726" width="16" height="12" rx="2" fill="rgba(56,189,248,0.12)" stroke="#38bdf8" stroke-width="1"/>
+<text class="lg" x="1004" y="736">Focal · quota</text>
+<line x1="1148" y1="732" x2="1166" y2="732" stroke="#9aa0aa" stroke-width="1.4" stroke-dasharray="5,4"/>
+<text class="lg" x="1172" y="736">dashed = WS push</text>
+</svg>
+<footer>TERRAFORGE · architecture-en-dark</footer>
+</div>
+</body>
+</html>

@@ -12,7 +12,7 @@
 | [`reviews/`](reviews/) | 带日期的时点审查快照，外加一个流产的审查目录 | 想知道某个决策/取舍的来龙去脉，或某轮审查发现了什么 |
 | [`archive/`](archive/) | 历史文档归档（全部 2026-05 ~ 07） | 考古：某个旧做法为什么被推翻 |
 | [`superpowers/`](superpowers/) | 历史实施计划 `plans/` 与配对设计稿 `specs/` | 考古：某个功能当初是怎么设计和排期的 |
-| [`assets/`](assets/) | 图片资源：`images/` 供文档内引用（已入库）；`ui-baseline/` 是 UI 回归基线截图（**未入库**，被 `.gitignore` 排除，只在本地存在） | 一般不用直接翻，由各文档引用 |
+| [`assets/`](assets/) | 图片资源：`images/` 供文档内引用（已入库）；[`diagrams/`](assets/diagrams/) 是根 README 的三张架构 / 状态机示意图 —— HTML 图源加渲染出的 PNG，改完用同目录的 `render.py` 重渲；`ui-baseline/` 是 UI 回归基线截图（**未入库**，被 `.gitignore` 排除，只在本地存在） | 一般不用直接翻，由各文档引用 |
 | [`examples/`](examples/) | 可直接运行的示例代码。目前只有 [`plugin-hello/`](examples/plugin-hello/)——拷进 `plugins/` 就能跑通的最小插件，`tests/test_docs_plugin_example.py` 钉住它不腐烂 | 照着 `guides/PLUGINS.md` 写插件时，想先跑通一个再改 |
 
 这张表**不再写份数**。原先写着 `plans` 10 份、`specs` 11 份、`reviews` 6 份，2026-08-08 实数是 15 / 17 / 7 —— 三处全错，而这个索引每周都在动。要数量自己 `ls` 一下，比读一个注定会烂的数字快。

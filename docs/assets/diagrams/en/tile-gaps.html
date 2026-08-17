@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Five tile outcomes and the decision · TerraForge</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+:root{
+  --paper:#f4f6f8; --ink:#15171c; --muted:#4b5563; --accent:#0284c7;
+  --fs:'Inter','Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --fm:'JetBrains Mono','Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
+  --ft:'Liberation Serif','DejaVu Serif','Georgia',serif;
+}
+body{font-family:var(--fs);background:var(--paper);color:var(--ink);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+.frame{max-width:1280px;width:100%}
+.eyebrow{font-family:var(--fm);font-size:.66rem;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:var(--ft);font-size:1.75rem;font-weight:400;line-height:1.2;margin-bottom:.4rem}
+.sub{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
+svg{width:100%;display:block}
+footer{margin-top:1.5rem;padding-top:.75rem;border-top:1px solid rgba(21,23,28,0.12);
+       font-family:var(--fm);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">FLOWCHART · TERRAFORGE</p>
+<h1>Five tile outcomes and the decision</h1>
+<p class="sub">Every tile that could not be fetched is accounted for in one of five categories. Only <code>no_data</code> — the upstream saying “there is nothing here” — counts as explained and completes on its own; one tile in any other category parks the task in “awaiting decision” with no artifact written at all.</p>
+<svg viewBox="0 0 1280 816" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="tile-gaps-en-title tile-gaps-en-desc">
+<title id="tile-gaps-en-title">Five tile outcomes and the decision</title>
+<desc id="tile-gaps-en-desc">Flowchart: tile outcomes split into success, no data upstream, retryable failure, permanent failure and cache write failure; any gap other than no_data parks the task in awaiting decision where the user refills or accepts, otherwise it completes automatically.</desc>
+<defs>
+<style>@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+    .nm{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .sb{font-family:var(--fm);font-size:9px;fill:#4b5563}
+    .eb{font-family:var(--fm);font-size:8px;font-weight:500;letter-spacing:.14em;fill:#4b5563}
+    .tg{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#4b5563}
+    .tgA{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#0284c7}
+    .al{font-family:var(--fm);font-size:8px;letter-spacing:.06em;fill:#6b7280}
+    .alA{font-family:var(--fm);font-size:8px;font-weight:600;letter-spacing:.06em;fill:#0284c7}
+    .zl{font-family:var(--fm);font-size:8px;letter-spacing:.14em;fill:rgba(21,23,28,0.45)}
+    .lg{font-family:var(--fs);font-size:10px;fill:#4b5563}
+    .cjk{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .alc{font-family:var(--fs);font-size:10px;fill:#6b7280}
+    .co{font-family:var(--ft);font-size:14px;font-style:italic;fill:#15171c}
+    .coA{font-family:var(--ft);font-size:14px;font-style:italic;fill:#0284c7}</style>
+<marker id="tile-gaps-en-arw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4b5563"/></marker>
+<marker id="tile-gaps-en-arwA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0284c7"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f6f8"/>
+<rect x="72" y="80" width="1152" height="88" rx="8" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.10)" stroke-width="0.8"/>
+<rect x="88" y="84" width="188" height="12" rx="2" fill="#f4f6f8"/>
+<text class="zl" x="92" y="93">TILEOUTCOME · 5 WAYS</text>
+<path d="M 648,176 V 264" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-gaps-en-arw)"/>
+<path d="M 828,304 H 904" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-gaps-en-arw)"/>
+<rect x="854" y="280" width="24" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="866" y="289" text-anchor="middle">NO</text>
+<path d="M 648,344 V 440" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-gaps-en-arw)"/>
+<rect x="656" y="386" width="29" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="660" y="395" text-anchor="start">YES</text>
+<path d="M 588,512 V 568 Q 588,576 580,576 H 408 Q 400,576 400,584 V 616" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-gaps-en-arw)"/>
+<path d="M 716,512 V 568 Q 716,576 724,576 H 896 Q 904,576 904,584 V 616" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-gaps-en-arw)"/>
+<path d="M 1064,652 H 1232 Q 1240,652 1240,644 V 316 Q 1240,308 1232,308 H 1224" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-gaps-en-arw)"/>
+<rect x="1188" y="474" width="44" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="1228" y="483" text-anchor="end">ACCEPT</text>
+<rect x="88" y="96" width="208" height="56" rx="6" fill="#f4f6f8"/>
+<rect x="88" y="96" width="208" height="56" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="100" y="108" width="64" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="132" y="117" text-anchor="middle">SUCCESS</text>
+<text class="nm" x="192" y="122" text-anchor="middle">Success</text>
+<text class="sb" x="192" y="140" text-anchor="middle">200 + magic ok</text>
+<rect x="316" y="96" width="208" height="56" rx="6" fill="#f4f6f8"/>
+<rect x="316" y="96" width="208" height="56" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="328" y="108" width="64" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="360" y="117" text-anchor="middle">NO_DATA</text>
+<text class="nm" x="420" y="122" text-anchor="middle">No data upstream</text>
+<text class="sb" x="420" y="140" text-anchor="middle">404 / 410</text>
+<rect x="544" y="96" width="208" height="56" rx="6" fill="#f4f6f8"/>
+<rect x="544" y="96" width="208" height="56" rx="6" fill="rgba(75,85,99,0.10)" stroke="#6b7280" stroke-width="1"/>
+<rect x="556" y="108" width="64" height="12" rx="2" fill="none" stroke="#6b7280" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="588" y="117" text-anchor="middle">RETRYABLE</text>
+<text class="nm" x="648" y="122" text-anchor="middle">Retryable failure</text>
+<text class="sb" x="648" y="140" text-anchor="middle">429 · 5xx · timeout</text>
+<rect x="772" y="96" width="208" height="56" rx="6" fill="#f4f6f8"/>
+<rect x="772" y="96" width="208" height="56" rx="6" fill="rgba(75,85,99,0.10)" stroke="#6b7280" stroke-width="1"/>
+<rect x="784" y="108" width="64" height="12" rx="2" fill="none" stroke="#6b7280" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="816" y="117" text-anchor="middle">PERMANENT</text>
+<text class="nm" x="876" y="122" text-anchor="middle">Permanent failure</text>
+<text class="sb" x="876" y="140" text-anchor="middle">4xx!=429 · not image</text>
+<rect x="1000" y="96" width="208" height="56" rx="6" fill="#f4f6f8"/>
+<rect x="1000" y="96" width="208" height="56" rx="6" fill="rgba(75,85,99,0.10)" stroke="#6b7280" stroke-width="1"/>
+<rect x="1012" y="108" width="64" height="12" rx="2" fill="none" stroke="#6b7280" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="1044" y="117" text-anchor="middle">CACHE_FAIL</text>
+<text class="nm" x="1104" y="122" text-anchor="middle">Cache write failure</text>
+<text class="sb" x="1104" y="140" text-anchor="middle">disk write failed</text>
+<polygon points="648,264 828,304 648,344 468,304" fill="#f4f6f8"/>
+<polygon points="648,264 828,304 648,344 468,304" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<text class="nm" x="648" y="302" text-anchor="middle">Any gap other than no_data?</text>
+<text class="sb" x="648" y="318" text-anchor="middle">unexplained &gt; 0</text>
+<rect x="904" y="272" width="320" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="904" y="272" width="320" height="72" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="916" y="284" width="40" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="936" y="293" text-anchor="middle">AUTO</text>
+<text class="nm" x="1064" y="316" text-anchor="middle">Auto complete</text>
+<text class="sb" x="1064" y="332" text-anchor="middle">completed / completed_with_gaps</text>
+<rect x="488" y="440" width="320" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="488" y="440" width="320" height="72" rx="6" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<rect x="500" y="452" width="40" height="12" rx="2" fill="none" stroke="#0284c7" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tgA" x="520" y="461" text-anchor="middle">WAIT</text>
+<text class="nm" x="648" y="484" text-anchor="middle">Awaiting decision</text>
+<text class="sb" x="648" y="500" text-anchor="middle">pending_decision · strict gate</text>
+<rect x="240" y="616" width="320" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="240" y="616" width="320" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="252" y="628" width="48" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="276" y="637" text-anchor="middle">REFILL</text>
+<text class="nm" x="400" y="660" text-anchor="middle">Refill</text>
+<text class="sb" x="400" y="676" text-anchor="middle">retryable only · idempotent</text>
+<rect x="744" y="616" width="320" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="744" y="616" width="320" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="756" y="628" width="48" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="780" y="637" text-anchor="middle">ACCEPT</text>
+<text class="nm" x="904" y="660" text-anchor="middle">Accept gaps</text>
+<text class="sb" x="904" y="676" text-anchor="middle">gap_decision=accept · marked</text>
+<text class="coA" x="440" y="384" text-anchor="end">Stitching and copying refuse to run here,</text>
+<text class="coA" x="440" y="406" text-anchor="end">so nothing half-baked ever reaches the disk.</text>
+<path d="M 300,404 Q 380,440 484,472" fill="none" stroke="#0284c7" stroke-opacity="0.50" stroke-width="1" stroke-dasharray="4,3"/>
+<circle cx="484" cy="472" r="2.5" fill="#0284c7"/>
+<line x1="40" y1="736" x2="1240" y2="736" stroke="rgba(21,23,28,0.12)" stroke-width="0.8"/>
+<text class="eb" x="40" y="760">LEGEND</text>
+<rect x="140" y="750" width="16" height="12" rx="2" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<text class="lg" x="164" y="760">Explained / terminal</text>
+<rect x="340" y="750" width="16" height="12" rx="2" fill="rgba(75,85,99,0.10)" stroke="#6b7280" stroke-width="1"/>
+<text class="lg" x="364" y="760">Unexplained gap</text>
+<rect x="540" y="750" width="16" height="12" rx="2" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<text class="lg" x="564" y="760">Focal · awaiting decision</text>
+<rect x="740" y="750" width="16" height="12" rx="2" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<text class="lg" x="764" y="760">User action</text>
+<line x1="940" y1="756" x2="958" y2="756" stroke="#4b5563" stroke-width="1.4" stroke-dasharray="4,3"/>
+<text class="lg" x="964" y="760">dashed = aside</text>
+</svg>
+<footer>TERRAFORGE · tile-gaps-en</footer>
+</div>
+</body>
+</html>

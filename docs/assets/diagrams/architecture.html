@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TerraForge 系统架构 · TerraForge</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+:root{
+  --paper:#f4f6f8; --ink:#15171c; --muted:#4b5563; --accent:#0284c7;
+  --fs:'Inter','Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --fm:'JetBrains Mono','Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
+  --ft:'Noto Serif CJK SC','Songti SC','Georgia',serif;
+}
+body{font-family:var(--fs);background:var(--paper);color:var(--ink);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+.frame{max-width:1280px;width:100%}
+.eyebrow{font-family:var(--fm);font-size:.66rem;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:var(--ft);font-size:1.75rem;font-weight:400;line-height:1.2;margin-bottom:.4rem}
+.sub{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
+svg{width:100%;display:block}
+footer{margin-top:1.5rem;padding-top:.75rem;border-top:1px solid rgba(21,23,28,0.12);
+       font-family:var(--fm);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">ARCHITECTURE · TERRAFORGE</p>
+<h1>TerraForge 系统架构</h1>
+<p class="sub">浏览器分三路进来：主端口要页面与 REST、瓦片端口取瓦片、底图转发换同源底图。写任务的四条管线加插件宿主都得先向全局调度器要配额，拿到多少就开多大的池子。</p>
+<svg viewBox="0 0 1280 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc">
+<title id="architecture-title">TerraForge 系统架构</title>
+<desc id="architecture-desc">系统架构图：浏览器经 Flask 主端口、瓦片端口与底图转发访问系统；四条管线管理器与插件宿主向全局资源调度器申请配额后驱动下载与切片引擎，并读写 SQLite、磁盘产物与外部上游。</desc>
+<defs>
+<style>@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+    .nm{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .sb{font-family:var(--fm);font-size:9px;fill:#4b5563}
+    .eb{font-family:var(--fm);font-size:8px;font-weight:500;letter-spacing:.14em;fill:#4b5563}
+    .tg{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#4b5563}
+    .tgA{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#0284c7}
+    .al{font-family:var(--fm);font-size:8px;letter-spacing:.06em;fill:#6b7280}
+    .alA{font-family:var(--fm);font-size:8px;font-weight:600;letter-spacing:.06em;fill:#0284c7}
+    .zl{font-family:var(--fm);font-size:8px;letter-spacing:.14em;fill:rgba(21,23,28,0.45)}
+    .lg{font-family:var(--fs);font-size:10px;fill:#4b5563}
+    .cjk{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .alc{font-family:var(--fs);font-size:10px;fill:#6b7280}
+    .co{font-family:var(--ft);font-size:14px;font-style:italic;fill:#15171c}
+    .coA{font-family:var(--ft);font-size:14px;font-style:italic;fill:#0284c7}</style>
+<marker id="architecture-arw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4b5563"/></marker>
+<marker id="architecture-arwA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0284c7"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f6f8"/>
+<rect x="328" y="144" width="568" height="560" rx="8" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.10)" stroke-width="0.8"/>
+<rect x="344" y="148" width="132" height="12" rx="2" fill="#f4f6f8"/>
+<text class="zl" x="348" y="157">APPLICATION PROCESS</text>
+<rect x="936" y="144" width="264" height="416" rx="8" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.10)" stroke-width="0.8"/>
+<rect x="952" y="148" width="124" height="12" rx="2" fill="#f4f6f8"/>
+<text class="zl" x="956" y="157">STORAGE · UPSTREAM</text>
+<path d="M 272,212 H 344" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="279" y="188" width="59" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="308" y="197" text-anchor="middle">REST · WS</text>
+<path d="M 576,212 H 648" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="590" y="188" width="44" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="612" y="197" text-anchor="middle">CREATE</text>
+<path d="M 880,212 H 952" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="897" y="188" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="916" y="197" text-anchor="middle">STATE</text>
+<path d="M 460,248 V 320" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="468" y="278" width="64" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="472" y="287" text-anchor="start">PLUGIN API</text>
+<path d="M 764,248 V 320" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="772" y="278" width="49" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="776" y="287" text-anchor="start">RESERVE</text>
+<path d="M 576,356 H 648" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="588" y="332" width="49" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="612" y="341" text-anchor="middle">CONTEXT</text>
+<path d="M 764,392 V 464" fill="none" stroke="#0284c7" stroke-width="1.6" marker-end="url(#architecture-arwA)"/>
+<rect x="717" y="422" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="alA" x="752" y="431" text-anchor="end">QUOTA</text>
+<path d="M 800,464 V 432 Q 800,424 808,424 H 992 Q 1000,424 1000,416 V 392" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="881" y="400" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="900" y="409" text-anchor="middle">HTTPS</text>
+<path d="M 880,500 H 952" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="897" y="476" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="916" y="485" text-anchor="middle">WRITE</text>
+<path d="M 400,536 V 564 Q 400,572 408,572 H 1052 Q 1060,572 1060,564 V 536" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="683" y="548" width="34" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="700" y="557" text-anchor="middle">READ</text>
+<path d="M 172,248 V 492 Q 172,500 180,500 H 344" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="180" y="374" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="184" y="383" text-anchor="start">TILES</text>
+<path d="M 204,248 V 636 Q 204,644 212,644 H 344" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="212" y="554" width="49" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="216" y="563" text-anchor="start">BASEMAP</text>
+<path d="M 576,644 H 1208 Q 1216,644 1216,636 V 364 Q 1216,356 1208,356 H 1184" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#architecture-arw)"/>
+<rect x="1154" y="566" width="54" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="1204" y="575" text-anchor="end">UPSTREAM</text>
+<path d="M 828,176 V 120 Q 828,112 820,112 H 148 Q 140,112 140,120 V 176" fill="none" stroke="#4b5563" stroke-width="1" marker-end="url(#architecture-arw)" stroke-dasharray="5,4"/>
+<rect x="465" y="88" width="54" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="492" y="97" text-anchor="middle">PROGRESS</text>
+<rect x="40" y="176" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="40" y="176" width="232" height="72" rx="6" fill="rgba(75,85,99,0.10)" stroke="#6b7280" stroke-width="1"/>
+<rect x="52" y="188" width="44" height="12" rx="2" fill="none" stroke="#6b7280" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="74" y="197" text-anchor="middle">UI</text>
+<text class="nm" x="156" y="220" text-anchor="middle">浏览器 · CesiumJS</text>
+<text class="sb" x="156" y="236" text-anchor="middle">Cesium 1.143 · Socket.IO</text>
+<rect x="344" y="176" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="344" y="176" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="356" y="188" width="44" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="197" text-anchor="middle">WEB</text>
+<text class="nm" x="460" y="220" text-anchor="middle">Flask 主端口</text>
+<text class="sb" x="460" y="236" text-anchor="middle">:5000 · SSR · REST · WS</text>
+<rect x="648" y="176" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="648" y="176" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="660" y="188" width="44" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="682" y="197" text-anchor="middle">TASK</text>
+<text class="nm" x="764" y="220" text-anchor="middle">四条管线管理器</text>
+<text class="sb" x="764" y="236" text-anchor="middle">map · dem · terrain · contour</text>
+<rect x="952" y="176" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="952" y="176" width="232" height="72" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="964" y="188" width="44" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="986" y="197" text-anchor="middle">DB</text>
+<text class="nm" x="1068" y="220" text-anchor="middle">SQLite</text>
+<text class="sb" x="1068" y="236" text-anchor="middle">data/map_downloader.db</text>
+<rect x="344" y="320" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="344" y="320" width="232" height="72" rx="6" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.24)" stroke-width="1" stroke-dasharray="4,3"/>
+<rect x="356" y="332" width="44" height="12" rx="2" fill="none" stroke="rgba(21,23,28,0.24)" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="341" text-anchor="middle">PLUG</text>
+<text class="nm" x="460" y="364" text-anchor="middle">插件宿主</text>
+<text class="sb" x="460" y="380" text-anchor="middle">registry · 4 hooks · off</text>
+<rect x="648" y="320" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="648" y="320" width="232" height="72" rx="6" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<rect x="660" y="332" width="44" height="12" rx="2" fill="none" stroke="#0284c7" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tgA" x="682" y="341" text-anchor="middle">QUOTA</text>
+<text class="nm" x="764" y="364" text-anchor="middle">全局调度与预算</text>
+<text class="sb" x="764" y="380" text-anchor="middle">task · net · cpu · gdal · disk</text>
+<rect x="952" y="320" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="952" y="320" width="232" height="72" rx="6" fill="rgba(21,23,28,0.03)" stroke="rgba(21,23,28,0.30)" stroke-width="1"/>
+<rect x="964" y="332" width="44" height="12" rx="2" fill="none" stroke="rgba(21,23,28,0.30)" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="986" y="341" text-anchor="middle">NET</text>
+<text class="nm" x="1068" y="364" text-anchor="middle">外部上游</text>
+<text class="sb" x="1068" y="380" text-anchor="middle">Google · S3 · Earthdata · Esri</text>
+<rect x="344" y="464" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="344" y="464" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="356" y="476" width="44" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="485" text-anchor="middle">HTTP</text>
+<text class="nm" x="460" y="508" text-anchor="middle">瓦片端口</text>
+<text class="sb" x="460" y="524" text-anchor="middle">:5001 · 5 prefix allow-list</text>
+<rect x="648" y="464" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="648" y="464" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="660" y="476" width="44" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="682" y="485" text-anchor="middle">WORK</text>
+<text class="nm" x="764" y="508" text-anchor="middle">下载与切片引擎</text>
+<text class="sb" x="764" y="524" text-anchor="middle">aiohttp · GDAL · quantized-mesh</text>
+<rect x="952" y="464" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="952" y="464" width="232" height="72" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="964" y="476" width="44" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="986" y="485" text-anchor="middle">FS</text>
+<text class="nm" x="1068" y="508" text-anchor="middle">磁盘产物</text>
+<text class="sb" x="1068" y="524" text-anchor="middle">downloads/&lt;pipeline&gt;/task_&lt;id&gt;</text>
+<rect x="344" y="608" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="344" y="608" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="356" y="620" width="44" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="378" y="629" text-anchor="middle">MAP</text>
+<text class="nm" x="460" y="652" text-anchor="middle">底图转发</text>
+<text class="sb" x="460" y="668" text-anchor="middle">/basemap · UA · fallback · proxy</text>
+<line x1="40" y1="712" x2="1240" y2="712" stroke="rgba(21,23,28,0.12)" stroke-width="0.8"/>
+<text class="eb" x="40" y="736">LEGEND</text>
+<rect x="140" y="726" width="16" height="12" rx="2" fill="rgba(75,85,99,0.10)" stroke="#6b7280" stroke-width="1"/>
+<text class="lg" x="164" y="736">客户端</text>
+<rect x="308" y="726" width="16" height="12" rx="2" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<text class="lg" x="332" y="736">服务与引擎</text>
+<rect x="476" y="726" width="16" height="12" rx="2" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.24)" stroke-width="1" stroke-dasharray="3,2"/>
+<text class="lg" x="500" y="736">默认关闭</text>
+<rect x="644" y="726" width="16" height="12" rx="2" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<text class="lg" x="668" y="736">本地存储</text>
+<rect x="812" y="726" width="16" height="12" rx="2" fill="rgba(21,23,28,0.03)" stroke="rgba(21,23,28,0.30)" stroke-width="1"/>
+<text class="lg" x="836" y="736">外部上游</text>
+<rect x="980" y="726" width="16" height="12" rx="2" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<text class="lg" x="1004" y="736">焦点 · 配额</text>
+<line x1="1148" y1="732" x2="1166" y2="732" stroke="#4b5563" stroke-width="1.4" stroke-dasharray="5,4"/>
+<text class="lg" x="1172" y="736">虚线 = WS 推送</text>
+</svg>
+<footer>TERRAFORGE · architecture</footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一张瓦片的两条路 · TerraForge</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+:root{
+  --paper:#f4f6f8; --ink:#15171c; --muted:#4b5563; --accent:#0284c7;
+  --fs:'Inter','Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --fm:'JetBrains Mono','Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
+  --ft:'Noto Serif CJK SC','Songti SC','Georgia',serif;
+}
+body{font-family:var(--fs);background:var(--paper);color:var(--ink);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+.frame{max-width:1280px;width:100%}
+.eyebrow{font-family:var(--fm);font-size:.66rem;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:var(--ft);font-size:1.75rem;font-weight:400;line-height:1.2;margin-bottom:.4rem}
+.sub{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
+svg{width:100%;display:block}
+footer{margin-top:1.5rem;padding-top:.75rem;border-top:1px solid rgba(21,23,28,0.12);
+       font-family:var(--fm);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">SEQUENCE · TERRAFORGE</p>
+<h1>一张瓦片的两条路</h1>
+<p class="sub">下载时先问缓存：命中的由 backfill 线程拷进产物目录，未命中的过信号量取上游、校验魔数、先写缓存再镜像到产物。浏览器预览时走另一条路 —— 瓦片端口按前缀放行，直接读产物目录。</p>
+<svg viewBox="0 0 1280 880" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="tile-request-title tile-request-desc">
+<title id="tile-request-title">一张瓦片的两条路</title>
+<desc id="tile-request-desc">时序图：下载引擎先查瓦片缓存，命中则由 backfill 拷进产物目录，未命中则请求上游、校验图片魔数、写缓存并镜像；浏览器随后经瓦片端口读取产物目录里的瓦片。</desc>
+<defs>
+<style>@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+    .nm{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .sb{font-family:var(--fm);font-size:9px;fill:#4b5563}
+    .eb{font-family:var(--fm);font-size:8px;font-weight:500;letter-spacing:.14em;fill:#4b5563}
+    .tg{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#4b5563}
+    .tgA{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#0284c7}
+    .al{font-family:var(--fm);font-size:8px;letter-spacing:.06em;fill:#6b7280}
+    .alA{font-family:var(--fm);font-size:8px;font-weight:600;letter-spacing:.06em;fill:#0284c7}
+    .zl{font-family:var(--fm);font-size:8px;letter-spacing:.14em;fill:rgba(21,23,28,0.45)}
+    .lg{font-family:var(--fs);font-size:10px;fill:#4b5563}
+    .cjk{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .alc{font-family:var(--fs);font-size:10px;fill:#6b7280}
+    .co{font-family:var(--ft);font-size:14px;font-style:italic;fill:#15171c}
+    .coA{font-family:var(--ft);font-size:14px;font-style:italic;fill:#0284c7}</style>
+<marker id="tile-request-arw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4b5563"/></marker>
+<marker id="tile-request-arwA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0284c7"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f6f8"/>
+<line x1="144" y1="176" x2="144" y2="768" stroke="rgba(21,23,28,0.10)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="392" y1="176" x2="392" y2="768" stroke="rgba(21,23,28,0.10)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="640" y1="176" x2="640" y2="768" stroke="rgba(21,23,28,0.10)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="888" y1="176" x2="888" y2="768" stroke="rgba(21,23,28,0.10)" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="1136" y1="176" x2="1136" y2="768" stroke="rgba(21,23,28,0.10)" stroke-width="1" stroke-dasharray="3,3"/>
+<rect x="636" y="208" width="8" height="416" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="0.8"/>
+<rect x="388" y="640" width="8" height="96" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="0.8"/>
+<rect x="620" y="248" width="536" height="392" rx="4" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.10)" stroke-width="1"/>
+<rect x="620" y="248" width="44" height="16" rx="2" fill="#f4f6f8" stroke="rgba(21,23,28,0.10)" stroke-width="1"/>
+<text class="eb" x="642" y="260" text-anchor="middle">ALT</text>
+<rect x="628" y="274" width="96" height="13" rx="2" fill="#f4f6f8"/><text class="al" x="632" y="284">[cache size &gt; 0]</text>
+<line x1="628" y1="384" x2="1148" y2="384" stroke="rgba(21,23,28,0.10)" stroke-width="1" stroke-dasharray="4,3"/>
+<rect x="628" y="398" width="44" height="13" rx="2" fill="#f4f6f8"/><text class="al" x="632" y="408">[else]</text>
+<path d="M 640,216 H 888" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-request-arw)"/>
+<rect x="732" y="192" width="64" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="764" y="201" text-anchor="middle">CACHE STAT</text>
+<path d="M 888,312 H 640" fill="none" stroke="#4b5563" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#tile-request-arw)"/>
+<rect x="732" y="288" width="64" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="764" y="297" text-anchor="middle">HIT size&gt;0</text>
+<path d="M 640,352 H 888" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-request-arw)"/>
+<rect x="725" y="328" width="79" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="764" y="337" text-anchor="middle">BACKFILL COPY</text>
+<path d="M 640,440 H 1136" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-request-arw)"/>
+<rect x="831" y="416" width="114" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="888" y="425" text-anchor="middle">GET TILE · semaphore</text>
+<path d="M 1136,480 H 640" fill="none" stroke="#4b5563" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#tile-request-arw)"/>
+<rect x="859" y="456" width="59" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="888" y="465" text-anchor="middle">200 BYTES</text>
+<path d="M 640,512 H 704 Q 712,512 712,520 V 528 Q 712,536 704,536 H 648" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-request-arw)"/>
+<text class="al" x="724" y="527">MAGIC CHECK</text>
+<path d="M 640,568 H 888" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-request-arw)"/>
+<rect x="730" y="544" width="69" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="764" y="553" text-anchor="middle">CACHE WRITE</text>
+<path d="M 640,600 H 888" fill="none" stroke="#0284c7" stroke-width="1.6" marker-end="url(#tile-request-arwA)"/>
+<rect x="730" y="576" width="69" height="12" rx="2" fill="#f4f6f8"/><text class="alA" x="764" y="585" text-anchor="middle">MIRROR COPY</text>
+<path d="M 144,664 H 392" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-request-arw)"/>
+<rect x="224" y="640" width="89" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="268" y="649" text-anchor="middle">GET /tiles/&lt;id&gt;</text>
+<path d="M 392,704 H 888" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#tile-request-arw)"/>
+<rect x="611" y="680" width="59" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="640" y="689" text-anchor="middle">SAFE READ</text>
+<path d="M 392,736 H 144" fill="none" stroke="#0284c7" stroke-width="1.6" stroke-dasharray="5,4" marker-end="url(#tile-request-arwA)"/>
+<rect x="244" y="712" width="49" height="12" rx="2" fill="#f4f6f8"/><text class="alA" x="268" y="721" text-anchor="middle">200 PNG</text>
+<rect x="40" y="104" width="208" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="40" y="104" width="208" height="72" rx="6" fill="rgba(75,85,99,0.10)" stroke="#6b7280" stroke-width="1"/>
+<rect x="52" y="116" width="36" height="12" rx="2" fill="none" stroke="#6b7280" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="70" y="125" text-anchor="middle">UI</text>
+<text class="nm" x="144" y="148" text-anchor="middle">浏览器</text>
+<text class="sb" x="144" y="164" text-anchor="middle">Cesium · ui.js tileUrl()</text>
+<rect x="288" y="104" width="208" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="288" y="104" width="208" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="300" y="116" width="36" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="318" y="125" text-anchor="middle">HTTP</text>
+<text class="nm" x="392" y="148" text-anchor="middle">瓦片端口</text>
+<text class="sb" x="392" y="164" text-anchor="middle">:5001 · prefix allow-list</text>
+<rect x="536" y="104" width="208" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="536" y="104" width="208" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="548" y="116" width="36" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="566" y="125" text-anchor="middle">WORK</text>
+<text class="nm" x="640" y="148" text-anchor="middle">下载引擎</text>
+<text class="sb" x="640" y="164" text-anchor="middle">aiohttp · classify_error</text>
+<rect x="784" y="104" width="208" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="784" y="104" width="208" height="72" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="796" y="116" width="36" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="814" y="125" text-anchor="middle">FS</text>
+<text class="nm" x="888" y="148" text-anchor="middle">本地磁盘</text>
+<text class="sb" x="888" y="164" text-anchor="middle">cache/ + downloads/</text>
+<rect x="1032" y="104" width="208" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="1032" y="104" width="208" height="72" rx="6" fill="rgba(21,23,28,0.03)" stroke="rgba(21,23,28,0.30)" stroke-width="1"/>
+<rect x="1044" y="116" width="36" height="12" rx="2" fill="none" stroke="rgba(21,23,28,0.30)" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="1062" y="125" text-anchor="middle">NET</text>
+<text class="nm" x="1136" y="148" text-anchor="middle">上游瓦片源</text>
+<text class="sb" x="1136" y="164" text-anchor="middle">mts0-3 · S3 · Earthdata</text>
+<line x1="40" y1="800" x2="1240" y2="800" stroke="rgba(21,23,28,0.12)" stroke-width="0.8"/>
+<text class="eb" x="40" y="824">LEGEND</text>
+<line x1="140" y1="820" x2="158" y2="820" stroke="#4b5563" stroke-width="1.4"/>
+<text class="lg" x="164" y="824">调用</text>
+<line x1="380" y1="820" x2="398" y2="820" stroke="#4b5563" stroke-width="1.4" stroke-dasharray="5,4"/>
+<text class="lg" x="404" y="824">返回</text>
+<line x1="620" y1="820" x2="638" y2="820" stroke="#0284c7" stroke-width="1.4"/>
+<text class="lg" x="644" y="824">焦点 · 落到产物与浏览器</text>
+<rect x="860" y="814" width="16" height="12" rx="2" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<text class="lg" x="884" y="824">活动区间</text>
+</svg>
+<footer>TERRAFORGE · tile-request</footer>
+</div>
+</body>
+</html>

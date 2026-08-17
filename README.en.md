@@ -20,6 +20,7 @@ A web-based GIS data acquisition and processing system. Four kinds of geospatial
 
 - [✨ Features](#-features)
 - [🖼 Screenshots](#-screenshots)
+- [🗺 Diagrams](#-diagrams)
 - [🧰 Tech stack](#-tech-stack)
 - [🚀 Quick start](#-quick-start)
 - [📖 User guide](#-user-guide)
@@ -97,6 +98,80 @@ A web-based GIS data acquisition and processing system. Four kinds of geospatial
     </td>
   </tr>
 </table>
+
+## 🗺 Diagrams
+
+Seven diagrams in four groups: **how it fits together** (components and ports, four pipelines), **one path end to end** (a single tile, terrain tiling), **what happens when it goes wrong** (task state machine, gap decision), and **how to extend it** (the four plugin extension points). The images and their sources (self-contained HTML, light and dark) live in [`docs/assets/diagrams/en/`](docs/assets/diagrams/en/); re-render with `render.py` in the parent directory.
+
+### Components and ports
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/en/architecture-dark.png">
+  <img src="docs/assets/diagrams/en/architecture.png" alt="System architecture: the browser reaches the app through the Flask main port, the tile port and the basemap proxy; four pipeline managers and the plugin host request quota from the global resource scheduler before driving the download and tiling engines, and read or write SQLite, disk artifacts and upstream sources">
+</picture>
+
+Three things worth looking at:
+
+- **The browser comes in through three doors.** Pages and REST go to the main port `:5000`; tiles go to `:5001` (a screenful of tile requests then does not compete for the main port's 6 connections — the allow-list is the single copy in `src/core/tile_paths.py`, shared by the tile port, the console log filter and the front-end URL rewriting); the basemap goes through the `/basemap` same-origin forward, so the real upstream address never leaves the server.
+- **Managers do not open their own pools.** All four pipelines and the plugin host ask the global scheduler for a quota first (task slot / network connections / CPU / GDAL slots / disk bytes). `reserve()` returns immediately and may grant less than requested — less simply means smaller pools, not a failure, which is why one big task cannot starve the others.
+- **Progress is pushed down, logs are pulled up.** Progress is WebSocket events (`task_progress` and friends); logs go over REST. This app has no rooms or namespaces, so one emit reaches every connected client — streaming log lines would read your task's log out loud to everybody with the page open.
+
+### Four pipelines
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/en/pipelines-dark.png">
+  <img src="docs/assets/diagrams/en/pipelines.png" alt="Swimlane diagram: the map tile, DEM elevation, 3D terrain and contour pipelines with their inputs, processing and served artifacts; DEM artifacts are reused by the terrain pipeline">
+</picture>
+
+Each pipeline has **its own manager, database tables, REST blueprint and artifact directory**, and shares only the SocketIO instance and the config manager. The one arrow crossing lanes is the one cross-pipeline handoff: the elevation files a DEM task downloaded are reused **zero-copy** by terrain and contour tiling, so deleting a contour or terrain task never touches the source DEM. That is also why the 3D terrain lane has an either/or input — reuse a downloaded DEM, or upload a GeoTIFF; both enter the same tiler.
+
+### Two paths of a single tile
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/en/tile-request-dark.png">
+  <img src="docs/assets/diagrams/en/tile-request.png" alt="Sequence diagram: the download engine checks the tile cache, a hit is copied by the backfill thread while a miss is fetched upstream, magic-checked, written to the cache and mirrored; the browser later reads the artifact directory through the tile port">
+</picture>
+
+The cache is **shared across tasks** (`cache/<style-code>-<source-fingerprint>/{z}/{x}/{y}.png`); the artifact directory is each task's own mirror of it. So a second pass over the same area never goes back to the network, and deleting one task's artifacts cannot hurt anybody else's cache. Two details: `200` does not mean success — the body still has to pass a magic-byte check, and `200` + HTML is classified as a permanent failure; and cache hits are back-filled by the `task-<id>-backfill` thread while freshly downloaded tiles are mirrored from the progress callback, two lists that never overlap.
+
+### Terrain tiling pipeline
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/en/terrain-tiling-dark.png">
+  <img src="docs/assets/diagrams/en/terrain-tiling.png" alt="Flowchart: terrain tiling starts with quota and input inventory, unpacks the base and unlinks the previous run, materialises multiple DEMs into one GeoTIFF, picks the zoom range and tiles in parallel, writes layer.json, and finally either grafts the packaged base or rewrites parentUrl">
+</picture>
+
+Two counter-intuitive steps, both marked on the diagram:
+
+- **Several DEMs must be materialised into one GeoTIFF** before sampling; a multi-source VRT cannot be handed to the sampler. The VRT picks a different built-in overview per read window, and ASTER's overview factors are 7.98× / 8.98× — not powers of two — so two vertically adjacent tiles sample different elevations. Measured: up to **50.9 m** of disagreement along a shared edge.
+- **The packaged base is grafted only after tiling**, and the previous run's hardlinks have to be unlinked *before* it. Get the order wrong and you write straight through into the packaged base under `assets/terrain/`. Grafting uses hardlinks and falls back to copying the whole batch across filesystems, which is what makes a task directory self-contained enough to copy to another machine.
+
+### Task state machine
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/en/task-state-dark.png">
+  <img src="docs/assets/diagrams/en/task-state.png" alt="State machine: a task moves between pending, running and paused; unexplained gaps park it in awaiting decision until the user refills or accepts; with only no_data gaps it lands in completed-with-gaps automatically, and refill can start from three states">
+</picture>
+
+Eight states shared by all four pipelines, and the value is the text stored in the database (`TaskState` in `src/contracts/outcome.py`). `pending_decision` looks terminal but is not: it still holds its artifact directory and cache references, cache clearing is blocked by it, and quitting warns about it. Refill (`POST .../refill`) can start from `pending_decision`, `completed_with_gaps` and `failed`, and re-runs the completion verdict when it finishes.
+
+### Five tile outcomes and the decision
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/en/tile-gaps-dark.png">
+  <img src="docs/assets/diagrams/en/tile-gaps.png" alt="Flowchart: tile outcomes split into success, no data upstream, retryable failure, permanent failure and cache write failure; any gap other than no_data parks the task in awaiting decision where the user refills or accepts, otherwise it completes automatically">
+</picture>
+
+The whole gap story rests on one asymmetry: **only `no_data` counts as explained** — the upstream answered "there is nothing here" (open ocean at z18, outside a DEM's coverage), so such a task lands in `completed_with_gaps` on its own and never bothers you. One retryable / permanent / cache-write failure, and stitching and copying **refuse to run**: the task parks in `pending_decision` with nothing half-baked on disk, and choosing "refill" or "accept the gaps" is still open. Once accepted, the result and the history entry are **permanently marked as having gaps** and are never counted as a complete artifact.
+
+### Four plugin extension points
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/en/plugins-dark.png">
+  <img src="docs/assets/diagrams/en/plugins.png" alt="Architecture diagram: a plugin manifest passes three admission gates into the registry, which lights up the source, pipeline, exporter and task-hook extension points through capability queries; a running pipeline plugin only gets a TaskContext, which flushes to the plugin task tables">
+</picture>
+
+A plugin declares what it is in `plugin.toml` and clears three gates before it enters the registry: API major version, ABI tag (`cp312-linux-x86_64` and friends, checked for external plugins only), and method signature (`runtime_checkable` `isinstance` only proves a method name exists — the argument count has to be checked by hand). At runtime a plugin gets exactly one `TaskContext`: progress, logging, quota, the URL gate, gap accounting and artifact registration all go through it, and **there is no manager, no socketio and no database connection behind it**. Plugins are off by default (`plugins.enabled DEFAULT 0`), and disabling one darkens all four of its extension points at once. See [docs/guides/PLUGINS.md](docs/guides/PLUGINS.md) (Chinese).
 
 ## 🧰 Tech stack
 

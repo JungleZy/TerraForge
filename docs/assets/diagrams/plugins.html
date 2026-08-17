@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>插件系统的四个扩展点 · TerraForge</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+:root{
+  --paper:#f4f6f8; --ink:#15171c; --muted:#4b5563; --accent:#0284c7;
+  --fs:'Inter','Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --fm:'JetBrains Mono','Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
+  --ft:'Noto Serif CJK SC','Songti SC','Georgia',serif;
+}
+body{font-family:var(--fs);background:var(--paper);color:var(--ink);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+.frame{max-width:1280px;width:100%}
+.eyebrow{font-family:var(--fm);font-size:.66rem;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:var(--ft);font-size:1.75rem;font-weight:400;line-height:1.2;margin-bottom:.4rem}
+.sub{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
+svg{width:100%;display:block}
+footer{margin-top:1.5rem;padding-top:.75rem;border-top:1px solid rgba(21,23,28,0.12);
+       font-family:var(--fm);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">ARCHITECTURE · TERRAFORGE</p>
+<h1>插件系统的四个扩展点</h1>
+<p class="sub">插件声明自己是什么（<code>plugin.toml</code>），过三道闸（API 主版本、ABI 标签、方法签名）才进注册表；能力查询是唯一入口，运行期只有一个 <code>TaskContext</code> 门面。</p>
+<svg viewBox="0 0 1280 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="plugins-title plugins-desc">
+<title id="plugins-title">插件系统的四个扩展点</title>
+<desc id="plugins-desc">架构图：插件清单经三道准入闸进入注册表，注册表通过能力查询点亮数据源、管线、导出器与任务钩子四个扩展点；管线运行时只拿到 TaskContext，由它落库到插件任务表。</desc>
+<defs>
+<style>@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+    .nm{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .sb{font-family:var(--fm);font-size:9px;fill:#4b5563}
+    .eb{font-family:var(--fm);font-size:8px;font-weight:500;letter-spacing:.14em;fill:#4b5563}
+    .tg{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#4b5563}
+    .tgA{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#0284c7}
+    .al{font-family:var(--fm);font-size:8px;letter-spacing:.06em;fill:#6b7280}
+    .alA{font-family:var(--fm);font-size:8px;font-weight:600;letter-spacing:.06em;fill:#0284c7}
+    .zl{font-family:var(--fm);font-size:8px;letter-spacing:.14em;fill:rgba(21,23,28,0.45)}
+    .lg{font-family:var(--fs);font-size:10px;fill:#4b5563}
+    .cjk{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .alc{font-family:var(--fs);font-size:10px;fill:#6b7280}
+    .co{font-family:var(--ft);font-size:14px;font-style:italic;fill:#15171c}
+    .coA{font-family:var(--ft);font-size:14px;font-style:italic;fill:#0284c7}</style>
+<marker id="plugins-arw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4b5563"/></marker>
+<marker id="plugins-arwA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0284c7"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f6f8"/>
+<rect x="328" y="264" width="568" height="256" rx="8" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-opacity="0.55" stroke-width="1" stroke-dasharray="4,4"/>
+<rect x="344" y="268" width="196" height="12" rx="2" fill="#f4f6f8"/>
+<text class="zl" x="348" y="277" fill="#0284c7">PLUGIN SURFACE · 4 HOOKS</text>
+<path d="M 272,164 H 344" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#plugins-arw)"/>
+<rect x="291" y="140" width="34" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="308" y="149" text-anchor="middle">LOAD</text>
+<path d="M 576,164 H 648" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#plugins-arw)"/>
+<rect x="595" y="140" width="34" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="612" y="149" text-anchor="middle">PASS</text>
+<path d="M 764,200 V 264" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#plugins-arw)"/>
+<rect x="772" y="226" width="64" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="776" y="235" text-anchor="start">CAPABILITY</text>
+<path d="M 648,332 H 624 Q 616,332 616,340 V 568 Q 616,576 624,576 H 692 Q 700,576 700,584 V 592" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#plugins-arw)"/>
+<rect x="624" y="394" width="54" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="628" y="403" text-anchor="start">run(ctx)</text>
+<path d="M 880,628 H 952" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#plugins-arw)"/>
+<rect x="897" y="604" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="916" y="613" text-anchor="middle">FLUSH</text>
+<rect x="40" y="128" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="40" y="128" width="232" height="72" rx="6" fill="rgba(21,23,28,0.03)" stroke="rgba(21,23,28,0.30)" stroke-width="1"/>
+<rect x="52" y="140" width="40" height="12" rx="2" fill="none" stroke="rgba(21,23,28,0.30)" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="72" y="149" text-anchor="middle">DECL</text>
+<text class="nm" x="156" y="172" text-anchor="middle">插件清单</text>
+<text class="sb" x="156" y="188" text-anchor="middle">plugin.toml · manifest.py</text>
+<rect x="344" y="128" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="344" y="128" width="232" height="72" rx="6" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.24)" stroke-width="1" stroke-dasharray="4,3"/>
+<rect x="356" y="140" width="40" height="12" rx="2" fill="none" stroke="rgba(21,23,28,0.24)" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="376" y="149" text-anchor="middle">GATE</text>
+<text class="nm" x="460" y="172" text-anchor="middle">三道闸</text>
+<text class="sb" x="460" y="188" text-anchor="middle">api_major · abi · signature</text>
+<rect x="648" y="128" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="648" y="128" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="660" y="140" width="40" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="680" y="149" text-anchor="middle">HOST</text>
+<text class="nm" x="764" y="172" text-anchor="middle">插件注册表</text>
+<text class="sb" x="764" y="188" text-anchor="middle">registry.py · enable/disable</text>
+<rect x="344" y="296" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="344" y="296" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="356" y="308" width="36" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="374" y="317" text-anchor="middle">SRC</text>
+<text class="nm" x="460" y="340" text-anchor="middle">数据源</text>
+<text class="sb" x="460" y="356" text-anchor="middle">SourceDescriptor · {credential}</text>
+<rect x="648" y="296" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="648" y="296" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="660" y="308" width="36" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="678" y="317" text-anchor="middle">PIPE</text>
+<text class="nm" x="764" y="340" text-anchor="middle">管线</text>
+<text class="sb" x="764" y="356" text-anchor="middle">PipelinePlugin.run(ctx)</text>
+<rect x="344" y="416" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="344" y="416" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="356" y="428" width="36" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="374" y="437" text-anchor="middle">EXP</text>
+<text class="nm" x="460" y="460" text-anchor="middle">导出器</text>
+<text class="sb" x="460" y="476" text-anchor="middle">Exporter · POST /api/export</text>
+<rect x="648" y="416" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="648" y="416" width="232" height="72" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="660" y="428" width="36" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="678" y="437" text-anchor="middle">HOOK</text>
+<text class="nm" x="764" y="460" text-anchor="middle">任务钩子</text>
+<text class="sb" x="764" y="476" text-anchor="middle">TaskHook.on_event(TaskEvent)</text>
+<rect x="648" y="592" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="648" y="592" width="232" height="72" rx="6" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<rect x="660" y="604" width="40" height="12" rx="2" fill="none" stroke="#0284c7" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tgA" x="680" y="613" text-anchor="middle">DOOR</text>
+<text class="nm" x="764" y="636" text-anchor="middle">TaskContext</text>
+<text class="sb" x="764" y="652" text-anchor="middle">progress · log · grant · gap</text>
+<rect x="952" y="592" width="232" height="72" rx="6" fill="#f4f6f8"/>
+<rect x="952" y="592" width="232" height="72" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="964" y="604" width="32" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="980" y="613" text-anchor="middle">DB</text>
+<text class="nm" x="1068" y="636" text-anchor="middle">插件任务表</text>
+<text class="sb" x="1068" y="652" text-anchor="middle">plugin_tasks · plugin_task_tiles</text>
+<text class="coA" x="1240" y="372" text-anchor="end">插件拿不到 manager、socketio 与数据库连接：</text>
+<text class="coA" x="1240" y="394" text-anchor="end">TaskContext 就是它能碰到的全部世界。</text>
+<path d="M 1000,392 Q 1010,500 890,608" fill="none" stroke="#0284c7" stroke-opacity="0.50" stroke-width="1" stroke-dasharray="4,3"/>
+<circle cx="890" cy="608" r="2.5" fill="#0284c7"/>
+<text class="co" x="1240" y="148" text-anchor="end">默认全关（plugins.enabled DEFAULT 0）；</text>
+<text class="co" x="1240" y="170" text-anchor="end">禁用一个插件，四个扩展点同时熄灭。</text>
+<path d="M 1010,168 Q 950,180 886,172" fill="none" stroke="#4b5563" stroke-opacity="0.40" stroke-width="1" stroke-dasharray="4,3"/>
+<circle cx="886" cy="172" r="2.5" fill="#4b5563"/>
+<line x1="40" y1="712" x2="1240" y2="712" stroke="rgba(21,23,28,0.12)" stroke-width="0.8"/>
+<text class="eb" x="40" y="736">LEGEND</text>
+<rect x="140" y="726" width="16" height="12" rx="2" fill="rgba(21,23,28,0.03)" stroke="rgba(21,23,28,0.30)" stroke-width="1"/>
+<text class="lg" x="164" y="736">插件自带声明</text>
+<rect x="340" y="726" width="16" height="12" rx="2" fill="rgba(21,23,28,0.02)" stroke="rgba(21,23,28,0.24)" stroke-width="1" stroke-dasharray="3,2"/>
+<text class="lg" x="364" y="736">准入闸</text>
+<rect x="540" y="726" width="16" height="12" rx="2" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<text class="lg" x="564" y="736">宿主与扩展点</text>
+<rect x="740" y="726" width="16" height="12" rx="2" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<text class="lg" x="764" y="736">焦点 · 唯一门面</text>
+<rect x="940" y="726" width="16" height="12" rx="2" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<text class="lg" x="964" y="736">共用一张任务表</text>
+</svg>
+<footer>TERRAFORGE · plugins</footer>
+</div>
+</body>
+</html>

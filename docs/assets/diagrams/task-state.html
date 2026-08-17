@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务状态机与缺块语义 · TerraForge</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+:root{
+  --paper:#f4f6f8; --ink:#15171c; --muted:#4b5563; --accent:#0284c7;
+  --fs:'Inter','Noto Sans CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+  --fm:'JetBrains Mono','Noto Sans Mono CJK SC','DejaVu Sans Mono',monospace;
+  --ft:'Noto Serif CJK SC','Songti SC','Georgia',serif;
+}
+body{font-family:var(--fs);background:var(--paper);color:var(--ink);min-height:100vh;
+     display:flex;align-items:center;justify-content:center;padding:3rem 2rem}
+.frame{max-width:1280px;width:100%}
+.eyebrow{font-family:var(--fm);font-size:.66rem;font-weight:500;letter-spacing:.18em;
+         text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:var(--ft);font-size:1.75rem;font-weight:400;line-height:1.2;margin-bottom:.4rem}
+.sub{font-size:.85rem;color:var(--muted);margin-bottom:1.5rem;line-height:1.6}
+svg{width:100%;display:block}
+footer{margin-top:1.5rem;padding-top:.75rem;border-top:1px solid rgba(21,23,28,0.12);
+       font-family:var(--fm);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="frame">
+<p class="eyebrow">STATE MACHINE · TERRAFORGE</p>
+<h1>任务状态机与缺块语义</h1>
+<p class="sub">八个状态四条管线共用（<code>TaskState</code>，值即落库文本）。只有 no_data 这一类缺块会自动完成；出现任何一块真失败就停在「待决策」等用户拍板。补漏可以从待决策、带缺块完成与失败三处发起。</p>
+<svg viewBox="0 0 1280 528" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="task-state-title task-state-desc">
+<title id="task-state-title">任务状态机与缺块语义</title>
+<desc id="task-state-desc">状态机图：任务在待启动、运行中、已暂停之间流转；未解释的缺块把任务停在待决策等用户补漏或接受；只有 no_data 缺块时自动落到带缺块完成；补漏可从三个状态发起。</desc>
+<defs>
+<style>@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin.woff2) format('woff2');}@font-face{font-family:'Inter';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/inter-latin-ext.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin.woff2) format('woff2');}@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400 700;font-display:swap;src:url(../../../static/vendor/fonts/jetbrains-mono-latin-ext.woff2) format('woff2');}
+    .nm{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}
+    .sb{font-family:var(--fm);font-size:9px;fill:#4b5563}
+    .eb{font-family:var(--fm);font-size:8px;font-weight:500;letter-spacing:.14em;fill:#4b5563}
+    .tg{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#4b5563}
+    .tgA{font-family:var(--fm);font-size:7px;font-weight:600;letter-spacing:.08em;fill:#0284c7}
+    .al{font-family:var(--fm);font-size:8px;letter-spacing:.06em;fill:#6b7280}
+    .alA{font-family:var(--fm);font-size:8px;font-weight:600;letter-spacing:.06em;fill:#0284c7}
+    .zl{font-family:var(--fm);font-size:8px;letter-spacing:.14em;fill:rgba(21,23,28,0.45)}
+    .lg{font-family:var(--fs);font-size:10px;fill:#4b5563}
+    .cjk{font-family:var(--fs);font-size:12px;font-weight:600;fill:#15171c}</style>
+<marker id="task-state-arw" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4b5563"/></marker>
+<marker id="task-state-arwA" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0284c7"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f6f8"/>
+<circle cx="56" cy="224" r="6" fill="#15171c"/>
+<path d="M 64,224 H 96" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<path d="M 240,224 H 328" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="265" y="200" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="284" y="209" text-anchor="middle">START</text>
+<path d="M 392,192 V 128" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="345" y="154" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="380" y="163" text-anchor="end">PAUSE</text>
+<path d="M 424,128 V 192" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="432" y="154" width="44" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="436" y="163" text-anchor="start">RESUME</text>
+<path d="M 392,256 V 320" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="345" y="282" width="39" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="380" y="291" text-anchor="end">ERROR</text>
+<path d="M 472,224 H 560" fill="none" stroke="#0284c7" stroke-width="1.6" marker-end="url(#task-state-arwA)"/>
+<rect x="482" y="200" width="69" height="12" rx="2" fill="#f4f6f8"/><text class="alA" x="516" y="209" text-anchor="middle">UNEXPLAINED</text>
+<path d="M 472,200 H 496 Q 504,200 504,192 V 120 Q 504,112 512,112 H 1040" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="752" y="88" width="49" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="776" y="97" text-anchor="middle">NO GAPS</text>
+<path d="M 472,248 H 512 Q 520,248 520,256 V 344 Q 520,352 528,352 H 1000 Q 1008,352 1008,344 V 248 Q 1008,240 1016,240 H 1040" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="723" y="328" width="74" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="760" y="337" text-anchor="middle">NO_DATA ONLY</text>
+<path d="M 736,224 H 824" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="741" y="200" width="79" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="780" y="209" text-anchor="middle">REFILL·ACCEPT</text>
+<path d="M 968,224 H 1040" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="975" y="200" width="59" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="1004" y="209" text-anchor="middle">GAPS LEFT</text>
+<path d="M 880,256 V 280 Q 880,288 872,288 H 656 Q 648,288 648,280 V 256" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="732" y="264" width="64" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="764" y="273" text-anchor="middle">STILL GAPS</text>
+<path d="M 400,384 V 408 Q 400,416 408,416 H 928 Q 936,416 936,408 V 360 a 8,8 0 0,0 0,-16 V 256" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="638" y="392" width="44" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="660" y="401" text-anchor="middle">REFILL</text>
+<path d="M 1180,192 V 168 Q 1180,160 1172,160 H 904 Q 896,160 896,168 V 192" fill="none" stroke="#4b5563" stroke-width="1.2" marker-end="url(#task-state-arw)"/>
+<rect x="1018" y="136" width="44" height="12" rx="2" fill="#f4f6f8"/><text class="al" x="1040" y="145" text-anchor="middle">REFILL</text>
+<rect x="96" y="192" width="144" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="96" y="192" width="144" height="64" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="108" y="204" width="52" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="134" y="213" text-anchor="middle">ACTIVE</text>
+<text class="nm" x="168" y="228" text-anchor="middle">待启动</text>
+<text class="sb" x="168" y="244" text-anchor="middle">pending</text>
+<rect x="328" y="192" width="144" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="328" y="192" width="144" height="64" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="340" y="204" width="52" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="366" y="213" text-anchor="middle">ACTIVE</text>
+<text class="nm" x="400" y="228" text-anchor="middle">运行中</text>
+<text class="sb" x="400" y="244" text-anchor="middle">running</text>
+<rect x="328" y="64" width="144" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="328" y="64" width="144" height="64" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="340" y="76" width="52" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="366" y="85" text-anchor="middle">ACTIVE</text>
+<text class="nm" x="400" y="100" text-anchor="middle">已暂停</text>
+<text class="sb" x="400" y="116" text-anchor="middle">paused</text>
+<rect x="328" y="320" width="144" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="328" y="320" width="144" height="64" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="340" y="332" width="52" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="366" y="341" text-anchor="middle">TERMINAL</text>
+<text class="nm" x="400" y="356" text-anchor="middle">失败</text>
+<text class="sb" x="400" y="372" text-anchor="middle">failed</text>
+<rect x="560" y="192" width="176" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="560" y="192" width="176" height="64" rx="6" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<rect x="572" y="204" width="52" height="12" rx="2" fill="none" stroke="#0284c7" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tgA" x="598" y="213" text-anchor="middle">ACTIVE</text>
+<text class="nm" x="648" y="228" text-anchor="middle">待决策</text>
+<text class="sb" x="648" y="244" text-anchor="middle">pending_decision</text>
+<rect x="824" y="192" width="144" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="824" y="192" width="144" height="64" rx="6" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<rect x="836" y="204" width="52" height="12" rx="2" fill="none" stroke="#15171c" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="862" y="213" text-anchor="middle">ACTIVE</text>
+<text class="nm" x="896" y="228" text-anchor="middle">补漏中</text>
+<text class="sb" x="896" y="244" text-anchor="middle">retrying</text>
+<rect x="1040" y="64" width="200" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="1040" y="64" width="200" height="64" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="1052" y="76" width="52" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="1078" y="85" text-anchor="middle">TERMINAL</text>
+<text class="nm" x="1140" y="100" text-anchor="middle">已完成</text>
+<text class="sb" x="1140" y="116" text-anchor="middle">completed</text>
+<rect x="1040" y="192" width="200" height="64" rx="6" fill="#f4f6f8"/>
+<rect x="1040" y="192" width="200" height="64" rx="6" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<rect x="1052" y="204" width="52" height="12" rx="2" fill="none" stroke="#4b5563" stroke-opacity="0.45" stroke-width="0.8"/>
+<text class="tg" x="1078" y="213" text-anchor="middle">TERMINAL</text>
+<text class="nm" x="1140" y="228" text-anchor="middle">带缺块完成</text>
+<text class="sb" x="1140" y="244" text-anchor="middle">completed_with_gaps</text>
+<line x1="40" y1="448" x2="1240" y2="448" stroke="rgba(21,23,28,0.12)" stroke-width="0.8"/>
+<text class="eb" x="40" y="472">LEGEND</text>
+<circle cx="148" cy="468" r="5" fill="#15171c"/>
+<text class="lg" x="164" y="472">起点</text>
+<rect x="340" y="462" width="16" height="12" rx="2" fill="#ffffff" stroke="#15171c" stroke-width="1"/>
+<text class="lg" x="364" y="472">活动态</text>
+<rect x="540" y="462" width="16" height="12" rx="2" fill="rgba(2,132,199,0.08)" stroke="#0284c7" stroke-width="1"/>
+<text class="lg" x="564" y="472">待决策 · 焦点</text>
+<rect x="740" y="462" width="16" height="12" rx="2" fill="rgba(21,23,28,0.05)" stroke="#4b5563" stroke-width="1"/>
+<text class="lg" x="764" y="472">终态</text>
+<line x1="940" y1="468" x2="958" y2="468" stroke="#4b5563" stroke-width="1.4"/>
+<text class="lg" x="964" y="472">转移 · 标注即触发条件</text>
+</svg>
+<footer>TERRAFORGE · task-state</footer>
+</div>
+</body>
+</html>
