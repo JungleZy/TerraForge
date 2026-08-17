@@ -70,6 +70,13 @@ DEFAULT_PROBE_URL = 'http://mts0.googleapis.com/vt?lyrs=m&x=1&y=1&z=2'
 COMMON_PROXY_PORTS = (
     7890,   # Clash / Clash for Windows —— mixed port，HTTP 与 SOCKS 同端口
     7897,   # Clash Verge rev 默认 mixed port
+    # 7892 在 Clash 官方模板里是 `redir-port`（Linux/macOS 的透明代理口），**不是**
+    # HTTP 代理口。列它的理由是现实：把 mixed-port 挪到 7892 的配置很常见，本仓
+    # 开发机的 Windows 宿主就是这样（WSL 里 `curl -x http://<宿主>:7892` 通，而
+    # 7890/7897 都没开），于是自动探测在这台机器上永远是 0 候选，只能手填。
+    # 代价是把 7892 真当 redir-port 用的机器上多花一轮 6 秒验证 —— 那种机器的流量
+    # 本来就被透明劫持，探不到代理照样能出网，多这一轮不影响结果。
+    7892,
     10809,  # v2rayN HTTP
     2080,   # sing-box / Nekoray mixed
     1087,   # Shadowsocks-NG / 老 v2rayX HTTP

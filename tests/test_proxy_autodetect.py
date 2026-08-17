@@ -176,6 +176,19 @@ def test_scan_skips_common_dev_server_ports():
     assert 8888 not in pa.COMMON_PROXY_PORTS
 
 
+def test_scan_covers_the_clash_mixed_port_variants():
+    """7890 / 7892 / 7897 三个都要在表里。
+
+    7892 是踩过的：本仓开发机的 Windows 宿主把 mixed-port 配在 7892，而表里只有
+    7890 与 7897 —— `detect_candidates()` 在那台机器上恒返回 0 个候选，配置页的
+    「立即检测」永远说探不到，用户只能手填代理。7892 在 Clash 官方模板里是
+    `redir-port`，删它的人多半是照官方文档判断「这不是 HTTP 口」，所以这条断言
+    连理由一起钉在这里。
+    """
+    for port in (7890, 7892, 7897):
+        assert port in pa.COMMON_PROXY_PORTS, f'{port} 不在扫描表里'
+
+
 # --- 环境变量候选 -----------------------------------------------------------
 
 def test_env_candidates_prefer_https_then_http(monkeypatch):
