@@ -43,7 +43,7 @@
              三个 data-panel 按钮是真 toggle（同名再点关闭），aria-expanded 由
              panels.js 与 .map-panel-btn--active 同步翻。 -->
         <div class="map-toolbar" id="mapToolbar">
-            <div class="map-panel-triggers">
+            <div class="map-panel-triggers tf-glass tf-glass--1">
                 <button type="button" class="map-panel-btn" data-panel="create"
                         aria-label="{{ t('tpl.index.toolbar.create_title') }}"
                         title="{{ t('tpl.index.toolbar.create_title') }}" aria-expanded="false">
@@ -67,7 +67,7 @@
                  文件输入用 hidden 属性而不是视觉隐藏：它只是管道，可见的控件是
                  上面那颗按钮，programmatic .click() 对 hidden 的 file input
                  照样弹出选择器。 -->
-            <div class="map-panel-triggers">
+            <div class="map-panel-triggers tf-glass tf-glass--1">
                 <button type="button" class="map-panel-btn" id="mapRegionImport"
                         aria-label="{{ t('tpl.index.toolbar.region_import') }}"
                         title="{{ t('tpl.index.toolbar.region_import_title') }}">
@@ -80,7 +80,7 @@
                 </button>
             </div>
             <input type="file" id="regionImportFile" accept=".geojson,.json,.kml,.kmz,.zip,.shp" hidden>
-            <div class="map-panel-triggers">
+            <div class="map-panel-triggers tf-glass tf-glass--1">
                 <!-- 地形光照：Cesium scene.globe.enableLighting 的开关。
                      偏好存 localStorage（terrain_lighting.js），不进 config 表。 -->
                 <button type="button" class="map-panel-btn" id="mapTerrainLighting"
@@ -93,7 +93,7 @@
                     <span>{{ t('tpl.index.toolbar.lighting') }}</span>
                 </button>
             </div>
-            <div class="map-panel-triggers" id="mapPanelTriggers">
+            <div class="map-panel-triggers tf-glass tf-glass--1" id="mapPanelTriggers">
                 <button type="button" class="map-panel-btn" data-panel="records" aria-label="{{ t('tpl.index.toolbar.tasks') }}" title="{{ t('tpl.index.toolbar.tasks_title') }}" aria-expanded="false">
                     {{ m.icon_tasks(18, gap='') }}
                     <span>{{ t('tpl.index.toolbar.tasks') }}</span>
@@ -119,7 +119,7 @@
              那一层，动画也做在它身上。role="combobox" + aria-expanded 描述的
              正是「一个输入框 + 一个随它开合的候选列表」这个结构。 -->
         <div class="map-search" id="mapSearch">
-            <div class="map-search__field">
+            <div class="map-search__field tf-glass tf-glass--1">
                 {{ m.icon_search(16, cls='map-search__icon') }}
                 <input type="search" class="map-search__input" id="placeSearchInput"
                        placeholder="{{ t('tpl.index.search.placeholder') }}"
@@ -167,7 +167,7 @@
 
      不加顶栏、不加常驻侧边栏、不加挤占式 dock —— 三条都在设计稿 §6 的已否决
      清单里（2026-07 试过并删掉），所以新入口只能落在既有工具条里。 -->
-<section class="workbench-panel" id="createPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.create') }}" hidden>
+<section class="workbench-panel tf-glass" id="createPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.create') }}" hidden>
     {{ m.panel_header(m.icon_create(16), t('tpl.index.panel.create'), t('tpl.index.panel.close')) }}
     {# --fill + 内层 .config-layout：三层 flex（外层吃满高度 / 中间滚动 /
        底条常驻），照抄 #configPanel 与 _config_content.html。 #}
@@ -577,7 +577,7 @@
    但**不写 aria-modal** —— 它宣称「页面其余部分已冻结」，非模态下是假话。
    打开时焦点收进面板（落点是 [data-panel-close] 关闭钮，面板自身带
    tabindex="-1" 供程序化聚焦），关闭时归还，由 panels.js 负责。 #}
-<section class="workbench-panel workbench-panel--wide" id="historyPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
+<section class="workbench-panel workbench-panel--wide tf-glass" id="historyPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.tasks') }}" hidden>
     {{ m.panel_header(m.icon_tasks(16), t('tpl.index.panel.tasks'), t('tpl.index.panel.close')) }}
     {# --fill：任务列表卡吃满剩余高度、列表在卡内滚动（.history-layout）。 #}
     <div class="workbench-panel__body workbench-panel__body--fill">
@@ -590,7 +590,7 @@
 </section>
 
 <!-- 配置面板 -->
-<section class="workbench-panel" id="configPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
+<section class="workbench-panel tf-glass" id="configPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.index.panel.config') }}" hidden>
     {{ m.panel_header(m.icon_config(16), t('tpl.index.panel.config'), t('tpl.index.panel.close')) }}
     {# --fill：滚动交给 _config_content.html 内部的 .config-scroll，
        底部操作条常驻。body 自己不再滚，否则两层都滚出双滚动条。 #}
@@ -604,7 +604,7 @@
      /api/plugins 渲染，插件集是运行期数据）。
      没有调宽热区：拖拽调宽只对两个既有面板启用（panels.js 的 RESIZE_CONFIGS），
      插件面板用缺省宽度。 -->
-<section class="workbench-panel" id="pluginsPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.plugins.title') }}" hidden>
+<section class="workbench-panel tf-glass" id="pluginsPanel" role="dialog" tabindex="-1" aria-label="{{ t('tpl.plugins.title') }}" hidden>
     {{ m.panel_header(m.icon_plugin(16), t('tpl.plugins.title'), t('tpl.index.panel.close')) }}
     <div class="workbench-panel__body">
         {% include "_plugins_content.html" %}
@@ -619,7 +619,7 @@
    既不在 Tab 序里也没有 Enter/Space 路径，`.statusbar-copy { cursor: pointer }`
    只对鼠标用户兑现了「这里能点」这个承诺。UA 的按钮字体与墨色由
    `.statusbar-pill` 的 font/color: inherit 抹平，盒子与 span 时期一致。 #}
-<button type="button" class="statusbar-item statusbar-pill statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records" aria-expanded="false">
+<button type="button" class="statusbar-item statusbar-pill tf-glass tf-glass--1 statusbar-tasks" id="statusTasks" title="{{ t('tpl.index.statusbar.tasks_title') }}" data-panel="records" aria-expanded="false">
     <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
     </svg>
@@ -632,7 +632,7 @@
    textContent（map.js 的 #statusCoordsText / #statusSelectionText /
    #statusClockText、tasks.js 的 #statusEventText）。写回胶囊本身会把图标
    一起抹掉 —— 首帧还在，第一次刷新之后就永远没了。 #}
-<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">
+<button type="button" class="statusbar-item statusbar-pill tf-glass tf-glass--1 statusbar-copy" id="statusCoords" title="{{ t('tpl.index.statusbar.coords_title') }}">
     <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <circle cx="12" cy="12" r="10"></circle>
         <line x1="22" y1="12" x2="18" y2="12"></line>
@@ -642,7 +642,7 @@
     </svg>
     <span id="statusCoordsText">{{ t('tpl.index.statusbar.coords_empty') }}</span>
 </button>
-<span class="statusbar-item statusbar-pill" id="statusZoom">
+<span class="statusbar-item statusbar-pill tf-glass tf-glass--1" id="statusZoom">
     <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
         <polyline points="2 17 12 22 22 17"></polyline>
@@ -650,20 +650,20 @@
     </svg>
     <span id="statusZoomZ">z—</span><span id="statusZoomAlt"></span>
 </span>
-<button type="button" class="statusbar-item statusbar-pill statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">
+<button type="button" class="statusbar-item statusbar-pill tf-glass tf-glass--1 statusbar-copy" id="statusSelection" title="{{ t('tpl.index.statusbar.selection_title') }}">
     <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"></path>
         <path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"></path>
     </svg>
     <span id="statusSelectionText">{{ t('tpl.index.statusbar.no_selection') }}</span>
 </button>
-<span class="statusbar-item statusbar-pill statusbar-event" id="statusEvent" aria-live="polite">
+<span class="statusbar-item statusbar-pill tf-glass tf-glass--1 statusbar-event" id="statusEvent" aria-live="polite">
     <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
     </svg>
     <span class="statusbar-event__text" id="statusEventText"></span>
 </span>
-<span class="statusbar-item statusbar-pill statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">
+<span class="statusbar-item statusbar-pill tf-glass tf-glass--1 statusbar-clock" id="statusClock" title="{{ t('tpl.index.statusbar.clock_title') }}">
     <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <circle cx="12" cy="12" r="10"></circle>
         <polyline points="12 6 12 12 16 14"></polyline>

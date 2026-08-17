@@ -91,7 +91,7 @@
             <!-- 连接状态指示：由 initConnectionStatus 点亮。socket 现在是全站单例
                  （window.TerraSocket），所有页面都会连，这里不再有「没有 socket 的
                  页面」；hidden 只是首帧到建连之间的那一小段。 -->
-            <span class="conn-status statusbar-pill" id="connStatus" hidden>
+            <span class="conn-status statusbar-pill tf-glass tf-glass--1" id="connStatus" hidden>
                 <span class="conn-dot"></span><span id="connStatusText">{{ t('tpl.base.conn.disconnected') }}</span>
             </span>
             {% block statusbar %}{% endblock %}

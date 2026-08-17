@@ -7855,7 +7855,15 @@ def _motion_rule_index(css):
 #       静态 linear-gradient，它不动，本来也不归 reduced-motion 管。
 #   所以别照着简报把这个块「补回来」：补一条红一条。将来真给流光加了动画，
 #   压制写法是 `animation: none !important`（动效属性，在白名单内）。
-_MOTION_BRANCH_COUNT = 46
+# 46 -> 49（2026-08-17 液态玻璃 Task 3）：加 3 个分支。
+#   `.tf-btn`（transform + box-shadow 的 hover 过渡，时长走 var(--liquid-motion)）
+#   是纯类选择器，落在 reduce 块 `*` 覆盖范围内，无需豁免登记。
+#   `.workbench-panel.tf-glass` 与 `.statusbar-copy.tf-glass` 是叠加修复块：
+#   元素挂 .tf-glass 后，同特异度 (0,1,0) 而源码更靠后的 .tf-glass 会顶掉
+#   面板的 position:fixed 与 opacity/transform 滑入过渡、以及可复制胶囊的
+#   hover 底色渐变，两个修复块以 (0,2,0) 把这些功能属性补回（皮肤属性仍由
+#   .tf-glass 承担）。复合类选择器同样在 reduce 块 `*` 覆盖范围内，无需豁免登记。
+_MOTION_BRANCH_COUNT = 49
 
 
 def test_motion_rule_index_is_complete():
@@ -8149,8 +8157,12 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # （box-shadow + border-color 的普通过渡），纯类选择器，在 reduce 块 `*`
     # 覆盖范围内，不进豁免清单。档位类 `.tf-glass--1/--3` 只翻转自定义属性、
     # 不声明 transition，不额外反解。
-    assert len(ctxs) == 43, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 43：\n'
+    # 43 -> 46（2026-08-17 液态玻璃 Task 3）：`.tf-btn`（hover 抬升过渡）、
+    # `.workbench-panel.tf-glass` 与 `.statusbar-copy.tf-glass`（叠加修复块，
+    # 补回被 .tf-glass 顶掉的 position:fixed / 滑入过渡 / hover 底色渐变）
+    # 各反解出一个上下文，都在 reduce 块 `*` 覆盖范围内，不进豁免清单。
+    assert len(ctxs) == 46, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 46：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )

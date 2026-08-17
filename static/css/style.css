@@ -5653,3 +5653,72 @@ code {
     background-attachment: fixed;
     min-height: 100vh;
 }
+
+/* 液态玻璃按钮:胶囊形,glass-1 档位,hover 抬升边缘高光 */
+.tf-btn {
+    --liquid-blur: var(--liquid-1-blur);
+    --liquid-bg: var(--liquid-1-bg);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 16px;
+    border: 1px solid var(--liquid-stroke);
+    border-radius: 999px;
+    color: var(--color-text-primary);
+    font: inherit;
+    cursor: pointer;
+    position: relative;
+    isolation: isolate;
+    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
+    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
+    box-shadow: inset 0 1px 1px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft);
+    transition: transform var(--liquid-motion), box-shadow var(--liquid-motion);
+}
+.tf-btn::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--liquid-scrim), var(--liquid-bg);
+}
+.tf-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: var(--liquid-shadow),
+        inset 0 1px 1px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft);
+}
+.tf-btn:disabled { opacity: 0.5; cursor: default; }
+.tf-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+}
+.tf-btn--accent::before {
+    background: linear-gradient(rgba(0,0,0,0.18), rgba(0,0,0,0.18)), var(--color-accent);
+}
+.tf-btn--accent { color: var(--color-on-accent); }
+@supports not (backdrop-filter: blur(1px)) {
+    .tf-btn { background: var(--color-bg-elevated); }
+    .tf-btn::before { content: none; }
+}
+
+/* Task 3 叠加修复:滑出面板挂 .tf-glass 后,两组功能属性会被压掉 ——
+   .tf-glass 与 .workbench-panel 同为 (0,1,0) 而源码更靠后,它的
+   position:relative 会顶掉面板的 position:fixed(面板脱离右侧锚点、
+   掉回文档流,彻底报废),它的 transition(box-shadow/border-color) 会顶掉
+   面板的 opacity/transform 滑入动画。本块只补回这两组功能属性;
+   边框/圆角/阴影/模糊/流光等皮肤属性照旧由 .tf-glass 承担 ——
+   那正是本阶段「叠加皮肤」的意图。 */
+.workbench-panel.tf-glass {
+    position: fixed;
+    transition: opacity var(--dur-base) var(--ease),
+                transform var(--dur-base) var(--ease);
+}
+
+/* 同上:.statusbar-copy(坐标/选区两颗可复制胶囊)的 hover 底色渐变
+   (background-color --dur-fast,全站交互反馈统一 0.15s 那一档)也会被
+   .tf-glass 的 transition 顶掉,hover 从渐变退成硬切。补回。 */
+.statusbar-copy.tf-glass {
+    transition: background-color var(--dur-fast) var(--ease);
+}
