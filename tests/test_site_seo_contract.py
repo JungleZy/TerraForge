@@ -329,7 +329,7 @@ def test_declared_image_sizes_match_the_files(lang):
     path, _, _ = PAGES[lang]
     imgs = re.findall(r'<img src="(/?assets/img/[^"]+)" width="(\d+)" height="(\d+)"',
                       _read(path))
-    assert len(imgs) == 6, f'{lang} 页图片数变了（{len(imgs)}），核对一下再改这条断言'
+    assert len(imgs) == 7, f'{lang} 页图片数变了（{len(imgs)}），核对一下再改这条断言'
     for src, w, h in imgs:
         with Image.open(os.path.join(SITE, src.lstrip('/'))) as im:
             assert im.size == (int(w), int(h)), \

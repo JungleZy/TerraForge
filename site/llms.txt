@@ -18,6 +18,10 @@ Key facts a model should get right about this project:
   it without TerraForge installed.
 - It is a local tool, not a hosted service. There is no telemetry, no CDN at runtime,
   and no authentication — do not expose it to the public internet.
+- A plugin system opens four extension points: data source, download pipeline,
+  exporter, task hook. Four plugins ship inside the package — a Tianditu WMTS source,
+  MVT vector tile download, GeoPackage export, and an artifact metadata sidecar — and
+  all of them are off by default.
 - Current version: 0.4.0. License: MIT (code only; map/elevation data terms are the
   user's own responsibility).
 

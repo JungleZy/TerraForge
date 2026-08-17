@@ -97,7 +97,8 @@
         "框选下载，拼成带地理配准的 GeoTIFF",
         "1°×1° 分幅高程，默认源不用注册账号",
         "切成 Cesium quantized-mesh，自带全球底座",
-        "渲染成标准 XYZ 瓦片，谁都能加载"
+        "渲染成标准 XYZ 瓦片，谁都能加载",
+        "四类扩展点，加能力不用动宿主"
       ],
       "author": { "@id": "https://terraforge-gis.pages.dev/#author" },
       "publisher": { "@id": "https://terraforge-gis.pages.dev/#author" }
@@ -131,6 +132,7 @@
     <a class="wordmark" href="/">TERRA<span>FORGE</span></a>
     <nav>
       <a href="#pipelines" class="hide-xs" data-i18n="nav.features">能力</a>
+      <a href="#plugins" class="hide-sm" data-i18n="nav.plugins">插件</a>
       <a href="#engineering" class="hide-sm" data-i18n="nav.engineering">工程</a>
       <a href="#download" data-i18n="nav.download">下载</a>
       <a href="#docs" class="hide-sm" data-i18n="nav.docs">文档</a>
@@ -291,6 +293,56 @@
           <figcaption data-i18n="pipe.contour.caption">天山选区 · 等高距 50 m · 分层设色 + 晕渲</figcaption>
         </figure>
       </article>
+    </div>
+  </section>
+
+  <!-- ── 插件系统 ────────────────────────────────────────────────── -->
+  <section class="band" id="plugins">
+    <div class="wrap">
+      <div class="band-head rv">
+        <p class="eyebrow" data-i18n="plug.eyebrow">0.4.0 新增 · 插件系统</p>
+        <h2 data-i18n="plug.h2">四类扩展点，加能力不用动宿主</h2>
+        <p data-i18n="plug.p">宿主开出四类扩展点，随包带四个首发插件各占一类。全部缺省关闭 —— 不去插件面板开启，这一侧的行为与上一版逐字一致。</p>
+      </div>
+
+      <article class="pipe rv">
+        <div class="pipe-text">
+          <p class="eyebrow" data-i18n-html="plug.panel.eyebrow"><b>PLUGINS</b> / 插件面板</p>
+          <h3 data-i18n="plug.panel.title">装上就在列表里，开不开由你</h3>
+          <p data-i18n="plug.panel.body">面板列出全部插件：名称、版本、来源、声明的能力与开关。每张卡片的「配置」按插件自己声明的 schema 现渲染成表单，凭据类字段永远不回显已保存的值。</p>
+          <dl class="spec">
+            <div><dt data-i18n="plug.panel.spec.source.dt">数据源</dt><dd data-i18n-html="plug.panel.spec.source.dd">天地图影像 <code>img_w</code> 与注记 <code>cia_w</code>（WMTS RESTful）。token 只存在插件配置里 —— 不进任务行、不进指纹、不进日志</dd></div>
+            <div><dt data-i18n="plug.panel.spec.pipeline.dt">下载管线</dt><dd data-i18n-html="plug.panel.spec.pipeline.dd">MVT 矢量瓦片：给一个 TileJSON 地址与层级范围，下成单个 <code>.mbtiles</code>（<code>metadata.format=pbf</code>），tileserver-gl / QGIS / MapLibre 直接读</dd></div>
+            <div><dt data-i18n="plug.panel.spec.exporter.dt">导出器</dt><dd data-i18n-html="plug.panel.spec.exporter.dd">GeoPackage：把已完成任务的 GeoTIFF 导出成 <code>.gpkg</code>，走的是核心那条导出路由，插件只往格式表加一行</dd></div>
+            <div><dt data-i18n="plug.panel.spec.hook.dt">任务钩子</dt><dd data-i18n-html="plug.panel.spec.hook.dd">产物元数据 sidecar：产物旁写一份 <code>.tfmeta.json</code> —— 形态、格式、字节数、瓦片数、层级范围、有没有缺块</dd></div>
+          </dl>
+        </div>
+        <figure class="shot">
+          <img src="assets/img/plugins.webp" width="702" height="1024" loading="lazy"
+               data-i18n-attr="alt:plug.panel.alt"
+               alt="插件面板：四张插件卡片分别是产物元数据 sidecar、GeoPackage 导出、MVT 矢量瓦片下载与天地图数据源，各带版本、来源、能力标签与「启用」按钮，顶部是插件以宿主完整权限运行的提示">
+          <figcaption data-i18n="plug.panel.caption">插件面板 · 四个首发插件缺省全部关闭</figcaption>
+        </figure>
+      </article>
+
+      <div class="claims rv">
+        <div class="claim">
+          <h3 data-i18n="plug.claim.off.h3">缺省全部关闭</h3>
+          <p data-i18n="plug.claim.off.p">不去面板开启，插件这一侧就不加载、不注册、也不出现在任何下拉里。升级只新建三张空表，存量数据一列不动。</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="plug.claim.gate.h3">坏插件不打穿宿主</h3>
+          <p data-i18n="plug.claim.gate.p">加载失败的插件照样在列表里，带一条失败原因 —— 装了却看不见比报错更难查。进注册表前要过三道闸：API 主版本、ABI 标签、方法签名。</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="plug.claim.context.h3">运行期只给一个 TaskContext</h3>
+          <p data-i18n-html="plug.claim.context.p">进度、日志、配额、URL 闸、缺块记账、产物登记都从 <code>TaskContext</code> 走，插件拿不到 manager、socketio 与数据库连接。但它与宿主同进程、没有沙箱 —— 只启用你信任的插件。</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="plug.claim.same.h3">任务混在同一个中心里</h3>
+          <p data-i18n="plug.claim.same.p">插件任务与四条核心管线同处一份列表：同一套状态、同一套缺块决策、同一颗删除按钮。</p>
+        </div>
+      </div>
     </div>
   </section>
 

@@ -79,7 +79,8 @@
         "Draw a box, download, mosaic into a georeferenced GeoTIFF",
         "1°×1° elevation tiles; the default source needs no account",
         "Sliced into Cesium quantized-mesh, global base included",
-        "Rendered as standard XYZ tiles that anything can load"
+        "Rendered as standard XYZ tiles that anything can load",
+        "Four extension points — add capabilities without touching the host"
       ],
       "author": {
         "@id": "https://terraforge-gis.pages.dev/#author"
@@ -117,6 +118,7 @@
     <a class="wordmark" href="/en/">TERRA<span>FORGE</span></a>
     <nav>
       <a href="#pipelines" class="hide-xs" data-i18n="nav.features">Features</a>
+      <a href="#plugins" class="hide-sm" data-i18n="nav.plugins">Plugins</a>
       <a href="#engineering" class="hide-sm" data-i18n="nav.engineering">Engineering</a>
       <a href="#download" data-i18n="nav.download">Download</a>
       <a href="#docs" class="hide-sm" data-i18n="nav.docs">Docs</a>
@@ -266,6 +268,55 @@
           <figcaption data-i18n="pipe.contour.caption">Tianshan selection · 50 m contour interval · hypsometric tint + hillshade</figcaption>
         </figure>
       </article>
+    </div>
+  </section>
+
+  <section class="band" id="plugins">
+    <div class="wrap">
+      <div class="band-head rv">
+        <p class="eyebrow" data-i18n="plug.eyebrow">New in 0.4.0 · plugin system</p>
+        <h2 data-i18n="plug.h2">Four extension points — add capabilities without touching the host</h2>
+        <p data-i18n="plug.p">The host opens four kinds of extension point, and four plugins ship with it, one of each kind. All of them are off by default — leave the plugin panel alone and this side behaves exactly as the previous version did.</p>
+      </div>
+
+      <article class="pipe rv">
+        <div class="pipe-text">
+          <p class="eyebrow" data-i18n-html="plug.panel.eyebrow"><b>PLUGINS</b> / Plugin panel</p>
+          <h3 data-i18n="plug.panel.title">Installed means listed; enabling is your call</h3>
+          <p data-i18n="plug.panel.body">The panel lists every plugin: name, version, origin, declared capabilities and its switch. The Configure button on each card renders a form from the plugin's own declared schema, and credential fields never echo a value that is already saved.</p>
+          <dl class="spec">
+            <div><dt data-i18n="plug.panel.spec.source.dt">Data source</dt><dd data-i18n-html="plug.panel.spec.source.dd">Tianditu imagery <code>img_w</code> and annotation <code>cia_w</code> (WMTS RESTful). The token lives only in the plugin's own configuration — never in a task row, a fingerprint or a log</dd></div>
+            <div><dt data-i18n="plug.panel.spec.pipeline.dt">Download pipeline</dt><dd data-i18n-html="plug.panel.spec.pipeline.dd">MVT vector tiles: give it a TileJSON URL and a zoom range, get one <code>.mbtiles</code> (<code>metadata.format=pbf</code>) that tileserver-gl / QGIS / MapLibre read directly</dd></div>
+            <div><dt data-i18n="plug.panel.spec.exporter.dt">Exporter</dt><dd data-i18n-html="plug.panel.spec.exporter.dd">GeoPackage: export a finished task's GeoTIFF as <code>.gpkg</code>; it goes through the core export route, and the plugin only adds a row to that route's format table</dd></div>
+            <div><dt data-i18n="plug.panel.spec.hook.dt">Task hook</dt><dd data-i18n-html="plug.panel.spec.hook.dd">Artifact metadata sidecar: writes a <code>.tfmeta.json</code> next to each artifact — kind, format, byte size, tile count, zoom range, and whether it has gaps</dd></div>
+          </dl>
+        </div>
+        <figure class="shot">
+          <img src="/assets/img/en/plugins.webp" width="702" height="1024" loading="lazy"
+               data-i18n-attr="alt:plug.panel.alt"
+               alt="Plugin panel: four plugin cards — artifact metadata sidecar, GeoPackage export, MVT vector tile download and the Tianditu data source — each with its version, origin, capability tag and an Enable button, under a notice that plugins run with the host's full privileges">
+          <figcaption data-i18n="plug.panel.caption">Plugin panel · all four bundled plugins are off by default</figcaption>
+        </figure>
+      </article>
+
+      <div class="claims rv">
+        <div class="claim">
+          <h3 data-i18n="plug.claim.off.h3">Off by default, every one of them</h3>
+          <p data-i18n="plug.claim.off.p">Leave the panel alone and nothing on the plugin side loads, registers or shows up in any dropdown. Upgrading only creates three empty tables; not one column of existing data is touched.</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="plug.claim.gate.h3">A broken plugin cannot take the host down</h3>
+          <p data-i18n="plug.claim.gate.p">A plugin that failed to load is still in the list, carrying its failure reason — one that is installed but invisible is harder to diagnose than one that errors. Three gates guard the registry: API major version, ABI tag, method signature.</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="plug.claim.context.h3">One TaskContext at runtime, nothing else</h3>
+          <p data-i18n-html="plug.claim.context.p">Progress, logging, quota, the URL gate, gap accounting and artifact registration all go through <code>TaskContext</code>; a plugin never gets the manager, socketio or a database connection. It does run inside the host process with no sandbox, though — only enable plugins you trust.</p>
+        </div>
+        <div class="claim">
+          <h3 data-i18n="plug.claim.same.h3">Plugin tasks live in the same task center</h3>
+          <p data-i18n="plug.claim.same.p">A plugin task sits in the same list as the four core pipelines: the same states, the same gap decision, the same delete button.</p>
+        </div>
+      </div>
     </div>
   </section>
 

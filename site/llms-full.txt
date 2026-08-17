@@ -4,7 +4,7 @@ Version: 0.4.0
 Homepage: https://terraforge-gis.pages.dev/ (Chinese) · https://terraforge-gis.pages.dev/en/ (English)
 Source: https://github.com/JungleZy/TerraForge
 License: MIT (software code only)
-Last updated: 2026-08-12
+Last updated: 2026-08-17
 
 This file is the plain-text version of everything the TerraForge website states. It is
 written to be quoted directly. Every number, format name and limitation below is taken
@@ -79,6 +79,31 @@ JungleZy/TerraForge). It is unrelated to other software that shares the name.
 - Data source: uploaded `.tif` files (multiple allowed) or a completed DEM task. Source
   files are used in place, not copied; deleting a contour task leaves the original DEM
   untouched.
+
+## Plugin system
+
+- The host exposes four kinds of extension point — data source, download pipeline,
+  exporter, task hook — and a plugin declares which of them it implements in its
+  `plugin.toml`.
+- Four plugins ship inside the package, one of each kind, and **all of them are off by
+  default**: a Tianditu WMTS data source (imagery `img_w` and annotation `cia_w`; needs
+  your own token, entered in the plugin's configuration), MVT vector tile download
+  (a TileJSON URL and a zoom range in, one `.mbtiles` with `metadata.format=pbf` out),
+  GeoPackage export (a finished task's GeoTIFF exported as `.gpkg`), and an artifact
+  metadata sidecar (writes `<artifact>.tfmeta.json` next to each artifact).
+- Enabling and configuring happens in the plugin panel inside the app. A plugin that
+  failed to load stays in the list with its failure reason: a broken plugin cannot take
+  the host down, and it is never silently hidden.
+- Three admission gates run before a plugin enters the registry: API major version,
+  ABI tag, and method signature.
+- At runtime a plugin gets exactly one `TaskContext` — progress, logging, quota, the
+  URL gate, gap accounting and artifact registration — and no access to the manager,
+  the SocketIO instance or a database connection. It does run inside the host process
+  with no sandbox and with the host's full privileges, so only enable plugins you trust.
+- Plugin tasks appear in the same task center as the four core pipelines, with the same
+  states, the same gap decision and the same delete semantics.
+- Plugin export has no route of its own: it goes through the core export endpoint, and
+  a plugin's exporter only adds a row to that endpoint's format table.
 
 ## Engineering guarantees
 
@@ -193,3 +218,13 @@ permanently on the result.
 Which operating systems are supported?
 Windows 10+ (x64), macOS on Apple Silicon (arm64), and Linux (x64). Intel Macs are not
 supported.
+
+Can I add my own data source or output format?
+Yes. The plugin system has four extension points — data source, download pipeline,
+exporter and task hook — documented in docs/guides/PLUGINS.md. Plugins are off by
+default and run with the host's full privileges, so only enable ones you trust.
+
+Does it support Tianditu?
+Yes, through the bundled Tianditu plugin (imagery `img_w` and annotation `cia_w` over
+WMTS RESTful). It is off by default and needs your own Tianditu token, entered in the
+plugin's configuration.

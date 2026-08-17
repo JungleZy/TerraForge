@@ -54,12 +54,13 @@ VOID = frozenset((
     'link', 'meta', 'param', 'source', 'track', 'wbr',
 ))
 
-# JSON-LD 的 featureList 用四条管线的标题，跟着语言走。
+# JSON-LD 的 featureList：四条管线的标题 + 插件系统那条 h2，跟着语言走。
 FEATURE_KEYS = (
     'pipe.tiles.title',
     'pipe.dem.title',
     'pipe.terrain.title',
     'pipe.contour.title',
+    'plug.h2',
 )
 
 BANNER = (
