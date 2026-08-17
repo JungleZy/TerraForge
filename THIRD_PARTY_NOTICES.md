@@ -6,8 +6,8 @@ TerraForge 本体采用 MIT（见根目录 [`LICENSE`](LICENSE)）。本文件�
 
 | 形态 | 内容 | 覆盖章节 |
 |---|---|---|
-| **源码分发**（Git 仓库） | `static/vendor/` 下的前端组件、`assets/terrain/` 下的地形数据 | §1、§2 |
-| **二进制分发**（Nuitka standalone 包） | 上面全部，外加 Python 运行时依赖与它们链接的原生库 | §1、§2、§3 |
+| **源码分发**（Git 仓库） | `static/vendor/` 下的前端组件、`assets/terrain/` 下的地形数据、`docs/assets/badges/` 下的文档徽章 | §1、§2、§3 |
+| **二进制分发**（Nuitka standalone 包） | 前两项，外加 Python 运行时依赖与它们链接的原生库（徽章不入包：发行产物不带 README 与 `docs/`） | §1、§2、§4 |
 
 许可证全文的存放约定：**能随组件落地的就落在组件目录旁**，本文件只做索引与说明。仅在无法落地时（原生库藏在 wheel 里、数据集只有使用条款）才在此转述。
 
@@ -66,7 +66,22 @@ Copernicus DEM GLO-30、ASTER GDEM v3、各家瓦片底图由用户在运行期�
 
 ---
 
-## 3. Python 运行时依赖
+## 3. 文档里的徽章图标（`docs/assets/badges/`）
+
+两份 README 的徽章与国旗是**烤成 PNG 入库**的，不在运行期从第三方取（理由与生成参数见 [`docs/assets/badges/README.md`](docs/assets/badges/README.md)，生成脚本 `scripts/build_readme_badges.py`）。它们随 Git 仓库分发，不进二进制产物。
+
+| 内容 | 来源 | 许可 |
+|---|---|---|
+| 徽章底板与文字 | shields.io 按 URL 渲染 | 生成图形，上游不主张版权 |
+| 徽章内的品牌图标 | shields.io 内置的 simple-icons 集合 | CC0-1.0（**仅素材文件**） |
+| 中国 / 英国国旗 | flagcdn.com | 国旗图案属公共领域 |
+| Windows 四窗格图标 | 本项目自绘（`WIN_LOGO_SVG`，因 simple-icons 已下架 Microsoft 全家） | 图形随本项目 MIT；Windows 商标权归 Microsoft |
+
+simple-icons 的 CC0 覆盖的是素材文件，**不覆盖商标本身**。Google、NASA、Apple、Linux、Microsoft、Esri、OpenStreetMap、Copernicus、Cesium、Flask、SQLite、Bootstrap、Vue、pytest、uv 等名称与标识归各自权利人；徽章仅用于标识 TerraForge 对接的技术与数据源，不表示对方背书或存在合作关系。另见 §6。
+
+---
+
+## 4. Python 运行时依赖
 
 仅在**二进制分发**（Nuitka standalone）时构成分发义务；从源码运行时这些包由使用者自行安装，义务在使用者一侧。版本以 `requirements.txt` 为准。
 
@@ -129,7 +144,7 @@ Nuitka 编译器本体是 AGPL-3.0，**但这不影响 TerraForge 采用 MIT**�
 
 ---
 
-## 4. 本项目自有代码中的算法出处
+## 5. 本项目自有代码中的算法出处
 
 以下均为本项目独立实现，**无法律署名义务**，列出仅为消除溯源疑问。
 
@@ -139,6 +154,6 @@ Nuitka 编译器本体是 AGPL-3.0，**但这不影响 TerraForge 采用 MIT**�
 
 ---
 
-## 5. 商标
+## 6. 商标
 
-本文件授予的是各组件的**代码**许可，不包含名称、Logo 与品牌资产的使用许可。Cesium、Bootstrap、Vue、Socket.IO、JetBrains、GEBCO 等名称与标识归各自权利人所有。
+本文件授予的是各组件的**代码**许可，不包含名称、Logo 与品牌资产的使用许可。Cesium、Bootstrap、Vue、Socket.IO、JetBrains、GEBCO 等名称与标识归各自权利人所有。README 徽章里出现的其余商标（Google、NASA、Apple、Linux、Microsoft、Esri、OpenStreetMap、Copernicus 等）同理，见 §3。

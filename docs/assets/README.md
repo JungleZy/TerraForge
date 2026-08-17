@@ -1,10 +1,12 @@
 # docs/assets —— 图片资源
 
-> **两个子目录，一个入库一个不入库，性质完全不同。搞混会丢文件或丢历史。**
+> **四个子目录，三个入库、一个不入库，性质完全不同。搞混会丢文件或丢历史。**
 
 | 目录 | 是否入库 | 后果 |
 |---|---|---|
 | `images/` | **已入库**（跟 git 走） | 被文档正文引用，删了会让引用它的文档变成一堆裂图 |
+| `diagrams/` | **已入库** | 根 README 的七张架构 / 流程 / 状态机图：HTML 图源 + 深浅两版 PNG，改完用同目录的 `render.py` 重渲，见 [`diagrams/README.md`](diagrams/README.md) |
+| `badges/` | **已入库** | 两份 README 的徽章与国旗（40 个 PNG，合计 74 KB），事实源是 `scripts/build_readme_badges.py`，见 [`badges/README.md`](badges/README.md) |
 | `ui-baseline/` | **未入库**（被 `.gitignore:140` 排除为 `docs/assets/ui-baseline/`） | 只存在于本地工作区。**删除不可逆，git 捞不回来**——没有任何提交里有它们 |
 
 ## `images/` —— 已入库，被正文引用

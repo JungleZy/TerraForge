@@ -1,55 +1,143 @@
-# TerraForge
+<div align="center">
 
-**中文** · [English](README.en.md)
+<h1>TerraForge</h1>
 
-[![Website](https://img.shields.io/badge/%E5%AE%98%E7%BD%91-terraforge--gis.pages.dev-38bdf8)](https://terraforge-gis.pages.dev/)
-[![Release](https://img.shields.io/github/v/release/JungleZy/TerraForge)](https://github.com/JungleZy/TerraForge/releases)
-[![Build](https://github.com/JungleZy/TerraForge/actions/workflows/test-build.yml/badge.svg)](https://github.com/JungleZy/TerraForge/actions/workflows/test-build.yml)
-[![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](#-许可证)
+<p><b>地图瓦片 · DEM 高程 · Cesium 3D 地形 · 等高线 —— 四条管线，一个界面</b></p>
+
+<p>
+  <img src="docs/assets/badges/flag-cn.png" width="18" alt=""> <b>中文</b>
+  &nbsp;·&nbsp;
+  <a href="README.en.md"><img src="docs/assets/badges/flag-gb.png" width="18" alt=""> English</a>
+</p>
+
+<p>
+  <a href="https://terraforge-gis.pages.dev/"><img alt="官网" height="20" src="docs/assets/badges/website-zh.png"></a>
+  <a href="https://github.com/JungleZy/TerraForge/releases"><img alt="最新版本" src="https://img.shields.io/github/v/release/JungleZy/TerraForge?logo=github&logoColor=white&color=6f42c1"></a>
+  <a href="https://github.com/JungleZy/TerraForge/actions/workflows/test-build.yml"><img alt="构建状态" src="https://img.shields.io/github/actions/workflow/status/JungleZy/TerraForge/test-build.yml?branch=master&logo=githubactions&logoColor=white&label=Build"></a>
+  <a href="https://www.python.org/"><img alt="Python 3.12+" height="20" src="docs/assets/badges/python.png"></a>
+  <a href="#-许可证"><img alt="MIT 许可证" height="20" src="docs/assets/badges/license-mit.png"></a>
+</p>
+
+<p>
+  <a href="https://github.com/JungleZy/TerraForge/releases/latest"><img alt="下载 Windows 版" height="28" src="docs/assets/badges/download-windows-zh.png"></a>
+  <a href="https://github.com/JungleZy/TerraForge/releases/latest"><img alt="下载 macOS 版" height="28" src="docs/assets/badges/download-macos-zh.png"></a>
+  <a href="https://github.com/JungleZy/TerraForge/releases/latest"><img alt="下载 Linux 版" height="28" src="docs/assets/badges/download-linux-zh.png"></a>
+</p>
+
+</div>
 
 基于 Web 的 GIS 数据获取与加工系统。在一个界面里完成四类地理数据工作：**Google Maps 瓦片下载**、**DEM 高程数据获取**、**Cesium 3D 地形切片**与**等高线地图生成**，支持交互式地图选区、实时进度监控、历史记录可视化与完善的配置管理。
 
-🖥 提供 Windows / macOS / Linux 预编译可执行文件，解压即用，无需安装 Python 环境。
+🖥 三个平台都有预编译可执行文件，解压即用，目标机器不需要 Python 环境。
 
-![TerraForge 主界面：贡嘎山一带的三维地形上覆盖着一个带角点手柄的矩形下载选区](site/assets/img/hero.webp)
-
-<sub>📸 本文截图取自 v0.3.5 实际运行界面。</sub>
+<div align="center">
+  <img src="site/assets/img/hero.webp" alt="TerraForge 主界面：贡嘎山一带的三维地形上覆盖着一个带角点手柄的矩形下载选区">
+  <br>
+  <sub>📸 本文截图取自 v0.3.5 实际运行界面。</sub>
+</div>
 
 ## 目录
+
+<table>
+<tr>
+<td valign="top">
+
+**上手**
+
+- [🚀 快速开始](#-快速开始)
+- [📖 使用指南](#-使用指南)
+- [📦 构建可执行文件](#-构建可执行文件)
+- [🩺 故障排除](#-故障排除)
+
+</td>
+<td valign="top">
+
+**功能与设计**
 
 - [✨ 功能特性](#-功能特性)
 - [🖼 界面一览](#-界面一览)
 - [🗺 架构图解](#-架构图解)
 - [🧰 技术栈](#-技术栈)
-- [🚀 快速开始](#-快速开始)
-- [📖 使用指南](#-使用指南)
-- [🧱 项目结构](#-项目结构)
+
+</td>
+<td valign="top">
+
+**参考**
+
 - [🔌 API 端点](#-api-端点)
+- [🧱 项目结构](#-项目结构)
 - [🛠 开发](#-开发)
 - [⚡ 性能设计](#-性能设计)
-- [📦 构建可执行文件](#-构建可执行文件)
-- [🩺 故障排除](#-故障排除)
+
+</td>
+<td valign="top">
+
+**须知**
+
 - [❗ 注意事项](#-注意事项)
 - [📄 许可证](#-许可证)
+- [🤝 贡献](#-贡献)
+- [🚫 免责声明](#-免责声明)
+
+</td>
+</tr>
+</table>
 
 ## ✨ 功能特性
 
 ### 四条数据管线
 
-- 🗺 **地图瓦片下载** — 交互式框选区域，从 Google Maps 下载瓦片，可选拼接为带地理配准的 GeoTIFF（GDAL），也可打包成单文件 MBTiles
-- ⛰ **DEM 高程下载** — 按区域自动计算并下载 1°×1° 高程分幅：默认 Copernicus GLO-30（公开 S3 桶，免认证），可选 ASTER GDEM v3（ASTGTM.003，需 Earthdata 账号）
-- 🏔 **3D 地形切片** — 将下载的 DEM 或本地上传的 GeoTIFF 切成 Cesium quantized-mesh 地形，内置全球低层级基础地形（GEBCO 2024 派生、含海底地形、全球无洞），CesiumJS 端自动级联加载
-- 〰️ **等高线生成** — 从上传的 DEM 渲染等高线 XYZ 瓦片：间距、色彩、分层设色、晕渲均可配置，支持样式预览
+<table>
+<tr>
+<td width="50%" valign="top">
 
-### 选区与产物
+**🗺 地图瓦片下载**
+
+<img alt="Google Maps" height="20" src="docs/assets/badges/google-maps.png"> <img alt="GeoTIFF via GDAL" height="20" src="docs/assets/badges/geotiff.png"> <img alt="MBTiles" height="20" src="docs/assets/badges/mbtiles.png">
+
+交互式框选区域，从 Google Maps 下载瓦片，可选拼接为带地理配准的 GeoTIFF（GDAL），也可打包成单文件 MBTiles
+
+</td>
+<td width="50%" valign="top">
+
+**⛰ DEM 高程下载**
+
+<img alt="Copernicus GLO-30" height="20" src="docs/assets/badges/copernicus-glo30.png"> <img alt="ASTER GDEM v3" height="20" src="docs/assets/badges/aster-gdem-v3.png">
+
+按区域自动计算并下载 1°×1° 高程分幅：默认 Copernicus GLO-30（公开 S3 桶，免认证），可选 ASTER GDEM v3（ASTGTM.003，需 Earthdata 账号）
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**🏔 3D 地形切片**
+
+<img alt="Cesium quantized-mesh" height="20" src="docs/assets/badges/quantized-mesh.png"> <img alt="GEBCO 2024" height="20" src="docs/assets/badges/gebco-2024.png">
+
+将下载的 DEM 或本地上传的 GeoTIFF 切成 Cesium quantized-mesh 地形，内置全球低层级基础地形（GEBCO 2024 派生、含海底地形、全球无洞），CesiumJS 端自动级联加载
+
+</td>
+<td width="50%" valign="top">
+
+**〰️ 等高线生成**
+
+<img alt="XYZ 瓦片" height="20" src="docs/assets/badges/xyz-tiles-zh.png"> <img alt="Leaflet" height="20" src="docs/assets/badges/leaflet.png"> <img alt="OpenLayers" height="20" src="docs/assets/badges/openlayers.png">
+
+从上传的 DEM 渲染等高线 XYZ 瓦片：间距、色彩、分层设色、晕渲均可配置，支持样式预览
+
+</td>
+</tr>
+</table>
+
+### 🧭 选区与产物
 
 - 🖱 **三种选区方式** — 地图上拉框、手动输入四至、导入区域文件（GeoJSON / KML / KMZ / Shapefile 的 .zip），支持多边形、多部件与**孔洞**（挖空的部分不下载）
 - 🌏 **跨 180° 经线** — 自动拆成两段处理，不再被拦下或被算成绕地球一圈
 - 📐 **建任务前先算清** — 框选后立刻给出瓦片数与磁盘用量估算（「需要约 X、可用 Y」），估算用你盘上已有瓦片的现量，不是固定均值
 - 📦 **MBTiles 导出** — 整棵瓦片金字塔打成单个 `.mbtiles`，建任务时勾选或事后导出皆可。这是**多一份产物**，原瓦片目录一张不动
 
-### 任务与进度
+### 📈 任务与进度
 
 - 📊 **WebSocket 实时进度** — 下载速度、剩余时间、分 zoom 拼接与复制阶段全程可见，大任务不再「卡 100%」
 - ⏸️ **任务调度** — 暂停 / 恢复，断点续传，已下载瓦片不重复下载
@@ -57,14 +145,14 @@
 - 🗂 **下载历史可视化** — 历史区域叠加在地图上，已完成任务可直接预览瓦片 / 地形 / 晕渲效果
 - 💾 **保存路径全盘可选** — 任意绝对路径 + 目录浏览弹窗；删除任务可选是否清理磁盘产物（带安全护栏），运行中的任务也能直接删
 
-### 出问题之后
+### 🧯 出问题之后
 
 - 🧾 **缺块不静默** — 瓦片结果分五类记账：成功 / 本来无数据 / 可重试失败 / 永久失败 / 缓存写入失败。只有「本来就没数据」才自动完成；出现真失败会停在**待决策**等你拍板，接受了缺口的成果**永久带缺块标记**
 - 🩹 **补漏只重跑该跑的** — 只重跑记录在案、且属于可重试类的那些格子，幂等，重复点不会重复下载
 - 📝 **每任务一份日志** — `logs/tasks/<管线>_<任务号>.log`，界面里能看、能导出成可直接贴进 issue 的诊断文本；**密码与 Token 在落盘前就被抹掉**
 - 🔍 **调度器快照** — `/api/scheduler/status` 回答「为什么第三个任务不开始跑」
 
-### 平台能力
+### 🎛 平台能力
 
 - 🎨 深色 / 浅色 / 跟随系统主题
 - 🌐 界面中英双语（语种存 cookie `tf-lang`，服务端渲染，刷新不闪烁）
@@ -78,23 +166,23 @@
 
 <table>
   <tr>
-    <td width="50%">
+    <td width="50%" valign="top" align="center">
       <img src="site/assets/img/create.webp" alt="下载数据对话框：显示选区四至、预计瓦片数，可选瓦片 / GeoTIFF / MBTiles 输出与缩放级别">
-      <sub>建任务时先算清要下多少块</sub>
+      <br><sub><b>建任务时先算清要下多少块</b></sub>
     </td>
-    <td width="50%">
+    <td width="50%" valign="top" align="center">
       <img src="site/assets/img/tasks.webp" alt="任务中心：总任务、已完成、失败数与累计下载量统计，下方是带类型标签和区域四至的任务列表，以及历史区域地图">
-      <sub>任务中心 · 历史区域直接叠在地图上</sub>
+      <br><sub><b>任务中心 · 历史区域直接叠在地图上</b></sub>
     </td>
   </tr>
   <tr>
-    <td width="50%">
+    <td width="50%" valign="top" align="center">
       <img src="site/assets/img/terrain.webp" alt="喜马拉雅山脊的三维地形渲染：低角度视图，雪线以上的山体起伏与远处地平线清晰可见">
-      <sub>喜马拉雅山脊 · 开启地形光照</sub>
+      <br><sub><b>喜马拉雅山脊 · 开启地形光照</b></sub>
     </td>
-    <td width="50%">
+    <td width="50%" valign="top" align="center">
       <img src="site/assets/img/contour.webp" alt="天山一带的等高线瓦片渲染成果：分层设色的高程色带配合褐色等高线，叠在卫星影像底图上">
-      <sub>天山选区 · 等高距 50 m · 分层设色 + 晕渲</sub>
+      <br><sub><b>天山选区 · 等高距 50 m · 分层设色 + 晕渲</b></sub>
     </td>
   </tr>
 </table>
@@ -177,21 +265,25 @@
 
 | 层 | 技术 |
 | --- | --- |
-| 🐍 后端 | Flask · Flask-SocketIO · aiohttp · GDAL · SQLite |
-| 🌍 前端 | CesiumJS 1.143 · Bootstrap 5.3 · Socket.IO（第三方库全部本地 vendor 于 `static/vendor/`，不依赖 CDN） |
-| 📦 打包 | Nuitka（standalone，自动收集 GDAL/PROJ 数据与系统库闭包） |
-| 🧪 测试 | pytest（API 契约、任务生命周期、路径安全，以及对 JS/CSS/模板的源码契约测试） |
-| 🧰 环境管理 | uv |
+| 🐍 后端 | <img alt="Flask" height="20" src="docs/assets/badges/flask.png"> <img alt="Flask-SocketIO" height="20" src="docs/assets/badges/flask-socketio.png"> <img alt="aiohttp" height="20" src="docs/assets/badges/aiohttp.png"> <img alt="GDAL" height="20" src="docs/assets/badges/gdal.png"> <img alt="SQLite" height="20" src="docs/assets/badges/sqlite.png"> |
+| 🌍 前端 | <img alt="CesiumJS 1.143" height="20" src="docs/assets/badges/cesiumjs.png"> <img alt="Bootstrap 5.3" height="20" src="docs/assets/badges/bootstrap.png"> <img alt="Socket.IO" height="20" src="docs/assets/badges/socketio.png"> <img alt="Vue" height="20" src="docs/assets/badges/vue.png"><br>第三方库全部本地 vendor 于 `static/vendor/`，不依赖 CDN |
+| 📦 打包 | <img alt="Nuitka" height="20" src="docs/assets/badges/nuitka.png"> standalone，自动收集 GDAL/PROJ 数据与系统库闭包 |
+| 🧪 测试 | <img alt="pytest" height="20" src="docs/assets/badges/pytest.png"> API 契约、任务生命周期、路径安全，以及对 JS/CSS/模板的源码契约测试 |
+| 🧰 环境管理 | <img alt="uv" height="20" src="docs/assets/badges/uv.png"> |
 
 ## 🚀 快速开始
 
 ### 方式一：预编译可执行文件（推荐）
 
 1. 从 [Releases](https://github.com/JungleZy/TerraForge/releases) 下载对应平台的压缩包
-2. 解压后运行：
-   - 🪟 **Windows**: 双击 `terraforge.exe`
-   - 🍎 **macOS** / 🐧 **Linux**: `./terraforge`
+2. 解压后按下表运行
 3. 浏览器访问 `http://localhost:5000`
+
+| 平台 | 运行方式 |
+| --- | --- |
+| <img alt="Windows" height="20" src="docs/assets/badges/os-windows.png"> | 双击 `terraforge.exe` |
+| <img alt="macOS" height="20" src="docs/assets/badges/os-macos.png"> | `./terraforge` |
+| <img alt="Linux" height="20" src="docs/assets/badges/os-linux.png"> | `./terraforge` |
 
 详见 [docs/guides/DISTRIBUTION.md](docs/guides/DISTRIBUTION.md)。
 
@@ -214,7 +306,10 @@ uv pip install -r requirements.txt
 uv run python app.py
 ```
 
-应用监听 `http://0.0.0.0:5000`（另在 5001 出瓦片，不放行也能用）。⚠️ **Windows / Apple Silicon Mac 走 conda-forge 路线，不是上面这套**；顺序为什么不能换、装坏了怎么重建，全部见 [docs/guides/INSTALL.md](docs/guides/INSTALL.md)。
+应用监听 `http://0.0.0.0:5000`（另在 5001 出瓦片，不放行也能用）。
+
+> [!IMPORTANT]
+> **Windows / Apple Silicon Mac 走 conda-forge 路线，不是上面这套**；顺序为什么不能换、装坏了怎么重建，全部见 [docs/guides/INSTALL.md](docs/guides/INSTALL.md)。
 
 装完想确认绑定是好的，只有这一条检查是真管用的：
 
@@ -233,13 +328,15 @@ uv run python -c "from osgeo import gdal_array; print(gdal_array.__file__)"
 
 **地图样式**：
 
-| 样式 | 代码 | 说明 |
-| --- | --- | --- |
-| 🗺 标准地图 | `m` | 标准道路地图 |
-| 🛰 卫星图 | `s` | 纯卫星影像 |
-| 🏷 卫星图+标注 | `y` | 卫星影像带道路标注 |
-| 🛣 道路图 | `h` | 仅道路网络 |
-| ⛰ 地形图 | `t` | 地形等高线 |
+| 预览 | 样式 | 代码 | 说明 |
+| --- | --- | --- | --- |
+| <img src="static/img/map-styles/m.png" width="64" alt="标准地图样例瓦片"> | 🗺 标准地图 | `m` | 标准道路地图 |
+| <img src="static/img/map-styles/s.png" width="64" alt="卫星图样例瓦片"> | 🛰 卫星图 | `s` | 纯卫星影像 |
+| <img src="static/img/map-styles/y.png" width="64" alt="卫星图+标注样例瓦片"> | 🏷 卫星图+标注 | `y` | 卫星影像带道路标注 |
+| <img src="static/img/map-styles/h.png" width="64" alt="道路图样例瓦片"> | 🛣 道路图 | `h` | 仅道路网络 |
+| <img src="static/img/map-styles/t.png" width="64" alt="地形图样例瓦片：深色地形阴影叠加层，单独看近乎全黑"> | ⛰ 地形图 | `t` | **深色地形阴影叠加层**，设计上叠在别的底图之上；单独下载出来近乎全黑（左边这张预览就是它的原样，不是坏图）。Google 那张浅色的完整地形底图是 `p`，本工具没收录 |
+
+<sub>预览图是仓库内置的样例瓦片（`static/img/map-styles/`，重庆 z10 的真实瓦片快照），界面里的样式预览读的也是这五张。</sub>
 
 **输出格式**：由「瓦片」「GeoTIFF」两个复选框组合——都选（默认）= 瓦片 + 拼接 GeoTIFF；只选其一 = 仅该产物。瓦片在下载过程中实时镜像到产物目录（边下边复制），下载完成后拼接阶段进度同样可见。旁边还有一个独立的「同时导出 MBTiles」——它与输出格式正交，勾了不会删掉瓦片目录。
 
@@ -260,7 +357,8 @@ uv run python -c "from osgeo import gdal_array; print(gdal_array.__file__)"
 3. 已有 GeoTIFF 可直接上传为**本地地形任务**，跳过下载直接切片
 4. 历史记录页可预览地形效果（无切片时按需渲染晕渲图）
 
-💡 切片档位（精细 / 均衡 / 快速）每差一级约 3.3 倍体积换 2.8 倍精度；**地形光照法线**烘焙进瓦片，切完想开只能重新切片，勾选后体积多 35%~100%、切片慢约一倍。
+> [!TIP]
+> 切片档位（精细 / 均衡 / 快速）每差一级约 3.3 倍体积换 2.8 倍精度；**地形光照法线**烘焙进瓦片，切完想开只能重新切片，勾选后体积多 35%~100%、切片慢约一倍。
 
 ### 〰️ 等高线地图
 
@@ -313,13 +411,18 @@ uv run python -c "from osgeo import gdal_array; print(gdal_array.__file__)"
 
 **🕵️ 代理自动检测（默认开启）**：代理服务器一栏留空时，程序自己找可用代理 —— 环境变量与系统代理设置、Windows 的 PAC 自动配置脚本、本机（WSL 下含 Windows 宿主）上 Clash/v2rayN 等常见代理端口。每个候选都会用一张真实瓦片实测，通过了才采用；都不通就直连。手动填了代理地址就以手动值为准，自动检测不参与。配置页有「立即检测」按钮和当前状态显示。
 
-> ⚠️ WSL 下用宿主机上的代理，还需要在代理客户端开启「允许局域网连接」并放行 Windows 防火墙，否则 WSL 连不到宿主的代理端口（自动检测同样探不到）。
+> [!WARNING]
+> WSL 下用宿主机上的代理，还需要在代理客户端开启「允许局域网连接」并放行 Windows 防火墙，否则 WSL 连不到宿主的代理端口（自动检测同样探不到）。
 
 ### 🎨 外观与界面语言
 
 主题在配置页的「外观」里切：**深色 / 浅色 / 跟随系统**，选择存 `localStorage` 的 `tf-theme`。界面语言中英双语，语种存 cookie `tf-lang`，由服务端渲染 —— 刷新时不会先闪一帧另一种语言。
 
-![浅色主题下的主界面：贡嘎山一带的三维地形上覆盖着矩形下载选区](docs/assets/images/readme/home-light.webp)
+<div align="center">
+  <img src="docs/assets/images/readme/home-light.webp" alt="浅色主题下的主界面：贡嘎山一带的三维地形上覆盖着矩形下载选区">
+  <br>
+  <sub><b>浅色主题 · 贡嘎山选区</b></sub>
+</div>
 
 ## 🧱 项目结构
 
@@ -357,13 +460,13 @@ map-download/
 
 ## 🔌 API 端点
 
-### 页面
+### 🖥 页面
 
 - `GET /` - 主页：地图选区、任务面板、数据处理弹窗
 - `GET /history` - 历史记录页
 - `GET /config` - 配置页
 
-### 瓦片任务（Google 地图下载）
+### 🗺 瓦片任务（Google 地图下载）
 
 - `POST /api/tasks` - 创建新任务。可选 `export_mbtiles`（真值 = 跑完后额外打一个 `.mbtiles`，与 `output_format` 正交，见「成果导出」）
 - `GET /api/tasks` - 获取所有任务
@@ -377,7 +480,7 @@ map-download/
 - `POST /api/tasks/<id>/accept_gaps` - 显式接受缺块：`pending_decision` → `completed_with_gaps`，并补跑严格模式此前拒绝执行的拼接 / 复制阶段。成果与历史**永久带缺块标记**，不会被当成完整成品
 - `GET /api/tasks/<id>/artifacts?pipeline=<管线>` - 这个任务已登记的产物清单（XYZ 目录 / GeoTIFF / MBTiles 等，一个任务可以同时有多种）。`pipeline` 缺省为 `map`
 
-### DEM 任务（高程下载）
+### ⛰ DEM 任务（高程下载）
 
 - `POST /api/dem/tasks` - 创建 DEM 任务。区域两种写法二选一：老的 `north`/`south`/`east`/`west` 四至，或新的 `region`（一个 `RegionSpec`）。**给了 `region` 时四至变成可选** —— 而且跨 180° 经线的 DEM 任务**只能**用 `region` 建：裸四至那条路对 `east <= west` 一律 400，那道校验是有意保留的
 - `GET /api/dem/tasks` - 获取所有 DEM 任务
@@ -387,7 +490,7 @@ map-download/
 - `POST /api/dem/tasks/<id>/resume` - 恢复
 - `DELETE /api/dem/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物）
 
-### 地形切片（Cesium quantized-mesh）
+### 🏔 地形切片（Cesium quantized-mesh）
 
 - `POST /api/terrain/dem/<id>/start` - 对已下载的 DEM 任务启动地形切片（可选 `maxzoom` 覆盖配置默认层级，JSON 或表单均可）
 - `GET /api/terrain/dem/<id>` - 查询切片任务状态
@@ -396,7 +499,7 @@ map-download/
 - `GET /api/terrain/local/tasks/<id>` - 获取本地地形任务详情
 - `DELETE /api/terrain/local/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物）。**0.3.3 起默认改为不删**：这条此前是四条管线里唯一默认连文件一起删的，现在四条一致。界面不受影响 —— 删除对话框一直显式带着这个参数
 
-### 等高线任务
+### 〰️ 等高线任务
 
 - `GET /api/contour/style_preview` - 等高线样式预览
 - `POST /api/contour/tasks` - 创建等高线任务（multipart：`files` 上传 DEM，或 `dem_task_id` 复用某个已完成 DEM 任务的目录；二者互斥）
@@ -407,7 +510,7 @@ map-download/
 - `POST /api/contour/tasks/<id>/resume` - 恢复
 - `DELETE /api/contour/tasks/<id>` - 删除（`?delete_files=true` 同时清理磁盘产物）
 
-### 插件
+### 🧩 插件
 
 - `GET /api/plugins` - 插件列表。**加载失败的插件也在列表里**，带 `load_error` —— 坏插件不许打穿宿主，但必须在界面上看得见
 - `POST /api/plugins/<id>/enable` - 启用插件
@@ -425,7 +528,7 @@ map-download/
 - 插件导出**没有专属路由**：走下面的 `POST /api/export/<pipeline>/<id>`，插件注册的 Exporter 只是往它的 `format` 表里加行
 - `GET /api/plugins/<id>/assets/<path>` - 插件 UI 资产。两道门：路径 `resolve()` 后必须仍在插件目录内，且必须在 `plugin.toml` 的 `ui.assets` 白名单里声明（目录里的 `plugin.py`、`vendor/` 一律出不去）
 
-### 静态瓦片服务
+### 🧱 静态瓦片服务
 
 - `GET /tiles/<task_id>/<path>` - 地图瓦片文件
 - `GET /terrain/base/<path>` - 全球基础地形（base_z8）
@@ -438,25 +541,25 @@ map-download/
 - `GET /terrain/local/<task_id>/hillshade.png` - 上一条对应的 PNG 本体
 - `GET /mbtiles/<pipeline>/<id>/<z>/<x>/<y>.<ext>` - 从已导出的 MBTiles 库里读一张瓦片。**影像、等高线与将来的矢量共用这一条路由** —— 刻意不按数据类型各开一条（`docs/notes/external-projects-takeaways.md` §5.3 明确禁止）。`<pipeline>` 取值来自 `src/contracts/artifact.py` 的 `PIPELINES`；库里存的是 TMS 行号，这条路由收 XYZ 并在内部翻转
 
-### 成果导出
+### 📤 成果导出
 
 - `POST /api/export/<pipeline>/<id>` - 把任务的瓦片金字塔打包成单个 `.mbtiles`，Body `{"format": "mbtiles"}`。**这是「多一份产物」，不是换一种输出格式**：`output_format` 一个取值都没加，原来的瓦片目录一张不动（它正是打包的原料，也是 `/tiles/<id>/` 预览的数据源）。幂等。`<pipeline>` 对着 `PIPELINES` 校验，打包器不支持的管线（`dem` / `local_terrain` 没有瓦片金字塔）回 400 并在 body 里给出 `supported_pipelines`。建任务时勾选 `export_mbtiles` 可以让它在跑完后自动执行一次
 - 同一条路由也是**插件导出器的唯一入口**：`format` 表 = 宿主自带的 `mbtiles` + 已启用插件注册的 Exporter 的 `format_id()`（例如首发插件 GeoPackage 的 `gpkg`）。插件格式吃的是 `artifacts` 登记行而不是瓦片目录，所以**不受**「有没有瓦片金字塔」那道管线闸限制 —— `POST /api/export/dem/7` + `{"format":"gpkg"}` 是合法的（`dem` 产 GeoTIFF，`GpkgExporter.accepts()` 正好收它）。导出器写出来的产物由宿主登记：`pipeline`/`task_id` 强制取 URL 里的值，路径必须落在宿主算出的目标目录内，插件说了不算
 - `GET /api/export/<pipeline>/<id>/formats` - 这个任务**真能导出**的格式清单（`{formats: ["mbtiles", "gpkg"]}`）。与上面 POST 回的 `supported_formats` 不是同一份：那一份是全局格式表（「这个部署认得哪些格式」），这一份已经拿这个任务的 `artifacts` 登记行对照过每个导出器的 `accepts()`（「这个任务导得出哪些」）。界面的格式选择器读它 —— 没有这条端点，格式表只在 400 的响应体里出现，前端只能写死一种格式或者让用户先撞个 400。`mbtiles` 那一半只看管线、**不去 stat 瓦片目录**（几万到上百万个文件，为一个下拉菜单扫一遍不成比例），所以「管线对但目录是空的」仍由 POST 的 400 兜住。清单可以是空的：`dem` / `local_terrain` 既没有瓦片金字塔，也没有任何产物登记行
 
-### 底图
+### 🌐 底图
 
 - `GET /basemap/<z>/<x>/<y>` - 底图瓦片的**同源转发，这一跳是强制的**：浏览器只拿得到这条路径，真实上游地址不出服务端。直连上游会被 CORS 把真实状态码埋成一句 CORS 报错，而且浏览器不吃配置里的 `proxy_url` —— 底图和下载会走成两条出网路径，代理配好了底图仍然是个蓝球
 - 取不到瓦片时会**自动回退**到链上的下一张（Esri 卫星 → Google 卫星 → OpenStreetMap 路网），换了会在界面上说一句。链里只放 WGS-84 的源：底图是用来框选下载范围的，静默换上一张 GCJ-02 的图等于让人框错地方。Google 路网（`lyrs=m`）因此不在链里——它中国区是 GCJ-02，而且与 Google 卫星同主机，卫星取不到时它也取不到
 - `GET /api/basemap` - 底图图层描述符（同源 url、最大层级、署名、源标识）。`/history` 独立页取它；首页由模板内联下发，不走这个接口
 
-### 历史记录
+### 🗂 历史记录
 
 - `GET /api/history` - 获取历史记录（支持分页）
 - `GET /api/history_all` - 获取全部历史记录
 - `GET /api/history_stats` - 历史统计
 
-### 配置管理
+### ⚙️ 配置管理
 
 - `GET /api/config` - 获取所有配置
 - `PUT /api/config` - 更新配置
@@ -466,39 +569,39 @@ map-download/
 - `GET|POST /api/config/proxy_status` - 代理自动检测：GET 读当前状态，POST 强制重新探测（同步执行，最坏二十几秒）
 - `POST /api/config/analyze_tile_url` - 图源向导：粘一条瓦片服务地址，认出模板形态（`{z}/{x}/{y}` 占位符、`{s}` 子域列表、行号方案、查询参数）并列出可疑之处。Body `{"url": "..."}`
 
-### 缓存管理
+### 🗃 缓存管理
 
 - `GET /api/cache/stats` - 按分类（各瓦片样式 / DEM 缓存）统计缓存占用与文件数
 - `POST /api/cache/clear` - 手动清理某个缓存分类，`{"category": "__all__"}` 清理全部
 - `GET /api/cache/namespaces` - 按**来源命名空间**（`<样式码>-<源指纹>`）统计缓存占用。与上面那条按分类统计的区别：同一个样式换过服务器就会有多个命名空间，只有这条分得开
 - `POST /api/cache/sweep_orphans` - 清掉没有任何现存任务认领的孤儿命名空间。在用的一个不动
 
-### 目录浏览
+### 📁 目录浏览
 
 - `GET /api/fs/browse?path=<绝对路径>` - 列出目录的非隐藏子目录（保存路径「浏览」弹窗的数据源；0.2.4 起全盘可浏览，Windows 根级返回盘符列表）。响应的 `parent` 有三种取值：绝对路径 = 上一级目录；`""` = 盘符列表那一层（Windows 的盘符根之上，客户端据此发一次不带 `path` 的请求）；`null` = 真的到顶（POSIX 的 `/`）
 
-### 栅格头部探测
+### 🔬 栅格头部探测
 
 - `POST /api/raster/inspect` - 解释浏览器读出的 GeoTIFF 头部标签，返回坐标系、WGS84 范围、分辨率、数据类型与建议最大层级。**不接收文件本身**：前端 `static/js/geotiff_meta.js` 用 `File.slice` 只读几 KB 的 IFD，几百 MB 的 DEM 不会为看一眼元信息先整包上传。Body `{"files": [...], "mode": "terrain"|"contour"}`，`mode` 决定建议层级按哪条切片管线算
 
-### 区域与地点
+### 📍 区域与地点
 
 - `POST /api/region/import` - multipart 上传一个区域文件（`file` 字段，GeoJSON / KML / KMZ / Shapefile 的 .zip），解析成 `RegionSpec`。返回 `{region, summary, warnings}`。支持多边形、多部件与孔洞；坐标系必须是 WGS-84 经纬度
 - `POST /api/region/estimate` - 对一个区域 + 层级范围估算瓦片数与磁盘占用，并给出磁盘预算裁决。Body 取 `region` 或 `bbox`，加 `zoom_min` / `zoom_max` / `style` / `output_format` / `output_path`。返回 `{tile_count, estimate, verdict}`
 - `GET /api/places/search?q=<关键词>&limit=<条数>` - 地名搜索。**未配置 `geocoder_url` 时返回 HTTP 200 与 `{"enabled": false, "results": []}`，不是错误** —— 程序不内置任何地名服务（理由见 `docs/notes/external-projects-takeaways.md` §11 与 §13 末尾的待决清单），界面据此把这一栏藏起来而不是显示成坏掉的功能。地址在配置页的「地名搜索」一栏填，必须含 `{q}` 占位符。接受两种响应：GeoJSON FeatureCollection（含 Photon 的非标准 `properties.extent`）与 Nominatim 风格数组
 
-### 任务日志与诊断
+### 📝 任务日志与诊断
 
 - `GET /api/logs/<pipeline>/<id>?limit=<行数>&errors_only=<bool>` - 读某个任务自己的日志。`<pipeline>` 取值来自 `PIPELINES`；凭据在**落盘前**就被抹掉了
 - `GET /api/logs/<pipeline>/<id>/diagnostics` - 同一份日志的 `text/plain` 附件，设计上就是可以直接贴进 issue 的
 
 **为什么日志不走 WebSocket**：本应用没有 room / namespace，任何一次 emit 都发给所有连着的客户端 —— 逐行日志事件等于把一个任务的日志广播给每一个打开着页面的人。日志尾随因此只走上面这两条 REST，由前端轮询。
 
-### 运行状态
+### 📊 运行状态
 
 - `GET /api/scheduler/status` - 全局资源调度器快照：各类资源（网络连接 / CPU / GDAL 槽位 / 磁盘字节）的上限与当前占用、等待中的任务。排查「为什么第三个任务不开始跑」看这条
 
-### WebSocket 事件
+### 🔔 WebSocket 事件
 
 - `task_progress` - 实时任务进度更新（瓦片 / DEM / 等高线 / 本地地形）
 - `task_completed` / `task_failed` - 任务完成 / 失败通知
@@ -584,10 +687,21 @@ build.bat
 
 ## ❗ 注意事项
 
-- 📜 Google Maps 服务条款可能禁止批量下载，**本工具仅供个人学习和研究使用**
+> [!IMPORTANT]
+> Google Maps 服务条款可能禁止批量下载，**本工具仅供个人学习和研究使用**。
+
+本工具会碰到的上游，以及各自的凭据要求：
+
+| 上游 | 账号 | 说明 |
+| --- | --- | --- |
+| <img alt="Google Maps" height="20" src="docs/assets/badges/google-maps.png"> | 不需要 | 瓦片下载的上游，受上面那条服务条款约束 |
+| <img alt="Copernicus GLO-30" height="20" src="docs/assets/badges/copernicus-glo30.png"> | 不需要 | 默认高程源，走公开 S3 桶 |
+| <img alt="ASTER GDEM v3" height="20" src="docs/assets/badges/aster-gdem-v3.png"> | 需要 NASA Earthdata Login | 可选高程源；水体掩膜数据同样需要 |
+| <img alt="GEBCO 2024" height="20" src="docs/assets/badges/gebco-2024.png"> | 不需要 | 随包全球基础地形（167 MB）的派生数据，署名见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
+| <img alt="Esri" height="20" src="docs/assets/badges/esri.png"> <img alt="OpenStreetMap" height="20" src="docs/assets/badges/openstreetmap.png"> | 不需要 | 底图回退链（Esri 卫星 → Google 卫星 → OSM 路网），经 `/basemap` 同源转发；链里只放 WGS-84 的源 |
+
 - ⏳ 大区域高缩放级别下载可能需要数小时甚至数天，并产生数 GB 数据，请确保磁盘空间充足
 - 🤝 请合理设置并发数，避免对瓦片服务器造成过大压力
-- 🔑 使用 ASTER GDEM v3 数据源需要有效的 NASA Earthdata Login 账号；默认的 Copernicus GLO-30 走公开 S3 桶，无需账号
 
 ## 📄 许可证
 
@@ -595,7 +709,8 @@ build.bat
 
 随本项目分发的第三方组件（CesiumJS、Bootstrap、Vue、Socket.IO、Inter / JetBrains Mono 字体、随包的 GEBCO 2024 派生地形数据，以及二进制发行时的 Python 依赖与原生库）各有其许可证与署名义务，逐条列在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-⚠️ MIT 只覆盖本项目的**软件代码**，**不授予**任何数据与在线服务的使用权。Google、Esri、天地图、OSM、Cesium Ion 等图源的 attribution、批量下载政策、Token 与配额需各自独立处理，见下方免责声明。
+> [!IMPORTANT]
+> MIT 只覆盖本项目的**软件代码**，**不授予**任何数据与在线服务的使用权。Google、Esri、天地图、OSM、Cesium Ion 等图源的 attribution、批量下载政策、Token 与配额需各自独立处理，见下方免责声明。
 
 ## 🤝 贡献
 
@@ -603,4 +718,16 @@ build.bat
 
 ## 🚫 免责声明
 
-本工具仅供学习和研究使用。使用者应遵守 Google Maps 服务条款和相关法律法规。作者不对使用本工具产生的任何后果负责。
+> [!CAUTION]
+> 本工具仅供学习和研究使用。使用者应遵守 Google Maps 服务条款和相关法律法规。作者不对使用本工具产生的任何后果负责。
+
+---
+
+<div align="center">
+  <sub>
+    <a href="https://terraforge-gis.pages.dev/">官网</a> ·
+    <a href="https://github.com/JungleZy/TerraForge/releases">下载</a> ·
+    <a href="docs/README.md">文档索引</a> ·
+    <a href="https://github.com/JungleZy/TerraForge/issues">反馈</a>
+  </sub>
+</div>
