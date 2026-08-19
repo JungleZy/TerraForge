@@ -480,7 +480,7 @@ style.css 末尾追加：
    保持 Task 1 的普通模糊,天然降级。
    2026-08-17 裁决(用户确认):feTurbulence 不带 <animate> 是静态滤镜,
    不归 prefers-reduced-motion 管;契约测试白名单只放行
-   animation-*/transition-*/scroll-behavior,故刻意不写 reduce 禁用块。 */
+   animation-系/transition-系/scroll-behavior,故刻意不写 reduce 禁用块。 */
 @supports (backdrop-filter: url("#tf-liquid-refraction")) {
     .tf-glass--3 {
         backdrop-filter: blur(2px) url("#tf-liquid-refraction") saturate(var(--liquid-saturate));
