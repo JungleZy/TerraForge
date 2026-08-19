@@ -162,16 +162,38 @@ def _global_keydown_handlers(src):
             continue
         ident = re.match(r'([A-Za-z_$][\w$]*)', tail)
         assert ident, f'认不出 {m.group(1)}.addEventListener 的处理器形态 —— 本测试已失效'
+        mthis = re.match(r'this\.([A-Za-z_$][\w$]*)', tail)
+        if mthis:
+            # `this._onKeydown` 形态（modal.js 的 TfModal：removeEventListener
+            # 要同一引用，处理器只能存成实例字段）—— 裸 ident 会拿 'this'
+            # 去查 function this()，直接失效。
+            out.append((m.group(1), _class_field_arrow_body(src, mthis.group(1))))
+            continue
         out.append((m.group(1), _function_body(src, ident.group(1))))
     return out
 
 
+def _class_field_arrow_body(src, name):
+    """`this._name = (...) => { ... }` 类字段箭头的函数体（含外层花括号）。"""
+    m = re.search(r'\b' + re.escape(name) + r'\s*=\s*\([^)]*\)\s*=>\s*\{', src)
+    assert m, f'找不到类字段箭头 {name} = (...) => {{ —— 本测试已失效'
+    open_at = m.end() - 1
+    return src[open_at:_balanced(src, open_at) + 1]
+
+
 def test_exactly_one_escape_closer_in_the_whole_frontend():
-    """全仓只许有一处「document/window 级 keydown 判 Escape 并关浮层」。
+    """全站只许有「panels.js 层栈 + TfModal 自关」两处 Esc 关浮层。
 
     判据是**结构**不是字面量：先找 document/window 上的 keydown 注册（元素级的
     不算），再解出它的处理器源码，看它是否既判 `'Escape'` 又执行关闭动作
     （closeTop / close* / reset / hide）。三份实现的时代这条会数出 3。
+
+    第二处是 2026-08-19 Task 8 登记进来的：自研 modal.js 替掉 bootstrap.Modal
+    之后，「弹窗按 Esc 关自己」这份处理器从 vendor/（本扫描天然看不见）搬进了
+    static/js/，必须显式记账。它不算竞争者是两点保证的：只在弹窗开着时挂
+    （hide 同步 removeEventListener），且 panels.js 的 onKey 用
+    body.modal-open 对它整体让位 —— 「一次 Esc 两层全关」由那道让位防，
+    不由「只有一处」防。
     """
     closers = []
     for name in _js_files():
@@ -182,8 +204,8 @@ def test_exactly_one_escape_closer_in_the_whole_frontend():
             if not re.search(r'\b(closeTop|close[A-Z]\w*|reset|hide)\s*\(', body):
                 continue
             closers.append(f'{name} ({target} 级)')
-    assert closers == ['panels.js (document 级)'], (
-        '「按 Esc 关最上层」必须全站只有一处、且在 panels.js 的层栈里，'
+    assert closers == ['modal.js (document 级)', 'panels.js (document 级)'], (
+        '「按 Esc 关浮层」全站只许 panels.js 层栈与 modal.js 自关两处，'
         f'实际：{closers or "一处都没有"}'
     )
 

@@ -8658,8 +8658,10 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 31 -> 32（插件管理面板）：index.html 的 extra_js 新增 static/js/plugins.js
     # （插件列表/启停/声明式新建任务表单；只有首页有插件面板，故挂在 index.html
     # 的 extra_js 而不是 base.html）。
-    assert len(refs) == 32, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 32 处。"
+    # 32 -> 33（自研 TfModal）：base.html 新增 static/js/modal.js（替掉仅有的
+    # 两处 bootstrap.Modal；必须排在 path_browser.js 与 history.js 之前）。
+    assert len(refs) == 33, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 33 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
@@ -8738,8 +8740,9 @@ _VENDOR_VERSION_PROBES = {
     ),
     'bootstrap/5.3.0/bootstrap.bundle.min.js': (
         re.compile(r'Bootstrap\s+v(\d+\.\d+\.\d+)'),
-        # Modal：history 页任务详情弹窗（history.js 里 new bootstrap.Modal）。
-        # Collapse：导航栏折叠按钮。
+        # 弹窗 2026-08-19 Task 8 起走自研 modal.js 的 TfModal，bundle JS
+        # 自此没有站内调用方（是否整份下线不在本任务范围）；'Modal' /
+        # 'Collapse' 退化为 bundle 内容的指纹。
         # createPopper：**bundle 版才有**，用它区分 bootstrap.bundle.min.js
         # 和体积相近的 bootstrap.min.js —— 后者不带 Popper，Dropdown/Tooltip
         # 会在运行时抛错，而文件名/版本号看起来一切正常。
@@ -9416,8 +9419,9 @@ _PAGE_CHAIN_PREFIX = (
 
 # 运行时才出现、grep 模板永远看不到的 <div>。
 #
-# 为什么必须显式登记：`.modal-backdrop` 由 Bootstrap 的 Modal 组件插到
-# <body> 末尾，`.task-error` 错误框由 task_list.js 的 TaskRow 组件渲染进
+# 为什么必须显式登记：`.modal-backdrop` 由自研 TfModal（static/js/modal.js，
+# 2026-08-19 Task 8 替掉 bootstrap.Modal）插到 <body> 末尾，`.task-error`
+# 错误框由 task_list.js 的 TaskRow 组件渲染进
 # 时间流——只扫模板的话，这两类一个都看不见，而「弹窗遮罩
 # 从来没暗过」正是 C1 收尾要修的那个缺陷。祖先链按真实 DOM 写（CDP 实测
 # 确认过层级）。
@@ -9433,8 +9437,8 @@ _RUNTIME_INJECTED_DIVS = (
         _task_error_chain(),
     ),
     (
-        'Bootstrap Modal 运行时插到 <body> 末尾的遮罩',
-        'static/vendor/bootstrap/5.3.0/bootstrap.bundle.min.js', 'modal-backdrop',
+        'TfModal.show() 运行时插到 <body> 末尾的遮罩',
+        'static/js/modal.js', 'modal-backdrop',
         (
             ('html', set(), '', {}),
             ('body', {'modal-open'}, '', {}),
@@ -9784,6 +9788,13 @@ _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED = {
         'Bootstrap 的 `.alert{background-color:var(--bs-alert-bg)}` 里那个变量'
         '由变体类赋值，而本站在 style.css 里覆盖的正是变体（.alert-info / '
         '.alert-danger）。实测 #boundsInfo = rgba(59,130,246,0.1)，是本站的值。',
+    'modal-backdrop':
+        '弹窗遮罩，由自研 TfModal（static/js/modal.js）运行时插入 —— '
+        '2026-08-19 Task 8 之前它由 bootstrap.Modal 内部创建，模板/JS 扫描'
+        '一直看不见它，这次替换才第一次进交集。Bootstrap 的默认 '
+        '`#000` + `.show` 下 opacity .5 就是设计要的压暗（液态玻璃档位只管 '
+        '.modal-content 的 tf-glass，不管遮罩底色），style.css 已接管它的 '
+        'z-index（--z-modal-backdrop）。',
 }
 
 

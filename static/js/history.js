@@ -656,9 +656,9 @@ async function viewTaskDetails(taskId, taskType = 'map') {
         // （contracts/artifact.PIPELINES）—— 插件任务走 /api/logs/plugin/<id>。
         openTaskLogPanel(taskType, taskId, task.status);
 
-        // 显示模态框。getOrCreateInstance 与全站一致：重复 new bootstrap.Modal
-        // 同一元素会叠出多个实例（每次打开多一层遮罩，关一层还剩一层）。
-        bootstrap.Modal.getOrCreateInstance(document.getElementById('taskDetailModal')).show();
+        // 显示模态框。getOrCreateInstance 语义不变：同一元素永远只有一份
+        // TfModal 实例，重复打开不会叠遮罩（modal.js 里还有 _isOpen 双保险）。
+        TfModal.getOrCreateInstance(document.getElementById('taskDetailModal')).show();
     } catch (error) {
         showToast(t('js.history.detail.load_failed'), 'danger');
     }

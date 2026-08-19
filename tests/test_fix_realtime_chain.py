@@ -153,14 +153,18 @@ def test_delete_task_closes_the_persistent_failure_toast():
 
 
 def test_detail_modal_uses_get_or_create_instance():
-    """详情弹窗必须 getOrCreateInstance（与 map.js 一致），不许 new 叠实例。"""
+    """详情弹窗必须走 TfModal.getOrCreateInstance（2026-08-19 Task 8 起自研
+    modal.js 替掉 bootstrap.Modal），同一元素单实例，重复打开不叠遮罩。"""
     src = _strip_js_comments(_js('history.js'))
     assert 'new bootstrap.Modal' not in src, (
         'history.js 仍在 new bootstrap.Modal——重复打开会叠多个实例/多层遮罩'
     )
+    assert 'bootstrap.Modal' not in src, (
+        'history.js 还在用 bootstrap.Modal——Task 8 起全站弹窗统一走 TfModal'
+    )
     body = _body('history.js', 'viewTaskDetails')
-    assert 'bootstrap.Modal.getOrCreateInstance(' in body, (
-        'viewTaskDetails 没有用 getOrCreateInstance 打开详情弹窗'
+    assert 'TfModal.getOrCreateInstance(' in body, (
+        'viewTaskDetails 没有用 TfModal.getOrCreateInstance 打开详情弹窗'
     )
 
 

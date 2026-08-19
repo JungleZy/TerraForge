@@ -115,7 +115,7 @@
         const cur = _el('pathBrowserCurrent');
         if (cur) cur.textContent = '';
         const modalEl = _el('pathBrowserModal');
-        modalInst = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modalInst = TfModal.getOrCreateInstance(modalEl);
         modalInst.show();
         load(targetInput.value.trim());
     };
