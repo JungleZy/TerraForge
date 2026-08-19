@@ -4,7 +4,9 @@
    包含块与层叠上下文)。 #}
 <div class="cmdk" id="cmdk" hidden>
     <div class="cmdk__backdrop" data-cmdk-close></div>
-    <div class="cmdk__dialog" role="dialog" aria-modal="true" aria-label="{{ t('tpl.base.cmdk.title') }}">
+    {# 容器挂 glass-3(2026-08-17 Task 7):模态级浮层吃折射档,与任务详情
+       modal 同档。dialog 自带的实底由 style.css 末尾 Task 7 补丁让位成透明。 #}
+    <div class="cmdk__dialog tf-glass tf-glass--3" role="dialog" aria-modal="true" aria-label="{{ t('tpl.base.cmdk.title') }}">
         <input type="text" class="cmdk__input" id="cmdkInput"
                role="combobox" aria-expanded="true" aria-controls="cmdkList" aria-autocomplete="list"
                placeholder="{{ t('tpl.base.cmdk.placeholder') }}">

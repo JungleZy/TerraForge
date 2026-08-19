@@ -5804,3 +5804,28 @@ code {
 @supports not (backdrop-filter: blur(1px)) {
     .card.tf-card, .modal-content.tf-glass { background: var(--color-bg-elevated); }
 }
+
+/* ══ Task 7 glass-3 折射滤镜(2026-08-17,设计 §1) ═══════════════════════
+   命令面板容器挂 glass-3 同理让位:.cmdk__dialog 自带的实底
+   (--color-bg-elevated)画在元素背景层,会盖死 backdrop-filter 的模糊
+   与折射,必须透明(同 Task 6 .modal-content 的处理)。特异度 (0,2,0)
+   压得住 (0,1,0) 的原声明;降级块把实底抬回去,at-rule 头逐字同
+   _KNOWN_INACTIVE_AT_RULES 白名单。 */
+.cmdk__dialog.tf-glass {
+    background: transparent;
+}
+@supports not (backdrop-filter: blur(1px)) {
+    .cmdk__dialog.tf-glass { background: var(--color-bg-elevated); }
+}
+
+/* 折射增强(仅 Chromium):glass-3 的背景扭曲。@supports 探测失败时
+   保持 Task 1 的普通模糊,天然降级。
+   2026-08-17 裁决(用户确认):feTurbulence 不带 <animate> 是静态滤镜,
+   不归 prefers-reduced-motion 管;契约测试白名单只放行
+   animation-* / transition-* / scroll-behavior 三类,故刻意不写 reduce 禁用块。 */
+@supports (backdrop-filter: url("#tf-liquid-refraction")) {
+    .tf-glass--3 {
+        backdrop-filter: blur(2px) url("#tf-liquid-refraction") saturate(var(--liquid-saturate));
+        -webkit-backdrop-filter: blur(2px) url("#tf-liquid-refraction") saturate(var(--liquid-saturate));
+    }
+}

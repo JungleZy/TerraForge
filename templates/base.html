@@ -353,5 +353,17 @@
     {% endblock %}
 
     {% block extra_js %}{% endblock %}
+
+    <!-- 液态玻璃 glass-3 的折射滤镜(2026-08-17 Task 7):不可见 SVG 定义体,
+         由 style.css 末尾 @supports 块里的 backdrop-filter: url(...) 引用。
+         滤镜是静态的(feTurbulence 不带 <animate>),全页只此一份;
+         不支持 backdrop-filter url() 的浏览器自然落到普通模糊。 -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <filter id="tf-liquid-refraction" x="0" y="0" width="100%" height="100%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008" numOctaves="2" seed="4" result="noise"/>
+        <feGaussianBlur in="noise" stdDeviation="2" result="blurred"/>
+        <feDisplacementMap in="SourceGraphic" in2="blurred" scale="40" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+    </svg>
 </body>
 </html>
