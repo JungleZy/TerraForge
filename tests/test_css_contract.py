@@ -6657,7 +6657,8 @@ def _history_error_div():
     src = _strip_js_comments(_js('task_list.js'))
     # Vue 化后加载失败提示是组件的 ERROR_TEMPLATE 常量（改造前是 history.js
     # loadHistory 的 catch 分支里一次 innerHTML 赋值）。节点本身没变：
-    # 一个 .text-center.text-danger 的 div。
+    # 一个 .text-danger.task-load-error 的 div（2026-08-20 修复轮：
+    # text-center 工具类摘进 .task-load-error 组件类）。
     m = re.search(r'ERROR_TEMPLATE\s*=\s*`(.*?)`', src, re.S)
     assert m, 'task_list.js 里找不到 ERROR_TEMPLATE —— 加载失败提示的 markup 变形了，本测试已失效'
     markup = m.group(1)

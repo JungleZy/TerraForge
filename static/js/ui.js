@@ -276,9 +276,10 @@
                 selectWrap = document.createElement('label');
                 selectWrap.className = 'app-confirm__check';
                 const selectText = document.createElement('span');
-                // .text-nowrap（Bootstrap 工具类）：.app-confirm__check 是
-                // flex row，标签文字不设 nowrap 时会被下拉挤成两行（实测
-                // 「导出格式」在 400px 的框里断成「导出格」/「式」）。
+                // .text-nowrap（2026-08-20 Task 9b 起为 style.css 自有工具类）：
+                // .app-confirm__check 是 flex row，标签文字不设 nowrap 时会被
+                // 下拉挤成两行（实测「导出格式」在 400px 的框里断成
+                // 「导出格」/「式」）。
                 selectText.className = 'text-nowrap';
                 selectText.textContent = selectOpt.label == null
                     ? '' : String(selectOpt.label);

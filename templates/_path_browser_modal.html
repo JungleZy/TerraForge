@@ -2,14 +2,18 @@
      数据来自 GET /api/fs/browse,交互在 static/js/path_browser.js。 -->
 <div class="modal fade" id="pathBrowserModal" tabindex="-1" aria-labelledby="pathBrowserTitle" aria-hidden="true">
     <div class="modal-dialog modal-dialog-scrollable">
-        <div class="modal-content">
+        <!-- tf-glass--3：模态框档位（设计 §1 档位表），与 #taskDetailModal 同口径；
+             挂类即生效（.modal-content.tf-glass 的实底让位规则是通用写法）。 -->
+        <div class="modal-content tf-glass tf-glass--3">
             <div class="modal-header">
                 <h5 class="modal-title" id="pathBrowserTitle">{{ t('tpl.path_browser.title') }}</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="{{ t('tpl.path_browser.close') }}"></button>
             </div>
             <div class="modal-body">
                 <div class="small text-muted mb-1">{{ t('tpl.path_browser.current') }}</div>
-                {# 外观全靠 Bootstrap 工具类。这里曾多挂一个 .path-browser-current，
+                {# 外观工具类（small/text-muted/font-monospace/text-break/mb-*
+                   等）2026-08-20 Task 9b 起全部自有（style.css 工具类区）。
+                   这里曾多挂一个 .path-browser-current，
                    全仓零定义、零引用（JS 走的是 id）—— 悬空的样式钩子只会让
                    后来的人猜「样式是不是漏写了」。 #}
                 <div class="font-monospace small text-break mb-2"
