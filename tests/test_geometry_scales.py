@@ -122,8 +122,6 @@ CONTROLS = (
     '.btn',
     '.btn-sm',
     '.btn.btn-icon',
-    ('.btn.btn-compact, .btn.tile-server-verify, .btn.concurrency-recommend, '
-     '.btn.path-browse, .bounds-actions .btn'),
     '.app-confirm__btn',
     '.dock-collapse-btn',
     '.form-control, .form-select',
@@ -144,10 +142,25 @@ CONTROLS = (
     # 选择器整条不在，`_radius_px` 只会返回 'missing'：留着它这条用例就永远红，
     # 而把它改成「断言 missing」等于守空气（同上面那条被删的
     # test_no_local_radius_patch_for_a_single_button_instance 的理由）。
+    # 2026-08-20 液态玻璃 Task 9a 摘出登记：这里原有第 4 项
+    #   '.btn.btn-compact, .btn.tile-server-verify, .btn.concurrency-recommend,
+    #    .btn.path-browse, .bounds-actions .btn'
+    # 紧凑档按钮圆角从 6px 上调到 --liquid-radius-control(12px)：原对齐理由
+    # （与相邻 6px input 同圆角）在输入框换成 12px .tf-field 后已失效，而这批
+    # 按钮多数挂了 .tf-btn（胶囊 999px 被压制规则顶住），6px 成了夹在两套
+    # 新几何之间的失效中间档。它们仍是控件不是「浮起表面」，所以不进
+    # RAISED_SURFACES，由下方 LIQUID_COMPACT_CONTROLS 单独钉 12px。
     # 顶上来的新宿主 `.bounds-readout` **不进本清单**：它整条规则只有
     # `margin-bottom: var(--space-3)`，是个排版容器不是控件 —— 没有边框、没有底色、
     # 不可聚焦，给它安个 6px 圆角是无中生有的契约。读数自己的几何仍在
-    # `.bounds-grid` / `.bounds-actions .btn` 上（后者就在本清单第 4 项里）。
+    # `.bounds-grid` / `.bounds-actions .btn` 上（后者在下方 LIQUID_COMPACT_CONTROLS 里）。
+)
+
+# 液态玻璃紧凑档控件 = 12px（--liquid-radius-control）。判据：与 12px 的
+# .tf-field 输入框同排并存的行内动作按钮。见 CONTROLS 里的摘出登记。
+LIQUID_COMPACT_CONTROLS = (
+    ('.btn.btn-compact, .btn.tile-server-verify, .btn.concurrency-recommend, '
+     '.btn.path-browse, .bounds-actions .btn'),
 )
 
 
@@ -240,6 +253,25 @@ def test_every_control_resolves_to_the_control_radius():
         elif px != 6.0:
             problems.append(f'{sel}: 解析成 {px}px，期望 6px')
     assert not problems, '控件圆角不齐：\n' + '\n'.join('  ' + p for p in problems)
+
+
+def test_liquid_compact_controls_resolve_to_the_liquid_control_radius():
+    """液态玻璃紧凑档按钮的 border-radius 解析成 12px（--liquid-radius-control）。
+
+    2026-08-20 Task 9a：与 12px .tf-field 输入框同排的行内动作按钮从 6px
+    上调，摘出登记见 CONTROLS 注释。断言机制与上一条相同（跟 var() 链算 px）。
+    """
+    css = _css()
+    problems = []
+    for sel in LIQUID_COMPACT_CONTROLS:
+        state, px = _radius_px(css, sel)
+        if state == 'missing':
+            problems.append(f'{sel}: 没有 border-radius 声明')
+        elif state == 'unparsed':
+            problems.append(f'{sel}: border-radius 是 {px!r}，解析不出 px')
+        elif px != 12.0:
+            problems.append(f'{sel}: 解析成 {px}px，期望 12px')
+    assert not problems, '液态紧凑档控件圆角不齐：\n' + '\n'.join('  ' + p for p in problems)
 
 
 # 2026-08-15 Task 5 删除登记：这里原有

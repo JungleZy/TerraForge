@@ -4992,8 +4992,16 @@ code {
     margin-top: var(--space-1);
 }
 
-/* 行内动作按钮统一紧凑档：高度锁 --ctl-h（28px）、圆角 --radius-xs（6px），
-   与相邻 input / select 同高同圆角。
+/* 行内动作按钮统一紧凑档：高度锁 --ctl-h（28px）、圆角 --liquid-radius-control
+   （12px），与相邻 tf-field 输入框同圆角。
+
+   2026-08-20 Task 9a 挂起项 8：圆角从 --radius-xs(6px) 上调到 12px。
+   原对齐理由（「与相邻 input 同圆角」）在液态玻璃改造后已失效 —— 相邻
+   输入框换成了 12px 的 .tf-field，这批按钮多数又挂了 .tf-btn（胶囊 999px
+   被本规则压成 6px），结果是「胶囊按钮 + 12px 输入框」中间夹一档 6px。
+   28px 高的小按钮全胶囊端头太圆、与方角输入框并排不协调（浏览器实看），
+   故不放手让 999px 生效，统一钉 12px。tests/test_geometry_scales.py 的
+   控件圆角清单同步改写（6px -> 12px 登记在同名清单注释里）。
 
    `.btn-compact` 是这一档的语义类名，新按钮加它即可；后面三个具名类是历史
    入口，保留是因为模板与测试都在按名字找它们（如
@@ -5018,7 +5026,7 @@ code {
 .btn.path-browse,
 .bounds-actions .btn {
     height: var(--ctl-h);
-    border-radius: var(--radius-xs);
+    border-radius: var(--liquid-radius-control);
     padding: 0 var(--space-3);   /* 10px -> --space-3（12px）：间距刻度归一 2026-08-14 */
     display: inline-flex;
     align-items: center;
