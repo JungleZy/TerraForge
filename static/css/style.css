@@ -38,6 +38,12 @@
     --color-glass-surface: rgba(21,23,28,0.72);
     --color-glass-border:  rgba(255,255,255,0.14);
 
+    /* .page-ambient 的等高线纹理层（data-URI 里引不了令牌，整层做成令牌）。
+       描边 #7dd3fc 是 accent 同色系天蓝，暗底下 0.09 可辨；亮底下白底吃蓝光，
+       同色系深一档的描边在下方亮色块覆盖。2026-08-20 Task 9a 用户裁决:
+       透明度 0.05 -> 0.09,0.05 实机几乎不可辨。 */
+    --ambient-contour: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%237dd3fc' stroke-opacity='0.09'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E");
+
     /* 液态玻璃令牌(2026-08-17 设计 §1)。独立于 --color-glass-surface 体系:
        旧令牌 alpha 0.72 是停靠浮层的不透明下限(test_elevation_glass.py 钉死),
        液态玻璃是「厚玻璃」质感,低 alpha + 边缘高光 + 流光,文字可读性靠
@@ -533,6 +539,10 @@
     --color-overlay-surface:  rgba(255,255,255,0.94);
     --color-glass-surface: rgba(255,255,255,0.78);
     --color-glass-border:  rgba(15,23,42,0.14);
+
+    /* 亮底等高线纹理：同形同透明度(0.09)，描边换成深天蓝 #0369a1
+       （亮色 splash 族同色）—— #7dd3fc 在白底上亮度差不够，实机不可辨 */
+    --ambient-contour: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%230369a1' stroke-opacity='0.09'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E");
 
     --color-checker-a: #d5d9df;
     --color-checker-b: #f4f5f7;
@@ -5658,12 +5668,11 @@ code {
    不是 `content: none`。 */
 
 /* 非地图页环境背景:玻璃需要丰富背景可采样(设计 §3)。
-   渐变取页面底与强调色的极淡混合;等高线纹理描边硬编码 #7dd3fc
-   (accent 同色系天蓝 —— data-URI 里引不了令牌),亮暗主题共用。
-   2026-08-20 Task 9a 用户裁决:描边透明度 0.05 -> 0.09,0.05 实机几乎不可辨。 */
+   渐变取页面底与强调色的极淡混合;等高线纹理整层走 --ambient-contour 令牌
+   (亮暗主题描边色不同,透明度同 0.09 —— 见 :root 两处定义处的注释)。 */
 .page-ambient {
     background:
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%237dd3fc' stroke-opacity='0.09'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E"),
+        var(--ambient-contour),
         radial-gradient(1200px 600px at 80% -10%, var(--color-accent-muted), transparent 60%),
         radial-gradient(900px 500px at 10% 110%, var(--color-accent-muted), transparent 55%),
         var(--color-bg-primary);
@@ -5751,6 +5760,19 @@ code {
    .tf-glass 的 transition 顶掉,hover 从渐变退成硬切。补回。 */
 .statusbar-copy.tf-glass {
     transition: background-color var(--dur-fast) var(--ease);
+}
+
+/* Task 9a 修复(2026-08-20,挂起项 14):上面的 hover 底色画在元素背景层,
+   而 ::before(scrim+玻璃底,z-index -2)渲染在元素背景**之上** —— 暗色下
+   hover 色 rgba(255,255,255,0.12) 换掉的是 0.72 的不透明暗底,再被 scrim
+   一盖,实测明暗两态逐像素无差(截图对比 t9-statuscopy-dark-*.png)。
+   修复:hover 色作为最顶层叠进 ::before。亮色下元素背景层的替换效应
+   (0.78 白底 -> 0.08 暗色)本来就可见,两层叠加后依然成立。
+   渐变色层不可平滑过渡(background-image 过渡是离散跳变),这里是硬切;
+   硬切有反馈 > 渐变无反馈,上面那条元素级 transition 保留给非玻璃降级路径。 */
+.statusbar-copy.tf-glass:hover::before {
+    background: linear-gradient(var(--color-control-hover), var(--color-control-hover)),
+                var(--liquid-scrim), var(--liquid-bg);
 }
 
 /* Task 9a 叠加修复(2026-08-20,挂起项 7):地图浮层 chip(预览提示条/
