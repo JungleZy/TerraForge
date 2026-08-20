@@ -244,14 +244,38 @@ def test_command_palette_js_passes_node_syntax_check():
 
 # ---------------------------------------------------------------- 样式
 
-def test_palette_is_an_opaque_docked_layer():
+def test_palette_is_a_glass_docked_layer():
+    """2026-08-17 液态玻璃 Task 7 起，面板是**挂 glass-3 的玻璃停靠层**，
+    不再是不透明实底层（本条原名 test_palette_is_an_opaque_docked_layer，
+    旧口径与现状相悖，2026-08-20 Task 9a 挂起项 12 改写为钉新现实）。
+
+    新现实的三层结构：
+    1. 底座 `.cmdk__dialog` 规则**保留** elevated 实底与模态级阴影 —— 那是
+       不支持 backdrop-filter 时的降级底（@supports 降级块把它抬回去），
+       也是玻璃被整类摘掉时的兜底；
+    2. 让位规则 `.cmdk__dialog.tf-glass` 把元素背景透明化，否则实底画在
+       元素背景层会盖死 backdrop-filter 的模糊与折射；
+    3. 玻璃皮肤（模糊/流光/折射）由 `.tf-glass` 组件承担，底座规则自己身上
+       一行 backdrop-filter 都不写。
+    """
     css = re.sub(r'/\*.*?\*/', '', _read(CSS_PATH), flags=re.S)
     m = re.search(r'\.cmdk__dialog\s*\{([^}]*)\}', css)
     assert m, '缺 .cmdk__dialog 规则'
     body = m.group(1)
-    assert 'var(--color-bg-elevated)' in body, '面板是不透明的停靠层,用 elevated 底'
+    assert 'var(--color-bg-elevated)' in body, (
+        '底座规则必须保留 elevated 实底 —— 它是不支持 backdrop-filter 时的降级底')
     assert 'var(--shadow-lg)' in body, '面板是模态级阴影'
-    assert 'backdrop-filter' not in body, '停靠层不做玻璃(玻璃只给浮在地图上的元素)'
+    assert 'backdrop-filter' not in body, (
+        '玻璃不在底座规则上 —— 模糊/折射由 .tf-glass 组件类承担')
+    g = re.search(r'\.cmdk__dialog\.tf-glass\s*\{([^}]*)\}', css)
+    assert g, '缺 .cmdk__dialog.tf-glass 让位规则（实底会盖死玻璃）'
+    assert re.search(r'background:\s*transparent', g.group(1)), (
+        '让位规则必须把元素背景透明化')
+    fb = re.search(
+        r'@supports not \(backdrop-filter: blur\(1px\)\)\s*\{[^{}]*'
+        r'\.cmdk__dialog\.tf-glass\s*\{([^}]*)\}', css, flags=re.S)
+    assert fb and 'var(--color-bg-elevated)' in fb.group(1), (
+        '降级块必须把 .cmdk__dialog.tf-glass 的实底抬回去')
     m = re.search(r'\.cmdk\s*\{([^}]*)\}', css)
     assert m, '缺 .cmdk 规则'
     # 2026-08-15 Task 3：层栈令牌化，这里的 13100 从字面量变成 var(--z-cmdk)
@@ -260,6 +284,20 @@ def test_palette_is_an_opaque_docked_layer():
     assert z, '.cmdk 必须显式声明 z-index，否则层序靠源码顺序碰运气'
     got = _resolve_z_index(css, z.group(1))
     assert got == 13100, f'.cmdk 的 z-index 应为 13100，实际 {z.group(1).strip()!r} -> {got}'
+
+
+def test_both_dialogs_carry_the_glass3_skin():
+    """主面板与速查表(?)两个 dialog 都必须挂 glass-3（2026-08-17 Task 7
+    主面板 / 2026-08-20 Task 9a 挂起项 3 速查表）。只挂一个的话另一个
+    会留着实底，两个浮层同一触发层两种质感。"""
+    src = _read(PARTIAL)
+    for did in ('cmdk', 'cmdkHelp'):
+        m = re.search(
+            r'id="' + did + r'"[\s\S]*?class="cmdk__dialog([^"]*)"', src)
+        assert m, f'#{did} 里找不到 .cmdk__dialog'
+        classes = m.group(1).split()
+        assert 'tf-glass' in classes and 'tf-glass--3' in classes, (
+            f'#{did} 的 dialog 没挂 glass-3：{m.group(1).strip()}')
 
 
 def test_help_close_restores_focus_and_dialogs_trap_tab():

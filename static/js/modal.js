@@ -53,13 +53,16 @@
             this._isOpen = false;
             this.el.classList.remove('show');
             this.el.style.display = 'none';
-            this.el.setAttribute('aria-hidden', 'true');
             document.body.classList.remove('modal-open');
             if (this._backdrop) { this._backdrop.remove(); this._backdrop = null; }
             document.removeEventListener('keydown', this._onKeydown);
             this.el.removeEventListener('mousedown', this._onBackdrop);
             this.el.removeEventListener('click', this._onDismiss);
+            // 先还原焦点再标 aria-hidden：焦点还停在弹窗内部时就把它标成
+            // aria-hidden，Chrome 会抛 "Blocked aria-hidden on an element because
+            // its descendant retained focus" 的 a11y 警告（2026-08-20 Task 9a M1）。
             if (this._prevFocus) this._prevFocus.focus();
+            this.el.setAttribute('aria-hidden', 'true');
             this.el.dispatchEvent(new CustomEvent('hidden.bs.modal', { bubbles: true }));
         }
         _trapFocus(e) {
