@@ -5822,6 +5822,14 @@ code {
    _KNOWN_INACTIVE_AT_RULES 白名单。 */
 .cmdk__dialog.tf-glass {
     background: transparent;
+    /* Task 9a 修复(2026-08-20,挂起项 4):.tf-glass 与 .cmdk__dialog 同为
+       (0,1,0) 而源码更靠后,它的 transition(box-shadow/border-color) 把
+       dialog 的 transform 8px 滑入过渡整条顶掉,面板入场退成纯淡入。
+       此处 (0,2,0) 把两组过渡合并补回(同 Task 3 .workbench-panel.tf-glass
+       修复块模式);速查表 #cmdkHelp 同挂 glass-3,共用这一条。 */
+    transition: transform var(--dur-base) var(--ease),
+                box-shadow var(--liquid-motion),
+                border-color var(--liquid-motion);
 }
 @supports not (backdrop-filter: blur(1px)) {
     .cmdk__dialog.tf-glass { background: var(--color-bg-elevated); }

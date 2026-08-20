@@ -7867,7 +7867,11 @@ def _motion_rule_index(css):
 #   （border-color + box-shadow 的聚焦过渡，时长走 var(--liquid-motion)）。
 #   纯类选择器，落在 reduce 块 `*` 覆盖范围内，无需豁免登记。同批的
 #   `.tf-card` / `.tf-card::before` 不声明任何 transition/animation，不计数。
-_MOTION_BRANCH_COUNT = 50
+# 50 -> 51（2026-08-20 液态玻璃 Task 9a）：加 1 个分支 `.cmdk__dialog.tf-glass`
+#   （修复块：.tf-glass 的 transition 简写顶掉了 .cmdk__dialog 的 transform
+#   8px 滑入，此处 (0,2,0) 合并 transform + box-shadow + border-color 三组
+#   过渡）。复合类选择器，落在 reduce 块 `*` 覆盖范围内，无需豁免登记。
+_MOTION_BRANCH_COUNT = 51
 
 
 def test_motion_rule_index_is_complete():
@@ -8169,8 +8173,11 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # + box-shadow 的普通过渡）反解出一个上下文，纯类选择器，在 reduce 块 `*`
     # 覆盖范围内，不进豁免清单。`:focus` 态只改终值、不声明 transition，
     # 不额外反解；`.tf-card` 无动效，不产生上下文。
-    assert len(ctxs) == 47, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 47：\n'
+    # 47 -> 48（2026-08-20 液态玻璃 Task 9a）：`.cmdk__dialog.tf-glass`
+    # （cmdk 滑入修复块，transform + box-shadow + border-color 合并过渡）
+    # 反解出一个上下文，复合类选择器，在 reduce 块 `*` 覆盖范围内，不进豁免清单。
+    assert len(ctxs) == 48, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 48：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
