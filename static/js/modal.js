@@ -38,8 +38,14 @@
             this.el.removeAttribute('aria-hidden');
             document.body.classList.add('modal-open');
             const bd = document.createElement('div');
-            bd.className = 'modal-backdrop fade show';
+            // .fade 分两帧挂：同一帧里 'fade show' 一起上，浏览器把 opacity
+            // 的初值直接算成 1，淡入永不发生（修复轮 1/5）。先插 opacity:0 的
+            // fade，双 rAF 后补 show，过渡才真正跑起来。
+            bd.className = 'modal-backdrop fade';
             document.body.appendChild(bd);
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => bd.classList.add('show'));
+            });
             this._backdrop = bd;
             document.addEventListener('keydown', this._onKeydown);
             this.el.addEventListener('mousedown', this._onBackdrop);

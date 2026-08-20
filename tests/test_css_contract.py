@@ -3947,14 +3947,14 @@ def _create_panel_form_content_height(css):
 
         四种来源：
           1. style.css 给它某个 class 声明了 display:flex/inline-flex（.map-style-row）；
-          2. Bootstrap 的 flex 类（.d-flex / .row —— 从 vendor 解析，见
-             `_horizontal_classes`，不写死）；
+          2. 自有横排类（.d-flex / .tf-cols 等 —— 从 style.css 解析，见
+             `_horizontal_classes`，不写死；2026-08-20 Task 9b 前读 vendor）；
           3. 子元素全是 .form-check-inline —— inline-block 流，也挤在一行里；
-          4. 子元素全是 `.btn` —— 同样是 inline-block 流（vendor 的
-             `.btn{…display:inline-block…}`，由 `_bootstrap_btn_is_inline_block`
-             从 vendor 现读现验，不写死）。2026-08-15 加：#createBoundsEntries
+          4. 子元素全是 `.btn` —— 同样是行内级盒（自有 `.btn` 基规则是
+             inline-flex，由 `_assert_btn_is_inline_level` 现读现验，不写死）。
+             2026-08-15 加：#createBoundsEntries
              里「去框选」「手动输入范围」两颗按钮就是这个形态，模板注释也写着
-             「.btn 本身是 inline-block，两颗自然并排」。按竖排累加会**高估**，
+             「.btn 本身是行内级，两颗自然并排」。按竖排累加会**高估**，
              而本模型的方向必须是下界（见函数 docstring）。
         混排（既有 inline-block 子元素又有块级子元素）响亮失败：那种形态折几行
         取决于容器宽度，模型算不准，宁可报失效也不猜。

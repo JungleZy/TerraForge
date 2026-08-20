@@ -333,6 +333,7 @@
        ⚠️ --z-map-veil 必须 < --z-map-overlay：换地形时罩的那层雾不能盖住工具条
        （tests/test_fix_terrain_preview_transition.py 钉住）。 */
     --z-glass-under:      -2;      /* 玻璃 scrim 底色层：沉到宿主内容之下（.tf-glass::before / .tf-card::before） */
+    --z-glass-sheen:      -1;      /* 玻璃流光层：内容之下、scrim 之上（.tf-glass::after / .tf-btn::before） */
     --z-inline:            1;      /* 组件内叠层：.progress__label 盖在轨道上 */
     --z-inline-handle:     2;      /* 组件内叠层：面板宽度拖拽把手 */
     --z-tooltip:          20;      /* .hint::after 气泡（宿主自己不建层） */
@@ -2810,6 +2811,7 @@ html[lang="en"] .map-panel-triggers {
    WCAG 断言变成「本测试已失效」。 */
 .task-load-error {
     padding: var(--space-5) var(--space-4);
+    text-align: center;   /* 原 Bootstrap 的 text-center 工具类（修复轮 1/5 收进组件类） */
 }
 
 /* 发光改用品牌色柔和版：原先硬编码 rgba(59,130,246,.x)（#3b82f6 蓝，不在
@@ -3917,12 +3919,10 @@ h1, h2, h3, h4, h5, h6 {
 
 /* 这里原本是 `.form-control-sm { padding: 0.4rem 0.65rem }`（6.4/10.4px）。
    A5 / Task 10 把基础控件收到 3/8px 之后，这条「小号」变成了**比基础还大**
-   的规则 —— 全站唯一用它的 templates/history.html:47 搜索框会变成页面上最高
-   的输入框。语义倒挂，整条删除。
-   删掉之后 Bootstrap 的 `.form-control-sm { padding: .25rem .5rem }`(0,1,0) 也
-   赢不了：style.css 排在 bootstrap.min.css 之后，同特异度、且我们用的是
-   padding 四条长写，逐属性覆盖简写。实测 history 页 #searchInput 高度 28px，
-   与基础控件一致 —— 在这个密度下不再需要「更小的一档」。 */
+   的规则 —— 全站唯一用它的 history 搜索框会变成页面上最高的输入框。
+   语义倒挂，整条删除。2026-08-20 修复轮 1/5：模板侧的 `form-control-sm`
+   类名也随 Bootstrap 清退一并摘掉（#searchInput 高 28px，与基础控件一致
+   —— 在这个密度下不再需要「更小的一档」）。 */
 
 .mb-3 {
     margin-bottom: var(--gap-field) !important;
@@ -4207,6 +4207,10 @@ code {
 .gap-2 { gap: var(--space-2); }
 .mt-1 { margin-top: var(--space-1); }
 .mt-2 { margin-top: var(--space-2); }
+/* mt-3 / p-3：Bootstrap 的 1rem = 16px = --space-4（ui.js:282 的确认框标签、
+   plugins.js:84/183/300 的插件卡与表单在用，修复轮 1/5 补登记） */
+.mt-3 { margin-top: var(--space-4); }
+.p-3 { padding: var(--space-4); }
 .ms-2 { margin-inline-start: var(--space-2); }
 .mb-0 { margin-bottom: 0; }
 .mb-1 { margin-bottom: var(--space-1); }
@@ -4220,6 +4224,7 @@ code {
 .small { font-size: var(--font-size-sm); }
 .font-monospace { font-family: var(--font-mono); }
 .text-break { word-break: break-word; overflow-wrap: break-word; }
+.text-nowrap { white-space: nowrap; }
 .text-secondary { color: var(--color-text-secondary); }
 
 /* 只给读屏软件的内容（history 列表的加载提示）。与 .bounds-sr 同一份声明 —
@@ -5938,7 +5943,7 @@ code {
     content: "";
     position: absolute;
     inset: 0;
-    z-index: -1;
+    z-index: var(--z-glass-sheen);
     border-radius: inherit;
     background: var(--liquid-sheen);
     /* mix-blend-mode 不是动效属性,不动全站动效锚点 */
@@ -6007,7 +6012,7 @@ code {
     content: "";
     position: absolute;
     inset: 0;
-    z-index: -1;
+    z-index: var(--z-glass-sheen);
     border-radius: inherit;
     background: var(--liquid-scrim), var(--liquid-bg);
 }

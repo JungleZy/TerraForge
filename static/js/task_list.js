@@ -67,7 +67,7 @@
     // 算对比度，它按「恰好一个 <div>」认路 —— 多一层就把那条 WCAG 断言变成
     // 「本测试已失效」，而那正是当初实测逃逸出 Critical 的那一条。
     const ERROR_TEMPLATE = `
-        <div class="text-center text-danger task-load-error" v-if="loadError">
+        <div class="text-danger task-load-error" v-if="loadError">
             {{ loadError }}
             <button type="button" class="btn btn-sm btn-outline-secondary d-block mx-auto mt-2"
                     @click="reloadList($event)"
