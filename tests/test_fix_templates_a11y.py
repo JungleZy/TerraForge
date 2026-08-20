@@ -434,7 +434,10 @@ def test_task_detail_modal_no_longer_carries_an_inline_style_block():
 # 于是它降级成一个普通的「删掉就不许长回来」的零引用类，与另外五个同列。
 # 删除的完整记账在 static/css/style.css 里 `.btn-danger` 之后那段登记注释，
 # 以及 tests/test_button_geometry.py::test_btn_info_has_no_rule_branches。
-_DELETED_DEAD_CLASSES = ('.alert-success', '.alert-warning',
+# 2026-08-20 Task 9b：`.alert-warning` 移出本表 —— _plugins_content.html 的
+# 「完全权限」提示一直在用它（此前由 Bootstrap 的同名规则渲染，「零引用」的
+# 结论先于该页面），清退后已在 style.css 自有化，转入下面的存活断言清单。
+_DELETED_DEAD_CLASSES = ('.alert-success',
                          '.text-success', '.text-warning', '.text-info',
                          '.btn-info')
 
@@ -474,7 +477,8 @@ def test_zero_reference_bootstrap_overrides_are_deleted():
         for sel, _ in _top_level_rules(css)
         for part in _selector_parts(sel)
     }
-    for keeper in ('.alert-info', '.alert-danger', '.text-danger', '.text-muted'):
+    for keeper in ('.alert-info', '.alert-danger', '.alert-warning',
+                   '.text-danger', '.text-muted'):
         assert any(re.fullmatch(re.escape(keeper), s) for s in survivors), (
             f'{keeper} 有真实引用，不该被一起删掉 —— 本测试已失效')
 

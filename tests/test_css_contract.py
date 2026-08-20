@@ -2191,17 +2191,16 @@ def _start_tags(markup):
 
 
 def test_bootstrap_dark_theme_is_enabled_on_the_html_element():
-    """`<html>` 标签上必须有 data-bs-theme="dark"。
+    """`<html>` 标签上必须有 data-bs-theme="dark"，且两个主题的 :root 块都
+    必须声明 color-scheme。
 
-    为什么这一个属性是整个任务的核心：Bootstrap 5.3 的
-    `[data-bs-theme=dark]` 选择器块里第一条声明就是 `color-scheme: dark`
-    （已核对 CDN 源码 bootstrap@5.3.0/dist/css/bootstrap.css 的
-    `[data-bs-theme=dark]` 块），
-    浏览器据此把**原生控件**——select 弹层、number 微调箭头、文件选择按钮
-    ——整体渲染成深色。同时它把 `--bs-tertiary-bg` 从 #f8f9fa 翻成 #2b3035，
-    修掉 `.form-control::file-selector-button` 的灰白底。
-    缺了它，自定义 CSS 只是在亮色 Bootstrap 上刷了一层深色漆，
-    凡是我们没逐条覆盖到的地方都会漏白。
+    为什么这一个属性是整个任务的核心：浏览器据此（配合 :root 的
+    `color-scheme: dark`）把**原生控件**——select 弹层、number 微调箭头、
+    文件选择按钮——整体渲染成深色。缺了它，自定义 CSS 只是在亮色基底上刷了
+    一层深色漆，凡是我们没逐条覆盖到的地方都会漏白。
+    （2026-08-20 Task 9b：color-scheme 与原生控件皮肤原由 Bootstrap 5.3 的
+    `[data-bs-theme=dark]` 块提供，清退后由 style.css 自有；属性名
+    `data-bs-theme` 保留不变，它现在纯是本站的主题开关。）
 
     ⚠️ 强度说明（p2-assertion-review.md 的 I 条）：计划原文写的是
         assert 'data-bs-theme="dark"' in html
@@ -2223,100 +2222,62 @@ def test_bootstrap_dark_theme_is_enabled_on_the_html_element():
     theme = html_tags[0].get('data-bs-theme')
     assert theme == 'dark', (
         f'<html> 的 data-bs-theme 是 {theme!r}，必须是 "dark"。\n'
-        '没有它，Bootstrap 整体仍处于亮色模式（实测 --bs-body-bg: #fff、'
-        '--bs-tertiary-bg: #f8f9fa），原生控件会在深色界面上漏出白块。'
+        '它是 SSR / 无 JS 回退的默认主题：亮暗令牌块的默认值按暗色落。'
+    )
+
+    # 2026-08-20 Task 9b（清退）补强：属性的消费者现在是我们自己 ——
+    # 原生控件配色（select 弹层 / number 微调箭头 / 文件选择按钮 / 滚动条）
+    # 靠 color-scheme，两个主题的 :root 块都必须声明它（原由 Bootstrap 的
+    # [data-bs-theme=dark] 块提供）。
+    css = _css()
+    root_bodies = [b for sel, b, ctx in _rules_ctx(css)
+                   if not ctx and sel == ':root']
+    light_bodies = [b for sel, b, ctx in _rules_ctx(css)
+                    if not ctx and sel == ':root[data-bs-theme="light"]']
+    assert root_bodies and light_bodies, (
+        ':root / :root[data-bs-theme="light"] 令牌块找不到了 —— 本测试已失效'
+    )
+    dark_cs = _decl_map(root_bodies[0]).get('color-scheme', '').strip()
+    light_cs = _decl_map(light_bodies[0]).get('color-scheme', '').strip()
+    assert dark_cs == 'dark', (
+        f':root 的 color-scheme 是 {dark_cs!r}，期望 dark —— '
+        '没有它，原生控件会在深色界面上漏出白块（下拉弹层 / 微调箭头）'
+    )
+    assert light_cs == 'light', (
+        f'亮色令牌块的 color-scheme 是 {light_cs!r}，期望 light'
     )
 
 
-# Bootstrap 首个带 `[data-bs-theme=dark]` 的版本。
-# 5.3.0 的 release note 把「color modes」列为该版本的头号新特性；5.2.x 的构建里
-# 全文件搜不到 data-bs-theme（实测：5.3.0 的 bootstrap.css 有 13 处）。
-MIN_BOOTSTRAP_VERSION = (5, 3)
+# 2026-08-20 Task 9b（Bootstrap 清退）：这里原本是
+# MIN_BOOTSTRAP_VERSION / _BOOTSTRAP_VERSION_RES / _bootstrap_asset_urls() /
+# test_bootstrap_build_is_new_enough_to_have_dark_theme —— 钉「base.html 引的
+# Bootstrap >= 5.3，否则 data-bs-theme 没人读」。清退之后前提整个反转：
+# Bootstrap 不再是依赖，**出现**引用才是缺陷。语义由下面的
+# test_base_html_references_no_bootstrap_assets 继承（方向相反、同样 fail-loud）。
+def test_base_html_references_no_bootstrap_assets():
+    """base.html 不许再出现任何 Bootstrap 资源引用（CSS / JS / vendor 路径）。
 
-# CDN 上两种常见的版号写法：
-#   npm 系（jsdelivr / unpkg）：.../bootstrap@5.3.0/dist/css/bootstrap.min.css
-#   cdnjs 系：                 .../ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css
-_BOOTSTRAP_VERSION_RES = (
-    re.compile(r'bootstrap@(\d+)\.(\d+)(?:\.(\d+))?', re.I),
-    re.compile(r'/bootstrap/(\d+)\.(\d+)(?:\.(\d+))?/', re.I),
-)
-
-
-def _bootstrap_asset_urls(markup):
-    """base.html 里引用 Bootstrap 的全部资源 URL（`<link href>` / `<script src>`）。"""
-    out = []
+    这是 Task 9b 清退的收口断言：原 `test_bootstrap_build_is_new_enough_
+    to_have_dark_theme`（钉版本号 >= 5.3）的反转。原生控件皮肤（select 箭头 /
+    文件选择按钮 / 勾选框对勾 / 滚动条配色）已由 style.css 的
+    --form-select-arrow / .form-control::file-selector-button /
+    --form-check-check / color-scheme 令牌自有接管 —— 谁把 Bootstrap 引回来，
+    谁就得同时回答「两套定义谁赢」的问题。
+    """
+    markup = _template('base.html')
+    hits = []
     for name, attrs in _start_tags(markup):
         url = attrs.get('href') if name == 'link' else attrs.get('src') if name == 'script' else None
         if url and 'bootstrap' in url.lower():
-            out.append((name, url))
-    return out
-
-
-def test_bootstrap_build_is_new_enough_to_have_dark_theme():
-    """base.html 引的 Bootstrap 必须 >= 5.3 —— 否则 data-bs-theme 是个没人读的属性。
-
-    ⚠️ 这条是评审逼出来的，**上一条断言对它完全失明**：把 base.html 里的
-    `bootstrap@5.3.0` 改成 `5.2.3`（或任何不含 `[data-bs-theme=dark]` 的构建），
-    `<html data-bs-theme="dark">` 立刻退化成一个纯装饰属性 —— 三处漏白原样回来、
-    select 箭头掉回 Bootstrap 亮色的 #343a40（对面板底 1.42:1，等于看不见），
-    **而全部测试照旧全绿**。
-
-    为什么本次提交之后特别需要它：A3/Task 8 删掉了站内那条硬编码
-    `--bs-form-select-bg-img` 的覆盖（因为 `[data-bs-theme=dark] .form-select`
-    (0,2,0) 无条件压过它），连带删掉了仅有的两条对箭头**渲染结果**敏感的断言
-    （test_form_select_arrow_stroke_matches_palette /
-    test_form_select_arrow_has_sufficient_contrast）。删除本身是对的 ——
-    那两条钉的是一段已成死代码的规则 —— 但删完之后「深色主题真的生效了」
-    这个契约只剩上一条断言在守，而它只看得见 HTML 属性、看不见属性有没有人消费。
-    这条把另一半补上：**属性在** + **能读懂这个属性的 Bootstrap 也在**。
-
-    为什么不需要联网（报告初稿在这里做了个假二选一，已订正）：版本号是**字面写在
-    base.html 里**的，而本文件早就在读这个文件了。真正守不住的是「Bootstrap 在
-    5.3.x 内部把 #adb5bd 改成别的颜色」那种漂移 —— 那才需要解析 CDN 上的 CSS，
-    代价大于收益，明确放弃（见 p2-task-8-report.md §10）。
-
-    覆盖范围（诚实说明）：这条守的是「声明的版本号够新」。它保证不了
-    「浏览器真的拿到了这个文件」。**vendor 本地化之后这层已经补上了**：
-    Bootstrap 落在 static/vendor/bootstrap/5.3.0/，由
-    test_vendor_tree_matches_the_manifest（文件在、字节数对）+
-    test_vendor_builds_match_the_version_in_their_path（文件里真有
-    `[data-bs-theme=dark]`）+ test_no_template_references_an_external_url
-    （没人把 <link> 改回 CDN）三条合起来钉住。本条只剩「模板声明的版本号够新」
-    这一层语义。（本地化之前这里写的是「属于本项目既有的 CDN 依赖问题」，
-    并指向 style.css 里那段 .row/.col-* 离线兜底注释 —— 那段已随本地化删除。）
-    """
-    assets = _bootstrap_asset_urls(_template('base.html'))
-    assert assets, (
-        'base.html 里找不到任何引用 Bootstrap 的 <link>/<script> —— '
-        '要么改用了别的引入方式（本测试已失效，请连同解析逻辑一起改），'
-        '要么 Bootstrap 被整个拿掉了'
+            hits.append(f'<{name}> {url}')
+    assert not hits, (
+        'base.html 里又出现了 Bootstrap 资源引用（Bootstrap 已于 2026-08-20 '
+        'Task 9b 清退，皮肤与弹窗行为全部自有）：\n'
+        + '\n'.join('  ' + h for h in hits)
     )
-    problems = []
-    for tag, url in assets:
-        version = None
-        for pattern in _BOOTSTRAP_VERSION_RES:
-            m = pattern.search(url)
-            if m:
-                version = tuple(int(g) for g in m.groups()[:2])
-                break
-        if version is None:
-            problems.append(
-                f'<{tag}> {url} —— 解析不出版本号。若是改成了本地 vendor 副本，'
-                '请把版本校验换成对该文件内容的检查（例如断言文件里有 '
-                '`[data-bs-theme=dark]`），不要直接删掉本断言'
-            )
-        elif version < MIN_BOOTSTRAP_VERSION:
-            problems.append(
-                f'<{tag}> {url} —— 版本 {version[0]}.{version[1]} < '
-                f'{MIN_BOOTSTRAP_VERSION[0]}.{MIN_BOOTSTRAP_VERSION[1]}，'
-                '该构建不含 [data-bs-theme=dark]'
-            )
-    assert not problems, (
-        'base.html 引的 Bootstrap 版本读不懂或太旧 —— '
-        '<html data-bs-theme="dark"> 会变成一个没人读的属性，'
-        '文件选择按钮 / number 微调箭头 / select 弹层三处漏白全部回潮，'
-        'select 箭头掉回 #343a40（对面板底 1.42:1）：\n'
-        + '\n'.join('  ' + p for p in problems)
+    # 磁盘侧的配对断言：vendor 目录必须真的不在了
+    assert not os.path.isdir(os.path.join(_STATIC_DIR, 'vendor', 'bootstrap')), (
+        'static/vendor/bootstrap/ 又回来了 —— 与上面的模板断言是同一枚硬币的两面'
     )
 
 
@@ -3296,237 +3257,131 @@ VIEWPORT_1366_HEIGHT_PX = 768
 # 这条能力现在服务于内容棘轮。
 # --------------------------------------------------------------------------
 
-_BOOTSTRAP_MIN_CSS = os.path.join(
-    os.path.dirname(os.path.dirname(CSS_PATH)),
-    'vendor', 'bootstrap', '5.3.0', 'bootstrap.min.css')
+# 2026-08-20 Task 9b（Bootstrap 清退）删除登记：这里原本是
+# `_BOOTSTRAP_MIN_CSS` + `_bootstrap_modal_metrics()` + `_modal_metrics()` ——
+# 从 vendor 的 bootstrap.min.css 解析弹窗框架度量的函数组。它们在
+# 2026-08-15 Task 5（弹窗 -> 满高面板）之后就没有调用方了（弹窗框架不参与
+# 提交钮位置公式，见上面的沿革第 3 代），vendor 删除后连「能跑」都不成立，
+# 整组删除。弹窗骨架样式现由 style.css 的 .modal / .modal-dialog /
+# .modal-content 规则自有提供。
 
 
-def _bootstrap_modal_metrics():
-    """从 vendor 的 bootstrap.min.css 解析弹窗布局度量（全部 fail-loud）。
+# 2026-08-20 Task 9b（Bootstrap 清退）：下面三个帮手原来都解析 vendor 的
+# bootstrap.min.css，vendor 删除后全部改读 style.css —— 同一个模型、同一份
+# fail-loud 纪律，只是真值来源从外部依赖换成本站唯一来源（收紧：少了一层
+# 「vendor 与 style.css 谁赢」的兜底分支，style.css 沉默即失效）。
+def _utility_margins(css):
+    """style.css 的 `.mt-N` / `.mb-N` 间距工具类 -> px（清退后它们全部自有）。
 
-    解析 vendor 文件而不是手写常量的理由与本文件其它 vendor 探针一致：
-    Bootstrap 升级改了这些值时，这里要么跟着算出新的（正确的）结果，
-    要么因为模式匹配不上而报「测试已失效」——两种情况都不会静默放行。
-
-    ⚠️ 本函数返回的是**兜底值**，调用方一律走 `_modal_metrics(css)`。理由与
-       BS_BTN_PADDING_Y_PX 那段注释完全同构（`.btn` 的纵向内边距已经为此翻过
-       一次车）：style.css 排在 bootstrap.min.css 之后、同名属性上特异度相同，
-       **浏览器里 style.css 赢**。拿 vendor 当真值 = 拿一个和模型同样过期的
-       常量当真值。
-
-    ⚠️ --bs-modal-margin 在 vendor 里出现**两次**：
-           .modal{--bs-modal-margin:0.5rem}                        基础
-           @media (min-width:576px){.modal{--bs-modal-margin:1.75rem}}
-       1366px 视口命中后者（28px）。第一版用 `re.search` 取了第一条（8px），
-       弹窗的纵向起点因此低算 20px（实测 .modal-dialog 的 margin-top = 28px）。
-       现在取最后一条，并要求这两条递增 —— 条数或顺序变了就响亮失败。
+    从样式表解析而不是写死「.mt-2 == 8」：工具类的值哪天调了，模型跟着算；
+    解析不到就响亮失败。
     """
-    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
-        src = f.read()
-
-    def grab_all(pattern, label):
-        vals = re.findall(pattern, src)
-        assert vals, f'vendor bootstrap.min.css 里找不到 {label} —— 构建变了，本测试已失效'
-        return vals
-
-    def grab(pattern, label):
-        return grab_all(pattern, label)[0]
-
-    def to_px(raw):
-        m = re.match(r'^([\d.]+)(px|rem)$', raw)
-        assert m, f'{raw!r} 不是 px/rem 字面量 —— 本测试已失效'
-        return float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
-
-    margins = [to_px(v) for v in grab_all(
-        r'--bs-modal-margin:([\d.]+rem)', '弹窗 margin')]
-    assert len(margins) == 2 and margins[1] > margins[0], (
-        f'--bs-modal-margin 不再是「基础 + ≥576px 断点」两条递增的声明（解析到 '
-        f'{margins}）—— 1366px 视口该用哪一条说不清了，本测试已失效'
-    )
-
-    # .modal-header .btn-close 的纵向内边距与负外边距在 vendor 里是同一个变量的
-    # +.5 / -.5，**精确抵消**，所以它只按 1em 的图标盒参与标题行高度。
-    # 实测（1366x768 headless Chromium）：btn-close 外框 31px（15 + 2×8），标题
-    # 行盒 27px，btn-close 上下各溢出 2px，而 .modal-header 高度 = 24+24+27+1 = 76
-    # —— 那 31px 从来没进过高度。旧常量 BS_MODAL_BTN_CLOSE_PX = 22.5 把 1.5em
-    # 当成布局高度，是个恰好不吃紧（27 > 22.5）所以一直没被发现的虚构值。
-    close_rule = grab(r'\.modal-header \.btn-close\{([^}]*)\}', '.modal-header .btn-close')
-    assert ('padding:calc(var(--bs-modal-header-padding-y) * .5)' in close_rule
-            and 'margin:calc(-.5 * var(--bs-modal-header-padding-y))' in close_rule), (
-        '.modal-header .btn-close 的「内边距 = 负外边距」抵消关系变了'
-        f'（{close_rule[:120]!r}）—— btn-close 会开始参与标题行高度，本测试已失效'
-    )
-
-    return {
-        # ≥576px 的 .modal-dialog 上外边距（1366px 视口命中这条）
-        'margin_top': margins[-1],
-        'padding': to_px(grab(r'--bs-modal-padding:([\d.]+rem)', '弹窗 body padding')),
-        'header_padding': to_px(grab(
-            r'--bs-modal-header-padding:([\d.]+rem)', '弹窗 header padding')),
-        'border_width': to_px(grab(r'--bs-border-width:([\d.]+px)', '边框宽度')),
-        'title_line_height': float(grab(
-            r'--bs-modal-title-line-height:([\d.]+)', '标题行高')),
-        # btn-close 参与布局的高度 = 图标盒 1em（内边距被负外边距抵掉，见上）
-        'btn_close_em': 1.0,
-    }
-
-
-def _modal_metrics(css):
-    """弹窗框架度量：**style.css 优先，vendor 兜底**。
-
-    形状照抄同文件里 `.btn` 那条已经修好的路 —— `_effective_button_height`
-    从 style.css 解析纵向内边距，只在 style.css 沉默时回落到 BS_BTN_PADDING_Y_PX。
-    那段注释里记着这个盲区第一次发作的样子：`.btn{padding:1rem 2rem}` 时
-    「真实 bottom 735.53 而模型仍算 715.53 …… 那条断言比的是『模型 vs 一个和
-    模型同样过期的常量』，两边一起错，差值当然是 0」。弹窗这一环犯的是同一个
-    错（D3），所以修法也一样。
-
-    实测确认的三处覆盖（各自与 vendor 同特异度、style.css 在后所以赢）：
-        .modal-header  { padding: var(--space-5) }  -> 24px（vendor 16）
-        .modal-body    { padding: var(--space-5) }  -> 24px（vendor 16）
-        .modal-content { border: 1px solid … }      -> 1px（与 vendor 同值）
-    `.modal-dialog` 的外边距 style.css 目前没有覆盖，仍走 vendor 的 28px ——
-    但下面照样查，将来有人覆盖了模型要自动跟上。
-
-    这个盲区的指纹：修好之前把 `--space-5` 扰动 1px，模型输出变化恰好 0.00。
-    """
-    metrics = dict(_bootstrap_modal_metrics())
-
-    def own_body(selector):
-        bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == selector and not ctx]
-        assert len(bodies) <= 1, (
-            f'期望至多 1 条 `{selector}` 规则，实际 {len(bodies)} 条 —— '
-            '哪一条赢说不清了，本模型已失效'
-        )
-        return bodies[0] if bodies else None
-
-    def own_pad_top(selector):
-        body = own_body(selector)
-        if body is None:
-            return None
-        decls = dict((n, v) for n, v, _i in _expanded_box_decls(body))
-        raw = decls.get('padding-top')
-        if raw is None:
-            return None
-        v = _resolve_length_px(css, raw)
-        assert v is not None, (
-            f'`{selector}` 的 padding-top = {raw!r}，解析不了 —— 本模型已失效（不是通过）'
-        )
-        return v
-
-    for key, selector in (('header_padding', '.modal-header'), ('padding', '.modal-body')):
-        got = own_pad_top(selector)
-        if got is not None:
-            metrics[key] = got
-
-    content = own_body('.modal-content')
-    if content is not None:
-        raw = _decl_map(content).get('border')
-        if raw:
-            m = re.match(r'^([\d.]+)(px|rem)\b', _IMPORTANT_RE.sub('', raw).strip())
-            assert m, (
-                f'`.modal-content` 的 border = {raw!r} 里读不出宽度 —— 本模型已失效'
-            )
-            metrics['border_width'] = float(m.group(1)) * (16 if m.group(2) == 'rem' else 1)
-
-    dialog = own_body('.modal-dialog')
-    if dialog is not None:
-        decls = _decl_map(dialog)
-        raw = decls.get('margin-top') or decls.get('margin')
-        if raw:
-            top = _IMPORTANT_RE.sub('', raw).strip().split()[0]
-            v = _resolve_length_px(css, top)
-            assert v is not None, (
-                f'`.modal-dialog` 的上外边距 {top!r} 解析不了 —— 本模型已失效'
-            )
-            metrics['margin_top'] = v
-
-    return metrics
-
-
-def _bootstrap_utility_margins():
-    """vendor 的 `.mt-N` / `.mb-N` 间距工具类 -> px。
-
-    从 vendor 解析而不是写死「.mt-2 == 8」：Bootstrap 的 $spacer 一改这里跟着
-    变，解析不到就响亮失败。style.css 覆盖了同名工具类（`.mb-3` 就是）时由
-    调用方优先取 style.css。
-    """
-    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
-        src = f.read()
     out = {}
-    for cls, raw in re.findall(
-            r'\.(m[tb]-\d+)\{margin-(?:top|bottom):(-?[\d.]+rem|0)!important\}', src):
-        out[cls] = 0.0 if raw == '0' else float(raw[:-3]) * 16
+    for sel, body, ctx in _rules_ctx(css):
+        if ctx:
+            continue
+        for branch in _selector_parts(sel):
+            m = re.fullmatch(r'\.(m[tb]-\d+)', branch)
+            if not m:
+                continue
+            decls = _decl_map(body)
+            raw = decls.get('margin-top' if m.group(1).startswith('mt') else 'margin-bottom')
+            if raw is None:
+                continue
+            v = _resolve_length_px(css, raw)
+            assert v is not None, (
+                f'`.{m.group(1)}` 的外边距是 {raw!r}，解析不了 —— 本模型已失效'
+            )
+            out[m.group(1)] = v
     assert {'mt-2', 'mb-2', 'mb-3'} <= set(out), (
-        'vendor bootstrap.min.css 里解析不到 .mt-2 / .mb-2 / .mb-3 间距工具类 '
-        '—— 本模型已失效'
+        f'style.css 里解析不到 .mt-2 / .mb-2 / .mb-3 间距工具类（拿到 {sorted(out)}）'
+        ' —— 本模型已失效'
     )
     return out
 
 
-def _bootstrap_horizontal_classes():
-    """vendor 里带 `display: flex / inline-flex` 的类名集合。
+def _horizontal_classes(css):
+    """style.css 里带 `display: flex / inline-flex / grid` 的类名集合。
 
     高度模型要靠它区分「横排容器」（子元素挤在一行，高度取最高的那个）和
-    「竖排容器」（子元素各占一行，高度累加）。`.row` / `.d-flex` 写死在模型里
-    也能跑，但 Bootstrap 哪天把 `.row` 改成 grid，写死的版本会静默算错。
+    「竖排容器」（子元素各占一行，高度累加）。清退后横排容器全部自有：
+    工具类 .d-flex 与自有栅格 .tf-cols（display:grid 同样是横排语义）。
     """
-    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
-        src = f.read()
-    out = {cls for cls, body in re.findall(r'\.([-\w]+)\{([^}]*)\}', src)
-           if re.search(r'display:\s*(?:inline-)?flex', body)}
-    assert {'d-flex', 'row'} <= out, (
-        'vendor bootstrap.min.css 里 .d-flex / .row 不再是 display:flex —— 本模型已失效'
+    out = set()
+    for sel, body, ctx in _rules_ctx(css):
+        decls = _decl_map(body)
+        if not re.fullmatch(r'(?:inline-)?flex|grid', decls.get('display', '').strip()):
+            continue
+        for branch in _selector_parts(sel):
+            m = re.fullmatch(r'\.([-\w]+)', branch)
+            if m:
+                out.add(m.group(1))
+    assert {'d-flex', 'tf-cols'} <= out, (
+        f'style.css 里 .d-flex / .tf-cols 不再是横排容器（拿到 {sorted(out)}）'
+        ' —— 本模型已失效'
     )
     return frozenset(out)
 
 
-def _assert_bootstrap_btn_is_inline_block():
-    """vendor 的 `.btn` 必须是 inline-block —— 高度模型「两颗按钮并排」的依据。
+def _assert_btn_is_inline_level(css):
+    """`.btn` 基规则必须是行内级盒 —— 高度模型「两颗按钮并排」的依据。
 
-    只在 vendor 里验，不写死：Bootstrap 哪天把 `.btn` 改成 `display:block`，
-    #createBoundsEntries 里那两颗入口就各占一行，模型按一行算会**低估**一整行。
-    那时这里响亮失败，而不是静默算错。style.css 侧没有覆盖 `.btn` 的 display
-    （只有 `.btn.btn-icon` / `.btn.path-browse` 那组把它换成 inline-flex，
-    仍是行内级），所以 vendor 这一条就是终值。
+    清退前验的是 vendor 的 inline-block；清退后 `.btn` 是本站自有的
+    inline-flex（同一行内级语义）。哪天有人把它改成 block，
+    #createBoundsEntries 里那两颗入口就各占一行，模型按一行算会**低估**
+    一整行 —— 那时这里响亮失败，而不是静默算错。
     """
-    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
-        src = f.read()
-    assert re.search(r'\.btn\{[^}]*display:\s*inline-block', src), (
-        'vendor bootstrap.min.css 里 `.btn` 不再是 display:inline-block —— '
+    bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == '.btn' and not ctx]
+    assert len(bodies) == 1, (
+        f'期望 style.css 顶层恰好 1 条 `.btn` 基规则，实际 {len(bodies)} 条'
+        ' —— 本模型已失效'
+    )
+    display = _decl_map(bodies[0]).get('display', '').strip()
+    assert display in ('inline-block', 'inline-flex'), (
+        f'`.btn` 的 display 是 {display!r}，不是行内级 —— '
         '两颗按钮还并不并排说不准了，本模型已失效（不是通过）'
     )
 
 
-def _bootstrap_form_check_metrics():
-    """vendor `.form-check` 的 (min-height, margin-bottom)（px）。
+def _form_check_metrics(css):
+    """style.css `.form-check` 的 (min-height, margin-bottom)（px）。
 
-    勾选行的高度由 Bootstrap 的 `min-height:1.5rem`(24px) 决定，**不是**由本站
-    放大到 1.25rem(20px) 的 .form-check-input 决定（20 < 24 顶不动）。实测：
-    一行勾选 24px、行下 2px；两个 .form-check-inline 并排那层 div 实测 26 = 24+2。
+    勾选行的高度由 `.form-check` 的 min-height（24px = --space-5，原 Bootstrap
+    的 1.5rem）决定，**不是**由本站放大到 1.25rem(20px) 的 .form-check-input
+    决定（20 < 24 顶不动）。实测：一行勾选 24px、行下 2px；两个
+    .form-check-inline 并排那层 div 实测 26 = 24+2。
     """
-    with open(_BOOTSTRAP_MIN_CSS, encoding='utf-8') as f:
-        src = f.read()
-    m = re.search(r'\.form-check\{([^}]*)\}', src)
-    assert m, 'vendor bootstrap.min.css 里找不到 .form-check —— 本模型已失效'
+    bodies = [b for sel, b, ctx in _rules_ctx(css) if sel == '.form-check' and not ctx]
+    assert len(bodies) == 1, (
+        f'期望 style.css 顶层恰好 1 条 `.form-check` 规则，实际 {len(bodies)} 条'
+        ' —— 本模型已失效'
+    )
+    decls = _decl_map(bodies[0])
     out = []
     for prop, label in (('min-height', '勾选行最小高度'), ('margin-bottom', '勾选行下外边距')):
-        mm = re.search(re.escape(prop) + r':([\d.]+rem|[\d.]+px)', m.group(1))
-        assert mm, f'vendor .form-check 里读不出 {label} —— 本模型已失效'
-        raw = mm.group(1)
-        out.append(float(raw[:-3]) * 16 if raw.endswith('rem') else float(raw[:-2]))
+        raw = decls.get(prop)
+        assert raw, f'style.css 的 .form-check 里读不出 {label} —— 本模型已失效'
+        v = _resolve_length_px(css, raw)
+        assert v is not None, (
+            f'`.form-check` 的 {prop} = {raw!r}，解析不了 —— 本模型已失效'
+        )
+        out.append(v)
     return tuple(out)
 
 
-# ---- 来自 Bootstrap、本文件不控制的几个数 --------------------------------
-# 每一条都标了 CDP 实测值。它们是模型里唯一「不是从 style.css 解析出来」的输入，
-# 所以单独列出来：Bootstrap 大版本升级时这几个数要重测。
-# `test_bootstrap_build_is_new_enough_to_have_dark_theme` 已经钉住 >= 5.3。
+# ---- 模型的常量输入 ------------------------------------------------------------
+# 2026-08-20 Task 9b（Bootstrap 清退）：这一组原来叫「来自 Bootstrap、本文件
+# 不控制的几个数」。清退后三个数里有两个已经是本站自有（body 的 line-height、
+# .alert 的 margin-bottom 都在 style.css 里），由各自的解析点直接读样式表；
+# 剩下 BS_BODY_LINE_HEIGHT 仍作常量留在这里 —— 模型里 6 处「没声明 line-height
+# 的文字行高 = 字号 × 1.5」的公式都引用它。它与 style.css 的 `body` 规则之间
+# 由 test_body_line_height_matches_the_model 钉住。
 
-# Bootstrap 的 --bs-body-line-height。用于所有没有显式声明 line-height 的文字
+# 自有 reboot 的 body line-height（原 Bootstrap 的 --bs-body-line-height）。
+# 用于所有没有显式声明 line-height 的文字
 # （.form-label / .form-group-label / .bounds-grid / .btn）。实测：14px 字 -> 21px 行高。
 BS_BODY_LINE_HEIGHT = 1.5
-# Bootstrap `.btn { padding: .375rem .75rem }` 的纵向内边距。
+# `.btn` 纵向内边距的兜底值（原 Bootstrap `.btn { padding: .375rem .75rem }`）。
 # ⚠️ 这是**兜底值**，只在 style.css 自己没声明 `.btn` 的纵向内边距时才用。
 #    第一版把它当成写死的常量（`btn_h = 2*6.0 + font*1.5`），于是按钮的
 #    padding / min-height / height / border 全在模型的视野之外。评审实测三例：
@@ -3537,10 +3392,6 @@ BS_BODY_LINE_HEIGHT = 1.5
 #    「模型 vs 一个和模型同样过期的常量」，两边一起错，差值当然是 0。
 #    现在由 `_effective_button_height` 从 style.css 解析，这个常量退居兜底。
 BS_BTN_PADDING_Y_PX = 6.0
-# Bootstrap `.alert { margin-bottom: 1rem }`。本站没有覆盖它。
-BS_ALERT_MARGIN_BOTTOM_PX = 16.0
-
-
 def _effective_button_height(css, ctx=None):
     """模拟层叠，算出一颗按钮的**最终**外框高度（默认 `#createTaskBtn`）。
 
@@ -3924,8 +3775,10 @@ def _create_panel_form_content_height(css):
     只是不再冒充折叠线判据。
 
     结构从 templates/index.html 解析（**整棵子树**，见 `_FormStructureParser`），
-    尺寸从 style.css 解析。只有 BS_BODY_LINE_HEIGHT / BS_BTN_PADDING_Y_PX /
-    BS_ALERT_MARGIN_BOTTOM_PX 三个数来自 Bootstrap。**不再读 _modal_metrics**：
+    尺寸从 style.css 解析。剩 BS_BODY_LINE_HEIGHT / BS_BTN_PADDING_Y_PX 两个
+    兜底常量（语义见常量上方的登记注释；2026-08-20 Task 9b 起间距工具类、
+    横排容器、勾选行高度、.alert 下外边距也全部改读 style.css）。
+    **不再读 _modal_metrics**：
     弹窗框架整个不存在了，而 .modal-header / .modal-title / .modal-content 三条
     规则**仍在** style.css 里（#taskDetailModal 与 #pathBrowserModal 还在用，
     tests/test_elevation_glass.py 钉着不许删）—— 也就是说继续读它们不会响亮
@@ -4045,6 +3898,9 @@ def _create_panel_form_content_height(css):
     text_mt = rule_px('.form-text', 'margin-top')
 
     alert_pad = rule_px('.alert', 'padding-top')
+    # 下外边距原来自 Bootstrap `.alert` 的 1rem（BS_ALERT_MARGIN_BOTTOM_PX
+    # 常量）；2026-08-20 Task 9b 起本站自有（--space-4），改为从样式表解析。
+    alert_mb = rule_px('.alert', 'margin-bottom')
     alert_border = border_px('.alert', 'border')
     grid_font = rule_px('.bounds-grid', 'font-size')
     grid_line = grid_font * BS_BODY_LINE_HEIGHT
@@ -4052,32 +3908,17 @@ def _create_panel_form_content_height(css):
     grid_h = 2 * grid_line + grid_row_gap          # 恰好 2 行，见下一节的断言
     alert_h = 2 * alert_pad + 2 * alert_border + grid_h
 
-    utils = _bootstrap_utility_margins()
-    horizontal_classes = _bootstrap_horizontal_classes()
-    _assert_bootstrap_btn_is_inline_block()
-    check_h, check_mb = _bootstrap_form_check_metrics()
-    check_own = rule_body('.form-check')
-    if check_own is not None:
-        decls = _decl_map(check_own)
-        for prop in ('min-height', 'margin-bottom'):
-            if prop not in decls:
-                continue
-            v = _resolve_length_px(css, decls[prop])
-            assert v is not None, (
-                f'style.css 的 `.form-check` 把 {prop} 写成 {decls[prop]!r}，'
-                '解析不了 —— 本模型已失效'
-            )
-            if prop == 'min-height':
-                check_h = v
-            else:
-                check_mb = v
+    utils = _utility_margins(css)
+    horizontal_classes = _horizontal_classes(css)
+    _assert_btn_is_inline_level(css)
+    check_h, check_mb = _form_check_metrics(css)
 
     def util_margin(classes, side):
         """`mt-N` / `mb-N` 工具类给出的外边距；没有这类 class 返回 None。
 
-        style.css 覆盖了同名工具类时以 style.css 为准 —— `.mb-3` 正是这种：
-        vendor 是 `1rem!important`、style.css 是 `var(--gap-field)!important`，
-        同特异度同 !important、style.css 在后所以赢（8px 而不是 16px）。
+        2026-08-20 Task 9b（清退）后工具类全部自有，`_utility_margins(css)`
+        解析的就是 style.css 自己 —— 原来那层「style.css 覆盖优先、vendor
+        兜底」的双源合并随之取消，少了一个模型与真实层叠不一致的盲区。
         """
         prefix = 'mt-' if side == 'top' else 'mb-'
         got = None
@@ -4107,7 +3948,7 @@ def _create_panel_form_content_height(css):
         四种来源：
           1. style.css 给它某个 class 声明了 display:flex/inline-flex（.map-style-row）；
           2. Bootstrap 的 flex 类（.d-flex / .row —— 从 vendor 解析，见
-             `_bootstrap_horizontal_classes`，不写死）；
+             `_horizontal_classes`，不写死）；
           3. 子元素全是 .form-check-inline —— inline-block 流，也挤在一行里；
           4. 子元素全是 `.btn` —— 同样是 inline-block 流（vendor 的
              `.btn{…display:inline-block…}`，由 `_bootstrap_btn_is_inline_block`
@@ -4157,7 +3998,7 @@ def _create_panel_form_content_height(css):
         if 'form-control' in cls or 'form-select' in cls:
             return out(ctl_h)
         if 'alert' in cls:
-            return out(alert_h, 0.0, BS_ALERT_MARGIN_BOTTOM_PX)
+            return out(alert_h, 0.0, alert_mb)
         if 'bounds-readout' in cls:
             # 选区四至读数（#createBoundsReadout）。模板里是个**空 div**，内容由
             # map.js 的 updateBoundsInfo() 在已框选状态下全量重建，所以必须进
@@ -6527,53 +6368,14 @@ def _text_branch_applies(branch, chain):
     return True
 
 
-# Bootstrap 5.3.0 里可能与 style.css 抢同一个元素 `color` 的规则。
-#
-# ⚠️ 这张表**不用来算颜色**，只用来做「style.css 必须赢」的下界检查。
-# 原写法是「Bootstrap 是 CDN 引入的，本仓库里没有它的源码，拿它的值算最终色
-# = 拿一份手抄的常量冒充事实」。**vendor 本地化之后前半句已经不成立**：源码就在
-# static/vendor/bootstrap/5.3.0/。但结论不变——真要算最终色得先有个完整的 CSS
-# 解析器（变量解析 + 层叠 + 继承），那是另一件事。所以做法仍然是：一旦模型算出
-# Bootstrap 的某条规则赢了 style.css，就**响亮失败**（「本测试算不了」），
-# 而不是给出一个可能错的数字。
-#
-# 表里每条的特异度与 !important 形态取自 bootstrap@5.3.0 的
-# dist/css/bootstrap.min.css，并已由 CDP 的 CSS.getMatchedStylesForNode
-# 在本项目的历史页 <td> 上逐条核对过（实测命中的就是下面第 1、2 条）。
-#
-# ⚠️ 版本被钉死在下面这个常量上（test_bootstrap_version_matches_the_modelled_one）。
-# 这张表是**按 5.3.0 的源码建的**：升级 Bootstrap 时那条断言会变红，
-# 强制重新核对「新版本里还有哪些规则能命中 <td> 且设 color」。
-# 不钉的话，升级引入一条新的高特异度规则时，模型不会知道，也不会响亮失败。
-_MODELLED_BOOTSTRAP_VERSION = (5, 3, 0)
-_BS_TEXT_UTILITIES = (
-    'text-danger', 'text-success', 'text-warning', 'text-info',
-    'text-primary', 'text-secondary', 'text-muted', 'text-body-secondary',
-)
-
-
-def _bootstrap_color_competitors(chain):
-    """返回 [(说明, (是否 important, 特异度))]。"""
-    el = chain[-1]
-    anc_classes = set()
-    for n in chain[:-1]:
-        anc_classes |= n.classes
-    out = []
-    if el.pseudo_element is None and el.tag in ('td', 'th') and 'table' in anc_classes:
-        # `.table > :not(caption) > * > *{color:var(--bs-table-color-state,...)}`
-        # `:not(caption)` 记它参数的特异度(0,0,1)，两个 `*` 不计 -> (0,1,1)，不带 !important
-        out.append(('.table > :not(caption) > * > *', (False, (0, 1, 1))))
-    for u in _BS_TEXT_UTILITIES:
-        if u in el.classes:
-            # `.text-danger{color:rgba(var(--bs-danger-rgb),var(--bs-text-opacity))!important}`
-            out.append((f'.{u}', (True, (0, 1, 0))))
-    if 'form-text' in el.classes:
-        out.append(('.form-text', (False, (0, 1, 0))))
-    if 'badge' in el.classes:
-        out.append(('.badge', (False, (0, 1, 0))))
-    if el.pseudo_element == 'placeholder' and 'form-control' in el.classes:
-        out.append(('.form-control::placeholder', (False, (0, 1, 1))))
-    return out
+# 2026-08-20 Task 9b（Bootstrap 清退）删除登记：这里原本是
+# `_MODELLED_BOOTSTRAP_VERSION` / `_BS_TEXT_UTILITIES` /
+# `_bootstrap_color_competitors(chain)` —— 一张「Bootstrap 5.3.0 里可能与
+# style.css 抢同一个元素 color 的规则」表，用来给 `_winning_color_decl` 的
+# 胜出者做「必须不输 Bootstrap」的下界检查。vendor 删除后竞争者不存在了，
+# 表与检查一并删除。它守过的实质约束（.text-muted / .text-danger 的
+# !important、.form-text 的颜色必须自己声明）在清退后的层叠里由本文件自己
+# 的规则间顺序继续成立，不再是外部竞争问题。
 
 
 def _winning_color_decl(css, chain, label):
@@ -6623,16 +6425,11 @@ def _winning_color_decl(css, chain, label):
     assert scanned > 100, f'只扫到 {scanned} 条声明 color 的规则 —— 扫描逻辑已失效'
     assert cands, (
         f'[{label}] 没有任何 style.css 的规则直接命中这个节点 —— '
-        '颜色会走继承或 Bootstrap，本模型算不了，测试已失效'
+        '颜色会走继承（或 UA 默认色），本模型算不了，测试已失效'
     )
     key, branch, raw = max(cands)
-    own_rank = (key[0], key[1])
-    for bs_label, bs_rank in _bootstrap_color_competitors(chain):
-        assert own_rank >= bs_rank, (
-            f'[{label}] style.css 的胜出规则 `{branch}` 排名 {own_rank}，'
-            f'输给 Bootstrap 的 `{bs_label}` {bs_rank} —— 最终颜色由 Bootstrap 决定，'
-            '本仓库里没有它的源码，模型算不了，测试已失效'
-        )
+    # 原「胜出者必须不输 Bootstrap 竞争者」的下界检查已随 Task 9b 清退删除
+    # （竞争者不存在了；删除登记见上面 `_winning_color_decl` 前的注释块）。
     return branch, raw
 
 
@@ -7409,42 +7206,11 @@ def test_task_row_status_dot_covers_every_status():
     )
 
 
-def test_bootstrap_version_matches_the_modelled_one():
-    """Bootstrap 的版本必须**恰好**是层叠模型建模时用的那一版。
-
-    `_bootstrap_color_competitors` 那张表是照着 bootstrap@5.3.0 的源码建的：
-    我扫了 5.3.0 里所有「能命中 <td>/<th> 且声明 color」的规则，完整集就是表里那两条
-    （`.table > :not(caption) > * > *` 和 `.text-*` 工具类），并用 CDP 的
-    `CSS.getMatchedStylesForNode` 在真实节点上核对过。
-
-    升级 Bootstrap 时这条会变红 —— **那是设计意图**，不是误报：
-    新版本可能引入一条新的高特异度 color 规则，而模型对它一无所知，
-    既不会算错也不会响亮失败，只会静默给出一个可能过期的结论。
-    变红时的正确做法是重新扫一遍新版本的 <td> 颜色规则、更新那张表，再改这个常量。
-
-    这条与 `test_bootstrap_build_is_new_enough_to_have_dark_theme` 是不同的约束：
-    那条守下界（>= 5.3 才有暗色主题），这条守精确匹配（模型的前提）。
-    """
-    seen = []
-    for tpl, markup in _all_templates():
-        for _tag, url in _bootstrap_asset_urls(markup):
-            for rx in _BOOTSTRAP_VERSION_RES:
-                m = rx.search(url)
-                if m:
-                    seen.append((tpl, url, tuple(int(g or 0) for g in m.groups())))
-                    break
-    assert seen, 'templates 里找不到任何带版号的 Bootstrap 资源 —— 本测试已失效'
-    wrong = [
-        f'{tpl}: {url} -> {".".join(map(str, ver))}'
-        for tpl, url, ver in seen if ver != _MODELLED_BOOTSTRAP_VERSION
-    ]
-    assert not wrong, (
-        '引用的 Bootstrap 版本与层叠模型建模的版本不符（模型按 '
-        f'{".".join(map(str, _MODELLED_BOOTSTRAP_VERSION))} 建的）：\n'
-        + '\n'.join('  ' + w for w in wrong)
-        + '\n升级是正当的，但要先重新核对 _bootstrap_color_competitors 那张表'
-        '（扫新版本里所有能命中 <td> 且设 color 的规则），再改 _MODELLED_BOOTSTRAP_VERSION。'
-    )
+# 2026-08-20 Task 9b（Bootstrap 清退）删除登记：
+# test_bootstrap_version_matches_the_modelled_one 已删 —— 它钉「模板引用的
+# Bootstrap 版本恰好等于层叠模型建模版本」，前提（vendor 里有 bootstrap）已消失；
+# 它建模的对象 _bootstrap_color_competitors 同批删除（见该表原位的登记注释）。
+# 「不再引 Bootstrap」这一面由 test_base_html_references_no_bootstrap_assets 守。
 
 
 # ==========================================================================
@@ -7871,7 +7637,10 @@ def _motion_rule_index(css):
 #   （修复块：.tf-glass 的 transition 简写顶掉了 .cmdk__dialog 的 transform
 #   8px 滑入，此处 (0,2,0) 合并 transform + box-shadow + border-color 三组
 #   过渡）。复合类选择器，落在 reduce 块 `*` 覆盖范围内，无需豁免登记。
-_MOTION_BRANCH_COUNT = 51
+# 51 -> 53（2026-08-20 Task 9b Bootstrap 清退自有化）：加 2 个分支
+#   `.fade`（opacity 过渡，原 Bootstrap）与 `.spinner-border`（旋转动画，
+#   原 Bootstrap）。都是纯类选择器，落在 reduce 块 `*` 覆盖范围内。
+_MOTION_BRANCH_COUNT = 53
 
 
 def test_motion_rule_index_is_complete():
@@ -8176,8 +7945,12 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 47 -> 48（2026-08-20 液态玻璃 Task 9a）：`.cmdk__dialog.tf-glass`
     # （cmdk 滑入修复块，transform + box-shadow + border-color 合并过渡）
     # 反解出一个上下文，复合类选择器，在 reduce 块 `*` 覆盖范围内，不进豁免清单。
-    assert len(ctxs) == 48, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 48：\n'
+    # 48 -> 50（2026-08-20 Task 9b Bootstrap 清退自有化）：`.fade`（弹窗
+    # opacity 淡入淡出，原 Bootstrap）与 `.spinner-border`（加载圈旋转动画，
+    # 原 Bootstrap 的 0.75s linear infinite）各反解出一个上下文，都是纯类
+    # 选择器，在 reduce 块 `*` 覆盖范围内，不进豁免清单。
+    assert len(ctxs) == 50, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 50：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
@@ -8274,8 +8047,9 @@ _VENDOR_DIR = os.path.join(_STATIC_DIR, 'vendor')
 # latin/latin-ext 两个子集、URL 改成本地相对路径），改一行注释字节数就变，
 # 钉死只会制造无谓的红。它由 test_local_font_css_is_self_contained 按结构校验。
 VENDOR_MANIFEST = {
-    'bootstrap/5.3.0/bootstrap.min.css': 232914,
-    'bootstrap/5.3.0/bootstrap.bundle.min.js': 80421,
+    # 2026-08-20 Task 9b（Bootstrap 清退）：'bootstrap/5.3.0/bootstrap.min.css'
+    # (232914)、'bootstrap/5.3.0/bootstrap.bundle.min.js' (80421)、
+    # 'bootstrap/5.3.0/LICENSE' (1093) 三条随 vendor 目录一并删除。
     'socket.io/4.5.4/socket.io.min.js': 44191,
     # Vue 3 global build（含 runtime compiler —— 组件用 template 字符串写，
     # 全站无构建步骤，这是选 global build 而不是 runtime-only 的唯一理由）。
@@ -8289,7 +8063,6 @@ VENDOR_MANIFEST = {
     # 一个许可证文件都没有）。Apache-2.0 与 OFL 1.1 都要求随附全文，漏一个就是
     # 分发不合规；钉字节数同样是为了拦「下到一半」与「下成了别的版本」。
     # 索引与说明见根目录 THIRD_PARTY_NOTICES.md。
-    'bootstrap/5.3.0/LICENSE': 1093,
     'cesium/1.143.0/LICENSE.md': 55506,
     'fonts/LICENSE-Inter.txt': 4380,
     'fonts/LICENSE-JetBrainsMono.txt': 4399,
@@ -8508,7 +8281,7 @@ _VENDOR_GENERATED = ('fonts/fonts.css',)
 # 通用的「不许有 http(s):// 」已经能拦住它们，但错误信息里点名域名 + 对应的
 # 本地替代路径，比一句「发现外链」有用得多。
 _FORMER_CDN_HOSTS = {
-    'cdn.jsdelivr.net': 'static/vendor/bootstrap/5.3.0/',
+    'cdn.jsdelivr.net': '（原 Bootstrap CDN；2026-08-20 已整库清退，勿再引入）',
     'unpkg.com': 'static/vendor/leaflet/1.9.4/',
     'cdnjs.cloudflare.com': 'static/vendor/leaflet.draw/1.0.4/',
     'cdn.socket.io': 'static/vendor/socket.io/4.5.4/',
@@ -8667,8 +8440,10 @@ def test_every_static_reference_in_templates_exists_on_disk():
     # 的 extra_js 而不是 base.html）。
     # 32 -> 33（自研 TfModal）：base.html 新增 static/js/modal.js（替掉仅有的
     # 两处 bootstrap.Modal；必须排在 path_browser.js 与 history.js 之前）。
-    assert len(refs) == 33, (
-        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 33 处。"
+    # 33 -> 31（2026-08-20 Task 9b Bootstrap 清退）：base.html 删除
+    # bootstrap.min.css 与 bootstrap.bundle.min.js 两处 vendor 引用。
+    assert len(refs) == 31, (
+        f"模板里解析出 {len(refs)} 处 url_for('static', ...)，本断言写下时是 31 处。"
         '数量变了不一定是错（加页面就会变），但请确认解析逻辑还认得出全部写法 —— '
         '尤其是：filename 必须是**字符串字面量**，写成变量拼接这里就看不见了'
     )
@@ -8735,26 +8510,9 @@ def test_vendor_tree_matches_the_manifest():
 # 键 = 相对 static/vendor/ 的文件路径；值 = (提取版本的正则, 该文件必须含有的内容标记们)。
 # 标记一律挑「站内真的依赖它」的东西，不挑随便一个字符串。
 _VENDOR_VERSION_PROBES = {
-    'bootstrap/5.3.0/bootstrap.min.css': (
-        re.compile(r'Bootstrap\s+v(\d+\.\d+\.\d+)'),
-        # `[data-bs-theme=dark]` 就是 MIN_BOOTSTRAP_VERSION 的**事实依据**：
-        # <html data-bs-theme="dark"> 得有人消费才不是装饰属性。本地化之前这
-        # 只能靠一个手抄常量间接主张（那条断言的注释自己承认「拿一份手抄的常量
-        # 冒充事实」），现在源码在仓库里，直接读文件。
-        # `.modal-backdrop` / `.row` 各代表一类站内依赖：弹窗遮罩、栅格
-        # （style.css 里那份残缺的 .row/.col-* 兜底已随本地化删除）。
-        ('[data-bs-theme=dark]', '.modal-backdrop', '.row'),
-    ),
-    'bootstrap/5.3.0/bootstrap.bundle.min.js': (
-        re.compile(r'Bootstrap\s+v(\d+\.\d+\.\d+)'),
-        # 弹窗 2026-08-19 Task 8 起走自研 modal.js 的 TfModal，bundle JS
-        # 自此没有站内调用方（是否整份下线不在本任务范围）；'Modal' /
-        # 'Collapse' 退化为 bundle 内容的指纹。
-        # createPopper：**bundle 版才有**，用它区分 bootstrap.bundle.min.js
-        # 和体积相近的 bootstrap.min.js —— 后者不带 Popper，Dropdown/Tooltip
-        # 会在运行时抛错，而文件名/版本号看起来一切正常。
-        ('Modal', 'Collapse', 'createPopper'),
-    ),
+    # 2026-08-20 Task 9b（Bootstrap 清退）：'bootstrap/5.3.0/bootstrap.min.css'
+    # 与 'bootstrap/5.3.0/bootstrap.bundle.min.js' 两条探针已删（库本身清退，
+    # data-bs-theme 的消费者是本站自己的令牌块与 color-scheme）。
     'cesium/1.143.0/Cesium.js': (
         re.compile(r'CESIUM_VERSION="(\d+\.\d+\.\d+)"'),
         # UrlTemplateImageryProvider / WebMercatorTilingScheme：首页 OSM 底图与
@@ -8773,19 +8531,15 @@ _VENDOR_VERSION_PROBES = {
 def test_vendor_builds_match_the_version_in_their_path():
     """路径里的版本号必须和文件里自报的版本一致。
 
-    路径版本号不是装饰：`test_bootstrap_build_is_new_enough_to_have_dark_theme`
-    和 `test_leaflet_draw_build_matches_the_locale_key_snapshot` 都从 base.html
-    的 URL 里正则抠版本号下结论。本地化之后那个版本号只是一个**目录名**——
-    谁都可以把一份 4.x 的 socket.io 放进 `socket.io/4.5.4/`，两条断言照旧全绿，
-    而运行时握手直接失败（服务端 python-socketio 5.9.0 = 协议 v5 / Engine.IO v4，
-    只吃 4.x 客户端）。
+    路径版本号不是装饰：谁都可以把一份 4.x 的 socket.io 放进
+    `socket.io/4.5.4/`，模板里的 URL 照旧全绿，而运行时握手直接失败
+    （服务端 python-socketio 5.9.0 = 协议 v5 / Engine.IO v4，只吃 4.x 客户端）。
 
     这条把「声明」对上「实物」：读文件里的版本 banner，和路径比。
-    同时各查一个**内容标记**，挡住「版本对但内容被替换/裁剪」——
-    尤其是 Bootstrap 的 `[data-bs-theme=dark]`：整站深色主题就靠它，
-    在本地化之前这一条只能靠手抄的 MIN_BOOTSTRAP_VERSION 常量间接主张。
+    同时各查一个**内容标记**，挡住「版本对但内容被替换/裁剪」。
+    （2026-08-20 Task 9b：Bootstrap 两条探针随清退删除，探针数 4 -> 2。）
     """
-    assert len(_VENDOR_VERSION_PROBES) == 4, '探针表被改动过，请同步本断言的说明'
+    assert len(_VENDOR_VERSION_PROBES) == 2, '探针表被改动过，请同步本断言的说明'
     problems = []
     for rel, (rx, markers) in sorted(_VENDOR_VERSION_PROBES.items()):
         path = os.path.join(_VENDOR_DIR, *rel.split('/'))
@@ -9023,8 +8777,11 @@ def test_vendor_files_are_not_swallowed_by_gitignore():
     """
     repo_root = os.path.dirname(_STATIC_DIR)
     on_disk = _vendor_files_on_disk()
-    assert len(on_disk) == 172, (
-        f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 172 个 —— '
+    # 172 -> 169（2026-08-20 Task 9b Bootstrap 清退）：bootstrap.min.css /
+    # bootstrap.bundle.min.js / LICENSE 三个文件随 static/vendor/bootstrap/
+    # 整目录删除，VENDOR_MANIFEST 同批同步。
+    assert len(on_disk) == 169, (
+        f'static/vendor/ 下有 {len(on_disk)} 个文件，本断言写下时是 169 个 —— '
         '本条按目录遍历，数量本身会变，但请顺手确认 VENDOR_MANIFEST 也同步了'
     )
     try:
@@ -9780,124 +9537,16 @@ def test_runtime_injected_div_table_is_grounded():
     )
 
 
-# Bootstrap 里给容器上背景、但本站**不打算**在 style.css 里覆盖的类，
-# 逐条写明为什么可以不管。每一条都是 CDP 实测过的（Chrome 148，删除兜底重置之后）。
-_BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED = {
-    'btn-close':
-        '弹窗右上角的关闭叉。它是 <button>，且 Bootstrap 给的是 '
-        '`transparent var(--bs-btn-close-bg) center/1em` —— 一张 data:URI 的 SVG 图标，'
-        '不是底色。实测 computed background-color = rgba(0,0,0,0)。',
-    'modal-footer':
-        'Bootstrap 5.3.0 只写了 `background-color: var(--bs-modal-footer-bg)`，'
-        '而这个变量在 5.3.0 里**从未被赋值**，实测 computed 是 rgba(0,0,0,0)。'
-        '它落在 .modal-content 的 #15171c 上，视觉上就是弹窗底色，正确。',
-    'alert':
-        'Bootstrap 的 `.alert{background-color:var(--bs-alert-bg)}` 里那个变量'
-        '由变体类赋值，而本站在 style.css 里覆盖的正是变体（.alert-info / '
-        '.alert-danger）。实测 #boundsInfo = rgba(59,130,246,0.1)，是本站的值。',
-    'modal-backdrop':
-        '弹窗遮罩，由自研 TfModal（static/js/modal.js）运行时插入 —— '
-        '2026-08-19 Task 8 之前它由 bootstrap.Modal 内部创建，模板/JS 扫描'
-        '一直看不见它，这次替换才第一次进交集。Bootstrap 的默认 '
-        '`#000` + `.show` 下 opacity .5 就是设计要的压暗（液态玻璃档位只管 '
-        '.modal-content 的 tf-glass，不管遮罩底色），style.css 已接管它的 '
-        'z-index（--z-modal-backdrop）。',
-}
-
-
-def test_no_bootstrap_component_background_reaches_a_div_unreviewed():
-    """在用的 Bootstrap 背景组件，要么本站覆盖过，要么写明为什么不覆盖。
-
-    **这条守的是删掉兜底重置之后新出现的长期风险。** 兜底重置在的时候，
-    Bootstrap 给任何 div 的背景都被 (0,11,1) 一律压平；删掉之后它们全部生效。
-    本站已经覆盖过的组件没问题，但 Bootstrap 5.3.0 里还有一批容器自带
-    `#212529` / `#2b3035` / `rgba(33,37,41,.85)` 这类灰，与本站调色板的
-    `#15171c` 不同源：
-
-        .dropdown-menu    #212529        .offcanvas        #212529
-        .popover          #212529        .toast            rgba(33,37,41,.85)
-        .input-group-text #2b3035
-
-    这些类今天在模板和 JS 里一个都不存在，所以不进受害者清单。但如果没有这条
-    断言，**将来任何人往页面里加一个这样的组件，拿到的就是 Bootstrap 的灰，
-    而且没有任何测试会红**。
-
-    判定方式：把 bootstrap.min.css 里「主体是单个类、且声明了背景」的类，与
-    模板 + JS 里真实出现过的类求交集；交集里的每一个类，要么 style.css 里
-    有一条选择器带上它的背景规则（= 本站做过决定），要么在
-    _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED 里写明理由。
-
-    JS 也要扫：`.app-toast` 那批就是 JS 拼出来的，只扫模板会漏掉一半界面。
-    扫的是 `class="..."`、`className = "..."`、`classList.add('...')` 三种形态。
-
-    覆盖范围（诚实说明）：这条按**类名**判定，不判层叠 —— 「做过决定」不等于
-    「决定生效了」。生效与否由上面那条主断言负责。两条一起才是完整的。
-    """
-    bs_path = os.path.join(_VENDOR_DIR, 'bootstrap', '5.3.0', 'bootstrap.min.css')
-    with open(bs_path, encoding='utf-8') as f:
-        bs = f.read()
-    bs_bg = {}
-    for sel, body, _ctx in _rules_ctx(bs):
-        decl = _bg_decl(body)
-        if decl is None:
-            continue
-        for branch in _selector_parts(sel):
-            parts = _split_branch(branch)
-            if parts is None:
-                continue
-            if re.fullmatch(r'\.[-\w]+', parts[-1][0]):
-                bs_bg.setdefault(parts[-1][0][1:], decl[0])
-    assert len(bs_bg) > 50, (
-        f'只从 bootstrap.min.css 里扫出 {len(bs_bg)} 个带背景的类 —— 解析多半坏了'
-    )
-
-    used = set()
-    for name in os.listdir(_TEMPLATES_DIR):
-        if name.endswith('.html'):
-            for attr in re.findall(r'class="([^"]*)"', _template(name)):
-                used |= set(attr.split())
-    for name in sorted(n for n in os.listdir(_JS_DIR) if n.endswith('.js')):
-        src = re.sub(r'/\*.*?\*/', '', _js(name), flags=re.S)
-        src = re.sub(r'(?m)^\s*//.*$', '', src)
-        for attr in re.findall(r'class="([^"]*)"', src):
-            used |= set(re.sub(r'\$\{[^}]*\}', ' ', attr).split())
-        for attr in re.findall(r"className\s*=\s*['\"]([^'\"]*)['\"]", src):
-            used |= set(attr.split())
-        for call in re.findall(r"classList\.(?:add|toggle)\(([^)]*)\)", src):
-            used |= set(re.findall(r"['\"]([-\w]+)['\"]", call))
-    assert len(used) > 80, f'只从模板 + JS 里扫出 {len(used)} 个类名 —— 解析多半坏了'
-
-    styled = set()
-    for sel, body, _ctx in _rules_ctx(_css()):
-        if _bg_decl(body) is None:
-            continue
-        for branch in _selector_parts(sel):
-            parts = _split_branch(branch)
-            if parts is None:
-                continue
-            styled |= set(re.findall(r'\.([-\w]+)', parts[-1][0]))
-
-    unreviewed = sorted(
-        c for c in (set(bs_bg) & used)
-        if c not in styled and c not in _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED
-    )
-    assert not unreviewed, (
-        '这些 Bootstrap 组件类在模板 / JS 里用上了，Bootstrap 会给它们上背景，'
-        '而 style.css 里没有任何背景规则提到它们 —— 界面上会出现 Bootstrap 自己的灰，'
-        '不是本站调色板的颜色。\n'
-        '要么在 style.css 里覆盖，要么登记进 '
-        '_BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED 并写明理由：\n'
-        + '\n'.join(f'  .{c}  Bootstrap 给的是 {bs_bg[c]}' for c in unreviewed)
-    )
-
-    stale = sorted(
-        c for c in _BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED
-        if c not in (set(bs_bg) & used)
-    )
-    assert not stale, (
-        '豁免表里有已经不成立的条目（组件不再使用，或 Bootstrap 不再给它背景），'
-        '留着只会让下一个人以为这里被想过：\n' + '\n'.join('  .' + c for c in stale)
-    )
+# 2026-08-20 Task 9b（Bootstrap 清退）删除登记：这里原本是
+# `_BOOTSTRAP_BG_CLASSES_INTENTIONALLY_UNSTYLED` 豁免表 +
+# test_no_bootstrap_component_background_reaches_a_div_unreviewed ——
+# 「模板/JS 用到的 Bootstrap 背景组件类，要么本站覆盖过、要么写明为什么不
+# 覆盖」。vendor 删除后「Bootstrap 的灰会漏进来」这个风险整体不存在了
+# （没有任何 Bootstrap 样式表会加载），该测试的前提与数据源
+# （解析 vendor bootstrap.min.css）同时消失，整条删除。
+# 「不许把 Bootstrap 引回来」由 test_base_html_references_no_bootstrap_assets
+# 接管；「这些 div 的底色必须真的渲染」由下面的
+# _DIV_BACKGROUNDS_THAT_MUST_RENDER 继续守。
 
 
 # 本次「根治兜底重置」修复的**全部受害者**，逐个登记期望值。

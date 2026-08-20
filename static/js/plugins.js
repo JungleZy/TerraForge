@@ -246,7 +246,7 @@
             ['east', t('js.plugins.form_east')],
             ['west', t('js.plugins.form_west')]
         ].map(function (f) {
-            return '<div class="col-6 col-lg-3">'
+            return '<div>'
                 + '<label class="form-label small mb-1">' + esc(f[1]) + '</label>'
                 + '<input type="number" step="any" required'
                 + ' class="form-control" name="' + f[0] + '">'
@@ -257,7 +257,8 @@
             + esc(t('js.plugins.form_name')) + '</label>'
             + '<input type="text" class="form-control" name="name">'
             + '</div>'
-            + '<div class="row g-2 mb-2">' + bbox + '</div>';
+            // 自有栅格：两栏、≥992px 四栏（原 Bootstrap 的 row g-2 + col-6 col-lg-3）
+            + '<div class="tf-cols tf-cols--2 tf-cols--lg-4 tf-cols--compact mb-2">' + bbox + '</div>';
     }
 
     /** 插件自己声明的参数（GET /api/plugins/<pid>/schema 的 params）。 */

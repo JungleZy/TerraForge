@@ -132,6 +132,26 @@ WHITELIST = {
         '写成 calc(-1 * var(--space-3)) 会让那条断言报「已失效」',
     ('.config-footer', 'padding'):
         '同上：`base_pad[0]` 必须是 `_px()` 读得懂的字面量',
+    # 2026-08-20 Task 9b（Bootstrap 清退自有化）三条：
+    ('.modal-dialog', 'margin'):
+        '28px 是 Bootstrap 5.3.0 `.modal-dialog` 在 ≥576px 的实测上外边距'
+        '（1.75rem），清退时照抄以保零视觉差。它是「弹窗离视口顶的距离」这个'
+        '独立几何，不是留白节奏；24px(--space-5)/32px(--space-6) 都不是它。',
+    ('.visually-hidden', 'margin'):
+        '-1px 是屏读专用隐藏配方的一部分（1px 见方 + margin:-1px + '
+        'clip-path: inset(50%)），抵的是自己那 1px 尺寸，不是间距'
+        '（与 .bounds-sr 那条同一份配方、同一个理由）',
+    # 液态玻璃组件的自有内衬（Task 3/4 落地，Task 9b 补登记）：
+    ('.tf-btn', 'gap'):
+        '6px 是图标与标签的光学间距（玻璃按钮是胶囊形态，密度独立于密档控件'
+        '刻度）；挪到 8px 会改变已定的签名外观',
+    ('.tf-btn', 'padding'):
+        '6px 16px 是液态玻璃胶囊按钮的自有内衬（设计稿 §3 签名件），'
+        '组件专有尺寸，不进留白刻度（同 .btn-icon 那批组件尺寸的待遇）',
+    ('.tf-field', 'padding'):
+        '8px 12px 是液态玻璃输入框的自有内衬（设计稿 §3 签名件），组件专有'
+        '尺寸；纵向 8px 恰在刻度上但与 --ctl-h 等密度令牌共同构成字段几何，'
+        '单独换 var() 会造成「一半刻度一半私有」的假归一',
 }
 
 _SPACING_PROP = re.compile(

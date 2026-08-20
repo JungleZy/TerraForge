@@ -126,7 +126,7 @@ function renderCacheStats(data) {
                 t('js.config.cache.size_files',
                     { size: formatBytes(c.size_bytes), count: c.file_count }) +
                 '</span>' +
-                '<button type="button" class="btn btn-outline-danger btn-compact cache-clear-btn" ' +
+                '<button type="button" class="tf-btn btn btn-outline-danger btn-compact cache-clear-btn" ' +
                 'data-key="' + window.escapeHtml(c.key) + '" data-label="' + window.escapeHtml(c.label) + '" ' +
                 'data-size="' + formatBytes(c.size_bytes) + '">' +
                 t('js.config.cache.clear') + '</button>' +

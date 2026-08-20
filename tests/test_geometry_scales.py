@@ -323,6 +323,24 @@ RADIUS_LITERAL_EXEMPTIONS = {
         '裁掉尾字母，style.css 那里有实测记录）。钉死 17px = 与中文端头同一段弧，'
         '下面 :first-child / :last-child 那几条按 17px 算出的让位余量继续成立。'
         '⚠️ 这是**豁免**，与「没人管」是两件事：删掉本条目它立刻变红。',
+    # 液态玻璃伪元素（2026-08-17，Task 9b）：`inherit` 不是刻度上的长度，它是
+    # 「跟随宿主 border-radius」的声明。scrim 底色层 / 流光层 / 按钮底色层都是
+    # inset:0 铺满宿主的伪元素，圆角必须与宿主逐像素一致（宿主圆角本身就是令牌
+    # --liquid-radius-panel / --radius-pill）；各写一份 var(...) 等于把同一件事
+    # 声明两遍，宿主换令牌时伪元素掉队。按 (选择器, 'inherit') 登记而不是把
+    # 'inherit' 加进 _RADIUS_SHAPE_KEYWORDS：值级豁免会让任何组件都能写
+    # border-radius: inherit 而不被看见，那不是形状语义，是继承语义。
+    ('.tf-glass::before', 'inherit'):
+        '伪元素跟随宿主圆角是有意为之：scrim 底色层 inset:0 铺满 .tf-glass，'
+        '宿主圆角走 --liquid-radius-panel 令牌，伪元素 inherit 保持一致。',
+    ('.tf-glass::after', 'inherit'):
+        '伪元素跟随宿主圆角是有意为之：流光层同上，必须与底色层同一段弧。',
+    ('.tf-btn::before', 'inherit'):
+        '伪元素跟随宿主圆角是有意为之：按钮胶囊底色层 inset:0 铺满 .tf-btn，'
+        '宿主圆角走 --radius-pill 令牌。',
+    ('.tf-card::before', 'inherit'):
+        '伪元素跟随宿主圆角是有意为之：卡片 scrim 层 inset:0 铺满 .tf-card，'
+        '宿主圆角走 --liquid-radius-panel 令牌。',
 }
 
 # 长写也要覆盖：只认简写的话，换个属性名就能绕过去（同 _height_px 的理由）。

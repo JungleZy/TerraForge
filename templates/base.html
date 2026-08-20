@@ -65,9 +65,6 @@
     <!-- Fonts: Inter (UI) + JetBrains Mono (数字) -->
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fonts/fonts.css') }}">
 
-    <!-- Bootstrap 5.3 CSS -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.min.css') }}">
-
     <!-- CesiumJS 1.143.0 Widgets CSS（首页主视图 + 历史小地图都是 Cesium） -->
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/cesium/1.143.0/Widgets/widgets.css') }}">
 
@@ -149,34 +146,28 @@
                     </div>
                     <div class="detail-progress-row"><span class="detail-k">{{ t('tpl.base.detail.progress') }}</span> <span id="detailProgress"></span></div>
                     <hr class="detail-sep">
-                    <div class="row">
-                        <div class="col-12">
-                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.bbox') }}</p>
-                            <div class="detail-grid">
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.north') }}</span><span class="detail-v detail-v--num" id="detailNorth"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.south') }}</span><span class="detail-v detail-v--num" id="detailSouth"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.east') }}</span><span class="detail-v detail-v--num" id="detailEast"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.west') }}</span><span class="detail-v detail-v--num" id="detailWest"></span></div>
-                            </div>
+                    <div>
+                        <p class="detail-k detail-k--head">{{ t('tpl.base.detail.bbox') }}</p>
+                        <div class="detail-grid">
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.north') }}</span><span class="detail-v detail-v--num" id="detailNorth"></span></div>
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.south') }}</span><span class="detail-v detail-v--num" id="detailSouth"></span></div>
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.east') }}</span><span class="detail-v detail-v--num" id="detailEast"></span></div>
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.west') }}</span><span class="detail-v detail-v--num" id="detailWest"></span></div>
                         </div>
                     </div>
                     <hr class="detail-sep">
-                    <div class="row">
-                        <div class="col-12">
-                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.output_path') }}</span><span class="detail-v"><code id="detailPath"></code></span></div>
-                            <div class="detail-grid detail-grid--spaced">
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.created_at') }}</span><span class="detail-v" id="detailCreated"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.started_at') }}</span><span class="detail-v" id="detailStarted"></span></div>
-                                <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.completed_at') }}</span><span class="detail-v" id="detailCompleted"></span></div>
-                            </div>
+                    <div>
+                        <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.output_path') }}</span><span class="detail-v"><code id="detailPath"></code></span></div>
+                        <div class="detail-grid detail-grid--spaced">
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.created_at') }}</span><span class="detail-v" id="detailCreated"></span></div>
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.started_at') }}</span><span class="detail-v" id="detailStarted"></span></div>
+                            <div class="detail-item"><span class="detail-k">{{ t('tpl.base.detail.completed_at') }}</span><span class="detail-v" id="detailCompleted"></span></div>
                         </div>
                     </div>
-                    <div class="row" id="detailErrorRow" hidden>
-                        <div class="col-12">
-                            <hr class="detail-sep">
-                            <p><strong>{{ t('tpl.base.detail.error_label') }}</strong></p>
-                            <div class="alert alert-danger" id="detailError"></div>
-                        </div>
+                    <div id="detailErrorRow" hidden>
+                        <hr class="detail-sep">
+                        <p><strong>{{ t('tpl.base.detail.error_label') }}</strong></p>
+                        <div class="alert alert-danger" id="detailError"></div>
                     </div>
 
                     {# 地形切片区只对本地地形任务显示（history.js viewTaskDetails 的
@@ -184,12 +175,10 @@
                        高程下载任务不再显示这一块 —— 切片已收敛成独立任务
                        （任务行「处理」按钮转出 local_terrain 任务），在这里再挂
                        一份 dem_terrain_jobs 的状态只会让人以为它是下载任务的一部分。 #}
-                    <div class="row" id="detailTerrainRow" hidden>
-                        <div class="col-12">
-                            <hr class="detail-sep">
-                            <p class="detail-terrain-title"><strong>{{ t('tpl.base.detail.terrain_label') }}</strong> <span id="detailTerrainStatus"></span></p>
-                            <div class="detail-terrain-info" id="detailTerrainInfo"></div>
-                        </div>
+                    <div id="detailTerrainRow" hidden>
+                        <hr class="detail-sep">
+                        <p class="detail-terrain-title"><strong>{{ t('tpl.base.detail.terrain_label') }}</strong> <span id="detailTerrainStatus"></span></p>
+                        <div class="detail-terrain-info" id="detailTerrainInfo"></div>
                     </div>
 
                     {# 缺口明细（§13-3）。只对有缺块记录的地图任务显示
@@ -198,12 +187,10 @@
                        都是运行期数据，且 pending_decision 还要在这里放
                        「补漏」「接受并导出」两颗按钮 —— 服务端渲染一个空壳再
                        由 JS 填，等于把同一份结构写两遍。 #}
-                    <div class="row" id="detailGapRow" hidden>
-                        <div class="col-12">
-                            <hr class="detail-sep">
-                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.gaps_label') }}</p>
-                            <div class="detail-gaps" id="detailGaps"></div>
-                        </div>
+                    <div id="detailGapRow" hidden>
+                        <hr class="detail-sep">
+                        <p class="detail-k detail-k--head">{{ t('tpl.base.detail.gaps_label') }}</p>
+                        <div class="detail-gaps" id="detailGaps"></div>
                     </div>
 
                     {# 产物清单（§13-3 / §5.3）。数据来自 GET /api/tasks/<id>/artifacts。
@@ -223,12 +210,10 @@
                        内容整块由 JS 渲染：条目数、形态、体检问题都是运行期数据，
                        服务端渲染空壳再由 JS 填等于把同一份结构写两遍（与上面
                        缺口那一块同一条理由）。 #}
-                    <div class="row" id="detailArtifactRow" hidden>
-                        <div class="col-12">
-                            <hr class="detail-sep">
-                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.artifacts_label') }}</p>
-                            <div class="detail-artifacts" id="detailArtifacts"></div>
-                        </div>
+                    <div id="detailArtifactRow" hidden>
+                        <hr class="detail-sep">
+                        <p class="detail-k detail-k--head">{{ t('tpl.base.detail.artifacts_label') }}</p>
+                        <div class="detail-artifacts" id="detailArtifacts"></div>
                     </div>
 
                     {# 任务日志（REST 轮询，不是 socket 流）。四条管线都有。
@@ -236,12 +221,10 @@
                        每一发 emit 都广播给**所有**客户端 —— 一个跑着的任务每秒
                        几十行日志会推给每一个开着页面的人，而其中 99% 的人没有
                        打开这个弹窗。轮询只在弹窗开着且任务还活着时进行。 #}
-                    <div class="row" id="detailLogRow" hidden>
-                        <div class="col-12">
-                            <hr class="detail-sep">
-                            <p class="detail-k detail-k--head">{{ t('tpl.base.detail.log_label') }}</p>
-                            <div class="task-log" id="detailLog"></div>
-                        </div>
+                    <div id="detailLogRow" hidden>
+                        <hr class="detail-sep">
+                        <p class="detail-k detail-k--head">{{ t('tpl.base.detail.log_label') }}</p>
+                        <div class="task-log" id="detailLog"></div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -254,9 +237,6 @@
     <!-- 命令面板(Ctrl/Cmd+K)与快捷键速查:外壳在此,列表由 command_palette.js
          按注册表填充。留在 <body> 直下 —— 与 #taskDetailModal 同一个理由。 -->
     {% include "_command_palette.html" %}
-
-    <!-- Bootstrap 5.3 JS Bundle（含 Popper） -->
-    <script src="{{ url_for('static', filename='vendor/bootstrap/5.3.0/bootstrap.bundle.min.js') }}"></script>
 
     {# 地图重型 vendor(Cesium 5.7MB):只有首页和历史页用得到,/config 独立页
        覆盖本 block 为空,白付的解析/下载全省。

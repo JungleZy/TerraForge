@@ -38,7 +38,7 @@ def test_vendor_assets_get_immutable_cache(monkeypatch, tmp_path):
 
     for url in (
         "/static/vendor/cesium/1.143.0/Cesium.js",
-        "/static/vendor/bootstrap/5.3.0/bootstrap.min.css",
+        "/static/vendor/socket.io/4.5.4/socket.io.min.js",
     ):
         resp = client.get(url)
         assert resp.status_code == 200

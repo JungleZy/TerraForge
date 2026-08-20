@@ -418,6 +418,14 @@ BUTTON_TRANSITION_PROPERTIES = (
 )
 BUTTON_TRANSITION_TIMING = 'var(--dur-fast) var(--ease)'
 
+# 选择器级豁免，写明理由。键是 _button_rules 给出的规范化选择器。
+BUTTON_TRANSITION_EXEMPTIONS = {
+    # .tf-btn 不动背景/描边/文字色（它的状态反馈是 hover 抬升 + 边缘高光），
+    # 强行套五属性表等于让它过渡一堆自己从不会变的属性；--liquid-motion 是
+    # 液态玻璃签名动效令牌，时长口径由 test_geometry_scales 的动效断言另行守。
+    '.tf-btn': '液态玻璃签名动效 --liquid-motion，用户裁决 2026-08-17（Task 9b）',
+}
+
 
 def _transition_segments(value):
     """`a 1s e, b 1s e` -> [('a', '1s e'), ('b', '1s e')]。"""
@@ -443,6 +451,8 @@ def test_every_button_transition_has_the_same_property_list():
     css = _css()
     offenders = []
     for branch, body, _at in _button_rules(css):
+        if branch in BUTTON_TRANSITION_EXEMPTIONS:
+            continue
         decls = _decl_map(body)
         if 'transition' not in decls:
             continue

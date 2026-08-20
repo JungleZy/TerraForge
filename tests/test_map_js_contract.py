@@ -1252,13 +1252,24 @@ def test_the_bounds_readout_is_rendered_in_exactly_one_place():
          选择器）。宿主换回地图浮层就是把这次收敛整个回退。
     """
     js = _all_js_code()
-    spans = {name: _named_function_spans(src) for name, src in js.items()}
+    # 懒求值（2026-08-20 Task 9b）：只有**命中字面量**的文件才需要反解函数
+    # 边界。modal.js 整个是箭头函数 + class，一个 `function NAME(` 声明都没有
+    # —— 旧写法对全目录每个文件先算 spans，撞上它就「一个具名函数都没扫到」，
+    # 而 modal.js 里根本没有四至 markup，它不需要被反解。
+    # fail-loud 口径不变：真命中的文件扫不出函数时，_named_function_spans 的
+    # assert 照样红。
+    span_cache = {}
+
+    def spans_for(name):
+        if name not in span_cache:
+            span_cache[name] = _named_function_spans(js[name])
+        return span_cache[name]
 
     def producers(literal):
         out = []
         for name, src in js.items():
             for m in re.finditer(re.escape(literal), src):
-                out.append((name, _owner_function(spans[name], m.start())))
+                out.append((name, _owner_function(spans_for(name), m.start())))
         return out
 
     value_cells = producers('class="bounds-v"')

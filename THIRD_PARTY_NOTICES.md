@@ -20,24 +20,20 @@ TerraForge 本体采用 MIT（见根目录 [`LICENSE`](LICENSE)）。本文件�
 | 组件 | 版本 | 许可证 | 全文 |
 |---|---|---|---|
 | CesiumJS | 1.143.0 | Apache-2.0（**另含分别授权的第三方部分**） | [`static/vendor/cesium/1.143.0/LICENSE.md`](static/vendor/cesium/1.143.0/LICENSE.md) |
-| Bootstrap（CSS + JS bundle） | 5.3.0 | MIT | [`static/vendor/bootstrap/5.3.0/LICENSE`](static/vendor/bootstrap/5.3.0/LICENSE) |
-| Popper.js（`@popperjs/core`） | 随 Bootstrap 5.3.0 bundle 内置 | MIT | 见下方说明 |
 | Vue.js | 3.5.13 | MIT | [`static/vendor/vue/3.5.13/LICENSE`](static/vendor/vue/3.5.13/LICENSE) |
 | Socket.IO Client（含内联的 Engine.IO Client） | 4.5.4 | MIT | [`static/vendor/socket.io/4.5.4/LICENSE`](static/vendor/socket.io/4.5.4/LICENSE) |
 | Inter | Google Fonts css2 快照（400/500/600/700） | SIL OFL 1.1 | [`static/vendor/fonts/LICENSE-Inter.txt`](static/vendor/fonts/LICENSE-Inter.txt) |
 | JetBrains Mono | Google Fonts css2 快照（400/600） | SIL OFL 1.1 | [`static/vendor/fonts/LICENSE-JetBrainsMono.txt`](static/vendor/fonts/LICENSE-JetBrainsMono.txt) |
+
+> Bootstrap（原 5.3.0，含内联 Popper）已于 2026-08-20 清退：全部样式/弹窗行为
+> 由 `static/css/style.css` 与 `static/js/modal.js` 自有接管，仓库不再分发
+> Bootstrap 文件，相应的 MIT 署名义务随之消失。
 
 ### CesiumJS —— 注意「Portions licensed separately」
 
 `Cesium.js` 头部的 `@license` 块声明 Apache-2.0，并附一句 `Portions licensed separately`。上游 `LICENSE.md` 的 `# Third-Party Code` 一节逐条列出了被打包进发行版的第三方代码（Sean O'Neil 的大气散射、zip.js、Autolinker.js、tween.js、Knockout、Draco、earcut、KTX2/basis、topojson、protobufjs、meshoptimizer 等）。该文件已**原样落到组件目录**，请以它为准，不要以本表的一行「Apache-2.0」为准。
 
 Cesium 同时声明了专利：`Columbus View (Pat. Pend.)`、`Patents US9153063B2 US9865085B1 US10592242`、`Patents pending US15/829,786 US16/850,266 US16/851,958`。原文见落地的 `LICENSE.md`。
-
-### Popper.js —— 无独立版权头
-
-`bootstrap.bundle.min.js` 按定义是 Bootstrap + Popper 的合并产物（`templates/base.html:203` 的注释亦如此写），但该文件头部**只有 Bootstrap 自己的 `@license` 块**。Popper 是独立版权人（Federico Zivolo）与独立包，不被 Bootstrap 的声明覆盖。
-
-> **待补**：Popper 的确切版本与版权行在本仓内无证据。Bootstrap 5.3.0 的上游依赖为 `@popperjs/core ^2.11.8`；升级 Bootstrap 或做正式发行前，应按实际内置版本补上其 MIT 声明。
 
 ### 字体子集说明
 

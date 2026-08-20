@@ -357,12 +357,12 @@
                      配置里的 default_zoom_min/max 此前只覆盖下载那一对（map.js 的
                      initMap），等高线那一腿改了没反应。 -->
                 <div id="zoomField">
-                    <div class="row">
-                        <div class="col-6 mb-3">
+                    <div class="tf-cols tf-cols--2">
+                        <div class="mb-3">
                             <label for="zoomMin" class="form-label">{{ t('tpl.index.form.zoom_min') }}</label>
                             <input type="number" class="form-control" id="zoomMin" min="0" max="21" value="10">
                         </div>
-                        <div class="col-6 mb-3">
+                        <div class="mb-3">
                             <label for="zoomMax" class="form-label">{{ t('tpl.index.form.zoom_max') }}</label>
                             <input type="number" class="form-control" id="zoomMax" min="0" max="21" value="15">
                         </div>
@@ -510,12 +510,12 @@
 
                     <details class="contour-style-custom" id="contourStyleCustom">
                         <summary>{{ t('tpl.index.process.style_custom') }}</summary>
-                        <div class="row mt-2">
-                            <div class="col-6 mb-2">
+                        <div class="tf-cols tf-cols--2 mt-2">
+                            <div class="mb-2">
                                 <label for="lineColorIntermediate" class="form-label">{{ t('tpl.index.process.line_color_intermediate') }}</label>
                                 <input type="color" id="lineColorIntermediate" value="#9C6B3F" class="form-control form-control-color w-100">
                             </div>
-                            <div class="col-6 mb-2">
+                            <div class="mb-2">
                                 <label for="lineColorIndex" class="form-label">{{ t('tpl.index.process.line_color_index') }}</label>
                                 <input type="color" id="lineColorIndex" value="#7A4F2A" class="form-control form-control-color w-100">
                             </div>

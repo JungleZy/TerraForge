@@ -332,6 +332,7 @@
 
        ⚠️ --z-map-veil 必须 < --z-map-overlay：换地形时罩的那层雾不能盖住工具条
        （tests/test_fix_terrain_preview_transition.py 钉住）。 */
+    --z-glass-under:      -2;      /* 玻璃 scrim 底色层：沉到宿主内容之下（.tf-glass::before / .tf-card::before） */
     --z-inline:            1;      /* 组件内叠层：.progress__label 盖在轨道上 */
     --z-inline-handle:     2;      /* 组件内叠层：面板宽度拖拽把手 */
     --z-tooltip:          20;      /* .hint::after 气泡（宿主自己不建层） */
@@ -393,10 +394,10 @@
 
     /* .alert-* 的底色（注意 alert-info 历史上用的是调色板外的 #3b82f6 蓝，
        暗色默认值保持现状不动；亮色档已归并到 info 色系）。
-       ⚠️ success / warning 两档**当前无消费者**：`.alert-success` /
-       `.alert-warning` 零引用，2026-08 评审 P2 已删。令牌留着是为了让
-       四档 alert 底色成套（深浅两档一并配对），下一个真要用 success/warning
-       信息条的人不用重新配色 —— 不是还有规则在读它们。 */
+       ⚠️ success 档**当前无消费者**：`.alert-success` 零引用，2026-08 评审
+       P2 已删。warning 档的消费者是 _plugins_content.html 的「完全权限」提示
+       （2026-08-20 Task 9b 自有化 .alert-warning）。令牌成套留着：下一个真
+       要用 success 信息条的人不用重新配色。 */
     --color-alert-info-bg:    rgba(59,130,246,0.1);
     --color-alert-success-bg: rgba(16,185,129,0.1);
     --color-alert-warning-bg: rgba(245,158,11,0.1);
@@ -428,6 +429,16 @@
     --map-filter: brightness(0.9) contrast(1.1);
     /* Bootstrap 的 .btn-close 图标本身是黑色 SVG，暗色下要反白；亮色下用原图 */
     --btn-close-filter: invert(1);
+
+    /* ══ 原由 Bootstrap 提供的原生控件皮肤（2026-08-20 Task 9b 清退后自有化）══
+       三个 data-URI 图 + color-scheme。SVG 内容逐字节取自 bootstrap@5.3.0
+       （描边色：箭头暗色 #adb5bd / 亮色 #343a40，对勾恒白）。它们画在
+       background-image 里，var() 插值不进去，只能整图做成令牌按主题翻转。 */
+    color-scheme: dark;
+    --form-select-arrow: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23adb5bd' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+    --btn-close-icon: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23000'%3e%3cpath d='M.293.293a1 1 0 0 1 1.414 0L8 6.586 14.293.293a1 1 0 1 1 1.414 1.414L9.414 8l6.293 6.293a1 1 0 0 1-1.414 1.414L8 9.414l-6.293 6.293a1 1 0 0 1-1.414-1.414L6.586 8 .293 1.707a1 1 0 0 1 0-1.414z'/%3e%3c/svg%3e");
+    /* 勾选框的对勾：白色描边画在 --color-accent 实底上，深浅两主题同一张图 */
+    --form-check-check: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e");
 }
 
 /* ==========================================================================
@@ -558,9 +569,13 @@
     --color-splash-glow:     rgba(3,105,161,0.35);
     --color-splash-bar-glow: rgba(3,105,161,0.40);
 
-    /* 亮色下瓦片不再压暗；btn-close 用 Bootstrap 原生的黑图标（不反色） */
+    /* 亮色下瓦片不再压暗；btn-close 用原生的黑图标（不反色） */
     --map-filter: none;
     --btn-close-filter: none;
+
+    /* 暗色块的同名四件（含义见 :root 尾部注释）。亮色箭头描边 #343a40。 */
+    color-scheme: light;
+    --form-select-arrow: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
 
     --liquid-1-bg:   rgba(255,255,255,0.42);
     --liquid-2-bg:   rgba(255,255,255,0.55);
@@ -751,6 +766,58 @@ small {
     font-size: var(--font-size-sm);
 }
 
+/* ══ 自有 reboot（2026-08-20 Task 9b：Bootstrap 清退后这些基底不再有别人提供）══
+   逐条摘自 bootstrap@5.3.0 reboot 中**本站真实吃到**的项，值按本站刻度换算。
+   每一条的缺失都有具体后果，不是照抄：
+     - 表单元素默认不继承字体：删掉后按钮/输入框回落到 UA 的小号系统字；
+     - button cursor / text-transform：UA 默认无指针手型；
+     - label  UA 是 inline，margin-bottom 不生效；
+     - ol/ul/p/h1-h6  UA 的上下外边距（1em/0.83em…）与 reboot 的 0/16px/8px
+       不同源，删了全站纵向节奏整体漂移；
+     - img/svg vertical-align：行内 SVG 图标的基线让位。 */
+button, input, optgroup, select, textarea {
+    margin: 0;
+    font-family: inherit;
+    font-size: inherit;
+}
+button {
+    /* line-height 不随上面那组写 inherit：高度模型（_btn_computed）解析不了
+       'inherit' 会响亮失效，而这里要的就是 body 的 1.5 —— 写出来，与 body
+       规则互为镜像（改 body 那行时这里一起改；BS_BODY_LINE_HEIGHT 钉着）。 */
+    line-height: 1.5;
+}
+input, optgroup, select, textarea {
+    line-height: inherit;
+}
+button, select {
+    text-transform: none;
+}
+button:not(:disabled) {
+    /* 全站没有 <input type="button|submit|reset">，只有 <button>，
+       所以不用 Bootstrap 那串 [type=...] 分支（按钮层叠模型也不认属性选择器） */
+    cursor: pointer;
+}
+label {
+    display: inline-block;
+}
+img, svg {
+    vertical-align: middle;
+}
+ol, ul {
+    padding-left: var(--space-6);   /* reboot 2rem(32px) = --space-6 */
+    margin-top: 0;
+    margin-bottom: var(--space-4);  /* reboot 1rem(16px) = --space-4 */
+}
+p {
+    margin-top: 0;
+    margin-bottom: var(--space-4);
+}
+h1, h2, h3, h4, h5, h6 {
+    margin-top: 0;
+    margin-bottom: var(--space-2);  /* reboot .5rem(8px) = --space-2 */
+    font-weight: var(--weight-medium);   /* reboot 500 = --weight-medium */
+}
+
 html {
     background: var(--color-bg-primary) !important;
 }
@@ -764,16 +831,14 @@ body {
     font-family: var(--font-display);
     font-weight: var(--weight-normal);
     font-size: var(--font-size-base);
+    /* reboot 的 --bs-body-line-height(1.5)，清退后自有。全站未声明 line-height
+       的文字都吃这个值；tests/test_css_contract.py 的高度模型按 1.5 算。 */
+    line-height: 1.5;
 }
 
-.row {
-    background: transparent !important;
-}
-
-.col,
-[class*="col-"] {
-    background: transparent !important;
-}
+/* 2026-08-20 Task 9b：`.row { background: transparent !important }` 与
+   `.col, [class*="col-"]` 两条已删 —— Bootstrap 栅格类随 vendor 一并清退，
+   全站模板/JS 不再出现 row / col-*，两条规则零命中。自有栅格见 .tf-cols。 */
 
 /* 这里原先有一条兜底重置，已整条删除：
 
@@ -1543,15 +1608,74 @@ html[lang="en"] .map-panel-triggers {
     padding: 12px;
 }
 
-/* Bootstrap 的 modal(1055)/modal-backdrop(1050) 原本是为「页面最顶层」设的，
-   工作台面板(1401)比它们高 —— 历史面板里开任务详情会弹到面板**下面**。
-   抬到面板之上、toast(11000) 之下。 */
+/* 弹窗层栈：工作台面板(1401)比弹窗高会出「详情弹窗被压在面板下面」的事故，
+   所以弹窗层抬到面板之上、toast(11000) 之下。
+   （定位与几何 2026-08-20 Task 9b 自有化：原由 bootstrap.min.css 提供，
+   值逐项照抄 5.3.0 —— .modal 的 fixed 满屏 / .modal-dialog 的 500px 与
+   28px 上外边距 / .modal-lg 的 800px / 遮罩 #000 50%。） */
 .modal-backdrop {
     z-index: var(--z-modal-backdrop);
+    position: fixed;
+    inset: 0;
+    /* rgba(4,6,10,0.55)：命令面板遮罩同一个令牌，与 #000@50% 视觉等价 */
+    background: var(--color-backdrop);
 }
 
 .modal {
     z-index: var(--z-modal);
+    position: fixed;
+    top: 0;
+    left: 0;
+    display: none;              /* TfModal.show() 用内联 display:block 打开 */
+    width: 100%;
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;           /* 内容高过视口时滚的是 .modal 自己 */
+    outline: 0;
+}
+
+/* 打开/关闭的透明度过渡。TfModal 对 .modal 只切 .show 类 + inline display，
+   Bootstrap 那套 .modal.fade .modal-dialog 的 -50px 滑入不进来了 —— 弹窗
+   只保留淡入淡出（0.15s = --dur-fast，动效刻度内）。 */
+.fade {
+    transition: opacity var(--dur-fast) var(--ease);
+}
+.fade:not(.show) {
+    opacity: 0;
+}
+
+.modal-dialog {
+    position: relative;
+    width: auto;
+    margin: var(--space-2);     /* <576px：8px = Bootstrap 的 0.5rem */
+    /* 点击穿透到 .modal（遮罩点击关闭由 modal.js 的 target===el 判定） */
+    pointer-events: none;
+}
+@media (min-width: 576px) {
+    .modal-dialog {
+        max-width: 500px;
+        /* 28px = Bootstrap 的 1.75rem，不在间距刻度上（24/32 之间）——
+           它是「弹窗离视口顶的距离」这个独立几何，不是留白节奏。 */
+        margin: 28px auto;
+    }
+}
+@media (min-width: 992px) {
+    .modal-lg {
+        max-width: 800px;
+    }
+}
+
+/* 内容可滚动的弹窗（路径浏览器）：高度钉死在视口减两个外边距，
+   .modal-content 收 overflow，滚动发生在 .modal-body。56px = 2×28px。 */
+.modal-dialog-scrollable {
+    height: calc(100% - 56px);
+}
+.modal-dialog-scrollable .modal-content {
+    max-height: 100%;
+    overflow: hidden;
+}
+.modal-dialog-scrollable .modal-body {
+    overflow-y: auto;
 }
 
 /* Map Styles */
@@ -2942,23 +3066,23 @@ html[lang="en"] .map-panel-triggers {
     margin-bottom: var(--space-2);
 }
 
-/* 英文下让 .row 的分栏按**容器**实际宽度铺，而不是 Bootstrap 那个按视口断点
-   定死的 33.33%。同一份表单长在两个宽度差一倍多的宿主里：/config 整页（约
-   1200px）与右侧配置面板（--panel-config-w 默认 480px，还能拖窄）。面板里三栏
-   各 149px，英文标签「Default min zoom level」放不下就折成两行，同排的
-   「Default map style」只有一行 —— 两个输入框差 21px 高，整排看着是错位的
-   （实测；中文标签四个字一行装得下，不触发，所以中文不进这条）。
-   flex: 1 1 200px 把「摆几栏」交给行自己：面板宽度下落成两栏（每栏 224px，
-   所有英文标签回到一行，输入框还宽了 75px），面板拖到很窄则落成一栏；
-   /config 整页照旧三栏均分，与改前逐像素相同。width: auto 不能省 ——
-   Bootstrap 的 col-md-* 是 `flex: 0 0 auto` + 写死的百分比 width，
-   不把 width 清回 auto，flex-basis 不起作用。
-   用后代组合符而不是 `>`：tests/test_css_contract.py 的按钮层叠模型
+/* 英文下让配置页的分栏按**容器**实际宽度铺，而不是写死三等分。同一份表单
+   长在两个宽度差一倍多的宿主里：/config 整页（约 1200px）与右侧配置面板
+   （--panel-config-w 默认 480px，还能拖窄）。面板里三栏各 149px，英文标签
+   「Default min zoom level」放不下就折成两行，同排的「Default map style」
+   只有一行 —— 两个输入框差 21px 高，整排看着是错位的（实测；中文标签四个
+   字一行装得下，不触发，所以中文不进这条）。
+   auto-fit minmax(200px,1fr) 把「摆几栏」交给容器：面板宽度下落成两栏
+   （每栏 224px，所有英文标签回到一行，输入框还宽了 75px），拖到很窄落成
+   一栏；/config 整页照旧三栏均分，与改前逐像素相同。
+   （2026-08-20 Task 9b：选择器从 `.row [class*="col-md-"]` 换成自有栅格的
+   容器属性选择器；改前的 `flex: 1 1 200px` + `width: auto` 是 flex 栅格的
+   写法，grid 容器上用 minmax 表达同一个意图。）
+   用后代/属性组合而不是 `>`：tests/test_css_contract.py 的按钮层叠模型
    （_btn_branch_applies）遇到子/兄弟组合符一律判「模型不支持」，会把十条
-   按钮断言一起顶成失效；后代写法在这份 markup 里选中的是同一批元素。 */
-html[lang="en"] .config-section .row [class*="col-md-"] {
-    flex: 1 1 200px;
-    width: auto;
+   按钮断言一起顶成失效。 */
+html[lang="en"] .config-section [class*="tf-cols--md-"] {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
 /* ==========================================================================
@@ -3443,6 +3567,8 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
        站内的 .alert 全是**信息条**（#boundsInfo 的四至、history 的错误提示），
        不是需要撑场面的横幅；16px 上下内边距在 1366x768 上是纯浪费。 */
     padding: var(--space-2) var(--pad-card);
+    /* 下外边距 2026-08-20 Task 9b 自有化（原 Bootstrap .alert 的 1rem）。 */
+    margin-bottom: var(--space-4);
     font-family: var(--font-display);
     font-size: var(--font-size-base);
     box-shadow: var(--shadow-sm);
@@ -3457,6 +3583,16 @@ html[lang="en"] .config-section .row [class*="col-md-"] {
 .alert-danger {
     background: var(--color-alert-danger-bg);
     border-color: var(--color-danger);
+    color: var(--color-text-primary);
+}
+
+/* 2026-08-20 Task 9b：.alert-warning 不再是死类 —— _plugins_content.html 的
+   「完全权限」提示一直在用它（此前由 Bootstrap 的同名规则渲染，评审 P2 的
+   「零引用」结论先于该页面）。清退后自有化，配色走现成的 warning 令牌。
+   tests/test_fix_templates_a11y.py 的 _DELETED_DEAD_CLASSES 同批更新。 */
+.alert-warning {
+    background: var(--color-alert-warning-bg);
+    border-color: var(--color-warning);
     color: var(--color-text-primary);
 }
 
@@ -3621,7 +3757,8 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--color-danger);
 }
 
-/* Loading Spinner */
+/* Loading Spinner（几何与旋转 2026-08-20 Task 9b 自有化：原 Bootstrap 的
+   2rem 圈 + 0.75s 旋转。值逐项照抄；动画名沿用 spinner-border。） */
 .spinner-container {
     display: flex;
     justify-content: center;
@@ -3630,8 +3767,19 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .spinner-border {
+    display: inline-block;
+    width: 2rem;
+    height: 2rem;
+    vertical-align: -0.125em;
+    border: 0.25em solid;
     border-color: var(--color-accent);
     border-right-color: transparent;
+    border-radius: 50%;
+    animation: spinner-border 0.75s linear infinite;
+}
+
+@keyframes spinner-border {
+    to { transform: rotate(360deg); }
 }
 
 /* Form Control Styles
@@ -3646,6 +3794,13 @@ h1, h2, h3, h4, h5, h6 {
    模拟层叠后最终生效的值，不是查字符串）。 */
 .form-control,
 .form-select {
+    /* display/width/appearance 2026-08-20 Task 9b 自有化（原 Bootstrap 表单
+       基底）：块级满宽；appearance:none 去掉 UA 原生皮肤（原生皮肤不吃
+       下面的 background/border 定制）。 */
+    display: block;
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
     background-color: var(--color-bg-tertiary);
     border: 1px solid var(--color-border);
     color: var(--color-text-primary);
@@ -3674,37 +3829,31 @@ h1, h2, h3, h4, h5, h6 {
     padding: var(--ctl-pad-y) var(--ctl-pad-x);
     margin: calc(-1 * var(--ctl-pad-y)) calc(-1 * var(--ctl-pad-x));
     margin-inline-end: var(--ctl-pad-x);
+    /* 皮肤 2026-08-20 Task 9b 自有化（原 reboot 的按钮默认 + Bootstrap 暗色
+       主题的 --bs-tertiary-bg 底）：不给色就是 UA 的 buttonface 灰。 */
+    background-color: var(--color-bg-secondary);
+    color: var(--color-text-primary);
+    border: 0;
+    border-inline-end: 1px solid var(--color-border);
 }
 
-/* 下拉箭头的让位空间。只作用于 .form-select，不波及普通 input。
-
-   上面 `.form-control, .form-select` 把右内边距设成 var(--ctl-pad-x)（现 8px；
-   A5/Task 10 之前是 `padding: 0.6rem 0.85rem` 的 13.6px），而 Bootstrap 原本用
-   `padding-right: 2.25rem`(36px) 专门给箭头让位。箭头占据右起 12–28px，
-   文字内容框却能延伸到右起 8px —— 二者会叠印。C1/Task 4 实测 900px 视口下
-   #downloadType 的最长选项与箭头重叠 14.4px，文字末尾字符被切断。
-   这里补回 Bootstrap 的 36px（几何下限 28px，余 8px 呼吸位）。
-   本条只作用于 .form-select，不波及 .form-control——普通 input 没有箭头，
-   给它 36px 右内边距是平白的浪费。
-   下限由 tests/test_css_contract.py::test_form_select_reserves_room_for_the_arrow 守住。
+/* 下拉箭头：图与让位 2026-08-20 Task 9b 起全部自有（原 Bootstrap 的
+   .form-select 四件 background-* 子属性 + [data-bs-theme=dark] 的描边色翻转，
+   现在由 :root / 亮色块的 --form-select-arrow 令牌承担）。几何不变：
+   箭头占右起 12~28px，padding-right 36px 的下限 28px 由
+   test_form_select_reserves_room_for_the_arrow 守。
 
    ⚠️ 位置是承重的：本条与上面那条特异度相同 (0,1,0)，靠**写在后面**取胜
       （同特异度下 longhand 与 shorthand 之间没有优先级，只有源码顺序）。
       挪到前面，右内边距立刻退回 8px，箭头压字。
-   （原先这里还有一段说「压不过 .config-section .form-select (0,2,0)、配置页要
-     单独补一条」—— A5/Task 10 已把那两条 .config-section 规则删掉，配置页现在
-     直接吃本条，实测 padding-right 36px。说明随之移除。）
-
-   箭头的**描边色**这里不再管：A3/Task 8 给 <html> 加上 data-bs-theme="dark"
-   之后，Bootstrap 自带的 `[data-bs-theme=dark] .form-select`（特异性 0,2,0）
-   把 --bs-form-select-bg-img 换成描边 #adb5bd 的版本，压过任何写在这里的
-   (0,1,0) 覆盖。#adb5bd 对面板底 --color-bg-tertiary(#1c2027) 实算 7.87:1，
-   高于 C1/Task 4 立的 3:1 图形元素下限，所以站内那条硬编码 #9aa0aa 的
-   data URI 覆盖已是死代码，连同它的两条断言一起删掉了。
-   （已核对 bootstrap@5.3.0 源码 2363-2365 行：那条规则**只有**
-   --bs-form-select-bg-img 一条声明，不碰 position / size / padding，
-   所以删掉站内覆盖不影响上面这 28px 的几何下限。） */
+   ⚠️ 背景只许写长写：background 简写会把 image/position/size/repeat 一起
+      重置，箭头消失（tests/test_css_contract.py::
+      test_form_select_never_uses_background_shorthand 钉住）。 */
 .form-select {
+    background-image: var(--form-select-arrow);
+    background-repeat: no-repeat;
+    background-position: right 12px center;   /* right .75rem = 12px */
+    background-size: 16px 12px;
     /* 36px（原 2.25rem，2026-08-14 换成 px 与刻度同单位）。不在刻度上、也不能
        写 var()：test_form_select_reserves_room_for_the_arrow 用只认字面量的
        `_length_to_px` 读最终生效值，下限 28px。 */
@@ -3730,6 +3879,11 @@ h1, h2, h3, h4, h5, h6 {
    下限由 tests/test_css_contract.py::test_color_picker_swatch_is_big_enough_to_see 守住。 */
 .form-control-color {
     width: 3rem;
+    /* 高度原由 Bootstrap 的 calc(1.5em + .75rem + 2px) 提供（实测外框 35px）；
+       2026-08-20 Task 9b 自有化，取主操作档 36px（差 1px，与按钮同档）。
+       注意本类**不进**控件高度模型（_effective_form_control_height 的分支
+       正则只认裸 .form-control），那条守的是文本框，不是取色器。 */
+    height: var(--ctl-h-lg);
     /* 4px = --space-1 的值，但必须写字面量：色块宽度模型
        test_color_picker_swatch_is_big_enough_to_see 用 `_length_to_px` 直读
        胜出的 padding-left/right（原 0.25rem，2026-08-14 换成 px）。 */
@@ -3776,6 +3930,14 @@ h1, h2, h3, h4, h5, h6 {
 
 /* Modal Styles */
 .modal-content {
+    /* 布局骨架 2026-08-20 Task 9b 自有化（原 Bootstrap）：flex 列让 body 吃
+       剩余高度；pointer-events 恢复（.modal-dialog 穿透点击给遮罩判定）。 */
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    pointer-events: auto;
+    outline: 0;
     background: var(--color-bg-elevated);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-card);
@@ -3783,6 +3945,10 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .modal-header {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
     background: var(--color-bg-elevated);
     border-bottom: 1px solid var(--color-border);
     color: var(--color-text-primary);
@@ -3793,6 +3959,7 @@ h1, h2, h3, h4, h5, h6 {
    同批四处之一（中央登记见 :root 字重刻度那段）。弹窗标题是 --font-size-lg
    (18px)，600 与正文 400 的层级差已经足够，700 只是更黑。 */
 .modal-title {
+    margin: 0;                 /* 自有 reboot 给 h5 留了 8px 下外边距，标题行不收 */
     font-family: var(--font-display);
     font-weight: var(--weight-strong);
     font-size: var(--font-size-lg);
@@ -3800,13 +3967,10 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .modal-body {
+    position: relative;
+    flex: 1 1 auto;            /* flex 列里吃剩余高度（scrollable 弹窗的滚动区） */
     color: var(--color-text-primary);
     font-size: var(--font-size-base);
-    /* 1.5rem == 24px == --space-5，等值迁移（无视觉变化）。
-       ⚠️ 这一行**压过** Bootstrap 的 `--bs-modal-padding: 1rem`(16px)：同为
-       (0,1,0) 而 style.css 后加载。tests/test_css_contract.py 的折叠线模型
-       必须从这里读、不能从 vendor 读 —— D3 缺陷（模型读 16、浏览器 24）就是
-       这么来的，现在由 `_style_modal_metrics()` 优先解析本文件。 */
     padding: var(--space-5);
 }
 
@@ -3820,13 +3984,27 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .modal-footer {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-2);
     border-top: 1px solid var(--color-border);
-    /* 1rem 1.5rem == 16px 24px == --space-4 --space-5，等值迁移（无视觉变化）。
-       同样压过 `--bs-modal-padding`，见 .modal-body 上面那段。 */
+    /* 1rem 1.5rem == 16px 24px == --space-4 --space-5，等值迁移（无视觉变化）。 */
     padding: var(--space-4) var(--space-5);
 }
 
+/* 关闭叉：基底 2026-08-20 Task 9b 自有化（原 Bootstrap 的 content-box 1em 图标盒
+   + SVG 背景）。图标走 --btn-close-icon 令牌（黑叉），暗色由 filter 反白。 */
 .btn-close {
+    box-sizing: content-box;
+    width: 1em;
+    height: 1em;
+    padding: var(--space-1);
+    border: 0;
+    border-radius: var(--radius-xxs);
+    background: transparent var(--btn-close-icon) center / 1em auto no-repeat;
+    cursor: pointer;
     filter: var(--btn-close-filter);
     opacity: 0.7;
 }
@@ -3835,8 +4013,14 @@ h1, h2, h3, h4, h5, h6 {
     opacity: 1;
 }
 
-/* Pagination */
+/* Pagination（布局骨架 2026-08-20 Task 9b 自有化：原 Bootstrap 的 flex 行 +
+   去列表符号。下外边距刻意**不声明** —— 自有 reboot 的 `ul` 规则给的
+   16px 与清退前逐像素一致。） */
 .pagination {
+    display: flex;
+    flex-wrap: wrap;
+    padding-left: 0;
+    list-style: none;
     gap: var(--space-2);
 }
 
@@ -3897,13 +4081,36 @@ code {
 
 /* Form Check Styles */
 .form-check {
+    /* display/min-height/margin-bottom 2026-08-20 Task 9b 自有化（原 Bootstrap
+       .form-check 的 block / 1.5rem / .125rem —— 24px = --space-5、
+       2px = --space-hair）。min-height 是勾选行高度的真正来源：1.25rem(20px)
+       的 .form-check-input 顶不动它。 */
+    display: block;
+    min-height: var(--space-5);
+    margin-bottom: var(--space-hair);
     padding-left: var(--space-6);   /* 1.75rem(28px) -> --space-6（32px）：间距刻度归一 2026-08-14 */
 }
 
+/* 一行多枚（「等高线」页的并排勾选）。原 Bootstrap .form-check-inline：
+   inline-block + 1rem 右距（= --space-4）。 */
+.form-check-inline {
+    display: inline-block;
+    margin-inline-end: var(--space-4);
+}
+
 .form-check-input {
+    float: left;
     width: 1.25rem;
     height: 1.25rem;
     margin-top: var(--space-hair);
+    /* appearance:none 2026-08-20 Task 9b 自有化（原 Bootstrap）：不去掉 UA
+       原生勾选皮肤，下面的 background/border 一条都不渲染。对勾图走
+       --form-check-check 令牌（白描边 SVG，画在 accent 实底上）。 */
+    -webkit-appearance: none;
+    appearance: none;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
     background-color: var(--color-bg-tertiary);
     border: 2px solid var(--color-control-border);
     cursor: pointer;
@@ -3931,6 +4138,9 @@ code {
 .form-check-input:checked {
     background-color: var(--color-accent);
     border-color: var(--color-accent);
+    /* 对勾图（2026-08-20 Task 9b 自有化，原 Bootstrap 的 --bs-form-check-bg-image）。
+       白色描边 SVG 画在 accent 实底上，深浅主题同一张。 */
+    background-image: var(--form-check-check);
 }
 
 .form-check-input:focus {
@@ -3972,21 +4182,97 @@ code {
 
 }
 
-/* Bootstrap 工具类的本地手抄已删除（.text-center / .d-flex /
-   .justify-content-between / .justify-content-center / .align-items-center /
-   .align-items-start / .mt-2 / .mt-3 / .w-100 共 9 条）。
-   本站惯例「style.css 排在 vendor 之后所以能赢」对工具类**不成立**：
-   Bootstrap 的工具类每一条都自带 !important，与源码顺序无关地压过普通声明，
-   而这 9 条的取值又与 Bootstrap 逐字相同 —— 它们从来没有生效过，删掉零视觉差。
-   （.mt-3 更是双重死亡：全仓模板里根本没有元素带这个类。）
-   .text-muted 不在此列，它显式带 !important 且换成了本站文字色，是活的。 */
+/* ══ 自有工具类与杂项基底（2026-08-20 Task 9b）══════════════════════════════
+   下面这批类名原由 bootstrap.min.css 定义（且每条都带 !important）。清退之后
+   本站自己定义它们 —— 这与 2026-08-15「删掉手抄工具类、别再加回来」的决定
+   **不矛盾**：那次的理由是「vendor 里有真定义、手抄永远赢不了 !important，
+   留着是死代码」；现在 vendor 没了，这里是**唯一**定义，不写就是样式塌掉。
+   值逐条照抄 Bootstrap 5.3.0 并换算到本站刻度（0.25rem→--space-1、
+   0.5rem→--space-2、1rem→--space-4），刻意**不带** !important：
+   清退前它们靠 !important 压一切；清退后没有竞争者，普通声明按源码顺序
+   生效即可（本节位置在所有组件规则之后，与清退前的胜出关系一致）。
+   ⚠️ 本节内部顺序承重：.invalid-feedback（默认 display:none）必须排在
+   .d-block **之前**，plugins.js 的错误行两个类同挂，靠 .d-block 在后胜出。 */
+.invalid-feedback {
+    display: none;
+    color: var(--color-danger);
+}
+.d-flex { display: flex; }
+.d-block { display: block; }
+.flex-grow-1 { flex-grow: 1; }
+.flex-wrap { flex-wrap: wrap; }
+.align-items-center { align-items: center; }
+.justify-content-between { justify-content: space-between; }
+.justify-content-center { justify-content: center; }
+.gap-2 { gap: var(--space-2); }
+.mt-1 { margin-top: var(--space-1); }
+.mt-2 { margin-top: var(--space-2); }
+.ms-2 { margin-inline-start: var(--space-2); }
+.mb-0 { margin-bottom: 0; }
+.mb-1 { margin-bottom: var(--space-1); }
+.mb-2 { margin-bottom: var(--space-2); }
+.mx-auto { margin-inline: auto; }
+.py-1 { padding-block: var(--space-1); }
+.px-2 { padding-inline: var(--space-2); }
+.py-2 { padding-block: var(--space-2); }
+.px-3 { padding-inline: var(--space-4); }
+.w-100 { width: 100%; }
+.small { font-size: var(--font-size-sm); }
+.font-monospace { font-family: var(--font-mono); }
+.text-break { word-break: break-word; overflow-wrap: break-word; }
+.text-secondary { color: var(--color-text-secondary); }
 
-/* Row / Column 的本地兜底已删除（vendor 本地化）。
-   这里原先有一份 .row / .col-6 / .col-12 / .col-md-6 的手抄定义，理由是
-   「bootstrap.min.css 走 CDN，CDN 不可达时栅格只剩这一份」。现在 Bootstrap
-   在 static/vendor/bootstrap/5.3.0/ 里随包发布，那个前提不再成立 ——
-   而那份兜底本来就是残缺的（模板里在用的 .col-md-4 / .col-md-3 从来没覆盖到），
-   留着只会和 Bootstrap 的真定义打架。别再加回来。 */
+/* 只给读屏软件的内容（history 列表的加载提示）。与 .bounds-sr 同一份声明 —
+   那一条的契约（恰好 1 条 sel == '.bounds-sr' 的规则）不许合并选择器，
+   所以这里单列一份。 */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* 详情弹窗里的分隔线（原 Bootstrap reboot 的 hr：无边框、1px 顶线、
+   上下 1rem。描边色换本站边框令牌，与 .detail-item 的下边线同一来源）。 */
+.detail-sep {
+    margin: var(--space-4) 0;
+    border: 0;
+    border-top: 1px solid var(--color-border);
+}
+
+/* ══ 自有栅格 .tf-cols（2026-08-20 Task 9b，替 Bootstrap 的 .row/.col-*）══
+   三种用法各一个修饰符：
+     .tf-cols--2     始终两栏（缩放范围、等高线色票）
+     .tf-cols--md-2  ≥768px 两栏，窄屏一栏（配置页对半分的字段组）
+     .tf-cols--md-3  ≥768px 三栏，窄屏一栏（配置页三等分的字段组）
+   列距 24px = --space-5，与 Bootstrap col 排水沟（两侧各 12px）同宽；
+   行距不在这里给 —— 子元素自己的 .mb-* 已经在管（与清退前一致）。
+   英文locale的容器自适应覆盖见 .config-section 那段（auto-fit minmax）。 */
+.tf-cols {
+    display: grid;
+    grid-template-columns: 1fr;
+    column-gap: var(--space-5);
+}
+.tf-cols--2 {
+    grid-template-columns: 1fr 1fr;
+}
+@media (min-width: 768px) {
+    .tf-cols--md-2 { grid-template-columns: 1fr 1fr; }
+    .tf-cols--md-3 { grid-template-columns: 1fr 1fr 1fr; }
+}
+/* 紧凑栅格：插件配置的四至输入（plugins.js），列距/行距都收 8px（原 g-2）。 */
+.tf-cols--compact {
+    column-gap: var(--space-2);
+    row-gap: var(--space-2);
+}
+@media (min-width: 992px) {
+    .tf-cols--lg-4 { grid-template-columns: repeat(4, 1fr); }
+}
 
 /* Scrollbar Styles for All Scrollable Elements（标准属性已并入文件顶部的 `*` 规则） */
 *::-webkit-scrollbar {
@@ -5054,17 +5340,33 @@ code {
     flex-shrink: 0;         /* 旁边的说明小字换行时按钮不被压扁 */
 }
 
-/* 目录选择弹窗(_path_browser_modal.html)的目录列表条目。
-   盖掉 Bootstrap 5.3.0 .list-group-item 的默认底色(var(--bs-list-group-bg),
-   深色主题下是 #212529 的灰,与本站调色板不同源):条目底色用比弹窗底
-   (--color-bg-secondary)浅一层的 --color-bg-tertiary,文字/边框走本站变量,
-   hover/focus 底色与幽灵按钮同款 --color-btn-ghost-hover(深浅两主题都有定义)。
-   特异度与 Bootstrap 相同((0,1,0)/(0,2,0)),靠 style.css 排在 bootstrap.min.css
-   之后取胜,不需要 !important。 */
+/* 目录选择弹窗(_path_browser_modal.html)的目录列表。
+   布局骨架 2026-08-20 Task 9b 自有化（原 Bootstrap 的 flex 列、去列表符号、
+   条目 padding/边框/相邻去重）。底色用比弹窗底(--color-bg-secondary)浅一层的
+   --color-bg-tertiary，文字/边框走本站变量，hover/focus 底色与幽灵按钮同款
+   --color-btn-ghost-hover（深浅两主题都有定义）。 */
+.list-group {
+    display: flex;
+    flex-direction: column;
+    padding-left: 0;
+    margin-bottom: 0;
+    list-style: none;
+}
+
 .list-group-item {
+    position: relative;
+    display: block;
+    padding: var(--space-2) var(--space-4);   /* Bootstrap .5rem 1rem = 8px 16px */
+    text-decoration: none;
     background-color: var(--color-bg-tertiary);
     color: var(--color-text-primary);
-    border-color: var(--color-border);
+    border: 1px solid var(--color-border);
+}
+
+/* 相邻条目去重顶边框。不用兄弟组合符 `.list-group-item + .list-group-item`：
+   按钮/文字层叠模型遇到 `+` 一律判「模型不支持」，会把一批断言顶成失效。 */
+.list-group-item:not(:first-child) {
+    border-top-width: 0;
 }
 
 .list-group-item-action:hover,
@@ -5628,7 +5930,7 @@ code {
     content: "";
     position: absolute;
     inset: 0;
-    z-index: -2;
+    z-index: var(--z-glass-under);
     border-radius: inherit;
     background: var(--liquid-scrim), var(--liquid-bg);
 }
@@ -5689,7 +5991,7 @@ code {
     gap: 6px;
     padding: 6px 16px;
     border: 1px solid var(--liquid-stroke);
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     color: var(--color-text-primary);
     font: inherit;
     cursor: pointer;
@@ -5786,7 +6088,10 @@ code {
     position: absolute;
 }
 
-/* 液态玻璃表单控件:glass-1 底,聚焦时描边染强调色 */
+/* 液态玻璃表单控件:glass-1 底,聚焦时描边染强调色。
+   ⚠️ 底色必须写 background-color 长写:background 简写会把 .form-select 的
+   下拉箭头(background-image 等四项)一并重置 —— 2026-08-20 Task 9b 箭头
+   自有化后实测:简写下 computed background-image = none,箭头消失。 */
 .tf-field {
     width: 100%;
     padding: 8px 12px;
@@ -5794,7 +6099,7 @@ code {
     border-radius: var(--liquid-radius-control);
     color: var(--color-text-primary);
     font: inherit;
-    background: var(--liquid-1-bg);
+    background-color: var(--liquid-1-bg);
     backdrop-filter: blur(var(--liquid-1-blur)) saturate(var(--liquid-saturate));
     -webkit-backdrop-filter: blur(var(--liquid-1-blur)) saturate(var(--liquid-saturate));
     box-shadow: inset 0 1px 1px var(--liquid-rim-soft);
@@ -5826,12 +6131,12 @@ code {
     content: "";
     position: absolute;
     inset: 0;
-    z-index: -2;
+    z-index: var(--z-glass-under);
     border-radius: inherit;
     background: var(--liquid-scrim), var(--liquid-bg);
 }
 @supports not (backdrop-filter: blur(1px)) {
-    .tf-field, .tf-card { background: var(--color-bg-elevated); }
+    .tf-field, .tf-card { background-color: var(--color-bg-elevated); }
     .tf-card::before { content: none; }
 }
 

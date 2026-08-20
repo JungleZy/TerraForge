@@ -115,8 +115,8 @@
                         </div>
                     </div>
 
-                    <div class="row">
-                        <div class="col-md-4 mb-3">
+                    <div class="tf-cols tf-cols--md-3">
+                        <div class="mb-3">
                             <label for="default_style" class="form-label">{{ t('tpl.config.basic.default_style') }}</label>
                             <select class="form-select tf-field" id="default_style">
                                 <option value="m" {% if config.default_style == 'm' %}selected{% endif %}>{{ t('tpl.config.basic.style_standard') }}</option>
@@ -127,13 +127,13 @@
                             </select>
                         </div>
 
-                        <div class="col-md-4 mb-3">
+                        <div class="mb-3">
                             <label for="default_zoom_min" class="form-label">{{ t('tpl.config.basic.zoom_min') }}</label>
                             <input type="number" class="form-control tf-field" id="default_zoom_min"
                                    value="{{ config.default_zoom_min }}" min="0" max="21">
                         </div>
 
-                        <div class="col-md-4 mb-3">
+                        <div class="mb-3">
                             <label for="default_zoom_max" class="form-label">{{ t('tpl.config.basic.zoom_max') }}</label>
                             <input type="number" class="form-control tf-field" id="default_zoom_max"
                                    value="{{ config.default_zoom_max }}" min="0" max="21">
@@ -147,8 +147,8 @@
                         {{ t('tpl.config.download.title') }}
                     </h3>
 
-                    <div class="row">
-                        <div class="col-md-4 mb-3">
+                    <div class="tf-cols tf-cols--md-3">
+                        <div class="mb-3">
                             <label for="concurrent_downloads" class="form-label">{{ t('tpl.config.download.concurrency') }}</label>
                             <input type="number" class="form-control tf-field" id="concurrent_downloads"
                                    value="{{ config.concurrent_downloads }}" min="1" max="100">
@@ -163,13 +163,13 @@
                             <small class="form-text d-block mt-1" id="concurrencyRecommendHint"></small>
                         </div>
 
-                        <div class="col-md-4 mb-3">
+                        <div class="mb-3">
                             <label for="request_timeout" class="form-label">{{ t('tpl.config.download.request_timeout') }}</label>
                             <input type="number" class="form-control tf-field" id="request_timeout"
                                    value="{{ config.request_timeout }}" min="1" max="300">
                         </div>
 
-                        <div class="col-md-4 mb-3">
+                        <div class="mb-3">
                             <label for="max_retries" class="form-label">{{ t('tpl.config.download.max_retries') }}</label>
                             <input type="number" class="form-control tf-field" id="max_retries"
                                    value="{{ config.max_retries }}" min="0" max="10">
@@ -332,8 +332,8 @@
                         {{ t('tpl.config.gdal.title') }}
                     </h3>
 
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
+                    <div class="tf-cols tf-cols--md-2">
+                        <div class="mb-3">
                             <label for="gdal_compression" class="form-label">{{ t('tpl.config.gdal.compression') }}</label>
                             <select class="form-select tf-field" id="gdal_compression">
                                 <option value="LZW" {% if config.gdal_compression == 'LZW' %}selected{% endif %}>LZW</option>
@@ -343,7 +343,7 @@
                             </select>
                         </div>
 
-                        <div class="col-md-6 mb-3">
+                        <div class="mb-3">
                             <label for="gdal_resampling" class="form-label">{{ t('tpl.config.gdal.resampling') }}</label>
                             <select class="form-select tf-field" id="gdal_resampling">
                                 <option value="nearest" {% if config.gdal_resampling == 'nearest' %}selected{% endif %}>{{ t('tpl.config.gdal.resampling_nearest') }}</option>
@@ -366,20 +366,20 @@
                        :invalid，点「保存」submit 事件根本不触发 —— 整个配置页
                        静默存不进去（不只是这两个字段）。范围由后端
                        ConfigManager._is_valid_lat/_is_valid_lng 兜住。 #}
-                    <div class="row">
-                        <div class="col-md-4 mb-3">
+                    <div class="tf-cols tf-cols--md-3">
+                        <div class="mb-3">
                             <label for="map_center_lat" class="form-label">{{ t('tpl.config.misc.map_center_lat') }}</label>
                             <input type="number" class="form-control tf-field" id="map_center_lat"
                                    value="{{ config.map_center_lat }}" step="any" min="-90" max="90">
                         </div>
 
-                        <div class="col-md-4 mb-3">
+                        <div class="mb-3">
                             <label for="map_center_lng" class="form-label">{{ t('tpl.config.misc.map_center_lng') }}</label>
                             <input type="number" class="form-control tf-field" id="map_center_lng"
                                    value="{{ config.map_center_lng }}" step="any" min="-180" max="180">
                         </div>
 
-                        <div class="col-md-4 mb-3">
+                        <div class="mb-3">
                             <label for="map_initial_zoom" class="form-label">{{ t('tpl.config.misc.map_initial_zoom') }}</label>
                             <input type="number" class="form-control tf-field" id="map_initial_zoom"
                                    value="{{ config.map_initial_zoom }}" min="0" max="21">
@@ -398,14 +398,14 @@
                         {{ t('tpl.config.earthdata.title') }}
                     </h3>
 
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
+                    <div class="tf-cols tf-cols--md-2">
+                        <div class="mb-3">
                             <label for="earthdata_username" class="form-label">{{ t('tpl.config.earthdata.username') }}</label>
                             <input type="text" class="form-control tf-field" id="earthdata_username"
                                    value="{{ config.earthdata_username }}" placeholder="Earthdata username">
                         </div>
 
-                        <div class="col-md-6 mb-3">
+                        <div class="mb-3">
                             <label for="earthdata_password" class="form-label">{{ t('tpl.config.earthdata.password') }}</label>
                             <input type="password" class="form-control tf-field" id="earthdata_password"
                                    value="{{ config.earthdata_password }}" placeholder="Earthdata password">
