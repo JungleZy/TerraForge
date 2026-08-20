@@ -55,6 +55,8 @@
     --liquid-shadow: 0 8px 32px rgba(0,0,0,0.35);
     --liquid-sheen: linear-gradient(135deg,
         rgba(255,255,255,0.28), rgba(255,255,255,0.06) 30%, transparent 60%);
+    /* 流光混合模式:暗色下 screen(提亮);亮色下白底叠白光无效,翻转见亮色块 */
+    --liquid-sheen-blend: screen;
     /* 文字可读性叠层:玻璃 alpha 太低,白字压不住亮色地图,叠一层暗化 */
     --liquid-scrim: linear-gradient(rgba(10,12,16,0.42), rgba(10,12,16,0.42));
     --liquid-radius-panel:   16px;
@@ -557,8 +559,12 @@
     --liquid-rim-soft:   rgba(255,255,255,0.50);
     --liquid-stroke:     rgba(15,23,42,0.12);
     --liquid-shadow: 0 8px 24px rgba(15,23,42,0.18);
+    /* 2026-08-20 Task 9a 用户裁决(亮色流光修复):亮色玻璃底本身就是白的,
+       原 0.55→0.12 的白色流光叠上去不可辨。梯度提到 0.85→0.25,混合模式
+       从 screen 翻回 normal(screen 在亮底上只输出更白的白,等于没有)。 */
     --liquid-sheen: linear-gradient(135deg,
-        rgba(255,255,255,0.55), rgba(255,255,255,0.12) 30%, transparent 60%);
+        rgba(255,255,255,0.85), rgba(255,255,255,0.25) 30%, transparent 60%);
+    --liquid-sheen-blend: normal;
     --liquid-scrim: linear-gradient(rgba(255,255,255,0.30), rgba(255,255,255,0.30));
 }
 
@@ -5615,7 +5621,8 @@ code {
     z-index: -1;
     border-radius: inherit;
     background: var(--liquid-sheen);
-    mix-blend-mode: screen;
+    /* mix-blend-mode 不是动效属性,不动全站动效锚点 */
+    mix-blend-mode: var(--liquid-sheen-blend, screen);
     pointer-events: none;
 }
 .tf-glass--1 { --liquid-blur: var(--liquid-1-blur); --liquid-bg: var(--liquid-1-bg); }
@@ -5643,10 +5650,12 @@ code {
    不是 `content: none`。 */
 
 /* 非地图页环境背景:玻璃需要丰富背景可采样(设计 §3)。
-   渐变取页面底与强调色的极淡混合,等高线纹理描边用边框令牌,亮暗自动跟随。 */
+   渐变取页面底与强调色的极淡混合;等高线纹理描边硬编码 #7dd3fc
+   (accent 同色系天蓝 —— data-URI 里引不了令牌),亮暗主题共用。
+   2026-08-20 Task 9a 用户裁决:描边透明度 0.05 -> 0.09,0.05 实机几乎不可辨。 */
 .page-ambient {
     background:
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%237dd3fc' stroke-opacity='0.05'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E"),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%237dd3fc' stroke-opacity='0.09'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E"),
         radial-gradient(1200px 600px at 80% -10%, var(--color-accent-muted), transparent 60%),
         radial-gradient(900px 500px at 10% 110%, var(--color-accent-muted), transparent 55%),
         var(--color-bg-primary);
