@@ -239,7 +239,7 @@
                                     <input type="text" class="form-control flex-grow-1 tile-server-input tf-field"
                                            value="{{ srv.strip() }}">
                                     <button type="button" class="btn btn-outline-primary tile-server-verify tf-btn">{{ t('tpl.config.download.tile_verify') }}</button>
-                                    <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove tf-btn"
+                                    <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove tf-btn tf-btn--danger"
                                             aria-label="{{ t('tpl.config.download.tile_remove') }}" title="{{ t('tpl.config.download.tile_remove') }}">
                                         {{ m.icon_close(14) }}
                                     </button>
@@ -317,7 +317,7 @@
                         </div>
                         <div class="d-flex gap-2">
                             <button type="button" class="btn btn-outline-secondary btn-compact tf-btn" id="cacheStatsRefresh">{{ t('tpl.config.cache.refresh') }}</button>
-                            <button type="button" class="btn btn-outline-danger btn-compact tf-btn" id="cacheClearAll">{{ t('tpl.config.cache.clear_all') }}</button>
+                            <button type="button" class="btn btn-outline-danger btn-compact tf-btn tf-btn--danger" id="cacheClearAll">{{ t('tpl.config.cache.clear_all') }}</button>
                         </div>
                     </div>
                 </div>

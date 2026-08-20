@@ -16,7 +16,9 @@
 
 <div class="cmdk" id="cmdkHelp" hidden>
     <div class="cmdk__backdrop" data-cmdk-help-close></div>
-    <div class="cmdk__dialog cmdk__dialog--help" role="dialog" aria-modal="true" aria-label="{{ t('tpl.base.cmdk.help_title') }}">
+    {# 速查表容器同挂 glass-3(2026-08-20 Task 9a 挂起项 3):与主面板同档。
+       实底让位/降级/滑入修复都走 .cmdk__dialog.tf-glass 那一份,无需另写。 #}
+    <div class="cmdk__dialog cmdk__dialog--help tf-glass tf-glass--3" role="dialog" aria-modal="true" aria-label="{{ t('tpl.base.cmdk.help_title') }}">
         <div class="cmdk__help-head">
             <span>{{ t('tpl.base.cmdk.help_title') }}</span>
             <button type="button" class="cmdk__help-close" data-cmdk-help-close

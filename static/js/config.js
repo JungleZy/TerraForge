@@ -451,9 +451,9 @@ function initLangSwitcher() {
 function tileServerRowHtml() {
     return `
     <div class="d-flex gap-2 align-items-center">
-        <input type="text" class="form-control flex-grow-1 tile-server-input">
-        <button type="button" class="btn btn-outline-primary tile-server-verify">${t('js.config.tile.verify')}</button>
-        <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove"
+        <input type="text" class="form-control flex-grow-1 tile-server-input tf-field">
+        <button type="button" class="btn btn-outline-primary tile-server-verify tf-btn">${t('js.config.tile.verify')}</button>
+        <button type="button" class="btn btn-icon btn-outline-danger tile-server-remove tf-btn tf-btn--danger"
                 aria-label="${t('js.config.tile.remove')}" title="${t('js.config.tile.remove')}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
@@ -523,9 +523,9 @@ function initTileServerEditor() {
 function tileUrlWizardHtml() {
     return `
     <div class="tile-url-wizard__row">
-        <input type="url" class="form-control flex-grow-1" id="tileUrlWizardInput"
+        <input type="url" class="form-control flex-grow-1 tf-field" id="tileUrlWizardInput"
                placeholder="${t('js.wizard.placeholder')}" aria-label="${t('js.wizard.label')}">
-        <button type="button" class="btn btn-outline-primary" id="tileUrlWizardRun">${t('js.wizard.analyze')}</button>
+        <button type="button" class="btn btn-outline-primary tf-btn" id="tileUrlWizardRun">${t('js.wizard.analyze')}</button>
     </div>
     <div class="tile-url-wizard__out" id="tileUrlWizardOut" hidden></div>
 `;

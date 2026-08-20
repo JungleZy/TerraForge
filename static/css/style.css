@@ -5707,6 +5707,19 @@ code {
     background: linear-gradient(rgba(0,0,0,0.18), rgba(0,0,0,0.18)), var(--color-accent);
 }
 .tf-btn--accent { color: var(--color-on-accent); }
+/* 警示色修饰(2026-08-20 Task 9a 挂起项 9):危险操作钮(清空缓存/删瓦片
+   服务器)挂 .tf-btn 后描边被 --liquid-stroke、文字被 --color-text-primary
+   接管,红色信号丢失。修饰类把描边/文字换回危险令牌,hover 升一档。
+   与 .tf-btn:hover 同特异度 (0,3,0) 而源码更靠后,hover 色稳定取胜;
+   抬升/阴影仍由 .tf-btn:hover 承担。 */
+.tf-btn--danger {
+    border-color: var(--color-danger);
+    color: var(--color-danger);
+}
+.tf-btn--danger:hover:not(:disabled) {
+    border-color: var(--color-danger-hover);
+    color: var(--color-danger-hover);
+}
 @supports not (backdrop-filter: blur(1px)) {
     .tf-btn { background: var(--color-bg-elevated); }
     .tf-btn::before { content: none; }
@@ -5730,6 +5743,17 @@ code {
    .tf-glass 的 transition 顶掉,hover 从渐变退成硬切。补回。 */
 .statusbar-copy.tf-glass {
     transition: background-color var(--dur-fast) var(--ease);
+}
+
+/* Task 9a 叠加修复(2026-08-20,挂起项 7):地图浮层 chip(预览提示条/
+   等高线预览面板,由 map.js 运行时创建)挂 .tf-glass 后,.tf-glass 的
+   position:relative(同 (0,1,0)、源码更靠后)会顶掉 chip 的
+   position:absolute,浮层掉回文档流。补回定位;底色沿用 .map-overlay-chip
+   的半透明 --color-glass-surface(与状态栏胶囊同一先例:半透明底不盖死
+   玻璃,无需让位),边框/阴影/模糊/流光等皮肤属性由 .tf-glass 承担。
+   本规则不声明 transition,不动全站动效锚点。 */
+.map-overlay-chip.tf-glass {
+    position: absolute;
 }
 
 /* 液态玻璃表单控件:glass-1 底,聚焦时描边染强调色 */
@@ -5833,6 +5857,13 @@ code {
 }
 @supports not (backdrop-filter: blur(1px)) {
     .cmdk__dialog.tf-glass { background: var(--color-bg-elevated); }
+}
+
+/* 折射滤镜的 SVG 定义体容器(base.html 末尾,0x0 不可见):定位曾写内联
+   style,2026-08-20 Task 9a 挂起项 5 收进样式表 —— test_fix_templates_a11y
+   钉死模板树里只允许取色器那一处内联 style。 */
+.tf-svg-defs {
+    position: absolute;
 }
 
 /* 折射增强(仅 Chromium):glass-3 的背景扭曲。@supports 探测失败时

@@ -170,7 +170,7 @@
                              completed_with_gaps）：排除它就等于让「接受缺口」这个
                              决定毫无意义。 -->
                         <button v-if="canExport && isExportable"
-                                class="btn btn-icon btn-sm btn-secondary" @click="exportOutput"
+                                class="btn btn-icon btn-sm btn-secondary tf-btn" @click="exportOutput"
                                 :title="t('js.gaps.action.export')" :aria-label="t('js.gaps.action.export')">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>

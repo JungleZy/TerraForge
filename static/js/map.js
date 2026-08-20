@@ -3913,7 +3913,7 @@ function _renderPreviewChip() {
         if (!host) return;
         chip = document.createElement('div');
         chip.id = 'taskPreviewChip';
-        chip.className = 'map-overlay-chip task-preview-chip';
+        chip.className = 'map-overlay-chip tf-glass tf-glass--1 task-preview-chip';
         host.appendChild(chip);
     }
     // 缺口徽章：带洞的成品在**每一处**露面都要带上这个数字（行、详情、这里）。
@@ -3987,7 +3987,7 @@ function contourPreviewPanel() {
         // 与右上的 .bounds-overlay、右下的 .task-preview-chip 共用
         // .map-overlay-chip 底座（定位/玻璃底色/描边/圆角/阴影/文字色/内边距），
         // 本类只留左下锚点、尺寸上界与滚动 —— 它是这个基类的第三个变体。
-        panel.className = 'map-overlay-chip contour-preview-panel';
+        panel.className = 'map-overlay-chip tf-glass tf-glass--1 contour-preview-panel';
         mapEl.parentNode.appendChild(panel);
     }
     return panel;

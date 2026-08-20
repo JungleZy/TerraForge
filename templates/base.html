@@ -99,7 +99,7 @@
                  99% 的启动底图已就位，状态栏不该多出一块常驻空位。
                  位置在页面 statusbar block 之后 = 最右；statusbar 是 flex 行，
                  位置完全由 DOM 顺序决定。 -->
-            <span class="statusbar-basemap statusbar-pill" id="statusBaseUnpack" hidden>
+            <span class="statusbar-basemap statusbar-pill tf-glass tf-glass--1" id="statusBaseUnpack" hidden>
                 <svg class="statusbar-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                     <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
                     <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
@@ -364,7 +364,7 @@
          由 style.css 末尾 @supports 块里的 backdrop-filter: url(...) 引用。
          滤镜是静态的(feTurbulence 不带 <animate>),全页只此一份;
          不支持 backdrop-filter url() 的浏览器自然落到普通模糊。 -->
-    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <svg class="tf-svg-defs" width="0" height="0" aria-hidden="true">
       <filter id="tf-liquid-refraction" x="0" y="0" width="100%" height="100%">
         <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008" numOctaves="2" seed="4" result="noise"/>
         <feGaussianBlur in="noise" stdDeviation="2" result="blurred"/>
