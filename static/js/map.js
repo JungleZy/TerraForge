@@ -1217,14 +1217,17 @@ function _renderPlaceSearching() {
     results.innerHTML = '';
     const hint = document.createElement('div');
     hint.className = 'place-search__hint place-search__hint--busy';
-    // 转圈 + 文字（2026-08-21 用户反馈：纯文字没有等待感）。复用全站既有
-    // 的 spinner-border 旋转动画，尺寸由 CSS 侧收小；动画对读屏无信息，
-    // aria-hidden。
-    const spinner = document.createElement('span');
-    spinner.className = 'spinner-border place-search__spinner';
-    spinner.setAttribute('aria-hidden', 'true');
-    hint.appendChild(spinner);
-    hint.appendChild(document.createTextNode(t('js.search.searching')));
+    // 三点呼吸（2026-08-21 用户反馈：居中、不要文字、单圈转弧太简单）。
+    // 视觉只摆三颗错相位弹跳的圆点；「搜索中」名义进 aria-label
+    //（role=status），读屏照常播报，界面上只留动画。
+    hint.setAttribute('role', 'status');
+    hint.setAttribute('aria-label', t('js.search.searching'));
+    for (let i = 0; i < 3; i++) {
+        const dot = document.createElement('span');
+        dot.className = 'place-search__dot';
+        dot.setAttribute('aria-hidden', 'true');
+        hint.appendChild(dot);
+    }
     results.appendChild(hint);
     _openPlaceSearch();
 }

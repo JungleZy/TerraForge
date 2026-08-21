@@ -7644,7 +7644,9 @@ def _motion_rule_index(css):
 # 53 -> 54（2026-08-21 搜索面板玻璃化）：`.map-search__panel.tf-glass`
 # 修复块（opacity/transform 开场过渡与 .tf-glass 两组过渡合并）。复合类
 # 选择器，落在 reduce 块 `*` 覆盖范围内，无需豁免登记。
-_MOTION_BRANCH_COUNT = 54
+# 54 -> 55（2026-08-21 搜索中三点呼吸）：`.place-search__dot` 一条动画分支
+#（纯类选择器，在 reduce 块 `*` 覆盖范围内）。
+_MOTION_BRANCH_COUNT = 55
 
 
 def test_motion_rule_index_is_complete():
@@ -7955,8 +7957,10 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # 选择器，在 reduce 块 `*` 覆盖范围内，不进豁免清单。
     # 50 -> 51（2026-08-21 搜索面板玻璃化）：`.map-search__panel.tf-glass`
     # 反解出一个上下文，复合类选择器，在 reduce 块 `*` 覆盖范围内。
-    assert len(ctxs) == 51, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 51：\n'
+    # 51 -> 52（2026-08-21 搜索中三点呼吸）：`.place-search__dot` 反解出一个
+    # 上下文，纯类选择器，在 reduce 块 `*` 覆盖范围内。
+    assert len(ctxs) == 52, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 52：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )

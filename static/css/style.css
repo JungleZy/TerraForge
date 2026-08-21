@@ -2668,21 +2668,29 @@ body {
     color: var(--color-text-secondary);
 }
 
-/* 「搜索中…」。上游往返实测约 2 秒，这一句是那段等待里屏幕上唯一的东西，
-   所以要比普通提示更显眼一档（正文色而不是次要色）。
-   2026-08-21：加转圈（用户反馈纯文字没有等待感）。动画复用全站既有
-   spinner-border 的 @keyframes，这里只排版与收尺寸，不声明动效。 */
+/* 「搜索中…」的三点呼吸（2026-08-21 用户反馈改三轮：居中、去掉文字、
+   单圈转弧太简单）。三颗 accent 圆点错相位弹跳，类 iMessage 的输入中
+   指示——等待感的语义由节奏承担，不写文字。「搜索中」这句话在 JS 侧
+   进了 role=status 的 aria-label，读屏不丢。 */
 .place-search__hint--busy {
     display: flex;
+    justify-content: center;
     align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-hair);
-    color: var(--color-text-primary);
+    gap: 7px;
+    padding: var(--space-3) var(--space-hair);
 }
-.place-search__spinner {
-    width: 14px;
-    height: 14px;
-    border-width: 2px;
+.place-search__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-accent);
+    animation: tf-search-dot 1.2s var(--ease) infinite;
+}
+.place-search__dot:nth-child(2) { animation-delay: 0.15s; }
+.place-search__dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes tf-search-dot {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+    30% { transform: translateY(-5px); opacity: 1; }
 }
 
 /* ==========================================================================

@@ -349,9 +349,11 @@ def test_history_click_shows_searching_and_keeps_panel_open():
     """
     src = _map_js()
     searching = _js_function_body(src, '_renderPlaceSearching')
-    assert 'spinner-border' in searching, (
-        '「搜索中…」缺转圈 —— 纯文字在上游往返那 2 秒里没有等待感'
-        '（2026-08-21 用户反馈）；转圈复用全站 spinner-border 动画')
+    assert 'place-search__dot' in searching, (
+        '「搜索中」缺三点呼吸动画（2026-08-21 用户反馈：居中、纯动画、'
+        '单圈转弧太简单）')
+    assert "role', 'status'" in searching and 'aria-label' in searching, (
+        '动画化之后「搜索中」的名义必须进 role=status 的 aria-label，读屏不丢')
 
     run = _js_function_body(_map_js(), '_runPlaceSearch')
     assert '_renderPlaceSearching' in run, (
