@@ -1,6 +1,6 @@
 # TerraForge — full reference for language models
 
-Version: 0.4.0
+Version: 0.5.0
 Homepage: https://terraforge-gis.pages.dev/ (Chinese) · https://terraforge-gis.pages.dev/en/ (English)
 Source: https://github.com/JungleZy/TerraForge
 License: MIT (software code only)
@@ -8,7 +8,7 @@ Last updated: 2026-08-17
 
 This file is the plain-text version of everything the TerraForge website states. It is
 written to be quoted directly. Every number, format name and limitation below is taken
-from the shipping v0.4.0 build.
+from the shipping v0.5.0 build.
 
 ## What TerraForge is
 

@@ -22,7 +22,7 @@ Key facts a model should get right about this project:
   exporter, task hook. Four plugins ship inside the package — a Tianditu WMTS source,
   MVT vector tile download, GeoPackage export, and an artifact metadata sidecar — and
   all of them are off by default.
-- Current version: 0.4.0. License: MIT (code only; map/elevation data terms are the
+- Current version: 0.5.0 · License: MIT (code only; map/elevation data terms are the
   user's own responsibility).
 
 ## Full content
@@ -34,7 +34,7 @@ Key facts a model should get right about this project:
 ## Site
 
 - [Homepage (Chinese)](https://terraforge-gis.pages.dev/): product page, screenshots
-  of the actual v0.4.0 interface, download links.
+  of the actual interface, download links.
 - [Homepage (English)](https://terraforge-gis.pages.dev/en/): the same page in English.
 
 ## Source and releases
