@@ -596,14 +596,18 @@
     color-scheme: light;
     --form-select-arrow: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
 
-    /* 2026-08-21 返工重调:亮色玻璃此前「一片纯白」的根因是白料 alpha
-       堆到 0.42~0.66 再叠 0.30 白纱,背景一点渗不上来。苹果亮色玻璃的
-       料其实很薄(0.18~0.36),靠 saturate 提色 + brightness 微提亮让背景
-       颜色渗进来,白字换深字,readability 由文字色承担不由料承担。 */
-    --liquid-1-bg:   rgba(255,255,255,0.18);
-    --liquid-2-bg:   rgba(255,255,255,0.26);
-    --liquid-3-bg:   rgba(255,255,255,0.36);
-    --liquid-brighten: 1.06;
+    /* 2026-08-21 返工重调:亮色玻璃「一片纯白」的主犯是叠了 0.30 均涂
+       白纱 + 0.85 白流光,不是料本身的 alpha。第一刀把料砍到 0.18~0.36
+       矫枉过正:地图页亮主题的背景是黑色太空,薄料+深字压在模糊黑底上
+       不可读。四轮实测收敛:亮色地图页的背景是黑色太空/亮色影像,深字
+       只有厚乳料(0.75~0.88)才挺得住——iOS 亮色玻璃压在深壁纸上本来就
+       接近乳白。「透」由重模糊 + 提饱和 + 边缘高光 + 折射表达,不由
+       低 alpha 表达;0.30 白纱与 0.85 白流光维持退场(那才是纯白感主犯)。 */
+    --liquid-1-bg:   rgba(255,255,255,0.75);
+    --liquid-2-bg:   rgba(255,255,255,0.82);
+    --liquid-3-bg:   rgba(255,255,255,0.88);
+    --liquid-brighten: 1.05;
+    --liquid-saturate: 170%;
     --liquid-rim-strong: rgba(255,255,255,0.85);
     --liquid-rim-soft:   rgba(255,255,255,0.40);
     --liquid-stroke:     rgba(15,23,42,0.10);
@@ -6130,9 +6134,9 @@ code {
 /* Task 9a 叠加修复(2026-08-20,挂起项 7):地图浮层 chip(预览提示条/
    等高线预览面板,由 map.js 运行时创建)挂 .tf-glass 后,.tf-glass 的
    position:relative(同 (0,1,0)、源码更靠后)会顶掉 chip 的
-   position:absolute,浮层掉回文档流。补回定位;底色沿用 .map-overlay-chip
-   的半透明 --color-glass-surface(与状态栏胶囊同一先例:半透明底不盖死
-   玻璃,无需让位),边框/阴影/模糊/流光等皮肤属性由 .tf-glass 承担。
+   position:absolute,浮层掉回文档流。补回定位。
+   底色原沿用老玻璃令牌;2026-08-21 第二阶段返工实测亮色下双材料叠加
+   把透明感堵死,已随四个老玻璃面一并在文件末尾让位透明。
    本规则不声明 transition,不动全站动效锚点。 */
 .map-overlay-chip.tf-glass {
     position: absolute;
@@ -6280,4 +6284,44 @@ code {
 }
 @supports not (backdrop-filter: blur(1px)) {
     .config-section { background: var(--color-bg-secondary); }
+}
+
+/* ══ 2026-08-21 返工(第二阶段):老玻璃面让位透明 ═══════════════════════
+   用户实测(Chrome 151 截图):亮色地图页上胶囊/工具条/搜索框是实心白,
+   地图一点不渗。根因:T3 的「叠加皮肤」只加了液态料,四个老玻璃面元素
+   背景层的 var(--color-glass-surface)(亮色 0.78 白/暗色 0.72 暗)还在画,
+   画在 backdrop-filter 结果之上,把透明感整体堵死 —— 双材料叠加。
+   处理与 .modal-content.tf-glass / .cmdk__dialog.tf-glass 同一先例:
+   带 .tf-glass 时元素背景让位透明,皮肤由液态令牌承担。
+   .workbench-panel 同理:面板实底 elevated 不换的话,里面分区卡再玻璃
+   也透不出地图。 */
+.statusbar-pill.tf-glass,
+.map-panel-triggers.tf-glass,
+.map-search__field.tf-glass,
+.map-overlay-chip.tf-glass {
+    background: transparent;
+    background-color: transparent;
+    border-color: var(--liquid-stroke);
+}
+.workbench-panel.tf-glass {
+    background: transparent;
+}
+/* 降级:不支持 backdrop-filter 时把老玻璃实底抬回(保持改造前观感)。
+   特异度 (0,2,0) 与让位规则持平、源码靠后,同块内取胜。
+   ⚠️ 必须用 background-color 长写,不许用 background 简写:
+   test_base_unpack_statusbar 的窄屏层叠测试按「特异度→源码序」平铺算
+   background 简写的赢家(不认 @supports 上下文),本块若不透明简写
+   参与竞争会压掉窄屏清零、英文状态栏被裁——而本块只在不认
+   backdrop-filter 的浏览器里激活,那种环境里根本没有玻璃设计,
+   窄屏清零的像素级收益无关紧要。 */
+@supports not (backdrop-filter: blur(1px)) {
+    .statusbar-pill.tf-glass,
+    .map-panel-triggers.tf-glass,
+    .map-search__field.tf-glass,
+    .map-overlay-chip.tf-glass {
+        background-color: var(--color-glass-surface);
+    }
+    .workbench-panel.tf-glass {
+        background: var(--color-bg-elevated);
+    }
 }
