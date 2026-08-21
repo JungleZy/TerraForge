@@ -6309,3 +6309,21 @@ code {
 .map-search__field.tf-glass {
     text-shadow: 0 1px 2px var(--liquid-text-lift);
 }
+
+/* 2026-08-21：搜索结果/最近搜索面板玻璃化（glass-2）。两处必须一起补：
+   1. 让位——自带的实底 --color-bg-elevated 画在元素背景层，会盖死
+      backdrop-filter（同 .modal-content/.cmdk__dialog 先例）；
+   2. 过渡合并——.tf-glass 的 transition（box-shadow/border-color）与它同为
+      (0,1,0) 且源码靠后，会把面板的 opacity/transform 开场过渡整条顶掉
+      （同 Task 3 .workbench-panel.tf-glass 修复模式）。 */
+.map-search__panel.tf-glass {
+    background: transparent;
+    border-color: var(--liquid-stroke);
+    transition: opacity var(--dur-base) var(--ease),
+                transform var(--dur-base) var(--ease),
+                box-shadow var(--liquid-motion),
+                border-color var(--liquid-motion);
+}
+@supports not (backdrop-filter: blur(1px)) {
+    .map-search__panel.tf-glass { background: var(--color-bg-elevated); }
+}

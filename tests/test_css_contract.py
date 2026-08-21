@@ -7641,7 +7641,10 @@ def _motion_rule_index(css):
 # 51 -> 53（2026-08-20 Task 9b Bootstrap 清退自有化）：加 2 个分支
 #   `.fade`（opacity 过渡，原 Bootstrap）与 `.spinner-border`（旋转动画，
 #   原 Bootstrap）。都是纯类选择器，落在 reduce 块 `*` 覆盖范围内。
-_MOTION_BRANCH_COUNT = 53
+# 53 -> 54（2026-08-21 搜索面板玻璃化）：`.map-search__panel.tf-glass`
+# 修复块（opacity/transform 开场过渡与 .tf-glass 两组过渡合并）。复合类
+# 选择器，落在 reduce 块 `*` 覆盖范围内，无需豁免登记。
+_MOTION_BRANCH_COUNT = 54
 
 
 def test_motion_rule_index_is_complete():
@@ -7950,8 +7953,10 @@ def test_reduced_motion_actually_stops_every_animated_element():
     # opacity 淡入淡出，原 Bootstrap）与 `.spinner-border`（加载圈旋转动画，
     # 原 Bootstrap 的 0.75s linear infinite）各反解出一个上下文，都是纯类
     # 选择器，在 reduce 块 `*` 覆盖范围内，不进豁免清单。
-    assert len(ctxs) == 50, (
-        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 50：\n'
+    # 50 -> 51（2026-08-21 搜索面板玻璃化）：`.map-search__panel.tf-glass`
+    # 反解出一个上下文，复合类选择器，在 reduce 块 `*` 覆盖范围内。
+    assert len(ctxs) == 51, (
+        f'反解出 {len(ctxs)} 个带动效的元素上下文，锚点是 51：\n'
         + '\n'.join('  ' + ' '.join(repr(n) for n in c) for c in ctxs)
         + '\n数字对不上说明扫描范围变了，先确认不是漏扫'
     )
