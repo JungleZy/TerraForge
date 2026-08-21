@@ -56,7 +56,7 @@
          3. 折射改边缘透镜(见 base.html tf-lens-map),不再整面噪声涂抹。
        亮色翻转集中在下方亮色令牌块。 */
 
-    --liquid-1-bg:   rgba(15,17,22,0.30);
+    --liquid-1-bg:   rgba(15,17,22,0.42);
     --liquid-1-blur: 16px;
     --liquid-2-bg:   rgba(15,17,22,0.38);
     --liquid-2-blur: 24px;
@@ -72,6 +72,8 @@
     --liquid-shadow: 0 12px 40px rgba(0,0,0,0.50);
     /* 玻璃厚度内底阴影(光从上来,底部内侧积暗) */
     --liquid-inner-depth: rgba(0,0,0,0.22);
+    /* 玻璃上文字的抠形投影(暗色:黑投影衬白字) */
+    --liquid-text-lift: rgba(0,0,0,0.45);
     /* 非地图页环境加彩:暗色页底本身够深,空操作;亮色块翻转为 accent
        色团——「明亮模式一片纯白」的修法,让玻璃有颜色可渗 */
     --ambient-boost: radial-gradient(800px 500px at 85% 0%, rgba(0,0,0,0), rgba(0,0,0,0));
@@ -619,6 +621,8 @@
     --liquid-sheen-blend: normal;
     /* 亮色 scrim 近乎退场:顶部一丝白光即可,不再均涂白纱 */
     --liquid-scrim: linear-gradient(rgba(255,255,255,0.08), rgba(255,255,255,0));
+    /* 玻璃上文字的抠形光晕(亮色:白光晕衬深字) */
+    --liquid-text-lift: rgba(255,255,255,0.55);
     /* 亮色环境加彩(2026-08-21 返工):三团 accent 色水洗纵向铺开 +
        底部微 vignette。第一版(22%/15% 两团)中段仍是平白底,玻璃卡
        在中段无颜色可渗;铺开+提到 26%/18%/14% */
@@ -6324,4 +6328,15 @@ code {
     .workbench-panel.tf-glass {
         background: var(--color-bg-elevated);
     }
+}
+
+/* 2026-08-21 返工(第三阶段):玻璃 chrome 上的文字锐度。glass-1 料再厚
+   也挡不住亮影像在字形边缘的干扰——苹果在玻璃上保文字锐度的手段是
+   一层极细的下方投影,把字形从模糊背景上「抠」出来。只加在常驻 chrome
+   的读数/图标文字上(状态栏胶囊、工具条按钮),不动正文区。
+   亮色下投影翻成白色光晕(深字下垫光),见亮色令牌块。 */
+.statusbar-pill.tf-glass,
+.map-panel-triggers.tf-glass .map-panel-btn,
+.map-search__field.tf-glass {
+    text-shadow: 0 1px 2px var(--liquid-text-lift);
 }
