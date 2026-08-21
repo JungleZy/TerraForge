@@ -2370,7 +2370,7 @@ body {
     align-items: center;
     gap: var(--space-2);
     padding: 0 var(--space-3);   /* 0.625rem(10px) -> --space-3（12px）：间距刻度归一 2026-08-14 */
-    height: var(--ctl-h);
+    height: var(--ctl-h-lg);   /* 2026-08-21：28px 密集档 -> 36px 主操作档（用户反馈与页面整体不协调）；它是地图页主输入，语义上本就归这档 */
     background: var(--color-glass-surface);
     backdrop-filter: blur(12px) saturate(140%);
     border: 1px solid var(--color-glass-border);
@@ -2388,16 +2388,15 @@ body {
 .map-search__input {
     flex: 1 1 auto;
     min-width: 0;
-    /* 23px -> --ctl-h（28px），2026-08-15：宿主 .map-search__field 是
-       --ctl-h(28px) 的胶囊、上下无内边距，而裸 input 只按自己的内容撑到 23px
-       —— 中间那 5px 是「看着是输入框、点上去不聚焦」的死区（上下各 2.5px，
-       正好是用户瞄准胶囊边缘时最容易点到的地方）。撑满宿主即可。 */
-    height: var(--ctl-h);
+    /* 裸 input 高度必须等于宿主胶囊（2026-08-15 的死区教训：宿主 28px 时
+       input 只撑到 23px,差出的 5px 是「看着是输入框、点上去不聚焦」的
+       死区）。宿主 2026-08-21 升到 --ctl-h-lg(36px),这里同步。 */
+    height: var(--ctl-h-lg);
     border: none;
     background: none;
     color: var(--color-text-primary);
     font-family: var(--font-display);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-md);
 }
 
 /* 裸 input 关掉焦点环，环画在宿主上（见下面的 :focus-within）——

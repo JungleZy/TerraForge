@@ -402,11 +402,13 @@ MAP_PANEL_BTN_H_PX = 40.0
 #                                 组件未提交摘出、同日随组件进 commit 后放回。
 # 统一到 --ctl-h。属性名不限 height / min-height：两种都是「高度从哪来」，
 # 只认一种的话换个属性就能绕过去。
+# 2026-08-21 删除登记：'.map-search__input' 随宿主 .map-search__field 升到
+# --ctl-h-lg(36px 主操作档)——它是地图页主输入，用户反馈 28px 与页面整体
+# 不协调。lg 档消费者自此多一对地图搜索胶囊。
 DENSE_CONTROL_HEIGHT_SITES = (
     '.bounds-edit-input',
     ('.btn.btn-compact, .btn.tile-server-verify, .btn.concurrency-recommend, '
      '.btn.path-browse, .bounds-actions .btn'),
-    '.map-search__input',
 )
 
 # `--ctl-h-lg` 的消费者：常驻底条上的主操作按钮。
