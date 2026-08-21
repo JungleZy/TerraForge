@@ -9563,8 +9563,9 @@ _DIV_BACKGROUNDS_THAT_MUST_RENDER = {
     # 类名/说明: (取链的方式, 期望的最终色, 改前实测值)
     # 2026-07 UX 改版：.index-right（dock 面板）随 dock 整体移除，
     # 不再是受害者，从清单删除。
-    '.config-section（配置页 6 个分区）':
-        ('config.html', {'config-section'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
+    # 2026-08-21 液态玻璃返工:.config-section 从实底 --color-bg-secondary 改为
+    # 玻璃面(让位透明 + glass-2 令牌,与 .cmdk__dialog 同一先例),不再是
+    # 「必须渲染实底」的受害者;由 test_config_sections_carry_liquid_glass_skin 接管。
     '.stat-card（历史页 4 张统计卡）':
         ('history.html', {'stat-card'}, '--color-bg-secondary', 'rgba(0, 0, 0, 0)'),
     '.modal-header（详情弹窗标题栏，2026-08 起标记在 base.html；2026-08-11 改版随 .modal-content 升入 elevated 档）':
@@ -9624,6 +9625,31 @@ def test_every_victim_of_the_deleted_blanket_reset_renders_its_background():
         + '\n'.join('  ' + p for p in problems)
     )
 
+def test_config_sections_carry_liquid_glass_skin():
+    """2026-08-21 液态玻璃返工:config 页 6 个分区从实底卡片改为玻璃面。
+
+    接替 _DIV_BACKGROUNDS_THAT_MUST_RENDER 里被移除的 .config-section 条目。
+    守三件事(对应 .cmdk__dialog 玻璃化先例的同一结构):
+      1. 让位补丁存在且背景引用 glass-2 令牌(scrim 渐变 + 底料);
+      2. backdrop-filter 声明存在(玻璃成立的前提);
+      3. @supports 降级块把实底抬回 --color-bg-secondary。
+    """
+    css = _css()
+    # 文件里有两条 .config-section 规则:中间的原始卡片规则与末尾的玻璃化
+    # 补丁(2026-08-21 返工)。取声明了 backdrop-filter 的那条。
+    bodies = [m.group(1) for m in
+              re.finditer(r'^\.config-section\s*\{([^}]*)\}', css, flags=re.M)]
+    glass = [b for b in bodies if 'backdrop-filter' in b]
+    assert glass, '.config-section 的玻璃化补丁不存在（没有声明 backdrop-filter 的规则）'
+    body = glass[0]
+    assert 'var(--liquid-scrim)' in body and 'var(--liquid-2-bg)' in body, (
+        '.config-section 的玻璃底必须引用 --liquid-scrim 与 --liquid-2-bg')
+    assert 'backdrop-filter' in body, '.config-section 缺 backdrop-filter'
+    fb = re.search(
+        r'@supports not \(backdrop-filter: blur\(1px\)\)\s*\{\s*'
+        r'\.config-section\s*\{([^}]*)\}', css)
+    assert fb and '--color-bg-secondary' in fb.group(1), (
+        '.config-section 的 @supports 降级块必须把实底抬回 --color-bg-secondary')
 
 def test_task_error_and_modal_backdrop_render_their_background():
     """两个运行时注入元素的背景契约：错误框**不得有底色** + 弹窗遮罩必须变暗。

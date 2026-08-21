@@ -340,15 +340,20 @@
 
     {% block extra_js %}{% endblock %}
 
-    <!-- 液态玻璃 glass-3 的折射滤镜(2026-08-17 Task 7):不可见 SVG 定义体,
-         由 style.css 末尾 @supports 块里的 backdrop-filter: url(...) 引用。
-         滤镜是静态的(feTurbulence 不带 <animate>),全页只此一份;
-         不支持 backdrop-filter url() 的浏览器自然落到普通模糊。 -->
+    <!-- 液态玻璃 glass-3 的折射滤镜(2026-08-17 Task 7,2026-08-21 返工):
+         不可见 SVG 定义体,由 style.css 末尾 @supports 块里的
+         backdrop-filter: url(...) 引用;不支持的浏览器自然落到普通模糊。
+         返工实测(Chromium):backdrop-filter 的 url() 管道不跑 feImage
+         (data-URI 与 DOM 引用均静默无效),边缘透镜位移图用不了;
+         只支持程序化原语。退而求其次:低频(0.004)单倍频程 feTurbulence
+         + 模糊软化 + scale 24——大块柔和的液态起伏取代第一版的高频
+         「脏玻璃」涂抹,文字层不受影响保持锐利。
+         滤镜静态(无 <animate>),不归 prefers-reduced-motion 管。 -->
     <svg class="tf-svg-defs" width="0" height="0" aria-hidden="true">
-      <filter id="tf-liquid-refraction" x="0" y="0" width="100%" height="100%">
-        <feTurbulence type="fractalNoise" baseFrequency="0.008 0.008" numOctaves="2" seed="4" result="noise"/>
-        <feGaussianBlur in="noise" stdDeviation="2" result="blurred"/>
-        <feDisplacementMap in="SourceGraphic" in2="blurred" scale="40" xChannelSelector="R" yChannelSelector="G"/>
+      <filter id="tf-liquid-refraction" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.004 0.004" numOctaves="1" seed="7" result="noise"/>
+        <feGaussianBlur in="noise" stdDeviation="3" result="blurred"/>
+        <feDisplacementMap in="SourceGraphic" in2="blurred" scale="24" xChannelSelector="R" yChannelSelector="G"/>
       </filter>
     </svg>
 </body>

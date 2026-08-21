@@ -44,27 +44,44 @@
        透明度 0.05 -> 0.09,0.05 实机几乎不可辨。 */
     --ambient-contour: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%237dd3fc' stroke-opacity='0.09'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E");
 
-    /* 液态玻璃令牌(2026-08-17 设计 §1)。独立于 --color-glass-surface 体系:
-       旧令牌 alpha 0.72 是停靠浮层的不透明下限(test_elevation_glass.py 钉死),
-       液态玻璃是「厚玻璃」质感,低 alpha + 边缘高光 + 流光,文字可读性靠
-       --liquid-scrim 叠层兜住。亮色翻转集中在下方亮色令牌块。 */
-    --liquid-1-bg:   rgba(255,255,255,0.06);
-    --liquid-1-blur: 12px;
-    --liquid-2-bg:   rgba(255,255,255,0.10);
-    --liquid-2-blur: 20px;
-    --liquid-3-bg:   rgba(255,255,255,0.14);
-    --liquid-3-blur: 28px;
-    --liquid-saturate: 160%;
-    --liquid-rim-strong: rgba(255,255,255,0.55);
-    --liquid-rim-soft:   rgba(255,255,255,0.22);
-    --liquid-stroke:     rgba(255,255,255,0.16);
-    --liquid-shadow: 0 8px 32px rgba(0,0,0,0.35);
-    --liquid-sheen: linear-gradient(135deg,
-        rgba(255,255,255,0.28), rgba(255,255,255,0.06) 30%, transparent 60%);
+    /* 液态玻璃令牌(2026-08-17 设计 §1,2026-08-21 返工重调)。独立于
+       --color-glass-surface 体系:旧令牌 alpha 0.72 是停靠浮层的不透明下限
+       (test_elevation_glass.py 钉死)。
+       返工口径(对苹果原版的三个修正):
+         1. 玻璃料是**深色调**不是白色调——白料叠黑纱在亮背景上糊成灰泥,
+            白字 readability 全丢;深料 + backdrop brightness 压暗才是 iOS
+            暗色玻璃的做法,文字天然挺。
+         2. scrim 从 0.42 均涂黑改成「顶透底暗」的纵向体积渐变,只塑体积感
+            不负责 readability(readability 由深料 + brightness 承担)。
+         3. 折射改边缘透镜(见 base.html tf-lens-map),不再整面噪声涂抹。
+       亮色翻转集中在下方亮色令牌块。 */
+
+    --liquid-1-bg:   rgba(15,17,22,0.30);
+    --liquid-1-blur: 16px;
+    --liquid-2-bg:   rgba(15,17,22,0.38);
+    --liquid-2-blur: 24px;
+    --liquid-3-bg:   rgba(15,17,22,0.46);
+    --liquid-3-blur: 32px;
+    --liquid-saturate: 170%;
+    /* backdrop 压暗:白字在压暗+提饱和的模糊背景上才挺,这是暗色玻璃
+       readability 的第一承担者(不是 scrim)。亮色翻转为 1.06 提亮。 */
+    --liquid-brighten: 0.88;
+    --liquid-rim-strong: rgba(255,255,255,0.42);
+    --liquid-rim-soft:   rgba(255,255,255,0.16);
+    --liquid-stroke:     rgba(255,255,255,0.10);
+    --liquid-shadow: 0 12px 40px rgba(0,0,0,0.50);
+    /* 玻璃厚度内底阴影(光从上来,底部内侧积暗) */
+    --liquid-inner-depth: rgba(0,0,0,0.22);
+    /* 非地图页环境加彩:暗色页底本身够深,空操作;亮色块翻转为 accent
+       色团——「明亮模式一片纯白」的修法,让玻璃有颜色可渗 */
+    --ambient-boost: radial-gradient(800px 500px at 85% 0%, rgba(0,0,0,0), rgba(0,0,0,0));
+    /* 镜面高光:窄而亮的一束(115deg,25% 内收完),不是铺满半面的斜渐变 */
+    --liquid-sheen: linear-gradient(115deg,
+        rgba(255,255,255,0.16), rgba(255,255,255,0.04) 25%, transparent 45%);
     /* 流光混合模式:暗色下 screen(提亮);亮色下白底叠白光无效,翻转见亮色块 */
     --liquid-sheen-blend: screen;
-    /* 文字可读性叠层:玻璃 alpha 太低,白字压不住亮色地图,叠一层暗化 */
-    --liquid-scrim: linear-gradient(rgba(10,12,16,0.42), rgba(10,12,16,0.42));
+    /* 体积渐变:顶部透光、底部微暗,塑造「厚玻璃」体积感 */
+    --liquid-scrim: linear-gradient(rgba(8,10,14,0), rgba(8,10,14,0.22));
     --liquid-radius-panel:   16px;
     --liquid-radius-control: 12px;
     --liquid-motion: 240ms cubic-bezier(0.32, 0.72, 0, 1);
@@ -552,9 +569,10 @@
     --color-glass-surface: rgba(255,255,255,0.78);
     --color-glass-border:  rgba(15,23,42,0.14);
 
-    /* 亮底等高线纹理：同形同透明度(0.09)，描边换成深天蓝 #0369a1
-       （亮色 splash 族同色）—— #7dd3fc 在白底上亮度差不够，实机不可辨 */
-    --ambient-contour: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%230369a1' stroke-opacity='0.09'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E");
+    /* 亮底等高线纹理：同形，描边深天蓝 #0369a1（亮色 splash 族同色）——
+       #7dd3fc 在白底上亮度差不够；透明度 0.09→0.12(2026-08-21 返工,
+       0.09 实机仍不可辨) */
+    --ambient-contour: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='480' height='480'%3E%3Cg fill='none' stroke='%230369a1' stroke-opacity='0.12'%3E%3Cpath d='M-20 120 C120 60 240 180 500 100'/%3E%3Cpath d='M-20 200 C140 140 260 260 500 180'/%3E%3Cpath d='M-20 280 C120 220 260 340 500 260'/%3E%3Cpath d='M-20 360 C140 300 240 420 500 340'/%3E%3Cpath d='M-20 440 C120 380 260 500 500 420'/%3E%3C/g%3E%3C/svg%3E");
 
     --color-checker-a: #d5d9df;
     --color-checker-b: #f4f5f7;
@@ -578,20 +596,33 @@
     color-scheme: light;
     --form-select-arrow: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23343a40' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
 
-    --liquid-1-bg:   rgba(255,255,255,0.42);
-    --liquid-2-bg:   rgba(255,255,255,0.55);
-    --liquid-3-bg:   rgba(255,255,255,0.66);
-    --liquid-rim-strong: rgba(255,255,255,0.90);
-    --liquid-rim-soft:   rgba(255,255,255,0.50);
-    --liquid-stroke:     rgba(15,23,42,0.12);
-    --liquid-shadow: 0 8px 24px rgba(15,23,42,0.18);
-    /* 2026-08-20 Task 9a 用户裁决(亮色流光修复):亮色玻璃底本身就是白的,
-       原 0.55→0.12 的白色流光叠上去不可辨。梯度提到 0.85→0.25,混合模式
-       从 screen 翻回 normal(screen 在亮底上只输出更白的白,等于没有)。 */
-    --liquid-sheen: linear-gradient(135deg,
-        rgba(255,255,255,0.85), rgba(255,255,255,0.25) 30%, transparent 60%);
+    /* 2026-08-21 返工重调:亮色玻璃此前「一片纯白」的根因是白料 alpha
+       堆到 0.42~0.66 再叠 0.30 白纱,背景一点渗不上来。苹果亮色玻璃的
+       料其实很薄(0.18~0.36),靠 saturate 提色 + brightness 微提亮让背景
+       颜色渗进来,白字换深字,readability 由文字色承担不由料承担。 */
+    --liquid-1-bg:   rgba(255,255,255,0.18);
+    --liquid-2-bg:   rgba(255,255,255,0.26);
+    --liquid-3-bg:   rgba(255,255,255,0.36);
+    --liquid-brighten: 1.06;
+    --liquid-rim-strong: rgba(255,255,255,0.85);
+    --liquid-rim-soft:   rgba(255,255,255,0.40);
+    --liquid-stroke:     rgba(15,23,42,0.10);
+    --liquid-shadow: 0 12px 32px rgba(15,23,42,0.16);
+    --liquid-inner-depth: rgba(15,23,42,0.06);
+    /* 镜面高光同暗色口径收窄(115deg,25% 内收完),normal 混合 */
+    --liquid-sheen: linear-gradient(115deg,
+        rgba(255,255,255,0.55), rgba(255,255,255,0.12) 25%, transparent 50%);
     --liquid-sheen-blend: normal;
-    --liquid-scrim: linear-gradient(rgba(255,255,255,0.30), rgba(255,255,255,0.30));
+    /* 亮色 scrim 近乎退场:顶部一丝白光即可,不再均涂白纱 */
+    --liquid-scrim: linear-gradient(rgba(255,255,255,0.08), rgba(255,255,255,0));
+    /* 亮色环境加彩(2026-08-21 返工):三团 accent 色水洗纵向铺开 +
+       底部微 vignette。第一版(22%/15% 两团)中段仍是平白底,玻璃卡
+       在中段无颜色可渗;铺开+提到 26%/18%/14% */
+    --ambient-boost:
+        radial-gradient(1000px 620px at 85% -5%, color-mix(in srgb, var(--color-accent) 26%, transparent), transparent 62%),
+        radial-gradient(900px 560px at 8% 105%, color-mix(in srgb, var(--color-accent) 18%, transparent), transparent 58%),
+        radial-gradient(760px 700px at 12% 45%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 60%),
+        linear-gradient(180deg, rgba(255,255,255,0), rgba(15,23,42,0.05));
 }
 
 /* ==========================================================================
@@ -5922,13 +5953,16 @@ code {
     isolation: isolate;
     border: 1px solid var(--liquid-stroke);
     border-radius: var(--liquid-radius-panel);
+    /* 厚度:外投影 + 顶边镜面高光 + 三边弱光 + 内底阴影(玻璃有厚度,
+       光从上往下,底部内侧积一层暗) */
     box-shadow: var(--liquid-shadow),
-        inset 0 1px 1px var(--liquid-rim-strong),
+        inset 0 1px 0.5px var(--liquid-rim-strong),
         inset 0 -1px 1px var(--liquid-rim-soft),
         inset 1px 0 1px var(--liquid-rim-soft),
-        inset -1px 0 1px var(--liquid-rim-soft);
-    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
-    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
+        inset -1px 0 1px var(--liquid-rim-soft),
+        inset 0 -12px 24px var(--liquid-inner-depth);
+    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
     transition: box-shadow var(--liquid-motion), border-color var(--liquid-motion);
 }
 .tf-glass::before {
@@ -5976,10 +6010,12 @@ code {
 
 /* 非地图页环境背景:玻璃需要丰富背景可采样(设计 §3)。
    渐变取页面底与强调色的极淡混合;等高线纹理整层走 --ambient-contour 令牌
-   (亮暗主题描边色不同,透明度同 0.09 —— 见 :root 两处定义处的注释)。 */
+   (亮暗主题描边色不同,透明度同 0.09 —— 见 :root 两处定义处的注释)。
+   --ambient-boost 是 2026-08-21 返工加的亮色加彩层(暗色为空操作)。 */
 .page-ambient {
     background:
         var(--ambient-contour),
+        var(--ambient-boost),
         radial-gradient(1200px 600px at 80% -10%, var(--color-accent-muted), transparent 60%),
         radial-gradient(900px 500px at 10% 110%, var(--color-accent-muted), transparent 55%),
         var(--color-bg-primary);
@@ -6002,10 +6038,12 @@ code {
     cursor: pointer;
     position: relative;
     isolation: isolate;
-    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
-    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
-    box-shadow: inset 0 1px 1px var(--liquid-rim-strong),
-        inset 0 -1px 1px var(--liquid-rim-soft);
+    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+    /* 厚度:顶边窄而亮的镜面线 + 底部内侧积暗,胶囊才像一块玻璃 */
+    box-shadow: inset 0 1px 0.5px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft),
+        inset 0 -6px 12px var(--liquid-inner-depth);
     transition: transform var(--liquid-motion), box-shadow var(--liquid-motion);
 }
 .tf-btn::before {
@@ -6021,6 +6059,13 @@ code {
     box-shadow: var(--liquid-shadow),
         inset 0 1px 1px var(--liquid-rim-strong),
         inset 0 -1px 1px var(--liquid-rim-soft);
+}
+/* 按压:玻璃被按下去——抬升取消、微缩、外投影收回 */
+.tf-btn:active:not(:disabled) {
+    transform: translateY(0) scale(0.96);
+    box-shadow: inset 0 1px 0.5px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft),
+        inset 0 2px 8px var(--liquid-inner-depth);
 }
 .tf-btn:disabled { opacity: 0.5; cursor: default; }
 .tf-btn:focus-visible {
@@ -6105,8 +6150,8 @@ code {
     color: var(--color-text-primary);
     font: inherit;
     background-color: var(--liquid-1-bg);
-    backdrop-filter: blur(var(--liquid-1-blur)) saturate(var(--liquid-saturate));
-    -webkit-backdrop-filter: blur(var(--liquid-1-blur)) saturate(var(--liquid-saturate));
+    backdrop-filter: blur(var(--liquid-1-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+    -webkit-backdrop-filter: blur(var(--liquid-1-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
     box-shadow: inset 0 1px 1px var(--liquid-rim-soft);
     transition: border-color var(--liquid-motion), box-shadow var(--liquid-motion);
 }
@@ -6124,13 +6169,12 @@ code {
     --liquid-bg: var(--liquid-2-bg);
     position: relative;
     isolation: isolate;
-    border: 1px solid var(--liquid-stroke);
-    border-radius: var(--liquid-radius-panel);
     box-shadow: var(--liquid-shadow),
-        inset 0 1px 1px var(--liquid-rim-strong),
-        inset 0 -1px 1px var(--liquid-rim-soft);
-    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
-    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
+        inset 0 1px 0.5px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft),
+        inset 0 -12px 24px var(--liquid-inner-depth);
+    backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+    -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
 }
 .tf-card::before {
     content: "";
@@ -6152,11 +6196,10 @@ code {
    必须让位成透明。描边与阴影顺带钉成玻璃值:.card:hover 同为 (0,2,0),
    本条源码更靠后,hover 时也不会退回 --shadow-md 平面阴影。 */
 .card.tf-card {
-    background: transparent;
-    border-color: var(--liquid-stroke);
     box-shadow: var(--liquid-shadow),
-        inset 0 1px 1px var(--liquid-rim-strong),
-        inset 0 -1px 1px var(--liquid-rim-soft);
+        inset 0 1px 0.5px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft),
+        inset 0 -12px 24px var(--liquid-inner-depth);
 }
 /* 2. 滚动容器铺实底(卡片原来的 --color-bg-secondary):.task-row 行
    自身无背景,不铺这条的话行会透出卡片玻璃的模糊底,滚动时糊底与
@@ -6213,7 +6256,28 @@ code {
    animation-* / transition-* / scroll-behavior 三类,故刻意不写 reduce 禁用块。 */
 @supports (backdrop-filter: url("#tf-liquid-refraction")) {
     .tf-glass--3 {
-        backdrop-filter: blur(2px) url("#tf-liquid-refraction") saturate(var(--liquid-saturate));
-        -webkit-backdrop-filter: blur(2px) url("#tf-liquid-refraction") saturate(var(--liquid-saturate));
+        backdrop-filter: url("#tf-liquid-refraction") blur(2px) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+        -webkit-backdrop-filter: url("#tf-liquid-refraction") blur(2px) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
     }
+}
+
+/* ══ 2026-08-21 返工:config 区块玻璃化 ═════════════════════════════════
+   .config-section 原是实底 --color-bg-secondary 卡片——亮色下六张白卡贴在
+   浅底上是「一片纯白」观感的主要来源。实底画在元素背景层会盖死
+   backdrop-filter,故让位透明,玻璃料(scrim 渐变 + 底料色)改由
+   background 承担(末层解析为 background-color,与 .tf-glass::before
+   同一机制),皮肤参数全部引 glass-2 令牌。无新 transition,不动动效锚点。 */
+.config-section {
+    background: var(--liquid-scrim), var(--liquid-2-bg);
+    border-color: var(--liquid-stroke);
+    border-radius: var(--liquid-radius-panel);
+    box-shadow: var(--liquid-shadow),
+        inset 0 1px 0.5px var(--liquid-rim-strong),
+        inset 0 -1px 1px var(--liquid-rim-soft),
+        inset 0 -12px 24px var(--liquid-inner-depth);
+    backdrop-filter: blur(var(--liquid-2-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+    -webkit-backdrop-filter: blur(var(--liquid-2-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
+}
+@supports not (backdrop-filter: blur(1px)) {
+    .config-section { background: var(--color-bg-secondary); }
 }
