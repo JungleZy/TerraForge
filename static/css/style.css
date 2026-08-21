@@ -1014,6 +1014,22 @@ body {
     box-shadow: var(--shadow-md);
     backdrop-filter: blur(12px) saturate(140%);
 }
+/* ⚠️ 兜底：`[hidden]` 的 UA 规则**不带** !important，作者侧普通声明压得过它 ——
+   2026-08-21 Chromium 148 实测：`.probe{display:flex}` 作用在带 hidden 的 div 上，
+   computed display 是 flex。`.statusbar-pill` 的 `display: inline-flex` 就是
+   这样一条声明：特异度 (0,1,0) 与 UA 的 `[hidden]` 同级、起源更高，没有本条的
+   话带 hidden 的胶囊照样渲染 —— 解压进度胶囊 #statusBaseUnpack 在 idle/ready
+   态由 JS 置 hidden 收起，实测属性挂上了、computed display 仍是 flex，胶囊
+   永不消失（2026-08-14 给它挂上 statusbar-pill 之前，.statusbar-basemap 没有
+   display 声明，UA 规则生效，所以那时是好的）。
+   与 `.workbench-panel[hidden]`、`.cmdk[hidden]` 是同一类兜底；那里注释里
+   「UA 带 !important、本条冗余」的说法已被上面的实测推翻，规则不冗余。
+   特异度 (0,2,0) 压得住基础规则；仍刻意排在它后面 —— 本项目测试的近似
+   层叠模型不把属性选择器计进特异度，平局靠源码顺序赢。 */
+.statusbar-pill[hidden] {
+    display: none;
+}
+
 
 /* 胶囊左侧的类别图标：flex 子项默认可收缩，读数变长时 14px 的方框会被压扁
    （SVG 有 width/height 属性也拦不住 flex-shrink）。
@@ -1568,15 +1584,17 @@ body {
     transform: translateX(0);
 }
 
-/* `[hidden]` 的 UA 规则实测在 Chromium 148 上带 `!important`：作者侧
-   `.probe{display:flex}` 压不过它（实测 computed display 仍是 none），
-   `display:flex!important` 才压得过。所以在 Chromium 上本条其实是冗余的。
-   ⚠️ 2026-08-15 Task 3 顺手更正一处算术：原注释把 `[hidden]` 写成 (0,1,1)。
-   属性选择器计在**类那一列**，`[hidden]` 是 (0,1,0)，与 `.workbench-panel`
-   同级 —— 谁赢由「起源 + !important」决定，跟特异度无关，原推理用错了档位。
-   交叉验过：`_btn_specificity('[hidden]')` == (0, 1, 0)。
-   规则本身**不动**：删它是行为变更（别的引擎 UA 表未必带 !important），
-   要删得单独验一轮，不搭本次的车。 */
+/* ⚠️ 本条**不是**冗余，删掉就是行为变更。这里曾长期写着「`[hidden]` 的 UA 规则
+   在 Chromium 148 上带 `!important`，作者侧 `.probe{display:flex}` 压不过它，
+   所以在 Chromium 上本条冗余」—— 2026-08-21 实测推翻：同版本 Chromium 上
+   `.probe{display:flex}` 作用在带 hidden 的 div 上，computed display 是 **flex**，
+   UA 规则是普通优先级。当天的真实故障就是这一类：`.statusbar-pill` 的
+   `display: inline-flex`（同源、(0,1,0)）压过 UA 的 `[hidden]`，解压进度胶囊
+   挂了 hidden 仍永不消失。原「实测」多半是把探针样式表里的兜底规则
+   （`.probe[hidden]{display:none}` 之类）的胜出误记成了 UA 规则的胜出。
+   旧的特异度算术（`[hidden]` 是 (0,1,0)，与 `.workbench-panel` 同级）本身没错，
+   但「谁赢由起源 + !important 决定」的前提错了：UA 不带 !important 时，
+   作者侧 (0,1,0) 的 display 声明就赢，必须有 (0,2,0) 的本条兜底。 */
 .workbench-panel[hidden] {
     display: none;
 }
@@ -2651,9 +2669,20 @@ body {
 }
 
 /* 「搜索中…」。上游往返实测约 2 秒，这一句是那段等待里屏幕上唯一的东西，
-   所以要比普通提示更显眼一档（正文色而不是次要色）。 */
+   所以要比普通提示更显眼一档（正文色而不是次要色）。
+   2026-08-21：加转圈（用户反馈纯文字没有等待感）。动画复用全站既有
+   spinner-border 的 @keyframes，这里只排版与收尺寸，不声明动效。 */
 .place-search__hint--busy {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-hair);
     color: var(--color-text-primary);
+}
+.place-search__spinner {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
 }
 
 /* ==========================================================================

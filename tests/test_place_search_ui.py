@@ -347,6 +347,12 @@ def test_history_click_shows_searching_and_keeps_panel_open():
        渲染好的结果面板当帧关掉。修法是在分派时就 `input.focus()` 把焦点
        收回到部件内的输入框（输入框不被重绘摘除）。
     """
+    src = _map_js()
+    searching = _js_function_body(src, '_renderPlaceSearching')
+    assert 'spinner-border' in searching, (
+        '「搜索中…」缺转圈 —— 纯文字在上游往返那 2 秒里没有等待感'
+        '（2026-08-21 用户反馈）；转圈复用全站 spinner-border 动画')
+
     run = _js_function_body(_map_js(), '_runPlaceSearch')
     assert '_renderPlaceSearching' in run, (
         '_runPlaceSearch 里没有渲染「搜索中…」——点历史条目/回车直接打网络时，'

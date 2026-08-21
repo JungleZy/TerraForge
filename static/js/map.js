@@ -1217,7 +1217,14 @@ function _renderPlaceSearching() {
     results.innerHTML = '';
     const hint = document.createElement('div');
     hint.className = 'place-search__hint place-search__hint--busy';
-    hint.textContent = t('js.search.searching');
+    // 转圈 + 文字（2026-08-21 用户反馈：纯文字没有等待感）。复用全站既有
+    // 的 spinner-border 旋转动画，尺寸由 CSS 侧收小；动画对读屏无信息，
+    // aria-hidden。
+    const spinner = document.createElement('span');
+    spinner.className = 'spinner-border place-search__spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    hint.appendChild(spinner);
+    hint.appendChild(document.createTextNode(t('js.search.searching')));
     results.appendChild(hint);
     _openPlaceSearch();
 }
