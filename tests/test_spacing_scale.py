@@ -124,9 +124,12 @@ WHITELIST = {
         'chip 高度模型（`_progress_label_chip_height_px`，'
         'test_every_progress_height_fits_the_label 的输入）用 `_length_to_px` '
         '直读 padding 的纵向分量，不跟 var()',
-    ('.workbench-panel__body', 'padding'):
-        'test_config_footer_is_a_real_bottom_bar_inside_the_panel 用只认字面量的 '
-        '`_px()` 读它，再要求面板变体的负外边距恰为它的相反数',
+    # 2026-08-21 删除登记：('.workbench-panel__body', 'padding') 条目。
+    # 面板浮动化把 12px 字面量迁成了 var(--space-3)——正是上方 2026-08-15
+    # 更正里实跑过的那条「换了就红」的场景；这次配套把两条消费断言
+    # （test_config_footer_is_a_real_bottom_bar_inside_the_panel 与
+    # _create_panel_submit_bottom）升级到 _resolve_length_px 跟令牌，
+    # 不变量本身（负外边距 = 宿主内边距的相反数）一个像素没变。
     ('.workbench-panel__body--fill .config-footer', 'margin'):
         '同上：三值简写的左右/下两位必须是字面量，且等于宿主内边距的相反数 —— '
         '写成 calc(-1 * var(--space-3)) 会让那条断言报「已失效」',

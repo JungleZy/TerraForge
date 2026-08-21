@@ -343,9 +343,6 @@ EOF
     isolation: isolate;
     border: 1px solid var(--liquid-stroke);
     border-radius: var(--liquid-radius-panel);
-    box-shadow: var(--liquid-shadow),
-        inset 0 1px 1px var(--liquid-rim-strong),
-        inset 0 -1px 1px var(--liquid-rim-soft);
     backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
     -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate));
 }

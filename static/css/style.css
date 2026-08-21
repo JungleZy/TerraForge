@@ -1560,9 +1560,9 @@ body {
      < toast 11000 < confirm 12000 < 拖拽遮罩 13000 < 命令面板 13100 */
 .workbench-panel {
     position: fixed;
-    top: 0;
-    bottom: 0;
-    right: 0;
+    top: var(--space-3);
+    bottom: var(--space-3);
+    right: var(--space-3);
     z-index: var(--z-panel);
     width: var(--panel-config-w);
     max-width: 94vw;
@@ -1639,7 +1639,7 @@ body {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 12px;
+    padding: var(--space-3);
 }
 
 /* 弹窗层栈：工作台面板(1401)比弹窗高会出「详情弹窗被压在面板下面」的事故，
@@ -2681,8 +2681,7 @@ body {
 .place-search__hint--busy {
     display: flex;
     justify-content: center;
-    align-items: center;
-    gap: 7px;
+    gap: var(--space-2);
     padding: var(--space-3) var(--space-hair);
 }
 .place-search__dot {
@@ -3757,8 +3756,8 @@ h1, h2, h3, h4, h5, h6 {
     /* 必须是 minmax(0, 1fr) 而不是 1fr：1fr 的下限是 min-content，
        累计下载量那种长数字会把轨道顶宽，横向溢出原样复活。 */
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: var(--space-5);
-    margin-bottom: var(--space-4);
+    gap: var(--space-3);
+    margin-bottom: var(--space-3);
 }
 
 /* 断点与被替换掉的 `col-6 col-md-3` 一致：md 以下两列。 */
@@ -3770,7 +3769,7 @@ h1, h2, h3, h4, h5, h6 {
 
 .stat-card {
     text-align: left;
-    padding: var(--space-5) var(--space-5);   /* 1.25rem(20px) -> --space-5（24px）：间距刻度归一 2026-08-14 */
+    padding: var(--space-3) var(--space-3);   /* 1.25rem(20px) -> --space-5（24px）：间距刻度归一 2026-08-14 */
     border-radius: var(--radius-card);
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
@@ -5803,6 +5802,7 @@ code {
     padding: 12px 12px;
     margin-top: var(--space-1);
     border-top: 1px solid var(--color-border);
+    border-radius: var(--liquid-radius-panel);
 }
 
 /* 面板里它是一条贴边的横带：面板底色是 elevated，操作带回落一层用
@@ -6189,10 +6189,6 @@ code {
     --liquid-bg: var(--liquid-2-bg);
     position: relative;
     isolation: isolate;
-    box-shadow: var(--liquid-shadow),
-        inset 0 1px 0.5px var(--liquid-rim-strong),
-        inset 0 -1px 1px var(--liquid-rim-soft),
-        inset 0 -12px 24px var(--liquid-inner-depth);
     backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
     -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
 }
@@ -6211,17 +6207,7 @@ code {
 
 /* ══ Task 6 history 迁移补丁(2026-08-17,设计 §3 性能预算) ══════════════
    玻璃只上列表容器壳;滚动区与长列表行保持实色。三条规则各司其职: */
-/* 1. .card 自带的实底(--color-bg-secondary)画在元素背景层 —— 它在
-   backdrop-filter 的模糊结果之上,会把模糊整个盖死,挂 .tf-card 的卡
-   必须让位成透明。描边与阴影顺带钉成玻璃值:.card:hover 同为 (0,2,0),
-   本条源码更靠后,hover 时也不会退回 --shadow-md 平面阴影。 */
-.card.tf-card {
-    box-shadow: var(--liquid-shadow),
-        inset 0 1px 0.5px var(--liquid-rim-strong),
-        inset 0 -1px 1px var(--liquid-rim-soft),
-        inset 0 -12px 24px var(--liquid-inner-depth);
-}
-/* 2. 滚动容器铺实底(卡片原来的 --color-bg-secondary):.task-row 行
+/* 1. 滚动容器铺实底(卡片原来的 --color-bg-secondary):.task-row 行
    自身无背景,不铺这条的话行会透出卡片玻璃的模糊底,滚动时糊底与
    文字错位发花;行也不许各自挂玻璃(同屏 backdrop-filter ≤ 8)。
    实底上在滚动容器一处,行照旧只有发丝分隔线,视觉与迁移前一致。 */
@@ -6294,10 +6280,6 @@ code {
     background: var(--liquid-scrim), var(--liquid-card-bg);
     border-color: var(--liquid-stroke);
     border-radius: var(--liquid-radius-panel);
-    box-shadow: var(--liquid-shadow),
-        inset 0 1px 0.5px var(--liquid-rim-strong),
-        inset 0 -1px 1px var(--liquid-rim-soft),
-        inset 0 -12px 24px var(--liquid-inner-depth);
     backdrop-filter: blur(var(--liquid-2-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
     -webkit-backdrop-filter: blur(var(--liquid-2-blur)) saturate(var(--liquid-saturate)) brightness(var(--liquid-brighten));
 }

@@ -1769,8 +1769,11 @@ def test_config_footer_is_a_real_bottom_bar_inside_the_panel():
         return out
 
     host = decls_for('.workbench-panel__body')
-    host_pad = _px((host.get('padding') or '').split()[0] if host.get('padding') else '')
-    assert host_pad, (
+    # 2026-08-21 起宿主 padding 是 var(--space-3)（面板浮动化顺带令牌化），
+    # 改用 _resolve_length_px 跟令牌；_px 只认字面量会报「读不出来」。
+    host_pad = _resolve_length_px(
+        css, (host.get('padding') or '').split()[0] if host.get('padding') else '')
+    assert host_pad is not None, (
         f'.workbench-panel__body 的 padding 读不出来（{host.get("padding")!r}）—— 本断言已失效'
     )
     footer_in_panel = decls_for('.workbench-panel__body--fill .config-footer')
@@ -4247,12 +4250,13 @@ def test_submit_button_lives_in_the_create_panel_footer():
 def _create_panel_submit_bottom(css, viewport_h):
     """算出提交钮的 bottom（px）。**公式里没有内容项**，这是本节的整个论点。
 
-    #createPanel 是 `position: fixed; top: 0; bottom: 0`（满视口高），里面三层
-    flex：.config-layout 是列容器、.config-scroll 吃满剩余高度并 overflow-y:auto、
-    .config-footer 是 `flex: 0 0 auto` 贴在底部。#createTaskBtn 在底条里、在
+    #createPanel 是 `position: fixed` 钉在视口上（2026-08-21 起四周内缩 12px
+    # 的悬浮玻璃卡；之前 top/bottom 贴边 0），里面三层
+    # flex：.config-layout 是列容器、.config-scroll 吃满剩余高度并 overflow-y:auto、
+    # .config-footer 是 `flex: 0 0 auto` 贴在底部。#createTaskBtn 在底条里、在
     #taskForm 之外。于是：
 
-        bottom = 视口高 - .config-footer 的下内边距
+        bottom = 视口高 - 面板下内缩 - .config-footer 的下内边距
 
     中间为什么没有别的项：宿主 .workbench-panel__body 有 12px 内边距，而
     `.workbench-panel__body--fill .config-footer` 的下外边距是 -12px，两者恰好
@@ -4289,23 +4293,28 @@ def _create_panel_submit_bottom(css, viewport_h):
             vals.append(None if v is None else sign * v)
         assert all(v is not None for v in vals), (
             f'`{selector}` 的 {prop} = {raw!r}，解析不了 —— 本模型已失效。'
-            'tests/test_spacing_scale.py 把这几条登记成「只许字面量」，'
-            '写成 calc() 或 var() 会让本模型整个失明'
+            '2026-08-21 起字面量/令牌都走 _resolve_length_px，两边都读得出'
         )
         return vals
 
-    # 前提 1：面板满视口高。
+    # 前提 1：面板钉在视口上。2026-08-21 起面板浮动化：top/bottom/right 从 0
+    # 改为 var(--space-3)（12px 内缩的悬浮玻璃卡），bottom 公式随之多减一项
+    # 面板下内缩。不变量从「满高」换成「上下内缩相等且读得出 px」。
     panel = one_rule('.workbench-panel')
     assert panel.get('position') == 'fixed', (
         '.workbench-panel 不再是 position: fixed —— 面板不再钉在视口上，'
         '提交钮的 bottom 就不能由视口高推出来了'
     )
+    panel_insets = {}
     for side in ('top', 'bottom'):
         raw = panel.get(side)
-        assert raw is not None and _resolve_length_px(css, raw) == 0, (
-            f'.workbench-panel 的 {side} 不是 0（实际 {raw!r}）—— 面板不再满高，'
-            '底条也就不再贴在视口底边'
+        assert raw is not None and _resolve_length_px(css, raw) is not None, (
+            f'.workbench-panel 的 {side} 读不出来（实际 {raw!r}）—— 本模型已失效'
         )
+        panel_insets[side] = _resolve_length_px(css, raw)
+    assert panel_insets['top'] == panel_insets['bottom'], (
+        f"面板上下内缩不等（{panel_insets}）—— 悬浮面板的上下边距理应一致"
+    )
 
     # 前提 2：滚动发生在 .config-scroll，而不是底条所在的那一层。
     scroll = one_rule('.config-scroll')
@@ -4344,11 +4353,18 @@ def _create_panel_submit_bottom(css, viewport_h):
         f'{host_pad_bottom}px 的相反数 —— 底条不贴视口底边了，'
         f'提交钮的 bottom 会比视口低 {host_pad_bottom + footer_margin[2]}px'
     )
-
-    # 前提 5：底条自己的下内边距，就是提交钮到视口底边的全部距离。
+    # 前提 5：提交钮到视口底边的距离 = 面板下内缩（浮动化新增的 12px）
+    # + 面板底边框 1px（满高时代面板只有 border-left，没有底边框；
+    # .tf-glass 的 1px 描边是四边的）+ 底条自己的下内边距。
+    glass = one_rule('.tf-glass')
+    glass_border = _resolve_length_px(css, (glass.get('border') or '').split()[0])
+    assert glass_border == 1, (
+        f'.tf-glass 的描边宽度不是 1px（实际 {glass.get("border")!r}）—— '
+        '底边框是公式里的一项，变了要重算'
+    )
     footer_pad = parts(footer['padding'], '.config-footer', 'padding')
     footer_pad_bottom = footer_pad[0] if len(footer_pad) < 3 else footer_pad[2]
-    return viewport_h - footer_pad_bottom
+    return viewport_h - panel_insets['bottom'] - glass_border - footer_pad_bottom
 
 
 def test_submit_button_fits_at_1366x768():
@@ -4387,12 +4403,11 @@ def test_submit_button_fits_at_1366x768():
             '这在面板结构下不该可能发生：要么某个前提断言漏了，要么底条的'
             '下内边距变成了负数'
         )
-        assert got == viewport - 12, (
+        assert got == viewport - 25, (
             f'视口 {viewport}px 下模型算出 bottom = {got:.2f}px，'
-            f'期望 {viewport - 12}px（= 视口 - 底条 12px 下内边距）。'
-            '浏览器实测 1366x768 -> 756.00、1600x900 -> 888.00，四条管线'
-            '× 明暗两主题共 16 组全部一致。这个等式变了说明底条的几何被改过，'
-            '请重新量一遍真实浏览器再改这里的 12'
+            f'期望 {viewport - 25}px（= 视口 - 面板下内缩 12 - 底边框 1 - 底条 '
+            '下内边距 12；2026-08-21 面板浮动化后浏览器实测 1366x768 -> 743.00）。'
+            '这个等式变了说明底条或面板的几何被改过，请重新量一遍真实浏览器再改'
         )
 
 

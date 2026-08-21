@@ -223,6 +223,67 @@ def test_statusbar_element_is_hidden_by_default():
     assert "hidden" in m.group(0)
 
 
+def test_hidden_attribute_actually_hides_the_capsule():
+    """带 hidden 的胶囊，作者侧层叠赢家必须是 display:none —— UA 规则压不住。
+
+    2026-08-21 实测的回归（本测试钉的就是它）：`[hidden]` 的 UA 规则**不带**
+    !important（同页探针：`.probe{display:flex}` 作用在带 hidden 的 div 上，
+    computed display 是 flex）。`.statusbar-pill` 的 `display: inline-flex`
+    是同源普通声明，于是挂了 hidden 的解压胶囊 computed display 仍是 flex ——
+    idle/ready 态 JS 明明把它收起了，界面上永不消失。`hidden` 属性在、
+    `test_statusbar_element_is_hidden_by_default` 全绿，故障完全无声。
+    修复 = `.statusbar-pill[hidden]{display:none}`（与 `.workbench-panel[hidden]`、
+    `.cmdk[hidden]` 同类兜底）。
+
+    钉法照 `test_narrow_screen_decoration_reset_actually_wins_the_cascade`：
+    不查「有没有写」，把胶囊相关的 display 规则按「近似特异度 → 源码顺序」
+    真算一遍层叠，断言赢家是 none。两个前提也要钉死，缺一个这条就假绿：
+      - markup 上胶囊确实同时带 statusbar-pill 与 hidden（摘掉 pill 类，守卫
+        打不到它；摘掉 hidden，「赢家是 none」反而成了 bug）；
+      - 赢家的选择器必须带 [hidden]（不带的话就是把所有胶囊永久 none 掉）。
+    ⚠️ `_specificity` 的近似不把属性选择器计进类那一列（`.statusbar-pill[hidden]`
+    与 `.statusbar-pill` 平局），所以守卫**必须排在基础规则之后**靠源码顺序赢
+    —— 真实层叠里它是 (0,2,0) 稳赢，顺序只是喂给近似模型的。
+    """
+    base = _base_html()
+    m = re.search(r'<span[^>]*id="statusBaseUnpack"[^>]*>', base)
+    assert m, "找不到 statusBaseUnpack 元素"
+    tag = m.group(0)
+    assert "statusbar-pill" in tag, (
+        "胶囊不再带 statusbar-pill 类 —— `.statusbar-pill[hidden]` 兜底打不到它，"
+        "而它若另有 display 声明，hidden 又会静默失效（2026-08-21 那类回归）")
+    assert "hidden" in tag, "胶囊默认不再是 hidden —— 前提变了，先核对设计再动本测试"
+
+    css = _css()
+    # 只看「以胶囊为主语」的规则：选择器最后一个复合选择器提到胶囊类。
+    # 不带这层过滤的话，窄屏让路规则
+    # `.workbench-statusbar:has(#statusBaseUnpack:not([hidden])…) .statusbar-tasks`
+    # 也会被 _rules_declaring 扫进来（:not(.statusbar-basemap--failed) 里含
+    # "statusbar-basemap" 子串），它近似特异度更高、值恰是 none、选择器里又恰好
+    # 有 [hidden] 字样 —— 删掉真守卫，下面两条断言照样假绿。它的主语是
+    # .statusbar-tasks 那几项读数，不是胶囊。
+    rules, seen = [], set()
+    for token in ("statusbar-basemap", "statusbar-pill"):
+        for sel, decls, pos in _rules_declaring(css, "display", token):
+            last = re.split(r"[\s>+~]+", sel.strip())[-1]
+            if token in last and pos not in seen:
+                seen.add(pos)
+                rules.append((sel, decls, pos))
+    assert rules, "没有任何以状态栏胶囊为主语的 display 规则 —— 本测试已失效"
+    assert not any("!important" in d for _, d, _ in rules), (
+        "有规则用了 !important，本测试的层叠模型算不了 —— 已失效（不是通过）")
+
+    sel, decls, _pos = max(rules, key=lambda r: (_specificity(r[0]), r[2]))
+    value = re.search(r"(?:^|;|\s)display\s*:\s*([^;]+)", decls).group(1).strip()
+    assert value == "none", (
+        f"带 hidden 的胶囊，display 层叠赢家是 `{sel} {{ display: {value} }}` —— "
+        "胶囊会在 idle/ready 态依旧显示（JS 置 hidden 无效）。"
+        "需要一条排在 `.statusbar-pill` 之后的 `.statusbar-pill[hidden]{display:none}`")
+    assert "[hidden]" in sel, (
+        f"层叠赢家 `{sel}` 不带 [hidden] —— 这是把**所有**状态栏胶囊永久 display:none，"
+        "不是兜底")
+
+
 def test_status_script_is_loaded_on_every_page_after_socket_js():
     """脚本必须全局加载（不在任何 Jinja block 里），且排在 socket.js 之后。
 
