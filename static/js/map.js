@@ -1290,6 +1290,10 @@ async function _runPlaceSearch(query) {
     }
 
     const seq = ++_placeSearchSeq;
+    // 「搜索中…」收进网络分支本体（2026-08-21）：此前只有敲字的去抖路径
+    // 渲染它，点历史条目/回车/点回输入框重搜都直接打网络，上游往返约 2 秒
+    // 里面板一直是旧内容，没有等待反馈。
+    _renderPlaceSearching();
     try {
         const response = await fetch(
             `/api/places/search?q=${encodeURIComponent(term)}&limit=8`);
@@ -1647,6 +1651,11 @@ function initRegionTools() {
         if (item.dataset.history) {
             input.value = item.dataset.history;
             syncClearBtn();
+            // 焦点收回输入框（2026-08-21）：历史钮是 <button>，点击后焦点在它
+            // 身上；结果回来时列表 innerHTML 重绘把这个拿着焦点的钮摘掉，
+            // focusout(relatedTarget=null) 命中兜底收板，结果面板闪开即关。
+            // 输入框不被重绘摘除，焦点放这里是安全的。
+            input.focus();
             _rememberPlaceQuery(item.dataset.history);   // 重排到最前
             _runPlaceSearch(item.dataset.history);
             return;

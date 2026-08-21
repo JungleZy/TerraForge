@@ -332,3 +332,34 @@ def test_history_reader_rejects_junk_from_local_storage():
     assert 'Array.isArray' in body, '没有校验顶层是不是数组'
     assert "typeof v === 'string'" in body, '没有逐项校验元素类型'
     assert 'catch' in body, 'localStorage 在隐私模式下会抛，必须兜住'
+
+
+def test_history_click_shows_searching_and_keeps_panel_open():
+    """点历史条目走的两条路的缺口（2026-08-21 用户实测反馈）。
+
+    1. 加载提示：历史条目的点击分派直接调 `_runPlaceSearch`，而「搜索中…」
+       此前只在敲字的去抖路径里渲染 —— 点历史后上游往返约 2 秒，面板上
+       一直是**旧的历史列表**，没有任何等待反馈。所以 `_renderPlaceSearching()`
+       必须收进 `_runPlaceSearch` 体内、且在 fetch 之前。
+    2. 闪开即关：历史条目是 <button>，点一下焦点落在它身上；结果回来时
+       `_renderPlaceResults` 把列表 innerHTML 整个重绘，这个拿着焦点的按钮
+       被从 DOM 里摘掉 → focusout(relatedTarget=null) → 兜底收板逻辑把刚
+       渲染好的结果面板当帧关掉。修法是在分派时就 `input.focus()` 把焦点
+       收回到部件内的输入框（输入框不被重绘摘除）。
+    """
+    run = _js_function_body(_map_js(), '_runPlaceSearch')
+    assert '_renderPlaceSearching' in run, (
+        '_runPlaceSearch 里没有渲染「搜索中…」——点历史条目/回车直接打网络时，'
+        '等待期间面板毫无反馈')
+    assert run.index('_renderPlaceSearching') < run.index('fetch('), (
+        '「搜索中…」必须排在 fetch 之前渲染')
+
+    body = _js_function_body(_map_js(), 'initRegionTools')
+    m = re.search(r'if\s*\(item\.dataset\.history\)\s*\{(.*?)\}', body, re.S)
+    assert m, '找不到历史条目的点击分派分支 —— 本测试已失效'
+    branch = m.group(1)
+    assert 'input.focus()' in branch, (
+        '历史分支没有把焦点收回输入框 —— 被点击的历史钮在结果重绘时被摘除，'
+        'focusout(null) 会把刚开的结果面板当帧关掉（闪开即关）')
+    assert branch.index('input.focus()') < branch.index('_runPlaceSearch'), (
+        'input.focus() 必须排在 _runPlaceSearch 之前')
