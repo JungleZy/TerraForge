@@ -401,7 +401,10 @@ def test_rail_has_a_create_entry_in_its_first_group():
     """
     html = _template('index.html')
     toolbar_at = html.index('<div class="map-toolbar"')
-    groups = list(re.finditer(r'<div class="map-panel-triggers"[^>]*>', html[toolbar_at:]))
+    # 2026-08-21 修复：类名匹配从 `class="map-panel-triggers"`（紧跟引号）
+    # 放宽为前缀匹配——液态玻璃改造给组容器追加了 tf-glass 类（81813c7
+    # 瘦身以来的红其实是这个正则失配，不是结构丢了）。
+    groups = list(re.finditer(r'<div class="map-panel-triggers[^"]*"[^>]*>', html[toolbar_at:]))
     assert groups, '.map-toolbar 里一个 .map-panel-triggers 组都没有 —— 本测试已失效'
     first_group_start = toolbar_at + groups[0].end()
     first_group_end = (toolbar_at + groups[1].start()) if len(groups) > 1 else len(html)
