@@ -5882,9 +5882,9 @@ def test_button_ink_is_readable_in_every_state():
 # `display: block`、56x40、**`aria-label` 为 null** —— 一颗真实存在、真实可见、
 # 真实缺无障碍名称的纯图标按钮，就在断言的扫描范围外（该按钮已随顶部
 # 工具栏一并移除）。
-# 注：地图左上角的 map-panel-btn（数据下载/数据处理/历史记录/配置）曾按纯
-# 图标按钮计入；实机反馈「纯图标必须悬停才知道功能」后已改为图标+文字，
-# 有可见文本，不再计入本表。
+# 注：地图左上角的 map-panel-btn 曾按纯图标按钮计入，2026-08 改为图标+文字
+# 移出本表；2026-08-21 按用户要求改回纯图标（文字标签删除，名义由
+# aria-label/title 承担）——六颗重新计入，19 -> 25。
 # `.btn-close` 也算进来：它确实是一颗没有可见文本的按钮。它的 aria-label 原本
 # 是 Bootstrap 默认的英文 "Close"，在整站中文界面里读屏会念出 "Close"，
 # 已一并改成「关闭」。它不走 `.btn-icon`（有自己的尺寸规则），所以只参与标签断言，不参与下面的尺寸断言。
@@ -5920,7 +5920,7 @@ def test_button_ink_is_readable_in_every_state():
 # 2026-08-15 Task 5：21 -> 19。两个参数弹窗各带一颗 .btn-close，随弹窗一起退场；
 # 面板的关闭钮走 panel_header 宏（已计在宏体那一行里），rail 的「新建」有可见
 # 文字。所以净 -2，见上面账本里 index.html 那一行。
-ICON_ONLY_BUTTON_COUNT = 19
+ICON_ONLY_BUTTON_COUNT = 25
 
 _JS_BUTTON_RE = re.compile(r'<button\b([^>]*)>(.*?)</button>', re.S)
 

@@ -283,16 +283,16 @@
     --ctl-h-lg:   36px;
 
     /* 组件专有尺寸，**既不在间距刻度上、也不在控件两级上**。
-       .map-panel-btn 是「图标 + 标签两层信息」的竖排按钮：
-           20px 图标 + 8px 间距 + 14px 标签 = 42px 内容
-           上下各 8px 让位给胶囊端头那段 17px 深的圆弧
+       .map-panel-btn 是竖排图标按钮（2026-08-21 起纯图标，文字标签按用户
+       要求取消，名义由 aria-label/title 承担）：
+           18px 图标 + 上下各 11px 让位给胶囊端头那段 17px 深的圆弧
        改前这个高度是四条规则四个数（54 / 58 / 60 / 64，按 :first-child /
        :last-child 分别加让位余量）—— 用高度做让位的后果是同一排按钮高低不齐，
        而且每多一种分组形态就要再算一个数。现在一个高度 + flex 居中，让位由
        居中自动给到上下两端。
        单独命名而不是塞进刻度：它就是这一个组件的尺寸，假装是刻度的一部分会
        诱导下一个人拿它去量别的东西。 */
-    --map-panel-btn-h: 58px;
+    --map-panel-btn-h: 40px;
 
     /* 间距刻度（7 级，2026-08-14 设计稿 §3.1）。全文 padding / margin / gap
        只许从这里取值 —— 改前同一种「组间距」在不同组件里写成 6/8/10/12/14px
@@ -1248,7 +1248,7 @@ body {
     border: none;
     border-bottom: 1px solid var(--color-border);
     background: transparent;
-    color: var(--color-text-secondary);
+    color: var(--color-text-primary);
     white-space: nowrap;
     cursor: pointer;
     /* 属性表与 `.btn` 逐字相同，见 `.dock-collapse-btn` 那条的登记。 */
@@ -1256,42 +1256,12 @@ body {
                 color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), filter var(--dur-fast) var(--ease);
 }
 
-.map-panel-btn span {
-    display: block;
-    margin-top: var(--space-2);                 /* 图标与标签之间要看得出是两层信息 */
-    line-height: 14px;
-    font-size: var(--font-size-xs);  /* 12px，与右上范围浮层同一档 */
-    color: inherit;
-}
-
-/* 英文标签比两字中文宽一倍不止（Settings / Zoom out ≈ 44~54px），32px 的按钮
-   装不下，`white-space: nowrap` + 容器 `overflow: hidden` 会把它裁成
-   「etting」「roces」（实测）。只在英文界面下放宽 —— 中文仍然是规定的 34px
-   胶囊，一个像素不动。lang 属性由服务端按语种渲染（见
-   templates/base.html 的 html_lang）。
-
-   宽度交给 min-width 而不是 width：`width: max-content` 让每颗按钮各自量各自的
-   标签，同一组里 Zoom in(62px) 与 Zoom out(70px) 不一样宽，分隔线、hover 底色、
-   焦点圈跟着参差不齐，标签也不落在组的中线上（实测）。这里把 width 放回 auto
-   （基础规则钉的是 32px，非 auto 的定宽会让列向 flex 的 stretch 失效），再用
-   min-width: max-content 把最宽的那颗标签的诉求交给容器：组宽（也就是
-   .map-toolbar 的宽）按最宽标签撑出来，其余按钮被 stretch 拉齐到同一宽度。 */
-html[lang="en"] .map-panel-btn {
-    width: auto;
-    min-width: max-content;
-    padding-inline: var(--space-2);
-}
-
-/* 端头弧线要跟着宽度改。--radius-pill(999px) 在 34px 宽的中文工具条上是两段
-   17px 的弧；英文工具条 72px 宽，同一条声明变成 36px 的半圆端头，直接啃掉首尾
-   按钮的标签 ——「Zoom out」在离底 10px 处两端各需让出 11px，实际只有 8px 富余，
-   于是被 overflow: hidden 裁掉尾字母（实测）。钉死 17px：与中文端头同一段弧，
-   下面 first/last-child 那几条按 17px 算出来的让位余量继续成立，形状从胶囊变成
-   同弧度的圆角矩形，两种语言看着仍是一套语言。 */
-html[lang="en"] .map-panel-triggers {
-    border-radius: 17px;
-}
-
+/* 2026-08-21 删除登记：按钮内的 <span> 文字标签按用户要求取消（纯图标，
+   名义由 aria-label/title 承担）。随之删除的有三条只服务于标签的规则：
+   `.map-panel-btn span` 标签样式、英文界面宽度放宽（html[lang=en]
+   .map-panel-btn 的 width:auto + min-width:max-content——没有标签后英文
+   也是 34px 胶囊）、英文端头弧线钉 17px（html[lang=en] .map-panel-triggers
+   ——组宽不再被英文标签撑开，胶囊弧线天然成立）。 */
 /* 胶囊两端各有一段 17px 深的圆弧（半径 = 34px 组宽的一半）。首尾按钮的内容
    贴着端头排的话会被弧线蹭到：12px 两字标签 24px 宽，要在离端 7.4px 处才有
    28px 可用宽（左右各 2px 留白）；20px 图标要 3.3px。
@@ -1305,9 +1275,9 @@ html[lang="en"] .map-panel-triggers {
    hover 底色、焦点圈都按按钮盒子画 —— 高低不齐是直接可见的。再加一种分组
    形态（比如两按钮分组）就要再算第五个数。
 
-   现在基规则一个 `height: var(--map-panel-btn-h)`(58px) +
-   `justify-content: center`：42px 内容居中后上下各 8px，8 > 7.4 —— 首、尾、
-   单按钮三种位置**同时**满足上面那条余量要求，一个数管全部。
+   现在基规则一个 `height: var(--map-panel-btn-h)`(40px，纯图标) +
+   `justify-content: center`：18px 图标居中后上下各 11px > 7.4px 余量——
+   首、尾、单按钮三种位置**同时**满足让位要求，一个数管全部。
    `:last-child` 只剩它本来的职责（收掉最后一条分隔线）。
    由 tests/test_geometry_scales.py::
    test_map_toolbar_buttons_have_one_fixed_height 钉住「只有一个高度来源」。 */

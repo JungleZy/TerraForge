@@ -48,7 +48,6 @@
                         aria-label="{{ t('tpl.index.toolbar.create_title') }}"
                         title="{{ t('tpl.index.toolbar.create_title') }}" aria-expanded="false">
                     {{ m.icon_create(18, gap='') }}
-                    <span>{{ t('tpl.index.toolbar.create') }}</span>
                 </button>
             </div>
             <!-- 2026-08-15 删除登记（两组）：
@@ -76,7 +75,6 @@
                         <polyline points="17 8 12 3 7 8"></polyline>
                         <line x1="12" y1="3" x2="12" y2="15"></line>
                     </svg>
-                    <span>{{ t('tpl.index.toolbar.region_import') }}</span>
                 </button>
             </div>
             <input type="file" id="regionImportFile" accept=".geojson,.json,.kml,.kmz,.zip,.shp" hidden>
@@ -90,21 +88,17 @@
                         <circle cx="12" cy="12" r="4"></circle>
                         <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
                     </svg>
-                    <span>{{ t('tpl.index.toolbar.lighting') }}</span>
                 </button>
             </div>
             <div class="map-panel-triggers tf-glass tf-glass--1" id="mapPanelTriggers">
                 <button type="button" class="map-panel-btn" data-panel="records" aria-label="{{ t('tpl.index.toolbar.tasks') }}" title="{{ t('tpl.index.toolbar.tasks_title') }}" aria-expanded="false">
                     {{ m.icon_tasks(18, gap='') }}
-                    <span>{{ t('tpl.index.toolbar.tasks') }}</span>
                 </button>
                 <button type="button" class="map-panel-btn" data-panel="config" aria-label="{{ t('tpl.index.toolbar.config') }}" title="{{ t('tpl.index.toolbar.config') }}" aria-expanded="false">
                     {{ m.icon_config(18, gap='') }}
-                    <span>{{ t('tpl.index.toolbar.config') }}</span>
                 </button>
                 <button type="button" class="map-panel-btn" data-panel="plugins" aria-label="{{ t('tpl.plugins.title') }}" title="{{ t('tpl.plugins.title') }}" aria-expanded="false">
                     {{ m.icon_plugin(18, gap='') }}
-                    <span>{{ t('tpl.plugins.title') }}</span>
                 </button>
             </div>
         </div>

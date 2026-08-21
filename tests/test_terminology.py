@@ -610,15 +610,16 @@ _T_CALL_RE = re.compile(r"t\(\s*'([^']+)'")
 # 一旦和产品对不上（换了容器 id、读数换了渲染函数），本条会退化成「因为空所以
 # 过」——那种断言比没有断言更坏，它占着一条测试名让人以为这块还有人看着。
 #
-# 实测（2026-08-17）四块区域各扫到几个可见文案键：
-#   #mapToolbar               6（新建 / 区域导入 / 光照 / 任务 / 配置 / 插件
-#                                —— 正好是瘦身后剩下的六颗）
+# 实测（2026-08-21 复核）四块区域各扫到几个可见文案键：
+#   #mapToolbar               0（工具条 2026-08-21 起纯图标化，六颗按钮的文字
+#                                标签按用户要求取消，名义由 aria-label/title 承担；
+#                                原先的 tpl.index.toolbar.create 从 _MUST_BE_SWEPT
+#                                移除）
 #   #selectionField           2（去框选 / 手动输入范围）
 #   updateBoundsInfo()        1（清除选区）
 #   _renderManualBounds()     2（确定 / 取消）
-# 去重后 11 个。`js.map.bounds.sr_` 那个拼接前缀不在其中（不是一条文案）。
+# 去重后 5 个。`js.map.bounds.sr_` 那个拼接前缀不在其中（不是一条文案）。
 _MUST_BE_SWEPT = (
-    'tpl.index.toolbar.create',      # 工具条「新建」
     'tpl.index.create.draw_rect',    # 选区段「去框选」
     'js.map.bounds.clear',           # 读数里「清除选区」（JS 重建出来的那颗）
 )
@@ -689,7 +690,7 @@ def test_no_button_in_the_selection_field_or_toolbar_promises_a_download():
     missing = [k for k in _MUST_BE_SWEPT if k not in swept]
     assert not missing, (
         f'这些按钮没被扫到：{missing} —— 扫查范围已经和产品对不上，本条正在变成'
-        f'「因为空所以过」（实测 2026-08-17 共扫到 11 个可见文案键，'
+        f'「因为空所以过」（实测 2026-08-21 共扫到 5 个可见文案键，'
         f'这次只扫到 {len(swept)} 个）')
     assert 'js.map.bounds.download' not in MESSAGES, (
         '旧键 js.map.bounds.download（「下载」/"Download"）还在 —— 它就是那句'

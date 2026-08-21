@@ -59,10 +59,10 @@ MESSAGES = {
         'zh': '清空搜索框',
         'en': 'Clear the search box',
     },
-    'tpl.index.toolbar.lighting': {
-        'zh': '光照',
-        'en': 'Lighting',
-    },
+    # 2026-08-21 删除登记：'tpl.index.toolbar.lighting'（光照）与
+    # 'tpl.index.toolbar.create'（新建）随工具条纯图标化删除——按钮上的
+    # 文字标签取消了，名义由 aria-label/title（terrain_lighting /
+    # create_title 等完整说法键）承担。
     'tpl.index.toolbar.terrain_lighting': {
         'zh': '地形光照',
         'en': 'Terrain lighting',
@@ -74,12 +74,8 @@ MESSAGES = {
     # 「新建」：左列工具条第一组，打开 #createPanel。四条管线（瓦片 / 高程 /
     # 本地地形切片 / 等高线）唯一的创建入口 —— 2026-08-15 起 tpl.index.toolbar
     # .process（任务筛选行右端那颗「处理」）随 #processOpenBtn 一起退役。
-    # 工具条按钮图标在上文字在下，所以短文案与 title 分成两个键：
-    # create 是按钮上那两个字，create_title 是 aria-label 与 title 的完整说法。
-    'tpl.index.toolbar.create': {
-        'zh': '新建',
-        'en': 'New',
-    },
+    # 工具条 2026-08-21 起纯图标化：按钮上的短文案键（create「新建」）已删，
+    # 名义只剩 create_title（aria-label 与 title 的完整说法）。
     'tpl.index.toolbar.create_title': {
         'zh': '新建任务',
         'en': 'New task',

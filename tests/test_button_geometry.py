@@ -108,11 +108,9 @@ _NOT_A_BUTTON_BOX = {
         '同上（只有 opacity）。',
     '.task-line1 .btn-group':
         '按钮**组**容器，只声明 flex 不参与按钮盒模型。',
-    '.map-panel-btn span':
-        '工具条按钮内的第二行标签，不是按钮盒子本身。',
-    'html[lang="en"] .map-panel-btn':
-        '英文档下工具条按钮改为按最宽标签撑开（width:auto + padding-inline），'
-        '管的是**宽度**；本文件钉的是高度/内边距纵向那一档与焦点环。',
+    # 2026-08-21 删除登记：'.map-panel-btn span'（标签样式）与
+    # 'html[lang="en"] .map-panel-btn'（英文宽度放宽）两条规则已随
+    # 工具条纯图标化删除，排除项一并移除。
 }
 
 
@@ -146,11 +144,11 @@ _UNMODELLABLE = {
         '逐个属性比对它与公共档的**令牌表达式**是否逐字相同。',
     ),
     'map-panel-btn': (
-        '它有 `:last-child`（收最后一条分隔线）与 `html[lang="en"] ` 前缀两种'
-        '形态，`_btn_branch_applies` 对二者都返回 None（不支持的伪类 / 祖先带'
-        '类型选择器）。',
-        '它本来就**不在两档里**：工具条按钮是「图标+标签」两层信息的竖排按钮，'
-        '高度走组件专有令牌 --map-panel-btn-h(58px)，由 '
+        '它有 `:last-child`（收最后一条分隔线）形态，`_btn_branch_applies`'
+        '对不支持的伪类返回 None。（原先还有 `html[lang="en"] ` 前缀形态，'
+        '2026-08-21 工具条纯图标化后随文字标签一起删除。）'
+        '它本来就**不在两档里**：工具条按钮是纯图标竖排按钮，'
+        '高度走组件专有令牌 --map-panel-btn-h(40px)，由 '
         'tests/test_geometry_scales.py::test_map_toolbar_buttons_have_one_fixed_height '
         '钉住「只有一个高度来源」。本文件只管它的焦点环与 transition。',
     ),
