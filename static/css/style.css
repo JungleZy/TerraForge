@@ -59,6 +59,10 @@
     --liquid-1-bg:   rgba(15,17,22,0.42);
     --liquid-1-blur: 16px;
     --liquid-2-bg:   rgba(15,17,22,0.38);
+    /* config 分区卡专用料(2026-08-21 与玻璃 chrome 分家):卡片坐在
+       page-ambient 浅底上,可以用薄料;chrome 那套厚料是为黑太空上的
+       文字可读性服务的,不该由卡片继承。暗色下两档同值。 */
+    --liquid-card-bg: rgba(15,17,22,0.38);
     --liquid-2-blur: 24px;
     --liquid-3-bg:   rgba(15,17,22,0.46);
     --liquid-3-blur: 32px;
@@ -607,6 +611,8 @@
        低 alpha 表达;0.30 白纱与 0.85 白流光维持退场(那才是纯白感主犯)。 */
     --liquid-1-bg:   rgba(255,255,255,0.75);
     --liquid-2-bg:   rgba(255,255,255,0.82);
+    /* 亮色卡材料:0.35 白让 ambient 水洗透上来(0.82 是纯白观感的来源) */
+    --liquid-card-bg: rgba(255,255,255,0.35);
     --liquid-3-bg:   rgba(255,255,255,0.88);
     --liquid-brighten: 1.05;
     --liquid-saturate: 170%;
@@ -6280,9 +6286,12 @@ code {
    浅底上是「一片纯白」观感的主要来源。实底画在元素背景层会盖死
    backdrop-filter,故让位透明,玻璃料(scrim 渐变 + 底料色)改由
    background 承担(末层解析为 background-color,与 .tf-glass::before
-   同一机制),皮肤参数全部引 glass-2 令牌。无新 transition,不动动效锚点。 */
+   同一机制)。无新 transition,不动动效锚点。
+   底料用 --liquid-card-bg 而不是 chrome 的 --liquid-2-bg:卡片坐在
+   page-ambient 浅底上,chrome 的厚料(亮色 0.82)是为黑太空上的文字
+   可读性服务的,卡片继承它又是纯白(同日两轮用户反馈)。 */
 .config-section {
-    background: var(--liquid-scrim), var(--liquid-2-bg);
+    background: var(--liquid-scrim), var(--liquid-card-bg);
     border-color: var(--liquid-stroke);
     border-radius: var(--liquid-radius-panel);
     box-shadow: var(--liquid-shadow),

@@ -9651,8 +9651,9 @@ def test_config_sections_carry_liquid_glass_skin():
     glass = [b for b in bodies if 'backdrop-filter' in b]
     assert glass, '.config-section 的玻璃化补丁不存在（没有声明 backdrop-filter 的规则）'
     body = glass[0]
-    assert 'var(--liquid-scrim)' in body and 'var(--liquid-2-bg)' in body, (
-        '.config-section 的玻璃底必须引用 --liquid-scrim 与 --liquid-2-bg')
+    assert 'var(--liquid-scrim)' in body and 'var(--liquid-card-bg)' in body, (
+        '.config-section 的玻璃底必须引用 --liquid-scrim 与 --liquid-card-bg'
+        '（2026-08-21 起卡片用专用薄料，不吃 chrome 的 --liquid-2-bg 厚料）')
     assert 'backdrop-filter' in body, '.config-section 缺 backdrop-filter'
     fb = re.search(
         r'@supports not \(backdrop-filter: blur\(1px\)\)\s*\{\s*'
